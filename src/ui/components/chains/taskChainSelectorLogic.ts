@@ -12,6 +12,7 @@ export interface ChainSelectorItem {
   projectId: string;
   projectName: string;
   coordinatorAgentInstanceId?: string;
+  submissionRoute?: string;
   taskCount?: number;
   completedTaskCount?: number;
   updatedAt?: string;

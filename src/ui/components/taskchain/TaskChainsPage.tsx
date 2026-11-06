@@ -34,6 +34,7 @@ interface TaskChainsPageProps {
   // Optional deep-link target task (from '/chains/:chainId/tasks/:taskId'); the
   // chain view auto-opens + scrolls to it. Undefined for the plain chain route.
   taskId?: string;
+  submissionAttempt?: string;
   isMobile?: boolean;
 }
 
@@ -415,7 +416,7 @@ function ChainGroupCard({
   );
 }
 
-export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initialChainId, taskId: focusTaskId, isMobile }) => {
+export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initialChainId, taskId: focusTaskId, submissionAttempt, isMobile }) => {
   // Read the viewport the same way ResourceContainer does, so the page and the
   // container can never disagree about where the 2-pane boundary is.
   const viewport = useViewport();
@@ -774,7 +775,7 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
     </div>
   );
 
-  if (ownerTarget) return <OwnerLocalPanel key={ownerTarget.chainId} initialChainId={ownerTarget.chainId} initialBridgeId={ownerTarget.bridgeId} initialTaskId={focusTaskId} onClose={() => { setOwnerTarget(null); handleCloseDetail(); }} />;
+  if (ownerTarget) return <OwnerLocalPanel key={JSON.stringify([ownerTarget.chainId, focusTaskId, submissionAttempt])} initialChainId={ownerTarget.chainId} initialBridgeId={ownerTarget.bridgeId} initialTaskId={focusTaskId} initialSubmissionAttempt={submissionAttempt} onClose={() => { setOwnerTarget(null); handleCloseDetail(); }} />;
   if (showOwnerLocal) return <OwnerLocalPanel onClose={() => setShowOwnerLocal(false)} />;
 
   return (

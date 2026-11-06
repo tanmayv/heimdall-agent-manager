@@ -1,3 +1,4 @@
+import { ownerSubmissionRoute } from '../../utils/ownerSubmissionNavigation';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useFetchTaskChainGroupsQuery, type ChainProjectGroup } from '../../api/endpoints/tasks';
@@ -195,6 +196,7 @@ export function TaskChainSelectorModal({
           }
           setRemoteChains(response.hits.map((hit) => ({
             chainId: hit.chain_id,
+            submissionRoute: ownerSubmissionRoute(hit),
             title: hit.title || 'Untitled chain',
             rawTitle: hit.title || '',
             status: hit.status || '',
@@ -276,6 +278,11 @@ export function TaskChainSelectorModal({
   // hosts place `chainTargetId(chain.chainId)` when a coordinator exists.
   const handleSelect = (chain: ChainSelectorItem) => {
     onClose();
+    if (chain.submissionRoute) {
+      if (onNavigate) onNavigate(chain.submissionRoute);
+      else window.location.hash = buildRouteHash(chain.submissionRoute, "");
+      return;
+    }
     void resolveChainConversationAgent(dispatch, chain.chainId, chain.coordinatorAgentInstanceId).then((coordinator) => {
       const resolved = { chainId: chain.chainId, coordinatorAgentInstanceId: coordinator || undefined };
       if (onSelectChain) {

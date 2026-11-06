@@ -64,7 +64,7 @@ search_result :: proc(s:^Store,c:json.Object,payload:string,now:i64,kr:^vault.Va
     result["indexed_seq"]=json.String(state[0][0])
     result["revision"]=json.String("0")
     for row in rows {
-        append(&items,doc(map[string]string{"chain_id"=row[0],"task_id"=row[1],"kind"=row[2],"object_id"=row[3],"object_revision"=row[4],"title"=row[5],"description"=row[6]}))
+        append(&items,doc(map[string]string{"chain_id"=row[0],"task_id"=row[1],"kind"=row[2],"object_id"=row[3],"object_revision"=row[4],"attempt"=(row[4] if row[2]=="output" else ""),"title"=row[5],"description"=row[6]}))
         result["hits"]=json.Array(items)
         if len(encode(result))>MAX_PAGE {
             ordered_remove(&items,len(items)-1)
@@ -94,8 +94,7 @@ search_rebuild :: proc(s:^Store)->bool {
         SELECT chain_id,task_id,'requirements',task_id,revision,'',brief_json FROM task_requirements a
         WHERE revision=(SELECT MAX(b.revision) FROM task_requirements b WHERE b.chain_id=a.chain_id AND b.task_id=a.task_id);
       INSERT INTO search_docs(chain_id,task_id,kind,object_id,revision,title,body)
-        SELECT chain_id,task_id,'output',task_id,attempt,'',summary FROM local_submissions a
-        WHERE attempt=(SELECT MAX(b.attempt) FROM local_submissions b WHERE b.chain_id=a.chain_id AND b.task_id=a.task_id);
+        SELECT chain_id,task_id,'output',task_id||':'||attempt,attempt,'',summary FROM local_submissions;
       INSERT INTO search_fts(search_fts,rank) VALUES('integrity-check',1);
       COMMIT;`) { return false }
     committed=true

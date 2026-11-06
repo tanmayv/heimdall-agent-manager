@@ -25,5 +25,6 @@
   "lifecycle_input": "protocol_version:version chain_id:id task_id:id lease_id:id configuration_revision:positive expected_revision:counter operation_id:id method:lifecycle_method request_expires_ms:positive capability:optional_document payload:document",
   "search_payload": "query_cipher:required_cipher limit:positive",
   "delete_payload": "protocol_version:version",
-  "chain_edit_payload": "title_cipher:required_cipher description_cipher:required_cipher"
+  "chain_edit_payload": "title_cipher:required_cipher description_cipher:required_cipher",
+  "submission_read_payload": "attempt:positive offset:counter"
 }

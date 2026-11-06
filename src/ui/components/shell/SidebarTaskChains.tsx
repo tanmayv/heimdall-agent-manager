@@ -97,6 +97,7 @@ export function SidebarTaskChains({ scrollRoot, active, currentPath, onNavigate,
   const open = async (event: React.MouseEvent<HTMLAnchorElement>, chain: HomeChainItem) => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
+    if (chain.submissionRoute) { navigateToHash(buildRouteHash(chain.submissionRoute, "")); onNavigate?.(); return; }
     const coordinator = await resolveChainConversationAgent(dispatch, chain.chainId, chain.coordinatorAgentInstanceId);
     navigateToHash(buildRouteHash(coordinator ? chainConversationRoute(chain.chainId) : `/chains/${encodeURIComponent(chain.chainId)}`, ''));
     onNavigate?.();
@@ -124,7 +125,7 @@ export function SidebarTaskChains({ scrollRoot, active, currentPath, onNavigate,
           </li>
         ) : rows.map(chain => (
           <li key={chain.chainId}>
-            <a href={buildRouteHash(chainConversationRoute(chain.chainId), '')}
+            <a href={buildRouteHash(chain.submissionRoute || chainConversationRoute(chain.chainId), '')}
               onClick={event => void open(event, chain)}
               data-debug-id={`sidebar-chain-row-${chain.chainId}`}
               aria-current={currentPath === chainConversationRoute(chain.chainId) ? 'page' : undefined}

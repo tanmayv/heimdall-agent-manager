@@ -140,6 +140,7 @@ export function HomeChainSearch({ onOpenAgent }: HomeChainSearchProps) {
   // chain detail when the list row lacks it. Only a chain without any
   // coordinator falls back to the chain page.
   const open = async (chain: HomeChainItem) => {
+    if (chain.submissionRoute) { navigateToHash(buildRouteHash(chain.submissionRoute, "")); return; }
     const coordinator = await resolveChainConversationAgent(dispatch, chain.chainId, chain.coordinatorAgentInstanceId);
     if (coordinator) {
       const target = chainTargetId(chain.chainId);

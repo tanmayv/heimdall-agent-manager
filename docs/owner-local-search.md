@@ -25,7 +25,7 @@ result incomplete/stale. Order is deterministic, without global BM25 statistics.
 | Chain title/description and task title/body | Current canonical local row |
 | Task comments | All retained local comments |
 | Goals/acceptance | Current immutable requirements revision's brief JSON |
-| Submission output | Latest local submission summary |
+| Submission output | Every retained local submission summary, keyed by task ID and attempt |
 | Linked messages/handoff | No owner-local producer exists yet; deferred with controls/linked-content work |
 | Artifacts, extractors, binary content, terminal output | Not indexed |
 
@@ -38,7 +38,7 @@ its existing encrypted feed and in-memory chain-title/description index.
 Source-table triggers upsert/delete documents and postings in the canonical
 transaction, including requirements/submission writers. Failed statements,
 deferred-constraint COMMIT failure and disk-full roll back content and postings.
-V5 migration backfills existing content atomically. Opening a database rebuilds
+V5 migration adds the index; V6 atomically upgrades its output identities and backfills every retained submission, including on existing V5 databases. Opening a database rebuilds
 documents from canonical rows, rebuilds FTS and checks external-content integrity.
 A rebuild failure disables search; it cannot yield stale successful results.
 
@@ -54,6 +54,14 @@ delivered plaintext cannot be remotely recalled.
 
 New signed `chain.edit`, `task.edit` and `task.delete` provide content maintenance
 with exact revisions, durable receipts and signed title/delete publication.
+Historical output hits carry an explicit attempt, and links open
+/chains/:chain/tasks/:task/submissions/:attempt. The owner panel labels the view
+as historical output and sends signed submission.read for that exact attempt;
+it never substitutes the current runtime summary. Reads recheck current grants,
+are read-only and return bounded summary pages (8192 bytes, UTF-8 boundaries).
+An absent attempt or revoked/cross-scope read fails closed. Requirements and
+configuration revision, author and head identify the immutable submitted record.
+
 Task edit/delete rejects tasks with any lease history or lifecycle configuration;
 these commands cannot bypass review/merge controls. Delete removes the unstarted
 task and comments plus their documents/postings in one transaction, and retains
@@ -81,7 +89,9 @@ The existing commands in [owner-local-lifecycle.md](owner-local-lifecycle.md)
 build/run the disposable real Hub/Bridge/CLI/PTY integration demo. Its
 `owner_local_flow.ts` now tests signed CLI/UI-client search create/comment/edit/
 delete, Unicode, restart/rebuild, chain/account isolation, mixed legacy/local
-results without duplicates, and late-result rejection after session lock.
+results without duplicates, and late-result rejection after session lock. A two-submission rework cycle
+then checks retained output across owner restart and renders the production
+owner panel from each exact search link against the real relay.
 The same run retains exact-child claim/heartbeat, requirements/ACK, submit
 replay, independent review and real Git merge/conflict checks. It uses production
 browser modules rather than browser automation or native provider-interrupt tests.
@@ -95,11 +105,13 @@ nix develop --command odin test src/lib/owner_local \
 nix develop --command odin test src/contracts \
   -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/contracts-search-unique
 nix develop --command node --import ./tests/helpers/vaultEndpointHarness.ts \
-  --test tests/ui_owner_local_contract_test.ts tests/ui_home_chain_search_test.ts
+  --test tests/ui_owner_local_contract_test.ts tests/ui_owner_submission_history_test.ts tests/ui_home_chain_search_test.ts
 nix develop --command npm run typecheck
 ```
 
-Storage tests include genuine V4 collision/rollback/backfill, Unicode/literal
+Storage tests include genuine V4/V5 collision/rollback/backfill, retained
+attempt-1/attempt-2 output before and after rebuild/restart, exact-attempt reads
+and revocation/cross-scope denial, Unicode/literal
 queries, source update/delete/replay, tombstone resurrection rejection, readonly/
 revoked scope, missing key, failed repair, failed COMMIT/disk-full and current
 requirements/submission indexing. Workflow/source episodes and R2C regressions

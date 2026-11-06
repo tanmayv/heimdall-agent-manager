@@ -1,3 +1,4 @@
+import { ownerSubmissionRoute } from '../../utils/ownerSubmissionNavigation';
 import type { ChainListItem, ChainProjectGroup } from '../../api/endpoints/tasks';
 import type { TaskChainSearchHit } from '../../utils/taskChainSearch';
 import { isVaultArmored } from '../../utils/vaultContent';
@@ -11,6 +12,7 @@ export interface HomeChainItem {
   projectName: string;
   updatedAt: string;
   coordinatorAgentInstanceId?: string;
+  submissionRoute?: string;
 }
 
 export const HOME_RECENT_CHAIN_LIMIT = 10;
@@ -133,6 +135,7 @@ export function homeChainsFromSearchHits(
     return {
       chainId: hit.chain_id,
       title: hit.title || known?.title || '',
+      submissionRoute: ownerSubmissionRoute(hit),
       status: String(hit.status || known?.status || '').toLowerCase(),
       projectId: hit.project_id || known?.projectId || '',
       projectName: known?.projectName || projectNames.get(hit.project_id) || '',

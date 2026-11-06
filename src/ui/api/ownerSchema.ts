@@ -27,6 +27,7 @@ export const ownerSchemas = {
   search_payload: [["query_cipher", "required_cipher"], ["limit", "positive"]],
   delete_payload: [["protocol_version", "version"]],
   chain_edit_payload: [["title_cipher", "required_cipher"], ["description_cipher", "required_cipher"]],
+  submission_read_payload: [["attempt", "positive"], ["offset", "counter"]],
 } as const;
 export type OwnerKind = keyof typeof ownerSchemas;
 export interface OwnerGenesis {
@@ -259,6 +260,10 @@ export interface OwnerChain_Edit_Payload {
   title_cipher: string;
   description_cipher: string;
 }
+export interface OwnerSubmission_Read_Payload {
+  attempt: string;
+  offset: string;
+}
 export interface OwnerDocuments {
   genesis: OwnerGenesis;
   command: OwnerCommand;
@@ -287,4 +292,5 @@ export interface OwnerDocuments {
   search_payload: OwnerSearch_Payload;
   delete_payload: OwnerDelete_Payload;
   chain_edit_payload: OwnerChain_Edit_Payload;
+  submission_read_payload: OwnerSubmission_Read_Payload;
 }

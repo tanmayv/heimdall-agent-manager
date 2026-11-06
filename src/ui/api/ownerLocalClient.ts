@@ -8,7 +8,7 @@ export interface OwnerSession { identity: DeviceIdentity; chain: VerifiedChain; 
 export interface OwnerOperation { command: string; payload: string; genesis: string }
 export interface OwnerInput {
   chainId: string; taskId?: string; expectedRevision: string;
-  query?: string; limit?: number;
+  query?: string; limit?: number; offset?: string;
   title?: string; description?: string; body?: string; cursor?: string; operationId?: string;
   instanceId?: string; configurationRevision?: string; enabled?: boolean;
   lifecycleConfig?: Record<string, string>; requirementsRevision?: string; attempt?: string; head?: string; verdict?: 'approve' | 'request_changes';
@@ -44,6 +44,7 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
   else if (method === 'lifecycle.configure') payload = input.lifecycleConfig ?? {};
   else if (method === 'requirements.edit') payload = { requirements_revision: input.requirementsRevision ?? '', body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'review.post') payload = { requirements_revision: input.requirementsRevision ?? '', attempt: input.attempt ?? '', head: input.head ?? '', verdict: input.verdict ?? 'approve', summary: input.body ?? '' };
+  else if (method === 'submission.read') payload = { attempt: input.attempt ?? '', offset: input.offset ?? '0' };
   else if (method === 'receipt.read') payload = { operation_id: input.operationId ?? '' };
   else payload = { cursor: input.cursor ?? '', limit: '20' };
   const payloadRaw = JSON.stringify(payload);

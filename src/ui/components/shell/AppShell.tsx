@@ -1,3 +1,4 @@
+import { parseChainRoute } from '../../utils/ownerSubmissionNavigation';
 import { SidebarTaskChains } from './SidebarTaskChains';
 import {
   LOGIN_PATH,
@@ -265,22 +266,6 @@ function isRouteActive(currentPath: string, itemPath: string): boolean {
   if (itemPath === '/memory') return currentPath === '/memory' || currentPath.startsWith('/memory/');
   if (itemPath === '/shells') return currentPath === '/shells' || currentPath.startsWith('/shells/');
   return currentPath === itemPath || currentPath.startsWith(`${itemPath}/`);
-}
-
-// Parse '/chains/:chainId(/tasks/:taskId)?' into its decoded parts. taskId is
-// undefined for the plain '/chains/:chainId' route. Centralised so the content
-// switch, breadcrumb, and any future consumer agree — a naive slice would pass the
-// whole 'chain.../tasks/task...' string as the chainId and break the chain lookup.
-function parseChainRoute(path: string): { chainId: string; taskId?: string } {
-  const rest = path.slice('/chains/'.length);
-  const tasksAt = rest.indexOf('/tasks/');
-  if (tasksAt >= 0) {
-    return {
-      chainId: decodeURIComponent(rest.slice(0, tasksAt)),
-      taskId: decodeURIComponent(rest.slice(tasksAt + '/tasks/'.length)),
-    };
-  }
-  return { chainId: decodeURIComponent(rest) };
 }
 
 function routeTitle(path: string): string {

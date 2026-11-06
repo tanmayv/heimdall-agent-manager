@@ -487,6 +487,15 @@ owner_fields_chain_edit_payload := [?]Owner_Field{
     {"title_cipher", "required_cipher"},
     {"description_cipher", "required_cipher"},
 }
+Owner_Submission_Read_Payload :: struct {
+    attempt: string,
+    offset: string,
+}
+@(private)
+owner_fields_submission_read_payload := [?]Owner_Field{
+    {"attempt", "positive"},
+    {"offset", "counter"},
+}
 owner_schema :: proc(kind: string) -> []Owner_Field {
     switch kind {
     case "genesis": return owner_fields_genesis[:]
@@ -516,6 +525,7 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "search_payload": return owner_fields_search_payload[:]
     case "delete_payload": return owner_fields_delete_payload[:]
     case "chain_edit_payload": return owner_fields_chain_edit_payload[:]
+    case "submission_read_payload": return owner_fields_submission_read_payload[:]
     }
     return nil
 }

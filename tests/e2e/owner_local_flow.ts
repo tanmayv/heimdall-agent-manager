@@ -124,7 +124,7 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
   await installKeyringFromWrap(approver.identity, approver.wrap, await approver.chain());
   const realFetch = globalThis.fetch;
   globalThis.fetch = (input: any, init: any = {}) => realFetch(new URL(String(input), hub.base), {
-    ...init, headers: { ...sessionHeaders(hub.session, hub.base), ...Object.fromEntries(new Headers(init.headers)) },
+    ...init, headers: { ...Object.fromEntries(new Headers(sessionHeaders(hub.session, hub.base))), ...Object.fromEntries(new Headers(init.headers)) },
   });
   try {
     let mixed: any;
@@ -143,7 +143,7 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
     let intercepted = false;
     globalThis.fetch = async (input: any, init: any = {}) => {
       const response = await realFetch(new URL(String(input), hub.base), {
-        ...init, headers: { ...sessionHeaders(hub.session, hub.base), ...Object.fromEntries(new Headers(init.headers)) },
+        ...init, headers: { ...Object.fromEntries(new Headers(sessionHeaders(hub.session, hub.base))), ...Object.fromEntries(new Headers(init.headers)) },
       });
       if (String(input).endsWith('/owner-local/relay') && !intercepted) {
         intercepted = true; reached(); await held;
@@ -213,7 +213,7 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
         const config={configuration_revision:'1',author_agent_id:worker.agentId,reviewer_agent_id:reviewer.agentId,reviewer_instance_id:reviewer.instanceId,directory_id:ownerId('dir_'),merge_policy:'git',repository:git.repository,worktree:git.worktree,source_branch:git.sourceBranch,target_branch:git.targetBranch,base_head:git.baseHead};
         await human('lifecycle.configure',{expectedRevision:'2',lifecycleConfig:config});
         await human('requirements.edit',{expectedRevision:'3',requirementsRevision:'1',body:JSON.stringify({goal:'lifecycle-private-goal',acceptance:['lifecycle-private-acceptance']})});
-        const input={protocol_version:'1',chain_id:cid,task_id:tid,lease_id:ownerId('lease_'),configuration_revision:'1',expected_revision:'4',operation_id:ownerId('op_'),method:'lease.claim',request_expires_ms:String(Date.now()+300000),capability:''};
+        let input={protocol_version:'1',chain_id:cid,task_id:tid,lease_id:ownerId('lease_'),configuration_revision:'1',expected_revision:'4',operation_id:ownerId('op_'),method:'lease.claim',request_expires_ms:String(Date.now()+300000),capability:''};
         const claim=worker.call(input);expect(claim.status===0,'lifecycle worker claims real exact-child lease');
         let cap=JSON.parse(claim.data.body).capability;
         await human('requirements.edit',{expectedRevision:'4',requirementsRevision:'2',body:JSON.stringify({goal:'lifecycle-private-revised-goal',acceptance:['lifecycle-private-revised-acceptance']})});
@@ -234,15 +234,32 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
         expect(JSON.parse((await human('chain.search',{taskId:'',expectedRevision:'0',query:'lifecycle-private-checks-pass'})).body).hits.some((h:any)=>h.kind==='output'),'real search indexes committed submission output');
 
         const replay=worker.call(submit);expect(replay.status===0 && replay.data.replay && replay.data.body===submitted.data.body,'lost submit reply replays after lease release without effects');
-        const verdict={requirements_revision:'2',attempt:'1',head:git.head,verdict:'approve',summary:'lifecycle-private-independent-review'};
-        expect(call(worker,'review.open',verdict,'','6').status!==0,'author cannot obtain reviewer capability');
-        expect(call(reviewer,'review.open',{...verdict,head:'f'.repeat(40)},'','6').status!==0,'stale submitted head rejects review');
-        await human('review.post',{expectedRevision:'6',requirementsRevision:'2',attempt:'1',head:git.head,verdict:'approve',body:'lifecycle-private-human-verdict'});
+
+        // Retain attempt 1, request rework, then submit attempt 2 through real children.
+        await human('review.post',{expectedRevision:'6',requirementsRevision:'2',attempt:'1',head:git.head,verdict:'request_changes',body:'Revise the first submission'});
+        input={...input,lease_id:ownerId('lease_'),expected_revision:'7',operation_id:ownerId('op_'),method:'lease.claim',capability:''};
+        const claimedAgain=worker.call(input);expect(claimedAgain.status===0,'worker claims a new lease after rework');
+        cap=JSON.parse(claimedAgain.data.body).capability;
+        expect(call(worker,'requirements.present',{requirements_revision:'2'},cap,'7').status===0,'second lease presents exact requirements');
+        expect(call(worker,'requirements.ack',{requirements_revision:'2'},cap,'7').status===0,'second lease ACKs exact requirements');
+        const secondSubmit={...input,operation_id:ownerId('op_'),method:'lease.submit',capability:cap,payload:JSON.stringify({requirements_revision:'2',head:git.head,summary:'lifecycle-private-second-checks-pass'})};
+        expect(worker.call(secondSubmit).status===0,'real CLI retains a distinct second submission');
+        for(const [term,attempt] of [['lifecycle-private-checks-pass','1'],['lifecycle-private-second-checks-pass','2']]){
+          const hit=JSON.parse((await human('chain.search',{taskId:'',expectedRevision:'0',query:term})).body).hits.find((h:any)=>h.kind==='output');
+          expect(hit?.attempt===attempt && hit?.object_id===tid+':'+attempt,'historical output search identifies exact attempt '+attempt);
+          const old=JSON.parse((await human('submission.read',{expectedRevision:'0',attempt})).body);
+          expect(old.kind==='submission' && old.attempt===attempt && old.summary===term,'signed exact-attempt read returns retained output '+attempt);
+        }
+
+        const verdict={requirements_revision:'2',attempt:'2',head:git.head,verdict:'approve',summary:'lifecycle-private-independent-review'};
+        expect(call(worker,'review.open',verdict,'','8').status!==0,'author cannot obtain reviewer capability');
+        expect(call(reviewer,'review.open',{...verdict,head:'f'.repeat(40)},'','8').status!==0,'stale submitted head rejects review');
+        await human('review.post',{expectedRevision:'8',requirementsRevision:'2',attempt:'2',head:git.head,verdict:'approve',body:'lifecycle-private-human-verdict'});
         const observed=JSON.parse((await human('runtime.read',{expectedRevision:'0'})).body);
         expect(observed.state[0][0]==='in_review','device-signed human approval does not replace named independent review');
-        const opened=call(reviewer,'review.open',verdict,'','7');expect(opened.status===0,'independent actual child obtains scoped reviewer capability');
+        const opened=call(reviewer,'review.open',verdict,'','9');expect(opened.status===0,'independent actual child obtains scoped reviewer capability');
         const rcap=JSON.parse(opened.data.body).capability;
-        const reviewed=call(reviewer,'review.post',verdict,rcap,'7');expect(reviewed.status===0,'independent actual child posts bound verdict');
+        const reviewed=call(reviewer,'review.post',verdict,rcap,'9');expect(reviewed.status===0,'independent actual child posts bound verdict');
         let state:any;
         for(const deadline=Date.now()+15000;;await new Promise(r=>setTimeout(r,200))){
           state=JSON.parse((await human('runtime.read',{expectedRevision:'0'})).body);
@@ -255,6 +272,53 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
         await inspectHub(cid);
         await worker.stop();
         expect(worker.call(submit).status!==0,'stopped child cannot read historical submit receipt');
+        await stopOwner();await restartOwner();
+        for(const [term,attempt] of [['lifecycle-private-checks-pass','1'],['lifecycle-private-second-checks-pass','2']]){
+          expect(JSON.parse((await human('chain.search',{taskId:'',expectedRevision:'0',query:term})).body).hits.some((h:any)=>h.kind==='output' && h.attempt===attempt),'real restart rebuild preserves historical output '+attempt);
+        }
+        if(!conflict){
+          const {JSDOM}=await import('jsdom');
+          const React=await import('react');
+          const {installKeyringFromWrap,clearKeyringSession}=await import('../../src/ui/utils/vaultKeyringSession.ts');
+          const {sessionHeaders}=await import('./hubOidc.mjs');
+          const {searchOwnerChains}=await import('../../src/ui/api/ownerSearchClient.ts');
+          const {homeChainsFromSearchHits}=await import('../../src/ui/components/home/homeChainSearchLogic.ts');
+          const {parseChainRoute}=await import('../../src/ui/utils/ownerSubmissionNavigation.ts');
+          const {default:OwnerLocalPanel}=await import('../../src/ui/components/taskchain/OwnerLocalPanel.tsx');
+          await installKeyringFromWrap(approver.identity,approver.wrap,await approver.chain());
+          const dom=new JSDOM('<div id="root"></div>',{url:hub.base});
+          const keys=['window','document','navigator','HTMLElement','IS_REACT_ACT_ENVIRONMENT'];
+          const descriptors=keys.map(k=>Object.getOwnPropertyDescriptor(globalThis,k));
+          for(const [key,value] of Object.entries({window:dom.window,document:dom.window.document,navigator:dom.window.navigator,HTMLElement:dom.window.HTMLElement,IS_REACT_ACT_ENVIRONMENT:true})) Object.defineProperty(globalThis,key,{value,configurable:true,writable:true});
+          const originalFetch=globalThis.fetch;
+          globalThis.fetch=(url:any,init:any={})=>originalFetch(new URL(String(url),hub.base),{...init,headers:{...Object.fromEntries(new Headers(sessionHeaders(hub.session,hub.base))),...Object.fromEntries(new Headers(init.headers))}});
+          const {createRoot}=await import('react-dom/client');
+          const root=createRoot(dom.window.document.getElementById('root')!);
+          try{
+            const listed=await http(hub,'GET','/api/v1/owner-local/chains?headers_only=1');
+            expect(listed.status===200,'rendered historical search uses authenticated listing: '+listed.status);
+            const listing=listed.data;
+            for(const [term,attempt] of [['lifecycle-private-checks-pass','1'],['lifecycle-private-second-checks-pass','2']]){
+              const result=await searchOwnerChains(session,listing,term,20,send);
+              const row=homeChainsFromSearchHits(result.hits,[]).find((r:any)=>r.chainId===cid)!;
+              expect(row.title.includes('submission attempt '+attempt) && row.submissionRoute?.endsWith('/submissions/'+attempt),'production UI exposes historical output identity '+attempt);
+              const target=parseChainRoute(row.submissionRoute!);
+              await React.act(async()=>root.render(React.createElement(OwnerLocalPanel,{key:attempt,onClose:()=>{},initialBridgeId:bridgeId,initialChainId:target.chainId,initialTaskId:target.taskId,initialSubmissionAttempt:target.submissionAttempt})));
+              for(const deadline=Date.now()+15000;;){
+                if(dom.window.document.querySelector('h3')?.textContent?.includes('attempt '+attempt))break;
+                if(Date.now()>deadline)throw new Error('historical panel did not open exact attempt: '+dom.window.document.body.textContent);
+                await React.act(async()=>{await new Promise(r=>setTimeout(r,50));});
+              }
+              expect(dom.window.document.querySelector('pre')?.textContent?.includes(term),'rendered UI reads exact historical summary '+attempt);
+              if(attempt==='1')expect(!dom.window.document.querySelector('pre')?.textContent?.includes('lifecycle-private-second-checks-pass'),'old output is not replaced by current submission');
+            }
+          }finally{
+            await React.act(async()=>root.unmount());
+            globalThis.fetch=originalFetch;clearKeyringSession();dom.window.close();
+            keys.forEach((k,i)=>{if(descriptors[i])Object.defineProperty(globalThis,k,descriptors[i]!);else delete (globalThis as any)[k];});
+          }
+        }
+
       } finally {await worker.stop();await reviewer.stop();}
     }
   }

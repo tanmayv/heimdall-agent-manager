@@ -21,6 +21,21 @@ read_result :: proc(s:^Store,c:json.Object,payload:string,revision:i64) -> Resul
         if len(rows)!=1 || rows[0][3]!=chain do return fail("invalid_scope")
         return Result{code="ok",body=rows[0][1],seq=number(rows[0][2]),replay=true}
     }
+    if method=="submission.read" {
+        rows,ok:=query(s.db,"SELECT summary,head,requirements_revision,configuration_revision,author_agent_id FROM local_submissions WHERE chain_id=? AND task_id=? AND attempt=?",chain,task,field(p,"attempt"))
+        if !ok do return fail("storage_error")
+        if len(rows)!=1 do return fail("invalid_scope")
+        summary:=rows[0][0]
+        offset:=number(field(p,"offset"))
+        if offset>i64(len(summary)) || (offset<i64(len(summary)) && summary[offset]&0xc0==0x80) do return fail("malformed")
+        end:=min(i64(len(summary)),offset+8192)
+        for end>offset && end<i64(len(summary)) && summary[end]&0xc0==0x80 {end-=1}
+        next:=""
+        if end<i64(len(summary)) do next=fmt.tprintf("%d",end)
+        body:=encode(doc(map[string]string{"kind"="submission","chain_id"=chain,"task_id"=task,"attempt"=field(p,"attempt"),"summary"=summary[offset:end],"offset"=field(p,"offset"),"next_offset"=next,"head"=rows[0][1],"requirements_revision"=rows[0][2],"configuration_revision"=rows[0][3],"author_agent_id"=rows[0][4]}))
+        if len(body)>MAX_PAGE do return fail("invalid_content")
+        return Result{code="ok",body=body}
+    }
     if method=="runtime.read" {
         fleet,ok:=query(s.db,"SELECT instance_id,configuration_revision,enabled FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task)
         if !ok do return fail("storage_error")

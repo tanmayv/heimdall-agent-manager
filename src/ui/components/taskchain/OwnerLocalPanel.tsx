@@ -5,7 +5,7 @@ import { getKeyringSession, subscribeKeyringSession } from '../../utils/vaultKey
 import { decryptVaultText } from '../../utils/vaultContent';
 import { pinsFromChain, verifyDirectory } from '../../utils/vaultDirectoryVerify';
 
-export default function OwnerLocalPanel({ onClose, initialChainId = "", initialBridgeId = "", initialTaskId = "" }: { onClose: () => void; initialChainId?: string; initialBridgeId?: string; initialTaskId?: string }) {
+export default function OwnerLocalPanel({ onClose, initialChainId = "", initialBridgeId = "", initialTaskId = "", initialSubmissionAttempt }: { onClose: () => void; initialChainId?: string; initialBridgeId?: string; initialTaskId?: string; initialSubmissionAttempt?: string }) {
   const [bridge, setBridge] = useState(initialBridgeId);
   const [chainId, setChainId] = useState(initialChainId);
   const [taskId, setTaskId] = useState(initialTaskId);
@@ -15,7 +15,7 @@ export default function OwnerLocalPanel({ onClose, initialChainId = "", initialB
   const [configRevision, setConfigRevision] = useState('1');
   const [lifecycleConfig, setLifecycleConfig] = useState('{}');
   const [requirementsRevision, setRequirementsRevision] = useState('1');
-  const [attempt, setAttempt] = useState('1');
+  const [attempt, setAttempt] = useState(initialSubmissionAttempt ?? '1');
   const [head, setHead] = useState('');
   const [verdict, setVerdict] = useState<'approve' | 'request_changes'>('approve');
   const [revision, setRevision] = useState('0');
@@ -48,15 +48,15 @@ export default function OwnerLocalPanel({ onClose, initialChainId = "", initialB
     }));
     if (getKeyringSession() === before) setListing(visible);
   }
-  async function perform(method: 'chain.edit' | 'task.edit' | 'task.delete' | 'chain.search' | 'chain.create' | 'task.create' | 'task.comment' | 'chain.read' | 'task.read' | 'fleet.edit' | 'runtime.read' | 'lifecycle.configure' | 'requirements.edit' | 'review.post') {
+  async function perform(method: 'submission.read' | 'chain.edit' | 'task.edit' | 'task.delete' | 'chain.search' | 'chain.create' | 'task.create' | 'task.comment' | 'chain.read' | 'task.read' | 'fleet.edit' | 'runtime.read' | 'lifecycle.configure' | 'requirements.edit' | 'review.post', target?: { taskId: string; attempt: string; offset?: string }) {
     const s = await current(); const before = getKeyringSession();
     const cid = method === 'chain.create' ? ownerId('chain_') : chainId;
-    const tid = method === 'task.create' ? ownerId('task_') : (['task.edit', 'task.delete', 'task.comment', 'task.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post'].includes(method) ? taskId : '');
-    const op = await prepareOwnerOperation(s, bridge, method, { chainId: cid, taskId: tid, expectedRevision: method === "chain.create" || (method.endsWith(".read") || method === "chain.search") ? "0" : revision, title, body, query: body, description: body, instanceId, configurationRevision: configRevision, lifecycleConfig: method === 'lifecycle.configure' ? JSON.parse(lifecycleConfig) : undefined, requirementsRevision, attempt, head, verdict });
+    const tid = target?.taskId ?? (method === 'task.create' ? ownerId('task_') : (['submission.read', 'task.edit', 'task.delete', 'task.comment', 'task.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post'].includes(method) ? taskId : ''));
+    const op = await prepareOwnerOperation(s, bridge, method, { chainId: cid, taskId: tid, expectedRevision: method === "chain.create" || (method.endsWith(".read") || method === "chain.search") ? "0" : revision, title, body, query: body, description: body, instanceId, configurationRevision: configRevision, lifecycleConfig: method === 'lifecycle.configure' ? JSON.parse(lifecycleConfig) : undefined, requirementsRevision, attempt: target?.attempt ?? attempt, offset: target?.offset, head, verdict });
     setPending(op); setChainId(cid); if (tid) setTaskId(tid);
     const result = await sendOwnerOperation(s, op, (relay) => cookieMutation('/api/v1/owner-local/relay', 'POST', relay));
     if (getKeyringSession() !== before) return;
-    const data = JSON.parse(result.body); setDetail(data); setRevision(data.revision ?? '0'); await list();
+    const data = JSON.parse(result.body); setDetail(data); setRevision(data.revision ?? '0'); if (data.attempt) setAttempt(data.attempt); await list();
   }
   async function retry() {
     if (!pending) return;
@@ -65,8 +65,8 @@ export default function OwnerLocalPanel({ onClose, initialChainId = "", initialB
     if (getKeyringSession() === before) setDetail({ ...JSON.parse(result.body), replay: result.replay });
   }
   useEffect(() => {
-    if (initialChainId && initialBridgeId) void run(() => perform(initialTaskId ? 'task.read' : 'chain.read'));
-  }, [initialChainId, initialBridgeId, initialTaskId]);
+    if (initialChainId && initialBridgeId) void run(() => perform(initialSubmissionAttempt !== undefined ? 'submission.read' : initialTaskId ? 'task.read' : 'chain.read'));
+  }, [initialChainId, initialBridgeId, initialTaskId, initialSubmissionAttempt]);
   const inputClass = 'border border-subtle rounded p-2 bg-surface text-primary';
   return <div className="fixed inset-0 z-50 overflow-auto bg-surface p-6" role="dialog" aria-label="Owner-local tasks">
     <div className="flex justify-between"><h2>Owner-local tasks</h2><button data-debug-id="owner-local-close" onClick={onClose}>Close</button></div>
@@ -88,7 +88,7 @@ export default function OwnerLocalPanel({ onClose, initialChainId = "", initialB
       <textarea data-debug-id="owner-local-body" aria-label="Body or comment" placeholder="Description, task body, or comment" className={inputClass} value={body} onChange={(e) => setBody(e.target.value)} />
     </div>
     <div className="flex flex-wrap gap-3">
-      {(['chain.edit', 'task.edit', 'task.delete', 'chain.search', 'chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post'] as const).map((method) => <button key={method} data-debug-id={'owner-local-' + method.replace('.', '-')} disabled={busy || !bridge} onClick={() => void run(() => perform(method))}>{{ 'chain.edit': 'Edit chain', 'task.edit': 'Edit task', 'task.delete': 'Delete unstarted task', 'chain.search': 'Search chain', 'chain.create': 'Create chain', 'task.create': 'Create task', 'task.comment': 'Add comment', 'chain.read': 'Read chain', 'task.read': 'Read task', 'fleet.edit': 'Assign local instance', 'runtime.read': 'Read runtime', 'lifecycle.configure': 'Configure review and merge', 'requirements.edit': 'Save requirements', 'review.post': 'Record human verdict' }[method]}</button>)}
+      {(['submission.read', 'chain.edit', 'task.edit', 'task.delete', 'chain.search', 'chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post'] as const).map((method) => <button key={method} data-debug-id={'owner-local-' + method.replace('.', '-')} disabled={busy || !bridge} onClick={() => void run(() => perform(method))}>{{ 'submission.read': 'Read submission attempt', 'chain.edit': 'Edit chain', 'task.edit': 'Edit task', 'task.delete': 'Delete unstarted task', 'chain.search': 'Search chain', 'chain.create': 'Create chain', 'task.create': 'Create task', 'task.comment': 'Add comment', 'chain.read': 'Read chain', 'task.read': 'Read task', 'fleet.edit': 'Assign local instance', 'runtime.read': 'Read runtime', 'lifecycle.configure': 'Configure review and merge', 'requirements.edit': 'Save requirements', 'review.post': 'Record human verdict' }[method]}</button>)}
       <button data-debug-id="owner-local-list" disabled={busy} onClick={() => void run(list)}>Refresh listing</button>
       <button data-debug-id="owner-local-retry" disabled={busy || !pending} onClick={() => void run(retry)}>Retry same operation</button>
       <button data-debug-id="owner-local-export" disabled={busy || !pending} onClick={() => void run(async () => {
@@ -106,6 +106,9 @@ export default function OwnerLocalPanel({ onClose, initialChainId = "", initialB
     </div>
     {error && <p role="alert">{error}</p>}
     <ul>{listing.map((r) => <li key={r.chain_id + r.task_id}><button data-debug-id={'owner-local-select-' + r.chain_id + r.task_id} onClick={() => {setChainId(r.chain_id);setTaskId(r.task_id);setBridge(r.owner_bridge_id);setRevision('0');setDetail(null);}}>{r.title} — {r.online ? 'owner online' : 'owner offline; details unavailable'}</button></li>)}</ul>
+    {detail?.kind === 'submission' && <h3>Submission attempt {detail.attempt} (historical output)</h3>}
+    {detail?.kind === 'submission' && detail.next_offset && <button data-debug-id="owner-local-submission-next" onClick={() => void run(() => perform('submission.read', { taskId: detail.task_id, attempt: detail.attempt, offset: detail.next_offset }))}>Next summary page</button>}
+    {detail?.hits?.filter((hit: any) => hit.kind === 'output').map((hit: any) => <button key={hit.object_id} data-debug-id={'owner-local-output-' + hit.object_id} onClick={() => void run(() => perform('submission.read', { taskId: hit.task_id, attempt: hit.attempt }))}>Read submission attempt {hit.attempt}</button>)}
     {detail && <pre className="whitespace-pre-wrap">{JSON.stringify(detail, null, 2)}</pre>}
   </div>;
 }

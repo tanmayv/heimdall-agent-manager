@@ -23,6 +23,7 @@ const DEADLINE_MS = 5000;
 const MAX_LIMIT = 50;
 
 export type TaskChainSearchHit = {
+  task_id?: string; kind?: string; attempt?: string;
   chain_id: string;
   project_id: string;
   status: string;
