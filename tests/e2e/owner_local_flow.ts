@@ -6,6 +6,12 @@ import { readFileSync } from 'node:fs';
 
 export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, stopOwner, restartOwner, inspectHub, otherAccount, cli, launchChild, prepareGit, registryFixture, rekeyOwner }: any) {
   const session = { identity: approver.identity, chain: await approver.chain(), keyring: await importKeyring(Uint8Array.from(approver.keyringBytes), approver.userId) };
+  if(process.env.HEIMDALL_E2E_OWNER_LINKED_ONLY==='1'){
+    await stopOwner();await restartOwner();
+    const {ownerLocalLinkedFlow}=await import('./owner_local_linked_flow.ts');
+    await ownerLocalLinkedFlow({session,bridgeId,cli,expect,stopOwner,restartOwner,inspectHub});
+    return;
+  }
   if(process.env.HEIMDALL_E2E_OWNER_AGGREGATE_ONLY==='1'){
     await stopOwner();await restartOwner();
     const {ownerLocalAggregateFlow}=await import('./owner_local_aggregate_flow.ts');
@@ -333,7 +339,7 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
         const delivered=JSON.parse(presented.data.body);
         expect(delivered.chain_summary.length<=16384 && delivered.chain_summary.split('\n').length<=60,'real CLI delivers a bounded owner projection');
         const provenance=JSON.parse(delivered.context_provenance);
-        expect(provenance.algorithm==='1' && provenance.source_digest && provenance.freshness==='snapshot','real requirements response includes versioned source provenance');
+        expect(provenance.algorithm==='2' && provenance.source_digest && provenance.freshness==='snapshot','real requirements response includes versioned source provenance');
         {
           const md=worker.readTaskMd();
           expect(md.includes(input.lease_id) && md.includes('lifecycle-private-revised-goal') && md.includes('## Chain summary') && md.includes('source_digest'),'real Bridge atomically writes exact lease/requirements and summary into TASK.md');
@@ -482,6 +488,11 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
   if(process.env.HEIMDALL_E2E_OWNER_REGISTRY==='1'){
     const {ownerRegistryFlow}=await import('./owner_registry_flow.ts');
     await ownerRegistryFlow({hub,approver,bridgeId,http,expect,registryFixture,rekeyOwner});
+  }
+  if(process.env.HEIMDALL_E2E_OWNER_LINKED==='1'){
+    const {ownerLocalLinkedFlow}=await import('./owner_local_linked_flow.ts');
+    const currentSession={identity:approver.identity,chain:await approver.chain(),keyring:await importKeyring(Uint8Array.from(approver.keyringBytes),approver.userId)};
+    await ownerLocalLinkedFlow({session:currentSession,bridgeId,cli,expect,stopOwner,restartOwner,inspectHub});
   }
   return { chainId, taskId };
 }

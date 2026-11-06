@@ -101,6 +101,8 @@ search_rebuild :: proc(s:^Store)->bool {
         SELECT chain_id,'','workflow',workflow_id||':'||version,version,json_extract(definition_json,'$.title'),definition_json FROM local_workflow_definitions;
       INSERT INTO search_docs(chain_id,task_id,kind,object_id,revision,title,body)
         SELECT chain_id,'','source',json_array(origin_kind,origin_id,episode_id),source_version,origin_kind,body FROM source_episodes;
+      INSERT INTO search_docs(chain_id,task_id,kind,object_id,revision,title,body)
+        SELECT b.chain_id,i.task_id,'message',json_array(b.object_id,b.revision),b.revision,'',b.prose FROM linked_bodies b JOIN linked_identities i USING(chain_id,kind,object_id,revision) WHERE b.kind='message';
       INSERT INTO search_fts(search_fts,rank) VALUES('integrity-check',1);
       COMMIT;`) { return false }
     committed=true

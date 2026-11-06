@@ -187,11 +187,23 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         }
     }
     if e:=contracts.owner_live_admit(c,g,now,revision);e!=.None do return auth_fail(e)
-    read:=method=="work.read" || method=="chain.metadata.read" || method=="native.metadata.read" || method=="fleet.policy.read" || method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="history.read" || method=="history.fetch" || method=="context.read" || method=="grant.read" || method=="workflow.read" || method=="source.read" || method=="submission.read" || method=="chain.search" || method=="chain.read" || method=="task.read" || method=="receipt.read" || method=="runtime.read"
+    read:=method=="linked.facet.read" || method=="envelope.read" || method=="linked.read" || method=="linked.fetch" || method=="linked.backup" || method=="work.read" || method=="chain.metadata.read" || method=="native.metadata.read" || method=="fleet.policy.read" || method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="history.read" || method=="history.fetch" || method=="context.read" || method=="grant.read" || method=="workflow.read" || method=="source.read" || method=="submission.read" || method=="chain.search" || method=="chain.read" || method=="task.read" || method=="receipt.read" || method=="runtime.read"
     if read {
         if method=="chain.search" && (kr==nil || kr.current_epoch==0) do return fail("invalid_content")
         result:Result
-        if method=="work.read" {
+        if method=="linked.facet.read" {
+            read_p,_:=contracts.owner_parse(payload,"linked_facet")
+            result=linked_facet_read(s,chain,read_p)
+        } else if method=="envelope.read" {
+            read_p,_:=contracts.owner_parse(payload,"linked_page")
+            result=envelope_inventory(s,c,read_p)
+        } else if method=="linked.read" || method=="linked.backup" {
+            read_p,_:=contracts.owner_parse(payload,"linked_page")
+            result=linked_inventory(s,c,read_p,kr)
+        } else if method=="linked.fetch" {
+            read_p,_:=contracts.owner_parse(payload,"linked_fetch")
+            result=linked_fetch(s,chain,read_p)
+        } else if method=="work.read" {
             read_p,_:=contracts.owner_parse(payload,"work_read_payload")
             result=work_read(s,chain,read_p)
         } else if method=="grant.read" {
@@ -219,7 +231,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     body_limit,encoded_limit:=MAX_BODY,MAX_ENCODED_FIELD
     // Historical bundles carry several independently typed records. Keep a
     // separate bounded admission size; ordinary prose limits stay unchanged.
-    if method=="native.history.import" || method=="native.metadata.import" { body_limit=65536;encoded_limit=131072 }
+    if method=="linked.put" || method=="linked.restore" || method=="native.history.import" || method=="native.metadata.import" { body_limit=65536;encoded_limit=131072 }
     for name in ([3]string{"title_cipher","body_cipher","description_cipher"}) {
         cipher:=field(p,name)
         if cipher=="" do continue
@@ -237,6 +249,10 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     next:=revision+1
     wrote:=false
     switch method {
+    case "linked.put", "linked.delete", "linked.restore":
+        code:=linked_command(s,c,p,body,seq,kr)
+        if code!="ok" do return fail(code)
+        wrote=true
     case "chain.draft", "task.publish", "chain.propose", "chain.decide", "chain.publish", "work.dependency.add", "work.dependency.remove", "work.scope", "chain.complete", "workflow.draft":
         code:=work_command(s,c,body,seq,now)
         if code!="ok" do return fail(code)
@@ -315,6 +331,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         if method=="task.edit" {
             _,wrote=query(s.db,"UPDATE tasks SET title=?,body=?,revision=revision+1 WHERE chain_id=? AND task_id=?",title,body,chain,task)
         } else {
+            if !linked_task_delete(s,chain,task,seq) do return fail("storage_error")
             if _,ok=query(s.db,"INSERT INTO task_deletions VALUES(?,?,?)",chain,task,fmt.tprintf("%d",seq));!ok do return fail("storage_error")
             if _,ok=query(s.db,"DELETE FROM task_comments WHERE chain_id=? AND task_id=?",chain,task);!ok do return fail("storage_error")
             if _,ok=query(s.db,"DELETE FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task);!ok do return fail("storage_error")

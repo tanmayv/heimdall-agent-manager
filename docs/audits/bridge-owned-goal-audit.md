@@ -152,3 +152,13 @@ semantics, offline revocation limits and irreversible decrypted-copy limits.
 Immutable signed grant audit records commit with grants and receipts. Recovery
 does not alter creator/genesis/owner. C1/C3 and whole-product migration gates
 remain separate; independent named review is required for this remediation.
+
+## C3 canonical linked-content remediation follow-up
+
+Task `task_18e569e4a29a0fbe` adds canonical linked messages, artifact bodies,
+encrypted blob chunks, same-chain references and permanent tombstones in V25.
+[The C3 API and restore contract](../owner-local-linked-content.md) documents
+signed producers, native facet resolution, transactional delete/GC, encrypted
+manifest pages, event-envelope key inventory, explicit V1 missing-evidence limits
+and M4's complete-inventory/staging obligations. Artifact text indexing and
+browser cache remain deferred. Independent named review remains required.

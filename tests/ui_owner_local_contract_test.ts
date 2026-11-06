@@ -294,3 +294,19 @@ test('rich aggregate metadata kinds retain strict read scope and preserve raw nu
   assert(fixture.metadata.some((entry:any)=>entry.raw.includes('9007199254740993')));
   assert.throws(()=>ownerParse(JSON.stringify({source_revision:'rich_source_7',kind:'unknown_native',cursor:'',limit:'1'}),'native_metadata_read'));
 });
+
+test('linked methods require signed chain scope, strict versions and current read or write grants', () => {
+  for (const method of ['linked.put','linked.delete','linked.restore','linked.read','linked.fetch','linked.backup','linked.facet.read','envelope.read']) {
+    const c = {...doc('command'),method,task_id:'',expected_revision:'1'} as OwnerCommand;
+    ownerParse(JSON.stringify(c),'command');
+    assert.throws(()=>ownerParse(JSON.stringify({...c,task_id:'task_1'}),'command'));
+    const read=['linked.read','linked.fetch','linked.backup','linked.facet.read','envelope.read'].includes(method);
+    assert.equal(ownerLiveAdmit(c,{...grant,method,task_id:'',can_mutate:false},1000n,1n),read?'none':'invalid_scope');
+  }
+  ownerParse('{"kind":"artifact","object_id":"original","revision":"9007199254740993"}','linked_delete');
+  for(const patch of [{kind:'file'},{revision:'0'},{revision:'01'},{chain_id:'other'}])
+    assert.throws(()=>ownerParse(JSON.stringify({kind:'artifact',object_id:'a',revision:'1',...patch}),'linked_delete'));
+  assert.throws(()=>ownerParse('{"kind":"artifact","kind":"blob","object_id":"a","revision":"1"}','linked_delete'));
+  assert.throws(()=>ownerParse('{"cursor":"","limit":"101"}','linked_page'));
+  assert.throws(()=>ownerParse('{"kind":"artifact","object_id":"a","revision":"1","offset":"-1"}','linked_fetch'));
+});

@@ -982,13 +982,29 @@
       ],
       "proof": "src/lib/owner_local/workflow_language_test.odin:179",
       "original": "src/hub/service/taskv2/workflow_execution.odin:481"
+    },
+    {
+      "family": "Canonical linked content, encrypted manifests and envelope metadata",
+      "status": "CANONICAL",
+      "methods": [
+        "linked.put",
+        "linked.delete",
+        "linked.restore",
+        "linked.read",
+        "linked.fetch",
+        "linked.backup",
+        "linked.facet.read",
+        "envelope.read"
+      ],
+      "proof": "src/lib/owner_local/linked_test.odin:40",
+      "original": "src/hub/domain/taskchain.odin:164"
     }
   ],
   "external_milestones": [
     {
       "id": "C3",
       "approved_by": "cmt_18e592e4d810d71a",
-      "scope": "Artifact/message bodies, envelopes/blobs and their body indexes. Typed IDs, pinned versions, provenance and explicit unresolved/import_pending references are canonical and tested."
+      "scope": "C1f delegated linked artifact/message bodies, envelopes/blobs and resolution to C3. V25 implementation and synthetic evidence are now documented in docs/owner-local-linked-content.md under task_18e569e4a29a0fbe, pending independent named review. M4 consumes the authenticated API with complete-inventory staging. Message prose is indexed; artifact content extraction/indexing and browser cache remain explicitly deferred."
     },
     {
       "id": "M3",
@@ -1089,7 +1105,15 @@
     "grant.recover": "src/lib/owner_local/grants_test.odin:133",
     "workflow.coordinator": "src/lib/owner_local/workflow_language_test.odin:168",
     "workflow.gate": "src/lib/owner_local/deferred_retirements_test.odin:44",
-    "workflow.gate.post": "src/lib/owner_local/workflow_language_test.odin:172"
+    "workflow.gate.post": "src/lib/owner_local/workflow_language_test.odin:172",
+    "linked.put": "src/lib/owner_local/linked_test.odin:19",
+    "linked.delete": "src/lib/owner_local/linked_test.odin:27",
+    "linked.restore": "src/lib/owner_local/linked_test.odin:19",
+    "linked.read": "src/lib/owner_local/linked_test.odin:218",
+    "linked.fetch": "src/lib/owner_local/linked_test.odin:24",
+    "linked.backup": "src/lib/owner_local/linked_test.odin:30",
+    "linked.facet.read": "src/lib/owner_local/linked_test.odin:194",
+    "envelope.read": "src/lib/owner_local/linked_test.odin:206"
   },
   "inventory_proof": "src/lib/owner_local/aggregate_test.odin:243"
 }

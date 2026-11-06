@@ -39,7 +39,7 @@ owner_hex :: proc(s: string, n: int) -> bool {
 
 owner_method_valid :: proc(s: string) -> bool {
     switch s {
-    case "chain.draft", "task.draft", "task.publish", "chain.propose", "chain.decide", "chain.publish", "work.dependency.add", "work.dependency.remove", "work.scope", "chain.complete", "work.read", "workflow.draft", "chain.member.set", "chain.directory.set", "chain.defaults.set", "chain.summary.set", "chain.metadata.read", "task.priority", "native.metadata.import", "native.metadata.read", "fleet.policy.set", "fleet.policy.read", "budget.activate", "native.history.import", "native.history.read", "native.history.fetch", "attempt.read", "history.read", "history.fetch", "context.read", "grant.set", "grant.revoke", "grant.read", "grant.policy", "grant.recover", "workflow.coordinator", "workflow.cancel", "workflow.gate", "workflow.define", "workflow.run", "workflow.retry", "workflow.read", "source.observe", "source.consume", "source.ack", "source.retire", "source.resolve", "source.escalate", "source.read", "dependency.edit", "review.roles", "task.hold", "task.release", "task.cancel", "task.reopen", "task.resolve", "merge.retry", "submission.read", "chain.edit", "task.edit", "task.delete", "chain.search", "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "runtime.read", "lifecycle.configure", "requirements.edit", "review.post": return true
+    case "linked.facet.read", "envelope.read", "linked.put", "linked.delete", "linked.restore", "linked.read", "linked.fetch", "linked.backup", "chain.draft", "task.draft", "task.publish", "chain.propose", "chain.decide", "chain.publish", "work.dependency.add", "work.dependency.remove", "work.scope", "chain.complete", "work.read", "workflow.draft", "chain.member.set", "chain.directory.set", "chain.defaults.set", "chain.summary.set", "chain.metadata.read", "task.priority", "native.metadata.import", "native.metadata.read", "fleet.policy.set", "fleet.policy.read", "budget.activate", "native.history.import", "native.history.read", "native.history.fetch", "attempt.read", "history.read", "history.fetch", "context.read", "grant.set", "grant.revoke", "grant.read", "grant.policy", "grant.recover", "workflow.coordinator", "workflow.cancel", "workflow.gate", "workflow.define", "workflow.run", "workflow.retry", "workflow.read", "source.observe", "source.consume", "source.ack", "source.retire", "source.resolve", "source.escalate", "source.read", "dependency.edit", "review.roles", "task.hold", "task.release", "task.cancel", "task.reopen", "task.resolve", "merge.retry", "submission.read", "chain.edit", "task.edit", "task.delete", "chain.search", "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "runtime.read", "lifecycle.configure", "requirements.edit", "review.post": return true
     }
     return false
 }
@@ -57,6 +57,7 @@ owner_field_valid :: proc(s, kind: string) -> bool {
     case "counter", "positive": return owner_decimal_valid(s) && (kind == "counter" || s != "0")
     case "priority": return s=="p0" || s=="p1" || s=="p2"
     case "metadata_kind": return s=="fleet" || s=="member" || s=="directory" || len(owner_metadata_fact_fields(s))>0
+    case "linked_kind": return s=="message" || s=="artifact" || s=="blob"
     case "native_history_kind": return s=="attempt" || s=="event" || s=="facet"
     case "native_cursor": return len(s)<=512
     case "native_actor": return s=="agent" || s=="user" || s=="hub" || s=="bridge"
@@ -146,7 +147,7 @@ owner_document_valid :: proc(kind: string, o: json.Object) -> bool {
         if expires>hard do return false
     }
     if kind=="lease_input" && ((owner_string(o,"method")=="lease.claim") != (owner_string(o,"capability")=="")) do return false
-    if kind == "read_payload" || kind=="native_history_read" || kind=="native_metadata_read" || kind=="work_read_payload" {
+    if kind == "linked_page" || kind == "read_payload" || kind=="native_history_read" || kind=="native_metadata_read" || kind=="work_read_payload" {
         limit, _ := strconv.parse_i64(owner_string(o, "limit"))
         if limit > 100 do return false
     }
@@ -194,6 +195,12 @@ owner_payload_kind :: proc(method: string) -> string {
     case "fleet.policy.set": return "fleet_policy_payload"
     case "fleet.policy.read": return "read_payload"
     case "budget.activate": return "budget_activation_payload"
+    case "linked.facet.read": return "linked_facet"
+    case "envelope.read": return "linked_page"
+    case "linked.put", "linked.restore": return "linked_payload"
+    case "linked.delete": return "linked_delete"
+    case "linked.fetch": return "linked_fetch"
+    case "linked.read", "linked.backup": return "linked_page"
     case "native.history.import": return "native_import_payload"
     case "native.history.read": return "native_history_read"
     case "native.history.fetch": return "native_history_fetch"
@@ -311,7 +318,7 @@ owner_live_admit :: proc(o: json.Object, grant: Owner_Read_Grant, now_ms, curren
     expires, _ := strconv.parse_i64(owner_string(o, "request_expires_ms"))
     if expires <= now_ms || expires - now_ms > OWNER_REQUEST_TTL_MS do return .Expired
     method := owner_string(o, "method")
-    read := method == "work.read" || method == "chain.metadata.read" || method == "native.metadata.read" || method == "fleet.policy.read" || method == "native.history.read" || method == "native.history.fetch" || method == "attempt.read" || method == "history.read" || method == "history.fetch" || method == "context.read" || method == "grant.read" || method == "workflow.read" || method == "source.read" || method == "submission.read" || method == "chain.search" || method == "chain.read" || method == "task.read" || method == "receipt.read" || method == "runtime.read"
+    read := method == "linked.facet.read" || method == "envelope.read" || method == "linked.read" || method == "linked.fetch" || method == "linked.backup" || method == "work.read" || method == "chain.metadata.read" || method == "native.metadata.read" || method == "fleet.policy.read" || method == "native.history.read" || method == "native.history.fetch" || method == "attempt.read" || method == "history.read" || method == "history.fetch" || method == "context.read" || method == "grant.read" || method == "workflow.read" || method == "source.read" || method == "submission.read" || method == "chain.search" || method == "chain.read" || method == "task.read" || method == "receipt.read" || method == "runtime.read"
     if !read && !grant.can_mutate do return .Invalid_Scope
     expected, _ := strconv.parse_i64(owner_string(o, "expected_revision"))
     if current_revision < 0 do return .Stale_Revision

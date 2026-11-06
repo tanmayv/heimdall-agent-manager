@@ -1169,6 +1169,129 @@ owner_fields_work_read_payload := [?]Owner_Field{
     {"cursor", "native_cursor"},
     {"limit", "positive"},
 }
+Owner_Linked_Payload :: struct {
+    body_cipher: string,
+}
+@(private)
+owner_fields_linked_payload := [?]Owner_Field{
+    {"body_cipher", "relay_cipher"},
+}
+Owner_Linked_Object :: struct {
+    account_id: string,
+    owner_bridge_id: string,
+    chain_id: string,
+    task_id: string,
+    kind: string,
+    object_id: string,
+    revision: string,
+    author_id: string,
+    created_ms: string,
+    media_type: string,
+    body_cipher: string,
+    references: string,
+    provenance: string,
+}
+@(private)
+owner_fields_linked_object := [?]Owner_Field{
+    {"account_id", "id"},
+    {"owner_bridge_id", "id"},
+    {"chain_id", "id"},
+    {"task_id", "optional"},
+    {"kind", "linked_kind"},
+    {"object_id", "id"},
+    {"revision", "positive"},
+    {"author_id", "id"},
+    {"created_ms", "counter"},
+    {"media_type", "document"},
+    {"body_cipher", "required_cipher"},
+    {"references", "document"},
+    {"provenance", "document"},
+}
+Owner_Linked_Reference :: struct {
+    kind: string,
+    object_id: string,
+    revision: string,
+}
+@(private)
+owner_fields_linked_reference := [?]Owner_Field{
+    {"kind", "linked_kind"},
+    {"object_id", "id"},
+    {"revision", "positive"},
+}
+Owner_Linked_Delete :: struct {
+    kind: string,
+    object_id: string,
+    revision: string,
+}
+@(private)
+owner_fields_linked_delete := [?]Owner_Field{
+    {"kind", "linked_kind"},
+    {"object_id", "id"},
+    {"revision", "positive"},
+}
+Owner_Linked_Fetch :: struct {
+    kind: string,
+    object_id: string,
+    revision: string,
+    offset: string,
+}
+@(private)
+owner_fields_linked_fetch := [?]Owner_Field{
+    {"kind", "linked_kind"},
+    {"object_id", "id"},
+    {"revision", "positive"},
+    {"offset", "counter"},
+}
+Owner_Linked_Page :: struct {
+    cursor: string,
+    limit: string,
+}
+@(private)
+owner_fields_linked_page := [?]Owner_Field{
+    {"cursor", "native_cursor"},
+    {"limit", "positive"},
+}
+Owner_Linked_Restore :: struct {
+    account_id: string,
+    owner_bridge_id: string,
+    chain_id: string,
+    format: string,
+    objects: string,
+    tombstones: string,
+}
+@(private)
+owner_fields_linked_restore := [?]Owner_Field{
+    {"account_id", "id"},
+    {"owner_bridge_id", "id"},
+    {"chain_id", "id"},
+    {"format", "version"},
+    {"objects", "document"},
+    {"tombstones", "document"},
+}
+Owner_Linked_Facet :: struct {
+    task_id: string,
+    source_revision: string,
+    key: string,
+}
+@(private)
+owner_fields_linked_facet := [?]Owner_Field{
+    {"task_id", "id"},
+    {"source_revision", "id"},
+    {"key", "document"},
+}
+Owner_Linked_Tombstone :: struct {
+    kind: string,
+    object_id: string,
+    revision: string,
+    task_id: string,
+}
+@(private)
+owner_fields_linked_tombstone := [?]Owner_Field{
+    {"kind", "linked_kind"},
+    {"object_id", "id"},
+    {"revision", "positive"},
+    {"task_id", "optional"},
+}
 owner_schema :: proc(kind: string) -> []Owner_Field {
     switch kind {
     case "genesis": return owner_fields_genesis[:]
@@ -1246,6 +1369,15 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "member_payload": return owner_fields_member_payload[:]
     case "directory_payload": return owner_fields_directory_payload[:]
     case "work_read_payload": return owner_fields_work_read_payload[:]
+    case "linked_payload": return owner_fields_linked_payload[:]
+    case "linked_object": return owner_fields_linked_object[:]
+    case "linked_reference": return owner_fields_linked_reference[:]
+    case "linked_delete": return owner_fields_linked_delete[:]
+    case "linked_fetch": return owner_fields_linked_fetch[:]
+    case "linked_page": return owner_fields_linked_page[:]
+    case "linked_restore": return owner_fields_linked_restore[:]
+    case "linked_facet": return owner_fields_linked_facet[:]
+    case "linked_tombstone": return owner_fields_linked_tombstone[:]
     }
     return nil
 }

@@ -75,6 +75,15 @@ export const ownerSchemas = {
   member_payload: [["instance_id", "id"], ["agent_id", "id"], ["role", "id"], ["enabled", "flag"]],
   directory_payload: [["directory_id", "id"], ["enabled", "flag"], ["body_cipher", "required_cipher"]],
   work_read_payload: [["cursor", "native_cursor"], ["limit", "positive"]],
+  linked_payload: [["body_cipher", "relay_cipher"]],
+  linked_object: [["account_id", "id"], ["owner_bridge_id", "id"], ["chain_id", "id"], ["task_id", "optional"], ["kind", "linked_kind"], ["object_id", "id"], ["revision", "positive"], ["author_id", "id"], ["created_ms", "counter"], ["media_type", "document"], ["body_cipher", "required_cipher"], ["references", "document"], ["provenance", "document"]],
+  linked_reference: [["kind", "linked_kind"], ["object_id", "id"], ["revision", "positive"]],
+  linked_delete: [["kind", "linked_kind"], ["object_id", "id"], ["revision", "positive"]],
+  linked_fetch: [["kind", "linked_kind"], ["object_id", "id"], ["revision", "positive"], ["offset", "counter"]],
+  linked_page: [["cursor", "native_cursor"], ["limit", "positive"]],
+  linked_restore: [["account_id", "id"], ["owner_bridge_id", "id"], ["chain_id", "id"], ["format", "version"], ["objects", "document"], ["tombstones", "document"]],
+  linked_facet: [["task_id", "id"], ["source_revision", "id"], ["key", "document"]],
+  linked_tombstone: [["kind", "linked_kind"], ["object_id", "id"], ["revision", "positive"], ["task_id", "optional"]],
 } as const;
 export type OwnerKind = keyof typeof ownerSchemas;
 export interface OwnerGenesis {
@@ -624,6 +633,63 @@ export interface OwnerWork_Read_Payload {
   cursor: string;
   limit: string;
 }
+export interface OwnerLinked_Payload {
+  body_cipher: string;
+}
+export interface OwnerLinked_Object {
+  account_id: string;
+  owner_bridge_id: string;
+  chain_id: string;
+  task_id: string;
+  kind: string;
+  object_id: string;
+  revision: string;
+  author_id: string;
+  created_ms: string;
+  media_type: string;
+  body_cipher: string;
+  references: string;
+  provenance: string;
+}
+export interface OwnerLinked_Reference {
+  kind: string;
+  object_id: string;
+  revision: string;
+}
+export interface OwnerLinked_Delete {
+  kind: string;
+  object_id: string;
+  revision: string;
+}
+export interface OwnerLinked_Fetch {
+  kind: string;
+  object_id: string;
+  revision: string;
+  offset: string;
+}
+export interface OwnerLinked_Page {
+  cursor: string;
+  limit: string;
+}
+export interface OwnerLinked_Restore {
+  account_id: string;
+  owner_bridge_id: string;
+  chain_id: string;
+  format: string;
+  objects: string;
+  tombstones: string;
+}
+export interface OwnerLinked_Facet {
+  task_id: string;
+  source_revision: string;
+  key: string;
+}
+export interface OwnerLinked_Tombstone {
+  kind: string;
+  object_id: string;
+  revision: string;
+  task_id: string;
+}
 export interface OwnerDocuments {
   genesis: OwnerGenesis;
   command: OwnerCommand;
@@ -700,4 +766,13 @@ export interface OwnerDocuments {
   member_payload: OwnerMember_Payload;
   directory_payload: OwnerDirectory_Payload;
   work_read_payload: OwnerWork_Read_Payload;
+  linked_payload: OwnerLinked_Payload;
+  linked_object: OwnerLinked_Object;
+  linked_reference: OwnerLinked_Reference;
+  linked_delete: OwnerLinked_Delete;
+  linked_fetch: OwnerLinked_Fetch;
+  linked_page: OwnerLinked_Page;
+  linked_restore: OwnerLinked_Restore;
+  linked_facet: OwnerLinked_Facet;
+  linked_tombstone: OwnerLinked_Tombstone;
 }

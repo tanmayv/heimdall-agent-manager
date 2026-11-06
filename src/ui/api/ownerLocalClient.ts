@@ -28,7 +28,7 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
   if (!bridge || !chain.trusted.has(identity.deviceId) || identity.userId !== chain.userId) throw new Error('Device and owner must be currently enrolled in this account');
   for (const [field,text] of [['title',input.title],['description',input.description],['body',input.body]] as const) {
     if (text === undefined) continue;
-    const nativeImportBody = (method === 'native.history.import' || method === 'native.metadata.import') && field === 'body';
+    const nativeImportBody = (['linked.put','linked.restore','native.history.import','native.metadata.import'].includes(method)) && field === 'body';
     const plainLimit = nativeImportBody ? 65536 : 8192;
     const encodedLimit = nativeImportBody ? 131072 : 16384;
     if (new TextEncoder().encode(text).length > plainLimit || new TextEncoder().encode(JSON.stringify(text)).length > encodedLimit) throw new Error(`Owner ${field} is limited to ${plainLimit} UTF-8 bytes and ${encodedLimit} JSON-encoded bytes`);
@@ -69,6 +69,11 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
   else if (method === 'lifecycle.configure') payload = input.lifecycleConfig ?? {};
   else if (method === 'requirements.edit') payload = { requirements_revision: input.requirementsRevision ?? '', body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'review.post') payload = { requirements_revision: input.requirementsRevision ?? '', attempt: input.attempt ?? '', head: input.head ?? '', verdict: input.verdict ?? 'approve', summary: input.body ?? '' };
+  else if (method === 'linked.put' || method === 'linked.restore') payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring) };
+  else if (method === 'linked.facet.read') payload = { ...ownerParse(input.body ?? '', 'linked_facet') };
+  else if (method === 'linked.delete') payload = { ...ownerParse(input.body ?? '', 'linked_delete') };
+  else if (method === 'linked.fetch') payload = { ...ownerParse(input.body ?? '', 'linked_fetch') };
+  else if (method === 'envelope.read' || method === 'linked.read' || method === 'linked.backup') payload = { cursor: input.cursor ?? '', limit: String(input.limit ?? 20) };
   else if (method === 'budget.activate') payload = { ...ownerParse(input.body ?? '', 'budget_activation_payload') };
   else if (method === 'task.priority') payload = { priority: input.priority ?? 'p2' };
   else if (method === 'fleet.policy.set' && input.nativeSourceRevision) payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring), source_revision: input.nativeSourceRevision };

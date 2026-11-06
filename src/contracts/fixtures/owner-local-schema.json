@@ -73,5 +73,14 @@
   "native_metadata_read": "source_revision:id kind:metadata_kind cursor:native_cursor limit:positive",
   "member_payload": "instance_id:id agent_id:id role:id enabled:flag",
   "directory_payload": "directory_id:id enabled:flag body_cipher:required_cipher",
-  "work_read_payload": "cursor:native_cursor limit:positive"
+  "work_read_payload": "cursor:native_cursor limit:positive",
+  "linked_payload": "body_cipher:relay_cipher",
+  "linked_object": "account_id:id owner_bridge_id:id chain_id:id task_id:optional kind:linked_kind object_id:id revision:positive author_id:id created_ms:counter media_type:document body_cipher:required_cipher references:document provenance:document",
+  "linked_reference": "kind:linked_kind object_id:id revision:positive",
+  "linked_delete": "kind:linked_kind object_id:id revision:positive",
+  "linked_fetch": "kind:linked_kind object_id:id revision:positive offset:counter",
+  "linked_page": "cursor:native_cursor limit:positive",
+  "linked_restore": "account_id:id owner_bridge_id:id chain_id:id format:version objects:document tombstones:document",
+  "linked_facet": "task_id:id source_revision:id key:document",
+  "linked_tombstone": "kind:linked_kind object_id:id revision:positive task_id:optional"
 }
