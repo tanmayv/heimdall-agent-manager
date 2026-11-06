@@ -280,3 +280,20 @@ language_reference_resolution_preserves_builtin_aliases_and_exact_identity :: pr
     id,version,found:=language_resolve_ref(&f.store,"chain","exact")
     testing.expect(t,found && id=="exact" && version=="1")
 }
+
+@(test)
+language_on_output_without_output_contract_uses_empty_output_and_raw_bindings :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=fixture(t);defer destroy(f);seed(t,f)
+    testing.expect_value(t,language_test_define(f,"follow",`{"schema":"workflow.v1","stages":[{"key":"follow","brief":{"goal":"Follow","acceptance":["done"]}}]}`).code,"ok")
+    testing.expect_value(t,language_test_define(f,"source",`{"schema":"workflow.v1","stages":[{"key":"source","brief":{"goal":"Source","acceptance":["done"],"on_output":{"workflow":"follow","inputs":{"rate":1.5,"items":[{"value":2.5}],"summary":"{{output}}"}}}}]}`).code,"ok")
+    testing.expect_value(t,language_test_run(f,"source","source",`{}`).code,"ok")
+    language_finish(t,f,language_tasks(f,"source","1","source")[0][0],"")
+    rows,ok:=query(f.store.db,"SELECT json_extract(l.inputs_json,'$.rate'),json_extract(l.inputs_json,'$.items[0].value'),json_extract(l.inputs_json,'$.summary'),g.consumed FROM local_workflow_output_triggers g JOIN local_workflow_language_runs l ON l.chain_id=g.chain_id AND l.run_id=g.target_run WHERE g.source_run='source'")
+    if testing.expect(t,ok && len(rows)==1) {
+        testing.expect_value(t,rows[0][0],"1.5")
+        testing.expect_value(t,rows[0][1],"2.5")
+        testing.expect_value(t,rows[0][2],"{}")
+        testing.expect_value(t,rows[0][3],"1")
+    }
+}

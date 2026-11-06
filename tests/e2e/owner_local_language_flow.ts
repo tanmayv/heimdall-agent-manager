@@ -74,6 +74,16 @@ export async function ownerLocalLanguageFlow({session,bridgeId,hub,http,cli,laun
     await finish((await tasks('builtin','1','fix'))[0][3]);
     await finish((await tasks('builtin','1','confirm'))[0][3]);
     expect((await inventory()).runs.find((r:any)=>r[0]==='builtin')[5]==='done','unmodified imported fix_flaky_tests template executes locally end to end');
+    const emptySpec={schema:'workflow.v1',stages:[{key:'source',brief:{goal:'Summary-only source',acceptance:['Done'],on_output:{start_workflow:'follow',inputs:{summary:'summary-only',rate:1.5}}}}]};
+    await mutate('workflow.define',{workflow_id:'empty_output',version:'1',title:'Empty output trigger',spec:JSON.stringify(emptySpec)});
+    await mutate('workflow.run',{run_id:'empty_output',workflow_id:'empty_output',version:'1',inputs:'{}'});
+    await finish((await tasks('empty_output','1','source'))[0][3]);
+    let summaryFollow='';
+    for(const row of (await inventory()).tasks.filter((r:any)=>r[2]==='follow:0')) {
+      if((await detail('task.read',{taskId:row[3]})).title==='Follow summary-only')summaryFollow=row[3];
+    }
+    expect(!!summaryFollow,'summary-only submission launches on_output with empty output fallback');
+    await finish(summaryFollow);
     const retrySpec={schema:'workflow.v1',stages:[{key:'gate',kind:'gate',approver:'user'},{key:'result',depends_on:['gate'],brief:{goal:'Retry result',acceptance:['Done']}}]};
     await mutate('workflow.define',{workflow_id:'retry',version:'1',title:'Retry',spec:JSON.stringify(retrySpec)});
     await mutate('workflow.run',{run_id:'retry',workflow_id:'retry',version:'1',inputs:'{}'});
