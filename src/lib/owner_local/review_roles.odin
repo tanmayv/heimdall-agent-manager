@@ -83,9 +83,14 @@ role_gate :: proc(s:^Store,chain,task,attempt:string)->(string,bool) {
         if !owed_read do return "",false
         if len(owed)>0 || (rc[1]=="1" && !user) do return "in_review",true
     }
-    required,required_read:=query(s.db,"SELECT requires_user_approval FROM local_workflow_language_items WHERE task_id=?",task)
+    // A human gate belongs to the immutable submitted attempt, including
+    // ordinary/static producers. Role configuration or stage metadata may add
+    // a requirement, but cannot remove an explicit submitted human gate.
+    required,required_read:=query(s.db,`SELECT 1 FROM local_submissions
+      WHERE chain_id=? AND task_id=? AND attempt=? AND json_extract(requirements_json,'$.requires_user_approval')=1
+      UNION ALL SELECT 1 FROM local_workflow_language_items WHERE task_id=? AND requires_user_approval=1 LIMIT 1`,chain,task,attempt,task)
     if !required_read do return "",false
-    if len(required)==1 && required[0][0]=="1" && !user do return "in_review",true
+    if len(required)>0 && !user do return "in_review",true
     if !language_policy_ready(s,chain,task) do return "in_review",true
     if !independent do return "in_review",true
     return ("merge_pending" if field(config,"merge_policy")=="git" else "done"),true

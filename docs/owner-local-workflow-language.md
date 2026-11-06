@@ -136,3 +136,9 @@ At the exact 128-run chain budget, automatic follow-ups record one durable
 that outcome for ordinary and generated producers, including after restart;
 it never silently reports a follow-up as executed. Missing-reference and invalid
 input outcomes use the same bounded, immutable failure ledger.
+
+Explicit `requires_user_approval: true` in an ordinary or static producer's
+immutable submitted brief is an additional completion gate. Independent agent
+approval and coordinator capabilities cannot satisfy it; the signed human
+verdict is required before completion, merge intent creation, or sibling release.
+Stage and separately configured role approval requirements remain additive.

@@ -49,7 +49,8 @@ export async function ownerLocalLanguageFlow({session,bridgeId,hub,http,cli,laun
     throw new Error('workflow inventory snapshot did not stabilize');
   };
   const tasks=async(run:string,execution:string,stage:string)=>(await inventory()).tasks.filter((r:any)=>r[0]===run && r[1]===execution && r[2].startsWith(stage+':'));
-  const finish=async(taskId:string,output?:any)=>{
+  let coordinatorCapability="";
+  const finish=async(taskId:string,output?:any,requiresHuman=false)=>{
     await human('fleet.edit',{taskId,expectedRevision:await revision(taskId),instanceId:worker.instanceId,configurationRevision:'1'});
     await human('lifecycle.configure',{taskId,expectedRevision:await revision(taskId),lifecycleConfig:{configuration_revision:'1',author_agent_id:worker.agentId,reviewer_agent_id:reviewer.agentId,reviewer_instance_id:reviewer.instanceId,directory_id:ownerId('dir_'),merge_policy:'none',repository:'',worktree:'',source_branch:'',target_branch:'',base_head:''}});
     const base={protocol_version:'1',chain_id:chainId,task_id:taskId,lease_id:ownerId('lease_'),configuration_revision:'1',expected_revision:await revision(taskId),operation_id:ownerId('op_'),method:'lease.claim',request_expires_ms:String(Date.now()+300000),capability:''};
@@ -64,15 +65,31 @@ export async function ownerLocalLanguageFlow({session,bridgeId,hub,http,cli,laun
     const verdict={requirements_revision:'1',attempt:'1',head:'',verdict:'approve',summary:'Independent dynamic review'};
     const opened=await call(reviewer,'review.open',verdict,'');expect(opened.status===0,'dynamic independent review opens');
     const reviewRequest={...base,method:'review.post',operation_id:ownerId('op_'),expected_revision:await revision(taskId),capability:JSON.parse(opened.data.body).capability,payload:JSON.stringify(verdict)};
+    const runsBefore=requiresHuman?(await inventory()).runs.length:0;
     expect(reviewer.call(reviewRequest).status===0,'dynamic independent review approves');
     expect(reviewer.call(reviewRequest).data.replay,'exact successful review replay preserves one follow-up');
+    let humanOperation:any;
+    if(requiresHuman){
+      expect((await detail('runtime.read',{taskId})).state[0][0]==='in_review','ordinary explicit human gate remains closed after independent agent approval');
+      expect((await inventory()).runs.length===runsBefore,'agent approval cannot launch human-gated ordinary sibling');
+      const coordinatorVote=coordinator.call({...base,method:'workflow.gate.post',operation_id:ownerId('op_'),expected_revision:await revision(taskId),capability:coordinatorCapability,payload:JSON.stringify({run_id:'ordinary',execution:'1',stage_key:'source',verdict:'approve',summary:'Coordinator cannot satisfy explicit human gate'})});
+      expect(coordinatorVote.status!==0,'actual configured coordinator cannot bypass ordinary human approval');
+      expect((await detail('runtime.read',{taskId})).state[0][0]==='in_review','coordinator denial leaves ordinary human gate closed');
+      humanOperation=await prepareOwnerOperation(session,bridgeId,'review.post',{chainId,taskId,expectedRevision:await revision(taskId),requirementsRevision:'1',attempt:'1',head:'',verdict:'approve',body:'Human approves ordinary output producer'});
+      await openOwnerReply(session,humanOperation,await cli(await ownerRelayFile(session,humanOperation)));
+      const replay=await openOwnerReply(session,humanOperation,await cli(await ownerRelayFile(session,humanOperation)));
+      expect(replay.replay,'exact signed human approval replay releases ordinary sibling once');
+      expect((await detail('runtime.read',{taskId})).state[0][0]==='done','signed human approval completes ordinary producer');
+    }
     if(output!==undefined) {
       const retained=await detail('submission.read',{taskId,attempt:'1',offset:'0'});
       expect(JSON.stringify(JSON.parse(retained.output))===JSON.stringify(output),'structured output retained through real relay');
     }
+    return humanOperation;
   };
   try {
     const binding=JSON.parse((await mutate('workflow.coordinator',{configuration_revision:'1',agent_id:coordinator.agentId,instance_id:coordinator.instanceId})).body);
+    coordinatorCapability=binding.capability;
     const source=(await tasks('dynamic','1','source'))[0][3];
     await finish(source,{summary:'dynamic-planned',tasks:[{key:'a',title:'Alpha',goal:'Build alpha'},{key:'b',title:'Beta',goal:'Build beta'}]});
     expect((await tasks('dynamic','1','write')).length===0,'real dynamic fan-out waits for gate');
@@ -108,8 +125,8 @@ export async function ownerLocalLanguageFlow({session,bridgeId,hub,http,cli,laun
     await finish(summaryFollow);
     const ordinarySource=ownerId('task_');
     await human('task.create',{taskId:ordinarySource,expectedRevision:await revision(),title:'Ordinary output producer',body:'Owner-local ordinary task'});
-    await human('requirements.edit',{taskId:ordinarySource,expectedRevision:await revision(ordinarySource),requirementsRevision:'1',body:JSON.stringify({goal:'Produce ordinary output',acceptance:['Done'],output:{schema:'inline',required:['summary']},on_output:{workflow:'follow',inputs:{summary:'{{output.summary}}'}}})});
-    await finish(ordinarySource,{summary:'ordinary-bound'});
+    await human('requirements.edit',{taskId:ordinarySource,expectedRevision:await revision(ordinarySource),requirementsRevision:'1',body:JSON.stringify({goal:'Produce ordinary output',acceptance:['Done'],requires_user_approval:true,output:{schema:'inline',required:['summary']},on_output:{workflow:'follow',inputs:{summary:'{{output.summary}}'}}})});
+    const ordinaryHuman=await finish(ordinarySource,{summary:'ordinary-bound'},true);
     const ordinaryFollowers=[];
     for(const row of (await inventory()).tasks.filter((r:any)=>r[2]==='follow:0')) {
       if((await detail('task.read',{taskId:row[3]})).title==='Follow ordinary-bound')ordinaryFollowers.push(row[3]);
@@ -132,6 +149,8 @@ export async function ownerLocalLanguageFlow({session,bridgeId,hub,http,cli,laun
     await worker.stop();await reviewer.stop();await coordinator.stop();
     await stopOwner();await restartOwner();
     expect((await inventory()).runs.find((r:any)=>r[0]==='retry')[5]==='done','real language execution and retry survive owner restart');
+    const humanReplay=await openOwnerReply(session,ordinaryHuman,await cli(await ownerRelayFile(session,ordinaryHuman)));
+    expect(humanReplay.replay,'signed human approval replay survives cold restart');
     expect((await inventory()).tasks.filter((r:any)=>r[3]===ordinaryFollowers[0]).length===1,'ordinary on_output sibling survives restart exactly once');
     expect((await detail('chain.search',{query:'dynamic-planned'})).hits.length>0,'structured output remains searchable after cold rebuild');
 
