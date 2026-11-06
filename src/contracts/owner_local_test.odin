@@ -292,3 +292,21 @@ native_history_contracts_bind_snapshot_scope_typed_keys_and_mutation :: proc(t:^
     _,ok:=owner_parse(`{"source_revision":"original_7","kind":"facet","cursor":"hash:[\"3\",\"output\",\"2\"]","limit":"100"}`,"native_history_read")
     testing.expect(t,ok)
 }
+
+@(test)
+native_placement_facet_zero_is_not_a_work_attempt :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    raw:=string(#load("fixtures/owner-native-placement-pregrant.json"))
+    bundle,valid:=owner_parse(raw,"native_history_bundle")
+    if !testing.expect(t,valid) do return
+    value,_:=owner_request_document(owner_string(bundle,"facets"));items,_:=value.(json.Array)
+    text,_:=items[0].(json.String);facet,ok:=owner_parse(string(text),"native_history_facet")
+    if !testing.expect(t,ok) do return
+    testing.expect_value(t,owner_string(facet,"attempt_no"),"0")
+    testing.expect_value(t,owner_string(facet,"kind"),"placement")
+    facet["kind"]=json.String("handoff");testing.expect(t,!owner_document_valid("native_history_facet",facet))
+    facet["kind"]=json.String("placement");facet["attempt_no"]=json.String("1")
+    testing.expect(t,owner_document_valid("native_history_facet",facet))
+    facet["attempt_no"]=json.String("-1");testing.expect(t,!owner_document_valid("native_history_facet",facet))
+    testing.expect(t,!owner_field_valid("0","positive"))
+}

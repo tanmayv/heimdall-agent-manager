@@ -133,6 +133,7 @@ native_history_import :: proc(s:^Store,c:json.Object,raw:string,seq:i64)->string
             record,ok:=native_content_parse(record_raw,fmt.tprintf("native_history_%s",kind))
             if !ok || field(record,"chain_id")!=chain || field(record,"task_id")!=task || field(record,"owner_user_id")!=owner || !native_json_object(field(record,"provenance_json")) do return "invalid_content"
             key,attempt,facet,version,writer:="",field(record,"attempt_no"),"","",""
+            parent_kind,parent_key:="",""
             switch kind {
             case "attempt":
                 key=attempt
@@ -147,9 +148,14 @@ native_history_import :: proc(s:^Store,c:json.Object,raw:string,seq:i64)->string
                 facet=field(record,"kind");version=field(record,"v");writer=field(record,"writer")
                 key=encode([3]string{attempt,facet,version})
                 if len(field(record,"written_at"))>128 || !native_json_object(field(record,"body_json")) || !native_references_valid(field(record,"references_json")) do return "invalid_content"
-                parents,parent_ok:=query(s.db,"SELECT 1 FROM native_history_records WHERE chain_id=? AND task_id=? AND source_revision=? AND record_kind='attempt' AND record_key=?",chain,task,source,attempt)
-                if !parent_ok do return "storage_error"
-                if len(parents)!=1 do return "invalid_content"
+                // The native placement writer persists attempt zero before
+                // any grant. Do not invent a work attempt to satisfy linkage.
+                if attempt!="0" {
+                    parents,parent_ok:=query(s.db,"SELECT 1 FROM native_history_records WHERE chain_id=? AND task_id=? AND source_revision=? AND record_kind='attempt' AND record_key=?",chain,task,source,attempt)
+                    if !parent_ok do return "storage_error"
+                    if len(parents)!=1 do return "invalid_content"
+                    parent_kind="attempt";parent_key=attempt
+                }
                 writers,writers_ok:=query(s.db,"SELECT 1 FROM native_history_records WHERE chain_id=? AND task_id=? AND record_kind='facet' AND attempt_no=? AND facet_kind=? AND writer!=? LIMIT 1",chain,task,attempt,facet,writer)
                 if !writers_ok do return "storage_error"
                 if len(writers)>0 do return "operation_conflict"
@@ -168,7 +174,7 @@ native_history_import :: proc(s:^Store,c:json.Object,raw:string,seq:i64)->string
                 if prior[0][0]!=record_raw || prior[0][1]!=owner || prior[0][2]!=field(bundle,"completeness") do return "operation_conflict"
                 continue
             }
-            _,inserted:=query(s.db,`INSERT INTO native_history_records VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,CASE WHEN ?='facet' THEN 'attempt' END,CASE WHEN ?='facet' THEN ? END)`,chain,task,source,kind,key,owner,field(bundle,"completeness"),attempt,facet,version,writer,record_raw,fmt.tprintf("%d",seq),kind,kind,attempt)
+            _,inserted:=query(s.db,`INSERT INTO native_history_records VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,NULLIF(?,''),NULLIF(?,''))`,chain,task,source,kind,key,owner,field(bundle,"completeness"),attempt,facet,version,writer,record_raw,fmt.tprintf("%d",seq),parent_kind,parent_key)
             if !inserted do return "storage_error"
             total+=1
             if number(count[0][0])+i64(total)>MAX_RECORDS do return "retention_capacity"

@@ -29,7 +29,7 @@ function fieldValid(s: string, kind: string): boolean {
     case 'native_cursor': return s.length <= 512;
     case 'native_actor': return ['agent','user','hub','bridge'].includes(s);
     case 'native_event_actor': return ['agent','user','hub','bridge','coordinator'].includes(s);
-    case 'facet_kind': return ['handoff','vcs','verify','output','runtime','artifacts'].includes(s);
+    case 'facet_kind': return ['handoff','vcs','verify','output','runtime','artifacts','placement'].includes(s);
     case 'optional_counter': return s === '' || decimal(s);
     case 'attempt_outcome': return ['', 'handoff', 'submitted', 'blocked', 'expired', 'expired:ttl', 'expired:hard_cap', 'expired:cancelled', 'expired:replaced', 'expired:chain_closed'].includes(s);
     case 'history_completeness': return s === 'full' || s === 'incomplete';
@@ -64,6 +64,7 @@ export function ownerDocumentValid<K extends OwnerKind>(kind: K, value: unknown)
     if ((o.ended_ms === '') !== (o.outcome === '')) return false;
     if (o.ended_ms !== '' && BigInt(String(o.ended_ms)) < BigInt(String(o.started_ms))) return false;
   }
+  if (kind === 'native_history_facet' && o.attempt_no === '0' && o.kind !== 'placement') return false;
   if (kind === 'registry' && o.deleted === '0') {
     if (o.task_id === '') {
       if (o.chain_title_cipher === '' || o.chain_description_cipher === '' || o.task_title_cipher !== '') return false;

@@ -23,9 +23,12 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
   const { identity, chain, keyring } = session;
   const bridge = [...chain.trusted.values()].find((d) => d.kind === 'bridge' && d.row.bridge_id === bridgeId);
   if (!bridge || !chain.trusted.has(identity.deviceId) || identity.userId !== chain.userId) throw new Error('Device and owner must be currently enrolled in this account');
-  for (const text of [input.title, input.description, input.body]) {
+  for (const [field,text] of [['title',input.title],['description',input.description],['body',input.body]] as const) {
     if (text === undefined) continue;
-    if (new TextEncoder().encode(text).length > 8192 || new TextEncoder().encode(JSON.stringify(text)).length > 16384) throw new Error('V1 fields are limited to 8192 UTF-8 bytes and 16384 JSON-encoded bytes');
+    const nativeImportBody = method === 'native.history.import' && field === 'body';
+    const plainLimit = nativeImportBody ? 65536 : 8192;
+    const encodedLimit = nativeImportBody ? 131072 : 16384;
+    if (new TextEncoder().encode(text).length > plainLimit || new TextEncoder().encode(JSON.stringify(text)).length > encodedLimit) throw new Error(`Owner ${field} is limited to ${plainLimit} UTF-8 bytes and ${encodedLimit} JSON-encoded bytes`);
   }
   if (method === "chain.search" && (new TextEncoder().encode(input.query ?? "").length > 256 || (input.query ?? "").trim().length < 2 || !Number.isInteger(input.limit ?? 20) || (input.limit ?? 20) < 1 || (input.limit ?? 20) > 50)) throw new Error("Search requires 2–256 UTF-8 bytes and a limit of 1–50");
   if (method === 'grant.recover' && identity.deviceId !== chain.rootDeviceId) throw new Error('Recovery requires the currently enrolled paired root');

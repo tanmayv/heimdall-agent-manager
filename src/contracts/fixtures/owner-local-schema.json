@@ -64,5 +64,5 @@
   "native_history_bundle": "source_revision:id owner_user_id:id completeness:history_completeness attempts:document events:document facets:document",
   "native_history_attempt": "task_id:id attempt_no:positive chain_id:id owner_user_id:id started_at:document ended_at:optional_document holder_instance_id:optional outcome:optional_document counts_toward_budget:flag provenance_json:document",
   "native_history_event": "event_id:positive task_id:id chain_id:id owner_user_id:id ts_ms:counter actor_kind:native_event_actor actor_id:optional kind:document payload_json:document provenance_json:document",
-  "native_history_facet": "task_id:id attempt_no:positive chain_id:id owner_user_id:id kind:facet_kind v:positive body_json:document writer:native_actor written_at:document references_json:document provenance_json:document"
+  "native_history_facet": "task_id:id attempt_no:counter chain_id:id owner_user_id:id kind:facet_kind v:positive body_json:document writer:native_actor written_at:document references_json:document provenance_json:document"
 }

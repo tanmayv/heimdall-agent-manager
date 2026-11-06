@@ -59,7 +59,7 @@ owner_field_valid :: proc(s, kind: string) -> bool {
     case "native_cursor": return len(s)<=512
     case "native_actor": return s=="agent" || s=="user" || s=="hub" || s=="bridge"
     case "native_event_actor": return s=="agent" || s=="user" || s=="hub" || s=="bridge" || s=="coordinator"
-    case "facet_kind": return s=="handoff" || s=="vcs" || s=="verify" || s=="output" || s=="runtime" || s=="artifacts"
+    case "facet_kind": return s=="handoff" || s=="vcs" || s=="verify" || s=="output" || s=="runtime" || s=="artifacts" || s=="placement"
     case "optional_counter": return s=="" || owner_decimal_valid(s)
     case "attempt_outcome": return s=="" || s=="handoff" || s=="submitted" || s=="blocked" || s=="expired" || s=="expired:ttl" || s=="expired:hard_cap" || s=="expired:cancelled" || s=="expired:replaced" || s=="expired:chain_closed"
     case "hash": return owner_hex(s, 64)
@@ -123,6 +123,9 @@ owner_document_valid :: proc(kind: string, o: json.Object) -> bool {
             if end<start do return false
         }
     }
+    // Placement diagnostics can precede the first work grant. This is an
+    // archival facet identity, never a zero-numbered logical work attempt.
+    if kind=="native_history_facet" && owner_string(o,"attempt_no")=="0" && owner_string(o,"kind")!="placement" do return false
     if kind == "registry" && owner_string(o, "deleted") == "0" {
         if owner_string(o, "task_id") == "" {
             if owner_string(o, "chain_title_cipher") == "" || owner_string(o, "chain_description_cipher") == "" || owner_string(o, "task_title_cipher") != "" do return false

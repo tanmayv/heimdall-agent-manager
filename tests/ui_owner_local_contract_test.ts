@@ -10,6 +10,22 @@ const creator: OwnerVerifiedKey = {account_id:'acct_1', principal_id:'dev_1', ke
 const bridge: OwnerVerifiedKey = {...creator,principal_id:'brg_1',key_id:'bridge_key',public_key:fixture.bridge_public_key,kind:'bridge'};
 const grant: OwnerReadGrant = {account_id:'acct_1', owner_bridge_id:'brg_1', chain_id:'chain_1',principal_id:'dev_1',key_id:'device_key',task_id:'task_1',method:'task.comment',revision:1n,expires_ms:1000000n,can_read:true,can_mutate:true,revoked:false};
 
+test('native placement facets retain pre-grant zero without allowing zero work attempts', () => {
+  const before = JSON.parse(readFileSync(new URL('../src/contracts/fixtures/owner-native-placement-pregrant.json', import.meta.url), 'utf8'));
+  assert.deepEqual(JSON.parse(before.attempts), []);
+  for (const raw of JSON.parse(before.facets)) {
+    const facet = ownerParse(raw, 'native_history_facet');
+    assert.equal(facet.kind, 'placement'); assert.equal(facet.attempt_no, '0'); assert.equal(facet.writer, 'hub');
+    assert.throws(() => ownerParse(JSON.stringify({ ...facet, kind:'handoff' }), 'native_history_facet'));
+    assert.throws(() => ownerParse(JSON.stringify({ ...facet, attempt_no:'-1' }), 'native_history_facet'));
+    assert.throws(() => ownerParse(JSON.stringify({ ...facet, v:'0' }), 'native_history_facet'));
+    ownerParse(JSON.stringify({ ...facet, attempt_no:'1' }), 'native_history_facet');
+  }
+  const later = JSON.parse(readFileSync(new URL('../src/contracts/fixtures/owner-native-placement-later.json', import.meta.url), 'utf8'));
+  const attempt = JSON.parse(JSON.parse(later.attempts)[0]);
+  assert.throws(() => ownerParse(JSON.stringify({ ...attempt, attempt_no:'0' }), 'native_history_attempt'));
+});
+
 test('native history imports require mutation and snapshot reads bind typed bounded payloads', () => {
   for (const method of ['native.history.read', 'native.history.fetch', 'native.history.import']) {
     const c = { ...doc('command'), method, expected_revision:'0' } as OwnerCommand;

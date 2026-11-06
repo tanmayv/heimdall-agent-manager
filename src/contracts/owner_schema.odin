@@ -1035,7 +1035,7 @@ Owner_Native_History_Facet :: struct {
 @(private)
 owner_fields_native_history_facet := [?]Owner_Field{
     {"task_id", "id"},
-    {"attempt_no", "positive"},
+    {"attempt_no", "counter"},
     {"chain_id", "id"},
     {"owner_user_id", "id"},
     {"kind", "facet_kind"},

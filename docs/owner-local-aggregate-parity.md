@@ -876,7 +876,7 @@ stored values (`src/lib/owner_local/native_history.odin:110`).
 | --- | --- |
 | `src/hub/domain/taskv2.odin:27` | Attempt: original task/attempt number, chain, original owner user ID, started/ended timestamp strings, holder, exact outcome and counting bit. Snapshot revisions retain changes to a native attempt without rewriting an earlier snapshot. |
 | `src/hub/domain/taskv2.odin:9` | Event: original event ID, task/chain/owner, exact timestamp, actor kind/ID, kind and verbatim payload. Native event IDs remain distinct from owner accepted-command sequence numbers. The actual coordinator actor is retained (`src/hub/service/taskv2/events.odin:71`; `verbs_m2.odin:392`). |
-| `src/hub/domain/taskv2.odin:43` | Facet: original task/attempt/kind/version, owner, writer, written-at string and verbatim body. All six source kinds are retained, including legacy read-only `verify` (`src/hub/service/taskv2/facets.odin:15`). |
+| `src/hub/domain/taskv2.odin:43` | Facet: original task/attempt/kind/version, owner, writer, written-at string and verbatim body. All seven source kinds are retained: the six in `src/hub/service/taskv2/facets.odin:15`, including legacy read-only `verify`, plus `placement` (`src/hub/service/taskv2/placement_failures.odin:13`). |
 
 Each record also retains caller-supplied pinned `provenance_json`; facet records
 carry typed artifact/message IDs, pinned revision/provenance and explicit
@@ -885,8 +885,10 @@ not a second object/body resolver (`src/lib/owner_local/native_history.odin:94`)
 C3 remains responsible for canonical linked bodies/envelopes/blobs. No path is
 opened to discover a body, and no Hub body/authority join is introduced.
 
-Facet-to-attempt linkage is checked before insertion and by a deferred foreign
-key. Original owner and one-writer-per-attempt/kind invariants are checked;
+Positive facet-to-attempt linkage is checked before insertion and by a deferred
+foreign key. Native pre-grant `placement` at attempt zero has no work-attempt
+parent; other facet kinds cannot use zero. Original owner and
+one-writer-per-attempt/kind invariants are checked;
 conflicting reimports of the same source key fail, and known event/facet versions
 cannot silently change across snapshots (`src/lib/owner_local/native_history.odin:110`;
 `migration_015.sql:56`). `source_completeness` exposes the import declaration;
@@ -1027,3 +1029,77 @@ lockfile unchanged); a JSON envelope key-order assertion (corrected to compare
 the exact archived record); and historical reconstruction retaining a V15
 trigger (all V15 objects are now removed before reconstructing older schemas).
 The first real demo's revision collision was corrected using a separate chain.
+
+### Placement review correction (attempt 3)
+
+Independent review correctly found an omitted seventh native facet kind.
+`src/hub/service/taskv2/placement_failures.odin:10` explicitly permits placement
+at attempt zero; its writer persists that facet without a work grant
+(`placement_failures.odin:231`). The original regression demonstrates zero
+`task_attempts` (`placement_failures_test.odin:35`). The earlier six-kind claim
+above has been corrected. This finding was reproduced as `invalid_content` in
+`sh_9f684f7aee8697bfa26bd5c398e0ca80` before the fix.
+
+Odin/TS contracts now admit `placement`, with attempt zero permitted only for
+that archival facet. Positive facets still require their exact snapshot attempt
+parent. Zero placement stores NULL parent columns, never an invented attempt;
+the unmerged V15 CHECK uses NULL-safe comparisons for the positive parent
+backstop (`src/lib/owner_local/migration_015.sql:69`). Accepted V1–V14 bytes stay
+unchanged. Runtime work-attempt contracts still require positive numbers.
+
+The native matcher regression exports two synthetic source captures with stable
+typed wrappers (`src/hub/service/taskv2/owner_native_placement_test.odin:67`).
+They preserve pre-grant placement versions 1/2 and later attempt-one versions
+1/2, exact HUB writer, native timestamps and body bytes. Its native fold counts
+zero before grant and one after submission. Local replay/restart tests fetch
+the original records exactly; statement and deferred-COMMIT failures roll back
+archive rows, receipts and revisions (`src/lib/owner_local/native_placement_test.odin:34`).
+Local work/submission rows and live counting remain zero after both archival
+snapshots. No baseline activation, budget enforcement or C3 body resolution is
+introduced.
+
+New verification commands, run in this task's managed worktree:
+
+```bash
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1b-placement-store-all
+# 133/133 PASS, sh_986b7653da87835353d815ef43a54fbb
+nix develop --command odin test src/hub/service/taskv2 -collection:odin_test=src -define:ODIN_TEST_NAMES=taskv2.test_owner_native_placement_archival_source_fixtures,taskv2.test_placement_worker_offline_is_durable_idempotent_and_recovers,taskv2.test_owner_native_import_fixture_matches_original_attempt_accounting,taskv2.test_owner_attempt_projection_matches_native_fold_prefixes -out:$HOME/.cache/heimdall-tests/c1b-placement-native-four
+# 4/4 PASS, sh_3a9da0c75b9146faa0be60f3a0d86ae5
+nix develop --command odin test src/contracts -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1b-placement-contracts-all
+python3 scripts/check-owner-aggregate-parity.py
+# 21/21 PASS; 240 fields/23 structs, sh_b5606b0e1ea198f3ea294cc466d87a22
+nix build .#ham-bridge .#ham-hub .#ham-ctl .#ham-pty-host -o $HOME/.cache/heimdall-tests/c1b-placement-bins -L
+# All four binaries PASS, sh_48258e4f21015db5566b6456b806cdc8
+nix develop --command npm run typecheck
+nix develop --command node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_owner_local_contract_test.ts tests/ui_owner_controls_test.ts tests/ui_owner_grants_test.ts tests/ui_owner_registry_listing_test.ts tests/ui_owner_submission_history_test.ts
+# Typecheck PASS, sh_bb048f54f8fb9f25e7c1c5fad2daaf00.
+# UI 19/19 PASS and staged/unstaged diff checks PASS, sh_7eced5391bedd79c26d20ecad156bb70.
+# Earlier UI invocation included a nonexistent flow-test filename; only its
+# 10 actual contract tests were counted. The final command lists existing files.
+```
+
+The first new real demo (`sh_ec02b416f778abbc9654c7721b1e0775`) proved pre-grant
+CLI import/replay, then exposed the browser helper's ordinary 8 KiB limit on a
+larger native source bundle. The helper now uses the store's existing 64 KiB
+plaintext/128 KiB JSON-expanded limit only for native import bodies; title,
+description and ordinary bodies retain their original limits
+(`src/ui/api/ownerLocalClient.ts:26`). The new real demo fetches all original
+placement versions with the actual CLI after owner restart and verifies zero
+runtime work/counting (`tests/e2e/owner_local_flow.ts:101`).
+The complete rerun `sh_fd6ec788bccfb8c3375d73bc72873f09` exited 0 with
+`all steps PASSED` (line 548), including all retained lease, lifecycle, controls,
+workflow, language, grant and registry flows. No live services were restarted.
+
+```bash
+nix develop --command env \
+  HEIMDALL_E2E_HUB_BIN=$HOME/.cache/heimdall-tests/c1b-placement-bins-1/bin/ham-hub \
+  HEIMDALL_E2E_BRIDGE_BIN=$HOME/.cache/heimdall-tests/c1b-placement-bins/bin/ham-bridge \
+  HEIMDALL_E2E_CTL_BIN=$HOME/.cache/heimdall-tests/c1b-placement-bins-2/bin/ham-ctl \
+  HEIMDALL_E2E_PTY_BIN=$HOME/.cache/heimdall-tests/c1b-placement-bins-3/bin/ham-pty-host \
+  HEIMDALL_E2E_IDENTITY_BIN=$HOME/.cache/heimdall-tests/c1b-identity \
+  HEIMDALL_E2E_OWNER_LOCAL=1 HEIMDALL_E2E_OWNER_LEASE=1 \
+  HEIMDALL_E2E_OWNER_LIFECYCLE=1 HEIMDALL_E2E_OWNER_CONTROLS=1 \
+  HEIMDALL_E2E_OWNER_WORKFLOWS=1 HEIMDALL_E2E_OWNER_LANGUAGE=1 \
+  HEIMDALL_E2E_OWNER_GRANTS=1 HEIMDALL_E2E_OWNER_REGISTRY=1 \
+  node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/bridge_real_enroll_e2e.mjs
+```

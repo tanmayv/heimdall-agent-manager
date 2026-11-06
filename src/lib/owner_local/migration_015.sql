@@ -66,7 +66,9 @@ CREATE TABLE native_history_records (
  FOREIGN KEY(chain_id,task_id,source_revision,parent_kind,parent_key)
  REFERENCES native_history_records(chain_id,task_id,source_revision,record_kind,record_key)
  DEFERRABLE INITIALLY DEFERRED,
- CHECK((record_kind='facet' AND parent_kind='attempt' AND parent_key=attempt_no AND facet_kind!='' AND facet_version!='')
+ CHECK((record_kind='facet' AND facet_kind!='' AND facet_version!='' AND
+       ((attempt_no='0' AND facet_kind='placement' AND parent_kind IS NULL AND parent_key IS NULL)
+        OR (attempt_no!='0' AND parent_kind IS 'attempt' AND parent_key IS attempt_no)))
     OR (record_kind!='facet' AND parent_kind IS NULL AND parent_key IS NULL))
 );
 CREATE INDEX native_history_inventory ON native_history_records(chain_id,task_id,source_revision,record_kind,record_key);
