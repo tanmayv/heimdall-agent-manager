@@ -1,4 +1,3 @@
--- V10 adds original workflow.v1 execution evidence after V9.
 DROP TRIGGER intent_transition;
 CREATE TABLE runtime_database_v10 (
  singleton INTEGER PRIMARY KEY CHECK(singleton=1), account_id TEXT NOT NULL,
@@ -50,67 +49,9 @@ BEGIN SELECT RAISE(ABORT,'invalid intent transition'); END;
 
 
 
-
-CREATE TABLE local_workflow_language_runs(
- chain_id TEXT NOT NULL,run_id TEXT NOT NULL,inputs_json TEXT NOT NULL,
- PRIMARY KEY(chain_id,run_id),FOREIGN KEY(chain_id,run_id) REFERENCES local_workflow_runs(chain_id,run_id));
-CREATE TABLE local_workflow_language_executions(
- chain_id TEXT NOT NULL,run_id TEXT NOT NULL,execution INTEGER NOT NULL,
- state TEXT NOT NULL CHECK(state IN('running','done','failed','cancelled')),
- failure TEXT NOT NULL DEFAULT '',principal_id TEXT NOT NULL,operation_id TEXT NOT NULL,
- PRIMARY KEY(chain_id,run_id,execution),
- FOREIGN KEY(chain_id,run_id,execution) REFERENCES local_workflow_executions(chain_id,run_id,execution));
-CREATE TABLE local_workflow_stage_expansions(
- chain_id TEXT NOT NULL,run_id TEXT NOT NULL,execution INTEGER NOT NULL,stage_key TEXT NOT NULL,
- item_count INTEGER NOT NULL CHECK(item_count BETWEEN 0 AND 256),
- PRIMARY KEY(chain_id,run_id,execution,stage_key),
- FOREIGN KEY(chain_id,run_id,execution) REFERENCES local_workflow_executions(chain_id,run_id,execution));
-CREATE TABLE local_workflow_language_items(
- task_id TEXT PRIMARY KEY REFERENCES local_workflow_tasks(task_id),
- stage_key TEXT NOT NULL,stage_index INTEGER NOT NULL CHECK(stage_index BETWEEN 0 AND 255),
- kind TEXT NOT NULL CHECK(kind IN('task','gate')),priority TEXT NOT NULL,
- max_parallel INTEGER NOT NULL CHECK(max_parallel BETWEEN 0 AND 50),
- requires_user_approval INTEGER NOT NULL CHECK(requires_user_approval IN(0,1)),
- provenance_json TEXT NOT NULL);
-CREATE TABLE local_workflow_outputs(
- chain_id TEXT NOT NULL,task_id TEXT NOT NULL,attempt INTEGER NOT NULL,output_json TEXT NOT NULL,
- PRIMARY KEY(chain_id,task_id,attempt),
- FOREIGN KEY(chain_id,task_id,attempt) REFERENCES local_submissions(chain_id,task_id,attempt));
-CREATE TABLE local_workflow_output_triggers(
- chain_id TEXT NOT NULL,source_task TEXT NOT NULL,source_attempt INTEGER NOT NULL,
- source_run TEXT NOT NULL,source_execution INTEGER NOT NULL,
- target_run TEXT NOT NULL,consumed INTEGER NOT NULL DEFAULT 0 CHECK(consumed IN(0,1)),
- PRIMARY KEY(chain_id,source_task,source_attempt),
- FOREIGN KEY(chain_id,source_task,source_attempt) REFERENCES local_submissions(chain_id,task_id,attempt),
- FOREIGN KEY(chain_id,source_run,source_execution) REFERENCES local_workflow_executions(chain_id,run_id,execution),
- FOREIGN KEY(chain_id,target_run) REFERENCES local_workflow_runs(chain_id,run_id));
-CREATE TABLE local_workflow_registry_envelopes(
- intent_id TEXT PRIMARY KEY REFERENCES runtime_intents(intent_id),registry_json TEXT NOT NULL);
-CREATE TRIGGER local_workflow_language_runs_immutable BEFORE UPDATE ON local_workflow_language_runs BEGIN SELECT RAISE(ABORT,'immutable workflow evidence'); END;
-CREATE TRIGGER local_workflow_language_runs_no_delete BEFORE DELETE ON local_workflow_language_runs BEGIN SELECT RAISE(ABORT,'immutable workflow evidence'); END;
-CREATE TRIGGER local_workflow_stage_expansions_immutable BEFORE UPDATE ON local_workflow_stage_expansions BEGIN SELECT RAISE(ABORT,'immutable workflow evidence'); END;
-CREATE TRIGGER local_workflow_stage_expansions_no_delete BEFORE DELETE ON local_workflow_stage_expansions BEGIN SELECT RAISE(ABORT,'immutable workflow evidence'); END;
-CREATE TRIGGER local_workflow_language_items_immutable BEFORE UPDATE ON local_workflow_language_items BEGIN SELECT RAISE(ABORT,'immutable workflow evidence'); END;
-CREATE TRIGGER local_workflow_language_items_no_delete BEFORE DELETE ON local_workflow_language_items BEGIN SELECT RAISE(ABORT,'immutable workflow evidence'); END;
-CREATE TRIGGER local_workflow_outputs_immutable BEFORE UPDATE ON local_workflow_outputs BEGIN SELECT RAISE(ABORT,'immutable workflow evidence'); END;
-CREATE TRIGGER local_workflow_outputs_no_delete BEFORE DELETE ON local_workflow_outputs BEGIN SELECT RAISE(ABORT,'immutable workflow evidence'); END;
-CREATE TRIGGER local_workflow_registry_envelopes_immutable BEFORE UPDATE ON local_workflow_registry_envelopes BEGIN SELECT RAISE(ABORT,'immutable workflow evidence'); END;
-CREATE TRIGGER local_workflow_registry_envelopes_no_delete BEFORE DELETE ON local_workflow_registry_envelopes BEGIN SELECT RAISE(ABORT,'immutable workflow evidence'); END;
-
-CREATE TRIGGER search_workflow_output AFTER INSERT ON local_workflow_outputs BEGIN
- UPDATE search_docs SET body=body||char(10)||NEW.output_json WHERE chain_id=NEW.chain_id AND task_id=NEW.task_id AND kind='output' AND object_id=NEW.task_id||':'||NEW.attempt;
-END;
-
-CREATE TABLE local_workflow_coordinators(
- chain_id TEXT NOT NULL REFERENCES task_chains(chain_id),revision INTEGER NOT NULL CHECK(revision>0),
- agent_id TEXT NOT NULL,child_json TEXT NOT NULL,capability_json TEXT NOT NULL,principal_id TEXT NOT NULL,operation_id TEXT NOT NULL,
- PRIMARY KEY(chain_id,revision));
-CREATE TRIGGER local_workflow_coordinators_immutable BEFORE UPDATE ON local_workflow_coordinators BEGIN SELECT RAISE(ABORT,'immutable coordinator binding'); END;
-CREATE TRIGGER local_workflow_coordinators_no_delete BEFORE DELETE ON local_workflow_coordinators BEGIN SELECT RAISE(ABORT,'immutable coordinator binding'); END;
-
-CREATE TABLE local_workflow_trigger_failures(
- chain_id TEXT NOT NULL,source_task TEXT NOT NULL,source_attempt INTEGER NOT NULL,reason TEXT NOT NULL,
- PRIMARY KEY(chain_id,source_task,source_attempt),
- FOREIGN KEY(chain_id,source_task,source_attempt) REFERENCES local_submissions(chain_id,task_id,attempt));
-CREATE TRIGGER local_workflow_trigger_failures_immutable BEFORE UPDATE ON local_workflow_trigger_failures BEGIN SELECT RAISE(ABORT,'immutable trigger outcome'); END;
-CREATE TRIGGER local_workflow_trigger_failures_no_delete BEFORE DELETE ON local_workflow_trigger_failures BEGIN SELECT RAISE(ABORT,'immutable trigger outcome'); END;
+CREATE TABLE local_chain_context(
+ chain_id TEXT PRIMARY KEY REFERENCES task_chains(chain_id),
+ algorithm INTEGER NOT NULL, version INTEGER NOT NULL CHECK(version>0),
+ source_seq INTEGER NOT NULL, source_digest TEXT NOT NULL,
+ source_count INTEGER NOT NULL, body TEXT NOT NULL
+);

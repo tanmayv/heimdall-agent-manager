@@ -196,3 +196,5 @@ Raw outputs, schemas, mockups and screenshots referenced by the documents above.
 - Mixed-work UI mockups for [plans/mixed-work-task-chains.md](plans/mixed-work-task-chains.md) (`html` with `png` renders):
   - [mockups/mixed-work.html](mockups/mixed-work.html), [mockups/mixed-work.png](mockups/mixed-work.png): the mixed-work concept.
   - [mockups/mixed-work-current-ui.html](mockups/mixed-work-current-ui.html), [mockups/mixed-work-current-ui.png](mockups/mixed-work-current-ui.png): the concept against the current UI.
+
+- [Bridge-owned chain context and legacy overflow remediation](owner-local-context.md)

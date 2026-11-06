@@ -518,6 +518,8 @@ agent_action_chain_summary_handler :: proc(ctx: rawptr, req: Request) -> Respons
 	taskv2.json_str(&o, "chain_id", string(row.chain_id))
 	taskv2.json_str(&o, "summary", row.body)
 	taskv2.json_str(&o, "body", row.body)
+    taskv2.json_str(&o,"curated_notes",row.curated_body)
+    taskv2.json_str(&o,"projection_state","stale" if row.failure_fingerprint!="" else "current")
 	taskv2.json_int(&o, "line_count", i64(row.line_count))
 	taskv2.json_int(&o, "version", i64(row.version))
 	taskv2.json_str(&o, "updated_at", row.updated_at)

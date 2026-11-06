@@ -26,6 +26,7 @@ import "core:os"
 import "core:strings"
 import "core:sync"
 import jsonx "odin_test:lib/jsonx"
+import compact "odin_test:lib/context_compaction"
 import ws "odin_test:lib/ws"
 
 // Per-instance cached vcs_base captured on `agent.lease.next` so a subsequent
@@ -677,6 +678,7 @@ bridge_taskv2_render_task_md :: proc(pack_json: string, max_bytes: int = BRIDGE_
 
 	raw_chain_summary := jsonx.extract_string(chain_obj, "summary", jsonx.extract_string(pack_json, "chain_summary", "", true, context.temp_allocator), true, context.temp_allocator)
 	chain_summary := bridge_taskv2_decrypt_field(raw_chain_summary, context.temp_allocator)
+    if chain_summary!="" do chain_summary=compact.project("# Chain context", "Bridge projection v1; original task handoff facets remain fetchable.",strings.split_lines(chain_summary,context.temp_allocator))
 
 	// Resolved inputs
 	inputs := make([dynamic]Bridge_Task_Md_Input, context.temp_allocator)
@@ -857,7 +859,7 @@ bridge_taskv2_materialize_task_md :: proc(run_dir, pack_json: string, max_bytes:
 	_ = bridge_make_directory_all(clean)
 	md := bridge_taskv2_render_task_md(pack_json, max_bytes)
 	defer delete(md)
-	if strings.trim_space(md) == "" do return false
+	if strings.trim_space(md) == "" || len(md)>max_bytes do return false
 	path := strings.concatenate({clean, "/TASK.md"})
 	defer delete(path)
 	sync.mutex_guard(&bridge_taskv2_task_md_mutex)

@@ -210,33 +210,38 @@ language_coordinator_gate_exact_binding_human_policy_and_replay :: proc(t:^testi
 }
 
 @(test)
-language_v9_upgrade_collision_and_deferred_commit_preserve_static_runtime :: proc(t:^testing.T) {
+language_v10_upgrade_collision_and_deferred_commit_preserve_static_runtime :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
     f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
     cap:=lifecycle_ready(t,f)
     testing.expect_value(t,advanced_call(f,"workflow.define","v9_static_define",workflow_test_definition()).code,"ok")
     testing.expect_value(t,advanced_call(f,"workflow.run","v9_static_run",`{"run_id":"static","workflow_id":"definition","version":"1"}`).code,"ok")
-    preserved:="SELECT (SELECT json_group_array(json_array(principal_id,operation_id,input_digest,result_json)) FROM command_receipts),(SELECT json_group_array(json_array(chain_id,run_id,execution,stage_key,task_id)) FROM local_workflow_tasks),(SELECT capability_json FROM local_leases WHERE retired_seq IS NULL LIMIT 1)"
+    testing.expect_value(t,context_call(f,"chain.read","v10_context","").code,"ok")
+    preserved:="SELECT (SELECT json_group_array(json_array(chain_id,algorithm,version,source_seq,source_digest,source_count,body)) FROM local_chain_context),(SELECT json_group_array(json_array(principal_id,operation_id,input_digest,result_json)) FROM command_receipts),(SELECT json_group_array(json_array(chain_id,run_id,execution,stage_key,task_id)) FROM local_workflow_tasks),(SELECT capability_json FROM local_leases WHERE retired_seq IS NULL LIMIT 1)"
     before,read:=query(f.store.db,preserved)
     if !testing.expect(t,read && len(before)==1) do return
     close(&f.store)
     db:DB
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
     testing.expect(t,exec(db,V10_TEST_DROP))
-    prefix:=string(MIGRATION_009);prefix=prefix[:strings.index(prefix,"CREATE TABLE local_workflow_definitions")]
+    prefix:=string(MIGRATION_010);prefix=prefix[:strings.index(prefix,"CREATE TABLE local_chain_context")]
     testing.expect(t,exec(db,prefix))
-    testing.expect(t,exec(db,"UPDATE schema_migrations SET version=9;CREATE VIEW local_workflow_stage_expansions AS SELECT 1"))
+    testing.expect(t,exec(db,"UPDATE schema_migrations SET version=10;CREATE VIEW local_workflow_stage_expansions AS SELECT 1"))
     testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
     rows,_:=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT count(*) FROM sqlite_master WHERE name='local_workflow_language_runs') FROM runtime_database")
-    testing.expect(t,rows[0][0]=="9" && rows[0][1]=="9" && rows[0][2]=="0")
-    testing.expect(t,exec(db,`DROP VIEW local_workflow_stage_expansions;CREATE TABLE w10_fail(id INTEGER PRIMARY KEY);CREATE TABLE w10_ref(id INTEGER REFERENCES w10_fail(id) DEFERRABLE INITIALLY DEFERRED);CREATE TRIGGER w10_commit_fail AFTER UPDATE ON schema_migrations WHEN NEW.version=10 BEGIN INSERT INTO w10_ref VALUES(1);END;`))
+    testing.expect(t,rows[0][0]=="10" && rows[0][1]=="10" && rows[0][2]=="0")
+    rollback,valid:=query(db,preserved)
+    if testing.expect(t,valid && len(rollback)==1) { for value,i in before[0] do testing.expect_value(t,rollback[0][i],value) }
+    testing.expect(t,exec(db,`DROP VIEW local_workflow_stage_expansions;CREATE TABLE w10_fail(id INTEGER PRIMARY KEY);CREATE TABLE w10_ref(id INTEGER REFERENCES w10_fail(id) DEFERRABLE INITIALLY DEFERRED);CREATE TRIGGER w10_commit_fail AFTER UPDATE ON schema_migrations WHEN NEW.version=11 BEGIN INSERT INTO w10_ref VALUES(1);END;`))
     testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
     rows,_=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT count(*) FROM sqlite_master WHERE name='local_workflow_language_runs') FROM runtime_database")
-    testing.expect(t,rows[0][0]=="9" && rows[0][1]=="9" && rows[0][2]=="0")
+    testing.expect(t,rows[0][0]=="10" && rows[0][1]=="10" && rows[0][2]=="0")
+    rollback,valid=query(db,preserved)
+    if testing.expect(t,valid && len(rollback)==1) { for value,i in before[0] do testing.expect_value(t,rollback[0][i],value) }
     testing.expect(t,exec(db,"DROP TRIGGER w10_commit_fail"))
     testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
@@ -435,7 +440,7 @@ language_on_output_capacity_failure_is_durable_and_visible :: proc(t:^testing.T)
 }
 
 @(test)
-language_v10_upgrade_preserves_trigger_receipts_and_live_capability :: proc(t:^testing.T) {
+language_v12_upgrade_preserves_trigger_receipts_and_live_capability :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
     f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
     testing.expect_value(t,language_test_define(f,"follow",`{"schema":"workflow.v1","stages":[{"key":"follow","brief":{"goal":"Follow","acceptance":["done"]}}]}`).code,"ok")
@@ -449,32 +454,32 @@ language_v10_upgrade_preserves_trigger_receipts_and_live_capability :: proc(t:^t
     close(&f.store)
     db:DB
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    // Reconstruct the genuine V10 header and non-null workflow prerequisites.
+    // Reconstruct the genuine V11 header and non-null workflow prerequisites.
     testing.expect(t,exec(db,"CREATE TEMP TABLE saved_triggers AS SELECT * FROM local_workflow_output_triggers; DROP TABLE local_workflow_output_triggers;"))
-    m10:=string(MIGRATION_010)
+    m10:=string(MIGRATION_011)
     start:=strings.index(m10,"CREATE TABLE local_workflow_output_triggers(")
     end:=strings.index(m10,"CREATE TABLE local_workflow_registry_envelopes(")
     testing.expect(t,exec(db,m10[start:end]))
     testing.expect(t,exec(db,"INSERT INTO local_workflow_output_triggers SELECT * FROM saved_triggers; DROP TABLE saved_triggers;"))
     prefix:=m10[:strings.index(m10,"CREATE TABLE local_workflow_language_runs")]
     testing.expect(t,exec(db,prefix))
-    testing.expect(t,exec(db,"UPDATE schema_migrations SET version=10; CREATE VIEW local_workflow_output_triggers_v11 AS SELECT 1;"))
+    testing.expect(t,exec(db,"UPDATE schema_migrations SET version=11; CREATE VIEW local_workflow_output_triggers_v12 AS SELECT 1;"))
     testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
     rows,ok:=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
-    testing.expect(t,ok && rows[0][0]=="10" && rows[0][1]=="10")
+    testing.expect(t,ok && rows[0][0]=="11" && rows[0][1]=="11")
     after,checked:=query(db,preserved)
     if testing.expect(t,checked && len(after)==1) { for value,i in before[0] do testing.expect_value(t,after[0][i],value) }
-    testing.expect(t,exec(db,`DROP VIEW local_workflow_output_triggers_v11;
+    testing.expect(t,exec(db,`DROP VIEW local_workflow_output_triggers_v12;
       CREATE TABLE w11_fail(id INTEGER PRIMARY KEY);
       CREATE TABLE w11_ref(id INTEGER REFERENCES w11_fail(id) DEFERRABLE INITIALLY DEFERRED);
-      CREATE TRIGGER w11_commit_fail AFTER UPDATE ON schema_migrations WHEN NEW.version=11 BEGIN INSERT INTO w11_ref VALUES(1); END;`))
+      CREATE TRIGGER w11_commit_fail AFTER UPDATE ON schema_migrations WHEN NEW.version=12 BEGIN INSERT INTO w11_ref VALUES(1); END;`))
     testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
     rows,ok=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
-    testing.expect(t,ok && rows[0][0]=="10" && rows[0][1]=="10")
+    testing.expect(t,ok && rows[0][0]=="11" && rows[0][1]=="11")
     after,checked=query(db,preserved)
     if testing.expect(t,checked && len(after)==1) { for value,i in before[0] do testing.expect_value(t,after[0][i],value) }
     testing.expect(t,exec(db,"DROP TRIGGER w11_commit_fail"))
@@ -482,7 +487,7 @@ language_v10_upgrade_preserves_trigger_receipts_and_live_capability :: proc(t:^t
     testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     after,checked=query(f.store.db,preserved)
     if testing.expect(t,checked && len(after)==1) { for value,i in before[0] do testing.expect_value(t,after[0][i],value) }
-    testing.expect_value(t,lifecycle_call(f,lease_child(),"requirements.present","after_v11",`{"requirements_revision":"1"}`,cap).code,"ok")
+    testing.expect_value(t,lifecycle_call(f,lease_child(),"requirements.present","after_v12",`{"requirements_revision":"1"}`,cap).code,"ok")
     rows,ok=query(f.store.db,"PRAGMA foreign_key_check")
     testing.expect(t,ok && len(rows)==0)
 }

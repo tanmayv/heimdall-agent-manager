@@ -218,3 +218,5 @@ need separate validation. No native provider interrupt behavior is established.
 | Git path/ref/source validation and CAS | `src/bridge/owner_local_lifecycle.odin:19` |
 | Durable effect settlement | `src/lib/owner_local/outbox.odin:65` |
 | Immutable schema additions | `src/lib/owner_local/migration_004.sql:50` |
+
+See [Bridge-owned chain context](owner-local-context.md) for bounded summaries, exact requirements delivery, full-source paging, and the legacy overflow fix.

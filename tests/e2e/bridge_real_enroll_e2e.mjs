@@ -246,6 +246,7 @@ async function main() {
       'i=os.environ.get("HEIMDALL_AGENT_INSTANCE_ID","unknown")\n' +
       'p=' + JSON.stringify(ROOT) + '+"/"+i+".env.json"\n' +
       'open(p,"w").write(json.dumps({k:v for k,v in os.environ.items() if k.startswith("HEIMDALL_")}))\n' +
+      'open(p+".cwd","w").write(os.getcwd())\n' +
       'subprocess.run([' + JSON.stringify(process.env.HEIMDALL_E2E_CTL_BIN) + ',"start-success"])\n' +
       'print("Owner lease synthetic child ready",flush=True)\n' +
       'while True: time.sleep(1)\n', { mode: 0o700 });
@@ -322,7 +323,7 @@ c.commit()
             const reply=called.stdout.trim()?JSON.parse(called.stdout):{};
             return {status:called.status,reply,data:reply.data?.data ?? reply.data,error:called.stderr};
           };
-          return {instanceId:iid,agentId:created.data.agent_id,call,stop:async()=>{await http(hubA,'POST','/api/v1/agent-instances/'+iid+'/stop',{body:{}});await sleep(1500);}};
+          return {instanceId:iid,agentId:created.data.agent_id,call,readTaskMd:()=>fs.readFileSync(path.join(fs.readFileSync(path.join(ROOT,iid+".env.json.cwd"),"utf8"),"TASK.md"),"utf8"),stop:async()=>{await http(hubA,'POST','/api/v1/agent-instances/'+iid+'/stop',{body:{}});await sleep(1500);}};
         } : undefined,
         prepareGit: process.env.HEIMDALL_E2E_OWNER_LIFECYCLE === '1' ? (taskId, conflict=false) => {
           const repo=path.join(HOME,ownerIdForFixture('lifecycle-repo-'));

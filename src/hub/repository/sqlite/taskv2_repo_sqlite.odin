@@ -349,7 +349,7 @@ task_review_list_by_task_sqlite :: proc(ctx: rawptr, task_id: domain.Task_ID, ow
 
 chain_summary_get_sqlite :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> (domain.Chain_Summary, bool, domain.Domain_Error) {
 	impl := (^Taskchain_Repo_SQLite)(ctx)
-	stmt, err := prepare(impl, "SELECT chain_id, owner_user_id, body, line_count, version, updated_at FROM chain_summaries WHERE chain_id = ? AND owner_user_id = ?;", "chain summary lookup")
+	stmt, err := prepare(impl, "SELECT chain_id, owner_user_id, body, line_count, version, updated_at, curated_body, failure_fingerprint, curated_initialized FROM chain_summaries WHERE chain_id = ? AND owner_user_id = ?;", "chain summary lookup")
 	if err.code != .None do return domain.Chain_Summary{}, false, err
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, string(chain_id)); bind_text(stmt, 2, string(owner_user_id))
@@ -361,16 +361,21 @@ chain_summary_get_sqlite :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, ow
 		line_count = int(sqlite3_column_int64(stmt, 3)),
 		version = int(sqlite3_column_int64(stmt, 4)),
 		updated_at = column_text(stmt, 5),
+        curated_body = column_text(stmt, 6),
+        failure_fingerprint = column_text(stmt, 7),
+        curated_initialized = sqlite3_column_int64(stmt, 8) != 0,
 	}, true, domain.Domain_Error{}
 }
 
 chain_summary_save_sqlite :: proc(ctx: rawptr, summary: domain.Chain_Summary) -> (domain.Chain_Summary, bool, domain.Domain_Error) {
 	impl := (^Taskchain_Repo_SQLite)(ctx)
-	stmt, err := prepare(impl, "INSERT INTO chain_summaries (chain_id, owner_user_id, body, line_count, version, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(chain_id) DO UPDATE SET body=excluded.body, line_count=excluded.line_count, version=excluded.version, updated_at=excluded.updated_at;", "chain summary save")
+	stmt, err := prepare(impl, "INSERT INTO chain_summaries (chain_id, owner_user_id, body, line_count, version, updated_at, curated_body, failure_fingerprint, curated_initialized) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(chain_id) DO UPDATE SET body=excluded.body, line_count=excluded.line_count, version=excluded.version, updated_at=excluded.updated_at, curated_body=excluded.curated_body, failure_fingerprint=excluded.failure_fingerprint, curated_initialized=excluded.curated_initialized;", "chain summary save")
 	if err.code != .None do return domain.Chain_Summary{}, false, err
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, string(summary.chain_id)); bind_text(stmt, 2, string(summary.owner_user_id)); bind_text(stmt, 3, summary.body)
 	sqlite3_bind_int(stmt, 4, c.int(summary.line_count)); sqlite3_bind_int(stmt, 5, c.int(summary.version)); bind_text(stmt, 6, summary.updated_at)
+    bind_text(stmt, 7, summary.curated_body); bind_text(stmt, 8, summary.failure_fingerprint)
+    sqlite3_bind_int(stmt, 9, 1 if summary.curated_initialized else 0)
 	if sqlite3_step(stmt) != SQLITE_DONE do return domain.Chain_Summary{}, false, domain.domain_error(.Conflict, "chain summary could not be saved")
 	return summary, true, domain.Domain_Error{}
 }

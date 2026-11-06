@@ -101,7 +101,7 @@ and dependency retention to the existing account quota. Existing encrypted-body
 and rendered-field limits still apply. A failed expansion publishes no partial
 stage. A zero-item expansion persists an explicit marker.
 
-Schema V10 adds the language after accepted V8 grants and V9 static workflows. V11 preserves V10 evidence while allowing a null run/execution pair for ordinary task-attempt output prerequisites. Runtime
+Schema V11 adds the language after accepted V8 grants, V9 static workflows and V10 context compaction. V12 preserves V11 evidence while allowing a null run/execution pair for ordinary task-attempt output prerequisites. Runtime
 expansion and source/capability/receipt/dependency changes share the owner UoW.
 Registry preparation is a durable intent: it freezes exact encrypted/signed
 registry bytes locally before network delivery. Recovered claims reuse those

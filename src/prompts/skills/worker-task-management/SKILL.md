@@ -48,7 +48,7 @@ The Bridge writes `<run_dir>/TASK.md` before your turn. It is your authoritative
 | Rejected At The Gate | why a workflow gate rejected your previous output |
 | Merge Conflict | your finished branch did not merge; reconcile it (see §2) |
 | Brief | goal and acceptance checklist (`ham-ctl task show <id>` has the full brief) |
-| Chain Summary | done tasks (+ commit), open tasks, **dead ends from every attempt in the chain**, coordinator notes |
+| Chain Summary | done tasks (+ commit), open tasks, a bounded recent lesson projection with fetch pointers to original attempts, coordinator notes |
 | From The Tasks This One Waits For | each dependency's handoff summary, decisions, dead ends, next steps, last commit, output |
 | Resolved Inputs | the refs your brief lists in `inputs`, resolved |
 | Where You Are / Previous Attempt | VCS state; the last attempt's outcome, handoff and heartbeat note |
@@ -82,7 +82,7 @@ The tasks after yours see only their `TASK.md`. What you write here is what they
 |---|---|
 | `--summary` (line 1 = what exists now) | chain summary for **every** later task; full text to dependents and the next attempt |
 | `--decision` (repeat per item) | dependents and the next attempt |
-| `--dead-end` (repeat per item) | chain summary for every task, dependents, next attempt; never dropped for size |
+| `--dead-end` (repeat per item) | immutable handoff history; bounded summaries link to full evidence |
 | `--next-steps` | dependents and the next attempt |
 | `--output-file` | dependents (inline when small), workflow fan-out / templates |
 
@@ -111,7 +111,7 @@ The tasks after yours see only their `TASK.md`. What you write here is what they
 - A block parks the task in `backlog`; the answer arrives in `TASK.md` ("Your Block Was Answered"). `--waiting-on` is free text: `user` for the user, `task` for another task, anything else for external systems.
 
 ## 6. Fetch omitted or referenced context
-`TASK.md` is capped (~8k tokens). When it overflows, resolved inputs go first, then dependency outputs, then the previous handoff summary, then the description; each is replaced by a fetch pointer. The brief, dead ends and open findings are never dropped.
+`TASK.md` is capped (~8k tokens). When it overflows, resolved inputs go first, then dependency outputs, then the previous handoff summary, then the description; each is replaced by a fetch pointer. The brief and open findings are preserved. Historical chain lessons use a bounded recent projection; the immutable originals remain available through the supplied fetch pointers.
 ```bash
 ./bin/ham-ctl task fetch <task-id> "#123"                          # an event (integer id)
 ./bin/ham-ctl task fetch <task-id> "output:<other-task-id>"        # another task's output

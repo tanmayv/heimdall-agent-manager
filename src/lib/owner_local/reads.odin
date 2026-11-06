@@ -10,6 +10,7 @@ import contracts "odin_test:contracts"
 read_result :: proc(s:^Store,c:json.Object,payload:string,revision:i64) -> Result {
     method,chain,task:=field(c,"method"),field(c,"chain_id"),field(c,"task_id")
     p,_:=contracts.owner_parse(payload,contracts.owner_payload_kind(method))
+    if method=="context.read" do return context_history(s,chain,p)
     if method=="source.read" do return source_inventory(s,chain,field(p,"cursor"),number(field(p,"limit")))
     if method=="workflow.read" do return workflow_inventory(s,chain,field(p,"cursor"),number(field(p,"limit")),revision)
     if method=="receipt.read" {
@@ -76,6 +77,9 @@ read_result :: proc(s:^Store,c:json.Object,payload:string,revision:i64) -> Resul
         header,found:=query(s.db,"SELECT title,description FROM task_chains WHERE chain_id=?",chain)
         if !found || len(header)!=1 do return fail("invalid_scope")
         result["title"]=json.String(header[0][0]);result["description"]=json.String(header[0][1])
+        projection,ready:=context_materialize(s,chain)
+        if !ready do return fail("storage_error")
+        result["context"]=projection
         rows,ok=query(s.db,"SELECT task_id,title,revision FROM tasks WHERE chain_id=? ORDER BY task_id LIMIT ? OFFSET ?",chain,fmt.tprintf("%d",limit+1),fmt.tprintf("%d",offset))
     } else {
         header,found:=query(s.db,"SELECT title,body FROM tasks WHERE chain_id=? AND task_id=?",chain,task)

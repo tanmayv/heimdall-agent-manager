@@ -6,7 +6,7 @@ import "core:strings"
 import "core:testing"
 
 V10_TEST_DROP :: "DROP TABLE IF EXISTS local_workflow_trigger_failures; DROP TABLE IF EXISTS local_workflow_coordinators; DROP TABLE IF EXISTS local_workflow_registry_envelopes; DROP TABLE IF EXISTS local_workflow_output_triggers; DROP TABLE IF EXISTS local_workflow_outputs; DROP TABLE IF EXISTS local_workflow_language_items; DROP TABLE IF EXISTS local_workflow_stage_expansions; DROP TABLE IF EXISTS local_workflow_language_executions; DROP TABLE IF EXISTS local_workflow_language_runs;"
-V9_TEST_DROP :: V10_TEST_DROP + string(#load("migration_009_test_drop.sql"))
+V9_TEST_DROP :: "DROP TABLE IF EXISTS local_chain_context;" + V10_TEST_DROP + string(#load("migration_009_test_drop.sql"))
 SEARCH_TEST_DROP :: V9_TEST_DROP + "DROP TABLE IF EXISTS local_grant_audit; DROP TABLE IF EXISTS local_grant_policy;" + `DROP INDEX IF EXISTS local_review_holder; DROP TRIGGER IF EXISTS search_local_handoffs_insert; DROP TABLE IF EXISTS local_checkpoints; DROP TABLE IF EXISTS local_work_attempts; DROP TABLE IF EXISTS local_assignment_history; DROP TABLE IF EXISTS intent_invalidations; DROP TABLE IF EXISTS control_notices; DROP TABLE IF EXISTS local_handoffs; DROP TABLE IF EXISTS local_controls; DROP TRIGGER IF EXISTS search_insert; DROP TRIGGER IF EXISTS search_delete; DROP TRIGGER IF EXISTS search_update; DROP TRIGGER IF EXISTS search_task_chains_insert; DROP TRIGGER IF EXISTS search_task_chains_update; DROP TRIGGER IF EXISTS search_task_chains_delete; DROP TRIGGER IF EXISTS search_tasks_insert; DROP TRIGGER IF EXISTS search_tasks_update; DROP TRIGGER IF EXISTS search_tasks_delete; DROP TRIGGER IF EXISTS search_task_comments_insert; DROP TRIGGER IF EXISTS search_task_comments_update; DROP TRIGGER IF EXISTS search_task_comments_delete; DROP TRIGGER IF EXISTS search_task_requirements_insert; DROP TRIGGER IF EXISTS search_task_requirements_update; DROP TRIGGER IF EXISTS search_task_requirements_delete; DROP TRIGGER IF EXISTS search_local_submissions_insert; DROP TRIGGER IF EXISTS search_local_submissions_update; DROP TRIGGER IF EXISTS search_local_submissions_delete; DROP TABLE IF EXISTS search_fts; DROP TABLE IF EXISTS search_docs; DROP TABLE IF EXISTS task_deletions;  DROP TRIGGER IF EXISTS task_no_resurrection; DROP TRIGGER IF EXISTS receipt_scope; CREATE TRIGGER receipt_scope BEFORE INSERT ON command_receipts
 WHEN NOT EXISTS(SELECT 1 FROM task_chains WHERE chain_id=NEW.chain_id)
  OR (NEW.task_id!='' AND NOT EXISTS(SELECT 1 FROM tasks WHERE chain_id=NEW.chain_id AND task_id=NEW.task_id))
@@ -39,7 +39,7 @@ additive_migration_preserves_v1_and_rolls_back_partial_ddl :: proc(t:^testing.T)
       (SELECT title FROM task_chains),(SELECT result_json FROM command_receipts),
       (SELECT payload_json FROM runtime_intents),(SELECT state FROM runtime_intents),database_id FROM runtime_database`)
     if testing.expect(t,ok && len(rows)==1) {
-        expected:=[7]string{"11","8","1","old title","historical result","signed old payload","settled"}
+        expected:=[7]string{"12","8","1","old title","historical result","signed old payload","settled"}
         for value,i in expected do testing.expect_value(t,rows[0][i],value)
         testing.expect_value(t,len(rows[0][7]),32)
     }
@@ -427,7 +427,7 @@ v2_runtime_identity_upgrade_is_atomic_and_preserves_clocks_and_intents :: proc(t
     testing.expect_value(t,sqlite3_close(legacy),0)
     testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     rows,ok=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations),database_id,incarnation,commit_seq,clock_high_ms,directory_version,directory_hash,(SELECT body FROM tasks),(SELECT payload_json FROM runtime_intents),(SELECT state FROM runtime_intents),(SELECT attempts FROM runtime_intents),(SELECT claim_incarnation FROM runtime_intents) FROM runtime_database")
-    expected:=[13]string{"11","11","stable_database","8","5","4000","2","head","preserved body","original signed intent","pending","1","0"}
+    expected:=[13]string{"12","12","stable_database","8","5","4000","2","head","preserved body","original signed intent","pending","1","0"}
     if testing.expect(t,ok && len(rows)==1) do for value,i in expected do testing.expect_value(t,rows[0][i],value)
     testing.expect(t,!exec(f.store.db,"UPDATE runtime_database SET account_id='other'"),"rebuilt identity guard remains active")
     testing.expect(t,!exec(f.store.db,"UPDATE runtime_database SET commit_seq=0"),"rebuilt monotonic guard remains active")
@@ -465,5 +465,5 @@ v3_lifecycle_migration_preserves_live_fences_and_rolls_back_collision :: proc(t:
     replay:=lease_invoke(f,raw,"",child,3000)
     testing.expect(t,replay.code=="ok" && replay.replay && replay.body==first.body,"migration preserves exact signed capability and historical receipt")
     rows,ok=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
-    testing.expect(t,ok && rows[0][0]=="11" && rows[0][1]=="11")
+    testing.expect(t,ok && rows[0][0]=="12" && rows[0][1]=="12")
 }
