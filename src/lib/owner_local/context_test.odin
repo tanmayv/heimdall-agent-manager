@@ -19,6 +19,12 @@ context_seed_history :: proc(t:^testing.T,f:^Fixture) {
         _,ok:=query(f.store.db,"INSERT INTO local_handoffs VALUES('chain','task','author',?,'handoff','lease',?,'keep original evidence','','',?)",fmt.tprintf("handoff%d",i),summary,fmt.tprintf("%d",i+100))
         testing.expect(t,ok)
     }
+    // Colons are legal in IDs. Delimiter concatenation must not alias these
+    // two distinct primary keys into one source_ref during reconstruction.
+    for pair,i in ([2][2]string{{"a:b","c"},{"a","b:c"}}) {
+        _,ok:=query(f.store.db,"INSERT INTO task_comments(chain_id,task_id,principal_id,operation_id,body,seq) VALUES('chain','task',?,?,'distinct composite identity',?)",pair[0],pair[1],fmt.tprintf("%d",2000+i))
+        testing.expect(t,ok)
+    }
     // One huge Unicode line, with significant evidence beyond the preview.
     _,ok:=query(f.store.db,"INSERT INTO task_comments VALUES('chain','task','huge','author',?,1000)",strings.concatenate({strings.repeat("界",10000,context.temp_allocator),"TAIL_EVIDENCE"},context.temp_allocator))
     testing.expect(t,ok)
@@ -65,7 +71,9 @@ context_bounded_projection_full_retrieval_restart_and_auth :: proc(t:^testing.T)
     }
     testing.expect_value(t,len(bodies),len(expected))
     for row in expected do testing.expect(t,bodies[fmt.tprintf("%s:%s",row[0],row[1])]==row[2],fmt.tprintf("exact original %s:%s",row[0],row[1]))
-    testing.expect(t,strings.contains(bodies["comment:author:huge"],"TAIL_EVIDENCE"))
+    found_tail:=false
+    for key,value in bodies do if strings.has_prefix(key,"comment:") && strings.contains(value,"TAIL_EVIDENCE") do found_tail=true
+    testing.expect(t,found_tail)
     // A signed source mutation invalidates old cursors and updates provenance.
     p:=encode(doc(map[string]string{"title_cipher"=cipher(f,"edited"),"description_cipher"=cipher(f,"curated separate input")}))
     revisions,_:=query(f.store.db,"SELECT revision FROM task_chains WHERE chain_id='chain'")
@@ -105,7 +113,7 @@ context_write_failure_is_explicit_and_requirements_remain_exact :: proc(t:^testi
     testing.expect_value(t,field(o,"acknowledged"),"1")
     testing.expect(t,len(field(o,"chain_summary"))<=compact.MAX_BYTES && strings.contains(field(o,"context_provenance"),"source_digest"))
     count,_:=query(f.store.db,"SELECT (SELECT count(*) FROM local_handoffs),(SELECT count(*) FROM task_comments)")
-    testing.expect(t,count[0][0]=="100" && count[0][1]=="1","projection never deletes originals")
+    testing.expect(t,count[0][0]=="100" && count[0][1]=="3","projection never deletes originals")
 }
 
 @(test)

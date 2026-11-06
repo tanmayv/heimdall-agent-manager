@@ -47,7 +47,7 @@ then **Next evidence page**. The ordinary signed CLI relay accepts the same meth
 Response fields are `source_kind`, `source_ref`, `body`, `offset`, `source_seq`,
 `revision` (chain revision), `source_count` and `next_cursor` (empty at end).
 
-Concatenate chunks for each `(source_kind, source_ref)` before parsing its original
+Composite source refs are opaque JSON tuples, so legal colons in IDs cannot alias\ndifferent records. Concatenate chunks for each `(source_kind, source_ref)` before parsing its original
 JSON. Chunks contain at most 8192 source bytes and preserve UTF-8 boundaries; the
 complete response fits the existing 65536-byte encoded page budget. Reads allocate
 one source record rather than the full archive. Cursor scope binds account, chain,
