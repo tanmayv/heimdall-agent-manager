@@ -1,0 +1,24 @@
+{
+  "chain_id": "chain",
+  "owner_user_id": "native_owner",
+  "source_revision": "native_revision_7",
+  "kind": "member",
+  "records": [
+    {
+      "chain_id": "chain",
+      "agent_instance_id": "native_instance",
+      "agent_id": "native_agent",
+      "owner_user_id": "native_owner",
+      "role": "coordinator",
+      "created_at": "2026-01-01T01:02:03.120+05:30"
+    },
+    {
+      "chain_id": "chain",
+      "agent_instance_id": "",
+      "agent_id": "",
+      "owner_user_id": "native_owner",
+      "role": "worker",
+      "created_at": ""
+    }
+  ]
+}

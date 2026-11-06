@@ -69,6 +69,7 @@ export const ownerSchemas = {
   budget_activation_payload: [["source_revision", "id"], ["snapshot_digest", "hash"], ["native_cutoff", "positive"], ["local_cutoff", "counter"], ["event_count", "positive"], ["attempt_count", "counter"], ["facet_count", "counter"], ["requirements_revision", "positive"], ["configuration_revision", "positive"], ["execution", "id"], ["source_gate", "flag"], ["source_no_review", "flag"]],
   budget_state: [["attempt_no", "counter"], ["counting_attempts", "counter"], ["max_attempts", "positive"], ["last_release", "attempt_release"], ["reason", "optional"], ["source_revision", "optional"], ["requirements_revision", "counter"], ["configuration_revision", "counter"], ["execution", "id"], ["local_cutoff", "counter"]],
   fleet_policy_payload: [["body_cipher", "required_cipher"]],
+  native_metadata_read: [["source_revision", "id"], ["kind", "metadata_kind"], ["cursor", "native_cursor"], ["limit", "positive"]],
 } as const;
 export type OwnerKind = keyof typeof ownerSchemas;
 export interface OwnerGenesis {
@@ -590,6 +591,12 @@ export interface OwnerBudget_State {
 export interface OwnerFleet_Policy_Payload {
   body_cipher: string;
 }
+export interface OwnerNative_Metadata_Read {
+  source_revision: string;
+  kind: string;
+  cursor: string;
+  limit: string;
+}
 export interface OwnerDocuments {
   genesis: OwnerGenesis;
   command: OwnerCommand;
@@ -660,4 +667,5 @@ export interface OwnerDocuments {
   budget_activation_payload: OwnerBudget_Activation_Payload;
   budget_state: OwnerBudget_State;
   fleet_policy_payload: OwnerFleet_Policy_Payload;
+  native_metadata_read: OwnerNative_Metadata_Read;
 }

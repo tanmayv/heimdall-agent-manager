@@ -187,7 +187,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         }
     }
     if e:=contracts.owner_live_admit(c,g,now,revision);e!=.None do return auth_fail(e)
-    read:=method=="fleet.policy.read" || method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="history.read" || method=="history.fetch" || method=="context.read" || method=="grant.read" || method=="workflow.read" || method=="source.read" || method=="submission.read" || method=="chain.search" || method=="chain.read" || method=="task.read" || method=="receipt.read" || method=="runtime.read"
+    read:=method=="native.metadata.read" || method=="fleet.policy.read" || method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="history.read" || method=="history.fetch" || method=="context.read" || method=="grant.read" || method=="workflow.read" || method=="source.read" || method=="submission.read" || method=="chain.search" || method=="chain.read" || method=="task.read" || method=="receipt.read" || method=="runtime.read"
     if read {
         if method=="chain.search" && (kr==nil || kr.current_epoch==0) do return fail("invalid_content")
         result:Result
@@ -216,7 +216,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     body_limit,encoded_limit:=MAX_BODY,MAX_ENCODED_FIELD
     // Historical bundles carry several independently typed records. Keep a
     // separate bounded admission size; ordinary prose limits stay unchanged.
-    if method=="native.history.import" { body_limit=65536;encoded_limit=131072 }
+    if method=="native.history.import" || method=="native.metadata.import" { body_limit=65536;encoded_limit=131072 }
     for name in ([3]string{"title_cipher","body_cipher","description_cipher"}) {
         cipher:=field(p,name)
         if cipher=="" do continue
@@ -233,6 +233,10 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     next:=revision+1
     wrote:=false
     switch method {
+    case "native.metadata.import":
+        code:=native_metadata_import(s,c,body,seq)
+        if code!="ok" do return fail(code)
+        wrote=true
     case "fleet.policy.set":
         code:=fleet_policy_set(s,c,body,seq)
         if code!="ok" do return fail(code)

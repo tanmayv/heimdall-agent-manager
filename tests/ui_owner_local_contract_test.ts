@@ -188,3 +188,18 @@ test('durable fleet policy is chain scoped and signed mutation differs from read
   assert.equal(ownerPayloadKind('fleet.policy.set'), 'fleet_policy_payload');
   assert.equal(ownerPayloadKind('fleet.policy.read'), 'read_payload');
 });
+
+test('native metadata snapshots have strict chain scope and distinct read and mutation authority', () => {
+  for (const method of ['native.metadata.import', 'native.metadata.read']) {
+    const c = { ...doc('command'), method, task_id:'', expected_revision:'0' } as OwnerCommand;
+    ownerParse(JSON.stringify(c), 'command');
+    const readonly = { ...grant, task_id:'', method, can_mutate:false };
+    assert.equal(ownerLiveAdmit(c, readonly, 1000n, 1n), method === 'native.metadata.import' ? 'invalid_scope' : 'none');
+    assert.throws(() => ownerParse(JSON.stringify({ ...c, task_id:'task_1' }), 'command'));
+  }
+  const page = { source_revision:'pinned_7', kind:'member', cursor:'', limit:'100' };
+  ownerParse(JSON.stringify(page), 'native_metadata_read');
+  ownerParse(JSON.stringify({ ...page, kind:'directory' }), 'native_metadata_read');
+  for (const patch of [{ kind:'fleet' }, { limit:'101' }, { limit:'0' }, { task_id:'forged' }])
+    assert.throws(() => ownerParse(JSON.stringify({ ...page, ...patch }), 'native_metadata_read'));
+});

@@ -1107,6 +1107,19 @@ Owner_Fleet_Policy_Payload :: struct {
 owner_fields_fleet_policy_payload := [?]Owner_Field{
     {"body_cipher", "required_cipher"},
 }
+Owner_Native_Metadata_Read :: struct {
+    source_revision: string,
+    kind: string,
+    cursor: string,
+    limit: string,
+}
+@(private)
+owner_fields_native_metadata_read := [?]Owner_Field{
+    {"source_revision", "id"},
+    {"kind", "metadata_kind"},
+    {"cursor", "native_cursor"},
+    {"limit", "positive"},
+}
 owner_schema :: proc(kind: string) -> []Owner_Field {
     switch kind {
     case "genesis": return owner_fields_genesis[:]
@@ -1178,6 +1191,7 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "budget_activation_payload": return owner_fields_budget_activation_payload[:]
     case "budget_state": return owner_fields_budget_state[:]
     case "fleet_policy_payload": return owner_fields_fleet_policy_payload[:]
+    case "native_metadata_read": return owner_fields_native_metadata_read[:]
     }
     return nil
 }

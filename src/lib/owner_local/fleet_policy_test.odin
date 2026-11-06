@@ -54,7 +54,7 @@ fleet_policy_round_trip_history_cas_and_restart :: proc(t:^testing.T) {
     testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,fleet_policy_test_read(f).code,"ok")
     rows,_=query(f.store.db,"SELECT (SELECT count(*) FROM local_fleet_policy_versions),(SELECT schema_version FROM runtime_database),(SELECT version FROM schema_migrations)")
-    testing.expect_value(t,encode(rows),encode([1][3]string{{"2","17","17"}}))
+    testing.expect_value(t,encode(rows),encode([1][3]string{{"2","18","18"}}))
     testing.expect(t,!exec(f.store.db,"UPDATE local_fleet_policy_versions SET provider='other'"))
     testing.expect(t,!exec(f.store.db,"DELETE FROM local_fleet_policy_models"))
     rows,_=query(f.store.db,"PRAGMA foreign_key_check")
@@ -125,7 +125,7 @@ fleet_policy_edits_preserve_live_child_authority_and_v16_migration_rollback :: p
     db:DB
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
     prefix:=string(MIGRATION_016);prefix=prefix[:strings.index(prefix,"CREATE TABLE native_budget_baselines")]
-    testing.expect(t,exec(db,"DROP VIEW local_fleet_policy_current; DROP TABLE local_fleet_policy_models; DROP TABLE local_fleet_policy_roles; DROP TABLE local_fleet_policy_versions"))
+    testing.expect(t,exec(db,"DROP TABLE IF EXISTS native_metadata_members; DROP TABLE IF EXISTS native_metadata_directories; DROP TABLE IF EXISTS native_metadata_snapshots; DROP TABLE IF EXISTS native_metadata_origins; DROP VIEW local_fleet_policy_current; DROP TABLE local_fleet_policy_models; DROP TABLE local_fleet_policy_roles; DROP TABLE local_fleet_policy_versions"))
     testing.expect(t,exec(db,prefix))
     testing.expect(t,exec(db,"UPDATE schema_migrations SET version=16; CREATE VIEW local_fleet_policy_versions AS SELECT 1"))
     testing.expect_value(t,sqlite3_close(db),0)

@@ -88,12 +88,12 @@ Each durable field declared in the original aggregate domain structs (including 
 
 | Native field | Original source | Local status and mapping |
 | --- | --- | --- |
-| `chain_id` | `src/hub/domain/taskchain.odin:240` | **OPEN** Required native field has no complete canonical local equivalent yet. Preserve and implement before C1 closure; this is not an approved omission. |
-| `agent_instance_id` | `src/hub/domain/taskchain.odin:241` | **OPEN** Required native field has no complete canonical local equivalent yet. Preserve and implement before C1 closure; this is not an approved omission. |
-| `agent_id` | `src/hub/domain/taskchain.odin:242` | **OPEN** Required native field has no complete canonical local equivalent yet. Preserve and implement before C1 closure; this is not an approved omission. |
-| `owner_user_id` | `src/hub/domain/taskchain.odin:243` | **LOCAL** `src/lib/owner_local/schema.sql:1`. Account/owner is pinned by runtime_database. Native user IDs still need explicit preservation on legacy import; do not infer ID equivalence. |
-| `role` | `src/hub/domain/taskchain.odin:244` | **OPEN** Required native field has no complete canonical local equivalent yet. Preserve and implement before C1 closure; this is not an approved omission. |
-| `created_at` | `src/hub/domain/taskchain.odin:245` | **OPEN** Required native field has no complete canonical local equivalent yet. Preserve and implement before C1 closure; this is not an approved omission. |
+| `chain_id` | `src/hub/domain/taskchain.odin:240` | **PARTIAL** `src/lib/owner_local/migration_018.sql:73` preserves this exact native field per immutable source revision with original owner provenance and signed history. Current operational configuration/activation remains required. |
+| `agent_instance_id` | `src/hub/domain/taskchain.odin:241` | **PARTIAL** `src/lib/owner_local/migration_018.sql:73` preserves this exact native field per immutable source revision with original owner provenance and signed history. Current operational configuration/activation remains required. |
+| `agent_id` | `src/hub/domain/taskchain.odin:242` | **PARTIAL** `src/lib/owner_local/migration_018.sql:73` preserves this exact native field per immutable source revision with original owner provenance and signed history. Current operational configuration/activation remains required. |
+| `owner_user_id` | `src/hub/domain/taskchain.odin:243` | **PARTIAL** `src/lib/owner_local/migration_018.sql:73` preserves this exact native field per immutable source revision with original owner provenance and signed history. Current operational configuration/activation remains required. |
+| `role` | `src/hub/domain/taskchain.odin:244` | **PARTIAL** `src/lib/owner_local/migration_018.sql:73` preserves this exact native field per immutable source revision with original owner provenance and signed history. Current operational configuration/activation remains required. |
+| `created_at` | `src/hub/domain/taskchain.odin:245` | **PARTIAL** `src/lib/owner_local/migration_018.sql:73` preserves this exact native field per immutable source revision with original owner provenance and signed history. Current operational configuration/activation remains required. |
 
 ### Task_Dependency
 
@@ -109,15 +109,15 @@ Each durable field declared in the original aggregate domain structs (including 
 
 | Native field | Original source | Local status and mapping |
 | --- | --- | --- |
-| `directory_id` | `src/hub/domain/taskchain.odin:257` | **OPEN** Required native field has no complete canonical local equivalent yet. Preserve and implement before C1 closure; this is not an approved omission. |
-| `chain_id` | `src/hub/domain/taskchain.odin:258` | **OPEN** Required native field has no complete canonical local equivalent yet. Preserve and implement before C1 closure; this is not an approved omission. |
-| `owner_user_id` | `src/hub/domain/taskchain.odin:259` | **LOCAL** `src/lib/owner_local/schema.sql:1`. Account/owner is pinned by runtime_database. Native user IDs still need explicit preservation on legacy import; do not infer ID equivalence. |
-| `path` | `src/hub/domain/taskchain.odin:260` | **OPEN** Required native field has no complete canonical local equivalent yet. Preserve and implement before C1 closure; this is not an approved omission. |
-| `bridge_id` | `src/hub/domain/taskchain.odin:261` | **OPEN** Required native field has no complete canonical local equivalent yet. Preserve and implement before C1 closure; this is not an approved omission. |
-| `vcs_kind` | `src/hub/domain/taskchain.odin:262` | **OPEN** Required native field has no complete canonical local equivalent yet. Preserve and implement before C1 closure; this is not an approved omission. |
-| `vcs_info_json` | `src/hub/domain/taskchain.odin:263` | **OPEN** Required native field has no complete canonical local equivalent yet. Preserve and implement before C1 closure; this is not an approved omission. |
-| `created_at` | `src/hub/domain/taskchain.odin:264` | **OPEN** Required native field has no complete canonical local equivalent yet. Preserve and implement before C1 closure; this is not an approved omission. |
-| `updated_at` | `src/hub/domain/taskchain.odin:265` | **OPEN** Required native field has no complete canonical local equivalent yet. Preserve and implement before C1 closure; this is not an approved omission. |
+| `directory_id` | `src/hub/domain/taskchain.odin:257` | **PARTIAL** `src/lib/owner_local/migration_018.sql:80` preserves this exact native field per immutable source revision with original owner provenance and signed history. Current operational configuration/activation remains required. |
+| `chain_id` | `src/hub/domain/taskchain.odin:258` | **PARTIAL** `src/lib/owner_local/migration_018.sql:80` preserves this exact native field per immutable source revision with original owner provenance and signed history. Current operational configuration/activation remains required. |
+| `owner_user_id` | `src/hub/domain/taskchain.odin:259` | **PARTIAL** `src/lib/owner_local/migration_018.sql:80` preserves this exact native field per immutable source revision with original owner provenance and signed history. Current operational configuration/activation remains required. |
+| `path` | `src/hub/domain/taskchain.odin:260` | **PARTIAL** `src/lib/owner_local/migration_018.sql:80` preserves this exact native field per immutable source revision with original owner provenance and signed history. Current operational configuration/activation remains required. |
+| `bridge_id` | `src/hub/domain/taskchain.odin:261` | **PARTIAL** `src/lib/owner_local/migration_018.sql:80` preserves this exact native field per immutable source revision with original owner provenance and signed history. Current operational configuration/activation remains required. |
+| `vcs_kind` | `src/hub/domain/taskchain.odin:262` | **PARTIAL** `src/lib/owner_local/migration_018.sql:80` preserves this exact native field per immutable source revision with original owner provenance and signed history. Current operational configuration/activation remains required. |
+| `vcs_info_json` | `src/hub/domain/taskchain.odin:263` | **PARTIAL** `src/lib/owner_local/migration_018.sql:80` preserves this exact native field per immutable source revision with original owner provenance and signed history. Current operational configuration/activation remains required. |
+| `created_at` | `src/hub/domain/taskchain.odin:264` | **PARTIAL** `src/lib/owner_local/migration_018.sql:80` preserves this exact native field per immutable source revision with original owner provenance and signed history. Current operational configuration/activation remains required. |
+| `updated_at` | `src/hub/domain/taskchain.odin:265` | **PARTIAL** `src/lib/owner_local/migration_018.sql:80` preserves this exact native field per immutable source revision with original owner provenance and signed history. Current operational configuration/activation remains required. |
 
 ### Fleet_Bridge_Model
 
@@ -1622,3 +1622,76 @@ nix develop --command odin test src/contracts -collection:odin_test=src -out:$HO
 The complete retained compatibility demo above passes all steps with **exit0**, 687 log lines (`sh_b8873369578548df11b58b8ef2286ba3`). Its `HEIMDALL_E2E_OWNER_FLEET_POLICY` flag is not a harness selector: the new fleet cases are proven separately by the explicit `HEIMDALL_E2E_OWNER_FLEET_POLICY_ONLY=1` focused CLI/rendered-UI demo. No new-case coverage is inferred from the retained run. Reuse these exact passing results; do not repeat unchanged suites.
 
 Final inventory and whitespace checks pass (`sh_7624208bf3a4b867b22d4bc9a54f076e`): `python3 scripts/check-owner-aggregate-parity.py` reports240 fields/23 structs; `git diff --check` passes; explicit `git diff --exit-code HEAD --` over schema.sql and migrations002–016 confirms those files remain unchanged. No unrelated boy-scout edits were made.
+
+## C1d attempt 3 native member/directory continuation checkpoint
+
+This remains **partial C1d work**, not a submission or parity closure. Current
+member/directory configuration, the other metadata kinds, defaults, curated
+summary, brief references and aggregate activation remain required.
+
+The native source shapes are `src/hub/domain/taskchain.odin:239` and
+`src/hub/domain/taskchain.odin:256`. Native membership is keyed by
+(chain_id, agent_instance_id), not by durable agent ID
+(`src/hub/repository/sqlite/taskchain_repo_sqlite.odin:338`). The adapter retains
+an empty historical instance identity without inventing a durable replacement.
+Native directory bridge/VCS fields can be empty; all original timestamp
+spellings and nested VCS JSON strings remain exact.
+
+`src/contracts/owner_metadata.odin:7` and :15 define the ordinary source shapes;
+:36 validates every field and nested JSON without unknown-key dropping.
+`src/lib/owner_local/migration_018.sql:58` adds an explicit signed-import native
+owner linkage, immutable source manifests, and normalized member/directory rows.
+Its deferred event foreign keys bind source facts to accepted signed input.
+V1–V17 migration SQL is unchanged.
+
+`native.metadata.import` consumes an encrypted object with chain_id,
+owner_user_id, source_revision, kind (member or directory), and a records array
+of ordinary native objects. Current bounds are 49,152 plaintext bytes, 100
+records per immutable kind/source snapshot and 4,096 bytes per string before
+stricter ID/time checks (`src/contracts/owner_metadata.odin:36`, :66). Larger
+aggregate import/chunk composition remains an explicit gap, not silent
+truncation or an approved omission. A source revision/kind is pinned to exact
+input bytes; changed content conflicts. A later revision preserves the earlier
+snapshot. These imported facts do not enroll members, configure execution
+directories, resolve filesystem paths, or mint/revoke child authority
+(`src/lib/owner_local/native_metadata.odin:8`).
+
+`native.metadata.read` returns paged ordinary source rows with original owner,
+source revision, accepted sequence and record count. Its cursor binds account,
+chain, source revision, kind and content digest (:50). Later local mutations do
+not invalidate an immutable source page; changed source/kind cursors fail.
+Current common grant checks still precede every read/replay. Mutation uses chain
+CAS and commits rows, origin/manifest, event, receipt and revision atomically.
+The browser signing adapter consumes these methods
+(`src/ui/api/ownerLocalClient.ts:67`); the actual CLI relay consumes the signed
+ordinary documents in `tests/e2e/owner_local_metadata_flow.ts:5`. No new rendered
+metadata panel is claimed.
+
+Verification from the assigned Workdir:
+
+- `nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/c1d-metadata-full-a3f`
+  — 163/163 PASS, session sh_a963dc1a3b976aa880f1f26b0baee83e. Covers source
+  round-trip/history/replay/restart, scope/CAS, statement/deferred-COMMIT rollback,
+  immutable guards, pagination/revoked grants, and genuine V17 migration
+  collision/COMMIT rollback preserving live capabilities.
+- `nix develop --command odin test src/contracts -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/c1d-metadata-contracts-a3i`
+  — 25/25 PASS, sh_4f64de17ad4197ecb1f153f30ab869ec.
+- `nix develop --command node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_owner_local_contract_test.ts`
+  — 12/12 PASS in sh_a963dc1a3b976aa880f1f26b0baee83e.
+- `nix develop --command npm run typecheck` — PASS in
+  sh_5311b13e49ceec913329666810b1b5d4 and sh_08e090bd142bcbb8415b35a45c200899.
+  The latter combined shell's exit0 masked an earlier failed contract check;
+  only the standalone a3i command above establishes final contract success.
+- `nix build .#ham-bridge .#ham-hub .#ham-ctl .#ham-pty-host -o $HOME/.cache/heimdall-tests/c1d-metadata-a3-final-bins`
+  — all four PASS in sh_c93ed5813395c23c63412cee5e6775eb, before that
+  combined shell's subsequent test-only failure. Its binaries are the final
+  production-source binaries exercised below.
+- `nix develop --command env HEIMDALL_E2E_HUB_BIN=$HOME/.cache/heimdall-tests/c1d-metadata-a3-final-bins-1/bin/ham-hub HEIMDALL_E2E_BRIDGE_BIN=$HOME/.cache/heimdall-tests/c1d-metadata-a3-final-bins/bin/ham-bridge HEIMDALL_E2E_CTL_BIN=$HOME/.cache/heimdall-tests/c1d-metadata-a3-final-bins-2/bin/ham-ctl HEIMDALL_E2E_PTY_BIN=$HOME/.cache/heimdall-tests/c1d-metadata-a3-final-bins-3/bin/ham-pty-host HEIMDALL_E2E_IDENTITY_BIN=$HOME/.cache/heimdall-tests/c1c-budget-identity HEIMDALL_E2E_OWNER_LOCAL=1 HEIMDALL_E2E_OWNER_METADATA_ONLY=1 node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/bridge_real_enroll_e2e.mjs`
+  — all steps PASS exit0, sh_378e329a4268e0a0703a0db71a0f0ad4. Actual enrollment,
+  CLI relay, every native field, CAS/conflict denial, immutable paging, historical
+  signed retry, exact event input and disposable owner restart were exercised.
+
+Initial failed drafts included multiline-do syntax, a test map's stale outer
+header after insertion, a malformed test edit, missing dynamic-literal feature,
+and historical fixtures retaining new tables. Corrected tests now pass.
+No production restart, deployment or push occurred. No unrelated code cleanup.

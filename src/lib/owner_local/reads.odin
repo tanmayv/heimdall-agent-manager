@@ -10,6 +10,7 @@ import contracts "odin_test:contracts"
 read_result :: proc(s:^Store,c:json.Object,payload:string,revision:i64) -> Result {
     method,chain,task:=field(c,"method"),field(c,"chain_id"),field(c,"task_id")
     p,_:=contracts.owner_parse(payload,contracts.owner_payload_kind(method))
+    if method=="native.metadata.read" do return native_metadata_read(s,chain,p)
     if method=="fleet.policy.read" do return fleet_policy_read(s,chain,p,revision)
     if method=="native.history.read" || method=="native.history.fetch" do return native_history_read(s,c,p)
     if method=="history.read" do return event_inventory(s,chain,p)

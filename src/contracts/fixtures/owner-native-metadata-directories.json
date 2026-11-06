@@ -1,0 +1,19 @@
+{
+  "chain_id": "chain",
+  "owner_user_id": "native_owner",
+  "source_revision": "native_revision_7",
+  "kind": "directory",
+  "records": [
+    {
+      "directory_id": "native_directory",
+      "chain_id": "chain",
+      "owner_user_id": "native_owner",
+      "path": "/home/项目/é",
+      "bridge_id": "",
+      "vcs_kind": "git",
+      "vcs_info_json": "{ \"branch\": \"原始\", \"head\": \"abc123\", \"dirty\": true }",
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-02T00:00:00.000-01:00"
+    }
+  ]
+}
