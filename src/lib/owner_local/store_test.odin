@@ -123,3 +123,124 @@ reads_preserve_nul_content_and_reject_stale_cursor :: proc(t:^testing.T) {
     p=encode(doc(map[string]string{"cursor"="wrong:0","limit"="1"}))
     testing.expect_value(t,invoke(f,command(f,"task.read","cursor","task",p,"0"),p).code,"stale_cursor")
 }
+
+@(test)
+escaped_content_rejected_before_commit_when_encoded_field_is_too_large :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f);seed(t,f)
+    oversized:=strings.repeat("\x01",8192,context.temp_allocator)
+    // Each input fits the raw byte cap. JSON encoding expands it sixfold.
+    for bad_title in ([2]bool{true,false}) {
+        title:="title";body:="body"
+        if bad_title {title=oversized} else {body=oversized}
+        p:=encode(doc(map[string]string{"title_cipher"=cipher(f,title),"body_cipher"=cipher(f,body)}))
+        c:=command(f,"task.create",fmt.tprintf("oversize_%v",bad_title),"oversize",p,"2")
+        testing.expect_value(t,invoke(f,c,p).code,"invalid_content")
+    }
+    p:=encode(doc(map[string]string{"body_cipher"=cipher(f,oversized)}))
+    testing.expect_value(t,invoke(f,command(f,"task.comment","oversize_comment","task",p,"1"),p).code,"invalid_content")
+    rows,_:=query(f.store.db,"SELECT (SELECT count(*) FROM tasks),(SELECT count(*) FROM task_comments),(SELECT count(*) FROM command_receipts),(SELECT count(*) FROM local_changes),(SELECT count(*) FROM runtime_intents)")
+    counts:=[5]string{"1","0","2","2","2"}
+    for actual,i in rows[0] {
+        expected:=counts[i]
+        testing.expect_value(t,actual,expected)
+    }
+    fresh:=fixture(t);defer destroy(fresh)
+    genesis,_:=contracts.owner_parse(fresh.genesis,"genesis")
+    digest,_:=contracts.owner_digest("genesis",genesis)
+    p=encode(doc(map[string]string{"genesis_digest"=digest,"title_cipher"=cipher(fresh,"title"),"description_cipher"=cipher(fresh,oversized)}))
+    testing.expect_value(t,invoke(fresh,command(fresh,"chain.create","create","",p,"0"),p).code,"invalid_content")
+    untouched,_:=query(fresh.store.db,"SELECT (SELECT count(*) FROM task_chains),(SELECT count(*) FROM local_grants),(SELECT count(*) FROM command_receipts),(SELECT count(*) FROM runtime_intents)")
+    for count in untouched[0] do testing.expect_value(t,count,"0")
+
+}
+@(test)
+escaped_headers_and_comments_paginate_with_bounded_advancing_cursors :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f);seed(t,f)
+    escaped:=strings.repeat("\x01",2730,context.temp_allocator)
+    p:=encode(doc(map[string]string{"title_cipher"=cipher(f,escaped),"body_cipher"=cipher(f,escaped)}))
+    testing.expect_value(t,invoke(f,command(f,"task.create","escaped_task","escaped",p,"2"),p).code,"ok")
+    for i in 0..<3 {
+        body:=fmt.tprintf("%s%d",escaped,i)
+        p=encode(doc(map[string]string{"body_cipher"=cipher(f,body)}))
+        c:=command(f,"task.comment",fmt.tprintf("escaped_comment_%d",i),"escaped",p,fmt.tprintf("%d",i+1))
+        testing.expect_value(t,invoke(f,c,p).code,"ok")
+    }
+    cursor:="";total:=0;pages:=0
+    for page in 0..<5 {
+        p=encode(doc(map[string]string{"cursor"=cursor,"limit"="100"}))
+        result:=invoke(f,command(f,"task.read",fmt.tprintf("escaped_read_%d",page),"escaped",p,"0"),p)
+        if !testing.expect(t,result.code=="ok") do break
+        testing.expect(t,len(result.body)<=MAX_PAGE,"complete JSON page including framing stays bounded")
+        v,_:=json.parse_string(result.body,.JSON,true,context.temp_allocator)
+        o,_:=v.(json.Object);items,_:=o["items"].(json.Array)
+        testing.expect_value(t,field(o,"title"),escaped)
+        testing.expect_value(t,field(o,"body"),escaped)
+        next:=field(o,"next_cursor")
+        if next!="" {
+            testing.expect(t,len(items)>0,"nonterminal page contains an item")
+            testing.expect(t,next!=cursor,"follow-up cursor must advance")
+        }
+        for item in items {
+            row,_:=item.(json.Object)
+            testing.expect_value(t,field(row,"operation_id"),fmt.tprintf("escaped_comment_%d",total))
+            testing.expect_value(t,field(row,"body"),fmt.tprintf("%s%d",escaped,total))
+            total+=1
+        }
+        pages+=1;cursor=next
+        if cursor=="" do break
+    }
+    testing.expect_value(t,total,3)
+    testing.expect(t,pages>1 && cursor=="","all escaped comments are exposed exactly once across terminal pagination")
+}
+
+@(test)
+oversized_legacy_row_fails_explicitly_without_a_looping_cursor :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f);seed(t,f)
+    p:=encode(doc(map[string]string{"body_cipher"=cipher(f,"committed comment")}))
+    testing.expect_value(t,invoke(f,command(f,"task.comment","comment","task",p,"1"),p).code,"ok")
+    // Simulate an object accepted by the earlier draft, bypassing new admission.
+    oversized:=strings.repeat("\x01",8192,context.temp_allocator)
+    _,_=query(f.store.db,"UPDATE tasks SET title=?,body=? WHERE task_id='task'",oversized,oversized)
+    p=encode(doc(map[string]string{"cursor"="","limit"="100"}))
+    result:=invoke(f,command(f,"task.read","read_legacy","task",p,"0"),p)
+    testing.expect_value(t,result.code,"invalid_content")
+    testing.expect_value(t,result.body,"")
+    rows,_:=query(f.store.db,"SELECT count(*) FROM task_comments")
+    testing.expect_value(t,rows[0][0],"1")
+}
+
+@(test)
+page_limit_counts_array_and_cursor_framing_near_the_cutoff :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    // Eight near-8KiB comments approach the byte cap. Small body-size changes
+    // exercise the cutoff where omitted commas/keys/cursor would exceed it.
+    for length:=8050;length<=8150;length+=10 {
+        f:=fixture(t);defer destroy(f);seed(t,f)
+        body:=strings.repeat("q",length,context.temp_allocator)
+        for i in 0..<8 {
+            p:=encode(doc(map[string]string{"body_cipher"=cipher(f,body)}))
+            testing.expect_value(t,invoke(f,command(f,"task.comment",fmt.tprintf("framing_%d",i),"task",p,fmt.tprintf("%d",i+1)),p).code,"ok")
+        }
+        cursor:="";total:=0
+        for page in 0..<3 {
+            p:=encode(doc(map[string]string{"cursor"=cursor,"limit"="100"}))
+            result:=invoke(f,command(f,"task.read",fmt.tprintf("framing_read_%d",page),"task",p,"0"),p)
+            if !testing.expect(t,result.code=="ok" && len(result.body)<=MAX_PAGE,"entire public page must fit") do break
+            v,_:=json.parse_string(result.body,.JSON,true,context.temp_allocator)
+            o,_:=v.(json.Object);items,_:=o["items"].(json.Array)
+            next:=field(o,"next_cursor")
+            if next!="" do testing.expect(t,len(items)>0 && next!=cursor)
+            for item in items {
+                row,_:=item.(json.Object)
+                testing.expect_value(t,field(row,"operation_id"),fmt.tprintf("framing_%d",total))
+                total+=1
+            }
+            cursor=next
+            if cursor=="" do break
+        }
+        testing.expect(t,total==8 && cursor=="","follow-up page exposes all eight comments")
+    }
+}

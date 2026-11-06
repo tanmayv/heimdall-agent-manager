@@ -19,6 +19,9 @@ Store :: struct {
 SCHEMA :: #load("schema.sql")
 MAX_RECORDS :: 100000
 MAX_BODY :: 8192
+// Two fixed header fields plus one maximum-sized item must fit a page.
+// Count JSON string encoding (including quotes), not just decrypted bytes.
+MAX_ENCODED_FIELD :: 16384
 MAX_PAGE :: 65536
 Result :: struct {
     code: string,
@@ -146,6 +149,8 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         if cipher=="" do continue
         plain,opened:=vault.open(cipher,kr,context.temp_allocator)
         if opened!=.Ok || len(plain)>MAX_BODY do return fail("invalid_content")
+        encoded_field:=encode(plain)
+        if encoded_field=="" || len(encoded_field)>MAX_ENCODED_FIELD do return fail("invalid_content")
         switch name { case "title_cipher": title=plain
         case "body_cipher": body=plain
         case "description_cipher": description=plain }

@@ -66,6 +66,28 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
   await throughCli('task.comment', { taskId: cliTask, expectedRevision: '1', body: 'CLI comment' });
   const cliDetail = JSON.parse((await throughCli('task.read', { taskId: cliTask, expectedRevision: '0' })).body);
   expect(cliDetail.body === 'CLI body' && cliDetail.items.length === 1 && cliDetail.items[0].body === 'CLI comment', 'CLI chain create -> task create -> comment -> detail read all commit through real relay');
+
+  let oversizedDenied = false;
+  try {
+    await prepareOwnerOperation(session, bridgeId, 'task.create', { chainId: cliChain, taskId: ownerId('task_'), expectedRevision: '3', title: '\x01'.repeat(8192), body: '\x01'.repeat(8192) });
+  } catch { oversizedDenied = true; }
+  expect(oversizedDenied, 'browser signing flow rejects JSON-expanded oversized fields');
+  const escapedTask = ownerId('task_'), escaped = '\x01'.repeat(2730);
+  await throughCli('task.create', { taskId: escapedTask, expectedRevision: '3', title: escaped, body: escaped });
+  for (let i = 0; i < 3; i++) await throughCli('task.comment', { taskId: escapedTask, expectedRevision: String(i + 1), body: escaped + i });
+  let cursor = '', seen = 0, pages = 0;
+  do {
+    const page = await throughCli('task.read', { taskId: escapedTask, expectedRevision: '0', cursor });
+    expect(new TextEncoder().encode(page.body).length <= 65536, 'escaped read page includes framing within 64KiB');
+    const data = JSON.parse(page.body);
+    expect(data.title === escaped && data.body === escaped, 'escaped task header survives real relay');
+    for (const item of data.items) expect(item.body === escaped + seen++, 'escaped comments remain ordered across cursor pages');
+    if (data.next_cursor) expect(data.items.length > 0 && data.next_cursor !== cursor, 'real relay nonterminal cursor advances');
+    cursor = data.next_cursor;
+    pages++;
+    if (pages > 5) throw new Error('cursor failed to terminate');
+  } while (cursor);
+  expect(seen === 3 && pages > 1, 'real CLI follows escaped comment pagination to completion');
   const unsigned = { ...relay, envelope: 'not-ciphertext' };
   let rejected = false; try { const reply = await cli(unsigned); rejected = reply?.code !== 'ok'; } catch { rejected = true; }
   expect(rejected, 'CLI rejects unsigned/invalid request file');

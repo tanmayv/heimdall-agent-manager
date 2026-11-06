@@ -19,7 +19,10 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
   const { identity, chain, keyring } = session;
   const bridge = [...chain.trusted.values()].find((d) => d.kind === 'bridge' && d.row.bridge_id === bridgeId);
   if (!bridge || !chain.trusted.has(identity.deviceId) || identity.userId !== chain.userId) throw new Error('Device and owner must be currently enrolled in this account');
-  for (const text of [input.title, input.description, input.body]) if (text && new TextEncoder().encode(text).length > 8192) throw new Error('V1 fields are limited to 8192 UTF-8 bytes');
+  for (const text of [input.title, input.description, input.body]) {
+    if (text === undefined) continue;
+    if (new TextEncoder().encode(text).length > 8192 || new TextEncoder().encode(JSON.stringify(text)).length > 16384) throw new Error('V1 fields are limited to 8192 UTF-8 bytes and 16384 JSON-encoded bytes');
+  }
   const operationId = input.operationId ?? ownerId('op_');
   let genesis = '';
   let payload: Record<string, string>;

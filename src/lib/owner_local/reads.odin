@@ -43,22 +43,32 @@ read_result :: proc(s:^Store,c:json.Object,payload:string,revision:i64) -> Resul
     }
     if !ok do return fail("storage_error")
     items:=make([dynamic]json.Value,context.temp_allocator)
-    budget:=len(encode(result))
     for row,i in rows {
         if i>=int(limit) do break
         item:json.Object
         if method=="chain.read" { item=doc(map[string]string{"task_id"=row[0],"title"=row[1],"revision"=row[2]}) } else {
             item=doc(map[string]string{"operation_id"=row[0],"principal_id"=row[1],"body"=row[2],"seq"=row[3]})
         }
-        n:=len(encode(item))
-        if budget+n>MAX_PAGE do break
-        budget+=n
         append(&items,item)
+        // Reserve the full candidate JSON, including array commas, keys and a
+        // nonterminal cursor. A terminal cursor is shorter than this reservation.
+        result["items"]=json.Array(items)
+        result["next_cursor"]=json.String(fmt.tprintf("%s:%d",scope,offset+i64(len(items))))
+        candidate:=encode(result)
+        if candidate=="" || len(candidate)>MAX_PAGE {
+            ordered_remove(&items,len(items)-1)
+            break
+        }
     }
+    // Old draft data that violates admission limits fails explicitly instead
+    // of returning an empty page with the same cursor forever.
+    if len(items)==0 && len(rows)>0 do return fail("invalid_content")
     next:=""
     if len(items)<len(rows) { next=fmt.tprintf("%s:%d",scope,offset+i64(len(items))) }
     result["items"]=json.Array(items);result["next_cursor"]=json.String(next)
-    return Result{code="ok",body=encode(result)}
+    encoded:=encode(result)
+    if encoded=="" || len(encoded)>MAX_PAGE do return fail("invalid_content")
+    return Result{code="ok",body=encoded}
 }
 pending :: proc(s:^Store,limit:=20) -> (rows:[dynamic][]string,ok:bool) {
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)

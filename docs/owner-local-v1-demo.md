@@ -12,7 +12,12 @@ local grant. This UI uses the account's existing passwordless device identity.
 The panel lists protected titles even when the owner is offline. Detail reads
 then return `owner_unavailable`; there is no alternate writer or detail cache.
 Reads and comments are limited to 100 records per page and 64 KiB of JSON per
-page; each prose field is limited to 8192 UTF-8 bytes in V1. Read results include
+page, including its items/cursor JSON framing. Each prose field is limited to
+8192 UTF-8 bytes and 16384 bytes as a JSON-encoded string (including quotes).
+Oversized escaped content is rejected before commit with `invalid_content`.
+These limits leave room for a complete header and at least one maximum-size
+item on every nonterminal page. Incompatible oversized data from earlier draft
+builds fails explicitly instead of returning a non-advancing cursor. Read results include
 `next_cursor`; callers pass it in the next signed read and restart on
 `stale_cursor`. Hub listing pages use `after_chain` and `after_task` from the
 last returned entry, with at most 100 entries per request.
