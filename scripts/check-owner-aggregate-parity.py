@@ -7,6 +7,7 @@ SOURCES = (
     "src/hub/domain/taskchain.odin",
     "src/hub/domain/taskv2.odin",
     "src/hub/domain/workflow_run.odin",
+    "src/hub/domain/mixed_work.odin",
 )
 # Read-only projections are documented as such in the ledger introduction.
 PROJECTIONS = {
