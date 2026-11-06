@@ -1,5 +1,6 @@
 // Real disposable owner Bridge, signed device relay, CLI and actual PTY children.
 import { prepareOwnerOperation, ownerId, ownerRelayFile, openOwnerReply, sendOwnerOperation } from '../../src/ui/api/ownerLocalClient.ts';
+import { ownerPayloadDigest } from '../../src/ui/api/ownerLocal.ts';
 
 export async function ownerLocalWorkflowsFlow({session,bridgeId,hub,http,cli,launchChild,expect,approver,stopOwner,restartOwner,inspectHub}:any) {
   const cid=ownerId('chain_');
@@ -31,8 +32,17 @@ export async function ownerLocalWorkflowsFlow({session,bridgeId,hub,http,cli,lau
     await bind(oldTask);
     const original=input(oldTask,await revision(oldTask));
     const claimed=worker.call(original);expect(claimed.status===0,'real generation1 worker claims');
+    const oldCap=JSON.parse(claimed.data.body).capability;
+    for(const method of ['requirements.present','requirements.ack']){
+      expect(worker.call({...original,method,operation_id:ownerId('op_'),capability:oldCap,payload:JSON.stringify({requirements_revision:'1'})}).status===0,'old generation '+method);
+    }
+    const oldSubmit={...original,method:'lease.submit',operation_id:ownerId('op_'),capability:oldCap,payload:JSON.stringify({requirements_revision:'1',head:'',summary:'workflow-old-submitted-review'})};
+    expect(worker.call(oldSubmit).status===0,'real generation1 submits before retry');
+    expect(JSON.parse((await human('source.read')).body).items.some((r:any)=>r[0]==='local.review' && r[1]===oldTask && r[4]==='0'),'submitted old generation has a canonical unresolved review source');
     await mutate('workflow.retry',{run_id:'demo_run',execution:'1'},true);
     const replay=worker.call(original);expect(replay.status===0 && replay.data.replay,'old exact claim reply remains historical after retry');
+    const submitReplay=worker.call(oldSubmit);expect(submitReplay.status===0 && submitReplay.data.replay,'old exact submit reply remains historical after retry');
+    expect(worker.call({...oldSubmit,operation_id:ownerId('op_')}).status!==0,'superseded review cannot accept a fresh old submission');
     expect(worker.call({...original,operation_id:ownerId('op_'),lease_id:ownerId('lease_')}).status!==0,'old generation cannot mint fresh work');
     const fact=(episode:string,version:string,resolved:string)=>({origin_kind:'demo',origin_id:'same_origin',episode_id:episode,source_version:version,resolved,deadline_ms:'0',body:'sourceprivateneedle'});
     const action=(episode:string,version:string)=>({origin_kind:'demo',origin_id:'same_origin',episode_id:episode,source_version:version,consumer_fence_hash:'0'.repeat(64),result:'Exact source episode'});
@@ -43,6 +53,7 @@ export async function ownerLocalWorkflowsFlow({session,bridgeId,hub,http,cli,lau
     await worker.stop();await reviewer.stop();await auditor.stop();
     await stopOwner();await restartOwner();
     const cold=JSON.parse((await human('source.read')).body);
+    expect(!cold.items.some((r:any)=>r[0]==='local.review' && r[1]===oldTask),'retry atomically resolves old canonical review source across real owner restart');
     expect(cold.items.some((r:any)=>r[2]==='old' && r[4]==='1' && r[9] && r[10]==='0'),'real cold discovery retains resolved episode with pending card');
     await mutate('source.resolve',action('old','8'),true);
     const retained=JSON.parse((await human('source.read')).body);
@@ -67,12 +78,18 @@ export async function ownerLocalWorkflowsFlow({session,bridgeId,hub,http,cli,lau
       const primary=call(reviewer,'review.open',verdict,'',rrev);expect(primary.status===0,'real primary review opens');
       const role={...verdict,role:'safety'};
       const safety=call(auditor,'review.role.open',role,'',rrev);expect(safety.status===0,'real required role opens separately');
+      const sourceBefore=JSON.parse((await human('source.read')).body).items.find((r:any)=>r[0]==='local.review' && r[1]===tid && r[2]==='1');
+      expect(!!sourceBefore,'real canonical review source is available before result consumption');
       expect(call(reviewer,'review.post',verdict,JSON.parse(primary.data.body).capability,rrev).status===0,'real primary approval');
       const waiting=JSON.parse((await human('runtime.read',{taskId:tid})).body);
       expect(waiting.state[0][0]==='in_review','primary alone cannot bypass required role');
       expect(call(auditor,'review.role.post',role,JSON.parse(safety.data.body).capability,await revision(tid)).status===0,'real independent role approval');
       const done=JSON.parse((await human('runtime.read',{taskId:tid})).body);
       expect(done.state[0][0]==='done','stage gate completes before successor eligibility');
+      const consumed={origin_kind:'local.review',origin_id:tid,episode_id:'1',source_version:sourceBefore[3],consumer_fence_hash:await ownerPayloadDigest(JSON.parse(primary.data.body).capability),result:'Exact primary review outcome'};
+      await mutate('source.ack',consumed,true);
+      await mutate('source.retire',consumed,true);
+      expect(true,'real signed CLI ACK/retirement accepts exact historical consumption after completed producer advancement');
     }
     expect((await workflow()).runs[0][5]==='done','real workflow completion folds after all stages');
     await worker.stop();await reviewer.stop();await auditor.stop();
@@ -105,6 +122,9 @@ export async function ownerLocalWorkflowsFlow({session,bridgeId,hub,http,cli,lau
         await wait(()=>!!button() && !button().disabled);
         await React.act(async()=>button().click());
         await wait(()=>!!dom.window.document.querySelector('pre')?.textContent?.includes(needle));
+        // The detail arrives before perform() finishes its listing refresh.
+        // Drain that work before unmounting and restoring global window.
+        await wait(()=>!button().disabled);
         expect(dom.window.document.querySelector('pre')?.textContent?.includes(needle),'rendered production panel reads '+method+' after restart');
       }
     }finally{await React.act(async()=>root.unmount());globalThis.fetch=originalFetch;clearKeyringSession();dom.window.close();keys.forEach((k,i)=>{if(descriptors[i])Object.defineProperty(globalThis,k,descriptors[i]!);else delete(globalThis as any)[k];});}

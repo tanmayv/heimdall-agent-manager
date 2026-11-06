@@ -25,7 +25,14 @@ source_command :: proc(s:^Store,c:json.Object,body:string,seq,now:i64) -> string
         if !ok do return "storage_error"
         return "ok" if source_pin(s,c,origin,id,episode) else "storage_error"
     }
-    if len(rows)!=1 || rows[0][0]!=version do return "stale_revision"
+    if len(rows)!=1 do return "stale_revision"
+    // ACK/retirement refer to an exact committed consumption, which may predate
+    // later producer facts or resolution. They cannot advance beyond that
+    // producer; the consumption lookup below still requires its exact fence.
+    historical:=method=="source.ack" || method=="source.retire"
+    if historical {
+        if number(version)>number(rows[0][0]) do return "stale_revision"
+    } else if rows[0][0]!=version do return "stale_revision"
     switch method {
     case "source.consume":
         caps,read:=query(s.db,"SELECT capability_json FROM local_leases WHERE chain_id=? AND retired_seq IS NULL AND expires_ms>? UNION ALL SELECT capability_json FROM local_review_sessions WHERE chain_id=? AND expires_ms>?",chain,fmt.tprintf("%d",now),chain,fmt.tprintf("%d",now))

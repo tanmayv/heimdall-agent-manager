@@ -76,7 +76,7 @@ templates (`{{...}}`) and product gate stages are unsupported here. Expansion,
 initial requirements revision 1, stage/task identities, dependency edges,
 append-only workflow event, source episode, receipt and protected-title
 publication intents commit together (`src/lib/owner_local/workflows.odin:10`,
-`:43`, `:130`).
+`:43`, `:134`).
 
 Read workflows to obtain generated task IDs. For each task, assign an already
 running local worker, configure the named independent reviewer/merge policy and
@@ -88,7 +88,7 @@ There is no automatic launch or fleet scheduler in this slice.
 A task may claim or receive a switch only after its prerequisites are `done`
 with ready controls. A successful review with no merge completes the stage;
 a Git stage waits for exact durable merge settlement. The execution completes
-only when every stage completes (`src/lib/owner_local/workflows.odin:106`, `:125`).
+only when every stage completes (`src/lib/owner_local/workflows.odin:110`, `:129`).
 
 Retry advances the execution and creates fresh deterministic stage identities.
 It preserves earlier tasks, immutable outputs, source episodes and event IDs;
@@ -96,13 +96,17 @@ retires old authority; invalidates old merge intents; and queues exact-child
 checkpoint notices. A fresh old-generation command rejects. A read-authorized
 retry of an already committed operation returns its historical result marked
 as replay and grants no new authority (`src/lib/owner_local/workflows.odin:60`,
-`leases.odin:69`, `lifecycle_agent.odin:48`).
+`leases.odin:69`, `lifecycle_agent.odin:49`).
+
+Retry also resolves every obsolete generation task's canonical review producer
+inside the retry transaction. It preserves any pending card for explicit exact
+closure, and records no synthetic verdict, consumption, ACK or retirement.
 
 Read pages carry `kind: "workflow"`, `runs`, `tasks`, `events`, `revision` and
 `next_cursor`. Rows are respectively run summary, stage identity and immutable
 event identity. The panel exposes **Next workflow records**. A concurrent owner
 commit invalidates a cursor; restart the read from the first page. History is
-paginated rather than silently truncated (`src/lib/owner_local/workflows.odin:151`).
+paginated rather than silently truncated (`src/lib/owner_local/workflows.odin:155`).
 
 ## Required review pairs
 
@@ -138,7 +142,7 @@ Every required pair and the original independent reviewer must approve. A
 request for changes wins and returns work to ready. Device approval is required
 only when explicitly configured with `requires_user_approval: "1"`; otherwise
 it is optional and never replaces agent approval. Storage-read failure cannot
-waive an owed role (`src/lib/owner_local/review_roles.odin:47`, `:63`).
+waive an owed role (`src/lib/owner_local/review_roles.odin:48`, `:64`).
 
 ## Episodes, exact results and cold recovery
 
@@ -152,7 +156,7 @@ Updating that same episode requires a greater version. Once resolved, an episode
 cannot reopen; recurrence creates a different episode ID. `local.review` and
 `local.workflow` are reserved canonical producers, co-committed with new local
 submissions/review results/workflow decisions. They cannot be forged through
-`source.observe` (`src/lib/owner_local/sources.odin:11`, `:71`).
+`source.observe` (`src/lib/owner_local/sources.odin:11`, `:78`).
 
 Source actions name the exact row/version:
 
@@ -165,6 +169,12 @@ execution-capability digest. Review results automatically consume their exact
 producer version in the same transaction as the verdict and receipt. The local
 inbox intent is co-committed; replay cannot consume a second time. Human device
 facts/results do not claim to authenticate an external producer or remote child.
+
+ACK and retirement may name an exact retained consumption at an earlier version
+than the current producer, including after producer resolution. A matching
+episode/version/fence consumption is still required, and a future producer
+version rejects. Consumption, escalation and card closure continue to require
+the exact current producer version.
 
 These facts stay distinct:
 
@@ -182,7 +192,7 @@ SQLite, without an origins cache. A resolved old episode with a pending card
 survives cold restart. A newer same-origin recurrence cannot block closure of
 that old episode. Pending cards cannot be pruned as merely resolved, and their
 related receipt bodies remain pinned after delivery. Reads never imply ACK,
-consumption, retirement or closure (`src/lib/owner_local/sources.odin:127`,
+consumption, retirement or closure (`src/lib/owner_local/sources.odin:134`,
 `retention.odin:23`, `migration_008.sql`).
 
 Source reads are bounded, carry a continuation cursor, and the panel exposes

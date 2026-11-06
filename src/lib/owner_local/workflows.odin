@@ -83,6 +83,10 @@ workflow_command :: proc(s:^Store,c:json.Object,body:string,seq:i64)->string {
             command:=doc(map[string]string{"chain_id"=chain,"task_id"=row[0],"principal_id"=field(c,"principal_id"),"operation_id"=field(c,"operation_id")})
             if !control_revoke(s,command,seq,"checkpoint") do return "storage_error"
             if _,ok=query(s.db,"DELETE FROM local_checkpoints WHERE chain_id=? AND task_id=?",chain,row[0]);!ok do return "storage_error"
+            // No future verdict may complete an obsolete execution's review.
+            // Resolve its producers in this same retry transaction, preserving
+            // card identity/closure and every consumption/ACK/retirement floor.
+            if _,ok=query(s.db,"UPDATE source_episodes SET resolved=1,source_version=? WHERE chain_id=? AND origin_kind='local.review' AND origin_id=? AND resolved=0",fmt.tprintf("%d",seq),chain,row[0]);!ok do return "storage_error"
         }
         if _,ok=query(s.db,"UPDATE local_workflow_executions SET state='superseded' WHERE chain_id=? AND run_id=? AND execution=?",chain,run,rows[0][2]);!ok do return "storage_error"
         if _,ok=query(s.db,"UPDATE local_workflow_runs SET current_execution=?,revision=revision+1 WHERE chain_id=? AND run_id=?",execution,chain,run);!ok do return "storage_error"

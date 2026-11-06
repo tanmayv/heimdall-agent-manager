@@ -7,15 +7,15 @@ import "core:strings"
 import "core:testing"
 import contracts "odin_test:contracts"
 
-advanced_call :: proc(f:^Fixture,method,op,body:string,task:string="",children:[]Child=nil)->Result {
+advanced_call :: proc(f:^Fixture,method,op,body:string,task:string="",children:[]Child=nil,now:i64=1000)->Result {
     rows,ok:=query(f.store.db,"SELECT revision FROM task_chains WHERE chain_id='chain'")
     if task!="" do rows,ok=query(f.store.db,"SELECT revision FROM tasks WHERE chain_id='chain' AND task_id=?",task)
     if !ok || len(rows)!=1 do return fail("storage_error")
     p:=encode(doc(map[string]string{"body_cipher"=cipher(f,body)}))
     if method=="dependency.edit" do p=body
-    raw:=command(f,method,op,task,p,rows[0][0])
+    raw:=command(f,method,op,task,p,rows[0][0],now+1000)
     if !observe_directory(&f.store,1,"head") do return fail("invalid_scope")
-    return execute(&f.store,raw,p,f.genesis,f.creator,f.owner,1,"head",1000,&f.kr,Signer{&f.owner_priv,test_sign},{},{},children)
+    return execute(&f.store,raw,p,f.genesis,f.creator,f.owner,1,"head",now,&f.kr,Signer{&f.owner_priv,test_sign},{},{},children)
 }
 workflow_test_definition :: proc()->string {
     stages:=[2]json.Object{
