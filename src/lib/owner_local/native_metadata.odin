@@ -5,6 +5,20 @@ import "core:encoding/json"
 import "core:fmt"
 import contracts "odin_test:contracts"
 
+// One original owner spans every source kind and every task in a chain.
+// Older databases may contain history imported before origins existed; inspect
+// those immutable rows before lazily establishing the shared origin. The caller
+// owns the transaction, so a later validation or COMMIT failure rolls it back.
+native_origin_accept :: proc(s:^Store,chain,owner:string,seq:i64) -> string {
+    if !transaction_current(s.active) do return "storage_error"
+    conflicts,ok:=query(s.db,"SELECT 1 FROM native_history_records WHERE chain_id=? AND owner_user_id!=? UNION ALL SELECT 1 FROM native_metadata_origins WHERE chain_id=? AND owner_user_id!=? LIMIT 1",chain,owner,chain,owner)
+    if !ok do return "storage_error"
+    if len(conflicts)>0 do return "operation_conflict"
+    _,ok=query(s.db,"INSERT INTO native_metadata_origins(chain_id,owner_user_id,accepted_seq) SELECT ?,?,COALESCE((SELECT min(accepted_seq) FROM native_history_records WHERE chain_id=?),?) WHERE NOT EXISTS(SELECT 1 FROM native_metadata_origins WHERE chain_id=?)",chain,owner,chain,fmt.tprintf("%d",seq),chain)
+    if !ok do return "storage_error"
+    return "ok"
+}
+
 // Imports are immutable source facts. They never configure a lifecycle
 // directory, enroll a member, launch a child, or change an operational role.
 native_metadata_import :: proc(s:^Store,c:json.Object,raw:string,seq:i64) -> string {
@@ -15,6 +29,7 @@ native_metadata_import :: proc(s:^Store,c:json.Object,raw:string,seq:i64) -> str
     if bundle.chain_id!=chain do return "invalid_scope"
     source,kind,owner:=bundle.source_revision,bundle.kind,bundle.owner_user_id
     manifest:="native_metadata_snapshots"
+    if kind=="fleet" do manifest="native_fleet_snapshots"
     if len(contracts.owner_metadata_fact_fields(kind))>0 do manifest="native_fact_snapshots"
     prior,ok:=query(s.db,fmt.tprintf("SELECT content_digest FROM %s WHERE chain_id=? AND source_revision=? AND kind=?",manifest),chain,source,kind)
     if !ok do return "storage_error"
@@ -23,19 +38,18 @@ native_metadata_import :: proc(s:^Store,c:json.Object,raw:string,seq:i64) -> str
         if prior[0][0]!=digest do return "operation_conflict"
         return "ok"
     }
-    origins,read:=query(s.db,"SELECT owner_user_id FROM native_metadata_origins WHERE chain_id=?",chain)
-    if !read do return "storage_error"
-    if len(origins)>0 && origins[0][0]!=owner do return "operation_conflict"
-    count,count_ok:=query(s.db,"SELECT (SELECT count(*) FROM native_metadata_members)+(SELECT count(*) FROM native_metadata_directories)+(SELECT count(*) FROM native_metadata_snapshots)+(SELECT count(*) FROM native_fact_snapshots)+(SELECT count(*) FROM native_fact_chain)+(SELECT count(*) FROM native_fact_task)+(SELECT count(*) FROM native_fact_comment)+(SELECT count(*) FROM native_fact_summary)")
+    if code:=native_origin_accept(s,chain,owner,seq); code!="ok" do return code
+    count,count_ok:=query(s.db,"SELECT (SELECT count(*) FROM native_fleet_policies)+(SELECT count(*) FROM native_fleet_snapshots)+(SELECT count(*) FROM native_metadata_members)+(SELECT count(*) FROM native_metadata_directories)+(SELECT count(*) FROM native_metadata_snapshots)+(SELECT count(*) FROM native_fact_snapshots)+(SELECT count(*) FROM native_fact_chain)+(SELECT count(*) FROM native_fact_task)+(SELECT count(*) FROM native_fact_comment)+(SELECT count(*) FROM native_fact_summary)")
     if !count_ok do return "storage_error"
     if number(count[0][0])+i64(len(bundle.records))+1>MAX_RECORDS do return "retention_capacity"
     stamp:=fmt.tprintf("%d",seq)
-    if len(origins)==0 {
-        if _,ok=query(s.db,"INSERT INTO native_metadata_origins VALUES(?,?,?)",chain,owner,stamp); !ok do return "storage_error"
-    }
     if _,ok=query(s.db,fmt.tprintf("INSERT INTO %s VALUES(?,?,?,?,?,?,?)",manifest),chain,source,kind,owner,stamp,fmt.tprintf("%d",len(bundle.records)),digest); !ok do return "storage_error"
     for row in bundle.records {
-        if len(contracts.owner_metadata_fact_fields(kind))>0 {
+        if kind=="fleet" {
+            policy,parsed:=contracts.owner_fleet_policy_parse(encode(row))
+            if !parsed do return "invalid_content"
+            if code:=native_fleet_insert(s,source,policy);code!="ok" do return code
+        } else if len(contracts.owner_metadata_fact_fields(kind))>0 {
             code:=native_fact_insert(s,source,kind,row)
             if code!="ok" do return code
         } else if kind=="member" {
@@ -55,6 +69,7 @@ native_metadata_import :: proc(s:^Store,c:json.Object,raw:string,seq:i64) -> str
 native_metadata_read :: proc(s:^Store,chain:string,p:json.Object) -> Result {
     source,kind:=field(p,"source_revision"),field(p,"kind")
     manifest:="native_metadata_snapshots"
+    if kind=="fleet" do manifest="native_fleet_snapshots"
     fields:=contracts.owner_metadata_fact_fields(kind)
     if len(fields)>0 do manifest="native_fact_snapshots"
     snapshot,ok:=query(s.db,fmt.tprintf("SELECT owner_user_id,accepted_seq,record_count,content_digest FROM %s WHERE chain_id=? AND source_revision=? AND kind=?",manifest),chain,source,kind)
@@ -72,6 +87,7 @@ native_metadata_read :: proc(s:^Store,chain:string,p:json.Object) -> Result {
         if !contracts.owner_field_valid(after,"optional") do return fail("malformed")
     }
     table,key:="native_metadata_members","agent_instance_id"
+    if kind=="fleet" { table="native_fleet_policies";key="agent_id" }
     if kind=="directory" { table="native_metadata_directories";key="directory_id" }
     if len(fields)>0 { table=fmt.tprintf("native_fact_%s",kind);key=contracts.owner_metadata_fact_key(kind) }
     rows,read:=query(s.db,fmt.tprintf("SELECT * FROM %s WHERE chain_id=? AND source_revision=? AND (?='' OR %s>?) ORDER BY %s LIMIT ?",table,key,key),chain,source,cursor,after,fmt.tprintf("%d",number(field(p,"limit"))+1))
@@ -82,7 +98,13 @@ native_metadata_read :: proc(s:^Store,chain:string,p:json.Object) -> Result {
     for row,i in rows {
         if i>=int(number(field(p,"limit"))) do break
         record:=make(json.Object,context.temp_allocator)
-        if len(fields)>0 {
+        if kind=="fleet" {
+            policy:=native_fleet_document(row)
+            value,valid:=contracts.owner_content_document(encode(policy))
+            object,obj:=value.(json.Object)
+            if !valid || !obj do return fail("storage_error")
+            record=object
+        } else if len(fields)>0 {
             for f,i in fields {
                 switch f.kind {
                 case "integer": record[f.name]=json.Integer(number(row[2+i]))

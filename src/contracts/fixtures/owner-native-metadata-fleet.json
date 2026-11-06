@@ -1,0 +1,24 @@
+{
+  "chain_id": "chain",
+  "owner_user_id": "native_owner",
+  "source_revision": "fleet_source_7",
+  "kind": "fleet",
+  "records": [
+    {
+      "provider_profile": "profile-code",
+      "task_chain_id": "chain",
+      "agent_id": "agent:worker",
+      "capacity": 9007199254740993,
+      "min_warm": 2,
+      "idle_ttl_seconds": 600,
+      "bridge_models_json": "{ \"bridge\" : {\"provider_profile\":\"profile-alt\",\"provider\":\"codex\",\"model\":\"模型🚀\"} }",
+      "provider": "codex",
+      "model": "模型🚀",
+      "roles_json": "[ \"worker\", \"security\" ]",
+      "bridge_id": "bridge",
+      "paused_roles_json": "[\"security\"]",
+      "created_at": "2020-01-02T03:04:05.123456+05:30",
+      "updated_at": "2021-02-03T04:05:06Z"
+    }
+  ]
+}

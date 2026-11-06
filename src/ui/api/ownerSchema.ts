@@ -9,6 +9,8 @@ export const ownerSchemas = {
   task_create_payload: [["title_cipher", "required_cipher"], ["body_cipher", "required_cipher"]],
   comment_payload: [["body_cipher", "required_cipher"]],
   read_payload: [["cursor", "optional"], ["limit", "positive"]],
+  priority_payload: [["priority", "priority"]],
+  fleet_policy_source_payload: [["body_cipher", "required_cipher"], ["source_revision", "id"]],
   receipt_payload: [["operation_id", "id"]],
   relay: [["protocol_version", "version"], ["chain_id", "id"], ["bridge_id", "id"], ["request_id", "id"], ["expires_ms", "positive"], ["envelope", "relay_cipher"]],
   request: [["command", "document"], ["payload", "document"], ["genesis", "optional_document"]],
@@ -148,6 +150,13 @@ export interface OwnerComment_Payload {
 export interface OwnerRead_Payload {
   cursor: string;
   limit: string;
+}
+export interface OwnerPriority_Payload {
+  priority: string;
+}
+export interface OwnerFleet_Policy_Source_Payload {
+  body_cipher: string;
+  source_revision: string;
 }
 export interface OwnerReceipt_Payload {
   operation_id: string;
@@ -607,6 +616,8 @@ export interface OwnerDocuments {
   task_create_payload: OwnerTask_Create_Payload;
   comment_payload: OwnerComment_Payload;
   read_payload: OwnerRead_Payload;
+  priority_payload: OwnerPriority_Payload;
+  fleet_policy_source_payload: OwnerFleet_Policy_Source_Payload;
   receipt_payload: OwnerReceipt_Payload;
   relay: OwnerRelay;
   request: OwnerRequest;

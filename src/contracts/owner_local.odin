@@ -39,7 +39,7 @@ owner_hex :: proc(s: string, n: int) -> bool {
 
 owner_method_valid :: proc(s: string) -> bool {
     switch s {
-    case "native.metadata.import", "native.metadata.read", "fleet.policy.set", "fleet.policy.read", "budget.activate", "native.history.import", "native.history.read", "native.history.fetch", "attempt.read", "history.read", "history.fetch", "context.read", "grant.set", "grant.revoke", "grant.read", "grant.policy", "grant.recover", "workflow.coordinator", "workflow.cancel", "workflow.gate", "workflow.define", "workflow.run", "workflow.retry", "workflow.read", "source.observe", "source.consume", "source.ack", "source.retire", "source.resolve", "source.escalate", "source.read", "dependency.edit", "review.roles", "task.hold", "task.release", "task.cancel", "task.reopen", "task.resolve", "merge.retry", "submission.read", "chain.edit", "task.edit", "task.delete", "chain.search", "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "runtime.read", "lifecycle.configure", "requirements.edit", "review.post": return true
+    case "task.priority", "native.metadata.import", "native.metadata.read", "fleet.policy.set", "fleet.policy.read", "budget.activate", "native.history.import", "native.history.read", "native.history.fetch", "attempt.read", "history.read", "history.fetch", "context.read", "grant.set", "grant.revoke", "grant.read", "grant.policy", "grant.recover", "workflow.coordinator", "workflow.cancel", "workflow.gate", "workflow.define", "workflow.run", "workflow.retry", "workflow.read", "source.observe", "source.consume", "source.ack", "source.retire", "source.resolve", "source.escalate", "source.read", "dependency.edit", "review.roles", "task.hold", "task.release", "task.cancel", "task.reopen", "task.resolve", "merge.retry", "submission.read", "chain.edit", "task.edit", "task.delete", "chain.search", "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "runtime.read", "lifecycle.configure", "requirements.edit", "review.post": return true
     }
     return false
 }
@@ -55,7 +55,8 @@ owner_field_valid :: proc(s, kind: string) -> bool {
         return true
     case "version": return s == "1"
     case "counter", "positive": return owner_decimal_valid(s) && (kind == "counter" || s != "0")
-    case "metadata_kind": return s=="member" || s=="directory" || len(owner_metadata_fact_fields(s))>0
+    case "priority": return s=="p0" || s=="p1" || s=="p2"
+    case "metadata_kind": return s=="fleet" || s=="member" || s=="directory" || len(owner_metadata_fact_fields(s))>0
     case "native_history_kind": return s=="attempt" || s=="event" || s=="facet"
     case "native_cursor": return len(s)<=512
     case "native_actor": return s=="agent" || s=="user" || s=="hub" || s=="bridge"
@@ -104,6 +105,7 @@ owner_field_valid :: proc(s, kind: string) -> bool {
 }
 
 owner_document_valid :: proc(kind: string, o: json.Object) -> bool {
+    if kind=="fleet_policy_payload" && "source_revision" in o do return owner_document_valid("fleet_policy_source_payload",o)
     if kind=="submit_payload" && "output" in o do return owner_document_valid("submit_output_payload",o)
     schema := owner_schema(kind)
     if len(schema) == 0 || len(o) != len(schema) do return false
@@ -114,7 +116,7 @@ owner_document_valid :: proc(kind: string, o: json.Object) -> bool {
     }
     if kind == "command" {
         method, task := owner_string(o, "method"), owner_string(o, "task_id")
-        if (method == "budget.activate" || method == "native.history.import" || method == "native.history.read" || method == "native.history.fetch" || method == "attempt.read" || method == "dependency.edit" || method == "review.roles" || method == "task.hold" || method == "task.release" || method == "task.cancel" || method == "task.reopen" || method == "task.resolve" || method == "merge.retry" || method == "submission.read" || method == "task.edit" || method == "task.delete" || method == "task.create" || method == "task.comment" || method == "task.read" || method == "fleet.edit" || method == "runtime.read" || method == "lifecycle.configure" || method == "requirements.edit" || method == "review.post") != (task != "") do return false
+        if (method == "task.priority" || method == "budget.activate" || method == "native.history.import" || method == "native.history.read" || method == "native.history.fetch" || method == "attempt.read" || method == "dependency.edit" || method == "review.roles" || method == "task.hold" || method == "task.release" || method == "task.cancel" || method == "task.reopen" || method == "task.resolve" || method == "merge.retry" || method == "submission.read" || method == "task.edit" || method == "task.delete" || method == "task.create" || method == "task.comment" || method == "task.read" || method == "fleet.edit" || method == "runtime.read" || method == "lifecycle.configure" || method == "requirements.edit" || method == "review.post") != (task != "") do return false
     }
     if kind=="native_attempt" {
         ended,outcome:=owner_string(o,"ended_ms"),owner_string(o,"outcome")
@@ -182,6 +184,7 @@ owner_payload_kind :: proc(method: string) -> string {
     case "requirements.present", "requirements.ack": return "ack_payload"
     case "lease.submit": return "submit_payload"
     case "review.open", "review.post": return "review_payload"
+    case "task.priority": return "priority_payload"
     case "native.metadata.import": return "native_import_payload"
     case "native.metadata.read": return "native_metadata_read"
     case "fleet.policy.set": return "fleet_policy_payload"

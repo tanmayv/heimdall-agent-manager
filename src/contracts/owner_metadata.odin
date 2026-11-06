@@ -34,6 +34,12 @@ Owner_Metadata_Import :: struct {
 // Strict schema checks preserve native strings, including Unicode paths and
 // original timestamp spellings. Nested VCS JSON is validated but never rewritten.
 owner_metadata_record_valid :: proc(row: json.Object, kind: string) -> bool {
+    if kind=="fleet" {
+        raw,err:=json.marshal(row,allocator=context.temp_allocator)
+        if err!=nil do return false
+        _,valid:=owner_fleet_policy_parse(string(raw))
+        return valid
+    }
     if len(owner_metadata_fact_fields(kind))>0 do return owner_metadata_fact_valid(row,kind)
     fields: []string
     switch kind {
@@ -84,12 +90,15 @@ owner_metadata_import_parse :: proc(raw:string) -> (Owner_Metadata_Import,bool) 
     seen:=make(map[string]bool,context.temp_allocator)
     for item in items {
         record,valid:=item.(json.Object)
-        if !valid || !owner_metadata_record_valid(record,result.kind) ||
-            owner_string(record,"chain_id")!=result.chain_id || owner_string(record,"owner_user_id")!=result.owner_user_id { return {},false }
+        if !valid || !owner_metadata_record_valid(record,result.kind) do return {},false
+        if result.kind=="fleet" {
+            if owner_string(record,"task_chain_id")!=result.chain_id do return {},false
+        } else if owner_string(record,"chain_id")!=result.chain_id || owner_string(record,"owner_user_id")!=result.owner_user_id { return {},false }
         // Native key: (chain_id, agent_instance_id), including an empty
         // historical instance value; durable agent IDs do not replace it.
         key:=owner_string(record,"directory_id")
         if result.kind=="member" do key=owner_string(record,"agent_instance_id")
+        if result.kind=="fleet" do key=owner_string(record,"agent_id")
         if name:=owner_metadata_fact_key(result.kind); name!="" do key=owner_string(record,name)
         if key in seen do return {},false
         seen[key]=true

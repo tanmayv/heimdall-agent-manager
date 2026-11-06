@@ -5,6 +5,27 @@ import "core:testing"
 import "core:encoding/json"
 
 @(test)
+native_fleet_metadata_uses_native_policy_shape_and_pinned_source_scope :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    raw:=string(#load("fixtures/owner-native-metadata-fleet.json"))
+    bundle,ok:=owner_metadata_import_parse(raw)
+    if !testing.expect(t,ok && len(bundle.records)==1 && bundle.kind=="fleet") do return
+    testing.expect_value(t,owner_string(bundle.records[0],"model"),"模型🚀")
+    value,_:=owner_content_document(raw);root,_:=value.(json.Object)
+    original:=bundle.records[0]
+    root["records"]=json.Array{original}
+    for key,bad in (map[string]json.Value{"task_chain_id"=json.String("other"),"capacity"=json.Integer(0),"roles_json"=json.String(`["worker","worker"]`),"bridge_id"=json.String("bad/bridge")}) {
+        prior:=original[key];original[key]=bad
+        bytes,_:=json.marshal(root,allocator=context.temp_allocator)
+        _,valid:=owner_metadata_import_parse(string(bytes));testing.expect(t,!valid)
+        original[key]=prior
+    }
+    root["records"]=json.Array{original,original}
+    bytes,_:=json.marshal(root,allocator=context.temp_allocator)
+    _,valid:=owner_metadata_import_parse(string(bytes));testing.expect(t,!valid)
+}
+
+@(test)
 native_metadata_strict_source_shapes :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
     for raw in ([6]string{string(#load("fixtures/owner-native-metadata-members.json")),string(#load("fixtures/owner-native-metadata-directories.json")),string(#load("fixtures/owner-native-metadata-chain.json")),string(#load("fixtures/owner-native-metadata-task.json")),string(#load("fixtures/owner-native-metadata-comment.json")),string(#load("fixtures/owner-native-metadata-summary.json"))}) {

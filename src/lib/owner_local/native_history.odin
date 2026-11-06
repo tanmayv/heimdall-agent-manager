@@ -112,9 +112,7 @@ native_history_import :: proc(s:^Store,c:json.Object,raw:string,seq:i64)->string
     bundle,valid:=native_content_parse(raw,"native_history_bundle")
     if !valid do return "invalid_content"
     chain,task,source,owner:=field(c,"chain_id"),field(c,"task_id"),field(bundle,"source_revision"),field(bundle,"owner_user_id")
-    owners,owners_ok:=query(s.db,"SELECT 1 FROM native_history_records WHERE chain_id=? AND task_id=? AND owner_user_id!=? LIMIT 1",chain,task,owner)
-    if !owners_ok do return "storage_error"
-    if len(owners)>0 do return "operation_conflict"
+    if code:=native_origin_accept(s,chain,owner,seq); code!="ok" do return code
     count,read:=query(s.db,"SELECT count(*) FROM native_history_records")
     if !read do return "storage_error"
     if number(count[0][0])>=MAX_RECORDS do return "retention_capacity"

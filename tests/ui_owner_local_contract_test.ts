@@ -10,6 +10,28 @@ const creator: OwnerVerifiedKey = {account_id:'acct_1', principal_id:'dev_1', ke
 const bridge: OwnerVerifiedKey = {...creator,principal_id:'brg_1',key_id:'bridge_key',public_key:fixture.bridge_public_key,kind:'bridge'};
 const grant: OwnerReadGrant = {account_id:'acct_1', owner_bridge_id:'brg_1', chain_id:'chain_1',principal_id:'dev_1',key_id:'device_key',task_id:'task_1',method:'task.comment',revision:1n,expires_ms:1000000n,can_read:true,can_mutate:true,revoked:false};
 
+test('priority requires task scope, strict native enum, mutation grant and current CAS', () => {
+  const c = {...doc('command'),method:'task.priority',expected_revision:'1'} as OwnerCommand;
+  ownerParse(JSON.stringify(c),'command');
+  assert.throws(()=>ownerParse(JSON.stringify({...c,task_id:''}),'command'));
+  for(const priority of ['p0','p1','p2']) ownerParse(JSON.stringify({priority}),'priority_payload');
+  for(const priority of ['P0','p3','',0]) assert.throws(()=>ownerParse(JSON.stringify({priority}),'priority_payload'));
+  assert.throws(()=>ownerParse('{"priority":"p0","state":"ready"}','priority_payload'));
+  assert.equal(ownerLiveAdmit(c,{...grant,method:c.method,can_mutate:false},1000n,1n),'invalid_scope');
+  assert.equal(ownerLiveAdmit(c,{...grant,method:c.method},1000n,2n),'stale_revision');
+  assert.equal(ownerLiveAdmit(c,{...grant,method:c.method},1000n,1n),'none');
+});
+
+test('fleet activation accepts an explicit pinned source without broadening ordinary payloads', () => {
+  const registry=doc('registry');
+  const body_cipher=registry.chain_title_cipher || registry.task_title_cipher;
+  const payload={body_cipher,source_revision:'source_7'};
+  ownerParse(JSON.stringify(payload),'fleet_policy_source_payload');
+  ownerParse(JSON.stringify(payload),'fleet_policy_payload');
+  for(const source_revision of ['', 'bad/source']) assert.throws(()=>ownerParse(JSON.stringify({...payload,source_revision}),'fleet_policy_payload'));
+  assert.throws(()=>ownerParse(JSON.stringify({...payload,activate:'1'}),'fleet_policy_payload'));
+});
+
 test('native placement facets retain pre-grant zero without allowing zero work attempts', () => {
   const before = JSON.parse(readFileSync(new URL('../src/contracts/fixtures/owner-native-placement-pregrant.json', import.meta.url), 'utf8'));
   assert.deepEqual(JSON.parse(before.attempts), []);
@@ -201,6 +223,7 @@ test('native metadata snapshots have strict chain scope and distinct read and mu
   ownerParse(JSON.stringify(page), 'native_metadata_read');
   for (const kind of ['directory', 'chain', 'task', 'comment', 'summary'])
     ownerParse(JSON.stringify({ ...page, kind }), 'native_metadata_read');
-  for (const patch of [{ kind:'fleet' }, { limit:'101' }, { limit:'0' }, { task_id:'forged' }])
+  ownerParse(JSON.stringify({...page,kind:'fleet'}), 'native_metadata_read');
+  for (const patch of [{ kind:'unknown' }, { limit:'101' }, { limit:'0' }, { task_id:'forged' }])
     assert.throws(() => ownerParse(JSON.stringify({ ...page, ...patch }), 'native_metadata_read'));
 });

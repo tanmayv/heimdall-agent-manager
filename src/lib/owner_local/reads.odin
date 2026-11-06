@@ -98,11 +98,12 @@ read_result :: proc(s:^Store,c:json.Object,payload:string,revision:i64) -> Resul
         projection,ready:=context_materialize(s,chain)
         if !ready do return fail("storage_error")
         result["context"]=projection
-        rows,ok=query(s.db,"SELECT task_id,title,revision FROM tasks WHERE chain_id=? ORDER BY task_id LIMIT ? OFFSET ?",chain,fmt.tprintf("%d",limit+1),fmt.tprintf("%d",offset))
+        rows,ok=query(s.db,"SELECT t.task_id,t.title,t.revision,COALESCE((SELECT priority FROM local_task_priority_versions p WHERE p.chain_id=t.chain_id AND p.task_id=t.task_id ORDER BY accepted_seq DESC LIMIT 1),'p2') FROM tasks t WHERE t.chain_id=? ORDER BY t.task_id LIMIT ? OFFSET ?",chain,fmt.tprintf("%d",limit+1),fmt.tprintf("%d",offset))
     } else {
-        header,found:=query(s.db,"SELECT title,body FROM tasks WHERE chain_id=? AND task_id=?",chain,task)
+        header,found:=query(s.db,"SELECT t.title,t.body,COALESCE((SELECT priority FROM local_task_priority_versions p WHERE p.chain_id=t.chain_id AND p.task_id=t.task_id ORDER BY accepted_seq DESC LIMIT 1),'p2') FROM tasks t WHERE t.chain_id=? AND t.task_id=?",chain,task)
         if !found || len(header)!=1 do return fail("invalid_scope")
         result["title"]=json.String(header[0][0]);result["body"]=json.String(header[0][1])
+        result["priority"]=json.String(header[0][2])
         rows,ok=query(s.db,"SELECT operation_id,principal_id,body,seq FROM task_comments WHERE chain_id=? AND task_id=? ORDER BY seq LIMIT ? OFFSET ?",chain,task,fmt.tprintf("%d",limit+1),fmt.tprintf("%d",offset))
     }
     if !ok do return fail("storage_error")
@@ -110,7 +111,7 @@ read_result :: proc(s:^Store,c:json.Object,payload:string,revision:i64) -> Resul
     for row,i in rows {
         if i>=int(limit) do break
         item:json.Object
-        if method=="chain.read" { item=doc(map[string]string{"task_id"=row[0],"title"=row[1],"revision"=row[2]}) } else {
+        if method=="chain.read" { item=doc(map[string]string{"task_id"=row[0],"title"=row[1],"revision"=row[2],"priority"=row[3]}) } else {
             item=doc(map[string]string{"operation_id"=row[0],"principal_id"=row[1],"body"=row[2],"seq"=row[3]})
         }
         append(&items,item)

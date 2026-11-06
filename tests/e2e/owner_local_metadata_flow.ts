@@ -55,7 +55,39 @@ export async function ownerLocalMetadataFlow({session,bridgeId,cli,expect,stopOw
     const old=(await read(bundle.kind)).items[0];
     expect(Object.entries(bundle.records[0]).every(([key,value])=>old[key]===value),'old source '+bundle.kind+' snapshot remains exact');
   }
+  const taskId=ownerId('priority_task_');
+  await call('task.create',{taskId,expectedRevision:String(revision),title:'Priority target',body:'Operational priority'});
+  const priority=await prepare('task.priority',{taskId,expectedRevision:'1',priority:'p0'});
+  await invoke(priority);
+  expect(JSON.parse((await call('task.read',{taskId})).body).priority==='p0','signed ordinary priority update is consumed by task read');
+  expect((await invoke(priority)).replay,'priority exact retry preserves accepted receipt');
+  await denied('task.priority',{taskId,expectedRevision:'1',priority:'p1'},'stale priority CAS rejected');
+  const listed=JSON.parse((await call('chain.read')).body);
+  expect(listed.items.find((row:any)=>row.task_id===taskId)?.priority==='p0','chain listing consumes operational priority');
+  const history=JSON.parse(readFileSync(new URL('../../src/contracts/fixtures/owner-native-history.json',import.meta.url),'utf8'));
+  await denied('native.history.import',{taskId,expectedRevision:'2',body:JSON.stringify(history)},'native history rejects owner conflicting with metadata origins');
+  history.owner_user_id=members.owner_user_id;
+  for(const kind of ['attempts','events','facets']) {
+    history[kind]=JSON.stringify(JSON.parse(history[kind]).map((raw:string)=>JSON.stringify({...JSON.parse(raw),chain_id:chainId,task_id:taskId,owner_user_id:history.owner_user_id})));
+  }
+  await call('native.history.import',{taskId,expectedRevision:'2',body:JSON.stringify(history)});
+  const fleet=JSON.parse(readFileSync(new URL('../../src/contracts/fixtures/owner-fleet-policy.json',import.meta.url),'utf8'));
+  fleet.task_chain_id=chainId;
+  const fleetSource='fleet_source_7';
+  const fleetBundle={chain_id:chainId,owner_user_id:members.owner_user_id,source_revision:fleetSource,kind:'fleet',records:[fleet]};
+  let liveRevision=JSON.parse((await call('chain.read')).body).revision;
+  await call('native.metadata.import',{expectedRevision:liveRevision,body:JSON.stringify(fleetBundle)});
+  expect(JSON.parse((await call('fleet.policy.read')).body).items.length===0,'fleet source import preserves snapshot without activating operational policy');
+  const sourceFleet=await read('fleet',{nativeSourceRevision:fleetSource});
+  expect(sourceFleet.items.length===1 && Object.entries(fleet).every(([key,value])=>sourceFleet.items[0][key]===value),'fleet snapshot preserves every ordinary source field');
+  liveRevision=JSON.parse((await call('chain.read')).body).revision;
+  await denied('fleet.policy.set',{expectedRevision:liveRevision,nativeSourceRevision:fleetSource,body:JSON.stringify({...fleet,capacity:fleet.capacity+1})},'source-linked activation rejects policy drift');
+  await call('fleet.policy.set',{expectedRevision:liveRevision,nativeSourceRevision:fleetSource,body:JSON.stringify(fleet)});
+  expect(JSON.parse((await call('fleet.policy.read')).body).items[0].source_revision===fleetSource,'signed activation records pinned fleet source revision');
   await stopOwner();await restartOwner();
+  expect(JSON.parse((await call('fleet.policy.read')).body).items[0].source_revision===fleetSource,'restart preserves fleet activation provenance');
+  expect(JSON.parse((await call('task.read',{taskId})).body).priority==='p0','restart preserves operational priority');
+  expect((await invoke(priority)).replay,'priority receipt survives restart and later task revisions');
   expect((await read('directory')).items[0].vcs_info_json===directories.records[0].vcs_info_json,'restart preserves native VCS string bytes and Unicode path');
   for(const bundle of facts) {
     expect((await read(bundle.kind)).items[0].updated_at===bundle.records[0].updated_at,'restart retains exact native '+bundle.kind+' timestamp');

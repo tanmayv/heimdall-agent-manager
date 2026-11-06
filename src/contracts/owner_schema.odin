@@ -163,6 +163,22 @@ owner_fields_read_payload := [?]Owner_Field{
     {"cursor", "optional"},
     {"limit", "positive"},
 }
+Owner_Priority_Payload :: struct {
+    priority: string,
+}
+@(private)
+owner_fields_priority_payload := [?]Owner_Field{
+    {"priority", "priority"},
+}
+Owner_Fleet_Policy_Source_Payload :: struct {
+    body_cipher: string,
+    source_revision: string,
+}
+@(private)
+owner_fields_fleet_policy_source_payload := [?]Owner_Field{
+    {"body_cipher", "required_cipher"},
+    {"source_revision", "id"},
+}
 Owner_Receipt_Payload :: struct {
     operation_id: string,
 }
@@ -1131,6 +1147,8 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "task_create_payload": return owner_fields_task_create_payload[:]
     case "comment_payload": return owner_fields_comment_payload[:]
     case "read_payload": return owner_fields_read_payload[:]
+    case "priority_payload": return owner_fields_priority_payload[:]
+    case "fleet_policy_source_payload": return owner_fields_fleet_policy_source_payload[:]
     case "receipt_payload": return owner_fields_receipt_payload[:]
     case "relay": return owner_fields_relay[:]
     case "request": return owner_fields_request[:]

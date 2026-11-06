@@ -8,12 +8,15 @@ import contracts "odin_test:contracts"
 // Current policy is the newest immutable accepted version per durable agent.
 // M3 consumes this policy; existing launched-child bindings and live leases are
 // independent. As in the native upsert, editing placement never retires a lease.
-fleet_policy_set :: proc(s:^Store,c:json.Object,raw:string,seq:i64) -> string {
+fleet_policy_set :: proc(s:^Store,c:json.Object,raw:string,seq:i64,source:="") -> string {
     if !transaction_current(s.active) do return "storage_error"
     policy,valid:=contracts.owner_fleet_policy_parse(raw)
     chain:=field(c,"chain_id")
     if !valid do return "invalid_content"
     if policy.task_chain_id!=chain do return "invalid_scope"
+    if source!="" {
+        if code:=native_fleet_policy_matches(s,source,policy); code!="ok" do return code
+    }
     counts,read:=query(s.db,"SELECT count(*) FROM local_fleet_policy_versions")
     if !read do return "storage_error"
     if number(counts[0][0])>=MAX_RECORDS do return "retention_capacity"
@@ -28,6 +31,9 @@ fleet_policy_set :: proc(s:^Store,c:json.Object,raw:string,seq:i64) -> string {
       policy.bridge_models_json,policy.provider,policy.model,policy.roles_json,policy.bridge_id,
       policy.paused_roles_json,policy.created_at,policy.updated_at)
     if !ok do return "storage_error"
+    if source!="" {
+        if _,ok=query(s.db,"INSERT INTO local_fleet_policy_sources VALUES(?,?,?,?)",chain,policy.agent_id,stamp,source);!ok do return "storage_error"
+    }
     for paused in 0..=1 {
         roles,_:=contracts.owner_fleet_roles(policy.paused_roles_json if paused==1 else policy.roles_json,paused==1)
         for role in roles {
@@ -60,7 +66,7 @@ fleet_policy_read :: proc(s:^Store,chain:string,p:json.Object,revision:i64) -> R
         after=cursor[65:]
         if !contracts.owner_field_valid(after,"id") do return fail("malformed")
     }
-    rows,ok:=query(s.db,"SELECT * FROM local_fleet_policy_current WHERE chain_id=? AND agent_id>? ORDER BY agent_id LIMIT ?",chain,after,fmt.tprintf("%d",number(field(p,"limit"))+1))
+    rows,ok:=query(s.db,"SELECT p.*,COALESCE((SELECT source_revision FROM local_fleet_policy_sources s WHERE s.chain_id=p.chain_id AND s.agent_id=p.agent_id AND s.accepted_seq=p.seq),'') FROM local_fleet_policy_current p WHERE p.chain_id=? AND p.agent_id>? ORDER BY p.agent_id LIMIT ?",chain,after,fmt.tprintf("%d",number(field(p,"limit"))+1))
     if !ok do return fail("storage_error")
     result:=doc(map[string]string{"chain_id"=chain,"revision"=fmt.tprintf("%d",revision),"next_cursor"=""})
     items:=make([dynamic]json.Value,context.temp_allocator)
@@ -73,6 +79,7 @@ fleet_policy_read :: proc(s:^Store,chain:string,p:json.Object,revision:i64) -> R
         item:=make(json.Object,context.temp_allocator)
         item["policy"]=value
         item["accepted_seq"]=json.String(row[2])
+        item["source_revision"]=json.String(row[15])
         append(&items,item)
         result["items"]=json.Array(items)
         result["next_cursor"]=json.String(fmt.tprintf("%s:%s",scope,row[1]))
