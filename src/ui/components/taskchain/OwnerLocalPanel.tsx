@@ -20,6 +20,11 @@ export default function OwnerLocalPanel({ onClose, initialChainId = "", initialB
   const [attempt, setAttempt] = useState(initialSubmissionAttempt ?? '1');
   const [head, setHead] = useState('');
   const [verdict, setVerdict] = useState<'approve' | 'request_changes'>('approve');
+  const [grantPrincipal, setGrantPrincipal] = useState('');
+  const [grantExpires, setGrantExpires] = useState(() => String(Date.now() + 86400000));
+  const [grantCanMutate, setGrantCanMutate] = useState(false);
+  const [recoveryEnabled, setRecoveryEnabled] = useState(false);
+  const [policyRevision, setPolicyRevision] = useState('1');
   const [revision, setRevision] = useState('0');
   const [listing, setListing] = useState<any[]>([]);
   const [detail, setDetail] = useState<any>(null);
@@ -50,15 +55,15 @@ export default function OwnerLocalPanel({ onClose, initialChainId = "", initialB
     }));
     if (getKeyringSession() === before) setListing(visible);
   }
-  async function perform(method: 'task.hold' | 'task.release' | 'task.cancel' | 'task.reopen' | 'task.resolve' | 'merge.retry' | 'submission.read' | 'chain.edit' | 'task.edit' | 'task.delete' | 'chain.search' | 'chain.create' | 'task.create' | 'task.comment' | 'chain.read' | 'task.read' | 'fleet.edit' | 'runtime.read' | 'lifecycle.configure' | 'requirements.edit' | 'review.post', target?: { taskId: string; attempt: string; offset?: string }) {
+  async function perform(method: 'grant.set' | 'grant.revoke' | 'grant.read' | 'grant.policy' | 'grant.recover' | 'task.hold' | 'task.release' | 'task.cancel' | 'task.reopen' | 'task.resolve' | 'merge.retry' | 'submission.read' | 'chain.edit' | 'task.edit' | 'task.delete' | 'chain.search' | 'chain.create' | 'task.create' | 'task.comment' | 'chain.read' | 'task.read' | 'fleet.edit' | 'runtime.read' | 'lifecycle.configure' | 'requirements.edit' | 'review.post', target?: { taskId?: string; attempt?: string; offset?: string; grantCursor?: string }) {
     const s = await current(); const before = getKeyringSession();
     const cid = method === 'chain.create' ? ownerId('chain_') : chainId;
     const tid = target?.taskId ?? (method === 'task.create' ? ownerId('task_') : (['task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'task.edit', 'task.delete', 'task.comment', 'task.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post'].includes(method) ? taskId : ''));
-    const op = await prepareOwnerOperation(s, bridge, method, { chainId: cid, taskId: tid, expectedRevision: method === "chain.create" || (method.endsWith(".read") || method === "chain.search") ? "0" : revision, title, body, query: body, description: body, enabled, instanceId, configurationRevision: configRevision, lifecycleConfig: method === 'lifecycle.configure' ? JSON.parse(lifecycleConfig) : undefined, requirementsRevision, attempt: target?.attempt ?? attempt, offset: target?.offset, head, verdict });
+    const op = await prepareOwnerOperation(s, bridge, method, { chainId: cid, taskId: tid, expectedRevision: method === "chain.create" || (method.endsWith(".read") || method === "chain.search") ? "0" : revision, title, body, query: body, description: body, enabled, instanceId, configurationRevision: configRevision, lifecycleConfig: method === 'lifecycle.configure' ? JSON.parse(lifecycleConfig) : undefined, requirementsRevision, attempt: target?.attempt ?? attempt, offset: target?.offset, cursor: target?.grantCursor, head, verdict, grantPrincipal, grantExpiresMs: grantExpires, grantCanMutate, recoveryEnabled, policyRevision });
     setPending(op); setChainId(cid); if (tid) setTaskId(tid);
     const result = await sendOwnerOperation(s, op, (relay) => cookieMutation('/api/v1/owner-local/relay', 'POST', relay));
     if (getKeyringSession() !== before) return;
-    const data = JSON.parse(result.body); setDetail(data); setRevision(data.revision ?? '0'); if (data.attempt) setAttempt(data.attempt); await list();
+    const data = JSON.parse(result.body); setDetail(data); setRevision(data.revision ?? '0'); if (data.attempt) setAttempt(data.attempt); if (data.policy_revision !== undefined) { setPolicyRevision(String(BigInt(data.policy_revision) + 1n)); setRecoveryEnabled(data.recovery_enabled === '1'); } await list();
   }
   async function retry() {
     if (!pending) return;
@@ -90,6 +95,20 @@ export default function OwnerLocalPanel({ onClose, initialChainId = "", initialB
       <select data-debug-id="owner-local-verdict" aria-label="Human verdict" className={inputClass} value={verdict} onChange={(e) => setVerdict(e.target.value as 'approve' | 'request_changes')}><option value="approve">Approve</option><option value="request_changes">Request changes</option></select>
       <textarea data-debug-id="owner-local-body" aria-label="Body or comment" placeholder="Description, task body, or comment" className={inputClass} value={body} onChange={(e) => setBody(e.target.value)} />
     </div>
+    <fieldset className="border border-subtle p-3 my-3">
+      <legend>Chain device access</legend>
+      <p>The creator administers access. Recovery requires the currently enrolled paired root and an enabled policy. Grants expire within 30 days. Revocation stops future owner requests; it cannot erase previously decrypted copies.</p>
+      <select data-debug-id="owner-local-grant-principal" aria-label="Grant recipient" className={inputClass} value={grantPrincipal} onChange={(e) => setGrantPrincipal(e.target.value)}>
+        <option value="">Choose enrolled browser</option>
+        {session && [...session.chain.trusted.values()].filter((d) => d.kind === 'browser').map((d) => <option key={d.device_id} value={d.device_id}>{d.device_id}</option>)}
+      </select>
+      <input data-debug-id="owner-local-grant-principal-id" aria-label="Recipient device ID including revoked devices" placeholder="Recipient device ID (revoke removed devices)" className={inputClass} value={grantPrincipal} onChange={(e) => setGrantPrincipal(e.target.value)} />
+      <input data-debug-id="owner-local-grant-expires" aria-label="Grant expiry Unix milliseconds" className={inputClass} value={grantExpires} onChange={(e) => setGrantExpires(e.target.value)} />
+      <label><input data-debug-id="owner-local-grant-write" type="checkbox" checked={grantCanMutate} onChange={(e) => setGrantCanMutate(e.target.checked)} />Allow chain mutations</label>
+      <label><input data-debug-id="owner-local-recovery-enabled" type="checkbox" checked={recoveryEnabled} onChange={(e) => setRecoveryEnabled(e.target.checked)} />Enable paired-root recovery policy</label>
+      <input data-debug-id="owner-local-policy-revision" aria-label="Next recovery policy revision" className={inputClass} value={policyRevision} onChange={(e) => setPolicyRevision(e.target.value)} />
+      {(['grant.read', 'grant.set', 'grant.revoke', 'grant.policy', 'grant.recover'] as const).map((method) => <button key={method} data-debug-id={'owner-local-' + method.replace('.', '-')} disabled={busy || !bridge} onClick={() => void run(() => perform(method))}>{{'grant.read':'Read grants and policy','grant.set':'Save device grant','grant.revoke':'Revoke device grant','grant.policy':'Save recovery policy','grant.recover':'Recover access as paired root'}[method]}</button>)}
+    </fieldset>
     <div className="flex flex-wrap gap-3">
       {(['task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'chain.edit', 'task.edit', 'task.delete', 'chain.search', 'chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post'] as const).map((method) => <button key={method} data-debug-id={'owner-local-' + method.replace('.', '-')} disabled={busy || !bridge} onClick={() => void run(() => perform(method))}>{{ 'task.hold': 'Hold task', 'task.release': 'Release hold', 'task.cancel': 'Cancel task', 'task.reopen': 'Reopen task', 'task.resolve': 'Resolve human block', 'merge.retry': 'Retry unchanged merge', 'submission.read': 'Read submission attempt', 'chain.edit': 'Edit chain', 'task.edit': 'Edit task', 'task.delete': 'Delete unstarted task', 'chain.search': 'Search chain', 'chain.create': 'Create chain', 'task.create': 'Create task', 'task.comment': 'Add comment', 'chain.read': 'Read chain', 'task.read': 'Read task', 'fleet.edit': 'Assign local instance', 'runtime.read': 'Read runtime', 'lifecycle.configure': 'Configure review and merge', 'requirements.edit': 'Save requirements', 'review.post': 'Record human verdict' }[method]}</button>)}
       <button data-debug-id="owner-local-list" disabled={busy} onClick={() => void run(list)}>Refresh listing</button>
@@ -109,6 +128,7 @@ export default function OwnerLocalPanel({ onClose, initialChainId = "", initialB
     </div>
     {error && <p role="alert">{error}</p>}
     <ul>{listing.map((r) => <li key={r.chain_id + r.task_id}><button data-debug-id={'owner-local-select-' + r.chain_id + r.task_id} onClick={() => {setChainId(r.chain_id);setTaskId(r.task_id);setBridge(r.owner_bridge_id);setRevision('0');setDetail(null);}}>{r.title} — {r.online ? 'owner online' : 'owner offline; details unavailable'}</button></li>)}</ul>
+    {detail?.grants && detail.next_cursor && <button data-debug-id="owner-local-grant-next" disabled={busy} onClick={() => void run(() => perform('grant.read', {grantCursor: detail.next_cursor}))}>Next grants page</button>}
     {detail?.kind === 'submission' && <h3>Submission attempt {detail.attempt} (historical output)</h3>}
     {detail?.kind === 'submission' && detail.next_offset && <button data-debug-id="owner-local-submission-next" onClick={() => void run(() => perform('submission.read', { taskId: detail.task_id, attempt: detail.attempt, offset: detail.next_offset }))}>Next summary page</button>}
     {detail?.hits?.filter((hit: any) => hit.kind === 'output').map((hit: any) => <button key={hit.object_id} data-debug-id={'owner-local-output-' + hit.object_id} onClick={() => void run(() => perform('submission.read', { taskId: hit.task_id, attempt: hit.attempt }))}>Read submission attempt {hit.attempt}</button>)}

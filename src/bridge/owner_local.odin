@@ -143,7 +143,15 @@ bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
             proof=bridge_owner_config_proof(&bridge_owner_store,p,contracts.owner_string(command,"chain_id"),contracts.owner_string(command,"task_id"))
         }
     }
-    result:=owner.execute(&bridge_owner_store,command_raw,payload,genesis_raw,key,owner_key,version,head,now,&kr,owner.Signer{nil,bridge_owner_sign},fleet_child,proof)
+    grant_proof:=owner.Grant_Proof{root=floor.root}
+    method:=contracts.owner_string(command,"method")
+    if method=="grant.set" || method=="grant.recover" {
+        if p,ok:=contracts.owner_parse(payload,"grant_payload");ok {
+            target,_,target_version,target_head,target_ok:=owner.verify_directory(bridge_owner_json(wire.directory),account,bridge_config.daemon_id,owner_pub,contracts.owner_string(p,"principal_id"),contracts.owner_string(p,"key_id"),floor.root,version,head,&kr)
+            if target_ok && target_version==version && target_head==head do grant_proof.target=target
+        }
+    }
+    result:=owner.execute(&bridge_owner_store,command_raw,payload,genesis_raw,key,owner_key,version,head,now,&kr,owner.Signer{nil,bridge_owner_sign},fleet_child,proof,grant_proof)
     sync.mutex_unlock(&bridge_local_token_mutex)
     sync.mutex_unlock(&bridge_startup_io_mutex)
     digest,_:=contracts.owner_digest("command",command)

@@ -136,7 +136,7 @@ controls_v6_upgrade_collision_and_commit_rollback_preserve_live_fences :: proc(t
     close(&f.store)
     db:DB
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    testing.expect(t,exec(db,"DROP INDEX IF EXISTS local_review_holder; DROP TRIGGER search_local_handoffs_insert; DROP TABLE local_checkpoints; DROP TABLE local_work_attempts; DROP TABLE local_assignment_history; DROP TABLE intent_invalidations; DROP TABLE control_notices; DROP TABLE local_handoffs; DROP TABLE local_controls;"))
+    testing.expect(t,exec(db,"DROP TABLE IF EXISTS local_grant_audit; DROP TABLE IF EXISTS local_grant_policy; DROP INDEX IF EXISTS local_review_holder; DROP TRIGGER search_local_handoffs_insert; DROP TABLE local_checkpoints; DROP TABLE local_work_attempts; DROP TABLE local_assignment_history; DROP TABLE intent_invalidations; DROP TABLE control_notices; DROP TABLE local_handoffs; DROP TABLE local_controls;"))
     prefix:=string(MIGRATION_006)
     prefix=prefix[:strings.index(prefix,"DROP TRIGGER search_local_submissions_insert;")]
     testing.expect(t,exec(db,prefix))
@@ -159,7 +159,7 @@ controls_v6_upgrade_collision_and_commit_rollback_preserve_live_fences :: proc(t
     testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     rows,_=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT count(*) FROM local_assignment_history),(SELECT count(*) FROM local_leases WHERE retired_seq IS NULL) FROM runtime_database")
-    testing.expect(t,rows[0][0]=="7" && rows[0][1]=="7" && rows[0][2]=="1" && rows[0][3]=="1")
+    testing.expect(t,rows[0][0]=="8" && rows[0][1]=="8" && rows[0][2]=="1" && rows[0][3]=="1")
     testing.expect_value(t,lifecycle_call(f,lease_child(),"requirements.present","after_upgrade",`{"requirements_revision":"1"}`,cap).code,"ok")
 }
 @(test)

@@ -136,3 +136,19 @@ actual HTTP owner publication/relay and the rendered production panel. Exact run
 results and commit are recorded in the remediation task's submission; independent
 named review remains required. This follow-up does not dispose of C1–C3 or mark
 the overall Bridge-owned product complete.
+
+## C2 device-grant remediation follow-up
+
+Task `task_18e569e4750fe9fd` adds signed chain-scoped device grant set/revoke/read,
+explicit versioned recovery-policy opt-in, and paired-root-only recovery. The
+owner verifies current signer and target enrollment against its durable root
+and directory pin, and applies expiry/revocation before historical replies or
+search. Delegated writers cannot administer grants. New content grants have a
+30-day maximum; upgrading V7 bounds legacy grants and leaves recovery disabled.
+
+See [owner-local-grants.md](../owner-local-grants.md) for the UI/CLI flow, exact
+authority matrix, safe refusal when root/policy is unavailable, migration
+semantics, offline revocation limits and irreversible decrypted-copy limits.
+Immutable signed grant audit records commit with grants and receipts. Recovery
+does not alter creator/genesis/owner. C1/C3 and whole-product migration gates
+remain separate; independent named review is required for this remediation.

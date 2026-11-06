@@ -34,6 +34,9 @@ export const ownerSchemas = {
   switch_payload: [["requirements_revision", "positive"], ["summary", "document"], ["next_steps", "optional_document"], ["destination_chain_id", "id"], ["destination_task_id", "id"], ["destination_revision", "positive"], ["destination_configuration_revision", "positive"], ["destination_requirements_revision", "positive"], ["destination_lease_id", "id"]],
   checkpoint_payload: [["requirements_revision", "positive"], ["attempt", "positive"], ["head", "optional_commit"], ["summary", "document"], ["next_steps", "optional_document"]],
   merge_retry_payload: [["attempt", "positive"], ["requirements_revision", "positive"], ["head", "optional_commit"], ["configuration_revision", "positive"], ["body_cipher", "required_cipher"]],
+  grant_payload: [["principal_id", "id"], ["key_id", "id"], ["expires_ms", "positive"], ["can_read", "flag"], ["can_mutate", "flag"]],
+  grant_revoke_payload: [["principal_id", "id"], ["key_id", "id"]],
+  grant_policy_payload: [["policy_revision", "positive"], ["recovery_enabled", "flag"]],
 } as const;
 export type OwnerKind = keyof typeof ownerSchemas;
 export interface OwnerGenesis {
@@ -309,6 +312,21 @@ export interface OwnerMerge_Retry_Payload {
   configuration_revision: string;
   body_cipher: string;
 }
+export interface OwnerGrant_Payload {
+  principal_id: string;
+  key_id: string;
+  expires_ms: string;
+  can_read: string;
+  can_mutate: string;
+}
+export interface OwnerGrant_Revoke_Payload {
+  principal_id: string;
+  key_id: string;
+}
+export interface OwnerGrant_Policy_Payload {
+  policy_revision: string;
+  recovery_enabled: string;
+}
 export interface OwnerDocuments {
   genesis: OwnerGenesis;
   command: OwnerCommand;
@@ -344,4 +362,7 @@ export interface OwnerDocuments {
   switch_payload: OwnerSwitch_Payload;
   checkpoint_payload: OwnerCheckpoint_Payload;
   merge_retry_payload: OwnerMerge_Retry_Payload;
+  grant_payload: OwnerGrant_Payload;
+  grant_revoke_payload: OwnerGrant_Revoke_Payload;
+  grant_policy_payload: OwnerGrant_Policy_Payload;
 }
