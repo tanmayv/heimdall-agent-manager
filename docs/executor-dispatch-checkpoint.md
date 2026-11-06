@@ -144,3 +144,135 @@ No unrelated cleanup was included. This is a bounded recovery correction;
 production owner reconciliation/global manual-warm admission, physical renewal,
 encrypted delivery, real provider/platform evidence and independent acceptance
 remain required. M3 is not submitted as complete.
+
+
+## Continuation: owner execution journal (V25)
+
+This scoped continuation adds the durable owner-side core. **It does not mount
+production remote assignment, remote transport or global launch admission.**
+Coordinator approval: `msg_18e59842a4bf3905`.
+
+The owner persists the original signed prepare and lease command before remote
+I/O. It binds them to the accepted exact assignment history and revalidates that
+assignment and normal owner lease guards before grant. A verified current host
+receipt allows an atomic owner transaction containing the normal lease grant,
+its event/receipt, the verified reservation and the signed activation outbox
+intent. Nested lease admission uses an owner savepoint; failure of the outer
+COMMIT rolls every effect back. The prepared absolute hard deadline is retained
+when admission happens later.
+
+A historical prepare replay cannot admit a lease by itself. Recovery requires a
+fresh signed query proving the same exact reservation is still prepared. Owner
+restart keeps the saved identities and produces an activation bound to the new
+owner incarnation; committed replay returns historical bytes without a second
+grant or intent. Bounded preparation enumeration exposes only saved documents.
+The fresh owner fence helper checks the exact claimed outbox target, payload,
+reservation, lease, deadline version, current assignment and task revision.
+
+Uncommitted expired preparations are retired by the ordinary Bridge maintenance
+worker. They create no lease or work attempt, and do not refund execution-device
+resources. The execution Bridge independently expires its own prepared charge.
+The owner production signer explicitly accepts only `executor.prepare` and
+`executor.action` resource domains, retains preloaded-key-only behavior and does
+not accept executor capacity policy signing.
+
+V25 uses the existing strict executor and owner wire contracts. It adds an
+owner-local durable schema, not a new Hub task field or public wire method.
+Old migrations are unchanged. Existing migration fixtures remove the new table
+when reconstructing historical databases and expect current schema25. The rich
+V23 collision test keeps its genuine historical version24 failure gate. The new
+V24 test verifies identity/content preservation and complete rollback of the
+runtime table and journal DDL on collision.
+
+### Source anchors
+
+- Persist signed preparation: `src/lib/owner_local/execution.odin:53`.
+- Verified receipt, atomic grant and activation: `src/lib/owner_local/execution.odin:129`.
+- Historical prepare requires fresh exact query: `src/lib/owner_local/execution.odin:106`.
+- Bounded saved-identity recovery inventory: `src/lib/owner_local/execution.odin:187`.
+- Current exact owner fence check: `src/lib/owner_local/execution.odin:203`.
+- No-attempt uncommitted preparation expiry: `src/lib/owner_local/execution.odin:237`.
+- Nested owner lease UoW and absolute hard bound: `src/lib/owner_local/leases.odin:71`.
+- Immutable durable journal: `src/lib/owner_local/migration_025.sql:48`.
+- Periodic preparation retirement: `src/bridge/owner_local_leases.odin:111`.
+- Production resource signing domains: `src/bridge/unseal_protocol.odin:848`.
+- Signed two-store integration proof: `src/lib/owner_local/execution_test.odin:81`.
+- Production signer proof: `src/bridge/vault_v2_bridge_test.odin:880`.
+
+
+### Chosen verification
+
+Commands run through managed shell sessions with the assigned worktree as
+`--cwd`:
+
+```bash
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3-owner-v25-full-final2-20261106-2346
+nix develop --command odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_NAMES=main.test_owner_local_periodic_batch_expires_and_publishes_after_commit,main.test_owner_local_publication_recovers_result_write_and_commit_failure_in_process,main.test_owner_local_signer_never_loads_keystore_inside_transaction,main.test_owner_local_executor_signer_domains_and_missing_identity -out:$HOME/.cache/heimdall-tests/m3-owner-maintenance-signer-final-20261106-2348
+nix build .#ham-bridge -o $HOME/.cache/heimdall-tests/m3-owner-v25-bridge-final-20261106-2347
+python3 scripts/check-owner-aggregate-parity.py
+git diff --check
+```
+
+Final owner suite: **227 PASS**, including nine new journal tests, session
+`sh_bf9ef7b168910ba365381562b6631841`. Final Bridge maintenance/publication and
+signer suite: **4 PASS**, session `sh_93acf1edc070b0d32376a241f57cc259`. Bridge build
+passed in `sh_21b4a3d1ac7d9884f92ae00342fef67f`. Aggregate parity passed: all 240
+original fields/23 structs and 73 signed methods, session
+`sh_c5b398c26560661908efcd5eafcf8917`. No Rust/TS/contracts changes were needed,
+so their checkpoint evidence was retained rather than rerun.
+
+Draft corrections: V25 initially retained a schema24 default, corrected before
+passing focused runs. Test drafts had an Odin multiline-loop/concatenation
+syntax error and an unsupported assertion-message argument. The first broader
+run was 223/224 passing; a historical V23 fixture retained the V25 journal table.
+Its teardown was corrected while preserving the version24 fault gate. Initial
+Nix build omitted new untracked files; staging the new source/SQL made it
+available to the Git-source snapshot. A parity run caught a shifted exact test
+line anchor; retaining the fixture constant on its original line restored the
+actual command-specific evidence. These were corrected, not waived.
+
+### Remaining production work
+
+1. Establish explicit reserved-remote assignment/enrollment from authorized
+   fleet/member/lifecycle policy. Current journal admission requires existing
+   accepted exact assignment history; it deliberately cannot fabricate a local
+   live-child proof or bypass those controls.
+2. Mount authenticated encrypted owner/executor transport, key/directory and
+   canonical resource resolution, plus the owner matcher/reconciliation worker.
+   The new current-fence helper is an internal authoritative read; it still
+   needs a signed/sealed challenge-bound transport response before replacing
+   the injected Bridge owner check.
+3. Consume `executor.activate` through a fenced production handler. The generic
+   outbox publisher currently returns unsupported for this kind. After owner
+   restart, query the saved activation before disposition; old activation bytes
+   cannot be reused as fresh launch permission. Add durable committed-grant
+   failure disposition with no agent-failure charge for an expired reservation.
+   Query/released state alone cannot prove a child never ran; preserve exact
+   physical outcome evidence rather than infer a refund.
+4. Provision the one device ledger and host-signed static policy; route every
+   manual/warm/owner launch through it, without an unfenced fallback. Wire
+   reservation renewal, exact stop/input/results and safe child recovery.
+5. Add physical deadline renewal, encrypted notification/AAD/tickets and actual
+   provider/macOS/Windows gates; obtain independent final acceptance.
+
+No global production route, deployment, live restart or push occurred. No
+unrelated boy-scout changes were included. M3 remains unfinished.
+
+### Exact owner-journal modified paths
+
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/docs/executor-dispatch-checkpoint.md`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/bridge/owner_local_leases.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/bridge/unseal_protocol.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/bridge/vault_v2_bridge_test.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/aggregate_test.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/context_test.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/controls_test.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/execution.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/execution_test.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/fleet_policy_test.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/foundations_test.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/grants_test.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/leases.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/migration_025.sql`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/migrations.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/search_test.odin`

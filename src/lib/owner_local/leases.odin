@@ -68,7 +68,7 @@ lease_capability :: proc(s:^Store,c:json.Object,expires,hard:i64,sign:Signer,met
 
 // Current authenticated read scope is checked before receipts. Capabilities are
 // not bearer authority: every invocation needs the actual local child proof.
-execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owner_Verified_Key,now:i64,sign:Signer) -> Result {
+execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owner_Verified_Key,now:i64,sign:Signer,parent:^Transaction=nil,reserved_hard:i64=0) -> Result {
     context.allocator=context.temp_allocator
     c,valid:=contracts.owner_parse(raw,"lease_command")
     if !valid do return fail("malformed")
@@ -77,7 +77,11 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
        !lease_scope(c,child) { return fail("invalid_scope") }
     if !contracts.owner_verify_signature("lease_command",c,"signature",key) do return fail("bad_signature")
     tx:Transaction
-    if !transaction_begin(s,&tx) do return fail("storage_error")
+    if parent==nil {
+        if !transaction_begin(s,&tx) do return fail("storage_error")
+    } else {
+        if parent.store!=s || !transaction_savepoint(parent,&tx) do return fail("storage_error")
+    }
     defer transaction_rollback(&tx)
     chain,task,instance,op,method:=field(c,"chain_id"),field(c,"task_id"),child.instance,field(c,"operation_id"),field(c,"method")
     fleet,found:=query(s.db,"SELECT instance_id,configuration_revision,enabled,launch_epoch,run_count,token_generation FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task)
@@ -132,6 +136,10 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
         deadline_ok:bool
         expires,hard,deadline_ok=lease_deadlines(s,chain,task,now)
         if !deadline_ok do return fail("invalid_content")
+        if reserved_hard!=0 {
+            if parent==nil || reserved_hard<=now || reserved_hard>hard do return fail("invalid_scope")
+            hard=reserved_hard;expires=min(expires,hard)
+        }
         if config,binding,configured:=lifecycle_config(s,chain,task);configured {
             if child.agent_id!=field(config,"author_agent_id") || encode(child)!=binding[1] do return fail("invalid_scope")
             states,ok:=query(s.db,"SELECT state FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)

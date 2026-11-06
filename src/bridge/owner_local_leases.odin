@@ -110,6 +110,7 @@ bridge_owner_maintenance_once :: proc() {
 }
 bridge_owner_maintenance_batch :: proc(s:^owner.Store,q:^owner.Intent_Completions,now:i64,ctx:rawptr,
     send:proc(rawptr,^owner.Store,owner.Intent_Claim)->(bool,string,i64)) -> bool {
+    if !owner.execution_expire_preparations(s,now) do return false
     if !owner.expire_leases(s,now) do return false
     return bridge_owner_publish_batch(s,q,now,ctx,send)
 }

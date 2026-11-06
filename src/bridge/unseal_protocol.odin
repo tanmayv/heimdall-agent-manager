@@ -846,8 +846,15 @@ bridge_unseal_decrypt_and_verify :: proc(
 }
 
 bridge_owner_sign :: proc(ctx:rawptr,kind:string,o:json.Object)->(string,bool) {
-    if kind!="coordinator_capability" && kind!="genesis" && kind!="registry" && kind!="lease_command" && kind!="lifecycle_command" && kind!="capability" do return "",false
-    canonical,valid:=contracts.owner_canonical(kind,o)
+    canonical:string
+    valid:bool
+    if kind=="executor.prepare" || kind=="executor.action" {
+        // Resource intents have a separate signing domain from task commands.
+        canonical,valid=contracts.executor_canonical(strings.trim_prefix(kind,"executor."),o)
+    } else {
+        if kind!="coordinator_capability" && kind!="genesis" && kind!="registry" && kind!="lease_command" && kind!="lifecycle_command" && kind!="capability" do return "",false
+        canonical,valid=contracts.owner_canonical(kind,o)
+    }
     if !valid do return "",false
     sync.mutex_lock(&g_bridge_identity_mu);defer sync.mutex_unlock(&g_bridge_identity_mu)
     // Called inside the owner UoW for registry intents. The request path loads
