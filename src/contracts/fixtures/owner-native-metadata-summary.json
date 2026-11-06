@@ -1,0 +1,19 @@
+{
+  "chain_id": "chain",
+  "owner_user_id": "native_owner",
+  "source_revision": "native_revision_7",
+  "kind": "summary",
+  "records": [
+    {
+      "curated_body": "Original ☃ curated_body",
+      "curated_initialized": true,
+      "failure_fingerprint": "Original ☃ failure_fingerprint",
+      "chain_id": "chain",
+      "owner_user_id": "native_owner",
+      "body": "Original ☃ body",
+      "line_count": 7,
+      "version": 7,
+      "updated_at": "2001-02-03T04:05:06.789+05:30"
+    }
+  ]
+}

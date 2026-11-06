@@ -199,7 +199,8 @@ test('native metadata snapshots have strict chain scope and distinct read and mu
   }
   const page = { source_revision:'pinned_7', kind:'member', cursor:'', limit:'100' };
   ownerParse(JSON.stringify(page), 'native_metadata_read');
-  ownerParse(JSON.stringify({ ...page, kind:'directory' }), 'native_metadata_read');
+  for (const kind of ['directory', 'chain', 'task', 'comment', 'summary'])
+    ownerParse(JSON.stringify({ ...page, kind }), 'native_metadata_read');
   for (const patch of [{ kind:'fleet' }, { limit:'101' }, { limit:'0' }, { task_id:'forged' }])
     assert.throws(() => ownerParse(JSON.stringify({ ...page, ...patch }), 'native_metadata_read'));
 });

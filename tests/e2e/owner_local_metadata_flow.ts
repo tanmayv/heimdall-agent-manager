@@ -41,7 +41,25 @@ export async function ownerLocalMetadataFlow({session,bridgeId,cli,expect,stopOw
   const event=events.items.find((item:any)=>item.kind==='native.metadata.import');
   const evidence=JSON.parse((await call('history.fetch',{eventSeq:event.seq})).body);
   expect(JSON.parse(JSON.parse(evidence.evidence).content).body===JSON.stringify(members),'exact original imported document remains in signed immutable history');
+
+  const facts=['chain','task','comment','summary'].map(fixture);
+  let revision=4;
+  for(const bundle of facts) {
+    const prepared=await prepare('native.metadata.import',{expectedRevision:String(revision),body:JSON.stringify(bundle)});
+    await invoke(prepared);revision++;
+    const page=await read(bundle.kind);
+    expect(page.items.length===1 && Object.keys(page.items[0]).length===Object.keys(bundle.records[0]).length && Object.entries(bundle.records[0]).every(([key,value])=>page.items[0][key]===value),'real CLI preserves all native '+bundle.kind+' fields and scalar types');
+    expect((await invoke(prepared)).replay,'exact source '+bundle.kind+' replay');
+    const later={...bundle,source_revision:'native_revision_8',records:bundle.records.map((row:any)=>({...row,[bundle.kind==='chain'||bundle.kind==='task'?'title':'body']:'later source text'}))};
+    await call('native.metadata.import',{expectedRevision:String(revision),body:JSON.stringify(later)});revision++;
+    const old=(await read(bundle.kind)).items[0];
+    expect(Object.entries(bundle.records[0]).every(([key,value])=>old[key]===value),'old source '+bundle.kind+' snapshot remains exact');
+  }
   await stopOwner();await restartOwner();
   expect((await read('directory')).items[0].vcs_info_json===directories.records[0].vcs_info_json,'restart preserves native VCS string bytes and Unicode path');
+  for(const bundle of facts) {
+    expect((await read(bundle.kind)).items[0].updated_at===bundle.records[0].updated_at,'restart retains exact native '+bundle.kind+' timestamp');
+    expect((await read(bundle.kind,{nativeSourceRevision:'native_revision_8'})).items.length===1,'restart retains newer '+bundle.kind+' source snapshot');
+  }
   expect((await invoke(exact)).replay,'restart retains exact accepted import receipt');
 }

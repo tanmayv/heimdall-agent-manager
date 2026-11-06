@@ -55,7 +55,7 @@ owner_field_valid :: proc(s, kind: string) -> bool {
         return true
     case "version": return s == "1"
     case "counter", "positive": return owner_decimal_valid(s) && (kind == "counter" || s != "0")
-    case "metadata_kind": return s=="member" || s=="directory"
+    case "metadata_kind": return s=="member" || s=="directory" || len(owner_metadata_fact_fields(s))>0
     case "native_history_kind": return s=="attempt" || s=="event" || s=="facet"
     case "native_cursor": return len(s)<=512
     case "native_actor": return s=="agent" || s=="user" || s=="hub" || s=="bridge"

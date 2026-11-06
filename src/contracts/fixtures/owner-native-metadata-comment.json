@@ -1,0 +1,20 @@
+{
+  "chain_id": "chain",
+  "owner_user_id": "native_owner",
+  "source_revision": "native_revision_7",
+  "kind": "comment",
+  "records": [
+    {
+      "delegated_client_id": "native_delegated_client_id",
+      "delegated_grant_id": "native_delegated_grant_id",
+      "comment_id": "native_comment_id",
+      "task_id": "native_task_id",
+      "chain_id": "chain",
+      "owner_user_id": "native_owner",
+      "author_agent_instance_id": "native_author_agent_instance_id",
+      "body": "Original ☃ body",
+      "created_at": "2001-02-03T04:05:06.789+05:30",
+      "updated_at": "2001-02-03T04:05:06.789+05:30"
+    }
+  ]
+}

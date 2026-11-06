@@ -1,0 +1,35 @@
+{
+  "chain_id": "chain",
+  "owner_user_id": "native_owner",
+  "source_revision": "native_revision_7",
+  "kind": "task",
+  "records": [
+    {
+      "task_id": "native_task_id",
+      "chain_id": "chain",
+      "owner_user_id": "native_owner",
+      "title": "Original ☃ title",
+      "description": "Original ☃ description",
+      "publish_state": "published",
+      "state": "done",
+      "kind": "task",
+      "priority": "p1",
+      "attempt_no": 7,
+      "brief_json": "{}",
+      "blocked_on_json": "",
+      "requires_user_approval": true,
+      "ready_since": "Original ☃ ready_since",
+      "bridge_id": "native_bridge_id",
+      "workflow_run_id": "native_workflow_run_id",
+      "workflow_execution_no": 7,
+      "stage_key": "native_stage_key",
+      "stage_index": 7,
+      "generated_by_json": "",
+      "created_at": "2001-02-03T04:05:06.789+05:30",
+      "updated_at": "2001-02-03T04:05:06.789+05:30",
+      "published_at": "2001-02-03T04:05:06.789+05:30",
+      "started_at": "2001-02-03T04:05:06.789+05:30",
+      "completed_at": "2001-02-03T04:05:06.789+05:30"
+    }
+  ]
+}

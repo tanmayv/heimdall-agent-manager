@@ -25,7 +25,7 @@ function fieldValid(s: string, kind: string): boolean {
     case 'lifecycle_method': return ['workflow.gate.post','review.role.open','review.role.post','lease.handoff','lease.block','lease.switch','review.checkpoint','requirements.present','requirements.ack','lease.submit','review.open','review.post'].includes(s);
     case 'merge_policy': return s === 'none' || s === 'git';
     case 'verdict': return s === 'approve' || s === 'request_changes';
-    case 'metadata_kind': return s === 'member' || s === 'directory';
+    case 'metadata_kind': return ['member', 'directory', 'chain', 'task', 'comment', 'summary'].includes(s);
     case 'native_history_kind': return ['attempt','event','facet'].includes(s);
     case 'native_cursor': return s.length <= 512;
     case 'native_actor': return ['agent','user','hub','bridge'].includes(s);
