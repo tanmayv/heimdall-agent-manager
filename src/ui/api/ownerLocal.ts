@@ -26,7 +26,7 @@ function fieldValid(s: string, kind: string): boolean {
     case 'merge_policy': return s === 'none' || s === 'git';
     case 'verdict': return s === 'approve' || s === 'request_changes';
     case 'optional_counter': return s === '' || decimal(s);
-    case 'attempt_outcome': return ['', 'handoff', 'submitted', 'blocked', 'expired', 'expired:ttl', 'expired:hard_cap', 'expired:cancelled', 'expired:replaced'].includes(s);
+    case 'attempt_outcome': return ['', 'handoff', 'submitted', 'blocked', 'expired', 'expired:ttl', 'expired:hard_cap', 'expired:cancelled', 'expired:replaced', 'expired:chain_closed'].includes(s);
     case 'history_completeness': return s === 'full' || s === 'incomplete';
     case 'attempt_release': return ['', 'handoff', 'submitted', 'blocked', 'expired', 'changes_requested', 'replaced', 'dep_added', 'reopened', 'user_stopped', 'released_noncounting'].includes(s);
     case 'path': return s.length <= 4096 && (s === '' || (s.startsWith('/') && !s.includes('..') && !s.includes('\\')));

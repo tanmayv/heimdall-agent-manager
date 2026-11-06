@@ -263,6 +263,8 @@ native_attempt_contract_is_task_scoped_read_only_and_validates_time_outcome :: p
     }
     raw:=`{"account_id":"account","chain_id":"chain","task_id":"task","attempt_no":"1","started_ms":"1000","ended_ms":"1100","holder_instance_id":"instance","outcome":"submitted","counts_toward_budget":"1","work_lease_id":"lease","completeness":"full"}`
     r,ok:=owner_parse(raw,"native_attempt");testing.expect(t,ok)
+    r["outcome"]=json.String("expired:chain_closed")
+    testing.expect(t,owner_document_valid("native_attempt",r))
     r["ended_ms"]=json.String("999");testing.expect(t,!owner_document_valid("native_attempt",r))
     r["ended_ms"]=json.String("");testing.expect(t,!owner_document_valid("native_attempt",r))
     r["outcome"]=json.String("");testing.expect(t,owner_document_valid("native_attempt",r))

@@ -2,6 +2,10 @@
 
 Task: task_18e569e48d6b5532, requirements revision 2. Baseline: 6b076ac70b439e0dc22d344fe344fbb7572e9d6e (W2/V12).
 
+C1a integration: task_18e57ad52bb4ea63, revision 1. The original broad C1 task is
+held/superseded, not approved. The bounded foundation proposed for acceptance
+and its successor API handoff are recorded at the end of this ledger.
+
 This is a field-by-field implementation ledger, **not a completion claim**. OPEN and PARTIAL rows are required work, not approved dispositions. C1 may not close, and M4 may not cut over an aggregate, while a required row is silently missing. Native values, authors, timestamps, facet versions and IDs must survive migration; do not reconstruct historical facts from current rows.
 
 The audit at f3cc56d1 is historical. W2 already accepts the full top-level brief vocabulary and validates structured output: src/lib/workflow_v1/boundary.odin:52; src/lib/owner_local/lifecycle_agent.odin:123. Those implementations must be reused.
@@ -765,3 +769,85 @@ not an implementation-completeness claim. The complete disposable demo passed
 with exit 0 in managed session `sh_41d90a59840bde07efde87b5becce2a8`, including
 the new native retirement CLI/browser reads and cold restart. Its exact command
 appears above.
+
+## C1a bounded foundation for independent acceptance
+
+Task `task_18e57ad52bb4ea63` integrates only the nine C1 commits from
+`6b076ac7..bfac0d0d`, in order, onto the same reviewed V12 base. The integrated
+tree at `4867e4fa` is byte-identical to `bfac0d0d` (`git diff --exit-code
+bfac0d0d HEAD`, exit 0). V1–V12 schema files remain byte-identical to the
+base; V13/V14 remain byte-identical to the preserved checkpoint. Named
+independent review is still required; this worker does not approve its work.
+
+The subset submitted for acceptance is:
+
+- Append-only accepted-command evidence with exact bytes, observed actor/time,
+  explicit legacy incompleteness, authorized keyset/chunk reads and transactional
+  rollback (`src/lib/owner_local/events.odin:12`; `migration_013.sql:55`).
+- Strict nested brief shape validation and native seconds-based hard deadlines
+  for claim/switch, pinned across heartbeat (`src/lib/workflow_v1/boundary.odin:52`;
+  `src/lib/owner_local/leases.odin:15`; native `src/hub/service/taskv2/lease.odin:114`).
+- Native live-hold/checkpoint behavior: retain current capability and TTL, prevent
+  new dispatch, defer review gate settlement until release, and preserve blocked
+  overlays (`src/lib/owner_local/controls.odin:67`; `review_roles.odin:64`;
+  native `src/hub/service/taskv2/verbs_m2.odin:620`).
+- Bounded retained-event native attempt observations, distinct from immutable
+  lease ordinals/submission keys, with explicit incomplete history
+  (`src/lib/owner_local/attempts.odin:103`; native
+  `src/hub/service/taskv2/fold.odin:138`; `lease.odin:177`).
+- Immutable task-scoped retirement evidence for nonmerging workflow tasks,
+  preserving native `expired:chain_closed` outcomes and parent event provenance
+  (`src/lib/owner_local/workflow_retirements.odin:10`; `migration_014.sql:55`;
+  native `src/hub/service/taskv2/workflow_execution.odin:192`; `lease.odin:407`).
+
+C1a found and fixed one concrete defect in that subset: the emitted native
+retirement outcome `expired:chain_closed` was missing from both wire validators
+(`src/contracts/owner_local.odin:59`; `src/ui/api/ownerLocal.ts:29`). The focused
+contract regression failed before the fix in session
+`sh_06e496f378a4b7525c891f2eeeea1777`. Both validators now accept it, and synthetic
+retirement records must pass the public parser
+(`src/lib/owner_local/workflow_retirements_test.odin:17`). No historical row,
+event, ID, migration or capability is rewritten by this correction.
+
+### Retained evidence verified without rerunning unchanged suites
+
+The old attempt-6 handoff contains exact commands and output paths. C1a read
+the retained session logs/status, rather than treating the handoff as new runs:
+
+| Retained session | Verified result |
+| --- | --- |
+| `sh_1a14890c9c8566499ddcf63debf8c087` | Owner store 120/120, exit 0 |
+| `sh_38163b05c4d915e78fd45724ac396a83` | Contracts 19/19; native fold differential 1/1, exit 0 |
+| `sh_2dd8e244b2e1949891cdfc63e2350828` | Typecheck; retained UI 17/17, exit 0 |
+| `sh_e8b61c912965d1cbc05182a4f565cbc5` | Four-binary build, exit 0; no build error diagnostic |
+| `sh_41d90a59840bde07efde87b5becce2a8` | Complete disposable demo, all steps passed, exit 0; actual CLI/browser attempt and retirement reads, hold/heartbeat, cold restart |
+
+New checks for the validator correction, from the C1a Workdir:
+
+```bash
+nix develop --command odin test src/contracts -collection:odin_test=src -define:ODIN_TEST_NAMES=contracts.native_attempt_contract_is_task_scoped_read_only_and_validates_time_outcome -out:$HOME/.cache/heimdall-tests/c1a-outcome-contract-final
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_NAMES=owner_local.workflow_retirement_static_retry_is_atomic_replay_safe_and_restart_exact,owner_local.workflow_retirement_language_cancel_and_gate_rejection_preserve_native_outcome,owner_local.workflow_retirement_implicit_expansion_failure_uses_current_event,owner_local.workflow_retirement_v13_upgrade_collision_commit_rollback_and_exact_preservation -out:$HOME/.cache/heimdall-tests/c1a-retirement-four-final
+nix develop --command node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_owner_local_contract_test.ts
+python3 scripts/check-owner-aggregate-parity.py
+git diff --check
+```
+
+Results: contract 1/1, retirement 4/4, UI 8/8; inventory 240 fields/23 structs;
+all exit 0. No allocator warnings. The inventory is not a parity proof. One
+earlier focused storage invocation named three nonexistent tests and ran only
+the static retry test; no coverage is claimed for those missing selections.
+The corrected four-test command above selected and passed all four tests.
+The unchanged full suites/builds/demo were not rerun for an outcome whitelist
+addition; their retained results are separate from the new focused evidence.
+
+### Required successor work and stable API boundaries
+
+Every OPEN/PARTIAL row and the command-parity table above remains binding.
+Foundation acceptance does not authorize migration or ordinary route cutover.
+
+| Successor responsibility | Starting API and unresolved requirement |
+| --- | --- |
+| Native attempts/history and budgets | `attempt_scan` (`src/lib/owner_local/attempts.odin:103`) powers task-scoped `attempt.read`, `runtime.read.attempts` and submission-to-native mapping (`reads.odin:16`, `reads.odin:50`). It is an observation, not native import/export or budget admission. Preserve original IDs, timestamp strings, actors, exact payload/outcome/counting and typed facet linkage before max-attempt admission/exhaustion. Never count V7 lease rows as attempts or renumber V4 submissions. Preserve live-hold/checkpoint semantics. Reconcile deferred retirement after unsettled merge CAS (`workflow_language.odin:373`) before whole workflow parity. |
+| Rich metadata/configuration | The 240-field inventory and command table require publication, priority, proposal/decision/publish, chain/task timestamps, membership/directories, provider/model/placement/fleet policy, curated summary, mixed-work graph/receipts/scope provenance and their strict ordinary adapters. Existing full brief validation is reusable; input-reference resolution remains required. |
+| Facets and final parity proof | Retain original facet kinds, IDs, versions, writer/time/body and pinned typed artifact/message provenance. C3 owns linked canonical bodies/envelopes/blobs; unresolved references stay explicitly unresolved/import-pending. Add the full rich native fixture and adapter proof for validation, authorization, replay, search, history, restart and migration rollback. Named independent review must assess final parity. |
+| Migration/cutover | Append V15+ for new schema; preserve V1–V14 and genuine historical reconstruction tests. `history.read`/`history.fetch` (`events.odin:26`, `events.odin:63`) expose current accepted evidence; legacy tags have no fabricated original provenance. M4 owns actual route cutover; no Hub writer fallback is introduced here. |

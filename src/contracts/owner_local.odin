@@ -56,7 +56,7 @@ owner_field_valid :: proc(s, kind: string) -> bool {
     case "version": return s == "1"
     case "counter", "positive": return owner_decimal_valid(s) && (kind == "counter" || s != "0")
     case "optional_counter": return s=="" || owner_decimal_valid(s)
-    case "attempt_outcome": return s=="" || s=="handoff" || s=="submitted" || s=="blocked" || s=="expired" || s=="expired:ttl" || s=="expired:hard_cap" || s=="expired:cancelled" || s=="expired:replaced"
+    case "attempt_outcome": return s=="" || s=="handoff" || s=="submitted" || s=="blocked" || s=="expired" || s=="expired:ttl" || s=="expired:hard_cap" || s=="expired:cancelled" || s=="expired:replaced" || s=="expired:chain_closed"
     case "hash": return owner_hex(s, 64)
     case "signature": return owner_hex(s, 128)
     case "method": return owner_method_valid(s)

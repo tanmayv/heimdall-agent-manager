@@ -14,6 +14,8 @@ retirement_record_test :: proc(t:^testing.T,f:^Fixture,task:string)->contracts.O
     testing.expect_value(t,r.outcome,"expired:chain_closed")
     testing.expect_value(t,r.completeness,"full")
     testing.expect_value(t,r.started_ms,"1000")
+    _,parsed:=contracts.owner_parse(encode(r),"native_attempt")
+    testing.expect(t,parsed,"retired native records must satisfy the public wire contract")
     return r
 }
 

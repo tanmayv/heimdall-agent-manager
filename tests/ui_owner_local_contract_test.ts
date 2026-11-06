@@ -21,6 +21,7 @@ test('native attempt records keep decimal identities, strict times and task read
   assert.throws(() => ownerParse(JSON.stringify({ ...c, task_id:'' }), 'command'));
   const record = { account_id:'account', chain_id:'chain', task_id:'task', attempt_no:'9007199254740993', started_ms:'1000', ended_ms:'1100', holder_instance_id:'instance', outcome:'submitted', counts_toward_budget:'1', work_lease_id:'lease', completeness:'full' };
   assert.equal(ownerParse(JSON.stringify(record), 'native_attempt').attempt_no, '9007199254740993');
+  assert.equal(ownerParse(JSON.stringify({ ...record, outcome:'expired:chain_closed' }), 'native_attempt').outcome, 'expired:chain_closed');
   for (const patch of [{ ended_ms:'999' }, { ended_ms:'' }, { ended_ms:'unknown' }, { outcome:'assumed' }, { counts_toward_budget:'true' }])
     assert.throws(() => ownerParse(JSON.stringify({ ...record, ...patch }), 'native_attempt'));
   for (const payload of [{ attempt:'0' }, { attempt:'-1' }, { attempt:'1', lease_id:'forged' }])
