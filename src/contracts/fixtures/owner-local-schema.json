@@ -32,5 +32,16 @@
   "block_payload": "requirements_revision:positive summary:document next_steps:optional_document waiting_on:id",
   "switch_payload": "requirements_revision:positive summary:document next_steps:optional_document destination_chain_id:id destination_task_id:id destination_revision:positive destination_configuration_revision:positive destination_requirements_revision:positive destination_lease_id:id",
   "checkpoint_payload": "requirements_revision:positive attempt:positive head:optional_commit summary:document next_steps:optional_document",
-  "merge_retry_payload": "attempt:positive requirements_revision:positive head:optional_commit configuration_revision:positive body_cipher:required_cipher"
+  "merge_retry_payload": "attempt:positive requirements_revision:positive head:optional_commit configuration_revision:positive body_cipher:required_cipher",
+  "workflow_definition": "workflow_id:id version:positive title:document stages:document",
+  "workflow_stage": "key:id title:document body:document brief:document depends_on:document",
+  "workflow_run": "run_id:id workflow_id:id version:positive",
+  "workflow_retry": "run_id:id execution:positive",
+  "dependency_payload": "prerequisite:id enabled:flag",
+  "source_fact": "origin_kind:id origin_id:id episode_id:id source_version:positive resolved:flag deadline_ms:counter body:document",
+  "source_action": "origin_kind:id origin_id:id episode_id:id source_version:positive consumer_fence_hash:hash result:document",
+  "source_page": "cursor:optional limit:positive",
+  "review_roles": "configuration_revision:positive requires_user_approval:flag pairs:document",
+  "review_pair": "role:id agent_id:id instance_id:id",
+  "review_role_payload": "requirements_revision:positive attempt:positive head:optional_commit verdict:verdict summary:document role:id"
 }

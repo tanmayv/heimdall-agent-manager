@@ -28,6 +28,7 @@ Groups:
 - [reference/task-placement-recovery.md](reference/task-placement-recovery.md): the `task_placement` attention cards and recovery APIs built on placement-failure snapshots (REQ-PLACE-2/3).
 - [plans/task-system-v2.md](plans/task-system-v2.md): Task System v2 specification and implementation status; the current task engine.
 - [fleet-management.md](fleet-management.md): per-chain, per-agent fleet launch settings and the `bridge_models` API field.
+- [owner-local-workflows.md](owner-local-workflows.md): bounded static owner-local DAGs, required review roles, source recovery, runnable demo and explicit M2 parity gaps.
 - [multi-question-messages.md](multi-question-messages.md): version 1 multi-question message form and the agent CLI JSON format.
 - [html-bundle-artifacts.md](html-bundle-artifacts.md): publishing multi-page static HTML bundles as artifacts and viewing them in an isolated iframe.
 - [quoted-context.md](quoted-context.md): the Quote feature that attaches selected message text to a coordinator message.

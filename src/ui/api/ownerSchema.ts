@@ -34,6 +34,17 @@ export const ownerSchemas = {
   switch_payload: [["requirements_revision", "positive"], ["summary", "document"], ["next_steps", "optional_document"], ["destination_chain_id", "id"], ["destination_task_id", "id"], ["destination_revision", "positive"], ["destination_configuration_revision", "positive"], ["destination_requirements_revision", "positive"], ["destination_lease_id", "id"]],
   checkpoint_payload: [["requirements_revision", "positive"], ["attempt", "positive"], ["head", "optional_commit"], ["summary", "document"], ["next_steps", "optional_document"]],
   merge_retry_payload: [["attempt", "positive"], ["requirements_revision", "positive"], ["head", "optional_commit"], ["configuration_revision", "positive"], ["body_cipher", "required_cipher"]],
+  workflow_definition: [["workflow_id", "id"], ["version", "positive"], ["title", "document"], ["stages", "document"]],
+  workflow_stage: [["key", "id"], ["title", "document"], ["body", "document"], ["brief", "document"], ["depends_on", "document"]],
+  workflow_run: [["run_id", "id"], ["workflow_id", "id"], ["version", "positive"]],
+  workflow_retry: [["run_id", "id"], ["execution", "positive"]],
+  dependency_payload: [["prerequisite", "id"], ["enabled", "flag"]],
+  source_fact: [["origin_kind", "id"], ["origin_id", "id"], ["episode_id", "id"], ["source_version", "positive"], ["resolved", "flag"], ["deadline_ms", "counter"], ["body", "document"]],
+  source_action: [["origin_kind", "id"], ["origin_id", "id"], ["episode_id", "id"], ["source_version", "positive"], ["consumer_fence_hash", "hash"], ["result", "document"]],
+  source_page: [["cursor", "optional"], ["limit", "positive"]],
+  review_roles: [["configuration_revision", "positive"], ["requires_user_approval", "flag"], ["pairs", "document"]],
+  review_pair: [["role", "id"], ["agent_id", "id"], ["instance_id", "id"]],
+  review_role_payload: [["requirements_revision", "positive"], ["attempt", "positive"], ["head", "optional_commit"], ["verdict", "verdict"], ["summary", "document"], ["role", "id"]],
 } as const;
 export type OwnerKind = keyof typeof ownerSchemas;
 export interface OwnerGenesis {
@@ -309,6 +320,71 @@ export interface OwnerMerge_Retry_Payload {
   configuration_revision: string;
   body_cipher: string;
 }
+export interface OwnerWorkflow_Definition {
+  workflow_id: string;
+  version: string;
+  title: string;
+  stages: string;
+}
+export interface OwnerWorkflow_Stage {
+  key: string;
+  title: string;
+  body: string;
+  brief: string;
+  depends_on: string;
+}
+export interface OwnerWorkflow_Run {
+  run_id: string;
+  workflow_id: string;
+  version: string;
+}
+export interface OwnerWorkflow_Retry {
+  run_id: string;
+  execution: string;
+}
+export interface OwnerDependency_Payload {
+  prerequisite: string;
+  enabled: string;
+}
+export interface OwnerSource_Fact {
+  origin_kind: string;
+  origin_id: string;
+  episode_id: string;
+  source_version: string;
+  resolved: string;
+  deadline_ms: string;
+  body: string;
+}
+export interface OwnerSource_Action {
+  origin_kind: string;
+  origin_id: string;
+  episode_id: string;
+  source_version: string;
+  consumer_fence_hash: string;
+  result: string;
+}
+export interface OwnerSource_Page {
+  cursor: string;
+  limit: string;
+}
+export interface OwnerReview_Roles {
+  configuration_revision: string;
+  requires_user_approval: string;
+  pairs: string;
+}
+export interface OwnerReview_Pair {
+  role: string;
+  agent_id: string;
+  instance_id: string;
+}
+export interface OwnerReview_Role_Payload {
+  requirements_revision: string;
+  attempt: string;
+  head: string;
+  verdict: string;
+  summary: string;
+  role: string;
+}
 export interface OwnerDocuments {
   genesis: OwnerGenesis;
   command: OwnerCommand;
@@ -344,4 +420,15 @@ export interface OwnerDocuments {
   switch_payload: OwnerSwitch_Payload;
   checkpoint_payload: OwnerCheckpoint_Payload;
   merge_retry_payload: OwnerMerge_Retry_Payload;
+  workflow_definition: OwnerWorkflow_Definition;
+  workflow_stage: OwnerWorkflow_Stage;
+  workflow_run: OwnerWorkflow_Run;
+  workflow_retry: OwnerWorkflow_Retry;
+  dependency_payload: OwnerDependency_Payload;
+  source_fact: OwnerSource_Fact;
+  source_action: OwnerSource_Action;
+  source_page: OwnerSource_Page;
+  review_roles: OwnerReview_Roles;
+  review_pair: OwnerReview_Pair;
+  review_role_payload: OwnerReview_Role_Payload;
 }

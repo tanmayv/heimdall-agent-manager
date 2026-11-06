@@ -30,7 +30,9 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
   const operationId = input.operationId ?? ownerId('op_');
   let genesis = '';
   let payload: Record<string, string>;
-  if (method === 'chain.edit') payload = { title_cipher: await encryptVaultText(input.title ?? '', keyring), description_cipher: await encryptVaultText(input.description ?? '', keyring) };
+  if (['workflow.define','workflow.run','workflow.retry','source.observe','source.consume','source.ack','source.retire','source.resolve','source.escalate','review.roles'].includes(method)) payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring) };
+  else if (method === 'dependency.edit') payload = { ...ownerParse(input.body ?? '', 'dependency_payload') };
+  else if (method === 'chain.edit') payload = { title_cipher: await encryptVaultText(input.title ?? '', keyring), description_cipher: await encryptVaultText(input.description ?? '', keyring) };
   else if (method === 'chain.search') payload = { query_cipher: await encryptVaultText(input.query ?? '', keyring), limit: String(input.limit ?? 20) };
   else if (method === 'task.delete') payload = { protocol_version: '1' };
   else if (method === 'chain.create') {

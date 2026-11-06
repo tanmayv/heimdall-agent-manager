@@ -1,3 +1,4 @@
+#+feature dynamic-literals
 package owner_local
 
 import "core:fmt"
@@ -63,6 +64,7 @@ intent_claim_due :: proc(s:^Store,now:i64,limit:=20) -> (claims:[dynamic]Intent_
 // Successful results are immutable. A failed/unknown external outcome retries
 // the same effect with a bounded delay; no payload may be replaced on retry.
 intent_result :: proc(s:^Store,claim:Intent_Claim,success:bool,result:string,now:i64) -> bool {
+    context.allocator=context.temp_allocator
     if now<0 || now>0x7fffffffffffffff-60000 || len(result)>8192 do return false
     tx:Transaction
     if !transaction_begin(s,&tx) do return false
@@ -83,6 +85,14 @@ intent_result :: proc(s:^Store,claim:Intent_Claim,success:bool,result:string,now
      WHERE intent_id=? AND state='claimed' AND claim_incarnation=? AND attempts=? AND payload_digest=? RETURNING intent_id,kind,chain_id,exact_fence_json`,
      state,published,result,fmt.tprintf("%d",now+delay),claim.id,fmt.tprintf("%d",claim.incarnation),fmt.tprintf("%d",claim.attempt),claim.digest)
     if !ok || len(rows)!=1 do return false
+    if rows[0][1]=="source.delivery" && success && !source_delivered(s,rows[0][2],rows[0][3]) do return false
+    if rows[0][1]=="source.delivery" && success {
+        runtime,read:=query(s.db,"SELECT commit_seq,clock_high_ms,(SELECT count(*) FROM local_changes) FROM runtime_database")
+        if !read || len(runtime)!=1 || number(runtime[0][2])>=1000000 do return false
+        seq:=number(runtime[0][0])+1
+        if _,ok:=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),rows[0][2],"source.delivered",claim.id,"1",claim.id);!ok do return false
+        if _,ok:=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",max(now,number(runtime[0][1]))));!ok do return false
+    }
     if rows[0][1]=="merge" {
         v,valid:=contracts.owner_request_document(rows[0][3])
         f,obj:=v.(json.Object)
@@ -103,6 +113,10 @@ intent_result :: proc(s:^Store,claim:Intent_Claim,success:bool,result:string,now
         if success do kind="merge.merged"
         if _,ok:=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),rows[0][2],kind,field(f,"task_id"),task_rows[0][0],claim.id);!ok do return false
         if _,ok:=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",max(now,number(runtime[0][1]))));!ok do return false
+        if !workflow_refresh(s) do return false
+        command:=doc(map[string]string{"chain_id"=rows[0][2],"task_id"=field(f,"task_id"),"method"="merge.result"})
+        if !source_lifecycle(&tx,command,nil,seq,now) do return false
     }
+    if !workflow_refresh(s) do return false
     return transaction_commit(&tx)
 }

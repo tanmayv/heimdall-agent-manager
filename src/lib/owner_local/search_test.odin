@@ -137,7 +137,7 @@ search_v4_upgrade_collision_is_atomic_and_preserves_live_history :: proc(t:^test
     testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,len(search_hits(search_for(f,"private"))),1)
     rows,ok=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
-    testing.expect(t,ok && rows[0][0]=="7" && rows[0][1]=="7")
+    testing.expect(t,ok && rows[0][0]=="8" && rows[0][1]=="8")
 }
 
 history_submit :: proc(t:^testing.T,f:^Fixture,lease,revision,summary:string) {
@@ -221,7 +221,7 @@ search_v5_upgrade_backfills_retained_attempts_and_rolls_back_failure :: proc(t:^
     close(&f.store)
     db:DB
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    testing.expect(t,exec(db,"DROP INDEX IF EXISTS local_review_holder; DROP TRIGGER search_local_handoffs_insert; DROP TABLE local_checkpoints; DROP TABLE local_work_attempts; DROP TABLE local_assignment_history; DROP TABLE intent_invalidations; DROP TABLE control_notices; DROP TABLE local_handoffs; DROP TABLE local_controls;"))
+    testing.expect(t,exec(db,V8_TEST_DROP+"DROP INDEX IF EXISTS local_review_holder; DROP TRIGGER search_local_handoffs_insert; DROP TABLE local_checkpoints; DROP TABLE local_work_attempts; DROP TABLE local_assignment_history; DROP TABLE intent_invalidations; DROP TABLE control_notices; DROP TABLE local_handoffs; DROP TABLE local_controls;"))
     text:=string(MIGRATION_005)
     prefix:=text[:strings.index(text,"CREATE TABLE task_deletions")]
     testing.expect(t,exec(db,prefix))

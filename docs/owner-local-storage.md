@@ -96,3 +96,8 @@ V7 adds local control modes, immutable signed assignment and work-attempt
 history, handoff/search producers, exact-child notices, one-shot held checkpoints
 and merge-intent invalidation. V6 live leases/receipts and immutable submission
 attempts are preserved; see [owner-local-controls.md](owner-local-controls.md).
+
+V8 adds the bounded static workflow generation/dependency graph, immutable required
+review pairs, exact source episodes/results and pending-card receipt pins in this
+same Store. See [owner-local-workflows.md](owner-local-workflows.md) for the command
+contract, cold recovery rules and remaining mandatory parity gates.

@@ -1,6 +1,8 @@
 # Owner-local controls and assignment
 
-This extends the running-local-child, single named author/reviewer lifecycle.
+This extends the running-local-child, named author/reviewer lifecycle.
+Required additional role pairs and static workflow/source integration are now
+covered by [owner-local-workflows.md](owner-local-workflows.md).
 There is no scheduler for unlaunched agents and no remote owner transfer.
 See [owner-local-lifecycle.md](owner-local-lifecycle.md) for setup and independent
 review, and [owner-local-search.md](owner-local-search.md) for scoped search.

@@ -77,6 +77,7 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
         if retired[0][0]!=digest do return fail("operation_conflict")
         return fail("retired")
     }
+    if !workflow_task_current(s,chain,task) do return fail("stale_revision")
     if !current || !control_ready(s,chain,task) do return fail("invalid_scope")
     if fleet[0][1]!=field(c,"configuration_revision") do return fail("invalid_scope")
     state,state_ok:=query(s.db,"SELECT commit_seq,clock_high_ms,recovery_state FROM runtime_database WHERE singleton=1")
@@ -100,6 +101,7 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
     expires,hard:=now+LEASE_TTL_MS,now+LEASE_HARD_MS
     version:=i64(1)
     if method=="lease.claim" {
+        if !dependency_ready(s,chain,task) do return fail("operation_conflict")
         if config,binding,configured:=lifecycle_config(s,chain,task);configured {
             if child.agent_id!=field(config,"author_agent_id") || encode(child)!=binding[1] do return fail("invalid_scope")
             states,ok:=query(s.db,"SELECT state FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)
