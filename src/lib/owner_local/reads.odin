@@ -10,6 +10,7 @@ import contracts "odin_test:contracts"
 read_result :: proc(s:^Store,c:json.Object,payload:string,revision:i64) -> Result {
     method,chain,task:=field(c,"method"),field(c,"chain_id"),field(c,"task_id")
     p,_:=contracts.owner_parse(payload,contracts.owner_payload_kind(method))
+    if method=="chain.metadata.read" do return chain_metadata_read(s,chain,p,revision)
     if method=="native.metadata.read" do return native_metadata_read(s,chain,p)
     if method=="fleet.policy.read" do return fleet_policy_read(s,chain,p,revision)
     if method=="native.history.read" || method=="native.history.fetch" do return native_history_read(s,c,p)
@@ -92,9 +93,9 @@ read_result :: proc(s:^Store,c:json.Object,payload:string,revision:i64) -> Resul
     rows:[dynamic][]string
     ok:bool
     if method=="chain.read" {
-        header,found:=query(s.db,"SELECT title,description FROM task_chains WHERE chain_id=?",chain)
+        header,found:=query(s.db,"SELECT title,description,COALESCE((SELECT defaults_json FROM local_chain_defaults_versions d WHERE d.chain_id=task_chains.chain_id ORDER BY accepted_seq DESC LIMIT 1),'{}') FROM task_chains WHERE chain_id=?",chain)
         if !found || len(header)!=1 do return fail("invalid_scope")
-        result["title"]=json.String(header[0][0]);result["description"]=json.String(header[0][1])
+        result["title"]=json.String(header[0][0]);result["description"]=json.String(header[0][1]);result["defaults_json"]=json.String(header[0][2])
         projection,ready:=context_materialize(s,chain)
         if !ready do return fail("storage_error")
         result["context"]=projection

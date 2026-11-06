@@ -1824,3 +1824,81 @@ restart:
 ```bash
 nix develop --command env HEIMDALL_E2E_HUB_BIN=$HOME/.cache/heimdall-tests/c1d2-fleet-origin-a2-bins-1/bin/ham-hub HEIMDALL_E2E_BRIDGE_BIN=$HOME/.cache/heimdall-tests/c1d2-fleet-origin-a2-bins/bin/ham-bridge HEIMDALL_E2E_CTL_BIN=$HOME/.cache/heimdall-tests/c1d2-fleet-origin-a2-bins-2/bin/ham-ctl HEIMDALL_E2E_PTY_BIN=$HOME/.cache/heimdall-tests/c1d2-fleet-origin-a2-bins-3/bin/ham-pty-host HEIMDALL_E2E_IDENTITY_BIN=$HOME/.cache/heimdall-tests/c1c-budget-identity HEIMDALL_E2E_OWNER_LOCAL=1 HEIMDALL_E2E_OWNER_METADATA_ONLY=1 node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/bridge_real_enroll_e2e.mjs
 ```
+
+## C1d-2 attempt 3 V21 continuation checkpoint
+
+This checkpoint remains partial. Operational members/directories, typed authorized
+pinned brief input/output resolution and rich aggregate composition still require
+implementation and independent review before submission.
+
+Signed `chain.defaults.set` and `chain.summary.set` use strict encrypted prose
+payloads, chain CAS and immutable normalized history
+(`src/lib/owner_local/store.odin:236`). Defaults additionally require a strict
+Unicode JSON object; exact original JSON text is retained. Native review-role
+descriptions and pending proposals stay in defaults; installing active review
+roles remains the separate `review.roles` operation, as approved in
+`msg_18e58c9aa0808ab7`.
+
+`chain.metadata.read` pages mixed operational defaults/summary history under
+current chain read authorization with revision-bound cursors and a fixed byte
+budget (`src/lib/owner_local/chain_metadata.odin:11`).
+Ordinary chain reads consume current defaults
+(`src/lib/owner_local/reads.odin:96`). Summary history and task priority enter the
+context source inventory; materialization consumes current curated notes
+(`src/lib/owner_local/context.odin:15`). Context algorithm/source-digest version 2
+forces lazy rebuild of persisted V20 caches even when commit_seq is unchanged.
+
+V21 appends immutable version tables and preserves V1-V20
+(`src/lib/owner_local/migration_021.sql:1`). Regression coverage includes exact
+replay, stale CAS and cursors, strict duplicate-key rejection, clearing current
+notes/defaults without deleting history, statement/deferred-COMMIT rollback,
+restart, live capability preservation, genuine V20 collision/COMMIT migration
+rollback, and unchanged-checkpoint context cache upgrade
+(`src/lib/owner_local/chain_metadata_test.odin:17`).
+Historical reconstruction fixtures explicitly remove the additive V21 tables.
+
+Final verification, all exit 0 from the assigned Workdir:
+
+```bash
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/c1d2-v21-cache-final-a3
+nix develop --command odin test src/contracts -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/c1d2-defaults-a3-contracts
+nix develop --command node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_owner_local_contract_test.ts
+nix develop --command npm run typecheck
+nix build .#ham-bridge .#ham-hub .#ham-ctl .#ham-pty-host -o $HOME/.cache/heimdall-tests/c1d2-v21-final-a3-bins
+python3 scripts/check-owner-aggregate-parity.py
+git diff --check
+git diff --cached --check
+```
+
+Results: 181 storage tests, 27 contracts, 16 UI contract tests, typecheck,
+four binary builds, and 240-field/23-struct inventory check pass.
+Sessions: `sh_f811ab456b752d889cc218c0ed0f8f96` (storage),
+`sh_221f4b94a78dec7badea4806e45d9037` (contracts/UI/typecheck),
+`sh_32da9d31605337eeed70665129cdf29e` (builds).
+
+Final real UI signatures -> CLI -> Hub -> disposable enrolled Bridge demo
+passes exact notes/defaults, mixed-kind pagination, CAS/replay, context and
+restart, retaining all prior metadata evidence
+(`tests/e2e/owner_local_metadata_flow.ts:1`):
+
+```bash
+nix develop --command env HEIMDALL_E2E_HUB_BIN=$HOME/.cache/heimdall-tests/c1d2-v21-final-a3-bins-1/bin/ham-hub HEIMDALL_E2E_BRIDGE_BIN=$HOME/.cache/heimdall-tests/c1d2-v21-final-a3-bins/bin/ham-bridge HEIMDALL_E2E_CTL_BIN=$HOME/.cache/heimdall-tests/c1d2-v21-final-a3-bins-2/bin/ham-ctl HEIMDALL_E2E_PTY_BIN=$HOME/.cache/heimdall-tests/c1d2-v21-final-a3-bins-3/bin/ham-pty-host HEIMDALL_E2E_IDENTITY_BIN=$HOME/.cache/heimdall-tests/c1c-budget-identity HEIMDALL_E2E_OWNER_LOCAL=1 HEIMDALL_E2E_OWNER_METADATA_ONLY=1 node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/bridge_real_enroll_e2e.mjs
+```
+
+Session `sh_ca5688409f39f75b48a2f3ce8328781d`, exit 0, all steps PASSED.
+Earlier draft failures were corrected: Odin test string escaping and dynamic
+array slicing, stale final-schema expectations, and the native-origin V19
+reconstruction retaining the additive V21 table. No failed check remains.
+
+Coordinator decision `cmt_18e58cc6c33d5ca9` / `msg_18e58cc85d025237`
+defines the next implementation:
+
+- `chain.member.set` must keep workflow coordinator capability enrollment
+  separate, while member removal revokes authority and expires leases.
+- `chain.directory.set` manages CAS/history configuration separately from
+  validated Git activation by `lifecycle.configure`. Directory modification
+  or removal must invalidate cached directory resolution and active task path
+  bindings.
+
+These member/directory rules are approved but not yet implemented here.
+FTS/artifact indexing remains deferred under the earlier coordinator decision.

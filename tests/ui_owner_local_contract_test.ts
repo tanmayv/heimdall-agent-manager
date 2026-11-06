@@ -227,3 +227,28 @@ test('native metadata snapshots have strict chain scope and distinct read and mu
   for (const patch of [{ kind:'unknown' }, { limit:'101' }, { limit:'0' }, { task_id:'forged' }])
     assert.throws(() => ownerParse(JSON.stringify({ ...page, ...patch }), 'native_metadata_read'));
 });
+
+test('curated summary uses chain scope, mutation CAS and strict encrypted prose; history is read-only', () => {
+  const base = {...doc('command'),task_id:'',expected_revision:'1'} as OwnerCommand;
+  const c = {...base,method:'chain.summary.set'};
+  ownerParse(JSON.stringify(c),'command');
+  assert.throws(()=>ownerParse(JSON.stringify({...c,task_id:'task'}),'command'));
+  const g = {...grant,method:c.method,task_id:''};
+  assert.equal(ownerLiveAdmit(c,{...g,can_mutate:false},1000n,1n),'invalid_scope');
+  assert.equal(ownerLiveAdmit(c,g,1000n,2n),'stale_revision');
+  assert.equal(ownerLiveAdmit(c,g,1000n,1n),'none');
+  const read = {...base,method:'chain.metadata.read',expected_revision:'0'};
+  ownerParse(JSON.stringify(read),'command');
+  assert.equal(ownerLiveAdmit(read,{...g,method:read.method,can_mutate:false},1000n,2n),'none');
+  assert.throws(()=>ownerParse(JSON.stringify({body_cipher:'plain text'}),'comment_payload'));
+});
+
+test('defaults is a chain-scoped mutation distinct from review-role installation', () => {
+  const c = {...doc('command'),task_id:'',method:'chain.defaults.set',expected_revision:'1'} as OwnerCommand;
+  ownerParse(JSON.stringify(c),'command');
+  assert.throws(()=>ownerParse(JSON.stringify({...c,task_id:'task'}),'command'));
+  const g = {...grant,method:c.method,task_id:''};
+  assert.equal(ownerLiveAdmit(c,{...g,can_mutate:false},1000n,1n),'invalid_scope');
+  assert.equal(ownerLiveAdmit(c,g,1000n,2n),'stale_revision');
+  assert.equal(ownerLiveAdmit(c,g,1000n,1n),'none');
+});

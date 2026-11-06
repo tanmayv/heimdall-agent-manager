@@ -13,7 +13,8 @@ import contracts "odin_test:contracts"
 // Complete source index, ordered by immutable reference. Only called under the
 // Store transaction AFTER chain read authorization. Never includes credentials.
 CONTEXT_SOURCE_SQL :: `SELECT kind,ref,body FROM (
- SELECT 'task' kind,task_id ref,json_object('task_id',task_id,'title',title,'body',body,'revision',revision) body FROM tasks WHERE chain_id=?1
+ SELECT 'task' kind,task_id ref,json_object('task_id',task_id,'title',title,'body',body,'revision',revision,'priority',COALESCE((SELECT priority FROM local_task_priority_versions p WHERE p.chain_id=tasks.chain_id AND p.task_id=tasks.task_id ORDER BY accepted_seq DESC LIMIT 1),'p2')) body FROM tasks WHERE chain_id=?1
+ UNION ALL SELECT 'curated_summary',CAST(accepted_seq AS TEXT),json_object('accepted_seq',accepted_seq,'curated_body',curated_body) FROM local_chain_summary_versions WHERE chain_id=?1
  UNION ALL SELECT 'requirements',json_array(task_id,CAST(revision AS TEXT)),json_object('task_id',task_id,'revision',revision,'brief',brief_json) FROM task_requirements WHERE chain_id=?1
  UNION ALL SELECT 'submission',json_array(task_id,CAST(attempt AS TEXT)),json_object('task_id',task_id,'attempt',attempt,'summary',summary,'head',head,'requirements_revision',requirements_revision) FROM local_submissions WHERE chain_id=?1
  UNION ALL SELECT 'handoff',json_array(principal_id,operation_id),json_object('task_id',task_id,'principal_id',principal_id,'operation_id',operation_id,'kind',kind,'summary',summary,'next_steps',next_steps,'waiting_on',waiting_on,'seq',seq) FROM local_handoffs WHERE chain_id=?1
@@ -40,7 +41,7 @@ context_source_digest :: proc(s:^Store,chain,seq:string) -> (string,i64,bool) {
     if sqlite3_bind_text(stmt,1,strings.clone_to_cstring(chain,context.temp_allocator),c.int(len(chain)),rawptr(~uintptr(0)))!=0 do return "",0,false
     hash:sha2.Context_256
     sha2.init_256(&hash)
-    prefix:=encode([4]string{"heimdall-context-source-v1",s.account,chain,seq})
+    prefix:=encode([4]string{"heimdall-context-source-v2",s.account,chain,seq})
     sha2.update(&hash,transmute([]byte)prefix)
     count:i64
     for {
@@ -68,14 +69,14 @@ context_materialize :: proc(s:^Store,chain:string) -> (json.Object,bool) {
     if s.active==nil || !transaction_current(s.active) do return nil,false
     state,ok:=query(s.db,"SELECT commit_seq FROM runtime_database WHERE singleton=1")
     if !ok || len(state)!=1 do return nil,false
-    header,found:=query(s.db,"SELECT title,description FROM task_chains WHERE chain_id=?",chain)
+    header,found:=query(s.db,"SELECT title,description,COALESCE((SELECT curated_body FROM local_chain_summary_versions s WHERE s.chain_id=task_chains.chain_id ORDER BY accepted_seq DESC LIMIT 1),'') FROM task_chains WHERE chain_id=?",chain)
     if !found || len(header)!=1 do return nil,false
     seq:=state[0][0]
     old,read:=query(s.db,"SELECT algorithm,version,source_seq,source_digest,source_count,body FROM local_chain_context WHERE chain_id=?",chain)
     if !read do return nil,false
     version:i64=1
     digest,body,count:="","",""
-    if len(old)==1 && old[0][0]=="1" && old[0][2]==seq {
+    if len(old)==1 && old[0][0]=="2" && old[0][2]==seq {
         version=number(old[0][1]);digest=old[0][3];count=old[0][4];body=old[0][5]
     } else {
         source_hash,source_count,source_ok:=context_source_digest(s,chain,seq)
@@ -85,6 +86,7 @@ context_materialize :: proc(s:^Store,chain:string) -> (json.Object,bool) {
         digest=source_hash
         items:=make([dynamic]string,context.temp_allocator)
         append(&items,fmt.tprintf("Coordinator input (chain description): %s",header[0][1]))
+        if header[0][2]!="" do append(&items,fmt.tprintf("Curated notes: %s",header[0][2]))
         pending,pending_ok:=query(s.db,"SELECT origin_kind,origin_id,episode_id,body FROM source_episodes WHERE chain_id=? AND (resolved=0 OR (card_id!='' AND card_closed=0)) ORDER BY source_version DESC,origin_kind,origin_id,episode_id LIMIT 16",chain)
         if !pending_ok do return nil,false
         for row in pending do append(&items,fmt.tprintf("[unresolved %s:%s:%s] %s",row[0],row[1],row[2],row[3]))
@@ -104,11 +106,11 @@ context_materialize :: proc(s:^Store,chain:string) -> (json.Object,bool) {
         if !recent_ok do return nil,false
         for row in recent do append(&items,fmt.tprintf("[submission %s:%s] %s",row[0],row[1],row[2]))
         body=compact.project(fmt.tprintf("# Chain %s: %s",chain,header[0][0]),
-            fmt.tprintf("Projection v1; checkpoint %s; %s sources. Fetch full originals with signed context.read (cursor pages); no source is deleted.",seq,count),items[:])
-        if _,saved:=query(s.db,"INSERT INTO local_chain_context VALUES(?,1,?,?,?,?,?) ON CONFLICT(chain_id) DO UPDATE SET algorithm=excluded.algorithm,version=excluded.version,source_seq=excluded.source_seq,source_digest=excluded.source_digest,source_count=excluded.source_count,body=excluded.body",
+            fmt.tprintf("Projection v2; checkpoint %s; %s sources. Fetch full originals with signed context.read (cursor pages); no source is deleted.",seq,count),items[:])
+        if _,saved:=query(s.db,"INSERT INTO local_chain_context VALUES(?,2,?,?,?,?,?) ON CONFLICT(chain_id) DO UPDATE SET algorithm=excluded.algorithm,version=excluded.version,source_seq=excluded.source_seq,source_digest=excluded.source_digest,source_count=excluded.source_count,body=excluded.body",
             chain,fmt.tprintf("%d",version),seq,digest,count,body);!saved do return nil,false
     }
-    return doc(map[string]string{"algorithm"="1","version"=fmt.tprintf("%d",version),"source_seq"=seq,"source_digest"=digest,"source_count"=count,"freshness"="snapshot","body"=body,"fetch_method"="context.read"}),true
+    return doc(map[string]string{"algorithm"="2","version"=fmt.tprintf("%d",version),"source_seq"=seq,"source_digest"=digest,"source_count"=count,"freshness"="snapshot","body"=body,"fetch_method"="context.read"}),true
 }
 
 // One bounded source chunk per page. Cursor binds account/chain/checkpoint,

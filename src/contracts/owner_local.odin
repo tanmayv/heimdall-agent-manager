@@ -39,7 +39,7 @@ owner_hex :: proc(s: string, n: int) -> bool {
 
 owner_method_valid :: proc(s: string) -> bool {
     switch s {
-    case "task.priority", "native.metadata.import", "native.metadata.read", "fleet.policy.set", "fleet.policy.read", "budget.activate", "native.history.import", "native.history.read", "native.history.fetch", "attempt.read", "history.read", "history.fetch", "context.read", "grant.set", "grant.revoke", "grant.read", "grant.policy", "grant.recover", "workflow.coordinator", "workflow.cancel", "workflow.gate", "workflow.define", "workflow.run", "workflow.retry", "workflow.read", "source.observe", "source.consume", "source.ack", "source.retire", "source.resolve", "source.escalate", "source.read", "dependency.edit", "review.roles", "task.hold", "task.release", "task.cancel", "task.reopen", "task.resolve", "merge.retry", "submission.read", "chain.edit", "task.edit", "task.delete", "chain.search", "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "runtime.read", "lifecycle.configure", "requirements.edit", "review.post": return true
+    case "chain.defaults.set", "chain.summary.set", "chain.metadata.read", "task.priority", "native.metadata.import", "native.metadata.read", "fleet.policy.set", "fleet.policy.read", "budget.activate", "native.history.import", "native.history.read", "native.history.fetch", "attempt.read", "history.read", "history.fetch", "context.read", "grant.set", "grant.revoke", "grant.read", "grant.policy", "grant.recover", "workflow.coordinator", "workflow.cancel", "workflow.gate", "workflow.define", "workflow.run", "workflow.retry", "workflow.read", "source.observe", "source.consume", "source.ack", "source.retire", "source.resolve", "source.escalate", "source.read", "dependency.edit", "review.roles", "task.hold", "task.release", "task.cancel", "task.reopen", "task.resolve", "merge.retry", "submission.read", "chain.edit", "task.edit", "task.delete", "chain.search", "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "runtime.read", "lifecycle.configure", "requirements.edit", "review.post": return true
     }
     return false
 }
@@ -171,7 +171,8 @@ owner_payload_kind :: proc(method: string) -> string {
     case "chain.edit": return "chain_edit_payload"
     case "task.delete": return "delete_payload"
     case "chain.search": return "search_payload"
-    case "task.comment": return "comment_payload"
+    case "task.comment", "chain.summary.set", "chain.defaults.set": return "comment_payload"
+    case "chain.metadata.read": return "read_payload"
     case "fleet.edit": return "fleet_payload"
     case "task.hold", "task.release", "task.cancel", "task.reopen", "task.resolve": return "control_payload"
     case "lease.handoff": return "handoff_payload"
@@ -307,7 +308,7 @@ owner_live_admit :: proc(o: json.Object, grant: Owner_Read_Grant, now_ms, curren
     expires, _ := strconv.parse_i64(owner_string(o, "request_expires_ms"))
     if expires <= now_ms || expires - now_ms > OWNER_REQUEST_TTL_MS do return .Expired
     method := owner_string(o, "method")
-    read := method == "native.metadata.read" || method == "fleet.policy.read" || method == "native.history.read" || method == "native.history.fetch" || method == "attempt.read" || method == "history.read" || method == "history.fetch" || method == "context.read" || method == "grant.read" || method == "workflow.read" || method == "source.read" || method == "submission.read" || method == "chain.search" || method == "chain.read" || method == "task.read" || method == "receipt.read" || method == "runtime.read"
+    read := method == "chain.metadata.read" || method == "native.metadata.read" || method == "fleet.policy.read" || method == "native.history.read" || method == "native.history.fetch" || method == "attempt.read" || method == "history.read" || method == "history.fetch" || method == "context.read" || method == "grant.read" || method == "workflow.read" || method == "source.read" || method == "submission.read" || method == "chain.search" || method == "chain.read" || method == "task.read" || method == "receipt.read" || method == "runtime.read"
     if !read && !grant.can_mutate do return .Invalid_Scope
     expected, _ := strconv.parse_i64(owner_string(o, "expected_revision"))
     if current_revision < 0 do return .Stale_Revision

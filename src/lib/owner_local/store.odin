@@ -187,7 +187,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         }
     }
     if e:=contracts.owner_live_admit(c,g,now,revision);e!=.None do return auth_fail(e)
-    read:=method=="native.metadata.read" || method=="fleet.policy.read" || method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="history.read" || method=="history.fetch" || method=="context.read" || method=="grant.read" || method=="workflow.read" || method=="source.read" || method=="submission.read" || method=="chain.search" || method=="chain.read" || method=="task.read" || method=="receipt.read" || method=="runtime.read"
+    read:=method=="chain.metadata.read" || method=="native.metadata.read" || method=="fleet.policy.read" || method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="history.read" || method=="history.fetch" || method=="context.read" || method=="grant.read" || method=="workflow.read" || method=="source.read" || method=="submission.read" || method=="chain.search" || method=="chain.read" || method=="task.read" || method=="receipt.read" || method=="runtime.read"
     if read {
         if method=="chain.search" && (kr==nil || kr.current_epoch==0) do return fail("invalid_content")
         result:Result
@@ -233,6 +233,13 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     next:=revision+1
     wrote:=false
     switch method {
+    case "chain.defaults.set":
+        value,valid:=contracts.owner_content_document(body)
+        _,object:=value.(json.Object)
+        if !valid || !object do return fail("invalid_content")
+        _,wrote=query(s.db,"INSERT INTO local_chain_defaults_versions VALUES(?,?,?)",chain,fmt.tprintf("%d",seq),body)
+    case "chain.summary.set":
+        _,wrote=query(s.db,"INSERT INTO local_chain_summary_versions VALUES(?,?,?)",chain,fmt.tprintf("%d",seq),body)
     case "task.priority":
         _,wrote=query(s.db,"INSERT INTO local_task_priority_versions VALUES(?,?,?,?)",chain,task,fmt.tprintf("%d",seq),field(p,"priority"))
         if wrote { _,wrote=query(s.db,"UPDATE tasks SET revision=revision+1 WHERE chain_id=? AND task_id=?",chain,task) }

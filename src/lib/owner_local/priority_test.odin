@@ -99,7 +99,7 @@ priority_v19_migration_collision_and_commit_rollback_preserve_rich_state :: proc
     close(&f.store)
     db:DB
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    testing.expect(t,exec(db,"DROP TRIGGER IF EXISTS native_history_origin; DROP TABLE IF EXISTS local_fleet_policy_sources; DROP TABLE IF EXISTS native_fleet_policies; DROP TABLE IF EXISTS native_fleet_snapshots; DROP TABLE local_task_priority_versions"))
+    testing.expect(t,exec(db,"DROP TABLE IF EXISTS local_chain_defaults_versions; DROP TABLE IF EXISTS local_chain_summary_versions; DROP TRIGGER IF EXISTS native_history_origin; DROP TABLE IF EXISTS local_fleet_policy_sources; DROP TABLE IF EXISTS native_fleet_policies; DROP TABLE IF EXISTS native_fleet_snapshots; DROP TABLE local_task_priority_versions"))
     prefix:=string(MIGRATION_019);prefix=prefix[:strings.index(prefix,"CREATE TABLE native_fact_snapshots")]
     testing.expect(t,exec(db,prefix))
     testing.expect(t,exec(db,"UPDATE schema_migrations SET version=19; CREATE VIEW local_task_priority_versions AS SELECT 1"))

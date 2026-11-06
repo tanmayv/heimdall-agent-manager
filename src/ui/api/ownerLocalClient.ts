@@ -56,7 +56,7 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
     genesis = JSON.stringify(g);
     payload = { genesis_digest: await ownerDigest('genesis', g), title_cipher: await encryptVaultText(input.title ?? '', keyring), description_cipher: await encryptVaultText(input.description ?? '', keyring) };
   } else if ((method === 'task.create' || method === 'task.edit')) payload = { title_cipher: await encryptVaultText(input.title ?? '', keyring), body_cipher: await encryptVaultText(input.body ?? '', keyring) };
-  else if (method === 'task.comment') payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring) };
+  else if (method === 'task.comment' || method === 'chain.summary.set' || method === 'chain.defaults.set') payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'fleet.edit') payload = { instance_id: input.instanceId ?? '', configuration_revision: input.configurationRevision ?? '', enabled: input.enabled === false ? '0' : '1' };
   else if (['task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve'].includes(method)) payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'merge.retry') payload = { attempt: input.attempt ?? '', requirements_revision: input.requirementsRevision ?? '', head: input.head ?? '', configuration_revision: input.configurationRevision ?? '', body_cipher: await encryptVaultText(input.body ?? '', keyring) };
@@ -68,7 +68,7 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
   else if (method === 'fleet.policy.set' && input.nativeSourceRevision) payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring), source_revision: input.nativeSourceRevision };
   else if (method === 'fleet.policy.set' || method === 'native.history.import' || method === 'native.metadata.import') payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'native.metadata.read') payload = { source_revision: input.nativeSourceRevision ?? '', kind: input.nativeHistoryKind ?? '', cursor: input.cursor ?? '', limit: String(input.limit ?? 20) };
-  else if (method === 'fleet.policy.read') payload = { cursor: input.cursor ?? '', limit: String(input.limit ?? 20) };
+  else if (method === 'fleet.policy.read' || method === 'chain.metadata.read') payload = { cursor: input.cursor ?? '', limit: String(input.limit ?? 20) };
   else if (method === 'native.history.read') payload = { source_revision: input.nativeSourceRevision ?? '', kind: input.nativeHistoryKind ?? '', cursor: input.cursor ?? '', limit: String(input.limit ?? 20) };
   else if (method === 'native.history.fetch') payload = { source_revision: input.nativeSourceRevision ?? '', kind: input.nativeHistoryKind ?? '', key: input.nativeHistoryKey ?? '', offset: input.offset ?? '0' };
   else if (method === 'attempt.read') payload = { attempt: input.attempt ?? '' };
