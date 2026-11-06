@@ -32,7 +32,7 @@ owner_hex :: proc(s: string, n: int) -> bool {
 
 owner_method_valid :: proc(s: string) -> bool {
     switch s {
-    case "grant.set", "grant.revoke", "grant.read", "grant.policy", "grant.recover", "workflow.define", "workflow.run", "workflow.retry", "workflow.read", "source.observe", "source.consume", "source.ack", "source.retire", "source.resolve", "source.escalate", "source.read", "dependency.edit", "review.roles", "task.hold", "task.release", "task.cancel", "task.reopen", "task.resolve", "merge.retry", "submission.read", "chain.edit", "task.edit", "task.delete", "chain.search", "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "runtime.read", "lifecycle.configure", "requirements.edit", "review.post": return true
+    case "grant.set", "grant.revoke", "grant.read", "grant.policy", "grant.recover", "workflow.coordinator", "workflow.cancel", "workflow.gate", "workflow.define", "workflow.run", "workflow.retry", "workflow.read", "source.observe", "source.consume", "source.ack", "source.retire", "source.resolve", "source.escalate", "source.read", "dependency.edit", "review.roles", "task.hold", "task.release", "task.cancel", "task.reopen", "task.resolve", "merge.retry", "submission.read", "chain.edit", "task.edit", "task.delete", "chain.search", "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "runtime.read", "lifecycle.configure", "requirements.edit", "review.post": return true
     }
     return false
 }
@@ -52,8 +52,9 @@ owner_field_valid :: proc(s, kind: string) -> bool {
     case "signature": return owner_hex(s, 128)
     case "method": return owner_method_valid(s)
     case "lease_method": return s=="lease.claim" || s=="lease.heartbeat"
+    case "coordinator_methods": return s=="workflow.gate.post"
     case "lease_methods": return s=="lease.claim,lease.heartbeat,requirements.present,requirements.ack,lease.submit,lease.handoff,lease.block,lease.switch" || s=="review.role.post,review.checkpoint" || s=="review.post,review.checkpoint" || s=="lease.claim,lease.heartbeat" || s=="lease.claim,lease.heartbeat,requirements.present,requirements.ack,lease.submit" || s=="review.post"
-    case "lifecycle_method": return s=="review.role.open" || s=="review.role.post" || s=="lease.handoff" || s=="lease.block" || s=="lease.switch" || s=="review.checkpoint" || s=="requirements.present" || s=="requirements.ack" || s=="lease.submit" || s=="review.open" || s=="review.post"
+    case "lifecycle_method": return s=="workflow.gate.post" || s=="review.role.open" || s=="review.role.post" || s=="lease.handoff" || s=="lease.block" || s=="lease.switch" || s=="review.checkpoint" || s=="requirements.present" || s=="requirements.ack" || s=="lease.submit" || s=="review.open" || s=="review.post"
     case "merge_policy": return s=="none" || s=="git"
     case "verdict": return s=="approve" || s=="request_changes"
     case "path": return len(s)<=4096 && (s=="" || (s[0]=='/' && !strings.contains(s,"..") && !strings.contains(s,"\\")))
@@ -86,6 +87,7 @@ owner_field_valid :: proc(s, kind: string) -> bool {
 }
 
 owner_document_valid :: proc(kind: string, o: json.Object) -> bool {
+    if kind=="submit_payload" && "output" in o do return owner_document_valid("submit_output_payload",o)
     schema := owner_schema(kind)
     if len(schema) == 0 || len(o) != len(schema) do return false
     for f in schema {
@@ -123,7 +125,9 @@ owner_document_valid :: proc(kind: string, o: json.Object) -> bool {
 
 owner_payload_kind :: proc(method: string) -> string {
     switch method {
-    case "workflow.define", "workflow.run", "workflow.retry", "source.observe", "source.consume", "source.ack", "source.retire", "source.resolve", "source.escalate", "review.roles": return "control_payload"
+    case "workflow.coordinator": return "coordinator_payload"
+    case "workflow.gate.post": return "workflow_gate"
+    case "workflow.cancel", "workflow.gate", "workflow.define", "workflow.run", "workflow.retry", "source.observe", "source.consume", "source.ack", "source.retire", "source.resolve", "source.escalate", "review.roles": return "control_payload"
     case "workflow.read", "source.read": return "read_payload"
     case "dependency.edit": return "dependency_payload"
     case "review.role.open", "review.role.post": return "review_role_payload"
@@ -170,6 +174,7 @@ owner_parse :: proc(raw, kind: string) -> (json.Object, bool) {
 // Signatures are detached and omitted; all other fields (including key IDs) bind.
 // No JSON serialization, escaping, map iteration or float formatting affects bytes.
 owner_canonical :: proc(kind: string, o: json.Object) -> (string, bool) {
+    if kind=="submit_payload" && "output" in o do return owner_canonical("submit_output_payload",o)
     if !owner_document_valid(kind, o) do return "", false
     b: strings.Builder
     strings.builder_init(&b, context.temp_allocator)

@@ -48,6 +48,13 @@ export const ownerSchemas = {
   grant_payload: [["principal_id", "id"], ["key_id", "id"], ["expires_ms", "positive"], ["can_read", "flag"], ["can_mutate", "flag"]],
   grant_revoke_payload: [["principal_id", "id"], ["key_id", "id"]],
   grant_policy_payload: [["policy_revision", "positive"], ["recovery_enabled", "flag"]],
+  workflow_language_definition: [["workflow_id", "id"], ["version", "positive"], ["title", "document"], ["spec", "document"]],
+  workflow_language_run: [["run_id", "id"], ["workflow_id", "id"], ["version", "positive"], ["inputs", "document"]],
+  workflow_gate: [["run_id", "id"], ["execution", "positive"], ["stage_key", "id"], ["verdict", "verdict"], ["summary", "document"]],
+  submit_output_payload: [["requirements_revision", "positive"], ["head", "optional_commit"], ["summary", "document"], ["output", "document"]],
+  workflow_control: [["run_id", "id"], ["execution", "positive"], ["reason", "document"]],
+  coordinator_payload: [["configuration_revision", "positive"], ["agent_id", "id"], ["instance_id", "id"]],
+  coordinator_capability: [["protocol_version", "version"], ["account_id", "id"], ["owner_bridge_id", "id"], ["chain_id", "id"], ["instance_id", "id"], ["launch_epoch", "id"], ["run_count", "positive"], ["token_generation", "hash"], ["configuration_revision", "positive"], ["expires_ms", "positive"], ["allowed_methods", "coordinator_methods"], ["key_id", "id"], ["signature", "signature"]],
 } as const;
 export type OwnerKind = keyof typeof ownerSchemas;
 export interface OwnerGenesis {
@@ -403,6 +410,56 @@ export interface OwnerGrant_Policy_Payload {
   policy_revision: string;
   recovery_enabled: string;
 }
+export interface OwnerWorkflow_Language_Definition {
+  workflow_id: string;
+  version: string;
+  title: string;
+  spec: string;
+}
+export interface OwnerWorkflow_Language_Run {
+  run_id: string;
+  workflow_id: string;
+  version: string;
+  inputs: string;
+}
+export interface OwnerWorkflow_Gate {
+  run_id: string;
+  execution: string;
+  stage_key: string;
+  verdict: string;
+  summary: string;
+}
+export interface OwnerSubmit_Output_Payload {
+  requirements_revision: string;
+  head: string;
+  summary: string;
+  output: string;
+}
+export interface OwnerWorkflow_Control {
+  run_id: string;
+  execution: string;
+  reason: string;
+}
+export interface OwnerCoordinator_Payload {
+  configuration_revision: string;
+  agent_id: string;
+  instance_id: string;
+}
+export interface OwnerCoordinator_Capability {
+  protocol_version: string;
+  account_id: string;
+  owner_bridge_id: string;
+  chain_id: string;
+  instance_id: string;
+  launch_epoch: string;
+  run_count: string;
+  token_generation: string;
+  configuration_revision: string;
+  expires_ms: string;
+  allowed_methods: string;
+  key_id: string;
+  signature: string;
+}
 export interface OwnerDocuments {
   genesis: OwnerGenesis;
   command: OwnerCommand;
@@ -452,4 +509,11 @@ export interface OwnerDocuments {
   grant_payload: OwnerGrant_Payload;
   grant_revoke_payload: OwnerGrant_Revoke_Payload;
   grant_policy_payload: OwnerGrant_Policy_Payload;
+  workflow_language_definition: OwnerWorkflow_Language_Definition;
+  workflow_language_run: OwnerWorkflow_Language_Run;
+  workflow_gate: OwnerWorkflow_Gate;
+  submit_output_payload: OwnerSubmit_Output_Payload;
+  workflow_control: OwnerWorkflow_Control;
+  coordinator_payload: OwnerCoordinator_Payload;
+  coordinator_capability: OwnerCoordinator_Capability;
 }

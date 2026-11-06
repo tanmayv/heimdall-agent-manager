@@ -5,12 +5,15 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:strings"
 import contracts "odin_test:contracts"
+import wf "odin_test:lib/workflow_v1"
 
 Source_Proof :: struct { head:string, valid:bool }
 // The owner-signed attestation includes the payload and exact observed child.
 // Historical replay precedes every mutation fence, but never current read auth.
 execute_lifecycle :: proc(s:^Store,raw,payload,cap_raw:string,child:Child,key:contracts.Owner_Verified_Key,now:i64,sign:Signer,source:Source_Proof={}) -> Result {
     context.allocator=context.temp_allocator
+    gate,gate_valid:=contracts.owner_parse(raw,"lifecycle_command")
+    if gate_valid && field(gate,"method")=="workflow.gate.post" do return execute_coordinator_gate(s,raw,payload,cap_raw,child,key,now,sign)
     c,valid:=contracts.owner_parse(raw,"lifecycle_command")
     if !valid do return fail("malformed")
     if !key.enrolled || key.revoked || key.kind!="bridge" || key.account_id!=s.account || key.principal_id!=s.owner || key.key_id!=s.owner_key ||
@@ -106,8 +109,18 @@ execute_lifecycle :: proc(s:^Store,raw,payload,cap_raw:string,child:Child,key:co
             states,state_ok:=query(s.db,"SELECT state,attempt FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)
             if !state_ok || len(states)!=1 do return fail("storage_error")
             if states[0][0]!="ready" do return fail("operation_conflict")
+            output:=field(p,"output")
+            if len(output)>MAX_BODY || len(encode(output))>MAX_ENCODED_FIELD do return fail("invalid_content")
+            if output!="" {
+                v,valid_output:=contracts.owner_request_document(output)
+                if _,obj:=v.(json.Object);!valid_output || !obj do return fail("invalid_content")
+            }
+            if err:=wf.validate_task_output_contract(req[1],output);err.code!=.None do return fail("invalid_content")
             attempt:=number(states[0][1])+1
             if _,ok=query(s.db,"INSERT INTO local_submissions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",chain,task,fmt.tprintf("%d",attempt),lease,child.agent_id,encode(child),req[0],field(config,"configuration_revision"),source.head,field(p,"summary"),req[1],child.instance,op);!ok do return fail("storage_error")
+            if output!="" {
+                if _,ok=query(s.db,"INSERT INTO local_workflow_outputs VALUES(?,?,?,?)",chain,task,fmt.tprintf("%d",attempt),output);!ok do return fail("storage_error")
+            }
             if _,ok=query(s.db,"UPDATE local_leases SET retired_seq=? WHERE lease_id=?",fmt.tprintf("%d",seq),lease);!ok do return fail("storage_error")
             if _,ok=query(s.db,"UPDATE lifecycle_state SET state='in_review',attempt=? WHERE chain_id=? AND task_id=?",fmt.tprintf("%d",attempt),chain,task);!ok do return fail("storage_error")
             if _,ok=query(s.db,"UPDATE tasks SET revision=revision+1 WHERE chain_id=? AND task_id=?",chain,task);!ok do return fail("storage_error")

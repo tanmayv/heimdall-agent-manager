@@ -246,3 +246,11 @@ rebuild and rendered workflow/source panels. It does not restart production.
 Focused evidence is beside the implementation in `workflows_test.odin`,
 `review_roles_test.odin` and `sources_test.odin`. The latter preserves the two
 reviewer scenarios from R2C without importing the rejected Hub-authority branch.
+
+
+## Original workflow.v1 language successor
+
+The original-language transport, dynamic fan-out/templates, structured outputs,
+on_output siblings and explicit coordinator/user gate paths are documented in
+[owner-local-workflow-language.md](owner-local-workflow-language.md). The static
+wrapper in this document remains a separate supported transport.

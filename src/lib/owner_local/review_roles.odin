@@ -83,6 +83,10 @@ role_gate :: proc(s:^Store,chain,task,attempt:string)->(string,bool) {
         if !owed_read do return "",false
         if len(owed)>0 || (rc[1]=="1" && !user) do return "in_review",true
     }
+    required,required_read:=query(s.db,"SELECT requires_user_approval FROM local_workflow_language_items WHERE task_id=?",task)
+    if !required_read do return "",false
+    if len(required)==1 && required[0][0]=="1" && !user do return "in_review",true
+    if !language_policy_ready(s,chain,task) do return "in_review",true
     if !independent do return "in_review",true
     return ("merge_pending" if field(config,"merge_policy")=="git" else "done"),true
 }

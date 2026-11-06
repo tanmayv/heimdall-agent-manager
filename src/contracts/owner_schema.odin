@@ -754,6 +754,113 @@ owner_fields_grant_policy_payload := [?]Owner_Field{
     {"policy_revision", "positive"},
     {"recovery_enabled", "flag"},
 }
+Owner_Workflow_Language_Definition :: struct {
+    workflow_id: string,
+    version: string,
+    title: string,
+    spec: string,
+}
+@(private)
+owner_fields_workflow_language_definition := [?]Owner_Field{
+    {"workflow_id", "id"},
+    {"version", "positive"},
+    {"title", "document"},
+    {"spec", "document"},
+}
+Owner_Workflow_Language_Run :: struct {
+    run_id: string,
+    workflow_id: string,
+    version: string,
+    inputs: string,
+}
+@(private)
+owner_fields_workflow_language_run := [?]Owner_Field{
+    {"run_id", "id"},
+    {"workflow_id", "id"},
+    {"version", "positive"},
+    {"inputs", "document"},
+}
+Owner_Workflow_Gate :: struct {
+    run_id: string,
+    execution: string,
+    stage_key: string,
+    verdict: string,
+    summary: string,
+}
+@(private)
+owner_fields_workflow_gate := [?]Owner_Field{
+    {"run_id", "id"},
+    {"execution", "positive"},
+    {"stage_key", "id"},
+    {"verdict", "verdict"},
+    {"summary", "document"},
+}
+Owner_Submit_Output_Payload :: struct {
+    requirements_revision: string,
+    head: string,
+    summary: string,
+    output: string,
+}
+@(private)
+owner_fields_submit_output_payload := [?]Owner_Field{
+    {"requirements_revision", "positive"},
+    {"head", "optional_commit"},
+    {"summary", "document"},
+    {"output", "document"},
+}
+Owner_Workflow_Control :: struct {
+    run_id: string,
+    execution: string,
+    reason: string,
+}
+@(private)
+owner_fields_workflow_control := [?]Owner_Field{
+    {"run_id", "id"},
+    {"execution", "positive"},
+    {"reason", "document"},
+}
+Owner_Coordinator_Payload :: struct {
+    configuration_revision: string,
+    agent_id: string,
+    instance_id: string,
+}
+@(private)
+owner_fields_coordinator_payload := [?]Owner_Field{
+    {"configuration_revision", "positive"},
+    {"agent_id", "id"},
+    {"instance_id", "id"},
+}
+Owner_Coordinator_Capability :: struct {
+    protocol_version: string,
+    account_id: string,
+    owner_bridge_id: string,
+    chain_id: string,
+    instance_id: string,
+    launch_epoch: string,
+    run_count: string,
+    token_generation: string,
+    configuration_revision: string,
+    expires_ms: string,
+    allowed_methods: string,
+    key_id: string,
+    signature: string,
+}
+@(private)
+owner_fields_coordinator_capability := [?]Owner_Field{
+    {"protocol_version", "version"},
+    {"account_id", "id"},
+    {"owner_bridge_id", "id"},
+    {"chain_id", "id"},
+    {"instance_id", "id"},
+    {"launch_epoch", "id"},
+    {"run_count", "positive"},
+    {"token_generation", "hash"},
+    {"configuration_revision", "positive"},
+    {"expires_ms", "positive"},
+    {"allowed_methods", "coordinator_methods"},
+    {"key_id", "id"},
+    {"signature", "signature"},
+}
 owner_schema :: proc(kind: string) -> []Owner_Field {
     switch kind {
     case "genesis": return owner_fields_genesis[:]
@@ -804,6 +911,13 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "grant_payload": return owner_fields_grant_payload[:]
     case "grant_revoke_payload": return owner_fields_grant_revoke_payload[:]
     case "grant_policy_payload": return owner_fields_grant_policy_payload[:]
+    case "workflow_language_definition": return owner_fields_workflow_language_definition[:]
+    case "workflow_language_run": return owner_fields_workflow_language_run[:]
+    case "workflow_gate": return owner_fields_workflow_gate[:]
+    case "submit_output_payload": return owner_fields_submit_output_payload[:]
+    case "workflow_control": return owner_fields_workflow_control[:]
+    case "coordinator_payload": return owner_fields_coordinator_payload[:]
+    case "coordinator_capability": return owner_fields_coordinator_capability[:]
     }
     return nil
 }

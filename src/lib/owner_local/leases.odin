@@ -101,7 +101,7 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
     expires,hard:=now+LEASE_TTL_MS,now+LEASE_HARD_MS
     version:=i64(1)
     if method=="lease.claim" {
-        if !dependency_ready(s,chain,task) do return fail("operation_conflict")
+        if !dependency_ready(s,chain,task) || !language_claim_ready(s,chain,task) do return fail("operation_conflict")
         if config,binding,configured:=lifecycle_config(s,chain,task);configured {
             if child.agent_id!=field(config,"author_agent_id") || encode(child)!=binding[1] do return fail("invalid_scope")
             states,ok:=query(s.db,"SELECT state FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)

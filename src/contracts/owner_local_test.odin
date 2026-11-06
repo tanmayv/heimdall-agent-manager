@@ -217,3 +217,20 @@ owner_controls_require_task_mutation_and_switch_exact_fields :: proc(t:^testing.
     p["verdict"]=json.String("approve")
     testing.expect(t,!owner_document_valid("checkpoint_payload",p),"checkpoint cannot carry a verdict")
 }
+
+@(test)
+owner_workflow_language_shapes_and_output_variant_bind_all_fields :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    p,ok:=owner_parse(`{"requirements_revision":"1","head":"","summary":"done","output":"{}"}`,"submit_payload")
+    if !testing.expect(t,ok) do return
+    a,valid:=owner_canonical("submit_payload",p)
+    testing.expect(t,valid)
+    p["output"]=json.String(`{"changed":true}`)
+    b,changed:=owner_canonical("submit_payload",p)
+    testing.expect(t,changed && a!=b)
+    _,ok=owner_parse(`{"configuration_revision":"1","agent_id":"agent","instance_id":"instance"}`,"coordinator_payload")
+    testing.expect(t,ok)
+    testing.expect_value(t,owner_payload_kind("workflow.gate.post"),"workflow_gate")
+    testing.expect(t,owner_field_valid("workflow.gate.post","lifecycle_method"))
+    testing.expect(t,!owner_field_valid("workflow.gate.post,task.reopen","coordinator_methods"))
+}

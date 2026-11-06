@@ -214,7 +214,11 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     next:=revision+1
     wrote:=false
     switch method {
-    case "workflow.define", "workflow.run", "workflow.retry":
+    case "workflow.coordinator":
+        code:=coordinator_configure(s,c,p,fleet_child,now,sign)
+        if code!="ok" do return fail(code)
+        wrote=true
+    case "workflow.cancel", "workflow.gate", "workflow.define", "workflow.run", "workflow.retry":
         code:=workflow_command(s,c,body,seq)
         if code!="ok" do return fail(code)
         wrote=true
@@ -303,6 +307,11 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     }
     if !creating && method!="chain.edit" { if _,ok=query(s.db,"UPDATE task_chains SET revision=revision+1 WHERE chain_id=?",chain);!ok do return fail("storage_error") }
     result:=encode(map[string]string{"chain_id"=chain,"task_id"=task,"operation_id"=op,"revision"=fmt.tprintf("%d",next)})
+    if method=="workflow.coordinator" {
+        bound,read:=query(s.db,"SELECT capability_json FROM local_workflow_coordinators WHERE chain_id=? AND revision=?",chain,field(p,"configuration_revision"))
+        if !read || len(bound)!=1 do return fail("storage_error")
+        result=encode(doc(map[string]string{"chain_id"=chain,"task_id"="","operation_id"=op,"revision"=fmt.tprintf("%d",next),"capability"=bound[0][0]}))
+    }
     if _,ok=query(s.db,"INSERT INTO command_receipts(principal_id,operation_id,chain_id,task_id,method,input_digest,digest_key_id,request_expires_ms,result_json,commit_seq,created_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)",principal,op,chain,task,method,digest,key.key_id,field(c,"request_expires_ms"),result,fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
     if _,ok=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),chain,method,task,fmt.tprintf("%d",next),op);!ok do return fail("storage_error")
     if !workflow_publications(&tx,c,body,seq,kr,sign) do return fail("storage_error")

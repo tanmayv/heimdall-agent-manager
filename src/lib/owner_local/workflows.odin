@@ -58,6 +58,7 @@ workflow_expand :: proc(s:^Store,chain,run,execution:string,stages:[]json.Object
     return ok
 }
 workflow_command :: proc(s:^Store,c:json.Object,body:string,seq:i64)->string {
+    if handled,code:=language_command(s,c,body,seq);handled do return code
     chain,method:=field(c,"chain_id"),field(c,"method")
     kind:="workflow_run"
     if method=="workflow.define" do kind="workflow_definition"
@@ -105,7 +106,9 @@ workflow_command :: proc(s:^Store,c:json.Object,body:string,seq:i64)->string {
 }
 workflow_task_current :: proc(s:^Store,chain,task:string)->bool {
     rows,ok:=query(s.db,"SELECT 1 FROM local_workflow_tasks t WHERE t.chain_id=? AND t.task_id=? AND NOT EXISTS(SELECT 1 FROM local_workflow_runs r JOIN local_workflow_executions e USING(chain_id,run_id) WHERE r.chain_id=t.chain_id AND r.run_id=t.run_id AND r.current_execution=t.execution AND e.execution=t.execution AND e.state='running')",chain,task)
-    return ok && len(rows)==0
+    if !ok || len(rows)>0 do return false
+    stopped,read:=query(s.db,"SELECT 1 FROM local_workflow_tasks t JOIN local_workflow_language_executions e USING(chain_id,run_id,execution) WHERE t.chain_id=? AND t.task_id=? AND e.state!='running'",chain,task)
+    return read && len(stopped)==0
 }
 dependency_ready :: proc(s:^Store,chain,task:string)->bool {
     if !workflow_task_current(s,chain,task) do return false
@@ -127,13 +130,17 @@ dependency_command :: proc(s:^Store,c,p:json.Object)->string {
     return "ok"
 }
 workflow_refresh :: proc(s:^Store)->bool {
-    _,ok:=query(s.db,"UPDATE local_workflow_executions SET state='done' WHERE state='running' AND NOT EXISTS(SELECT 1 FROM local_workflow_tasks t LEFT JOIN lifecycle_state s ON s.chain_id=t.chain_id AND s.task_id=t.task_id LEFT JOIN local_controls c ON c.chain_id=t.chain_id AND c.task_id=t.task_id WHERE t.chain_id=local_workflow_executions.chain_id AND t.run_id=local_workflow_executions.run_id AND t.execution=local_workflow_executions.execution AND (s.state IS NULL OR s.state!='done' OR COALESCE(c.mode,'ready')!='ready'))")
+    if !language_refresh(s) do return false
+    _,ok:=query(s.db,"UPDATE local_workflow_executions SET state='done' WHERE state='running' AND NOT EXISTS(SELECT 1 FROM local_workflow_language_runs v WHERE v.chain_id=local_workflow_executions.chain_id AND v.run_id=local_workflow_executions.run_id) AND NOT EXISTS(SELECT 1 FROM local_workflow_tasks t LEFT JOIN lifecycle_state s ON s.chain_id=t.chain_id AND s.task_id=t.task_id LEFT JOIN local_controls c ON c.chain_id=t.chain_id AND c.task_id=t.task_id WHERE t.chain_id=local_workflow_executions.chain_id AND t.run_id=local_workflow_executions.run_id AND t.execution=local_workflow_executions.execution AND (s.state IS NULL OR s.state!='done' OR COALESCE(c.mode,'ready')!='ready'))")
     return ok
 }
 
 workflow_publications :: proc(tx:^Transaction,c:json.Object,body:string,seq:i64,kr:^vault.Vault_Keyring,sign:Signer)->bool {
     method:=field(c,"method")
     if method!="workflow.run" && method!="workflow.retry" do return true
+    language_rows,check:=query(tx.store.db,"SELECT 1 FROM local_workflow_language_runs WHERE chain_id=? AND run_id=json_extract(?,'$.run_id')",field(c,"chain_id"),body)
+    if !check do return false
+    if len(language_rows)>0 do return true
     p,valid:=contracts.owner_parse(body,("workflow_run" if method=="workflow.run" else "workflow_retry"))
     if !valid || sign.sign==nil do return false
     s:=tx.store;chain:=field(c,"chain_id")
@@ -165,11 +172,12 @@ workflow_inventory :: proc(s:^Store,chain,cursor:string,limit,revision:i64)->Res
         if offset<0 || offset>MAX_RECORDS || fmt.tprintf("%d",offset)!=parts[1] do return fail("malformed")
     }
     rows,ok:=query(s.db,`SELECT * FROM (
-      SELECT 'run' AS kind,r.run_id,r.workflow_id AS a,cast(r.definition_version AS TEXT) AS b,cast(r.current_execution AS TEXT) AS c,cast(r.revision AS TEXT) AS d,e.state AS e
-      FROM local_workflow_runs r JOIN local_workflow_executions e ON e.chain_id=r.chain_id AND e.run_id=r.run_id AND e.execution=r.current_execution WHERE r.chain_id=?
+      SELECT 'run' AS kind,r.run_id,r.workflow_id AS a,cast(r.definition_version AS TEXT) AS b,cast(r.current_execution AS TEXT) AS c,cast(r.revision AS TEXT) AS d,COALESCE(x.state,e.state) AS e
+      FROM local_workflow_runs r JOIN local_workflow_executions e ON e.chain_id=r.chain_id AND e.run_id=r.run_id AND e.execution=r.current_execution LEFT JOIN local_workflow_language_executions x ON x.chain_id=r.chain_id AND x.run_id=r.run_id AND x.execution=r.current_execution WHERE r.chain_id=?
       UNION ALL SELECT 'task',run_id,cast(execution AS TEXT),stage_key,task_id,'','' FROM local_workflow_tasks WHERE chain_id=?
       UNION ALL SELECT 'event',run_id,cast(execution AS TEXT),cast(event_seq AS TEXT),kind,principal_id,operation_id FROM local_workflow_events WHERE chain_id=?
-      ) ORDER BY kind,run_id,a,b LIMIT ? OFFSET ?`,chain,chain,chain,fmt.tprintf("%d",limit+1),fmt.tprintf("%d",offset))
+      UNION ALL SELECT 'event',t.run_id,cast(t.execution AS TEXT),'trigger_failed',f.reason,f.source_task,cast(f.source_attempt AS TEXT) FROM local_workflow_trigger_failures f JOIN local_workflow_tasks t ON t.chain_id=f.chain_id AND t.task_id=f.source_task WHERE f.chain_id=?
+      ) ORDER BY kind,run_id,a,b LIMIT ? OFFSET ?`,chain,chain,chain,chain,fmt.tprintf("%d",limit+1),fmt.tprintf("%d",offset))
     if !ok do return fail("storage_error")
     runs:=make([dynamic][]string,context.temp_allocator)
     tasks:=make([dynamic][]string,context.temp_allocator)

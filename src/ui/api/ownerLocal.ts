@@ -8,7 +8,7 @@ export const OWNER_DOCUMENT_MAX = 256 * 1024;
 export const OWNER_REQUEST_TTL_MS = 300000n;
 const ascii = (s: string) => /^[\x20-\x7e]*$/.test(s);
 const decimal = (s: string) => /^(0|[1-9][0-9]*)$/.test(s) && s.length <= 19 && BigInt(s) <= 9223372036854775807n;
-const methods = new Set(['grant.set','grant.revoke','grant.read','grant.policy','grant.recover','workflow.define','workflow.run','workflow.retry','workflow.read','source.observe','source.consume','source.ack','source.retire','source.resolve','source.escalate','source.read','dependency.edit','review.roles','task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'chain.edit', 'task.edit', 'task.delete', 'chain.search', 'chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'receipt.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post']);
+const methods = new Set(['workflow.coordinator','grant.set','grant.revoke','grant.read','grant.policy','grant.recover','workflow.cancel','workflow.gate','workflow.define','workflow.run','workflow.retry','workflow.read','source.observe','source.consume','source.ack','source.retire','source.resolve','source.escalate','source.read','dependency.edit','review.roles','task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'chain.edit', 'task.edit', 'task.delete', 'chain.search', 'chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'receipt.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post']);
 function fieldValid(s: string, kind: string): boolean {
   if (kind === "document" || kind === "optional_document") return new TextEncoder().encode(s).length <= OWNER_DOCUMENT_MAX && (s !== "" || kind === "optional_document");
   if (!ascii(s)) return false;
@@ -20,8 +20,9 @@ function fieldValid(s: string, kind: string): boolean {
     case 'signature': return /^[0-9a-f]{128}$/.test(s);
     case 'method': return methods.has(s);
     case 'lease_method': return s === 'lease.claim' || s === 'lease.heartbeat';
+    case 'coordinator_methods': return s === 'workflow.gate.post';
     case 'lease_methods': return ['review.role.post,review.checkpoint','lease.claim,lease.heartbeat,requirements.present,requirements.ack,lease.submit,lease.handoff,lease.block,lease.switch','review.post,review.checkpoint','lease.claim,lease.heartbeat','lease.claim,lease.heartbeat,requirements.present,requirements.ack,lease.submit','review.post'].includes(s);
-    case 'lifecycle_method': return ['review.role.open','review.role.post','lease.handoff','lease.block','lease.switch','review.checkpoint','requirements.present','requirements.ack','lease.submit','review.open','review.post'].includes(s);
+    case 'lifecycle_method': return ['workflow.gate.post','review.role.open','review.role.post','lease.handoff','lease.block','lease.switch','review.checkpoint','requirements.present','requirements.ack','lease.submit','review.open','review.post'].includes(s);
     case 'merge_policy': return s === 'none' || s === 'git';
     case 'verdict': return s === 'approve' || s === 'request_changes';
     case 'path': return s.length <= 4096 && (s === '' || (s.startsWith('/') && !s.includes('..') && !s.includes('\\')));
@@ -43,6 +44,7 @@ function fieldValid(s: string, kind: string): boolean {
 export function ownerDocumentValid<K extends OwnerKind>(kind: K, value: unknown): value is OwnerDocuments[K] {
   if (!Object.hasOwn(ownerSchemas, kind) || !value || typeof value !== 'object' || Array.isArray(value)) return false;
   const o = value as Record<string, unknown>;
+  if (kind === 'submit_payload' && Object.hasOwn(o, 'output')) return ownerDocumentValid('submit_output_payload', value);
   const fields = ownerSchemas[kind];
   if (Object.keys(o).length !== fields.length) return false;
   for (const [name, type] of fields) if (!Object.hasOwn(o, name) || typeof o[name] !== 'string' || !fieldValid(o[name], type)) return false;
@@ -63,7 +65,9 @@ export function ownerDocumentValid<K extends OwnerKind>(kind: K, value: unknown)
 }
 export function ownerPayloadKind(method: string): OwnerKind {
   switch (method) {
-    case 'workflow.define': case 'workflow.run': case 'workflow.retry': case 'source.observe': case 'source.consume': case 'source.ack': case 'source.retire': case 'source.resolve': case 'source.escalate': case 'review.roles': return 'control_payload';
+    case 'workflow.coordinator': return 'coordinator_payload';
+    case 'workflow.gate.post': return 'workflow_gate';
+    case 'workflow.cancel': case 'workflow.gate': case 'workflow.define': case 'workflow.run': case 'workflow.retry': case 'source.observe': case 'source.consume': case 'source.ack': case 'source.retire': case 'source.resolve': case 'source.escalate': case 'review.roles': return 'control_payload';
     case 'workflow.read': case 'source.read': return 'read_payload';
     case 'dependency.edit': return 'dependency_payload';
     case 'review.role.open': case 'review.role.post': return 'review_role_payload';
@@ -102,6 +106,7 @@ export function ownerParse<K extends OwnerKind>(raw: string, kind: K): OwnerDocu
   return value;
 }
 export function ownerCanonical<K extends OwnerKind>(kind: K, o: OwnerDocuments[K]): string {
+  if (kind === 'submit_payload' && Object.hasOwn(o, 'output')) return ownerCanonical('submit_output_payload', o as unknown as OwnerDocuments['submit_output_payload']);
   if (!ownerDocumentValid(kind, o)) throw new SyntaxError('Invalid owner document');
   const fields = o as unknown as Record<string, string>;
   return 'heimdall-owner-local/' + kind + '/v1\n' + ownerSchemas[kind]

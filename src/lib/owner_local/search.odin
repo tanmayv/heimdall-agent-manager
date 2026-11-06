@@ -94,7 +94,7 @@ search_rebuild :: proc(s:^Store)->bool {
         SELECT chain_id,task_id,'requirements',task_id,revision,'',brief_json FROM task_requirements a
         WHERE revision=(SELECT MAX(b.revision) FROM task_requirements b WHERE b.chain_id=a.chain_id AND b.task_id=a.task_id);
       INSERT INTO search_docs(chain_id,task_id,kind,object_id,revision,title,body)
-        SELECT chain_id,task_id,'output',task_id||':'||attempt,attempt,'',summary FROM local_submissions;
+        SELECT a.chain_id,a.task_id,'output',a.task_id||':'||a.attempt,a.attempt,'',a.summary||COALESCE(char(10)||o.output_json,'') FROM local_submissions a LEFT JOIN local_workflow_outputs o ON o.chain_id=a.chain_id AND o.task_id=a.task_id AND o.attempt=a.attempt;
       INSERT INTO search_docs(chain_id,task_id,kind,object_id,revision,title,body)
         SELECT chain_id,task_id,'handoff',principal_id||':'||operation_id,seq,kind,summary||char(10)||next_steps||char(10)||waiting_on FROM local_handoffs;
       INSERT INTO search_docs(chain_id,task_id,kind,object_id,revision,title,body)

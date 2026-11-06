@@ -61,11 +61,18 @@ bridge_owner_publish_registry :: proc(_:rawptr,s:^owner.Store,claim:owner.Intent
     if claim.kind=="source.delivery" do return true,"local_source_visible",time.to_unix_nanoseconds(time.now())/1000000
     if claim.kind=="merge" do return bridge_owner_merge(s,claim)
     // Future consumers must validate their own execution fences before I/O.
-    if claim.kind!="registry" do return false,"unsupported_kind",time.to_unix_nanoseconds(time.now())/1000000
+    registry_payload:=claim.payload
+    if claim.kind=="registry.prepare" {
+        kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
+        if !unlocked do return false,"vault_locked",time.to_unix_nanoseconds(time.now())/1000000
+        prepared,ok:=owner.language_registry_prepare(s,claim,&kr,owner.Signer{nil,bridge_owner_sign})
+        if !ok do return false,"registry_prepare_failed",time.to_unix_nanoseconds(time.now())/1000000
+        registry_payload=prepared
+    } else if claim.kind!="registry" { return false,"unsupported_kind",time.to_unix_nanoseconds(time.now())/1000000 }
     token:=bridge_credential_snapshot();defer delete(token)
     headers:=[?]httpc.Header{httpc.bearer(token)}
     genesis:=owner.genesis_for(s,claim.chain)
-    publication:=contracts.Owner_Publication{genesis,claim.payload}
+    publication:=contracts.Owner_Publication{genesis,registry_payload}
     response,err:=bridge_http_request_retry({method=.POST,url=bridge_hub_url(),path={"api","v1","owner-local","registry"},headers=headers[:],body=httpc.json_body(publication)})
     defer httpc.response_destroy(&response)
     return err==.None && response.status==200,fmt.tprintf("%d",response.status),time.to_unix_nanoseconds(time.now())/1000000
@@ -137,6 +144,11 @@ bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
         current:bool
         fleet_child,current=bridge_owner_child_locked(contracts.owner_string(p,"instance_id"),"")
         if !current do fleet_child={} // Historical device receipts remain readable after child exit.
+    }
+    if contracts.owner_string(command,"method")=="workflow.coordinator" {
+        if p,ok:=contracts.owner_parse(payload,"coordinator_payload");ok {
+            fleet_child,_=bridge_owner_child_locked(contracts.owner_string(p,"instance_id"),"")
+        }
     }
     proof:owner.Lifecycle_Proof
     if contracts.owner_string(command,"method")=="lifecycle.configure" {

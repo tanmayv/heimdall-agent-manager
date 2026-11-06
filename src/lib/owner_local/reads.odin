@@ -34,7 +34,11 @@ read_result :: proc(s:^Store,c:json.Object,payload:string,revision:i64) -> Resul
         for end>offset && end<i64(len(summary)) && summary[end]&0xc0==0x80 {end-=1}
         next:=""
         if end<i64(len(summary)) do next=fmt.tprintf("%d",end)
-        body:=encode(doc(map[string]string{"kind"="submission","chain_id"=chain,"task_id"=task,"attempt"=field(p,"attempt"),"summary"=summary[offset:end],"offset"=field(p,"offset"),"next_offset"=next,"head"=rows[0][1],"requirements_revision"=rows[0][2],"configuration_revision"=rows[0][3],"author_agent_id"=rows[0][4]}))
+        output,output_read:=query(s.db,"SELECT output_json FROM local_workflow_outputs WHERE chain_id=? AND task_id=? AND attempt=?",chain,task,field(p,"attempt"))
+        if !output_read do return fail("storage_error")
+        output_json:=""
+        if len(output)==1 do output_json=output[0][0]
+        body:=encode(doc(map[string]string{"output"=output_json,"kind"="submission","chain_id"=chain,"task_id"=task,"attempt"=field(p,"attempt"),"summary"=summary[offset:end],"offset"=field(p,"offset"),"next_offset"=next,"head"=rows[0][1],"requirements_revision"=rows[0][2],"configuration_revision"=rows[0][3],"author_agent_id"=rows[0][4]}))
         if len(body)>MAX_PAGE do return fail("invalid_content")
         return Result{code="ok",body=body}
     }

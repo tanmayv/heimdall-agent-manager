@@ -46,5 +46,12 @@
   "review_role_payload": "requirements_revision:positive attempt:positive head:optional_commit verdict:verdict summary:document role:id",
   "grant_payload": "principal_id:id key_id:id expires_ms:positive can_read:flag can_mutate:flag",
   "grant_revoke_payload": "principal_id:id key_id:id",
-  "grant_policy_payload": "policy_revision:positive recovery_enabled:flag"
+  "grant_policy_payload": "policy_revision:positive recovery_enabled:flag",
+  "workflow_language_definition": "workflow_id:id version:positive title:document spec:document",
+  "workflow_language_run": "run_id:id workflow_id:id version:positive inputs:document",
+  "workflow_gate": "run_id:id execution:positive stage_key:id verdict:verdict summary:document",
+  "submit_output_payload": "requirements_revision:positive head:optional_commit summary:document output:document",
+  "workflow_control": "run_id:id execution:positive reason:document",
+  "coordinator_payload": "configuration_revision:positive agent_id:id instance_id:id",
+  "coordinator_capability": "protocol_version:version account_id:id owner_bridge_id:id chain_id:id instance_id:id launch_epoch:id run_count:positive token_generation:hash configuration_revision:positive expires_ms:positive allowed_methods:coordinator_methods key_id:id signature:signature"
 }

@@ -75,6 +75,9 @@ control_human :: proc(s:^Store,c,p:json.Object,body:string,seq:i64) -> string {
         mode="cancelled";next="ready"
         if !control_revoke(s,c,seq,"stop") do return "storage_error"
     case "task.reopen":
+        generated,checked:=query(s.db,"SELECT 1 FROM local_workflow_language_items WHERE task_id=?",task)
+        if !checked do return "storage_error"
+        if len(generated)>0 do return "operation_conflict"
         if mode!="cancelled" && state!="done" && state!="merge_blocked" do return "operation_conflict"
         mode="ready";next="ready"
         if !control_revoke(s,c,seq,"checkpoint") do return "storage_error"

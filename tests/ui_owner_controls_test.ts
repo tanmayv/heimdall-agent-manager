@@ -5,7 +5,7 @@ import { createDeviceIdentity, memoryDeviceStore } from '../src/ui/utils/deviceI
 import { importKeyring } from '../src/ui/utils/vaultKeyring.ts';
 import { decryptVaultText } from '../src/ui/utils/vaultContent.ts';
 import { prepareOwnerOperation } from '../src/ui/api/ownerLocalClient.ts';
-import { ownerParse, ownerLiveAdmit, ownerPayloadKind, ownerVerifySignature } from '../src/ui/api/ownerLocal.ts';
+import { ownerParse, ownerCanonical, ownerLiveAdmit, ownerPayloadKind, ownerVerifySignature } from '../src/ui/api/ownerLocal.ts';
 
 test('control preparation encrypts reasons, signs exact CAS and keeps every control a mutation', async () => {
   const identity = await createDeviceIdentity(memoryDeviceStore(), USER);
@@ -52,7 +52,7 @@ test('static workflow and source operations use signed encrypted owner commands 
   const chain = { ...verified, trusted: new Map(verified.trusted) };
   chain.trusted.set('bridge_key', {kind:'bridge',device_id:'bridge_key',row:{bridge_id:'bridge'}} as any);
   const session = {identity,chain,keyring};
-  for (const method of ['workflow.define','workflow.run','workflow.retry','source.observe','source.consume','source.ack','source.retire','source.resolve','source.escalate','review.roles']) {
+  for (const method of ['workflow.cancel','workflow.gate','workflow.define','workflow.run','workflow.retry','source.observe','source.consume','source.ack','source.retire','source.resolve','source.escalate','review.roles']) {
     const taskId = method === 'review.roles' ? 'task' : '';
     const body = '{"private":"source and workflow content"}';
     const op = await prepareOwnerOperation(session,'bridge',method,{chainId:'chain',taskId,expectedRevision:'7',body});
@@ -73,4 +73,15 @@ test('static workflow and source operations use signed encrypted owner commands 
   assert.throws(()=>ownerParse(JSON.stringify({...fact,source_version:'0'}),'source_fact'));
   assert.throws(()=>ownerParse(JSON.stringify({...fact,owner_bridge_id:'other'}),'source_fact'));
   assert.equal(ownerPayloadKind('review.role.post'),'review_role_payload');
+});
+
+test('workflow structured output canonicalization and coordinator scope are exact', () => {
+  const output=ownerParse(JSON.stringify({requirements_revision:'1',head:'',summary:'Done',output:'{}'}),'submit_payload');
+  const first=ownerCanonical('submit_payload',output);
+  const changed=ownerParse(JSON.stringify({...output,output:'{"changed":true}'}),'submit_payload');
+  assert.notEqual(first,ownerCanonical('submit_payload',changed));
+  assert.equal(ownerPayloadKind('workflow.coordinator'),'coordinator_payload');
+  assert.equal(ownerPayloadKind('workflow.gate.post'),'workflow_gate');
+  assert.equal(ownerParse(JSON.stringify({configuration_revision:'1',agent_id:'agt_coordinator',instance_id:'inst_running'}),'coordinator_payload').agent_id,'agt_coordinator');
+  assert.throws(()=>ownerParse(JSON.stringify({...output,unknown:'ignored?'}),'submit_payload'));
 });
