@@ -81,7 +81,7 @@ test('all V1 methods authenticate typed payloads and bind create to exact genesi
 
 test('runtime proof signatures bind exact child and scoped resource', async () => {
   const {ownerVerifySignature}=await import('../src/ui/api/ownerLocal.ts');
-  for (const kind of ['capability','lease_command'] as const) {
+  for (const kind of ['capability','lease_command','lifecycle_command'] as const) {
     const o=doc(kind) as any;
     assert.equal(await ownerVerifySignature(kind,o,'signature',bridge),true);
     for (const name of ['account_id','chain_id','task_id','lease_id','instance_id','launch_epoch','token_generation','configuration_revision']) {

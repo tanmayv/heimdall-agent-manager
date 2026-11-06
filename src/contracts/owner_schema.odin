@@ -323,6 +323,145 @@ owner_fields_lease_input := [?]Owner_Field{
     {"request_expires_ms", "positive"},
     {"capability", "optional_document"},
 }
+Owner_Lifecycle_Config_Payload :: struct {
+    configuration_revision: string,
+    author_agent_id: string,
+    reviewer_agent_id: string,
+    reviewer_instance_id: string,
+    directory_id: string,
+    merge_policy: string,
+    repository: string,
+    worktree: string,
+    source_branch: string,
+    target_branch: string,
+    base_head: string,
+}
+@(private)
+owner_fields_lifecycle_config_payload := [?]Owner_Field{
+    {"configuration_revision", "positive"},
+    {"author_agent_id", "id"},
+    {"reviewer_agent_id", "id"},
+    {"reviewer_instance_id", "id"},
+    {"directory_id", "id"},
+    {"merge_policy", "merge_policy"},
+    {"repository", "path"},
+    {"worktree", "path"},
+    {"source_branch", "optional_ref"},
+    {"target_branch", "optional_ref"},
+    {"base_head", "optional_commit"},
+}
+Owner_Requirements_Payload :: struct {
+    requirements_revision: string,
+    body_cipher: string,
+}
+@(private)
+owner_fields_requirements_payload := [?]Owner_Field{
+    {"requirements_revision", "positive"},
+    {"body_cipher", "required_cipher"},
+}
+Owner_Ack_Payload :: struct {
+    requirements_revision: string,
+}
+@(private)
+owner_fields_ack_payload := [?]Owner_Field{
+    {"requirements_revision", "positive"},
+}
+Owner_Submit_Payload :: struct {
+    requirements_revision: string,
+    head: string,
+    summary: string,
+}
+@(private)
+owner_fields_submit_payload := [?]Owner_Field{
+    {"requirements_revision", "positive"},
+    {"head", "optional_commit"},
+    {"summary", "document"},
+}
+Owner_Review_Payload :: struct {
+    requirements_revision: string,
+    attempt: string,
+    head: string,
+    verdict: string,
+    summary: string,
+}
+@(private)
+owner_fields_review_payload := [?]Owner_Field{
+    {"requirements_revision", "positive"},
+    {"attempt", "positive"},
+    {"head", "optional_commit"},
+    {"verdict", "verdict"},
+    {"summary", "document"},
+}
+Owner_Lifecycle_Command :: struct {
+    protocol_version: string,
+    account_id: string,
+    owner_bridge_id: string,
+    chain_id: string,
+    task_id: string,
+    lease_id: string,
+    instance_id: string,
+    launch_epoch: string,
+    run_count: string,
+    token_generation: string,
+    configuration_revision: string,
+    expected_revision: string,
+    operation_id: string,
+    method: string,
+    request_expires_ms: string,
+    capability_digest: string,
+    key_id: string,
+    signature: string,
+    payload_digest: string,
+}
+@(private)
+owner_fields_lifecycle_command := [?]Owner_Field{
+    {"protocol_version", "version"},
+    {"account_id", "id"},
+    {"owner_bridge_id", "id"},
+    {"chain_id", "id"},
+    {"task_id", "id"},
+    {"lease_id", "id"},
+    {"instance_id", "id"},
+    {"launch_epoch", "id"},
+    {"run_count", "positive"},
+    {"token_generation", "hash"},
+    {"configuration_revision", "positive"},
+    {"expected_revision", "counter"},
+    {"operation_id", "id"},
+    {"method", "lifecycle_method"},
+    {"request_expires_ms", "positive"},
+    {"capability_digest", "hash"},
+    {"key_id", "id"},
+    {"signature", "signature"},
+    {"payload_digest", "hash"},
+}
+Owner_Lifecycle_Input :: struct {
+    protocol_version: string,
+    chain_id: string,
+    task_id: string,
+    lease_id: string,
+    configuration_revision: string,
+    expected_revision: string,
+    operation_id: string,
+    method: string,
+    request_expires_ms: string,
+    capability: string,
+    payload: string,
+}
+@(private)
+owner_fields_lifecycle_input := [?]Owner_Field{
+    {"protocol_version", "version"},
+    {"chain_id", "id"},
+    {"task_id", "id"},
+    {"lease_id", "id"},
+    {"configuration_revision", "positive"},
+    {"expected_revision", "counter"},
+    {"operation_id", "id"},
+    {"method", "lifecycle_method"},
+    {"request_expires_ms", "positive"},
+    {"capability", "optional_document"},
+    {"payload", "document"},
+}
 owner_schema :: proc(kind: string) -> []Owner_Field {
     switch kind {
     case "genesis": return owner_fields_genesis[:]
@@ -342,6 +481,13 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "capability": return owner_fields_capability[:]
     case "lease_command": return owner_fields_lease_command[:]
     case "lease_input": return owner_fields_lease_input[:]
+    case "lifecycle_config_payload": return owner_fields_lifecycle_config_payload[:]
+    case "requirements_payload": return owner_fields_requirements_payload[:]
+    case "ack_payload": return owner_fields_ack_payload[:]
+    case "submit_payload": return owner_fields_submit_payload[:]
+    case "review_payload": return owner_fields_review_payload[:]
+    case "lifecycle_command": return owner_fields_lifecycle_command[:]
+    case "lifecycle_input": return owner_fields_lifecycle_input[:]
     }
     return nil
 }

@@ -86,6 +86,48 @@
       "raw": "{\"protocol_version\":\"1\",\"chain_id\":\"chain_1\",\"task_id\":\"task_1\",\"lease_id\":\"lease_1\",\"configuration_revision\":\"2\",\"expected_revision\":\"3\",\"operation_id\":\"lease_op\",\"method\":\"lease.heartbeat\",\"request_expires_ms\":\"9000\",\"capability\":\"{\\\"protocol_version\\\":\\\"1\\\",\\\"account_id\\\":\\\"acct_1\\\",\\\"owner_bridge_id\\\":\\\"brg_1\\\",\\\"chain_id\\\":\\\"chain_1\\\",\\\"task_id\\\":\\\"task_1\\\",\\\"lease_id\\\":\\\"lease_1\\\",\\\"instance_id\\\":\\\"inst_1\\\",\\\"launch_epoch\\\":\\\"epoch_1\\\",\\\"run_count\\\":\\\"9007199254740993\\\",\\\"token_generation\\\":\\\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\\",\\\"configuration_revision\\\":\\\"2\\\",\\\"requirements_revision\\\":\\\"1\\\",\\\"expires_ms\\\":\\\"10000\\\",\\\"hard_ms\\\":\\\"20000\\\",\\\"allowed_methods\\\":\\\"lease.claim,lease.heartbeat\\\",\\\"key_id\\\":\\\"bridge_key\\\",\\\"signature\\\":\\\"82333b3ea339f6d5114bfc2cbf115f9006d2e6418bdabc3fd9da30556b1b562f0efc7f12579db2af45680eee557e61f2d9e982992a99d3b5be3657363fc2477e\\\"}\"}",
       "canonical": "heimdall-owner-local/lease_input/v1\n1:1,7:chain_1,6:task_1,7:lease_1,1:2,1:3,8:lease_op,15:lease.heartbeat,4:9000,607:{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"owner_bridge_id\":\"brg_1\",\"chain_id\":\"chain_1\",\"task_id\":\"task_1\",\"lease_id\":\"lease_1\",\"instance_id\":\"inst_1\",\"launch_epoch\":\"epoch_1\",\"run_count\":\"9007199254740993\",\"token_generation\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"configuration_revision\":\"2\",\"requirements_revision\":\"1\",\"expires_ms\":\"10000\",\"hard_ms\":\"20000\",\"allowed_methods\":\"lease.claim,lease.heartbeat\",\"key_id\":\"bridge_key\",\"signature\":\"82333b3ea339f6d5114bfc2cbf115f9006d2e6418bdabc3fd9da30556b1b562f0efc7f12579db2af45680eee557e61f2d9e982992a99d3b5be3657363fc2477e\"},",
       "digest": "c7f45bf0482bfdcb7264569dc5a93adb4c59626c0287a82e4e4f6b2bca551b3c"
+    },
+    {
+      "kind": "lifecycle_config_payload",
+      "raw": "{\"configuration_revision\":\"1\",\"author_agent_id\":\"agt_author\",\"reviewer_agent_id\":\"agt_reviewer\",\"reviewer_instance_id\":\"inst_reviewer\",\"directory_id\":\"dir_local\",\"merge_policy\":\"none\",\"repository\":\"\",\"worktree\":\"\",\"source_branch\":\"\",\"target_branch\":\"\",\"base_head\":\"\"}",
+      "canonical": "heimdall-owner-local/lifecycle_config_payload/v1\n1:1,10:agt_author,12:agt_reviewer,13:inst_reviewer,9:dir_local,4:none,0:,0:,0:,0:,0:,",
+      "digest": "0ce98cc9e4b08a582b674e7bf8e88c926391dbabcbc5e548bc206b181828eb04"
+    },
+    {
+      "kind": "requirements_payload",
+      "raw": "{\"requirements_revision\":\"2\",\"body_cipher\":\"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\"}",
+      "canonical": "heimdall-owner-local/requirements_payload/v1\n1:2,69:vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==,",
+      "digest": "1532f7efe3ec6f404707660b175390ba03781e824f71bd650ab16be60100e569"
+    },
+    {
+      "kind": "ack_payload",
+      "raw": "{\"requirements_revision\":\"2\"}",
+      "canonical": "heimdall-owner-local/ack_payload/v1\n1:2,",
+      "digest": "cba2d931881e6288ea9a37125652e86ad1bd62057e76c56ad0c059a67c4427cc"
+    },
+    {
+      "kind": "submit_payload",
+      "raw": "{\"requirements_revision\":\"2\",\"head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"summary\":\"Checks pass\"}",
+      "canonical": "heimdall-owner-local/submit_payload/v1\n1:2,40:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,11:Checks pass,",
+      "digest": "5a6ed52a7e543db6f8e100cd1712777b17d05105de957f3ea42a32e2aa651728"
+    },
+    {
+      "kind": "review_payload",
+      "raw": "{\"requirements_revision\":\"2\",\"attempt\":\"1\",\"head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"verdict\":\"approve\",\"summary\":\"Independent review\"}",
+      "canonical": "heimdall-owner-local/review_payload/v1\n1:2,1:1,40:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,7:approve,18:Independent review,",
+      "digest": "0f38b7a835868551f74d669071c1d1f8582851ac78433ef5d9036623f0a5385e"
+    },
+    {
+      "kind": "lifecycle_command",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"owner_bridge_id\":\"brg_1\",\"chain_id\":\"chain_1\",\"task_id\":\"task_1\",\"lease_id\":\"lease_1\",\"instance_id\":\"inst_1\",\"launch_epoch\":\"epoch_1\",\"run_count\":\"9007199254740993\",\"token_generation\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"configuration_revision\":\"2\",\"expected_revision\":\"3\",\"operation_id\":\"lease_op\",\"method\":\"lease.submit\",\"request_expires_ms\":\"9000\",\"capability_digest\":\"f2ac00640a6f2393dc00200a69219d8609af6c6a0a26a083571d5815a3092731\",\"key_id\":\"bridge_key\",\"signature\":\"e7c02a9e045c952def0d17ac38dac5e1f6df8fe60b35bddd65abcdbdf908afd083c29ec87a73275ed2fcb9b7d1de60f3afdf71d399e9ef711b623c717fe11e36\",\"payload_digest\":\"f37cfbc42ff362ab298aca275757ab32ec78634f36652d8c4c50ebdd702137cb\"}",
+      "canonical": "heimdall-owner-local/lifecycle_command/v1\n1:1,6:acct_1,5:brg_1,7:chain_1,6:task_1,7:lease_1,6:inst_1,7:epoch_1,16:9007199254740993,64:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,1:2,1:3,8:lease_op,12:lease.submit,4:9000,64:f2ac00640a6f2393dc00200a69219d8609af6c6a0a26a083571d5815a3092731,10:bridge_key,64:f37cfbc42ff362ab298aca275757ab32ec78634f36652d8c4c50ebdd702137cb,",
+      "digest": "cfc2b9778b0f68224ec4ec067691ea56393843f25f35cf19590da2d07d3e97a5"
+    },
+    {
+      "kind": "lifecycle_input",
+      "raw": "{\"protocol_version\":\"1\",\"chain_id\":\"chain_1\",\"task_id\":\"task_1\",\"lease_id\":\"lease_1\",\"configuration_revision\":\"1\",\"expected_revision\":\"4\",\"operation_id\":\"op_submit\",\"method\":\"lease.submit\",\"request_expires_ms\":\"10000\",\"capability\":\"{}\",\"payload\":\"{\\\"requirements_revision\\\":\\\"2\\\",\\\"head\\\":\\\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\\",\\\"summary\\\":\\\"Checks pass\\\"}\"}",
+      "canonical": "heimdall-owner-local/lifecycle_input/v1\n1:1,7:chain_1,6:task_1,7:lease_1,1:1,1:4,9:op_submit,12:lease.submit,5:10000,2:{},103:{\"requirements_revision\":\"2\",\"head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"summary\":\"Checks pass\"},",
+      "digest": "96b6a03b9309d6057859e15d4a198028f26dfb8489e04eac62a2bf763b15950a"
     }
   ],
   "invalid": [
@@ -258,6 +300,31 @@
       "name": "missing heartbeat capability",
       "kind": "lease_input",
       "raw": "{\"protocol_version\":\"1\",\"chain_id\":\"chain_1\",\"task_id\":\"task_1\",\"lease_id\":\"lease_1\",\"configuration_revision\":\"2\",\"expected_revision\":\"3\",\"operation_id\":\"lease_op\",\"method\":\"lease.heartbeat\",\"request_expires_ms\":\"9000\",\"capability\":\"\"}"
+    },
+    {
+      "name": "lifecycle unknown field",
+      "kind": "lifecycle_input",
+      "raw": "{\"protocol_version\":\"1\",\"chain_id\":\"chain_1\",\"task_id\":\"task_1\",\"lease_id\":\"lease_1\",\"configuration_revision\":\"1\",\"expected_revision\":\"4\",\"operation_id\":\"op_submit\",\"method\":\"lease.submit\",\"request_expires_ms\":\"10000\",\"capability\":\"{}\",\"payload\":\"{\\\"requirements_revision\\\":\\\"2\\\",\\\"head\\\":\\\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\\",\\\"summary\\\":\\\"Checks pass\\\"}\",\"workflow_execution\":\"1\"}"
+    },
+    {
+      "name": "lifecycle duplicate field",
+      "kind": "ack_payload",
+      "raw": "{\"requirements_revision\":\"2\",\"requirements_revision\":\"3\"}"
+    },
+    {
+      "name": "lifecycle unsafe path",
+      "kind": "lifecycle_config_payload",
+      "raw": "{\"configuration_revision\":\"1\",\"author_agent_id\":\"agt_author\",\"reviewer_agent_id\":\"agt_reviewer\",\"reviewer_instance_id\":\"inst_reviewer\",\"directory_id\":\"dir_local\",\"merge_policy\":\"none\",\"repository\":\"/repo/../other\",\"worktree\":\"\",\"source_branch\":\"\",\"target_branch\":\"\",\"base_head\":\"\"}"
+    },
+    {
+      "name": "lifecycle malformed head",
+      "kind": "submit_payload",
+      "raw": "{\"requirements_revision\":\"2\",\"head\":\"--all\",\"summary\":\"Checks pass\"}"
+    },
+    {
+      "name": "lifecycle unknown verdict",
+      "kind": "review_payload",
+      "raw": "{\"requirements_revision\":\"2\",\"attempt\":\"1\",\"head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"verdict\":\"accept\",\"summary\":\"Independent review\"}"
     }
   ],
   "commands": [

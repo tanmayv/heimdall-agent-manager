@@ -1,4 +1,4 @@
-import { ownerCanonical, ownerDigest, ownerParse, ownerPayloadDigest, type OwnerCommand, type OwnerGenesis } from './ownerLocal.ts';
+import { ownerCanonical, ownerDigest, ownerParse, ownerPayloadDigest, ownerPayloadKind, type OwnerCommand, type OwnerGenesis } from './ownerLocal.ts';
 import { signDeviceText, type DeviceIdentity } from '../utils/deviceIdentity.ts';
 import { encryptVaultText, decryptVaultText } from '../utils/vaultContent.ts';
 import type { VaultKeyring } from '../utils/vaultKeyring.ts';
@@ -10,6 +10,7 @@ export interface OwnerInput {
   chainId: string; taskId?: string; expectedRevision: string;
   title?: string; description?: string; body?: string; cursor?: string; operationId?: string;
   instanceId?: string; configurationRevision?: string; enabled?: boolean;
+  lifecycleConfig?: Record<string, string>; requirementsRevision?: string; attempt?: string; head?: string; verdict?: 'approve' | 'request_changes';
 }
 export const ownerId = (prefix: string) => prefix + crypto.randomUUID().replaceAll('-', '');
 const zeros = '0'.repeat(128);
@@ -35,9 +36,13 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
   } else if (method === 'task.create') payload = { title_cipher: await encryptVaultText(input.title ?? '', keyring), body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'task.comment') payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'fleet.edit') payload = { instance_id: input.instanceId ?? '', configuration_revision: input.configurationRevision ?? '', enabled: input.enabled === false ? '0' : '1' };
+  else if (method === 'lifecycle.configure') payload = input.lifecycleConfig ?? {};
+  else if (method === 'requirements.edit') payload = { requirements_revision: input.requirementsRevision ?? '', body_cipher: await encryptVaultText(input.body ?? '', keyring) };
+  else if (method === 'review.post') payload = { requirements_revision: input.requirementsRevision ?? '', attempt: input.attempt ?? '', head: input.head ?? '', verdict: input.verdict ?? 'approve', summary: input.body ?? '' };
   else if (method === 'receipt.read') payload = { operation_id: input.operationId ?? '' };
   else payload = { cursor: input.cursor ?? '', limit: '20' };
   const payloadRaw = JSON.stringify(payload);
+  ownerParse(payloadRaw, ownerPayloadKind(method));
   const command: OwnerCommand = { protocol_version: '1', account_id: identity.userId, chain_id: input.chainId, immutable_owner_bridge: bridgeId, principal_id: identity.deviceId, operation_id: operationId, method, task_id: input.taskId ?? '', expected_revision: input.expectedRevision, request_expires_ms: String(Date.now() + 300000), payload_digest: await ownerPayloadDigest(payloadRaw), key_id: identity.deviceId, signature: zeros };
   command.signature = await signed(session, 'command', command);
   ownerParse(JSON.stringify(command), 'command');

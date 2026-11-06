@@ -27,6 +27,8 @@ compact_receipts :: proc(s:^Store,now:i64,limit:=100) -> (int,bool) {
        WHERE i.principal_id=r.principal_id AND i.operation_id=r.operation_id AND i.state!='settled')
       AND NOT EXISTS(SELECT 1 FROM lease_receipt_pins p JOIN local_leases l ON l.lease_id=p.lease_id WHERE p.principal_id=r.principal_id AND p.operation_id=r.operation_id AND l.retired_seq IS NULL)
       AND NOT EXISTS(SELECT 1 FROM local_fleet f WHERE f.principal_id=r.principal_id AND f.operation_id=r.operation_id)
+      AND NOT EXISTS(SELECT 1 FROM lifecycle_configs c WHERE c.principal_id=r.principal_id AND c.operation_id=r.operation_id)
+      AND NOT EXISTS(SELECT 1 FROM local_submissions a JOIN lifecycle_state t ON t.chain_id=a.chain_id AND t.task_id=a.task_id WHERE a.principal_id=r.principal_id AND a.operation_id=r.operation_id AND t.state!='done')
       ORDER BY commit_seq LIMIT ?`,fmt.tprintf("%d",now-RECEIPT_RETENTION_MS),fmt.tprintf("%d",now),fmt.tprintf("%d",limit))
     if !ok do return 0,false
     for row in rows {

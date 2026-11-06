@@ -2,8 +2,9 @@
 
 This slice extends the create/task/comment/read demo with a signed assignment of
 one task to an already-running local instance, an exact-child lease claim, and
-heartbeat renewal. ACK, submission, review, workflows, remote reservations,
-provider launch scheduling, and migration remain separate tasks.
+heartbeat renewal. [Requirements, submission and independent review](owner-local-lifecycle.md)
+extend this same path. Workflows, remote reservations, provider launch scheduling,
+and migration remain separate tasks.
 
 ## Try it
 

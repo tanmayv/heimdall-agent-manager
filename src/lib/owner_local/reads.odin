@@ -28,7 +28,12 @@ read_result :: proc(s:^Store,c:json.Object,payload:string,revision:i64) -> Resul
         if !read do return fail("storage_error")
         // Fixed-size one-task observation; capabilities/token generations are
         // deliberately excluded from the human observation response.
-        return Result{code="ok",body=encode(struct { revision:string, fleet,leases:[dynamic][]string, }{fmt.tprintf("%d",revision),fleet,leases})}
+        configs,cok:=query(s.db,"SELECT config_json FROM lifecycle_configs WHERE chain_id=? AND task_id=? ORDER BY revision DESC LIMIT 1",chain,task)
+        req,rok:=query(s.db,"SELECT revision,brief_json FROM task_requirements WHERE chain_id=? AND task_id=? ORDER BY revision DESC LIMIT 1",chain,task)
+        states,sok:=query(s.db,"SELECT state,attempt,merge_receipt FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)
+        submissions,aok:=query(s.db,"SELECT attempt,head,requirements_revision,summary,author_agent_id FROM local_submissions WHERE chain_id=? AND task_id=? ORDER BY attempt DESC LIMIT 1",chain,task)
+        if !cok || !rok || !sok || !aok do return fail("storage_error")
+        return Result{code="ok",body=encode(struct { revision:string, fleet,leases,config,requirements,state,submission:[dynamic][]string, }{fmt.tprintf("%d",revision),fleet,leases,configs,req,states,submissions})}
     }
     scope:=contracts.owner_payload_digest(encode([5]string{s.account,chain,task,method,fmt.tprintf("%d",revision)}))
     cursor:=field(p,"cursor")

@@ -17,6 +17,13 @@ export const ownerSchemas = {
   capability: [["protocol_version", "version"], ["account_id", "id"], ["owner_bridge_id", "id"], ["chain_id", "id"], ["task_id", "id"], ["lease_id", "id"], ["instance_id", "id"], ["launch_epoch", "id"], ["run_count", "positive"], ["token_generation", "hash"], ["configuration_revision", "positive"], ["requirements_revision", "positive"], ["expires_ms", "positive"], ["hard_ms", "positive"], ["allowed_methods", "lease_methods"], ["key_id", "id"], ["signature", "signature"]],
   lease_command: [["protocol_version", "version"], ["account_id", "id"], ["owner_bridge_id", "id"], ["chain_id", "id"], ["task_id", "id"], ["lease_id", "id"], ["instance_id", "id"], ["launch_epoch", "id"], ["run_count", "positive"], ["token_generation", "hash"], ["configuration_revision", "positive"], ["expected_revision", "counter"], ["operation_id", "id"], ["method", "lease_method"], ["request_expires_ms", "positive"], ["capability_digest", "hash"], ["key_id", "id"], ["signature", "signature"]],
   lease_input: [["protocol_version", "version"], ["chain_id", "id"], ["task_id", "id"], ["lease_id", "id"], ["configuration_revision", "positive"], ["expected_revision", "counter"], ["operation_id", "id"], ["method", "lease_method"], ["request_expires_ms", "positive"], ["capability", "optional_document"]],
+  lifecycle_config_payload: [["configuration_revision", "positive"], ["author_agent_id", "id"], ["reviewer_agent_id", "id"], ["reviewer_instance_id", "id"], ["directory_id", "id"], ["merge_policy", "merge_policy"], ["repository", "path"], ["worktree", "path"], ["source_branch", "optional_ref"], ["target_branch", "optional_ref"], ["base_head", "optional_commit"]],
+  requirements_payload: [["requirements_revision", "positive"], ["body_cipher", "required_cipher"]],
+  ack_payload: [["requirements_revision", "positive"]],
+  submit_payload: [["requirements_revision", "positive"], ["head", "optional_commit"], ["summary", "document"]],
+  review_payload: [["requirements_revision", "positive"], ["attempt", "positive"], ["head", "optional_commit"], ["verdict", "verdict"], ["summary", "document"]],
+  lifecycle_command: [["protocol_version", "version"], ["account_id", "id"], ["owner_bridge_id", "id"], ["chain_id", "id"], ["task_id", "id"], ["lease_id", "id"], ["instance_id", "id"], ["launch_epoch", "id"], ["run_count", "positive"], ["token_generation", "hash"], ["configuration_revision", "positive"], ["expected_revision", "counter"], ["operation_id", "id"], ["method", "lifecycle_method"], ["request_expires_ms", "positive"], ["capability_digest", "hash"], ["key_id", "id"], ["signature", "signature"], ["payload_digest", "hash"]],
+  lifecycle_input: [["protocol_version", "version"], ["chain_id", "id"], ["task_id", "id"], ["lease_id", "id"], ["configuration_revision", "positive"], ["expected_revision", "counter"], ["operation_id", "id"], ["method", "lifecycle_method"], ["request_expires_ms", "positive"], ["capability", "optional_document"], ["payload", "document"]],
 } as const;
 export type OwnerKind = keyof typeof ownerSchemas;
 export interface OwnerGenesis {
@@ -172,6 +179,72 @@ export interface OwnerLease_Input {
   request_expires_ms: string;
   capability: string;
 }
+export interface OwnerLifecycle_Config_Payload {
+  configuration_revision: string;
+  author_agent_id: string;
+  reviewer_agent_id: string;
+  reviewer_instance_id: string;
+  directory_id: string;
+  merge_policy: string;
+  repository: string;
+  worktree: string;
+  source_branch: string;
+  target_branch: string;
+  base_head: string;
+}
+export interface OwnerRequirements_Payload {
+  requirements_revision: string;
+  body_cipher: string;
+}
+export interface OwnerAck_Payload {
+  requirements_revision: string;
+}
+export interface OwnerSubmit_Payload {
+  requirements_revision: string;
+  head: string;
+  summary: string;
+}
+export interface OwnerReview_Payload {
+  requirements_revision: string;
+  attempt: string;
+  head: string;
+  verdict: string;
+  summary: string;
+}
+export interface OwnerLifecycle_Command {
+  protocol_version: string;
+  account_id: string;
+  owner_bridge_id: string;
+  chain_id: string;
+  task_id: string;
+  lease_id: string;
+  instance_id: string;
+  launch_epoch: string;
+  run_count: string;
+  token_generation: string;
+  configuration_revision: string;
+  expected_revision: string;
+  operation_id: string;
+  method: string;
+  request_expires_ms: string;
+  capability_digest: string;
+  key_id: string;
+  signature: string;
+  payload_digest: string;
+}
+export interface OwnerLifecycle_Input {
+  protocol_version: string;
+  chain_id: string;
+  task_id: string;
+  lease_id: string;
+  configuration_revision: string;
+  expected_revision: string;
+  operation_id: string;
+  method: string;
+  request_expires_ms: string;
+  capability: string;
+  payload: string;
+}
 export interface OwnerDocuments {
   genesis: OwnerGenesis;
   command: OwnerCommand;
@@ -190,4 +263,11 @@ export interface OwnerDocuments {
   capability: OwnerCapability;
   lease_command: OwnerLease_Command;
   lease_input: OwnerLease_Input;
+  lifecycle_config_payload: OwnerLifecycle_Config_Payload;
+  requirements_payload: OwnerRequirements_Payload;
+  ack_payload: OwnerAck_Payload;
+  submit_payload: OwnerSubmit_Payload;
+  review_payload: OwnerReview_Payload;
+  lifecycle_command: OwnerLifecycle_Command;
+  lifecycle_input: OwnerLifecycle_Input;
 }

@@ -180,3 +180,13 @@ owner_runtime_proof_vectors_bind_all_child_fields :: proc(t:^testing.T) {
         }
     }
 }
+
+@(test)
+owner_lifecycle_signature_binds_payload_and_child :: proc(t:^testing.T) {
+    f:=owner_fixture(t)
+    _,bridge:=owner_fixture_keys(f)
+    c:=owner_fixture_document(t,f,"lifecycle_command")
+    testing.expect(t,owner_verify_signature("lifecycle_command",c,"signature",bridge))
+    c["payload_digest"]=json.String(strings.repeat("b",64,context.temp_allocator))
+    testing.expect(t,!owner_verify_signature("lifecycle_command",c,"signature",bridge))
+}

@@ -32,7 +32,7 @@ owner_hex :: proc(s: string, n: int) -> bool {
 
 owner_method_valid :: proc(s: string) -> bool {
     switch s {
-    case "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "runtime.read": return true
+    case "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "runtime.read", "lifecycle.configure", "requirements.edit", "review.post": return true
     }
     return false
 }
@@ -52,7 +52,17 @@ owner_field_valid :: proc(s, kind: string) -> bool {
     case "signature": return owner_hex(s, 128)
     case "method": return owner_method_valid(s)
     case "lease_method": return s=="lease.claim" || s=="lease.heartbeat"
-    case "lease_methods": return s=="lease.claim,lease.heartbeat"
+    case "lease_methods": return s=="lease.claim,lease.heartbeat" || s=="lease.claim,lease.heartbeat,requirements.present,requirements.ack,lease.submit" || s=="review.post"
+    case "lifecycle_method": return s=="requirements.present" || s=="requirements.ack" || s=="lease.submit" || s=="review.open" || s=="review.post"
+    case "merge_policy": return s=="none" || s=="git"
+    case "verdict": return s=="approve" || s=="request_changes"
+    case "path": return len(s)<=4096 && (s=="" || (s[0]=='/' && !strings.contains(s,"..") && !strings.contains(s,"\\")))
+    case "optional_commit": return s=="" || owner_hex(s,40) || owner_hex(s,64)
+    case "optional_ref":
+        if s=="" do return true
+        if len(s)>160 || s[0]=='-' || strings.contains(s,"..") || strings.contains(s,"//") do return false
+        for b in s do if !(b>='a' && b<='z' || b>='A' && b<='Z' || b>='0' && b<='9' || b=='_' || b=='-' || b=='.' || b=='/') do return false
+        return true
     case "flag": return s == "0" || s == "1"
     case "relay_cipher":
         if len(s)>196608 do return false
@@ -85,7 +95,7 @@ owner_document_valid :: proc(kind: string, o: json.Object) -> bool {
     }
     if kind == "command" {
         method, task := owner_string(o, "method"), owner_string(o, "task_id")
-        if (method == "task.create" || method == "task.comment" || method == "task.read" || method == "fleet.edit" || method == "runtime.read") != (task != "") do return false
+        if (method == "task.create" || method == "task.comment" || method == "task.read" || method == "fleet.edit" || method == "runtime.read" || method == "lifecycle.configure" || method == "requirements.edit" || method == "review.post") != (task != "") do return false
     }
     if kind == "registry" && owner_string(o, "deleted") == "0" {
         if owner_string(o, "task_id") == "" {
@@ -117,6 +127,11 @@ owner_payload_kind :: proc(method: string) -> string {
     case "task.create": return "task_create_payload"
     case "task.comment": return "comment_payload"
     case "fleet.edit": return "fleet_payload"
+    case "lifecycle.configure": return "lifecycle_config_payload"
+    case "requirements.edit": return "requirements_payload"
+    case "requirements.present", "requirements.ack": return "ack_payload"
+    case "lease.submit": return "submit_payload"
+    case "review.open", "review.post": return "review_payload"
     case "chain.read", "task.read", "runtime.read": return "read_payload"
     case "receipt.read": return "receipt_payload"
     }

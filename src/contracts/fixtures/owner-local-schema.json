@@ -15,5 +15,12 @@
   "fleet_payload": "instance_id:id configuration_revision:positive enabled:flag",
   "capability": "protocol_version:version account_id:id owner_bridge_id:id chain_id:id task_id:id lease_id:id instance_id:id launch_epoch:id run_count:positive token_generation:hash configuration_revision:positive requirements_revision:positive expires_ms:positive hard_ms:positive allowed_methods:lease_methods key_id:id signature:signature",
   "lease_command": "protocol_version:version account_id:id owner_bridge_id:id chain_id:id task_id:id lease_id:id instance_id:id launch_epoch:id run_count:positive token_generation:hash configuration_revision:positive expected_revision:counter operation_id:id method:lease_method request_expires_ms:positive capability_digest:hash key_id:id signature:signature",
-  "lease_input": "protocol_version:version chain_id:id task_id:id lease_id:id configuration_revision:positive expected_revision:counter operation_id:id method:lease_method request_expires_ms:positive capability:optional_document"
+  "lease_input": "protocol_version:version chain_id:id task_id:id lease_id:id configuration_revision:positive expected_revision:counter operation_id:id method:lease_method request_expires_ms:positive capability:optional_document",
+  "lifecycle_config_payload": "configuration_revision:positive author_agent_id:id reviewer_agent_id:id reviewer_instance_id:id directory_id:id merge_policy:merge_policy repository:path worktree:path source_branch:optional_ref target_branch:optional_ref base_head:optional_commit",
+  "requirements_payload": "requirements_revision:positive body_cipher:required_cipher",
+  "ack_payload": "requirements_revision:positive",
+  "submit_payload": "requirements_revision:positive head:optional_commit summary:document",
+  "review_payload": "requirements_revision:positive attempt:positive head:optional_commit verdict:verdict summary:document",
+  "lifecycle_command": "protocol_version:version account_id:id owner_bridge_id:id chain_id:id task_id:id lease_id:id instance_id:id launch_epoch:id run_count:positive token_generation:hash configuration_revision:positive expected_revision:counter operation_id:id method:lifecycle_method request_expires_ms:positive capability_digest:hash key_id:id signature:signature payload_digest:hash",
+  "lifecycle_input": "protocol_version:version chain_id:id task_id:id lease_id:id configuration_revision:positive expected_revision:counter operation_id:id method:lifecycle_method request_expires_ms:positive capability:optional_document payload:document"
 }

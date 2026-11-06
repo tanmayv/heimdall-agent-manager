@@ -15,7 +15,7 @@ additive_migration_preserves_v1_and_rolls_back_partial_ddl :: proc(t:^testing.T)
     legacy:DB
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&legacy),0)
     testing.expect(t,exec(legacy,`PRAGMA foreign_keys=OFF;
-      DROP TABLE lease_receipt_pins; DROP TABLE local_leases; DROP TABLE local_fleet; DROP TABLE runtime_intents; DROP TABLE local_changes; DROP TABLE command_receipts;
+      DROP TABLE local_merge_preparations; DROP TABLE local_reviews; DROP TABLE local_review_sessions; DROP TABLE local_submissions; DROP TABLE requirement_ack; DROP TABLE task_requirements; DROP TABLE lifecycle_state; DROP TABLE lifecycle_configs; DROP TABLE lease_receipt_pins; DROP TABLE local_leases; DROP TABLE local_fleet; DROP TABLE runtime_intents; DROP TABLE local_changes; DROP TABLE command_receipts;
       DROP TABLE operation_tombstones; DROP TABLE task_comments; DROP TABLE tasks;
       DROP TABLE local_grants; DROP TRIGGER genesis_immutable_delete; DROP TABLE chain_genesis;
       DROP TABLE task_chains; DROP TABLE runtime_database; DROP TABLE schema_migrations;`))
@@ -30,7 +30,7 @@ additive_migration_preserves_v1_and_rolls_back_partial_ddl :: proc(t:^testing.T)
       (SELECT title FROM task_chains),(SELECT result_json FROM command_receipts),
       (SELECT payload_json FROM runtime_intents),(SELECT state FROM runtime_intents),database_id FROM runtime_database`)
     if testing.expect(t,ok && len(rows)==1) {
-        expected:=[7]string{"3","8","1","old title","historical result","signed old payload","settled"}
+        expected:=[7]string{"4","8","1","old title","historical result","signed old payload","settled"}
         for value,i in expected do testing.expect_value(t,rows[0][i],value)
         testing.expect_value(t,len(rows[0][7]),32)
     }
@@ -49,7 +49,7 @@ additive_migration_preserves_v1_and_rolls_back_partial_ddl :: proc(t:^testing.T)
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(broken.path,context.temp_allocator),&legacy),0)
     // Force a V1 migration failure after several ALTERs. The transaction must
     // undo both DDL and the migration marker; subsequent repair can retry.
-    testing.expect(t,exec(legacy,`PRAGMA foreign_keys=OFF; DROP TABLE lease_receipt_pins; DROP TABLE local_leases; DROP TABLE local_fleet; DROP TABLE runtime_intents; DROP TABLE local_changes;
+    testing.expect(t,exec(legacy,`PRAGMA foreign_keys=OFF; DROP TABLE local_merge_preparations; DROP TABLE local_reviews; DROP TABLE local_review_sessions; DROP TABLE local_submissions; DROP TABLE requirement_ack; DROP TABLE task_requirements; DROP TABLE lifecycle_state; DROP TABLE lifecycle_configs; DROP TABLE lease_receipt_pins; DROP TABLE local_leases; DROP TABLE local_fleet; DROP TABLE runtime_intents; DROP TABLE local_changes;
       DROP TABLE command_receipts; DROP TABLE task_comments; DROP TABLE tasks; DROP TABLE local_grants;
       DROP TRIGGER genesis_immutable_delete; DROP TABLE chain_genesis; DROP TABLE task_chains;
       DROP TABLE runtime_database; DROP TABLE schema_migrations;`))
@@ -382,7 +382,7 @@ v2_runtime_identity_upgrade_is_atomic_and_preserves_clocks_and_intents :: proc(t
     legacy:DB
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&legacy),0)
     testing.expect(t,exec(legacy,`PRAGMA foreign_keys=OFF;
-      DROP TABLE lease_receipt_pins; DROP TABLE local_leases; DROP TABLE local_fleet;
+      DROP TABLE local_merge_preparations; DROP TABLE local_reviews; DROP TABLE local_review_sessions; DROP TABLE local_submissions; DROP TABLE requirement_ack; DROP TABLE task_requirements; DROP TABLE lifecycle_state; DROP TABLE lifecycle_configs; DROP TABLE lease_receipt_pins; DROP TABLE local_leases; DROP TABLE local_fleet;
       DROP TABLE runtime_intents; DROP TABLE local_changes; DROP TABLE command_receipts;
       DROP TABLE operation_tombstones; DROP TABLE task_comments; DROP TABLE tasks;
       DROP TABLE local_grants; DROP TRIGGER genesis_immutable_delete; DROP TABLE chain_genesis;
@@ -410,8 +410,43 @@ v2_runtime_identity_upgrade_is_atomic_and_preserves_clocks_and_intents :: proc(t
     testing.expect_value(t,sqlite3_close(legacy),0)
     testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     rows,ok=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations),database_id,incarnation,commit_seq,clock_high_ms,directory_version,directory_hash,(SELECT body FROM tasks),(SELECT payload_json FROM runtime_intents),(SELECT state FROM runtime_intents),(SELECT attempts FROM runtime_intents),(SELECT claim_incarnation FROM runtime_intents) FROM runtime_database")
-    expected:=[13]string{"3","3","stable_database","8","5","4000","2","head","preserved body","original signed intent","pending","1","0"}
+    expected:=[13]string{"4","4","stable_database","8","5","4000","2","head","preserved body","original signed intent","pending","1","0"}
     if testing.expect(t,ok && len(rows)==1) do for value,i in expected do testing.expect_value(t,rows[0][i],value)
     testing.expect(t,!exec(f.store.db,"UPDATE runtime_database SET account_id='other'"),"rebuilt identity guard remains active")
     testing.expect(t,!exec(f.store.db,"UPDATE runtime_database SET commit_seq=0"),"rebuilt monotonic guard remains active")
+}
+
+@(test)
+v3_lifecycle_migration_preserves_live_fences_and_rolls_back_collision :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f)
+    child:=lease_child();fleet_seed(t,f,child)
+    raw:=lease_request(f,child,"lease.claim","claim","lease","")
+    first:=lease_invoke(f,raw,"",child)
+    if !testing.expect_value(t,first.code,"ok") do return
+    close(&f.store)
+    db:DB
+    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
+    testing.expect(t,exec(db,`PRAGMA foreign_keys=OFF;
+      DROP TABLE local_merge_preparations; DROP TABLE local_reviews; DROP TABLE local_review_sessions;
+      DROP TABLE local_submissions; DROP TABLE requirement_ack; DROP TABLE task_requirements;
+      DROP TABLE lifecycle_state; DROP TABLE lifecycle_configs;`))
+    text:=string(MIGRATION_004)
+    prefix:=text[:strings.index(text,"CREATE TABLE lifecycle_configs")]
+    v3,_:=strings.replace_all(prefix,"DEFAULT 4 CHECK(schema_version=4)","DEFAULT 3 CHECK(schema_version=3)",context.temp_allocator)
+    v3,_=strings.replace_all(v3,"database_id,4,","database_id,3,",context.temp_allocator)
+    testing.expect(t,exec(db,v3))
+    testing.expect(t,exec(db,"UPDATE schema_migrations SET version=3; CREATE VIEW lifecycle_configs AS SELECT 1;"))
+    testing.expect_value(t,sqlite3_close(db),0)
+    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"),"collision rolls back all migration4 DDL and header changes")
+    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
+    rows,ok:=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT count(*) FROM local_leases WHERE retired_seq IS NULL) FROM runtime_database")
+    testing.expect(t,ok && rows[0][0]=="3" && rows[0][1]=="3" && rows[0][2]=="1")
+    testing.expect(t,exec(db,"DROP VIEW lifecycle_configs"))
+    testing.expect_value(t,sqlite3_close(db),0)
+    testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
+    replay:=lease_invoke(f,raw,"",child,3000)
+    testing.expect(t,replay.code=="ok" && replay.replay && replay.body==first.body,"migration preserves exact signed capability and historical receipt")
+    rows,ok=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
+    testing.expect(t,ok && rows[0][0]=="4" && rows[0][1]=="4")
 }

@@ -82,8 +82,57 @@ main :: proc() {
         command=signed_command(&creator_priv,"task.create","task_create","task",payload,"1")
         request:=owner.encode(owner.doc(map[string]string{"command"=command,"payload"=payload}))
         if os.write_entire_file(fmt.tprintf("%s.request",path),transmute([]byte)request)!=nil do os.exit(7)
+    } else if strings.has_prefix(mode,"submit_") {
+        child:=owner.Child{"instance","epoch",strings.repeat("a",64,context.temp_allocator),1,"author"}
+        reviewer:=owner.Child{"review_instance","review_epoch",strings.repeat("b",64,context.temp_allocator),1,"reviewer"}
+        if mode=="submit_seed" {
+            p:=owner.encode(owner.doc(map[string]string{"configuration_revision"="1","author_agent_id"="author","reviewer_agent_id"="reviewer","reviewer_instance_id"="review_instance","directory_id"="directory","merge_policy"="none","repository"="","worktree"="","source_branch"="","target_branch"="","base_head"=""}))
+            command:=signed_command(&creator_priv,"lifecycle.configure","config","task",p,"2")
+            r:=owner.execute(&s,command,p,"",creator,bridge,1,"head",1000,&kr,signer,{},owner.Lifecycle_Proof{child,reviewer,true})
+            if r.code!="ok" {fmt.println(r.code);os.exit(20)}
+            brief,_:=vault.seal_string(`{"goal":"Private submit goal","acceptance":["Private submit acceptance"]}`,&kr,context.temp_allocator)
+            p=owner.encode(owner.doc(map[string]string{"requirements_revision"="1","body_cipher"=brief}))
+            command=signed_command(&creator_priv,"requirements.edit","requirements","task",p,"3")
+            r=owner.execute(&s,command,p,"",creator,bridge,1,"head",1000,&kr,signer)
+            if r.code!="ok" {fmt.println(r.code);os.exit(21)}
+            bytes,_:=os.read_entire_file(fmt.tprintf("%s.lease",path),context.temp_allocator)
+            c,_:=contracts.owner_parse(string(bytes),"lease_command")
+            c["expected_revision"]=json.String("4")
+            sig,_:=sign(&owner_priv,"lease_command",c);c["signature"]=json.String(sig)
+            r=owner.execute_lease(&s,owner.encode(c),"",child,bridge,1000,signer)
+            if r.code!="ok" {fmt.println(r.code);os.exit(22)}
+            v,_:=json.parse_string(r.body,.JSON,true,context.temp_allocator);result,_:=v.(json.Object)
+            cap:=owner.field(result,"capability")
+            c["capability_digest"]=json.String(contracts.owner_payload_digest(cap))
+            for method in ([3]string{"requirements.present","requirements.ack","lease.submit"}) {
+                p=`{"requirements_revision":"1"}`
+                if method=="lease.submit" do p=`{"requirements_revision":"1","head":"","summary":"Private submit evidence"}`
+                c["method"]=json.String(method);c["operation_id"]=json.String(method)
+                c["payload_digest"]=json.String(contracts.owner_payload_digest(p))
+                sig,_=sign(&owner_priv,"lifecycle_command",c);c["signature"]=json.String(sig)
+                raw:=owner.encode(c)
+                if method=="lease.submit" {
+                    request:=owner.encode(owner.doc(map[string]string{"command"=raw,"payload"=p,"capability"=cap}))
+                    if os.write_entire_file(fmt.tprintf("%s.submit",path),transmute([]byte)request)!=nil do os.exit(23)
+                } else {
+                    r=owner.execute_lifecycle(&s,raw,p,cap,child,bridge,1000,signer)
+                    if r.code!="ok" {fmt.println(r.code);os.exit(24)}
+                }
+            }
+        } else {
+            bytes,err:=os.read_entire_file(fmt.tprintf("%s.submit",path),context.temp_allocator)
+            if err!=nil do os.exit(25)
+            v,_:=json.parse_string(string(bytes),.JSON,true,context.temp_allocator);request,_:=v.(json.Object)
+            if mode=="submit_before" do _=sqlite3_commit_hook(s.db,before_commit,nil)
+            now:=i64(1000)
+            if mode=="submit_replay" do now=4000000
+            r:=owner.execute_lifecycle(&s,owner.field(request,"command"),owner.field(request,"payload"),owner.field(request,"capability"),child,bridge,now,signer,owner.Source_Proof{"",true})
+            if r.code!="ok" {fmt.println(r.code);os.exit(26)}
+            if mode=="submit_after" do boundary("after_commit")
+            fmt.println(owner.encode(r))
+        }
     } else if strings.has_prefix(mode,"lease_") {
-        child:=owner.Child{"instance","epoch",strings.repeat("a",64,context.temp_allocator),1}
+        child:=owner.Child{"instance","epoch",strings.repeat("a",64,context.temp_allocator),1,"author"}
         if mode=="lease_seed" {
             p:=owner.encode(owner.doc(map[string]string{"instance_id"="instance","configuration_revision"="1","enabled"="1"}))
             c:=signed_command(&creator_priv,"fleet.edit","fleet","task",p,"1")

@@ -144,6 +144,7 @@ Bridge_Runtime_Command_Result :: struct {
 }
 
 Bridge_Runtime_Launch :: struct {
+    agent_id:string,
 	agent_instance_id: string,
 	command_id: string,
 	run_dir: string,
@@ -2650,7 +2651,7 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 	defer delete(provider_profile)
 	// T6: the chain coordinator is alerted when a context rollover stalls.
 	bridge_rollover_note_launch(instance_id, descriptor.coordinator_id)
-	return bridge_runtime_launch_agent_pty_host(command_id, instance_id, run_dir, endpoint, provider, model, agent_issue.plaintext_token, descriptor.display_name, 0, descriptor.project_path, permission_mode, provider_profile)
+	return bridge_runtime_launch_agent_pty_host(command_id, instance_id, run_dir, endpoint, provider, model, agent_issue.plaintext_token, descriptor.display_name, 0, descriptor.project_path, permission_mode, provider_profile, descriptor.agent_id)
 }
 
 bridge_runtime_launch_provider_test :: proc(command_id, command_json: string) -> (ok: bool, detail: string, err: Bridge_Error) {
@@ -2690,7 +2691,7 @@ bridge_runtime_launch_provider_test :: proc(command_id, command_json: string) ->
 // ham-pty-host daemon, and (3) spawn (or restart, if the instance is already
 // registered) the agent under the daemon PTY. Retry/backoff on spawn preserves
 // AC-5 launch resilience.
-bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, endpoint, provider, model, agent_token, display_name: string, timeout_seconds: u64, project_path: string = "", permission_mode: string = "", provider_profile: string = "") -> (ok: bool, detail: string, err: Bridge_Error) {
+bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, endpoint, provider, model, agent_token, display_name: string, timeout_seconds: u64, project_path: string = "", permission_mode: string = "", provider_profile: string = "", durable_agent_id: string = "") -> (ok: bool, detail: string, err: Bridge_Error) {
 	// T2b: the context window is resolved per launch from provider + model
 	// (override > shipped config > default); never detected from the provider.
 	bridge_ext_note_launch(instance_id, provider, model, provider_profile)
@@ -2750,7 +2751,7 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 	}
 	bridge_runtime_set_pty_process_alive(instance_id, true)
 	bridge_startup_spawned(instance_id, agent_token, pid)
-	bridge_runtime_record_launch(Bridge_Runtime_Launch{agent_instance_id = strings.clone(instance_id), command_id = strings.clone(command_id), run_dir = strings.clone(run_dir), project_path = strings.clone(strings.trim_space(project_path)), pane_id = fmt.tprintf("pty-host:%d", pid), agent_token = strings.clone(agent_token), provider_sym = contracts.bridge_log_provider_sym(provider), launched_at_ns = time.tick_now()._nsec})
+	bridge_runtime_record_launch(Bridge_Runtime_Launch{agent_id = strings.clone(durable_agent_id), agent_instance_id = strings.clone(instance_id), command_id = strings.clone(command_id), run_dir = strings.clone(run_dir), project_path = strings.clone(strings.trim_space(project_path)), pane_id = fmt.tprintf("pty-host:%d", pid), agent_token = strings.clone(agent_token), provider_sym = contracts.bridge_log_provider_sym(provider), launched_at_ns = time.tick_now()._nsec})
 	// BR-3: ensure the event-subscription worker is running so this instance's
 	// ChildExited/StartupReady/StartupBlocked/ScreenChanged events flow to the hub
 	// status/activity surface without polling.

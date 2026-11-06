@@ -7,6 +7,7 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:testing"
+import "core:sync"
 import "core:time"
 import contracts "odin_test:contracts"
 import vault "odin_test:lib/vault"
@@ -19,6 +20,7 @@ test_sign :: proc(ctx:rawptr,kind:string,o:json.Object)->(string,bool) {
     if !signed do return "",false
     return vault.hex_encode_lower(sig.sig[:],context.temp_allocator),true
 }
+fixture_sequence:i64
 fixture :: proc(t:^testing.T)->^Fixture {
     f:=new(Fixture)
     testing.expect(t,vault.p256_private_key_generate(&f.creator_priv))
@@ -33,7 +35,7 @@ fixture :: proc(t:^testing.T)->^Fixture {
     key[0]=5
     f.kr,_=vault.keyring_from_single_key("account",id,1,key[:])
     home:=os.get_env("HOME",context.temp_allocator)
-    f.path=fmt.aprintf("%s/.cache/heimdall-tests/owner-unit-%d.sqlite",home,time.to_unix_nanoseconds(time.now()))
+    f.path=fmt.aprintf("%s/.cache/heimdall-tests/owner-unit-%d-%d.sqlite",home,time.to_unix_nanoseconds(time.now()),sync.atomic_add(&fixture_sequence,1))
     if !testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key")) do testing.fail_now(t,"open")
     g:=doc(map[string]string{"protocol_version"="1","account_id"="account","chain_id"="chain","creation_op"="create","owner_bridge_id"="bridge","owner_key_id"="bridge_key","creator_id"="device","creator_key_id"="device","schema_version"="1","creator_signature"=strings.repeat("0",128,context.temp_allocator),"owner_signature"=strings.repeat("0",128,context.temp_allocator)})
     sig,_:=test_sign(&f.creator_priv,"genesis",g);g["creator_signature"]=json.String(sig)

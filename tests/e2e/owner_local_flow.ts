@@ -3,7 +3,7 @@ import { prepareOwnerOperation, sendOwnerOperation, openOwnerReply, ownerRelayFi
 import { importKeyring } from '../../src/ui/utils/vaultKeyring.ts';
 import { createDeviceIdentity, memoryDeviceStore } from '../../src/ui/utils/deviceIdentity.ts';
 
-export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, stopOwner, restartOwner, inspectHub, otherAccount, cli, launchChild }: any) {
+export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, stopOwner, restartOwner, inspectHub, otherAccount, cli, launchChild, prepareGit }: any) {
   const session = { identity: approver.identity, chain: await approver.chain(), keyring: await importKeyring(Uint8Array.from(approver.keyringBytes), approver.userId) };
   const chainId = ownerId('chain_'), taskId = ownerId('task_');
   const send = async (body: unknown) => {
@@ -116,5 +116,58 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
       expect(stale.status!==0,'stopped child token cannot replay or renew local lease');
     } finally { await child.stop(); }
   }
+
+  if (prepareGit && launchChild) {
+    for (const conflict of [false,true]) {
+      const cid=ownerId('chain_'),tid=ownerId('task_'),git=prepareGit(tid,conflict);
+      const worker=await launchChild(git.repository),reviewer=await launchChild();
+      try {
+        const human=async(method:string,input:any)=>invoke(await prepareOwnerOperation(session,bridgeId,method,{chainId:cid,taskId:tid,...input}));
+        await human('chain.create',{taskId:'',expectedRevision:'0',title:'lifecycle-private-chain',description:'lifecycle-private-description'});
+        await human('task.create',{expectedRevision:'1',title:'lifecycle-private-task',body:'lifecycle-private-body'});
+        await human('fleet.edit',{expectedRevision:'1',instanceId:worker.instanceId,configurationRevision:'1'});
+        const config={configuration_revision:'1',author_agent_id:worker.agentId,reviewer_agent_id:reviewer.agentId,reviewer_instance_id:reviewer.instanceId,directory_id:ownerId('dir_'),merge_policy:'git',repository:git.repository,worktree:git.worktree,source_branch:git.sourceBranch,target_branch:git.targetBranch,base_head:git.baseHead};
+        await human('lifecycle.configure',{expectedRevision:'2',lifecycleConfig:config});
+        await human('requirements.edit',{expectedRevision:'3',requirementsRevision:'1',body:JSON.stringify({goal:'lifecycle-private-goal',acceptance:['lifecycle-private-acceptance']})});
+        const input={protocol_version:'1',chain_id:cid,task_id:tid,lease_id:ownerId('lease_'),configuration_revision:'1',expected_revision:'4',operation_id:ownerId('op_'),method:'lease.claim',request_expires_ms:String(Date.now()+300000),capability:''};
+        const claim=worker.call(input);expect(claim.status===0,'lifecycle worker claims real exact-child lease');
+        let cap=JSON.parse(claim.data.body).capability;
+        await human('requirements.edit',{expectedRevision:'4',requirementsRevision:'2',body:JSON.stringify({goal:'lifecycle-private-revised-goal',acceptance:['lifecycle-private-revised-acceptance']})});
+        const call=(child:any,method:string,payload:any,capability:string,revision='5')=>child.call({...input,expected_revision:revision,operation_id:ownerId('op_'),method,capability,payload:JSON.stringify(payload)});
+        const old=call(worker,'requirements.ack',{requirements_revision:'1'},cap);
+        expect(old.status!==0,'old requirements ACK rejected through real CLI');
+        const unread=call(worker,'requirements.ack',{requirements_revision:'2'},cap);
+        expect(unread.status!==0,'unpresented exact requirements ACK rejected');
+        const presented=call(worker,'requirements.present',{requirements_revision:'2'},cap);
+        expect(presented.status===0 && JSON.parse(presented.data.body).brief.includes('lifecycle-private-revised'),'real CLI reads exact immutable brief');
+        expect(call(worker,'requirements.ack',{requirements_revision:'2'},cap).status===0,'real CLI ACKs exact presented revision');
+        const submit={...input,expected_revision:'5',operation_id:ownerId('op_'),method:'lease.submit',capability:cap,payload:JSON.stringify({requirements_revision:'2',head:git.head,summary:'lifecycle-private-checks-pass'})};
+        const submitted=worker.call(submit);expect(submitted.status===0,'real CLI submits actual clean source head');
+        const replay=worker.call(submit);expect(replay.status===0 && replay.data.replay && replay.data.body===submitted.data.body,'lost submit reply replays after lease release without effects');
+        const verdict={requirements_revision:'2',attempt:'1',head:git.head,verdict:'approve',summary:'lifecycle-private-independent-review'};
+        expect(call(worker,'review.open',verdict,'','6').status!==0,'author cannot obtain reviewer capability');
+        expect(call(reviewer,'review.open',{...verdict,head:'f'.repeat(40)},'','6').status!==0,'stale submitted head rejects review');
+        await human('review.post',{expectedRevision:'6',requirementsRevision:'2',attempt:'1',head:git.head,verdict:'approve',body:'lifecycle-private-human-verdict'});
+        const observed=JSON.parse((await human('runtime.read',{expectedRevision:'0'})).body);
+        expect(observed.state[0][0]==='in_review','device-signed human approval does not replace named independent review');
+        const opened=call(reviewer,'review.open',verdict,'','7');expect(opened.status===0,'independent actual child obtains scoped reviewer capability');
+        const rcap=JSON.parse(opened.data.body).capability;
+        const reviewed=call(reviewer,'review.post',verdict,rcap,'7');expect(reviewed.status===0,'independent actual child posts bound verdict');
+        let state:any;
+        for(const deadline=Date.now()+15000;;await new Promise(r=>setTimeout(r,200))){
+          state=JSON.parse((await human('runtime.read',{expectedRevision:'0'})).body);
+          if(state.state[0][0]===(conflict?'merge_blocked':'done'))break;
+          if(Date.now()>deadline)throw new Error('merge gate did not settle: '+JSON.stringify(state));
+        }
+        expect(state.leases.length===0,'submit release and gate persist in owner SQLite');
+        if(conflict)expect(state.state[0][2]==='merge_conflict' && git.targetHead()===git.baseHead,'real Git conflict keeps durable intent blocking and target unchanged');
+        else expect(git.targetHead()===git.head && state.state[0][2]===git.head,'real Git exact target CAS stores successful merge receipt');
+        await inspectHub(cid);
+        await worker.stop();
+        expect(worker.call(submit).status!==0,'stopped child cannot read historical submit receipt');
+      } finally {await worker.stop();await reviewer.stop();}
+    }
+  }
+
   return { chainId, taskId };
 }

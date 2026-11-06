@@ -7,7 +7,7 @@ import "core:strings"
 import "core:testing"
 import contracts "odin_test:contracts"
 
-lease_child :: proc() -> Child { return {"instance","epoch",strings.repeat("a",64,context.temp_allocator),1} }
+lease_child :: proc() -> Child { return {"instance","epoch",strings.repeat("a",64,context.temp_allocator),1,"author"} }
 fleet_seed :: proc(t:^testing.T,f:^Fixture,child:Child) {
     seed(t,f)
     p:=encode(doc(map[string]string{"instance_id"=child.instance,"configuration_revision"="1","enabled"="1"}))

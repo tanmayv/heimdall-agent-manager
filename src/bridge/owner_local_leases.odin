@@ -36,13 +36,17 @@ bridge_owner_child_locked :: proc(instance,token_hash:string) -> (owner.Child,bo
         // local launch key supplies a durable Bridge-defined launch identity.
         if separator>=0 do epoch=r.instance_token[separator+1:]
         if !contracts.owner_field_valid(epoch,"id") do return {},false
-        return owner.Child{instance,epoch,generation,i64(r.run_count)},true
+        launch,has_launch:=bridge_runtime_get_launch(instance)
+        if !has_launch do return {},false
+        return owner.Child{instance,epoch,generation,i64(r.run_count),launch.agent_id},true
     }
     return {},false
 }
 
 bridge_owner_agent :: proc(request_id,params:string,rec:Bridge_Local_Agent_Token_Record) -> string {
     input,valid:=contracts.owner_parse(params,"lease_input")
+    lifecycle:=false
+    if !valid { input,valid=contracts.owner_parse(params,"lifecycle_input");lifecycle=valid }
     if !valid do return bridge_local_response_error(request_id,"malformed","invalid owner-local lease input")
     account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
     pub:=bridge_identity_public_key_hex(bridge_config.daemon_id)
@@ -64,11 +68,22 @@ bridge_owner_agent :: proc(request_id,params:string,rec:Bridge_Local_Agent_Token
     command["instance_id"]=json.String(child.instance);command["launch_epoch"]=json.String(child.epoch)
     command["run_count"]=json.String(fmt.tprintf("%d",child.run_count));command["token_generation"]=json.String(child.token_generation)
     command["key_id"]=json.String(key_id);command["signature"]=json.String(strings.repeat("0",128,context.temp_allocator))
-    signature,signed:=bridge_owner_sign(nil,"lease_command",command)
+    kind:="lease_command"
+    payload:=""
+    if lifecycle {
+        kind="lifecycle_command"
+        payload=contracts.owner_string(input,"payload")
+        command["payload_digest"]=json.String(contracts.owner_payload_digest(payload))
+    }
+    signature,signed:=bridge_owner_sign(nil,kind,command)
     if !signed do return bridge_local_response_error(request_id,"storage_error","attestation signing failed")
     command["signature"]=json.String(signature)
     key:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,key_id,pub,"bridge",true,false}
-    result:=owner.execute_lease(&bridge_owner_store,bridge_owner_json(command),cap,child,key,now,owner.Signer{nil,bridge_owner_sign})
+    result:owner.Result
+    if lifecycle {
+        proof:=bridge_owner_source_proof(&bridge_owner_store,contracts.owner_string(command,"chain_id"),contracts.owner_string(command,"task_id"))
+        result=owner.execute_lifecycle(&bridge_owner_store,bridge_owner_json(command),payload,cap,child,key,now,owner.Signer{nil,bridge_owner_sign},proof)
+    } else { result=owner.execute_lease(&bridge_owner_store,bridge_owner_json(command),cap,child,key,now,owner.Signer{nil,bridge_owner_sign}) }
     if result.code!="ok" do return bridge_local_response_error(request_id,result.code,"owner-local lease rejected")
     return bridge_local_response_data(request_id,bridge_owner_json(result))
 }

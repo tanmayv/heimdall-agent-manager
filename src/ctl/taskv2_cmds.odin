@@ -1339,7 +1339,9 @@ ctl_v2_owner_local :: proc(endpoint,token:string,tokens,args:[]string) {
         if path=="" do ctl_print_error_exit("--request-file is required")
         bytes,err:=os.read_entire_file(path,context.temp_allocator)
         if err!=nil do ctl_print_error_exit("cannot read owner-local lease input")
-        if _,valid:=contracts.owner_parse(string(bytes),"lease_input");!valid do ctl_print_error_exit("invalid owner-local lease input")
+        if _,valid:=contracts.owner_parse(string(bytes),"lease_input");!valid {
+            if _,valid:=contracts.owner_parse(string(bytes),"lifecycle_input");!valid do ctl_print_error_exit("invalid owner-local lease/lifecycle input")
+        }
         response,sent:=ctl_agent_local_call(endpoint,token,"agent.owner_local.lease",string(bytes))
         if !sent do ctl_print_error_exit("local Bridge endpoint is not reachable")
         fmt.println(response)

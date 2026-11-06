@@ -282,16 +282,22 @@ c.commit()
           const response = JSON.parse(called.stdout);
           return response.data?.data ?? response.data;
         },
-        launchChild: process.env.HEIMDALL_E2E_OWNER_LEASE === '1' ? async () => {
+        launchChild: process.env.HEIMDALL_E2E_OWNER_LEASE === '1' ? async (projectPath = '') => {
           const discovered = await http(hubA, 'POST', '/api/v1/bridges/' + S.a.bridgeId + '/providers/discover', {body:{}});
           expect(discovered.status === 200, 'synthetic provider discovered on disposable Bridge');
           const enabled = await http(hubA, 'PUT', '/api/v1/bridges/' + S.a.bridgeId + '/providers/codex', {body:{enabled:true}});
           expect(enabled.status === 200, 'synthetic provider enabled');
-          const created = await http(hubA, 'POST', '/api/v1/agents', {body:{name:'Owner lease fixture',slug:'owner-lease-fixture',instructions:'Disposable integration fixture'}});
+          const created = await http(hubA, 'POST', '/api/v1/agents', {body:{name:'Owner lease fixture',slug:ownerIdForFixture('owner-lease-'),instructions:'Disposable integration fixture'}});
           expect(created.status === 200 || created.status === 201, 'created disposable agent');
           const models = spawnSync('python3', ['-c', 'import sqlite3,sys;print(sqlite3.connect(sys.argv[1]).execute("select model_id from provider_models where provider=\'codex\' and state=\'active\' order by rank limit 1").fetchone()[0])', path.join(ROOT,'hub-a','hub.db')], {encoding:'utf8'});
           if (models.status !== 0) throw new Error(models.stderr);
-          const started = await http(hubA, 'POST', '/api/v1/agent-instances', {body:{agent_id:created.data.agent_id,bridge_id:S.a.bridgeId,provider:'codex',model:models.stdout.trim(),display_name:'Owner lease child'}});
+          let projectId='';
+          if (projectPath) {
+            const project=await http(hubA,'POST','/api/v1/projects',{body:{name:'Owner-local disposable repository',slug:ownerIdForFixture('local-repo-'),default_path:projectPath,vcs_kind:'git'}});
+            expect(project.status===200 || project.status===201,'created disposable project path binding');
+            projectId=project.data.project_id;
+          }
+          const started = await http(hubA, 'POST', '/api/v1/agent-instances', {body:{project_id:projectId,agent_id:created.data.agent_id,bridge_id:S.a.bridgeId,provider:'codex',model:models.stdout.trim(),display_name:'Owner lease child'}});
           expect(started.status === 200 || started.status === 201, 'started actual synthetic PTY child');
           const iid=started.data.agent_instance_id;
           let socket=path.join(S.cfgA.local,'pty-host-'+S.a.bridgeId+'.sock');
@@ -315,7 +321,27 @@ c.commit()
             const reply=called.stdout.trim()?JSON.parse(called.stdout):{};
             return {status:called.status,reply,data:reply.data?.data ?? reply.data,error:called.stderr};
           };
-          return {instanceId:iid,call,stop:async()=>{await http(hubA,'POST','/api/v1/agent-instances/'+iid+'/stop',{body:{}});await sleep(1500);}};
+          return {instanceId:iid,agentId:created.data.agent_id,call,stop:async()=>{await http(hubA,'POST','/api/v1/agent-instances/'+iid+'/stop',{body:{}});await sleep(1500);}};
+        } : undefined,
+        prepareGit: process.env.HEIMDALL_E2E_OWNER_LIFECYCLE === '1' ? (taskId, conflict=false) => {
+          const repo=path.join(HOME,ownerIdForFixture('lifecycle-repo-'));
+          fs.mkdirSync(repo,{recursive:true});
+          const git=(cwd,...args)=>{
+            const r=spawnSync('git',['-c','user.name=Fixture','-c','user.email=fixture@localhost','-C',cwd,...args],{encoding:'utf8',timeout:15000,env:ENV});
+            if(r.status!==0) throw new Error('fixture git '+args.join(' ')+': '+r.stderr);
+            return r.stdout.trim();
+          };
+          git(repo,'init','-b','sandbox');fs.writeFileSync(path.join(repo,'shared.txt'),'base\n');
+          git(repo,'add','.');git(repo,'commit','-m','base');git(repo,'branch','integration');
+          const worktree=path.join(repo,'.heimdall','worktrees',taskId),sourceBranch='heimdall/'+taskId;
+          git(repo,'worktree','add','-b',sourceBranch,worktree);
+          fs.writeFileSync(path.join(worktree,'shared.txt'),'source\n');git(worktree,'add','.');git(worktree,'commit','-m','source');
+          if(conflict){
+            const targetWork=path.join(HOME,ownerIdForFixture('target-work-'));
+            git(repo,'worktree','add',targetWork,'integration');fs.writeFileSync(path.join(targetWork,'shared.txt'),'target\n');
+            git(targetWork,'add','.');git(targetWork,'commit','-m','target');git(repo,'worktree','remove',targetWork);
+          }
+          return {repository:repo,worktree,sourceBranch,targetBranch:'integration',baseHead:git(repo,'rev-parse','integration'),head:git(worktree,'rev-parse','HEAD'),targetHead:()=>git(repo,'rev-parse','integration')};
         } : undefined,
         stopOwner: async () => {
           S.runA.kill(); await sleep(1500);
@@ -355,7 +381,7 @@ r=c.execute("select registry_json from owner_local_titles where chain_id=?",(sys
 assert len(r)==2 and all("owner-private" not in x[0] for x in r)
 from pathlib import Path
 for dbfile in Path(sys.argv[1]).parent.glob("hub.db*"):
- if dbfile.is_file(): assert b"owner-private" not in dbfile.read_bytes()
+ if dbfile.is_file(): assert all(marker not in dbfile.read_bytes() for marker in (b"owner-private", b"lifecycle-private"))
 print("metadata-only Hub SQLite verified")
 `, path.join(ROOT, 'hub-a', 'hub.db'), chainId], { encoding: 'utf8' });
           expect(probe.status === 0, 'Hub SQLite contains no local chain/task bodies: ' + probe.stderr);

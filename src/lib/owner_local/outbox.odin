@@ -1,6 +1,7 @@
 package owner_local
 
 import "core:fmt"
+import "core:encoding/json"
 import contracts "odin_test:contracts"
 
 payload_hash :: contracts.owner_payload_digest
@@ -67,14 +68,41 @@ intent_result :: proc(s:^Store,claim:Intent_Claim,success:bool,result:string,now
     if !transaction_begin(s,&tx) do return false
     defer transaction_rollback(&tx)
     if claim.incarnation!=s.incarnation do return false
+    metadata,meta_ok:=query(s.db,"SELECT kind,chain_id,exact_fence_json FROM runtime_intents WHERE intent_id=?",claim.id)
+    if !meta_ok || len(metadata)!=1 do return false
+    if metadata[0][0]=="merge" {
+        exact:=claim;exact.kind="merge";exact.chain=metadata[0][1];exact.fence=metadata[0][2]
+        if !merge_claim_current(s,exact) do return false
+    }
     state:="pending";published:="0"
     if success {state="settled";published="1"}
     // Retry floor persists across restarts. Never decrement the clock watermark
     // or permit a delayed completion to overwrite the current claimant.
     delay:=min(i64(60000),1000*min(claim.attempt,i64(60)))
     rows,ok:=query(s.db,`UPDATE runtime_intents SET state=?,published=?,result_json=?,next_retry_ms=?
-     WHERE intent_id=? AND state='claimed' AND claim_incarnation=? AND attempts=? AND payload_digest=? RETURNING intent_id`,
+     WHERE intent_id=? AND state='claimed' AND claim_incarnation=? AND attempts=? AND payload_digest=? RETURNING intent_id,kind,chain_id,exact_fence_json`,
      state,published,result,fmt.tprintf("%d",now+delay),claim.id,fmt.tprintf("%d",claim.incarnation),fmt.tprintf("%d",claim.attempt),claim.digest)
     if !ok || len(rows)!=1 do return false
+    if rows[0][1]=="merge" {
+        v,valid:=contracts.owner_request_document(rows[0][3])
+        f,obj:=v.(json.Object)
+        if !valid || !obj do return false
+        next:="merge_blocked"
+        if success {
+            if result!=merge_prepared(s,claim) || result=="" do return false
+            next="done"
+        }
+        updated,read:=query(s.db,"UPDATE lifecycle_state SET state=?,merge_receipt=? WHERE chain_id=? AND task_id=? AND attempt=? AND state IN('merge_pending','merge_blocked') RETURNING attempt",next,result,rows[0][2],field(f,"task_id"),field(f,"attempt"))
+        if !read || len(updated)!=1 do return false
+        task_rows,task_ok:=query(s.db,"UPDATE tasks SET revision=revision+1 WHERE chain_id=? AND task_id=? RETURNING revision",rows[0][2],field(f,"task_id"))
+        if !task_ok || len(task_rows)!=1 do return false
+        runtime,runtime_ok:=query(s.db,"SELECT commit_seq,clock_high_ms,(SELECT count(*) FROM local_changes) FROM runtime_database WHERE singleton=1")
+        if !runtime_ok || len(runtime)!=1 || number(runtime[0][2])>=1000000 do return false
+        seq:=number(runtime[0][0])+1
+        kind:="merge.failed"
+        if success do kind="merge.merged"
+        if _,ok:=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),rows[0][2],kind,field(f,"task_id"),task_rows[0][0],claim.id);!ok do return false
+        if _,ok:=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",max(now,number(runtime[0][1]))));!ok do return false
+    }
     return transaction_commit(&tx)
 }

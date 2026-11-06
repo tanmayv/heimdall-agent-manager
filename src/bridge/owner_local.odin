@@ -53,6 +53,7 @@ bridge_owner_publish_batch :: proc(s:^owner.Store,q:^owner.Intent_Completions,no
 }
 
 bridge_owner_publish_registry :: proc(_:rawptr,s:^owner.Store,claim:owner.Intent_Claim) -> (bool,string,i64) {
+    if claim.kind=="merge" do return bridge_owner_merge(s,claim)
     // Future consumers must validate their own execution fences before I/O.
     if claim.kind!="registry" do return false,"unsupported_kind",time.to_unix_nanoseconds(time.now())/1000000
     token:=bridge_credential_snapshot();defer delete(token)
@@ -128,7 +129,13 @@ bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
         fleet_child,current=bridge_owner_child_locked(contracts.owner_string(p,"instance_id"),"")
         if !current do fleet_child={} // Historical device receipts remain readable after child exit.
     }
-    result:=owner.execute(&bridge_owner_store,command_raw,payload,genesis_raw,key,owner_key,version,head,now,&kr,owner.Signer{nil,bridge_owner_sign},fleet_child)
+    proof:owner.Lifecycle_Proof
+    if contracts.owner_string(command,"method")=="lifecycle.configure" {
+        if p,ok:=contracts.owner_parse(payload,"lifecycle_config_payload");ok {
+            proof=bridge_owner_config_proof(&bridge_owner_store,p,contracts.owner_string(command,"chain_id"),contracts.owner_string(command,"task_id"))
+        }
+    }
+    result:=owner.execute(&bridge_owner_store,command_raw,payload,genesis_raw,key,owner_key,version,head,now,&kr,owner.Signer{nil,bridge_owner_sign},fleet_child,proof)
     sync.mutex_unlock(&bridge_local_token_mutex)
     sync.mutex_unlock(&bridge_startup_io_mutex)
     digest,_:=contracts.owner_digest("command",command)

@@ -14,20 +14,28 @@ LEASE_HARD_MS :: i64(60*60*1000)
 Child :: struct {
     instance,epoch,token_generation:string,
     run_count:i64,
+    agent_id:string,
 }
 lease_scope :: proc(c:json.Object,child:Child) -> bool {
     return field(c,"instance_id")==child.instance && field(c,"launch_epoch")==child.epoch &&
         field(c,"token_generation")==child.token_generation && number(field(c,"run_count"))==child.run_count
 }
-lease_capability :: proc(s:^Store,c:json.Object,expires,hard:i64,sign:Signer) -> (string,bool) {
+lease_capability :: proc(s:^Store,c:json.Object,expires,hard:i64,sign:Signer,methods:string="") -> (string,bool) {
+    req:="1"
+    if r,ok:=lifecycle_requirements(s,field(c,"chain_id"),field(c,"task_id"));ok do req=r[0]
+    allowed:=methods
+    if allowed=="" {
+        allowed="lease.claim,lease.heartbeat"
+        if _,_,ok:=lifecycle_config(s,field(c,"chain_id"),field(c,"task_id"));ok do allowed="lease.claim,lease.heartbeat,requirements.present,requirements.ack,lease.submit"
+    }
     cap:=doc(map[string]string{
         "protocol_version"="1","account_id"=s.account,"owner_bridge_id"=s.owner,
         "chain_id"=field(c,"chain_id"),"task_id"=field(c,"task_id"),"lease_id"=field(c,"lease_id"),
         "instance_id"=field(c,"instance_id"),"launch_epoch"=field(c,"launch_epoch"),
         "run_count"=field(c,"run_count"),"token_generation"=field(c,"token_generation"),
-        "configuration_revision"=field(c,"configuration_revision"),"requirements_revision"="1",
+        "configuration_revision"=field(c,"configuration_revision"),"requirements_revision"=req,
         "expires_ms"=fmt.tprintf("%d",expires),"hard_ms"=fmt.tprintf("%d",hard),
-        "allowed_methods"="lease.claim,lease.heartbeat","key_id"=s.owner_key,
+        "allowed_methods"=allowed,"key_id"=s.owner_key,
         "signature"=strings.repeat("0",128,context.temp_allocator)})
     if sign.sign==nil do return "",false
     sig,ok:=sign.sign(sign.ctx,"capability",cap)
@@ -90,6 +98,11 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
     expires,hard:=now+LEASE_TTL_MS,now+LEASE_HARD_MS
     version:=i64(1)
     if method=="lease.claim" {
+        if config,binding,configured:=lifecycle_config(s,chain,task);configured {
+            if child.agent_id!=field(config,"author_agent_id") || encode(child)!=binding[1] do return fail("invalid_scope")
+            states,ok:=query(s.db,"SELECT state FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)
+            if !ok || len(states)!=1 || states[0][0]!="ready" do return fail("operation_conflict")
+        }
         if cap_raw!="" || field(c,"capability_digest")!=contracts.owner_payload_digest("") do return fail("digest_mismatch")
         // Expiry is a separate durable decision. Never silently replace a live
         // row or reuse an old lease identity, including after restart.

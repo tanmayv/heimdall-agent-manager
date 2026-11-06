@@ -3,7 +3,7 @@
 The original V1 is the minimal **device-only** create/task/comment/read protocol.
 The additive single-device fleet/claim/heartbeat schemas and Bridge-attested
 capabilities are documented in [owner-local-leases.md](owner-local-leases.md).
-Remote execution and migration remain outside these contracts.
+[Requirements, submit and independent review](owner-local-lifecycle.md) add strict lifecycle\ninput/attestation domains and device configuration/verdict methods. Remote execution\nand migration remain outside these contracts.
 Legacy Hub writer and transport routes are unchanged.
 
 ## Wire and signing

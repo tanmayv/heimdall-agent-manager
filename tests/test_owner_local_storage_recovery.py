@@ -96,7 +96,28 @@ def main():
         with sqlite3.connect(path) as db:
             assert db.execute("SELECT count(*) FROM local_leases").fetchone() == (1,)
             assert db.execute("SELECT count(*) FROM local_leases WHERE retired_seq IS NULL").fetchone() == (0,)
-    print("PASS: SIGKILL before commit, after commit/lost reply, and after outbox claim; lease grant/receipt/pin SIGKILL boundaries and post-expiry replay preserve exact effects")
+        submit_path = Path(directory) / "submit.sqlite"
+        run(args.probe, "seed", submit_path)
+        run(args.probe, "retry", submit_path)
+        run(args.probe, "lease_seed", submit_path)
+        run(args.probe, "submit_seed", submit_path)
+        baseline = snapshot(submit_path)
+        kill_at(args.probe, "submit_before", submit_path, "before_commit")
+        assert snapshot(submit_path) == baseline
+        with sqlite3.connect(submit_path) as db:
+            assert db.execute("SELECT count(*) FROM local_submissions").fetchone() == (0,)
+            assert db.execute("SELECT count(*) FROM local_leases WHERE retired_seq IS NULL").fetchone() == (1,)
+        kill_at(args.probe, "submit_after", submit_path, "after_commit")
+        committed = snapshot(submit_path)
+        assert committed == tuple(n + d for n, d in zip(baseline, (1, 0, 1, 1, 0)))
+        replay = json.loads(run(args.probe, "submit_replay", submit_path))
+        assert replay["code"] == "ok" and replay["replay"] is True
+        assert snapshot(submit_path) == committed
+        with sqlite3.connect(submit_path) as db:
+            assert db.execute("SELECT count(*) FROM local_submissions").fetchone() == (1,)
+            assert db.execute("SELECT count(*) FROM local_leases WHERE retired_seq IS NULL").fetchone() == (0,)
+            assert db.execute("SELECT state,attempt FROM lifecycle_state").fetchone() == ("in_review", 1)
+    print("PASS: SIGKILL before commit, after commit/lost reply, and after outbox claim; lease grant/receipt/pin SIGKILL boundaries and post-expiry replay and atomic submit release/facets/receipt SIGKILL recovery preserve exact effects")
 
 
 if __name__ == "__main__":

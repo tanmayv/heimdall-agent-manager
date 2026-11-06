@@ -13,6 +13,11 @@ export default function OwnerLocalPanel({ onClose }: { onClose: () => void }) {
   const [body, setBody] = useState('');
   const [instanceId, setInstanceId] = useState('');
   const [configRevision, setConfigRevision] = useState('1');
+  const [lifecycleConfig, setLifecycleConfig] = useState('{}');
+  const [requirementsRevision, setRequirementsRevision] = useState('1');
+  const [attempt, setAttempt] = useState('1');
+  const [head, setHead] = useState('');
+  const [verdict, setVerdict] = useState<'approve' | 'request_changes'>('approve');
   const [revision, setRevision] = useState('0');
   const [listing, setListing] = useState<any[]>([]);
   const [detail, setDetail] = useState<any>(null);
@@ -43,11 +48,11 @@ export default function OwnerLocalPanel({ onClose }: { onClose: () => void }) {
     }));
     if (getKeyringSession() === before) setListing(visible);
   }
-  async function perform(method: 'chain.create' | 'task.create' | 'task.comment' | 'chain.read' | 'task.read' | 'fleet.edit' | 'runtime.read') {
+  async function perform(method: 'chain.create' | 'task.create' | 'task.comment' | 'chain.read' | 'task.read' | 'fleet.edit' | 'runtime.read' | 'lifecycle.configure' | 'requirements.edit' | 'review.post') {
     const s = await current(); const before = getKeyringSession();
     const cid = method === 'chain.create' ? ownerId('chain_') : chainId;
-    const tid = method === 'task.create' ? ownerId('task_') : (['task.comment', 'task.read', 'fleet.edit', 'runtime.read'].includes(method) ? taskId : '');
-    const op = await prepareOwnerOperation(s, bridge, method, { chainId: cid, taskId: tid, expectedRevision: method === "chain.create" || method.endsWith(".read") ? "0" : revision, title, body, description: body, instanceId, configurationRevision: configRevision });
+    const tid = method === 'task.create' ? ownerId('task_') : (['task.comment', 'task.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post'].includes(method) ? taskId : '');
+    const op = await prepareOwnerOperation(s, bridge, method, { chainId: cid, taskId: tid, expectedRevision: method === "chain.create" || method.endsWith(".read") ? "0" : revision, title, body, description: body, instanceId, configurationRevision: configRevision, lifecycleConfig: method === 'lifecycle.configure' ? JSON.parse(lifecycleConfig) : undefined, requirementsRevision, attempt, head, verdict });
     setPending(op); setChainId(cid); if (tid) setTaskId(tid);
     const result = await sendOwnerOperation(s, op, (relay) => cookieMutation('/api/v1/owner-local/relay', 'POST', relay));
     if (getKeyringSession() !== before) return;
@@ -62,7 +67,7 @@ export default function OwnerLocalPanel({ onClose }: { onClose: () => void }) {
   const inputClass = 'border border-subtle rounded p-2 bg-surface text-primary';
   return <div className="fixed inset-0 z-50 overflow-auto bg-surface p-6" role="dialog" aria-label="Owner-local tasks">
     <div className="flex justify-between"><h2>Owner-local tasks</h2><button data-debug-id="owner-local-close" onClick={onClose}>Close</button></div>
-    <p>Tasks and comments live on the selected owner Bridge. Assign a running local instance, then use its CLI to claim and renew a lease. Read runtime shows the current lease.</p>
+    <p>Tasks and comments live on the selected owner Bridge. Assign a running local instance, then use its CLI to claim and renew a lease. Configure independent review and merge, save requirements, then use the assigned child’s CLI to read, acknowledge and submit. Read runtime shows the current submission and gate.</p>
     <div className="flex flex-wrap gap-2 my-3">
       <select data-debug-id="owner-local-bridge" aria-label="Owner Bridge" className={inputClass} value={bridge} onChange={(e) => setBridge(e.target.value)}><option value="">Choose owner Bridge</option>{bridges.map((d) => <option key={d.device_id} value={d.row.bridge_id}>{d.row.bridge_id}</option>)}</select>
       <input data-debug-id="owner-local-chain" aria-label="Chain ID" placeholder="Chain ID" className={inputClass} value={chainId} onChange={(e) => setChainId(e.target.value)} />
@@ -71,10 +76,15 @@ export default function OwnerLocalPanel({ onClose }: { onClose: () => void }) {
       <input data-debug-id="owner-local-title" aria-label="Title" placeholder="Title" className={inputClass} value={title} onChange={(e) => setTitle(e.target.value)} />
       <input data-debug-id="owner-local-fleet-instance" aria-label="Fleet instance ID" placeholder="Running instance ID" className={inputClass} value={instanceId} onChange={(e) => setInstanceId(e.target.value)} />
       <input data-debug-id="owner-local-config-revision" aria-label="Configuration revision" className={inputClass} value={configRevision} onChange={(e) => setConfigRevision(e.target.value)} />
+      <textarea data-debug-id="owner-local-lifecycle-config" aria-label="Lifecycle configuration JSON" placeholder="Device-signed lifecycle configuration" className={inputClass} value={lifecycleConfig} onChange={(e) => setLifecycleConfig(e.target.value)} />
+      <input data-debug-id="owner-local-requirements-revision" aria-label="Requirements revision" className={inputClass} value={requirementsRevision} onChange={(e) => setRequirementsRevision(e.target.value)} />
+      <input data-debug-id="owner-local-attempt" aria-label="Submitted attempt" className={inputClass} value={attempt} onChange={(e) => setAttempt(e.target.value)} />
+      <input data-debug-id="owner-local-head" aria-label="Submitted commit" className={inputClass} value={head} onChange={(e) => setHead(e.target.value)} />
+      <select data-debug-id="owner-local-verdict" aria-label="Human verdict" className={inputClass} value={verdict} onChange={(e) => setVerdict(e.target.value as 'approve' | 'request_changes')}><option value="approve">Approve</option><option value="request_changes">Request changes</option></select>
       <textarea data-debug-id="owner-local-body" aria-label="Body or comment" placeholder="Description, task body, or comment" className={inputClass} value={body} onChange={(e) => setBody(e.target.value)} />
     </div>
     <div className="flex flex-wrap gap-3">
-      {(['chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'fleet.edit', 'runtime.read'] as const).map((method) => <button key={method} data-debug-id={'owner-local-' + method.replace('.', '-')} disabled={busy || !bridge} onClick={() => void run(() => perform(method))}>{{ 'chain.create': 'Create chain', 'task.create': 'Create task', 'task.comment': 'Add comment', 'chain.read': 'Read chain', 'task.read': 'Read task', 'fleet.edit': 'Assign local instance', 'runtime.read': 'Read runtime' }[method]}</button>)}
+      {(['chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post'] as const).map((method) => <button key={method} data-debug-id={'owner-local-' + method.replace('.', '-')} disabled={busy || !bridge} onClick={() => void run(() => perform(method))}>{{ 'chain.create': 'Create chain', 'task.create': 'Create task', 'task.comment': 'Add comment', 'chain.read': 'Read chain', 'task.read': 'Read task', 'fleet.edit': 'Assign local instance', 'runtime.read': 'Read runtime', 'lifecycle.configure': 'Configure review and merge', 'requirements.edit': 'Save requirements', 'review.post': 'Record human verdict' }[method]}</button>)}
       <button data-debug-id="owner-local-list" disabled={busy} onClick={() => void run(list)}>Refresh listing</button>
       <button data-debug-id="owner-local-retry" disabled={busy || !pending} onClick={() => void run(retry)}>Retry same operation</button>
       <button data-debug-id="owner-local-export" disabled={busy || !pending} onClick={() => void run(async () => {
