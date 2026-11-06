@@ -109,7 +109,7 @@ grant :: proc(s:^Store, command:json.Object, now:i64) -> (contracts.Owner_Read_G
 // entering here. Its pinned sequence/hash is rechecked under the write lock.
 // The key is a verified current directory member, never a request assertion.
 execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:contracts.Owner_Verified_Key,
-    directory_version:i64,directory_hash:string, now:i64, kr:^vault.Vault_Keyring, sign:Signer, fleet_child:Child={}, lifecycle_proof:Lifecycle_Proof={}, role_children:[]Child=nil) -> Result {
+    directory_version:i64,directory_hash:string, now:i64, kr:^vault.Vault_Keyring, sign:Signer, fleet_child:Child={}, lifecycle_proof:Lifecycle_Proof={}, role_children:[]Child=nil, grant_proof:Grant_Proof={}) -> Result {
     context.allocator=context.temp_allocator
     c,parsed:=contracts.owner_parse(command_raw,"command")
     if !parsed do return fail("malformed")
@@ -122,7 +122,17 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     if !ok || len(state)!=1 do return fail("storage_error")
     if directory_version!=number(state[0][2]) || directory_hash!=state[0][3] do return fail("invalid_scope")
     method,chain,task,principal,op:=field(c,"method"),field(c,"chain_id"),field(c,"task_id"),field(c,"principal_id"),field(c,"operation_id")
-    g,has_grant:=grant(s,c,now)
+    if now<0 || now>0x7fffffffffffffff-GRANT_MAX_TTL_MS do return fail("invalid_scope")
+    auth_now:=max(now,number(state[0][1]))
+    g,has_grant:=grant(s,c,auth_now)
+    if method=="grant.recover" || (method=="grant.read" && grant_root(key,grant_proof) && (!has_grant || g.expires_ms<=auth_now || g.revoked || !g.can_read)) {
+        _,enabled,policy_ok:=grant_policy(s,chain)
+        if !policy_ok do return fail("storage_error")
+        if !enabled || !grant_root(key,grant_proof) do return fail("invalid_scope")
+        // Root recovery authorizes this operation only, never chain content.
+        g=contracts.Owner_Read_Grant{account_id=s.account,owner_bridge_id=s.owner,chain_id=chain,principal_id=principal,key_id=key.key_id,method=method,revision=1,expires_ms=now+contracts.OWNER_REQUEST_TTL_MS,can_read=true,can_mutate=true}
+        has_grant=true
+    } else if strings.has_prefix(method,"grant.") && !grant_admin(s,chain,key,grant_proof) { return fail("invalid_scope") }
     genesis:json.Object
     creating:=method=="chain.create"
     if creating {
@@ -134,10 +144,10 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         if !has_grant {
             existing,looked:=query(s.db,"SELECT chain_id FROM task_chains WHERE chain_id=?",chain)
             if !looked || len(existing)>0 do return fail("invalid_scope")
-            g=contracts.Owner_Read_Grant{account_id=s.account,owner_bridge_id=s.owner,chain_id=chain,principal_id=principal,key_id=key.key_id,method=method,revision=1,expires_ms=0x7fffffffffffffff,can_read=true,can_mutate=true}
+            g=contracts.Owner_Read_Grant{account_id=s.account,owner_bridge_id=s.owner,chain_id=chain,principal_id=principal,key_id=key.key_id,method=method,revision=1,expires_ms=now+GRANT_MAX_TTL_MS,can_read=true,can_mutate=true}
         }
     } else if !has_grant { return fail("invalid_scope") }
-    if e:=contracts.owner_authenticate_command(c,payload,key,g,now);e!=.None do return auth_fail(e)
+    if e:=contracts.owner_authenticate_command(c,payload,key,g,auth_now);e!=.None do return auth_fail(e)
     digest,_:=contracts.owner_digest("command",c)
     receipts,receipt_ok:=query(s.db,"SELECT method,input_digest,result_json,commit_seq,chain_id,task_id FROM command_receipts WHERE principal_id=? AND operation_id=?",principal,op)
     if !receipt_ok do return fail("storage_error")
@@ -167,10 +177,14 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         revision=number(tasks[0][0])
     }
     if e:=contracts.owner_live_admit(c,g,now,revision);e!=.None do return auth_fail(e)
-    read:=method=="workflow.read" || method=="source.read" || method=="submission.read" || method=="chain.search" || method=="chain.read" || method=="task.read" || method=="receipt.read" || method=="runtime.read"
+    read:=method=="grant.read" || method=="workflow.read" || method=="source.read" || method=="submission.read" || method=="chain.search" || method=="chain.read" || method=="task.read" || method=="receipt.read" || method=="runtime.read"
     if read {
         if method=="chain.search" && (kr==nil || kr.current_epoch==0) do return fail("invalid_content")
-        result:=search_result(s,c,payload,now,kr) if method=="chain.search" else read_result(s,c,payload,revision)
+        result:Result
+        if method=="grant.read" {
+            p,_:=contracts.owner_parse(payload,"read_payload")
+            result=grant_read(s,c,p,revision,key,grant_proof)
+        } else { result=search_result(s,c,payload,now,kr) if method=="chain.search" else read_result(s,c,payload,revision) }
         if result.code!="ok" do return result
         if !transaction_commit(&tx) do return fail("storage_error")
         return result
@@ -219,7 +233,11 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     case "chain.create":
         _,wrote=query(s.db,"INSERT INTO task_chains VALUES(?,?,?,?,?,1)",chain,principal,key.key_id,title,description)
         if wrote { _,wrote=query(s.db,"INSERT INTO chain_genesis VALUES(?,?,?,?)",chain,op,field(p,"genesis_digest"),genesis_raw) }
-        if wrote { _,wrote=query(s.db,"INSERT INTO local_grants VALUES(?,?,?,1,9223372036854775807,1,1,0)",chain,principal,key.key_id) }
+        if wrote { _,wrote=query(s.db,"INSERT INTO local_grants VALUES(?,?,?,1,?,1,1,0)",chain,principal,key.key_id,fmt.tprintf("%d",now+GRANT_MAX_TTL_MS)) }
+    case "grant.set", "grant.revoke", "grant.policy", "grant.recover":
+        code:=grant_write(s,c,p,command_raw,payload,key,grant_proof,now,seq)
+        if code!="ok" do return fail(code)
+        wrote=true
     case "chain.edit":
         _,wrote=query(s.db,"UPDATE task_chains SET title=?,description=?,revision=revision+1 WHERE chain_id=?",title,description,chain)
     case "task.edit", "task.delete":

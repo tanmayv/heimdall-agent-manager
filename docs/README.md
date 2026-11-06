@@ -43,6 +43,7 @@ Groups:
 
 ### Auth, accounts and billing
 
+- [owner-local-grants.md](owner-local-grants.md): signed chain-scoped browser access, bounded expiry, explicit paired-root recovery and safe refusal limits.
 - [auth-oidc.md](auth-oidc.md): OIDC-only user authentication (session cookie for web, bearer token for native apps).
 - [account-billing.md](account-billing.md): subscriptions, entitlements and Paddle integration, with configuration variables.
 - [analytics.md](analytics.md): PostHog funnel events for the marketing site and the app.

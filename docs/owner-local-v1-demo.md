@@ -1,3 +1,5 @@
+For signed device grants, expiry and paired-root recovery, see [owner-local-grants.md](owner-local-grants.md).
+
 For the additive single-device fleet/lease/heartbeat flow, see [owner-local-leases.md](owner-local-leases.md).
 
 # Owner-local V1 task demo

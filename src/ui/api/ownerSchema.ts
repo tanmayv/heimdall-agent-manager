@@ -45,6 +45,9 @@ export const ownerSchemas = {
   review_roles: [["configuration_revision", "positive"], ["requires_user_approval", "flag"], ["pairs", "document"]],
   review_pair: [["role", "id"], ["agent_id", "id"], ["instance_id", "id"]],
   review_role_payload: [["requirements_revision", "positive"], ["attempt", "positive"], ["head", "optional_commit"], ["verdict", "verdict"], ["summary", "document"], ["role", "id"]],
+  grant_payload: [["principal_id", "id"], ["key_id", "id"], ["expires_ms", "positive"], ["can_read", "flag"], ["can_mutate", "flag"]],
+  grant_revoke_payload: [["principal_id", "id"], ["key_id", "id"]],
+  grant_policy_payload: [["policy_revision", "positive"], ["recovery_enabled", "flag"]],
 } as const;
 export type OwnerKind = keyof typeof ownerSchemas;
 export interface OwnerGenesis {
@@ -385,6 +388,21 @@ export interface OwnerReview_Role_Payload {
   summary: string;
   role: string;
 }
+export interface OwnerGrant_Payload {
+  principal_id: string;
+  key_id: string;
+  expires_ms: string;
+  can_read: string;
+  can_mutate: string;
+}
+export interface OwnerGrant_Revoke_Payload {
+  principal_id: string;
+  key_id: string;
+}
+export interface OwnerGrant_Policy_Payload {
+  policy_revision: string;
+  recovery_enabled: string;
+}
 export interface OwnerDocuments {
   genesis: OwnerGenesis;
   command: OwnerCommand;
@@ -431,4 +449,7 @@ export interface OwnerDocuments {
   review_roles: OwnerReview_Roles;
   review_pair: OwnerReview_Pair;
   review_role_payload: OwnerReview_Role_Payload;
+  grant_payload: OwnerGrant_Payload;
+  grant_revoke_payload: OwnerGrant_Revoke_Payload;
+  grant_policy_payload: OwnerGrant_Policy_Payload;
 }

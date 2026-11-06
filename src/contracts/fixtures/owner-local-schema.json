@@ -43,5 +43,8 @@
   "source_page": "cursor:optional limit:positive",
   "review_roles": "configuration_revision:positive requires_user_approval:flag pairs:document",
   "review_pair": "role:id agent_id:id instance_id:id",
-  "review_role_payload": "requirements_revision:positive attempt:positive head:optional_commit verdict:verdict summary:document role:id"
+  "review_role_payload": "requirements_revision:positive attempt:positive head:optional_commit verdict:verdict summary:document role:id",
+  "grant_payload": "principal_id:id key_id:id expires_ms:positive can_read:flag can_mutate:flag",
+  "grant_revoke_payload": "principal_id:id key_id:id",
+  "grant_policy_payload": "policy_revision:positive recovery_enabled:flag"
 }

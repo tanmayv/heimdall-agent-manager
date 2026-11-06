@@ -8,10 +8,10 @@ dynamic definitions instead of interpreting them as static work.
 The implementation uses the same signed device commands, exact observed local
 children, read-authorized receipt replay and SQLite transaction as the prior
 [lifecycle](owner-local-lifecycle.md), [controls](owner-local-controls.md) and
-[search](owner-local-search.md) slices. The additive V8 schema retains V7 rows,
+[search](owner-local-search.md) slices. The additive V9 schema follows accepted V8 grants and retains earlier rows,
 capabilities and operation identities. No Hub task/workflow authority is added.
 See `src/lib/owner_local/migrations.odin:3`, `store.odin:115`, and
-`migration_008.sql:54` in that package.
+`migration_009.sql:54` in that package.
 
 ## Commands and setup
 
@@ -193,7 +193,7 @@ survives cold restart. A newer same-origin recurrence cannot block closure of
 that old episode. Pending cards cannot be pruned as merely resolved, and their
 related receipt bodies remain pinned after delivery. Reads never imply ACK,
 consumption, retirement or closure (`src/lib/owner_local/sources.odin:134`,
-`retention.odin:23`, `migration_008.sql`).
+`retention.odin:23`, `migration_009.sql`).
 
 Source reads are bounded, carry a continuation cursor, and the panel exposes
 **Next pending sources**. Cursor invalidation requires a fresh first-page read.

@@ -721,6 +721,39 @@ owner_fields_review_role_payload := [?]Owner_Field{
     {"summary", "document"},
     {"role", "id"},
 }
+Owner_Grant_Payload :: struct {
+    principal_id: string,
+    key_id: string,
+    expires_ms: string,
+    can_read: string,
+    can_mutate: string,
+}
+@(private)
+owner_fields_grant_payload := [?]Owner_Field{
+    {"principal_id", "id"},
+    {"key_id", "id"},
+    {"expires_ms", "positive"},
+    {"can_read", "flag"},
+    {"can_mutate", "flag"},
+}
+Owner_Grant_Revoke_Payload :: struct {
+    principal_id: string,
+    key_id: string,
+}
+@(private)
+owner_fields_grant_revoke_payload := [?]Owner_Field{
+    {"principal_id", "id"},
+    {"key_id", "id"},
+}
+Owner_Grant_Policy_Payload :: struct {
+    policy_revision: string,
+    recovery_enabled: string,
+}
+@(private)
+owner_fields_grant_policy_payload := [?]Owner_Field{
+    {"policy_revision", "positive"},
+    {"recovery_enabled", "flag"},
+}
 owner_schema :: proc(kind: string) -> []Owner_Field {
     switch kind {
     case "genesis": return owner_fields_genesis[:]
@@ -768,6 +801,9 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "review_roles": return owner_fields_review_roles[:]
     case "review_pair": return owner_fields_review_pair[:]
     case "review_role_payload": return owner_fields_review_role_payload[:]
+    case "grant_payload": return owner_fields_grant_payload[:]
+    case "grant_revoke_payload": return owner_fields_grant_revoke_payload[:]
+    case "grant_policy_payload": return owner_fields_grant_policy_payload[:]
     }
     return nil
 }

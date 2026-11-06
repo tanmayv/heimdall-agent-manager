@@ -25,6 +25,7 @@ All of the following element types must have `data-debug-id`:
 
 | Component | Key IDs |
 |-----------|---------|
+| `OwnerLocalPanel` device grants | `owner-local-grant-principal`, `owner-local-grant-principal-id`, `owner-local-grant-expires`, `owner-local-grant-write`, `owner-local-recovery-enabled`, `owner-local-policy-revision`, `owner-local-grant-read`, `owner-local-grant-set`, `owner-local-grant-revoke`, `owner-local-grant-policy`, `owner-local-grant-recover`, `owner-local-grant-next` |
 | `DesktopUpdatesPanel` | `settings-nav-updates`, `desktop-updates-panel`, `desktop-updates-current-version`, `desktop-updates-status`, `desktop-updates-check`, `desktop-updates-progress`, `desktop-updates-retry`, `desktop-updates-restart`, `desktop-updates-later`, `desktop-updates-release-link` |
 | `DesktopUpdatePreparation` | `desktop-update-preparing-overlay`, `desktop-update-preparing-status` |
 | `SetupWizardPage` Projects step | `setup-projects-retry-btn` |
