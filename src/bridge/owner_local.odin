@@ -1,6 +1,7 @@
 package main
 
 import "core:encoding/json"
+import "core:os"
 import "core:fmt"
 import "base:runtime"
 import "core:strconv"
@@ -26,6 +27,9 @@ bridge_owner_open :: proc(account,key_id:string)->bool {
     if !ok do return false
     path:=fmt.tprintf("%sowner-local-%s",dir,contracts.owner_payload_digest(account))
     if err:=bridge_make_directory_all(path,{.Read_User,.Write_User,.Execute_User});err!=nil do return false
+    when ODIN_OS != .Windows {
+        if os.chmod(path,{.Read_User,.Write_User,.Execute_User})!=nil do return false
+    }
     // Use the real allocator for the process-lifetime owner identity strings.
     saved:=context.allocator;context.allocator=runtime.default_allocator()
     opened:=owner.open(&bridge_owner_store,fmt.tprintf("%s/runtime.sqlite",path),account,bridge_config.daemon_id,key_id)
@@ -75,6 +79,7 @@ Owner_Result_Plain :: struct {
 }
 bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
     context.allocator=context.temp_allocator
+    search_generation:=bridge_task_chain_search_generation()
     wire:Owner_Bridge_Command
     if json.unmarshal_string(text,&wire,.JSON,context.temp_allocator)!=nil do return
     relay,valid:=contracts.owner_parse(wire.relay,"relay")
@@ -82,6 +87,8 @@ bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
     request_id:=contracts.owner_string(relay,"request_id")
     reply:=struct {type,command_id,request_id,code,envelope:string}{"command_result",wire.command_id,request_id,"invalid_scope",""}
     defer {
+        // Publication can perform I/O after sealing; lock may arrive meanwhile.
+        if bridge_task_chain_search_generation()!=search_generation {reply.code="vault_locked";reply.envelope=""}
         result:=bridge_owner_json(reply)
         bridge_runtime_cache_command(wire.command_id,result)
         if conn!=nil do _=bridge_hub_send(conn,result)
@@ -140,6 +147,7 @@ bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
     sync.mutex_unlock(&bridge_startup_io_mutex)
     digest,_:=contracts.owner_digest("command",command)
     response:=Owner_Result_Plain{request_id,digest,result.code,result.body,fmt.tprintf("%d",result.seq),result.replay}
+    if bridge_task_chain_search_generation()!=search_generation {reply.code="vault_locked";return}
     sealed,sealed_ok:=bridge_encrypt_vault_text(bridge_owner_json(response),&kr,context.temp_allocator)
     if !sealed_ok {reply.code="storage_error";return}
     reply.code="ok";reply.envelope=sealed

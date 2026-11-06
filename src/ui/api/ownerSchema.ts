@@ -24,6 +24,9 @@ export const ownerSchemas = {
   review_payload: [["requirements_revision", "positive"], ["attempt", "positive"], ["head", "optional_commit"], ["verdict", "verdict"], ["summary", "document"]],
   lifecycle_command: [["protocol_version", "version"], ["account_id", "id"], ["owner_bridge_id", "id"], ["chain_id", "id"], ["task_id", "id"], ["lease_id", "id"], ["instance_id", "id"], ["launch_epoch", "id"], ["run_count", "positive"], ["token_generation", "hash"], ["configuration_revision", "positive"], ["expected_revision", "counter"], ["operation_id", "id"], ["method", "lifecycle_method"], ["request_expires_ms", "positive"], ["capability_digest", "hash"], ["key_id", "id"], ["signature", "signature"], ["payload_digest", "hash"]],
   lifecycle_input: [["protocol_version", "version"], ["chain_id", "id"], ["task_id", "id"], ["lease_id", "id"], ["configuration_revision", "positive"], ["expected_revision", "counter"], ["operation_id", "id"], ["method", "lifecycle_method"], ["request_expires_ms", "positive"], ["capability", "optional_document"], ["payload", "document"]],
+  search_payload: [["query_cipher", "required_cipher"], ["limit", "positive"]],
+  delete_payload: [["protocol_version", "version"]],
+  chain_edit_payload: [["title_cipher", "required_cipher"], ["description_cipher", "required_cipher"]],
 } as const;
 export type OwnerKind = keyof typeof ownerSchemas;
 export interface OwnerGenesis {
@@ -245,6 +248,17 @@ export interface OwnerLifecycle_Input {
   capability: string;
   payload: string;
 }
+export interface OwnerSearch_Payload {
+  query_cipher: string;
+  limit: string;
+}
+export interface OwnerDelete_Payload {
+  protocol_version: string;
+}
+export interface OwnerChain_Edit_Payload {
+  title_cipher: string;
+  description_cipher: string;
+}
 export interface OwnerDocuments {
   genesis: OwnerGenesis;
   command: OwnerCommand;
@@ -270,4 +284,7 @@ export interface OwnerDocuments {
   review_payload: OwnerReview_Payload;
   lifecycle_command: OwnerLifecycle_Command;
   lifecycle_input: OwnerLifecycle_Input;
+  search_payload: OwnerSearch_Payload;
+  delete_payload: OwnerDelete_Payload;
+  chain_edit_payload: OwnerChain_Edit_Payload;
 }

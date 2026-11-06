@@ -1,3 +1,5 @@
+import { cookieJsonFetch } from '../../api/cookieFetch';
+import { getKeyringSession } from '../../utils/vaultKeyringSession';
 import OwnerLocalPanel from './OwnerLocalPanel';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Badge, IconButton, ResourceContainer, ResourceSearchFilter, useViewport } from '@ui';
@@ -421,6 +423,7 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
   const isMobileViewport = isMobile ?? viewport === 'mobile';
 
   const [showOwnerLocal, setShowOwnerLocal] = useState(false);
+  const [ownerTarget, setOwnerTarget] = useState<{ chainId: string; bridgeId: string } | null>(null);
   const [selectedChainId, setSelectedChainId] = useState<string>(initialChainId || '');
   const [filterProjectId, setFilterProjectId] = useState<string>('');
   const [filterStatus, setFilterStatus] = useState<'active' | 'completed' | 'archived' | 'all'>('active');
@@ -480,6 +483,18 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
   }, [projectsQuery.data, showArchivedProjects, archivedProjectIds]);
 
   const isUnlocked = useSelector(selectIsVaultUnlocked);
+  useEffect(() => {
+    setOwnerTarget(null);
+    const session = getKeyringSession();
+    if (!initialChainId || !isUnlocked || !session) return;
+    const controller = new AbortController();
+    void cookieJsonFetch('/api/v1/owner-local/chains?headers_only=1&chain_id=' + encodeURIComponent(initialChainId), { signal: controller.signal }).then((rows) => {
+      if (controller.signal.aborted || getKeyringSession() !== session) return;
+      const row = rows.find((r: any) => r.chain_id === initialChainId && !r.task_id);
+      if (row) setOwnerTarget({ chainId: row.chain_id, bridgeId: row.owner_bridge_id });
+    }).catch(() => {});
+    return () => controller.abort();
+  }, [initialChainId, isUnlocked]);
   const [decryptedProjects, setDecryptedProjects] = useState<Project[]>(projects);
 
   useEffect(() => {
@@ -759,6 +774,7 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
     </div>
   );
 
+  if (ownerTarget) return <OwnerLocalPanel key={ownerTarget.chainId} initialChainId={ownerTarget.chainId} initialBridgeId={ownerTarget.bridgeId} initialTaskId={focusTaskId} onClose={() => { setOwnerTarget(null); handleCloseDetail(); }} />;
   if (showOwnerLocal) return <OwnerLocalPanel onClose={() => setShowOwnerLocal(false)} />;
 
   return (

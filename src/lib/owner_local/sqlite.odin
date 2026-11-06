@@ -12,6 +12,7 @@ DB :: distinct rawptr
 Stmt :: distinct rawptr
 @(default_calling_convention="c")
 foreign sqlite {
+    sqlite3_progress_handler :: proc(db:DB,n:c.int,callback:proc "c"(rawptr)->c.int,data:rawptr) ---
     sqlite3_open :: proc(path: cstring, db: ^DB) -> c.int ---
     sqlite3_close :: proc(db: DB) -> c.int ---
     sqlite3_get_autocommit :: proc(db:DB)->c.int ---

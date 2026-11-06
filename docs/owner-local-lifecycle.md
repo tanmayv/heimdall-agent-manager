@@ -187,11 +187,14 @@ historical replay after release/expiry, and unchanged effect identities.
 Unit tests additionally inject deferred-FK COMMIT failures, stale/revoked scope,
 receipt retention, clock regressions and migration failures.
 
+Durable scoped search and bounded unstarted-task content maintenance are now
+implemented; see [owner-local-search.md](owner-local-search.md).
+
 ## Remaining M2 expansion
 
 This is an explicit single-worker/single-reviewer, already-running-child slice.
 General directory/fleet management, provider scheduling, workflow executions,
-dependencies, search, handoff/block/switch, review role sets, reopen/retry and
+dependencies, handoff/block/switch, review role sets, reopen/retry and
 operator repair/rebinding of blocked merges remain M2 work. Unsupported workflow
 fields/methods reject at the strict contract boundary; no workflow authority is
 inferred. Remote execution/reservations remain M3 and migration/recovery

@@ -462,6 +462,31 @@ owner_fields_lifecycle_input := [?]Owner_Field{
     {"capability", "optional_document"},
     {"payload", "document"},
 }
+Owner_Search_Payload :: struct {
+    query_cipher: string,
+    limit: string,
+}
+@(private)
+owner_fields_search_payload := [?]Owner_Field{
+    {"query_cipher", "required_cipher"},
+    {"limit", "positive"},
+}
+Owner_Delete_Payload :: struct {
+    protocol_version: string,
+}
+@(private)
+owner_fields_delete_payload := [?]Owner_Field{
+    {"protocol_version", "version"},
+}
+Owner_Chain_Edit_Payload :: struct {
+    title_cipher: string,
+    description_cipher: string,
+}
+@(private)
+owner_fields_chain_edit_payload := [?]Owner_Field{
+    {"title_cipher", "required_cipher"},
+    {"description_cipher", "required_cipher"},
+}
 owner_schema :: proc(kind: string) -> []Owner_Field {
     switch kind {
     case "genesis": return owner_fields_genesis[:]
@@ -488,6 +513,9 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "review_payload": return owner_fields_review_payload[:]
     case "lifecycle_command": return owner_fields_lifecycle_command[:]
     case "lifecycle_input": return owner_fields_lifecycle_input[:]
+    case "search_payload": return owner_fields_search_payload[:]
+    case "delete_payload": return owner_fields_delete_payload[:]
+    case "chain_edit_payload": return owner_fields_chain_edit_payload[:]
     }
     return nil
 }

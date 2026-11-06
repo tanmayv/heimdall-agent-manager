@@ -8,6 +8,7 @@ export interface OwnerSession { identity: DeviceIdentity; chain: VerifiedChain; 
 export interface OwnerOperation { command: string; payload: string; genesis: string }
 export interface OwnerInput {
   chainId: string; taskId?: string; expectedRevision: string;
+  query?: string; limit?: number;
   title?: string; description?: string; body?: string; cursor?: string; operationId?: string;
   instanceId?: string; configurationRevision?: string; enabled?: boolean;
   lifecycleConfig?: Record<string, string>; requirementsRevision?: string; attempt?: string; head?: string; verdict?: 'approve' | 'request_changes';
@@ -25,15 +26,19 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
     if (text === undefined) continue;
     if (new TextEncoder().encode(text).length > 8192 || new TextEncoder().encode(JSON.stringify(text)).length > 16384) throw new Error('V1 fields are limited to 8192 UTF-8 bytes and 16384 JSON-encoded bytes');
   }
+  if (method === "chain.search" && (new TextEncoder().encode(input.query ?? "").length > 256 || (input.query ?? "").trim().length < 2 || !Number.isInteger(input.limit ?? 20) || (input.limit ?? 20) < 1 || (input.limit ?? 20) > 50)) throw new Error("Search requires 2–256 UTF-8 bytes and a limit of 1–50");
   const operationId = input.operationId ?? ownerId('op_');
   let genesis = '';
   let payload: Record<string, string>;
-  if (method === 'chain.create') {
+  if (method === 'chain.edit') payload = { title_cipher: await encryptVaultText(input.title ?? '', keyring), description_cipher: await encryptVaultText(input.description ?? '', keyring) };
+  else if (method === 'chain.search') payload = { query_cipher: await encryptVaultText(input.query ?? '', keyring), limit: String(input.limit ?? 20) };
+  else if (method === 'task.delete') payload = { protocol_version: '1' };
+  else if (method === 'chain.create') {
     const g: OwnerGenesis = { protocol_version: '1', account_id: identity.userId, chain_id: input.chainId, creation_op: operationId, owner_bridge_id: bridgeId, owner_key_id: bridge.device_id, creator_id: identity.deviceId, creator_key_id: identity.deviceId, schema_version: '1', creator_signature: zeros, owner_signature: zeros };
     g.creator_signature = await signed(session, 'genesis', g);
     genesis = JSON.stringify(g);
     payload = { genesis_digest: await ownerDigest('genesis', g), title_cipher: await encryptVaultText(input.title ?? '', keyring), description_cipher: await encryptVaultText(input.description ?? '', keyring) };
-  } else if (method === 'task.create') payload = { title_cipher: await encryptVaultText(input.title ?? '', keyring), body_cipher: await encryptVaultText(input.body ?? '', keyring) };
+  } else if ((method === 'task.create' || method === 'task.edit')) payload = { title_cipher: await encryptVaultText(input.title ?? '', keyring), body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'task.comment') payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'fleet.edit') payload = { instance_id: input.instanceId ?? '', configuration_revision: input.configurationRevision ?? '', enabled: input.enabled === false ? '0' : '1' };
   else if (method === 'lifecycle.configure') payload = input.lifecycleConfig ?? {};

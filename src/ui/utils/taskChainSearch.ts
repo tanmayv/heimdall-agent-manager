@@ -1,3 +1,7 @@
+import { cookieJsonFetch } from '../api/cookieFetch';
+import { searchOwnerChains } from '../api/ownerSearchClient';
+import { getKeyringSession } from './vaultKeyringSession';
+import { verifyDirectory, pinsFromChain } from './vaultDirectoryVerify';
 import { apiUrl, ApiError } from '../api/cookieFetch';
 import { readBridgeRows } from '../api/endpoints/bridgeSupport';
 import {
@@ -175,7 +179,7 @@ function searchCandidates(bridges: SearchBridge[]): SearchBridge[] {
   }).slice(0, 2);
 }
 
-export async function searchTaskChainsEncrypted(
+async function searchLegacyTaskChainsEncrypted(
   query: string,
   ownerId: string,
   options: { projectId?: string; status?: string; limit?: number } = {},
@@ -222,4 +226,36 @@ export async function searchTaskChainsEncrypted(
   } finally {
     controllers.forEach((controller) => controller.abort());
   }
+}
+
+/** Search local owners and legacy data; copies are never owner fallbacks. */
+export async function searchTaskChainsEncrypted(
+  query: string, ownerId: string,
+  options: { projectId?: string; status?: string; limit?: number } = {},
+): Promise<TaskChainSearchResponse> {
+  const session = getKeyringSession();
+  const legacy = searchLegacyTaskChainsEncrypted(query, ownerId, options);
+  if (!session || session.identity.userId !== ownerId) return legacy;
+  const trimmed = query.trim(), limit = options.limit ?? 20;
+  if (trimmed.length < 2 || new TextEncoder().encode(trimmed).length > 256 || !Number.isInteger(limit) || limit < 1 || limit > MAX_LIMIT) {
+    await legacy.catch(() => undefined);
+    throw new ApiError('Invalid search query or limit', 400, 'limit_exceeded');
+  }
+  const localController = new AbortController();
+  const localDeadline = setTimeout(() => localController.abort(), DEADLINE_MS);
+  const local = (async () => {
+    const chain = await verifyDirectory(await cookieJsonFetch('/api/v1/vault/directory', { signal: localController.signal }), ownerId, pinsFromChain(session.chain));
+    const rows = await cookieJsonFetch('/api/v1/owner-local/chains?headers_only=1', { signal: localController.signal });
+    return searchOwnerChains({ ...session, chain }, rows, trimmed, limit,
+      (relay) => cookieJsonFetch('/api/v1/owner-local/relay', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(relay), signal: localController.signal }), localController.signal);
+  })().finally(() => clearTimeout(localDeadline));
+  const [old, owned] = await Promise.allSettled([legacy, local]);
+  if (getKeyringSession() !== session || !getActiveVaultKey()) throw new ApiError('Vault session changed', 423, 'vault_locked');
+  // A failed owner listing cannot safely deduplicate migrated legacy content.
+  if (owned.status === 'rejected') throw owned.reason;
+  if (old.status === 'rejected' && !owned.value.ownedIds.size) throw old.reason;
+  const previous = old.status === 'fulfilled' ? old.value : { request_id: '', bridge_id: '', indexed_revision: 0, stale: true, hits: [] };
+  const localHits = options.projectId || options.status ? [] : owned.value.hits;
+  return { ...previous, stale: previous.stale || owned.value.stale,
+    hits: [...localHits, ...previous.hits.filter((h) => !owned.value.ownedIds.has(h.chain_id))].slice(0, limit) };
 }

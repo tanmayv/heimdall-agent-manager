@@ -6,6 +6,7 @@ import "core:fmt"
 import "core:strconv"
 import "core:strings"
 import "core:sync"
+import "core:os"
 import contracts "odin_test:contracts"
 import vault "odin_test:lib/vault"
 
@@ -19,6 +20,7 @@ Store :: struct {
     active:^Transaction,
     tx_thread:int,
     tx_failed,unusable:bool,
+    search_ready:bool,
 }
 SCHEMA :: #load("schema.sql")
 MAX_RECORDS :: 100000
@@ -45,6 +47,9 @@ open :: proc(s: ^Store, path, account, owner, owner_key: string) -> bool {
     if sqlite3_open(strings.clone_to_cstring(fmt.tprintf("%s.writer",path), context.temp_allocator), &s.writer) != 0 { close(s);return false }
     if !exec(s.writer, "CREATE TABLE IF NOT EXISTS writer_lock(id INTEGER); BEGIN EXCLUSIVE;") { close(s); return false }
     if sqlite3_open(strings.clone_to_cstring(path, context.temp_allocator), &s.db) != 0 { close(s); return false }
+    when ODIN_OS != .Windows {
+        if os.chmod(path,{.Read_User,.Write_User})!=nil || os.chmod(fmt.tprintf("%s.writer",path),{.Read_User,.Write_User})!=nil {close(s);return false}
+    }
     // Reject a mismatched account/owner before even migrating an existing DB.
     tables,tables_ok:=query(s.db,"SELECT name FROM sqlite_master WHERE type='table' AND name='runtime_database'")
     if !tables_ok {close(s);return false}
@@ -66,6 +71,13 @@ open :: proc(s: ^Store, path, account, owner, owner_key: string) -> bool {
     if !state_ok || len(state)!=1 { close(s);return false }
     s.incarnation=number(state[0][0])
     s.account=strings.clone(account); s.owner=strings.clone(owner); s.owner_key=strings.clone(owner_key)
+    _=search_rebuild(s)
+    when ODIN_OS != .Windows {
+        for suffix in ([2]string{"-wal","-shm"}) {
+            file:=fmt.tprintf("%s%s",path,suffix)
+            if os.exists(file) && os.chmod(file,{.Read_User,.Write_User})!=nil {close(s);return false}
+        }
+    }
     return true
 }
 close :: proc(s: ^Store) {
@@ -74,7 +86,7 @@ close :: proc(s: ^Store) {
     delete(s.account); delete(s.owner); delete(s.owner_key)
     s.account=""; s.owner=""; s.owner_key=""
     s.incarnation=0;s.active=nil
-    s.tx_thread=0;s.tx_failed=false;s.unusable=false
+    s.tx_thread=0;s.tx_failed=false;s.unusable=false;s.search_ready=false
 }
 number :: proc(v: string) -> i64 { n,_:=strconv.parse_i64(v); return n }
 encode :: proc(v: $T) -> string { b,e:=json.marshal(v, allocator=context.temp_allocator); if e!=nil do return ""; return string(b) }
@@ -149,15 +161,16 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     if len(chains)>0 do revision=number(chains[0][0])
     if creating && revision>0 do return fail("operation_conflict")
     if !creating && revision==0 do return fail("invalid_scope")
-    if method=="task.comment" || method=="task.read" || method=="fleet.edit" || method=="runtime.read" || method=="lifecycle.configure" || method=="requirements.edit" || method=="review.post" {
+    if method=="task.edit" || method=="task.delete" || method=="task.comment" || method=="task.read" || method=="fleet.edit" || method=="runtime.read" || method=="lifecycle.configure" || method=="requirements.edit" || method=="review.post" {
         tasks,found:=query(s.db,"SELECT revision FROM tasks WHERE chain_id=? AND task_id=?",chain,task)
         if !found || len(tasks)!=1 do return fail("invalid_scope")
         revision=number(tasks[0][0])
     }
     if e:=contracts.owner_live_admit(c,g,now,revision);e!=.None do return auth_fail(e)
-    read:=method=="chain.read" || method=="task.read" || method=="receipt.read" || method=="runtime.read"
+    read:=method=="chain.search" || method=="chain.read" || method=="task.read" || method=="receipt.read" || method=="runtime.read"
     if read {
-        result:=read_result(s,c,payload,revision)
+        if method=="chain.search" && (kr==nil || kr.current_epoch==0) do return fail("invalid_content")
+        result:=search_result(s,c,payload,now,kr) if method=="chain.search" else read_result(s,c,payload,revision)
         if result.code!="ok" do return result
         if !transaction_commit(&tx) do return fail("storage_error")
         return result
@@ -190,7 +203,24 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         _,wrote=query(s.db,"INSERT INTO task_chains VALUES(?,?,?,?,?,1)",chain,principal,key.key_id,title,description)
         if wrote { _,wrote=query(s.db,"INSERT INTO chain_genesis VALUES(?,?,?,?)",chain,op,field(p,"genesis_digest"),genesis_raw) }
         if wrote { _,wrote=query(s.db,"INSERT INTO local_grants VALUES(?,?,?,1,9223372036854775807,1,1,0)",chain,principal,key.key_id) }
+    case "chain.edit":
+        _,wrote=query(s.db,"UPDATE task_chains SET title=?,description=?,revision=revision+1 WHERE chain_id=?",title,description,chain)
+    case "task.edit", "task.delete":
+        protected,checked:=query(s.db,"SELECT 1 FROM local_leases WHERE chain_id=? AND task_id=? UNION ALL SELECT 1 FROM lifecycle_configs WHERE chain_id=? AND task_id=? LIMIT 1",chain,task,chain,task)
+        if !checked do return fail("storage_error")
+        if len(protected)>0 do return fail("operation_conflict")
+        if method=="task.edit" {
+            _,wrote=query(s.db,"UPDATE tasks SET title=?,body=?,revision=revision+1 WHERE chain_id=? AND task_id=?",title,body,chain,task)
+        } else {
+            if _,ok=query(s.db,"INSERT INTO task_deletions VALUES(?,?,?)",chain,task,fmt.tprintf("%d",seq));!ok do return fail("storage_error")
+            if _,ok=query(s.db,"DELETE FROM task_comments WHERE chain_id=? AND task_id=?",chain,task);!ok do return fail("storage_error")
+            if _,ok=query(s.db,"DELETE FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task);!ok do return fail("storage_error")
+            _,wrote=query(s.db,"DELETE FROM tasks WHERE chain_id=? AND task_id=?",chain,task)
+        }
     case "task.create":
+        deleted,checked:=query(s.db,"SELECT 1 FROM task_deletions WHERE task_id=?",task)
+        if !checked do return fail("storage_error")
+        if len(deleted)>0 do return fail("retired")
         next=1
         _,wrote=query(s.db,"INSERT INTO tasks VALUES(?,?,?,?,1)",chain,task,title,body)
     case "fleet.edit":
@@ -215,17 +245,17 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         if sqlite3_errcode(s.db)==19 do return fail("operation_conflict") // SQLITE_CONSTRAINT
         return fail("storage_error")
     }
-    if !creating { if _,ok=query(s.db,"UPDATE task_chains SET revision=revision+1 WHERE chain_id=?",chain);!ok do return fail("storage_error") }
+    if !creating && method!="chain.edit" { if _,ok=query(s.db,"UPDATE task_chains SET revision=revision+1 WHERE chain_id=?",chain);!ok do return fail("storage_error") }
     result:=encode(map[string]string{"chain_id"=chain,"task_id"=task,"operation_id"=op,"revision"=fmt.tprintf("%d",next)})
     if _,ok=query(s.db,"INSERT INTO command_receipts(principal_id,operation_id,chain_id,task_id,method,input_digest,digest_key_id,request_expires_ms,result_json,commit_seq,created_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)",principal,op,chain,task,method,digest,key.key_id,field(c,"request_expires_ms"),result,fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
     if _,ok=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),chain,method,task,fmt.tprintf("%d",next),op);!ok do return fail("storage_error")
     if method=="review.post" && !lifecycle_merge_intent(&tx,c,p,seq) do return fail("storage_error")
-    if method=="chain.create" || method=="task.create" {
+    if method=="chain.create" || method=="task.create" || method=="chain.edit" || method=="task.edit" || method=="task.delete" {
         genesis_rows,found:=query(s.db,"SELECT genesis_digest FROM chain_genesis WHERE chain_id=?",chain)
         if !found || len(genesis_rows)!=1 do return fail("storage_error")
         registry:=doc(map[string]string{"protocol_version"="1","account_id"=s.account,"chain_id"=chain,"owner_bridge_id"=s.owner,"key_id"=s.owner_key,"genesis_digest"=genesis_rows[0][0],"metadata_revision"=fmt.tprintf("%d",seq),"task_id"=task,
           "chain_title_cipher"="","chain_description_cipher"="","task_title_cipher"="","deleted"="0","signature"=strings.repeat("0",128,context.temp_allocator)})
-        if creating { registry["chain_title_cipher"]=p["title_cipher"]; registry["chain_description_cipher"]=p["description_cipher"] } else { registry["task_title_cipher"]=p["title_cipher"] }
+        if method=="task.delete" { registry["deleted"]=json.String("1") } else if creating || method=="chain.edit" { registry["chain_title_cipher"]=p["title_cipher"]; registry["chain_description_cipher"]=p["description_cipher"] } else { registry["task_title_cipher"]=p["title_cipher"] }
         if sign.sign==nil do return fail("storage_error")
         signature,signed:=sign.sign(sign.ctx,"registry",registry)
         if !signed do return fail("storage_error")

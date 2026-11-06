@@ -92,6 +92,90 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
   let rejected = false; try { const reply = await cli(unsigned); rejected = reply?.code !== 'ok'; } catch { rejected = true; }
   expect(rejected, 'CLI rejects unsigned/invalid request file');
 
+
+  // Search uses the same production UI signing/relay client and the real CLI.
+  const searchChain = ownerId('chain_'), searchTask = ownerId('task_');
+  const searchCommand = async (method: string, input: any, useCli = false) => {
+    const operation = await prepareOwnerOperation(session, bridgeId, method, { chainId: searchChain, ...input });
+    return useCli ? openOwnerReply(session, operation, await cli(await ownerRelayFile(session, operation))) : invoke(operation);
+  };
+  await searchCommand('chain.create', { expectedRevision: '0', title: 'search-private-chain', description: 'search-private-description' });
+  await searchCommand('task.create', { taskId: searchTask, expectedRevision: '1', title: 'search-private-task', body: 'uniquesearchbody 世界' }, true);
+  await searchCommand('task.comment', { taskId: searchTask, expectedRevision: '1', body: 'uniquesearchcomment sharedsearchword' }, true);
+  const search = async (query: string, useCli = false) => JSON.parse((await searchCommand('chain.search', { expectedRevision: '0', query }, useCli)).body).hits;
+  expect((await search('uniquesearchbody', true)).length === 1, 'real CLI searches freshly committed local task');
+  expect((await search('世界')).length === 1 && (await search('uniquesearchcomment')).length === 1, 'Unicode and comment search use durable owner FTS');
+  const { searchOwnerChains } = await import('../../src/ui/api/ownerSearchClient.ts');
+  const listing = async () => (await http(hub, 'GET', '/api/v1/owner-local/chains')).data;
+  const combined = await searchOwnerChains(session, await listing(), 'uniquesearchcomment', 20, send);
+  expect(combined.hits.length === 1 && combined.hits[0].chain_id === searchChain, 'existing UI owner-search client finds exactly the authorized chain');
+
+  // Exercise the exported existing UI search entrypoint over both real sources.
+  const { installKeyringFromWrap, clearKeyringSession } = await import('../../src/ui/utils/vaultKeyringSession.ts');
+  const { searchTaskChainsEncrypted } = await import('../../src/ui/utils/taskChainSearch.ts');
+  const { encryptVaultText } = await import('../../src/ui/utils/vaultContent.ts');
+  const { sessionHeaders } = await import('./hubOidc.mjs');
+  const legacyCreated = await http(hub, 'POST', '/api/v1/task-chains', { body: {
+    title: await encryptVaultText('sharedsearchword legacy title', session.keyring),
+    description: await encryptVaultText('sharedsearchword legacy description', session.keyring), kind: 'mixed_work',
+  } });
+  expect(legacyCreated.status === 200 || legacyCreated.status === 201, 'real legacy chain remains Hub canonical for unmigrated coverage: ' + legacyCreated.status + (legacyCreated.status >= 400 ? ' ' + legacyCreated.raw : ''));
+  const legacyId = legacyCreated.data.chain_id;
+  await installKeyringFromWrap(approver.identity, approver.wrap, await approver.chain());
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (input: any, init: any = {}) => realFetch(new URL(String(input), hub.base), {
+    ...init, headers: { ...sessionHeaders(hub.session, hub.base), ...Object.fromEntries(new Headers(init.headers)) },
+  });
+  try {
+    let mixed: any;
+    for (const deadline = Date.now() + 45000;; await new Promise((r) => setTimeout(r, 500))) {
+      mixed = await searchTaskChainsEncrypted('sharedsearchword', approver.userId, { limit: 20 });
+      if (mixed.hits.some((h: any) => h.chain_id === legacyId)) break;
+      if (Date.now() > deadline) throw new Error('legacy refresh did not join owner search');
+    }
+    expect(mixed.hits.filter((h: any) => h.chain_id === searchChain).length === 1 &&
+      mixed.hits.filter((h: any) => h.chain_id === legacyId).length === 1,
+      'production UI search returns owner and unmigrated legacy hits exactly once');
+    let release: () => void = () => {};
+    let reached: () => void = () => {};
+    const held = new Promise<void>((r) => { release = r; });
+    const ready = new Promise<void>((r) => { reached = r; });
+    let intercepted = false;
+    globalThis.fetch = async (input: any, init: any = {}) => {
+      const response = await realFetch(new URL(String(input), hub.base), {
+        ...init, headers: { ...sessionHeaders(hub.session, hub.base), ...Object.fromEntries(new Headers(init.headers)) },
+      });
+      if (String(input).endsWith('/owner-local/relay') && !intercepted) {
+        intercepted = true; reached(); await held;
+      }
+      return response;
+    };
+    const late = searchTaskChainsEncrypted('sharedsearchword', approver.userId, { limit: 20 });
+    await ready;
+    clearKeyringSession(); release();
+    let discarded = false; try { await late; } catch { discarded = true; }
+    expect(discarded, 'real UI discards completed owner query after lock/session generation changes');
+  } finally { globalThis.fetch = realFetch; clearKeyringSession(); }
+
+  const isolated = JSON.parse((await invoke(await make('chain.search', { expectedRevision: '0', query: 'uniquesearchcomment' }))).body);
+  expect(isolated.hits.length === 0, 'signed chain filter cannot expose matching content in another chain');
+  const foreignSearch = await searchCommand('chain.search', { expectedRevision: '0', query: 'uniquesearchcomment' });
+  expect(foreignSearch.code === 'ok', 'search result is independently device authorized');
+  const operation = await prepareOwnerOperation(session, bridgeId, 'chain.search', { chainId: searchChain, expectedRevision: '0', query: 'uniquesearchcomment' });
+  const wrongScope = await http(otherHub, 'POST', '/api/v1/owner-local/relay', { body: await ownerRelayFile(session, operation) });
+  expect(wrongScope.status !== 200, 'another account cannot search owner-local prose');
+  await searchCommand('task.edit', { taskId: searchTask, expectedRevision: '2', title: 'edited-private-task', body: 'uniquesearchedited' }, true);
+  expect((await search('uniquesearchbody')).length === 0 && (await search('uniquesearchedited')).length === 1, 'real edit atomically removes old postings and indexes new content');
+  await searchCommand('chain.edit', { expectedRevision: '4', title: 'edited-private-chain', description: 'uniquesearchchaindescription' });
+  expect((await search('uniquesearchchaindescription')).length === 1, 'chain edit publishes title metadata and indexes prose');
+  await stopOwner(); await restartOwner();
+  expect((await search('uniquesearchedited', true)).length === 1 && (await search('uniquesearchcomment')).length === 1, 'actual owner restart rebuilds index from committed canonical rows');
+  await searchCommand('task.delete', { taskId: searchTask, expectedRevision: '3' }, true);
+  expect(!(await listing()).some((r: any) => r.task_id === searchTask), 'deleted title tombstone is excluded from visible Hub listing');
+  expect((await search('uniquesearchedited')).length === 0 && (await search('uniquesearchcomment')).length === 0, 'real delete removes canonical task/comment postings together');
+  await stopOwner(); await restartOwner();
+  expect((await search('uniquesearchedited')).length === 0, 'restart cannot resurrect deleted search content');
+
   if (launchChild) {
     const child = await launchChild();
     try {
@@ -133,6 +217,10 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
         const claim=worker.call(input);expect(claim.status===0,'lifecycle worker claims real exact-child lease');
         let cap=JSON.parse(claim.data.body).capability;
         await human('requirements.edit',{expectedRevision:'4',requirementsRevision:'2',body:JSON.stringify({goal:'lifecycle-private-revised-goal',acceptance:['lifecycle-private-revised-acceptance']})});
+        const requirementHits=JSON.parse((await human('chain.search',{taskId:'',expectedRevision:'0',query:'lifecycle-private-revised-goal'})).body).hits;
+        expect(requirementHits.some((h:any)=>h.kind==='requirements'),'real search indexes revised goals and acceptance');
+        expect(JSON.parse((await human('chain.search',{taskId:'',expectedRevision:'0',query:'lifecycle-private-goal'})).body).hits.length===0,'old requirements postings are removed');
+
         const call=(child:any,method:string,payload:any,capability:string,revision='5')=>child.call({...input,expected_revision:revision,operation_id:ownerId('op_'),method,capability,payload:JSON.stringify(payload)});
         const old=call(worker,'requirements.ack',{requirements_revision:'1'},cap);
         expect(old.status!==0,'old requirements ACK rejected through real CLI');
@@ -143,6 +231,8 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
         expect(call(worker,'requirements.ack',{requirements_revision:'2'},cap).status===0,'real CLI ACKs exact presented revision');
         const submit={...input,expected_revision:'5',operation_id:ownerId('op_'),method:'lease.submit',capability:cap,payload:JSON.stringify({requirements_revision:'2',head:git.head,summary:'lifecycle-private-checks-pass'})};
         const submitted=worker.call(submit);expect(submitted.status===0,'real CLI submits actual clean source head');
+        expect(JSON.parse((await human('chain.search',{taskId:'',expectedRevision:'0',query:'lifecycle-private-checks-pass'})).body).hits.some((h:any)=>h.kind==='output'),'real search indexes committed submission output');
+
         const replay=worker.call(submit);expect(replay.status===0 && replay.data.replay && replay.data.body===submitted.data.body,'lost submit reply replays after lease release without effects');
         const verdict={requirements_revision:'2',attempt:'1',head:git.head,verdict:'approve',summary:'lifecycle-private-independent-review'};
         expect(call(worker,'review.open',verdict,'','6').status!==0,'author cannot obtain reviewer capability');

@@ -5,6 +5,13 @@ import "core:fmt"
 import "core:strings"
 import "core:testing"
 
+SEARCH_TEST_DROP :: `DROP TRIGGER IF EXISTS search_insert; DROP TRIGGER IF EXISTS search_delete; DROP TRIGGER IF EXISTS search_update; DROP TRIGGER IF EXISTS search_task_chains_insert; DROP TRIGGER IF EXISTS search_task_chains_update; DROP TRIGGER IF EXISTS search_task_chains_delete; DROP TRIGGER IF EXISTS search_tasks_insert; DROP TRIGGER IF EXISTS search_tasks_update; DROP TRIGGER IF EXISTS search_tasks_delete; DROP TRIGGER IF EXISTS search_task_comments_insert; DROP TRIGGER IF EXISTS search_task_comments_update; DROP TRIGGER IF EXISTS search_task_comments_delete; DROP TRIGGER IF EXISTS search_task_requirements_insert; DROP TRIGGER IF EXISTS search_task_requirements_update; DROP TRIGGER IF EXISTS search_task_requirements_delete; DROP TRIGGER IF EXISTS search_local_submissions_insert; DROP TRIGGER IF EXISTS search_local_submissions_update; DROP TRIGGER IF EXISTS search_local_submissions_delete; DROP TABLE IF EXISTS search_fts; DROP TABLE IF EXISTS search_docs; DROP TABLE IF EXISTS task_deletions;  DROP TRIGGER IF EXISTS task_no_resurrection; DROP TRIGGER IF EXISTS receipt_scope; CREATE TRIGGER receipt_scope BEFORE INSERT ON command_receipts
+WHEN NOT EXISTS(SELECT 1 FROM task_chains WHERE chain_id=NEW.chain_id)
+ OR (NEW.task_id!='' AND NOT EXISTS(SELECT 1 FROM tasks WHERE chain_id=NEW.chain_id AND task_id=NEW.task_id))
+ OR EXISTS(SELECT 1 FROM operation_tombstones WHERE principal_id=NEW.principal_id AND operation_id=NEW.operation_id)
+BEGIN SELECT RAISE(ABORT,'receipt scope or retired operation'); END;
+`
+
 @(test)
 additive_migration_preserves_v1_and_rolls_back_partial_ddl :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
@@ -14,7 +21,7 @@ additive_migration_preserves_v1_and_rolls_back_partial_ddl :: proc(t:^testing.T)
     // committed content, replay evidence and already-published outbox records.
     legacy:DB
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&legacy),0)
-    testing.expect(t,exec(legacy,`PRAGMA foreign_keys=OFF;
+    testing.expect(t,exec(legacy,`PRAGMA foreign_keys=OFF;`+SEARCH_TEST_DROP+`
       DROP TABLE local_merge_preparations; DROP TABLE local_reviews; DROP TABLE local_review_sessions; DROP TABLE local_submissions; DROP TABLE requirement_ack; DROP TABLE task_requirements; DROP TABLE lifecycle_state; DROP TABLE lifecycle_configs; DROP TABLE lease_receipt_pins; DROP TABLE local_leases; DROP TABLE local_fleet; DROP TABLE runtime_intents; DROP TABLE local_changes; DROP TABLE command_receipts;
       DROP TABLE operation_tombstones; DROP TABLE task_comments; DROP TABLE tasks;
       DROP TABLE local_grants; DROP TRIGGER genesis_immutable_delete; DROP TABLE chain_genesis;
@@ -30,7 +37,7 @@ additive_migration_preserves_v1_and_rolls_back_partial_ddl :: proc(t:^testing.T)
       (SELECT title FROM task_chains),(SELECT result_json FROM command_receipts),
       (SELECT payload_json FROM runtime_intents),(SELECT state FROM runtime_intents),database_id FROM runtime_database`)
     if testing.expect(t,ok && len(rows)==1) {
-        expected:=[7]string{"4","8","1","old title","historical result","signed old payload","settled"}
+        expected:=[7]string{"5","8","1","old title","historical result","signed old payload","settled"}
         for value,i in expected do testing.expect_value(t,rows[0][i],value)
         testing.expect_value(t,len(rows[0][7]),32)
     }
@@ -49,7 +56,7 @@ additive_migration_preserves_v1_and_rolls_back_partial_ddl :: proc(t:^testing.T)
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(broken.path,context.temp_allocator),&legacy),0)
     // Force a V1 migration failure after several ALTERs. The transaction must
     // undo both DDL and the migration marker; subsequent repair can retry.
-    testing.expect(t,exec(legacy,`PRAGMA foreign_keys=OFF; DROP TABLE local_merge_preparations; DROP TABLE local_reviews; DROP TABLE local_review_sessions; DROP TABLE local_submissions; DROP TABLE requirement_ack; DROP TABLE task_requirements; DROP TABLE lifecycle_state; DROP TABLE lifecycle_configs; DROP TABLE lease_receipt_pins; DROP TABLE local_leases; DROP TABLE local_fleet; DROP TABLE runtime_intents; DROP TABLE local_changes;
+    testing.expect(t,exec(legacy,`PRAGMA foreign_keys=OFF;`+SEARCH_TEST_DROP+` DROP TABLE local_merge_preparations; DROP TABLE local_reviews; DROP TABLE local_review_sessions; DROP TABLE local_submissions; DROP TABLE requirement_ack; DROP TABLE task_requirements; DROP TABLE lifecycle_state; DROP TABLE lifecycle_configs; DROP TABLE lease_receipt_pins; DROP TABLE local_leases; DROP TABLE local_fleet; DROP TABLE runtime_intents; DROP TABLE local_changes;
       DROP TABLE command_receipts; DROP TABLE task_comments; DROP TABLE tasks; DROP TABLE local_grants;
       DROP TRIGGER genesis_immutable_delete; DROP TABLE chain_genesis; DROP TABLE task_chains;
       DROP TABLE runtime_database; DROP TABLE schema_migrations;`))
@@ -155,8 +162,10 @@ real_commit_failure_and_sqlite_full_never_report_success :: proc(t:^testing.T) {
     testing.expect(t,invoke(f,c,p).code=="storage_error","deferred foreign key fails at COMMIT")
     rows,_:=query(f.store.db,"SELECT (SELECT count(*) FROM task_comments),(SELECT count(*) FROM command_receipts),commit_seq FROM runtime_database")
     testing.expect(t,rows[0][0]=="0" && rows[0][1]=="2" && rows[0][2]=="2","failed COMMIT rolled back everything")
+    testing.expect_value(t,len(search_hits(search_for(f,"failure"))),0)
     testing.expect(t,exec(f.store.db,"DROP TRIGGER fail_commit"))
     testing.expect(t,invoke(f,c,p).code=="ok","next transaction remains usable")
+    testing.expect_value(t,len(search_hits(search_for(f,"failure"))),1)
     testing.expect(t,exec(f.store.db,"CREATE TABLE failure_pages(body BLOB)"))
     pages,_:=query(f.store.db,"PRAGMA page_count")
     testing.expect(t,exec(f.store.db,fmt.tprintf("PRAGMA max_page_count=%d",number(pages[0][0])+4)))
@@ -166,6 +175,7 @@ real_commit_failure_and_sqlite_full_never_report_success :: proc(t:^testing.T) {
     testing.expect(t,invoke(f,c,p).code=="storage_error","real SQLITE_FULL during mutation")
     rows,_=query(f.store.db,"SELECT (SELECT count(*) FROM task_comments),(SELECT count(*) FROM command_receipts),commit_seq FROM runtime_database")
     testing.expect(t,rows[0][0]=="1" && rows[0][1]=="3" && rows[0][2]=="3","disk full left no phantom comment or receipt")
+    testing.expect_value(t,len(search_hits(search_for(f,"failure"))),1)
     testing.expect(t,exec(f.store.db,"DROP TRIGGER disk_full; PRAGMA max_page_count=1073741823"))
     testing.expect_value(t,invoke(f,c,p).code,"ok")
     pages,_=query(f.store.db,"PRAGMA page_count")
@@ -381,7 +391,7 @@ v2_runtime_identity_upgrade_is_atomic_and_preserves_clocks_and_intents :: proc(t
     close(&f.store)
     legacy:DB
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&legacy),0)
-    testing.expect(t,exec(legacy,`PRAGMA foreign_keys=OFF;
+    testing.expect(t,exec(legacy,`PRAGMA foreign_keys=OFF;`+SEARCH_TEST_DROP+`
       DROP TABLE local_merge_preparations; DROP TABLE local_reviews; DROP TABLE local_review_sessions; DROP TABLE local_submissions; DROP TABLE requirement_ack; DROP TABLE task_requirements; DROP TABLE lifecycle_state; DROP TABLE lifecycle_configs; DROP TABLE lease_receipt_pins; DROP TABLE local_leases; DROP TABLE local_fleet;
       DROP TABLE runtime_intents; DROP TABLE local_changes; DROP TABLE command_receipts;
       DROP TABLE operation_tombstones; DROP TABLE task_comments; DROP TABLE tasks;
@@ -410,7 +420,7 @@ v2_runtime_identity_upgrade_is_atomic_and_preserves_clocks_and_intents :: proc(t
     testing.expect_value(t,sqlite3_close(legacy),0)
     testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     rows,ok=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations),database_id,incarnation,commit_seq,clock_high_ms,directory_version,directory_hash,(SELECT body FROM tasks),(SELECT payload_json FROM runtime_intents),(SELECT state FROM runtime_intents),(SELECT attempts FROM runtime_intents),(SELECT claim_incarnation FROM runtime_intents) FROM runtime_database")
-    expected:=[13]string{"4","4","stable_database","8","5","4000","2","head","preserved body","original signed intent","pending","1","0"}
+    expected:=[13]string{"5","5","stable_database","8","5","4000","2","head","preserved body","original signed intent","pending","1","0"}
     if testing.expect(t,ok && len(rows)==1) do for value,i in expected do testing.expect_value(t,rows[0][i],value)
     testing.expect(t,!exec(f.store.db,"UPDATE runtime_database SET account_id='other'"),"rebuilt identity guard remains active")
     testing.expect(t,!exec(f.store.db,"UPDATE runtime_database SET commit_seq=0"),"rebuilt monotonic guard remains active")
@@ -427,7 +437,7 @@ v3_lifecycle_migration_preserves_live_fences_and_rolls_back_collision :: proc(t:
     close(&f.store)
     db:DB
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    testing.expect(t,exec(db,`PRAGMA foreign_keys=OFF;
+    testing.expect(t,exec(db,`PRAGMA foreign_keys=OFF;`+SEARCH_TEST_DROP+`
       DROP TABLE local_merge_preparations; DROP TABLE local_reviews; DROP TABLE local_review_sessions;
       DROP TABLE local_submissions; DROP TABLE requirement_ack; DROP TABLE task_requirements;
       DROP TABLE lifecycle_state; DROP TABLE lifecycle_configs;`))
@@ -448,5 +458,5 @@ v3_lifecycle_migration_preserves_live_fences_and_rolls_back_collision :: proc(t:
     replay:=lease_invoke(f,raw,"",child,3000)
     testing.expect(t,replay.code=="ok" && replay.replay && replay.body==first.body,"migration preserves exact signed capability and historical receipt")
     rows,ok=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
-    testing.expect(t,ok && rows[0][0]=="4" && rows[0][1]=="4")
+    testing.expect(t,ok && rows[0][0]=="5" && rows[0][1]=="5")
 }

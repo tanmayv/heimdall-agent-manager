@@ -24,8 +24,8 @@ owner_directory :: proc(h:^Bridge_Handlers,account:string)->(vault.Directory_Ver
     return d,true
 }
 owner_json :: proc(v:$T)->string { b,_:=json.marshal(v,allocator=context.temp_allocator);return string(b) }
-owner_registry_rows :: proc(h:^Bridge_Handlers,account,chain,after_chain,after_task:string,limit:int)->([]domain.Owner_Registry_Record,domain.Domain_Error) {
-    return h.taskchains.repo.owner_registry_list(h.taskchains.repo.ctx,account,chain,after_chain,after_task,limit)
+owner_registry_rows :: proc(h:^Bridge_Handlers,account,chain,after_chain,after_task:string,limit:int,headers_only:bool=false)->([]domain.Owner_Registry_Record,domain.Domain_Error) {
+    return h.taskchains.repo.owner_registry_list(h.taskchains.repo.ctx,account,chain,after_chain,after_task,limit,headers_only)
 }
 Owner_Relay_Command :: struct {
     type,command_id,account_id,relay:string,
@@ -107,11 +107,13 @@ owner_local_list_handler :: proc(ctx:rawptr,req:Request)->Response {
     if !ok do return resp
     if !contracts.is_user_auth(auth) do return respond_error(domain.domain_error(.Forbidden,"user authentication required"),req.request_id)
     chain:=query_value(req.query,"chain_id")
-    rows,err:=owner_registry_rows(h,auth.user_id,chain,query_value(req.query,"after_chain"),query_value(req.query,"after_task"),101)
+    rows,err:=owner_registry_rows(h,auth.user_id,chain,query_value(req.query,"after_chain"),query_value(req.query,"after_task"),101,query_value(req.query,"headers_only")=="1")
     if err.code!=.None do return respond_error(err,req.request_id)
     out:=make([dynamic]Owner_Listing,context.temp_allocator)
     for row in rows {
         if row.registry_json=="" do continue
+        registry,valid:=contracts.owner_parse(row.registry_json,"registry")
+        if !valid || contracts.owner_string(registry,"deleted")=="1" do continue
         append(&out,Owner_Listing{row.chain_id,row.owner_bridge_id,row.owner_key_id,row.task_id,row.registry_json,project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry,row.owner_bridge_id)})
     }
     return respond_success(owner_json(out[:]),req.request_id,auth_ctx_server_time(req))

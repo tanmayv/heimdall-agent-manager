@@ -122,7 +122,7 @@ async function approverFor(hub) {
   const parsed = await openVerifiedWrap(self.data.wrap, { userId, recipientDeviceId: identity.deviceId, recipientEcdhPrivate: identity.ecdhPrivateKey, chain: await chain() });
   const keyringBytes = serializeKeyringBytes(parsed);
   for (const e of parsed.entries) e.key.fill(0);
-  return { userId, identity, chain, keyringBytes };
+  return { userId, identity, chain, keyringBytes, wrap: self.data.wrap };
 }
 
 function bridgeArgs(cfg) {
@@ -381,8 +381,9 @@ r=c.execute("select registry_json from owner_local_titles where chain_id=?",(sys
 assert len(r)==2 and all("owner-private" not in x[0] for x in r)
 from pathlib import Path
 for dbfile in Path(sys.argv[1]).parent.glob("hub.db*"):
- if dbfile.is_file(): assert all(marker not in dbfile.read_bytes() for marker in (b"owner-private", b"lifecycle-private"))
-print("metadata-only Hub SQLite verified")
+ if dbfile.is_file(): assert all(marker not in dbfile.read_bytes() for marker in (b"owner-private", b"lifecycle-private", b"uniquesearch", b"search-private", b"sharedsearchword"))
+assert all(marker not in (Path(sys.argv[1]).parent/"hub.log").read_bytes() for marker in (b"owner-private", b"lifecycle-private", b"uniquesearch", b"search-private", b"sharedsearchword"))
+print("metadata-only Hub SQLite and log verified")
 `, path.join(ROOT, 'hub-a', 'hub.db'), chainId], { encoding: 'utf8' });
           expect(probe.status === 0, 'Hub SQLite contains no local chain/task bodies: ' + probe.stderr);
         },

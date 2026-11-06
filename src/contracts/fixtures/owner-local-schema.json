@@ -22,5 +22,8 @@
   "submit_payload": "requirements_revision:positive head:optional_commit summary:document",
   "review_payload": "requirements_revision:positive attempt:positive head:optional_commit verdict:verdict summary:document",
   "lifecycle_command": "protocol_version:version account_id:id owner_bridge_id:id chain_id:id task_id:id lease_id:id instance_id:id launch_epoch:id run_count:positive token_generation:hash configuration_revision:positive expected_revision:counter operation_id:id method:lifecycle_method request_expires_ms:positive capability_digest:hash key_id:id signature:signature payload_digest:hash",
-  "lifecycle_input": "protocol_version:version chain_id:id task_id:id lease_id:id configuration_revision:positive expected_revision:counter operation_id:id method:lifecycle_method request_expires_ms:positive capability:optional_document payload:document"
+  "lifecycle_input": "protocol_version:version chain_id:id task_id:id lease_id:id configuration_revision:positive expected_revision:counter operation_id:id method:lifecycle_method request_expires_ms:positive capability:optional_document payload:document",
+  "search_payload": "query_cipher:required_cipher limit:positive",
+  "delete_payload": "protocol_version:version",
+  "chain_edit_payload": "title_cipher:required_cipher description_cipher:required_cipher"
 }

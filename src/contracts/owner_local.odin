@@ -32,7 +32,7 @@ owner_hex :: proc(s: string, n: int) -> bool {
 
 owner_method_valid :: proc(s: string) -> bool {
     switch s {
-    case "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "runtime.read", "lifecycle.configure", "requirements.edit", "review.post": return true
+    case "chain.edit", "task.edit", "task.delete", "chain.search", "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "runtime.read", "lifecycle.configure", "requirements.edit", "review.post": return true
     }
     return false
 }
@@ -95,7 +95,7 @@ owner_document_valid :: proc(kind: string, o: json.Object) -> bool {
     }
     if kind == "command" {
         method, task := owner_string(o, "method"), owner_string(o, "task_id")
-        if (method == "task.create" || method == "task.comment" || method == "task.read" || method == "fleet.edit" || method == "runtime.read" || method == "lifecycle.configure" || method == "requirements.edit" || method == "review.post") != (task != "") do return false
+        if (method == "task.edit" || method == "task.delete" || method == "task.create" || method == "task.comment" || method == "task.read" || method == "fleet.edit" || method == "runtime.read" || method == "lifecycle.configure" || method == "requirements.edit" || method == "review.post") != (task != "") do return false
     }
     if kind == "registry" && owner_string(o, "deleted") == "0" {
         if owner_string(o, "task_id") == "" {
@@ -124,7 +124,10 @@ owner_document_valid :: proc(kind: string, o: json.Object) -> bool {
 owner_payload_kind :: proc(method: string) -> string {
     switch method {
     case "chain.create": return "chain_create_payload"
-    case "task.create": return "task_create_payload"
+    case "task.create", "task.edit": return "task_create_payload"
+    case "chain.edit": return "chain_edit_payload"
+    case "task.delete": return "delete_payload"
+    case "chain.search": return "search_payload"
     case "task.comment": return "comment_payload"
     case "fleet.edit": return "fleet_payload"
     case "lifecycle.configure": return "lifecycle_config_payload"
@@ -243,7 +246,7 @@ owner_live_admit :: proc(o: json.Object, grant: Owner_Read_Grant, now_ms, curren
     expires, _ := strconv.parse_i64(owner_string(o, "request_expires_ms"))
     if expires <= now_ms || expires - now_ms > OWNER_REQUEST_TTL_MS do return .Expired
     method := owner_string(o, "method")
-    read := method == "chain.read" || method == "task.read" || method == "receipt.read" || method == "runtime.read"
+    read := method == "chain.search" || method == "chain.read" || method == "task.read" || method == "receipt.read" || method == "runtime.read"
     if !read && !grant.can_mutate do return .Invalid_Scope
     expected, _ := strconv.parse_i64(owner_string(o, "expected_revision"))
     if current_revision < 0 do return .Stale_Revision
