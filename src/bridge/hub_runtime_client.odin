@@ -2581,11 +2581,18 @@ bridge_runtime_launch_provider_test :: proc(command_id, command_json: string) ->
 // Stop the PTY child before invalidating credentials and declaring it stopped.
 // A failed close leaves stop intent active and must never acknowledge success.
 bridge_runtime_stop_agent :: proc(instance_id: string, force: bool = false) -> bool {
+    sync.mutex_lock(&bridge_executor_mutex);defer sync.mutex_unlock(&bridge_executor_mutex)
+    return bridge_legacy_stop_target(bridge_legacy_global_store(),instance_id,force)
+}
+
+// Only the guarded entry above may reach this implementation. Its caller keeps
+// startup I/O serialization through daemon close and credential invalidation.
+bridge_runtime_stop_agent_unfenced :: proc(instance_id: string, force:bool,launch_key:string) -> bool {
 	if strings.trim_space(instance_id) == "" do return false
 	// Record the operator's intent to stop, so a late/duplicate wrapper signal that
 	// races the ~1s self-reap window cannot resurrect the instance back to
 	// running/starting (see bridge_runtime_note_activity_signal).
-	bridge_runtime_mark_stop_intent(instance_id)
+	bridge_runtime_mark_stop_intent_io_locked(instance_id)
 	bridge_runtime_set_status(instance_id, "stopping", "idle")
 	// Wrapper-free: the bridge closes the instance on the ham-pty-host daemon
 	// directly (SIGTERM->SIGKILL + unregister). Token invalidation below is still
@@ -2599,12 +2606,13 @@ bridge_runtime_stop_agent :: proc(instance_id: string, force: bool = false) -> b
 	registered, alive := false, false
 	for agent in reply.agents do if agent.instance_id == instance_id { registered = true; alive = agent.alive; break }
 	pty_host_reply_delete(reply)
-	if force && registered && alive {
-		client := Pty_Host_Client{socket = socket}
-		// An instance that exited between the list and the SIGKILL is already stopped.
-		if result, _ := bridge_pty_host_signal_detailed(&client, instance_id, 9); result == .Refused do return false
-	}
-	if registered && !bridge_pty_host_close(socket, instance_id) do return false
+    _=force // Exact close performs bounded TERM/KILL without a broad PID signal.
+    if registered {
+        if launch_key=="" do return false
+        pid,known:=bridge_pty_host_executor_query(socket,instance_id,launch_key)
+        if !known || (alive && pid<=0) do return false
+        if !bridge_pty_host_executor_close(socket,instance_id,launch_key) do return false
+    }
 
 	// Invalidate every local token for this instance (persisted to disk).
 	invalidated := bridge_agent_token_invalidate_instance(instance_id)

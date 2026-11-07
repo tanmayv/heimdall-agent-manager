@@ -997,6 +997,11 @@ bridge_taskv2_git_identity_args :: proc(repo: string) -> []string {
 // failure (conflict, dirty main checkout) aborts the merge and keeps the
 // worktree and branch: the hub blocks the task on a human.
 bridge_taskv2_merge_task_worktree :: proc(repo, workdir, branch, task_id: string) -> Bridge_Taskv2_Merge_Result {
+    sync.mutex_lock(&bridge_executor_mutex);defer sync.mutex_unlock(&bridge_executor_mutex)
+    return bridge_legacy_merge_target(bridge_legacy_global_store(),repo,workdir,branch,task_id)
+}
+
+bridge_taskv2_merge_task_worktree_unfenced :: proc(repo, workdir, branch, task_id: string) -> Bridge_Taskv2_Merge_Result {
 	r := Bridge_Taskv2_Merge_Result{files = make([dynamic]string, context.temp_allocator)}
 	if strings.trim_space(repo) == "" || strings.trim_space(branch) == "" {
 		r.detail = "missing repo or branch"

@@ -124,6 +124,13 @@ bridge_executor_local_real_daemon_lost_observation_restart_and_exact_stop :: pro
     testing.expect(t,!bridge_pty_host_executor_close(socket,recovered.instance,recovered.launch_key))
     same_pid,same_known=bridge_pty_host_executor_query(socket,replacement.instance,replacement.launch_key)
     testing.expect(t,same_known && same_pid==pid)
+    // A late legacy stop, including force, cannot kill this exact retained
+    // child once its instance target has crossed the permanent barrier.
+    barrier:=executor.Legacy_Barrier{"source_chain","migration",contracts.owner_payload_digest("verified selection"),1}
+    testing.expect_value(t,bridge_legacy_install_barrier(&s,barrier,[]executor.Legacy_Resource{{"instance",replacement.instance}}).code,"ok")
+    testing.expect(t,!bridge_legacy_stop_target(&s,replacement.instance,true))
+    same_pid,same_known=bridge_pty_host_executor_query(socket,replacement.instance,replacement.launch_key)
+    testing.expect(t,same_known && same_pid==pid,"fenced legacy force-stop leaves exact child alive")
     launch=replacement;recovered=replacement
     // Daemon loss cannot prove absence or refund this warm charge.
     _=os.process_kill(process);_,_=os.process_wait(process);process_live=false
@@ -172,4 +179,77 @@ bridge_executor_local_resolver_rechecks_catalog_mapping_and_full_spawn :: proc(t
     bridge_executor_test_set(c,"model","seed")
     testing.expect(t,os.remove(directory)==nil)
     testing.expect(t,!bridge_executor_resolve_local(&s,executor.encode(c),req).resolved)
+}
+
+@(test)
+bridge_legacy_barrier_prevents_native_first_io_after_signed_local_consent :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    binary:=os.get_env("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)
+    if binary=="" {
+        when #config(EXECUTOR_TEST_REQUIRED,false) {testing.fail_now(t,"HEIMDALL_EXECUTOR_TEST_PTY must name the real daemon")}
+        else {fmt.eprintln("[skip] local executor proof requires HEIMDALL_EXECUTOR_TEST_PTY");return}
+    }
+    sync.mutex_lock(&bridge_test_config_mutex);defer sync.mutex_unlock(&bridge_test_config_mutex)
+    suffix:=fmt.tprintf("%d",time.to_unix_nanoseconds(time.now()))
+    socket:=fmt.tprintf("/tmp/ham-local-barrier-%s.sock",suffix)
+    swap:=pty_host_test_install_socket(socket);defer pty_host_test_restore_socket(swap)
+    process,err:=os.process_start(os.Process_Desc{command=[]string{binary,"--socket",socket,"daemon"}})
+    if !testing.expect(t,err==nil) do return
+    process_live:=true
+    defer {if process_live {_=os.process_kill(process);_,_=os.process_wait(process)};_=os.remove(socket)}
+    ready:=false
+    for _ in 0..<100 {if bridge_pty_host_ping(socket) {ready=true;break};time.sleep(10*time.Millisecond)}
+    if !testing.expect(t,ready && bridge_pty_host_local_executor_capable(socket)) do return
+    path:=fmt.tprintf("%s/.cache/heimdall-tests/local-barrier-%s.sqlite",os.get_env("HOME",context.temp_allocator),suffix)
+    s:executor.Store
+    if !testing.expect(t,executor.open(&s,path,"account","executor","operator")) do return
+    defer {executor.close(&s);for ext in ([4]string{"","-wal","-shm",".writer"}) do _=os.remove(fmt.tprintf("%s%s",path,ext))}
+    host_private,host:=bridge_executor_test_key("executor","operator",11);defer ecdsa.private_key_clear(&host_private)
+    device_private,device:=bridge_executor_test_key("device","device_key",12);defer ecdsa.private_key_clear(&device_private)
+    device.kind="device"
+    now:=bridge_executor_physical_clock(nil)
+    p:=bridge_executor_test_doc("policy")
+    testing.expect_value(t,executor.install_policy(&s,bridge_executor_test_sign(p,"policy",&host_private),host,now).code,"ok")
+    d:=bridge_executor_test_doc("directory")
+    testing.expect_value(t,executor.install_directory(&s,bridge_executor_test_sign(d,"directory",&host_private),host,now,"/repo").code,"ok")
+    req:=Pty_Host_Spawn_Request{instance="local_instance",argv=[]string{"sh"},rows=24,cols=80}
+    c:=bridge_executor_test_doc("local_configuration")
+    bridge_executor_test_set(c,"purpose","warm");bridge_executor_test_set(c,"provider_profile","default")
+    bridge_executor_test_set(c,"directory_key",executor.directory_key("executor","/repo"))
+    bridge_executor_test_set(c,"spawn_digest",bridge_executor_local_spawn_digest(req))
+    configuration:=executor.encode(c)
+    resources:=executor.Local_Resources{contracts.owner_payload_digest(configuration),contracts.owner_string(c,"spawn_digest"),"/repo",true}
+    o:=bridge_executor_test_doc("local_launch")
+    bridge_executor_test_set(o,"configuration_digest",resources.configuration_digest)
+    bridge_executor_test_set(o,"issued_ms",fmt.tprintf("%d",now));bridge_executor_test_set(o,"request_expires_ms",fmt.tprintf("%d",now+60000))
+    consent:=bridge_executor_test_sign(o,"local_launch",&device_private)
+    admitted:=executor.admit_local(&s,consent,configuration,device,now,resources)
+    if !testing.expect_value(t,admitted.code,"ok") do return
+    v,_:=contracts.owner_content_document(admitted.body);body,_:=v.(json.Object)
+    launch,found:=executor.local_launch(&s,contracts.owner_string(body,"launch_id"));testing.expect(t,found)
+    barrier:=executor.Legacy_Barrier{"source_chain","migration",contracts.owner_payload_digest("verified selection"),1}
+    testing.expect_value(t,bridge_legacy_install_barrier(&s,barrier,[]executor.Legacy_Resource{{"instance",launch.instance}}).code,"ok")
+    prepared:=false
+    delivered,reason:=bridge_executor_local_dispatch(&s,launch,device,req,resources,socket,
+        prepare_ctx=&prepared,prepare=proc(ctx:rawptr)->bool {(^bool)(ctx)^=true;return true})
+    testing.expect(t,!delivered && reason=="legacy_fenced" && !prepared)
+    listed,read:=bridge_pty_host_list(socket)
+    testing.expect(t,read)
+    if read {defer pty_host_reply_delete(listed);for agent in listed.agents do testing.expect(t,agent.instance_id!=launch.instance)}
+    retained,loaded:=executor.local_launch(&s,launch.id)
+    testing.expect(t,loaded && retained.state=="admitted","barrier consumes neither launch authority nor child charge")
+    // A child predating the native admission ledger has no authenticated
+    // exact close identity. Legacy force-stop must refuse it, not infer drain
+    // from the current instance name or send a broad signal.
+    unknown:=Pty_Host_Spawn_Request{instance="historical_unknown",argv=[]string{"sh"},rows=24,cols=80}
+    unknown_pid,spawned:=bridge_pty_host_spawn(socket,unknown)
+    if !testing.expect(t,spawned && unknown_pid>0) do return
+    defer {_=bridge_pty_host_close(socket,unknown.instance);bridge_shell_test_kill_pid(int(unknown_pid))}
+    testing.expect(t,!bridge_legacy_stop_target(&s,unknown.instance,true))
+    current,listed_ok:=bridge_pty_host_list(socket)
+    if !testing.expect(t,listed_ok) do return
+    defer pty_host_reply_delete(current)
+    still_live:=false
+    for child in current.agents do if child.instance_id==unknown.instance && child.alive do still_live=true
+    testing.expect(t,still_live,"unknown pre-upgrade child remains unresolved and alive")
 }
