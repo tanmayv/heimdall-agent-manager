@@ -6,6 +6,16 @@ As of 2026-11-07, the tested Linux Codex busy-turn path delivers the exact owner
 
 ## Enabled behavior versus notification capability
 
+**Mac deferral, 2026-11-07:** the user answered the successor task's block with
+“Skip real mac for now” (task `task_18e5beeef261412e`, attempt 2). Real Mac
+provider execution is deferred. This is not native acceptance or permission to
+install a protected image. The approved guarded-image engineering at `df0b9527`
+proves inspection and refusal only; see `docs/darwin-guarded-image-engineering.md`.
+Production Darwin activation still refuses at
+`tools/pty_host/src/darwin_image.rs:190`, and the notification profile remains
+disabled at `tools/pty_host/src/native_notification.rs:88`. The separate Claude
+exact-TAB requirement is unchanged by this Mac-only decision.
+
 Provider launch/profile enablement is separate from notification support. The Bridge requests the native notification profile for Codex only (`src/bridge/pty_host_runtime.odin:406`). The daemon enables it only when executable and platform admission succeeds (`tools/pty_host/src/daemon.rs:603`); other children can still launch, but interrupt Prepare without a profile refuses before input (`tools/pty_host/src/delivery.rs:123`).
 
 | Platform/provider/state | Current behavior | Evidence boundary and remaining gate |
