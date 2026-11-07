@@ -2385,7 +2385,7 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string,legacy_j
 			// the child is not confirmed live, fall through to the launch paths.
 			deliver := extract_json_string(entry, "deliver", "")
 			defer delete(deliver)
-			if deliver == "nudge" && bridge_wake_nudge_live_child(instance_id, task_id, role, lease_id, run_count, pack_json,legacy_journal) {
+			if deliver == "nudge" && bridge_wake_nudge_live_child(instance_id, task_id, role, lease_id, run_count, pack_json,legacy_journal,observation_action=action,observation_entry_index=i64(entry_index),observation_entry_digest=contracts.owner_payload_digest(entry)) {
 				bridge_runtime_set_launch_role(instance_id, role)
 				fmt.println("bridge wake_agent: nudged live instance", instance_id, "to run lease next")
 				continue
@@ -2460,7 +2460,7 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string,legacy_j
 // any precondition fails. A failed keystroke delivery still returns true: the
 // child is live, so a launch would no-op; the hub re-sends an unconfirmed
 // wake once and then parks the task (grant_unconfirmed).
-bridge_wake_nudge_live_child :: proc(instance_id, task_id, role, lease_id: string, run_count: int, pack_json: string,legacy_journal:^executor.Store=nil) -> bool {
+bridge_wake_nudge_live_child :: proc(instance_id, task_id, role, lease_id: string, run_count: int, pack_json: string,legacy_journal:^executor.Store=nil,observation_action:executor.Legacy_Action={},observation_entry_index:i64= -1,observation_entry_digest:string="") -> bool {
 	if run_count <= 0 || strings.trim_space(instance_id) == "" do return false
 	launch, has := bridge_runtime_get_launch(instance_id)
 	if !has do return false
@@ -2478,6 +2478,10 @@ bridge_wake_nudge_live_child :: proc(instance_id, task_id, role, lease_id: strin
 	if !daemon_ok do return false
 	confirmed, _ := bridge_startup_confirm_spawned_io_locked(socket, instance_id, run_count)
 	if !confirmed do return false
+    if !bridge_legacy_observe_nudge_locked(journal,observation_action,instance_id,run_count,observation_entry_index,observation_entry_digest,socket) {
+        fmt.eprintln("bridge wake_agent: exact native nudge observation unavailable")
+        return true // Confirmed live child stays untouched; no replacement launch.
+    }
 	if strings.has_prefix(strings.trim_space(pack_json), "{") {
 		run_dir := launch.run_dir
 		default_dir := ""

@@ -457,6 +457,36 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="",
     testing.expect(t,same_known && same_pid==manual_pid)
     recovered,projection:=bridge_runtime_instance_snapshot(manual_launch.instance)
     testing.expect(t,projection && recovered.startup.generation>0 && recovered.startup.pty_pid==manual_pid && recovered.startup.armed_at_ms>0)
+    // Observe exact native presence before an incoming live-child task nudge.
+    nudge_entry:=executor.encode(struct{agent_instance_id,task_id:string,run_count:int}{manual_launch.instance,"nudge_task",1})
+    nudge_parent:=strings.concatenate({`{"type":"wake_agent","payload":{"run":[`,nudge_entry,`]}}`},context.temp_allocator)
+    nudge_spec,_:=bridge_command_spec("wake_agent")
+    nudge_action,nudge_prepared:=bridge_legacy_dispatch_prepare(nudge_parent,"wake_agent",nudge_spec,&bridge_executor_store)
+    testing.expect(t,nudge_prepared)
+    nudge_job:=Bridge_Dispatch_Job{text=nudge_parent,command_type="wake_agent",legacy_action=nudge_action}
+    testing.expect(t,bridge_legacy_dispatch_start(&nudge_job,&bridge_executor_store))
+    nudge_digest:=contracts.owner_payload_digest(nudge_entry)
+    testing.expect(t,bridge_wake_nudge_live_child(manual_launch.instance,"nudge_task","worker","nudge_lease",1,`{"task_id":"nudge_task"}`,&bridge_executor_store,
+        observation_action=nudge_action,observation_entry_index=0,observation_entry_digest=nudge_digest))
+    testing.expect(t,bridge_legacy_dispatch_end(nudge_action,true,&bridge_executor_store))
+    nudge_rows,nudge_read:=executor.query(bridge_executor_store.db,"SELECT launch_key,child_pid,entry_digest FROM executor_legacy_action_nudges WHERE action_id=?",fmt.tprintf("%d",nudge_action.id))
+    testing.expect(t,nudge_read && len(nudge_rows)==1 && nudge_rows[0][0]==manual_launch.launch_key && executor.number(nudge_rows[0][1])==i64(manual_pid) && nudge_rows[0][2]==nudge_digest,
+        "actual native key query and durable presence precede task pack and keystroke")
+    context_before,context_err:=os.read_entire_file(fmt.tprintf("%s/TASK.md",material.run_dir),context.temp_allocator)
+    testing.expect(t,context_err==nil)
+    testing.expect(t,executor.exec(bridge_executor_store.db,"CREATE TRIGGER fail_nudge_observation BEFORE INSERT ON executor_legacy_action_nudges BEGIN SELECT RAISE(ABORT,'test persistence fault'); END;"))
+    refused_action,refused_prepared:=bridge_legacy_dispatch_prepare(nudge_parent,"wake_agent",nudge_spec,&bridge_executor_store)
+    testing.expect(t,refused_prepared)
+    nudge_job.legacy_action=refused_action
+    testing.expect(t,bridge_legacy_dispatch_start(&nudge_job,&bridge_executor_store))
+    testing.expect(t,bridge_wake_nudge_live_child(manual_launch.instance,"nudge_task","worker","refused_lease",1,`{"task_id":"refused_task"}`,&bridge_executor_store,
+        observation_action=refused_action,observation_entry_index=0,observation_entry_digest=nudge_digest))
+    testing.expect(t,bridge_legacy_dispatch_end(refused_action,true,&bridge_executor_store))
+    context_after,context_after_err:=os.read_entire_file(fmt.tprintf("%s/TASK.md",material.run_dir),context.temp_allocator)
+    testing.expect(t,context_after_err==nil && string(context_before)==string(context_after),"failed exact nudge observation leaves live task context unchanged")
+    same_pid,same_known=bridge_pty_host_executor_query(socket,manual_launch.instance,manual_launch.launch_key)
+    testing.expect(t,same_known && same_pid==manual_pid,"refused nudge never falls through to replacing the child")
+    testing.expect(t,executor.exec(bridge_executor_store.db,"DROP TRIGGER fail_nudge_observation"))
     command["method"]=json.String("cancel");command["operation_id"]=json.String("manual_cancel")
     final_cancel:=bridge_executor_test_sign(command,"local_draft",&device_private)
     if revoked_cancel {

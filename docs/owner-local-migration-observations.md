@@ -143,3 +143,29 @@ V12-to-V13 upgrade failure tests preserve running occurrences, native draft
 material and reservation state across name collision and deferred COMMIT failure.
 Retained triggers are recreated around the runtime-header rebuild; the native
 journal and immutable unknown-coverage marker are preserved.
+
+## Exact local-child nudge observations (V14)
+
+Before applying a live-child wake pack or typing its notice, the observed path
+derives the unique current active local admission, queries that exact daemon
+launch key and retains the observed PID, run count, configuration digest and
+instance/directory identity with the original entry occurrence. The application,
+startup and physical gates surround this check and the following I/O. Missing,
+ambiguous, stale or unpersistable evidence leaves the confirmed live child
+untouched; the handler prevents replacement-launch fallback. An untracked or
+remote child cannot substitute for the required local native admission.
+
+The private row means observed presence at that boundary only. It is not a task
+grant, historical source provenance, successful task delivery or physical
+absence. Exact old row replay is read-only and cannot type/apply the nudge again.
+A different launch under the same occurrence/entry conflicts. A migration drain
+still needs a new authenticated physical observation, the complete resource
+union and explicit device adoption; these rows alone cannot enable any route.
+The incoming pack's full canonical filesystem resource set and alternate
+producer coverage remain unfinished.
+
+V13-to-V14 migration recreates retained runtime references and preserves native
+history across name collisions and deferred COMMIT failure. Storage tests cover
+exact-key identity, changed entry/PID/launch rejection, rollback and read-only
+historical replay. Native PTY tests verify the stored key/PID against the actual
+child and inject a persistence failure to keep task context and child unchanged.

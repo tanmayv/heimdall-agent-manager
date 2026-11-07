@@ -93,3 +93,20 @@ bridge_legacy_action_observe_selected_draft :: proc(store:^executor.Store,action
         native_request_digest=contracts.owner_payload_digest(command),draft_id=draft})
     return result.code=="ok"
 }
+
+// Caller holds application/startup/physical gates. Query the exact retained
+// native key, then persist presence before applying any task pack or keystroke.
+// An unresolved child is never replaced and a historical row is not fresh proof.
+bridge_legacy_observe_nudge_locked :: proc(store:^executor.Store,action:executor.Legacy_Action,instance:string,run:int,index:i64,entry_digest,socket:string)->bool {
+    if action.id==0 do return true // Producer remains outside verified coverage.
+    if store==nil || index<0 || !contracts.owner_hex(entry_digest,64) do return false
+    sync.mutex_lock(&store.mutex)
+    rows,read:=executor.query(store.db,"SELECT launch_id,launch_key FROM executor_local_launches WHERE instance_id=? AND state='active' AND observed_incarnation=?",instance,executor.encode(store.incarnation))
+    sync.mutex_unlock(&store.mutex)
+    if !read || len(rows)!=1 do return false
+    pid,known:=bridge_pty_host_executor_query(socket,instance,rows[0][1])
+    if !known || pid<=0 do return false
+    result:=executor.legacy_action_observe_nudge(store,executor.Legacy_Action_Nudge{
+        action=action,entry_index=index,entry_digest=entry_digest,launch_id=rows[0][0],child_pid=i64(pid),run_count=i64(run)})
+    return result.code=="ok" && !result.replay
+}

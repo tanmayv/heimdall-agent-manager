@@ -188,7 +188,7 @@ executor_draft_v7_migration_collision_retains_exact_live_local_child :: proc(t:^
     testing.expect(t,exec(f.store.db,"DROP TABLE executor_local_draft_receipts; DROP TABLE executor_local_drafts; PRAGMA legacy_alter_table=ON; DROP TRIGGER runtime_immutable; DROP TRIGGER runtime_no_delete; ALTER TABLE executor_runtime RENAME TO runtime_v8_fixture;"))
     testing.expect(t,exec(f.store.db,"DROP TABLE executor_legacy_commands; DROP TABLE executor_legacy_resources; DROP TABLE executor_legacy_barriers;"))
     schema:=string(#load("schema.sql"))
-    old,_:=strings.replace_all(schema[:strings.index(schema,"CREATE TABLE executor_policies")],"schema_version=13","schema_version=7",context.temp_allocator)
+    old,_:=strings.replace_all(schema[:strings.index(schema,"CREATE TABLE executor_policies")],"schema_version=14","schema_version=7",context.temp_allocator)
     testing.expect(t,exec(f.store.db,old))
     testing.expect(t,exec(f.store.db,"INSERT INTO executor_runtime SELECT singleton,7,account_id,executor_bridge_id,operator_key_id,incarnation,clock_high_ms,recovery_state,policy_revision,device_capacity FROM runtime_v8_fixture; DROP TABLE runtime_v8_fixture; CREATE VIEW executor_local_drafts AS SELECT 1;"))
     close(&f.store);testing.expect(t,!open(&f.store,f.path,"account","executor","operator"))
@@ -198,7 +198,7 @@ executor_draft_v7_migration_collision_retains_exact_live_local_child :: proc(t:^
     testing.expect(t,exec(f.store.db,"DROP VIEW executor_local_drafts"));close(&f.store)
     testing.expect(t,open(&f.store,f.path,"account","executor","operator"))
     rows,_=query(f.store.db,"SELECT schema_version,incarnation,(SELECT launch_key FROM executor_local_launches),(SELECT state FROM executor_local_launches) FROM executor_runtime")
-    testing.expect(t,len(rows)==1 && rows[0][0]=="13" && rows[0][1]=="2" && rows[0][2]==launch.launch_key && rows[0][3]=="active")
+    testing.expect(t,len(rows)==1 && rows[0][0]=="14" && rows[0][1]=="2" && rows[0][2]==launch.launch_key && rows[0][3]=="active")
     // Retained shared-admission triggers must reference the NEW runtime, not
     // SQLite's temporary rename target; the live child still excludes a rival.
     p:=document("prepare");set(p,"executor_incarnation","2")

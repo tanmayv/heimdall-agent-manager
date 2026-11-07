@@ -173,7 +173,7 @@ executor_local_v6_migration_collision_atomicity :: proc(t:^testing.T) {
     testing.expect(t,exec(f.store.db,"PRAGMA legacy_alter_table=ON; DROP TRIGGER runtime_immutable; DROP TRIGGER runtime_no_delete; ALTER TABLE executor_runtime RENAME TO executor_runtime_v7;"))
     testing.expect(t,exec(f.store.db,"DROP TABLE executor_legacy_commands; DROP TABLE executor_legacy_resources; DROP TABLE executor_legacy_barriers;"))
     schema:=string(#load("schema.sql"))
-    old,_:=strings.replace_all(schema[:strings.index(schema,"CREATE TABLE executor_policies")],"schema_version=13","schema_version=6",context.temp_allocator)
+    old,_:=strings.replace_all(schema[:strings.index(schema,"CREATE TABLE executor_policies")],"schema_version=14","schema_version=6",context.temp_allocator)
     testing.expect(t,exec(f.store.db,old))
     testing.expect(t,exec(f.store.db,"INSERT INTO executor_runtime SELECT singleton,6,account_id,executor_bridge_id,operator_key_id,incarnation,clock_high_ms,recovery_state,policy_revision,device_capacity FROM executor_runtime_v7; DROP TABLE executor_runtime_v7; CREATE VIEW executor_local_launches AS SELECT 1;"))
     close(&f.store);testing.expect(t,!open(&f.store,f.path,"account","executor","operator"))
@@ -183,7 +183,7 @@ executor_local_v6_migration_collision_atomicity :: proc(t:^testing.T) {
     testing.expect(t,exec(f.store.db,"DROP VIEW executor_local_launches"));close(&f.store)
     testing.expect(t,open(&f.store,f.path,"account","executor","operator"))
     rows,_=query(f.store.db,"SELECT schema_version,incarnation,(SELECT state FROM executor_reservations),(SELECT count(*) FROM executor_local_launches) FROM executor_runtime")
-    testing.expect_value(t,encode(rows),encode([1][4]string{{"13","2","active","0"}}))
+    testing.expect_value(t,encode(rows),encode([1][4]string{{"14","2","active","0"}}))
 }
 
 @(test)

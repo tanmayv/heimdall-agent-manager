@@ -1,6 +1,6 @@
 
 CREATE TABLE executor_runtime (
- singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=13),
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=14),
  account_id TEXT NOT NULL, executor_bridge_id TEXT NOT NULL, operator_key_id TEXT NOT NULL,
  incarnation INTEGER NOT NULL CHECK(incarnation>0), clock_high_ms INTEGER NOT NULL CHECK(clock_high_ms>=0),
  recovery_state TEXT NOT NULL CHECK(recovery_state IN ('ready','reconciling','clock_uncertain')),
@@ -439,3 +439,28 @@ CREATE TRIGGER legacy_action_draft_no_delete BEFORE DELETE ON executor_legacy_ac
 CREATE TRIGGER native_journal_executor_legacy_action_drafts_insert AFTER INSERT ON executor_legacy_action_drafts BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
 CREATE TRIGGER native_journal_executor_legacy_action_drafts_update AFTER UPDATE ON executor_legacy_action_drafts BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
 CREATE TRIGGER native_journal_executor_legacy_action_drafts_delete AFTER DELETE ON executor_legacy_action_drafts BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+-- Exact local native child presence observed before a wake nudge. No absence or grant.
+CREATE TABLE executor_legacy_action_nudges (
+ association_id TEXT PRIMARY KEY CHECK(length(association_id)=64),
+ action_id INTEGER NOT NULL REFERENCES executor_legacy_actions(action_id),
+ entry_index INTEGER NOT NULL CHECK(entry_index>=0),
+ entry_digest TEXT NOT NULL CHECK(length(entry_digest)=64),
+ launch_id TEXT NOT NULL REFERENCES executor_local_launches(launch_id),
+ launch_key TEXT NOT NULL, configuration_digest TEXT NOT NULL CHECK(length(configuration_digest)=64),
+ instance_id TEXT NOT NULL, directory_key TEXT NOT NULL,
+ child_pid INTEGER NOT NULL CHECK(child_pid>0), run_count INTEGER NOT NULL CHECK(run_count>0),
+ observed_incarnation INTEGER NOT NULL CHECK(observed_incarnation>0),
+ UNIQUE(action_id,entry_index)
+);
+CREATE TRIGGER legacy_action_nudge_admission BEFORE INSERT ON executor_legacy_action_nudges
+WHEN NEW.observed_incarnation!=(SELECT incarnation FROM executor_runtime)
+ OR NOT EXISTS(SELECT 1 FROM executor_legacy_actions WHERE action_id=NEW.action_id AND observed_incarnation=NEW.observed_incarnation AND state='running')
+ OR NOT EXISTS(SELECT 1 FROM executor_local_launches WHERE launch_id=NEW.launch_id AND launch_key=NEW.launch_key
+  AND instance_id=NEW.instance_id AND state='active' AND observed_incarnation=NEW.observed_incarnation)
+BEGIN SELECT RAISE(ABORT,'nudge requires current exact native child'); END;
+CREATE TRIGGER legacy_action_nudge_no_replace BEFORE INSERT ON executor_legacy_action_nudges WHEN EXISTS(SELECT 1 FROM executor_legacy_action_nudges WHERE association_id=NEW.association_id) BEGIN SELECT RAISE(ABORT,'retained nudge observation'); END;
+CREATE TRIGGER legacy_action_nudge_no_update BEFORE UPDATE ON executor_legacy_action_nudges BEGIN SELECT RAISE(ABORT,'immutable nudge observation'); END;
+CREATE TRIGGER legacy_action_nudge_no_delete BEFORE DELETE ON executor_legacy_action_nudges BEGIN SELECT RAISE(ABORT,'retained nudge observation'); END;
+CREATE TRIGGER native_journal_executor_legacy_action_nudges_insert AFTER INSERT ON executor_legacy_action_nudges BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_action_nudges_update AFTER UPDATE ON executor_legacy_action_nudges BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_action_nudges_delete AFTER DELETE ON executor_legacy_action_nudges BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
