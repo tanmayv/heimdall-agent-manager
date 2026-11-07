@@ -66,6 +66,7 @@ Bridge_Dispatch_Claim_State :: enum {
 Bridge_Dispatch_Job :: struct {
 	legacy_action: executor.Legacy_Action,
 	paired_observation_required: bool,
+	legacy_ingress: Bridge_Legacy_Ingress_State,
 	text: string,
 	command_id: string,
 	command_type: string,
@@ -208,6 +209,7 @@ bridge_command_dispatch_init :: proc() {
 	for i in 0..<len(bridge_dispatch_workers) {
 		_ = thread.create_and_start_with_data(rawptr(&bridge_dispatch_workers[i]), bridge_command_dispatch_worker)
 	}
+	_ = thread.create_and_start_with_data(nil, bridge_legacy_dispatch_ingress_worker)
 }
 
 bridge_command_dispatch_begin_connection :: proc() -> i64 {
@@ -230,6 +232,10 @@ bridge_command_dispatch_drop_stale_queue_locked :: proc(queue: ^[dynamic]Bridge_
 	for i := 0; i < len(queue); {
 		job := queue[i]
 		if job.generation == generation { i += 1; continue }
+		// Paired jobs remain owned and budgeted until the ingress journal and
+		// explicit worker discard complete. Never erase an unrecorded interval
+		// on reconnect, or perform journal I/O on the WebSocket reader.
+		if job.paired_observation_required { i += 1; continue }
 		if claim_i := bridge_command_dispatch_claim_index_locked(job.command_id); claim_i >= 0 {
 			delete(bridge_dispatch_claims[claim_i].command_id, runtime.default_allocator())
 			delete(bridge_dispatch_claims[claim_i].input_digest, runtime.default_allocator())
@@ -615,6 +621,7 @@ bridge_command_dispatch :: proc(conn: ^ws.Connection, text: string, generation: 
 
 	job := Bridge_Dispatch_Job{
 		paired_observation_required = paired_required,
+		legacy_ingress = .Pending if paired_required else .None,
 		text = strings.clone(text, runtime.default_allocator()),
 		command_id = strings.clone(command_id, runtime.default_allocator()),
 		command_type = strings.clone(command_type, runtime.default_allocator()),
@@ -675,6 +682,7 @@ bridge_command_dispatch_take :: proc(class: Bridge_Command_Class) -> (Bridge_Dis
 
 bridge_command_dispatch_take_queue_locked :: proc(queue: ^[dynamic]Bridge_Dispatch_Job) -> (Bridge_Dispatch_Job, bool) {
 	for job, i in queue {
+		if job.legacy_ingress==.Pending || job.legacy_ingress==.Writing do continue
 		blocked := false
 		if job.ordering_key != "" {
 			for key in bridge_dispatch_active_keys {
@@ -690,6 +698,7 @@ bridge_command_dispatch_take_queue_locked :: proc(queue: ^[dynamic]Bridge_Dispat
 		selected := Bridge_Dispatch_Job{
 			legacy_action = queue[i].legacy_action,
 			paired_observation_required = queue[i].paired_observation_required,
+			legacy_ingress = queue[i].legacy_ingress,
 			text = queue[i].text,
 			command_id = queue[i].command_id,
 			command_type = queue[i].command_type,
@@ -770,7 +779,10 @@ bridge_command_dispatch_worker :: proc(data: rawptr) {
 		worker.deadline_ns = job.deadline_ns
 		sync.mutex_unlock(&bridge_dispatch_mu)
 		ran := false
-		if time.to_unix_nanoseconds(time.now()) >= job.deadline_ns {
+		if bridge_legacy_dispatch_job_stale(job) {
+			// Completion is generation-scoped; the outbox will suppress this
+			// old reply. The retained native occurrence still gets discarded.
+		} else if time.to_unix_nanoseconds(time.now()) >= job.deadline_ns {
 			sync.mutex_lock(&bridge_dispatch_mu)
 			bridge_dispatch_metrics.deadline_expired += 1
 			sync.mutex_unlock(&bridge_dispatch_mu)

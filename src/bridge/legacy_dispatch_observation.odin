@@ -3,6 +3,7 @@ package main
 import "core:sync"
 import "core:encoding/json"
 import contracts "odin_test:contracts"
+import executor "odin_test:lib/executor_local"
 
 // Private memory observation only. It excludes inline handlers, startup specs,
 // daemon children and durable history. It cannot establish complete coverage,
@@ -29,7 +30,7 @@ bridge_legacy_dispatch_snapshot_locked :: proc()->Bridge_Legacy_Dispatch_Snapsho
     snapshot:=Bridge_Legacy_Dispatch_Snapshot{
         revision=bridge_dispatch_observation_revision,
         generation=bridge_dispatch_generation,
-        valid=bridge_dispatch_initialized && !bridge_dispatch_observation_exhausted,
+        valid=bridge_dispatch_initialized && !bridge_dispatch_observation_exhausted && !bridge_legacy_ingress_failed,
     }
     Entry :: struct {id,digest:string,state:Bridge_Dispatch_Claim_State}
     entries:=make([dynamic]Entry,context.temp_allocator)
@@ -43,7 +44,7 @@ bridge_legacy_dispatch_snapshot_locked :: proc()->Bridge_Legacy_Dispatch_Snapsho
         append(&entries,Entry{claim.command_id,claim.input_digest,claim.state})
     }
     // Include actual queue bytes, not only the in-memory claim projection.
-    Job :: struct {id,digest:string,generation:i64}
+    Job :: struct {id,digest:string,generation:i64,ingress:Bridge_Legacy_Ingress_State,action:executor.Legacy_Action}
     jobs:=make([dynamic]Job,context.temp_allocator)
     queues:=[]([]Bridge_Dispatch_Job){
         bridge_dispatch_lifecycle[:],bridge_dispatch_interactive[:],
@@ -63,7 +64,7 @@ bridge_legacy_dispatch_snapshot_locked :: proc()->Bridge_Legacy_Dispatch_Snapsho
             claim:=bridge_dispatch_claims[claim_index]
             if claim.state!=.Queued || claim.input_digest!=digest do snapshot.valid=false
         }
-        append(&jobs,Job{job.command_id,digest,job.generation})
+        append(&jobs,Job{job.command_id,digest,job.generation,job.legacy_ingress,job.legacy_action})
     }
     if snapshot.queued!=len(jobs) do snapshot.valid=false
     bytes,err:=json.marshal(struct{claims:[]Entry,jobs:[]Job}{entries[:],jobs[:]},allocator=context.temp_allocator)

@@ -52,6 +52,8 @@ bridge_legacy_dispatch_prepare :: proc(text,kind:string,spec:Bridge_Command_Spec
 }
 
 bridge_legacy_dispatch_start :: proc(job:^Bridge_Dispatch_Job,injected:^executor.Store=nil)->bool {
+    if job.legacy_ingress==.Pending || job.legacy_ingress==.Writing || job.legacy_ingress==.Failed do return false
+    if job.paired_observation_required && job.legacy_action.id==0 do return false
     spec,known:=bridge_command_spec(job.command_type)
     if !known do return false
     if !bridge_legacy_dispatch_requires_observation(spec) do return true
