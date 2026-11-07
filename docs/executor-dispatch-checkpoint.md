@@ -759,3 +759,147 @@ git diff HEAD --check
 - `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/tests/ui_executor_issuance_test.ts`
 
 - `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/bridge/hub_command_dispatch.odin`
+
+## Continuation: immutable owner binding and sealed prepare ingress
+
+After issuance commit `1f1c6e3e`, coordinator requested exact owner/key binding
+(`msg_18e59deab83fb5e4`) and acknowledged ingress evidence
+(`msg_18e59e9a3e6b41ae`). This is another bounded M3 checkpoint, not milestone
+completion.
+
+Executor V3 adds immutable account-local chain/genesis/owner Bridge/key pins.
+First binding requires both a currently approved creator device signature and
+the currently enrolled owner's signature. Replays retain the original genesis;
+creator revocation does not rewrite previously trusted history, but the current
+owner key is always mandatory. First observation after creator revocation
+fails closed; no recovery consent or ownership transfer is invented
+(`src/lib/executor_local/owner_binding.odin:11`).
+
+Fresh prepare facts must match the exact configuration this executor allocated:
+chain/task/instance, epoch/run/token generation, configuration/executor/policy
+versions, slot/profile and canonical directory resource. The latest signed
+directory mapping must still be enabled
+(`src/lib/executor_local/owner_binding.odin:54`).
+The Bridge rechecks actual directory/catalog/profile availability before fresh
+prepare; historical receipt replay bypasses only fresh resource admission.
+
+`POST /api/v1/executor/relay` requires a Bridge token for the immutable owner in
+the canonical signed registry. It forwards the stored signed genesis plus current
+signed directory evidence to the account-owned executor. It reads routing
+metadata, not task eligibility or grant state
+(`src/hub/transport/http/owner_local_handlers.odin:203`).
+The queued exclusive executor handler verifies paired root/directory, signed
+scope/command and durable owner binding before prepare/query/stop. It signs and
+seals exact receipts. No network assertion is converted into
+`Current_Owner_Fence`: fresh activate/heartbeat stay closed while their signed
+nonce-bound exchange is unmounted
+(`src/bridge/executor_exchange.odin:47`).
+
+The shared executor directory verifier persists a fully signed newer paired log
+**before** principal admission or content-epoch checks. A rejected command or
+missing new content key therefore cannot allow a later older snapshot to
+resurrect access (`src/bridge/executor_exchange.odin:20`). Issuance uses this
+same verifier. The native test observes a valid epoch-2 log while holding only
+epoch-1 content keys, verifies rejection, and then rejects the older correctly
+signed log against the durable pin.
+
+V1 and V2 ledger migrations to V3 are transactional. Genuine V2 collision
+reconstruction preserves committed issuance response/credentials and active
+reservations with the old incarnation; successful recovery advances the header
+and incarnation exactly once. Existing physical charges and historical rows are
+not rewritten.
+
+### Exact owner-binding verification
+
+Commands ran through managed shell sessions in the assigned task worktree:
+
+```bash
+nix develop --command odin test src/lib/executor_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3-owner-binding-v3-check-20261107-0116
+nix develop --command odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_NAMES=main.test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection,main.test_executor_issuance_resolves_signed_directory_catalog_and_profile,main.test_owner_local_executor_signer_domains_and_missing_identity -out:$HOME/.cache/heimdall-tests/m3-owner-binding-mounted-draft2-20261107-0119
+nix develop --command odin test src/hub/transport/http -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_NAMES=http.executor_issuance_relay_requires_user_account_and_keeps_runtime_offline_opaque,http.executor_resource_relay_requires_exact_registered_owner_bridge -out:$HOME/.cache/heimdall-tests/m3-owner-binding-hub-20261107-0119
+nix develop --command odin test src/contracts -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3-owner-binding-contracts-final-20261107-0121
+nix develop --command odin test src/lib/executor_channel -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3-owner-binding-channel-final-20261107-0121
+node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_executor_contract_test.ts tests/ui_executor_channel_test.ts tests/ui_executor_issuance_test.ts
+npm run typecheck
+nix develop --command odin check src/hub -collection:odin_test=src
+nix build .#ham-bridge .#ham-hub -o $HOME/.cache/heimdall-tests/m3-owner-binding-bins-20261107-0119
+nix develop --command odin build tests/executor_crash_probe -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/m3-owner-binding-crash-probe-20261107-0121
+nix develop --command env HEIMDALL_EXECUTOR_CRASH_PROBE=$HOME/.cache/heimdall-tests/m3-owner-binding-crash-probe-20261107-0121 python3 tests/test_executor_process_crash.py
+python3 scripts/check-owner-aggregate-parity.py
+git diff HEAD --check
+```
+
+| Check | Outcome / managed session |
+|---|---|
+| Executor, including V1/V2 migration and immutable owner/configuration gates | **24 PASS**, `sh_cc6f98b652a1be3c901dc6a7365943f7` |
+| Bridge mounted issuance + distinct enrolled owner ingress, resolver and signer | **3 PASS**, `sh_8e2cdfbf26a2663a5f3bfe3ea25d1a1b` |
+| Hub issuance/resource relay authorization | **2 PASS**, `sh_0d288a9547bf4ade2ebe5e7167fa5820` |
+| Native shared contracts | **32 PASS**, `sh_4315051ca4770a011ec7eccd8efcea16` |
+| Native channel core | **3 PASS**, `sh_a8ddf0e01b102415785cac611ebf80b5` |
+| TS contracts/channel/client | **10 PASS**, `sh_9dc84babbb7c0cd2eb3e8f29670bbca8` |
+| Typecheck | PASS, `sh_e227f0b971db642f1c3bb75089463c80` |
+| Hub compilation | PASS, `sh_e77da6bdbb61ebcbdd7241025a5b0328` |
+| Hub and Bridge package builds | PASS, `sh_0dd5274924c8ddf5a55dcc086646abd9` |
+| Rebuilt V3 independent SIGKILL supervisor, four boundaries | **1 test PASS**, `sh_015578ef26fcca371d6b1aaf33369ccb` |
+| Existing aggregate gate | PASS, 240 fields/23 structs/74 owner methods, `sh_c253473aecc9a07edeaa6868c2439653` |
+
+The expanded Bridge test exercises real P256 owner and executor keys enrolled
+under the disposable paired root, signed genesis, actual filesystem/profile/
+catalog lookup and production handler calls: prepare, duplicate historical
+receipt, exact query, prepared stop, and rejected activation with **zero launch
+intents**. These calls use `conn=nil`; the Hub checks are authenticated handler
+regressions. This is **not** a real enrolled multi-Bridge network, provider
+execution, macOS or Windows pass.
+
+Draft corrections were confined to multiline Odin syntax, a missing test import,
+and an overbroad test expectation replacement that accidentally changed a
+distinct-identity count from two to three. All reported final checks pass.
+No unrelated cleanup, live restart, deployment or push occurred.
+
+### Continuation constraints for owner outbound outbox wiring
+
+1. Preserve this commit series and the task worktree; no candidate-history merges.
+2. Mount a dedicated owner executor worker. Snapshot/claim under the owner mutex,
+   release before network I/O, then reacquire and recheck exact claim, paired
+   directory, original request and current fence before committing outcomes.
+   The existing registry publisher runs while `bridge_owner_mutex` is held
+   (`src/bridge/owner_local_leases.odin:101`, `src/bridge/owner_local.odin:49`).
+   Reusing it for a synchronous activation/fence callback would deadlock.
+   Do not wait for that callback from an exclusive Bridge dispatch job either.
+3. Preserve completion persistence retry behavior and saved original prepare/
+   action/reservation identities. Do not regenerate unknown-outcome operations.
+   Preparations have a 30-second TTL; the existing 30-second maintenance cadence
+   cannot be relied upon for timely first dispatch.
+4. Mount the signed one-use owner fence challenge/reply before admitting fresh
+   activate/heartbeat or auto-committing owner grants. The verified fence must
+   be consumed and rechecked with local invalidations before physical I/O.
+5. Add exact committed-grant failure disposition: a released receipt alone never
+   proves a child did not run and never authorizes refunds or failure-charge
+   suppression. Provision operator policy/mappings through an actual operator
+   path and demonstrate real enrolled network recovery, not only these handlers.
+6. Complete manual/warm/global admission, unknown-child reconciliation, physical
+   deadline renewal, encrypted notification/results and actual provider/platform
+   gates before final independent and explicit user acceptance.
+
+M3 remains **unfinished**. No task submission or acceptance is claimed.
+
+### Exact owner-binding checkpoint modified paths
+
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/docs/executor-dispatch-checkpoint.md`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/bridge/executor_exchange.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/bridge/executor_issuance.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/bridge/executor_issuance_test.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/bridge/hub_command_dispatch.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/bridge/hub_runtime_client.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/contracts/executor.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/contracts/fixtures/executor-v1.json`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/hub/app/wiring.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/hub/transport/http/owner_local_handlers.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/hub/transport/http/task_chain_search_relay_test.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/executor_local/issuance_test.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/executor_local/migration_003.sql`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/executor_local/owner_binding.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/executor_local/owner_binding_test.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/executor_local/schema.sql`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/executor_local/store.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/ui/api/executor.ts`

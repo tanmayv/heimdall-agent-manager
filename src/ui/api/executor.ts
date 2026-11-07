@@ -11,6 +11,7 @@ export const executorSchemas = {
     ['input_digest','hash'],['fence_digest','hash'],['owner_incarnation','positive'],['executor_incarnation','positive'],
     ['issued_ms','positive'],['request_expires_ms','positive'],
   ],
+  exchange: [['scope','document'],['envelope','required_cipher']],
   issuance_exchange: [['scope','document'],['envelope','required_cipher'],['selection','document']],
   issuance_bundle: [['configuration','document'],['attestation','document'],['issuance_receipt','document']],
   directory: [

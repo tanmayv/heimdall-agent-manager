@@ -23,6 +23,9 @@ executor_transport_fields := [?]Owner_Field{
     {"issued_ms","positive"},{"request_expires_ms","positive"},
 }
 // Issuance consent carries selectors, never caller-chosen runtime credentials.
+executor_exchange_fields := [?]Owner_Field{
+    {"scope","document"},{"envelope","required_cipher"},
+}
 executor_issuance_exchange_fields := [?]Owner_Field{
     {"scope","document"},{"envelope","required_cipher"},{"selection","document"},
 }
@@ -109,6 +112,7 @@ executor_receipt_fields := [?]Owner_Field{
 }
 executor_schema :: proc(kind:string)->[]Owner_Field {
     switch kind {
+    case "exchange":return executor_exchange_fields[:]
     case "issuance_exchange":return executor_issuance_exchange_fields[:]
     case "issuance_bundle":return executor_issuance_bundle_fields[:]
     case "directory":return executor_directory_fields[:]

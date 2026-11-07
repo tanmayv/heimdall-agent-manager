@@ -839,6 +839,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains", rawptr(&graph.taskchain_handlers), http.create_task_chain_handler)
 	http.router_add(&graph.router,"POST","/api/v1/owner-local/relay",rawptr(&graph.bridge_handlers),http.owner_local_relay_handler)
 	http.router_add(&graph.router,"POST","/api/v1/executor/issuance",rawptr(&graph.bridge_handlers),http.executor_issuance_relay_handler)
+	http.router_add(&graph.router,"POST","/api/v1/executor/relay",rawptr(&graph.bridge_handlers),http.executor_relay_handler)
 	http.router_add(&graph.router,"POST","/api/v1/owner-local/registry",rawptr(&graph.bridge_handlers),http.owner_local_publish_handler)
 	http.router_add(&graph.router,"GET","/api/v1/owner-local/chains",rawptr(&graph.bridge_handlers),http.owner_local_list_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/search/relay", rawptr(&graph.bridge_handlers), http.task_chain_search_relay_handler)

@@ -1,6 +1,6 @@
 
 CREATE TABLE executor_runtime (
- singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=2),
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=3),
  account_id TEXT NOT NULL, executor_bridge_id TEXT NOT NULL, operator_key_id TEXT NOT NULL,
  incarnation INTEGER NOT NULL CHECK(incarnation>0), clock_high_ms INTEGER NOT NULL CHECK(clock_high_ms>=0),
  recovery_state TEXT NOT NULL CHECK(recovery_state IN ('ready','reconciling','clock_uncertain')),
@@ -91,3 +91,9 @@ CREATE TRIGGER enrollment_pin_monotonic BEFORE UPDATE ON executor_enrollment_pin
 WHEN NEW.singleton IS NOT OLD.singleton OR NEW.version<OLD.version OR (NEW.version=OLD.version AND NEW.head_hash IS NOT OLD.head_hash)
 BEGIN SELECT RAISE(ABORT,'enrollment pin cannot regress'); END;
 CREATE TRIGGER enrollment_pin_no_delete BEFORE DELETE ON executor_enrollment_pin BEGIN SELECT RAISE(ABORT,'retained enrollment pin'); END;
+CREATE TABLE executor_chain_owners (
+ chain_id TEXT PRIMARY KEY, owner_bridge_id TEXT NOT NULL, owner_key_id TEXT NOT NULL,
+ genesis_digest TEXT NOT NULL, genesis_json TEXT NOT NULL CHECK(json_valid(genesis_json))
+);
+CREATE TRIGGER chain_owner_no_update BEFORE UPDATE ON executor_chain_owners BEGIN SELECT RAISE(ABORT,'immutable chain owner'); END;
+CREATE TRIGGER chain_owner_no_delete BEFORE DELETE ON executor_chain_owners BEGIN SELECT RAISE(ABORT,'retained chain owner'); END;

@@ -6,7 +6,6 @@ import "core:crypto"
 import "core:encoding/json"
 import "core:time"
 import channel "odin_test:lib/executor_channel"
-import owner "odin_test:lib/owner_local"
 import vault "odin_test:lib/vault"
 import ws "odin_test:lib/ws"
 import "core:fmt"
@@ -117,12 +116,13 @@ bridge_executor_issuance_handle :: proc(conn:^ws.Connection,text:string) {
     sync.mutex_lock(&bridge_executor_mutex);defer sync.mutex_unlock(&bridge_executor_mutex)
     if !bridge_executor_open(account,key_id) {reply.code="storage_error";return}
     s:=&bridge_executor_store
-    seq,head,pinned:=executor.enrollment_pin(s)
-    if !pinned {reply.code="storage_error";return}
-    device,self,version,hash,trusted:=owner.verify_directory(bridge_owner_json(wire.directory),account,bridge_config.daemon_id,public,
-        get(consent,"principal_id"),get(consent,"key_id"),floor.root,seq,head,&kr)
+    dir,trusted:=bridge_executor_directory(s,wire.directory,&kr)
     if !trusted do return
-    if !executor.observe_enrollment(s,version,hash) {reply.code="storage_error";return}
+    approved,device_ok:=dir.trusted[get(consent,"principal_id")]
+    enrolled,self_ok:=dir.trusted[key_id]
+    if !device_ok || approved.kind!="browser" || !self_ok || enrolled.kind!="bridge" || enrolled.sign_public_key!=public do return
+    device:=contracts.Owner_Verified_Key{account,approved.id,approved.id,approved.sign_public_key,"device",true,false}
+    self:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,key_id,public,"bridge",true,false}
     verified,authenticated:=channel.open_signed(get(exchange,"envelope"),&kr,scope,device,now,context.temp_allocator)
     if !authenticated do return
     defer crypto.zero_explicit(raw_data(verified),len(verified))

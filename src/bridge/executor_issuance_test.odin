@@ -6,6 +6,7 @@ import "core:crypto/ecdsa"
 import "core:os"
 import "core:fmt"
 import "core:testing"
+import "core:strings"
 import "core:sync"
 import "core:time"
 import "core:encoding/json"
@@ -156,6 +157,87 @@ test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection :: pr
     same:string
     same,verified=channel.open_issuance(get(response,"envelope"),&kr,reply_scope,consent,selected,device,host,time.to_unix_nanoseconds(time.now())/1000000)
     testing.expect(t,verified && plain==same)
+    // Enroll a distinct owner signing key under the same real paired root.
+    owner_private,owner_key:=bridge_executor_test_key("owner1","pending",2)
+    defer ecdsa.private_key_clear(&owner_private)
+    owner_id,_:=vault.device_id_from_sign_pub(owner_key.public_key,context.temp_allocator)
+    owner_key.key_id=owner_id;owner_key.account_id=TEST_VAULT_USER_ID
+    owner_approval:=vault.Statement{type="approve",user_id=TEST_VAULT_USER_ID,seq="3",prev_hash=directory.head_hash,
+        issuer_device_id=g.subject_device_id,issued_at_ms="4",subject_device_id=owner_id,subject_kind="bridge",
+        subject_sign_pub=owner_key.public_key,subject_sign_alg=vault.SIGN_ALG_ECDSA_P256_SHA256,subject_label_b64="b3duZXI",
+        epoch="1",epoch_commit=g.epoch_commit}
+    owner_text,_:=vault.statement_canonical(&owner_approval,context.temp_allocator)
+    owner_sig,_:=vault.sign_p256(&device_private,transmute([]byte)owner_text)
+    owner_signature,_:=vault.signature_object(&owner_sig,context.temp_allocator)
+    peer_directory:=directory;peer_directory.version=3;peer_directory.head_hash=vault.log_entry_hash(owner_text,context.temp_allocator)
+    peer_directory.log=make([]vault.Directory_Log_Item,3,context.temp_allocator)
+    copy(peer_directory.log,directory.log);peer_directory.log[2]={3,owner_text,owner_signature}
+    peer_directory.devices=make([]vault.Directory_Device_Item,3,context.temp_allocator)
+    copy(peer_directory.devices,directory.devices);peer_directory.devices[2]={owner_id,"bridge",vault.SIGN_ALG_ECDSA_P256_SHA256,"",owner_key.public_key,"",true,false}
+    genesis_owner:=make(json.Object,context.temp_allocator)
+    for pair in ([11][2]string{{"protocol_version","1"},{"account_id",TEST_VAULT_USER_ID},{"chain_id","chain"},{"creation_op","owner_genesis"},
+        {"owner_bridge_id","owner1"},{"owner_key_id",owner_id},{"creator_id",g.subject_device_id},{"creator_key_id",g.subject_device_id},
+        {"schema_version","1"},{"creator_signature",strings.repeat("0",128,context.temp_allocator)},{"owner_signature",strings.repeat("0",128,context.temp_allocator)}}) {
+        genesis_owner[pair[0]]=json.String(pair[1])
+    }
+    canonical_genesis,_:=contracts.owner_canonical("genesis",genesis_owner)
+    creator_signature,_:=vault.sign_p256(&device_private,transmute([]byte)canonical_genesis)
+    owner_genesis_signature,_:=vault.sign_p256(&owner_private,transmute([]byte)canonical_genesis)
+    genesis_owner["creator_signature"]=json.String(vault.hex_encode_lower(creator_signature.sig[:],context.temp_allocator))
+    genesis_owner["owner_signature"]=json.String(vault.hex_encode_lower(owner_genesis_signature.sig[:],context.temp_allocator))
+    request_value,_:=contracts.owner_content_document(plain);issued_bundle,_:=request_value.(json.Object)
+    config,_:=contracts.owner_parse(get(issued_bundle,"configuration"),"remote_configuration")
+    prepared:=bridge_executor_test_doc("prepare")
+    for name in ([14]string{"account_id","owner_bridge_id","executor_bridge_id","chain_id","task_id","instance_id",
+        "launch_epoch","run_count","token_generation","configuration_revision","executor_incarnation","policy_revision","slot_id","provider_profile"}) {prepared[name]=config[name]}
+    prepared["directory_key"]=config["directory_key"];prepared["key_id"]=json.String(owner_id)
+    prepare_now:=time.to_unix_nanoseconds(time.now())/1000000
+    prepared["prepare_until_ms"]=json.String(fmt.tprintf("%d",prepare_now+30000))
+    prepared["request_expires_ms"]=json.String(fmt.tprintf("%d",prepare_now+60000))
+    prepared["hard_ms"]=json.String(fmt.tprintf("%d",prepare_now+600000))
+    peer_wire:=Executor_Exchange_Wire{"executor_exchange","",TEST_VAULT_USER_ID,"",executor.encode(genesis_owner),peer_directory}
+    prepared_receipt,prepare_code:=bridge_executor_test_exchange(t,peer_wire,prepared,"prepare",&owner_private,&kr,host,"mounted_prepare")
+    if !testing.expect_value(t,prepare_code,"ok") do return
+    testing.expect_value(t,get(prepared_receipt,"state"),"prepared")
+    testing.expect_value(t,get(prepared_receipt,"historical"),"0")
+    repeated,repeat_code:=bridge_executor_test_exchange(t,peer_wire,prepared,"prepare",&owner_private,&kr,host,"mounted_prepare_retry")
+    testing.expect_value(t,repeat_code,"ok");testing.expect_value(t,get(repeated,"historical"),"1")
+    prepare_digest,_:=contracts.executor_digest("prepare",prepared)
+    action:=bridge_executor_test_doc("action")
+    for name in ([7]string{"account_id","owner_bridge_id","executor_bridge_id","chain_id","reservation_id","owner_incarnation","executor_incarnation"}) do action[name]=prepared[name]
+    action["prepare_digest"]=json.String(prepare_digest);action["key_id"]=json.String(owner_id)
+    action["method"]=json.String("query");action["operation_id"]=json.String("query_exact")
+    action["request_expires_ms"]=prepared["request_expires_ms"];action["hard_ms"]=prepared["hard_ms"]
+    action["expires_ms"]=json.String(fmt.tprintf("%d",prepare_now+300000))
+    queried,query_code:=bridge_executor_test_exchange(t,peer_wire,action,"action",&owner_private,&kr,host,"mounted_query")
+    testing.expect_value(t,query_code,"ok");testing.expect_value(t,get(queried,"state"),"prepared")
+    action["method"]=json.String("activate");action["operation_id"]=json.String("activate_exact")
+    _,activate_code:=bridge_executor_test_exchange(t,peer_wire,action,"action",&owner_private,&kr,host,"mounted_activate_closed")
+    testing.expect_value(t,activate_code,"owner_fence_not_current")
+    rows,_=executor.query(bridge_executor_store.db,"SELECT count(*) FROM executor_intents")
+    testing.expect_value(t,rows[0][0],"0")
+    action["method"]=json.String("stop");action["operation_id"]=json.String("stop_exact")
+    stopped,stop_code:=bridge_executor_test_exchange(t,peer_wire,action,"action",&owner_private,&kr,host,"mounted_stop")
+    testing.expect_value(t,stop_code,"ok");testing.expect_value(t,get(stopped,"state"),"released")
+
+    // A signed newer directory is a security observation even when its content
+    // key has not arrived. Rejecting the request must still prevent rollback.
+    rotation:=vault.Statement{type="rotate",user_id=TEST_VAULT_USER_ID,seq="4",prev_hash=peer_directory.head_hash,
+        issuer_device_id=g.subject_device_id,issued_at_ms="5",epoch="2",epoch_commit=strings.repeat("c",64,context.temp_allocator)}
+    rotation_text,_:=vault.statement_canonical(&rotation,context.temp_allocator)
+    rotation_signature,_:=vault.sign_p256(&device_private,transmute([]byte)rotation_text)
+    rotation_sig,_:=vault.signature_object(&rotation_signature,context.temp_allocator)
+    rotated:=peer_directory;rotated.version=4;rotated.current_epoch=2
+    rotated.head_hash=vault.log_entry_hash(rotation_text,context.temp_allocator)
+    rotated.log=make([]vault.Directory_Log_Item,4,context.temp_allocator);copy(rotated.log,peer_directory.log)
+    rotated.log[3]={4,rotation_text,rotation_sig}
+    _,rotation_open:=bridge_executor_directory(&bridge_executor_store,rotated,&kr)
+    testing.expect(t,!rotation_open,"missing current content epoch denies admission")
+    pinned_version,_,pin_ok:=executor.enrollment_pin(&bridge_executor_store)
+    testing.expect(t,pin_ok && pinned_version==4,"verified newer directory survives rejected admission")
+    _,rolled_back:=bridge_executor_directory(&bridge_executor_store,peer_directory,&kr)
+    testing.expect(t,!rolled_back,"old correctly signed directory cannot restore revoked authority")
+
     // Current paired-directory verification cannot be replaced by an account
     // encryption key and a caller-supplied approved row.
     wire.command_id="mounted_bad_directory";wire.directory.log[1].signature="{}"
@@ -165,4 +247,38 @@ test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection :: pr
     testing.expect_value(t,get(response,"code"),"invalid_scope")
     rows,_=executor.query(bridge_executor_store.db,"SELECT count(*) FROM executor_issuances")
     testing.expect_value(t,rows[0][0],"1")
+}
+
+// Drives the production executor handler with real inner signatures and channel
+// encryption. It does not stand in for a network/Hub enrollment demonstration.
+bridge_executor_test_exchange :: proc(t:^testing.T,wire:Executor_Exchange_Wire,request:json.Object,kind:string,
+    private:^ecdsa.Private_Key,kr:^vault.Vault_Keyring,self:contracts.Owner_Verified_Key,id:string)->(json.Object,string) {
+    get:=contracts.owner_string
+    now:=time.to_unix_nanoseconds(time.now())/1000000
+    raw:=bridge_executor_test_sign(request,kind,private)
+    digest,_:=contracts.executor_digest(kind,request)
+    scope:=bridge_executor_test_doc("transport_scope")
+    for name in ([7]string{"account_id","owner_bridge_id","executor_bridge_id","chain_id","reservation_id","owner_incarnation","executor_incarnation"}) do scope[name]=request[name]
+    bridge_executor_test_set(scope,"method",kind);bridge_executor_test_set(scope,"request_id",id)
+    bridge_executor_test_set(scope,"input_digest",digest)
+    bridge_executor_test_set(scope,"fence_digest",digest if kind=="prepare" else get(request,"prepare_digest"))
+    bridge_executor_test_set(scope,"issued_ms",fmt.tprintf("%d",now))
+    bridge_executor_test_set(scope,"request_expires_ms",fmt.tprintf("%d",now+60000))
+    encrypted,encrypted_ok:=channel.seal(raw,kr,scope,now);testing.expect(t,encrypted_ok)
+    exchange:=executor.encode(struct{scope,envelope:string}{executor.encode(scope),encrypted})
+    outer,outer_ok:=vault.seal(transmute([]byte)exchange,kr);testing.expect(t,outer_ok)
+    call:=wire;call.command_id=id
+    call.relay=executor.encode(struct{protocol_version,chain_id,bridge_id,request_id,expires_ms,envelope:string}{
+        "1",get(request,"chain_id"),get(request,"executor_bridge_id"),id,fmt.tprintf("%d",now+60000),outer})
+    bridge_executor_exchange_handle(nil,executor.encode(call))
+    cached,found:=bridge_runtime_cached_command(id)
+    if !found do return nil,"test_no_reply"
+    value,_:=contracts.owner_content_document(cached);response,_:=value.(json.Object)
+    code:=get(response,"code")
+    if code!="ok" do return nil,code
+    scope["direction"]=json.String("response")
+    plain,opened:=channel.open_signed(get(response,"envelope"),kr,scope,self,time.to_unix_nanoseconds(time.now())/1000000)
+    if !opened do return nil,"test_bad_reply"
+    receipt,valid:=contracts.executor_parse(plain,"receipt")
+    return receipt,("ok" if valid else "test_bad_receipt")
 }
