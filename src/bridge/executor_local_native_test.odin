@@ -503,12 +503,18 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="",
     testing.expect(t,!bridge_legacy_startup_input_allowed_locked(&bridge_executor_store,startup_changed,socket),"changed run cannot inherit a startup write")
     sync.mutex_unlock(&bridge_legacy_physical_mutex)
     startup_barrier:=executor.Legacy_Barrier{"startup_source","startup_migration",contracts.owner_payload_digest("startup selection"),0}
-    testing.expect_value(t,bridge_legacy_install_barrier(&bridge_executor_store,startup_barrier,[]executor.Legacy_Resource{{"instance",manual_launch.instance}}).code,"ok")
+    canonical_startup_dir,startup_dir_known:=bridge_executor_canonical_directory(material.run_dir)
+    testing.expect(t,startup_dir_known)
+    testing.expect_value(t,bridge_legacy_install_barrier(&bridge_executor_store,startup_barrier,[]executor.Legacy_Resource{{"workdir_hash",contracts.owner_payload_digest(canonical_startup_dir)}}).code,"ok")
     sync.mutex_lock(&bridge_legacy_physical_mutex)
     testing.expect(t,!bridge_legacy_startup_input_allowed_locked(&bridge_executor_store,startup_current,socket),"generation-zero barrier blocks reminder to a surviving child")
     sync.mutex_unlock(&bridge_legacy_physical_mutex)
     sync.mutex_unlock(&bridge_startup_io_mutex)
     sync.mutex_unlock(&bridge_executor_mutex)
+    testing.expect(t,bridge_wake_nudge_live_child(manual_launch.instance,"unfenced_task_claim","worker","unfenced_lease_claim",1,`{"task_id":"must_not_replace_context"}`,&bridge_executor_store),
+        "shared native resource refusal handles wake without replacement fallback")
+    protected_context,protected_context_err:=os.read_entire_file(fmt.tprintf("%s/TASK.md",material.run_dir),context.temp_allocator)
+    testing.expect(t,protected_context_err==nil && string(protected_context)==string(context_after),"pack with no placement cannot hide the current native protected directory")
     for kind in ([4]Bridge_Legacy_Agent_Delivery_Kind{.Message,.Task_Nudge,.Notice,.Resize}) {
         delivered_notice,refused_notice:=bridge_legacy_agent_delivery({kind=kind,instance=manual_launch.instance,text="must not reach child",rows=30,cols=100},&bridge_executor_store,socket)
         testing.expect(t,!delivered_notice && refused_notice,"queued/rollover producer cannot bypass the migration barrier or replace a child")

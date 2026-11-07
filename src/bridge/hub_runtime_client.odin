@@ -2390,7 +2390,7 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string,legacy_j
 			defer delete(deliver)
 			if deliver == "nudge" && bridge_wake_nudge_live_child(instance_id, task_id, role, lease_id, run_count, pack_json,legacy_journal,observation_action=action,observation_entry_index=i64(entry_index),observation_entry_digest=contracts.owner_payload_digest(entry)) {
 				bridge_runtime_set_launch_role(instance_id, role)
-				fmt.println("bridge wake_agent: nudged live instance", instance_id, "to run lease next")
+				fmt.println("bridge wake_agent: handled existing instance", instance_id)
 				continue
 			}
 
@@ -2475,28 +2475,33 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string,legacy_j
 // round). It requires a launch record, no stop intent, and a live child of
 // exactly this generation (`run_count`, confirmed with the PTY host). Then it
 // rewrites <run_dir>/TASK.md from the pack and types one line telling the agent
-// to run `ham-ctl lease next`. Returns false — the caller then launches — when
-// any precondition fails. A failed keystroke delivery still returns true: the
-// child is live, so a launch would no-op; the hub re-sends an unconfirmed
-// wake once and then parks the task (grant_unconfirmed).
+// to run `ham-ctl lease next`. True also means a fenced/uncertain existing
+// child was left untouched: the caller must not fall back to replacement.
+// False permits launch only without a prior record or after confirmed absence.
 bridge_wake_nudge_live_child :: proc(instance_id, task_id, role, lease_id: string, run_count: int, pack_json: string,legacy_journal:^executor.Store=nil,observation_action:executor.Legacy_Action={},observation_entry_index:i64= -1,observation_entry_digest:string="") -> bool {
 	if run_count <= 0 || strings.trim_space(instance_id) == "" do return false
-	launch, has := bridge_runtime_get_launch(instance_id)
-	if !has do return false
+    if _,known:=bridge_runtime_get_launch(instance_id);!known do return false
     sync.mutex_lock(&bridge_executor_mutex);defer sync.mutex_unlock(&bridge_executor_mutex)
     journal:=legacy_journal
     if journal==nil do journal=bridge_legacy_global_store()
     sync.mutex_lock(&bridge_startup_io_mutex);defer sync.mutex_unlock(&bridge_startup_io_mutex)
     sync.mutex_lock(&bridge_legacy_physical_mutex);defer sync.mutex_unlock(&bridge_legacy_physical_mutex)
-    if !bridge_legacy_targets_allowed(journal,[]executor.Legacy_Resource{{"instance",instance_id},{"task",task_id}}) do return false
+	launch, has := bridge_runtime_get_launch(instance_id)
+	if !has do return true // Record changed while acquiring lifecycle gates.
+    if !bridge_legacy_targets_allowed(journal,[]executor.Legacy_Resource{{"instance",instance_id},{"task",task_id}}) do return true
 	sync.mutex_lock(&bridge_runtime_mutex)
 	stopped := bridge_runtime_stop_intent_active_locked(instance_id, bridge_runtime_now_ms())
 	sync.mutex_unlock(&bridge_runtime_mutex)
-	if stopped do return false
+	if stopped do return true
 	socket, daemon_ok := bridge_pty_host_ensure_daemon()
-	if !daemon_ok do return false
-	confirmed, _ := bridge_startup_confirm_spawned_io_locked(socket, instance_id, run_count)
-	if !confirmed do return false
+	if !daemon_ok do return true
+	confirmed, queried := bridge_startup_confirm_spawned_io_locked(socket, instance_id, run_count)
+	if !confirmed do return !queried // Only independently observed absence permits launch fallback.
+    current,exists:=bridge_runtime_instance_snapshot(instance_id)
+    if !exists || !bridge_legacy_startup_input_allowed_locked(journal,current,socket) {
+        fmt.eprintln("bridge wake_agent: native child resources fenced or uncertain",instance_id)
+        return true
+    }
     if !bridge_legacy_observe_nudge_locked(journal,observation_action,instance_id,run_count,observation_entry_index,observation_entry_digest,socket) {
         fmt.eprintln("bridge wake_agent: exact native nudge observation unavailable")
         return true // Confirmed live child stays untouched; no replacement launch.
