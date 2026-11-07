@@ -1,0 +1,305 @@
+{
+  "task": "task_18e5ac3dd21cf93e",
+  "attempt": 2,
+  "requirements_revision": 3,
+  "prior_rejected_head": "4cfa224fa862f05927672c757e935246c28c9969",
+  "activation_commit": "deff1cfe",
+  "hashes": {
+    "src/bridge/executor_activation.odin": "bdb7f402e467d350b101598321ddf2728fcaec87b00327b084c9ac14c78b2fd4",
+    "src/bridge/executor_bootstrap.odin": "7be8ab32795245ee36b4f8588761d592081e8bfe48f90b48845fb11ff8ffcdb5",
+    "src/bridge/executor_exchange.odin": "c0f1f550690131a47820c0aedffbe2a339139144ed22165d49589e592263789c",
+    "src/bridge/executor_issuance_test.odin": "2a515c14b5b96c15b98ac24ccca92f1572007d31a688bf04019f3a545229c5bc",
+    "src/bridge/owner_executor_native_test.odin": "f620194ab8a6f3b61242c93205e4b248e0da1c4d4d4863635dcf30e2fe77ab83",
+    "src/bridge/owner_executor_stop_test.odin": "fbce2847908bf2f2f0603199b2a149c91fefb5a21f5c60211dd09c6d46a8df4a",
+    "src/bridge/owner_local_controls.odin": "80f9017860c56f478306867a3c9944a19a22fbc19e55abf5900b47419c185a03",
+    "src/bridge/owner_local_controls_test.odin": "bdc16526dfc1a78bafb6a8c6158f4d86717f29371859143a957144d37c47a9b6",
+    "src/bridge/owner_local_executor.odin": "2c9b99dbea4ee07de02f86e0282b681b3889fff71d992345b1ad1b6b70c5d76a",
+    "src/contracts/executor.odin": "36f9c12fb8bacde660a47bd295bdbfd222fc129d986e57c2fd0163501fc6ad26",
+    "src/lib/executor_channel/channel.odin": "1243a6d179e80f3d0badb9209147dac0938dccc7bd9813695f6f0ca43693f787",
+    "src/lib/executor_channel/channel_test.odin": "0ae094c235fe74232c2bae1babc11143b40fa2b2ca0b9b6f58acef6fc652c164",
+    "src/lib/executor_local/actions.odin": "8cba8e08ec44dfc17d3723d48d5890949b446a7c1bedb42ec0ecf5844f2c79e6",
+    "src/lib/owner_local/aggregate_test.odin": "4663003795b0463a6164244bac27e03317df6f26a2593d569768ff66bb3d4731",
+    "src/lib/owner_local/budget_test.odin": "f5e3dbe95c4ffdc0fc8d49ef197cda869bb59c5bfbefd1c308844e83763e34a1",
+    "src/lib/owner_local/chain_metadata_test.odin": "608a0cd87337c8e5a024ee2b46a0c8206a7f75c3ada0ebbfb11870512c97c244",
+    "src/lib/owner_local/context_test.odin": "2b06d9c3ee5405b7d9b2d8ce950bac1cfab3509a38f315c6caeb2f7e6a7a33b2",
+    "src/lib/owner_local/controls.odin": "c81d8bffaee0ba5295077896649f7a7d553657b6c27c413ad6046bac2274fb91",
+    "src/lib/owner_local/controls_test.odin": "b3fe7617c0858840ae474632855fe46e307eacf628ff891dec6c79fa8c9da576",
+    "src/lib/owner_local/deferred_retirements_test.odin": "83f7a8d3af374bd1465a7dc9cf7cf1323f379cfb1fb28fee0c0d1ff598c30747",
+    "src/lib/owner_local/events_test.odin": "8649b4d8817ec19b6c9678e14ff5f84288ea5bc1f62eea8174fe94d539f553e0",
+    "src/lib/owner_local/execution_bootstrap_test.odin": "0c34da256b3c28d26bb1868e35eba272596563bdc01a07b069bd853ad86a206a",
+    "src/lib/owner_local/execution_stop.odin": "d47a15257268d2113e4142501ec7ead4ded1f827249d231f5263181d812433d9",
+    "src/lib/owner_local/execution_stop_test.odin": "996417f326ea616d7f16ebb00f9f09d2f3b6e88b888c81ee125a2136c56d4855",
+    "src/lib/owner_local/execution_test.odin": "910322ef337bd8d73c04c49a6ff6b0bf9996d6afe15ed6676226b7dc4a9bddff",
+    "src/lib/owner_local/fleet_policy_test.odin": "1aa5049b56f14e5029f5eb946ffbf411fdf7b60ed278219a23378697c1e833df",
+    "src/lib/owner_local/foundations_test.odin": "9f08c97d6674d815451a58af7426cdda5e5457d512f60a1533e35f95cfdf8cf8",
+    "src/lib/owner_local/grants_test.odin": "b5470404a558b3d7ee98a3d69532c2d079ad32ec22ed1e719291c57b8f8f0e82",
+    "src/lib/owner_local/linked_test.odin": "284c56f89f4c953fbb07852a0f1f2fa6e2e81e43eb360f014293dca7ec32b2ce",
+    "src/lib/owner_local/migration_028.sql": "65cc7c8ed71d5d0db33b28250e6e863782fc11ec904ed2dd2458b0831dbf219e",
+    "src/lib/owner_local/migrations.odin": "a6d0fa933180137e80fe1412e440dc3913eda1121e1773fca54e306b7a43f372",
+    "src/lib/owner_local/native_history_test.odin": "379eba94a060ddadf9cde863924c71644a9fd927ec65c3cbb1b18541b41d1343",
+    "src/lib/owner_local/native_metadata_test.odin": "90dde5c1eda1d3658803803fbdb7a5203b88ba92068a358ad35c2071be9d5e7b",
+    "src/lib/owner_local/native_origin_test.odin": "1943638a1d2fa1fe5b0c203dddb6d656666594f67293a14a785dccc60624f73a",
+    "src/lib/owner_local/operational_metadata_test.odin": "57745a6af6b8c6bab60dd662143328e68374be33fa2477587ce7e178e0469f58",
+    "src/lib/owner_local/outbox.odin": "9afa5e7ab21c8015526825b9811c0353f4660ba8869e3b0de11a3cf1238e62c6",
+    "src/lib/owner_local/priority_test.odin": "4d2e811660f1ba2d2ad091145f05656edc669ec90fe6b8a2c8aa04674b982edb",
+    "src/lib/owner_local/search_test.odin": "fd5658fd5ad1feec09e79d93aeb780ce8208a6e807beb329df9f464626c82ccb",
+    "src/lib/owner_local/work_upgrade_test.odin": "7f8d809715f862abfe74f5efd5ebe1c766e02e4a77e82168dfcccbeb4c2199ed",
+    "src/lib/owner_local/workflow_language_test.odin": "222e40b6b31b72aa7c4b0ba263f5d5039eef86c0d6bc69c96af7ea182917ba5a",
+    "src/lib/owner_local/workflow_retirements_test.odin": "64683eaddf61831947ac2f729e02110b24c24cd6dd750ad41d39c3f2de94f7af",
+    "src/lib/owner_local/workflows_test.odin": "153a5e2bec5f23192d8896d78d9fe8e5b37bbb227f5e9b9d8fee4d256968060c",
+    "src/ui/api/executor.ts": "478af1e284d8109eb7472a50fb91ef3a9c6f2ef273cadb71cbe9e8b4aa05e1c4",
+    "src/ui/api/executorChannel.ts": "6be084918b46ebc8aade48b61a41dd976fc8afef84774319d9c47a5db2645348",
+    "tests/ui_executor_channel_test.ts": "1b9c37748efe7ce971705d8852ade3f65a203b01aa82ec41b5d331b79daa2adf"
+  },
+  "head": "7d72d11e7b26c6f53c32d1e3eb53af910e15bb82",
+  "scope": "Linux Codex; Mac execution and Claude PTY notifications deferred/disabled; Windows notifications unsupported",
+  "review_reproduction_comment": "cmt_18e5c42088238de6",
+  "native_result": {
+    "notices": 1,
+    "typed_aborts": 1,
+    "message_bytes": 66,
+    "pid": 3304905,
+    "cleanup_verified": true
+  },
+  "logs": [
+    {
+      "label": "final_libraries",
+      "session": "sh_3b490d68c299d986f116b38640fa68dd",
+      "ok": true,
+      "lines": [
+        "7:Finished 269 tests in 2m22.695153893s. All tests were successful.",
+        "14:Finished 56 tests in 8.367763286s. All tests were successful.",
+        "21:Finished 6 tests in 101.245113ms. All tests were successful.",
+        "28:Finished 40 tests in 722.375504ms. All tests were successful.",
+        ""
+      ],
+      "truncated": false,
+      "total_lines": 29
+    },
+    {
+      "label": "final_bridge",
+      "session": "sh_3c90c666773085a25cf85a9c91cb65f6",
+      "ok": true,
+      "lines": [
+        "2028:Finished 1046 tests in 1m1.731869896s. All tests were successful.",
+        ""
+      ],
+      "truncated": false,
+      "total_lines": 2029
+    },
+    {
+      "label": "final_packages",
+      "session": "sh_e1204870b2f2522b33288d3208ebf7a4",
+      "ok": true,
+      "lines": [
+        "trace: evaluation warning: stdenv.isDarwin is deprecated, use stdenv.hostPlatform.isDarwin instead",
+        ""
+      ],
+      "truncated": false,
+      "total_lines": 1
+    },
+    {
+      "label": "ui_and_initial_dependency_failure",
+      "session": "sh_78fd23ae25da86e494c10d2e491d07c8",
+      "ok": true,
+      "lines": [
+        "✔ mounted local approval retains exact authorization through reload/lost reply and verifies fresh enrollment (1720.613855ms)",
+        "ℹ tests 24",
+        "ℹ suites 0",
+        "ℹ pass 24",
+        "ℹ fail 0",
+        "ℹ cancelled 0",
+        "ℹ skipped 0",
+        "ℹ todo 0",
+        "ℹ duration_ms 3232.135877",
+        "",
+        "> heimdall@0.3.3 typecheck",
+        "> tsc -b",
+        "",
+        "src/ui/main.tsx:73:41 - error TS2307: Cannot find module 'posthog-js' or its corresponding type declarations.",
+        "",
+        "73   loadClient: async () => (await import('posthog-js')).default as unknown as AnalyticsClient,",
+        "                                           ~~~~~~~~~~~~",
+        "",
+        "",
+        "Found 1 error.",
+        "",
+        "⠙",
+        ""
+      ],
+      "truncated": true,
+      "total_lines": 45
+    },
+    {
+      "label": "restored_dependencies_and_typecheck",
+      "session": "sh_b6d10dd5a2fe468c33667d7bf5fc2868",
+      "ok": true,
+      "lines": [
+        "⠸⠼⠴⠦⠧⠇⠏⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⠋⠙⠹⠸⠼",
+        "added 691 packages in 8s",
+        "⠼",
+        "> heimdall@0.3.3 typecheck",
+        "> tsc -b",
+        "",
+        "⠙",
+        ""
+      ],
+      "truncated": true,
+      "total_lines": 13
+    },
+    {
+      "label": "actual_codex",
+      "session": "sh_79d0d26107ba8390215cca35652fed86",
+      "ok": true,
+      "lines": [
+        "6:[native-owner] original signed chain/reserve/requirements/preparation/commit/bootstrap PASS",
+        "21:[native-owner] actual extension -> current bootstrap observer -> native daemon binding PASS 3304905",
+        "24:[native-owner] actual signed owner hold -> encrypted executor/nonce -> partial interrupt/paste -> lost-result recovery -> signed receipt/replay PASS bytes 66 submissions 1 typed_aborts 1 callbacks 5",
+        ""
+      ],
+      "truncated": false,
+      "total_lines": 27
+    },
+    {
+      "label": "actual_codex_result",
+      "session": "sh_79d0d26107ba8390215cca35652fed86",
+      "ok": true,
+      "lines": [
+        "26:Finished 1 test in 4.687665691s. The test was successful.",
+        ""
+      ],
+      "truncated": false,
+      "total_lines": 27
+    },
+    {
+      "label": "native_cleanup",
+      "session": "sh_6c03dce5a69d4a3d6116f8359895e022",
+      "ok": true,
+      "lines": [
+        "{\"native_pid\": 3304905, \"pid_absent\": true, \"new_native_sockets_or_locks\": [], \"codex_config_sha256\": \"d111397be1b38940d9b795a64f8b75dc61a659e98895d6aff0a41ba372aba6cf\"}",
+        ""
+      ],
+      "truncated": false,
+      "total_lines": 1
+    },
+    {
+      "label": "focused_bridge",
+      "session": "sh_c23318863e4dd320cec0f0d58e29accc",
+      "ok": true,
+      "lines": [
+        "warning: Git tree '/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e5ac3dd21cf93e' is dirty",
+        "[INFO ] --- [2026-11-07 13:22:09] Starting test runner with 1 thread.",
+        "[INFO ] --- [2026-11-07 13:22:09] The random seed sent to every test is: 1568373340681908. Set with -define:ODIN_TEST_RANDOM_SEED=n.",
+        "[INFO ] --- [2026-11-07 13:22:09] Memory tracking is enabled. Tests will log their memory usage if there's an issue.",
+        "[INFO ] --- [2026-11-07 13:22:09] < Final Mem/ Total Mem> <  Peak Mem> (#Free/Alloc) :: [package.test_name]",
+        "vault: pinned account root dev_c8f193e678e762f9c4b28fc9e11a6e43 (fingerprint c8f1 93e6 78e7 62f9)",
+        "vault: pinned account root dev_c8f193e678e762f9c4b28fc9e11a6e43 (fingerprint c8f1 93e6 78e7 62f9)",
+        "[native-owner] original signed chain/reserve/requirements/preparation/commit/bootstrap PASS",
+        "[remote-stop] signed original owner cancel -> durable query/stop -> executor/owner restart -> disconnected stopping retains charge -> exact released receipt PASS",
+        "",
+        "Finished 3 tests in 5.607295941s. All tests were successful.",
+        "",
+        ""
+      ],
+      "truncated": false,
+      "total_lines": 12
+    },
+    {
+      "label": "focused_stop_owner",
+      "session": "sh_ff021c8b221484f21760f20ce8adacad",
+      "ok": true,
+      "lines": [
+        "warning: Git tree '/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e5ac3dd21cf93e' is dirty",
+        "[INFO ] --- [2026-11-07 13:15:40] Starting test runner with 1 thread.",
+        "[INFO ] --- [2026-11-07 13:15:40] The random seed sent to every test is: 1566971345747952. Set with -define:ODIN_TEST_RANDOM_SEED=n.",
+        "[INFO ] --- [2026-11-07 13:15:40] Memory tracking is enabled. Tests will log their memory usage if there's an issue.",
+        "[INFO ] --- [2026-11-07 13:15:40] < Final Mem/ Total Mem> <  Peak Mem> (#Free/Alloc) :: [package.test_name]",
+        "",
+        "Finished 4 tests in 2.196294121s. All tests were successful.",
+        "",
+        ""
+      ],
+      "truncated": false,
+      "total_lines": 8
+    },
+    {
+      "label": "focused_renew_race",
+      "session": "sh_fc4c532b937641925fc1ab92ccc2e394",
+      "ok": true,
+      "lines": [
+        "warning: Git tree '/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e5ac3dd21cf93e' is dirty",
+        "[INFO ] --- [2026-11-07 13:11:06] Starting test runner with 1 thread.",
+        "[INFO ] --- [2026-11-07 13:11:06] The random seed sent to every test is: 1565987525990784. Set with -define:ODIN_TEST_RANDOM_SEED=n.",
+        "[INFO ] --- [2026-11-07 13:11:06] Memory tracking is enabled. Tests will log their memory usage if there's an issue.",
+        "[INFO ] --- [2026-11-07 13:11:06] < Final Mem/ Total Mem> <  Peak Mem> (#Free/Alloc) :: [package.test_name]",
+        "",
+        "Finished 1 test in 454.68903ms. The test was successful.",
+        "",
+        ""
+      ],
+      "truncated": false,
+      "total_lines": 8
+    },
+    {
+      "label": "channel_native_and_ts",
+      "session": "sh_e6ce08b7bfbecea31b78200a0fb3fff8",
+      "ok": true,
+      "lines": [
+        "warning: Git tree '/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e5ac3dd21cf93e' is dirty",
+        "[INFO ] --- [2026-11-07 13:14:03] Starting test runner with 1 thread.",
+        "[INFO ] --- [2026-11-07 13:14:03] The random seed sent to every test is: 1566623273592528. Set with -define:ODIN_TEST_RANDOM_SEED=n.",
+        "[INFO ] --- [2026-11-07 13:14:03] Memory tracking is enabled. Tests will log their memory usage if there's an issue.",
+        "[INFO ] --- [2026-11-07 13:14:03] < Final Mem/ Total Mem> <  Peak Mem> (#Free/Alloc) :: [package.test_name]",
+        "",
+        "Finished 6 tests in 99.432854ms. All tests were successful.",
+        "",
+        "✔ query discovery refreshes serving incarnation while preserving the original child and ordinary admission (27.997591ms)",
+        "✔ executor channel shares exact AAD/ciphertext and verifies both signed directions (4.79579ms)",
+        "✔ executor channel rejects every routing-field substitution, expired scope and retained old epoch (3.939292ms)",
+        "✔ shared account key cannot replace sender signature or exact original request correlation (4.210907ms)",
+        "✔ encrypted notification and checkpoint nonce bind both signatures and pending AAD (8.235841ms)",
+        "ℹ tests 5",
+        "ℹ suites 0",
+        "ℹ pass 5",
+        "ℹ fail 0",
+        "ℹ cancelled 0",
+        "ℹ skipped 0",
+        "ℹ todo 0",
+        "ℹ duration_ms 292.411271",
+        ""
+      ],
+      "truncated": false,
+      "total_lines": 21
+    },
+    {
+      "label": "migration_fixture_failures",
+      "session": "sh_fe15fd5f94699f4773dcb5b654d6e4f7",
+      "ok": true,
+      "lines": [
+        "6:[ERROR] --- [2026-11-07 13:04:07] [foundations_test.odin:38:additive_migration_preserves_v1_and_rolls_back_partial_ddl()] expected open(&f.store, f.path, \"account\", \"bridge\", \"bridge_key\") to be true",
+        "7:[ERROR] --- [2026-11-07 13:04:07] [foundations_test.odin:42:additive_migration_preserves_v1_and_rolls_back_partial_ddl()] expected ok && len(rows) == 1 to be true",
+        "8:[ERROR] --- [2026-11-07 13:04:07] [foundations_test.odin:48:additive_migration_preserves_v1_and_rolls_back_partial_ddl()] legacy receipt age is conservatively anchored to request expiry",
+        "9:[ERROR] --- [2026-11-07 13:04:08] [foundations_test.odin:50:additive_migration_preserves_v1_and_rolls_back_partial_ddl()] repeat migration is a no-op",
+        "10:[ERROR] --- [2026-11-07 13:04:08] [foundations_test.odin:53:additive_migration_preserves_v1_and_rolls_back_partial_ddl()] expected exec(legacy, \"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=99\") to be true",
+        "11:[ERROR] --- [2026-11-07 13:04:08] [foundations_test.odin:55:additive_migration_preserves_v1_and_rolls_back_partial_ddl()] unknown future schema fails closed",
+        "12:[ERROR] --- [2026-11-07 13:04:09] [foundations_test.odin:78:additive_migration_preserves_v1_and_rolls_back_partial_ddl()] repair then retry succeeds",
+        "13:[ERROR] --- [2026-11-07 13:06:00] [foundations_test.odin:429:v2_runtime_identity_upgrade_is_atomic_and_preserves_clocks_and_intents()] expected open(&f.store, f.path, \"account\", \"bridge\", \"bridge_key\") to be true",
+        "14:[ERROR] --- [2026-11-07 13:06:00] [foundations_test.odin:432:v2_runtime_identity_upgrade_is_atomic_and_preserves_clocks_and_intents()] expected ok && len(rows) == 1 to be true",
+        ""
+      ],
+      "truncated": false,
+      "total_lines": 24
+    },
+    {
+      "label": "old_nil_store_fixture_failure",
+      "session": "sh_2647e2c4ac1960ec639073bd3ee9e40c",
+      "ok": true,
+      "lines": [
+        "1094:[ERROR] --- [2026-11-07 13:19:46] [owner_local_controls_test.odin:33:test_owner_local_control_notice_rejects_new_child_and_retries_unverified_child()] expected success && result == \"obsolete_child\" to be true",
+        ""
+      ],
+      "truncated": false,
+      "total_lines": 2039
+    }
+  ]
+}

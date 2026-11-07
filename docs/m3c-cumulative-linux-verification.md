@@ -1,5 +1,11 @@
 # M3c cumulative Linux runtime verification
 
+**Historical attempt-1 report:** named review rejected `4cfa224f` for remote
+activation resource revalidation and remote-stop routing gaps. Passing suites
+below did not cover those interleavings. The repairs, intended-behavior tests,
+current exact-head checks and actual Codex rerun are documented in
+`docs/m3c-remote-runtime-repair.md`. Independent re-review remains required.
+
 Current Linux Codex scope is ready for independent cumulative review under revision 3 of `task_18e5ac3dd21cf93e`. This work verifies the retained runtime and dependency deltas, adds two missing fault/race checks, and maps the original requirements to actual source and evidence. It does not grant its own review approval. Real Mac execution and Claude PTY notifications are explicitly deferred and remain disabled/unsupported; Windows notifications remain unsupported. Future Claude support retains exact bytes without normalization or another transport.
 
 ## Provenance and change

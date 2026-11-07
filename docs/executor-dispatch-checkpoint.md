@@ -1,5 +1,17 @@
 # M3 continuation: executor dispatch checkpoint
 
+**Latest repair checkpoint (2026-11-07):** named review rejected attempt1 for
+two confirmed remote runtime gaps. Implementation `7d72d11e` now pins/rechecks
+the actual prepared resources across the owner callback and routes retirement
+through durable signed query/ordinary-stop phases to the exact executor.
+V28 retains immutable operation bytes and distinguishes stopping from released
+absence. Owner269/executor56/channel6/contracts40/UI24/typecheck, final required
+daemon Bridge1046 and Bridge/CLI/PTY builds pass. A fresh actual Linux Codex owner
+proof passes with one exact notice/typed abort and signed result replay.
+See `docs/m3c-remote-runtime-repair.md` for exact source, commands, failed drafts,
+cleanup and evidence limits. Named cumulative re-review is still required;
+M4 remains separate and Mac/Claude deferrals remain disabled/unsupported.
+
 **Current cumulative review checkpoint (2026-11-07):** M3c revision 3 verifies
 the retained Linux Codex runtime and dependency deltas. Current store56,
 owner265, contracts40, UI23, required-daemon Bridge1045 and four-boundary real
