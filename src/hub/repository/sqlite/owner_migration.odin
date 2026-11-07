@@ -59,14 +59,14 @@ legacy_migration_select :: proc(ctx:rawptr,s:domain.Legacy_Migration_Selection) 
 
 legacy_source_get :: proc(ctx:rawptr,account,chain:string) -> (domain.Legacy_Source_Fence,bool,domain.Domain_Error) {
     impl:=(^Taskchain_Repo_SQLite)(ctx)
-    rows,ok:=legacy_metadata(impl.conn,`SELECT m.migration_id,m.owner_bridge_id,m.owner_key_id,m.selection_digest,m.state,m.quiescence_digest,m.revision,g.generation
+    rows,ok:=legacy_metadata(impl.conn,`SELECT m.migration_id,m.owner_bridge_id,m.owner_key_id,m.selection_digest,m.state,m.quiescence_digest,m.revision,g.generation,m.manifest_digest,m.receipt_digest
       FROM owner_legacy_migrations m JOIN owner_legacy_source_generations g ON g.chain_id=m.chain_id AND g.account_id=m.account_id
-      WHERE m.account_id=? AND m.chain_id=?`,8,account,chain)
+      WHERE m.account_id=? AND m.chain_id=?`,10,account,chain)
     if !ok do return {},false,legacy_storage_error()
     if len(rows)==0 do return {},false,{}
     r:=rows[0]
     revision,_:=strconv.parse_i64(r[6]);generation,_:=strconv.parse_i64(r[7])
-    return domain.Legacy_Source_Fence{selection={account_id=account,chain_id=chain,migration_id=r[0],owner_bridge_id=r[1],owner_key_id=r[2],selection_digest=r[3]},state=r[4],quiescence_digest=r[5],revision=revision,generation=generation},true,{}
+    return domain.Legacy_Source_Fence{selection={account_id=account,chain_id=chain,migration_id=r[0],owner_bridge_id=r[1],owner_key_id=r[2],selection_digest=r[3]},state=r[4],quiescence_digest=r[5],revision=revision,generation=generation,manifest_digest=r[8],receipt_digest=r[9]},true,{}
 }
 
 legacy_effect_prepare :: proc(ctx:rawptr,e:domain.Legacy_Source_Effect) -> (i64,domain.Domain_Error) {
@@ -126,8 +126,9 @@ legacy_source_freeze :: proc(ctx:rawptr,account,chain,migration,selection_digest
     f,found,ferr:=legacy_source_get(ctx,account,chain)
     if ferr.code!=.None do return ferr
     if !found || f.selection.migration_id!=migration || f.selection.selection_digest!=selection_digest || f.generation!=generation do return legacy_conflict()
-    if f.state=="frozen" {
-        if f.revision!=revision+1 || f.quiescence_digest!=quiescence_digest do return legacy_conflict()
+    if f.state=="frozen" || f.state=="imported" {
+        // Exact replay of this freeze; a later cutover advances one more revision.
+        if f.revision!=revision+(1 if f.state=="frozen" else 2) || f.quiescence_digest!=quiescence_digest do return legacy_conflict()
         return {}
     }
     if f.state!="draining" || f.revision!=revision do return legacy_conflict()

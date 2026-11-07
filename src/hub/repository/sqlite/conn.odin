@@ -55,6 +55,9 @@ foreign sqlite3_lib {
 	sqlite3_column_text :: proc(pStmt: sqlite3_stmt, iCol: c.int) -> cstring ---
 	sqlite3_column_double :: proc(pStmt: sqlite3_stmt, iCol: c.int) -> c.double ---
 	sqlite3_column_bytes :: proc(pStmt: sqlite3_stmt, iCol: c.int) -> c.int ---
+	sqlite3_column_type :: proc(pStmt: sqlite3_stmt, iCol: c.int) -> c.int ---
+	sqlite3_column_count :: proc(pStmt: sqlite3_stmt) -> c.int ---
+	sqlite3_column_name :: proc(pStmt: sqlite3_stmt, iCol: c.int) -> cstring ---
 	// Never call sqlite3_changes directly: it is per-CONNECTION, not per-statement.
 	// Use step_changes, which pairs it with its own step under the connection mutex.
 	sqlite3_changes :: proc(db: sqlite3) -> c.int ---

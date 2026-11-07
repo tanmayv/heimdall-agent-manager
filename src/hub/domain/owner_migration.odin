@@ -14,4 +14,14 @@ Legacy_Source_Fence :: struct {
     selection:Legacy_Migration_Selection,
     state,quiescence_digest:string,
     revision,generation:i64,
+    manifest_digest,receipt_digest:string,
+}
+
+// R3 one-shot import. A blocker refuses selection before any write; codes are
+// stable for the UI and ham-ctl.
+Legacy_Migration_Blocker :: struct { code:string, count:i64 }
+// Verbatim export of one frozen chain. manifest_digest is the import identity.
+Legacy_Migration_Export :: struct {
+    manifest,manifest_digest:string,
+    documents:[]string,
 }

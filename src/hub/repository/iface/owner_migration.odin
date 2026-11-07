@@ -10,3 +10,12 @@ Legacy_Effect_Prepare :: proc(ctx:rawptr, effect:domain.Legacy_Source_Effect) ->
 // Freeze requires separately authenticated generation-bound physical drain
 // evidence. It is not a query for an empty lease table.
 Legacy_Source_Freeze :: proc(ctx:rawptr, account,chain,migration,selection_digest,quiescence_digest:string, revision,generation:i64) -> domain.Domain_Error
+// R3 one-shot import. Freeze checks blockers, selects and freezes in ONE
+// transaction; blockers return without any write.
+Legacy_Migration_Freeze_Now :: proc(ctx:rawptr, selection:domain.Legacy_Migration_Selection) -> (domain.Legacy_Source_Fence,[]domain.Legacy_Migration_Blocker,domain.Domain_Error)
+Legacy_Migration_Blockers :: proc(ctx:rawptr, chain:string) -> ([]domain.Legacy_Migration_Blocker,domain.Domain_Error)
+Legacy_Migration_Export_Proc :: proc(ctx:rawptr, account,chain,migration:string) -> (domain.Legacy_Migration_Export,domain.Domain_Error)
+// Registers owner routing and marks the migration imported atomically. Callers
+// verify the owner's signed import receipt first.
+Legacy_Migration_Cutover :: proc(ctx:rawptr, account,chain,migration,manifest_digest,receipt_digest:string, route:domain.Owner_Registry_Record) -> (bool,domain.Domain_Error)
+Legacy_Migration_Get :: proc(ctx:rawptr, account,migration:string) -> (domain.Legacy_Source_Fence,bool,domain.Domain_Error)
