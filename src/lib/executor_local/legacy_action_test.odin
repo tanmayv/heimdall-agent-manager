@@ -41,19 +41,22 @@ executor_legacy_unscoped_start_is_serialized_with_barrier_and_replay :: proc(t:^
         }
         sync.barrier_wait(&start)
         for worker in workers {thread.join(worker);thread.destroy(worker)}
-        testing.expect_value(t,jobs[0].code,"ok")
+        testing.expect(t,jobs[0].code=="ok" || jobs[0].code=="native_handlers_running")
         testing.expect(t,jobs[1].code=="ok" || jobs[1].code=="legacy_fenced")
         rows,read:=query(f.store.db,"SELECT state FROM executor_legacy_actions")
         testing.expect(t,read && len(rows)==1)
         if jobs[1].code=="ok" {
+            testing.expect_value(t,jobs[0].code,"native_handlers_running")
             testing.expect(t,rows[0][0]=="running","earlier invocation remains explicit unresolved work, never drain")
             replay:=legacy_action_transition(&f.store,action,"prepared","running",reject_barriers=true)
             testing.expect(t,replay.code=="ok" && replay.replay,"historical replay creates no new invocation")
             testing.expect_value(t,legacy_action_transition(&f.store,action,"running","returned").code,"ok")
         } else {
+            testing.expect_value(t,jobs[0].code,"ok")
             testing.expect(t,rows[0][0]=="prepared","barrier wins without a runnable handler")
             testing.expect_value(t,legacy_action_transition(&f.store,action,"prepared","discarded").code,"ok")
         }
+        testing.expect_value(t,legacy_barrier_install(&f.store,legacy_test_barrier()).code,"ok")
         late,late_received:=legacy_action_receive(&f.store,input)
         testing.expect_value(t,late_received.code,"ok")
         testing.expect_value(t,legacy_action_transition(&f.store,late,"received","prepared").code,"ok")

@@ -806,8 +806,20 @@ bridge_command_dispatch_worker :: proc(data: rawptr) {
 			time.sleep(5 * time.Millisecond)
 			continue
 		}
-		ran := false
-		if bridge_legacy_dispatch_job_stale(job) {
+        bridge_command_dispatch_execute(worker,&job)
+		// Handlers allocate freely from the per-thread temp arena. Workers live for
+		// the whole process, so without a per-job reset every command's temp
+		// allocations (and every block grown for a large payload) are retained forever.
+		free_all(context.temp_allocator)
+	}
+}
+
+// Execute exactly the owned job already transferred by dispatch_take. The
+// injected journal supports isolated native runtime proofs; production resolves
+// the same managed Store at admission/end, never a Hub-supplied journal.
+bridge_command_dispatch_execute :: proc(worker:^Bridge_Dispatch_Worker,job:^Bridge_Dispatch_Job,injected:^executor.Store=nil) {
+        ran := false
+		if bridge_legacy_dispatch_job_stale(job^) {
 			// Completion is generation-scoped; the outbox will suppress this
 			// old reply. The retained native occurrence still gets discarded.
 		} else if time.to_unix_nanoseconds(time.now()) >= job.deadline_ns {
@@ -819,7 +831,7 @@ bridge_command_dispatch_worker :: proc(data: rawptr) {
                 _ = bridge_command_worker_capture_send(&worker.sink_conn, result)
                 delete(result)
             }
-		} else if bridge_legacy_dispatch_start(&job) {
+		} else if bridge_legacy_dispatch_start(job,injected) {
 			ran = true
 			sync.mutex_lock(&bridge_dispatch_mu)
 			worker.current_legacy_action = job.legacy_action
@@ -841,13 +853,8 @@ bridge_command_dispatch_worker :: proc(data: rawptr) {
 			delete(result)
             }
 		}
-		if !bridge_legacy_dispatch_end(job.legacy_action,ran) do fmt.eprintln("bridge: action handler boundary remains unresolved")
-		bridge_command_dispatch_finish(worker, &job)
-		// Handlers allocate freely from the per-thread temp arena. Workers live for
-		// the whole process, so without a per-job reset every command's temp
-		// allocations (and every block grown for a large payload) are retained forever.
-		free_all(context.temp_allocator)
-	}
+        if !bridge_legacy_dispatch_end(job.legacy_action,ran,injected) do fmt.eprintln("bridge: action handler boundary remains unresolved")
+        bridge_command_dispatch_finish(worker,job)
 }
 
 // Worker-safe command handlers use this to propagate the dispatch budget into

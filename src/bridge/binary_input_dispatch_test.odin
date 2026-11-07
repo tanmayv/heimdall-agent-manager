@@ -87,6 +87,9 @@ bridge_binary_input_retains_native_bytes_off_reader_and_refuses_barrier :: proc(
     testing.expect(t,bridge_legacy_dispatch_end(job.legacy_action,false,store))
     owned_bytes:=bridge_dispatch_owned_bytes
     testing.expect(t,owned_bytes>0)
+    bridge_dispatch_owned_bytes=BRIDGE_DISPATCH_OWNED_BYTES_LIMIT
+    testing.expect(t,!bridge_command_dispatch_binary_input(nil,original,7),"native input shares bounded backpressure without creating command results")
+    bridge_dispatch_owned_bytes=owned_bytes
     bridge_command_dispatch_finish(worker,&job)
     testing.expect(t,bridge_dispatch_owned_bytes==0 && bridge_dispatch_queued_cost==0)
     testing.expect(t,len(bridge_dispatch_outputs)==0,"ack-less binary input creates no command results")
@@ -125,10 +128,12 @@ bridge_raw_input_rechecks_barrier_after_dispatch_start :: proc(t:^testing.T) {
     job:=Bridge_Dispatch_Job{text=packet,command_type="shell_pty_input",legacy_action=action}
     testing.expect(t,bridge_legacy_dispatch_start(&job,store))
     barrier:=executor.Legacy_Barrier{"source","migration",contracts.owner_payload_digest("selection"),0}
+    testing.expect(t,bridge_legacy_install_barrier(store,barrier,[]executor.Legacy_Resource{{"instance","other"}}).code=="native_handlers_running",
+        "barrier install cannot acknowledge while a physical handler remains active")
+    testing.expect(t,bridge_legacy_dispatch_end(action,true,store))
     testing.expect_value(t,bridge_legacy_install_barrier(store,barrier,[]executor.Legacy_Resource{{"instance","other"}}).code,"ok")
     delivered,refused:=bridge_legacy_shell_input("shell","original input",store,"/nonexistent/must-not-write")
-    testing.expect(t,!delivered && refused,"a prior running observation cannot bypass the physical barrier")
+    testing.expect(t,!delivered && refused,"raw input rechecks the installed physical barrier")
     delivered,refused=bridge_legacy_shell_delivery({kind=.Resize,target="shell",rows=40,cols=120},store,"/nonexistent/must-not-write")
-    testing.expect(t,!delivered && refused,"shell resize also rechecks the physical barrier")
-    testing.expect(t,bridge_legacy_dispatch_end(action,true,store))
+    testing.expect(t,!delivered && refused,"shell resize rechecks the installed physical barrier")
 }

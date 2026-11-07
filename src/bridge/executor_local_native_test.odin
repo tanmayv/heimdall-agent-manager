@@ -487,6 +487,23 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="",
     same_pid,same_known=bridge_pty_host_executor_query(socket,manual_launch.instance,manual_launch.launch_key)
     testing.expect(t,same_known && same_pid==manual_pid,"refused nudge never falls through to replacing the child")
     testing.expect(t,executor.exec(bridge_executor_store.db,"DROP TRIGGER fail_nudge_observation"))
+    binary_fixture:=bridge_test_dispatch_save()
+    defer bridge_test_dispatch_restore(binary_fixture)
+    binary_counter:=test_pty_input_next_counter()
+    binary_salt:[vault.PTY_V2_SALT_BYTES]byte
+    crypto.rand_bytes(binary_salt[:])
+    binary_cipher,binary_sealed:=test_pty_input_payload_with("",TEST_VAULT_KEY_HEX,1,manual_launch.instance,binary_salt,binary_counter,bridge_unseal_boot_id())
+    testing.expect(t,binary_sealed)
+    binary_frame:=contracts.pty_wire_encode_session_frame(contracts.PTY_WIRE_KIND_INPUT,contracts.PTY_WIRE_FLAG_ENCRYPTED,manual_launch.instance,binary_cipher,context.temp_allocator)
+    binary_action,binary_fenced:=bridge_test_binary_execute(t,&bridge_executor_store,binary_frame)
+    testing.expect(t,binary_action.id>0 && !binary_fenced)
+    sync.mutex_lock(&bridge_pty_input_replay_mu)
+    replay_after_binary,binary_seen:=bridge_pty_input_replay[manual_launch.instance]
+    sync.mutex_unlock(&bridge_pty_input_replay_mu)
+    binary_counter_seen:=false
+    for entry in replay_after_binary.entries do if entry.used && entry.salt==binary_salt && entry.last==binary_counter do binary_counter_seen=true
+    testing.expect(t,binary_seen && binary_counter_seen,"actual native worker opens the unchanged encrypted binary frame")
+    testing.expect(t,len(bridge_dispatch_outputs)==0,"successful native binary input has no synthetic command result")
     // Startup reminders are a separate physical producer. Match the exact
     // retained native material/run/child and refuse a current migration fence.
     sync.mutex_lock(&bridge_executor_mutex)
@@ -521,6 +538,18 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="",
     }
     same_pid,same_known=bridge_pty_host_executor_query(socket,manual_launch.instance,manual_launch.launch_key)
     testing.expect(t,same_known && same_pid==manual_pid,"refused alternate inputs keep the exact surviving child")
+    later_counter:=test_pty_input_next_counter()
+    later_cipher,later_sealed:=test_pty_input_payload_with("",TEST_VAULT_KEY_HEX,1,manual_launch.instance,binary_salt,later_counter,bridge_unseal_boot_id())
+    testing.expect(t,later_sealed)
+    later_frame:=contracts.pty_wire_encode_session_frame(contracts.PTY_WIRE_KIND_INPUT,contracts.PTY_WIRE_FLAG_ENCRYPTED,manual_launch.instance,later_cipher,context.temp_allocator)
+    later_action,later_fenced:=bridge_test_binary_execute(t,&bridge_executor_store,later_frame)
+    testing.expect(t,later_action.id>0 && later_fenced,"installed migration barrier refuses native binary input before decryption or PTY I/O")
+    sync.mutex_lock(&bridge_pty_input_replay_mu)
+    replay_after_refusal:=bridge_pty_input_replay[manual_launch.instance]
+    sync.mutex_unlock(&bridge_pty_input_replay_mu)
+    testing.expect(t,replay_after_refusal==replay_after_binary,"refused worker does not consume the later encrypted input counter")
+    binary_rows,binary_read:=executor.query(bridge_executor_store.db,"SELECT command_id,chain_claim,state FROM executor_legacy_actions WHERE command_kind=? ORDER BY action_id",BRIDGE_DISPATCH_BINARY_INPUT_KIND)
+    testing.expect(t,binary_read && len(binary_rows)==2 && binary_rows[0][0]=="" && binary_rows[0][1]=="" && binary_rows[0][2]=="returned" && binary_rows[1][2]=="discarded")
     command["method"]=json.String("cancel");command["operation_id"]=json.String("manual_cancel")
     final_cancel:=bridge_executor_test_sign(command,"local_draft",&device_private)
     if revoked_cancel {

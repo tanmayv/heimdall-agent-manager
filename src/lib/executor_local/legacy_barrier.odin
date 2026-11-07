@@ -72,6 +72,13 @@ legacy_barrier_install :: proc(s:^Store,b:Legacy_Barrier,resources:[]Legacy_Reso
             return fail("stale_observation")
         }
     }
+    // A native handler admitted before this transaction must return before
+    // installation can acknowledge that the physical gate has fenced it.
+    // Pending jobs remain observed and will be refused at fresh admission.
+    // Children/legacy metadata still need their separate exhaustive drain.
+    active_handlers,handlers_read:=query(s.db,"SELECT 1 FROM executor_legacy_actions WHERE state='running' LIMIT 1")
+    if !handlers_read do return fail("storage_error")
+    if len(active_handlers)>0 do return fail("native_handlers_running")
     count,counted:=query(s.db,"SELECT count(*) FROM executor_legacy_barriers")
     if !counted || len(count)!=1 do return fail("storage_error")
     if number(count[0][0])>=MAX_RECORDS do return fail("quota_exceeded")
