@@ -1,9 +1,11 @@
-# Native interrupt profile / session trust audit — `9e6b89af`
+# Native interrupt profile / session trust audit — `9e6b89af` (+ delta to `7f13c94e`)
 
 Independent interim audit for M3b `task_18e5ac3dc3e13d1e` (audit task
 `task_18e5b73835a29c2e`, 2026-11-07). **Not an acceptance.** Scope is the exact
-commit `9e6b89af35783b76ff908406972db54ecdd3964b`, inspected in a detached
-worktree. The engineer's uncommitted work was not read or moved.
+commit `9e6b89af35783b76ff908406972db54ecdd3964b`, plus the requirements
+revision 2 replacement pin `7f13c94e580693fe6f3482fa3a4c3b699494a56b`
+(see "Delta 9e6b89af..7f13c94e" below). Each was inspected in its own
+detached worktree. The engineer's uncommitted work was not read or moved.
 
 Files audited (from `git show --stat 9e6b89af`): `tools/pty_host/src/native_notification.rs`,
 `daemon.rs`, `delivery.rs`, `dproto.rs`, `host.rs`; `src/bridge/executor_child.odin`,
@@ -181,6 +183,35 @@ duplicated, but it loses a delivery.
 - **The real Codex row shape matches the parser.** I checked the engineer's
   rollout: it has `ordinal`, `session_meta.payload.{id,cwd,cli_version,timestamp}`,
   and `event_msg.payload.{type,turn_id,reason}`.
+
+## Delta 9e6b89af..7f13c94e (REQ-PROFILE-A3)
+
+`git diff --stat 9e6b89af 7f13c94e` has one commit and three files:
+`docs/executor-dispatch-checkpoint.md`, `src/bridge/pty_host_client_test.odin`,
+and `tools/pty_host/src/native_notification.rs`.
+
+- **No production native code changed.** The only `.rs` change is in
+  `tests::root()`: it now returns `fs::canonicalize(p)` after `mkdir`, which
+  fixes the Darwin `/var` → `/private/var` mismatch against production's
+  canonicalizing containment. The production `bind`, `begin` and `poll` code
+  is byte-identical, so every finding above still applies.
+- **The Odin Spawn codec goldens are correct.** The encoder always emits the
+  trailing optional notification-profile byte (`0` when absent). The full and
+  minimal goldens now add that byte. The new present-profile test asserts that
+  the frame grows by exactly `4+len`: absent is 1 byte; present is
+  1 + u32 length + bytes. The prefix bytes are unchanged and the string is the
+  last field. The Rust decoder still accepts a legacy frame without the byte
+  (`off < rest.len()`; dproto test). Not rerun here; the engineer reports the
+  full Bridge suite at 1043 pass in `sh_afb369b8…`.
+- **F5 is not fixed by the delta.** Canonicalizing does not make the
+  directory unique. At `7f13c94e`:
+  `cargo test --lib -- native_notification --test-threads=1` → 4 pass;
+  default parallel, 5 runs → FAILED 2/4, 2/4, 2/4, 2/4, 1/4.
+  `notification_session` dproto → 1 pass. The engineer's "20+2 pass"
+  (`sh_460363b8…`) used `--test-threads=1`.
+- The docs delta reports a Mac 9e6b89af run of 17 pass / 3 fail and asks for
+  a Mac rerun at the new pin. That is consistent with the source and not
+  re-verified here.
 
 ## Recommendation
 
