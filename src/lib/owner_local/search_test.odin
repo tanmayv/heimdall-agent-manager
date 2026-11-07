@@ -137,7 +137,7 @@ search_v4_upgrade_collision_is_atomic_and_preserves_live_history :: proc(t:^test
     testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,len(search_hits(search_for(f,"private"))),1)
     rows,ok=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
-    testing.expect(t,ok && rows[0][0]=="29" && rows[0][1]=="29")
+    testing.expect(t,ok && rows[0][0]=="30" && rows[0][1]=="30")
 }
 
 history_submit :: proc(t:^testing.T,f:^Fixture,lease,revision,summary:string) {

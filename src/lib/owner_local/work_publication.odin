@@ -13,10 +13,12 @@ work_time :: proc(now:i64)->string {
     return fmt.tprintf("%04d-%02d-%02dT%02d:%02d:%02dZ",y,int(m),d,h,n,s)
 }
 work_chain_active :: proc(s:^Store,chain:string)->bool {
+    if migration_quarantined(s,chain) do return false
     rows,ok:=query(s.db,"SELECT status FROM local_work_chains WHERE chain_id=?",chain)
     return ok && len(rows)==1 && rows[0][0]=="active"
 }
 work_task_published :: proc(s:^Store,chain,task:string)->bool {
+    if migration_quarantined(s,chain) do return false
     rows,ok:=query(s.db,"SELECT 1 FROM local_work_chains w WHERE chain_id=? AND status='active' AND publish_state='published' AND COALESCE((SELECT publish_state FROM local_task_publications p WHERE p.chain_id=w.chain_id AND p.task_id=? ORDER BY accepted_seq DESC LIMIT 1),'published')='published'",chain,task)
     return ok && len(rows)==1
 }

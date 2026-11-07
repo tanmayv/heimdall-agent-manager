@@ -244,6 +244,9 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         case "description_cipher": description=plain }
     }
     if task!="" && method!="task.comment" && method!="native.history.import" && !workflow_task_current(s,chain,task) do return fail("stale_revision")
+    // An imported chain is quarantined until the Hub cutover is observed:
+    // no mutation of any kind, including grants, before activation.
+    if !creating && migration_quarantined(s,chain) do return fail("operation_conflict")
     if !creating && !strings.has_prefix(method,"grant.") && !work_chain_active(s,chain) do return fail("operation_conflict")
     seq:=number(state[0][0])+1
     next:=revision+1
@@ -312,7 +315,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         wrote=true
     case "chain.create":
         _,wrote=query(s.db,"INSERT INTO task_chains VALUES(?,?,?,?,?,1)",chain,principal,key.key_id,title,description)
-        if wrote { _,wrote=query(s.db,"INSERT INTO chain_genesis VALUES(?,?,?,?)",chain,op,field(p,"genesis_digest"),genesis_raw) }
+        if wrote { _,wrote=query(s.db,"INSERT INTO chain_genesis(chain_id,creation_op,genesis_digest,genesis_json) VALUES(?,?,?,?)",chain,op,field(p,"genesis_digest"),genesis_raw) }
         if wrote { _,wrote=query(s.db,"INSERT INTO local_grants VALUES(?,?,?,1,?,1,1,0)",chain,principal,key.key_id,fmt.tprintf("%d",now+GRANT_MAX_TTL_MS)) }
     case "grant.set", "grant.revoke", "grant.policy", "grant.recover":
         code:=grant_write(s,c,p,command_raw,payload,key,grant_proof,now,seq)

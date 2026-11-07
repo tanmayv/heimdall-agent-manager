@@ -2,7 +2,8 @@ package owner_local
 
 import "core:encoding/json"
 
-SCHEMA_VERSION :: 29
+SCHEMA_VERSION :: 30
+MIGRATION_030 :: #load("migration_030.sql")
 MIGRATION_029 :: #load("migration_029.sql")
 MIGRATION_028 :: #load("migration_028.sql")
 MIGRATION_027 :: #load("migration_027.sql")
@@ -173,6 +174,14 @@ migrate :: proc(db:DB) -> bool {
         if !migration_029_release_budget_controls(db) do return false
         if !exec(db,string(MIGRATION_029)) do return false
         if !exec(db,"UPDATE schema_migrations SET version=29 WHERE singleton=1") do return false
+    }
+    if version<=29 {
+        // Re-runnable: the column may survive a test downgrade of the version.
+        columns,read:=query(db,"SELECT 1 FROM pragma_table_info('chain_genesis') WHERE name='import_manifest_hash'")
+        if !read do return false
+        if len(columns)==0 && !exec(db,"ALTER TABLE chain_genesis ADD COLUMN import_manifest_hash TEXT NOT NULL DEFAULT ''") do return false
+        if !exec(db,string(MIGRATION_030)) do return false
+        if !exec(db,"UPDATE schema_migrations SET version=30 WHERE singleton=1") do return false
     }
     if !exec(db,"COMMIT") do return false
     committed=true

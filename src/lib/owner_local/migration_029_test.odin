@@ -36,7 +36,7 @@ migration_029_drops_budget_tables_and_releases_overlay_blocks :: proc(t:^testing
     rows,_:=query(f.store.db,`SELECT schema_version,(SELECT version FROM schema_migrations),
       (SELECT count(*) FROM sqlite_master WHERE name IN('native_budget_baselines','native_budget_overlap','local_budget_evidence','budget_control_owners','native_budget_snapshot_sealed'))
       FROM runtime_database`)
-    testing.expect_value(t,encode(rows),encode([1][3]string{{"29","29","0"}}))
+    testing.expect_value(t,encode(rows),encode([1][3]string{{"30","30","0"}}))
     // The overlay without a saved control is cleared; a saved control is restored.
     controls,_:=query(f.store.db,"SELECT task_id,mode,resume_state,reason,waiting_on FROM local_controls ORDER BY task_id")
     testing.expect_value(t,encode(controls),encode([1][5]string{{"dest","held","ready","operator hold",""}}))

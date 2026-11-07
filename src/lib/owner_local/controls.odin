@@ -6,12 +6,14 @@ import "core:fmt"
 import contracts "odin_test:contracts"
 
 control_ready :: proc(s:^Store,chain,task:string) -> bool {
+    if migration_quarantined(s,chain) do return false
     rows,ok:=query(s.db,"SELECT mode FROM local_controls WHERE chain_id=? AND task_id=?",chain,task)
     return ok && (len(rows)==0 || rows[0][0]=="ready")
 }
 // Existing holders keep authority under a hold. New dispatch still requires
 // control_ready; blocked/cancelled authority is never admitted by this helper.
 control_active :: proc(s:^Store,chain,task:string) -> bool {
+    if migration_quarantined(s,chain) do return false
     rows,ok:=query(s.db,"SELECT mode FROM local_controls WHERE chain_id=? AND task_id=?",chain,task)
     return ok && (len(rows)==0 || rows[0][0]=="ready" || rows[0][0]=="held")
 }
