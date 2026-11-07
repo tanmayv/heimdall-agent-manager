@@ -22,6 +22,16 @@ The audit at f3cc56d1 is historical. W2 already accepts the full top-level brief
 > preserved. The Hub's taskv2 budget is unchanged. Budget sections below are
 > historical; the budget source and test files they cite were deleted.
 
+## R3 one-shot legacy import
+
+The legacy Hub aggregate also reaches an owner through the one-shot import in
+[plans/bridge-owned-runtime-local-search.md](plans/bridge-owned-runtime-local-search.md)
+section 8. It exports every column of every row (not only the 240 fields below) as
+hash-verified documents archived verbatim in `migration_import_documents`, imports
+attempts/events/facets as native history and projects the live tables. Kinds that
+cannot become live owner-local authority are listed in each manifest's
+`archival_only` notes (`OWNER_MIGRATION_ARCHIVAL_ONLY`).
+
 ## Field inventory
 
 Each durable field declared in the original aggregate domain structs (including mixed-work graph records) is listed once below. Transport-only page items and derived comment previews/search-feed cursors are projections, not additional canonical bodies.
