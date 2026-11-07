@@ -379,3 +379,19 @@ test_live_requirements_ctl_context_flags :: proc(t: ^testing.T) {
     testing.expect(t,strings.contains(history,"Before: prior objective") && !strings.contains(history,"vault:v2:"))
 
 }
+
+// R4a: an owner-chain `lease next` (served by the owner Bridge store, see
+// src/bridge/owner_agent_routing.odin Owner_Agent_Next) keeps the Hub shape the
+// lease verbs read: lease_id/task_id and the per-task worktree as placement.
+@(test)
+test_lease_peek_parse_owner_chain_shape :: proc(t: ^testing.T) {
+	resp := `{"v":1,"id":"ham-ctl-agent","ok":true,"data":{"status":"granted","lease":{"lease_id":"lease_ab","task_id":"task_ab","chain_id":"chain_ab","requirements_revision":"2","acknowledged":"0","placement":{"workdir":"/repo/.heimdall/worktrees/task_ab","directory_path":"/repo","branch":"heimdall/task_ab"}},"task":{"task_id":"task_ab","chain_id":"chain_ab"},"authority":{"kind":"owner","bridge_id":"brg_owner"}}}`
+	lease, ok := ctl_lease_peek_parse(resp)
+	testing.expect(t, ok, "owner lease parsed")
+	testing.expect_value(t, lease.status, "granted")
+	testing.expect_value(t, lease.lease_id, "lease_ab")
+	testing.expect_value(t, lease.task_id, "task_ab")
+	testing.expect_value(t, lease.directory_path, "/repo/.heimdall/worktrees/task_ab")
+	_, none := ctl_lease_peek_parse(`{"v":1,"ok":true,"data":{"status":"none","authority":{"kind":"owner","bridge_id":"brg_owner"}}}`)
+	testing.expect(t, !none, "no owner lease -> not parsed")
+}

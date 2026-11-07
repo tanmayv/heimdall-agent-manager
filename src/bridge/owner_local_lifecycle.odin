@@ -56,20 +56,24 @@ bridge_owner_paths :: proc(c:json.Object,task:string,check_target:=true) -> bool
        strings.has_suffix(worktrees,fmt.tprintf("branch refs/heads/%s",get(c,"target_branch"))) { return false }
     return true
 }
-bridge_owner_config_proof :: proc(s:^owner.Store,c:json.Object,chain,task:string) -> owner.Lifecycle_Proof {
+bridge_owner_config_proof :: proc(s:^owner.Store,c:json.Object,chain,task:string,create_worktree:=false) -> owner.Lifecycle_Proof {
     get:=contracts.owner_string
     rows,ok:=owner.query(s.db,"SELECT instance_id FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task)
     if !ok || len(rows)!=1 do return {}
     author,aok:=bridge_owner_child_locked(rows[0][0],"")
     reviewer,rok:=bridge_owner_child_locked(get(c,"reviewer_instance_id"),"")
     if !aok || !rok do return {}
-    valid:=bridge_owner_paths(c,task)
+    valid:=true
     if get(c,"merge_policy")=="git" {
         launch,found:=bridge_runtime_get_launch(author.instance)
         if !found do return {}
         project:=bridge_fs_canonicalize_existing(launch.project_path);defer delete(project)
-        valid=valid && (project==get(c,"repository") || project==get(c,"worktree"))
+        valid=project==get(c,"repository") || project==get(c,"worktree")
+        // Only for the author's own project repository, and only the exact
+        // repo/.heimdall/worktrees/<task> path on heimdall/<task>.
+        if valid && create_worktree && project==get(c,"repository") do _=bridge_owner_ensure_worktree(c,task)
     }
+    valid=valid && bridge_owner_paths(c,task)
     return owner.Lifecycle_Proof{author,reviewer,valid}
 }
 bridge_owner_source_proof :: proc(s:^owner.Store,chain,task:string) -> owner.Source_Proof {

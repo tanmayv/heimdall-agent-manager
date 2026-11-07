@@ -158,7 +158,10 @@ bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
     proof:owner.Lifecycle_Proof
     if contracts.owner_string(command,"method")=="lifecycle.configure" {
         if p,ok:=contracts.owner_parse(payload,"lifecycle_config_payload");ok {
-            proof=bridge_owner_config_proof(&bridge_owner_store,p,contracts.owner_string(command,"chain_id"),contracts.owner_string(command,"task_id"))
+            // R4a: a configure signed by a verified directory device may create
+            // the deterministic task worktree it names (claim parity).
+            signed:=contracts.owner_verify_signature("command",command,"signature",key) && contracts.owner_payload_digest(payload)==contracts.owner_string(command,"payload_digest")
+            proof=bridge_owner_config_proof(&bridge_owner_store,p,contracts.owner_string(command,"chain_id"),contracts.owner_string(command,"task_id"),signed)
         }
     }
     role_children:=make([dynamic]owner.Child,context.temp_allocator)

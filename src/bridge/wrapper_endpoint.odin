@@ -493,6 +493,10 @@ bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec
 		if response, handled := bridge_rollover_intercept_chat_send(request_id, params, rec); handled do return response
 	}
 
+	// R4a: verbs on a chain this Bridge owns are served by the owner store
+	// (owner_agent_routing.odin); everything else goes to the Hub route table.
+	if response, handled := bridge_owner_agent_route(request_id, method, params, rec); handled do return response
+
 	// Agent API v2: everything else resolves through the single route table.
 	route := bridge_agent_route(method, params)
 	if route.kind == .Local {
