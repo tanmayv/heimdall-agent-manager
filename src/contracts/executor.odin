@@ -26,6 +26,11 @@ executor_transport_fields := [?]Owner_Field{
 executor_exchange_fields := [?]Owner_Field{
     {"scope","document"},{"envelope","required_cipher"},
 }
+// The encrypted owner claim context is a selector, not authority. Only a fresh
+// signed nonce reply for this exact claimed action can admit activation.
+executor_activation_exchange_fields := [?]Owner_Field{
+    {"scope","document"},{"envelope","required_cipher"},{"intent_id","hash"},{"claim_attempt","positive"},
+}
 executor_issuance_exchange_fields := [?]Owner_Field{
     {"scope","document"},{"envelope","required_cipher"},{"selection","document"},
 }
@@ -113,6 +118,7 @@ executor_receipt_fields := [?]Owner_Field{
 executor_schema :: proc(kind:string)->[]Owner_Field {
     switch kind {
     case "exchange":return executor_exchange_fields[:]
+    case "activation_exchange":return executor_activation_exchange_fields[:]
     case "issuance_exchange":return executor_issuance_exchange_fields[:]
     case "issuance_bundle":return executor_issuance_bundle_fields[:]
     case "directory":return executor_directory_fields[:]

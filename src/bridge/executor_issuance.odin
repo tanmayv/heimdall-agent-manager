@@ -34,7 +34,7 @@ bridge_executor_open :: proc(account,key:string)->bool {
     return opened
 }
 bridge_executor_sign :: proc(_:rawptr,kind:string,o:json.Object)->(string,bool) {
-    if kind!="enrollment" && kind!="issuance_receipt" && kind!="receipt" do return "",false
+    if kind!="enrollment" && kind!="issuance_receipt" && kind!="receipt" && kind!="fence_request" do return "",false
     return bridge_owner_sign(nil,fmt.tprintf("executor.%s",kind),o)
 }
 bridge_executor_canonical_directory :: proc(path:string)->(string,bool) {

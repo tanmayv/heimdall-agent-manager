@@ -44,7 +44,8 @@ bridge_executor_prepare_resources :: proc(s:^executor.Store,p:json.Object)->exec
     if !resolved.resolved || resolved.directory_key!=resources.directory_key do return {}
     return resources
 }
-bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string) {
+bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string,activation:bool=false,callback_ctx:rawptr=nil,
+    fence_exchange:Executor_Fence_Exchange=bridge_executor_fence_exchange) {
     context.allocator=context.temp_allocator
     generation:=bridge_task_chain_search_generation()
     wire:Executor_Exchange_Wire
@@ -68,7 +69,7 @@ bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string) {
     plain,opened:=bridge_open_current_epoch_token(get(relay,"envelope"),&kr,context.temp_allocator)
     if !opened do return
     defer crypto.zero_explicit(raw_data(plain),len(plain))
-    exchange,parsed:=contracts.executor_parse(plain,"exchange")
+    exchange,parsed:=contracts.executor_parse(plain,"activation_exchange" if activation else "exchange")
     scope,scoped:=contracts.executor_parse(get(exchange,"scope"),"transport_scope")
     genesis,g_ok:=contracts.owner_parse(wire.genesis,"genesis")
     method:=get(scope,"method")
@@ -97,6 +98,7 @@ bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string) {
     defer crypto.zero_explicit(raw_data(request_raw),len(request_raw))
     p,p_ok:=contracts.executor_parse(request_raw,method)
     if !p_ok do return
+    if activation && (method!="action" || get(p,"method")!="activate") do return
     now=time.to_unix_nanoseconds(time.now())/1000000
     binding:=executor.bind_owner(s,wire.genesis,creator_key,owner_key,now)
     if binding.code!="ok" {reply.code=binding.code;return}
@@ -109,10 +111,29 @@ bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string) {
         resources:=bridge_executor_prepare_resources(s,p)
         result=executor.prepare(s,request_raw,owner_key,time.to_unix_nanoseconds(time.now())/1000000,resources)
     } else {
-        // No network assertion is converted into a Current_Owner_Fence.
-        // Receipt replay/query/stop are safe; fresh activate/heartbeat remain
-        // closed until the signed nonce-bound owner exchange is mounted.
+        // Replay/query/stop need no network callback. A fresh activate through
+        // the separate General_IO command must consume a live owner nonce.
         result=executor.action(s,request_raw,owner_key,time.to_unix_nanoseconds(time.now())/1000000)
+        if activation && result.code=="owner_fence_not_current" {
+            self:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,self_id,public,"bridge",true,false}
+            pending,ready:=executor.fence_challenge(s,request_raw,get(exchange,"intent_id"),contracts.executor_number(exchange,"claim_attempt"),
+                owner_key,self,time.to_unix_nanoseconds(time.now())/1000000,{nil,bridge_executor_sign})
+            if !ready {reply.code="owner_fence_not_current";return}
+            defer executor.fence_challenge_destroy(&pending)
+            // No executor/owner mutex or SQLite UoW spans the callback.
+            sync.mutex_unlock(&bridge_executor_mutex)
+            callback:=fence_exchange(callback_ctx,pending.request,generation)
+            sync.mutex_lock(&bridge_executor_mutex)
+            if bridge_task_chain_search_generation()!=generation {reply.code="vault_locked";return}
+            verified,verified_ok:=bridge_executor_directory(s,callback.directory,&kr)
+            latest_self,self_current:=verified.trusted[self_id]
+            latest_owner,owner_current:=verified.trusted[owner_key.key_id]
+            if !verified_ok || !self_current || latest_self.kind!="bridge" || latest_self.sign_public_key!=public ||
+               !owner_current || latest_owner.kind!="bridge" || latest_owner.sign_public_key!=owner_key.public_key ||
+               !executor.owner_bound(s,p,method,owner_key) {return}
+            current:=bridge_executor_fence_accept(s,&pending,callback,owner_key,self,&kr,time.to_unix_nanoseconds(time.now())/1000000)
+            result=executor.action(s,request_raw,owner_key,time.to_unix_nanoseconds(time.now())/1000000,current)
+        }
     }
     reply.code=result.code
     if result.code!="ok" do return

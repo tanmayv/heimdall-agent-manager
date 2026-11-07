@@ -62,6 +62,8 @@ test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection :: pr
     callback_spec,callback_known:=bridge_command_spec("owner_executor_fence")
     testing.expect(t,callback_known && callback_spec.queued && callback_spec.class==.Interactive && callback_spec.key_kind==.None && callback_spec.retry_safe,
         "nonce callback must not wait behind an executor's Exclusive job or Bridge ordering key")
+    activate_spec,activate_known:=bridge_command_spec("executor_activation")
+    testing.expect(t,activate_known && activate_spec.queued && activate_spec.class==.General_IO && activate_spec.key_kind==.None && activate_spec.retry_safe)
 
     st:=p1c_test_setup(t);defer p1c_test_teardown(st)
     sync.mutex_lock(&keystore_test_mutex);defer sync.mutex_unlock(&keystore_test_mutex)
@@ -224,6 +226,42 @@ test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection :: pr
     stopped,stop_code:=bridge_executor_test_exchange(t,peer_wire,action,"action",&owner_private,&kr,host,"mounted_stop")
     testing.expect_value(t,stop_code,"ok");testing.expect_value(t,get(stopped,"state"),"released")
 
+    // Exercise the production activation ingress with a signed encrypted owner
+    // callback. The injected transport is not an enrolled network proof.
+    for mode in 0..<3 {
+        prepared["reservation_id"]=json.String(fmt.tprintf("activation_reservation_%d",mode))
+        prepared["operation_id"]=json.String(fmt.tprintf("activation_prepare_%d",mode))
+        _,code:=bridge_executor_test_exchange(t,peer_wire,prepared,"prepare",&owner_private,&kr,host,fmt.tprintf("activation_prepare_call_%d",mode))
+        if !testing.expect_value(t,code,"ok") do return
+        prepare_digest,_=contracts.executor_digest("prepare",prepared)
+        action["reservation_id"]=prepared["reservation_id"];action["prepare_digest"]=json.String(prepare_digest)
+        action["method"]=json.String("activate");action["operation_id"]=json.String(fmt.tprintf("activate_nonce_%d",mode))
+        probe:=Executor_Fence_Test_Probe{private=&owner_private,kr=&kr,directory=peer_directory,action=action,owner_key=owner_key,cancel=mode==0,restart=mode==2}
+        accepted,activation_code:=bridge_executor_test_exchange(t,peer_wire,action,"action",&owner_private,&kr,host,
+            fmt.tprintf("activation_nonce_call_%d",mode),&probe)
+        testing.expect(t,probe.calls==1 && probe.unlocked,"nonce callback releases the executor mutex")
+        if mode==0 {
+            testing.expect_value(t,activation_code,"operation_conflict")
+            rows,_=executor.query(bridge_executor_store.db,"SELECT count(*) FROM executor_intents WHERE kind='launch'")
+            testing.expect(t,rows[0][0]=="0","cancel during callback cannot create a launch")
+        } else if mode==1 {
+            testing.expect_value(t,activation_code,"ok");testing.expect_value(t,get(accepted,"state"),"active")
+            replay,replay_code:=bridge_executor_test_exchange(t,peer_wire,action,"action",&owner_private,&kr,host,"activation_nonce_retry",&probe)
+            testing.expect_value(t,replay_code,"ok");testing.expect_value(t,get(replay,"historical"),"1")
+            testing.expect_value(t,probe.calls,1)
+            rows,_=executor.query(bridge_executor_store.db,"SELECT count(*) FROM executor_intents WHERE kind='launch'")
+            testing.expect_value(t,rows[0][0],"1")
+            // Trusted test-daemon absence drains the charge before the next
+            // reservation. No physical provider/absence claim is inferred.
+            testing.expect(t,executor.observe_child(&bridge_executor_store,get(prepared,"reservation_id"),
+                {get(prepared,"instance_id"),get(accepted,"launch_key"),bridge_executor_store.incarnation,false}))
+        } else {
+            testing.expect_value(t,activation_code,"stale_incarnation")
+            rows,_=executor.query(bridge_executor_store.db,"SELECT count(*) FROM executor_intents WHERE kind='launch' AND state!='settled'")
+            testing.expect_value(t,rows[0][0],"0")
+        }
+    }
+
     // The outbound worker revalidates paired-directory evidence against the
     // immutable accepted assignment before it can interpret an executor reply.
     response_owner:owner.Store
@@ -283,7 +321,7 @@ test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection :: pr
 // Drives the production executor handler with real inner signatures and channel
 // encryption. It does not stand in for a network/Hub enrollment demonstration.
 bridge_executor_test_exchange :: proc(t:^testing.T,wire:Executor_Exchange_Wire,request:json.Object,kind:string,
-    private:^ecdsa.Private_Key,kr:^vault.Vault_Keyring,self:contracts.Owner_Verified_Key,id:string)->(json.Object,string) {
+    private:^ecdsa.Private_Key,kr:^vault.Vault_Keyring,self:contracts.Owner_Verified_Key,id:string,probe:^Executor_Fence_Test_Probe=nil)->(json.Object,string) {
     get:=contracts.owner_string
     now:=time.to_unix_nanoseconds(time.now())/1000000
     raw:=bridge_executor_test_sign(request,kind,private)
@@ -297,11 +335,14 @@ bridge_executor_test_exchange :: proc(t:^testing.T,wire:Executor_Exchange_Wire,r
     bridge_executor_test_set(scope,"request_expires_ms",fmt.tprintf("%d",now+60000))
     encrypted,encrypted_ok:=channel.seal(raw,kr,scope,now);testing.expect(t,encrypted_ok)
     exchange:=executor.encode(struct{scope,envelope:string}{executor.encode(scope),encrypted})
+    if probe!=nil do exchange=executor.encode(struct{scope,envelope,intent_id,claim_attempt:string}{executor.encode(scope),encrypted,strings.repeat("a",64,context.temp_allocator),"1"})
     outer,outer_ok:=vault.seal(transmute([]byte)exchange,kr);testing.expect(t,outer_ok)
     call:=wire;call.command_id=id
     call.relay=executor.encode(struct{protocol_version,chain_id,bridge_id,request_id,expires_ms,envelope:string}{
         "1",get(request,"chain_id"),get(request,"executor_bridge_id"),id,fmt.tprintf("%d",now+60000),outer})
-    bridge_executor_exchange_handle(nil,executor.encode(call))
+    if probe==nil {bridge_executor_exchange_handle(nil,executor.encode(call))} else {
+        bridge_executor_exchange_handle(nil,executor.encode(call),true,probe,bridge_executor_test_fence_callback)
+    }
     cached,found:=bridge_runtime_cached_command(id)
     if !found do return nil,"test_no_reply"
     value,_:=contracts.owner_content_document(cached);response,_:=value.(json.Object)
@@ -312,4 +353,54 @@ bridge_executor_test_exchange :: proc(t:^testing.T,wire:Executor_Exchange_Wire,r
     if !opened do return nil,"test_bad_reply"
     receipt,valid:=contracts.executor_parse(plain,"receipt")
     return receipt,("ok" if valid else "test_bad_receipt")
+}
+
+Executor_Fence_Test_Probe :: struct {
+    private:^ecdsa.Private_Key,
+    kr:^vault.Vault_Keyring,
+    directory:vault.Directory_Verification_Input,
+    action:json.Object,
+    owner_key:contracts.Owner_Verified_Key,
+    cancel,restart,unlocked:bool,
+    calls:int,
+}
+bridge_executor_test_fence_callback :: proc(ctx:rawptr,raw:string,generation:i64)->Executor_Fence_Outcome {
+    p:=(^Executor_Fence_Test_Probe)(ctx);p.calls+=1
+    q,valid:=contracts.executor_parse(raw,"fence_request")
+    if !valid do return {}
+    get:=contracts.owner_string
+    now:=time.to_unix_nanoseconds(time.now())/1000000
+    p.unlocked=sync.mutex_try_lock(&bridge_executor_mutex)
+    if p.unlocked {
+        if p.cancel {
+            stop:=make(json.Object,context.temp_allocator)
+            for name,value in p.action do stop[name]=value
+            stop["method"]=json.String("stop");stop["operation_id"]=json.String("cancel_in_callback")
+            result:=executor.action(&bridge_executor_store,bridge_executor_test_sign(stop,"action",p.private),p.owner_key,now)
+            if result.code!="ok" do panic("callback cancellation failed")
+        }
+        if p.restart {
+            account:=strings.clone(bridge_executor_store.account,context.temp_allocator)
+            operator:=strings.clone(bridge_executor_store.operator_key,context.temp_allocator)
+            executor.close(&bridge_executor_store)
+            if !bridge_executor_open(account,operator) do panic("callback restart failed")
+        }
+        sync.mutex_unlock(&bridge_executor_mutex)
+    }
+    reply:=bridge_executor_test_doc("fence_reply")
+    for name in ([7]string{"account_id","owner_bridge_id","executor_bridge_id","chain_id","reservation_id","owner_incarnation","executor_incarnation"}) do reply[name]=q[name]
+    digest,_:=contracts.executor_digest("fence_request",q)
+    reply["request_digest"]=json.String(digest);reply["action_digest"]=q["action_digest"];reply["challenge"]=q["challenge"]
+    reply["prepare_digest"]=p.action["prepare_digest"];reply["owner_commit_seq"]=p.action["owner_commit_seq"]
+    reply["checked_ms"]=json.String(fmt.tprintf("%d",now));reply["request_expires_ms"]=q["request_expires_ms"]
+    reply["key_id"]=json.String(p.owner_key.key_id)
+    reply_raw:=bridge_executor_test_sign(reply,"fence_reply",p.private)
+    scope:=bridge_executor_test_doc("transport_scope")
+    for name in ([7]string{"account_id","owner_bridge_id","executor_bridge_id","chain_id","reservation_id","owner_incarnation","executor_incarnation"}) do scope[name]=q[name]
+    scope["method"]=json.String("fence_request");scope["direction"]=json.String("response")
+    scope["input_digest"]=json.String(digest);scope["fence_digest"]=q["action_digest"]
+    scope["issued_ms"]=q["issued_ms"];scope["request_expires_ms"]=q["request_expires_ms"]
+    token,sealed:=channel.seal(reply_raw,p.kr,scope,now,context.temp_allocator)
+    if !sealed do return {}
+    return {executor.encode(scope),token,p.directory}
 }

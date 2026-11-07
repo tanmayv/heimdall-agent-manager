@@ -236,6 +236,12 @@ executor_fence_relay_handler :: proc(ctx:rawptr,req:Request)->Response {
 // Only the immutable registered owner Bridge may request remote resources.
 // This reads signed routing metadata, never task eligibility/grant state.
 executor_relay_handler :: proc(ctx:rawptr,req:Request)->Response {
+    return executor_relay(ctx,req,false)
+}
+executor_activation_relay_handler :: proc(ctx:rawptr,req:Request)->Response {
+    return executor_relay(ctx,req,true)
+}
+executor_relay :: proc(ctx:rawptr,req:Request,activation:bool)->Response {
     context.allocator=context.temp_allocator
     h:=(^Bridge_Handlers)(ctx)
     auth,ok,resp:=require_auth_or_bridge_token(h.auth,req)
@@ -257,7 +263,7 @@ executor_relay_handler :: proc(ctx:rawptr,req:Request)->Response {
     directory,available:=owner_directory(h,auth.user_id)
     if !available do return respond_error(domain.domain_error(.Forbidden,"current directory unavailable"),req.request_id)
     id:=fmt.tprintf("cmd_executor_%d",time.to_unix_nanoseconds(time.now()))
-    command:=Executor_Relay_Command{"executor_exchange",id,auth.user_id,req.body,rows[0].genesis_json,directory}
+    command:=Executor_Relay_Command{"executor_activation" if activation else "executor_exchange",id,auth.user_id,req.body,rows[0].genesis_json,directory}
     reply,received,rerr:=bridge_runtime.send_runtime_command_wait(h.bridge_runtime_registry,project_service.Runtime_Command{bridge_id=target,command_id=id,body_json=owner_json(command)},10000)
     if !received do return respond_error(rerr,req.request_id)
     defer delete(reply,runtime.default_allocator())

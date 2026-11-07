@@ -150,7 +150,7 @@ bridge_owner_executor_exchange :: proc(_:rawptr,c:owner.Intent_Claim,snapshot:st
     scope["issued_ms"]=json.String(fmt.tprintf("%d",now));scope["request_expires_ms"]=json.String(fmt.tprintf("%d",expires))
     token,sealed:=channel.seal(c.payload,&kr,scope,now,context.temp_allocator)
     if !sealed do return bridge_owner_json(outcome),now
-    exchange:=bridge_owner_json(struct{scope,envelope:string}{bridge_owner_json(scope),token})
+    exchange:=bridge_owner_json(struct{scope,envelope,intent_id,claim_attempt:string}{bridge_owner_json(scope),token,c.id,fmt.tprintf("%d",c.attempt)})
     outer,wrapped:=vault.seal(transmute([]byte)exchange,&kr,context.temp_allocator)
     if !wrapped do return bridge_owner_json(outcome),now
     relay:=struct{protocol_version,chain_id,bridge_id,request_id,expires_ms,envelope:string}{
@@ -158,7 +158,7 @@ bridge_owner_executor_exchange :: proc(_:rawptr,c:owner.Intent_Claim,snapshot:st
     credential:=bridge_credential_snapshot();defer delete(credential)
     headers:=[?]httpc.Header{httpc.bearer(credential)}
     if pin.generation!=bridge_task_chain_search_generation() || sync.atomic_load(&bridge_hub_traffic_stopped) {outcome.code="vault_locked";return bridge_owner_json(outcome),now}
-    response,err:=bridge_http_request_retry({method=.POST,url=bridge_hub_url(),path={"api","v1","executor","relay"},headers=headers[:],body=httpc.json_body(relay),timeout_ms=10000},deadline_ns=expires*1000000)
+    response,err:=bridge_http_request_retry({method=.POST,url=bridge_hub_url(),path={"api","v1","executor","activate"},headers=headers[:],body=httpc.json_body(relay),timeout_ms=10000},deadline_ns=expires*1000000)
     defer httpc.response_destroy(&response)
     completed:=time.to_unix_nanoseconds(time.now())/1000000
     // Save our exact pending scope, never a scope supplied by the relay.

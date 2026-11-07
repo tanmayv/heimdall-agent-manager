@@ -1057,8 +1057,8 @@ executor/owner signatures and channel encryption, consumes the executor nonce
 once, rejects account-key forgery and invalidated claims, and verifies unchanged
 owner state. The Bridge test verifies callback dispatcher independence and
 paired-directory rollback denial; it does not exercise a real network callback.
-Full owner regression session `sh_93d4c91819ac4abbd9fd57e5fe00fec3` was started
-after the focused passes; its result is recorded in the subsequent checkpoint.
+Full owner regression session `sh_93d4c91819ac4abbd9fd57e5fe00fec3` subsequently
+passed **242 tests** in 2m28s, with no reported memory errors.
 
 Draft corrections: multiline Odin `do` syntax and test `expect_value` message
 arguments were corrected before the passing checks. No shared record schema,
@@ -1078,4 +1078,108 @@ Modified paths (all under the Workdir stated above):
 - `src/hub/transport/http/task_chain_search_relay_test.odin`
 - `src/lib/owner_local/execution_channel.odin`
 - `src/lib/owner_local/execution_channel_test.odin`
+- `docs/executor-dispatch-checkpoint.md`
+
+### Attempt 5: mounted outbound nonce activation
+
+Coordinator approved separate bounded General_IO activation routing in
+`msg_18e5a0e1449cf98f`, and authorized a formal M3-2 continuation in
+`msg_18e5a15ce4f83ba9`. This is a concrete checkpoint, not full M3 acceptance.
+
+The strict native/TypeScript `activation_exchange` contract adds encrypted
+claim id/attempt context without changing existing exchange records
+(`src/contracts/executor.odin:28`, `src/ui/api/executor.ts:16`). The owner worker
+sends its original signed action and claimed intent identity to the new
+`/api/v1/executor/activate` route (`src/bridge/owner_local_executor.odin:151`).
+Hub authentication remains immutable-owner-only; it selects the separate
+activation command without acquiring task authority
+(`src/hub/transport/http/owner_local_handlers.odin:246`).
+
+The executor activation command uses General_IO with no Bridge ordering key
+(`src/bridge/hub_command_dispatch.odin:286`). Ordinary receipt replay does not
+call the owner again. Fresh activation creates a random signed nonce, releases
+the executor mutex for bounded HTTP, then reacquires it and verifies current
+paired directory/self/owner binding. It consumes the one-use reply and repeats
+ledger admission, including incarnation, expiry and state guards
+(`src/bridge/executor_exchange.odin:117`). The callback HTTP function receives
+no Store pointer and uses the nonce expiry as its retry deadline
+(`src/bridge/executor_fence_client.odin:24`). The legacy exchange and fresh
+heartbeat remain fail-closed without this activation nonce path. This opens
+ledger activation only; no physical launch worker or deadline renewal is
+mounted by this change.
+
+Commands ran through managed shell sessions in the same assigned Workdir:
+
+```bash
+nix develop --command odin test src/contracts -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3-nonce-contracts-20261107-0208
+node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_executor_contract_test.ts tests/ui_executor_channel_test.ts tests/ui_executor_issuance_test.ts
+nix develop --command odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_NAMES=main.test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection,main.test_owner_executor_worker_retains_response_and_completion_across_storage_failures,main.test_owner_executor_worker_allows_concurrent_owner_callback_and_fences_late_reply,main.test_owner_executor_worker_unknown_outcome_retries_original_claim_after_floor,main.test_owner_executor_worker_rechecks_route_after_result_persistence_failure -out:$HOME/.cache/heimdall-tests/m3-nonce-mounted3-20261107-0212
+nix develop --command odin test src/hub/transport/http -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_NAMES=http.executor_resource_relay_requires_exact_registered_owner_bridge -out:$HOME/.cache/heimdall-tests/m3-nonce-hub-20261107-0212
+npm run typecheck
+nix build .#ham-bridge .#ham-hub -o $HOME/.cache/heimdall-tests/m3-nonce-bins-20261107-0214
+git diff --cached --check
+```
+
+| Check | Outcome / session |
+|---|---|
+| Shared native wire vectors including activation context rejection | **32 PASS**, `sh_f18e1cf89aef0b881e437ab88857701c` |
+| Mirrored TS contract/channel/issuance | **10 PASS**, `sh_605a7abbbbda9a61c857a5dd8e4bd2f5` |
+| Production activation ingress plus retained worker fault/concurrency regressions | **5 PASS**, `sh_438428b0c5f9d555c156a237e0cdbb18` |
+| Hub resource/reverse fence/activation relay authorization | **1 PASS**, `sh_d89e6f80df99e105ee7f1ff62d10aca4` |
+| Typecheck | PASS, `sh_e889a4c9d4ee84a39b473d19bc366a7a` |
+| Hub + Bridge packages | PASS, `sh_994e6457362765cd7079b5b05aef308a` |
+
+The expanded mounted ingress regression injects the callback transport but
+uses genuine owner signatures, channel encryption, production challenge signing
+and the real SQLite ledger. It verifies cancellation while the mutex is
+released, successful activation, duplicate historical replay without another
+callback/launch, and actual ledger close/reopen during the callback followed by
+stale-incarnation rejection (`src/bridge/executor_issuance_test.odin:228`).
+Trusted test-daemon absence is used only to drain the test charge between cases;
+no physical provider or real network absence evidence is inferred.
+
+An initial activation regression exposed the narrower `bridge_executor_sign`
+wrapper rejecting `fence_request` despite the inner signer allowing it. Added
+that specific signing domain (`src/bridge/executor_issuance.odin:36`), then the
+mounted activation test passed; the final expanded five-test run also passes.
+This failed draft did not authorize activation or create a launch intent.
+No live restart, deploy or push occurred.
+
+#### M3-2 continuation requirements
+
+Preserve both Attempt 5 commits on this task branch. Mount owner preparation
+initiation and prepare/query/retry reconciliation from the original journal
+documents. There is currently no production caller of
+`execution_prepare_start` (`src/lib/owner_local/execution.odin:58`); maintenance
+only expires preparations (`src/bridge/owner_local_leases.odin:113`). Do not
+invent new unknown-outcome reservation/operation identities. Preserve opaque
+response retention across read/result-COMMIT failures, exact post-I/O
+rechecks, current directory observations and original operation deadlines.
+
+Then complete device operator budget/mapping provisioning, shared manual/warm
+admission, physical launch/input/stop/result fencing and bounded child deadline
+renewal, unknown-child reconciliation, committed-grant failure disposition,
+encrypted PTY notification/result tickets and actual enrolled lost-reply/crash/
+cross-owner evidence. A released reservation or expired owner lease still does
+not prove that a child never ran or authorize refunds. Real Linux/macOS
+provider interrupt/Unicode-paste and bounded Windows gates need explicit
+evidence or honest unsupported limits. Complete independent and explicit user
+review before full M3 acceptance. The network client itself has compilation
+coverage here; injected callbacks do not establish its enrolled end-to-end pass.
+
+Modified paths, relative to the same absolute Workdir:
+
+- `src/bridge/executor_exchange.odin`
+- `src/bridge/executor_fence_client.odin`
+- `src/bridge/executor_issuance.odin`
+- `src/bridge/executor_issuance_test.odin`
+- `src/bridge/hub_command_dispatch.odin`
+- `src/bridge/hub_runtime_client.odin`
+- `src/bridge/owner_local_executor.odin`
+- `src/contracts/executor.odin`
+- `src/contracts/fixtures/executor-v1.json`
+- `src/hub/app/wiring.odin`
+- `src/hub/transport/http/owner_local_handlers.odin`
+- `src/hub/transport/http/task_chain_search_relay_test.odin`
+- `src/ui/api/executor.ts`
 - `docs/executor-dispatch-checkpoint.md`

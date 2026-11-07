@@ -974,6 +974,10 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
         bridge_owner_executor_fence_handle(conn,text)
         return
     }
+    if type == "executor_activation" {
+        bridge_executor_exchange_handle(conn,text,true)
+        return
+    }
     if type == "executor_exchange" {
         bridge_executor_exchange_handle(conn,text)
         return

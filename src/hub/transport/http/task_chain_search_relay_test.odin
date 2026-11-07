@@ -316,8 +316,11 @@ executor_resource_relay_requires_exact_registered_owner_bridge :: proc(t:^testin
     headers:=[1]contracts.HTTP_Header{{"Authorization",fmt.tprintf("Bearer %s",owner.bridge_token)}};req.headers=headers[:]
     response=executor_relay_handler(&f.h,req);testing.expect_value(t,response.status,200)
     testing.expect(t,strings.contains(response.body,"executor_unavailable"))
+    response=executor_activation_relay_handler(&f.h,req);testing.expect_value(t,response.status,200)
+    testing.expect(t,strings.contains(response.body,"executor_unavailable"))
     headers[0].value=fmt.tprintf("Bearer %s",other.bridge_token)
     response=executor_relay_handler(&f.h,req);testing.expect_value(t,response.status,403)
+    response=executor_activation_relay_handler(&f.h,req);testing.expect_value(t,response.status,403)
 
     // The reverse nonce relay accepts an account executor, but can target only
     // the immutable registered owner. It does not inspect a grant or payload.

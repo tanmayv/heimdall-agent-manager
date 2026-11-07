@@ -12,6 +12,7 @@ export const executorSchemas = {
     ['issued_ms','positive'],['request_expires_ms','positive'],
   ],
   exchange: [['scope','document'],['envelope','required_cipher']],
+  activation_exchange: [['scope','document'],['envelope','required_cipher'],['intent_id','hash'],['claim_attempt','positive']],
   issuance_exchange: [['scope','document'],['envelope','required_cipher'],['selection','document']],
   issuance_bundle: [['configuration','document'],['attestation','document'],['issuance_receipt','document']],
   directory: [
