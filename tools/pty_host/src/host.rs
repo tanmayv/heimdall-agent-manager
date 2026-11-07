@@ -96,6 +96,18 @@ pub struct PtyHost {
 }
 
 impl PtyHost {
+    /// Guarded Darwin substrate: inspect/revalidate before opening a PTY or
+    /// executing a pathname. No unproved candidate may become an ordinary-spawn
+    /// fallback here. The general spawn API remains a separate authority.
+    #[cfg(unix)]
+    pub fn spawn_darwin_candidate(config: SpawnConfig, candidate: &crate::darwin_image::Candidate) -> Result<Self> {
+        if std::path::Path::new(&config.program)!=candidate.path() {
+            anyhow::bail!("darwin_image: spawn_path_mismatch");
+        }
+        candidate.authorize_activation()?;
+        Self::spawn(config)
+    }
+
     /// Spawn `config.program` under a fresh PTY.
     pub fn spawn(config: SpawnConfig) -> Result<Self> {
         let pty_system = NativePtySystem::default();

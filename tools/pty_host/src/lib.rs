@@ -20,6 +20,8 @@ pub mod client;
 pub mod daemon;
 pub mod delivery;
 pub mod native_notification;
+#[cfg(unix)]
+pub mod darwin_image;
 pub mod dashboard_tui;
 pub mod dclient;
 pub mod dashboard_ui;

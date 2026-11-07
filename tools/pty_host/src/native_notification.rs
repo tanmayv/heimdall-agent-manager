@@ -78,7 +78,15 @@ impl NativeProfile {
         if declaration != PROFILE { bail!("notification profile: unknown declaration"); }
         // portable-pty closes inherited descriptors. Linux can execute the
         // daemon-held fd through procfs; Darwin needs its own proven backend.
-        if !cfg!(target_os="linux") { return Ok(None); }
+        if !cfg!(target_os="linux") {
+            #[cfg(target_os="macos")]
+            let _=crate::darwin_image::Candidate::inspect(Path::new(program),crate::darwin_image::MAC_CODEX_SHA256)
+                .and_then(|candidate|candidate.authorize_activation());
+            // No accepted lifetime-policy constructor or native backend exists.
+            // Inspection must never implicitly enable a profile, even if a
+            // future refactor changes the inspection result.
+            return Ok(None);
+        }
         let path=Path::new(program);
         if !path.is_absolute() || path.file_name().and_then(|n| n.to_str())!=Some("codex") { return Ok(None); }
         let executable=fs::canonicalize(path)?;

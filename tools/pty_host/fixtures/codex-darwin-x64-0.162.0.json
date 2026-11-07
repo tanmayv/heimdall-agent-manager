@@ -1,0 +1,10 @@
+{
+  "package": "@openai/codex",
+  "package_version": "0.162.0-darwin-x64",
+  "native_version": "0.162.0",
+  "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.162.0-darwin-x64.tgz",
+  "integrity": "sha512-4XzCUJgEDDdme6VWDEKvbWDA6f+470d4xhhorYUgNBZwY8Dq5NYqvWkO33rnc1vjxkqSj+SwkymHxRMxL6h1CA==",
+  "member": "package/vendor/x86_64-apple-darwin/bin/codex",
+  "native_sha256": "fd4bb93679bfcc546765a3363a0df9a855f364b61ea6681009b28ba4c2e5b60d",
+  "trust": "private staging only; not a protected install or native admission proof"
+}
