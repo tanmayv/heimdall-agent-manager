@@ -509,6 +509,32 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="",
         rows,_=executor.query(bridge_executor_store.db,"SELECT count(*) FROM executor_live_resources")
         testing.expect_value(t,rows[0][0],"0")
     }
+    if !revoked_cancel {
+        // Actual wake ingress must retain the original parent/entry bytes in
+        // the immutable native draft, before any device launch permission.
+        observed_instance:=fmt.tprintf("native_observed_%s",variant)
+        proposed:=bridge_wake_launch_command_json("proposed",observed_instance,"observed_task","worker","claude",selected_model,"native_agent","Observed agent","legacy_chain","Legacy","","",new_path,
+            lease_id="observed_lease",pack_json=`{"n":9007199254740993}`,run_count=1,provider_profile=selected_profile,instance_token="isolated-hub-assertion",launch_epoch="observed_epoch")
+        raw_entry,entry_ok:=contracts.owner_content_member_bytes(proposed,"payload")
+        if !testing.expect(t,entry_ok) do return
+        parent:=strings.concatenate({` {"type":"wake_agent","command_id":"observed_parent","chain_id":"legacy_chain","payload":{"run":[ `,raw_entry,` ],"stop":[]}} `},context.temp_allocator)
+        bridge_hub_handle_wake_agent(nil,parent,&bridge_executor_store)
+        observed_draft,observed_found:=executor.local_draft_source(&bridge_executor_store,bridge_executor_local_source(proposed,"warm"))
+        if !testing.expect(t,observed_found,"actual wake stages immutable observed draft") do return
+        retained,material_ok:=bridge_executor_local_material(observed_draft)
+        testing.expect(t,material_ok && retained.origin.version=="1" && retained.origin.account==bridge_executor_store.account)
+        testing.expect_value(t,retained.origin.parent_digest,contracts.owner_payload_digest(parent))
+        testing.expect_value(t,retained.origin.entry_digest,contracts.owner_payload_digest(raw_entry))
+        testing.expect_value(t,retained.origin.native_command_digest,contracts.owner_payload_digest(retained.command))
+        testing.expect(t,strings.contains(retained.command,"9007199254740993"),"synthetic pack keeps unsafe integer token intact")
+        testing.expect(t,observed_draft.launch_id=="","observation does not authorize a child")
+        second_parent,_:=strings.replace_all(parent,"observed_parent","later_parent",context.temp_allocator)
+        bridge_hub_handle_wake_agent(nil,second_parent,&bridge_executor_store)
+        same_draft,same_draft_found:=executor.local_draft_source(&bridge_executor_store,bridge_executor_local_source(proposed,"warm"))
+        testing.expect(t,same_draft_found && same_draft.id==observed_draft.id && same_draft.material==observed_draft.material,"later source claim cannot rewrite the first retained observation")
+        _,rewritten:=executor.query(bridge_executor_store.db,"UPDATE executor_local_drafts SET material='{}' WHERE draft_id=?",observed_draft.id)
+        testing.expect(t,!rewritten,"retained source/target material cannot be rewritten")
+    }
 }
 Executor_Local_Test_IO :: struct {
     directory:vault.Directory_Verification_Input,disable_catalog,native_files:bool,
