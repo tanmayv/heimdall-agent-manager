@@ -30,7 +30,7 @@ bridge_legacy_dispatch_prepare_locked :: proc(text,kind:string,spec:Bridge_Comma
     if !bridge_legacy_dispatch_requires_observation(spec) || store==nil do return {},true
     command_id,chain:="",""
     value,valid:=contracts.owner_content_document(text)
-    if object,is_object:=value.(json.Object);valid && is_object {
+    if object,is_object:=value.(json.Object);kind!=BRIDGE_DISPATCH_BINARY_INPUT_KIND && valid && is_object {
         command_id=contracts.owner_string(object,"command_id")
         chain=contracts.owner_string(object,"chain_id")
         if !contracts.owner_field_valid(command_id,"optional") do command_id=""
@@ -56,6 +56,7 @@ bridge_legacy_dispatch_start :: proc(job:^Bridge_Dispatch_Job,injected:^executor
     if job.legacy_ingress==.Pending || job.legacy_ingress==.Writing || job.legacy_ingress==.Failed do return false
     if job.paired_observation_required && job.legacy_action.id==0 do return false
     spec,known:=bridge_command_spec(job.command_type)
+    if job.native_binary && job.command_type==BRIDGE_DISPATCH_BINARY_INPUT_KIND {spec=bridge_command_binary_input_spec();known=true}
     if !known do return false
     if !bridge_legacy_dispatch_requires_observation(spec) do return true
     sync.mutex_lock(&bridge_executor_mutex);defer sync.mutex_unlock(&bridge_executor_mutex)
@@ -75,7 +76,9 @@ bridge_legacy_dispatch_start :: proc(job:^Bridge_Dispatch_Job,injected:^executor
     rows,read:=executor.query(store.db,"SELECT command_kind,packet_digest FROM executor_legacy_actions WHERE action_id=? AND observed_incarnation=?",fmt.tprintf("%d",job.legacy_action.id),fmt.tprintf("%d",job.legacy_action.incarnation))
     sync.mutex_unlock(&store.mutex)
     if !read || len(rows)!=1 || rows[0][0]!=job.command_type || rows[0][1]!=contracts.owner_payload_digest(job.text) do return false
-    started:=executor.legacy_action_transition(store,job.legacy_action,"prepared","running")
+    unscoped:=spec.key_kind==.Filesystem || spec.key_kind==.VCS || spec.key_kind==.Shell || spec.key_kind==.LSP
+    started:=executor.legacy_action_transition(store,job.legacy_action,"prepared","running",reject_barriers=unscoped)
+    job.legacy_start_fenced=started.code=="legacy_fenced"
     return started.code=="ok" && !started.replay
 }
 

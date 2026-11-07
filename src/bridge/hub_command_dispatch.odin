@@ -67,6 +67,8 @@ Bridge_Dispatch_Job :: struct {
 	legacy_action: executor.Legacy_Action,
 	paired_observation_required: bool,
 	legacy_ingress: Bridge_Legacy_Ingress_State,
+	legacy_start_fenced: bool,
+	native_binary: bool,
 	text: string,
 	command_id: string,
 	command_type: string,
@@ -103,6 +105,7 @@ Bridge_Dispatch_Worker :: struct {
 	current_generation: i64,
 	current_command_id: string,
 	current_input_digest: string,
+	current_native_binary: bool,
 	current_legacy_action: executor.Legacy_Action,
 	last_result: string,
 	output_failed: bool,
@@ -414,6 +417,7 @@ bridge_command_ordering_key :: proc(command_type, text: string) -> string {
 			delete(id)
 			id = extract_json_string(text, "shell_id", "")
 		}
+        if id=="" {delete(id);id=extract_json_string(text,"agent_instance_id","")}
 		defer delete(id)
 		if id != "" do return strings.concatenate({"shell:", id})
 		return ""
@@ -564,7 +568,6 @@ bridge_command_dispatch :: proc(conn: ^ws.Connection, text: string, generation: 
 		return true
 	}
 	if !spec.queued do return false
-	class := spec.class
 	command_id, id_ok := bridge_command_dispatch_resolve_id(command_type, text)
 	defer delete(command_id)
 	if !id_ok {
@@ -580,12 +583,20 @@ bridge_command_dispatch :: proc(conn: ^ws.Connection, text: string, generation: 
 		_ = bridge_hub_send(conn, protocol_error)
 		return true
 	}
+    return bridge_command_dispatch_enqueue(conn,text,command_type,command_id,spec,generation)
+}
+
+// Native binary frames share the bounded scheduler and retain their original
+// bytes. No JSON conversion, transport change, or external command ID is used.
+bridge_command_dispatch_enqueue :: proc(conn:^ws.Connection,text,command_type,command_id:string,spec:Bridge_Command_Spec,generation:i64,native_binary:bool=false,native_ordering_key:string="")->bool {
+    class:=spec.class
+    mcp_large:=bridge_command_dispatch_is_mcp_large(command_type,len(text))
 	paired_required := bridge_legacy_dispatch_requires_observation(spec) && bridge_config.daemon_id!=""
 	input_digest := contracts.owner_payload_digest(text)
-	ordering_key := bridge_command_ordering_key(command_type, text)
+	ordering_key := strings.clone(native_ordering_key) if native_binary else bridge_command_ordering_key(command_type, text)
 	defer delete(ordering_key)
 
-	timeout_ms := bridge_command_budget_ms(text, spec)
+	timeout_ms := spec.timeout_ms if native_binary else bridge_command_budget_ms(text, spec)
 	now_ns := time.to_unix_nanoseconds(time.now())
 	deadline := now_ns + i64(time.Duration(timeout_ms) * time.Millisecond)
 	owned_bytes := len(text) + len(command_id) + len(command_type)
@@ -596,6 +607,7 @@ bridge_command_dispatch :: proc(conn: ^ws.Connection, text: string, generation: 
 		claim := bridge_dispatch_claims[claim_index]
 		cached := strings.clone(claim.result_json, runtime.default_allocator())
 		sync.mutex_unlock(&bridge_dispatch_mu)
+        if native_binary {delete(cached,runtime.default_allocator());return false}
 		if cached != "" {
 			defer delete(cached, runtime.default_allocator())
 			_ = bridge_hub_send(conn, cached)
@@ -614,6 +626,7 @@ bridge_command_dispatch :: proc(conn: ^ws.Connection, text: string, generation: 
 	if scope != "" {
 		bridge_dispatch_metrics.rejected += 1
 		sync.mutex_unlock(&bridge_dispatch_mu)
+        if native_binary do return false
 		busy := bridge_command_dispatch_busy_json(command_id, scope)
 		defer delete(busy)
 		_ = bridge_hub_send(conn, busy)
@@ -621,6 +634,7 @@ bridge_command_dispatch :: proc(conn: ^ws.Connection, text: string, generation: 
 	}
 
 	job := Bridge_Dispatch_Job{
+		native_binary = native_binary,
 		paired_observation_required = paired_required,
 		legacy_ingress = .Pending if paired_required else .None,
 		text = strings.clone(text, runtime.default_allocator()),
@@ -651,6 +665,7 @@ bridge_command_dispatch :: proc(conn: ^ws.Connection, text: string, generation: 
 	bridge_dispatch_observation_changed_locked()
 	bridge_dispatch_metrics.queue_high_water = max(bridge_dispatch_metrics.queue_high_water, bridge_command_dispatch_total_locked())
 	sync.mutex_unlock(&bridge_dispatch_mu)
+    if native_binary do return true
 	accepted := bridge_command_result_json(command_id, "accepted", "")
 	defer delete(accepted)
 	_ = bridge_hub_send(conn, accepted)
@@ -690,6 +705,7 @@ bridge_command_dispatch_bind_worker_locked :: proc(worker:^Bridge_Dispatch_Worke
     worker.current_command_id=strings.clone(job.command_id,runtime.default_allocator())
     worker.current_input_digest=strings.clone(contracts.owner_payload_digest(job.text),runtime.default_allocator())
     worker.current_legacy_action=job.legacy_action
+    worker.current_native_binary=job.native_binary
     worker.enqueued_ns=job.enqueued_ns
     worker.started_ns=time.to_unix_nanoseconds(time.now())
     worker.deadline_ns=job.deadline_ns
@@ -712,6 +728,7 @@ bridge_command_dispatch_take_queue_locked :: proc(queue: ^[dynamic]Bridge_Dispat
 		// Build an explicit value and clear the queue's ownership before removal.
 		selected := Bridge_Dispatch_Job{
 			legacy_action = queue[i].legacy_action,
+			native_binary = queue[i].native_binary,
 			paired_observation_required = queue[i].paired_observation_required,
 			legacy_ingress = queue[i].legacy_ingress,
 			text = queue[i].text,
@@ -750,7 +767,7 @@ bridge_command_dispatch_finish :: proc(worker: ^Bridge_Dispatch_Worker, job: ^Br
 		bridge_dispatch_claims[i].input_digest = ""
 		delete(bridge_dispatch_claims[i].result_json, runtime.default_allocator())
 		bridge_dispatch_claims[i].result_json=""
-		if job.command_type!="mcp_transform" do bridge_dispatch_claims[i].result_json = strings.clone(worker.last_result, runtime.default_allocator())
+		if job.command_type!="mcp_transform" && !job.native_binary do bridge_dispatch_claims[i].result_json = strings.clone(worker.last_result, runtime.default_allocator())
 	}
 	if job.mcp_large {bridge_dispatch_mcp_large_bytes -= job.owned_bytes} else {bridge_dispatch_owned_bytes -= job.owned_bytes}
 	bridge_dispatch_queued_cost -= job.cost_units
@@ -764,6 +781,7 @@ bridge_command_dispatch_finish :: proc(worker: ^Bridge_Dispatch_Worker, job: ^Br
 	delete(worker.current_input_digest,runtime.default_allocator())
 	worker.current_input_digest=""
 	worker.current_legacy_action = {}
+	worker.current_native_binary = false
 	delete(worker.last_result, runtime.default_allocator())
 	worker.last_result = ""
 	worker.output_failed = false
@@ -796,20 +814,32 @@ bridge_command_dispatch_worker :: proc(data: rawptr) {
 			sync.mutex_lock(&bridge_dispatch_mu)
 			bridge_dispatch_metrics.deadline_expired += 1
 			sync.mutex_unlock(&bridge_dispatch_mu)
-			result := bridge_command_dispatch_deadline_json(job.command_id)
-			_ = bridge_command_worker_capture_send(&worker.sink_conn, result)
-			delete(result)
+            if !job.native_binary {
+                result := bridge_command_dispatch_deadline_json(job.command_id)
+                _ = bridge_command_worker_capture_send(&worker.sink_conn, result)
+                delete(result)
+            }
 		} else if bridge_legacy_dispatch_start(&job) {
 			ran = true
 			sync.mutex_lock(&bridge_dispatch_mu)
 			worker.current_legacy_action = job.legacy_action
 			bridge_dispatch_observation_changed_locked()
 			sync.mutex_unlock(&bridge_dispatch_mu)
-			bridge_hub_handle_command(&worker.sink_conn, job.text)
+            if job.native_binary {
+                bridge_hub_handle_binary_frame(&worker.sink_conn,transmute([]byte)job.text)
+            } else {
+                bridge_hub_handle_command(&worker.sink_conn, job.text)
+            }
 		} else {
-			result := bridge_command_failed_json(job.command_id,bridge_cause_wire_error("storage_error","native action observation unavailable"))
+            if job.native_binary {
+                fmt.eprintln("bridge: binary PTY input refused before execution")
+            } else {
+            err:=bridge_cause_wire_error("storage_error","native action observation unavailable")
+            if job.legacy_start_fenced do err=contracts.wire_error(.Conflict,"legacy_fenced","migration barrier refuses an unscoped resource command")
+			result := bridge_command_failed_json(job.command_id,err)
 			_ = bridge_command_worker_capture_send(&worker.sink_conn,result)
 			delete(result)
+            }
 		}
 		if !bridge_legacy_dispatch_end(job.legacy_action,ran) do fmt.eprintln("bridge: action handler boundary remains unresolved")
 		bridge_command_dispatch_finish(worker, &job)

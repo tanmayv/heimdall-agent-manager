@@ -37,8 +37,9 @@ legacy_action_receive :: proc(s:^Store,input:Legacy_Action_Input)->(Legacy_Actio
 // Exact same-state replay is read-only, including after restart. A missing
 // transition after crash stays unresolved; never relabel it returned/discarded
 // from an old incarnation or infer that its daemon child disappeared.
-legacy_action_transition :: proc(s:^Store,action:Legacy_Action,from,to:string)->Result {
+legacy_action_transition :: proc(s:^Store,action:Legacy_Action,from,to:string,reject_barriers:bool=false)->Result {
     if action.id<=0 || action.incarnation<=0 ||
+       reject_barriers && (from!="prepared" || to!="running") ||
        !(from=="received" && (to=="prepared" || to=="discarded") ||
          from=="prepared" && (to=="running" || to=="discarded") ||
          from=="running" && to=="returned") {return fail("invalid_scope")}
@@ -55,6 +56,15 @@ legacy_action_transition :: proc(s:^Store,action:Legacy_Action,from,to:string)->
     }
     if action.incarnation!=s.incarnation do return fail("stale_incarnation")
     if rows[0][1]!=from do return fail("action_conflict")
+    // Trusted native dispatch uses this for resource users whose overlap with
+    // a protected target has not been independently excluded. This is an
+    // admission fence, not a claim that prior invocations/children drained.
+    // Historical replay above cannot issue another handler invocation.
+    if reject_barriers {
+        barriers,read:=query(s.db,"SELECT 1 FROM executor_legacy_barriers LIMIT 1")
+        if !read do return fail("storage_error")
+        if len(barriers)>0 do return fail("legacy_fenced")
+    }
     _,written:=query(s.db,"UPDATE executor_legacy_actions SET state=?,previous_state=? WHERE action_id=?",to,from,fmt.tprintf("%d",action.id))
     if !written || !commit(s) do return fail("storage_error")
     return Result{code="ok"}

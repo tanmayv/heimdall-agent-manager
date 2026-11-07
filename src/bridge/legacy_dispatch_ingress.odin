@@ -28,6 +28,7 @@ bridge_legacy_ingress_take_queue_locked :: proc(queue:^[dynamic]Bridge_Dispatch_
         job.legacy_ingress=.Writing
         bridge_dispatch_observation_changed_locked()
         return Bridge_Dispatch_Job{
+            native_binary=job.native_binary,
             text=strings.clone(job.text,runtime.default_allocator()),
             command_type=strings.clone(job.command_type,runtime.default_allocator()),
             command_id=strings.clone(job.command_id,runtime.default_allocator()),
@@ -64,6 +65,7 @@ bridge_legacy_dispatch_ingress_once :: proc(injected:^executor.Store=nil)->bool 
     defer delete(work.command_type,runtime.default_allocator())
     defer delete(work.command_id,runtime.default_allocator())
     spec,known:=bridge_command_spec(work.command_type)
+    if work.native_binary && work.command_type==BRIDGE_DISPATCH_BINARY_INPUT_KIND {spec=bridge_command_binary_input_spec();known=true}
     action:executor.Legacy_Action
     recorded:=false
     if known {

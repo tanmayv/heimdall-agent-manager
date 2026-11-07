@@ -3,6 +3,28 @@ package main
 import "core:fmt"
 import "core:testing"
 import executor "odin_test:lib/executor_local"
+import contracts "odin_test:contracts"
+
+@(test)
+bridge_legacy_dispatch_refuses_unscoped_resources_under_barrier :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    store,path:=bridge_legacy_test_store(t);defer bridge_legacy_test_close(store,path)
+    barrier:=executor.Legacy_Barrier{"chain","migration",contracts.owner_payload_digest("selection"),0}
+    testing.expect_value(t,bridge_legacy_install_barrier(store,barrier,[]executor.Legacy_Resource{{"instance","unrelated_claim"}}).code,"ok")
+    for kind in ([4]string{"fs_write_file","vcs_commit","shell_pty_input","lsp_start"}) {
+        packet:=executor.encode(struct{type,command_id:string}{kind,"original"})
+        spec,known:=bridge_command_spec(kind)
+        testing.expect(t,known)
+        action,prepared:=bridge_legacy_dispatch_prepare(packet,kind,spec,store)
+        testing.expect(t,prepared)
+        job:=Bridge_Dispatch_Job{text=packet,command_type=kind,legacy_action=action}
+        testing.expect(t,!bridge_legacy_dispatch_start(&job,store) && job.legacy_start_fenced,
+            "caller claims cannot positively exclude shared filesystem/process resources")
+        testing.expect(t,bridge_legacy_dispatch_end(action,false,store))
+    }
+    rows,read:=executor.query(store.db,"SELECT count(*),sum(state='discarded'),sum(state='running') FROM executor_legacy_actions")
+    testing.expect(t,read && rows[0][0]=="4" && rows[0][1]=="4" && rows[0][2]=="0")
+}
 
 @(test)
 bridge_legacy_dispatch_journals_original_occurrences_and_refuses_unrecorded_start :: proc(t:^testing.T) {

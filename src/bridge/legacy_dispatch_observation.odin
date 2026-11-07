@@ -44,7 +44,7 @@ bridge_legacy_dispatch_snapshot_locked :: proc()->Bridge_Legacy_Dispatch_Snapsho
         append(&entries,Entry{claim.command_id,claim.input_digest,claim.state})
     }
     // Include actual queue bytes, not only the in-memory claim projection.
-    Job :: struct {id,digest:string,generation:i64,ingress:Bridge_Legacy_Ingress_State,action:executor.Legacy_Action}
+    Job :: struct {id,digest:string,generation:i64,ingress:Bridge_Legacy_Ingress_State,action:executor.Legacy_Action,binary:bool}
     jobs:=make([dynamic]Job,context.temp_allocator)
     queues:=[]([]Bridge_Dispatch_Job){
         bridge_dispatch_lifecycle[:],bridge_dispatch_interactive[:],
@@ -64,13 +64,13 @@ bridge_legacy_dispatch_snapshot_locked :: proc()->Bridge_Legacy_Dispatch_Snapsho
             claim:=bridge_dispatch_claims[claim_index]
             if claim.state!=.Queued || claim.input_digest!=digest do snapshot.valid=false
         }
-        append(&jobs,Job{job.command_id,digest,job.generation,job.legacy_ingress,job.legacy_action})
+        append(&jobs,Job{job.command_id,digest,job.generation,job.legacy_ingress,job.legacy_action,job.native_binary})
     }
     if snapshot.queued!=len(jobs) do snapshot.valid=false
     // The running claim projection must agree with actual worker ownership.
     // Includes the take->handler and handler->finish intervals, not only jobs
     // whose native handler is already executing.
-    Worker :: struct {id,digest:string,generation:i64,action:executor.Legacy_Action}
+    Worker :: struct {id,digest:string,generation:i64,action:executor.Legacy_Action,binary:bool}
     workers:=make([dynamic]Worker,context.temp_allocator)
     worker_seen:=make(map[string]bool,context.temp_allocator)
     for worker in bridge_dispatch_workers {
@@ -85,7 +85,7 @@ bridge_legacy_dispatch_snapshot_locked :: proc()->Bridge_Legacy_Dispatch_Snapsho
             claim:=bridge_dispatch_claims[claim_index]
             if claim.state!=.Running || claim.input_digest!=worker.current_input_digest do snapshot.valid=false
         }
-        append(&workers,Worker{id,worker.current_input_digest,worker.current_generation,worker.current_legacy_action})
+        append(&workers,Worker{id,worker.current_input_digest,worker.current_generation,worker.current_legacy_action,worker.current_native_binary})
     }
     if snapshot.running!=len(workers) do snapshot.valid=false
     bytes,err:=json.marshal(struct{claims:[]Entry,jobs:[]Job,workers:[]Worker}{entries[:],jobs[:],workers[:]},allocator=context.temp_allocator)

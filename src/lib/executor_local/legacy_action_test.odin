@@ -1,12 +1,66 @@
 package executor_local
 
+import "base:runtime"
 import "core:fmt"
 import "core:strings"
 import "core:testing"
+import "core:sync"
+import "core:thread"
 import contracts "odin_test:contracts"
 
 legacy_action_test_input :: proc()->Legacy_Action_Input {
     return {kind="wake_agent",packet_digest=contracts.owner_payload_digest("exact idless unscoped packet")}
+}
+
+@(test)
+executor_legacy_unscoped_start_is_serialized_with_barrier_and_replay :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    for _ in 0..<8 {
+        f:=fixture(t)
+        input:=Legacy_Action_Input{kind="fs_write_file",packet_digest=contracts.owner_payload_digest("original filesystem packet")}
+        action,received:=legacy_action_receive(&f.store,input)
+        testing.expect_value(t,received.code,"ok")
+        testing.expect_value(t,legacy_action_transition(&f.store,action,"received","prepared").code,"ok")
+        start:sync.Barrier;sync.barrier_init(&start,3)
+        Job :: struct {store:^Store,action:Legacy_Action,start:^sync.Barrier,install:bool,code:string}
+        jobs:=[2]Job{{&f.store,action,&start,true,""},{&f.store,action,&start,false,""}}
+        workers:[2]^thread.Thread
+        for index in 0..<2 {
+            workers[index]=thread.create_and_start_with_data(&jobs[index],proc(ctx:rawptr) {
+                job:=(^Job)(ctx)
+                sync.barrier_wait(job.start)
+                result:Result
+                if job.install {
+                    result=legacy_barrier_install(job.store,legacy_test_barrier())
+                } else {
+                    result=legacy_action_transition(job.store,job.action,"prepared","running",reject_barriers=true)
+                }
+                job.code=strings.clone(result.code,runtime.default_allocator())
+                free_all(context.temp_allocator)
+            })
+        }
+        sync.barrier_wait(&start)
+        for worker in workers {thread.join(worker);thread.destroy(worker)}
+        testing.expect_value(t,jobs[0].code,"ok")
+        testing.expect(t,jobs[1].code=="ok" || jobs[1].code=="legacy_fenced")
+        rows,read:=query(f.store.db,"SELECT state FROM executor_legacy_actions")
+        testing.expect(t,read && len(rows)==1)
+        if jobs[1].code=="ok" {
+            testing.expect(t,rows[0][0]=="running","earlier invocation remains explicit unresolved work, never drain")
+            replay:=legacy_action_transition(&f.store,action,"prepared","running",reject_barriers=true)
+            testing.expect(t,replay.code=="ok" && replay.replay,"historical replay creates no new invocation")
+            testing.expect_value(t,legacy_action_transition(&f.store,action,"running","returned").code,"ok")
+        } else {
+            testing.expect(t,rows[0][0]=="prepared","barrier wins without a runnable handler")
+            testing.expect_value(t,legacy_action_transition(&f.store,action,"prepared","discarded").code,"ok")
+        }
+        late,late_received:=legacy_action_receive(&f.store,input)
+        testing.expect_value(t,late_received.code,"ok")
+        testing.expect_value(t,legacy_action_transition(&f.store,late,"received","prepared").code,"ok")
+        testing.expect_value(t,legacy_action_transition(&f.store,late,"prepared","running",reject_barriers=true).code,"legacy_fenced")
+        for job in jobs do delete(job.code,runtime.default_allocator())
+        destroy(f)
+    }
 }
 
 @(test)

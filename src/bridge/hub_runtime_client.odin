@@ -707,9 +707,10 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 			if !got do break
 			inbound_count += 1
 			// REQ-PTY-NET-3: a BINARY frame from the hub is pty input (a pty_wire session
-			// frame). It never enters the command dispatcher: no command_id, no result.
+			// frame). Native bounded dispatch retains the exact binary transport
+            // and ack-less semantics while keeping journal/PTY I/O off the reader.
 			if opcode == 0x2 {
-				bridge_hub_handle_binary_frame(conn, transmute([]byte)text)
+				_ = bridge_command_dispatch_binary_input(conn,transmute([]byte)text,connection_generation)
 				delete(text)
 				continue
 			}
@@ -2086,7 +2087,8 @@ bridge_hub_handle_binary_frame :: proc(conn: ^ws.Connection, frame: []byte) {
 		}
 		return
 	}
-	if !bridge_pty_host_deliver_shell_input(shell_id, data) {
+	delivered,_ := bridge_legacy_shell_input(shell_id, data)
+	if !delivered {
 		// Ack-less (no command_result to carry a typed error), so report it the typed
 		// way the bridge reports any failure: a bridge_log event the hub relays and
 		// counts (REQ-ERR-PROTO-A), rate-limited and dedup'd by the blog ring.
@@ -2139,7 +2141,7 @@ bridge_hub_handle_shell_pty_input :: proc(conn: ^ws.Connection, text: string) {
 		return
 	}
 
-	ok := bridge_pty_host_deliver_shell_input(shell_id, data)
+	ok,_ := bridge_legacy_shell_input(shell_id, data)
 	if !ok do fmt.println("bridge shell_pty_input delivery failed for shell", shell_id)
 
 	if command_id != "" {
