@@ -1277,8 +1277,32 @@ in `msg_18e5a256cceec1ad` before introducing the owner-rendered sealed bootstrap
 and executor-attested remote child relay boundary. No Hub registration or task
 authority shortcut was introduced.
 
-Coordinator platform guidance in `msg_18e5a19acce4ec40`: run real execution/PTTY
+Coordinator platform guidance in `msg_18e5a19acce4ec40`: run real execution/PTY
 integration on Linux, verify Darwin interrupt/paste behavior through
 unit/contracts, document explicit Windows limits. No macOS or Windows host is
 provisioned; no real-provider, Darwin runtime or Windows runtime pass is claimed
 by this checkpoint.
+
+### Follow-up evidence and confirmed continuation boundary
+
+Coordinator confirmed the owner-rendered/signed sealed bootstrap and
+executor-attested child relay in `msg_18e5a26de2522317` /
+`cmt_18e5a26cc02ea57b`. No further permission is needed for that implementation
+within this task. The Hub must remain encrypted transit only. The requested
+next slice is executor admission, sealed bootstrap prespawn and encrypted PTY
+delivery with Linux/Darwin profiles and isolated loopback/mock integration.
+
+Actual POSIX SIGKILL evidence also passed on this checkpoint:
+
+```bash
+nix develop --command sh -c 'odin build tests/executor_crash_probe -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/m3b-crash-probe-20261107-0230 && HEIMDALL_EXECUTOR_CRASH_PROBE=$HOME/.cache/heimdall-tests/m3b-crash-probe-20261107-0230 python3 tests/test_executor_process_crash.py'
+```
+
+Session `sh_6a72ad04b8c8509ddb048af66cbf55fb`: **1 test PASS**, covering
+four committed boundaries (issuance, preparation, activation and claimed launch).
+This proves isolated ledger recovery across actual process death, not a provider
+or physical bootstrap launch.
+
+The final Bridge three-test run passed after adding the failed-current-read
+retention assertion; typecheck passed after the pinned dependency installation.
+No dependency manifest or lockfile changed. No unrelated cleanup was performed.
