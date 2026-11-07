@@ -117,6 +117,8 @@ executor_receipt_fields := [?]Owner_Field{
 }
 executor_schema :: proc(kind:string)->[]Owner_Field {
     switch kind {
+    case "bootstrap":return executor_bootstrap_fields[:]
+    case "child_request":return executor_child_request_fields[:]
     case "exchange":return executor_exchange_fields[:]
     case "activation_exchange":return executor_activation_exchange_fields[:]
     case "issuance_exchange":return executor_issuance_exchange_fields[:]
@@ -162,6 +164,10 @@ executor_valid :: proc(o:json.Object,kind:string)->bool {
         case:
             if !owner_field_valid(s,f.kind) do return false
         }
+    }
+    if kind=="bootstrap" || kind=="child_request" {
+        start,end:=executor_number(o,"issued_ms"),executor_number(o,"request_expires_ms")
+        if end<=start || end-start>EXECUTOR_FENCE_TTL_MS || end>executor_number(o,"expires_ms") || executor_number(o,"expires_ms")>executor_number(o,"hard_ms") do return false
     }
     if kind=="directory" && owner_string(o,"directory_path")=="" do return false
     if kind=="policy" {
@@ -234,7 +240,7 @@ executor_verify :: proc(kind:string,o:json.Object,key:Owner_Verified_Key)->bool 
     if !key.enrolled || key.revoked || (key.kind!="device" if kind=="issuance_consent" else key.kind!="bridge") || key.account_id!=owner_string(o,"account_id") ||
        key.key_id!=owner_string(o,"key_id") { return false }
     identity:="owner_bridge_id"
-    if kind=="policy" || kind=="receipt" || kind=="fence_request" || kind=="enrollment" || kind=="issuance_receipt" || kind=="directory" do identity="executor_bridge_id"
+    if kind=="policy" || kind=="receipt" || kind=="fence_request" || kind=="enrollment" || kind=="issuance_receipt" || kind=="directory" || kind=="child_request" do identity="executor_bridge_id"
     if kind=="issuance_consent" do identity="principal_id"
     if key.principal_id!=owner_string(o,identity) do return false
     canonical,ok:=executor_canonical(kind,o)

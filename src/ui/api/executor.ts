@@ -4,6 +4,8 @@ import { parseOwnerRequestDocument } from './ownerJson.ts';
 
 // Mirrored executor resource contracts; no task command or launch authority.
 export const executorSchemas = {
+  child_request: [["protocol_version", "version"], ["account_id", "id"], ["owner_bridge_id", "id"], ["executor_bridge_id", "id"], ["chain_id", "id"], ["task_id", "id"], ["lease_id", "id"], ["reservation_id", "id"], ["instance_id", "id"], ["launch_epoch", "id"], ["run_count", "positive"], ["token_generation", "hash"], ["configuration_revision", "positive"], ["grant_generation", "positive"], ["owner_incarnation", "positive"], ["executor_incarnation", "positive"], ["prepare_digest", "hash"], ["bootstrap_digest", "hash"], ["input_digest", "hash"], ["launch_key", "hash"], ["deadline_version", "positive"], ["expires_ms", "positive"], ["hard_ms", "positive"], ["issued_ms", "positive"], ["request_expires_ms", "positive"], ["key_id", "id"], ["signature", "signature"]],
+  bootstrap: [["protocol_version", "version"], ["account_id", "id"], ["owner_bridge_id", "id"], ["executor_bridge_id", "id"], ["chain_id", "id"], ["task_id", "id"], ["lease_id", "id"], ["reservation_id", "id"], ["instance_id", "id"], ["launch_epoch", "id"], ["run_count", "positive"], ["token_generation", "hash"], ["configuration_revision", "positive"], ["grant_generation", "positive"], ["owner_incarnation", "positive"], ["executor_incarnation", "positive"], ["prepare_digest", "hash"], ["action_digest", "hash"], ["configuration_digest", "hash"], ["body_digest", "hash"], ["launch_key", "hash"], ["deadline_version", "positive"], ["expires_ms", "positive"], ["hard_ms", "positive"], ["issued_ms", "positive"], ["request_expires_ms", "positive"], ["key_id", "id"], ["signature", "signature"]],
   transport_scope: [
     ['protocol_version','version'],['account_id','id'],['owner_bridge_id','id'],['executor_bridge_id','id'],
     ['chain_id','id'],['reservation_id','optional'],['request_id','id'],
@@ -436,6 +438,10 @@ export function executorParse(raw: string, kind: ExecutorKind): ExecutorDocument
     if (typeof field !== 'string' || !fieldValid(field, type)) throw new SyntaxError('Executor field');
   }
   const o = value as ExecutorDocument;
+  if (kind === 'bootstrap' || kind === 'child_request') {
+    const start = BigInt(o.issued_ms), end = BigInt(o.request_expires_ms);
+    if (end <= start || end-start > EXECUTOR_FENCE_TTL_MS || end > BigInt(o.expires_ms) || BigInt(o.expires_ms) > BigInt(o.hard_ms)) throw new SyntaxError('Executor child bounds');
+  }
   if (kind === 'directory' && o.directory_path === '') throw new SyntaxError('Executor directory path');
   if (kind === 'policy') {
     const capacity = BigInt(o.device_capacity);
@@ -470,7 +476,7 @@ const unhex = (hex: string): Uint8Array<ArrayBuffer> => Uint8Array.from(hex.matc
 export async function executorVerify(kind: ExecutorKind, value: ExecutorDocument, key: OwnerVerifiedKey): Promise<boolean> {
   try {
     const o = executorParse(JSON.stringify(value), kind);
-    const principal = kind === 'policy' || kind === 'receipt' || kind === 'fence_request' || kind === 'enrollment' || kind === 'issuance_receipt' || kind === 'directory' ? o.executor_bridge_id : kind === 'issuance_consent' ? o.principal_id : o.owner_bridge_id;
+    const principal = kind === 'policy' || kind === 'receipt' || kind === 'fence_request' || kind === 'enrollment' || kind === 'issuance_receipt' || kind === 'directory' || kind === 'child_request' ? o.executor_bridge_id : kind === 'issuance_consent' ? o.principal_id : o.owner_bridge_id;
     if (!key.enrolled || key.revoked || key.kind !== (kind === 'issuance_consent' ? 'device' : 'bridge') || key.account_id !== o.account_id ||
         key.principal_id !== principal || key.key_id !== o.key_id || !/^04[0-9a-f]{128}$/.test(key.public_key)) return false;
     const pub = await crypto.subtle.importKey('raw', unhex(key.public_key), {name:'ECDSA',namedCurve:'P-256'}, false, ['verify']);
@@ -551,5 +557,48 @@ export async function executorIssuanceMatches(receipt: ExecutorDocument, consent
       receipt.enrollment_digest === await ownerPayloadDigest(executorCanonical('enrollment',enrollment)) &&
       (!currentAdmission || (now >= BigInt(consent.issued_ms) && now < BigInt(consent.request_expires_ms) &&
         now >= BigInt(receipt.issued_ms) && now < BigInt(receipt.request_expires_ms)));
+  } catch { return false; }
+}
+
+/** The caller pins launchKey from the accepted executor reservation. */
+export async function executorBootstrapMatches(b: ExecutorDocument, p: ExecutorDocument, a: ExecutorDocument,
+  configurationRaw: string, bodyRaw: string, launchKey: string, ownerKey: OwnerVerifiedKey, now: bigint): Promise<boolean> {
+  try {
+    const c = ownerParse(configurationRaw,'remote_configuration');
+    if (!await executorVerify('bootstrap',b,ownerKey) || !await executorVerify('prepare',p,ownerKey) ||
+        !await executorVerify('action',a,ownerKey) || a.method !== 'activate' || p.owner_bridge_id === p.executor_bridge_id ||
+        !/^[0-9a-f]{64}$/.test(launchKey) || b.launch_key !== launchKey || bodyRaw === '' ||
+        new TextEncoder().encode(bodyRaw).length > EXECUTOR_DOCUMENT_MAX) return false;
+    for (const name of ['protocol_version','account_id','owner_bridge_id','executor_bridge_id','chain_id','task_id','lease_id',
+      'reservation_id','instance_id','launch_epoch','run_count','token_generation','configuration_revision','grant_generation',
+      'owner_incarnation','executor_incarnation','hard_ms']) if (b[name] !== p[name]) return false;
+    for (const name of ['protocol_version','account_id','owner_bridge_id','executor_bridge_id','chain_id','task_id',
+      'instance_id','launch_epoch','run_count','token_generation','configuration_revision','executor_incarnation','policy_revision','slot_id',
+      'provider_profile','directory_key']) if (p[name] !== c[name]) return false;
+    for (const name of ['protocol_version','account_id','owner_bridge_id','executor_bridge_id','chain_id','reservation_id',
+      'owner_incarnation','executor_incarnation','grant_generation','deadline_version','expires_ms','hard_ms']) if (b[name] !== a[name]) return false;
+    const pd = await ownerPayloadDigest(executorCanonical('prepare',p));
+    return b.prepare_digest === pd && a.prepare_digest === pd && b.action_digest === await ownerPayloadDigest(executorCanonical('action',a)) &&
+      b.configuration_digest === await ownerPayloadDigest(configurationRaw) && b.body_digest === await ownerPayloadDigest(bodyRaw) &&
+      now >= BigInt(b.issued_ms) && now < BigInt(b.request_expires_ms) && now < BigInt(a.request_expires_ms) && now < BigInt(a.expires_ms);
+  } catch { return false; }
+}
+
+/** The caller supplies its currently accepted bootstrap and checks owner state. */
+export async function executorChildRequestMatches(r: ExecutorDocument, b: ExecutorDocument, inputRaw: string,
+  executorKey: OwnerVerifiedKey, ownerKey: OwnerVerifiedKey, now: bigint): Promise<boolean> {
+  try {
+    if (!await executorVerify('child_request',r,executorKey) || !await executorVerify('bootstrap',b,ownerKey) ||
+        b.owner_bridge_id === b.executor_bridge_id) return false;
+    for (const name of ['protocol_version','account_id','owner_bridge_id','executor_bridge_id','chain_id','task_id','lease_id',
+      'reservation_id','instance_id','launch_epoch','run_count','token_generation','configuration_revision','grant_generation',
+      'owner_incarnation','executor_incarnation','prepare_digest','launch_key','deadline_version','expires_ms','hard_ms']) {
+      if (r[name] !== b[name]) return false;
+    }
+    if (r.bootstrap_digest !== await ownerPayloadDigest(executorCanonical('bootstrap',b)) || r.input_digest !== await ownerPayloadDigest(inputRaw)) return false;
+    let input;
+    try { input = ownerParse(inputRaw,'lease_input'); } catch { input = ownerParse(inputRaw,'lifecycle_input'); }
+    for (const name of ['chain_id','task_id','lease_id','configuration_revision']) if (input[name] !== r[name]) return false;
+    return now >= BigInt(r.issued_ms) && BigInt(r.issued_ms) >= BigInt(b.issued_ms) && now < BigInt(r.request_expires_ms) && now < BigInt(input.request_expires_ms);
   } catch { return false; }
 }
