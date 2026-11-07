@@ -29,6 +29,8 @@ MERGE_TIMEOUT_MS :: 60_000
 
 Merge_Effect :: struct {
     source_command_id,source_body:string,
+    source_effect_id:string,
+    source_generation:i64,
 	owner:     string,
 	task_id:   string,
 	bridge_id: string,
@@ -71,7 +73,7 @@ effect_merge_worktree :: proc(svc: ^Service, u: ^Uow, task: domain.Task, evs: []
 }
 
 destroy_merge_effect :: proc(m: Merge_Effect) {
-    delete(m.source_command_id);delete(m.source_body)
+    delete(m.source_command_id);delete(m.source_body);delete(m.source_effect_id)
 	delete(m.owner)
 	delete(m.task_id)
 	delete(m.bridge_id)
@@ -105,6 +107,8 @@ flush_merges :: proc(svc: ^Service, e: ^Effects) {
 		job.merge = Merge_Effect{
             source_command_id=strings.clone(m.source_command_id),
             source_body=strings.clone(m.source_body),
+            source_effect_id=strings.clone(m.source_effect_id),
+            source_generation=m.source_generation,
 			owner     = strings.clone(m.owner),
 			task_id   = strings.clone(m.task_id),
 			bridge_id = strings.clone(m.bridge_id),

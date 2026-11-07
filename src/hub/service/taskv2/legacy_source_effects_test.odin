@@ -16,6 +16,7 @@ legacy_effect_observe :: proc(ctx:rawptr,w:Wake_Command) {
     testing.expect(o.t,id!="")
     testing.expect_value(o.t,scalar_text(o.fx,fmt.tprintf("SELECT input_digest FROM owner_legacy_source_effects WHERE effect_id='%s'",id)),contracts.owner_payload_digest(w.body_json))
     testing.expect_value(o.t,scalar_text(o.fx,fmt.tprintf("SELECT state FROM owner_legacy_source_effects WHERE effect_id='%s'",id)),"outstanding")
+    testing.expect_value(o.t,scalar_text(o.fx,fmt.tprintf("SELECT command_id FROM owner_legacy_source_effects WHERE effect_id='%s'",id)),id)
 }
 
 @(test)

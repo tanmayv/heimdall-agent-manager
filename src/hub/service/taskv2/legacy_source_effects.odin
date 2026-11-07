@@ -10,6 +10,7 @@ import agent "odin_test:hub/service/agent"
 
 Prepared_Legacy_Wake :: struct {
     bridge_id,chain_id,command_id,body_json,key:string,
+    source_generation:i64,
 }
 
 // Persist exact dispatch hashes inside the mutation transaction, including
@@ -33,10 +34,10 @@ prepare_legacy_source_effects :: proc(svc:^Service,e:^Effects) -> domain.Domain_
         defer delete(body)
         kind:="wake"
         if len(runs)==0 do kind="stop"
-        _,perr:=svc.repo.legacy_effect_prepare(svc.repo.ctx,domain.Legacy_Source_Effect{
-          account_id=string(source.owner_user_id),chain_id=chain,effect_id=id,bridge_id=bridge,kind=kind,input_digest=contracts.owner_payload_digest(body)})
+        generation,perr:=svc.repo.legacy_effect_prepare(svc.repo.ctx,domain.Legacy_Source_Effect{
+          account_id=string(source.owner_user_id),chain_id=chain,effect_id=id,command_id=id,bridge_id=bridge,kind=kind,input_digest=contracts.owner_payload_digest(body)})
         if perr.code!=.None do return perr
-        append(&e.source_wakes,Prepared_Legacy_Wake{strings.clone(bridge),strings.clone(chain),strings.clone(id),strings.clone(body),strings.clone(key)})
+        append(&e.source_wakes,Prepared_Legacy_Wake{strings.clone(bridge),strings.clone(chain),strings.clone(id),strings.clone(body),strings.clone(key),generation})
     }
     for &m in e.merges {
         task,found,err:=iface.taskchain_get_task(svc.repo,domain.Task_ID(m.task_id))
@@ -47,11 +48,13 @@ prepare_legacy_source_effects :: proc(svc:^Service,e:^Effects) -> domain.Domain_
         // Each dispatch attempt gets its own source fence, while the existing
         // Bridge merge command identity remains stable/idempotent.
         effect_id:=platform.generate_id(svc.ids,"effect_merge_")
-        _,perr:=svc.repo.legacy_effect_prepare(svc.repo.ctx,domain.Legacy_Source_Effect{
-          account_id=string(task.owner_user_id),chain_id=string(task.chain_id),effect_id=effect_id,bridge_id=m.bridge_id,kind="merge",input_digest=contracts.owner_payload_digest(body)})
+        generation,perr:=svc.repo.legacy_effect_prepare(svc.repo.ctx,domain.Legacy_Source_Effect{
+          account_id=string(task.owner_user_id),chain_id=string(task.chain_id),effect_id=effect_id,command_id=command_id,bridge_id=m.bridge_id,kind="merge",input_digest=contracts.owner_payload_digest(body)})
         if perr.code!=.None do return perr
         m.source_command_id=strings.clone(command_id)
         m.source_body=strings.clone(body)
+        m.source_effect_id=strings.clone(effect_id)
+        m.source_generation=generation
     }
     return {}
 }

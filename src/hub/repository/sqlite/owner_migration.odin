@@ -74,6 +74,7 @@ legacy_effect_prepare :: proc(ctx:rawptr,e:domain.Legacy_Source_Effect) -> (i64,
     // Without the task transaction a crash can commit a task grant with no
     // corresponding effect fence. Refuse such a caller rather than repair it.
     if sqlite3_get_autocommit(impl.conn.db)!=0 do return 0,legacy_conflict()
+    if !contracts.owner_field_valid(e.command_id,"id") do return 0,domain.domain_error(.Validation_Failed,"original legacy command identity required")
     if e.account_id=="" || e.chain_id=="" || e.effect_id=="" || e.bridge_id=="" || !contracts.owner_hex(e.input_digest,64) || (e.kind!="wake" && e.kind!="stop" && e.kind!="merge") do return 0,domain.domain_error(.Validation_Failed,"invalid source effect fence")
     factory:SQLite_Unit_Of_Work_Factory
     uf:=new_unit_of_work_factory(&factory,impl.conn,nil)
@@ -81,11 +82,11 @@ legacy_effect_prepare :: proc(ctx:rawptr,e:domain.Legacy_Source_Effect) -> (i64,
     if !opened do return 0,err
     committed:=false
     defer { if !committed do iface.unit_of_work_rollback(&tx) }
-    rows,ok:=legacy_metadata(impl.conn,"SELECT account_id,chain_id,bridge_id,kind,input_digest,generation FROM owner_legacy_source_effects WHERE effect_id=?",6,e.effect_id)
+    rows,ok:=legacy_metadata(impl.conn,"SELECT account_id,chain_id,bridge_id,kind,input_digest,generation,command_id FROM owner_legacy_source_effects WHERE effect_id=?",7,e.effect_id)
     if !ok do return 0,legacy_storage_error()
     if len(rows)>0 {
         r:=rows[0]
-        if r[0]!=e.account_id || r[1]!=e.chain_id || r[2]!=e.bridge_id || r[3]!=e.kind || r[4]!=e.input_digest do return 0,legacy_conflict()
+        if r[0]!=e.account_id || r[1]!=e.chain_id || r[2]!=e.bridge_id || r[3]!=e.kind || r[4]!=e.input_digest || r[6]!=e.command_id do return 0,legacy_conflict()
         n,_:=strconv.parse_i64(r[5]);return n,{}
     }
     rows,ok=legacy_metadata(impl.conn,"SELECT 1 FROM owner_legacy_source_effects WHERE account_id=? LIMIT 1 OFFSET 99999",1,e.account_id)
@@ -99,8 +100,8 @@ legacy_effect_prepare :: proc(ctx:rawptr,e:domain.Legacy_Source_Effect) -> (i64,
     rows,ok=legacy_metadata(impl.conn,"UPDATE owner_legacy_source_generations SET generation=generation+1 WHERE chain_id=? AND account_id=? RETURNING generation",1,e.chain_id,e.account_id)
     if !ok || len(rows)!=1 do return 0,legacy_storage_error()
     generation:=rows[0][0]
-    _,ok=legacy_metadata(impl.conn,`INSERT INTO owner_legacy_source_effects(effect_id,chain_id,account_id,bridge_id,kind,input_digest,generation,state)
-      VALUES(?,?,?,?,?,?,?,'outstanding')`,0,e.effect_id,e.chain_id,e.account_id,e.bridge_id,e.kind,e.input_digest,generation)
+    _,ok=legacy_metadata(impl.conn,`INSERT INTO owner_legacy_source_effects(effect_id,chain_id,account_id,bridge_id,kind,input_digest,generation,state,command_id)
+      VALUES(?,?,?,?,?,?,?,'outstanding',?)`,0,e.effect_id,e.chain_id,e.account_id,e.bridge_id,e.kind,e.input_digest,generation,e.command_id)
     if !ok do return 0,legacy_conflict()
     n,_:=strconv.parse_i64(generation)
     committed,err=iface.unit_of_work_commit(&tx)

@@ -166,7 +166,7 @@ legacy_effect_fence_is_precommit_exact_replay_and_blocks_empty_lease_freeze :: p
     s:=legacy_seed_source(t,&conn)
     impl:Taskchain_Repo_SQLite
     repo:=new_taskchain_repository(&impl,&conn)
-    effect:=domain.Legacy_Source_Effect{account_id="account",chain_id="chain",effect_id="effect",bridge_id="executor",kind="merge",input_digest=strings.repeat("c",64,context.temp_allocator)}
+    effect:=domain.Legacy_Source_Effect{account_id="account",chain_id="chain",effect_id="effect",command_id="command",bridge_id="executor",kind="merge",input_digest=strings.repeat("c",64,context.temp_allocator)}
     _,err:=repo.legacy_effect_prepare(repo.ctx,effect)
     testing.expect_value(t,err.code,domain.Error_Code.Conflict)
     factory:SQLite_Unit_Of_Work_Factory
@@ -209,4 +209,61 @@ legacy_effect_fence_is_precommit_exact_replay_and_blocks_empty_lease_freeze :: p
 
 legacy_test_selection :: proc() -> domain.Legacy_Migration_Selection {
     return {account_id="account",chain_id="chain",migration_id="migration",owner_bridge_id="bridge",owner_key_id="key",selection_digest=strings.repeat("a",64,context.temp_allocator),expected_work_revision=1}
+}
+
+@(test)
+legacy_effect_command_identity_does_not_relabel_or_merge_dispatches :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    conn,opened:=tmpl_clone_migrated(t)
+    if !testing.expect(t,opened) do return
+    defer close(&conn)
+    _=legacy_seed_source(t,&conn)
+    impl:Taskchain_Repo_SQLite
+    repo:=new_taskchain_repository(&impl,&conn)
+    factory:SQLite_Unit_Of_Work_Factory
+    uf:=new_unit_of_work_factory(&factory,&conn,nil)
+    tx,ok,_:=iface.unit_of_work_begin(&uf)
+    if !testing.expect(t,ok) do return
+    e:=domain.Legacy_Source_Effect{account_id="account",chain_id="chain",effect_id="dispatch1",command_id="stable_merge_command",bridge_id="executor",kind="merge",input_digest=strings.repeat("c",64,context.temp_allocator)}
+    first,err:=repo.legacy_effect_prepare(repo.ctx,e)
+    testing.expect_value(t,err.code,domain.Error_Code.None)
+    e.effect_id="dispatch2"
+    second:i64
+    second,err=repo.legacy_effect_prepare(repo.ctx,e)
+    testing.expect(t,err.code==.None && second>first,"stable command retries retain distinct source effect identities")
+    e.command_id="other_command"
+    _,err=repo.legacy_effect_prepare(repo.ctx,e)
+    testing.expect_value(t,err.code,domain.Error_Code.Conflict)
+    e.effect_id="missing_command";e.command_id=""
+    _,err=repo.legacy_effect_prepare(repo.ctx,e)
+    testing.expect_value(t,err.code,domain.Error_Code.Validation_Failed)
+    committed,_:=iface.unit_of_work_commit(&tx);testing.expect(t,committed)
+    rows,read:=legacy_metadata(&conn,"SELECT effect_id,command_id FROM owner_legacy_source_effects ORDER BY generation",2)
+    testing.expect(t,read && len(rows)==2 && rows[0][0]=="dispatch1" && rows[1][0]=="dispatch2" && rows[0][1]==rows[1][1])
+    testing.expect(t,!exec(&conn,"UPDATE owner_legacy_source_effects SET command_id='relabeled'"))
+}
+
+@(test)
+legacy_effect_v204_upgrade_retains_unknown_association_and_rolls_back :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    conn,opened,_:=open(":memory:")
+    if !testing.expect(t,opened) do return
+    defer close(&conn)
+    migrated,_:=run_migrations(&conn,stop_before="205_owner_legacy_effect_identity.sql")
+    if !testing.expect(t,migrated) do return
+    _=legacy_seed_source(t,&conn)
+    digest:=strings.repeat("c",64,context.temp_allocator)
+    testing.expect(t,exec(&conn,"INSERT INTO owner_legacy_source_generations VALUES('chain','account',1)"))
+    _,written:=legacy_metadata(&conn,"INSERT INTO owner_legacy_source_effects VALUES('old_effect','chain','account','executor','merge',?,1,'outstanding','')",0,digest)
+    testing.expect(t,written)
+    testing.expect(t,exec(&conn,"CREATE TEMP TRIGGER reject_205_marker BEFORE INSERT ON schema_migrations WHEN NEW.version='205_owner_legacy_effect_identity.sql' BEGIN SELECT RAISE(ABORT,'marker failure'); END"))
+    migrated,_=run_migrations(&conn)
+    testing.expect(t,!migrated && !migration_applied(&conn,"205_owner_legacy_effect_identity.sql"))
+    rows,read:=legacy_metadata(&conn,"SELECT 1 FROM pragma_table_info('owner_legacy_source_effects') WHERE name='command_id'",1)
+    testing.expect(t,read && len(rows)==0,"failed migration rolls back added column")
+    testing.expect(t,exec(&conn,"DROP TRIGGER reject_205_marker"))
+    migrated,_=run_migrations(&conn);testing.expect(t,migrated)
+    rows,read=legacy_metadata(&conn,"SELECT effect_id,input_digest,state,command_id FROM owner_legacy_source_effects",4)
+    testing.expect(t,read && len(rows)==1 && rows[0][0]=="old_effect" && rows[0][1]==digest && rows[0][2]=="outstanding" && rows[0][3]=="","old association remains unknown, never inferred from effect ID")
+    testing.expect(t,!exec(&conn,"UPDATE owner_legacy_source_effects SET command_id='guessed_old_command'"))
 }

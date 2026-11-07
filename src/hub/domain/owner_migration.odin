@@ -8,7 +8,7 @@ Legacy_Migration_Selection :: struct {
     expected_work_revision:i64,
 }
 Legacy_Source_Effect :: struct {
-    account_id,chain_id,effect_id,bridge_id,kind,input_digest:string,
+    account_id,chain_id,effect_id,bridge_id,kind,input_digest,command_id:string,
 }
 Legacy_Source_Fence :: struct {
     selection:Legacy_Migration_Selection,
