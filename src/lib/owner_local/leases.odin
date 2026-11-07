@@ -112,7 +112,6 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
         if field(assigned,"method")=="fleet.reserve" && (parent==nil || reserved_hard==0) do return fail("invalid_scope")
         if !work_task_published(s,chain,task) do return fail("operation_conflict")
         if fleet[0][1]!=field(c,"configuration_revision") do return fail("invalid_scope")
-        if code:=budget_admit(s,chain,task);code!="ok" do return fail(code)
     }
     if !control_active(s,chain,task) || (method=="lease.claim" && !control_ready(s,chain,task)) do return fail("invalid_scope")
     if fleet[0][1]!=field(c,"configuration_revision") do return fail("invalid_scope")

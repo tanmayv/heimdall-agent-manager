@@ -91,7 +91,6 @@ execution_prepare_start :: proc(s:^Store,prepare_raw,lease_raw:string,key:contra
     if !workflow_task_current(s,chain,task) || !work_task_published(s,chain,task) ||
        !control_active(s,chain,task) || !control_ready(s,chain,task) ||
        !dependency_ready(s,chain,task) || !language_claim_ready(s,chain,task) { return fail("operation_conflict") }
-    if code:=budget_admit(s,chain,task);code!="ok" do return fail(code)
     _,hard,deadline_ok:=lease_deadlines(s,chain,task,now)
     if !deadline_ok || contracts.executor_number(p,"hard_ms")!=hard do return fail("invalid_scope")
     conflicts,checked:=query(s.db,"SELECT 1 FROM local_leases WHERE lease_id=? OR (retired_seq IS NULL AND (instance_id=? OR task_id=?)) UNION ALL SELECT 1 FROM owner_execution_journal WHERE state!='retired' AND (instance_id=? OR task_id=?)",

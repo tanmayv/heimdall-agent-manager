@@ -58,8 +58,6 @@ member_cas_history_exact_child_removal_restart_and_last_coordinator :: proc(t:^t
     view,record,_,scanned:=attempt_scan(&f.store,"chain","task",1)
     testing.expect(t,scanned && !view.incomplete && !view.live)
     testing.expect(t,record.outcome=="expired:replaced" && record.ended_ms=="1000" && record.completeness=="full")
-    budget,state,budget_ok:=budget_view(&f.store,"chain","task")
-    testing.expect(t,budget_ok && !budget.live && state.reason!="history_incomplete")
     testing.expect_value(t,member_call(f,child,"worker","1","rejoin").code,"ok")
     testing.expect_value(t,lifecycle_call(f,child,"requirements.present","rejoin_old_cap",`{"requirements_revision":"1"}`,cap).code,"invalid_scope")
     testing.expect_value(t,member_call(f,child,"coordinator","1","promote").code,"ok")

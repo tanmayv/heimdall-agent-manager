@@ -1,6 +1,9 @@
 package owner_local
 
-SCHEMA_VERSION :: 28
+import "core:encoding/json"
+
+SCHEMA_VERSION :: 29
+MIGRATION_029 :: #load("migration_029.sql")
 MIGRATION_028 :: #load("migration_028.sql")
 MIGRATION_027 :: #load("migration_027.sql")
 MIGRATION_026 :: #load("migration_026.sql")
@@ -166,8 +169,54 @@ migrate :: proc(db:DB) -> bool {
         if !exec(db,string(MIGRATION_028)) do return false
         if !exec(db,"UPDATE schema_migrations SET version=28 WHERE singleton=1") do return false
     }
+    if version<=28 {
+        if !migration_029_release_budget_controls(db) do return false
+        if !exec(db,string(MIGRATION_029)) do return false
+        if !exec(db,"UPDATE schema_migrations SET version=29 WHERE singleton=1") do return false
+    }
     if !exec(db,"COMMIT") do return false
     committed=true
+    return true
+}
+
+// V29 removes the owner-local attempt budget. A task blocked only by the budget
+// overlay must not stay stuck once that overlay's table is gone: restore the
+// independent control the overlay saved (prior_json), or clear the overlay.
+// The table may be absent when an older schema never created it.
+migration_029_release_budget_controls :: proc(db:DB) -> bool {
+    present,ok:=query(db,"SELECT 1 FROM sqlite_master WHERE type='table' AND name='budget_control_owners'")
+    if !ok do return false
+    if len(present)>0 {
+        owners,read:=query(db,"SELECT chain_id,task_id,reason,prior_json FROM budget_control_owners ORDER BY chain_id,task_id")
+        if !read do return false
+        for owner in owners {
+            chain,task,reason:=owner[0],owner[1],owner[2]
+            prior:[dynamic][]string
+            if json.unmarshal_string(owner[3],&prior,.JSON,context.temp_allocator)!=nil do return false
+            if len(prior)>1 || (len(prior)==1 && len(prior[0])!=4) do return false
+            controls,found:=query(db,"SELECT mode,reason FROM local_controls WHERE chain_id=? AND task_id=?",chain,task)
+            if !found do return false
+            if len(controls)!=1 do continue
+            if controls[0][0]=="held" {
+                // A hold placed over the overlay resumes to the saved control.
+                resume,waiting:="ready",""
+                if len(prior)==1 { resume=prior[0][0];waiting=prior[0][3];if resume=="held" do resume=prior[0][1] }
+                if _,ok=query(db,"UPDATE local_controls SET resume_state=?,waiting_on=? WHERE chain_id=? AND task_id=?",resume,waiting,chain,task);!ok do return false
+            } else if controls[0][0]=="blocked" && controls[0][1]==reason {
+                if len(prior)==0 {
+                    if _,ok=query(db,"DELETE FROM local_controls WHERE chain_id=? AND task_id=?",chain,task);!ok do return false
+                } else if _,ok=query(db,"UPDATE local_controls SET mode=?,resume_state=?,reason=?,waiting_on=? WHERE chain_id=? AND task_id=?",prior[0][0],prior[0][1],prior[0][2],prior[0][3],chain,task);!ok do return false
+            } else do continue
+            if _,ok=query(db,"UPDATE tasks SET revision=revision+1 WHERE chain_id=? AND task_id=?",chain,task);!ok do return false
+        }
+    }
+    // An overlay block without its owner row has nothing to restore.
+    orphans,read:=query(db,"SELECT chain_id,task_id FROM local_controls WHERE mode='blocked' AND waiting_on='human' AND reason IN('budget_exhausted','oscillation','native_blocked')")
+    if !read do return false
+    for row in orphans {
+        if _,ok=query(db,"DELETE FROM local_controls WHERE chain_id=? AND task_id=?",row[0],row[1]);!ok do return false
+        if _,ok=query(db,"UPDATE tasks SET revision=revision+1 WHERE chain_id=? AND task_id=?",row[0],row[1]);!ok do return false
+    }
     return true
 }
 

@@ -172,9 +172,6 @@ native_history_import :: proc(s:^Store,c:json.Object,raw:string,seq:i64)->string
                 if prior[0][0]!=record_raw || prior[0][1]!=owner || prior[0][2]!=field(bundle,"completeness") do return "operation_conflict"
                 continue
             }
-            sealed,seal_ok:=query(s.db,"SELECT 1 FROM native_budget_baselines WHERE chain_id=? AND task_id=? AND source_revision=?",chain,task,source)
-            if !seal_ok do return "storage_error"
-            if len(sealed)>0 do return "operation_conflict"
             _,inserted:=query(s.db,`INSERT INTO native_history_records VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,NULLIF(?,''),NULLIF(?,''))`,chain,task,source,kind,key,owner,field(bundle,"completeness"),attempt,facet,version,writer,record_raw,fmt.tprintf("%d",seq),parent_kind,parent_key)
             if !inserted do return "storage_error"
             total+=1
@@ -185,7 +182,7 @@ native_history_import :: proc(s:^Store,c:json.Object,raw:string,seq:i64)->string
 }
 
 // This API exposes source snapshots separately from C1a's current runtime
-// projection. A declared import completeness is not budget admission authority.
+// projection. A declared import completeness is not admission authority.
 native_history_read :: proc(s:^Store,c,p:json.Object)->Result {
     chain,task,source,kind:=field(c,"chain_id"),field(c,"task_id"),field(p,"source_revision"),field(p,"kind")
     if field(c,"method")=="native.history.fetch" {

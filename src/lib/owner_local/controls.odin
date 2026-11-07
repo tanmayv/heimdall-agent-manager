@@ -72,33 +72,6 @@ control_mode :: proc(s:^Store,chain,task,mode,resume,reason,waiting:string) -> b
     _,ok:=query(s.db,"INSERT INTO local_controls VALUES(?,?,?,?,?,?) ON CONFLICT(chain_id,task_id) DO UPDATE SET mode=excluded.mode,resume_state=excluded.resume_state,reason=excluded.reason,waiting_on=excluded.waiting_on",chain,task,mode,resume,reason,waiting)
     return ok
 }
-// The budget overlay saves independent controls for later recovery. Accepted
-// hold/release commands must advance that saved state in the same transaction,
-// otherwise recovery can restore a hold the operator has already released.
-control_budget_hold :: proc(s:^Store,chain,task,method,body:string) -> bool {
-    rows,ok:=query(s.db,"SELECT prior_json FROM budget_control_owners WHERE chain_id=? AND task_id=?",chain,task)
-    if !ok do return false
-    if len(rows)==0 do return true
-    prior:[dynamic][]string
-    if json.unmarshal_string(rows[0][0],&prior,.JSON,context.temp_allocator)!=nil do return false
-    if len(prior)>1 || (len(prior)==1 && len(prior[0])!=4) do return false
-    mode,resume,reason,waiting:="ready","ready",body,""
-    if len(prior)==1 { mode=prior[0][0];resume=prior[0][1];reason=prior[0][2];waiting=prior[0][3] }
-    if method=="task.hold" {
-        if mode!="held" { resume=mode;mode="held";reason=body }
-    } else if mode=="held" {
-        mode="ready";reason=body
-        if resume=="blocked" {
-            mode="blocked"
-            blocks,found:=query(s.db,"SELECT summary FROM local_handoffs WHERE chain_id=? AND task_id=? AND kind='lease.block' ORDER BY seq DESC LIMIT 1",chain,task)
-            if !found || len(blocks)!=1 do return false
-            reason=blocks[0][0]
-        } else { waiting="" }
-        resume="ready"
-    }
-    _,ok=query(s.db,"UPDATE budget_control_owners SET prior_json=? WHERE chain_id=? AND task_id=?",encode([1][4]string{{mode,resume,reason,waiting}}),chain,task)
-    return ok
-}
 control_human :: proc(s:^Store,c,p:json.Object,body:string,seq:i64) -> string {
     chain,task,method:=field(c,"chain_id"),field(c,"task_id"),field(c,"method")
     state:="ready"
@@ -123,20 +96,13 @@ control_human :: proc(s:^Store,c,p:json.Object,body:string,seq:i64) -> string {
         // Pre-fix holds stored lifecycle state in resume_state; always retain
         // the current lifecycle state. A native block is a separate overlay.
         if resume=="blocked" do mode="blocked"
-        owned,owned_ok:=query(s.db,"SELECT reason FROM budget_control_owners WHERE chain_id=? AND task_id=?",chain,task)
-        if !owned_ok do return "storage_error"
-        if mode=="blocked" && len(owned)==1 {
-            reason=owned[0][0]
-        } else if mode=="blocked" {
+        if mode=="blocked" {
             blocks,found:=query(s.db,"SELECT summary FROM local_handoffs WHERE chain_id=? AND task_id=? AND kind='lease.block' ORDER BY seq DESC LIMIT 1",chain,task)
             if !found || len(blocks)!=1 do return "storage_error"
             reason=blocks[0][0]
         }
     case "task.cancel":
         if mode=="cancelled" || state=="done" do return "operation_conflict"
-        source_view,source_state,source_ok:=budget_view(s,chain,task)
-        if !source_ok do return "storage_error"
-        if source_state.source_revision!="" && source_view.done do return "operation_conflict"
         mode="cancelled";next="ready";waiting=""
         if !control_revoke(s,c,seq,"stop") do return "storage_error"
     case "task.reopen":
@@ -147,11 +113,7 @@ control_human :: proc(s:^Store,c,p:json.Object,body:string,seq:i64) -> string {
         consumed,read_consumed:=query(s.db,"SELECT 1 FROM local_workflow_output_triggers WHERE chain_id=? AND source_task=? AND consumed=1 LIMIT 1",chain,task)
         if !read_consumed do return "storage_error"
         if len(consumed)>0 do return "operation_conflict"
-        if mode!="cancelled" && state!="done" && state!="merge_blocked" {
-            source_view,source_state,source_ok:=budget_view(s,chain,task)
-            if !source_ok do return "storage_error"
-            if source_state.source_revision=="" || (!source_view.done && !source_view.cancelled) do return "operation_conflict"
-        }
+        if mode!="cancelled" && state!="done" && state!="merge_blocked" do return "operation_conflict"
         mode="ready";next="ready";waiting=""
         if !control_revoke(s,c,seq,"checkpoint") do return "storage_error"
     case "task.resolve":
@@ -172,14 +134,8 @@ control_human :: proc(s:^Store,c,p:json.Object,body:string,seq:i64) -> string {
         next="merge_pending"
     case: return "malformed"
     }
-    if method=="task.hold" || method=="task.release" {
-        if !control_budget_hold(s,chain,task,method,body) do return "storage_error"
-    }
     if method!="task.hold" {
         if _,ok=query(s.db,"DELETE FROM local_checkpoints WHERE chain_id=? AND task_id=?",chain,task);!ok do return "storage_error"
-    }
-    if method=="task.resolve" || method=="task.cancel" || method=="task.reopen" {
-        if _,ok=query(s.db,"DELETE FROM budget_control_owners WHERE chain_id=? AND task_id=?",chain,task);!ok do return "storage_error"
     }
     if !control_mode(s,chain,task,mode,resume,reason,waiting) do return "storage_error"
     if method=="task.release" && next=="in_review" {
@@ -241,7 +197,6 @@ control_agent :: proc(tx:^Transaction,c,p:json.Object,child:Child,seq,now:i64,si
     req,has_req:=lifecycle_requirements(s,dest_chain,dest)
     if !configured || !has_req || encode(child)!=binding[1] || child.agent_id!=field(config,"author_agent_id") do return "invalid_scope",false
     if !dependency_ready(s,dest_chain,dest) do return "operation_conflict",false
-    if code:=budget_admit(s,dest_chain,dest);code!="ok" do return code,false
     if !control_ready(s,dest_chain,dest) do return "operation_conflict",false
     if req[0]!=field(p,"destination_requirements_revision") do return "stale_revision",false
     states,ok:=query(s.db,"SELECT state FROM lifecycle_state WHERE chain_id=? AND task_id=?",dest_chain,dest)

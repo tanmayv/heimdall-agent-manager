@@ -171,7 +171,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     if len(chains)>0 do revision=number(chains[0][0])
     if creating && revision>0 do return fail("operation_conflict")
     if !creating && revision==0 do return fail("invalid_scope")
-    if method=="task.publish" || method=="task.priority" || method=="budget.activate" || method=="native.history.import" || method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="dependency.edit" || method=="review.roles" || method=="task.hold" || method=="task.release" || method=="task.cancel" || method=="task.reopen" || method=="task.resolve" || method=="merge.retry" || method=="submission.read" || method=="task.edit" || method=="task.delete" || method=="task.comment" || method=="task.read" || method=="fleet.edit" || method=="fleet.reserve" || method=="runtime.read" || method=="lifecycle.configure" || method=="requirements.edit" || method=="review.post" {
+    if method=="task.publish" || method=="task.priority"|| method=="native.history.import" || method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="dependency.edit" || method=="review.roles" || method=="task.hold" || method=="task.release" || method=="task.cancel" || method=="task.reopen" || method=="task.resolve" || method=="merge.retry" || method=="submission.read" || method=="task.edit" || method=="task.delete" || method=="task.comment" || method=="task.read" || method=="fleet.edit" || method=="fleet.reserve" || method=="runtime.read" || method=="lifecycle.configure" || method=="requirements.edit" || method=="review.post" {
         tasks,found:=query(s.db,"SELECT revision FROM tasks WHERE chain_id=? AND task_id=?",chain,task)
         if !found do return fail("storage_error")
         if len(tasks)==1 {
@@ -279,10 +279,6 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         code:=fleet_policy_set(s,c,body,seq,field(p,"source_revision"))
         if code!="ok" do return fail(code)
         wrote=true
-    case "budget.activate":
-        code:=budget_activate(s,c,p,seq)
-        if code!="ok" do return fail(code)
-        _,wrote=query(s.db,"UPDATE tasks SET revision=revision+1 WHERE chain_id=? AND task_id=?",chain,task)
     case "native.history.import":
         code:=native_history_import(s,c,body,seq)
         if code!="ok" do return fail(code)

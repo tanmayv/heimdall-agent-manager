@@ -66,8 +66,7 @@ execution_preparation_current :: proc(s:^Store,reservation:string,now:i64)->bool
     return read && len(revisions)==1 && revisions[0][0]==field(c,"expected_revision") &&
         workflow_task_current(s,chain,task) && work_task_published(s,chain,task) &&
         control_active(s,chain,task) && control_ready(s,chain,task) &&
-        dependency_ready(s,chain,task) && language_claim_ready(s,chain,task) &&
-        budget_admit(s,chain,task)=="ok"
+        dependency_ready(s,chain,task) && language_claim_ready(s,chain,task)
 }
 
 // Persist the original prepare evidence and a fixed signed query before query

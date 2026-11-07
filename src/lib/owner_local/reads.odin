@@ -74,9 +74,7 @@ read_result :: proc(s:^Store,c:json.Object,payload:string,revision:i64) -> Resul
         if !controls_ok do return fail("storage_error")
         attempts,attempts_ok:=attempt_view(s,chain,task)
         if !attempts_ok do return fail("storage_error")
-        _,budget,budget_ok:=budget_view(s,chain,task)
-        if !budget_ok do return fail("storage_error")
-        return Result{code="ok",body=encode(struct { revision:string, fleet,leases,config,requirements,state,submission,controls:[dynamic][]string, attempts:contracts.Owner_Attempt_State, budget:contracts.Owner_Budget_State, }{fmt.tprintf("%d",revision),fleet,leases,configs,req,states,submissions,controls,attempt_document(attempts),budget})}
+        return Result{code="ok",body=encode(struct { revision:string, fleet,leases,config,requirements,state,submission,controls:[dynamic][]string, attempts:contracts.Owner_Attempt_State, }{fmt.tprintf("%d",revision),fleet,leases,configs,req,states,submissions,controls,attempt_document(attempts)})}
     }
     scope:=contracts.owner_payload_digest(encode([5]string{s.account,chain,task,method,fmt.tprintf("%d",revision)}))
     cursor:=field(p,"cursor")

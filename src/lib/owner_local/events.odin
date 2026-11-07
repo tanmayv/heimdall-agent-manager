@@ -28,15 +28,6 @@ event_record :: proc(tx:^Transaction,seq,now:i64,chain,task,actor_kind,actor_id,
     _,ok:=query(tx.store.db,"INSERT INTO local_events VALUES(?,?,?,?,?,?,?,?,?,'full')",
         fmt.tprintf("%d",seq),chain,task,fmt.tprintf("%d",now),actor_kind,actor_id,kind,op,evidence)
     if !ok do return false
-    // The current event and any task-scoped workflow retirements share one
-    // immutable budget disposition. The same transaction owns all these rows.
-    affected,affected_ok:=query(tx.store.db,`SELECT ?1 WHERE ?1!='' UNION SELECT task_id FROM local_task_retirements WHERE seq=?2 AND chain_id=?3 UNION SELECT task_id FROM local_metadata_retirements WHERE seq=?2 AND chain_id=?3`,task,fmt.tprintf("%d",seq),chain)
-    if !affected_ok do return false
-    for row in affected { if !budget_record(tx.store,chain,row[0],seq) do return false }
-    if kind=="lease.switch" {
-        value,parsed:=contracts.owner_request_document(payload);p,obj:=value.(json.Object)
-        if !parsed || !obj || !budget_record(tx.store,field(p,"destination_chain_id"),field(p,"destination_task_id"),seq) do return false
-    }
     return work_after_event(tx,chain,task,kind,actor_id,op,payload,seq,now)
 }
 

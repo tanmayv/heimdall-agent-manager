@@ -17,10 +17,10 @@ dependency_claim :: proc(f:^Fixture,task,lease,op,revision:string)->Result {
  return lease_invoke(f,encode(c),"",lease_child())
 }
 @(test)
-dependency_signed_live_retirement_rollback_replay_restart_and_noncounting_next_grant :: proc(t:^testing.T) {
+dependency_signed_live_retirement_rollback_replay_restart_and_next_grant :: proc(t:^testing.T) {
  context.allocator=context.temp_allocator
  f:=fixture(t);defer destroy(f);lifecycle_seed(t,f);control_destination_seed(t,f)
- p:=encode(doc(map[string]string{"requirements_revision"="2","body_cipher"=cipher(f,`{"goal":"bounded","acceptance":["done"],"budget":{"max_attempts":1}}`)}))
+ p:=encode(doc(map[string]string{"requirements_revision"="2","body_cipher"=cipher(f,`{"goal":"bounded","acceptance":["done"]}`)}))
  testing.expect_value(t,invoke(f,command(f,"requirements.edit","one","task",p,"4"),p).code,"ok")
  claimed:=dependency_claim(f,"task","source_lease","claim_source","5")
  testing.expect_value(t,claimed.code,"ok");cap:=result_cap(claimed)
@@ -33,7 +33,6 @@ dependency_signed_live_retirement_rollback_replay_restart_and_noncounting_next_g
  testing.expect(t,exec(f.store.db,"DROP TRIGGER dep_fail"))
  testing.expect_value(t,invoke(f,raw,p).code,"ok")
  replay:=invoke(f,raw,p,4000000);testing.expect(t,replay.code=="ok" && replay.replay)
- budget_expect_test(t,f,1,1,"")
  attempt:=attempt_read_test(t,f,"1")
  testing.expect_value(t,attempt.outcome,"expired:dep_added")
  testing.expect_value(t,dependency_claim(f,"task","blocked","blocked_source","6").code,"operation_conflict")
@@ -54,7 +53,6 @@ dependency_signed_live_retirement_rollback_replay_restart_and_noncounting_next_g
  heartbeat:=lease_request(f,lease_child(),"lease.heartbeat","stale","source_lease",cap,"6")
  testing.expect_value(t,lease_invoke(f,heartbeat,cap,lease_child()).code,"invalid_scope")
  testing.expect_value(t,dependency_claim(f,"task","source_next","resume_source","6").code,"ok")
- budget_expect_test(t,f,2,1,"")
  rows,ok=query(f.store.db,"SELECT (SELECT count(*) FROM local_dependency_retirements),(SELECT count(*) FROM control_notices WHERE operation_id='add_dep'),(SELECT count(*) FROM local_work_attempts WHERE task_id='task')")
  testing.expect(t,ok && rows[0][0]=="1" && rows[0][1]=="1" && rows[0][2]=="2")
 }
