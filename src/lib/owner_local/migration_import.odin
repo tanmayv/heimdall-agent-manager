@@ -66,6 +66,13 @@ migration_text :: proc(row:json.Object,name:string) -> string {
 }
 
 Migration_Rows :: map[string][dynamic]json.Object
+// A kind with no exported rows has no entry; never iterate a map index of a
+// missing key in place.
+migration_rows :: proc(rows:Migration_Rows,kind:string)->[]json.Object {
+    list,found:=rows[kind]
+    if !found do return nil
+    return list[:]
+}
 
 migration_import :: proc(s:^Store,input:Migration_Import_Input,device,owner_key:contracts.Owner_Verified_Key,
     directory_version:i64,directory_hash:string,now:i64,kr:^vault.Vault_Keyring,sign:Signer) -> Result {
@@ -126,7 +133,7 @@ migration_import :: proc(s:^Store,input:Migration_Import_Input,device,owner_key:
         }
         rows[ref.kind]=list
     }
-    if len(rows["chain"])!=1 do return fail("invalid_content")
+    if len(migration_rows(rows,"chain"))!=1 do return fail("invalid_content")
     seq:=number(state[0][0])+1
     stamp:=fmt.tprintf("%d",seq)
     summary:=make(map[string]i64)
@@ -152,7 +159,7 @@ migration_import :: proc(s:^Store,input:Migration_Import_Input,device,owner_key:
     if !checked || len(checks)!=1 do return fail("storage_error")
     total:i64
     for k in manifest.kinds do total+=k.rows
-    if number(checks[0][0])!=i64(len(rows["task"])) || number(checks[0][1])!=i64(len(rows["comment"])) || number(checks[0][2])!=i64(len(manifest.documents)) || number(checks[0][3])!=total do return fail("invalid_content")
+    if number(checks[0][0])!=i64(len(migration_rows(rows,"task"))) || number(checks[0][1])!=i64(len(migration_rows(rows,"comment"))) || number(checks[0][2])!=i64(len(manifest.documents)) || number(checks[0][3])!=total do return fail("invalid_content")
     if _,ok=query(s.db,"INSERT INTO command_receipts(principal_id,operation_id,chain_id,task_id,method,input_digest,digest_key_id,request_expires_ms,result_json,commit_seq,created_ms) VALUES(?,?,?,'',?,?,?,?,?,?,?)",
         principal,migration,chain,MIGRATION_IMPORT_METHOD,manifest_digest,field(selection,"key_id"),field(selection,"request_expires_ms"),receipt_raw,stamp,fmt.tprintf("%d",now));!ok do return fail("storage_error")
     if _,ok=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,'',1,?)",stamp,chain,MIGRATION_IMPORT_METHOD,migration);!ok do return fail("storage_error")
@@ -166,7 +173,7 @@ migration_import :: proc(s:^Store,input:Migration_Import_Input,device,owner_key:
 // legacy vault ciphertext; IDs and authors are the legacy ones.
 migration_project :: proc(s:^Store,chain,principal,key_id,migration:string,rows:Migration_Rows,seq,now:i64,kr:^vault.Vault_Keyring,summary:^map[string]i64) -> string {
     stamp:=fmt.tprintf("%d",seq)
-    c:=rows["chain"][0]
+    c:=migration_rows(rows,"chain")[0]
     title,t_ok:=migration_plain(migration_text(c,"title"),kr)
     description,d_ok:=migration_plain(migration_text(c,"description"),kr)
     if !t_ok || !d_ok do return "invalid_content"
@@ -182,7 +189,9 @@ migration_project :: proc(s:^Store,chain,principal,key_id,migration:string,rows:
     if defaults:=migration_text(c,"defaults_json");defaults!="" && defaults!="{}" {
         if _,ok:=query(s.db,"INSERT INTO local_chain_defaults_versions VALUES(?,?,?)",chain,stamp,defaults);!ok do return "invalid_content"
     }
-    for t in rows["task"] {
+    rows_task:=migration_rows(rows,"task")
+
+    for t in rows_task {
         task:=migration_text(t,"task_id")
         if !contracts.owner_field_valid(task,"id") do return "invalid_content"
         task_title,a:=migration_plain(migration_text(t,"title"),kr)
@@ -220,22 +229,30 @@ migration_project :: proc(s:^Store,chain,principal,key_id,migration:string,rows:
         }
         summary^["task"]+=1
     }
-    for d in rows["dependency"] {
+    rows_dependency:=migration_rows(rows,"dependency")
+
+    for d in rows_dependency {
         if _,ok:=query(s.db,"INSERT INTO local_dependencies VALUES(?,?,?)",chain,migration_text(d,"task_id"),migration_text(d,"depends_on_task_id"));!ok do return "invalid_content"
     }
-    for d in rows["work_dependency"] {
+    rows_work_dependency:=migration_rows(rows,"work_dependency")
+
+    for d in rows_work_dependency {
         if migration_text(d,"removed_at")!="" || migration_text(d,"dependent_kind")!="task" || migration_text(d,"prerequisite_kind")!="task" { summary^["work_dependency_archival"]+=1;continue }
         if _,ok:=query(s.db,"INSERT INTO local_work_dependencies VALUES(?,?,'task',?,'task',?,?,?,?,?)",chain,migration_text(d,"dependency_id"),migration_text(d,"dependent_id"),migration_text(d,"prerequisite_id"),
             migration_text(d,"created_at"),migration_text(d,"created_by_kind"),migration_text(d,"created_by_id"),stamp);!ok do return "invalid_content"
     }
-    for m in rows["comment"] {
+    rows_comment:=migration_rows(rows,"comment")
+
+    for m in rows_comment {
         body,ok:=migration_plain(migration_text(m,"body"),kr)
         if !ok do return "invalid_content"
         author:=migration_text(m,"author_agent_instance_id")
         if author=="" do author=migration_text(m,"owner_user_id")
         if _,ok=query(s.db,"INSERT INTO task_comments VALUES(?,?,?,?,?,?)",chain,migration_text(m,"task_id"),migration_text(m,"comment_id"),author,body,stamp);!ok do return "invalid_content"
     }
-    for m in rows["summary"] {
+    rows_summary:=migration_rows(rows,"summary")
+
+    for m in rows_summary {
         curated,ok:=migration_plain(migration_text(m,"curated_body"),kr)
         if !ok do return "invalid_content"
         if curated=="" do continue
@@ -244,7 +261,7 @@ migration_project :: proc(s:^Store,chain,principal,key_id,migration:string,rows:
     // Imports bump the local work revision through triggers; never go below
     // the legacy revision clients last observed.
     if _,ok:=query(s.db,"UPDATE local_work_chains SET work_revision=max(work_revision,CAST(? AS INTEGER)) WHERE chain_id=?",migration_text(c,"work_revision"),chain);!ok do return "storage_error"
-    if completions:=rows["work_completion"];len(completions)>0 {
+    if completions:=migration_rows(rows,"work_completion");len(completions)>0 {
         last:=completions[len(completions)-1]
         if _,ok:=query(s.db,"INSERT INTO local_work_completions VALUES(?,?,?,?,'user',?,?)",chain,migration_text(last,"work_revision"),migration_text(last,"summary"),migration_text(last,"completed_at"),s.account,stamp);!ok do return "storage_error"
     }
@@ -258,13 +275,17 @@ migration_native_history :: proc(s:^Store,chain:string,rows:Migration_Rows,seq:i
     per_task:=make(map[string][3][dynamic]string)
     attempts:=make(map[string]bool)
     order:=make([dynamic]string)
-    for t in rows["task"] { append(&order,migration_text(t,"task_id")) }
+    rows_task:=migration_rows(rows,"task")
+
+    for t in rows_task { append(&order,migration_text(t,"task_id")) }
     add :: proc(per_task:^map[string][3][dynamic]string,task:string,slot:int,record:string) {
         lists:=per_task[task]
         append(&lists[slot],record)
         per_task[task]=lists
     }
-    for a in rows["attempt"] {
+    rows_attempt:=migration_rows(rows,"attempt")
+
+    for a in rows_attempt {
         task,attempt:=migration_text(a,"task_id"),migration_text(a,"attempt_no")
         r:=encode(doc(map[string]string{"task_id"=task,"attempt_no"=attempt,"chain_id"=chain,"owner_user_id"=s.account,"started_at"=migration_text(a,"started_at"),"ended_at"=migration_text(a,"ended_at"),
             "holder_instance_id"=migration_text(a,"holder_instance_id"),"outcome"=migration_text(a,"outcome"),"counts_toward_budget"="0" if migration_text(a,"counts_toward_budget")=="0" else "1","provenance_json"="{}"}))
@@ -272,7 +293,9 @@ migration_native_history :: proc(s:^Store,chain:string,rows:Migration_Rows,seq:i
         attempts[fmt.tprintf("%s/%s",task,attempt)]=true
         add(&per_task,task,0,r)
     }
-    for e in rows["event"] {
+    rows_event:=migration_rows(rows,"event")
+
+    for e in rows_event {
         task:=migration_text(e,"task_id")
         r:=encode(doc(map[string]string{"event_id"=migration_text(e,"event_id"),"task_id"=task,"chain_id"=chain,"owner_user_id"=s.account,"ts_ms"=migration_text(e,"ts_ms"),"actor_kind"=migration_text(e,"actor_kind"),
             "actor_id"=migration_text(e,"actor_id"),"kind"=migration_text(e,"kind"),"payload_json"=migration_text(e,"payload_json"),"provenance_json"="{}"}))
@@ -280,7 +303,9 @@ migration_native_history :: proc(s:^Store,chain:string,rows:Migration_Rows,seq:i
         if !ok || !native_json_object(field(parsed,"payload_json")) { summary^["event_archival_only"]+=1;continue }
         add(&per_task,task,1,r)
     }
-    for f in rows["facet"] {
+    rows_facet:=migration_rows(rows,"facet")
+
+    for f in rows_facet {
         task,attempt:=migration_text(f,"task_id"),migration_text(f,"attempt_no")
         r:=encode(doc(map[string]string{"task_id"=task,"attempt_no"=attempt,"chain_id"=chain,"owner_user_id"=s.account,"kind"=migration_text(f,"kind"),"v"=migration_text(f,"v"),"body_json"=migration_text(f,"body_json"),
             "writer"=migration_text(f,"writer"),"written_at"=migration_text(f,"written_at"),"references_json"="[]","provenance_json"="{}"}))

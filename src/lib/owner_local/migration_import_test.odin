@@ -224,3 +224,22 @@ migration_import_replay_conflict_owner_and_hash_refusals :: proc(t:^testing.T) {
     rows_after,_:=query(f.store.db,"SELECT count(*) FROM migration_imports")
     testing.expect_value(t,rows_after[0][0],"1")
 }
+
+// A real legacy chain usually lacks most kinds (no comments, history or
+// dependencies); absent kinds import as empty.
+@(test)
+migration_import_minimal_chain_with_absent_kinds :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f)
+    full:=migration_test_rows(f)
+    rows:=make(map[string][]string)
+    rows["chain"]=full["chain"]
+    rows["task"]=migration_list([]string{`{"task_id":"t_only","chain_id":"legacy_chain","owner_user_id":"account","title":"Only","description":"","publish_state":"draft","state":"backlog","priority":"p2","attempt_no":0,"brief_json":"{}","blocked_on_json":""}`})
+    m:=migration_test_build(f,"mig_min",rows)
+    got:=migration_test_import(f,m)
+    if !testing.expect_value(t,got.code,"ok") do return
+    counts,_:=query(f.store.db,"SELECT (SELECT count(*) FROM tasks WHERE chain_id='legacy_chain'),(SELECT count(*) FROM native_history_records),(SELECT count(*) FROM migration_import_documents)")
+    testing.expect_value(t,encode(counts),encode([1][3]string{{"1","0","2"}}))
+    rows2,_:=query(f.store.db,"SELECT publish_state FROM local_task_publications WHERE task_id='t_only'")
+    testing.expect_value(t,encode(rows2),encode([1][1]string{{"draft"}}))
+}
