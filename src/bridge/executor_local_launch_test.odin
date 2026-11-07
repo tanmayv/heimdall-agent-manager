@@ -125,8 +125,9 @@ bridge_executor_local_real_daemon_lost_observation_restart_and_exact_stop :: pro
     same_pid,same_known=bridge_pty_host_executor_query(socket,replacement.instance,replacement.launch_key)
     testing.expect(t,same_known && same_pid==pid)
     // A late legacy stop, including force, cannot kill this exact retained
-    // child once its instance target has crossed the permanent barrier.
-    barrier:=executor.Legacy_Barrier{"source_chain","migration",contracts.owner_payload_digest("verified selection"),1}
+    // child once its instance target has crossed the permanent barrier. Zero
+    // source generation must not turn this independently observed child idle.
+    barrier:=executor.Legacy_Barrier{"source_chain","migration",contracts.owner_payload_digest("verified selection"),0}
     testing.expect_value(t,bridge_legacy_install_barrier(&s,barrier,[]executor.Legacy_Resource{{"instance",replacement.instance}}).code,"ok")
     testing.expect(t,!bridge_legacy_stop_target(&s,replacement.instance,true))
     same_pid,same_known=bridge_pty_host_executor_query(socket,replacement.instance,replacement.launch_key)
