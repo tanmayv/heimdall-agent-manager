@@ -70,6 +70,11 @@ bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string,activati
     if !opened do return
     defer crypto.zero_explicit(raw_data(plain),len(plain))
     exchange,parsed:=contracts.executor_parse(plain,"activation_exchange" if activation else "exchange")
+    has_bootstrap:=false
+    if activation && !parsed {
+        exchange,parsed=contracts.executor_parse(plain,"activation_bootstrap_exchange")
+        has_bootstrap=parsed
+    }
     scope,scoped:=contracts.executor_parse(get(exchange,"scope"),"transport_scope")
     genesis,g_ok:=contracts.owner_parse(wire.genesis,"genesis")
     method:=get(scope,"method")
@@ -107,6 +112,7 @@ bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string,activati
     // Trusted housekeeping retains charges for active/uncertain children.
     _=executor.expire(s,now)
     result:executor.Result
+    current:executor.Current_Owner_Fence
     if method=="prepare" {
         resources:=bridge_executor_prepare_resources(s,p)
         result=executor.prepare(s,request_raw,owner_key,time.to_unix_nanoseconds(time.now())/1000000,resources)
@@ -114,7 +120,7 @@ bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string,activati
         // Replay/query/stop need no network callback. A fresh activate through
         // the separate General_IO command must consume a live owner nonce.
         result=executor.action(s,request_raw,owner_key,time.to_unix_nanoseconds(time.now())/1000000)
-        if activation && result.code=="owner_fence_not_current" {
+        if activation && (result.code=="owner_fence_not_current" || has_bootstrap && result.code=="ok") {
             self:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,self_id,public,"bridge",true,false}
             pending,ready:=executor.fence_challenge(s,request_raw,get(exchange,"intent_id"),contracts.executor_number(exchange,"claim_attempt"),
                 owner_key,self,time.to_unix_nanoseconds(time.now())/1000000,{nil,bridge_executor_sign})
@@ -131,9 +137,14 @@ bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string,activati
             if !verified_ok || !self_current || latest_self.kind!="bridge" || latest_self.sign_public_key!=public ||
                !owner_current || latest_owner.kind!="bridge" || latest_owner.sign_public_key!=owner_key.public_key ||
                !executor.owner_bound(s,p,method,owner_key) {return}
-            current:=bridge_executor_fence_accept(s,&pending,callback,owner_key,self,&kr,time.to_unix_nanoseconds(time.now())/1000000)
+            current=bridge_executor_fence_accept(s,&pending,callback,owner_key,self,&kr,time.to_unix_nanoseconds(time.now())/1000000)
             result=executor.action(s,request_raw,owner_key,time.to_unix_nanoseconds(time.now())/1000000,current)
         }
+    }
+    if has_bootstrap && result.code=="ok" {
+        accepted:=executor.accept_bootstrap(s,get(exchange,"bootstrap"),get(exchange,"body"),request_raw,owner_key,
+            time.to_unix_nanoseconds(time.now())/1000000,current)
+        if accepted.code!="ok" {reply.code=accepted.code;return}
     }
     reply.code=result.code
     if result.code!="ok" do return

@@ -15,6 +15,7 @@ export const executorSchemas = {
     ['issued_ms','positive'],['request_expires_ms','positive'],
   ],
   exchange: [['scope','document'],['envelope','required_cipher']],
+  activation_bootstrap_exchange: [['scope','document'],['envelope','required_cipher'],['intent_id','hash'],['claim_attempt','positive'],['bootstrap','document'],['body','document']],
   activation_exchange: [['scope','document'],['envelope','required_cipher'],['intent_id','hash'],['claim_attempt','positive']],
   issuance_exchange: [['scope','document'],['envelope','required_cipher'],['selection','document']],
   issuance_bundle: [['configuration','document'],['attestation','document'],['issuance_receipt','document']],
@@ -447,8 +448,8 @@ export function executorParse(raw: string, kind: ExecutorKind): ExecutorDocument
     for (const skill of skills) {
       if (!object(skill) || Object.keys(skill).length !== 2 || typeof skill.name !== 'string' ||
           !/^[a-zA-Z0-9-]{1,160}$/.test(skill.name) || typeof skill.content !== 'string' ||
-          !fieldValid(skill.content,'document') || seen.has(skill.name)) throw new SyntaxError('Executor bootstrap skill');
-      seen.add(skill.name);
+          !fieldValid(skill.content,'document') || seen.has(skill.name.toLowerCase())) throw new SyntaxError('Executor bootstrap skill');
+      seen.add(skill.name.toLowerCase());
     }
   }
   if (kind === 'bootstrap' || kind === 'child_request') {

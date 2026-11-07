@@ -52,12 +52,14 @@ for (const [name] of executorSchemas.child_request) {
   const changed = await sign('child_request',{...child,[name]:replacement(child[name])},executor);
   child_bad.push({name,raw:JSON.stringify(changed)});
 }
-const result = {owner_key:ownerKey,executor_key:executorKey,prepare:JSON.stringify(p),action:JSON.stringify(a),configuration,body,input,
+const exchange = {...doc('activation_exchange'),bootstrap:JSON.stringify(bootstrap),body};
+const result = {activation_exchange:JSON.stringify(exchange),owner_key:ownerKey,executor_key:executorKey,prepare:JSON.stringify(p),action:JSON.stringify(a),configuration,body,input,
   bootstrap:JSON.stringify(bootstrap),child:JSON.stringify(child),bootstrap_bad,child_bad,
   content_bad: [
     JSON.stringify({...JSON.parse(body),argv:'sh'}),
     ...['../escape','a/b','a_b','a.b',''].map(name => JSON.stringify({...JSON.parse(body),skills_json:JSON.stringify([{name,content:'data'}])})),
     JSON.stringify({...JSON.parse(body),skills_json:JSON.stringify([{name:'same',content:'a'},{name:'same',content:'b'}])}),
+    JSON.stringify({...JSON.parse(body),skills_json:JSON.stringify([{name:'Worker',content:'a'},{name:'worker',content:'b'}])}),
     JSON.stringify({...JSON.parse(body),skills_json:JSON.stringify([{name:'worker',content:'data',mode:'0755'}])}),
     JSON.stringify({...JSON.parse(body),skills_json:'[{"name":"a","name":"b","content":"x"}]'}),
   ]};

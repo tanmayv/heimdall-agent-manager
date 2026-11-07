@@ -106,7 +106,7 @@ bridge_owner_preparation_snapshot :: proc(_:rawptr,s:^owner.Store,now:i64)->(own
         if !a_ok || len(assignment)!=1 do return {},"",false
         config,parsed:=owner.remote_assignment_configuration(assignment[0][0])
         if !parsed do return {},"",false
-        return c,bridge_owner_json(Owner_Executor_Pin{contracts.owner_string(config,"executor_key_id"),bridge_task_chain_search_generation()}),true
+        return c,bridge_owner_json(Owner_Executor_Pin{key_id=contracts.owner_string(config,"executor_key_id"),generation=bridge_task_chain_search_generation()}),true
     }
     return {},"",true
 }

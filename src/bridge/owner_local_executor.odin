@@ -2,6 +2,7 @@ package main
 
 import "base:runtime"
 import "core:encoding/json"
+import "core:crypto"
 import "core:fmt"
 import "core:strings"
 import "core:sync"
@@ -32,6 +33,7 @@ bridge_owner_executor_started:bool
 
 bridge_owner_executor_clear :: proc(w:^Owner_Executor_Worker) {
     a:=runtime.default_allocator()
+    if w.snapshot!="" do crypto.zero_explicit(raw_data(w.snapshot),len(w.snapshot))
     for value in ([9]string{w.claim.id,w.claim.chain,w.claim.kind,w.claim.destination,w.claim.fence,w.claim.payload,w.claim.digest,w.snapshot,w.response}) do delete(value,a)
     w.claim={};w.snapshot="";w.response="";w.completed=0;w.pending=false;w.received=false
 }
@@ -106,7 +108,7 @@ bridge_owner_executor_batch :: proc(w:^Owner_Executor_Worker,s:^owner.Store,mute
     return true
 }
 
-Owner_Executor_Pin :: struct {key_id:string,generation:i64}
+Owner_Executor_Pin :: struct {key_id:string,generation:i64,bootstrap,body:string}
 Owner_Executor_Outcome :: struct {scope,body,code:string}
 Owner_Executor_Relay_Data :: struct {reply:string,directory:vault.Directory_Verification_Input}
 Owner_Executor_HTTP_Reply :: struct {data:Owner_Executor_Relay_Data}
@@ -122,7 +124,14 @@ bridge_owner_executor_snapshot :: proc(_:rawptr,s:^owner.Store,c:owner.Intent_Cl
     if !ok || len(rows)!=1 do return "",false
     config,valid:=owner.remote_assignment_configuration(rows[0][0])
     if !valid || contracts.owner_string(config,"executor_bridge_id")!=c.destination do return "",false
-    return bridge_owner_json(Owner_Executor_Pin{contracts.owner_string(config,"executor_key_id"),bridge_task_chain_search_generation()}),true
+    public:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+    key:=contracts.Owner_Verified_Key{s.account,s.owner,s.owner_key,public,"bridge",true,false}
+    content:=owner.execution_bootstrap(s,c,"# Bridge-owned runtime worker\nRead TASK.md. Work only on the existing assigned lease. Use the owner-local lease/lifecycle API described there; task authority stays on the owner Bridge.\n","","[]",key,now,{nil,bridge_owner_sign})
+    if content.code!="ok" do return "",false
+    value,decoded:=contracts.owner_content_document(content.body);bundle,b_ok:=value.(json.Object)
+    if !decoded || !b_ok do return "",false
+    return bridge_owner_json(Owner_Executor_Pin{key_id=contracts.owner_string(config,"executor_key_id"),generation=bridge_task_chain_search_generation(),
+        bootstrap=contracts.owner_string(bundle,"bootstrap"),body=contracts.owner_string(bundle,"body")}),true
 }
 
 // This function deliberately has no Store parameter. It may block on the Hub
@@ -153,7 +162,12 @@ bridge_owner_executor_exchange :: proc(_:rawptr,c:owner.Intent_Claim,snapshot:st
     token,sealed:=channel.seal(c.payload,&kr,scope,now,context.temp_allocator)
     if !sealed do return bridge_owner_json(outcome),now
     exchange:=bridge_owner_json(struct{scope,envelope:string}{bridge_owner_json(scope),token})
-    if c.kind=="executor.activate" do exchange=bridge_owner_json(struct{scope,envelope,intent_id,claim_attempt:string}{bridge_owner_json(scope),token,c.id,fmt.tprintf("%d",c.attempt)})
+    if c.kind=="executor.activate" {
+        if pin.bootstrap=="" || pin.body=="" {outcome.code="bootstrap_unavailable";return bridge_owner_json(outcome),now}
+        exchange=bridge_owner_json(struct{scope,envelope,intent_id,claim_attempt,bootstrap,body:string}{
+            bridge_owner_json(scope),token,c.id,fmt.tprintf("%d",c.attempt),pin.bootstrap,pin.body})
+        if _,valid:=contracts.executor_parse(exchange,"activation_bootstrap_exchange");!valid {outcome.code="bootstrap_too_large";return bridge_owner_json(outcome),now}
+    }
     outer,wrapped:=vault.seal(transmute([]byte)exchange,&kr,context.temp_allocator)
     if !wrapped do return bridge_owner_json(outcome),now
     relay:=struct{protocol_version,chain_id,bridge_id,request_id,expires_ms,envelope:string}{

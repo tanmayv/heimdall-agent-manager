@@ -1363,3 +1363,114 @@ activation identity; encrypted exchange ingress/egress mounting; worker
 prespawn/launch/query/stop and exact-child token/relay auth; bounded renewal;
 shared manual/warm admission and provisioning; encrypted PTY ticket/results;
 Linux actual execution and Darwin contract profiles, documented Windows bounds.
+
+## M3-2 durable owner snapshot and encrypted ingress (2026-11-07)
+
+This supersedes the preceding remaining-work list for bootstrap snapshot and
+ingress only. **M3-2 is still incomplete; do not submit it as accepted.**
+
+`src/lib/owner_local/execution_bootstrap.odin:12` persists the first owner-signed
+bootstrap under the exact current activation claim. Owner migration V27 retains
+it separately from the source grant. The body includes complete current
+requirements, the existing capability and bounded derived context; creating it
+does not create another lease/attempt or acknowledge requirements. Replays use
+the same original metadata, bytes and deadline. Current owner incarnation and
+assignment admission still apply before replay.
+
+`src/bridge/owner_local_executor.odin:127` now snapshots this content before I/O
+and sends it inside the existing encrypted activation relay. The owner snapshot
+buffer is wiped when released. This call currently provides minimal worker
+instructions and no memories/skills; the native renderer accepts trusted
+owner-provided instruction/memory/skill content for future richer provisioning.
+
+`src/bridge/executor_exchange.odin:70` accepts a separate strict
+`activation_bootstrap_exchange` content contract, retaining the existing signed
+action, paired-directory checks, consumed owner challenge and current executor
+incarnation. `src/bridge/executor_exchange.odin:144` persists bootstrap content
+against the exact locally committed activation before replying. Case-folded
+duplicate skill names are rejected for Darwin/Windows filesystem compatibility.
+
+### Verification
+
+All commands ran through managed shell in the task Workdir. No Hub task authority
+or legacy bootstrap registration was introduced.
+
+| Command | Result |
+|---|---|
+| `nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3b-owner-bootstrap-full-20261107-0259` | 259 PASS; sh_af10a98105018803a161be87ef5768a0 |
+| `nix develop --command odin test src/contracts -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3b-final-contracts-20261107-0303` | 36 PASS; sh_d3de1b24f6c85333dc4fb1f62c338a98 |
+| `node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_executor_child_test.ts tests/ui_executor_contract_test.ts tests/ui_executor_channel_test.ts tests/ui_executor_issuance_test.ts` | 14 PASS; sh_f937178704dac605a4ed825752ce872d |
+| `npm run typecheck` | PASS; sh_596187bad9187ce49428ce668da09ad5 |
+| `nix build .#ham-bridge .#ham-hub -o $HOME/.cache/heimdall-tests/m3b-ingress-bins-20261107-0303` | PASS; sh_018cc2da1a4bd1265df0f533141bd460 |
+| `nix build .#ham-pty-host -o $HOME/.cache/heimdall-tests/m3b-bootstrap-pty-20261107-0300` | PASS; sh_ca50da6b2aa3802c6d49e8977e6ab151 |
+
+Four focused Bridge tests (mounted encrypted ingress, writer, planted-root
+rejection and signer domains) passed with:
+
+```bash
+nix develop --command odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_NAMES=main.test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection,main.test_executor_bootstrap_materializes_owner_content_without_hub_and_local_shim,main.test_executor_bootstrap_denies_content_substitution_and_planted_root_symlink,main.test_owner_local_executor_signer_domains_and_missing_identity -out:$HOME/.cache/heimdall-tests/m3b-bootstrap-ingress-20261107-0258
+```
+
+Session: sh_21f5e789766d41247f0005daf4123a3f.
+
+The final Linux **actual PTY child** integration also passed (1 test,
+sh_d5213838d0cd894140331ff02e780f58):
+
+```bash
+nix develop --command env HEIMDALL_EXECUTOR_TEST_PTY=$HOME/.cache/heimdall-tests/m3b-bootstrap-pty-20261107-0300/bin/ham-pty-host odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:EXECUTOR_TEST_REQUIRED=true -define:ODIN_TEST_NAMES=main.test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection -out:$HOME/.cache/heimdall-tests/m3b-bootstrap-real-child-20261107-0301
+```
+
+It uses production signed issuance, encryption and ingress, then explicitly
+connects the accepted local bootstrap to a real daemon running `sh`. It proves
+exact child presence, duplicate-dispatch rejection, no rematerialization after
+dispatch, unchanged PID on replay, exact stop and observed absence. The owner
+network/check transport is injected. It is **not** an actual provider execution,
+a full-network enrollment demonstration or automatic production dispatch.
+
+Actual POSIX process-death ledger evidence was rerun against the new source
+(1 PASS, four committed boundaries; sh_4999c47904d36f0d6e243344438e22ed):
+
+```bash
+nix develop --command sh -c 'odin build tests/executor_crash_probe -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/m3b-bootstrap-crash-probe-20261107-0304 && HEIMDALL_EXECUTOR_CRASH_PROBE=$HOME/.cache/heimdall-tests/m3b-bootstrap-crash-probe-20261107-0304 python3 tests/test_executor_process_crash.py'
+```
+
+Owner tests cover genuine V26→27 collision rollback/recovery, preservation of
+activation bytes/identity, failed COMMIT, original snapshot replay, current
+incarnation and no additional grant/attempt. Historical-schema fixtures now drop
+the dependent bootstrap table and assert V27. Draft fixes: test requirements
+must be installed by a signed requirements.edit before bootstrap (the old lease
+fixture intentionally had none); a map-encoded response reordered wrapper keys
+on replay, fixed with a stable struct. A mistaken broad test-version replacement
+temporarily changed native-history record counts; reverted before final passing
+259-test run. No unrelated cleanup.
+
+### Precise continuation boundaries
+
+1. **Automatic physical dispatch is still unmounted.** The production handler
+   replies with a resource receipt after bootstrap acceptance
+   (`src/bridge/executor_exchange.odin:149`). It does not call
+   `bridge_executor_prepare_spawn` or `bridge_executor_dispatch`. Connect the
+   physical launch/query before acknowledging the original activation outbox, or
+   introduce a separately verified current launch fence with contracts/tests.
+   The existing owner activation callback requires the original claimed outbox;
+   after owner acceptance settles it, that same callback cannot authorize a new
+   launch. Prefer finishing physical dispatch before the receipt acknowledgement.
+2. A lost physical spawn reply must query the same daemon key without obtaining
+   another credential or cleaning the run directory. `launch_material` now
+   refuses after dispatch begins. Retain the original resolved request in a live
+   delivery worker or add an explicit query-only reconciliation branch.
+3. Issued credentials remain executor-local and are not legacy Hub tokens.
+   Before starting real workers, mount exact-child token authentication and the
+   sealed executor-attested child relay to the owner. The owner must derive the
+   current exact child/assignment/lease from its journal, verify the current paired
+   executor key and run the existing authoritative lease/lifecycle handlers.
+   Do not register a Hub task/lease or accept remote task grants.
+4. Implement bounded child renewal, expiry/stop reconciliation and shared
+   manual/warm admission, including legacy launch paths through the same
+   device-wide ledger. Preserve charges until trusted exact-child absence.
+5. Implement encrypted PTY delivery tickets/results and actual provider
+   interrupt profiles. Selected source `5b307a18` can supply the PTY primitive,
+   but adapt away its legacy BO/Hub authority. Linux actual integration plus
+   Darwin unit/contracts and explicit Windows bounds remain the approved gate.
+   No Darwin/Windows runtime or real-provider pass is claimed here.
+6. Complete all acceptance evidence and obtain independent review before submit.

@@ -249,12 +249,40 @@ test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection :: pr
             replay,replay_code:=bridge_executor_test_exchange(t,peer_wire,action,"action",&owner_private,&kr,host,"activation_nonce_retry",&probe)
             testing.expect_value(t,replay_code,"ok");testing.expect_value(t,get(replay,"historical"),"1")
             testing.expect_value(t,probe.calls,1)
+            b:=make(json.Object,context.temp_allocator)
+            for entry in contracts.executor_schema("bootstrap") {
+                value:=get(prepared,entry.name)
+                if value=="" do value=get(action,entry.name)
+                b[entry.name]=json.String(value)
+            }
+            content:=executor.encode(struct{agents_md,memory_md,task_md,skills_json:string}{"# Owner worker","","# Existing lease","[]"})
+            ad,_:=contracts.executor_digest("action",action)
+            issued:=time.to_unix_nanoseconds(time.now())/1000000
+            b["prepare_digest"]=json.String(prepare_digest);b["action_digest"]=json.String(ad)
+            b["configuration_digest"]=json.String(contracts.owner_payload_digest(get(issued_bundle,"configuration")))
+            b["body_digest"]=json.String(contracts.owner_payload_digest(content));b["launch_key"]=accepted["launch_key"]
+            b["issued_ms"]=json.String(fmt.tprintf("%d",issued));b["request_expires_ms"]=json.String(fmt.tprintf("%d",issued+4000))
+            bootstrap:=bridge_executor_test_sign(b,"bootstrap",&owner_private)
+            _,bootstrap_code:=bridge_executor_test_exchange(t,peer_wire,action,"action",&owner_private,&kr,host,"activation_bootstrap_call",&probe,bootstrap,content)
+            testing.expect_value(t,bootstrap_code,"ok")
+            testing.expect_value(t,probe.calls,2)
+            rows,_=executor.query(bridge_executor_store.db,"SELECT document,body FROM executor_bootstraps WHERE reservation_id=?",get(prepared,"reservation_id"))
+            testing.expect(t,len(rows)==1 && rows[0][0]==bootstrap && rows[0][1]==content)
+            _,duplicate_code:=bridge_executor_test_exchange(t,peer_wire,action,"action",&owner_private,&kr,host,"activation_bootstrap_duplicate",&probe,bootstrap,content)
+            testing.expect_value(t,duplicate_code,"ok")
+            _,substitution_code:=bridge_executor_test_exchange(t,peer_wire,action,"action",&owner_private,&kr,host,"activation_bootstrap_substitution",&probe,bootstrap,"changed")
+            testing.expect_value(t,substitution_code,"operation_conflict")
             rows,_=executor.query(bridge_executor_store.db,"SELECT count(*) FROM executor_intents WHERE kind='launch'")
             testing.expect_value(t,rows[0][0],"1")
             // Trusted test-daemon absence drains the charge before the next
             // reservation. No physical provider/absence claim is inferred.
-            testing.expect(t,executor.observe_child(&bridge_executor_store,get(prepared,"reservation_id"),
-                {get(prepared,"instance_id"),get(accepted,"launch_key"),bridge_executor_store.incarnation,false}))
+            if os.get_env("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)!="" {
+                bridge_executor_test_bootstrap_real_child(t,prepared,action,&owner_private,owner_key)
+            } else {
+                when #config(EXECUTOR_TEST_REQUIRED,false) {testing.fail_now(t,"real bootstrap daemon required")}
+                testing.expect(t,executor.observe_child(&bridge_executor_store,get(prepared,"reservation_id"),
+                    {get(prepared,"instance_id"),get(accepted,"launch_key"),bridge_executor_store.incarnation,false}))
+            }
         } else {
             testing.expect_value(t,activation_code,"stale_incarnation")
             rows,_=executor.query(bridge_executor_store.db,"SELECT count(*) FROM executor_intents WHERE kind='launch' AND state!='settled'")
@@ -273,7 +301,7 @@ test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection :: pr
     _,history_written:=owner.query(response_owner.db,"INSERT INTO local_assignment_history VALUES('chain','task',1,'device','assign','{}',?,'{}')",assignment_snapshot)
     testing.expect(t,history_written)
     dispatch_claim:=owner.Intent_Claim{destination=id,fence=bridge_owner_json(prepared)}
-    dispatch_pin:=Owner_Executor_Pin{key_id,bridge_task_chain_search_generation()}
+    dispatch_pin:=Owner_Executor_Pin{key_id=key_id,generation=bridge_task_chain_search_generation()}
     checked_key,trusted_peer,read_peer:=bridge_owner_executor_directory(&response_owner,peer_directory,dispatch_pin,dispatch_claim,&kr)
     testing.expect(t,read_peer && trusted_peer && checked_key.key_id==key_id)
     wrong_pin:=dispatch_pin;wrong_pin.key_id=owner_id
@@ -321,7 +349,7 @@ test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection :: pr
 // Drives the production executor handler with real inner signatures and channel
 // encryption. It does not stand in for a network/Hub enrollment demonstration.
 bridge_executor_test_exchange :: proc(t:^testing.T,wire:Executor_Exchange_Wire,request:json.Object,kind:string,
-    private:^ecdsa.Private_Key,kr:^vault.Vault_Keyring,self:contracts.Owner_Verified_Key,id:string,probe:^Executor_Fence_Test_Probe=nil)->(json.Object,string) {
+    private:^ecdsa.Private_Key,kr:^vault.Vault_Keyring,self:contracts.Owner_Verified_Key,id:string,probe:^Executor_Fence_Test_Probe=nil,bootstrap:string="",body:string="")->(json.Object,string) {
     get:=contracts.owner_string
     now:=time.to_unix_nanoseconds(time.now())/1000000
     raw:=bridge_executor_test_sign(request,kind,private)
@@ -336,6 +364,10 @@ bridge_executor_test_exchange :: proc(t:^testing.T,wire:Executor_Exchange_Wire,r
     encrypted,encrypted_ok:=channel.seal(raw,kr,scope,now);testing.expect(t,encrypted_ok)
     exchange:=executor.encode(struct{scope,envelope:string}{executor.encode(scope),encrypted})
     if probe!=nil do exchange=executor.encode(struct{scope,envelope,intent_id,claim_attempt:string}{executor.encode(scope),encrypted,strings.repeat("a",64,context.temp_allocator),"1"})
+    if bootstrap!="" {
+        exchange=executor.encode(struct{scope,envelope,intent_id,claim_attempt,bootstrap,body:string}{
+            executor.encode(scope),encrypted,strings.repeat("a",64,context.temp_allocator),"1",bootstrap,body})
+    }
     outer,outer_ok:=vault.seal(transmute([]byte)exchange,kr);testing.expect(t,outer_ok)
     call:=wire;call.command_id=id
     call.relay=executor.encode(struct{protocol_version,chain_id,bridge_id,request_id,expires_ms,envelope:string}{
@@ -403,4 +435,60 @@ bridge_executor_test_fence_callback :: proc(ctx:rawptr,raw:string,generation:i64
     token,sealed:=channel.seal(reply_raw,p.kr,scope,now,context.temp_allocator)
     if !sealed do return {}
     return {executor.encode(scope),token,p.directory}
+}
+
+bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,p,a:json.Object,owner_private:^ecdsa.Private_Key,owner_key:contracts.Owner_Verified_Key) {
+    binary:=os.get_env("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)
+    if !testing.expect(t,binary!="","real bootstrap integration requires the built PTY daemon") do return
+    suffix:=fmt.tprintf("%d",time.to_unix_nanoseconds(time.now()))
+    socket:=fmt.tprintf("/tmp/ham-bootstrap-%s.sock",suffix)
+    swap:=pty_host_test_install_socket(socket);defer pty_host_test_restore_socket(swap)
+    process,err:=os.process_start(os.Process_Desc{command=[]string{binary,"--socket",socket,"daemon"}})
+    if !testing.expect(t,err==nil) do return
+    defer {_=os.process_kill(process);_,_=os.process_wait(process);_=os.remove(socket)}
+    ready:=false
+    for _ in 0..<100 {if bridge_pty_host_ping(socket) {ready=true;break};time.sleep(10*time.Millisecond)}
+    if !testing.expect(t,ready) do return
+    now:=time.to_unix_nanoseconds(time.now())/1000000
+    intent,claimed:=executor.take_intent(&bridge_executor_store,now)
+    if !testing.expect(t,claimed) do return
+    defer _=bridge_pty_host_executor_close(socket,intent.instance,intent.launch_key)
+    material,available:=executor.launch_material(&bridge_executor_store,intent,now)
+    if !testing.expect(t,available) do return
+    dir:=fmt.tprintf("%s/.cache/heimdall-tests/bootstrap-live-%s",os.get_env("HOME",context.temp_allocator),suffix)
+    defer bridge_prespawn_rmdir_all(dir)
+    prev,had:=os.lookup_env("HEIMDALL_HAM_CTL_BIN",context.temp_allocator)
+    defer {if had {_=os.set_env("HEIMDALL_HAM_CTL_BIN",prev)} else {os.unset_env("HEIMDALL_HAM_CTL_BIN")}}
+    _=os.set_env("HEIMDALL_HAM_CTL_BIN","/bin/sh")
+    result,written:=bridge_executor_materialize(dir,"unix:/isolated-bootstrap-child.sock",material,"claude")
+    if !testing.expect(t,written) do return
+    defer bridge_prespawn_result_delete(result)
+    env:=bridge_pty_host_env_pairs(result.env)
+    defer {for pair in env {delete(pair[0]);delete(pair[1])};delete(env)}
+    req:=Pty_Host_Spawn_Request{instance=intent.instance,argv=[]string{"sh"},cwd=dir,has_cwd=true,env=env,
+        rows=24,cols=80,has_timeout_seconds=true,timeout_seconds=30}
+    proof:=executor.Current_Owner_Fence{true,contracts.owner_string(a,"prepare_digest"),contracts.executor_number(a,"owner_incarnation"),contracts.executor_number(a,"owner_commit_seq")}
+    delivered,reason:=bridge_executor_dispatch(&bridge_executor_store,intent,now,socket,req,&proof,bridge_executor_test_owner,&now,bridge_executor_test_clock)
+    if !testing.expect(t,delivered && reason=="child_present","accepted sealed bootstrap reaches an exact real PTY child") do return
+    pid,known:=bridge_pty_host_executor_query(socket,intent.instance,intent.launch_key)
+    testing.expect(t,known && pid>0)
+    _,available=executor.launch_material(&bridge_executor_store,intent,now)
+    testing.expect(t,!available,"a confirmed child cannot be rematerialized")
+    delivered,reason=bridge_executor_dispatch(&bridge_executor_store,intent,now,socket,req,&proof,bridge_executor_test_owner,&now,bridge_executor_test_clock)
+    testing.expect(t,!delivered && reason=="stale_intent","duplicate dispatch cannot launch again")
+    again,queried:=bridge_pty_host_executor_query(socket,intent.instance,intent.launch_key)
+    testing.expect(t,queried && again==pid)
+    stop:=make(json.Object,context.temp_allocator)
+    for name,value in a do stop[name]=value
+    stop["method"]=json.String("stop");stop["operation_id"]=json.String("bootstrap_real_stop")
+    now=time.to_unix_nanoseconds(time.now())/1000000
+    stopped:=executor.action(&bridge_executor_store,bridge_executor_test_sign(stop,"action",owner_private),owner_key,now)
+    testing.expect_value(t,stopped.code,"ok")
+    stop_intent,taken:=executor.take_intent(&bridge_executor_store,now)
+    if !testing.expect(t,taken && stop_intent.kind=="stop") do return
+    delivered,reason=bridge_executor_dispatch(&bridge_executor_store,stop_intent,now,socket,{},nil,nil,&now,bridge_executor_test_clock)
+    testing.expect(t,delivered && reason=="child_absent")
+    absent,observed:=bridge_pty_host_executor_query(socket,intent.instance,intent.launch_key)
+    testing.expect(t,observed && absent==0)
+    _=p
 }

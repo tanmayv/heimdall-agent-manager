@@ -1,6 +1,7 @@
 package owner_local
 
-SCHEMA_VERSION :: 26
+SCHEMA_VERSION :: 27
+MIGRATION_027 :: #load("migration_027.sql")
 MIGRATION_026 :: #load("migration_026.sql")
 MIGRATION_025 :: #load("migration_025.sql")
 MIGRATION_024 :: #load("migration_024.sql")
@@ -155,6 +156,10 @@ migrate :: proc(db:DB) -> bool {
     if version<=25 {
         if !exec(db,string(MIGRATION_026)) do return false
         if !exec(db,"UPDATE schema_migrations SET version=26 WHERE singleton=1") do return false
+    }
+    if version<=26 {
+        if !exec(db,string(MIGRATION_027)) do return false
+        if !exec(db,"UPDATE schema_migrations SET version=27 WHERE singleton=1") do return false
     }
     if !exec(db,"COMMIT") do return false
     committed=true

@@ -1,6 +1,7 @@
 package contracts
 
 import "core:encoding/json"
+import "core:strings"
 
 // These records travel only inside the sealed Bridge channel. A bootstrap is
 // owner-authored content, not executable argv or a replacement task grant.
@@ -15,6 +16,7 @@ executor_bootstrap_skill_name_valid :: proc(s:string)->bool {
     return true
 }
 executor_bootstrap_content_valid :: proc(o:json.Object)->bool {
+    context.allocator=context.temp_allocator
     value,parsed:=owner_content_document(owner_string(o,"skills_json"))
     skills,array:=value.(json.Array)
     if !parsed || !array || len(skills)>64 do return false
@@ -25,8 +27,8 @@ executor_bootstrap_content_valid :: proc(o:json.Object)->bool {
         name,named:=skill["name"].(json.String)
         content,text:=skill["content"].(json.String)
         if !named || !text || !executor_bootstrap_skill_name_valid(string(name)) ||
-           !owner_field_valid(string(content),"document") || seen[string(name)] {return false}
-        seen[string(name)]=true
+           !owner_field_valid(string(content),"document") || seen[strings.to_lower(string(name))] {return false}
+        seen[strings.to_lower(string(name))]=true
     }
     return true
 }

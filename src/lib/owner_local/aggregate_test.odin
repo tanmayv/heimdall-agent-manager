@@ -213,7 +213,7 @@ aggregate_v23_upgrade_collision_commit_rollback_and_live_capability_recovery :: 
     before,_:=query(f.store.db,"SELECT lease_id,capability_json,expires_ms,hard_ms,retired_seq FROM local_leases")
     close(&f.store);db:DB
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    testing.expect(t,exec(db,string(#load("migration_025_test_drop.sql"))+"DROP TABLE IF EXISTS owner_execution_queries; DROP TABLE owner_execution_journal; DROP TABLE native_record_values; DROP TABLE native_record_snapshots"))
+    testing.expect(t,exec(db,string(#load("migration_025_test_drop.sql"))+"DROP TABLE IF EXISTS owner_execution_bootstraps; DROP TABLE IF EXISTS owner_execution_queries; DROP TABLE owner_execution_journal; DROP TABLE native_record_values; DROP TABLE native_record_snapshots"))
     prefix:=string(MIGRATION_023);prefix=prefix[:strings.index(prefix,"CREATE TABLE local_work_chains")]
     testing.expect(t,exec(db,prefix))
     testing.expect(t,exec(db,"UPDATE schema_migrations SET version=23; CREATE VIEW native_record_snapshots AS SELECT 1"))

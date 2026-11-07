@@ -31,6 +31,10 @@ executor_exchange_fields := [?]Owner_Field{
 executor_activation_exchange_fields := [?]Owner_Field{
     {"scope","document"},{"envelope","required_cipher"},{"intent_id","hash"},{"claim_attempt","positive"},
 }
+executor_activation_bootstrap_exchange_fields := [?]Owner_Field{
+    {"scope","document"},{"envelope","required_cipher"},{"intent_id","hash"},{"claim_attempt","positive"},
+    {"bootstrap","document"},{"body","document"},
+}
 executor_issuance_exchange_fields := [?]Owner_Field{
     {"scope","document"},{"envelope","required_cipher"},{"selection","document"},
 }
@@ -121,6 +125,7 @@ executor_schema :: proc(kind:string)->[]Owner_Field {
     case "bootstrap":return executor_bootstrap_fields[:]
     case "child_request":return executor_child_request_fields[:]
     case "exchange":return executor_exchange_fields[:]
+    case "activation_bootstrap_exchange":return executor_activation_bootstrap_exchange_fields[:]
     case "activation_exchange":return executor_activation_exchange_fields[:]
     case "issuance_exchange":return executor_issuance_exchange_fields[:]
     case "issuance_bundle":return executor_issuance_bundle_fields[:]
@@ -217,7 +222,7 @@ executor_valid :: proc(o:json.Object,kind:string)->bool {
 executor_parse :: proc(raw,kind:string)->(json.Object,bool) {
     if len(raw)>EXECUTOR_DOCUMENT_MAX do return nil,false
     v:json.Value;ok:bool
-    if kind=="bootstrap_content" || kind=="issuance_selection" || kind=="issuance_exchange" || kind=="issuance_bundle" {v,ok=owner_content_document(raw)} else {v,ok=owner_request_document(raw)}
+    if kind=="activation_bootstrap_exchange" || kind=="bootstrap_content" || kind=="issuance_selection" || kind=="issuance_exchange" || kind=="issuance_bundle" {v,ok=owner_content_document(raw)} else {v,ok=owner_request_document(raw)}
     o,obj:=v.(json.Object)
     if !ok || !obj || !executor_valid(o,kind) do return nil,false
     return o,true
