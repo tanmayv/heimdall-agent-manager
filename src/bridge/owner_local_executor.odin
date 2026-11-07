@@ -135,22 +135,25 @@ bridge_owner_executor_exchange :: proc(_:rawptr,c:owner.Intent_Claim,snapshot:st
        pin.generation!=bridge_task_chain_search_generation() || sync.atomic_load(&bridge_hub_traffic_stopped) {return bridge_owner_json(outcome),now}
     kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
     if !unlocked {outcome.code="vault_locked";return bridge_owner_json(outcome),now}
-    action,parsed:=contracts.executor_parse(c.payload,"action")
+    kind:="prepare" if c.kind=="executor.prepare" else "action"
+    action,parsed:=contracts.executor_parse(c.payload,kind)
     if !parsed do return bridge_owner_json(outcome),now
     get:=contracts.owner_string
     expires:=min(contracts.executor_number(action,"request_expires_ms"),now+contracts.EXECUTOR_TRANSPORT_TTL_MS)
     if expires<=now {outcome.code="expired";return bridge_owner_json(outcome),now}
-    digest,_:=contracts.executor_digest("action",action)
+    digest,_:=contracts.executor_digest(kind,action)
     request_id:=fmt.tprintf("executor_%d",time.to_unix_nanoseconds(time.now()))
     scope:=make(json.Object,context.temp_allocator)
     for name in ([7]string{"protocol_version","account_id","owner_bridge_id","executor_bridge_id","chain_id","reservation_id","owner_incarnation"}) do scope[name]=action[name]
     scope["executor_incarnation"]=action["executor_incarnation"]
-    scope["request_id"]=json.String(request_id);scope["method"]=json.String("action");scope["direction"]=json.String("request")
-    scope["input_digest"]=json.String(digest);scope["fence_digest"]=action["prepare_digest"]
+    scope["request_id"]=json.String(request_id);scope["method"]=json.String(kind);scope["direction"]=json.String("request")
+    scope["input_digest"]=json.String(digest)
+    scope["fence_digest"]=json.String(digest) if kind=="prepare" else action["prepare_digest"]
     scope["issued_ms"]=json.String(fmt.tprintf("%d",now));scope["request_expires_ms"]=json.String(fmt.tprintf("%d",expires))
     token,sealed:=channel.seal(c.payload,&kr,scope,now,context.temp_allocator)
     if !sealed do return bridge_owner_json(outcome),now
-    exchange:=bridge_owner_json(struct{scope,envelope,intent_id,claim_attempt:string}{bridge_owner_json(scope),token,c.id,fmt.tprintf("%d",c.attempt)})
+    exchange:=bridge_owner_json(struct{scope,envelope:string}{bridge_owner_json(scope),token})
+    if c.kind=="executor.activate" do exchange=bridge_owner_json(struct{scope,envelope,intent_id,claim_attempt:string}{bridge_owner_json(scope),token,c.id,fmt.tprintf("%d",c.attempt)})
     outer,wrapped:=vault.seal(transmute([]byte)exchange,&kr,context.temp_allocator)
     if !wrapped do return bridge_owner_json(outcome),now
     relay:=struct{protocol_version,chain_id,bridge_id,request_id,expires_ms,envelope:string}{
@@ -158,7 +161,8 @@ bridge_owner_executor_exchange :: proc(_:rawptr,c:owner.Intent_Claim,snapshot:st
     credential:=bridge_credential_snapshot();defer delete(credential)
     headers:=[?]httpc.Header{httpc.bearer(credential)}
     if pin.generation!=bridge_task_chain_search_generation() || sync.atomic_load(&bridge_hub_traffic_stopped) {outcome.code="vault_locked";return bridge_owner_json(outcome),now}
-    response,err:=bridge_http_request_retry({method=.POST,url=bridge_hub_url(),path={"api","v1","executor","activate"},headers=headers[:],body=httpc.json_body(relay),timeout_ms=10000},deadline_ns=expires*1000000)
+    route:="activate" if c.kind=="executor.activate" else "relay"
+    response,err:=bridge_http_request_retry({method=.POST,url=bridge_hub_url(),path={"api","v1","executor",route},headers=headers[:],body=httpc.json_body(relay),timeout_ms=10000},deadline_ns=expires*1000000)
     defer httpc.response_destroy(&response)
     completed:=time.to_unix_nanoseconds(time.now())/1000000
     // Save our exact pending scope, never a scope supplied by the relay.
@@ -237,6 +241,7 @@ bridge_owner_executor_once :: proc() {
     opened:=bridge_owner_open(account,key_id)
     sync.mutex_unlock(&bridge_owner_mutex)
     if !opened do return
+    bridge_owner_preparation_once(&bridge_owner_store)
     _=bridge_owner_executor_batch(&bridge_owner_executor_worker,&bridge_owner_store,&bridge_owner_mutex,
         time.to_unix_nanoseconds(time.now())/1000000,nil,bridge_owner_executor_snapshot,bridge_owner_executor_exchange,bridge_owner_executor_accept)
 }

@@ -1183,3 +1183,102 @@ Modified paths, relative to the same absolute Workdir:
 - `src/hub/transport/http/task_chain_search_relay_test.odin`
 - `src/ui/api/executor.ts`
 - `docs/executor-dispatch-checkpoint.md`
+
+## M3-2 continuation checkpoint — 2026-11-07
+
+Workdir: `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e5a16377e1ae67`.
+Coordinator authorized transplantation of this chain's linear M3 checkpoints
+through `660ad79b` in `msg_18e5a19acce4ec40`. Their new lineage is
+`4c649e4c..fddffbd2`, based on `813ef994`. No external candidate-history
+merge, shared checkout change, live restart, deployment or push occurred.
+
+### Concrete additions
+
+- Retained existing linked-content V25 migration and native/TS schemas. The
+  executor journal now follows it as V26
+  (`src/lib/owner_local/migrations.odin:3`,
+  `src/lib/owner_local/migration_026.sql:1`). Historical upgrade fixtures
+  reconstruct both additions correctly; old runtime identity, receipt and
+  live-capability regression coverage remains in the combined suite.
+- Accepted remote assignments initiate signed prepare and lease documents with
+  deterministic reservation/operation identities, persisted before I/O.
+  A restart reuses the saved documents, and the old owner incarnation fails
+  closed (`src/lib/owner_local/execution_prepare.odin:12`).
+- A fixed signed query and the exact signed prepare receipt are durably stored
+  before query I/O. The original preparation deadline remains binding.
+  Query evidence is checked even when the original prepare receipt is fresh
+  (`src/lib/owner_local/execution_prepare.odin:75`,
+  `src/lib/owner_local/execution.odin:124`).
+- The existing executor worker now runs bounded preparation scanning and a
+  separate retained-response delivery worker. It holds no owner mutex across
+  HTTP. Runtime allocation preserves opaque response bytes through request
+  allocator resets and failed local admission reads
+  (`src/bridge/owner_local_preparation.odin:19`, `:52`).
+  Scanning admits one outstanding preparation at a time and rotates past
+  inadmissible assignments.
+- The transport seals prepare/action scopes separately and selects the existing
+  relay endpoint for prepare/query and the nonce-protected activation endpoint
+  for activate (`src/bridge/owner_local_executor.odin:131`). Receipt processing
+  still verifies the current paired directory, exact pinned executor key,
+  signed request correlation, owner readiness and post-I/O cancellation fences.
+
+### Verification
+
+All commands below ran in the Workdir above through managed shell sessions.
+`-out:` paths are unique and below `$HOME`.
+
+| Command | Result / session |
+|---|---|
+| `nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3b-owner-import2-20261107-0218` | 253 PASS; `sh_76907213bef5cddc97717bbc6424f15b` |
+| `nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3b-prep-owner-full-20261107-0225` | 256 PASS; `sh_eb6df0dd1355a5dddd9559e75913d54a` |
+| `nix develop --command odin test src/contracts -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3b-contracts-20261107-0226` | 33 PASS; `sh_a1e0462cd55135f60350c5619989e5b4` |
+| `nix develop --command odin test src/lib/executor_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3b-executor-20261107-0226` | 24 PASS; `sh_f956041b461668b6f523deba5f1778cd` |
+| `node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_executor_contract_test.ts tests/ui_executor_channel_test.ts tests/ui_executor_issuance_test.ts` | 10 PASS; `sh_e39f68381d81925e084e24b6bd758404` |
+| `nix develop --command npm ci --ignore-scripts --no-audit --no-fund && npm run typecheck` | PASS; `sh_ab0671f0e5fe0dd40dd7bfefab945396` |
+| `nix build .#ham-bridge .#ham-hub -o $HOME/.cache/heimdall-tests/m3b-prep-bins-20261107-0227` | PASS; `sh_b4ec11e0f4e0be7a74348d955cbec8a0` |
+
+The final focused Bridge command is:
+
+```bash
+nix develop --command odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_NAMES=main.test_owner_preparation_worker_retains_response_across_temp_reset_and_storage_retry,main.test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection,main.test_owner_executor_worker_retains_response_and_completion_across_storage_failures -out:$HOME/.cache/heimdall-tests/m3b-prep-bridge3-20261107-0228
+```
+
+It passed all 3 tests (`sh_f67f23447c1742aebffca73ae80a3946`).
+The owner additions cover lost prepare replies, immutable query replay,
+query-write rollback, query/request substitution rejection, exact grant commit,
+owner restart without replacement reservation, and signed task cancellation.
+The Bridge orchestration test injects transport/admission callbacks to verify
+mutex release, retained-response storage retry and allocator lifetime. The
+mounted ingress test uses production encryption/signatures/ledger behavior.
+Neither establishes enrolled real-network or provider launch behavior.
+
+Failed drafts: initial V25 test expectations and historical reconstruction
+fixtures were incompatible with the combined branch; fixed before 253/256-pass
+runs. New Odin multiline `do` drafts were corrected before passing compilation.
+The first cancellation regression attempted a forbidden raw fleet update;
+replaced with a signed `task.cancel` command. Two editing scripts had Python
+quoting errors and made no changes. Initial typecheck lacked the known pinned
+`posthog-js` dependency; lockfile-based npm installation fixed it without
+dependency-manifest changes.
+
+### Remaining acceptance work
+
+This is a preparation checkpoint, not full M3-2 acceptance. Physical process
+launch, shared manual/warm admission, budget/mapping provisioning, encrypted
+PTY delivery/results, bounded child deadline renewal and real enrolled
+lost-reply/crash/cross-owner evidence remain to be implemented or verified.
+
+Issued instances/credentials are executor-local
+(`src/lib/executor_local/issuance.odin:78`, `:105`); existing prespawn bootstrap
+fetch expects a Hub instance (`src/bridge/bootstrap_prespawn.odin:47`), and the
+current authoritative lease handler expects a live local owner child
+(`src/bridge/owner_local_leases.odin:55`). Coordinator clarification was requested
+in `msg_18e5a256cceec1ad` before introducing the owner-rendered sealed bootstrap
+and executor-attested remote child relay boundary. No Hub registration or task
+authority shortcut was introduced.
+
+Coordinator platform guidance in `msg_18e5a19acce4ec40`: run real execution/PTTY
+integration on Linux, verify Darwin interrupt/paste behavior through
+unit/contracts, document explicit Windows limits. No macOS or Windows host is
+provisioned; no real-provider, Darwin runtime or Windows runtime pass is claimed
+by this checkpoint.

@@ -80,3 +80,13 @@ WHEN NEW.reservation_id IS NOT OLD.reservation_id OR NEW.chain_id IS NOT OLD.cha
 BEGIN SELECT RAISE(ABORT,'immutable owner execution'); END;
 CREATE TRIGGER owner_execution_no_delete BEFORE DELETE ON owner_execution_journal
 BEGIN SELECT RAISE(ABORT,'retain execution identity'); END;
+
+CREATE TABLE owner_execution_queries (
+ reservation_id TEXT PRIMARY KEY REFERENCES owner_execution_journal(reservation_id),
+ prepare_receipt TEXT NOT NULL CHECK(json_valid(prepare_receipt)),
+ query_json TEXT NOT NULL CHECK(json_valid(query_json))
+);
+CREATE TRIGGER owner_execution_query_no_update BEFORE UPDATE ON owner_execution_queries
+ BEGIN SELECT RAISE(ABORT,'immutable execution query'); END;
+CREATE TRIGGER owner_execution_query_no_delete BEFORE DELETE ON owner_execution_queries
+ BEGIN SELECT RAISE(ABORT,'retain execution query'); END;

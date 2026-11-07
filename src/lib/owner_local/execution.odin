@@ -113,7 +113,7 @@ execution_prepared_receipt :: proc(s:^Store,p:json.Object,receipt_raw,query_raw,
     owner_key,executor_key:contracts.Owner_Verified_Key,now:i64)->bool {
     r,valid:=contracts.executor_parse(receipt_raw,"receipt")
     if !valid || !contracts.executor_receipt_matches(r,p,"prepare",executor_key,now,false) do return false
-    if contracts.executor_receipt_matches(r,p,"prepare",executor_key,now) do return true
+    if query_raw=="" && contracts.executor_receipt_matches(r,p,"prepare",executor_key,now) do return true
     q,q_ok:=contracts.executor_parse(query_raw,"action")
     qr,qr_ok:=contracts.executor_parse(query_receipt_raw,"receipt")
     if !q_ok || !qr_ok || !contracts.executor_verify("action",q,owner_key) ||
