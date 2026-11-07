@@ -400,6 +400,7 @@ Executor_Fence_Test_Probe :: struct {
     owner_key:contracts.Owner_Verified_Key,
     cancel,restart,unlocked:bool,
     calls:int,
+    invalidate_at:int,
     startup_unlocked,prepared_before_callback:bool,
     prepare_probe:^Executor_Test_Prepare,
 }
@@ -444,6 +445,7 @@ bridge_executor_test_fence_callback :: proc(ctx:rawptr,raw:string,generation:i64
     scope["issued_ms"]=q["issued_ms"];scope["request_expires_ms"]=q["request_expires_ms"]
     token,sealed:=channel.seal(reply_raw,p.kr,scope,now,context.temp_allocator)
     if !sealed do return {}
+    if p.invalidate_at>0 && p.calls==p.invalidate_at do bridge_task_chain_search_lock()
     return {executor.encode(scope),token,p.directory}
 }
 
@@ -537,6 +539,63 @@ bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,wire:Executor_Exc
         local,handled=bridge_executor_agent("child_local_bad",input,material.token_secret,transport,socket)
         testing.expectf(t,handled && strings.contains(local,"invalid_owner_result"),"corrupted result or scope rejected: %s",local)
     }
+    // Exercise signed renewal through the mounted encrypted ingress and exact
+    // real daemon. Lose the local confirmation after IPC, then retry the same
+    // signed version with a fresh nonce; neither path may rematerialize/spawn.
+    renewal:=make(json.Object,context.temp_allocator)
+    for name,value in a do renewal[name]=value
+    renewal["method"]=json.String("heartbeat");renewal["operation_id"]=json.String("physical_renewal")
+    renewal["deadline_version"]=json.String("2")
+    renewal["owner_commit_seq"]=json.String("2")
+    renewal["expires_ms"]=json.String(fmt.tprintf("%d",contracts.executor_number(a,"expires_ms")+10000))
+    fence_probe.action=renewal
+    testing.expect(t,executor.exec(bridge_executor_store.db,"CREATE TRIGGER fail_renewal_confirm BEFORE UPDATE ON executor_renewals BEGIN SELECT RAISE(ABORT,'lost confirmation'); END"))
+    _,renew_code:=bridge_executor_test_exchange(t,wire,renewal,"action",owner_private,kr,self_key,"physical_renew_lost",
+        &fence_probe,"","",launch_io,true)
+    testing.expect_value(t,renew_code,"renewal_not_committed")
+    _,auth_before_confirm:=executor.child_bootstrap(&bridge_executor_store,intent.instance,material.token_secret,time.to_unix_nanoseconds(time.now())/1000000)
+    testing.expect(t,!auth_before_confirm,"pending renewal cannot authenticate a child")
+    _,pending_relay:=bridge_executor_test_exchange(t,wire,renewal,"action",owner_private,kr,self_key,"physical_renew_generic_pending")
+    testing.expect_value(t,pending_relay,"signer_unavailable")
+    testing.expect(t,executor.exec(bridge_executor_store.db,"DROP TRIGGER fail_renewal_confirm"))
+    renewed,renew_retry:=bridge_executor_test_exchange(t,wire,renewal,"action",owner_private,kr,self_key,"physical_renew_retry",
+        &fence_probe,"","",launch_io,true)
+    testing.expect(t,renew_retry=="ok" && contracts.owner_string(renewed,"deadline_version")=="2")
+    calls_after_renewal:=fence_probe.calls
+    _,renew_again:=bridge_executor_test_exchange(t,wire,renewal,"action",owner_private,kr,self_key,"physical_renew_exact",
+        &fence_probe,"","",launch_io,true)
+    testing.expect(t,renew_again=="ok" && fence_probe.calls==calls_after_renewal+1 &&
+        prepare_probe.calls==1 && fence_probe.unlocked && fence_probe.startup_unlocked,
+        "each physical renewal retry requires a fresh nonce and never prepares another child")
+    same_pid,same_child:=bridge_pty_host_executor_query(socket,intent.instance,intent.launch_key)
+    testing.expect(t,same_child && same_pid==pid)
+    renewed_attestation:=bridge_executor_child_attest(&bridge_executor_store,intent.instance,material.token_secret,input,socket,owner_key,self,{nil,bridge_executor_sign})
+    testing.expect_value(t,renewed_attestation.code,"ok")
+    renewed_request,renewed_valid:=contracts.executor_parse(renewed_attestation.body,"child_request")
+    signed_renewal,_:=contracts.executor_parse(bridge_executor_test_sign(renewal,"action",owner_private),"action")
+    testing.expect(t,renewed_valid && contracts.executor_child_request_matches(renewed_request,bootstrap,input,self,owner_key,time.to_unix_nanoseconds(time.now())/1000000,signed_renewal))
+    // Invalidate vault authority after the logical version commits but before
+    // the second, physical nonce callback returns. No daemon version may move.
+    blocked:=make(json.Object,context.temp_allocator)
+    for name,value in renewal do blocked[name]=value
+    blocked["operation_id"]=json.String("physical_renew_invalidated")
+    blocked["deadline_version"]=json.String("3")
+    blocked["owner_commit_seq"]=json.String("3")
+    blocked["expires_ms"]=json.String(fmt.tprintf("%d",contracts.executor_number(a,"expires_ms")+20000))
+    fence_probe.action=blocked;fence_probe.invalidate_at=fence_probe.calls+2
+    _,blocked_code:=bridge_executor_test_exchange(t,wire,blocked,"action",owner_private,kr,self_key,"physical_renew_invalidate",
+        &fence_probe,"","",launch_io,true)
+    testing.expect_value(t,blocked_code,"vault_locked")
+    controls,_:=executor.query(bridge_executor_store.db,"SELECT renewal_secret FROM executor_controls WHERE reservation_id=?",intent.reservation)
+    _,still_version2:=bridge_pty_host_executor_renew(socket,intent.instance,intent.launch_key,controls[0][0],2,
+        contracts.executor_number(renewal,"expires_ms"),contracts.executor_number(renewal,"hard_ms"))
+    testing.expect(t,still_version2 && prepare_probe.calls==1,"vault invalidation cannot move daemon version or spawn")
+    fence_probe.invalidate_at=0
+    _,recovered_code:=bridge_executor_test_exchange(t,wire,blocked,"action",owner_private,kr,self_key,"physical_renew_after_invalidate",
+        &fence_probe,"","",launch_io,true)
+    testing.expect(t,recovered_code=="ok" && prepare_probe.calls==1,
+        "new current generation and a fresh nonce may deliver only the same pending version")
+
     // The ledger still says confirmed, but physical absence must reject the
     // credential before any executor-attested owner request can be signed.
     testing.expect(t,bridge_pty_host_executor_close(socket,intent.instance,intent.launch_key))
@@ -547,7 +606,7 @@ bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,wire:Executor_Exc
     testing.expect_value(t,attested.code,"child_not_current")
     stop:=make(json.Object,context.temp_allocator)
     for name,value in a do stop[name]=value
-    stop["method"]=json.String("stop");stop["operation_id"]=json.String("bootstrap_real_stop")
+    stop["method"]=json.String("stop");stop["operation_id"]=json.String("bootstrap_real_stop");stop["deadline_version"]=json.String("3")
     now=time.to_unix_nanoseconds(time.now())/1000000
     stopped:=executor.action(&bridge_executor_store,bridge_executor_test_sign(stop,"action",owner_private),owner_key,now)
     testing.expect_value(t,stopped.code,"ok")

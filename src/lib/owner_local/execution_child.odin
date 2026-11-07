@@ -35,9 +35,18 @@ execution_child :: proc(s:^Store,request_raw,input_raw:string,executor_key,owner
     b,b_ok:=contracts.executor_parse(row[0],"bootstrap")
     p,p_ok:=contracts.executor_parse(row[1],"prepare")
     c,c_ok:=contracts.owner_parse(row[2],"lease_command")
+    renewal:json.Object
+    if b_ok && field(r,"deadline_version")!=field(b,"deadline_version") {
+        saved,read:=query(s.db,"SELECT payload_json FROM runtime_intents WHERE kind='executor.heartbeat' AND chain_id=? AND principal_id=? AND json_extract(payload_json,'$.reservation_id')=? AND json_extract(payload_json,'$.deadline_version')=?",
+            field(b,"chain_id"),field(b,"instance_id"),field(b,"reservation_id"),field(r,"deadline_version"))
+        if !read || len(saved)!=1 do return {},false
+        parsed:bool
+        renewal,parsed=contracts.executor_parse(saved[0][0],"action")
+        if !parsed do return {},false
+    }
     if !b_ok || !p_ok || !c_ok || !remote_assignment_key_matches(s,p,executor_key) ||
-       !contracts.executor_child_request_matches(r,b,input_raw,executor_key,owner_key,now) ||
-       now>=contracts.executor_number(b,"expires_ms") || now>=contracts.executor_number(b,"hard_ms") {return {},false}
+       !contracts.executor_child_request_matches(r,b,input_raw,executor_key,owner_key,now,renewal) ||
+       now>=contracts.executor_number(r,"expires_ms") || now>=contracts.executor_number(r,"hard_ms") {return {},false}
     child,current:=execution_assignment(s,p,c,false)
     original:Child
     if !current || json.unmarshal_string(row[3],&original,.JSON,context.temp_allocator)!=nil ||

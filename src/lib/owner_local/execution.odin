@@ -218,21 +218,29 @@ execution_activation_fence :: proc(s:^Store,claim:Intent_Claim,now:i64)->(curren
 }
 execution_activation_fence_locked :: proc(s:^Store,claim:Intent_Claim,now:i64)->(current:bool,digest:string,owner_incarnation,commit_seq:i64) {
     if !transaction_current(s.active) do return false,"",0,0
-    if claim.kind!="executor.activate" || claim.incarnation!=s.incarnation || claim.digest!=contracts.owner_payload_digest(claim.payload) do return false,"",0,0
-    rows,ok:=query(s.db, `SELECT j.prepare_json,j.lease_command,j.activation_json,j.grant_seq,l.expires_ms,l.hard_ms,l.deadline_version,
-        (SELECT clock_high_ms FROM runtime_database),(SELECT recovery_state FROM runtime_database)
+    if (claim.kind!="executor.activate" && claim.kind!="executor.heartbeat") || claim.incarnation!=s.incarnation || claim.digest!=contracts.owner_payload_digest(claim.payload) do return false,"",0,0
+    rows,ok:=query(s.db, `SELECT j.prepare_json,j.lease_command,i.payload_json,i.commit_seq,l.expires_ms,l.hard_ms,l.deadline_version,
+        (SELECT clock_high_ms FROM runtime_database),(SELECT recovery_state FROM runtime_database),e.evidence_json,r.input_digest
       FROM owner_execution_journal j JOIN local_leases l ON l.lease_id=j.lease_id
-      JOIN runtime_intents i ON i.chain_id=j.chain_id AND i.principal_id=j.instance_id AND i.operation_id=j.operation_id AND i.kind='executor.activate'
+      JOIN runtime_intents i ON i.chain_id=j.chain_id AND i.principal_id=j.instance_id AND i.kind=?
+      JOIN command_receipts r ON r.principal_id=i.principal_id AND r.operation_id=i.operation_id AND r.commit_seq=i.commit_seq
+        AND r.chain_id=j.chain_id AND r.task_id=j.task_id
+        AND ((i.kind='executor.activate' AND r.method='lease.claim' AND i.operation_id=j.operation_id)
+          OR (i.kind='executor.heartbeat' AND r.method='lease.heartbeat'))
+      JOIN local_events e ON e.seq=r.commit_seq AND e.chain_id=r.chain_id AND e.task_id=r.task_id
+        AND e.actor_id=r.principal_id AND e.kind=r.method AND e.operation_id=r.operation_id
       WHERE j.state='committed' AND l.retired_seq IS NULL AND i.intent_id=? AND i.state='claimed'
         AND i.claim_incarnation=? AND i.attempts=? AND i.payload_digest=? AND i.payload_json=?
         AND i.destination_bridge=? AND i.exact_fence_json=?
         AND NOT EXISTS(SELECT 1 FROM intent_invalidations x WHERE x.intent_id=i.intent_id)`,
-        claim.id,fmt.tprintf("%d",s.incarnation),fmt.tprintf("%d",claim.attempt),claim.digest,claim.payload,claim.destination,claim.fence)
+        claim.kind,claim.id,fmt.tprintf("%d",s.incarnation),fmt.tprintf("%d",claim.attempt),claim.digest,claim.payload,claim.destination,claim.fence)
     if !ok || len(rows)!=1 do return false,"",0,0
     row:=rows[0]
     p,p_ok:=contracts.executor_parse(row[0],"prepare");c,c_ok:=contracts.owner_parse(row[1],"lease_command")
     a,a_ok:=contracts.executor_parse(row[2],"action")
-    if !p_ok || !c_ok || !a_ok || row[2]!=claim.payload || claim.fence!=row[0] || claim.chain!=field(p,"chain_id") ||
+    if !p_ok || !c_ok || !a_ok || field(a,"method")!=("activate" if claim.kind=="executor.activate" else "heartbeat") ||
+       contracts.executor_number(a,"owner_commit_seq")!=number(row[3]) ||
+       field(a,"hard_ms")!=row[5] || row[2]!=claim.payload || claim.fence!=row[0] || claim.chain!=field(p,"chain_id") ||
        field(a,"executor_bridge_id")!=claim.destination || now<0 || now<number(row[7]) || row[8]!="ready" ||
        number(row[4])<=now || number(row[5])<=now || number(row[6])!=contracts.executor_number(a,"deadline_version") ||
        number(row[4])!=contracts.executor_number(a,"expires_ms") ||
@@ -240,8 +248,17 @@ execution_activation_fence_locked :: proc(s:^Store,claim:Intent_Claim,now:i64)->
        contracts.executor_number(a,"request_expires_ms")<=now {return false,"",0,0}
     _,current=execution_assignment(s,p,c)
     if !current || !control_active(s,claim.chain,field(p,"task_id")) || !workflow_task_current(s,claim.chain,field(p,"task_id")) do return false,"",0,0
+    expected:=field(c,"expected_revision")
+    if claim.kind=="executor.heartbeat" {
+        value,valid:=contracts.owner_request_document(row[9]);e,obj:=value.(json.Object)
+        heartbeat,parsed:=contracts.owner_parse(field(e,"command"),"lease_command")
+        hd,digested:=contracts.owner_digest("lease_command",heartbeat)
+        if !valid || !obj || !parsed || !digested || hd!=row[10] || field(heartbeat,"method")!="lease.heartbeat" ||
+           field(heartbeat,"lease_id")!=field(c,"lease_id") || field(heartbeat,"instance_id")!=field(c,"instance_id") {return false,"",0,0}
+        expected=field(heartbeat,"expected_revision")
+    }
     tasks,read:=query(s.db,"SELECT revision FROM tasks WHERE chain_id=? AND task_id=?",claim.chain,field(p,"task_id"))
-    if !read || len(tasks)!=1 || tasks[0][0]!=field(c,"expected_revision") do return false,"",0,0
+    if !read || len(tasks)!=1 || tasks[0][0]!=expected do return false,"",0,0
     return true,field(a,"prepare_digest"),s.incarnation,number(row[3])
 }
 
@@ -317,4 +334,37 @@ execution_expire_preparations :: proc(s:^Store,now:i64)->bool {
         if !execution_change(&tx,seq,now,p,"execution.prepare_expired",row[0],"no_grant") do return false
     }
     return transaction_commit(&tx)
+}
+
+// A renewal action is an immutable outbox journal entry, inserted in the same
+// transaction as the lease heartbeat receipt. Historical receipt replay returns
+// before this helper, so it can never enqueue or extend the deadline twice.
+// Local children have no execution journal and keep their ordinary lease path.
+execution_renewal_enqueue :: proc(tx:^Transaction,c:json.Object,seq,version,expires,hard,now:i64,
+    key:contracts.Owner_Verified_Key,sign:Signer)->bool {
+    if !transaction_current(tx) || field(c,"method")!="lease.heartbeat" || sign.sign==nil do return false
+    s:=tx.store
+    rows,ok:=query(s.db,"SELECT prepare_json FROM owner_execution_journal WHERE lease_id=? AND chain_id=? AND task_id=? AND instance_id=? AND state='committed'",
+        field(c,"lease_id"),field(c,"chain_id"),field(c,"task_id"),field(c,"instance_id"))
+    if !ok || len(rows)>1 do return false
+    if len(rows)==0 do return true
+    p,valid:=contracts.executor_parse(rows[0][0],"prepare")
+    if !valid || !contracts.executor_verify("prepare",p,key) || hard!=contracts.executor_number(p,"hard_ms") do return false
+    digest,_:=contracts.executor_digest("prepare",p)
+    a:=doc(map[string]string{
+        "protocol_version"="1","account_id"=s.account,"executor_bridge_id"=field(p,"executor_bridge_id"),
+        "owner_bridge_id"=s.owner,"chain_id"=field(p,"chain_id"),"reservation_id"=field(p,"reservation_id"),
+        "operation_id"=contracts.owner_payload_digest(encode([3]string{field(p,"reservation_id"),"heartbeat",field(c,"operation_id")})),
+        "method"="heartbeat","prepare_digest"=digest,"executor_incarnation"=field(p,"executor_incarnation"),
+        "owner_incarnation"=fmt.tprintf("%d",s.incarnation),"owner_commit_seq"=fmt.tprintf("%d",seq),
+        "grant_generation"=field(p,"grant_generation"),"deadline_version"=fmt.tprintf("%d",version),
+        "expires_ms"=fmt.tprintf("%d",expires),"hard_ms"=fmt.tprintf("%d",hard),
+        "request_expires_ms"=fmt.tprintf("%d",min(now+contracts.OWNER_REQUEST_TTL_MS,expires)),
+        "key_id"=s.owner_key,"signature"=strings.repeat("0",128,context.temp_allocator)})
+    signature,signed:=sign.sign(sign.ctx,"executor.action",a)
+    if !signed do return false
+    a["signature"]=json.String(signature)
+    if !contracts.executor_verify("action",a,key) do return false
+    return intent_enqueue(tx,{field(c,"chain_id"),field(c,"instance_id"),field(c,"operation_id"),seq,
+        "executor.heartbeat",field(p,"executor_bridge_id"),rows[0][0],encode(a)})
 }

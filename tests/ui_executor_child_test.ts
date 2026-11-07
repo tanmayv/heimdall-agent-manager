@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { executorParse, executorVerify, executorBootstrapMatches, executorChildRequestMatches, executorChildResultMatches } from '../src/ui/api/executor.ts';
+import { executorParse, executorCanonical, executorVerify, executorBootstrapMatches, executorChildRequestMatches, executorChildResultMatches } from '../src/ui/api/executor.ts';
 import type { OwnerVerifiedKey } from '../src/ui/api/ownerLocal.ts';
 const f = JSON.parse(readFileSync(new URL('../src/contracts/fixtures/executor-child-v1.json',import.meta.url),'utf8')) as {
   activation_exchange: string; content_bad: string[]; owner_key: OwnerVerifiedKey; executor_key: OwnerVerifiedKey; prepare: string; action: string; bootstrap: string; child: string;
@@ -56,4 +56,27 @@ test('bootstrap content permits Unicode and rejects executable and skill path in
   assert.doesNotThrow(() => executorParse(f.body,'bootstrap_content'));
   assert.doesNotThrow(() => executorParse(f.activation_exchange,'activation_bootstrap_exchange'));
   for (const raw of f.content_bad) assert.throws(() => executorParse(raw,'bootstrap_content'));
+});
+
+
+test('confirmed renewal supplements the immutable bootstrap deadline with exact signed scope',async () => {
+  const owner = await crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);
+  const executor = await crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);
+  const hex = (value: ArrayBuffer) => Buffer.from(value).toString('hex');
+  const ownerKey = {...f.owner_key,public_key:hex(await crypto.subtle.exportKey('raw',owner.publicKey))};
+  const executorKey = {...f.executor_key,public_key:hex(await crypto.subtle.exportKey('raw',executor.publicKey))};
+  const sign = async (kind: 'action'|'bootstrap'|'child_request', value: Record<string,string>, pair: CryptoKeyPair) =>
+    ({...value,signature:hex(await crypto.subtle.sign({name:'ECDSA',hash:'SHA-256'},pair.privateKey,new TextEncoder().encode(executorCanonical(kind,value))))});
+  const bootstrap = await sign('bootstrap',b,owner);
+  const renewal = await sign('action',{...a,method:'heartbeat',operation_id:'renewal',deadline_version:'2',expires_ms:'8000',request_expires_ms:'6000'},owner);
+  const child = await sign('child_request',{...r,deadline_version:'2',expires_ms:'8000',issued_ms:'5100',request_expires_ms:'5500'},executor);
+  assert.equal(await executorChildRequestMatches(child,bootstrap,f.input,executorKey,ownerKey,5200n,renewal),true);
+  assert.equal(await executorChildRequestMatches(child,bootstrap,f.input,executorKey,ownerKey,5200n),false);
+  for (const name of ['reservation_id','grant_generation','executor_incarnation','owner_incarnation','prepare_digest','hard_ms']) {
+    const changed = await sign('action',{...renewal,[name]:name === 'prepare_digest' ? 'b'.repeat(64) : name === 'reservation_id' ? 'other' : '9999'},owner);
+    assert.equal(await executorChildRequestMatches(child,bootstrap,f.input,executorKey,ownerKey,5200n,changed),false,name);
+  }
+  const unsigned = {...renewal,expires_ms:'4000'};
+  assert.equal(await executorChildRequestMatches(child,bootstrap,f.input,executorKey,ownerKey,5200n,unsigned),false);
+  assert.equal(await executorChildRequestMatches(child,bootstrap,f.input,executorKey,{...ownerKey,revoked:true},5200n,renewal),false);
 });

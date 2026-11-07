@@ -165,6 +165,15 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
         if len(rows)!=1 || rows[0][0]!=cap_raw || !lease_scope(cap,child) ||
             field(cap,"configuration_revision")!=fleet[0][1] { return fail("invalid_scope") }
         if number(rows[0][1])<=now || number(rows[0][2])<=now do return fail("expired")
+        // Do not let a child outrun delivery of the prior exact physical
+        // version. Receipt replay above remains available while it is pending.
+        pending,pending_read:=query(s.db,`SELECT 1 FROM owner_execution_journal j JOIN runtime_intents i
+          ON i.chain_id=j.chain_id AND i.principal_id=j.instance_id AND i.kind='executor.heartbeat'
+          AND json_extract(i.payload_json,'$.reservation_id')=j.reservation_id
+          WHERE j.lease_id=? AND i.state!='settled' LIMIT 1`,lease)
+        if !pending_read do return fail("storage_error")
+        if len(pending)>0 do return fail("operation_conflict")
+        if number(rows[0][3])==0x7fffffffffffffff do return fail("retention_capacity")
         hard=number(rows[0][2]);version=number(rows[0][3])+1
         expires=min(expires,hard)
     }
@@ -186,6 +195,7 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
     if _,ok=query(s.db,`INSERT INTO command_receipts(principal_id,operation_id,chain_id,task_id,method,input_digest,digest_key_id,request_expires_ms,result_json,commit_seq,created_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,instance,op,chain,task,method,digest,s.owner_key,field(c,"request_expires_ms"),result,fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
     if _,ok=query(s.db,"INSERT INTO lease_receipt_pins VALUES(?,?,?)",instance,op,lease);!ok do return fail("storage_error")
     if _,ok=query(s.db,"INSERT OR IGNORE INTO lease_receipt_pins SELECT principal_id,operation_id,? FROM local_fleet WHERE chain_id=? AND task_id=?",lease,chain,task);!ok do return fail("storage_error")
+    if method=="lease.heartbeat" && !execution_renewal_enqueue(&tx,c,seq,version,expires,hard,now,key,sign) do return fail("storage_error")
     if !event_record(&tx,seq,now,chain,task,"agent",instance,method,op,raw,"",encode(child),result) do return fail("storage_error")
     if _,ok=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),chain,method,task,tasks[0][0],op);!ok do return fail("storage_error")
     if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")

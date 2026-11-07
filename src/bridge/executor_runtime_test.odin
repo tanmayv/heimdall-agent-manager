@@ -10,6 +10,7 @@ import "core:strings"
 import "core:sync"
 import "core:testing"
 import "core:time"
+import "core:thread"
 import contracts "odin_test:contracts"
 import executor "odin_test:lib/executor_local"
 import vault "odin_test:lib/vault"
@@ -322,4 +323,31 @@ bridge_executor_renewal_exact_ipc :: proc(t:^testing.T) {
     testing.expect(t,bridge_pty_host_executor_close(socket,req.instance,key))
     _,retired:=bridge_pty_host_executor_renew(socket,req.instance,key,secret,3,now+7000,now+8000)
     testing.expect(t,!retired)
+}
+
+
+@(test)
+bridge_executor_physical_authority_gate_linearizes_vault_invalidation :: proc(t:^testing.T) {
+    sync.mutex_lock(&task_chain_search_global_test_mutex);defer sync.mutex_unlock(&task_chain_search_global_test_mutex)
+    generation:=bridge_task_chain_search_generation()
+    if !testing.expect(t,bridge_executor_authority_begin(generation)) do return
+    race:struct {started,finished:bool}
+    worker:=thread.create_and_start_with_data(&race,proc(data:rawptr) {
+        r:=(^struct {started,finished:bool})(data)
+        sync.atomic_store(&r.started,true)
+        bridge_task_chain_search_lock()
+        sync.atomic_store(&r.finished,true)
+    })
+    for !sync.atomic_load(&race.started) do time.sleep(time.Millisecond)
+    time.sleep(30*time.Millisecond)
+    testing.expect(t,!sync.atomic_load(&race.finished),"vault generation invalidation must wait for physical I/O")
+    bridge_executor_authority_end()
+    thread.join(worker);thread.destroy(worker)
+    testing.expect(t,sync.atomic_load(&race.finished))
+    allowed:=bridge_executor_authority_begin(generation)
+    if allowed do bridge_executor_authority_end()
+    testing.expect(t,!allowed,"a snapshot captured before invalidation cannot begin physical I/O")
+    fresh:=bridge_executor_authority_begin(bridge_task_chain_search_generation())
+    testing.expect(t,fresh)
+    if fresh do bridge_executor_authority_end()
 }

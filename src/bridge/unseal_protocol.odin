@@ -645,6 +645,7 @@ bridge_unseal_decrypt_and_verify :: proc(
 	local_bridge_id: string,
 	current_clock_ms: i64,
 ) -> (ok: bool, err_msg: string) {
+	unseal_generation:=bridge_task_chain_search_generation()
 	bridge_unseal_init()
 
 	payload: Bridge_Unseal_Payload
@@ -741,6 +742,8 @@ bridge_unseal_decrypt_and_verify :: proc(
 	// keyring stores below.
 	sync.mutex_lock(&g_unseal_install_mu)
 	defer sync.mutex_unlock(&g_unseal_install_mu)
+	sync.rw_mutex_lock(&bridge_vault_io_mutex);defer sync.rw_mutex_unlock(&bridge_vault_io_mutex)
+	if unseal_generation!=bridge_task_chain_search_generation() do return false,"vault changed during unseal"
 
 	// ── Keyring authentication (plan §1, finding C1) ──────────────────────
 	// The ECDH unseal proves only that the sender saw this boot's signed key, not
@@ -839,7 +842,7 @@ bridge_unseal_decrypt_and_verify :: proc(
 	if !store_ok do return false, "failed to store unsealed vault keyring in secure keystore"
 
 	// A new keyring: rebuild the search index under it and re-salt every PTY stream.
-	bridge_task_chain_search_lock()
+	bridge_task_chain_search_lock_inner()
 	bridge_pty_stream_resalt_all()
 	bridge_enrollment_unseal_mark_received()
 	return true, ""

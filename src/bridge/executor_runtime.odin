@@ -2,6 +2,7 @@
 package main
 
 import "core:fmt"
+import "core:crypto"
 import contracts "odin_test:contracts"
 import executor "odin_test:lib/executor_local"
 
@@ -30,7 +31,8 @@ bridge_executor_dispatch :: proc(s:^executor.Store,intent:executor.Intent,now:i6
            owner_check==nil {return false,"invalid_launch"}
         // Only the Bridge's catalog/configuration resolver may supply argv/env.
         // The exact spawn bytes become immutable in the daemon on first I/O.
-        for pair in request.env do if pair[0]=="HEIMDALL_EXECUTOR_LAUNCH_KEY" || pair[0]=="HEIMDALL_EXECUTOR_DEADLINE_MS" do return false,"reserved_launch_key"
+        for pair in request.env do if pair[0]=="HEIMDALL_EXECUTOR_LAUNCH_KEY" || pair[0]=="HEIMDALL_EXECUTOR_DEADLINE_MS" ||
+            pair[0]=="HEIMDALL_EXECUTOR_DEADLINE_VERSION" || pair[0]=="HEIMDALL_EXECUTOR_HARD_MS" || pair[0]=="HEIMDALL_EXECUTOR_RENEW_SECRET" {return false,"reserved_launch_key"}
         proof:=owner_check(ctx,intent)
         if !executor.expire(s,clock(clock_ctx)) do return false,"clock_or_storage_error"
         digest,_:=contracts.executor_digest("prepare",p)
@@ -51,6 +53,13 @@ bridge_executor_dispatch :: proc(s:^executor.Store,intent:executor.Intent,now:i6
     fresh_remaining,still_current:=executor.intent_current(s,intent,admission_now)
     if !still_current do return false,"stale_intent"
     if intent.kind=="launch" && request.timeout_seconds>u64(fresh_remaining/1000) do return false,"expired_launch"
+    secret:=""
+    if intent.kind=="launch" {
+        ready:bool
+        secret,ready=executor.launch_control(s,intent,admission_now)
+        if !ready do return false,"control_not_committed"
+    }
+    defer {if secret!="" do crypto.zero_explicit(raw_data(secret),len(secret))}
     first_dispatch:=executor.begin_dispatch(s,intent,admission_now)
     if first_dispatch && intent.kind=="launch" && final_owner_check!=nil {
         // A slow durable dispatch commit must not outlive the signed nonce.
@@ -69,9 +78,13 @@ bridge_executor_dispatch :: proc(s:^executor.Store,intent:executor.Intent,now:i6
         } else {
             req:=request
             if final_owner_check!=nil do req.timeout_seconds=min(req.timeout_seconds,u64(fresh_remaining/1000))
-            env:=make([][2]string,len(request.env)+2,context.temp_allocator)
+            env:=make([][2]string,len(request.env)+5,context.temp_allocator)
             copy(env,request.env);env[len(request.env)]={"HEIMDALL_EXECUTOR_LAUNCH_KEY",intent.launch_key}
             env[len(request.env)+1]={"HEIMDALL_EXECUTOR_DEADLINE_MS",fmt.tprintf("%d",admission_now+fresh_remaining)}
+            p,_:=contracts.executor_parse(intent.document,"prepare")
+            env[len(request.env)+2]={"HEIMDALL_EXECUTOR_DEADLINE_VERSION","1"}
+            env[len(request.env)+3]={"HEIMDALL_EXECUTOR_HARD_MS",contracts.owner_string(p,"hard_ms")}
+            env[len(request.env)+4]={"HEIMDALL_EXECUTOR_RENEW_SECRET",secret}
             req.env=env
             _,_=bridge_pty_host_spawn(socket,req)
         }

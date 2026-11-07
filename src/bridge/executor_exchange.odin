@@ -105,7 +105,7 @@ bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string,activati
     defer crypto.zero_explicit(raw_data(request_raw),len(request_raw))
     p,p_ok:=contracts.executor_parse(request_raw,method)
     if !p_ok do return
-    if activation && (method!="action" || get(p,"method")!="activate") do return
+    if activation && (method!="action" || (get(p,"method")!="activate" && get(p,"method")!="heartbeat") || has_bootstrap && get(p,"method")!="activate") do return
     now=time.to_unix_nanoseconds(time.now())/1000000
     binding:=executor.bind_owner(s,wire.genesis,creator_key,owner_key,now)
     if binding.code!="ok" {reply.code=binding.code;return}
@@ -150,6 +150,11 @@ bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string,activati
         self:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,self_id,public,"bridge",true,false}
         launched,reason:=dispatch(s,request_raw,exchange,owner_key,self,&kr,generation,callback_ctx,fence_exchange,launch_io)
         if !launched {reply.code=reason;return}
+    }
+    if activation && get(p,"method")=="heartbeat" && result.code=="ok" {
+        self:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,self_id,public,"bridge",true,false}
+        delivered,reason:=dispatch(s,request_raw,exchange,owner_key,self,&kr,generation,callback_ctx,fence_exchange,launch_io)
+        if !delivered {reply.code=reason;return}
     }
     reply.code=result.code
     if result.code!="ok" do return

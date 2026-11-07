@@ -105,12 +105,13 @@ executor_bootstrap_matches :: proc(b,p,a:json.Object,configuration_raw,body_raw,
 // The caller supplies the currently accepted bootstrap, not one selected by the
 // remote sender. Replays must reach the owner's ordinary operation receipt path.
 // This does not renew a deadline or establish that a process is still present.
-executor_child_request_matches :: proc(r,b:json.Object,input_raw:string,executor_key,owner_key:Owner_Verified_Key,now:i64)->bool {
+executor_child_request_matches :: proc(r,b:json.Object,input_raw:string,executor_key,owner_key:Owner_Verified_Key,now:i64,renewal:json.Object=nil)->bool {
     if !executor_verify("child_request",r,executor_key) || !executor_verify("bootstrap",b,owner_key) ||
        owner_string(b,"owner_bridge_id")==owner_string(b,"executor_bridge_id") {return false}
-    for name in ([22]string{"protocol_version","account_id","owner_bridge_id","executor_bridge_id","chain_id","task_id","lease_id",
+    if !executor_child_deadline_matches(r,b,renewal,owner_key) do return false
+    for name in ([20]string{"protocol_version","account_id","owner_bridge_id","executor_bridge_id","chain_id","task_id","lease_id",
         "reservation_id","instance_id","launch_epoch","run_count","token_generation","configuration_revision","grant_generation",
-        "owner_incarnation","executor_incarnation","prepare_digest","launch_key","deadline_version","expires_ms","hard_ms","bootstrap_digest"}) {
+        "owner_incarnation","executor_incarnation","prepare_digest","launch_key","hard_ms","bootstrap_digest"}) {
         if name=="bootstrap_digest" {
             digest,_:=executor_digest("bootstrap",b)
             if owner_string(r,name)!=digest do return false
@@ -141,3 +142,21 @@ executor_child_result_matches :: proc(result,request:json.Object,body:string,own
 
 // Local startup acknowledgement; readiness grants no owner task authority.
 Executor_Readiness_Ack :: struct {accepted:bool,ready_ms:string}
+
+
+// A signed renewal supplements only the deadline of the immutable bootstrap.
+// Its source must be the local owner outbox or the executor's daemon-confirmed
+// journal, never a document selected by the remote child.
+executor_child_deadline_matches :: proc(r,b,a:json.Object,key:Owner_Verified_Key)->bool {
+    if a==nil do return owner_string(r,"deadline_version")==owner_string(b,"deadline_version") &&
+        owner_string(r,"expires_ms")==owner_string(b,"expires_ms")
+    if !executor_verify("action",a,key) || owner_string(a,"method")!="heartbeat" do return false
+    for name in ([11]string{"protocol_version","account_id","owner_bridge_id","executor_bridge_id","chain_id",
+        "reservation_id","grant_generation","owner_incarnation","executor_incarnation","prepare_digest","hard_ms"}) {
+        if owner_string(a,name)!=owner_string(b,name) do return false
+    }
+    return executor_number(a,"deadline_version")>executor_number(b,"deadline_version") &&
+        executor_number(a,"expires_ms")>=executor_number(b,"expires_ms") &&
+        owner_string(r,"deadline_version")==owner_string(a,"deadline_version") &&
+        owner_string(r,"expires_ms")==owner_string(a,"expires_ms")
+}

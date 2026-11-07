@@ -41,8 +41,16 @@ child_bootstrap_locked :: proc(s:^Store,instance,secret:string,now:i64)->(string
     if !valid || !scope(s,b) || field(b,"instance_id")!=instance || field(b,"launch_key")!=row[7] ||
        field(b,"token_generation")!=contracts.owner_payload_digest(secret) ||
        field(b,"configuration_digest")!=contracts.owner_payload_digest(row[8]) ||
-       field(b,"deadline_version")!=row[4] || field(b,"expires_ms")!=row[2] || field(b,"hard_ms")!=row[3] ||
+       field(b,"hard_ms")!=row[3] ||
        num(b,"owner_incarnation")!=number(row[11]) {return "",false}
+    if field(b,"deadline_version")!=row[4] || field(b,"expires_ms")!=row[2] {
+        a,confirmed:=child_renewal_locked(s,field(b,"reservation_id"),row[4],row[2],row[3])
+        if !confirmed || num(a,"deadline_version")<=num(b,"deadline_version") || num(a,"expires_ms")<num(b,"expires_ms") do return "",false
+        for name in ([11]string{"protocol_version","account_id","owner_bridge_id","executor_bridge_id","chain_id",
+            "reservation_id","grant_generation","owner_incarnation","executor_incarnation","prepare_digest","hard_ms"}) {
+            if field(a,name)!=field(b,name) do return "",false
+        }
+    }
     return row[0],true
 }
 
@@ -64,21 +72,30 @@ attest_child_request :: proc(s:^Store,instance,secret,input_raw:string,observati
        executor_key.principal_id!=s.executor || executor_key.account_id!=s.account ||
        !observation.present || observation.executor_incarnation!=s.incarnation ||
        observation.instance!=instance || observation.launch_key!=field(b,"launch_key") {return fail("invalid_scope")}
+    deadline,read:=query(s.db,"SELECT deadline_version,expires_ms,hard_ms FROM executor_reservations WHERE reservation_id=?",field(b,"reservation_id"))
+    if !read || len(deadline)!=1 do return fail("storage_error")
+    renewal:json.Object
+    if deadline[0][0]!=field(b,"deadline_version") {
+        confirmed:bool
+        renewal,confirmed=child_renewal_locked(s,field(b,"reservation_id"),deadline[0][0],deadline[0][1],deadline[0][2])
+        if !confirmed do return fail("invalid_scope")
+    }
     r:=make(json.Object,context.temp_allocator)
     for entry in contracts.executor_schema("child_request") do r[entry.name]=b[entry.name]
     digest,_:=contracts.executor_digest("bootstrap",b)
+    r["deadline_version"]=json.String(deadline[0][0]);r["expires_ms"]=json.String(deadline[0][1])
     r["bootstrap_digest"]=json.String(digest)
     r["input_digest"]=json.String(contracts.owner_payload_digest(input_raw))
     r["issued_ms"]=json.String(fmt.tprintf("%d",now))
     // The original input may be expired but still name a committed operation.
     // Only the owner may decide receipt replay versus a fresh expired mutation.
-    r["request_expires_ms"]=json.String(fmt.tprintf("%d",min(now+contracts.EXECUTOR_FENCE_TTL_MS,num(b,"expires_ms"),num(b,"hard_ms"))))
+    r["request_expires_ms"]=json.String(fmt.tprintf("%d",min(now+contracts.EXECUTOR_FENCE_TTL_MS,num(r,"expires_ms"),num(r,"hard_ms"))))
     r["key_id"]=json.String(executor_key.key_id)
     r["signature"]=json.String(strings.repeat("0",128,context.temp_allocator))
     if !contracts.executor_valid(r,"child_request") || num(r,"request_expires_ms")<=now do return fail("expired")
     signature,signed:=sign.sign(sign.ctx,"child_request",r)
     if !signed do return fail("signer_unavailable")
     r["signature"]=json.String(signature)
-    if !contracts.executor_child_request_matches(r,b,input_raw,executor_key,owner_key,now) do return fail("invalid_scope")
+    if !contracts.executor_child_request_matches(r,b,input_raw,executor_key,owner_key,now,renewal) do return fail("invalid_scope")
     return Result{code="ok",body=encode(r)}
 }

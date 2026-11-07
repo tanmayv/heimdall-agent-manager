@@ -34,16 +34,16 @@ owner_execution_child_uses_native_journal_and_ordinary_capability_replay :: proc
     testing.expect_value(t,encode(child),encode(lease_child()))
     testing.expect(t,fleet_policy_test_state(f)==before,"verifying an executor attestation must not mutate authoritative state")
     command:=lease_request(f,child,"lease.heartbeat","remote_hb","lease",caps[0][0],"3")
-    renewed:=lease_invoke(f,command,caps[0][0],child,1300)
+    renewed:=execute_lease(&f.store,command,caps[0][0],child,f.owner,1300,{&f.owner_priv,execution_test_sign})
     testing.expect_value(t,renewed.code,"ok")
-    replay:=lease_invoke(f,command,caps[0][0],child,1400)
+    replay:=execute_lease(&f.store,command,caps[0][0],child,f.owner,1400,{&f.owner_priv,execution_test_sign})
     testing.expect(t,replay.code=="ok" && replay.replay && replay.body==renewed.body)
     // A fresh transport attestation carries the exact expired original input;
     // native receipt replay still precedes fresh mutation expiry checks.
     later:=execution_child_test_request(x,b,input,2100)
     replay_child,current:=execution_child(&f.store,later,input,x.host_key,f.owner,2100)
     testing.expect(t,current)
-    replay=lease_invoke(f,command,caps[0][0],replay_child,2100)
+    replay=execute_lease(&f.store,command,caps[0][0],replay_child,f.owner,2100,{&f.owner_priv,execution_test_sign})
     testing.expect(t,replay.code=="ok" && replay.replay && replay.body==renewed.body)
     fresh:=lease_request(f,child,"lease.heartbeat","new_expired_hb","lease",caps[0][0],"3")
     testing.expect_value(t,lease_invoke(f,fresh,caps[0][0],child,2100).code,"expired")
@@ -81,4 +81,51 @@ owner_execution_child_rejects_substitution_revocation_regrant_and_restart :: pro
     _,valid=execution_child(&f.store,request,input,x.host_key,f.owner,1800);testing.expect(t,!valid)
     close(&f.store);testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     _,valid=execution_child(&f.store,request,input,x.host_key,f.owner,1400);testing.expect(t,!valid,"old owner incarnation is not fresh remote authority")
+}
+
+
+@(test)
+owner_execution_child_lost_submit_reply_replays_after_native_lease_retirement :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    x:=execution_test_fixture(t);defer execution_test_destroy(x);f:=x.owner
+    config:=encode(doc(map[string]string{"configuration_revision"="1","author_agent_id"="author","reviewer_agent_id"="reviewer",
+        "reviewer_instance_id"="review_instance","directory_id"="directory","merge_policy"="none","repository"="",
+        "worktree"="","source_branch"="","target_branch"="","base_head"=""}))
+    configured:=execute(&f.store,command(f,"lifecycle.configure","config","task",config,"2"),config,"",
+        f.creator,f.owner,1,"head",1000,&f.kr,{&f.owner_priv,test_sign},{},Lifecycle_Proof{lease_child(),lifecycle_reviewer(),true})
+    if !testing.expect_value(t,configured.code,"ok") do return
+    lifecycle_edit(t,f,"1","3")
+    x.lease=lease_request(f,lease_child(),"lease.claim","claim","lease","","4")
+    testing.expect_value(t,execution_prepare_start(&f.store,x.prepare,x.lease,f.owner,1000).code,"ok")
+    x.receipt=execution_test_prepare(t,x)
+    if !testing.expect_value(t,execution_test_commit(x).code,"ok") do return
+    claim:=execution_test_claim(t,f)
+    snapshot:=execution_bootstrap(&f.store,claim,"Worker","","[]",f.owner,1200,{&f.owner_priv,execution_test_sign})
+    if !testing.expect_value(t,snapshot.code,"ok") do return
+    bundle,_:=contracts.owner_content_document(snapshot.body);o,_:=bundle.(json.Object)
+    b,_:=contracts.executor_parse(field(o,"bootstrap"),"bootstrap")
+    caps,_:=query(f.store.db,"SELECT capability_json FROM local_leases WHERE lease_id='lease'")
+    cap:=caps[0][0]
+    ack:=`{"requirements_revision":"1"}`
+    testing.expect_value(t,lifecycle_call(f,lease_child(),"requirements.present","present",ack,cap,"4",{},1200).code,"ok")
+    testing.expect_value(t,lifecycle_call(f,lease_child(),"requirements.ack","ack",ack,cap,"4",{},1200).code,"ok")
+    payload:=`{"requirements_revision":"1","head":"","summary":"Checks pass"}`
+    input:=encode(contracts.Owner_Lifecycle_Input{"1","chain","task","lease","1","4","remote_submit","lease.submit","2000",cap,payload})
+    request:=execution_child_test_request(x,b,input,1300)
+    child,valid:=execution_child(&f.store,request,input,x.host_key,f.owner,1300)
+    if !testing.expect(t,valid) do return
+    raw:=lifecycle_raw(f,child,"lease.submit","remote_submit",payload,cap,"4")
+    submitted:=execute_lifecycle(&f.store,raw,payload,cap,child,f.owner,1300,{&f.owner_priv,test_sign},{"",true})
+    if !testing.expect_value(t,submitted.code,"ok") do return
+    retired,_:=query(f.store.db,"SELECT retired_seq FROM local_leases WHERE lease_id='lease'")
+    testing.expect(t,retired[0][0]!="")
+    before:=fleet_policy_test_state(f)
+    retry:=execution_child_test_request(x,b,input,2100)
+    replay_child,current:=execution_child(&f.store,retry,input,x.host_key,f.owner,2100)
+    if !testing.expect(t,current,"a live exact child can still reach its committed submission receipt") do return
+    replay:=execute_lifecycle(&f.store,raw,payload,cap,replay_child,f.owner,2100,{&f.owner_priv,test_sign})
+    testing.expect(t,replay.code=="ok" && replay.replay && replay.body==submitted.body)
+    testing.expect_value(t,fleet_policy_test_state(f),before)
+    fresh:=lifecycle_raw(f,child,"lease.submit","new_submit",payload,cap,"5")
+    testing.expect(t,execute_lifecycle(&f.store,fresh,payload,cap,child,f.owner,2100,{&f.owner_priv,test_sign}).code!="ok")
 }

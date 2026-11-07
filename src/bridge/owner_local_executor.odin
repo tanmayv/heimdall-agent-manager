@@ -124,6 +124,10 @@ bridge_owner_executor_snapshot :: proc(_:rawptr,s:^owner.Store,c:owner.Intent_Cl
     if !ok || len(rows)!=1 do return "",false
     config,valid:=owner.remote_assignment_configuration(rows[0][0])
     if !valid || contracts.owner_string(config,"executor_bridge_id")!=c.destination do return "",false
+    if c.kind=="executor.heartbeat" {
+        return bridge_owner_json(Owner_Executor_Pin{key_id=contracts.owner_string(config,"executor_key_id"),
+            generation=bridge_task_chain_search_generation()}),true
+    }
     public:=bridge_identity_public_key_hex(bridge_config.daemon_id)
     key:=contracts.Owner_Verified_Key{s.account,s.owner,s.owner_key,public,"bridge",true,false}
     content:=owner.execution_bootstrap(s,c,"# Bridge-owned runtime worker\nRead TASK.md. Work only on the existing assigned lease. Use the owner-local lease/lifecycle API described there; task authority stays on the owner Bridge.\n","","[]",key,now,{nil,bridge_owner_sign})
@@ -168,6 +172,10 @@ bridge_owner_executor_exchange :: proc(_:rawptr,c:owner.Intent_Claim,snapshot:st
             bridge_owner_json(scope),token,c.id,fmt.tprintf("%d",c.attempt),pin.bootstrap,pin.body})
         if _,valid:=contracts.executor_parse(exchange,"activation_bootstrap_exchange");!valid {outcome.code="bootstrap_too_large";return bridge_owner_json(outcome),now}
     }
+    if c.kind=="executor.heartbeat" {
+        exchange=bridge_owner_json(struct{scope,envelope,intent_id,claim_attempt:string}{
+            bridge_owner_json(scope),token,c.id,fmt.tprintf("%d",c.attempt)})
+    }
     outer,wrapped:=vault.seal(transmute([]byte)exchange,&kr,context.temp_allocator)
     if !wrapped do return bridge_owner_json(outcome),now
     relay:=struct{protocol_version,chain_id,bridge_id,request_id,expires_ms,envelope:string}{
@@ -175,7 +183,7 @@ bridge_owner_executor_exchange :: proc(_:rawptr,c:owner.Intent_Claim,snapshot:st
     credential:=bridge_credential_snapshot();defer delete(credential)
     headers:=[?]httpc.Header{httpc.bearer(credential)}
     if pin.generation!=bridge_task_chain_search_generation() || sync.atomic_load(&bridge_hub_traffic_stopped) {outcome.code="vault_locked";return bridge_owner_json(outcome),now}
-    route:="activate" if c.kind=="executor.activate" else "relay"
+    route:="activate" if c.kind=="executor.activate" || c.kind=="executor.heartbeat" else "relay"
     response,err:=bridge_http_request_retry({method=.POST,url=bridge_hub_url(),path={"api","v1","executor",route},headers=headers[:],body=httpc.json_body(relay),timeout_ms=10000},deadline_ns=expires*1000000)
     defer httpc.response_destroy(&response)
     completed:=time.to_unix_nanoseconds(time.now())/1000000

@@ -531,7 +531,7 @@ export async function executorFenceReplyMatches(reply: ExecutorDocument, request
   ownerKey: OwnerVerifiedKey, executorKey: OwnerVerifiedKey, now: bigint): Promise<boolean> {
   try {
     if (!await executorVerify('fence_request',request,executorKey) || !await executorVerify('fence_reply',reply,ownerKey) ||
-        !await executorVerify('action',action,ownerKey) || action.method !== 'activate') return false;
+        !await executorVerify('action',action,ownerKey) || !['activate','heartbeat'].includes(action.method)) return false;
     for (const name of ['account_id','executor_bridge_id','owner_bridge_id','chain_id','reservation_id','executor_incarnation','owner_incarnation','request_expires_ms']) {
       if (reply[name] !== request[name]) return false;
     }
@@ -617,13 +617,20 @@ export async function executorBootstrapMatches(b: ExecutorDocument, p: ExecutorD
 
 /** The caller supplies its currently accepted bootstrap and checks owner state. */
 export async function executorChildRequestMatches(r: ExecutorDocument, b: ExecutorDocument, inputRaw: string,
-  executorKey: OwnerVerifiedKey, ownerKey: OwnerVerifiedKey, now: bigint): Promise<boolean> {
+  executorKey: OwnerVerifiedKey, ownerKey: OwnerVerifiedKey, now: bigint, renewal?: ExecutorDocument): Promise<boolean> {
   try {
     if (!await executorVerify('child_request',r,executorKey) || !await executorVerify('bootstrap',b,ownerKey) ||
         b.owner_bridge_id === b.executor_bridge_id) return false;
+    if (renewal) {
+      if (!await executorVerify('action',renewal,ownerKey) || renewal.method !== 'heartbeat') return false;
+      for (const name of ['protocol_version','account_id','owner_bridge_id','executor_bridge_id','chain_id','reservation_id',
+        'grant_generation','owner_incarnation','executor_incarnation','prepare_digest','hard_ms']) if (renewal[name] !== b[name]) return false;
+      if (BigInt(renewal.deadline_version) <= BigInt(b.deadline_version) || BigInt(renewal.expires_ms) < BigInt(b.expires_ms) ||
+          r.deadline_version !== renewal.deadline_version || r.expires_ms !== renewal.expires_ms) return false;
+    } else if (r.deadline_version !== b.deadline_version || r.expires_ms !== b.expires_ms) return false;
     for (const name of ['protocol_version','account_id','owner_bridge_id','executor_bridge_id','chain_id','task_id','lease_id',
       'reservation_id','instance_id','launch_epoch','run_count','token_generation','configuration_revision','grant_generation',
-      'owner_incarnation','executor_incarnation','prepare_digest','launch_key','deadline_version','expires_ms','hard_ms']) {
+      'owner_incarnation','executor_incarnation','prepare_digest','launch_key','hard_ms']) {
       if (r[name] !== b[name]) return false;
     }
     if (r.bootstrap_digest !== await ownerPayloadDigest(executorCanonical('bootstrap',b)) || r.input_digest !== await ownerPayloadDigest(inputRaw)) return false;

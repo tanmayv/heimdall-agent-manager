@@ -334,6 +334,10 @@ bridge_task_chain_search_rebuild :: proc(documents: []Task_Chain_Search_Document
 }
 
 bridge_task_chain_search_lock :: proc() {
+	sync.rw_mutex_lock(&bridge_vault_io_mutex);defer sync.rw_mutex_unlock(&bridge_vault_io_mutex)
+	bridge_task_chain_search_lock_inner()
+}
+bridge_task_chain_search_lock_inner :: proc() {
 	sync.rw_mutex_lock(&bridge_task_chain_search_state.mutex)
 	bridge_task_chain_search_state.vault_generation += 1
 	old := bridge_task_chain_search_state.index

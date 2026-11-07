@@ -2,6 +2,7 @@
 package executor_local
 import "core:encoding/json"
 import "core:strings"
+import "core:sync"
 import contracts "odin_test:contracts"
 
 Signer :: struct {ctx:rawptr,sign:proc(rawptr,string,json.Object)->(string,bool)}
@@ -11,6 +12,16 @@ seal_receipt :: proc(s:^Store,request:json.Object,kind:string,result:Result,sign
     context.allocator=context.temp_allocator
     if result.code!="ok" || (kind!="prepare" && kind!="action") || sign.sign==nil || !contracts.executor_valid(request,kind) || !scope(s,request) do return "",false
     digest,_:=contracts.executor_digest(kind,request)
+    if kind=="action" && field(request,"method")=="heartbeat" {
+        // Generic relay/replay must not turn a ledger-only acceptance into a
+        // signed physical-delivery receipt. Only exact daemon confirmation
+        // may settle the owner's pending version.
+        sync.mutex_lock(&s.mutex)
+        rows,read:=query(s.db,"SELECT 1 FROM executor_renewals WHERE reservation_id=? AND deadline_version=? AND action_digest=? AND state='confirmed'",
+            field(request,"reservation_id"),field(request,"deadline_version"),digest)
+        sync.mutex_unlock(&s.mutex)
+        if !read || len(rows)!=1 do return "",false
+    }
     // Only immutable identity is read here; result.body is the persisted
     // historical snapshot returned by receipt deduplication.
     value,ok:=contracts.owner_content_document(result.body);body,obj:=value.(json.Object)

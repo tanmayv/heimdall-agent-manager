@@ -1,6 +1,7 @@
 package main
 
 import "core:sync"
+import "core:crypto"
 import "core:encoding/json"
 import "core:time"
 import contracts "odin_test:contracts"
@@ -45,6 +46,9 @@ bridge_executor_activate_dispatch :: proc(s:^executor.Store,action_raw:string,ex
     io:Executor_Launch_IO={nil,bridge_executor_startup_prepare,""})->(bool,string) {
     a,valid:=contracts.executor_parse(action_raw,"action")
     if !valid do return false,"malformed"
+    if contracts.owner_string(a,"method")=="heartbeat" {
+        return bridge_executor_renew_dispatch(s,action_raw,exchange,owner_key,self,kr,generation,callback_ctx,fence_exchange,io)
+    }
     now:=bridge_executor_physical_clock(nil)
     intent,query_only,selected:=executor.reservation_launch(s,contracts.owner_string(a,"reservation_id"),contracts.owner_string(a,"prepare_digest"),now)
     if !selected do return false,"stale_intent"
@@ -54,6 +58,8 @@ bridge_executor_activate_dispatch :: proc(s:^executor.Store,action_raw:string,ex
     defer {if owned_socket do delete(socket)}
     if query_only {
         sync.mutex_lock(&bridge_startup_io_mutex);defer sync.mutex_unlock(&bridge_startup_io_mutex)
+    if !bridge_executor_authority_begin(generation) do return false,"vault_locked"
+    defer bridge_executor_authority_end()
         if !executor.expire(s,bridge_executor_physical_clock(nil)) do return false,"clock_or_storage_error"
         _,_,current:=executor.reservation_launch(s,intent.reservation,contracts.owner_string(a,"prepare_digest"),bridge_executor_physical_clock(nil))
         if !current do return false,"stale_intent"
@@ -82,6 +88,8 @@ bridge_executor_activate_dispatch :: proc(s:^executor.Store,action_raw:string,ex
     proof:=bridge_executor_fence_accept(s,&pending,callback,owner_key,self,kr,bridge_executor_physical_clock(nil))
     physical:=Executor_Physical_Fence{proof,&pending}
     sync.mutex_lock(&bridge_startup_io_mutex);defer sync.mutex_unlock(&bridge_startup_io_mutex)
+    if !bridge_executor_authority_begin(generation) do return false,"vault_locked"
+    defer bridge_executor_authority_end()
     remaining,current:=executor.intent_current(s,intent,bridge_executor_physical_clock(nil))
     if !current || remaining<1000 do return false,"stale_intent"
     request.timeout_seconds=u64(remaining/1000)
@@ -91,3 +99,47 @@ bridge_executor_activate_dispatch :: proc(s:^executor.Store,action_raw:string,ex
 }
 
 Executor_Activation_Dispatch :: #type proc(^executor.Store,string,json.Object,contracts.Owner_Verified_Key,contracts.Owner_Verified_Key,^vault.Vault_Keyring,i64,rawptr,Executor_Fence_Exchange,Executor_Launch_IO)->(bool,string)
+
+
+// Every physical renewal, including a lost-reply retry, consumes a new owner
+// nonce. A persisted action/receipt alone cannot extend the daemon timer.
+bridge_executor_renew_dispatch :: proc(s:^executor.Store,raw:string,exchange:json.Object,
+    owner_key,self:contracts.Owner_Verified_Key,kr:^vault.Vault_Keyring,generation:i64,
+    callback_ctx:rawptr,fence_exchange:Executor_Fence_Exchange,io:Executor_Launch_IO)->(bool,string) {
+    if fence_exchange==nil do return false,"owner_fence_not_current"
+    pending,ready:=executor.fence_challenge(s,raw,contracts.owner_string(exchange,"intent_id"),
+        contracts.executor_number(exchange,"claim_attempt"),owner_key,self,bridge_executor_physical_clock(nil),{nil,bridge_executor_sign})
+    if !ready do return false,"owner_fence_not_current"
+    defer executor.fence_challenge_destroy(&pending)
+    sync.mutex_unlock(&bridge_executor_mutex)
+    callback:=fence_exchange(callback_ctx,pending.request,generation)
+    sync.mutex_lock(&bridge_executor_mutex)
+    if generation!=bridge_task_chain_search_generation() do return false,"vault_locked"
+    directory,trusted:=bridge_executor_directory(s,callback.directory,kr)
+    own,self_current:=directory.trusted[self.key_id]
+    peer,owner_current:=directory.trusted[owner_key.key_id]
+    a,valid:=contracts.executor_parse(raw,"action")
+    if !valid || !trusted || !self_current || own.kind!="bridge" || own.sign_public_key!=self.public_key ||
+       !owner_current || peer.kind!="bridge" || peer.sign_public_key!=owner_key.public_key ||
+       !executor.owner_bound(s,a,"action",owner_key) {return false,"invalid_scope"}
+    proof:=bridge_executor_fence_accept(s,&pending,callback,owner_key,self,kr,bridge_executor_physical_clock(nil))
+    physical:=Executor_Physical_Fence{proof,&pending}
+    sync.mutex_lock(&bridge_startup_io_mutex);defer sync.mutex_unlock(&bridge_startup_io_mutex)
+    if !bridge_executor_authority_begin(generation) do return false,"vault_locked"
+    defer bridge_executor_authority_end()
+    now:=bridge_executor_physical_clock(nil)
+    if !executor.expire(s,now) do return false,"clock_or_storage_error"
+    material,current:=executor.renewal_material(s,raw,now)
+    if !current do return false,"stale_renewal"
+    defer crypto.zero_explicit(raw_data(material.secret),len(material.secret))
+    if !bridge_executor_physical_fence(&physical,{}).current do return false,"owner_fence_not_current"
+    socket:=io.socket
+    owned_socket:=socket==""
+    if owned_socket do socket=pty_host_socket_path()
+    defer {if owned_socket do delete(socket)}
+    _,delivered:=bridge_pty_host_executor_renew(socket,material.instance,material.launch_key,material.secret,
+        material.version,material.expires,material.hard)
+    if !delivered do return false,"renewal_uncertain"
+    if !executor.renewal_confirm(s,material,bridge_executor_physical_clock(nil)) do return false,"renewal_not_committed"
+    return true,"renewed"
+}

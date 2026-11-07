@@ -1,6 +1,6 @@
 
 CREATE TABLE executor_runtime (
- singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=5),
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=6),
  account_id TEXT NOT NULL, executor_bridge_id TEXT NOT NULL, operator_key_id TEXT NOT NULL,
  incarnation INTEGER NOT NULL CHECK(incarnation>0), clock_high_ms INTEGER NOT NULL CHECK(clock_high_ms>=0),
  recovery_state TEXT NOT NULL CHECK(recovery_state IN ('ready','reconciling','clock_uncertain')),
@@ -124,3 +124,26 @@ WHEN NOT EXISTS(SELECT 1 FROM executor_reservations r JOIN executor_bootstraps b
 BEGIN SELECT RAISE(ABORT,'readiness requires current exact child'); END;
 CREATE TRIGGER readiness_no_update BEFORE UPDATE ON executor_readiness BEGIN SELECT RAISE(ABORT,'immutable readiness'); END;
 CREATE TRIGGER readiness_no_delete BEFORE DELETE ON executor_readiness BEGIN SELECT RAISE(ABORT,'retained readiness'); END;
+
+-- Control credentials are Bridge-only and never part of child material.
+CREATE TABLE executor_controls (
+ reservation_id TEXT PRIMARY KEY REFERENCES executor_reservations(reservation_id),
+ renewal_secret TEXT NOT NULL CHECK(length(renewal_secret)=64)
+);
+CREATE TRIGGER control_no_update BEFORE UPDATE ON executor_controls BEGIN SELECT RAISE(ABORT,'immutable control credential'); END;
+CREATE TRIGGER control_no_delete BEFORE DELETE ON executor_controls BEGIN SELECT RAISE(ABORT,'retained control credential'); END;
+-- Accepted signed deadlines do not authenticate a child until daemon delivery
+-- has been confirmed. Lost replies retry the exact same version and expiry.
+CREATE TABLE executor_renewals (
+ reservation_id TEXT NOT NULL REFERENCES executor_reservations(reservation_id),
+ deadline_version INTEGER NOT NULL CHECK(deadline_version>1),
+ action_digest TEXT NOT NULL, document TEXT NOT NULL CHECK(json_valid(document)),
+ state TEXT NOT NULL CHECK(state IN ('pending','confirmed')),
+ PRIMARY KEY(reservation_id,deadline_version)
+);
+CREATE TRIGGER renewal_immutable BEFORE UPDATE ON executor_renewals
+WHEN NEW.reservation_id IS NOT OLD.reservation_id OR NEW.deadline_version IS NOT OLD.deadline_version
+ OR NEW.action_digest IS NOT OLD.action_digest OR NEW.document IS NOT OLD.document
+ OR (OLD.state='confirmed' AND NEW.state!='confirmed')
+BEGIN SELECT RAISE(ABORT,'immutable signed renewal'); END;
+CREATE TRIGGER renewal_no_delete BEFORE DELETE ON executor_renewals BEGIN SELECT RAISE(ABORT,'retained renewal'); END;

@@ -19,7 +19,7 @@ fence_challenge :: proc(s:^Store,action_raw,intent_id:string,attempt:i64,owner_k
     now:i64,sign:Signer)->(Fence_Challenge,bool) {
     started:=time.tick_now()
     a,valid:=contracts.executor_parse(action_raw,"action")
-    if !valid || !scope(s,a) || !contracts.executor_verify("action",a,owner_key) || field(a,"method")!="activate" ||
+    if !valid || !scope(s,a) || !contracts.executor_verify("action",a,owner_key) || (field(a,"method")!="activate" && field(a,"method")!="heartbeat") ||
        num(a,"executor_incarnation")!=s.incarnation || !contracts.owner_field_valid(intent_id,"hash") || attempt<=0 ||
        now<=0 || now>0x7fffffffffffffff-contracts.EXECUTOR_FENCE_TTL_MS || now>=num(a,"request_expires_ms") ||
        now>=num(a,"expires_ms") || sign.sign==nil {return {},false}

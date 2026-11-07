@@ -280,7 +280,7 @@ executor_enrollment_matches :: proc(attestation:json.Object,configuration_raw:st
 // stateless; the executor consumes its locally held nonce after success.
 executor_fence_reply_matches :: proc(reply,request,action:json.Object,owner_key,executor_key:Owner_Verified_Key,now:i64)->bool {
     if !executor_verify("fence_request",request,executor_key) || !executor_verify("fence_reply",reply,owner_key) ||
-       !executor_verify("action",action,owner_key) || owner_string(action,"method")!="activate" {return false}
+       !executor_verify("action",action,owner_key) || (owner_string(action,"method")!="activate" && owner_string(action,"method")!="heartbeat") {return false}
     for name in ([8]string{"account_id","executor_bridge_id","owner_bridge_id","chain_id","reservation_id","executor_incarnation","owner_incarnation","request_expires_ms"}) {
         if owner_string(reply,name)!=owner_string(request,name) do return false
     }

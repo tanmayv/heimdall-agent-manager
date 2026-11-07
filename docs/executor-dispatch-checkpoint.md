@@ -1,11 +1,12 @@
 # M3 continuation: executor dispatch checkpoint
 
 **Current continuation status (2026-11-07):** automatic exact activation,
-bounded reconciliation, executor-local readiness and the exact daemon renewal
-primitive are implemented. **Production signed renewal remains unfinished.**
-Continue at [Exact daemon renewal primitive](#exact-daemon-renewal-primitive-2026-11-07-continuation);
-its final checklist is the current boundary. Earlier sections below preserve
-historical implementation and verification records; do not reimplement them.
+bounded reconciliation, executor-local readiness, and production signed physical
+deadline renewal are implemented. Continue at
+[Signed physical renewal](#signed-physical-renewal-2026-11-07-continuation)
+for the current boundary, verification and remaining work. Earlier sections
+preserve historical checkpoints; their unfinished renewal lists are superseded.
+**Full M3 acceptance remains incomplete.**
 
 Task `task_18e556f90cfa1e9c`, attempt 2, branch `heimdall/task_18e556f90cfa1e9c`.
 
@@ -1860,3 +1861,133 @@ Exact modified paths under
 - `src/bridge/pty_executor_test.odin`
 - `tools/pty_host/src/daemon.rs`
 - `tools/pty_host/src/dproto.rs`
+
+
+### Signed physical renewal (2026-11-07 continuation)
+
+The owner heartbeat transaction now appends an immutable signed
+`executor.heartbeat` action to its existing outbox, atomically with the lease
+deadline/capability and operation receipt. Historical replay returns before
+enqueueing. A new remote heartbeat cannot skip an unsettled physical version
+(`src/lib/owner_local/leases.odin:169`,
+`src/lib/owner_local/execution.odin:343`). No synthetic task authority is added.
+
+Fresh bilateral fences now admit activation or heartbeat. Owner validation binds
+the exact claimed action, current lease version/expiry/hard bound and its
+matching receipt. Renewal task revision comes from the matching immutable
+heartbeat event, rather than the initial claim revision
+(`src/lib/owner_local/execution.odin:219`,
+`src/contracts/executor.odin:281`,
+`src/lib/executor_local/fence.odin:18`). TypeScript mirrors this contract.
+
+Executor schema V6 adds a separate immutable Bridge-only control credential and
+a signed renewal journal with pending/confirmed delivery. Credentials are created
+once before first dispatch and excluded from child launch material. The existing
+daemon strips the secret before spawning and retains only its digest. A migrated
+nonrenewable child gains no new secret or launch permission
+(`src/lib/executor_local/migration_006.sql:1`,
+`src/lib/executor_local/renewal.odin:13`,
+`src/bridge/executor_runtime.odin:58`,
+`tools/pty_host/src/daemon.rs:400`).
+
+Production renewal consumes a new signed nonce even for exact lost-reply
+recovery, rechecks the enrolled directory/current owner binding, and serializes
+the exact daemon IPC with invalidation. Repeating the same accepted
+version/expiry recovers delivery without resetting its timer or spawning.
+Only a successful exact daemon response can confirm local delivery
+(`src/bridge/executor_activation.odin:106`,
+`src/lib/executor_local/renewal.odin:41`).
+A generic relay or historical replay cannot obtain a signed heartbeat receipt
+for pending-only ledger acceptance
+(`src/lib/executor_local/receipts.odin:15`).
+
+Immutable bootstrap identity is retained. Child authentication and attestations
+may supplement its deadline only from the exact daemon-confirmed signed renewal;
+the owner independently resolves its own authored renewal journal
+(`src/lib/executor_local/child.odin:44`,
+`src/contracts/executor_child.odin:150`,
+`src/lib/owner_local/execution_child.odin:37`). Exact live-child read scope
+still reaches native submission receipts after successful lease retirement.
+The new regression performs a real native submit, loses its response, then
+replays through a fresh executor attestation without a second grant or mutation
+(`src/lib/owner_local/execution_child_test.odin:88`).
+
+Vault purge/reset/rekey and generation invalidation now take an exclusive
+physical-I/O gate; activation, query recovery and renewal take its shared side
+under startup serialization. Reset holds the gate through identity/cache
+deletion, and unseal rejects a generation captured before invalidation. Lock
+order is install mutex -> exclusive vault gate for mutations, and startup mutex
+-> shared vault gate for physical I/O
+(`src/bridge/vault_decrypt.odin:79`,
+`src/bridge/unseal_protocol.odin:743`,
+`src/bridge/task_chain_search_index.odin:335`,
+`src/bridge/executor_activation.odin:60`).
+
+Independent read-only source review caught and rechecked fixes for:
+- skipping a pending physical renewal version;
+- pinning renewal to the original claim revision;
+- rejecting committed submit replay after lease retirement;
+- emitting historical physical-success receipts before confirmation;
+- vault invalidation during physical I/O and partial reset/unseal interleaving.
+
+No remaining concrete renewal blocker was found by that review. It is a
+checkpoint source audit, not full task/platform approval.
+
+Final checks ran through managed shells in
+`/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e5a16377e1ae67`:
+
+```bash
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3b-renew-owner-final-20261107-0441
+nix develop --command odin test src/lib/executor_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3b-renew-ledger-receipt-20261107-0437
+nix develop --command odin test src/contracts -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3b-renew-contracts-final-20261107-0441
+nix develop --command env HEIMDALL_EXECUTOR_TEST_PTY=$PWD/tools/pty_host/target/debug/ham-pty-host odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1 -define:EXECUTOR_TEST_REQUIRED=true -define:ODIN_TEST_NAMES=main.test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection,main.bridge_executor_real_daemon_ledger_dispatch_and_stale_stop,main.bridge_executor_expiry_during_owner_check_and_clock_regression_fail_before_io,main.bridge_executor_physical_fence_rechecks_wall_and_monotonic_expiry,main.bridge_executor_renewal_exact_ipc,main.bridge_executor_physical_authority_gate_linearizes_vault_invalidation -out:$HOME/.cache/heimdall-tests/m3b-renew-real-final-20261107-0446
+nix develop --command odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1 -define:ODIN_TEST_NAMES=main.test_v2_unseal_accepts_signed_payload_and_rejects_negatives,main.test_v2_unseal_keyring_owner_and_superset,main.test_v2_epoch_floor_survives_lock,main.test_v2_unseal_requires_chain_to_pinned_root,main.test_v2_identity_is_never_regenerated,main.task_chain_search_rebuild_is_atomic_and_lock_drops_plaintext,main.task_chain_search_lock_generation_prevents_late_refresh_swap,main.test_enroll_replace_other_account_wipes_old_secrets,main.bridge_executor_physical_authority_gate_linearizes_vault_invalidation -out:$HOME/.cache/heimdall-tests/m3b-renew-vault-final-20261107-0441
+nix develop --command node --experimental-strip-types --test --import ./tests/helpers/vaultEndpointHarness.ts tests/ui_executor_contract_test.ts tests/ui_executor_child_test.ts tests/ui_executor_channel_test.ts tests/ui_executor_issuance_test.ts
+nix develop --command npm run typecheck
+nix build .#ham-bridge .#ham-pty-host -o $HOME/.cache/heimdall-tests/m3b-signed-renew-bins-20261107-0444
+git diff --check
+```
+
+| Check | Final outcome / managed session |
+| --- | --- |
+| Owner store | 264 PASS; `sh_685a45e8f430180b9feae8ea5f3bd988` |
+| Executor store, V6 collision/recovery, child deadline and receipt gates | 36 PASS; `sh_584685f8b9cf481de43631304f10109e` |
+| Native contracts | 37 PASS; `sh_531152d237be46dcf976e9f94bdd89c0` |
+| Mounted encrypted real daemon, lost confirmation, generic pending replay refusal, generation invalidation/recovery, same-PID replay | 6 PASS; `sh_537360969193c4b2ad56ba9fb586f0d5` |
+| Vault/unseal/search/reset-adjacent regressions | 9 PASS; `sh_2b1a31095c4b770b9306fe4248d54808` |
+| TS contracts/channel/child/issuance | 16 PASS; `sh_1188e51e960b7fe1526bc535f4d12bb5` |
+| Typecheck | PASS; `sh_99860b1115db355847dc60fd054c53f0` |
+| Bridge/PTY Nix packages | PASS; `sh_7be89e2932e80ece801e7fc21b2e1784` |
+
+The old-daemon phase explicitly skipped without `HEIMDALL_EXECUTOR_OLD_PTY`.
+No new old-daemon, real-provider, Darwin or Windows evidence is claimed.
+Rust sources did not change in this checkpoint; the prior 188-pass real-PTY
+Rust evidence remains historical and was not rerun. Package tests alone are
+not host PTY evidence; the separate required-daemon native run is.
+
+Corrected draft failures: Odin multiline `do` and variable redeclarations;
+a remote owner fixture using a lease-only signer; a supplemental TS fixture
+which initially decreased the original expiry; V5 migration reconstruction
+whose renamed runtime invalidated a retained readiness trigger; and an extended
+mounted fixture which needed to recover its intentionally pending version before
+reasserting physical-absence errors. Failed drafts are not passing evidence.
+One managed diagnostic lacked `rg`, and one exploratory log ID did not exist;
+neither affected the working tree. No unrelated cleanup, push or rollout.
+
+#### Current remaining boundary
+
+1. Complete global manual/warm admission. Coordinator decision
+   `cmt_18e5a9a3dc79631c` / `msg_18e5a9a3e8badc19` selects an
+   enrolled-device-authorized local launch journal sharing the same finite
+   device/account/provider slots, exact instance and protected directory ledger.
+   Do not invent chain/task/lease IDs or treat Hub launch commands alone as
+   admission. Task-owned dispatch retains the signed owner protocol.
+2. Ordinary user shells and isolated disposable test fixtures are outside
+   agent-slot budgets. A real managed-agent provider test through production
+   launch machinery must be admitted and counted. Warm children remain charged
+   until exact trusted stop/exit evidence, without timeout-only refunds.
+3. Complete encrypted PTY tickets/results, literal bracketed paste,
+   real provider Linux/Darwin interrupt profiles and documented Windows bounds,
+   actual owner/executor failure and cross-owner integration, then the required
+   independent task review. Preserve executor-local readiness and read-only
+   receipt recovery. **Do not submit this task as complete yet.**

@@ -385,3 +385,94 @@ owner_execution_preparation_expiry_retires_without_lease_or_attempt :: proc(t:^t
     state,read:=executor.query(x.host.db,"SELECT state FROM executor_reservations")
     testing.expect(t,read);testing.expect(t,state[0][0]=="prepared","owner retirement cannot refund executor resources")
 }
+
+@(test)
+owner_execution_renewal_outbox_is_atomic_exact_and_fresh :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    x:=execution_test_fixture(t);defer execution_test_destroy(x);f:=x.owner
+    testing.expect_value(t,execution_prepare_start(&f.store,x.prepare,x.lease,f.owner,1000).code,"ok")
+    x.receipt=execution_test_prepare(t,x)
+    grant:=execution_test_commit(x)
+    if !testing.expect_value(t,grant.code,"ok") do return
+    original:=execution_test_claim(t,f)
+    a,_:=contracts.executor_parse(grant.body,"action")
+    testing.expect_value(t,executor.action(&x.host,grant.body,f.owner,1150,{true,field(a,"prepare_digest"),1,grant.seq}).code,"ok")
+    rows,read:=query(f.store.db,"SELECT capability_json FROM local_leases WHERE lease_id='lease'")
+    if !testing.expect(t,read && len(rows)==1) do return
+    cap:=rows[0][0]
+    raw:=lease_request(f,lease_child(),"lease.heartbeat","renew","lease",cap,"2",4000)
+    renewed:=execute_lease(&f.store,raw,cap,lease_child(),f.owner,1200,{&f.owner_priv,execution_test_sign})
+    if !testing.expect_value(t,renewed.code,"ok") do return
+    claims,ok:=intent_claim_due(&f.store,1200,20,.Executor)
+    testing.expect(t,ok && len(claims)==1)
+    if len(claims)!=1 do return
+    claim:=claims[0]
+    testing.expect_value(t,claim.kind,"executor.heartbeat")
+    action,parsed:=contracts.executor_parse(claim.payload,"action")
+    testing.expect(t,parsed && contracts.executor_verify("action",action,f.owner))
+    testing.expect_value(t,field(action,"deadline_version"),"2")
+    testing.expect_value(t,field(action,"expires_ms"),"901200")
+    testing.expect_value(t,field(action,"hard_ms"),"3601000")
+    testing.expect_value(t,contracts.executor_number(action,"owner_commit_seq"),renewed.seq)
+    replay:=execute_lease(&f.store,raw,cap,lease_child(),f.owner,5000,{&f.owner_priv,execution_test_sign})
+    testing.expect(t,replay.code=="ok" && replay.replay && replay.body==renewed.body)
+    current,_,_,_:=execution_activation_fence(&f.store,original,1250)
+    testing.expect(t,!current,"old activation cannot authorize a new deadline")
+    pending,ready:=executor.fence_challenge(&x.host,claim.payload,claim.id,claim.attempt,f.owner,x.host_key,1250,{&f.creator_priv,execution_test_seal})
+    if !testing.expect(t,ready) do return
+    defer executor.fence_challenge_destroy(&pending)
+    reply:=execution_test_fence_reply(x,pending.request,1300)
+    if !testing.expect_value(t,reply.code,"ok") do return
+    proof:=executor.fence_accept(&x.host,&pending,reply.body,f.owner,x.host_key,1300)
+    testing.expect(t,proof.current && proof.commit_seq==renewed.seq)
+    testing.expect_value(t,executor.action(&x.host,claim.payload,f.owner,1300,proof).code,"ok")
+    testing.expect_value(t,executor.action(&x.host,claim.payload,f.owner,1300).code,"ok")
+    changed:=claim;changed.kind="executor.activate"
+    current,_,_,_=execution_activation_fence(&f.store,changed,1300);testing.expect(t,!current)
+    changed=claim;changed.payload=grant.body;changed.digest=contracts.owner_payload_digest(grant.body)
+    current,_,_,_=execution_activation_fence(&f.store,changed,1300);testing.expect(t,!current)
+    next_raw:=lease_request(f,lease_child(),"lease.heartbeat","renew_next","lease",result_cap(renewed),"2",5000)
+    next:=execute_lease(&f.store,next_raw,result_cap(renewed),lease_child(),f.owner,1350,{&f.owner_priv,execution_test_sign})
+    testing.expect(t,next.code=="operation_conflict","pending physical version cannot be skipped")
+    testing.expect(t,intent_result(&f.store,claim,true,"confirmed exact daemon delivery",1350))
+    testing.expect(t,exec(f.store.db,"UPDATE tasks SET revision=revision+1 WHERE task_id='task'"))
+    next_raw=lease_request(f,lease_child(),"lease.heartbeat","renew_next","lease",result_cap(renewed),"3",5000)
+    next=execute_lease(&f.store,next_raw,result_cap(renewed),lease_child(),f.owner,1400,{&f.owner_priv,execution_test_sign})
+    if !testing.expect_value(t,next.code,"ok") do return
+    next_claims,claimed:=intent_claim_due(&f.store,1400,20,.Executor)
+    if !testing.expect(t,claimed && len(next_claims)==1) do return
+    next_claim:=next_claims[0]
+    current,_,_,_=execution_activation_fence(&f.store,next_claim,1450)
+    testing.expect(t,current,"renewal pins its own heartbeat revision, not the initial grant revision")
+    testing.expect(t,exec(f.store.db,"UPDATE tasks SET revision=revision+1 WHERE task_id='task'"))
+    current,_,_,_=execution_activation_fence(&f.store,next_claim,1450)
+    testing.expect(t,!current,"later task changes invalidate the pending heartbeat fence")
+    // The journal survives restart, but its old owner incarnation cannot be
+    // turned back into current authority by a fresh transport challenge.
+    close(&f.store);testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
+    testing.expect_value(t,execution_test_fence_reply(x,pending.request,1350).code,"invalid_scope")
+    rows,read=query(f.store.db,"SELECT count(*) FROM runtime_intents WHERE kind='executor.heartbeat'")
+    testing.expect(t,read && rows[0][0]=="2")
+}
+
+@(test)
+owner_execution_failed_renewal_outbox_rolls_back_lease_and_receipt :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    x:=execution_test_fixture(t);defer execution_test_destroy(x);f:=x.owner
+    testing.expect_value(t,execution_prepare_start(&f.store,x.prepare,x.lease,f.owner,1000).code,"ok")
+    x.receipt=execution_test_prepare(t,x)
+    if !testing.expect_value(t,execution_test_commit(x).code,"ok") do return
+    before,read:=query(f.store.db,"SELECT capability_json,expires_ms,deadline_version,(SELECT commit_seq FROM runtime_database) FROM local_leases")
+    if !testing.expect(t,read && len(before)==1) do return
+    cap:=before[0][0]
+    raw:=lease_request(f,lease_child(),"lease.heartbeat","renew","lease",cap,"2",4000)
+    testing.expect(t,exec(f.store.db,"CREATE TRIGGER fail_renewal BEFORE INSERT ON runtime_intents WHEN NEW.kind='executor.heartbeat' BEGIN SELECT RAISE(ABORT,'test outbox failure'); END"))
+    denied:=execute_lease(&f.store,raw,cap,lease_child(),f.owner,1200,{&f.owner_priv,execution_test_sign})
+    testing.expect_value(t,denied.code,"storage_error")
+    after,ok:=query(f.store.db,"SELECT capability_json,expires_ms,deadline_version,(SELECT commit_seq FROM runtime_database) FROM local_leases")
+    testing.expect(t,ok && encode(before)==encode(after))
+    rows,checked:=query(f.store.db,"SELECT (SELECT count(*) FROM command_receipts WHERE operation_id='renew'),(SELECT count(*) FROM runtime_intents WHERE kind='executor.heartbeat')")
+    testing.expect(t,checked && rows[0][0]=="0" && rows[0][1]=="0")
+    testing.expect(t,exec(f.store.db,"DROP TRIGGER fail_renewal"))
+    testing.expect_value(t,execute_lease(&f.store,raw,cap,lease_child(),f.owner,1200,{&f.owner_priv,execution_test_sign}).code,"ok")
+}

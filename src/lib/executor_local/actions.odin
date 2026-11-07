@@ -52,6 +52,7 @@ action :: proc(s:^Store,raw:string,key:contracts.Owner_Verified_Key,now:i64,curr
         if !current.current || current.prepare_digest!=row[2] || current.owner_incarnation!=num(o,"owner_incarnation") ||
            current.commit_seq!=num(o,"owner_commit_seq") { return fail("owner_fence_not_current") }
         if _,ok:=query(s.db,"UPDATE executor_reservations SET expires_ms=?,deadline_version=? WHERE reservation_id=?",field(o,"expires_ms"),field(o,"deadline_version"),id);!ok do return fail("storage_error")
+        if _,ok:=query(s.db,"INSERT INTO executor_renewals VALUES(?,?,?,?,'pending')",id,field(o,"deadline_version"),digest,raw);!ok do return fail("storage_error")
     case "stop":
         if row[8]=="released" do return fail("retired")
         if field(o,"deadline_version")!=row[4] do return fail("stale_deadline")
