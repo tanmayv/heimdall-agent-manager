@@ -196,7 +196,6 @@ lease_next :: proc(s:^Store,child:Child,key:contracts.Owner_Verified_Key,now:i64
       FROM local_fleet f JOIN tasks t ON t.chain_id=f.chain_id AND t.task_id=f.task_id
       WHERE f.instance_id=? AND f.enabled=1 ORDER BY pr,f.chain_id,f.task_id LIMIT 200`,child.instance)
     if !read do return fail("storage_error"),{}
-    last:="none"
     for row in candidates {
         chain,task:=row[0],row[1]
         if role,_:=agent_authorize(s,chain,task,child,"lease.next");role!=.Worker do continue
@@ -210,12 +209,12 @@ lease_next :: proc(s:^Store,child:Child,key:contracts.Owner_Verified_Key,now:i64
         signature,signed:=sign.sign(sign.ctx,"lease_command",c)
         if !signed do return fail("storage_error"),{}
         c["signature"]=json.String(signature)
+        // A refused candidate rolls back its savepoint; try the next one.
         r:=execute_lease(s,encode(c),"",child,key,now,sign,&tx)
-        if r.code!="ok" { last=r.code;continue }
+        if r.code!="ok" do continue
         if !transaction_commit(&tx) do return fail("storage_error"),{}
         return r,Lease_Pick{"granted",chain,task,lease_id}
     }
-    _=last
     pick:=Lease_Pick{status="none"}
     return Result{code="ok",body=encode(pick)},pick
 }
