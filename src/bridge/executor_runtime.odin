@@ -13,7 +13,7 @@ Executor_Now :: proc(ctx:rawptr)->i64
 // Callers serialize this physical I/O path with application of executor
 // invalidations. No SQLite transaction spans the owner check or daemon request.
 bridge_executor_dispatch :: proc(s:^executor.Store,intent:executor.Intent,now:i64,socket:string,
-    request:Pty_Host_Spawn_Request,ctx:rawptr,owner_check:Executor_Owner_Check,clock_ctx:rawptr,clock:Executor_Now)->(bool,string) {
+    request:Pty_Host_Spawn_Request,ctx:rawptr,owner_check:Executor_Owner_Check,clock_ctx:rawptr,clock:Executor_Now,final_owner_check:Executor_Owner_Check=nil)->(bool,string) {
     if clock==nil do return false,"clock_required"
     if !executor.expire(s,now) do return false,"clock_or_storage_error"
     _,current:=executor.intent_current(s,intent,now)
@@ -40,17 +40,35 @@ bridge_executor_dispatch :: proc(s:^executor.Store,intent:executor.Intent,now:i6
     if !executor.expire(s,checked_now) do return false,"clock_or_storage_error"
     if _,valid:=executor.intent_current(s,intent,checked_now);!valid do return false,"stale_intent"
     if !bridge_pty_host_executor_capable(socket) do return false,"executor_unsupported"
+    if intent.kind=="launch" && final_owner_check!=nil {
+        proof:=final_owner_check(ctx,intent)
+        p,_:=contracts.executor_parse(intent.document,"prepare")
+        digest,_:=contracts.executor_digest("prepare",p)
+        if !proof.current || proof.prepare_digest!=digest || proof.owner_incarnation<contracts.executor_number(p,"owner_incarnation") || proof.commit_seq<=0 do return false,"owner_fence_not_current"
+    }
     admission_now:=clock(clock_ctx)
     if !executor.expire(s,admission_now) do return false,"clock_or_storage_error"
     fresh_remaining,still_current:=executor.intent_current(s,intent,admission_now)
     if !still_current do return false,"stale_intent"
     if intent.kind=="launch" && request.timeout_seconds>u64(fresh_remaining/1000) do return false,"expired_launch"
     first_dispatch:=executor.begin_dispatch(s,intent,admission_now)
+    if first_dispatch && intent.kind=="launch" && final_owner_check!=nil {
+        // A slow durable dispatch commit must not outlive the signed nonce.
+        // Failure after this boundary stays query-only; never restore launch.
+        proof:=final_owner_check(ctx,intent)
+        if !proof.current do return false,"owner_fence_not_current"
+        admission_now=clock(clock_ctx)
+        if !executor.expire(s,admission_now) do return false,"clock_or_storage_error"
+        remaining,current:=executor.intent_current(s,intent,admission_now)
+        if !current || remaining<1000 do return false,"stale_intent"
+        fresh_remaining=remaining
+    }
     if first_dispatch || intent.kind=="stop" {
         if intent.kind=="stop" {
             _=bridge_pty_host_executor_close(socket,intent.instance,intent.launch_key)
         } else {
             req:=request
+            if final_owner_check!=nil do req.timeout_seconds=min(req.timeout_seconds,u64(fresh_remaining/1000))
             env:=make([][2]string,len(request.env)+2,context.temp_allocator)
             copy(env,request.env);env[len(request.env)]={"HEIMDALL_EXECUTOR_LAUNCH_KEY",intent.launch_key}
             env[len(request.env)+1]={"HEIMDALL_EXECUTOR_DEADLINE_MS",fmt.tprintf("%d",admission_now+fresh_remaining)}

@@ -244,3 +244,27 @@ bridge_executor_expiry_during_owner_check_and_clock_regression_fail_before_io ::
     rows,read=executor.query(s.db,"SELECT recovery_state FROM executor_runtime")
     testing.expect(t,read && rows[0][0]=="clock_uncertain")
 }
+
+@(test)
+bridge_executor_physical_fence_rechecks_wall_and_monotonic_expiry :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    now:=bridge_executor_physical_clock(nil)
+    q:=bridge_executor_test_doc("fence_request")
+    bridge_executor_test_set(q,"issued_ms",fmt.tprintf("%d",now))
+    bridge_executor_test_set(q,"request_expires_ms",fmt.tprintf("%d",now+1000))
+    pending:=executor.Fence_Challenge{request=executor.encode(q),consumed=true,started=time.tick_now()}
+    physical:=Executor_Physical_Fence{executor.Current_Owner_Fence{true,"digest",1,1},&pending}
+    testing.expect(t,bridge_executor_physical_fence(&physical,{}).current)
+    pending.consumed=false
+    testing.expect(t,!bridge_executor_physical_fence(&physical,{}).current,"unverified pending exchange is not a proof")
+    pending.consumed=true;pending.started=time.tick_add(time.tick_now(),-2*time.Second)
+    testing.expect(t,!bridge_executor_physical_fence(&physical,{}).current,"elapsed monotonic nonce lifetime fails closed")
+    pending.started=time.tick_now()
+    bridge_executor_test_set(q,"request_expires_ms",fmt.tprintf("%d",now))
+    pending.request=executor.encode(q)
+    testing.expect(t,!bridge_executor_physical_fence(&physical,{}).current,"wall expiry fails closed")
+    bridge_executor_test_set(q,"issued_ms",fmt.tprintf("%d",now+1000))
+    bridge_executor_test_set(q,"request_expires_ms",fmt.tprintf("%d",now+2000))
+    pending.request=executor.encode(q)
+    testing.expect(t,!bridge_executor_physical_fence(&physical,{}).current,"wall clock before challenge issue fails closed")
+}

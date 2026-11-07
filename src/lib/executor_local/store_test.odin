@@ -447,3 +447,41 @@ executor_stop_adoption_failure_rolls_back_claim_and_allows_retry :: proc(t:^test
     recovered:Intent;recovered,taken=take_intent(&f.store,6100)
     testing.expect(t,taken && recovered.kind=="stop" && recovered.launch_key==stop.launch_key && recovered.incarnation==2)
 }
+
+@(test)
+executor_exact_launch_selection_recovers_without_consuming_other_owner :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=fixture(t);defer destroy(f);policy(t,f)
+    p:=document("prepare")
+    testing.expect_value(t,reserve(f,p,&f.owner1).code,"ok")
+    a:=activate_document(p);testing.expect_value(t,perform(f,a,&f.owner1).code,"ok")
+    p2:=document("prepare")
+    for pair in ([][2]string{{"owner_bridge_id","owner2"},{"key_id","owner2"},{"reservation_id","aaa_other"},
+        {"instance_id","instance2"},{"slot_id","slot2"},{"directory_key",strings.repeat("c",64,context.temp_allocator)}}) {set(p2,pair[0],pair[1])}
+    testing.expect_value(t,reserve(f,p2,&f.owner2,1100).code,"ok")
+    a2:=activate_document(p2)
+    for pair in ([][2]string{{"owner_bridge_id","owner2"},{"key_id","owner2"},{"reservation_id","aaa_other"}}) {set(a2,pair[0],pair[1])}
+    testing.expect_value(t,perform(f,a2,&f.owner2).code,"ok")
+    digest,_:=contracts.executor_digest("prepare",p)
+    _,_,valid:=reservation_launch(&f.store,"aaa_other",digest,1200)
+    testing.expect(t,!valid,"another owner's reservation cannot satisfy the exact prepare digest")
+    intent,query_only,ok:=reservation_launch(&f.store,"reservation",digest,1200)
+    testing.expect(t,ok && !query_only && intent.reservation=="reservation")
+    retry,query_retry,recovered:=reservation_launch(&f.store,"reservation",digest,1200)
+    testing.expect(t,recovered && !query_retry && retry==intent,"pre-dispatch recovery preserves the original claim")
+    other,taken:=take_intent(&f.store,1200)
+    testing.expect(t,taken && other.reservation=="aaa_other","exact selection leaves unrelated pending work untouched")
+    testing.expect(t,begin_dispatch(&f.store,intent,1200))
+    retry,query_retry,recovered=reservation_launch(&f.store,"reservation",digest,1200)
+    testing.expect(t,recovered && query_retry && retry==intent,"ambiguous dispatch must only query the original key")
+    testing.expect(t,!begin_dispatch(&f.store,retry,1200))
+    testing.expect(t,observe_child(&f.store,"reservation",observation(f,"reservation",true)))
+    retry,query_retry,recovered=reservation_launch(&f.store,"reservation",digest,1200)
+    testing.expect(t,recovered && query_retry && retry==intent,"confirmed receipt retry remains query-only")
+    close(&f.store);testing.expect(t,open(&f.store,f.path,"account","executor","operator"))
+    retry,query_retry,recovered=reservation_launch(&f.store,"reservation",digest,1300)
+    testing.expect(t,recovered && query_retry && retry.launch_key==intent.launch_key && retry.incarnation!=intent.incarnation)
+    testing.expect(t,!begin_dispatch(&f.store,retry,1300),"restart cannot regain launch permission")
+    _,_,valid=reservation_launch(&f.store,"reservation",digest,6000)
+    testing.expect(t,!valid,"expired activation cannot recover launch permission")
+}

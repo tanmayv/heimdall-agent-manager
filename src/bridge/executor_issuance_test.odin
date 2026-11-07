@@ -277,7 +277,7 @@ test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection :: pr
             // Trusted test-daemon absence drains the charge before the next
             // reservation. No physical provider/absence claim is inferred.
             if os.get_env("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)!="" {
-                bridge_executor_test_bootstrap_real_child(t,prepared,action,&owner_private,owner_key,peer_directory,&kr)
+                bridge_executor_test_bootstrap_real_child(t,peer_wire,prepared,action,&owner_private,owner_key,peer_directory,&kr)
             } else {
                 when #config(EXECUTOR_TEST_REQUIRED,false) {testing.fail_now(t,"real bootstrap daemon required")}
                 testing.expect(t,executor.observe_child(&bridge_executor_store,get(prepared,"reservation_id"),
@@ -349,7 +349,8 @@ test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection :: pr
 // Drives the production executor handler with real inner signatures and channel
 // encryption. It does not stand in for a network/Hub enrollment demonstration.
 bridge_executor_test_exchange :: proc(t:^testing.T,wire:Executor_Exchange_Wire,request:json.Object,kind:string,
-    private:^ecdsa.Private_Key,kr:^vault.Vault_Keyring,self:contracts.Owner_Verified_Key,id:string,probe:^Executor_Fence_Test_Probe=nil,bootstrap:string="",body:string="")->(json.Object,string) {
+    private:^ecdsa.Private_Key,kr:^vault.Vault_Keyring,self:contracts.Owner_Verified_Key,id:string,probe:^Executor_Fence_Test_Probe=nil,bootstrap:string="",body:string="",
+    launch_io:Executor_Launch_IO={},physical:bool=false)->(json.Object,string) {
     get:=contracts.owner_string
     now:=time.to_unix_nanoseconds(time.now())/1000000
     raw:=bridge_executor_test_sign(request,kind,private)
@@ -373,7 +374,11 @@ bridge_executor_test_exchange :: proc(t:^testing.T,wire:Executor_Exchange_Wire,r
     call.relay=executor.encode(struct{protocol_version,chain_id,bridge_id,request_id,expires_ms,envelope:string}{
         "1",get(request,"chain_id"),get(request,"executor_bridge_id"),id,fmt.tprintf("%d",now+60000),outer})
     if probe==nil {bridge_executor_exchange_handle(nil,executor.encode(call))} else {
-        bridge_executor_exchange_handle(nil,executor.encode(call),true,probe,bridge_executor_test_fence_callback)
+        if physical {
+            bridge_executor_exchange_handle(nil,executor.encode(call),true,probe,bridge_executor_test_fence_callback,bridge_executor_activate_dispatch,launch_io)
+        } else {
+            bridge_executor_exchange_handle(nil,executor.encode(call),true,probe,bridge_executor_test_fence_callback,bridge_executor_test_accept_bootstrap_only)
+        }
     }
     cached,found:=bridge_runtime_cached_command(id)
     if !found do return nil,"test_no_reply"
@@ -395,6 +400,8 @@ Executor_Fence_Test_Probe :: struct {
     owner_key:contracts.Owner_Verified_Key,
     cancel,restart,unlocked:bool,
     calls:int,
+    startup_unlocked,prepared_before_callback:bool,
+    prepare_probe:^Executor_Test_Prepare,
 }
 bridge_executor_test_fence_callback :: proc(ctx:rawptr,raw:string,generation:i64)->Executor_Fence_Outcome {
     p:=(^Executor_Fence_Test_Probe)(ctx);p.calls+=1
@@ -402,6 +409,9 @@ bridge_executor_test_fence_callback :: proc(ctx:rawptr,raw:string,generation:i64
     if !valid do return {}
     get:=contracts.owner_string
     now:=time.to_unix_nanoseconds(time.now())/1000000
+    p.startup_unlocked=sync.mutex_try_lock(&bridge_startup_io_mutex)
+    if p.startup_unlocked do sync.mutex_unlock(&bridge_startup_io_mutex)
+    if p.prepare_probe!=nil do p.prepared_before_callback=p.prepare_probe.calls>0
     p.unlocked=sync.mutex_try_lock(&bridge_executor_mutex)
     if p.unlocked {
         if p.cancel {
@@ -437,7 +447,7 @@ bridge_executor_test_fence_callback :: proc(ctx:rawptr,raw:string,generation:i64
     return {executor.encode(scope),token,p.directory}
 }
 
-bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,p,a:json.Object,owner_private:^ecdsa.Private_Key,owner_key:contracts.Owner_Verified_Key,
+bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,wire:Executor_Exchange_Wire,p,a:json.Object,owner_private:^ecdsa.Private_Key,owner_key:contracts.Owner_Verified_Key,
     directory:vault.Directory_Verification_Input,kr:^vault.Vault_Keyring) {
     binary:=os.get_env("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)
     if !testing.expect(t,binary!="","real bootstrap integration requires the built PTY daemon") do return
@@ -466,17 +476,25 @@ bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,p,a:json.Object,o
     defer bridge_prespawn_result_delete(result)
     env:=bridge_pty_host_env_pairs(result.env)
     defer {for pair in env {delete(pair[0]);delete(pair[1])};delete(env)}
-    req:=Pty_Host_Spawn_Request{instance=intent.instance,argv=[]string{"sh"},cwd=dir,has_cwd=true,env=env,
-        rows=24,cols=80,has_timeout_seconds=true,timeout_seconds=30}
-    proof:=executor.Current_Owner_Fence{true,contracts.owner_string(a,"prepare_digest"),contracts.executor_number(a,"owner_incarnation"),contracts.executor_number(a,"owner_commit_seq")}
-    delivered,reason:=bridge_executor_dispatch(&bridge_executor_store,intent,now,socket,req,&proof,bridge_executor_test_owner,&now,bridge_executor_test_clock)
-    if !testing.expect(t,delivered && reason=="child_present","accepted sealed bootstrap reaches an exact real PTY child") do return
+    prepare_probe:=Executor_Test_Prepare{dir,0}
+    launch_io:=Executor_Launch_IO{&prepare_probe,bridge_executor_test_physical_prepare,socket}
+    fence_probe:=Executor_Fence_Test_Probe{private=owner_private,kr=kr,directory=directory,action=a,owner_key=owner_key,prepare_probe=&prepare_probe}
+    self_key:=contracts.Owner_Verified_Key{bridge_executor_store.account,bridge_executor_store.executor,bridge_executor_store.operator_key,
+        bridge_identity_public_key_hex(bridge_config.daemon_id),"bridge",true,false}
+    _,launch_code:=bridge_executor_test_exchange(t,wire,a,"action",owner_private,kr,self_key,"physical_activation",
+        &fence_probe,material.bootstrap,material.body,launch_io,true)
+    if !testing.expect_value(t,launch_code,"ok") do return
+    delivered:=true;reason:="child_present"
+    testing.expect(t,fence_probe.calls==1 && fence_probe.unlocked && fence_probe.startup_unlocked &&
+        fence_probe.prepared_before_callback && prepare_probe.calls==1,"nonce follows file I/O and releases executor/startup gates")
     pid,known:=bridge_pty_host_executor_query(socket,intent.instance,intent.launch_key)
     testing.expect(t,known && pid>0)
     _,available=executor.launch_material(&bridge_executor_store,intent,now)
     testing.expect(t,!available,"a confirmed child cannot be rematerialized")
-    delivered,reason=bridge_executor_dispatch(&bridge_executor_store,intent,now,socket,req,&proof,bridge_executor_test_owner,&now,bridge_executor_test_clock)
-    testing.expect(t,!delivered && reason=="stale_intent","duplicate dispatch cannot launch again")
+    _,launch_code=bridge_executor_test_exchange(t,wire,a,"action",owner_private,kr,self_key,"physical_activation_retry",
+        &fence_probe,material.bootstrap,material.body,launch_io,true)
+    testing.expect(t,launch_code=="ok" && prepare_probe.calls==1 && fence_probe.calls==1,
+        "confirmed activation replay only queries the exact child without file I/O or a new nonce")
     again,queried:=bridge_pty_host_executor_query(socket,intent.instance,intent.launch_key)
     testing.expect(t,queried && again==pid)
     bootstrap,_:=contracts.executor_parse(material.bootstrap,"bootstrap")
@@ -556,4 +574,24 @@ bridge_executor_test_child_exchange :: proc(ctx:rawptr,raw,input:string,_:i64)->
     if p.mode==1 do token=fmt.tprintf("%sx",token)
     if p.mode==2 do scope["input_digest"]=json.String(strings.repeat("0",64,context.temp_allocator))
     return {bridge_owner_json(scope),token,p.directory}
+}
+
+// This mounted-handler fixture isolates signature/storage acceptance. Physical
+// dispatch is exercised separately below against the same retained bootstrap.
+bridge_executor_test_accept_bootstrap_only :: proc(_: ^executor.Store,_:string,_:json.Object,
+    _:contracts.Owner_Verified_Key,_:contracts.Owner_Verified_Key,_:^vault.Vault_Keyring,_:i64,
+    _:rawptr,_:Executor_Fence_Exchange,_:Executor_Launch_IO)->(bool,string) {return true,"accepted"}
+
+Executor_Test_Prepare :: struct {dir:string,calls:int}
+bridge_executor_test_physical_prepare :: proc(ctx:rawptr,s:^executor.Store,intent:executor.Intent,now:i64)->(Pty_Host_Spawn_Request,bool) {
+    p:=(^Executor_Test_Prepare)(ctx);p.calls+=1
+    material,available:=executor.launch_material(s,intent,now)
+    if !available do return {},false
+    result,written:=bridge_executor_materialize(p.dir,"unix:/isolated-bootstrap-child.sock",material,"claude")
+    if !written do return {},false
+    defer bridge_prespawn_result_delete(result)
+    env:=bridge_pty_host_env_pairs(result.env)
+    argv:=make([]string,1);argv[0]=strings.clone("sh")
+    return Pty_Host_Spawn_Request{instance=strings.clone(intent.instance),argv=argv,cwd=strings.clone(p.dir),has_cwd=true,env=env,
+        rows=24,cols=80,has_timeout_seconds=true,timeout_seconds=30},true
 }

@@ -1593,24 +1593,67 @@ production builds **PASS** (`sh_e8672266caa0933bc13fb3dadbcc452e`), whitespace
 check **PASS**. All new source files were staged before the Nix builds so the
 flake included them.
 
+### Automatic exact activation dispatch (2026-11-07 continuation)
+
+Activation with accepted bootstrap now calls physical dispatch before returning a
+successful receipt (`src/bridge/executor_exchange.odin:146`). Exact reservation
+selection binds the original prepare digest and retains the original daemon key;
+a dispatch marker, confirmed child, or executor restart permits only observation
+(`src/lib/executor_local/actions.odin:181`). A retained bootstrap replay avoids
+another admission nonce, but still checks exact original bootstrap/body equality
+(`src/lib/executor_local/bootstrap.odin:75`).
+
+First launch resolves local provisioning and materializes files before obtaining
+a new signed owner nonce. The executor mutex is released across owner HTTP, and
+the startup I/O gate is acquired only after the callback returns and current
+paired keys are rechecked (`src/bridge/executor_activation.odin:65`). Final proof
+checks enforce wall and monotonic expiry, including after the durable dispatch
+commit, immediately before Spawn (`src/bridge/executor_runtime.odin:55`).
+Failure after that commit remains query-only. Confirmed replay neither
+rematerializes the run directory nor requests another nonce
+(`src/bridge/executor_activation.odin:55`).
+
+The mounted activation handler is exercised with real signatures/encryption and
+a real isolated PTY daemon. The fixture injects the owner transport and local
+Spawn resolver (shell stand-in); it verifies the same child PID on replay,
+one materialization, and executor/startup mutex availability during the nonce
+callback (`src/bridge/executor_issuance_test.odin:450`). Earlier signature/storage
+acceptance cases explicitly inject an acceptance-only dispatcher; they do not
+claim physical launch. This is not an enrolled-network or real-provider demo.
+
+Final-source checks, all through managed shells in this task Workdir:
+
+```bash
+nix develop --command odin test src/lib/executor_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3b-auto-dispatch-ledger-20261107-0349
+nix develop --command env HEIMDALL_EXECUTOR_TEST_PTY=$HOME/.cache/heimdall-tests/m3b-bootstrap-pty-20261107-0300/bin/ham-pty-host odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:EXECUTOR_TEST_REQUIRED=true -define:ODIN_TEST_NAMES=main.test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection,main.bridge_executor_real_daemon_ledger_dispatch_and_stale_stop,main.bridge_executor_expiry_during_owner_check_and_clock_regression_fail_before_io,main.bridge_executor_physical_fence_rechecks_wall_and_monotonic_expiry -out:$HOME/.cache/heimdall-tests/m3b-mounted-auto-dispatch-final-20261107-0349
+nix build .#ham-bridge -o $HOME/.cache/heimdall-tests/m3b-auto-dispatch-bins-20261107-0348
+git diff --cached --check
+```
+
+Results: executor **30 PASS** (`sh_08c7fcf647980bc1ce8af24e885553d4`),
+Bridge **4 PASS** (`sh_15ce625903c02f1d0812aece19fc43b9`), production Bridge build
+**PASS** (`sh_e81ec4c9a5e3f088352df92f237c1708`). Old-daemon compatibility phase
+was skipped because `HEIMDALL_EXECUTOR_OLD_PTY` was absent.
+
+Draft failures corrected: multiline Odin loop syntax, a fixture timestamp that
+regressed after another owner's activation, and Tick/Duration test arithmetic.
+Moving the capability probe before the first owner check broke the existing
+expiry regression; preserved its original ordering and added a separate local
+final proof check around durable dispatch. No clock or authority check was
+relaxed. No unrelated cleanup.
+
 ### Next implementation boundary
 
-1. Mount automatic exact-reservation launch/query before activation outbox
-   settlement. Acquire a fresh owner nonce **after** bootstrap file I/O. Never
-   hold owner/executor/startup I/O mutexes across the network callback: a
-   colocated owner request can hold the owner mutex while waiting for startup
-   I/O, so holding startup I/O across a nonce callback can deadlock too. Recheck
-   bounded proof freshness and the local exact claim immediately before Spawn.
-2. Select/recover the original reservation's intent, not an arbitrary first
-   global pending intent. An uncertain dispatched claim uses the query-only
-   path; a confirmed replay queries the exact daemon key without rematerializing.
-3. Mount executor-local startup readiness for the issued credential. The child
-   endpoint currently supports only the owner-local lease/lifecycle method;
-   `agent.start_success` remains a legacy-token path. Do not register a Hub task
-   or substitute a Hub instance token to make readiness work.
-4. Implement bounded renewal/expiry reconciliation, global admission including
-   legacy/manual/warm paths, encrypted PTY tickets/results and Linux/Darwin
-   interrupt profiles with documented Windows bounds. Rich owner-rendered
+1. Mount executor-local startup readiness for the issued credential.
+   `agent.start_success` remains a legacy-token path. Clarification requested
+   from the coordinator: whether durable readiness is executor-local observation
+   only or requires a separately owner-validated observation. Do not register a
+   Hub task or substitute a Hub instance token.
+2. Implement bounded renewal/expiry reconciliation and device-wide admission
+   including legacy/manual/warm paths.
+3. Implement encrypted PTY tickets/results, bracketed paste, Linux/Darwin
+   interrupt profiles and documented Windows bounds. Rich owner-rendered
    profile/memory/skill provisioning remains separate from the minimal snapshot.
-5. Complete actual failure/cross-owner evidence and independent review before
-   submit. Continue this same branch; do not reimport predecessor history.
+4. Complete actual failure/cross-owner evidence, real provider and platform
+   verification gates, and independent review before submit. The full M3 task
+   remains incomplete; continue this same branch without reimporting predecessors.

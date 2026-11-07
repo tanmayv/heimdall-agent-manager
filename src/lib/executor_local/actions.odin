@@ -174,3 +174,33 @@ begin_dispatch :: proc(s:^Store,intent:Intent,now:i64)->bool {
     if _,written:=query(s.db,"UPDATE executor_intents SET claim_incarnation=? WHERE reservation_id=? AND kind=?",fmt.tprintf("%d",s.incarnation),intent.reservation,intent.kind);!written do return false
     return commit(s)
 }
+
+// Select only the launch belonging to an authenticated activation. Recovery
+// returns the original daemon key; it never claims unrelated global work.
+// query_only is mandatory after dispatch, confirmation, or a runtime restart.
+reservation_launch :: proc(s:^Store,id,prepare_digest:string,now:i64)->(intent:Intent,query_only:bool,valid:bool) {
+    context.allocator=context.temp_allocator
+    sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
+    if id=="" || prepare_digest=="" || !begin(s) do return {},false,false
+    defer rollback(s)
+    if code:=clock(s,now,false);code!="" do return {},false,false
+    rows,ok:=query(s.db,`SELECT r.instance_id,r.launch_key,r.document,r.executor_incarnation,r.launch_state,
+      i.state,i.claim_incarnation,(SELECT recovery_state FROM executor_runtime)
+      FROM executor_reservations r JOIN executor_intents i USING(reservation_id)
+      WHERE r.reservation_id=? AND r.prepare_digest=? AND r.state='active'
+      AND r.expires_ms>CAST(? AS INTEGER) AND r.hard_ms>CAST(? AS INTEGER) AND i.kind='launch'`,
+      id,prepare_digest,fmt.tprintf("%d",now),fmt.tprintf("%d",now))
+    if !ok || len(rows)!=1 do return {},false,false
+    row:=rows[0]
+    intent=Intent{id,"launch",row[0],row[1],row[2],s.incarnation}
+    query_only=row[4]=="confirmed" || row[5]=="settled" || number(row[6])!=0 ||
+        number(row[3])!=s.incarnation || row[7]!="ready"
+    if !query_only && row[5]=="pending" {
+        if _,written:=query(s.db,"UPDATE executor_intents SET state='uncertain',claim_incarnation=0 WHERE reservation_id=? AND kind='launch' AND state='pending'",id);!written do return {},false,false
+        if _,written:=query(s.db,"UPDATE executor_reservations SET launch_state='uncertain' WHERE reservation_id=?",id);!written do return {},false,false
+    } else if !query_only && row[5]!="uncertain" {
+        return {},false,false
+    }
+    if !commit(s) do return {},false,false
+    return intent,query_only,true
+}

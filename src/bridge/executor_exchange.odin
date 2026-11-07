@@ -45,7 +45,9 @@ bridge_executor_prepare_resources :: proc(s:^executor.Store,p:json.Object)->exec
     return resources
 }
 bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string,activation:bool=false,callback_ctx:rawptr=nil,
-    fence_exchange:Executor_Fence_Exchange=bridge_executor_fence_exchange) {
+    fence_exchange:Executor_Fence_Exchange=bridge_executor_fence_exchange,
+    dispatch:Executor_Activation_Dispatch=bridge_executor_activate_dispatch,
+    launch_io:Executor_Launch_IO={nil,bridge_executor_startup_prepare,""}) {
     context.allocator=context.temp_allocator
     generation:=bridge_task_chain_search_generation()
     wire:Executor_Exchange_Wire
@@ -108,7 +110,7 @@ bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string,activati
     binding:=executor.bind_owner(s,wire.genesis,creator_key,owner_key,now)
     if binding.code!="ok" {reply.code=binding.code;return}
     if !executor.owner_bound(s,p,method,owner_key) do return
-    if contracts.executor_number(scope,"executor_incarnation")!=s.incarnation {reply.code="stale_incarnation";return}
+    if contracts.executor_number(scope,"executor_incarnation")!=s.incarnation && !(activation && method=="action" && get(p,"method")=="activate") {reply.code="stale_incarnation";return}
     // Trusted housekeeping retains charges for active/uncertain children.
     _=executor.expire(s,now)
     result:executor.Result
@@ -120,7 +122,7 @@ bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string,activati
         // Replay/query/stop need no network callback. A fresh activate through
         // the separate General_IO command must consume a live owner nonce.
         result=executor.action(s,request_raw,owner_key,time.to_unix_nanoseconds(time.now())/1000000)
-        if activation && (result.code=="owner_fence_not_current" || has_bootstrap && result.code=="ok") {
+        if activation && (result.code=="owner_fence_not_current" || has_bootstrap && result.code=="ok" && !executor.bootstrap_retained(s,get(p,"reservation_id"))) {
             self:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,self_id,public,"bridge",true,false}
             pending,ready:=executor.fence_challenge(s,request_raw,get(exchange,"intent_id"),contracts.executor_number(exchange,"claim_attempt"),
                 owner_key,self,time.to_unix_nanoseconds(time.now())/1000000,{nil,bridge_executor_sign})
@@ -145,6 +147,9 @@ bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string,activati
         accepted:=executor.accept_bootstrap(s,get(exchange,"bootstrap"),get(exchange,"body"),request_raw,owner_key,
             time.to_unix_nanoseconds(time.now())/1000000,current)
         if accepted.code!="ok" {reply.code=accepted.code;return}
+        self:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,self_id,public,"bridge",true,false}
+        launched,reason:=dispatch(s,request_raw,exchange,owner_key,self,&kr,generation,callback_ctx,fence_exchange,launch_io)
+        if !launched {reply.code=reason;return}
     }
     reply.code=result.code
     if result.code!="ok" do return

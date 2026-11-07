@@ -69,3 +69,12 @@ launch_material :: proc(s:^Store,intent:Intent,now:i64)->(Launch_Material,bool) 
     row:=rows[0]
     return Launch_Material{row[0],row[1],row[2],row[3]},true
 }
+
+// Used only to avoid an unnecessary fresh owner nonce on retained bootstrap
+// replay. accept_bootstrap still checks exact signed bytes and body equality.
+bootstrap_retained :: proc(s:^Store,id:string)->bool {
+    sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
+    if s.db==nil || s.unusable do return false
+    rows,ok:=query(s.db,"SELECT 1 FROM executor_bootstraps WHERE reservation_id=?",id)
+    return ok && len(rows)==1
+}
