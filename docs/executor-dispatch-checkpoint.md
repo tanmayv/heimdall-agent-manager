@@ -1306,3 +1306,60 @@ or physical bootstrap launch.
 The final Bridge three-test run passed after adding the failed-current-read
 retention assertion; typecheck passed after the pinned dependency installation.
 No dependency manifest or lockfile changed. No unrelated cleanup was performed.
+
+## M3-2 bootstrap continuation (2026-11-07, checkpoint fdc0b675 + writer)
+
+This remains an incomplete M3-2 checkpoint. No production physical-launch or
+remote child relay acceptance is claimed.
+
+- `src/contracts/executor_child.odin:8` defines owner-signed bootstrap content,
+  bootstrap metadata and executor-signed child requests. Matching requires exact
+  prepare/action/configuration/body/child/deadline identities. Current-owner and
+  exact-live-child checks remain required at callers.
+- `src/lib/executor_local/bootstrap.odin:14` accepts bootstrap content only
+  against a locally committed activation receipt, exact local issuance and a
+  freshly obtained bilateral owner proof. The immutable executor V4 table
+  retains historical output; replay does not produce new launch authority.
+- `src/lib/executor_local/bootstrap.odin:60` returns local credentials only for
+  an exact live, undispatched launch claim in this serving incarnation.
+- `src/bridge/executor_bootstrap.odin:15` resolves the current local provider
+  profile and mapping, then prepares a Spawn request from accepted content.
+  `src/bridge/executor_bootstrap.odin:54` writes fixed bootstrap files and
+  locally selected skill paths, generating the CLI shim locally. The caller
+  must own the startup I/O mutex and still perform fresh dispatch admission.
+  A process whose dispatch already crossed the durable boundary must only be
+  queried; it must never have its run directory cleaned again.
+- Production signer allowlists now include the separate bootstrap/child-request
+  domains (`src/bridge/unseal_protocol.odin:851`,
+  `src/bridge/executor_issuance.odin:36`).
+
+Verification, all through managed shells in the task Workdir:
+
+| Exact command | Result |
+|---|---|
+| `nix develop --command odin test src/contracts -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3b-bootstrap-content-contracts-20261107-0248` | 36 PASS; sh_52933d3bd1ebae39129b68876301c65e |
+| `nix develop --command odin test src/lib/executor_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3b-bootstrap-content-ledger-20261107-0248` | 27 PASS; sh_11ec1b1726bcdc01ceb26435c8a9cc25 |
+| `node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_executor_child_test.ts tests/ui_executor_contract_test.ts tests/ui_executor_channel_test.ts tests/ui_executor_issuance_test.ts` | 14 PASS; sh_35be65d64bb6e065a2498aa63d15a2c7 |
+| `npm run typecheck` | PASS; sh_39b14c0c73721a80cb965a8886103700 |
+
+Focused Bridge command (3 PASS; sh_a93f5529512a3e20ccb041abae2f8d32):
+
+```bash
+nix develop --command odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_NAMES=main.test_executor_bootstrap_materializes_owner_content_without_hub_and_local_shim,main.test_executor_bootstrap_denies_content_substitution_and_planted_root_symlink,main.test_owner_local_executor_signer_domains_and_missing_identity -out:$HOME/.cache/heimdall-tests/m3b-bootstrap-writer3-20261107-0248
+```
+
+Earlier durable-store checkpoint fdc0b675 passed the production Bridge build:
+`nix build .#ham-bridge -o $HOME/.cache/heimdall-tests/m3b-bootstrap-bins-20261107-0242`
+(sh_92549d43ccb08ad6ec7bcfba10536346). It predates the prespawn writer.
+
+Draft failures corrected: Odin multiline-do and variable-index literal syntax;
+file APIs return os.Error rather than bool; the writer test initially lacked
+a local provider catalog and correctly failed closed. No production fallback
+was added. An empty-map test helper originally lost its map header; direct
+initialization fixed the fixture. No unrelated cleanup.
+
+Remaining: durable owner-rendered bootstrap snapshot tied to the original
+activation identity; encrypted exchange ingress/egress mounting; worker
+prespawn/launch/query/stop and exact-child token/relay auth; bounded renewal;
+shared manual/warm admission and provisioning; encrypted PTY ticket/results;
+Linux actual execution and Darwin contract profiles, documented Windows bounds.

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { executorParse, executorVerify, executorBootstrapMatches, executorChildRequestMatches } from '../src/ui/api/executor.ts';
 import type { OwnerVerifiedKey } from '../src/ui/api/ownerLocal.ts';
 const f = JSON.parse(readFileSync(new URL('../src/contracts/fixtures/executor-child-v1.json',import.meta.url),'utf8')) as {
-  owner_key: OwnerVerifiedKey; executor_key: OwnerVerifiedKey; prepare: string; action: string; bootstrap: string; child: string;
+  content_bad: string[]; owner_key: OwnerVerifiedKey; executor_key: OwnerVerifiedKey; prepare: string; action: string; bootstrap: string; child: string;
   configuration: string; body: string; input: string; bootstrap_bad: {name:string;raw:string}[]; child_bad: {name:string;raw:string}[];
 };
 const b = executorParse(f.bootstrap,'bootstrap'), p = executorParse(f.prepare,'prepare'), a = executorParse(f.action,'action');
@@ -39,4 +39,9 @@ test('child record parser rejects added authority, duplicate keys and oversized 
       assert.throws(() => executorParse(JSON.stringify({...parsed,request_expires_ms}),kind));
     }
   }
+});
+
+test('bootstrap content permits Unicode and rejects executable and skill path injection', () => {
+  assert.doesNotThrow(() => executorParse(f.body,'bootstrap_content'));
+  for (const raw of f.content_bad) assert.throws(() => executorParse(raw,'bootstrap_content'));
 });

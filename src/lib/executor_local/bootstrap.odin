@@ -63,7 +63,8 @@ launch_material :: proc(s:^Store,intent:Intent,now:i64)->(Launch_Material,bool) 
     if _,current:=intent_current_locked(s,intent,now);!current do return {},false
     rows,ok:=query(s.db,`SELECT b.document,b.body,i.configuration,i.token_secret
       FROM executor_bootstraps b JOIN executor_reservations r USING(reservation_id)
-      JOIN executor_issuances i ON i.instance_id=r.instance_id WHERE b.reservation_id=?`,intent.reservation)
+      JOIN executor_issuances i ON i.instance_id=r.instance_id WHERE b.reservation_id=? AND EXISTS(SELECT 1 FROM executor_intents x
+      WHERE x.reservation_id=b.reservation_id AND x.kind='launch' AND x.state='uncertain' AND x.claim_incarnation=0)`,intent.reservation)
     if !ok || len(rows)!=1 do return {},false
     row:=rows[0]
     return Launch_Material{row[0],row[1],row[2],row[3]},true

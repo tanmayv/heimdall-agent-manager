@@ -6,6 +6,30 @@ import "core:encoding/json"
 // owner-authored content, not executable argv or a replacement task grant.
 // A child request attests one exact locally observed child and input; the owner
 // must still check its journal, current assignment, capability and operation.
+executor_bootstrap_content_fields := [?]Owner_Field{
+    {"agents_md","document"},{"memory_md","optional_document"},{"task_md","document"},{"skills_json","document"},
+}
+executor_bootstrap_skill_name_valid :: proc(s:string)->bool {
+    if len(s)==0 || len(s)>160 do return false
+    for c in s do if !(c>='a' && c<='z' || c>='A' && c<='Z' || c>='0' && c<='9' || c=='-') do return false
+    return true
+}
+executor_bootstrap_content_valid :: proc(o:json.Object)->bool {
+    value,parsed:=owner_content_document(owner_string(o,"skills_json"))
+    skills,array:=value.(json.Array)
+    if !parsed || !array || len(skills)>64 do return false
+    seen:=make(map[string]bool,context.temp_allocator)
+    for item in skills {
+        skill,obj:=item.(json.Object)
+        if !obj || len(skill)!=2 do return false
+        name,named:=skill["name"].(json.String)
+        content,text:=skill["content"].(json.String)
+        if !named || !text || !executor_bootstrap_skill_name_valid(string(name)) ||
+           !owner_field_valid(string(content),"document") || seen[string(name)] {return false}
+        seen[string(name)]=true
+    }
+    return true
+}
 executor_bootstrap_fields := [?]Owner_Field{
     {"protocol_version","version"},{"account_id","id"},{"owner_bridge_id","id"},{"executor_bridge_id","id"},
     {"chain_id","id"},{"task_id","id"},{"lease_id","id"},{"reservation_id","id"},
@@ -30,7 +54,8 @@ executor_child_request_fields := [?]Owner_Field{
 executor_bootstrap_matches :: proc(b,p,a:json.Object,configuration_raw,body_raw,launch_key:string,
     owner_key:Owner_Verified_Key,now:i64)->bool {
     c,configured:=owner_parse(configuration_raw,"remote_configuration")
-    if !configured || !executor_verify("bootstrap",b,owner_key) || !executor_verify("prepare",p,owner_key) ||
+    _,content_valid:=executor_parse(body_raw,"bootstrap_content")
+    if !configured || !content_valid || !executor_verify("bootstrap",b,owner_key) || !executor_verify("prepare",p,owner_key) ||
        !executor_verify("action",a,owner_key) || owner_string(a,"method")!="activate" ||
        owner_string(p,"owner_bridge_id")==owner_string(p,"executor_bridge_id") ||
        !owner_field_valid(launch_key,"hash") || owner_string(b,"launch_key")!=launch_key ||

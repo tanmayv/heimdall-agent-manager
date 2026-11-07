@@ -15,6 +15,13 @@ import executor "odin_test:lib/executor_local"
 import vault "odin_test:lib/vault"
 
 bridge_executor_test_doc :: proc(kind:string)->json.Object {
+    if kind=="bootstrap" || kind=="child_request" {
+        v,_:=contracts.owner_content_document(#load("../contracts/fixtures/executor-child-v1.json",string))
+        root,_:=v.(json.Object)
+        field:="child" if kind=="child_request" else "bootstrap"
+        o,_:=contracts.executor_parse(contracts.owner_string(root,field),kind)
+        return o
+    }
     v,_:=contracts.owner_content_document(#load("../contracts/fixtures/executor-v1.json",string));root,_:=v.(json.Object);items,_:=root["valid"].(json.Array)
     for item in items {row,_:=item.(json.Object);if contracts.owner_string(row,"kind")==kind {o,_:=contracts.executor_parse(contracts.owner_string(row,"raw"),kind);return o}}
     return nil

@@ -62,3 +62,17 @@ executor_child_request_exact_signed_binding :: proc(t:^testing.T) {
     testing.expect(t,!executor_child_request_matches(r,b,input,revoked,owner,1300))
     testing.expect(t,!executor_verify("child_request",r,owner))
 }
+
+@(test)
+executor_bootstrap_content_rejects_authority_and_path_injection :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=executor_child_fixture(t)
+    _,valid:=executor_parse(owner_string(f,"body"),"bootstrap_content")
+    testing.expect(t,valid)
+    bad,_:=f["content_bad"].(json.Array)
+    for item in bad {
+        raw,_:=item.(json.String)
+        _,accepted:=executor_parse(string(raw),"bootstrap_content")
+        testing.expect(t,!accepted)
+    }
+}

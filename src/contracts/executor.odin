@@ -117,6 +117,7 @@ executor_receipt_fields := [?]Owner_Field{
 }
 executor_schema :: proc(kind:string)->[]Owner_Field {
     switch kind {
+    case "bootstrap_content":return executor_bootstrap_content_fields[:]
     case "bootstrap":return executor_bootstrap_fields[:]
     case "child_request":return executor_child_request_fields[:]
     case "exchange":return executor_exchange_fields[:]
@@ -165,6 +166,7 @@ executor_valid :: proc(o:json.Object,kind:string)->bool {
             if !owner_field_valid(s,f.kind) do return false
         }
     }
+    if kind=="bootstrap_content" && !executor_bootstrap_content_valid(o) do return false
     if kind=="bootstrap" || kind=="child_request" {
         start,end:=executor_number(o,"issued_ms"),executor_number(o,"request_expires_ms")
         if end<=start || end-start>EXECUTOR_FENCE_TTL_MS || end>executor_number(o,"expires_ms") || executor_number(o,"expires_ms")>executor_number(o,"hard_ms") do return false
@@ -215,7 +217,7 @@ executor_valid :: proc(o:json.Object,kind:string)->bool {
 executor_parse :: proc(raw,kind:string)->(json.Object,bool) {
     if len(raw)>EXECUTOR_DOCUMENT_MAX do return nil,false
     v:json.Value;ok:bool
-    if kind=="issuance_selection" || kind=="issuance_exchange" || kind=="issuance_bundle" {v,ok=owner_content_document(raw)} else {v,ok=owner_request_document(raw)}
+    if kind=="bootstrap_content" || kind=="issuance_selection" || kind=="issuance_exchange" || kind=="issuance_bundle" {v,ok=owner_content_document(raw)} else {v,ok=owner_request_document(raw)}
     o,obj:=v.(json.Object)
     if !ok || !obj || !executor_valid(o,kind) do return nil,false
     return o,true

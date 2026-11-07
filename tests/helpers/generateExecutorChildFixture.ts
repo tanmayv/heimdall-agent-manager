@@ -25,7 +25,7 @@ const config = {protocol_version:'1',account_id:p.account_id,owner_bridge_id:p.o
   executor_incarnation:p.executor_incarnation,policy_revision:p.policy_revision,slot_id:p.slot_id,provider_profile:p.provider_profile,
   provider:'codex',model:'模型🚀',directory_id:'directory',directory_key:p.directory_key,directory_path:'/repo'};
 const configuration = JSON.stringify(config);
-const body = JSON.stringify({agents_md:'# Worker\n模型🚀',memory_md:'',task_md:'# Assigned task'});
+const body = JSON.stringify({agents_md:'# Worker\n模型🚀',memory_md:'',task_md:'# Assigned task',skills_json:JSON.stringify([{name:'worker',content:'# Skills\n模型🚀'}])});
 const b: Record<string,string> = {};
 for (const [name] of executorSchemas.bootstrap) b[name] = p[name] ?? a[name] ?? '';
 Object.assign(b,{prepare_digest:digest(executorCanonical('prepare',p)),action_digest:digest(executorCanonical('action',a)),
@@ -53,5 +53,12 @@ for (const [name] of executorSchemas.child_request) {
   child_bad.push({name,raw:JSON.stringify(changed)});
 }
 const result = {owner_key:ownerKey,executor_key:executorKey,prepare:JSON.stringify(p),action:JSON.stringify(a),configuration,body,input,
-  bootstrap:JSON.stringify(bootstrap),child:JSON.stringify(child),bootstrap_bad,child_bad};
+  bootstrap:JSON.stringify(bootstrap),child:JSON.stringify(child),bootstrap_bad,child_bad,
+  content_bad: [
+    JSON.stringify({...JSON.parse(body),argv:'sh'}),
+    ...['../escape','a/b','a_b','a.b',''].map(name => JSON.stringify({...JSON.parse(body),skills_json:JSON.stringify([{name,content:'data'}])})),
+    JSON.stringify({...JSON.parse(body),skills_json:JSON.stringify([{name:'same',content:'a'},{name:'same',content:'b'}])}),
+    JSON.stringify({...JSON.parse(body),skills_json:JSON.stringify([{name:'worker',content:'data',mode:'0755'}])}),
+    JSON.stringify({...JSON.parse(body),skills_json:'[{"name":"a","name":"b","content":"x"}]'}),
+  ]};
 writeFileSync(new URL('src/contracts/fixtures/executor-child-v1.json',root),JSON.stringify(result,null,2)+'\n');

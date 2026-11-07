@@ -4,6 +4,7 @@ import { parseOwnerRequestDocument } from './ownerJson.ts';
 
 // Mirrored executor resource contracts; no task command or launch authority.
 export const executorSchemas = {
+  bootstrap_content: [['agents_md','document'],['memory_md','optional_document'],['task_md','document'],['skills_json','document']],
   child_request: [["protocol_version", "version"], ["account_id", "id"], ["owner_bridge_id", "id"], ["executor_bridge_id", "id"], ["chain_id", "id"], ["task_id", "id"], ["lease_id", "id"], ["reservation_id", "id"], ["instance_id", "id"], ["launch_epoch", "id"], ["run_count", "positive"], ["token_generation", "hash"], ["configuration_revision", "positive"], ["grant_generation", "positive"], ["owner_incarnation", "positive"], ["executor_incarnation", "positive"], ["prepare_digest", "hash"], ["bootstrap_digest", "hash"], ["input_digest", "hash"], ["launch_key", "hash"], ["deadline_version", "positive"], ["expires_ms", "positive"], ["hard_ms", "positive"], ["issued_ms", "positive"], ["request_expires_ms", "positive"], ["key_id", "id"], ["signature", "signature"]],
   bootstrap: [["protocol_version", "version"], ["account_id", "id"], ["owner_bridge_id", "id"], ["executor_bridge_id", "id"], ["chain_id", "id"], ["task_id", "id"], ["lease_id", "id"], ["reservation_id", "id"], ["instance_id", "id"], ["launch_epoch", "id"], ["run_count", "positive"], ["token_generation", "hash"], ["configuration_revision", "positive"], ["grant_generation", "positive"], ["owner_incarnation", "positive"], ["executor_incarnation", "positive"], ["prepare_digest", "hash"], ["action_digest", "hash"], ["configuration_digest", "hash"], ["body_digest", "hash"], ["launch_key", "hash"], ["deadline_version", "positive"], ["expires_ms", "positive"], ["hard_ms", "positive"], ["issued_ms", "positive"], ["request_expires_ms", "positive"], ["key_id", "id"], ["signature", "signature"]],
   transport_scope: [
@@ -411,6 +412,7 @@ function fieldValid(s: string, kind: string): boolean {
     case 'executor_transport_method': return ['enrollment','prepare','action','fence_request'].includes(s);
     case 'executor_direction': return s === 'request' || s === 'response';
     case 'required_cipher': { if (s.length > 65536 || s === '') return false; try { parseVaultEnvelope(s); return true; } catch { return false; } }
+    case 'optional_document': return new TextEncoder().encode(s).length <= 256 * 1024;
     case 'document': return new TextEncoder().encode(s).length <= 256 * 1024 && s !== '';
     case 'version': return s === '1';
     case 'id': return id(s);
@@ -438,6 +440,17 @@ export function executorParse(raw: string, kind: ExecutorKind): ExecutorDocument
     if (typeof field !== 'string' || !fieldValid(field, type)) throw new SyntaxError('Executor field');
   }
   const o = value as ExecutorDocument;
+  if (kind === 'bootstrap_content') {
+    const skills = parseOwnerRequestDocument(o.skills_json);
+    if (!Array.isArray(skills) || skills.length > 64) throw new SyntaxError('Executor bootstrap skills');
+    const seen = new Set<string>();
+    for (const skill of skills) {
+      if (!object(skill) || Object.keys(skill).length !== 2 || typeof skill.name !== 'string' ||
+          !/^[a-zA-Z0-9-]{1,160}$/.test(skill.name) || typeof skill.content !== 'string' ||
+          !fieldValid(skill.content,'document') || seen.has(skill.name)) throw new SyntaxError('Executor bootstrap skill');
+      seen.add(skill.name);
+    }
+  }
   if (kind === 'bootstrap' || kind === 'child_request') {
     const start = BigInt(o.issued_ms), end = BigInt(o.request_expires_ms);
     if (end <= start || end-start > EXECUTOR_FENCE_TTL_MS || end > BigInt(o.expires_ms) || BigInt(o.expires_ms) > BigInt(o.hard_ms)) throw new SyntaxError('Executor child bounds');
@@ -565,6 +578,7 @@ export async function executorBootstrapMatches(b: ExecutorDocument, p: ExecutorD
   configurationRaw: string, bodyRaw: string, launchKey: string, ownerKey: OwnerVerifiedKey, now: bigint): Promise<boolean> {
   try {
     const c = ownerParse(configurationRaw,'remote_configuration');
+    executorParse(bodyRaw,'bootstrap_content');
     if (!await executorVerify('bootstrap',b,ownerKey) || !await executorVerify('prepare',p,ownerKey) ||
         !await executorVerify('action',a,ownerKey) || a.method !== 'activate' || p.owner_bridge_id === p.executor_bridge_id ||
         !/^[0-9a-f]{64}$/.test(launchKey) || b.launch_key !== launchKey || bodyRaw === '' ||

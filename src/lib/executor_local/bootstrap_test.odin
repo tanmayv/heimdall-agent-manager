@@ -32,7 +32,7 @@ bootstrap_fixture :: proc(t:^testing.T,f:^Fixture)->Bootstrap_Fixture {
         if v=="" do v=field(a,entry.name)
         b[entry.name]=json.String(v)
     }
-    body:="{\"agents_md\":\"# Authoritative owner instructions\"}"
+    body:=encode(struct{agents_md,memory_md,task_md,skills_json:string}{"# Authoritative owner instructions","","# Assigned task","[]"})
     pd,_:=contracts.executor_digest("prepare",p);ad,_:=contracts.executor_digest("action",a)
     for pair in ([8][2]string{{"prepare_digest",pd},{"action_digest",ad},{"configuration_digest",contracts.owner_payload_digest(configuration)},
         {"body_digest",contracts.owner_payload_digest(body)},{"launch_key",rows[0][0]},{"issued_ms","1250"},{"request_expires_ms","1900"},{"key_id",f.owner1.public.key_id}}) {set(b,pair[0],pair[1])}
@@ -60,6 +60,8 @@ executor_bootstrap_requires_committed_activation_and_replays_without_relaunch_au
     testing.expect_value(t,accept_bootstrap(&f.store,signed(changed,"bootstrap",&f.owner1),"changed",x.action,f.owner1.public,1300,proof(x.a)).code,"operation_conflict")
     revoked:=f.owner1.public;revoked.revoked=true
     testing.expect_value(t,accept_bootstrap(&f.store,x.raw,x.body,x.action,revoked,1300,proof(x.a)).code,"invalid_scope")
+    testing.expect(t,begin_dispatch(&f.store,intent,1300))
+    _,ready=launch_material(&f.store,intent,1300);testing.expect(t,!ready,"crossed dispatch never rematerializes a running child")
     testing.expect(t,!exec(f.store.db,"UPDATE executor_bootstraps SET body='changed'"))
     testing.expect(t,!exec(f.store.db,"DELETE FROM executor_bootstraps"))
     testing.expect(t,expire(&f.store,5000))
