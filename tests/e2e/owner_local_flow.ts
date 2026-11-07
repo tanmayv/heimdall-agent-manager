@@ -12,6 +12,12 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
     await ownerLocalLinkedFlow({session,bridgeId,cli,expect,stopOwner,restartOwner,inspectHub});
     return;
   }
+  if(process.env.HEIMDALL_E2E_OWNER_MIGRATION_ONLY==='1'){
+    await stopOwner();await restartOwner();
+    const {ownerMigrationFlow}=await import('./owner_migration_flow.ts');
+    await ownerMigrationFlow({session,bridgeId,hub,http,expect,cli,stopOwner,restartOwner});
+    return;
+  }
   if(process.env.HEIMDALL_E2E_OWNER_AGGREGATE_ONLY==='1'){
     await stopOwner();await restartOwner();
     const {ownerLocalAggregateFlow}=await import('./owner_local_aggregate_flow.ts');
