@@ -472,6 +472,12 @@ executor_exact_launch_selection_recovers_without_consuming_other_owner :: proc(t
     other,taken:=take_intent(&f.store,1200)
     testing.expect(t,taken && other.reservation=="aaa_other","exact selection leaves unrelated pending work untouched")
     testing.expect(t,begin_dispatch(&f.store,intent,1200))
+    testing.expect(t,begin_dispatch(&f.store,other,1200))
+    first_page,page_ok:=reconcile_candidates(&f.store,"",1)
+    if !testing.expect(t,page_ok && len(first_page)==1 && first_page[0].reservation=="aaa_other") do return
+    second_page,second_ok:=reconcile_candidates(&f.store,first_page[0].reservation,1)
+    testing.expect(t,second_ok && len(second_page)==1 && second_page[0].reservation=="reservation",
+        "an unresolved earlier owner cannot starve a later owner in bounded observation work")
     retry,query_retry,recovered=reservation_launch(&f.store,"reservation",digest,1200)
     testing.expect(t,recovered && query_retry && retry==intent,"ambiguous dispatch must only query the original key")
     testing.expect(t,!begin_dispatch(&f.store,retry,1200))

@@ -1642,14 +1642,51 @@ expiry regression; preserved its original ordering and added a separate local
 final proof check around durable dispatch. No clock or authority check was
 relaxed. No unrelated cleanup.
 
+### Bounded safety reconciliation (2026-11-07 continuation)
+
+The Bridge starts an independent executor safety worker at startup
+(`src/bridge/main.odin:280`). Each tick expires reservations and observes at most
+16 exact retained children, with a durable-identity cursor that wraps for another
+sweep. Unknown daemon results retain the charge and advance the cursor so later
+owners are not starved (`src/bridge/executor_reconcile.odin:14`).
+The cursor itself is in memory; restart safely restarts the sweep.
+
+Candidates exclude the current runtime's queued and undispatched claims, because
+a fresh owner callback can be in flight with the application mutex released.
+Dispatched/confirmed claims, retained children from prior executor incarnations,
+and stopping reservations are eligible (`src/lib/executor_local/reconcile.odin:10`).
+The exact instance/key/document/incarnation is rechecked before local daemon I/O;
+only stopping reservations are closed (`src/lib/executor_local/reconcile.odin:30`).
+This worker cannot Spawn, renew, or mutate owner task state. Recovery completes
+only after all charged retained children have trusted current observations.
+
+Checks:
+
+```bash
+nix develop --command odin test src/lib/executor_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3b-reconcile-ledger-final-20261107-0353
+nix develop --command env HEIMDALL_EXECUTOR_TEST_PTY=$HOME/.cache/heimdall-tests/m3b-bootstrap-pty-20261107-0300/bin/ham-pty-host odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:EXECUTOR_TEST_REQUIRED=true -define:ODIN_TEST_NAMES=main.bridge_executor_real_daemon_ledger_dispatch_and_stale_stop,main.test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection,main.bridge_executor_expiry_during_owner_check_and_clock_regression_fail_before_io,main.bridge_executor_physical_fence_rechecks_wall_and_monotonic_expiry -out:$HOME/.cache/heimdall-tests/m3b-reconcile-bridge-20261107-0353
+nix build .#ham-bridge -o $HOME/.cache/heimdall-tests/m3b-reconcile-bins-20261107-0353
+git diff --cached --check
+```
+
+Results: executor **32 PASS** (`sh_feebefff9c60d0792692d0a7ccc58859`),
+Bridge **4 PASS** (`sh_2edb735cc24a0b9be1131da3b94190d2`), production Bridge
+build **PASS** (`sh_548ddc8a3d99e6cbc78bc4d98873934e`).
+The real daemon fixture covers live child observation, an expired warm child's
+exact stop/absence, and charge retention across real daemon loss. Native tests
+cover undispatched exclusion, restart observation without launch authority and
+two-owner cursor progress. No new platform/provider evidence is claimed.
+An initial test used an unsupported message argument to `expect_value`; corrected
+to `expect` before the passing run. No unrelated cleanup.
+
 ### Next implementation boundary
 
 1. Mount executor-local startup readiness for the issued credential.
-   `agent.start_success` remains a legacy-token path. Clarification requested
-   from the coordinator: whether durable readiness is executor-local observation
-   only or requires a separately owner-validated observation. Do not register a
+   `agent.start_success` remains a legacy-token path. Coordinator confirmed exact executor-local readiness with replay and stale-child
+   denial, without owner task-authority effects (msg_18e5a6f1a1e4556d). Identify
+   an exact owner waiting consumer before proposing any owner observation. Do not register a
    Hub task or substitute a Hub instance token.
-2. Implement bounded renewal/expiry reconciliation and device-wide admission
+2. Implement bounded renewal and device-wide admission
    including legacy/manual/warm paths.
 3. Implement encrypted PTY tickets/results, bracketed paste, Linux/Darwin
    interrupt profiles and documented Windows bounds. Rich owner-rendered
