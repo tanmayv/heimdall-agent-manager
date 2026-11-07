@@ -238,6 +238,30 @@ bridge_legacy_barrier_prevents_native_first_io_after_signed_local_consent :: pro
     if read {defer pty_host_reply_delete(listed);for agent in listed.agents do testing.expect(t,agent.instance_id!=launch.instance)}
     retained,loaded:=executor.local_launch(&s,launch.id)
     testing.expect(t,loaded && retained.state=="admitted","barrier consumes neither launch authority nor child charge")
+    // Normal unfenced native launches/stops still work. Cancel only the
+    // undispatched fixture admission, then obtain distinct fresh signed consent.
+    testing.expect(t,executor.cancel_local_admission(&s,launch.id))
+    req.instance="unfenced_native"
+    bridge_executor_test_set(c,"instance_id",req.instance)
+    bridge_executor_test_set(c,"spawn_digest",bridge_executor_local_spawn_digest(req))
+    configuration=executor.encode(c)
+    resources=executor.Local_Resources{contracts.owner_payload_digest(configuration),contracts.owner_string(c,"spawn_digest"),"/repo",true}
+    bridge_executor_test_set(o,"operation_id","normal_after_fenced")
+    bridge_executor_test_set(o,"configuration_digest",resources.configuration_digest)
+    consent=bridge_executor_test_sign(o,"local_launch",&device_private)
+    normal_result:=executor.admit_local(&s,consent,configuration,device,bridge_executor_physical_clock(nil),resources)
+    if !testing.expect_value(t,normal_result.code,"ok") do return
+    normal_doc,_:=contracts.owner_content_document(normal_result.body);normal_body,_:=normal_doc.(json.Object)
+    normal,normal_found:=executor.local_launch(&s,contracts.owner_string(normal_body,"launch_id"))
+    if !testing.expect(t,normal_found) do return
+    delivered,reason=bridge_executor_local_dispatch(&s,normal,device,req,resources,socket)
+    if !testing.expect(t,delivered && reason=="child_present") do return
+    normal_pid,normal_known:=bridge_pty_host_executor_query(socket,normal.instance,normal.launch_key)
+    if !testing.expect(t,normal_known && normal_pid>0) do return
+    defer {_=bridge_pty_host_executor_close(socket,normal.instance,normal.launch_key);bridge_shell_test_kill_pid(int(normal_pid))}
+    testing.expect(t,bridge_legacy_stop_target(&s,normal.instance,false),"unfenced native exact stop succeeds")
+    stopped,stopped_known:=bridge_pty_host_executor_query(socket,normal.instance,normal.launch_key)
+    testing.expect(t,stopped_known && stopped==0)
     // A child predating the native admission ledger has no authenticated
     // exact close identity. Legacy force-stop must refuse it, not infer drain
     // from the current instance name or send a broad signal.

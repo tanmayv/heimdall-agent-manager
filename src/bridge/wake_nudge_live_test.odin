@@ -14,6 +14,8 @@ import "core:sync"
 import "core:sys/posix"
 import "core:testing"
 import "core:thread"
+import contracts "odin_test:contracts"
+import executor "odin_test:lib/executor_local"
 
 @(test)
 test_wake_nudge_line_names_lease_and_lease_next :: proc(t: ^testing.T) {
@@ -152,7 +154,12 @@ test_wake_nudge_live_child_keeps_process_and_refreshes_task_md :: proc(t: ^testi
 		`}],"stop":[]}}`,
 	})
 	defer delete(wake)
-	bridge_hub_handle_wake_agent(nil, wake)
+    journal,journal_path:=bridge_legacy_test_store(t);defer bridge_legacy_test_close(journal,journal_path)
+    bridge_hub_handle_wake_agent(nil,wake,journal)
+    barrier:=executor.Legacy_Barrier{"source_chain","migration",contracts.owner_payload_digest("verified selection"),1}
+    testing.expect_value(t,bridge_legacy_install_barrier(journal,barrier,[]executor.Legacy_Resource{{"instance",id}}).code,"ok")
+    denied_pack:=`{"task_id":"claimed_other_task","brief":{"goal":"DENIED_AFTER_BARRIER","acceptance":["a"]}}`
+    testing.expect(t,!bridge_wake_nudge_live_child(id,"claimed_other_task","worker","late_lease",4,denied_pack,journal),"late wake denied before pack write and PTY input")
 	sync.atomic_store(&server.stop, true)
 	thread.join(worker)
 

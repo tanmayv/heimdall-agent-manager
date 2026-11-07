@@ -1,5 +1,6 @@
 package main
 
+import executor "odin_test:lib/executor_local"
 import "base:runtime"
 import "core:crypto"
 import "core:crypto/hash"
@@ -2320,7 +2321,7 @@ bridge_hub_handle_pane_capture_command :: proc(conn: ^ws.Connection, text: strin
 // depth so this path can never stop or churn a coordinator. The command body carries
 // no command_id and the hub fire-and-forgets the send, so there is normally nothing
 // to ack; we still ack if a command_id is ever present.
-bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
+bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string,legacy_journal:^executor.Store=nil) {
 	command_id := extract_json_string(text, "command_id", "")
 	payload, payload_ok := bridge_provider_json_extract_object(text, "payload")
 	if !payload_ok {
@@ -2379,7 +2380,7 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
 			// the child is not confirmed live, fall through to the launch paths.
 			deliver := extract_json_string(entry, "deliver", "")
 			defer delete(deliver)
-			if deliver == "nudge" && bridge_wake_nudge_live_child(instance_id, task_id, role, lease_id, run_count, pack_json) {
+			if deliver == "nudge" && bridge_wake_nudge_live_child(instance_id, task_id, role, lease_id, run_count, pack_json,legacy_journal) {
 				bridge_runtime_set_launch_role(instance_id, role)
 				fmt.println("bridge wake_agent: nudged live instance", instance_id, "to run lease next")
 				continue
@@ -2452,17 +2453,23 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
 // any precondition fails. A failed keystroke delivery still returns true: the
 // child is live, so a launch would no-op; the hub re-sends an unconfirmed
 // wake once and then parks the task (grant_unconfirmed).
-bridge_wake_nudge_live_child :: proc(instance_id, task_id, role, lease_id: string, run_count: int, pack_json: string) -> bool {
+bridge_wake_nudge_live_child :: proc(instance_id, task_id, role, lease_id: string, run_count: int, pack_json: string,legacy_journal:^executor.Store=nil) -> bool {
 	if run_count <= 0 || strings.trim_space(instance_id) == "" do return false
 	launch, has := bridge_runtime_get_launch(instance_id)
 	if !has do return false
+    sync.mutex_lock(&bridge_executor_mutex);defer sync.mutex_unlock(&bridge_executor_mutex)
+    journal:=legacy_journal
+    if journal==nil do journal=bridge_legacy_global_store()
+    sync.mutex_lock(&bridge_startup_io_mutex);defer sync.mutex_unlock(&bridge_startup_io_mutex)
+    sync.mutex_lock(&bridge_legacy_physical_mutex);defer sync.mutex_unlock(&bridge_legacy_physical_mutex)
+    if !bridge_legacy_targets_allowed(journal,[]executor.Legacy_Resource{{"instance",instance_id},{"task",task_id}}) do return false
 	sync.mutex_lock(&bridge_runtime_mutex)
 	stopped := bridge_runtime_stop_intent_active_locked(instance_id, bridge_runtime_now_ms())
 	sync.mutex_unlock(&bridge_runtime_mutex)
 	if stopped do return false
 	socket, daemon_ok := bridge_pty_host_ensure_daemon()
 	if !daemon_ok do return false
-	confirmed, _ := bridge_startup_confirm_spawned(socket, instance_id, run_count)
+	confirmed, _ := bridge_startup_confirm_spawned_io_locked(socket, instance_id, run_count)
 	if !confirmed do return false
 	if strings.has_prefix(strings.trim_space(pack_json), "{") {
 		bridge_taskv2_ensure_pack_worktree(pack_json)
