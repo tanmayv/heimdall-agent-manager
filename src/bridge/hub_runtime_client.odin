@@ -2943,6 +2943,9 @@ bridge_runtime_mark_stop_intent :: proc(instance_id: string) {
     bridge_runtime_mark_stop_intent_io_locked(instance_id)
 }
 bridge_runtime_mark_stop_intent_io_locked :: proc(instance_id:string) {
+    // An exact stop may be the first operation after restart. Both the
+    // registry backing array and retained ID outlive the caller's job arena.
+    context.allocator=runtime.heap_allocator()
 	now := bridge_runtime_now_ms()
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
