@@ -45,7 +45,7 @@ test('placement defaults to an online enrolled Bridge, otherwise the Hub', async
   clearKeyringSession();
 });
 
-async function renderModal(bridgeStatus: string) {
+async function renderModal(bridgeStatus: string, bridgesReady: Promise<void> = Promise.resolve()) {
   const env = await ownerTestSession('brg_home', 'Home Bridge');
   const calls: OwnerCall[] = [];
   const hubPosts: string[] = [];
@@ -56,7 +56,7 @@ async function renderModal(bridgeStatus: string) {
     const method = String(init?.method || 'GET').toUpperCase();
     const ok = (data: unknown) => new Response(JSON.stringify({ data }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     if (method !== 'GET') hubPosts.push(method + ' ' + u.pathname);
-    if (u.pathname === '/api/v1/bridges') return ok([{ bridge_id: 'brg_home', label: 'Home Bridge', status: bridgeStatus }]);
+    if (u.pathname === '/api/v1/bridges') return bridgesReady.then(() => ok([{ bridge_id: 'brg_home', label: 'Home Bridge', status: bridgeStatus }]));
     if (u.pathname === '/api/v1/vault/directory') return ok(env.hub.dir());
     if (u.pathname === '/api/v1/owner-local/relay') return ok(await relay(JSON.parse(init.body)));
     return ok({});
@@ -80,6 +80,7 @@ async function renderModal(bridgeStatus: string) {
     const setter = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, 'value')!.set!;
     await act(async () => { setter.call(input, value); input.dispatchEvent(new win.Event('input', { bubbles: true })); });
   };
+  const submitButton = () => container.querySelector('button[type="submit"]') as HTMLButtonElement;
   const submit = async () => {
     const button = container.querySelector('button[type="submit"]') as HTMLButtonElement;
     assert.equal(button.disabled, false);
@@ -93,7 +94,7 @@ async function renderModal(bridgeStatus: string) {
     globalThis.fetch = saved;
     clearKeyringSession();
   };
-  return { env, calls, hubPosts, created, $, typeTitle, submit, settle, cleanup, container };
+  return { env, calls, hubPosts, created, $, typeTitle, submit, submitButton, settle, cleanup, container };
 }
 
 test('the create modal defaults to the owner Bridge and creates there with a signed genesis', async () => {
@@ -103,6 +104,7 @@ test('the create modal defaults to the owner Bridge and creates there with a sig
     assert.equal(ui.$('create-chain-placement-hub-input')!.checked, false, 'the Hub is an explicit non-default option');
     assert.match(ui.$('create-chain-placement-hub')!.textContent!, /Hub \(legacy\)/);
     assert.ok(!ui.container.textContent!.includes('— Unassigned —'), 'an owner chain has no Hub project selector');
+    assert.match(ui.$('create-chain-owner-fields-note')!.textContent!, /Project and coordinator are Hub settings/);
 
     await ui.typeTitle('Bridge-first chain');
     await ui.submit();
@@ -132,6 +134,24 @@ test('with no online owner Bridge the modal falls back to the Hub and says why',
     assert.equal(ui.$('create-chain-placement-bridge-brg_home-input')!.disabled, true);
     assert.match(ui.$('create-chain-placement-note')!.textContent!, /None of your enrolled Bridges is online/);
     assert.ok(ui.container.textContent!.includes('— Unassigned —'), 'Hub chains keep the project selector');
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('a fast submit cannot create a Hub chain while the Bridges are still being checked', async () => {
+  let release!: () => void;
+  const ui = await renderModal('online', new Promise<void>((r) => { release = r; }));
+  try {
+    await ui.typeTitle('Too quick');
+    assert.equal(ui.submitButton().disabled, true, 'submit waits for the placement default');
+    await ui.settle();
+    release();
+    await ui.settle();
+    assert.equal(ui.$('create-chain-placement-bridge-brg_home-input')!.checked, true);
+    await ui.submit();
+    assert.equal(ui.calls[0]?.method, 'chain.create');
+    assert.ok(!ui.hubPosts.some((p) => p.endsWith('/task-chains')));
   } finally {
     await ui.cleanup();
   }

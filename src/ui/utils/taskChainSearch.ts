@@ -234,37 +234,26 @@ async function searchLegacyTaskChainsEncrypted(
 
 /**
  * Applies project/status filters to Bridge-owned hits where owner metadata
- * allows. Owner chains carry no Hub project (a moved chain's former project is
- * passed in `projectOf` when known) and the registry carries no status, but an
- * owner chain is never archived. A filter that cannot be checked keeps the hit
- * and records it in `filters_unverified` so the UI can label it.
+ * allows. An owner chain has no Hub project in owner metadata (only a moved
+ * chain's frozen Hub copy had one, and that copy is not searched), so a project
+ * filter excludes owner hits. The registry carries no status, but an owner
+ * chain is never archived: an archived/cancelled filter excludes them, any
+ * other status filter keeps them labelled in `filters_unverified`.
+ * (No UI caller passes project/status filters today; the home, sidebar and
+ * picker searches are unfiltered.)
  */
-export function filterOwnerSearchHits(
-  hits: OwnerSearchHit[],
-  options: { projectId?: string; status?: string; projectOf?: (chainId: string) => string | undefined },
-): OwnerSearchHit[] {
-  const out: OwnerSearchHit[] = [];
-  for (const hit of hits) {
-    const unverified: string[] = [];
-    if (options.projectId) {
-      const project = options.projectOf?.(hit.chain_id);
-      if (project === undefined) unverified.push('project');
-      else if (project !== options.projectId) continue;
-    }
-    if (options.status) {
-      const status = options.status.toLowerCase();
-      if (status === 'archived' || status === 'cancelled') continue;
-      unverified.push('status');
-    }
-    out.push(unverified.length ? { ...hit, filters_unverified: unverified } : hit);
-  }
-  return out;
+export function filterOwnerSearchHits(hits: OwnerSearchHit[], options: { projectId?: string; status?: string }): OwnerSearchHit[] {
+  if (options.projectId) return [];
+  const status = (options.status || '').toLowerCase();
+  if (!status) return hits;
+  if (status === 'archived' || status === 'cancelled') return [];
+  return hits.map((hit) => ({ ...hit, filters_unverified: ['status'] }));
 }
 
 /** Search local owners and legacy data; copies are never owner fallbacks. */
 export async function searchTaskChainsEncrypted(
   query: string, ownerId: string,
-  options: { projectId?: string; status?: string; limit?: number; projectOf?: (chainId: string) => string | undefined } = {},
+  options: { projectId?: string; status?: string; limit?: number } = {},
 ): Promise<TaskChainSearchResponse> {
   const session = getKeyringSession();
   const legacy = searchLegacyTaskChainsEncrypted(query, ownerId, options);

@@ -9,8 +9,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Badge, Button, StatusDot, type Tone } from '@ui';
 import {
   freshOwnerSession, isOwnerOffline, ownerCall, ownerErrorMessage, ownerOfflineMessage, ownerRelaySend, ownerTaskState,
-  readArchivedReviews, readOwnerChain, readOwnerReviews, readOwnerRuntime, readOwnerSubmission, readOwnerTask,
-  type OwnerChainDetail, type OwnerChainSummary, type OwnerReview, type OwnerRuntime, type OwnerSend,
+  ownerExpectedRevision, readArchivedReviews, readOwnerChain, readOwnerChainStatus, readOwnerReviews, readOwnerRuntime, readOwnerSubmission, readOwnerTask,
+  type OwnerChainDetail, type OwnerChainStatus, type OwnerChainSummary, type OwnerReview, type OwnerRuntime, type OwnerSend,
   type OwnerSubmission, type OwnerTaskDetail, type OwnerTaskState,
 } from '../../api/ownerChains';
 import { ownerId, type OwnerInput, type OwnerSession } from '../../api/ownerLocalClient';
@@ -46,6 +46,10 @@ interface TaskView {
   runtime: OwnerRuntime;
   reviews: OwnerReview[];
   reviewsError: string;
+  /** The history scan hit its page cap: newer owner reviews may be missing. */
+  reviewsTruncated: boolean;
+  /** Older owner reviews were left out (only the latest are kept). */
+  reviewsMore: boolean;
 }
 
 export interface OwnerChainViewProps {
@@ -72,6 +76,7 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [detail, setDetail] = useState<OwnerChainDetail | null>(null);
+  const [chainStatus, setChainStatus] = useState<OwnerChainStatus>(chain.status ?? '');
   const [states, setStates] = useState<Record<string, OwnerRuntime>>({});
   const [selected, setSelected] = useState(focusTaskId || '');
   const [task, setTask] = useState<TaskView | null>(null);
@@ -104,9 +109,12 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
     setLoading(true);
     try {
       const s = await session();
-      const d = await readOwnerChain(s, bridge, chain.chainId, send);
+      const [d, status] = await Promise.all([
+        readOwnerChain(s, bridge, chain.chainId, send),
+        readOwnerChainStatus(s, bridge, chain.chainId, send).catch((e) => { if (isOwnerOffline(e)) throw e; return '' as OwnerChainStatus; }),
+      ]);
       if (!live.current) return;
-      setOffline(false); setDetail(d); setError('');
+      setOffline(false); setDetail(d); setChainStatus(status); setError('');
       // Task states come from one bounded runtime observation per task.
       const next: Record<string, OwnerRuntime> = {};
       const queue = d.tasks.slice(0, RUNTIME_LIMIT).map((t) => t.task_id);
@@ -125,13 +133,14 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
     try {
       const s = await session();
       const [d, rt] = await Promise.all([readOwnerTask(s, bridge, chain.chainId, taskId, send), readOwnerRuntime(s, bridge, chain.chainId, taskId, send)]);
-      let reviews: OwnerReview[] = [], reviewsError = '';
+      let reviews: OwnerReview[] = [], reviewsError = '', reviewsTruncated = false, reviewsMore = false;
       try {
         const [archived, owned] = await Promise.all([readArchivedReviews(s, bridge, chain.chainId, taskId, send), readOwnerReviews(s, bridge, chain.chainId, taskId, send)]);
-        reviews = [...owned, ...archived];
+        reviews = [...owned.reviews, ...archived];
+        reviewsTruncated = owned.truncated; reviewsMore = owned.more;
       } catch (e) { if (isOwnerOffline(e)) throw e; reviewsError = ownerErrorMessage(e, chain.bridgeName); }
       if (!live.current) return;
-      setTask({ taskId, detail: d, runtime: rt, reviews, reviewsError });
+      setTask({ taskId, detail: d, runtime: rt, reviews, reviewsError, reviewsTruncated, reviewsMore });
       setStates((prev) => ({ ...prev, [taskId]: rt }));
     } catch (e) { fail(e); } finally { if (live.current) setTaskLoading(false); }
   }, [bridge, chain.chainId, chain.bridgeName, send, session, fail]);
@@ -154,7 +163,10 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
     setBusy(true); setError(''); setNotice('');
     try {
       const s = await session();
-      const expectedRevision = input.taskId ? (task?.taskId === input.taskId ? task.detail.revision : '0') : (detail?.revision ?? '0');
+      // Task-scoped methods are checked against the task revision, everything
+      // else (task.create included) against the chain revision.
+      const taskRevision = input.taskId && task?.taskId === input.taskId ? task.detail.revision : '0';
+      const expectedRevision = ownerExpectedRevision(method, detail?.revision ?? '0', taskRevision);
       await ownerCall(s, bridge, method, { chainId: chain.chainId, expectedRevision, ...input }, send);
       if (!live.current) return true;
       setNotice(done);
@@ -177,6 +189,8 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
   const description = detail?.description ?? chain.description;
   const s = sessionRef.current;
   const ts = task ? ownerTaskState(task.runtime) : null;
+  // Changes only on a reachable owner whose chain is confirmed active.
+  const editable = !offline && Boolean(detail) && chainStatus === 'active';
 
   return (
     <div data-debug-id="owner-chain-view" className="flex h-full min-w-0 flex-col overflow-y-auto text-left">
@@ -189,6 +203,11 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
               <StatusDot size="sm" tone={offline ? 'neutral' : 'success'} label={offline ? 'Owner offline' : 'Owner online'} />
               {chain.bridgeName} · {offline ? 'offline' : 'online'}
             </span>
+            {!offline && detail && (
+              <Badge tone={chainStatus === 'active' ? 'info' : chainStatus === 'completed' ? 'success' : 'neutral'} data-debug-id="owner-chain-status">
+                {chainStatus === 'active' ? 'Active' : chainStatus === 'completed' ? 'Completed' : 'Status unknown'}
+              </Badge>
+            )}
             {chain.migrated && <Badge tone="neutral">Moved from Hub</Badge>}
             {chain.pending && <Badge tone="pending">Registering</Badge>}
           </div>
@@ -207,6 +226,11 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
       )}
       {error && <div role="alert" data-debug-id="owner-chain-error" className="mx-4 mt-3 rounded-lg border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger">{error}</div>}
       {notice && !error && <div role="status" data-debug-id="owner-chain-notice" className="mx-4 mt-3 text-xs text-muted">{notice}</div>}
+      {!offline && detail && chainStatus !== 'active' && (
+        <p data-debug-id="owner-chain-readonly" className="mx-4 mt-3 text-xs text-muted">
+          {chainStatus === 'completed' ? 'This chain is completed; it is read-only.' : 'The chain’s status could not be read; changes are unavailable.'}
+        </p>
+      )}
       {chain.sealed && <p className="mx-4 mt-3 text-xs text-muted">Some titles are sealed with a key this device does not hold.</p>}
 
       {description ? <p data-debug-id="owner-chain-description" className="whitespace-pre-wrap px-4 pt-3 text-sm text-muted">{description}</p> : null}
@@ -237,7 +261,7 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
             })}
           </ul>
           {detail?.truncated && <p className="text-xs text-muted">Showing the first {detail.tasks.length} tickets.</p>}
-          {!offline && detail && (
+          {editable && (
             <form data-debug-id="owner-chain-create-task-form" className="space-y-1.5 rounded-lg border border-subtle p-3" onSubmit={(e) => {
               e.preventDefault();
               if (!newTitle.trim()) return;
@@ -271,7 +295,7 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
                 </div>
               </div>
 
-              <div className="flex flex-wrap gap-2">
+              {editable && <div className="flex flex-wrap gap-2">
                 {ts.held
                   ? <Button size="sm" data-debug-id="owner-chain-release" disabled={busy} onClick={() => void mutate('task.release', { taskId: task.taskId, body: reason }, 'Hold released.')}>Release hold</Button>
                   : ts.state !== 'cancelled' && ts.state !== 'done' && <Button size="sm" data-debug-id="owner-chain-hold" disabled={busy} onClick={() => void mutate('task.hold', { taskId: task.taskId, body: reason }, 'Ticket held.')}>Hold</Button>}
@@ -280,7 +304,7 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
                   : ts.state !== 'done' && <Button size="sm" variant="danger" data-debug-id="owner-chain-cancel" disabled={busy} onClick={() => void mutate('task.cancel', { taskId: task.taskId, body: reason }, 'Ticket cancelled.')}>Cancel ticket</Button>}
                 <input aria-label="Reason (optional)" placeholder="Reason (optional)" data-debug-id="owner-chain-control-reason" value={reason} onChange={(e) => setReason(e.target.value)}
                   className="min-w-0 flex-1 rounded-md border border-subtle bg-canvas px-2 py-1 text-xs text-primary" />
-              </div>
+              </div>}
 
               <section data-debug-id="owner-chain-brief" className="space-y-1">
                 <h4 className="text-xs font-semibold uppercase tracking-wider text-muted">Brief</h4>
@@ -322,7 +346,13 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
               <section data-debug-id="owner-chain-reviews" className="space-y-1">
                 <h4 className="text-xs font-semibold uppercase tracking-wider text-muted">Reviews</h4>
                 {task.reviewsError && <p role="alert" className="text-xs text-danger">{task.reviewsError}</p>}
-                {task.reviews.length === 0 && !task.reviewsError && <p className="text-xs italic text-faint">No reviews.</p>}
+                {task.reviewsTruncated && (
+                  <p role="status" data-debug-id="owner-chain-reviews-truncated" className="text-xs text-warning">
+                    This chain’s history is longer than the view scans; newer reviews may be missing. Use Advanced/debug to read the full history.
+                  </p>
+                )}
+                {task.reviewsMore && <p data-debug-id="owner-chain-reviews-more" className="text-xs text-muted">Showing the latest owner reviews only.</p>}
+                {task.reviews.length === 0 && !task.reviewsError && !task.reviewsTruncated && <p className="text-xs italic text-faint">No reviews.</p>}
                 <ul className="space-y-1.5">
                   {task.reviews.map((r, i) => (
                     <li key={i} data-debug-id={`owner-chain-review-${r.source}-${i}`} className="rounded-lg border border-subtle p-2 text-sm">
@@ -337,7 +367,7 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
                     </li>
                   ))}
                 </ul>
-                {ts.state === 'in_review' && task.runtime.submission && (
+                {editable && ts.state === 'in_review' && task.runtime.submission && (
                   <div className="space-y-1.5 rounded-lg border border-subtle p-3">
                     <textarea aria-label="Review summary" placeholder="Review summary" data-debug-id="owner-chain-review-summary" value={reviewSummary} onChange={(e) => setReviewSummary(e.target.value)} rows={2}
                       className="w-full rounded-md border border-subtle bg-canvas px-2 py-1.5 text-sm text-primary" />
@@ -371,7 +401,7 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
                   ))}
                 </ul>
                 {task.detail.truncated && <p className="text-xs text-muted">Showing the first {task.detail.comments.length} comments.</p>}
-                <form className="space-y-1.5" onSubmit={(e) => {
+                {editable && <form className="space-y-1.5" onSubmit={(e) => {
                   e.preventDefault();
                   if (!comment.trim()) return;
                   void mutate('task.comment', { taskId: task.taskId, body: comment.trim() }, 'Comment added.').then((ok) => { if (ok) setComment(''); });
@@ -379,7 +409,7 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
                   <textarea aria-label="Add a comment" placeholder="Add a comment" data-debug-id="owner-chain-comment-input" value={comment} onChange={(e) => setComment(e.target.value)} rows={2}
                     className="w-full rounded-md border border-subtle bg-canvas px-2 py-1.5 text-sm text-primary" />
                   <Button size="sm" type="submit" data-debug-id="owner-chain-comment-submit" disabled={busy || !comment.trim()}>Comment</Button>
-                </form>
+                </form>}
               </section>
             </>
           ) : null}

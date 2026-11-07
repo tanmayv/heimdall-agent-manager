@@ -94,5 +94,38 @@ test('chain list filters apply to owner chains where the registry allows', () =>
   assert.deepEqual(filterOwnerChains(chains, { ...f, projectId: 'proj_1' }).map((c) => c.chainId), ['a']);
   assert.deepEqual(filterOwnerChains(chains, { ...f, query: 'login' }).map((c) => c.chainId), ['a'], 'task titles are searchable');
   assert.deepEqual(filterOwnerChains(chains, { ...f, status: 'archived' }), [], 'owner chains are never archived');
+  assert.deepEqual(filterOwnerChains(chains, { ...f, projectId: 'proj_2' }), [], 'native chains (no project) are excluded under a project filter');
   assert.deepEqual(filterOwnerChains(chains, { ...f, kind: 'workflow' }), []);
+});
+
+test('list statuses come from online owners (bounded); completed chains leave Active, offline ones are unknown', async () => {
+  const env = await ownerTestSession();
+  const { readOwnerChainStatuses } = await import('../src/ui/api/ownerChains.ts');
+  const { fakeOwner } = await import('./helpers/ownerFakeRelay.ts');
+  const base = { ownerBridgeId: env.bridgeId, bridgeName: 'Home', description: '', sealed: false, tasks: [{ taskId: 't', title: 'x' }], projectId: '', projectName: '', migrated: false };
+  const chains = Array.from({ length: 12 }, (_, i) => ({ ...base, chainId: 'c' + i, title: 'C' + i, online: i !== 11 }));
+  let inFlight = 0, max = 0;
+  const methods: string[] = [];
+  const send = fakeOwner(env.session, async (call) => {
+    methods.push(call.method);
+    inFlight++; max = Math.max(max, inFlight); await new Promise((r) => setTimeout(r, 1)); inFlight--;
+    if (call.command.chain_id === 'c10') return { code: 'storage_error' };
+    return { chain_id: call.command.chain_id, status: call.command.chain_id === 'c3' ? 'completed' : 'active', publish_state: 'published', work_revision: '1', items: [], next_cursor: '', pending_proposal_id: '', pending_proposal: null };
+  });
+  try {
+    const statuses = await readOwnerChainStatuses(env.session, chains, send);
+    assert.ok(max <= 4, 'bounded concurrency');
+    assert.ok(methods.every((m) => m === 'work.read'));
+    assert.equal(methods.length, 11, 'the offline owner is not asked');
+    assert.equal(statuses.get('c3'), 'completed');
+    assert.equal(statuses.get('c0'), 'active');
+    assert.equal(statuses.get('c10'), '', 'a failed read is unknown');
+    assert.equal(statuses.has('c11'), false);
+    const listed = chains.map((c) => ({ ...c, status: statuses.get(c.chainId) ?? '' }));
+    const f = { query: '', status: 'active' as const, projectId: '', onlyWithTasks: false, kind: 'all' as const };
+    const active = filterOwnerChains(listed, f).map((c) => c.chainId);
+    assert.ok(!active.includes('c3') && active.includes('c11') && active.includes('c10'), 'completed leaves Active; unknown stays');
+    assert.deepEqual(filterOwnerChains(listed, { ...f, status: 'completed' }).map((c) => c.chainId), ['c3']);
+    assert.equal(filterOwnerChains(listed, { ...f, status: 'all' }).length, 12);
+  } finally { clearKeyringSession(); }
 });

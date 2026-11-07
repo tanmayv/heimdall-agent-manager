@@ -91,11 +91,14 @@ export const CreateChainModal: React.FC<CreateChainModalProps> = ({
 
   if (!isOpen) return null;
 
+  // Until the Bridges are checked the default is not known: never let a fast
+  // submit fall through to the Hub.
+  const placementPending = kind === 'ticket' && placementState.loading && !placementChoice;
   const formProblem = ownerPlacement ? '' : createChainFormProblem(kind, projectId, coordinatorAgentId);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim() || formProblem) return;
+    if (!title.trim() || formProblem || placementPending) return;
 
     setSubmitError('');
     try {
@@ -108,7 +111,7 @@ export const CreateChainModal: React.FC<CreateChainModalProps> = ({
           onCreated?.(chainId, {
             chainId, ownerBridgeId: placement, bridgeName: choice?.name || placement, online: true,
             title: title.trim(), description: description.trim(), sealed: false, tasks: [],
-            projectId: '', projectName: '', migrated: false, pending: true,
+            projectId: '', projectName: '', migrated: false, pending: true, status: 'active',
           });
         } catch (err) {
           setSubmitError(ownerErrorMessage(err, choice?.name));
@@ -218,6 +221,12 @@ export const CreateChainModal: React.FC<CreateChainModalProps> = ({
             state={placementState}
             hubOnly={kind === 'workflow' ? 'Workflow runs start on the Hub.' : undefined}
           />
+
+          {ownerPlacement && (projects.length > 0 || agents.length > 0) && (
+            <p data-debug-id="create-chain-owner-fields-note" className="text-[11px] text-muted">
+              Project and coordinator are Hub settings; a chain on your Bridge has neither.
+            </p>
+          )}
 
           {/* Project selector (Hub chains; an owner chain has no Hub project) */}
           {projects.length > 0 && !ownerPlacement && (
@@ -366,7 +375,7 @@ export const CreateChainModal: React.FC<CreateChainModalProps> = ({
             </button>
             <button
               type="submit"
-              disabled={isSubmitting || !title.trim() || Boolean(formProblem)}
+              disabled={isSubmitting || !title.trim() || Boolean(formProblem) || placementPending}
               className="rounded-lg bg-accent px-4 py-2 text-xs font-semibold text-accent-fg hover:opacity-90 transition-opacity disabled:opacity-50"
             >
               {isSubmitting

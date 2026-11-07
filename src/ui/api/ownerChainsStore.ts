@@ -4,7 +4,7 @@
 
 import { useEffect, useSyncExternalStore } from 'react';
 import { cookieJsonFetch } from './cookieFetch';
-import { loadOwnerChainSummaries, type OwnerChainSummary } from './ownerChains';
+import { loadOwnerChainSummaries, ownerRelaySend, readOwnerChainStatuses, type OwnerChainSummary, type OwnerSend } from './ownerChains';
 import type { OwnerRegistryPage } from './ownerRegistryListing';
 import { subscribeTaskChainCreation } from './taskChainCreationEvents';
 import { getKeyringSession, subscribeKeyringSession } from '../utils/vaultKeyringSession';
@@ -22,6 +22,7 @@ let generation = 0;
 const pending = new Map<string, OwnerChainSummary>();
 const listeners = new Set<() => void>();
 let fetchPage: (path: string) => Promise<OwnerRegistryPage> = cookieJsonFetch;
+let send: OwnerSend = ownerRelaySend;
 let wired = false;
 
 function publish(next: OwnerChainsState) {
@@ -48,9 +49,15 @@ export async function refreshOwnerChains(): Promise<void> {
   if (!session) { pending.clear(); publish(LOCKED); return; }
   publish({ status: 'loading', chains: state.status === 'locked' ? [...pending.values()] : state.chains });
   try {
-    const chains = await loadOwnerChainSummaries(session, fetchPage, () => getKeyringSession() === session && generation === mine);
-    if (generation !== mine || getKeyringSession() !== session) return;
+    const current = () => getKeyringSession() === session && generation === mine;
+    const chains = await loadOwnerChainSummaries(session, fetchPage, current);
+    if (!current()) return;
     publish({ status: 'ready', chains: withPending(chains) });
+    // Work status (active/completed) is owner state: read it from the online
+    // owners, bounded; offline chains stay unknown.
+    const statuses = await readOwnerChainStatuses(session, chains, send, current);
+    if (!current()) return;
+    publish({ status: 'ready', chains: state.chains.map((c) => (statuses.has(c.chainId) ? { ...c, status: statuses.get(c.chainId) } : c)) });
   } catch (error) {
     if (generation !== mine || getKeyringSession() !== session) return;
     publish({ status: 'error', chains: withPending([]), error: error instanceof Error ? error.message : String(error) });
@@ -85,8 +92,9 @@ export function useOwnerChains(): OwnerChainsState {
 }
 
 /** Tests only. */
-export function resetOwnerChainsForTest(page?: (path: string) => Promise<OwnerRegistryPage>): void {
+export function resetOwnerChainsForTest(page?: (path: string) => Promise<OwnerRegistryPage>, relay?: OwnerSend): void {
   state = LOCKED; loadedFor = null; generation++; pending.clear();
   fetchPage = page ?? cookieJsonFetch;
+  send = relay ?? ownerRelaySend;
   listeners.forEach((l) => l());
 }

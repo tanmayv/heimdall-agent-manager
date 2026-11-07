@@ -26,13 +26,37 @@ export async function ownerTestSession(bridgeId = 'brg_home', bridgeName = 'Home
 export interface OwnerCall { method: string; command: Record<string, string>; payload: Record<string, string>; genesis: string }
 export type OwnerAnswer = 'offline' | { code: string } | Record<string, unknown>;
 
-export function fakeOwner(session: OwnerSession, answer: (call: OwnerCall) => OwnerAnswer | Promise<OwnerAnswer>, calls: OwnerCall[] = []) {
+// Independent copies of the owner's rules (src/lib/owner_local/store.odin
+// execute() and contracts owner_live_admit), deliberately not imported from the
+// UI code under test.
+const TASK_REVISION_METHODS = new Set(['task.publish', 'task.priority', 'native.history.import', 'native.history.read', 'native.history.fetch',
+  'attempt.read', 'dependency.edit', 'review.roles', 'task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry',
+  'submission.read', 'task.edit', 'task.delete', 'task.comment', 'task.read', 'fleet.edit', 'fleet.reserve', 'runtime.read',
+  'lifecycle.configure', 'requirements.edit', 'review.post']);
+const READ_METHODS = new Set(['linked.facet.read', 'envelope.read', 'linked.read', 'linked.fetch', 'linked.backup', 'work.read', 'chain.metadata.read',
+  'native.metadata.read', 'fleet.policy.read', 'native.history.read', 'native.history.fetch', 'attempt.read', 'history.read', 'history.fetch',
+  'context.read', 'grant.read', 'workflow.read', 'source.read', 'submission.read', 'chain.search', 'chain.read', 'task.read', 'receipt.read',
+  'runtime.read', 'migration.archive.read']);
+
+export interface OwnerRevisions { chain: (chainId: string) => string; task: (chainId: string, taskId: string) => string }
+
+/**
+ * With `revisions`, every command's expected_revision is checked like the
+ * owner does: task-scoped methods against the task revision, all others
+ * (task.create included) against the chain revision; a read may send 0.
+ */
+export function fakeOwner(session: OwnerSession, answer: (call: OwnerCall) => OwnerAnswer | Promise<OwnerAnswer>, calls: OwnerCall[] = [], revisions?: OwnerRevisions) {
   return async (relay: any): Promise<unknown> => {
     const operation = JSON.parse(await decryptVaultText(relay.envelope, session.keyring));
     const command = ownerParse(operation.command, 'command') as unknown as Record<string, string>;
     const call: OwnerCall = { method: command.method, command, payload: JSON.parse(operation.payload), genesis: operation.genesis };
     calls.push(call);
-    const out = await answer(call);
+    let out: OwnerAnswer;
+    const expected = command.expected_revision;
+    const current = !revisions || call.method === 'chain.create' ? expected
+      : TASK_REVISION_METHODS.has(call.method) ? revisions.task(command.chain_id, command.task_id) : revisions.chain(command.chain_id);
+    if (!(READ_METHODS.has(call.method) && expected === '0') && expected !== current) out = { code: 'stale_revision' };
+    else out = await answer(call);
     if (out === 'offline') return { code: 'owner_unavailable' };
     const code = typeof (out as any).code === 'string' && Object.keys(out).length === 1 ? (out as any).code : 'ok';
     const result = {

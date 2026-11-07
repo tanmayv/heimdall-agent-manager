@@ -101,7 +101,7 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
   else if (method === 'history.fetch') payload = { seq: input.eventSeq ?? '', offset: input.offset ?? '0' };
   else if (method === 'submission.read') payload = { attempt: input.attempt ?? '', offset: input.offset ?? '0' };
   else if (method === 'receipt.read') payload = { operation_id: input.operationId ?? '' };
-  else payload = { cursor: input.cursor ?? '', limit: '20' };
+  else payload = { cursor: input.cursor ?? '', limit: String(input.limit ?? 20) };
   const payloadRaw = JSON.stringify(payload);
   ownerParse(payloadRaw, ownerPayloadKind(method));
   const command: OwnerCommand = { protocol_version: '1', account_id: identity.userId, chain_id: input.chainId, immutable_owner_bridge: bridgeId, principal_id: identity.deviceId, operation_id: operationId, method, task_id: input.taskId ?? '', expected_revision: input.expectedRevision, request_expires_ms: String(Date.now() + 300000), payload_digest: await ownerPayloadDigest(payloadRaw), key_id: identity.deviceId, signature: zeros };

@@ -1,6 +1,7 @@
 // R4b: local (Bridge-owned) search keeps every hit of a chain, grouped; walks
 // the paged owner registry past 100 chains; and applies project/status filters
-// to local hits where owner metadata allows, labelling the rest.
+// to local hits where owner metadata allows (no Hub project: excluded under a
+// project filter; never archived), labelling an unverifiable status.
 //
 // RUN: node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_owner_search_test.ts
 
@@ -86,10 +87,7 @@ test('project and status filters apply to local hits where owner metadata allows
   assert.deepEqual(filterOwnerSearchHits(hits, {}), hits);
   assert.deepEqual(filterOwnerSearchHits(hits, { status: 'archived' }), [], 'owner chains are never archived');
   assert.deepEqual(filterOwnerSearchHits(hits, { status: 'active' }).map((h) => h.filters_unverified), [['status'], ['status']], 'kept and labelled');
-  const projectOf = (c: string) => (c === 'moved' ? 'proj_1' : c === 'native' ? '' : undefined);
-  assert.deepEqual(filterOwnerSearchHits(hits, { projectId: 'proj_1', projectOf }).map((h) => [h.chain_id, h.filters_unverified]), [['moved', undefined]]);
-  assert.deepEqual(filterOwnerSearchHits([hit('unknown')], { projectId: 'proj_1', projectOf }).map((h) => h.filters_unverified), [['project']]);
-  assert.deepEqual(filterOwnerSearchHits([hit('unknown')], { projectId: 'proj_1' }).map((h) => h.filters_unverified), [['project']]);
+  assert.deepEqual(filterOwnerSearchHits(hits, { projectId: 'proj_1' }), [], 'owner chains carry no Hub project');
 });
 
 test('the combined search pages the owner registry and filters local hits', async () => {
@@ -126,8 +124,8 @@ test('the combined search pages the owner registry and filters local hits', asyn
     const active = await searchTaskChainsEncrypted('needle', user, { limit: 20, status: 'active' });
     assert.equal(active.hits.length, 5, 'unverifiable status keeps local hits');
     assert.ok(active.hits.every((h) => h.filters_unverified?.includes('status')));
-    const project = await searchTaskChainsEncrypted('needle', user, { limit: 20, projectId: 'proj_1', projectOf: (c) => (c === id(120) ? 'proj_1' : '') });
-    assert.deepEqual([...new Set(project.hits.map((h) => h.chain_id))], [id(120)]);
+    const project = await searchTaskChainsEncrypted('needle', user, { limit: 20, projectId: 'proj_1' });
+    assert.deepEqual(project.hits, [], 'a project filter excludes owner chains');
   } finally {
     globalThis.fetch = saved;
     clearKeyringSession();

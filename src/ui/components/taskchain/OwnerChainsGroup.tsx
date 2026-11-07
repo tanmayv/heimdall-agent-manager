@@ -10,9 +10,11 @@ import type { OwnerChainSummary } from '../../api/ownerChains';
 export type ChainStatusFilter = 'active' | 'completed' | 'archived' | 'all';
 
 /**
- * Which owner chains a list filter keeps. The registry carries no chain status,
- * so owner chains show under Active and All only; a project filter keeps the
- * chains whose (migrated) Hub placement matched it.
+ * Which owner chains a list filter keeps. Status comes from the online owners
+ * (work.read): completed chains move to Completed; chains whose status is
+ * unknown (owner offline) stay under Active and All, labelled. Owner chains are
+ * never archived. A project filter keeps only moved chains whose Hub placement
+ * matched it (native owner chains have no project).
  */
 export function filterOwnerChains(
   chains: OwnerChainSummary[],
@@ -20,7 +22,9 @@ export function filterOwnerChains(
 ): OwnerChainSummary[] {
   const q = f.query.trim().toLowerCase();
   return chains.filter((c) => {
-    if (f.status === 'completed' || f.status === 'archived') return false;
+    if (f.status === 'archived') return false;
+    if (f.status === 'completed' && c.status !== 'completed') return false;
+    if (f.status === 'active' && c.status === 'completed') return false;
     if (f.kind === 'workflow') return false;
     if (f.projectId && c.projectId !== f.projectId) return false;
     if (f.onlyWithTasks && c.tasks.length === 0 && !c.pending) return false;
@@ -42,6 +46,9 @@ export function OwnerChainRow({ chain, active, onSelect }: { chain: OwnerChainSu
             <StatusDot size="sm" tone={chain.online ? 'success' : 'neutral'} label={chain.online ? 'Owner online' : 'Owner offline'} />
             {chain.bridgeName} · {chain.online ? 'online' : 'offline'}
           </span>
+          <Badge tone={chain.status === 'active' ? 'info' : chain.status === 'completed' ? 'success' : 'neutral'} data-debug-id={`task-chains-owner-status-${chain.chainId}`}>
+            {chain.status === 'active' ? 'Active' : chain.status === 'completed' ? 'Completed' : 'Status unknown'}
+          </Badge>
           {chain.migrated && <Badge tone="neutral">Moved from Hub</Badge>}
           {chain.pending && <Badge tone="pending">Registering</Badge>}
           <span className="shrink-0 rounded-md border border-subtle bg-surface-raised px-1.5 py-0.5 text-caption text-muted"

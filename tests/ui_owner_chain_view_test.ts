@@ -56,25 +56,38 @@ function summary(env: { bridgeId: string; bridgeName: string }, extra: Partial<O
   };
 }
 
-test('owner chain view renders tickets, brief, comments, submissions and reviews, and signs a comment', async () => {
+test('owner chain view renders tickets, brief, comments, submissions and reviews, and signs revision-bound changes', async () => {
   const env = await ownerTestSession();
   const { session } = env;
   const calls: OwnerCall[] = [];
+  // The fake owner enforces expected_revision exactly like the real one.
+  let chainRev = 7;
+  const taskRevs: Record<string, number> = { task_1: 3, task_2: 1 };
+  const tasks = [{ task_id: 'task_1', title: 'Fix login', priority: 'p1' }, { task_id: 'task_2', title: 'Write docs', priority: 'p2' }];
+  const revisions = { chain: () => String(chainRev), task: (_c: string, t: string) => String(taskRevs[t] ?? 0) };
   let comments = [
     { operation_id: 'cmt_legacy', principal_id: 'inst_author', body: 'Imported comment', seq: '1', created_at: '2025-04-03T12:00:00Z' },
   ];
   const send = fakeOwner(session, async (call) => {
     const task = call.command.task_id;
     switch (call.method) {
-      case 'chain.read': return { chain_id: 'chain_owned', task_id: '', revision: '7', title: 'Live chain title', description: 'Live description', defaults_json: '{}',
-        items: [{ task_id: 'task_1', title: 'Fix login', revision: '3', priority: 'p1' }, { task_id: 'task_2', title: 'Write docs', revision: '1', priority: 'p2' }], next_cursor: '' };
+      case 'chain.read': return { chain_id: 'chain_owned', task_id: '', revision: String(chainRev), title: 'Live chain title', description: 'Live description', defaults_json: '{}',
+        items: tasks.map((t) => ({ ...t, revision: String(taskRevs[t.task_id]) })), next_cursor: '' };
+      case 'work.read': return { chain_id: 'chain_owned', publish_state: 'published', status: 'active', work_revision: '1', pending_proposal_id: '', next_cursor: '', items: [], pending_proposal: null };
+      case 'task.create': {
+        chainRev++;
+        tasks.push({ task_id: call.command.task_id, title: await decryptVaultText(call.payload.title_cipher, session.keyring), priority: 'p2' });
+        taskRevs[call.command.task_id] = 1;
+        return { chain_id: 'chain_owned', task_id: call.command.task_id, revision: String(chainRev) };
+      }
+      case 'review.post': case 'task.hold': taskRevs[task]++; return { chain_id: 'chain_owned', task_id: task, revision: String(taskRevs[task]) };
       case 'runtime.read': return task === 'task_1'
-        ? { revision: '3', fleet: [], leases: [], config: [], requirements: [['2', JSON.stringify({ goal: 'Users can sign in', acceptance: ['SSO works', 'Errors are shown'] })]],
+        ? { revision: String(taskRevs.task_1), fleet: [], leases: [], config: [], requirements: [['2', JSON.stringify({ goal: 'Users can sign in', acceptance: ['SSO works', 'Errors are shown'] })]],
             state: [['in_review', '2', '']], submission: [['2', 'a'.repeat(40), '2', 'Implemented SSO', 'agt_worker']], controls: [],
             attempts: { attempt_no: '2', last_release: '', work_lease_id: '', completeness: 'full' } }
         : { revision: '1', fleet: [], leases: [], config: [], requirements: [], state: [], submission: [], controls: [['held', 'ready', 'waiting', '']],
             attempts: { attempt_no: '0', last_release: '', work_lease_id: '', completeness: 'full' } };
-      case 'task.read': return { chain_id: 'chain_owned', task_id: task, revision: '3', title: 'Fix login', body: 'Login fails on Safari', priority: 'p1', items: comments, next_cursor: '' };
+      case 'task.read': return { chain_id: 'chain_owned', task_id: task, revision: String(taskRevs[task]), title: 'Fix login', body: 'Login fails on Safari', priority: 'p1', items: comments, next_cursor: '' };
       case 'migration.archive.read': return { chain_id: 'chain_owned', migration_id: 'mig_1', next_cursor: '', items: [
         { kind: 'review', doc_index: '0', row: '0', record: JSON.stringify({ task_id: 'task_1', attempt_no: 1, role: 'security', reviewer_kind: 'agent', reviewer_agent_id: 'agt_reviewer', verdict: 'request_changes', findings_json: JSON.stringify([{ note: 'Validate the redirect' }]), created_at: '2025-04-02T09:00:00Z' }) },
       ] };
@@ -91,11 +104,12 @@ test('owner chain view renders tickets, brief, comments, submissions and reviews
         offset: '0', next_offset: '', head: 'b'.repeat(40), requirements_revision: '2', configuration_revision: '1', author_agent_id: 'agt_worker', output: '', native_attempt: '', attempt_completeness: 'full' };
       case 'task.comment': {
         comments = [...comments, { operation_id: call.command.operation_id, principal_id: session.identity.deviceId, body: await decryptVaultText(call.payload.body_cipher, session.keyring), seq: '2', created_at: '2026-11-07T10:00:00Z' }];
-        return { chain_id: 'chain_owned', task_id: task, revision: '4' };
+        taskRevs[task]++;
+        return { chain_id: 'chain_owned', task_id: task, revision: String(taskRevs[task]) };
       }
       default: return { code: 'invalid_scope' };
     }
-  }, calls);
+  }, calls, revisions);
   const ui = mountDom();
   try {
     await act(async () => ui.root.render(React.createElement(OwnerChainView, { chain: summary(env), send, session: async () => session })));
@@ -135,11 +149,25 @@ test('owner chain view renders tickets, brief, comments, submissions and reviews
     await ui.type('owner-chain-review-summary', 'Ship it');
     await ui.click('owner-chain-review-approve');
     const review = calls.find((c) => c.method === 'review.post')!;
+    assert.equal(review.command.expected_revision, '4', 'after the comment the task revision moved on');
     assert.deepEqual({ attempt: review.payload.attempt, head: review.payload.head, rr: review.payload.requirements_revision, verdict: review.payload.verdict, summary: review.payload.summary },
       { attempt: '2', head: 'a'.repeat(40), rr: '2', verdict: 'approve', summary: 'Ship it' });
 
     await ui.click('owner-chain-hold');
     assert.equal(calls.filter((c) => c.method === 'task.hold').length, 1);
+    assert.equal(ui.$('owner-chain-error'), null, 'no change was refused as stale');
+
+    // Creating a ticket is chain-scoped: bound to the chain revision.
+    assert.equal(ui.$('owner-chain-status')!.textContent, 'Active');
+    await ui.type('owner-chain-new-task-title', 'Add audit log');
+    await ui.click('owner-chain-create-task');
+    const created = calls.find((c) => c.method === 'task.create')!;
+    assert.equal(created.command.expected_revision, '7');
+    assert.match(created.command.task_id, /^task_/);
+    assert.equal(ui.$('owner-chain-error'), null);
+    assert.equal(ui.$('owner-chain-notice')!.textContent, 'Ticket created.');
+    assert.match(ui.$(`owner-chain-task-${created.command.task_id}`)!.textContent!, /Add audit log/);
+    assert.equal((ui.$('owner-chain-new-task-title') as HTMLInputElement).value, '', 'the form clears after success');
 
     await ui.click('owner-chain-debug-toggle');
     assert.ok(ui.dom.window.document.querySelector('[aria-label="Owner-local tasks"]'), 'the raw console stays reachable behind Advanced/debug');
@@ -185,4 +213,73 @@ test('owner refusals are worded, not raw codes', async () => {
   assert.equal(ownerErrorMessage(new Error('some_new_code')), 'The owner Bridge refused the request (some new code).');
   assert.equal(ownerErrorMessage(new Error('{"weird":1}')), 'The owner Bridge request failed. Try again.');
   assert.equal(ownerErrorMessage(new Error('owner_unavailable'), 'Desk'), 'Owner Bridge Desk is offline — details and changes unavailable');
+});
+
+test('a completed owner chain shows its status and offers no changes', async () => {
+  const env = await ownerTestSession();
+  const { session } = env;
+  const calls: OwnerCall[] = [];
+  const send = fakeOwner(session, (call) => {
+    switch (call.method) {
+      case 'chain.read': return { chain_id: 'chain_owned', task_id: '', revision: '4', title: 'Done chain', description: '', defaults_json: '{}', items: [{ task_id: 'task_1', title: 'Fix login', revision: '2', priority: 'p2' }], next_cursor: '' };
+      case 'work.read': return { chain_id: 'chain_owned', publish_state: 'published', status: 'completed', work_revision: '3', pending_proposal_id: '', next_cursor: '', items: [], pending_proposal: null };
+      case 'runtime.read': return { revision: '2', fleet: [], leases: [], config: [], requirements: [], state: [['done', '1', '']], submission: [], controls: [], attempts: { attempt_no: '1', last_release: '', work_lease_id: '', completeness: 'full' } };
+      case 'task.read': return { chain_id: 'chain_owned', task_id: 'task_1', revision: '2', title: 'Fix login', body: '', priority: 'p2', items: [], next_cursor: '' };
+      case 'history.read': return { chain_id: 'chain_owned', next_cursor: '', items: [] };
+      case 'migration.archive.read': return { code: 'invalid_scope' };
+      default: return { code: 'invalid_scope' };
+    }
+  }, calls);
+  const ui = mountDom();
+  try {
+    await act(async () => ui.root.render(React.createElement(OwnerChainView, { chain: summary(env, { migrated: false }), send, session: async () => session })));
+    await ui.flush();
+    assert.equal(ui.$('owner-chain-status')!.textContent, 'Completed');
+    assert.match(ui.$('owner-chain-readonly')!.textContent!, /completed; it is read-only/);
+    assert.equal(ui.$('owner-chain-create-task-form'), null);
+    await ui.click('owner-chain-task-task_1');
+    assert.equal(ui.$('owner-chain-task-title')!.textContent, 'Fix login');
+    for (const id of ['owner-chain-comment-input', 'owner-chain-hold', 'owner-chain-cancel', 'owner-chain-reopen', 'owner-chain-review-approve']) assert.equal(ui.$(id), null, id);
+    assert.ok(calls.every((c) => c.method.endsWith('.read') || c.method === 'history.read'), 'only reads were sent');
+  } finally {
+    await ui.restore();
+    clearKeyringSession();
+  }
+});
+
+test('owner reviews come from the newest history, past 200 events, with an explicit cap', async () => {
+  const env = await ownerTestSession();
+  const { readOwnerReviews } = await import('../src/ui/api/ownerChains.ts');
+  // 450 events, oldest first; 30 reviews of task_1 spread through them.
+  const events = Array.from({ length: 450 }, (_, i) => ({
+    seq: String(i + 1), task_id: i % 15 === 0 ? 'task_1' : 'task_x', ts_ms: String(1_700_000_000_000 + i), actor_kind: 'agent', actor_id: 'agt_r' + i,
+    kind: i % 15 === 0 ? 'review.post' : 'lease.claim', operation_id: 'op' + i, completeness: 'full', evidence_bytes: '1',
+  }));
+  const limits: string[] = [];
+  const send = fakeOwner(env.session, (call) => {
+    if (call.method === 'history.read') {
+      limits.push(call.payload.limit);
+      const start = call.payload.cursor ? Number(call.payload.cursor.split(':')[1]) : 0;
+      const limit = Number(call.payload.limit);
+      const items = events.slice(start, start + limit);
+      return { chain_id: 'chain_owned', items, next_cursor: start + limit < events.length ? 'scope:' + (start + limit) : '' };
+    }
+    if (call.method === 'history.fetch') return { seq: call.payload.seq, offset: '0', next_offset: '', completeness: 'full',
+      evidence: JSON.stringify({ payload: JSON.stringify({ attempt: call.payload.seq, verdict: 'approve', summary: 'review at ' + call.payload.seq }) }) };
+    return { code: 'invalid_scope' };
+  });
+  try {
+    const all = await readOwnerReviews(env.session, env.bridgeId, 'chain_owned', 'task_1', send);
+    assert.deepEqual(limits, ['100', '100', '100', '100', '100'], 'paged to the end, 100 events per page');
+    assert.equal(all.reviews.length, 20);
+    assert.equal(all.reviews[0].summary, 'review at 436', 'the newest review (event 436) is first');
+    assert.equal(all.reviews.at(-1)!.summary, 'review at 151', 'older reviews beyond the latest 20 are dropped');
+    assert.equal(all.more, true);
+    assert.equal(all.truncated, false);
+    limits.length = 0;
+    const capped = await readOwnerReviews(env.session, env.bridgeId, 'chain_owned', 'task_1', send, 20, 2);
+    assert.equal(limits.length, 2);
+    assert.equal(capped.truncated, true, 'a scan stopped by the page cap says so');
+    assert.equal(capped.reviews[0].summary, 'review at 196');
+  } finally { clearKeyringSession(); }
 });

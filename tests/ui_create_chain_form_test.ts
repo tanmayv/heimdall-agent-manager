@@ -48,8 +48,8 @@ test('CreateChainModal blocks the project-without-coordinator submit and shows c
     'utf8',
   );
   assert.match(src, /createChainFormProblem\(kind, projectId, coordinatorAgentId\)/);
-  assert.match(src, /if \(!title\.trim\(\) \|\| formProblem\) return;/);
-  assert.match(src, /disabled=\{isSubmitting \|\| !title\.trim\(\) \|\| Boolean\(formProblem\)\}/);
+  assert.match(src, /if \(!title\.trim\(\) \|\| formProblem \|\| placementPending\) return;/);
+  assert.match(src, /disabled=\{isSubmitting \|\| !title\.trim\(\) \|\| Boolean\(formProblem\) \|\| placementPending\}/);
   assert.match(src, /setSubmitError\(createChainErrorMessage\(err\)\)/);
   assert.match(src, /role="alert" data-debug-id="create-chain-error"/);
 });

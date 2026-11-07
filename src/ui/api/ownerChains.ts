@@ -34,7 +34,10 @@ export interface OwnerChainSummary {
   migrated: boolean;
   /** Created here; the owner has not published its registry entry yet. */
   pending?: boolean;
+  /** The owner's work status; '' or absent when unknown (owner offline or not read). */
+  status?: OwnerChainStatus;
 }
+export type OwnerChainStatus = '' | 'active' | 'completed';
 
 /** Fixed sends for the owner relay; replaced in tests. */
 export type OwnerSend = (relay: unknown) => Promise<unknown>;
@@ -111,6 +114,11 @@ export async function loadOwnerChainSummaries(
 /**
  * Owner chains own their identity: a Hub row with the same id is the frozen
  * copy left by migration. Drop it, keep its project placement on the owner row.
+ *
+ * Limitation: the Hub chain list carries no migration state client-side, so
+ * this dedupe keys on the live registry. If the owner registry tombstones a
+ * moved chain (deleted on its Bridge), its frozen Hub copy is listed again.
+ * R4a's `authority:{kind:"owner"}` on /task-chains is the durable fix.
  */
 export function mergeOwnerChains<T extends { chainId: string; projectId?: string; projectName?: string }>(
   hubChains: T[], owners: OwnerChainSummary[],
@@ -141,6 +149,45 @@ export function ownerChainListItem(o: OwnerChainSummary): ChainListItem & { owne
 }
 
 /* Owner operations ----------------------------------------------------- */
+
+/**
+ * Methods whose expected_revision is the TASK revision on the owner
+ * (src/lib/owner_local/store.odin, execute()); every other method, task.create
+ * included, is checked against the CHAIN revision.
+ */
+export const OWNER_TASK_REVISION_METHODS: ReadonlySet<string> = new Set([
+  'task.publish', 'task.priority', 'native.history.import', 'native.history.read', 'native.history.fetch', 'attempt.read',
+  'dependency.edit', 'review.roles', 'task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry',
+  'submission.read', 'task.edit', 'task.delete', 'task.comment', 'task.read', 'fleet.edit', 'fleet.reserve', 'runtime.read',
+  'lifecycle.configure', 'requirements.edit', 'review.post',
+]);
+export function ownerExpectedRevision(method: string, chainRevision: string, taskRevision: string): string {
+  return OWNER_TASK_REVISION_METHODS.has(method) ? taskRevision : chainRevision;
+}
+
+/** The owner's work status of a chain (work.read). */
+export async function readOwnerChainStatus(session: OwnerSession, bridgeId: string, chainId: string, send: OwnerSend = ownerRelaySend): Promise<OwnerChainStatus> {
+  const data = await ownerCall(session, bridgeId, 'work.read', { chainId, expectedRevision: '0', cursor: '', limit: 1 }, send);
+  return data.status === 'active' || data.status === 'completed' ? data.status : '';
+}
+
+/**
+ * Statuses for the online chains of a listing, bounded at four concurrent owner
+ * reads. Offline or failing chains stay unknown ('').
+ */
+export async function readOwnerChainStatuses(
+  session: OwnerSession, chains: OwnerChainSummary[], send: OwnerSend = ownerRelaySend, current: () => boolean = () => true,
+): Promise<Map<string, OwnerChainStatus>> {
+  const out = new Map<string, OwnerChainStatus>();
+  const queue = chains.filter((c) => c.online && !c.pending);
+  await Promise.all(Array.from({ length: Math.min(4, queue.length) }, async () => {
+    for (let c = queue.shift(); c; c = queue.shift()) {
+      if (!current()) return;
+      try { out.set(c.chainId, await readOwnerChainStatus(session, c.ownerBridgeId, c.chainId, send)); } catch { out.set(c.chainId, ''); }
+    }
+  }));
+  return out;
+}
 
 const OWNER_ERROR_TEXT: Record<string, string> = {
   invalid_scope: 'This device has no access to that chain or task on its owner Bridge.',
@@ -312,20 +359,36 @@ export async function readArchivedReviews(session: OwnerSession, bridgeId: strin
   return out;
 }
 
-/** Reviews recorded on the owner, from its accepted event history (bounded scan). */
-export async function readOwnerReviews(session: OwnerSession, bridgeId: string, chainId: string, taskId: string, send: OwnerSend = ownerRelaySend): Promise<OwnerReview[]> {
+export const OWNER_REVIEW_KEEP = 20;
+export const OWNER_HISTORY_PAGE = 100;
+export const OWNER_HISTORY_MAX_PAGES = 200;
+
+/**
+ * Reviews recorded on the owner, from its accepted event history. The history
+ * is oldest-first, so it is paged to the end (100 events per page) keeping a
+ * ring buffer of the latest matching review events. `truncated` is set when the
+ * page cap stopped the scan before the end (newer reviews may be missing);
+ * `more` when older reviews were dropped from the buffer.
+ */
+export async function readOwnerReviews(
+  session: OwnerSession, bridgeId: string, chainId: string, taskId: string, send: OwnerSend = ownerRelaySend,
+  keep = OWNER_REVIEW_KEEP, maxPages = OWNER_HISTORY_MAX_PAGES,
+): Promise<{ reviews: OwnerReview[]; truncated: boolean; more: boolean }> {
   const events: any[] = [];
-  let cursor = '';
-  for (let page = 0; page < MAX_PAGES; page++) {
-    const data = await ownerCall(session, bridgeId, 'history.read', { chainId, expectedRevision: '0', cursor }, send);
+  let cursor = '', dropped = false;
+  for (let page = 0; page < maxPages; page++) {
+    const data = await ownerCall(session, bridgeId, 'history.read', { chainId, expectedRevision: '0', cursor, limit: OWNER_HISTORY_PAGE }, send);
     for (const e of Array.isArray(data.items) ? data.items : []) {
-      if (e.task_id === taskId && (e.kind === 'review.post' || e.kind === 'review.role.post')) events.push(e);
+      if (e.task_id === taskId && (e.kind === 'review.post' || e.kind === 'review.role.post')) {
+        events.push(e);
+        if (events.length > keep) { events.shift(); dropped = true; }
+      }
     }
     cursor = String(data.next_cursor || '');
     if (!cursor) break;
   }
-  const out: OwnerReview[] = [];
-  for (const e of events.slice(-20)) {
+  const reviews: OwnerReview[] = [];
+  for (const e of events) {
     let evidence = '', offset = '0';
     for (let chunk = 0; chunk < 8; chunk++) {
       const part = await ownerCall(session, bridgeId, 'history.fetch', { chainId, expectedRevision: '0', eventSeq: String(e.seq), offset }, send);
@@ -336,13 +399,14 @@ export async function readOwnerReviews(session: OwnerSession, bridgeId: string, 
     let payload: any = {};
     try { payload = JSON.parse(String(JSON.parse(evidence).payload || '{}')); } catch { payload = {}; }
     const ms = Number(e.ts_ms);
-    out.push({
+    reviews.push({
       source: 'owner', attempt: String(payload.attempt ?? ''), verdict: String(payload.verdict ?? ''),
       reviewer: e.actor_kind === 'agent' ? String(e.actor_id || 'Agent') : (e.actor_id === session.identity.deviceId ? 'You' : 'Device ' + String(e.actor_id || '').slice(0, 8)),
       role: String(payload.role ?? ''), summary: String(payload.summary ?? ''), at: Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : '',
     });
   }
-  return out;
+  // Newest first, like the rest of the view.
+  return { reviews: reviews.reverse(), truncated: Boolean(cursor), more: dropped };
 }
 
 export interface OwnerSubmission { attempt: string; summary: string; head: string; author: string; requirementsRevision: string; complete: boolean }
