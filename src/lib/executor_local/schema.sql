@@ -1,6 +1,6 @@
 
 CREATE TABLE executor_runtime (
- singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=12),
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=13),
  account_id TEXT NOT NULL, executor_bridge_id TEXT NOT NULL, operator_key_id TEXT NOT NULL,
  incarnation INTEGER NOT NULL CHECK(incarnation>0), clock_high_ms INTEGER NOT NULL CHECK(clock_high_ms>=0),
  recovery_state TEXT NOT NULL CHECK(recovery_state IN ('ready','reconciling','clock_uncertain')),
@@ -414,3 +414,28 @@ BEGIN SELECT RAISE(ABORT,'retained action evidence'); END;
 CREATE TRIGGER native_journal_executor_legacy_actions_insert AFTER INSERT ON executor_legacy_actions BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
 CREATE TRIGGER native_journal_executor_legacy_actions_update AFTER UPDATE ON executor_legacy_actions BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
 CREATE TRIGGER native_journal_executor_legacy_actions_delete AFTER DELETE ON executor_legacy_actions BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+-- Private occurrence-to-selected-draft evidence, never execution authority.
+CREATE TABLE executor_legacy_action_drafts (
+ association_id TEXT PRIMARY KEY CHECK(length(association_id)=64 AND association_id NOT GLOB '*[^0-9a-f]*'),
+ action_id INTEGER NOT NULL REFERENCES executor_legacy_actions(action_id),
+ entry_index INTEGER NOT NULL CHECK(entry_index>=-1),
+ entry_digest TEXT NOT NULL CHECK(length(entry_digest)=64 AND entry_digest NOT GLOB '*[^0-9a-f]*'),
+ native_request_digest TEXT NOT NULL CHECK(length(native_request_digest)=64 AND native_request_digest NOT GLOB '*[^0-9a-f]*'),
+ draft_id TEXT NOT NULL REFERENCES executor_local_drafts(draft_id),
+ configuration_digest TEXT NOT NULL CHECK(length(configuration_digest)=64),
+ material_digest TEXT NOT NULL CHECK(length(material_digest)=64),
+ instance_id TEXT NOT NULL, directory_id TEXT NOT NULL, directory_key TEXT NOT NULL,
+ observed_incarnation INTEGER NOT NULL CHECK(observed_incarnation>0),
+ UNIQUE(action_id,entry_index,native_request_digest,draft_id)
+);
+CREATE TRIGGER legacy_action_draft_admission BEFORE INSERT ON executor_legacy_action_drafts
+WHEN NEW.observed_incarnation!=(SELECT incarnation FROM executor_runtime)
+ OR NOT EXISTS(SELECT 1 FROM executor_legacy_actions WHERE action_id=NEW.action_id
+  AND observed_incarnation=NEW.observed_incarnation AND state='running')
+BEGIN SELECT RAISE(ABORT,'draft association requires current running occurrence'); END;
+CREATE TRIGGER legacy_action_draft_no_replace BEFORE INSERT ON executor_legacy_action_drafts WHEN EXISTS(SELECT 1 FROM executor_legacy_action_drafts WHERE association_id=NEW.association_id) BEGIN SELECT RAISE(ABORT,'retained draft association'); END;
+CREATE TRIGGER legacy_action_draft_no_update BEFORE UPDATE ON executor_legacy_action_drafts BEGIN SELECT RAISE(ABORT,'immutable draft association'); END;
+CREATE TRIGGER legacy_action_draft_no_delete BEFORE DELETE ON executor_legacy_action_drafts BEGIN SELECT RAISE(ABORT,'retained draft association'); END;
+CREATE TRIGGER native_journal_executor_legacy_action_drafts_insert AFTER INSERT ON executor_legacy_action_drafts BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_action_drafts_update AFTER UPDATE ON executor_legacy_action_drafts BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_action_drafts_delete AFTER DELETE ON executor_legacy_action_drafts BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;

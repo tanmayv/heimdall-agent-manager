@@ -195,7 +195,7 @@ bridge_executor_local_note_pending :: proc(command,detail:string,err:Bridge_Erro
 
 // An unsigned Hub request can propose a draft only. It must not touch the
 // previous generation's token, bootstrap, stop intent, startup state or child.
-bridge_executor_local_stage :: proc(command:string,purpose:string,io:Executor_Local_IO={nil,bridge_executor_child_fetch,bridge_executor_local_files,""},origin:Executor_Legacy_Origin={})->(bool,string,Bridge_Error) {
+bridge_executor_local_stage :: proc(command:string,purpose:string,io:Executor_Local_IO={nil,bridge_executor_child_fetch,bridge_executor_local_files,""},origin:Executor_Legacy_Origin={},observation_action:executor.Legacy_Action={},observation_entry_index:i64= -1,observation_entry_digest:string="")->(bool,string,Bridge_Error) {
     context.allocator=context.temp_allocator
     generation:=bridge_task_chain_search_generation()
     account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
@@ -211,7 +211,7 @@ bridge_executor_local_stage :: proc(command:string,purpose:string,io:Executor_Lo
     source:=bridge_executor_local_source(command,purpose)
     if d,found:=executor.local_draft_source(s,source);found {
         if !bridge_executor_local_retry_matches(d,command) do return false,"draft_generation_conflict",bridge_error(.agent_launch_failed,.denied)
-        if !bridge_legacy_observe_draft(s,origin,command,d.id) do return false,"legacy_observation_unavailable",bridge_error(.agent_launch_failed,.denied)
+        if !bridge_legacy_observe_draft(s,origin,command,d.id) || !bridge_legacy_action_observe_selected_draft(s,observation_action,command,d.id,observation_entry_index,observation_entry_digest) do return false,"legacy_observation_unavailable",bridge_error(.agent_launch_failed,.denied)
         // A retry may reuse the original exact signed consent, never an
         // unsigned Hub assertion or a replacement synthetic authorization.
         if raw,authorized:=executor.local_draft_consent(s,d);authorized {
@@ -288,6 +288,6 @@ bridge_executor_local_stage :: proc(command:string,purpose:string,io:Executor_Lo
     defer crypto.zero_explicit(raw_data(material),len(material))
     draft,staged:=executor.stage_local_draft(s,source,executor.encode(c),material)
     if staged!="ok" do return false,staged,bridge_error(.agent_launch_failed,.denied)
-    if !bridge_legacy_observe_draft(s,origin,command,draft.id) do return false,"legacy_observation_unavailable",bridge_error(.agent_launch_failed,.denied)
+    if !bridge_legacy_observe_draft(s,origin,command,draft.id) || !bridge_legacy_action_observe_selected_draft(s,observation_action,command,draft.id,observation_entry_index,observation_entry_digest) do return false,"legacy_observation_unavailable",bridge_error(.agent_launch_failed,.denied)
     return false,bridge_executor_local_pending(draft),bridge_error(.agent_launch_failed,.denied)
 }

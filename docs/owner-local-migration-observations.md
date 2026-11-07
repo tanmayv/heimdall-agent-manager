@@ -107,3 +107,39 @@ runtime references, preserving the native journal sequence and immutable
 `prior_coverage_unknown=1`. Historical fixtures remove newer tables before
 reconstruction. Name collision and deferred COMMIT tests retain native draft
 material and reservation identity across failed upgrades and recovery.
+
+## Selected native draft associations (V13)
+
+V13 links a current running receive occurrence to a selected immutable native
+draft. The row keeps the exact original entry index/digest and the incoming
+transformed-request digest separately from the selected configuration/material
+digests. Instance and directory identities are derived from the retained draft
+configuration. The draft retains its original material and eventual launch link;
+association rows cannot provide consent, a task grant or a child launch receipt.
+
+The worker carries its occurrence alongside runtime invocation arguments.
+Neither `Executor_Local_Material` nor its serialized origin gains a field, so
+existing material and local consent identity stay unchanged. Ordinary launch,
+provider-test and fresh/retry wake staging pass this metadata. Scoped and idless
+wake entries retain separate occurrences; empty original IDs and chain claims
+stay empty. V11 scoped observation checks remain unchanged. Alternate producers
+that carry no occurrence remain unknown.
+
+A whole-packet association must match its retained parent digest; batched wake
+handlers use the original raw entry spans and indexes. An exact association
+replay is read-only after handler return or restart, while changed entry evidence
+or incarnation conflicts. New associations require the current running
+occurrence. Native selected identity comes from immutable stored configuration,
+not from the packet's claimed chain or a supplied target label. Later incoming
+proposals may associate with an earlier selected draft without overwriting it or
+claiming that the new proposal executed.
+
+This still excludes wake-existing nudges, exact stop/merge target associations,
+inline/startup/alternate producers, complete durable queue ingress and physical
+resource/child absence. All remain required for the signed complete union and
+migration-only device adoption. No inventory/binding/drain/cutover route is enabled.
+
+V12-to-V13 upgrade failure tests preserve running occurrences, native draft
+material and reservation state across name collision and deferred COMMIT failure.
+Retained triggers are recreated around the runtime-header rebuild; the native
+journal and immutable unknown-coverage marker are preserved.

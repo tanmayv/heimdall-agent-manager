@@ -81,3 +81,15 @@ bridge_legacy_dispatch_end :: proc(action:executor.Legacy_Action,ran:bool,inject
     if ran {from="running";to="returned"}
     return executor.legacy_action_transition(store,action,from,to).code=="ok"
 }
+
+// Caller holds executor application mutex. The action is carried alongside the
+// invocation, never added to serialized local launch material or consent scope.
+bridge_legacy_action_observe_selected_draft :: proc(store:^executor.Store,action:executor.Legacy_Action,command,draft:string,index:i64,entry_digest:string)->bool {
+    if action.id==0 do return true // Unobserved producer remains unknown.
+    digest:=entry_digest
+    if index== -1 do digest=contracts.owner_payload_digest(command)
+    result:=executor.legacy_action_observe_draft(store,executor.Legacy_Action_Draft{
+        action=action,entry_index=index,entry_digest=digest,
+        native_request_digest=contracts.owner_payload_digest(command),draft_id=draft})
+    return result.code=="ok"
+}

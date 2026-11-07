@@ -518,7 +518,13 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="",
         raw_entry,entry_ok:=contracts.owner_content_member_bytes(proposed,"payload")
         if !testing.expect(t,entry_ok) do return
         parent:=strings.concatenate({` {"type":"wake_agent","command_id":"observed_parent","chain_id":"legacy_chain","payload":{"run":[ `,raw_entry,` ],"stop":[]}} `},context.temp_allocator)
-        bridge_hub_handle_wake_agent(nil,parent,&bridge_executor_store)
+        observed_spec,_:=bridge_command_spec("wake_agent")
+        action,action_prepared:=bridge_legacy_dispatch_prepare(parent,"wake_agent",observed_spec,&bridge_executor_store)
+        testing.expect(t,action_prepared)
+        observed_job:=Bridge_Dispatch_Job{text=parent,command_type="wake_agent",legacy_action=action}
+        testing.expect(t,bridge_legacy_dispatch_start(&observed_job,&bridge_executor_store))
+        bridge_hub_handle_wake_agent(nil,parent,&bridge_executor_store,observation_action=action)
+        testing.expect(t,bridge_legacy_dispatch_end(action,true,&bridge_executor_store))
         observed_draft,observed_found:=executor.local_draft_source(&bridge_executor_store,bridge_executor_local_source(proposed,"warm"))
         if !testing.expect(t,observed_found,"actual wake stages immutable observed draft") do return
         retained,material_ok:=bridge_executor_local_material(observed_draft)
@@ -529,7 +535,12 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="",
         testing.expect(t,strings.contains(retained.command,"9007199254740993"),"synthetic pack keeps unsafe integer token intact")
         testing.expect(t,observed_draft.launch_id=="","observation does not authorize a child")
         second_parent,_:=strings.replace_all(parent,"observed_parent","later_parent",context.temp_allocator)
-        bridge_hub_handle_wake_agent(nil,second_parent,&bridge_executor_store)
+        later_action,later_prepared:=bridge_legacy_dispatch_prepare(second_parent,"wake_agent",observed_spec,&bridge_executor_store)
+        testing.expect(t,later_prepared)
+        observed_job.legacy_action=later_action;observed_job.text=second_parent
+        testing.expect(t,bridge_legacy_dispatch_start(&observed_job,&bridge_executor_store))
+        bridge_hub_handle_wake_agent(nil,second_parent,&bridge_executor_store,observation_action=later_action)
+        testing.expect(t,bridge_legacy_dispatch_end(later_action,true,&bridge_executor_store))
         same_draft,same_draft_found:=executor.local_draft_source(&bridge_executor_store,bridge_executor_local_source(proposed,"warm"))
         testing.expect(t,same_draft_found && same_draft.id==observed_draft.id && same_draft.material==observed_draft.material,"later source claim cannot rewrite the first retained observation")
         associations,associations_read:=executor.query(bridge_executor_store.db,"SELECT parent_command_id,parent_digest,entry_digest FROM executor_legacy_observations WHERE draft_id=? ORDER BY parent_command_id",observed_draft.id)
@@ -541,6 +552,30 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="",
             testing.expect_value(t,associations[1][1],contracts.owner_payload_digest(parent))
             testing.expect_value(t,associations[0][2],contracts.owner_payload_digest(raw_entry))
         }
+        idless_parent:=strings.concatenate({`{"type":"wake_agent","payload":{"run":[`,raw_entry,`],"stop":[]}}`},context.temp_allocator)
+        idless_action,idless_prepared:=bridge_legacy_dispatch_prepare(idless_parent,"wake_agent",observed_spec,&bridge_executor_store)
+        testing.expect(t,idless_prepared)
+        observed_job.legacy_action=idless_action;observed_job.text=idless_parent
+        testing.expect(t,bridge_legacy_dispatch_start(&observed_job,&bridge_executor_store))
+        bridge_hub_handle_wake_agent(nil,idless_parent,&bridge_executor_store,observation_action=idless_action)
+        testing.expect(t,bridge_legacy_dispatch_end(idless_action,true,&bridge_executor_store))
+        selected_rows,selected_read:=executor.query(bridge_executor_store.db,
+            "SELECT a.command_id,a.chain_claim,a.packet_digest,d.entry_digest,d.instance_id,d.configuration_digest,d.material_digest FROM executor_legacy_action_drafts d JOIN executor_legacy_actions a USING(action_id) WHERE d.draft_id=? ORDER BY a.action_id",observed_draft.id)
+        testing.expect(t,selected_read && len(selected_rows)==3,"scoped and idless actual wake occurrences bind the same selected native draft")
+        if len(selected_rows)==3 {
+            testing.expect_value(t,selected_rows[2][0],"")
+            testing.expect_value(t,selected_rows[2][1],"")
+            testing.expect_value(t,selected_rows[2][2],contracts.owner_payload_digest(idless_parent))
+            for row in selected_rows {
+                testing.expect_value(t,row[3],contracts.owner_payload_digest(raw_entry))
+                testing.expect_value(t,row[4],observed_instance)
+                testing.expect_value(t,row[5],contracts.owner_payload_digest(observed_draft.configuration))
+                testing.expect_value(t,row[6],contracts.owner_payload_digest(observed_draft.material))
+            }
+        }
+        retained_after_idless,retained_idless_found:=executor.local_draft_native(&bridge_executor_store,observed_draft.id)
+        testing.expect(t,retained_idless_found && retained_after_idless.material==observed_draft.material && retained_after_idless.launch_id=="",
+            "occurrence evidence changes neither first material nor child authority")
         _,rewritten:=executor.query(bridge_executor_store.db,"UPDATE executor_local_drafts SET material='{}' WHERE draft_id=?",observed_draft.id)
         testing.expect(t,!rewritten,"retained source/target material cannot be rewritten")
     }

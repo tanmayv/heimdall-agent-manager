@@ -1049,7 +1049,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		defer delete(accepted)
 		bridge_runtime_cache_command(command_id, accepted)
 		_ = bridge_hub_send(conn, accepted)
-		ok, detail, launch_err := bridge_runtime_launch_agent(command_id, text, bridge_command_worker_deadline_ns(conn))
+		ok, detail, launch_err := bridge_runtime_launch_agent(command_id, text, bridge_command_worker_deadline_ns(conn),observation_action=bridge_command_worker_legacy_action(conn))
 		instance_id := extract_json_string(text, "agent_instance_id", "")
 		defer delete(instance_id)
 		st_json := bridge_instance_status_json(instance_id)
@@ -1070,7 +1070,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		defer delete(accepted)
 		bridge_runtime_cache_command(command_id, accepted)
 		_ = bridge_hub_send(conn, accepted)
-		ok, detail, test_err := bridge_runtime_launch_provider_test(command_id, text)
+		ok, detail, test_err := bridge_runtime_launch_provider_test(command_id, text,observation_action=bridge_command_worker_legacy_action(conn))
 		instance_id := extract_json_string(text, "agent_instance_id", "")
 		defer delete(instance_id)
 		st_json := bridge_instance_status_json(instance_id)
@@ -2321,13 +2321,16 @@ bridge_hub_handle_pane_capture_command :: proc(conn: ^ws.Connection, text: strin
 // depth so this path can never stop or churn a coordinator. The command body carries
 // no command_id and the hub fire-and-forgets the send, so there is normally nothing
 // to ack; we still ack if a command_id is ever present.
-bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string,legacy_journal:^executor.Store=nil) {
+bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string,legacy_journal:^executor.Store=nil,observation_action:executor.Legacy_Action={}) {
 	command_id := extract_json_string(text, "command_id", "")
 	payload, payload_ok := contracts.owner_content_member_bytes(text,"payload")
 	if !payload_ok {
 		if command_id != "" && conn!=nil do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded", ""))
 		return
 	}
+
+    action:=observation_action
+    if action.id==0 do action=bridge_command_worker_legacy_action(conn)
 
 	// coordinator_ids collects any instance the hub (unexpectedly) marked coordinator
 	// in run[]; combined with the local launch-record role in the stop loop below it
@@ -2400,7 +2403,7 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string,legacy_j
 				command_json := bridge_wake_launch_command_json(syn_command_id, instance_id, task_id, role, provider, model, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path, coordinator_display_name, lease_id, pack_json, permission_mode, run_count,provider_profile,assertion,epoch)
 				defer delete(command_json)
                 origin.native_command_digest=contracts.owner_payload_digest(command_json)
-				ok, detail, launch_err := bridge_runtime_launch_agent(syn_command_id, command_json, bridge_command_worker_deadline_ns(conn),purpose="warm",origin=origin)
+				ok, detail, launch_err := bridge_runtime_launch_agent(syn_command_id, command_json, bridge_command_worker_deadline_ns(conn),purpose="warm",origin=origin,observation_action=action,observation_entry_index=i64(entry_index),observation_entry_digest=contracts.owner_payload_digest(entry))
 				if ok {
 					bridge_runtime_set_launch_role(instance_id, role)
 					fmt.println("bridge wake_agent: re-bootstrapped and restarted instance", instance_id)
@@ -2419,7 +2422,7 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string,legacy_j
 				command_json := bridge_wake_launch_command_json(syn_command_id, instance_id, task_id, role, provider, model, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path, "", lease_id, pack_json, permission_mode, run_count,provider_profile,assertion,epoch)
 				defer delete(command_json)
                 origin.native_command_digest=contracts.owner_payload_digest(command_json)
-				ok, detail, launch_err := bridge_runtime_launch_agent(syn_command_id, command_json, bridge_command_worker_deadline_ns(conn),purpose="warm",origin=origin)
+				ok, detail, launch_err := bridge_runtime_launch_agent(syn_command_id, command_json, bridge_command_worker_deadline_ns(conn),purpose="warm",origin=origin,observation_action=action,observation_entry_index=i64(entry_index),observation_entry_digest=contracts.owner_payload_digest(entry))
 				if ok {
 					bridge_runtime_set_launch_role(instance_id, role)
 					fmt.println("bridge wake_agent: launched instance", instance_id)
@@ -2572,19 +2575,19 @@ bridge_wake_launch_command_json :: proc(command_id, instance_id, task_id, role, 
 // bridge_runtime_launch_agent launches (or confirms) the instance named in a
 // launch_agent command. On failure `err` carries the typed code + class so callers
 // decide retry/park/fail from the class, never from the `detail` text.
-bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_ns: i64 = 0,purpose:string="manual",origin:Executor_Legacy_Origin={}) -> (ok: bool, detail: string, err: Bridge_Error) {
+bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_ns: i64 = 0,purpose:string="manual",origin:Executor_Legacy_Origin={},observation_action:executor.Legacy_Action={},observation_entry_index:i64= -1,observation_entry_digest:string="") -> (ok: bool, detail: string, err: Bridge_Error) {
     if !bridge_auto_update_launch_enter() do return false, "bridge is applying an automatic update; retry after reconnect", bridge_error(.agent_launch_failed, .other, retry_after_ms = 30_000)
     defer bridge_auto_update_launch_leave()
     _ = command_id
     _ = deadline_ns
-    ok,detail,err=bridge_executor_local_stage(command_json,purpose,origin=origin)
+    ok,detail,err=bridge_executor_local_stage(command_json,purpose,origin=origin,observation_action=observation_action,observation_entry_index=observation_entry_index,observation_entry_digest=observation_entry_digest)
     if !ok do bridge_executor_local_note_pending(command_json,detail,err)
     return
 }
 
-bridge_runtime_launch_provider_test :: proc(command_id, command_json: string) -> (ok: bool, detail: string, err: Bridge_Error) {
+bridge_runtime_launch_provider_test :: proc(command_id, command_json: string,observation_action:executor.Legacy_Action={}) -> (ok: bool, detail: string, err: Bridge_Error) {
     _ = command_id
-    ok,detail,err=bridge_executor_local_stage(command_json,"provider_test")
+    ok,detail,err=bridge_executor_local_stage(command_json,"provider_test",observation_action=observation_action)
     if !ok do bridge_executor_local_note_pending(command_json,detail,err)
     return
 }

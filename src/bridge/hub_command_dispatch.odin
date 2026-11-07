@@ -101,6 +101,7 @@ Bridge_Dispatch_Worker :: struct {
 	sink_conn: ws.Connection,
 	current_generation: i64,
 	current_command_id: string,
+	current_legacy_action: executor.Legacy_Action,
 	last_result: string,
 	output_failed: bool,
 	enqueued_ns: i64,
@@ -737,6 +738,7 @@ bridge_command_dispatch_finish :: proc(worker: ^Bridge_Dispatch_Worker, job: ^Br
 	}
 	delete(worker.current_command_id, runtime.default_allocator())
 	worker.current_command_id = ""
+	worker.current_legacy_action = {}
 	delete(worker.last_result, runtime.default_allocator())
 	worker.last_result = ""
 	worker.output_failed = false
@@ -777,6 +779,9 @@ bridge_command_dispatch_worker :: proc(data: rawptr) {
 			delete(result)
 		} else if bridge_legacy_dispatch_start(&job) {
 			ran = true
+			sync.mutex_lock(&bridge_dispatch_mu)
+			worker.current_legacy_action = job.legacy_action
+			sync.mutex_unlock(&bridge_dispatch_mu)
 			bridge_hub_handle_command(&worker.sink_conn, job.text)
 		} else {
 			result := bridge_command_failed_json(job.command_id,bridge_cause_wire_error("storage_error","native action observation unavailable"))
@@ -803,6 +808,15 @@ bridge_command_worker_deadline_ns :: proc(conn: ^ws.Connection) -> i64 {
 		if rawptr(conn) == rawptr(&worker.sink_conn) do return worker.deadline_ns
 	}
 	return 0
+}
+
+// Private current packet occurrence only. It is not source authority and is
+// cleared with the worker job; no native material serialization depends on it.
+bridge_command_worker_legacy_action :: proc(conn:^ws.Connection)->executor.Legacy_Action {
+    if conn==nil do return {}
+    sync.mutex_lock(&bridge_dispatch_mu);defer sync.mutex_unlock(&bridge_dispatch_mu)
+    for &worker in bridge_dispatch_workers do if rawptr(conn)==rawptr(&worker.sink_conn) do return worker.current_legacy_action
+    return {}
 }
 
 // Single-flight handlers must include time spent queued when deciding whether
