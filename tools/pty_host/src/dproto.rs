@@ -100,6 +100,8 @@ pub struct SpawnRequest {
     /// Maximum lifetime of the child process in seconds. `None` means no
     /// deadline. A restart starts a fresh timeout from the new child spawn.
     pub timeout_seconds: Option<u64>,
+    /// Trusted, spawn-fixed native notification profile declaration; never env/notification input.
+    pub notification_profile: Option<String>,
 }
 
 impl SpawnRequest {
@@ -312,6 +314,11 @@ pub enum CtlMsg {
     /// REQ-START-3: exactly one startup instruction per child. A repeated request
     /// returns its receipt; a different launch key/pid is rejected before input.
     StartupInput { instance: String, pid: i32, launch_key: String, data: Vec<u8> },
+    /// S3 local protocol: prepare=0 (no I/O), dispatch=1, query=2.
+    /// Ticket must be durably saved with the Bridge intent before dispatch.
+    Notification { delivery: crate::delivery::Delivery, mode: u8, ticket: String },
+    /// Current-child native SessionStart observation. Cannot select or change a profile.
+    NotificationSession { instance: String, pid: i32, key: String, epoch: String, count: String, session: String, path: String, source: String },
     /// Confirm a successfully spawned, still-live child by its immutable spawn key.
     /// Unlike bridge token issuance, this evidence survives a bridge restart.
     StartupLaunch { instance: String, launch_key: String },
@@ -344,6 +351,8 @@ pub enum CtlMsg {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CtlReply {
     StartupInputDone { instance: String, pid: i32, launch_key: String },
+    NotificationReceipt { instance: String, delivery_id: String, receipt: crate::delivery::Receipt },
+    NotificationSessionBound { instance: String },
     /// pid=0 means no live child was spawned with the requested key.
     StartupLaunch { instance: String, pid: i32, launch_key: String },
     Spawned { instance: String, pid: i32 },
@@ -414,6 +423,10 @@ const T_SHUTDOWN: u8 = 0x37;
 const T_WATCH_EVENTS: u8 = 0x38;
 const T_SIGNAL: u8 = 0x39;
 const T_STARTUP_INPUT: u8 = 0x3A;
+const T_NOTIFICATION: u8 = 0x3C;
+const T_NOTIFICATION_SESSION: u8 = 0x42;
+const T_NOTIFICATION_SESSION_BOUND: u8 = 0xB4;
+const T_NOTIFICATION_RECEIPT: u8 = 0xB3;
 const T_STARTUP_LAUNCH: u8 = 0x3B;
 const T_STARTUP_LAUNCH_REPLY: u8 = 0xB2;
 
@@ -457,6 +470,19 @@ fn get_str(rest: &[u8], off: &mut usize) -> io::Result<String> {
     let s = String::from_utf8_lossy(&rest[*off..*off + len]).into_owned();
     *off += len;
     Ok(s)
+}
+
+// Notification IDs are printable ASCII and bounded before allocating. Keep
+// legacy string decoding unchanged for existing terminal/control commands.
+fn get_notification_str(rest: &[u8], off: &mut usize) -> io::Result<String> {
+    let prefix=rest.get(*off..*off+4).ok_or_else(|| bad("notification truncated string"))?;
+    let len=u32::from_be_bytes(prefix.try_into().unwrap()) as usize;
+    *off+=4;
+    if len>256 { return Err(bad("notification oversized id")); }
+    let bytes=rest.get(*off..*off+len).ok_or_else(|| bad("notification truncated id"))?;
+    if !bytes.iter().all(|b| (0x21..=0x7e).contains(b)) { return Err(bad("notification invalid id")); }
+    *off+=len;
+    Ok(String::from_utf8(bytes.to_vec()).unwrap())
 }
 
 fn put_opt_str(p: &mut Vec<u8>, s: &Option<String>) {
@@ -581,6 +607,8 @@ impl CtlMsg {
             CtlMsg::Input { instance, .. } => Some(instance),
             CtlMsg::StartupInput { instance, .. } => Some(instance),
             CtlMsg::StartupLaunch { instance, .. } | CtlMsg::ExecutorClose { instance, .. } | CtlMsg::ExecutorLaunch { instance, .. } | CtlMsg::ExecutorRenew { instance, .. } => Some(instance),
+            CtlMsg::Notification { delivery, .. } => Some(&delivery.instance),
+            CtlMsg::NotificationSession { instance, .. } => Some(instance),
             CtlMsg::Key { instance, .. } => Some(instance),
             CtlMsg::Resize { instance, .. } => Some(instance),
             CtlMsg::Capture { instance } => Some(instance),
@@ -621,6 +649,11 @@ impl CtlMsg {
                 put_opt_str(&mut p, &meta_str);
                 put_opt_str(&mut p, &req.tee_path);
                 put_opt_u64(&mut p, req.timeout_seconds);
+                put_opt_str(&mut p, &req.notification_profile);
+            }
+            CtlMsg::NotificationSession { instance, pid, key, epoch, count, session, path, source } => {
+                p.push(T_NOTIFICATION_SESSION); put_str(&mut p,instance); put_i32(&mut p,*pid);
+                for value in [key,epoch,count,session,path,source] { put_str(&mut p,value); }
             }
             CtlMsg::Close { instance } => {
                 p.push(T_CLOSE);
@@ -662,6 +695,16 @@ impl CtlMsg {
                 p.push(T_STARTUP_LAUNCH);
                 put_str(&mut p, instance);
                 put_str(&mut p, launch_key);
+            }
+            CtlMsg::Notification { delivery: d, mode, ticket } => {
+                p.push(T_NOTIFICATION);
+                p.push(*mode);
+                put_str(&mut p, ticket);
+                put_str(&mut p, &d.instance);
+                put_i32(&mut p, d.pid);
+                for s in [&d.launch_key, &d.launch_epoch, &d.run_count, &d.operation_id, &d.delivery_id] { put_str(&mut p, s); }
+                p.push(u8::from(d.interrupt));
+                p.extend_from_slice(&d.message);
             }
             CtlMsg::Key { instance, key } => {
                 p.push(T_KEY);
@@ -725,6 +768,7 @@ impl CtlMsg {
                 let meta = meta_str.and_then(|s| serde_json::from_str(&s).ok());
                 let tee_path = if off < rest.len() { get_opt_str(rest, &mut off)? } else { None };
                 let timeout_seconds = get_opt_u64(rest, &mut off)?;
+                let notification_profile = if off < rest.len() { get_opt_str(rest, &mut off)? } else { None };
                 CtlMsg::Spawn(SpawnRequest {
                     instance,
                     argv,
@@ -739,7 +783,20 @@ impl CtlMsg {
                     meta,
                     tee_path,
                     timeout_seconds,
+                    notification_profile,
                 })
+            }
+            T_NOTIFICATION_SESSION => {
+                let instance=get_notification_str(rest,&mut off)?;
+                let pid=get_i32(rest,&mut off)?;
+                let key=get_notification_str(rest,&mut off)?;
+                let epoch=get_notification_str(rest,&mut off)?;
+                let count=get_notification_str(rest,&mut off)?;
+                let session=get_notification_str(rest,&mut off)?;
+                let path=get_str(rest,&mut off)?;
+                let source=get_notification_str(rest,&mut off)?;
+                if pid<=0 || path.len()>4096 || off!=rest.len() { return Err(bad("notification session malformed")); }
+                CtlMsg::NotificationSession { instance,pid,key,epoch,count,session,path,source }
             }
             T_CLOSE => CtlMsg::Close {
                 instance: get_str(rest, &mut off)?,
@@ -798,6 +855,22 @@ impl CtlMsg {
                 }
                 if tag==0x3e {CtlMsg::ExecutorClose{instance,launch_key}} else {CtlMsg::ExecutorLaunch{instance,launch_key}}
             },
+            T_NOTIFICATION => {
+                let mode = *rest.get(off).ok_or_else(|| bad("notification missing mode"))?; off += 1;
+                let ticket = get_notification_str(rest, &mut off)?;
+                let instance = get_notification_str(rest, &mut off)?;
+                let pid = get_i32(rest, &mut off)?;
+                let launch_key = get_notification_str(rest, &mut off)?;
+                let launch_epoch = get_notification_str(rest, &mut off)?;
+                let run_count = get_notification_str(rest, &mut off)?;
+                let operation_id = get_notification_str(rest, &mut off)?;
+                let delivery_id = get_notification_str(rest, &mut off)?;
+                let flag = *rest.get(off).ok_or_else(|| bad("notification missing interrupt"))?; off += 1;
+                if rest.len()-off>16384 { return Err(bad("notification oversized message")); }
+                let delivery = crate::delivery::Delivery { instance, pid, launch_key, launch_epoch, run_count, operation_id, delivery_id, interrupt: flag == 1, message:rest[off..].to_vec() };
+                if flag > 1 || mode > 2 || !delivery.valid() || (mode == 0 && !ticket.is_empty()) || (mode != 0 && !crate::delivery::id(&ticket)) { return Err(bad("notification malformed")); }
+                CtlMsg::Notification { delivery, mode, ticket }
+            }
             T_STARTUP_LAUNCH => CtlMsg::StartupLaunch {
                 instance: get_str(rest, &mut off)?,
                 launch_key: get_str(rest, &mut off)?,
@@ -854,6 +927,8 @@ impl CtlReply {
             CtlReply::StreamClosed { instance, .. } => Some(instance),
             CtlReply::AlreadyExited { instance, .. } => Some(instance),
             CtlReply::StartupInputDone { instance, .. } => Some(instance),
+            CtlReply::NotificationReceipt { instance, .. } => Some(instance),
+            CtlReply::NotificationSessionBound { instance } => Some(instance),
             CtlReply::StartupLaunch { instance, .. } => Some(instance),
             _ => None,
         }
@@ -866,11 +941,24 @@ impl CtlReply {
     pub fn encode(&self) -> Vec<u8> {
         let mut p = Vec::new();
         match self {
+            CtlReply::NotificationSessionBound { instance } => { p.push(T_NOTIFICATION_SESSION_BOUND); put_str(&mut p,instance); }
             CtlReply::StartupInputDone { instance, pid, launch_key } => {
                 p.push(T_STARTUP_INPUT_DONE);
                 put_str(&mut p, instance);
                 put_i32(&mut p, *pid);
                 put_str(&mut p, launch_key);
+            }
+            CtlReply::NotificationReceipt { instance, delivery_id, receipt: r } => {
+                p.push(T_NOTIFICATION_RECEIPT);
+                put_str(&mut p, instance);
+                put_str(&mut p, delivery_id);
+                put_str(&mut p, &r.ticket);
+                p.push(u8::from(r.esc_written));
+                put_i32(&mut p, r.message_written as i32);
+                p.push(u8::from(r.enter_written));
+                p.push(r.status);
+                put_str(&mut p,&r.input_profile);
+                put_i32(&mut p,r.retry_after_ms as i32);
             }
             CtlReply::StartupLaunch { instance, pid, launch_key } => {
                 p.push(T_STARTUP_LAUNCH_REPLY);
@@ -1135,11 +1223,25 @@ impl CtlReply {
                 pid: get_i32(rest, &mut off)?,
                 launch_key: get_str(rest, &mut off)?,
             },
+            T_NOTIFICATION_SESSION_BOUND => CtlReply::NotificationSessionBound { instance:get_notification_str(rest,&mut off)? },
             T_STARTUP_INPUT_DONE => CtlReply::StartupInputDone {
                 instance: get_str(rest, &mut off)?,
                 pid: get_i32(rest, &mut off)?,
                 launch_key: get_str(rest, &mut off)?,
             },
+            T_NOTIFICATION_RECEIPT => {
+                let instance = get_notification_str(rest, &mut off)?;
+                let delivery_id = get_notification_str(rest, &mut off)?;
+                let ticket = get_notification_str(rest, &mut off)?;
+                let esc = *rest.get(off).ok_or_else(|| bad("notification missing esc phase"))?; off += 1;
+                let message_written = get_i32(rest, &mut off)? as usize;
+                let enter = *rest.get(off).ok_or_else(|| bad("notification missing enter phase"))?; off += 1;
+                let status = *rest.get(off).ok_or_else(|| bad("notification missing status"))?; off += 1;
+                let input_profile=get_notification_str(rest,&mut off)?;
+                let retry_after_ms=get_i32(rest,&mut off)? as u32;
+                if esc > 1 || enter > 1 || status > 3 || message_written > 16384 || retry_after_ms>10000 || status!=0 && retry_after_ms!=0 || off != rest.len() { return Err(bad("notification malformed receipt")); }
+                CtlReply::NotificationReceipt { instance, delivery_id, receipt: crate::delivery::Receipt { ticket, esc_written:esc == 1, message_written, enter_written:enter == 1, status,input_profile,retry_after_ms } }
+            }
             _ => return Err(bad("unknown reply tag")),
         })
     }
@@ -1227,6 +1329,74 @@ mod tests {
     }
 
     #[test]
+    fn notification_wire_shared_golden_and_strict_flags() {
+        let delivery = crate::delivery::tests::intent();
+        let msg = CtlMsg::Notification { delivery, mode:0, ticket:String::new() };
+        let encoded = msg.encode();
+        let golden = include_str!("../fixtures/notification-prepare.hex").trim();
+        assert_eq!(encoded.iter().map(|b| format!("{b:02x}")).collect::<String>(), golden);
+        round_msg(msg.clone());
+        for n in 0..encoded.len()-15 { assert!(CtlMsg::decode_payload(&encoded[4..n.max(4)]).is_err()); }
+        let mut flag = encoded[4..].to_vec();
+        let at = flag.len()-17;
+        flag[at] = 2;
+        assert!(CtlMsg::decode_payload(&flag).is_err());
+        for mutation in 0..5 {
+            let mut bad=msg.clone();
+            if let CtlMsg::Notification { delivery,mode,ticket }=&mut bad {
+                match mutation {
+                    0=>delivery.message=vec![b'x';16385],
+                    1=>delivery.message=vec![0xff],
+                    2=>delivery.launch_epoch="x".repeat(257),
+                    3=>*mode=3,
+                    _=>*ticket="x".repeat(257),
+                }
+            }
+            assert!(CtlMsg::decode_payload(&bad.encode()[4..]).is_err());
+        }
+        let mut oversized=encoded[4..].to_vec(); oversized[2..6].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(CtlMsg::decode_payload(&oversized).is_err());
+        for mode in [1,2] { let mut retry=msg.clone(); if let CtlMsg::Notification { mode:m, ticket, .. }=&mut retry { *m=mode; *ticket="saved-ticket".into(); } round_msg(retry); }
+        for status in 0..4 {
+            let reply = CtlReply::NotificationReceipt { instance:"inst".into(), delivery_id:"delivery".into(), receipt: crate::delivery::Receipt { ticket:"ticket".into(), esc_written:true, message_written:15, enter_written:status==1, status,input_profile:"readline-keyseq-timeout-v1:1:2".into(),retry_after_ms:if status==0 {2}else{0} } };
+            round_reply(reply.clone());
+            let bytes=reply.encode();
+            for n in 4..bytes.len() { assert!(CtlReply::decode_payload(&bytes[4..n]).is_err()); }
+            let mut extra=bytes[4..].to_vec(); extra.push(0); assert!(CtlReply::decode_payload(&extra).is_err());
+        }
+    }
+
+    #[test]
+    fn notification_shared_unicode_and_control_vectors_encode_decode_dispatch() {
+        let vectors: serde_json::Value=serde_json::from_str(include_str!("../fixtures/notification-messages.json")).unwrap();
+        for case in vectors["cases"].as_array().unwrap() {
+            let name=case["name"].as_str().unwrap();
+            let text=case["message"].as_str().unwrap();
+            let valid=case["valid"].as_bool().unwrap();
+            for interrupt in [false,true] {
+                let mut d=crate::delivery::tests::intent(); d.message=text.as_bytes().to_vec(); d.interrupt=interrupt;
+                assert_eq!(d.valid(),valid,"{name}");
+                let wire=CtlMsg::Notification { delivery:d.clone(),mode:0,ticket:String::new() }.encode();
+                assert_eq!(CtlMsg::decode_payload(&wire[4..]).is_ok(),valid,"{name}");
+                let mut bytes=vec![]; let mut store=crate::delivery::tests::store();
+                let prepared=store.apply(&d,crate::delivery::PREPARE,"",&mut bytes);
+                if valid {
+                    let p=prepared.unwrap();
+                    let now=std::time::Instant::now();
+                    store.apply_at(&d,crate::delivery::DISPATCH,&p.ticket,&mut bytes,now).unwrap();
+                    let r=store.apply_at(&d,crate::delivery::DISPATCH,&p.ticket,&mut bytes,now+std::time::Duration::from_millis(200)).unwrap();
+                    assert_eq!(r.status,crate::delivery::DELIVERED,"{name}");
+                    assert_eq!(r.message_written,text.len());
+                    let esc:&[u8]=if interrupt { b"\x1b" } else { b"" };
+                    assert_eq!(bytes,[esc,crate::delivery::PASTE_BEGIN,text.as_bytes(),crate::delivery::PASTE_END,b"\r"].concat(),"{name}");
+                } else { assert!(prepared.is_err(),"{name}"); assert!(bytes.is_empty()); }
+            }
+        }
+        assert!(crate::delivery::message_valid("€".repeat(5461).as_bytes()));
+        assert!(!crate::delivery::message_valid("€".repeat(5462).as_bytes()));
+    }
+
+    #[test]
     fn startup_input_wire_roundtrips_and_truncation_is_rejected() {
         let msg = CtlMsg::StartupInput { instance: "inst".into(), pid: 42, launch_key: "launch".into(), data: b"confirm\r".to_vec() };
         round_msg(msg.clone());
@@ -1274,7 +1444,21 @@ mod tests {
             meta: Some(serde_json::json!({"project": "acme", "priority": 1})),
             tee_path: Some("/var/log/agent_abc.log".into()),
             timeout_seconds: Some(120),
+            notification_profile: Some("codex-native-session-v1".into()),
         }));
+    }
+
+    #[test]
+    fn notification_session_roundtrip_bounds_and_legacy_spawn() {
+        let msg=CtlMsg::NotificationSession { instance:"inst".into(),pid:42,key:"key".into(),epoch:"epoch".into(),count:"1".into(),session:"session".into(),path:"/native/session.jsonl".into(),source:"startup".into() };
+        round_msg(msg.clone());
+        round_reply(CtlReply::NotificationSessionBound { instance:"inst".into() });
+        let wire=msg.encode()[4..].to_vec();
+        for end in 0..wire.len() { assert!(CtlMsg::decode_payload(&wire[..end]).is_err()); }
+        let mut trailing=wire;trailing.push(0);assert!(CtlMsg::decode_payload(&trailing).is_err());
+        let legacy=CtlMsg::Spawn(SpawnRequest { instance:"legacy".into(),argv:vec!["true".into()],..Default::default() });
+        let mut encoded=legacy.encode()[4..].to_vec(); assert_eq!(encoded.pop(),Some(0));
+        assert_eq!(CtlMsg::decode_payload(&encoded).unwrap(),legacy,"absent native declaration cannot enable a profile");
     }
 
     #[test]
@@ -1293,6 +1477,7 @@ mod tests {
             meta: None,
             tee_path: None,
             timeout_seconds: None,
+            notification_profile: None,
         }));
     }
 
@@ -1312,6 +1497,7 @@ mod tests {
             meta: None,
             tee_path: None,
             timeout_seconds: None,
+            notification_profile: None,
         });
         let bytes = request.encode();
         let mut cur = std::io::Cursor::new(bytes);

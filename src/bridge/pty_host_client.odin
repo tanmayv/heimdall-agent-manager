@@ -59,6 +59,10 @@ PTY_HOST_T_STARTUP_INPUT :: 0x3A
 PTY_HOST_T_STARTUP_INPUT_DONE :: 0xB1
 PTY_HOST_T_STARTUP_LAUNCH :: 0x3B
 PTY_HOST_T_STARTUP_LAUNCH_REPLY :: 0xB2
+PTY_HOST_T_NOTIFICATION :: 0x3C
+PTY_HOST_T_NOTIFICATION_RECEIPT :: 0xB3
+PTY_HOST_T_NOTIFICATION_SESSION :: 0x42
+PTY_HOST_T_NOTIFICATION_SESSION_BOUND :: 0xB4
 
 PTY_HOST_MAX_FRAME_BYTES :: 64 * 1024 * 1024
 
@@ -108,6 +112,7 @@ Pty_Host_Spawn_Request :: struct {
 	has_tee_path:        bool,
 	has_timeout_seconds: bool,
 	timeout_seconds:     u64,
+    notification_profile: string,
 	rows:                u16,
 	cols:                u16,
 }
@@ -153,6 +158,8 @@ Pty_Host_Reply_Kind :: enum {
 	Already_Exited,
 	Startup_Input_Done,
 	Startup_Launch,
+    Notification_Receipt,
+    Notification_Session_Bound,
 }
 
 // One agent's liveness entry inside a Host_Heartbeat reply.
@@ -168,6 +175,14 @@ Pty_Host_Reply :: struct {
 	code:             i32, // ChildExited code
 	message:          string, // Error message / StartupBlocked safe_diagnostic
 	startup_key:      string, // StartupInputDone launch fence
+    notification_id: string,
+    notification_ticket: string,
+    notification_esc: bool,
+    notification_bytes: u32,
+    notification_enter: bool,
+    notification_status: u8,
+    notification_profile: string,
+    notification_retry_ms: u32,
 	reason_code:      string, // StartupBlocked reason_code
 	hash:             u64, // ScreenChanged content hash
 	ts_unix_ms:       u64, // HostHeartbeat timestamp
@@ -308,6 +323,7 @@ pty_host_encode_spawn :: proc(req: Pty_Host_Spawn_Request) -> []byte {
 	} else {
 		append(&p, 0)
 	}
+	pty_host_put_opt_str(&p, req.notification_profile!="", req.notification_profile)
 	return pty_host_frame(p[:])
 }
 
@@ -386,6 +402,29 @@ pty_host_decode_reply :: proc(payload: []byte) -> (Pty_Host_Reply, bool) {
 	off := 0
 	r: Pty_Host_Reply
 	switch tag {
+    case PTY_HOST_T_NOTIFICATION_SESSION_BOUND:
+        r.kind=.Notification_Session_Bound
+        inst,ok:=pty_notification_get_str(rest,&off)
+        if !ok do return {},false
+        if off!=len(rest) { delete(inst);return {},false }
+        r.instance=inst
+    case PTY_HOST_T_NOTIFICATION_RECEIPT:
+        success := false
+        defer { if !success do pty_host_reply_delete(r) }
+        r.kind = .Notification_Receipt
+        ok: bool
+        r.instance, ok = pty_notification_get_str(rest, &off); if !ok do return {}, false
+        r.notification_id, ok = pty_notification_get_str(rest, &off); if !ok do return {}, false
+        r.notification_ticket, ok = pty_notification_get_str(rest, &off); if !ok do return {}, false
+        if off >= len(rest) || rest[off] > 1 do return {}, false
+        r.notification_esc = rest[off] == 1; off += 1
+        r.notification_bytes, ok = pty_host_get_u32(rest, &off); if !ok do return {}, false
+        if off+2 > len(rest) || rest[off] > 1 || rest[off+1] > 3 || r.notification_bytes > 16384 do return {}, false
+        r.notification_enter = rest[off] == 1; r.notification_status = rest[off+1]; off+=2
+        r.notification_profile,ok=pty_notification_get_str(rest,&off); if !ok do return {},false
+        r.notification_retry_ms,ok=pty_host_get_u32(rest,&off)
+        if !ok || off!=len(rest) || r.notification_retry_ms>10000 || r.notification_status!=0 && r.notification_retry_ms!=0 do return {},false
+        success = true
 	case PTY_HOST_T_STARTUP_LAUNCH_REPLY, PTY_HOST_T_STARTUP_INPUT_DONE:
 		r.kind = .Startup_Launch if tag == PTY_HOST_T_STARTUP_LAUNCH_REPLY else .Startup_Input_Done
 		inst, ok := pty_host_get_str(rest, &off); if !ok do return {}, false
@@ -549,6 +588,9 @@ pty_host_free_agents :: proc(agents: []Pty_Host_Agent_Info) {
 
 // pty_host_reply_delete frees an owned reply's heap fields.
 pty_host_reply_delete :: proc(r: Pty_Host_Reply) {
+    delete(r.notification_id)
+    delete(r.notification_ticket)
+    delete(r.notification_profile)
 	delete(r.startup_key)
 	if r.instance != "" do delete(r.instance)
 	if r.message != "" do delete(r.message)

@@ -62,7 +62,7 @@ open_signed :: proc(token:string,kr:^vault.Vault_Keyring,expected:json.Object,ke
     if !opened do return "",false
     kind:="issuance_consent" if direction=="request" && method=="enrollment" else method
     if direction=="response" {
-        if method=="prepare" || method=="action" {kind="receipt"} else if method=="fence_request" {kind="fence_reply"}
+        if method=="prepare" || method=="action" {kind="receipt"} else if method=="fence_request" {kind="fence_reply"} else if method=="notification" {kind="notification_result"} else if method=="notification_fence_request" {kind="notification_fence_reply"}
     }
     o,parsed:=contracts.executor_parse(plain,kind)
     valid:=parsed && contracts.executor_verify(kind,o,key)
@@ -78,10 +78,10 @@ open_signed :: proc(token:string,kr:^vault.Vault_Keyring,expected:json.Object,ke
     if direction=="request" {
         input,_=contracts.executor_digest(kind,o)
         fence=contracts.owner_string(o,"prepare_digest")
-        if method=="prepare" {fence=input} else if method=="fence_request" {fence=contracts.owner_string(o,"action_digest")} else if method=="enrollment" {fence=contracts.owner_string(o,"selection_digest")}
+        if method=="prepare" {fence=input} else if (method=="fence_request" || method=="notification_fence_request") {fence=contracts.owner_string(o,"action_digest")} else if method=="enrollment" {fence=contracts.owner_string(o,"selection_digest")}
     } else if method=="enrollment" {
         input=contracts.owner_string(o,"configuration_digest");fence=input
-    } else if method=="fence_request" {
+    } else if method=="fence_request" || method=="notification_fence_request" {
         input=contracts.owner_string(o,"request_digest");fence=contracts.owner_string(o,"action_digest")
     } else {
         input=contracts.owner_string(o,"input_digest");fence=contracts.owner_string(o,"prepare_digest")

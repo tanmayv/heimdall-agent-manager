@@ -108,15 +108,21 @@ bridge_owner_executor_batch :: proc(w:^Owner_Executor_Worker,s:^owner.Store,mute
     return true
 }
 
-Owner_Executor_Pin :: struct {key_id:string,generation:i64,bootstrap,body:string}
+Owner_Executor_Pin :: struct {key_id:string,generation:i64,bootstrap,body,notification,message,code:string}
 Owner_Executor_Outcome :: struct {scope,body,code:string}
 Owner_Executor_Relay_Data :: struct {reply:string,directory:vault.Directory_Verification_Input}
 Owner_Executor_HTTP_Reply :: struct {data:Owner_Executor_Relay_Data}
 Owner_Executor_Command_Reply :: struct {type,command_id,request_id,code,envelope:string}
 
 bridge_owner_executor_snapshot :: proc(_:rawptr,s:^owner.Store,c:owner.Intent_Claim,now:i64)->(string,bool) {
-    current,_,_,_:=owner.execution_activation_fence(s,c,now)
-    if !current do return "",false
+    if c.kind=="executor.notification" {
+        code:=owner.execution_notification_current(s,c,now)
+        if code=="storage_error" do return "",false
+        if code!="ok" do return bridge_owner_json(Owner_Executor_Pin{generation=bridge_task_chain_search_generation(),code=code}),true
+    } else {
+        current,_,_,_:=owner.execution_activation_fence(s,c,now)
+        if !current do return "",false
+    }
     p,parsed:=contracts.executor_parse(c.fence,"prepare")
     if !parsed do return "",false
     rows,ok:=owner.query(s.db,"SELECT payload_json FROM local_assignment_history WHERE chain_id=? AND task_id=? AND revision=?",
@@ -130,6 +136,14 @@ bridge_owner_executor_snapshot :: proc(_:rawptr,s:^owner.Store,c:owner.Intent_Cl
     }
     public:=bridge_identity_public_key_hex(bridge_config.daemon_id)
     key:=contracts.Owner_Verified_Key{s.account,s.owner,s.owner_key,public,"bridge",true,false}
+    if c.kind=="executor.notification" {
+        result:=owner.execution_notification(s,c,key,now,{nil,bridge_owner_sign})
+        if result.code!="ok" do return bridge_owner_json(Owner_Executor_Pin{generation=bridge_task_chain_search_generation(),code=result.code}),true
+        value,decoded:=contracts.owner_content_document(result.body);bundle,object:=value.(json.Object)
+        if !decoded || !object do return "",false
+        return bridge_owner_json(Owner_Executor_Pin{key_id=contracts.owner_string(config,"executor_key_id"),generation=bridge_task_chain_search_generation(),
+            notification=contracts.owner_string(bundle,"notification"),message=contracts.owner_string(bundle,"message")}),true
+    }
     content:=owner.execution_bootstrap(s,c,"# Bridge-owned runtime worker\nRead TASK.md. Work only on the existing assigned lease. Use the owner-local lease/lifecycle API described there; task authority stays on the owner Bridge.\n","","[]",key,now,{nil,bridge_owner_sign})
     if content.code!="ok" do return "",false
     value,decoded:=contracts.owner_content_document(content.body);bundle,b_ok:=value.(json.Object)
@@ -148,8 +162,10 @@ bridge_owner_executor_exchange :: proc(_:rawptr,c:owner.Intent_Claim,snapshot:st
        pin.generation!=bridge_task_chain_search_generation() || sync.atomic_load(&bridge_hub_traffic_stopped) {return bridge_owner_json(outcome),now}
     kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
     if !unlocked {outcome.code="vault_locked";return bridge_owner_json(outcome),now}
-    kind:="prepare" if c.kind=="executor.prepare" else "action"
-    action,parsed:=contracts.executor_parse(c.payload,kind)
+    if pin.code!="" {outcome.code=pin.code;return bridge_owner_json(outcome),now}
+    kind:="notification" if c.kind=="executor.notification" else ("prepare" if c.kind=="executor.prepare" else "action")
+    raw:=pin.notification if c.kind=="executor.notification" else c.payload
+    action,parsed:=contracts.executor_parse(raw,kind)
     if !parsed do return bridge_owner_json(outcome),now
     get:=contracts.owner_string
     expires:=min(contracts.executor_number(action,"request_expires_ms"),now+contracts.EXECUTOR_TRANSPORT_TTL_MS)
@@ -163,9 +179,13 @@ bridge_owner_executor_exchange :: proc(_:rawptr,c:owner.Intent_Claim,snapshot:st
     scope["input_digest"]=json.String(digest)
     scope["fence_digest"]=json.String(digest) if kind=="prepare" else action["prepare_digest"]
     scope["issued_ms"]=json.String(fmt.tprintf("%d",now));scope["request_expires_ms"]=json.String(fmt.tprintf("%d",expires))
-    token,sealed:=channel.seal(c.payload,&kr,scope,now,context.temp_allocator)
+    token,sealed:=channel.seal(raw,&kr,scope,now,context.temp_allocator)
     if !sealed do return bridge_owner_json(outcome),now
     exchange:=bridge_owner_json(struct{scope,envelope:string}{bridge_owner_json(scope),token})
+    if c.kind=="executor.notification" {
+        exchange=bridge_owner_json(struct{scope,envelope,message,claim_attempt:string}{bridge_owner_json(scope),token,pin.message,fmt.tprintf("%d",c.attempt)})
+        if _,valid:=contracts.executor_parse(exchange,"notification_exchange");!valid {outcome.code="invalid_notification_exchange";return bridge_owner_json(outcome),now}
+    }
     if c.kind=="executor.activate" {
         if pin.bootstrap=="" || pin.body=="" {outcome.code="bootstrap_unavailable";return bridge_owner_json(outcome),now}
         exchange=bridge_owner_json(struct{scope,envelope,intent_id,claim_attempt,bootstrap,body:string}{
@@ -227,7 +247,7 @@ bridge_owner_executor_accept :: proc(_:rawptr,s:^owner.Store,c:owner.Intent_Clai
     if json.unmarshal_string(snapshot,&pin,.JSON,context.temp_allocator)!=nil ||
        json.unmarshal_string(response,&outcome,.JSON,context.temp_allocator)!=nil {return true,false,"malformed_executor_response"}
     if pin.generation!=bridge_task_chain_search_generation() || sync.atomic_load(&bridge_hub_traffic_stopped) do return true,false,"vault_locked"
-    if outcome.code!="response" do return true,false,outcome.code
+    if outcome.code!="response" do return true,c.kind=="executor.notification" && outcome.code=="no_current_target",outcome.code
     envelope:Owner_Executor_HTTP_Reply
     if json.unmarshal_string(outcome.body,&envelope,.JSON,context.temp_allocator)!=nil do return true,false,"malformed_executor_response"
     kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
@@ -241,6 +261,17 @@ bridge_owner_executor_accept :: proc(_:rawptr,s:^owner.Store,c:owner.Intent_Clai
        reply.request_id!=contracts.owner_string(scope,"request_id") || reply.type!="command_result" {return true,false,"invalid_executor_reply"}
     if reply.code!="ok" do return true,false,"executor_rejected"
     receipt,authenticated:=channel.open_signed(reply.envelope,&kr,scope,key,now,context.temp_allocator)
+    if c.kind=="executor.notification" {
+        n,parsed:=contracts.executor_parse(pin.notification,"notification")
+        r,valid:=contracts.executor_parse(receipt,"notification_result")
+        if !authenticated || !parsed || !valid || !contracts.executor_notification_result_matches(r,n,pin.message,key,now) do return true,false,"invalid_notification_result"
+        current:=owner.execution_notification_current(s,c,now)
+        if current=="storage_error" do return false,false,current
+        if current!="ok" do return true,true,current
+        // Settling physical evidence neither acknowledges a source nor grants
+        // work. Partial writes retry the same immutable daemon ticket.
+        return true,contracts.owner_string(r,"status")!="partial",receipt
+    }
     action,parsed:=contracts.executor_parse(c.payload,"action")
     r,valid:=contracts.executor_parse(receipt,"receipt")
     if !authenticated || !parsed || !valid || !contracts.executor_receipt_matches(r,action,"action",key,now,false) ||

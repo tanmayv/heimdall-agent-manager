@@ -125,3 +125,40 @@ channel_account_key_does_not_replace_enrolled_signature_or_exact_correlation :: 
     rebound,rebound_ok=seal(v.request,&kr,changed,1200);testing.expect(t,rebound_ok)
     _,authenticated=open_signed(rebound,&kr,changed,v.owner_key,1200);testing.expect(t,!authenticated,"issuance requires its own signed consent contract")
 }
+
+@(test)
+channel_notification_and_checkpoint_nonce_bind_exact_signed_scope :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    _,kr:=fixture(t);defer vault.keyring_wipe(&kr)
+    value,_:=contracts.owner_content_document(#load("../../contracts/fixtures/executor-notification-v1.json",string))
+    f,_:=value.(json.Object);get:=contracts.owner_string
+    owner_doc,_:=f["owner_key"].(json.Object);executor_doc,_:=f["executor_key"].(json.Object)
+    owner:=contracts.Owner_Verified_Key{"account",get(owner_doc,"principal_id"),get(owner_doc,"key_id"),get(owner_doc,"public_key"),"bridge",true,false}
+    executor:=contracts.Owner_Verified_Key{"account",get(executor_doc,"principal_id"),get(executor_doc,"key_id"),get(executor_doc,"public_key"),"bridge",true,false}
+    for pair in ([2][4]string{{"notification","notification","notification_result","result"},
+        {"notification_fence_request","notification_fence_request","notification_fence_reply","fence"}}) {
+        raw:=get(f,"notification" if pair[0]=="notification" else "challenge")
+        request,_:=contracts.executor_parse(raw,pair[1])
+        scope:=make(json.Object,context.temp_allocator)
+        for name in ([8]string{"protocol_version","account_id","owner_bridge_id","executor_bridge_id","chain_id","reservation_id","owner_incarnation","executor_incarnation"}) do scope[name]=request[name]
+        digest,_:=contracts.executor_digest(pair[1],request)
+        scope["request_id"]=json.String("notification_call");scope["method"]=json.String(pair[0]);scope["direction"]=json.String("request")
+        scope["input_digest"]=json.String(digest)
+        scope["fence_digest"]=request["prepare_digest"] if pair[0]=="notification" else request["action_digest"]
+        scope["issued_ms"]=json.String("1300");scope["request_expires_ms"]=json.String("1700")
+        token,sealed:=seal(raw,&kr,scope,1400);testing.expect(t,sealed)
+        sender:=owner if pair[0]=="notification" else executor
+        plain,opened:=open_signed(token,&kr,scope,sender,1400)
+        testing.expect(t,opened && plain==raw)
+        forged_scope:=clone(scope);forged_scope["input_digest"]=json.String(strings.repeat("e",64,context.temp_allocator))
+        forged,forged_ok:=seal(raw,&kr,forged_scope,1400);testing.expect(t,forged_ok)
+        _,opened=open_signed(forged,&kr,forged_scope,sender,1400);testing.expect(t,!opened)
+        scope["direction"]=json.String("response")
+        response:=get(f,pair[3])
+        token,sealed=seal(response,&kr,scope,1400);testing.expect(t,sealed)
+        receiver:=executor if pair[0]=="notification" else owner
+        plain,opened=open_signed(token,&kr,scope,receiver,1400)
+        testing.expect(t,opened && plain==response)
+        _,opened=open_signed(token,&kr,scope,sender,1400);testing.expect(t,!opened)
+    }
+}

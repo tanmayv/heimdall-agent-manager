@@ -213,6 +213,8 @@ struct Agent {
     detector: Option<JoinHandle<()>>,
     startup_input: StartupInputState,
     deadline: Arc<Mutex<ChildDeadline>>,
+    notifications: crate::delivery::Deliveries,
+    native_notifications: Option<crate::native_notification::NativeProfile>,
 }
 
 #[derive(Default)]
@@ -581,7 +583,7 @@ impl Daemon {
         let cols = if spec.cols == 0 { CRT_COLS } else { spec.cols };
         let program = spec.argv[0].clone();
         let args = spec.argv[1..].to_vec();
-        let config = SpawnConfig {
+        let mut config = SpawnConfig {
             program,
             args,
             rows,
@@ -598,6 +600,10 @@ impl Daemon {
             cwd: spec.cwd.clone(),
             extra_env: spec.env.clone(),
         };
+        let native_notifications=crate::native_notification::NativeProfile::for_spawn(&config.program,config.cwd.as_deref(),&spec.env,spec.notification_profile.as_deref()).ok().flatten();
+        if let Some(program)=native_notifications.as_ref().and_then(|p|p.executable_path()) { config.program=program; }
+        let mut notifications=crate::delivery::Deliveries::default();
+        if let Some(profile)=&native_notifications { notifications.configure_profile(crate::delivery::InputProfile::native_codex(profile.id.clone())).map_err(|e|anyhow!(e))?; }
         let mut host = PtyHost::spawn(config)
             .with_context(|| format!("spawn agent {}", spec.instance))?;
         let pid = host.pid();
@@ -741,6 +747,8 @@ impl Daemon {
             detector,
             startup_input: StartupInputState::default(),
             deadline,
+            notifications,
+            native_notifications,
         })
     }
 
@@ -963,6 +971,7 @@ impl Daemon {
         let a = agents
             .get(shell_id)
             .ok_or_else(|| anyhow!("input: no such instance {shell_id}"))?;
+        if a.notifications.pending() { return Err(anyhow!("input: notification delivery is incomplete")); }
         let res = a.host.lock().unwrap().write_input(bytes);
         res
     }
@@ -987,6 +996,7 @@ impl Daemon {
         }
         let mut agents = self.agents.lock().unwrap();
         let a = agents.get_mut(instance).ok_or_else(|| anyhow!("startup input: no such instance"))?;
+        if a.notifications.pending() { return Err(anyhow!("startup input: notification delivery is incomplete")); }
         let expected_key = a.spec.env.iter().rev().find(|(k, _)| k == "HEIMDALL_STARTUP_KEY").map(|(_, v)| v.as_str());
         if a.pid != pid || expected_key != Some(launch_key) || a.stop.load(Ordering::SeqCst) || !a.alive.load(Ordering::SeqCst) {
             return Err(anyhow!("startup input: stale or inactive launch"));
@@ -1005,6 +1015,94 @@ impl Daemon {
         a.host.lock().unwrap().write_startup_input(bytes, &mut state.written)?;
         state.delivered = true;
         Ok(())
+    }
+
+    /// The registry lock fences lookup, child replacement and the entire
+    /// ESC/message/Enter transaction. The host writer lock also excludes panes.
+    pub fn notification(&self, intent: &crate::delivery::Delivery, mode: u8, ticket: &str) -> Result<crate::delivery::Receipt> {
+        if cfg!(windows) { return Err(anyhow!("notification: unsupported_not_delivered")); }
+        if !intent.valid() { return Err(anyhow!("notification: malformed intent")); }
+        let mut agents = self.agents.lock().unwrap();
+        let Some(a) = agents.get_mut(&intent.instance) else {
+            // An absent registry entry does not prove that a pre-crash child
+            // terminated. Never turn an unknown replay into a fresh dispatch.
+            return Ok(crate::delivery::Receipt::absent(if mode == crate::delivery::PREPARE {
+                crate::delivery::CHILD_MISMATCH
+            } else { crate::delivery::RECOVERY_REQUIRED }));
+        };
+        let env = |key: &str| {
+            let mut values = a.spec.env.iter().filter(|(k, _)| k == key);
+            let value = values.next().map(|(_, v)| v.as_str());
+            if values.next().is_some() { None } else { value }
+        };
+        if a.pid != intent.pid || env("HEIMDALL_STARTUP_KEY") != Some(intent.launch_key.as_str())
+            || env("HEIMDALL_NOTIFICATION_EPOCH") != Some(intent.launch_epoch.as_str())
+            || env("HEIMDALL_NOTIFICATION_RUN_COUNT") != Some(intent.run_count.as_str())
+            || a.stop.load(Ordering::SeqCst) || !a.alive.load(Ordering::SeqCst) {
+            return Ok(crate::delivery::Receipt::absent(crate::delivery::CHILD_MISMATCH));
+        }
+        // The deadline watcher may not have run yet. Serialize the physical
+        // write with renewal/retirement and enforce the same absolute fence.
+        // Query remains read-only recovery and cannot extend the deadline.
+        let mut deadline = a.deadline.lock().unwrap();
+        if mode != crate::delivery::QUERY && deadline.expired(Instant::now(), now_millis()) {
+            return Ok(crate::delivery::Receipt::absent(crate::delivery::CHILD_MISMATCH));
+        }
+        if intent.interrupt {
+            if let Some(native)=&mut a.native_notifications {
+                if mode==crate::delivery::PREPARE && !native.ensure_bound() { return Err(anyhow!("notification: interrupt_profile_unsupported_not_delivered")); }
+                if mode==crate::delivery::DISPATCH {
+                    let previous=a.host.lock().unwrap().notification(&mut a.notifications,intent,crate::delivery::QUERY,ticket)?;
+                    if previous.status!=crate::delivery::PARTIAL { return Ok(previous); }
+                    if !native.ensure_bound() {
+                        if a.notifications.started(&intent.delivery_id) { return Ok(a.notifications.recover(&intent.delivery_id)); }
+                        return Err(anyhow!("notification: interrupt_profile_unsupported_not_delivered"));
+                    }
+                    if !previous.esc_written {
+                        if native.begin(&intent.delivery_id).is_err() { return Err(anyhow!("notification: interrupt_profile_unsupported_not_delivered")); }
+                    } else if !a.notifications.native_acknowledged(&intent.delivery_id) {
+                        match native.poll(&intent.delivery_id) {
+                            crate::native_notification::Ack::Ready=>a.notifications.acknowledge_native(&intent.delivery_id),
+                            crate::native_notification::Ack::Uncertain=>return Ok(a.notifications.recover(&intent.delivery_id)),
+                            crate::native_notification::Ack::Waiting=>return Ok(previous),
+                        }
+                    }
+                    let result=a.host.lock().unwrap().notification(&mut a.notifications,intent,mode,ticket)?;
+                    if !previous.esc_written && result.esc_written { native.sent(&intent.delivery_id); }
+                    return Ok(result);
+                }
+            }
+        }
+        let result=a.host.lock().unwrap().notification(&mut a.notifications, intent, mode, ticket);
+        result
+    }
+
+    /// Session observations bind once to a spawn-fixed profile and exact child.
+    /// This local Bridge message does not configure capabilities or write input.
+    pub fn notification_session(&self,instance:&str,pid:i32,key:&str,epoch:&str,count:&str,session:&str,path:&str,source:&str)->Result<()> {
+        let mut agents=self.agents.lock().unwrap();
+        let a=agents.get_mut(instance).ok_or_else(||anyhow!("notification session: missing child"))?;
+        let env=|name:&str| {
+            let mut values=a.spec.env.iter().filter(|(k,_)|k==name);
+            let first=values.next().map(|(_,v)|v.as_str());
+            if values.next().is_some() { None } else { first }
+        };
+        if a.pid!=pid || env("HEIMDALL_STARTUP_KEY")!=Some(key) || env("HEIMDALL_NOTIFICATION_EPOCH")!=Some(epoch) ||
+            env("HEIMDALL_NOTIFICATION_RUN_COUNT")!=Some(count) || a.stop.load(Ordering::SeqCst) || !a.alive.load(Ordering::SeqCst) {
+            return Err(anyhow!("notification session: stale child"));
+        }
+        a.native_notifications.as_mut().ok_or_else(||anyhow!("notification session: profile unsupported"))?.observe(session,path,source)
+    }
+
+    /// Trusted host-bootstrap API only: S3 mounts no wire/agent command for
+    /// configuration and never trusts profile values from notification/env input.
+    /// R3 must load independently validated host settings and persist this binding.
+    pub fn configure_notification_input_profile(&self, instance: &str, pid: i32, key: &str, epoch: &str, count: &str, profile: crate::delivery::InputProfile) -> Result<()> {
+        let mut agents=self.agents.lock().unwrap();
+        let a=agents.get_mut(instance).ok_or_else(|| anyhow!("notification profile: missing child"))?;
+        let env=|name:&str| a.spec.env.iter().rev().find(|(k,_)| k==name).map(|(_,v)| v.as_str());
+        if a.pid!=pid || env("HEIMDALL_STARTUP_KEY")!=Some(key) || env("HEIMDALL_NOTIFICATION_EPOCH")!=Some(epoch) || env("HEIMDALL_NOTIFICATION_RUN_COUNT")!=Some(count) || a.stop.load(Ordering::SeqCst) || !a.alive.load(Ordering::SeqCst) { return Err(anyhow!("notification profile: stale child")); }
+        a.notifications.configure_profile(profile).map_err(|e| anyhow!(e))
     }
 
     /// Resize an instance/shell's PTY + VT model.
@@ -1711,6 +1809,20 @@ fn handle_ctl(daemon: &Daemon, id: u64, msg: CtlMsg, tx: &ReplySink) {
             let pid = daemon.startup_launch_pid(&instance, &launch_key);
             let _ = tx.send(CtlReply::StartupLaunch { instance, pid, launch_key });
         }
+        CtlMsg::NotificationSession { instance,pid,key,epoch,count,session,path,source } => {
+            let reply=match daemon.notification_session(&instance,pid,&key,&epoch,&count,&session,&path,&source) {
+                Ok(())=>CtlReply::NotificationSessionBound{instance},
+                Err(_)=>CtlReply::Error{instance,message:"notification session: rejected".into()},
+            };
+            let _=tx.send(reply);
+        }
+        CtlMsg::Notification { delivery, mode, ticket } => {
+            let reply = match daemon.notification(&delivery, mode, &ticket) {
+                Ok(receipt) => CtlReply::NotificationReceipt { instance:delivery.instance, delivery_id:delivery.delivery_id, receipt },
+                Err(e) => CtlReply::Error { instance:delivery.instance, message:if cfg!(windows) { "notification: unsupported_not_delivered".into() } else if e.to_string()=="notification: literal_paste_unsupported_not_delivered" { "notification: literal_paste_unsupported_not_delivered".into() } else if e.to_string()=="notification: interrupt_profile_unsupported_not_delivered" { "notification: interrupt_profile_unsupported_not_delivered".into() } else { "notification: request rejected".into() } },
+            };
+            let _ = tx.send(reply);
+        }
         CtlMsg::StartupInput { instance, pid, launch_key, data } => {
             let reply = match daemon.write_startup_input(&instance, pid, &launch_key, &data) {
                 Ok(()) => CtlReply::StartupInputDone { instance, pid, launch_key },
@@ -1900,6 +2012,7 @@ mod tests {
             meta: None,
             tee_path: None,
             timeout_seconds: None,
+            notification_profile: None,
         }
     }
 
@@ -2226,6 +2339,199 @@ mod tests {
         server.shutdown();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn notification_deadline_blocks_dispatch_before_watcher_and_ambiguous_identity() {
+        require_pty!();
+        let Some(sh) = shell() else { return };
+        let d = Daemon::new();
+        let mut spec = sh_spec("inst", &sh);
+        spec.argv = vec![sh, "-c".into(), "printf READY; sleep 30".into()];
+        for (k, v) in [("HEIMDALL_STARTUP_KEY", "key"), ("HEIMDALL_NOTIFICATION_EPOCH", "epoch"), ("HEIMDALL_NOTIFICATION_RUN_COUNT", "1")] {
+            spec.env.push((k.into(), v.into()));
+        }
+        let pid = d.spawn(spec).unwrap();
+        assert!(capture_contains(&d, "inst", "READY", Duration::from_secs(3)));
+        let mut intent = crate::delivery::tests::intent();
+        intent.pid = pid;
+        intent.interrupt = false;
+        let prepared = d.notification(&intent, crate::delivery::PREPARE, "").unwrap();
+        assert_eq!(prepared.status, crate::delivery::PARTIAL);
+        let host = {
+            let mut agents = d.agents.lock().unwrap();
+            let a = agents.get_mut("inst").unwrap();
+            a.spec.env.push(("HEIMDALL_NOTIFICATION_EPOCH".into(), "epoch".into()));
+            a.host.clone()
+        };
+        assert_eq!(d.notification(&intent, crate::delivery::DISPATCH, &prepared.ticket).unwrap().status,
+            crate::delivery::CHILD_MISMATCH, "duplicate exact identity is still ambiguous");
+        {
+            let mut agents = d.agents.lock().unwrap();
+            let a = agents.get_mut("inst").unwrap();
+            a.spec.env.pop();
+        }
+        // Stop the watcher reaching the host; exercise direct deadline checking
+        // while the registered child is still alive, before termination catches up.
+        let guard = host.lock().unwrap();
+        {
+            let agents = d.agents.lock().unwrap();
+            let a = agents.get("inst").unwrap();
+            assert!(a.alive.load(Ordering::SeqCst));
+            a.deadline.lock().unwrap().at = Some(Instant::now());
+        }
+        assert_eq!(d.notification(&intent, crate::delivery::DISPATCH, &prepared.ticket).unwrap().status,
+            crate::delivery::CHILD_MISMATCH, "expired intent must not reach the writer");
+        drop(guard);
+        d.close("inst").unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notification_exact_child_socket_retry_and_lost_host_state() {
+        require_pty!();
+        let Some(sh) = shell() else { return };
+        let sock = tmp_socket("notification");
+        let mut server = DaemonServer::start(&sock).unwrap();
+        let d = server.daemon();
+        let mut spec = sh_spec("inst", &sh);
+        // Capture physical bytes without interpreting ESC or executing message.
+        spec.argv=vec![sh,"-c".into(),"stty raw -echo; printf '\\033[?2004hNOTIFY_READY'; dd bs=1 count=30 2>/dev/null | od -An -tx1 | tr -s ' ' | tr '\\n' ' '; sleep 30".into()];
+        for (k,v) in [("HEIMDALL_STARTUP_KEY","key"),("HEIMDALL_NOTIFICATION_EPOCH","epoch"),("HEIMDALL_NOTIFICATION_RUN_COUNT","1")] { spec.env.push((k.into(),v.into())); }
+        let pid=d.spawn(spec).unwrap();
+        assert!(capture_contains(d,"inst","NOTIFY_READY",Duration::from_secs(3)));
+        let mut unverified=crate::delivery::tests::intent(); unverified.pid=pid;
+        assert_eq!(d.notification(&unverified,crate::delivery::PREPARE,"").unwrap_err().to_string(),"notification: interrupt_profile_unsupported_not_delivered");
+        let profile=crate::delivery::InputProfile::readline_keyseq_timeout(1,2).unwrap();
+        assert!(d.configure_notification_input_profile("inst",pid+1,"key","epoch","1",profile.clone()).is_err());
+        d.configure_notification_input_profile("inst",pid,"key","epoch","1",profile).unwrap();
+        let mut intent=crate::delivery::tests::intent(); intent.pid=pid;
+        let request=|mode,ticket: String| {
+            let mut c=UnixStream::connect(&sock).unwrap();
+            dproto::write_ctl_msg(&mut c,&CtlMsg::Notification { delivery:intent.clone(),mode,ticket }).unwrap();
+            match await_reply(&mut c, |_| true,Duration::from_secs(3)).unwrap() {
+                CtlReply::NotificationReceipt { receipt,.. }=>receipt,
+                other=>panic!("{other:?}"),
+            }
+        };
+        let prepared=request(crate::delivery::PREPARE,String::new());
+        assert!(!prepared.esc_written && !prepared.enter_written);
+        let msg=CtlMsg::Notification { delivery:intent.clone(),mode:crate::delivery::DISPATCH,ticket:prepared.ticket.clone() };
+        let mut lost=UnixStream::connect(&sock).unwrap(); dproto::write_ctl_msg(&mut lost,&msg).unwrap(); drop(lost);
+        assert!(wait_for(|| request(crate::delivery::QUERY,prepared.ticket.clone()).esc_written,Duration::from_secs(3)));
+        let settling=request(crate::delivery::QUERY,prepared.ticket.clone());
+        std::thread::sleep(Duration::from_millis(u64::from(settling.retry_after_ms)+2));
+        let mut workers=vec![];
+        for _ in 0..4 { let sock=sock.clone(); let msg=msg.clone(); workers.push(std::thread::spawn(move || {
+            let mut c=UnixStream::connect(sock).unwrap(); dproto::write_ctl_msg(&mut c,&msg).unwrap();
+            assert!(matches!(await_reply(&mut c, |_| true,Duration::from_secs(3)),Some(CtlReply::NotificationReceipt { receipt,.. }) if receipt.status==crate::delivery::DELIVERED));
+        })); }
+        for w in workers { w.join().unwrap(); }
+        assert_eq!(request(crate::delivery::QUERY,prepared.ticket.clone()).status,crate::delivery::DELIVERED);
+        assert!(capture_contains(d,"inst","1b 1b 5b 32 30 30 7e",Duration::from_secs(3)));
+        assert!(capture_contains(d,"inst","74 65 78 74 1b 5b 32 30 31 7e 0d",Duration::from_secs(3)));
+        assert_eq!(d.capture("inst").unwrap().lines.join("\n").matches("1b 1b 5b").count(),1);
+        for field in 0..4 { let mut stale=intent.clone(); match field { 0=>stale.pid+=1,1=>stale.launch_key="new-key".into(),2=>stale.launch_epoch="new-epoch".into(),_=>stale.run_count="2".into() }
+            assert_eq!(d.notification(&stale,crate::delivery::DISPATCH,&prepared.ticket).unwrap().status,crate::delivery::CHILD_MISMATCH);
+        }
+        let mut conflict=intent.clone(); conflict.interrupt=false;
+        assert!(d.notification(&conflict,crate::delivery::DISPATCH,&prepared.ticket).is_err());
+        // Explicitly lose the host journal while the physical child remains.
+        d.agents.lock().unwrap().get_mut("inst").unwrap().notifications=crate::delivery::Deliveries::default();
+        assert_eq!(request(crate::delivery::QUERY,prepared.ticket.clone()).status,crate::delivery::RECOVERY_REQUIRED);
+        assert_eq!(request(crate::delivery::DISPATCH,prepared.ticket.clone()).status,crate::delivery::RECOVERY_REQUIRED);
+        let replacement=d.restart("inst").unwrap(); assert_ne!(replacement,pid);
+        assert_eq!(d.notification(&intent,crate::delivery::DISPATCH,&prepared.ticket).unwrap().status,crate::delivery::CHILD_MISMATCH);
+        let mut relabelled=intent.clone(); relabelled.pid=replacement;
+        assert_eq!(d.notification(&relabelled,crate::delivery::DISPATCH,&prepared.ticket).unwrap().status,crate::delivery::RECOVERY_REQUIRED);
+        d.close("inst").unwrap();
+        assert_eq!(d.notification(&intent,crate::delivery::DISPATCH,&prepared.ticket).unwrap().status,crate::delivery::RECOVERY_REQUIRED);
+        server.shutdown();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notification_readline_runtime_preserves_multiline_tab_and_unicode_as_one_paste() {
+        require_pty!();
+        // nix develop may put bash without Readline first on PATH.
+        let selected = std::env::var("HEIMDALL_NOTIFICATION_READLINE_BASH").ok();
+        let bash = if let Some(path) = selected {
+            Some(resolve(&path).expect("explicit notification Readline Bash is unavailable"))
+        } else {
+            resolve("/bin/bash").or_else(|| resolve("/usr/bin/bash")).or_else(|| resolve("bash"))
+        };
+        let Some(bash) = bash else {
+            assert!(std::env::var("HEIMDALL_NOTIFICATION_REQUIRE_PTY").as_deref() != Ok("1"),
+                "required notification Readline Bash is unavailable");
+            eprintln!("[skip] bash/readline unavailable"); return;
+        };
+        if !std::process::Command::new(&bash).args(["-c","type bind >/dev/null 2>&1"]).status().is_ok_and(|s| s.success()) {
+            assert!(std::env::var("HEIMDALL_NOTIFICATION_REQUIRE_PTY").as_deref() != Ok("1"),
+                "required notification Bash lacks Readline");
+            eprintln!("[skip] selected bash has no Readline"); return;
+        }
+        let sock=tmp_socket("notification_readline");
+        let output=tmp_socket("notification_readline_output");
+        let rc=tmp_socket("notification_readline_rc");
+        // Inspect Readline's actual editor buffer on Enter. `read -e` has
+        // line-oriented shell semantics and truncates at an embedded LF even
+        // after Readline accepted the complete multiline paste.
+        std::fs::write(&rc,r#"PS1='LITERAL_READY> '
+bind 'set enable-bracketed-paste on'
+bind 'set keyseq-timeout 50'
+bind '"\e": abort'
+bind -x '"\C-m": printf "%s\0" "$READLINE_LINE" >> "$CAPTURE_PATH"; printf "\nLITERAL_DONE\n"; READLINE_LINE=""'
+"#).unwrap();
+        let mut server=DaemonServer::start(&sock).unwrap(); let d=server.daemon();
+        let mut spec=sh_spec("inst",&bash);
+        spec.argv=vec![bash,"--noprofile".into(),"--rcfile".into(),rc.to_string_lossy().into_owned(),"-i".into()];
+        spec.env.push(("CAPTURE_PATH".into(),output.to_string_lossy().into_owned()));
+        for (k,v) in [("HEIMDALL_STARTUP_KEY","key"),("HEIMDALL_NOTIFICATION_EPOCH","epoch"),("HEIMDALL_NOTIFICATION_RUN_COUNT","1")] { spec.env.push((k.into(),v.into())); }
+        let pid=d.spawn(spec).unwrap();
+        d.configure_notification_input_profile("inst",pid,"key","epoch","1",crate::delivery::InputProfile::readline_keyseq_timeout(50,100).unwrap()).unwrap();
+        assert!(wait_for(|| {
+            let agents=d.agents.lock().unwrap();
+            let host=agents.get("inst").unwrap().host.lock().unwrap();
+            let enabled=host.engine().lock().unwrap().bracketed_paste_enabled(); enabled
+        },Duration::from_secs(3)),"runtime did not advertise DEC2004: {:?}",d.capture("inst"));
+        let mut intent=crate::delivery::tests::intent(); intent.pid=pid; intent.interrupt=false;
+        intent.message="first\n€ 日本語\t😀".as_bytes().to_vec();
+        let p=d.notification(&intent,crate::delivery::PREPARE,"").unwrap();
+        assert_eq!(d.notification(&intent,crate::delivery::DISPATCH,&p.ticket).unwrap().status,crate::delivery::DELIVERED);
+        assert!(capture_contains(d,"inst","LITERAL_DONE",Duration::from_secs(3)));
+        let mut expected=intent.message.clone(); expected.push(0);
+        assert_eq!(std::fs::read(&output).unwrap(),expected);
+        // Completed retries return their receipt without another editor action.
+        assert_eq!(d.notification(&intent,crate::delivery::DISPATCH,&p.ticket).unwrap().status,crate::delivery::DELIVERED);
+        assert_eq!(std::fs::read(&output).unwrap(),expected);
+        intent.interrupt=true; intent.delivery_id="interrupt-delivery".into(); intent.operation_id="interrupt-operation".into();
+        assert!(wait_for(|| {
+            let agents=d.agents.lock().unwrap(); let host=agents.get("inst").unwrap().host.lock().unwrap();
+            let ready=host.engine().lock().unwrap().bracketed_paste_enabled(); ready
+        },Duration::from_secs(3)));
+        let interrupted=d.notification(&intent,crate::delivery::PREPARE,"").unwrap();
+        let settling=d.notification(&intent,crate::delivery::DISPATCH,&interrupted.ticket).unwrap();
+        assert_eq!(settling.status,crate::delivery::PARTIAL); assert!(settling.esc_written && settling.retry_after_ms>0 && settling.message_written==0);
+        let early=d.notification(&intent,crate::delivery::DISPATCH,&interrupted.ticket).unwrap();
+        assert_eq!(early.status,crate::delivery::PARTIAL); assert_eq!(early.message_written,0);
+        std::thread::sleep(Duration::from_millis(u64::from(settling.retry_after_ms)+10));
+        assert_eq!(d.notification(&intent,crate::delivery::DISPATCH,&interrupted.ticket).unwrap().status,crate::delivery::DELIVERED);
+        expected.extend_from_slice(&intent.message); expected.push(0);
+        assert!(wait_for(|| std::fs::read(&output).is_ok_and(|bytes| bytes==expected),Duration::from_secs(3)),"interrupted paste changed editor contents: {:?}",d.capture("inst"));
+        d.close("inst").unwrap(); server.shutdown(); let _=std::fs::remove_file(output); let _=std::fs::remove_file(rc);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn notification_windows_is_explicitly_unsupported_before_lookup_or_write() {
+        let d=Daemon::new();
+        let intent=crate::delivery::tests::intent();
+        for mode in 0..3 {
+            let error=d.notification(&intent,mode,"saved-ticket").unwrap_err();
+            assert_eq!(error.to_string(),"notification: unsupported_not_delivered");
+            assert!(d.list().is_empty());
+        }
+    }
+
     fn find(list: &[AgentInfo], instance: &str) -> Option<AgentInfo> {
         list.iter().find(|a| a.instance_id == instance).cloned()
     }
@@ -2524,7 +2830,9 @@ mod tests {
     // ---- socket-level (dproto) end-to-end -------------------------------
 
     fn tmp_socket(name: &str) -> std::path::PathBuf {
+        // Darwin TMPDIR can exceed sockaddr_un even before the unique suffix.
         let mut p = std::env::temp_dir();
+        if p.as_os_str().len()>40 { p=std::path::PathBuf::from("/tmp"); }
         p.push(format!(
             "ham-daemon-{}-{}-{}.sock",
             name,
@@ -3625,9 +3933,18 @@ mod tests {
             let mut c = UnixStream::connect(&sock).unwrap();
             dproto::write_ctl_msg(&mut c, &CtlMsg::Attach { instance: "inst_pipe".into() }).unwrap();
             dproto::write_ctl_msg(&mut c, &CtlMsg::Resize { instance: "inst_pipe".into(), rows: 40, cols: 120 }).unwrap();
-            // Wait for initial screen
+            // Attach's first Screen precedes processing the one-way Resize.
+            // Wait for its actual effect before dropping the socket, rather
+            // than racing the server reader under parallel test load.
             let _ = dproto::read_ctl_reply(&mut c);
-            assert_eq!(d.capture("inst_pipe").unwrap().rows, 40);
+            let start=Instant::now();
+            let mut resized=false;
+            while start.elapsed()<Duration::from_secs(3) {
+                let snapshot=d.capture("inst_pipe").unwrap();
+                if snapshot.rows==40 && snapshot.cols==120 { resized=true;break; }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(resized,"live attached Resize was not applied before disconnect");
             // Drop client stream abruptly (simulating broken pipe/disconnect)
         }
 

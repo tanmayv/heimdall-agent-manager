@@ -128,6 +128,11 @@ executor_schema :: proc(kind:string)->[]Owner_Field {
     case "operator_import":return executor_operator_import_fields[:]
     case "local_launch":return executor_local_launch_fields[:]
     case "local_configuration":return executor_local_configuration_fields[:]
+    case "notification":return executor_notification_fields[:]
+    case "notification_result":return executor_notification_result_fields[:]
+    case "notification_exchange":return executor_notification_exchange_fields[:]
+    case "notification_fence_request":return executor_notification_fence_request_fields[:]
+    case "notification_fence_reply":return executor_fence_reply_fields[:]
     case "bootstrap_content":return executor_bootstrap_content_fields[:]
     case "bootstrap":return executor_bootstrap_fields[:]
     case "child_request":return executor_child_request_fields[:]
@@ -168,13 +173,15 @@ executor_valid :: proc(o:json.Object,kind:string)->bool {
         case "executor_local_purpose":
             if s!="manual" && s!="warm" && s!="provider_test" do return false
         case "executor_transport_method":
-            if s!="enrollment" && s!="prepare" && s!="action" && s!="fence_request" && s!="child_request" do return false
+            if s!="enrollment" && s!="prepare" && s!="action" && s!="fence_request" && s!="child_request" && s!="notification" && s!="notification_fence_request" do return false
         case "executor_direction":
             if s!="request" && s!="response" do return false
         case "executor_receipt_method":
             if s!="prepare" && s!="activate" && s!="heartbeat" && s!="stop" && s!="query" do return false
         case "executor_state":
             if s!="prepared" && s!="active" && s!="stopping" && s!="released" do return false
+        case "notification_status":
+            if s!="partial" && s!="delivered" && s!="recovery_required" && s!="child_mismatch" && s!="unsupported_not_delivered" do return false
         case "executor_flag":
             if s!="0" && s!="1" do return false
         case "executor_purpose":
@@ -190,11 +197,11 @@ executor_valid :: proc(o:json.Object,kind:string)->bool {
         if end<=start || end-start>EXECUTOR_TRANSPORT_TTL_MS do return false
     }
     if kind=="bootstrap_content" && !executor_bootstrap_content_valid(o) do return false
-    if kind=="child_result" {
+    if kind=="child_result" || kind=="notification_result" {
         start,end:=executor_number(o,"issued_ms"),executor_number(o,"request_expires_ms")
         if end<=start || end-start>EXECUTOR_FENCE_TTL_MS do return false
     }
-    if kind=="bootstrap" || kind=="child_request" {
+    if kind=="bootstrap" || kind=="child_request" || kind=="notification" {
         start,end:=executor_number(o,"issued_ms"),executor_number(o,"request_expires_ms")
         if end<=start || end-start>EXECUTOR_FENCE_TTL_MS || end>executor_number(o,"expires_ms") || executor_number(o,"expires_ms")>executor_number(o,"hard_ms") do return false
     }
@@ -222,8 +229,8 @@ executor_valid :: proc(o:json.Object,kind:string)->bool {
         if directory!="" && !owner_field_valid(directory,"hash") do return false
     }
     if (kind=="action" || kind=="receipt") && executor_number(o,"expires_ms")>executor_number(o,"hard_ms") do return false
-    if kind=="fence_request" || kind=="fence_reply" {
-        start:=executor_number(o,"issued_ms" if kind=="fence_request" else "checked_ms")
+    if kind=="fence_request" || kind=="fence_reply" || kind=="notification_fence_request" || kind=="notification_fence_reply" {
+        start:=executor_number(o,"issued_ms" if kind=="fence_request" || kind=="notification_fence_request" else "checked_ms")
         end:=executor_number(o,"request_expires_ms")
         if end<=start || end-start>EXECUTOR_FENCE_TTL_MS do return false
     }
@@ -244,7 +251,7 @@ executor_valid :: proc(o:json.Object,kind:string)->bool {
 executor_parse :: proc(raw,kind:string)->(json.Object,bool) {
     if len(raw)>EXECUTOR_DOCUMENT_MAX do return nil,false
     v:json.Value;ok:bool
-    if kind=="local_bundle" || kind=="local_configuration" || kind=="child_exchange" || kind=="child_result_bundle" || kind=="activation_bootstrap_exchange" || kind=="bootstrap_content" || kind=="issuance_selection" || kind=="issuance_exchange" || kind=="issuance_bundle" {v,ok=owner_content_document(raw)} else {v,ok=owner_request_document(raw)}
+    if kind=="notification_exchange" || kind=="local_bundle" || kind=="local_configuration" || kind=="child_exchange" || kind=="child_result_bundle" || kind=="activation_bootstrap_exchange" || kind=="bootstrap_content" || kind=="issuance_selection" || kind=="issuance_exchange" || kind=="issuance_bundle" {v,ok=owner_content_document(raw)} else {v,ok=owner_request_document(raw)}
     o,obj:=v.(json.Object)
     if !ok || !obj || !executor_valid(o,kind) do return nil,false
     return o,true
@@ -269,7 +276,7 @@ executor_verify :: proc(kind:string,o:json.Object,key:Owner_Verified_Key)->bool 
     if !key.enrolled || key.revoked || (key.kind!="device" if kind=="issuance_consent" || kind=="local_launch" || kind=="local_draft" else key.kind!="bridge") || key.account_id!=owner_string(o,"account_id") ||
        key.key_id!=owner_string(o,"key_id") { return false }
     identity:="owner_bridge_id"
-    if kind=="policy" || kind=="receipt" || kind=="fence_request" || kind=="enrollment" || kind=="issuance_receipt" || kind=="directory" || kind=="child_request" || kind=="local_result" do identity="executor_bridge_id"
+    if kind=="notification_result" || kind=="notification_fence_request" || kind=="policy" || kind=="receipt" || kind=="fence_request" || kind=="enrollment" || kind=="issuance_receipt" || kind=="directory" || kind=="child_request" || kind=="local_result" do identity="executor_bridge_id"
     if kind=="issuance_consent" || kind=="local_launch" || kind=="local_draft" do identity="principal_id"
     if key.principal_id!=owner_string(o,identity) do return false
     canonical,ok:=executor_canonical(kind,o)

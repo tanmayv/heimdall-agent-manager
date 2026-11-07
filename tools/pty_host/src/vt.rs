@@ -107,6 +107,8 @@ pub struct Screen {
     primary_saved_cursor: Option<(usize, usize)>,
     // Cursor visibility (?25h / ?25l).
     cursor_hidden: bool,
+    bracketed_paste: bool,
+    paste_generation: u64,
     // DECSTBM scroll region (0-based inclusive row indices).
     scroll_top: usize,
     scroll_bottom: usize,
@@ -149,6 +151,8 @@ impl Screen {
             saved_cursor: None,
             primary_saved_cursor: None,
             cursor_hidden: false,
+            bracketed_paste: false,
+            paste_generation: 0,
             scroll_top: 0,
             scroll_bottom: rows - 1,
             origin_mode: false,
@@ -640,6 +644,12 @@ impl Screen {
         for p in params.iter() {
             let mode = p.first().copied().unwrap_or(0);
             match mode {
+                2004 => {
+                    if self.bracketed_paste!=set {
+                        self.paste_generation=self.paste_generation.saturating_add(1);
+                        self.bracketed_paste=set && self.paste_generation<u64::MAX;
+                    }
+                },
                 47 | 1047 => {
                     if set {
                         if !self.alt_screen {
@@ -1017,6 +1027,8 @@ impl Perform for Screen {
                 self.saved_cursor = None;
                 self.primary_saved_cursor = None;
                 self.cursor_hidden = false;
+                self.bracketed_paste = false;
+                self.paste_generation=self.paste_generation.saturating_add(1);
                 self.scroll_top = 0;
                 self.scroll_bottom = self.rows - 1;
                 self.origin_mode = false;
@@ -1061,6 +1073,9 @@ pub struct VtEngine {
 }
 
 impl VtEngine {
+    pub fn bracketed_paste_enabled(&self) -> bool { self.screen.bracketed_paste }
+    pub fn bracketed_paste_generation(&self) -> u64 { self.screen.paste_generation }
+
     pub fn new(rows: usize, cols: usize) -> Self {
         VtEngine {
             parser: Parser::new(),
@@ -1098,6 +1113,15 @@ mod tests {
         assert_eq!(cap.lines[0], "hello world");
         assert_eq!(cap.cursor_row, 0);
         assert_eq!(cap.cursor_col, 11);
+    }
+
+    #[test]
+    fn notification_bracketed_paste_mode_tracks_fragmented_enable_disable_and_reset() {
+        let mut e=VtEngine::new(4,20);
+        assert!(!e.bracketed_paste_enabled());
+        e.feed(b"\x1b[?20"); e.feed(b"04h"); assert!(e.bracketed_paste_enabled());
+        e.feed(b"\x1b[?2004l"); assert!(!e.bracketed_paste_enabled());
+        e.feed(b"\x1b[?2004h\x1bc"); assert!(!e.bracketed_paste_enabled());
     }
 
     #[test]

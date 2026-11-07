@@ -18,6 +18,8 @@
 
 pub mod client;
 pub mod daemon;
+pub mod delivery;
+pub mod native_notification;
 pub mod dashboard_tui;
 pub mod dclient;
 pub mod dashboard_ui;

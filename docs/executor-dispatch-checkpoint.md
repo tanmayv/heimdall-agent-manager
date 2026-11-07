@@ -2517,3 +2517,598 @@ nix develop --command env HEIMDALL_EXECUTOR_TEST_PTY=$HOME/.cache/heimdall-tests
 the prior submission's evidence above; those suites were not rerun for these
 Bridge-only corrections. The three disclosed Task System v2 baseline failures
 remain out of scope. No live restart, provisioning, deployment or push occurred.
+
+## M3b transport checkpoint (2026-11-07, incomplete production gate)
+
+Base `ecb30481` already contains approved M3a `ab8beb00` and predecessor
+`65557436`; no branch reset, history merge or duplicate predecessor import was
+needed. Selected additive PTY hunks came from `b193d3d0^..12b7f198`. Existing
+executor controls, absolute deadlines, signed renewal and local admission were
+retained when resolving the additive daemon/protocol conflicts.
+
+The local protocol contract is `src/contracts/pty_notification.md`, with native
+types/validation in the adjacent Odin file. The Bridge adapter validates exact
+receipt identity, ticket, profile, progress and status. Rust retains bounded
+prepare/dispatch/query receipts, partial-write offsets, literal Unicode and
+DEC2004 paste gates. Daemon notification writes now enforce the inherited
+absolute child deadline before the watcher catches up; ambiguous duplicate
+runtime environment identities fail closed. Spawn assembly removes caller
+copies of startup/notification identity keys before appending Bridge-derived
+values. This small nearby correction prevents ambiguous duplicate identities.
+
+This is a **transport checkpoint**, not completed encrypted owner production
+delivery. No arbitrary child notification permission or legacy Hub permit was
+imported. Coordinator decision `msg_18e5b1e083c6b73c` selects existing
+owner-authorized source/wake/lifecycle intents only. Decision
+`msg_18e5b225f5280a88` specifically approves replacing the existing task.hold
+checkpoint producer, preserving its original exact Child/reservation/intent and
+hold/checkpoint authority. The current raw one-way control notice remains at
+`src/bridge/owner_local_controls.odin:62` and is the next integration point;
+do not claim connected owner-to-encrypted-PTY results yet.
+
+Checks, cwd this task worktree:
+
+- `nix develop --command cargo test --manifest-path tools/pty_host/Cargo.toml notification -- --test-threads=1`
+  passed 14 unit + 2 integration tests (initial transport, session
+  `sh_24703d229913d0379306ab21a46f27d3`).
+- `nix develop --command env HEIMDALL_EXECUTOR_REQUIRE_PTY=1 HEIMDALL_NOTIFICATION_REQUIRE_PTY=1 cargo test --manifest-path tools/pty_host/Cargo.toml -- --test-threads=1`
+  passed 205 unit + 2 integration tests, 2 existing ignored unit tests, exit 0
+  (`sh_eb6586b85fa08c9b2fccfbca519736a4`).
+- Final focused notification run with both required flags and the same command
+  plus `notification` passed 15 unit + 2 integration tests, exit 0
+  (`sh_a5b1887ac83880197f411f093fa5ed82`). This follows the explicit
+  Readline-Bash selector and required-prerequisite checks.
+- `nix develop --command odin test src/contracts -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3b-contracts-20261107-0719`
+  passed 37 tests, exit 0 (`sh_67da7356f89b2c91d25b9a4ec504bb3b`).
+- `nix develop --command odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1 -define:ODIN_TEST_NAMES=main.pty_notification_wire_matches_rust_golden,main.pty_notification_shared_unicode_and_control_vectors,main.pty_notification_reply_is_strict_and_tracks_phases,main.pty_notification_transport_distinguishes_receipt_uncertainty_and_unsupported,main.pty_notification_spawn_fence_tracks_exact_issued_token -out:$HOME/.cache/heimdall-tests/m3b-notification-bridge-20261107-0719`
+  passed 5 tests, exit 0, no allocator warnings
+  (`sh_38d05aef0be2dc025ad828a2d6aee553`).
+- `nix build .#ham-bridge .#ham-pty-host -o $HOME/.cache/heimdall-tests/m3b-transport-bins-20261107-0719`
+  passed exit 0 (`sh_a5b1f8f930614b4c4eec58acc54ddec2`).
+- `nix develop --command env HEIMDALL_EXECUTOR_TEST_PTY=$HOME/.cache/heimdall-tests/m3b-transport-bins-20261107-0719-1/bin/ham-pty-host odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1 -define:EXECUTOR_TEST_REQUIRED=true -out:$HOME/.cache/heimdall-tests/m3b-transport-bridge-full-20261107-0720`
+  passed 1041 tests, exit 0 (`sh_4bbc3cfc26705d5bd672d157d42d9bb2`).
+  The broad suite emitted allocator warnings in untouched VCS/process/wake
+  tests; these are disclosed, not claimed as a leak-free resource gate.
+
+The first Nix build failed because cleanCargoSource excluded shared hex/JSON
+fixtures. Applying the selected explicit fixture filter to native and release
+source sets fixed it; later both package builds pass. One draft native validator
+had shell-quoted character literals stripped; using numeric LF/TAB codepoints
+fixed the compile error before focused/full passes. No failure is counted as
+passing evidence.
+
+Native evidence procedure: `docs/pty-provider-evidence.md`. Real required PTY
+checks have an explicit fail-instead-of-skip flag; the separate Readline fixture
+can select an existing compatible Bash with
+`HEIMDALL_NOTIFICATION_READLINE_BASH`, including on macOS. Readline evidence is
+not Codex/Claude evidence. Linux has codex-cli 0.162.0 and Claude Code 2.1.319,
+but no actual-provider interruption pass is claimed. Effective Bridge data_dir
+was discovered from narrowly redacted runtime flags:
+`/home/tanmay/.local/share/heimdall/bridges/heimdall-bridge-hub-brolabs-ai`.
+Its profile store contains only disabled pi; the existing native default-profile
+fallback applies to codex/claude. The cached catalog advertises claude/codex/
+copilot/antigravity/pi; copilot and agy were absent from PATH, pi is installed
+but disabled. No support was silently removed. Mac host access is coordinated
+separately; no macOS/Windows native pass or live restart/deploy/push occurred.
+
+Next: mount existing exact owner-authorized checkpoint intent through encrypted
+request/result AAD, durable exact ticket/progress, current fence and receipt-first
+recovery; map no-current-target explicitly without changing source visibility/
+ACK. Preserve retained retired/checkpoint authorization rather than granting
+fresh work or redirecting a stale ticket. Then run actual Codex/Claude Linux and
+macOS profiles plus honest Windows gates, connected producer/result failure
+proofs, cumulative suites and independent review. M3b is not complete.
+
+
+## M3b encrypted checkpoint implementation (2026-11-07, incomplete acceptance)
+
+Commits 286c0c42 and 7f8fe004 add admitted remote notification identity and
+strict Odin/TypeScript checkpoint contracts. The continuation mounts only
+the approved remote task.hold producer, not arbitrary child notification.send.
+
+Source path:
+
+- src/lib/owner_local/execution_notification.odin:11 selects the original
+  committed journal/Child inside the hold transaction. controls.odin preserves
+  the journal's complete Child when no local lifecycle configuration exists.
+- execution_notification.odin:30 checks the original claimed hold receipt,
+  control notice, journal, live exact lease, assignment, bootstrap and current
+  held state. Release/replacement gives explicit no_current_target; no new work
+  grant is requested. The distinct nonce callback starts at line 93.
+- src/lib/executor_local/notification.odin:61 uses the existing append-only
+  executor_receipts journal for notification.ticket/dispatch/result stages.
+  First PID/ticket/profile cannot be replaced. Stable effect identity excludes
+  only refreshed request/deadline timing, preserving the original intent,
+  target, message and reservation. Capacity fails closed; receipts are retained.
+- src/bridge/executor_notification.odin:42 performs exact reservation-key
+  observation, persists the first daemon ticket before dispatch, releases
+  executor/startup gates for the owner callback, rechecks current directory and
+  deadline/nonce fences, queries the saved ticket before dispatch/resume, and
+  signs exact physical results. Journal loss never becomes another Prepare
+  after a saved ticket. Startup IPC token digest and executor reservation launch
+  key remain distinct.
+- owner_local_executor.odin uses its existing snapshot/unlocked-exchange/recheck
+  worker. executor_exchange.odin and owner_executor_fence.odin carry the
+  encrypted request/result and separate checkpoint nonce. The corresponding
+  executor and owner signer allowlists were extended explicitly. Sources are
+  not acknowledged by physical result settlement.
+
+Evidence (cwd this task worktree):
+
+| Check | Outcome / session |
+| --- | --- |
+| Odin contracts, final schema domains | 40 pass; sh_146ca40691e08130ac6c2b45c21e848c |
+| Native executor_channel | 5 pass; sh_67dfaa3fd64f73fb2a281eb392c223c0 |
+| Mirrored TS notification/contracts/child/channel | 20 pass; sh_1a5d30ad276782a428a6e6ec8c83e5d2 |
+| Pinned npm ci and typecheck | exit 0; sh_0bd68d548c3289106435ce32d767f523 |
+| Owner suite after source/hold integration | 265 pass; sh_3253608258bec821cc3047cedbdbbe51 |
+| Focused owner held checkpoint nonce/release | 1 pass; sh_4a3f5dacf1c4fe560f7c9a0d5e72b409 |
+| Executor suite with journal/nonce tests | 56 pass; sh_97307aacbd4ad4d4534564e9e408751b |
+| Real-daemon mounted encrypted unsupported/replacement path | 1 pass; sh_1519a50b0481e8d20dd294ecc53def0f |
+| Cumulative required-daemon Bridge | 1042 pass, exit 0; sh_0da4d435c77f3995277e13bfe4df29d6 |
+| ham-bridge package | exit 0; sh_04d5a7aa90594dbfdcf2ec803c7f808a |
+
+Exact final integration commands:
+
+```bash
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3b-owner-notice-full-20261107-0750
+nix develop --command odin test src/lib/executor_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3b-executor-notice-20261107-0755
+nix develop --command env HEIMDALL_EXECUTOR_TEST_PTY=$HOME/.cache/heimdall-tests/m3b-transport-bins-20261107-0719-1/bin/ham-pty-host odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1 -define:EXECUTOR_TEST_REQUIRED=true -define:ODIN_TEST_NAMES=main.test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection -out:$HOME/.cache/heimdall-tests/m3b-notice-mounted-20261107-0801
+nix develop --command env HEIMDALL_EXECUTOR_TEST_PTY=$HOME/.cache/heimdall-tests/m3b-transport-bins-20261107-0719-1/bin/ham-pty-host odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1 -define:EXECUTOR_TEST_REQUIRED=true -out:$HOME/.cache/heimdall-tests/m3b-notice-bridge-full-20261107-0802
+nix build .#ham-bridge -o $HOME/.cache/heimdall-tests/m3b-notice-bins-20261107-0802
+```
+
+The full Bridge suite emits allocator warnings in existing bootstrap/config,
+VCS/process/wake tests; it is not a leak-free resource gate. Focused new tests
+have no allocator warnings. Rust transport was unchanged in this continuation;
+the prior required-PTY 205+2 evidence is retained, not claimed rerun.
+
+Failed drafts: the new source regression initially exposed empty remote
+agent_id; preserve the committed Child instead of weakening equality.
+A mounted test initially used the derived production socket rather than the
+private injected socket; correction passes. One Odin multiline-do syntax and
+one test variable redeclaration were corrected. Typecheck required restoring
+the pinned posthog-js dependency through npm ci. Direct Node fixture generation
+failed on extensionless imports; use the existing vaultEndpointHarness.
+
+**Still required:** a positive connected original-owner-producer -> encrypted
+exact-child PTY -> signed result/replay proof, including uncertain/partial I/O
+through the new production path. The current actual daemon has only an
+explicitly configured Readline InputProfile; no validated production native
+Codex/Claude configurator has been established (delivery.rs:56,
+daemon.rs:1052). The mounted production test establishes honest signed
+unsupported_not_delivered with zero progress, not actual-provider delivery.
+Native Linux/macOS literal Unicode/paste and interrupt evidence, Mac host
+access, honest Windows limits, cumulative final gate and the named independent
+review remain open. Never equate the synthetic signed fixture profile string
+or Readline evidence with native provider support. No live restart, deployment
+or push occurred. M3b must not be submitted as complete at this checkpoint.
+
+Final native Linux probe results are recorded in docs/pty-provider-evidence.md: Codex exact literal/replay and separate raw ESC/acknowledged post-input observation; Claude exact TAB failure. Neither is a production interrupt-profile or Mac pass. Final TS20/typecheck rerun exited0 in sh_a6726eb21a37ef061c4d6720c79156d9 after claim_attempt exchange binding.
+
+
+## M3b native profile continuation (2026-11-07 08:47 UTC; still incomplete)
+
+The trusted Spawn request now carries a fixed codex-native-session-v1
+declaration. The daemon independently validates native executable/version,
+records its SHA256, and binds current-child SessionStart to one fresh exact
+native session. Delivery requires a fresh structured abort of the captured
+active turn before any paste, with no empirical settle-delay fallback. Native
+session identity/header/prefix changes, stale/echoed/wrong-turn events, idle,
+unknown state and timeout fail closed. See docs/pty-provider-evidence.md for the
+exact trust contract, tested versions and native evidence.
+
+The remote observation endpoint reuses existing signed executor child-token,
+paired-directory, bootstrap/incarnation/deadline and exact daemon launch checks.
+It accepts only native SessionStart observation, not arbitrary legacy extension
+effects or a Hub token registration. This fixes the session-observation gap
+without extending task authority. Native state is transport evidence only.
+
+Verification so far (cwd this task worktree):
+
+```bash
+nix develop --command env HEIMDALL_EXECUTOR_REQUIRE_PTY=1 HEIMDALL_PTY_REQUIRED=1 CARGO_TARGET_DIR=$HOME/.cache/heimdall-tests/m3b-native-profile-target-20261107 cargo test --locked --manifest-path tools/pty_host/Cargo.toml -- --test-threads=1
+```
+
+211 pass, 2 subprocess-only tests explicitly ignored and exercised by their
+parent resource tests; integration safety tests 2 pass; exit0 in
+sh_f0795a7c62d9d74b4370c95dcb2f5003. A later header-pin tightening reran the
+focused notification suite successfully in sh_8b3c00dd3fe9bbc19abca97eeeb9ef5e.
+
+```bash
+nix develop --command env HEIMDALL_EXECUTOR_TEST_PTY=$HOME/.cache/heimdall-tests/m3b-native-profile-target-20261107/release/ham-pty-host odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1 -define:EXECUTOR_TEST_REQUIRED=true -define:ODIN_TEST_NAMES=main.test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection -out:$HOME/.cache/heimdall-tests/m3b-native-profile-mounted-20261107-0845
+```
+
+1 pass, exit0, sh_b2e6074cc39d85e6e58842bd55c10fe7. This includes remote
+SessionStart invalid-path/no-profile refusal through real current bootstrap auth,
+wrong-token rejection and unchanged readiness/renewal behavior. Native Linux
+interrupt=true daemon literal/replay passed in
+sh_22f528f0bd6ebe2552e7154fec02a987; that probe supplies its exact disposable
+SessionStart observation rather than exercising the complete owner producer.
+
+Remaining: original owner hold producer -> encrypted executor -> real native
+child -> signed owner result/replay proof, full affected cumulative gate, new
+Mac source/profile rerun and named independent review. Original Mac f6a8f209
+evidence remains separate. Claude TAB is failed with no waiver. Windows native
+managed-shell access is blocked by invalid_vault_key. No complete submission,
+live restart, deployment or push is authorized by this checkpoint.
+
+
+### Native checkpoint cumulative and Mac follow-up (08:54 UTC)
+
+The full Bridge gate passes1043 tests in sh_afb369b83aaa94af0fd34c91e02bebd9
+with the same command above, output path
+$HOME/.cache/heimdall-tests/m3b-native-profile-full-bridge-20261107-0850.
+The first cumulative run had1040 pass2 failures solely in old Spawn wire-length
+expectations; those golden arrays now include the optional native-profile byte
+and a new present-profile trailing-option regression. Production native code
+did not change for that correction. The ham-bridge package build passed
+sh_4ea80b1f20972e7bd5484a0c8319312d:
+nix build .#ham-bridge -o $HOME/.cache/heimdall-tests/m3b-native-profile-bins-20261107-0849.
+Allocator warnings remain in existing Bridge tests; this is no leak-free gate.
+
+A final native-header-pin source rerun passed real Linux interruption/literal/
+replay in sh_947ffefcd8c097686027926685cc65cf. Mac worker reports actual
+9e6b89af native profile PASS in sh_d3d9c7e817ff78d44afeca4944a67f13:
+CLI/state0.162.0,130-byte literal once/replay and interrupt=true102-byte exact
+once/replay after one fresh typed abort; model gpt-5.6-sol, native executable
+digest fd4bb93679bfcc546765a3363a0df9a855f364b61ea6681009b28ba4c2e5b60d.
+Mac cleanup/event audit and independent review remain separately tracked.
+
+The Mac native suite at9e6b89af records17 pass3 fail. All four original platform
+failures are fixed; three new parser fixtures failed because their synthetic
+root retained Darwin's /var alias while production canonicalizes /private/var.
+The test-only root helper now canonicalizes after mkdir; production containment
+checks are unchanged. Linux focused notification suite after this correction:
+20+2 pass, exit0, sh_460363b84abd9a118b2672be2cdfc3f9, same required-PTY
+cargo command with filter notification. Mac must rerun the explicitly updated
+source pin; the failing run is not erased. Full connected owner production
+proof, Windows access/Claude disposition and named review are still required.
+
+
+## Audit corrections after 7f13c94e (2026-11-07 09:12 UTC; not acceptance)
+
+These corrections supersede the earlier native-profile capability description.
+
+- F1: authenticated SessionStart now retains an immutable exact session/path
+  observation without reading a not-yet-created file. PREPARE validates its
+  canonical root, metadata/version, identity and header lazily. A unit test
+  proves startup-before-file resolution. This is not the missing positive
+  installed-hook -> authenticated observer proof.
+- F2: clear/resume/unknown lifecycle sources or different startup observations
+  permanently invalidate the profile. Both local and bootstrap-authenticated
+  remote observation routes forward that lifecycle source. Pending input cannot
+  continue after invalidation; completed receipt replay remains read-only.
+- F3: Linux capability admission now checks the exact observed vendor executable
+  SHA25650ed828f357c655a3c82054d346cab8434f24901f14ec19b8267571bdd008b38.
+  Native --version and PTY exec use the daemon-held file descriptor via
+  /proc/<daemon-pid>/fd/<fd>, rather than reopening the original path. Tests
+  reject an unknown native executable before a version probe and preserve the
+  original inode across a pathname replacement. Actual descriptor-executed
+  Codex interrupt/literal/replay passes sh_0d5fdeb5d38efb51a7cea42c354312db.
+- F4: native session producer version must now equal0.162.0;0.167.0 is refused.
+- F5: fixture IDs add a process-wide atomic suffix; native tests pass in default
+  parallel mode.
+- F6: an already validated same-ticket paste resumes its remaining bytes without
+  re-polling the eight-second native acknowledgment horizon. Lifecycle/paste-mode
+  invalidation still refuses writes.
+
+Darwin native capability is conservatively refused in this hardened revision
+until a safe immutable executable backend is demonstrated. This is an open
+Milestone3 gate, not an accepted platform reduction; prior Mac native results
+at9e6b89af/7f13c94e remain historical evidence. Source-backed backend choices:
+portable-pty0.9.0/src/unix.rs:228-282 constructs a std Command and closes random
+descriptors at pre_exec line276, so inherited /dev/fd execution is not currently
+a proven Darwin substitute for Linux parent-procfd execution. Options to verify
+are a narrowly scoped native spawn backend retaining exactly one verified
+executable descriptor, or a vendor-hash-pinned canonical installation whose
+file and every mutable ancestor are OS-enforced root-owned/non-writable to the
+child. Neither option is implemented/proven here; no generic-copy/path-name
+solution is claimed immutable. Same-uid writable native logs remain transport
+evidence only, and bounded8MiB reads/hashes still hold the daemon agents lock.
+
+Checks after corrections:
+```bash
+nix develop --command env HEIMDALL_EXECUTOR_REQUIRE_PTY=1 HEIMDALL_PTY_REQUIRED=1 CARGO_TARGET_DIR=$HOME/.cache/heimdall-tests/m3b-native-profile-target-20261107 cargo test --locked --manifest-path tools/pty_host/Cargo.toml
+```
+Default-parallel214 unit+2 safety pass,2 subprocess-only ignores in
+sh_49d5c145e7c4b73641e7a6b51040d9dd. The earlier full parallel run failed an
+existing resize test race: Attach's first Screen preceded processing the next
+one-way Resize. The fixture now waits up to3s for actual40x120 effect before
+disconnect; the production resize path is unchanged. Serial212+2 passed before
+the two new inode/digest tests (sh_31a297ad41171a297266f81b8b669440).
+Final pending-lifecycle guard focused23+2 passes sh_9cab8796820d506dcfc5f3309dc50020.
+Full hardened Bridge1043 pass sh_b6a5bf76c098c2d68e370f1519b53e4e with prior
+required-PTY command/output m3b-audit-full-bridge-20261107-0903. ham-bridge
+package build passes sh_31b3be554aaee07aecaed3a1f613fae4:
+nix build .#ham-bridge -o $HOME/.cache/heimdall-tests/m3b-audit-profile-bins-20261107-0910.
+
+Native hook prerequisite investigation:
+The read-only installed native plugin inventory contains no Heimdall entry.
+The strict --native-hook probe failed rather than using direct0x42 observation.
+Official OpenAI docs https://learn.chatgpt.com/docs/hooks and installed0.162.0
+help support project hooks plus --dangerously-bypass-hook-trust for automation
+that vets exact hook sources. Coordinator explicitly authorized the inspected
+private fixture only, with per-invocation flags and no persisted settings.
+The --vetted-fixture-hook harness writes only a private project hook/script and
+records SHA256/config/argv. Both lexical and canonical project trust -c keys
+still reached a native Folder access prompt saying the decision will be saved;
+no approval/input was sent. Sessions sh_ecd5a09147d6877d4cd1fc1ffba612b6 and
+sh_807a73bad8bb4a6b88606c97141ed746 fail honestly. Last fixture source:
+hook SHA2564aef8b5850f310c1f50c6e9895deeedef1eeddca9e42db827c5e1eb50d65cf4d,
+config SHA256c064480da9bd5dd1d546690a50d28303a49b7d7ccf90becb435454ea610db353;
+exact argv/screen retained in
+/home/tanmay/.cache/heimdall-tests/provider-observe-64bc54afb4b64d31b4fbe1a63eb24128/.
+No native hook pass is inferred. A supported disposable already-trusted real
+extension launch is still needed, followed by the original owner hold producer
+through encrypted exact-child dispatch, physical result/replay and owner
+acceptance. Windows access, Claude TAB disposition and named audit re-review
+also remain open. No complete submission, live restart, deployment or push.
+
+## Immutable Linux executable snapshot (2026-11-07 09:20 UTC; incomplete M3b)
+
+The inode-only F3 mitigation above is superseded. A retained read-only descriptor
+does not prevent a same-UID writer changing that inode between admission and
+execution. Linux now copies the bounded executable into a private memfd, adds
+and verifies WRITE/GROW/SHRINK/SEAL seals, then hashes the sealed bytes. Both
+version probe and PTY spawn execute the same retained sealed image via procfs.
+Unknown hashes acquire no notification capability. Non-Linux and unavailable
+memfd/sealing support remain unsupported. Owned File handles drop on error.
+See tools/pty_host/src/native_notification.rs:47-78 and daemon.rs:603-604.
+Regression covers original inode overwrite, path replacement, write/reopened
+write, truncate/grow and seal change rejection.
+
+Checks (M3b worktree):
+```bash
+nix develop --command env HEIMDALL_EXECUTOR_REQUIRE_PTY=1 HEIMDALL_PTY_REQUIRED=1 CARGO_TARGET_DIR=$HOME/.cache/heimdall-tests/m3b-native-profile-target-20261107 cargo test --locked --manifest-path tools/pty_host/Cargo.toml native_notification
+nix develop --command env HEIMDALL_EXECUTOR_REQUIRE_PTY=1 HEIMDALL_PTY_REQUIRED=1 CARGO_TARGET_DIR=$HOME/.cache/heimdall-tests/m3b-native-profile-target-20261107 cargo test --locked --manifest-path tools/pty_host/Cargo.toml
+nix develop --command env CARGO_TARGET_DIR=$HOME/.cache/heimdall-tests/m3b-native-profile-target-20261107 cargo build --release --locked --manifest-path tools/pty_host/Cargo.toml
+nix develop --command python3 tests/observe_provider_notification.py --daemon $HOME/.cache/heimdall-tests/m3b-native-profile-target-20261107/release/ham-pty-host --provider codex --model gpt-6.1-sol --seconds 5 --literal --native-interrupt
+```
+Focused7 pass sh_5ae562e2b178001f24a9df64a7392b24. First full run
+sh_4082b62d7873824add95c41c4d7082f7 failed existing lockless listener stale
+socket assertion (213pass1fail2ignores); focused rerun1 pass
+sh_e02836c465dfae7cc32f5262fcbc37db and full rerun214+2 pass,2 subprocess-only
+ignores sh_ef70ece7b3d0fbc55281e500b420bb41. No socket behavior changed;
+transient failure remains recorded. Release build exit0
+sh_d6150de43f69de398a56582f55444486. Actual sealed-image Linux probe exit0
+sh_b9bd1111843f4c304e6667c5bc71cd6d: CLI/state0.162.0,130-byte literal
+once/replay and102-byte interrupt=true literal once/replay after one typed abort.
+Direct native observation remains in this probe: no installed-hook/authenticated
+observer or full owner producer pass inferred. Darwin safe image/native proof
+remains open and enrolled Mac is offline. Windows native refusal/ConPTY evidence
+6bd47371 remains evidence-only. No M3b completion implied.
+
+Authenticated malformed SessionStart now permanently invalidates the native profile
+before returning an error, including changed session with empty/relative path.
+This closes a residual F2 ordering gap (old bound session otherwise survived).
+Regression24+2 pass sh_6e2dd623f4218f5f1aaade2dd7232c6c using the same required
+PTY cargo command above with filter notification. Completed receipt replay
+remains read-only; invalidation blocks pending physical input.
+
+Bridge lifecycle propagation now preserves authenticated malformed observations:
+local token/current-launch route no longer drops empty native session/path;
+shared remote-child helper validates runtime authority IDs separately and sends
+a bounded invalid lifecycle observation for malformed native fields. Daemon
+receives it only after current token/PID/epoch/count fences, then invalidates.
+Route regression covers local startup queries plus the shared remote IPC helper,
+8 observed frames, bad authority still rejected without IPC. Native invalidation
+is verified separately in Rust; no complete remote/native integration inferred.
+Focused Bridge1 pass sh_c0d6ece3c109c0b6181328ea7d8fac3f:
+```bash
+nix develop --command odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1 -define:ODIN_TEST_NAMES=main.pty_notification_malformed_lifecycle_reaches_daemon_after_current_child_fences -out:$HOME/.cache/heimdall-tests/m3b-malformed-route-20261107-0925
+```
+Actual callback mechanics now passes using session inline hook config instead
+of project .codex config, avoiding persisted folder trust. Official source:
+https://learn.chatgpt.com/docs/hooks (session config hooks and one-invocation
+reviewed-source flag). sh_0379e09bb569a80b1151d660ac13d90b exit0 using prior
+native probe command plus --native-hook --vetted-fixture-hook: actual startup
+callback bound native session,130/102-byte literal/interrupt submissions once,
+replay no duplicate. Evidence provider-observe-fb41c8fe3f5a44d5bb4dca861bdfdb31.
+This script still calls daemon0x42 directly and is fixture mechanics only;
+production ham-ctl extension/Bridge observer and full owner producer remain open.
+No saved native trust/config changes or credential export.
+
+## Connected original-owner native proof (2026-11-07 10:03 UTC; incomplete M3b)
+
+The Linux gap is now covered by a genuine owner producer, not manually inserted
+owner authority or a signed unsupported fixture. Native gate is explicitly
+EXECUTOR_NATIVE_OWNER=true; ordinary Bridge tests skip the provider invocation.
+Source: src/bridge/owner_executor_native_test.odin:60 creates signed chain/task/
+policy/reservation/requirements through owner APIs, execution_prepare_assignment,
+real mounted encrypted prepare, original prepare_commit and execution_bootstrap.
+Its :124 actual private socket receives ham-ctl extension hook codex output and
+uses the production current-bootstrap/paired-directory observer. :197 calls
+production prepare_spawn/materialize before reviewed invocation-only hook flags.
+:162 preserves signed encrypted current owner nonce callbacks without holding
+executor/startup mutexes. :357 injects only a result-journal storage failure
+AFTER physical output, recovering the original ticket/receipt. :404 restarts
+the private daemon after exact child close: the new daemon reports UNKNOWN exact
+launch state and an empty roster; completed result replay remains read-only.
+:461 pairs a distinct normally enrolled test owner and calls production
+bridge_owner_executor_accept, rejecting altered pending-scope AAD before accepting
+the authentic response. Original lease/attempt/bootstrap counts do not grow.
+This is a mounted production-handler proof with hermetic reverse transport;
+it is not a new live Hub/remote-network enrollment demonstration.
+
+Real Codex SessionStart occurs on the first user turn, not the idle composer.
+The fixture's initial non-interrupt paste waits for explicit daemon paste-mode
+support; it preserves literal LF/TAB/euro/Japanese/astral content exactly once.
+The native callback invokes the actual built ham-ctl adapter, not direct0x42.
+Owner task.hold then produces the exact66-byte one-line notice. The real native
+turn aborts once, notice submits once, partial result/lost persistence/replay
+reuse one immutable ticket. Stale launch epoch and altered result scope fail.
+Actual signed result returns through production owner acceptance and settles
+only delivery evidence; no new lease, attempt, bootstrap or task authority.
+
+The first complete physical run exposed native Codex trimming a FINAL newline
+from the notice (exact0 / without-final-LF1 / typed-abort1 in
+sh_b8c5ca5e567c7e578e3a2892a9f45f52). The one-line producer and fence message at
+src/lib/owner_local/execution_notification.odin:77,134 now omit this unnecessary
+finalLF. Enter stays a separate transport boundary. The owner unit asserts exact
+text, and the arbitrary multiline Unicode initial input remains byte-exact;
+no blanket normalization was introduced. This prerelease format change is not
+permission for a live upgrade of already pending old-format delivery stages.
+
+Reproduction from the M3b worktree (normal provider auth stays in its store;
+no export/copy, saved hook trust/config changes, production tokens or endpoints):
+```bash
+nix develop --command python3 tests/prepare_native_owner_notification.py --out $HOME/.cache/heimdall-tests/native-owner-args-final-20261107-1002.json --ctl $HOME/.cache/heimdall-tests/m3b-native-ctl-20261107-0931/bin/ham-ctl --codex /home/linuxbrew/.linuxbrew/bin/codex
+nix develop --command env HEIMDALL_NATIVE_CODEX=/home/linuxbrew/.linuxbrew/bin/codex HEIMDALL_NATIVE_MODEL=gpt-6.1-sol HEIMDALL_NATIVE_ARGS=$HOME/.cache/heimdall-tests/native-owner-args-final-20261107-1002.json HEIMDALL_NATIVE_CTL=$HOME/.cache/heimdall-tests/m3b-native-ctl-20261107-0931/bin/ham-ctl HEIMDALL_EXECUTOR_TEST_PTY=$HOME/.cache/heimdall-tests/m3b-native-profile-target-20261107/release/ham-pty-host odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1 -define:EXECUTOR_NATIVE_OWNER=true -define:ODIN_TEST_NAMES=main.test_executor_original_owner_native_notification -out:$HOME/.cache/heimdall-tests/m3b-owner-native-final-20261107-1004
+```
+Final native1 pass sh_b29ecfce43bb535588e125fadc22b5bb,4.74s, real PID3103501,
+66-byte notice/submission1/typed-abort1/callbacks5, stale request refusal,
+partial + lost-result recovery, same-ticket replay after daemon journal loss,
+wrong-AAD owner rejection and authentic production owner acceptance. Earlier
+connected proof without host-loss negative variant also passes
+sh_b433d550124996c3ef2f2e9132a5f48d. CLI/state0.162.0 and exact vendor SHA
+50ed828f357c655a3c82054d346cab8434f24901f14ec19b8267571bdd008b38 only.
+Actual ham-ctl SHA f5a6674a72089664be9cbdc5fc77c22bf82bd323d4ed969658226dd34710e754;
+repo hook source SHA801b83d72454d057ab4ad73dd6a5bcc6fa7acd955a99f2a0598621f4df02c8bd.
+Arguments/source manifest sh_ea0f1aacfc647db57500a334549278b8; rendered wrapper
+hash and actual redacted argv appear in each native run. Wrapper records native
+callback mechanics then calls the same repo CLI command. All fixture services,
+identities, runtime directories and sockets are private and cleaned.
+
+Full owner265 pass sh_28e38dfa86e4147c71e73ae4ebe2ebd9 using:
+```bash
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1 -out:$HOME/.cache/heimdall-tests/m3b-native-owner-full-20261107-0956
+```
+Earlier hardened full Bridge1044 and package passed before this owner correction;
+latest full Bridge/package checks follow. Rust215+2 serial and release pass
+sh_e1a1425be99ad3ad8600e48500a56039; independent final parallel215+2 pass is in
+e2f9a89a delta audit. Retain worker parallel FD-exhaustion subprocess failure
+sh_c22cd0ac3341d236d825d07fd554733a and prior stale-socket transient; no silent
+retry-only claim. Fixture development failures included do-body/return syntax,
+missing private runtime base/profile binary, idle callback assumption, wrong
+activation-vs-notification ingress, owner consent/scope mismatch, missing fresh
+owner enrollment floor, and expecting journal loss to imply known absence.
+Final fixture uses normal signed enrollment/current fences throughout.
+
+No full M3b completion/rollout is implied: hardened Darwin safe image/native
+proof remains open (Mac offline; source report e624fc84/artifact art_18e5b8e6ebe7f0ba),
+Windows repair integration/review and Claude TAB disposition remain separately
+gated, and this connected delta needs named independent review. Previous
+Linux audit e2f9a89a closes F2-F6 only within its reviewed evidence boundary.
+
+Final cumulative checks on d2864a05 source (2026-11-07 10:06 UTC):
+```bash
+nix develop --command env HEIMDALL_EXECUTOR_TEST_PTY=$HOME/.cache/heimdall-tests/m3b-native-profile-target-20261107/release/ham-pty-host odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1 -define:EXECUTOR_TEST_REQUIRED=true -out:$HOME/.cache/heimdall-tests/m3b-native-owner-full-bridge-20261107-1005
+nix build .#ham-bridge -o $HOME/.cache/heimdall-tests/m3b-native-owner-bins-20261107-1005
+```
+Full Bridge1045 pass sh_ec11503a488c802872ddb180dedad7e9; includes explicit
+native opt-in skip in the ordinary suite. Separate actual native proof above
+supplies that evidence. Existing allocator warnings persist; not a leak-free
+gate. ham-bridge package exit0 sh_cb492ccbee9da9d36c2ddbfbb87a0ee4.
+Cleanup/config audit sh_904d99d5f4eec19cfc5669b01d2e6eb1: no private native
+processes, native PID3103501 absent, original native config SHA256 unchanged
+(d111397be1b38940d9b795a64f8b75dc61a659e98895d6aff0a41ba372aba6cf).
+Removed14 old unheld private daemon lock files only after verifying same UID,
+no socket and exclusive flock; final fixture removes its own socket and lock.
+Independent connected-delta audit task_18e5bb3fa781e488 is pinned through
+source d2864a05, with a separate named safety reviewer. Its verdict is pending;
+no full milestone approval, live restart, deployment or push.
+
+## Pending partial notification journal loss (2026-11-07 10:20 UTC; incomplete M3b)
+
+The optional EXECUTOR_NATIVE_PENDING_LOSS mode in
+src/bridge/owner_executor_native_test.odin:378 reuses the original signed owner,
+production prepare/bootstrap, real Codex SessionStart hook and encrypted hold
+notification. It stops at the first signed partial result: ESC written, zero
+message bytes and no Enter (:379). The daemon is killed without first closing
+the child, then restarted on the same private socket (:389). Exact launch query
+is UNKNOWN (:395); Query of the original saved ticket returns recovery_required
+(:401). This status is successful observation of uncertainty, not delivery or
+known absence (tools/pty_host/src/delivery.rs:130).
+
+Production reconciliation runs at the current time (:405); three encrypted
+production notification retries return child_unavailable with no additional
+owner callback (:407). The original durable ticket is byte-identical, no final
+result exists and the shared live-resource charge stays1 (:413). A revoked-key
+input and request-expiry boundary fail the current check (:419); this is direct
+current-check coverage, not a new signed directory-revocation demonstration.
+Normal signed task.cancel then makes the owner reject a fresh pending nonce
+with no_current_target (:423). Actual native transcript contains zero notice
+submissions and at most one interrupted turn; task lease/attempt/bootstrap
+counts do not grow (:434). A production reconciliation sweep with its clock
+advanced past the signed reservation expiry attempts exact cleanup but retains
+charge1 and only the original ticket/dispatch evidence (:440). Test-only child
+cleanup uses bridge_shell_test_kill_pid (:292), never an authority observation.
+
+This proves safe refusal with retained ambiguity. It does not prove eventual
+delivery, recovery of a lost daemon journal, or authoritative absence/capacity
+release. The ordinary native mode separately still proves eventual delivery
+when the original daemon receipt survives, followed by completed-cache replay.
+No production code changed in this delta.
+
+Exact native reproduction (same reviewed invocation-only fixture, no saved
+trust/config/auth changes):
+```bash
+nix develop --command python3 tests/prepare_native_owner_notification.py --out $HOME/.cache/heimdall-tests/native-owner-pending-20261107-1017.json --ctl $HOME/.cache/heimdall-tests/m3b-native-ctl-20261107-0931/bin/ham-ctl --codex /home/linuxbrew/.linuxbrew/bin/codex
+nix develop --command env HEIMDALL_NATIVE_CODEX=/home/linuxbrew/.linuxbrew/bin/codex HEIMDALL_NATIVE_MODEL=gpt-6.1-sol HEIMDALL_NATIVE_ARGS=$HOME/.cache/heimdall-tests/native-owner-pending-20261107-1017.json HEIMDALL_NATIVE_CTL=$HOME/.cache/heimdall-tests/m3b-native-ctl-20261107-0931/bin/ham-ctl HEIMDALL_EXECUTOR_TEST_PTY=$HOME/.cache/heimdall-tests/m3b-native-profile-target-20261107/release/ham-pty-host odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1 -define:EXECUTOR_NATIVE_OWNER=true -define:EXECUTOR_NATIVE_PENDING_LOSS=true -define:ODIN_TEST_NAMES=main.test_executor_original_owner_native_notification -out:$HOME/.cache/heimdall-tests/m3b-owner-pending-loss-20261107-1019
+```
+Manifest sh_f455cfc8ef8ae0908699e665f4aedb2f; native pending test1 PASS in
+sh_15f0d1520b27b96105f79a3a259ae6c6 (3.46s, PID3127772, notice0/abort1/charge1).
+Earlier sh_2408cd1dd486a02e62090e9a0d6fdfba also passed before adding actual
+reconciliation/expiry sweeps. First sh_e536cc45e4d7a0b659dd3f28b059d523 failed a
+fixture assumption that unknown-ticket Query must be an IPC error; corrected
+to require the actual recovery_required receipt. No production defect inferred.
+Native normal-mode regression1 PASS in sh_76a1eb0e977e0c6f8aa8b0583deb5f80
+(4.16s, PID3128945, notice1/abort1/callbacks5), using the exact native command
+above without EXECUTOR_NATIVE_PENDING_LOSS and with
+-out:$HOME/.cache/heimdall-tests/m3b-owner-normal-regression-20261107-1020.
+
+Full required-daemon Bridge1045 PASS (58.37s, exit0) in
+sh_f3892ed9c47f882576b4b1d2f3886169:
+```bash
+nix develop --command env HEIMDALL_EXECUTOR_TEST_PTY=$HOME/.cache/heimdall-tests/m3b-native-profile-target-20261107/release/ham-pty-host odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1 -define:EXECUTOR_TEST_REQUIRED=true -out:$HOME/.cache/heimdall-tests/m3b-pending-full-bridge-20261107-1021
+```
+The suite explicitly skips old-daemon compatibility without
+HEIMDALL_EXECUTOR_OLD_PTY and native-owner opt-in (covered separately above).
+Existing allocator warnings remain, not a leak-free result. No new package,
+owner or Rust rerun: only Bridge test code and this checkpoint changed; earlier
+production package/owner/Rust evidence remains attributed to its source.
+Cleanup sh_6d75dd5cc2b82d76d0fcc0bbaf779d13 verifies all four native run PIDs
+(3125480/3126550/3127772/3128945) absent, no native-owner/hook sockets or locks
+created since this run began, and first failed fixture workdir removed. Native
+config SHA256 remains d111397be1b38940d9b795a64f8b75dc61a659e98895d6aff0a41ba372aba6cf.
+
+Named review approved connected audit e4ca4ae9 for890f87eb..d2864a05 only;
+this new pending-loss delta still needs independent review. Coordinator reports
+Windows12838668 repaired, reapproved and merged, with notification explicitly
+unsupported. Darwin source investigation e624fc84 is reviewed but Mac remains
+offline; no hardened safe-image/native pass. Claude2.1.319 literal TAB becomes
+four spaces in actual transcript (docs/pty-provider-evidence.md:121), with bounded
+vendor-code investigation at :130. Exact TAB remains failed/unwaived; no text
+normalization, API substitution or new provider support is claimed. Idle/unknown
+native state remains unsupported. Full M3b/platform and cumulative recovery
+gates remain open; no live restart, deployment or push.
+
+## Real idle refusal and provider matrix (2026-11-07 10:31 UTC)
+
+New opt-in EXECUTOR_NATIVE_IDLE_REFUSAL uses the same original-owner/native
+proof, with a short exact Unicode/LF/TAB first prompt and bounded wait for the
+actual completed turn. Source src/bridge/owner_executor_native_test.odin:299,346
+and :527. Two production idle retries return signed unsupported_not_delivered
+with no ESC/text/Enter (:549); signed task.cancel denies the owner nonce (:560).
+A real device-signed enrolled-owner-key revocation advances the directory pin4
+despite missing next epoch content key, and an older directory cannot reach a
+fresh callback (:569). No notice submission or abort, one unchanged ticket,
+charge1 and no lease/attempt/bootstrap growth (:595). Native1PASS5.58s in
+sh_fccfda47c755776dcf34871798eba283,PID3141451; required-daemon Bridge1045PASS
+59.16s in sh_f4166e587edeabe16697c0a514cd1437. Exact commands, draft failures,
+cleanup and source-cited unsupported/enabled matrix are in
+docs/m3b-provider-support-matrix.md. No production implementation changed.
+
+The previous pending-loss section's source line references are pinned to
+c61dad29. Its independent audit89bfda15/artifact art_18e5bc7e475b471c is now
+named-review approved for87b6df96..c61dad29 only. That scope proves safe refusal,
+not eventual recovery, authoritative absence, persistent Bridge restart or
+full M3b/platform acceptance. This new idle delta needs independent review.
+
+Claude2.1.319 installed paste-handler inspection reconfirms TAB replacement
+before large-paste collapse; no supported exact-TAB current-PTY route is proven.
+Official external-editor and print stream-JSON options are different transport
+approaches requiring separate approval/design, not substitutions or waivers.
+Mac still needs online access and a proven hardened executable backend. Full
+milestone remains incomplete; no live restart/deployment/push.

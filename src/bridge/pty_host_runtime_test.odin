@@ -439,7 +439,7 @@ pty_host_build_spawn_from_profile :: proc(t: ^testing.T) {
 	testing.expect_value(t, req.cwd, "/tmp/run/inst_test")
 	testing.expect(t, req.has_cwd, "cwd present")
 	testing.expect(t, len(req.argv) > 0, "argv non-empty")
-	testing.expect_value(t, len(req.env), 2)
+	testing.expect_value(t, len(req.env), 5)
 	testing.expect_value(t, req.rows, u16(25))
 	testing.expect_value(t, req.cols, u16(80))
 	testing.expect_value(t, req.rows, u16(PTY_HOST_DEFAULT_ROWS))

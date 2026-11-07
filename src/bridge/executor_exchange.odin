@@ -72,6 +72,11 @@ bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string,activati
     if !opened do return
     defer crypto.zero_explicit(raw_data(plain),len(plain))
     exchange,parsed:=contracts.executor_parse(plain,"activation_exchange" if activation else "exchange")
+    notification:=false
+    if !activation && !parsed {
+        exchange,parsed=contracts.executor_parse(plain,"notification_exchange")
+        notification=parsed
+    }
     has_bootstrap:=false
     if activation && !parsed {
         exchange,parsed=contracts.executor_parse(plain,"activation_bootstrap_exchange")
@@ -80,7 +85,8 @@ bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string,activati
     scope,scoped:=contracts.executor_parse(get(exchange,"scope"),"transport_scope")
     genesis,g_ok:=contracts.owner_parse(wire.genesis,"genesis")
     method:=get(scope,"method")
-    if !parsed || !scoped || !g_ok || (method!="prepare" && method!="action") || get(scope,"direction")!="request" ||
+    if notification!=(method=="notification") do return
+    if !parsed || !scoped || !g_ok || (method!="prepare" && method!="action" && method!="notification") || get(scope,"direction")!="request" ||
        get(scope,"account_id")!=account || get(scope,"executor_bridge_id")!=bridge_config.daemon_id ||
        get(scope,"chain_id")!=get(relay,"chain_id") || get(scope,"request_id")!=get(relay,"request_id") ||
        get(genesis,"chain_id")!=get(scope,"chain_id") || get(genesis,"account_id")!=account ||
@@ -111,6 +117,18 @@ bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string,activati
     if binding.code!="ok" {reply.code=binding.code;return}
     if !executor.owner_bound(s,p,method,owner_key) do return
     if contracts.executor_number(scope,"executor_incarnation")!=s.incarnation && !(activation && method=="action" && get(p,"method")=="activate") {reply.code="stale_incarnation";return}
+    if notification {
+        self:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,self_id,public,"bridge",true,false}
+        result:=bridge_executor_notification_dispatch(s,request_raw,get(exchange,"message"),contracts.executor_number(exchange,"claim_attempt"),
+            owner_key,self,&kr,generation,callback_ctx,fence_exchange,launch_io)
+        reply.code=result.code
+        if result.code!="ok" do return
+        scope["direction"]=json.String("response")
+        token,sealed:=channel.seal(result.body,&kr,scope,time.to_unix_nanoseconds(time.now())/1000000,context.temp_allocator)
+        if !sealed {reply.code="expired";return}
+        reply.envelope=token
+        return
+    }
     // Trusted housekeeping retains charges for active/uncertain children.
     _=executor.expire(s,now)
     result:executor.Result

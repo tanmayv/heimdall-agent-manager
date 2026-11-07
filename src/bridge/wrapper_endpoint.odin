@@ -227,7 +227,7 @@ bridge_local_endpoint_handle_jsonl_line :: proc(line: string,
 	if bridge_local_spoofable_params(params) do return bridge_local_response_error(request_id, "forbidden", "local callers cannot spoof owner, sender, instance, or Hub credentials")
 	rec, ok := bridge_agent_token_verify(token)
 	if !ok {
-        if method=="agent.owner_local.lease" || method=="agent.start_success" {
+        if method=="agent.owner_local.lease" || method=="agent.start_success" || method=="agent.extension.event" {
             if response,handled:=bridge_executor_agent(request_id,params,token,executor_transport,executor_socket,method);handled do return response
         }
         return bridge_local_response_error(request_id, "unauthenticated", "local agent token is invalid or rotated")

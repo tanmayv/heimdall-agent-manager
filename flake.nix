@@ -262,7 +262,14 @@
       mkPtyHost = pkgs:
         let
           craneLib = crane.mkLib pkgs;
-          src = craneLib.cleanCargoSource ./tools/pty_host;
+          src = pkgs.lib.cleanSourceWith {
+            src = ./tools/pty_host;
+            # Odin and Rust share this exact codec fixture; crane's default
+            # filter keeps only Rust/TOML/lock files.
+            filter = path: type: craneLib.filterCargoSources path type
+              || pkgs.lib.hasSuffix "/fixtures/notification-prepare.hex" path
+              || pkgs.lib.hasSuffix "/fixtures/notification-messages.json" path;
+          };
           commonArgs = {
             inherit src;
             strictDeps = true;
@@ -302,7 +309,12 @@
               else
                 pkgs.pkgsCross.musl64;
             craneLib = crane.mkLib crossPkgs;
-            src = craneLib.cleanCargoSource ./tools/pty_host;
+            src = pkgs.lib.cleanSourceWith {
+              src = ./tools/pty_host;
+              filter = path: type: craneLib.filterCargoSources path type
+                || pkgs.lib.hasSuffix "/fixtures/notification-prepare.hex" path
+                || pkgs.lib.hasSuffix "/fixtures/notification-messages.json" path;
+            };
             rustTarget = crossPkgs.stdenv.hostPlatform.rust.rustcTarget;
             rustflagsEnv = "CARGO_TARGET_${pkgs.lib.toUpper (pkgs.lib.replaceStrings [ "-" ] [ "_" ] rustTarget)}_RUSTFLAGS";
             commonArgs = {

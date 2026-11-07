@@ -46,7 +46,7 @@ export async function openSignedExecutorChannel(token: string, keyring: VaultKey
     const plain = await openExecutorChannel(token,keyring,expected,now);
     if (plain === null) return null;
     let kind: ExecutorKind = direction === 'request' && method === 'enrollment' ? 'issuance_consent' : method as ExecutorKind;
-    if (direction === 'response') kind = method === 'prepare' || method === 'action' ? 'receipt' : method === 'fence_request' ? 'fence_reply' : kind;
+    if (direction === 'response') kind = method === 'prepare' || method === 'action' ? 'receipt' : method === 'fence_request' ? 'fence_reply' : method === 'notification' ? 'notification_result' : method === 'notification_fence_request' ? 'notification_fence_reply' : kind;
     const value = executorParse(plain,kind);
     if (!await executorVerify(kind,value,key)) return null;
     if (kind === 'receipt' && ((method === 'prepare') !== (value.method === 'prepare'))) return null;
@@ -56,9 +56,9 @@ export async function openSignedExecutorChannel(token: string, keyring: VaultKey
     let input: string, fence: string;
     if (direction === 'request') {
       input = await ownerPayloadDigest(executorCanonical(kind,value));
-      fence = method === 'prepare' ? input : method === 'fence_request' ? value.action_digest : method === 'enrollment' ? value.selection_digest : value.prepare_digest;
+      fence = method === 'prepare' ? input : (method === 'fence_request' || method === 'notification_fence_request') ? value.action_digest : method === 'enrollment' ? value.selection_digest : value.prepare_digest;
     } else if (method === 'enrollment') { input = value.configuration_digest;fence = input; }
-    else if (method === 'fence_request') { input = value.request_digest;fence = value.action_digest; }
+    else if (method === 'fence_request' || method === 'notification_fence_request') { input = value.request_digest;fence = value.action_digest; }
     else { input = value.input_digest;fence = value.prepare_digest; }
     return input === expected.input_digest && fence === expected.fence_digest ? plain : null;
   } catch { return null; }

@@ -1,0 +1,197 @@
+{
+  "recorded_utc": "2026-11-07T10:47:20Z",
+  "bridge_id": "brg_18e30f3f36df903e",
+  "task_id": "task_18e5ac3dc3e13d1e",
+  "scope": "Existing Mac native prerequisite observation; no backend acceptance",
+  "note": "Raw Hub logs remain authoritative. Omitted noisy binary first-line dump and lengthy Nix option descriptions; selected values retained separately. Query automatic stale-temproots maintenance is preserved.",
+  "sessions": [
+    {
+      "session_id": "sh_30e7db523fdf91493757ebbc4cd8cb46",
+      "total_lines": 10,
+      "lines": [
+        "Darwin 25.6.0 x86_64",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang",
+        "Apple clang version 21.0.0 (clang-2100.1.1.101)",
+        "Target: x86_64-apple-darwin25.6.0",
+        "Thread model: posix",
+        "InstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/share/man/man2/execve.2",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/share/man/man2/posix_spawn.2",
+        "No manual entry for fexecve",
+        "/usr/bin/python3",
+        ""
+      ],
+      "omitted_diagnostic_prefixes": [
+        "launcher_first_line",
+        "nix_protection_relevant_config"
+      ]
+    },
+    {
+      "session_id": "sh_2d14f95ac7e233c21b5102d392571c9f",
+      "total_lines": 33,
+      "lines": [
+        "uid_gid 501 20",
+        "absent_known_path /Users/tanmay/.cache/heimdall-mac-rerun-9e6b89af/providers/node_modules/@openai/codex-darwin-x64/vendor/x86_64-apple-darwin/bin/codex",
+        "absent_known_path /Users/tanmay/.nix-profile/bin/codex",
+        "absent_known_path /Users/tanmay/.local/bin/codex",
+        "absent_known_path /usr/local/bin/codex",
+        "absent_known_path /opt/homebrew/bin/codex",
+        "existing {\"path\": \"/nix/var/nix/profiles/default/bin/nix\", \"canonical\": \"/nix/store/bj12vbvfgn2bbgc7jjjlbr62c4bmn382-nix-3.11.1/bin/nix\", \"uid\": 0, \"gid\": 350, \"mode\": \"0o555\", \"size\": 3960024, \"writable\": false}",
+        "-r-xr-xr-x  1 root  nixbld  - 3960024 Jan  1  1970 /nix/store/bj12vbvfgn2bbgc7jjjlbr62c4bmn382-nix-3.11.1/bin/nix",
+        "dr-xr-xr-x  14 root  nixbld  - 448 Sep  5  2025 /nix/store/bj12vbvfgn2bbgc7jjjlbr62c4bmn382-nix-3.11.1/bin",
+        "dr-xr-xr-x  7 root  nixbld  - 224 Sep  5  2025 /nix/store/bj12vbvfgn2bbgc7jjjlbr62c4bmn382-nix-3.11.1",
+        "drwxrwxr-t@ 11877 root  nixbld  - 380064 Nov  7 13:53 /nix/store",
+        "drwxr-xr-x  9 root  wheel  - 288 Oct 23 10:00 /nix",
+        "drwxr-xr-x  22 root  wheel  sunlnk 704 Oct 16 09:50 /",
+        "Filesystem   512-blocks      Used Available Capacity  Mounted on",
+        "/dev/disk1s8  976490576  54959232 554312440    10%    /nix",
+        "sdk /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk",
+        "sdk_declaration_check fexecve 1 <stdin>:3:28: error: use of undeclared identifier 'fexecve'; did you mean 'execve'?",
+        "    3 | void *candidate = (void *)&fexecve;",
+        "      |                            ^~~~~~~",
+        "      |                            execve",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/unistd.h:457:6: note: 'execve' declared here",
+        "  457 | int      execve(const char * __file, char *_LIBC_CSTR const *_LIBC_NULL_TERMINATED __argv, char *_LIBC_CSTR const *_LIBC_NULL_TERMINATED __envp) __WATCHOS_PROHIBITED __TVOS_PROHIBITED;",
+        "      |          ^",
+        "1 error generated.",
+        "sdk_declaration_check execveat 1 <stdin>:3:28: error: use of undeclared identifier 'execveat'; did you mean 'execve'?",
+        "    3 | void *candidate = (void *)&execveat;",
+        "      |                            ^~~~~~~~",
+        "      |                            execve",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/unistd.h:457:6: note: 'execve' declared here",
+        "  457 | int      execve(const char * __file, char *_LIBC_CSTR const *_LIBC_NULL_TERMINATED __argv, char *_LIBC_CSTR const *_LIBC_NULL_TERMINATED __envp) __WATCHOS_PROHIBITED __TVOS_PROHIBITED;",
+        "      |          ^",
+        "1 error generated.",
+        "sdk_declaration_check posix_spawn_file_actions_addinherit_np 0 ",
+        ""
+      ],
+      "omitted_diagnostic_prefixes": [
+        "launcher_first_line",
+        "nix_protection_relevant_config"
+      ]
+    },
+    {
+      "session_id": "sh_f88494a6b9d5cd24e850c508c7c65202",
+      "total_lines": 8,
+      "lines": [
+        "bounded_candidate_pattern /nix/store/*codex*/bin/codex count 1",
+        "candidate {\"path\": \"/nix/store/0yd2iwrahi7bg2rv2sanmfhpg0dk7vcg-codex-0.146.0/bin/codex\", \"canonical\": \"/nix/store/0yd2iwrahi7bg2rv2sanmfhpg0dk7vcg-codex-0.146.0/bin/codex\", \"writable\": false}",
+        "bounded_candidate_pattern /nix/store/*codex*/vendor/x86_64-apple-darwin/bin/codex count 0",
+        "bounded_candidate_pattern /Users/tanmay/.cache/heimdall-mac-rerun-*/providers/node_modules/@openai/codex-darwin-x64/vendor/x86_64-apple-darwin/bin/codex count 0",
+        "bounded_candidate_pattern /etc/profiles/per-user/tanmay/bin/codex count 0",
+        "bounded_candidate_pattern /run/current-system/sw/bin/codex count 1",
+        "candidate {\"path\": \"/run/current-system/sw/bin/codex\", \"canonical\": \"/nix/store/0yd2iwrahi7bg2rv2sanmfhpg0dk7vcg-codex-0.146.0/bin/codex\", \"writable\": false}",
+        "group_names [20, 1005, 12, 61, 79, 80, 81, 98, 701, 33, 100, 204, 250, 395, 398, 399, 400]",
+        ""
+      ],
+      "omitted_diagnostic_prefixes": [
+        "launcher_first_line",
+        "nix_protection_relevant_config"
+      ]
+    },
+    {
+      "session_id": "sh_76fa9465e697974bcaa443ab63ce07ab",
+      "total_lines": 13,
+      "lines": [
+        "candidate_sha256 8aeff09a5164b383a14be7f9652f9d4713511b08e9fb4e982f0891b1a31d2ec5",
+        "-r-xr-xr-x  1 root  nixbld  - 13248 Jan  1  1970 /nix/store/0yd2iwrahi7bg2rv2sanmfhpg0dk7vcg-codex-0.146.0/bin/codex",
+        "dr-xr-xr-x  5 root  nixbld  - 160 Jan  1  1970 /nix/store/0yd2iwrahi7bg2rv2sanmfhpg0dk7vcg-codex-0.146.0/bin",
+        "dr-xr-xr-x  4 root  nixbld  - 128 Jan  1  1970 /nix/store/0yd2iwrahi7bg2rv2sanmfhpg0dk7vcg-codex-0.146.0",
+        "drwxrwxr-t@ 11877 root  nixbld  - 380064 Nov  7 13:53 /nix/store",
+        "drwxr-xr-x  9 root  wheel  - 288 Oct 23 10:00 /nix",
+        "drwxr-xr-x  22 root  wheel  sunlnk 704 Oct 16 09:50 /",
+        "native_version codex-cli 0.146.0",
+        "Filesystem   512-blocks      Used Available Capacity  Mounted on",
+        "/dev/disk1s8  976490576  54959232 554307640    10%    /nix",
+        "store_mount ['/dev/disk1s8 on /nix (apfs, local, nosuid, journaled, noatime, nobrowse)']",
+        "nix_config_read_exit 0",
+        ""
+      ],
+      "omitted_diagnostic_prefixes": [
+        "launcher_first_line",
+        "nix_protection_relevant_config"
+      ]
+    },
+    {
+      "session_id": "sh_e6c1fdc7a2e5bca09eecf0189f8e8e10",
+      "total_lines": 9,
+      "lines": [
+        "launcher_file_type /nix/store/0yd2iwrahi7bg2rv2sanmfhpg0dk7vcg-codex-0.146.0/bin/codex: Mach-O 64-bit executable x86_64",
+        "direct_bin_names ['codex', 'codex-code-mode-host', '.codex-wrapped']",
+        "wrapper_store_references ['/nix/store/0yd2iwrahi7bg2rv2sanmfhpg0dk7vcg-codex-0.146.0/bin/.codex-wrapped', '/nix/store/yclzcx3iq9wk0vb6dr0kqb8wc75vrc1h-ripgrep-15.1.0/bin']",
+        "reference_type /nix/store/0yd2iwrahi7bg2rv2sanmfhpg0dk7vcg-codex-0.146.0/bin/.codex-wrapped: Mach-O 64-bit executable x86_64",
+        "sibling .codex-wrapped 381827576 0 0o555 False",
+        "/nix/store/0yd2iwrahi7bg2rv2sanmfhpg0dk7vcg-codex-0.146.0/bin/.codex-wrapped: Mach-O 64-bit executable x86_64",
+        "sibling codex-code-mode-host 61179688 0 0o555 False",
+        "/nix/store/0yd2iwrahi7bg2rv2sanmfhpg0dk7vcg-codex-0.146.0/bin/codex-code-mode-host: Mach-O 64-bit executable x86_64",
+        ""
+      ],
+      "omitted_diagnostic_prefixes": [
+        "launcher_first_line",
+        "nix_protection_relevant_config"
+      ]
+    },
+    {
+      "session_id": "sh_1eae50bf473a461a00dfd14e069c2b20",
+      "total_lines": 12,
+      "lines": [
+        "actual_native_sha256 c92993a099decee6b728f52209705bcabb8a1db93e0e7102bc1d8985aec0f607 bytes 381827576",
+        "-r-xr-xr-x  1 root  nixbld  - 381827576 Jan  1  1970 /nix/store/0yd2iwrahi7bg2rv2sanmfhpg0dk7vcg-codex-0.146.0/bin/.codex-wrapped",
+        "exact_file_open_snapshot_exit 0 records p11412",
+        "c.codex-wrapped",
+        "u501",
+        "ftxt",
+        "a",
+        "config_path /etc/nix/nix.conf",
+        "selected_config_line !include nix.custom.conf",
+        "config_path_absent /Users/tanmay/.config/nix/nix.conf",
+        "client_selected_values {\"build-users-group\": \"\", \"trusted-users\": [\"root\"], \"allowed-users\": [\"*\"], \"sandbox\": false, \"require-sigs\": true}",
+        "read_only_snapshot_not_daemon_policy_or_updater_race_proof",
+        ""
+      ],
+      "omitted_diagnostic_prefixes": [
+        "launcher_first_line",
+        "nix_protection_relevant_config"
+      ]
+    },
+    {
+      "session_id": "sh_9bdbc4da55784d2ede2560ae3d643301",
+      "total_lines": 9,
+      "lines": [
+        "selected_system_config /etc/nix/nix.conf exists True canonical /private/etc/nix/nix.conf",
+        "!include nix.custom.conf",
+        "selected_system_config /etc/nix/nix.custom.conf exists True canonical /nix/store/3m8l9dywsah2vmzblapb2nvc3l46c671-etc-nix.custom.conf",
+        "sandbox = false",
+        "known_daemon_plist_exists True",
+        "daemon_executable /bin/sh",
+        "daemon_has_option_override False",
+        "daemon_config_location {}",
+        "daemon_identity 364     0 /nix/var/nix/profiles/default/bin/nix-daemon",
+        ""
+      ],
+      "omitted_diagnostic_prefixes": [
+        "launcher_first_line",
+        "nix_protection_relevant_config"
+      ]
+    },
+    {
+      "session_id": "sh_4c1de603bece9a2326f9aabddff6dfb4",
+      "total_lines": 8,
+      "lines": [
+        "removing stale temporary roots file '/nix/var/nix/temproots/9390'",
+        "/nix/var/nix/profiles/system-5-link -> /nix/store/2wy6k9pc0fcddd8yn7dkxm7j8wh107sk-darwin-system-26.05.4459544",
+        "/run/current-system -> /nix/store/2wy6k9pc0fcddd8yn7dkxm7j8wh107sk-darwin-system-26.05.4459544",
+        "{censored} -> /nix/store/0yd2iwrahi7bg2rv2sanmfhpg0dk7vcg-codex-0.146.0",
+        "/nix/var/nix/profiles/system-4-link -> /nix/store/yc879gh41n755482bqy4dlvf7f3aqy4c-darwin-system-26.05.4459544",
+        "drwxr-xr-x  5 root  wheel   - 160 Oct 26 22:27 /nix/var/nix/gcroots",
+        "lrwxr-xr-x  1 root  wheel   -  13 Oct 22 19:41 /nix/var/nix/profiles/system -> system-5-link",
+        "lrwxr-xr-x  1 root  daemon  -  71 Oct 26 22:27 /run/current-system -> /nix/store/2wy6k9pc0fcddd8yn7dkxm7j8wh107sk-darwin-system-26.05.4459544",
+        ""
+      ],
+      "omitted_diagnostic_prefixes": [
+        "launcher_first_line",
+        "nix_protection_relevant_config"
+      ]
+    }
+  ]
+}

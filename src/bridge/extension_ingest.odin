@@ -110,6 +110,7 @@ bridge_ext_ingest :: proc(rec: Bridge_Local_Agent_Token_Record, params: string, 
 			continue
 		}
 		defer contracts.ext_event_destroy(&ev)
+		bridge_pty_notification_session(rec,ev)
 		bridge_tool_live_event(rec, ev, raw)
 		if bridge_startup_event(ev) {
 			// A launch's first readiness completes a context rollover restart (T6).

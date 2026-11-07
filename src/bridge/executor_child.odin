@@ -54,7 +54,7 @@ bridge_executor_child_fetch :: proc(_:rawptr,generation:i64)->(vault.Directory_V
 bridge_executor_child_send :: proc(_:rawptr,request,input:string,generation:i64)->Executor_Fence_Outcome {return bridge_executor_child_exchange(request,input,generation)}
 bridge_executor_agent :: proc(request_id,input,secret:string,
     transport:Executor_Child_Transport={nil,bridge_executor_child_fetch,bridge_executor_child_send},socket_path:string="",method:string="agent.owner_local.lease")->(string,bool) {
-    if method!="agent.owner_local.lease" && method!="agent.start_success" do return "",false
+    if method!="agent.owner_local.lease" && method!="agent.start_success" && method!="agent.extension.event" do return "",false
     generation:=bridge_task_chain_search_generation()
     account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
     public:=bridge_identity_public_key_hex(bridge_config.daemon_id)
@@ -75,7 +75,7 @@ bridge_executor_agent :: proc(request_id,input,secret:string,
     }
     kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
     if !unlocked do return fail(request_id,"vault_locked")
-    if transport.directory==nil || method!="agent.start_success" && transport.exchange==nil do return fail(request_id,"owner_unavailable")
+    if transport.directory==nil || method=="agent.owner_local.lease" && transport.exchange==nil do return fail(request_id,"owner_unavailable")
     directory,fetched:=transport.directory(transport.ctx,generation)
     if !fetched do return fail(request_id,"directory_unavailable")
     b,parsed:=contracts.executor_parse(raw,"bootstrap")
@@ -88,6 +88,8 @@ bridge_executor_agent :: proc(request_id,input,secret:string,
         if socket=="" do socket=pty_host_socket_path()
         if method=="agent.start_success" {
             attested=bridge_executor_child_ready(&bridge_executor_store,instance,secret,socket,source,host)
+        } else if method=="agent.extension.event" {
+            attested=bridge_executor_child_notification_session(&bridge_executor_store,instance,secret,input,socket,source,host)
         } else {
             attested=bridge_executor_child_attest(&bridge_executor_store,instance,secret,input,socket,source,host,{nil,bridge_executor_sign})
         }
@@ -95,7 +97,7 @@ bridge_executor_agent :: proc(request_id,input,secret:string,
     }
     sync.mutex_unlock(&bridge_executor_mutex)
     if attested.code!="ok" do return fail(request_id,attested.code)
-    if method=="agent.start_success" {
+    if method=="agent.start_success" || method=="agent.extension.event" {
         if generation!=bridge_task_chain_search_generation() do return fail(request_id,"vault_locked")
         return bridge_local_response_data(request_id,attested.body),true
     }
@@ -139,4 +141,40 @@ bridge_executor_child_ready :: proc(s:^executor.Store,instance,secret,socket:str
     if !known || pid<=0 do return executor.Result{code="child_not_current"}
     return executor.child_ready(s,instance,secret,executor.Child_Observation{instance,key,s.incarnation,true},
         owner_key,executor_key,bridge_executor_physical_clock(nil))
+}
+
+
+// Only current remote-child native session observation is accepted here. This
+// never installs a legacy Hub token, relays arbitrary extension effects, marks
+// readiness, grants task authority, configures profiles or writes PTY input.
+bridge_executor_child_notification_session :: proc(s:^executor.Store,instance,secret,input,socket:string,
+    owner_key,executor_key:contracts.Owner_Verified_Key)->executor.Result {
+    sync.mutex_lock(&bridge_startup_io_mutex);defer sync.mutex_unlock(&bridge_startup_io_mutex)
+    raw,authenticated:=executor.child_bootstrap(s,instance,secret,bridge_executor_physical_clock(nil))
+    if !authenticated do return {code="invalid_scope"}
+    b,parsed:=contracts.executor_parse(raw,"bootstrap")
+    if !parsed || !contracts.executor_verify("bootstrap",b,owner_key) ||
+       contracts.owner_string(b,"executor_bridge_id")!=executor_key.principal_id { return {code="invalid_scope"} }
+    pid,known:=bridge_pty_host_executor_query(socket,instance,contracts.owner_string(b,"launch_key"))
+    if !known || pid<=0 do return {code="child_not_current"}
+    raws,err:=contracts.ext_split_events(input)
+    if err!=.None do return {code="malformed"}
+    defer contracts.ext_split_events_destroy(raws)
+    accepted:=0
+    for value in raws {
+        ev,parse_err:=contracts.ext_parse_event(value)
+        if parse_err!=.None do return {code="malformed"}
+        defer contracts.ext_event_destroy(&ev)
+        if ev.provider!="codex" || ev.kind!=.Session || ev.session_phase!="start" ||
+           ev.agent_id!="" || (ev.agent_type!="" && ev.agent_type!="main") { continue }
+        // Repeat token/runtime fences immediately before the observation IPC.
+        _,current:=executor.child_bootstrap(s,instance,secret,bridge_executor_physical_clock(nil))
+        if !current do return {code="invalid_scope"}
+        if !bridge_pty_notification_bind_session(socket,instance,pid,contracts.owner_string(b,"token_generation"),
+            contracts.owner_string(b,"launch_epoch"),contracts.owner_string(b,"run_count"),ev.session_id,ev.transcript_path,ev.session_source) {
+            return {code="notification_profile_unsupported"}
+        }
+        accepted+=1
+    }
+    return {code="ok",body=bridge_owner_json(struct{accepted,rejected:int}{accepted,0})}
 }

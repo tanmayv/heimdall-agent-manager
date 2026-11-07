@@ -25,12 +25,20 @@ control_notice :: proc(s:^Store,c:json.Object,child:Child,kind:string) -> bool {
 }
 control_notify :: proc(s:^Store,c:json.Object,kind:string) -> bool {
     chain,task:=field(c,"chain_id"),field(c,"task_id")
-    rows,ok:=query(s.db,"SELECT instance_id,launch_epoch,token_generation,run_count FROM local_leases WHERE chain_id=? AND task_id=? AND retired_seq IS NULL",chain,task)
+    rows,ok:=query(s.db,"SELECT l.instance_id,l.launch_epoch,l.token_generation,l.run_count,COALESCE((SELECT j.child_json FROM owner_execution_journal j WHERE j.lease_id=l.lease_id AND j.state='committed'),'') FROM local_leases l WHERE l.chain_id=? AND l.task_id=? AND l.retired_seq IS NULL",chain,task)
     if !ok do return false
     agent:=""
     if config,_,found:=lifecycle_config(s,chain,task);found do agent=field(config,"author_agent_id")
     for row in rows {
-        if !control_notice(s,c,Child{row[0],row[1],row[2],number(row[3]),agent},kind) do return false
+        child:=Child{row[0],row[1],row[2],number(row[3]),agent}
+        if row[4]!="" {
+            // Remote grants retain the complete original Child, including its
+            // author identity; a local lifecycle configuration may not exist.
+            if json.unmarshal_string(row[4],&child,.JSON,context.temp_allocator)!=nil ||
+               child.instance!=row[0] || child.epoch!=row[1] || child.token_generation!=row[2] ||
+               child.run_count!=number(row[3]) || child.agent_id=="" {return false}
+        }
+        if !control_notice(s,c,child,kind) do return false
     }
     sessions,read:=query(s.db,"SELECT child FROM local_review_sessions WHERE chain_id=? AND task_id=? UNION SELECT child_json FROM local_checkpoints WHERE chain_id=? AND task_id=?",chain,task,chain,task)
     if !read do return false
@@ -192,6 +200,11 @@ control_intents :: proc(tx:^Transaction,c:json.Object,seq:i64) -> bool {
     rows,ok:=query(tx.store.db,"SELECT child_json,kind,task_id FROM control_notices WHERE principal_id=? AND operation_id=?",field(c,"principal_id"),field(c,"operation_id"))
     if !ok do return false
     for row in rows {
+        if row[1]=="checkpoint" {
+            handled,ok:=execution_notification_intent(tx,c,row[0],seq)
+            if !ok do return false
+            if handled do continue
+        }
         if !intent_enqueue(tx,Intent_Input{chain=field(c,"chain_id"),principal=field(c,"principal_id"),operation=field(c,"operation_id"),seq=seq,kind=row[1],destination=payload_hash(row[0]),fence=row[0],payload=encode(doc(map[string]string{"task_id"=row[2],"method"=field(c,"method")}))}) do return false
     }
     return true

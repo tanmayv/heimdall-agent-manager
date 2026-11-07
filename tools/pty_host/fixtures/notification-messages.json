@@ -1,0 +1,214 @@
+{
+  "cases": [
+    {
+      "name": "ascii",
+      "message": "literal $() text",
+      "valid": true
+    },
+    {
+      "name": "euro",
+      "message": "€",
+      "valid": true
+    },
+    {
+      "name": "emoji",
+      "message": "😀",
+      "valid": true
+    },
+    {
+      "name": "latin-extended",
+      "message": "Ā",
+      "valid": true
+    },
+    {
+      "name": "japanese",
+      "message": "日本語",
+      "valid": true
+    },
+    {
+      "name": "multiline-tab-unicode",
+      "message": "first\n€ 日本語\t😀",
+      "valid": true
+    },
+    {
+      "name": "empty",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "cr",
+      "message": "bad\r",
+      "valid": false
+    },
+    {
+      "name": "esc",
+      "message": "bad\u001b",
+      "valid": false
+    },
+    {
+      "name": "del",
+      "message": "bad",
+      "valid": false
+    },
+    {
+      "name": "c1-80",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-81",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-82",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-83",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-84",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-85",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-86",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-87",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-88",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-89",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-8a",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-8b",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-8c",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-8d",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-8e",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-8f",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-90",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-91",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-92",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-93",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-94",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-95",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-96",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-97",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-98",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-99",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-9a",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-9b",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-9c",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-9d",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-9e",
+      "message": "",
+      "valid": false
+    },
+    {
+      "name": "c1-9f",
+      "message": "",
+      "valid": false
+    }
+  ]
+}

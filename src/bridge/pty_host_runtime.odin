@@ -376,10 +376,19 @@ bridge_pty_host_build_spawn_for_profile :: proc(instance_id, run_dir: string, pr
 	// The optional environment key fences StartupInput and StartupLaunch; existing
 	// clients and Spawn codecs remain wire-compatible.
 	env_pairs := bridge_pty_host_env_pairs(env)
-	spawn_env := make([dynamic][2]string, len(env_pairs), len(env_pairs) + 1)
-	copy(spawn_env[:], env_pairs)
+	spawn_env := make([dynamic][2]string, 0, len(env_pairs) + 3)
+    for pair in env_pairs {
+        if pair[0]=="HEIMDALL_STARTUP_KEY" || pair[0]=="HEIMDALL_NOTIFICATION_EPOCH" || pair[0]=="HEIMDALL_NOTIFICATION_RUN_COUNT" {
+            delete(pair[0]); delete(pair[1])
+        } else { append(&spawn_env,pair) }
+    }
 	delete(env_pairs)
 	append(&spawn_env, [2]string{strings.clone("HEIMDALL_STARTUP_KEY"), bridge_local_hash_token(agent_token)})
+    // Immutable child runtime fences. Legacy children without them fail closed
+    // for the staged notification command; normal input remains compatible.
+    notification_epoch, notification_count := bridge_pty_notification_spawn_fence(instance_id, agent_token)
+    append(&spawn_env, [2]string{strings.clone("HEIMDALL_NOTIFICATION_EPOCH"), notification_epoch})
+    append(&spawn_env, [2]string{strings.clone("HEIMDALL_NOTIFICATION_RUN_COUNT"), notification_count})
 	req := Pty_Host_Spawn_Request{
 		instance         = strings.clone(instance_id),
 		argv             = cloned_argv,
@@ -394,6 +403,7 @@ bridge_pty_host_build_spawn_for_profile :: proc(instance_id, run_dir: string, pr
 		timeout_seconds     = timeout_seconds,
 		rows                = PTY_HOST_DEFAULT_ROWS,
 		cols                = PTY_HOST_DEFAULT_COLS,
+        notification_profile = strings.clone("codex-native-session-v1") if profile.name=="codex" else "",
 	}
 	if !inert do bridge_pty_host_track_instance_provider(instance_id, profile.name)
 	return req, true
@@ -412,6 +422,7 @@ bridge_pty_host_env_pairs :: proc(env: []string) -> [][2]string {
 }
 
 bridge_pty_host_spawn_request_delete :: proc(req: Pty_Host_Spawn_Request) {
+    if req.notification_profile!="" do delete(req.notification_profile)
 	if req.instance != "" do delete(req.instance)
 	for a in req.argv do delete(a)
 	if req.argv != nil do delete(req.argv)

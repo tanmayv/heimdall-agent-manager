@@ -35,7 +35,7 @@ bind_owner :: proc(s:^Store,raw:string,creator,owner:contracts.Owner_Verified_Ke
     return Result{code="ok",body=digest}
 }
 owner_bound :: proc(s:^Store,request:json.Object,kind:string,key:contracts.Owner_Verified_Key)->bool {
-    if !scope(s,request) || (kind!="prepare" && kind!="action") || !contracts.executor_verify(kind,request,key) do return false
+    if !scope(s,request) || (kind!="prepare" && kind!="action" && kind!="notification") || !contracts.executor_verify(kind,request,key) do return false
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
     if s.db==nil || s.unusable do return false
     rows,ok:=query(s.db,"SELECT 1 FROM executor_chain_owners WHERE chain_id=? AND owner_bridge_id=? AND owner_key_id=?",

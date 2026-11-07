@@ -55,3 +55,29 @@ test('shared account key cannot replace sender signature or exact original reque
   const pending=await sealExecutorChannel(vector.request,kr,enrollment,1200n);
   assert.equal(await openSignedExecutorChannel(pending,kr,enrollment,vector.owner_key,1200n),null);
 });
+
+test('encrypted notification and checkpoint nonce bind both signatures and pending AAD',async()=>{
+  const {executorParse,executorCanonical}=await import('../src/ui/api/executor.ts');
+  const {ownerPayloadDigest}=await import('../src/ui/api/ownerLocal.ts');
+  const f=JSON.parse(readFileSync(new URL('../src/contracts/fixtures/executor-notification-v1.json',import.meta.url),'utf8'));
+  const kr=await keyring();
+  for(const [method,raw,response,sender,receiver] of [
+    ['notification',f.notification,f.result,f.owner_key,f.executor_key],
+    ['notification_fence_request',f.challenge,f.fence,f.executor_key,f.owner_key],
+  ] as const) {
+    const n=executorParse(raw,method);
+    const scope:ExecutorDocument={};
+    for(const name of ['protocol_version','account_id','owner_bridge_id','executor_bridge_id','chain_id','reservation_id','owner_incarnation','executor_incarnation']) scope[name]=n[name];
+    Object.assign(scope,{request_id:'notification_call',method,direction:'request',input_digest:await ownerPayloadDigest(executorCanonical(method,n)),
+      fence_digest:method==='notification'?n.prepare_digest:n.action_digest,issued_ms:'1300',request_expires_ms:'1700'});
+    const token=await sealExecutorChannel(raw,kr,scope,1400n);
+    assert.equal(await openSignedExecutorChannel(token,kr,scope,sender,1400n),raw);
+    const forgedScope={...scope,input_digest:'e'.repeat(64)};
+    const forged=await sealExecutorChannel(raw,kr,forgedScope,1400n);
+    assert.equal(await openSignedExecutorChannel(forged,kr,forgedScope,sender,1400n),null);
+    const replyScope={...scope,direction:'response'};
+    const sealed=await sealExecutorChannel(response,kr,replyScope,1400n);
+    assert.equal(await openSignedExecutorChannel(sealed,kr,replyScope,receiver,1400n),response);
+    assert.equal(await openSignedExecutorChannel(sealed,kr,replyScope,sender,1400n),null);
+  }
+});

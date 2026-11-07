@@ -131,6 +131,7 @@ pty_host_encode_spawn_full_shape :: proc(t: ^testing.T) {
 	// opt kind(0), label(0), meta(0), tee_path(0), timeout(1, u64=120)
 	append(&full_want, 0, 0, 0, 0)
 	append(&full_want, 1, 0, 0, 0, 0, 0, 0, 0, 120)
+    append(&full_want,0) // optional native profile absent
 
 	testing.expect_value(t, len(pl), len(full_want))
 	for i in 0..<len(full_want) do testing.expect_value(t, pl[i], full_want[i])
@@ -168,9 +169,25 @@ pty_host_encode_spawn_minimal_omits_opts :: proc(t: ^testing.T) {
 		0, // opt meta absent
 		0, // opt tee_path absent
 		0, // opt timeout_seconds absent
+        0, // opt notification_profile absent
 	}
 	testing.expect_value(t, len(pl), len(want))
 	for i in 0..<len(want) do testing.expect_value(t, pl[i], want[i])
+}
+
+@(test)
+pty_host_spawn_native_profile_is_explicit_trailing_option :: proc(t:^testing.T) {
+    req:=Pty_Host_Spawn_Request{instance="i",argv=[]string{"true"},rows=24,cols=80}
+    ordinary:=pty_host_encode_spawn(req);defer delete(ordinary)
+    req.notification_profile="codex-native-session-v1"
+    native:=pty_host_encode_spawn(req);defer delete(native)
+    before:=pty_host_test_reframe(t,ordinary);after:=pty_host_test_reframe(t,native)
+    testing.expect_value(t,len(after)-len(before),4+len(req.notification_profile))
+    for i in 0..<len(before)-1 do testing.expect_value(t,after[i],before[i])
+    offset:=len(before)-1
+    testing.expect_value(t,after[offset],u8(1));offset+=1
+    profile,valid:=pty_host_get_str(after,&offset);defer delete(profile)
+    testing.expect(t,valid && profile==req.notification_profile && offset==len(after))
 }
 
 // ---- reply decode round-trips (encode with our put_* then decode) --------

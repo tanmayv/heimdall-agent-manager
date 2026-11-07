@@ -327,6 +327,7 @@ fn ctl_spawn(
         meta: None,
         tee_path: None,
         timeout_seconds,
+        notification_profile: None,
     };
     match request(&socket, &CtlMsg::Spawn(req))? {
         CtlReply::Spawned { instance, pid } => {

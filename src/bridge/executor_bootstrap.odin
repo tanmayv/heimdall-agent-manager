@@ -41,7 +41,10 @@ bridge_executor_prepare_spawn :: proc(s:^executor.Store,intent:executor.Intent,n
     // The signed mapping selects the working directory, never a remote argv or
     // path assertion. Agent instructions live in the local run directory.
     // Keep cwd at run_dir; TASK.md carries the authoritative task workdir.
-    _=b
+    if !bridge_executor_bind_notification_spawn(&request,b,material.token_secret) {
+        bridge_pty_host_spawn_request_delete(request)
+        return {},false
+    }
     return request,true
 }
 
@@ -91,4 +94,28 @@ bridge_executor_materialize :: proc(dir,endpoint:string,m:executor.Launch_Materi
     if !bridge_bootstrap_write_ham_ctl_wrapper(dir,endpoint,m.token_secret,get(b,"instance_id")) do return {},false
     if os.write_entire_file(fmt.tprintf("%s/heimdall-executor-bootstrap.json",dir),transmute([]byte)m.bootstrap)!=nil do return {},false
     return Bridge_Prespawn_Result{strings.clone(dir),bridge_prespawn_env(dir,endpoint,m.token_secret,get(b,"instance_id"))},true
+}
+
+// Bootstrap admission has already verified the owner signature and exact
+// reservation. Remote tokens are not local token-store records: carry the
+// admitted epoch/count directly instead of falling back to the legacy empty
+// identity. Only this internal launch path may replace the derived env values.
+bridge_executor_bind_notification_spawn :: proc(request:^Pty_Host_Spawn_Request,b:json.Object,secret:string)->bool {
+    get:=contracts.owner_string
+    if !contracts.executor_valid(b,"bootstrap") || request.instance!=get(b,"instance_id") ||
+       contracts.owner_payload_digest(secret)!=get(b,"token_generation") {return false}
+    env:=make([dynamic][2]string,0,len(request.env)+3)
+    for pair in request.env {
+        if pair[0]=="HEIMDALL_STARTUP_KEY" || pair[0]=="HEIMDALL_NOTIFICATION_EPOCH" || pair[0]=="HEIMDALL_NOTIFICATION_RUN_COUNT" {
+            delete(pair[0]);delete(pair[1])
+        } else {append(&env,pair)}
+    }
+    delete(request.env)
+    // Notification IPC uses the startup key (token digest); executor query,
+    // close and renewal retain the separate reservation launch key.
+    append(&env,[2]string{strings.clone("HEIMDALL_STARTUP_KEY"),strings.clone(get(b,"token_generation"))})
+    append(&env,[2]string{strings.clone("HEIMDALL_NOTIFICATION_EPOCH"),strings.clone(get(b,"launch_epoch"))})
+    append(&env,[2]string{strings.clone("HEIMDALL_NOTIFICATION_RUN_COUNT"),strings.clone(get(b,"run_count"))})
+    request.env=env[:]
+    return true
 }

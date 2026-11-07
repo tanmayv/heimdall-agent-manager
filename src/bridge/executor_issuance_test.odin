@@ -56,6 +56,15 @@ test_executor_issuance_resolves_signed_directory_catalog_and_profile :: proc(t:^
 
 @(test)
 test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection :: proc(t:^testing.T) {
+    bridge_executor_issuance_mounted_scenario(t)
+}
+
+@(test)
+test_executor_original_owner_native_notification :: proc(t:^testing.T) {
+    when #config(EXECUTOR_NATIVE_OWNER,false) {bridge_executor_issuance_mounted_scenario(t,true)}
+    else {fmt.eprintln("[skip] actual native owner proof requires EXECUTOR_NATIVE_OWNER=true")}
+}
+bridge_executor_issuance_mounted_scenario :: proc(t:^testing.T,native:=false) {
     context.allocator=context.temp_allocator
     spec,queued:=bridge_command_spec("executor_issuance")
     testing.expect(t,queued && spec.queued && spec.class==.Exclusive && spec.retry_safe,"filesystem/SQLite issuance must leave the WebSocket reader")
@@ -66,8 +75,21 @@ test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection :: pr
     testing.expect(t,activate_known && activate_spec.queued && activate_spec.class==.General_IO && activate_spec.key_kind==.None && activate_spec.retry_safe)
 
     st:=p1c_test_setup(t);defer p1c_test_teardown(st)
+    selected_provider,selected_model:="claude","seed"
+    if native {
+        selected_provider="codex";selected_model=os.get_env("HEIMDALL_NATIVE_MODEL",context.temp_allocator)
+        binary:=os.get_env("HEIMDALL_NATIVE_CODEX",context.temp_allocator)
+        if !testing.expect(t,binary!="" && selected_model!="","explicit native executable/model required") do return
+        bridge_provider_catalog_snapshot.providers[0].provider="codex"
+        bridge_provider_catalog_snapshot.providers[0].binary=binary
+        bridge_provider_catalog_snapshot.providers[0].models[0].model_id=selected_model
+        bridge_provider_catalog_snapshot.providers[0].model_flag="--model"
+        bridge_provider_catalog_snapshot.providers[1].provider="claude"
+        profile:=Provider_Profile{profile_id="codex",provider="codex",enabled=true,config=Provider_Profile_Config{binary_path=binary}}
+        if !testing.expect_value(t,profile_upsert(&profile,nil,bridge_executor_physical_clock(nil)),Profile_Error.None) do return
+    }
     sync.mutex_lock(&keystore_test_mutex);defer sync.mutex_unlock(&keystore_test_mutex)
-    id,_:=keystore_test_bridge_ids()
+    id,owner_runtime_id:=keystore_test_bridge_ids()
     prior_id:=keystore_test_set_daemon_id(id);defer {bridge_config.daemon_id=prior_id}
     keystore_lock_and_purge(id);_=keystore_delete_identity_key(id);bridge_unseal_forget_identity()
     unseal_nonce_cache_clear(&g_unseal_nonce_cache);bridge_unseal_init()
@@ -123,25 +145,27 @@ test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection :: pr
     policy:=bridge_executor_test_doc("policy")
     bridge_executor_test_set(policy,"account_id",TEST_VAULT_USER_ID);bridge_executor_test_set(policy,"executor_bridge_id",id)
     bridge_executor_test_set(policy,"key_id",key_id)
-    bridge_executor_test_set(policy,"slots_json",`[{"slot_id":"slot1","provider_profile":"claude","enabled":"1"}]`)
+    bridge_executor_test_set(policy,"slots_json",executor.encode([]struct{slot_id,provider_profile,enabled:string}{{"slot1",selected_provider,"1"}}))
     testing.expect_value(t,executor.install_policy(&bridge_executor_store,bridge_executor_test_sign(policy,"policy",&host_private),host,now).code,"ok")
     mapping:=bridge_executor_test_doc("directory")
     for pair in ([4][2]string{{"account_id",TEST_VAULT_USER_ID},{"executor_bridge_id",id},{"key_id",key_id},{"directory_path",work}}) do bridge_executor_test_set(mapping,pair[0],pair[1])
     testing.expect_value(t,bridge_executor_install_directory(&bridge_executor_store,bridge_executor_test_sign(mapping,"directory",&host_private),host,now).code,"ok")
     device:=contracts.Owner_Verified_Key{TEST_VAULT_USER_ID,g.subject_device_id,g.subject_device_id,g.subject_sign_pub,"device",true,false}
     selection:=bridge_executor_test_doc("issuance_selection")
-    bridge_executor_test_set(selection,"provider","claude");bridge_executor_test_set(selection,"model","seed");bridge_executor_test_set(selection,"provider_profile","claude")
+    bridge_executor_test_set(selection,"provider",selected_provider);bridge_executor_test_set(selection,"model",selected_model);bridge_executor_test_set(selection,"provider_profile",selected_provider)
     selected:=executor.encode(selection)
     consent:=bridge_executor_test_doc("issuance_consent")
     for pair in ([7][2]string{{"account_id",TEST_VAULT_USER_ID},{"executor_bridge_id",id},{"executor_key_id",key_id},{"principal_id",g.subject_device_id},
         {"key_id",g.subject_device_id},{"issued_ms",fmt.tprintf("%d",now)},{"request_expires_ms",fmt.tprintf("%d",now+300000)}}) {bridge_executor_test_set(consent,pair[0],pair[1])}
     bridge_executor_test_set(consent,"selection_digest",contracts.owner_payload_digest(selected))
+    if native do bridge_executor_test_set(consent,"owner_bridge_id",owner_runtime_id)
     consent_raw:=bridge_executor_test_sign(consent,"issuance_consent",&device_private)
     digest,_:=contracts.executor_digest("issuance_consent",consent)
     scope:=bridge_executor_test_doc("transport_scope")
     for pair in ([10][2]string{{"account_id",TEST_VAULT_USER_ID},{"executor_bridge_id",id},{"method","enrollment"},{"reservation_id",""},{"request_id","mounted_issuance"},
         {"input_digest",digest},{"fence_digest",get(consent,"selection_digest")},{"issued_ms",fmt.tprintf("%d",now)},
         {"request_expires_ms",fmt.tprintf("%d",now+60000)},{"executor_incarnation","1"}}) {bridge_executor_test_set(scope,pair[0],pair[1])}
+    bridge_executor_test_set(scope,"owner_bridge_id",get(consent,"owner_bridge_id"))
     token,token_ok:=channel.seal(consent_raw,&kr,scope,now);testing.expect(t,token_ok)
     exchange:=executor.encode(struct{scope,envelope,selection:string}{executor.encode(scope),token,selected})
     outer,outer_ok:=vault.seal(transmute([]byte)exchange,&kr);testing.expect(t,outer_ok)
@@ -166,6 +190,22 @@ test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection :: pr
     // Enroll a distinct owner signing key under the same real paired root.
     owner_private,owner_key:=bridge_executor_test_key("owner1","pending",2)
     defer ecdsa.private_key_clear(&owner_private)
+    if native {
+        owner_key.principal_id=owner_runtime_id
+        prior_native_id:=bridge_config.daemon_id
+        bridge_config.daemon_id=owner_runtime_id
+        defer {bridge_config.daemon_id=prior_native_id;bridge_unseal_forget_identity()}
+        keystore_lock_and_purge(owner_runtime_id);_=keystore_delete_identity_key(owner_runtime_id)
+        bridge_unseal_forget_identity()
+        if !testing.expect(t,test_provision_identity(owner_runtime_id)) do return
+        record:Bridge_Identity_Record
+        if !testing.expect(t,keystore_read_identity(owner_runtime_id,&record)==.Found) do return
+        defer crypto.zero_explicit(&record,size_of(record))
+        ecdsa.private_key_clear(&owner_private)
+        if !testing.expect(t,ecdsa.private_key_set_bytes(&owner_private,.SECP256R1,record.scalar[:])) do return
+        owner_key.public_key=bridge_identity_public_key_hex(owner_runtime_id)
+    }
+    defer {if native {keystore_lock_and_purge(owner_runtime_id);_=keystore_delete_identity_key(owner_runtime_id)}}
     owner_id,_:=vault.device_id_from_sign_pub(owner_key.public_key,context.temp_allocator)
     owner_key.key_id=owner_id;owner_key.account_id=TEST_VAULT_USER_ID
     owner_approval:=vault.Statement{type="approve",user_id=TEST_VAULT_USER_ID,seq="3",prev_hash=directory.head_hash,
@@ -182,7 +222,7 @@ test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection :: pr
     copy(peer_directory.devices,directory.devices);peer_directory.devices[2]={owner_id,"bridge",vault.SIGN_ALG_ECDSA_P256_SHA256,"",owner_key.public_key,"",true,false}
     genesis_owner:=make(json.Object,context.temp_allocator)
     for pair in ([11][2]string{{"protocol_version","1"},{"account_id",TEST_VAULT_USER_ID},{"chain_id","chain"},{"creation_op","owner_genesis"},
-        {"owner_bridge_id","owner1"},{"owner_key_id",owner_id},{"creator_id",g.subject_device_id},{"creator_key_id",g.subject_device_id},
+        {"owner_bridge_id",owner_key.principal_id},{"owner_key_id",owner_id},{"creator_id",g.subject_device_id},{"creator_key_id",g.subject_device_id},
         {"schema_version","1"},{"creator_signature",strings.repeat("0",128,context.temp_allocator)},{"owner_signature",strings.repeat("0",128,context.temp_allocator)}}) {
         genesis_owner[pair[0]]=json.String(pair[1])
     }
@@ -193,6 +233,11 @@ test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection :: pr
     genesis_owner["owner_signature"]=json.String(vault.hex_encode_lower(owner_genesis_signature.sig[:],context.temp_allocator))
     request_value,_:=contracts.owner_content_document(plain);issued_bundle,_:=request_value.(json.Object)
     config,_:=contracts.owner_parse(get(issued_bundle,"configuration"),"remote_configuration")
+    if native {
+        bridge_executor_original_owner_native(t,peer_directory,executor.encode(genesis_owner),config,issued_bundle,
+            device,owner_key,host,&device_private,&owner_private,&kr,work)
+        return
+    }
     prepared:=bridge_executor_test_doc("prepare")
     for name in ([14]string{"account_id","owner_bridge_id","executor_bridge_id","chain_id","task_id","instance_id",
         "launch_epoch","run_count","token_generation","configuration_revision","executor_incarnation","policy_revision","slot_id","provider_profile"}) {prepared[name]=config[name]}
@@ -350,7 +395,8 @@ test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection :: pr
 // encryption. It does not stand in for a network/Hub enrollment demonstration.
 bridge_executor_test_exchange :: proc(t:^testing.T,wire:Executor_Exchange_Wire,request:json.Object,kind:string,
     private:^ecdsa.Private_Key,kr:^vault.Vault_Keyring,self:contracts.Owner_Verified_Key,id:string,probe:^Executor_Fence_Test_Probe=nil,bootstrap:string="",body:string="",
-    launch_io:Executor_Launch_IO={},physical:bool=false)->(json.Object,string) {
+    launch_io:Executor_Launch_IO={},physical:bool=false,notification_message:string="",
+    exchange_ctx:rawptr=nil,exchange_fn:Executor_Fence_Exchange=nil,owner_intent:string="",scope_out:^string=nil)->(json.Object,string) {
     get:=contracts.owner_string
     now:=time.to_unix_nanoseconds(time.now())/1000000
     raw:=bridge_executor_test_sign(request,kind,private)
@@ -367,13 +413,18 @@ bridge_executor_test_exchange :: proc(t:^testing.T,wire:Executor_Exchange_Wire,r
     if probe!=nil do exchange=executor.encode(struct{scope,envelope,intent_id,claim_attempt:string}{executor.encode(scope),encrypted,strings.repeat("a",64,context.temp_allocator),"1"})
     if bootstrap!="" {
         exchange=executor.encode(struct{scope,envelope,intent_id,claim_attempt,bootstrap,body:string}{
-            executor.encode(scope),encrypted,strings.repeat("a",64,context.temp_allocator),"1",bootstrap,body})
+            executor.encode(scope),encrypted,owner_intent if owner_intent!="" else strings.repeat("a",64,context.temp_allocator),"1",bootstrap,body})
+    }
+    if kind=="notification" {
+        exchange=executor.encode(struct{scope,envelope,message,claim_attempt:string}{executor.encode(scope),encrypted,notification_message,"1"})
     }
     outer,outer_ok:=vault.seal(transmute([]byte)exchange,kr);testing.expect(t,outer_ok)
     call:=wire;call.command_id=id
     call.relay=executor.encode(struct{protocol_version,chain_id,bridge_id,request_id,expires_ms,envelope:string}{
         "1",get(request,"chain_id"),get(request,"executor_bridge_id"),id,fmt.tprintf("%d",now+60000),outer})
-    if probe==nil {bridge_executor_exchange_handle(nil,executor.encode(call))} else {
+    if exchange_fn!=nil {
+        bridge_executor_exchange_handle(nil,executor.encode(call),kind!="notification",exchange_ctx,exchange_fn,bridge_executor_activate_dispatch,launch_io)
+    } else if probe==nil {bridge_executor_exchange_handle(nil,executor.encode(call),false,nil,bridge_executor_fence_exchange,bridge_executor_activate_dispatch,launch_io)} else {
         if physical {
             bridge_executor_exchange_handle(nil,executor.encode(call),true,probe,bridge_executor_test_fence_callback,bridge_executor_activate_dispatch,launch_io)
         } else {
@@ -386,9 +437,10 @@ bridge_executor_test_exchange :: proc(t:^testing.T,wire:Executor_Exchange_Wire,r
     code:=get(response,"code")
     if code!="ok" do return nil,code
     scope["direction"]=json.String("response")
+    if scope_out!=nil do scope_out^=executor.encode(scope)
     plain,opened:=channel.open_signed(get(response,"envelope"),kr,scope,self,time.to_unix_nanoseconds(time.now())/1000000)
     if !opened do return nil,"test_bad_reply"
-    receipt,valid:=contracts.executor_parse(plain,"receipt")
+    receipt,valid:=contracts.executor_parse(plain,"notification_result" if kind=="notification" else "receipt")
     return receipt,("ok" if valid else "test_bad_receipt")
 }
 
@@ -500,6 +552,40 @@ bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,wire:Executor_Exc
     again,queried:=bridge_pty_host_executor_query(socket,intent.instance,intent.launch_key)
     testing.expect(t,queried && again==pid)
     bootstrap,_:=contracts.executor_parse(material.bootstrap,"bootstrap")
+    notice:=contracts.PTY_Notification_Delivery{
+        protocol_version=1,source={intent.instance,contracts.owner_string(bootstrap,"launch_epoch"),contracts.owner_string(bootstrap,"run_count")},
+        pid=fmt.tprintf("%d",pid),launch_key=contracts.owner_string(bootstrap,"token_generation"),operation_id="bootstrap_notice",delivery_id="bootstrap_notice_delivery",
+        message="Inspect the owner checkpoint.",
+    }
+    prepared_notice:=bridge_pty_notification_request(socket,notice,PTY_NOTIFICATION_PREPARE,"")
+    defer delete(prepared_notice.ticket);defer delete(prepared_notice.input_profile)
+    testing.expect(t,prepared_notice.error==.None && prepared_notice.receipt.status=="partial" && prepared_notice.ticket!="",
+        "real remote child retains the exact bootstrap notification identity without local token records")
+    stale_notice:=notice;stale_notice.source.launch_epoch="replacement_epoch"
+    rejected_notice:=bridge_pty_notification_request(socket,stale_notice,PTY_NOTIFICATION_QUERY,prepared_notice.ticket)
+    defer delete(rejected_notice.ticket);defer delete(rejected_notice.input_profile)
+    testing.expect(t,rejected_notice.error!=.None || rejected_notice.receipt.status=="child_mismatch",
+        "replacement epoch cannot query the original child ticket")
+    notification:=make(json.Object,context.temp_allocator)
+    for entry in contracts.executor_schema("notification") do notification[entry.name]=bootstrap[entry.name]
+    message:="[owner-local] task.hold checkpoint € 日本語 😀\n"
+    bridge_executor_test_set(notification,"intent_id",strings.repeat("b",64,context.temp_allocator))
+    bridge_executor_test_set(notification,"owner_commit_seq","17")
+    bridge_executor_test_set(notification,"message_digest",contracts.owner_payload_digest(message))
+    bridge_executor_test_set(notification,"issued_ms",fmt.tprintf("%d",time.to_unix_nanoseconds(time.now())/1000000))
+    bridge_executor_test_set(notification,"request_expires_ms",fmt.tprintf("%d",time.to_unix_nanoseconds(time.now())/1000000+4000))
+    physical_result,notification_code:=bridge_executor_test_exchange(t,wire,notification,"notification",owner_private,kr,self_key,"physical_notification_unsupported",
+        nil,"","",Executor_Launch_IO{socket=socket},false,message)
+    if !testing.expect_value(t,notification_code,"ok") do return
+    testing.expect(t,contracts.executor_notification_result_matches(physical_result,notification,message,self_key,time.to_unix_nanoseconds(time.now())/1000000))
+    testing.expect(t,contracts.owner_string(physical_result,"status")=="unsupported_not_delivered" &&
+        contracts.owner_string(physical_result,"message_bytes_written")=="0","unvalidated real child fails closed with a signed exact zero-progress result")
+    changed_notification:=make(json.Object,context.temp_allocator)
+    for k,v in notification do changed_notification[k]=v
+    bridge_executor_test_set(changed_notification,"launch_epoch","replacement_epoch")
+    _,stale_notification:=bridge_executor_test_exchange(t,wire,changed_notification,"notification",owner_private,kr,self_key,"physical_notification_replacement",
+        nil,"","",Executor_Launch_IO{socket=socket},false,message)
+    testing.expect_value(t,stale_notification,"no_current_target")
     input:=executor.encode(contracts.Owner_Lease_Input{"1",contracts.owner_string(bootstrap,"chain_id"),contracts.owner_string(bootstrap,"task_id"),
         contracts.owner_string(bootstrap,"lease_id"),contracts.owner_string(bootstrap,"configuration_revision"),"1","live_child_hb","lease.heartbeat",
         contracts.owner_string(a,"request_expires_ms"),"existing_capability"})
@@ -511,6 +597,17 @@ bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,wire:Executor_Exc
     testing.expect(t,valid && contracts.executor_child_request_matches(child_request,bootstrap,input,self,owner_key,time.to_unix_nanoseconds(time.now())/1000000))
     probe:=Executor_Child_Test_Transport{t,directory,kr,owner_private,owner_key,0,0}
     transport:=Executor_Child_Transport{&probe,bridge_executor_test_child_directory,bridge_executor_test_child_exchange}
+    native_event:=`{"schema":"ham.ext.v1","provider":"codex","ext_version":"0.1.0","event":"session","ts":"2026-11-07T00:00:00Z","session_id":"native_session","transcript_path":"/not-a-native-session.jsonl","payload":{"phase":"start","source":"startup"}}`
+    native_params_value,_:=contracts.owner_content_document(native_event)
+    native_params,_:=native_params_value.(json.Object)
+    native_line:=executor.encode(struct{v:int,id,token,method:string,params:json.Object}{
+        1,"native_session",material.token_secret,"agent.extension.event",native_params})
+    native_response:=bridge_local_endpoint_handle_jsonl_line(native_line,transport,socket)
+    testing.expectf(t,strings.contains(native_response,"notification_profile_unsupported") && probe.exchanges==0,
+        "current remote child observes only its own native session; no legacy token or owner relay: %s",native_response)
+    wrong_native:=executor.encode(struct{v:int,id,token,method:string,params:json.Object}{
+        1,"native_wrong","wrong_secret","agent.extension.event",native_params})
+    testing.expect(t,strings.contains(bridge_local_endpoint_handle_jsonl_line(wrong_native,transport,socket),"unauthenticated"))
     ready_line:=executor.encode(struct{v:int,id,token,method:string,params:json.Object}{
         1,"ready_local",material.token_secret,"agent.start_success",make(json.Object,context.temp_allocator)})
     readiness:=bridge_local_endpoint_handle_jsonl_line(ready_line,transport,socket)
@@ -674,6 +771,12 @@ bridge_executor_test_physical_prepare :: proc(ctx:rawptr,s:^executor.Store,inten
     defer bridge_prespawn_result_delete(result)
     env:=bridge_pty_host_env_pairs(result.env)
     argv:=make([]string,1);argv[0]=strings.clone("sh")
-    return Pty_Host_Spawn_Request{instance=strings.clone(intent.instance),argv=argv,cwd=strings.clone(p.dir),has_cwd=true,env=env,
-        rows=24,cols=80,has_timeout_seconds=true,timeout_seconds=30},true
+    request:=Pty_Host_Spawn_Request{instance=strings.clone(intent.instance),argv=argv,cwd=strings.clone(p.dir),has_cwd=true,env=env,
+        rows=24,cols=80,has_timeout_seconds=true,timeout_seconds=30}
+    b,parsed:=contracts.executor_parse(material.bootstrap,"bootstrap")
+    if !parsed || !bridge_executor_bind_notification_spawn(&request,b,material.token_secret) {
+        bridge_pty_host_spawn_request_delete(request)
+        return {},false
+    }
+    return request,true
 }

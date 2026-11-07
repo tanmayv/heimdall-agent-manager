@@ -66,7 +66,9 @@ bridge_owner_executor_fence_handle :: proc(conn:^ws.Connection,text:string,child
     defer crypto.zero_explicit(raw_data(plain),len(plain))
     exchange,parsed:=contracts.executor_parse(plain,"child_exchange" if child else "exchange")
     scope,scoped:=contracts.executor_parse(get(exchange,"scope"),"transport_scope")
-    if !parsed || !scoped || get(scope,"method")!=("child_request" if child else "fence_request") || get(scope,"direction")!="request" ||
+    notification:=!child && get(scope,"method")=="notification_fence_request"
+    request_kind:="child_request" if child else ("notification_fence_request" if notification else "fence_request")
+    if !parsed || !scoped || get(scope,"method")!=request_kind || get(scope,"direction")!="request" ||
        get(scope,"account_id")!=account || get(scope,"owner_bridge_id")!=bridge_config.daemon_id ||
        get(scope,"executor_bridge_id")!=wire.executor_bridge_id ||
        get(scope,"chain_id")!=get(relay,"chain_id") || get(scope,"request_id")!=get(relay,"request_id") ||
@@ -84,13 +86,27 @@ bridge_owner_executor_fence_handle :: proc(conn:^ws.Connection,text:string,child
     raw,decrypted:=channel.open(get(exchange,"envelope"),&kr,scope,now,context.temp_allocator)
     if !decrypted do return
     defer crypto.zero_explicit(raw_data(raw),len(raw))
-    request,r_ok:=contracts.executor_parse(raw,"child_request" if child else "fence_request")
+    request,r_ok:=contracts.executor_parse(raw,request_kind)
     if !r_ok do return
     floor,status:=keystore_read_epoch_floor(bridge_config.daemon_id)
     if status!=.Found do return
     key,key_version,key_head,key_ok:=owner.verify_executor_directory(bridge_owner_json(wire.directory),account,
         get(scope,"executor_bridge_id"),get(request,"key_id"),floor.root,version,head,&kr)
     if !key_ok || key_version!=version || key_head!=head do return
+    if notification {
+        authenticated,verified:=channel.open_signed(get(exchange,"envelope"),&kr,scope,key,now,context.temp_allocator)
+        if !verified do return
+        defer crypto.zero_explicit(raw_data(authenticated),len(authenticated))
+        result:=owner.execution_notification_fence_reply(s,authenticated,key,owner_key,version,head,
+            time.to_unix_nanoseconds(time.now())/1000000,{nil,bridge_owner_sign})
+        reply.code=result.code
+        if result.code!="ok" do return
+        scope["direction"]=json.String("response")
+        token,sealed:=channel.seal(result.body,&kr,scope,time.to_unix_nanoseconds(time.now())/1000000,context.temp_allocator)
+        if !sealed {reply.code="expired";return}
+        reply.envelope=token
+        return
+    }
     if child {
         authenticated,verified:=channel.open_signed(get(exchange,"envelope"),&kr,scope,key,now,context.temp_allocator)
         if !verified do return

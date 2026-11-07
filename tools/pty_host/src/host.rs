@@ -92,6 +92,7 @@ pub struct PtyHost {
     /// Broadcast raw PTY output chunks to interested consumers (sockets/TUI).
     output_rx: Option<Receiver<Vec<u8>>>,
     size: (u16, u16),
+    notification_pending: bool,
 }
 
 impl PtyHost {
@@ -194,6 +195,13 @@ impl PtyHost {
                             if output_tx.send(buf[..n].to_vec()).is_err() { break; }
                         }
                         Err(e) => {
+                            // Notification dispatch temporarily makes the shared
+                            // PTY open-file description nonblocking. A cloned
+                            // reader can observe EAGAIN during that short window.
+                            if e.kind() == std::io::ErrorKind::WouldBlock {
+                                std::thread::sleep(std::time::Duration::from_millis(1));
+                                continue;
+                            }
                             if e.kind() == std::io::ErrorKind::Interrupted {
                                 continue;
                             }
@@ -242,11 +250,13 @@ impl PtyHost {
             wait_thread: Some(wait_thread),
             output_rx: Some(output_rx),
             size: (config.rows, config.cols),
+            notification_pending: false,
         })
     }
 
     /// Send raw bytes to the child's stdin (via the PTY).
     pub fn write_input(&self, bytes: &[u8]) -> Result<()> {
+        if self.notification_pending { return Err(anyhow::anyhow!("input: notification delivery is incomplete")); }
         let mut guard = self.writer.lock().unwrap();
         let w = guard
             .as_mut()
@@ -259,9 +269,40 @@ impl PtyHost {
     /// Startup input keeps byte progress across retries. `Write::write` reports
     /// the bytes accepted before an error, so resuming never retypes a prefix.
     pub fn write_startup_input(&self, bytes: &[u8], written: &mut usize) -> Result<()> {
+        if self.notification_pending { return Err(anyhow::anyhow!("startup input: notification delivery is incomplete")); }
         let mut guard = self.writer.lock().unwrap();
         let w = guard.as_mut().ok_or_else(|| anyhow::anyhow!("startup input: session has exited"))?;
         write_startup_remaining(w, bytes, written).context("startup input: PTY write failed")
+    }
+
+    pub fn notification(&mut self, deliveries: &mut crate::delivery::Deliveries, intent: &crate::delivery::Delivery, mode: u8, ticket: &str) -> Result<crate::delivery::Receipt> {
+        if cfg!(windows) { return Err(anyhow::anyhow!("notification: unsupported_not_delivered")); }
+        let mut guard = self.writer.lock().unwrap();
+        let w = guard.as_mut().ok_or_else(|| anyhow::anyhow!("notification: child writer unavailable"))?;
+        // Verify the actual target's DEC2004 advertisement, not its provider
+        // name. Keep the local VT-mode observation stable through this write.
+        let runtime = if mode == crate::delivery::DISPATCH { Some(self.engine.lock().unwrap()) } else { None };
+        if let Some(runtime)=&runtime {
+            let previous=deliveries.apply(intent,crate::delivery::QUERY,ticket,w).map_err(|e| anyhow::anyhow!(e))?;
+            if previous.status != crate::delivery::PARTIAL { return Ok(previous); }
+            if !runtime.bracketed_paste_enabled() {
+                if deliveries.started(&intent.delivery_id) { return Ok(deliveries.recover(&intent.delivery_id)); }
+                return Err(anyhow::anyhow!("notification: literal_paste_unsupported_not_delivered"));
+            }
+            // Disabling and re-enabling paste between retries can reset the
+            // target editor's partial delimiter state even if it is enabled now.
+            if !deliveries.bind_paste_generation(&intent.delivery_id,runtime.bracketed_paste_generation()) {
+                return Ok(deliveries.recover(&intent.delivery_id));
+            }
+        }
+        #[cfg(unix)]
+        let _nonblocking = if mode == crate::delivery::DISPATCH {
+            let fd = self.master.as_ref().and_then(|m| m.as_raw_fd()).ok_or_else(|| anyhow::anyhow!("notification: no PTY descriptor"))?;
+            Some(NotificationNonblocking::new(fd)?)
+        } else { None };
+        let result = deliveries.apply(intent, mode, ticket, w).map_err(|e| anyhow::anyhow!(e));
+        self.notification_pending = deliveries.pending();
+        result
     }
 
     /// Snapshot the current rendered screen.
@@ -379,7 +420,14 @@ impl PtyHost {
         if self.is_alive() {
             return;
         }
+        // portable-pty's Unix writer Drop writes LF+VEOF. A full input buffer
+        // can otherwise block teardown even after the child exited. The same
+        // nonblocking bound is needed when retiring a partial notification.
+        #[cfg(unix)]
+        let flags = self.master.as_ref().and_then(|m| m.as_raw_fd()).and_then(|fd| NotificationNonblocking::new(fd).ok());
         self.writer.lock().unwrap().take();
+        #[cfg(unix)]
+        drop(flags);
         self.master.take();
     }
 
@@ -425,6 +473,31 @@ impl PtyHost {
         }
         None
     }
+}
+
+impl Drop for PtyHost {
+    fn drop(&mut self) {
+        if self.notification_pending && !self.is_alive() { self.release_pty(); }
+    }
+}
+
+// The writer and reader are dup()s of the same open file description. Hold the
+// host/writer locks while toggling its flags; restore them before ordinary I/O.
+#[cfg(unix)]
+struct NotificationNonblocking { fd: std::os::fd::RawFd, original: libc::c_int }
+#[cfg(unix)]
+impl NotificationNonblocking {
+    fn new(fd: std::os::fd::RawFd) -> Result<Self> {
+        let original=unsafe { libc::fcntl(fd,libc::F_GETFL) };
+        if original < 0 || unsafe { libc::fcntl(fd,libc::F_SETFL,original | libc::O_NONBLOCK) } < 0 {
+            return Err(anyhow::anyhow!("notification: nonblocking PTY unavailable"));
+        }
+        Ok(Self { fd,original })
+    }
+}
+#[cfg(unix)]
+impl Drop for NotificationNonblocking {
+    fn drop(&mut self) { unsafe { libc::fcntl(self.fd,libc::F_SETFL,self.original); } }
 }
 
 fn write_startup_remaining<W: std::io::Write + ?Sized>(writer: &mut W, bytes: &[u8], written: &mut usize) -> std::io::Result<()> {
@@ -478,6 +551,118 @@ pub(crate) mod tests {
         assert_eq!(written, bytes.len());
         write_startup_remaining(&mut writer, bytes, &mut written).unwrap();
         assert_eq!(writer.bytes, bytes, "retry must never retype an accepted prefix");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notification_partial_excludes_raw_and_startup_writers() {
+        if !pty_available() { eprintln!("[skip] no PTY available"); return; }
+        let Some(sh)=shell() else { return };
+        let mut host=PtyHost::spawn(SpawnConfig::new(sh,vec!["-c".into(),"printf FIXTURE_READY; sleep 30".into()])).unwrap();
+        assert!(wait_for(||host.capture().lines.join("\n").contains("FIXTURE_READY"),Duration::from_secs(3)));
+        host.engine.lock().unwrap().feed(b"\x1b[?2004h");
+        struct Flaky { bytes: Vec<u8>, fail: bool }
+        impl std::io::Write for Flaky {
+            fn write(&mut self,data:&[u8])->std::io::Result<usize> {
+                if self.bytes.len()==1 && self.fail { self.fail=false; return Err(std::io::ErrorKind::WouldBlock.into()); }
+                self.bytes.extend_from_slice(data); Ok(data.len())
+            }
+            fn flush(&mut self)->std::io::Result<()> { Ok(()) }
+        }
+        *host.writer.lock().unwrap()=Some(Box::new(Flaky { bytes:vec![],fail:true }));
+        let intent=crate::delivery::tests::intent();
+        let mut deliveries=crate::delivery::tests::store();
+        let p=host.notification(&mut deliveries,&intent,crate::delivery::PREPARE,"").unwrap();
+        let partial=host.notification(&mut deliveries,&intent,crate::delivery::DISPATCH,&p.ticket).unwrap();
+        assert!(partial.esc_written && !partial.enter_written);
+        assert!(host.write_input(b"raw").is_err());
+        assert!(host.write_startup_input(b"startup",&mut 0).is_err());
+        let queried=host.notification(&mut deliveries,&intent,crate::delivery::QUERY,&p.ticket).unwrap();
+        assert_eq!((queried.esc_written,queried.message_written,queried.enter_written,queried.status),(partial.esc_written,partial.message_written,partial.enter_written,partial.status));
+        assert!(queried.retry_after_ms<=partial.retry_after_ms);
+        std::thread::sleep(Duration::from_millis(110));
+        host.notification(&mut deliveries,&intent,crate::delivery::DISPATCH,&p.ticket).unwrap();
+        assert_eq!(host.notification(&mut deliveries,&intent,crate::delivery::DISPATCH,&p.ticket).unwrap().status,crate::delivery::DELIVERED);
+        assert!(host.write_input(b"raw after completion").is_ok());
+        host.kill(); host.wait_timeout(Duration::from_secs(3));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notification_runtime_paste_gate_and_lost_mode_are_fail_closed() {
+        if !pty_available() { eprintln!("[skip] no PTY available"); return; }
+        let Some(sh)=shell() else { return };
+        let mut host=PtyHost::spawn(SpawnConfig::new(sh,vec![])).unwrap();
+        struct Sink(Arc<Mutex<(Vec<u8>,usize)>>);
+        impl std::io::Write for Sink {
+            fn write(&mut self,data:&[u8])->std::io::Result<usize> {
+                let mut state=self.0.lock().unwrap();
+                if state.1==0 { return Err(std::io::ErrorKind::WouldBlock.into()); }
+                let n=data.len().min(state.1); state.0.extend_from_slice(&data[..n]); state.1-=n; Ok(n)
+            }
+            fn flush(&mut self)->std::io::Result<()> { Ok(()) }
+        }
+        let state=Arc::new(Mutex::new((vec![],2)));
+        *host.writer.lock().unwrap()=Some(Box::new(Sink(state.clone())));
+        let mut deliveries=crate::delivery::tests::store(); let intent=crate::delivery::tests::intent();
+        let p=host.notification(&mut deliveries,&intent,crate::delivery::PREPARE,"").unwrap();
+        let error=host.notification(&mut deliveries,&intent,crate::delivery::DISPATCH,&p.ticket).unwrap_err();
+        assert_eq!(error.to_string(),"notification: literal_paste_unsupported_not_delivered");
+        assert!(state.lock().unwrap().0.is_empty());
+        host.engine.lock().unwrap().feed(b"\x1b[?2004h");
+        let partial=host.notification(&mut deliveries,&intent,crate::delivery::DISPATCH,&p.ticket).unwrap();
+        assert_eq!(partial.status,crate::delivery::PARTIAL);
+        assert_eq!(state.lock().unwrap().0,b"\x1b");
+        host.engine.lock().unwrap().feed(b"\x1b[?2004l");
+        host.engine.lock().unwrap().feed(b"\x1b[?2004h");
+        state.lock().unwrap().1=999;
+        let recovery=host.notification(&mut deliveries,&intent,crate::delivery::DISPATCH,&p.ticket).unwrap();
+        assert_eq!(recovery.status,crate::delivery::RECOVERY_REQUIRED);
+        host.engine.lock().unwrap().feed(b"\x1b[?2004h");
+        assert_eq!(host.notification(&mut deliveries,&intent,crate::delivery::DISPATCH,&p.ticket).unwrap().status,crate::delivery::RECOVERY_REQUIRED);
+        assert_eq!(state.lock().unwrap().0,b"\x1b");
+        assert!(host.write_input(b"cannot splice").is_err());
+        host.kill(); host.wait_timeout(Duration::from_secs(3));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notification_full_pty_buffer_is_bounded_and_reader_survives() {
+        if !pty_available() { eprintln!("[skip] no PTY available"); return; }
+        let Some(sh)=shell() else { return };
+        let mut config=SpawnConfig::new(sh,vec!["-c".into(),"stty raw -echo; printf '\\033[?2004hBUFFER_READY'; sleep 1; printf 'READER_SURVIVED'; sleep 30".into()]);
+        config.login_shell=false;
+        let mut host=PtyHost::spawn(config).unwrap();
+        assert!(wait_for(|| host.capture().lines.join("\n").contains("BUFFER_READY"),Duration::from_secs(3)));
+        let fd=host.master.as_ref().unwrap().as_raw_fd().unwrap();
+        let original=unsafe { libc::fcntl(fd,libc::F_GETFL) };
+        {
+            let mut guard=host.writer.lock().unwrap();
+            let writer=guard.as_mut().unwrap();
+            let _flags=NotificationNonblocking::new(fd).unwrap();
+            let mut filled=false;
+            for _ in 0..1024 {
+                match writer.write(&[b'x';4096]) {
+                    Ok(_) => {},
+                    Err(e) if e.kind()==std::io::ErrorKind::WouldBlock => { filled=true; break; },
+                    Err(e) => panic!("{e}"),
+                }
+            }
+            assert!(filled,"input buffer did not reach backpressure");
+        }
+        let mut intent=crate::delivery::tests::intent();
+        intent.message=vec![b'n';16384];
+        let mut deliveries=crate::delivery::tests::store();
+        let p=host.notification(&mut deliveries,&intent,crate::delivery::PREPARE,"").unwrap();
+        let start=std::time::Instant::now();
+        let partial=host.notification(&mut deliveries,&intent,crate::delivery::DISPATCH,&p.ticket).unwrap();
+        assert!(start.elapsed()<Duration::from_millis(500));
+        assert_eq!(partial.status,crate::delivery::PARTIAL);
+        assert!(!partial.enter_written);
+        assert_eq!(unsafe { libc::fcntl(fd,libc::F_GETFL) } & libc::O_NONBLOCK,original & libc::O_NONBLOCK);
+        assert!(host.write_input(b"cannot splice").is_err());
+        assert!(wait_for(|| host.capture().lines.join("\n").contains("READER_SURVIVED"),Duration::from_secs(3)));
+        host.kill(); host.wait_timeout(Duration::from_secs(3));
     }
 
     #[test]
@@ -540,9 +725,13 @@ pub(crate) mod tests {
     pub(crate) fn pty_available() -> bool {
         let prog = match resolve("true").or_else(|| resolve("/usr/bin/true")) {
             Some(p) => p,
-            None => return false,
+            None => {
+                assert!(std::env::var("HEIMDALL_NOTIFICATION_REQUIRE_PTY").as_deref() != Ok("1"),
+                    "required notification PTY probe executable is unavailable");
+                return false;
+            }
         };
-        PtyHost::spawn(SpawnConfig {
+        let available = PtyHost::spawn(SpawnConfig {
             program: prog,
             args: vec![],
             rows: 24,
@@ -551,7 +740,10 @@ pub(crate) mod tests {
             cwd: None,
             extra_env: Vec::new(),
         })
-        .is_ok()
+        .is_ok();
+        assert!(available || std::env::var("HEIMDALL_NOTIFICATION_REQUIRE_PTY").as_deref() != Ok("1"),
+            "real notification PTY evidence was required");
+        available
     }
 
     macro_rules! skip_if_none {

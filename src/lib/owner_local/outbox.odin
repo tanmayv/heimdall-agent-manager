@@ -49,7 +49,7 @@ intent_claim_due :: proc(s:^Store,now:i64,limit:=20,consumer:Intent_Consumer=.Al
     if state[0][1]!="ready" do return nil,false
     rows,rows_ok:=query(s.db,`SELECT intent_id,chain_id,kind,destination_bridge,exact_fence_json,payload_json,payload_digest,attempts
      FROM runtime_intents WHERE state='pending' AND NOT EXISTS(SELECT 1 FROM intent_invalidations x WHERE x.intent_id=runtime_intents.intent_id) AND next_retry_ms<=?
-       AND (?='0' OR (?='2' AND kind IN('executor.activate','executor.heartbeat')) OR
+       AND (?='0' OR (?='2' AND kind IN('executor.activate','executor.heartbeat','executor.notification')) OR
          (?='1' AND kind IN('registry','registry.prepare','source.delivery','merge','stop','checkpoint')))
      ORDER BY commit_seq,intent_id LIMIT ?`,fmt.tprintf("%d",now),fmt.tprintf("%d",int(consumer)),fmt.tprintf("%d",int(consumer)),fmt.tprintf("%d",int(consumer)),fmt.tprintf("%d",limit))
     if !rows_ok do return nil,false

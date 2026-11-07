@@ -4,6 +4,25 @@ import { parseOwnerRequestDocument } from './ownerJson.ts';
 
 // Mirrored executor resource contracts; no task command or launch authority.
 export const executorSchemas = {
+  notification: [["protocol_version","version"],["account_id","id"],["owner_bridge_id","id"],["executor_bridge_id","id"],["chain_id","id"],["task_id","id"],["lease_id","id"],["reservation_id","id"],["instance_id","id"],["launch_epoch","id"],["run_count","positive"],["token_generation","hash"],["configuration_revision","positive"],["grant_generation","positive"],["owner_incarnation","positive"],["executor_incarnation","positive"],["prepare_digest","hash"],["launch_key","hash"],["deadline_version","positive"],["expires_ms","positive"],["hard_ms","positive"],["intent_id","hash"],["owner_commit_seq","positive"],["message_digest","hash"],["issued_ms","positive"],["request_expires_ms","positive"],["key_id","id"],["signature","signature"]],
+  notification_result: [["protocol_version","version"],["account_id","id"],["owner_bridge_id","id"],["executor_bridge_id","id"],["chain_id","id"],["reservation_id","id"],["owner_incarnation","positive"],["executor_incarnation","positive"],["prepare_digest","hash"],["input_digest","hash"],["intent_id","hash"],["pid","counter"],["ticket","optional"],["input_profile","optional"],["esc_written","executor_flag"],["message_bytes_written","counter"],["enter_written","executor_flag"],["status","notification_status"],["issued_ms","positive"],["request_expires_ms","positive"],["key_id","id"],["signature","signature"]],
+  notification_exchange: [['scope','document'],['envelope','required_cipher'],['message','document'],['claim_attempt','positive']],
+  notification_fence_request: [
+    ['protocol_version','version'],['account_id','id'],['executor_bridge_id','id'],
+    ['owner_bridge_id','id'],['chain_id','id'],['reservation_id','id'],
+    ['executor_incarnation','positive'],['owner_incarnation','positive'],
+    ['intent_id','hash'],['claim_attempt','positive'],['action_digest','hash'],
+    ['challenge','hash'],['issued_ms','positive'],['request_expires_ms','positive'],
+    ['key_id','id'],['signature','signature'],['notification','document'],
+  ],
+  notification_fence_reply: [
+    ['protocol_version','version'],['account_id','id'],['executor_bridge_id','id'],
+    ['owner_bridge_id','id'],['chain_id','id'],['reservation_id','id'],
+    ['executor_incarnation','positive'],['owner_incarnation','positive'],
+    ['request_digest','hash'],['action_digest','hash'],['prepare_digest','hash'],
+    ['challenge','hash'],['owner_commit_seq','positive'],['checked_ms','positive'],
+    ['request_expires_ms','positive'],['key_id','id'],['signature','signature'],
+  ],
   operator_import: [['kind','label'],['document','document']],
   local_relay: [['protocol_version','version'],['bridge_id','id'],['request_id','id'],['expires_ms','positive'],['envelope','required_cipher']],
   local_result: [['protocol_version','version'],['account_id','id'],['executor_bridge_id','id'],
@@ -432,7 +451,7 @@ const id = (s: string) => s.length <= 160 && /^[a-zA-Z0-9_.:-]+$/.test(s);
 const object = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 function fieldValid(s: string, kind: string): boolean {
   switch (kind) {
-    case 'executor_transport_method': return ['enrollment','prepare','action','fence_request','child_request'].includes(s);
+    case 'executor_transport_method': return ['enrollment','prepare','action','fence_request','child_request','notification','notification_fence_request'].includes(s);
     case 'executor_direction': return s === 'request' || s === 'response';
     case 'required_cipher': { if (s.length > 65536 || s === '') return false; try { parseVaultEnvelope(s); return true; } catch { return false; } }
     case 'optional_document': return new TextEncoder().encode(s).length <= 256 * 1024;
@@ -442,11 +461,13 @@ function fieldValid(s: string, kind: string): boolean {
     case 'path': return s.length <= 4096 && s.startsWith('/') && !s.includes('..') && !s.includes(String.fromCharCode(92)) && [...s].every(c => c.charCodeAt(0) >= 32 && c.charCodeAt(0) <= 126);
     case 'label': return s.length > 0 && new TextEncoder().encode(s).length <= 256 && !/[\u0000-\u001f\u007f]/.test(s);
     case 'optional': return s === '' || id(s);
+    case 'counter': return integer(s);
     case 'positive': return integer(s) && s !== '0';
     case 'hash': return /^[0-9a-f]{64}$/.test(s);
     case 'signature': return /^[0-9a-f]{128}$/.test(s);
     case 'executor_receipt_method': return ['prepare','activate','heartbeat','stop','query'].includes(s);
     case 'executor_state': return ['prepared','active','stopping','released'].includes(s);
+    case 'notification_status': return ['partial','delivered','recovery_required','child_mismatch','unsupported_not_delivered'].includes(s);
     case 'executor_flag': return s === '0' || s === '1';
     case 'executor_purpose': return ['work','review','manual','warm'].includes(s);
     case 'executor_draft_method': return ['prepare','inspect','authorize','cancel'].includes(s);
@@ -477,11 +498,11 @@ export function executorParse(raw: string, kind: ExecutorKind): ExecutorDocument
       seen.add(skill.name.toLowerCase());
     }
   }
-  if (kind === 'bootstrap' || kind === 'child_request') {
+  if (kind === 'bootstrap' || kind === 'child_request' || kind === 'notification') {
     const start = BigInt(o.issued_ms), end = BigInt(o.request_expires_ms);
     if (end <= start || end-start > EXECUTOR_FENCE_TTL_MS || end > BigInt(o.expires_ms) || BigInt(o.expires_ms) > BigInt(o.hard_ms)) throw new SyntaxError('Executor child bounds');
   }
-  if (kind === 'child_result' && (BigInt(o.request_expires_ms) <= BigInt(o.issued_ms) || BigInt(o.request_expires_ms)-BigInt(o.issued_ms) > EXECUTOR_FENCE_TTL_MS)) throw new SyntaxError('Executor child result bounds');
+  if ((kind === 'child_result' || kind === 'notification_result') && (BigInt(o.request_expires_ms) <= BigInt(o.issued_ms) || BigInt(o.request_expires_ms)-BigInt(o.issued_ms) > EXECUTOR_FENCE_TTL_MS)) throw new SyntaxError('Executor child result bounds');
   if (kind === 'directory' && o.directory_path === '') throw new SyntaxError('Executor directory path');
   if (kind === 'policy') {
     const capacity = BigInt(o.device_capacity);
@@ -497,8 +518,8 @@ export function executorParse(raw: string, kind: ExecutorKind): ExecutorDocument
   }
   if (kind === 'prepare' && (BigInt(o.prepare_until_ms) > BigInt(o.hard_ms) || (o.directory_key !== '' && !/^[0-9a-f]{64}$/.test(o.directory_key)))) throw new SyntaxError('Executor prepare bounds');
   if ((kind === 'action' || kind === 'receipt') && BigInt(o.expires_ms) > BigInt(o.hard_ms)) throw new SyntaxError('Executor action bounds');
-  if (kind === 'fence_request' || kind === 'fence_reply') {
-    const start = BigInt(kind === 'fence_request' ? o.issued_ms : o.checked_ms);
+  if (kind === 'fence_request' || kind === 'fence_reply' || kind === 'notification_fence_request' || kind === 'notification_fence_reply') {
+    const start = BigInt(kind === 'fence_request' || kind === 'notification_fence_request' ? o.issued_ms : o.checked_ms);
     const end = BigInt(o.request_expires_ms);
     if (end <= start || end - start > EXECUTOR_FENCE_TTL_MS) throw new SyntaxError('Executor fence bounds');
   }
@@ -528,7 +549,7 @@ const unhex = (hex: string): Uint8Array<ArrayBuffer> => Uint8Array.from(hex.matc
 export async function executorVerify(kind: ExecutorKind, value: ExecutorDocument, key: OwnerVerifiedKey): Promise<boolean> {
   try {
     const o = executorParse(JSON.stringify(value), kind);
-    const principal = kind === 'policy' || kind === 'receipt' || kind === 'fence_request' || kind === 'enrollment' || kind === 'issuance_receipt' || kind === 'directory' || kind === 'child_request' || kind === 'local_result' ? o.executor_bridge_id : kind === 'issuance_consent' || kind === 'local_launch' || kind === 'local_draft' ? o.principal_id : o.owner_bridge_id;
+    const principal = kind === 'notification_result' || kind === 'notification_fence_request' || kind === 'policy' || kind === 'receipt' || kind === 'fence_request' || kind === 'enrollment' || kind === 'issuance_receipt' || kind === 'directory' || kind === 'child_request' || kind === 'local_result' ? o.executor_bridge_id : kind === 'issuance_consent' || kind === 'local_launch' || kind === 'local_draft' ? o.principal_id : o.owner_bridge_id;
     if (!key.enrolled || key.revoked || key.kind !== (kind === 'issuance_consent' || kind === 'local_launch' || kind === 'local_draft' ? 'device' : 'bridge') || key.account_id !== o.account_id ||
         key.principal_id !== principal || key.key_id !== o.key_id || !/^04[0-9a-f]{128}$/.test(key.public_key)) return false;
     const pub = await crypto.subtle.importKey('raw', unhex(key.public_key), {name:'ECDSA',namedCurve:'P-256'}, false, ['verify']);

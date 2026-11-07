@@ -80,3 +80,37 @@ test_executor_bootstrap_denies_content_substitution_and_planted_root_symlink :: 
     keep,kept:=os.read_entire_file(fmt.tprintf("%s/keep.txt",target),context.temp_allocator)
     testing.expect(t,kept==nil && string(keep)=="untouched")
 }
+
+@(test)
+test_executor_bootstrap_notification_identity_ignores_local_token_store :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    material:=bridge_executor_bootstrap_test_material()
+    b,parsed:=contracts.executor_parse(material.bootstrap,"bootstrap")
+    if !testing.expect(t,parsed) do return
+    env:=make([][2]string,4)
+    env[0]={strings.clone("KEEP"),strings.clone("value")}
+    env[1]={strings.clone("HEIMDALL_NOTIFICATION_EPOCH"),strings.clone("forged_epoch")}
+    env[2]={strings.clone("HEIMDALL_NOTIFICATION_RUN_COUNT"),strings.clone("999")}
+    env[3]={strings.clone("HEIMDALL_NOTIFICATION_EPOCH"),strings.clone("duplicate_epoch")}
+    request:=Pty_Host_Spawn_Request{instance=strings.clone(contracts.owner_string(b,"instance_id")),env=env}
+    defer bridge_pty_host_spawn_request_delete(request)
+    // A token mismatch must leave the request untouched.
+    testing.expect(t,!bridge_executor_bind_notification_spawn(&request,b,"replacement-secret"))
+    testing.expect(t,len(request.env)==4 && request.env[1][1]=="forged_epoch")
+    wrong:=request;wrong.instance="replacement_instance"
+    testing.expect(t,!bridge_executor_bind_notification_spawn(&wrong,b,material.token_secret))
+    testing.expect(t,bridge_executor_bind_notification_spawn(&request,b,material.token_secret))
+    testing.expect(t,len(request.env)==4 && request.env[0][0]=="KEEP" && request.env[0][1]=="value")
+    epochs,counts:=0,0
+    for pair in request.env {
+        if pair[0]=="HEIMDALL_NOTIFICATION_EPOCH" {
+            epochs+=1
+            testing.expect_value(t,pair[1],contracts.owner_string(b,"launch_epoch"))
+        }
+        if pair[0]=="HEIMDALL_NOTIFICATION_RUN_COUNT" {
+            counts+=1
+            testing.expect_value(t,pair[1],contracts.owner_string(b,"run_count"))
+        }
+    }
+    testing.expect(t,epochs==1 && counts==1,"exactly one identity from the admitted remote bootstrap")
+}

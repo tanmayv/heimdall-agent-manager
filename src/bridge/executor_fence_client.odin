@@ -20,7 +20,9 @@ Executor_Fence_Exchange :: proc(rawptr,string,i64)->Executor_Fence_Outcome
 // Called only with the application executor mutex released. No Store pointer
 // crosses this boundary, and the nonce deadline bounds all HTTP retry work.
 bridge_executor_fence_exchange :: proc(_:rawptr,request_raw:string,generation:i64)->Executor_Fence_Outcome {
-    return bridge_executor_reverse_exchange(request_raw,"fence_request","",generation)
+    kind:="fence_request"
+    if _,valid:=contracts.executor_parse(request_raw,"notification_fence_request");valid do kind="notification_fence_request"
+    return bridge_executor_reverse_exchange(request_raw,kind,"",generation)
 }
 bridge_executor_child_exchange :: proc(request_raw,input:string,generation:i64)->Executor_Fence_Outcome {
     return bridge_executor_reverse_exchange(request_raw,"child_request",input,generation)
