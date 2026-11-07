@@ -15,10 +15,11 @@ import executor "odin_test:lib/executor_local"
 import vault "odin_test:lib/vault"
 
 bridge_executor_test_doc :: proc(kind:string)->json.Object {
-    if kind=="bootstrap" || kind=="child_request" {
+    if kind=="bootstrap" || kind=="child_request" || kind=="child_result" {
         v,_:=contracts.owner_content_document(#load("../contracts/fixtures/executor-child-v1.json",string))
         root,_:=v.(json.Object)
         field:="child" if kind=="child_request" else "bootstrap"
+        if kind=="child_result" do field="child_result"
         o,_:=contracts.executor_parse(contracts.owner_string(root,field),kind)
         return o
     }

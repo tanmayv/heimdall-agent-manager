@@ -329,13 +329,19 @@ executor_resource_relay_requires_exact_registered_owner_bridge :: proc(t:^testin
     req.body=body;req.path="/api/v1/executor/fence"
     response=executor_fence_relay_handler(&f.h,req);testing.expect_value(t,response.status,200)
     testing.expect(t,strings.contains(response.body,"owner_unavailable"))
+    response=executor_child_relay_handler(&f.h,req);testing.expect_value(t,response.status,200)
+    testing.expect(t,strings.contains(response.body,"owner_unavailable"))
     req.body=owner_json(struct{protocol_version,chain_id,bridge_id,request_id,expires_ms,envelope:string}{
         "1","chain",other.bridge.bridge_id,"executor_fence",fmt.tprintf("%d",now+5000),"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="})
     response=executor_fence_relay_handler(&f.h,req);testing.expect_value(t,response.status,403)
+    response=executor_child_relay_handler(&f.h,req);testing.expect_value(t,response.status,403)
     req.body=body;req.headers=nil
     response=executor_fence_relay_handler(&f.h,req);testing.expect_value(t,response.status,401)
+    response=executor_child_relay_handler(&f.h,req);testing.expect_value(t,response.status,401)
     req=search_relay_request(f,body)
     response=executor_fence_relay_handler(&f.h,req);testing.expect_value(t,response.status,403)
+    response=executor_child_relay_handler(&f.h,req);testing.expect_value(t,response.status,403)
     req.headers=headers[:];req.body="{}"
     response=executor_fence_relay_handler(&f.h,req);testing.expect_value(t,response.status,400)
+    response=executor_child_relay_handler(&f.h,req);testing.expect_value(t,response.status,400)
 }

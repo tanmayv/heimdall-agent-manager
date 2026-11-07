@@ -970,8 +970,8 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		bridge_hub_handle_provider_profile_op(conn, text)
 		return
 	}
-	if type == "owner_executor_fence" {
-        bridge_owner_executor_fence_handle(conn,text)
+	if type == "owner_executor_fence" || type == "owner_executor_child" {
+        bridge_owner_executor_fence_handle(conn,text,type=="owner_executor_child")
         return
     }
     if type == "executor_activation" {

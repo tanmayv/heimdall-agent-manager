@@ -124,6 +124,9 @@ executor_schema :: proc(kind:string)->[]Owner_Field {
     case "bootstrap_content":return executor_bootstrap_content_fields[:]
     case "bootstrap":return executor_bootstrap_fields[:]
     case "child_request":return executor_child_request_fields[:]
+    case "child_exchange":return executor_child_exchange_fields[:]
+    case "child_result":return executor_child_result_fields[:]
+    case "child_result_bundle":return executor_child_result_bundle_fields[:]
     case "exchange":return executor_exchange_fields[:]
     case "activation_bootstrap_exchange":return executor_activation_bootstrap_exchange_fields[:]
     case "activation_exchange":return executor_activation_exchange_fields[:]
@@ -154,7 +157,7 @@ executor_valid :: proc(o:json.Object,kind:string)->bool {
         s:=string(value)
         switch f.kind {
         case "executor_transport_method":
-            if s!="enrollment" && s!="prepare" && s!="action" && s!="fence_request" do return false
+            if s!="enrollment" && s!="prepare" && s!="action" && s!="fence_request" && s!="child_request" do return false
         case "executor_direction":
             if s!="request" && s!="response" do return false
         case "executor_receipt_method":
@@ -172,6 +175,10 @@ executor_valid :: proc(o:json.Object,kind:string)->bool {
         }
     }
     if kind=="bootstrap_content" && !executor_bootstrap_content_valid(o) do return false
+    if kind=="child_result" {
+        start,end:=executor_number(o,"issued_ms"),executor_number(o,"request_expires_ms")
+        if end<=start || end-start>EXECUTOR_FENCE_TTL_MS do return false
+    }
     if kind=="bootstrap" || kind=="child_request" {
         start,end:=executor_number(o,"issued_ms"),executor_number(o,"request_expires_ms")
         if end<=start || end-start>EXECUTOR_FENCE_TTL_MS || end>executor_number(o,"expires_ms") || executor_number(o,"expires_ms")>executor_number(o,"hard_ms") do return false
@@ -222,7 +229,7 @@ executor_valid :: proc(o:json.Object,kind:string)->bool {
 executor_parse :: proc(raw,kind:string)->(json.Object,bool) {
     if len(raw)>EXECUTOR_DOCUMENT_MAX do return nil,false
     v:json.Value;ok:bool
-    if kind=="activation_bootstrap_exchange" || kind=="bootstrap_content" || kind=="issuance_selection" || kind=="issuance_exchange" || kind=="issuance_bundle" {v,ok=owner_content_document(raw)} else {v,ok=owner_request_document(raw)}
+    if kind=="child_exchange" || kind=="child_result_bundle" || kind=="activation_bootstrap_exchange" || kind=="bootstrap_content" || kind=="issuance_selection" || kind=="issuance_exchange" || kind=="issuance_bundle" {v,ok=owner_content_document(raw)} else {v,ok=owner_request_document(raw)}
     o,obj:=v.(json.Object)
     if !ok || !obj || !executor_valid(o,kind) do return nil,false
     return o,true

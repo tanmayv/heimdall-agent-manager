@@ -1,14 +1,25 @@
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { executorParse, executorVerify, executorBootstrapMatches, executorChildRequestMatches } from '../src/ui/api/executor.ts';
+import { executorParse, executorVerify, executorBootstrapMatches, executorChildRequestMatches, executorChildResultMatches } from '../src/ui/api/executor.ts';
 import type { OwnerVerifiedKey } from '../src/ui/api/ownerLocal.ts';
 const f = JSON.parse(readFileSync(new URL('../src/contracts/fixtures/executor-child-v1.json',import.meta.url),'utf8')) as {
   activation_exchange: string; content_bad: string[]; owner_key: OwnerVerifiedKey; executor_key: OwnerVerifiedKey; prepare: string; action: string; bootstrap: string; child: string;
   configuration: string; body: string; input: string; bootstrap_bad: {name:string;raw:string}[]; child_bad: {name:string;raw:string}[];
+  child_result: string; result_body: string; result_bad: {name:string;raw:string}[]; expired_input: string; expired_child: string;
 };
 const b = executorParse(f.bootstrap,'bootstrap'), p = executorParse(f.prepare,'prepare'), a = executorParse(f.action,'action');
 const r = executorParse(f.child,'child_request');
+test('owner child result binds the exact attestation and result bytes, including Unicode',async () => {
+  const result = executorParse(f.child_result,'child_result');
+  assert.equal(await executorChildResultMatches(result,r,f.result_body,f.owner_key,1400n),true);
+  for (const bad of f.result_bad) assert.equal(await executorChildResultMatches(executorParse(bad.raw,'child_result'),r,f.result_body,f.owner_key,1400n),false,bad.name);
+  assert.equal(await executorChildResultMatches(result,r,f.result_body+' ',f.owner_key,1400n),false);
+  assert.equal(await executorChildResultMatches(result,r,f.result_body,f.executor_key,1400n),false);
+  assert.equal(await executorChildResultMatches(result,r,f.result_body,{...f.owner_key,revoked:true},1400n),false);
+  for (const now of [1299n,1800n]) assert.equal(await executorChildResultMatches(result,r,f.result_body,f.owner_key,now),false);
+  assert.equal(await executorChildRequestMatches(executorParse(f.expired_child,'child_request'),b,f.expired_input,f.executor_key,f.owner_key,1300n),true,'original expired inputs must reach owner receipt replay');
+});
 test('owner bootstrap rejects correctly signed scope, launch, configuration, body and deadline substitution',async () => {
   const check = (value = b, config = f.configuration, body = f.body, now = 1300n) =>
     executorBootstrapMatches(value,p,a,config,body,b.launch_key,f.owner_key,now);

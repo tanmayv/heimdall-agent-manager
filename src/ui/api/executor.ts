@@ -15,6 +15,9 @@ export const executorSchemas = {
     ['issued_ms','positive'],['request_expires_ms','positive'],
   ],
   exchange: [['scope','document'],['envelope','required_cipher']],
+  child_exchange: [['scope','document'],['envelope','required_cipher'],['input','document']],
+  child_result_bundle: [['receipt','document'],['body','document']],
+  child_result: [['protocol_version','version'],['account_id','id'],['owner_bridge_id','id'],['executor_bridge_id','id'],['chain_id','id'],['reservation_id','id'],['owner_incarnation','positive'],['executor_incarnation','positive'],['prepare_digest','hash'],['request_digest','hash'],['input_digest','hash'],['result_digest','hash'],['issued_ms','positive'],['request_expires_ms','positive'],['key_id','id'],['signature','signature']],
   activation_bootstrap_exchange: [['scope','document'],['envelope','required_cipher'],['intent_id','hash'],['claim_attempt','positive'],['bootstrap','document'],['body','document']],
   activation_exchange: [['scope','document'],['envelope','required_cipher'],['intent_id','hash'],['claim_attempt','positive']],
   issuance_exchange: [['scope','document'],['envelope','required_cipher'],['selection','document']],
@@ -410,7 +413,7 @@ const id = (s: string) => s.length <= 160 && /^[a-zA-Z0-9_.:-]+$/.test(s);
 const object = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 function fieldValid(s: string, kind: string): boolean {
   switch (kind) {
-    case 'executor_transport_method': return ['enrollment','prepare','action','fence_request'].includes(s);
+    case 'executor_transport_method': return ['enrollment','prepare','action','fence_request','child_request'].includes(s);
     case 'executor_direction': return s === 'request' || s === 'response';
     case 'required_cipher': { if (s.length > 65536 || s === '') return false; try { parseVaultEnvelope(s); return true; } catch { return false; } }
     case 'optional_document': return new TextEncoder().encode(s).length <= 256 * 1024;
@@ -456,6 +459,7 @@ export function executorParse(raw: string, kind: ExecutorKind): ExecutorDocument
     const start = BigInt(o.issued_ms), end = BigInt(o.request_expires_ms);
     if (end <= start || end-start > EXECUTOR_FENCE_TTL_MS || end > BigInt(o.expires_ms) || BigInt(o.expires_ms) > BigInt(o.hard_ms)) throw new SyntaxError('Executor child bounds');
   }
+  if (kind === 'child_result' && (BigInt(o.request_expires_ms) <= BigInt(o.issued_ms) || BigInt(o.request_expires_ms)-BigInt(o.issued_ms) > EXECUTOR_FENCE_TTL_MS)) throw new SyntaxError('Executor child result bounds');
   if (kind === 'directory' && o.directory_path === '') throw new SyntaxError('Executor directory path');
   if (kind === 'policy') {
     const capacity = BigInt(o.device_capacity);
@@ -484,6 +488,18 @@ export function executorParse(raw: string, kind: ExecutorKind): ExecutorDocument
 export function executorCanonical(kind: ExecutorKind, value: ExecutorDocument): string {
   const o = executorParse(JSON.stringify(value), kind);
   return 'heimdall-executor/' + kind + '/v1\n' + executorSchemas[kind].filter(([,type]) => type !== 'signature').map(([name]) => new TextEncoder().encode(o[name]).length + ':' + o[name] + ',').join('');
+}
+export async function executorChildResultMatches(result: ExecutorDocument, request: ExecutorDocument, body: string, ownerKey: OwnerVerifiedKey, now: number | bigint): Promise<boolean> {
+  try {
+    if (!await executorVerify('child_result',result,ownerKey)) return false;
+    executorParse(JSON.stringify(request),'child_request');
+    for (const name of ['protocol_version','account_id','owner_bridge_id','executor_bridge_id','chain_id','reservation_id','owner_incarnation','executor_incarnation','prepare_digest','input_digest']) {
+      if (result[name] !== request[name]) return false;
+    }
+    return result.request_digest === await ownerPayloadDigest(executorCanonical('child_request',request)) && result.result_digest === await ownerPayloadDigest(body) &&
+      BigInt(now) >= BigInt(result.issued_ms) && BigInt(result.issued_ms) >= BigInt(request.issued_ms) &&
+      BigInt(now) < BigInt(result.request_expires_ms) && BigInt(result.request_expires_ms) <= BigInt(request.request_expires_ms);
+  } catch { return false; }
 }
 
 const unhex = (hex: string): Uint8Array<ArrayBuffer> => Uint8Array.from(hex.match(/../g) ?? [], (pair) => parseInt(pair,16));
@@ -614,6 +630,6 @@ export async function executorChildRequestMatches(r: ExecutorDocument, b: Execut
     let input;
     try { input = ownerParse(inputRaw,'lease_input'); } catch { input = ownerParse(inputRaw,'lifecycle_input'); }
     for (const name of ['chain_id','task_id','lease_id','configuration_revision']) if (input[name] !== r[name]) return false;
-    return now >= BigInt(r.issued_ms) && BigInt(r.issued_ms) >= BigInt(b.issued_ms) && now < BigInt(r.request_expires_ms) && now < BigInt(input.request_expires_ms);
+    return now >= BigInt(r.issued_ms) && BigInt(r.issued_ms) >= BigInt(b.issued_ms) && now < BigInt(r.request_expires_ms);
   } catch { return false; }
 }

@@ -277,7 +277,7 @@ test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection :: pr
             // Trusted test-daemon absence drains the charge before the next
             // reservation. No physical provider/absence claim is inferred.
             if os.get_env("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)!="" {
-                bridge_executor_test_bootstrap_real_child(t,prepared,action,&owner_private,owner_key)
+                bridge_executor_test_bootstrap_real_child(t,prepared,action,&owner_private,owner_key,peer_directory,&kr)
             } else {
                 when #config(EXECUTOR_TEST_REQUIRED,false) {testing.fail_now(t,"real bootstrap daemon required")}
                 testing.expect(t,executor.observe_child(&bridge_executor_store,get(prepared,"reservation_id"),
@@ -437,7 +437,8 @@ bridge_executor_test_fence_callback :: proc(ctx:rawptr,raw:string,generation:i64
     return {executor.encode(scope),token,p.directory}
 }
 
-bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,p,a:json.Object,owner_private:^ecdsa.Private_Key,owner_key:contracts.Owner_Verified_Key) {
+bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,p,a:json.Object,owner_private:^ecdsa.Private_Key,owner_key:contracts.Owner_Verified_Key,
+    directory:vault.Directory_Verification_Input,kr:^vault.Vault_Keyring) {
     binary:=os.get_env("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)
     if !testing.expect(t,binary!="","real bootstrap integration requires the built PTY daemon") do return
     suffix:=fmt.tprintf("%d",time.to_unix_nanoseconds(time.now()))
@@ -478,6 +479,31 @@ bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,p,a:json.Object,o
     testing.expect(t,!delivered && reason=="stale_intent","duplicate dispatch cannot launch again")
     again,queried:=bridge_pty_host_executor_query(socket,intent.instance,intent.launch_key)
     testing.expect(t,queried && again==pid)
+    bootstrap,_:=contracts.executor_parse(material.bootstrap,"bootstrap")
+    input:=executor.encode(contracts.Owner_Lease_Input{"1",contracts.owner_string(bootstrap,"chain_id"),contracts.owner_string(bootstrap,"task_id"),
+        contracts.owner_string(bootstrap,"lease_id"),contracts.owner_string(bootstrap,"configuration_revision"),"1","live_child_hb","lease.heartbeat",
+        contracts.owner_string(a,"request_expires_ms"),"existing_capability"})
+    self:=contracts.Owner_Verified_Key{bridge_executor_store.account,bridge_executor_store.executor,bridge_executor_store.operator_key,
+        bridge_identity_public_key_hex(bridge_config.daemon_id),"bridge",true,false}
+    attested:=bridge_executor_child_attest(&bridge_executor_store,intent.instance,material.token_secret,input,socket,owner_key,self,{nil,bridge_executor_sign})
+    if !testing.expect_value(t,attested.code,"ok") do return
+    child_request,valid:=contracts.executor_parse(attested.body,"child_request")
+    testing.expect(t,valid && contracts.executor_child_request_matches(child_request,bootstrap,input,self,owner_key,time.to_unix_nanoseconds(time.now())/1000000))
+    probe:=Executor_Child_Test_Transport{t,directory,kr,owner_private,owner_key,0,0}
+    transport:=Executor_Child_Transport{&probe,bridge_executor_test_child_directory,bridge_executor_test_child_exchange}
+    local,handled:=bridge_executor_agent("child_local",input,material.token_secret,transport,socket)
+    testing.expectf(t,handled && strings.contains(local,`"code":"ok"`) && probe.exchanges==1,"mounted child endpoint: handled=%v exchanges=%d response=%s",handled,probe.exchanges,local)
+    testing.expect(t,!strings.contains(local,material.token_secret),"child credential stays local")
+    for mode in 1..=2 {
+        probe.mode=mode
+        local,handled=bridge_executor_agent("child_local_bad",input,material.token_secret,transport,socket)
+        testing.expectf(t,handled && strings.contains(local,"invalid_owner_result"),"corrupted result or scope rejected: %s",local)
+    }
+    // The ledger still says confirmed, but physical absence must reject the
+    // credential before any executor-attested owner request can be signed.
+    testing.expect(t,bridge_pty_host_executor_close(socket,intent.instance,intent.launch_key))
+    attested=bridge_executor_child_attest(&bridge_executor_store,intent.instance,material.token_secret,input,socket,owner_key,self,{nil,bridge_executor_sign})
+    testing.expect_value(t,attested.code,"child_not_current")
     stop:=make(json.Object,context.temp_allocator)
     for name,value in a do stop[name]=value
     stop["method"]=json.String("stop");stop["operation_id"]=json.String("bootstrap_real_stop")
@@ -491,4 +517,43 @@ bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,p,a:json.Object,o
     absent,observed:=bridge_pty_host_executor_query(socket,intent.instance,intent.launch_key)
     testing.expect(t,observed && absent==0)
     _=p
+}
+
+Executor_Child_Test_Transport :: struct {
+    t:^testing.T,directory:vault.Directory_Verification_Input,kr:^vault.Vault_Keyring,
+    private:^ecdsa.Private_Key,key:contracts.Owner_Verified_Key,mode,exchanges:int,
+}
+bridge_executor_test_child_directory :: proc(ctx:rawptr,_:i64)->(vault.Directory_Verification_Input,bool) {
+    p:=(^Executor_Child_Test_Transport)(ctx)
+    unlocked:=sync.mutex_try_lock(&bridge_executor_mutex)
+    testing.expect(p.t,unlocked,"directory HTTP must not hold executor mutex")
+    if unlocked do sync.mutex_unlock(&bridge_executor_mutex)
+    return p.directory,true
+}
+bridge_executor_test_child_sign :: proc(ctx:rawptr,kind:string,o:json.Object)->(string,bool) {
+    name:=strings.trim_prefix(kind,"executor.")
+    raw:=bridge_executor_test_sign(o,name,(^ecdsa.Private_Key)(ctx))
+    signed,valid:=contracts.executor_parse(raw,name)
+    return contracts.owner_string(signed,"signature"),valid
+}
+bridge_executor_test_child_exchange :: proc(ctx:rawptr,raw,input:string,_:i64)->Executor_Fence_Outcome {
+    p:=(^Executor_Child_Test_Transport)(ctx);p.exchanges+=1
+    unlocked:=sync.mutex_try_lock(&bridge_executor_mutex)
+    testing.expect(p.t,unlocked,"owner HTTP must not hold executor mutex")
+    if unlocked do sync.mutex_unlock(&bridge_executor_mutex)
+    request,valid:=contracts.executor_parse(raw,"child_request")
+    testing.expect(p.t,valid && contracts.owner_string(request,"input_digest")==contracts.owner_payload_digest(input))
+    scope:=make(json.Object,context.temp_allocator)
+    for name in ([8]string{"protocol_version","account_id","owner_bridge_id","executor_bridge_id","chain_id","reservation_id","owner_incarnation","executor_incarnation"}) do scope[name]=request[name]
+    digest,_:=contracts.executor_digest("child_request",request)
+    scope["request_id"]=json.String("child_test");scope["method"]=json.String("child_request");scope["direction"]=json.String("request")
+    scope["input_digest"]=json.String(digest);scope["fence_digest"]=request["prepare_digest"]
+    scope["issued_ms"]=request["issued_ms"];scope["request_expires_ms"]=request["request_expires_ms"]
+    body:=bridge_owner_json(owner.Result{code="ok",body="native owner result"})
+    token,sealed:=owner.execution_child_result(request,body,scope,p.key,time.to_unix_nanoseconds(time.now())/1000000,p.kr,{p.private,bridge_executor_test_child_sign})
+    testing.expect(p.t,sealed)
+    scope["direction"]=json.String("response")
+    if p.mode==1 do token=fmt.tprintf("%sx",token)
+    if p.mode==2 do scope["input_digest"]=json.String(strings.repeat("0",64,context.temp_allocator))
+    return {bridge_owner_json(scope),token,p.directory}
 }

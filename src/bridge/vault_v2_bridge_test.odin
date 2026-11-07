@@ -886,7 +886,7 @@ test_owner_local_executor_signer_domains_and_missing_identity :: proc(t:^testing
     key_id,key_ok:=vault.device_id_from_sign_pub(public,context.temp_allocator)
     if !testing.expect(t,key_ok) do return
     key:=contracts.Owner_Verified_Key{"account",f.id_a,key_id,public,"bridge",true,false}
-    for kind in ([9]string{"prepare","action","fence_request","fence_reply","enrollment","receipt","issuance_receipt","bootstrap","child_request"}) {
+    for kind in ([10]string{"prepare","action","fence_request","fence_reply","enrollment","receipt","issuance_receipt","bootstrap","child_request","child_result"}) {
         object:=bridge_executor_test_doc(kind)
         object["owner_bridge_id"]=json.String(f.id_a);object["key_id"]=json.String(key_id)
         if kind=="fence_request" || kind=="enrollment" || kind=="receipt" || kind=="issuance_receipt" || kind=="child_request" do object["executor_bridge_id"]=json.String(f.id_a)

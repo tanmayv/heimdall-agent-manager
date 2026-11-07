@@ -1474,3 +1474,143 @@ temporarily changed native-history record counts; reverted before final passing
    Darwin unit/contracts and explicit Windows bounds remain the approved gate.
    No Darwin/Windows runtime or real-provider pass is claimed here.
 6. Complete all acceptance evidence and obtain independent review before submit.
+
+## M3-2 exact child authentication and reverse relay (2026-11-07)
+
+This supersedes continuation boundary 3 above for the lease/lifecycle request
+path. **M3-2 remains incomplete. Automatic physical dispatch, bounded renewal,
+global legacy/manual/warm admission and encrypted PTY delivery remain open.**
+
+Commit `fea2f510` adds query-only recovery after the durable physical dispatch
+boundary. The retry supplies neither Spawn material nor an owner nonce. It
+observes the original daemon key and cannot clean the run directory or launch a
+replacement (`src/bridge/executor_runtime.odin:24`,
+`src/lib/executor_local/actions.odin:159`). The real-daemon regression simulates
+a lost response before local observation and verifies the original PID.
+
+`src/lib/executor_local/child.odin:14` authenticates the exact issued secret only
+for a current, confirmed, unexpired child generation. It fails closed on local
+clock regression, owner incarnation changes and executor restart. The Bridge
+also queries the actual daemon by its exact launch key before attesting input
+(`src/bridge/executor_child.odin:16`). No executor credential is inserted into the
+legacy agent-token store or sent to the Hub or owner.
+
+The local endpoint fallback accepts these credentials only for
+`agent.owner_local.lease` (`src/bridge/wrapper_endpoint.odin:225`). It fetches and
+verifies the current paired directory, signs the exact child/input digest and
+uses the encrypted reverse relay (`src/bridge/executor_child.odin:55`). Both HTTP
+steps run without the executor mutex. Returned directory observations are
+persisted before interpreting results. Unknown/revoked peers, substituted
+results and changed local child fences fail closed.
+
+The Hub exposes Bridge-authenticated directory retrieval and reverse child
+transit, using the immutable registered owner route
+(`src/hub/transport/http/owner_local_handlers.odin:211`). It reads routing and
+paired-directory metadata only. The receiving Bridge validates the enrolled
+executor and authenticated channel, resolves identity from its own retained
+bootstrap/journal/current assignment and calls the ordinary authoritative
+lease/lifecycle handlers (`src/lib/owner_local/execution_child.odin:15`,
+`src/bridge/owner_executor_child.odin:14`). A remote `lease.claim` is rejected;
+no replacement task grant or work attempt is admitted.
+
+The owner signs a separate `child_result` receipt over the exact request and
+result bytes; the content bundle remains encrypted. Unicode result content is
+allowed without relaxing the ASCII authority envelope. A shared account key
+cannot forge this owner signature or substitute another result
+(`src/contracts/executor_child.odin:64`,
+`src/lib/executor_channel/channel.odin:121`). Odin and TypeScript share signed
+substitution fixtures for both request and result.
+
+A fresh child transport attestation may carry the exact **expired original
+input**. The owner alone decides historical receipt replay versus a fresh
+expired mutation. Changing the original input expiry would change the operation
+digest and is forbidden recovery. Native owner tests prove the same committed
+heartbeat result replays after input expiry, while a new expired operation is
+rejected. Current child/assignment read scope still applies.
+
+### Verification for this continuation
+
+All commands run through managed shells in the task Workdir. No real provider,
+full enrolled-network, Darwin runtime or Windows runtime result is claimed.
+
+```bash
+nix develop --command odin test src/lib/executor_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3b-query-ledger-20261107-0310
+nix develop --command env HEIMDALL_EXECUTOR_TEST_PTY=$HOME/.cache/heimdall-tests/m3b-bootstrap-pty-20261107-0300/bin/ham-pty-host odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:EXECUTOR_TEST_REQUIRED=true -define:ODIN_TEST_NAMES=main.bridge_executor_real_daemon_ledger_dispatch_and_stale_stop,main.bridge_executor_expiry_during_owner_check_and_clock_regression_fail_before_io -out:$HOME/.cache/heimdall-tests/m3b-query-bridge-20261107-0310
+nix build .#ham-bridge -o $HOME/.cache/heimdall-tests/m3b-query-bins-20261107-0311
+```
+
+Results: executor **27 PASS** (`sh_80a1c335f94ec4198f4b260e449eda7c`), Bridge
+**2 PASS** (`sh_1d5bd570d88c6e3a5d4cf22123bdc7dc`), production Bridge build
+**PASS** (`sh_342a19656d905fdc2ec5b94ed13d53b3`). The optional old-daemon phase
+was skipped because `HEIMDALL_EXECUTOR_OLD_PTY` was absent.
+
+```bash
+nix develop --command odin test src/contracts -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3b-child-contracts-20261107-0327
+nix develop --command odin test src/lib/executor_channel -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3b-child-channel-20261107-0327
+nix develop --command odin test src/lib/executor_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3b-child-ledger-20261107-0327
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_NAMES=owner_local.owner_execution_child_uses_native_journal_and_ordinary_capability_replay,owner_local.owner_execution_child_rejects_substitution_revocation_regrant_and_restart -out:$HOME/.cache/heimdall-tests/m3b-child-owner-replay-20261107-0327
+```
+
+Results: contracts **37 PASS**, channel **4 PASS**, executor **29 PASS**
+(`sh_f1f5f1566cdaa4fc149a520976b11dc6`); owner replay **2 PASS**
+(`sh_7f61d0c04d856f442caff2b390bdca95`). The earlier full owner run passed
+**261 tests** (`sh_2da8a45eaae8571aa68582f5474f7598`), before the added expired-input
+replay assertions and result sealing helper.
+
+```bash
+node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_executor_child_test.ts tests/ui_executor_contract_test.ts tests/ui_executor_channel_test.ts tests/ui_executor_issuance_test.ts
+npm run typecheck
+nix develop --command odin test src/hub/transport/http -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_NAMES=http.executor_resource_relay_requires_exact_registered_owner_bridge -out:$HOME/.cache/heimdall-tests/m3b-child-hub-relay-20261107-0330
+nix develop --command env HEIMDALL_EXECUTOR_TEST_PTY=$HOME/.cache/heimdall-tests/m3b-bootstrap-pty-20261107-0300/bin/ham-pty-host odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:EXECUTOR_TEST_REQUIRED=true -define:ODIN_TEST_NAMES=main.test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection,main.test_owner_local_executor_signer_domains_and_missing_identity -out:$HOME/.cache/heimdall-tests/m3b-child-endpoint-real3-20261107-0334
+```
+
+Results: TypeScript **15 PASS** and typecheck **PASS**
+(`sh_a8edf645b1d8851c62af3df6afc65909`); Hub routing **1 PASS**
+(`sh_f9d78ec7bcd4104b1a32cf0839c32479`); real-child endpoint and signer domains
+**2 PASS** (`sh_7ce2772addd5957fa1d31780de41c8a0`). The endpoint integration uses
+injected directory/owner transport and real encrypted owner-signed results. It
+proves exact live child authentication, unlocked I/O, result/scope substitution
+rejection and denial after physical absence despite a retained confirmed ledger.
+Native owner journal/capability behavior is independently tested; this is not an
+end-to-end enrolled-network owner mutation demo.
+
+Draft failures corrected: Odin test variable redeclaration; heartbeat fixture
+used `heartbeat` instead of `lease.heartbeat`; TypeScript referenced a nonexistent
+digest helper; the isolated PTY test initially used the production socket path
+instead of its explicit test socket. The test fence safely refused that dial.
+No production authority fallback or unrelated cleanup was introduced.
+
+Final-source verification also passed:
+
+```bash
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3b-child-relay-owner-full-20261107-0336
+nix build .#ham-bridge .#ham-hub -o $HOME/.cache/heimdall-tests/m3b-child-relay-bins-20261107-0336
+git diff HEAD --check
+```
+
+Full owner suite **261 PASS** (`sh_7c9f9203eedd413924b710d16db39aa2`), both
+production builds **PASS** (`sh_e8672266caa0933bc13fb3dadbcc452e`), whitespace
+check **PASS**. All new source files were staged before the Nix builds so the
+flake included them.
+
+### Next implementation boundary
+
+1. Mount automatic exact-reservation launch/query before activation outbox
+   settlement. Acquire a fresh owner nonce **after** bootstrap file I/O. Never
+   hold owner/executor/startup I/O mutexes across the network callback: a
+   colocated owner request can hold the owner mutex while waiting for startup
+   I/O, so holding startup I/O across a nonce callback can deadlock too. Recheck
+   bounded proof freshness and the local exact claim immediately before Spawn.
+2. Select/recover the original reservation's intent, not an arbitrary first
+   global pending intent. An uncertain dispatched claim uses the query-only
+   path; a confirmed replay queries the exact daemon key without rematerializing.
+3. Mount executor-local startup readiness for the issued credential. The child
+   endpoint currently supports only the owner-local lease/lifecycle method;
+   `agent.start_success` remains a legacy-token path. Do not register a Hub task
+   or substitute a Hub instance token to make readiness work.
+4. Implement bounded renewal/expiry reconciliation, global admission including
+   legacy/manual/warm paths, encrypted PTY tickets/results and Linux/Darwin
+   interrupt profiles with documented Windows bounds. Rich owner-rendered
+   profile/memory/skill provisioning remains separate from the minimal snapshot.
+5. Complete actual failure/cross-owner evidence and independent review before
+   submit. Continue this same branch; do not reimport predecessor history.

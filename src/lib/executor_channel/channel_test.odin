@@ -28,6 +28,35 @@ clone :: proc(source:json.Object)->json.Object {
     for k,v in source do target[k]=v
     return target
 }
+@(test)
+channel_child_results_reject_account_key_forgery_and_correlated_body_substitution :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    _,kr:=fixture(t);defer vault.keyring_wipe(&kr)
+    value,_:=contracts.owner_content_document(#load("../../contracts/fixtures/executor-child-v1.json",string))
+    f,_:=value.(json.Object)
+    get:=contracts.owner_string
+    request,_:=contracts.executor_parse(get(f,"child"),"child_request")
+    key_doc,_:=f["owner_key"].(json.Object)
+    key:=contracts.Owner_Verified_Key{"account",get(key_doc,"principal_id"),get(key_doc,"key_id"),get(key_doc,"public_key"),"bridge",true,false}
+    scope:=make(json.Object,context.temp_allocator)
+    for name in ([8]string{"protocol_version","account_id","owner_bridge_id","executor_bridge_id","chain_id","reservation_id","owner_incarnation","executor_incarnation"}) do scope[name]=request[name]
+    digest,_:=contracts.executor_digest("child_request",request)
+    scope["request_id"]=json.String("child_result");scope["method"]=json.String("child_request");scope["direction"]=json.String("response")
+    scope["input_digest"]=json.String(digest);scope["fence_digest"]=request["prepare_digest"]
+    scope["issued_ms"]=json.String("1200");scope["request_expires_ms"]=json.String("1800")
+    body:=get(f,"result_body")
+    receipt:=get(f,"child_result")
+    encoded,_:=json.marshal(struct{receipt,body:string}{receipt,body},allocator=context.temp_allocator)
+    token,sealed:=seal(string(encoded),&kr,scope,1400)
+    testing.expect(t,sealed)
+    opened,verified:=open_child_result(token,&kr,scope,request,key,1400)
+    testing.expect(t,verified && opened==body)
+    // An account-key holder can reseal changed plaintext but cannot replace
+    // the separately owner-signed result digest.
+    encoded,_=json.marshal(struct{receipt,body:string}{receipt,"forged"},allocator=context.temp_allocator)
+    token,sealed=seal(string(encoded),&kr,scope,1400);testing.expect(t,sealed)
+    _,verified=open_child_result(token,&kr,scope,request,key,1400);testing.expect(t,!verified)
+}
 
 @(test)
 channel_cross_runtime_ciphertext_aad_and_bilateral_signed_records :: proc(t:^testing.T) {

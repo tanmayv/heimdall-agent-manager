@@ -206,6 +206,21 @@ Executor_Fence_Command :: struct {
 // The owner verifies the enrolled executor signature and exact claimed intent;
 // this routing check neither grants work nor attests a current execution fence.
 executor_fence_relay_handler :: proc(ctx:rawptr,req:Request)->Response {
+    return executor_reverse_relay(ctx,req,false)
+}
+executor_child_relay_handler :: proc(ctx:rawptr,req:Request)->Response {
+    return executor_reverse_relay(ctx,req,true)
+}
+executor_directory_handler :: proc(ctx:rawptr,req:Request)->Response {
+    h:=(^Bridge_Handlers)(ctx)
+    auth,ok,resp:=require_auth_or_bridge_token(h.auth,req)
+    if !ok do return resp
+    if auth.kind!=.Bridge_Token do return respond_error(domain.domain_error(.Forbidden,"executor Bridge authentication required"),req.request_id)
+    directory,available:=owner_directory(h,auth.user_id)
+    if !available do return respond_error(domain.domain_error(.Forbidden,"current directory unavailable"),req.request_id)
+    return respond_success(owner_json(directory),req.request_id,auth_ctx_server_time(req))
+}
+executor_reverse_relay :: proc(ctx:rawptr,req:Request,child:bool)->Response {
     context.allocator=context.temp_allocator
     h:=(^Bridge_Handlers)(ctx)
     auth,ok,resp:=require_auth_or_bridge_token(h.auth,req)
@@ -227,7 +242,7 @@ executor_fence_relay_handler :: proc(ctx:rawptr,req:Request)->Response {
     directory,available:=owner_directory(h,auth.user_id)
     if !available do return respond_error(domain.domain_error(.Forbidden,"current directory unavailable"),req.request_id)
     id:=fmt.tprintf("cmd_executor_fence_%d",time.to_unix_nanoseconds(time.now()))
-    command:=Executor_Fence_Command{"owner_executor_fence",id,auth.user_id,auth.bridge_id,req.body,directory}
+    command:=Executor_Fence_Command{"owner_executor_child" if child else "owner_executor_fence",id,auth.user_id,auth.bridge_id,req.body,directory}
     reply,received,rerr:=bridge_runtime.send_runtime_command_wait(h.bridge_runtime_registry,project_service.Runtime_Command{bridge_id=target,command_id=id,body_json=owner_json(command)},5000)
     if !received do return respond_error(rerr,req.request_id)
     defer delete(reply,runtime.default_allocator())

@@ -16,6 +16,28 @@ executor_child_key :: proc(root:json.Object,name:string)->Owner_Verified_Key {
         owner_string(o,"public_key"),"bridge",true,false}
 }
 @(test)
+executor_child_result_exact_owner_signature_and_expired_input_relay :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=executor_child_fixture(t)
+    request,_:=executor_parse(owner_string(f,"child"),"child_request")
+    result,valid:=executor_parse(owner_string(f,"child_result"),"child_result");testing.expect(t,valid)
+    key:=executor_child_key(f,"owner_key")
+    body:=owner_string(f,"result_body")
+    testing.expect(t,executor_child_result_matches(result,request,body,key,1400))
+    bad,_:=f["result_bad"].(json.Array)
+    for item in bad {
+        row,_:=item.(json.Object);r,parsed:=executor_parse(owner_string(row,"raw"),"child_result")
+        testing.expect(t,parsed)
+        testing.expectf(t,!executor_child_result_matches(r,request,body,key,1400),"signed result substitution: %s",owner_string(row,"name"))
+    }
+    testing.expect(t,!executor_child_result_matches(result,request,strings.concatenate({body," "},context.temp_allocator),key,1400))
+    testing.expect(t,!executor_child_result_matches(result,request,body,executor_child_key(f,"executor_key"),1400))
+    for now in ([2]i64{1299,1800}) do testing.expect(t,!executor_child_result_matches(result,request,body,key,now))
+    b,_:=executor_parse(owner_string(f,"bootstrap"),"bootstrap")
+    old_input,_:=executor_parse(owner_string(f,"expired_child"),"child_request")
+    testing.expect(t,executor_child_request_matches(old_input,b,owner_string(f,"expired_input"),executor_child_key(f,"executor_key"),key,1300))
+}
+@(test)
 executor_bootstrap_exact_signed_binding :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
     f:=executor_child_fixture(t)

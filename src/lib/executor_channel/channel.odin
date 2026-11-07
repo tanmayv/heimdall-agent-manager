@@ -3,6 +3,7 @@ package executor_channel
 import "core:crypto"
 import "core:encoding/json"
 import "core:fmt"
+import "core:strings"
 import contracts "odin_test:contracts"
 import random "odin_test:lib/os_random"
 import vault "odin_test:lib/vault"
@@ -113,4 +114,25 @@ open_issuance :: proc(token:string,kr:^vault.Vault_Keyring,expected,consent:json
         crypto.zero_explicit(raw_data(plain),len(plain));delete(plain,allocator);return "",false
     }
     return plain,true
+}
+
+// Child results use a separately signed owner receipt over the exact result
+// bytes, including failures. AEAD possession alone cannot forge a result.
+open_child_result :: proc(token:string,kr:^vault.Vault_Keyring,expected,request:json.Object,
+    owner_key:contracts.Owner_Verified_Key,now:i64,allocator:=context.allocator)->(string,bool) {
+    get:=contracts.owner_string
+    digest,_:=contracts.executor_digest("child_request",request)
+    if get(expected,"method")!="child_request" || get(expected,"direction")!="response" ||
+       get(expected,"input_digest")!=digest || get(expected,"fence_digest")!=get(request,"prepare_digest") {return "",false}
+    for name in ([7]string{"account_id","owner_bridge_id","executor_bridge_id","chain_id","reservation_id","owner_incarnation","executor_incarnation"}) {
+        if get(expected,name)!=get(request,name) do return "",false
+    }
+    plain,opened:=open(token,kr,expected,now,allocator)
+    if !opened do return "",false
+    defer {crypto.zero_explicit(raw_data(plain),len(plain));delete(plain,allocator)}
+    bundle,valid:=contracts.executor_parse(plain,"child_result_bundle")
+    receipt,parsed:=contracts.executor_parse(get(bundle,"receipt"),"child_result")
+    if !valid || !parsed || !contracts.executor_child_result_matches(receipt,request,get(bundle,"body"),owner_key,now) {return "",false}
+    // Plaintext is wiped above; return a distinct caller-owned body.
+    return strings.clone(get(bundle,"body"),allocator),true
 }

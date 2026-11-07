@@ -40,6 +40,20 @@ for (const [name] of executorSchemas.child_request) r[name] = bootstrap[name] ??
 Object.assign(r,{bootstrap_digest:digest(executorCanonical('bootstrap',bootstrap)),input_digest:digest(input),issued_ms:'1200',
   request_expires_ms:'1800',key_id:executorKey.key_id,signature:'0'.repeat(128)});
 const child = await sign('child_request',r,executor);
+const resultBody = JSON.stringify({code:'ok',body:'authoritative result 模型🚀',replay:false});
+const childResult: Record<string,string> = {};
+for (const [name] of executorSchemas.child_result) childResult[name] = child[name] ?? '';
+Object.assign(childResult,{request_digest:digest(executorCanonical('child_request',child)),result_digest:digest(resultBody),
+  issued_ms:'1300',key_id:ownerKey.key_id,signature:'0'.repeat(128)});
+const child_result = await sign('child_result',childResult);
+const result_bad = [];
+for (const name of ['account_id','owner_bridge_id','executor_bridge_id','chain_id','reservation_id','owner_incarnation','executor_incarnation','prepare_digest','request_digest','input_digest','result_digest']) {
+  const value = child_result[name];
+  const replacement = /^[0-9a-f]{64}$/.test(value) ? 'd'.repeat(64) : /^[0-9]+$/.test(value) ? String(BigInt(value)+1n) : value+'_other';
+  result_bad.push({name,raw:JSON.stringify(await sign('child_result',{...child_result,[name]:replacement}))});
+}
+const expiredInput = JSON.stringify({...JSON.parse(input),request_expires_ms:'1000'});
+const expired_child = await sign('child_request',{...child,input_digest:digest(expiredInput)},executor);
 const replacement = (v: string) => /^[0-9a-f]{64}$/.test(v) ? (v === 'd'.repeat(64) ? 'e' : 'd').repeat(64) : /^[0-9]+$/.test(v) ? String(BigInt(v)+1n) : v+'_other';
 const bootstrap_bad = [], child_bad = [];
 for (const [name] of executorSchemas.bootstrap) {
@@ -55,6 +69,7 @@ for (const [name] of executorSchemas.child_request) {
 const exchange = {...doc('activation_exchange'),bootstrap:JSON.stringify(bootstrap),body};
 const result = {activation_exchange:JSON.stringify(exchange),owner_key:ownerKey,executor_key:executorKey,prepare:JSON.stringify(p),action:JSON.stringify(a),configuration,body,input,
   bootstrap:JSON.stringify(bootstrap),child:JSON.stringify(child),bootstrap_bad,child_bad,
+  child_result:JSON.stringify(child_result),result_body:resultBody,result_bad,expired_input:expiredInput,expired_child:JSON.stringify(expired_child),
   content_bad: [
     JSON.stringify({...JSON.parse(body),argv:'sh'}),
     ...['../escape','a/b','a_b','a.b',''].map(name => JSON.stringify({...JSON.parse(body),skills_json:JSON.stringify([{name,content:'data'}])})),

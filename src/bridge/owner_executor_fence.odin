@@ -40,7 +40,7 @@ bridge_owner_fence_directory :: proc(s:^owner.Store,input:vault.Directory_Verifi
 // Short, read-only owner callback. It does no network I/O and never publishes
 // the outbox. Keep it on a distinct dispatcher key so a colocated executor's
 // pending exchange cannot block the callback it is waiting for.
-bridge_owner_executor_fence_handle :: proc(conn:^ws.Connection,text:string) {
+bridge_owner_executor_fence_handle :: proc(conn:^ws.Connection,text:string,child:bool=false) {
     context.allocator=context.temp_allocator
     generation:=bridge_task_chain_search_generation()
     wire:Owner_Executor_Fence_Command
@@ -64,9 +64,9 @@ bridge_owner_executor_fence_handle :: proc(conn:^ws.Connection,text:string) {
     plain,opened:=bridge_open_current_epoch_token(get(relay,"envelope"),&kr,context.temp_allocator)
     if !opened do return
     defer crypto.zero_explicit(raw_data(plain),len(plain))
-    exchange,parsed:=contracts.executor_parse(plain,"exchange")
+    exchange,parsed:=contracts.executor_parse(plain,"child_exchange" if child else "exchange")
     scope,scoped:=contracts.executor_parse(get(exchange,"scope"),"transport_scope")
-    if !parsed || !scoped || get(scope,"method")!="fence_request" || get(scope,"direction")!="request" ||
+    if !parsed || !scoped || get(scope,"method")!=("child_request" if child else "fence_request") || get(scope,"direction")!="request" ||
        get(scope,"account_id")!=account || get(scope,"owner_bridge_id")!=bridge_config.daemon_id ||
        get(scope,"executor_bridge_id")!=wire.executor_bridge_id ||
        get(scope,"chain_id")!=get(relay,"chain_id") || get(scope,"request_id")!=get(relay,"request_id") ||
@@ -84,13 +84,25 @@ bridge_owner_executor_fence_handle :: proc(conn:^ws.Connection,text:string) {
     raw,decrypted:=channel.open(get(exchange,"envelope"),&kr,scope,now,context.temp_allocator)
     if !decrypted do return
     defer crypto.zero_explicit(raw_data(raw),len(raw))
-    request,r_ok:=contracts.executor_parse(raw,"fence_request")
+    request,r_ok:=contracts.executor_parse(raw,"child_request" if child else "fence_request")
     if !r_ok do return
     floor,status:=keystore_read_epoch_floor(bridge_config.daemon_id)
     if status!=.Found do return
     key,key_version,key_head,key_ok:=owner.verify_executor_directory(bridge_owner_json(wire.directory),account,
         get(scope,"executor_bridge_id"),get(request,"key_id"),floor.root,version,head,&kr)
     if !key_ok || key_version!=version || key_head!=head do return
+    if child {
+        authenticated,verified:=channel.open_signed(get(exchange,"envelope"),&kr,scope,key,now,context.temp_allocator)
+        if !verified do return
+        defer crypto.zero_explicit(raw_data(authenticated),len(authenticated))
+        exact,current:=owner.execution_child(s,authenticated,get(exchange,"input"),key,owner_key,time.to_unix_nanoseconds(time.now())/1000000)
+        if !current do return
+        body:=bridge_owner_executor_child_apply(s,get(exchange,"input"),exact,owner_key)
+        token,sealed:=owner.execution_child_result(request,body,scope,owner_key,time.to_unix_nanoseconds(time.now())/1000000,&kr,{nil,bridge_owner_sign})
+        if !sealed {reply.code="expired";return}
+        reply.code="ok";reply.envelope=token
+        return
+    }
     result:=owner.execution_fence_channel_reply(s,get(exchange,"envelope"),scope,key,owner_key,version,head,
         time.to_unix_nanoseconds(time.now())/1000000,&kr,{nil,bridge_owner_sign})
     reply.code=result.code

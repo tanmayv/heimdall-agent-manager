@@ -53,6 +53,21 @@ executor_child_request_fields := [?]Owner_Field{
     {"issued_ms","positive"},{"request_expires_ms","positive"},{"key_id","id"},{"signature","signature"},
 }
 
+executor_child_exchange_fields := [?]Owner_Field{
+    {"scope","document"},{"envelope","required_cipher"},{"input","document"},
+}
+executor_child_result_bundle_fields := [?]Owner_Field{
+    {"receipt","document"},{"body","document"},
+}
+// Owner attestation binds one complete child request and the exact result
+// bytes. It does not itself grant or renew a task lease.
+executor_child_result_fields := [?]Owner_Field{
+    {"protocol_version","version"},{"account_id","id"},{"owner_bridge_id","id"},{"executor_bridge_id","id"},
+    {"chain_id","id"},{"reservation_id","id"},{"owner_incarnation","positive"},{"executor_incarnation","positive"},
+    {"prepare_digest","hash"},{"request_digest","hash"},{"input_digest","hash"},{"result_digest","hash"},
+    {"issued_ms","positive"},{"request_expires_ms","positive"},{"key_id","id"},{"signature","signature"},
+}
+
 executor_bootstrap_matches :: proc(b,p,a:json.Object,configuration_raw,body_raw,launch_key:string,
     owner_key:Owner_Verified_Key,now:i64)->bool {
     c,configured:=owner_parse(configuration_raw,"remote_configuration")
@@ -108,5 +123,18 @@ executor_child_request_matches :: proc(r,b:json.Object,input_raw:string,executor
         if owner_string(input,name)!=owner_string(r,name) do return false
     }
     return now>=executor_number(r,"issued_ms") && executor_number(r,"issued_ms")>=executor_number(b,"issued_ms") &&
-        now<executor_number(r,"request_expires_ms") && now<executor_number(input,"request_expires_ms")
+        now<executor_number(r,"request_expires_ms")
+}
+
+executor_child_result_matches :: proc(result,request:json.Object,body:string,owner_key:Owner_Verified_Key,now:i64)->bool {
+    if !executor_verify("child_result",result,owner_key) || !executor_valid(request,"child_request") do return false
+    for name in ([10]string{"protocol_version","account_id","owner_bridge_id","executor_bridge_id","chain_id","reservation_id",
+        "owner_incarnation","executor_incarnation","prepare_digest","input_digest"}) {
+        if owner_string(result,name)!=owner_string(request,name) do return false
+    }
+    digest,_:=executor_digest("child_request",request)
+    return owner_string(result,"request_digest")==digest && owner_string(result,"result_digest")==owner_payload_digest(body) &&
+        now>=executor_number(result,"issued_ms") && executor_number(result,"issued_ms")>=executor_number(request,"issued_ms") &&
+        now<executor_number(result,"request_expires_ms") &&
+        executor_number(result,"request_expires_ms")<=executor_number(request,"request_expires_ms")
 }
