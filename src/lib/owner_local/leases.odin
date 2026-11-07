@@ -105,6 +105,11 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
     }
     if !workflow_task_current(s,chain,task) do return fail("stale_revision")
     if method=="lease.claim" {
+        assignment,read:=query(s.db,"SELECT configuration_command FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task)
+        if !read || len(assignment)!=1 do return fail("storage_error")
+        assigned,valid:=contracts.owner_parse(assignment[0][0],"command")
+        if !valid do return fail("invalid_scope")
+        if field(assigned,"method")=="fleet.reserve" && (parent==nil || reserved_hard==0) do return fail("invalid_scope")
         if !work_task_published(s,chain,task) do return fail("operation_conflict")
         if fleet[0][1]!=field(c,"configuration_revision") do return fail("invalid_scope")
         if code:=budget_admit(s,chain,task);code!="ok" do return fail(code)

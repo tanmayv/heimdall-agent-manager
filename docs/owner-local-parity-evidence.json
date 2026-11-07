@@ -887,7 +887,8 @@
         "chain.metadata.read",
         "fleet.edit",
         "lifecycle.configure",
-        "runtime.read"
+        "runtime.read",
+        "fleet.reserve"
       ],
       "proof": "src/lib/owner_local/operational_metadata_test.odin:39",
       "original": "src/hub/domain/taskchain.odin:239"
@@ -1113,7 +1114,15 @@
     "linked.fetch": "src/lib/owner_local/linked_test.odin:24",
     "linked.backup": "src/lib/owner_local/linked_test.odin:30",
     "linked.facet.read": "src/lib/owner_local/linked_test.odin:195",
-    "envelope.read": "src/lib/owner_local/linked_test.odin:207"
+    "envelope.read": "src/lib/owner_local/linked_test.odin:207",
+    "fleet.reserve": "src/lib/owner_local/remote_assignment_test.odin:40"
   },
-  "inventory_proof": "src/lib/owner_local/aggregate_test.odin:243"
+  "inventory_proof": "src/lib/owner_local/aggregate_test.odin:243",
+  "m3_extensions": [
+    {
+      "method": "fleet.reserve",
+      "approved_by": "msg_18e599de90fa25d9",
+      "proof": "src/lib/owner_local/remote_assignment_test.odin:50"
+    }
+  ]
 }

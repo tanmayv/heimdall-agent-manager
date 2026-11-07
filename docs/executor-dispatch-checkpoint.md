@@ -260,6 +260,9 @@ unrelated boy-scout changes were included. M3 remains unfinished.
 
 ## Continuation: bilateral signed fence challenges
 
+Source anchors in this section describe checkpoint `d9253b59`; the subsequent
+reserved-enrollment section records later changes to those files.
+
 Coordinator approved this bounded step in `msg_18e59949a8d52e41`, followed by
 remote enrollment and production transport/reconciliation. This checkpoint
 implements the signed exchange core; it does not mount a remote route or replace
@@ -350,6 +353,90 @@ Exact signed-fence modified paths:
 - `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/bridge/vault_v2_bridge_test.odin`
 - `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/docs/executor-dispatch-checkpoint.md`
 
+## Continuation: explicit reserved remote enrollment
+
+Coordinator approved the distinct signed device `fleet.reserve` boundary in
+`msg_18e599de90fa25d9`. The existing `fleet.edit` and local live-child proof are
+preserved. The generic encrypted device ingress now resolves the executor key
+against paired, signed directory evidence and passes it to ordinary owner
+command admission. Directory approval alone does not bind arbitrary Bridge IDs:
+the signed device configuration authorizes the exact executor Bridge ID/key pair,
+and the executor signs the digest of those exact configuration bytes.
+
+The strict generated payload retains instance, configuration revision, enabled
+flag and `body_cipher`. The decrypted reservation contains the exact remote
+configuration and signed executor enrollment. Content documents admit Unicode
+model labels without relaxing ASCII authority envelope parsing. Original signed
+ciphertext and verified plaintext are retained atomically together in immutable
+assignment history; no migration or historical-row rewrite was needed.
+
+Enrollment creates no lease, host resource reservation or child process. It
+checks current native fleet policy, paused roles, capacity, member identity and
+directory configuration, and establishes an explicitly reserved worker member.
+Existing local child identities and unsettled execution journals cannot be
+relabeled as reserved remote children. Ordinary direct lease admission rejects
+reserved facts; the verified host-reservation journal remains the explicit grant
+path. Cross-Bridge preparation now requires accepted `fleet.reserve` history and
+matches the exact executor incarnation, policy, slot, profile and directory key.
+Host receipt/fence verification also checks the key pinned by that history.
+
+Read-scope validation and changed-input conflict lookup precede fresh admission
+checks. A policy pause can leave historical replay readable while denying a new
+grant or launch fence. Member/directory changes invalidate pending assignment;
+directory invalidation includes remote configuration history. Accepted reserve
+events participate in the existing attempt/budget replacement folds. The signed
+method coverage inventory records the approved extension and its executed test
+anchor: 74 signed methods, with the original 240 fields/23 structs preserved.
+
+### Reserved enrollment verification
+
+Commands ran through managed shell sessions with the assigned worktree as cwd:
+
+```bash
+python3 scripts/generate-owner-local-contracts.py
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3-reserve-owner-final-20261107-0013
+nix develop --command odin test src/contracts -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3-reserve-contracts-final-20261107-0013
+nix develop --command odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_NAMES=main.test_owner_local_executor_signer_domains_and_missing_identity -out:$HOME/.cache/heimdall-tests/m3-reserve-signer-20261107-0006
+node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_executor_contract_test.ts tests/ui_owner_local_contract_test.ts
+npm run typecheck
+nix build .#ham-bridge -o $HOME/.cache/heimdall-tests/m3-reserve-bridge-final-20261107-0013
+python3 scripts/check-owner-aggregate-parity.py
+git diff --check
+```
+
+Full owner suite: **239 PASS**, `sh_29607d24792160372df4b7eb8609f1c0`.
+Nine focused owner/directory/replay tests passed in
+`sh_b63b9213d0d1584a6a364b05a3c9af20`.
+Native contracts: **32 PASS**, `sh_c3a8043cd78f55326cfd6befe481c095`.
+Bridge signer including enrollment domain: **1 PASS**,
+`sh_dabb7f07d097d2729a3cfb577a43cb80`.
+TS contracts: **25 PASS**, `sh_955e40595613d2e41db822253c5d4360`.
+Typecheck: PASS, `sh_8d4ee0e74c16ef7a939071d368c97ba0`.
+Bridge build: PASS, `sh_0d7b00bb86672f8fbc4ea72b3da29347`.
+Aggregate parity and diff check: PASS, `sh_daf6b633a3f7cccbcedec01584b52a61`.
+
+Draft corrections were not waived: immutable-parameter address and dynamic
+string syntax; null-prototype TS assertion; a 237/238 owner run exposed live
+configuration checking before changed-input conflict detection; native empty
+policy fields needed to preserve executor resolution; multiline Odin `do`
+syntax prevented a draft build; the Unicode model test caught the ASCII/content
+boundary and led to the encrypted body rather than broader authority parsing.
+
+This checkpoint tests signed owner admission, actual P256 directory evidence,
+SQLite rollback/restart, strict wire parity and the production signer. It does
+not demonstrate a real enrolled multi-Bridge request, issue remote attestations,
+mount prepare/activate/fence transport, or dispatch provider processes. Existing
+Rust/provider/platform evidence was retained because no daemon/input code
+changed. No unrelated cleanup, live restart, deployment or push occurred.
+
+Next: issue enrollment only after canonical device resource/catalog resolution
+and exact reserved identity allocation; add sealed, identity-bound executor relay
+and current directory verification in both directions; mount matcher and exact
+saved-identity reconciliation, including lost replies and committed-grant failure
+disposition. Global manual/warm admission, physical renewal, encrypted delivery
+and results, actual provider/platform tests and final independent/user acceptance
+remain required. M3 is unfinished.
+
 ### Exact owner-journal modified paths
 
 - `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/docs/executor-dispatch-checkpoint.md`
@@ -368,3 +455,42 @@ Exact signed-fence modified paths:
 - `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/migration_025.sql`
 - `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/migrations.odin`
 - `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/search_test.odin`
+
+### Reserved enrollment source anchors
+
+- Encrypted device ingress and current executor key: `src/bridge/owner_local.odin:189`.
+- Paired root/current directory verification: `src/lib/owner_local/directory.odin:48`.
+- Device configuration/host attestation binding: `src/contracts/executor.odin:178`.
+- Current policy/capacity: `src/lib/owner_local/remote_assignment.odin:9`; membership/directory/physical-outcome guards: `src/lib/owner_local/remote_assignment.odin:49`.
+- Atomic assignment history: `src/lib/owner_local/store.odin:330`; exact preparation/replay: `src/lib/owner_local/execution.odin:29`; direct grant guard: `src/lib/owner_local/leases.odin:110`.
+- Browser writer verifies the approved executor before signing/encrypting: `src/ui/api/ownerLocalClient.ts:68`.
+
+### Exact reserved-enrollment modified paths
+
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/docs/executor-dispatch-checkpoint.md`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/docs/owner-local-parity-evidence.json`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/bridge/owner_local.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/bridge/unseal_protocol.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/bridge/vault_v2_bridge_test.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/contracts/executor.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/contracts/fixtures/executor-v1.json`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/contracts/fixtures/owner-local-schema.json`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/contracts/owner_local.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/contracts/owner_schema.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/attempts.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/budget_overlap.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/budget_runtime.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/directory.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/execution.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/execution_test.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/leases.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/operational_metadata.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/remote_assignment.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/remote_assignment_test.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/remote_directory_test.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/store.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/ui/api/executor.ts`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/ui/api/ownerLocal.ts`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/ui/api/ownerLocalClient.ts`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/ui/api/ownerSchema.ts`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/tests/ui_executor_contract_test.ts`

@@ -14,6 +14,12 @@ EXECUTOR_PREPARE_TTL_MS :: 30000
 // A fence response is evidence for one outstanding random challenge only.
 // Transport callers must consume the challenge and recheck local intent state.
 EXECUTOR_FENCE_TTL_MS :: 5000
+executor_enrollment_fields := [?]Owner_Field{
+    {"protocol_version","version"},{"account_id","id"},{"executor_bridge_id","id"},
+    {"owner_bridge_id","id"},{"chain_id","id"},{"task_id","id"},{"instance_id","id"},
+    {"configuration_revision","positive"},{"configuration_digest","hash"},
+    {"issued_ms","positive"},{"request_expires_ms","positive"},{"key_id","id"},{"signature","signature"},
+}
 executor_fence_request_fields := [?]Owner_Field{
     {"protocol_version","version"},{"account_id","id"},{"executor_bridge_id","id"},
     {"owner_bridge_id","id"},{"chain_id","id"},{"reservation_id","id"},
@@ -72,6 +78,7 @@ executor_schema :: proc(kind:string)->[]Owner_Field {
     case "receipt":return executor_receipt_fields[:]
     case "fence_request":return executor_fence_request_fields[:]
     case "fence_reply":return executor_fence_reply_fields[:]
+    case "enrollment":return executor_enrollment_fields[:]
     }
     return nil
 }
@@ -126,6 +133,10 @@ executor_valid :: proc(o:json.Object,kind:string)->bool {
         end:=executor_number(o,"request_expires_ms")
         if end<=start || end-start>EXECUTOR_FENCE_TTL_MS do return false
     }
+    if kind=="enrollment" {
+        issued,end:=executor_number(o,"issued_ms"),executor_number(o,"request_expires_ms")
+        if end<=issued || end-issued>OWNER_REQUEST_TTL_MS do return false
+    }
     return true
 }
 executor_parse :: proc(raw,kind:string)->(json.Object,bool) {
@@ -154,12 +165,25 @@ executor_verify :: proc(kind:string,o:json.Object,key:Owner_Verified_Key)->bool 
     if !key.enrolled || key.revoked || key.kind!="bridge" || key.account_id!=owner_string(o,"account_id") ||
        key.key_id!=owner_string(o,"key_id") { return false }
     identity:="owner_bridge_id"
-    if kind=="policy" || kind=="receipt" || kind=="fence_request" do identity="executor_bridge_id"
+    if kind=="policy" || kind=="receipt" || kind=="fence_request" || kind=="enrollment" do identity="executor_bridge_id"
     if key.principal_id!=owner_string(o,identity) do return false
     canonical,ok:=executor_canonical(kind,o)
     if !ok do return false
     sig,valid:=vault.signature_text_from_parts("ecdsa-p256-sha256",owner_string(o,"signature"),context.temp_allocator)
     return valid && vault.verify("ecdsa-p256-sha256",key.public_key,transmute([]byte)canonical,sig)
+}
+
+// Enrollment attests a reserved configuration, never a running child or lease.
+// The separate signed device command must authorize these exact config bytes.
+executor_enrollment_matches :: proc(attestation:json.Object,configuration_raw:string,key:Owner_Verified_Key,now:i64,current_admission:=true)->bool {
+    c,valid:=owner_parse(configuration_raw,"remote_configuration")
+    if !valid || !executor_verify("enrollment",attestation,key) || owner_string(c,"owner_bridge_id")==owner_string(c,"executor_bridge_id") ||
+       owner_string(c,"directory_path")=="" || owner_string(c,"executor_key_id")!=key.key_id ||
+       owner_string(attestation,"configuration_digest")!=owner_payload_digest(configuration_raw) {return false}
+    for name in ([8]string{"protocol_version","account_id","executor_bridge_id","owner_bridge_id","chain_id","task_id","instance_id","configuration_revision"}) {
+        if owner_string(attestation,name)!=owner_string(c,name) do return false
+    }
+    return !current_admission || (now>=executor_number(attestation,"issued_ms") && now<executor_number(attestation,"request_expires_ms"))
 }
 
 // Both signatures and the exact pending request are required. This helper is

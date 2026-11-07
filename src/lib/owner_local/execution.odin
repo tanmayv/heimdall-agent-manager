@@ -26,19 +26,24 @@ execution_clock :: proc(tx:^Transaction,now:i64)->string {
 // The child is pinned by accepted assignment history, not supplied by an
 // executor or inferred to be a live local PTY. A separate remote enrollment
 // path must establish that assignment before this API can admit a reservation.
-execution_assignment :: proc(s:^Store,p,c:json.Object)->(Child,bool) {
+execution_assignment :: proc(s:^Store,p,c:json.Object,current_admission:=true)->(Child,bool) {
     for name in ([10]string{"account_id","owner_bridge_id","chain_id","task_id","lease_id",
         "instance_id","launch_epoch","run_count","token_generation","configuration_revision"}) {
         if field(p,name)!=field(c,name) do return {},false
     }
     chain,task:=field(p,"chain_id"),field(p,"task_id")
-    rows,ok:=query(s.db,"SELECT f.instance_id,f.launch_epoch,f.run_count,f.token_generation,h.child_json FROM local_fleet f JOIN local_assignment_history h ON h.chain_id=f.chain_id AND h.task_id=f.task_id AND h.revision=f.configuration_revision WHERE f.chain_id=? AND f.task_id=? AND f.enabled=1 AND f.configuration_revision=?",chain,task,field(p,"configuration_revision"))
+    rows,ok:=query(s.db,"SELECT f.instance_id,f.launch_epoch,f.run_count,f.token_generation,h.child_json,h.command_json,h.payload_json FROM local_fleet f JOIN local_assignment_history h ON h.chain_id=f.chain_id AND h.task_id=f.task_id AND h.revision=f.configuration_revision WHERE f.chain_id=? AND f.task_id=? AND f.enabled=1 AND f.configuration_revision=?",chain,task,field(p,"configuration_revision"))
     if !ok || len(rows)!=1 do return {},false
     child:Child
     if json.unmarshal_string(rows[0][4],&child,.JSON,context.temp_allocator)!=nil ||
        rows[0][0]!=field(p,"instance_id") || rows[0][1]!=field(p,"launch_epoch") ||
        rows[0][2]!=field(p,"run_count") || rows[0][3]!=field(p,"token_generation") ||
        !lease_scope(p,child) || !member_authorized(s,chain,child) || !lifecycle_path_current(s,chain,task) {return {},false}
+    assigned,parsed:=contracts.owner_parse(rows[0][5],"command")
+    if !parsed do return {},false
+    if field(p,"executor_bridge_id")!=s.owner {
+        if field(assigned,"method")!="fleet.reserve" || !remote_assignment_prepare_matches(s,p,rows[0][6],current_admission) do return {},false
+    } else if field(assigned,"method")!="fleet.edit" {return {},false}
     return child,true
 }
 execution_change :: proc(tx:^Transaction,seq,now:i64,p:json.Object,kind,operation,result:string)->bool {
@@ -63,7 +68,7 @@ execution_prepare_start :: proc(s:^Store,prepare_raw,lease_raw:string,key:contra
     tx:Transaction
     if !transaction_begin(s,&tx) do return fail("storage_error")
     defer transaction_rollback(&tx)
-    child,current:=execution_assignment(s,p,c)
+    child,current:=execution_assignment(s,p,c,false)
     if !current do return fail("invalid_scope")
     digest,_:=contracts.executor_digest("prepare",p);lease_digest,_:=contracts.owner_digest("lease_command",c)
     rows,read:=query(s.db,"SELECT prepare_digest,lease_digest,state,prepare_seq FROM owner_execution_journal WHERE reservation_id=? OR (instance_id=? AND operation_id=?)",
@@ -73,6 +78,7 @@ execution_prepare_start :: proc(s:^Store,prepare_raw,lease_raw:string,key:contra
         if len(rows)!=1 || rows[0][0]!=digest || rows[0][1]!=lease_digest do return fail("operation_conflict")
         return Result{code="ok",body=rows[0][2],seq=number(rows[0][3]),replay=true}
     }
+    if _,admitted:=execution_assignment(s,p,c);!admitted do return fail("invalid_scope")
     if code:=execution_clock(&tx,now);code!="ok" do return fail(code)
     if contracts.executor_number(p,"owner_incarnation")!=s.incarnation do return fail("stale_incarnation")
     if contracts.executor_number(p,"prepare_until_ms")<=now || contracts.executor_number(p,"prepare_until_ms")-now>contracts.EXECUTOR_PREPARE_TTL_MS ||
@@ -140,7 +146,8 @@ execution_prepare_commit :: proc(s:^Store,reservation,receipt_raw:string,owner_k
     p,valid:=contracts.executor_parse(row[0],"prepare");c,c_ok:=contracts.owner_parse(row[1],"lease_command")
     if !valid || !c_ok || !contracts.executor_verify("prepare",p,owner_key) ||
        !contracts.owner_verify_signature("lease_command",c,"signature",owner_key) {return fail("invalid_scope")}
-    child,current:=execution_assignment(s,p,c)
+    if field(p,"executor_bridge_id")!=s.owner && !remote_assignment_key_matches(s,p,executor_key) do return fail("invalid_scope")
+    child,current:=execution_assignment(s,p,c,false)
     if !current || encode(child)!=row[5] do return fail("invalid_scope")
     // Require authenticated exact executor evidence before even replaying a
     // committed journal result. Revoked executor credentials cannot read it.
@@ -148,6 +155,7 @@ execution_prepare_commit :: proc(s:^Store,reservation,receipt_raw:string,owner_k
     if !r_ok || !contracts.executor_receipt_matches(r,p,"prepare",executor_key,now,false) do return fail("invalid_scope")
     if row[2]=="retired" do return fail("retired")
     if row[2]=="committed" do return Result{code="ok",body=row[3],seq=number(row[4]),replay=true}
+    if _,admitted:=execution_assignment(s,p,c);!admitted do return fail("invalid_scope")
     if code:=execution_clock(&tx,now);code!="ok" do return fail(code)
     if contracts.executor_number(p,"prepare_until_ms")<=now do return fail("expired")
     if !execution_prepared_receipt(s,p,receipt_raw,query_raw,query_receipt_raw,owner_key,executor_key,now) do return fail("reservation_not_current")
@@ -263,6 +271,8 @@ execution_fence_reply :: proc(s:^Store,request_raw:string,executor_key,owner_key
     claim:=Intent_Claim{field(request,"intent_id"),row[0],row[1],row[2],row[3],row[4],row[5],number(row[6]),number(row[7])}
     action,a_ok:=contracts.executor_parse(claim.payload,"action")
     if !a_ok || !contracts.executor_verify("action",action,owner_key) || field(request,"claim_attempt")!=row[7] do return fail("invalid_scope")
+    prepared,p_ok:=contracts.executor_parse(claim.fence,"prepare")
+    if !p_ok || (field(action,"executor_bridge_id")!=s.owner && !remote_assignment_key_matches(s,prepared,executor_key)) do return fail("invalid_scope")
     for name in ([7]string{"account_id","executor_bridge_id","owner_bridge_id","chain_id","reservation_id","executor_incarnation","owner_incarnation"}) {
         if field(request,name)!=field(action,name) do return fail("invalid_scope")
     }

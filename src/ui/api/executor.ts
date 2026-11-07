@@ -1,8 +1,14 @@
-import { ownerPayloadDigest, type OwnerVerifiedKey } from './ownerLocal.ts';
+import { ownerPayloadDigest, ownerParse, type OwnerVerifiedKey } from './ownerLocal.ts';
 import { parseOwnerRequestDocument } from './ownerJson.ts';
 
 // Mirrored executor resource contracts; no task command or launch authority.
 export const executorSchemas = {
+  enrollment: [
+    ['protocol_version','version'],['account_id','id'],['executor_bridge_id','id'],
+    ['owner_bridge_id','id'],['chain_id','id'],['task_id','id'],['instance_id','id'],
+    ['configuration_revision','positive'],['configuration_digest','hash'],
+    ['issued_ms','positive'],['request_expires_ms','positive'],['key_id','id'],['signature','signature'],
+  ],
   fence_request: [
     ['protocol_version','version'],['account_id','id'],['executor_bridge_id','id'],
     ['owner_bridge_id','id'],['chain_id','id'],['reservation_id','id'],
@@ -383,6 +389,7 @@ export function executorParse(raw: string, kind: ExecutorKind): ExecutorDocument
     const end = BigInt(o.request_expires_ms);
     if (end <= start || end - start > EXECUTOR_FENCE_TTL_MS) throw new SyntaxError('Executor fence bounds');
   }
+  if (kind === 'enrollment' && (BigInt(o.request_expires_ms) <= BigInt(o.issued_ms) || BigInt(o.request_expires_ms)-BigInt(o.issued_ms) > 300000n)) throw new SyntaxError('Executor enrollment bounds');
   return o;
 }
 export function executorCanonical(kind: ExecutorKind, value: ExecutorDocument): string {
@@ -394,11 +401,23 @@ const unhex = (hex: string): Uint8Array<ArrayBuffer> => Uint8Array.from(hex.matc
 export async function executorVerify(kind: ExecutorKind, value: ExecutorDocument, key: OwnerVerifiedKey): Promise<boolean> {
   try {
     const o = executorParse(JSON.stringify(value), kind);
-    const principal = kind === 'policy' || kind === 'receipt' || kind === 'fence_request' ? o.executor_bridge_id : o.owner_bridge_id;
+    const principal = kind === 'policy' || kind === 'receipt' || kind === 'fence_request' || kind === 'enrollment' ? o.executor_bridge_id : o.owner_bridge_id;
     if (!key.enrolled || key.revoked || key.kind !== 'bridge' || key.account_id !== o.account_id ||
         key.principal_id !== principal || key.key_id !== o.key_id || !/^04[0-9a-f]{128}$/.test(key.public_key)) return false;
     const pub = await crypto.subtle.importKey('raw', unhex(key.public_key), {name:'ECDSA',namedCurve:'P-256'}, false, ['verify']);
     return await crypto.subtle.verify({name:'ECDSA',hash:'SHA-256'}, pub, unhex(o.signature), new TextEncoder().encode(executorCanonical(kind,o)));
+  } catch { return false; }
+}
+
+export async function executorEnrollmentMatches(attestation: ExecutorDocument, configurationRaw: string, key: OwnerVerifiedKey, now: bigint, currentAdmission = true): Promise<boolean> {
+  try {
+    const c = ownerParse(configurationRaw,'remote_configuration');
+    if (!await executorVerify('enrollment',attestation,key) || c.owner_bridge_id === c.executor_bridge_id || c.directory_path === '' || c.executor_key_id !== key.key_id ||
+        attestation.configuration_digest !== await ownerPayloadDigest(configurationRaw)) return false;
+    for (const name of ['protocol_version','account_id','executor_bridge_id','owner_bridge_id','chain_id','task_id','instance_id','configuration_revision'] as const) {
+      if (attestation[name] !== c[name]) return false;
+    }
+    return !currentAdmission || (now >= BigInt(attestation.issued_ms) && now < BigInt(attestation.request_expires_ms));
   } catch { return false; }
 }
 

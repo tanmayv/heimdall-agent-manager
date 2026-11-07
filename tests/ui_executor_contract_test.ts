@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { executorParse, executorCanonical, executorVerify, executorReceiptMatches, executorFenceReplyMatches, type ExecutorKind } from '../src/ui/api/executor.ts';
+import { executorParse, executorCanonical, executorVerify, executorReceiptMatches, executorFenceReplyMatches, executorEnrollmentMatches, type ExecutorKind } from '../src/ui/api/executor.ts';
+import { ownerParse, ownerPayloadKind } from '../src/ui/api/ownerLocal.ts';
 const fixture = JSON.parse(readFileSync(new URL('../src/contracts/fixtures/executor-v1.json', import.meta.url), 'utf8')) as {
  valid: {kind: ExecutorKind; raw: string; canonical: string; digest: string}[];
  invalid: {kind: ExecutorKind; raw: string; name: string}[];
@@ -66,4 +67,29 @@ test('executor P256 receipt binds scope/digest/incarnation and historical admiss
   const historical = await sign({...receipt,historical:'1'});
   assert.equal(await executorReceiptMatches(historical,request,'prepare',key,1000n),false);
   assert.equal(await executorReceiptMatches(historical,request,'prepare',key,5000n,false),true);
+});
+
+test('remote enrollment binds exact device-selected configuration and enrolled executor key', async () => {
+  const pair = await crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);
+  const hex = (value: ArrayBuffer) => Buffer.from(value).toString('hex');
+  const key = {account_id:'account',principal_id:'executor',key_id:'operator',public_key:hex(await crypto.subtle.exportKey('raw',pair.publicKey)),kind:'bridge' as const,enrolled:true,revoked:false};
+  const config = {protocol_version:'1',account_id:'account',owner_bridge_id:'owner1',executor_bridge_id:'executor',executor_key_id:'operator',
+    chain_id:'chain',task_id:'task',instance_id:'instance',agent_id:'author',launch_epoch:'epoch',run_count:'1',token_generation:'a'.repeat(64),
+    configuration_revision:'1',executor_incarnation:'1',policy_revision:'1',slot_id:'slot1',provider_profile:'default',provider:'codex',model:'模型🚀',
+    directory_id:'remote_dir',directory_key:'b'.repeat(64),directory_path:'/repo'};
+  const raw = JSON.stringify(config);
+  assert.equal(ownerParse(raw,'remote_configuration').model,'模型🚀');
+  const enrollment = {...executorParse(fixture.valid.find(r => r.kind === 'enrollment')!.raw,'enrollment'),configuration_digest:createHash('sha256').update(raw).digest('hex')};
+  const signed = {...enrollment,signature:hex(await crypto.subtle.sign({name:'ECDSA',hash:'SHA-256'},pair.privateKey,new TextEncoder().encode(executorCanonical('enrollment',enrollment))))};
+  assert.equal(await executorEnrollmentMatches(signed,raw,key,1200n),true);
+  assert.equal(await executorEnrollmentMatches(signed,raw+' ',key,1200n),false);
+  assert.equal(await executorEnrollmentMatches(signed,JSON.stringify({...config,executor_key_id:'other'}),key,1200n),false);
+  assert.equal(await executorEnrollmentMatches(signed,raw,{...key,revoked:true},1200n),false);
+  assert.equal(await executorEnrollmentMatches(signed,raw,{...key,principal_id:'other'},1200n),false);
+  assert.equal(await executorEnrollmentMatches(signed,raw,key,2000n),false);
+  assert.equal(await executorEnrollmentMatches(signed,raw,key,3000n,false),true);
+  assert.equal(ownerPayloadKind('fleet.reserve'),'fleet_reserve_payload');
+  const reservation = {configuration:raw,attestation:JSON.stringify(signed)};
+  assert.deepEqual({...ownerParse(JSON.stringify(reservation),'remote_reservation')},reservation);
+  assert.throws(() => ownerParse(JSON.stringify({...reservation,child:'synthetic'}),'remote_reservation'));
 });

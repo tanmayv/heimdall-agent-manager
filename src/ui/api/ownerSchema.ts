@@ -84,6 +84,10 @@ export const ownerSchemas = {
   linked_restore: [["account_id", "id"], ["owner_bridge_id", "id"], ["chain_id", "id"], ["format", "version"], ["objects", "document"], ["tombstones", "document"]],
   linked_facet: [["task_id", "id"], ["source_revision", "id"], ["key", "document"]],
   linked_tombstone: [["kind", "linked_kind"], ["object_id", "id"], ["revision", "positive"], ["task_id", "optional"]],
+  fleet_reserve_payload: [["instance_id", "id"], ["configuration_revision", "positive"], ["enabled", "flag"], ["body_cipher", "required_cipher"]],
+  remote_configuration: [["protocol_version", "version"], ["account_id", "id"], ["owner_bridge_id", "id"], ["executor_bridge_id", "id"], ["executor_key_id", "id"], ["chain_id", "id"], ["task_id", "id"], ["instance_id", "id"], ["agent_id", "id"], ["launch_epoch", "id"], ["run_count", "positive"], ["token_generation", "hash"], ["configuration_revision", "positive"], ["executor_incarnation", "positive"], ["policy_revision", "positive"], ["slot_id", "id"], ["provider_profile", "id"], ["provider", "label"], ["model", "label"], ["directory_id", "id"], ["directory_key", "hash"], ["directory_path", "path"]],
+  remote_reservation: [["configuration", "document"], ["attestation", "document"]],
+  remote_assignment_snapshot: [["signed_payload", "document"], ["reservation", "document"]],
 } as const;
 export type OwnerKind = keyof typeof ownerSchemas;
 export interface OwnerGenesis {
@@ -690,6 +694,44 @@ export interface OwnerLinked_Tombstone {
   revision: string;
   task_id: string;
 }
+export interface OwnerFleet_Reserve_Payload {
+  instance_id: string;
+  configuration_revision: string;
+  enabled: string;
+  body_cipher: string;
+}
+export interface OwnerRemote_Configuration {
+  protocol_version: string;
+  account_id: string;
+  owner_bridge_id: string;
+  executor_bridge_id: string;
+  executor_key_id: string;
+  chain_id: string;
+  task_id: string;
+  instance_id: string;
+  agent_id: string;
+  launch_epoch: string;
+  run_count: string;
+  token_generation: string;
+  configuration_revision: string;
+  executor_incarnation: string;
+  policy_revision: string;
+  slot_id: string;
+  provider_profile: string;
+  provider: string;
+  model: string;
+  directory_id: string;
+  directory_key: string;
+  directory_path: string;
+}
+export interface OwnerRemote_Reservation {
+  configuration: string;
+  attestation: string;
+}
+export interface OwnerRemote_Assignment_Snapshot {
+  signed_payload: string;
+  reservation: string;
+}
 export interface OwnerDocuments {
   genesis: OwnerGenesis;
   command: OwnerCommand;
@@ -775,4 +817,8 @@ export interface OwnerDocuments {
   linked_restore: OwnerLinked_Restore;
   linked_facet: OwnerLinked_Facet;
   linked_tombstone: OwnerLinked_Tombstone;
+  fleet_reserve_payload: OwnerFleet_Reserve_Payload;
+  remote_configuration: OwnerRemote_Configuration;
+  remote_reservation: OwnerRemote_Reservation;
+  remote_assignment_snapshot: OwnerRemote_Assignment_Snapshot;
 }

@@ -109,7 +109,7 @@ overlap_local_steps :: proc(s:^Store,chain,task,cutoff:string,input:Budget_Input
             case "task.reopen":native="reopened"
             case "task.resolve":native="answered"
             case "dependency.edit":if row[12]!="" {native="lease_expired";reason="dep_added"}
-            case "fleet.edit","lifecycle.configure","review.roles":
+            case "fleet.edit","fleet.reserve","lifecycle.configure","review.roles":
                 if before.live {native="lease_expired";reason="replaced"} else if before.in_review {native="requirements_rework"}
             case "requirements.edit":if before.in_review do native="requirements_rework"
             case "review.post","review.role.post":

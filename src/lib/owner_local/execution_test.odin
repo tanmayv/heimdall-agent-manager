@@ -37,9 +37,9 @@ execution_test_document :: proc(kind:string)->json.Object {
 }
 execution_test_fixture :: proc(t:^testing.T)->^Execution_Test {
     x:=new(Execution_Test);x.owner=fixture(t);f:=x.owner
-    fleet_seed(t,f,lease_child())
     x.path=fmt.aprintf("%s.executor",f.path)
     x.host_key=f.creator;x.host_key.kind="bridge";x.host_key.principal_id="executor";x.host_key.key_id="operator"
+    remote_test_seed(t,f,x.host_key)
     if !testing.expect(t,executor.open(&x.host,x.path,"account","executor","operator")) do testing.fail_now(t,"executor open")
     policy:=execution_test_document("policy")
     testing.expect_value(t,executor.install_policy(&x.host,execution_test_signed(f,policy,"policy",true),x.host_key,1000).code,"ok")

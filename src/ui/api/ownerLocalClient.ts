@@ -4,6 +4,7 @@ import { signDeviceText, type DeviceIdentity } from '../utils/deviceIdentity.ts'
 import { encryptVaultText, decryptVaultText } from '../utils/vaultContent.ts';
 import type { VaultKeyring } from '../utils/vaultKeyring.ts';
 import type { VerifiedChain } from '../utils/vaultDirectoryVerify.ts';
+import { executorEnrollmentMatches, executorParse } from './executor.ts';
 
 export interface OwnerSession { identity: DeviceIdentity; chain: VerifiedChain; keyring: VaultKeyring }
 export interface OwnerOperation { command: string; payload: string; genesis: string }
@@ -64,6 +65,20 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
   else if (method === 'chain.member.set') payload = { instance_id: input.instanceId ?? '', agent_id: input.agentId ?? '', role: input.memberRole ?? 'worker', enabled: input.enabled === false ? '0' : '1' };
   else if (method === 'chain.directory.set') payload = { directory_id: input.directoryId ?? '', enabled: input.enabled === false ? '0' : '1', body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'fleet.edit') payload = { instance_id: input.instanceId ?? '', configuration_revision: input.configurationRevision ?? '', enabled: input.enabled === false ? '0' : '1' };
+  else if (method === 'fleet.reserve') {
+    const p = ownerParse(input.body ?? '', 'remote_reservation');
+    const config = ownerParse(p.configuration, 'remote_configuration');
+    const attestation = executorParse(p.attestation, 'enrollment');
+    const executor = chain.trusted.get(config.executor_key_id);
+    if (!executor || executor.kind !== 'bridge' || config.account_id !== identity.userId || config.owner_bridge_id !== bridgeId ||
+        config.chain_id !== input.chainId || config.task_id !== input.taskId ||
+        !await executorEnrollmentMatches(attestation,p.configuration,{account_id:identity.userId,principal_id:config.executor_bridge_id,
+          key_id:executor.device_id,public_key:executor.sign_public_key,kind:'bridge',enrolled:true,revoked:false},BigInt(Date.now()))) {
+      throw new Error('Remote reservation requires the exact configuration and a current enrolled executor attestation');
+    }
+    payload = {instance_id:config.instance_id,configuration_revision:config.configuration_revision,enabled:'1',
+      body_cipher:await encryptVaultText(input.body ?? '',keyring)};
+  }
   else if (['task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve'].includes(method)) payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'merge.retry') payload = { attempt: input.attempt ?? '', requirements_revision: input.requirementsRevision ?? '', head: input.head ?? '', configuration_revision: input.configurationRevision ?? '', body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'lifecycle.configure') payload = input.lifecycleConfig ?? {};

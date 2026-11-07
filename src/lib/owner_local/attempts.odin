@@ -58,7 +58,7 @@ attempt_event :: proc(v:^Attempt_View,kind:string,c,p:json.Object,destination:=f
         attempt_release(v,"submitted");v.in_review=true
     case "task.reopen":
         attempt_release(v,"reopened");v.in_review=false
-    case "fleet.edit","lifecycle.configure","review.roles":
+    case "fleet.edit","fleet.reserve","lifecycle.configure","review.roles":
         if v.live || v.in_review {
             attempt_release(v,"replaced");v.in_review=false
         }
@@ -117,7 +117,7 @@ attempt_scan :: proc(s:^Store,chain,task:string,selected:i64=0,target_lease:stri
             CASE WHEN completeness='full' THEN evidence_json ELSE '{}' END AS evidence
           FROM local_events WHERE seq>?3 AND ((chain_id=?1 AND task_id=?2
             AND kind IN('lease.claim','lease.handoff','lease.switch','lease.block',
-              'lease.expired','lease.submit','task.reopen','fleet.edit','lifecycle.configure',
+              'lease.expired','lease.submit','task.reopen','fleet.edit','fleet.reserve','lifecycle.configure',
               'review.roles','task.hold','task.release','task.cancel','requirements.edit','review.post','review.role.post','dependency.edit'))
             OR kind='lease.switch' OR EXISTS(SELECT 1 FROM local_metadata_retirements r WHERE r.seq=local_events.seq AND r.chain_id=?1 AND r.task_id=?2) OR (chain_id=?1 AND EXISTS(SELECT 1 FROM local_task_retirements r WHERE r.seq=local_events.seq AND r.chain_id=?1 AND r.task_id=?2)))),
           decoded AS (SELECT *,NULLIF(json_extract(evidence,'$.command'),'') AS command,
@@ -170,7 +170,7 @@ attempt_scan :: proc(s:^Store,chain,task:string,selected:i64=0,target_lease:stri
                 switch row[3] {
                 case "task.cancel": record.outcome="expired:cancelled"
                 case "dependency.edit": record.outcome="expired:dep_added"
-                case "fleet.edit","lifecycle.configure","review.roles": record.outcome="expired:replaced"
+                case "fleet.edit","fleet.reserve","lifecycle.configure","review.roles": record.outcome="expired:replaced"
                 case "lease.expired":
                     if row[11]=="ttl" || row[11]=="hard_cap" {
                         record.outcome=fmt.tprintf("expired:%s",row[11])
