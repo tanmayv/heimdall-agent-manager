@@ -68,7 +68,16 @@ on its fleet-bound task, the configured reviewer, and the chain's enabled
 coordinator member for `task create|update|comment|show`, `task-chain show|
 summary set|propose|publish` and `review post --on-behalf-of user`. The owner
 key then signs the command. A claim creates `<repo>/.heimdall/worktrees/<task>`
-on `heimdall/<task>` from the configured base. Chains the Bridge does not own
+on `heimdall/<task>` from the configured base, after the claim commits and
+outside the child locks; a failure is reported and on TASK.md, and the next
+`lease next` retries. The coordinator may also create and assign work on the
+user's behalf: `task create|update --priority --depends-on --assignee
+--reviewer` and `task depend` map to `task.priority`, `dependency.edit`,
+`fleet.edit` and `lifecycle.configure`, limited to agents that are running,
+enabled members or fleet workers of this chain on this Bridge, and to the
+chain's single configured directory with its `target_branch` chain default.
+Adding members, grants or outside agents stays human-only; any other flag
+answers `unsupported_on_owner_chain`. Chains the Bridge does not own
 go to the Hub, which answers writes on an owner-held chain with a typed
 `owner_authority` error naming the owner Bridge
 (`src/bridge/owner_agent_routing.odin`, `src/hub/transport/http/owner_authority.odin`).

@@ -286,9 +286,6 @@ c.commit()
     bridgeCli('executor', 'import', '--config', S.cfgA.config, '--local-run-dir', S.cfgA.local, '--kind', kind, '--file', signed);
   };
   async function ensureExecutorResources(projectPath) {
-    // Native startup creates <local-run-dir>/instances/<id> non-recursively;
-    // a fresh disposable Bridge has no instances directory yet.
-    fs.mkdirSync(path.join(S.cfgA.local, 'instances'), { recursive: true, mode: 0o700 });
     if (!executorIdentity) executorIdentity = JSON.parse(bridgeCli('executor', 'identity', '--config', S.cfgA.config).split('\n').pop());
     if (!executorPolicy) {
       const slots = Array.from({ length: 8 }, (_, i) => ({ slot_id: 'e2e_slot_' + i, provider_profile: 'codex', enabled: '1' }));
