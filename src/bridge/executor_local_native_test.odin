@@ -1,6 +1,7 @@
 #+build !windows
 #+feature dynamic-literals
 package main
+import "base:runtime"
 import "core:crypto"
 import "core:crypto/ecdsa"
 import "core:os"
@@ -21,8 +22,62 @@ import local_socket "odin_test:lib/local_socket"
 
 @(test)
 test_executor_local_native_pending_fresh_resources_and_real_dispatch :: proc(t:^testing.T) {
+    bridge_executor_local_native_scenario(t)
+}
+@(test)
+test_executor_local_native_custom_profile_model_dispatch :: proc(t:^testing.T) {
+    bridge_executor_local_native_scenario(t,model_mode="custom")
+}
+@(test)
+test_executor_local_native_discovered_profile_model_dispatch :: proc(t:^testing.T) {
+    bridge_executor_local_native_scenario(t,model_mode="discovered")
+}
+@(test)
+test_executor_local_native_cancel_rechecks_revocation_before_io :: proc(t:^testing.T) {
+    bridge_executor_local_native_scenario(t,revoked_cancel=true)
+}
+
+bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="",revoked_cancel:bool=false) {
     context.allocator=context.temp_allocator
     st:=p1c_test_setup(t);defer p1c_test_teardown(st)
+    {
+        context.allocator=runtime.default_allocator()
+        bridge_agent_wake_init()
+    }
+    sync.mutex_lock(&bridge_wake_mutex)
+    saved_wakes:=bridge_agent_wake
+    bridge_agent_wake=nil
+    sync.mutex_unlock(&bridge_wake_mutex)
+    defer {
+        sync.mutex_lock(&bridge_wake_mutex)
+        bridge_agent_wake=saved_wakes
+        sync.mutex_unlock(&bridge_wake_mutex)
+    }
+    // Bootstrap publication uses the scenario allocator, so each scenario
+    // must own its map until that allocator is reset by the test runner.
+    sync.mutex_lock(&bridge_bootstrap_fileset_mutex)
+    saved_filesets:=bridge_bootstrap_filesets
+    bridge_bootstrap_filesets=nil
+    sync.mutex_unlock(&bridge_bootstrap_fileset_mutex)
+    defer {
+        sync.mutex_lock(&bridge_bootstrap_fileset_mutex)
+        bridge_bootstrap_filesets=saved_filesets
+        sync.mutex_unlock(&bridge_bootstrap_fileset_mutex)
+    }
+    // Legacy fixture issuance uses the test allocator. Keep its records local
+    // to this scenario rather than leaving them in the process-global store
+    // after the test allocator is reset between parameterized scenarios.
+    sync.mutex_lock(&bridge_local_token_mutex)
+    saved_tokens:=bridge_local_token_records
+    bridge_local_token_records=make([dynamic]Bridge_Local_Agent_Token_Record,allocator=runtime.default_allocator())
+    sync.mutex_unlock(&bridge_local_token_mutex)
+    defer {
+        sync.mutex_lock(&bridge_local_token_mutex)
+        current_tokens:=bridge_local_token_records
+        bridge_local_token_records=saved_tokens
+        sync.mutex_unlock(&bridge_local_token_mutex)
+        delete(current_tokens)
+    }
     sync.mutex_lock(&keystore_test_mutex);defer sync.mutex_unlock(&keystore_test_mutex)
     id,_:=keystore_test_bridge_ids()
     prior_id:=keystore_test_set_daemon_id(id);defer {bridge_config.daemon_id=prior_id}
@@ -81,10 +136,14 @@ test_executor_local_native_pending_fresh_resources_and_real_dispatch :: proc(t:^
     host_private:ecdsa.Private_Key
     if !testing.expect(t,ecdsa.private_key_set_bytes(&host_private,.SECP256R1,identity_record.scalar[:])) do return
     defer ecdsa.private_key_clear(&host_private)
+    selected_profile:="claude" if model_mode=="" else "claude_selected"
+    selected_model:="seed"
+    if model_mode=="custom" do selected_model="custom-review-model"
+    if model_mode=="discovered" do selected_model="profile-only-model"
     policy:=bridge_executor_test_doc("policy")
     bridge_executor_test_set(policy,"account_id",TEST_VAULT_USER_ID);bridge_executor_test_set(policy,"executor_bridge_id",id)
     bridge_executor_test_set(policy,"key_id",key_id)
-    bridge_executor_test_set(policy,"slots_json",`[{"slot_id":"slot1","provider_profile":"claude","enabled":"1"}]`)
+    bridge_executor_test_set(policy,"slots_json",executor.encode([]struct{slot_id,provider_profile,enabled:string}{{"slot1",selected_profile,"1"}}))
     policy_raw:=bridge_executor_test_operator_provision(t,"policy",executor.encode(policy),root)
     forged:=policy;forged["signature"]=json.String(strings.repeat("0",128,context.temp_allocator))
     forged_params:=struct{kind,document:string}{"policy",executor.encode(forged)}
@@ -102,12 +161,19 @@ test_executor_local_native_pending_fresh_resources_and_real_dispatch :: proc(t:^
     bridge_config.local_endpoint_run_dir=fmt.tprintf("%s/runtime",root)
     defer {bridge_config.local_endpoint_run_dir=old_run_dir}
     testing.expect(t,bridge_make_directory_all(fmt.tprintf("%s/instances",bridge_config.local_endpoint_run_dir))==nil)
-    pp:=Provider_Profile{profile_id="claude",provider="claude",enabled=true,config=Provider_Profile_Config{binary_path="/bin/sh"}}
+    pp:=Provider_Profile{profile_id=selected_profile,provider="claude",enabled=true,config=Provider_Profile_Config{binary_path="/bin/sh"}}
+    if model_mode=="custom" do pp.config.custom_models=[]string{selected_model}
     bridge_provider_catalog_snapshot.providers[0].model_flag="-s"
     testing.expect_value(t,profile_upsert(&pp,nil,now),Profile_Error.None)
-    instance:="native_local_instance"
+    if model_mode=="discovered" {
+        bridge_models_save(Bridge_Provider_Models{provider="claude",profile_id=selected_profile,has_snapshot=true,
+            models=[]Bridge_Discovered_Model{{model_id=selected_model,label=selected_model}}})
+    }
+    variant:=model_mode if model_mode!="" else "default"
+    if revoked_cancel do variant="revoked_cancel"
+    instance:=fmt.tprintf("native_local_%s",variant)
     command_json:=executor.encode(struct{type,command_id,agent_instance_id,provider,model,provider_profile:string,run_count:int}{
-        "launch_provider_test","native_first",instance,"claude","seed","claude",1})
+        "launch_provider_test","native_first",instance,"claude",selected_model,selected_profile,1})
     run_dir:=bridge_runtime_default_run_dir(instance);defer delete(run_dir)
     testing.expect(t,bridge_make_directory_all(run_dir)==nil)
     marker:=fmt.tprintf("%s/keep.txt",run_dir)
@@ -350,14 +416,15 @@ test_executor_local_native_pending_fresh_resources_and_real_dispatch :: proc(t:^
         _,_=net.send_tcp(client,transmute([]byte)response);p.served=true
     })
     defer {thread.join(http_worker);thread.destroy(http_worker)}
-    manual:=bridge_wake_launch_command_json("manual","native_manual_instance","","worker","claude","seed","native_agent","Native agent","","","","",new_path,
-        run_count=1,provider_profile="claude",instance_token="isolated-hub-assertion",launch_epoch="native_epoch")
+    manual_instance:=fmt.tprintf("native_manual_%s",variant)
+    manual:=bridge_wake_launch_command_json("manual",manual_instance,"","worker","claude",selected_model,"native_agent","Native agent","","","","",new_path,
+        run_count=1,provider_profile=selected_profile,instance_token="isolated-hub-assertion",launch_epoch="native_epoch")
     ready,manual_detail,_:=bridge_runtime_launch_agent("manual",manual)
     testing.expect(t,!ready)
     pending_value,_=contracts.owner_content_document(manual_detail);pending,_=pending_value.(json.Object)
     manual_draft,manual_found:=executor.local_draft_native(&bridge_executor_store,get(pending,"draft_id"))
     if !testing.expect(t,manual_found,manual_detail) do return
-    status:=bridge_instance_status_json("native_manual_instance")
+    status:=bridge_instance_status_json(manual_instance)
     testing.expect(t,extract_json_string(status,"launch_epoch","")=="native_epoch","pending status carries proposed epoch without activating credentials")
     command["draft_id"]=json.String(manual_draft.id);command["configuration_digest"]=json.String(contracts.owner_payload_digest(manual_draft.configuration))
     command["method"]=json.String("prepare");command["operation_id"]=json.String("manual_prepare")
@@ -382,8 +449,8 @@ test_executor_local_native_pending_fresh_resources_and_real_dispatch :: proc(t:^
     sync.mutex_lock(&bridge_runtime_mutex)
     for &inst in bridge_runtime_instances do if inst.agent_instance_id==manual_launch.instance {inst.startup.generation=0;inst.pty_process_alive=false}
     sync.mutex_unlock(&bridge_runtime_mutex)
-    warm:=bridge_wake_launch_command_json("warm",manual_launch.instance,"","worker","claude","seed","native_agent","Native agent","","","","",new_path,
-        pack_json=`{"delivery":"new task context"}`,run_count=1,provider_profile="claude",instance_token="isolated-hub-assertion",launch_epoch="native_epoch")
+    warm:=bridge_wake_launch_command_json("warm",manual_launch.instance,"","worker","claude",selected_model,"native_agent","Native agent","","","","",new_path,
+        pack_json=`{"delivery":"new task context"}`,run_count=1,provider_profile=selected_profile,instance_token="isolated-hub-assertion",launch_epoch="native_epoch")
     ready,_,_=bridge_executor_local_stage(warm,"warm",{&probe,bridge_executor_local_test_directory,bridge_executor_local_test_files,socket})
     testing.expect(t,ready)
     same_pid,same_known=bridge_pty_host_executor_query(socket,manual_launch.instance,manual_launch.launch_key)
@@ -391,13 +458,71 @@ test_executor_local_native_pending_fresh_resources_and_real_dispatch :: proc(t:^
     recovered,projection:=bridge_runtime_instance_snapshot(manual_launch.instance)
     testing.expect(t,projection && recovered.startup.generation>0 && recovered.startup.pty_pid==manual_pid && recovered.startup.armed_at_ms>0)
     command["method"]=json.String("cancel");command["operation_id"]=json.String("manual_cancel")
-    _,code=bridge_executor_test_local_exchange(t,wire,bridge_executor_test_sign(command,"local_draft",&device_private),&kr,host,"manual_cancel",bridge_executor_local_test_apply)
-    testing.expect_value(t,code,"ok")
+    final_cancel:=bridge_executor_test_sign(command,"local_draft",&device_private)
+    if revoked_cancel {
+        Cancel_Request :: struct {t:^testing.T,wire:Executor_Issuance_Wire,raw:string,kr:^vault.Vault_Keyring,host:contracts.Owner_Verified_Key,code:string}
+        request:=Cancel_Request{t,wire,final_cancel,&kr,host,""}
+        probe.wait_cancel=true
+        before_fetch:=probe.directory_calls
+        sync.mutex_lock(&bridge_startup_io_mutex)
+        worker:=thread.create_and_start_with_data(&request,proc(ctx:rawptr) {
+            p:=(^Cancel_Request)(ctx)
+            _,code:=bridge_executor_test_local_exchange(p.t,p.wire,p.raw,p.kr,p.host,"manual_cancel",bridge_executor_local_test_apply)
+            p.code=strings.clone(code,runtime.default_allocator())
+        })
+        entered:=false
+        for _ in 0..<100 {
+            if sync.atomic_load(&probe.cancel_entered) {entered=true;break}
+            time.sleep(5*time.Millisecond)
+        }
+        // The relay was authenticated against directory v2. Change the fresh
+        // native view while the request is queued behind the startup gate.
+        probe.directory=revoked
+        probe.require_startup_gate=true
+        sync.mutex_unlock(&bridge_startup_io_mutex)
+        thread.join(worker);thread.destroy(worker)
+        code=strings.clone(request.code,context.temp_allocator)
+        delete(request.code,runtime.default_allocator())
+        testing.expect(t,entered && probe.directory_calls>before_fetch && !probe.directory_gate_missing,"cancel refreshes enrollment only after acquiring startup serialization")
+    } else {
+        _,code=bridge_executor_test_local_exchange(t,wire,final_cancel,&kr,host,"manual_cancel",bridge_executor_local_test_apply)
+    }
+    if !revoked_cancel {
+        testing.expect_value(t,code,"ok")
+    } else {
+        testing.expect_value(t,code,"invalid_scope")
+        _,credential_current:=bridge_agent_token_verify(material.token)
+        testing.expect(t,credential_current,"revoked cancel cannot invalidate the exact credential")
+        same_pid,same_known=bridge_pty_host_executor_query(socket,manual_launch.instance,manual_launch.launch_key)
+        testing.expect(t,same_known && same_pid==manual_pid,"revoked cancel cannot Close the child")
+        retained_draft,_:=executor.local_draft_native(&bridge_executor_store,manual_draft.id)
+        testing.expect_value(t,retained_draft.state,"authorized")
+        retained_launch,_:=executor.local_launch(&bridge_executor_store,manual_launch.id)
+        testing.expect_value(t,retained_launch.state,"active")
+        rows,_=executor.query(bridge_executor_store.db,"SELECT count(*) FROM executor_live_resources")
+        testing.expect_value(t,rows[0][0],"1")
+        // Revocation rejects this user command; independently durable safety
+        // intent must still reconcile the exact child and charge.
+        testing.expect(t,executor.stop_local_launch(&bridge_executor_store,retained_launch))
+        _,reconciled:=bridge_executor_local_reconcile_batch(&bridge_executor_store,socket,"")
+        testing.expect(t,reconciled)
+        rows,_=executor.query(bridge_executor_store.db,"SELECT count(*) FROM executor_live_resources")
+        testing.expect_value(t,rows[0][0],"0")
+    }
 }
-Executor_Local_Test_IO :: struct {directory:vault.Directory_Verification_Input,disable_catalog,native_files:bool,replace_mapping:string,host:contracts.Owner_Verified_Key,socket:string,delay_ms:i64}
+Executor_Local_Test_IO :: struct {
+    directory:vault.Directory_Verification_Input,disable_catalog,native_files:bool,
+    replace_mapping:string,host:contracts.Owner_Verified_Key,socket:string,delay_ms:i64,
+    wait_cancel,cancel_entered,require_startup_gate,directory_gate_missing:bool,directory_calls:int,
+}
 bridge_executor_local_test_io:^Executor_Local_Test_IO
 bridge_executor_local_test_directory :: proc(ctx:rawptr,_:i64)->(vault.Directory_Verification_Input,bool) {
     p:=(^Executor_Local_Test_IO)(ctx)
+    p.directory_calls+=1
+    if p.require_startup_gate && sync.mutex_try_lock(&bridge_startup_io_mutex) {
+        p.directory_gate_missing=true
+        sync.mutex_unlock(&bridge_startup_io_mutex)
+    }
     if p.delay_ms>0 do time.sleep(time.Duration(p.delay_ms)*time.Millisecond)
     return p.directory,true
 }
@@ -418,6 +543,7 @@ bridge_executor_local_test_files :: proc(ctx:rawptr,m:Executor_Local_Material)->
 }
 bridge_executor_local_test_apply :: proc(s:^executor.Store,raw:string,o:json.Object,key:contracts.Owner_Verified_Key,kr:^vault.Vault_Keyring,generation:i64)->executor.Result {
     p:=bridge_executor_local_test_io
+    if p.wait_cancel && contracts.owner_string(o,"method")=="cancel" do sync.atomic_store(&p.cancel_entered,true)
     return bridge_executor_local_apply_io(s,raw,o,key,kr,generation,{p,bridge_executor_local_test_directory,bridge_executor_local_test_files,p.socket})
 }
 

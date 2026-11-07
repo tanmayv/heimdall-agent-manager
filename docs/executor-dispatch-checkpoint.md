@@ -2453,3 +2453,67 @@ procedure-pointer compatibility and an `expect_value` source-location argument.
 No Rust/daemon source changed. Real daemon verification used the retained matching
 local-admission package; Rust/provider/platform matrices were not rerun or claimed.
 No unrelated cleanup, live provisioning, restart, deployment or push occurred.
+
+
+## M3a independent-review corrections (attempt 3, 2026-11-07)
+
+Both findings against `64935dda` are addressed without changing wire contracts.
+`src/bridge/executor_local_relay.odin:113` refreshes the signed paired directory
+inside the startup/vault gates before durable cancellation or exact token/child
+side effects. Unavailable directory transport fails closed. A browser key revoked
+while cancellation is queued cannot invalidate the retained credential, Close the
+child, change the authorized draft, or release its charge. Trusted durable stop
+and reconciliation remain a separate safety path.
+
+`src/bridge/executor_local_launch.odin:29` checks global provider enablement
+separately from selected-profile model support. Custom models and models discovered
+only for that profile now reach dispatch; disabled providers still fail closed.
+The native scenario variants exercise provider-test, ordinary manual bootstrap,
+warm reuse, exact cancellation, catalog-disable rejection and real daemon identity.
+The cancellation variant queues a genuine paired signed request behind startup
+serialization, revokes its key, and checks that enrollment refresh occurs under
+the gate before any side effect; it then verifies independent trusted cleanup.
+
+The mounted successful-cancel fixture supplies a genuine complete paired-directory
+response through the directory-fetch seam. Native scenario fixtures isolate
+process-global token, bootstrap and wake state whose allocations otherwise outlive
+the per-test allocator. This keeps the four real-daemon variants runnable together.
+
+Focused verification passed **5 tests, exit 0**, session
+`sh_e58f0e2f2a05d25834c8beb2c931801b`:
+
+```bash
+nix develop --command env HEIMDALL_EXECUTOR_TEST_PTY=$HOME/.cache/heimdall-tests/m3-local-admission-bins-20261107-0505-1/bin/ham-pty-host odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1 -define:EXECUTOR_TEST_REQUIRED=true -define:ODIN_TEST_NAMES=main.test_executor_local_native_pending_fresh_resources_and_real_dispatch,main.test_executor_local_native_custom_profile_model_dispatch,main.test_executor_local_native_discovered_profile_model_dispatch,main.test_executor_local_native_cancel_rechecks_revocation_before_io,main.test_executor_local_mounted_signed_prepare_inspect_cancel_restart -out:$HOME/.cache/heimdall-tests/m3a-review-native-fixes-20261107-0712
+```
+
+Before the production fixes, isolated custom/discovered tests failed with
+`invalid_resources` (`sh_1544ba14e8a9cb36564c5da55d52ce6f`,
+`sh_4cff556bbdda6caa5e81991259c4b166`), and queued revoked cancellation still
+invalidated the token/closed the child (`sh_c9195cfae0b0a616bc5cc1a830bd95c9`).
+Combined draft fixtures initially retained allocator-owned process-global state;
+those failed/hung runs were stopped, corrected, and are not passing evidence.
+An intermediate fixture compile rejected an invalid dynamic-array delete overload;
+that was corrected before the passing run.
+
+
+Broader verification passed **1036 Bridge tests, exit 0**, session
+`sh_41b9a4068adbebf1f67212dcd7fb89c9`; the production Bridge package build
+passed **exit 0**, session `sh_b971734bbc090dc08d9efdb6528ce74c`:
+
+```bash
+nix develop --command env HEIMDALL_EXECUTOR_TEST_PTY=$HOME/.cache/heimdall-tests/m3-local-admission-bins-20261107-0505-1/bin/ham-pty-host odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1 -define:EXECUTOR_TEST_REQUIRED=true -out:$HOME/.cache/heimdall-tests/m3a-review-bridge-full-20261107-0714
+nix build .#ham-bridge -o $HOME/.cache/heimdall-tests/m3a-review-fixes-bins-20261107-0714
+```
+
+After making initial wake-map allocation explicitly process-lifetime in the
+fixture, the final focused rerun passed **5 tests, exit 0**, session
+`sh_5d89bf3aa0867b04808b4663276dc653`:
+
+```bash
+nix develop --command env HEIMDALL_EXECUTOR_TEST_PTY=$HOME/.cache/heimdall-tests/m3-local-admission-bins-20261107-0505-1/bin/ham-pty-host odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1 -define:EXECUTOR_TEST_REQUIRED=true -define:ODIN_TEST_NAMES=main.test_executor_local_native_pending_fresh_resources_and_real_dispatch,main.test_executor_local_native_custom_profile_model_dispatch,main.test_executor_local_native_discovered_profile_model_dispatch,main.test_executor_local_native_cancel_rechecks_revocation_before_io,main.test_executor_local_mounted_signed_prepare_inspect_cancel_restart -out:$HOME/.cache/heimdall-tests/m3a-review-native-fixes-20261107-0717
+```
+
+`git diff --check` is clean. Unchanged Hub/contracts/storage/UI/daemon code retains
+the prior submission's evidence above; those suites were not rerun for these
+Bridge-only corrections. The three disclosed Task System v2 baseline failures
+remain out of scope. No live restart, provisioning, deployment or push occurred.

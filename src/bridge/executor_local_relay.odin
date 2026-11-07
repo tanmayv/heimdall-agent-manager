@@ -108,7 +108,19 @@ bridge_executor_local_apply_io :: proc(s:^executor.Store,raw:string,o:json.Objec
         sync.mutex_lock(&bridge_startup_io_mutex);defer sync.mutex_unlock(&bridge_startup_io_mutex)
         if !bridge_executor_authority_begin(generation) do return executor.Result{code="vault_locked"}
         defer bridge_executor_authority_end()
-        result:=executor.local_draft_command(s,raw,key,bridge_executor_physical_clock(nil))
+        current_key:=key
+        if method=="cancel" {
+            // A relay-time key may have been revoked while this request waited
+            // for startup/vault serialization. Refresh before either committing
+            // cancellation or invalidating the token/closing the exact child.
+            if io.directory==nil do return executor.Result{code="directory_unavailable"}
+            directory,fetched:=io.directory(io.ctx,generation)
+            if !fetched do return executor.Result{code="directory_unavailable"}
+            fresh,authenticated:=bridge_executor_local_keys(s,o,directory,kr)
+            if !authenticated || fresh.public_key!=key.public_key do return executor.Result{code="invalid_scope"}
+            current_key=fresh
+        }
+        result:=executor.local_draft_command(s,raw,current_key,bridge_executor_physical_clock(nil))
         if result.code=="ok" && method=="cancel" {
             draft,found:=executor.local_draft_native(s,contracts.owner_string(o,"draft_id"))
             if found && draft.launch_id!="" {

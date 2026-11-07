@@ -26,7 +26,9 @@ bridge_executor_resolve_local :: proc(s:^executor.Store,configuration:string,req
     canonical,within:=bridge_executor_canonical_directory(mapping.path)
     if !within || executor.directory_key(s.executor,canonical)!=mapping.key do return {}
     provider,model,profile:=get(c,"provider"),get(c,"model"),get(c,"provider_profile")
-    if !bridge_provider_catalog_has_model(provider,model) do return {}
+    // Provider enablement is global; model support belongs to the selected
+    // profile (including its custom models and discovered account snapshot).
+    if _,active:=bridge_provider_catalog_profile(provider);!active do return {}
     resolved,err:=profile_lookup(provider,profile,prepare_runtime=false)
     if err!=.None || !resolved.enabled || resolved.provider!=provider || resolved.profile_id!=profile || !profile_has_model(&resolved,provider,model) do return {}
     digest:=bridge_executor_local_spawn_digest(request)
