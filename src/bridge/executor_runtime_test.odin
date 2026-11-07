@@ -113,10 +113,19 @@ bridge_executor_real_daemon_ledger_dispatch_and_stale_stop :: proc(t:^testing.T)
         testing.expect(t,listed && len(roster.agents)==0,"unsupported daemon did not receive a fallback launch")
         pty_host_reply_delete(roster)
     } else {fmt.eprintln("[skip] old-daemon compatibility phase requires HEIMDALL_EXECUTOR_OLD_PTY")}
-    delivered,reason=bridge_executor_dispatch(&s,intent,base+1200,socket,req,&proof,bridge_executor_test_owner,&io_now,bridge_executor_test_clock)
+    // Commit first dispatch and create the real child, but lose its reply
+    // before the local observation commits. Recovery has no Spawn or nonce.
+    testing.expect(t,executor.begin_dispatch(&s,intent,base+1200))
+    lost_req:=req
+    lost_req.env=[][2]string{{"HEIMDALL_EXECUTOR_LAUNCH_KEY",intent.launch_key},{"HEIMDALL_EXECUTOR_DEADLINE_MS",fmt.tprintf("%d",base+5000)}}
+    _,_=bridge_pty_host_spawn(socket,lost_req)
+    original_pid,original_known:=bridge_pty_host_executor_query(socket,intent.instance,intent.launch_key)
+    if !testing.expect(t,original_known && original_pid>0) do return
+    delivered,reason=bridge_executor_dispatch(&s,intent,base+1200,socket,{},nil,nil,&io_now,bridge_executor_test_clock)
     if !testing.expect(t,delivered && reason=="child_present") do return
     pid,known:=bridge_pty_host_executor_query(socket,"instance",intent.launch_key)
     testing.expect(t,known && pid>0)
+    testing.expect(t,pid==original_pid,"query-only recovery preserves the original physical child")
     testing.expect(t,!bridge_pty_host_close(socket,"instance"),"unfenced stop cannot close resource-fenced child")
     testing.expect(t,executor.expire(&s,base+6000))
     stop,stopping:=executor.take_intent(&s,base+6000);testing.expect(t,stopping && stop.kind=="stop")

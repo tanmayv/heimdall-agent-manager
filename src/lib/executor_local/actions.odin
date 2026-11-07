@@ -156,6 +156,14 @@ intent_current_locked :: proc(s:^Store,intent:Intent,now:i64)->(i64,bool) {
 }
 // Exactly one claimant may cross into first dispatch. Retried calls query the
 // same daemon key only. An old runtime cannot acquire fresh I/O permission.
+dispatch_started :: proc(s:^Store,intent:Intent,now:i64)->bool {
+    sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
+    if intent.kind!="launch" do return false
+    if _,current:=intent_current_locked(s,intent,now);!current do return false
+    rows,ok:=query(s.db,"SELECT claim_incarnation FROM executor_intents WHERE reservation_id=? AND kind='launch'",intent.reservation)
+    return ok && len(rows)==1 && number(rows[0][0])==s.incarnation
+}
+
 begin_dispatch :: proc(s:^Store,intent:Intent,now:i64)->bool {
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
     if !begin(s) do return false

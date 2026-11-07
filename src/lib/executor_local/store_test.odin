@@ -378,10 +378,14 @@ executor_first_dispatch_permission_is_durable_single_use_and_restart_fenced :: p
     intent,ok:=take_intent(&f.store,1200);testing.expect(t,ok)
     remaining,current:=intent_current(&f.store,intent,1200);testing.expect(t,current && remaining==3800)
     changed:=intent;changed.launch_key="other"
+    testing.expect(t,!dispatch_started(&f.store,intent,1200),"claim alone is not physical dispatch")
     testing.expect(t,!begin_dispatch(&f.store,changed,1200))
     testing.expect(t,begin_dispatch(&f.store,intent,1200))
+    testing.expect(t,dispatch_started(&f.store,intent,1200))
+    testing.expect(t,!dispatch_started(&f.store,changed,1200),"query admission binds the exact daemon key")
     testing.expect(t,!begin_dispatch(&f.store,intent,1200))
     close(&f.store);testing.expect(t,open(&f.store,f.path,"account","executor","operator"))
+    testing.expect(t,!dispatch_started(&f.store,intent,1300),"old runtime must use restart reconciliation")
     testing.expect(t,!begin_dispatch(&f.store,intent,1300))
 }
 

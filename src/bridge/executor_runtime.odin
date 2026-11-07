@@ -18,6 +18,12 @@ bridge_executor_dispatch :: proc(s:^executor.Store,intent:executor.Intent,now:i6
     if !executor.expire(s,now) do return false,"clock_or_storage_error"
     _,current:=executor.intent_current(s,intent,now)
     if !current do return false,"stale_intent"
+    // After the durable dispatch boundary, retries have no launch authority.
+    // Do not require credentials, a reconstructed Spawn, or another owner nonce
+    // merely to observe the same exact daemon child.
+    if executor.dispatch_started(s,intent,now) {
+        return bridge_executor_observe_dispatch(s,intent,socket)
+    }
     if intent.kind=="launch" {
         p,valid:=contracts.executor_parse(intent.document,"prepare")
         if !valid || request.instance!=intent.instance || !request.has_timeout_seconds || request.timeout_seconds==0 ||
@@ -54,6 +60,10 @@ bridge_executor_dispatch :: proc(s:^executor.Store,intent:executor.Intent,now:i6
     }
     // Lost spawn/stop replies are resolved by exact query. Daemon cache loss or
     // an unverified child stays uncertain; it can never silently free a slot.
+    return bridge_executor_observe_dispatch(s,intent,socket)
+}
+
+bridge_executor_observe_dispatch :: proc(s:^executor.Store,intent:executor.Intent,socket:string)->(bool,string) {
     pid,known:=bridge_pty_host_executor_query(socket,intent.instance,intent.launch_key)
     if !known do return false,"executor_uncertain"
     observed:=executor.Child_Observation{intent.instance,intent.launch_key,intent.incarnation,pid>0}
