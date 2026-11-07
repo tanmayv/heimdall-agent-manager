@@ -307,9 +307,11 @@ bridge_command_spec :: proc(command_type: string) -> (Bridge_Command_Spec, bool)
         // key needed by an owner handler on a colocated execution device.
         return Bridge_Command_Spec{class=.General_IO,priority=.Interactive,queued=true,requires_id=true,timeout_ms=10000,cost_units=1,retry_safe=true},true
     case "owner_migration_import":
-        // One-shot import: downloads the frozen export, then one local
-        // transaction. Never retried blindly; the Hub retries the same digest.
-        return Bridge_Command_Spec{class = .Exclusive, priority = .Interactive, key_kind = .Bridge, queued = true, requires_id = true, timeout_ms = 120_000, cost_units = 4}, true
+        // One-shot import. The download runs without the Exclusive slot (it
+        // can take a while and must not stall owner commands); the single
+        // local import transaction is serialized by the owner mutex. Never
+        // retried blindly; the Hub retries the same digest.
+        return Bridge_Command_Spec{class = .General_IO, priority = .Interactive, queued = true, requires_id = true, timeout_ms = 120_000, cost_units = 4}, true
     case "owner_migration_activate":
         // A nudge only: activation is re-derived from Hub state.
         return Bridge_Command_Spec{class = .General_IO, priority = .Interactive, queued = true, requires_id = true, timeout_ms = 15_000, cost_units = 1, retry_safe = true}, true

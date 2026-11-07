@@ -19,6 +19,7 @@ migration_test_lookup :: proc(ctx:rawptr,migration:string)->(Owner_Migration_Sta
     hub:=(^Migration_Test_Hub)(ctx)
     hub.calls+=1
     if hub.state=="" do return {},false // Hub unreachable
+    if hub.state=="absent" do return Owner_Migration_State_Wire{migration_id=migration,state="absent"},true
     return Owner_Migration_State_Wire{migration,"legacy_chain",hub.state,hub.digest,"bridge"},true
 }
 migration_test_sign :: proc(ctx:rawptr,kind:string,o:json.Object)->(string,bool) {
@@ -76,5 +77,20 @@ test_owner_migration_activation_waits_for_hub_cutover_across_restart :: proc(t:^
     testing.expect_value(t,rows[0][0],"2")
     calls:=hub.calls
     testing.expect_value(t,bridge_owner_migration_reconcile_store(&store,&mutex,&hub,migration_test_lookup,3000,&kr,signer),0)
+    testing.expect_value(t,hub.calls,calls)
+    // A second import whose Hub migration was aborted is abandoned: it stays
+    // quarantined, is never activated and is not polled again.
+    testing.expect(t,owner.exec(store.db,fmt.tprintf(`INSERT INTO task_chains VALUES('aborted_chain','device','device','Aborted','desc',1);
+      INSERT INTO tasks VALUES('aborted_chain','t_aborted','Aborted','body',1);
+      INSERT INTO chain_genesis(chain_id,creation_op,genesis_digest,genesis_json,import_manifest_hash) VALUES('aborted_chain','mig_aborted','%s','{{}}','%s');
+      INSERT INTO migration_imports VALUES('mig_aborted','%s','aborted_chain','%s','device','device',4,'{{}}','{{}}','{{}}',NULL);`,strings.repeat("c",64),digest,digest,strings.repeat("b",64))))
+    hub.state="absent"
+    testing.expect_value(t,bridge_owner_migration_reconcile_store(&store,&mutex,&hub,migration_test_lookup,4000,&kr,signer),0)
+    pending,_:=owner.migration_pending(&store)
+    testing.expect_value(t,len(pending),0)
+    testing.expect(t,!owner.control_ready(&store,"aborted_chain","t_aborted"),"an aborted import is never admitted")
+    calls=hub.calls
+    hub.state="imported"
+    testing.expect_value(t,bridge_owner_migration_reconcile_store(&store,&mutex,&hub,migration_test_lookup,5000,&kr,signer),0)
     testing.expect_value(t,hub.calls,calls)
 }

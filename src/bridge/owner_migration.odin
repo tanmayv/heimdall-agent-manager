@@ -45,6 +45,9 @@ bridge_owner_migration_state :: proc(_:rawptr,migration:string)->(Owner_Migratio
     query:=[?]httpc.Query_Param{{"migration_id",migration}}
     response,err:=bridge_http_request_retry({method=.GET,url=bridge_hub_url(),path={"api","v1","owner-local","migrations","state"},query=query[:],headers=headers[:],timeout_ms=10000})
     defer httpc.response_destroy(&response)
+    // An authenticated 404 means the Hub has no such migration for this owner:
+    // it was aborted before cutover and can never be imported.
+    if err==.None && response.status==404 do return Owner_Migration_State_Wire{migration_id=migration,state="absent"},true
     if err!=.None || response.status!=200 || len(httpc.text(response))>65536 do return {},false
     wire:struct{data:Owner_Migration_State_Wire}
     if json.unmarshal_string(httpc.text(response),&wire,.JSON,context.temp_allocator)!=nil do return {},false
@@ -166,6 +169,12 @@ bridge_owner_migration_reconcile_store :: proc(s:^owner.Store,mutex:^sync.Mutex,
     activated:=0
     for p in pending {
         state,found:=lookup(ctx,p[0])
+        if found && state.state=="absent" {
+            sync.mutex_lock(mutex)
+            _=owner.migration_abandon(s,p[0])
+            sync.mutex_unlock(mutex)
+            continue
+        }
         if !found || state.state!="imported" || state.chain_id!=p[1] || state.manifest_digest!=p[2] do continue
         sync.mutex_lock(mutex)
         result:=owner.migration_activate(s,p[0],p[2],now,kr,sign)
