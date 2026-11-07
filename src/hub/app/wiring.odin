@@ -618,6 +618,9 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.issue_handlers = http.Issue_Handlers{auth = &graph.auth, issues = &graph.issues, clock = &graph.clock}
 	graph.agent_action_handlers.cards = &graph.cards
 	graph.router = http.new_router()
+	// R4a: writes to an owner-held chain answer owner_authority before any handler.
+	graph.router.guard = http.owner_authority_guard
+	graph.router.guard_ctx = rawptr(&graph.taskchain_handlers)
 	if config.mcp_oauth_spike {
 		mcp_service.init(&graph.mcp_spike)
 		graph.mcp_spike_handlers = {auth = &graph.auth, store = &graph.mcp_spike, origin = strings.trim_right(config.ui_origin, "/")}

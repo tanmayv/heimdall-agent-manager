@@ -27,6 +27,7 @@ new_taskchain_repository :: proc(impl: ^Taskchain_Repo_SQLite, conn: ^Conn) -> i
 		ctx = rawptr(impl),
         owner_registry_publish=owner_registry_publish,
         owner_registry_list=owner_registry_list,
+        owner_registry_routes=owner_registry_routes,
 		get_chain = taskchain_get_chain_sqlite,
 		list_chains_by_owner = taskchain_list_chains_by_owner_sqlite,
 		count_pinned_chains = taskchain_count_pinned_chains_sqlite,

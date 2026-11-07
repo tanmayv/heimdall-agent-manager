@@ -38,9 +38,15 @@ Upgrade_Route :: struct {
 	raw:     bool,
 }
 
+// Router_Guard runs after a route matches and before its handler; blocked=true
+// answers with its response instead (R4a owner authority on owner-held chains).
+Router_Guard :: proc(ctx: rawptr, req: Request) -> (Response, bool)
+
 Router :: struct {
 	routes: [dynamic]Route,
 	upgrade_routes: [dynamic]Upgrade_Route,
+	guard:     Router_Guard,
+	guard_ctx: rawptr,
 }
 
 new_router :: proc() -> Router {
@@ -146,6 +152,9 @@ router_dispatch_matched :: proc(router: ^Router, req: Request) -> (Response, str
 	}
 	for route in router.routes {
 		if (route.method == req.method || route.method == "ANY") && route.handler != nil && route_matches(route.path, req.path) {
+			if router.guard != nil {
+				if blocked_resp, blocked := router.guard(router.guard_ctx, req); blocked do return blocked_resp, route.path
+			}
 			return route.handler(route.ctx, req), route.path
 		}
 	}
