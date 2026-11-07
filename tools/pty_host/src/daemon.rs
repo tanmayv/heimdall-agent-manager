@@ -212,6 +212,7 @@ struct Agent {
     /// when the spec carried a `detect` config).
     detector: Option<JoinHandle<()>>,
     startup_input: StartupInputState,
+    deadline: Arc<Mutex<ChildDeadline>>,
 }
 
 #[derive(Default)]
@@ -344,10 +345,126 @@ type Sinks = Arc<Mutex<HashMap<u64, ReplySink>>>;
 /// StartupBlocked) for ALL agents without attaching to any instance's Output.
 type Watchers = Arc<Mutex<HashMap<u64, ReplySink>>>;
 
+// Exact resource-fenced launches are deduplicated for the daemon lifetime.
+// Losing this ledger requires explicit executor recovery; an unknown key is
+// never reported absent. Keep hashes, not copies of prior credential-bearing specs.
+const EXECUTOR_LAUNCH_KEY: &str = "HEIMDALL_EXECUTOR_LAUNCH_KEY";
+const EXECUTOR_LOCAL_LAUNCH: &str = "HEIMDALL_EXECUTOR_LOCAL_LAUNCH";
+const EXECUTOR_LAUNCH_LIMIT: usize = 100_000;
+#[derive(Clone, Copy)]
+enum ExecutorLaunchState { Uncertain, Spawned(i32), Failed, NoChild }
+struct ExecutorLaunch { instance: String, digest: [u8;32], state: ExecutorLaunchState }
+fn executor_launch_key(spec: &SpawnRequest) -> Result<Option<&str>> {
+    let keys: Vec<_> = spec.env.iter().filter(|(name,_)| name == EXECUTOR_LAUNCH_KEY).collect();
+    if keys.is_empty() { return Ok(None); }
+    if keys.len()!=1 { return Err(anyhow!("spawn: duplicate executor launch key")); }
+    let key=keys[0].1.as_str();
+    if key.len()!=64 || !key.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+        return Err(anyhow!("spawn: invalid executor launch key"));
+    }
+    Ok(Some(key))
+}
+
+// A distinct local Bridge mode preserves manual/warm lifetime semantics. It
+// shares exact-key deduplication and stop/query evidence with owner launches,
+// but can never carry an owner deadline or renewal credential.
+fn executor_local_launch(spec: &SpawnRequest) -> Result<bool> {
+    let values: Vec<_> = spec.env.iter().filter(|(name, _)| name == EXECUTOR_LOCAL_LAUNCH).collect();
+    if values.is_empty() {return Ok(false);}
+    if values.len()!=1 || values[0].1!="1" || executor_launch_key(spec)?.is_none() ||
+        spec.env.iter().any(|(name, _)| matches!(name.as_str(),
+            "HEIMDALL_EXECUTOR_DEADLINE_MS" | "HEIMDALL_EXECUTOR_DEADLINE_VERSION" |
+            "HEIMDALL_EXECUTOR_HARD_MS" | "HEIMDALL_EXECUTOR_RENEW_SECRET")) {
+        return Err(anyhow!("spawn: invalid local executor mode"));
+    }
+    Ok(true)
+}
+
+// The watcher and renewal share this lock. Once expiry wins, retirement is
+// irreversible even if the watcher has not yet delivered the signal.
+struct ChildDeadline {
+    at: Option<Instant>,
+    executor: Option<ExecutorDeadline>,
+    retired: bool,
+}
+struct ExecutorDeadline { renew_digest: Option<[u8;32]>, version: u64, expires_ms: u64, hard_ms: u64, hard_at: Instant }
+fn executor_env_number(spec: &SpawnRequest, name: &str) -> Result<Option<u64>> {
+    let values: Vec<_> = spec.env.iter().filter(|(key, _)| key == name).collect();
+    if values.is_empty() { return Ok(None); }
+    if values.len() != 1 { return Err(anyhow!("spawn: duplicate {name}")); }
+    let text = &values[0].1;
+    let value = text.parse::<u64>().ok().filter(|v| *v > 0 && *v <= i64::MAX as u64 && v.to_string() == *text)
+        .ok_or_else(|| anyhow!("spawn: invalid {name}"))?;
+    Ok(Some(value))
+}
+impl ChildDeadline {
+    fn from_spec(spec: &SpawnRequest) -> Result<Self> {
+        let now = Instant::now();
+        let local = executor_local_launch(spec)?;
+        let mut at = spec.timeout_seconds.and_then(|s| now.checked_add(Duration::from_secs(s)));
+        if spec.timeout_seconds.is_some() && at.is_none() { return Err(anyhow!("spawn: timeout overflow")); }
+        let executor = if executor_launch_key(spec)?.is_some() && !local {
+            let wall = now_millis();
+            let expires_ms = executor_env_number(spec, "HEIMDALL_EXECUTOR_DEADLINE_MS")?
+                .ok_or_else(|| anyhow!("spawn: executor deadline required"))?;
+            let version = executor_env_number(spec, "HEIMDALL_EXECUTOR_DEADLINE_VERSION")?;
+            let hard = executor_env_number(spec, "HEIMDALL_EXECUTOR_HARD_MS")?;
+            if version.is_some() != hard.is_some() { return Err(anyhow!("spawn: incomplete executor deadline bounds")); }
+            let hard_ms = hard.unwrap_or(expires_ms);
+            if wall >= expires_ms || expires_ms > hard_ms || at.is_none() { return Err(anyhow!("spawn: invalid executor deadline bounds")); }
+            let physical = now.checked_add(Duration::from_millis(expires_ms - wall)).ok_or_else(|| anyhow!("spawn: deadline overflow"))?;
+            at = Some(at.unwrap().min(physical));
+            let secrets: Vec<_> = spec.env.iter().filter(|(key, _)| key == "HEIMDALL_EXECUTOR_RENEW_SECRET").collect();
+            let renew_digest = if secrets.is_empty() { None } else {
+                let secret = &secrets[0].1;
+                if secrets.len() != 1 || version.is_none() || secret.len() != 64 ||
+                    !secret.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+                    return Err(anyhow!("spawn: invalid executor renewal credential"));
+                }
+                use sha2::{Digest, Sha256};
+                Some(Sha256::digest(secret.as_bytes()).into())
+            };
+            Some(ExecutorDeadline { renew_digest, version: version.unwrap_or(1), expires_ms, hard_ms,
+                hard_at: now.checked_add(Duration::from_millis(hard_ms - wall)).ok_or_else(|| anyhow!("spawn: hard deadline overflow"))? })
+        } else { None };
+        Ok(Self { at, executor, retired: false })
+    }
+    fn expired(&mut self, now: Instant, wall: u64) -> bool {
+        if self.at.is_some_and(|at| now >= at) || self.executor.as_ref().is_some_and(|d| wall >= d.expires_ms || wall >= d.hard_ms) {
+            self.retired = true;
+        }
+        self.retired
+    }
+    fn renew(&mut self, secret: &str, version: u64, expires_ms: u64, hard_ms: u64) -> Result<()> {
+        use sha2::{Digest, Sha256};
+        let supplied: [u8;32] = Sha256::digest(secret.as_bytes()).into();
+        if self.executor.as_ref().and_then(|d| d.renew_digest) != Some(supplied) {
+            return Err(anyhow!("executor: invalid renewal credential"));
+        }
+        let now = Instant::now();
+        let wall = now_millis();
+        if self.expired(now, wall) { return Err(anyhow!("executor: deadline retired")); }
+        let d = self.executor.as_mut().ok_or_else(|| anyhow!("executor: deadline unavailable"))?;
+        if hard_ms != d.hard_ms || expires_ms > hard_ms || expires_ms <= wall || version == 0 || version > i64::MAX as u64 {
+            return Err(anyhow!("executor: deadline scope mismatch"));
+        }
+        if version == d.version && expires_ms == d.expires_ms { return Ok(()); }
+        if d.version.checked_add(1) != Some(version) || expires_ms < d.expires_ms {
+            return Err(anyhow!("executor: stale or conflicting deadline"));
+        }
+        let at = now.checked_add(Duration::from_millis(expires_ms - wall)).ok_or_else(|| anyhow!("executor: deadline overflow"))?;
+        self.at = Some(at.min(d.hard_at));
+        d.version = version; d.expires_ms = expires_ms;
+        Ok(())
+    }
+}
+
 /// The per-machine multi-agent daemon.
 #[derive(Clone)]
 pub struct Daemon {
     agents: Registry,
+    lifecycle: Arc<Mutex<()>>,
+    executor_launches: Arc<Mutex<HashMap<String, ExecutorLaunch>>>,
     /// Clients that have Attached and are receiving instance-scoped Output.
     subs: Subscribers,
     /// All connected clients' sinks (HOST-5): a sink here is NOT subscribed to
@@ -370,6 +487,8 @@ impl Daemon {
     pub fn new() -> Self {
         Daemon {
             agents: Arc::new(Mutex::new(HashMap::new())),
+            lifecycle: Arc::new(Mutex::new(())),
+            executor_launches: Arc::new(Mutex::new(HashMap::new())),
             subs: Arc::new(Mutex::new(HashMap::new())),
             sinks: Arc::new(Mutex::new(HashMap::new())),
             watchers: Arc::new(Mutex::new(HashMap::new())),
@@ -383,7 +502,8 @@ impl Daemon {
 
     /// Register + launch a new agent. Errors if `instance` is empty, `argv` is
     /// empty, or the instance id is already registered.
-    pub fn spawn(&self, spec: SpawnRequest) -> Result<i32> {
+    pub fn spawn(&self, mut spec: SpawnRequest) -> Result<i32> {
+        let _lifecycle = self.lifecycle.lock().unwrap();
         if spec.instance.is_empty() {
             return Err(anyhow!("spawn: empty instance id"));
         }
@@ -393,23 +513,70 @@ impl Daemon {
         if spec.timeout_seconds == Some(0) {
             return Err(anyhow!("spawn: timeout_seconds must be greater than zero"));
         }
-        {
-            let agents = self.agents.lock().unwrap();
-            if agents.contains_key(&spec.instance) {
-                return Err(anyhow!("spawn: instance {} already exists", spec.instance));
+        use sha2::{Digest,Sha256};
+        let key=executor_launch_key(&spec)?.map(str::to_owned);
+        let local=executor_local_launch(&spec)?;
+        let digest: [u8;32]=Sha256::digest(CtlMsg::Spawn(spec.clone()).encode()).into();
+        if let Some(key)=key.as_deref() {
+            let launches=self.executor_launches.lock().unwrap();
+            if let Some(prior)=launches.get(key) {
+                if prior.instance!=spec.instance || prior.digest!=digest { return Err(anyhow!("spawn: executor launch input conflict")); }
+                return match prior.state {
+                    ExecutorLaunchState::Spawned(pid) => {
+                        let agents=self.agents.lock().unwrap();
+                        match agents.get(&spec.instance) {
+                            Some(agent) if agent.alive.load(Ordering::SeqCst) && agent.pid==pid && executor_launch_key(&agent.spec)?==Some(key) => Ok(pid),
+                            _ => Err(anyhow!("spawn: executor launch retired")),
+                        }
+                    },
+                    _ => Err(anyhow!("spawn: executor launch requires reconciliation")),
+                };
+            }
+            if launches.len()>=EXECUTOR_LAUNCH_LIMIT { return Err(anyhow!("spawn: executor retention capacity")); }
+        }
+        if self.agents.lock().unwrap().contains_key(&spec.instance) {
+            return Err(anyhow!("spawn: instance {} already exists",spec.instance));
+        }
+        if let Some(key)=key.as_deref() {
+            self.executor_launches.lock().unwrap().insert(key.into(),ExecutorLaunch{instance:spec.instance.clone(),digest,state:ExecutorLaunchState::Uncertain});
+        }
+        if let Some(key)=key.as_deref() {
+            if !local {
+            let deadlines:Vec<_>=spec.env.iter().filter(|(name,_)|name=="HEIMDALL_EXECUTOR_DEADLINE_MS").collect();
+            let deadline=if deadlines.len()==1 {
+                let text=deadlines[0].1.as_str();
+                text.parse::<u64>().ok().filter(|value|*value<=i64::MAX as u64 && value.to_string()==text)
+            } else {None};
+            let remaining=deadline.map(|value|value.saturating_sub(now_millis())/1000).unwrap_or(0);
+            let timeout=spec.timeout_seconds.unwrap_or(0);
+            if remaining==0 || timeout==0 {
+                self.executor_launches.lock().unwrap().get_mut(key).unwrap().state=ExecutorLaunchState::NoChild;
+                return Err(anyhow!("spawn: executor deadline expired or unbounded"));
+            }
+            spec.timeout_seconds=Some(timeout.min(remaining));
             }
         }
-        let agent = self.build_agent(spec)?;
-        let pid = agent.pid;
-        let instance = agent.spec.instance.clone();
-        let mut agents = self.agents.lock().unwrap();
-        agents.insert(instance, agent);
-        prune_tombstones(&mut agents, TOMBSTONE_MAX, TOMBSTONE_TTL);
+        let agent=match self.build_agent(spec) {
+            Ok(agent)=>agent,
+            Err(error)=>{
+                if let Some(key)=key.as_deref() { self.executor_launches.lock().unwrap().get_mut(key).unwrap().state=ExecutorLaunchState::Failed; }
+                return Err(error);
+            }
+        };
+        let pid=agent.pid;
+        self.agents.lock().unwrap().insert(agent.spec.instance.clone(),agent);
+        if let Some(key)=key.as_deref() { self.executor_launches.lock().unwrap().get_mut(key).unwrap().state=ExecutorLaunchState::Spawned(pid); }
+        prune_tombstones(&mut self.agents.lock().unwrap(),TOMBSTONE_MAX,TOMBSTONE_TTL);
         Ok(pid)
     }
 
     /// Build + start an [`Agent`] (PTY spawn + pump + exit watcher) from a spec.
-    fn build_agent(&self, spec: SpawnRequest) -> Result<Agent> {
+    fn build_agent(&self, mut spec: SpawnRequest) -> Result<Agent> {
+        let deadline = Arc::new(Mutex::new(ChildDeadline::from_spec(&spec)?));
+        // A renewal credential is local control data, never child configuration.
+        // Retain only its digest in the daemon; do not inherit it or retain it
+        // in the restart spec. Executor restarts are forbidden separately.
+        spec.env.retain(|(key, _)| key != "HEIMDALL_EXECUTOR_RENEW_SECRET");
         let rows = if spec.rows == 0 { CRT_ROWS } else { spec.rows };
         let cols = if spec.cols == 0 { CRT_COLS } else { spec.cols };
         let program = spec.argv[0].clone();
@@ -480,15 +647,14 @@ impl Daemon {
             let stop = Arc::clone(&stop);
             let host = Arc::clone(&host);
             let instance = instance.clone();
-            let timeout = spec.timeout_seconds.map(Duration::from_secs);
+            let deadline = Arc::clone(&deadline);
             std::thread::Builder::new().spawn(move || {
-                let started = Instant::now();
                 let mut timeout_fired = false;
                 while alive.load(Ordering::SeqCst) {
                     if stop.load(Ordering::SeqCst) {
                         return;
                     }
-                    if !timeout_fired && timeout.is_some_and(|limit| started.elapsed() >= limit) {
+                    if !timeout_fired && deadline.lock().unwrap().expired(Instant::now(), now_millis()) {
                         timeout_fired = true;
                         host.lock().unwrap().terminate();
                         let dead = host.lock().unwrap().wait_timeout(TERM_GRACE).is_some();
@@ -574,11 +740,19 @@ impl Daemon {
             exit_watch: Some(exit_watch),
             detector,
             startup_input: StartupInputState::default(),
+            deadline,
         })
     }
 
     /// SIGTERM -> wait -> SIGKILL the instance, then unregister it.
     pub fn close(&self, instance: &str) -> Result<()> {
+        let _lifecycle=self.lifecycle.lock().unwrap();
+        if let Some(agent)=self.agents.lock().unwrap().get(instance) {
+            if executor_launch_key(&agent.spec)?.is_some() { return Err(anyhow!("close: executor launch key required")); }
+        }
+        self.close_locked(instance)
+    }
+    fn close_locked(&self, instance: &str) -> Result<()> {
         broadcast_instance_subs(
             &self.subs,
             instance,
@@ -601,6 +775,10 @@ impl Daemon {
     /// is torn down first; background threads are re-plumbed automatically.
     /// Returns the new child pid.
     pub fn restart(&self, instance: &str) -> Result<i32> {
+        let _lifecycle=self.lifecycle.lock().unwrap();
+        if let Some(agent)=self.agents.lock().unwrap().get(instance) {
+            if executor_launch_key(&agent.spec)?.is_some() { return Err(anyhow!("restart: fresh executor reservation required")); }
+        }
         // Take the existing agent out, remember its spec, tear it down.
         let mut old = self
             .agents
@@ -627,6 +805,54 @@ impl Daemon {
             .unwrap()
             .insert(instance.to_string(), agent);
         Ok(pid)
+    }
+
+    /// Exact resource stop. A stale key never closes a replacement child.
+    pub fn close_executor(&self, instance: &str, key: &str) -> Result<()> {
+        let _lifecycle=self.lifecycle.lock().unwrap();
+        {
+            let launches=self.executor_launches.lock().unwrap();
+            let prior=launches.get(key).ok_or_else(||anyhow!("executor: unknown launch key; recovery required"))?;
+            if prior.instance!=instance { return Err(anyhow!("executor: instance mismatch")); }
+            if matches!(prior.state,ExecutorLaunchState::Failed|ExecutorLaunchState::Uncertain) {return Err(anyhow!("executor: launch uncertain; recovery required"));}
+        }
+        {
+            let agents=self.agents.lock().unwrap();
+            if let Some(agent)=agents.get(instance) {
+                if executor_launch_key(&agent.spec)?!=Some(key) { return Err(anyhow!("executor: child mismatch")); }
+            } else { return Ok(()); }
+        }
+        self.close_locked(instance)
+    }
+    /// Renew only this exact live child; no spawn or registry adoption is possible.
+    /// The local Bridge must verify fresh signed owner authority before this IPC.
+    pub fn renew_executor(&self, instance: &str, key: &str, secret: &str, version: u64, expires_ms: u64, hard_ms: u64) -> Result<i32> {
+        let _lifecycle = self.lifecycle.lock().unwrap();
+        let launches = self.executor_launches.lock().unwrap();
+        let prior = launches.get(key).ok_or_else(|| anyhow!("executor: unknown launch key; recovery required"))?;
+        if prior.instance != instance || !matches!(prior.state, ExecutorLaunchState::Spawned(_)) {
+            return Err(anyhow!("executor: launch mismatch"));
+        }
+        let agents = self.agents.lock().unwrap();
+        let agent = agents.get(instance).ok_or_else(|| anyhow!("executor: child absent"))?;
+        if executor_launch_key(&agent.spec)? != Some(key) || !agent.alive.load(Ordering::SeqCst) || agent.stop.load(Ordering::SeqCst) {
+            return Err(anyhow!("executor: child mismatch"));
+        }
+        agent.deadline.lock().unwrap().renew(secret, version, expires_ms, hard_ms)?;
+        Ok(agent.pid)
+    }
+    /// Unknown keys after daemon loss stay uncertain, never falsely absent.
+    pub fn executor_launch_pid(&self, instance: &str, key: &str) -> Result<i32> {
+        let _lifecycle=self.lifecycle.lock().unwrap();
+        let launches=self.executor_launches.lock().unwrap();
+        let prior=launches.get(key).ok_or_else(||anyhow!("executor: unknown launch key; recovery required"))?;
+        if prior.instance!=instance { return Err(anyhow!("executor: instance mismatch")); }
+        if matches!(prior.state,ExecutorLaunchState::Failed|ExecutorLaunchState::Uncertain) { return Err(anyhow!("executor: launch uncertain")); }
+        let agents=self.agents.lock().unwrap();
+        Ok(match agents.get(instance) {
+            Some(agent) if executor_launch_key(&agent.spec)?==Some(key) && agent.alive.load(Ordering::SeqCst) => agent.pid,
+            _=>0,
+        })
     }
 
     /// Enumerate all registered agents (order unspecified).
@@ -965,9 +1191,10 @@ impl Daemon {
 
     /// Stop all agents + drop all subscribers. Idempotent.
     pub fn shutdown(&self) {
+        let _lifecycle=self.lifecycle.lock().unwrap();
         let ids: Vec<String> = self.agents.lock().unwrap().keys().cloned().collect();
         for id in ids {
-            let _ = self.close(&id);
+            let _ = self.close_locked(&id);
         }
         self.subs.lock().unwrap().clear();
         self.sinks.lock().unwrap().clear();
@@ -1459,6 +1686,27 @@ fn handle_ctl(daemon: &Daemon, id: u64, msg: CtlMsg, tx: &ReplySink) {
                 });
             }
         }
+        CtlMsg::ExecutorRenew { instance, launch_key, secret, version, expires_ms, hard_ms } => {
+            let reply = match daemon.renew_executor(&instance, &launch_key, &secret, version, expires_ms, hard_ms) {
+                Ok(pid) => CtlReply::StartupLaunch { instance, pid, launch_key },
+                Err(error) => CtlReply::Error { instance, message: format!("{error:#}") },
+            };
+            let _ = tx.send(reply);
+        }
+        CtlMsg::ExecutorClose { instance, launch_key } => {
+            let reply=match daemon.close_executor(&instance,&launch_key) {
+                Ok(())=>CtlReply::Closed{instance},
+                Err(error)=>CtlReply::Error{instance,message:format!("{error:#}")},
+            };
+            let _=tx.send(reply);
+        }
+        CtlMsg::ExecutorLaunch { instance, launch_key } => {
+            let reply=match daemon.executor_launch_pid(&instance,&launch_key) {
+                Ok(pid)=>CtlReply::StartupLaunch{instance,pid,launch_key},
+                Err(error)=>CtlReply::Error{instance,message:format!("{error:#}")},
+            };
+            let _=tx.send(reply);
+        }
         CtlMsg::StartupLaunch { instance, launch_key } => {
             let pid = daemon.startup_launch_pid(&instance, &launch_key);
             let _ = tx.send(CtlReply::StartupLaunch { instance, pid, launch_key });
@@ -1499,7 +1747,7 @@ fn handle_ctl(daemon: &Daemon, id: u64, msg: CtlMsg, tx: &ReplySink) {
         },
         CtlMsg::Detach { instance } => daemon.detach(id, &instance),
         CtlMsg::WatchEvents => daemon.watch_events(id),
-        CtlMsg::Ping => {
+        CtlMsg::Ping | CtlMsg::ExecutorReady | CtlMsg::LocalExecutorReady => {
             let _ = tx.send(CtlReply::Pong);
         }
         CtlMsg::Shutdown => {
@@ -1653,6 +1901,227 @@ mod tests {
             tee_path: None,
             timeout_seconds: None,
         }
+    }
+
+    fn executor_pty_available() -> bool {
+        if pty_available() {return true;}
+        assert!(std::env::var("HEIMDALL_EXECUTOR_REQUIRE_PTY").as_deref()!=Ok("1"),"real executor PTY proof was required");
+        eprintln!("[skip] executor PTY checks unavailable in this sandbox; require with HEIMDALL_EXECUTOR_REQUIRE_PTY=1");
+        false
+    }
+    fn executor_spec(instance:&str,sh:&str,key:&str)->SpawnRequest {
+        let mut spec=sh_spec(instance,sh);
+        spec.env.push((EXECUTOR_LAUNCH_KEY.into(),key.into()));
+        spec.env.push(("HEIMDALL_EXECUTOR_DEADLINE_MS".into(),(now_millis()+10000).to_string()));
+        spec.timeout_seconds=Some(5);
+        spec
+    }
+    #[test]
+    fn executor_local_mode_is_disjoint_from_owner_deadlines() {
+        let mut spec=sh_spec("local-mode", "/unused");
+        spec.env.push((EXECUTOR_LOCAL_LAUNCH.into(),"1".into()));
+        assert!(executor_local_launch(&spec).is_err());
+        spec.env.push((EXECUTOR_LAUNCH_KEY.into(),"c".repeat(64)));
+        assert!(executor_local_launch(&spec).unwrap());
+        let local=ChildDeadline::from_spec(&spec).unwrap();
+        assert!(local.at.is_none() && local.executor.is_none());
+        for name in ["HEIMDALL_EXECUTOR_DEADLINE_MS", "HEIMDALL_EXECUTOR_DEADLINE_VERSION", "HEIMDALL_EXECUTOR_HARD_MS", "HEIMDALL_EXECUTOR_RENEW_SECRET"] {
+            let mut mixed=spec.clone();mixed.env.push((name.into(),"1".into()));
+            assert!(executor_local_launch(&mixed).is_err());
+            assert!(ChildDeadline::from_spec(&mixed).is_err());
+        }
+        let mut duplicate=spec.clone();duplicate.env.push((EXECUTOR_LOCAL_LAUNCH.into(),"1".into()));
+        assert!(executor_local_launch(&duplicate).is_err());
+        spec.env[0].1="0".into();
+        assert!(executor_local_launch(&spec).is_err());
+    }
+    #[test]
+    #[cfg(unix)]
+    fn executor_local_warm_exact_replay_stop_and_unknown_daemon() {
+        if !executor_pty_available() {return;}
+        let sh=shell().expect("POSIX shell required");
+        let daemon=Daemon::new();
+        let key="d".repeat(64);
+        let mut spec=sh_spec("local-warm",&sh);
+        spec.env.push((EXECUTOR_LAUNCH_KEY.into(),key.clone()));
+        spec.env.push((EXECUTOR_LOCAL_LAUNCH.into(),"1".into()));
+        let pid=daemon.spawn(spec.clone()).unwrap();
+        assert_eq!(daemon.spawn(spec.clone()).unwrap(),pid);
+        assert_eq!(daemon.executor_launch_pid("local-warm",&key).unwrap(),pid);
+        assert!(Daemon::new().executor_launch_pid("local-warm",&key).is_err());
+        let mut changed=spec.clone();changed.argv.push("-i".into());
+        assert!(daemon.spawn(changed).is_err());
+        assert!(daemon.close_executor("local-warm",&"e".repeat(64)).is_err());
+        assert_eq!(daemon.executor_launch_pid("local-warm",&key).unwrap(),pid);
+        daemon.close_executor("local-warm",&key).unwrap();
+        assert_eq!(daemon.executor_launch_pid("local-warm",&key).unwrap(),0);
+        assert!(daemon.spawn(spec).is_err());
+        daemon.shutdown();
+    }
+    #[test]
+    fn executor_deadline_versions_replay_bounds_and_irreversible_expiry() {
+        let mut spec = executor_spec("deadline-state", "/unused", &"a".repeat(64));
+        let now = now_millis();
+        spec.env.push(("HEIMDALL_EXECUTOR_RENEW_SECRET".into(), "b".repeat(64)));
+        spec.env.push(("HEIMDALL_EXECUTOR_DEADLINE_VERSION".into(), "1".into()));
+        spec.env.push(("HEIMDALL_EXECUTOR_HARD_MS".into(), (now + 30000).to_string()));
+        let mut d = ChildDeadline::from_spec(&spec).unwrap();
+        let expiry = now + 20000;
+        assert!(d.renew(&"b".repeat(64), 3, expiry, now + 30000).is_err());
+        assert!(d.renew(&"b".repeat(64), 2, expiry, now + 30001).is_err());
+        assert!(d.renew(&"b".repeat(64), 2, now + 30001, now + 30000).is_err());
+        d.renew(&"b".repeat(64), 2, expiry, now + 30000).unwrap();
+        let at = d.at;
+        d.renew(&"b".repeat(64), 2, expiry, now + 30000).unwrap();
+        assert_eq!(d.at, at, "replay must not reset monotonic deadline");
+        assert!(d.renew(&"b".repeat(64), 2, expiry + 1, now + 30000).is_err());
+        assert!(d.renew(&"b".repeat(64), 1, expiry, now + 30000).is_err());
+        assert!(d.renew(&"b".repeat(64), 3, expiry - 1, now + 30000).is_err());
+        // Monotonic expiry wins despite a backwards wall clock.
+        assert!(d.expired(at.unwrap(), 1));
+        assert!(d.renew(&"b".repeat(64), 3, expiry + 1, now + 30000).is_err());
+        assert!(d.retired);
+        // Wall expiry is also irreversible before the watcher sends a signal.
+        let mut wall = ChildDeadline::from_spec(&spec).unwrap();
+        assert!(wall.expired(Instant::now(), now + 30000));
+        assert!(wall.renew(&"b".repeat(64), 2, expiry, now + 30000).is_err());
+        // A backwards wall clock cannot move the fixed monotonic hard bound.
+        let mut bounded = ChildDeadline::from_spec(&spec).unwrap();
+        let cap = Instant::now() + Duration::from_secs(1);
+        bounded.executor.as_mut().unwrap().hard_at = cap;
+        bounded.renew(&"b".repeat(64), 2, now + 30000, now + 30000).unwrap();
+        assert_eq!(bounded.at, Some(cap));
+        // Old spawns have no renewable headroom beyond their original expiry.
+        spec.env.retain(|(k, _)| k != "HEIMDALL_EXECUTOR_RENEW_SECRET" && k != "HEIMDALL_EXECUTOR_DEADLINE_VERSION" && k != "HEIMDALL_EXECUTOR_HARD_MS");
+        let mut old = ChildDeadline::from_spec(&spec).unwrap();
+        assert!(old.renew(&"b".repeat(64), 2, expiry, now + 30000).is_err());
+        spec.env.push(("HEIMDALL_EXECUTOR_RENEW_SECRET".into(), "b".repeat(64)));
+        spec.env.push(("HEIMDALL_EXECUTOR_DEADLINE_VERSION".into(), "1".into()));
+        assert!(ChildDeadline::from_spec(&spec).is_err());
+        spec.env.push(("HEIMDALL_EXECUTOR_DEADLINE_VERSION".into(), "1".into()));
+        assert!(ChildDeadline::from_spec(&spec).is_err());
+    }
+    #[test]
+    #[cfg(unix)]
+    fn executor_renewal_extends_only_exact_live_child_and_still_expires() {
+        if !executor_pty_available() { return; }
+        let sh = shell().expect("POSIX shell required");
+        let daemon = Daemon::new();
+        let key = "7".repeat(64);
+        let mut spec = executor_spec("executor-renew", &sh, &key);
+        let now = now_millis();
+        spec.timeout_seconds = Some(1);
+        spec.env.push(("HEIMDALL_EXECUTOR_RENEW_SECRET".into(), "b".repeat(64)));
+        spec.env.push(("HEIMDALL_EXECUTOR_DEADLINE_VERSION".into(), "1".into()));
+        spec.env.push(("HEIMDALL_EXECUTOR_HARD_MS".into(), (now + 12000).to_string()));
+        let pid = daemon.spawn(spec.clone()).unwrap();
+        assert!(daemon.agents.lock().unwrap().get("executor-renew").unwrap().spec.env.iter()
+            .all(|(k, _)| k != "HEIMDALL_EXECUTOR_RENEW_SECRET"));
+        assert!(daemon.renew_executor("executor-renew", &key, &"0".repeat(64), 2, now + 11000, now + 12000).is_err());
+        assert!(daemon.renew_executor("other", &key, &"b".repeat(64), 2, now + 11000, now + 12000).is_err());
+        assert!(daemon.renew_executor("executor-renew", &"8".repeat(64), &"b".repeat(64), 2, now + 11000, now + 12000).is_err());
+        assert_eq!(daemon.renew_executor("executor-renew", &key, &"b".repeat(64), 2, now + 11000, now + 12000).unwrap(), pid);
+        assert_eq!(daemon.renew_executor("executor-renew", &key, &"b".repeat(64), 2, now + 11000, now + 12000).unwrap(), pid);
+        std::thread::sleep(Duration::from_millis(1200));
+        assert_eq!(daemon.executor_launch_pid("executor-renew", &key).unwrap(), pid);
+        // Force the shared monotonic boundary, proving the real watcher uses it.
+        {
+            let agents = daemon.agents.lock().unwrap();
+            agents.get("executor-renew").unwrap().deadline.lock().unwrap().at = Some(Instant::now());
+        }
+        assert!(wait_for(|| !daemon.is_alive("executor-renew"), Duration::from_secs(3)));
+        assert!(daemon.renew_executor("executor-renew", &key, &"b".repeat(64), 3, now + 12000, now + 12000).is_err());
+        daemon.close_executor("executor-renew", &key).unwrap();
+        let mut replacement = executor_spec("executor-renew", &sh, &"9".repeat(64));
+        replacement.timeout_seconds = Some(3);
+        let replacement_pid = daemon.spawn(replacement).unwrap();
+        assert!(daemon.renew_executor("executor-renew", &key, &"b".repeat(64), 3, now + 12000, now + 12000).is_err());
+        assert_eq!(daemon.executor_launch_pid("executor-renew", &"9".repeat(64)).unwrap(), replacement_pid);
+        assert!(Daemon::new().renew_executor("executor-renew", &key, &"b".repeat(64), 2, now + 11000, now + 12000).is_err());
+        daemon.shutdown();
+    }
+    #[test]
+    #[cfg(unix)]
+    fn executor_spawn_retry_is_exact_live_child_and_retired_key_never_respawns() {
+        if !executor_pty_available() {return;}
+        let sh=shell().expect("POSIX shell required");let daemon=Daemon::new();
+        let key="a".repeat(64);let spec=executor_spec("executor-replay",&sh,&key);
+        let pid=daemon.spawn(spec.clone()).unwrap();
+        assert_eq!(daemon.spawn(spec.clone()).unwrap(),pid);
+        let mut changed=spec.clone();changed.argv.push("-i".into());
+        assert!(daemon.spawn(changed).is_err());
+        assert!(daemon.close("executor-replay").is_err());
+        assert!(daemon.restart("executor-replay").is_err());
+        assert_eq!(daemon.executor_launch_pid("executor-replay",&key).unwrap(),pid);
+        daemon.close_executor("executor-replay",&key).unwrap();
+        assert_eq!(daemon.executor_launch_pid("executor-replay",&key).unwrap(),0);
+        assert!(daemon.spawn(spec).is_err());
+        daemon.close_executor("executor-replay",&key).unwrap();
+        daemon.shutdown();
+    }
+    #[test]
+    #[cfg(unix)]
+    fn executor_concurrent_duplicate_spawns_have_one_child_for_fenced_and_legacy() {
+        if !executor_pty_available() {return;}
+        let sh=shell().expect("POSIX shell required");
+        for fenced in [false,true] {
+            let daemon=Daemon::new();let key="b".repeat(64);
+            let spec=if fenced {executor_spec("executor-race",&sh,&key)} else {sh_spec("executor-race",&sh)};
+            let barrier=Arc::new(std::sync::Barrier::new(5));
+            let mut workers=Vec::new();
+            for _ in 0..4 {
+                let d=daemon.clone();let s=spec.clone();let gate=Arc::clone(&barrier);
+                workers.push(std::thread::spawn(move||{gate.wait();d.spawn(s)}));
+            }
+            barrier.wait();
+            let results:Vec<_>=workers.into_iter().map(|worker|worker.join().unwrap()).collect();
+            let pids:Vec<_>=results.iter().filter_map(|result|result.as_ref().ok().copied()).collect();
+            assert_eq!(pids.len(),if fenced {4} else {1});
+            assert!(pids.iter().all(|pid|*pid==pids[0]));
+            assert_eq!(daemon.list().len(),1);
+            daemon.shutdown();
+        }
+    }
+    #[test]
+    #[cfg(unix)]
+    fn executor_stale_close_and_unknown_daemon_query_cannot_free_replacement() {
+        if !executor_pty_available() {return;}
+        let sh=shell().expect("POSIX shell required");let daemon=Daemon::new();
+        let old="c".repeat(64);let new="d".repeat(64);
+        daemon.spawn(executor_spec("executor-replace",&sh,&old)).unwrap();
+        daemon.close_executor("executor-replace",&old).unwrap();
+        let pid=daemon.spawn(executor_spec("executor-replace",&sh,&new)).unwrap();
+        assert!(daemon.close_executor("executor-replace",&old).is_err());
+        assert_eq!(daemon.executor_launch_pid("executor-replace",&new).unwrap(),pid);
+        assert_eq!(daemon.executor_launch_pid("executor-replace",&old).unwrap(),0);
+        assert!(Daemon::new().executor_launch_pid("executor-replace",&new).is_err());
+        daemon.shutdown();
+    }
+    #[test]
+    #[cfg(unix)]
+    fn executor_expired_absolute_deadline_rejects_before_any_child_exists() {
+        let daemon=Daemon::new();let key="7".repeat(64);
+        let mut spec=executor_spec("executor-expired","/nonexistent",&key);
+        spec.env.retain(|(name,_)|name!="HEIMDALL_EXECUTOR_DEADLINE_MS");
+        spec.env.push(("HEIMDALL_EXECUTOR_DEADLINE_MS".into(),"1".into()));
+        assert!(daemon.spawn(spec).is_err());
+        assert_eq!(daemon.agent_count(),0);
+        assert_eq!(daemon.executor_launch_pid("executor-expired",&key).unwrap(),0);
+        daemon.close_executor("executor-expired",&key).unwrap();
+    }
+    #[test]
+    #[cfg(unix)]
+    fn executor_failed_launch_and_duplicate_reserved_env_stay_uncertain() {
+        let daemon=Daemon::new();let key="e".repeat(64);
+        let spec=executor_spec("executor-failed","/nonexistent/heimdall-executor-probe",&key);
+        assert!(daemon.spawn(spec.clone()).is_err());
+        assert!(daemon.spawn(spec).is_err());
+        assert!(daemon.executor_launch_pid("executor-failed",&key).is_err());
+        assert!(daemon.close_executor("executor-failed",&key).is_err());
+        let mut duplicate=executor_spec("executor-duplicate","/nonexistent",&"f".repeat(64));
+        duplicate.env.push((EXECUTOR_LAUNCH_KEY.into(),"f".repeat(64)));
+        assert!(daemon.spawn(duplicate).is_err());
+        assert_eq!(daemon.agent_count(),0);
     }
 
     #[test]

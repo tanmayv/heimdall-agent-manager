@@ -115,6 +115,7 @@ bridge_models_get :: proc(provider: string, allocator := context.allocator, prof
 }
 
 bridge_models_save :: proc(value: Bridge_Provider_Models) {
+	sync.rw_mutex_lock(&bridge_launch_configuration_mutex);defer sync.rw_mutex_unlock(&bridge_launch_configuration_mutex)
 	sync.mutex_lock(&bridge_models_mu); defer sync.mutex_unlock(&bridge_models_mu)
 	bridge_models_load_locked()
 	alloc := runtime.default_allocator()

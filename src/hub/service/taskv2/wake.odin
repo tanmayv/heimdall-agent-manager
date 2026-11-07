@@ -45,6 +45,8 @@ effect_wake_lease :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease, task
 	if lease.kind == domain.LEASE_KIND_REVIEW do role = "reviewer"
 	provider, model := lease_launch_model(svc, Placement{bridge_id = bridge_id, provider = lease.provider, provider_profile=lease.provider_profile, model = lease.model}, inst)
 	append(&u.effects.owned_strings, provider, model)
+	assertion:=agent.instance_assertion_token(inst)
+	append(&u.effects.owned_strings,assertion)
 	entry := agent.Wake_Agent_Run_Entry{
 		run_count = inst.run_count,
 		agent_instance_id = inst.agent_instance_id,
@@ -61,6 +63,7 @@ effect_wake_lease :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease, task
 		project_id        = string(inst.project_id),
 		project_path      = inst.project_path,
 		lease_id          = lease.lease_id,
+		instance_token=assertion,launch_epoch=inst.launch_epoch,
 		pack_json         = build_pack_json(svc, chain, task, lease, inst),
 		permission_mode   = permission_mode,
 		// A live child keeps its process: the bridge nudges it to run

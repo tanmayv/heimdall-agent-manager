@@ -44,7 +44,7 @@ budget_local_event :: proc(v:^Budget_State,pending:^bool,kind:string,c,p,content
     case "task.release":
         budget_event(v,"hold_released","{}",input)
         if pending^ { budget_event(v,"changes_requested","{}",input);pending^=false }
-    case "fleet.edit","lifecycle.configure","review.roles":
+    case "fleet.edit","fleet.reserve","lifecycle.configure","review.roles":
         if v.live do budget_event(v,"lease_expired",`{"reason":"replaced"}`,input)
         if v.in_review do budget_event(v,"requirements_rework","{}",input)
         pending^=false
@@ -99,7 +99,7 @@ budget_view :: proc(s:^Store,chain,task:string)->(Budget_State,contracts.Owner_B
           SELECT seq,chain_id,task_id,kind,completeness,CASE WHEN completeness='full' THEN evidence_json ELSE '{}' END evidence
           FROM local_events WHERE seq>?3 AND ((chain_id=?1 AND task_id=?2 AND kind IN(
             'lease.claim','lease.handoff','lease.switch','lease.block','lease.expired','lease.submit',
-            'task.cancel','task.reopen','task.resolve','task.hold','task.release','fleet.edit','lifecycle.configure',
+            'task.cancel','task.reopen','task.resolve','task.hold','task.release','fleet.edit','fleet.reserve','lifecycle.configure',
             'review.roles','requirements.edit','review.post','review.role.post','dependency.edit')) OR kind='lease.switch'
             OR EXISTS(SELECT 1 FROM local_metadata_retirements r WHERE r.seq=local_events.seq AND r.chain_id=?1 AND r.task_id=?2) OR EXISTS(SELECT 1 FROM local_task_retirements r WHERE r.seq=local_events.seq AND r.chain_id=?1 AND r.task_id=?2))),
           decoded AS (SELECT *,NULLIF(json_extract(evidence,'$.command'),'') AS command,

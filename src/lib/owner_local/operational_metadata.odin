@@ -77,7 +77,7 @@ directory_set :: proc(s:^Store,c,p:json.Object,body:string,seq:i64) -> string {
     if field(p,"enabled")=="0" && (len(previous)!=1 || previous[0][0]!="1") do return "operation_conflict"
     // Directory IDs bind the exact lifecycle configuration. Unrelated task
     // paths remain valid; a replacement requires explicit Git activation.
-    tasks,ok:=query(s.db,"SELECT task_id FROM lifecycle_configs lc WHERE chain_id=? AND revision=(SELECT max(revision) FROM lifecycle_configs x WHERE x.chain_id=lc.chain_id AND x.task_id=lc.task_id) AND json_extract(config_json,\'$.directory_id\')=?",chain,id)
+    tasks,ok:=query(s.db,"SELECT task_id FROM lifecycle_configs lc WHERE chain_id=? AND revision=(SELECT max(revision) FROM lifecycle_configs x WHERE x.chain_id=lc.chain_id AND x.task_id=lc.task_id) AND json_extract(config_json,\'$.directory_id\')=? UNION SELECT f.task_id FROM local_fleet f JOIN local_assignment_history h ON h.chain_id=f.chain_id AND h.task_id=f.task_id AND h.revision=f.configuration_revision WHERE f.chain_id=? AND json_extract(h.command_json,'$.method')='fleet.reserve' AND json_extract(json_extract(json_extract(h.payload_json,'$.reservation'),'$.configuration'),'$.directory_id')=?",chain,id,chain,id)
     if !ok do return "storage_error"
     for task in tasks { if !metadata_revoke_task(s,c,task[0],seq) do return "storage_error" }
     if _,ok=query(s.db,"INSERT INTO local_chain_directory_versions VALUES(?,?,?,?,?)",chain,id,fmt.tprintf("%d",seq),field(p,"enabled"),body);!ok do return "storage_error"

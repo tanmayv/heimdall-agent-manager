@@ -645,6 +645,7 @@ bridge_unseal_decrypt_and_verify :: proc(
 	local_bridge_id: string,
 	current_clock_ms: i64,
 ) -> (ok: bool, err_msg: string) {
+	unseal_generation:=bridge_task_chain_search_generation()
 	bridge_unseal_init()
 
 	payload: Bridge_Unseal_Payload
@@ -741,6 +742,8 @@ bridge_unseal_decrypt_and_verify :: proc(
 	// keyring stores below.
 	sync.mutex_lock(&g_unseal_install_mu)
 	defer sync.mutex_unlock(&g_unseal_install_mu)
+	sync.rw_mutex_lock(&bridge_vault_io_mutex);defer sync.rw_mutex_unlock(&bridge_vault_io_mutex)
+	if unseal_generation!=bridge_task_chain_search_generation() do return false,"vault changed during unseal"
 
 	// ── Keyring authentication (plan §1, finding C1) ──────────────────────
 	// The ECDH unseal proves only that the sender saw this boot's signed key, not
@@ -839,15 +842,22 @@ bridge_unseal_decrypt_and_verify :: proc(
 	if !store_ok do return false, "failed to store unsealed vault keyring in secure keystore"
 
 	// A new keyring: rebuild the search index under it and re-salt every PTY stream.
-	bridge_task_chain_search_lock()
+	bridge_task_chain_search_lock_inner()
 	bridge_pty_stream_resalt_all()
 	bridge_enrollment_unseal_mark_received()
 	return true, ""
 }
 
 bridge_owner_sign :: proc(ctx:rawptr,kind:string,o:json.Object)->(string,bool) {
-    if kind!="coordinator_capability" && kind!="genesis" && kind!="registry" && kind!="lease_command" && kind!="lifecycle_command" && kind!="capability" do return "",false
-    canonical,valid:=contracts.owner_canonical(kind,o)
+    canonical:string
+    valid:bool
+    if kind=="executor.local_result" || kind=="executor.child_result" || kind=="executor.bootstrap" || kind=="executor.child_request" || kind=="executor.prepare" || kind=="executor.action" || kind=="executor.fence_reply" || kind=="executor.fence_request" || kind=="executor.enrollment" || kind=="executor.issuance_receipt" || kind=="executor.receipt" {
+        // Resource intents have a separate signing domain from task commands.
+        canonical,valid=contracts.executor_canonical(strings.trim_prefix(kind,"executor."),o)
+    } else {
+        if kind!="coordinator_capability" && kind!="genesis" && kind!="registry" && kind!="lease_command" && kind!="lifecycle_command" && kind!="capability" do return "",false
+        canonical,valid=contracts.owner_canonical(kind,o)
+    }
     if !valid do return "",false
     sync.mutex_lock(&g_bridge_identity_mu);defer sync.mutex_unlock(&g_bridge_identity_mu)
     // Called inside the owner UoW for registry intents. The request path loads

@@ -67,3 +67,16 @@ intent_completions_flush :: proc(s:^Store,q:^Intent_Completions) -> bool {
     }
     return true
 }
+
+// Full immutable dispatch snapshot recheck after releasing the owner mutex.
+// Unlike the minimal retained completion identity, this also binds the route,
+// payload and exact fence supplied to external I/O.
+intent_claim_exact :: proc(s:^Store,claim:Intent_Claim)->(current:bool,ok:bool) {
+    tx:Transaction
+    if !transaction_begin(s,&tx) do return false,false
+    defer transaction_rollback(&tx)
+    rows,read:=query(s.db,"SELECT 1 FROM runtime_intents WHERE intent_id=? AND chain_id=? AND kind=? AND destination_bridge=? AND exact_fence_json=? AND payload_json=? AND payload_digest=? AND claim_incarnation=? AND attempts=? AND state='claimed' AND NOT EXISTS(SELECT 1 FROM intent_invalidations x WHERE x.intent_id=runtime_intents.intent_id)",
+        claim.id,claim.chain,claim.kind,claim.destination,claim.fence,claim.payload,claim.digest,fmt.tprintf("%d",claim.incarnation),fmt.tprintf("%d",claim.attempt))
+    if !read || !transaction_commit(&tx) do return false,false
+    return claim.incarnation==s.incarnation && len(rows)==1,true
+}

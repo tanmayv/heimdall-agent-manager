@@ -317,6 +317,8 @@ bridge_provider_discover_execute_profile :: proc(filter: []string, profile_id: s
 		append(&results,result)
 	}
 
+	sync.rw_mutex_lock(&bridge_launch_configuration_mutex)
+	defer sync.rw_mutex_unlock(&bridge_launch_configuration_mutex)
 	sync.rw_mutex_lock(&bridge_provider_paths_mutex)
 	for result in results do bridge_provider_paths_upsert_unlocked(bridge_provider_path_clone(result, runtime.default_allocator()))
 	_ = bridge_provider_paths_save_unlocked()
@@ -427,6 +429,9 @@ bridge_provider_handle_discover_frame :: proc(conn: ^ws.Connection, frame_type, 
 }
 
 bridge_provider_resolve_path :: proc(provider: string) -> (string, bool) {
+	return bridge_provider_resolve_launch_path(provider,false)
+}
+bridge_provider_resolve_launch_path :: proc(provider: string, cached_only:bool) -> (string, bool) {
 	bridge_provider_paths_init()
 	sync.rw_mutex_shared_lock(&bridge_provider_paths_mutex)
 	for item in bridge_provider_paths {
@@ -437,6 +442,7 @@ bridge_provider_resolve_path :: proc(provider: string) -> (string, bool) {
 		}
 	}
 	sync.rw_mutex_shared_unlock(&bridge_provider_paths_mutex)
+	if cached_only do return "",false
 
 	filter := []string{provider}
 	results := bridge_provider_discover(filter)

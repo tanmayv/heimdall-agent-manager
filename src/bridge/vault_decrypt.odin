@@ -5,6 +5,7 @@ package main
 // are plain text to this bridge and are never decrypted.
 
 import "core:crypto"
+import "core:sync"
 import "core:strings"
 import vault "odin_test:lib/vault"
 
@@ -75,9 +76,18 @@ bridge_decrypt_embedded_vault_tokens :: proc(text: string, allocator := context.
 // / Keychain / Credential Manager / Termux sealed file and RAM; other bridges' keys
 // are untouched (REQ-T5-3). The identity key stays: a locked bridge is still the
 // same, enrolled bridge and keeps reporting "locked".
+bridge_vault_io_mutex:sync.RW_Mutex
+
+// Physical executor I/O holds a shared gate. Purge/rekey and its generation
+// invalidation hold the exclusive gate, so stale snapshots cannot cross them.
 bridge_vault_lock :: proc() {
-	bridge_task_chain_search_lock()
+	sync.mutex_lock(&g_unseal_install_mu);defer sync.mutex_unlock(&g_unseal_install_mu)
+	sync.rw_mutex_lock(&bridge_vault_io_mutex);defer sync.rw_mutex_unlock(&bridge_vault_io_mutex)
+	bridge_vault_lock_inner()
+}
+bridge_vault_lock_inner :: proc() {
 	keystore_lock_and_purge(bridge_config.daemon_id)
+	bridge_task_chain_search_lock_inner()
 }
 
 // Purges the keyring like a lock and deletes the identity key, so a human must
@@ -85,7 +95,9 @@ bridge_vault_lock :: proc() {
 // (purge-on-revoke). Bridge-local only (agent vault.reset op); the hub never
 // triggers it. Under Termux it also deletes this bridge's Android Keystore key.
 bridge_vault_reset :: proc() {
-	bridge_vault_lock()
+	sync.mutex_lock(&g_unseal_install_mu);defer sync.mutex_unlock(&g_unseal_install_mu)
+	sync.rw_mutex_lock(&bridge_vault_io_mutex);defer sync.rw_mutex_unlock(&bridge_vault_io_mutex)
+	bridge_vault_lock_inner()
 	_ = keystore_delete_identity_key(bridge_config.daemon_id)
 	_ = keystore_identity_backup_drop(bridge_config.daemon_id)
 	bridge_unseal_forget_identity()
@@ -95,10 +107,7 @@ bridge_vault_reset :: proc() {
 }
 
 // Explicitly wipe unsealed vault key material on bridge shutdown
-bridge_vault_shutdown :: proc() {
-	bridge_task_chain_search_lock()
-	keystore_lock_and_purge(bridge_config.daemon_id)
-}
+bridge_vault_shutdown :: proc() {bridge_vault_lock()}
 
 // bridge_keyring_bytes_from_env decodes HEIMDALL_VAULT_KEYRING (standard base64 of
 // the HKR2 bytes). present reports the variable is set and non-blank: a present but
@@ -112,3 +121,13 @@ bridge_keyring_from_env_value :: proc(value: string) -> (kr: vault.Vault_Keyring
 	kr, ok = vault.keyring_parse(raw)
 	return kr, true, ok
 }
+
+bridge_executor_authority_begin :: proc(expected_generation:i64)->bool {
+	sync.rw_mutex_shared_lock(&bridge_vault_io_mutex)
+    if expected_generation!=bridge_task_chain_search_generation() || sync.atomic_load(&bridge_hub_traffic_stopped) {
+	    sync.rw_mutex_shared_unlock(&bridge_vault_io_mutex)
+        return false
+    }
+    return true
+}
+bridge_executor_authority_end :: proc() {sync.rw_mutex_shared_unlock(&bridge_vault_io_mutex)}

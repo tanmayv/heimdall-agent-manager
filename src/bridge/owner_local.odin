@@ -46,7 +46,7 @@ bridge_owner_publish_batch :: proc(s:^owner.Store,q:^owner.Intent_Completions,no
     send:proc(rawptr,^owner.Store,owner.Intent_Claim)->(bool,string,i64)) -> bool {
     // No new delivery while a previous outcome still cannot be persisted.
     if !owner.intent_completions_flush(s,q) do return false
-    pending,ok:=owner.intent_claim_due(s,now)
+    pending,ok:=owner.intent_claim_due(s,now,20,.Owner)
     if !ok do return false
     for claim in pending {
         success,result,completed:=send(ctx,s,claim)
@@ -186,7 +186,19 @@ bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
             if target_ok && target_version==version && target_head==head do grant_proof.target=target
         }
     }
-    result:=owner.execute(&bridge_owner_store,command_raw,payload,genesis_raw,key,owner_key,version,head,now,&kr,owner.Signer{nil,bridge_owner_sign},fleet_child,proof,role_children[:],grant_proof)
+    remote_key:contracts.Owner_Verified_Key
+    if method=="fleet.reserve" {
+        if p,ok:=contracts.owner_parse(payload,"fleet_reserve_payload");ok {
+            body,opened:=vault.open(contracts.owner_string(p,"body_cipher"),&kr,context.temp_allocator)
+            reservation,parsed:=contracts.owner_parse(body,"remote_reservation")
+            if config,valid:=contracts.owner_parse(contracts.owner_string(reservation,"configuration"),"remote_configuration");valid && parsed && opened==.Ok {
+                verified,remote_version,remote_head,approved:=owner.verify_executor_directory(bridge_owner_json(wire.directory),account,
+                    contracts.owner_string(config,"executor_bridge_id"),contracts.owner_string(config,"executor_key_id"),floor.root,version,head,&kr)
+                if approved && remote_version==version && remote_head==head do remote_key=verified
+            }
+        }
+    }
+    result:=owner.execute(&bridge_owner_store,command_raw,payload,genesis_raw,key,owner_key,version,head,now,&kr,owner.Signer{nil,bridge_owner_sign},fleet_child,proof,role_children[:],grant_proof,remote_key)
     sync.mutex_unlock(&bridge_local_token_mutex)
     sync.mutex_unlock(&bridge_startup_io_mutex)
     digest,_:=contracts.owner_digest("command",command)

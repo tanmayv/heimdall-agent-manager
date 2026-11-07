@@ -1,5 +1,6 @@
 package main
 
+import "base:runtime"
 import "core:crypto/legacy/sha1"
 import "core:fmt"
 import "core:os"
@@ -59,6 +60,27 @@ bridge_agent_token_issue :: proc(agent_instance_id, instance_token: string, role
 	bridge_agent_token_store_save_locked()
 	sync.mutex_unlock(&bridge_local_token_mutex)
 	return Bridge_Local_Token_Issue_Result{plaintext_token = plain, agent_instance_id = record.agent_instance_id, role = role}
+}
+
+// Only native signed-launch dispatch activates a staged CSPRNG token. Replay
+// never reactivates a revoked generation or invalidates a different instance.
+bridge_agent_token_activate_retained :: proc(instance,assertion,token:string,run:int)->bool {
+	context.allocator=runtime.default_allocator()
+	if token=="" || instance=="" || run<=0 do return false
+	if bridge_local_token_records==nil do bridge_agent_token_store_init()
+	hash:=bridge_local_hash_token(token)
+	defer delete(hash)
+	sync.mutex_lock(&bridge_local_token_mutex);defer sync.mutex_unlock(&bridge_local_token_mutex)
+	for rec in bridge_local_token_records {
+		if rec.token_hash==hash do return rec.agent_instance_id==instance && rec.run_count==run && rec.instance_token==assertion && rec.invalidated_at_unix_ms==0
+		if rec.agent_instance_id==instance && rec.run_count>=run do return false
+	}
+	now:=bridge_local_now_unix_ms()
+	for &rec in bridge_local_token_records {
+		if rec.agent_instance_id==instance && rec.invalidated_at_unix_ms==0 do rec.invalidated_at_unix_ms=now
+	}
+	append(&bridge_local_token_records,Bridge_Local_Agent_Token_Record{token_hash=strings.clone(hash),agent_instance_id=strings.clone(instance),instance_token=strings.clone(assertion),run_count=run,role=.Agent,issued_at_unix_ms=now})
+	return bridge_agent_token_store_save_locked()
 }
 
 bridge_agent_token_verify :: proc(plaintext: string) -> (Bridge_Local_Agent_Token_Record, bool) {
@@ -224,7 +246,7 @@ bridge_agent_token_store_load_file :: proc(path: string) {
 	}
 }
 
-bridge_agent_token_store_save_locked :: proc() {
+bridge_agent_token_store_save_locked :: proc() -> bool {
 	path := bridge_agent_token_store_path()
 	defer delete(path)
 	if slash := strings.last_index_byte(path, '/'); slash > 0 { _ = bridge_make_directory_all(path[:slash]) }
@@ -247,12 +269,14 @@ bridge_agent_token_store_save_locked :: proc() {
 	tmp := strings.concatenate({path, ".tmp"})
 	defer delete(tmp)
 	content := strings.to_string(b)
-	if os.write_entire_file(tmp, transmute([]byte)content) != nil do return
+	if os.write_entire_file(tmp, transmute([]byte)content) != nil do return false
 	if os.rename(tmp, path) != nil {
 		// Fallback: best-effort direct write if rename is unavailable.
-		_ = os.write_entire_file(path, transmute([]byte)content)
+		written := os.write_entire_file(path, transmute([]byte)content) == nil
 		_ = os.remove(tmp)
+		return written
 	}
+	return true
 }
 
 bridge_agent_token_role_from_string :: proc(value: string) -> Bridge_Local_Token_Role {

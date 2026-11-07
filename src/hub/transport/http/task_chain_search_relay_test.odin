@@ -1,6 +1,8 @@
 package http
 
 import "core:testing"
+import "core:encoding/json"
+import taskchain_service "odin_test:hub/service/taskchain"
 import "base:runtime"
 import "core:fmt"
 import "core:net"
@@ -250,4 +252,127 @@ task_chain_search_relay_handler_rejects_malformed_and_unauthorized :: proc(t: ^t
 	r = task_chain_search_relay_handler(&f.h, req)
 	testing.expect_value(t, r.status, status_for_error(.Bridge_Offline)); delete(r.body)
 	testing.expect_value(t, f.registry.command_count, 0)
+}
+
+@(test)
+executor_issuance_relay_requires_user_account_and_keeps_runtime_offline_opaque :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=search_relay_fixture(t);defer search_relay_fixture_destroy(f)
+    project.bridge_runtime_registry_mark_offline(&f.registry,f.bridge_id,f.generation)
+    id:vault.Vault_Id;id[0]=1
+    key:[32]byte;key[0]=1
+    kr,key_ok:=vault.keyring_from_single_key(f.owner,id,1,key[:])
+    if !testing.expect(t,key_ok) do return
+    defer vault.keyring_wipe(&kr)
+    plain:string="{}"
+    envelope,sealed:=vault.seal(transmute([]byte)plain,&kr)
+    if !testing.expect(t,sealed) do return
+    now:=time.to_unix_nanoseconds(time.now())/1000000
+    body:=owner_json(struct{protocol_version,chain_id,bridge_id,request_id,expires_ms,envelope:string}{
+        "1","chain",f.bridge_id,"issuance_http",fmt.tprintf("%d",now+60000),envelope})
+    req:=search_relay_request(f,body);req.path="/api/v1/executor/issuance"
+    // A current account-owned device with no live socket returns unavailable;
+    // neither encrypted payload nor task authority is evaluated at the Hub.
+    response:=executor_issuance_relay_handler(&f.h,req)
+    testing.expect_value(t,response.status,200)
+    testing.expect(t,strings.contains(response.body,"executor_unavailable"))
+    req.body="{}";response=executor_issuance_relay_handler(&f.h,req)
+    testing.expect_value(t,response.status,400)
+    req.body=body;req.headers=nil;response=executor_issuance_relay_handler(&f.h,req)
+    testing.expect(t,response.status==401 || response.status==403)
+    req.headers=http_test_login(t,&f.auth,"executor_other_account")
+    response=executor_issuance_relay_handler(&f.h,req)
+    testing.expect(t,response.status==403 || response.status==404)
+}
+
+@(test)
+executor_resource_relay_requires_exact_registered_owner_bridge :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=search_relay_fixture(t);defer search_relay_fixture_destroy(f)
+    project.bridge_runtime_registry_mark_offline(&f.registry,f.bridge_id,f.generation)
+    owner,owner_ok,_:=bridge_service.enroll_bridge_from_device_grant(&f.bridges,{owner_user_id=f.owner,bridge_public_key="04ccdd",bridge_key_fingerprint="owner",machine_hostname="owner"})
+    if !testing.expect(t,owner_ok) do return
+    other,other_ok,_:=bridge_service.enroll_bridge_from_device_grant(&f.bridges,{owner_user_id=f.owner,bridge_public_key="04eeff",bridge_key_fingerprint="other",machine_hostname="other"})
+    if !testing.expect(t,other_ok) do return
+    impl:sqlite.Taskchain_Repo_SQLite
+    repo:=sqlite.new_taskchain_repository(&impl,&f.conn)
+    service:=taskchain_service.Taskchain_Service{repo=&repo};f.h.taskchains=&service
+    fixture,_:=contracts.owner_content_document(#load("../../../contracts/fixtures/owner-local-v1.json",string))
+    entries,_:=fixture.(json.Object)["valid"].(json.Array)
+    registry:json.Object
+    for entry in entries {
+        e,_:=entry.(json.Object)
+        if contracts.owner_string(e,"kind")=="registry" do registry,_=contracts.owner_parse(contracts.owner_string(e,"raw"),"registry")
+    }
+    registry["account_id"]=json.String(f.owner);registry["chain_id"]=json.String("chain")
+    r:=domain.Owner_Registry_Record{account_id=f.owner,chain_id="chain",owner_bridge_id=owner.bridge.bridge_id,
+        owner_key_id="owner_key",creator_id="creator",genesis_digest="genesis_digest",genesis_json="signed_genesis",metadata_revision=1,registry_json=owner_json(registry)}
+    testing.expect_value(t,repo.owner_registry_publish(repo.ctx,r).code,domain.Error_Code.None)
+    now:=time.to_unix_nanoseconds(time.now())/1000000
+    body:=owner_json(struct{protocol_version,chain_id,bridge_id,request_id,expires_ms,envelope:string}{
+        "1","chain",f.bridge_id,"owner_resource",fmt.tprintf("%d",now+60000),"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="})
+    req:=search_relay_request(f,body);req.path="/api/v1/executor/relay"
+    response:=executor_relay_handler(&f.h,req);testing.expect_value(t,response.status,403)
+    headers:=[1]contracts.HTTP_Header{{"Authorization",fmt.tprintf("Bearer %s",owner.bridge_token)}};req.headers=headers[:]
+    response=executor_relay_handler(&f.h,req);testing.expect_value(t,response.status,200)
+    testing.expect(t,strings.contains(response.body,"executor_unavailable"))
+    response=executor_activation_relay_handler(&f.h,req);testing.expect_value(t,response.status,200)
+    testing.expect(t,strings.contains(response.body,"executor_unavailable"))
+    headers[0].value=fmt.tprintf("Bearer %s",other.bridge_token)
+    response=executor_relay_handler(&f.h,req);testing.expect_value(t,response.status,403)
+    response=executor_activation_relay_handler(&f.h,req);testing.expect_value(t,response.status,403)
+
+    // The reverse nonce relay accepts an account executor, but can target only
+    // the immutable registered owner. It does not inspect a grant or payload.
+    body=owner_json(struct{protocol_version,chain_id,bridge_id,request_id,expires_ms,envelope:string}{
+        "1","chain",owner.bridge.bridge_id,"executor_fence",fmt.tprintf("%d",now+5000),"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="})
+    req.body=body;req.path="/api/v1/executor/fence"
+    response=executor_fence_relay_handler(&f.h,req);testing.expect_value(t,response.status,200)
+    testing.expect(t,strings.contains(response.body,"owner_unavailable"))
+    response=executor_child_relay_handler(&f.h,req);testing.expect_value(t,response.status,200)
+    testing.expect(t,strings.contains(response.body,"owner_unavailable"))
+    req.body=owner_json(struct{protocol_version,chain_id,bridge_id,request_id,expires_ms,envelope:string}{
+        "1","chain",other.bridge.bridge_id,"executor_fence",fmt.tprintf("%d",now+5000),"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="})
+    response=executor_fence_relay_handler(&f.h,req);testing.expect_value(t,response.status,403)
+    response=executor_child_relay_handler(&f.h,req);testing.expect_value(t,response.status,403)
+    req.body=body;req.headers=nil
+    response=executor_fence_relay_handler(&f.h,req);testing.expect_value(t,response.status,401)
+    response=executor_child_relay_handler(&f.h,req);testing.expect_value(t,response.status,401)
+    req=search_relay_request(f,body)
+    response=executor_fence_relay_handler(&f.h,req);testing.expect_value(t,response.status,403)
+    response=executor_child_relay_handler(&f.h,req);testing.expect_value(t,response.status,403)
+    req.headers=headers[:];req.body="{}"
+    response=executor_fence_relay_handler(&f.h,req);testing.expect_value(t,response.status,400)
+    response=executor_child_relay_handler(&f.h,req);testing.expect_value(t,response.status,400)
+}
+
+@(test)
+executor_local_launch_relay_requires_user_account_and_keeps_runtime_offline_opaque :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=search_relay_fixture(t);defer search_relay_fixture_destroy(f)
+    project.bridge_runtime_registry_mark_offline(&f.registry,f.bridge_id,f.generation)
+    id:vault.Vault_Id;id[0]=1
+    key:[32]byte;key[0]=1
+    kr,key_ok:=vault.keyring_from_single_key(f.owner,id,1,key[:])
+    if !testing.expect(t,key_ok) do return
+    defer vault.keyring_wipe(&kr)
+    plain:string="{}"
+    envelope,sealed:=vault.seal(transmute([]byte)plain,&kr)
+    if !testing.expect(t,sealed) do return
+    now:=time.to_unix_nanoseconds(time.now())/1000000
+    body:=owner_json(struct{protocol_version,bridge_id,request_id,expires_ms,envelope:string}{
+        "1",f.bridge_id,"issuance_http",fmt.tprintf("%d",now+60000),envelope})
+    req:=search_relay_request(f,body);req.path="/api/v1/executor/local-launch"
+    // A current account-owned device with no live socket returns unavailable;
+    // neither encrypted payload nor task authority is evaluated at the Hub.
+    response:=executor_local_launch_relay_handler(&f.h,req)
+    testing.expect_value(t,response.status,200)
+    testing.expect(t,strings.contains(response.body,"executor_unavailable"))
+    req.body="{}";response=executor_local_launch_relay_handler(&f.h,req)
+    testing.expect_value(t,response.status,400)
+    req.body=body;req.headers=nil;response=executor_local_launch_relay_handler(&f.h,req)
+    testing.expect(t,response.status==401 || response.status==403)
+    req.headers=http_test_login(t,&f.auth,"executor_other_account")
+    response=executor_local_launch_relay_handler(&f.h,req)
+    testing.expect(t,response.status==403 || response.status==404)
 }

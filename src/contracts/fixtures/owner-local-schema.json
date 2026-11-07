@@ -82,5 +82,9 @@
   "linked_page": "cursor:native_cursor limit:positive",
   "linked_restore": "account_id:id owner_bridge_id:id chain_id:id format:version objects:document tombstones:document",
   "linked_facet": "task_id:id source_revision:id key:document",
-  "linked_tombstone": "kind:linked_kind object_id:id revision:positive task_id:optional"
+  "linked_tombstone": "kind:linked_kind object_id:id revision:positive task_id:optional",
+  "fleet_reserve_payload": "instance_id:id configuration_revision:positive enabled:flag body_cipher:required_cipher",
+  "remote_configuration": "protocol_version:version account_id:id owner_bridge_id:id executor_bridge_id:id executor_key_id:id chain_id:id task_id:id instance_id:id agent_id:id launch_epoch:id run_count:positive token_generation:hash configuration_revision:positive executor_incarnation:positive policy_revision:positive slot_id:id provider_profile:id provider:label model:label directory_id:id directory_key:hash directory_path:path",
+  "remote_reservation": "configuration:document attestation:document",
+  "remote_assignment_snapshot": "signed_payload:document reservation:document"
 }

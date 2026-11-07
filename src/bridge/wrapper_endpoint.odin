@@ -214,15 +214,24 @@ bridge_local_endpoint_client_thread :: proc(client: net.TCP_Socket) {
 	}
 }
 
-bridge_local_endpoint_handle_jsonl_line :: proc(line: string) -> string {
+bridge_local_endpoint_handle_jsonl_line :: proc(line: string,
+    executor_transport:Executor_Child_Transport={nil,bridge_executor_child_fetch,bridge_executor_child_send},executor_socket:string="") -> string {
 	request_id := bridge_local_extract_json_string(line, "id", "")
 	if bridge_local_extract_json_int(line, "v", 0) != 1 do return bridge_local_response_error(request_id, "bad_version", "local endpoint protocol version must be 1")
 	token := bridge_local_extract_json_string(line, "token", "")
 	method := bridge_local_extract_json_string(line, "method", "")
 	params := bridge_local_extract_json_object(line, "params")
+	if method=="executor.operator.install" || method=="executor.operator.inspect" {
+		return bridge_executor_operator_handle(request_id,method,params)
+	}
 	if bridge_local_spoofable_params(params) do return bridge_local_response_error(request_id, "forbidden", "local callers cannot spoof owner, sender, instance, or Hub credentials")
 	rec, ok := bridge_agent_token_verify(token)
-	if !ok do return bridge_local_response_error(request_id, "unauthenticated", "local agent token is invalid or rotated")
+	if !ok {
+        if method=="agent.owner_local.lease" || method=="agent.start_success" {
+            if response,handled:=bridge_executor_agent(request_id,params,token,executor_transport,executor_socket,method);handled do return response
+        }
+        return bridge_local_response_error(request_id, "unauthenticated", "local agent token is invalid or rotated")
+    }
 	if !bridge_local_method_allowed(method, rec.role) do return bridge_local_response_error(request_id, "forbidden", "method is not allowed for this local token role")
 	if strings.has_prefix(method, "wrapper.") do return bridge_local_handle_wrapper_method(request_id, method, params, rec)
 	if strings.has_prefix(method, "agent.") do return bridge_local_handle_agent_method(request_id, method, params, rec)

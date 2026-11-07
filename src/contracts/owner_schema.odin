@@ -1292,6 +1292,86 @@ owner_fields_linked_tombstone := [?]Owner_Field{
     {"revision", "positive"},
     {"task_id", "optional"},
 }
+Owner_Fleet_Reserve_Payload :: struct {
+    instance_id: string,
+    configuration_revision: string,
+    enabled: string,
+    body_cipher: string,
+}
+@(private)
+owner_fields_fleet_reserve_payload := [?]Owner_Field{
+    {"instance_id", "id"},
+    {"configuration_revision", "positive"},
+    {"enabled", "flag"},
+    {"body_cipher", "required_cipher"},
+}
+Owner_Remote_Configuration :: struct {
+    protocol_version: string,
+    account_id: string,
+    owner_bridge_id: string,
+    executor_bridge_id: string,
+    executor_key_id: string,
+    chain_id: string,
+    task_id: string,
+    instance_id: string,
+    agent_id: string,
+    launch_epoch: string,
+    run_count: string,
+    token_generation: string,
+    configuration_revision: string,
+    executor_incarnation: string,
+    policy_revision: string,
+    slot_id: string,
+    provider_profile: string,
+    provider: string,
+    model: string,
+    directory_id: string,
+    directory_key: string,
+    directory_path: string,
+}
+@(private)
+owner_fields_remote_configuration := [?]Owner_Field{
+    {"protocol_version", "version"},
+    {"account_id", "id"},
+    {"owner_bridge_id", "id"},
+    {"executor_bridge_id", "id"},
+    {"executor_key_id", "id"},
+    {"chain_id", "id"},
+    {"task_id", "id"},
+    {"instance_id", "id"},
+    {"agent_id", "id"},
+    {"launch_epoch", "id"},
+    {"run_count", "positive"},
+    {"token_generation", "hash"},
+    {"configuration_revision", "positive"},
+    {"executor_incarnation", "positive"},
+    {"policy_revision", "positive"},
+    {"slot_id", "id"},
+    {"provider_profile", "id"},
+    {"provider", "label"},
+    {"model", "label"},
+    {"directory_id", "id"},
+    {"directory_key", "hash"},
+    {"directory_path", "path"},
+}
+Owner_Remote_Reservation :: struct {
+    configuration: string,
+    attestation: string,
+}
+@(private)
+owner_fields_remote_reservation := [?]Owner_Field{
+    {"configuration", "document"},
+    {"attestation", "document"},
+}
+Owner_Remote_Assignment_Snapshot :: struct {
+    signed_payload: string,
+    reservation: string,
+}
+@(private)
+owner_fields_remote_assignment_snapshot := [?]Owner_Field{
+    {"signed_payload", "document"},
+    {"reservation", "document"},
+}
 owner_schema :: proc(kind: string) -> []Owner_Field {
     switch kind {
     case "genesis": return owner_fields_genesis[:]
@@ -1378,6 +1458,10 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "linked_restore": return owner_fields_linked_restore[:]
     case "linked_facet": return owner_fields_linked_facet[:]
     case "linked_tombstone": return owner_fields_linked_tombstone[:]
+    case "fleet_reserve_payload": return owner_fields_fleet_reserve_payload[:]
+    case "remote_configuration": return owner_fields_remote_configuration[:]
+    case "remote_reservation": return owner_fields_remote_reservation[:]
+    case "remote_assignment_snapshot": return owner_fields_remote_assignment_snapshot[:]
     }
     return nil
 }

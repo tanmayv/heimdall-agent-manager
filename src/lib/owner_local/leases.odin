@@ -68,7 +68,7 @@ lease_capability :: proc(s:^Store,c:json.Object,expires,hard:i64,sign:Signer,met
 
 // Current authenticated read scope is checked before receipts. Capabilities are
 // not bearer authority: every invocation needs the actual local child proof.
-execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owner_Verified_Key,now:i64,sign:Signer) -> Result {
+execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owner_Verified_Key,now:i64,sign:Signer,parent:^Transaction=nil,reserved_hard:i64=0) -> Result {
     context.allocator=context.temp_allocator
     c,valid:=contracts.owner_parse(raw,"lease_command")
     if !valid do return fail("malformed")
@@ -77,7 +77,11 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
        !lease_scope(c,child) { return fail("invalid_scope") }
     if !contracts.owner_verify_signature("lease_command",c,"signature",key) do return fail("bad_signature")
     tx:Transaction
-    if !transaction_begin(s,&tx) do return fail("storage_error")
+    if parent==nil {
+        if !transaction_begin(s,&tx) do return fail("storage_error")
+    } else {
+        if parent.store!=s || !transaction_savepoint(parent,&tx) do return fail("storage_error")
+    }
     defer transaction_rollback(&tx)
     chain,task,instance,op,method:=field(c,"chain_id"),field(c,"task_id"),child.instance,field(c,"operation_id"),field(c,"method")
     fleet,found:=query(s.db,"SELECT instance_id,configuration_revision,enabled,launch_epoch,run_count,token_generation FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task)
@@ -101,6 +105,11 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
     }
     if !workflow_task_current(s,chain,task) do return fail("stale_revision")
     if method=="lease.claim" {
+        assignment,read:=query(s.db,"SELECT configuration_command FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task)
+        if !read || len(assignment)!=1 do return fail("storage_error")
+        assigned,valid:=contracts.owner_parse(assignment[0][0],"command")
+        if !valid do return fail("invalid_scope")
+        if field(assigned,"method")=="fleet.reserve" && (parent==nil || reserved_hard==0) do return fail("invalid_scope")
         if !work_task_published(s,chain,task) do return fail("operation_conflict")
         if fleet[0][1]!=field(c,"configuration_revision") do return fail("invalid_scope")
         if code:=budget_admit(s,chain,task);code!="ok" do return fail(code)
@@ -132,6 +141,10 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
         deadline_ok:bool
         expires,hard,deadline_ok=lease_deadlines(s,chain,task,now)
         if !deadline_ok do return fail("invalid_content")
+        if reserved_hard!=0 {
+            if parent==nil || reserved_hard<=now || reserved_hard>hard do return fail("invalid_scope")
+            hard=reserved_hard;expires=min(expires,hard)
+        }
         if config,binding,configured:=lifecycle_config(s,chain,task);configured {
             if child.agent_id!=field(config,"author_agent_id") || encode(child)!=binding[1] do return fail("invalid_scope")
             states,ok:=query(s.db,"SELECT state FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)
@@ -152,6 +165,15 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
         if len(rows)!=1 || rows[0][0]!=cap_raw || !lease_scope(cap,child) ||
             field(cap,"configuration_revision")!=fleet[0][1] { return fail("invalid_scope") }
         if number(rows[0][1])<=now || number(rows[0][2])<=now do return fail("expired")
+        // Do not let a child outrun delivery of the prior exact physical
+        // version. Receipt replay above remains available while it is pending.
+        pending,pending_read:=query(s.db,`SELECT 1 FROM owner_execution_journal j JOIN runtime_intents i
+          ON i.chain_id=j.chain_id AND i.principal_id=j.instance_id AND i.kind='executor.heartbeat'
+          AND json_extract(i.payload_json,'$.reservation_id')=j.reservation_id
+          WHERE j.lease_id=? AND i.state!='settled' LIMIT 1`,lease)
+        if !pending_read do return fail("storage_error")
+        if len(pending)>0 do return fail("operation_conflict")
+        if number(rows[0][3])==0x7fffffffffffffff do return fail("retention_capacity")
         hard=number(rows[0][2]);version=number(rows[0][3])+1
         expires=min(expires,hard)
     }
@@ -173,6 +195,7 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
     if _,ok=query(s.db,`INSERT INTO command_receipts(principal_id,operation_id,chain_id,task_id,method,input_digest,digest_key_id,request_expires_ms,result_json,commit_seq,created_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,instance,op,chain,task,method,digest,s.owner_key,field(c,"request_expires_ms"),result,fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
     if _,ok=query(s.db,"INSERT INTO lease_receipt_pins VALUES(?,?,?)",instance,op,lease);!ok do return fail("storage_error")
     if _,ok=query(s.db,"INSERT OR IGNORE INTO lease_receipt_pins SELECT principal_id,operation_id,? FROM local_fleet WHERE chain_id=? AND task_id=?",lease,chain,task);!ok do return fail("storage_error")
+    if method=="lease.heartbeat" && !execution_renewal_enqueue(&tx,c,seq,version,expires,hard,now,key,sign) do return fail("storage_error")
     if !event_record(&tx,seq,now,chain,task,"agent",instance,method,op,raw,"",encode(child),result) do return fail("storage_error")
     if _,ok=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),chain,method,task,tasks[0][0],op);!ok do return fail("storage_error")
     if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")

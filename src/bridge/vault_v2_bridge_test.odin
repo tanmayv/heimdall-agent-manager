@@ -875,3 +875,42 @@ test_vault_prune_verdict :: proc(t: ^testing.T) {
 	testing.expect_value(t, bridge_prune_verdict(true, 404), Prune_Verdict.Unknown)
 	testing.expect_value(t, bridge_prune_verdict(false, 0), Prune_Verdict.Unknown)
 }
+
+@(test)
+test_owner_local_executor_signer_domains_and_missing_identity :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    sync.mutex_lock(&bridge_test_config_mutex);defer sync.mutex_unlock(&bridge_test_config_mutex)
+    sync.mutex_lock(&keystore_test_mutex);defer sync.mutex_unlock(&keystore_test_mutex)
+    f:=v2_open();defer v2_close(&f)
+    public:=bridge_identity_public_key_hex(f.id_a)
+    key_id,key_ok:=vault.device_id_from_sign_pub(public,context.temp_allocator)
+    if !testing.expect(t,key_ok) do return
+    key:=contracts.Owner_Verified_Key{"account",f.id_a,key_id,public,"bridge",true,false}
+    for kind in ([10]string{"prepare","action","fence_request","fence_reply","enrollment","receipt","issuance_receipt","bootstrap","child_request","child_result"}) {
+        object:=bridge_executor_test_doc(kind)
+        object["owner_bridge_id"]=json.String(f.id_a);object["key_id"]=json.String(key_id)
+        if kind=="fence_request" || kind=="enrollment" || kind=="receipt" || kind=="issuance_receipt" || kind=="child_request" do object["executor_bridge_id"]=json.String(f.id_a)
+        signature,signed:=bridge_owner_sign(nil,fmt.tprintf("executor.%s",kind),object)
+        if !testing.expect(t,signed) do continue
+        object["signature"]=json.String(signature)
+        testing.expect(t,contracts.executor_verify(kind,object,key))
+        if kind=="child_request" {
+            wrapped,allowed:=bridge_executor_sign(nil,kind,object)
+            testing.expect(t,allowed)
+            object["signature"]=json.String(wrapped)
+            testing.expect(t,contracts.executor_verify(kind,object,key))
+        }
+        _,signed=bridge_owner_sign(nil,kind,object)
+        testing.expect(t,!signed,"resource signing requires the explicit executor domain")
+        _,signed=bridge_owner_sign(nil,"executor.issuance_consent",object)
+        testing.expect(t,!signed,"Bridge signer cannot manufacture device issuance consent")
+        _,signed=bridge_owner_sign(nil,"executor.directory",object)
+        testing.expect(t,!signed,"remote issuance cannot provision host directory authority")
+        _,signed=bridge_owner_sign(nil,"executor.policy",object)
+        testing.expect(t,!signed,"owner signer cannot install host capacity policy")
+        bridge_unseal_forget_identity()
+        _,signed=bridge_owner_sign(nil,fmt.tprintf("executor.%s",kind),object)
+        testing.expect(t,!signed,"owner transaction cannot load a missing identity")
+        testing.expect(t,bridge_identity_public_key_hex(f.id_a)!="")
+    }
+}

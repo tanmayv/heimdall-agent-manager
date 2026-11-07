@@ -564,6 +564,7 @@ dependencies = [
  "portable-pty",
  "ratatui",
  "serde_json",
+ "sha2",
  "uds_windows",
  "vte",
  "windows-sys",

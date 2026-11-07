@@ -109,7 +109,7 @@ grant :: proc(s:^Store, command:json.Object, now:i64) -> (contracts.Owner_Read_G
 // entering here. Its pinned sequence/hash is rechecked under the write lock.
 // The key is a verified current directory member, never a request assertion.
 execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:contracts.Owner_Verified_Key,
-    directory_version:i64,directory_hash:string, now:i64, kr:^vault.Vault_Keyring, sign:Signer, fleet_child:Child={}, lifecycle_proof:Lifecycle_Proof={}, role_children:[]Child=nil, grant_proof:Grant_Proof={}) -> Result {
+    directory_version:i64,directory_hash:string, now:i64, kr:^vault.Vault_Keyring, sign:Signer, fleet_child:Child={}, lifecycle_proof:Lifecycle_Proof={}, role_children:[]Child=nil, grant_proof:Grant_Proof={}, remote_key:contracts.Owner_Verified_Key={}) -> Result {
     context.allocator=context.temp_allocator
     c,parsed:=contracts.owner_parse(command_raw,"command")
     if !parsed do return fail("malformed")
@@ -171,7 +171,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     if len(chains)>0 do revision=number(chains[0][0])
     if creating && revision>0 do return fail("operation_conflict")
     if !creating && revision==0 do return fail("invalid_scope")
-    if method=="task.publish" || method=="task.priority" || method=="budget.activate" || method=="native.history.import" || method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="dependency.edit" || method=="review.roles" || method=="task.hold" || method=="task.release" || method=="task.cancel" || method=="task.reopen" || method=="task.resolve" || method=="merge.retry" || method=="submission.read" || method=="task.edit" || method=="task.delete" || method=="task.comment" || method=="task.read" || method=="fleet.edit" || method=="runtime.read" || method=="lifecycle.configure" || method=="requirements.edit" || method=="review.post" {
+    if method=="task.publish" || method=="task.priority" || method=="budget.activate" || method=="native.history.import" || method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="dependency.edit" || method=="review.roles" || method=="task.hold" || method=="task.release" || method=="task.cancel" || method=="task.reopen" || method=="task.resolve" || method=="merge.retry" || method=="submission.read" || method=="task.edit" || method=="task.delete" || method=="task.comment" || method=="task.read" || method=="fleet.edit" || method=="fleet.reserve" || method=="runtime.read" || method=="lifecycle.configure" || method=="requirements.edit" || method=="review.post" {
         tasks,found:=query(s.db,"SELECT revision FROM tasks WHERE chain_id=? AND task_id=?",chain,task)
         if !found do return fail("storage_error")
         if len(tasks)==1 {
@@ -219,7 +219,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         return fail("clock_uncertain")
     }
     if state[0][4]!="ready" do return fail("clock_uncertain")
-    if method=="task.cancel" || method=="task.reopen" || method=="fleet.edit" || method=="lifecycle.configure" || method=="review.roles" || method=="dependency.edit" || method=="merge.retry" {
+    if method=="task.cancel" || method=="task.reopen" || method=="fleet.edit" || method=="fleet.reserve" || method=="lifecycle.configure" || method=="review.roles" || method=="dependency.edit" || method=="merge.retry" {
         pending,read:=query(s.db,"SELECT 1 FROM deferred_workflow_retirements d WHERE d.chain_id=? AND d.task_id=? AND NOT EXISTS(SELECT 1 FROM deferred_workflow_dispositions r WHERE r.intent_id=d.intent_id) LIMIT 1",chain,task)
         if !read do return fail("storage_error")
         if len(pending)>0 do return fail("operation_conflict")
@@ -344,8 +344,13 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         next=1
         _,wrote=query(s.db,"INSERT INTO tasks VALUES(?,?,?,?,1)",chain,task,title,body)
         if wrote && method=="task.draft" {_,wrote=query(s.db,"INSERT INTO local_task_publications VALUES(?,?,?,\'draft\')",chain,task,fmt.tprintf("%d",seq))}
-    case "fleet.edit":
+    case "fleet.edit", "fleet.reserve":
         assigned_child:=fleet_child
+        if method=="fleet.reserve" {
+            code:string
+            assigned_child,code=remote_assignment_child(s,c,p,body,remote_key,now,seq)
+            if code!="ok" do return fail(code)
+        }
         states,state_read:=query(s.db,"SELECT state FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)
         if !state_read do return fail("storage_error")
         if len(states)>0 && states[0][0]!="ready" && states[0][0]!="in_review" do return fail("operation_conflict")
@@ -362,7 +367,9 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         if _,ok=query(s.db,"DELETE FROM local_checkpoints WHERE chain_id=? AND task_id=?",chain,task);!ok do return fail("storage_error")
         if _,ok=query(s.db,"UPDATE lifecycle_state SET state='ready' WHERE chain_id=? AND task_id=? AND state='in_review'",chain,task);!ok do return fail("storage_error")
         _,wrote=query(s.db,"INSERT INTO local_fleet VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(chain_id,task_id) DO UPDATE SET instance_id=excluded.instance_id,configuration_revision=excluded.configuration_revision,enabled=excluded.enabled,principal_id=excluded.principal_id,operation_id=excluded.operation_id,configuration_command=excluded.configuration_command,configuration_payload=excluded.configuration_payload,launch_epoch=excluded.launch_epoch,run_count=excluded.run_count,token_generation=excluded.token_generation",chain,task,field(p,"instance_id"),field(p,"configuration_revision"),field(p,"enabled"),principal,op,command_raw,payload,assigned_child.epoch,fmt.tprintf("%d",assigned_child.run_count),assigned_child.token_generation)
-        if wrote { _,wrote=query(s.db,"INSERT INTO local_assignment_history VALUES(?,?,?,?,?,?,?,?)",chain,task,field(p,"configuration_revision"),principal,op,command_raw,payload,encode(assigned_child)) }
+        assignment_payload:=payload
+        if method=="fleet.reserve" do assignment_payload=encode(doc(map[string]string{"signed_payload"=payload,"reservation"=body}))
+        if wrote { _,wrote=query(s.db,"INSERT INTO local_assignment_history VALUES(?,?,?,?,?,?,?,?)",chain,task,field(p,"configuration_revision"),principal,op,command_raw,assignment_payload,encode(assigned_child)) }
         if wrote { _,wrote=query(s.db,"UPDATE local_controls SET resume_state='ready' WHERE chain_id=? AND task_id=?",chain,task) }
         if wrote { _,wrote=query(s.db,"UPDATE tasks SET revision=revision+1 WHERE chain_id=? AND task_id=?",chain,task) }
     case "task.hold", "task.release", "task.cancel", "task.reopen", "task.resolve", "merge.retry":

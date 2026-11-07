@@ -449,6 +449,9 @@ launch_provider_test_instance :: proc(service: ^Agent_Service, saved: domain.Age
 	strings.write_string(&b, "\",\"provider\":\""); write_service_json_string(&b, saved.provider)
 	strings.write_string(&b, "\",\"provider_profile\":\""); write_service_json_string(&b, domain.profile_effective_id(saved.provider,saved.provider_profile))
 	strings.write_string(&b, "\",\"model\":\""); write_service_json_string(&b, saved.model)
+	token:=instance_assertion_token(saved);defer delete(token)
+	strings.write_string(&b,"\",\"instance_token\":\"");write_service_json_string(&b,token)
+	strings.write_string(&b,"\",\"launch_epoch\":\"");write_service_json_string(&b,saved.launch_epoch)
 	strings.write_string(&b, "\",\"run_count\":"); strings.write_string(&b, fmt.tprintf("%d", saved.run_count))
 	strings.write_string(&b, "}")
 	command := project_service.Runtime_Command{bridge_id=saved.bridge_id,command_id=command_id,body_json=strings.to_string(b)}
@@ -1834,6 +1837,7 @@ Wake_Agent_Run_Entry :: struct {
 	// Task System v2: the lease this run entry delivers and its context pack
 	// (a JSON object, emitted verbatim). Empty for non-lease wakes.
 	lease_id:          string,
+	instance_token,launch_epoch:string,
 	pack_json:         string,
 	// REQ-EXT-PERM-2: the durable agent's permission mode ("yolo" | "ask");
 	// omitted when empty so the bridge keeps the yolo launch.
@@ -1866,6 +1870,12 @@ wake_agent_command_json :: proc(command_id, chain_id: string, run: []Wake_Agent_
 		strings.write_string(&b, "\",\"task_id\":\""); write_service_json_string(&b, entry.task_id)
 		strings.write_string(&b, "\",\"role\":\""); write_service_json_string(&b, entry.role)
 		strings.write_string(&b, "\"")   // close role value
+		if entry.instance_token!="" {
+			strings.write_string(&b,",\"instance_token\":\"");write_service_json_string(&b,entry.instance_token);strings.write_byte(&b,'"')
+		}
+		if entry.launch_epoch!="" {
+			strings.write_string(&b,",\"launch_epoch\":\"");write_service_json_string(&b,entry.launch_epoch);strings.write_byte(&b,'"')
+		}
 		// provider/model are emitted only when non-empty so an old bridge that
 		// ignores them, and a hub restarting an instance with no saved values,
 		// both keep the previous "fall back to bridge defaults" behavior.
