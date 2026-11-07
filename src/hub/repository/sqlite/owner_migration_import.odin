@@ -24,30 +24,45 @@ legacy_count :: proc(conn:^Conn,sql:string,args:..string) -> (i64,bool) {
     return n,parsed
 }
 
-// Each code names a live execution the import would otherwise drop. A task
-// awaiting review or merge has an unresolved execution and cannot import idle.
+// Each code names live work the import would otherwise drop or silently
+// release. Every query lists the blocking identities (first 20 are reported).
+// A task awaiting review or merge has an unresolved execution; a ticket gated
+// on a workflow run that has not succeeded would lose its gate (workflow runs
+// are archival on the owner); a non-terminal workflow stage task would become
+// an ordinary dispatchable ticket. Stage tasks of a finished execution are
+// historical in the Hub; the owner imports them as non-dispatchable archive.
 LEGACY_MIGRATION_BLOCKER_SQL := [?][2]string{
-    {"live_leases","SELECT count(*) FROM task_leases WHERE chain_id=?1"},
-    {"outstanding_effects","SELECT count(*) FROM owner_legacy_source_effects WHERE chain_id=?1 AND state='outstanding'"},
-    {"running_workflows","SELECT count(*) FROM workflow_run_executions WHERE chain_id=?1 AND state IN ('pending','running')"},
-    {"tasks_in_progress","SELECT count(*) FROM tasks WHERE chain_id=?1 AND state='in_progress'"},
-    {"tasks_in_review","SELECT count(*) FROM tasks WHERE chain_id=?1 AND state='in_review'"},
-    {"pending_merges",`SELECT count(*) FROM tasks t WHERE t.chain_id=?1 AND t.state='done'
+    {"live_leases","SELECT lease_id FROM task_leases WHERE chain_id=?1 ORDER BY lease_id"},
+    {"outstanding_effects","SELECT effect_id FROM owner_legacy_source_effects WHERE chain_id=?1 AND state='outstanding' ORDER BY effect_id"},
+    {"running_workflows","SELECT run_id||':'||execution_no FROM workflow_run_executions WHERE chain_id=?1 AND state IN ('pending','running') ORDER BY run_id,execution_no"},
+    {"tasks_in_progress","SELECT task_id FROM tasks WHERE chain_id=?1 AND state='in_progress' ORDER BY task_id"},
+    {"tasks_in_review","SELECT task_id FROM tasks WHERE chain_id=?1 AND state='in_review' ORDER BY task_id"},
+    {"pending_merges",`SELECT t.task_id FROM tasks t WHERE t.chain_id=?1 AND t.state='done'
       AND EXISTS(SELECT 1 FROM task_chain_directories d WHERE d.chain_id=?1 AND d.vcs_kind='git')
       AND (SELECT e.kind FROM task_events e WHERE e.task_id=t.task_id AND e.kind IN ('merged','merge_conflict','approved','submitted')
-           ORDER BY e.event_id DESC LIMIT 1) IN ('approved','submitted')`},
-    {"merge_conflicts",`SELECT count(*) FROM tasks t WHERE t.chain_id=?1
+           ORDER BY e.event_id DESC LIMIT 1) IN ('approved','submitted') ORDER BY t.task_id`},
+    {"merge_conflicts",`SELECT t.task_id FROM tasks t WHERE t.chain_id=?1
       AND (SELECT e.kind FROM task_events e WHERE e.task_id=t.task_id AND e.kind IN ('merged','merge_conflict','approved','submitted')
-           ORDER BY e.event_id DESC LIMIT 1)='merge_conflict'`},
+           ORDER BY e.event_id DESC LIMIT 1)='merge_conflict' ORDER BY t.task_id`},
+    {"workflow_gated_dependencies",`SELECT d.dependency_id||' ('||d.dependent_kind||':'||d.dependent_id||' needs workflow_run:'||d.prerequisite_id||')'
+      FROM work_dependencies d WHERE d.chain_id=?1 AND d.removed_at='' AND d.prerequisite_kind='workflow_run'
+      AND NOT EXISTS(SELECT 1 FROM workflow_runs r JOIN workflow_run_executions e ON e.run_id=r.run_id AND e.execution_no=r.current_execution_no
+        WHERE r.run_id=d.prerequisite_id AND e.state='succeeded') ORDER BY d.dependency_id`},
+    {"workflow_stage_tasks",`SELECT t.task_id FROM tasks t WHERE t.chain_id=?1 AND (t.workflow_run_id!='' OR t.stage_key!='' OR t.kind='gate')
+      AND t.state NOT IN ('done','cancelled') AND (t.workflow_run_id='' OR EXISTS(SELECT 1 FROM workflow_run_executions e
+        WHERE e.run_id=t.workflow_run_id AND e.execution_no=t.workflow_execution_no AND e.state IN ('draft','pending','running'))) ORDER BY t.task_id`},
 }
 
 legacy_migration_blockers :: proc(ctx:rawptr,chain:string) -> ([]domain.Legacy_Migration_Blocker,domain.Domain_Error) {
     impl:=(^Taskchain_Repo_SQLite)(ctx)
     out:=make([dynamic]domain.Legacy_Migration_Blocker,context.temp_allocator)
     for b in LEGACY_MIGRATION_BLOCKER_SQL {
-        n,ok:=legacy_count(impl.conn,b[1],chain)
+        rows,ok:=legacy_metadata(impl.conn,b[1],1,chain)
         if !ok do return nil,legacy_storage_error()
-        if n>0 do append(&out,domain.Legacy_Migration_Blocker{b[0],n})
+        if len(rows)==0 do continue
+        items:=make([dynamic]string,context.temp_allocator)
+        for r in rows[:min(len(rows),20)] do append(&items,r[0])
+        append(&out,domain.Legacy_Migration_Blocker{b[0],i64(len(rows)),items[:]})
     }
     return out[:],{}
 }
@@ -73,6 +88,11 @@ legacy_migration_freeze_now :: proc(ctx:rawptr,s:domain.Legacy_Migration_Selecti
     if found {
         if f.selection.migration_id!=s.migration_id || f.selection.owner_bridge_id!=s.owner_bridge_id || f.selection.owner_key_id!=s.owner_key_id || f.selection.selection_digest!=s.selection_digest do return {},nil,legacy_conflict()
         if f.state!="draining" { committed,err=iface.unit_of_work_commit(&tx);return f,nil,err }
+    }
+    if !found {
+        aborted,read:=legacy_metadata(impl.conn,"SELECT 1 FROM owner_legacy_aborted_migrations WHERE migration_id=?",1,s.migration_id)
+        if !read do return {},nil,legacy_storage_error()
+        if len(aborted)>0 do return {},nil,domain.domain_error(.Conflict,"this migration was aborted; sign a new selection",`{"code":"migration_aborted"}`)
     }
     blockers,berr:=legacy_migration_blockers(ctx,s.chain_id)
     if berr.code!=.None do return {},nil,berr
@@ -211,4 +231,34 @@ legacy_migration_get :: proc(ctx:rawptr,account,migration:string) -> (domain.Leg
     if !ok do return {},false,legacy_storage_error()
     if len(rows)!=1 do return {},false,{}
     return legacy_source_get(ctx,account,rows[0][0])
+}
+
+// Returns a selected or frozen (never imported) chain to its legacy writer.
+// The id is recorded so the same selection cannot freeze or cut over again;
+// a quarantined owner-side import of it can never be activated.
+legacy_migration_abort :: proc(ctx:rawptr,account,chain,migration:string) -> (replayed:bool,err:domain.Domain_Error) {
+    impl:=(^Taskchain_Repo_SQLite)(ctx)
+    factory:SQLite_Unit_Of_Work_Factory
+    uf:=new_unit_of_work_factory(&factory,impl.conn,nil)
+    tx,opened,berr:=iface.unit_of_work_begin(&uf)
+    if !opened do return false,berr
+    committed:=false
+    defer { if !committed do iface.unit_of_work_rollback(&tx) }
+    f,found,ferr:=legacy_source_get(ctx,account,chain)
+    if ferr.code!=.None do return false,ferr
+    if !found || f.selection.migration_id!=migration {
+        rows,ok:=legacy_metadata(impl.conn,"SELECT 1 FROM owner_legacy_aborted_migrations WHERE migration_id=? AND chain_id=? AND account_id=?",1,migration,chain,account)
+        if !ok do return false,legacy_storage_error()
+        if len(rows)==0 do return false,domain.domain_error(.Not_Found,"no such migration for this chain")
+        committed,err=iface.unit_of_work_commit(&tx)
+        return true,err
+    }
+    if f.state=="imported" do return false,domain.domain_error(.Conflict,"an imported migration cannot be aborted",`{"code":"migration_imported"}`)
+    _,ok:=legacy_metadata(impl.conn,"INSERT INTO owner_legacy_aborted_migrations VALUES(?,?,?,?,?)",0,migration,chain,account,f.selection.owner_bridge_id,f.selection.selection_digest)
+    if !ok do return false,legacy_storage_error()
+    rows:[][]string
+    rows,ok=legacy_metadata(impl.conn,"DELETE FROM owner_legacy_migrations WHERE migration_id=? AND chain_id=? AND account_id=? AND state!='imported' RETURNING migration_id",1,migration,chain,account)
+    if !ok || len(rows)!=1 do return false,legacy_conflict()
+    committed,err=iface.unit_of_work_commit(&tx)
+    return false,err
 }

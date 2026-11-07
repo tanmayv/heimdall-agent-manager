@@ -650,6 +650,7 @@ MIGRATION_204_OWNER_LEGACY_SOURCE_FENCES :: #load("migrations/204_owner_legacy_s
 MIGRATION_205_OWNER_LEGACY_EFFECT_IDENTITY :: #load("migrations/205_owner_legacy_effect_identity.sql", string)
 MIGRATION_206_OWNER_LEGACY_CLOSE_ADMISSION :: #load("migrations/206_owner_legacy_close_admission.sql", string)
 MIGRATION_207_OWNER_LEGACY_IMPORT_CUTOVER :: #load("migrations/207_owner_legacy_import_cutover.sql", string)
+MIGRATION_208_OWNER_LEGACY_MIGRATION_ABORT :: #load("migrations/208_owner_legacy_migration_abort.sql", string)
 MIGRATION_203_CHAIN_CONTEXT :: #load("migrations/203_chain_context.sql", string)
 MIGRATION_202_OWNER_LOCAL_REGISTRY :: #load("migrations/202_owner_local_registry.sql", string)
 
@@ -867,6 +868,7 @@ migration_order :: [?]string {
     "205_owner_legacy_effect_identity.sql",
     "206_owner_legacy_close_admission.sql",
     "207_owner_legacy_import_cutover.sql",
+    "208_owner_legacy_migration_abort.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1306,7 +1308,7 @@ run_migrations :: proc(
 			)
 		}
 		if !exec(conn, sql) {
-			if name=="169_provider_profiles.sql" || name=="204_owner_legacy_source_fences.sql" || name=="205_owner_legacy_effect_identity.sql" || name=="206_owner_legacy_close_admission.sql" || name=="207_owner_legacy_import_cutover.sql" do _=exec(conn,"ROLLBACK;")
+			if name=="169_provider_profiles.sql" || name=="204_owner_legacy_source_fences.sql" || name=="205_owner_legacy_effect_identity.sql" || name=="206_owner_legacy_close_admission.sql" || name=="207_owner_legacy_import_cutover.sql" || name=="208_owner_legacy_migration_abort.sql" do _=exec(conn,"ROLLBACK;")
 			delete(sql)
 			return false, domain.domain_error(
 				.Internal_Error,
@@ -1360,6 +1362,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
     if name == "205_owner_legacy_effect_identity.sql" do return strings.clone(MIGRATION_205_OWNER_LEGACY_EFFECT_IDENTITY)
     if name == "206_owner_legacy_close_admission.sql" do return strings.clone(MIGRATION_206_OWNER_LEGACY_CLOSE_ADMISSION)
     if name == "207_owner_legacy_import_cutover.sql" do return strings.clone(MIGRATION_207_OWNER_LEGACY_IMPORT_CUTOVER)
+    if name == "208_owner_legacy_migration_abort.sql" do return strings.clone(MIGRATION_208_OWNER_LEGACY_MIGRATION_ABORT)
     if name == "203_chain_context.sql" do return strings.clone(MIGRATION_203_CHAIN_CONTEXT)
     if name == "202_owner_local_registry.sql" do return strings.clone(MIGRATION_202_OWNER_LOCAL_REGISTRY)
 	if name == "201_extension_version_sync_0_5_49.sql" do return strings.clone(MIGRATION_201_EXTENSION_VERSION_SYNC)

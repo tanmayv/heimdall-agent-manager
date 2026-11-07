@@ -19,7 +19,7 @@ Legacy_Source_Fence :: struct {
 
 // R3 one-shot import. A blocker refuses selection before any write; codes are
 // stable for the UI and ham-ctl.
-Legacy_Migration_Blocker :: struct { code:string, count:i64 }
+Legacy_Migration_Blocker :: struct { code:string, count:i64, items:[]string }
 // Verbatim export of one frozen chain. manifest_digest is the import identity.
 Legacy_Migration_Export :: struct {
     manifest,manifest_digest:string,

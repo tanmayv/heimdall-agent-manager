@@ -23,7 +23,7 @@ legacy_source_guard_inventory :: proc(t:^testing.T) {
     // owner routing/fencing tables themselves. They are not canonical task
     // rows. The migration transport must separately drain runtime producers.
     exceptions:=map[string]bool{"agent_instances"=true,"shell_sessions"=true,"issues"=true,"task_chain_search_changes"=true,
-      "owner_local_chains"=true,"owner_local_titles"=true,"owner_legacy_source_generations"=true,"owner_legacy_source_effects"=true,"owner_legacy_migrations"=true}
+      "owner_local_chains"=true,"owner_local_titles"=true,"owner_legacy_source_generations"=true,"owner_legacy_source_effects"=true,"owner_legacy_migrations"=true,"owner_legacy_aborted_migrations"=true}
     defer delete(exceptions)
     for r in rows {
         if exceptions[r[0]] do continue
