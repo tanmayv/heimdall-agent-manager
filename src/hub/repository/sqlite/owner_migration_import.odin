@@ -206,6 +206,10 @@ legacy_migration_cutover :: proc(ctx:rawptr,account,chain,migration,manifest_dig
     f,found,ferr:=legacy_source_get(ctx,account,chain)
     if ferr.code!=.None do return false,ferr
     if !found || f.selection.migration_id!=migration do return false,legacy_conflict()
+    // Defence in depth: an aborted migration id is never cut over.
+    aborted,aborted_read:=legacy_metadata(impl.conn,"SELECT 1 FROM owner_legacy_aborted_migrations WHERE migration_id=?",1,migration)
+    if !aborted_read do return false,legacy_storage_error()
+    if len(aborted)>0 do return false,domain.domain_error(.Conflict,"this migration was aborted",`{"code":"migration_aborted"}`)
     if f.state=="imported" {
         if f.manifest_digest!=manifest_digest || f.receipt_digest!=receipt_digest do return false,legacy_conflict()
         committed,err=iface.unit_of_work_commit(&tx)
@@ -261,4 +265,13 @@ legacy_migration_abort :: proc(ctx:rawptr,account,chain,migration:string) -> (re
     if !ok || len(rows)!=1 do return false,legacy_conflict()
     committed,err=iface.unit_of_work_commit(&tx)
     return false,err
+}
+
+// An aborted migration of this account: (chain, owner Bridge).
+legacy_migration_aborted :: proc(ctx:rawptr,account,migration:string) -> (chain,owner_bridge:string,found:bool,err:domain.Domain_Error) {
+    impl:=(^Taskchain_Repo_SQLite)(ctx)
+    rows,ok:=legacy_metadata(impl.conn,"SELECT chain_id,owner_bridge_id FROM owner_legacy_aborted_migrations WHERE account_id=? AND migration_id=?",2,account,migration)
+    if !ok do return "","",false,legacy_storage_error()
+    if len(rows)!=1 do return "","",false,{}
+    return rows[0][0],rows[0][1],true,{}
 }

@@ -251,7 +251,15 @@ owner_migration_state_handler :: proc(ctx:rawptr,req:Request)->Response {
     migration:=query_value(req.query,"migration_id")
     f,found,err:=h.taskchains.repo.legacy_migration_get(h.taskchains.repo.ctx,auth.user_id,migration)
     if err.code!=.None do return respond_error(err,req.request_id)
-    if !found || f.selection.owner_bridge_id!=auth.bridge_id do return respond_error(domain.domain_error(.Not_Found,"migration not found"),req.request_id)
+    if !found {
+        // Only an explicit abort record says "aborted"; an unknown migration
+        // stays 404, which the owner treats as retryable, never as abort.
+        chain,owner_bridge,aborted,aerr:=h.taskchains.repo.legacy_migration_aborted(h.taskchains.repo.ctx,auth.user_id,migration)
+        if aerr.code!=.None do return respond_error(aerr,req.request_id)
+        if aborted && owner_bridge==auth.bridge_id do return respond_success(owner_json(Owner_Migration_State{migration,chain,"aborted","",owner_bridge}),req.request_id,auth_ctx_server_time(req))
+        return respond_error(domain.domain_error(.Not_Found,"migration not found"),req.request_id)
+    }
+    if f.selection.owner_bridge_id!=auth.bridge_id do return respond_error(domain.domain_error(.Not_Found,"migration not found"),req.request_id)
     return respond_success(owner_json(Owner_Migration_State{migration,f.selection.chain_id,f.state,f.manifest_digest,f.selection.owner_bridge_id}),req.request_id,auth_ctx_server_time(req))
 }
 
@@ -299,6 +307,12 @@ owner_migration_export_cached :: proc(h:^Bridge_Handlers,account,chain,migration
     return export,{}
 }
 
+// Abort returns a frozen chain to the legacy writer and abandons any owner-side
+// import: a human decision. Agent instance tokens (any agent of the account)
+// are refused; only the user's own authenticated session may abort.
+owner_migration_abort_authorized :: proc(auth:contracts.Auth_Context)->bool {
+    return contracts.is_user_auth(auth) && auth.kind!=.Instance_Token
+}
 // POST /api/v1/owner-local/migrations/abort {chain_id,migration_id}: the
 // account owner returns a selected or frozen chain to its legacy writer. A
 // quarantined owner-side import of it is never activated: the Hub never
@@ -308,7 +322,7 @@ owner_migration_abort_handler :: proc(ctx:rawptr,req:Request)->Response {
     h:=(^Bridge_Handlers)(ctx)
     auth,ok,resp:=require_auth_any(h.auth,req)
     if !ok do return resp
-    if !contracts.is_user_auth(auth) && auth.kind!=.Instance_Token do return respond_error(domain.domain_error(.Forbidden,"user authentication required"),req.request_id)
+    if !owner_migration_abort_authorized(auth) do return respond_error(domain.domain_error(.Forbidden,"aborting a migration needs the account owner's browser session; agent tokens cannot abort"),req.request_id)
     body:Owner_Migration_Abort_Request
     if json.unmarshal_string(req.body,&body,.JSON,context.temp_allocator)!=nil || body.chain_id=="" || body.migration_id=="" do return respond_error(domain.domain_error(.Validation_Failed,"chain_id and migration_id are required"),req.request_id)
     chain,exists,cerr:=h.taskchains.repo.get_chain(h.taskchains.repo.ctx,domain.Task_Chain_ID(body.chain_id))

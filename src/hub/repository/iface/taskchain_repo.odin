@@ -64,6 +64,7 @@ Taskchain_Repository :: struct {
     legacy_migration_cutover: Legacy_Migration_Cutover,
     legacy_migration_get: Legacy_Migration_Get,
     legacy_migration_abort: Legacy_Migration_Abort,
+    legacy_migration_aborted: Legacy_Migration_Aborted,
     owner_registry_publish: Owner_Registry_Publish,
     owner_registry_list: Owner_Registry_List,
 	ctx: rawptr,

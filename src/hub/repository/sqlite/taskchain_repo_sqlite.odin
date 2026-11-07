@@ -24,6 +24,7 @@ new_taskchain_repository :: proc(impl: ^Taskchain_Repo_SQLite, conn: ^Conn) -> i
         legacy_migration_cutover=legacy_migration_cutover,
         legacy_migration_get=legacy_migration_get,
         legacy_migration_abort=legacy_migration_abort,
+        legacy_migration_aborted=legacy_migration_aborted,
 		ctx = rawptr(impl),
         owner_registry_publish=owner_registry_publish,
         owner_registry_list=owner_registry_list,

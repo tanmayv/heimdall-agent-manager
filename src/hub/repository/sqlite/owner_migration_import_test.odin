@@ -288,3 +288,27 @@ legacy_import_abort_releases_frozen_chain_and_fences_the_selection :: proc(t:^te
     testing.expect_value(t,err.code,domain.Error_Code.Conflict)
     testing.expect(t,!exec(&conn,"DELETE FROM owner_legacy_migrations"),"an imported fence is permanent")
 }
+
+// R3 re-review: only an explicit abort record reports a migration aborted.
+@(test)
+legacy_import_aborted_lookup_is_explicit :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    conn,opened:=tmpl_clone_migrated(t)
+    if !opened do return
+    defer close(&conn)
+    s:=legacy_seed_source(t,&conn)
+    impl:Taskchain_Repo_SQLite
+    repo:=new_taskchain_repository(&impl,&conn)
+    _,_,found,_:=repo.legacy_migration_aborted(repo.ctx,"account","migration")
+    testing.expect(t,!found,"unknown migrations are not aborted")
+    _,_,ferr:=repo.legacy_migration_freeze_now(repo.ctx,s)
+    testing.expect_value(t,ferr.code,domain.Error_Code.None)
+    _,_,found,_=repo.legacy_migration_aborted(repo.ctx,"account","migration")
+    testing.expect(t,!found,"a frozen migration is not aborted")
+    _,err:=repo.legacy_migration_abort(repo.ctx,"account","chain","migration")
+    testing.expect_value(t,err.code,domain.Error_Code.None)
+    chain,bridge,aborted,_:=repo.legacy_migration_aborted(repo.ctx,"account","migration")
+    testing.expect(t,aborted && chain=="chain" && bridge=="bridge")
+    _,_,found,_=repo.legacy_migration_aborted(repo.ctx,"other","migration")
+    testing.expect(t,!found)
+}

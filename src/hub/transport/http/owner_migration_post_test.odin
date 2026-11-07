@@ -151,6 +151,9 @@ owner_migration_post_blockers_offline_concurrency_replay_and_abort :: proc(t:^te
     abort :: proc(h:^Bridge_Handlers,headers:[]contracts.HTTP_Header,chain,migration:string)->Response {
         return owner_migration_abort_handler(h,Request{method="POST",headers=headers,body=owner_json(Owner_Migration_Abort_Request{chain,migration}),remote_addr="127.0.0.1:4444"})
     }
+    // Abort is a human decision: agent instance tokens are refused.
+    testing.expect(t,!owner_migration_abort_authorized(contracts.Auth_Context{kind=.Instance_Token,user_id=account}))
+    testing.expect(t,owner_migration_abort_authorized(contracts.Auth_Context{kind=.Session,user_id=account}))
     // 5. An imported migration cannot be aborted.
     testing.expect_value(t,abort(&h,headers,"chain_a","mig_a").status,409)
     // 6. Abort a frozen migration: the chain is writable again, the same

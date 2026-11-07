@@ -21,3 +21,4 @@ Legacy_Migration_Cutover :: proc(ctx:rawptr, account,chain,migration,manifest_di
 Legacy_Migration_Get :: proc(ctx:rawptr, account,migration:string) -> (domain.Legacy_Source_Fence,bool,domain.Domain_Error)
 // Aborts a selected or frozen (never imported) migration for the account owner.
 Legacy_Migration_Abort :: proc(ctx:rawptr, account,chain,migration:string) -> (bool,domain.Domain_Error)
+Legacy_Migration_Aborted :: proc(ctx:rawptr, account,migration:string) -> (string,string,bool,domain.Domain_Error)
