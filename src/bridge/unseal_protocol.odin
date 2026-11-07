@@ -855,7 +855,7 @@ bridge_owner_sign :: proc(ctx:rawptr,kind:string,o:json.Object)->(string,bool) {
         // Resource intents have a separate signing domain from task commands.
         canonical,valid=contracts.executor_canonical(strings.trim_prefix(kind,"executor."),o)
     } else {
-        if kind!="coordinator_capability" && kind!="genesis" && kind!="registry" && kind!="lease_command" && kind!="lifecycle_command" && kind!="capability" do return "",false
+        if kind!="coordinator_capability" && kind!="genesis" && kind!="registry" && kind!="migration_import_receipt" && kind!="lease_command" && kind!="lifecycle_command" && kind!="capability" do return "",false
         canonical,valid=contracts.owner_canonical(kind,o)
     }
     if !valid do return "",false

@@ -998,6 +998,14 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		bridge_owner_handle(conn, text)
 		return
 	}
+    if type == "owner_migration_import" {
+        bridge_owner_migration_import_handle(conn,text)
+        return
+    }
+    if type == "owner_migration_activate" {
+        bridge_owner_migration_activate_handle(conn,text)
+        return
+    }
 	if type == "task_chain_search" {
 		bridge_task_chain_search_handle_command(conn, text)
 		return

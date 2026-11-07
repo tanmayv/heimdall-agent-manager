@@ -90,7 +90,12 @@ owner_local_publish_handler :: proc(ctx:rawptr,req:Request)->Response {
     digest,_:=contracts.owner_digest("genesis",genesis)
     ck:=contracts.Owner_Verified_Key{account,creator.id,creator.id,creator.sign_public_key,"device",approved && creator.kind=="browser",false}
     if !owner_publication_verified(genesis,registry,contracts.owner_string(publication,"genesis"),account,auth.bridge_id,ck,bk,existing) do return respond_error(domain.domain_error(.Forbidden,"invalid owner signatures"),req.request_id)
-    if _,exists,_:=h.taskchains.repo.get_chain(h.taskchains.repo.ctx,domain.Task_Chain_ID(chain));exists do return respond_error(domain.domain_error(.Conflict,"legacy chain requires explicit migration"),req.request_id)
+    if _,exists,_:=h.taskchains.repo.get_chain(h.taskchains.repo.ctx,domain.Task_Chain_ID(chain));exists {
+        // Only a chain whose legacy writer was retired by an imported cutover
+        // to this exact owner may publish owner-local metadata.
+        f,imported,ferr:=h.taskchains.repo.legacy_source_get(h.taskchains.repo.ctx,account,chain)
+        if ferr.code!=.None || !imported || f.state!="imported" || f.selection.owner_bridge_id!=auth.bridge_id || f.selection.owner_key_id!=owner.id do return respond_error(domain.domain_error(.Conflict,"legacy chain requires explicit migration"),req.request_id)
+    }
     revision,_:=strconv.parse_i64(contracts.owner_string(registry,"metadata_revision"))
     r:=domain.Owner_Registry_Record{account_id=account,chain_id=chain,owner_bridge_id=auth.bridge_id,owner_key_id=owner.id,creator_id=contracts.owner_string(genesis,"creator_id"),genesis_digest=digest,genesis_json=contracts.owner_string(publication,"genesis"),task_id=contracts.owner_string(registry,"task_id"),registry_json=contracts.owner_string(publication,"registry"),metadata_revision=revision}
     err:=h.taskchains.repo.owner_registry_publish(h.taskchains.repo.ctx,r)

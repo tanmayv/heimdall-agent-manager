@@ -317,6 +317,8 @@ bridge_owner_executor_once :: proc() {
     sync.mutex_unlock(&bridge_owner_mutex)
     if !opened do return
     bridge_owner_preparation_once(&bridge_owner_store)
+    // Restart-safe activation of imported chains whose Hub cutover committed.
+    _=bridge_owner_migration_reconcile(false)
     _=bridge_owner_executor_batch(&bridge_owner_executor_worker,&bridge_owner_store,&bridge_owner_mutex,
         time.to_unix_nanoseconds(time.now())/1000000,nil,bridge_owner_executor_snapshot,bridge_owner_executor_exchange,bridge_owner_executor_accept)
 }
