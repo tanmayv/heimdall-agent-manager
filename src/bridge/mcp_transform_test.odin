@@ -14,7 +14,7 @@ test_mcp_dispatch_never_caches_plaintext_worker_results :: proc(t:^testing.T) {
 	defer {
 		for output in bridge_dispatch_outputs do delete(output.text,runtime.default_allocator())
 		delete(bridge_dispatch_outputs)
-		for claim in bridge_dispatch_claims {delete(claim.command_id,runtime.default_allocator());delete(claim.result_json,runtime.default_allocator())}
+		for claim in bridge_dispatch_claims {delete(claim.command_id,runtime.default_allocator());delete(claim.input_digest,runtime.default_allocator());delete(claim.result_json,runtime.default_allocator())}
 		delete(bridge_dispatch_claims)
 		bridge_dispatch_workers[0]=old_worker;bridge_dispatch_outputs=old_outputs;bridge_dispatch_claims=old_claims
 		bridge_dispatch_outbox_bytes=old_bytes;bridge_dispatch_queued_cost=old_cost;bridge_dispatch_owned_bytes=old_owned;bridge_dispatch_metrics=old_metrics

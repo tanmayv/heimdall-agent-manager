@@ -42,3 +42,23 @@ The V10-to-V11 upgrade rebuilds the versioned runtime header and recreates its
 retained dependent triggers in the same opening transaction as the new tables.
 Collision and deferred-COMMIT tests verify rollback and recovery while retaining
 native material and prepared reservation identity.
+
+## Dispatcher memory currentness
+
+The private Bridge dispatcher snapshot captures queued and running claims, exact
+received-byte digests, connection generation and a monotonic memory revision.
+It also hashes the actual queue bytes and rejects missing, duplicate or
+inconsistent claim evidence. Taking a job changes its claim to running under
+the dispatcher lock, before the worker copies its current command identity;
+the transfer interval cannot appear idle. Admission, take, finish, stale queue
+drop and reconnect invalidate older snapshots. Revision saturation refuses
+further valid observations rather than allowing an ABA.
+
+The snapshot is local process memory, not durable packet history or a complete
+migration inventory. Returned jobs may leave live children. Inline handlers,
+startup specs, protected filesystem users, old admissions and daemon children
+require separate union evidence. A matching snapshot does not imply any of
+those are absent. No signed receiver consumes this snapshot yet. A future CAS
+consumer must retain the dispatcher lock through the guarded operation and
+combine it with the established physical/startup/database gates. Snapshot
+digests use the caller temporary arena and must be copied for retention.

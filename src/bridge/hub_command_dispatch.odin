@@ -86,6 +86,8 @@ Bridge_Dispatch_Output :: struct {
 
 Bridge_Dispatch_Claim :: struct {
 	command_id: string,
+	// Exact received bytes, never authority inferred from the command ID.
+	input_digest: string,
 	state: Bridge_Dispatch_Claim_State,
 	result_json: string,
 }
@@ -209,6 +211,7 @@ bridge_command_dispatch_begin_connection :: proc() -> i64 {
 	sync.mutex_lock(&bridge_dispatch_mu)
 	defer sync.mutex_unlock(&bridge_dispatch_mu)
 	bridge_dispatch_generation += 1
+	bridge_dispatch_observation_changed_locked()
 	bridge_command_dispatch_drop_stale_queue_locked(&bridge_dispatch_lifecycle, bridge_dispatch_generation)
 	bridge_command_dispatch_drop_stale_queue_locked(&bridge_dispatch_interactive, bridge_dispatch_generation)
 	bridge_command_dispatch_drop_stale_queue_locked(&bridge_dispatch_background, bridge_dispatch_generation)
@@ -225,6 +228,7 @@ bridge_command_dispatch_drop_stale_queue_locked :: proc(queue: ^[dynamic]Bridge_
 		if job.generation == generation { i += 1; continue }
 		if claim_i := bridge_command_dispatch_claim_index_locked(job.command_id); claim_i >= 0 {
 			delete(bridge_dispatch_claims[claim_i].command_id, runtime.default_allocator())
+			delete(bridge_dispatch_claims[claim_i].input_digest, runtime.default_allocator())
 			delete(bridge_dispatch_claims[claim_i].result_json, runtime.default_allocator())
 			ordered_remove(&bridge_dispatch_claims, claim_i)
 		}
@@ -236,6 +240,7 @@ bridge_command_dispatch_drop_stale_queue_locked :: proc(queue: ^[dynamic]Bridge_
 		delete(job.command_type, runtime.default_allocator())
 		delete(job.ordering_key, runtime.default_allocator())
 		ordered_remove(queue, i)
+		bridge_dispatch_observation_changed_locked()
 	}
 }
 
@@ -474,6 +479,7 @@ bridge_command_dispatch_prune_claim_locked :: proc() -> bool {
 	for claim, i in bridge_dispatch_claims {
 		if claim.state != .Completed do continue
 		delete(claim.command_id, runtime.default_allocator())
+		delete(claim.input_digest, runtime.default_allocator())
 		delete(claim.result_json, runtime.default_allocator())
 		ordered_remove(&bridge_dispatch_claims, i)
 		return true
@@ -563,6 +569,7 @@ bridge_command_dispatch :: proc(conn: ^ws.Connection, text: string, generation: 
 		_ = bridge_hub_send(conn, protocol_error)
 		return true
 	}
+	input_digest := contracts.owner_payload_digest(text)
 	ordering_key := bridge_command_ordering_key(command_type, text)
 	defer delete(ordering_key)
 
@@ -623,10 +630,11 @@ bridge_command_dispatch :: proc(conn: ^ws.Connection, text: string, generation: 
 	case .Shell: append(&bridge_dispatch_shell, job)
 	case .Model_Discovery: append(&bridge_dispatch_model_discovery, job)
 	}
-	append(&bridge_dispatch_claims, Bridge_Dispatch_Claim{command_id = strings.clone(command_id, runtime.default_allocator()), state = .Queued})
+	append(&bridge_dispatch_claims, Bridge_Dispatch_Claim{command_id = strings.clone(command_id, runtime.default_allocator()), input_digest = strings.clone(input_digest, runtime.default_allocator()), state = .Queued})
 	if mcp_large {bridge_dispatch_mcp_large_bytes += owned_bytes} else {bridge_dispatch_owned_bytes += owned_bytes}
 	bridge_dispatch_queued_cost += spec.cost_units
 	bridge_dispatch_metrics.accepted += 1
+	bridge_dispatch_observation_changed_locked()
 	bridge_dispatch_metrics.queue_high_water = max(bridge_dispatch_metrics.queue_high_water, bridge_command_dispatch_total_locked())
 	sync.mutex_unlock(&bridge_dispatch_mu)
 	accepted := bridge_command_result_json(command_id, "accepted", "")
@@ -652,6 +660,7 @@ bridge_command_dispatch_take :: proc(class: Bridge_Command_Class) -> (Bridge_Dis
 	job, ok := bridge_command_dispatch_take_queue_locked(queue)
 	if !ok do return job, false
 	if i := bridge_command_dispatch_claim_index_locked(job.command_id); i >= 0 do bridge_dispatch_claims[i].state = .Running
+	bridge_dispatch_observation_changed_locked()
 	now_ns := time.to_unix_nanoseconds(time.now())
 	wait_ms := (now_ns - job.enqueued_ns) / i64(time.Millisecond)
 	bridge_dispatch_metrics.max_queue_wait_ms = max(bridge_dispatch_metrics.max_queue_wait_ms, wait_ms)
@@ -705,6 +714,9 @@ bridge_command_dispatch_finish :: proc(worker: ^Bridge_Dispatch_Worker, job: ^Br
 	}
 	if i := bridge_command_dispatch_claim_index_locked(job.command_id); i >= 0 {
 		bridge_dispatch_claims[i].state = .Completed
+		delete(bridge_dispatch_claims[i].input_digest, runtime.default_allocator())
+		bridge_dispatch_claims[i].input_digest = ""
+		bridge_dispatch_observation_changed_locked()
 		delete(bridge_dispatch_claims[i].result_json, runtime.default_allocator())
 		bridge_dispatch_claims[i].result_json=""
 		if job.command_type!="mcp_transform" do bridge_dispatch_claims[i].result_json = strings.clone(worker.last_result, runtime.default_allocator())
