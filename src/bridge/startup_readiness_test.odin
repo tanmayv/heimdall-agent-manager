@@ -248,6 +248,38 @@ startup_fallback_quiet_missing_or_broken_extension :: proc(t: ^testing.T) {
 }
 
 @(test)
+startup_producer_serializes_physical_write_and_releases_network_relay :: proc(t:^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex);defer sync.mutex_unlock(&bridge_test_config_mutex)
+    saved_id:=bridge_config.daemon_id
+    bridge_config.daemon_id="" // Pre-enrollment fixture, never a coverage claim.
+    defer bridge_config.daemon_id=saved_id
+    id:="startup_gate_order"
+    rec:=startup_test_launch(id,id)
+    bridge_startup_tick(31000,deliver=proc(_:string,_:int)->bool {
+        all_held:=true
+        for gate in ([]^sync.Mutex{&bridge_executor_mutex,&bridge_startup_io_mutex,&bridge_legacy_physical_mutex}) {
+            if sync.mutex_try_lock(gate) {all_held=false;sync.mutex_unlock(gate)}
+        }
+        reader_free:=sync.mutex_try_lock(&bridge_dispatch_mu)
+        if reader_free do sync.mutex_unlock(&bridge_dispatch_mu)
+        return all_held && reader_free
+    },only_instance=id,kind=.Fallback)
+    fallback,_:=bridge_runtime_instance_snapshot(id)
+    testing.expect(t,fallback.startup.fallback_delivered,"physical delivery holds the established gate order while leaving dispatcher reader free")
+    accepted,_:=bridge_startup_accept(rec,32000)
+    testing.expect(t,accepted)
+    bridge_startup_tick(32001,relay=proc(_:Bridge_Local_Agent_Token_Record,_:int)->Bridge_Startup_Relay_Result {
+        all_free:=true
+        for gate in ([]^sync.Mutex{&bridge_executor_mutex,&bridge_startup_io_mutex,&bridge_legacy_physical_mutex}) {
+            if sync.mutex_try_lock(gate) {sync.mutex_unlock(gate)} else {all_free=false}
+        }
+        return {ok=all_free,error=contracts.wire_error(.Bridge_Timeout)}
+    },only_instance=id,kind=.Readiness)
+    ready,_:=bridge_runtime_instance_snapshot(id)
+    testing.expect(t,ready.startup.ready_delivered,"readiness network callback holds none of the application/startup/physical gates")
+}
+
+@(test)
 startup_relay_failure_retries_without_fallback :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)

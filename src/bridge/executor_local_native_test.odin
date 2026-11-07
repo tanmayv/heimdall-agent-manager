@@ -457,6 +457,99 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="",
     testing.expect(t,same_known && same_pid==manual_pid)
     recovered,projection:=bridge_runtime_instance_snapshot(manual_launch.instance)
     testing.expect(t,projection && recovered.startup.generation>0 && recovered.startup.pty_pid==manual_pid && recovered.startup.armed_at_ms>0)
+    // Observe exact native presence before an incoming live-child task nudge.
+    nudge_entry:=executor.encode(struct{agent_instance_id,task_id:string,run_count:int}{manual_launch.instance,"nudge_task",1})
+    nudge_parent:=strings.concatenate({`{"type":"wake_agent","payload":{"run":[`,nudge_entry,`]}}`},context.temp_allocator)
+    nudge_spec,_:=bridge_command_spec("wake_agent")
+    nudge_action,nudge_prepared:=bridge_legacy_dispatch_prepare(nudge_parent,"wake_agent",nudge_spec,&bridge_executor_store)
+    testing.expect(t,nudge_prepared)
+    nudge_job:=Bridge_Dispatch_Job{text=nudge_parent,command_type="wake_agent",legacy_action=nudge_action}
+    testing.expect(t,bridge_legacy_dispatch_start(&nudge_job,&bridge_executor_store))
+    nudge_digest:=contracts.owner_payload_digest(nudge_entry)
+    testing.expect(t,bridge_wake_nudge_live_child(manual_launch.instance,"nudge_task","worker","nudge_lease",1,`{"task_id":"nudge_task"}`,&bridge_executor_store,
+        observation_action=nudge_action,observation_entry_index=0,observation_entry_digest=nudge_digest))
+    testing.expect(t,bridge_legacy_dispatch_end(nudge_action,true,&bridge_executor_store))
+    nudge_rows,nudge_read:=executor.query(bridge_executor_store.db,"SELECT launch_key,child_pid,entry_digest FROM executor_legacy_action_nudges WHERE action_id=?",fmt.tprintf("%d",nudge_action.id))
+    testing.expect(t,nudge_read && len(nudge_rows)==1 && nudge_rows[0][0]==manual_launch.launch_key && executor.number(nudge_rows[0][1])==i64(manual_pid) && nudge_rows[0][2]==nudge_digest,
+        "actual native key query and durable presence precede task pack and keystroke")
+    context_before,context_err:=os.read_entire_file(fmt.tprintf("%s/TASK.md",material.run_dir),context.temp_allocator)
+    testing.expect(t,context_err==nil)
+    testing.expect(t,executor.exec(bridge_executor_store.db,"CREATE TRIGGER fail_nudge_observation BEFORE INSERT ON executor_legacy_action_nudges BEGIN SELECT RAISE(ABORT,'test persistence fault'); END;"))
+    refused_action,refused_prepared:=bridge_legacy_dispatch_prepare(nudge_parent,"wake_agent",nudge_spec,&bridge_executor_store)
+    testing.expect(t,refused_prepared)
+    nudge_job.legacy_action=refused_action
+    testing.expect(t,bridge_legacy_dispatch_start(&nudge_job,&bridge_executor_store))
+    testing.expect(t,bridge_wake_nudge_live_child(manual_launch.instance,"nudge_task","worker","refused_lease",1,`{"task_id":"refused_task"}`,&bridge_executor_store,
+        observation_action=refused_action,observation_entry_index=0,observation_entry_digest=nudge_digest))
+    testing.expect(t,bridge_legacy_dispatch_end(refused_action,true,&bridge_executor_store))
+    context_after,context_after_err:=os.read_entire_file(fmt.tprintf("%s/TASK.md",material.run_dir),context.temp_allocator)
+    testing.expect(t,context_after_err==nil && string(context_before)==string(context_after),"failed exact nudge observation leaves live task context unchanged")
+    same_pid,same_known=bridge_pty_host_executor_query(socket,manual_launch.instance,manual_launch.launch_key)
+    testing.expect(t,same_known && same_pid==manual_pid,"refused nudge never falls through to replacing the child")
+    testing.expect(t,executor.exec(bridge_executor_store.db,"DROP TRIGGER fail_nudge_observation"))
+    binary_fixture:=bridge_test_dispatch_save()
+    defer bridge_test_dispatch_restore(binary_fixture)
+    binary_counter:=test_pty_input_next_counter()
+    binary_salt:[vault.PTY_V2_SALT_BYTES]byte
+    crypto.rand_bytes(binary_salt[:])
+    binary_cipher,binary_sealed:=test_pty_input_payload_with("",TEST_VAULT_KEY_HEX,1,manual_launch.instance,binary_salt,binary_counter,bridge_unseal_boot_id())
+    testing.expect(t,binary_sealed)
+    binary_frame:=contracts.pty_wire_encode_session_frame(contracts.PTY_WIRE_KIND_INPUT,contracts.PTY_WIRE_FLAG_ENCRYPTED,manual_launch.instance,binary_cipher,context.temp_allocator)
+    binary_action,binary_fenced:=bridge_test_binary_execute(t,&bridge_executor_store,binary_frame)
+    testing.expect(t,binary_action.id>0 && !binary_fenced)
+    sync.mutex_lock(&bridge_pty_input_replay_mu)
+    replay_after_binary,binary_seen:=bridge_pty_input_replay[manual_launch.instance]
+    sync.mutex_unlock(&bridge_pty_input_replay_mu)
+    binary_counter_seen:=false
+    for entry in replay_after_binary.entries do if entry.used && entry.salt==binary_salt && entry.last==binary_counter do binary_counter_seen=true
+    testing.expect(t,binary_seen && binary_counter_seen,"actual native worker opens the unchanged encrypted binary frame")
+    testing.expect(t,len(bridge_dispatch_outputs)==0,"successful native binary input has no synthetic command result")
+    // Startup reminders are a separate physical producer. Match the exact
+    // retained native material/run/child and refuse a current migration fence.
+    sync.mutex_lock(&bridge_executor_mutex)
+    sync.mutex_lock(&bridge_startup_io_mutex)
+    startup_current,startup_exists:=bridge_runtime_instance_snapshot(manual_launch.instance)
+    testing.expect(t,startup_exists)
+    sync.mutex_lock(&bridge_legacy_physical_mutex)
+    testing.expect(t,bridge_legacy_startup_input_allowed_locked(&bridge_executor_store,startup_current,socket),"native startup producer matches current exact child and resources")
+    startup_changed:=startup_current
+    startup_changed.startup.pty_pid+=1
+    testing.expect(t,!bridge_legacy_startup_input_allowed_locked(&bridge_executor_store,startup_changed,socket),"replacement PID cannot inherit a startup write")
+    startup_changed=startup_current
+    startup_changed.startup.rec.run_count+=1
+    testing.expect(t,!bridge_legacy_startup_input_allowed_locked(&bridge_executor_store,startup_changed,socket),"changed run cannot inherit a startup write")
+    sync.mutex_unlock(&bridge_legacy_physical_mutex)
+    startup_barrier:=executor.Legacy_Barrier{"startup_source","startup_migration",contracts.owner_payload_digest("startup selection"),0}
+    canonical_startup_dir,startup_dir_known:=bridge_executor_canonical_directory(material.run_dir)
+    testing.expect(t,startup_dir_known)
+    testing.expect_value(t,bridge_legacy_install_barrier(&bridge_executor_store,startup_barrier,[]executor.Legacy_Resource{{"workdir_hash",contracts.owner_payload_digest(canonical_startup_dir)}}).code,"ok")
+    sync.mutex_lock(&bridge_legacy_physical_mutex)
+    testing.expect(t,!bridge_legacy_startup_input_allowed_locked(&bridge_executor_store,startup_current,socket),"generation-zero barrier blocks reminder to a surviving child")
+    sync.mutex_unlock(&bridge_legacy_physical_mutex)
+    sync.mutex_unlock(&bridge_startup_io_mutex)
+    sync.mutex_unlock(&bridge_executor_mutex)
+    testing.expect(t,bridge_wake_nudge_live_child(manual_launch.instance,"unfenced_task_claim","worker","unfenced_lease_claim",1,`{"task_id":"must_not_replace_context"}`,&bridge_executor_store),
+        "shared native resource refusal handles wake without replacement fallback")
+    protected_context,protected_context_err:=os.read_entire_file(fmt.tprintf("%s/TASK.md",material.run_dir),context.temp_allocator)
+    testing.expect(t,protected_context_err==nil && string(protected_context)==string(context_after),"pack with no placement cannot hide the current native protected directory")
+    for kind in ([4]Bridge_Legacy_Agent_Delivery_Kind{.Message,.Task_Nudge,.Notice,.Resize}) {
+        delivered_notice,refused_notice:=bridge_legacy_agent_delivery({kind=kind,instance=manual_launch.instance,text="must not reach child",rows=30,cols=100},&bridge_executor_store,socket)
+        testing.expect(t,!delivered_notice && refused_notice,"queued/rollover producer cannot bypass the migration barrier or replace a child")
+    }
+    same_pid,same_known=bridge_pty_host_executor_query(socket,manual_launch.instance,manual_launch.launch_key)
+    testing.expect(t,same_known && same_pid==manual_pid,"refused alternate inputs keep the exact surviving child")
+    later_counter:=test_pty_input_next_counter()
+    later_cipher,later_sealed:=test_pty_input_payload_with("",TEST_VAULT_KEY_HEX,1,manual_launch.instance,binary_salt,later_counter,bridge_unseal_boot_id())
+    testing.expect(t,later_sealed)
+    later_frame:=contracts.pty_wire_encode_session_frame(contracts.PTY_WIRE_KIND_INPUT,contracts.PTY_WIRE_FLAG_ENCRYPTED,manual_launch.instance,later_cipher,context.temp_allocator)
+    later_action,later_fenced:=bridge_test_binary_execute(t,&bridge_executor_store,later_frame)
+    testing.expect(t,later_action.id>0 && later_fenced,"installed migration barrier refuses native binary input before decryption or PTY I/O")
+    sync.mutex_lock(&bridge_pty_input_replay_mu)
+    replay_after_refusal:=bridge_pty_input_replay[manual_launch.instance]
+    sync.mutex_unlock(&bridge_pty_input_replay_mu)
+    testing.expect(t,replay_after_refusal==replay_after_binary,"refused worker does not consume the later encrypted input counter")
+    binary_rows,binary_read:=executor.query(bridge_executor_store.db,"SELECT command_id,chain_claim,state FROM executor_legacy_actions WHERE command_kind=? ORDER BY action_id",BRIDGE_DISPATCH_BINARY_INPUT_KIND)
+    testing.expect(t,binary_read && len(binary_rows)==2 && binary_rows[0][0]=="" && binary_rows[0][1]=="" && binary_rows[0][2]=="returned" && binary_rows[1][2]=="discarded")
     command["method"]=json.String("cancel");command["operation_id"]=json.String("manual_cancel")
     final_cancel:=bridge_executor_test_sign(command,"local_draft",&device_private)
     if revoked_cancel {
@@ -508,6 +601,76 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="",
         testing.expect(t,reconciled)
         rows,_=executor.query(bridge_executor_store.db,"SELECT count(*) FROM executor_live_resources")
         testing.expect_value(t,rows[0][0],"0")
+    }
+    if !revoked_cancel {
+        // Actual wake ingress must retain the original parent/entry bytes in
+        // the immutable native draft, before any device launch permission.
+        observed_instance:=fmt.tprintf("native_observed_%s",variant)
+        proposed:=bridge_wake_launch_command_json("proposed",observed_instance,"observed_task","worker","claude",selected_model,"native_agent","Observed agent","legacy_chain","Legacy","","",new_path,
+            lease_id="observed_lease",pack_json=`{"n":9007199254740993}`,run_count=1,provider_profile=selected_profile,instance_token="isolated-hub-assertion",launch_epoch="observed_epoch")
+        raw_entry,entry_ok:=contracts.owner_content_member_bytes(proposed,"payload")
+        if !testing.expect(t,entry_ok) do return
+        parent:=strings.concatenate({` {"type":"wake_agent","command_id":"observed_parent","chain_id":"legacy_chain","payload":{"run":[ `,raw_entry,` ],"stop":[]}} `},context.temp_allocator)
+        observed_spec,_:=bridge_command_spec("wake_agent")
+        action,action_prepared:=bridge_legacy_dispatch_prepare(parent,"wake_agent",observed_spec,&bridge_executor_store)
+        testing.expect(t,action_prepared)
+        observed_job:=Bridge_Dispatch_Job{text=parent,command_type="wake_agent",legacy_action=action}
+        testing.expect(t,bridge_legacy_dispatch_start(&observed_job,&bridge_executor_store))
+        bridge_hub_handle_wake_agent(nil,parent,&bridge_executor_store,observation_action=action)
+        testing.expect(t,bridge_legacy_dispatch_end(action,true,&bridge_executor_store))
+        observed_draft,observed_found:=executor.local_draft_source(&bridge_executor_store,bridge_executor_local_source(proposed,"warm"))
+        if !testing.expect(t,observed_found,"actual wake stages immutable observed draft") do return
+        retained,material_ok:=bridge_executor_local_material(observed_draft)
+        testing.expect(t,material_ok && retained.origin.version=="1" && retained.origin.account==bridge_executor_store.account)
+        testing.expect_value(t,retained.origin.parent_digest,contracts.owner_payload_digest(parent))
+        testing.expect_value(t,retained.origin.entry_digest,contracts.owner_payload_digest(raw_entry))
+        testing.expect_value(t,retained.origin.native_command_digest,contracts.owner_payload_digest(retained.command))
+        testing.expect(t,strings.contains(retained.command,"9007199254740993"),"synthetic pack keeps unsafe integer token intact")
+        testing.expect(t,observed_draft.launch_id=="","observation does not authorize a child")
+        second_parent,_:=strings.replace_all(parent,"observed_parent","later_parent",context.temp_allocator)
+        later_action,later_prepared:=bridge_legacy_dispatch_prepare(second_parent,"wake_agent",observed_spec,&bridge_executor_store)
+        testing.expect(t,later_prepared)
+        observed_job.legacy_action=later_action;observed_job.text=second_parent
+        testing.expect(t,bridge_legacy_dispatch_start(&observed_job,&bridge_executor_store))
+        bridge_hub_handle_wake_agent(nil,second_parent,&bridge_executor_store,observation_action=later_action)
+        testing.expect(t,bridge_legacy_dispatch_end(later_action,true,&bridge_executor_store))
+        same_draft,same_draft_found:=executor.local_draft_source(&bridge_executor_store,bridge_executor_local_source(proposed,"warm"))
+        testing.expect(t,same_draft_found && same_draft.id==observed_draft.id && same_draft.material==observed_draft.material,"later source claim cannot rewrite the first retained observation")
+        associations,associations_read:=executor.query(bridge_executor_store.db,"SELECT parent_command_id,parent_digest,entry_digest FROM executor_legacy_observations WHERE draft_id=? ORDER BY parent_command_id",observed_draft.id)
+        testing.expect(t,associations_read && len(associations)==2,"actual retry retains both original packet associations independently of first material")
+        if len(associations)==2 {
+            testing.expect_value(t,associations[0][0],"later_parent")
+            testing.expect_value(t,associations[0][1],contracts.owner_payload_digest(second_parent))
+            testing.expect_value(t,associations[1][0],"observed_parent")
+            testing.expect_value(t,associations[1][1],contracts.owner_payload_digest(parent))
+            testing.expect_value(t,associations[0][2],contracts.owner_payload_digest(raw_entry))
+        }
+        idless_parent:=strings.concatenate({`{"type":"wake_agent","payload":{"run":[`,raw_entry,`],"stop":[]}}`},context.temp_allocator)
+        idless_action,idless_prepared:=bridge_legacy_dispatch_prepare(idless_parent,"wake_agent",observed_spec,&bridge_executor_store)
+        testing.expect(t,idless_prepared)
+        observed_job.legacy_action=idless_action;observed_job.text=idless_parent
+        testing.expect(t,bridge_legacy_dispatch_start(&observed_job,&bridge_executor_store))
+        bridge_hub_handle_wake_agent(nil,idless_parent,&bridge_executor_store,observation_action=idless_action)
+        testing.expect(t,bridge_legacy_dispatch_end(idless_action,true,&bridge_executor_store))
+        selected_rows,selected_read:=executor.query(bridge_executor_store.db,
+            "SELECT a.command_id,a.chain_claim,a.packet_digest,d.entry_digest,d.instance_id,d.configuration_digest,d.material_digest FROM executor_legacy_action_drafts d JOIN executor_legacy_actions a USING(action_id) WHERE d.draft_id=? ORDER BY a.action_id",observed_draft.id)
+        testing.expect(t,selected_read && len(selected_rows)==3,"scoped and idless actual wake occurrences bind the same selected native draft")
+        if len(selected_rows)==3 {
+            testing.expect_value(t,selected_rows[2][0],"")
+            testing.expect_value(t,selected_rows[2][1],"")
+            testing.expect_value(t,selected_rows[2][2],contracts.owner_payload_digest(idless_parent))
+            for row in selected_rows {
+                testing.expect_value(t,row[3],contracts.owner_payload_digest(raw_entry))
+                testing.expect_value(t,row[4],observed_instance)
+                testing.expect_value(t,row[5],contracts.owner_payload_digest(observed_draft.configuration))
+                testing.expect_value(t,row[6],contracts.owner_payload_digest(observed_draft.material))
+            }
+        }
+        retained_after_idless,retained_idless_found:=executor.local_draft_native(&bridge_executor_store,observed_draft.id)
+        testing.expect(t,retained_idless_found && retained_after_idless.material==observed_draft.material && retained_after_idless.launch_id=="",
+            "occurrence evidence changes neither first material nor child authority")
+        _,rewritten:=executor.query(bridge_executor_store.db,"UPDATE executor_local_drafts SET material='{}' WHERE draft_id=?",observed_draft.id)
+        testing.expect(t,!rewritten,"retained source/target material cannot be rewritten")
     }
 }
 Executor_Local_Test_IO :: struct {

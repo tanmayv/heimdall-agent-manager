@@ -1,9 +1,9 @@
 #+build !windows
 package main
 
-// T8: a wake_agent run[] entry marked deliver="nudge" for a child that is
-// confirmed live on the same generation keeps the process: the bridge rewrites
-// TASK.md and types a `lease next` line instead of killing and re-bootstrapping.
+// A daemon startup token alone cannot establish retained native configuration.
+// Unknown legacy children remain alive without task-pack or PTY mutations.
+// Real signed native positive delivery is covered in executor_local_native_test.
 
 import "base:runtime"
 import "core:c"
@@ -14,6 +14,8 @@ import "core:sync"
 import "core:sys/posix"
 import "core:testing"
 import "core:thread"
+import contracts "odin_test:contracts"
+import executor "odin_test:lib/executor_local"
 
 @(test)
 test_wake_nudge_line_names_lease_and_lease_next :: proc(t: ^testing.T) {
@@ -35,7 +37,7 @@ test_wake_nudge_declines_without_launch_record :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_wake_nudge_live_child_keeps_process_and_refreshes_task_md :: proc(t: ^testing.T) {
+test_wake_nudge_unknown_native_admission_keeps_process_and_refuses_task_md :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	context.allocator = runtime.heap_allocator()
@@ -152,20 +154,29 @@ test_wake_nudge_live_child_keeps_process_and_refreshes_task_md :: proc(t: ^testi
 		`}],"stop":[]}}`,
 	})
 	defer delete(wake)
-	bridge_hub_handle_wake_agent(nil, wake)
+    journal,journal_path:=bridge_legacy_test_store(t);defer bridge_legacy_test_close(journal,journal_path)
+    bridge_hub_handle_wake_agent(nil,wake,journal)
+    protected:=fmt.tprintf("%s/protected_worktree",run_dir)
+    canonical:=bridge_fs_canonicalize_existing(protected);defer delete(canonical)
+    pack_barrier:=executor.Legacy_Barrier{"pack_source","pack_migration",contracts.owner_payload_digest("pack selection"),1}
+    testing.expect_value(t,bridge_legacy_install_barrier(journal,pack_barrier,[]executor.Legacy_Resource{{"workdir_hash",contracts.owner_payload_digest(canonical)}}).code,"ok")
+    denied_workdir_pack:=bridge_legacy_test_pack(run_dir,protected,"claimed_other_task","heimdall/claimed_other_task")
+    testing.expect(t,bridge_wake_nudge_live_child(id,"claimed_other_task","worker","denied_workdir_lease",4,denied_workdir_pack,journal),"fenced pack keeps existing child without relaunch or typing")
+    testing.expect(t,!os.exists(protected))
+    barrier:=executor.Legacy_Barrier{"source_chain","migration",contracts.owner_payload_digest("verified selection"),1}
+    testing.expect_value(t,bridge_legacy_install_barrier(journal,barrier,[]executor.Legacy_Resource{{"instance",id}}).code,"ok")
+    denied_pack:=`{"task_id":"claimed_other_task","brief":{"goal":"DENIED_AFTER_BARRIER","acceptance":["a"]}}`
+    testing.expect(t,bridge_wake_nudge_live_child(id,"claimed_other_task","worker","late_lease",4,denied_pack,journal),"late wake refused without replacement fallback")
 	sync.atomic_store(&server.stop, true)
 	thread.join(worker)
 
 	testing.expect_value(t, server.unexpected, 0) // no close / spawn: the child is kept
-	testing.expect_value(t, server.queries, 1)
-	testing.expect(t, server.inputs >= 1 && server.keys >= 1, "one line typed and submitted")
+	testing.expect_value(t, server.queries, 2)
+	testing.expect(t, server.inputs == 0 && server.keys == 0, "unknown native admission cannot receive input")
 	typed := string(server.typed[:])
-	testing.expect(t, strings.contains(typed, "ham-ctl lease next") && strings.contains(typed, "lease_t8"), typed)
-	md, read_err := os.read_entire_file(task_md, context.allocator)
-	if testing.expect(t, read_err == nil, "TASK.md refreshed from the pack") {
-		testing.expect(t, strings.contains(string(md), "NUDGE_GOAL"), string(md))
-		delete(md)
-	}
+    testing.expect(t,typed=="","no unobserved lease line is typed")
+    testing.expect(t,!strings.contains(typed,"denied_workdir_lease"),"fenced pack cannot send a misleading wake line")
+    testing.expect(t,!os.exists(task_md),"unknown native child cannot acquire task context")
 	sync.mutex_lock(&bridge_local_token_mutex)
 	testing.expect_value(t, bridge_local_token_records[0].invalidated_at_unix_ms, 0) // token not rotated
 	sync.mutex_unlock(&bridge_local_token_mutex)

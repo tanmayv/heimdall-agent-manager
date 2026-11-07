@@ -30,6 +30,7 @@ SQLITE_TRANSIENT :: rawptr(~uintptr(0))
 foreign sqlite3_lib {
 	sqlite3_open :: proc(filename: cstring, ppDb: [^]sqlite3) -> c.int ---
 	sqlite3_close :: proc(db: sqlite3) -> c.int ---
+	sqlite3_get_autocommit :: proc(db: sqlite3) -> c.int ---
 	// step/exec/prepare_v2/finalize are the choke points every query in this
 	// package passes through, so they are bound under *_raw names and wrapped
 	// with the timing + busy accounting (sqlite_metrics.odin, db_telemetry.odin).

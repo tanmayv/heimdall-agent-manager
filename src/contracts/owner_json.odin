@@ -2,6 +2,7 @@ package contracts
 
 import "core:encoding/json"
 import "core:strconv"
+import "core:strings"
 import jsonx "odin_test:lib/jsonx"
 
 // Request-only validation tree. Unlike the binary-compatible response reader,
@@ -31,6 +32,45 @@ owner_request_document :: proc(raw: string) -> (json.Value, bool) {
 // decoded-key uniqueness, depth and exact integer rules.
 owner_content_document :: proc(raw: string) -> (json.Value, bool) {
     return owner_json_document(raw, true)
+}
+
+// Native observation helpers return borrowed ORIGINAL value spans. The jsonx
+// extract_raw_* helpers reserialize values and cannot preserve signed hashes,
+// unsafe integer lexemes or a received parent/entry association. Validate the
+// entire document first, including decoded-key uniqueness, before selecting.
+owner_content_member_bytes :: proc(raw,key:string)->(string,bool) {
+    value,valid:=owner_content_document(raw)
+    if !valid do return "",false
+    if _,object:=value.(json.Object);!object do return "",false
+    r:=Owner_JSON_Reader{raw=raw,content_strings=true,tokenizer=json.make_tokenizer(raw,.JSON,true)}
+    if !owner_json_advance(&r) || !owner_json_advance(&r) do return "",false
+    for r.token.kind!=.Close_Brace {
+        name,decoded:=owner_json_string(r.token,true)
+        if !decoded || !owner_json_advance(&r) || r.token.kind!=.Colon || !owner_json_advance(&r) do return "",false
+        start:=r.token.offset
+        if _,read:=owner_json_value(&r,1);!read do return "",false
+        if name==key do return strings.trim_space(raw[start:r.token.offset]),true
+        if r.token.kind==.Close_Brace do break
+        if r.token.kind!=.Comma || !owner_json_advance(&r) do return "",false
+    }
+    return "",false
+}
+
+owner_content_array_bytes :: proc(raw:string)->([]string,bool) {
+    value,valid:=owner_content_document(raw)
+    if !valid do return nil,false
+    if _,array:=value.(json.Array);!array do return nil,false
+    r:=Owner_JSON_Reader{raw=raw,content_strings=true,tokenizer=json.make_tokenizer(raw,.JSON,true)}
+    if !owner_json_advance(&r) || !owner_json_advance(&r) do return nil,false
+    out:=make([dynamic]string,context.temp_allocator)
+    for r.token.kind!=.Close_Bracket {
+        start:=r.token.offset
+        if _,read:=owner_json_value(&r,1);!read do return nil,false
+        append(&out,strings.trim_space(raw[start:r.token.offset]))
+        if r.token.kind==.Close_Bracket do break
+        if r.token.kind!=.Comma || !owner_json_advance(&r) do return nil,false
+    }
+    return out[:],true
 }
 
 @(private = "file")

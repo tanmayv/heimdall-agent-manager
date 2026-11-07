@@ -54,6 +54,10 @@ Task_Chain_Fleet_List_By_Chain_Proc :: proc(ctx: rawptr, chain_id: domain.Task_C
 Task_Chain_Fleet_Delete_Proc :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, agent_id: string, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error)
 
 Taskchain_Repository :: struct {
+    legacy_migration_select: Legacy_Migration_Select,
+    legacy_source_get: Legacy_Source_Get,
+    legacy_effect_prepare: Legacy_Effect_Prepare,
+    legacy_source_freeze: Legacy_Source_Freeze,
     owner_registry_publish: Owner_Registry_Publish,
     owner_registry_list: Owner_Registry_List,
 	ctx: rawptr,

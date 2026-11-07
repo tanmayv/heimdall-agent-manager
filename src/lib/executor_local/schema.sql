@@ -1,6 +1,6 @@
 
 CREATE TABLE executor_runtime (
- singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=8),
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=15),
  account_id TEXT NOT NULL, executor_bridge_id TEXT NOT NULL, operator_key_id TEXT NOT NULL,
  incarnation INTEGER NOT NULL CHECK(incarnation>0), clock_high_ms INTEGER NOT NULL CHECK(clock_high_ms>=0),
  recovery_state TEXT NOT NULL CHECK(recovery_state IN ('ready','reconciling','clock_uncertain')),
@@ -230,3 +230,259 @@ CREATE TABLE executor_local_draft_receipts (
 );
 CREATE TRIGGER local_draft_receipt_no_update BEFORE UPDATE ON executor_local_draft_receipts BEGIN SELECT RAISE(ABORT,'immutable draft receipt'); END;
 CREATE TRIGGER local_draft_receipt_no_delete BEFORE DELETE ON executor_local_draft_receipts BEGIN SELECT RAISE(ABORT,'retained draft receipt'); END;
+
+-- Migration fences are execution metadata, never imported task authority.
+-- A barrier is permanent until a separately verified source resume protocol
+-- exists. Completion of a command handler is not proof of child absence.
+CREATE TABLE executor_legacy_barriers (
+ chain_id TEXT PRIMARY KEY CHECK(length(chain_id)>0),
+ migration_id TEXT NOT NULL CHECK(length(migration_id)>0),
+ selection_digest TEXT NOT NULL CHECK(length(selection_digest)=64 AND selection_digest NOT GLOB '*[^0-9a-f]*'),
+ source_generation INTEGER NOT NULL CHECK(source_generation>=0),
+ installed_incarnation INTEGER NOT NULL CHECK(installed_incarnation>0)
+);
+CREATE TRIGGER legacy_barrier_admission BEFORE INSERT ON executor_legacy_barriers
+WHEN NEW.installed_incarnation!=(SELECT incarnation FROM executor_runtime)
+BEGIN SELECT RAISE(ABORT,'legacy barrier requires current executor'); END;
+CREATE TRIGGER legacy_barrier_no_update BEFORE UPDATE ON executor_legacy_barriers BEGIN SELECT RAISE(ABORT,'retained legacy barrier'); END;
+CREATE TRIGGER legacy_barrier_no_delete BEFORE DELETE ON executor_legacy_barriers BEGIN SELECT RAISE(ABORT,'retained legacy barrier'); END;
+
+-- Targets remain fenced even if a late command claims a different chain.
+-- Workdir identity is a digest of the verified canonical path, not prose/path.
+CREATE TABLE executor_legacy_resources (
+ kind TEXT NOT NULL CHECK(kind IN ('instance','task','workdir_hash')),
+ resource_id TEXT NOT NULL CHECK(length(resource_id)>0),
+ chain_id TEXT NOT NULL REFERENCES executor_legacy_barriers(chain_id),
+ PRIMARY KEY(kind,resource_id,chain_id)
+);
+CREATE TRIGGER legacy_resource_no_update BEFORE UPDATE ON executor_legacy_resources BEGIN SELECT RAISE(ABORT,'retained legacy resource fence'); END;
+CREATE TRIGGER legacy_resource_no_delete BEFORE DELETE ON executor_legacy_resources BEGIN SELECT RAISE(ABORT,'retained legacy resource fence'); END;
+
+CREATE TABLE executor_legacy_commands (
+ command_id TEXT PRIMARY KEY CHECK(length(command_id)>0),
+ chain_id TEXT NOT NULL CHECK(length(chain_id)>0),
+ input_digest TEXT NOT NULL CHECK(length(input_digest)=64 AND input_digest NOT GLOB '*[^0-9a-f]*'),
+ admitted_incarnation INTEGER NOT NULL CHECK(admitted_incarnation>0),
+ state TEXT NOT NULL CHECK(state IN ('running','returned'))
+);
+CREATE INDEX legacy_command_chain_state ON executor_legacy_commands(chain_id,state);
+CREATE TRIGGER legacy_command_admission BEFORE INSERT ON executor_legacy_commands
+WHEN NEW.state!='running' OR NEW.admitted_incarnation!=(SELECT incarnation FROM executor_runtime)
+ OR EXISTS(SELECT 1 FROM executor_legacy_barriers WHERE chain_id=NEW.chain_id)
+BEGIN SELECT RAISE(ABORT,'legacy dispatch fenced'); END;
+CREATE TRIGGER legacy_command_transition BEFORE UPDATE ON executor_legacy_commands
+WHEN NEW.command_id IS NOT OLD.command_id OR NEW.chain_id IS NOT OLD.chain_id
+ OR NEW.input_digest IS NOT OLD.input_digest OR NEW.admitted_incarnation IS NOT OLD.admitted_incarnation
+ OR OLD.state!='running' OR NEW.state!='returned'
+ OR NEW.admitted_incarnation!=(SELECT incarnation FROM executor_runtime)
+BEGIN SELECT RAISE(ABORT,'immutable legacy command or stale completion'); END;
+CREATE TRIGGER legacy_command_no_delete BEFORE DELETE ON executor_legacy_commands BEGIN SELECT RAISE(ABORT,'retained legacy dispatch'); END;
+
+-- Native observation only. No row grants execution or proves historical origin.
+-- Missing pre-upgrade history remains unknown.
+CREATE TABLE executor_legacy_observations (
+ observation_id TEXT PRIMARY KEY CHECK(length(observation_id)=64 AND observation_id NOT GLOB '*[^0-9a-f]*'),
+ parent_command_id TEXT NOT NULL CHECK(length(parent_command_id)>0),
+ parent_digest TEXT NOT NULL CHECK(length(parent_digest)=64 AND parent_digest NOT GLOB '*[^0-9a-f]*'),
+ entry_index INTEGER NOT NULL CHECK(entry_index>=0),
+ entry_digest TEXT NOT NULL CHECK(length(entry_digest)=64 AND entry_digest NOT GLOB '*[^0-9a-f]*'),
+ chain_id TEXT NOT NULL CHECK(length(chain_id)>0),
+ instance_id TEXT NOT NULL CHECK(length(instance_id)>0),
+ task_id TEXT NOT NULL, lease_id TEXT NOT NULL,
+ native_request_digest TEXT NOT NULL CHECK(length(native_request_digest)=64 AND native_request_digest NOT GLOB '*[^0-9a-f]*'),
+ draft_id TEXT NOT NULL REFERENCES executor_local_drafts(draft_id),
+ observed_incarnation INTEGER NOT NULL CHECK(observed_incarnation>0),
+ UNIQUE(parent_command_id,entry_index,native_request_digest,draft_id)
+);
+CREATE TRIGGER legacy_observation_admission BEFORE INSERT ON executor_legacy_observations
+WHEN NEW.observed_incarnation!=(SELECT incarnation FROM executor_runtime)
+ OR EXISTS(SELECT 1 FROM executor_legacy_observations WHERE observation_id=NEW.observation_id)
+BEGIN SELECT RAISE(ABORT,'observation requires current executor'); END;
+CREATE TRIGGER legacy_observation_no_update BEFORE UPDATE ON executor_legacy_observations BEGIN SELECT RAISE(ABORT,'immutable native observation'); END;
+CREATE TRIGGER legacy_observation_no_delete BEFORE DELETE ON executor_legacy_observations BEGIN SELECT RAISE(ABORT,'retained native observation'); END;
+
+-- Database coverage only. Pre-upgrade physical/queued work remains unknown.
+CREATE TABLE executor_native_journal (
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+ sequence INTEGER NOT NULL CHECK(sequence>=0),
+ coverage_version INTEGER NOT NULL CHECK(coverage_version=1),
+ prior_coverage_unknown INTEGER NOT NULL CHECK(prior_coverage_unknown=1)
+);
+INSERT INTO executor_native_journal VALUES(1,0,1,1);
+CREATE TRIGGER native_journal_no_replace BEFORE INSERT ON executor_native_journal WHEN EXISTS(SELECT 1 FROM executor_native_journal) BEGIN SELECT RAISE(ABORT,'retained native journal'); END;
+CREATE TRIGGER native_journal_transition BEFORE UPDATE ON executor_native_journal
+WHEN NEW.singleton IS NOT OLD.singleton OR NEW.coverage_version IS NOT OLD.coverage_version
+ OR NEW.prior_coverage_unknown IS NOT OLD.prior_coverage_unknown
+ OR OLD.sequence=9223372036854775807 OR NEW.sequence!=OLD.sequence+1
+BEGIN SELECT RAISE(ABORT,'invalid native journal sequence'); END;
+CREATE TRIGGER native_journal_no_delete BEFORE DELETE ON executor_native_journal BEGIN SELECT RAISE(ABORT,'retained native journal'); END;
+CREATE TRIGGER native_journal_executor_runtime_insert AFTER INSERT ON executor_runtime BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_runtime_update AFTER UPDATE ON executor_runtime BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_runtime_delete AFTER DELETE ON executor_runtime BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_policies_insert AFTER INSERT ON executor_policies BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_policies_update AFTER UPDATE ON executor_policies BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_policies_delete AFTER DELETE ON executor_policies BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_slots_insert AFTER INSERT ON executor_slots BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_slots_update AFTER UPDATE ON executor_slots BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_slots_delete AFTER DELETE ON executor_slots BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_owner_watermarks_insert AFTER INSERT ON executor_owner_watermarks BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_owner_watermarks_update AFTER UPDATE ON executor_owner_watermarks BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_owner_watermarks_delete AFTER DELETE ON executor_owner_watermarks BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_reservations_insert AFTER INSERT ON executor_reservations BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_reservations_update AFTER UPDATE ON executor_reservations BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_reservations_delete AFTER DELETE ON executor_reservations BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_receipts_insert AFTER INSERT ON executor_receipts BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_receipts_update AFTER UPDATE ON executor_receipts BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_receipts_delete AFTER DELETE ON executor_receipts BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_intents_insert AFTER INSERT ON executor_intents BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_intents_update AFTER UPDATE ON executor_intents BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_intents_delete AFTER DELETE ON executor_intents BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_issuances_insert AFTER INSERT ON executor_issuances BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_issuances_update AFTER UPDATE ON executor_issuances BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_issuances_delete AFTER DELETE ON executor_issuances BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_directories_insert AFTER INSERT ON executor_directories BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_directories_update AFTER UPDATE ON executor_directories BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_directories_delete AFTER DELETE ON executor_directories BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_enrollment_pin_insert AFTER INSERT ON executor_enrollment_pin BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_enrollment_pin_update AFTER UPDATE ON executor_enrollment_pin BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_enrollment_pin_delete AFTER DELETE ON executor_enrollment_pin BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_chain_owners_insert AFTER INSERT ON executor_chain_owners BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_chain_owners_update AFTER UPDATE ON executor_chain_owners BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_chain_owners_delete AFTER DELETE ON executor_chain_owners BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_bootstraps_insert AFTER INSERT ON executor_bootstraps BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_bootstraps_update AFTER UPDATE ON executor_bootstraps BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_bootstraps_delete AFTER DELETE ON executor_bootstraps BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_readiness_insert AFTER INSERT ON executor_readiness BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_readiness_update AFTER UPDATE ON executor_readiness BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_readiness_delete AFTER DELETE ON executor_readiness BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_controls_insert AFTER INSERT ON executor_controls BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_controls_update AFTER UPDATE ON executor_controls BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_controls_delete AFTER DELETE ON executor_controls BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_renewals_insert AFTER INSERT ON executor_renewals BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_renewals_update AFTER UPDATE ON executor_renewals BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_renewals_delete AFTER DELETE ON executor_renewals BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_local_launches_insert AFTER INSERT ON executor_local_launches BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_local_launches_update AFTER UPDATE ON executor_local_launches BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_local_launches_delete AFTER DELETE ON executor_local_launches BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_local_observations_insert AFTER INSERT ON executor_local_observations BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_local_observations_update AFTER UPDATE ON executor_local_observations BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_local_observations_delete AFTER DELETE ON executor_local_observations BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_local_drafts_insert AFTER INSERT ON executor_local_drafts BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_local_drafts_update AFTER UPDATE ON executor_local_drafts BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_local_drafts_delete AFTER DELETE ON executor_local_drafts BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_local_draft_receipts_insert AFTER INSERT ON executor_local_draft_receipts BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_local_draft_receipts_update AFTER UPDATE ON executor_local_draft_receipts BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_local_draft_receipts_delete AFTER DELETE ON executor_local_draft_receipts BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_barriers_insert AFTER INSERT ON executor_legacy_barriers BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_barriers_update AFTER UPDATE ON executor_legacy_barriers BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_barriers_delete AFTER DELETE ON executor_legacy_barriers BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_resources_insert AFTER INSERT ON executor_legacy_resources BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_resources_update AFTER UPDATE ON executor_legacy_resources BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_resources_delete AFTER DELETE ON executor_legacy_resources BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_commands_insert AFTER INSERT ON executor_legacy_commands BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_commands_update AFTER UPDATE ON executor_legacy_commands BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_commands_delete AFTER DELETE ON executor_legacy_commands BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_observations_insert AFTER INSERT ON executor_legacy_observations BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_observations_update AFTER UPDATE ON executor_legacy_observations BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_observations_delete AFTER DELETE ON executor_legacy_observations BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+-- Private receive observations only. These rows grant no invocation or task authority.
+CREATE TABLE executor_legacy_actions (
+ action_id INTEGER PRIMARY KEY CHECK(action_id>0),
+ observed_incarnation INTEGER NOT NULL CHECK(observed_incarnation>0),
+ command_id TEXT NOT NULL, command_kind TEXT NOT NULL CHECK(length(command_kind)>0),
+ chain_claim TEXT NOT NULL,
+ packet_digest TEXT NOT NULL CHECK(length(packet_digest)=64 AND packet_digest NOT GLOB '*[^0-9a-f]*'),
+ state TEXT NOT NULL CHECK(state IN ('received','prepared','running','returned','discarded')),
+ previous_state TEXT NOT NULL CHECK(previous_state IN ('','received','prepared','running'))
+);
+CREATE TRIGGER legacy_action_admission BEFORE INSERT ON executor_legacy_actions
+WHEN NEW.observed_incarnation!=(SELECT incarnation FROM executor_runtime) OR NEW.state!='received' OR NEW.previous_state!=''
+ OR NEW.action_id!=(SELECT sequence+1 FROM executor_native_journal WHERE singleton=1)
+BEGIN SELECT RAISE(ABORT,'action observation requires current journal'); END;
+CREATE TRIGGER legacy_action_transition BEFORE UPDATE ON executor_legacy_actions
+WHEN NEW.action_id IS NOT OLD.action_id OR NEW.observed_incarnation IS NOT OLD.observed_incarnation
+ OR NEW.command_id IS NOT OLD.command_id OR NEW.command_kind IS NOT OLD.command_kind
+ OR NEW.chain_claim IS NOT OLD.chain_claim OR NEW.packet_digest IS NOT OLD.packet_digest
+ OR NEW.observed_incarnation!=(SELECT incarnation FROM executor_runtime)
+ OR NEW.previous_state IS NOT OLD.state
+ OR NOT ((OLD.state='received' AND NEW.state IN ('prepared','discarded'))
+      OR (OLD.state='prepared' AND NEW.state IN ('running','discarded'))
+      OR (OLD.state='running' AND NEW.state='returned'))
+BEGIN SELECT RAISE(ABORT,'immutable action evidence or invalid transition'); END;
+CREATE TRIGGER legacy_action_no_delete BEFORE DELETE ON executor_legacy_actions
+BEGIN SELECT RAISE(ABORT,'retained action evidence'); END;
+CREATE TRIGGER native_journal_executor_legacy_actions_insert AFTER INSERT ON executor_legacy_actions BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_actions_update AFTER UPDATE ON executor_legacy_actions BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_actions_delete AFTER DELETE ON executor_legacy_actions BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+-- Private occurrence-to-selected-draft evidence, never execution authority.
+CREATE TABLE executor_legacy_action_drafts (
+ association_id TEXT PRIMARY KEY CHECK(length(association_id)=64 AND association_id NOT GLOB '*[^0-9a-f]*'),
+ action_id INTEGER NOT NULL REFERENCES executor_legacy_actions(action_id),
+ entry_index INTEGER NOT NULL CHECK(entry_index>=-1),
+ entry_digest TEXT NOT NULL CHECK(length(entry_digest)=64 AND entry_digest NOT GLOB '*[^0-9a-f]*'),
+ native_request_digest TEXT NOT NULL CHECK(length(native_request_digest)=64 AND native_request_digest NOT GLOB '*[^0-9a-f]*'),
+ draft_id TEXT NOT NULL REFERENCES executor_local_drafts(draft_id),
+ configuration_digest TEXT NOT NULL CHECK(length(configuration_digest)=64),
+ material_digest TEXT NOT NULL CHECK(length(material_digest)=64),
+ instance_id TEXT NOT NULL, directory_id TEXT NOT NULL, directory_key TEXT NOT NULL,
+ observed_incarnation INTEGER NOT NULL CHECK(observed_incarnation>0),
+ UNIQUE(action_id,entry_index,native_request_digest,draft_id)
+);
+CREATE TRIGGER legacy_action_draft_admission BEFORE INSERT ON executor_legacy_action_drafts
+WHEN NEW.observed_incarnation!=(SELECT incarnation FROM executor_runtime)
+ OR NOT EXISTS(SELECT 1 FROM executor_legacy_actions WHERE action_id=NEW.action_id
+  AND observed_incarnation=NEW.observed_incarnation AND state='running')
+BEGIN SELECT RAISE(ABORT,'draft association requires current running occurrence'); END;
+CREATE TRIGGER legacy_action_draft_no_replace BEFORE INSERT ON executor_legacy_action_drafts WHEN EXISTS(SELECT 1 FROM executor_legacy_action_drafts WHERE association_id=NEW.association_id) BEGIN SELECT RAISE(ABORT,'retained draft association'); END;
+CREATE TRIGGER legacy_action_draft_no_update BEFORE UPDATE ON executor_legacy_action_drafts BEGIN SELECT RAISE(ABORT,'immutable draft association'); END;
+CREATE TRIGGER legacy_action_draft_no_delete BEFORE DELETE ON executor_legacy_action_drafts BEGIN SELECT RAISE(ABORT,'retained draft association'); END;
+CREATE TRIGGER native_journal_executor_legacy_action_drafts_insert AFTER INSERT ON executor_legacy_action_drafts BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_action_drafts_update AFTER UPDATE ON executor_legacy_action_drafts BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_action_drafts_delete AFTER DELETE ON executor_legacy_action_drafts BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+-- Exact local native child presence observed before a wake nudge. No absence or grant.
+CREATE TABLE executor_legacy_action_nudges (
+ association_id TEXT PRIMARY KEY CHECK(length(association_id)=64),
+ action_id INTEGER NOT NULL REFERENCES executor_legacy_actions(action_id),
+ entry_index INTEGER NOT NULL CHECK(entry_index>=0),
+ entry_digest TEXT NOT NULL CHECK(length(entry_digest)=64),
+ launch_id TEXT NOT NULL REFERENCES executor_local_launches(launch_id),
+ launch_key TEXT NOT NULL, configuration_digest TEXT NOT NULL CHECK(length(configuration_digest)=64),
+ instance_id TEXT NOT NULL, directory_key TEXT NOT NULL,
+ child_pid INTEGER NOT NULL CHECK(child_pid>0), run_count INTEGER NOT NULL CHECK(run_count>0),
+ observed_incarnation INTEGER NOT NULL CHECK(observed_incarnation>0),
+ UNIQUE(action_id,entry_index)
+);
+CREATE TRIGGER legacy_action_nudge_admission BEFORE INSERT ON executor_legacy_action_nudges
+WHEN NEW.observed_incarnation!=(SELECT incarnation FROM executor_runtime)
+ OR NOT EXISTS(SELECT 1 FROM executor_legacy_actions WHERE action_id=NEW.action_id AND observed_incarnation=NEW.observed_incarnation AND state='running')
+ OR NOT EXISTS(SELECT 1 FROM executor_local_launches WHERE launch_id=NEW.launch_id AND launch_key=NEW.launch_key
+  AND instance_id=NEW.instance_id AND state='active' AND observed_incarnation=NEW.observed_incarnation)
+BEGIN SELECT RAISE(ABORT,'nudge requires current exact native child'); END;
+CREATE TRIGGER legacy_action_nudge_no_replace BEFORE INSERT ON executor_legacy_action_nudges WHEN EXISTS(SELECT 1 FROM executor_legacy_action_nudges WHERE association_id=NEW.association_id) BEGIN SELECT RAISE(ABORT,'retained nudge observation'); END;
+CREATE TRIGGER legacy_action_nudge_no_update BEFORE UPDATE ON executor_legacy_action_nudges BEGIN SELECT RAISE(ABORT,'immutable nudge observation'); END;
+CREATE TRIGGER legacy_action_nudge_no_delete BEFORE DELETE ON executor_legacy_action_nudges BEGIN SELECT RAISE(ABORT,'retained nudge observation'); END;
+CREATE TRIGGER native_journal_executor_legacy_action_nudges_insert AFTER INSERT ON executor_legacy_action_nudges BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_action_nudges_update AFTER UPDATE ON executor_legacy_action_nudges BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_action_nudges_delete AFTER DELETE ON executor_legacy_action_nudges BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+-- Native stop/merge targets observed before physical effects, never authority.
+CREATE TABLE executor_legacy_action_effects (
+ observation_id TEXT PRIMARY KEY CHECK(length(observation_id)=64),
+ action_id INTEGER NOT NULL REFERENCES executor_legacy_actions(action_id),
+ effect_kind TEXT NOT NULL CHECK(effect_kind IN ('stop','merge')),
+ entry_index INTEGER NOT NULL CHECK(entry_index>=-1),
+ entry_digest TEXT NOT NULL CHECK(length(entry_digest)=64),
+ evidence TEXT NOT NULL CHECK(json_valid(evidence)),
+ evidence_digest TEXT NOT NULL CHECK(length(evidence_digest)=64),
+ observed_incarnation INTEGER NOT NULL CHECK(observed_incarnation>0),
+ UNIQUE(action_id,effect_kind,entry_index)
+);
+CREATE TRIGGER legacy_action_effect_admission BEFORE INSERT ON executor_legacy_action_effects
+WHEN NEW.observed_incarnation!=(SELECT incarnation FROM executor_runtime)
+ OR NOT EXISTS(SELECT 1 FROM executor_legacy_actions WHERE action_id=NEW.action_id AND state='running' AND observed_incarnation=NEW.observed_incarnation)
+BEGIN SELECT RAISE(ABORT,'effect observation requires current running occurrence'); END;
+CREATE TRIGGER legacy_action_effect_no_replace BEFORE INSERT ON executor_legacy_action_effects WHEN EXISTS(SELECT 1 FROM executor_legacy_action_effects WHERE observation_id=NEW.observation_id) BEGIN SELECT RAISE(ABORT,'retained effect observation'); END;
+CREATE TRIGGER legacy_action_effect_no_update BEFORE UPDATE ON executor_legacy_action_effects BEGIN SELECT RAISE(ABORT,'immutable effect observation'); END;
+CREATE TRIGGER legacy_action_effect_no_delete BEFORE DELETE ON executor_legacy_action_effects BEGIN SELECT RAISE(ABORT,'retained effect observation'); END;
+CREATE TRIGGER native_journal_executor_legacy_action_effects_insert AFTER INSERT ON executor_legacy_action_effects BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_action_effects_update AFTER UPDATE ON executor_legacy_action_effects BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_action_effects_delete AFTER DELETE ON executor_legacy_action_effects BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;

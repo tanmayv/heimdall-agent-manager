@@ -19,6 +19,7 @@ Executor_Local_Material :: struct {
     command,token,assertion,endpoint,run_dir,provider,model,profile,permission,display,purpose:string,
     run_count:int,
     request:Pty_Host_Spawn_Request,
+    origin:Executor_Legacy_Origin,
 }
 
 bridge_executor_local_descriptor :: proc(command:string)->Bridge_Bootstrap_Descriptor {
@@ -70,6 +71,8 @@ bridge_executor_local_startup :: proc(ctx:rawptr)->bool {
     // A slow dispatch COMMIT must not carry a prior enrollment snapshot over
     // the first bootstrap/token mutation, or slow writes over the final Spawn.
     if !bridge_executor_local_startup_current(p) do return false
+    descriptor:=bridge_executor_local_descriptor(m.command)
+    if !bridge_legacy_apply_pack_locked(p.store,m.request.instance,"",descriptor.pack_json) do return false
     if !bridge_os_prepare_private_dir(m.run_dir) do return false
     pp,e:=profile_lookup(m.provider,m.profile)
     if e!=.None do return false
@@ -106,7 +109,6 @@ bridge_executor_local_startup :: proc(ctx:rawptr)->bool {
         }
     }
     bridge_runtime_clear_stop_intent(m.request.instance)
-    descriptor:=bridge_executor_local_descriptor(m.command)
     bridge_rollover_note_launch(m.request.instance,descriptor.coordinator_id)
     bridge_ext_note_launch(m.request.instance,m.provider,m.model,m.profile)
     bridge_startup_arm(m.request.instance,m.token,bridge_runtime_now_ms())
@@ -123,6 +125,7 @@ bridge_executor_local_material :: proc(d:executor.Local_Draft)->(Executor_Local_
     if !valid || get(c,"instance_id")!=m.request.instance || get(c,"token_generation")!=contracts.owner_payload_digest(m.token) ||
        get(c,"run_count")!=fmt.tprintf("%d",m.run_count) || get(c,"provider")!=m.provider || get(c,"model")!=m.model ||
        get(c,"provider_profile")!=m.profile || bridge_executor_local_spawn_digest(m.request)!=get(c,"spawn_digest") {return {},false}
+    if m.origin.version!="" && (m.origin.account!=get(c,"account_id") || m.origin.instance!=m.request.instance || !bridge_legacy_origin_matches_native(m.origin,m.command)) do return {},false
     return m,true
 }
 
@@ -192,7 +195,7 @@ bridge_executor_local_note_pending :: proc(command,detail:string,err:Bridge_Erro
 
 // An unsigned Hub request can propose a draft only. It must not touch the
 // previous generation's token, bootstrap, stop intent, startup state or child.
-bridge_executor_local_stage :: proc(command:string,purpose:string,io:Executor_Local_IO={nil,bridge_executor_child_fetch,bridge_executor_local_files,""})->(bool,string,Bridge_Error) {
+bridge_executor_local_stage :: proc(command:string,purpose:string,io:Executor_Local_IO={nil,bridge_executor_child_fetch,bridge_executor_local_files,""},origin:Executor_Legacy_Origin={},observation_action:executor.Legacy_Action={},observation_entry_index:i64= -1,observation_entry_digest:string="")->(bool,string,Bridge_Error) {
     context.allocator=context.temp_allocator
     generation:=bridge_task_chain_search_generation()
     account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
@@ -204,9 +207,11 @@ bridge_executor_local_stage :: proc(command:string,purpose:string,io:Executor_Lo
     sync.mutex_lock(&bridge_executor_mutex);defer sync.mutex_unlock(&bridge_executor_mutex)
     if !bridge_executor_open(account,self) do return false,"local launch journal unavailable",bridge_error(.agent_launch_failed,.other)
     s:=&bridge_executor_store
+    if origin.version!="" && !bridge_legacy_origin_matches_native(origin,command) do return false,"legacy_observation_mismatch",bridge_error(.agent_launch_failed,.denied)
     source:=bridge_executor_local_source(command,purpose)
     if d,found:=executor.local_draft_source(s,source);found {
         if !bridge_executor_local_retry_matches(d,command) do return false,"draft_generation_conflict",bridge_error(.agent_launch_failed,.denied)
+        if !bridge_legacy_observe_draft(s,origin,command,d.id) || !bridge_legacy_action_observe_selected_draft(s,observation_action,command,d.id,observation_entry_index,observation_entry_digest) do return false,"legacy_observation_unavailable",bridge_error(.agent_launch_failed,.denied)
         // A retry may reuse the original exact signed consent, never an
         // unsigned Hub assertion or a replacement synthetic authorization.
         if raw,authorized:=executor.local_draft_consent(s,d);authorized {
@@ -277,9 +282,12 @@ bridge_executor_local_stage :: proc(command:string,purpose:string,io:Executor_Lo
         {"slot_id",slot},{"provider",provider},{"model",model},{"provider_profile",pp.profile_id},
         {"directory_id",directory},{"directory_revision",fmt.tprintf("%d",mapping.revision)},
         {"directory_key",mapping.key},{"purpose",purpose},{"spawn_digest",bridge_executor_local_spawn_digest(request)}}) {c[pair[0]]=json.String(pair[1])}
-    material:=executor.encode(Executor_Local_Material{command,token,assertion,endpoint,run_dir,provider,model,pp.profile_id,permission,d.display_name,purpose,run,request})
+    observed:=origin
+    if observed.version!="" do observed.account=account
+    material:=executor.encode(Executor_Local_Material{command,token,assertion,endpoint,run_dir,provider,model,pp.profile_id,permission,d.display_name,purpose,run,request,observed})
     defer crypto.zero_explicit(raw_data(material),len(material))
     draft,staged:=executor.stage_local_draft(s,source,executor.encode(c),material)
     if staged!="ok" do return false,staged,bridge_error(.agent_launch_failed,.denied)
+    if !bridge_legacy_observe_draft(s,origin,command,draft.id) || !bridge_legacy_action_observe_selected_draft(s,observation_action,command,draft.id,observation_entry_index,observation_entry_digest) do return false,"legacy_observation_unavailable",bridge_error(.agent_launch_failed,.denied)
     return false,bridge_executor_local_pending(draft),bridge_error(.agent_launch_failed,.denied)
 }

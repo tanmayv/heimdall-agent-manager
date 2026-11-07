@@ -4,6 +4,8 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:testing"
+import contracts "odin_test:contracts"
+import executor "odin_test:lib/executor_local"
 
 // Real-git-repo integration tests for the bridge VCS provider (TASK-1-TEST Part C):
 // stage/unstage roundtrip, revert (modified + untracked guard), the no-HEAD unstage
@@ -346,9 +348,52 @@ bridge_taskv2_task_worktree_lifecycle_test :: proc(t: ^testing.T) {
 
 	// Uncommitted work is committed and merged back; the worktree goes away.
 	vcs_test_write(wt_path, "feature.txt", "work\n")
-	r := bridge_taskv2_merge_task_worktree(dir, wt_path, branch, "task_test_123")
+	store,path:=bridge_legacy_test_store(t);defer bridge_legacy_test_close(store,path)
+    packet:=`{"type":"taskv2_merge_worktree","command_id":"merge_original"}`
+    spec,_:=bridge_command_spec("taskv2_merge_worktree")
+    action,prepared:=bridge_legacy_dispatch_prepare(packet,"taskv2_merge_worktree",spec,store)
+    testing.expect(t,prepared)
+    job:=Bridge_Dispatch_Job{text=packet,command_type="taskv2_merge_worktree",legacy_action=action}
+    testing.expect(t,bridge_legacy_dispatch_start(&job,store))
+    digest:=contracts.owner_payload_digest(packet)
+    testing.expect(t,executor.exec(store.db,"CREATE TRIGGER refuse_merge_observation BEFORE INSERT ON executor_legacy_action_effects BEGIN SELECT RAISE(ABORT,'merge journal fault'); END;"))
+    refused:=bridge_legacy_merge_target(store,dir,wt_path,branch,"task_test_123",action,digest)
+    testing.expect(t,!refused.ok && os.exists(wt_path) && !os.exists(fmt.tprintf("%s/feature.txt",dir)),"journal failure precedes autocommit, merge and worktree deletion")
+    testing.expect(t,executor.exec(store.db,"DROP TRIGGER refuse_merge_observation"))
+    r := bridge_legacy_merge_target(store,dir,wt_path,branch,"task_test_123",action,digest)
 	testing.expect(t, r.ok && !r.conflict, "merge succeeds")
 	testing.expect(t, os.exists(fmt.tprintf("%s/feature.txt", dir)), "work landed in the directory")
 	testing.expect(t, !os.exists(wt_path), "worktree removed after merge")
+    rows,read:=executor.query(store.db,"SELECT effect_kind,json_extract(evidence,'$.branch'),entry_digest FROM executor_legacy_action_effects")
+    testing.expect(t,read && len(rows)==1 && rows[0][0]=="merge" && rows[0][1]==branch && rows[0][2]==digest)
+    testing.expect(t,bridge_legacy_dispatch_end(action,true,store))
 }
 
+
+@(test)
+bridge_legacy_barrier_prevents_real_merge_and_worktree_autocommit :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    dir,ok:=vcs_test_git_repo("legacy_merge_barrier");defer vcs_test_rm(dir)
+    if !testing.expect(t,ok) do return
+    vcs_test_write(dir,"README.md","base\n")
+    if !testing.expect(t,vcs_test_git("git","-C",dir,"add","README.md") && vcs_test_git("git","-C",dir,"commit","-m","init")) do return
+    workdir:=fmt.tprintf("%s/.heimdall/worktrees/task_fenced",dir)
+    branch:="heimdall/task_fenced"
+    if !testing.expect(t,bridge_taskv2_ensure_task_worktree(dir,workdir,branch)) do return
+    vcs_test_write(workdir,"feature.txt","must remain uncommitted\n")
+    before,before_ok:=bridge_taskv2_git_head(dir);defer delete(before)
+    work_before,work_ok:=bridge_taskv2_git_head(workdir);defer delete(work_before)
+    if !testing.expect(t,before_ok && work_ok) do return
+    store,path:=bridge_legacy_test_store(t);defer bridge_legacy_test_close(store,path)
+    canonical:=bridge_fs_canonicalize_existing(workdir);defer delete(canonical)
+    barrier:=executor.Legacy_Barrier{"source_chain","migration",contracts.owner_payload_digest("verified selection"),1}
+    testing.expect_value(t,bridge_legacy_install_barrier(store,barrier,[]executor.Legacy_Resource{{"workdir_hash",contracts.owner_payload_digest(canonical)}}).code,"ok")
+    // A different claimed task ID cannot evade the actual canonical target.
+    result:=bridge_legacy_merge_target(store,dir,workdir,branch,"claimed_other_task")
+    testing.expect(t,!result.ok && !result.conflict)
+    after,after_ok:=bridge_taskv2_git_head(dir);defer delete(after)
+    work_after,work_after_ok:=bridge_taskv2_git_head(workdir);defer delete(work_after)
+    testing.expect(t,after_ok && work_after_ok && before==after && work_before==work_after)
+    dirty,dirty_ok:=bridge_taskv2_git_dirty(workdir)
+    testing.expect(t,dirty_ok && dirty && os.exists(workdir) && !os.exists(fmt.tprintf("%s/feature.txt",dir)))
+}

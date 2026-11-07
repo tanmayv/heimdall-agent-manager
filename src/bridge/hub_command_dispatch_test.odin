@@ -13,6 +13,7 @@ bridge_dispatch_queue_take_transfers_job_ownership :: proc(t: ^testing.T) {
 	append(&queue, Bridge_Dispatch_Job{
 		text = strings.clone(`{"type":"provider_discover"}`),
 		command_id = strings.clone("cmd_take"),
+		paired_observation_required = true,
 		command_type = strings.clone("provider_discover"),
 		generation = 7,
 		owned_bytes = 64,
@@ -23,6 +24,7 @@ bridge_dispatch_queue_take_transfers_job_ownership :: proc(t: ^testing.T) {
 	testing.expect(t, ok, "queued job is available")
 	testing.expect_value(t, len(queue), 0)
 	testing.expect_value(t, job.command_id, "cmd_take")
+	testing.expect(t,job.paired_observation_required,"queue transfer cannot drop the paired journal requirement")
 	testing.expect_value(t, job.command_type, "provider_discover")
 	testing.expect_value(t, job.generation, i64(7))
 	testing.expect(t, strings.contains(job.text, "provider_discover"), "worker retains the owned command body")

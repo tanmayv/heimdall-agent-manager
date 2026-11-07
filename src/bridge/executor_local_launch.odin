@@ -1,6 +1,7 @@
 package main
 
 import "core:strings"
+import "core:sync"
 import contracts "odin_test:contracts"
 import executor "odin_test:lib/executor_local"
 
@@ -48,6 +49,10 @@ bridge_executor_local_dispatch :: proc(s:^executor.Store,launch:executor.Local_L
     if !found || current.incarnation!=launch.incarnation || current.instance!=launch.instance || current.launch_key!=launch.launch_key ||
        current.configuration!=launch.configuration || current.spawn_digest!=launch.spawn_digest {return false,"stale_local_launch"}
     if current.state!="admitted" do return bridge_executor_local_observe(s,current,socket)
+    sync.mutex_lock(&bridge_legacy_physical_mutex);defer sync.mutex_unlock(&bridge_legacy_physical_mutex)
+    // launch.instance is reloaded from the retained device-signed native
+    // configuration above, never selected by a caller-supplied chain.
+    if !bridge_legacy_targets_allowed(s,[]executor.Legacy_Resource{{"instance",current.instance}}) do return false,"legacy_fenced"
     if request.instance!=launch.instance || bridge_executor_local_spawn_digest(request)!=launch.spawn_digest do return false,"invalid_resources"
     for pair in request.env do if strings.has_prefix(pair[0],"HEIMDALL_EXECUTOR_") {return false,"reserved_launch_key"}
     if !bridge_pty_host_local_executor_capable(socket) do return false,"local_executor_unsupported"
