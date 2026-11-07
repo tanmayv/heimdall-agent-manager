@@ -210,13 +210,9 @@ migration_029_release_budget_controls :: proc(db:DB) -> bool {
             if _,ok=query(db,"UPDATE tasks SET revision=revision+1 WHERE chain_id=? AND task_id=?",chain,task);!ok do return false
         }
     }
-    // An overlay block without its owner row has nothing to restore.
-    orphans,read:=query(db,"SELECT chain_id,task_id FROM local_controls WHERE mode='blocked' AND waiting_on='human' AND reason IN('budget_exhausted','oscillation','native_blocked')")
-    if !read do return false
-    for row in orphans {
-        if _,ok=query(db,"DELETE FROM local_controls WHERE chain_id=? AND task_id=?",row[0],row[1]);!ok do return false
-        if _,ok=query(db,"UPDATE tasks SET revision=revision+1 WHERE chain_id=? AND task_id=?",row[0],row[1]);!ok do return false
-    }
+    // Only owner rows identify overlay blocks. A block without one is a genuine
+    // lease.block whose free-text reason may coincide with a budget word, so it
+    // is left untouched.
     return true
 }
 

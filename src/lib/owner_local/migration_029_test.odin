@@ -51,3 +51,26 @@ migration_029_drops_budget_tables_and_releases_overlay_blocks :: proc(t:^testing
     sealed,_:=query(f.store.db,"SELECT count(*) FROM sqlite_master WHERE type='trigger' AND tbl_name='native_history_records' AND sql LIKE '%budget%'")
     testing.expect_value(t,sealed[0][0],"0")
 }
+
+// R2 review: V29 must not clear a block that no budget owner row claims. A
+// genuine worker lease.block may carry a free-text reason equal to a former
+// budget word; it stays blocked through the upgrade.
+@(test)
+migration_029_keeps_unowned_block_with_budget_word_reason :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
+    close(&f.store)
+    db:DB
+    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
+    testing.expect(t,exec(db,`
+      INSERT INTO local_controls VALUES('chain','task','blocked','ready','budget_exhausted','human');
+      UPDATE schema_migrations SET version=28;`))
+    before,_:=query(db,"SELECT revision FROM tasks WHERE chain_id='chain' AND task_id='task'")
+    testing.expect_value(t,sqlite3_close(db),0)
+    if !testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key")) do return
+    controls,_:=query(f.store.db,"SELECT task_id,mode,resume_state,reason,waiting_on FROM local_controls ORDER BY task_id")
+    testing.expect_value(t,encode(controls),encode([1][5]string{{"task","blocked","ready","budget_exhausted","human"}}))
+    after,_:=query(f.store.db,"SELECT revision FROM tasks WHERE chain_id='chain' AND task_id='task'")
+    testing.expect_value(t,encode(after),encode(before))
+    testing.expect(t,!control_ready(&f.store,"chain","task"),"the genuine block survives V29")
+}
