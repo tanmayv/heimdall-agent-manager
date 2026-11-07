@@ -142,8 +142,9 @@ owner_local_list_handler :: proc(ctx:rawptr,req:Request)->Response {
     if !paged {
         // The legacy array form used to stop silently after 100 (or 101) rows.
         // It now walks every keyset page; only an explicit bound fails.
-        all,complete:=owner_local_list_all(h,auth.user_id,chain,headers_only)
-        if !complete do return respond_error(domain.domain_error(.Validation_Failed,"registry listing exceeds the unpaged bound; use page=1"),req.request_id)
+        all,code:=owner_local_list_all(h,auth.user_id,chain,headers_only)
+        if code==.Read_Failed do return respond_error(domain.domain_error(.Internal_Error,"registry read failed"),req.request_id)
+        if code==.Over_Bound do return respond_error(domain.domain_error(.Validation_Failed,"registry listing exceeds the unpaged bound; use page=1"),req.request_id)
         return respond_success(owner_json(all),req.request_id,auth_ctx_server_time(req))
     }
     rows,err:=owner_registry_rows(h,auth.user_id,chain,query_value(req.query,"after_chain"),query_value(req.query,"after_task"),101,headers_only)
@@ -177,25 +178,26 @@ OWNER_LIST_UNPAGED_MAX_ROWS :: 20000
 OWNER_LIST_UNPAGED_MAX_BYTES :: 16*1024*1024
 // Every live registry row for the unpaged array form, walked by keyset pages
 // of 100. complete=false only past an explicit row/byte bound.
-owner_local_list_all :: proc(h:^Bridge_Handlers,account,chain:string,headers_only:bool)->([]Owner_Listing,bool) {
+Owner_List_All_Code :: enum { Complete, Over_Bound, Read_Failed }
+owner_local_list_all :: proc(h:^Bridge_Handlers,account,chain:string,headers_only:bool)->([]Owner_Listing,Owner_List_All_Code) {
     out:=make([dynamic]Owner_Listing,context.temp_allocator)
     after_chain,after_task:="",""
     examined,bytes:=0,0
     for {
         rows,err:=owner_registry_rows(h,account,chain,after_chain,after_task,101,headers_only)
-        if err.code!=.None do return nil,false
+        if err.code!=.None do return nil,.Read_Failed
         for row,i in rows {
             if i==100 do break
             examined+=1
-            if examined>OWNER_LIST_UNPAGED_MAX_ROWS do return nil,false
+            if examined>OWNER_LIST_UNPAGED_MAX_ROWS do return nil,.Over_Bound
             after_chain,after_task=row.chain_id,row.task_id
             registry,valid:=contracts.owner_parse(row.registry_json,"registry")
             if !valid || contracts.owner_string(registry,"deleted")=="1" do continue
             bytes+=len(row.registry_json)+256
-            if bytes>OWNER_LIST_UNPAGED_MAX_BYTES do return nil,false
+            if bytes>OWNER_LIST_UNPAGED_MAX_BYTES do return nil,.Over_Bound
             append(&out,Owner_Listing{row.chain_id,row.owner_bridge_id,row.owner_key_id,row.task_id,row.registry_json,project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry,row.owner_bridge_id)})
         }
-        if len(rows)<=100 do return out[:],true
+        if len(rows)<=100 do return out[:],.Complete
     }
 }
 

@@ -816,7 +816,7 @@ list_task_chains_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		if coord_err.code != .None do return respond_error(coord_err, req.request_id)
 		defer delete(coord_chains)
 		wires := make([]Task_Chain_Wire, len(coord_chains), context.temp_allocator)
-		authority := owner_authority_routes(h.taskchains, string(auth_ctx.user_id), "")
+		authority, _ := owner_authority_routes(h.taskchains, string(auth_ctx.user_id), "")
 		for chain, i in coord_chains {
 			wires[i] = make_chain_wire(chain)
 			wires[i].authority = owner_authority_wire(authority, string(chain.chain_id))
@@ -1054,7 +1054,7 @@ enrich_chain_list_items :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Con
 	// chain with an unknown (0) count rather than filtering them all away.
 	counts_ok := counts_err.code == .None
 	// R4a: one registry read marks every owner-held (migrated) chain.
-	authority := owner_authority_routes(h.taskchains, string(auth.user_id), "")
+	authority, _ := owner_authority_routes(h.taskchains, string(auth.user_id), "")
 	for c in chains {
 		if !include_archived && c.status == .Archived do continue
 		rollup := task_counts[string(c.chain_id)] or_else iface.Chain_Task_Rollup{}
@@ -1467,7 +1467,7 @@ task_chain_detail_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	chain_id := path_part(req.path, 4)
 	// READ (REQ-SEC-3): owner-scoped detail; a same-owner non-member may view it.
 	chain, got, err := taskchain_service.get_chain_for_read(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id))
-	owner_bridge, owner_held := owner_authority_of(h.taskchains, string(auth_ctx.user_id), chain_id)
+	owner_bridge, owner_held, _ := owner_authority_of(h.taskchains, string(auth_ctx.user_id), chain_id)
 	// A native owner chain has no Hub rows: name its authority instead of 404.
 	if !got && owner_held do return respond_error(owner_authority_error(chain_id, owner_bridge), req.request_id)
 	if !got do return respond_error(err, req.request_id)
