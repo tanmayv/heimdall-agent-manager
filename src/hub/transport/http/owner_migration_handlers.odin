@@ -4,6 +4,8 @@ import "base:runtime"
 import "core:encoding/json"
 import "core:fmt"
 import "core:strconv"
+import "core:strings"
+import "core:sync"
 import "core:time"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
@@ -22,7 +24,34 @@ import vault "odin_test:lib/vault"
 // the Bridge, which re-derives activation from /state on every restart.
 OWNER_MIGRATION_IMPORT_TIMEOUT_MS :: 120_000
 
+// External effects of the migrate POST, injectable for handler tests.
+Owner_Migration_Env :: struct {
+    keys:proc(h:^Bridge_Handlers,account:string,selection:json.Object)->(contracts.Owner_Verified_Key,contracts.Owner_Verified_Key,vault.Directory_Verification_Input,bool),
+    bridge_owned:proc(h:^Bridge_Handlers,auth:contracts.Auth_Context,bridge_id:string)->(bool,domain.Domain_Error),
+    bridge_live:proc(h:^Bridge_Handlers,bridge_id:string)->bool,
+    relay:proc(h:^Bridge_Handlers,bridge_id,command_id,body:string)->(string,bool,domain.Domain_Error),
+    nudge:proc(h:^Bridge_Handlers,account,bridge_id,migration,chain_id,manifest_digest:string)->bool,
+}
+owner_migration_default_env :: proc()->Owner_Migration_Env {
+    return {
+        keys=owner_migration_keys,
+        bridge_owned=proc(h:^Bridge_Handlers,auth:contracts.Auth_Context,bridge_id:string)->(bool,domain.Domain_Error) {
+            _,owned,err:=bridge_service.get_bridge(h.bridges,auth,bridge_id)
+            return owned,err
+        },
+        bridge_live=proc(h:^Bridge_Handlers,bridge_id:string)->bool { return project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry,bridge_id) },
+        relay=proc(h:^Bridge_Handlers,bridge_id,command_id,body:string)->(string,bool,domain.Domain_Error) {
+            raw,received,err:=bridge_runtime.send_runtime_command_wait(h.bridge_runtime_registry,project_service.Runtime_Command{bridge_id=bridge_id,command_id=command_id,body_json=body},OWNER_MIGRATION_IMPORT_TIMEOUT_MS)
+            if !received do return "",false,err
+            out:=strings.clone(raw,context.temp_allocator)
+            delete(raw,runtime.default_allocator())
+            return out,true,{}
+        },
+        nudge=owner_migration_activate_nudge,
+    }
+}
 Owner_Migration_Request :: struct { selection,genesis:string }
+Owner_Migration_Abort_Request :: struct { chain_id,migration_id:string }
 Owner_Migration_Preflight :: struct {
     chain_id,state,migration_id,owner_bridge_id:string,
     work_revision:i64,
@@ -93,7 +122,9 @@ owner_migration_keys :: proc(h:^Bridge_Handlers,account:string,selection:json.Ob
 
 owner_migration_handler :: proc(ctx:rawptr,req:Request)->Response {
     context.allocator=context.temp_allocator
-    h:=(^Bridge_Handlers)(ctx)
+    return owner_migration_post((^Bridge_Handlers)(ctx),req,owner_migration_default_env())
+}
+owner_migration_post :: proc(h:^Bridge_Handlers,req:Request,env:Owner_Migration_Env)->Response {
     // The device signatures carry consent; an instance token only transports
     // a browser-signed request (ham-ctl), exactly like the owner relay.
     auth,ok,resp:=require_auth_any(h.auth,req)
@@ -107,7 +138,7 @@ owner_migration_handler :: proc(ctx:rawptr,req:Request)->Response {
     get:=contracts.owner_string
     account,chain_id,migration,bridge_id:=get(selection,"account_id"),get(selection,"chain_id"),get(selection,"migration_id"),get(selection,"owner_bridge_id")
     if account!=auth.user_id do return respond_error(domain.domain_error(.Forbidden,"selection account mismatch"),req.request_id)
-    device,owner,directory,keys_ok:=owner_migration_keys(h,account,selection)
+    device,owner,directory,keys_ok:=env.keys(h,account,selection)
     if !keys_ok do return respond_error(domain.domain_error(.Forbidden,"selection signer or owner Bridge is not currently enrolled"),req.request_id)
     if e:=contracts.owner_verify_migration_selection(selection,account,chain_id,device,owner);e!=.None do return respond_error(domain.domain_error(.Forbidden,fmt.tprintf("migration selection rejected: %s",contracts.owner_auth_error_code(e))),req.request_id)
     // The device also signs the destination genesis: creation_op is the migration.
@@ -119,7 +150,7 @@ owner_migration_handler :: proc(ctx:rawptr,req:Request)->Response {
     chain,exists,cerr:=h.taskchains.repo.get_chain(h.taskchains.repo.ctx,domain.Task_Chain_ID(chain_id))
     if cerr.code!=.None do return respond_error(cerr,req.request_id)
     if !exists || string(chain.owner_user_id)!=account do return respond_error(domain.domain_error(.Not_Found,"task chain not found"),req.request_id)
-    if _,owned,berr:=bridge_service.get_bridge(h.bridges,auth,bridge_id);!owned do return respond_error(berr,req.request_id)
+    if owned,berr:=env.bridge_owned(h,auth,bridge_id);!owned do return respond_error(berr,req.request_id)
     selection_digest,_:=contracts.owner_digest("migration_selection",selection)
     expected,_:=strconv.parse_i64(get(selection,"expected_work_revision"))
     s:=domain.Legacy_Migration_Selection{account,chain_id,migration,bridge_id,owner.key_id,selection_digest,expected}
@@ -134,32 +165,30 @@ owner_migration_handler :: proc(ctx:rawptr,req:Request)->Response {
     fence,blockers,ferr:=h.taskchains.repo.legacy_migration_freeze_now(h.taskchains.repo.ctx,s)
     if ferr.code!=.None do return respond_error(ferr,req.request_id)
     if len(blockers)>0 do return owner_migration_blocked(blockers,req.request_id)
-    export,eerr:=h.taskchains.repo.legacy_migration_export(h.taskchains.repo.ctx,account,chain_id,migration)
+    export,eerr:=owner_migration_export_cached(h,account,chain_id,migration)
     if eerr.code!=.None do return respond_error(eerr,req.request_id)
     result:=Owner_Migration_Result{state=fence.state,migration_id=migration,chain_id=chain_id,manifest_digest=export.manifest_digest}
     if fence.state=="imported" {
         // Exact retry after cutover: nudge activation again; the Bridge also
         // re-derives it from Hub state on its own.
         result.receipt_digest=fence.receipt_digest;result.replayed=true
-        result.activation_sent=owner_migration_activate_nudge(h,account,bridge_id,migration,chain_id,export.manifest_digest)
+        result.activation_sent=env.nudge(h,account,bridge_id,migration,chain_id,export.manifest_digest)
         return respond_success(owner_json(result),req.request_id,auth_ctx_server_time(req))
     }
-    if !project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry,bridge_id) {
+    if !env.bridge_live(h,bridge_id) {
         return respond_error(domain.domain_error(.Bridge_Offline,"owner Bridge is offline; the chain stays frozen until the import is retried",`{"code":"owner_unavailable","state":"frozen"}`),req.request_id)
     }
     id:=fmt.tprintf("cmd_owner_migration_%d",time.to_unix_nanoseconds(time.now()))
     command:=Owner_Migration_Import_Command{"owner_migration_import",id,account,migration,chain_id,body.selection,body.genesis,export.manifest_digest,directory}
-    raw,received,rerr:=bridge_runtime.send_runtime_command_wait(h.bridge_runtime_registry,project_service.Runtime_Command{bridge_id=bridge_id,command_id=id,body_json=owner_json(command)},OWNER_MIGRATION_IMPORT_TIMEOUT_MS)
+    reply_text,received,rerr:=env.relay(h,bridge_id,id,owner_json(command))
     if !received do return respond_error(rerr,req.request_id)
-    reply_text:=string(raw)
-    defer delete(raw,runtime.default_allocator())
     reply:Owner_Migration_Import_Reply
     if json.unmarshal_string(reply_text,&reply,.JSON,context.temp_allocator)!=nil do return respond_error(domain.domain_error(.Internal_Error,"invalid owner import reply"),req.request_id)
     if reply.code!="ok" do return respond_error(domain.domain_error(.Conflict,fmt.tprintf("owner import failed: %s",reply.code),owner_json(struct{code,state:string}{reply.code,"frozen"})),req.request_id)
     receipt_digest,cut,cut_err:=owner_migration_cutover(h,account,chain_id,migration,export.manifest_digest,selection,genesis,reply,owner)
     if cut_err.code!=.None do return respond_error(cut_err,req.request_id)
     result.state="imported";result.receipt_digest=receipt_digest;result.replayed=cut
-    result.activation_sent=owner_migration_activate_nudge(h,account,bridge_id,migration,chain_id,export.manifest_digest)
+    result.activation_sent=env.nudge(h,account,bridge_id,migration,chain_id,export.manifest_digest)
     return respond_success(owner_json(result),req.request_id,auth_ctx_server_time(req))
 }
 
@@ -199,7 +228,7 @@ owner_migration_export_handler :: proc(ctx:rawptr,req:Request)->Response {
     f,found,err:=h.taskchains.repo.legacy_migration_get(h.taskchains.repo.ctx,auth.user_id,migration)
     if err.code!=.None do return respond_error(err,req.request_id)
     if !found || f.selection.owner_bridge_id!=auth.bridge_id do return respond_error(domain.domain_error(.Forbidden,"selected owner Bridge required"),req.request_id)
-    export,eerr:=h.taskchains.repo.legacy_migration_export(h.taskchains.repo.ctx,auth.user_id,f.selection.chain_id,migration)
+    export,eerr:=owner_migration_export_cached(h,auth.user_id,f.selection.chain_id,migration)
     if eerr.code!=.None do return respond_error(eerr,req.request_id)
     part:=query_value(req.query,"part")
     out:=Owner_Migration_Part{migration,export.manifest_digest,part,""}
@@ -224,4 +253,73 @@ owner_migration_state_handler :: proc(ctx:rawptr,req:Request)->Response {
     if err.code!=.None do return respond_error(err,req.request_id)
     if !found || f.selection.owner_bridge_id!=auth.bridge_id do return respond_error(domain.domain_error(.Not_Found,"migration not found"),req.request_id)
     return respond_success(owner_json(Owner_Migration_State{migration,f.selection.chain_id,f.state,f.manifest_digest,f.selection.owner_bridge_id}),req.request_id,auth_ctx_server_time(req))
+}
+
+// Frozen rows are immutable, so one export serves every part request of a
+// migration. A small heap cache keyed by migration id; abort evicts it.
+Owner_Migration_Cached_Export :: struct { account,migration,manifest,manifest_digest:string, documents:[]string }
+owner_migration_export_cache:[2]Owner_Migration_Cached_Export
+owner_migration_export_cache_next:int
+owner_migration_export_cache_mutex:sync.Mutex
+
+owner_migration_cache_free :: proc(e:^Owner_Migration_Cached_Export) {
+    a:=runtime.default_allocator()
+    delete(e.account,a);delete(e.migration,a);delete(e.manifest,a);delete(e.manifest_digest,a)
+    for d in e.documents do delete(d,a)
+    delete(e.documents,a)
+    e^={}
+}
+owner_migration_export_evict :: proc(account,migration:string) {
+    sync.mutex_lock(&owner_migration_export_cache_mutex);defer sync.mutex_unlock(&owner_migration_export_cache_mutex)
+    for &e in owner_migration_export_cache do if e.account==account && e.migration==migration do owner_migration_cache_free(&e)
+}
+// Callers have already authorized the account and checked the fence state.
+owner_migration_export_cached :: proc(h:^Bridge_Handlers,account,chain,migration:string)->(domain.Legacy_Migration_Export,domain.Domain_Error) {
+    sync.mutex_lock(&owner_migration_export_cache_mutex)
+    for e in owner_migration_export_cache {
+        if e.migration!="" && e.account==account && e.migration==migration {
+            docs:=make([]string,len(e.documents),context.temp_allocator)
+            for d,i in e.documents do docs[i]=strings.clone(d,context.temp_allocator)
+            out:=domain.Legacy_Migration_Export{strings.clone(e.manifest,context.temp_allocator),strings.clone(e.manifest_digest,context.temp_allocator),docs}
+            sync.mutex_unlock(&owner_migration_export_cache_mutex)
+            return out,{}
+        }
+    }
+    sync.mutex_unlock(&owner_migration_export_cache_mutex)
+    export,err:=h.taskchains.repo.legacy_migration_export(h.taskchains.repo.ctx,account,chain,migration)
+    if err.code!=.None do return export,err
+    a:=runtime.default_allocator()
+    entry:=Owner_Migration_Cached_Export{strings.clone(account,a),strings.clone(migration,a),strings.clone(export.manifest,a),strings.clone(export.manifest_digest,a),make([]string,len(export.documents),a)}
+    for d,i in export.documents do entry.documents[i]=strings.clone(d,a)
+    sync.mutex_lock(&owner_migration_export_cache_mutex);defer sync.mutex_unlock(&owner_migration_export_cache_mutex)
+    slot:=&owner_migration_export_cache[owner_migration_export_cache_next]
+    owner_migration_export_cache_next=(owner_migration_export_cache_next+1)%len(owner_migration_export_cache)
+    owner_migration_cache_free(slot)
+    slot^=entry
+    return export,{}
+}
+
+// POST /api/v1/owner-local/migrations/abort {chain_id,migration_id}: the
+// account owner returns a selected or frozen chain to its legacy writer. A
+// quarantined owner-side import of it is never activated: the Hub never
+// reports it imported again.
+owner_migration_abort_handler :: proc(ctx:rawptr,req:Request)->Response {
+    context.allocator=context.temp_allocator
+    h:=(^Bridge_Handlers)(ctx)
+    auth,ok,resp:=require_auth_any(h.auth,req)
+    if !ok do return resp
+    if !contracts.is_user_auth(auth) && auth.kind!=.Instance_Token do return respond_error(domain.domain_error(.Forbidden,"user authentication required"),req.request_id)
+    body:Owner_Migration_Abort_Request
+    if json.unmarshal_string(req.body,&body,.JSON,context.temp_allocator)!=nil || body.chain_id=="" || body.migration_id=="" do return respond_error(domain.domain_error(.Validation_Failed,"chain_id and migration_id are required"),req.request_id)
+    chain,exists,cerr:=h.taskchains.repo.get_chain(h.taskchains.repo.ctx,domain.Task_Chain_ID(body.chain_id))
+    if cerr.code!=.None do return respond_error(cerr,req.request_id)
+    if !exists || string(chain.owner_user_id)!=auth.user_id do return respond_error(domain.domain_error(.Not_Found,"task chain not found"),req.request_id)
+    fence,selected,_:=h.taskchains.repo.legacy_source_get(h.taskchains.repo.ctx,auth.user_id,body.chain_id)
+    replayed,err:=h.taskchains.repo.legacy_migration_abort(h.taskchains.repo.ctx,auth.user_id,body.chain_id,body.migration_id)
+    if err.code!=.None do return respond_error(err,req.request_id)
+    owner_migration_export_evict(auth.user_id,body.migration_id)
+    // Lets the owner abandon a quarantined import now; it also does so on its
+    // own reconcile, since the Hub no longer reports this migration.
+    if selected && fence.selection.migration_id==body.migration_id && h.bridge_runtime_registry!=nil do _=owner_migration_activate_nudge(h,auth.user_id,fence.selection.owner_bridge_id,body.migration_id,body.chain_id,"")
+    return respond_success(owner_json(struct{state,migration_id,chain_id:string,replayed:bool}{"aborted",body.migration_id,body.chain_id,replayed}),req.request_id,auth_ctx_server_time(req))
 }

@@ -849,6 +849,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router,"GET","/api/v1/owner-local/chains",rawptr(&graph.bridge_handlers),http.owner_local_list_handler)
 	http.router_add(&graph.router,"GET","/api/v1/owner-local/migrations/preflight",rawptr(&graph.bridge_handlers),http.owner_migration_preflight_handler)
 	http.router_add(&graph.router,"POST","/api/v1/owner-local/migrations",rawptr(&graph.bridge_handlers),http.owner_migration_handler)
+	http.router_add(&graph.router,"POST","/api/v1/owner-local/migrations/abort",rawptr(&graph.bridge_handlers),http.owner_migration_abort_handler)
 	http.router_add(&graph.router,"GET","/api/v1/owner-local/migrations/export",rawptr(&graph.bridge_handlers),http.owner_migration_export_handler)
 	http.router_add(&graph.router,"GET","/api/v1/owner-local/migrations/state",rawptr(&graph.bridge_handlers),http.owner_migration_state_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/search/relay", rawptr(&graph.bridge_handlers), http.task_chain_search_relay_handler)
