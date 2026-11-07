@@ -4,6 +4,8 @@ import "core:strings"
 import contracts "odin_test:contracts"
 import executor "odin_test:lib/executor_local"
 
+Executor_Local_Prepare :: #type proc(rawptr)->bool
+
 // The immutable digest covers the full framed Spawn, including exact argv,
 // environment, startup credentials, cwd, timeout and provider configuration.
 // This is computed before Bridge-only exact-control fields are appended.
@@ -25,7 +27,7 @@ bridge_executor_resolve_local :: proc(s:^executor.Store,configuration:string,req
     if !within || executor.directory_key(s.executor,canonical)!=mapping.key do return {}
     provider,model,profile:=get(c,"provider"),get(c,"model"),get(c,"provider_profile")
     if !bridge_provider_catalog_has_model(provider,model) do return {}
-    resolved,err:=profile_lookup(provider,profile)
+    resolved,err:=profile_lookup(provider,profile,prepare_runtime=false)
     if err!=.None || !resolved.enabled || resolved.provider!=provider || resolved.profile_id!=profile || !profile_has_model(&resolved,provider,model) do return {}
     digest:=bridge_executor_local_spawn_digest(request)
     if digest!=get(c,"spawn_digest") do return {}
@@ -37,7 +39,8 @@ bridge_executor_resolve_local :: proc(s:^executor.Store,configuration:string,req
 // daemon I/O. Once first permission is consumed every retry is exact query only.
 bridge_executor_local_dispatch :: proc(s:^executor.Store,launch:executor.Local_Launch,key:contracts.Owner_Verified_Key,
     request:Pty_Host_Spawn_Request,resources:executor.Local_Resources,socket:string,
-    clock_ctx:rawptr=nil,clock:Executor_Now=bridge_executor_physical_clock)->(bool,string) {
+    clock_ctx:rawptr=nil,clock:Executor_Now=bridge_executor_physical_clock,
+    prepare_ctx:rawptr=nil,prepare:Executor_Local_Prepare=nil)->(bool,string) {
     if clock==nil do return false,"clock_required"
     current,found:=executor.local_launch(s,launch.id)
     if !found || current.incarnation!=launch.incarnation || current.instance!=launch.instance || current.launch_key!=launch.launch_key ||
@@ -47,6 +50,10 @@ bridge_executor_local_dispatch :: proc(s:^executor.Store,launch:executor.Local_L
     for pair in request.env do if strings.has_prefix(pair[0],"HEIMDALL_EXECUTOR_") {return false,"reserved_launch_key"}
     if !bridge_pty_host_local_executor_capable(socket) do return false,"local_executor_unsupported"
     if !executor.local_begin_dispatch(s,launch,key,clock(clock_ctx),resources) do return bridge_executor_local_observe(s,launch,socket)
+    if !executor.local_dispatch_current(s,launch,key,clock(clock_ctx)) do return false,"local_admission_not_current"
+    // Consume the durable first-I/O permission before any bootstrap/token
+    // mutation. A crash or failed preparation remains charged and query-only.
+    if prepare!=nil && !prepare(prepare_ctx) do return false,"startup_prepare_failed"
     if !executor.local_dispatch_current(s,launch,key,clock(clock_ctx)) do return false,"local_admission_not_current"
     req:=request
     env:=make([][2]string,len(request.env)+2,context.temp_allocator)

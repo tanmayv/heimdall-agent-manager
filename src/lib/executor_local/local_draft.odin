@@ -11,6 +11,40 @@ import contracts "odin_test:contracts"
 // included in a device inspect result or accepted from encrypted relay input.
 Local_Draft :: struct {id,configuration,material,principal,key,state,launch_id:string,revision:i64}
 
+local_draft_source :: proc(s:^Store,source:string)->(Local_Draft,bool) {
+    id:=contracts.owner_payload_digest(encode([3]string{"local-draft",s.executor,source}))
+    return local_draft_native(s,id)
+}
+
+local_draft_consent :: proc(s:^Store,draft:Local_Draft)->(string,bool) {
+    sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
+    if s.db==nil || s.unusable || draft.launch_id=="" do return "",false
+    rows,read:=query(s.db,`SELECT consent FROM executor_local_launches l JOIN executor_local_drafts d ON d.launch_id=l.launch_id
+      WHERE d.draft_id=? AND d.state='authorized' AND l.state IN ('admitted','dispatching','active')`,draft.id)
+    if !read || len(rows)!=1 do return "",false
+    return rows[0][0],true
+}
+
+// Selection is a native proposal from installed signed resources, never new
+// authority. Authorization and first dispatch revalidate these exact versions.
+// Empty path is allowed only when a single current mapping is unambiguous.
+local_draft_selection :: proc(s:^Store,profile,path:string)->(slot,directory:string,policy:i64,mapping:Directory_Mapping,code:string) {
+    sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
+    if s.db==nil || s.unusable do return "","",0,{},"storage_error"
+    rows,read:=query(s.db,`SELECT directory_id,directory_path,directory_key,revision FROM executor_directories d
+      WHERE enabled=1 AND revision=(SELECT max(revision) FROM executor_directories WHERE directory_id=d.directory_id)
+      AND (?='' OR directory_path=?) ORDER BY directory_id LIMIT 2`,path,path)
+    if !read do return "","",0,{},"storage_error"
+    if len(rows)!=1 do return "","",0,{},"directory_selection_required"
+    r:=rows[0]
+    slots,found:=query(s.db,`SELECT slot_id,(SELECT policy_revision FROM executor_runtime) FROM executor_slots
+      WHERE provider_profile=? AND enabled=1 AND NOT EXISTS(SELECT 1 FROM executor_live_resources r WHERE r.slot_id=executor_slots.slot_id)
+      ORDER BY slot_id LIMIT 1`,profile)
+    if !found do return "","",0,{},"storage_error"
+    if len(slots)!=1 do return "","",0,{},"slot_selection_required"
+    return slots[0][0],r[0],number(slots[0][1]),Directory_Mapping{r[1],r[2],number(r[3])},"ok"
+}
+
 // The native source digest identifies one exact ordinary launch generation.
 // Retrying it returns the original random material, including after restart.
 // Staging is inert: no token activation, bootstrap write, resource charge or I/O.

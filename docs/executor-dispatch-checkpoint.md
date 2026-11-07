@@ -2303,3 +2303,153 @@ launch evidence remain below.
 6. Commit final implementation and obtain the named independent review before
    M3a submission. Encrypted PTY/result/provider-platform work belongs to the
    separately scoped continuation; this checkpoint grants no full M3 gate.
+
+## M3a production admission completion — 2026-11-07
+
+This section supersedes the preceding M3a continuation list for production
+admission. Requirements revision 1 and coordinator interface/provisioning decisions
+`cmt_18e5af02125aae50` and `cmt_18e5af47889e76ab` remain the scope. Independent
+review is routed to named reviewer `agt_18e5281575868be4` through normal lease
+submission, as confirmed by the coordinator. This is not the full Milestone 3
+PTY/result/provider-platform gate or permission to roll out a runtime.
+
+### Connected behavior and authority
+
+- `src/bridge/executor_local_native.odin:195` is the native manual/warm/provider-test
+  entry. It selects an available exact-profile slot from installed signed policy
+  and an unambiguous signed canonical directory mapping. Missing resources return
+  actionable configuration refusal. OS CSPRNG material is generated once and
+  retained with the native command/full Spawn; unsigned requests do not invalidate
+  the old token, clean bootstrap, arm startup or start a child. Compatible native
+  generation retries reuse original material and current exact signed consent;
+  conflicting configuration/epoch retries cannot replace it. No synthetic
+  chain/task/lease or Bridge-fabricated Hub credential is introduced.
+- `src/bridge/executor_local_relay.odin:105` connects the signed draft authorize
+  transaction to physical dispatch. It checks preparing principal/key and exact
+  revision/digest before preparation. Slow bootstrap assembly releases the
+  application executor mutex. Fresh paired directory/key verification then runs
+  under startup/vault gates, and native catalog/profile/model/path configuration
+  remains serialized through I/O. The bounded directory GET has no reverse Bridge
+  callback and holds no SQL transaction. Immutable Spawn and signed mapping are
+  resolved again before admission. Enrollment is fetched again across the durable
+  dispatch COMMIT and bootstrap writes (`executor_local_native.odin:59`).
+- `src/bridge/executor_local_launch.odin:40` consumes durable first-I/O permission
+  before the startup callback. Lost replies/restarts are exact observation only.
+  `src/bridge/startup_readiness.odin:383` reuses the exact daemon startup-key check
+  while already holding startup serialization, restoring a lost projection without
+  rotating token/bootstrap or claiming readiness from a historical receipt.
+- Signed cancellation in `src/bridge/executor_local_relay.odin:107` invalidates only
+  the retained exact startup credential, targets the exact daemon launch key, and
+  retains stopping/uncertain charges until trusted exact absence commits. A lost
+  stop-observation commit cannot refund a live/uncertain child. Receipt replay
+  cannot revive cancelled state. Existing all-owner shared-budget, owner-fence,
+  renewal and readiness paths remain connected and covered below.
+- `src/ui/components/agents/LocalLaunchApproval.tsx:27` mounts review, inspect,
+  approve, cancel and exact retry in ordinary instance details. Current directory
+  verification runs before and after relay I/O. Only unresolved signed operation
+  bytes and small draft references are retained as session-storage vault
+  ciphertext; response/configuration plaintext is not persisted as a detail cache.
+  Reload retries the same signature/operation rather than minting authority.
+  Controls remain reachable after readiness clears the instance error.
+
+### Explicit operator provisioning
+
+`src/bridge/executor_operator.odin:20` adds an explicit native CLI signer for
+supplied bounded policy/directory records. It uses existing protected Bridge
+identity/account/key/domain binding. The authority is OS-account/keystore access;
+it does **not** distinguish humans from agents with the same OS account/access.
+There is no signing RPC, private-key export, imported private key, automatic
+signing/provisioning or agent-token operator authority.
+
+`src/bridge/executor_operator.odin:49` and
+`src/lib/executor_local/operator.odin:9` provide independently verified signed
+import/readback through the running single journal writer, under the same gates.
+Import enforces canonical paths, revision/replay, finite allocations and drain
+rules. Public identity inspection and complete operator record/command examples
+are in `docs/executor-local-operator.md`. Verification used disposable isolated
+identities, config files, sockets, journal and daemon; no live configuration was
+signed/installed or restarted.
+
+### Verification
+
+Commands ran through managed shells in
+`/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e5ac3db3f3fce0`,
+except the explicitly detached unchanged baseline described below.
+
+```bash
+nix develop --command env HEIMDALL_EXECUTOR_TEST_PTY=$HOME/.cache/heimdall-tests/m3-local-admission-bins-20261107-0505-1/bin/ham-pty-host odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1 -out:$HOME/.cache/heimdall-tests/m3a-bridge-final-20261107-0637
+nix develop --command env HEIMDALL_EXECUTOR_TEST_PTY=$HOME/.cache/heimdall-tests/m3-local-admission-bins-20261107-0505-1/bin/ham-pty-host odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1 -define:EXECUTOR_TEST_REQUIRED=true -define:ODIN_TEST_NAMES=main.test_executor_local_native_pending_fresh_resources_and_real_dispatch,main.test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection,main.bridge_executor_local_real_daemon_lost_observation_restart_and_exact_stop,main.bridge_executor_physical_authority_gate_linearizes_vault_invalidation -out:$HOME/.cache/heimdall-tests/m3a-acceptance-real-final-20261107-0643
+nix develop --command env HEIMDALL_EXECUTOR_TEST_PTY=$HOME/.cache/heimdall-tests/m3-local-admission-bins-20261107-0505-1/bin/ham-pty-host odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1 -define:EXECUTOR_TEST_REQUIRED=true -define:ODIN_TEST_NAMES=main.test_executor_local_native_pending_fresh_resources_and_real_dispatch -out:$HOME/.cache/heimdall-tests/m3a-operator-final-20261107-0644
+nix develop --command odin test src/lib/executor_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3a-storage-final-20261107-0636
+nix develop --command odin test src/contracts -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3a-contracts-final-20261107-0640
+nix develop --command odin test src/hub/service/agent -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3a-agent-final-20261107-0641
+nix develop --command node --experimental-strip-types --test --import ./tests/helpers/vaultEndpointHarness.ts tests/ui_local_launch_approval_test.ts tests/ui_executor_local_launch_test.ts tests/ui_executor_contract_test.ts tests/ui_executor_issuance_test.ts tests/ui_wire_error_test.ts
+nix develop --command npm run typecheck
+nix develop --command npm run build
+nix build .#ham-bridge .#ham-hub -o $HOME/.cache/heimdall-tests/m3a-native-review-bins-20261107-0648
+git diff --cached --check
+```
+
+| Check | Outcome | Managed session |
+| --- | --- | --- |
+| Full Bridge, including real-daemon tests when configured | 1033 pass, exit 0 | `sh_a983406e16e88f936a6c1baac90ee73f` |
+| Required real native/remote/recovery/vault gate | 4 pass, exit 0 | `sh_221588b1a55adb1bcd34603b4acaf805` |
+| Final native operator/input-bound check | 1 pass, exit 0 | `sh_9c5e315b3c732105826cc8c24fe102c1` |
+| Executor journal | 54 pass, exit 0 | `sh_db722051400dadc3b4cadfa7b45f84bd` |
+| Contracts | 37 pass, exit 0 | `sh_2a60d8af5a79376125d81c8e912f1b67` |
+| Hub agent/routing | 68 pass, exit 0 | `sh_d87b2594e09f864a7185ffe02fa32fde` |
+| TS contracts/client/mounted UI/error regression | 13 pass, exit 0 | `sh_073a09db1feac7e9b3f62587ed1acbaf` |
+| Final typecheck | pass, exit 0 | `sh_c54e898d14e30aebc7382b4e326adb0f` |
+| UI/Electron build | pass, exit 0 | `sh_e7c67db605fde1ea56254a752de98ca9` |
+| Final Hub/Bridge packages | pass, exit 0 | `sh_9c127464d42573df6cb3c49f7a4cb72c` |
+
+The mounted native scenario (`executor_local_native_test.odin:23`) exercises the
+CLI sign/export and import/inspect over an isolated real local socket, before any
+native launch. It proves missing-config refusal, forged operator/agent-token
+rejection, no signing RPC, live reallocation rejection, signed prepare ownership,
+delayed expiry, fresh root-signed revocation/high-water rollback rejection,
+catalog disable and signed directory replacement. It then exercises admission
+rollback before startup, actual managed provider-test Spawn, lost observation,
+same-operation/native retry preserving one child, reopen/cancel/failed observation
+charge retention and historical authorize-after-cancel. Finally it runs ordinary
+manual launch through production bootstrap HTTP/template materialization and a
+real daemon, warm reuse with projection recovery, and exact signed cancellation.
+The browser scenario exercises actual mounted buttons, signed/encrypted replies,
+lost reply plus unmount/remount, identical signature replay, post-ready controls
+and delayed reply after enrolled Bridge revocation.
+
+### Baseline failures and corrected drafts
+
+The broader Task System v2 suite has **193 tests, 3 failures** on both changed
+source (`sh_64cbeb0817a95b398f0584e920ec96cc`) and untouched `9ea25988`
+(`sh_d538c42fd181b75b173d1d1bdc228db7`):
+
+- `test_clock_jump_extension_only_when_jump_detected`;
+- `test_d1_verify_waiting_task_gets_fresh_review_after_migration`;
+- `test_fleet_delete_reevaluates_gate`.
+
+Both ran the following exact command, differing only in unique output and cwd:
+
+```bash
+nix develop --command odin test src/hub/service/taskv2 -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3a-taskv2-wake-final-20261107-0636
+nix develop --command odin test src/hub/service/taskv2 -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3a-taskv2-baseline-20261107-0638
+```
+
+The baseline used a detached temporary worktree under `$HOME/.cache/heimdall-tests`,
+created from `9ea25988` and removed after comparison; shared/predecessor branches
+were untouched. These existing failures are disclosed, not counted as passing
+coverage or broadened into unrelated fixes.
+
+An early full Bridge run was stopped after obsolete unsigned-wake tests expected
+token/bootstrap replacement and waited for now-forbidden bootstrap I/O. They are
+replaced by unsigned refusal/credential preservation and exact credential-forwarding
+checks; the real signed native scenario retains lost-reply/projection recovery
+coverage. The obsolete unused unsigned PTY launcher was removed. Draft errors
+corrected before final passes: shell-edit quoting, Odin crypto helper/length,
+dynamic file-set ownership, flat provider-test parsing, fixture model flag,
+complete root-signed revoke subject, provider-test clean-slate behavior,
+procedure-pointer compatibility and an `expect_value` source-location argument.
+
+No Rust/daemon source changed. Real daemon verification used the retained matching
+local-admission package; Rust/provider/platform matrices were not rerun or claimed.
+No unrelated cleanup, live provisioning, restart, deployment or push occurred.

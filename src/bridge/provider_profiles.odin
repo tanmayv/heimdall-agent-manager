@@ -579,6 +579,7 @@ profile_list :: proc(allocator := context.temp_allocator) -> ([]Provider_Profile
 profile_lookup :: proc(
 	provider, profile_id: string,
 	allocator := context.temp_allocator,
+	prepare_runtime := true,
 ) -> (
 	p: Provider_Profile,
 	err: Profile_Error,
@@ -595,7 +596,9 @@ profile_lookup :: proc(
 		if !rec.enabled do return {}, .Disabled
 		p = rec
 		if !profile_materialize(&p) do return {}, .Store_Unavailable
-		if e := profile_prepare_runtime(&p); e != .None do return {}, e
+		if prepare_runtime {
+			if e := profile_prepare_runtime(&p); e != .None do return {}, e
+		}
 		return p, .None
 	}
 	if id == provider do return Provider_Profile{profile_id = provider, provider = provider, enabled = true}, .None
@@ -656,6 +659,9 @@ profile_commit_locked :: proc(
 // keep_names supports the earlier explicit keep bit; value_redacted is the
 // t3code keep rule. Non-redacted empty clears; missing/non-sensitive removes.
 profile_upsert :: proc(p: ^Provider_Profile, keep_names: []string, now: i64) -> Profile_Error {
+	bridge_provider_catalog_init()
+	sync.rw_mutex_lock(&bridge_launch_configuration_mutex)
+	defer sync.rw_mutex_unlock(&bridge_launch_configuration_mutex)
 	if e := profile_validate_metadata(p); e != .None do return e
 	profile_normalize(p)
 	if e := profile_validate(p); e != .None do return e
@@ -714,6 +720,9 @@ profile_upsert :: proc(p: ^Provider_Profile, keep_names: []string, now: i64) -> 
 }
 
 profile_remove :: proc(profile_id: string) -> Profile_Error {
+	bridge_provider_catalog_init()
+	sync.rw_mutex_lock(&bridge_launch_configuration_mutex)
+	defer sync.rw_mutex_unlock(&bridge_launch_configuration_mutex)
 	sync.mutex_lock(&g_profile_store_mu)
 	defer sync.mutex_unlock(&g_profile_store_mu)
 	records, ok := profile_store_read_locked()
@@ -733,6 +742,9 @@ profile_remove :: proc(profile_id: string) -> Profile_Error {
 
 // Reset drops all overrides, including secrets, but preserves enabled.
 profile_reset :: proc(provider: string) -> Profile_Error {
+	bridge_provider_catalog_init()
+	sync.rw_mutex_lock(&bridge_launch_configuration_mutex)
+	defer sync.rw_mutex_unlock(&bridge_launch_configuration_mutex)
 	sync.mutex_lock(&g_profile_store_mu)
 	defer sync.mutex_unlock(&g_profile_store_mu)
 	records, ok := profile_store_read_locked()
@@ -751,6 +763,9 @@ profile_reset :: proc(provider: string) -> Profile_Error {
 }
 
 profile_purge :: proc() -> bool {
+	bridge_provider_catalog_init()
+	sync.rw_mutex_lock(&bridge_launch_configuration_mutex)
+	defer sync.rw_mutex_unlock(&bridge_launch_configuration_mutex)
 	sync.mutex_lock(&g_profile_store_mu)
 	defer sync.mutex_unlock(&g_profile_store_mu)
 	return profile_purge_path(profile_store_path())

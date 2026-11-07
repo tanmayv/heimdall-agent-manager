@@ -4,6 +4,7 @@ import { parseOwnerRequestDocument } from './ownerJson.ts';
 
 // Mirrored executor resource contracts; no task command or launch authority.
 export const executorSchemas = {
+  operator_import: [['kind','label'],['document','document']],
   local_relay: [['protocol_version','version'],['bridge_id','id'],['request_id','id'],['expires_ms','positive'],['envelope','required_cipher']],
   local_result: [['protocol_version','version'],['account_id','id'],['executor_bridge_id','id'],
     ['principal_id','id'],['operation_id','id'],['request_id','id'],['request_digest','hash'],['result_digest','hash'],

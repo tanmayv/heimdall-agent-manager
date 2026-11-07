@@ -125,6 +125,7 @@ executor_schema :: proc(kind:string)->[]Owner_Field {
     case "local_result":return executor_local_result_fields[:]
     case "local_bundle":return executor_local_bundle_fields[:]
     case "local_draft":return executor_local_draft_fields[:]
+    case "operator_import":return executor_operator_import_fields[:]
     case "local_launch":return executor_local_launch_fields[:]
     case "local_configuration":return executor_local_configuration_fields[:]
     case "bootstrap_content":return executor_bootstrap_content_fields[:]

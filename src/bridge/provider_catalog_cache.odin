@@ -51,6 +51,9 @@ Bridge_Provider_Catalog_Snapshot :: struct {
 }
 
 bridge_provider_catalog_mutex: sync.RW_Mutex
+// Native local launch holds a shared gate from fresh configuration resolution
+// through first physical I/O. Catalog/profile replacement takes it exclusively.
+bridge_launch_configuration_mutex: sync.RW_Mutex
 bridge_provider_catalog_loaded: bool
 bridge_provider_catalog_snapshot: ^Bridge_Provider_Catalog_Snapshot
 
@@ -116,6 +119,8 @@ bridge_provider_catalog_build_snapshot :: proc(etag, catalog_json: string) -> (^
 
 bridge_provider_catalog_publish :: proc(snapshot: ^Bridge_Provider_Catalog_Snapshot) {
 	if snapshot == nil do return
+	sync.rw_mutex_lock(&bridge_launch_configuration_mutex)
+	defer sync.rw_mutex_unlock(&bridge_launch_configuration_mutex)
 	sync.rw_mutex_lock(&bridge_provider_catalog_mutex)
 	// Published snapshots are immutable and intentionally retained for the process
 	// lifetime. A launch may still hold owned argv derived under the read lock; with

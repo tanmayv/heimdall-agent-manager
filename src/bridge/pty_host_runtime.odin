@@ -322,7 +322,7 @@ bridge_pty_host_ping :: proc(socket: string) -> bool {
 // pp is the resolved provider profile (REQ-PROF-4), nil for the default profile:
 // its binary replaces the discovered path, its args follow the model flag, and its
 // env layer goes before env (so the HEIMDALL_* variables always win).
-bridge_pty_host_build_spawn :: proc(instance_id, run_dir, provider, model, agent_token: string, env: []string, display_name := "", timeout_seconds: u64 = 0, permission_mode := "", pp: ^Provider_Profile = nil) -> (Pty_Host_Spawn_Request, bool) {
+bridge_pty_host_build_spawn :: proc(instance_id, run_dir, provider, model, agent_token: string, env: []string, display_name := "", timeout_seconds: u64 = 0, permission_mode := "", pp: ^Provider_Profile = nil, inert := false) -> (Pty_Host_Spawn_Request, bool) {
 	if strings.trim_space(provider) == "" || strings.trim_space(model) == "" do return {}, false
 	if pp != nil {
 		if !profile_has_model(pp,provider,model) do return {},false
@@ -334,7 +334,7 @@ bridge_pty_host_build_spawn :: proc(instance_id, run_dir, provider, model, agent
 		resolved_path = strings.clone(pp.config.binary_path)
 	} else {
 		path_ok: bool
-		resolved_path, path_ok = bridge_provider_resolve_path(provider)
+		resolved_path, path_ok = bridge_provider_resolve_launch_path(provider,inert)
 		if !path_ok do return {}, false
 	}
 	defer delete(resolved_path)
@@ -351,8 +351,8 @@ bridge_pty_host_build_spawn :: proc(instance_id, run_dir, provider, model, agent
 		profile.extra_args = bridge_pty_host_default_profile_args(provider)
 	}
 	profile.extension_expected = bridge_provider_launch_extension_expected(profile,pp.profile_id if pp != nil else "")
-	bridge_startup_set_expectation(instance_id, agent_token, profile.extension_expected)
-	return bridge_pty_host_build_spawn_for_profile(instance_id, run_dir, profile, model, agent_token, full_env, display_name, timeout_seconds, permission_mode)
+	if !inert do bridge_startup_set_expectation(instance_id, agent_token, profile.extension_expected)
+	return bridge_pty_host_build_spawn_for_profile(instance_id, run_dir, profile, model, agent_token, full_env, display_name, timeout_seconds, permission_mode, inert)
 }
 
 // Args of a launch without a provider profile: for Codex, the overrides that load
@@ -364,7 +364,7 @@ bridge_pty_host_default_profile_args :: proc(provider: string) -> []string {
 }
 
 // Assemble the launch from the already resolved, immutable catalog profile.
-bridge_pty_host_build_spawn_for_profile :: proc(instance_id, run_dir: string, profile: Bridge_Provider_Profile, model, agent_token: string, env: []string, display_name := "", timeout_seconds: u64 = 0, permission_mode := "") -> (Pty_Host_Spawn_Request, bool) {
+bridge_pty_host_build_spawn_for_profile :: proc(instance_id, run_dir: string, profile: Bridge_Provider_Profile, model, agent_token: string, env: []string, display_name := "", timeout_seconds: u64 = 0, permission_mode := "", inert := false) -> (Pty_Host_Spawn_Request, bool) {
 	agent_argv := bridge_runtime_agent_argv_for_profile(profile, model, agent_token, instance_id, permission_mode)
 	if len(agent_argv) == 0 do return {}, false
 
@@ -395,7 +395,7 @@ bridge_pty_host_build_spawn_for_profile :: proc(instance_id, run_dir: string, pr
 		rows                = PTY_HOST_DEFAULT_ROWS,
 		cols                = PTY_HOST_DEFAULT_COLS,
 	}
-	bridge_pty_host_track_instance_provider(instance_id, profile.name)
+	if !inert do bridge_pty_host_track_instance_provider(instance_id, profile.name)
 	return req, true
 }
 

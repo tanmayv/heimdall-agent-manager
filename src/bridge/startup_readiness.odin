@@ -375,6 +375,12 @@ bridge_startup_tick :: proc(now: i64, relay := bridge_startup_relay, deliver := 
 bridge_startup_confirm_spawned :: proc(socket, instance_id: string, run_count: int) -> (confirmed, queried: bool) {
 	sync.mutex_lock(&bridge_startup_io_mutex)
 	defer sync.mutex_unlock(&bridge_startup_io_mutex)
+	return bridge_startup_confirm_spawned_io_locked(socket,instance_id,run_count)
+}
+
+// Native signed local dispatch already owns startup I/O serialization. Reuse
+// the exact persisted startup-key check without recursively taking that gate.
+bridge_startup_confirm_spawned_io_locked :: proc(socket, instance_id: string, run_count: int) -> (confirmed, queried: bool) {
 	rec: Bridge_Local_Agent_Token_Record
 	sync.mutex_lock(&bridge_local_token_mutex)
 	for i := len(bridge_local_token_records) - 1; i >= 0; i -= 1 {

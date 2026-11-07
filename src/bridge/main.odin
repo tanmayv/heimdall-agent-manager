@@ -134,6 +134,10 @@ main :: proc() {
 		if !bridge_extensions_command(os.args) do os.exit(1)
 		return
 	}
+	if len(os.args)>1 && os.args[1]=="executor" {
+		if !bridge_executor_operator_command(os.args) do os.exit(1)
+		return
+	}
 	if len(os.args) > 1 && os.args[1] == "list" {
 		if !bridge_list_command(os.args) do os.exit(1)
 		return
@@ -295,6 +299,7 @@ print_usage :: proc() {
 	fmt.println("recovery: ham-bridge recovery resume-sunset --config PATH  (offline; stop service first; resume a temporary sunset after rollback)")
 	fmt.println("service: ham-bridge service start|stop|restart|status [--hub URL [--profile P] | --service NAME] [--json]")
 	fmt.println("status:  ham-bridge status [--json] [--hub URL [--profile P] | --service NAME]   (installed/enrolled/running/connected/vault/version; no token needed)")
+	fmt.println("executor: ham-bridge executor identity|sign|import|inspect --config FILE [--kind policy|directory --file RECORD --output SIGNED_RECORD] (explicit host operator configuration; signing is local CLI only)")
 	fmt.println("setup:   ham-bridge setup --hub URL [--profile P] [--new-bridge | --reuse-bridge BRIDGE_ID] [--reenroll] [--headless] [--json-progress]   (transactional install from this bundle; see docs/bridge-setup-progress.md)")
 	fmt.println("list:    ham-bridge list [--json]   (every bridge profile of this OS user)")
 	fmt.println("vault:  ham-bridge vault prune [--config PATH [--bridge-token-file PATH] [--remove]] [--remove-scope BRIDGE_ID --hub URL]   (list / prune vault state of bridges whose hub rejects them; never silent)")

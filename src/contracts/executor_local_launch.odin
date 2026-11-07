@@ -40,3 +40,5 @@ executor_local_result_fields := [?]Owner_Field{
     {"request_expires_ms","positive"},{"key_id","id"},{"signature","signature"},
 }
 executor_local_bundle_fields := [?]Owner_Field{{"receipt","document"},{"body","document"}}
+// Local transport carries an already signed record, never operator authority.
+executor_operator_import_fields := [?]Owner_Field{{"kind","label"},{"document","document"}}

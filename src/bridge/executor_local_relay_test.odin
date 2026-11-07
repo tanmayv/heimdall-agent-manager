@@ -145,7 +145,7 @@ test_executor_local_mounted_signed_prepare_inspect_cancel_restart :: proc(t:^tes
     testing.expect(t,cached && extract_json_string(response,"code","")=="invalid_scope")
 }
 
-bridge_executor_test_local_exchange :: proc(t:^testing.T,template:Executor_Issuance_Wire,raw:string,kr:^vault.Vault_Keyring,host:contracts.Owner_Verified_Key,request_id:string)->(string,string) {
+bridge_executor_test_local_exchange :: proc(t:^testing.T,template:Executor_Issuance_Wire,raw:string,kr:^vault.Vault_Keyring,host:contracts.Owner_Verified_Key,request_id:string,apply:Executor_Local_Apply=bridge_executor_local_apply)->(string,string) {
     now:=bridge_executor_physical_clock(nil)
     token,sealed:=bridge_encrypt_vault_text(raw,kr,context.temp_allocator)
     if !testing.expect(t,sealed) do return "","test_seal_failed"
@@ -153,7 +153,7 @@ bridge_executor_test_local_exchange :: proc(t:^testing.T,template:Executor_Issua
     wire.command_id=request_id
     wire.relay=executor.encode(struct{protocol_version,bridge_id,request_id,expires_ms,envelope:string}{
         "1",host.principal_id,request_id,fmt.tprintf("%d",now+60000),token})
-    bridge_executor_local_handle(nil,executor.encode(wire))
+    bridge_executor_local_handle(nil,executor.encode(wire),apply)
     response,cached:=bridge_runtime_cached_command(request_id)
     if !testing.expect(t,cached) do return "","test_reply_missing"
     get:=contracts.owner_string

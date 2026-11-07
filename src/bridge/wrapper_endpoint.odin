@@ -221,6 +221,9 @@ bridge_local_endpoint_handle_jsonl_line :: proc(line: string,
 	token := bridge_local_extract_json_string(line, "token", "")
 	method := bridge_local_extract_json_string(line, "method", "")
 	params := bridge_local_extract_json_object(line, "params")
+	if method=="executor.operator.install" || method=="executor.operator.inspect" {
+		return bridge_executor_operator_handle(request_id,method,params)
+	}
 	if bridge_local_spoofable_params(params) do return bridge_local_response_error(request_id, "forbidden", "local callers cannot spoof owner, sender, instance, or Hub credentials")
 	rec, ok := bridge_agent_token_verify(token)
 	if !ok {
