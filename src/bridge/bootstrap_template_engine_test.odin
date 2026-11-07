@@ -121,6 +121,7 @@ bt3_e2e_real_template_worker :: proc(t: ^testing.T) {
 
 @(test)
 bt_memory_decouple_manifest_and_file_set :: proc(t: ^testing.T) {
+    context.allocator=context.temp_allocator
 	tpl_body := "Agent: {agent_name}\n"
 	mem_body := "# Applicable Memories\n\n### Test Title\nType: Fact\n\nSome memory body\n"
 
@@ -172,16 +173,19 @@ bt_memory_decouple_manifest_and_file_set :: proc(t: ^testing.T) {
 	bootstrap_cache_put(&cache, tpl_hash, tpl_body)
 	bootstrap_cache_put(&cache, mem_hash, mem_body)
 
-	d := Bridge_Bootstrap_Descriptor{
-		instance_id = "inst_1",
-		agent_name = "Agent 1",
-		role = "worker",
-	}
+    repo,repo_ok:=vcs_test_git_repo("bootstrap_assembly_no_io");defer vcs_test_rm(repo)
+    if !testing.expect(t,repo_ok) do return
+    vcs_test_write(repo,"README.md","base\n")
+    if !testing.expect(t,vcs_test_git("git","-C",repo,"add","README.md") && vcs_test_git("git","-C",repo,"commit","-m","init")) do return
+    workdir:=fmt.tprintf("%s/.heimdall/worktrees/task_assembly",repo)
+    pack:=bridge_legacy_test_pack(repo,workdir,"task_assembly","heimdall/task_assembly")
+    d := Bridge_Bootstrap_Descriptor{instance_id="inst_1",agent_name="Agent 1",role="worker",pack_json=pack}
 
 	files, res := bridge_bootstrap_build_file_set(manifest, d, "unix:/tmp/test.sock", "tok", "codex", &cache)
 	defer bridge_bootstrap_free_file_set(files)
 
 	testing.expect(t, res.ok, "build file set should succeed")
+    testing.expect(t,!os.exists(workdir) && !bridge_taskv2_branch_exists(repo,"heimdall/task_assembly"),"bootstrap assembly must not mutate Git before physical admission")
 	found_memory_file := false
 	for f in files {
 		if f.kind == "MEMORY_MD" {

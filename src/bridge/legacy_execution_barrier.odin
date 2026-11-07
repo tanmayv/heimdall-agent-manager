@@ -2,6 +2,7 @@ package main
 
 import "core:strings"
 import "core:sync"
+import jsonx "odin_test:lib/jsonx"
 import contracts "odin_test:contracts"
 import executor "odin_test:lib/executor_local"
 import vault "odin_test:lib/vault"
@@ -76,4 +77,43 @@ bridge_legacy_merge_target :: proc(s:^executor.Store,repo,workdir,branch,task:st
         return Bridge_Taskv2_Merge_Result{detail="legacy merge target fenced or unresolved"}
     }
     return bridge_taskv2_merge_task_worktree_unfenced(canonical_repo,canonical,branch,task)
+}
+
+// Caller holds startup I/O and the physical gate. Derive all protected targets
+// from the pack that will actually be applied. A claimed chain is never used.
+// This is protective refusal, not authenticated source provenance or drain.
+bridge_legacy_apply_pack_locked :: proc(s:^executor.Store,instance,run_dir,pack:string)->bool {
+    targets:=make([dynamic]executor.Legacy_Resource,context.temp_allocator)
+    append(&targets,executor.Legacy_Resource{"instance",instance})
+    task_obj,_:=jsonx.extract_raw_object(pack,"task",true,context.temp_allocator)
+    task:=jsonx.extract_string(pack,"task_id",jsonx.extract_string(task_obj,"task_id","",true,context.temp_allocator),true,context.temp_allocator)
+    if task!="" do append(&targets,executor.Legacy_Resource{"task",task})
+    place,has:=jsonx.extract_raw_object(pack,"placement",true,context.temp_allocator)
+    if !has {
+        lease,found:=jsonx.extract_raw_object(pack,"lease",true,context.temp_allocator)
+        if found do place,has=jsonx.extract_raw_object(lease,"placement",true,context.temp_allocator)
+    }
+    workdir_hash:=""
+    if has {
+        workdir:=jsonx.extract_string(place,"workdir","",true,context.temp_allocator)
+        if workdir!="" {
+            canonical:=bridge_fs_canonicalize_existing(workdir);defer delete(canonical)
+            workdir_hash=contracts.owner_payload_digest(canonical)
+            append(&targets,executor.Legacy_Resource{"workdir_hash",workdir_hash})
+        }
+    }
+    if run_dir!="" {
+        canonical:=bridge_fs_canonicalize_existing(run_dir);defer delete(canonical)
+        digest:=contracts.owner_payload_digest(canonical)
+        if digest!=workdir_hash do append(&targets,executor.Legacy_Resource{"workdir_hash",digest})
+    }
+    if !bridge_legacy_targets_allowed(s,targets[:]) do return false
+    bridge_taskv2_ensure_pack_worktree(pack)
+    return run_dir=="" || bridge_taskv2_materialize_task_md(run_dir,pack)
+}
+
+bridge_legacy_apply_pack :: proc(s:^executor.Store,instance,run_dir,pack:string)->bool {
+    sync.mutex_lock(&bridge_startup_io_mutex);defer sync.mutex_unlock(&bridge_startup_io_mutex)
+    sync.mutex_lock(&bridge_legacy_physical_mutex);defer sync.mutex_unlock(&bridge_legacy_physical_mutex)
+    return bridge_legacy_apply_pack_locked(s,instance,run_dir,pack)
 }

@@ -70,6 +70,8 @@ bridge_executor_local_startup :: proc(ctx:rawptr)->bool {
     // A slow dispatch COMMIT must not carry a prior enrollment snapshot over
     // the first bootstrap/token mutation, or slow writes over the final Spawn.
     if !bridge_executor_local_startup_current(p) do return false
+    descriptor:=bridge_executor_local_descriptor(m.command)
+    if !bridge_legacy_apply_pack_locked(p.store,m.request.instance,"",descriptor.pack_json) do return false
     if !bridge_os_prepare_private_dir(m.run_dir) do return false
     pp,e:=profile_lookup(m.provider,m.profile)
     if e!=.None do return false
@@ -106,7 +108,6 @@ bridge_executor_local_startup :: proc(ctx:rawptr)->bool {
         }
     }
     bridge_runtime_clear_stop_intent(m.request.instance)
-    descriptor:=bridge_executor_local_descriptor(m.command)
     bridge_rollover_note_launch(m.request.instance,descriptor.coordinator_id)
     bridge_ext_note_launch(m.request.instance,m.provider,m.model,m.profile)
     bridge_startup_arm(m.request.instance,m.token,bridge_runtime_now_ms())

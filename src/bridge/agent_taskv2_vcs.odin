@@ -246,12 +246,13 @@ bridge_agent_lease_local_rpc :: proc(request_id, method: string, hub_path: []str
 				}
 				// The task's checkout must exist before the agent reads TASK.md
 				// and cds into it.
-				bridge_taskv2_ensure_pack_worktree(pack_obj)
-				if strings.trim_space(run_dir) != "" {
-					if !bridge_taskv2_materialize_task_md(run_dir, pack_obj) {
-						return bridge_local_response_error(request_id, "task_context_unavailable", "Could not refresh TASK.md; retry lease next before acknowledging requirements")
-					}
-				}
+                sync.mutex_lock(&bridge_executor_mutex)
+                journal:=bridge_legacy_global_store()
+                applied:=bridge_legacy_apply_pack(journal,rec.agent_instance_id,run_dir,pack_obj)
+                sync.mutex_unlock(&bridge_executor_mutex)
+                if !applied {
+                    return bridge_local_response_error(request_id, "task_context_unavailable", "Task context fenced or unavailable; retry lease next before acknowledging requirements")
+                }
 			}
 		}
 	}

@@ -2472,7 +2472,6 @@ bridge_wake_nudge_live_child :: proc(instance_id, task_id, role, lease_id: strin
 	confirmed, _ := bridge_startup_confirm_spawned_io_locked(socket, instance_id, run_count)
 	if !confirmed do return false
 	if strings.has_prefix(strings.trim_space(pack_json), "{") {
-		bridge_taskv2_ensure_pack_worktree(pack_json)
 		run_dir := launch.run_dir
 		default_dir := ""
 		if strings.trim_space(run_dir) == "" {
@@ -2480,8 +2479,9 @@ bridge_wake_nudge_live_child :: proc(instance_id, task_id, role, lease_id: strin
 			run_dir = default_dir
 		}
 		defer if default_dir != "" do delete(default_dir)
-		if !bridge_taskv2_materialize_task_md(run_dir, pack_json) {
-			fmt.eprintln("bridge wake_agent: could not refresh TASK.md for nudged instance", instance_id, "(lease next rewrites it)")
+		if !bridge_legacy_apply_pack_locked(journal,instance_id,run_dir,pack_json) {
+			fmt.eprintln("bridge wake_agent: task context fenced or unavailable for nudged instance", instance_id)
+            return true // Existing child remains live; do not type or relaunch.
 		}
 	}
 	line := bridge_wake_nudge_line(lease_id, task_id, role)
