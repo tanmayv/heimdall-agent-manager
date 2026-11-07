@@ -3,7 +3,6 @@ package main
 import "core:fmt"
 import "core:strings"
 import "core:sync"
-import executor "odin_test:lib/executor_local"
 import contracts "odin_test:contracts"
 import ws "odin_test:lib/ws"
 
@@ -32,29 +31,4 @@ bridge_command_dispatch_binary_input :: proc(conn:^ws.Connection,frame:[]byte,ge
     key:=strings.concatenate({"shell:",target},context.temp_allocator)
     return bridge_command_dispatch_enqueue(conn,transmute(string)frame,BRIDGE_DISPATCH_BINARY_INPUT_KIND,id,
         bridge_command_binary_input_spec(),generation,native_binary=true,native_ordering_key=key)
-}
-
-// Worker-side physical boundary for binary and JSON terminal input. A shell can
-// reach arbitrary shared resources, so unknown overlap refuses every installed
-// barrier. Keep the physical gate through the write: a successful queue/start
-// observation cannot authorize an input after a concurrent barrier installation.
-bridge_legacy_shell_input :: proc(target,data:string,injected:^executor.Store=nil,injected_socket:string="")->(delivered,refused:bool) {
-    sync.mutex_lock(&bridge_executor_mutex);defer sync.mutex_unlock(&bridge_executor_mutex)
-    sync.mutex_lock(&bridge_startup_io_mutex);defer sync.mutex_unlock(&bridge_startup_io_mutex)
-    sync.mutex_lock(&bridge_legacy_physical_mutex);defer sync.mutex_unlock(&bridge_legacy_physical_mutex)
-    store,available:=bridge_legacy_dispatch_store_locked(injected)
-    if !available do return false,true
-    if store!=nil {
-        sync.mutex_lock(&store.mutex)
-        usable:=store.db!=nil && !store.unusable
-        clear:=false
-        if usable {
-            rows,read:=executor.query(store.db,"SELECT 1 FROM executor_legacy_barriers LIMIT 1")
-            clear=read && len(rows)==0
-        }
-        sync.mutex_unlock(&store.mutex)
-        if !clear do return false,true
-    }
-    if injected_socket!="" do return bridge_pty_host_deliver_shell_input(injected_socket,target,data),false
-    return bridge_pty_host_deliver_shell_input(target,data),false
 }

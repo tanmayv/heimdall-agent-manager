@@ -81,6 +81,9 @@ bridge_executor_local_real_daemon_lost_observation_restart_and_exact_stop :: pro
         time.sleep(10*time.Millisecond)
     }
     testing.expect(t,input_seen,"guarded input reached the actual retained child")
+    resize_ok,resize_refused:=bridge_legacy_shell_delivery({kind=.Resize,target=launch.instance,rows=40,cols=120},&s,socket)
+    testing.expect(t,resize_ok && !resize_refused)
+
     // Retrying even the old pre-dispatch snapshot cannot send Spawn again.
     delivered,reason=bridge_executor_local_dispatch(&s,launch,device,req,resources,socket)
     testing.expect(t,delivered && reason=="child_present")
@@ -146,6 +149,9 @@ bridge_executor_local_real_daemon_lost_observation_restart_and_exact_stop :: pro
     testing.expect(t,!bridge_legacy_stop_target(&s,replacement.instance,true))
     input_ok,input_refused=bridge_legacy_shell_input(replacement.instance,"printf forbidden > /dev/null\n",&s,socket)
     testing.expect(t,!input_ok && input_refused,"barrier refuses raw input to the surviving child")
+    resize_ok,resize_refused=bridge_legacy_shell_delivery({kind=.Resize,target=replacement.instance,rows=24,cols=80},&s,socket)
+    testing.expect(t,!resize_ok && resize_refused,"barrier refuses shell resize to the surviving child")
+
 
     same_pid,same_known=bridge_pty_host_executor_query(socket,replacement.instance,replacement.launch_key)
     testing.expect(t,same_known && same_pid==pid,"fenced legacy force-stop leaves exact child alive")

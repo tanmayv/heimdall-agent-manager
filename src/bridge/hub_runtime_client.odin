@@ -2163,7 +2163,7 @@ bridge_hub_handle_shell_pty_resize :: proc(conn: ^ws.Connection, text: string) {
 	rows := bridge_pty_dimension(cmd.rows)
 	cols := bridge_pty_dimension(cmd.cols)
 
-	ok := bridge_pty_host_deliver_shell_resize(shell_id, rows, cols)
+	ok,_ := bridge_legacy_shell_delivery({kind=.Resize,target=shell_id,rows=rows,cols=cols})
 	if !ok do fmt.println("bridge shell_pty_resize delivery failed for shell", shell_id)
 
 	if command_id != "" {

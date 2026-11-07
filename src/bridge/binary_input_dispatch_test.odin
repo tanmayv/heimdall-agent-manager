@@ -128,5 +128,7 @@ bridge_raw_input_rechecks_barrier_after_dispatch_start :: proc(t:^testing.T) {
     testing.expect_value(t,bridge_legacy_install_barrier(store,barrier,[]executor.Legacy_Resource{{"instance","other"}}).code,"ok")
     delivered,refused:=bridge_legacy_shell_input("shell","original input",store,"/nonexistent/must-not-write")
     testing.expect(t,!delivered && refused,"a prior running observation cannot bypass the physical barrier")
+    delivered,refused=bridge_legacy_shell_delivery({kind=.Resize,target="shell",rows=40,cols=120},store,"/nonexistent/must-not-write")
+    testing.expect(t,!delivered && refused,"shell resize also rechecks the physical barrier")
     testing.expect(t,bridge_legacy_dispatch_end(action,true,store))
 }
