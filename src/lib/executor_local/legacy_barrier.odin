@@ -45,7 +45,7 @@ Legacy_Barrier_Status :: struct {
 // destination retirement and a new authenticated generation, not row deletion.
 legacy_barrier_install :: proc(s:^Store,b:Legacy_Barrier,resources:[]Legacy_Resource=nil)->Result {
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
-    if !contracts.owner_field_valid(b.chain,"id") || !contracts.owner_field_valid(b.migration,"id") || !contracts.owner_hex(b.selection_digest,64) || b.source_generation<=0 || !legacy_resources_valid(resources) do return fail("invalid_scope")
+    if !contracts.owner_field_valid(b.chain,"id") || !contracts.owner_field_valid(b.migration,"id") || !contracts.owner_hex(b.selection_digest,64) || b.source_generation<0 || !legacy_resources_valid(resources) do return fail("invalid_scope")
     if !begin(s) do return fail("storage_error")
     defer rollback(s)
     rows,read:=query(s.db,"SELECT migration_id,selection_digest,source_generation FROM executor_legacy_barriers WHERE chain_id=?",b.chain)

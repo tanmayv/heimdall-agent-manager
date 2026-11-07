@@ -4,6 +4,7 @@ import "base:runtime"
 import "core:sync"
 import "core:thread"
 import "core:strings"
+import "core:os"
 import "core:testing"
 
 legacy_test_barrier :: proc()->Legacy_Barrier {return {"chain","migration",strings.repeat("a",64,context.temp_allocator),1}}
@@ -73,7 +74,7 @@ executor_legacy_barrier_storage_failure_and_direct_sql_backstops :: proc(t:^test
     testing.expect_value(t,legacy_barrier_install(&f.store,legacy_test_barrier()).code,"ok")
     _,written:=query(f.store.db,"INSERT INTO executor_legacy_commands VALUES('bypass','chain',?,1,'running')",legacy_test_digest())
     testing.expect(t,!written,"direct insert is fenced")
-    s:=legacy_test_barrier();s.source_generation=0
+    s:=legacy_test_barrier();s.source_generation= -1
     testing.expect_value(t,legacy_barrier_install(&f.store,s).code,"invalid_scope")
 }
 
@@ -142,7 +143,7 @@ executor_legacy_v8_migration_collision_and_commit_failure_are_atomic :: proc(t:^
     original,_:=query(f.store.db,"SELECT document,launch_key FROM executor_reservations")
     testing.expect(t,exec(f.store.db,"DROP TABLE executor_legacy_commands; DROP TABLE executor_legacy_resources; DROP TABLE executor_legacy_barriers; PRAGMA legacy_alter_table=ON; DROP TRIGGER runtime_immutable; DROP TRIGGER runtime_no_delete; ALTER TABLE executor_runtime RENAME TO runtime_v9_fixture;"))
     schema:=string(#load("schema.sql"))
-    old,_:=strings.replace_all(schema[:strings.index(schema,"CREATE TABLE executor_policies")],"schema_version=9","schema_version=8",context.temp_allocator)
+    old,_:=strings.replace_all(schema[:strings.index(schema,"CREATE TABLE executor_policies")],"schema_version=10","schema_version=8",context.temp_allocator)
     testing.expect(t,exec(f.store.db,old))
     testing.expect(t,exec(f.store.db,"INSERT INTO executor_runtime SELECT singleton,8,account_id,executor_bridge_id,operator_key_id,incarnation,clock_high_ms,recovery_state,policy_revision,device_capacity FROM runtime_v9_fixture; DROP TABLE runtime_v9_fixture; CREATE VIEW executor_legacy_commands AS SELECT 1;"))
     close(&f.store);testing.expect(t,!open(&f.store,f.path,"account","executor","operator"))
@@ -157,7 +158,7 @@ executor_legacy_v8_migration_collision_and_commit_failure_are_atomic :: proc(t:^
     testing.expect(t,exec(f.store.db,"DROP TRIGGER legacy_migration_commit"));close(&f.store)
     testing.expect(t,open(&f.store,f.path,"account","executor","operator"))
     rows,ok=query(f.store.db,"SELECT schema_version,incarnation,(SELECT state FROM executor_reservations),(SELECT launch_key FROM executor_reservations) FROM executor_runtime")
-    testing.expect(t,ok && rows[0][0]=="9" && rows[0][1]=="2" && rows[0][2]=="released" && rows[0][3]==original[0][1])
+    testing.expect(t,ok && rows[0][0]=="10" && rows[0][1]=="2" && rows[0][2]=="released" && rows[0][3]==original[0][1])
     // Rebuilt retained triggers bind the new runtime, not the dropped alias.
     refs,read:=query(f.store.db,"SELECT name FROM sqlite_master WHERE sql LIKE '%executor_runtime_v8%'")
     testing.expect(t,read && len(refs)==0)
@@ -192,4 +193,61 @@ executor_legacy_resource_fences_bind_targets_across_claimed_chain_and_exact_repl
     _,found:=legacy_barrier_status(&f.store,"next");testing.expect(t,!found,"barrier and complete inventory commit together")
     testing.expect(t,exec(f.store.db,"DROP TRIGGER reject_legacy_resource"))
     testing.expect_value(t,legacy_barrier_install(&f.store,b,targets[:]).code,"ok")
+}
+
+@(test)
+executor_legacy_zero_generation_preserves_unknown_execution :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=fixture(t);defer destroy(f)
+    _,r:=legacy_command_admit(&f.store,"chain","preupgrade_unknown",legacy_test_digest())
+    testing.expect_value(t,r.code,"admitted")
+    b:=legacy_test_barrier();b.source_generation=0
+    targets:=[]Legacy_Resource{{"instance","unknown_instance"}}
+    testing.expect_value(t,legacy_barrier_install(&f.store,b,targets).code,"ok")
+    testing.expect(t,legacy_barrier_install(&f.store,b,targets).replay)
+    status,found:=legacy_barrier_status(&f.store,"chain")
+    testing.expect(t,found && status.barrier.source_generation==0 && status.running==1,"generation zero does not imply empty history or drain")
+    close(&f.store);testing.expect(t,open(&f.store,f.path,"account","executor","operator"))
+    status,found=legacy_barrier_status(&f.store,"chain")
+    testing.expect(t,found && status.barrier.source_generation==0 && status.running==1)
+    _,r=legacy_command_admit(&f.store,"alias","late",legacy_test_digest(),targets)
+    testing.expect_value(t,r.code,"legacy_fenced")
+}
+
+@(test)
+executor_legacy_v9_zero_migration_retains_barriers_and_rolls_back :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=fixture(t);defer destroy(f)
+    close(&f.store)
+    for suffix in ([3]string{"","-wal","-shm"}) do _=os.remove(strings.concatenate({f.path,suffix},context.temp_allocator))
+    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&f.store.db),0)
+    schema,_:=strings.replace_all(string(#load("schema.sql")),"schema_version=10","schema_version=9",context.temp_allocator)
+    historical,_:=strings.replace_all(schema,"source_generation>=0","source_generation>0",context.temp_allocator)
+    testing.expect(t,exec(f.store.db,historical))
+    testing.expect(t,exec(f.store.db,"PRAGMA foreign_keys=ON; INSERT INTO executor_runtime VALUES(1,9,'account','executor','operator',1,0,'ready',0,0);"))
+    f.store.account=strings.clone("account");f.store.executor=strings.clone("executor");f.store.operator_key=strings.clone("operator");f.store.incarnation=1
+    policy(t,f)
+    testing.expect_value(t,reserve(f,document("prepare"),&f.owner1).code,"ok")
+    _,ok:=query(f.store.db,"INSERT INTO executor_legacy_commands VALUES('uncertain','chain',?,1,'running')",legacy_test_digest());testing.expect(t,ok)
+    _,ok=query(f.store.db,"INSERT INTO executor_legacy_barriers VALUES('chain','migration',?,1,1)",legacy_test_barrier().selection_digest);testing.expect(t,ok)
+    testing.expect(t,exec(f.store.db,"INSERT INTO executor_legacy_resources VALUES('instance','retained_instance','chain'); CREATE VIEW executor_legacy_resources_v9 AS SELECT 1;"))
+    close(&f.store);testing.expect(t,!open(&f.store,f.path,"account","executor","operator"))
+    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&f.store.db),0)
+    rows,read:=query(f.store.db,"SELECT schema_version,incarnation,(SELECT count(*) FROM executor_legacy_resources),(SELECT state FROM executor_legacy_commands) FROM executor_runtime")
+    testing.expect(t,read && rows[0][0]=="9" && rows[0][1]=="1" && rows[0][2]=="1" && rows[0][3]=="running")
+    testing.expect(t,exec(f.store.db,"DROP VIEW executor_legacy_resources_v9; CREATE TABLE zero_parent(id INTEGER PRIMARY KEY); CREATE TABLE zero_fault(id INTEGER REFERENCES zero_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER zero_commit AFTER UPDATE ON executor_reservations WHEN NEW.state='released' BEGIN INSERT INTO zero_fault VALUES(1); END;"))
+    close(&f.store);testing.expect(t,!open(&f.store,f.path,"account","executor","operator"))
+    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&f.store.db),0)
+    rows,read=query(f.store.db,"SELECT schema_version,incarnation,(SELECT state FROM executor_reservations),(SELECT count(*) FROM executor_legacy_resources) FROM executor_runtime")
+    testing.expect(t,read && rows[0][0]=="9" && rows[0][1]=="1" && rows[0][2]=="prepared" && rows[0][3]=="1","failed COMMIT restores header, exact reservation and barrier inventory")
+    testing.expect(t,exec(f.store.db,"DROP TRIGGER zero_commit"));close(&f.store)
+    testing.expect(t,open(&f.store,f.path,"account","executor","operator"))
+    status,found:=legacy_barrier_status(&f.store,"chain")
+    testing.expect(t,found && status.running==1 && status.installed_incarnation==1)
+    rows,read=query(f.store.db,"SELECT schema_version,(SELECT count(*) FROM executor_legacy_resources) FROM executor_runtime")
+    testing.expect(t,read && rows[0][0]=="10" && rows[0][1]=="1")
+    refs,refs_ok:=query(f.store.db,"SELECT name FROM sqlite_master WHERE sql LIKE '%executor_runtime_v9%' OR sql LIKE '%executor_legacy_barriers_v9%'")
+    testing.expect(t,refs_ok && len(refs)==0)
+    b:=legacy_test_barrier();b.chain="zero_chain";b.migration="zero_migration";b.source_generation=0
+    testing.expect_value(t,legacy_barrier_install(&f.store,b).code,"ok")
 }
