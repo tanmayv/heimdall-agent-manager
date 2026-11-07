@@ -14,6 +14,7 @@ import {
 } from '../../utils/taskChainSearch';
 import { useAuthUser } from '../auth/AuthUserContext';
 import { useArchivedProjectIds } from '../projects/projectModel';
+import { useOwnerChains } from '../../api/ownerChainsStore';
 import { chainStatusDot } from '../ui/patterns/commandPaletteLogic';
 import { VaultText } from '../vault/VaultText';
 import {
@@ -23,6 +24,7 @@ import {
   homeChainsFromFlatList,
   homeChainPage,
   homeChainsFromSearchHits,
+  homeChainsWithOwners,
   type HomeChainItem,
 } from './homeChainSearchLogic';
 
@@ -71,7 +73,11 @@ export function HomeChainSearch({ onOpenAgent }: HomeChainSearchProps) {
 
   // Keep the full stable snapshot separate from the browse slice: page clicks
   // must not restart encrypted search or change its relevance ordering.
-  const loaded = useMemo(() => homeChainsFromFlatList(data?.chains, archivedProjectIds), [data, archivedProjectIds]);
+  const owners = useOwnerChains();
+  const loaded = useMemo(
+    () => homeChainsWithOwners(homeChainsFromFlatList(data?.chains, archivedProjectIds), owners.chains),
+    [data, archivedProjectIds, owners.chains],
+  );
   const trimmed = query.trim();
   const searchKey = JSON.stringify([authUser?.user_id, isVaultUnlocked, trimmed]);
   const snapshot = JSON.stringify([authUser?.user_id, isVaultUnlocked, query, loaded.map((c) => c.chainId)]);
@@ -141,6 +147,8 @@ export function HomeChainSearch({ onOpenAgent }: HomeChainSearchProps) {
   // coordinator falls back to the chain page.
   const open = async (chain: HomeChainItem) => {
     if (chain.submissionRoute) { navigateToHash(buildRouteHash(chain.submissionRoute, "")); return; }
+    // An owner chain has no Hub coordinator conversation: open its chain view.
+    if (chain.owner) { navigateToHash(buildRouteHash(`/chains/${encodeURIComponent(chain.chainId)}`, '')); return; }
     const coordinator = await resolveChainConversationAgent(dispatch, chain.chainId, chain.coordinatorAgentInstanceId);
     if (coordinator) {
       const target = chainTargetId(chain.chainId);
@@ -198,20 +206,27 @@ export function HomeChainSearch({ onOpenAgent }: HomeChainSearchProps) {
           </li>
         ) : (
           rows.map((chain) => (
-            <li key={chain.chainId}>
+            <li key={chain.rowKey || chain.chainId}>
               <button
                 type="button"
-                data-debug-id={`home-chain-row-${chain.chainId}`}
+                data-debug-id={chain.firstInGroup === false ? `home-chain-match-row-${(chain.rowKey || chain.chainId).replace(/\u0000/g, '-')}` : `home-chain-row-${chain.chainId}`}
                 onClick={() => void open(chain)}
                 title={chain.coordinatorAgentInstanceId ? 'Open coordinator conversation' : 'Open task chain'}
                 className="flex w-full min-w-0 items-center gap-3 px-4 py-2.5 text-left hover:bg-neutral-soft"
               >
-                <StatusDot size="sm" {...chainStatusDot(chain.status)} label={chain.status || "unknown"} />
+                {chain.owner
+                  ? <StatusDot size="sm" tone={chain.owner.online ? 'success' : 'neutral'} label={chain.owner.online ? 'Owner Bridge online' : 'Owner Bridge offline'} />
+                  : <StatusDot size="sm" {...chainStatusDot(chain.status)} label={chain.status || "unknown"} />}
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium text-primary">
-                    <VaultText value={decryptedTitles[chain.chainId]?.decryptedTitle || chain.title} fallback={chain.chainId} as="span" />
-                  </span>
-                  {chain.projectName ? (
+                  {chain.firstInGroup === false ? null : (
+                    <span className="block truncate text-sm font-medium text-primary">
+                      <VaultText value={decryptedTitles[chain.chainId]?.decryptedTitle || chain.title} fallback={chain.chainId} as="span" />
+                    </span>
+                  )}
+                  {chain.matchLabel ? <span className="block truncate text-xs text-muted">{chain.matchLabel}</span> : null}
+                  {chain.owner && chain.firstInGroup !== false ? (
+                    <span className="block truncate text-xs text-muted">Bridge-owned · {chain.owner.bridgeName}{chain.owner.online ? '' : ' (offline)'}</span>
+                  ) : chain.projectName ? (
                     <span className="block truncate text-xs text-muted">
                       <VaultText value={chain.projectName} fallback="" as="span" />
                     </span>

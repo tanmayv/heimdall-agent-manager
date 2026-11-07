@@ -194,7 +194,11 @@ export function TaskChainSelectorModal({
               if (ch.coordinatorAgentInstanceId) coordinators.set(ch.chainId, ch.coordinatorAgentInstanceId);
             }
           }
-          setRemoteChains(response.hits.map((hit) => ({
+          // The picker selects chains: one row per chain (its first match), even
+          // when a Bridge-owned chain returns several grouped matches.
+          const seen = new Set<string>();
+          const firstHits = response.hits.filter((hit) => !seen.has(hit.chain_id) && Boolean(seen.add(hit.chain_id)));
+          setRemoteChains(firstHits.map((hit) => ({
             chainId: hit.chain_id,
             submissionRoute: ownerSubmissionRoute(hit),
             title: hit.title || 'Untitled chain',

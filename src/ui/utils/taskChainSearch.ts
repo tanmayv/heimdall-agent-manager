@@ -1,5 +1,6 @@
 import { cookieJsonFetch } from '../api/cookieFetch';
-import { searchOwnerChains } from '../api/ownerSearchClient';
+import { limitHitsByChain, searchOwnerChains, type OwnerSearchHit } from '../api/ownerSearchClient';
+import { listOwnerRegistryPages } from '../api/ownerRegistryListing';
 import { getKeyringSession } from './vaultKeyringSession';
 import { verifyDirectory, pinsFromChain } from './vaultDirectoryVerify';
 import { apiUrl, ApiError } from '../api/cookieFetch';
@@ -24,6 +25,8 @@ const MAX_LIMIT = 50;
 
 export type TaskChainSearchHit = {
   task_id?: string; kind?: string; attempt?: string;
+  /** Owner (Bridge-owned) hits: the matched object's title, the owner, unchecked filters. */
+  match_title?: string; owner_bridge_id?: string; owner_online?: boolean; filters_unverified?: string[];
   chain_id: string;
   project_id: string;
   status: string;
@@ -229,10 +232,39 @@ async function searchLegacyTaskChainsEncrypted(
   }
 }
 
+/**
+ * Applies project/status filters to Bridge-owned hits where owner metadata
+ * allows. Owner chains carry no Hub project (a moved chain's former project is
+ * passed in `projectOf` when known) and the registry carries no status, but an
+ * owner chain is never archived. A filter that cannot be checked keeps the hit
+ * and records it in `filters_unverified` so the UI can label it.
+ */
+export function filterOwnerSearchHits(
+  hits: OwnerSearchHit[],
+  options: { projectId?: string; status?: string; projectOf?: (chainId: string) => string | undefined },
+): OwnerSearchHit[] {
+  const out: OwnerSearchHit[] = [];
+  for (const hit of hits) {
+    const unverified: string[] = [];
+    if (options.projectId) {
+      const project = options.projectOf?.(hit.chain_id);
+      if (project === undefined) unverified.push('project');
+      else if (project !== options.projectId) continue;
+    }
+    if (options.status) {
+      const status = options.status.toLowerCase();
+      if (status === 'archived' || status === 'cancelled') continue;
+      unverified.push('status');
+    }
+    out.push(unverified.length ? { ...hit, filters_unverified: unverified } : hit);
+  }
+  return out;
+}
+
 /** Search local owners and legacy data; copies are never owner fallbacks. */
 export async function searchTaskChainsEncrypted(
   query: string, ownerId: string,
-  options: { projectId?: string; status?: string; limit?: number } = {},
+  options: { projectId?: string; status?: string; limit?: number; projectOf?: (chainId: string) => string | undefined } = {},
 ): Promise<TaskChainSearchResponse> {
   const session = getKeyringSession();
   const legacy = searchLegacyTaskChainsEncrypted(query, ownerId, options);
@@ -246,7 +278,11 @@ export async function searchTaskChainsEncrypted(
   const localDeadline = setTimeout(() => localController.abort(), DEADLINE_MS);
   const local = (async () => {
     const chain = await verifyDirectory(await cookieJsonFetch('/api/v1/vault/directory', { signal: localController.signal }), ownerId, pinsFromChain(session.chain));
-    const rows = await cookieJsonFetch('/api/v1/owner-local/chains?headers_only=1', { signal: localController.signal });
+    // The paged registry: every owner chain, not only the first hundred.
+    const rows = await listOwnerRegistryPages(
+      (path) => cookieJsonFetch(path + '&headers_only=1', { signal: localController.signal }),
+      () => !localController.signal.aborted && getKeyringSession() === session,
+    );
     return searchOwnerChains({ ...session, chain }, rows, trimmed, limit,
       (relay) => cookieJsonFetch('/api/v1/owner-local/relay', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(relay), signal: localController.signal }), localController.signal);
   })().finally(() => clearTimeout(localDeadline));
@@ -256,7 +292,7 @@ export async function searchTaskChainsEncrypted(
   if (owned.status === 'rejected') throw owned.reason;
   if (old.status === 'rejected' && !owned.value.ownedIds.size) throw old.reason;
   const previous = old.status === 'fulfilled' ? old.value : { request_id: '', bridge_id: '', indexed_revision: 0, stale: true, hits: [] };
-  const localHits = options.projectId || options.status ? [] : owned.value.hits;
+  const localHits = filterOwnerSearchHits(owned.value.hits, options);
   return { ...previous, stale: previous.stale || owned.value.stale,
-    hits: [...localHits, ...previous.hits.filter((h) => !owned.value.ownedIds.has(h.chain_id))].slice(0, limit) };
+    hits: limitHitsByChain([...localHits, ...previous.hits.filter((h) => !owned.value.ownedIds.has(h.chain_id))], limit) };
 }

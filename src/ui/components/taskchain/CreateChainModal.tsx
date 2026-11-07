@@ -7,11 +7,14 @@ import {
 } from '../../api/endpoints/tasks';
 import { useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
 import { createChainErrorMessage, createChainFormProblem } from './createChainForm';
+import { ChainPlacementField, useChainPlacementChoices } from './ChainPlacementField';
+import { HUB_PLACEMENT, createOwnerChain, freshOwnerSession, ownerErrorMessage, type OwnerChainSummary } from '../../api/ownerChains';
 
 export interface CreateChainModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onCreated?: (chainId: string) => void;
+  /** `owner` is set when the chain was created on an owner Bridge. */
+  onCreated?: (chainId: string, owner?: OwnerChainSummary) => void;
   projects?: Array<{ project_id: string; name?: string }>;
   defaultProjectId?: string;
 }
@@ -29,6 +32,12 @@ export const CreateChainModal: React.FC<CreateChainModalProps> = ({
   const [projectId, setProjectId] = useState(defaultProjectId);
   const [coordinatorAgentId, setCoordinatorAgentId] = useState('');
   const [submitError, setSubmitError] = useState('');
+  // Placement defaults to the user's online Bridge until they choose.
+  const placementState = useChainPlacementChoices(isOpen);
+  const [placementChoice, setPlacementChoice] = useState('');
+  const [creatingOwner, setCreatingOwner] = useState(false);
+  const placement = kind === 'workflow' ? HUB_PLACEMENT : (placementChoice || placementState.initial);
+  const ownerPlacement = placement !== HUB_PLACEMENT;
 
   // Workflow template state
   // The modal stays mounted while closed (it returns null below), so every query is
@@ -82,7 +91,7 @@ export const CreateChainModal: React.FC<CreateChainModalProps> = ({
 
   if (!isOpen) return null;
 
-  const formProblem = createChainFormProblem(kind, projectId, coordinatorAgentId);
+  const formProblem = ownerPlacement ? '' : createChainFormProblem(kind, projectId, coordinatorAgentId);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -90,6 +99,24 @@ export const CreateChainModal: React.FC<CreateChainModalProps> = ({
 
     setSubmitError('');
     try {
+      if (ownerPlacement) {
+        const choice = placementState.choices.find((c) => c.bridgeId === placement);
+        setCreatingOwner(true);
+        try {
+          const session = await freshOwnerSession();
+          const chainId = await createOwnerChain(session, placement, { title: title.trim(), description: description.trim() });
+          onCreated?.(chainId, {
+            chainId, ownerBridgeId: placement, bridgeName: choice?.name || placement, online: true,
+            title: title.trim(), description: description.trim(), sealed: false, tasks: [],
+            projectId: '', projectName: '', migrated: false, pending: true,
+          });
+        } catch (err) {
+          setSubmitError(ownerErrorMessage(err, choice?.name));
+        } finally {
+          setCreatingOwner(false);
+        }
+        return;
+      }
       if (kind === 'workflow') {
         const payload: any = {
           name: title.trim(),
@@ -125,7 +152,7 @@ export const CreateChainModal: React.FC<CreateChainModalProps> = ({
     }
   };
 
-  const isSubmitting = isCreatingChain || isRunningWorkflow;
+  const isSubmitting = isCreatingChain || isRunningWorkflow || creatingOwner;
 
   return (
     <div
@@ -185,8 +212,15 @@ export const CreateChainModal: React.FC<CreateChainModalProps> = ({
             </div>
           </div>
 
-          {/* Project selector */}
-          {projects.length > 0 && (
+          <ChainPlacementField
+            value={placement}
+            onChange={setPlacementChoice}
+            state={placementState}
+            hubOnly={kind === 'workflow' ? 'Workflow runs start on the Hub.' : undefined}
+          />
+
+          {/* Project selector (Hub chains; an owner chain has no Hub project) */}
+          {projects.length > 0 && !ownerPlacement && (
             <label className="flex flex-col gap-1 text-muted">
               <span className="font-semibold text-[11px]">Project</span>
               <select
@@ -231,7 +265,7 @@ export const CreateChainModal: React.FC<CreateChainModalProps> = ({
                 />
               </label>
 
-              {agents.length > 0 && (
+              {agents.length > 0 && !ownerPlacement && (
                 <label className="flex flex-col gap-1 text-muted">
                   <span className="font-semibold text-[11px]">Coordinator Agent (Optional)</span>
                   <select

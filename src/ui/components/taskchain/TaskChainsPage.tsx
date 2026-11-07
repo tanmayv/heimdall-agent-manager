@@ -1,6 +1,10 @@
 import { cookieJsonFetch } from '../../api/cookieFetch';
 import { getKeyringSession } from '../../utils/vaultKeyringSession';
 import OwnerLocalPanel from './OwnerLocalPanel';
+import { OwnerChainView } from './OwnerChainView';
+import { OwnerChainsGroup, filterOwnerChains } from './OwnerChainsGroup';
+import { loadOwnerChainSummaries, mergeOwnerChains, type OwnerChainSummary } from '../../api/ownerChains';
+import { addPendingOwnerChain, useOwnerChains } from '../../api/ownerChainsStore';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Badge, IconButton, ResourceContainer, ResourceSearchFilter, useViewport } from '@ui';
 import Icon from '../Icon';
@@ -424,7 +428,9 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
   const isMobileViewport = isMobile ?? viewport === 'mobile';
 
   const [showOwnerLocal, setShowOwnerLocal] = useState(false);
-  const [ownerTarget, setOwnerTarget] = useState<{ chainId: string; bridgeId: string } | null>(null);
+  // A deep-linked owner chain resolved before the shared registry snapshot loads.
+  const [ownerProbe, setOwnerProbe] = useState<OwnerChainSummary | null>(null);
+  const ownerChains = useOwnerChains();
   const [selectedChainId, setSelectedChainId] = useState<string>(initialChainId || '');
   const [filterProjectId, setFilterProjectId] = useState<string>('');
   const [filterStatus, setFilterStatus] = useState<'active' | 'completed' | 'archived' | 'all'>('active');
@@ -485,17 +491,21 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
 
   const isUnlocked = useSelector(selectIsVaultUnlocked);
   useEffect(() => {
-    setOwnerTarget(null);
+    setOwnerProbe(null);
     const session = getKeyringSession();
     if (!initialChainId || !isUnlocked || !session) return;
+    if (ownerChains.chains.some((c) => c.chainId === initialChainId)) return;
     const controller = new AbortController();
-    void cookieJsonFetch('/api/v1/owner-local/chains?headers_only=1&chain_id=' + encodeURIComponent(initialChainId), { signal: controller.signal }).then((rows) => {
-      if (controller.signal.aborted || getKeyringSession() !== session) return;
-      const row = rows.find((r: any) => r.chain_id === initialChainId && !r.task_id);
-      if (row) setOwnerTarget({ chainId: row.chain_id, bridgeId: row.owner_bridge_id });
+    void loadOwnerChainSummaries(
+      session,
+      (path) => cookieJsonFetch(path + '&chain_id=' + encodeURIComponent(initialChainId), { signal: controller.signal }),
+      () => !controller.signal.aborted && getKeyringSession() === session,
+    ).then((rows) => {
+      const row = rows.find((r) => r.chainId === initialChainId);
+      if (row && !controller.signal.aborted) setOwnerProbe(row);
     }).catch(() => {});
     return () => controller.abort();
-  }, [initialChainId, isUnlocked]);
+  }, [initialChainId, isUnlocked]); // eslint-disable-line react-hooks/exhaustive-deps
   const [decryptedProjects, setDecryptedProjects] = useState<Project[]>(projects);
 
   useEffect(() => {
@@ -518,7 +528,7 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
     };
   }, [projects, isUnlocked]);
 
-  const rawGroups: ChainProjectGroup[] = useMemo(() => {
+  const hubGroups: ChainProjectGroup[] = useMemo(() => {
     const raw = filterProjectId
       ? (projectPageQuery.data ? [projectPageQuery.data] : [])
       : (groupsQuery.data?.groups || []);
@@ -527,6 +537,26 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
     }
     return raw;
   }, [filterProjectId, projectPageQuery.data, groupsQuery.data, showArchivedProjects, archivedProjectIds]);
+
+  // Bridge-owned chains own their ids: a Hub row with the same id is the frozen
+  // copy a migration left behind, so it is dropped (lending its project).
+  const { rawGroups, owners } = useMemo(() => {
+    const merged = mergeOwnerChains(hubGroups.flatMap((g) => g.chains), ownerChains.chains);
+    const kept = new Set(merged.hub.map((c) => c.chainId));
+    return {
+      rawGroups: hubGroups.map((g) => {
+        const chains = g.chains.filter((c) => kept.has(c.chainId));
+        const dropped = g.chains.length - chains.length;
+        return dropped ? { ...g, chains, chainTotal: Math.max(0, (g.chainTotal || g.chains.length) - dropped) } : g;
+      }),
+      owners: merged.owners,
+    };
+  }, [hubGroups, ownerChains.chains]);
+  const ownerById = useMemo(() => {
+    const map = new Map(owners.map((o) => [o.chainId, o]));
+    if (ownerProbe && !map.has(ownerProbe.chainId)) map.set(ownerProbe.chainId, ownerProbe);
+    return map;
+  }, [owners, ownerProbe]);
 
   // Chain titles are vault-encrypted, so the search box must match the DECRYPTED
   // title — matching `chain.title` directly would be matching ciphertext. Titles
@@ -598,14 +628,18 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
       .filter((g) => Boolean(filterProjectId) || g.chains.length > 0);
   }, [rawGroups, filterStatus, filterKind, filterProjectId, matchesSearch]);
 
-  const totalChains = useMemo(() => groups.reduce((sum, g) => sum + (g.chainTotal || g.chains.length), 0), [groups]);
+  const visibleOwners = useMemo(
+    () => filterOwnerChains(owners, { query: searchQuery, status: filterStatus, projectId: filterProjectId, onlyWithTasks, kind: filterKind }),
+    [owners, searchQuery, filterStatus, filterProjectId, onlyWithTasks, filterKind],
+  );
+  const totalChains = useMemo(() => visibleOwners.length + groups.reduce((sum, g) => sum + (g.chainTotal || g.chains.length), 0), [groups, visibleOwners]);
   const isLoading = filterProjectId ? projectPageQuery.isLoading : groupsQuery.isLoading;
   const error = filterProjectId ? projectPageQuery.error : groupsQuery.error;
 
   // Desktop shows both panes, so an empty detail pane is wasted space: preselect
   // the first visible chain (mirrors IssueListPage). State only — no route push,
   // so '/chains' stays '/chains' until the user actually picks a row.
-  const firstChainId = groups[0]?.chains[0]?.chainId || '';
+  const firstChainId = visibleOwners[0]?.chainId || groups[0]?.chains[0]?.chainId || '';
   useEffect(() => {
     if (twoPane && !selectedChainId && firstChainId) {
       setSelectedChainId(firstChainId);
@@ -723,7 +757,21 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
           </div>
         )}
 
-        {!isLoading && !error && groups.length === 0 && (
+        {visibleOwners.length > 0 && (
+          <div className="mb-6">
+            <OwnerChainsGroup
+              chains={visibleOwners}
+              activeChainId={selectedChainId}
+              onSelect={handleSelectChain}
+              loading={ownerChains.status === 'loading'}
+              error={ownerChains.status === 'error' ? ownerChains.error : undefined}
+              collapsed={Boolean(collapsed.__owner__)}
+              onToggle={() => setCollapsed((prev) => ({ ...prev, __owner__: !prev.__owner__ }))}
+            />
+          </div>
+        )}
+
+        {!isLoading && !error && groups.length === 0 && visibleOwners.length === 0 && (
           <div
             data-debug-id="task-chains-empty-state"
             className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-subtle bg-surface/50 p-12 text-center"
@@ -775,8 +823,8 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
     </div>
   );
 
-  if (ownerTarget) return <OwnerLocalPanel key={JSON.stringify([ownerTarget.chainId, focusTaskId, submissionAttempt])} initialChainId={ownerTarget.chainId} initialBridgeId={ownerTarget.bridgeId} initialTaskId={focusTaskId} initialSubmissionAttempt={submissionAttempt} onClose={() => { setOwnerTarget(null); handleCloseDetail(); }} />;
   if (showOwnerLocal) return <OwnerLocalPanel onClose={() => setShowOwnerLocal(false)} />;
+  const selectedOwner = selectedChainId ? ownerById.get(selectedChainId) : undefined;
 
   return (
     <ResourceContainer
@@ -789,7 +837,15 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
             </Badge>
           </span>
           <div className="flex items-center gap-2">
-            <button data-debug-id="task-chains-owner-local" onClick={() => setShowOwnerLocal(true)}>Owner-local</button>
+            <button
+              type="button"
+              data-debug-id="task-chains-owner-local"
+              onClick={() => setShowOwnerLocal(true)}
+              title="Raw owner-local operations (advanced/debug)"
+              className="inline-flex items-center rounded-lg border border-subtle bg-surface px-3 py-1 text-xs text-muted hover:text-primary"
+            >
+              Owner-local (debug)
+            </button>
             <button
               type="button"
               data-debug-id="task-chains-workflows-btn"
@@ -820,7 +876,15 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
       emptyDetailText="Select a task chain to see it here."
       list={listColumn}
       detail={
-        selectedChainId ? (
+        selectedOwner ? (
+          <OwnerChainView
+            key={JSON.stringify([selectedOwner.chainId, focusTaskId, submissionAttempt])}
+            chain={selectedOwner}
+            focusTaskId={focusTaskId}
+            submissionAttempt={submissionAttempt}
+            onClose={handleCloseDetail}
+          />
+        ) : selectedChainId ? (
           <TaskChainOverview
             // Keyed by chain: switching chains only changes the hash, so without a
             // key React reuses the overview and keeps the previous chain's task open.
@@ -848,8 +912,9 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
         onClose={() => setShowCreateChainModal(false)}
         projects={decryptedProjects}
         defaultProjectId={filterProjectId}
-        onCreated={(newChainId) => {
+        onCreated={(newChainId, owner) => {
           setShowCreateChainModal(false);
+          if (owner) addPendingOwnerChain(owner);
           handleSelectChain(newChainId);
         }}
       />

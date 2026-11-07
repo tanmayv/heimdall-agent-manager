@@ -2,6 +2,7 @@ import { ownerSubmissionRoute } from '../../utils/ownerSubmissionNavigation';
 import type { ChainListItem, ChainProjectGroup } from '../../api/endpoints/tasks';
 import type { TaskChainSearchHit } from '../../utils/taskChainSearch';
 import { isVaultArmored } from '../../utils/vaultContent';
+import type { OwnerChainSummary } from '../../api/ownerChains';
 
 /** A flat (ungrouped) recent task chain row on the home view. */
 export interface HomeChainItem {
@@ -13,6 +14,49 @@ export interface HomeChainItem {
   updatedAt: string;
   coordinatorAgentInstanceId?: string;
   submissionRoute?: string;
+  /** Unique per row: a chain can have several search matches. */
+  rowKey?: string;
+  /** What matched inside the chain (search rows only). */
+  matchLabel?: string;
+  /** False for the second and later matches of the same chain. */
+  firstInGroup?: boolean;
+  /** Set for Bridge-owned chains. */
+  owner?: { bridgeId: string; bridgeName: string; online: boolean };
+}
+
+/**
+ * Bridge-owned chains first, then the Hub list without the frozen Hub copies
+ * of chains that moved to a Bridge (the owner row inherits their project).
+ */
+export function homeChainsWithOwners(loaded: HomeChainItem[], owners: OwnerChainSummary[]): HomeChainItem[] {
+  if (!owners.length) return loaded;
+  const copies = new Map(loaded.map((c) => [c.chainId, c]));
+  const ids = new Set(owners.map((o) => o.chainId));
+  return [
+    ...owners.map((o): HomeChainItem => {
+      const copy = copies.get(o.chainId);
+      return {
+        chainId: o.chainId, title: o.title || '', status: '', updatedAt: copy?.updatedAt || '',
+        projectId: o.projectId || copy?.projectId || '', projectName: o.projectName || copy?.projectName || '',
+        owner: { bridgeId: o.ownerBridgeId, bridgeName: o.bridgeName, online: o.online },
+      };
+    }),
+    ...loaded.filter((c) => !ids.has(c.chainId)),
+  ];
+}
+
+const MATCH_KIND_LABELS: Record<string, string> = {
+  chain: 'Chain', task: 'Ticket', requirements: 'Requirements', comment: 'Comment', handoff: 'Handoff',
+  archived_task: 'Archived workflow stage', message: 'Message', workflow: 'Workflow', source: 'Source',
+};
+
+/** "Ticket: Fix login", "Comment", "Submission attempt 2", "… (status not checked)". */
+export function searchMatchLabel(hit: TaskChainSearchHit): string {
+  const kind = hit.kind || '';
+  let label = kind === 'output' ? `Submission attempt ${hit.attempt}` : (MATCH_KIND_LABELS[kind] || '');
+  if (label && hit.match_title && kind !== 'chain' && kind !== 'output') label += ': ' + hit.match_title;
+  if (hit.filters_unverified?.length) label += (label ? ' ' : '') + `(${hit.filters_unverified.join(' and ')} not checked)`;
+  return label;
 }
 
 export const HOME_RECENT_CHAIN_LIMIT = 10;
@@ -120,8 +164,10 @@ export function filterHomeChains(
 }
 
 /**
- * Bridge search hits -> home rows. Hits carry no coordinator, so it (and the
- * project name) is filled in from the loaded chain list when known.
+ * Bridge search hits -> home rows, one row per match. Matches of one chain stay
+ * together (the first carries the chain heading). Hits carry no coordinator,
+ * so it (and the project name) is filled in from the loaded chain list when
+ * known. `limit` counts chains, not matches.
  */
 export function homeChainsFromSearchHits(
   hits: TaskChainSearchHit[],
@@ -130,8 +176,17 @@ export function homeChainsFromSearchHits(
 ): HomeChainItem[] {
   const byId = new Map(loaded.map((c) => [c.chainId, c]));
   const projectNames = new Map(loaded.map((c) => [c.projectId, c.projectName]));
-  return hits.slice(0, limit).map((hit) => {
+  const order: string[] = [];
+  const groups = new Map<string, TaskChainSearchHit[]>();
+  for (const hit of hits) {
+    if (!groups.has(hit.chain_id)) { groups.set(hit.chain_id, []); order.push(hit.chain_id); }
+    groups.get(hit.chain_id)!.push(hit);
+  }
+  return order.slice(0, limit).flatMap((chainId) => groups.get(chainId)!.map((hit, i) => {
     const known = byId.get(hit.chain_id);
+    const owner = hit.owner_bridge_id
+      ? { bridgeId: hit.owner_bridge_id, bridgeName: known?.owner?.bridgeName || hit.owner_bridge_id, online: hit.owner_online !== false }
+      : known?.owner;
     return {
       chainId: hit.chain_id,
       title: hit.title || known?.title || '',
@@ -141,6 +196,10 @@ export function homeChainsFromSearchHits(
       projectName: known?.projectName || projectNames.get(hit.project_id) || '',
       updatedAt: hit.updated_at || known?.updatedAt || '',
       coordinatorAgentInstanceId: known?.coordinatorAgentInstanceId,
+      rowKey: [hit.chain_id, hit.kind || '', hit.task_id || '', hit.attempt || '', String(i)].join('\u0000'),
+      matchLabel: searchMatchLabel(hit),
+      firstInGroup: i === 0,
+      ...(owner ? { owner } : {}),
     };
-  });
+  }));
 }
