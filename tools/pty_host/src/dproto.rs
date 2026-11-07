@@ -48,6 +48,7 @@
 //! | 0xAF | StreamClosed| stream closed (child exited or teardown)             |
 //! | 0xB0 | AlreadyExited| Signal target had already exited (instance + code)  |
 //! | 0x40 | ExecutorRenew | exact instance/key/control secret + u64 version/expiry/hard bound; reply StartupLaunch |
+//! | 0x41 | LocalExecutorReady | exact-key local manual/warm launches without owner lease deadlines |
 //! | 0x3D | ExecutorReady | require exact-key fencing and absolute deadlines |
 //! | 0x3E | ExecutorClose | close only the matching executor launch key      |
 //! | 0x3F | ExecutorLaunch | query known executor launch; unknown is uncertain |
@@ -318,6 +319,7 @@ pub enum CtlMsg {
     /// Exact replay is idempotent; an expired child cannot be renewed or respawned.
     ExecutorRenew { instance: String, launch_key: String, secret: String, version: u64, expires_ms: u64, hard_ms: u64 },
     ExecutorReady,
+    LocalExecutorReady,
     ExecutorClose { instance: String, launch_key: String },
     ExecutorLaunch { instance: String, launch_key: String },
     Key { instance: String, key: NamedKey },
@@ -651,6 +653,7 @@ impl CtlMsg {
                 put_u64(&mut p, *version); put_u64(&mut p, *expires_ms); put_u64(&mut p, *hard_ms);
             }
             CtlMsg::ExecutorReady => p.push(0x3d),
+            CtlMsg::LocalExecutorReady => p.push(0x41),
             CtlMsg::ExecutorClose { instance, launch_key } | CtlMsg::ExecutorLaunch { instance, launch_key } => {
                 p.push(if matches!(self,CtlMsg::ExecutorClose{..}) {0x3e} else {0x3f});
                 put_str(&mut p,instance);put_str(&mut p,launch_key);
@@ -780,6 +783,10 @@ impl CtlMsg {
             0x3d => {
                 if !rest.is_empty() {return Err(bad("trailing executor handshake bytes"));}
                 CtlMsg::ExecutorReady
+            },
+            0x41 => {
+                if !rest.is_empty() {return Err(bad("trailing local executor handshake bytes"));}
+                CtlMsg::LocalExecutorReady
             },
             0x3e | 0x3f => {
                 let instance=get_str(rest,&mut off)?;
@@ -1195,6 +1202,7 @@ mod tests {
     #[test]
     fn executor_controls_roundtrip_reject_trailing_and_malformed_identity() {
         round_msg(CtlMsg::ExecutorReady);
+        round_msg(CtlMsg::LocalExecutorReady);
         assert!(CtlMsg::decode_payload(&[0x3d,0]).is_err());
         for message in [
             CtlMsg::ExecutorRenew{instance:"inst".into(),launch_key:"c".repeat(64),secret:"b".repeat(64),version:2,expires_ms:2000,hard_ms:3000},

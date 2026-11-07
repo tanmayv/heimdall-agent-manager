@@ -4,6 +4,15 @@ import { parseOwnerRequestDocument } from './ownerJson.ts';
 
 // Mirrored executor resource contracts; no task command or launch authority.
 export const executorSchemas = {
+  local_launch: [['protocol_version','version'],['account_id','id'],['executor_bridge_id','id'],
+    ['principal_id','id'],['operation_id','id'],['configuration_digest','hash'],
+    ['issued_ms','positive'],['request_expires_ms','positive'],['key_id','id'],['signature','signature']],
+  local_configuration: [['protocol_version','version'],['account_id','id'],['executor_bridge_id','id'],
+    ['instance_id','id'],['launch_epoch','id'],['run_count','positive'],['token_generation','hash'],
+    ['configuration_revision','positive'],['executor_incarnation','positive'],['policy_revision','positive'],
+    ['slot_id','id'],['provider','label'],['model','label'],['provider_profile','id'],
+    ['directory_id','id'],['directory_revision','positive'],['directory_key','hash'],
+    ['purpose','executor_local_purpose'],['spawn_digest','hash']],
   bootstrap_content: [['agents_md','document'],['memory_md','optional_document'],['task_md','document'],['skills_json','document']],
   child_request: [["protocol_version", "version"], ["account_id", "id"], ["owner_bridge_id", "id"], ["executor_bridge_id", "id"], ["chain_id", "id"], ["task_id", "id"], ["lease_id", "id"], ["reservation_id", "id"], ["instance_id", "id"], ["launch_epoch", "id"], ["run_count", "positive"], ["token_generation", "hash"], ["configuration_revision", "positive"], ["grant_generation", "positive"], ["owner_incarnation", "positive"], ["executor_incarnation", "positive"], ["prepare_digest", "hash"], ["bootstrap_digest", "hash"], ["input_digest", "hash"], ["launch_key", "hash"], ["deadline_version", "positive"], ["expires_ms", "positive"], ["hard_ms", "positive"], ["issued_ms", "positive"], ["request_expires_ms", "positive"], ["key_id", "id"], ["signature", "signature"]],
   bootstrap: [["protocol_version", "version"], ["account_id", "id"], ["owner_bridge_id", "id"], ["executor_bridge_id", "id"], ["chain_id", "id"], ["task_id", "id"], ["lease_id", "id"], ["reservation_id", "id"], ["instance_id", "id"], ["launch_epoch", "id"], ["run_count", "positive"], ["token_generation", "hash"], ["configuration_revision", "positive"], ["grant_generation", "positive"], ["owner_incarnation", "positive"], ["executor_incarnation", "positive"], ["prepare_digest", "hash"], ["action_digest", "hash"], ["configuration_digest", "hash"], ["body_digest", "hash"], ["launch_key", "hash"], ["deadline_version", "positive"], ["expires_ms", "positive"], ["hard_ms", "positive"], ["issued_ms", "positive"], ["request_expires_ms", "positive"], ["key_id", "id"], ["signature", "signature"]],
@@ -430,6 +439,7 @@ function fieldValid(s: string, kind: string): boolean {
     case 'executor_state': return ['prepared','active','stopping','released'].includes(s);
     case 'executor_flag': return s === '0' || s === '1';
     case 'executor_purpose': return ['work','review','manual','warm'].includes(s);
+    case 'executor_local_purpose': return ['manual','warm','provider_test'].includes(s);
     case 'executor_method': return ['activate','heartbeat','stop','query'].includes(s);
     default: return false;
   }
@@ -444,6 +454,7 @@ export function executorParse(raw: string, kind: ExecutorKind): ExecutorDocument
     if (typeof field !== 'string' || !fieldValid(field, type)) throw new SyntaxError('Executor field');
   }
   const o = value as ExecutorDocument;
+  if (kind === 'local_launch' && (BigInt(o.request_expires_ms) <= BigInt(o.issued_ms) || BigInt(o.request_expires_ms)-BigInt(o.issued_ms) > EXECUTOR_TRANSPORT_TTL_MS)) throw new SyntaxError('Executor local consent bounds');
   if (kind === 'bootstrap_content') {
     const skills = parseOwnerRequestDocument(o.skills_json);
     if (!Array.isArray(skills) || skills.length > 64) throw new SyntaxError('Executor bootstrap skills');
@@ -506,8 +517,8 @@ const unhex = (hex: string): Uint8Array<ArrayBuffer> => Uint8Array.from(hex.matc
 export async function executorVerify(kind: ExecutorKind, value: ExecutorDocument, key: OwnerVerifiedKey): Promise<boolean> {
   try {
     const o = executorParse(JSON.stringify(value), kind);
-    const principal = kind === 'policy' || kind === 'receipt' || kind === 'fence_request' || kind === 'enrollment' || kind === 'issuance_receipt' || kind === 'directory' || kind === 'child_request' ? o.executor_bridge_id : kind === 'issuance_consent' ? o.principal_id : o.owner_bridge_id;
-    if (!key.enrolled || key.revoked || key.kind !== (kind === 'issuance_consent' ? 'device' : 'bridge') || key.account_id !== o.account_id ||
+    const principal = kind === 'policy' || kind === 'receipt' || kind === 'fence_request' || kind === 'enrollment' || kind === 'issuance_receipt' || kind === 'directory' || kind === 'child_request' ? o.executor_bridge_id : kind === 'issuance_consent' || kind === 'local_launch' ? o.principal_id : o.owner_bridge_id;
+    if (!key.enrolled || key.revoked || key.kind !== (kind === 'issuance_consent' || kind === 'local_launch' ? 'device' : 'bridge') || key.account_id !== o.account_id ||
         key.principal_id !== principal || key.key_id !== o.key_id || !/^04[0-9a-f]{128}$/.test(key.public_key)) return false;
     const pub = await crypto.subtle.importKey('raw', unhex(key.public_key), {name:'ECDSA',namedCurve:'P-256'}, false, ['verify']);
     return await crypto.subtle.verify({name:'ECDSA',hash:'SHA-256'}, pub, unhex(o.signature), new TextEncoder().encode(executorCanonical(kind,o)));

@@ -132,6 +132,8 @@ complete_recovery :: proc(s:^Store,now:i64)->bool {
     if code:=clock(s,now,false);code!="" do return false
     rows,ok:=query(s.db,"SELECT count(*) FROM executor_reservations WHERE state IN ('active','stopping') AND observed_incarnation!=?",fmt.tprintf("%d",s.incarnation))
     if !ok || len(rows)!=1 || rows[0][0]!="0" do return false
+    local_rows,local_ok:=query(s.db,"SELECT count(*) FROM executor_local_launches WHERE state IN ('dispatching','active','stopping') AND observed_incarnation!=?",fmt.tprintf("%d",s.incarnation))
+    if !local_ok || len(local_rows)!=1 || local_rows[0][0]!="0" do return false
     if !exec(s.db,"UPDATE executor_runtime SET recovery_state='ready' WHERE singleton=1") do return false
     return commit(s)
 }

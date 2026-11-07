@@ -349,6 +349,7 @@ type Watchers = Arc<Mutex<HashMap<u64, ReplySink>>>;
 // Losing this ledger requires explicit executor recovery; an unknown key is
 // never reported absent. Keep hashes, not copies of prior credential-bearing specs.
 const EXECUTOR_LAUNCH_KEY: &str = "HEIMDALL_EXECUTOR_LAUNCH_KEY";
+const EXECUTOR_LOCAL_LAUNCH: &str = "HEIMDALL_EXECUTOR_LOCAL_LAUNCH";
 const EXECUTOR_LAUNCH_LIMIT: usize = 100_000;
 #[derive(Clone, Copy)]
 enum ExecutorLaunchState { Uncertain, Spawned(i32), Failed, NoChild }
@@ -362,6 +363,21 @@ fn executor_launch_key(spec: &SpawnRequest) -> Result<Option<&str>> {
         return Err(anyhow!("spawn: invalid executor launch key"));
     }
     Ok(Some(key))
+}
+
+// A distinct local Bridge mode preserves manual/warm lifetime semantics. It
+// shares exact-key deduplication and stop/query evidence with owner launches,
+// but can never carry an owner deadline or renewal credential.
+fn executor_local_launch(spec: &SpawnRequest) -> Result<bool> {
+    let values: Vec<_> = spec.env.iter().filter(|(name, _)| name == EXECUTOR_LOCAL_LAUNCH).collect();
+    if values.is_empty() {return Ok(false);}
+    if values.len()!=1 || values[0].1!="1" || executor_launch_key(spec)?.is_none() ||
+        spec.env.iter().any(|(name, _)| matches!(name.as_str(),
+            "HEIMDALL_EXECUTOR_DEADLINE_MS" | "HEIMDALL_EXECUTOR_DEADLINE_VERSION" |
+            "HEIMDALL_EXECUTOR_HARD_MS" | "HEIMDALL_EXECUTOR_RENEW_SECRET")) {
+        return Err(anyhow!("spawn: invalid local executor mode"));
+    }
+    Ok(true)
 }
 
 // The watcher and renewal share this lock. Once expiry wins, retirement is
@@ -384,9 +400,10 @@ fn executor_env_number(spec: &SpawnRequest, name: &str) -> Result<Option<u64>> {
 impl ChildDeadline {
     fn from_spec(spec: &SpawnRequest) -> Result<Self> {
         let now = Instant::now();
+        let local = executor_local_launch(spec)?;
         let mut at = spec.timeout_seconds.and_then(|s| now.checked_add(Duration::from_secs(s)));
         if spec.timeout_seconds.is_some() && at.is_none() { return Err(anyhow!("spawn: timeout overflow")); }
-        let executor = if executor_launch_key(spec)?.is_some() {
+        let executor = if executor_launch_key(spec)?.is_some() && !local {
             let wall = now_millis();
             let expires_ms = executor_env_number(spec, "HEIMDALL_EXECUTOR_DEADLINE_MS")?
                 .ok_or_else(|| anyhow!("spawn: executor deadline required"))?;
@@ -498,6 +515,7 @@ impl Daemon {
         }
         use sha2::{Digest,Sha256};
         let key=executor_launch_key(&spec)?.map(str::to_owned);
+        let local=executor_local_launch(&spec)?;
         let digest: [u8;32]=Sha256::digest(CtlMsg::Spawn(spec.clone()).encode()).into();
         if let Some(key)=key.as_deref() {
             let launches=self.executor_launches.lock().unwrap();
@@ -523,6 +541,7 @@ impl Daemon {
             self.executor_launches.lock().unwrap().insert(key.into(),ExecutorLaunch{instance:spec.instance.clone(),digest,state:ExecutorLaunchState::Uncertain});
         }
         if let Some(key)=key.as_deref() {
+            if !local {
             let deadlines:Vec<_>=spec.env.iter().filter(|(name,_)|name=="HEIMDALL_EXECUTOR_DEADLINE_MS").collect();
             let deadline=if deadlines.len()==1 {
                 let text=deadlines[0].1.as_str();
@@ -535,6 +554,7 @@ impl Daemon {
                 return Err(anyhow!("spawn: executor deadline expired or unbounded"));
             }
             spec.timeout_seconds=Some(timeout.min(remaining));
+            }
         }
         let agent=match self.build_agent(spec) {
             Ok(agent)=>agent,
@@ -1727,7 +1747,7 @@ fn handle_ctl(daemon: &Daemon, id: u64, msg: CtlMsg, tx: &ReplySink) {
         },
         CtlMsg::Detach { instance } => daemon.detach(id, &instance),
         CtlMsg::WatchEvents => daemon.watch_events(id),
-        CtlMsg::Ping | CtlMsg::ExecutorReady => {
+        CtlMsg::Ping | CtlMsg::ExecutorReady | CtlMsg::LocalExecutorReady => {
             let _ = tx.send(CtlReply::Pong);
         }
         CtlMsg::Shutdown => {
@@ -1895,6 +1915,48 @@ mod tests {
         spec.env.push(("HEIMDALL_EXECUTOR_DEADLINE_MS".into(),(now_millis()+10000).to_string()));
         spec.timeout_seconds=Some(5);
         spec
+    }
+    #[test]
+    fn executor_local_mode_is_disjoint_from_owner_deadlines() {
+        let mut spec=sh_spec("local-mode", "/unused");
+        spec.env.push((EXECUTOR_LOCAL_LAUNCH.into(),"1".into()));
+        assert!(executor_local_launch(&spec).is_err());
+        spec.env.push((EXECUTOR_LAUNCH_KEY.into(),"c".repeat(64)));
+        assert!(executor_local_launch(&spec).unwrap());
+        let local=ChildDeadline::from_spec(&spec).unwrap();
+        assert!(local.at.is_none() && local.executor.is_none());
+        for name in ["HEIMDALL_EXECUTOR_DEADLINE_MS", "HEIMDALL_EXECUTOR_DEADLINE_VERSION", "HEIMDALL_EXECUTOR_HARD_MS", "HEIMDALL_EXECUTOR_RENEW_SECRET"] {
+            let mut mixed=spec.clone();mixed.env.push((name.into(),"1".into()));
+            assert!(executor_local_launch(&mixed).is_err());
+            assert!(ChildDeadline::from_spec(&mixed).is_err());
+        }
+        let mut duplicate=spec.clone();duplicate.env.push((EXECUTOR_LOCAL_LAUNCH.into(),"1".into()));
+        assert!(executor_local_launch(&duplicate).is_err());
+        spec.env[0].1="0".into();
+        assert!(executor_local_launch(&spec).is_err());
+    }
+    #[test]
+    #[cfg(unix)]
+    fn executor_local_warm_exact_replay_stop_and_unknown_daemon() {
+        if !executor_pty_available() {return;}
+        let sh=shell().expect("POSIX shell required");
+        let daemon=Daemon::new();
+        let key="d".repeat(64);
+        let mut spec=sh_spec("local-warm",&sh);
+        spec.env.push((EXECUTOR_LAUNCH_KEY.into(),key.clone()));
+        spec.env.push((EXECUTOR_LOCAL_LAUNCH.into(),"1".into()));
+        let pid=daemon.spawn(spec.clone()).unwrap();
+        assert_eq!(daemon.spawn(spec.clone()).unwrap(),pid);
+        assert_eq!(daemon.executor_launch_pid("local-warm",&key).unwrap(),pid);
+        assert!(Daemon::new().executor_launch_pid("local-warm",&key).is_err());
+        let mut changed=spec.clone();changed.argv.push("-i".into());
+        assert!(daemon.spawn(changed).is_err());
+        assert!(daemon.close_executor("local-warm",&"e".repeat(64)).is_err());
+        assert_eq!(daemon.executor_launch_pid("local-warm",&key).unwrap(),pid);
+        daemon.close_executor("local-warm",&key).unwrap();
+        assert_eq!(daemon.executor_launch_pid("local-warm",&key).unwrap(),0);
+        assert!(daemon.spawn(spec).is_err());
+        daemon.shutdown();
     }
     #[test]
     fn executor_deadline_versions_replay_bounds_and_irreversible_expiry() {

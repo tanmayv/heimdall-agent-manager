@@ -4,6 +4,7 @@ import contracts "odin_test:contracts"
 // 0x3C is reserved for the selected notification adapter; keep executor controls
 // disjoint. The daemon echoes the exact key in its query response.
 PTY_HOST_T_EXECUTOR_RENEW :: 0x40
+PTY_HOST_T_LOCAL_EXECUTOR_READY :: 0x41
 PTY_HOST_T_EXECUTOR_READY :: 0x3D
 PTY_HOST_T_EXECUTOR_CLOSE :: 0x3E
 PTY_HOST_T_EXECUTOR_LAUNCH :: 0x3F
@@ -36,6 +37,14 @@ bridge_pty_host_executor_close :: proc(socket,instance,key:string)->bool {
 // capability handshake succeeds, even though legacy Spawn itself is compatible.
 bridge_pty_host_executor_capable :: proc(socket:string)->bool {
     frame:=pty_host_frame([]byte{PTY_HOST_T_EXECUTOR_READY});defer delete(frame)
+    reply,ok:=pty_host_request(socket,frame)
+    if !ok do return false
+    defer pty_host_reply_delete(reply)
+    return reply.kind==.Pong
+}
+
+bridge_pty_host_local_executor_capable :: proc(socket:string)->bool {
+    frame:=pty_host_frame([]byte{PTY_HOST_T_LOCAL_EXECUTOR_READY});defer delete(frame)
     reply,ok:=pty_host_request(socket,frame)
     if !ok do return false
     defer pty_host_reply_delete(reply)

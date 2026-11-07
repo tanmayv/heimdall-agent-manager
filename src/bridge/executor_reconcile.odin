@@ -8,6 +8,8 @@ import "core:time"
 import executor "odin_test:lib/executor_local"
 import vault "odin_test:lib/vault"
 
+bridge_executor_local_reconcile_after:string
+
 // Bounded safety work only: there is no launch or owner-task mutation here.
 // Unknown daemon results retain the device charge and are revisited next sweep.
 // The caller holds bridge_executor_mutex; only exact local daemon I/O runs here.
@@ -39,7 +41,15 @@ bridge_executor_reconcile_once :: proc(after:string)->(string,bool) {
     sync.mutex_lock(&bridge_executor_mutex);defer sync.mutex_unlock(&bridge_executor_mutex)
     if !bridge_executor_open(account,key) do return after,false
     socket:=pty_host_socket_path();defer delete(socket)
-    return bridge_executor_reconcile_batch(&bridge_executor_store,bridge_executor_physical_clock(nil),socket,after)
+    next,read:=bridge_executor_reconcile_batch(&bridge_executor_store,bridge_executor_physical_clock(nil),socket,after)
+    sync.mutex_lock(&bridge_startup_io_mutex)
+    local_next,local_read:=bridge_executor_local_reconcile_batch(&bridge_executor_store,socket,bridge_executor_local_reconcile_after)
+    if local_read {
+        delete(bridge_executor_local_reconcile_after,runtime.default_allocator())
+        bridge_executor_local_reconcile_after=strings.clone(local_next,runtime.default_allocator())
+    }
+    sync.mutex_unlock(&bridge_startup_io_mutex)
+    return next,read && local_read
 }
 bridge_executor_reconcile_worker :: proc() {
     after:string

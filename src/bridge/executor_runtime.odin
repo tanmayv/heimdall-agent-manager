@@ -32,7 +32,7 @@ bridge_executor_dispatch :: proc(s:^executor.Store,intent:executor.Intent,now:i6
         // Only the Bridge's catalog/configuration resolver may supply argv/env.
         // The exact spawn bytes become immutable in the daemon on first I/O.
         for pair in request.env do if pair[0]=="HEIMDALL_EXECUTOR_LAUNCH_KEY" || pair[0]=="HEIMDALL_EXECUTOR_DEADLINE_MS" ||
-            pair[0]=="HEIMDALL_EXECUTOR_DEADLINE_VERSION" || pair[0]=="HEIMDALL_EXECUTOR_HARD_MS" || pair[0]=="HEIMDALL_EXECUTOR_RENEW_SECRET" {return false,"reserved_launch_key"}
+            pair[0]=="HEIMDALL_EXECUTOR_DEADLINE_VERSION" || pair[0]=="HEIMDALL_EXECUTOR_HARD_MS" || pair[0]=="HEIMDALL_EXECUTOR_RENEW_SECRET" || pair[0]=="HEIMDALL_EXECUTOR_LOCAL_LAUNCH" {return false,"reserved_launch_key"}
         proof:=owner_check(ctx,intent)
         if !executor.expire(s,clock(clock_ctx)) do return false,"clock_or_storage_error"
         digest,_:=contracts.executor_digest("prepare",p)

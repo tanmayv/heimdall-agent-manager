@@ -50,7 +50,7 @@ install_directory :: proc(s:^Store,raw:string,key:contracts.Owner_Verified_Key,n
     } else if len(rows)!=1 || rows[0][0]!=path {return fail("invalid_resources")}
     resource:=directory_key(s.executor,path)
     old_key:=rows[0][1] if len(rows)>0 else resource
-    busy,busy_ok:=query(s.db,"SELECT 1 FROM executor_reservations WHERE state!='released' AND directory_key IN (?,?) LIMIT 1",resource,old_key)
+    busy,busy_ok:=query(s.db,"SELECT 1 FROM executor_live_resources WHERE directory_key IN (?,?) LIMIT 1",resource,old_key)
     if !busy_ok do return fail("storage_error")
     if len(busy)>0 do return fail("resources_not_drained")
     quota,quota_ok:=query(s.db,"SELECT count(*) FROM executor_directories")

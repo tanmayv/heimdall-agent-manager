@@ -52,6 +52,26 @@ test('executor schemas reject duplicate nested slots and noncanonical integers',
   }
 });
 
+test('local launch requires exact enrolled device signature without owner or task authority', async () => {
+  const pair = await crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);
+  const hex = (value: ArrayBuffer) => Buffer.from(value).toString('hex');
+  const key = {account_id:'account',principal_id:'device',key_id:'device_key',public_key:hex(await crypto.subtle.exportKey('raw',pair.publicKey)),kind:'device' as const,enrolled:true,revoked:false};
+  const consent = executorParse(fixture.valid.find(r => r.kind === 'local_launch')!.raw,'local_launch');
+  const signature = hex(await crypto.subtle.sign({name:'ECDSA',hash:'SHA-256'},pair.privateKey,new TextEncoder().encode(executorCanonical('local_launch',consent))));
+  const sealed = {...consent,signature};
+  assert.equal(await executorVerify('local_launch',sealed,key),true);
+  for (const changed of [{...key,kind:'bridge' as const},{...key,revoked:true},{...key,enrolled:false},{...key,principal_id:'other'},{...key,account_id:'other'}]) {
+    assert.equal(await executorVerify('local_launch',sealed,changed),false);
+  }
+  for (const name of Object.keys(consent).filter(k => k !== 'signature')) {
+    assert.equal(await executorVerify('local_launch',{...sealed,[name]:name === 'configuration_digest' ? 'd'.repeat(64) : '99'},key),false,name);
+  }
+  assert.throws(() => executorParse(JSON.stringify({...sealed,task_id:'task'}),'local_launch'));
+  const c = executorParse(fixture.valid.find(r => r.kind === 'local_configuration')!.raw,'local_configuration');
+  const unicode = executorParse(JSON.stringify({...c,model:'模型 🚀'}),'local_configuration');
+  assert.equal(unicode.model,'模型 🚀');
+});
+
 test('executor P256 receipt binds scope/digest/incarnation and historical admission', async () => {
   const pair = await crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);
   const hex = (value: ArrayBuffer) => Buffer.from(value).toString('hex');

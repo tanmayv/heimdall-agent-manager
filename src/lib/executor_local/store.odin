@@ -49,15 +49,16 @@ open :: proc(s:^Store,path,account,executor,operator_key:string)->bool {
     if len(tables)==0 {
         existing,read:=query(s.db,"SELECT name FROM sqlite_master WHERE type='table'")
         if !read || len(existing)>0 || !exec(s.db,string(#load("schema.sql"))) do return false
-        if _,written:=query(s.db,"INSERT INTO executor_runtime VALUES(1,6,?,?,?,1,0,'ready',0,0)",account,executor,operator_key);!written do return false
+        if _,written:=query(s.db,"INSERT INTO executor_runtime VALUES(1,7,?,?,?,1,0,'ready',0,0)",account,executor,operator_key);!written do return false
     } else {
         rows,read:=query(s.db,"SELECT schema_version,account_id,executor_bridge_id,operator_key_id,incarnation FROM executor_runtime WHERE singleton=1")
-        if !read || len(rows)!=1 || (rows[0][0]!="1" && rows[0][0]!="2" && rows[0][0]!="3" && rows[0][0]!="4" && rows[0][0]!="5" && rows[0][0]!="6") || rows[0][1]!=account || rows[0][2]!=executor || rows[0][3]!=operator_key || number(rows[0][4])==0x7fffffffffffffff do return false
+        if !read || len(rows)!=1 || (rows[0][0]!="1" && rows[0][0]!="2" && rows[0][0]!="3" && rows[0][0]!="4" && rows[0][0]!="5" && rows[0][0]!="6" && rows[0][0]!="7") || rows[0][1]!=account || rows[0][2]!=executor || rows[0][3]!=operator_key || number(rows[0][4])==0x7fffffffffffffff do return false
         if rows[0][0]=="1" && !exec(s.db,string(#load("migration_002.sql"))) do return false
         if (rows[0][0]=="1" || rows[0][0]=="2") && !exec(s.db,string(#load("migration_003.sql"))) do return false
         if (rows[0][0]=="1" || rows[0][0]=="2" || rows[0][0]=="3") && !exec(s.db,string(#load("migration_004.sql"))) do return false
-        if rows[0][0]!="5" && rows[0][0]!="6" && !exec(s.db,string(#load("migration_005.sql"))) do return false
-        if rows[0][0]!="6" && !exec(s.db,string(#load("migration_006.sql"))) do return false
+        if rows[0][0]!="5" && rows[0][0]!="6" && rows[0][0]!="7" && !exec(s.db,string(#load("migration_005.sql"))) do return false
+        if rows[0][0]!="6" && rows[0][0]!="7" && !exec(s.db,string(#load("migration_006.sql"))) do return false
+        if rows[0][0]!="7" && !exec(s.db,string(#load("migration_007.sql"))) do return false
         if !exec(s.db,"UPDATE executor_runtime SET incarnation=incarnation+1,recovery_state='reconciling'; UPDATE executor_reservations SET state='released' WHERE state='prepared';") do return false
     }
     rows,read:=query(s.db,"SELECT incarnation FROM executor_runtime WHERE singleton=1")
@@ -131,7 +132,7 @@ install_policy :: proc(s:^Store,raw:string,key:contracts.Owner_Verified_Key,now:
     quota,q_ok:=query(s.db,"SELECT count(*) FROM executor_policies")
     if !q_ok do return fail("storage_error")
     if number(quota[0][0])>=MAX_RECORDS do return fail("retention_capacity")
-    rows,ok:=query(s.db,"SELECT policy_revision,(SELECT count(*) FROM executor_reservations WHERE state!='released') FROM executor_runtime WHERE singleton=1")
+    rows,ok:=query(s.db,"SELECT policy_revision,(SELECT count(*) FROM executor_live_resources) FROM executor_runtime WHERE singleton=1")
     if !ok || len(rows)!=1 do return fail("storage_error")
     if num(o,"policy_revision")!=number(rows[0][0])+1 do return fail("stale_revision")
     if rows[0][1]!="0" do return fail("resources_not_drained")
@@ -173,14 +174,14 @@ prepare :: proc(s:^Store,raw:string,key:contracts.Owner_Verified_Key,now:i64,res
     quota,q_ok:=query(s.db,"SELECT (SELECT count(*) FROM executor_reservations),(SELECT count(*) FROM executor_receipts)")
     if !q_ok do return fail("storage_error")
     if number(quota[0][0])>=MAX_RECORDS || number(quota[0][1])>=MAX_RECORDS do return fail("retention_capacity")
-    rows,read:=query(s.db,"SELECT policy_revision,device_capacity,(SELECT count(*) FROM executor_reservations WHERE state!='released') FROM executor_runtime WHERE singleton=1")
+    rows,read:=query(s.db,"SELECT policy_revision,device_capacity,(SELECT count(*) FROM executor_live_resources) FROM executor_runtime WHERE singleton=1")
     if !read || len(rows)!=1 do return fail("storage_error")
     if rows[0][0]!=field(o,"policy_revision") do return fail("stale_policy")
     if number(rows[0][2])>=number(rows[0][1]) do return fail("capacity_exhausted")
     slots,found:=query(s.db,"SELECT 1 FROM executor_slots WHERE slot_id=? AND provider_profile=? AND enabled=1",field(o,"slot_id"),field(o,"provider_profile"))
     if !found do return fail("storage_error")
     if len(slots)!=1 do return fail("invalid_slot")
-    conflicts,checked:=query(s.db,"SELECT 1 FROM executor_reservations WHERE state!='released' AND (slot_id=? OR instance_id=? OR (directory_key!='' AND directory_key=?))",field(o,"slot_id"),field(o,"instance_id"),field(o,"directory_key"))
+    conflicts,checked:=query(s.db,"SELECT 1 FROM executor_live_resources WHERE (slot_id=? OR instance_id=? OR (directory_key!='' AND directory_key=?))",field(o,"slot_id"),field(o,"instance_id"),field(o,"directory_key"))
     if !checked do return fail("storage_error")
     if len(conflicts)>0 do return fail("resource_conflict")
     existing,existing_ok:=query(s.db,"SELECT 1 FROM executor_reservations WHERE reservation_id=?",field(o,"reservation_id"))

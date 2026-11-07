@@ -4,7 +4,8 @@
 bounded reconciliation, executor-local readiness, and production signed physical
 deadline renewal are implemented. Continue at
 [Signed physical renewal](#signed-physical-renewal-2026-11-07-continuation)
-for the current boundary, verification and remaining work. Earlier sections
+for renewal evidence, then [Local admission foundation](#local-admission-foundation-2026-11-07-continuation)
+for the latest checkpoint and remaining work. Earlier sections
 preserve historical checkpoints; their unfinished renewal lists are superseded.
 **Full M3 acceptance remains incomplete.**
 
@@ -1991,3 +1992,132 @@ neither affected the working tree. No unrelated cleanup, push or rollout.
    actual owner/executor failure and cross-owner integration, then the required
    independent task review. Preserve executor-local readiness and read-only
    receipt recovery. **Do not submit this task as complete yet.**
+
+
+### Local admission foundation (2026-11-07 continuation)
+
+Base: `d62a9a8ef81319c93e0b1a45f52b638b340fa552`.
+This is a foundation checkpoint for coordinator decision
+`cmt_18e5a9a3dc79631c`, not completed global production admission.
+
+The new `local_launch` device consent signs the exact raw digest of a
+`local_configuration`: physical instance, launch epoch/run/token generation,
+configuration and executor revisions, policy/slot/profile, protected directory
+revision/key, purpose and full Spawn digest. Neither document invents owner,
+chain, task or lease authority. Native and TypeScript schemas share canonical
+vectors and fail closed on extra authority fields. Unicode model labels stay in
+the content configuration; the signed authority envelope remains ASCII
+(`src/contracts/executor_local_launch.odin:5`,
+`src/contracts/executor.odin:240`, `src/ui/api/executor.ts:7`).
+
+V7 retains local consent/configuration in a distinct immutable journal.
+`executor_live_resources` unifies its charges with every owner's reservation.
+Both insert paths have SQL conflict backstops for device capacity, slot, exact
+instance and protected directory; policy and directory changes require both
+classes to drain. Existing V1-V5 reconstruction tests remove V7 additions first.
+A genuine V6 collision/rollback/recovery test preserves the existing active
+reservation and runtime identity
+(`src/lib/executor_local/schema.sql:152`,
+`src/lib/executor_local/schema.sql:187`,
+`src/lib/executor_local/store.odin:177`,
+`src/lib/executor_local/local_launch_test.odin:165`).
+
+Admission authenticates an enrolled device, checks the current mapping and
+trusted resolver output, and journals exact bytes before granting one-shot I/O.
+It saves a monotonic admission tick, fenced by executor incarnation, so wall
+rollback or a slow commit cannot extend the consent window. Dispatch rechecks
+the current device signature and policy/mapping, consumes permission durably,
+then checks the deadline again. A replay returns retained identity/state; it
+cannot refresh the configuration, deadline, incarnation or launch permission.
+A Bridge restart never reissues an old admission
+(`src/lib/executor_local/local_launch.odin:23`,
+`src/lib/executor_local/local_launch.odin:83`,
+`src/lib/executor_local/local_launch.odin:157`).
+
+Manual/warm lifetime is separate from owner lease deadlines. Local daemon
+capability `0x41` explicitly admits exact-key local mode without a lease timer,
+preserving optional provider-test timeouts. The daemon rejects duplicate local
+markers, missing launch keys and any mixture of local mode with owner
+deadline/renewal fields. Owner dispatch also rejects caller-supplied local
+markers. All launches still share the daemon's serialized lifecycle, exact
+full-Spawn digest, tombstones, query and stop keys
+(`tools/pty_host/src/daemon.rs:371`,
+`tools/pty_host/src/daemon.rs:518`,
+`tools/pty_host/src/dproto.rs:322`,
+`src/bridge/executor_runtime.odin:34`).
+
+The native adapter canonicalizes the current directory and resolves catalog/
+profile/model before physical I/O. It reads current journal state on every
+retry, so an old admitted snapshot becomes query-only after first dispatch.
+Only trusted exact daemon absence can refund a dispatched local charge.
+Explicit cancellation can release an undispatched admission; expiry alone
+cannot release either class. Local reconciliation is bounded with a separate
+cursor from owner reconciliation, and restart readiness waits for both classes
+(`src/bridge/executor_local_launch.odin:17`,
+`src/bridge/executor_local_launch.odin:38`,
+`src/lib/executor_local/local_launch.odin:105`,
+`src/bridge/executor_reconcile.odin:44`,
+`src/lib/executor_local/actions.odin:135`).
+
+The real packaged-daemon proof injects a failed observation transaction after
+successful Spawn, recovers the same PID with an old snapshot, reopens the ledger,
+requires exact recovery before readiness, stops/refunds the exact warm child,
+launches an independently authorized replacement, rejects stale-key stop, kills
+the actual daemon and restarts it, then verifies that unknown prior identity
+stays charged/stopping. The resolver separately rejects changed Spawn bytes,
+reserved fields, missing catalog models and vanished canonical directories
+(`src/bridge/executor_local_launch_test.odin:16`).
+
+Checks ran through managed shells in
+`/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e5a16377e1ae67`:
+
+```bash
+nix develop --command odin test src/lib/executor_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3-local-store-final-20261107-0505
+nix develop --command odin test src/contracts -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3-local-contracts-final-20261107-0505
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3-local-owner-final-20261107-0505
+nix develop --command node --experimental-strip-types --test --import ./tests/helpers/vaultEndpointHarness.ts tests/ui_executor_contract_test.ts
+nix develop --command npm run typecheck
+nix develop --command env HEIMDALL_EXECUTOR_REQUIRE_PTY=1 cargo test --manifest-path tools/pty_host/Cargo.toml --offline -- --test-threads=1
+nix build .#ham-bridge .#ham-pty-host -o $HOME/.cache/heimdall-tests/m3-local-admission-bins-20261107-0505
+nix develop --command env HEIMDALL_EXECUTOR_TEST_PTY=$HOME/.cache/heimdall-tests/m3-local-admission-bins-20261107-0505-1/bin/ham-pty-host odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1 -define:EXECUTOR_TEST_REQUIRED=true -define:ODIN_TEST_NAMES=main.test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection,main.bridge_executor_real_daemon_ledger_dispatch_and_stale_stop,main.bridge_executor_expiry_during_owner_check_and_clock_regression_fail_before_io,main.bridge_executor_physical_fence_rechecks_wall_and_monotonic_expiry,main.bridge_executor_renewal_exact_ipc,main.bridge_executor_physical_authority_gate_linearizes_vault_invalidation,main.bridge_executor_local_resolver_rechecks_catalog_mapping_and_full_spawn,main.bridge_executor_local_real_daemon_lost_observation_restart_and_exact_stop -out:$HOME/.cache/heimdall-tests/m3-local-real-final-20261107-0507
+git diff --check
+```
+
+| Check | Outcome / managed session |
+| --- | --- |
+| Executor store, shared quota/race/replay/directory/clock/rollback/restart and V6 migration | 44 PASS; `sh_3d8ad68ed9c742993fad991cd70e961d` |
+| Native contracts, shared new wire vectors | 37 PASS; `sh_c810dccb2bf9ef7efbb7c6d93d2694e2` |
+| Owner regression | 264 PASS; `sh_aae3c13a4e6693c9dcdf5edc1ed3e5c3` |
+| TS contracts/device consent | 7 PASS; `sh_aeab01ccf857a187fb99d933762a909c` |
+| Typecheck | PASS; `sh_48758f31e911662c860c1c417ab12fce` |
+| Rust host suite with real PTY required | 190 PASS; `sh_06e026afdcaff91c84e8ff23b2cb8fd2`; two ignored helper tests are invoked by their parent fresh-process tests |
+| Bridge/PTY Nix packages | PASS; `sh_03d7e5fe9bbda0a9625f27907a38ed44` |
+| Packaged real-daemon local proof plus retained remote issuance/activation/deadline/renewal/vault regressions | 8 PASS; `sh_5df4a7d20975575f70d1728f3e1c6b1b` |
+
+Corrected drafts: missing explicit i32-to-int cleanup conversion; an Odin
+multiline `do`; and the meaningful retry defect where an old caller snapshot's
+state was trusted instead of reading the current durable journal. No failing
+draft is counted as passing evidence. No unrelated cleanup or rollout.
+
+#### Remaining production boundary
+
+The new local dispatch adapter is internal. **Production manual/warm launch
+entrypoints and the enrolled-device consent/draft transport are not wired.**
+Existing production calls at `src/bridge/hub_runtime_client.odin:2670`,
+`:2701`, and `:2773` must be replaced with this authenticated path before
+claiming global admission. A native durable draft must preserve the exact
+Bridge-generated startup credentials and Spawn digest for the device to approve;
+never ask a caller to invent a physical Spawn or expose startup secrets, and
+never treat a Hub command alone as consent. Reuse current paired-directory
+verification and the shared vault/startup I/O gate, then recheck current
+enrollment immediately before first I/O. Preserve task-owned signed dispatch.
+
+Ordinary user shells and isolated disposable fixtures remain excluded. A real
+managed provider test through production launch must use the same budget.
+Encrypted PTY tickets/results, literal bracketed paste, real Linux/Darwin
+provider interrupt profiles, explicit Windows limits, full owner/executor
+crash/cross-owner integration and required independent final task review remain.
+The old-daemon phase was explicitly skipped without
+`HEIMDALL_EXECUTOR_OLD_PTY`; no new real-provider, Darwin or Windows evidence is
+claimed. The coordinator is arranging an independent source audit of a pinned
+checkpoint. That audit does not replace full M3 acceptance or the final review.
