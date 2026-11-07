@@ -1,6 +1,7 @@
 #+feature dynamic-literals
 package main
 
+import "core:encoding/json"
 import "core:fmt"
 import "core:os"
 import "core:strings"
@@ -60,6 +61,9 @@ test_owner_claim_creates_task_worktree_and_task_md :: proc(t:^testing.T) {
     config:=owner.doc(map[string]string{"configuration_revision"="1","author_agent_id"="author","reviewer_agent_id"="reviewer","reviewer_instance_id"="review_instance",
         "directory_id"="directory","merge_policy"="git","repository"=repo,"worktree"=work,"source_branch"=fmt.tprintf("heimdall/%s",task),"target_branch"="integration","base_head"=base})
     testing.expect(t,!bridge_taskv2_is_checkout_root(work))
+    testing.expect(t,!bridge_owner_paths(config,task),"submit/merge validation requires the worktree")
+    testing.expect(t,bridge_owner_paths(config,task,allow_missing_worktree=true),"configuration accepts a not-yet-created, safe worktree path")
+    testing.expect(t,!os.exists(fmt.tprintf("%s/.heimdall",repo)),"configuration validation creates nothing")
     testing.expect(t,bridge_owner_ensure_worktree(config,task),"claim creates the deterministic task worktree")
     testing.expect(t,bridge_taskv2_is_checkout_root(work))
     testing.expect_value(t,owner_routing_git(t,work,"symbolic-ref","--short","HEAD"),fmt.tprintf("heimdall/%s",task))
@@ -87,5 +91,68 @@ test_owner_claim_creates_task_worktree_and_task_md :: proc(t:^testing.T) {
     testing.expect(t,strings.contains(text,fmt.tprintf("Workdir: `%s` on branch `heimdall/%s`",work,task)),"TASK.md names the Workdir")
     testing.expect(t,strings.contains(text,"ham-ctl lease heartbeat --lease lease_routing --acknowledge-requirements-revision 2"),"TASK.md gives the exact ACK command")
     testing.expect(t,strings.contains(text,"Ship it") && strings.contains(text,"## Chain summary"))
+    // A pending claim whose worktree cannot be created still writes TASK.md,
+    // names the problem and reports it; the lease stays for the retry.
+    broken_task:="task_broken"
+    broken:=owner.doc(map[string]string{"merge_policy"="git","repository"=repo,"worktree"=fmt.tprintf("%s/.heimdall/worktrees/%s",repo,broken_task),"source_branch"=fmt.tprintf("heimdall/%s",broken_task),"target_branch"="integration","base_head"=strings.repeat("0",40,context.temp_allocator)})
+    pending:=Owner_Pending_Delivery{active=true,config=broken,configured=true,task=broken_task,present_body=body,
+        command=owner.doc(map[string]string{"chain_id"="chain","task_id"=broken_task,"lease_id"="lease_broken","instance_id"="inst","workdir"="x","branch"="y"})}
+    reply:=bridge_owner_materialize("req",pending,run)
+    testing.expect(t,strings.contains(reply,`"worktree_unavailable"`),"a failed checkout is reported, not hidden")
+    failed_md,_:=os.read_entire_file(fmt.tprintf("%s/TASK.md",run),context.temp_allocator)
+    testing.expect(t,strings.contains(string(failed_md),"Workdir: unavailable") && strings.contains(string(failed_md),"lease_broken"),"TASK.md says the Workdir is unavailable and how to retry")
+
     _=owner_routing_git(t,repo,"worktree","remove","--force",work)
+}
+
+@(test)
+test_owner_worktree_refuses_symlinked_components_and_wrong_branch :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    root:=fmt.tprintf("%s/.cache/heimdall-tests/owner-worktree-safety-%d",os.get_env("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    testing.expect(t,bridge_make_directory_all(fmt.tprintf("%s/repo",root))==nil)
+    testing.expect(t,bridge_make_directory_all(fmt.tprintf("%s/elsewhere",root))==nil)
+    defer _=os.remove_all(root)
+    repo:=bridge_fs_canonicalize_existing(fmt.tprintf("%s/repo",root));defer delete(repo)
+    owner_routing_git(t,repo,"init","-b","sandbox")
+    testing.expect(t,os.write_entire_file(fmt.tprintf("%s/f.txt",repo),transmute([]byte)string("base\n"))==nil)
+    owner_routing_git(t,repo,"add",".")
+    owner_routing_git(t,repo,"commit","-m","base")
+    base:=owner_routing_git(t,repo,"rev-parse","HEAD")
+    make_config :: proc(repo,task,base:string) -> json.Object {
+        return owner.doc(map[string]string{"merge_policy"="git","repository"=repo,"worktree"=fmt.tprintf("%s/.heimdall/worktrees/%s",repo,task),
+            "source_branch"=fmt.tprintf("heimdall/%s",task),"target_branch"="integration","base_head"=base})
+    }
+    // .heimdall is a symlink to a directory outside the repository.
+    testing.expect(t,os.symlink(fmt.tprintf("%s/elsewhere",root),fmt.tprintf("%s/.heimdall",repo))==nil)
+    testing.expect(t,!bridge_owner_worktree_path_safe(repo,"task_a"))
+    testing.expect(t,!bridge_owner_ensure_worktree(make_config(repo,"task_a",base),"task_a"),"a symlinked .heimdall is refused before mkdir")
+    entries,_:=os.read_all_directory_by_path(fmt.tprintf("%s/elsewhere",root),context.temp_allocator)
+    testing.expect_value(t,len(entries),0)
+    testing.expect(t,os.remove(fmt.tprintf("%s/.heimdall",repo))==nil)
+    // worktrees/ itself a symlink.
+    testing.expect(t,os.make_directory(fmt.tprintf("%s/.heimdall",repo))==nil)
+    testing.expect(t,os.symlink(fmt.tprintf("%s/elsewhere",root),fmt.tprintf("%s/.heimdall/worktrees",repo))==nil)
+    testing.expect(t,!bridge_owner_ensure_worktree(make_config(repo,"task_a",base),"task_a"),"a symlinked worktrees directory is refused")
+    testing.expect(t,os.remove(fmt.tprintf("%s/.heimdall/worktrees",repo))==nil)
+    // An existing worktree on another branch is refused, not reused.
+    testing.expect(t,bridge_owner_ensure_worktree(make_config(repo,"task_a",base),"task_a"))
+    owner_routing_git(t,fmt.tprintf("%s/.heimdall/worktrees/task_a",repo),"checkout","-b","other")
+    testing.expect(t,!bridge_owner_ensure_worktree(make_config(repo,"task_a",base),"task_a"),"a branch mismatch is refused")
+    // A plain directory squatting on the path is not adopted.
+    testing.expect(t,os.make_directory(fmt.tprintf("%s/.heimdall/worktrees/task_b",repo))==nil)
+    testing.expect(t,!bridge_owner_ensure_worktree(make_config(repo,"task_b",base),"task_b"),"a non-checkout directory is refused")
+    _=owner_routing_git(t,repo,"worktree","remove","--force",fmt.tprintf("%s/.heimdall/worktrees/task_a",repo))
+}
+
+@(test)
+test_executor_prepare_run_dir_creates_missing_instances_parent :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    root:=fmt.tprintf("%s/.cache/heimdall-tests/run-dir-%d",os.get_env("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    defer _=os.remove_all(root)
+    run_dir:=fmt.tprintf("%s/local/instances/inst_fresh",root)
+    testing.expect(t,!bridge_os_prepare_private_dir(run_dir),"the plain private mkdir is non-recursive (the fresh-Bridge failure)")
+    testing.expect(t,bridge_executor_prepare_run_dir(run_dir),"native startup creates the missing instances parent")
+    info,err:=os.lstat(run_dir,context.temp_allocator)
+    testing.expect(t,err==nil && info.type==.Directory)
+    testing.expect(t,bridge_executor_prepare_run_dir(run_dir),"idempotent for an existing run directory")
 }

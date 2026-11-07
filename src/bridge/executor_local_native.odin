@@ -65,6 +65,16 @@ bridge_executor_local_startup_current :: proc(p:^Executor_Local_Startup)->bool {
 }
 // Called after the durable dispatch boundary while startup, configuration and
 // vault gates are held. Never re-entered by a lost-reply retry or after restart.
+// A fresh Bridge has no <local-run-dir>/instances yet: create the missing
+// parents (owner-only) before the private, non-recursive run directory.
+bridge_executor_prepare_run_dir :: proc(run_dir:string)->bool {
+    clean:=strings.trim_right(run_dir,"/")
+    if slash:=strings.last_index_byte(clean,'/');slash>0 {
+        if bridge_make_directory_all(clean[:slash],{.Read_User,.Write_User,.Execute_User})!=nil do return false
+    }
+    return bridge_os_prepare_private_dir(clean)
+}
+
 bridge_executor_local_startup :: proc(ctx:rawptr)->bool {
     p:=(^Executor_Local_Startup)(ctx)
     m:=p.m
@@ -73,7 +83,7 @@ bridge_executor_local_startup :: proc(ctx:rawptr)->bool {
     if !bridge_executor_local_startup_current(p) do return false
     descriptor:=bridge_executor_local_descriptor(m.command)
     if !bridge_legacy_apply_pack_locked(p.store,m.request.instance,"",descriptor.pack_json) do return false
-    if !bridge_os_prepare_private_dir(m.run_dir) do return false
+    if !bridge_executor_prepare_run_dir(m.run_dir) do return false
     pp,e:=profile_lookup(m.provider,m.profile)
     if e!=.None do return false
     _=pp
@@ -94,7 +104,7 @@ bridge_executor_local_startup :: proc(ctx:rawptr)->bool {
     bridge_startup_set_expectation(m.request.instance,m.token,bridge_provider_launch_extension_expected(catalog,m.profile))
     bridge_pty_host_track_instance_provider(m.request.instance,m.provider)
     bridge_prespawn_clean_slate(m.run_dir)
-    if !bridge_os_prepare_private_dir(m.run_dir) do return false
+    if !bridge_executor_prepare_run_dir(m.run_dir) do return false
     if m.purpose=="provider_test" {
         if !bridge_bootstrap_materialize_local_provider_test(m.run_dir,m.endpoint,m.token,m.request.instance,m.provider) do return false
     } else {
