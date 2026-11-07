@@ -276,3 +276,50 @@ bridge_executor_physical_fence_rechecks_wall_and_monotonic_expiry :: proc(t:^tes
     pending.request=executor.encode(q)
     testing.expect(t,!bridge_executor_physical_fence(&physical,{}).current,"wall clock before challenge issue fails closed")
 }
+
+@(test)
+bridge_executor_renewal_exact_ipc :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    binary:=os.get_env("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)
+    if binary=="" {
+        when #config(EXECUTOR_TEST_REQUIRED,false) {
+            testing.fail_now(t,"HEIMDALL_EXECUTOR_TEST_PTY must name the built real daemon")
+        } else {fmt.eprintln("[skip] renewal IPC requires HEIMDALL_EXECUTOR_TEST_PTY");return}
+    }
+    sync.mutex_lock(&bridge_test_config_mutex);defer sync.mutex_unlock(&bridge_test_config_mutex)
+    suffix:=fmt.tprintf("%d",time.to_unix_nanoseconds(time.now()))
+    socket:=fmt.tprintf("/tmp/ham-executor-renew-%s.sock",suffix)
+    swap:=pty_host_test_install_socket(socket);defer pty_host_test_restore_socket(swap)
+    process,err:=os.process_start(os.Process_Desc{command=[]string{binary,"--socket",socket,"daemon"}})
+    if !testing.expect(t,err==nil) do return
+    defer {
+        frame:=pty_host_frame([]byte{0x37});reply,ok:=pty_host_request(socket,frame);delete(frame)
+        if ok do pty_host_reply_delete(reply)
+        _=os.process_kill(process);_,_=os.process_wait(process);_=os.remove(socket)
+    }
+    ready:=false
+    for _ in 0..<100 {if bridge_pty_host_ping(socket) {ready=true;break};time.sleep(10*time.Millisecond)}
+    if !testing.expect(t,ready) do return
+    now:=bridge_runtime_now_ms()
+    key:=strings.repeat("7",64,context.temp_allocator)
+    req:=Pty_Host_Spawn_Request{instance="renew_instance",argv=[]string{"sh"},rows=24,cols=80,has_timeout_seconds=true,timeout_seconds=3}
+    secret:=strings.repeat("b",64,context.temp_allocator)
+    req.env=[][2]string{{"HEIMDALL_EXECUTOR_RENEW_SECRET",secret},{"HEIMDALL_EXECUTOR_LAUNCH_KEY",key},{"HEIMDALL_EXECUTOR_DEADLINE_MS",fmt.tprintf("%d",now+4000)},
+        {"HEIMDALL_EXECUTOR_DEADLINE_VERSION","1"},{"HEIMDALL_EXECUTOR_HARD_MS",fmt.tprintf("%d",now+8000)}}
+    _,_=bridge_pty_host_spawn(socket,req)
+    pid,present:=bridge_pty_host_executor_query(socket,req.instance,key)
+    if !testing.expect(t,present && pid>0) do return
+    renewed,ok:=bridge_pty_host_executor_renew(socket,req.instance,key,secret,2,now+6000,now+8000)
+    testing.expect(t,ok && renewed==pid)
+    replay,replayed:=bridge_pty_host_executor_renew(socket,req.instance,key,secret,2,now+6000,now+8000)
+    testing.expect(t,replayed && replay==pid)
+    _,conflict:=bridge_pty_host_executor_renew(socket,req.instance,key,secret,2,now+6001,now+8000)
+    testing.expect(t,!conflict)
+    _,wrong_hard:=bridge_pty_host_executor_renew(socket,req.instance,key,secret,3,now+7000,now+8001)
+    testing.expect(t,!wrong_hard)
+    _,wrong_child:=bridge_pty_host_executor_renew(socket,"other",key,secret,3,now+7000,now+8000)
+    testing.expect(t,!wrong_child)
+    testing.expect(t,bridge_pty_host_executor_close(socket,req.instance,key))
+    _,retired:=bridge_pty_host_executor_renew(socket,req.instance,key,secret,3,now+7000,now+8000)
+    testing.expect(t,!retired)
+}

@@ -1,5 +1,12 @@
 # M3 continuation: executor dispatch checkpoint
 
+**Current continuation status (2026-11-07):** automatic exact activation,
+bounded reconciliation, executor-local readiness and the exact daemon renewal
+primitive are implemented. **Production signed renewal remains unfinished.**
+Continue at [Exact daemon renewal primitive](#exact-daemon-renewal-primitive-2026-11-07-continuation);
+its final checklist is the current boundary. Earlier sections below preserve
+historical implementation and verification records; do not reimplement them.
+
 Task `task_18e556f90cfa1e9c`, attempt 2, branch `heimdall/task_18e556f90cfa1e9c`.
 
 This continuation preserves the physical dispatch foundation and adds the owner execution journal, signed single-use fence challenges (`d9253b59`), explicit reserved remote enrollment (`c4dfa43d`) and the sealed channel core documented below. The latest owner suite passed 239 tests; native/TS channel vectors also pass. Checkpoint 1 is `33107517648ae4d43e0f9aad176e24404152017a`, documented in `docs/executor-reservations-checkpoint.md`.
@@ -1755,3 +1762,101 @@ No unrelated cleanup or owner task mutation was added.
 4. Complete actual failure/cross-owner evidence, real provider and platform
    verification gates, and independent review before submit. The full M3 task
    remains incomplete; continue this same branch without reimporting predecessors.
+
+### Exact daemon renewal primitive (2026-11-07 continuation)
+
+This checkpoint implements the physical renewal primitive only. **Signed
+owner-to-executor renewal remains unfinished and is not mounted.** The existing
+production launch path still sends only its original deadline, so it creates
+nonrenewable children. No remote child request, task heartbeat result or
+historical receipt is used to extend a process.
+
+The local IPC contract adds tag `0x40`: length-prefixed instance, exact launch
+key and Bridge-only renewal secret, followed by little-endian u64 deadline
+version, absolute expiry and hard deadline
+(`tools/pty_host/src/dproto.rs:319`). A successful response is the existing
+exact-key `StartupLaunch` response with a positive PID. It is a per-request
+acknowledgement, not permission to issue another renewal. Unsupported daemons
+reject the new tag; no legacy fallback is provided.
+
+The daemon accepts renewal only for the exact live keyed child
+(`tools/pty_host/src/daemon.rs:809`). Version must increment by one; the same
+version and expiry are idempotent without resetting the monotonic clock.
+Conflicting/stale/skipped versions, decreased expiry and changed hard bounds
+fail. A shared deadline mutex linearizes renewal against irreversible expiry.
+Both wall expiry and monotonic expiry retire the child, and renewal cannot
+revive it. The initial monotonic hard bound cannot move backwards with the
+wall clock (`tools/pty_host/src/daemon.rs:421`).
+
+Renewable initial spawns must carry canonical positive
+`HEIMDALL_EXECUTOR_DEADLINE_VERSION` and `HEIMDALL_EXECUTOR_HARD_MS`, plus an
+unpredictable `HEIMDALL_EXECUTOR_RENEW_SECRET`. The secret is removed before
+creating the child and from its retained restart spec; the daemon retains only
+a SHA256 digest (`tools/pty_host/src/daemon.rs:400`,
+`tools/pty_host/src/daemon.rs:559`). An initial spawn without that separate
+credential cannot renew. The child-visible launch key and deadline are
+insufficient. The future production implementation must durably retain this
+control credential separately from all child bootstrap/configuration material.
+
+Native encoding and the one-shot adapter are in
+`src/bridge/pty_executor.odin:48`. The real isolated-daemon native test at
+`src/bridge/executor_runtime_test.odin:281` exercises success, exact lost-reply
+replay, wrong child, conflicting version, changed hard bound and denial after
+stop. Rust tests cover actual survival beyond the original physical timeout,
+shared-watcher expiry, wrong secret, credential exclusion from the retained
+child spec, monotonic hard cap, stale replacement and unknown daemon state
+(`tools/pty_host/src/daemon.rs:1900`).
+
+Next implementation boundary remains:
+1. Add owner-authored renewal journal/outbox and fresh nonce verification for the
+   exact current lease/version/expiry. Existing
+   `src/lib/owner_local/execution.odin:220`,
+   `src/contracts/executor.odin:281` and
+   `src/lib/executor_local/fence.odin:18` admit activation only.
+2. Reconcile immutable bootstrap authentication with accepted signed deadline
+   updates. `src/lib/executor_local/child.odin:44` currently requires the
+   bootstrap deadline/version to equal the current reservation. Do not simply
+   loosen that check or trust a child heartbeat result.
+3. Persist the separate Bridge control credential, send bounded initial metadata
+   only from validated reservation state, and invoke physical renewal only after
+   fresh current owner/directory rechecks under startup I/O serialization.
+   Recover lost daemon replies using the exact version/expiry; never respawn.
+4. Complete global manual/warm admission, encrypted PTY tickets/results,
+   provider/platform evidence and independent review as already listed above.
+
+Draft failures corrected: an initial shell-quoting edit stripped Rust byte
+literal quotes; a credential-aware test fixture initially omitted the new
+credential and was correctly rejected. Neither failed draft is claimed as
+passing evidence. No unrelated cleanup, push, deployment or task-authority
+effect was introduced.
+
+Final-source verification, through managed shells in this task Workdir:
+
+```bash
+nix develop --command env HEIMDALL_EXECUTOR_REQUIRE_PTY=1 cargo test --manifest-path tools/pty_host/Cargo.toml --offline -- --test-threads=1
+nix develop --command cargo build --manifest-path tools/pty_host/Cargo.toml --offline
+nix develop --command env HEIMDALL_EXECUTOR_TEST_PTY=$PWD/tools/pty_host/target/debug/ham-pty-host odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:EXECUTOR_TEST_REQUIRED=true -define:ODIN_TEST_NAMES=main.pty_executor_exact_control_wire_shape_and_invalid_identity,main.pty_executor_renew_wire_bounds,main.bridge_executor_renewal_exact_ipc,main.bridge_executor_real_daemon_ledger_dispatch_and_stale_stop,main.bridge_executor_expiry_during_owner_check_and_clock_regression_fail_before_io,main.bridge_executor_physical_fence_rechecks_wall_and_monotonic_expiry,main.test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection -out:$HOME/.cache/heimdall-tests/m3b-renew-secret-real-20261107-0415
+nix build .#ham-bridge .#ham-pty-host -o $HOME/.cache/heimdall-tests/m3b-renew-secret-bins-20261107-0416
+git diff --cached --check
+```
+
+Results: Rust **188 PASS**, two existing child helpers ignored at the top
+level and invoked by their passing parent fresh-process tests; real PTY required.
+Local binary build **PASS** and native Bridge **7 PASS**
+(`sh_2f9940c7e87e08bcd29cfe01240faf69`).
+Production Bridge/PTY package builds **PASS**
+(`sh_d8df08e045448e9c6aa78db1b13e6f85`).
+The old-daemon phase was explicitly skipped without
+`HEIMDALL_EXECUTOR_OLD_PTY`; no new old-daemon/platform/provider proof is
+claimed. No TypeScript or owner/ledger contracts changed, so their suites were
+not rerun for this local IPC checkpoint. Full M3 acceptance remains incomplete.
+
+Exact modified paths under
+`/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e5a16377e1ae67/`:
+
+- `docs/executor-dispatch-checkpoint.md`
+- `src/bridge/executor_runtime_test.odin`
+- `src/bridge/pty_executor.odin`
+- `src/bridge/pty_executor_test.odin`
+- `tools/pty_host/src/daemon.rs`
+- `tools/pty_host/src/dproto.rs`

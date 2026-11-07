@@ -47,6 +47,7 @@
 //! | 0xAE | StreamReady | stream attached and ready to accept input/output     |
 //! | 0xAF | StreamClosed| stream closed (child exited or teardown)             |
 //! | 0xB0 | AlreadyExited| Signal target had already exited (instance + code)  |
+//! | 0x40 | ExecutorRenew | exact instance/key/control secret + u64 version/expiry/hard bound; reply StartupLaunch |
 //! | 0x3D | ExecutorReady | require exact-key fencing and absolute deadlines |
 //! | 0x3E | ExecutorClose | close only the matching executor launch key      |
 //! | 0x3F | ExecutorLaunch | query known executor launch; unknown is uncertain |
@@ -313,6 +314,9 @@ pub enum CtlMsg {
     /// Confirm a successfully spawned, still-live child by its immutable spawn key.
     /// Unlike bridge token issuance, this evidence survives a bridge restart.
     StartupLaunch { instance: String, launch_key: String },
+    /// Local Bridge control only: fresh owner authority must be checked by the Bridge.
+    /// Exact replay is idempotent; an expired child cannot be renewed or respawned.
+    ExecutorRenew { instance: String, launch_key: String, secret: String, version: u64, expires_ms: u64, hard_ms: u64 },
     ExecutorReady,
     ExecutorClose { instance: String, launch_key: String },
     ExecutorLaunch { instance: String, launch_key: String },
@@ -574,7 +578,7 @@ impl CtlMsg {
             CtlMsg::Attach { instance } => Some(instance),
             CtlMsg::Input { instance, .. } => Some(instance),
             CtlMsg::StartupInput { instance, .. } => Some(instance),
-            CtlMsg::StartupLaunch { instance, .. } | CtlMsg::ExecutorClose { instance, .. } | CtlMsg::ExecutorLaunch { instance, .. } => Some(instance),
+            CtlMsg::StartupLaunch { instance, .. } | CtlMsg::ExecutorClose { instance, .. } | CtlMsg::ExecutorLaunch { instance, .. } | CtlMsg::ExecutorRenew { instance, .. } => Some(instance),
             CtlMsg::Key { instance, .. } => Some(instance),
             CtlMsg::Resize { instance, .. } => Some(instance),
             CtlMsg::Capture { instance } => Some(instance),
@@ -640,6 +644,11 @@ impl CtlMsg {
                 put_i32(&mut p, *pid);
                 put_str(&mut p, launch_key);
                 p.extend_from_slice(data);
+            }
+            CtlMsg::ExecutorRenew { instance, launch_key, secret, version, expires_ms, hard_ms } => {
+                p.push(0x40);
+                put_str(&mut p, instance); put_str(&mut p, launch_key); put_str(&mut p, secret);
+                put_u64(&mut p, *version); put_u64(&mut p, *expires_ms); put_u64(&mut p, *hard_ms);
             }
             CtlMsg::ExecutorReady => p.push(0x3d),
             CtlMsg::ExecutorClose { instance, launch_key } | CtlMsg::ExecutorLaunch { instance, launch_key } => {
@@ -752,6 +761,22 @@ impl CtlMsg {
                 let launch_key = get_str(rest, &mut off)?;
                 CtlMsg::StartupInput { instance, pid, launch_key, data: rest[off..].to_vec() }
             }
+            0x40 => {
+                let instance = get_str(rest, &mut off)?;
+                let launch_key = get_str(rest, &mut off)?;
+                let secret = get_str(rest, &mut off)?;
+                let version = get_u64(rest, &mut off)?;
+                let expires_ms = get_u64(rest, &mut off)?;
+                let hard_ms = get_u64(rest, &mut off)?;
+                if off != rest.len() || instance.is_empty() || instance.len() > 160 ||
+                    !instance.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-.:".contains(&b)) ||
+                    launch_key.len() != 64 || !launch_key.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) ||
+                    secret.len() != 64 || !secret.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) ||
+                    version == 0 || version > i64::MAX as u64 || expires_ms == 0 || expires_ms > hard_ms || hard_ms > i64::MAX as u64 {
+                    return Err(bad("invalid executor renewal"));
+                }
+                CtlMsg::ExecutorRenew { instance, launch_key, secret, version, expires_ms, hard_ms }
+            },
             0x3d => {
                 if !rest.is_empty() {return Err(bad("trailing executor handshake bytes"));}
                 CtlMsg::ExecutorReady
@@ -1172,6 +1197,7 @@ mod tests {
         round_msg(CtlMsg::ExecutorReady);
         assert!(CtlMsg::decode_payload(&[0x3d,0]).is_err());
         for message in [
+            CtlMsg::ExecutorRenew{instance:"inst".into(),launch_key:"c".repeat(64),secret:"b".repeat(64),version:2,expires_ms:2000,hard_ms:3000},
             CtlMsg::ExecutorClose{instance:"inst".into(),launch_key:"a".repeat(64)},
             CtlMsg::ExecutorLaunch{instance:"inst".into(),launch_key:"b".repeat(64)},
         ] {
@@ -1181,6 +1207,12 @@ mod tests {
             for end in 0..payload.len() {assert!(CtlMsg::decode_payload(&payload[..end]).is_err());}
             let mut extra=payload.to_vec();extra.push(0);
             assert!(CtlMsg::decode_payload(&extra).is_err());
+        }
+        for (version, expires_ms, hard_ms) in [(0, 2000, 3000), (u64::MAX, 2000, 3000),
+            (2, 0, 3000), (2, 3001, 3000), (2, 2000, u64::MAX)] {
+            let invalid = CtlMsg::ExecutorRenew { instance: "inst".into(), launch_key: "a".repeat(64), secret: "b".repeat(64),
+                version, expires_ms, hard_ms }.encode();
+            assert!(CtlMsg::decode_payload(&invalid[4..]).is_err());
         }
         let invalid=CtlMsg::ExecutorClose{instance:"inst".into(),launch_key:"wrong".into()}.encode();
         assert!(CtlMsg::decode_payload(&invalid[4..]).is_err());
