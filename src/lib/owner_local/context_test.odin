@@ -26,7 +26,7 @@ context_seed_history :: proc(t:^testing.T,f:^Fixture) {
         testing.expect(t,ok)
     }
     // One huge Unicode line, with significant evidence beyond the preview.
-    _,ok:=query(f.store.db,"INSERT INTO task_comments VALUES('chain','task','huge','author',?,1000)",strings.concatenate({strings.repeat("界",10000,context.temp_allocator),"TAIL_EVIDENCE"},context.temp_allocator))
+    _,ok:=query(f.store.db,"INSERT INTO task_comments(chain_id,task_id,operation_id,principal_id,body,seq) VALUES('chain','task','huge','author',?,1000)",strings.concatenate({strings.repeat("界",10000,context.temp_allocator),"TAIL_EVIDENCE"},context.temp_allocator))
     testing.expect(t,ok)
 }
 

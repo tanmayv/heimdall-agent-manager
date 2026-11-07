@@ -88,7 +88,7 @@ identity_revision_scope_and_incarnation_guards :: proc(t:^testing.T) {
       "UPDATE task_chains SET title='unversioned'", "UPDATE tasks SET revision=revision+2",
       "UPDATE tasks SET chain_id='other',revision=revision+1", "UPDATE local_grants SET can_mutate=0",
     }) { testing.expectf(t,!exec(f.store.db,sql),"guard rejects %s",sql) }
-    testing.expect(t,!exec(f.store.db,`INSERT INTO task_comments VALUES('another_chain','task','cross','device','wrong',3)`),"composite task scope")
+    testing.expect(t,!exec(f.store.db,`INSERT INTO task_comments(chain_id,task_id,operation_id,principal_id,body,seq) VALUES('another_chain','task','cross','device','wrong',3)`),"composite task scope")
     testing.expect(t,!exec(f.store.db,`INSERT INTO command_receipts(principal_id,operation_id,chain_id,task_id,method,input_digest,digest_key_id,request_expires_ms,result_json,commit_seq)
        VALUES('device','cross','wrong','task','task.comment','x','device',1000,'x',3)`),"receipt same-chain scope")
     testing.expect(t,!exec(f.store.db,"DELETE FROM command_receipts"),"deduplication evidence cannot disappear")
@@ -131,7 +131,7 @@ nested_candidate_rollback_drops_state_receipt_change_and_intent :: proc(t:^testi
     testing.expect(t,!transaction_begin(&f.store,&another),"nested begin fails instead of deadlocking; use savepoint")
     testing.expect(t,transaction_savepoint(&outer,&child))
     testing.expect(t,!transaction_savepoint(&child,&outer),"active ancestor handle cannot be overwritten")
-    testing.expect(t,exec(f.store.db,`INSERT INTO task_comments VALUES('chain','task','candidate','device','candidate',3);
+    testing.expect(t,exec(f.store.db,`INSERT INTO task_comments(chain_id,task_id,operation_id,principal_id,body,seq) VALUES('chain','task','candidate','device','candidate',3);
       INSERT INTO command_receipts(principal_id,operation_id,chain_id,task_id,method,input_digest,digest_key_id,request_expires_ms,result_json,commit_seq)
        VALUES('device','candidate','chain','task','task.comment','x','device',2000,'result',3);
       INSERT INTO local_changes VALUES(3,'chain','task.comment','task',2,'candidate');`))
