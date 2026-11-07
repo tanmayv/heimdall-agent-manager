@@ -21,7 +21,21 @@ export async function ownerMigrationFlow({session,bridgeId,hub,http,expect,cli,s
   expect(offline.status>=400 && /owner_unavailable|offline/i.test(offline.raw),'offline owner leaves the chain frozen: '+offline.status+' '+offline.raw);
   const frozenWrite=await http(hub,'PUT','/api/v1/task-chains/'+chainId+'/summary',{body:{body:'late legacy write'}});
   expect(frozenWrite.status>=400,'frozen legacy chain refuses writes: '+frozenWrite.status);
+  // Abort: an unfinished migration returns the frozen chain to the Hub writer.
+  const second=await http(hub,'POST','/api/v1/task-chains',{body:{title:await enc('Aborted migration chain'),description:await enc('stays on the Hub'),kind:'mixed_work'}});
+  const secondId=second.data.chain_id;
+  const secondPre=await http(hub,'GET','/api/v1/owner-local/migrations/preflight?chain_id='+encodeURIComponent(secondId));
+  const secondRequest=await prepareMigrationRequest(session,secondId,bridgeId,secondPre.data.work_revision);
+  await http(hub,'POST','/api/v1/owner-local/migrations',{body:secondRequest});
+  const frozen=await http(hub,'GET','/api/v1/owner-local/migrations/preflight?chain_id='+encodeURIComponent(secondId));
+  expect(frozen.data.state==='frozen','second chain frozen while the owner is offline');
+  const aborted=await http(hub,'POST','/api/v1/owner-local/migrations/abort',{body:{chain_id:secondId,migration_id:frozen.data.migration_id}});
+  expect(aborted.status===200 && aborted.data.state==='aborted','unfinished migration aborts: '+aborted.raw);
+  const released=await http(hub,'PUT','/api/v1/task-chains/'+secondId+'/summary',{body:{body:'back on the Hub writer'}});
+  expect(released.status<400,'aborted chain is writable on the Hub again: '+released.status+' '+released.raw);
   await restartOwner();
+  const lateRetry=await http(hub,'POST','/api/v1/owner-local/migrations',{body:secondRequest});
+  expect(lateRetry.status>=400,'the aborted selection never freezes or cuts over again: '+lateRetry.status);
   let moved:any;
   for(let i=0;i<20;i++){
     moved=await http(hub,'POST','/api/v1/owner-local/migrations',{body:request});

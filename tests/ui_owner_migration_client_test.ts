@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { FakeHub, USER } from './helpers/vaultDirectoryFixture.ts';
 import { createDeviceIdentity, memoryDeviceStore } from '../src/ui/utils/deviceIdentity.ts';
 import { importKeyring } from '../src/ui/utils/vaultKeyring.ts';
-import { ownerParse, ownerVerifySignature } from '../src/ui/api/ownerLocal.ts';
+import { ownerParse, ownerPayloadKind, ownerVerifySignature } from '../src/ui/api/ownerLocal.ts';
+import { prepareOwnerOperation } from '../src/ui/api/ownerLocalClient.ts';
 import { ownerVerifyMigrationSelection } from '../src/ui/api/ownerMigration.ts';
 import { ApiError } from '../src/ui/api/cookieFetch.ts';
 import { describeMigrationBlockers, migrationBlockersFromError, prepareMigrationRequest } from '../src/ui/api/ownerMigrationClient.ts';
@@ -28,6 +29,14 @@ test('legacy migration request is device-signed selection plus genesis created b
   assert.equal(await ownerVerifyMigrationSelection(selection,USER,'chain_1',device,owner),'none');
   assert.equal(await ownerVerifySignature('genesis',genesis,'creator_signature',device),true);
   await assert.rejects(prepareMigrationRequest(session,'chain_1','unknown_bridge',7),/currently enrolled/);
+  // Archived legacy rows are a chain-scoped read filtered by kind and task.
+  const archive = await prepareOwnerOperation(session,'bridge','migration.archive.read',{chainId:'chain_1',expectedRevision:'0',archiveKind:'review',archiveTaskId:'task_1',limit:5});
+  const command = ownerParse(archive.command,'command');
+  assert.equal(command.task_id,'');
+  assert.equal(ownerPayloadKind('migration.archive.read'),'archive_read_payload');
+  ownerParse(archive.payload,'archive_read_payload');
+  assert.deepEqual(JSON.parse(archive.payload),{kind:'review',task_id:'task_1',cursor:'',limit:'5'});
+  assert.throws(()=>ownerParse(JSON.stringify({kind:'review',task_id:'',cursor:'',limit:'101'}),'archive_read_payload'));
 });
 
 test('busy-chain refusals are listed from the Hub error details', () => {

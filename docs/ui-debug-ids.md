@@ -27,7 +27,7 @@ All of the following element types must have `data-debug-id`:
 |-----------|---------|
 | `OwnerLocalPanel` durable fleet policy | `owner-local-fleet-policy`, `owner-local-fleet-policy-read`, `owner-local-fleet-policy-save`, `owner-local-fleet-policy-next` |
 | `OwnerLocalPanel` device grants | `owner-local-grant-principal`, `owner-local-grant-principal-id`, `owner-local-grant-expires`, `owner-local-grant-write`, `owner-local-recovery-enabled`, `owner-local-policy-revision`, `owner-local-grant-read`, `owner-local-grant-set`, `owner-local-grant-revoke`, `owner-local-grant-policy`, `owner-local-grant-recover`, `owner-local-grant-next` |
-| `OwnerLocalPanel` legacy chain migration | `owner-local-migration-check`, `owner-local-migration-move`, `owner-local-migration-export` |
+| `OwnerLocalPanel` legacy chain migration | `owner-local-migration-check`, `owner-local-migration-move`, `owner-local-migration-export`, `owner-local-migration-abort`, `owner-local-migration-reviews`, `owner-local-migration-archive`, `owner-local-migration-archive-next` |
 | `DesktopUpdatesPanel` | `settings-nav-updates`, `desktop-updates-panel`, `desktop-updates-current-version`, `desktop-updates-status`, `desktop-updates-check`, `desktop-updates-progress`, `desktop-updates-retry`, `desktop-updates-restart`, `desktop-updates-later`, `desktop-updates-release-link` |
 | `DesktopUpdatePreparation` | `desktop-update-preparing-overlay`, `desktop-update-preparing-status` |
 | `SetupWizardPage` Projects step | `setup-projects-retry-btn` |

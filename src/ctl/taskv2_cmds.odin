@@ -1367,7 +1367,14 @@ ctl_v2_owner_local :: proc(endpoint,token:string,tokens,args:[]string) {
 ctl_v2_task_chain_migrate :: proc(endpoint,token:string,args:[]string) {
     chain:=option_value(args,"--chain","")
     owner:=option_value(args,"--owner","")
-    if chain=="" || owner=="" do ctl_print_error_exit("usage: task-chain migrate --chain <id> --owner <bridge-id> [--request-file <signed.json>]")
+    if has_flag(args,"--abort") {
+        // Returns a selected or frozen (never imported) chain to its legacy writer.
+        migration:=option_value(args,"--migration","")
+        if chain=="" || migration=="" do ctl_print_error_exit("usage: task-chain migrate --abort --chain <id> --migration <migration-id>")
+        ctl_agent_rest(endpoint,token,{method=.POST,path=ctl_api("owner-local","migrations","abort"),body=httpc.json_body(Ctl_Migration_Abort{chain,migration})})
+        return
+    }
+    if chain=="" || owner=="" do ctl_print_error_exit("usage: task-chain migrate --chain <id> --owner <bridge-id> [--request-file <signed.json>] | --abort --chain <id> --migration <id>")
     path:=option_value(args,"--request-file","")
     if path=="" {
         q:=ctl_query_make()
@@ -1382,6 +1389,7 @@ ctl_v2_task_chain_migrate :: proc(endpoint,token:string,args:[]string) {
     ctl_agent_rest(endpoint,token,{method=.POST,path=ctl_api("owner-local","migrations"),body=httpc.json_body(request)})
 }
 Ctl_Migration_Request :: struct { selection,genesis:string }
+Ctl_Migration_Abort :: struct { chain_id,migration_id:string }
 ctl_migration_request_parse :: proc(raw,chain,owner:string)->(Ctl_Migration_Request,bool) {
     request:Ctl_Migration_Request
     if json.unmarshal_string(raw,&request,.JSON,context.temp_allocator)!=nil do return {},false
