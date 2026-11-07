@@ -10,6 +10,18 @@ Current C1f gate: all 240 native fields have canonical, tested source/storage/im
 
 The audit at f3cc56d1 is historical. W2 already accepts the full top-level brief vocabulary and validates structured output: src/lib/workflow_v1/boundary.odin:52; src/lib/owner_local/lifecycle_agent.odin:123. Those implementations must be reused.
 
+> **Owner-local attempt budget removed (2026-11-07).** By user decision on
+> 2026-11-07 the Bridge-owned (owner-local) runtime no longer has an attempt
+> budget: no `budget.activate` method, no budget admission/exhaustion,
+> oscillation or native-blocked overlay, no `runtime.read.budget` and no
+> counting attempts. Owner-local migration V29 drops the budget tables and
+> releases any task the overlay had blocked
+> (`src/lib/owner_local/migration_029_test.odin`). Attempt numbers remain as
+> archival identity (`attempt.read`, `submission.read`, facets), and the
+> archival `counts_toward_budget` value of imported native attempts is still
+> preserved. The Hub's taskv2 budget is unchanged. Budget sections below are
+> historical; the budget source and test files they cite were deleted.
+
 ## Field inventory
 
 Each durable field declared in the original aggregate domain structs (including mixed-work graph records) is listed once below. Transport-only page items and derived comment previews/search-feed cursors are projections, not additional canonical bodies.
@@ -390,7 +402,7 @@ Accepted C1a-C1e signed families are canonical per `cmt_18e592e4d810d71a`. Every
 | Source results and consumption / `src/hub/domain/taskv2.odin:9` | `source.observe`, `source.consume`, `source.ack`, `source.retire`, `source.resolve`, `source.escalate`, `source.read` | `src/lib/owner_local/sources_test.odin:55` |
 | History and complete native export / `src/hub/service/taskv2/facets.odin:279` | `history.read`, `history.fetch`, `native.history.import`, `native.history.read`, `native.history.fetch`, `native.metadata.import`, `native.metadata.read` | `src/lib/owner_local/aggregate_test.odin:90` |
 | Search, context and read authorization / `src/hub/service/taskv2/pack.odin:1` | `chain.search`, `chain.read`, `task.read`, `context.read`, `receipt.read` | `src/lib/owner_local/aggregate_test.odin:162` |
-| Budget and native attempt/expiry accounting / `src/hub/service/taskv2/lease.odin:114` | `budget.activate`, `attempt.read` | `src/lib/owner_local/budget_overlap_test.odin:59` |
+| Native attempt/expiry history (owner-local budget removed 2026-11-07) / `src/hub/service/taskv2/lease.odin:177` | `attempt.read` | `src/lib/owner_local/attempts_test.odin:27` |
 | Grants and root recovery / `src/hub/domain/taskchain.odin:124` | `grant.set`, `grant.revoke`, `grant.read`, `grant.policy`, `grant.recover` | `src/lib/owner_local/grants_test.odin:47` |
 | Workflow coordinator and explicit gates / `src/hub/service/taskv2/workflow_execution.odin:481` | `workflow.coordinator`, `workflow.gate`, `workflow.gate.post` | `src/lib/owner_local/workflow_language_test.odin:179` |
 
@@ -1113,6 +1125,10 @@ nix develop --command env \
 
 ## C1c revision 2: native budget admission and explicit baseline activation
 
+> Historical: the owner-local attempt budget described in this and the
+> following budget sections was removed by user decision on 2026-11-07
+> (owner-local migration V29). The cited budget files no longer exist.
+
 This section supersedes earlier checkpoint statements that budget enforcement or
 C1c activation is still unimplemented. It does not close unrelated aggregate
 metadata/body/cutover rows or claim whole-C1 completion.
@@ -1300,6 +1316,9 @@ they did not establish these four paths. Coordinator
 
 ### Budget-owned overlay recovery and ordinary oscillation
 
+> Historical: removed by user decision on 2026-11-07. V29 restores or clears
+> every `budget_control_owners` overlay before dropping the table.
+
 `budget_control_owners` preserves the independent control below a generated
 budget/oscillation block. Current fold recovery restores that saved state,
 including the underlying resume mode while held, rather than leaving a stale
@@ -1446,6 +1465,9 @@ claim of completed aggregate parity. No broad unrelated suites were repeated;
 unchanged identity code uses the prior tested disposable identity binary.
 
 ## C1c released-hold review follow-up (attempts 4–5, requirements revision 2)
+
+> Historical: the budget overlay this section repairs was removed by user
+> decision on 2026-11-07 (owner-local migration V29).
 
 The prior rework still missed this ordering: hold before expiry → exhausted
 while held → explicit release while still exhausted → authorized budget raise.
