@@ -45,9 +45,8 @@ bridge_owner_migration_state :: proc(_:rawptr,migration:string)->(Owner_Migratio
     query:=[?]httpc.Query_Param{{"migration_id",migration}}
     response,err:=bridge_http_request_retry({method=.GET,url=bridge_hub_url(),path={"api","v1","owner-local","migrations","state"},query=query[:],headers=headers[:],timeout_ms=10000})
     defer httpc.response_destroy(&response)
-    // An authenticated 404 means the Hub has no such migration for this owner:
-    // it was aborted before cutover and can never be imported.
-    if err==.None && response.status==404 do return Owner_Migration_State_Wire{migration_id=migration,state="absent"},true
+    // A 404 (unknown migration, version skew, proxy) is never treated as an
+    // abort: only an explicit state "aborted" from the Hub abandons an import.
     if err!=.None || response.status!=200 || len(httpc.text(response))>65536 do return {},false
     wire:struct{data:Owner_Migration_State_Wire}
     if json.unmarshal_string(httpc.text(response),&wire,.JSON,context.temp_allocator)!=nil do return {},false
@@ -94,8 +93,18 @@ bridge_owner_migration_import_handle :: proc(conn:^ws.Connection,text:string) {
     // A replay needs no download: the stored receipt and owner genesis answer.
     sync.mutex_lock(&bridge_owner_mutex)
     if !bridge_owner_open(account,owner_id) { sync.mutex_unlock(&bridge_owner_mutex);reply.code="storage_error";return }
-    receipt,lookup:=owner.migration_import_lookup(&bridge_owner_store,wire.migration_id,wire.chain_id,wire.manifest_digest)
+    receipt,lookup,other:=owner.migration_import_lookup(&bridge_owner_store,wire.migration_id,wire.chain_id,wire.manifest_digest)
     sync.mutex_unlock(&bridge_owner_mutex)
+    if lookup=="pending_other" {
+        // An earlier import of this chain is still pending. Only the Hub's
+        // explicit abort of that migration lets this one replace it.
+        state,found:=bridge_owner_migration_state(nil,other)
+        if !found || state.state!="aborted" || state.chain_id!=wire.chain_id { reply.code="operation_conflict";return }
+        sync.mutex_lock(&bridge_owner_mutex)
+        _=owner.migration_abandon(&bridge_owner_store,other)
+        receipt,lookup,_=owner.migration_import_lookup(&bridge_owner_store,wire.migration_id,wire.chain_id,wire.manifest_digest)
+        sync.mutex_unlock(&bridge_owner_mutex)
+    }
     if lookup=="ok" {
         reply.code="ok";reply.receipt=receipt;reply.genesis=owner.genesis_for(&bridge_owner_store,wire.chain_id)
         return
@@ -169,7 +178,7 @@ bridge_owner_migration_reconcile_store :: proc(s:^owner.Store,mutex:^sync.Mutex,
     activated:=0
     for p in pending {
         state,found:=lookup(ctx,p[0])
-        if found && state.state=="absent" {
+        if found && state.state=="aborted" && state.migration_id==p[0] && state.chain_id==p[1] {
             sync.mutex_lock(mutex)
             _=owner.migration_abandon(s,p[0])
             sync.mutex_unlock(mutex)

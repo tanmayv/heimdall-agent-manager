@@ -36,6 +36,11 @@ export async function ownerMigrationFlow({session,bridgeId,hub,http,expect,cli,s
   await restartOwner();
   const lateRetry=await http(hub,'POST','/api/v1/owner-local/migrations',{body:secondRequest});
   expect(lateRetry.status>=400,'the aborted selection never freezes or cuts over again: '+lateRetry.status);
+  const fresh=await http(hub,'GET','/api/v1/owner-local/migrations/preflight?chain_id='+encodeURIComponent(secondId));
+  const remigrate=await prepareMigrationRequest(session,secondId,bridgeId,fresh.data.work_revision);
+  let again:any;
+  for(let i=0;i<20;i++){ again=await http(hub,'POST','/api/v1/owner-local/migrations',{body:remigrate}); if(again.status===200) break; await new Promise((r)=>setTimeout(r,1000)); }
+  expect(again.status===200 && again.data.state==='imported','after abort the chain re-migrates to the same owner Bridge: '+again.raw);
   let moved:any;
   for(let i=0;i<20;i++){
     moved=await http(hub,'POST','/api/v1/owner-local/migrations',{body:request});
