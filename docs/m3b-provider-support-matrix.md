@@ -1,6 +1,12 @@
 # M3b provider behavior and remaining gates
 
-As of 2026-11-07, the tested Linux Codex busy-turn path delivers the exact owner notice once. A real idle Codex session safely refuses input; cancellation and a newer device-signed owner revocation preserve that refusal. Claude literal TAB, hardened macOS execution, and Windows notifications remain unsupported or unproved. Passing refusal checks does not complete the cross-platform M3b acceptance criteria.
+As of 2026-11-07, the tested Linux Codex busy-turn path delivers the exact owner notice once. A real idle Codex session safely refuses input; cancellation and a newer device-signed owner revocation preserve that refusal. Current successor revision 3 covers Linux Codex: the user explicitly deferred real Mac execution and Claude PTY notifications. Both remain disabled/unsupported, not passed. Windows notifications remain unsupported. Refusal evidence does not establish deferred provider support or the separate M3c cumulative gate.
+
+**Current scope, revision 3:** explicit user message `msg_18e5c304c93b438a`
+defers Claude PTY notifications. This supersedes the earlier current-milestone
+Claude gate disposition below; historical failure evidence remains valid.
+Future Claude support must preserve literal bytes without normalization or
+alternate transport. No new provider capability is enabled by this decision.
 
 **User decision, 2026-11-07:** retain the current exact PTY requirement (source message `msg_18e5bcdbb5cda4c6`, coordinator relay `msg_18e5bce0f924df3e`). No alternate editor/stream-JSON/API transport planning or implementation as a substitute is authorized. No TAB normalization or acceptance waiver. Claude remains an open gate until a supported literal PTY path is proven.
 

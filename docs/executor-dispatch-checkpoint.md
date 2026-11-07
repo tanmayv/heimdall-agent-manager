@@ -3143,3 +3143,20 @@ normalization or Claude waiver. A vendor-supported exact-TAB interactive route
 or corrected pinned build is still required before full submission. No new
 provider run or repeat exhausted inspection is justified by the Mac-only
 scope decision. No full M3b completion is claimed.
+
+## Successor revision 3: current Linux Codex scope (2026-11-07 12:29 UTC)
+
+Explicit user message `msg_18e5c304c93b438a` defers Claude PTY notifications.
+Requirements revision 3 supersedes the revision-2 current Claude blocker above.
+Current M3b acceptance covers Linux Codex encrypted exact-child delivery and
+results; real Mac execution and Claude notifications remain deferred/disabled,
+Windows notifications unsupported. No provider pass or byte normalization is
+implied. Future Claude support retains literal-byte PTY requirements.
+
+The existing connected, pending-hostloss and idle native audits remain scoped
+as documented above. Current Linux Codex evidence supports review submission;
+it does not prove eventual recovery, capacity refund or idle delivery. Existing
+renewal/global-admission evidence is unchanged. No production code changed,
+and no repeated provider probe, Mac install, live restart or push occurred.
+The separate M3c cumulative crash/replay/capacity gate and M4 remain required.
+The review summary is `docs/m3b-current-linux-review.md`.
