@@ -182,6 +182,7 @@ Raw outputs, schemas, mockups and screenshots referenced by the documents above.
 - [pty-macos-evidence-f6a8f209.md](pty-macos-evidence-f6a8f209.md): pinned native Mac PTY/provider observations, failed checks, capability limits, and cleanup; [managed session records](evidence/macos-f6a8f209-sessions.json).
 - [pty-macos-native-profile-evidence.md](pty-macos-native-profile-evidence.md): revised native Mac suite and isolated Codex typed-abort/literal/replay evidence, preserved failures, open audit gates, and cleanup; [session records](evidence/macos-native-profile-sessions.json).
 - [macos-pinned-executable-investigation.md](macos-pinned-executable-investigation.md): exact-checkpoint Darwin executable-identity source investigation, conditional backend options and offline native prerequisites; [source manifest](evidence/macos-pinned-executable-sources.json).
+- [pty-windows-evidence-f6a8f209.md](pty-windows-evidence-f6a8f209.md): native Windows build, ConPTY capture/cleanup, explicit unsupported notification test and provider inventory; [selected session records](evidence/windows-f6a8f209-sessions.json).
 - Benchmark and telemetry outputs (`txt`), produced by the performance reports above:
   - [api-fetch-dedup-baseline-after.txt](api-fetch-dedup-baseline-after.txt)
   - [cache-matrix-run1.txt](cache-matrix-run1.txt)
