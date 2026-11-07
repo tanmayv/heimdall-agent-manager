@@ -1,10 +1,26 @@
 # M3b provider behavior and remaining gates
 
-As of 2026-11-07, the tested Linux Codex busy-turn path delivers the exact owner notice once. A real idle Codex session safely refuses input; cancellation and a newer device-signed owner revocation preserve that refusal. Claude literal TAB, hardened macOS execution, and Windows notifications remain unsupported or unproved. Passing refusal checks does not complete the cross-platform M3b acceptance criteria.
+As of 2026-11-07, the tested Linux Codex busy-turn path delivers the exact owner notice once. A real idle Codex session safely refuses input; cancellation and a newer device-signed owner revocation preserve that refusal. Current successor revision 3 covers Linux Codex: the user explicitly deferred real Mac execution and Claude PTY notifications. Both remain disabled/unsupported, not passed. Windows notifications remain unsupported. Refusal evidence does not establish deferred provider support or the separate M3c cumulative gate.
+
+**Current scope, revision 3:** explicit user message `msg_18e5c304c93b438a`
+defers Claude PTY notifications. This supersedes the earlier current-milestone
+Claude gate disposition below; historical failure evidence remains valid.
+Future Claude support must preserve literal bytes without normalization or
+alternate transport. No new provider capability is enabled by this decision.
 
 **User decision, 2026-11-07:** retain the current exact PTY requirement (source message `msg_18e5bcdbb5cda4c6`, coordinator relay `msg_18e5bce0f924df3e`). No alternate editor/stream-JSON/API transport planning or implementation as a substitute is authorized. No TAB normalization or acceptance waiver. Claude remains an open gate until a supported literal PTY path is proven.
 
 ## Enabled behavior versus notification capability
+
+**Mac deferral, 2026-11-07:** the user answered the successor task's block with
+“Skip real mac for now” (task `task_18e5beeef261412e`, attempt 2). Real Mac
+provider execution is deferred. This is not native acceptance or permission to
+install a protected image. The approved guarded-image engineering at `df0b9527`
+proves inspection and refusal only; see `docs/darwin-guarded-image-engineering.md`.
+Production Darwin activation still refuses at
+`tools/pty_host/src/darwin_image.rs:190`, and the notification profile remains
+disabled at `tools/pty_host/src/native_notification.rs:88`. The separate Claude
+exact-TAB requirement is unchanged by this Mac-only decision.
 
 Provider launch/profile enablement is separate from notification support. The Bridge requests the native notification profile for Codex only (`src/bridge/pty_host_runtime.odin:406`). The daemon enables it only when executable and platform admission succeeds (`tools/pty_host/src/daemon.rs:603`); other children can still launch, but interrupt Prepare without a profile refuses before input (`tools/pty_host/src/delivery.rs:123`).
 
@@ -16,7 +32,7 @@ Provider launch/profile enablement is separate from notification support. The Br
 | Same Codex, newer signed owner revocation | Verified next directory advances the pin to 4 despite unavailable next epoch key; old-directory replay refuses before another nonce callback | Actual device-signed log entry and production directory verification (`src/bridge/owner_executor_native_test.odin:569`). This does not test every possible revocation race. |
 | Same Codex, daemon loses a pending partial ticket journal | Exact launch is unknown; original ticket Query says `recovery_required`; production retries refuse; expiry retains capacity | Named pending-loss audit `89bfda15`, artifact `art_18e5bc7e475b471c`, exact delta `87b6df96..c61dad29`. Safe refusal only: no eventual recovery, persistent Bridge restart, known absence, or capacity refund is established. |
 | Linux Claude Code 2.1.319, tested Opus 5.5 | Normal CLI launch is distinct from interrupt notification capability; no native interrupt profile is enabled. Prior literal-paste probe changes TAB into four spaces | Actual native failure documented in `docs/pty-provider-evidence.md:121`. Interrupt notification Prepare refuses without a profile (`tools/pty_host/src/delivery.rs:123`). Exact TAB remains failed/unwaived; no native interrupt support is claimed. |
-| macOS Codex/Claude | Host access restored in attempt3; hardened native interrupt profile still unavailable | Live SDK/protection assessment is in `docs/macos-live-native-prerequisites.md`: existing Codex0.146.0 differs from required0.162.0; no safe backend is accepted. Native admission rejects non-Linux platforms (`tools/pty_host/src/native_notification.rs:68`). Reviewed source investigation `e624fc84` remains applicable; historical native passes do not validate the current hardened backend. |
+| macOS Codex/Claude | Real execution deferred by user for the current milestone; Darwin notification profile disabled | Reviewed guarded-image engineering `df0b9527` verifies private pinned 0.162 bytes and native refusal tests, not provider eligibility. Activation refuses unproven lifetime policy (`tools/pty_host/src/darwin_image.rs:190`); production profile remains absent (`tools/pty_host/src/native_notification.rs:88`). No new Mac probes or installation are authorized by the deferral. |
 | Windows providers | Notification dispatch unsupported; platform launch/ConPTY evidence is separate | Explicit daemon refusal (`tools/pty_host/src/daemon.rs:1023`). Coordinator reports repaired/reapproved Windows checkpoint `12838668`; this is not a Windows notification/provider pass. |
 | Other binaries, versions, or unknown lifecycle state | No native interrupt capability inferred | Fixed declaration, native binary/hash/version and current session checks fail closed (`tools/pty_host/src/native_notification.rs:75`, `:120`, `:187`). |
 
@@ -36,7 +52,7 @@ No supported exact-TAB route is demonstrated for the current Claude PTY integrat
 | Alternate transport rejected as a substitute by current user decision | No editor/structured-input/API planning or implementation under this task | No scope expansion or substitute evidence. The exact PTY requirement remains unchanged. |
 | Keep unsupported behavior explicit while other gates are investigated | Continue refusing unproved notification paths; make the failed Claude TAB and offline Mac evidence visible | Honest current capability reporting, with M3b remaining incomplete. It is not a platform or provider waiver. |
 
-Mac access is now restored; its already-authorized read-only assessment found no eligible0.162.0 installation and established no immutable executable backend. The concrete conditional proposal is in `docs/macos-live-native-prerequisites.md`. Missing daemon journals still need explicit recovery/absence evidence before releasing capacity. Those gates remain regardless of the Claude option.
+Mac access was restored and subsequent guarded engineering prepared private pinned 0.162.0 bytes, but established no eligible immutable executable backend. Revision 2 of successor `task_18e5beeef261412e` now defers real Mac execution from the current milestone; Darwin remains disabled. The protected-image plan is separate and grants no installation authority. Missing daemon journals still need explicit recovery/absence evidence before releasing capacity. Claude's exact-TAB requirement remains unchanged.
 
 ## New bounded real idle and revocation evidence
 
