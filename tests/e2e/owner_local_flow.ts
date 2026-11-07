@@ -42,6 +42,11 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
     await ownerLocalFleetPolicyFlow({session,bridgeId,cli,expect,stopOwner,restartOwner,approver,hub});
     return;
   }
+  if(process.env.HEIMDALL_E2E_OWNER_TRANSPARENT_ONLY==='1'){
+    const {ownerTransparentFlow}=await import('./owner_transparent_flow.ts');
+    await ownerTransparentFlow({session,bridgeId,hub,http,expect,launchChild,prepareGit});
+    return;
+  }
   if(process.env.HEIMDALL_E2E_OWNER_LANGUAGE_ONLY==='1'){
     const {ownerLocalLanguageFlow}=await import('./owner_local_language_flow.ts');
     await ownerLocalLanguageFlow({session,bridgeId,hub,http,cli,launchChild,expect,approver,stopOwner,restartOwner});
