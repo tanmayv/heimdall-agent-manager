@@ -96,7 +96,7 @@ executor_owner_binding_v2_upgrade_collision_rolls_back_issuance_and_active_resou
     testing.expect(t,exec(f.store.db,"DROP TABLE executor_renewals; DROP TABLE executor_controls; DROP TABLE executor_readiness; DROP TABLE executor_bootstraps; DROP TABLE executor_chain_owners; DROP TRIGGER runtime_immutable; DROP TRIGGER runtime_no_delete; ALTER TABLE executor_runtime RENAME TO executor_runtime_v3;"))
     testing.expect(t,exec(f.store.db,"DROP TABLE executor_legacy_commands; DROP TABLE executor_legacy_resources; DROP TABLE executor_legacy_barriers;"))
     schema:=string(#load("schema.sql"))
-    old,_:=strings.replace_all(schema[:strings.index(schema,"CREATE TABLE executor_policies")],"schema_version=11","schema_version=2",context.temp_allocator)
+    old,_:=strings.replace_all(schema[:strings.index(schema,"CREATE TABLE executor_policies")],"schema_version=12","schema_version=2",context.temp_allocator)
     testing.expect(t,exec(f.store.db,old))
     testing.expect(t,exec(f.store.db,"INSERT INTO executor_runtime SELECT singleton,2,account_id,executor_bridge_id,operator_key_id,incarnation,clock_high_ms,recovery_state,policy_revision,device_capacity FROM executor_runtime_v3; DROP TABLE executor_runtime_v3; CREATE TABLE executor_chain_owners(collision TEXT);"))
     close(&f.store)
@@ -107,5 +107,5 @@ executor_owner_binding_v2_upgrade_collision_rolls_back_issuance_and_active_resou
     testing.expect(t,exec(f.store.db,"DROP TABLE executor_chain_owners"));close(&f.store)
     testing.expect(t,open(&f.store,f.path,"account","executor","operator"))
     rows,_=query(f.store.db,"SELECT schema_version,incarnation,(SELECT state FROM executor_reservations),(SELECT result_json FROM executor_issuances) FROM executor_runtime")
-    testing.expect(t,rows[0][0]=="11" && rows[0][1]=="2" && rows[0][2]=="active" && rows[0][3]==issued.body)
+    testing.expect(t,rows[0][0]=="12" && rows[0][1]=="2" && rows[0][2]=="active" && rows[0][3]==issued.body)
 }

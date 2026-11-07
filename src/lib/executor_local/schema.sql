@@ -1,6 +1,6 @@
 
 CREATE TABLE executor_runtime (
- singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=11),
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=12),
  account_id TEXT NOT NULL, executor_bridge_id TEXT NOT NULL, operator_key_id TEXT NOT NULL,
  incarnation INTEGER NOT NULL CHECK(incarnation>0), clock_high_ms INTEGER NOT NULL CHECK(clock_high_ms>=0),
  recovery_state TEXT NOT NULL CHECK(recovery_state IN ('ready','reconciling','clock_uncertain')),
@@ -385,3 +385,32 @@ CREATE TRIGGER native_journal_executor_legacy_commands_delete AFTER DELETE ON ex
 CREATE TRIGGER native_journal_executor_legacy_observations_insert AFTER INSERT ON executor_legacy_observations BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
 CREATE TRIGGER native_journal_executor_legacy_observations_update AFTER UPDATE ON executor_legacy_observations BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
 CREATE TRIGGER native_journal_executor_legacy_observations_delete AFTER DELETE ON executor_legacy_observations BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+-- Private receive observations only. These rows grant no invocation or task authority.
+CREATE TABLE executor_legacy_actions (
+ action_id INTEGER PRIMARY KEY CHECK(action_id>0),
+ observed_incarnation INTEGER NOT NULL CHECK(observed_incarnation>0),
+ command_id TEXT NOT NULL, command_kind TEXT NOT NULL CHECK(length(command_kind)>0),
+ chain_claim TEXT NOT NULL,
+ packet_digest TEXT NOT NULL CHECK(length(packet_digest)=64 AND packet_digest NOT GLOB '*[^0-9a-f]*'),
+ state TEXT NOT NULL CHECK(state IN ('received','prepared','running','returned','discarded')),
+ previous_state TEXT NOT NULL CHECK(previous_state IN ('','received','prepared','running'))
+);
+CREATE TRIGGER legacy_action_admission BEFORE INSERT ON executor_legacy_actions
+WHEN NEW.observed_incarnation!=(SELECT incarnation FROM executor_runtime) OR NEW.state!='received' OR NEW.previous_state!=''
+ OR NEW.action_id!=(SELECT sequence+1 FROM executor_native_journal WHERE singleton=1)
+BEGIN SELECT RAISE(ABORT,'action observation requires current journal'); END;
+CREATE TRIGGER legacy_action_transition BEFORE UPDATE ON executor_legacy_actions
+WHEN NEW.action_id IS NOT OLD.action_id OR NEW.observed_incarnation IS NOT OLD.observed_incarnation
+ OR NEW.command_id IS NOT OLD.command_id OR NEW.command_kind IS NOT OLD.command_kind
+ OR NEW.chain_claim IS NOT OLD.chain_claim OR NEW.packet_digest IS NOT OLD.packet_digest
+ OR NEW.observed_incarnation!=(SELECT incarnation FROM executor_runtime)
+ OR NEW.previous_state IS NOT OLD.state
+ OR NOT ((OLD.state='received' AND NEW.state IN ('prepared','discarded'))
+      OR (OLD.state='prepared' AND NEW.state IN ('running','discarded'))
+      OR (OLD.state='running' AND NEW.state='returned'))
+BEGIN SELECT RAISE(ABORT,'immutable action evidence or invalid transition'); END;
+CREATE TRIGGER legacy_action_no_delete BEFORE DELETE ON executor_legacy_actions
+BEGIN SELECT RAISE(ABORT,'retained action evidence'); END;
+CREATE TRIGGER native_journal_executor_legacy_actions_insert AFTER INSERT ON executor_legacy_actions BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_actions_update AFTER UPDATE ON executor_legacy_actions BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_actions_delete AFTER DELETE ON executor_legacy_actions BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;

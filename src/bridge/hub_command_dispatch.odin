@@ -8,6 +8,7 @@ import "core:sync"
 import "core:thread"
 import "core:time"
 import contracts "odin_test:contracts"
+import executor "odin_test:lib/executor_local"
 import jsonx "odin_test:lib/jsonx"
 import vault "odin_test:lib/vault"
 import ws "odin_test:lib/ws"
@@ -63,6 +64,8 @@ Bridge_Dispatch_Claim_State :: enum {
 }
 
 Bridge_Dispatch_Job :: struct {
+	legacy_action: executor.Legacy_Action,
+	paired_observation_required: bool,
 	text: string,
 	command_id: string,
 	command_type: string,
@@ -569,6 +572,7 @@ bridge_command_dispatch :: proc(conn: ^ws.Connection, text: string, generation: 
 		_ = bridge_hub_send(conn, protocol_error)
 		return true
 	}
+	paired_required := bridge_legacy_dispatch_requires_observation(spec) && bridge_config.daemon_id!=""
 	input_digest := contracts.owner_payload_digest(text)
 	ordering_key := bridge_command_ordering_key(command_type, text)
 	defer delete(ordering_key)
@@ -609,6 +613,7 @@ bridge_command_dispatch :: proc(conn: ^ws.Connection, text: string, generation: 
 	}
 
 	job := Bridge_Dispatch_Job{
+		paired_observation_required = paired_required,
 		text = strings.clone(text, runtime.default_allocator()),
 		command_id = strings.clone(command_id, runtime.default_allocator()),
 		command_type = strings.clone(command_type, runtime.default_allocator()),
@@ -682,6 +687,8 @@ bridge_command_dispatch_take_queue_locked :: proc(queue: ^[dynamic]Bridge_Dispat
 		// and the runtime loop correctly discarded every completion as stale.
 		// Build an explicit value and clear the queue's ownership before removal.
 		selected := Bridge_Dispatch_Job{
+			legacy_action = queue[i].legacy_action,
+			paired_observation_required = queue[i].paired_observation_required,
 			text = queue[i].text,
 			command_id = queue[i].command_id,
 			command_type = queue[i].command_type,
@@ -760,6 +767,7 @@ bridge_command_dispatch_worker :: proc(data: rawptr) {
 		worker.started_ns = time.to_unix_nanoseconds(time.now())
 		worker.deadline_ns = job.deadline_ns
 		sync.mutex_unlock(&bridge_dispatch_mu)
+		ran := false
 		if time.to_unix_nanoseconds(time.now()) >= job.deadline_ns {
 			sync.mutex_lock(&bridge_dispatch_mu)
 			bridge_dispatch_metrics.deadline_expired += 1
@@ -767,9 +775,15 @@ bridge_command_dispatch_worker :: proc(data: rawptr) {
 			result := bridge_command_dispatch_deadline_json(job.command_id)
 			_ = bridge_command_worker_capture_send(&worker.sink_conn, result)
 			delete(result)
-		} else {
+		} else if bridge_legacy_dispatch_start(&job) {
+			ran = true
 			bridge_hub_handle_command(&worker.sink_conn, job.text)
+		} else {
+			result := bridge_command_failed_json(job.command_id,bridge_cause_wire_error("storage_error","native action observation unavailable"))
+			_ = bridge_command_worker_capture_send(&worker.sink_conn,result)
+			delete(result)
 		}
+		if !bridge_legacy_dispatch_end(job.legacy_action,ran) do fmt.eprintln("bridge: action handler boundary remains unresolved")
 		bridge_command_dispatch_finish(worker, &job)
 		// Handlers allocate freely from the per-thread temp arena. Workers live for
 		// the whole process, so without a per-job reset every command's temp

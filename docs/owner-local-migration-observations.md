@@ -62,3 +62,48 @@ those are absent. No signed receiver consumes this snapshot yet. A future CAS
 consumer must retain the dispatcher lock through the guarded operation and
 combine it with the established physical/startup/database gates. Snapshot
 digests use the caller temporary arena and must be copied for retention.
+
+## Durable worker-boundary observations (V12)
+
+V12 adds private received-action occurrences, separate from invocation receipts.
+Each occurrence has its original optional command ID and chain claim, actual
+selected command kind, raw packet digest, native incarnation and monotonic
+journal identity. Identical packets get independent occurrences. Raw bodies,
+tokens and payloads are not retained in this table. Identity fields cannot be
+rewritten or deleted; journal and state changes commit atomically.
+
+States are `received -> prepared -> running -> returned`, or
+`received/prepared -> discarded`. `prepared` is an observation reservation before
+the handler, **not** evidence that the packet entered a durable dispatcher queue.
+Only the last exact transition can replay read-only. Changed transition inputs
+conflict, and old incarnations cannot newly finish unresolved records. Historical
+start replay cannot run another handler. A returned handler may leave children,
+merges or resource users alive; a discarded occurrence says nothing about other
+occurrences of the same packet.
+
+The worker records relevant paired actions before invoking the handler and
+refuses the handler on persistence failure. Initial required families are Agent,
+Filesystem, VCS, Shell and LSP. This is not exhaustive effect classification:
+MCP, provider, setup and nested work may affect protected resources and remain
+unknown unless relevance is independently excluded or inventoried. Diagnostic
+compatibility confers no migration coverage. Only no configured Bridge identity
+permits pre-enrollment compatibility; a configured but unavailable identity or
+account journal refuses relevant work. A job admitted while paired cannot
+silently lose that requirement while waiting. Enrollment after unpaired queue
+ingress requires a fresh worker observation and preserves the unknown interval.
+
+Journal I/O stays off the WebSocket reader and outside the dispatcher mutex.
+The reader only captures the paired-observation requirement in memory; the
+worker opens/rechecks the journal under the executor application mutex before
+handler I/O. No database transaction spans a physical handler. This checkpoint
+does **not** provide durable queue ingress: crashes/reconnect drops/deadlines
+before worker admission may have no action row, and their earlier coverage stays
+unknown. There is no signed completeness receiver or barrier consumer for these
+records. Native target/draft/child associations, inline/startup/alternate
+producers and the full physical/resource union remain required.
+
+V11-to-V12 rebuilds the runtime header transactionally while recreating retained
+runtime references, preserving the native journal sequence and immutable
+`prior_coverage_unknown=1`. Historical fixtures remove newer tables before
+reconstruction. Name collision and deferred COMMIT tests retain native draft
+material and reservation identity across failed upgrades and recovery.
