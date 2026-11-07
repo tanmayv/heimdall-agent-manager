@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "status": "review-only; no lifecycle operation executed",
+  "install": {
+    "transaction": "install-protection.py:proposed_install",
+    "cli": "--apply always exits 78 before any filesystem operation",
+    "postcondition": "one new retained version; no active selector or enabled profile"
+  },
+  "update": {
+    "transaction": "separate reviewed pin and version constant; same exclusive publication transaction",
+    "overwrite_existing": false,
+    "delete_previous": false,
+    "auto_select": false
+  },
+  "drain": {
+    "current_action": "none: Darwin profile admission already disabled",
+    "future_action": "close new native admissions under daemon registry mutex; invalidate pending native delivery; allow owned children to exit or use existing launch-fenced ExecutorClose; wait/join their PTY cleanup",
+    "proof_of_global_no_references": false,
+    "permits_image_deletion": false
+  },
+  "uninstall": {
+    "transaction": "disable native admission in a separately approved backend revision; drain owned sessions; retain every published inode and manifest indefinitely",
+    "filesystem_commands": [],
+    "deletes_images": false,
+    "physical_purge": "unsupported online; requires a distinct offline maintenance design and explicit authorization"
+  },
+  "rollback": {
+    "before_publication": "retain failed root-only .stage-* for explicit review; no error-path recursive removal",
+    "after_publication": "leave new and previous versions retained and disabled; current code requires no selector change",
+    "future_enabled_backend": "disable new admissions and drain first; reselect an independently approved retained version only in a separately reviewed backend revision",
+    "filesystem_commands": [],
+    "enables_version": false
+  }
+}

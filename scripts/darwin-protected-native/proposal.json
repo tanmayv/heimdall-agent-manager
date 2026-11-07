@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "status": "review-only; privileged execution not approved",
+  "base": "/Library/HeimdallProtectedNative",
+  "version": "codex-0.162.0-darwin-x64-fd4bb93679bfcc546765a3363a0df9a855f364b61ea6681009b28ba4c2e5b60d",
+  "native_sha256": "fd4bb93679bfcc546765a3363a0df9a855f364b61ea6681009b28ba4c2e5b60d",
+  "native_version_output": "codex-cli 0.162.0",
+  "archive_url": "https://registry.npmjs.org/@openai/codex/-/codex-0.162.0-darwin-x64.tgz",
+  "archive_integrity": "sha512-4XzCUJgEDDdme6VWDEKvbWDA6f+470d4xhhorYUgNBZwY8Dq5NYqvWkO33rnc1vjxkqSj+SwkymHxRMxL6h1CA==",
+  "archive_member": "package/vendor/x86_64-apple-darwin/bin/codex",
+  "owner": "root:wheel",
+  "base_mode": "0755",
+  "version_mode": "0555",
+  "image_mode": "0555",
+  "image_flags": 0,
+  "retention": "indefinite; no online deletion or garbage collection",
+  "production_admissible": false,
+  "closure_proven": false,
+  "native_install_validated": false,
+  "enabled": false
+}
