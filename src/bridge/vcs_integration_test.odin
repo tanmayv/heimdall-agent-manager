@@ -349,10 +349,24 @@ bridge_taskv2_task_worktree_lifecycle_test :: proc(t: ^testing.T) {
 	// Uncommitted work is committed and merged back; the worktree goes away.
 	vcs_test_write(wt_path, "feature.txt", "work\n")
 	store,path:=bridge_legacy_test_store(t);defer bridge_legacy_test_close(store,path)
-    r := bridge_legacy_merge_target(store,dir,wt_path,branch,"task_test_123")
+    packet:=`{"type":"taskv2_merge_worktree","command_id":"merge_original"}`
+    spec,_:=bridge_command_spec("taskv2_merge_worktree")
+    action,prepared:=bridge_legacy_dispatch_prepare(packet,"taskv2_merge_worktree",spec,store)
+    testing.expect(t,prepared)
+    job:=Bridge_Dispatch_Job{text=packet,command_type="taskv2_merge_worktree",legacy_action=action}
+    testing.expect(t,bridge_legacy_dispatch_start(&job,store))
+    digest:=contracts.owner_payload_digest(packet)
+    testing.expect(t,executor.exec(store.db,"CREATE TRIGGER refuse_merge_observation BEFORE INSERT ON executor_legacy_action_effects BEGIN SELECT RAISE(ABORT,'merge journal fault'); END;"))
+    refused:=bridge_legacy_merge_target(store,dir,wt_path,branch,"task_test_123",action,digest)
+    testing.expect(t,!refused.ok && os.exists(wt_path) && !os.exists(fmt.tprintf("%s/feature.txt",dir)),"journal failure precedes autocommit, merge and worktree deletion")
+    testing.expect(t,executor.exec(store.db,"DROP TRIGGER refuse_merge_observation"))
+    r := bridge_legacy_merge_target(store,dir,wt_path,branch,"task_test_123",action,digest)
 	testing.expect(t, r.ok && !r.conflict, "merge succeeds")
 	testing.expect(t, os.exists(fmt.tprintf("%s/feature.txt", dir)), "work landed in the directory")
 	testing.expect(t, !os.exists(wt_path), "worktree removed after merge")
+    rows,read:=executor.query(store.db,"SELECT effect_kind,json_extract(evidence,'$.branch'),entry_digest FROM executor_legacy_action_effects")
+    testing.expect(t,read && len(rows)==1 && rows[0][0]=="merge" && rows[0][1]==branch && rows[0][2]==digest)
+    testing.expect(t,bridge_legacy_dispatch_end(action,true,store))
 }
 
 

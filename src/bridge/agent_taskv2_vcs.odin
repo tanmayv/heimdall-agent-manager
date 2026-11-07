@@ -25,6 +25,8 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:sync"
+import contracts "odin_test:contracts"
+import executor "odin_test:lib/executor_local"
 import jsonx "odin_test:lib/jsonx"
 import compact "odin_test:lib/context_compaction"
 import ws "odin_test:lib/ws"
@@ -997,9 +999,9 @@ bridge_taskv2_git_identity_args :: proc(repo: string) -> []string {
 // left in the worktree is committed first so nothing is lost. Any merge
 // failure (conflict, dirty main checkout) aborts the merge and keeps the
 // worktree and branch: the hub blocks the task on a human.
-bridge_taskv2_merge_task_worktree :: proc(repo, workdir, branch, task_id: string) -> Bridge_Taskv2_Merge_Result {
+bridge_taskv2_merge_task_worktree :: proc(repo, workdir, branch, task_id: string,action:executor.Legacy_Action={},entry_digest:string="") -> Bridge_Taskv2_Merge_Result {
     sync.mutex_lock(&bridge_executor_mutex);defer sync.mutex_unlock(&bridge_executor_mutex)
-    return bridge_legacy_merge_target(bridge_legacy_global_store(),repo,workdir,branch,task_id)
+    return bridge_legacy_merge_target(bridge_legacy_global_store(),repo,workdir,branch,task_id,action,entry_digest)
 }
 
 bridge_taskv2_merge_task_worktree_unfenced :: proc(repo, workdir, branch, task_id: string) -> Bridge_Taskv2_Merge_Result {
@@ -1122,6 +1124,7 @@ bridge_taskv2_handle_command :: proc(conn: ^ws.Connection, type, text: string) -
 		jsonx.extract_string(text, "workdir", "", true, context.temp_allocator),
 		jsonx.extract_string(text, "branch", "", true, context.temp_allocator),
 		jsonx.extract_string(text, "task_id", "", true, context.temp_allocator),
+		bridge_command_worker_legacy_action(conn),contracts.owner_payload_digest(text),
 	)
 	out := bridge_taskv2_merge_result_json(command_id, r)
 	defer delete(out)

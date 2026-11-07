@@ -1,6 +1,6 @@
 
 CREATE TABLE executor_runtime (
- singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=14),
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=15),
  account_id TEXT NOT NULL, executor_bridge_id TEXT NOT NULL, operator_key_id TEXT NOT NULL,
  incarnation INTEGER NOT NULL CHECK(incarnation>0), clock_high_ms INTEGER NOT NULL CHECK(clock_high_ms>=0),
  recovery_state TEXT NOT NULL CHECK(recovery_state IN ('ready','reconciling','clock_uncertain')),
@@ -464,3 +464,25 @@ CREATE TRIGGER legacy_action_nudge_no_delete BEFORE DELETE ON executor_legacy_ac
 CREATE TRIGGER native_journal_executor_legacy_action_nudges_insert AFTER INSERT ON executor_legacy_action_nudges BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
 CREATE TRIGGER native_journal_executor_legacy_action_nudges_update AFTER UPDATE ON executor_legacy_action_nudges BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
 CREATE TRIGGER native_journal_executor_legacy_action_nudges_delete AFTER DELETE ON executor_legacy_action_nudges BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+-- Native stop/merge targets observed before physical effects, never authority.
+CREATE TABLE executor_legacy_action_effects (
+ observation_id TEXT PRIMARY KEY CHECK(length(observation_id)=64),
+ action_id INTEGER NOT NULL REFERENCES executor_legacy_actions(action_id),
+ effect_kind TEXT NOT NULL CHECK(effect_kind IN ('stop','merge')),
+ entry_index INTEGER NOT NULL CHECK(entry_index>=-1),
+ entry_digest TEXT NOT NULL CHECK(length(entry_digest)=64),
+ evidence TEXT NOT NULL CHECK(json_valid(evidence)),
+ evidence_digest TEXT NOT NULL CHECK(length(evidence_digest)=64),
+ observed_incarnation INTEGER NOT NULL CHECK(observed_incarnation>0),
+ UNIQUE(action_id,effect_kind,entry_index)
+);
+CREATE TRIGGER legacy_action_effect_admission BEFORE INSERT ON executor_legacy_action_effects
+WHEN NEW.observed_incarnation!=(SELECT incarnation FROM executor_runtime)
+ OR NOT EXISTS(SELECT 1 FROM executor_legacy_actions WHERE action_id=NEW.action_id AND state='running' AND observed_incarnation=NEW.observed_incarnation)
+BEGIN SELECT RAISE(ABORT,'effect observation requires current running occurrence'); END;
+CREATE TRIGGER legacy_action_effect_no_replace BEFORE INSERT ON executor_legacy_action_effects WHEN EXISTS(SELECT 1 FROM executor_legacy_action_effects WHERE observation_id=NEW.observation_id) BEGIN SELECT RAISE(ABORT,'retained effect observation'); END;
+CREATE TRIGGER legacy_action_effect_no_update BEFORE UPDATE ON executor_legacy_action_effects BEGIN SELECT RAISE(ABORT,'immutable effect observation'); END;
+CREATE TRIGGER legacy_action_effect_no_delete BEFORE DELETE ON executor_legacy_action_effects BEGIN SELECT RAISE(ABORT,'retained effect observation'); END;
+CREATE TRIGGER native_journal_executor_legacy_action_effects_insert AFTER INSERT ON executor_legacy_action_effects BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_action_effects_update AFTER UPDATE ON executor_legacy_action_effects BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;
+CREATE TRIGGER native_journal_executor_legacy_action_effects_delete AFTER DELETE ON executor_legacy_action_effects BEGIN UPDATE executor_native_journal SET sequence=sequence+1 WHERE singleton=1; END;

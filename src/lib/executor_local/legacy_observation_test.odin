@@ -6,7 +6,7 @@ import contracts "odin_test:contracts"
 
 // Reconstruct the pre-V11 effective schema in historical upgrade fixtures.
 legacy_remove_v11_journal_fixture :: proc(t:^testing.T,s:^Store) {
-    testing.expect(t,exec(s.db,"DROP TABLE IF EXISTS executor_legacy_action_nudges; DROP TABLE IF EXISTS executor_legacy_action_drafts; DROP TABLE IF EXISTS executor_legacy_actions"))
+    testing.expect(t,exec(s.db,"DROP TABLE IF EXISTS executor_legacy_action_effects; DROP TABLE IF EXISTS executor_legacy_action_nudges; DROP TABLE IF EXISTS executor_legacy_action_drafts; DROP TABLE IF EXISTS executor_legacy_actions"))
     rows,read:=query(s.db,"SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'native_journal_*'")
     testing.expect(t,read)
     for row in rows do testing.expect(t,exec(s.db,strings.concatenate({"DROP TRIGGER ",row[0]},context.temp_allocator)))
@@ -85,9 +85,9 @@ executor_legacy_observation_v10_upgrade_collision_retains_native_material :: pro
     testing.expect_value(t,reserve(f,document("prepare"),&f.owner1).code,"ok")
     // Effective historical header and absence of V11 tables/triggers.
     legacy_remove_v11_journal_fixture(t,&f.store)
-    testing.expect(t,exec(f.store.db,"PRAGMA legacy_alter_table=ON; DROP TRIGGER runtime_immutable; DROP TRIGGER runtime_no_delete; ALTER TABLE executor_runtime RENAME TO runtime_v11_fixture;"))
+    testing.expect(t,exec(f.store.db,"DROP TABLE IF EXISTS executor_legacy_action_effects; PRAGMA legacy_alter_table=ON; DROP TRIGGER runtime_immutable; DROP TRIGGER runtime_no_delete; ALTER TABLE executor_runtime RENAME TO runtime_v11_fixture;"))
     schema:=string(#load("schema.sql"))
-    old,_:=strings.replace_all(schema[:strings.index(schema,"CREATE TABLE executor_policies")],"schema_version=14","schema_version=10",context.temp_allocator)
+    old,_:=strings.replace_all(schema[:strings.index(schema,"CREATE TABLE executor_policies")],"schema_version=15","schema_version=10",context.temp_allocator)
     testing.expect(t,exec(f.store.db,old))
     testing.expect(t,exec(f.store.db,"INSERT INTO executor_runtime SELECT singleton,10,account_id,executor_bridge_id,operator_key_id,incarnation,clock_high_ms,recovery_state,policy_revision,device_capacity FROM runtime_v11_fixture; DROP TABLE runtime_v11_fixture; CREATE VIEW executor_legacy_observations AS SELECT 1;"))
     close(&f.store);testing.expect(t,!open(&f.store,f.path,"account","executor","operator"))
@@ -102,7 +102,7 @@ executor_legacy_observation_v10_upgrade_collision_retains_native_material :: pro
     testing.expect(t,exec(f.store.db,"DROP TRIGGER observation_upgrade_commit"));close(&f.store)
     testing.expect(t,open(&f.store,f.path,"account","executor","operator"))
     rows,read=query(f.store.db,"SELECT schema_version,incarnation,(SELECT material FROM executor_local_drafts) FROM executor_runtime")
-    testing.expect(t,read && rows[0][0]=="14" && rows[0][1]=="2" && rows[0][2]==d.material)
+    testing.expect(t,read && rows[0][0]=="15" && rows[0][1]=="2" && rows[0][2]==d.material)
     refs,read_refs:=query(f.store.db,"SELECT name FROM sqlite_master WHERE sql LIKE '%executor_runtime_v10%'")
     testing.expect(t,read_refs && len(refs)==0)
     testing.expect_value(t,legacy_barrier_install(&f.store,legacy_test_barrier()).code,"ok")

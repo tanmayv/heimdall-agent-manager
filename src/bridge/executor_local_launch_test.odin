@@ -5,6 +5,7 @@ package main
 import "core:crypto/ecdsa"
 import "core:encoding/json"
 import "core:fmt"
+import "core:strings"
 import "core:os"
 import "core:sync"
 import "core:testing"
@@ -260,7 +261,37 @@ bridge_legacy_barrier_prevents_native_first_io_after_signed_local_consent :: pro
     normal_pid,normal_known:=bridge_pty_host_executor_query(socket,normal.instance,normal.launch_key)
     if !testing.expect(t,normal_known && normal_pid>0) do return
     defer {_=bridge_pty_host_executor_close(socket,normal.instance,normal.launch_key);bridge_shell_test_kill_pid(int(normal_pid))}
-    testing.expect(t,bridge_legacy_stop_target(&s,normal.instance,false),"unfenced native exact stop succeeds")
+    stop_packet:=strings.concatenate({`{"type":"stop_agent","command_id":"native_stop","agent_instance_id":"`,normal.instance,`"}`},context.temp_allocator)
+    stop_spec,_:=bridge_command_spec("stop_agent")
+    stop_action,stop_prepared:=bridge_legacy_dispatch_prepare(stop_packet,"stop_agent",stop_spec,&s)
+    testing.expect(t,stop_prepared)
+    stop_job:=Bridge_Dispatch_Job{text=stop_packet,command_type="stop_agent",legacy_action=stop_action}
+    testing.expect(t,bridge_legacy_dispatch_start(&stop_job,&s))
+    stop_digest:=contracts.owner_payload_digest(stop_packet)
+    testing.expect(t,executor.exec(s.db,"CREATE TRIGGER refuse_stop_observation BEFORE INSERT ON executor_legacy_action_effects BEGIN SELECT RAISE(ABORT,'stop journal fault'); END;"))
+    testing.expect(t,!bridge_legacy_stop_target(&s,normal.instance,false,stop_action,-1,stop_digest))
+    still_pid,still_known:=bridge_pty_host_executor_query(socket,normal.instance,normal.launch_key)
+    testing.expect(t,still_known && still_pid==normal_pid,"journal failure leaves the exact native child alive")
+    testing.expect(t,executor.exec(s.db,"DROP TRIGGER refuse_stop_observation"))
+    testing.expect(t,bridge_legacy_dispatch_end(stop_action,true,&s))
+    // The live wake handler must retain the original stop[] entry identity,
+    // rather than substituting a synthetic launch/direct-stop packet.
+    stop_entry:=fmt.tprintf(`"%s"`,normal.instance)
+    wake_packet:=strings.concatenate({`{"type":"wake_agent","payload":{"run":[],"stop":[ `,stop_entry,` ]}}`},context.temp_allocator)
+    _,wake_valid:=contracts.owner_content_document(wake_packet)
+    testing.expect(t,wake_valid,wake_packet)
+    wake_observations,wake_observed:=bridge_legacy_wake_observations(wake_packet)
+    testing.expect(t,wake_observed && len(wake_observations)==0,"empty run array remains a valid stop-only wake")
+    wake_spec,_:=bridge_command_spec("wake_agent")
+    wake_action,wake_prepared:=bridge_legacy_dispatch_prepare(wake_packet,"wake_agent",wake_spec,&s)
+    testing.expect(t,wake_prepared)
+    wake_job:=Bridge_Dispatch_Job{text=wake_packet,command_type="wake_agent",legacy_action=wake_action}
+    testing.expect(t,bridge_legacy_dispatch_start(&wake_job,&s))
+    bridge_hub_handle_wake_agent(nil,wake_packet,&s,wake_action)
+    stop_rows,stop_read:=executor.query(s.db,"SELECT effect_kind,json_extract(evidence,'$.launch_key'),json_extract(evidence,'$.child_pid'),entry_digest FROM executor_legacy_action_effects")
+    testing.expect(t,stop_read && len(stop_rows)==1 && stop_rows[0][0]=="stop" && stop_rows[0][1]==normal.launch_key && stop_rows[0][2]==fmt.tprintf("%d",normal_pid) && stop_rows[0][3]==contracts.owner_payload_digest(stop_entry))
+    testing.expect(t,!bridge_legacy_stop_target(&s,normal.instance,false,wake_action,0,contracts.owner_payload_digest(stop_entry)),"historical observation cannot authorize a second physical invocation")
+    testing.expect(t,bridge_legacy_dispatch_end(wake_action,true,&s))
     stopped,stopped_known:=bridge_pty_host_executor_query(socket,normal.instance,normal.launch_key)
     testing.expect(t,stopped_known && stopped==0)
     // A child predating the native admission ledger has no authenticated

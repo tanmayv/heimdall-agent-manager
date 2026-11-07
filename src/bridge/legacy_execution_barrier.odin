@@ -45,22 +45,38 @@ bridge_legacy_global_store :: proc()->^executor.Store {
     return &bridge_executor_store
 }
 
-bridge_legacy_stop_target :: proc(s:^executor.Store,instance:string,force:bool)->bool {
+bridge_legacy_stop_target :: proc(s:^executor.Store,instance:string,force:bool,action:executor.Legacy_Action={},entry_index:i64= -1,entry_digest:string="")->bool {
     sync.mutex_lock(&bridge_startup_io_mutex);defer sync.mutex_unlock(&bridge_startup_io_mutex)
     sync.mutex_lock(&bridge_legacy_physical_mutex);defer sync.mutex_unlock(&bridge_legacy_physical_mutex)
     if !bridge_legacy_targets_allowed(s,[]executor.Legacy_Resource{{"instance",instance}}) do return false
     // Only a retained native admission supplies an exact close key. An
     // instance ID or generic process listing cannot authorize a retargeted stop.
     sync.mutex_lock(&s.mutex)
-    rows,read:=executor.query(s.db,"SELECT launch_key FROM executor_local_launches WHERE instance_id=? AND state IN ('dispatching','active','stopping')",instance)
+    rows,read:=executor.query(s.db,"SELECT launch_key,launch_id,configuration FROM executor_local_launches WHERE instance_id=? AND state IN ('dispatching','active','stopping')",instance)
     sync.mutex_unlock(&s.mutex)
     if !read || len(rows)>1 do return false
     key:=""
     if len(rows)==1 do key=rows[0][0]
+    if action.id>0 {
+        if len(rows)!=1 do return false
+        config,valid:=contracts.executor_parse(rows[0][2],"local_configuration")
+        if !valid do return false
+        socket,available:=bridge_pty_host_ensure_daemon()
+        if !available do return false
+        pid,known:=bridge_pty_host_executor_query(socket,instance,key)
+        if !known do return false
+        observed:=executor.legacy_action_observe_stop(s,action,entry_index,entry_digest,executor.Legacy_Stop_Evidence{
+            instance_id=instance,launch_id=rows[0][1],launch_key=key,
+            configuration_digest=contracts.owner_payload_digest(rows[0][2]),
+            directory_key=contracts.owner_string(config,"directory_key"),
+            run_count=contracts.executor_number(config,"run_count"),child_pid=i64(pid),
+        })
+        if observed.code!="ok" || observed.replay do return false
+    }
     return bridge_runtime_stop_agent_unfenced(instance,force,key)
 }
 
-bridge_legacy_merge_target :: proc(s:^executor.Store,repo,workdir,branch,task:string)->Bridge_Taskv2_Merge_Result {
+bridge_legacy_merge_target :: proc(s:^executor.Store,repo,workdir,branch,task:string,action:executor.Legacy_Action={},entry_digest:string="")->Bridge_Taskv2_Merge_Result {
     sync.mutex_lock(&bridge_legacy_physical_mutex);defer sync.mutex_unlock(&bridge_legacy_physical_mutex)
     if strings.trim_space(workdir)=="" || !contracts.owner_field_valid(task,"id") do return Bridge_Taskv2_Merge_Result{detail="legacy merge target unresolved"}
     canonical:=bridge_fs_canonicalize_existing(workdir);defer delete(canonical)
@@ -75,6 +91,19 @@ bridge_legacy_merge_target :: proc(s:^executor.Store,repo,workdir,branch,task:st
        !branch_read || strings.trim_space(actual_branch)!=branch || !bridge_taskv2_is_checkout_root(canonical) ||
        !bridge_legacy_targets_allowed(s,[]executor.Legacy_Resource{{"task",task},{"workdir_hash",contracts.owner_payload_digest(canonical)}}) {
         return Bridge_Taskv2_Merge_Result{detail="legacy merge target fenced or unresolved"}
+    }
+    if action.id>0 {
+        repo_head,repo_read:=vcs_run([]string{"git","-C",canonical_repo,"rev-parse","HEAD"})
+        defer delete(repo_head)
+        work_head,work_read:=vcs_run([]string{"git","-C",canonical,"rev-parse","HEAD"})
+        defer delete(work_head)
+        if !repo_read || !work_read do return Bridge_Taskv2_Merge_Result{detail="native merge heads unresolved"}
+        observed:=executor.legacy_action_observe_merge(s,action,entry_digest,executor.Legacy_Merge_Evidence{
+            task_id=task,repository_hash=contracts.owner_payload_digest(canonical_repo),
+            workdir_hash=contracts.owner_payload_digest(canonical),branch=branch,
+            repository_head=strings.trim_space(repo_head),worktree_head=strings.trim_space(work_head),
+        })
+        if observed.code!="ok" || observed.replay do return Bridge_Taskv2_Merge_Result{detail="native merge observation unavailable"}
     }
     return bridge_taskv2_merge_task_worktree_unfenced(canonical_repo,canonical,branch,task)
 }

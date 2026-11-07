@@ -1093,7 +1093,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		_ = bridge_hub_send(conn, accepted)
 		instance_id := extract_json_string(text, "agent_instance_id", "")
 		defer delete(instance_id)
-		ok, restored := bridge_runtime_stop_or_restore(instance_id, extract_json_bool(text, "force", false))
+		ok, restored := bridge_runtime_stop_or_restore(instance_id, extract_json_bool(text, "force", false),observation_action=bridge_command_worker_legacy_action(conn),entry_digest=contracts.owner_payload_digest(text))
 		defer delete(restored)
 		// The run's final token usage rides on the status report below (T3r).
 		if ok do _ = bridge_ext_token_capture_final(instance_id, bridge_agent_instance_run_count(instance_id))
@@ -2437,18 +2437,34 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string,legacy_j
 
 	// STOP: terminate each instance whose task is no longer actionable, honoring the
 	// coordinator exemption (defense in depth — the hub never emits coordinators).
-	if stop_ids, stop_ok := bridge_provider_json_extract_string_array(payload, "stop"); stop_ok {
-		defer delete(stop_ids)
-		for id in stop_ids {
+    stops_complete:=true
+	if stop_bytes, stop_ok := contracts.owner_content_member_bytes(payload, "stop"); stop_ok {
+        stop_entries,valid_stops:=contracts.owner_content_array_bytes(stop_bytes)
+        if !valid_stops do return
+		for raw_entry,stop_index in stop_entries {
+            value,valid_id:=contracts.owner_content_document(raw_entry)
+            decoded_id,is_id:=value.(json.String)
+            id:=string(decoded_id)
+            if !valid_id || !is_id do return
 			if strings.trim_space(id) == "" do continue
+            if !contracts.owner_field_valid(id,"id") do return
 			if coordinator_ids[id] do continue
 			if launch, has := bridge_runtime_get_launch(id); has && launch.role == "coordinator" do continue
-			if bridge_runtime_stop_agent(id) do _ = bridge_ext_token_capture_final(id, bridge_agent_instance_run_count(id))
-			fmt.println("bridge wake_agent: stopped instance", id)
+            if bridge_runtime_stop_agent_observed(id,false,action,i64(stop_index),contracts.owner_payload_digest(raw_entry),legacy_journal) {
+                _ = bridge_ext_token_capture_final(id, bridge_agent_instance_run_count(id))
+                fmt.println("bridge wake_agent: stopped instance", id)
+            } else {
+                stops_complete=false
+                fmt.eprintln("bridge wake_agent: stop remains unresolved",id)
+            }
 		}
 	}
 
-	if command_id != "" && conn!=nil do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded", ""))
+    if command_id!="" && conn!=nil {
+        result:=bridge_command_result_json(command_id,"succeeded","") if stops_complete else bridge_command_failed_json(command_id,bridge_cause_wire_error("stop_failed","wake stop remains unresolved"))
+        defer delete(result)
+        _=bridge_hub_send(conn,result)
+    }
 }
 
 // bridge_wake_nudge_live_child delivers a wake run[] entry to a child that is
@@ -2599,8 +2615,14 @@ bridge_runtime_launch_provider_test :: proc(command_id, command_json: string,obs
 // Stop the PTY child before invalidating credentials and declaring it stopped.
 // A failed close leaves stop intent active and must never acknowledge success.
 bridge_runtime_stop_agent :: proc(instance_id: string, force: bool = false) -> bool {
+    return bridge_runtime_stop_agent_observed(instance_id,force)
+}
+
+bridge_runtime_stop_agent_observed :: proc(instance_id:string,force:bool,action:executor.Legacy_Action={},entry_index:i64= -1,entry_digest:string="",injected:^executor.Store=nil)->bool {
     sync.mutex_lock(&bridge_executor_mutex);defer sync.mutex_unlock(&bridge_executor_mutex)
-    return bridge_legacy_stop_target(bridge_legacy_global_store(),instance_id,force)
+    store:=injected
+    if store==nil do store=bridge_legacy_global_store()
+    return bridge_legacy_stop_target(store,instance_id,force,action,entry_index,entry_digest)
 }
 
 // Only the guarded entry above may reach this implementation. Its caller keeps
@@ -2830,10 +2852,12 @@ bridge_runtime_record_failure :: proc(instance_id: string, err: Bridge_Error, de
 // alive, and the liveness reconciler settles it from there. restored is that status
 // ("" on success; caller owns it); the failed command_result carries it for the hub.
 // stop is a seam for tests.
-bridge_runtime_stop_or_restore :: proc(instance_id: string, force: bool, stop := bridge_runtime_stop_agent) -> (ok: bool, restored: string) {
+bridge_runtime_stop_or_restore :: proc(instance_id: string, force: bool, stop := bridge_runtime_stop_agent,observation_action:executor.Legacy_Action={},entry_digest:string="") -> (ok: bool, restored: string) {
 	prior_runtime, prior_activity, had_prior := bridge_runtime_status_snapshot(instance_id)
 	defer { delete(prior_runtime); delete(prior_activity) }
-	if stop(instance_id, force) do return true, ""
+    stopped:=false
+    if observation_action.id>0 {stopped=bridge_runtime_stop_agent_observed(instance_id,force,observation_action,-1,entry_digest)} else {stopped=stop(instance_id,force)}
+	if stopped do return true, ""
 	runtime_status, activity := "unreachable", "idle"
 	if had_prior && prior_runtime != "" && prior_runtime != "stopping" {
 		runtime_status, activity = prior_runtime, prior_activity
