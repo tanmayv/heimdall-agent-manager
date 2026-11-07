@@ -14,6 +14,14 @@ EXECUTOR_PREPARE_TTL_MS :: 30000
 // A fence response is evidence for one outstanding random challenge only.
 // Transport callers must consume the challenge and recheck local intent state.
 EXECUTOR_FENCE_TTL_MS :: 5000
+EXECUTOR_TRANSPORT_TTL_MS :: 60000
+executor_transport_fields := [?]Owner_Field{
+    {"protocol_version","version"},{"account_id","id"},{"owner_bridge_id","id"},{"executor_bridge_id","id"},
+    {"chain_id","id"},{"reservation_id","optional"},{"request_id","id"},
+    {"method","executor_transport_method"},{"direction","executor_direction"},
+    {"input_digest","hash"},{"fence_digest","hash"},{"owner_incarnation","positive"},{"executor_incarnation","positive"},
+    {"issued_ms","positive"},{"request_expires_ms","positive"},
+}
 executor_enrollment_fields := [?]Owner_Field{
     {"protocol_version","version"},{"account_id","id"},{"executor_bridge_id","id"},
     {"owner_bridge_id","id"},{"chain_id","id"},{"task_id","id"},{"instance_id","id"},
@@ -79,6 +87,7 @@ executor_schema :: proc(kind:string)->[]Owner_Field {
     case "fence_request":return executor_fence_request_fields[:]
     case "fence_reply":return executor_fence_reply_fields[:]
     case "enrollment":return executor_enrollment_fields[:]
+    case "transport_scope":return executor_transport_fields[:]
     }
     return nil
 }
@@ -91,6 +100,10 @@ executor_valid :: proc(o:json.Object,kind:string)->bool {
         if !is_string do return false
         s:=string(value)
         switch f.kind {
+        case "executor_transport_method":
+            if s!="enrollment" && s!="prepare" && s!="action" && s!="fence_request" do return false
+        case "executor_direction":
+            if s!="request" && s!="response" do return false
         case "executor_receipt_method":
             if s!="prepare" && s!="activate" && s!="heartbeat" && s!="stop" && s!="query" do return false
         case "executor_state":
@@ -136,6 +149,14 @@ executor_valid :: proc(o:json.Object,kind:string)->bool {
     if kind=="enrollment" {
         issued,end:=executor_number(o,"issued_ms"),executor_number(o,"request_expires_ms")
         if end<=issued || end-issued>OWNER_REQUEST_TTL_MS do return false
+    }
+    if kind=="transport_scope" {
+        issued,end:=executor_number(o,"issued_ms"),executor_number(o,"request_expires_ms")
+        if end<=issued || end-issued>EXECUTOR_TRANSPORT_TTL_MS do return false
+        reservation:=owner_string(o,"reservation_id")
+        if owner_string(o,"method")=="enrollment" {
+            if reservation!="" do return false
+        } else if !owner_field_valid(reservation,"id") {return false}
     }
     return true
 }

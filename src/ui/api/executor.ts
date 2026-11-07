@@ -3,6 +3,13 @@ import { parseOwnerRequestDocument } from './ownerJson.ts';
 
 // Mirrored executor resource contracts; no task command or launch authority.
 export const executorSchemas = {
+  transport_scope: [
+    ['protocol_version','version'],['account_id','id'],['owner_bridge_id','id'],['executor_bridge_id','id'],
+    ['chain_id','id'],['reservation_id','optional'],['request_id','id'],
+    ['method','executor_transport_method'],['direction','executor_direction'],
+    ['input_digest','hash'],['fence_digest','hash'],['owner_incarnation','positive'],['executor_incarnation','positive'],
+    ['issued_ms','positive'],['request_expires_ms','positive'],
+  ],
   enrollment: [
     ['protocol_version','version'],['account_id','id'],['executor_bridge_id','id'],
     ['owner_bridge_id','id'],['chain_id','id'],['task_id','id'],['instance_id','id'],
@@ -340,11 +347,14 @@ export const EXECUTOR_DOCUMENT_MAX = 32768;
 export const EXECUTOR_CAPACITY_MAX = 128;
 export const EXECUTOR_PREPARE_TTL_MS = 30000n;
 export const EXECUTOR_FENCE_TTL_MS = 5000n;
+export const EXECUTOR_TRANSPORT_TTL_MS = 60000n;
 const integer = (s: string) => /^(0|[1-9][0-9]*)$/.test(s) && s.length <= 19 && BigInt(s) <= 9223372036854775807n;
 const id = (s: string) => s.length <= 160 && /^[a-zA-Z0-9_.:-]+$/.test(s);
 const object = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 function fieldValid(s: string, kind: string): boolean {
   switch (kind) {
+    case 'executor_transport_method': return ['enrollment','prepare','action','fence_request'].includes(s);
+    case 'executor_direction': return s === 'request' || s === 'response';
     case 'document': return new TextEncoder().encode(s).length <= 256 * 1024 && s !== '';
     case 'version': return s === '1';
     case 'id': return id(s);
@@ -390,6 +400,8 @@ export function executorParse(raw: string, kind: ExecutorKind): ExecutorDocument
     if (end <= start || end - start > EXECUTOR_FENCE_TTL_MS) throw new SyntaxError('Executor fence bounds');
   }
   if (kind === 'enrollment' && (BigInt(o.request_expires_ms) <= BigInt(o.issued_ms) || BigInt(o.request_expires_ms)-BigInt(o.issued_ms) > 300000n)) throw new SyntaxError('Executor enrollment bounds');
+  if (kind === 'transport_scope' && (BigInt(o.request_expires_ms) <= BigInt(o.issued_ms) || BigInt(o.request_expires_ms)-BigInt(o.issued_ms) > EXECUTOR_TRANSPORT_TTL_MS ||
+      (o.method === 'enrollment' ? o.reservation_id !== '' : !id(o.reservation_id)))) throw new SyntaxError('Executor transport bounds');
   return o;
 }
 export function executorCanonical(kind: ExecutorKind, value: ExecutorDocument): string {

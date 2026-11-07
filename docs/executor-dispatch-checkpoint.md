@@ -2,7 +2,7 @@
 
 Task `task_18e556f90cfa1e9c`, attempt 2, branch `heimdall/task_18e556f90cfa1e9c`.
 
-Checkpoint 1 is committed at `33107517648ae4d43e0f9aad176e24404152017a`; its evidence is in `docs/executor-reservations-checkpoint.md`. The second scoped commit adds the physical dispatch foundation below. Coordinator continuation instructions: `msg_18e5966c77baea81`, `msg_18e59763464904aa`.
+This continuation preserves the physical dispatch foundation and adds the owner execution journal, signed single-use fence challenges (`d9253b59`), explicit reserved remote enrollment (`c4dfa43d`) and the sealed channel core documented below. The latest owner suite passed 239 tests; native/TS channel vectors also pass. Checkpoint 1 is `33107517648ae4d43e0f9aad176e24404152017a`, documented in `docs/executor-reservations-checkpoint.md`.
 
 **M3 remains unfinished.** Production owner reconciliation, global manual/warm admission and encrypted provider delivery still need implementation and independent acceptance. The current Bridge dispatcher is an internal adapter exercised with real processes and a test owner verifier. It is not mounted as a production owner lease route.
 
@@ -10,12 +10,12 @@ Checkpoint 1 is committed at `33107517648ae4d43e0f9aad176e24404152017a`; its evi
 
 | Requirement | Verified checkpoint | Required continuation |
 | --- | --- | --- |
-| REQ-M3-1 | Signed finite device ledger; cross-owner/manual/warm resource exclusion, canonical resource-proof boundary, drain-before-policy replacement | Production owner prepare/commit/activate journal and every manual/warm launch entrypoint |
-| REQ-M3-2 | Exact replay, persistent single-use first dispatch, stale incarnation/deadline/stop rejection, real daemon key deduplication, expiry rechecks and bounded physical child timeout | Owner recovery loop, remote instance/config binding, physical deadline renewal with version fencing, all stop/result consumers |
-| REQ-M3-3 | Old daemon capability refusal and exact keyed local query/close protocol | Encrypted notification/AAD/tickets, actual provider interrupt/literal-paste profiles, macOS and bounded Windows evidence |
+| REQ-M3-1 | Signed finite device ledger; core cross-owner/manual/warm resource exclusion; owner atomic journal/outbox; device-authorized exact remote configuration and enrolled-key binding | Canonical resource/identity attestation issuance, mounted prepare/activate reconciliation and every manual/warm launch entrypoint |
+| REQ-M3-2 | Exact replay, persistent single-use first dispatch, stale incarnation/deadline/stop rejection, real daemon key deduplication, expiry rechecks, signed nonce-bound owner fence and bounded physical child timeout | Mounted owner recovery/remote exchange loop, physical deadline renewal with version fencing, all stop/result consumers |
+| REQ-M3-3 | Old daemon capability refusal, exact keyed local query/close and current-epoch identity-bound sealed channel core with shared native/TS vectors | Mounted encrypted transport, notification/AAD/tickets, actual provider interrupt/literal-paste profiles, macOS and bounded Windows evidence |
 | REQ-M3-4 | Real two-owner thread race, transactional faults, three ledger SIGKILL boundaries, real PTY replacement and daemon-loss uncertainty | Full owner/executor crash integration, independent review and final M3 gate |
 
-## Implementation map
+## Original physical dispatch implementation map
 
 | Behavior | Source |
 | --- | --- |
@@ -494,3 +494,108 @@ remain required. M3 is unfinished.
 - `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/ui/api/ownerLocalClient.ts`
 - `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/ui/api/ownerSchema.ts`
 - `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/tests/ui_executor_contract_test.ts`
+
+## Continuation: sealed executor channel core
+
+Coordinator approved this bounded step in `msg_18e59b429c7faaf6` and requested
+checkpoint/handoff in `msg_18e59bae46b2cb6b`. This is a library/contract
+checkpoint; no Hub relay endpoint, Bridge request handler or remote process
+launcher is mounted.
+
+`src/lib/executor_channel/channel.odin:19` binds the account, immutable owner,
+executor, chain, reservation, request ID, method, direction, original request and
+fence digests, both runtime incarnations, issued/expiry times and current vault
+identity/epoch into canonical AEAD associated data. Scope has a bounded 60-second
+transport lifetime; this does not extend the separately signed command/fence
+deadlines. Sealing uses the existing vault AES-GCM implementation and a fresh
+fail-closed OS nonce (`src/lib/executor_channel/channel.odin:34`), with a distinct
+AAD domain and bounded ciphertext/plaintext. No new encryption primitive was
+introduced.
+
+`src/lib/executor_channel/channel.odin:42` accepts only the keyring's current
+epoch, even when older epoch keys are retained. Generic content envelopes and
+request/response reflection fail authentication. The expected scope must come
+from the locally pending exchange and current runtime state, not unchecked relay
+metadata. Ordinary encryption alone authenticates no particular account device.
+
+`src/lib/executor_channel/channel.odin:57` additionally verifies the current
+enrolled inner Bridge signature, exact record kind, identities, original input
+digest and prepare/action/configuration fence correlation. Caller command
+admission, receipt matching, durable deduplication and physical fence validation
+remain mandatory. Historical receipts remain evidence. Enrollment requests fail
+closed here until the distinct signed issuance-consent contract exists; an
+account-key holder cannot use the generic primitive to mint that authority.
+
+The TypeScript mirror is `src/ui/api/executorChannel.ts`. Shared synthetic
+vectors in `src/contracts/fixtures/executor-channel-v1.json` contain public
+verification keys, deterministic test ciphertext/AAD and two signed directions.
+Native and TS tests compare the same bytes and reject substitutions in every
+scope field, retained old epochs, wrong vault, expiry, generic-content reflection,
+oversized bodies, invalid/revoked sender signatures and re-encrypted wrong
+correlation. Test request/reply/content envelopes use distinct synthetic nonces.
+
+### Channel verification
+
+All commands used managed shell sessions and this task worktree as cwd:
+
+```bash
+nix develop --command odin test src/lib/executor_channel -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3-channel-shared-final-20261107-0028
+nix develop --command odin test src/contracts -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3-channel-contracts-20261107-0027
+node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_executor_channel_test.ts tests/ui_executor_contract_test.ts
+npm run typecheck
+python3 scripts/check-owner-aggregate-parity.py
+nix build .#ham-bridge -o $HOME/.cache/heimdall-tests/m3-channel-bridge-20261107-0027
+git diff --check
+```
+
+Native channel: **3 PASS**, `sh_97e5b83a0ae0bf80a1aa8f636ff7a767`.
+Native contracts: **32 PASS**, `sh_32d96545958c1dd53d62b64b9bd258c4`.
+TS channel/contracts: **8 PASS**, `sh_1a05e615276dbb16d5cd7bff22bc5556`.
+Typecheck/parity/diff: PASS, `sh_8311fb81fc4375667e771631b4533698`.
+Bridge build: PASS, `sh_f44c6cfe251d43b4706ed57c3591a661`.
+The full owner **239 PASS** evidence above belongs to `c4dfa43d`; this step
+changes no owner transaction or daemon code, so those suites were not repeated.
+No new test failure was waived. No unrelated cleanup, push, deployment or live
+restart occurred.
+
+### Exact continuation for the next lease
+
+1. Preserve this task/worktree and all checkpoint commits. Implement issuance
+   consent plus actual canonical directory/trusted-root/catalog/profile
+   resolution and durable reserved identity allocation. Never sign token/path
+   facts solely because the caller supplied them. Current channel signed opening
+   intentionally refuses enrollment requests until that contract exists.
+2. Add the enrolled, sealed owner/executor relay and production request handlers
+   using this channel. Resolve/recheck current directory pins at both ends;
+   derive expected scope from pending saved identities. Replace injected owner
+   verification only with the signed single-use fence exchange. Keep network I/O
+   outside SQLite transactions and serialize physical I/O with invalidations.
+3. Mount matcher/prepare/activate reconciliation and query lost replies by saved
+   original identities. A committed owner grant needs exact physical failure
+   disposition; a released receipt alone never proves that a child did not run
+   and never justifies resource/attempt refunds.
+4. Route every owner/manual/warm launch through one device ledger; integrate
+   exact lifecycle/result fences, uncertain-child recovery, physical deadline
+   renewal, encrypted notification/result AAD and tickets. Keep warm charges
+   until trusted exact-child absence.
+5. Run actual enrolled Hub/owner/executor/provider failure evidence, including
+   executor crashes, duplicate deliveries and cross-owner races. Linux core
+   crypto/PTY tests do not establish real provider, macOS or Windows support.
+   Obtain independent and explicit user acceptance only after M3 is complete.
+
+M3 is **unfinished**. This handoff preserves implemented, tested checkpoints and
+does not submit the milestone as complete.
+
+### Exact sealed-channel modified paths
+
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/docs/executor-dispatch-checkpoint.md`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/contracts/executor.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/contracts/fixtures/executor-channel-v1.json`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/contracts/fixtures/executor-v1.json`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/executor_channel/channel.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/executor_channel/channel_test.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/ui/api/executor.ts`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/ui/api/executorChannel.ts`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/tests/ui_executor_channel_test.ts`
+
+Agent-scoped Unicode-ingress habit proposed as pending memory `mem_18e59bb1a0e1a243`; no approval was inferred or performed.

@@ -41,6 +41,12 @@
       "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"owner_bridge_id\":\"owner1\",\"chain_id\":\"chain\",\"task_id\":\"task\",\"instance_id\":\"instance\",\"configuration_revision\":\"1\",\"configuration_digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"issued_ms\":\"1000\",\"request_expires_ms\":\"2000\",\"key_id\":\"operator\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}",
       "canonical": "heimdall-executor/enrollment/v1\n1:1,7:account,8:executor,6:owner1,5:chain,4:task,8:instance,1:1,64:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,4:1000,4:2000,8:operator,",
       "digest": "c105eb486df7d82dff21f58a9f42f260ecead8f0b34f4c14bb44f24e03971856"
+    },
+    {
+      "kind": "transport_scope",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"owner_bridge_id\":\"owner1\",\"executor_bridge_id\":\"executor\",\"chain_id\":\"chain\",\"reservation_id\":\"reservation\",\"request_id\":\"rpc_1\",\"method\":\"prepare\",\"direction\":\"request\",\"input_digest\":\"111554cc3fd15e8a53597b2018b87a4ea91398c9d192532e79614852ce396772\",\"fence_digest\":\"111554cc3fd15e8a53597b2018b87a4ea91398c9d192532e79614852ce396772\",\"owner_incarnation\":\"1\",\"executor_incarnation\":\"1\",\"issued_ms\":\"1000\",\"request_expires_ms\":\"2000\"}",
+      "canonical": "heimdall-executor/transport_scope/v1\n1:1,7:account,6:owner1,8:executor,5:chain,11:reservation,5:rpc_1,7:prepare,7:request,64:111554cc3fd15e8a53597b2018b87a4ea91398c9d192532e79614852ce396772,64:111554cc3fd15e8a53597b2018b87a4ea91398c9d192532e79614852ce396772,1:1,1:1,4:1000,4:2000,",
+      "digest": "7fd115638ecc76dc22b4e3b4522c84375c9ae02898c7f388c9249a224119fc9b"
     }
   ],
   "invalid": [
@@ -183,6 +189,36 @@
       "kind": "enrollment",
       "name": "enrollment rejects configuration_digest",
       "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"owner_bridge_id\":\"owner1\",\"chain_id\":\"chain\",\"task_id\":\"task\",\"instance_id\":\"instance\",\"configuration_revision\":\"1\",\"configuration_digest\":\"bad\",\"issued_ms\":\"1000\",\"request_expires_ms\":\"2000\",\"key_id\":\"operator\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}"
+    },
+    {
+      "kind": "transport_scope",
+      "name": "transport rejects signature",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"owner_bridge_id\":\"owner1\",\"executor_bridge_id\":\"executor\",\"chain_id\":\"chain\",\"reservation_id\":\"reservation\",\"request_id\":\"rpc_1\",\"method\":\"prepare\",\"direction\":\"request\",\"input_digest\":\"111554cc3fd15e8a53597b2018b87a4ea91398c9d192532e79614852ce396772\",\"fence_digest\":\"111554cc3fd15e8a53597b2018b87a4ea91398c9d192532e79614852ce396772\",\"owner_incarnation\":\"1\",\"executor_incarnation\":\"1\",\"issued_ms\":\"1000\",\"request_expires_ms\":\"2000\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}"
+    },
+    {
+      "kind": "transport_scope",
+      "name": "transport rejects method",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"owner_bridge_id\":\"owner1\",\"executor_bridge_id\":\"executor\",\"chain_id\":\"chain\",\"reservation_id\":\"reservation\",\"request_id\":\"rpc_1\",\"method\":\"launch\",\"direction\":\"request\",\"input_digest\":\"111554cc3fd15e8a53597b2018b87a4ea91398c9d192532e79614852ce396772\",\"fence_digest\":\"111554cc3fd15e8a53597b2018b87a4ea91398c9d192532e79614852ce396772\",\"owner_incarnation\":\"1\",\"executor_incarnation\":\"1\",\"issued_ms\":\"1000\",\"request_expires_ms\":\"2000\"}"
+    },
+    {
+      "kind": "transport_scope",
+      "name": "transport rejects direction",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"owner_bridge_id\":\"owner1\",\"executor_bridge_id\":\"executor\",\"chain_id\":\"chain\",\"reservation_id\":\"reservation\",\"request_id\":\"rpc_1\",\"method\":\"prepare\",\"direction\":\"reply\",\"input_digest\":\"111554cc3fd15e8a53597b2018b87a4ea91398c9d192532e79614852ce396772\",\"fence_digest\":\"111554cc3fd15e8a53597b2018b87a4ea91398c9d192532e79614852ce396772\",\"owner_incarnation\":\"1\",\"executor_incarnation\":\"1\",\"issued_ms\":\"1000\",\"request_expires_ms\":\"2000\"}"
+    },
+    {
+      "kind": "transport_scope",
+      "name": "transport rejects request_expires_ms",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"owner_bridge_id\":\"owner1\",\"executor_bridge_id\":\"executor\",\"chain_id\":\"chain\",\"reservation_id\":\"reservation\",\"request_id\":\"rpc_1\",\"method\":\"prepare\",\"direction\":\"request\",\"input_digest\":\"111554cc3fd15e8a53597b2018b87a4ea91398c9d192532e79614852ce396772\",\"fence_digest\":\"111554cc3fd15e8a53597b2018b87a4ea91398c9d192532e79614852ce396772\",\"owner_incarnation\":\"1\",\"executor_incarnation\":\"1\",\"issued_ms\":\"1000\",\"request_expires_ms\":\"999999\"}"
+    },
+    {
+      "kind": "transport_scope",
+      "name": "transport rejects owner_incarnation",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"owner_bridge_id\":\"owner1\",\"executor_bridge_id\":\"executor\",\"chain_id\":\"chain\",\"reservation_id\":\"reservation\",\"request_id\":\"rpc_1\",\"method\":\"prepare\",\"direction\":\"request\",\"input_digest\":\"111554cc3fd15e8a53597b2018b87a4ea91398c9d192532e79614852ce396772\",\"fence_digest\":\"111554cc3fd15e8a53597b2018b87a4ea91398c9d192532e79614852ce396772\",\"owner_incarnation\":\"01\",\"executor_incarnation\":\"1\",\"issued_ms\":\"1000\",\"request_expires_ms\":\"2000\"}"
+    },
+    {
+      "kind": "transport_scope",
+      "name": "transport rejects reservation_id",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"owner_bridge_id\":\"owner1\",\"executor_bridge_id\":\"executor\",\"chain_id\":\"chain\",\"reservation_id\":\"\",\"request_id\":\"rpc_1\",\"method\":\"prepare\",\"direction\":\"request\",\"input_digest\":\"111554cc3fd15e8a53597b2018b87a4ea91398c9d192532e79614852ce396772\",\"fence_digest\":\"111554cc3fd15e8a53597b2018b87a4ea91398c9d192532e79614852ce396772\",\"owner_incarnation\":\"1\",\"executor_incarnation\":\"1\",\"issued_ms\":\"1000\",\"request_expires_ms\":\"2000\"}"
     }
   ]
 }
