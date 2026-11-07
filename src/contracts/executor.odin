@@ -22,6 +22,35 @@ executor_transport_fields := [?]Owner_Field{
     {"input_digest","hash"},{"fence_digest","hash"},{"owner_incarnation","positive"},{"executor_incarnation","positive"},
     {"issued_ms","positive"},{"request_expires_ms","positive"},
 }
+// Issuance consent carries selectors, never caller-chosen runtime credentials.
+executor_issuance_exchange_fields := [?]Owner_Field{
+    {"scope","document"},{"envelope","required_cipher"},{"selection","document"},
+}
+executor_issuance_bundle_fields := [?]Owner_Field{
+    {"configuration","document"},{"attestation","document"},{"issuance_receipt","document"},
+}
+executor_directory_fields := [?]Owner_Field{
+    {"protocol_version","version"},{"account_id","id"},{"executor_bridge_id","id"},
+    {"directory_id","id"},{"revision","positive"},{"directory_path","path"},{"enabled","executor_flag"},
+    {"key_id","id"},{"signature","signature"},
+}
+executor_issuance_selection_fields := [?]Owner_Field{
+    {"provider","label"},{"model","label"},{"provider_profile","id"},
+    {"directory_id","id"},{"policy_revision","positive"},{"slot_id","id"},
+}
+executor_issuance_consent_fields := [?]Owner_Field{
+    {"protocol_version","version"},{"account_id","id"},{"owner_bridge_id","id"},
+    {"executor_bridge_id","id"},{"executor_key_id","id"},{"chain_id","id"},{"task_id","id"},
+    {"agent_id","id"},{"configuration_revision","positive"},{"operation_id","id"},
+    {"principal_id","id"},{"selection_digest","hash"},
+    {"issued_ms","positive"},{"request_expires_ms","positive"},{"key_id","id"},{"signature","signature"},
+}
+executor_issuance_receipt_fields := [?]Owner_Field{
+    {"protocol_version","version"},{"account_id","id"},{"owner_bridge_id","id"},
+    {"executor_bridge_id","id"},{"chain_id","id"},{"task_id","id"},{"operation_id","id"},
+    {"principal_id","id"},{"request_digest","hash"},{"configuration_digest","hash"},{"enrollment_digest","hash"},
+    {"issued_ms","positive"},{"request_expires_ms","positive"},{"key_id","id"},{"signature","signature"},
+}
 executor_enrollment_fields := [?]Owner_Field{
     {"protocol_version","version"},{"account_id","id"},{"executor_bridge_id","id"},
     {"owner_bridge_id","id"},{"chain_id","id"},{"task_id","id"},{"instance_id","id"},
@@ -80,6 +109,12 @@ executor_receipt_fields := [?]Owner_Field{
 }
 executor_schema :: proc(kind:string)->[]Owner_Field {
     switch kind {
+    case "issuance_exchange":return executor_issuance_exchange_fields[:]
+    case "issuance_bundle":return executor_issuance_bundle_fields[:]
+    case "directory":return executor_directory_fields[:]
+    case "issuance_selection":return executor_issuance_selection_fields[:]
+    case "issuance_consent":return executor_issuance_consent_fields[:]
+    case "issuance_receipt":return executor_issuance_receipt_fields[:]
     case "policy":return executor_policy_fields[:]
     case "prepare":return executor_prepare_fields[:]
     case "action":return executor_action_fields[:]
@@ -118,6 +153,7 @@ executor_valid :: proc(o:json.Object,kind:string)->bool {
             if !owner_field_valid(s,f.kind) do return false
         }
     }
+    if kind=="directory" && owner_string(o,"directory_path")=="" do return false
     if kind=="policy" {
         cap:=executor_number(o,"device_capacity")
         if cap>EXECUTOR_CAPACITY_MAX do return false
@@ -146,7 +182,7 @@ executor_valid :: proc(o:json.Object,kind:string)->bool {
         end:=executor_number(o,"request_expires_ms")
         if end<=start || end-start>EXECUTOR_FENCE_TTL_MS do return false
     }
-    if kind=="enrollment" {
+    if kind=="enrollment" || kind=="issuance_consent" || kind=="issuance_receipt" {
         issued,end:=executor_number(o,"issued_ms"),executor_number(o,"request_expires_ms")
         if end<=issued || end-issued>OWNER_REQUEST_TTL_MS do return false
     }
@@ -162,7 +198,9 @@ executor_valid :: proc(o:json.Object,kind:string)->bool {
 }
 executor_parse :: proc(raw,kind:string)->(json.Object,bool) {
     if len(raw)>EXECUTOR_DOCUMENT_MAX do return nil,false
-    v,ok:=owner_request_document(raw);o,obj:=v.(json.Object)
+    v:json.Value;ok:bool
+    if kind=="issuance_selection" || kind=="issuance_exchange" || kind=="issuance_bundle" {v,ok=owner_content_document(raw)} else {v,ok=owner_request_document(raw)}
+    o,obj:=v.(json.Object)
     if !ok || !obj || !executor_valid(o,kind) do return nil,false
     return o,true
 }
@@ -183,10 +221,11 @@ executor_digest :: proc(kind:string,o:json.Object)->(string,bool) {
     return owner_payload_digest(canonical),true
 }
 executor_verify :: proc(kind:string,o:json.Object,key:Owner_Verified_Key)->bool {
-    if !key.enrolled || key.revoked || key.kind!="bridge" || key.account_id!=owner_string(o,"account_id") ||
+    if !key.enrolled || key.revoked || (key.kind!="device" if kind=="issuance_consent" else key.kind!="bridge") || key.account_id!=owner_string(o,"account_id") ||
        key.key_id!=owner_string(o,"key_id") { return false }
     identity:="owner_bridge_id"
-    if kind=="policy" || kind=="receipt" || kind=="fence_request" || kind=="enrollment" do identity="executor_bridge_id"
+    if kind=="policy" || kind=="receipt" || kind=="fence_request" || kind=="enrollment" || kind=="issuance_receipt" || kind=="directory" do identity="executor_bridge_id"
+    if kind=="issuance_consent" do identity="principal_id"
     if key.principal_id!=owner_string(o,identity) do return false
     canonical,ok:=executor_canonical(kind,o)
     if !ok do return false
@@ -257,4 +296,32 @@ executor_receipt_matches :: proc(receipt,request:json.Object,kind:string,key:Own
           owner_string(receipt,"deadline_version")==owner_string(request,"deadline_version")
     }
     return method=="query" || (method=="stop" && (state=="stopping" || state=="released"))
+}
+
+// Verify the requested selectors and generated response together. This does not
+// authorize a task grant, reserve capacity, or establish a current launch fence.
+executor_issuance_matches :: proc(receipt,consent:json.Object,selection_raw,configuration_raw:string,
+    enrollment:json.Object,device_key,executor_key:Owner_Verified_Key,now:i64,current_admission:=true)->bool {
+    selection,selected:=executor_parse(selection_raw,"issuance_selection")
+    c,configured:=owner_parse(configuration_raw,"remote_configuration")
+    if !selected || !configured || !executor_verify("issuance_consent",consent,device_key) ||
+       !executor_verify("issuance_receipt",receipt,executor_key) ||
+       !executor_enrollment_matches(enrollment,configuration_raw,executor_key,now,current_admission) {return false}
+    for name in ([8]string{"protocol_version","account_id","owner_bridge_id","executor_bridge_id","chain_id","task_id","operation_id","principal_id"}) {
+        if owner_string(receipt,name)!=owner_string(consent,name) do return false
+    }
+    for name in ([9]string{"protocol_version","account_id","owner_bridge_id","executor_bridge_id","executor_key_id","chain_id","task_id","agent_id","configuration_revision"}) {
+        if owner_string(c,name)!=owner_string(consent,name) do return false
+    }
+    for name in ([6]string{"provider","model","provider_profile","directory_id","policy_revision","slot_id"}) {
+        if owner_string(c,name)!=owner_string(selection,name) do return false
+    }
+    request_digest,_:=executor_digest("issuance_consent",consent)
+    enrollment_digest,_:=executor_digest("enrollment",enrollment)
+    return owner_string(consent,"selection_digest")==owner_payload_digest(selection_raw) &&
+        owner_string(receipt,"request_digest")==request_digest &&
+        owner_string(receipt,"configuration_digest")==owner_payload_digest(configuration_raw) &&
+        owner_string(receipt,"enrollment_digest")==enrollment_digest &&
+        (!current_admission || (now>=executor_number(consent,"issued_ms") && now<executor_number(consent,"request_expires_ms") &&
+          now>=executor_number(receipt,"issued_ms") && now<executor_number(receipt,"request_expires_ms")))
 }

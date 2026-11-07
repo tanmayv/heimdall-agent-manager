@@ -93,3 +93,53 @@ test('remote enrollment binds exact device-selected configuration and enrolled e
   assert.deepEqual({...ownerParse(JSON.stringify(reservation),'remote_reservation')},reservation);
   assert.throws(() => ownerParse(JSON.stringify({...reservation,child:'synthetic'}),'remote_reservation'));
 });
+
+test('issuance binds enrolled device consent to selectors, generated configuration and signed response', async () => {
+  const { executorIssuanceMatches } = await import('../src/ui/api/executor.ts');
+  const device = await crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);
+  const host = await crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);
+  const hex = (value: ArrayBuffer) => Buffer.from(value).toString('hex');
+  const key = async (pair: CryptoKeyPair, principal_id: string, key_id: string, kind: 'device' | 'bridge') =>
+    ({account_id:'account',principal_id,key_id,kind,public_key:hex(await crypto.subtle.exportKey('raw',pair.publicKey)),enrolled:true,revoked:false});
+  const deviceKey = await key(device,'owner2','owner2','device'), executorKey = await key(host,'executor','operator','bridge');
+  const sign = async (kind: ExecutorKind, value: Record<string,string>, pair: CryptoKeyPair) =>
+    ({...value,signature:hex(await crypto.subtle.sign({name:'ECDSA',hash:'SHA-256'},pair.privateKey,new TextEncoder().encode(executorCanonical(kind,value))))});
+  const digest = (raw: string) => createHash('sha256').update(raw).digest('hex');
+  const doc = (kind: ExecutorKind) => executorParse(fixture.valid.find(r => r.kind === kind)!.raw,kind);
+  const selectionRaw = JSON.stringify(doc('issuance_selection'));
+  const consent = await sign('issuance_consent',{...doc('issuance_consent'),selection_digest:digest(selectionRaw)},device);
+  assert.equal(await executorVerify('issuance_consent',consent,deviceKey),true);
+  assert.equal(await executorVerify('issuance_consent',consent,{...deviceKey,kind:'bridge'}),false);
+  assert.equal(await executorVerify('issuance_consent',consent,{...deviceKey,revoked:true}),false);
+  const config = {protocol_version:'1',account_id:'account',owner_bridge_id:'owner1',executor_bridge_id:'executor',executor_key_id:'operator',
+    chain_id:'chain',task_id:'task',instance_id:'inst_generated',agent_id:'author',launch_epoch:'epoch_generated',run_count:'1',
+    token_generation:'a'.repeat(64),configuration_revision:'1',executor_incarnation:'1',
+    ...doc('issuance_selection'),directory_key:'b'.repeat(64),directory_path:'/repo'};
+  const raw = JSON.stringify(config);
+  const enrollment = await sign('enrollment',{...doc('enrollment'),instance_id:config.instance_id,configuration_digest:digest(raw)},host);
+  const receipt = await sign('issuance_receipt',{...doc('issuance_receipt'),request_digest:digest(executorCanonical('issuance_consent',consent)),
+    configuration_digest:digest(raw),enrollment_digest:digest(executorCanonical('enrollment',enrollment))},host);
+  const matches = (r = receipt, c = consent, sel = selectionRaw, configuration = raw, e = enrollment, now = 1200n, current = true) =>
+    executorIssuanceMatches(r,c,sel,configuration,e,deviceKey,executorKey,now,current);
+  assert.equal(await matches(),true);
+  assert.equal(await matches(receipt,consent,selectionRaw,raw,enrollment,2000n),false);
+  assert.equal(await matches(receipt,consent,selectionRaw,raw,enrollment,3000n,false),true);
+  assert.equal(await matches(receipt,consent,selectionRaw+' '),false);
+  assert.equal(await matches(receipt,consent,selectionRaw,raw+' '),false);
+  for (const name of ['account_id','owner_bridge_id','executor_bridge_id','chain_id','task_id','operation_id','principal_id','request_digest','configuration_digest','enrollment_digest']) {
+    const value = receipt[name].length === 64 ? 'c'.repeat(64) : 'other';
+    assert.equal(await matches(await sign('issuance_receipt',{...receipt,[name]:value},host)),false,name);
+  }
+  // Even freshly signed output from the enrolled executor cannot satisfy
+  // consent for another task/agent/provider/directory/configuration revision.
+  for (const name of ['task_id','agent_id','configuration_revision','provider','model','provider_profile','directory_id','policy_revision','slot_id']) {
+    const changed = JSON.stringify({...config,[name]:name.endsWith('revision') ? '2' : 'other'});
+    const attestation = await sign('enrollment',{...enrollment,task_id:name === 'task_id' ? 'other' : enrollment.task_id,
+      configuration_revision:name === 'configuration_revision' ? '2' : enrollment.configuration_revision,
+      configuration_digest:digest(changed)},host);
+    const response = await sign('issuance_receipt',{...receipt,configuration_digest:digest(changed),enrollment_digest:digest(executorCanonical('enrollment',attestation))},host);
+    assert.equal(await matches(response,consent,selectionRaw,changed,attestation),false,name);
+  }
+  assert.equal(await executorIssuanceMatches(receipt,consent,selectionRaw,raw,enrollment,{...deviceKey,revoked:true},executorKey,1200n),false);
+  assert.equal(await executorIssuanceMatches(receipt,consent,selectionRaw,raw,enrollment,deviceKey,{...executorKey,revoked:true},1200n),false);
+});

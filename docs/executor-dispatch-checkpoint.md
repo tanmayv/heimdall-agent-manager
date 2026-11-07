@@ -599,3 +599,163 @@ does not submit the milestone as complete.
 - `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/tests/ui_executor_channel_test.ts`
 
 Agent-scoped Unicode-ingress habit proposed as pending memory `mem_18e59bb1a0e1a243`; no approval was inferred or performed.
+
+## Continuation: consent-bound issuance and host directory authority
+
+Coordinator approvals: `msg_18e59c4d4a2d0a5d` (consent/receipt/allocation) and
+`msg_18e59cad788aadb7` (host-signed local directory mappings). This checkpoint
+mounts issuance only. M3 is **unfinished**.
+
+An enrolled browser device signs `issuance_consent`, binding account, owner and
+executor Bridge/key, chain/task/agent, configuration revision, operation ID,
+requested-selector digest and deadline. Selectors contain provider/model,
+profile, directory ID, policy revision and slot ID; caller instance, token, epoch
+and path fields reject. Unicode selectors remain encrypted content; authority
+envelopes stay ASCII. Native and TS schemas/canonical byte lengths share vectors
+(`src/contracts/executor.odin:303`).
+
+Host operator authority provisions immutable signed directory versions. Enabled
+versions require a trusted canonical existing path. Aliases of one canonical path
+share a resource key; replacement/disable requires drained old/new resources.
+Historical replay cannot re-enable a mapping
+(`src/lib/executor_local/directories.odin:26`). The Bridge resolver rechecks
+trusted-root containment, existence and exact active catalog model/profile
+(`src/bridge/executor_issuance.odin:55`). It never attests raw caller paths.
+
+Executor V2 migration preserves V1 active resources/receipts/fences atomically.
+Immutable issuance rows retain consent/selectors, generated configuration,
+private random child credential and complete signed response. The response
+excludes the credential, retaining its generation digest. The executor generates
+instance/epoch/credential facts. Authenticated retries return original historical
+bytes before fresh clock/policy/resources/incarnation checks; changed input
+conflicts, and revoked device/executor keys still deny reading saved output.
+Issuance creates no lease, resource reservation or child
+(`src/lib/executor_local/issuance.odin:30`).
+
+A separate signed `issuance_receipt` binds consent, configuration and enrollment
+digests. Channel opening checks current enrolled keys and pending original
+request/selectors. Re-encrypting another response with an account key fails.
+Fresh opening checks executor incarnation; explicit historical opening retains
+old facts and grants no launch rights
+(`src/lib/executor_channel/channel.odin:95`).
+
+`POST /api/v1/executor/issuance` checks user authentication, account Bridge
+ownership and availability, then relays opaque bytes plus signed directory
+evidence without authoritative task reads/writes
+(`src/hub/transport/http/owner_local_handlers.odin:171`).
+The mounted Bridge verifies account/current epoch/correlation, paired root,
+durable monotonic directory pin and device consent before allocation
+(`src/bridge/executor_issuance.odin:74`).
+The client preserves consent across fresh encrypted transport attempts and
+verifies current enrollment/request-bound replies
+(`src/ui/api/executorIssuance.ts:36`).
+
+### Verification
+
+All commands ran through managed shell sessions with this assigned worktree as cwd:
+
+```bash
+nix develop --command odin test src/lib/executor_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3-issuance-native-final-20261107-0055
+nix develop --command odin test src/contracts -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3-issuance-contracts-final-20261107-0100
+nix develop --command odin test src/lib/executor_channel -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3-issuance-channel-draft-20261107-0051
+nix develop --command odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_NAMES=main.test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection,main.test_executor_issuance_resolves_signed_directory_catalog_and_profile,main.test_owner_local_executor_signer_domains_and_missing_identity -out:$HOME/.cache/heimdall-tests/m3-issuance-mounted-final-20261107-0101
+nix develop --command odin test src/hub/transport/http -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_NAMES=http.executor_issuance_relay_requires_user_account_and_keeps_runtime_offline_opaque -out:$HOME/.cache/heimdall-tests/m3-issuance-hub-relay-final3-20261107-0103
+node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_executor_contract_test.ts tests/ui_executor_channel_test.ts tests/ui_executor_issuance_test.ts
+npm run typecheck
+nix develop --command odin check src/hub -collection:odin_test=src
+nix build .#ham-bridge .#ham-hub -o $HOME/.cache/heimdall-tests/m3-issuance-mounted-bins-20261107-0100
+nix develop --command odin build tests/executor_crash_probe -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/m3-issuance-crash-probe-20261107-0103
+nix develop --command env HEIMDALL_EXECUTOR_CRASH_PROBE=$HOME/.cache/heimdall-tests/m3-issuance-crash-probe-20261107-0103 python3 tests/test_executor_process_crash.py
+python3 scripts/check-owner-aggregate-parity.py
+git diff --check
+```
+
+- Executor **21 PASS**, `sh_f3d6f34dff5b248e62f39c3b51b71527`: immutable generated
+  output/credential, signature/scope rejection, expired/conflicting/revoked retry,
+  deferred-COMMIT rollback, V1 migration collision rollback preserving active
+  resources, mapping drain/alias/history, pins and sealed pending correlation.
+- Contracts **32 PASS**, `sh_dc239fd77cd4e6b390270f7551b55b75`.
+- Existing channel **3 PASS**, `sh_7a20b998236959f53192f22ff0956971`; new issuance
+  channel paths are covered by executor/TS tests.
+- Bridge **3 PASS**, `sh_fe5bf911e7cafc48410e3a10f0e1388c`: actual filesystem/
+  catalog/profile resolver; production handler with `conn=nil`, disposable paired
+  keystore/root, fully signed directory, encrypted consent, host signatures,
+  duplicate delivery and invalid-directory rejection. This is native handler
+  coverage, **not** a real network or multi-Bridge/provider demonstration.
+- Hub auth/account/offline **1 PASS**, `sh_5cc6b1c24c330520acd74ec373ea904c`.
+- TS contracts/channel/client **10 PASS**, `sh_d11d658aa880bcce5367dd3a3f0f2aad`.
+- Typecheck PASS, `sh_e33693e15dac4103d1f1a932266de1ab`.
+- Hub check PASS, `sh_6e34d23d51ee40682986ff29a33e6ceb`.
+- Hub/Bridge builds PASS, `sh_e53be3b2f93f71db2bf22d012ec3fd3e`.
+- Independent Python supervisor **1 PASS / four SIGKILL boundaries**: issuance,
+  prepare, activate, first dispatch (`sh_2b04b3df623c7ba52b8d68bd0153e392`).
+  An independently restarted native process verifies original saved issuance/
+  credential and expired historical replay. This proves isolated-ledger crash
+  recovery, not provider behavior.
+- Existing aggregate gate PASS: 240 fields/23 structs, 74 owner methods
+  (`sh_5250a888c41e63c2a481fa802b1ea71c`).
+
+Draft failures were corrected, not waived: quoting errors caused no writes;
+Odin tuple-conditional/array/type/scope/multiline-do syntax; a reserialized test
+selector needed its exact signed digest updated; a TS spread needed explicit
+record typing; the old unseal proof omitted full-directory epoch commitment;
+a mounted-reply check used time captured before issuance; the Hub offline fixture
+still had a live hello with no vault service, causing a test segfault until
+explicitly marked offline. Production verification stayed strict.
+No unrelated cleanup, live restart, deployment or push occurred.
+
+### Remaining work
+
+Host-signed static policy/directory provisioning is validated by native APIs;
+operator UI/CLI provisioning is not yet mounted. Next: actual enrolled network
+issuance, owner/executor prepare/action/fence relays, matcher/outbox exact
+reconciliation and committed-grant failure disposition. All manual/warm launches,
+physical renewal and unknown-child recovery must use one ledger before claiming
+global resource safety. Encrypted notification/results, actual provider
+interrupt/Unicode delivery, macOS/Windows gates and independent/explicit user
+acceptance remain outstanding.
+
+Final dispatch audit also registers `executor_issuance` on the existing
+exclusive Bridge worker queue, so filesystem/profile/SQLite work never runs on
+the WebSocket reader (`src/bridge/hub_command_dispatch.odin:282`).
+The mounted native test checks this production registration.
+Final reruns: Bridge **3 PASS**, `sh_7f9aa41ef03377582277e19a57863d83`;
+Bridge build PASS, `sh_fe8486f16045b0a0788b71759985fcf7`.
+Exact commands:
+
+```bash
+nix develop --command odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_NAMES=main.test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection,main.test_executor_issuance_resolves_signed_directory_catalog_and_profile,main.test_owner_local_executor_signer_domains_and_missing_identity -out:$HOME/.cache/heimdall-tests/m3-issuance-dispatch-tests-20261107-0106
+nix build .#ham-bridge -o $HOME/.cache/heimdall-tests/m3-issuance-dispatch-bridge-20261107-0106
+git diff HEAD --check
+```
+
+### Exact issuance-checkpoint modified paths
+
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/docs/executor-dispatch-checkpoint.md`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/bridge/executor_issuance.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/bridge/executor_issuance_test.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/bridge/hub_runtime_client.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/bridge/unseal_protocol.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/bridge/vault_v2_bridge_test.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/contracts/executor.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/contracts/fixtures/executor-v1.json`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/hub/app/wiring.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/hub/transport/http/owner_local_handlers.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/hub/transport/http/task_chain_search_relay_test.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/executor_channel/channel.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/executor_local/directories.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/executor_local/directories_test.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/executor_local/issuance.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/executor_local/issuance_test.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/executor_local/migration_002.sql`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/executor_local/schema.sql`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/executor_local/store.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/ui/api/executor.ts`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/ui/api/executorChannel.ts`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/ui/api/executorIssuance.ts`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/tests/executor_crash_probe/main.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/tests/test_executor_process_crash.py`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/tests/ui_executor_contract_test.ts`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/tests/ui_executor_issuance_test.ts`
+
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/bridge/hub_command_dispatch.odin`

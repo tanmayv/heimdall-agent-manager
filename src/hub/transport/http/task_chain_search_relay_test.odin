@@ -251,3 +251,34 @@ task_chain_search_relay_handler_rejects_malformed_and_unauthorized :: proc(t: ^t
 	testing.expect_value(t, r.status, status_for_error(.Bridge_Offline)); delete(r.body)
 	testing.expect_value(t, f.registry.command_count, 0)
 }
+
+@(test)
+executor_issuance_relay_requires_user_account_and_keeps_runtime_offline_opaque :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=search_relay_fixture(t);defer search_relay_fixture_destroy(f)
+    project.bridge_runtime_registry_mark_offline(&f.registry,f.bridge_id,f.generation)
+    id:vault.Vault_Id;id[0]=1
+    key:[32]byte;key[0]=1
+    kr,key_ok:=vault.keyring_from_single_key(f.owner,id,1,key[:])
+    if !testing.expect(t,key_ok) do return
+    defer vault.keyring_wipe(&kr)
+    plain:string="{}"
+    envelope,sealed:=vault.seal(transmute([]byte)plain,&kr)
+    if !testing.expect(t,sealed) do return
+    now:=time.to_unix_nanoseconds(time.now())/1000000
+    body:=owner_json(struct{protocol_version,chain_id,bridge_id,request_id,expires_ms,envelope:string}{
+        "1","chain",f.bridge_id,"issuance_http",fmt.tprintf("%d",now+60000),envelope})
+    req:=search_relay_request(f,body);req.path="/api/v1/executor/issuance"
+    // A current account-owned device with no live socket returns unavailable;
+    // neither encrypted payload nor task authority is evaluated at the Hub.
+    response:=executor_issuance_relay_handler(&f.h,req)
+    testing.expect_value(t,response.status,200)
+    testing.expect(t,strings.contains(response.body,"executor_unavailable"))
+    req.body="{}";response=executor_issuance_relay_handler(&f.h,req)
+    testing.expect_value(t,response.status,400)
+    req.body=body;req.headers=nil;response=executor_issuance_relay_handler(&f.h,req)
+    testing.expect(t,response.status==401 || response.status==403)
+    req.headers=http_test_login(t,&f.auth,"executor_other_account")
+    response=executor_issuance_relay_handler(&f.h,req)
+    testing.expect(t,response.status==403 || response.status==404)
+}

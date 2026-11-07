@@ -1,3 +1,4 @@
+import { parseVaultEnvelope } from '../utils/vaultCrypto.ts';
 import { ownerPayloadDigest, ownerParse, type OwnerVerifiedKey } from './ownerLocal.ts';
 import { parseOwnerRequestDocument } from './ownerJson.ts';
 
@@ -9,6 +10,56 @@ export const executorSchemas = {
     ['method','executor_transport_method'],['direction','executor_direction'],
     ['input_digest','hash'],['fence_digest','hash'],['owner_incarnation','positive'],['executor_incarnation','positive'],
     ['issued_ms','positive'],['request_expires_ms','positive'],
+  ],
+  issuance_exchange: [['scope','document'],['envelope','required_cipher'],['selection','document']],
+  issuance_bundle: [['configuration','document'],['attestation','document'],['issuance_receipt','document']],
+  directory: [
+    ['protocol_version','version'],['account_id','id'],['executor_bridge_id','id'],
+    ['directory_id','id'],['revision','positive'],['directory_path','path'],['enabled','executor_flag'],
+    ['key_id','id'],['signature','signature'],
+  ],
+  issuance_selection: [
+    ['provider','label'],
+    ['model','label'],
+    ['provider_profile','id'],
+    ['directory_id','id'],
+    ['policy_revision','positive'],
+    ['slot_id','id'],
+  ],
+  issuance_consent: [
+    ['protocol_version','version'],
+    ['account_id','id'],
+    ['owner_bridge_id','id'],
+    ['executor_bridge_id','id'],
+    ['executor_key_id','id'],
+    ['chain_id','id'],
+    ['task_id','id'],
+    ['agent_id','id'],
+    ['configuration_revision','positive'],
+    ['operation_id','id'],
+    ['principal_id','id'],
+    ['selection_digest','hash'],
+    ['issued_ms','positive'],
+    ['request_expires_ms','positive'],
+    ['key_id','id'],
+    ['signature','signature'],
+  ],
+  issuance_receipt: [
+    ['protocol_version','version'],
+    ['account_id','id'],
+    ['owner_bridge_id','id'],
+    ['executor_bridge_id','id'],
+    ['chain_id','id'],
+    ['task_id','id'],
+    ['operation_id','id'],
+    ['principal_id','id'],
+    ['request_digest','hash'],
+    ['configuration_digest','hash'],
+    ['enrollment_digest','hash'],
+    ['issued_ms','positive'],
+    ['request_expires_ms','positive'],
+    ['key_id','id'],
+    ['signature','signature'],
   ],
   enrollment: [
     ['protocol_version','version'],['account_id','id'],['executor_bridge_id','id'],
@@ -355,9 +406,12 @@ function fieldValid(s: string, kind: string): boolean {
   switch (kind) {
     case 'executor_transport_method': return ['enrollment','prepare','action','fence_request'].includes(s);
     case 'executor_direction': return s === 'request' || s === 'response';
+    case 'required_cipher': { if (s.length > 65536 || s === '') return false; try { parseVaultEnvelope(s); return true; } catch { return false; } }
     case 'document': return new TextEncoder().encode(s).length <= 256 * 1024 && s !== '';
     case 'version': return s === '1';
     case 'id': return id(s);
+    case 'path': return s.length <= 4096 && s.startsWith('/') && !s.includes('..') && !s.includes(String.fromCharCode(92)) && [...s].every(c => c.charCodeAt(0) >= 32 && c.charCodeAt(0) <= 126);
+    case 'label': return s.length > 0 && new TextEncoder().encode(s).length <= 256 && !/[\u0000-\u001f\u007f]/.test(s);
     case 'optional': return s === '' || id(s);
     case 'positive': return integer(s) && s !== '0';
     case 'hash': return /^[0-9a-f]{64}$/.test(s);
@@ -380,6 +434,7 @@ export function executorParse(raw: string, kind: ExecutorKind): ExecutorDocument
     if (typeof field !== 'string' || !fieldValid(field, type)) throw new SyntaxError('Executor field');
   }
   const o = value as ExecutorDocument;
+  if (kind === 'directory' && o.directory_path === '') throw new SyntaxError('Executor directory path');
   if (kind === 'policy') {
     const capacity = BigInt(o.device_capacity);
     const slots = parseOwnerRequestDocument(o.slots_json);
@@ -399,22 +454,22 @@ export function executorParse(raw: string, kind: ExecutorKind): ExecutorDocument
     const end = BigInt(o.request_expires_ms);
     if (end <= start || end - start > EXECUTOR_FENCE_TTL_MS) throw new SyntaxError('Executor fence bounds');
   }
-  if (kind === 'enrollment' && (BigInt(o.request_expires_ms) <= BigInt(o.issued_ms) || BigInt(o.request_expires_ms)-BigInt(o.issued_ms) > 300000n)) throw new SyntaxError('Executor enrollment bounds');
+  if (['enrollment','issuance_consent','issuance_receipt'].includes(kind) && (BigInt(o.request_expires_ms) <= BigInt(o.issued_ms) || BigInt(o.request_expires_ms)-BigInt(o.issued_ms) > 300000n)) throw new SyntaxError('Executor enrollment bounds');
   if (kind === 'transport_scope' && (BigInt(o.request_expires_ms) <= BigInt(o.issued_ms) || BigInt(o.request_expires_ms)-BigInt(o.issued_ms) > EXECUTOR_TRANSPORT_TTL_MS ||
       (o.method === 'enrollment' ? o.reservation_id !== '' : !id(o.reservation_id)))) throw new SyntaxError('Executor transport bounds');
   return o;
 }
 export function executorCanonical(kind: ExecutorKind, value: ExecutorDocument): string {
   const o = executorParse(JSON.stringify(value), kind);
-  return 'heimdall-executor/' + kind + '/v1\n' + executorSchemas[kind].filter(([,type]) => type !== 'signature').map(([name]) => o[name].length + ':' + o[name] + ',').join('');
+  return 'heimdall-executor/' + kind + '/v1\n' + executorSchemas[kind].filter(([,type]) => type !== 'signature').map(([name]) => new TextEncoder().encode(o[name]).length + ':' + o[name] + ',').join('');
 }
 
 const unhex = (hex: string): Uint8Array<ArrayBuffer> => Uint8Array.from(hex.match(/../g) ?? [], (pair) => parseInt(pair,16));
 export async function executorVerify(kind: ExecutorKind, value: ExecutorDocument, key: OwnerVerifiedKey): Promise<boolean> {
   try {
     const o = executorParse(JSON.stringify(value), kind);
-    const principal = kind === 'policy' || kind === 'receipt' || kind === 'fence_request' || kind === 'enrollment' ? o.executor_bridge_id : o.owner_bridge_id;
-    if (!key.enrolled || key.revoked || key.kind !== 'bridge' || key.account_id !== o.account_id ||
+    const principal = kind === 'policy' || kind === 'receipt' || kind === 'fence_request' || kind === 'enrollment' || kind === 'issuance_receipt' || kind === 'directory' ? o.executor_bridge_id : kind === 'issuance_consent' ? o.principal_id : o.owner_bridge_id;
+    if (!key.enrolled || key.revoked || key.kind !== (kind === 'issuance_consent' ? 'device' : 'bridge') || key.account_id !== o.account_id ||
         key.principal_id !== principal || key.key_id !== o.key_id || !/^04[0-9a-f]{128}$/.test(key.public_key)) return false;
     const pub = await crypto.subtle.importKey('raw', unhex(key.public_key), {name:'ECDSA',namedCurve:'P-256'}, false, ['verify']);
     return await crypto.subtle.verify({name:'ECDSA',hash:'SHA-256'}, pub, unhex(o.signature), new TextEncoder().encode(executorCanonical(kind,o)));
@@ -471,5 +526,28 @@ export async function executorReceiptMatches(receipt: ExecutorDocument, request:
     if (method === 'prepare') return receipt.state === 'prepared' && receipt.child_incarnation === request.executor_incarnation && receipt.expires_ms === request.prepare_until_ms && receipt.deadline_version === '1';
     if (method === 'activate' || method === 'heartbeat') return receipt.state === 'active' && receipt.expires_ms === request.expires_ms && receipt.deadline_version === request.deadline_version;
     return method === 'query' || (method === 'stop' && ['stopping','released'].includes(receipt.state));
+  } catch { return false; }
+}
+
+export async function executorIssuanceMatches(receipt: ExecutorDocument, consent: ExecutorDocument, selectionRaw: string,
+  configurationRaw: string, enrollment: ExecutorDocument, deviceKey: OwnerVerifiedKey, executorKey: OwnerVerifiedKey,
+  now: bigint, currentAdmission = true): Promise<boolean> {
+  try {
+    const selection = executorParse(selectionRaw,'issuance_selection');
+    const c = ownerParse(configurationRaw,'remote_configuration');
+    if (!await executorVerify('issuance_consent',consent,deviceKey) || !await executorVerify('issuance_receipt',receipt,executorKey) ||
+        !await executorEnrollmentMatches(enrollment,configurationRaw,executorKey,now,currentAdmission)) return false;
+    for (const name of ['protocol_version','account_id','owner_bridge_id','executor_bridge_id','chain_id','task_id','operation_id','principal_id'])
+      if (receipt[name] !== consent[name]) return false;
+    for (const name of ['protocol_version','account_id','owner_bridge_id','executor_bridge_id','executor_key_id','chain_id','task_id','agent_id','configuration_revision'])
+      if (c[name] !== consent[name]) return false;
+    for (const name of ['provider','model','provider_profile','directory_id','policy_revision','slot_id'])
+      if (c[name] !== selection[name]) return false;
+    return consent.selection_digest === await ownerPayloadDigest(selectionRaw) &&
+      receipt.request_digest === await ownerPayloadDigest(executorCanonical('issuance_consent',consent)) &&
+      receipt.configuration_digest === await ownerPayloadDigest(configurationRaw) &&
+      receipt.enrollment_digest === await ownerPayloadDigest(executorCanonical('enrollment',enrollment)) &&
+      (!currentAdmission || (now >= BigInt(consent.issued_ms) && now < BigInt(consent.request_expires_ms) &&
+        now >= BigInt(receipt.issued_ms) && now < BigInt(receipt.request_expires_ms)));
   } catch { return false; }
 }

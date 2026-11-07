@@ -1,4 +1,4 @@
-import { executorCanonical, executorParse, executorVerify, type ExecutorDocument, type ExecutorKind } from './executor.ts';
+import { executorCanonical, executorParse, executorVerify, executorIssuanceMatches, type ExecutorDocument, type ExecutorKind } from './executor.ts';
 import { ownerPayloadDigest, type OwnerVerifiedKey } from './ownerLocal.ts';
 import { currentKey, type VaultKeyring } from '../utils/vaultKeyring.ts';
 import { parseVaultEnvelope, sealVaultEnvelope } from '../utils/vaultCrypto.ts';
@@ -43,10 +43,9 @@ export async function openExecutorChannel(token: string, keyring: VaultKeyring, 
 export async function openSignedExecutorChannel(token: string, keyring: VaultKeyring, expected: ExecutorDocument, key: OwnerVerifiedKey, now: bigint): Promise<string | null> {
   try {
     const {method,direction} = expected;
-    if (direction === 'request' && method === 'enrollment') return null;
     const plain = await openExecutorChannel(token,keyring,expected,now);
     if (plain === null) return null;
-    let kind = method as ExecutorKind;
+    let kind: ExecutorKind = direction === 'request' && method === 'enrollment' ? 'issuance_consent' : method as ExecutorKind;
     if (direction === 'response') kind = method === 'prepare' || method === 'action' ? 'receipt' : method === 'fence_request' ? 'fence_reply' : kind;
     const value = executorParse(plain,kind);
     if (!await executorVerify(kind,value,key)) return null;
@@ -57,10 +56,29 @@ export async function openSignedExecutorChannel(token: string, keyring: VaultKey
     let input: string, fence: string;
     if (direction === 'request') {
       input = await ownerPayloadDigest(executorCanonical(kind,value));
-      fence = method === 'prepare' ? input : method === 'fence_request' ? value.action_digest : value.prepare_digest;
+      fence = method === 'prepare' ? input : method === 'fence_request' ? value.action_digest : method === 'enrollment' ? value.selection_digest : value.prepare_digest;
     } else if (method === 'enrollment') { input = value.configuration_digest;fence = input; }
     else if (method === 'fence_request') { input = value.request_digest;fence = value.action_digest; }
     else { input = value.input_digest;fence = value.prepare_digest; }
     return input === expected.input_digest && fence === expected.fence_digest ? plain : null;
+  } catch { return null; }
+}
+
+export async function openExecutorIssuance(token: string, keyring: VaultKeyring, expected: ExecutorDocument,
+  consent: ExecutorDocument, selection: string, deviceKey: OwnerVerifiedKey, executorKey: OwnerVerifiedKey,
+  now: bigint, currentAdmission = true): Promise<string | null> {
+  try {
+    if (expected.method !== 'enrollment' || expected.direction !== 'response' ||
+        expected.input_digest !== await ownerPayloadDigest(executorCanonical('issuance_consent',consent)) ||
+        expected.fence_digest !== consent.selection_digest) return null;
+    for (const name of ['account_id','owner_bridge_id','executor_bridge_id','chain_id']) if (expected[name] !== consent[name]) return null;
+    const plain = await openExecutorChannel(token,keyring,expected,now);
+    if (plain === null) return null;
+    const bundle = executorParse(plain,'issuance_bundle');
+    const receipt = executorParse(bundle.issuance_receipt,'issuance_receipt'), enrollment = executorParse(bundle.attestation,'enrollment');
+    if (!await executorIssuanceMatches(receipt,consent,selection,bundle.configuration,enrollment,deviceKey,executorKey,now,currentAdmission)) return null;
+    const configuration = JSON.parse(bundle.configuration);
+    if (currentAdmission && configuration.executor_incarnation !== expected.executor_incarnation) return null;
+    return plain;
   } catch { return null; }
 }

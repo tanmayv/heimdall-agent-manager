@@ -57,10 +57,9 @@ open :: proc(token:string,kr:^vault.Vault_Keyring,expected:json.Object,now:i64,a
 open_signed :: proc(token:string,kr:^vault.Vault_Keyring,expected:json.Object,key:contracts.Owner_Verified_Key,
     now:i64,allocator:=context.allocator)->(string,bool) {
     method,direction:=contracts.owner_string(expected,"method"),contracts.owner_string(expected,"direction")
-    if direction=="request" && method=="enrollment" do return "",false // issuance consent contract is separate
     plain,opened:=open(token,kr,expected,now,allocator)
     if !opened do return "",false
-    kind:=method
+    kind:="issuance_consent" if direction=="request" && method=="enrollment" else method
     if direction=="response" {
         if method=="prepare" || method=="action" {kind="receipt"} else if method=="fence_request" {kind="fence_reply"}
     }
@@ -78,7 +77,7 @@ open_signed :: proc(token:string,kr:^vault.Vault_Keyring,expected:json.Object,ke
     if direction=="request" {
         input,_=contracts.executor_digest(kind,o)
         fence=contracts.owner_string(o,"prepare_digest")
-        if method=="prepare" {fence=input} else if method=="fence_request" {fence=contracts.owner_string(o,"action_digest")}
+        if method=="prepare" {fence=input} else if method=="fence_request" {fence=contracts.owner_string(o,"action_digest")} else if method=="enrollment" {fence=contracts.owner_string(o,"selection_digest")}
     } else if method=="enrollment" {
         input=contracts.owner_string(o,"configuration_digest");fence=input
     } else if method=="fence_request" {
@@ -88,5 +87,30 @@ open_signed :: proc(token:string,kr:^vault.Vault_Keyring,expected:json.Object,ke
     }
     if input!=contracts.owner_string(expected,"input_digest") || fence!=contracts.owner_string(expected,"fence_digest") do valid=false
     if !valid {crypto.zero_explicit(raw_data(plain),len(plain));delete(plain,allocator);return "",false}
+    return plain,true
+}
+
+// The caller supplies saved consent/selection and current enrolled keys.
+// Read-only historical output never authorizes a launch.
+open_issuance :: proc(token:string,kr:^vault.Vault_Keyring,expected,consent:json.Object,selection:string,
+    device_key,executor_key:contracts.Owner_Verified_Key,now:i64,current_admission:=true,allocator:=context.allocator)->(string,bool) {
+    if contracts.owner_string(expected,"method")!="enrollment" || contracts.owner_string(expected,"direction")!="response" do return "",false
+    input,_:=contracts.executor_digest("issuance_consent",consent)
+    if contracts.owner_string(expected,"input_digest")!=input ||
+       contracts.owner_string(expected,"fence_digest")!=contracts.owner_string(consent,"selection_digest") {return "",false}
+    for name in ([4]string{"account_id","owner_bridge_id","executor_bridge_id","chain_id"}) {
+        if contracts.owner_string(expected,name)!=contracts.owner_string(consent,name) do return "",false
+    }
+    plain,opened:=open(token,kr,expected,now,allocator)
+    if !opened do return "",false
+    bundle,valid:=contracts.executor_parse(plain,"issuance_bundle")
+    receipt,r_ok:=contracts.executor_parse(contracts.owner_string(bundle,"issuance_receipt"),"issuance_receipt")
+    enrollment,e_ok:=contracts.executor_parse(contracts.owner_string(bundle,"attestation"),"enrollment")
+    config,c_ok:=contracts.owner_parse(contracts.owner_string(bundle,"configuration"),"remote_configuration")
+    if !valid || !r_ok || !e_ok || !c_ok ||
+       !contracts.executor_issuance_matches(receipt,consent,selection,contracts.owner_string(bundle,"configuration"),enrollment,device_key,executor_key,now,current_admission) ||
+       (current_admission && contracts.owner_string(config,"executor_incarnation")!=contracts.owner_string(expected,"executor_incarnation")) {
+        crypto.zero_explicit(raw_data(plain),len(plain));delete(plain,allocator);return "",false
+    }
     return plain,true
 }

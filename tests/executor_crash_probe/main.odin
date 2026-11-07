@@ -29,13 +29,42 @@ key :: proc(id,key_id:string,scalar:u8)->(ecdsa.Private_Key,contracts.Owner_Veri
     pub:[65]byte;ecdsa.private_key_public_bytes(&private,pub[:])
     return private,contracts.Owner_Verified_Key{"account",id,key_id,vault.hex_encode_lower(pub[:],context.temp_allocator),"bridge",true,false}
 }
+issuance_sign :: proc(ctx:rawptr,kind:string,o:json.Object)->(string,bool) {
+    canonical,valid:=contracts.executor_canonical(kind,o)
+    if !valid do return "",false
+    signature,ok:=vault.sign_p256((^ecdsa.Private_Key)(ctx),transmute([]byte)canonical)
+    return vault.hex_encode_lower(signature.sig[:],context.temp_allocator),ok
+}
 main :: proc() {
     context.allocator=context.temp_allocator
-    require(len(os.args)==4,"usage: executor-crash-probe seed|verify path prepare|activate|launch")
+    require(len(os.args)==4,"usage: executor-crash-probe seed|verify path issuance|prepare|activate|launch")
     mode,path,stage:=os.args[1],os.args[2],os.args[3]
     host_private,host:=key("executor","operator",1);owner_private,owner:=key("owner1","owner1",2)
     s:executor.Store
     require(executor.open(&s,path,"account","executor","operator"),"open")
+    if stage=="issuance" {
+        device_private,device:=key("owner2","owner2",3);device.kind="device"
+        if mode=="seed" {
+            require(executor.install_policy(&s,sign(doc("policy"),"policy",&host_private),host,1000).code=="ok","issuance policy")
+            require(executor.install_directory(&s,sign(doc("directory"),"directory",&host_private),host,1000,"/repo").code=="ok","issuance mapping")
+            selection:=executor.encode(doc("issuance_selection"));consent:=doc("issuance_consent")
+            set(consent,"selection_digest",contracts.owner_payload_digest(selection))
+            resources:=executor.Issuance_Resources{contracts.owner_payload_digest(selection),executor.directory_key("executor","/repo"),"/repo",true}
+            result:=executor.issue(&s,sign(consent,"issuance_consent",&device_private),selection,device,host,1100,resources,executor.Signer{&host_private,issuance_sign})
+            require(result.code=="ok","issue commit")
+            fmt.println("COMMITTED",stage)
+            time.sleep(time.Minute);os.exit(2)
+        }
+        rows,ok:=executor.query(s.db,"SELECT consent,selection,result_json,configuration,token_secret FROM executor_issuances")
+        require(ok && len(rows)==1,"one committed issuance survives crash")
+        replay:=executor.issue(&s,rows[0][0],rows[0][1],device,host,5000,{},{})
+        require(replay.code=="ok" && replay.replay && replay.body==rows[0][2],"original issuance exact replay after expiry/restart")
+        config,valid:=contracts.owner_parse(rows[0][3],"remote_configuration")
+        require(valid && contracts.owner_string(config,"executor_incarnation")=="1" && contracts.owner_string(config,"token_generation")==contracts.owner_payload_digest(rows[0][4]),"physical identity and credential unchanged")
+        count,_:=executor.query(s.db,"SELECT (SELECT count(*) FROM executor_reservations),(SELECT count(*) FROM executor_intents)")
+        require(count[0][0]=="0" && count[0][1]=="0","issuance never creates reservation or launch")
+        executor.close(&s);fmt.println("PASS",stage);return
+    }
     p:=doc("prepare");raw:=sign(p,"prepare",&owner_private)
     resolved:=executor.Resolved_Resources{contracts.owner_string(p,"directory_key"),"default","instance","1"}
     digest,_:=contracts.executor_digest("prepare",p)

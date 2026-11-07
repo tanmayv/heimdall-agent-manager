@@ -160,3 +160,35 @@ owner_local_list_handler :: proc(ctx:rawptr,req:Request)->Response {
     if terminal do cursor={}
     return respond_success(owner_json(Owner_Listing_Page{out[:],cursor,terminal}),req.request_id,auth_ctx_server_time(req))
 }
+
+Executor_Issuance_Command :: struct {
+    type,command_id,account_id,relay:string,
+    directory:vault.Directory_Verification_Input,
+}
+// The Hub transports opaque bytes and enrolled directory evidence only. The
+// executor verifies device consent and owns identity allocation; no task state
+// is granted or changed here.
+executor_issuance_relay_handler :: proc(ctx:rawptr,req:Request)->Response {
+    context.allocator=context.temp_allocator
+    h:=(^Bridge_Handlers)(ctx)
+    auth,ok,resp:=require_auth(h.auth,req)
+    if !ok do return resp
+    if !contracts.is_user_auth(auth) do return respond_error(domain.domain_error(.Forbidden,"user authentication required"),req.request_id)
+    relay,valid:=contracts.owner_parse(req.body,"relay")
+    if !valid do return respond_error(domain.domain_error(.Validation_Failed,"invalid executor relay"),req.request_id)
+    bridge_id:=contracts.owner_string(relay,"bridge_id")
+    expires,_:=strconv.parse_i64(contracts.owner_string(relay,"expires_ms"))
+    now:=time.to_unix_nanoseconds(time.now())/1000000
+    if expires<=now || expires-now>60000 do return respond_error(domain.domain_error(.Validation_Failed,"relay expired"),req.request_id)
+    bridge,owned,err:=bridge_service.get_bridge(h.bridges,auth,bridge_id)
+    if !owned do return respond_error(err,req.request_id)
+    if bridge.status!=.Online || !project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry,bridge_id) do return respond_success(`{"code":"executor_unavailable"}`,req.request_id,auth_ctx_server_time(req))
+    directory,available:=owner_directory(h,auth.user_id)
+    if !available do return respond_error(domain.domain_error(.Forbidden,"current directory unavailable"),req.request_id)
+    id:=fmt.tprintf("cmd_executor_issuance_%d",time.to_unix_nanoseconds(time.now()))
+    command:=Executor_Issuance_Command{"executor_issuance",id,auth.user_id,req.body,directory}
+    reply,received,rerr:=bridge_runtime.send_runtime_command_wait(h.bridge_runtime_registry,project_service.Runtime_Command{bridge_id=bridge_id,command_id=id,body_json=owner_json(command)},10000)
+    if !received do return respond_error(rerr,req.request_id)
+    defer delete(reply,runtime.default_allocator())
+    return respond_success(reply,req.request_id,auth_ctx_server_time(req))
+}

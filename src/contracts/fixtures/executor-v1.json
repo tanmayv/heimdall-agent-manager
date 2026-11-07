@@ -47,6 +47,30 @@
       "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"owner_bridge_id\":\"owner1\",\"executor_bridge_id\":\"executor\",\"chain_id\":\"chain\",\"reservation_id\":\"reservation\",\"request_id\":\"rpc_1\",\"method\":\"prepare\",\"direction\":\"request\",\"input_digest\":\"111554cc3fd15e8a53597b2018b87a4ea91398c9d192532e79614852ce396772\",\"fence_digest\":\"111554cc3fd15e8a53597b2018b87a4ea91398c9d192532e79614852ce396772\",\"owner_incarnation\":\"1\",\"executor_incarnation\":\"1\",\"issued_ms\":\"1000\",\"request_expires_ms\":\"2000\"}",
       "canonical": "heimdall-executor/transport_scope/v1\n1:1,7:account,6:owner1,8:executor,5:chain,11:reservation,5:rpc_1,7:prepare,7:request,64:111554cc3fd15e8a53597b2018b87a4ea91398c9d192532e79614852ce396772,64:111554cc3fd15e8a53597b2018b87a4ea91398c9d192532e79614852ce396772,1:1,1:1,4:1000,4:2000,",
       "digest": "7fd115638ecc76dc22b4e3b4522c84375c9ae02898c7f388c9249a224119fc9b"
+    },
+    {
+      "kind": "issuance_selection",
+      "raw": "{\"provider\":\"codex\",\"model\":\"模型🚀\",\"provider_profile\":\"default\",\"directory_id\":\"remote_dir\",\"policy_revision\":\"1\",\"slot_id\":\"slot1\"}",
+      "canonical": "heimdall-executor/issuance_selection/v1\n5:codex,10:模型🚀,7:default,10:remote_dir,1:1,5:slot1,",
+      "digest": "46c28b848d661b1182f9d33294725cfd45ed25bcd8ca0dd1cdec4a0054c08f73"
+    },
+    {
+      "kind": "issuance_consent",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"owner_bridge_id\":\"owner1\",\"executor_bridge_id\":\"executor\",\"executor_key_id\":\"operator\",\"chain_id\":\"chain\",\"task_id\":\"task\",\"agent_id\":\"author\",\"configuration_revision\":\"1\",\"operation_id\":\"issuance\",\"principal_id\":\"owner2\",\"selection_digest\":\"140715a854ee967b922e99f5d3e9ff66acff27b2baf61ac5a3f1cdde6de6d3a6\",\"issued_ms\":\"1000\",\"request_expires_ms\":\"2000\",\"key_id\":\"owner2\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}",
+      "canonical": "heimdall-executor/issuance_consent/v1\n1:1,7:account,6:owner1,8:executor,8:operator,5:chain,4:task,6:author,1:1,8:issuance,6:owner2,64:140715a854ee967b922e99f5d3e9ff66acff27b2baf61ac5a3f1cdde6de6d3a6,4:1000,4:2000,6:owner2,",
+      "digest": "d217faebc2b3de1987a96d4e3793f3427cc8e4e4a6593f3aa0aeae44656b902b"
+    },
+    {
+      "kind": "issuance_receipt",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"owner_bridge_id\":\"owner1\",\"executor_bridge_id\":\"executor\",\"chain_id\":\"chain\",\"task_id\":\"task\",\"operation_id\":\"issuance\",\"principal_id\":\"owner2\",\"request_digest\":\"d217faebc2b3de1987a96d4e3793f3427cc8e4e4a6593f3aa0aeae44656b902b\",\"configuration_digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"enrollment_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"issued_ms\":\"1100\",\"request_expires_ms\":\"2000\",\"key_id\":\"operator\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}",
+      "canonical": "heimdall-executor/issuance_receipt/v1\n1:1,7:account,6:owner1,8:executor,5:chain,4:task,8:issuance,6:owner2,64:d217faebc2b3de1987a96d4e3793f3427cc8e4e4a6593f3aa0aeae44656b902b,64:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,64:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,4:1100,4:2000,8:operator,",
+      "digest": "4c81affccfad7b0c476608fd7593503cadec7490d647e3604d3d2985a9b263ff"
+    },
+    {
+      "kind": "directory",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"directory_id\":\"remote_dir\",\"revision\":\"1\",\"directory_path\":\"/repo\",\"enabled\":\"1\",\"key_id\":\"operator\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}",
+      "canonical": "heimdall-executor/directory/v1\n1:1,7:account,8:executor,10:remote_dir,1:1,5:/repo,1:1,8:operator,",
+      "digest": "1051b7619745d97e787878360719b51f6ccb4411b908f1d50cd40819c0855afa"
     }
   ],
   "invalid": [
@@ -219,6 +243,56 @@
       "kind": "transport_scope",
       "name": "transport rejects reservation_id",
       "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"owner_bridge_id\":\"owner1\",\"executor_bridge_id\":\"executor\",\"chain_id\":\"chain\",\"reservation_id\":\"\",\"request_id\":\"rpc_1\",\"method\":\"prepare\",\"direction\":\"request\",\"input_digest\":\"111554cc3fd15e8a53597b2018b87a4ea91398c9d192532e79614852ce396772\",\"fence_digest\":\"111554cc3fd15e8a53597b2018b87a4ea91398c9d192532e79614852ce396772\",\"owner_incarnation\":\"1\",\"executor_incarnation\":\"1\",\"issued_ms\":\"1000\",\"request_expires_ms\":\"2000\"}"
+    },
+    {
+      "name": "issuance selector cannot supply token",
+      "kind": "issuance_selection",
+      "raw": "{\"provider\": \"codex\", \"model\": \"\\u6a21\\u578b\\ud83d\\ude80\", \"provider_profile\": \"default\", \"directory_id\": \"remote_dir\", \"policy_revision\": \"1\", \"slot_id\": \"slot1\", \"token_generation\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}"
+    },
+    {
+      "name": "issuance selector cannot supply path",
+      "kind": "issuance_selection",
+      "raw": "{\"provider\": \"codex\", \"model\": \"\\u6a21\\u578b\\ud83d\\ude80\", \"provider_profile\": \"default\", \"directory_id\": \"remote_dir\", \"policy_revision\": \"1\", \"slot_id\": \"slot1\", \"directory_path\": \"/caller\"}"
+    },
+    {
+      "name": "issuance consent lifetime",
+      "kind": "issuance_consent",
+      "raw": "{\"protocol_version\": \"1\", \"account_id\": \"account\", \"owner_bridge_id\": \"owner1\", \"executor_bridge_id\": \"executor\", \"executor_key_id\": \"operator\", \"chain_id\": \"chain\", \"task_id\": \"task\", \"agent_id\": \"author\", \"configuration_revision\": \"1\", \"operation_id\": \"issuance\", \"principal_id\": \"owner2\", \"selection_digest\": \"140715a854ee967b922e99f5d3e9ff66acff27b2baf61ac5a3f1cdde6de6d3a6\", \"issued_ms\": \"1000\", \"request_expires_ms\": \"301001\", \"key_id\": \"owner2\", \"signature\": \"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}"
+    },
+    {
+      "name": "issuance consent duplicate principal",
+      "kind": "issuance_consent",
+      "raw": "{\"protocol_version\": \"1\", \"account_id\": \"account\", \"owner_bridge_id\": \"owner1\", \"executor_bridge_id\": \"executor\", \"executor_key_id\": \"operator\", \"chain_id\": \"chain\", \"task_id\": \"task\", \"agent_id\": \"author\", \"configuration_revision\": \"1\", \"operation_id\": \"issuance\", \"principal_id\": \"owner2\", \"selection_digest\": \"140715a854ee967b922e99f5d3e9ff66acff27b2baf61ac5a3f1cdde6de6d3a6\", \"issued_ms\": \"1000\", \"request_expires_ms\": \"2000\", \"key_id\": \"owner2\", \"signature\": \"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\",\"principal_id\":\"other\"}"
+    },
+    {
+      "name": "issuance selector label control",
+      "kind": "issuance_selection",
+      "raw": "{\"provider\": \"codex\", \"model\": \"bad\\nmodel\", \"provider_profile\": \"default\", \"directory_id\": \"remote_dir\", \"policy_revision\": \"1\", \"slot_id\": \"slot1\"}"
+    },
+    {
+      "name": "issuance selector label size",
+      "kind": "issuance_selection",
+      "raw": "{\"provider\": \"codex\", \"model\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"provider_profile\": \"default\", \"directory_id\": \"remote_dir\", \"policy_revision\": \"1\", \"slot_id\": \"slot1\"}"
+    },
+    {
+      "name": "directory empty",
+      "kind": "directory",
+      "raw": "{\"protocol_version\": \"1\", \"account_id\": \"account\", \"executor_bridge_id\": \"executor\", \"directory_id\": \"remote_dir\", \"revision\": \"1\", \"directory_path\": \"\", \"enabled\": \"1\", \"key_id\": \"operator\", \"signature\": \"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}"
+    },
+    {
+      "name": "directory relative",
+      "kind": "directory",
+      "raw": "{\"protocol_version\": \"1\", \"account_id\": \"account\", \"executor_bridge_id\": \"executor\", \"directory_id\": \"remote_dir\", \"revision\": \"1\", \"directory_path\": \"repo\", \"enabled\": \"1\", \"key_id\": \"operator\", \"signature\": \"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}"
+    },
+    {
+      "name": "directory traversal",
+      "kind": "directory",
+      "raw": "{\"protocol_version\": \"1\", \"account_id\": \"account\", \"executor_bridge_id\": \"executor\", \"directory_id\": \"remote_dir\", \"revision\": \"1\", \"directory_path\": \"/repo/../other\", \"enabled\": \"1\", \"key_id\": \"operator\", \"signature\": \"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}"
+    },
+    {
+      "name": "directory backslash",
+      "kind": "directory",
+      "raw": "{\"protocol_version\": \"1\", \"account_id\": \"account\", \"executor_bridge_id\": \"executor\", \"directory_id\": \"remote_dir\", \"revision\": \"1\", \"directory_path\": \"/repo\\\\other\", \"enabled\": \"1\", \"key_id\": \"operator\", \"signature\": \"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}"
     }
   ]
 }

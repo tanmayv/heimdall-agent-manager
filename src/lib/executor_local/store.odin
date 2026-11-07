@@ -49,10 +49,11 @@ open :: proc(s:^Store,path,account,executor,operator_key:string)->bool {
     if len(tables)==0 {
         existing,read:=query(s.db,"SELECT name FROM sqlite_master WHERE type='table'")
         if !read || len(existing)>0 || !exec(s.db,string(#load("schema.sql"))) do return false
-        if _,written:=query(s.db,"INSERT INTO executor_runtime VALUES(1,1,?,?,?,1,0,'ready',0,0)",account,executor,operator_key);!written do return false
+        if _,written:=query(s.db,"INSERT INTO executor_runtime VALUES(1,2,?,?,?,1,0,'ready',0,0)",account,executor,operator_key);!written do return false
     } else {
         rows,read:=query(s.db,"SELECT schema_version,account_id,executor_bridge_id,operator_key_id,incarnation FROM executor_runtime WHERE singleton=1")
-        if !read || len(rows)!=1 || rows[0][0]!="1" || rows[0][1]!=account || rows[0][2]!=executor || rows[0][3]!=operator_key || number(rows[0][4])==0x7fffffffffffffff do return false
+        if !read || len(rows)!=1 || (rows[0][0]!="1" && rows[0][0]!="2") || rows[0][1]!=account || rows[0][2]!=executor || rows[0][3]!=operator_key || number(rows[0][4])==0x7fffffffffffffff do return false
+        if rows[0][0]=="1" && !exec(s.db,string(#load("migration_002.sql"))) do return false
         if !exec(s.db,"UPDATE executor_runtime SET incarnation=incarnation+1,recovery_state='reconciling'; UPDATE executor_reservations SET state='released' WHERE state='prepared';") do return false
     }
     rows,read:=query(s.db,"SELECT incarnation FROM executor_runtime WHERE singleton=1")

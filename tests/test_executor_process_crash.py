@@ -13,7 +13,7 @@ class ExecutorProcessCrash(unittest.TestCase):
     def test_committed_boundaries_survive_sigkill_without_reissuing_launch(self):
         cache = Path.home() / ".cache" / "heimdall-tests"
         cache.mkdir(parents=True, exist_ok=True)
-        for stage in ("prepare", "activate", "launch"):
+        for stage in ("issuance", "prepare", "activate", "launch"):
             with self.subTest(stage=stage), tempfile.TemporaryDirectory(prefix="executor-crash-", dir=cache) as directory:
                 path = str(Path(directory) / "executor.sqlite")
                 child = subprocess.Popen([PROBE, "seed", path, stage], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
