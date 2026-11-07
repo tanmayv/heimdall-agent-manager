@@ -102,6 +102,7 @@ Bridge_Dispatch_Worker :: struct {
 	sink_conn: ws.Connection,
 	current_generation: i64,
 	current_command_id: string,
+	current_input_digest: string,
 	current_legacy_action: executor.Legacy_Action,
 	last_result: string,
 	output_failed: bool,
@@ -656,7 +657,7 @@ bridge_command_dispatch :: proc(conn: ^ws.Connection, text: string, generation: 
 	return true
 }
 
-bridge_command_dispatch_take :: proc(class: Bridge_Command_Class) -> (Bridge_Dispatch_Job, bool) {
+bridge_command_dispatch_take :: proc(class: Bridge_Command_Class,worker:^Bridge_Dispatch_Worker=nil) -> (Bridge_Dispatch_Job, bool) {
 	sync.mutex_lock(&bridge_dispatch_mu)
 	defer sync.mutex_unlock(&bridge_dispatch_mu)
 	queue: ^[dynamic]Bridge_Dispatch_Job
@@ -673,11 +674,25 @@ bridge_command_dispatch_take :: proc(class: Bridge_Command_Class) -> (Bridge_Dis
 	job, ok := bridge_command_dispatch_take_queue_locked(queue)
 	if !ok do return job, false
 	if i := bridge_command_dispatch_claim_index_locked(job.command_id); i >= 0 do bridge_dispatch_claims[i].state = .Running
+	if worker!=nil do bridge_command_dispatch_bind_worker_locked(worker,job)
 	bridge_dispatch_observation_changed_locked()
 	now_ns := time.to_unix_nanoseconds(time.now())
 	wait_ms := (now_ns - job.enqueued_ns) / i64(time.Millisecond)
 	bridge_dispatch_metrics.max_queue_wait_ms = max(bridge_dispatch_metrics.max_queue_wait_ms, wait_ms)
 	return job, true
+}
+
+// Transfer the actual owned job and its retained native occurrence in the same
+// critical section as queue removal/claim transition. Inventory never observes
+// a running claim with no corresponding worker ownership.
+bridge_command_dispatch_bind_worker_locked :: proc(worker:^Bridge_Dispatch_Worker,job:Bridge_Dispatch_Job) {
+    worker.current_generation=job.generation
+    worker.current_command_id=strings.clone(job.command_id,runtime.default_allocator())
+    worker.current_input_digest=strings.clone(contracts.owner_payload_digest(job.text),runtime.default_allocator())
+    worker.current_legacy_action=job.legacy_action
+    worker.enqueued_ns=job.enqueued_ns
+    worker.started_ns=time.to_unix_nanoseconds(time.now())
+    worker.deadline_ns=job.deadline_ns
 }
 
 bridge_command_dispatch_take_queue_locked :: proc(queue: ^[dynamic]Bridge_Dispatch_Job) -> (Bridge_Dispatch_Job, bool) {
@@ -733,7 +748,6 @@ bridge_command_dispatch_finish :: proc(worker: ^Bridge_Dispatch_Worker, job: ^Br
 		bridge_dispatch_claims[i].state = .Completed
 		delete(bridge_dispatch_claims[i].input_digest, runtime.default_allocator())
 		bridge_dispatch_claims[i].input_digest = ""
-		bridge_dispatch_observation_changed_locked()
 		delete(bridge_dispatch_claims[i].result_json, runtime.default_allocator())
 		bridge_dispatch_claims[i].result_json=""
 		if job.command_type!="mcp_transform" do bridge_dispatch_claims[i].result_json = strings.clone(worker.last_result, runtime.default_allocator())
@@ -747,6 +761,8 @@ bridge_command_dispatch_finish :: proc(worker: ^Bridge_Dispatch_Worker, job: ^Br
 	}
 	delete(worker.current_command_id, runtime.default_allocator())
 	worker.current_command_id = ""
+	delete(worker.current_input_digest,runtime.default_allocator())
+	worker.current_input_digest=""
 	worker.current_legacy_action = {}
 	delete(worker.last_result, runtime.default_allocator())
 	worker.last_result = ""
@@ -755,6 +771,7 @@ bridge_command_dispatch_finish :: proc(worker: ^Bridge_Dispatch_Worker, job: ^Br
 	worker.enqueued_ns = 0
 	worker.started_ns = 0
 	worker.deadline_ns = 0
+	bridge_dispatch_observation_changed_locked()
 	sync.mutex_unlock(&bridge_dispatch_mu)
 	if job.command_type=="mcp_transform" && job.text!="" do crypto.zero_explicit(raw_data(job.text),len(job.text))
 	delete(job.text, runtime.default_allocator())
@@ -766,18 +783,11 @@ bridge_command_dispatch_finish :: proc(worker: ^Bridge_Dispatch_Worker, job: ^Br
 bridge_command_dispatch_worker :: proc(data: rawptr) {
 	worker := (^Bridge_Dispatch_Worker)(data)
 	for {
-		job, ok := bridge_command_dispatch_take(worker.class)
+		job, ok := bridge_command_dispatch_take(worker.class,worker)
 		if !ok {
 			time.sleep(5 * time.Millisecond)
 			continue
 		}
-		sync.mutex_lock(&bridge_dispatch_mu)
-		worker.current_generation = job.generation
-		worker.current_command_id = strings.clone(job.command_id, runtime.default_allocator())
-		worker.enqueued_ns = job.enqueued_ns
-		worker.started_ns = time.to_unix_nanoseconds(time.now())
-		worker.deadline_ns = job.deadline_ns
-		sync.mutex_unlock(&bridge_dispatch_mu)
 		ran := false
 		if bridge_legacy_dispatch_job_stale(job) {
 			// Completion is generation-scoped; the outbox will suppress this
@@ -793,6 +803,7 @@ bridge_command_dispatch_worker :: proc(data: rawptr) {
 			ran = true
 			sync.mutex_lock(&bridge_dispatch_mu)
 			worker.current_legacy_action = job.legacy_action
+			bridge_dispatch_observation_changed_locked()
 			sync.mutex_unlock(&bridge_dispatch_mu)
 			bridge_hub_handle_command(&worker.sink_conn, job.text)
 		} else {

@@ -1,6 +1,7 @@
 package main
 
 import "core:encoding/json"
+import "core:fmt"
 import "core:sync"
 import contracts "odin_test:contracts"
 import executor "odin_test:lib/executor_local"
@@ -68,6 +69,12 @@ bridge_legacy_dispatch_start :: proc(job:^Bridge_Dispatch_Job,injected:^executor
         if !prepared do return false
         job.legacy_action=action
     }
+    // The transferred occurrence must still describe the actual worker bytes;
+    // a valid action from a different packet is not interchangeable evidence.
+    sync.mutex_lock(&store.mutex)
+    rows,read:=executor.query(store.db,"SELECT command_kind,packet_digest FROM executor_legacy_actions WHERE action_id=? AND observed_incarnation=?",fmt.tprintf("%d",job.legacy_action.id),fmt.tprintf("%d",job.legacy_action.incarnation))
+    sync.mutex_unlock(&store.mutex)
+    if !read || len(rows)!=1 || rows[0][0]!=job.command_type || rows[0][1]!=contracts.owner_payload_digest(job.text) do return false
     started:=executor.legacy_action_transition(store,job.legacy_action,"prepared","running")
     return started.code=="ok" && !started.replay
 }

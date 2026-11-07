@@ -18,6 +18,9 @@ bridge_legacy_dispatch_journals_original_occurrences_and_refuses_unrecorded_star
     append(&queue,Bridge_Dispatch_Job{legacy_action=action,text=packet,command_id="bridge_synthetic_id",command_type="wake_agent"})
     job,taken:=bridge_command_dispatch_take_queue_locked(&queue)
     testing.expect(t,taken && job.legacy_action==action,"taking a job preserves its exact native observation identity")
+    job.text=`{"type":"wake_agent","payload":{"run":[],"stop":["retargeted"]}}`
+    testing.expect(t,!bridge_legacy_dispatch_start(&job,store),"valid occurrence cannot be swapped onto different worker bytes")
+    job.text=packet
     testing.expect(t,bridge_legacy_dispatch_start(&job,store))
     testing.expect(t,!bridge_legacy_dispatch_start(&job,store),"historical state replay cannot admit another invocation")
     testing.expect(t,bridge_legacy_dispatch_end(job.legacy_action,true,store))

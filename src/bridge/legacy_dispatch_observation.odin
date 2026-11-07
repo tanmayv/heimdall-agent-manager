@@ -67,7 +67,28 @@ bridge_legacy_dispatch_snapshot_locked :: proc()->Bridge_Legacy_Dispatch_Snapsho
         append(&jobs,Job{job.command_id,digest,job.generation,job.legacy_ingress,job.legacy_action})
     }
     if snapshot.queued!=len(jobs) do snapshot.valid=false
-    bytes,err:=json.marshal(struct{claims:[]Entry,jobs:[]Job}{entries[:],jobs[:]},allocator=context.temp_allocator)
+    // The running claim projection must agree with actual worker ownership.
+    // Includes the take->handler and handler->finish intervals, not only jobs
+    // whose native handler is already executing.
+    Worker :: struct {id,digest:string,generation:i64,action:executor.Legacy_Action}
+    workers:=make([dynamic]Worker,context.temp_allocator)
+    worker_seen:=make(map[string]bool,context.temp_allocator)
+    for worker in bridge_dispatch_workers {
+        if worker.current_command_id=="" do continue
+        id:=worker.current_command_id
+        if worker_seen[id] || !contracts.owner_hex(worker.current_input_digest,64) do snapshot.valid=false
+        worker_seen[id]=true
+        claim_index:=bridge_command_dispatch_claim_index_locked(id)
+        if claim_index<0 {
+            snapshot.valid=false
+        } else {
+            claim:=bridge_dispatch_claims[claim_index]
+            if claim.state!=.Running || claim.input_digest!=worker.current_input_digest do snapshot.valid=false
+        }
+        append(&workers,Worker{id,worker.current_input_digest,worker.current_generation,worker.current_legacy_action})
+    }
+    if snapshot.running!=len(workers) do snapshot.valid=false
+    bytes,err:=json.marshal(struct{claims:[]Entry,jobs:[]Job,workers:[]Worker}{entries[:],jobs[:],workers[:]},allocator=context.temp_allocator)
     if err!=nil {snapshot.valid=false;return snapshot}
     snapshot.digest=contracts.owner_payload_digest(string(bytes))
     return snapshot
