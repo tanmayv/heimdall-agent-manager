@@ -12,15 +12,17 @@ import vault "odin_test:lib/vault"
 // always resolves argv and the endpoint from local catalog/configuration.
 Executor_Launch_IO :: struct {
     ctx:rawptr,
-    prepare:proc(rawptr,^executor.Store,executor.Intent,i64)->(Pty_Host_Spawn_Request,bool),
+    prepare:proc(rawptr,^executor.Store,executor.Intent,i64)->(Pty_Host_Spawn_Request,string,bool),
     socket:string,
 }
-bridge_executor_startup_prepare :: proc(_:rawptr,s:^executor.Store,intent:executor.Intent,now:i64)->(Pty_Host_Spawn_Request,bool) {
+bridge_executor_startup_prepare :: proc(_:rawptr,s:^executor.Store,intent:executor.Intent,now:i64)->(Pty_Host_Spawn_Request,string,bool) {
     sync.mutex_lock(&bridge_runtime_mutex)
     endpoint,ready:=bridge_runtime_ensure_local_endpoint()
     sync.mutex_unlock(&bridge_runtime_mutex)
-    if !ready do return {},false
-    return bridge_executor_prepare_spawn(s,intent,now,endpoint)
+    if !ready do return {},"",false
+    pin:string
+    request,built:=bridge_executor_prepare_spawn(s,intent,now,endpoint,&pin)
+    return request,pin,built
 }
 Executor_Physical_Fence :: struct {
     proof:executor.Current_Owner_Fence,
@@ -68,13 +70,10 @@ bridge_executor_activate_dispatch :: proc(s:^executor.Store,action_raw:string,ex
         return delivered && reason=="child_present",reason
     }
     if io.prepare==nil || fence_exchange==nil do return false,"startup_unavailable"
-    sync.rw_mutex_shared_lock(&bridge_launch_configuration_mutex)
-    resource_pin,pinned:=bridge_executor_launch_resource_pin(s,intent,now)
-    sync.rw_mutex_shared_unlock(&bridge_launch_configuration_mutex)
-    if !pinned do return false,"invalid_resources"
-    request,ready:=io.prepare(io.ctx,s,intent,now)
+    request,resource_pin,ready:=io.prepare(io.ctx,s,intent,now)
     if !ready do return false,"spawn_prepare_failed"
     defer bridge_pty_host_spawn_request_delete(request)
+    if resource_pin=="" do return false,"invalid_resources"
     pending,challenged:=executor.fence_challenge(s,action_raw,contracts.owner_string(exchange,"intent_id"),
         contracts.executor_number(exchange,"claim_attempt"),owner_key,self,bridge_executor_physical_clock(nil),{nil,bridge_executor_sign})
     if !challenged do return false,"owner_fence_not_current"

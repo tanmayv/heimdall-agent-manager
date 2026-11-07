@@ -66,7 +66,7 @@ deferred_retirement_test :: proc(t:^testing.T,legacy:bool) {
           CREATE TRIGGER local_events_no_update BEFORE UPDATE ON local_events BEGIN SELECT RAISE(ABORT,'immutable event'); END;`))
         prefix:=string(MIGRATION_014);prefix=prefix[:strings.index(prefix,"CREATE TABLE local_task_retirements")]
         if !testing.expect(t,exec(db,prefix)) do return
-        testing.expect(t,exec(db,"UPDATE schema_migrations SET version=14"))
+        testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=14"))
         testing.expect_value(t,sqlite3_close(db),0)
     }
     testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))

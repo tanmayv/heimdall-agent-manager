@@ -200,6 +200,11 @@ control_intents :: proc(tx:^Transaction,c:json.Object,seq:i64) -> bool {
     rows,ok:=query(tx.store.db,"SELECT child_json,kind,task_id FROM control_notices WHERE principal_id=? AND operation_id=?",field(c,"principal_id"),field(c,"operation_id"))
     if !ok do return false
     for row in rows {
+        if row[1]=="stop" {
+            handled,ok:=execution_stop_intent(tx,c,row[0],seq,row[2])
+            if !ok do return false
+            if handled do continue
+        }
         if row[1]=="checkpoint" {
             handled,ok:=execution_notification_intent(tx,c,row[0],seq)
             if !ok do return false

@@ -210,7 +210,7 @@ grants_v7_upgrade_bounds_legacy_authority_and_rolls_back_collision_and_commit_fa
     prefix:=string(MIGRATION_007)
     prefix=prefix[:strings.index(prefix,"CREATE TABLE local_controls")]
     testing.expect(t,exec(db,prefix))
-    testing.expect(t,exec(db,"UPDATE schema_migrations SET version=7; CREATE INDEX local_review_holder ON local_review_sessions(json_extract(child,'$.instance')); UPDATE local_grants SET revision=revision+1,expires_ms=9223372036854775807; CREATE VIEW local_grant_policy AS SELECT 1;"))
+    testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=7; CREATE INDEX local_review_holder ON local_review_sessions(json_extract(child,'$.instance')); UPDATE local_grants SET revision=revision+1,expires_ms=9223372036854775807; CREATE VIEW local_grant_policy AS SELECT 1;"))
     testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
@@ -229,7 +229,7 @@ grants_v7_upgrade_bounds_legacy_authority_and_rolls_back_collision_and_commit_fa
     testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     rows,_=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT expires_ms FROM local_grants),(SELECT count(*) FROM local_grant_policy),(SELECT body FROM tasks),(SELECT count(*) FROM command_receipts) FROM runtime_database")
-    testing.expect(t,rows[0][0]=="27" && rows[0][1]=="27" && number(rows[0][2])==1000+GRANT_MAX_TTL_MS && rows[0][3]=="0" && rows[0][4]=="private body" && rows[0][5]=="2")
+    testing.expect(t,rows[0][0]=="28" && rows[0][1]=="28" && number(rows[0][2])==1000+GRANT_MAX_TTL_MS && rows[0][3]=="0" && rows[0][4]=="private body" && rows[0][5]=="2")
 }
 
 @(test)

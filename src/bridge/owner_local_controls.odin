@@ -15,6 +15,14 @@ bridge_owner_control_notice :: proc(s:^owner.Store,claim:owner.Intent_Claim) -> 
     now:=time.to_unix_nanoseconds(time.now())/1000000
     expected:owner.Child
     if json.unmarshal_string(claim.fence,&expected,.JSON,context.temp_allocator)!=nil do return false,"malformed_child",now
+    if s==nil do return false,"owner_store_required",now
+    remote,remote_read:=owner.query(s.db,"SELECT prepare_json FROM owner_execution_journal WHERE child_json=? AND state='committed'",claim.fence)
+    if !remote_read do return false,"storage_error",now
+    for row in remote {
+        prepared,valid:=contracts.executor_parse(row[0],"prepare")
+        if !valid do return false,"malformed_child",now
+        if contracts.owner_string(prepared,"executor_bridge_id")!=s.owner do return false,"remote_child_requires_executor",now
+    }
     sync.mutex_lock(&bridge_startup_io_mutex);defer sync.mutex_unlock(&bridge_startup_io_mutex)
     sync.mutex_lock(&bridge_local_token_mutex)
     inst,found:=bridge_runtime_instance_snapshot(expected.instance)

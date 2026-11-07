@@ -15,7 +15,7 @@ work_v22_upgrade_collision_and_deferred_commit_preserve_live_authority :: proc(t
     prefix:=string(MIGRATION_022);prefix=prefix[:strings.index(prefix,"CREATE TABLE local_chain_member_versions")]
     testing.expect(t,exec(db,V23_TEST_DROP))
     testing.expect(t,exec(db,prefix))
-    testing.expect(t,exec(db,"UPDATE schema_migrations SET version=22; CREATE VIEW local_work_chains AS SELECT 1"))
+    testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=22; CREATE VIEW local_work_chains AS SELECT 1"))
     testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)

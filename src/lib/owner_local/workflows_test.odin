@@ -119,7 +119,7 @@ workflow_v8_upgrade_collision_and_commit_failure_preserve_live_capability :: pro
     testing.expect(t,exec(db,V9_TEST_DROP))
     prefix:=string(MIGRATION_008);prefix=prefix[:strings.index(prefix,"-- Existing profiles")]
     testing.expect(t,exec(db,prefix))
-    testing.expect(t,exec(db,"UPDATE schema_migrations SET version=8; CREATE INDEX local_review_holder ON local_review_sessions(json_extract(child,'$.instance')); CREATE VIEW local_workflow_runs AS SELECT 1;"))
+    testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=8; CREATE INDEX local_review_holder ON local_review_sessions(json_extract(child,'$.instance')); CREATE VIEW local_workflow_runs AS SELECT 1;"))
     testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)

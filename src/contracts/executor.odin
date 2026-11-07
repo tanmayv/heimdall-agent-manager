@@ -350,6 +350,23 @@ executor_receipt_matches :: proc(receipt,request:json.Object,kind:string,key:Own
     return method=="query" || (method=="stop" && (state=="stopping" || state=="released"))
 }
 
+// A recovery query may discover the serving incarnation, never a replacement
+// child. All immutable reservation identities and the original child key stay
+// pinned; this exception grants no activate/heartbeat/stop admission.
+executor_query_receipt_matches :: proc(r,q:json.Object,key:Owner_Verified_Key,now:i64,launch_key:string)->bool {
+    if !executor_valid(q,"action") || owner_string(q,"method")!="query" ||
+       !executor_valid(r,"receipt") || !executor_verify("receipt",r,key) ||
+       owner_string(r,"method")!="query" || owner_string(r,"historical")!="0" ||
+       now<0 || now>=executor_number(q,"request_expires_ms") ||
+       executor_number(r,"executor_incarnation")<executor_number(q,"executor_incarnation") ||
+       owner_string(r,"child_incarnation")!=owner_string(q,"executor_incarnation") || owner_string(r,"launch_key")!=launch_key {return false}
+    for name in ([9]string{"account_id","executor_bridge_id","owner_bridge_id","chain_id","reservation_id","operation_id","grant_generation","prepare_digest","hard_ms"}) {
+        if owner_string(r,name)!=owner_string(q,name) do return false
+    }
+    digest,_:=executor_digest("action",q)
+    return owner_string(r,"input_digest")==digest
+}
+
 // Verify the requested selectors and generated response together. This does not
 // authorize a task grant, reserve capacity, or establish a current launch fence.
 executor_issuance_matches :: proc(receipt,consent:json.Object,selection_raw,configuration_raw:string,

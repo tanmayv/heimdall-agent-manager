@@ -116,7 +116,9 @@ bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string,activati
     binding:=executor.bind_owner(s,wire.genesis,creator_key,owner_key,now)
     if binding.code!="ok" {reply.code=binding.code;return}
     if !executor.owner_bound(s,p,method,owner_key) do return
-    if contracts.executor_number(scope,"executor_incarnation")!=s.incarnation && !(activation && method=="action" && get(p,"method")=="activate") {reply.code="stale_incarnation";return}
+    if contracts.executor_number(scope,"executor_incarnation")!=s.incarnation &&
+       !(method=="action" && get(p,"method")=="query") &&
+       !(activation && method=="action" && get(p,"method")=="activate") {reply.code="stale_incarnation";return}
     if notification {
         self:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,self_id,public,"bridge",true,false}
         result:=bridge_executor_notification_dispatch(s,request_raw,get(exchange,"message"),contracts.executor_number(exchange,"claim_attempt"),
@@ -176,6 +178,21 @@ bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string,activati
     }
     reply.code=result.code
     if result.code!="ok" do return
+    if method=="action" && get(p,"method")=="stop" {
+        sync.mutex_lock(&bridge_startup_io_mutex);defer sync.mutex_unlock(&bridge_startup_io_mutex)
+        if !bridge_executor_authority_begin(generation) {reply.code="vault_locked";return}
+        defer bridge_executor_authority_end()
+        socket:=launch_io.socket
+        owned_socket:=socket==""
+        if owned_socket do socket=pty_host_socket_path()
+        defer {if owned_socket do delete(socket)}
+        if intent,pending:=executor.reservation_stop(s,p);pending {
+            _,_=bridge_executor_dispatch(s,intent,bridge_executor_physical_clock(nil),socket,{},nil,nil,nil,bridge_executor_physical_clock)
+        }
+        observed:=executor.stop_result(s,p)
+        if observed.code!="ok" {reply.code=observed.code;return}
+        result.body=observed.body
+    }
     receipt,signed:=executor.seal_receipt(s,p,method,result,executor.Signer{nil,bridge_executor_sign})
     if !signed {reply.code="signer_unavailable";return}
     response_scope:=scope;response_scope["direction"]=json.String("response")

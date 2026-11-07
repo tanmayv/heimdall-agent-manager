@@ -64,7 +64,11 @@ test_executor_original_owner_native_notification :: proc(t:^testing.T) {
     when #config(EXECUTOR_NATIVE_OWNER,false) {bridge_executor_issuance_mounted_scenario(t,true)}
     else {fmt.eprintln("[skip] actual native owner proof requires EXECUTOR_NATIVE_OWNER=true")}
 }
-bridge_executor_issuance_mounted_scenario :: proc(t:^testing.T,native:=false) {
+@(test)
+test_executor_original_owner_remote_stop :: proc(t:^testing.T) {
+    bridge_executor_issuance_mounted_scenario(t,true,true)
+}
+bridge_executor_issuance_mounted_scenario :: proc(t:^testing.T,native:=false,stop_only:=false) {
     context.allocator=context.temp_allocator
     spec,queued:=bridge_command_spec("executor_issuance")
     testing.expect(t,queued && spec.queued && spec.class==.Exclusive && spec.retry_safe,"filesystem/SQLite issuance must leave the WebSocket reader")
@@ -76,7 +80,7 @@ bridge_executor_issuance_mounted_scenario :: proc(t:^testing.T,native:=false) {
 
     st:=p1c_test_setup(t);defer p1c_test_teardown(st)
     selected_provider,selected_model:="claude","seed"
-    if native {
+    if native && !stop_only {
         selected_provider="codex";selected_model=os.get_env("HEIMDALL_NATIVE_MODEL",context.temp_allocator)
         binary:=os.get_env("HEIMDALL_NATIVE_CODEX",context.temp_allocator)
         if !testing.expect(t,binary!="" && selected_model!="","explicit native executable/model required") do return
@@ -235,7 +239,7 @@ bridge_executor_issuance_mounted_scenario :: proc(t:^testing.T,native:=false) {
     config,_:=contracts.owner_parse(get(issued_bundle,"configuration"),"remote_configuration")
     if native {
         bridge_executor_original_owner_native(t,peer_directory,executor.encode(genesis_owner),config,issued_bundle,
-            device,owner_key,host,&device_private,&owner_private,&kr,work)
+            device,owner_key,host,&device_private,&owner_private,&kr,work,stop_only)
         return
     }
     prepared:=bridge_executor_test_doc("prepare")
@@ -438,7 +442,8 @@ bridge_executor_test_exchange :: proc(t:^testing.T,wire:Executor_Exchange_Wire,r
     if code!="ok" do return nil,code
     scope["direction"]=json.String("response")
     if scope_out!=nil do scope_out^=executor.encode(scope)
-    plain,opened:=channel.open_signed(get(response,"envelope"),kr,scope,self,time.to_unix_nanoseconds(time.now())/1000000)
+    plain,opened:=channel.open_signed(get(response,"envelope"),kr,scope,self,time.to_unix_nanoseconds(time.now())/1000000,
+        query_discovery=kind=="action" && get(request,"method")=="query")
     if !opened do return nil,"test_bad_reply"
     receipt,valid:=contracts.executor_parse(plain,"notification_result" if kind=="notification" else "receipt")
     return receipt,("ok" if valid else "test_bad_receipt")
@@ -803,12 +808,16 @@ bridge_executor_test_accept_bootstrap_only :: proc(_: ^executor.Store,_:string,_
     _:rawptr,_:Executor_Fence_Exchange,_:Executor_Launch_IO)->(bool,string) {return true,"accepted"}
 
 Executor_Test_Prepare :: struct {dir:string,calls:int}
-bridge_executor_test_physical_prepare :: proc(ctx:rawptr,s:^executor.Store,intent:executor.Intent,now:i64)->(Pty_Host_Spawn_Request,bool) {
+bridge_executor_test_physical_prepare :: proc(ctx:rawptr,s:^executor.Store,intent:executor.Intent,now:i64)->(Pty_Host_Spawn_Request,string,bool) {
     p:=(^Executor_Test_Prepare)(ctx);p.calls+=1
+    sync.mutex_lock(&bridge_startup_io_mutex);defer sync.mutex_unlock(&bridge_startup_io_mutex)
+    sync.rw_mutex_shared_lock(&bridge_launch_configuration_mutex);defer sync.rw_mutex_shared_unlock(&bridge_launch_configuration_mutex)
+    pin,current:=bridge_executor_launch_resource_pin(s,intent,now)
+    if !current do return {},"",false
     material,available:=executor.launch_material(s,intent,now)
-    if !available do return {},false
+    if !available do return {},"",false
     result,written:=bridge_executor_materialize(p.dir,"unix:/isolated-bootstrap-child.sock",material,"claude")
-    if !written do return {},false
+    if !written do return {},"",false
     defer bridge_prespawn_result_delete(result)
     env:=bridge_pty_host_env_pairs(result.env)
     argv:=make([]string,1);argv[0]=strings.clone("sh")
@@ -817,7 +826,7 @@ bridge_executor_test_physical_prepare :: proc(ctx:rawptr,s:^executor.Store,inten
     b,parsed:=contracts.executor_parse(material.bootstrap,"bootstrap")
     if !parsed || !bridge_executor_bind_notification_spawn(&request,b,material.token_secret) {
         bridge_pty_host_spawn_request_delete(request)
-        return {},false
+        return {},"",false
     }
-    return request,true
+    return request,pin,true
 }

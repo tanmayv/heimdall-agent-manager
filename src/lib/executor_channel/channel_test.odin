@@ -1,10 +1,59 @@
 package executor_channel
 
 import "core:encoding/json"
+import "core:crypto/ecdsa"
 import "core:strings"
 import "core:testing"
 import contracts "odin_test:contracts"
 import vault "odin_test:lib/vault"
+
+@(test)
+channel_query_discovery_changes_only_serving_metadata_never_child_or_mutation :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    v,kr:=fixture(t);defer vault.keyring_wipe(&kr)
+    value,_:=contracts.owner_content_document(#load("../../contracts/fixtures/executor-v1.json",string))
+    root,_:=value.(json.Object);items,_:=root["valid"].(json.Array)
+    q,r:json.Object
+    for item in items {
+        row,_:=item.(json.Object)
+        if contracts.owner_string(row,"kind")=="action" {q,_=contracts.executor_parse(contracts.owner_string(row,"raw"),"action")}
+        if contracts.owner_string(row,"kind")=="receipt" {r,_=contracts.executor_parse(contracts.owner_string(row,"raw"),"receipt")}
+    }
+    q["method"]=json.String("query")
+    scalar:[32]byte;scalar[31]=7
+    private:ecdsa.Private_Key;testing.expect(t,ecdsa.private_key_set_bytes(&private,.SECP256R1,scalar[:]))
+    defer ecdsa.private_key_clear(&private)
+    pub:[65]byte;ecdsa.private_key_public_bytes(&private,pub[:])
+    key:=contracts.Owner_Verified_Key{"account",contracts.owner_string(q,"executor_bridge_id"),contracts.owner_string(r,"key_id"),
+        vault.hex_encode_lower(pub[:],context.temp_allocator),"bridge",true,false}
+    for name in ([9]string{"account_id","executor_bridge_id","owner_bridge_id","chain_id","reservation_id","operation_id","grant_generation","prepare_digest","hard_ms"}) do r[name]=q[name]
+    r["method"]=json.String("query");r["historical"]=json.String("0")
+    r["executor_incarnation"]=json.String("2");r["child_incarnation"]=q["executor_incarnation"]
+    digest,_:=contracts.executor_digest("action",q);r["input_digest"]=json.String(digest)
+    scope:=clone(v.reply_scope)
+    for name in ([6]string{"account_id","executor_bridge_id","owner_bridge_id","chain_id","reservation_id","executor_incarnation"}) do scope[name]=q[name]
+    scope["method"]=json.String("action");scope["input_digest"]=json.String(digest);scope["fence_digest"]=q["prepare_digest"]
+    launch:=contracts.owner_string(r,"launch_key")
+    for mutation in ([8]string{"","chain_id","reservation_id","operation_id","grant_generation","launch_key","child_incarnation","method"}) {
+        changed:=clone(r)
+        if mutation!="" {changed[mutation]=json.String("heartbeat" if mutation=="method" else ("9" if mutation=="child_incarnation" || mutation=="grant_generation" else strings.repeat("e",64,context.temp_allocator)))}
+        canonical,_:=contracts.executor_canonical("receipt",changed)
+        signature,_:=vault.sign_p256(&private,transmute([]byte)canonical)
+        changed["signature"]=json.String(vault.hex_encode_lower(signature.sig[:],context.temp_allocator))
+        bytes,_:=json.marshal(changed,allocator=context.temp_allocator)
+        token,sealed:=seal(string(bytes),&kr,scope,1200);testing.expect(t,sealed)
+        plain,opened:=open_signed(token,&kr,scope,key,1200,query_discovery=true)
+        matches:=contracts.executor_query_receipt_matches(changed,q,key,1200,launch)
+        testing.expect(t,(opened && matches)==(mutation==""),mutation)
+        if mutation=="" {
+            testing.expect(t,plain==string(bytes))
+            _,strict:=open_signed(token,&kr,scope,key,1200)
+            testing.expect(t,!strict,"ordinary channel remains exact-incarnation")
+            revoked:=key;revoked.revoked=true
+            testing.expect(t,!contracts.executor_query_receipt_matches(changed,q,revoked,1200,launch))
+        }
+    }
+}
 
 Vector :: struct {
     scope,reply_scope:json.Object,

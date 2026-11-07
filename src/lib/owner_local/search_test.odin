@@ -126,7 +126,7 @@ search_v4_upgrade_collision_is_atomic_and_preserves_live_history :: proc(t:^test
     text:=string(MIGRATION_004)
     prefix:=text[:strings.index(text,"CREATE TABLE lifecycle_configs")]
     testing.expect(t,exec(db,prefix))
-    testing.expect(t,exec(db,"UPDATE schema_migrations SET version=4; CREATE VIEW search_docs AS SELECT 1;"))
+    testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=4; CREATE VIEW search_docs AS SELECT 1;"))
     testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
@@ -137,7 +137,7 @@ search_v4_upgrade_collision_is_atomic_and_preserves_live_history :: proc(t:^test
     testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,len(search_hits(search_for(f,"private"))),1)
     rows,ok=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
-    testing.expect(t,ok && rows[0][0]=="27" && rows[0][1]=="27")
+    testing.expect(t,ok && rows[0][0]=="28" && rows[0][1]=="28")
 }
 
 history_submit :: proc(t:^testing.T,f:^Fixture,lease,revision,summary:string) {
@@ -228,7 +228,7 @@ search_v5_upgrade_backfills_retained_attempts_and_rolls_back_failure :: proc(t:^
     testing.expect(t,exec(db,"DROP TRIGGER search_local_submissions_insert; DROP TRIGGER search_local_submissions_update; DROP TRIGGER search_local_submissions_delete; DELETE FROM search_docs WHERE kind='output';"))
     legacy:=text[strings.index(text,"CREATE TRIGGER search_local_submissions_insert"):strings.index(text,"DROP TRIGGER receipt_scope")]
     testing.expect(t,exec(db,legacy))
-    testing.expect(t,exec(db,"UPDATE schema_migrations SET version=5; CREATE TRIGGER fail_history_upgrade BEFORE INSERT ON search_docs WHEN new.kind='output' BEGIN SELECT RAISE(ABORT,'full'); END;"))
+    testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=5; CREATE TRIGGER fail_history_upgrade BEFORE INSERT ON search_docs WHEN new.kind='output' BEGIN SELECT RAISE(ABORT,'full'); END;"))
     testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)

@@ -40,7 +40,7 @@ export async function openExecutorChannel(token: string, keyring: VaultKeyring, 
   finally { payload?.fill(0);ciphertext?.fill(0); }
 }
 
-export async function openSignedExecutorChannel(token: string, keyring: VaultKeyring, expected: ExecutorDocument, key: OwnerVerifiedKey, now: bigint): Promise<string | null> {
+export async function openSignedExecutorChannel(token: string, keyring: VaultKeyring, expected: ExecutorDocument, key: OwnerVerifiedKey, now: bigint, queryDiscovery = false): Promise<string | null> {
   try {
     const {method,direction} = expected;
     const plain = await openExecutorChannel(token,keyring,expected,now);
@@ -52,7 +52,11 @@ export async function openSignedExecutorChannel(token: string, keyring: VaultKey
     if (kind === 'receipt' && ((method === 'prepare') !== (value.method === 'prepare'))) return null;
     for (const name of ['account_id','owner_bridge_id','executor_bridge_id','chain_id']) if (value[name] !== expected[name]) return null;
     if (method !== 'enrollment' && value.reservation_id !== expected.reservation_id) return null;
-    for (const name of ['owner_incarnation','executor_incarnation']) if (name in value && value[name] !== expected[name]) return null;
+    for (const name of ['owner_incarnation','executor_incarnation']) {
+      if (name === 'executor_incarnation' && queryDiscovery && direction === 'response' && kind === 'receipt' && method === 'action' && value.method === 'query' &&
+          BigInt(value.executor_incarnation) >= BigInt(expected.executor_incarnation) && value.child_incarnation === expected.executor_incarnation) continue;
+      if (name in value && value[name] !== expected[name]) return null;
+    }
     let input: string, fence: string;
     if (direction === 'request') {
       input = await ownerPayloadDigest(executorCanonical(kind,value));

@@ -131,7 +131,7 @@ native_metadata_v17_migration_collision_commit_rollback_and_live_capability :: p
     testing.expect(t,exec(db,V23_TEST_DROP))
     testing.expect(t,exec(db,"DROP TABLE IF EXISTS local_metadata_retirements; DROP TABLE IF EXISTS local_brief_inputs; DROP TABLE IF EXISTS local_coordinator_revocations; DROP TABLE IF EXISTS local_config_revocations; DROP TABLE IF EXISTS local_chain_directory_versions; DROP TABLE IF EXISTS local_chain_member_versions; DROP TABLE IF EXISTS local_member_chains; DROP TABLE IF EXISTS local_chain_defaults_versions; DROP TABLE IF EXISTS local_chain_summary_versions; DROP TRIGGER IF EXISTS native_history_origin; DROP TABLE IF EXISTS local_fleet_policy_sources; DROP TABLE IF EXISTS native_fleet_policies; DROP TABLE IF EXISTS native_fleet_snapshots; DROP TABLE IF EXISTS local_task_priority_versions; DROP TABLE IF EXISTS native_fact_chain; DROP TABLE IF EXISTS native_fact_task; DROP TABLE IF EXISTS native_fact_comment; DROP TABLE IF EXISTS native_fact_summary; DROP TABLE IF EXISTS native_fact_snapshots; DROP TABLE native_metadata_members; DROP TABLE native_metadata_directories; DROP TABLE native_metadata_snapshots; DROP TABLE native_metadata_origins"))
     testing.expect(t,exec(db,prefix))
-    testing.expect(t,exec(db,"UPDATE schema_migrations SET version=17; CREATE VIEW native_metadata_origins AS SELECT 1"))
+    testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=17; CREATE VIEW native_metadata_origins AS SELECT 1"))
     testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
@@ -261,7 +261,7 @@ native_facts_v18_migration_preserves_history_and_capability_on_failure :: proc(t
     testing.expect(t,exec(db,"DROP TABLE IF EXISTS local_metadata_retirements; DROP TABLE IF EXISTS local_brief_inputs; DROP TABLE IF EXISTS local_coordinator_revocations; DROP TABLE IF EXISTS local_config_revocations; DROP TABLE IF EXISTS local_chain_directory_versions; DROP TABLE IF EXISTS local_chain_member_versions; DROP TABLE IF EXISTS local_member_chains; DROP TABLE IF EXISTS local_chain_defaults_versions; DROP TABLE IF EXISTS local_chain_summary_versions; DROP TRIGGER IF EXISTS native_history_origin; DROP TABLE IF EXISTS local_fleet_policy_sources; DROP TABLE IF EXISTS native_fleet_policies; DROP TABLE IF EXISTS native_fleet_snapshots; DROP TABLE IF EXISTS local_task_priority_versions; DROP TABLE native_fact_chain; DROP TABLE native_fact_task; DROP TABLE native_fact_comment; DROP TABLE native_fact_summary; DROP TABLE native_fact_snapshots"))
     prefix:=string(MIGRATION_018);prefix=prefix[:strings.index(prefix,"CREATE TABLE native_metadata_origins")]
     testing.expect(t,exec(db,prefix))
-    testing.expect(t,exec(db,"UPDATE schema_migrations SET version=18; CREATE VIEW native_fact_snapshots AS SELECT 1"))
+    testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=18; CREATE VIEW native_fact_snapshots AS SELECT 1"))
     testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)

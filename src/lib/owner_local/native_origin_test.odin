@@ -86,7 +86,7 @@ native_origin_v19_migration_rejects_conflicting_legacy_owner_atomically :: proc(
     prefix:=string(MIGRATION_019);prefix=prefix[:strings.index(prefix,"CREATE TABLE native_fact_snapshots")]
     testing.expect(t,exec(db,prefix))
     // Older code allowed a history owner different from the metadata origin.
-    testing.expect(t,exec(db,"UPDATE schema_migrations SET version=19; DROP TRIGGER native_metadata_origins_no_update; UPDATE native_metadata_origins SET owner_user_id='conflicting_owner'; CREATE TRIGGER native_metadata_origins_no_update BEFORE UPDATE ON native_metadata_origins BEGIN SELECT RAISE(ABORT,'immutable native metadata'); END"))
+    testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=19; DROP TRIGGER native_metadata_origins_no_update; UPDATE native_metadata_origins SET owner_user_id='conflicting_owner'; CREATE TRIGGER native_metadata_origins_no_update BEFORE UPDATE ON native_metadata_origins BEGIN SELECT RAISE(ABORT,'immutable native metadata'); END"))
     testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)

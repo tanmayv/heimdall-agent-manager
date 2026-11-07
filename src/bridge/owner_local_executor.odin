@@ -108,14 +108,18 @@ bridge_owner_executor_batch :: proc(w:^Owner_Executor_Worker,s:^owner.Store,mute
     return true
 }
 
-Owner_Executor_Pin :: struct {key_id:string,generation:i64,bootstrap,body,notification,message,code:string}
+Owner_Executor_Pin :: struct {key_id:string,generation:i64,bootstrap,body,notification,message,code,control:string}
 Owner_Executor_Outcome :: struct {scope,body,code:string}
 Owner_Executor_Relay_Data :: struct {reply:string,directory:vault.Directory_Verification_Input}
 Owner_Executor_HTTP_Reply :: struct {data:Owner_Executor_Relay_Data}
 Owner_Executor_Command_Reply :: struct {type,command_id,request_id,code,envelope:string}
 
 bridge_owner_executor_snapshot :: proc(_:rawptr,s:^owner.Store,c:owner.Intent_Claim,now:i64)->(string,bool) {
-    if c.kind=="executor.notification" {
+    stopping:=owner.execution_stop_kind(c.kind)
+    if stopping {
+        // The durable cancellation replaces active-lease authority, never its
+        // exact original reservation or enrolled execution device.
+    } else if c.kind=="executor.notification" {
         code:=owner.execution_notification_current(s,c,now)
         if code=="storage_error" do return "",false
         if code!="ok" do return bridge_owner_json(Owner_Executor_Pin{generation=bridge_task_chain_search_generation(),code=code}),true
@@ -130,6 +134,14 @@ bridge_owner_executor_snapshot :: proc(_:rawptr,s:^owner.Store,c:owner.Intent_Cl
     if !ok || len(rows)!=1 do return "",false
     config,valid:=owner.remote_assignment_configuration(rows[0][0])
     if !valid || contracts.owner_string(config,"executor_bridge_id")!=c.destination do return "",false
+    if stopping {
+        public:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+        key:=contracts.Owner_Verified_Key{s.account,s.owner,s.owner_key,public,"bridge",true,false}
+        result:=owner.execution_stop_request(s,c,key,now,{nil,bridge_owner_sign})
+        if result.code!="ok" && result.code!="released" do return "",false
+        return bridge_owner_json(Owner_Executor_Pin{key_id=contracts.owner_string(config,"executor_key_id"),generation=bridge_task_chain_search_generation(),
+            control=result.body,code=("remote_released" if result.code=="released" else "")}),true
+    }
     if c.kind=="executor.heartbeat" {
         return bridge_owner_json(Owner_Executor_Pin{key_id=contracts.owner_string(config,"executor_key_id"),
             generation=bridge_task_chain_search_generation()}),true
@@ -164,7 +176,7 @@ bridge_owner_executor_exchange :: proc(_:rawptr,c:owner.Intent_Claim,snapshot:st
     if !unlocked {outcome.code="vault_locked";return bridge_owner_json(outcome),now}
     if pin.code!="" {outcome.code=pin.code;return bridge_owner_json(outcome),now}
     kind:="notification" if c.kind=="executor.notification" else ("prepare" if c.kind=="executor.prepare" else "action")
-    raw:=pin.notification if c.kind=="executor.notification" else c.payload
+    raw:=pin.control if owner.execution_stop_kind(c.kind) else (pin.notification if c.kind=="executor.notification" else c.payload)
     action,parsed:=contracts.executor_parse(raw,kind)
     if !parsed do return bridge_owner_json(outcome),now
     get:=contracts.owner_string
@@ -247,7 +259,8 @@ bridge_owner_executor_accept :: proc(_:rawptr,s:^owner.Store,c:owner.Intent_Clai
     if json.unmarshal_string(snapshot,&pin,.JSON,context.temp_allocator)!=nil ||
        json.unmarshal_string(response,&outcome,.JSON,context.temp_allocator)!=nil {return true,false,"malformed_executor_response"}
     if pin.generation!=bridge_task_chain_search_generation() || sync.atomic_load(&bridge_hub_traffic_stopped) do return true,false,"vault_locked"
-    if outcome.code!="response" do return true,c.kind=="executor.notification" && outcome.code=="no_current_target",outcome.code
+    if outcome.code!="response" do return true,(c.kind=="executor.notification" && outcome.code=="no_current_target") ||
+        (owner.execution_stop_kind(c.kind) && outcome.code=="remote_released"),outcome.code
     envelope:Owner_Executor_HTTP_Reply
     if json.unmarshal_string(outcome.body,&envelope,.JSON,context.temp_allocator)!=nil do return true,false,"malformed_executor_response"
     kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
@@ -260,7 +273,15 @@ bridge_owner_executor_accept :: proc(_:rawptr,s:^owner.Store,c:owner.Intent_Clai
     if !scoped || json.unmarshal_string(envelope.data.reply,&reply,.JSON,context.temp_allocator)!=nil ||
        reply.request_id!=contracts.owner_string(scope,"request_id") || reply.type!="command_result" {return true,false,"invalid_executor_reply"}
     if reply.code!="ok" do return true,false,"executor_rejected"
-    receipt,authenticated:=channel.open_signed(reply.envelope,&kr,scope,key,now,context.temp_allocator)
+    control,control_valid:=contracts.executor_parse(pin.control,"action")
+    receipt,authenticated:=channel.open_signed(reply.envelope,&kr,scope,key,now,context.temp_allocator,
+        query_discovery=owner.execution_stop_kind(c.kind) && control_valid && contracts.owner_string(control,"method")=="query")
+    if owner.execution_stop_kind(c.kind) {
+        if !authenticated do return true,false,"invalid_executor_receipt"
+        result:=owner.execution_stop_accept(s,c,pin.control,receipt,key,now)
+        if result.code=="storage_error" do return false,false,result.code
+        return true,result.code=="released",result.code
+    }
     if c.kind=="executor.notification" {
         n,parsed:=contracts.executor_parse(pin.notification,"notification")
         r,valid:=contracts.executor_parse(receipt,"notification_result")
@@ -292,6 +313,7 @@ bridge_owner_executor_once :: proc() {
     if !valid || account=="" do return
     sync.mutex_lock(&bridge_owner_mutex)
     opened:=bridge_owner_open(account,key_id)
+    if opened do opened=owner.execution_stop_recover(&bridge_owner_store)
     sync.mutex_unlock(&bridge_owner_mutex)
     if !opened do return
     bridge_owner_preparation_once(&bridge_owner_store)

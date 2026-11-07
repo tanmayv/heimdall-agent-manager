@@ -24,21 +24,39 @@ bridge_executor_launch_resource_pin :: proc(s:^executor.Store,intent:executor.In
     if !within || mapping.key!=contracts.owner_string(c,"directory_key") || executor.directory_key(s.executor,canonical)!=mapping.key do return "",false
     identity,exists:=bridge_os_socket_file_identity(canonical)
     if !exists do return "",false
+    // Directory contents may legitimately change during bootstrap preparation
+    // or owner journaling. Device/inode identify the selected directory itself.
+    identity.ctime_sec=0;identity.ctime_nsec=0
     provider,model:=contracts.owner_string(c,"provider"),contracts.owner_string(c,"model")
     catalog,active:=bridge_provider_catalog_profile(provider)
     profile,err:=profile_lookup(provider,contracts.owner_string(c,"provider_profile"),prepare_runtime=false)
     if !active || err!=.None || !profile.enabled || !profile_has_model(&profile,provider,model) do return "",false
+    binary,_:=bridge_provider_catalog_binary(provider,context.temp_allocator)
+    bridge_provider_paths_init()
+    path,state:="",""
+    sync.rw_mutex_shared_lock(&bridge_provider_paths_mutex)
+    for item in bridge_provider_paths {
+        if item.provider==provider && profile_effective_id(provider,item.profile_id)==provider {
+            path=strings.clone(item.resolved_path,context.temp_allocator);state=strings.clone(item.state,context.temp_allocator);break
+        }
+    }
+    sync.rw_mutex_shared_unlock(&bridge_provider_paths_mutex)
     return contracts.owner_payload_digest(bridge_owner_json(struct {
         selection:string,profile:Provider_Profile,catalog:Bridge_Provider_Profile,identity:Pty_Host_Daemon_Identity,
-    }{material.configuration,profile,catalog,identity})),true
+        binary,path,state:string,
+    }{material.configuration,profile,catalog,identity,binary,path,state})),true
 }
 
 // Only an exact first launch claim may materialize. Invalidation and all spawn
 // I/O share startup_io_mutex. A retry after begin_dispatch queries the exact
 // daemon child; it must never clean a possibly running child's directory.
-bridge_executor_prepare_spawn :: proc(s:^executor.Store,intent:executor.Intent,now:i64,endpoint:string)->(Pty_Host_Spawn_Request,bool) {
+bridge_executor_prepare_spawn :: proc(s:^executor.Store,intent:executor.Intent,now:i64,endpoint:string,resource_pin:^string=nil)->(Pty_Host_Spawn_Request,bool) {
     when ODIN_OS==.Windows {return {},false}
     sync.mutex_lock(&bridge_startup_io_mutex);defer sync.mutex_unlock(&bridge_startup_io_mutex)
+    sync.rw_mutex_shared_lock(&bridge_launch_configuration_mutex);defer sync.rw_mutex_shared_unlock(&bridge_launch_configuration_mutex)
+    pin,current_resources:=bridge_executor_launch_resource_pin(s,intent,now)
+    if !current_resources do return {},false
+    if resource_pin!=nil do resource_pin^=pin
     material,ready:=executor.launch_material(s,intent,now)
     if !ready do return {},false
     defer crypto.zero_explicit(raw_data(material.token_secret),len(material.token_secret))
@@ -52,6 +70,13 @@ bridge_executor_prepare_spawn :: proc(s:^executor.Store,intent:executor.Intent,n
     provider,model:=contracts.owner_string(c,"provider"),contracts.owner_string(c,"model")
     profile,err:=profile_lookup(provider,contracts.owner_string(c,"provider_profile"))
     if err!=.None || !profile.enabled do return {},false
+    // Discovery publishes under the configuration write gate. Never invoke it
+    // while holding this read gate; use the current previously discovered path.
+    if profile.config.binary_path=="" {
+        path,found:=bridge_provider_resolve_launch_path(provider,true)
+        if !found do return {},false
+        profile.config.binary_path=path
+    }
     dir,within:=bridge_fs_run_dir_root(intent.instance)
     if !within do return {},false
     defer delete(dir)

@@ -226,7 +226,7 @@ language_v10_upgrade_collision_and_deferred_commit_preserve_static_runtime :: pr
     testing.expect(t,exec(db,V10_TEST_DROP))
     prefix:=string(MIGRATION_010);prefix=prefix[:strings.index(prefix,"CREATE TABLE local_chain_context")]
     testing.expect(t,exec(db,prefix))
-    testing.expect(t,exec(db,"UPDATE schema_migrations SET version=10;CREATE VIEW local_workflow_stage_expansions AS SELECT 1"))
+    testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=10;CREATE VIEW local_workflow_stage_expansions AS SELECT 1"))
     testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
@@ -464,7 +464,7 @@ language_v12_upgrade_preserves_trigger_receipts_and_live_capability :: proc(t:^t
     testing.expect(t,exec(db,"INSERT INTO local_workflow_output_triggers SELECT * FROM saved_triggers; DROP TABLE saved_triggers;"))
     prefix:=m10[:strings.index(m10,"CREATE TABLE local_workflow_language_runs")]
     testing.expect(t,exec(db,prefix))
-    testing.expect(t,exec(db,"UPDATE schema_migrations SET version=11; CREATE VIEW local_workflow_output_triggers_v12 AS SELECT 1;"))
+    testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=11; CREATE VIEW local_workflow_output_triggers_v12 AS SELECT 1;"))
     testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)

@@ -610,6 +610,20 @@ export async function executorReceiptMatches(receipt: ExecutorDocument, request:
   } catch { return false; }
 }
 
+
+export async function executorQueryReceiptMatches(r: ExecutorDocument, q: ExecutorDocument, key: OwnerVerifiedKey, now: bigint, launchKey: string): Promise<boolean> {
+  try {
+    executorParse(JSON.stringify(q),'action');
+    executorParse(JSON.stringify(r),'receipt');
+    if (q.method !== 'query' || r.method !== 'query' || r.historical !== '0' || !await executorVerify('receipt',r,key) ||
+      now < 0n || now >= BigInt(q.request_expires_ms) || BigInt(r.executor_incarnation) < BigInt(q.executor_incarnation) ||
+      r.child_incarnation !== q.executor_incarnation || r.launch_key !== launchKey) return false;
+    for (const name of ['account_id','executor_bridge_id','owner_bridge_id','chain_id','reservation_id','operation_id','grant_generation','prepare_digest','hard_ms'])
+      if (r[name] !== q[name]) return false;
+    return r.input_digest === await ownerPayloadDigest(executorCanonical('action',q));
+  } catch { return false; }
+}
+
 export async function executorIssuanceMatches(receipt: ExecutorDocument, consent: ExecutorDocument, selectionRaw: string,
   configurationRaw: string, enrollment: ExecutorDocument, deviceKey: OwnerVerifiedKey, executorKey: OwnerVerifiedKey,
   now: bigint, currentAdmission = true): Promise<boolean> {

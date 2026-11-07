@@ -243,7 +243,7 @@ linked_v24_upgrade_collision_commit_rollback_and_live_capability_preservation ::
     testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_bootstraps; DROP TABLE IF EXISTS owner_execution_queries; DROP TABLE owner_execution_journal;"+string(#load("migration_025_test_drop.sql"))))
     prefix:=string(MIGRATION_024);prefix=prefix[:strings.index(prefix,"CREATE TABLE native_record_snapshots")]
     testing.expect(t,exec(db,prefix))
-    testing.expect(t,exec(db,"UPDATE schema_migrations SET version=24; CREATE VIEW linked_identities AS SELECT 1"))
+    testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=24; CREATE VIEW linked_identities AS SELECT 1"))
     testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)

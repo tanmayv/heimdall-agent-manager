@@ -9,6 +9,37 @@ const vector = JSON.parse(readFileSync(new URL('../src/contracts/fixtures/execut
   scope:ExecutorDocument;reply_scope:ExecutorDocument;request:string;reply:string;aad:string;token:string;reply_token:string;old_token:string;content_token:string;
   vault_id:string;epoch:number;epoch_key_hex:string;old_epoch_key_hex:string;nonce_hex:string;owner_key:OwnerVerifiedKey;executor_key:OwnerVerifiedKey;
 };
++test('query discovery refreshes serving incarnation while preserving the original child and ordinary admission', async () => {
+  const {executorParse,executorCanonical,executorQueryReceiptMatches} = await import('../src/ui/api/executor.ts');
+  const {createHash} = await import('node:crypto');
+  const fixture = JSON.parse(readFileSync(new URL('../src/contracts/fixtures/executor-v1.json',import.meta.url),'utf8')) as {valid:{kind:string;raw:string}[]};
+  const q = {...executorParse(fixture.valid.find(x=>x.kind==='action')!.raw,'action'),method:'query'};
+  const pair = await crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);
+  const base = executorParse(fixture.valid.find(x=>x.kind==='receipt')!.raw,'receipt');
+  const key:OwnerVerifiedKey = {account_id:'account',principal_id:q.executor_bridge_id,key_id:base.key_id,
+    public_key:Buffer.from(await crypto.subtle.exportKey('raw',pair.publicKey)).toString('hex'),kind:'bridge',enrolled:true,revoked:false};
+  for (const name of ['account_id','executor_bridge_id','owner_bridge_id','chain_id','reservation_id','operation_id','grant_generation','prepare_digest','hard_ms']) base[name]=q[name];
+  const digest=createHash('sha256').update(executorCanonical('action',q)).digest('hex');
+  Object.assign(base,{method:'query',historical:'0',executor_incarnation:'2',child_incarnation:q.executor_incarnation,input_digest:digest});
+  const scope={...vector.reply_scope,method:'action',input_digest:digest,fence_digest:q.prepare_digest};
+  for (const name of ['account_id','executor_bridge_id','owner_bridge_id','chain_id','reservation_id','executor_incarnation']) scope[name]=q[name];
+  const ring=await keyring(), launch=base.launch_key;
+  for (const mutation of ['', 'chain_id','reservation_id','operation_id','grant_generation','launch_key','child_incarnation','method']) {
+    const r={...base};
+    if(mutation) r[mutation]=mutation==='method'?'heartbeat':['child_incarnation','grant_generation'].includes(mutation)?'9':'e'.repeat(64);
+    r.signature=Buffer.from(await crypto.subtle.sign({name:'ECDSA',hash:'SHA-256'},pair.privateKey,new TextEncoder().encode(executorCanonical('receipt',r)))).toString('hex');
+    const token=await sealExecutorChannel(JSON.stringify(r),ring,scope,1200n);
+    assert.ok(token);
+    const opened=await openSignedExecutorChannel(token,ring,scope,key,1200n,true);
+    const matched=await executorQueryReceiptMatches(r,q,key,1200n,launch);
+    assert.equal(opened!==null && matched,mutation==='',mutation);
+    if(!mutation) {
+      assert.equal(await openSignedExecutorChannel(token,ring,scope,key,1200n),null);
+      assert.equal(await executorQueryReceiptMatches(r,q,{...key,revoked:true},1200n,launch),false);
+    }
+  }
+});
+
 const bytes = (hex:string) => Uint8Array.from(Buffer.from(hex,'hex'));
 async function keyring():Promise<VaultKeyring> {
   const current = await crypto.subtle.importKey('raw',bytes(vector.epoch_key_hex),{name:'AES-GCM'},false,['encrypt','decrypt']);

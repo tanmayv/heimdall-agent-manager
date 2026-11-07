@@ -67,7 +67,7 @@ owner_bootstrap_v26_upgrade_collision_rolls_back_original_activation :: proc(t:^
     db:DB;testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
     sql:=string(MIGRATION_026)
     prefix:=sql[:strings.index(sql,"CREATE TABLE owner_execution_journal")]
-    testing.expect(t,exec(db,strings.concatenate({"PRAGMA foreign_keys=OFF; DROP TABLE owner_execution_bootstraps;",prefix,"UPDATE schema_migrations SET version=26; CREATE VIEW owner_execution_bootstraps AS SELECT 1;"},context.temp_allocator)))
+    testing.expect(t,exec(db,strings.concatenate({"PRAGMA foreign_keys=OFF; DROP TABLE owner_execution_bootstraps;",prefix,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=26; CREATE VIEW owner_execution_bootstraps AS SELECT 1;"},context.temp_allocator)))
     testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
@@ -76,5 +76,5 @@ owner_bootstrap_v26_upgrade_collision_rolls_back_original_activation :: proc(t:^
     testing.expect(t,exec(db,"DROP VIEW owner_execution_bootstraps"));testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     rows,_=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations),database_id,commit_seq,(SELECT activation_json FROM owner_execution_journal) FROM runtime_database")
-    testing.expect(t,rows[0][0]=="27" && rows[0][1]=="27" && rows[0][2]==before[0][0] && rows[0][3]==before[0][1] && rows[0][4]==before[0][2])
+    testing.expect(t,rows[0][0]=="28" && rows[0][1]=="28" && rows[0][2]==before[0][0] && rows[0][3]==before[0][1] && rows[0][4]==before[0][2])
 }

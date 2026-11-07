@@ -144,7 +144,7 @@ operational_v21_upgrade_collision_and_commit_failure_preserve_capability :: proc
     prefix:=string(MIGRATION_021)
     prefix=prefix[:strings.index(prefix,"CREATE TABLE local_chain_summary_versions")]
     testing.expect(t,exec(db,prefix))
-    testing.expect(t,exec(db,"UPDATE schema_migrations SET version=21; CREATE VIEW local_chain_member_versions AS SELECT 1"))
+    testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=21; CREATE VIEW local_chain_member_versions AS SELECT 1"))
     testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)

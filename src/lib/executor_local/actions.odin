@@ -2,6 +2,7 @@
 package executor_local
 
 import "core:fmt"
+import "core:encoding/json"
 import "core:sync"
 import contracts "odin_test:contracts"
 
@@ -65,6 +66,33 @@ action :: proc(s:^Store,raw:string,key:contracts.Owner_Verified_Key,now:i64,curr
     }
     body,ok:=result_body(s,id)
     if !ok || !save_receipt(s,o,"action",digest,body) || !commit(s) do return fail("storage_error")
+    return Result{code="ok",body=body}
+}
+
+// Select only the exact stop committed by action(); never consume another
+ // owner's pending work while serving a remote cancellation.
+reservation_stop :: proc(s:^Store,request:json.Object)->(Intent,bool) {
+    sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
+    if !begin(s) do return {},false
+    defer rollback(s)
+    rows,read:=query(s.db,"SELECT r.instance_id,r.launch_key,r.document FROM executor_reservations r JOIN executor_intents i USING(reservation_id) WHERE r.reservation_id=? AND r.prepare_digest=? AND r.owner_bridge_id=? AND r.state='stopping' AND i.kind='stop'",
+        field(request,"reservation_id"),field(request,"prepare_digest"),field(request,"owner_bridge_id"))
+    if !read || len(rows)!=1 do return {},false
+    if _,ok:=query(s.db,"UPDATE executor_intents SET state='uncertain',claim_incarnation=? WHERE reservation_id=? AND kind='stop'",fmt.tprintf("%d",s.incarnation),field(request,"reservation_id"));!ok do return {},false
+    if !commit(s) do return {},false
+    return Intent{field(request,"reservation_id"),"stop",rows[0][0],rows[0][1],rows[0][2],s.incarnation},true
+}
+
+// Stop acknowledgement reflects the serving exact ledger after physical I/O,
+// while the immutable operation receipt still deduplicates action acceptance.
+stop_result :: proc(s:^Store,request:json.Object)->Result {
+    sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
+    rows,read:=query(s.db,"SELECT 1 FROM executor_reservations WHERE reservation_id=? AND prepare_digest=? AND owner_bridge_id=? AND state IN ('stopping','released')",
+        field(request,"reservation_id"),field(request,"prepare_digest"),field(request,"owner_bridge_id"))
+    if !read do return fail("storage_error")
+    if len(rows)!=1 do return fail("invalid_scope")
+    body,ok:=result_body(s,field(request,"reservation_id"))
+    if !ok do return fail("storage_error")
     return Result{code="ok",body=body}
 }
 

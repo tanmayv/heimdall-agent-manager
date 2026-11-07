@@ -56,7 +56,7 @@ open :: proc(token:string,kr:^vault.Vault_Keyring,expected:json.Object,now:i64,a
 // Signature and exact correlation checks are mandatory even for account-key
 // holders. Historical receipts remain observations, not fresh admission.
 open_signed :: proc(token:string,kr:^vault.Vault_Keyring,expected:json.Object,key:contracts.Owner_Verified_Key,
-    now:i64,allocator:=context.allocator)->(string,bool) {
+    now:i64,allocator:=context.allocator,query_discovery:bool=false)->(string,bool) {
     method,direction:=contracts.owner_string(expected,"method"),contracts.owner_string(expected,"direction")
     plain,opened:=open(token,kr,expected,now,allocator)
     if !opened do return "",false
@@ -72,6 +72,10 @@ open_signed :: proc(token:string,kr:^vault.Vault_Keyring,expected:json.Object,ke
     }
     if method!="enrollment" && contracts.owner_string(o,"reservation_id")!=contracts.owner_string(expected,"reservation_id") do valid=false
     for name in ([2]string{"owner_incarnation","executor_incarnation"}) {
+        if name=="executor_incarnation" && query_discovery && direction=="response" && kind=="receipt" &&
+           method=="action" && contracts.owner_string(o,"method")=="query" &&
+           contracts.executor_number(o,"executor_incarnation")>=contracts.executor_number(expected,"executor_incarnation") &&
+           contracts.owner_string(o,"child_incarnation")==contracts.owner_string(expected,"executor_incarnation") {continue}
         if name in o && contracts.owner_string(o,name)!=contracts.owner_string(expected,name) do valid=false
     }
     input,fence:string

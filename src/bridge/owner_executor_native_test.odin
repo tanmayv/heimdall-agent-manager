@@ -59,7 +59,7 @@ native_owner_call :: proc(p:^Native_Owner_Proof,method,operation,task,payload,re
 // assignment/preparation/commit/bootstrap APIs. SQL is used only to inspect state.
 bridge_executor_original_owner_native :: proc(t:^testing.T,directory:vault.Directory_Verification_Input,genesis:string,
     config,bundle:json.Object,device,key,host:contracts.Owner_Verified_Key,device_private,owner_private:^ecdsa.Private_Key,
-    kr:^vault.Vault_Keyring,work:string) {
+    kr:^vault.Vault_Keyring,work:string,stop_only:=false) {
     p:=Native_Owner_Proof{device=device,key=key,host=host,device_private=device_private,owner_private=owner_private,
         kr=kr,directory=directory,genesis=genesis,work=work,chain=contracts.owner_string(config,"chain_id"),task=contracts.owner_string(config,"task_id")}
     path:=fmt.tprintf("%s/owner-native.sqlite",work)
@@ -107,6 +107,7 @@ bridge_executor_original_owner_native :: proc(t:^testing.T,directory:vault.Direc
     b,valid:=contracts.executor_parse(contracts.owner_string(content,"bootstrap"),"bootstrap")
     testing.expect(t,valid && contracts.executor_verify("bootstrap",b,key))
     fmt.println("[native-owner] original signed chain/reserve/requirements/preparation/commit/bootstrap PASS")
+    if stop_only {native_owner_remote_stop(t,&p,wire,activation,content,path);return}
     native_owner_physical(t,&p,wire,activation,content)
 }
 
@@ -194,28 +195,29 @@ native_owner_fence_exchange :: proc(ctx:rawptr,raw:string,generation:i64)->Execu
     if !ok do return {}
     return {executor.encode(scope),response,o.directory}
 }
-native_owner_prepare_spawn :: proc(ctx:rawptr,s:^executor.Store,intent:executor.Intent,now:i64)->(Pty_Host_Spawn_Request,bool) {
+native_owner_prepare_spawn :: proc(ctx:rawptr,s:^executor.Store,intent:executor.Intent,now:i64)->(Pty_Host_Spawn_Request,string,bool) {
     p:=(^Native_Owner_Physical)(ctx)
-    request,built:=bridge_executor_prepare_spawn(s,intent,now,p.endpoint)
+    pin:string
+    request,built:=bridge_executor_prepare_spawn(s,intent,now,p.endpoint,&pin)
     if !built {
         m,available:=executor.launch_material(s,intent,now)
         c,_:=contracts.owner_parse(m.configuration,"remote_configuration")
         profile,profile_error:=profile_lookup(contracts.owner_string(c,"provider"),contracts.owner_string(c,"provider_profile"))
         dir,within:=bridge_fs_run_dir_root(intent.instance)
         fmt.println("[native-owner] prepare diagnostic material/profile/path:",available,profile_error,profile.enabled,within,dir)
-        return {},false
+        return {},"",false
     }
     // Only additional invocation flags from the separately vetted fixture.
     bytes,read_error:=os.read_entire_file(p.args_file,context.temp_allocator)
     extra:[]string
     if read_error!=nil || json.unmarshal(bytes,&extra,.JSON,context.temp_allocator)!=nil {
-        bridge_pty_host_spawn_request_delete(request);return {},false
+        bridge_pty_host_spawn_request_delete(request);return {},"",false
     }
     script:=fmt.tprintf("%s/native-hook.sh",p.owner.work)
     status:=fmt.tprintf("%s/native-hook-status",p.owner.work)
     event:=fmt.tprintf("%s/native-hook-event.json",p.owner.work)
     source:=fmt.tprintf("#!/bin/sh\necho invoked > '%s'\ncat > '%s'\nif [ -n \"$HEIMDALL_CTL_BIN\" ]; then echo ctl_present >> '%s'; \"$HEIMDALL_CTL_BIN\" extension hook codex < '%s'; else echo ctl_absent >> '%s'; fi\n",status,event,status,event,status)
-    if os.write_entire_file(script,transmute([]byte)source)!=nil {bridge_pty_host_spawn_request_delete(request);return {},false}
+    if os.write_entire_file(script,transmute([]byte)source)!=nil {bridge_pty_host_spawn_request_delete(request);return {},"",false}
     hook_config:=strings.concatenate({"hooks.SessionStart=[{hooks=[{type=\"command\",command=",executor.encode(fmt.tprintf("sh '%s'",script)),",timeout=5}]}]"},context.temp_allocator)
     filtered:=make([dynamic]string,context.temp_allocator)
     index:=0
@@ -235,7 +237,7 @@ native_owner_prepare_spawn :: proc(ctx:rawptr,s:^executor.Store,intent:executor.
     }
     fmt.println("[native-owner] hook_script_sha256",contracts.owner_payload_digest(source),"vetted_args_sha256",contracts.owner_payload_digest(string(bytes)))
     p.run_dir=request.cwd
-    return request,true
+    return request,pin,true
 }
 native_owner_physical :: proc(t:^testing.T,p:^Native_Owner_Proof,wire:Executor_Exchange_Wire,
     activation:owner.Intent_Claim,content:json.Object) {
