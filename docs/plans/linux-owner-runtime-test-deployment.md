@@ -1,12 +1,8 @@
-# Isolated Linux owner-runtime test candidate and rollback
+# Ledger-only Linux runtime verification proposal
 
-This is a review proposal for task `task_18e5c7109a726015`, requirements revision 1. Preparation rebuilt and hashed approved Bridge, CLI and PTY packages; it did not deploy, start a daemon/child/server, install software, modify live credentials/configuration, or push. The smallest meaningful candidate is signed owner/executor ledger tests plus a real shell/PTY fixture. Normal UI/CLI/worker migration is still M4 work. The optional actual Codex route uses the already-authorized existing provider profile and is explicitly separate from the fully private no-auth candidate.
+Task `task_18e5c7109a726015`, revision 1: approved source and actual Bridge/CLI/PTY builds are pinned. Executable scope is narrowed to in-process owner/executor ledger verification because the prior broader candidate lacked durable process capture for crash rollback. Ordinary ingress remains M4; physical/native proofs are historical evidence.
 
-## Decision and review boundary
-
-Independent named review and the task's explicit user approval must precede any execution of the proposed child-starting commands below. Approval of this document is not approval to migrate an existing chain. No existing chain, account, runtime socket, Bridge configuration, user service, provider trust setting or production database is an input to the private fixture candidate.
-
-The candidate validates runtime primitives and failure boundaries. It does not offer an interactive deployed product, a fresh provider login, WAN partition proof, general release readiness, Mac/Claude execution notifications, or Windows support. Native release scope is Linux Codex only; Mac and Claude notifications remain disabled/user-deferred and Windows is unsupported.
+Pending independent named review and existing gates. No execution approval requested. No live chains, credentials, config, services, installation or startup changed.
 
 ## 1. Source and actual build pins (REQ-DEP-P1)
 
@@ -51,233 +47,141 @@ Riverwood uses the existing `/home/tanmay/.local/bin/nix` wrapper, rootless nix-
 
 Dependencies are fixed by `flake.lock`: observed development tools Odin `dev-2026-09`, Rust `1.98.1`, Node `v26.4.0`; the Bridge package closure includes Odin `dev-2026-07a`, SQLite `3.53.3`, OpenSSL `3.6.4`, socat `1.8.1.3`, glibc `2.42-84`. Linked libcurl is the repository-pinned `8.23.0` (zlib source pin `1.3.2`); the closure also contains curl CLI `8.22.0`. The CLI version is not the linked-library version. Existing Nix caches/store may gain build objects; no global profile or service is changed. The build emitted the existing deprecated `stdenv.isDarwin` evaluation warning.
 
-## 2. Isolation contract
+## 2. Named finding resolved by narrowing
 
-The operator selects a new, absent candidate root:
+Review of `8bdf4667` correctly found no operational mechanism to create the rollback ownership manifest. The remote-stop fixture holds original/replacement child PIDs locally; manual observation cannot durably capture every generation before a crash. Artifact `art_18e5c78488835689` is superseded.
 
-```text
-/home/tanmay/.cache/heimdall-candidates/linux-owner-3d7cd694
-  source/                 detached checkout of the reviewed commit
-  home/                   private HOME for no-auth fixtures
-  home/.cache/heimdall-tests/
-  home/.config/heimdall/bridges/brg_test_<test-pid>/
-  home/.config/heimdall/bridges/brg_test_<test-pid>_b/
-  bin/                    compiled fixture test executables
-  evidence/               exit status, hashes and owned-process manifest
-```
+This revision takes the reviewer's narrowing alternative, accepted by coordinator message `msg_18e5c7afe88cf48a`: **ledger-only verification**. Child-starting commands and manifest-dependent PID rollback are removed. No supervisor or runtime feature is added. Real shell/PTY and native proofs are historical evidence only.
 
-An existing root is a refusal, not an invitation to overwrite. No deployment profile is added to the ordinary Bridge. Test configuration is in-process and restores its globals on normal return.
+The proposed command runs only `src/lib/owner_local`, without `-all-packages`. Static audit covered its 51 test files and production repository import closure: contracts, context_compaction, executor_channel, executor_local, html_bundle, jsonx, os_random, vault, workflow_v1. No process-start/kill/fork/exec/system call was found. Owner OS calls perform HOME lookup and fixture-file remove/chmod/exists; SQLite is in-process FFI. Imported package tests do not run. Execution fixtures inject observations and call ledger APIs, never Bridge/PTY/provider launches.
 
-| Boundary | Actual candidate behavior |
+Audit session `sh_008deee76316003fa08c86866c1f2136` enumerated that closure and checked process-call patterns. This is static evidence, not fresh test execution. Odin/compiler/test-runner processes remain ordinary managed verification processes; the tests launch no separate runtime daemon, provider or fixture child.
+
+## 3. Exact isolated configuration (REQ-DEP-P1)
+
+Private absent root: `/home/tanmay/.cache/heimdall-candidates/linux-owner-ledger-3d7cd694`, with `source/`, `home/.cache/heimdall-tests/` and `bin/owner-tests`.
+
+| Boundary | Ledger-only configuration |
 |---|---|
-| Account | Bridge fixture `usr_bridge_test`; owner-unit fixture `account`. Neither is a live Hub login. |
-| Creator/device | Fixture root signing key and genuinely signed test directory; owner unit uses generated fixture keys. No production enrollment/export. |
-| Owner/executor | Separate test identities `brg_test_<pid>_b` and `brg_test_<pid>`; owner and executor databases remain distinct even when both run in one test process. |
-| Key scope | `http://keystore.test.invalid:1` is the test-only canonical scope default, not a server to start. Test builds refuse non-`brg_test_` keystore identities. Fixture-only Linux keyring entries may exist during execution and are purged by fixture teardown. |
-| Profile/catalog | `p1c_test_setup` creates a private catalog/profile file under `/tmp/ham-p1c-<pid>-<nanoseconds>/provider_profiles.json`; shell fixture injects a test preparer. Its nominal Claude catalog entry is not Claude execution evidence. |
-| Owner DB | Remote-stop/native fixture `/tmp/ham-p1c-<pid>-<ns>/work/owner-native.sqlite`; owner unit `<private HOME>/.cache/heimdall-tests/owner-unit-<ns>-<sequence>.sqlite`. |
-| Executor DB | Private per-test Bridge vault directory, account-digest subdirectory `executor-local-<SHA256(account)>`; `runtime.sqlite` plus `runtime.sqlite.writer` and SQLite WAL/SHM sidecars (`src/bridge/executor_issuance.odin:21`). Account digest is `17a9731873dce63118def85569ef7dfcc01b9d2933165932e9d6b30ab1c6b0c4`. Record the created directory before cleanup. |
-| Runtime content | Private p1c data/work tree, generated TASK/bootstrap, profile and exact launch key; never an active M4 worktree. |
-| Ports / Hub | No TCP port, HTTP server, production Hub endpoint, browser account or relay service. |
-| PTY endpoints | Remote stop: `/tmp/ham-remote-stop-<ns>.sock`, plus empty-owner control `/tmp/ham-owner-empty-<ns>.sock`; both have separate lock files. Native optional route: `/tmp/ham-native-owner-<ns>.sock`, `/tmp/ham-native-hook-<ns>.sock`. Fail on collision. |
-| Native auth | Fully private HOME has no provider auth. No credential copy, provider login, trust/config edit or implicit fallback to the ordinary profile. |
-| Roles/capabilities | Capacity 1 worker policy in signed remote fixture; original owner prepares/commits one lease/bootstrap. Separate owner-unit role tests require every configured named pair and explicit human approval; fixture capabilities are not reusable live tokens. |
+| Account/keys | Fixture `account`, owner `bridge`/`bridge_key`, creator `device`, generated fixture P-256 keys; no live enrollment. |
+| Executor | In-process `executor`/`operator` with separate SQLite store; no enrolled machine. |
+| Owner DB | Private HOME + `/.cache/heimdall-tests/owner-unit-<nanoseconds>-<atomic-sequence>.sqlite`; WAL/SHM/`.writer` sidecars. |
+| Executor DB | Owner DB path + `.executor` and its own sidecars. |
+| Setup | `src/lib/owner_local/store_test.odin:24` creates keys/owner DB; `src/lib/owner_local/execution_test.odin:38` creates executor ledger. Destructors close/remove fixture DBs. |
+| Runtime/profile | No Bridge config, keystore, provider profile/catalog, TASK filesystem bootstrap, PTY host or provider executable. Provider names are inert fixture data. |
+| Endpoints/ports | None: no TCP/HTTP, Unix socket, Hub relay, browser session or daemon socket. |
+| Auth/roles | Private HOME has no provider auth. Inherited Heimdall/provider keys removed. Fixture worker/reviewer capabilities have no physical process or live Hub authority. |
+| State | Private root, Git worktree metadata and existing Nix caches. Failure can leave private DB files. |
 
-Paths containing `<pid>`, `<ns>`, and account digests are generated by reviewed source, not caller-selected deployment flags. Record their exact realized values for each approved execution. Hardcoded /tmp paths are not redirected by setting TMPDIR. Private HOME covers state that uses home expansion, while p1c/socket paths are separately owned temporary state.
+Pinned Bridge/CLI/PTY outputs remain build evidence; this candidate executes none of their entrypoints. No dynamic /tmp/socket/child ownership manifest is needed because those resources are excluded.
 
-## 3. Proposed execution commands — NOT EXECUTED
+## 4. Proposed ledger commands — NOT EXECUTED
 
-Run via managed `ham-ctl shell run --cwd <source>`; use explicit background mode only when desired and read completion logs. These commands are for the later approved execution task. Do not run a Bridge daemon, `nix run .#bridge`, Hub server, provider installer or service manager.
-
-First create the absent candidate root and pinned source, using the existing repository only as a read source plus Git worktree metadata:
+For a later execution task after named review and existing gates; no execution approval requested now. Use managed `ham-ctl shell run` with explicit cwd, never `serve`.
 
 ```bash
 set -eu
-candidate_root=/home/tanmay/.cache/heimdall-candidates/linux-owner-3d7cd694
+candidate_root=/home/tanmay/.cache/heimdall-candidates/linux-owner-ledger-3d7cd694
 test ! -e "$candidate_root" || exit 1
 umask 077
-mkdir -p "$candidate_root"/{home/.cache/heimdall-tests,bin,evidence}
+mkdir -p "$candidate_root"/{home/.cache/heimdall-tests,bin}
 git -C /var/home/tanmay/heimdall-agent-manager worktree add --detach \
   "$candidate_root/source" 3d7cd69492a5a9b857b2e54c667366f62986d778
 git -C "$candidate_root/source" rev-parse HEAD HEAD^{tree}
 git -C "$candidate_root/source" status --porcelain
 ```
 
-Stop if HEAD/tree differ from section 1 or status is nonempty. All subsequent commands run from `$candidate_root/source`. Inside the existing Nix environment, verify section 1 SHA256 and NAR hashes before using the exact PTY package. The Bridge and CLI outputs are pinned deliverables; baseline fixtures exercise Bridge source as a test executable, not a running package service.
-
-The following shell body is the complete no-auth test scope. It deliberately does not run any native provider test. It sanitizes inherited Heimdall credentials before compiling/running test code, keeps HOME private, and preserves the compiler/tool environment established by Nix:
+Require section 1 commit/tree and empty status. Run below with cwd `/home/tanmay/.cache/heimdall-candidates/linux-owner-ledger-3d7cd694/source`. Establish Nix before overriding HOME:
 
 ```bash
 nix develop --command bash -c '
 set -eu
-candidate_root=/home/tanmay/.cache/heimdall-candidates/linux-owner-3d7cd694
-for name in ${!HEIMDALL_@}; do unset "$name"; done
+candidate_root=/home/tanmay/.cache/heimdall-candidates/linux-owner-ledger-3d7cd694
+for name in $(compgen -A variable HEIMDALL_); do unset "$name"; done
 unset OPENAI_API_KEY ANTHROPIC_API_KEY CODEX_HOME
 export HOME="$candidate_root/home"
 export XDG_CONFIG_HOME="$HOME/.config" XDG_CACHE_HOME="$HOME/.cache"
 export XDG_DATA_HOME="$HOME/.local/share"
-export HEIMDALL_EXECUTOR_TEST_PTY=/nix/store/8mbr1mz360m9v6ys15hrbfdgyxz4y2am-ham-pty-host-0.5.49/bin/ham-pty-host
 umask 077
 odin test src/lib/owner_local -collection:odin_test=src \
   -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1 \
   -out:"$candidate_root/bin/owner-tests"
-odin test src/bridge -collection:odin_test=src \
-  -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1 \
-  -define:EXECUTOR_TEST_REQUIRED=true \
-  -define:ODIN_TEST_NAMES=main.test_executor_original_owner_remote_stop \
-  -out:"$candidate_root/bin/remote-stop-tests"
-sha256sum "$candidate_root/bin/owner-tests" "$candidate_root/bin/remote-stop-tests"
+sha256sum "$candidate_root/bin/owner-tests"
+printf "%s\n" "LEDGER_ONLY_VERIFICATION_COMPLETE"
 '
 ```
 
-These commands build and RUN tests; they must not be mistaken for private build-only preparation. `EXECUTOR_TEST_REQUIRED=true` makes missing actual PTY support fail instead of silently skipping. The source-level remote-stop test name is verified in `src/bridge/executor_issuance_test.odin:68`. Compilation hashes of these future test executables are not claimed as already prepared outputs.
+Do not add `-all-packages`, change to `src/bridge`, add native opt-ins or supply a PTY binary. This builds and RUNS owner tests, not build-only. It was not run during preparation. Require managed exit 0, zero failures and final marker. M3c previously reported 269 owner tests; investigate unexpected count changes. Save session ID/results and future test-executable hash. No unbuilt test hash is claimed.
 
-Observe managed output and exit status. Require zero failing tests, no required-daemon skip, and the remote-stop final marker:
+Review surface: named output plus pinned source assertions. DBs are removed on normal exit; no interactive product/SQL inspection window.
 
-```text
-[remote-stop] signed original owner cancel -> durable query/stop -> executor/owner restart -> disconnected stopping retains charge -> exact released receipt PASS
-```
+## 5. Coverage and missing ingress (REQ-DEP-P2)
 
-The user can inspect signed protocol/SQL assertions directly in `src/bridge/owner_executor_native_test.odin:60`, `src/bridge/owner_executor_stop_test.odin:18`, and `src/lib/owner_local/review_roles_test.odin:29`. These deterministic fixtures remove their DBs on normal exit; they do not promise an interactive SQL inspection window or retained plaintext state. Managed logs and the pinned source are the review surface. A product UI demonstration requires M4 convergence and a separate deployment proposal.
-
-## 4. Meaningful user checks and missing ingress (REQ-DEP-P2)
-
-| Check | Available observation / pass condition |
+| Behavior | Available ledger-only check |
 |---|---|
-| Signed chain/fleet/requirements | Remote fixture executes signed chain.create, task.create, fleet.policy.set, fleet.reserve, requirements.edit, genuine preparation/commit/bootstrap APIs; its original-owner marker must pass. No authority rows are inserted by SQL. |
-| Claim/present/ack/submit/review | Full owner suite includes role fixture claim, requirements.present/ack, lease.submit, primary review, two named role votes and human review. State remains in_review until all gates pass; self-author review and stale attempts reject. This is source/API fixture coverage, not an autonomous Codex worker completing a task. |
-| Exact cancel/stop | Signed cancellation creates durable executor query then ordinary stop. An empty owner-local daemon refuses remote settlement. After owner/executor DB restart the exact executor alone can acknowledge release. |
-| Disconnected endpoint | Signed stopping accepted, actual original PID still live, live-resource count remains 1. Reconnect and exact released receipt then make charge 0. |
-| Replacement isolation | Old reservation stop leaves the replacement launch key/PID alive. Replacement is a physical test control, not a new task grant. |
-| Replay/lost reply | Durable query bytes repeat identically; transport retry does not manufacture new authority. Existing signed receipts prove past results only. |
-| Fail-closed resources | Approved M3c mounted regressions cover catalog disabled, binary changed, directory missing/replaced during unlocked callback: invalid_resources before first spawn. They are recorded evidence, not extra cases silently added to this proposed execution scope. |
-| Crash/offline/unknown | Daemon journal loss or unavailable child means unknown/recovery_required/child_unavailable, never trusted absence. Expiry alone does not refund capacity; no automatic retarget or reconstructed partial receipt. |
+| Signed chain/fleet | Fixture keys sign commands and validate chain/fleet/reservation history. Some setup seeds prior rows by SQL; this is not the mounted signed Bridge proof. |
+| Claim/requirements/submit | `src/lib/owner_local/review_roles_test.odin:13` claims, presents/acks requirements and submits exact revision through APIs. No worker process. |
+| Named/user gates | `src/lib/owner_local/review_roles_test.odin:29` keeps in_review until primary, both roles and human approval; author/stale exclusion asserted. |
+| Prepare/commit | Separate in-process owner/executor DBs/signatures in execution tests; no daemon. |
+| Stop/replay | Signed durable phases and acceptance against injected observations; no fresh physical termination/PTY-input proof. |
+| Crash/offline/unknown | Charge retained without correlated trusted executor released proof; stopping is acceptance only. Unknown/expiry/journal loss cannot prove absence/refund capacity. |
 
-Existing dedicated ingress does exist: CLI `task-chain owner-local relay --request-file` forwards opaque human-device-signed browser exports; `task-chain owner-local lease --request-file` calls `agent.owner_local.lease`. Instance tokens authenticate transport and cannot generate human signatures/grants. The Bridge denies Wrapper access to that lease route. Sources: `src/ctl/taskv2_cmds.odin:1336`, `src/bridge/owner_local_leases_test.odin:6`, `src/bridge/executor_child.odin:56`.
+No fresh real shell/PTY/native child, daemon restart, replacement-generation stop or provider session is proposed.
 
-These dedicated paths do not make ordinary `task-chain`/`lease`/`review` worker commands or normal browser chain creation automatically target an isolated owner. There is no fixture Hub/browser/export signer/paired production account in this candidate. M4 must finish ordinary ingress, worker migration, cutover/restore and repeated-cycle convergence before a normal user deployment can be meaningfully proposed. Do not pass the worker's live token or live signed exports into the candidate to fill that gap.
+Dedicated source paths exist: `task-chain owner-local relay --request-file` forwards human-device-signed browser exports; `task-chain owner-local lease --request-file` calls `agent.owner_local.lease`. Tokens authenticate transport, not human signatures/grants; Wrapper access is denied. See `src/ctl/taskv2_cmds.odin:1336`, `src/bridge/owner_local_leases_test.odin:6`, `src/bridge/executor_child.odin:56`.
 
-## 5. Optional existing-profile Linux Codex route
+No fixture Hub/browser signer/paired live account is supplied. Ordinary UI/CLI/worker migration, cutover/restore and repeated-cycle convergence remain M4. Dedicated APIs are not normal ingress readiness. Do not use live tokens, exports or chains to fill the gap. This is not a deployable app.
 
-This is a separate, already-authorized one-invocation diagnostic route from M3c, not the private no-auth baseline. No fresh native test was run during preparation. The approved source report records Codex `0.162.0`, model `gpt-6.1-sol`, session `sh_79d0d26107ba8390215cca35652fed86`, 1 pass in 4.69s: real SessionStart hook binding, one notice submission, one typed abort, 66 message bytes, partial/lost-result persistence recovery and signed receipt replay.
+## 6. Historical physical/native evidence, excluded from execution
 
-Provider executable read-only pin observed during preparation:
-`/home/linuxbrew/.linuxbrew/bin/codex` resolves to `/var/home/linuxbrew/.linuxbrew/Caskroom/codex/0.162.0/bin/codex`; SHA256 `50ed828f357c655a3c82054d346cab8434f24901f14ec19b8267571bdd008b38`. Existing inspected invocation-arguments file `/home/tanmay/.cache/heimdall-tests/native-owner-pending-20261107-1017.json` SHA256 is `91fce628cbe0866a93d18e883c20767853927b10bf3e614a03de0c6697a3fac8`.
+Release scope remains Linux Codex only. Mac execution and Claude notifications remain disabled/user-deferred; Windows is unsupported.
 
-That argument file requests no alternate screen, read-only sandbox, update checking disabled, and the explicitly authorized invocation-only `--dangerously-bypass-hook-trust`. The reviewed fixture replaces only the SessionStart hook argument with its private script. At `src/bridge/owner_executor_native_test.odin:201` that inspected script records the fixture event and runs exactly `"$HEIMDALL_CTL_BIN" extension hook codex`; it does not install persistent trust/configuration. Verify the script source and hashes before any rerun. No auth export, copied credential, settings edit, alternate provider transport or normalization is allowed.
+[M3c report](artifact://art_18e5c657a8858a2a) and [source/evidence](artifact://art_18e5c63e31f87a5e) retain implementation `7d72d11e` in approved `3d7cd694`.
 
-If an execution task elects this optional diagnostic, use the existing authenticated provider profile as authorized; preserve its current HOME/provider profile rather than falsely claiming a new private provider login. Keep fixture state and compiled output private, and sanitize inherited HEIMDALL_* first as in section 3. Existing provider session/transcript files can be written by Codex in its existing profile; they are outside the fully private baseline and must be recorded as exact session paths, never glob-deleted. Refuse the optional diagnostic if an existing profile would require login, auth refresh/config/trust mutation, or if its outputs cannot be scoped. No new user auth action is needed to complete this preparation.
+Prior remote-stop proof used genuinely signed original-owner chain/fleet/requirements/prepare/commit/bootstrap, real shell/PTY, owner/executor DB restarts, disconnected stopping with charge 1, reconnected exact released proof reducing charge to 0, and replacement isolation. Source `src/bridge/owner_executor_stop_test.odin:18` holds PIDs locally at lines 46/130 without durable external capture. Prior required-daemon Bridge suite: 1046 passes. No rerun command is supplied.
 
-Exact future diagnostic invocation, inside the pinned source's Nix environment after HEIMDALL_* sanitization:
+Recorded Linux Codex `0.162.0` / `gpt-6.1-sol` run `sh_79d0d26107ba8390215cca35652fed86`: 1 pass/4.69s, real SessionStart binding, one notice, one typed abort, 66 message bytes, partial/lost-result recovery and signed receipt replay. Notification is typed PTY interrupt/paste/Enter, not desktop notification. Completed exact receipts replay read-only; unfinished unknown partials refuse recovery/resend and retain charge. Replay does not override expiry/revocation.
 
-```bash
-env HEIMDALL_NATIVE_CODEX=/home/linuxbrew/.linuxbrew/bin/codex \
-  HEIMDALL_NATIVE_MODEL=gpt-6.1-sol \
-  HEIMDALL_NATIVE_ARGS=/home/tanmay/.cache/heimdall-tests/native-owner-pending-20261107-1017.json \
-  HEIMDALL_NATIVE_CTL=/nix/store/551axj2arhddg3rqi566lhpvc7m54vdz-ham-ctl-0.5.49/bin/ham-ctl \
-  HEIMDALL_EXECUTOR_TEST_PTY=/nix/store/8mbr1mz360m9v6ys15hrbfdgyxz4y2am-ham-pty-host-0.5.49/bin/ham-pty-host \
-  odin test src/bridge -collection:odin_test=src \
-  -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1 \
-  -define:EXECUTOR_NATIVE_OWNER=true \
-  -define:ODIN_TEST_NAMES=main.test_executor_original_owner_native_notification \
-  -out:/home/tanmay/.cache/heimdall-candidates/linux-owner-3d7cd694/bin/native-owner-tests
-```
+Existing authorization permits one-invocation inspected hamctl hook with the already-authenticated provider profile, no credential export/copy, login or persistent auth/trust/settings change. It is separate from private no-auth state. `src/bridge/owner_executor_native_test.odin:201` generates the script calling `"$HEIMDALL_CTL_BIN" extension hook codex`. Inspected arguments use read-only sandbox, no alt-screen, updates disabled and authorized invocation-only `--dangerously-bypass-hook-trust`, not persistent trust installation.
 
-This proposes the newly pinned CLI/PTY rather than silently reusing the older M3b CLI from the recorded run; that exact combination has not been native-rerun here. Record its eventual result separately. Compare provider config SHA256 before/after without printing config or auth. Recorded M3c cleanup `sh_6c03dce5a69d4a3d6116f8359895e022` found PID3304905 absent, no new sockets/locks, and unchanged config SHA256 `d111397be1b38940d9b795a64f8b75dc61a659e98895d6aff0a41ba372aba6cf`; this is historical evidence, not the expected current hash.
+Retained read-only pins:
 
-Native notification is a typed PTY interrupt/paste/Enter operation with retained exact ticket/receipt, not OS desktop notification. A completed exact receipt can be replayed read-only after journal loss; revocation/expiry still apply. An unfinished partial operation with lost daemon journal must return recovery_required/child_unavailable and retain capacity, not resend a potentially duplicate message. The remote stop scenario above uses a shell child; it does not establish a fresh native-Codex cancellation run or a Claude/Mac claim.
+- `/home/linuxbrew/.linuxbrew/bin/codex` resolves to `/var/home/linuxbrew/.linuxbrew/Caskroom/codex/0.162.0/bin/codex`, SHA256 `50ed828f357c655a3c82054d346cab8434f24901f14ec19b8267571bdd008b38`.
+- `/home/tanmay/.cache/heimdall-tests/native-owner-pending-20261107-1017.json` SHA256 `91fce628cbe0866a93d18e883c20767853927b10bf3e614a03de0c6697a3fac8`.
 
-## 6. Failure handling and exact rollback
+Existing profile can write sessions/transcripts outside private state. No fresh private native readiness or execution command is proposed. Historical cleanup `sh_6c03dce5a69d4a3d6116f8359895e022` found PID3304905 absent, no new sockets/locks, unchanged config SHA256 `d111397be1b38940d9b795a64f8b75dc61a659e98895d6aff0a41ba372aba6cf`; not an expected current hash.
 
-Rollback affects only candidate-owned processes and state. There is no live service switch to undo and no existing DB backup to restore. Do not clear shared keyrings, stop user services, run killall/pkill, remove global Nix profiles/store objects, or reset the repository.
+Before any future child-starting proposal, require independently reviewed pre-start supervision/containment with durable host/inner-Nix PID mapping, every daemon/original/replacement generation, state/socket ownership and prevention of further spawns during teardown. Establish capture before spawn; fail closed if unavailable. Manual later polling/empty manifests do not qualify. This preparation implements/assumes none of it; native authorization alone does not supply rollback.
 
-Before any later execution, the execution holder records a private owned-process manifest containing each test runner, daemon and child PID, /proc PID start-time, executable identity and exact socket/state paths. Capture host /proc PIDs and parent-child ownership at creation/observation, not by matching a process name after a crash. If an inner Nix namespace reports different PIDs, do not substitute those for the host manifest. Native fixture logs the actual child PID; record its exact transcript/session paths without retaining token-bearing argv. Include timestamp and whether an identity was verified. A missing/ambiguous identity is a stop-and-investigate condition.
+## 7. Ledger-only cleanup
 
-| Event | Response / rollback |
-|---|---|
-| Normal return | Reviewed fixture defers close exact instance+launch-key child, kill/wait only its daemon, purge test identities and remove its temporary trees/socket/lock files. Owner unit closes/removes DB/WAL/SHM/writer files. Verify manifest entries absent afterward. |
-| Runner still active | Let bounded fixture teardown finish; if aborting a managed run, use `ham-ctl shell kill <that candidate session-id>`. Ctrl-C alone does not stop a managed run. Do not assume stopping the runner proves children absent. |
-| Runner/daemon crash | For each manifest PID verify current /proc start-time and executable still equal the recorded values; signal TERM to that exact owned PID, wait, and only if the same identity survives use KILL. A recycled PID must never be signalled. Recheck the exact recorded child even if a restarted daemon reports unknown. |
-| Unknown ownership | Leave process and state intact, preserve private evidence and request investigation. Never kill by provider name or refund ledger capacity. |
-| Physical daemon offline | Retain charge and durable signed phase. Reconnect/requery exact executor; only correlated signed released proof settles capacity. Manual OS cleanup is test rollback, not authority to forge an executor receipt. |
-| Unexpected provider/profile change | Stop optional route, preserve hashes and paths, report discrepancy. No automatic credential/config restore from copied secrets or broad profile deletion. |
+No runtime service/profile cutover, running Bridge/PTY/provider, socket or keyring exists in this scope. Rollback removes only private checkout/fixture files after verified inactivity.
 
-After all recorded processes are verified absent, remove only the manifest's exact generated socket/lock and p1c paths (checking ownership and that they were absent before this run). No wildcard /tmp cleanup. Purge only the test identities through fixture teardown; a residual test keyring entry requires exact recorded test scope, never a keyring-wide clear.
+Normal managed exit 0 plus `LEDGER_ONLY_VERIFICATION_COMPLETE` means Odin waited for its test executable. Destructors close/remove DBs/sidecars. Save managed results externally, then clean up below. On failure, abort, host crash, missing marker, unknown status or uncertain completion, **preserve the root; do not remove it**. Let managed verification finish or investigate its owning session. Never guess PIDs/kill by provider name/delete open state.
 
-For an abnormal exit, the following exact command consumes the privately recorded manifest `evidence/owned-processes.json`, a JSON array of `{"pid":123,"start_ticks":"456","exe":"/absolute/executable","role":"fixture-child"}` records. Values must have been observed while ownership was established; the example numbers are schema examples, not targets. It signals only matching identities, children before daemons before runners. It refuses a mismatch rather than guessing. Run it from the host /proc namespace where the manifest was captured. It uses Linux pidfds so a recycled PID cannot receive a later signal.
-
-```bash
-python3 - /home/tanmay/.cache/heimdall-candidates/linux-owner-3d7cd694/evidence/owned-processes.json <<'PY'
-import json, os, select, signal, sys
-from pathlib import Path
-
-def identity(pid):
-    try:
-        base = Path("/proc") / str(pid)
-        stat = (base / "stat").read_text()
-        # comm may contain spaces/parentheses; fields after final ')' start at field 3.
-        fields = stat[stat.rfind(")") + 2:].split()
-        if fields[0] == "Z":
-            return None
-        return fields[19], os.readlink(base / "exe"), base.stat().st_uid
-    except FileNotFoundError:
-        return None
-
-rows = json.loads(Path(sys.argv[1]).read_text())
-rank = {"fixture-child": 0, "pty-daemon": 1, "runner": 2}
-for row in sorted(rows, key=lambda r: rank[r["role"]]):
-    pid = int(row["pid"])
-    assert pid > 1 and pid not in (os.getpid(), os.getppid())
-    expected = (str(row["start_ticks"]), row["exe"], os.getuid())
-    try:
-        fd = os.pidfd_open(pid)
-    except ProcessLookupError:
-        continue
-    try:
-        current = identity(pid)
-        if current is None:
-            continue
-        assert current == expected, "PID identity mismatch; preserve state"
-        # fd pins this process even if the numeric PID is later reused.
-        try:
-            signal.pidfd_send_signal(fd, signal.SIGTERM)
-        except ProcessLookupError:
-            continue
-        if not select.select([fd], [], [], 5)[0]:
-            try:
-                signal.pidfd_send_signal(fd, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            assert select.select([fd], [], [], 5)[0], "Owned process remains; investigate"
-    finally:
-        os.close(fd)
-print("Recorded candidate processes absent; this is OS cleanup, not a signed release")
-PY
-```
-
-Finally detach the candidate checkout and remove its own root, after preserving the small non-secret evidence report:
+After interruption, cleanup waits for confirmed end of managed process and no compiler/test runner using the root; otherwise quarantine it for the later execution holder. This does not promise crash cleanup for physical child generations: the narrowed tests cannot launch them.
 
 ```bash
 set -eu
-candidate_root=/home/tanmay/.cache/heimdall-candidates/linux-owner-3d7cd694
-# Preconditions: all manifest process identities absent; source checkout clean.
-git -C "$candidate_root/source" status --porcelain
+candidate_root=/home/tanmay/.cache/heimdall-candidates/linux-owner-ledger-3d7cd694
+# Require recorded exit 0 + marker, or separately verified inactivity.
+test "$candidate_root" = /home/tanmay/.cache/heimdall-candidates/linux-owner-ledger-3d7cd694
+test "$(git -C "$candidate_root/source" rev-parse HEAD)" = 3d7cd69492a5a9b857b2e54c667366f62986d778
+test -z "$(git -C "$candidate_root/source" status --porcelain)"
 git -C /var/home/tanmay/heimdall-agent-manager worktree remove "$candidate_root/source"
-# Inspect this literal path and its owned contents before removal:
-test "$candidate_root" = /home/tanmay/.cache/heimdall-candidates/linux-owner-3d7cd694
 rm -r -- "$candidate_root"
 ```
 
-Do not execute removal if worktree removal failed, status was dirty, or root ownership is uncertain. Native profile transcripts remain in the existing profile unless an exact recorded fixture-owned path is separately reviewed for cleanup; no provider-wide session deletion. No daemon socket for the ordinary running Bridge is ever an input to these commands.
+Stop on any failed precondition/removal. Never remove M4 worktrees, shared caches/store, ordinary Bridge state, provider sessions/config, global profiles/services. Filesystem cleanup cannot forge executor absence or settle charge.
 
-## 7. Evidence and acceptance map (REQ-DEP-P3)
+## 8. Acceptance and checks (REQ-DEP-P3)
 
-| Requirement | Deliverable / limitation |
+| Requirement | Disposition |
 |---|---|
-| REQ-DEP-P1 | Approved commit/tree, actual freshly built package/entrypoint/NAR hashes, pinned dependencies, separate identities/HOME/DBs, exact generated socket patterns and commands. No live endpoint or credentials. |
-| REQ-DEP-P2 | Reproducible signed ledger + actual shell/PTY scope, exact expected failure/charge behavior and owned-process rollback. Dedicated ingress/M4 and native auth boundaries are explicit. |
-| REQ-DEP-P3 | This committed document plus its identical review artifact. No deployment/startup, auth/config/service mutation, installation or push occurred during preparation. Independent and user reviews remain pending. |
+| REQ-DEP-P1 | Source/tree and actual package SHA256/NAR/dependencies retained; private ledger account/DB/config/commands specified. No live endpoint/auth. |
+| REQ-DEP-P2 | Smallest currently safe scope is ledger-only. Physical child rollback lacks pre-start capture, so starts are excluded. M4/historical-proof limits explicit. |
+| REQ-DEP-P3 | Committed document/replacement artifact for independent review; no deployment/startup/auth/service/install/push. |
 
-Recorded approved M3c results: owner 269, executor 56, encrypted channel 6, contracts 40, required-daemon Bridge 1046, UI 24; typecheck and all three packages passed. Full Bridge suite has existing allocator warnings; no leak-free claim. Historical/native replay proof does not guarantee indefinite transport validity, override revocation, reconstruct unknown physical outcomes, or establish normal M4 ingress. This preparation reran builds and read source/hashes only, not those child-starting suites.
+Preparation: prior three-package build/hash reads; revised static initial-owner-test/import-closure no-child audit; Bash syntax/source-reference/diff checks and artifact roundtrip. No ledger test, child suite, daemon/server/provider ran during preparation.
 
-Primary evidence: [M3c repair report](artifact://art_18e5c657a8858a2a), [M3c source hashes and evidence](artifact://art_18e5c63e31f87a5e), committed `docs/m3c-remote-runtime-repair.md` and `docs/evidence/m3c-remote-runtime-repair.json`. This proposal adds no runtime feature and makes no deployment readiness claim beyond the small fixture scope stated above.
+Retained M3c: owner269, executor56, channel6, contracts40, required-daemon Bridge1046, UI24, typecheck/packages and native proof above. Existing Bridge allocator warnings remain; no leak-free claim. Pins do not turn historical evidence into fresh runs or waive gates.
