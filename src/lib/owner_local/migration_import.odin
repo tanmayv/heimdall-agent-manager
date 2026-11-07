@@ -31,15 +31,65 @@ migration_quarantined :: proc(s:^Store,chain:string) -> bool {
     return !ok || len(rows)>0
 }
 
-// Before fetching any document: an exact earlier import replays its stored
-// receipt, a different digest for the same migration or chain conflicts.
-migration_import_lookup :: proc(s:^Store,migration,chain,manifest_digest:string) -> (receipt,code:string) {
+// Before fetching any document. "ok" replays the stored receipt of an exact
+// earlier import; "miss" means import (replacing an abandoned import of the
+// same chain); "migration_aborted" is terminal for an abandoned or discarded
+// migration, which never yields a receipt; "pending_other" names another
+// unactivated import of the chain that the caller may check with the Hub.
+migration_import_lookup :: proc(s:^Store,migration,chain,manifest_digest:string) -> (receipt,code,other:string) {
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
-    rows,ok:=query(s.db,"SELECT manifest_digest,receipt_json,migration_id FROM migration_imports WHERE migration_id=? OR chain_id=?",migration,chain)
-    if !ok do return "","storage_error"
-    if len(rows)==0 do return "","miss"
-    if len(rows)!=1 || rows[0][0]!=manifest_digest || rows[0][2]!=migration do return "","operation_conflict"
-    return rows[0][1],"ok"
+    gone,ok:=query(s.db,"SELECT 1 FROM migration_discarded WHERE migration_id=?",migration)
+    if !ok do return "","storage_error",""
+    if len(gone)>0 do return "","migration_aborted",""
+    rows:[dynamic][]string
+    rows,ok=query(s.db,`SELECT manifest_digest,receipt_json,migration_id,COALESCE(activated_seq,''),
+      EXISTS(SELECT 1 FROM migration_abandoned a WHERE a.migration_id=m.migration_id) FROM migration_imports m WHERE migration_id=? OR chain_id=?`,migration,chain)
+    if !ok do return "","storage_error",""
+    if len(rows)==0 do return "","miss",""
+    if len(rows)!=1 do return "","operation_conflict",""
+    r:=rows[0]
+    if r[2]==migration {
+        if r[4]=="1" do return "","migration_aborted",""
+        if r[0]!=manifest_digest do return "","operation_conflict",""
+        return r[1],"ok",""
+    }
+    if r[3]!="" do return "","operation_conflict",""
+    if r[4]=="1" do return "","miss",""
+    return "","pending_other",r[2]
+}
+
+migration_abandoned_import :: proc(s:^Store,migration:string) -> (bool,bool) {
+    rows,ok:=query(s.db,"SELECT 1 FROM migration_abandoned WHERE migration_id=? UNION ALL SELECT 1 FROM migration_discarded WHERE migration_id=?",migration,migration)
+    return ok && len(rows)>0,ok
+}
+
+// Removes every row of an abandoned, never-activated import's chain so a new
+// migration of the chain to this owner can replace it. Only import-written
+// rows can exist: the chain was quarantined from import to abandonment. The
+// append-only delete guards of the chain-scoped tables are lifted for this
+// statement only, inside the caller's transaction, and restored verbatim.
+migration_discard :: proc(s:^Store,chain,old,manifest_digest,replaced_by:string,seq:i64) -> bool {
+    if !transaction_current(s.active) do return false
+    state,ok:=query(s.db,"SELECT activated_seq IS NULL,EXISTS(SELECT 1 FROM migration_abandoned WHERE migration_id=?) FROM migration_imports WHERE migration_id=? AND chain_id=?",old,old,chain)
+    if !ok || len(state)!=1 || state[0][0]!="1" || state[0][1]!="1" do return false
+    if !exec(s.db,"PRAGMA defer_foreign_keys=ON") do return false
+    tables:[dynamic][]string
+    tables,ok=query(s.db,`SELECT m.name FROM sqlite_master m WHERE m.type='table' AND m.name!='migration_discarded'
+      AND m.sql NOT LIKE 'CREATE VIRTUAL%' AND EXISTS(SELECT 1 FROM pragma_table_info(m.name) p WHERE p.name='chain_id') ORDER BY m.name`)
+    if !ok do return false
+    targets:=make([dynamic][2]string,context.temp_allocator)
+    for t in tables do append(&targets,[2]string{t[0],"chain_id"})
+    append(&targets,[2]string{"migration_import_documents","migration_id"},[2]string{"migration_abandoned","migration_id"})
+    for target in targets {
+        guards,read:=query(s.db,"SELECT name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name=? AND upper(sql) LIKE '%BEFORE DELETE%'",target[0])
+        if !read do return false
+        for g in guards { if !exec(s.db,fmt.tprintf(`DROP TRIGGER "%s"`,g[0])) do return false }
+        _,deleted:=query(s.db,fmt.tprintf("DELETE FROM %s WHERE %s=?",target[0],target[1]),chain if target[1]=="chain_id" else old)
+        for g in guards { if !exec(s.db,g[1]) do return false }
+        if !deleted do return false
+    }
+    _,ok=query(s.db,"INSERT INTO migration_discarded VALUES(?,?,?,?,?)",old,chain,manifest_digest,replaced_by,fmt.tprintf("%d",seq))
+    return ok
 }
 
 // Imports whose Hub cutover has not yet been observed: (migration, chain, digest).
@@ -100,18 +150,41 @@ migration_import :: proc(s:^Store,input:Migration_Import_Input,device,owner_key:
     state,ok:=query(s.db,"SELECT commit_seq,clock_high_ms,directory_version,directory_hash,recovery_state,database_id FROM runtime_database WHERE singleton=1")
     if !ok || len(state)!=1 do return fail("storage_error")
     if directory_version!=number(state[0][2]) || directory_hash!=state[0][3] do return fail("invalid_scope")
-    existing,found:=query(s.db,"SELECT manifest_digest,receipt_json,migration_id,selection_digest FROM migration_imports WHERE migration_id=? OR chain_id=?",migration,chain)
+    // An abandoned or discarded migration never yields a receipt again.
+    if aborted,read:=migration_abandoned_import(s,migration);!read {
+        return fail("storage_error")
+    } else if aborted {
+        return fail("migration_aborted")
+    }
+    existing,found:=query(s.db,"SELECT manifest_digest,receipt_json,migration_id,selection_digest,COALESCE(activated_seq,'') FROM migration_imports WHERE migration_id=? OR chain_id=?",migration,chain)
     if !found do return fail("storage_error")
+    replaced:=""
     if len(existing)>0 {
-        if len(existing)!=1 || existing[0][0]!=manifest_digest || existing[0][2]!=migration || existing[0][3]!=selection_digest do return fail("operation_conflict")
-        if !transaction_commit(&tx) do return fail("storage_error")
-        return Result{code="ok",body=existing[0][1],replay=true}
+        if len(existing)!=1 do return fail("operation_conflict")
+        e:=existing[0]
+        if e[2]!=migration {
+            // Another migration of this chain: only an abandoned, never
+            // activated import may be replaced.
+            abandoned,read:=migration_abandoned_import(s,e[2])
+            if !read do return fail("storage_error")
+            if !abandoned || e[4]!="" do return fail("operation_conflict")
+            replaced=e[2]
+        } else {
+            if e[0]!=manifest_digest || e[3]!=selection_digest do return fail("operation_conflict")
+            if !transaction_commit(&tx) do return fail("storage_error")
+            return Result{code="ok",body=e[1],replay=true}
+        }
     }
     if now<number(state[0][1]) {
         if !mark_clock_uncertain(&tx) do return fail("storage_error")
         return fail("clock_uncertain")
     }
     if state[0][4]!="ready" do return fail("clock_uncertain")
+    if replaced!="" {
+        prior,read:=query(s.db,"SELECT manifest_digest FROM migration_imports WHERE migration_id=?",replaced)
+        if !read || len(prior)!=1 do return fail("storage_error")
+        if !migration_discard(s,chain,replaced,prior[0][0],migration,number(state[0][0])+1) do return fail("storage_error")
+    }
     clash,read:=query(s.db,"SELECT 1 FROM task_chains WHERE chain_id=? UNION ALL SELECT 1 FROM chain_genesis WHERE creation_op=? UNION ALL SELECT 1 FROM command_receipts WHERE principal_id=? AND operation_id=?",chain,migration,principal,migration)
     if !read do return fail("storage_error")
     if len(clash)>0 do return fail("operation_conflict")

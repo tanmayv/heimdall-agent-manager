@@ -362,7 +362,7 @@ owner_execution_v25_upgrade_preserves_identity_and_rolls_back_collision :: proc(
     testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     rows,read=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations),database_id,commit_seq FROM runtime_database")
-    testing.expect(t,read);testing.expect_value(t,encode(rows),encode([1][4]string{{"31","31",before[0][0],before[0][1]}}))
+    testing.expect(t,read);testing.expect_value(t,encode(rows),encode([1][4]string{{"32","32",before[0][0],before[0][1]}}))
 }
 
 @(test)

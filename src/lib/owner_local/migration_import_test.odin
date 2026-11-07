@@ -208,7 +208,7 @@ migration_import_replay_conflict_owner_and_hash_refusals :: proc(t:^testing.T) {
     testing.expect_value(t,migration_test_import(f,wrong).code,"invalid_scope")
     first:=migration_test_import(f,m)
     if !testing.expect_value(t,first.code,"ok") do return
-    receipt,code:=migration_import_lookup(&f.store,"mig_once","legacy_chain",m.digest)
+    receipt,code,_:=migration_import_lookup(&f.store,"mig_once","legacy_chain",m.digest)
     testing.expect(t,code=="ok" && receipt==first.body,"lookup replays before any document is fetched")
     replay:=migration_test_import(f,m,5000)
     testing.expect(t,replay.code=="ok" && replay.replay && replay.body==first.body)
@@ -216,7 +216,7 @@ migration_import_replay_conflict_owner_and_hash_refusals :: proc(t:^testing.T) {
     changed:=migration_test_rows(f)
     changed["comment"]=nil
     other:=migration_test_build(f,"mig_once",changed)
-    _,code=migration_import_lookup(&f.store,"mig_once","legacy_chain",other.digest)
+    _,code,_=migration_import_lookup(&f.store,"mig_once","legacy_chain",other.digest)
     testing.expect_value(t,code,"operation_conflict")
     testing.expect_value(t,migration_test_import(f,other).code,"operation_conflict")
     // A different migration for the already imported chain also conflicts.
@@ -396,4 +396,47 @@ migration_import_abandoned_import_never_activates :: proc(t:^testing.T) {
     testing.expect(t,migration_quarantined(&f.store,"legacy_chain") && !control_ready(&f.store,"legacy_chain","t_ready"))
     close(&f.store);testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect(t,migration_quarantined(&f.store,"legacy_chain"))
+}
+
+// R3 re-review: an abandoned import never yields a receipt, and a new
+// migration of the same chain to this owner replaces it (abort, then
+// re-migrate to the same Bridge).
+@(test)
+migration_import_abandoned_import_is_replaced_by_a_new_migration :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f)
+    rows:=migration_test_rows(f)
+    first:=migration_test_build(f,"mig_first",rows)
+    if !testing.expect_value(t,migration_test_import(f,first).code,"ok") do return
+    second:=migration_test_build(f,"mig_second",rows)
+    _,code,other:=migration_import_lookup(&f.store,"mig_second","legacy_chain",second.digest)
+    testing.expect(t,code=="pending_other" && other=="mig_first","a pending import of the chain is named, not replaced")
+    testing.expect_value(t,migration_test_import(f,second).code,"operation_conflict")
+    testing.expect(t,migration_abandon(&f.store,"mig_first"))
+    // The abandoned migration is terminal: no receipt, no replay.
+    receipt,aborted,_:=migration_import_lookup(&f.store,"mig_first","legacy_chain",first.digest)
+    testing.expect(t,aborted=="migration_aborted" && receipt=="")
+    testing.expect_value(t,migration_test_import(f,first).code,"migration_aborted")
+    _,code,_=migration_import_lookup(&f.store,"mig_second","legacy_chain",second.digest)
+    testing.expect_value(t,code,"miss")
+    got:=migration_test_import(f,second)
+    if !testing.expect_value(t,got.code,"ok") do return
+    counts,_:=query(f.store.db,`SELECT (SELECT count(*) FROM tasks WHERE chain_id='legacy_chain'),(SELECT count(*) FROM task_comments WHERE chain_id='legacy_chain'),
+      (SELECT group_concat(migration_id) FROM migration_imports),(SELECT count(*) FROM migration_import_documents WHERE migration_id='mig_first'),
+      (SELECT creation_op FROM chain_genesis WHERE chain_id='legacy_chain'),(SELECT replaced_by FROM migration_discarded WHERE migration_id='mig_first'),
+      (SELECT count(*) FROM native_history_records WHERE chain_id='legacy_chain')`)
+    testing.expect_value(t,encode(counts),encode([1][7]string{{"4","1","mig_second","0","mig_second","mig_second","3"}}))
+    fk,_:=query(f.store.db,"PRAGMA foreign_key_check");testing.expect_value(t,len(fk),0)
+    guards,_:=query(f.store.db,"SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name IN('genesis_immutable_delete','migration_import_no_delete','migration_abandoned_no_delete')")
+    testing.expect_value(t,guards[0][0],"3")
+    testing.expect(t,!exec(f.store.db,"DELETE FROM chain_genesis"),"delete guards are restored")
+    // The replacement activates normally; the discarded id stays terminal.
+    migration_test_activate(t,f,second,"mig_second")
+    testing.expect(t,control_ready(&f.store,"legacy_chain","t_ready"))
+    _,code,_=migration_import_lookup(&f.store,"mig_first","legacy_chain",first.digest)
+    testing.expect_value(t,code,"migration_aborted")
+    // An activated import is never replaced.
+    third:=migration_test_build(f,"mig_third",rows)
+    _,code,_=migration_import_lookup(&f.store,"mig_third","legacy_chain",third.digest)
+    testing.expect_value(t,code,"operation_conflict")
 }
