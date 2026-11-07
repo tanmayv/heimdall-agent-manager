@@ -91,6 +91,13 @@ export const ownerSchemas = {
   migration_selection: [["protocol_version", "version"], ["account_id", "id"], ["chain_id", "id"], ["migration_id", "id"], ["owner_bridge_id", "id"], ["owner_key_id", "id"], ["principal_id", "id"], ["key_id", "id"], ["expected_work_revision", "counter"], ["request_expires_ms", "positive"], ["signature", "signature"]],
   migration_import_receipt: [["protocol_version", "version"], ["account_id", "id"], ["chain_id", "id"], ["migration_id", "id"], ["owner_bridge_id", "id"], ["key_id", "id"], ["selection_digest", "hash"], ["manifest_digest", "hash"], ["genesis_digest", "hash"], ["database_id", "id"], ["import_seq", "positive"], ["schema_version", "positive"], ["signature", "signature"]],
   migration_control: [["protocol_version", "version"], ["account_id", "id"], ["chain_id", "id"], ["migration_id", "id"], ["owner_bridge_id", "id"], ["principal_id", "id"], ["key_id", "id"], ["action", "migration_action"], ["expected_revision", "positive"], ["selection_digest", "hash"], ["evidence_digest", "hash"], ["request_expires_ms", "positive"], ["signature", "signature"]],
+  migration_source_inventory: [["protocol_version", "version"], ["account_id", "id"], ["chain_id", "id"], ["migration_id", "id"], ["selection_digest", "hash"], ["source_database_id", "id"], ["source_revision", "positive"], ["source_generation", "counter"], ["work_revision", "counter"], ["coverage_start", "counter"], ["coverage_version", "positive"], ["admission_closed", "flag"], ["effect_count", "counter"], ["entry_count", "counter"], ["executor_count", "counter"], ["resource_count", "counter"], ["effects_digest", "hash"], ["executors_digest", "hash"], ["resources_digest", "hash"]],
+  migration_effect: [["protocol_version", "version"], ["account_id", "id"], ["chain_id", "id"], ["effect_id", "id"], ["command_id", "id"], ["kind", "migration_effect_kind"], ["executor_bridge_id", "id"], ["source_generation", "positive"], ["parent_digest", "hash"], ["entry_index", "counter"], ["entry_digest", "hash"], ["task_id", "optional"], ["instance_id", "optional"], ["lease_id", "optional"]],
+  migration_mapping: [["protocol_version", "version"], ["executor_bridge_id", "id"], ["effect_id", "id"], ["command_id", "id"], ["entry_index", "counter"], ["effect_digest", "hash"], ["kind", "migration_effect_kind"], ["target_kind", "migration_target_kind"], ["parent_digest", "hash"], ["entry_digest", "hash"], ["task_id", "optional"], ["instance_id", "optional"], ["lease_id", "optional"], ["native_admission_digest", "optional_hash"], ["launch_key", "optional_hash"], ["launch_epoch", "optional"], ["run_count", "counter"], ["token_generation", "optional_hash"], ["configuration_digest", "optional_hash"], ["directory_id", "optional"], ["directory_revision", "counter"], ["directory_key", "optional_hash"], ["workdir_hash", "optional_hash"], ["repository_hash", "optional_hash"], ["branch", "optional_ref"]],
+  migration_executor_inventory: [["protocol_version", "version"], ["account_id", "id"], ["chain_id", "id"], ["migration_id", "id"], ["selection_digest", "hash"], ["source_inventory_digest", "hash"], ["source_generation", "counter"], ["executor_bridge_id", "id"], ["key_id", "id"], ["executor_incarnation", "positive"], ["journal_sequence", "counter"], ["coverage_version", "positive"], ["challenge", "hash"], ["observed_ms", "positive"], ["request_expires_ms", "positive"], ["complete", "flag"], ["command_count", "counter"], ["target_count", "counter"], ["unknown_count", "counter"], ["commands_digest", "hash"], ["targets_digest", "hash"], ["unknown_digest", "hash"], ["signature", "signature"]],
+  migration_inventory_reference: [["executor_bridge_id", "id"], ["key_id", "id"], ["inventory_digest", "hash"]],
+  migration_origin_binding: [["protocol_version", "version"], ["account_id", "id"], ["chain_id", "id"], ["migration_id", "id"], ["selection_digest", "hash"], ["owner_bridge_id", "id"], ["owner_key_id", "id"], ["principal_id", "id"], ["key_id", "id"], ["directory_root", "hash"], ["directory_sequence", "counter"], ["directory_head", "hash"], ["directory_epoch", "positive"], ["operation_id", "id"], ["issued_ms", "positive"], ["request_expires_ms", "positive"], ["nonce", "hash"], ["source_inventory_digest", "hash"], ["source_revision", "positive"], ["source_generation", "counter"], ["executor_count", "counter"], ["executor_inventories_digest", "hash"], ["mapping_count", "counter"], ["mapping_digest", "hash"], ["purpose", "migration_adoption_purpose"], ["signature", "signature"]],
+  migration_executor_drain: [["protocol_version", "version"], ["account_id", "id"], ["chain_id", "id"], ["migration_id", "id"], ["selection_digest", "hash"], ["source_inventory_digest", "hash"], ["source_generation", "counter"], ["executor_bridge_id", "id"], ["key_id", "id"], ["binding_digest", "hash"], ["barrier_receipt_digest", "hash"], ["executor_incarnation", "positive"], ["journal_sequence", "counter"], ["challenge", "hash"], ["observed_ms", "positive"], ["request_expires_ms", "positive"], ["complete", "flag"], ["inventory_digest", "hash"], ["mapping_digest", "hash"], ["resource_digest", "hash"], ["dispositions_digest", "hash"], ["observation_coverage_digest", "hash"], ["unresolved_count", "counter"], ["admitted_handler_count", "counter"], ["live_child_count", "counter"], ["merge_count", "counter"], ["queued_action_count", "counter"], ["signature", "signature"]],
 } as const;
 export type OwnerKind = keyof typeof ownerSchemas;
 export interface OwnerGenesis {
@@ -778,6 +785,158 @@ export interface OwnerMigration_Control {
   request_expires_ms: string;
   signature: string;
 }
+export interface OwnerMigration_Source_Inventory {
+  protocol_version: string;
+  account_id: string;
+  chain_id: string;
+  migration_id: string;
+  selection_digest: string;
+  source_database_id: string;
+  source_revision: string;
+  source_generation: string;
+  work_revision: string;
+  coverage_start: string;
+  coverage_version: string;
+  admission_closed: string;
+  effect_count: string;
+  entry_count: string;
+  executor_count: string;
+  resource_count: string;
+  effects_digest: string;
+  executors_digest: string;
+  resources_digest: string;
+}
+export interface OwnerMigration_Effect {
+  protocol_version: string;
+  account_id: string;
+  chain_id: string;
+  effect_id: string;
+  command_id: string;
+  kind: string;
+  executor_bridge_id: string;
+  source_generation: string;
+  parent_digest: string;
+  entry_index: string;
+  entry_digest: string;
+  task_id: string;
+  instance_id: string;
+  lease_id: string;
+}
+export interface OwnerMigration_Mapping {
+  protocol_version: string;
+  executor_bridge_id: string;
+  effect_id: string;
+  command_id: string;
+  entry_index: string;
+  effect_digest: string;
+  kind: string;
+  target_kind: string;
+  parent_digest: string;
+  entry_digest: string;
+  task_id: string;
+  instance_id: string;
+  lease_id: string;
+  native_admission_digest: string;
+  launch_key: string;
+  launch_epoch: string;
+  run_count: string;
+  token_generation: string;
+  configuration_digest: string;
+  directory_id: string;
+  directory_revision: string;
+  directory_key: string;
+  workdir_hash: string;
+  repository_hash: string;
+  branch: string;
+}
+export interface OwnerMigration_Executor_Inventory {
+  protocol_version: string;
+  account_id: string;
+  chain_id: string;
+  migration_id: string;
+  selection_digest: string;
+  source_inventory_digest: string;
+  source_generation: string;
+  executor_bridge_id: string;
+  key_id: string;
+  executor_incarnation: string;
+  journal_sequence: string;
+  coverage_version: string;
+  challenge: string;
+  observed_ms: string;
+  request_expires_ms: string;
+  complete: string;
+  command_count: string;
+  target_count: string;
+  unknown_count: string;
+  commands_digest: string;
+  targets_digest: string;
+  unknown_digest: string;
+  signature: string;
+}
+export interface OwnerMigration_Inventory_Reference {
+  executor_bridge_id: string;
+  key_id: string;
+  inventory_digest: string;
+}
+export interface OwnerMigration_Origin_Binding {
+  protocol_version: string;
+  account_id: string;
+  chain_id: string;
+  migration_id: string;
+  selection_digest: string;
+  owner_bridge_id: string;
+  owner_key_id: string;
+  principal_id: string;
+  key_id: string;
+  directory_root: string;
+  directory_sequence: string;
+  directory_head: string;
+  directory_epoch: string;
+  operation_id: string;
+  issued_ms: string;
+  request_expires_ms: string;
+  nonce: string;
+  source_inventory_digest: string;
+  source_revision: string;
+  source_generation: string;
+  executor_count: string;
+  executor_inventories_digest: string;
+  mapping_count: string;
+  mapping_digest: string;
+  purpose: string;
+  signature: string;
+}
+export interface OwnerMigration_Executor_Drain {
+  protocol_version: string;
+  account_id: string;
+  chain_id: string;
+  migration_id: string;
+  selection_digest: string;
+  source_inventory_digest: string;
+  source_generation: string;
+  executor_bridge_id: string;
+  key_id: string;
+  binding_digest: string;
+  barrier_receipt_digest: string;
+  executor_incarnation: string;
+  journal_sequence: string;
+  challenge: string;
+  observed_ms: string;
+  request_expires_ms: string;
+  complete: string;
+  inventory_digest: string;
+  mapping_digest: string;
+  resource_digest: string;
+  dispositions_digest: string;
+  observation_coverage_digest: string;
+  unresolved_count: string;
+  admitted_handler_count: string;
+  live_child_count: string;
+  merge_count: string;
+  queued_action_count: string;
+  signature: string;
+}
 export interface OwnerDocuments {
   genesis: OwnerGenesis;
   command: OwnerCommand;
@@ -870,4 +1029,11 @@ export interface OwnerDocuments {
   migration_selection: OwnerMigration_Selection;
   migration_import_receipt: OwnerMigration_Import_Receipt;
   migration_control: OwnerMigration_Control;
+  migration_source_inventory: OwnerMigration_Source_Inventory;
+  migration_effect: OwnerMigration_Effect;
+  migration_mapping: OwnerMigration_Mapping;
+  migration_executor_inventory: OwnerMigration_Executor_Inventory;
+  migration_inventory_reference: OwnerMigration_Inventory_Reference;
+  migration_origin_binding: OwnerMigration_Origin_Binding;
+  migration_executor_drain: OwnerMigration_Executor_Drain;
 }

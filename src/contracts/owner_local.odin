@@ -59,6 +59,10 @@ owner_field_valid :: proc(s, kind: string) -> bool {
         for b in s do if !(b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_' || b == '-' || b == '.' || b == ':') do return false
         return true
     case "migration_action": return s=="resume" || s=="cutover"
+    case "migration_effect_kind": return s=="wake" || s=="stop" || s=="merge"
+    case "migration_target_kind": return s=="launch" || s=="merge" || s=="never_admitted"
+    case "optional_hash": return s=="" || owner_hex(s,64)
+    case "migration_adoption_purpose": return s=="adopt-for-migration-drain-only"
     case "version": return s == "1"
     case "counter", "positive": return owner_decimal_valid(s) && (kind == "counter" || s != "0")
     case "priority": return s=="p0" || s=="p1" || s=="p2"
