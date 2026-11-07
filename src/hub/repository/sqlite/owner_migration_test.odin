@@ -267,3 +267,72 @@ legacy_effect_v204_upgrade_retains_unknown_association_and_rolls_back :: proc(t:
     testing.expect(t,read && len(rows)==1 && rows[0][0]=="old_effect" && rows[0][1]==digest && rows[0][2]=="outstanding" && rows[0][3]=="","old association remains unknown, never inferred from effect ID")
     testing.expect(t,!exec(&conn,"UPDATE owner_legacy_source_effects SET command_id='guessed_old_command'"))
 }
+
+@(test)
+legacy_selection_closes_all_ordinary_effect_admission_without_changing_inventory :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    conn,opened:=tmpl_clone_migrated(t)
+    if !testing.expect(t,opened) do return
+    defer close(&conn)
+    selection:=legacy_seed_source(t,&conn)
+    impl:Taskchain_Repo_SQLite
+    repo:=new_taskchain_repository(&impl,&conn)
+    factory:SQLite_Unit_Of_Work_Factory
+    uf:=new_unit_of_work_factory(&factory,&conn,nil)
+    effect:=domain.Legacy_Source_Effect{account_id="account",chain_id="chain",effect_id="original",command_id="original_command",bridge_id="executor",kind="stop",input_digest=strings.repeat("c",64,context.temp_allocator)}
+    tx,txok,_:=iface.unit_of_work_begin(&uf)
+    if !testing.expect(t,txok) do return
+    generation,err:=repo.legacy_effect_prepare(repo.ctx,effect)
+    testing.expect_value(t,err.code,domain.Error_Code.None)
+    committed,_:=iface.unit_of_work_commit(&tx)
+    testing.expect(t,committed)
+    testing.expect_value(t,repo.legacy_migration_select(repo.ctx,selection).code,domain.Error_Code.None)
+    for kind in ([3]string{"wake","stop","merge"}) {
+        tx,txok,_=iface.unit_of_work_begin(&uf)
+        if !testing.expect(t,txok) do return
+        fresh:=effect;fresh.effect_id=kind;fresh.kind=kind
+        _,err=repo.legacy_effect_prepare(repo.ctx,fresh)
+        testing.expectf(t,err.code==.Conflict,"selected scope rejects ordinary %s",kind)
+        // Even a caller that ignores the error and commits cannot advance G.
+        committed,_=iface.unit_of_work_commit(&tx)
+        testing.expect(t,committed)
+        // Direct producers cannot bypass the repository admission check.
+        _,inserted:=legacy_metadata(&conn,"INSERT INTO owner_legacy_source_effects(effect_id,chain_id,account_id,bridge_id,kind,input_digest,generation,state,command_id) VALUES(?,'chain','account','executor',?, ?,?,'outstanding','raw_command')",0,kind,kind,effect.input_digest,fmt.tprintf("%d",generation))
+        testing.expect(t,!inserted)
+    }
+    tx,txok,_=iface.unit_of_work_begin(&uf)
+    if !testing.expect(t,txok) do return
+    same,replay_err:=repo.legacy_effect_prepare(repo.ctx,effect)
+    testing.expect(t,replay_err.code==.None && same==generation,"historical replay remains query-only")
+    iface.unit_of_work_rollback(&tx)
+    f,found,ferr:=repo.legacy_source_get(repo.ctx,"account","chain")
+    testing.expect(t,found && ferr.code==.None && f.generation==generation)
+    rows,read:=legacy_metadata(&conn,"SELECT count(*) FROM owner_legacy_source_effects",1)
+    testing.expect(t,read && len(rows)==1 && rows[0][0]=="1")
+}
+
+@(test)
+legacy_close_admission_v205_upgrade_rolls_back_and_retries :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    conn,opened,_:=open(":memory:")
+    if !testing.expect(t,opened) do return
+    defer close(&conn)
+    migrated,_:=run_migrations(&conn,stop_before="206_owner_legacy_close_admission.sql")
+    if !testing.expect(t,migrated) do return
+    s:=legacy_seed_source(t,&conn)
+    impl:Taskchain_Repo_SQLite
+    repo:=new_taskchain_repository(&impl,&conn)
+    testing.expect_value(t,repo.legacy_migration_select(repo.ctx,s).code,domain.Error_Code.None)
+    testing.expect(t,exec(&conn,"CREATE TEMP TRIGGER reject_206_marker BEFORE INSERT ON schema_migrations WHEN NEW.version='206_owner_legacy_close_admission.sql' BEGIN SELECT RAISE(ABORT,'marker failure'); END"))
+    migrated,_=run_migrations(&conn)
+    testing.expect(t,!migrated && !migration_applied(&conn,"206_owner_legacy_close_admission.sql"))
+    rows,read:=legacy_metadata(&conn,"SELECT sql FROM sqlite_master WHERE name='owner_legacy_effect_admission'",1)
+    testing.expect(t,read && len(rows)==1 && strings.contains(rows[0][0],"NEW.kind='wake'"),"failed upgrade restores original trigger atomically")
+    testing.expect(t,exec(&conn,"DROP TRIGGER reject_206_marker"))
+    migrated,_=run_migrations(&conn)
+    testing.expect(t,migrated && migration_applied(&conn,"206_owner_legacy_close_admission.sql"))
+    rows,read=legacy_metadata(&conn,"SELECT sql FROM sqlite_master WHERE name='owner_legacy_effect_admission'",1)
+    testing.expect(t,read && len(rows)==1 && !strings.contains(rows[0][0],"NEW.kind='wake'"))
+    f,found,err:=repo.legacy_source_get(repo.ctx,"account","chain")
+    testing.expect(t,found && err.code==.None && f.state=="draining" && f.revision==1 && f.generation==0,"upgrade cannot reopen or relabel selected source")
+}

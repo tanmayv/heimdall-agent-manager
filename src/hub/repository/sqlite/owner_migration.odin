@@ -89,6 +89,12 @@ legacy_effect_prepare :: proc(ctx:rawptr,e:domain.Legacy_Source_Effect) -> (i64,
         if r[0]!=e.account_id || r[1]!=e.chain_id || r[2]!=e.bridge_id || r[3]!=e.kind || r[4]!=e.input_digest || r[6]!=e.command_id do return 0,legacy_conflict()
         n,_:=strconv.parse_i64(r[5]);return n,{}
     }
+    // A selected migration has a closed execution scope, including ordinary
+    // stop/merge effects. Migration cleanup must use the separately adopted
+    // existing target set; it cannot append ordinary task commands.
+    rows,ok=legacy_metadata(impl.conn,"SELECT 1 FROM owner_legacy_migrations WHERE chain_id=?",1,e.chain_id)
+    if !ok do return 0,legacy_storage_error()
+    if len(rows)>0 do return 0,legacy_conflict()
     rows,ok=legacy_metadata(impl.conn,"SELECT 1 FROM owner_legacy_source_effects WHERE account_id=? LIMIT 1 OFFSET 99999",1,e.account_id)
     if !ok do return 0,legacy_storage_error()
     if len(rows)>0 do return 0,domain.domain_error(.Conflict,"legacy source effect retention capacity reached; drain before further dispatch")
