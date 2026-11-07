@@ -318,4 +318,21 @@ executor_resource_relay_requires_exact_registered_owner_bridge :: proc(t:^testin
     testing.expect(t,strings.contains(response.body,"executor_unavailable"))
     headers[0].value=fmt.tprintf("Bearer %s",other.bridge_token)
     response=executor_relay_handler(&f.h,req);testing.expect_value(t,response.status,403)
+
+    // The reverse nonce relay accepts an account executor, but can target only
+    // the immutable registered owner. It does not inspect a grant or payload.
+    body=owner_json(struct{protocol_version,chain_id,bridge_id,request_id,expires_ms,envelope:string}{
+        "1","chain",owner.bridge.bridge_id,"executor_fence",fmt.tprintf("%d",now+5000),"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="})
+    req.body=body;req.path="/api/v1/executor/fence"
+    response=executor_fence_relay_handler(&f.h,req);testing.expect_value(t,response.status,200)
+    testing.expect(t,strings.contains(response.body,"owner_unavailable"))
+    req.body=owner_json(struct{protocol_version,chain_id,bridge_id,request_id,expires_ms,envelope:string}{
+        "1","chain",other.bridge.bridge_id,"executor_fence",fmt.tprintf("%d",now+5000),"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="})
+    response=executor_fence_relay_handler(&f.h,req);testing.expect_value(t,response.status,403)
+    req.body=body;req.headers=nil
+    response=executor_fence_relay_handler(&f.h,req);testing.expect_value(t,response.status,401)
+    req=search_relay_request(f,body)
+    response=executor_fence_relay_handler(&f.h,req);testing.expect_value(t,response.status,403)
+    req.headers=headers[:];req.body="{}"
+    response=executor_fence_relay_handler(&f.h,req);testing.expect_value(t,response.status,400)
 }

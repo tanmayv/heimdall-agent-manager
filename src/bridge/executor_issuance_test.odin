@@ -59,6 +59,9 @@ test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection :: pr
     context.allocator=context.temp_allocator
     spec,queued:=bridge_command_spec("executor_issuance")
     testing.expect(t,queued && spec.queued && spec.class==.Exclusive && spec.retry_safe,"filesystem/SQLite issuance must leave the WebSocket reader")
+    callback_spec,callback_known:=bridge_command_spec("owner_executor_fence")
+    testing.expect(t,callback_known && callback_spec.queued && callback_spec.class==.Interactive && callback_spec.key_kind==.None && callback_spec.retry_safe,
+        "nonce callback must not wait behind an executor's Exclusive job or Bridge ordering key")
 
     st:=p1c_test_setup(t);defer p1c_test_teardown(st)
     sync.mutex_lock(&keystore_test_mutex);defer sync.mutex_unlock(&keystore_test_mutex)
@@ -238,6 +241,8 @@ test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection :: pr
     wrong_pin:=dispatch_pin;wrong_pin.key_id=owner_id
     _,trusted_peer,read_peer=bridge_owner_executor_directory(&response_owner,peer_directory,wrong_pin,dispatch_claim,&kr)
     testing.expect(t,read_peer && !trusted_peer,"another enrolled Bridge cannot substitute for the assignment key")
+    callback_owner,callback_version,callback_head,callback_trusted:=bridge_owner_fence_directory(&response_owner,peer_directory,&kr)
+    testing.expect(t,callback_trusted && callback_owner.key_id==key_id && callback_version==3 && callback_head==peer_directory.head_hash)
 
     // A signed newer directory is a security observation even when its content
     // key has not arrived. Rejecting the request must still prevent rollback.
@@ -257,6 +262,8 @@ test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection :: pr
     _,trusted_peer,read_peer=bridge_owner_executor_directory(&response_owner,rotated,dispatch_pin,dispatch_claim,&kr)
     owner_pin_seq,owner_pin_hash:=owner.directory_pin(&response_owner)
     testing.expect(t,read_peer && !trusted_peer && owner_pin_seq==4 && owner_pin_hash==rotated.head_hash)
+    _,_,_,callback_trusted=bridge_owner_fence_directory(&response_owner,peer_directory,&kr)
+    testing.expect(t,!callback_trusted,"owner nonce callback cannot restore an older enrolled directory")
     _,trusted_peer,read_peer=bridge_owner_executor_directory(&response_owner,peer_directory,dispatch_pin,dispatch_claim,&kr)
     testing.expect(t,read_peer && !trusted_peer,"late older response cannot roll back observed content-key rotation")
     _,rolled_back:=bridge_executor_directory(&bridge_executor_store,peer_directory,&kr)

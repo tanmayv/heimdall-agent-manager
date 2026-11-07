@@ -1016,3 +1016,66 @@ explicit user review required by the full milestone.
 - `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/completions.odin`
 - `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/outbox.odin`
 - `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/outbox_consumers_test.odin`
+
+### Attempt 5: reverse encrypted owner fence ingress
+
+The nonce callback has an authenticated reverse relay at
+`POST /api/v1/executor/fence`. Account Bridge authentication may route only to
+the immutable registered chain owner. The forwarded executor Bridge identity
+comes from that authenticated token, not the encrypted request
+(`src/hub/transport/http/owner_local_handlers.odin:207`). The owner additionally
+checks the enrolled executor signature, exact encrypted channel scope and
+current claimed activation intent. The paired-directory observation is durable
+before key admission (`src/bridge/owner_executor_fence.odin:24`).
+
+The callback runs as a short Interactive command without the executor exchange's
+Bridge ordering key (`src/bridge/hub_command_dispatch.odin:282`). It performs
+neither network I/O nor outbox publication while holding the owner mutex.
+`execution_fence_channel_reply` authenticates and signs the existing nonce
+protocol, returns encrypted output and preserves the saved request scope
+(`src/lib/owner_local/execution_channel.odin:13`). It does not create a grant,
+renew a deadline or supply physical execution evidence.
+
+All commands below ran through managed shell sessions in this task worktree:
+
+```bash
+nix develop --command odin check src/bridge -collection:odin_test=src
+nix develop --command odin check src/hub -collection:odin_test=src
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_NAMES=owner_local.owner_execution_encrypted_callback_binds_claim_and_rejects_account_key_forgery -out:$HOME/.cache/heimdall-tests/m3-fence-channel2-20261107-0202
+nix develop --command odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_NAMES=main.test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection -out:$HOME/.cache/heimdall-tests/m3-fence-mounted-20261107-0202
+nix develop --command odin test src/hub/transport/http -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_NAMES=http.executor_resource_relay_requires_exact_registered_owner_bridge -out:$HOME/.cache/heimdall-tests/m3-fence-hub-20261107-0200
+nix build .#ham-bridge .#ham-hub -o $HOME/.cache/heimdall-tests/m3-fence-ingress-bins-20261107-0203
+git diff --cached --check
+```
+
+Both compile checks and package builds passed. Focused tests passed: owner
+encrypted callback **1** (`sh_8bd8a46ed4dfb635d7a14d3425c34e86`), Bridge
+paired-directory/dispatcher **1** (`sh_d23ca81e4c9b08d92736d77b729704b4`), Hub
+relay authorization **1** (`sh_80e759023cf7a07ad57470be4d593e3c`). Build session:
+`sh_da049e10751951fb5345edeb08f00a04`. The callback test uses genuine P256
+executor/owner signatures and channel encryption, consumes the executor nonce
+once, rejects account-key forgery and invalidated claims, and verifies unchanged
+owner state. The Bridge test verifies callback dispatcher independence and
+paired-directory rollback denial; it does not exercise a real network callback.
+Full owner regression session `sh_93d4c91819ac4abbd9fd57e5fe00fec3` was started
+after the focused passes; its result is recorded in the subsequent checkpoint.
+
+Draft corrections: multiline Odin `do` syntax and test `expect_value` message
+arguments were corrected before the passing checks. No shared record schema,
+UI, Rust or provider behavior changed. Platform/provider suites were skipped
+because no support claim is made. Fresh activation remains closed in the
+executor handler until the outbound challenge and exact activation context are
+mounted. This ingress checkpoint is not M3 completion or submission.
+
+Modified paths (all under the Workdir stated above):
+
+- `src/bridge/owner_executor_fence.odin`
+- `src/bridge/executor_issuance_test.odin`
+- `src/bridge/hub_command_dispatch.odin`
+- `src/bridge/hub_runtime_client.odin`
+- `src/hub/app/wiring.odin`
+- `src/hub/transport/http/owner_local_handlers.odin`
+- `src/hub/transport/http/task_chain_search_relay_test.odin`
+- `src/lib/owner_local/execution_channel.odin`
+- `src/lib/owner_local/execution_channel_test.odin`
+- `docs/executor-dispatch-checkpoint.md`

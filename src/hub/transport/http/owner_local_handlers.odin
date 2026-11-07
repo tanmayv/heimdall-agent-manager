@@ -198,6 +198,41 @@ Executor_Relay_Command :: struct {
     directory:vault.Directory_Verification_Input,
 }
 Executor_Relay_Result :: struct {reply:string,directory:vault.Directory_Verification_Input}
+Executor_Fence_Command :: struct {
+    type,command_id,account_id,executor_bridge_id,relay:string,
+    directory:vault.Directory_Verification_Input,
+}
+// Reverse relay: an enrolled account Bridge can ask only the immutable owner.
+// The owner verifies the enrolled executor signature and exact claimed intent;
+// this routing check neither grants work nor attests a current execution fence.
+executor_fence_relay_handler :: proc(ctx:rawptr,req:Request)->Response {
+    context.allocator=context.temp_allocator
+    h:=(^Bridge_Handlers)(ctx)
+    auth,ok,resp:=require_auth_or_bridge_token(h.auth,req)
+    if !ok do return resp
+    if auth.kind!=.Bridge_Token do return respond_error(domain.domain_error(.Forbidden,"executor Bridge authentication required"),req.request_id)
+    relay,valid:=contracts.owner_parse(req.body,"relay")
+    if !valid do return respond_error(domain.domain_error(.Validation_Failed,"invalid fence relay"),req.request_id)
+    get:=contracts.owner_string
+    expires:=contracts.executor_number(relay,"expires_ms")
+    now:=time.to_unix_nanoseconds(time.now())/1000000
+    if expires<=now || expires-now>contracts.EXECUTOR_FENCE_TTL_MS do return respond_error(domain.domain_error(.Validation_Failed,"fence relay expired"),req.request_id)
+    rows,read:=owner_registry_rows(h,auth.user_id,get(relay,"chain_id"),"","",1)
+    if read.code!=.None do return respond_error(read,req.request_id)
+    target:=get(relay,"bridge_id")
+    if len(rows)!=1 || rows[0].owner_bridge_id!=target do return respond_error(domain.domain_error(.Forbidden,"immutable owner target required"),req.request_id)
+    bridge,owned,err:=bridge_service.get_bridge(h.bridges,auth,target)
+    if !owned do return respond_error(err,req.request_id)
+    if bridge.status!=.Online || !project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry,target) do return respond_success(`{"code":"owner_unavailable"}`,req.request_id,auth_ctx_server_time(req))
+    directory,available:=owner_directory(h,auth.user_id)
+    if !available do return respond_error(domain.domain_error(.Forbidden,"current directory unavailable"),req.request_id)
+    id:=fmt.tprintf("cmd_executor_fence_%d",time.to_unix_nanoseconds(time.now()))
+    command:=Executor_Fence_Command{"owner_executor_fence",id,auth.user_id,auth.bridge_id,req.body,directory}
+    reply,received,rerr:=bridge_runtime.send_runtime_command_wait(h.bridge_runtime_registry,project_service.Runtime_Command{bridge_id=target,command_id=id,body_json=owner_json(command)},5000)
+    if !received do return respond_error(rerr,req.request_id)
+    defer delete(reply,runtime.default_allocator())
+    return respond_success(owner_json(Executor_Relay_Result{reply,directory}),req.request_id,auth_ctx_server_time(req))
+}
 // Only the immutable registered owner Bridge may request remote resources.
 // This reads signed routing metadata, never task eligibility/grant state.
 executor_relay_handler :: proc(ctx:rawptr,req:Request)->Response {
