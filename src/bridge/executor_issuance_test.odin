@@ -14,6 +14,7 @@ import channel "odin_test:lib/executor_channel"
 import vault "odin_test:lib/vault"
 import contracts "odin_test:contracts"
 import executor "odin_test:lib/executor_local"
+import owner "odin_test:lib/owner_local"
 
 @(test)
 test_executor_issuance_resolves_signed_directory_catalog_and_profile :: proc(t:^testing.T) {
@@ -220,6 +221,24 @@ test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection :: pr
     stopped,stop_code:=bridge_executor_test_exchange(t,peer_wire,action,"action",&owner_private,&kr,host,"mounted_stop")
     testing.expect_value(t,stop_code,"ok");testing.expect_value(t,get(stopped,"state"),"released")
 
+    // The outbound worker revalidates paired-directory evidence against the
+    // immutable accepted assignment before it can interpret an executor reply.
+    response_owner:owner.Store
+    if !testing.expect(t,owner.open(&response_owner,fmt.tprintf("%s/owner-response.sqlite",root),TEST_VAULT_USER_ID,id,key_id)) do return
+    defer owner.close(&response_owner)
+    testing.expect(t,owner.exec(response_owner.db,"INSERT INTO task_chains VALUES('chain','device','device','title','description',1); INSERT INTO tasks VALUES('chain','task','title','body',1);"))
+    reservation_snapshot:=bridge_owner_json(contracts.Owner_Remote_Reservation{get(issued_bundle,"configuration"),get(issued_bundle,"attestation")})
+    assignment_snapshot:=bridge_owner_json(contracts.Owner_Remote_Assignment_Snapshot{"{}",reservation_snapshot})
+    _,history_written:=owner.query(response_owner.db,"INSERT INTO local_assignment_history VALUES('chain','task',1,'device','assign','{}',?,'{}')",assignment_snapshot)
+    testing.expect(t,history_written)
+    dispatch_claim:=owner.Intent_Claim{destination=id,fence=bridge_owner_json(prepared)}
+    dispatch_pin:=Owner_Executor_Pin{key_id,bridge_task_chain_search_generation()}
+    checked_key,trusted_peer,read_peer:=bridge_owner_executor_directory(&response_owner,peer_directory,dispatch_pin,dispatch_claim,&kr)
+    testing.expect(t,read_peer && trusted_peer && checked_key.key_id==key_id)
+    wrong_pin:=dispatch_pin;wrong_pin.key_id=owner_id
+    _,trusted_peer,read_peer=bridge_owner_executor_directory(&response_owner,peer_directory,wrong_pin,dispatch_claim,&kr)
+    testing.expect(t,read_peer && !trusted_peer,"another enrolled Bridge cannot substitute for the assignment key")
+
     // A signed newer directory is a security observation even when its content
     // key has not arrived. Rejecting the request must still prevent rollback.
     rotation:=vault.Statement{type="rotate",user_id=TEST_VAULT_USER_ID,seq="4",prev_hash=peer_directory.head_hash,
@@ -235,6 +254,11 @@ test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection :: pr
     testing.expect(t,!rotation_open,"missing current content epoch denies admission")
     pinned_version,_,pin_ok:=executor.enrollment_pin(&bridge_executor_store)
     testing.expect(t,pin_ok && pinned_version==4,"verified newer directory survives rejected admission")
+    _,trusted_peer,read_peer=bridge_owner_executor_directory(&response_owner,rotated,dispatch_pin,dispatch_claim,&kr)
+    owner_pin_seq,owner_pin_hash:=owner.directory_pin(&response_owner)
+    testing.expect(t,read_peer && !trusted_peer && owner_pin_seq==4 && owner_pin_hash==rotated.head_hash)
+    _,trusted_peer,read_peer=bridge_owner_executor_directory(&response_owner,peer_directory,dispatch_pin,dispatch_claim,&kr)
+    testing.expect(t,read_peer && !trusted_peer,"late older response cannot roll back observed content-key rotation")
     _,rolled_back:=bridge_executor_directory(&bridge_executor_store,peer_directory,&kr)
     testing.expect(t,!rolled_back,"old correctly signed directory cannot restore revoked authority")
 

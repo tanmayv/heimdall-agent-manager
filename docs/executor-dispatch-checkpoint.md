@@ -903,3 +903,116 @@ M3 remains **unfinished**. No task submission or acceptance is claimed.
 - `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/executor_local/schema.sql`
 - `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/executor_local/store.odin`
 - `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/ui/api/executor.ts`
+
+### Attempt 4: isolated owner executor outbox worker
+
+Coordinator scope is recorded in `cmt_18e59f4bd7ff7274` and
+`msg_18e59f4d5dd43458`: implement the dedicated owner executor worker and its
+concurrency/retry evidence, then commit this bounded checkpoint. **M3 remains
+unfinished; this checkpoint is not a task submission or acceptance.**
+
+The owner publisher now claims only registry/control/source/merge effects
+(`src/bridge/owner_local.odin:49`). Consumer selection precedes the claim limit,
+so more than one batch of executor work cannot starve registry delivery;
+unrecognized kinds remain pending (`src/lib/owner_local/outbox.odin:38`).
+Invalidated claims reject both successful and failed late completions
+(`src/lib/owner_local/outbox.odin:90`).
+
+The dedicated worker is started independently of the maintenance/dispatch jobs
+(`src/bridge/main.odin:279`, `src/bridge/owner_local_executor.odin:243`).
+It claims one activation effect under the owner mutex, snapshots the immutable
+accepted executor key and original signed action, releases the mutex for HTTP,
+then reacquires it for exact claim and response checks
+(`src/bridge/owner_local_executor.odin:54`,
+`src/bridge/owner_local_executor.odin:115`,
+`src/lib/owner_local/completions.odin:74`). The exchange callback has no Store
+parameter. It retains the original operation/reservation/action bytes; each
+attempt's transport request ID is correlation only. HTTP attempts are bounded by
+the original signed request deadline
+(`src/bridge/owner_local_executor.odin:130`).
+
+One bounded retained item owns its strings beyond temporary allocator resets.
+Read failures preserve the opaque response without repeating I/O. Statement or
+COMMIT failures preserve the interpreted completion and full dispatch snapshot;
+every persistence retry rechecks the exact claim. Failed/unknown external
+outcomes retry the same effect after the durable floor
+(`src/bridge/owner_local_executor.odin:59`).
+
+Response verification observes a newer genuinely signed paired log before
+peer/keyring admission, rejects directory rollback, checks the assigned enrolled
+key and original encrypted scope/signature, and rechecks the current owner fence
+and vault generation (`src/bridge/owner_local_executor.odin:175`,
+`src/bridge/owner_local_executor.odin:199`). Completion is delivery evidence;
+it grants no lease, renews no deadline and supplies no refund/failure disposition.
+
+#### Exact checkpoint verification
+
+All commands ran through `ham-ctl shell run --cwd` with workdir
+`/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c`:
+
+```bash
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3-worker-owner-full-20261107-0141
+nix develop --command odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_NAMES=main.test_owner_executor_worker_retains_response_and_completion_across_storage_failures,main.test_owner_executor_worker_allows_concurrent_owner_callback_and_fences_late_reply,main.test_owner_executor_worker_unknown_outcome_retries_original_claim_after_floor,main.test_owner_executor_worker_rechecks_route_after_result_persistence_failure,main.test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection,main.test_owner_local_publication_recovers_result_write_and_commit_failure_in_process,main.test_owner_local_periodic_batch_expires_and_publishes_after_commit -out:$HOME/.cache/heimdall-tests/m3-worker-final4-20261107-0147
+nix build .#ham-bridge -o $HOME/.cache/heimdall-tests/m3-worker-bridge-final-20261107-0147
+git diff HEAD --check
+```
+
+- Full owner-local suite: **241 PASS**, session `sh_2c645cc5f99d241e055efb2a5c465de6`.
+- Final focused Bridge suite: **7 PASS**, session `sh_564282c1c9f4e5db2111b6b3014672df`.
+- Final Bridge package build: **PASS**, session `sh_5cca9d751037cfd263e018003c190203`.
+- Earlier focused consumer tests: **2 PASS**, included again in the full suite.
+- No shared wire/schema, UI, Hub or Rust changes; their unrelated builds/suites
+  were deliberately skipped. No macOS/Windows/provider or enrolled-network pass
+  is inferred from these Linux tests.
+
+The concurrency test uses an actual second thread while owner callbacks acquire
+the mutex, with overlapping ticks refused. It tests ordinary completion,
+append-only invalidation and owner-store restart during I/O
+(`src/bridge/owner_local_executor_test.odin:112`). Fault tests reset the temporary
+arena, retain responses through a failed recheck, and inject statement and
+deferred-COMMIT failures without reopening or redelivering
+(`src/bridge/owner_local_executor_test.odin:78`). Tests preserve original retry
+identities and verify that claimed route/fence rewrites are already rejected by
+the transition guard (`src/bridge/owner_local_executor_test.odin:161`,
+`src/bridge/owner_local_executor_test.odin:180`).
+The extended production directory helper test uses real paired P256 signatures,
+rejects another enrolled assignment key and refuses an older response after
+observing a newer content-key rotation
+(`src/bridge/executor_issuance_test.odin:226`).
+
+Draft corrections: multiline Odin `do` syntax, Tick/Duration arithmetic, and a
+test's incorrect assumption that claimed row metadata could be rewritten. The
+corrected test explicitly checks the existing transition rejection. All final
+checks pass. No unrelated cleanup, live restart, deployment or push occurred.
+
+#### Remaining M3 integration
+
+The mounted worker consumes **committed activation intents only**. The current
+executor action handler still denies fresh activation/heartbeat without its
+signed nonce callback (`src/bridge/executor_exchange.odin:112`). This checkpoint
+does not mount outbound prepare/query recovery, create automatic owner grants,
+provision operator policy, reconcile committed-grant failure, run physical PTY
+dispatch or demonstrate an enrolled multi-Bridge network. These are explicit
+continuation items, not evidence supplied by the injected worker transport tests.
+
+Continue by mounting signed nonce request/reply and executor activation context
+before opening fresh activation, and add owner prepare/retry/query using the
+original journal identities. Preserve snapshot -> unlocked I/O -> exact recheck;
+do not wait on a fence callback inside an exclusive Bridge command job. Keep
+exact physical charges until trusted child evidence; a released receipt alone
+does not prove no child ran. Then finish operator provisioning, actual enrolled
+network/lost-reply/crash evidence, shared manual/warm admission, encrypted
+notifications/results, real provider/platform gates, and the independent plus
+explicit user review required by the full milestone.
+
+#### Exact modified paths
+
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/docs/executor-dispatch-checkpoint.md`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/bridge/main.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/bridge/owner_local.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/bridge/owner_local_executor.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/bridge/owner_local_executor_test.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/bridge/executor_issuance_test.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/completions.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/outbox.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/outbox_consumers_test.odin`

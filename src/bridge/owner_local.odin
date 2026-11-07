@@ -46,7 +46,7 @@ bridge_owner_publish_batch :: proc(s:^owner.Store,q:^owner.Intent_Completions,no
     send:proc(rawptr,^owner.Store,owner.Intent_Claim)->(bool,string,i64)) -> bool {
     // No new delivery while a previous outcome still cannot be persisted.
     if !owner.intent_completions_flush(s,q) do return false
-    pending,ok:=owner.intent_claim_due(s,now)
+    pending,ok:=owner.intent_claim_due(s,now,20,.Owner)
     if !ok do return false
     for claim in pending {
         success,result,completed:=send(ctx,s,claim)

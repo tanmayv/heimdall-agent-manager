@@ -35,7 +35,10 @@ intent_enqueue :: proc(tx:^Transaction,input:Intent_Input) -> bool {
     return ok
 }
 
-intent_claim_due :: proc(s:^Store,now:i64,limit:=20) -> (claims:[dynamic]Intent_Claim,ok:bool) {
+// Separate consumers claim only their own effects. Filtering happens before
+// LIMIT so an offline executor cannot starve registry/control delivery.
+Intent_Consumer :: enum { All, Owner, Executor }
+intent_claim_due :: proc(s:^Store,now:i64,limit:=20,consumer:Intent_Consumer=.All) -> (claims:[dynamic]Intent_Claim,ok:bool) {
     if now<0 || limit<1 || limit>20 do return nil,false
     tx:Transaction
     if !transaction_begin(s,&tx) do return nil,false
@@ -45,7 +48,10 @@ intent_claim_due :: proc(s:^Store,now:i64,limit:=20) -> (claims:[dynamic]Intent_
     if now<number(state[0][0]) { _=mark_clock_uncertain(&tx);return nil,false }
     if state[0][1]!="ready" do return nil,false
     rows,rows_ok:=query(s.db,`SELECT intent_id,chain_id,kind,destination_bridge,exact_fence_json,payload_json,payload_digest,attempts
-     FROM runtime_intents WHERE state='pending' AND NOT EXISTS(SELECT 1 FROM intent_invalidations x WHERE x.intent_id=runtime_intents.intent_id) AND next_retry_ms<=? ORDER BY commit_seq,intent_id LIMIT ?`,fmt.tprintf("%d",now),fmt.tprintf("%d",limit))
+     FROM runtime_intents WHERE state='pending' AND NOT EXISTS(SELECT 1 FROM intent_invalidations x WHERE x.intent_id=runtime_intents.intent_id) AND next_retry_ms<=?
+       AND (?='0' OR (?='2' AND kind='executor.activate') OR
+         (?='1' AND kind IN('registry','registry.prepare','source.delivery','merge','stop','checkpoint')))
+     ORDER BY commit_seq,intent_id LIMIT ?`,fmt.tprintf("%d",now),fmt.tprintf("%d",int(consumer)),fmt.tprintf("%d",int(consumer)),fmt.tprintf("%d",int(consumer)),fmt.tprintf("%d",limit))
     if !rows_ok do return nil,false
     claims=make([dynamic]Intent_Claim,context.temp_allocator)
     for row in rows {
@@ -82,7 +88,9 @@ intent_result :: proc(s:^Store,claim:Intent_Claim,success:bool,result:string,now
     // or permit a delayed completion to overwrite the current claimant.
     delay:=min(i64(60000),1000*min(claim.attempt,i64(60)))
     rows,ok:=query(s.db,`UPDATE runtime_intents SET state=?,published=?,result_json=?,next_retry_ms=?
-     WHERE intent_id=? AND state='claimed' AND claim_incarnation=? AND attempts=? AND payload_digest=? RETURNING intent_id,kind,chain_id,exact_fence_json`,
+     WHERE intent_id=? AND state='claimed' AND claim_incarnation=? AND attempts=? AND payload_digest=?
+       AND NOT EXISTS(SELECT 1 FROM intent_invalidations x WHERE x.intent_id=runtime_intents.intent_id)
+     RETURNING intent_id,kind,chain_id,exact_fence_json`,
      state,published,result,fmt.tprintf("%d",now+delay),claim.id,fmt.tprintf("%d",claim.incarnation),fmt.tprintf("%d",claim.attempt),claim.digest)
     if !ok || len(rows)!=1 do return false
     if rows[0][1]=="source.delivery" && success && !source_delivered(s,rows[0][2],rows[0][3]) do return false
