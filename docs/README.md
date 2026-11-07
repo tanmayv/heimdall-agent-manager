@@ -180,6 +180,7 @@ Superseded or one-off records kept for context. Do not treat them as current beh
 Raw outputs, schemas, mockups and screenshots referenced by the documents above.
 
 - [pty-macos-evidence-f6a8f209.md](pty-macos-evidence-f6a8f209.md): pinned native Mac PTY/provider observations, failed checks, capability limits, and cleanup; [managed session records](evidence/macos-f6a8f209-sessions.json).
+- [pty-macos-native-profile-evidence.md](pty-macos-native-profile-evidence.md): revised native Mac suite and isolated Codex typed-abort/literal/replay evidence, preserved failures, open audit gates, and cleanup; [session records](evidence/macos-native-profile-sessions.json).
 - Benchmark and telemetry outputs (`txt`), produced by the performance reports above:
   - [api-fetch-dedup-baseline-after.txt](api-fetch-dedup-baseline-after.txt)
   - [cache-matrix-run1.txt](cache-matrix-run1.txt)
