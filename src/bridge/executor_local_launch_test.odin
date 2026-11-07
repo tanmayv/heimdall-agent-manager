@@ -79,14 +79,35 @@ bridge_executor_local_real_daemon_lost_observation_restart_and_exact_stop :: pro
     testing.expect(t,executor.complete_recovery(&s,bridge_executor_physical_clock(nil)))
     rows,_:=executor.query(s.db,"SELECT count(*) FROM executor_live_resources");testing.expect_value(t,rows[0][0],"1")
     recovered,loaded:=executor.local_launch(&s,launch.id);testing.expect(t,loaded)
+    // A disconnected control endpoint is not trusted absence. Exercise the
+    // actual failing socket path across ledger reopen, then queue an exact
+    // stop while disconnected. Reconnecting must stop the original child,
+    // without another Spawn or a capacity refund during the partition.
+    disconnected:=fmt.tprintf("%s.disconnected",socket)
+    for _ in 0..<2 {
+        delivered,reason=bridge_executor_local_dispatch(&s,recovered,device,{}, {},disconnected)
+        testing.expect(t,!delivered && reason=="executor_uncertain")
+        rows,_=executor.query(s.db,"SELECT count(*) FROM executor_live_resources")
+        testing.expect_value(t,rows[0][0],"1")
+    }
+    same_pid,same_known=bridge_pty_host_executor_query(socket,launch.instance,launch.launch_key)
+    testing.expect(t,same_known && same_pid==pid,"disconnected retries preserve the original child")
     testing.expect(t,executor.stop_local_launch(&s,recovered))
+    _,reconciled=bridge_executor_local_reconcile_batch(&s,disconnected,"")
+    testing.expect(t,reconciled)
+    rows,_=executor.query(s.db,"SELECT count(*) FROM executor_live_resources")
+    testing.expect(t,rows[0][0]=="1","unacknowledged stop retains capacity")
+    executor.close(&s);testing.expect(t,executor.open(&s,path,"account","executor","operator"))
+    testing.expect(t,!executor.complete_recovery(&s,bridge_executor_physical_clock(nil)))
+    recovered,loaded=executor.local_launch(&s,launch.id);testing.expect(t,loaded)
+    testing.expect_value(t,recovered.state,"stopping")
     _,reconciled=bridge_executor_local_reconcile_batch(&s,socket,"");testing.expect(t,reconciled)
     stopped,stopped_known:=bridge_pty_host_executor_query(socket,launch.instance,launch.launch_key)
     testing.expect(t,stopped_known && stopped==0)
     rows,_=executor.query(s.db,"SELECT count(*) FROM executor_live_resources");testing.expect_value(t,rows[0][0],"0")
     child_live=false
     // A newly authorized replacement can reuse the slot, never the old key.
-    bridge_executor_test_set(c,"executor_incarnation","2")
+    bridge_executor_test_set(c,"executor_incarnation",fmt.tprintf("%d",s.incarnation))
     configuration=executor.encode(c);resources.configuration_digest=contracts.owner_payload_digest(configuration)
     bridge_executor_test_set(o,"configuration_digest",resources.configuration_digest)
     bridge_executor_test_set(o,"operation_id","replacement_local")

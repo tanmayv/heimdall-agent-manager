@@ -170,6 +170,12 @@ executor_statement_commit_failure_and_identity_fail_closed :: proc(t:^testing.T)
 
 @(test)
 executor_two_owners_race_one_slot_exactly_one_prepare_commits :: proc(t:^testing.T) {
+    for resource in ([3]string{"slot","instance","directory"}) {
+        executor_two_owners_race_resource(t,resource)
+    }
+}
+
+executor_two_owners_race_resource :: proc(t:^testing.T,resource:string) {
     context.allocator=context.temp_allocator
     f:=fixture(t);defer destroy(f);policy(t,f)
     Job :: struct {store:^Store,raw:string,key:contracts.Owner_Verified_Key,resolved:Resolved_Resources,barrier:^sync.Barrier,status:int}
@@ -177,7 +183,12 @@ executor_two_owners_race_one_slot_exactly_one_prepare_commits :: proc(t:^testing
     jobs:[2]Job;threads:[2]^thread.Thread
     for i in 0..<2 {
         p:=document("prepare");key:=&f.owner1
-        if i==1 {key=&f.owner2;set(p,"owner_bridge_id","owner2");set(p,"key_id","owner2");set(p,"reservation_id","reservation2");set(p,"instance_id","instance2");set(p,"directory_key",strings.repeat("c",64,context.temp_allocator))}
+        if i==1 {
+            key=&f.owner2;set(p,"owner_bridge_id","owner2");set(p,"key_id","owner2");set(p,"reservation_id","reservation2")
+            if resource!="slot" do set(p,"slot_id","slot2")
+            if resource!="instance" do set(p,"instance_id","instance2")
+            if resource!="directory" do set(p,"directory_key",strings.repeat("c",64,context.temp_allocator))
+        }
         jobs[i]=Job{&f.store,signed(p,"prepare",key),key.public,resources(p),&barrier,0}
         threads[i]=thread.create_and_start_with_data(&jobs[i],proc(data:rawptr) {
             context.allocator=context.temp_allocator
