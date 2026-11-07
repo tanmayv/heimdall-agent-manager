@@ -1,6 +1,6 @@
 
 CREATE TABLE executor_runtime (
- singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=3),
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=4),
  account_id TEXT NOT NULL, executor_bridge_id TEXT NOT NULL, operator_key_id TEXT NOT NULL,
  incarnation INTEGER NOT NULL CHECK(incarnation>0), clock_high_ms INTEGER NOT NULL CHECK(clock_high_ms>=0),
  recovery_state TEXT NOT NULL CHECK(recovery_state IN ('ready','reconciling','clock_uncertain')),
@@ -97,3 +97,10 @@ CREATE TABLE executor_chain_owners (
 );
 CREATE TRIGGER chain_owner_no_update BEFORE UPDATE ON executor_chain_owners BEGIN SELECT RAISE(ABORT,'immutable chain owner'); END;
 CREATE TRIGGER chain_owner_no_delete BEFORE DELETE ON executor_chain_owners BEGIN SELECT RAISE(ABORT,'retained chain owner'); END;
+CREATE TABLE executor_bootstraps (
+ reservation_id TEXT PRIMARY KEY REFERENCES executor_reservations(reservation_id),
+ input_digest TEXT NOT NULL, document TEXT NOT NULL CHECK(json_valid(document)),
+ body TEXT NOT NULL, action_json TEXT NOT NULL CHECK(json_valid(action_json))
+);
+CREATE TRIGGER bootstrap_no_update BEFORE UPDATE ON executor_bootstraps BEGIN SELECT RAISE(ABORT,'immutable bootstrap'); END;
+CREATE TRIGGER bootstrap_no_delete BEFORE DELETE ON executor_bootstraps BEGIN SELECT RAISE(ABORT,'retained bootstrap'); END;
