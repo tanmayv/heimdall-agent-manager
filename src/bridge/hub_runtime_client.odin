@@ -1121,7 +1121,8 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		sender := sender_dn if sender_dn != "" else sender_id
 		// T6: during a context rollover the notice (which presses ESC) would
 		// interrupt the handoff; it is queued and delivered after the restart.
-		ok := bridge_rollover_queue_notice(instance_id, sender) || bridge_pty_host_deliver_to_agent(instance_id, "message", sender, "", "")
+        ok:=bridge_rollover_queue_notice(instance_id,sender)
+        if !ok do ok,_=bridge_legacy_agent_delivery({kind=.Message,instance=instance_id,sender=sender})
 		if !ok do fmt.println("bridge notification pending/no-agent-subscription", instance_id, command_id)
 		if command_id != "" {
 			res := bridge_command_result_json(command_id, "succeeded" if ok else "accepted", "")
@@ -1159,7 +1160,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		origin := extract_json_string(text, "origin", "")
 		defer delete(origin)
 		interrupt := extract_json_bool(text, "interrupt", false) || origin == "pausing" || origin == "finishing"
-		ok := bridge_pty_host_deliver_to_agent(instance_id, "task_nudge", "", task_id, target_role, human_message, task_title, interrupt)
+		ok,_ := bridge_legacy_agent_delivery({kind=.Task_Nudge,instance=instance_id,task=task_id,role=target_role,text=human_message,title=task_title,interrupt=interrupt})
 		if !ok do fmt.println("bridge notify_task_nudge pending/no-agent-subscription", instance_id, command_id)
 		if command_id != "" {
 			res := bridge_command_result_json(command_id, "succeeded" if ok else "accepted", "")
@@ -1194,7 +1195,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		defer delete(notice)
 		fmt.println("bridge hub runtime command notify_shell_run", instance_id, session_id, status)
 		if socket, sok := bridge_pty_host_ensure_daemon(); sok {
-			ok := bridge_pty_host_deliver_notice(socket, instance_id, notice)
+			ok,_ := bridge_legacy_agent_delivery({kind=.Notice,instance=instance_id,text=notice},injected_socket=socket)
 			if command_id != "" {
 				res := bridge_command_result_json(command_id, "succeeded" if ok else "accepted", "")
 				defer delete(res)
@@ -1224,7 +1225,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		notice := strings.concatenate({"Nudge: ", message})
 		defer delete(notice)
 		if socket, sok := bridge_pty_host_ensure_daemon(); sok {
-			ok := bridge_pty_host_deliver_notice(socket, instance_id, notice)
+			ok,_ := bridge_legacy_agent_delivery({kind=.Notice,instance=instance_id,text=notice},injected_socket=socket)
 			if command_id != "" {
 				res := bridge_command_result_json(command_id, "succeeded" if ok else "accepted", "")
 				defer delete(res)
@@ -1322,10 +1323,12 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 				// lives here. Deliver straight to the local agent via the daemon;
 				// otherwise wake the local agent (coalesced) so it can pick up the work
 				// on boot. Targets not local to this bridge are ignored.
-				if bridge_pty_host_deliver_to_agent(inst, "task_nudge", "", task_id, "participant", human_message) {
+                delivered_now,refused:=bridge_legacy_agent_delivery({kind=.Task_Nudge,instance=inst,task=task_id,role="participant",text=human_message})
+				if delivered_now {
 					delivered += 1
 					continue
 				}
+                if refused {failed+=1;continue}
 				if bridge_task_status_notify_wake_local(inst) {
 					delivered += 1
 					fmt.println("bridge task_status_changed_notify woke local target", inst, command_id)
@@ -2033,7 +2036,7 @@ bridge_hub_handle_agent_pty_resize :: proc(conn: ^ws.Connection, text: string) {
 	rows := bridge_pty_dimension(cmd.rows)
 	cols := bridge_pty_dimension(cmd.cols)
 
-	ok := bridge_pty_host_deliver_resize(instance_id, rows, cols)
+	ok,_ := bridge_legacy_agent_delivery({kind=.Resize,instance=instance_id,rows=rows,cols=cols})
 	if !ok do fmt.println("bridge agent_pty_resize delivery failed for instance", instance_id)
 
 	if command_id != "" {

@@ -487,6 +487,34 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="",
     same_pid,same_known=bridge_pty_host_executor_query(socket,manual_launch.instance,manual_launch.launch_key)
     testing.expect(t,same_known && same_pid==manual_pid,"refused nudge never falls through to replacing the child")
     testing.expect(t,executor.exec(bridge_executor_store.db,"DROP TRIGGER fail_nudge_observation"))
+    // Startup reminders are a separate physical producer. Match the exact
+    // retained native material/run/child and refuse a current migration fence.
+    sync.mutex_lock(&bridge_executor_mutex)
+    sync.mutex_lock(&bridge_startup_io_mutex)
+    startup_current,startup_exists:=bridge_runtime_instance_snapshot(manual_launch.instance)
+    testing.expect(t,startup_exists)
+    sync.mutex_lock(&bridge_legacy_physical_mutex)
+    testing.expect(t,bridge_legacy_startup_input_allowed_locked(&bridge_executor_store,startup_current,socket),"native startup producer matches current exact child and resources")
+    startup_changed:=startup_current
+    startup_changed.startup.pty_pid+=1
+    testing.expect(t,!bridge_legacy_startup_input_allowed_locked(&bridge_executor_store,startup_changed,socket),"replacement PID cannot inherit a startup write")
+    startup_changed=startup_current
+    startup_changed.startup.rec.run_count+=1
+    testing.expect(t,!bridge_legacy_startup_input_allowed_locked(&bridge_executor_store,startup_changed,socket),"changed run cannot inherit a startup write")
+    sync.mutex_unlock(&bridge_legacy_physical_mutex)
+    startup_barrier:=executor.Legacy_Barrier{"startup_source","startup_migration",contracts.owner_payload_digest("startup selection"),0}
+    testing.expect_value(t,bridge_legacy_install_barrier(&bridge_executor_store,startup_barrier,[]executor.Legacy_Resource{{"instance",manual_launch.instance}}).code,"ok")
+    sync.mutex_lock(&bridge_legacy_physical_mutex)
+    testing.expect(t,!bridge_legacy_startup_input_allowed_locked(&bridge_executor_store,startup_current,socket),"generation-zero barrier blocks reminder to a surviving child")
+    sync.mutex_unlock(&bridge_legacy_physical_mutex)
+    sync.mutex_unlock(&bridge_startup_io_mutex)
+    sync.mutex_unlock(&bridge_executor_mutex)
+    for kind in ([4]Bridge_Legacy_Agent_Delivery_Kind{.Message,.Task_Nudge,.Notice,.Resize}) {
+        delivered_notice,refused_notice:=bridge_legacy_agent_delivery({kind=kind,instance=manual_launch.instance,text="must not reach child",rows=30,cols=100},&bridge_executor_store,socket)
+        testing.expect(t,!delivered_notice && refused_notice,"queued/rollover producer cannot bypass the migration barrier or replace a child")
+    }
+    same_pid,same_known=bridge_pty_host_executor_query(socket,manual_launch.instance,manual_launch.launch_key)
+    testing.expect(t,same_known && same_pid==manual_pid,"refused alternate inputs keep the exact surviving child")
     command["method"]=json.String("cancel");command["operation_id"]=json.String("manual_cancel")
     final_cancel:=bridge_executor_test_sign(command,"local_draft",&device_private)
     if revoked_cancel {

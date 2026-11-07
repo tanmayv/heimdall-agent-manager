@@ -283,17 +283,20 @@ bridge_startup_tick :: proc(now: i64, relay := bridge_startup_relay, deliver := 
 	}
 	sync.mutex_unlock(&bridge_runtime_mutex)
 	for job in jobs {
+		sync.mutex_lock(&bridge_executor_mutex)
 		sync.mutex_lock(&bridge_startup_io_mutex)
 		inst, exists := bridge_runtime_instance_snapshot(job.id)
 		if !exists || inst.startup.generation != job.generation ||
 		   inst.runtime_status == "stopped" || inst.runtime_status == "stopping" ||
 		   inst.runtime_status == "failed" || inst.stopped_intent_unix_ms != 0 || !bridge_startup_rec_current(inst.startup.rec) {
 			sync.mutex_unlock(&bridge_startup_io_mutex)
+			sync.mutex_unlock(&bridge_executor_mutex)
 			continue
 		}
 		ready := inst.startup.ready_pending && !bridge_operation_terminal({state = inst.startup.relay_state}) && now >= inst.startup.next_attempt_ms
 		if (kind == .Fallback && ready) || (kind == .Readiness && !ready) {
 			sync.mutex_unlock(&bridge_startup_io_mutex)
+			sync.mutex_unlock(&bridge_executor_mutex)
 			continue
 		}
         key := bridge_startup_receipt_key(inst.startup.rec, fallback = !ready)
@@ -311,6 +314,7 @@ bridge_startup_tick :: proc(now: i64, relay := bridge_startup_relay, deliver := 
             sync.mutex_unlock(&bridge_runtime_mutex)
             delete(key)
             sync.mutex_unlock(&bridge_startup_io_mutex)
+            sync.mutex_unlock(&bridge_executor_mutex)
             continue
         }
         started := time.tick_now()
@@ -323,14 +327,23 @@ bridge_startup_tick :: proc(now: i64, relay := bridge_startup_relay, deliver := 
 			// the hub authenticates the launch assertion and rejects stopped epochs.
 			rec := bridge_startup_clone_rec(inst.startup.rec, context.temp_allocator)
 			sync.mutex_unlock(&bridge_startup_io_mutex)
+			sync.mutex_unlock(&bridge_executor_mutex)
             result := relay(rec, bridge_operation_timeout_ms(budget, now))
             ok = result.ok; err = result.error
 		} else if bridge_startup_fallback_due(inst, now) {
 			attempted = true
-			ok = deliver(job.id, bridge_operation_timeout_ms(budget, now))
+            sync.mutex_lock(&bridge_legacy_physical_mutex)
+            store,available:=bridge_legacy_dispatch_store_locked(nil)
+            socket:=pty_host_socket_path()
+            if available && bridge_legacy_startup_input_allowed_locked(store,inst,socket) {
+                ok = deliver(job.id, bridge_operation_timeout_ms(budget, now))
+            }
+            delete(socket)
+            sync.mutex_unlock(&bridge_legacy_physical_mutex)
 		}
 		if !attempted {
 			sync.mutex_unlock(&bridge_startup_io_mutex)
+			sync.mutex_unlock(&bridge_executor_mutex)
 			continue
 		}
         if !bridge_startup_job_current(job.id, job.generation) {
@@ -364,7 +377,10 @@ bridge_startup_tick :: proc(now: i64, relay := bridge_startup_relay, deliver := 
 			break
 		}
 		sync.mutex_unlock(&bridge_runtime_mutex)
-		if !ready do sync.mutex_unlock(&bridge_startup_io_mutex)
+        if !ready {
+            sync.mutex_unlock(&bridge_startup_io_mutex)
+            sync.mutex_unlock(&bridge_executor_mutex)
+        }
 		if report_failure do fmt.eprintln("bridge startup reminder not acknowledged for", job.id, "— bounded recovery pending; inspect readiness status")
 	}
 }

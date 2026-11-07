@@ -544,9 +544,8 @@ bridge_rollover_execute :: proc(actions: [dynamic]Bridge_Rollover_Action) {
 // ---- default effects -------------------------------------------------------
 
 bridge_rollover_deliver_line_default :: proc(instance_id, text: string) -> bool {
-	socket, ok := bridge_pty_host_ensure_daemon()
-	if !ok do return false
-	return bridge_pty_host_deliver_line(socket, instance_id, text)
+    ok,_:=bridge_legacy_agent_delivery({kind=.Notice,instance=instance_id,text=text})
+    return ok
 }
 
 bridge_rollover_report_idle_default :: proc(instance_id, source: string) {
@@ -554,7 +553,8 @@ bridge_rollover_report_idle_default :: proc(instance_id, source: string) {
 }
 
 bridge_rollover_deliver_notice_default :: proc(instance_id, sender: string) -> bool {
-	return bridge_pty_host_deliver_to_agent(instance_id, "message", sender, "", "")
+    ok,_:=bridge_legacy_agent_delivery({kind=.Message,instance=instance_id,sender=sender})
+    return ok
 }
 
 bridge_rollover_rec_for :: proc(instance_id: string) -> (rec: Bridge_Local_Agent_Token_Record, ok: bool) {
