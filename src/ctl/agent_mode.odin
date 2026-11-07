@@ -216,6 +216,7 @@ ctl_v2_agents :: proc(endpoint, token: string, tokens, args: []string) {
 // ---- task-chain ---------------------------------------------------------
 ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
     if pos(tokens,0)=="owner-local" { ctl_v2_owner_local(endpoint,token,tokens,args);return }
+    if pos(tokens,0)=="migrate" { ctl_v2_task_chain_migrate(endpoint,token,args);return }
 
 	verb := pos(tokens, 0)
 	switch verb {
@@ -1973,6 +1974,11 @@ print_help_task_chain :: proc() {
 	fmt.println("  directory <add|update|remove|list>  Manage task chain relevant directories.")
 	fmt.println("  fleet <list|set|pause|resume>       Manage chain fleet capacities, roles, placement, and dispatch pause.")
 	fmt.println("  token-usage [<chain-id>]            Per-agent (and per-instance) + chain total token usage, JSON.")
+	fmt.println("  migrate --chain <id> --owner <bridge-id> [--request-file <signed.json>]")
+	fmt.println("                                      Move a legacy chain to its owner Bridge (one-shot). Without")
+	fmt.println("                                      --request-file prints the preflight (blockers, work revision).")
+	fmt.println("                                      The selection must be signed by an enrolled browser device")
+	fmt.println("                                      (task chain page: Move to Bridge, or its export); agents relay only.")
 	fmt.println("")
 	fmt.println("MIXED-WORK GRAPH (every chain is mixed_work: tickets and workflow runs share one graph)")
 	fmt.println("  Refs are typed: task:<task-id> (an ordinary ticket) or workflow_run:<run-id> (a whole run;")

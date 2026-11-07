@@ -51,9 +51,11 @@ owner_migration_blocked :: proc(blockers:[]domain.Legacy_Migration_Blocker,reque
 owner_migration_preflight_handler :: proc(ctx:rawptr,req:Request)->Response {
     context.allocator=context.temp_allocator
     h:=(^Bridge_Handlers)(ctx)
-    auth,ok,resp:=require_auth(h.auth,req)
+    // The device signatures carry consent; an instance token only transports
+    // a browser-signed request (ham-ctl), exactly like the owner relay.
+    auth,ok,resp:=require_auth_any(h.auth,req)
     if !ok do return resp
-    if !contracts.is_user_auth(auth) do return respond_error(domain.domain_error(.Forbidden,"user authentication required"),req.request_id)
+    if !contracts.is_user_auth(auth) && auth.kind!=.Instance_Token do return respond_error(domain.domain_error(.Forbidden,"user authentication required"),req.request_id)
     chain_id:=query_value(req.query,"chain_id")
     chain,exists,err:=h.taskchains.repo.get_chain(h.taskchains.repo.ctx,domain.Task_Chain_ID(chain_id))
     if err.code!=.None do return respond_error(err,req.request_id)
@@ -92,9 +94,11 @@ owner_migration_keys :: proc(h:^Bridge_Handlers,account:string,selection:json.Ob
 owner_migration_handler :: proc(ctx:rawptr,req:Request)->Response {
     context.allocator=context.temp_allocator
     h:=(^Bridge_Handlers)(ctx)
-    auth,ok,resp:=require_auth(h.auth,req)
+    // The device signatures carry consent; an instance token only transports
+    // a browser-signed request (ham-ctl), exactly like the owner relay.
+    auth,ok,resp:=require_auth_any(h.auth,req)
     if !ok do return resp
-    if !contracts.is_user_auth(auth) do return respond_error(domain.domain_error(.Forbidden,"user authentication required"),req.request_id)
+    if !contracts.is_user_auth(auth) && auth.kind!=.Instance_Token do return respond_error(domain.domain_error(.Forbidden,"user authentication required"),req.request_id)
     body:Owner_Migration_Request
     if json.unmarshal_string(req.body,&body,.JSON,context.temp_allocator)!=nil do return respond_error(domain.domain_error(.Validation_Failed,"invalid migration request"),req.request_id)
     selection,sel_ok:=contracts.owner_parse(body.selection,"migration_selection")

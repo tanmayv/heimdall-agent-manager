@@ -1360,3 +1360,35 @@ ctl_v2_owner_local :: proc(endpoint,token:string,tokens,args:[]string) {
     relay["request_id"]=json.String(fmt.tprintf("req_cli_%d",time.to_unix_nanoseconds(time.now())))
     ctl_agent_rest(endpoint,token,{method=.POST,path=ctl_api("owner-local","relay"),body=httpc.json_body(relay)})
 }
+
+// One-shot legacy import (R3). Consent is a browser-device signature over the
+// selection and destination genesis; the instance token only transports it.
+// Without --request-file this prints the Hub preflight for the chain.
+ctl_v2_task_chain_migrate :: proc(endpoint,token:string,args:[]string) {
+    chain:=option_value(args,"--chain","")
+    owner:=option_value(args,"--owner","")
+    if chain=="" || owner=="" do ctl_print_error_exit("usage: task-chain migrate --chain <id> --owner <bridge-id> [--request-file <signed.json>]")
+    path:=option_value(args,"--request-file","")
+    if path=="" {
+        q:=ctl_query_make()
+        ctl_query_add(&q,"chain_id",chain)
+        ctl_agent_rest(endpoint,token,{method=.GET,path=ctl_api("owner-local","migrations","preflight"),query=q[:]})
+        return
+    }
+    bytes,read:=os.read_entire_file(path,context.temp_allocator)
+    if read!=nil do ctl_print_error_exit("cannot read signed migration request")
+    request,valid:=ctl_migration_request_parse(string(bytes),chain,owner)
+    if !valid do ctl_print_error_exit("signed migration request must hold a selection and genesis for --chain and --owner")
+    ctl_agent_rest(endpoint,token,{method=.POST,path=ctl_api("owner-local","migrations"),body=httpc.json_body(request)})
+}
+Ctl_Migration_Request :: struct { selection,genesis:string }
+ctl_migration_request_parse :: proc(raw,chain,owner:string)->(Ctl_Migration_Request,bool) {
+    request:Ctl_Migration_Request
+    if json.unmarshal_string(raw,&request,.JSON,context.temp_allocator)!=nil do return {},false
+    selection,sel_ok:=contracts.owner_parse(request.selection,"migration_selection")
+    genesis,gen_ok:=contracts.owner_parse(request.genesis,"genesis")
+    if !sel_ok || !gen_ok do return {},false
+    get:=contracts.owner_string
+    if get(selection,"chain_id")!=chain || get(selection,"owner_bridge_id")!=owner || get(genesis,"chain_id")!=chain || get(genesis,"creation_op")!=get(selection,"migration_id") do return {},false
+    return request,true
+}
