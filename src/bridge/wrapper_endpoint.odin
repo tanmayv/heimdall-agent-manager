@@ -214,7 +214,8 @@ bridge_local_endpoint_client_thread :: proc(client: net.TCP_Socket) {
 	}
 }
 
-bridge_local_endpoint_handle_jsonl_line :: proc(line: string) -> string {
+bridge_local_endpoint_handle_jsonl_line :: proc(line: string,
+    executor_transport:Executor_Child_Transport={nil,bridge_executor_child_fetch,bridge_executor_child_send},executor_socket:string="") -> string {
 	request_id := bridge_local_extract_json_string(line, "id", "")
 	if bridge_local_extract_json_int(line, "v", 0) != 1 do return bridge_local_response_error(request_id, "bad_version", "local endpoint protocol version must be 1")
 	token := bridge_local_extract_json_string(line, "token", "")
@@ -223,8 +224,8 @@ bridge_local_endpoint_handle_jsonl_line :: proc(line: string) -> string {
 	if bridge_local_spoofable_params(params) do return bridge_local_response_error(request_id, "forbidden", "local callers cannot spoof owner, sender, instance, or Hub credentials")
 	rec, ok := bridge_agent_token_verify(token)
 	if !ok {
-        if method=="agent.owner_local.lease" {
-            if response,handled:=bridge_executor_agent(request_id,params,token);handled do return response
+        if method=="agent.owner_local.lease" || method=="agent.start_success" {
+            if response,handled:=bridge_executor_agent(request_id,params,token,executor_transport,executor_socket,method);handled do return response
         }
         return bridge_local_response_error(request_id, "unauthenticated", "local agent token is invalid or rotated")
     }

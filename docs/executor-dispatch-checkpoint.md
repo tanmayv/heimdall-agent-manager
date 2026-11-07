@@ -1679,15 +1679,76 @@ two-owner cursor progress. No new platform/provider evidence is claimed.
 An initial test used an unsupported message argument to `expect_value`; corrected
 to `expect` before the passing run. No unrelated cleanup.
 
+### Executor-local startup readiness (2026-11-07 continuation)
+
+Coordinator guidance (`msg_18e5a6f1a1e4556d`) authorizes exact local
+child/token-generation readiness with replay and stale-child denial, without
+owner task-authority effects. The legacy consumer still relays readiness using
+its Hub instance token (`src/bridge/startup_readiness.odin:222`); remote activation
+uses the owner activation fence and active execution receipt instead
+(`src/bridge/owner_local_executor.odin:117`,
+`src/bridge/owner_local_executor.odin:238`). No additional remote owner waiting
+consumer was identified, so this change adds no owner readiness observation.
+
+The existing local `agent.start_success` method now admits executor credentials
+through the separate executor path (`src/bridge/wrapper_endpoint.odin:227`).
+Readiness accepts empty params only: identity/generation come from local retained
+issuance, not caller assertions. It fetches and verifies the paired directory,
+checks exact daemon presence, and rechecks current bootstrap/secret/deadline
+under the startup I/O gate before persisting
+(`src/bridge/executor_child.odin:130`).
+The acknowledgement contract is `accepted` plus the original `ready_ms`
+(`src/contracts/executor_child.odin:143`, TypeScript mirror in
+`src/ui/api/executor.ts`).
+
+Executor schema V5 appends exact reservation/instance/launch-key/token-generation/
+executor-incarnation readiness. Scope and append-only SQL triggers guard records
+(`src/lib/executor_local/schema.sql:110`). Fresh authentication precedes receipt
+replay, so retained success cannot authenticate a revoked, expired, stopped or
+prior-runtime child (`src/lib/executor_local/readiness.odin:9`). The V4-to-V5
+migration transactionally rebuilds the runtime version guard without reissuing
+identities. Historical reconstruction fixtures now remove readiness too.
+
+Native tests exercise exact observation, wrong keys/secrets, expiry, restart,
+idempotent original timestamp, immutable evidence, statement and deferred-COMMIT
+rollback, and genuine V4 migration collision/rollback/recovery
+(`src/lib/executor_local/readiness_test.odin:7`,
+`src/lib/executor_local/readiness_test.odin:56`).
+The real-child endpoint test verifies accepted readiness, identical replay
+without owner exchange, denial of caller-selected fields/wrong secrets, and
+denial after physical child absence (`src/bridge/executor_issuance_test.odin:512`).
+
+Final-source checks:
+
+```bash
+nix develop --command odin test src/lib/executor_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3b-readiness-ledger-final-20261107-0400
+nix develop --command odin test src/contracts -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3b-readiness-contracts-20261107-0400
+nix develop --command env HEIMDALL_EXECUTOR_TEST_PTY=$HOME/.cache/heimdall-tests/m3b-bootstrap-pty-20261107-0300/bin/ham-pty-host odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:EXECUTOR_TEST_REQUIRED=true -define:ODIN_TEST_NAMES=main.test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection,main.bridge_executor_real_daemon_ledger_dispatch_and_stale_stop,main.bridge_executor_expiry_during_owner_check_and_clock_regression_fail_before_io,main.bridge_executor_physical_fence_rechecks_wall_and_monotonic_expiry,main.startup_both_events_and_cli_share_one_ready_relay,main.startup_stop_relaunch_and_revocation_are_fenced -out:$HOME/.cache/heimdall-tests/m3b-readiness-real-final-20261107-0400
+npm run typecheck
+nix build .#ham-bridge -o $HOME/.cache/heimdall-tests/m3b-readiness-bins-20261107-0400
+git diff --cached --check
+```
+
+Results: executor **34 PASS** (`sh_9feae8b95558e76ff4c7fbf68addd433`);
+contracts **37 PASS** (`sh_440ed6cc7e78391e5b221ce91499c13e`);
+Bridge **6 PASS** (`sh_9dd3ec188bb8aa3c56cf04b46267ed11`);
+typecheck **PASS** (`sh_05d4aa2a2668b7707a9862a446182102`);
+production Bridge build **PASS** (`sh_de78069c06f8b713fbca9eaa4bf65073`).
+Old-daemon compatibility phase remains skipped without
+`HEIMDALL_EXECUTOR_OLD_PTY`. No real provider or additional platform evidence is
+claimed. An initial scripted edit also inserted a migration call in rollback;
+compilation caught it and it was removed before all passing checks.
+No unrelated cleanup or owner task mutation was added.
+
 ### Next implementation boundary
 
-1. Mount executor-local startup readiness for the issued credential.
-   `agent.start_success` remains a legacy-token path. Coordinator confirmed exact executor-local readiness with replay and stale-child
-   denial, without owner task-authority effects (msg_18e5a6f1a1e4556d). Identify
-   an exact owner waiting consumer before proposing any owner observation. Do not register a
-   Hub task or substitute a Hub instance token.
-2. Implement bounded renewal and device-wide admission
-   including legacy/manual/warm paths.
+1. Implement bounded signed deadline renewal through the owner/executor path,
+   including the exact daemon deadline. Existing bootstrap immutability and exact
+   deadline-version/expiry checks must be reconciled with renewal; never extend a
+   process by trusting a child or a historical receipt.
+2. Complete device-wide admission across legacy/manual/warm launch paths.
+   Current remote reservations share one ledger, but legacy physical launches
+   still need accounting and mapping/identity fences.
 3. Implement encrypted PTY tickets/results, bracketed paste, Linux/Darwin
    interrupt profiles and documented Windows bounds. Rich owner-rendered
    profile/memory/skill provisioning remains separate from the minimal snapshot.

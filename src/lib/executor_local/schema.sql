@@ -1,6 +1,6 @@
 
 CREATE TABLE executor_runtime (
- singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=4),
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=5),
  account_id TEXT NOT NULL, executor_bridge_id TEXT NOT NULL, operator_key_id TEXT NOT NULL,
  incarnation INTEGER NOT NULL CHECK(incarnation>0), clock_high_ms INTEGER NOT NULL CHECK(clock_high_ms>=0),
  recovery_state TEXT NOT NULL CHECK(recovery_state IN ('ready','reconciling','clock_uncertain')),
@@ -104,3 +104,23 @@ CREATE TABLE executor_bootstraps (
 );
 CREATE TRIGGER bootstrap_no_update BEFORE UPDATE ON executor_bootstraps BEGIN SELECT RAISE(ABORT,'immutable bootstrap'); END;
 CREATE TRIGGER bootstrap_no_delete BEFORE DELETE ON executor_bootstraps BEGIN SELECT RAISE(ABORT,'retained bootstrap'); END;
+
+-- Local readiness is an observation of an already confirmed exact child.
+-- It cannot create an owner task, grant, lease, deadline, or launch identity.
+CREATE TABLE executor_readiness (
+ reservation_id TEXT PRIMARY KEY REFERENCES executor_reservations(reservation_id),
+ instance_id TEXT NOT NULL, launch_key TEXT NOT NULL, token_generation TEXT NOT NULL,
+ executor_incarnation INTEGER NOT NULL CHECK(executor_incarnation>0),
+ ready_ms INTEGER NOT NULL CHECK(ready_ms>0)
+);
+CREATE TRIGGER readiness_scope BEFORE INSERT ON executor_readiness
+WHEN NOT EXISTS(SELECT 1 FROM executor_reservations r JOIN executor_bootstraps b USING(reservation_id)
+ WHERE r.reservation_id=NEW.reservation_id AND r.instance_id=NEW.instance_id AND r.launch_key=NEW.launch_key
+ AND json_extract(b.document,'$.token_generation')=NEW.token_generation
+ AND r.state='active' AND r.launch_state='confirmed'
+ AND r.executor_incarnation=NEW.executor_incarnation AND r.observed_incarnation=NEW.executor_incarnation
+ AND NEW.executor_incarnation=(SELECT incarnation FROM executor_runtime)
+ AND NEW.ready_ms<r.expires_ms AND NEW.ready_ms<r.hard_ms)
+BEGIN SELECT RAISE(ABORT,'readiness requires current exact child'); END;
+CREATE TRIGGER readiness_no_update BEFORE UPDATE ON executor_readiness BEGIN SELECT RAISE(ABORT,'immutable readiness'); END;
+CREATE TRIGGER readiness_no_delete BEFORE DELETE ON executor_readiness BEGIN SELECT RAISE(ABORT,'retained readiness'); END;

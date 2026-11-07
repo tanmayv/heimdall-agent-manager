@@ -633,3 +633,6 @@ export async function executorChildRequestMatches(r: ExecutorDocument, b: Execut
     return now >= BigInt(r.issued_ms) && BigInt(r.issued_ms) >= BigInt(b.issued_ms) && now < BigInt(r.request_expires_ms);
   } catch { return false; }
 }
+
+/** Local startup observation only; this grants no owner task authority. */
+export interface ExecutorReadinessAck { accepted: boolean; ready_ms: string }

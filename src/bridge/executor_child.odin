@@ -53,7 +53,8 @@ Executor_Child_Transport :: struct {
 bridge_executor_child_fetch :: proc(_:rawptr,generation:i64)->(vault.Directory_Verification_Input,bool) {return bridge_executor_directory_fetch(generation)}
 bridge_executor_child_send :: proc(_:rawptr,request,input:string,generation:i64)->Executor_Fence_Outcome {return bridge_executor_child_exchange(request,input,generation)}
 bridge_executor_agent :: proc(request_id,input,secret:string,
-    transport:Executor_Child_Transport={nil,bridge_executor_child_fetch,bridge_executor_child_send},socket_path:string="")->(string,bool) {
+    transport:Executor_Child_Transport={nil,bridge_executor_child_fetch,bridge_executor_child_send},socket_path:string="",method:string="agent.owner_local.lease")->(string,bool) {
+    if method!="agent.owner_local.lease" && method!="agent.start_success" do return "",false
     generation:=bridge_task_chain_search_generation()
     account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
     public:=bridge_identity_public_key_hex(bridge_config.daemon_id)
@@ -66,10 +67,15 @@ bridge_executor_agent :: proc(request_id,input,secret:string,
     if opened {instance,raw,authenticated=executor.child_token(&bridge_executor_store,secret,time.to_unix_nanoseconds(time.now())/1000000)}
     sync.mutex_unlock(&bridge_executor_mutex)
     if !authenticated do return "",false
-    fail:=proc(id,code:string)->(string,bool) {return bridge_local_response_error(id,code,"remote owner request rejected"),true}
+    fail:=proc(id,code:string)->(string,bool) {return bridge_local_response_error(id,code,"executor request rejected"),true}
+    if method=="agent.start_success" {
+        value,parsed:=contracts.owner_content_document(input)
+        params,is_object:=value.(json.Object)
+        if !parsed || !is_object || len(params)!=0 do return fail(request_id,"malformed")
+    }
     kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
     if !unlocked do return fail(request_id,"vault_locked")
-    if transport.directory==nil || transport.exchange==nil do return fail(request_id,"owner_unavailable")
+    if transport.directory==nil || method!="agent.start_success" && transport.exchange==nil do return fail(request_id,"owner_unavailable")
     directory,fetched:=transport.directory(transport.ctx,generation)
     if !fetched do return fail(request_id,"directory_unavailable")
     b,parsed:=contracts.executor_parse(raw,"bootstrap")
@@ -80,11 +86,19 @@ bridge_executor_agent :: proc(request_id,input,secret:string,
     if trusted && generation==bridge_task_chain_search_generation() {
         socket:=socket_path
         if socket=="" do socket=pty_host_socket_path()
-        attested=bridge_executor_child_attest(&bridge_executor_store,instance,secret,input,socket,source,host,{nil,bridge_executor_sign})
+        if method=="agent.start_success" {
+            attested=bridge_executor_child_ready(&bridge_executor_store,instance,secret,socket,source,host)
+        } else {
+            attested=bridge_executor_child_attest(&bridge_executor_store,instance,secret,input,socket,source,host,{nil,bridge_executor_sign})
+        }
         if socket_path=="" do delete(socket)
     }
     sync.mutex_unlock(&bridge_executor_mutex)
     if attested.code!="ok" do return fail(request_id,attested.code)
+    if method=="agent.start_success" {
+        if generation!=bridge_task_chain_search_generation() do return fail(request_id,"vault_locked")
+        return bridge_local_response_data(request_id,attested.body),true
+    }
     outcome:=transport.exchange(transport.ctx,attested.body,input,generation)
     if outcome.envelope=="" do return fail(request_id,"owner_unavailable")
     sync.mutex_lock(&bridge_executor_mutex);defer sync.mutex_unlock(&bridge_executor_mutex)
@@ -110,4 +124,19 @@ bridge_executor_agent :: proc(request_id,input,secret:string,
         if !bridge_owner_materialize_context(dir,command,result.body) do return fail(request_id,"context_delivery_failed")
     }
     return bridge_local_response_data(request_id,body),true
+}
+
+// Current paired keys and exact daemon presence precede durable local readiness.
+bridge_executor_child_ready :: proc(s:^executor.Store,instance,secret,socket:string,
+    owner_key,executor_key:contracts.Owner_Verified_Key)->executor.Result {
+    sync.mutex_lock(&bridge_startup_io_mutex);defer sync.mutex_unlock(&bridge_startup_io_mutex)
+    raw,authenticated:=executor.child_bootstrap(s,instance,secret,bridge_executor_physical_clock(nil))
+    if !authenticated do return executor.Result{code="invalid_scope"}
+    b,parsed:=contracts.executor_parse(raw,"bootstrap")
+    if !parsed do return executor.Result{code="invalid_scope"}
+    key:=contracts.owner_string(b,"launch_key")
+    pid,known:=bridge_pty_host_executor_query(socket,instance,key)
+    if !known || pid<=0 do return executor.Result{code="child_not_current"}
+    return executor.child_ready(s,instance,secret,executor.Child_Observation{instance,key,s.incarnation,true},
+        owner_key,executor_key,bridge_executor_physical_clock(nil))
 }

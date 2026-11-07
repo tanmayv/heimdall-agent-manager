@@ -138,3 +138,6 @@ executor_child_result_matches :: proc(result,request:json.Object,body:string,own
         now<executor_number(result,"request_expires_ms") &&
         executor_number(result,"request_expires_ms")<=executor_number(request,"request_expires_ms")
 }
+
+// Local startup acknowledgement; readiness grants no owner task authority.
+Executor_Readiness_Ack :: struct {accepted:bool,ready_ms:string}

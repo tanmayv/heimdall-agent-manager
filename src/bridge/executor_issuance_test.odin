@@ -509,6 +509,26 @@ bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,wire:Executor_Exc
     testing.expect(t,valid && contracts.executor_child_request_matches(child_request,bootstrap,input,self,owner_key,time.to_unix_nanoseconds(time.now())/1000000))
     probe:=Executor_Child_Test_Transport{t,directory,kr,owner_private,owner_key,0,0}
     transport:=Executor_Child_Transport{&probe,bridge_executor_test_child_directory,bridge_executor_test_child_exchange}
+    ready_line:=executor.encode(struct{v:int,id,token,method:string,params:json.Object}{
+        1,"ready_local",material.token_secret,"agent.start_success",make(json.Object,context.temp_allocator)})
+    readiness:=bridge_local_endpoint_handle_jsonl_line(ready_line,transport,socket)
+    testing.expectf(t,strings.contains(readiness,`"accepted":true`) && probe.exchanges==0,
+        "executor readiness uses exact live child without owner relay: %s",readiness)
+    ready_rows,_:=executor.query(bridge_executor_store.db,"SELECT count(*),min(ready_ms) FROM executor_readiness")
+    testing.expect(t,ready_rows[0][0]=="1")
+    replay_readiness:=bridge_local_endpoint_handle_jsonl_line(ready_line,transport,socket)
+    testing.expect(t,replay_readiness==readiness && probe.exchanges==0,"exact ready retry returns original local acknowledgement")
+    ready_rows_after,_:=executor.query(bridge_executor_store.db,"SELECT count(*),min(ready_ms) FROM executor_readiness")
+    testing.expect(t,ready_rows_after[0][0]=="1" && ready_rows_after[0][1]==ready_rows[0][1])
+    bad_params:=make(json.Object,context.temp_allocator);bad_params["run_count"]=json.String("99")
+    bad_ready:=executor.encode(struct{v:int,id,token,method:string,params:json.Object}{
+        1,"ready_spoof",material.token_secret,"agent.start_success",bad_params})
+    rejected_ready:=bridge_local_endpoint_handle_jsonl_line(bad_ready,transport,socket)
+    testing.expect(t,strings.contains(rejected_ready,"malformed") && probe.exchanges==0,"readiness accepts no caller-selected launch fields")
+    bad_ready=executor.encode(struct{v:int,id,token,method:string,params:json.Object}{
+        1,"ready_wrong","wrong_secret","agent.start_success",make(json.Object,context.temp_allocator)})
+    rejected_ready=bridge_local_endpoint_handle_jsonl_line(bad_ready,transport,socket)
+    testing.expect(t,strings.contains(rejected_ready,"unauthenticated") && probe.exchanges==0)
     local,handled:=bridge_executor_agent("child_local",input,material.token_secret,transport,socket)
     testing.expectf(t,handled && strings.contains(local,`"code":"ok"`) && probe.exchanges==1,"mounted child endpoint: handled=%v exchanges=%d response=%s",handled,probe.exchanges,local)
     testing.expect(t,!strings.contains(local,material.token_secret),"child credential stays local")
@@ -520,6 +540,9 @@ bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,wire:Executor_Exc
     // The ledger still says confirmed, but physical absence must reject the
     // credential before any executor-attested owner request can be signed.
     testing.expect(t,bridge_pty_host_executor_close(socket,intent.instance,intent.launch_key))
+    readiness=bridge_local_endpoint_handle_jsonl_line(ready_line,transport,socket)
+    testing.expect(t,strings.contains(readiness,"child_not_current") && !strings.contains(readiness,`"accepted":true`),
+        "durable ready evidence cannot replay after exact physical absence")
     attested=bridge_executor_child_attest(&bridge_executor_store,intent.instance,material.token_secret,input,socket,owner_key,self,{nil,bridge_executor_sign})
     testing.expect_value(t,attested.code,"child_not_current")
     stop:=make(json.Object,context.temp_allocator)
