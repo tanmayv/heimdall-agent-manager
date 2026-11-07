@@ -28,11 +28,20 @@ admit_local :: proc(s:^Store,raw,configuration:string,key:contracts.Owner_Verifi
     if !valid || !configured do return fail("malformed")
     if !scope(s,o) || !scope(s,c) || !contracts.executor_verify("local_launch",o,key) do return fail("invalid_scope")
     digest,_:=contracts.executor_digest("local_launch",o)
-    config_digest:=contracts.owner_payload_digest(configuration)
-    if config_digest!=field(o,"configuration_digest") do return fail("digest_mismatch")
+    if contracts.owner_payload_digest(configuration)!=field(o,"configuration_digest") do return fail("digest_mismatch")
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
     if !begin(s) do return fail("storage_error")
     defer rollback(s)
+    result:=admit_local_tx(s,raw,configuration,o,c,digest,now,resources,started)
+    if result.code=="ok" && !result.replay && !commit(s) do return fail("storage_error")
+    return result
+}
+
+// Caller authenticates the command and holds the mutex and SQL transaction.
+// Shared by standalone consent and exact draft authorization, so the draft,
+// admission, and operation receipt commit or roll back together.
+admit_local_tx :: proc(s:^Store,raw,configuration:string,o,c:json.Object,digest:string,now:i64,resources:Local_Resources,started:time.Tick)->Result {
+    config_digest:=contracts.owner_payload_digest(configuration)
     rows,read:=query(s.db,"SELECT launch_id,input_digest FROM executor_local_launches WHERE principal_id=? AND operation_id=?",field(o,"principal_id"),field(o,"operation_id"))
     if !read do return fail("storage_error")
     if len(rows)>0 {
@@ -66,7 +75,7 @@ admit_local :: proc(s:^Store,raw,configuration:string,key:contracts.Owner_Verifi
         id,field(o,"principal_id"),field(o,"operation_id"),digest,raw,configuration,field(c,"slot_id"),field(c,"instance_id"),field(c,"directory_key"),field(c,"executor_incarnation"),launch_key,field(c,"spawn_digest"),fmt.tprintf("%d",now),fmt.tprintf("%d",started._nsec))
     if !written do return fail("storage_error")
     result:=local_result(s,id)
-    if result.code!="ok" || !commit(s) do return fail("storage_error")
+    if result.code!="ok" do return fail("storage_error")
     return result
 }
 
@@ -87,9 +96,9 @@ local_begin_dispatch :: proc(s:^Store,launch:Local_Launch,key:contracts.Owner_Ve
     if code:=clock(s,now);code!="" do return false
     rows,ok:=query(s.db,"SELECT consent,configuration,admitted_ms,admitted_tick_ns FROM executor_local_launches WHERE launch_id=? AND instance_id=? AND launch_key=? AND spawn_digest=? AND state='admitted' AND executor_incarnation=?",launch.id,launch.instance,launch.launch_key,launch.spawn_digest,fmt.tprintf("%d",s.incarnation))
     if !ok || len(rows)!=1 || rows[0][1]!=launch.configuration do return false
-    o,valid:=contracts.executor_parse(rows[0][0],"local_launch")
+    o,kind,valid:=local_consent(rows[0][0])
     c,configured:=contracts.executor_parse(rows[0][1],"local_configuration")
-    if !valid || !configured || !contracts.executor_verify("local_launch",o,key) || !local_time_live(o,now,number(rows[0][2]),number(rows[0][3])) || !resources.resolved || resources.configuration_digest!=contracts.owner_payload_digest(rows[0][1]) || resources.spawn_digest!=launch.spawn_digest do return false
+    if !valid || !configured || !contracts.executor_verify(kind,o,key) || !local_time_live(o,now,number(rows[0][2]),number(rows[0][3])) || !resources.resolved || resources.configuration_digest!=contracts.owner_payload_digest(rows[0][1]) || resources.spawn_digest!=launch.spawn_digest do return false
     current,read:=query(s.db,`SELECT 1 FROM executor_runtime WHERE policy_revision=? AND
       EXISTS(SELECT 1 FROM executor_slots WHERE slot_id=? AND provider_profile=? AND enabled=1) AND
       EXISTS(SELECT 1 FROM executor_directories WHERE directory_id=? AND revision=? AND enabled=1 AND directory_key=? AND directory_path=?
@@ -161,8 +170,8 @@ local_dispatch_current :: proc(s:^Store,launch:Local_Launch,key:contracts.Owner_
       AND executor_incarnation=? AND state='dispatching' AND (SELECT recovery_state FROM executor_runtime)='ready'
       AND (SELECT clock_high_ms FROM executor_runtime)<=CAST(? AS INTEGER)`,launch.id,launch.instance,launch.launch_key,launch.configuration,fmt.tprintf("%d",s.incarnation),fmt.tprintf("%d",now))
     if !ok || len(rows)!=1 do return false
-    o,valid:=contracts.executor_parse(rows[0][0],"local_launch")
-    return valid && contracts.executor_verify("local_launch",o,key) && local_time_live(o,now,number(rows[0][1]),number(rows[0][2]))
+    o,kind,valid:=local_consent(rows[0][0])
+    return valid && contracts.executor_verify(kind,o,key) && local_time_live(o,now,number(rows[0][1]),number(rows[0][2]))
 }
 
 // The saved monotonic admission time belongs only to this runtime incarnation.
@@ -173,4 +182,13 @@ local_time_live :: proc(o:json.Object,now,admitted_ms,admitted_tick_ns:i64)->boo
     return now>=admitted_ms && now>=num(o,"issued_ms") && request_live(o,now) &&
         remaining>0 && remaining<=contracts.EXECUTOR_TRANSPORT_TTL_MS &&
         elapsed>=0 && elapsed<time.Duration(remaining)*time.Millisecond
+}
+
+
+// A draft authorize command is itself exact device consent. Other draft
+// methods can never be interpreted as permission for physical dispatch.
+local_consent :: proc(raw:string)->(json.Object,string,bool) {
+    if o,valid:=contracts.executor_parse(raw,"local_launch");valid do return o,"local_launch",true
+    o,valid:=contracts.executor_parse(raw,"local_draft")
+    return o,"local_draft",valid && field(o,"method")=="authorize"
 }

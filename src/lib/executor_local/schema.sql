@@ -1,6 +1,6 @@
 
 CREATE TABLE executor_runtime (
- singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=7),
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=8),
  account_id TEXT NOT NULL, executor_bridge_id TEXT NOT NULL, operator_key_id TEXT NOT NULL,
  incarnation INTEGER NOT NULL CHECK(incarnation>0), clock_high_ms INTEGER NOT NULL CHECK(clock_high_ms>=0),
  recovery_state TEXT NOT NULL CHECK(recovery_state IN ('ready','reconciling','clock_uncertain')),
@@ -199,3 +199,34 @@ WHEN NEW.state!='admitted' OR
  OR EXISTS(SELECT 1 FROM executor_live_resources WHERE slot_id=NEW.slot_id OR instance_id=NEW.instance_id
    OR (directory_key!='' AND directory_key=NEW.directory_key))
 BEGIN SELECT RAISE(ABORT,'shared executor resource conflict'); END;
+
+CREATE TABLE executor_local_drafts (
+ draft_id TEXT PRIMARY KEY, source_digest TEXT NOT NULL UNIQUE,
+ revision INTEGER NOT NULL CHECK(revision>0),
+ configuration TEXT NOT NULL CHECK(json_valid(configuration)),
+ material TEXT NOT NULL CHECK(json_valid(material)),
+ principal_id TEXT NOT NULL DEFAULT '', key_id TEXT NOT NULL DEFAULT '',
+ state TEXT NOT NULL CHECK(state IN ('pending','prepared','authorized','cancelled')),
+ launch_id TEXT REFERENCES executor_local_launches(launch_id),
+ CHECK((state='pending' AND principal_id='' AND key_id='' AND launch_id IS NULL)
+    OR (state!='pending' AND principal_id!='' AND key_id!='')),
+ CHECK((state='authorized' AND launch_id IS NOT NULL) OR state!='authorized')
+);
+CREATE TRIGGER local_draft_immutable BEFORE UPDATE ON executor_local_drafts
+WHEN NEW.draft_id IS NOT OLD.draft_id OR NEW.source_digest IS NOT OLD.source_digest
+ OR NEW.revision IS NOT OLD.revision OR NEW.configuration IS NOT OLD.configuration
+ OR NEW.material IS NOT OLD.material
+ OR (OLD.principal_id!='' AND (NEW.principal_id IS NOT OLD.principal_id OR NEW.key_id IS NOT OLD.key_id))
+ OR (OLD.launch_id IS NOT NULL AND NEW.launch_id IS NOT OLD.launch_id)
+ OR (OLD.state='cancelled' AND NEW.state!='cancelled')
+ OR (OLD.state='authorized' AND NEW.state NOT IN ('authorized','cancelled'))
+ OR (OLD.state='prepared' AND NEW.state='pending')
+BEGIN SELECT RAISE(ABORT,'immutable local draft or invalid transition'); END;
+CREATE TRIGGER local_draft_no_delete BEFORE DELETE ON executor_local_drafts BEGIN SELECT RAISE(ABORT,'retained local draft'); END;
+CREATE TABLE executor_local_draft_receipts (
+ principal_id TEXT NOT NULL, operation_id TEXT NOT NULL,
+ input_digest TEXT NOT NULL, draft_id TEXT NOT NULL REFERENCES executor_local_drafts(draft_id),
+ result_json TEXT NOT NULL CHECK(json_valid(result_json)), PRIMARY KEY(principal_id,operation_id)
+);
+CREATE TRIGGER local_draft_receipt_no_update BEFORE UPDATE ON executor_local_draft_receipts BEGIN SELECT RAISE(ABORT,'immutable draft receipt'); END;
+CREATE TRIGGER local_draft_receipt_no_delete BEFORE DELETE ON executor_local_draft_receipts BEGIN SELECT RAISE(ABORT,'retained draft receipt'); END;

@@ -5,7 +5,9 @@ bounded reconciliation, executor-local readiness, and production signed physical
 deadline renewal are implemented. Continue at
 [Signed physical renewal](#signed-physical-renewal-2026-11-07-continuation)
 for renewal evidence, then [Local admission foundation](#local-admission-foundation-2026-11-07-continuation)
-for the latest checkpoint and remaining work. Earlier sections
+for the admission foundation, then
+[M3a durable draft and authenticated cancellation](#m3a-durable-draft-and-authenticated-cancellation-checkpoint-2026-11-07)
+for the latest partial checkpoint and remaining work. Earlier sections
 preserve historical checkpoints; their unfinished renewal lists are superseded.
 **Full M3 acceptance remains incomplete.**
 
@@ -2167,3 +2169,137 @@ permission is needed for routine implementation within it.
 
 All remaining production and full M3 gates in the preceding section remain.
 This test checkpoint is neither full acceptance nor the final independent review.
+
+
+## M3a durable draft and authenticated cancellation checkpoint (2026-11-07)
+
+Task `task_18e5ac3db3f3fce0`, revision 1, initial lease
+`lease_18e5ac3db6b20b6c`. The task branch was explicitly based on authorized
+predecessor `65557436`; the audit-only `03f2d411` branch and shared checkout
+were preserved. All prior scoped M3 implementation ancestry remains intact.
+
+This is a verified **partial checkpoint**, not M3a submission or P2/P3 closure.
+
+### Implemented boundary
+
+- `src/contracts/executor_local_launch.odin:23` adds strict, separately signed
+  device commands for prepare/inspect/authorize/cancel, binding the account,
+  executor, preparing principal/key, exact draft ID/revision/configuration
+  digest, operation ID, and bounded request lifetime. Native and TS schemas
+  match; task/lease/chain fields are rejected.
+- `src/lib/executor_local/local_draft.odin:17` stages native-only JSON material
+  once per native source digest. Retries and reopen retain the original bytes.
+  This helper **does not generate** startup randomness or activate tokens.
+  Its future production caller must generate and validate those facts natively;
+  no relay accepts material, an argv, credentials or a physical Spawn.
+- `src/lib/executor_local/local_draft.odin:52` explicitly projects public
+  configuration/state without startup material, local tokens, consent or daemon
+  launch keys. The first signed prepare claims ownership. Other enrolled
+  principals/keys cannot inspect, authorize, cancel or replay that draft.
+- `src/lib/executor_local/local_draft.odin:68` commits draft authorization,
+  existing shared-budget local admission, and exact operation receipt together.
+  The original signed authorize document is itself dispatch consent, with no
+  second approval signature required. Receipt replay does not revive state.
+- Signed cancellation releases admitted rows atomically, including after reopen;
+  dispatching/active/stopping rows instead retain charge and enter stopping for
+  existing exact daemon reconciliation. Cancellation and first dispatch share
+  the Store mutex. Deferred COMMIT failures roll back state, receipts and quota.
+- V8 migration rebuilds the runtime header while recreating all retained
+  readiness/shared-admission triggers referring to it. Genuine V7 collision
+  rollback/retry preserves an active local child/key and its shared exclusion.
+  Historical V1-V6 fixtures also upgrade to V8.
+- `src/hub/transport/http/owner_local_handlers.odin:174` and
+  `src/hub/app/wiring.odin:844` route the minimal encrypted local relay through
+  `POST /api/v1/executor/local-launch`. No synthetic owner, chain, task or lease
+  is added. Hub checks user/account/device routing and transports ciphertext.
+- `src/bridge/executor_local_relay.odin:28` opens current-epoch ciphertext,
+  resolves the signed preparing browser and executor against the paired
+  directory/high-water pin, and executes retained-draft methods under startup
+  and vault gates. Replies have a separate enrolled Bridge signature binding
+  the principal, operation, transport request and exact result bytes. Both the
+  Bridge signing wrapper and inner identity signer admit only the new explicit
+  result domain.
+- `src/ui/api/executorLocalLaunch.ts:31` prepares/retries exact signed
+  operations and verifies current-enrollment signed encrypted replies. It is a
+  client module; **no approval screen is mounted yet**.
+
+### Verified evidence
+
+All commands below ran in
+`/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e5ac3db3f3fce0`
+through managed shells. The final functional change preserves the original
+admission-entry monotonic tick across signature/transaction work in both paths.
+
+```bash
+nix develop --command odin test src/lib/executor_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3a-drafts-final-20261107-0549
+nix develop --command odin test src/contracts -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3a-contracts-final-20261107-0548
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3a-owner-final-20261107-0548
+nix develop --command odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1 -define:ODIN_TEST_NAMES=main.test_executor_local_mounted_signed_prepare_inspect_cancel_restart,main.test_executor_issuance_mounted_handler_paired_consent_replay_and_rejection -out:$HOME/.cache/heimdall-tests/m3a-mounted-final-20261107-0549
+nix develop --command odin test src/hub/transport/http -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_NAMES=http.executor_local_launch_relay_requires_user_account_and_keeps_runtime_offline_opaque,http.executor_issuance_relay_requires_user_account_and_keeps_runtime_offline_opaque -out:$HOME/.cache/heimdall-tests/m3a-http-local-relay-20261107-0545
+nix develop --command node --experimental-strip-types --test --import ./tests/helpers/vaultEndpointHarness.ts tests/ui_executor_contract_test.ts tests/ui_executor_issuance_test.ts tests/ui_executor_local_launch_test.ts
+nix develop --command npm ci --ignore-scripts --no-audit --no-fund
+nix develop --command npm run typecheck
+nix build .#ham-bridge .#ham-hub -o $HOME/.cache/heimdall-tests/m3a-draft-relay-bins-final-20261107-0549
+git diff --cached --check
+```
+
+| Check | Result | Managed session |
+| --- | --- | --- |
+| Executor storage, including seven new draft regressions | 54 PASS, exit 0 | `sh_a9cdabe2d86bf5c8097d911f0a556700` |
+| Native shared contracts | 37 PASS, exit 0 | `sh_52a64c70df33533e13dbfe6649759a12` |
+| Owner regression | 264 PASS, exit 0 | `sh_226279de368750bb39dff814f1b30bb1` |
+| Mounted signed draft plus retained remote issuance/activation | 2 PASS, exit 0 | `sh_fbd17b7af8fdd97f4339d3f09d457cba` |
+| HTTP opaque user/account routing, new and retained | 2 PASS, exit 0 | `sh_e31c866dbada8c68cc9aecdfd87017bd` |
+| TS strict contracts/issuance/local client | 9 PASS, exit 0 | `sh_2abff33a872619d603bb0020dd633534` |
+| Pinned dependency install | PASS, exit 0, no lock change | `sh_6fb775b80355282542c3d993ac07f523` |
+| Typecheck | PASS, exit 0 | `sh_4d5107563cfc599113b0e57be4cb4ce0` |
+| Bridge and Hub packages | PASS, exit 0 | `sh_8b893008585f9e6121b29159fc41f3ca` |
+
+Mounted coverage uses genuine paired root/device/Bridge keys and production
+decryption, signature, dispatch registration, signed reply, vault/startup gates
+and cancellation. It creates a native draft internally, admits it through the
+storage API with trusted test resources, reopens before dispatch, then cancels
+through the real relay. **This does not prove ordinary production launch**.
+
+Corrected draft failures: an overbroad scripted insertion in rollback; Odin
+multiline `do` syntax in a test; and using a stale saved wall time after live
+mounted operations (correctly rejected as clock regression). Initial typecheck
+lacked pinned `posthog-js`; the pinned install above restored it. An EOF blank
+line was removed after diff-check. One attempted run-directory-relative CLI
+heartbeat from the Workdir failed with no state effect; subsequent CLI calls
+used the managed run directory. No failed run is counted as passing evidence.
+No unrelated cleanup, restart, deploy or push occurred.
+
+Rust/daemon/provider/platform suites were not repeated: no Rust source or
+physical production dispatch changed. Required production freshness and actual
+launch evidence remain below.
+
+### Required continuation; acceptance remains open
+
+1. Build the native ordinary-launch draft caller. Generate CSPRNG startup
+   material once, retain exact native command/Spawn facts, and choose the
+   signed policy/slot/protected-directory mapping. Pending unsigned Hub
+   launch/wake must not invalidate a prior token, write/clean bootstrap,
+   spawn or report readiness. Define the stable native source digest across
+   transport retries and retain the original exact generation.
+2. Wire `src/bridge/hub_runtime_client.odin:2558`, `:2677`, and `:2714`
+   (ordinary/manual, warm/wake and managed provider tests). The legacy launch
+   path is still present. Keep task-owner dispatch/renewal/readiness intact.
+   `src/bridge/executor_local_relay.odin:95` intentionally supplies no trusted
+   resources yet: new authorize requests fail closed with invalid_resources.
+   Replace that unfinished native apply boundary with resource resolution and
+   physical dispatch; never decode a Spawn/material from a relay.
+3. Close P2 in that wrapper: fresh paired key/enrollment and current canonical
+   filesystem/catalog/profile checks under startup/vault gates through first
+   physical I/O, including delayed-consent revocation/mapping replacement/
+   catalog-disable regressions. Preserve the original signed authorization
+   for exact retry/query; do not request redundant approval per wake.
+4. Mount the usable pending/review/authorize/inspect/cancel screen using the
+   signed client, with exact operation retention on lost replies and fresh
+   directory verification. The API/client alone is not this UI.
+5. Finish ordinary lifecycle cancellation/recovery/dispatch integration and
+   actual-launch race evidence. The new mounted exact cancellation route
+   advances P3, but does not close it without native ordinary drafts and UI.
+6. Commit final implementation and obtain the named independent review before
+   M3a submission. Encrypted PTY/result/provider-platform work belongs to the
+   separately scoped continuation; this checkpoint grants no full M3 gate.

@@ -121,6 +121,10 @@ executor_receipt_fields := [?]Owner_Field{
 }
 executor_schema :: proc(kind:string)->[]Owner_Field {
     switch kind {
+    case "local_relay":return executor_local_relay_fields[:]
+    case "local_result":return executor_local_result_fields[:]
+    case "local_bundle":return executor_local_bundle_fields[:]
+    case "local_draft":return executor_local_draft_fields[:]
     case "local_launch":return executor_local_launch_fields[:]
     case "local_configuration":return executor_local_configuration_fields[:]
     case "bootstrap_content":return executor_bootstrap_content_fields[:]
@@ -158,6 +162,8 @@ executor_valid :: proc(o:json.Object,kind:string)->bool {
         if !is_string do return false
         s:=string(value)
         switch f.kind {
+        case "executor_draft_method":
+            if s!="prepare" && s!="inspect" && s!="authorize" && s!="cancel" do return false
         case "executor_local_purpose":
             if s!="manual" && s!="warm" && s!="provider_test" do return false
         case "executor_transport_method":
@@ -178,7 +184,7 @@ executor_valid :: proc(o:json.Object,kind:string)->bool {
             if !owner_field_valid(s,f.kind) do return false
         }
     }
-    if kind=="local_launch" {
+    if kind=="local_launch" || kind=="local_draft" || kind=="local_result" {
         start,end:=executor_number(o,"issued_ms"),executor_number(o,"request_expires_ms")
         if end<=start || end-start>EXECUTOR_TRANSPORT_TTL_MS do return false
     }
@@ -237,7 +243,7 @@ executor_valid :: proc(o:json.Object,kind:string)->bool {
 executor_parse :: proc(raw,kind:string)->(json.Object,bool) {
     if len(raw)>EXECUTOR_DOCUMENT_MAX do return nil,false
     v:json.Value;ok:bool
-    if kind=="local_configuration" || kind=="child_exchange" || kind=="child_result_bundle" || kind=="activation_bootstrap_exchange" || kind=="bootstrap_content" || kind=="issuance_selection" || kind=="issuance_exchange" || kind=="issuance_bundle" {v,ok=owner_content_document(raw)} else {v,ok=owner_request_document(raw)}
+    if kind=="local_bundle" || kind=="local_configuration" || kind=="child_exchange" || kind=="child_result_bundle" || kind=="activation_bootstrap_exchange" || kind=="bootstrap_content" || kind=="issuance_selection" || kind=="issuance_exchange" || kind=="issuance_bundle" {v,ok=owner_content_document(raw)} else {v,ok=owner_request_document(raw)}
     o,obj:=v.(json.Object)
     if !ok || !obj || !executor_valid(o,kind) do return nil,false
     return o,true
@@ -259,11 +265,11 @@ executor_digest :: proc(kind:string,o:json.Object)->(string,bool) {
     return owner_payload_digest(canonical),true
 }
 executor_verify :: proc(kind:string,o:json.Object,key:Owner_Verified_Key)->bool {
-    if !key.enrolled || key.revoked || (key.kind!="device" if kind=="issuance_consent" || kind=="local_launch" else key.kind!="bridge") || key.account_id!=owner_string(o,"account_id") ||
+    if !key.enrolled || key.revoked || (key.kind!="device" if kind=="issuance_consent" || kind=="local_launch" || kind=="local_draft" else key.kind!="bridge") || key.account_id!=owner_string(o,"account_id") ||
        key.key_id!=owner_string(o,"key_id") { return false }
     identity:="owner_bridge_id"
-    if kind=="policy" || kind=="receipt" || kind=="fence_request" || kind=="enrollment" || kind=="issuance_receipt" || kind=="directory" || kind=="child_request" do identity="executor_bridge_id"
-    if kind=="issuance_consent" || kind=="local_launch" do identity="principal_id"
+    if kind=="policy" || kind=="receipt" || kind=="fence_request" || kind=="enrollment" || kind=="issuance_receipt" || kind=="directory" || kind=="child_request" || kind=="local_result" do identity="executor_bridge_id"
+    if kind=="issuance_consent" || kind=="local_launch" || kind=="local_draft" do identity="principal_id"
     if key.principal_id!=owner_string(o,identity) do return false
     canonical,ok:=executor_canonical(kind,o)
     if !ok do return false

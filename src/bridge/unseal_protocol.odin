@@ -851,7 +851,7 @@ bridge_unseal_decrypt_and_verify :: proc(
 bridge_owner_sign :: proc(ctx:rawptr,kind:string,o:json.Object)->(string,bool) {
     canonical:string
     valid:bool
-    if kind=="executor.child_result" || kind=="executor.bootstrap" || kind=="executor.child_request" || kind=="executor.prepare" || kind=="executor.action" || kind=="executor.fence_reply" || kind=="executor.fence_request" || kind=="executor.enrollment" || kind=="executor.issuance_receipt" || kind=="executor.receipt" {
+    if kind=="executor.local_result" || kind=="executor.child_result" || kind=="executor.bootstrap" || kind=="executor.child_request" || kind=="executor.prepare" || kind=="executor.action" || kind=="executor.fence_reply" || kind=="executor.fence_request" || kind=="executor.enrollment" || kind=="executor.issuance_receipt" || kind=="executor.receipt" {
         // Resource intents have a separate signing domain from task commands.
         canonical,valid=contracts.executor_canonical(strings.trim_prefix(kind,"executor."),o)
     } else {

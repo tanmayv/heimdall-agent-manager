@@ -49,16 +49,17 @@ open :: proc(s:^Store,path,account,executor,operator_key:string)->bool {
     if len(tables)==0 {
         existing,read:=query(s.db,"SELECT name FROM sqlite_master WHERE type='table'")
         if !read || len(existing)>0 || !exec(s.db,string(#load("schema.sql"))) do return false
-        if _,written:=query(s.db,"INSERT INTO executor_runtime VALUES(1,7,?,?,?,1,0,'ready',0,0)",account,executor,operator_key);!written do return false
+        if _,written:=query(s.db,"INSERT INTO executor_runtime VALUES(1,8,?,?,?,1,0,'ready',0,0)",account,executor,operator_key);!written do return false
     } else {
         rows,read:=query(s.db,"SELECT schema_version,account_id,executor_bridge_id,operator_key_id,incarnation FROM executor_runtime WHERE singleton=1")
-        if !read || len(rows)!=1 || (rows[0][0]!="1" && rows[0][0]!="2" && rows[0][0]!="3" && rows[0][0]!="4" && rows[0][0]!="5" && rows[0][0]!="6" && rows[0][0]!="7") || rows[0][1]!=account || rows[0][2]!=executor || rows[0][3]!=operator_key || number(rows[0][4])==0x7fffffffffffffff do return false
+        if !read || len(rows)!=1 || (rows[0][0]!="1" && rows[0][0]!="2" && rows[0][0]!="3" && rows[0][0]!="4" && rows[0][0]!="5" && rows[0][0]!="6" && rows[0][0]!="7" && rows[0][0]!="8") || rows[0][1]!=account || rows[0][2]!=executor || rows[0][3]!=operator_key || number(rows[0][4])==0x7fffffffffffffff do return false
         if rows[0][0]=="1" && !exec(s.db,string(#load("migration_002.sql"))) do return false
         if (rows[0][0]=="1" || rows[0][0]=="2") && !exec(s.db,string(#load("migration_003.sql"))) do return false
         if (rows[0][0]=="1" || rows[0][0]=="2" || rows[0][0]=="3") && !exec(s.db,string(#load("migration_004.sql"))) do return false
-        if rows[0][0]!="5" && rows[0][0]!="6" && rows[0][0]!="7" && !exec(s.db,string(#load("migration_005.sql"))) do return false
-        if rows[0][0]!="6" && rows[0][0]!="7" && !exec(s.db,string(#load("migration_006.sql"))) do return false
-        if rows[0][0]!="7" && !exec(s.db,string(#load("migration_007.sql"))) do return false
+        if rows[0][0]!="5" && rows[0][0]!="6" && rows[0][0]!="7" && rows[0][0]!="8" && !exec(s.db,string(#load("migration_005.sql"))) do return false
+        if rows[0][0]!="6" && rows[0][0]!="7" && rows[0][0]!="8" && !exec(s.db,string(#load("migration_006.sql"))) do return false
+        if rows[0][0]!="7" && rows[0][0]!="8" && !exec(s.db,string(#load("migration_007.sql"))) do return false
+        if rows[0][0]!="8" && !exec(s.db,string(#load("migration_008.sql"))) do return false
         if !exec(s.db,"UPDATE executor_runtime SET incarnation=incarnation+1,recovery_state='reconciling'; UPDATE executor_reservations SET state='released' WHERE state='prepared';") do return false
     }
     rows,read:=query(s.db,"SELECT incarnation FROM executor_runtime WHERE singleton=1")

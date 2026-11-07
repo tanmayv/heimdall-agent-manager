@@ -287,7 +287,7 @@ bridge_command_spec :: proc(command_type: string) -> (Bridge_Command_Spec, bool)
         // Network callback cannot occupy the Exclusive worker or the Bridge
         // key needed by an owner handler on a colocated execution device.
         return Bridge_Command_Spec{class=.General_IO,priority=.Interactive,queued=true,requires_id=true,timeout_ms=10000,cost_units=1,retry_safe=true},true
-    case "owner_local", "executor_issuance", "executor_exchange":
+    case "owner_local", "executor_local_launch", "executor_issuance", "executor_exchange":
 		return Bridge_Command_Spec{class = .Exclusive, priority = .Interactive, key_kind = .Bridge, queued = true, requires_id = true, timeout_ms = 10000, cost_units = 1, retry_safe = true}, true
 	case "task_chain_search":
 		return Bridge_Command_Spec{class = .Interactive, priority = .Interactive, key_kind = .Bridge, queued = true, requires_id = true, timeout_ms = 5000, cost_units = 2, retry_safe = true}, true

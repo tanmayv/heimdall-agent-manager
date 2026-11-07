@@ -95,6 +95,12 @@
       "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"principal_id\":\"device\",\"operation_id\":\"local_op\",\"configuration_digest\":\"8e038ce9bc0f9a9d9f66e672bdd2840325871e836d4903880eae011db8eeb1b3\",\"issued_ms\":\"1000\",\"request_expires_ms\":\"5000\",\"key_id\":\"device_key\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}",
       "canonical": "heimdall-executor/local_launch/v1\n1:1,7:account,8:executor,6:device,8:local_op,64:8e038ce9bc0f9a9d9f66e672bdd2840325871e836d4903880eae011db8eeb1b3,4:1000,4:5000,10:device_key,",
       "digest": "67a1f5ede02a6cc43f11fa701851d4151121223ce40e8304c6d668492d9f061b"
+    },
+    {
+      "kind": "local_draft",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"principal_id\":\"device\",\"operation_id\":\"draft_op\",\"method\":\"prepare\",\"draft_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"draft_revision\":\"1\",\"configuration_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"issued_ms\":\"1000\",\"request_expires_ms\":\"2000\",\"key_id\":\"device_key\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}",
+      "canonical": "heimdall-executor/local_draft/v1\n1:1,7:account,8:executor,6:device,8:draft_op,7:prepare,64:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,1:1,64:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,4:1000,4:2000,10:device_key,",
+      "digest": "863f20a4580ba509f9ea9951e20eb9f45e2ee91bd1bc37c28ea66e0c538254fd"
     }
   ],
   "invalid": [
@@ -362,6 +368,26 @@
       "name": "local exact directory revision required",
       "kind": "local_configuration",
       "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"instance_id\":\"local_instance\",\"launch_epoch\":\"launch_local\",\"run_count\":\"1\",\"token_generation\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"configuration_revision\":\"1\",\"executor_incarnation\":\"1\",\"policy_revision\":\"1\",\"slot_id\":\"slot1\",\"provider\":\"codex\",\"model\":\"model\",\"provider_profile\":\"profile\",\"directory_id\":\"remote_dir\",\"directory_revision\":\"0\",\"directory_key\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"purpose\":\"manual\",\"spawn_digest\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}"
+    },
+    {
+      "name": "unknown draft method",
+      "kind": "local_draft",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"principal_id\":\"device\",\"operation_id\":\"draft_op\",\"method\":\"stop\",\"draft_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"draft_revision\":\"1\",\"configuration_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"issued_ms\":\"1000\",\"request_expires_ms\":\"2000\",\"key_id\":\"device_key\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}"
+    },
+    {
+      "name": "no synthetic task grant",
+      "kind": "local_draft",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"principal_id\":\"device\",\"operation_id\":\"draft_op\",\"method\":\"prepare\",\"draft_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"draft_revision\":\"1\",\"configuration_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"issued_ms\":\"1000\",\"request_expires_ms\":\"2000\",\"key_id\":\"device_key\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\",\"task_id\":\"task\"}"
+    },
+    {
+      "name": "wrong revision type",
+      "kind": "local_draft",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"principal_id\":\"device\",\"operation_id\":\"draft_op\",\"method\":\"prepare\",\"draft_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"draft_revision\":\"01\",\"configuration_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"issued_ms\":\"1000\",\"request_expires_ms\":\"2000\",\"key_id\":\"device_key\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}"
+    },
+    {
+      "name": "draft expiry",
+      "kind": "local_draft",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"principal_id\":\"device\",\"operation_id\":\"draft_op\",\"method\":\"prepare\",\"draft_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"draft_revision\":\"1\",\"configuration_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"issued_ms\":\"1000\",\"request_expires_ms\":\"1000\",\"key_id\":\"device_key\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}"
     }
   ]
 }
