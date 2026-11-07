@@ -68,6 +68,10 @@ bridge_executor_activate_dispatch :: proc(s:^executor.Store,action_raw:string,ex
         return delivered && reason=="child_present",reason
     }
     if io.prepare==nil || fence_exchange==nil do return false,"startup_unavailable"
+    sync.rw_mutex_shared_lock(&bridge_launch_configuration_mutex)
+    resource_pin,pinned:=bridge_executor_launch_resource_pin(s,intent,now)
+    sync.rw_mutex_shared_unlock(&bridge_launch_configuration_mutex)
+    if !pinned do return false,"invalid_resources"
     request,ready:=io.prepare(io.ctx,s,intent,now)
     if !ready do return false,"spawn_prepare_failed"
     defer bridge_pty_host_spawn_request_delete(request)
@@ -90,6 +94,13 @@ bridge_executor_activate_dispatch :: proc(s:^executor.Store,action_raw:string,ex
     sync.mutex_lock(&bridge_startup_io_mutex);defer sync.mutex_unlock(&bridge_startup_io_mutex)
     if !bridge_executor_authority_begin(generation) do return false,"vault_locked"
     defer bridge_executor_authority_end()
+    // The owner callback ran without application locks. The prepared argv is
+    // usable only if its exact local resources still match; hold configuration
+    // serialization through first I/O so a profile edit cannot race this check.
+    sync.rw_mutex_shared_lock(&bridge_launch_configuration_mutex)
+    defer sync.rw_mutex_shared_unlock(&bridge_launch_configuration_mutex)
+    current_pin,resources_current:=bridge_executor_launch_resource_pin(s,intent,bridge_executor_physical_clock(nil))
+    if !resources_current || current_pin!=resource_pin do return false,"invalid_resources"
     remaining,current:=executor.intent_current(s,intent,bridge_executor_physical_clock(nil))
     if !current || remaining<1000 do return false,"stale_intent"
     request.timeout_seconds=u64(remaining/1000)

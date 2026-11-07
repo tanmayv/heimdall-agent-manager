@@ -9,6 +9,30 @@ import "core:sync"
 import contracts "odin_test:contracts"
 import executor "odin_test:lib/executor_local"
 
+// Caller holds launch-configuration read serialization. This read-only pin
+// binds the signed selection to the current profile, catalog and directory
+// identity; it neither rematerializes bootstrap nor mutates runtime settings.
+bridge_executor_launch_resource_pin :: proc(s:^executor.Store,intent:executor.Intent,now:i64)->(string,bool) {
+    material,ready:=executor.launch_material(s,intent,now)
+    if !ready do return "",false
+    defer crypto.zero_explicit(raw_data(material.token_secret),len(material.token_secret))
+    c,valid:=contracts.owner_parse(material.configuration,"remote_configuration")
+    if !valid do return "",false
+    mapping,found:=executor.directory_mapping(s,contracts.owner_string(c,"directory_id"))
+    if !found do return "",false
+    canonical,within:=bridge_executor_canonical_directory(mapping.path)
+    if !within || mapping.key!=contracts.owner_string(c,"directory_key") || executor.directory_key(s.executor,canonical)!=mapping.key do return "",false
+    identity,exists:=bridge_os_socket_file_identity(canonical)
+    if !exists do return "",false
+    provider,model:=contracts.owner_string(c,"provider"),contracts.owner_string(c,"model")
+    catalog,active:=bridge_provider_catalog_profile(provider)
+    profile,err:=profile_lookup(provider,contracts.owner_string(c,"provider_profile"),prepare_runtime=false)
+    if !active || err!=.None || !profile.enabled || !profile_has_model(&profile,provider,model) do return "",false
+    return contracts.owner_payload_digest(bridge_owner_json(struct {
+        selection:string,profile:Provider_Profile,catalog:Bridge_Provider_Profile,identity:Pty_Host_Daemon_Identity,
+    }{material.configuration,profile,catalog,identity})),true
+}
+
 // Only an exact first launch claim may materialize. Invalidation and all spawn
 // I/O share startup_io_mutex. A retry after begin_dispatch queries the exact
 // daemon child; it must never clean a possibly running child's directory.

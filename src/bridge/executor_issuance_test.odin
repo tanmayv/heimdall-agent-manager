@@ -455,6 +455,7 @@ Executor_Fence_Test_Probe :: struct {
     invalidate_at:int,
     startup_unlocked,prepared_before_callback:bool,
     prepare_probe:^Executor_Test_Prepare,
+    resource_mutation,resource_path:string,
 }
 bridge_executor_test_fence_callback :: proc(ctx:rawptr,raw:string,generation:i64)->Executor_Fence_Outcome {
     p:=(^Executor_Fence_Test_Probe)(ctx);p.calls+=1
@@ -481,6 +482,22 @@ bridge_executor_test_fence_callback :: proc(ctx:rawptr,raw:string,generation:i64
             if !bridge_executor_open(account,operator) do panic("callback restart failed")
         }
         sync.mutex_unlock(&bridge_executor_mutex)
+    }
+    if p.resource_mutation!="" && p.calls==1 {
+        switch p.resource_mutation {
+        case "catalog":
+            sync.rw_mutex_lock(&bridge_launch_configuration_mutex)
+            bridge_provider_catalog_snapshot.providers[0].state="disabled"
+            sync.rw_mutex_unlock(&bridge_launch_configuration_mutex)
+        case "profile":
+            profile,err:=profile_lookup("claude","claude",prepare_runtime=false)
+            if err!=.None do panic("profile lookup")
+            profile.config.binary_path="/bin/false"
+            if profile_upsert(&profile,nil,now)!=.None do panic("profile mutation")
+        case "missing","replacement":
+            if os.rename(p.resource_path,fmt.tprintf("%s.saved",p.resource_path))!=nil do panic("directory rename")
+            if p.resource_mutation=="replacement" && os.make_directory(p.resource_path)!=nil do panic("directory replacement")
+        }
     }
     reply:=bridge_executor_test_doc("fence_reply")
     for name in ([7]string{"account_id","owner_bridge_id","executor_bridge_id","chain_id","reservation_id","owner_incarnation","executor_incarnation"}) do reply[name]=q[name]
@@ -535,6 +552,30 @@ bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,wire:Executor_Exc
     fence_probe:=Executor_Fence_Test_Probe{private=owner_private,kr=kr,directory=directory,action=a,owner_key=owner_key,prepare_probe=&prepare_probe}
     self_key:=contracts.Owner_Verified_Key{bridge_executor_store.account,bridge_executor_store.executor,bridge_executor_store.operator_key,
         bridge_identity_public_key_hex(bridge_config.daemon_id),"bridge",true,false}
+    config,_:=contracts.owner_parse(material.configuration,"remote_configuration")
+    mapping,_:=executor.directory_mapping(&bridge_executor_store,contracts.owner_string(config,"directory_id"))
+    original_profile,profile_error:=profile_lookup("claude","claude",prepare_runtime=false)
+    if !testing.expect(t,profile_error==.None) do return
+    for mutation in ([4]string{"catalog","profile","missing","replacement"}) {
+        fence_probe.calls=0;fence_probe.resource_mutation=mutation;fence_probe.resource_path=mapping.path
+        _,rejected:=bridge_executor_test_exchange(t,wire,a,"action",owner_private,kr,self_key,
+            fmt.tprintf("physical_resource_%s",mutation),&fence_probe,material.bootstrap,material.body,launch_io,true)
+        testing.expect_value(t,rejected,"invalid_resources")
+        refused_pid,refused_known:=bridge_pty_host_executor_query(socket,intent.instance,intent.launch_key)
+        testing.expect(t,!refused_known && refused_pid==0,"resource changes reject before first Spawn")
+        switch mutation {
+        case "catalog":
+            sync.rw_mutex_lock(&bridge_launch_configuration_mutex)
+            bridge_provider_catalog_snapshot.providers[0].state="active"
+            sync.rw_mutex_unlock(&bridge_launch_configuration_mutex)
+        case "profile":
+            testing.expect(t,profile_upsert(&original_profile,nil,bridge_executor_physical_clock(nil))==.None)
+        case "missing","replacement":
+            if mutation=="replacement" do testing.expect(t,os.remove(mapping.path)==nil)
+            testing.expect(t,os.rename(fmt.tprintf("%s.saved",mapping.path),mapping.path)==nil)
+        }
+    }
+    fence_probe.resource_mutation="";fence_probe.calls=0;prepare_probe.calls=0
     _,launch_code:=bridge_executor_test_exchange(t,wire,a,"action",owner_private,kr,self_key,"physical_activation",
         &fence_probe,material.bootstrap,material.body,launch_io,true)
     if !testing.expect_value(t,launch_code,"ok") do return
