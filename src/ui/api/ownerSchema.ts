@@ -96,6 +96,7 @@ export const ownerSchemas = {
   migration_inventory_reference: [["executor_bridge_id", "id"], ["key_id", "id"], ["inventory_digest", "hash"]],
   migration_origin_binding: [["protocol_version", "version"], ["account_id", "id"], ["chain_id", "id"], ["migration_id", "id"], ["selection_digest", "hash"], ["owner_bridge_id", "id"], ["owner_key_id", "id"], ["principal_id", "id"], ["key_id", "id"], ["directory_root", "hash"], ["directory_sequence", "counter"], ["directory_head", "hash"], ["directory_epoch", "positive"], ["operation_id", "id"], ["issued_ms", "positive"], ["request_expires_ms", "positive"], ["nonce", "hash"], ["source_inventory_digest", "hash"], ["source_revision", "positive"], ["source_generation", "counter"], ["executor_count", "counter"], ["executor_inventories_digest", "hash"], ["mapping_count", "counter"], ["mapping_digest", "hash"], ["purpose", "migration_adoption_purpose"], ["signature", "signature"]],
   migration_executor_drain: [["protocol_version", "version"], ["account_id", "id"], ["chain_id", "id"], ["migration_id", "id"], ["selection_digest", "hash"], ["source_inventory_digest", "hash"], ["source_generation", "counter"], ["executor_bridge_id", "id"], ["key_id", "id"], ["binding_digest", "hash"], ["barrier_receipt_digest", "hash"], ["executor_incarnation", "positive"], ["journal_sequence", "counter"], ["challenge", "hash"], ["observed_ms", "positive"], ["request_expires_ms", "positive"], ["complete", "flag"], ["inventory_digest", "hash"], ["mapping_digest", "hash"], ["resource_digest", "hash"], ["dispositions_digest", "hash"], ["observation_coverage_digest", "hash"], ["unresolved_count", "counter"], ["admitted_handler_count", "counter"], ["live_child_count", "counter"], ["merge_count", "counter"], ["queued_action_count", "counter"], ["signature", "signature"]],
+  archive_read_payload: [["kind", "optional"], ["task_id", "optional"], ["cursor", "native_cursor"], ["limit", "positive"]],
 } as const;
 export type OwnerKind = keyof typeof ownerSchemas;
 export interface OwnerGenesis {
@@ -907,6 +908,12 @@ export interface OwnerMigration_Executor_Drain {
   queued_action_count: string;
   signature: string;
 }
+export interface OwnerArchive_Read_Payload {
+  kind: string;
+  task_id: string;
+  cursor: string;
+  limit: string;
+}
 export interface OwnerDocuments {
   genesis: OwnerGenesis;
   command: OwnerCommand;
@@ -1004,4 +1011,5 @@ export interface OwnerDocuments {
   migration_inventory_reference: OwnerMigration_Inventory_Reference;
   migration_origin_binding: OwnerMigration_Origin_Binding;
   migration_executor_drain: OwnerMigration_Executor_Drain;
+  archive_read_payload: OwnerArchive_Read_Payload;
 }

@@ -8,7 +8,7 @@ export const OWNER_DOCUMENT_MAX = 256 * 1024;
 export const OWNER_REQUEST_TTL_MS = 300000n;
 const ascii = (s: string) => /^[\x20-\x7e]*$/.test(s);
 const decimal = (s: string) => /^(0|[1-9][0-9]*)$/.test(s) && s.length <= 19 && BigInt(s) <= 9223372036854775807n;
-const methods = new Set(['linked.facet.read','envelope.read','linked.put','linked.delete','linked.restore','linked.read','linked.fetch','linked.backup','chain.draft','task.draft','task.publish','chain.propose','chain.decide','chain.publish','work.dependency.add','work.dependency.remove','work.scope','chain.complete','work.read','workflow.draft','chain.member.set','chain.directory.set','chain.defaults.set','chain.summary.set','chain.metadata.read','task.priority','native.metadata.import','native.metadata.read','fleet.policy.set','fleet.policy.read','native.history.import','native.history.read','native.history.fetch','attempt.read','history.read','history.fetch','context.read','workflow.coordinator','grant.set','grant.revoke','grant.read','grant.policy','grant.recover','workflow.cancel','workflow.gate','workflow.define','workflow.run','workflow.retry','workflow.read','source.observe','source.consume','source.ack','source.retire','source.resolve','source.escalate','source.read','dependency.edit','review.roles','task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'chain.edit', 'task.edit', 'task.delete', 'chain.search', 'chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'receipt.read', 'fleet.edit', 'fleet.reserve', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post']);
+const methods = new Set(['linked.facet.read','envelope.read','linked.put','linked.delete','linked.restore','linked.read','linked.fetch','linked.backup','chain.draft','task.draft','task.publish','chain.propose','chain.decide','chain.publish','work.dependency.add','work.dependency.remove','work.scope','chain.complete','work.read','workflow.draft','chain.member.set','chain.directory.set','chain.defaults.set','chain.summary.set','chain.metadata.read','task.priority','native.metadata.import','native.metadata.read','fleet.policy.set','fleet.policy.read','native.history.import','native.history.read','native.history.fetch','attempt.read','history.read','history.fetch','context.read','workflow.coordinator','grant.set','grant.revoke','grant.read','grant.policy','grant.recover','workflow.cancel','workflow.gate','workflow.define','workflow.run','workflow.retry','workflow.read','source.observe','source.consume','source.ack','source.retire','source.resolve','source.escalate','source.read','dependency.edit','review.roles','task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'chain.edit', 'task.edit', 'task.delete', 'chain.search', 'chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'receipt.read', 'fleet.edit', 'fleet.reserve', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post', 'migration.archive.read']);
 function fieldValid(s: string, kind: string): boolean {
   if (kind === "document" || kind === "optional_document") return new TextEncoder().encode(s).length <= OWNER_DOCUMENT_MAX && (s !== "" || kind === "optional_document");
   if (kind === 'label') return s.length > 0 && new TextEncoder().encode(s).length <= 256 && !/[\x00-\x1f\x7f]/.test(s);
@@ -84,7 +84,7 @@ export function ownerDocumentValid<K extends OwnerKind>(kind: K, value: unknown)
   if (kind === 'receipt' && o.result_code === 'retired' && o.result_cipher !== '') return false;
   if (kind === 'capability' && BigInt(String(o.expires_ms)) > BigInt(String(o.hard_ms))) return false;
   if (kind === 'lease_input' && ((o.method === 'lease.claim') !== (o.capability === ''))) return false;
-  if ((kind === 'linked_page' || kind === 'read_payload' || kind === 'native_history_read' || kind === 'native_metadata_read' || kind === 'work_read_payload') && BigInt(String(o.limit)) > 100n) return false;
+  if ((kind === 'linked_page' || kind === 'read_payload' || kind === 'native_history_read' || kind === 'native_metadata_read' || kind === 'work_read_payload' || kind === 'archive_read_payload') && BigInt(String(o.limit)) > 100n) return false;
   return true;
 }
 export function ownerPayloadKind(method: string): OwnerKind {
@@ -136,6 +136,7 @@ export function ownerPayloadKind(method: string): OwnerKind {
     case 'linked.read': case 'linked.backup': return 'linked_page';
     case 'native.history.import': return 'native_import_payload';
     case 'native.history.read': return 'native_history_read';
+    case 'migration.archive.read': return 'archive_read_payload';
     case 'native.history.fetch': return 'native_history_fetch';
     case 'attempt.read': return 'attempt_read_payload';
     case 'history.fetch': return 'history_fetch_payload';
@@ -213,7 +214,7 @@ export function ownerLiveAdmit(o: OwnerCommand, grant: OwnerReadGrant, nowMs: bi
   if (o.immutable_owner_bridge !== grant.owner_bridge_id) return 'owner_mismatch';
   const expires = BigInt(o.request_expires_ms);
   if (expires <= nowMs || expires - nowMs > OWNER_REQUEST_TTL_MS) return 'expired';
-  const read = ['linked.facet.read','envelope.read','linked.read','linked.fetch','linked.backup','work.read','chain.metadata.read','native.metadata.read','fleet.policy.read','native.history.read','native.history.fetch','attempt.read','history.read','history.fetch','context.read', 'grant.read','workflow.read','source.read','submission.read', 'chain.search', 'chain.read', 'task.read', 'receipt.read', 'runtime.read'].includes(o.method);
+  const read = ['linked.facet.read','envelope.read','linked.read','linked.fetch','linked.backup','work.read','chain.metadata.read','native.metadata.read','fleet.policy.read','native.history.read','native.history.fetch','attempt.read','history.read','history.fetch','context.read', 'grant.read','workflow.read','source.read','submission.read', 'chain.search', 'chain.read', 'task.read', 'receipt.read', 'runtime.read', 'migration.archive.read'].includes(o.method);
   if (!read && !grant.can_mutate) return 'invalid_scope';
   if (currentRevision < 0n) return 'stale_revision';
   if (read && o.expected_revision === '0') return 'none';

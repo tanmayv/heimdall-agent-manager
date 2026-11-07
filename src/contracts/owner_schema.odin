@@ -1714,6 +1714,19 @@ owner_fields_migration_executor_drain := [?]Owner_Field{
     {"queued_action_count", "counter"},
     {"signature", "signature"},
 }
+Owner_Archive_Read_Payload :: struct {
+    kind: string,
+    task_id: string,
+    cursor: string,
+    limit: string,
+}
+@(private)
+owner_fields_archive_read_payload := [?]Owner_Field{
+    {"kind", "optional"},
+    {"task_id", "optional"},
+    {"cursor", "native_cursor"},
+    {"limit", "positive"},
+}
 owner_schema :: proc(kind: string) -> []Owner_Field {
     switch kind {
     case "genesis": return owner_fields_genesis[:]
@@ -1812,6 +1825,7 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "migration_inventory_reference": return owner_fields_migration_inventory_reference[:]
     case "migration_origin_binding": return owner_fields_migration_origin_binding[:]
     case "migration_executor_drain": return owner_fields_migration_executor_drain[:]
+    case "archive_read_payload": return owner_fields_archive_read_payload[:]
     }
     return nil
 }

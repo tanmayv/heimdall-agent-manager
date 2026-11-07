@@ -18,7 +18,7 @@ work_chain_active :: proc(s:^Store,chain:string)->bool {
     return ok && len(rows)==1 && rows[0][0]=="active"
 }
 work_task_published :: proc(s:^Store,chain,task:string)->bool {
-    if migration_quarantined(s,chain) do return false
+    if migration_quarantined(s,chain) || migration_archived_task(s,chain,task) do return false
     rows,ok:=query(s.db,"SELECT 1 FROM local_work_chains w WHERE chain_id=? AND status='active' AND publish_state='published' AND COALESCE((SELECT publish_state FROM local_task_publications p WHERE p.chain_id=w.chain_id AND p.task_id=? ORDER BY accepted_seq DESC LIMIT 1),'published')='published'",chain,task)
     return ok && len(rows)==1
 }

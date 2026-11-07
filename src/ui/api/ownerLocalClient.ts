@@ -10,7 +10,7 @@ export interface OwnerSession { identity: DeviceIdentity; chain: VerifiedChain; 
 export interface OwnerOperation { command: string; payload: string; genesis: string }
 export interface OwnerInput {
   chainId: string; taskId?: string; expectedRevision: string;
-  priority?: 'p0' | 'p1' | 'p2'; query?: string; limit?: number; offset?: string; eventSeq?: string; nativeSourceRevision?: string; nativeHistoryKind?: string; nativeHistoryKey?: string;
+  priority?: 'p0' | 'p1' | 'p2'; archiveKind?: string; archiveTaskId?: string; query?: string; limit?: number; offset?: string; eventSeq?: string; nativeSourceRevision?: string; nativeHistoryKind?: string; nativeHistoryKey?: string;
   title?: string; description?: string; body?: string; cursor?: string; operationId?: string;
   grantPrincipal?: string; grantExpiresMs?: string; grantCanMutate?: boolean; recoveryEnabled?: boolean; policyRevision?: string;
   directoryId?: string; agentId?: string; memberRole?: string;
@@ -94,6 +94,7 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
   else if (method === 'fleet.policy.set' || method === 'native.history.import' || method === 'native.metadata.import') payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'native.metadata.read') payload = { source_revision: input.nativeSourceRevision ?? '', kind: input.nativeHistoryKind ?? '', cursor: input.cursor ?? '', limit: String(input.limit ?? 20) };
   else if (method === 'work.read' || method === 'fleet.policy.read' || method === 'chain.metadata.read') payload = { cursor: input.cursor ?? '', limit: String(input.limit ?? 20) };
+  else if (method === 'migration.archive.read') payload = { kind: input.archiveKind ?? '', task_id: input.archiveTaskId ?? '', cursor: input.cursor ?? '', limit: String(input.limit ?? 20) };
   else if (method === 'native.history.read') payload = { source_revision: input.nativeSourceRevision ?? '', kind: input.nativeHistoryKind ?? '', cursor: input.cursor ?? '', limit: String(input.limit ?? 20) };
   else if (method === 'native.history.fetch') payload = { source_revision: input.nativeSourceRevision ?? '', kind: input.nativeHistoryKind ?? '', key: input.nativeHistoryKey ?? '', offset: input.offset ?? '0' };
   else if (method === 'attempt.read') payload = { attempt: input.attempt ?? '' };

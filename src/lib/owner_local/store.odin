@@ -7,6 +7,7 @@ import "core:strconv"
 import "core:strings"
 import "core:sync"
 import "core:os"
+import "core:time"
 import contracts "odin_test:contracts"
 import vault "odin_test:lib/vault"
 
@@ -187,7 +188,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         }
     }
     if e:=contracts.owner_live_admit(c,g,now,revision);e!=.None do return auth_fail(e)
-    read:=method=="linked.facet.read" || method=="envelope.read" || method=="linked.read" || method=="linked.fetch" || method=="linked.backup" || method=="work.read" || method=="chain.metadata.read" || method=="native.metadata.read" || method=="fleet.policy.read" || method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="history.read" || method=="history.fetch" || method=="context.read" || method=="grant.read" || method=="workflow.read" || method=="source.read" || method=="submission.read" || method=="chain.search" || method=="chain.read" || method=="task.read" || method=="receipt.read" || method=="runtime.read"
+    read:=method=="linked.facet.read" || method=="envelope.read" || method=="linked.read" || method=="linked.fetch" || method=="linked.backup" || method=="work.read" || method=="chain.metadata.read" || method=="native.metadata.read" || method=="fleet.policy.read" || method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="history.read" || method=="history.fetch" || method=="context.read" || method=="grant.read" || method=="workflow.read" || method=="source.read" || method=="submission.read" || method=="chain.search" || method=="chain.read" || method=="task.read" || method=="receipt.read" || method=="runtime.read" || method=="migration.archive.read"
     if read {
         if method=="chain.search" && (kr==nil || kr.current_epoch==0) do return fail("invalid_content")
         result:Result
@@ -206,6 +207,9 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         } else if method=="work.read" {
             read_p,_:=contracts.owner_parse(payload,"work_read_payload")
             result=work_read(s,chain,read_p)
+        } else if method=="migration.archive.read" {
+            read_p,_:=contracts.owner_parse(payload,"archive_read_payload")
+            result=migration_archive_read(s,c,read_p)
         } else if method=="grant.read" {
             p,_:=contracts.owner_parse(payload,"read_payload")
             result=grant_read(s,c,p,revision,key,grant_proof)
@@ -386,7 +390,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         }
         wrote=true
     case "task.comment":
-        _,wrote=query(s.db,"INSERT INTO task_comments VALUES(?,?,?,?,?,?)",chain,task,op,principal,body,fmt.tprintf("%d",seq))
+        _,wrote=query(s.db,"INSERT INTO task_comments(chain_id,task_id,operation_id,principal_id,body,seq,created_at) VALUES(?,?,?,?,?,?,?)",chain,task,op,principal,body,fmt.tprintf("%d",seq),comment_time(now))
         if wrote { _,wrote=query(s.db,"UPDATE tasks SET revision=revision+1 WHERE chain_id=? AND task_id=?",chain,task) }
     }
     if !wrote {
@@ -437,4 +441,13 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=?,directory_version=?,directory_hash=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now),fmt.tprintf("%d",directory_version),directory_hash);!ok do return fail("storage_error")
     if !transaction_commit(&tx) do return fail("storage_error")
     return Result{code="ok",body=result,seq=seq}
+}
+
+// UTC RFC 3339 commit time recorded with a new local comment; imported
+// comments keep their legacy created_at verbatim.
+comment_time :: proc(ms:i64) -> string {
+    t:=time.unix(ms/1000,(ms%1000)*1000000)
+    y,mon,d:=time.date(t)
+    h,mi,sec:=time.clock_from_time(t)
+    return fmt.tprintf("%04d-%02d-%02dT%02d:%02d:%02d.%03dZ",y,int(mon),d,h,mi,sec,ms%1000)
 }

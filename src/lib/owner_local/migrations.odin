@@ -2,7 +2,8 @@ package owner_local
 
 import "core:encoding/json"
 
-SCHEMA_VERSION :: 30
+SCHEMA_VERSION :: 31
+MIGRATION_031 :: #load("migration_031.sql")
 MIGRATION_030 :: #load("migration_030.sql")
 MIGRATION_029 :: #load("migration_029.sql")
 MIGRATION_028 :: #load("migration_028.sql")
@@ -182,6 +183,13 @@ migrate :: proc(db:DB) -> bool {
         if len(columns)==0 && !exec(db,"ALTER TABLE chain_genesis ADD COLUMN import_manifest_hash TEXT NOT NULL DEFAULT ''") do return false
         if !exec(db,string(MIGRATION_030)) do return false
         if !exec(db,"UPDATE schema_migrations SET version=30 WHERE singleton=1") do return false
+    }
+    if version<=30 {
+        columns,read:=query(db,"SELECT 1 FROM pragma_table_info('task_comments') WHERE name='created_at'")
+        if !read do return false
+        if len(columns)==0 && !exec(db,"ALTER TABLE task_comments ADD COLUMN created_at TEXT NOT NULL DEFAULT ''") do return false
+        if !exec(db,string(MIGRATION_031)) do return false
+        if !exec(db,"UPDATE schema_migrations SET version=31 WHERE singleton=1") do return false
     }
     if !exec(db,"COMMIT") do return false
     committed=true

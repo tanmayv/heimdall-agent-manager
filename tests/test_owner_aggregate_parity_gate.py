@@ -24,7 +24,7 @@ class AggregateParityGate(unittest.TestCase):
         if expected is None:
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             self.assertIn("240 original fields / 23 structs", result.stdout)
-            self.assertIn("81 signed methods", result.stdout)
+            self.assertIn("82 signed methods", result.stdout)
         else:
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(expected, result.stderr + result.stdout)

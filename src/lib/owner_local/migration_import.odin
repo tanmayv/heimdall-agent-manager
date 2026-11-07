@@ -3,6 +3,7 @@ package owner_local
 
 import "core:encoding/json"
 import "core:fmt"
+import "core:slice"
 import "core:strings"
 import "core:sync"
 import contracts "odin_test:contracts"
@@ -44,7 +45,7 @@ migration_import_lookup :: proc(s:^Store,migration,chain,manifest_digest:string)
 // Imports whose Hub cutover has not yet been observed: (migration, chain, digest).
 migration_pending :: proc(s:^Store) -> ([][3]string,bool) {
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
-    rows,ok:=query(s.db,"SELECT migration_id,chain_id,manifest_digest FROM migration_imports WHERE activated_seq IS NULL ORDER BY migration_id LIMIT 20")
+    rows,ok:=query(s.db,"SELECT migration_id,chain_id,manifest_digest FROM migration_imports m WHERE activated_seq IS NULL AND NOT EXISTS(SELECT 1 FROM migration_abandoned a WHERE a.migration_id=m.migration_id) ORDER BY migration_id LIMIT 20")
     if !ok do return nil,false
     out:=make([dynamic][3]string,context.temp_allocator)
     for r in rows do append(&out,[3]string{r[0],r[1],r[2]})
@@ -134,10 +135,14 @@ migration_import :: proc(s:^Store,input:Migration_Import_Input,device,owner_key:
         rows[ref.kind]=list
     }
     if len(migration_rows(rows,"chain"))!=1 do return fail("invalid_content")
-    seq:=number(state[0][0])+1
+    // Imported comments take one commit sequence each, in legacy created_at
+    // order, so comment pages stay ordered and stable; the import itself
+    // commits at the following sequence.
+    comment_base:=number(state[0][0])+1
+    seq:=comment_base+i64(len(migration_rows(rows,"comment")))
     stamp:=fmt.tprintf("%d",seq)
     summary:=make(map[string]i64)
-    if code:=migration_project(s,chain,principal,field(selection,"key_id"),migration,rows,seq,now,kr,&summary);code!="ok" do return fail(code)
+    if code:=migration_project(s,chain,principal,field(selection,"key_id"),migration,rows,seq,comment_base,now,kr,&summary);code!="ok" do return fail(code)
     if _,ok=query(s.db,"INSERT INTO chain_genesis(chain_id,creation_op,genesis_digest,genesis_json,import_manifest_hash) VALUES(?,?,?,?,?)",chain,migration,genesis_digest,input.genesis_raw,manifest_digest);!ok do return fail("storage_error")
     if code:=migration_native_history(s,chain,rows,seq,&summary);code!="ok" do return fail(code)
 
@@ -171,7 +176,7 @@ migration_import :: proc(s:^Store,input:Migration_Import_Input,device,owner_key:
 
 // Live projection. Titles, descriptions and bodies are decrypted from the
 // legacy vault ciphertext; IDs and authors are the legacy ones.
-migration_project :: proc(s:^Store,chain,principal,key_id,migration:string,rows:Migration_Rows,seq,now:i64,kr:^vault.Vault_Keyring,summary:^map[string]i64) -> string {
+migration_project :: proc(s:^Store,chain,principal,key_id,migration:string,rows:Migration_Rows,seq,comment_base,now:i64,kr:^vault.Vault_Keyring,summary:^map[string]i64) -> string {
     stamp:=fmt.tprintf("%d",seq)
     c:=migration_rows(rows,"chain")[0]
     title,t_ok:=migration_plain(migration_text(c,"title"),kr)
@@ -189,15 +194,38 @@ migration_project :: proc(s:^Store,chain,principal,key_id,migration:string,rows:
     if defaults:=migration_text(c,"defaults_json");defaults!="" && defaults!="{}" {
         if _,ok:=query(s.db,"INSERT INTO local_chain_defaults_versions VALUES(?,?,?)",chain,stamp,defaults);!ok do return "invalid_content"
     }
+    // Workflow runs are archival on the owner. Their current execution state
+    // decides whether a gated ticket or a stage task could become dispatchable
+    // here; the Hub refuses those chains before freeze, and so does the owner.
+    current:=make(map[string]string)
+    for r in migration_rows(rows,"workflow_run") do current[migration_text(r,"run_id")]=migration_text(r,"current_execution_no")
+    execution:=make(map[string]string)
+    for e in migration_rows(rows,"workflow_execution") do execution[fmt.tprintf("%s/%s",migration_text(e,"run_id"),migration_text(e,"execution_no"))]=migration_text(e,"state")
+    for d in migration_rows(rows,"work_dependency") {
+        if migration_text(d,"removed_at")!="" || migration_text(d,"prerequisite_kind")!="workflow_run" do continue
+        run:=migration_text(d,"prerequisite_id")
+        if execution[fmt.tprintf("%s/%s",run,current[run])]!="succeeded" do return "operation_conflict"
+    }
     rows_task:=migration_rows(rows,"task")
 
     for t in rows_task {
         task:=migration_text(t,"task_id")
         if !contracts.owner_field_valid(task,"id") do return "invalid_content"
+        run,stage_key,kind:=migration_text(t,"workflow_run_id"),migration_text(t,"stage_key"),migration_text(t,"kind")
+        stage:=run!="" || stage_key!="" || kind=="gate"
+        if stage && migration_text(t,"state")!="done" && migration_text(t,"state")!="cancelled" {
+            live:=execution[fmt.tprintf("%s/%s",run,migration_text(t,"workflow_execution_no"))]
+            if run=="" || live=="draft" || live=="pending" || live=="running" do return "operation_conflict"
+        }
         task_title,a:=migration_plain(migration_text(t,"title"),kr)
         body,b:=migration_plain(migration_text(t,"description"),kr)
         if !a || !b do return "invalid_content"
         if _,ok:=query(s.db,"INSERT INTO tasks VALUES(?,?,?,?,1)",chain,task,task_title,body);!ok do return "operation_conflict"
+        if stage {
+            // A stage of an archived run is history, never an ordinary ticket.
+            if _,ok:=query(s.db,"INSERT INTO migration_archived_tasks VALUES(?,?,?,?,?)",chain,task,run,stage_key,kind);!ok do return "storage_error"
+            summary^["workflow_stage_task_archived"]+=1
+        }
         task_publish:="draft" if migration_text(t,"publish_state")=="draft" else "published"
         if _,ok:=query(s.db,"INSERT INTO local_task_publications VALUES(?,?,?,?)",chain,task,stamp,task_publish);!ok do return "storage_error"
         if p:=migration_text(t,"priority");p=="p0" || p=="p1" || p=="p2" {
@@ -243,12 +271,19 @@ migration_project :: proc(s:^Store,chain,principal,key_id,migration:string,rows:
     }
     rows_comment:=migration_rows(rows,"comment")
 
-    for m in rows_comment {
+    ordered:=slice.clone(rows_comment,context.temp_allocator)
+    slice.sort_by(ordered,proc(a,b:json.Object)->bool {
+        x,y:=migration_text(a,"created_at"),migration_text(b,"created_at")
+        if x!=y do return x<y
+        return migration_text(a,"comment_id")<migration_text(b,"comment_id")
+    })
+    for m,i in ordered {
         body,ok:=migration_plain(migration_text(m,"body"),kr)
         if !ok do return "invalid_content"
         author:=migration_text(m,"author_agent_instance_id")
         if author=="" do author=migration_text(m,"owner_user_id")
-        if _,ok=query(s.db,"INSERT INTO task_comments VALUES(?,?,?,?,?,?)",chain,migration_text(m,"task_id"),migration_text(m,"comment_id"),author,body,stamp);!ok do return "invalid_content"
+        if _,ok=query(s.db,"INSERT INTO task_comments(chain_id,task_id,operation_id,principal_id,body,seq,created_at) VALUES(?,?,?,?,?,?,?)",chain,migration_text(m,"task_id"),migration_text(m,"comment_id"),author,body,
+            fmt.tprintf("%d",comment_base+i64(i)),migration_text(m,"created_at"));!ok do return "invalid_content"
     }
     rows_summary:=migration_rows(rows,"summary")
 
@@ -386,4 +421,71 @@ migration_activate :: proc(s:^Store,migration,manifest_digest:string,now:i64,kr:
     if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=max(clock_high_ms,?) WHERE singleton=1",stamp,fmt.tprintf("%d",max(now,0)));!ok do return fail("storage_error")
     if !transaction_commit(&tx) do return fail("storage_error")
     return Result{code="ok",body=result,seq=seq}
+}
+
+migration_archived_task :: proc(s:^Store,chain,task:string) -> bool {
+    rows,ok:=query(s.db,"SELECT 1 FROM migration_archived_tasks WHERE chain_id=? AND task_id=?",chain,task)
+    return !ok || len(rows)>0
+}
+
+// The Hub no longer knows this migration (it was aborted before cutover):
+// the quarantined import is abandoned. It stays quarantined and inert, is
+// never activated and is not polled again.
+migration_abandon :: proc(s:^Store,migration:string) -> bool {
+    tx:Transaction
+    if !transaction_begin(s,&tx) do return false
+    defer transaction_rollback(&tx)
+    rows,ok:=query(s.db,"SELECT activated_seq FROM migration_imports WHERE migration_id=?",migration)
+    if !ok || len(rows)!=1 || rows[0][0]!="" do return false
+    if _,ok=query(s.db,"INSERT OR IGNORE INTO migration_abandoned VALUES(?)",migration);!ok do return false
+    return transaction_commit(&tx)
+}
+
+// `migration.archive.read`: read-only, chain-scoped pages over the verbatim
+// legacy documents, optionally filtered by kind and task. The cursor is
+// "<doc_index>:<row>" of the next row to examine.
+migration_archive_read :: proc(s:^Store,c,p:json.Object) -> Result {
+    chain:=field(c,"chain_id")
+    kind,task,limit:=field(p,"kind"),field(p,"task_id"),number(field(p,"limit"))
+    imports,ok:=query(s.db,"SELECT migration_id FROM migration_imports WHERE chain_id=?",chain)
+    if !ok do return fail("storage_error")
+    if len(imports)!=1 do return fail("invalid_scope")
+    doc_index,row_index:i64
+    if cursor:=field(p,"cursor");cursor!="" {
+        parts:=strings.split(cursor,":",context.temp_allocator)
+        if len(parts)!=2 || fmt.tprintf("%d",number(parts[0]))!=parts[0] || fmt.tprintf("%d",number(parts[1]))!=parts[1] do return fail("malformed")
+        doc_index,row_index=number(parts[0]),number(parts[1])
+    }
+    docs,read:=query(s.db,"SELECT doc_index,kind,body FROM migration_import_documents WHERE migration_id=? AND doc_index>=? AND (?='' OR kind=?) ORDER BY doc_index",imports[0][0],fmt.tprintf("%d",doc_index),kind,kind)
+    if !read do return fail("storage_error")
+    result:=doc(map[string]string{"chain_id"=chain,"migration_id"=imports[0][0],"next_cursor"=""})
+    items:=make([dynamic]json.Value,context.temp_allocator)
+    for d in docs {
+        v,err:=json.parse_string(d[2],.JSON,true,context.temp_allocator)
+        o,obj:=v.(json.Object)
+        list,arr:=o["rows"].(json.Array)
+        if err!=nil || !obj || !arr do return fail("storage_error")
+        start:=row_index if number(d[0])==doc_index else 0
+        for i:=start;i<i64(len(list));i+=1 {
+            row,is_row:=list[i].(json.Object)
+            if !is_row do return fail("storage_error")
+            if task!="" && migration_text(row,"task_id")!=task do continue
+            if i64(len(items))>=limit {
+                result["next_cursor"]=json.String(fmt.tprintf("%s:%d",d[0],i))
+                result["items"]=json.Array(items)
+                return Result{code="ok",body=encode(result)}
+            }
+            append(&items,doc(map[string]string{"kind"=d[1],"doc_index"=d[0],"row"=fmt.tprintf("%d",i),"record"=encode(row)}))
+            result["items"]=json.Array(items)
+            if len(encode(result))>MAX_PAGE-1024 {
+                ordered_remove(&items,len(items)-1)
+                if len(items)==0 do return fail("invalid_content")
+                result["next_cursor"]=json.String(fmt.tprintf("%s:%d",d[0],i))
+                result["items"]=json.Array(items)
+                return Result{code="ok",body=encode(result)}
+            }
+        }
+    }
+    result["items"]=json.Array(items)
+    return Result{code="ok",body=encode(result)}
 }
