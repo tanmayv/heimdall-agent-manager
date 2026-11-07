@@ -201,3 +201,99 @@ agent_lease_next_respects_dependencies_and_lifecycle_author_binding :: proc(t:^t
     st,found:=agent_lease_state(&f.store,child)
     testing.expect(t,found && st.lease_id=="lease_1" && st.configured && st.requirements_revision=="1" && st.capability!="")
 }
+
+agent_seat :: proc(t:^testing.T,f:^Fixture,child:Child,role:string) {
+    p:=encode(doc(map[string]string{"instance_id"=child.instance,"agent_id"=child.agent_id,"role"=role,"enabled"="1"}))
+    c:=command(f,"chain.member.set",fmt.tprintf("seat_%s",child.instance),"",p,agent_chain_rev(f))
+    testing.expect_value(t,execute(&f.store,c,p,f.genesis,f.creator,f.owner,1,"head",1000,&f.kr,Signer{&f.owner_priv,test_sign},child).code,"ok")
+}
+// Lifecycle command of an arbitrary task/lease, signed by the owner key as the
+// Bridge does for a proven child.
+agent_lifecycle :: proc(f:^Fixture,child:Child,task,lease,method,op,payload,cap,configuration:string) -> Result {
+    c:=doc(map[string]string{
+        "protocol_version"="1","account_id"="account","owner_bridge_id"="bridge","chain_id"="chain","task_id"=task,
+        "lease_id"=lease,"instance_id"=child.instance,"launch_epoch"=child.epoch,"run_count"=fmt.tprintf("%d",child.run_count),
+        "token_generation"=child.token_generation,"configuration_revision"=configuration,"expected_revision"=agent_task_revision(f,task),
+        "operation_id"=op,"method"=method,"request_expires_ms"="2000","capability_digest"=contracts.owner_payload_digest(cap),
+        "key_id"="bridge_key","signature"=strings.repeat("0",128,context.temp_allocator),"payload_digest"=contracts.owner_payload_digest(payload)})
+    sig,_:=test_sign(&f.owner_priv,"lifecycle_command",c);c["signature"]=json.String(sig)
+    return execute_lifecycle(&f.store,encode(c),payload,cap,child,f.owner,1000,Signer{&f.owner_priv,test_sign},Source_Proof{"",true})
+}
+agent_assign_run :: proc(f:^Fixture,coord,worker,reviewer:Child,task:string) -> (string,string) {
+    fleet:=encode(doc(map[string]string{"instance_id"=worker.instance,"configuration_revision"="1","enabled"="1"}))
+    raw:=agent_command(f,coord,"fleet.edit",fmt.tprintf("fleet_%s",task),task,fleet,agent_task_revision(f,task))
+    r:=execute_agent(&f.store,raw,fleet,coord,f.owner,1000,&f.kr,Signer{&f.owner_priv,test_sign},worker)
+    if r.code!="ok" do return "fleet",r.code
+    config:=encode(doc(map[string]string{"configuration_revision"="1","author_agent_id"=worker.agent_id,"reviewer_agent_id"=reviewer.agent_id,"reviewer_instance_id"=reviewer.instance,"directory_id"="owner_none","merge_policy"="none","repository"="","worktree"="","source_branch"="","target_branch"="","base_head"=""}))
+    raw=agent_command(f,coord,"lifecycle.configure",fmt.tprintf("config_%s",task),task,config,agent_task_revision(f,task))
+    r=execute_agent(&f.store,raw,config,coord,f.owner,1000,&f.kr,Signer{&f.owner_priv,test_sign},{},Lifecycle_Proof{worker,reviewer,true})
+    if r.code!="ok" do return "configure",r.code
+    return "","ok"
+}
+
+@(test)
+agent_coordinator_creates_assigns_and_the_assigned_pair_runs_the_task :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f);seed(t,f)
+    coord,worker,reviewer,stranger:=agent_coordinator_child(),lease_child(),lifecycle_reviewer(),agent_stranger()
+    agent_seat_coordinator(t,f,coord);agent_seat(t,f,worker,"worker");agent_seat(t,f,reviewer,"reviewer")
+    tmpl,code:=agent_assignment_template(&f.store,"chain")
+    testing.expect(t,code=="ok" && tmpl.merge_policy=="none","no chain directory -> merge policy none")
+    // The coordinator creates two tasks; the second depends on the first.
+    for task in ([2]string{"first","second"}) {
+        created:=encode(doc(map[string]string{"title_cipher"=cipher(f,task),"body_cipher"=cipher(f,"agent body")}))
+        testing.expect_value(t,agent_run(f,coord,"task.create",fmt.tprintf("create_%s",task),task,created,agent_chain_rev(f)).code,"ok")
+        brief:=encode(doc(map[string]string{"requirements_revision"="1","body_cipher"=cipher(f,`{"goal":"Ship it","acceptance":["Tests pass"]}`)}))
+        testing.expect_value(t,agent_run(f,coord,"requirements.edit",fmt.tprintf("req_%s",task),task,brief,agent_task_revision(f,task)).code,"ok")
+        testing.expect_value(t,agent_run(f,coord,"task.priority",fmt.tprintf("prio_%s",task),task,`{"priority":"p0"}`,agent_task_revision(f,task)).code,"ok")
+        step,result:=agent_assign_run(f,coord,worker,reviewer,task)
+        testing.expectf(t,result=="ok","%s assignment step %s: %s",task,step,result)
+    }
+    testing.expect_value(t,agent_run(f,coord,"dependency.edit","dep","second",`{"prerequisite":"first","enabled":"1"}`,agent_task_revision(f,"second")).code,"ok")
+    // A non-member cannot be assigned, a git configuration outside the
+    // chain's configured directory is refused, and a worker cannot assign.
+    fleet:=encode(doc(map[string]string{"instance_id"=stranger.instance,"configuration_revision"="2","enabled"="1"}))
+    raw:=agent_command(f,coord,"fleet.edit","fleet_stranger","second",fleet,agent_task_revision(f,"second"))
+    testing.expect_value(t,execute_agent(&f.store,raw,fleet,coord,f.owner,1000,&f.kr,Signer{&f.owner_priv,test_sign},stranger).code,"invalid_scope")
+    git:=encode(doc(map[string]string{"configuration_revision"="2","author_agent_id"=worker.agent_id,"reviewer_agent_id"=reviewer.agent_id,"reviewer_instance_id"=reviewer.instance,"directory_id"="elsewhere","merge_policy"="git","repository"="/repo","worktree"="/repo/.heimdall/worktrees/second","source_branch"="heimdall/second","target_branch"="main","base_head"=strings.repeat("b",40,context.temp_allocator)}))
+    raw=agent_command(f,coord,"lifecycle.configure","config_git","second",git,agent_task_revision(f,"second"))
+    testing.expect_value(t,execute_agent(&f.store,raw,git,coord,f.owner,1000,&f.kr,Signer{&f.owner_priv,test_sign},{},Lifecycle_Proof{worker,reviewer,true}).code,"invalid_scope")
+    self_fleet:=encode(doc(map[string]string{"instance_id"=worker.instance,"configuration_revision"="2","enabled"="1"}))
+    raw=agent_command(f,worker,"fleet.edit","worker_fleet","second",self_fleet,agent_task_revision(f,"second"))
+    testing.expect_value(t,execute_agent(&f.store,raw,self_fleet,worker,f.owner,1000,&f.kr,Signer{&f.owner_priv,test_sign},worker).code,"invalid_scope")
+
+    // The assigned worker leases the unblocked task, ACKs and submits.
+    r,pick:=lease_next(&f.store,worker,f.owner,1000,Signer{&f.owner_priv,test_sign},"lease_first","op_first")
+    if !testing.expect(t,r.code=="ok" && pick.status=="granted" && pick.task_id=="first","the dependent task waits; the first task is claimed") do return
+    st,_:=agent_lease_state(&f.store,worker)
+    req:=`{"requirements_revision":"1"}`
+    testing.expect_value(t,agent_lifecycle(f,worker,"first","lease_first","requirements.present","present",req,st.capability,"1").code,"ok")
+    testing.expect_value(t,agent_lifecycle(f,worker,"first","lease_first","requirements.ack","ack",req,st.capability,"1").code,"ok")
+    testing.expect_value(t,agent_lifecycle(f,worker,"first","lease_first","lease.submit","submit",`{"requirements_revision":"1","head":"","summary":"done"}`,st.capability,"1").code,"ok")
+    // Only the assigned reviewer reviews.
+    verdict:=encode(doc(map[string]string{"requirements_revision"="1","attempt"="1","head"="","verdict"="approve","summary"="reviewed"}))
+    testing.expect_value(t,agent_lifecycle(f,stranger,"first","lease_first","review.open","s_open",verdict,"","1").code,"invalid_scope")
+    opened:=agent_lifecycle(f,reviewer,"first","lease_first","review.open","open",verdict,"","1")
+    if !testing.expect_value(t,opened.code,"ok") do return
+    testing.expect_value(t,agent_lifecycle(f,reviewer,"first","lease_first","review.post","post",verdict,result_cap(opened),"1").code,"ok")
+    states,_:=query(f.store.db,"SELECT state FROM lifecycle_state WHERE chain_id='chain' AND task_id='first'")
+    testing.expect_value(t,states[0][0],"done")
+    // With its prerequisite done, the dependent task is claimable.
+    next,second:=lease_next(&f.store,worker,f.owner,1000,Signer{&f.owner_priv,test_sign},"lease_second","op_second")
+    testing.expect(t,next.code=="ok" && second.task_id=="second","the dependency is released by the approved prerequisite")
+}
+
+@(test)
+agent_bindings_for_lease_routing_ignore_disabled_rows_and_reviewers :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
+    bound,ok:=agent_lease_bound(&f.store,"instance")
+    testing.expect(t,ok && bound,"an enabled fleet worker routes lease verbs to the owner")
+    bound,ok=agent_lease_bound(&f.store,"review_instance")
+    testing.expect(t,ok && !bound,"a reviewer-only binding does not")
+    _,_=query(f.store.db,"UPDATE local_fleet SET enabled=0,configuration_revision=configuration_revision+1")
+    bound,ok=agent_lease_bound(&f.store,"instance")
+    testing.expect(t,ok && !bound,"a disabled fleet row does not")
+    _,found,read:=agent_task_state(&f.store,"","missing")
+    testing.expect(t,read && !found,"a task this store does not hold is not found, not an error")
+}

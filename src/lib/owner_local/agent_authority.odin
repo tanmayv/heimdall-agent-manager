@@ -30,7 +30,8 @@ agent_verb_role :: proc(verb:string) -> Agent_Role {
     switch verb {
     case "lease.next","lease.claim","lease.heartbeat","lease.submit","lease.handoff","lease.block","lease.switch","requirements.present","requirements.ack": return .Worker
     case "review.open","review.post","review.role.open","review.role.post","review.checkpoint": return .Reviewer
-    case "task.create","task.edit","task.comment","task.read","chain.read","chain.summary.set","chain.propose","chain.publish","requirements.edit","review.human": return .Coordinator
+    case "task.create","task.edit","task.comment","task.read","chain.read","chain.summary.set","chain.propose","chain.publish","requirements.edit","review.human",
+         "task.priority","dependency.edit","fleet.edit","lifecycle.configure": return .Coordinator
     }
     return .None
 }
@@ -109,7 +110,8 @@ agent_authorize_locked :: proc(s:^Store,chain,task:string,child:Child,verb:strin
 // Methods an agent may submit through the ordinary signed command path.
 agent_command_method :: proc(method:string) -> bool {
     switch method {
-    case "task.create","task.edit","task.comment","task.read","chain.read","chain.summary.set","chain.propose","chain.publish","requirements.edit","review.post": return true
+    case "task.create","task.edit","task.comment","task.read","chain.read","chain.summary.set","chain.propose","chain.publish","requirements.edit","review.post",
+         "task.priority","dependency.edit","fleet.edit","lifecycle.configure": return true
     }
     return false
 }
@@ -123,10 +125,32 @@ agent_command_admit :: proc(s:^Store,c:json.Object,payload:string,key:contracts.
     if field(c,"principal_id")!=agent.instance || field(c,"key_id")!=s.owner_key || field(c,"account_id")!=s.account || field(c,"immutable_owner_bridge")!=s.owner do return "invalid_scope"
     if !contracts.owner_verify_signature("command",c,"signature",key) do return "bad_signature"
     if contracts.owner_payload_digest(payload)!=field(c,"payload_digest") do return "digest_mismatch"
-    if _,parsed:=contracts.owner_parse(payload,contracts.owner_payload_kind(method));!parsed do return "malformed"
+    p,parsed:=contracts.owner_parse(payload,contracts.owner_payload_kind(method))
+    if !parsed do return "malformed"
     verb:="review.human" if method=="review.post" else method
-    role,code:=agent_authorize(s,field(c,"chain_id"),field(c,"task_id"),agent,verb)
+    chain:=field(c,"chain_id")
+    role,code:=agent_authorize(s,chain,field(c,"task_id"),agent,verb)
     if role==.None do return code
+    // Assignment on the user's behalf is limited to agents already enrolled
+    // in THIS chain (an enabled member or fleet worker) and to the chain's
+    // configured repository. New members and grants stay human-only.
+    switch method {
+    case "fleet.edit":
+        participant,ok:=agent_chain_participant(s,chain,field(p,"instance_id"))
+        if !ok do return "storage_error"
+        if !participant do return "invalid_scope"
+    case "lifecycle.configure":
+        participant,ok:=agent_chain_participant(s,chain,field(p,"reviewer_instance_id"))
+        if !ok do return "storage_error"
+        if !participant do return "invalid_scope"
+        if field(p,"merge_policy")=="git" {
+            rows,read:=query(s.db,"SELECT enabled,body FROM local_chain_directory_versions WHERE chain_id=? AND directory_id=? ORDER BY accepted_seq DESC LIMIT 1",chain,field(p,"directory_id"))
+            if !read do return "storage_error"
+            if len(rows)!=1 || rows[0][0]!="1" do return "invalid_scope"
+            v,valid:=contracts.owner_content_document(rows[0][1]);d,obj:=v.(json.Object)
+            if !valid || !obj || field(d,"path")!=field(p,"repository") do return "invalid_scope"
+        }
+    }
     return "ok"
 }
 
@@ -137,10 +161,72 @@ agent_grant :: proc(s:^Store,c:json.Object,now:i64) -> contracts.Owner_Read_Gran
 
 // Coordinator (and own-task worker) commands, signed by the owner key on the
 // agent's behalf. The directory pin is the owner's current one.
-execute_agent :: proc(s:^Store,command_raw,payload:string,agent:Child,owner_key:contracts.Owner_Verified_Key,now:i64,kr:^vault.Vault_Keyring,sign:Signer) -> Result {
+// fleet_child and proof are Bridge-observed facts for fleet.edit and
+// lifecycle.configure, exactly as on the device path.
+execute_agent :: proc(s:^Store,command_raw,payload:string,agent:Child,owner_key:contracts.Owner_Verified_Key,now:i64,kr:^vault.Vault_Keyring,sign:Signer,fleet_child:Child={},proof:Lifecycle_Proof={}) -> Result {
     version,hash:=directory_pin(s)
     if version<0 do return fail("storage_error")
-    return execute(s,command_raw,payload,"",owner_key,owner_key,version,hash,now,kr,sign,agent=agent)
+    return execute(s,command_raw,payload,"",owner_key,owner_key,version,hash,now,kr,sign,fleet_child,proof,agent=agent)
+}
+
+// An enabled current member (latest version) or an enabled fleet worker of
+// this chain. ok=false only on a storage failure.
+agent_chain_participant :: proc(s:^Store,chain,instance:string) -> (bool,bool) {
+    if instance=="" do return false,true
+    rows,ok:=query(s.db,`SELECT 1 FROM local_chain_member_versions m WHERE chain_id=?1 AND instance_id=?2 AND enabled=1
+      AND accepted_seq=(SELECT max(accepted_seq) FROM local_chain_member_versions x WHERE x.chain_id=m.chain_id AND x.instance_id=m.instance_id)
+      UNION ALL SELECT 1 FROM local_fleet WHERE chain_id=?1 AND instance_id=?2 AND enabled=1 LIMIT 1`,chain,instance)
+    if !ok do return false,false
+    return len(rows)>0,true
+}
+
+// Instances that may be assigned in this chain (see agent_chain_participant).
+agent_chain_participants :: proc(s:^Store,chain:string) -> ([]string,bool) {
+    tx:Transaction
+    if !transaction_begin(s,&tx) do return nil,false
+    defer transaction_rollback(&tx)
+    rows,ok:=query(s.db,`SELECT instance_id FROM local_chain_member_versions m WHERE chain_id=?1 AND enabled=1
+      AND accepted_seq=(SELECT max(accepted_seq) FROM local_chain_member_versions x WHERE x.chain_id=m.chain_id AND x.instance_id=m.instance_id)
+      UNION SELECT instance_id FROM local_fleet WHERE chain_id=?1 AND enabled=1`,chain)
+    if !ok do return nil,false
+    out:=make([dynamic]string,context.temp_allocator)
+    for r in rows do append(&out,r[0])
+    return out[:],true
+}
+
+// The repository a coordinator may configure: the chain's single enabled
+// directory, and its target branch from the chain defaults ("target_branch")
+// or the latest Git configuration on that repository. No directory means
+// merge_policy none.
+Agent_Assignment_Template :: struct { merge_policy,directory_id,repository,target_branch:string }
+agent_assignment_template :: proc(s:^Store,chain:string) -> (Agent_Assignment_Template,string) {
+    tx:Transaction
+    if !transaction_begin(s,&tx) do return {},"storage_error"
+    defer transaction_rollback(&tx)
+    dirs,ok:=query(s.db,`SELECT directory_id,body FROM local_chain_directory_versions d WHERE chain_id=? AND enabled=1
+      AND accepted_seq=(SELECT max(accepted_seq) FROM local_chain_directory_versions x WHERE x.chain_id=d.chain_id AND x.directory_id=d.directory_id)`,chain)
+    if !ok do return {},"storage_error"
+    if len(dirs)==0 do return Agent_Assignment_Template{merge_policy="none",directory_id="owner_none"},"ok"
+    if len(dirs)>1 do return {},"ambiguous_directory"
+    v,valid:=contracts.owner_content_document(dirs[0][1]);d,obj:=v.(json.Object)
+    if !valid || !obj || field(d,"path")=="" do return {},"invalid_content"
+    t:=Agent_Assignment_Template{"git",dirs[0][0],field(d,"path"),""}
+    defaults,read:=query(s.db,"SELECT defaults_json FROM local_chain_defaults_versions WHERE chain_id=? ORDER BY accepted_seq DESC LIMIT 1",chain)
+    if !read do return {},"storage_error"
+    if len(defaults)==1 {
+        dv,dvalid:=contracts.owner_content_document(defaults[0][0])
+        if o,is_obj:=dv.(json.Object);dvalid && is_obj do t.target_branch=field(o,"target_branch")
+    }
+    if t.target_branch=="" {
+        configs,cread:=query(s.db,"SELECT config_json FROM lifecycle_configs WHERE chain_id=? ORDER BY rowid DESC",chain)
+        if !cread do return {},"storage_error"
+        for row in configs {
+            c,cvalid:=contracts.owner_parse(row[0],"lifecycle_config_payload")
+            if cvalid && field(c,"merge_policy")=="git" && field(c,"repository")==t.repository { t.target_branch=field(c,"target_branch");break }
+        }
+    }
+    if t.target_branch=="" || !contracts.owner_field_valid(t.target_branch,"optional_ref") do return {},"target_branch_required"
+    return t,"ok"
 }
 
 // ---- lease.next: atomic next-ready discovery + claim --------------------
@@ -243,38 +329,58 @@ agent_lease_state :: proc(s:^Store,child:Child) -> (Agent_Lease_State,bool) {
 
 Agent_Task_State :: struct {
     chain_id,task_id,task_revision,chain_revision,requirements_revision,state,attempt,head,configuration_revision:string,
+    brief:string,
+    fleet_instance,fleet_revision,fleet_enabled:string,
+    config_max_revision:string,
+    dependencies:[]string,
     config:json.Object,
     configured:bool,
 }
 
-// Resolve a task (chain optional) known to this owner store.
-agent_task_state :: proc(s:^Store,chain,task:string) -> (Agent_Task_State,bool) {
+// Resolve a task (chain optional) known to this owner store. ok=false means
+// the store could not be read (busy or failed): never "not mine".
+agent_task_state :: proc(s:^Store,chain,task:string) -> (st:Agent_Task_State,found:bool,ok:bool) {
     tx:Transaction
-    if !transaction_begin(s,&tx) do return {},false
+    if !transaction_begin(s,&tx) do return {},false,false
     defer transaction_rollback(&tx)
-    rows,ok:=query(s.db,"SELECT t.chain_id,t.task_id,t.revision,c.revision FROM tasks t JOIN task_chains c ON c.chain_id=t.chain_id WHERE t.task_id=? AND (?='' OR t.chain_id=?)",task,chain,chain)
-    if !ok || len(rows)!=1 do return {},false
-    st:=Agent_Task_State{chain_id=rows[0][0],task_id=rows[0][1],task_revision=rows[0][2],chain_revision=rows[0][3]}
-    if req,has:=lifecycle_requirements(s,st.chain_id,task);has do st.requirements_revision=req[0]
+    rows,read:=query(s.db,"SELECT t.chain_id,t.task_id,t.revision,c.revision FROM tasks t JOIN task_chains c ON c.chain_id=t.chain_id WHERE t.task_id=? AND (?='' OR t.chain_id=?)",task,chain,chain)
+    if !read do return {},false,false
+    if len(rows)!=1 do return {},false,true
+    st=Agent_Task_State{chain_id=rows[0][0],task_id=rows[0][1],task_revision=rows[0][2],chain_revision=rows[0][3]}
+    if req,has:=lifecycle_requirements(s,st.chain_id,task);has { st.requirements_revision=req[0];st.brief=req[1] }
     st.config,_,st.configured=lifecycle_config(s,st.chain_id,task)
     if st.configured do st.configuration_revision=field(st.config,"configuration_revision")
-    states,read:=query(s.db,"SELECT l.state,l.attempt,COALESCE((SELECT head FROM local_submissions x WHERE x.chain_id=l.chain_id AND x.task_id=l.task_id AND x.attempt=l.attempt),'') FROM lifecycle_state l WHERE chain_id=? AND task_id=?",st.chain_id,task)
-    if read && len(states)==1 { st.state=states[0][0];st.attempt=states[0][1];st.head=states[0][2] }
-    return st,true
+    states,sread:=query(s.db,"SELECT l.state,l.attempt,COALESCE((SELECT head FROM local_submissions x WHERE x.chain_id=l.chain_id AND x.task_id=l.task_id AND x.attempt=l.attempt),'') FROM lifecycle_state l WHERE chain_id=? AND task_id=?",st.chain_id,task)
+    if !sread do return {},false,false
+    if len(states)==1 { st.state=states[0][0];st.attempt=states[0][1];st.head=states[0][2] }
+    fleet,fread:=query(s.db,"SELECT instance_id,configuration_revision,enabled FROM local_fleet WHERE chain_id=? AND task_id=?",st.chain_id,task)
+    if !fread do return {},false,false
+    if len(fleet)==1 { st.fleet_instance=fleet[0][0];st.fleet_revision=fleet[0][1];st.fleet_enabled=fleet[0][2] }
+    configs,cread:=query(s.db,"SELECT COALESCE(max(revision),0) FROM lifecycle_configs WHERE chain_id=? AND task_id=?",st.chain_id,task)
+    if !cread do return {},false,false
+    st.config_max_revision=configs[0][0]
+    deps,dread:=query(s.db,"SELECT prerequisite FROM local_dependencies WHERE chain_id=? AND task_id=? ORDER BY prerequisite",st.chain_id,task)
+    if !dread do return {},false,false
+    list:=make([dynamic]string,context.temp_allocator)
+    for d in deps do append(&list,d[0])
+    st.dependencies=list[:]
+    return st,true,true
 }
 
-// Chain revision for chain-scoped commands; "" when this store does not own it.
-agent_chain_revision :: proc(s:^Store,chain:string) -> string {
+// Chain revision for chain-scoped commands; found=false when this store does
+// not hold the chain, ok=false when it could not be read.
+agent_chain_revision :: proc(s:^Store,chain:string) -> (revision:string,found:bool,ok:bool) {
     tx:Transaction
-    if !transaction_begin(s,&tx) do return ""
+    if !transaction_begin(s,&tx) do return "",false,false
     defer transaction_rollback(&tx)
-    rows,ok:=query(s.db,"SELECT revision FROM task_chains WHERE chain_id=?",chain)
-    if !ok || len(rows)!=1 do return ""
-    return rows[0][0]
+    rows,read:=query(s.db,"SELECT revision FROM task_chains WHERE chain_id=?",chain)
+    if !read do return "",false,false
+    if len(rows)!=1 do return "",false,true
+    return rows[0][0],true,true
 }
 
-// The chains this child acts on as a member or fleet worker (its context when
-// a verb names no chain).
+// The chain this child acts on when a verb names none: its membership, its
+// live lease or its enabled fleet rows (exactly one chain).
 agent_home_chain :: proc(s:^Store,child:Child) -> string {
     tx:Transaction
     if !transaction_begin(s,&tx) do return ""
@@ -284,13 +390,28 @@ agent_home_chain :: proc(s:^Store,child:Child) -> string {
     return rows[0][0]
 }
 
-// Whether this instance has any owner-local binding at all (fleet row, lease,
-// membership or review configuration) on this store.
-agent_bound :: proc(s:^Store,instance:string) -> bool {
+// Lease-verb routing: an enabled fleet row or a live lease of this instance.
+// Disabled rows, membership and reviewer-only bindings do not count.
+agent_lease_bound :: proc(s:^Store,instance:string) -> (bound:bool,ok:bool) {
     tx:Transaction
-    if !transaction_begin(s,&tx) do return false
+    if !transaction_begin(s,&tx) do return false,false
     defer transaction_rollback(&tx)
-    rows,ok:=query(s.db,`SELECT 1 FROM local_fleet WHERE instance_id=?1 UNION ALL SELECT 1 FROM local_leases WHERE instance_id=?1 AND retired_seq IS NULL
-      UNION ALL SELECT 1 FROM local_member_chains WHERE instance_id=?1 UNION ALL SELECT 1 FROM lifecycle_configs WHERE json_extract(reviewer_child,'$.instance')=?1 LIMIT 1`,instance)
-    return ok && len(rows)>0
+    rows,read:=query(s.db,`SELECT 1 FROM local_fleet WHERE instance_id=?1 AND enabled=1
+      UNION ALL SELECT 1 FROM local_leases WHERE instance_id=?1 AND retired_seq IS NULL LIMIT 1`,instance)
+    if !read do return false,false
+    return len(rows)>0,true
+}
+
+// Chain-verb routing without ids: a current enabled member, an enabled fleet
+// worker or a live lease holder of this store.
+agent_bound :: proc(s:^Store,instance:string) -> (bound:bool,ok:bool) {
+    tx:Transaction
+    if !transaction_begin(s,&tx) do return false,false
+    defer transaction_rollback(&tx)
+    rows,read:=query(s.db,`SELECT 1 FROM local_fleet WHERE instance_id=?1 AND enabled=1
+      UNION ALL SELECT 1 FROM local_leases WHERE instance_id=?1 AND retired_seq IS NULL
+      UNION ALL SELECT 1 FROM local_chain_member_versions m WHERE instance_id=?1 AND enabled=1
+        AND accepted_seq=(SELECT max(accepted_seq) FROM local_chain_member_versions x WHERE x.chain_id=m.chain_id AND x.instance_id=m.instance_id) LIMIT 1`,instance)
+    if !read do return false,false
+    return len(rows)>0,true
 }
