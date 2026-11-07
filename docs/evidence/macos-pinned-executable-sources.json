@@ -1,0 +1,50 @@
+{
+  "xnu_commit": "f6217f891ac0bb64f3d375211650a4c1ff8ca1ea",
+  "retrieved_utc": "2026-11-07",
+  "items": [
+    {
+      "name": "exec",
+      "url": "https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/bsd/kern/kern_exec.c",
+      "sha256": "89531d33618b8361064236189212c3c96be1b32e098690b17802b6b15d932d1a",
+      "bytes": 251651,
+      "pinned_url": "https://raw.githubusercontent.com/apple-oss-distributions/xnu/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/kern/kern_exec.c"
+    },
+    {
+      "name": "fdesc",
+      "url": "https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/bsd/miscfs/devfs/devfs_fdesc_support.c",
+      "sha256": "8669a7660d7fdbece091ebfe2ac1f181f4d08139cfb9bd5dfcf51987a1d6cb0d",
+      "bytes": 21200,
+      "pinned_url": "https://raw.githubusercontent.com/apple-oss-distributions/xnu/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/miscfs/devfs/devfs_fdesc_support.c"
+    },
+    {
+      "name": "spawn",
+      "url": "https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/libsyscall/wrappers/spawn/posix_spawn.c",
+      "sha256": "15392bdbd233e899de34b238afdb2f991a71a24583dec92ae503cb42bc5f9fad",
+      "bytes": 80627,
+      "pinned_url": "https://raw.githubusercontent.com/apple-oss-distributions/xnu/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/libsyscall/wrappers/spawn/posix_spawn.c"
+    },
+    {
+      "name": "spawn_header",
+      "url": "https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/libsyscall/wrappers/spawn/spawn.h",
+      "sha256": "4b196764e478b25c2fdfcdd240b2f1601fbc59410ce9c8cb59780354ff1ebf3e",
+      "bytes": 9612,
+      "pinned_url": "https://raw.githubusercontent.com/apple-oss-distributions/xnu/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/libsyscall/wrappers/spawn/spawn.h"
+    }
+  ],
+  "implementation": "96697a86fc9c1db7e529707c09631c31546c4dd3",
+  "portable_pty": {
+    "version": "0.9.0",
+    "registry_checksum": "b4a596a2b3d2752d94f51fac2d4a96737b8705dddd311a32b9af47211f08671e",
+    "unix_rs_sha256": "14c85213b32074d71c8af334531fd027d6a0558dee830282620c88bab056c4b3"
+  },
+  "native": {
+    "bridge": "brg_18e30f3f36df903e",
+    "status": "offline",
+    "runtime_connected": false,
+    "unseal_boot_id": "",
+    "shell_refusal": "the bridge has not announced a boot id; refusing to build enc_spec",
+    "session_created": false,
+    "native_checks": "not run",
+    "host_changes": false
+  }
+}
