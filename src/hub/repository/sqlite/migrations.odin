@@ -646,6 +646,7 @@ MIGRATION_199_EXTENSION_VERSION_SYNC :: #load("migrations/199_extension_version_
 
 MIGRATION_200_EXTENSION_VERSION_SYNC :: #load("migrations/200_extension_version_sync_0_5_48.sql", string)
 
+MIGRATION_204_OWNER_LEGACY_SOURCE_FENCES :: #load("migrations/204_owner_legacy_source_fences.sql", string)
 MIGRATION_203_CHAIN_CONTEXT :: #load("migrations/203_chain_context.sql", string)
 MIGRATION_202_OWNER_LOCAL_REGISTRY :: #load("migrations/202_owner_local_registry.sql", string)
 
@@ -859,6 +860,7 @@ migration_order :: [?]string {
 	"201_extension_version_sync_0_5_49.sql",
     "202_owner_local_registry.sql",
     "203_chain_context.sql",
+    "204_owner_legacy_source_fences.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1298,7 +1300,7 @@ run_migrations :: proc(
 			)
 		}
 		if !exec(conn, sql) {
-			if name=="169_provider_profiles.sql" do _=exec(conn,"ROLLBACK;")
+			if name=="169_provider_profiles.sql" || name=="204_owner_legacy_source_fences.sql" do _=exec(conn,"ROLLBACK;")
 			delete(sql)
 			return false, domain.domain_error(
 				.Internal_Error,
@@ -1348,6 +1350,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 			return string(data)
 		}
 	}
+    if name == "204_owner_legacy_source_fences.sql" do return strings.clone(MIGRATION_204_OWNER_LEGACY_SOURCE_FENCES)
     if name == "203_chain_context.sql" do return strings.clone(MIGRATION_203_CHAIN_CONTEXT)
     if name == "202_owner_local_registry.sql" do return strings.clone(MIGRATION_202_OWNER_LOCAL_REGISTRY)
 	if name == "201_extension_version_sync_0_5_49.sql" do return strings.clone(MIGRATION_201_EXTENSION_VERSION_SYNC)

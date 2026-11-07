@@ -88,6 +88,9 @@ export const ownerSchemas = {
   remote_configuration: [["protocol_version", "version"], ["account_id", "id"], ["owner_bridge_id", "id"], ["executor_bridge_id", "id"], ["executor_key_id", "id"], ["chain_id", "id"], ["task_id", "id"], ["instance_id", "id"], ["agent_id", "id"], ["launch_epoch", "id"], ["run_count", "positive"], ["token_generation", "hash"], ["configuration_revision", "positive"], ["executor_incarnation", "positive"], ["policy_revision", "positive"], ["slot_id", "id"], ["provider_profile", "id"], ["provider", "label"], ["model", "label"], ["directory_id", "id"], ["directory_key", "hash"], ["directory_path", "path"]],
   remote_reservation: [["configuration", "document"], ["attestation", "document"]],
   remote_assignment_snapshot: [["signed_payload", "document"], ["reservation", "document"]],
+  migration_selection: [["protocol_version", "version"], ["account_id", "id"], ["chain_id", "id"], ["migration_id", "id"], ["owner_bridge_id", "id"], ["owner_key_id", "id"], ["principal_id", "id"], ["key_id", "id"], ["expected_work_revision", "counter"], ["request_expires_ms", "positive"], ["signature", "signature"]],
+  migration_import_receipt: [["protocol_version", "version"], ["account_id", "id"], ["chain_id", "id"], ["migration_id", "id"], ["owner_bridge_id", "id"], ["key_id", "id"], ["selection_digest", "hash"], ["manifest_digest", "hash"], ["genesis_digest", "hash"], ["database_id", "id"], ["import_seq", "positive"], ["schema_version", "positive"], ["signature", "signature"]],
+  migration_control: [["protocol_version", "version"], ["account_id", "id"], ["chain_id", "id"], ["migration_id", "id"], ["owner_bridge_id", "id"], ["principal_id", "id"], ["key_id", "id"], ["action", "migration_action"], ["expected_revision", "positive"], ["selection_digest", "hash"], ["evidence_digest", "hash"], ["request_expires_ms", "positive"], ["signature", "signature"]],
 } as const;
 export type OwnerKind = keyof typeof ownerSchemas;
 export interface OwnerGenesis {
@@ -732,6 +735,49 @@ export interface OwnerRemote_Assignment_Snapshot {
   signed_payload: string;
   reservation: string;
 }
+export interface OwnerMigration_Selection {
+  protocol_version: string;
+  account_id: string;
+  chain_id: string;
+  migration_id: string;
+  owner_bridge_id: string;
+  owner_key_id: string;
+  principal_id: string;
+  key_id: string;
+  expected_work_revision: string;
+  request_expires_ms: string;
+  signature: string;
+}
+export interface OwnerMigration_Import_Receipt {
+  protocol_version: string;
+  account_id: string;
+  chain_id: string;
+  migration_id: string;
+  owner_bridge_id: string;
+  key_id: string;
+  selection_digest: string;
+  manifest_digest: string;
+  genesis_digest: string;
+  database_id: string;
+  import_seq: string;
+  schema_version: string;
+  signature: string;
+}
+export interface OwnerMigration_Control {
+  protocol_version: string;
+  account_id: string;
+  chain_id: string;
+  migration_id: string;
+  owner_bridge_id: string;
+  principal_id: string;
+  key_id: string;
+  action: string;
+  expected_revision: string;
+  selection_digest: string;
+  evidence_digest: string;
+  request_expires_ms: string;
+  signature: string;
+}
 export interface OwnerDocuments {
   genesis: OwnerGenesis;
   command: OwnerCommand;
@@ -821,4 +867,7 @@ export interface OwnerDocuments {
   remote_configuration: OwnerRemote_Configuration;
   remote_reservation: OwnerRemote_Reservation;
   remote_assignment_snapshot: OwnerRemote_Assignment_Snapshot;
+  migration_selection: OwnerMigration_Selection;
+  migration_import_receipt: OwnerMigration_Import_Receipt;
+  migration_control: OwnerMigration_Control;
 }

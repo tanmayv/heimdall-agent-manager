@@ -139,6 +139,7 @@ trigger_label :: proc(t: Trigger) -> string {
 
 // Effects collects the side effects a UoW decided on; they run after COMMIT.
 Effects :: struct {
+    source_wakes: [dynamic]Prepared_Legacy_Wake,
 	// wake runs/stops keyed by bridge id (see wake.odin, M1).
 	runs:        map[string][dynamic]agent.Wake_Agent_Run_Entry,
 	stops:       map[string][dynamic]string,
@@ -261,10 +262,18 @@ begin_uow :: proc(svc: ^Service) -> (Uow, bool, domain.Domain_Error) {
 // — network I/O strictly after the lock is released. A NESTED unit of work
 // (SAVEPOINT inside a caller's transaction) hands its effects to the outer
 // transaction's after-commit hooks instead of flushing under the lock (S7).
-end_uow :: proc(svc: ^Service, u: ^Uow, ok: bool) -> (bool, domain.Domain_Error) {
+end_uow :: proc(svc: ^Service, u: ^Uow, success: bool) -> (bool, domain.Domain_Error) {
+	ok:=success
 	committed := ok
 	err := domain.Domain_Error{}
 	nested := u.has_tx && u.tx.nested
+	if ok && u.has_tx {
+		if prep_err:=prepare_legacy_source_effects(svc,&u.effects);prep_err.code!=.None {
+			ok=false
+			committed=false
+			err=prep_err
+		}
+	}
 	if u.has_tx {
 		if ok && nested {
 			// Register BEFORE the savepoint release so a failed release drops it.
@@ -301,6 +310,7 @@ Deferred_Effects :: struct {
 // Move a successfully released savepoint's effects into its parent. Payloads
 // and owned map keys transfer with the arrays; only source containers are freed.
 move_effects :: proc(dst, src: ^Effects) {
+	append(&dst.source_wakes,..src.source_wakes[:]);delete(src.source_wakes)
 	for key, entries in src.runs {
 		current := dst.runs[key]
 		for entry in entries {
@@ -375,6 +385,10 @@ cancel_reservations :: proc(svc: ^Service, e: ^Effects) {
 
 @(private = "package")
 destroy_effects :: proc(e: ^Effects) {
+	for w in e.source_wakes {
+		delete(w.bridge_id);delete(w.chain_id);delete(w.command_id);delete(w.body_json);delete(w.key)
+	}
+	delete(e.source_wakes)
 	for _, entries in e.runs do delete(entries)
 	delete(e.runs)
 	for _, entries in e.stops do delete(entries)

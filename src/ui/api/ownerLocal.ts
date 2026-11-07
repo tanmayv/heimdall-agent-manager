@@ -15,6 +15,7 @@ function fieldValid(s: string, kind: string): boolean {
   if (!ascii(s)) return false;
   switch (kind) {
     case 'id': case 'optional': return (kind === 'optional' && s === '') || (s.length <= 160 && /^[a-zA-Z0-9_.:-]+$/.test(s));
+    case 'migration_action': return s === 'resume' || s === 'cutover';
     case 'version': return s === '1';
     case 'counter': case 'positive': return decimal(s) && (kind === 'counter' || s !== '0');
     case 'hash': return /^[0-9a-f]{64}$/.test(s);

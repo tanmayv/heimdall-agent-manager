@@ -120,7 +120,6 @@ remove_stop :: proc(u: ^Uow, key, instance_id: string) {
 	u.effects.stops[key] = stops
 }
 
-@(private = "file")
 split_wake_key :: proc(key: string) -> (bridge_id, chain_id: string) {
 	for i in 0..<len(key) {
 		if key[i] == 0 do return key[:i], key[i+1:]
@@ -139,6 +138,17 @@ Wake_Command :: struct {
 // runs/stops a committed UoW decided on. Called after COMMIT, never under the
 // tx mutex.
 flush_wakes :: proc(svc: ^Service, e: ^Effects) {
+	if len(e.source_wakes)>0 {
+		for w in e.source_wakes {
+			if svc.wake_observer!=nil do svc.wake_observer(svc.wake_observer_ctx,Wake_Command{bridge_id=w.bridge_id,chain_id=w.chain_id,body_json=w.body_json})
+			if sent,err:=project.bridge_command_send_runtime(svc.bridge_command_sink,project.Runtime_Command{bridge_id=w.bridge_id,command_id=w.command_id,body_json=w.body_json});!sent && svc.bridge_command_sink.send_runtime_command!=nil {
+				fmt.eprintfln("[taskv2] wake_agent to bridge %s failed: %s",w.bridge_id,err.message)
+				runs:=e.runs[w.key]
+				for run in runs do on_dispatch_failed(svc,run.lease_id,err.message)
+			}
+		}
+		return
+	}
 	keys := make(map[string]bool, context.temp_allocator)
 	for k in e.runs do keys[k] = true
 	for k in e.stops do keys[k] = true

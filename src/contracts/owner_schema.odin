@@ -1372,6 +1372,95 @@ owner_fields_remote_assignment_snapshot := [?]Owner_Field{
     {"signed_payload", "document"},
     {"reservation", "document"},
 }
+Owner_Migration_Selection :: struct {
+    protocol_version: string,
+    account_id: string,
+    chain_id: string,
+    migration_id: string,
+    owner_bridge_id: string,
+    owner_key_id: string,
+    principal_id: string,
+    key_id: string,
+    expected_work_revision: string,
+    request_expires_ms: string,
+    signature: string,
+}
+@(private)
+owner_fields_migration_selection := [?]Owner_Field{
+    {"protocol_version", "version"},
+    {"account_id", "id"},
+    {"chain_id", "id"},
+    {"migration_id", "id"},
+    {"owner_bridge_id", "id"},
+    {"owner_key_id", "id"},
+    {"principal_id", "id"},
+    {"key_id", "id"},
+    {"expected_work_revision", "counter"},
+    {"request_expires_ms", "positive"},
+    {"signature", "signature"},
+}
+Owner_Migration_Import_Receipt :: struct {
+    protocol_version: string,
+    account_id: string,
+    chain_id: string,
+    migration_id: string,
+    owner_bridge_id: string,
+    key_id: string,
+    selection_digest: string,
+    manifest_digest: string,
+    genesis_digest: string,
+    database_id: string,
+    import_seq: string,
+    schema_version: string,
+    signature: string,
+}
+@(private)
+owner_fields_migration_import_receipt := [?]Owner_Field{
+    {"protocol_version", "version"},
+    {"account_id", "id"},
+    {"chain_id", "id"},
+    {"migration_id", "id"},
+    {"owner_bridge_id", "id"},
+    {"key_id", "id"},
+    {"selection_digest", "hash"},
+    {"manifest_digest", "hash"},
+    {"genesis_digest", "hash"},
+    {"database_id", "id"},
+    {"import_seq", "positive"},
+    {"schema_version", "positive"},
+    {"signature", "signature"},
+}
+Owner_Migration_Control :: struct {
+    protocol_version: string,
+    account_id: string,
+    chain_id: string,
+    migration_id: string,
+    owner_bridge_id: string,
+    principal_id: string,
+    key_id: string,
+    action: string,
+    expected_revision: string,
+    selection_digest: string,
+    evidence_digest: string,
+    request_expires_ms: string,
+    signature: string,
+}
+@(private)
+owner_fields_migration_control := [?]Owner_Field{
+    {"protocol_version", "version"},
+    {"account_id", "id"},
+    {"chain_id", "id"},
+    {"migration_id", "id"},
+    {"owner_bridge_id", "id"},
+    {"principal_id", "id"},
+    {"key_id", "id"},
+    {"action", "migration_action"},
+    {"expected_revision", "positive"},
+    {"selection_digest", "hash"},
+    {"evidence_digest", "hash"},
+    {"request_expires_ms", "positive"},
+    {"signature", "signature"},
+}
 owner_schema :: proc(kind: string) -> []Owner_Field {
     switch kind {
     case "genesis": return owner_fields_genesis[:]
@@ -1462,6 +1551,9 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "remote_configuration": return owner_fields_remote_configuration[:]
     case "remote_reservation": return owner_fields_remote_reservation[:]
     case "remote_assignment_snapshot": return owner_fields_remote_assignment_snapshot[:]
+    case "migration_selection": return owner_fields_migration_selection[:]
+    case "migration_import_receipt": return owner_fields_migration_import_receipt[:]
+    case "migration_control": return owner_fields_migration_control[:]
     }
     return nil
 }

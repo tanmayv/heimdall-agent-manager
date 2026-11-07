@@ -28,6 +28,7 @@ MERGE_COMMAND_TYPE :: "taskv2_merge_worktree"
 MERGE_TIMEOUT_MS :: 60_000
 
 Merge_Effect :: struct {
+    source_command_id,source_body:string,
 	owner:     string,
 	task_id:   string,
 	bridge_id: string,
@@ -70,6 +71,7 @@ effect_merge_worktree :: proc(svc: ^Service, u: ^Uow, task: domain.Task, evs: []
 }
 
 destroy_merge_effect :: proc(m: Merge_Effect) {
+    delete(m.source_command_id);delete(m.source_body)
 	delete(m.owner)
 	delete(m.task_id)
 	delete(m.bridge_id)
@@ -101,6 +103,8 @@ flush_merges :: proc(svc: ^Service, e: ^Effects) {
 		job := new(Merge_Job)
 		job.svc = svc
 		job.merge = Merge_Effect{
+            source_command_id=strings.clone(m.source_command_id),
+            source_body=strings.clone(m.source_body),
 			owner     = strings.clone(m.owner),
 			task_id   = strings.clone(m.task_id),
 			bridge_id = strings.clone(m.bridge_id),
@@ -201,10 +205,15 @@ run_merge :: proc(svc: ^Service, m: Merge_Effect) {
     initial, found, _ := iface.taskchain_get_task(svc.repo, domain.Task_ID(m.task_id))
     if !found || !workflow_merge_allowed(svc, initial) do return
 	command_id := fmt.tprintf("cmd_merge_%s_%d", initial.task_id, initial.attempt_no)
+	body:=merge_command_json(command_id,m)
+	if m.source_command_id!="" {
+		command_id=m.source_command_id
+		body=m.source_body
+	}
 	reply, ok, err := project.bridge_command_send_runtime_wait(svc.bridge_command_sink, project.Runtime_Command{
 		bridge_id  = m.bridge_id,
 		command_id = command_id,
-		body_json  = merge_command_json(command_id, m),
+		body_json  = body,
 	}, MERGE_TIMEOUT_MS)
 	defer if ok do delete(reply)
 

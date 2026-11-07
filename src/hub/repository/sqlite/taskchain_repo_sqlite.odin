@@ -14,6 +14,10 @@ Taskchain_Repo_SQLite :: struct {
 new_taskchain_repository :: proc(impl: ^Taskchain_Repo_SQLite, conn: ^Conn) -> iface.Taskchain_Repository {
 	impl.conn = conn
 	return iface.Taskchain_Repository{
+        legacy_migration_select=legacy_migration_select,
+        legacy_source_get=legacy_source_get,
+        legacy_effect_prepare=legacy_effect_prepare,
+        legacy_source_freeze=legacy_source_freeze,
 		ctx = rawptr(impl),
         owner_registry_publish=owner_registry_publish,
         owner_registry_list=owner_registry_list,
