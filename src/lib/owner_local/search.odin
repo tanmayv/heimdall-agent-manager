@@ -34,7 +34,8 @@ search_literal :: proc(text:string)->(string,bool) {
     return strings.to_string(b),true
 }
 // Archived workflow stage tasks (migration_archived_tasks, V31) are immutable
-// history: one search document per stage task carries its run and stage
+// history, never live tickets: they have no 'task' document (V33 trigger
+// guard, the rebuild below, and the import). One search document per stage task carries its run and stage
 // identity, so a search for a run or stage key finds the archived stage and the
 // hit is labelled archival rather than a live ticket. The table's only writer
 // (the migration import) indexes in the same transaction; the startup rebuild
@@ -45,6 +46,9 @@ SEARCH_ARCHIVED_TASK_INSERT :: `INSERT INTO search_docs(chain_id,task_id,kind,ob
   FROM migration_archived_tasks WHERE chain_id=? AND task_id=?
   ON CONFLICT(chain_id,kind,object_id) DO UPDATE SET revision=excluded.revision,title=excluded.title,body=excluded.body`
 search_index_archived_task :: proc(s:^Store,chain,task:string)->bool {
+    // The tasks insert trigger ran before the row was known to be archival;
+    // V33 keeps later task updates from re-adding a live 'task' document.
+    if _,ok:=query(s.db,"DELETE FROM search_docs WHERE chain_id=? AND kind='task' AND object_id=?",chain,task);!ok do return false
     _,ok:=query(s.db,SEARCH_ARCHIVED_TASK_INSERT,chain,task)
     return ok
 }
@@ -103,7 +107,8 @@ search_rebuild :: proc(s:^Store)->bool {
       INSERT INTO search_docs(chain_id,task_id,kind,object_id,revision,title,body)
         SELECT chain_id,'','chain',chain_id,revision,title,description FROM task_chains;
       INSERT INTO search_docs(chain_id,task_id,kind,object_id,revision,title,body)
-        SELECT chain_id,task_id,'task',task_id,revision,title,body FROM tasks;
+        SELECT chain_id,task_id,'task',task_id,revision,title,body FROM tasks t
+        WHERE NOT EXISTS(SELECT 1 FROM migration_archived_tasks a WHERE a.chain_id=t.chain_id AND a.task_id=t.task_id);
       INSERT INTO search_docs(chain_id,task_id,kind,object_id,revision,title,body)
         SELECT chain_id,task_id,'comment',principal_id||':'||operation_id,seq,'',body FROM task_comments;
       INSERT INTO search_docs(chain_id,task_id,kind,object_id,revision,title,body)

@@ -2,7 +2,8 @@ package owner_local
 
 import "core:encoding/json"
 
-SCHEMA_VERSION :: 32
+SCHEMA_VERSION :: 33
+MIGRATION_033 :: #load("migration_033.sql")
 MIGRATION_032 :: #load("migration_032.sql")
 MIGRATION_031 :: #load("migration_031.sql")
 MIGRATION_030 :: #load("migration_030.sql")
@@ -195,6 +196,10 @@ migrate :: proc(db:DB) -> bool {
     if version<=31 {
         if !exec(db,string(MIGRATION_032)) do return false
         if !exec(db,"UPDATE schema_migrations SET version=32 WHERE singleton=1") do return false
+    }
+    if version<=32 {
+        if !exec(db,string(MIGRATION_033)) do return false
+        if !exec(db,"UPDATE schema_migrations SET version=33 WHERE singleton=1") do return false
     }
     if !exec(db,"COMMIT") do return false
     committed=true

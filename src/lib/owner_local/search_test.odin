@@ -137,7 +137,7 @@ search_v4_upgrade_collision_is_atomic_and_preserves_live_history :: proc(t:^test
     testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,len(search_hits(search_for(f,"private"))),1)
     rows,ok=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
-    testing.expect(t,ok && rows[0][0]=="32" && rows[0][1]=="32")
+    testing.expect(t,ok && rows[0][0]=="33" && rows[0][1]=="33")
 }
 
 history_submit :: proc(t:^testing.T,f:^Fixture,lease,revision,summary:string) {
@@ -253,7 +253,7 @@ search_indexes_archived_stage_tasks_at_import_and_rebuild :: proc(t:^testing.T) 
     rows["workflow_execution"]=migration_list([]string{`{"run_id":"run_zeta","execution_no":1,"chain_id":"legacy_chain","owner_user_id":"account","state":"succeeded"}`})
     tasks:=make([dynamic]string)
     for task in rows["task"] do append(&tasks,task)
-    append(&tasks,`{"task_id":"t_stage","chain_id":"legacy_chain","owner_user_id":"account","title":"Stage","description":"","publish_state":"published","state":"done","kind":"task","priority":"p1","attempt_no":1,"brief_json":"{\"goal\":\"g\",\"acceptance\":[\"a\"]}","blocked_on_json":"","workflow_run_id":"run_zeta","workflow_execution_no":1,"stage_key":"deployprobe"}`)
+    append(&tasks,`{"task_id":"t_stage","chain_id":"legacy_chain","owner_user_id":"account","title":"Stage","description":"","publish_state":"published","state":"ready","kind":"task","priority":"p1","attempt_no":1,"brief_json":"{\"goal\":\"g\",\"acceptance\":[\"a\"]}","blocked_on_json":"","workflow_run_id":"run_zeta","workflow_execution_no":1,"stage_key":"deployprobe"}`)
     rows["task"]=tasks[:]
     m:=migration_test_build(f,"mig_search_stage",rows)
     if !testing.expect_value(t,migration_test_import(f,m).code,"ok") do return
@@ -276,15 +276,38 @@ search_indexes_archived_stage_tasks_at_import_and_rebuild :: proc(t:^testing.T) 
     expect_archived(t,f,"deployprobe","archived_stage_key")
     expect_archived(t,f,"run_zeta","archived_run_id")
     migration_test_activate(t,f,m,"mig_search_stage")
-    // Live tickets of the same import are not labelled archival.
-    count,_:=query(f.store.db,"SELECT (SELECT count(*) FROM search_docs WHERE kind='archived_task'),(SELECT count(*) FROM search_docs WHERE kind='task' AND chain_id='legacy_chain')")
-    testing.expect_value(t,encode(count),encode([1][2]string{{"1","5"}}))
+    // Live tickets of the same import are not labelled archival, and the stage
+    // task has no live 'task' document, even after its row is updated.
+    docs :: proc(f:^Fixture)->string {
+        count,_:=query(f.store.db,"SELECT (SELECT count(*) FROM search_docs WHERE kind='archived_task'),(SELECT count(*) FROM search_docs WHERE kind='task' AND chain_id='legacy_chain'),(SELECT count(*) FROM search_docs WHERE kind='task' AND task_id='t_stage')")
+        return encode(count)
+    }
+    live_docs:=encode([1][3]string{{"1","4","0"}})
+    testing.expect_value(t,docs(f),live_docs)
+    p:=encode(doc(map[string]string{"body_cipher"=cipher(f,"cancel stage")}))
+    testing.expect_value(t,invoke(f,migration_test_command(f,"task.cancel","cancel_archived_stage","t_stage",p,"1"),p).code,"ok")
+    testing.expect_value(t,docs(f),live_docs)
     before,_:=query(f.store.db,"SELECT chain_id,task_id,object_id,revision,title,body FROM search_docs WHERE kind='archived_task'")
     testing.expect(t,search_rebuild(&f.store))
     after,_:=query(f.store.db,"SELECT chain_id,task_id,object_id,revision,title,body FROM search_docs WHERE kind='archived_task'")
     testing.expect_value(t,encode(after),encode(before))
     expect_archived(t,f,"deployprobe","archived_after_rebuild")
+    testing.expect_value(t,docs(f),live_docs)
     close(&f.store)
     testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     expect_archived(t,f,"deployprobe","archived_after_restart")
+    // A V32 store (unguarded task triggers, a live doc for the stage) upgrades
+    // to V33 without the live doc and with the guarded triggers.
+    testing.expect(t,exec(f.store.db,`DROP TRIGGER search_tasks_update;
+      CREATE TRIGGER search_tasks_update AFTER UPDATE ON tasks BEGIN INSERT INTO search_docs(chain_id,task_id,kind,object_id,revision,title,body) VALUES(new.chain_id,new.task_id,'task',new.task_id,new.revision,new.title,new.body) ON CONFLICT(chain_id,kind,object_id) DO UPDATE SET revision=excluded.revision,title=excluded.title,body=excluded.body; END;
+      UPDATE tasks SET revision=revision+1 WHERE task_id='t_stage';
+      UPDATE schema_migrations SET version=32;`))
+    testing.expect_value(t,docs(f),encode([1][3]string{{"1","5","1"}}))
+    close(&f.store)
+    testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
+    testing.expect_value(t,docs(f),live_docs)
+    version,_:=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
+    testing.expect_value(t,encode(version),encode([1][2]string{{"33","33"}}))
+    testing.expect(t,exec(f.store.db,"UPDATE tasks SET revision=revision+1 WHERE task_id='t_stage'"))
+    testing.expect_value(t,docs(f),live_docs)
 }
