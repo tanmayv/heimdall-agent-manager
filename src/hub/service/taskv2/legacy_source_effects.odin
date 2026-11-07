@@ -29,7 +29,6 @@ prepare_legacy_source_effects :: proc(svc:^Service,e:^Effects) -> domain.Domain_
         if err.code!=.None do return err
         if !found do return domain.domain_error(.Conflict,"legacy effect source chain unavailable")
         id:=platform.generate_id(svc.ids,"cmd_")
-        defer delete(id)
         body:=agent.wake_agent_command_json(id,chain,runs[:],stops[:])
         defer delete(body)
         kind:="wake"
@@ -48,7 +47,6 @@ prepare_legacy_source_effects :: proc(svc:^Service,e:^Effects) -> domain.Domain_
         // Each dispatch attempt gets its own source fence, while the existing
         // Bridge merge command identity remains stable/idempotent.
         effect_id:=platform.generate_id(svc.ids,"effect_merge_")
-        defer delete(effect_id)
         _,perr:=svc.repo.legacy_effect_prepare(svc.repo.ctx,domain.Legacy_Source_Effect{
           account_id=string(task.owner_user_id),chain_id=string(task.chain_id),effect_id=effect_id,bridge_id=m.bridge_id,kind="merge",input_digest=contracts.owner_payload_digest(body)})
         if perr.code!=.None do return perr
