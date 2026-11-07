@@ -1,0 +1,176 @@
+{
+  "task": "task_18e5ac3dd21cf93e",
+  "requirements_revision": 3,
+  "test_commit": "ed86718a",
+  "base": "08ed6adee3e82b330aa8e063ad2cc84e7ace41ad",
+  "scope": "Linux Codex; Mac execution and Claude notifications deferred/disabled, Windows unsupported",
+  "source_sha256": {
+    "src/bridge/executor_local_launch_test.odin": "252391be8d70be653865bc8735e558bd3f44287826b5ad2c493447a26e4d8847",
+    "src/lib/executor_local/store_test.odin": "995a0c0384c3ffbf28b4d958cf1f60627bfcdf7b033b0c6bc808c1cd1a30afd5"
+  },
+  "logs": [
+    {
+      "label": "store_owner_crash",
+      "session": "sh_d2dae96c29e028e18efca02c2ffa548b",
+      "ok": true,
+      "lines": [
+        "[INFO ] --- [2026-11-07 12:32:52] Starting test runner with 1 thread.",
+        "[INFO ] --- [2026-11-07 12:32:52] The random seed sent to every test is: 1557726660321840. Set with -define:ODIN_TEST_RANDOM_SEED=n.",
+        "[INFO ] --- [2026-11-07 12:32:52] Memory tracking is enabled. Tests will log their memory usage if there's an issue.",
+        "[INFO ] --- [2026-11-07 12:32:52] < Final Mem/ Total Mem> <  Peak Mem> (#Free/Alloc) :: [package.test_name]",
+        "",
+        "Finished 56 tests in 8.004452063s. All tests were successful.",
+        "",
+        "[INFO ] --- [2026-11-07 12:33:04] Starting test runner with 1 thread.",
+        "[INFO ] --- [2026-11-07 12:33:04] The random seed sent to every test is: 1557770678886348. Set with -define:ODIN_TEST_RANDOM_SEED=n.",
+        "[INFO ] --- [2026-11-07 12:33:04] Memory tracking is enabled. Tests will log their memory usage if there's an issue.",
+        "[INFO ] --- [2026-11-07 12:33:04] < Final Mem/ Total Mem> <  Peak Mem> (#Free/Alloc) :: [package.test_name]",
+        "",
+        "Finished 265 tests in 2m11.805323106s. All tests were successful.",
+        "",
+        ".",
+        "----------------------------------------------------------------------",
+        "Ran 1 test in 0.329s",
+        "",
+        "OK",
+        ""
+      ],
+      "truncated": false,
+      "total_lines": 19
+    },
+    {
+      "label": "focused_races_and_failed_fixture",
+      "session": "sh_7e2eb6e59a73a27b91687dad876e7656",
+      "ok": true,
+      "lines": [
+        "warning: Git tree '/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e5ac3dd21cf93e' is dirty",
+        "[INFO ] --- [2026-11-07 12:34:18] Starting test runner with 1 thread.",
+        "[INFO ] --- [2026-11-07 12:34:18] The random seed sent to every test is: 1558038501460440. Set with -define:ODIN_TEST_RANDOM_SEED=n.",
+        "[INFO ] --- [2026-11-07 12:34:18] Memory tracking is enabled. Tests will log their memory usage if there's an issue.",
+        "[INFO ] --- [2026-11-07 12:34:18] < Final Mem/ Total Mem> <  Peak Mem> (#Free/Alloc) :: [package.test_name]",
+        "",
+        "Finished 1 test in 169.442125ms. The test was successful.",
+        "",
+        "[INFO ] --- [2026-11-07 12:34:35] Starting test runner with 1 thread.",
+        "[INFO ] --- [2026-11-07 12:34:35] The random seed sent to every test is: 1558099004671224. Set with -define:ODIN_TEST_RANDOM_SEED=n.",
+        "[INFO ] --- [2026-11-07 12:34:35] Memory tracking is enabled. Tests will log their memory usage if there's an issue.",
+        "[INFO ] --- [2026-11-07 12:34:35] < Final Mem/ Total Mem> <  Peak Mem> (#Free/Alloc) :: [package.test_name]",
+        "[ERROR] --- [2026-11-07 12:34:36] [executor_local_launch_test.odin:116:bridge_executor_local_real_daemon_lost_observation_restart_and_exact_stop()] expected admitted.code to be ok, got stale_incarnation",
+        "",
+        "Finished 1 test in 900.824344ms. The test failed.",
+        " - main.bridge_executor_local_real_daemon_lost_observation_restart_and_exact_stop \texpected admitted.code to be ok, got stale_incarnation",
+        "",
+        ""
+      ],
+      "truncated": false,
+      "total_lines": 17
+    },
+    {
+      "label": "focused_corrected",
+      "session": "sh_2df2e61edc4692fef193e033dfc99715",
+      "ok": true,
+      "lines": [
+        "warning: Git tree '/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e5ac3dd21cf93e' is dirty",
+        "[INFO ] --- [2026-11-07 12:35:15] Starting test runner with 1 thread.",
+        "[INFO ] --- [2026-11-07 12:35:15] The random seed sent to every test is: 1558241794117476. Set with -define:ODIN_TEST_RANDOM_SEED=n.",
+        "[INFO ] --- [2026-11-07 12:35:15] Memory tracking is enabled. Tests will log their memory usage if there's an issue.",
+        "[INFO ] --- [2026-11-07 12:35:15] < Final Mem/ Total Mem> <  Peak Mem> (#Free/Alloc) :: [package.test_name]",
+        "",
+        "Finished 1 test in 931.201045ms. The test was successful.",
+        "",
+        ""
+      ],
+      "truncated": false,
+      "total_lines": 8
+    },
+    {
+      "label": "final_executor_bridge",
+      "session": "sh_f8f4bca5df78a1deb97cd95e803ea9a0",
+      "ok": true,
+      "lines": [
+        "7:Finished 56 tests in 9.025968033s. All tests were successful.",
+        "2034:Finished 1045 tests in 59.215846076s. All tests were successful.",
+        ""
+      ],
+      "truncated": false,
+      "total_lines": 2035
+    },
+    {
+      "label": "contracts_ui",
+      "session": "sh_c8611a4612e62bbaf20149850f5e083e",
+      "ok": true,
+      "lines": [
+        "warning: Git tree '/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e5ac3dd21cf93e' is dirty",
+        "[INFO ] --- [2026-11-07 12:36:36] Starting test runner with 1 thread.",
+        "[INFO ] --- [2026-11-07 12:36:36] The random seed sent to every test is: 1558534882170708. Set with -define:ODIN_TEST_RANDOM_SEED=n.",
+        "[INFO ] --- [2026-11-07 12:36:36] Memory tracking is enabled. Tests will log their memory usage if there's an issue.",
+        "[INFO ] --- [2026-11-07 12:36:36] < Final Mem/ Total Mem> <  Peak Mem> (#Free/Alloc) :: [package.test_name]",
+        "",
+        "Finished 40 tests in 741.747768ms. All tests were successful.",
+        "",
+        "✔ executor channel shares exact AAD/ciphertext and verifies both signed directions (20.252397ms)",
+        "✔ executor channel rejects every routing-field substitution, expired scope and retained old epoch (15.335633ms)",
+        "✔ shared account key cannot replace sender signature or exact original request correlation (6.940656ms)",
+        "✔ encrypted notification and checkpoint nonce bind both signatures and pending AAD (13.515455ms)",
+        "✔ owner child result binds the exact attestation and result bytes, including Unicode (30.577125ms)",
+        "✔ owner bootstrap rejects correctly signed scope, launch, configuration, body and deadline substitution (55.92241ms)",
+        "✔ executor child request rejects correctly signed exact-child and input substitution (32.511496ms)",
+        "✔ child record parser rejects added authority, duplicate keys and oversized or noncanonical deadlines (1.506942ms)",
+        "✔ bootstrap content permits Unicode and rejects executable and skill path injection (1.41095ms)",
+        "✔ confirmed renewal supplements the immutable bootstrap deadline with exact signed scope (22.208298ms)",
+        "✔ executor shared canonical wire vectors and fail-closed inputs (14.857893ms)",
+        "✔ executor bilateral fence exchange binds pending challenge, action and both enrolled keys (89.897767ms)",
+        "✔ executor schemas reject duplicate nested slots and noncanonical integers (0.615683ms)",
+        "✔ local launch requires exact enrolled device signature without owner or task authority (3.620337ms)",
+        "✔ executor P256 receipt binds scope/digest/incarnation and historical admission (6.455156ms)",
+        "✔ remote enrollment binds exact device-selected configuration and enrolled executor key (5.925165ms)",
+        "✔ issuance binds enrolled device consent to selectors, generated configuration and signed response (51.862224ms)",
+        "✔ issuance client signs selectors, hides transport metadata, retains operation across retries and verifies current enrolled replies (52.230032ms)",
+        "✔ local draft client retains signed operation and verifies exact enrolled execution result (53.135751ms)",
+        "✔ notification signatures bind the exact original bootstrap and literal message (58.298ms)",
+        "✔ notification results correlate signed input, scope and exact progress (14.403244ms)",
+        "✔ checkpoint nonce signatures cannot authorize activation or a different hold effect (24.318963ms)",
+        "✔ mounted local approval retains exact authorization through reload/lost reply and verifies fresh enrollment (1579.303037ms)",
+        "ℹ tests 23",
+        "ℹ suites 0",
+        "ℹ pass 23",
+        "ℹ fail 0",
+        "ℹ cancelled 0",
+        "ℹ skipped 0",
+        "ℹ todo 0",
+        "ℹ duration_ms 2781.494999",
+        ""
+      ],
+      "truncated": false,
+      "total_lines": 39
+    },
+    {
+      "label": "packages",
+      "session": "sh_73c3cf1e1c0e22a8802482a975d8bc81",
+      "ok": true,
+      "lines": [
+        "warning: Git tree '/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e5ac3dd21cf93e' is dirty",
+        "warning: Git tree '/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e5ac3dd21cf93e' is dirty",
+        "trace: evaluation warning: stdenv.isDarwin is deprecated, use stdenv.hostPlatform.isDarwin instead",
+        ""
+      ],
+      "truncated": false,
+      "total_lines": 3
+    },
+    {
+      "label": "draft_compile_error",
+      "session": "sh_19296f55ce6e6f823f9f83a318cdb6ad",
+      "ok": true,
+      "lines": [
+        "warning: Git tree '/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e5ac3dd21cf93e' is dirty",
+        "/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e5ac3dd21cf93e/src/bridge/executor_local_launch_test.odin(99:43) Error: Cannot convert untyped value '\"unacknowledged stop retains capacity\"' to 'Source_Code_Location' from 'untyped string' ",
+        "\t... t_value(t,rows[0][0],\"1\",\"unacknowledged stop retains capacity\") ",
+        "\t                             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^ ",
+        " ",
+        ""
+      ],
+      "truncated": false,
+      "total_lines": 5
+    }
+  ]
+}

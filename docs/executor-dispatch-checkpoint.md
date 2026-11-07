@@ -1,5 +1,17 @@
 # M3 continuation: executor dispatch checkpoint
 
+**Current cumulative review checkpoint (2026-11-07):** M3c revision 3 verifies
+the retained Linux Codex runtime and dependency deltas. Current store56,
+owner265, contracts40, UI23, required-daemon Bridge1045 and four-boundary real
+SIGKILL harness pass; Bridge/PTY packages build. New test commit `ed86718a`
+adds disconnected exact-stop/reopen/reconnect coverage and independent signed
+two-owner slot/instance/directory races. The original requirement map and P2/P3
+closure evidence are in `docs/m3c-cumulative-linux-verification.md`. Named
+cumulative review is still required; this is not a self-approved full gate.
+Mac execution and Claude notifications are user-deferred/disabled, Windows
+unsupported. Earlier unfinished lists below are historical checkpoints; M4
+migration/restore/repeated-cycle gates remain separate.
+
 **Current continuation status (2026-11-07):** automatic exact activation,
 bounded reconciliation, executor-local readiness, and production signed physical
 deadline renewal are implemented. Continue at
