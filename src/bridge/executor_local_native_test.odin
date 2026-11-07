@@ -532,6 +532,15 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="",
         bridge_hub_handle_wake_agent(nil,second_parent,&bridge_executor_store)
         same_draft,same_draft_found:=executor.local_draft_source(&bridge_executor_store,bridge_executor_local_source(proposed,"warm"))
         testing.expect(t,same_draft_found && same_draft.id==observed_draft.id && same_draft.material==observed_draft.material,"later source claim cannot rewrite the first retained observation")
+        associations,associations_read:=executor.query(bridge_executor_store.db,"SELECT parent_command_id,parent_digest,entry_digest FROM executor_legacy_observations WHERE draft_id=? ORDER BY parent_command_id",observed_draft.id)
+        testing.expect(t,associations_read && len(associations)==2,"actual retry retains both original packet associations independently of first material")
+        if len(associations)==2 {
+            testing.expect_value(t,associations[0][0],"later_parent")
+            testing.expect_value(t,associations[0][1],contracts.owner_payload_digest(second_parent))
+            testing.expect_value(t,associations[1][0],"observed_parent")
+            testing.expect_value(t,associations[1][1],contracts.owner_payload_digest(parent))
+            testing.expect_value(t,associations[0][2],contracts.owner_payload_digest(raw_entry))
+        }
         _,rewritten:=executor.query(bridge_executor_store.db,"UPDATE executor_local_drafts SET material='{}' WHERE draft_id=?",observed_draft.id)
         testing.expect(t,!rewritten,"retained source/target material cannot be rewritten")
     }

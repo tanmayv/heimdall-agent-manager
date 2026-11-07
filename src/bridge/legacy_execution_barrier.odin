@@ -17,9 +17,9 @@ bridge_legacy_physical_mutex:sync.Mutex
 // Caller serializes Store lifecycle. Only the eventual authenticated migration
 // receiver may call this with the verified full target inventory. No Hub/agent
 // route currently exposes it; unverified caller chain fields confer no authority.
-bridge_legacy_install_barrier :: proc(s:^executor.Store,b:executor.Legacy_Barrier,targets:[]executor.Legacy_Resource)->executor.Result {
+bridge_legacy_install_barrier :: proc(s:^executor.Store,b:executor.Legacy_Barrier,targets:[]executor.Legacy_Resource,snapshot:^executor.Legacy_Journal_Snapshot=nil)->executor.Result {
     sync.mutex_lock(&bridge_legacy_physical_mutex);defer sync.mutex_unlock(&bridge_legacy_physical_mutex)
-    return executor.legacy_barrier_install(s,b,targets)
+    return executor.legacy_barrier_install(s,b,targets,snapshot)
 }
 
 // Caller holds the physical gate. Compare actual execution targets, independent

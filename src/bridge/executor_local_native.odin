@@ -211,6 +211,7 @@ bridge_executor_local_stage :: proc(command:string,purpose:string,io:Executor_Lo
     source:=bridge_executor_local_source(command,purpose)
     if d,found:=executor.local_draft_source(s,source);found {
         if !bridge_executor_local_retry_matches(d,command) do return false,"draft_generation_conflict",bridge_error(.agent_launch_failed,.denied)
+        if !bridge_legacy_observe_draft(s,origin,command,d.id) do return false,"legacy_observation_unavailable",bridge_error(.agent_launch_failed,.denied)
         // A retry may reuse the original exact signed consent, never an
         // unsigned Hub assertion or a replacement synthetic authorization.
         if raw,authorized:=executor.local_draft_consent(s,d);authorized {
@@ -287,5 +288,6 @@ bridge_executor_local_stage :: proc(command:string,purpose:string,io:Executor_Lo
     defer crypto.zero_explicit(raw_data(material),len(material))
     draft,staged:=executor.stage_local_draft(s,source,executor.encode(c),material)
     if staged!="ok" do return false,staged,bridge_error(.agent_launch_failed,.denied)
+    if !bridge_legacy_observe_draft(s,origin,command,draft.id) do return false,"legacy_observation_unavailable",bridge_error(.agent_launch_failed,.denied)
     return false,bridge_executor_local_pending(draft),bridge_error(.agent_launch_failed,.denied)
 }

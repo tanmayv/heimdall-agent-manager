@@ -43,7 +43,7 @@ Legacy_Barrier_Status :: struct {
 
 // There is intentionally no remove/resume API. Source resume requires correlated
 // destination retirement and a new authenticated generation, not row deletion.
-legacy_barrier_install :: proc(s:^Store,b:Legacy_Barrier,resources:[]Legacy_Resource=nil)->Result {
+legacy_barrier_install :: proc(s:^Store,b:Legacy_Barrier,resources:[]Legacy_Resource=nil,snapshot:^Legacy_Journal_Snapshot=nil)->Result {
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
     if !contracts.owner_field_valid(b.chain,"id") || !contracts.owner_field_valid(b.migration,"id") || !contracts.owner_hex(b.selection_digest,64) || b.source_generation<0 || !legacy_resources_valid(resources) do return fail("invalid_scope")
     if !begin(s) do return fail("storage_error")
@@ -59,6 +59,18 @@ legacy_barrier_install :: proc(s:^Store,b:Legacy_Barrier,resources:[]Legacy_Reso
         for r in resources do wanted[fmt.tprintf("%s:%s",r.kind,r.id)]=true
         for r in stored do if !wanted[fmt.tprintf("%s:%s",r[0],r[1])] do return fail("barrier_conflict")
         return Result{code="ok",replay=true}
+    }
+    // Future verified observation consumers must supply their captured journal
+    // snapshot. Compare under the same write transaction as barrier insertion;
+    // a mismatch requires fresh evidence, never a best-effort installation.
+    // Historical exact replay above performs no new installation or authority.
+    if snapshot!=nil {
+        journal,read:=query(s.db,"SELECT sequence,coverage_version,prior_coverage_unknown FROM executor_native_journal WHERE singleton=1")
+        if !read || len(journal)!=1 do return fail("storage_error")
+        if snapshot.incarnation!=s.incarnation || snapshot.sequence!=number(journal[0][0]) ||
+           snapshot.coverage_version!=number(journal[0][1]) || snapshot.prior_coverage_unknown!=(journal[0][2]=="1") {
+            return fail("stale_observation")
+        }
     }
     count,counted:=query(s.db,"SELECT count(*) FROM executor_legacy_barriers")
     if !counted || len(count)!=1 do return fail("storage_error")

@@ -2,6 +2,7 @@ package main
 
 import "core:encoding/json"
 import contracts "odin_test:contracts"
+import executor "odin_test:lib/executor_local"
 
 // Native observation, NOT historical authority or a task grant. This records
 // what this Bridge actually received and transformed. Only later explicit
@@ -59,4 +60,17 @@ bridge_legacy_origin_matches_native :: proc(origin:Executor_Legacy_Origin,comman
     if !valid || !is_object do return false
     get:=contracts.owner_string
     return get(object,"agent_instance_id")==origin.instance && get(object,"task_id")==origin.task && get(object,"lease_id")==origin.lease && get(object,"chain_id")==origin.entry_chain
+}
+
+// Called under the executor application mutex before a retry can apply signed
+// consent. Keep later packet associations without rewriting first material.
+bridge_legacy_observe_draft :: proc(s:^executor.Store,origin:Executor_Legacy_Origin,command,draft:string)->bool {
+    if origin.version=="" do return true // Legacy coverage stays unknown.
+    if !bridge_legacy_origin_matches_native(origin,command) do return false
+    result:=executor.legacy_observe_draft(s,executor.Legacy_Draft_Observation{
+        parent_command_id=origin.parent_command_id,parent_digest=origin.parent_digest,
+        entry_digest=origin.entry_digest,chain=origin.parent_chain,instance=origin.instance,
+        task=origin.task,lease=origin.lease,native_request_digest=origin.native_command_digest,
+        draft_id=draft,entry_index=origin.entry_index})
+    return result.code=="ok"
 }
