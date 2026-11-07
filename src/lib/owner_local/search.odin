@@ -33,6 +33,22 @@ search_literal :: proc(text:string)->(string,bool) {
     }
     return strings.to_string(b),true
 }
+// Archived workflow stage tasks (migration_archived_tasks, V31) are immutable
+// history: one search document per stage task carries its run and stage
+// identity, so a search for a run or stage key finds the archived stage and the
+// hit is labelled archival rather than a live ticket. The table's only writer
+// (the migration import) indexes in the same transaction; the startup rebuild
+// derives the same rows; a discarded import removes them with every other
+// chain-scoped row.
+SEARCH_ARCHIVED_TASK_INSERT :: `INSERT INTO search_docs(chain_id,task_id,kind,object_id,revision,title,body)
+  SELECT chain_id,task_id,'archived_task',task_id,1,stage_key,'archived workflow stage '||stage_key||' run '||run_id||' '||kind
+  FROM migration_archived_tasks WHERE chain_id=? AND task_id=?
+  ON CONFLICT(chain_id,kind,object_id) DO UPDATE SET revision=excluded.revision,title=excluded.title,body=excluded.body`
+search_index_archived_task :: proc(s:^Store,chain,task:string)->bool {
+    _,ok:=query(s.db,SEARCH_ARCHIVED_TASK_INSERT,chain,task)
+    return ok
+}
+
 search_result :: proc(s:^Store,c:json.Object,payload:string,now:i64,kr:^vault.Vault_Keyring)->Result {
     p,valid:=contracts.owner_parse(payload,"search_payload")
     if !valid do return fail("malformed")
@@ -97,6 +113,8 @@ search_rebuild :: proc(s:^Store)->bool {
         SELECT a.chain_id,a.task_id,'output',a.task_id||':'||a.attempt,a.attempt,'',a.summary||COALESCE(char(10)||o.output_json,'') FROM local_submissions a LEFT JOIN local_workflow_outputs o ON o.chain_id=a.chain_id AND o.task_id=a.task_id AND o.attempt=a.attempt;
       INSERT INTO search_docs(chain_id,task_id,kind,object_id,revision,title,body)
         SELECT chain_id,task_id,'handoff',principal_id||':'||operation_id,seq,kind,summary||char(10)||next_steps||char(10)||waiting_on FROM local_handoffs;
+      INSERT INTO search_docs(chain_id,task_id,kind,object_id,revision,title,body)
+        SELECT chain_id,task_id,'archived_task',task_id,1,stage_key,'archived workflow stage '||stage_key||' run '||run_id||' '||kind FROM migration_archived_tasks;
       INSERT INTO search_docs(chain_id,task_id,kind,object_id,revision,title,body)
         SELECT chain_id,'','workflow',workflow_id||':'||version,version,json_extract(definition_json,'$.title'),definition_json FROM local_workflow_definitions;
       INSERT INTO search_docs(chain_id,task_id,kind,object_id,revision,title,body)

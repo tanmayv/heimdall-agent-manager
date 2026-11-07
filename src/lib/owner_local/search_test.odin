@@ -240,3 +240,51 @@ search_v5_upgrade_backfills_retained_attempts_and_rolls_back_failure :: proc(t:^
     history_expect(t,f)
     testing.expect(t,search_rebuild(&f.store));history_expect(t,f)
 }
+
+// R4b: an archived workflow stage task (migration_archived_tasks) is found by
+// its run and stage identity and labelled archival. The import indexes it in
+// its own transaction; the startup rebuild reproduces exactly the same rows.
+@(test)
+search_indexes_archived_stage_tasks_at_import_and_rebuild :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f)
+    rows:=migration_test_rows(f)
+    rows["workflow_run"]=migration_list([]string{`{"run_id":"run_zeta","chain_id":"legacy_chain","owner_user_id":"account","current_execution_no":1}`})
+    rows["workflow_execution"]=migration_list([]string{`{"run_id":"run_zeta","execution_no":1,"chain_id":"legacy_chain","owner_user_id":"account","state":"succeeded"}`})
+    tasks:=make([dynamic]string)
+    for task in rows["task"] do append(&tasks,task)
+    append(&tasks,`{"task_id":"t_stage","chain_id":"legacy_chain","owner_user_id":"account","title":"Stage","description":"","publish_state":"published","state":"done","kind":"task","priority":"p1","attempt_no":1,"brief_json":"{\"goal\":\"g\",\"acceptance\":[\"a\"]}","blocked_on_json":"","workflow_run_id":"run_zeta","workflow_execution_no":1,"stage_key":"deployprobe"}`)
+    rows["task"]=tasks[:]
+    m:=migration_test_build(f,"mig_search_stage",rows)
+    if !testing.expect_value(t,migration_test_import(f,m).code,"ok") do return
+    find :: proc(f:^Fixture,text,op:string)->(json.Array,string) {
+        p:=encode(doc(map[string]string{"query_cipher"=cipher(f,text),"limit"="50"}))
+        got:=invoke(f,migration_test_command(f,"chain.search",op,"",p,"0"),p)
+        return search_hits(got),got.code
+    }
+    expect_archived :: proc(t:^testing.T,f:^Fixture,text,op:string) {
+        hits,code:=find(f,text,op)
+        if !testing.expect_value(t,code,"ok") do return
+        if !testing.expect_value(t,len(hits),1) do return
+        hit,_:=hits[0].(json.Object)
+        testing.expect_value(t,field(hit,"kind"),"archived_task")
+        testing.expect_value(t,field(hit,"task_id"),"t_stage")
+        testing.expect_value(t,field(hit,"chain_id"),"legacy_chain")
+        testing.expect_value(t,field(hit,"title"),"deployprobe")
+    }
+    // Indexed by the import itself: no restart or rebuild has happened yet.
+    expect_archived(t,f,"deployprobe","archived_stage_key")
+    expect_archived(t,f,"run_zeta","archived_run_id")
+    migration_test_activate(t,f,m,"mig_search_stage")
+    // Live tickets of the same import are not labelled archival.
+    count,_:=query(f.store.db,"SELECT (SELECT count(*) FROM search_docs WHERE kind='archived_task'),(SELECT count(*) FROM search_docs WHERE kind='task' AND chain_id='legacy_chain')")
+    testing.expect_value(t,encode(count),encode([1][2]string{{"1","5"}}))
+    before,_:=query(f.store.db,"SELECT chain_id,task_id,object_id,revision,title,body FROM search_docs WHERE kind='archived_task'")
+    testing.expect(t,search_rebuild(&f.store))
+    after,_:=query(f.store.db,"SELECT chain_id,task_id,object_id,revision,title,body FROM search_docs WHERE kind='archived_task'")
+    testing.expect_value(t,encode(after),encode(before))
+    expect_archived(t,f,"deployprobe","archived_after_rebuild")
+    close(&f.store)
+    testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
+    expect_archived(t,f,"deployprobe","archived_after_restart")
+}

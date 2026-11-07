@@ -297,6 +297,7 @@ migration_project :: proc(s:^Store,chain,principal,key_id,migration:string,rows:
         if stage {
             // A stage of an archived run is history, never an ordinary ticket.
             if _,ok:=query(s.db,"INSERT INTO migration_archived_tasks VALUES(?,?,?,?,?)",chain,task,run,stage_key,kind);!ok do return "storage_error"
+            if !search_index_archived_task(s,chain,task) do return "storage_error"
             summary^["workflow_stage_task_archived"]+=1
         }
         task_publish:="draft" if migration_text(t,"publish_state")=="draft" else "published"
