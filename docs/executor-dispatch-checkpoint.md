@@ -3112,3 +3112,34 @@ Official external-editor and print stream-JSON options are different transport
 approaches requiring separate approval/design, not substitutions or waivers.
 Mac still needs online access and a proven hardened executable backend. Full
 milestone remains incomplete; no live restart/deployment/push.
+
+## Successor revision 2: real Mac deferred (2026-11-07 12:25 UTC)
+
+User answer “Skip real mac for now” is recorded in task
+`task_18e5beeef261412e`, attempt 2. Requirements revision 2 explicitly defers
+real Mac provider execution from the current milestone. This supersedes older
+Mac availability/proof requirements above for current acceptance; it is not a
+Mac pass or permission for installation or backend enablement. Approved guard
+engineering `df0b9527` remains refusal evidence only. Darwin activation refuses
+at `tools/pty_host/src/darwin_image.rs:190`; production profile remains disabled
+at `tools/pty_host/src/native_notification.rs:88`. No new Mac probes occurred.
+
+Current Linux evidence remains scoped: the connected original-owner native
+Codex audit `e4ca4ae9` proves exact Unicode/LF/TAB busy-turn delivery, typed
+same-turn interrupt, once-only receipt and partial/lost-result reconciliation.
+The pending-hostloss audit `89bfda15` proves safe refusal and retained capacity,
+not eventual recovery or refund. The idle audit merged at `873aa65c` proves
+refusal/cancellation/revocation only, not idle delivery. These approved audits
+were not rerun for this documentation-only change. Existing exact child,
+owner/encryption, receipt, renewal and capacity fences are unchanged. Windows
+notifications remain unsupported; platform launch evidence is separate.
+
+Claude 2.1.319 still transforms literal TAB into four spaces; the physical
+transcript and bounded vendor inspection remain recorded in
+`docs/pty-provider-evidence.md:121` and
+`docs/m3b-provider-support-matrix.md:27` at predecessor `df0b9527`. Revision 2
+retains the exact interactive PTY requirement, with no alternative transport,
+normalization or Claude waiver. A vendor-supported exact-TAB interactive route
+or corrected pinned build is still required before full submission. No new
+provider run or repeat exhausted inspection is justified by the Mac-only
+scope decision. No full M3b completion is claimed.
