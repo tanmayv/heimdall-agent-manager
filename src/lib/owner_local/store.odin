@@ -110,7 +110,7 @@ grant :: proc(s:^Store, command:json.Object, now:i64) -> (contracts.Owner_Read_G
 // entering here. Its pinned sequence/hash is rechecked under the write lock.
 // The key is a verified current directory member, never a request assertion.
 execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:contracts.Owner_Verified_Key,
-    directory_version:i64,directory_hash:string, now:i64, kr:^vault.Vault_Keyring, sign:Signer, fleet_child:Child={}, lifecycle_proof:Lifecycle_Proof={}, role_children:[]Child=nil, grant_proof:Grant_Proof={}, remote_key:contracts.Owner_Verified_Key={}) -> Result {
+    directory_version:i64,directory_hash:string, now:i64, kr:^vault.Vault_Keyring, sign:Signer, fleet_child:Child={}, lifecycle_proof:Lifecycle_Proof={}, role_children:[]Child=nil, grant_proof:Grant_Proof={}, remote_key:contracts.Owner_Verified_Key={}, agent:Child={}) -> Result {
     context.allocator=context.temp_allocator
     c,parsed:=contracts.owner_parse(command_raw,"command")
     if !parsed do return fail("malformed")
@@ -126,7 +126,13 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     if now<0 || now>0x7fffffffffffffff-GRANT_MAX_TTL_MS do return fail("invalid_scope")
     auth_now:=max(now,number(state[0][1]))
     g,has_grant:=grant(s,c,auth_now)
-    if method=="grant.recover" || (method=="grant.read" && grant_root(key,grant_proof) && (!has_grant || g.expires_ms<=auth_now || g.revoked || !g.can_read)) {
+    // R4a: an owner-signed agent command (agent_authority.odin) replaces the
+    // device grant with the agent policy. Never chain.create or grant.*.
+    agent_mode:=agent.instance!=""
+    if agent_mode {
+        if code:=agent_command_admit(s,c,payload,key,agent);code!="ok" do return fail(code)
+        g=agent_grant(s,c,auth_now);has_grant=true
+    } else if method=="grant.recover" || (method=="grant.read" && grant_root(key,grant_proof) && (!has_grant || g.expires_ms<=auth_now || g.revoked || !g.can_read)) {
         _,enabled,policy_ok:=grant_policy(s,chain)
         if !policy_ok do return fail("storage_error")
         if !enabled || !grant_root(key,grant_proof) do return fail("invalid_scope")
@@ -148,7 +154,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
             g=contracts.Owner_Read_Grant{account_id=s.account,owner_bridge_id=s.owner,chain_id=chain,principal_id=principal,key_id=key.key_id,method=method,revision=1,expires_ms=now+GRANT_MAX_TTL_MS,can_read=true,can_mutate=true}
         }
     } else if !has_grant { return fail("invalid_scope") }
-    if e:=contracts.owner_authenticate_command(c,payload,key,g,auth_now);e!=.None do return auth_fail(e)
+    if !agent_mode { if e:=contracts.owner_authenticate_command(c,payload,key,g,auth_now);e!=.None do return auth_fail(e) }
     digest,_:=contracts.owner_digest("command",c)
     receipts,receipt_ok:=query(s.db,"SELECT method,input_digest,result_json,commit_seq,chain_id,task_id FROM command_receipts WHERE principal_id=? AND operation_id=?",principal,op)
     if !receipt_ok do return fail("storage_error")
@@ -412,7 +418,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     if !workflow_publications(&tx,c,body,seq,kr,sign) do return fail("storage_error")
     if !source_intent(&tx,c,body,seq) do return fail("storage_error")
     if !workflow_refresh(s) do return fail("storage_error")
-    if !event_record(&tx,seq,now,chain,task,"device",principal,method,op,command_raw,payload,content,result) do return fail("storage_error")
+    if !event_record(&tx,seq,now,chain,task,("agent" if agent_mode else "device"),principal,method,op,command_raw,payload,content,result) do return fail("storage_error")
     if !source_lifecycle(&tx,c,p,seq,now) do return fail("storage_error")
     if !control_intents(&tx,c,seq) do return fail("storage_error")
     if method=="review.post" && !lifecycle_merge_intent(&tx,c,p,seq) do return fail("storage_error")
