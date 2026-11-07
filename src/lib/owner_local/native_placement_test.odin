@@ -41,7 +41,7 @@ native_placement_history_preserves_zero_and_later_versions_without_work_grants :
     rows,_:=query(f.store.db,"SELECT (SELECT count(*) FROM native_history_records WHERE record_kind='attempt'),(SELECT count(*) FROM local_work_attempts),(SELECT count(*) FROM local_submissions)")
     testing.expect(t,rows[0][0]=="0" && rows[0][1]=="0" && rows[0][2]=="0")
     state,ok:=attempt_view(&f.store,"chain","task")
-    testing.expect(t,ok && state.attempt_no==0 && state.counting_attempts==0 && state.grants==0)
+    testing.expect(t,ok && state.attempt_no==0 && state.grants==0)
     p:=encode(doc(map[string]string{"body_cipher"=cipher(f,after)}))
     c:=command(f,"native.history.import","native_later","task",p,"2")
     accepted:=invoke(f,c,p)
@@ -54,7 +54,7 @@ native_placement_history_preserves_zero_and_later_versions_without_work_grants :
     rows,_=query(f.store.db,"SELECT (SELECT count(*) FROM native_history_records WHERE record_kind='attempt' AND attempt_no='0'),(SELECT count(*) FROM native_history_records WHERE record_kind='attempt' AND attempt_no='1'),(SELECT count(*) FROM local_work_attempts)")
     testing.expect(t,rows[0][0]=="0" && rows[0][1]=="1" && rows[0][2]=="0")
     state,ok=attempt_view(&f.store,"chain","task")
-    testing.expect(t,ok && state.attempt_no==0 && state.counting_attempts==0 && state.grants==0)
+    testing.expect(t,ok && state.attempt_no==0 && state.grants==0)
 }
 
 @(test)

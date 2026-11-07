@@ -261,25 +261,25 @@ native_attempt_contract_is_task_scoped_read_only_and_validates_time_outcome :: p
     for raw in ([3]string{`{"attempt":"0"}`,`{"attempt":"-1"}`,`{"attempt":"1","lease_id":"forged"}`}) {
         _,ok:=owner_parse(raw,"attempt_read_payload");testing.expect(t,!ok)
     }
-    raw:=`{"account_id":"account","chain_id":"chain","task_id":"task","attempt_no":"1","started_ms":"1000","ended_ms":"1100","holder_instance_id":"instance","outcome":"submitted","counts_toward_budget":"1","work_lease_id":"lease","completeness":"full"}`
+    raw:=`{"account_id":"account","chain_id":"chain","task_id":"task","attempt_no":"1","started_ms":"1000","ended_ms":"1100","holder_instance_id":"instance","outcome":"submitted","work_lease_id":"lease","completeness":"full"}`
     r,ok:=owner_parse(raw,"native_attempt");testing.expect(t,ok)
     r["outcome"]=json.String("expired:chain_closed")
     testing.expect(t,owner_document_valid("native_attempt",r))
     r["ended_ms"]=json.String("999");testing.expect(t,!owner_document_valid("native_attempt",r))
     r["ended_ms"]=json.String("");testing.expect(t,!owner_document_valid("native_attempt",r))
     r["outcome"]=json.String("");testing.expect(t,owner_document_valid("native_attempt",r))
-    r["counts_toward_budget"]=json.String("assumed");testing.expect(t,!owner_document_valid("native_attempt",r))
+    r["counted"]=json.String("1");testing.expect(t,!owner_document_valid("native_attempt",r))
 }
 
 @(test)
 native_history_contracts_bind_snapshot_scope_typed_keys_and_mutation :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
     fixture:=owner_fixture(t);c:=owner_fixture_document(t,fixture,"command")
-    for method in ([4]string{"budget.activate","native.history.import","native.history.read","native.history.fetch"}) {
+    for method in ([3]string{"native.history.import","native.history.read","native.history.fetch"}) {
         c["method"]=json.String(method);c["expected_revision"]=json.String("0")
         g:=owner_fixture_grant();g.method=method;g.can_mutate=false
         expected:=Owner_Auth_Error.None
-        if method=="native.history.import" || method=="budget.activate" do expected=.Invalid_Scope
+        if method=="native.history.import" do expected=.Invalid_Scope
         testing.expect_value(t,owner_live_admit(c,g,1000,1),expected)
     }
     for raw in ([4]string{

@@ -36,17 +36,6 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
     await ownerLocalFleetPolicyFlow({session,bridgeId,cli,expect,stopOwner,restartOwner,approver,hub});
     return;
   }
-  if(process.env.HEIMDALL_E2E_OWNER_BUDGET_REWORK_ONLY==='1'){
-    await stopOwner();await restartOwner();
-    const {ownerLocalBudgetReworkFlow}=await import('./owner_local_budget_rework_flow.ts');
-    await ownerLocalBudgetReworkFlow({session,bridgeId,hub,http,cli,launchChild,expect,approver,stopOwner,restartOwner});
-    return;
-  }
-  if(process.env.HEIMDALL_E2E_OWNER_BUDGET_ONLY==='1'){
-    const {ownerLocalBudgetFlow}=await import('./owner_local_budget_flow.ts');
-    await ownerLocalBudgetFlow({session,bridgeId,hub,http,cli,launchChild,expect,approver,stopOwner,restartOwner});
-    return;
-  }
   if(process.env.HEIMDALL_E2E_OWNER_LANGUAGE_ONLY==='1'){
     const {ownerLocalLanguageFlow}=await import('./owner_local_language_flow.ts');
     await ownerLocalLanguageFlow({session,bridgeId,hub,http,cli,launchChild,expect,approver,stopOwner,restartOwner});
@@ -162,7 +151,7 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
     }
   }
   const placementState=JSON.parse((await invoke(await placementMake('runtime.read',{taskId:placementTask,expectedRevision:'0'}))).body);
-  expect(placementState.attempts.attempt_no==='0' && placementState.attempts.counting_attempts==='0' && placementState.leases.length===0,'archival placement zero/later records never grant work or activate native accounting');
+  expect(placementState.attempts.attempt_no==='0' && placementState.leases.length===0,'archival placement zero/later records never grant work or activate native accounting');
 
   const cliChain = ownerId('chain_'), cliTask = ownerId('task_');
   const throughCli = async (method: any, input: any) => {
@@ -380,7 +369,7 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
           expect(old.kind==='submission' && old.attempt===attempt && old.summary===term,'signed exact-attempt read returns retained output '+attempt);
           expect(old.native_attempt===attempt && old.attempt_completeness==='full','historical submission maps to native attempt '+attempt);
           const native=JSON.parse((await human('attempt.read',{expectedRevision:'0',attempt})).body);
-          expect(native.task_id===tid && native.attempt_no===attempt && native.holder_instance_id===worker.instanceId && native.work_lease_id && native.outcome==='submitted' && native.counts_toward_budget==='1' && BigInt(native.ended_ms)>=BigInt(native.started_ms) && native.completeness==='full','real signed native attempt record retains holder, outcome and exact times '+attempt);
+          expect(native.task_id===tid && native.attempt_no===attempt && native.holder_instance_id===worker.instanceId && native.work_lease_id && native.outcome==='submitted' && BigInt(native.ended_ms)>=BigInt(native.started_ms) && native.completeness==='full','real signed native attempt record retains holder, outcome and exact times '+attempt);
         }
 
         const verdict={requirements_revision:'2',attempt:'2',head:git.head,verdict:'approve',summary:'lifecycle-private-independent-review'};
@@ -472,14 +461,6 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
   if(process.env.HEIMDALL_E2E_OWNER_LANGUAGE==='1'){
     const {ownerLocalLanguageFlow}=await import('./owner_local_language_flow.ts');
     await ownerLocalLanguageFlow({session,bridgeId,hub,http,cli,launchChild,expect,approver,stopOwner,restartOwner});
-  }
-  if(process.env.HEIMDALL_E2E_OWNER_BUDGET==='1'){
-    const {ownerLocalBudgetFlow}=await import('./owner_local_budget_flow.ts');
-    await ownerLocalBudgetFlow({session,bridgeId,hub,http,cli,launchChild,expect,approver,stopOwner,restartOwner});
-  }
-  if(process.env.HEIMDALL_E2E_OWNER_BUDGET_REWORK==='1'){
-    const {ownerLocalBudgetReworkFlow}=await import('./owner_local_budget_rework_flow.ts');
-    await ownerLocalBudgetReworkFlow({session,bridgeId,hub,http,cli,launchChild,expect,approver,stopOwner,restartOwner});
   }
   if(process.env.HEIMDALL_E2E_OWNER_GRANTS==='1'){
     const {ownerGrantsFlow}=await import('./owner_grants_flow.ts');

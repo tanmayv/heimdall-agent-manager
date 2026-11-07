@@ -14,7 +14,7 @@ hold_live_heartbeat_restart_checkpoint_release_continues_native_attempt :: proc(
     rows,_:=query(f.store.db,"SELECT expires_ms,hard_ms,capability_json,(SELECT count(*) FROM local_checkpoints) FROM local_leases WHERE retired_seq IS NULL")
     if !testing.expect_value(t,len(rows),1) do return
     testing.expect(t,rows[0][0]=="901000" && rows[0][1]=="3601000" && rows[0][2]==cap && rows[0][3]=="0")
-    attempt_expect(t,f,1,1,"")
+    attempt_expect(t,f,1,"")
     testing.expect_value(t,lease_invoke(f,lease_request(f,lease_child(),"lease.claim","held_claim","other","","5"),"",lease_child()).code,"invalid_scope")
     close(&f.store);testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     hb:=lease_request(f,lease_child(),"lease.heartbeat","held_heartbeat","lease",cap,"5")
@@ -30,19 +30,19 @@ hold_live_heartbeat_restart_checkpoint_release_continues_native_attempt :: proc(
     p:=`{"requirements_revision":"1","summary":"native checkpoint","next_steps":"continue after release"}`
     first:=lifecycle_call(f,lease_child(),"lease.handoff","held_checkpoint",p,new_cap,"5",{},1100)
     testing.expect_value(t,first.code,"ok")
-    attempt_expect(t,f,1,1,"handoff")
+    attempt_expect(t,f,1,"handoff")
     testing.expect_value(t,lease_invoke(f,lease_request(f,lease_child(),"lease.heartbeat","after_checkpoint","lease",new_cap,"6"),new_cap,lease_child(),1100).code,"invalid_scope")
     payload:=encode(doc(map[string]string{"body_cipher"=cipher(f,"release checkpoint")}))
     testing.expect_value(t,invoke(f,command(f,"task.release","release","task",payload,"6"),payload,1100).code,"ok")
     claimed:=lease_invoke(f,lease_request(f,lease_child(),"lease.claim","continue","lease2","","7"),"",lease_child(),1100)
     testing.expect_value(t,claimed.code,"ok")
-    attempt_expect(t,f,1,1,"")
+    attempt_expect(t,f,1,"")
     rows,_=query(f.store.db,"SELECT count(*) FROM local_work_attempts")
     testing.expect(t,rows[0][0]=="2","compatibility lease ordinal remains distinct from native attempt")
 }
 
 @(test)
-hold_expiry_and_failed_hold_preserve_ttl_history_and_budget :: proc(t:^testing.T) {
+hold_expiry_and_failed_hold_preserve_ttl_and_attempt_history :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
     f:=fixture(t);defer destroy(f);lifecycle_seed(t,f);_=lifecycle_ready(t,f)
     testing.expect(t,exec(f.store.db,"CREATE TRIGGER hold_fail BEFORE INSERT ON local_events WHEN NEW.kind='task.hold' BEGIN SELECT RAISE(ABORT,'failure'); END"))
@@ -52,14 +52,14 @@ hold_expiry_and_failed_hold_preserve_ttl_history_and_budget :: proc(t:^testing.T
     testing.expect(t,exec(f.store.db,"DROP TRIGGER hold_fail"))
     testing.expect_value(t,control_call(f,"task.hold","hold","4").code,"ok")
     testing.expect(t,expire_leases(&f.store,901000))
-    attempt_expect(t,f,1,1,"expired")
+    attempt_expect(t,f,1,"expired")
     rows,_=query(f.store.db,"SELECT mode,(SELECT count(*) FROM local_leases WHERE retired_seq IS NULL) FROM local_controls")
     testing.expect(t,rows[0][0]=="held" && rows[0][1]=="0")
     p:=encode(doc(map[string]string{"body_cipher"=cipher(f,"release after expiry")}))
     testing.expect_value(t,invoke(f,command(f,"task.release","release","task",p,"5",903000),p,901000).code,"ok")
     claimed:=lease_invoke(f,lease_request(f,lease_child(),"lease.claim","after_expiry","lease2","","6",903000),"",lease_child(),901000)
     testing.expect_value(t,claimed.code,"ok")
-    attempt_expect(t,f,2,2,"")
+    attempt_expect(t,f,2,"")
 }
 
 @(test)
@@ -101,15 +101,15 @@ hold_request_changes_settles_only_on_release :: proc(t:^testing.T) {
     if !testing.expect_value(t,opened.code,"ok") do return
     testing.expect_value(t,control_call(f,"task.hold","hold","5").code,"ok")
     testing.expect_value(t,lifecycle_call(f,lifecycle_reviewer(),"review.post","changes",verdict,result_cap(opened),"6").code,"ok")
-    attempt_expect(t,f,1,1,"submitted")
+    attempt_expect(t,f,1,"submitted")
     rows,_:=query(f.store.db,"SELECT state FROM lifecycle_state")
     testing.expect_value(t,rows[0][0],"in_review")
     testing.expect_value(t,control_call(f,"task.release","release","7").code,"ok")
-    attempt_expect(t,f,1,1,"changes_requested")
+    attempt_expect(t,f,1,"changes_requested")
     rows,_=query(f.store.db,"SELECT state FROM lifecycle_state")
     testing.expect_value(t,rows[0][0],"ready")
     testing.expect_value(t,lease_invoke(f,lease_request(f,lease_child(),"lease.claim","rework","lease2","","8"),"",lease_child()).code,"ok")
-    attempt_expect(t,f,2,2,"")
+    attempt_expect(t,f,2,"")
 }
 
 @(test)
@@ -119,7 +119,7 @@ hold_nested_block_survives_release_and_cannot_be_answered_while_held :: proc(t:^
     testing.expect_value(t,control_call(f,"task.hold","hold","4").code,"ok")
     p:=`{"requirements_revision":"1","summary":"needs external input","next_steps":"ask coordinator","waiting_on":"human"}`
     testing.expect_value(t,lifecycle_call(f,lease_child(),"lease.block","block",p,cap,"5").code,"ok")
-    attempt_expect(t,f,1,1,"blocked")
+    attempt_expect(t,f,1,"blocked")
     testing.expect_value(t,control_call(f,"task.resolve","held_answer","6").code,"operation_conflict")
     testing.expect_value(t,control_call(f,"task.release","release","6").code,"ok")
     rows,_:=query(f.store.db,"SELECT mode,reason,waiting_on FROM local_controls")
@@ -181,7 +181,7 @@ hold_legacy_checkpoint_binding_does_not_resurrect_retired_authority :: proc(t:^t
 }
 
 @(test)
-hold_requirements_rework_clears_deferred_rejection_without_counting_new_budget :: proc(t:^testing.T) {
+hold_requirements_rework_clears_deferred_rejection_and_starts_next_attempt :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
     f:=fixture(t);defer destroy(f);lifecycle_seed(t,f);cap:=lifecycle_ready(t,f)
     testing.expect_value(t,lifecycle_call(f,lease_child(),"lease.submit","submit",`{"requirements_revision":"1","head":"","summary":"submitted"}`,cap).code,"ok")
@@ -193,9 +193,9 @@ hold_requirements_rework_clears_deferred_rejection_without_counting_new_budget :
     testing.expect_value(t,control_call(f,"task.hold","hold","5").code,"ok")
     testing.expect_value(t,lifecycle_call(f,lifecycle_reviewer(),"review.post","changes",verdict,result_cap(opened),"6").code,"ok")
     lifecycle_edit(t,f,"2","7")
-    attempt_expect(t,f,1,1,"replaced")
+    attempt_expect(t,f,1,"replaced")
     testing.expect_value(t,control_call(f,"task.release","release","8").code,"ok")
-    attempt_expect(t,f,1,1,"replaced")
+    attempt_expect(t,f,1,"replaced")
     testing.expect_value(t,lease_invoke(f,lease_request(f,lease_child(),"lease.claim","replanned","lease2","","9"),"",lease_child()).code,"ok")
-    attempt_expect(t,f,2,1,"")
+    attempt_expect(t,f,2,"")
 }

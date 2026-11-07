@@ -6,9 +6,11 @@ import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import local "odin_test:lib/owner_local"
 
-// Compare every prefix against the original authoritative fold, including the
-// distinction between a spent attempt and a non-counting NEXT grant. This is
-// intentionally differential rather than a second list of expected counters.
+// Compare every prefix against the original authoritative fold: the owner-local
+// projection keeps native attempt numbers and live state as archival identity.
+// The owner-local runtime has no attempt cap (removed 2026-11-07), so only
+// attempt numbering and liveness are compared. This is intentionally
+// differential rather than a second list of expected counters.
 @(test)
 test_owner_attempt_projection_matches_native_fold_prefixes :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
@@ -46,7 +48,6 @@ test_owner_attempt_projection_matches_native_fold_prefixes :: proc(t:^testing.T)
         local.attempt_event(&view,step.local_kind,c,p)
         native:=fold_task(events[:],input)
         testing.expect_value(t,view.attempt_no,i64(native.attempt_no))
-        testing.expect_value(t,view.counting_attempts,i64(native.counting_attempts))
         testing.expect_value(t,view.live,native.has_work_lease)
         testing.expect(t,!view.incomplete)
     }

@@ -10,7 +10,6 @@ retirement_record_test :: proc(t:^testing.T,f:^Fixture,task:string)->contracts.O
     v,r,_,ok:=attempt_scan(&f.store,"chain",task,1)
     testing.expect(t,ok && !v.incomplete && !v.live && !v.in_review && !v.held)
     testing.expect_value(t,v.attempt_no,1)
-    testing.expect_value(t,v.counting_attempts,1)
     testing.expect_value(t,r.outcome,"expired:chain_closed")
     testing.expect_value(t,r.completeness,"full")
     testing.expect_value(t,r.started_ms,"1000")

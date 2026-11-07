@@ -888,7 +888,6 @@ owner_fields_history_fetch_payload := [?]Owner_Field{
 }
 Owner_Attempt_State :: struct {
     attempt_no: string,
-    counting_attempts: string,
     last_release: string,
     work_lease_id: string,
     completeness: string,
@@ -896,7 +895,6 @@ Owner_Attempt_State :: struct {
 @(private)
 owner_fields_attempt_state := [?]Owner_Field{
     {"attempt_no", "counter"},
-    {"counting_attempts", "counter"},
     {"last_release", "attempt_release"},
     {"work_lease_id", "optional"},
     {"completeness", "history_completeness"},
@@ -917,7 +915,6 @@ Owner_Native_Attempt :: struct {
     ended_ms: string,
     holder_instance_id: string,
     outcome: string,
-    counts_toward_budget: string,
     work_lease_id: string,
     completeness: string,
 }
@@ -931,7 +928,6 @@ owner_fields_native_attempt := [?]Owner_Field{
     {"ended_ms", "optional_counter"},
     {"holder_instance_id", "id"},
     {"outcome", "attempt_outcome"},
-    {"counts_toward_budget", "flag"},
     {"work_lease_id", "id"},
     {"completeness", "history_completeness"},
 }
@@ -1061,60 +1057,6 @@ owner_fields_native_history_facet := [?]Owner_Field{
     {"written_at", "document"},
     {"references_json", "document"},
     {"provenance_json", "document"},
-}
-Owner_Budget_Activation_Payload :: struct {
-    source_revision: string,
-    snapshot_digest: string,
-    native_cutoff: string,
-    local_cutoff: string,
-    event_count: string,
-    attempt_count: string,
-    facet_count: string,
-    requirements_revision: string,
-    configuration_revision: string,
-    execution: string,
-    source_gate: string,
-    source_no_review: string,
-}
-@(private)
-owner_fields_budget_activation_payload := [?]Owner_Field{
-    {"source_revision", "id"},
-    {"snapshot_digest", "hash"},
-    {"native_cutoff", "positive"},
-    {"local_cutoff", "counter"},
-    {"event_count", "positive"},
-    {"attempt_count", "counter"},
-    {"facet_count", "counter"},
-    {"requirements_revision", "positive"},
-    {"configuration_revision", "positive"},
-    {"execution", "id"},
-    {"source_gate", "flag"},
-    {"source_no_review", "flag"},
-}
-Owner_Budget_State :: struct {
-    attempt_no: string,
-    counting_attempts: string,
-    max_attempts: string,
-    last_release: string,
-    reason: string,
-    source_revision: string,
-    requirements_revision: string,
-    configuration_revision: string,
-    execution: string,
-    local_cutoff: string,
-}
-@(private)
-owner_fields_budget_state := [?]Owner_Field{
-    {"attempt_no", "counter"},
-    {"counting_attempts", "counter"},
-    {"max_attempts", "positive"},
-    {"last_release", "attempt_release"},
-    {"reason", "optional"},
-    {"source_revision", "optional"},
-    {"requirements_revision", "counter"},
-    {"configuration_revision", "counter"},
-    {"execution", "id"},
-    {"local_cutoff", "counter"},
 }
 Owner_Fleet_Policy_Payload :: struct {
     body_cipher: string,
@@ -1842,8 +1784,6 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "native_history_attempt": return owner_fields_native_history_attempt[:]
     case "native_history_event": return owner_fields_native_history_event[:]
     case "native_history_facet": return owner_fields_native_history_facet[:]
-    case "budget_activation_payload": return owner_fields_budget_activation_payload[:]
-    case "budget_state": return owner_fields_budget_state[:]
     case "fleet_policy_payload": return owner_fields_fleet_policy_payload[:]
     case "native_metadata_read": return owner_fields_native_metadata_read[:]
     case "member_payload": return owner_fields_member_payload[:]

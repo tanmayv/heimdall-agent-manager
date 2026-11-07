@@ -89,7 +89,6 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
   else if (method === 'linked.delete') payload = { ...ownerParse(input.body ?? '', 'linked_delete') };
   else if (method === 'linked.fetch') payload = { ...ownerParse(input.body ?? '', 'linked_fetch') };
   else if (method === 'envelope.read' || method === 'linked.read' || method === 'linked.backup') payload = { cursor: input.cursor ?? '', limit: String(input.limit ?? 20) };
-  else if (method === 'budget.activate') payload = { ...ownerParse(input.body ?? '', 'budget_activation_payload') };
   else if (method === 'task.priority') payload = { priority: input.priority ?? 'p2' };
   else if (method === 'fleet.policy.set' && input.nativeSourceRevision) payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring), source_revision: input.nativeSourceRevision };
   else if (method === 'fleet.policy.set' || method === 'native.history.import' || method === 'native.metadata.import') payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring) };

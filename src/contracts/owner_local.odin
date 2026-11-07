@@ -39,7 +39,7 @@ owner_hex :: proc(s: string, n: int) -> bool {
 
 owner_method_valid :: proc(s: string) -> bool {
     switch s {
-    case "linked.facet.read", "envelope.read", "linked.put", "linked.delete", "linked.restore", "linked.read", "linked.fetch", "linked.backup", "chain.draft", "task.draft", "task.publish", "chain.propose", "chain.decide", "chain.publish", "work.dependency.add", "work.dependency.remove", "work.scope", "chain.complete", "work.read", "workflow.draft", "chain.member.set", "chain.directory.set", "chain.defaults.set", "chain.summary.set", "chain.metadata.read", "task.priority", "native.metadata.import", "native.metadata.read", "fleet.policy.set", "fleet.policy.read", "budget.activate", "native.history.import", "native.history.read", "native.history.fetch", "attempt.read", "history.read", "history.fetch", "context.read", "grant.set", "grant.revoke", "grant.read", "grant.policy", "grant.recover", "workflow.coordinator", "workflow.cancel", "workflow.gate", "workflow.define", "workflow.run", "workflow.retry", "workflow.read", "source.observe", "source.consume", "source.ack", "source.retire", "source.resolve", "source.escalate", "source.read", "dependency.edit", "review.roles", "task.hold", "task.release", "task.cancel", "task.reopen", "task.resolve", "merge.retry", "submission.read", "chain.edit", "task.edit", "task.delete", "chain.search", "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "fleet.reserve", "runtime.read", "lifecycle.configure", "requirements.edit", "review.post": return true
+    case "linked.facet.read", "envelope.read", "linked.put", "linked.delete", "linked.restore", "linked.read", "linked.fetch", "linked.backup", "chain.draft", "task.draft", "task.publish", "chain.propose", "chain.decide", "chain.publish", "work.dependency.add", "work.dependency.remove", "work.scope", "chain.complete", "work.read", "workflow.draft", "chain.member.set", "chain.directory.set", "chain.defaults.set", "chain.summary.set", "chain.metadata.read", "task.priority", "native.metadata.import", "native.metadata.read", "fleet.policy.set", "fleet.policy.read", "native.history.import", "native.history.read", "native.history.fetch", "attempt.read", "history.read", "history.fetch", "context.read", "grant.set", "grant.revoke", "grant.read", "grant.policy", "grant.recover", "workflow.coordinator", "workflow.cancel", "workflow.gate", "workflow.define", "workflow.run", "workflow.retry", "workflow.read", "source.observe", "source.consume", "source.ack", "source.retire", "source.resolve", "source.escalate", "source.read", "dependency.edit", "review.roles", "task.hold", "task.release", "task.cancel", "task.reopen", "task.resolve", "merge.retry", "submission.read", "chain.edit", "task.edit", "task.delete", "chain.search", "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "fleet.reserve", "runtime.read", "lifecycle.configure", "requirements.edit", "review.post": return true
     }
     return false
 }
@@ -109,7 +109,7 @@ owner_field_valid :: proc(s, kind: string) -> bool {
         case "malformed", "bad_signature", "invalid_scope", "owner_mismatch",
              "digest_mismatch", "operation_conflict", "expired", "retired",
              "stale_revision", "owner_unavailable", "retention_capacity",
-             "storage_error", "invalid_content", "clock_uncertain", "stale_cursor", "recovery_required", "budget_exhausted": return true
+             "storage_error", "invalid_content", "clock_uncertain", "stale_cursor", "recovery_required": return true
         }
     }
     return false
@@ -127,7 +127,7 @@ owner_document_valid :: proc(kind: string, o: json.Object) -> bool {
     }
     if kind == "command" {
         method, task := owner_string(o, "method"), owner_string(o, "task_id")
-        if (method == "task.priority" || method == "budget.activate" || method == "native.history.import" || method == "native.history.read" || method == "native.history.fetch" || method == "attempt.read" || method == "dependency.edit" || method == "review.roles" || method == "task.hold" || method == "task.release" || method == "task.cancel" || method == "task.reopen" || method == "task.resolve" || method == "merge.retry" || method == "submission.read" || method == "task.edit" || method == "task.delete" || method == "task.draft" || method == "task.publish" || method == "task.create" || method == "task.comment" || method == "task.read" || method == "fleet.edit" || method == "fleet.reserve" || method == "runtime.read" || method == "lifecycle.configure" || method == "requirements.edit" || method == "review.post") != (task != "") do return false
+        if (method == "task.priority" || method == "native.history.import" || method == "native.history.read" || method == "native.history.fetch" || method == "attempt.read" || method == "dependency.edit" || method == "review.roles" || method == "task.hold" || method == "task.release" || method == "task.cancel" || method == "task.reopen" || method == "task.resolve" || method == "merge.retry" || method == "submission.read" || method == "task.edit" || method == "task.delete" || method == "task.draft" || method == "task.publish" || method == "task.create" || method == "task.comment" || method == "task.read" || method == "fleet.edit" || method == "fleet.reserve" || method == "runtime.read" || method == "lifecycle.configure" || method == "requirements.edit" || method == "review.post") != (task != "") do return false
     }
     if kind=="native_attempt" {
         ended,outcome:=owner_string(o,"ended_ms"),owner_string(o,"outcome")
@@ -205,7 +205,6 @@ owner_payload_kind :: proc(method: string) -> string {
     case "native.metadata.read": return "native_metadata_read"
     case "fleet.policy.set": return "fleet_policy_payload"
     case "fleet.policy.read": return "read_payload"
-    case "budget.activate": return "budget_activation_payload"
     case "linked.facet.read": return "linked_facet"
     case "envelope.read": return "linked_page"
     case "linked.put", "linked.restore": return "linked_payload"

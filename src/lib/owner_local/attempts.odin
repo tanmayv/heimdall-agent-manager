@@ -7,23 +7,19 @@ import contracts "odin_test:contracts"
 
 // Native attempt numbers differ from both immutable V7 lease ordinals and V4
 // submission keys. Derive them from retained accepted events, never row counts.
-// See taskv2/fold.odin:138-149,377-403. Handoff continues an attempt; structural
-// replacement starts a new, non-counting attempt on the next grant.
+// See taskv2/fold.odin:138-149. Handoff continues an attempt; any other release
+// starts a new attempt on the next grant. The owner-local runtime keeps attempt
+// numbers as archival identity only and enforces no attempt cap (the policy was
+// removed by user decision on 2026-11-07).
 Attempt_View :: struct {
-    attempt_no,counting_attempts,grants:i64,
+    attempt_no,grants:i64,
     last_release,work_lease_id:string,
     live,in_review,incomplete,held,pending_changes:bool,
 }
 
 attempt_grant :: proc(v:^Attempt_View,lease:string) {
     if v.live || lease=="" { v.incomplete=true;return }
-    if v.last_release!="handoff" {
-        v.attempt_no+=1
-        switch v.last_release {
-        case "replaced","dep_added","reopened","user_stopped","released_noncounting":
-        case: v.counting_attempts+=1
-        }
-    }
+    if v.last_release!="handoff" do v.attempt_no+=1
     v.grants+=1
     v.last_release=""
     v.work_lease_id=lease
@@ -77,7 +73,7 @@ attempt_event :: proc(v:^Attempt_View,kind:string,c,p:json.Object,destination:=f
         }
     case "requirements.edit":
         // Editing a live brief does not retire the work lease. Replacing a
-        // submitted brief does invalidate its review, without spending budget.
+        // submitted brief does invalidate its review.
         if v.in_review { attempt_release(v,"replaced");v.in_review=false }
     case "review.post","review.role.post":
         if field(p,"verdict")=="request_changes" {
@@ -92,7 +88,7 @@ attempt_event :: proc(v:^Attempt_View,kind:string,c,p:json.Object,destination:=f
 // legacy_tag rows do not contain enough data to reconstruct native outcomes.
 // An older unrepresented workflow retirement remains explicitly incomplete;
 // V14 records task-specific retirement evidence without repairing old events.
-// Callers must not use this for budget enforcement or native migration export.
+// Callers must not use this for admission or native migration export.
 attempt_view :: proc(s:^Store,chain,task:string) -> (Attempt_View,bool) {
     v,_,_,ok:=attempt_scan(s,chain,task)
     return v,ok
@@ -100,8 +96,8 @@ attempt_view :: proc(s:^Store,chain,task:string) -> (Attempt_View,bool) {
 
 // The immutable accepted event stream is the canonical source. Keep only one
 // selected native record in memory while scanning bounded pages. In particular,
-// a handoff continuation changes holder/end/outcome, never original start time
-// or counting status (native lease.odin:177-190).
+// a handoff continuation changes holder/end/outcome, never the original start
+// time (native lease.odin:177-190).
 attempt_scan :: proc(s:^Store,chain,task:string,selected:i64=0,target_lease:string="") -> (Attempt_View,contracts.Owner_Native_Attempt,string,bool) {
     v:Attempt_View
     record:contracts.Owner_Native_Attempt
@@ -156,7 +152,6 @@ attempt_scan :: proc(s:^Store,chain,task:string,selected:i64=0,target_lease:stri
                         record=contracts.Owner_Native_Attempt{
                             account_id=s.account,chain_id=chain,task_id=task,
                             attempt_no=fmt.tprintf("%d",v.attempt_no),started_ms=row[9],
-                            counts_toward_budget=("1" if v.counting_attempts>previous.counting_attempts else "0"),
                         }
                     }
                     record.holder_instance_id=row[10];record.work_lease_id=v.work_lease_id
@@ -215,5 +210,5 @@ attempt_scan :: proc(s:^Store,chain,task:string,selected:i64=0,target_lease:stri
 }
 
 attempt_document :: proc(v:Attempt_View) -> contracts.Owner_Attempt_State {
-    return {fmt.tprintf("%d",v.attempt_no),fmt.tprintf("%d",v.counting_attempts),v.last_release,v.work_lease_id,("incomplete" if v.incomplete else "full")}
+    return {fmt.tprintf("%d",v.attempt_no),v.last_release,v.work_lease_id,("incomplete" if v.incomplete else "full")}
 }

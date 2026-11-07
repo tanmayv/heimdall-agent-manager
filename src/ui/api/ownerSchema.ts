@@ -58,9 +58,9 @@ export const ownerSchemas = {
   coordinator_payload: [["configuration_revision", "positive"], ["agent_id", "id"], ["instance_id", "id"]],
   coordinator_capability: [["protocol_version", "version"], ["account_id", "id"], ["owner_bridge_id", "id"], ["chain_id", "id"], ["instance_id", "id"], ["launch_epoch", "id"], ["run_count", "positive"], ["token_generation", "hash"], ["configuration_revision", "positive"], ["expires_ms", "positive"], ["allowed_methods", "coordinator_methods"], ["key_id", "id"], ["signature", "signature"]],
   history_fetch_payload: [["seq", "positive"], ["offset", "counter"]],
-  attempt_state: [["attempt_no", "counter"], ["counting_attempts", "counter"], ["last_release", "attempt_release"], ["work_lease_id", "optional"], ["completeness", "history_completeness"]],
+  attempt_state: [["attempt_no", "counter"], ["last_release", "attempt_release"], ["work_lease_id", "optional"], ["completeness", "history_completeness"]],
   attempt_read_payload: [["attempt", "positive"]],
-  native_attempt: [["account_id", "id"], ["chain_id", "id"], ["task_id", "id"], ["attempt_no", "positive"], ["started_ms", "counter"], ["ended_ms", "optional_counter"], ["holder_instance_id", "id"], ["outcome", "attempt_outcome"], ["counts_toward_budget", "flag"], ["work_lease_id", "id"], ["completeness", "history_completeness"]],
+  native_attempt: [["account_id", "id"], ["chain_id", "id"], ["task_id", "id"], ["attempt_no", "positive"], ["started_ms", "counter"], ["ended_ms", "optional_counter"], ["holder_instance_id", "id"], ["outcome", "attempt_outcome"], ["work_lease_id", "id"], ["completeness", "history_completeness"]],
   native_import_payload: [["body_cipher", "relay_cipher"]],
   native_history_read: [["source_revision", "id"], ["kind", "native_history_kind"], ["cursor", "native_cursor"], ["limit", "positive"]],
   native_history_fetch: [["source_revision", "id"], ["kind", "native_history_kind"], ["key", "document"], ["offset", "counter"]],
@@ -68,8 +68,6 @@ export const ownerSchemas = {
   native_history_attempt: [["task_id", "id"], ["attempt_no", "positive"], ["chain_id", "id"], ["owner_user_id", "id"], ["started_at", "document"], ["ended_at", "optional_document"], ["holder_instance_id", "optional"], ["outcome", "optional_document"], ["counts_toward_budget", "flag"], ["provenance_json", "document"]],
   native_history_event: [["event_id", "positive"], ["task_id", "id"], ["chain_id", "id"], ["owner_user_id", "id"], ["ts_ms", "counter"], ["actor_kind", "native_event_actor"], ["actor_id", "optional"], ["kind", "document"], ["payload_json", "document"], ["provenance_json", "document"]],
   native_history_facet: [["task_id", "id"], ["attempt_no", "counter"], ["chain_id", "id"], ["owner_user_id", "id"], ["kind", "facet_kind"], ["v", "positive"], ["body_json", "document"], ["writer", "native_actor"], ["written_at", "document"], ["references_json", "document"], ["provenance_json", "document"]],
-  budget_activation_payload: [["source_revision", "id"], ["snapshot_digest", "hash"], ["native_cutoff", "positive"], ["local_cutoff", "counter"], ["event_count", "positive"], ["attempt_count", "counter"], ["facet_count", "counter"], ["requirements_revision", "positive"], ["configuration_revision", "positive"], ["execution", "id"], ["source_gate", "flag"], ["source_no_review", "flag"]],
-  budget_state: [["attempt_no", "counter"], ["counting_attempts", "counter"], ["max_attempts", "positive"], ["last_release", "attempt_release"], ["reason", "optional"], ["source_revision", "optional"], ["requirements_revision", "counter"], ["configuration_revision", "counter"], ["execution", "id"], ["local_cutoff", "counter"]],
   fleet_policy_payload: [["body_cipher", "required_cipher"]],
   native_metadata_read: [["source_revision", "id"], ["kind", "metadata_kind"], ["cursor", "native_cursor"], ["limit", "positive"]],
   member_payload: [["instance_id", "id"], ["agent_id", "id"], ["role", "id"], ["enabled", "flag"]],
@@ -516,7 +514,6 @@ export interface OwnerHistory_Fetch_Payload {
 }
 export interface OwnerAttempt_State {
   attempt_no: string;
-  counting_attempts: string;
   last_release: string;
   work_lease_id: string;
   completeness: string;
@@ -533,7 +530,6 @@ export interface OwnerNative_Attempt {
   ended_ms: string;
   holder_instance_id: string;
   outcome: string;
-  counts_toward_budget: string;
   work_lease_id: string;
   completeness: string;
 }
@@ -596,32 +592,6 @@ export interface OwnerNative_History_Facet {
   written_at: string;
   references_json: string;
   provenance_json: string;
-}
-export interface OwnerBudget_Activation_Payload {
-  source_revision: string;
-  snapshot_digest: string;
-  native_cutoff: string;
-  local_cutoff: string;
-  event_count: string;
-  attempt_count: string;
-  facet_count: string;
-  requirements_revision: string;
-  configuration_revision: string;
-  execution: string;
-  source_gate: string;
-  source_no_review: string;
-}
-export interface OwnerBudget_State {
-  attempt_no: string;
-  counting_attempts: string;
-  max_attempts: string;
-  last_release: string;
-  reason: string;
-  source_revision: string;
-  requirements_revision: string;
-  configuration_revision: string;
-  execution: string;
-  local_cutoff: string;
 }
 export interface OwnerFleet_Policy_Payload {
   body_cipher: string;
@@ -1006,8 +976,6 @@ export interface OwnerDocuments {
   native_history_attempt: OwnerNative_History_Attempt;
   native_history_event: OwnerNative_History_Event;
   native_history_facet: OwnerNative_History_Facet;
-  budget_activation_payload: OwnerBudget_Activation_Payload;
-  budget_state: OwnerBudget_State;
   fleet_policy_payload: OwnerFleet_Policy_Payload;
   native_metadata_read: OwnerNative_Metadata_Read;
   member_payload: OwnerMember_Payload;

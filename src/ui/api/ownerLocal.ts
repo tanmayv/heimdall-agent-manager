@@ -8,7 +8,7 @@ export const OWNER_DOCUMENT_MAX = 256 * 1024;
 export const OWNER_REQUEST_TTL_MS = 300000n;
 const ascii = (s: string) => /^[\x20-\x7e]*$/.test(s);
 const decimal = (s: string) => /^(0|[1-9][0-9]*)$/.test(s) && s.length <= 19 && BigInt(s) <= 9223372036854775807n;
-const methods = new Set(['linked.facet.read','envelope.read','linked.put','linked.delete','linked.restore','linked.read','linked.fetch','linked.backup','chain.draft','task.draft','task.publish','chain.propose','chain.decide','chain.publish','work.dependency.add','work.dependency.remove','work.scope','chain.complete','work.read','workflow.draft','chain.member.set','chain.directory.set','chain.defaults.set','chain.summary.set','chain.metadata.read','task.priority','native.metadata.import','native.metadata.read','fleet.policy.set','fleet.policy.read','budget.activate','native.history.import','native.history.read','native.history.fetch','attempt.read','history.read','history.fetch','context.read','workflow.coordinator','grant.set','grant.revoke','grant.read','grant.policy','grant.recover','workflow.cancel','workflow.gate','workflow.define','workflow.run','workflow.retry','workflow.read','source.observe','source.consume','source.ack','source.retire','source.resolve','source.escalate','source.read','dependency.edit','review.roles','task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'chain.edit', 'task.edit', 'task.delete', 'chain.search', 'chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'receipt.read', 'fleet.edit', 'fleet.reserve', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post']);
+const methods = new Set(['linked.facet.read','envelope.read','linked.put','linked.delete','linked.restore','linked.read','linked.fetch','linked.backup','chain.draft','task.draft','task.publish','chain.propose','chain.decide','chain.publish','work.dependency.add','work.dependency.remove','work.scope','chain.complete','work.read','workflow.draft','chain.member.set','chain.directory.set','chain.defaults.set','chain.summary.set','chain.metadata.read','task.priority','native.metadata.import','native.metadata.read','fleet.policy.set','fleet.policy.read','native.history.import','native.history.read','native.history.fetch','attempt.read','history.read','history.fetch','context.read','workflow.coordinator','grant.set','grant.revoke','grant.read','grant.policy','grant.recover','workflow.cancel','workflow.gate','workflow.define','workflow.run','workflow.retry','workflow.read','source.observe','source.consume','source.ack','source.retire','source.resolve','source.escalate','source.read','dependency.edit','review.roles','task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'chain.edit', 'task.edit', 'task.delete', 'chain.search', 'chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'receipt.read', 'fleet.edit', 'fleet.reserve', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post']);
 function fieldValid(s: string, kind: string): boolean {
   if (kind === "document" || kind === "optional_document") return new TextEncoder().encode(s).length <= OWNER_DOCUMENT_MAX && (s !== "" || kind === "optional_document");
   if (kind === 'label') return s.length > 0 && new TextEncoder().encode(s).length <= 256 && !/[\x00-\x1f\x7f]/.test(s);
@@ -55,7 +55,7 @@ function fieldValid(s: string, kind: string): boolean {
       if (s.length > 65536) return false;
       try { parseVaultEnvelope(s); return true; } catch { return false; }
     case 'result_code': return s === 'ok' || s === 'retired';
-    case 'error_code': return ['malformed', 'bad_signature', 'invalid_scope', 'owner_mismatch', 'digest_mismatch', 'operation_conflict', 'expired', 'retired', 'stale_revision', 'owner_unavailable', 'retention_capacity', 'storage_error', 'invalid_content', 'clock_uncertain', 'stale_cursor', 'recovery_required', 'budget_exhausted'].includes(s);
+    case 'error_code': return ['malformed', 'bad_signature', 'invalid_scope', 'owner_mismatch', 'digest_mismatch', 'operation_conflict', 'expired', 'retired', 'stale_revision', 'owner_unavailable', 'retention_capacity', 'storage_error', 'invalid_content', 'clock_uncertain', 'stale_cursor', 'recovery_required'].includes(s);
     default: return false;
   }
 }
@@ -68,7 +68,7 @@ export function ownerDocumentValid<K extends OwnerKind>(kind: K, value: unknown)
   if (Object.keys(o).length !== fields.length) return false;
   for (const [name, type] of fields) if (!Object.hasOwn(o, name) || typeof o[name] !== 'string' || !fieldValid(o[name], type)) return false;
   if (kind === 'command') {
-    if (['task.draft','task.publish','task.priority','budget.activate','native.history.import','native.history.read','native.history.fetch','attempt.read','dependency.edit','review.roles','task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'task.edit', 'task.delete', 'task.create', 'task.comment', 'task.read', 'fleet.edit', 'fleet.reserve', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post'].includes(String(o.method)) !== (o.task_id !== '')) return false;
+    if (['task.draft','task.publish','task.priority','native.history.import','native.history.read','native.history.fetch','attempt.read','dependency.edit','review.roles','task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'task.edit', 'task.delete', 'task.create', 'task.comment', 'task.read', 'fleet.edit', 'fleet.reserve', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post'].includes(String(o.method)) !== (o.task_id !== '')) return false;
   }
   if (kind === 'native_attempt') {
     if ((o.ended_ms === '') !== (o.outcome === '')) return false;
@@ -128,7 +128,6 @@ export function ownerPayloadKind(method: string): OwnerKind {
     case 'native.metadata.read': return 'native_metadata_read';
     case 'fleet.policy.set': return 'fleet_policy_payload';
     case 'fleet.policy.read': return 'read_payload';
-    case 'budget.activate': return 'budget_activation_payload';
     case 'linked.facet.read': return 'linked_facet';
     case 'envelope.read': return 'linked_page';
     case 'linked.put': case 'linked.restore': return 'linked_payload';

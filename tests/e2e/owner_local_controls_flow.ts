@@ -36,7 +36,7 @@ export async function ownerLocalControlsFlow({session,bridgeId,hub,http,cli,laun
     const sourceAttempt=JSON.parse((await human('attempt.read',{expectedRevision:'0',attempt:'1'},true)).body);
     expect(sourceAttempt.work_lease_id===input.lease_id && sourceAttempt.outcome==='handoff' && sourceAttempt.ended_ms && sourceAttempt.completeness==='full','real CLI relay reads switched source native record');
     const destinationAttempt=JSON.parse((await human('attempt.read',{taskId:dest,expectedRevision:'0',attempt:'1'})).body);
-    expect(destinationAttempt.work_lease_id===destinationLease && destinationAttempt.outcome==='' && destinationAttempt.started_ms && destinationAttempt.counts_toward_budget==='1','real browser reads atomic switch destination native record');
+    expect(destinationAttempt.work_lease_id===destinationLease && destinationAttempt.outcome==='' && destinationAttempt.started_ms,'real browser reads atomic switch destination native record');
 
     // Render the production panel and click real signed controls against Hub/Bridge.
     const {JSDOM}=await import('jsdom');
@@ -94,7 +94,7 @@ export async function ownerLocalControlsFlow({session,bridgeId,hub,http,cli,laun
     const renewed=worker.call(heartbeat);expect(renewed.status===0,'live held child renews exact lease after checkpoint notification');
     destinationCap=JSON.parse(renewed.data.body).capability;
     state=JSON.parse((await human('runtime.read',{taskId:dest,expectedRevision:'0'})).body);
-    expect(state.leases[0][3]===hard && state.attempts.attempt_no==='1' && state.attempts.counting_attempts==='1','hold and heartbeat preserve native attempt and hard deadline');
+    expect(state.leases[0][3]===hard && state.attempts.attempt_no==='1','hold and heartbeat preserve native attempt and hard deadline');
     await human('task.release',{taskId:dest,expectedRevision:'5',body:'Continue live lease'},true);
     heartbeat.expected_revision='6';
     const blocked=worker.call({...heartbeat,operation_id:ownerId('op_'),method:'lease.block',capability:destinationCap,payload:JSON.stringify({requirements_revision:'1',summary:'controls-private-blockneedle',next_steps:'Await explicit answer',waiting_on:'human'})});
