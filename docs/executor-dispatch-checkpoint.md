@@ -2121,3 +2121,49 @@ The old-daemon phase was explicitly skipped without
 `HEIMDALL_EXECUTOR_OLD_PTY`; no new real-provider, Darwin or Windows evidence is
 claimed. The coordinator is arranging an independent source audit of a pinned
 checkpoint. That audit does not replace full M3 acceptance or the final review.
+
+### Explicit abandoned-admission recovery regression (2026-11-07)
+
+The pinned independent audit at
+`03f2d4112e47f9dc3ee6309b108cf7ffd920b52b`
+identified P3: an abandoned admitted row deliberately remains charged after
+restart until exact explicit cancellation. This checkpoint adds storage-level
+proof in `src/lib/executor_local/local_launch_test.odin`:
+
+- Admit, reopen, recover and expire: charge remains and old-incarnation first
+  dispatch fails. Wrong-identity cancellation has no effect; exact cancellation
+  releases the charge. Signed historical replay retains released state across
+  another reopen and cannot regain first I/O.
+- Race exact cancellation against first-dispatch consumption in 16 fresh ledgers:
+  exactly one wins. A dispatch winner stays charged, including after stop intent;
+  cancellation cannot refund it.
+- Force a deferred foreign-key failure at cancellation COMMIT: the state update
+  rolls back, the admission stays charged, and cancellation succeeds only after
+  removing the injected failure.
+
+Check, from the task Workdir:
+
+```bash
+nix develop --command odin test src/lib/executor_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3-cancel-atomic-20261107-0523
+```
+
+47 tests PASS, exit 0; managed session
+`sh_fa4298efc7505721f1e1cf0e0697896e`. Earlier focused restart-only run passed
+45 tests in `sh_be673d0a94479ee0391f0970a4082e94`.
+No production behavior changed; no additional package builds are needed for
+these storage-only regression additions.
+
+P3 is **not closed**: authenticated production cancellation/recovery must still
+be wired. P2 is also open. Coordinator decision
+`cmt_18e5abb5ff4ac800` confirms existing encrypted executor relay with
+domain-separated device-signed exact draft prepare/inspect/authorize/cancel;
+principal-owned drafts, current enrollment/resources, stable native random
+startup material, no unsigned Hub launch authority, no secrets in inspect, and
+atomic replay/conflict/cancel handling. Production first I/O must hold the
+startup/vault gates and recheck current paired key/filesystem/catalog. Dispatched
+or uncertain children use exact stop/reconciliation, retaining their charge until
+trusted absence. This decision resolves the interface question; no further
+permission is needed for routine implementation within it.
+
+All remaining production and full M3 gates in the preceding section remain.
+This test checkpoint is neither full acceptance nor the final independent review.

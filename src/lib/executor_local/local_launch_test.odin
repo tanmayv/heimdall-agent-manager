@@ -225,3 +225,97 @@ executor_local_final_dispatch_checks_consent_and_monotonic_admission_window :: p
     testing.expect(t,!local_time_live(consent,1100,1000,old_tick))
     testing.expect(t,!local_time_live(consent,1100,1000,time.tick_now()._nsec+i64(time.Second)))
 }
+
+// A restart must retain abandoned admissions until an explicit exact cancel.
+// Cancellation is never a substitute for observing a possibly dispatched child.
+@(test)
+executor_local_abandoned_admission_reopen_exact_cancel :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=fixture(t);defer destroy(f)
+    o,c,r:=local_inputs(t,f)
+    launch:=local_snapshot(t,f,local_admit(f,o,c))
+    close(&f.store)
+    if !testing.expect(t,open(&f.store,f.path,"account","executor","operator")) do return
+    testing.expect(t,complete_recovery(&f.store,9000))
+    testing.expect(t,expire(&f.store,9000))
+    recovered,found:=local_launch(&f.store,launch.id)
+    testing.expect(t,found && recovered.state=="admitted")
+    testing.expect(t,!local_begin_dispatch(&f.store,recovered,f.owner2.public,9000,r))
+    rows,_:=query(f.store.db,"SELECT count(*) FROM executor_live_resources")
+    testing.expect_value(t,rows[0][0],"1")
+    testing.expect(t,!cancel_local_admission(&f.store,"unrelated_launch"))
+    testing.expect(t,cancel_local_admission(&f.store,launch.id))
+    rows,_=query(f.store.db,"SELECT count(*) FROM executor_live_resources")
+    testing.expect_value(t,rows[0][0],"0")
+    // A historical signed retry cannot restore a cancelled admission.
+    replay:=local_admit(f,o,c,9000)
+    testing.expect(t,replay.replay && body_field(replay,"state")=="released")
+    testing.expect(t,!local_begin_dispatch(&f.store,recovered,f.owner2.public,9000,r))
+    close(&f.store)
+    if !testing.expect(t,open(&f.store,f.path,"account","executor","operator")) do return
+    testing.expect(t,complete_recovery(&f.store,9000))
+    retained,loaded:=local_launch(&f.store,launch.id)
+    testing.expect(t,loaded && retained.state=="released")
+    rows,_=query(f.store.db,"SELECT count(*) FROM executor_live_resources")
+    testing.expect_value(t,rows[0][0],"0")
+}
+
+@(test)
+executor_local_cancel_and_first_dispatch_linearize :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    // Exercise both legal orderings without letting cancel refund a possible child.
+    for _ in 0..<16 {
+        f:=fixture(t)
+        o,c,r:=local_inputs(t,f)
+        launch:=local_snapshot(t,f,local_admit(f,o,c))
+        Job :: struct {f:^Fixture,launch:Local_Launch,resources:Local_Resources,barrier:^sync.Barrier,cancel,ok:bool}
+        barrier:sync.Barrier;sync.barrier_init(&barrier,3)
+        jobs:=[2]Job{{f,launch,r,&barrier,true,false},{f,launch,r,&barrier,false,false}}
+        threads:[2]^thread.Thread
+        for i in 0..<2 {
+            threads[i]=thread.create_and_start_with_data(&jobs[i],proc(data:rawptr) {
+                context.allocator=context.temp_allocator
+                j:=(^Job)(data);sync.barrier_wait(j.barrier)
+                if j.cancel {j.ok=cancel_local_admission(&j.f.store,j.launch.id)}
+                else {j.ok=local_begin_dispatch(&j.f.store,j.launch,j.f.owner2.public,1100,j.resources)}
+            })
+        }
+        sync.barrier_wait(&barrier)
+        for th in threads {thread.join(th);thread.destroy(th)}
+        testing.expect(t,jobs[0].ok!=jobs[1].ok)
+        current,found:=local_launch(&f.store,launch.id);testing.expect(t,found)
+        rows,_:=query(f.store.db,"SELECT count(*) FROM executor_live_resources")
+        if jobs[0].ok {
+            testing.expect(t,current.state=="released")
+            testing.expect_value(t,rows[0][0],"0")
+            testing.expect(t,!local_begin_dispatch(&f.store,launch,f.owner2.public,1100,r))
+        } else {
+            testing.expect(t,current.state=="dispatching")
+            testing.expect_value(t,rows[0][0],"1")
+            testing.expect(t,!cancel_local_admission(&f.store,launch.id))
+            testing.expect(t,stop_local_launch(&f.store,current))
+            testing.expect(t,!cancel_local_admission(&f.store,launch.id))
+        }
+        destroy(f)
+    }
+}
+
+@(test)
+executor_local_cancel_failed_commit_retains_admission :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=fixture(t);defer destroy(f)
+    o,c,_:=local_inputs(t,f)
+    launch:=local_snapshot(t,f,local_admit(f,o,c))
+    // A deferred foreign key violation fails COMMIT after the UPDATE succeeds.
+    testing.expect(t,exec(f.store.db,"CREATE TABLE cancel_commit_fault(id TEXT REFERENCES executor_local_launches(launch_id) DEFERRABLE INITIALLY DEFERRED)"))
+    testing.expect(t,exec(f.store.db,"CREATE TRIGGER cancel_commit_fault_trigger AFTER UPDATE OF state ON executor_local_launches WHEN NEW.state='released' BEGIN INSERT INTO cancel_commit_fault VALUES('missing_launch'); END"))
+    testing.expect(t,!cancel_local_admission(&f.store,launch.id))
+    retained,found:=local_launch(&f.store,launch.id)
+    testing.expect(t,found && retained.state=="admitted")
+    rows,_:=query(f.store.db,"SELECT count(*) FROM executor_live_resources")
+    testing.expect_value(t,rows[0][0],"1")
+    testing.expect(t,exec(f.store.db,"DROP TRIGGER cancel_commit_fault_trigger"))
+    testing.expect(t,cancel_local_admission(&f.store,launch.id))
+    rows,_=query(f.store.db,"SELECT count(*) FROM executor_live_resources")
+    testing.expect_value(t,rows[0][0],"0")
+}
