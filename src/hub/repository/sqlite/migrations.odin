@@ -661,6 +661,8 @@ MIGRATION_210_MEMORY_AUTO_APPROVED :: #load("migrations/210_memory_auto_approved
 
 MIGRATION_211_EXTENSION_VERSION_SYNC :: #load("migrations/211_extension_version_sync_0_5_50_subagents_2.sql", string)
 
+MIGRATION_212_EXTENSION_VERSION_SYNC :: #load("migrations/212_extension_version_sync_0_5_50_subagents_3.sql", string)
+
 migration_order :: [?]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
@@ -877,6 +879,7 @@ migration_order :: [?]string {
 	"209_extension_version_sync_0_5_50_subagents_1.sql",
 	"210_memory_auto_approved.sql",
 	"211_extension_version_sync_0_5_50_subagents_2.sql",
+	"212_extension_version_sync_0_5_50_subagents_3.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1371,6 +1374,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 			return string(data)
 		}
 	}
+	if name == "212_extension_version_sync_0_5_50_subagents_3.sql" do return strings.clone(MIGRATION_212_EXTENSION_VERSION_SYNC)
 	if name == "211_extension_version_sync_0_5_50_subagents_2.sql" do return strings.clone(MIGRATION_211_EXTENSION_VERSION_SYNC)
 	if name == "209_extension_version_sync_0_5_50_subagents_1.sql" do return strings.clone(MIGRATION_209_EXTENSION_VERSION_SYNC)
 	if name == "210_memory_auto_approved.sql" do return strings.clone(MIGRATION_210_MEMORY_AUTO_APPROVED)
