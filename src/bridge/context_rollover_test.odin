@@ -1,5 +1,6 @@
 package main
 
+import "core:mem"
 import "core:strings"
 import "core:sync"
 import "core:testing"
@@ -518,4 +519,64 @@ test_rollover_pane_diff_idle_withheld_then_rereported :: proc(t: ^testing.T) {
 	testing.expect_value(t, bridge_rollover_phase_of(id), Bridge_Rollover_Phase.Normal)
 	testing.expect_value(t, len(roll_rec.idles), 1)
 	testing.expect(t, strings.has_suffix(roll_rec.idles[0], "|pane_diff"), roll_rec.idles[0])
+}
+
+@(test)
+test_rollover_launch_and_notices_survive_caller_arena_reset :: proc(t: ^testing.T) {
+	roll_begin()
+	id := "inst_roll_arena"
+	// Force note_launch to allocate the registry, independent of test ordering.
+	sync.mutex_lock(&bridge_rollover_mutex)
+	saved := bridge_rollover_states
+	bridge_rollover_states = nil
+	sync.mutex_unlock(&bridge_rollover_mutex)
+	defer {
+		roll_end(id)
+		sync.mutex_lock(&bridge_rollover_mutex)
+		delete(bridge_rollover_states)
+		bridge_rollover_states = saved
+		sync.mutex_unlock(&bridge_rollover_mutex)
+	}
+	backing := make([]byte, 64 * 1024)
+	defer delete(backing)
+	arena: mem.Arena
+	mem.arena_init(&arena, backing)
+	{
+		context.allocator = mem.arena_allocator(&arena)
+		bridge_rollover_note_launch(strings.clone(id), strings.clone("retained_coordinator"))
+	}
+	// Preserve array descriptors so the old implementation fails on assertions
+	// rather than following overwritten string pointers.
+	mem.zero_slice(backing)
+	free_all(mem.arena_allocator(&arena))
+	if !testing.expect_value(t, len(bridge_rollover_states), 1) do return
+	if !testing.expect_value(t, bridge_rollover_states[0].agent_instance_id, id) do return
+	testing.expect_value(t, bridge_rollover_states[0].coordinator_id, "retained_coordinator")
+	now := bridge_runtime_now_ms()
+	roll_event(id, 85, false, now)
+	bridge_rollover_on_activity(id, "idle", "pane_diff", now + 1)
+	testing.expect_value(t, bridge_rollover_phase_of(id), Bridge_Rollover_Phase.Requested)
+	testing.expect_value(t, len(roll_rec.requests), 1)
+	{
+		context.allocator = mem.arena_allocator(&arena)
+		testing.expect(t, bridge_rollover_queue_notice(id, strings.clone("retained_sender")))
+		testing.expect_value(t, bridge_rollover_filter_activity(id, "idle", strings.clone("pane_diff")), "active")
+	}
+	mem.zero_slice(backing)
+	free_all(mem.arena_allocator(&arena))
+	testing.expect(t, bridge_rollover_queue_notice(id, "retained_sender"), "duplicate still coalesces")
+	testing.expect(t, bridge_rollover_queue_notice(id, "second_sender"))
+	// Timeout ends the rollover and drains both retained notices exactly once.
+	roll_tick(now + 1 + BRIDGE_ROLLOVER_REQUEST_TIMEOUT_MS)
+	roll_tick(now + 1 + 2 * BRIDGE_ROLLOVER_REQUEST_TIMEOUT_MS)
+	testing.expect_value(t, bridge_rollover_phase_of(id), Bridge_Rollover_Phase.Normal)
+	testing.expect_value(t, len(roll_rec.notices), 2)
+	if len(roll_rec.notices) == 2 {
+		testing.expect_value(t, roll_rec.notices[0], "inst_roll_arena|retained_sender")
+		testing.expect_value(t, roll_rec.notices[1], "inst_roll_arena|second_sender")
+	}
+	testing.expect_value(t, len(roll_rec.idles), 1)
+	if len(roll_rec.idles) == 1 do testing.expect_value(t, roll_rec.idles[0], "inst_roll_arena|pane_diff")
+	roll_tick(now + 2 + 2 * BRIDGE_ROLLOVER_REQUEST_TIMEOUT_MS)
+	testing.expect_value(t, len(roll_rec.notices), 2)
 }

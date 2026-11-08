@@ -42,10 +42,12 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="")
     }
     sync.mutex_lock(&bridge_wake_mutex)
     saved_wakes:=bridge_agent_wake
-    bridge_agent_wake=nil
+    bridge_agent_wake=make(map[string]Bridge_Wake_State,allocator=runtime.heap_allocator())
     sync.mutex_unlock(&bridge_wake_mutex)
     defer {
+        bridge_agent_wake_reset()
         sync.mutex_lock(&bridge_wake_mutex)
+        delete(bridge_agent_wake)
         bridge_agent_wake=saved_wakes
         sync.mutex_unlock(&bridge_wake_mutex)
     }

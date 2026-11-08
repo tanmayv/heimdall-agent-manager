@@ -1,5 +1,7 @@
 package main
 
+import "base:runtime"
+import "core:mem"
 import "core:os"
 import "core:strings"
 import "core:sync"
@@ -161,7 +163,7 @@ test_wake_stale_failure_after_successful_launch_is_dropped :: proc(t: ^testing.T
 	bridge_agent_wake_reset()
 	defer bridge_agent_wake_reset()
 	id := "inst_wake_race"
-	bridge_agent_wake[id] = Bridge_Wake_State{last_wake_ms = 1_000}
+	bridge_agent_wake[strings.clone(id, runtime.heap_allocator())] = Bridge_Wake_State{last_wake_ms = 1_000}
 	in_flight_generation := bridge_agent_wake[id].generation
 
 	bridge_task_wake_note_launched(id, 1_500) // launch B succeeds first
@@ -445,4 +447,91 @@ test_executor_local_failure_codes_map_to_classes :: proc(t: ^testing.T) {
 	defer delete(wire)
 	werr, found := contracts.wire_error_parse(wire, context.temp_allocator)
 	testing.expect(t, found && werr.class == .fatal, wire)
+}
+
+// Exercise each public insertion path with a fresh registry, so the first call
+// also checks ownership of the map allocation (not just the entry key).
+@(test)
+test_wake_launch_survives_caller_arena_reset :: proc(t: ^testing.T) {
+	wake_test_caller_arena_reset(t, false)
+}
+
+@(test)
+test_wake_attempt_survives_caller_arena_reset :: proc(t: ^testing.T) {
+	wake_test_caller_arena_reset(t, true)
+}
+
+@(private = "file")
+wake_test_caller_arena_reset :: proc(t: ^testing.T, attempt: bool) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	sync.mutex_lock(&wake_global_state_mu)
+	defer sync.mutex_unlock(&wake_global_state_mu)
+	saved_map, saved_once := bridge_agent_wake, bridge_wake_once
+	bridge_agent_wake, bridge_wake_once = nil, {}
+	defer {
+		bridge_agent_wake_reset()
+		delete(bridge_agent_wake)
+		bridge_agent_wake, bridge_wake_once = saved_map, saved_once
+	}
+	// Empty URL makes the attempt fail locally without launching or networking.
+	saved_url := bridge_config.daemon_url
+	bridge_config.daemon_url = ""
+	defer { bridge_config.daemon_url = saved_url }
+	backing := make([]byte, 64 * 1024)
+	defer delete(backing)
+	arena: mem.Arena
+	mem.arena_init(&arena, backing)
+	{
+		context.allocator = mem.arena_allocator(&arena)
+		id := strings.clone("inst_wake_arena")
+		if attempt {
+			testing.expect(t, !bridge_task_wake_if_needed(id, 50_000))
+		} else {
+			bridge_task_wake_note_launched(id, 50_000)
+		}
+	}
+	mem.zero_slice(backing)
+	free_all(mem.arena_allocator(&arena))
+	st, has := bridge_agent_wake["inst_wake_arena"]
+	if !testing.expect(t, has, "literal lookup after destroying caller storage") do return
+	testing.expect_value(t, st.last_wake_ms, i64(50_000))
+	testing.expect_value(t, st.generation, u64(0) if attempt else u64(1))
+	testing.expect(t, !bridge_task_wake_if_needed("inst_wake_arena", 51_000), "coalesced attempt")
+	bridge_task_wake_note_launched("inst_wake_arena", 52_000)
+	testing.expect_value(t, len(bridge_agent_wake), 1)
+	testing.expect_value(t, bridge_agent_wake["inst_wake_arena"].generation, st.generation + 1)
+
+	// Give the retained etag a nonempty value as well as provider/model.
+	bridge_provider_catalog_init()
+	fixture := Bridge_Provider_Catalog_Snapshot{etag = "retained_catalog"}
+	sync.rw_mutex_lock(&bridge_provider_catalog_mutex)
+	saved_catalog := bridge_provider_catalog_snapshot
+	bridge_provider_catalog_snapshot = &fixture
+	sync.rw_mutex_unlock(&bridge_provider_catalog_mutex)
+	defer {
+		sync.rw_mutex_lock(&bridge_provider_catalog_mutex)
+		bridge_provider_catalog_snapshot = saved_catalog
+		sync.rw_mutex_unlock(&bridge_provider_catalog_mutex)
+	}
+	{
+		context.allocator = mem.arena_allocator(&arena)
+		bridge_task_wake_record_result("inst_wake_arena", st.generation + 1,
+			false, "", bridge_error(.provider_missing),
+			`{"provider":"retained_provider","model":"retained_model"}`, 53_000)
+	}
+	mem.zero_slice(backing)
+	free_all(mem.arena_allocator(&arena))
+	parked := bridge_agent_wake["inst_wake_arena"]
+	testing.expect(t, parked.parked)
+	testing.expect_value(t, parked.catalog_etag, "retained_catalog")
+	testing.expect_value(t, parked.provider, "retained_provider")
+	testing.expect_value(t, parked.model, "retained_model")
+	// Cleanup must use the owning allocator even under another arena.
+	{
+		context.allocator = mem.arena_allocator(&arena)
+		bridge_task_wake_note_launched("inst_wake_arena", 54_000)
+		bridge_agent_wake_reset()
+	}
+	testing.expect_value(t, len(bridge_agent_wake), 0)
 }

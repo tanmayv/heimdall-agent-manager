@@ -157,7 +157,16 @@ bridge_rollover_state_locked :: proc(instance_id: string, create := true) -> ^Br
 		if s.agent_instance_id == instance_id do return &s
 	}
 	if !create || len(bridge_rollover_states) >= BRIDGE_ROLLOVER_MAX_INSTANCES do return nil
-	append(&bridge_rollover_states, Bridge_Rollover_State{agent_instance_id = strings.clone(instance_id, bridge_rollover_heap())})
+	// First creation can come from native launch under a disposable arena.
+	// Initialize all retained containers here, regardless of the entry point.
+	heap := bridge_rollover_heap()
+	if bridge_rollover_states.allocator.procedure == nil {
+		bridge_rollover_states = make([dynamic]Bridge_Rollover_State, allocator = heap)
+	}
+	append(&bridge_rollover_states, Bridge_Rollover_State{
+		agent_instance_id = strings.clone(instance_id, heap),
+		queued_notices = make([dynamic]string, allocator = heap),
+	})
 	return &bridge_rollover_states[len(bridge_rollover_states) - 1]
 }
 

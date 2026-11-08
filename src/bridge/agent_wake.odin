@@ -1,5 +1,6 @@
 package main
 
+import "base:runtime"
 import "core:fmt"
 import "core:time"
 import "core:math/rand"
@@ -28,6 +29,11 @@ bridge_agent_wake: map[string]Bridge_Wake_State // agent_instance_id -> wake sta
 
 bridge_wake_once: sync.Once
 
+// Wake bookkeeping is reached from native launches using disposable arenas.
+bridge_wake_heap :: proc() -> runtime.Allocator {
+	return runtime.heap_allocator()
+}
+
 // bridge_agent_wake_init allocates the wake state exactly once. It is idempotent
 // and never replaces the mutex or the map, because launch paths
 // (bridge_task_wake_note_launched) can run as soon as the hub worker starts. main
@@ -35,7 +41,7 @@ bridge_wake_once: sync.Once
 // no call order can touch nil state.
 bridge_agent_wake_init :: proc() {
 	sync.once_do(&bridge_wake_once, proc() {
-		bridge_agent_wake = make(map[string]Bridge_Wake_State)
+		bridge_agent_wake = make(map[string]Bridge_Wake_State, allocator = bridge_wake_heap())
 	})
 }
 
@@ -44,7 +50,10 @@ bridge_agent_wake_reset :: proc() {
 	bridge_agent_wake_init()
 	sync.mutex_lock(&bridge_wake_mutex)
 	defer sync.mutex_unlock(&bridge_wake_mutex)
-	for _, &st in bridge_agent_wake do bridge_wake_state_free(&st)
+	for key, &st in bridge_agent_wake {
+		bridge_wake_state_free(&st)
+		delete(key, bridge_wake_heap())
+	}
 	clear(&bridge_agent_wake)
 }
 
@@ -100,9 +109,9 @@ Bridge_Wake_Transition :: enum {
 }
 
 bridge_wake_state_free :: proc(st: ^Bridge_Wake_State) {
-	delete(st.catalog_etag)
-	delete(st.provider)
-	delete(st.model)
+	delete(st.catalog_etag, bridge_wake_heap())
+	delete(st.provider, bridge_wake_heap())
+	delete(st.model, bridge_wake_heap())
 	st.catalog_etag, st.provider, st.model = "", "", ""
 }
 
@@ -187,7 +196,7 @@ bridge_task_wake_note_launched :: proc(instance_id: string, now_ms: i64 = 0) {
 	bridge_agent_wake_init()
 	sync.mutex_lock(&bridge_wake_mutex)
 	defer sync.mutex_unlock(&bridge_wake_mutex)
-	if instance_id not_in bridge_agent_wake do bridge_agent_wake[strings.clone(instance_id)] = Bridge_Wake_State{}
+	if instance_id not_in bridge_agent_wake do bridge_agent_wake[strings.clone(instance_id, bridge_wake_heap())] = Bridge_Wake_State{}
 	st := &bridge_agent_wake[instance_id]
 	st.last_wake_ms = now_ms if now_ms > 0 else bridge_runtime_now_ms()
 	if st.parked || st.failures > 0 do fmt.println("bridge wake RECOVERED (launched)", instance_id)
@@ -223,7 +232,7 @@ bridge_task_wake_if_needed :: proc(instance_id: string, now: i64, deadline_ns: i
 		sync.mutex_unlock(&bridge_wake_mutex)
 		return false
 	}
-	if !has do bridge_agent_wake[strings.clone(instance_id)] = Bridge_Wake_State{}
+	if !has do bridge_agent_wake[strings.clone(instance_id, bridge_wake_heap())] = Bridge_Wake_State{}
 	slot := &bridge_agent_wake[instance_id]
 	slot.last_wake_ms = now
 	generation := slot.generation
@@ -270,8 +279,11 @@ bridge_task_wake_record_result :: proc(instance_id: string, generation: u64, ok:
 		// Snapshot the trigger baselines on EVERY parked failure, including a failed
 		// unpark attempt: otherwise a changed catalog etag would re-trigger each tick.
 		bridge_wake_state_free(st)
+		// These helpers return caller-owned strings. Select the persistent
+		// allocator only for this scope; their other callers remain unchanged.
+		context.allocator = bridge_wake_heap()
 		st.catalog_etag = bridge_provider_catalog_current_etag()
-		st.provider, st.model = bridge_runtime_provider_model(command_json) // caller-owned
+		st.provider, st.model = bridge_runtime_provider_model(command_json)
 	}
 	switch transition {
 	case .None:
