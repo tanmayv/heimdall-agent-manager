@@ -110,7 +110,7 @@ grant :: proc(s:^Store, command:json.Object, now:i64) -> (contracts.Owner_Read_G
 // entering here. Its pinned sequence/hash is rechecked under the write lock.
 // The key is a verified current directory member, never a request assertion.
 execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:contracts.Owner_Verified_Key,
-    directory_version:i64,directory_hash:string, now:i64, kr:^vault.Vault_Keyring, sign:Signer, fleet_child:Child={}, lifecycle_proof:Lifecycle_Proof={}, role_children:[]Child=nil, grant_proof:Grant_Proof={}, remote_key:contracts.Owner_Verified_Key={}, agent:Child={}) -> Result {
+    directory_version:i64,directory_hash:string, now:i64, kr:^vault.Vault_Keyring, sign:Signer, fleet_child:Child={}, lifecycle_proof:Lifecycle_Proof={}, role_children:[]Child=nil, grant_proof:Grant_Proof={}, remote_key:contracts.Owner_Verified_Key={}, agent:Child={}, source:Source_Proof={}) -> Result {
     context.allocator=context.temp_allocator
     c,parsed:=contracts.owner_parse(command_raw,"command")
     if !parsed do return fail("malformed")
@@ -181,7 +181,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     if len(chains)>0 do revision=number(chains[0][0])
     if creating && revision>0 do return fail("operation_conflict")
     if !creating && revision==0 do return fail("invalid_scope")
-    if method=="task.publish" || method=="task.priority"|| method=="native.history.import" || method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="dependency.edit" || method=="review.roles" || method=="task.hold" || method=="task.release" || method=="task.cancel" || method=="task.reopen" || method=="task.resolve" || method=="merge.retry" || method=="lease.revoke" || method=="task.recheck" || method=="task.escalate" || method=="submission.read" || method=="task.edit" || method=="task.delete" || method=="task.comment" || method=="task.read" || method=="fleet.edit" || method=="fleet.reserve" || method=="runtime.read" || method=="lifecycle.configure" || method=="requirements.edit" || method=="review.post" {
+    if method=="task.publish" || method=="task.priority"|| method=="native.history.import" || method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="dependency.edit" || method=="review.roles" || method=="task.hold" || method=="task.release" || method=="task.cancel" || method=="task.reopen" || method=="task.resolve" || method=="merge.retry" || method=="lease.revoke" || method=="task.recheck" || method=="task.escalate" || method=="lifecycle.force_submit" || method=="task.complete" || method=="task.split" || method=="submission.read" || method=="task.edit" || method=="task.delete" || method=="task.comment" || method=="task.read" || method=="fleet.edit" || method=="fleet.reserve" || method=="runtime.read" || method=="lifecycle.configure" || method=="requirements.edit" || method=="review.post" {
         tasks,found:=query(s.db,"SELECT revision FROM tasks WHERE chain_id=? AND task_id=?",chain,task)
         if !found do return fail("storage_error")
         if len(tasks)==1 {
@@ -233,7 +233,8 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     }
     if state[0][4]!="ready" do return fail("clock_uncertain")
     if method=="task.cancel" || method=="task.reopen" || method=="fleet.edit" || method=="fleet.reserve" || method=="lifecycle.configure" || method=="review.roles" || method=="dependency.edit" || method=="merge.retry" ||
-       method=="lease.revoke" || method=="task.escalate" || method=="task.recheck" {
+       method=="lease.revoke" || method=="task.escalate" || method=="task.recheck" ||
+       method=="lifecycle.force_submit" || method=="task.complete" || method=="task.split" {
         pending,read:=query(s.db,"SELECT 1 FROM deferred_workflow_retirements d WHERE d.chain_id=? AND d.task_id=? AND NOT EXISTS(SELECT 1 FROM deferred_workflow_dispositions r WHERE r.intent_id=d.intent_id) LIMIT 1",chain,task)
         if !read do return fail("storage_error")
         if len(pending)>0 do return fail("operation_conflict")
@@ -245,7 +246,8 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     body_limit,encoded_limit:=MAX_BODY,MAX_ENCODED_FIELD
     // Historical bundles carry several independently typed records. Keep a
     // separate bounded admission size; ordinary prose limits stay unchanged.
-    if method=="linked.put" || method=="linked.restore" || method=="native.history.import" || method=="native.metadata.import" { body_limit=65536;encoded_limit=131072 }
+    // A split carries every child's title, body and brief in one sealed body.
+    if method=="linked.put" || method=="linked.restore" || method=="native.history.import" || method=="native.metadata.import" || method=="task.split" { body_limit=65536;encoded_limit=131072 }
     for name in ([3]string{"title_cipher","body_cipher","description_cipher"}) {
         cipher:=field(p,name)
         if cipher=="" do continue
@@ -260,7 +262,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     if task!="" && method!="task.comment" && method!="native.history.import" && !workflow_task_current(s,chain,task) do return fail("stale_revision")
     // R2-6: a coordinator control states why (control event summary + the
     // agent-attributed event); revoke and escalate always do.
-    if (agent_mode && agent_reason_required(method)) || method=="lease.revoke" || method=="task.escalate" {
+    if (agent_mode && agent_reason_required(method)) || method=="lease.revoke" || method=="task.escalate" || method=="lifecycle.force_submit" || method=="task.complete" {
         if strings.trim_space(body)=="" do return fail("invalid_content")
     }
     // An imported chain is quarantined until the Hub cutover is observed:
@@ -330,7 +332,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         if code!="ok" do return fail(code)
         wrote=true
     case "review.roles":
-        code:=role_configure(s,c,body,role_children,seq,device,agent_mode)
+        code:=role_configure(s,c,body,role_children,seq,device,agent_mode,agent)
         if code!="ok" do return fail(code)
         wrote=true
     case "chain.create":
@@ -403,6 +405,28 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         }
         if code!="ok" do return fail(code)
         wrote=true
+    case "lifecycle.force_submit":
+        // P-CS CC-B: coordinator only; the head is the Bridge observation.
+        if !agent_mode do return fail("invalid_scope")
+        code:string
+        code,control_extra=force_submit_command(s,c,p,body,seq,source,agent)
+        if code!="ok" do return fail(code)
+        wrote=true
+    case "task.complete":
+        if !agent_mode do return fail("invalid_scope")
+        code:string
+        code,control_extra=complete_command(s,c,p,body,seq,agent)
+        if code!="ok" do return fail(code)
+        wrote=true
+    case "task.split":
+        code:string
+        code,control_extra=split_command(s,c,command_raw,payload,body,seq,device,agent_mode,role_children)
+        if code!="ok" do return fail(code)
+        wrote=true
+    case "chain.policy.set":
+        // Device-signed only: agent_command_method never admits it.
+        if !device do return fail("invalid_scope")
+        _,wrote=query(s.db,"INSERT INTO local_chain_policies VALUES(?,?,?,?,?,?)",chain,field(p,"policy"),field(p,"value"),fmt.tprintf("%d",seq),principal,op)
     case "lifecycle.configure", "requirements.edit", "review.post":
         code:=lifecycle_human(s,c,p,body,command_raw,payload,lifecycle_proof,device)
         if code!="ok" do return fail(code)
@@ -445,7 +469,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     if !source_lifecycle(&tx,c,p,seq,now) do return fail("storage_error")
     if !control_intents(&tx,c,seq) do return fail("storage_error")
     if method=="review.post" && !lifecycle_merge_intent(&tx,c,p,seq) do return fail("storage_error")
-    if method=="task.release" || method=="task.recheck" {
+    if method=="task.release" || method=="task.recheck" || method=="task.complete" {
         // A release (or recheck) may settle verdicts recorded under the hold. Bind a new
         // merge intent to that immutable submission, never to release input.
         submitted,read:=query(s.db,"SELECT attempt,head,requirements_revision FROM local_submissions WHERE chain_id=? AND task_id=? ORDER BY attempt DESC LIMIT 1",chain,task)
@@ -455,6 +479,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
             if !lifecycle_merge_intent(&tx,c,bound,seq) do return fail("storage_error")
         }
     }
+    if method=="task.split" && !split_registry(&tx,c,seq,kr,sign) do return fail("storage_error")
     if method=="chain.create" || method=="task.draft" || method=="task.create" || method=="chain.edit" || method=="task.edit" || method=="task.delete" {
         genesis_rows,found:=query(s.db,"SELECT genesis_digest FROM chain_genesis WHERE chain_id=?",chain)
         if !found || len(genesis_rows)!=1 do return fail("storage_error")

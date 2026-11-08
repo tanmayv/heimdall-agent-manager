@@ -45,7 +45,8 @@ agent_verb_role :: proc(verb:string) -> Agent_Role {
 agent_coordinator_control :: proc(verb:string) -> bool {
     switch verb {
     case "task.hold","task.release","task.cancel","task.reopen","task.resolve","merge.retry","task.delete","review.roles",
-         "chain.complete","workflow.retry","workflow.cancel","lease.revoke","task.recheck","task.escalate": return true
+         "chain.complete","workflow.retry","workflow.cancel","lease.revoke","task.recheck","task.escalate",
+         "lifecycle.force_submit","task.complete","task.split": return true
     }
     return false
 }
@@ -54,7 +55,8 @@ agent_coordinator_control :: proc(verb:string) -> bool {
 // is stored in the control event summary and the agent-attributed event.
 agent_reason_required :: proc(method:string) -> bool {
     switch method {
-    case "task.hold","task.release","task.cancel","task.reopen","task.resolve","lease.revoke","task.delete","task.escalate","merge.retry": return true
+    case "task.hold","task.release","task.cancel","task.reopen","task.resolve","lease.revoke","task.delete","task.escalate","merge.retry",
+         "lifecycle.force_submit","task.complete","task.split": return true
     }
     return false
 }
@@ -158,11 +160,19 @@ agent_command_admit :: proc(s:^Store,c:json.Object,payload:string,key:contracts.
     // in THIS chain (an enabled member or fleet worker) and to the chain's
     // configured repository. New members and grants stay human-only.
     switch method {
+    case "review.post":
+        // REQ-CC-13 (Hub solo_self_review parity): a coordinator that worked
+        // the task as its worker never reviews it, not even as a relay.
+        worked,ok:=agent_self_worked(s,chain,field(c,"task_id"),agent)
+        if !ok do return "storage_error"
+        if worked do return "invalid_scope"
     case "fleet.edit":
         participant,ok:=agent_chain_participant(s,chain,field(p,"instance_id"))
         if !ok do return "storage_error"
         if !participant do return "invalid_scope"
     case "lifecycle.configure":
+        // REQ-CC-13: the coordinator never names itself the reviewer.
+        if field(p,"reviewer_instance_id")==agent.instance || field(p,"reviewer_agent_id")==agent.agent_id do return "invalid_scope"
         participant,ok:=agent_chain_participant(s,chain,field(p,"reviewer_instance_id"))
         if !ok do return "storage_error"
         if !participant do return "invalid_scope"
@@ -186,10 +196,10 @@ agent_grant :: proc(s:^Store,c:json.Object,now:i64) -> contracts.Owner_Read_Gran
 // agent's behalf. The directory pin is the owner's current one.
 // fleet_child and proof are Bridge-observed facts for fleet.edit and
 // lifecycle.configure, exactly as on the device path.
-execute_agent :: proc(s:^Store,command_raw,payload:string,agent:Child,owner_key:contracts.Owner_Verified_Key,now:i64,kr:^vault.Vault_Keyring,sign:Signer,fleet_child:Child={},proof:Lifecycle_Proof={},role_children:[]Child=nil) -> Result {
+execute_agent :: proc(s:^Store,command_raw,payload:string,agent:Child,owner_key:contracts.Owner_Verified_Key,now:i64,kr:^vault.Vault_Keyring,sign:Signer,fleet_child:Child={},proof:Lifecycle_Proof={},role_children:[]Child=nil,source:Source_Proof={}) -> Result {
     version,hash:=directory_pin(s)
     if version<0 do return fail("storage_error")
-    return execute(s,command_raw,payload,"",owner_key,owner_key,version,hash,now,kr,sign,fleet_child,proof,role_children,agent=agent)
+    return execute(s,command_raw,payload,"",owner_key,owner_key,version,hash,now,kr,sign,fleet_child,proof,role_children,agent=agent,source=source)
 }
 
 // An enabled current member (latest version) or an enabled fleet worker of

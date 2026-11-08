@@ -39,7 +39,7 @@ owner_hex :: proc(s: string, n: int) -> bool {
 
 owner_method_valid :: proc(s: string) -> bool {
     switch s {
-    case "linked.facet.read", "envelope.read", "linked.put", "linked.delete", "linked.restore", "linked.read", "linked.fetch", "linked.backup", "chain.draft", "task.draft", "task.publish", "chain.propose", "chain.decide", "chain.publish", "work.dependency.add", "work.dependency.remove", "work.scope", "chain.complete", "work.read", "workflow.draft", "chain.member.set", "chain.directory.set", "chain.defaults.set", "chain.summary.set", "chain.metadata.read", "task.priority", "native.metadata.import", "native.metadata.read", "fleet.policy.set", "fleet.policy.read", "native.history.import", "native.history.read", "native.history.fetch", "attempt.read", "history.read", "history.fetch", "context.read", "grant.set", "grant.revoke", "grant.read", "grant.policy", "grant.recover", "workflow.coordinator", "workflow.cancel", "workflow.gate", "workflow.define", "workflow.run", "workflow.retry", "workflow.read", "source.observe", "source.consume", "source.ack", "source.retire", "source.resolve", "source.escalate", "source.read", "dependency.edit", "review.roles", "task.hold", "task.release", "task.cancel", "task.reopen", "task.resolve", "merge.retry", "lease.revoke", "task.recheck", "task.escalate", "submission.read", "chain.edit", "task.edit", "task.delete", "chain.search", "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "fleet.reserve", "runtime.read", "lifecycle.configure", "requirements.edit", "review.post", "migration.archive.read": return true
+    case "linked.facet.read", "envelope.read", "linked.put", "linked.delete", "linked.restore", "linked.read", "linked.fetch", "linked.backup", "chain.draft", "task.draft", "task.publish", "chain.propose", "chain.decide", "chain.publish", "work.dependency.add", "work.dependency.remove", "work.scope", "chain.complete", "work.read", "workflow.draft", "chain.member.set", "chain.directory.set", "chain.defaults.set", "chain.summary.set", "chain.metadata.read", "task.priority", "native.metadata.import", "native.metadata.read", "fleet.policy.set", "fleet.policy.read", "native.history.import", "native.history.read", "native.history.fetch", "attempt.read", "history.read", "history.fetch", "context.read", "grant.set", "grant.revoke", "grant.read", "grant.policy", "grant.recover", "workflow.coordinator", "workflow.cancel", "workflow.gate", "workflow.define", "workflow.run", "workflow.retry", "workflow.read", "source.observe", "source.consume", "source.ack", "source.retire", "source.resolve", "source.escalate", "source.read", "dependency.edit", "review.roles", "task.hold", "task.release", "task.cancel", "task.reopen", "task.resolve", "merge.retry", "lease.revoke", "task.recheck", "task.escalate", "lifecycle.force_submit", "task.complete", "task.split", "chain.policy.set", "submission.read", "chain.edit", "task.edit", "task.delete", "chain.search", "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "fleet.reserve", "runtime.read", "lifecycle.configure", "requirements.edit", "review.post", "migration.archive.read": return true
     }
     return false
 }
@@ -95,6 +95,7 @@ owner_field_valid :: proc(s, kind: string) -> bool {
         return true
     case "flag": return s == "0" || s == "1"
     case "revoke_mode": return s == "checkpoint" || s == "stop"
+    case "chain_policy": return s == "coordinator_force_done"
     case "cancel_dependents":
         if s == "drop" || s == "keep" do return true
         return strings.has_prefix(s, "repoint:") && owner_field_valid(s[len("repoint:"):], "id")
@@ -135,7 +136,7 @@ owner_document_valid :: proc(kind: string, o: json.Object) -> bool {
     }
     if kind == "command" {
         method, task := owner_string(o, "method"), owner_string(o, "task_id")
-        if (method == "task.priority" || method == "native.history.import" || method == "native.history.read" || method == "native.history.fetch" || method == "attempt.read" || method == "dependency.edit" || method == "review.roles" || method == "task.hold" || method == "task.release" || method == "task.cancel" || method == "task.reopen" || method == "task.resolve" || method == "merge.retry" || method == "lease.revoke" || method == "task.recheck" || method == "task.escalate" || method == "submission.read" || method == "task.edit" || method == "task.delete" || method == "task.draft" || method == "task.publish" || method == "task.create" || method == "task.comment" || method == "task.read" || method == "fleet.edit" || method == "fleet.reserve" || method == "runtime.read" || method == "lifecycle.configure" || method == "requirements.edit" || method == "review.post") != (task != "") do return false
+        if (method == "task.priority" || method == "native.history.import" || method == "native.history.read" || method == "native.history.fetch" || method == "attempt.read" || method == "dependency.edit" || method == "review.roles" || method == "task.hold" || method == "task.release" || method == "task.cancel" || method == "task.reopen" || method == "task.resolve" || method == "merge.retry" || method == "lease.revoke" || method == "task.recheck" || method == "task.escalate" || method == "lifecycle.force_submit" || method == "task.complete" || method == "task.split" || method == "submission.read" || method == "task.edit" || method == "task.delete" || method == "task.draft" || method == "task.publish" || method == "task.create" || method == "task.comment" || method == "task.read" || method == "fleet.edit" || method == "fleet.reserve" || method == "runtime.read" || method == "lifecycle.configure" || method == "requirements.edit" || method == "review.post") != (task != "") do return false
     }
     if kind=="native_attempt" {
         ended,outcome:=owner_string(o,"ended_ms"),owner_string(o,"outcome")
@@ -199,6 +200,10 @@ owner_payload_kind :: proc(method: string) -> string {
     case "fleet.reserve": return "fleet_reserve_payload"
     case "task.hold", "task.release", "task.cancel", "task.reopen", "task.resolve", "task.recheck", "task.escalate": return "control_payload"
     case "lease.revoke": return "revoke_payload"
+    case "lifecycle.force_submit": return "force_submit_payload"
+    case "task.complete": return "complete_payload"
+    case "task.split": return "comment_payload"
+    case "chain.policy.set": return "chain_policy_payload"
     case "lease.handoff": return "handoff_payload"
     case "lease.block": return "block_payload"
     case "lease.switch": return "switch_payload"

@@ -83,7 +83,7 @@ source_lifecycle :: proc(tx:^Transaction,c,p:json.Object,seq,now:i64)->bool {
         state,ok:=query(s.db,"SELECT state,attempt FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)
         if !ok do return false
         if len(state)==1 {
-            if method=="lease.submit" {
+            if method=="lease.submit" || method=="lifecycle.force_submit" {
                 if _,ok=query(s.db,"INSERT INTO source_episodes(chain_id,origin_kind,origin_id,episode_id,source_version,resolved,deadline_ms,body) VALUES(?,'local.review',?,?,?,0,?,?)",chain,task,state[0][1],version,fmt.tprintf("%d",now+LEASE_TTL_MS),"Independent review awaiting required verdicts");!ok do return false
                 if !source_pin(s,c,"local.review",task,state[0][1]) do return false
             }

@@ -181,5 +181,5 @@ owner_remote_stop_v27_upgrade_collision_preserves_pending_intent :: proc(t:^test
     testing.expect(t,exec(db,"DROP VIEW owner_execution_stop_steps"));testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     rows,_=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations),database_id FROM runtime_database")
-    testing.expect(t,rows[0][0]=="35" && rows[0][1]=="35" && rows[0][2]==before[0][0])
+    testing.expect(t,rows[0][0]=="36" && rows[0][1]=="36" && rows[0][2]==before[0][0])
 }

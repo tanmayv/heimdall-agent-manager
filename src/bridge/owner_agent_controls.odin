@@ -32,6 +32,10 @@ bridge_owner_control_method :: proc(method:string) -> string {
     case "agent.task_chain.complete","agent.work.complete": return "chain.complete"
     case "agent.workflow.retry": return "workflow.retry"
     case "agent.workflow.cancel": return "workflow.cancel"
+    // P-CS CC-B work operations.
+    case "agent.task.submit_review": return "lifecycle.force_submit"
+    case "agent.task.complete": return "task.complete"
+    case "agent.task.split": return "task.split"
     }
     return ""
 }
@@ -74,7 +78,8 @@ bridge_owner_control_fields :: proc(owner_method:string,p:json.Object) -> (Owner
     }
     if out.reason=="" {
         switch owner_method {
-        case "task.hold","task.release","task.cancel","task.reopen","task.resolve","task.escalate","merge.retry","task.delete","lease.revoke":
+        case "task.hold","task.release","task.cancel","task.reopen","task.resolve","task.escalate","merge.retry","task.delete","lease.revoke",
+             "lifecycle.force_submit","task.complete","task.split":
             return {},"a reason is required (--reason)"
         }
     }
@@ -92,6 +97,10 @@ bridge_owner_control_refusal :: proc(owner_method,code:string) -> string {
             return "refused: only the chain coordinator may configure review roles, for agents already in this chain, and it may add but never remove a user-approval gate"
         case "task.delete":
             return "refused: only the chain coordinator may delete a task"
+        case "lifecycle.force_submit":
+            return "refused: only the chain coordinator may submit for review, and the worktree head must be clean and descend from the base"
+        case "task.split":
+            return "refused: only the chain coordinator may split; an agent cannot drop the original's user-approval gate on a child, assign agents outside this chain, or split a task escalated to a human"
         }
         return "refused: only the verified chain coordinator may use this control"
     case "operation_conflict":
@@ -105,9 +114,21 @@ bridge_owner_control_refusal :: proc(owner_method,code:string) -> string {
         case "lease.revoke": return "the task has no live lease to revoke"
         case "task.delete": return "only an unstarted task (no lease, assignment, configuration or history) can be deleted"
         case "merge.retry": return "the task is not merge-blocked with a pending merge"
+        case "lifecycle.force_submit": return "only a ready, not held/blocked/cancelled, ordinary task that has had a lease (whose last lease has not already submitted) can be submitted for review"
+        case "task.split": return "only a ready (not in review, merging, done or cancelled) ordinary task can be split, child ids must be new, and dependents cannot be generated workflow tasks or form a cycle"
         }
-    case "stale_revision": return "the task changed concurrently; read it again and retry"
-    case "invalid_content": return "a reason is required (--reason)"
+    case "stale_revision":
+        switch owner_method {
+        case "lifecycle.force_submit": return "the requirements were not acknowledged on the task's last lease (or changed); pass --override-ack with --reason to submit anyway"
+        case "task.complete": return "the attempt or submitted head changed; read the task again and retry"
+        }
+        return "the task changed concurrently; read it again and retry"
+    case "invalid_content":
+        switch owner_method {
+        case "task.split": return "invalid split: a reason, 1-32 children each with a new task_id and title, a valid brief (goal and acceptance), and a map naming every dependent with child ids"
+        case "lifecycle.force_submit": return "a reason is required (--reason), and the brief's output contract must be satisfiable without output"
+        }
+        return "a reason is required (--reason)"
     }
     return fmt.tprintf("owner %s refused",owner_method)
 }
@@ -162,7 +183,33 @@ bridge_owner_control :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -
     if not_found!="" do return not_found
     payload:string
     role_children:=make([dynamic]owner.Child,context.temp_allocator)
+    source:owner.Source_Proof
     switch owner_method {
+    case "lifecycle.force_submit":
+        summary:=bridge_owner_pstr(p,"summary")
+        if summary=="" do return bridge_owner_fail(ctx,"bad_request","submit for review requires --summary (and --reason)")
+        if !st.configured do return bridge_owner_fail(ctx,"invalid_scope","the task has no lifecycle configuration")
+        // The head is observed from the task worktree here, never taken from
+        // the caller (R2-3), exactly as lease submit does.
+        source=bridge_owner_source_proof(s,st.chain_id,st.task_id)
+        if !source.valid do return bridge_owner_fail(ctx,"worktree_not_clean",fmt.tprintf("the task worktree %s must be clean and descend from the base",contracts.owner_string(st.config,"worktree")))
+        override:="0"
+        if b,ok:=p["override_ack"].(json.Boolean);ok && bool(b) do override="1"
+        requirements:=bridge_owner_pstr(p,"expected_requirements_revision")
+        if requirements=="" do requirements=st.requirements_revision
+        payload=bridge_owner_json(map[string]string{"requirements_revision"=requirements,"head"=source.head,"summary"=summary,"override_ack"=override,"body_cipher"=sealed_reason})
+    case "task.complete":
+        if b,ok:=p["force"].(json.Boolean);!ok || !bool(b) do return bridge_owner_fail(ctx,"bad_request","task done needs --force (it skips only the independent review); use task recheck to settle verdicts already posted")
+        if code,why:=owner.complete_refusal_locked(s,st.chain_id,st.task_id,ctx.child);code!="ok" do return bridge_owner_fail(ctx,code,fmt.tprintf("refused: %s",why) if why!="" else bridge_owner_control_refusal(owner_method,code))
+        attempt:=st.attempt
+        if attempt=="" do attempt="0"
+        payload=bridge_owner_json(map[string]string{"attempt"=attempt,"head"=st.head if st.state=="in_review" else "","force"="1","body_cipher"=sealed_reason})
+    case "task.split":
+        body,code,message:=bridge_owner_split_body(ctx,st,p,fields.reason,&role_children)
+        if code!="ok" do return bridge_owner_fail(ctx,code,message)
+        cipher,ok:=bridge_owner_cipher(ctx,body)
+        if !ok do return bridge_owner_fail(ctx,"vault_locked","cannot seal the split")
+        payload=bridge_owner_json(map[string]string{"body_cipher"=cipher})
     case "task.cancel":
         values:=map[string]string{"body_cipher"=sealed_reason}
         defer delete(values)
@@ -185,7 +232,7 @@ bridge_owner_control :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -
     case:
         payload=bridge_owner_json(map[string]string{"body_cipher"=sealed_reason})
     }
-    r:=bridge_owner_run_command(ctx,owner_method,st.chain_id,st.task_id,st.task_revision,payload,role_children=role_children[:])
+    r:=bridge_owner_run_command(ctx,owner_method,st.chain_id,st.task_id,st.task_revision,payload,role_children=role_children[:],source=source)
     if r.code!="ok" do return bridge_owner_fail(ctx,r.code,bridge_owner_control_refusal(owner_method,r.code))
     out:=bridge_owner_result_object(r.body)
     out["authority"]=json.Object{"kind"=json.String("owner"),"bridge_id"=json.String(bridge_config.daemon_id)}
@@ -228,4 +275,56 @@ bridge_owner_review_roles_body :: proc(ctx:^Owner_Agent_Ctx,st:owner.Agent_Task_
     }
     revision:=fmt.tprintf("%d",owner.number(rows[0][0])+1)
     return bridge_owner_json(map[string]string{"configuration_revision"=revision,"requires_user_approval"=approval,"pairs"=bridge_owner_json(pairs)}),"ok",""
+}
+
+// task.split child file: {children:[{task_id?,title,body?|description?,brief?,
+// assignee?|assignee_instance_id?,unassigned?}], dependents all|last|map,
+// map {dependent:[child ids]}}. Ids are generated when absent; assignees must
+// be running participants of this chain (observed here, like review roles).
+bridge_owner_split_body :: proc(ctx:^Owner_Agent_Ctx,st:owner.Agent_Task_State,p:json.Object,reason:string,observed:^[dynamic]owner.Child) -> (string,string,string) {
+    list,is_list:=p["children"].(json.Array)
+    if !is_list || len(list)<1 || len(list)>32 do return "","bad_request","task split needs 1-32 children (--child-file)"
+    dependents:=bridge_owner_pstr(p,"dependents")
+    if dependents=="" do dependents="all"
+    if dependents!="all" && dependents!="last" && dependents!="map" do return "","bad_request","--dependents must be all, last or map"
+    children:=make(json.Array,0,len(list),context.temp_allocator)
+    for item in list {
+        spec,obj:=item.(json.Object)
+        if !obj do return "","bad_request","each child is an object with at least a title"
+        id:=bridge_owner_pstr(spec,"task_id")
+        if id=="" do id=bridge_owner_fresh_id("task")
+        title:=bridge_owner_plain(ctx,bridge_owner_pstr(spec,"title"))
+        if title=="" do return "","bad_request","each child needs a title"
+        body:=bridge_owner_pstr(spec,"body")
+        if body=="" do body=bridge_owner_pstr(spec,"description")
+        child:=make(json.Object,context.temp_allocator)
+        child["task_id"]=json.String(id);child["title"]=json.String(title);child["body"]=json.String(bridge_owner_plain(ctx,body))
+        if brief:=bridge_owner_brief_text(ctx,spec);brief!="" {
+            v,ok:=json.parse_string(brief,.JSON,true,context.temp_allocator)
+            if bo,is_obj:=v.(json.Object);ok==.None && is_obj do child["brief"]=bo
+        }
+        if b,typed:=spec["unassigned"].(json.Boolean);typed && bool(b) do child["unassigned"]=json.Boolean(true)
+        instance:=bridge_owner_pstr(spec,"assignee_instance_id")
+        if agent_id:=bridge_owner_pstr(spec,"assignee");agent_id!="" {
+            resolved,code,message:=bridge_owner_resolve_agent(ctx,st.chain_id,agent_id,"assignee")
+            if code!="ok" do return "",code,message
+            if instance!="" && instance!=resolved.instance do return "","bad_request","assignee and assignee_instance_id disagree"
+            instance=resolved.instance
+            append(observed,resolved)
+        } else if instance!="" {
+            current,live:=bridge_owner_child_locked(instance,"")
+            if !live do return "","invalid_scope",fmt.tprintf("%s is not a running instance on this Bridge",instance)
+            append(observed,current)
+        }
+        if instance!="" do child["assignee_instance_id"]=json.String(instance)
+        append(&children,child)
+    }
+    out:=make(json.Object,context.temp_allocator)
+    out["reason"]=json.String(reason);out["dependents"]=json.String(dependents);out["children"]=children
+    if dependents=="map" {
+        m,is_map:=p["map"].(json.Object)
+        if !is_map do return "","bad_request","--dependents map needs a map {dependent_task_id: [child task ids]}"
+        out["map"]=m
+    }
+    return bridge_owner_json(out),"ok",""
 }
