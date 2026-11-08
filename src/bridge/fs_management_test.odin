@@ -46,21 +46,26 @@ import vault "odin_test:lib/vault"
 // fs_test_base resolves (and pins) the shared temp base as the GLOBAL sandbox
 // root. Idempotent across concurrent tests: they all compute + write the same
 // absolute path. Per-test isolation comes from unique subdirs (see make_root).
+// Writes to the global root are serialized with every other test that swaps
+// bridge_fs_root (they hold bridge_test_config_mutex); a caller that already
+// holds the mutex passes config_locked=true.
 @(private = "file")
-fs_test_base :: proc() -> string {
+fs_test_base :: proc(config_locked := false) -> string {
 	base := os.get_env_alloc("TMPDIR", context.allocator)
 	if strings.trim_space(base) == "" do base = "/tmp"
 	base = strings.trim_right(base, "/")
 	if resolved, rerr := os.get_absolute_path(base, context.allocator); rerr == nil do base = resolved
+	if !config_locked do sync.mutex_lock(&bridge_test_config_mutex)
 	bridge_fs_root = base // global root = shared temp base (defense-in-depth ceiling)
+	if !config_locked do sync.mutex_unlock(&bridge_test_config_mutex)
 	return base
 }
 
 // fs_test_make_root creates a unique per-test subdir under the shared base and
 // returns its absolute path, to be passed as `sandbox_root` to every op.
 @(private = "file")
-fs_test_make_root :: proc(t: ^testing.T, tag: string) -> string {
-	base := fs_test_base()
+fs_test_make_root :: proc(t: ^testing.T, tag: string, config_locked := false) -> string {
+	base := fs_test_base(config_locked)
 	stamp := fs_test_stamp()
 	defer delete(stamp)
 	root := strings.concatenate({base, "/ham_fs_test_", tag, "_", stamp})
@@ -470,7 +475,7 @@ fs_run_dir_root_resolves_within_instances_base :: proc(t: ^testing.T) {
 	saved_dir := bridge_config.local_endpoint_run_dir
 	defer { bridge_config.local_endpoint_run_dir = saved_dir }
 
-	base := fs_test_make_root(t, "rundir_base")
+	base := fs_test_make_root(t, "rundir_base", config_locked = true)
 	defer fs_test_cleanup(base)
 	bridge_config.local_endpoint_run_dir = base
 	// The instance dir need not exist yet (agent may not have launched).
@@ -487,7 +492,7 @@ fs_run_dir_root_sanitizes_instance_id :: proc(t: ^testing.T) {
 	saved_dir := bridge_config.local_endpoint_run_dir
 	defer { bridge_config.local_endpoint_run_dir = saved_dir }
 
-	base := fs_test_make_root(t, "rundir_sanitize")
+	base := fs_test_make_root(t, "rundir_sanitize", config_locked = true)
 	defer fs_test_cleanup(base)
 	bridge_config.local_endpoint_run_dir = base
 	// Slashes are stripped by bridge_runtime_safe_part, so a traversal-looking id
@@ -519,7 +524,7 @@ fs_run_dir_root_canonicalizes_symlinked_base :: proc(t: ^testing.T) {
 	// macOS /tmp -> /private/tmp), the raw (unresolved) base failed to prefix-match
 	// the symlink-resolved run dir, so every run-dir op returned path_outside_root.
 	// bridge_fs_run_dir_root must canonicalize the base before the containment check.
-	real_base := fs_test_make_root(t, "rundir_symlink_real")
+	real_base := fs_test_make_root(t, "rundir_symlink_real", config_locked = true)
 	defer fs_test_cleanup(real_base)
 	// A sibling symlink pointing at the real base; configure the LINK path as the
 	// run dir so resolution has to follow the symlink.
@@ -1174,7 +1179,7 @@ fs_vault_read_file_encryption_lifecycle :: proc(t: ^testing.T) {
 		}
 	}
 
-	root := fs_test_make_root(t, "vault_read")
+	root := fs_test_make_root(t, "vault_read", config_locked = true)
 	defer fs_test_cleanup(root)
 	fs_test_seed_file(t, root, "confidential.txt", "classified data 12345")
 
@@ -1234,7 +1239,7 @@ fs_vault_write_file_requires_path_bound_ciphertext :: proc(t: ^testing.T) {
 		}
 	}
 
-	root := fs_test_make_root(t, "vault_write")
+	root := fs_test_make_root(t, "vault_write", config_locked = true)
 	defer fs_test_cleanup(root)
 
 	test_key := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -1264,7 +1269,7 @@ fs_vault_write_file_requires_path_bound_ciphertext :: proc(t: ^testing.T) {
 	expect_rejected(t, root, "other.txt", test_fs_write_seal("x", test_key, root, "valid.txt"), "a token sealed for another path")
 	// P4 root binding: a write sealed for the same relative path under ANOTHER project
 	// root (a hub replaying project A's write into project B) is refused.
-	other_root := fs_test_make_root(t, "vault_write_other")
+	other_root := fs_test_make_root(t, "vault_write_other", config_locked = true)
 	defer fs_test_cleanup(other_root)
 	expect_rejected(t, root, "env.txt", test_fs_write_seal("x", test_key, other_root, "env.txt"), "a token sealed for another project root")
 	content_env, _ := test_encrypt_hex("x", test_key)
@@ -1301,7 +1306,7 @@ fs_vault_batch_write_enforces_decryption_per_item :: proc(t: ^testing.T) {
 		}
 	}
 
-	root := fs_test_make_root(t, "vault_batch")
+	root := fs_test_make_root(t, "vault_batch", config_locked = true)
 	defer fs_test_cleanup(root)
 
 	test_key := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
