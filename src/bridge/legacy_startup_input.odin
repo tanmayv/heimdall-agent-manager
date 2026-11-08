@@ -5,7 +5,7 @@ import contracts "odin_test:contracts"
 import executor "odin_test:lib/executor_local"
 
 // Caller holds application -> startup I/O -> physical gates. The native
-// journal, retained token issuance, current directory mapping and both daemon
+// journal, retained token issuance, current project directory and both daemon
 // identities must agree before a startup reminder can write to the PTY.
 // Unknown historical children are never replaced or treated as absent.
 bridge_legacy_startup_input_allowed_locked :: proc(s:^executor.Store,inst:Bridge_Runtime_Instance,socket:string)->bool {
@@ -23,11 +23,12 @@ bridge_legacy_startup_input_allowed_locked :: proc(s:^executor.Store,inst:Bridge
     if !valid || material.run_count!=inst.startup.rec.run_count ||
        bridge_local_hash_token(material.token)!=inst.startup.rec.token_hash ||
        inst.startup.launch_key!=inst.startup.rec.token_hash {return false}
-    resources:=bridge_executor_resolve_local(s,rows[0][1],material.request)
+    resources:=bridge_executor_resolve_local(s,rows[0][1],material)
     if !resources.resolved do return false
     targets:=make([dynamic]executor.Legacy_Resource,context.temp_allocator)
     append(&targets,executor.Legacy_Resource{"instance",inst.agent_instance_id})
-    for path in ([3]string{resources.directory_path,material.run_dir,material.request.cwd}) {
+    for path,i in ([3]string{resources.directory_path,material.run_dir,material.request.cwd}) {
+        if path=="" && i==0 do continue // A launch without a project.
         if path=="" do return false
         canonical,exists:=bridge_executor_canonical_directory(path)
         if !exists do return false

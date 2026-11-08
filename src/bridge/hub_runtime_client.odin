@@ -986,10 +986,6 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
         bridge_executor_exchange_handle(conn,text)
         return
     }
-    if type == "executor_local_launch" {
-        bridge_executor_local_handle(conn,text)
-        return
-    }
     if type == "executor_issuance" {
         bridge_executor_issuance_handle(conn,text)
         return
@@ -2619,14 +2615,14 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
     _ = command_id
     _ = deadline_ns
     ok,detail,err=bridge_executor_local_stage(command_json,purpose,origin=origin,observation_action=observation_action,observation_entry_index=observation_entry_index,observation_entry_digest=observation_entry_digest)
-    if !ok do bridge_executor_local_note_pending(command_json,detail,err)
+    if !ok do bridge_executor_local_note_failure(command_json,detail,err)
     return
 }
 
 bridge_runtime_launch_provider_test :: proc(command_id, command_json: string,observation_action:executor.Legacy_Action={}) -> (ok: bool, detail: string, err: Bridge_Error) {
     _ = command_id
     ok,detail,err=bridge_executor_local_stage(command_json,"provider_test",observation_action=observation_action)
-    if !ok do bridge_executor_local_note_pending(command_json,detail,err)
+    if !ok do bridge_executor_local_note_failure(command_json,detail,err)
     return
 }
 

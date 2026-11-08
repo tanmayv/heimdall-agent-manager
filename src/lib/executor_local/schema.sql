@@ -1,6 +1,6 @@
 
 CREATE TABLE executor_runtime (
- singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=15),
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=16),
  account_id TEXT NOT NULL, executor_bridge_id TEXT NOT NULL, operator_key_id TEXT NOT NULL,
  incarnation INTEGER NOT NULL CHECK(incarnation>0), clock_high_ms INTEGER NOT NULL CHECK(clock_high_ms>=0),
  recovery_state TEXT NOT NULL CHECK(recovery_state IN ('ready','reconciling','clock_uncertain')),
@@ -16,6 +16,9 @@ CREATE TABLE executor_policies (revision INTEGER PRIMARY KEY, input_digest TEXT 
 CREATE TRIGGER policy_no_update BEFORE UPDATE ON executor_policies BEGIN SELECT RAISE(ABORT,'immutable policy'); END;
 CREATE TRIGGER policy_no_delete BEFORE DELETE ON executor_policies BEGIN SELECT RAISE(ABORT,'immutable policy'); END;
 CREATE TABLE executor_slots (slot_id TEXT PRIMARY KEY, provider_profile TEXT NOT NULL, enabled INTEGER NOT NULL CHECK(enabled IN (0,1)));
+-- Reserved, permanently disabled slot identity for native local launches.
+-- It satisfies the retained foreign key and is never offered by a policy path.
+INSERT INTO executor_slots VALUES('native_local','',0);
 CREATE TABLE executor_owner_watermarks (owner_bridge_id TEXT PRIMARY KEY, incarnation INTEGER NOT NULL CHECK(incarnation>0));
 CREATE TRIGGER owner_watermark_monotonic BEFORE UPDATE ON executor_owner_watermarks
 WHEN NEW.owner_bridge_id IS NOT OLD.owner_bridge_id OR NEW.incarnation<OLD.incarnation
@@ -184,20 +187,23 @@ CREATE TABLE executor_local_observations (
 );
 CREATE TRIGGER local_observation_no_update BEFORE UPDATE ON executor_local_observations BEGIN SELECT RAISE(ABORT,'immutable local observation'); END;
 CREATE TRIGGER local_observation_no_delete BEFORE DELETE ON executor_local_observations BEGIN SELECT RAISE(ABORT,'retained local observation'); END;
+-- Policy-governed resources only. Native local launches (reserved slot
+-- native_local) are not charged against device slots, capacity or directories.
 CREATE VIEW executor_live_resources AS
  SELECT slot_id,instance_id,directory_key FROM executor_reservations WHERE state!='released'
- UNION ALL SELECT slot_id,instance_id,directory_key FROM executor_local_launches WHERE state!='released';
+ UNION ALL SELECT slot_id,instance_id,directory_key FROM executor_local_launches WHERE state!='released' AND slot_id!='native_local';
 CREATE TRIGGER reservation_shared_admission BEFORE INSERT ON executor_reservations
 WHEN NEW.state!='released' AND (
  (SELECT count(*) FROM executor_live_resources)>=(SELECT device_capacity FROM executor_runtime)
  OR EXISTS(SELECT 1 FROM executor_live_resources WHERE slot_id=NEW.slot_id OR instance_id=NEW.instance_id
-   OR (directory_key!='' AND directory_key=NEW.directory_key)))
-BEGIN SELECT RAISE(ABORT,'shared executor resource conflict'); END;
-CREATE TRIGGER local_shared_admission BEFORE INSERT ON executor_local_launches
-WHEN NEW.state!='admitted' OR
- (SELECT count(*) FROM executor_live_resources)>=(SELECT device_capacity FROM executor_runtime)
- OR EXISTS(SELECT 1 FROM executor_live_resources WHERE slot_id=NEW.slot_id OR instance_id=NEW.instance_id
    OR (directory_key!='' AND directory_key=NEW.directory_key))
+ OR EXISTS(SELECT 1 FROM executor_local_launches WHERE state!='released' AND instance_id=NEW.instance_id))
+BEGIN SELECT RAISE(ABORT,'shared executor resource conflict'); END;
+-- A native local admission needs only one live exact child per instance.
+CREATE TRIGGER local_shared_admission BEFORE INSERT ON executor_local_launches
+WHEN NEW.state!='admitted' OR NEW.slot_id!='native_local' OR NEW.directory_key!=''
+ OR EXISTS(SELECT 1 FROM executor_local_launches WHERE state!='released' AND instance_id=NEW.instance_id)
+ OR EXISTS(SELECT 1 FROM executor_reservations WHERE state!='released' AND instance_id=NEW.instance_id)
 BEGIN SELECT RAISE(ABORT,'shared executor resource conflict'); END;
 
 CREATE TABLE executor_local_drafts (

@@ -693,7 +693,7 @@ export function LiveInstanceDetailPane({
               </StatusPill>
             ) : null}
           </div>
-          <AgentFailureNotice runtimeStatus={runtimeStatus} lastError={inst?.last_error} instanceId={instanceId} />
+          <AgentFailureNotice runtimeStatus={runtimeStatus} lastError={inst?.last_error} />
         </DetailRow>
 
         <DetailRow label="Provider & Model">

@@ -58,3 +58,14 @@ test('AgentDetail renders a failed instance by its error class', () => {
   assert.equal(render('running', missingProvider), '');
   assert.equal(render('failed', null), '');
 });
+
+test('a launch failure never renders an approval or operator-configuration surface', () => {
+  const render = (lastError: unknown) =>
+    renderToStaticMarkup(React.createElement(AgentFailureNotice, { runtimeStatus: 'failed', lastError }));
+  const legacyPending = { code: 'internal_error', class: 'recoverable', cause: 'agent_launch_failed',
+    message: JSON.stringify({ code: 'launch_authorization_required', executor_bridge_id: 'brg', draft_id: 'a'.repeat(64), draft_revision: '1', configuration_digest: 'b'.repeat(64), state: 'pending' }) };
+  const html = render(legacyPending);
+  assert.doesNotMatch(html, /local-launch-approval|Launch approval required|Approve exact launch|Prepare review/);
+  assert.doesNotMatch(render({ code: 'internal_error', class: 'recoverable', cause: 'agent_launch_failed', message: 'directory_selection_required' }), /host operator/);
+  assert.match(html, /data-debug-id="live-instance-last-error"/);
+});

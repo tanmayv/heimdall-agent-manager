@@ -37,7 +37,6 @@ import { bridgeUnsealTargetFromRecord } from '../../src/ui/utils/vaultBridgeUnse
 import { buildBridgeApproval, buildGenesis, checkBridgeCodeInfo } from '../../src/ui/utils/vaultDeviceFlows.ts';
 import { derivePairKeys, pairApproveMac, pairHubOrigin } from '../../src/ui/utils/vaultPairing.ts';
 import { importKeyring } from '../../src/ui/utils/vaultKeyring.ts';
-import { prepareLocalLaunchOperation, localLaunchRelay, openLocalLaunchReply } from '../../src/ui/api/executorLocalLaunch.ts';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const USER = 'e2e-real-enroll';
@@ -270,51 +269,11 @@ c.commit()
     expect(second.refused && /another ham-bridge instance/i.test(second.out), 'a second instance on the same config refuses (instance lock)');
   });
 
-  // Host-operator launch resources for the synthetic children (explicit,
-  // signed, imported into the running Bridge), then browser launch approval.
-  let executorIdentity = null, executorPolicy = false;
-  const executorDirectories = new Map();
-  const bridgeCli = (...args) => {
-    const r = spawnSync(process.env.HEIMDALL_E2E_BRIDGE_BIN, args, { cwd: S.cfgA.dir, env: ENV, encoding: 'utf8', timeout: 30000 });
-    if (r.status !== 0) throw new Error('ham-bridge ' + args.slice(0, 2).join(' ') + ' failed: ' + r.stdout + r.stderr);
-    return r.stdout.trim();
+  // Launches need no host-operator slot policy, signed directory mapping or
+  // per-launch browser approval: the enrolled Bridge starts the child itself.
+  const launchApprovalCode = (lastError) => {
+    try { return JSON.parse(lastError?.message ?? '').code ?? ''; } catch { return ''; }
   };
-  const installExecutorRecord = (kind, record) => {
-    const file = path.join(ROOT, ownerIdForFixture(kind + '-') + '.json'), signed = file + '.signed';
-    fs.writeFileSync(file, JSON.stringify({ ...record, account_id: executorIdentity.account_id, executor_bridge_id: executorIdentity.executor_bridge_id, key_id: executorIdentity.key_id, signature: '0'.repeat(128) }), { mode: 0o600 });
-    bridgeCli('executor', 'sign', '--config', S.cfgA.config, '--kind', kind, '--file', file, '--output', signed);
-    bridgeCli('executor', 'import', '--config', S.cfgA.config, '--local-run-dir', S.cfgA.local, '--kind', kind, '--file', signed);
-  };
-  async function ensureExecutorResources(projectPath) {
-    if (!executorIdentity) executorIdentity = JSON.parse(bridgeCli('executor', 'identity', '--config', S.cfgA.config).split('\n').pop());
-    if (!executorPolicy) {
-      const slots = Array.from({ length: 8 }, (_, i) => ({ slot_id: 'e2e_slot_' + i, provider_profile: 'codex', enabled: '1' }));
-      installExecutorRecord('policy', { protocol_version: '1', policy_revision: '1', device_capacity: '8', slots_json: JSON.stringify(slots) });
-      executorPolicy = true;
-    }
-    const real = fs.realpathSync(projectPath);
-    if (executorDirectories.has(real)) return;
-    installExecutorRecord('directory', { protocol_version: '1', directory_id: 'e2e_dir_' + executorDirectories.size, revision: '1', directory_path: real, enabled: '1' });
-    executorDirectories.set(real, true);
-  }
-  // Same parsing as LocalLaunchApproval.pendingLaunchDraft (the UI component).
-  const pendingLaunchDraft = (lastError) => {
-    try {
-      const value = JSON.parse(lastError?.message ?? '');
-      if (value.code !== 'launch_authorization_required') return null;
-      return { executorBridge: value.executor_bridge_id, draftId: value.draft_id, revision: value.draft_revision, configurationDigest: value.configuration_digest };
-    } catch { return null; }
-  };
-  async function approveLocalLaunch(draft) {
-    const session = { identity: S.apA.identity, chain: await S.apA.chain(), keyring: await importKeyring(Uint8Array.from(S.apA.keyringBytes), S.apA.userId) };
-    for (const method of ['prepare', 'authorize']) {
-      const transport = await localLaunchRelay(session, await prepareLocalLaunchOperation(session, draft, method));
-      const reply = await http(hubA, 'POST', '/api/v1/executor/local-launch', { body: transport.relay });
-      if (reply.status !== 200) throw new Error('local launch relay ' + method + ': ' + reply.raw);
-      const result = await openLocalLaunchReply(session, transport, reply.data);
-      if (result.code !== 'ok') throw new Error('local launch ' + method + ' refused: ' + result.code);
-    }
-  }
   if (process.env.HEIMDALL_E2E_OWNER_LOCAL === '1') {
     await step('owner-local V1 real relay, persistence, retries and offline listing', async () => {
       const { ownerLocalFlow } = await import('./owner_local_flow.ts');
@@ -334,13 +293,10 @@ c.commit()
           return response.data?.data ?? response.data;
         },
         launchChild: process.env.HEIMDALL_E2E_OWNER_LEASE === '1' ? async (projectPath = '') => {
-          // Every launch is a native local draft: the host operator signs a slot
-          // policy and directory mapping once, and the enrolled browser approves
-          // each exact launch (docs/executor-local-operator.md).
-          // A live launch charges its directory exclusively, so a child without
-          // a repository gets its own disposable workspace project.
+          // Launches start directly on the enrolled Bridge: no slot policy,
+          // directory mapping or approval. A child without a repository gets its
+          // own disposable workspace project.
           if (!projectPath) { projectPath = path.join(HOME, ownerIdForFixture('workspace-')); fs.mkdirSync(projectPath, { recursive: true }); }
-          await ensureExecutorResources(projectPath);
           const discovered = await http(hubA, 'POST', '/api/v1/bridges/' + S.a.bridgeId + '/providers/discover', {body:{}});
           expect(discovered.status === 200, 'synthetic provider discovered on disposable Bridge');
           const enabled = await http(hubA, 'PUT', '/api/v1/bridges/' + S.a.bridgeId + '/providers/codex', {body:{enabled:true}});
@@ -366,12 +322,12 @@ c.commit()
             socket=path.join(tmp,'heimdall-'+process.getuid(),hash.toString(16).padStart(16,'0')+'.sock');
           }
           children.push({kill:()=>spawnSync(process.env.HEIMDALL_E2E_PTY_BIN,['--socket',socket,'stop'],{env:ENV,timeout:5000})});
-          let env,approved=false;
+          let env;
           for (const deadline=Date.now()+45000;;await sleep(200)) {
             try {env=JSON.parse(fs.readFileSync(path.join(ROOT,iid+'.env.json'),'utf8'));} catch {}
             const state=await http(hubA,'GET','/api/v1/agent-instances/'+iid);
-            const draft=pendingLaunchDraft(state.data?.last_error);
-            if (draft && !approved) { await approveLocalLaunch(draft); approved=true; }
+            const legacy=launchApprovalCode(state.data?.last_error);
+            if (legacy==='launch_authorization_required' || /selection_required/.test(state.data?.last_error?.message ?? '')) throw new Error('launch still gated by approval/policy: '+JSON.stringify(state.data?.last_error));
             if (env && state.data?.runtime_status==='running') break;
             if (Date.now()>deadline) throw new Error('synthetic child never became ready: '+JSON.stringify(state));
           }

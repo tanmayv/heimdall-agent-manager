@@ -9,9 +9,9 @@ import contracts "odin_test:contracts"
 executor_legacy_nudge_exact_child_identity_replay_and_rollback :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
     f:=fixture(t);defer destroy(f)
-    consent,config,resources:=local_inputs(t,f)
-    launch:=local_snapshot(t,f,local_admit(f,consent,config))
-    testing.expect(t,local_begin_dispatch(&f.store,launch,f.owner2.public,1100,resources))
+    draft,config,resources:=local_inputs(t,f)
+    launch:=local_snapshot(t,f,local_admit(f,draft,resources))
+    testing.expect(t,local_begin_dispatch(&f.store,launch,1100,resources))
     testing.expect(t,observe_local_child(&f.store,launch,Child_Observation{launch.instance,launch.launch_key,1,true}))
     action:=legacy_action_draft_running(t,f)
     o:=Legacy_Action_Nudge{action=action,entry_index=0,entry_digest=contracts.owner_payload_digest("nudge entry"),launch_id=launch.id,child_pid=42,run_count=number(field(config,"run_count"))}
@@ -58,7 +58,7 @@ executor_legacy_nudge_v13_upgrade_collision_and_commit_failure_preserve_history 
     testing.expect_value(t,reserve(f,document("prepare"),&f.owner1).code,"ok")
     testing.expect(t,exec(f.store.db,"DROP TABLE executor_legacy_action_nudges; DROP TABLE IF EXISTS executor_legacy_action_effects; PRAGMA legacy_alter_table=ON; DROP TRIGGER runtime_immutable; DROP TRIGGER runtime_no_delete; ALTER TABLE executor_runtime RENAME TO runtime_v14_fixture;"))
     schema:=string(#load("schema.sql"))
-    old,_:=strings.replace_all(schema[:strings.index(schema,"CREATE TABLE executor_policies")],"schema_version=15","schema_version=13",context.temp_allocator)
+    old,_:=strings.replace_all(schema[:strings.index(schema,"CREATE TABLE executor_policies")],"schema_version=16","schema_version=13",context.temp_allocator)
     testing.expect(t,exec(f.store.db,old))
     testing.expect(t,exec(f.store.db,"INSERT INTO executor_runtime SELECT singleton,13,account_id,executor_bridge_id,operator_key_id,incarnation,clock_high_ms,recovery_state,policy_revision,device_capacity FROM runtime_v14_fixture; DROP TABLE runtime_v14_fixture;"))
     for line in strings.split_lines(schema) do if strings.has_prefix(line,"CREATE TRIGGER native_journal_executor_runtime_") do testing.expect(t,exec(f.store.db,line))
@@ -75,7 +75,7 @@ executor_legacy_nudge_v13_upgrade_collision_and_commit_failure_preserve_history 
     testing.expect(t,exec(f.store.db,"DROP TRIGGER nudge_upgrade_commit"));close(&f.store)
     testing.expect(t,open(&f.store,f.path,"account","executor","operator"))
     rows,read=query(f.store.db,"SELECT schema_version,incarnation,(SELECT state FROM executor_legacy_actions),(SELECT material FROM executor_local_drafts) FROM executor_runtime")
-    testing.expect(t,read && rows[0][0]=="15" && rows[0][1]=="2" && rows[0][2]=="running" && rows[0][3]==d.material)
+    testing.expect(t,read && rows[0][0]=="16" && rows[0][1]=="2" && rows[0][2]=="running" && rows[0][3]==d.material)
     refs,refs_read:=query(f.store.db,"SELECT name FROM sqlite_master WHERE sql LIKE '%executor_runtime_v13%'")
     testing.expect(t,refs_read && len(refs)==0)
 }

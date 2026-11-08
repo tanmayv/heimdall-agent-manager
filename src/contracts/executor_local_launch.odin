@@ -8,13 +8,16 @@ executor_local_launch_fields := [?]Owner_Field{
     {"issued_ms","positive"},{"request_expires_ms","positive"},
     {"key_id","id"},{"signature","signature"},
 }
+// Native-only launch configuration retained in the local journal. The
+// canonical project directory is bound by digest (empty for no project); no
+// slot policy or signed directory mapping participates in a local launch.
 executor_local_configuration_fields := [?]Owner_Field{
     {"protocol_version","version"},{"account_id","id"},{"executor_bridge_id","id"},
     {"instance_id","id"},{"launch_epoch","id"},{"run_count","positive"},
     {"token_generation","hash"},{"configuration_revision","positive"},
-    {"executor_incarnation","positive"},{"policy_revision","positive"},
-    {"slot_id","id"},{"provider","label"},{"model","label"},{"provider_profile","id"},
-    {"directory_id","id"},{"directory_revision","positive"},{"directory_key","hash"},
+    {"executor_incarnation","positive"},
+    {"provider","label"},{"model","label"},{"provider_profile","id"},
+    {"directory_digest","optional_hash"},
     {"purpose","executor_local_purpose"},{"spawn_digest","hash"},
 }
 
