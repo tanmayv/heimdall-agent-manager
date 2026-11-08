@@ -62,8 +62,10 @@ transaction_rollback :: proc(tx:^Transaction) {
     if tx.parent!=nil {
         if !exec(s.db,fmt.tprintf("ROLLBACK TO candidate_%d; RELEASE candidate_%d",tx.serial,tx.serial)) do s.tx_failed=true
     } else {
-        // Before ROLLBACK replaces the connection's error state.
-        storage_failure_note(s,"rollback")
+        // Before ROLLBACK replaces the connection's error state. Only a real
+        // SQLite error: the many ordinary rollbacks of refused or read-only
+        // work must not overwrite the cause of a storage failure.
+        if storage_error_pending(s) do storage_failure_note(s,"rollback")
         _=exec(s.db,"ROLLBACK")
         // SQLITE_FULL can already have rolled back automatically. A connection
         // still in a transaction after rollback is quarantined until reopen.
@@ -73,6 +75,15 @@ transaction_rollback :: proc(tx:^Transaction) {
     s.active=tx.parent
     tx.store=nil
     if tx.parent==nil {sync.atomic_store(&s.tx_thread,0);sync.mutex_unlock(&s.mutex)}
+}
+
+// True when the connection's last result is an SQLite error (not OK, ROW or
+// DONE) or a nested candidate already failed.
+storage_error_pending :: proc(s:^Store) -> bool {
+    if s.tx_failed do return true
+    if s.db==nil do return false
+    code:=sqlite3_extended_errcode(s.db)&0xff
+    return code!=0 && code!=100 && code!=101
 }
 
 // Records why a transaction did not commit: the step plus the connection's
@@ -91,7 +102,9 @@ storage_failure_note :: proc(s:^Store,step:string,conn:DB=nil) {
 // transaction, for logging a storage_error. Never blocks: a transaction still
 // held (by any thread) is itself reported. Temp-allocated.
 storage_diagnostic :: proc(s:^Store) -> string {
-    if !sync.mutex_try_lock(&s.mutex) do return fmt.tprintf("transaction held by thread %d",sync.atomic_load(&s.tx_thread))
+    // The note is a fixed buffer only written under Store.mutex; a held lock
+    // still reports the last recorded cause.
+    if !sync.mutex_try_lock(&s.mutex) do return fmt.tprintf("transaction held by thread %d last_failure=%q",sync.atomic_load(&s.tx_thread),string(s.last_failure[:s.last_failure_len]))
     defer sync.mutex_unlock(&s.mutex)
     return fmt.tprintf("open=%v unusable=%v last_failure=%q",s.db!=nil,s.unusable,string(s.last_failure[:s.last_failure_len]))
 }

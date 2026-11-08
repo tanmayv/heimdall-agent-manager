@@ -24,11 +24,11 @@ bridge_owner_json :: proc(v:$T)->string { b,_:=json.marshal(v,allocator=context.
 bridge_owner_open :: proc(account,key_id:string)->bool {
     if bridge_owner_store.db!=nil do return bridge_owner_store.account==account && bridge_owner_store.owner_key==key_id
     dir,ok:=bridge_vault_bridge_dir(bridge_config.daemon_id,context.temp_allocator)
-    if !ok do return false
+    if !ok { owner.storage_failure_note(&bridge_owner_store,"bridge: no state directory");return false }
     path:=fmt.tprintf("%sowner-local-%s",dir,contracts.owner_payload_digest(account))
-    if err:=bridge_make_directory_all(path,{.Read_User,.Write_User,.Execute_User});err!=nil do return false
+    if err:=bridge_make_directory_all(path,{.Read_User,.Write_User,.Execute_User});err!=nil { owner.storage_failure_note(&bridge_owner_store,"bridge: create store directory");return false }
     when ODIN_OS != .Windows {
-        if os.chmod(path,{.Read_User,.Write_User,.Execute_User})!=nil do return false
+        if os.chmod(path,{.Read_User,.Write_User,.Execute_User})!=nil { owner.storage_failure_note(&bridge_owner_store,"bridge: chmod store directory");return false }
     }
     // Use the real allocator for the process-lifetime owner identity strings.
     saved:=context.allocator;context.allocator=runtime.default_allocator()

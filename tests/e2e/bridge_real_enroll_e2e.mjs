@@ -76,6 +76,15 @@ const ENV = { ...process.env, PATH: ROOT + path.delimiter + process.env.PATH, HO
 if (process.env.HEIMDALL_E2E_PTY_BIN) ENV.HEIMDALL_HAM_PTY_HOST_BIN=process.env.HEIMDALL_E2E_PTY_BIN;
 const children = [];
 const CREATED = []; // bridge ids whose scoped credentials this run wrote
+const CREATED_SCOPES = []; // their exact keystore scope names (Linux @u key descriptions)
+// keystore_scope_name_for_hub (src/bridge/keystore_scope.odin) for this run's
+// http://127.0.0.1:<port> hubs: "<bridge_id>_" + sha256(header|hub|id)[:32].
+function keystoreScopeName(hubBase, bridgeId) {
+  const u = new URL(hubBase.replace(/\/+$/, ''));
+  const path = u.pathname === '/' ? '' : u.pathname;
+  const hub = `${u.protocol}//${u.hostname.toLowerCase()}:${u.port || (u.protocol === 'https:' ? 443 : 80)}${path}`;
+  return bridgeId + '_' + createHash('sha256').update(`heimdall-bridge-scope/v1|${hub}|${bridgeId}`).digest('hex').slice(0, 32);
+}
 
 async function startHub(label) {
   const bin = process.env.HEIMDALL_E2E_HUB_BIN;
@@ -179,6 +188,7 @@ async function enroll(hub, approver, cfg) {
   const bridgeId = appr.data?.hub_observed?.bridge_id;
   expect(appr.status === 200 && bridgeId, `approved -> ${bridgeId}`);
   CREATED.push(bridgeId);
+  CREATED_SCOPES.push(keystoreScopeName(hub.base, bridgeId));
   // Wait for the enrolling process's enroll-only connection (it serves the unseal).
   let target = null;
   for (const deadline = Date.now() + 30_000; ; await sleep(250)) {
@@ -420,6 +430,7 @@ c.commit()
           // store before the flow relies on it being offline.
           const old = S.runA; old.kill();
           if (old.exitCode === null && old.signalCode === null) await Promise.race([new Promise((r) => old.once('exit', r)), sleep(20_000)]);
+          expect(old.exitCode !== null || old.signalCode !== null, 'stopped owner runtime exited within 20s');
           await sleep(1500);
           // Seed an authorized disposable transport instance, bypassing provider
           // launch only. The real local token + Hub bridge/instance checks run.
@@ -543,9 +554,10 @@ print("metadata-only Hub SQLite and log verified")
 // kernel user keyring (@u), which outlives this run and counts against the
 // per-user key quota (kernel.keys.maxbytes, 20000 by default). Without this
 // cleanup repeated runs exhaust it and a later enrollment's unseal fails
-// ("could not be read back from the OS keystore"). Only this run's bridges.
+// ("could not be read back from the OS keystore"). Only `user` keys whose
+// description is exactly one of this run's scoped key names.
 function cleanupLinuxKeyring() {
-  if (process.platform !== 'linux' || CREATED.length === 0) return;
+  if (process.platform !== 'linux' || CREATED_SCOPES.length === 0) return;
   const r = spawnSync('python3', ['-c', `import ctypes,os,platform,sys
 nr={'x86_64':250,'aarch64':219}.get(platform.machine())
 if nr is None: sys.exit(0)
@@ -562,11 +574,12 @@ for k in ids:
   d=ctypes.create_string_buffer(512)
   m=keyctl(6,k,d,len(d))  # KEYCTL_DESCRIBE: type;uid;gid;perm;description
   if m<=0: continue
-  desc=d.value.decode(errors='replace').split(';',4)[-1]
-  if any(desc.startswith('heimdall:vault_keyring:'+b+'_') or desc=='heimdall:vault_keyring:'+b for b in sys.argv[1:]):
+  fields=d.value.decode(errors='replace').split(';',4)
+  if len(fields)!=5 or fields[0]!='user': continue
+  if fields[4] in {'heimdall:vault_keyring:'+b for b in sys.argv[1:]}:
     keyctl(3,k); removed+=keyctl(9,k,U)==0  # KEYCTL_REVOKE, KEYCTL_UNLINK
 print(removed)
-`, ...CREATED], { encoding: 'utf8' });
+`, ...CREATED_SCOPES], { encoding: 'utf8' });
   console.log(r.status === 0 ? `removed ${r.stdout.trim()} kernel keyring key(s) this run created` : `(keyring cleanup failed: ${r.stderr.trim()})`);
 }
 
