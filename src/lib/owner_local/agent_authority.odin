@@ -33,7 +33,30 @@ agent_verb_role :: proc(verb:string) -> Agent_Role {
     case "task.create","task.edit","task.comment","task.read","chain.read","chain.summary.set","chain.propose","chain.publish","requirements.edit","review.human",
          "task.priority","dependency.edit","fleet.edit","lifecycle.configure": return .Coordinator
     }
+    if agent_coordinator_control(verb) do return .Coordinator
     return .None
+}
+
+// Coordinator controls on an owner chain (P-CS CC-A, REQ-CC-1..5,8,10,11 and
+// R2-5): the verified chain coordinator drives tasks without holding a lease.
+// Worker, reviewer and foreign-chain tokens are refused with invalid_scope by
+// agent_authorize. workflow.gate stays user-only; fleet.reserve, membership
+// and grants stay human-only.
+agent_coordinator_control :: proc(verb:string) -> bool {
+    switch verb {
+    case "task.hold","task.release","task.cancel","task.reopen","task.resolve","merge.retry","task.delete","review.roles",
+         "chain.complete","workflow.retry","workflow.cancel","lease.revoke","task.recheck","task.escalate": return true
+    }
+    return false
+}
+
+// Controls whose agent form must carry a non-empty reason (R2-6). The reason
+// is stored in the control event summary and the agent-attributed event.
+agent_reason_required :: proc(method:string) -> bool {
+    switch method {
+    case "task.hold","task.release","task.cancel","task.reopen","task.resolve","lease.revoke","task.delete","task.escalate","merge.retry": return true
+    }
+    return false
 }
 
 agent_child_valid :: proc(child:Child) -> bool {
@@ -113,7 +136,7 @@ agent_command_method :: proc(method:string) -> bool {
     case "task.create","task.edit","task.comment","task.read","chain.read","chain.summary.set","chain.propose","chain.publish","requirements.edit","review.post",
          "task.priority","dependency.edit","fleet.edit","lifecycle.configure": return true
     }
-    return false
+    return agent_coordinator_control(method)
 }
 
 // Admission of an owner-signed agent command inside execute(): the owner key
@@ -163,10 +186,10 @@ agent_grant :: proc(s:^Store,c:json.Object,now:i64) -> contracts.Owner_Read_Gran
 // agent's behalf. The directory pin is the owner's current one.
 // fleet_child and proof are Bridge-observed facts for fleet.edit and
 // lifecycle.configure, exactly as on the device path.
-execute_agent :: proc(s:^Store,command_raw,payload:string,agent:Child,owner_key:contracts.Owner_Verified_Key,now:i64,kr:^vault.Vault_Keyring,sign:Signer,fleet_child:Child={},proof:Lifecycle_Proof={}) -> Result {
+execute_agent :: proc(s:^Store,command_raw,payload:string,agent:Child,owner_key:contracts.Owner_Verified_Key,now:i64,kr:^vault.Vault_Keyring,sign:Signer,fleet_child:Child={},proof:Lifecycle_Proof={},role_children:[]Child=nil) -> Result {
     version,hash:=directory_pin(s)
     if version<0 do return fail("storage_error")
-    return execute(s,command_raw,payload,"",owner_key,owner_key,version,hash,now,kr,sign,fleet_child,proof,agent=agent)
+    return execute(s,command_raw,payload,"",owner_key,owner_key,version,hash,now,kr,sign,fleet_child,proof,role_children,agent=agent)
 }
 
 // An enabled current member (latest version) or an enabled fleet worker of

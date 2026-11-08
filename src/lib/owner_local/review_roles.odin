@@ -10,7 +10,7 @@ role_configuration :: proc(s:^Store,chain,task:string)->([]string,bool) {
     if !ok || len(rows)!=1 do return nil,false
     return rows[0],true
 }
-role_configure :: proc(s:^Store,c:json.Object,body:string,children:[]Child,seq:i64,device:=false)->string {
+role_configure :: proc(s:^Store,c:json.Object,body:string,children:[]Child,seq:i64,device:=false,agent:=false)->string {
     p,valid:=contracts.owner_parse(body,"review_roles")
     if !valid do return "malformed"
     chain,task:=field(c,"chain_id"),field(c,"task_id")
@@ -30,6 +30,13 @@ role_configure :: proc(s:^Store,c:json.Object,body:string,children:[]Child,seq:i
     for pair in pairs {
         o,obj:=pair.(json.Object)
         if !obj || !contracts.owner_document_valid("review_pair",o) || field(o,"agent_id")==field(config,"author_agent_id") do return "invalid_scope"
+        // A coordinator configures roles only for participants already in
+        // this chain (like lifecycle.configure); new members are human-only.
+        if agent {
+            participant,read:=agent_chain_participant(s,chain,field(o,"instance_id"))
+            if !read do return "storage_error"
+            if !participant do return "invalid_scope"
+        }
         found:=false
         for child in children {
             if member_authorized(s,chain,child) && child.instance==field(o,"instance_id") && child.agent_id==field(o,"agent_id") && child.epoch!="" {

@@ -519,6 +519,38 @@ Owner_Control_Payload :: struct {
 owner_fields_control_payload := [?]Owner_Field{
     {"body_cipher", "required_cipher"},
 }
+// task.cancel with explicit dependents handling (drop | repoint:<task> | keep).
+Owner_Cancel_Payload :: struct {
+    body_cipher: string,
+    dependents: string,
+}
+@(private)
+owner_fields_cancel_payload := [?]Owner_Field{
+    {"body_cipher", "required_cipher"},
+    {"dependents", "cancel_dependents"},
+}
+// task.delete carrying an audited reason (required on the agent path).
+Owner_Delete_Reason_Payload :: struct {
+    protocol_version: string,
+    body_cipher: string,
+}
+@(private)
+owner_fields_delete_reason_payload := [?]Owner_Field{
+    {"protocol_version", "version"},
+    {"body_cipher", "required_cipher"},
+}
+// lease.revoke: end the current lease without cancelling the task.
+Owner_Revoke_Payload :: struct {
+    body_cipher: string,
+    mode: string,
+    disable_fleet: string,
+}
+@(private)
+owner_fields_revoke_payload := [?]Owner_Field{
+    {"body_cipher", "required_cipher"},
+    {"mode", "revoke_mode"},
+    {"disable_fleet", "flag"},
+}
 Owner_Handoff_Payload :: struct {
     requirements_revision: string,
     summary: string,
@@ -1760,6 +1792,9 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "chain_edit_payload": return owner_fields_chain_edit_payload[:]
     case "submission_read_payload": return owner_fields_submission_read_payload[:]
     case "control_payload": return owner_fields_control_payload[:]
+    case "cancel_payload": return owner_fields_cancel_payload[:]
+    case "delete_reason_payload": return owner_fields_delete_reason_payload[:]
+    case "revoke_payload": return owner_fields_revoke_payload[:]
     case "handoff_payload": return owner_fields_handoff_payload[:]
     case "block_payload": return owner_fields_block_payload[:]
     case "switch_payload": return owner_fields_switch_payload[:]
