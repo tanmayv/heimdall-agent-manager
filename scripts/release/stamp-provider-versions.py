@@ -14,7 +14,8 @@ MANIFESTS = ("antigravity/plugin.json", "claude-code/.claude-plugin/plugin.json"
 CATALOG_SQL = re.compile(
     r"^(?:CREATE TABLE(?: IF NOT EXISTS)?|ALTER TABLE|INSERT(?: OR \w+)? INTO|UPDATE|DELETE FROM)"
     r"\s+(?:provider_catalog|provider_models|provider_catalog_meta|provider_icons)\b", re.I)
-ORDER = re.compile(r"(migration_order :: \[)(\d+)(\]string \{)(.*?)(\n\})", re.S)
+# The registry may be sized explicitly ([N]string) or inferred ([?]string).
+ORDER = re.compile(r"(migration_order :: \[)(\d+|\?)(\]string \{)(.*?)(\n\})", re.S)
 
 
 def catalog_database(directory, names):
@@ -94,7 +95,7 @@ def stamp(root, version):
     if order is None:
         raise ValueError("Cannot find migration_order registry")
     names = re.findall(r'"([^"]+\.sql)"', order[4])
-    if len(names) != int(order[2]) or len(names) != len(set(names)):
+    if (order[2] != "?" and len(names) != int(order[2])) or len(names) != len(set(names)):
         raise ValueError("Inconsistent migration_order registry")
     numbered = {p.name for p in directory.glob("[0-9]*_*.sql")}
     # Namespaced migrations (e.g. native_001_*.sql) are registered but carry no
@@ -127,7 +128,8 @@ def stamp(root, version):
             declaration = symbol + ' :: #load("migrations/' + name + '", string)\n\n'
             text = text[:order.start()] + declaration + text[order.start():]
             order = ORDER.search(text)
-            text = (text[:order.start()] + order[1] + str(len(names) + 1) + order[3] +
+            size = "?" if order[2] == "?" else str(len(names) + 1)
+            text = (text[:order.start()] + order[1] + size + order[3] +
                     order[4] + '\n\t"' + name + '",' + order[5] + text[order.end():])
             # Put the lookup beside the generated #load, before the historical
             # migration_order declaration; use the existing embedded resolver body.

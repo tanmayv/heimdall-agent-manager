@@ -227,9 +227,10 @@ class DistributionTests(unittest.TestCase):
     def test_version_generator_uses_next_free_registered_number_and_build_metadata(self):
         registry = self.sql / "migrations.odin"
         text = registry.read_text()
-        order = re.search(r"(migration_order :: \[)(\d+)(\]string \{)(.*?)(\n\})", text, re.S)
+        order = re.search(r"(migration_order :: \[)(\d+|\?)(\]string \{)(.*?)(\n\})", text, re.S)
         name = f"{self.next_migration:03d}_reserved.sql"
-        text = (text[:order.start()] + order[1] + str(int(order[2]) + 1) + order[3]
+        size = "?" if order[2] == "?" else str(int(order[2]) + 1)
+        text = (text[:order.start()] + order[1] + size + order[3]
                 + order[4] + '\n\t"' + name + '",' + order[5] + text[order.end():])
         registry.write_text(text)
         self.write(self.sql / "migrations" / name, "-- unrelated forward migration\n")
@@ -239,6 +240,26 @@ class DistributionTests(unittest.TestCase):
         protocol = (self.repo / "src/contracts/protocol.odin").read_text()
         self.assertIn('GIT_COMMIT :: #config(HAM_GIT_COMMIT, "abcdef12")', protocol)
         self.assertIn('BUILD_TIMESTAMP :: #config(HAM_BUILD_TIMESTAMP, "2026-10-24T00:00:00Z")', protocol)
+
+    def test_version_generator_accepts_inferred_and_explicit_registry_size(self):
+        registry = self.sql / "migrations.odin"
+        pristine = registry.read_text()
+        pattern = re.compile(r"migration_order :: \[(\d+|\?)\]string \{(.*?)\n\}", re.S)
+        count = len(re.findall(r'"([^"]+\.sql)"', pattern.search(pristine)[2]))
+        migrations = self.sql / "migrations"
+        original = {p.name for p in migrations.glob("*.sql")}
+        for size, expected in (("?", "?"), (str(count), str(count + 1))):
+            with self.subTest(size=size):
+                for path in migrations.glob("*.sql"):
+                    if path.name not in original:
+                        path.unlink()
+                registry.write_text(pattern.sub(lambda m: m[0].replace(f"[{m[1]}]", f"[{size}]", 1), pristine, 1))
+                self.run_script(self.repo / "scripts/release/bump-version.sh", "--version-only", self.next_version)
+                order = pattern.search(registry.read_text())
+                self.assertEqual(order[1], expected)
+                names = re.findall(r'"([^"]+\.sql)"', order[2])
+                self.assertEqual(len(names), count + 1)
+                self.assertRegex(names[-1], rf"^{self.next_migration:03d}_extension_version_sync_")
 
     def test_version_bump_stamps_manifests_and_append_only_catalog(self):
         migrations = self.sql / "migrations"
@@ -283,9 +304,10 @@ class DistributionTests(unittest.TestCase):
             text = (self.sql / "migrations.odin").read_text()
             self.assertIn('#load("migrations/' + latest.name + '", string)', text)
             self.assertIn('if name == "' + latest.name + '"', text)
-            order = re.search(r"migration_order :: \[(\d+)\]string \{(.*?)\n\}", text, re.S)
+            order = re.search(r"migration_order :: \[(\d+|\?)\]string \{(.*?)\n\}", text, re.S)
             names = re.findall(r'"([^"]+\.sql)"', order[2])
-            self.assertEqual(int(order[1]), len(names))
+            if order[1] != "?":
+                self.assertEqual(int(order[1]), len(names))
             self.assertEqual(names[-1], latest.name)
             before = {str(p.relative_to(self.repo)): p.read_bytes() for p in self.repo.rglob("*") if p.is_file()}
             self.run_script(self.repo / "scripts/release/bump-version.sh", "--version-only", version)
