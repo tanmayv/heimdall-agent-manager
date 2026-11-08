@@ -23,12 +23,11 @@ Set `--ui-origin` to the exact browser origin, such as `https://heimdall.mundus.
 Checkout remains disabled until the API key, client token, and webhook secret are configured. Catalog prices must be configured before checkout offers appear. The API key and webhook secret are never returned to the UI. The configured environment is pinned in the billing database once server credentials are supplied, preventing a sandbox/live mixup.
 
 The CLI flag `--billing-enforce-plan-limits true|false` takes precedence over
-`HEIMDALL_BILLING_ENFORCE_PLAN_LIMITS`. If neither is set, enforcement is enabled
-when **any** Paddle API key, client token, webhook secret, or Hobbyist price ID is
-non-empty. Setting only the environment name or grace duration does not enable
-limits. Hubs without Paddle configuration stay unlimited by default. Explicit
-`true` enables limits without Paddle; explicit `false` disables them even with
-Paddle configured. Checkout availability remains a separate decision.
+`HEIMDALL_BILLING_ENFORCE_PLAN_LIMITS`. If neither is set, plan limits are **not**
+enforced, even when Paddle credentials or price IDs are configured: enforcement
+is opt-in. A hosted deployment that sells plans must set the flag to `true`.
+Explicit `true` enables limits with or without Paddle; explicit `false` (or no
+setting) leaves the hub unlimited. Checkout availability remains a separate decision.
 
 ## Enforced entitlements
 

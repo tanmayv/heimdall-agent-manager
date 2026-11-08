@@ -81,7 +81,7 @@ fixture_setup :: proc(fixture: ^Fixture, repo: ^iface.Billing_Repository, clock:
 	fixture.account = domain.Account_Billing{user_id = "alice", plan_id = "free", plan_label = "Free", status = "free", entitlements = {max_bridges = 1, terminal_streaming_enabled = true, max_concurrent_streams = 2}}
 	repo^ = iface.Billing_Repository{ctx = fixture, get_account = fixture_get, list_plans = fixture_plans, reserve_checkout = fixture_reserve, finish_checkout = fixture_finish, apply_event = fixture_apply}
 	clock^ = platform.Clock{now = fixture_clock}
-	return Service{repo = repo, clock = clock, config = Config{environment = "sandbox", api_key = "test_key", client_token = "test_token", webhook_secret = "test_secret", past_due_grace_seconds = 86400}, request = fixture_api, new_reference = fixture_reference}
+	return Service{repo = repo, clock = clock, config = Config{environment = "sandbox", api_key = "test_key", client_token = "test_token", webhook_secret = "test_secret", past_due_grace_seconds = 86400, enforce_plan_limits = true}, request = fixture_api, new_reference = fixture_reference}
 }
 
 @(test)

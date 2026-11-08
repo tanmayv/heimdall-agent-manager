@@ -17,13 +17,13 @@ Entitlement_Cache_Entry :: struct {
 	expires_at: i64,
 }
 
-// Enforcement is independent of checkout readiness. Partial Paddle setup still
-// enables limits; an explicit operator override always wins. The default sandbox
-// environment and grace duration alone do not count as a Paddle integration.
+// Enforcement is independent of checkout readiness and is opt-in (F1): plan
+// limits apply only when the operator sets the explicit flag
+// (--billing-enforce-plan-limits / HEIMDALL_BILLING_ENFORCE_PLAN_LIMITS = true).
+// Paddle credentials alone never turn limits on.
 plan_limits_enabled :: proc(config: Config) -> bool {
 	if enforce, explicit := config.enforce_plan_limits.?; explicit do return enforce
-	return config.api_key != "" || config.client_token != "" ||
-		config.webhook_secret != "" || config.hobbyist_price_id != ""
+	return false
 }
 
 // Serialize fills and invalidations so an in-flight read cannot repopulate an

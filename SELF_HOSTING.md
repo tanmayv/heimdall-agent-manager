@@ -118,10 +118,10 @@ HTTPS. The web UI is served as a static bundle and can be served by the same rev
 
 ### 1.4a Billing and plan enforcement
 
-A self-hosted hub with no Paddle credentials or price ID is unlimited by default.
-If any Paddle API key, client token, webhook secret, or Hobbyist price ID is set,
-plan limits turn on, even when checkout is not fully configured. Set enforcement
-explicitly to control it independently of checkout:
+A self-hosted hub is unlimited by default, with or without Paddle credentials.
+Plan limits are enforced only when you turn them on explicitly; configuring Paddle
+(API key, client token, webhook secret, Hobbyist price ID) never enables them on its
+own. Set enforcement explicitly, independently of checkout:
 
 ```bash
 # Enforce catalog plans and account overrides without requiring Paddle.
