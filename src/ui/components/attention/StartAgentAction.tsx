@@ -1,10 +1,13 @@
-import { useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useSelector } from 'react-redux';
 import type { AttentionItem, AttentionTaskItem } from '../../api/endpoints/attention';
 import { acceptCard } from '../../services/attention/attentionActions';
 import { useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
 import { useGetTaskChainFleetsQuery } from '../../api/endpoints/taskChains';
 import { useFetchChainTaskDetailQuery } from '../../api/endpoints/tasks';
 import { VaultText } from '../vault';
+import { selectActiveVaultKey, selectIsVaultUnlocked } from '../../store/vaultSlice';
+import { containsVaultArmored, decryptVaultLabel, getActiveVaultKey } from '../../utils/vaultContent';
 
 function startFailureText(message: string) {
   return message.includes('instance_not_drained') ? 'The previous agent process is still shutting down. Retry when it finishes.' : message;
@@ -77,10 +80,38 @@ function DelegateWorker({ item, onDelegate, busy, debugPrefix }: { item: Attenti
   const fleets = useGetTaskChainFleetsQuery({ chainId: item.action_refs.chain_id });
   const detail = useFetchChainTaskDetailQuery({ chainId: item.action_refs.chain_id, taskId: item.action_refs.task_id });
   const task = detail.data?.task;
+  const vaultUnlocked = useSelector(selectIsVaultUnlocked);
+  const installedKey = useSelector(selectActiveVaultKey);
+  const vaultKey = vaultUnlocked ? installedKey || getActiveVaultKey() : null;
   const reviewers: string[] = task?.brief?.reviewers || [];
   const roles: string[] = task?.brief?.review_roles || [];
-  const candidates = delegationCandidates(identities.data?.agents || [], fleets.data || [], [item.details.start_agent?.agent_id || '', task?.brief?.assignee || '', ...reviewers])
-    .filter((a) => !roles.some((r) => (fleets.data || []).find((f) => f.agent_id === (a.agent_id || a.id))?.roles?.includes(r)));
+  const candidates = useMemo(() => delegationCandidates(identities.data?.agents || [], fleets.data || [], [item.details.start_agent?.agent_id || '', task?.brief?.assignee || '', ...reviewers])
+    .filter((a) => !roles.some((r) => (fleets.data || []).find((f) => f.agent_id === (a.agent_id || a.id))?.roles?.includes(r))),
+  [identities.data?.agents, fleets.data, item.details.start_agent?.agent_id, task?.brief?.assignee, reviewers.join('\0'), roles.join('\0')]);
+  const labels = useMemo(() => candidates.map((agent) => {
+    const value = String(agent.name || agent.display_name || agent.slug || '');
+    const id = String(agent.agent_id || agent.id || '');
+    return { id, value, safe: containsVaultArmored(value) ? (vaultKey ? 'Loading agent name…' : 'Encrypted agent (unlock vault to view name)') : (value || 'Unnamed agent') };
+  }), [candidates, vaultKey]);
+  const [resolvedLabels, setResolvedLabels] = useState<{ key: unknown; values: Record<string, string> }>({ key: null, values: {} });
+  useEffect(() => {
+    let active = true;
+    const values = Object.fromEntries(labels.map(({ id, safe }) => [id, safe]));
+    setResolvedLabels({ key: vaultKey, values });
+    if (!vaultKey) return () => { active = false; };
+    Promise.all(labels.map(async ({ id, value }) => {
+      if (!containsVaultArmored(value)) return [id, value] as const;
+      try {
+        const opened = await decryptVaultLabel(value, vaultKey);
+        return [id, opened || 'Unnamed agent'] as const;
+      } catch {
+        return [id, 'Encrypted agent name unavailable'] as const;
+      }
+    })).then((entries) => {
+      if (active) setResolvedLabels({ key: vaultKey, values: Object.fromEntries(entries) });
+    });
+    return () => { active = false; };
+  }, [labels, vaultKey]);
   const loading = identities.isFetching || fleets.isFetching || detail.isFetching;
   const failed = identities.isError || fleets.isError || detail.isError;
   const valid = !!task && !task.workflow_run_id && !task.stage_key && !(task.leases || []).length && candidates.some((a) => (a.agent_id || a.id) === selected);
@@ -90,7 +121,12 @@ function DelegateWorker({ item, onDelegate, busy, debugPrefix }: { item: Attenti
     <select id={id} data-debug-id={id} value={selected} disabled={busy || loading || failed} onChange={(e) => setSelected(e.target.value)} className="w-full rounded border border-subtle bg-surface p-2 text-primary">
       <option value="">Choose a worker</option>
       {selected && !candidates.some((a) => (a.agent_id || a.id) === selected) ? <option value={selected} disabled>Selection unavailable</option> : null}
-      {candidates.map((a) => <option key={a.agent_id || a.id} value={a.agent_id || a.id}>{a.name || a.display_name || a.slug || 'Unnamed agent'}</option>)}
+      {candidates.map((a) => {
+        const agentId = String(a.agent_id || a.id || '');
+        const label = labels.find((candidate) => candidate.id === agentId);
+        const name = resolvedLabels.key === vaultKey ? resolvedLabels.values[agentId] : label?.safe;
+        return <option key={agentId} value={agentId}>{name || 'Unnamed agent'}</option>;
+      })}
     </select>
     <p className="text-[12px] text-muted">Delegating starts the selected worker if stopped, including a worker you stopped. This changes only this ticket’s assignee. Existing reviews stay required.</p>
     {failed ? <p role="alert">Could not load workers. Reopen this card to retry.</p> : null}
