@@ -1,4 +1,5 @@
 import { announceTaskChainCreated } from '../taskChainCreationEvents';
+import { parseChainAuthority, type ChainAuthority } from '../chainAuthority';
 import type { VaultKeyring } from '../../utils/vaultKeyring';
 import * as daemonApi from '../daemonApi';
 import { upsertTaskLogEvent } from '../taskCache';
@@ -420,6 +421,12 @@ export type ChainListItem = {
   hasUserValidation: boolean;
   isPinned: boolean;
   pinnedAt: string;
+  /**
+   * R4a: set when the Hub marks the chain owner-held (`authority:{kind:"owner",
+   * bridge_id}`): the row is the frozen Hub copy of a chain that moved to its
+   * owner Bridge (or a native owner chain). Absent for ordinary Hub chains.
+   */
+  authority?: ChainAuthority;
 };
 export type ChainProjectGroup = {
   projectId: string;
@@ -431,6 +438,7 @@ export type ChainProjectGroup = {
 };
 function normalizeChainListItem(c: any): ChainListItem {
   const userValidationCount = Number(c?.user_validation_count ?? c?.userValidationCount ?? 0);
+  const authority = parseChainAuthority(c?.authority);
   return {
     chainId: String(c?.chain_id ?? c?.chainId ?? ''),
     title: String(c?.title ?? ''),
@@ -446,6 +454,7 @@ function normalizeChainListItem(c: any): ChainListItem {
     hasUserValidation: Boolean((c?.user_validation_count ?? c?.userValidationCount ?? 0) > 0),
     isPinned: Boolean(c?.is_pinned ?? c?.isPinned ?? false),
     pinnedAt: String(c?.pinned_at ?? c?.pinnedAt ?? ''),
+    ...(authority ? { authority } : {}),
   };
 }
 function normalizeChainProjectGroup(g: any): ChainProjectGroup {

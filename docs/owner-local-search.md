@@ -11,8 +11,14 @@ changed vault session discards late replies.
 The home/sidebar/selector search still presents one row per matching chain.
 Selecting an owner-local chain opens its owner panel; **Search chain** there
 returns matching objects with task ID, kind, object revision and indexed commit
-sequence. Unknown local project/status fields do not match project/status
-filters. At most 100 owner chains, four concurrent requests, 50 objects per chain,
+sequence. Owner metadata has no project or status. A project filter keeps an
+owner chain only when the Hub lists its frozen copy in that project with
+`authority:{kind:"owner"}` (a migrated chain; `loadProjectOwnerChainIds` in
+`src/ui/utils/taskChainSearch.ts`); native owner chains never match a project.
+An archived/cancelled status filter excludes owner chains, other status filters
+keep them marked unchecked. Chain lists drop every Hub row marked owner-held,
+so a frozen copy stays hidden even after the owner registry tombstones the
+chain (`mergeOwnerChains`, `homeChainsWithOwners`). At most 100 owner chains, four concurrent requests, 50 objects per chain,
 256 query bytes/16 literal terms, 64 KiB per owner result, five seconds of browser
 request time and two million SQLite VM instructions per query are allowed.
 Oversized scopes fail explicitly; interrupted owner requests mark the combined

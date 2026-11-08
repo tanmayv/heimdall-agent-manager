@@ -5,6 +5,7 @@ import { getKeyringSession } from './vaultKeyringSession';
 import { verifyDirectory, pinsFromChain } from './vaultDirectoryVerify';
 import { apiUrl, ApiError } from '../api/cookieFetch';
 import { readBridgeRows } from '../api/endpoints/bridgeSupport';
+import { isOwnerHeldChain, parseChainAuthority } from '../api/chainAuthority';
 import {
   getActiveTaskChainSearchKey,
   getActiveVaultKey,
@@ -234,20 +235,52 @@ async function searchLegacyTaskChainsEncrypted(
 
 /**
  * Applies project/status filters to Bridge-owned hits where owner metadata
- * allows. An owner chain has no Hub project in owner metadata (only a moved
- * chain's frozen Hub copy had one, and that copy is not searched), so a project
- * filter excludes owner hits. The registry carries no status, but an owner
- * chain is never archived: an archived/cancelled filter excludes them, any
- * other status filter keeps them labelled in `filters_unverified`.
- * (No UI caller passes project/status filters today; the home, sidebar and
- * picker searches are unfiltered.)
+ * allows. Owner metadata carries no Hub project; a migrated chain keeps its
+ * project through its Hub authority row (the frozen copy the Hub marks
+ * `authority:{kind:"owner"}`), so under a project filter an owner hit is kept
+ * only when its chain is in `projectOwnerChainIds` (the owner-held Hub rows of
+ * that project). Native owner chains have no project and are excluded. The
+ * registry carries no status, but an owner chain is never archived: an
+ * archived/cancelled filter excludes them, any other status filter keeps them
+ * labelled in `filters_unverified`.
  */
-export function filterOwnerSearchHits(hits: OwnerSearchHit[], options: { projectId?: string; status?: string }): OwnerSearchHit[] {
-  if (options.projectId) return [];
+export function filterOwnerSearchHits(
+  hits: OwnerSearchHit[], options: { projectId?: string; status?: string },
+  projectOwnerChainIds: ReadonlySet<string> = new Set(),
+): OwnerSearchHit[] {
+  if (options.projectId) hits = hits.filter((hit) => projectOwnerChainIds.has(hit.chain_id));
   const status = (options.status || '').toLowerCase();
-  if (!status) return hits;
+  if (!status || !hits.length) return hits;
   if (status === 'archived' || status === 'cancelled') return [];
   return hits.map((hit) => ({ ...hit, filters_unverified: ['status'] }));
+}
+
+const PROJECT_PAGE_LIMIT = 100;
+const PROJECT_MAX_PAGES = 50;
+
+/**
+ * Chain ids the Hub marks owner-held within one project: every page of
+ * /task-chains?project_id=. A project page includes archived Hub rows, so a
+ * frozen copy is found whatever its frozen status.
+ */
+export async function loadProjectOwnerChainIds(
+  projectId: string, fetchPage: (path: string) => Promise<any> = cookieJsonFetch,
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  const seen = new Set<string>();
+  let cursor = '';
+  for (let page = 0; page < PROJECT_MAX_PAGES; page++) {
+    const params = new URLSearchParams({ project_id: projectId, limit: String(PROJECT_PAGE_LIMIT) });
+    if (cursor) params.set('cursor', cursor);
+    const data = await fetchPage('/api/v1/task-chains?' + params.toString());
+    for (const c of Array.isArray(data?.chains) ? data.chains : []) {
+      if (isOwnerHeldChain({ authority: parseChainAuthority(c?.authority) }) && String(c?.project_id ?? projectId) === projectId) out.add(String(c.chain_id));
+    }
+    cursor = data?.has_more ? String(data?.next_cursor || '') : '';
+    if (!cursor || seen.has(cursor)) break;
+    seen.add(cursor);
+  }
+  return out;
 }
 
 /** Search local owners and legacy data; copies are never owner fallbacks. */
@@ -265,6 +298,11 @@ export async function searchTaskChainsEncrypted(
   }
   const localController = new AbortController();
   const localDeadline = setTimeout(() => localController.abort(), DEADLINE_MS);
+  // Owner hits under a project filter match through their Hub authority rows.
+  // An unreadable project listing cannot prove a project: owner hits drop out.
+  const projectOwned = options.projectId
+    ? loadProjectOwnerChainIds(options.projectId, (path) => cookieJsonFetch(path, { signal: localController.signal })).catch(() => new Set<string>())
+    : Promise.resolve(new Set<string>());
   const local = (async () => {
     const chain = await verifyDirectory(await cookieJsonFetch('/api/v1/vault/directory', { signal: localController.signal }), ownerId, pinsFromChain(session.chain));
     // The paged registry: every owner chain, not only the first hundred.
@@ -274,14 +312,16 @@ export async function searchTaskChainsEncrypted(
     );
     return searchOwnerChains({ ...session, chain }, rows, trimmed, limit,
       (relay) => cookieJsonFetch('/api/v1/owner-local/relay', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(relay), signal: localController.signal }), localController.signal);
-  })().finally(() => clearTimeout(localDeadline));
+  })();
   const [old, owned] = await Promise.allSettled([legacy, local]);
+  // The deadline also bounds the project listing; it never rejects.
+  const projectIds = await projectOwned.finally(() => clearTimeout(localDeadline));
   if (getKeyringSession() !== session || !getActiveVaultKey()) throw new ApiError('Vault session changed', 423, 'vault_locked');
   // A failed owner listing cannot safely deduplicate migrated legacy content.
   if (owned.status === 'rejected') throw owned.reason;
   if (old.status === 'rejected' && !owned.value.ownedIds.size) throw old.reason;
   const previous = old.status === 'fulfilled' ? old.value : { request_id: '', bridge_id: '', indexed_revision: 0, stale: true, hits: [] };
-  const localHits = filterOwnerSearchHits(owned.value.hits, options);
+  const localHits = filterOwnerSearchHits(owned.value.hits, options, projectIds);
   return { ...previous, stale: previous.stale || owned.value.stale,
     hits: limitHitsByChain([...localHits, ...previous.hits.filter((h) => !owned.value.ownedIds.has(h.chain_id))], limit) };
 }

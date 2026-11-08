@@ -15,6 +15,7 @@ import { decryptVaultText } from '../utils/vaultContent';
 import { pinsFromChain, verifyDirectory, type VerifiedChain } from '../utils/vaultDirectoryVerify';
 import { getKeyringSession } from '../utils/vaultKeyringSession';
 import type { ChainListItem } from './endpoints/tasks';
+import { isOwnerHeldChain, type ChainAuthority } from './chainAuthority';
 
 export interface OwnerChainTaskTitle { taskId: string; title: string }
 export interface OwnerChainSummary {
@@ -115,20 +116,19 @@ export async function loadOwnerChainSummaries(
  * Owner chains own their identity: a Hub row with the same id is the frozen
  * copy left by migration. Drop it, keep its project placement on the owner row.
  *
- * Limitation: the Hub chain list carries no migration state client-side, so
- * this dedupe keys on the live registry. If the owner registry tombstones a
- * moved chain (deleted on its Bridge), its frozen Hub copy is listed again.
- * R4a's `authority:{kind:"owner"}` on /task-chains is the durable fix.
+ * A Hub row the Hub marks owner-held (R4a `authority:{kind:"owner"}`) is dropped
+ * even when no live registry row matches it, e.g. once the owner registry
+ * tombstones a moved chain (deleted on its Bridge): the frozen copy must never
+ * resurface as an ordinary Hub chain.
  */
-export function mergeOwnerChains<T extends { chainId: string; projectId?: string; projectName?: string }>(
+export function mergeOwnerChains<T extends { chainId: string; projectId?: string; projectName?: string; authority?: ChainAuthority }>(
   hubChains: T[], owners: OwnerChainSummary[],
 ): { hub: T[]; owners: OwnerChainSummary[] } {
   const ids = new Set(owners.map((o) => o.chainId));
   const copies = new Map<string, T>();
   const hub = hubChains.filter((c) => {
-    if (!ids.has(c.chainId)) return true;
-    copies.set(c.chainId, c);
-    return false;
+    if (ids.has(c.chainId)) { copies.set(c.chainId, c); return false; }
+    return !isOwnerHeldChain(c);
   });
   return {
     hub,
