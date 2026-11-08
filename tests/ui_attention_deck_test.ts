@@ -3,8 +3,8 @@
 //
 // RUN: node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_attention_deck_test.ts
 
-import { importRawKeyHex } from './helpers/vaultTestKeyring.ts';
-import { asKeyring } from './helpers/vaultTestKeyring.ts';
+import { importRawKeyHex, asKeyring, keyringFromHex } from './helpers/vaultTestKeyring.ts';
+import { encryptVaultText } from '../src/ui/utils/vaultContent.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import React from 'react';
@@ -357,6 +357,34 @@ test('deck: locked vault shows the lock placeholder instead of ciphertext', asyn
     assert.doesNotMatch(text(), /vault:v2:7e57000000000001:e1:/, 'ciphertext is never painted');
     assert.ok(q('[data-debug-id="vault-locked-placeholder"]'), 'lock placeholder shown');
   });
+});
+
+test('deck: delegate picker decrypts durable agent labels and masks them while locked', async () => {
+  const encryptedName = await encryptVaultText('Replacement worker', await keyringFromHex('00'.repeat(32)));
+  const item = taskItem('delegate', {
+    primary_op: 'agent.start', operations: [{ op: 'agent.start', label: 'Start agent' }], rationale: 'The worker is stopped',
+    details: { priority: 'p1', status: 'backlog', attention: 'blocked', badge: 'agent_not_running', block_id: 'b1', excerpt: null,
+      start_agent: { agent_id: 'agt_current', agent_name: 'Current worker', bridge_id: 'brg_device', bridge_name: 'Mundus', detail: 'Stopped', diagnostic: 'instance_not_drained', can_delegate: true } },
+  });
+  const routes = {
+    '/agents': [{ agent_id: 'agt_replacement', name: encryptedName, state: 'active' }],
+    '/fleets': [{ agent_id: 'agt_replacement', roles: ['worker'], paused_roles: [] }],
+    '/tasks/task_secret_delegate': { task_id: 'task_secret_delegate', brief: { assignee: 'agt_current', reviewers: [], review_roles: [] }, leases: [] },
+  };
+  await withDeck([item], async ({ q, act }) => {
+    const select = q('[data-debug-id^="attention-delegate-worker-"]') as HTMLSelectElement;
+    assert.ok(select, 'delegation picker is visible on the deck card');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 40)); });
+    assert.equal([...select.options].find((option) => option.value === 'agt_replacement')?.textContent, 'Replacement worker');
+    assert.doesNotMatch(select.textContent || '', /vault:v2:/);
+  }, { unlocked: true, routes });
+
+  await withDeck([item], async ({ q, text }) => {
+    const select = q('[data-debug-id^="attention-delegate-worker-"]') as HTMLSelectElement;
+    assert.ok(select, 'delegation picker remains available with a locked vault');
+    assert.equal([...select.options].find((option) => option.value === 'agt_replacement')?.textContent, 'Encrypted agent (unlock vault to view name)');
+    assert.doesNotMatch(text(), /vault:v2:/, 'ciphertext never appears in deck content');
+  }, { routes });
 });
 
 test('deck: a legacy verify skip on a review card is not shown (verification removed)', async () => {
@@ -838,12 +866,14 @@ test('deck Start agent shows failed starts inline and permits retry', async () =
   const item = taskItem('start', {
     primary_op: 'agent.start', operations: [{ op: 'agent.start', label: 'Start agent' }],
     rationale: 'Agent worker (codex/model) on bridge b is not running: stopped',
-    details: { priority: 'p1', status: 'backlog', attention: 'blocked', badge: 'agent_not_running', block_id: 'block1', excerpt: null },
+    details: { priority: 'p1', status: 'backlog', attention: 'blocked', badge: 'agent_not_running', block_id: 'block1', excerpt: null,
+      start_agent: { agent_id: 'agt_worker', agent_name: 'Smoke worker', bridge_id: 'brg_device', bridge_name: 'Mundus', detail: 'Stopped by the user', diagnostic: 'Raw failure', can_delegate: false } },
   });
   await withDeck([item], async ({ q, act, text, hits }) => {
     assert.ok(q('[data-debug-id="attention-start-agent"]'));
     assert.match(q('[data-debug-id="attention-card-badge"]').textContent, /Agent not running/);
-    assert.match(text(), /on bridge b is not running: stopped/);
+    assert.match(text(), /Smoke worker on Mundus is not running/);
+    assert.doesNotMatch(q('[data-debug-id="attention-card-facts"]').parentElement.textContent, /on bridge b/);
     assert.equal(q('[data-debug-id="attention-action-answer"]'), null);
     await act(async () => { q('[data-debug-id="attention-start-agent"]').click(); });
     assert.match(q('[data-debug-id="attention-start-agent-error"]').textContent, /credentials missing/);

@@ -748,7 +748,7 @@ export function AttentionDeck({
 
         <nav aria-label="Card actions" data-debug-id="attention-deck-dock" data-attention-dock className="mx-4 mb-4 flex justify-around rounded-[var(--radius-lg)] border border-subtle bg-surface-raised px-1 py-1.5" style={{ visibility: current ? 'visible' : 'hidden' }}>
           {dock.map((d) => current && needsAgentStart(current) && d.debug === 'answer' ? (
-            <StartAgentAction key={current.card_id} debugPrefix="attention" onStart={() => void agentStart.start(current)} {...agentStart.states[current.card_id]} />
+            <StartAgentAction key={current.card_id} item={current.kind === 'task' ? current : undefined} onDelegate={(id) => void agentStart.start(current, id)} debugPrefix="attention" onStart={() => void agentStart.start(current)} {...agentStart.states[current.card_id]} />
           ) : (
             <button
               key={d.debug}

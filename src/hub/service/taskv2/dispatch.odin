@@ -6,6 +6,7 @@ import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import agent "odin_test:hub/service/agent"
 import iface "odin_test:hub/repository/iface"
+import platform "odin_test:hub/platform"
 import jsonx "odin_test:lib/jsonx"
 
 // Dispatch is infrastructure failure, before work starts. Retain the attempt
@@ -56,11 +57,13 @@ agent_not_running_in_uow :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Leas
 	if strings.trim_space(detail) == "" do detail = "launch failed before startup confirmation"
 	waiting := json_begin()
 	json_str(&waiting, "kind", "agent_not_running")
+	json_str(&waiting, "failure_id", platform.generate_id(svc.ids, "failure_"))
 	json_str(&waiting, "agent_id", agent_id)
 	json_str(&waiting, "bridge_id", bridge)
 	if cause != "" do json_str(&waiting, "cause", cause)
 	json_str(&waiting, "provider", provider)
 	json_str(&waiting, "model", model)
+	json_str(&waiting, "detail", detail)
 	json_str(&waiting, "reason", fmt.tprintf("Agent %s (%s/%s) on bridge %s is not running: %s", agent_id, provider, model, bridge, detail))
 	json_int(&waiting, "since_ms", now_ms(svc.clock))
 	p := json_begin()
@@ -108,11 +111,13 @@ block_ready_agent_in_uow :: proc(svc: ^Service, u: ^Uow, task: domain.Task, agen
 	if placement.model == "" do placement.model = "unresolved"
 	waiting := json_begin()
 	json_str(&waiting, "kind", "agent_not_running")
+	json_str(&waiting, "failure_id", platform.generate_id(svc.ids, "failure_"))
 	json_str(&waiting, "agent_id", agent_id)
 	json_str(&waiting, "bridge_id", placement.bridge_id)
 	if cause != "" do json_str(&waiting, "cause", cause)
 	json_str(&waiting, "provider", placement.provider)
 	json_str(&waiting, "model", placement.model)
+	json_str(&waiting, "detail", failure)
 	json_str(&waiting, "reason", fmt.tprintf("Agent %s (%s/%s) on bridge %s is not running: %s", agent_id, placement.provider, placement.model, placement.bridge_id, failure))
 	json_int(&waiting, "since_ms", now_ms(svc.clock))
 	p := json_begin()
@@ -129,8 +134,9 @@ block_ready_agent_in_uow :: proc(svc: ^Service, u: ^Uow, task: domain.Task, agen
 // synchronous launch/send failures are returned to the card as well as
 // persisted in its newly projected reason. A coordinator never clears a
 // deliberate user stop: only the user restarts what the user stopped.
-start_task_agent :: proc(svc: ^Service, auth: contracts.Auth_Context, task_id: domain.Task_ID, expected_waiting_on := "") -> (bool, domain.Domain_Error) {
+start_task_agent :: proc(svc: ^Service, auth: contracts.Auth_Context, task_id: domain.Task_ID, expected_waiting_on := "", replacement_agent_id := "", expected_assignment := "", expected_attempt := -1) -> (bool, domain.Domain_Error) {
 	is_user := contracts.is_user_auth(auth)
+	if replacement_agent_id != "" && (!is_user || expected_waiting_on == "") do return false, domain.domain_error(.Forbidden, "only the user may delegate the displayed failure")
 	caller: domain.Agent_Instance
 	if !is_user {
 		inst, iok, _ := instance_from_auth(svc, auth)
@@ -165,6 +171,20 @@ start_task_agent :: proc(svc: ^Service, auth: contracts.Auth_Context, task_id: d
 		_, _ = end_uow(svc, &u, false)
 		return false, domain.domain_error(.Conflict, "task is no longer waiting for its agent")
 	}
+	if replacement_agent_id != "" {
+		if brief_assignee(task.brief_json) != expected_assignment || (expected_attempt >= 0 && task.attempt_no != expected_attempt) {
+			_, _ = end_uow(svc, &u, false)
+			return false, domain.domain_error(.Conflict, "the task assignment or attempt changed; reload the card")
+		}
+		delegated, derr := delegate_task_agent_in_uow(svc, &u, auth, task, replacement_agent_id)
+		_, cerr := end_uow(svc, &u, delegated)
+		if !delegated do return false, derr
+		if cerr.code != .None do return false, cerr
+		fresh, exists, ferr := iface.taskchain_get_task(svc.repo, task_id)
+		if !exists do return false, ferr
+		if is_agent_not_running_block(fresh.blocked_on_json) do return false, domain.domain_error(.Conflict, jsonx.extract_string(fresh.blocked_on_json, "detail", "Replacement failed to start; refresh the card for details", true, context.temp_allocator))
+		return true, {}
+	}
 	agent_id := jsonx.extract_string(task.blocked_on_json, "agent_id", "", true, context.temp_allocator)
 	if chain, chain_found, _ := iface.taskchain_get_chain(svc.repo, task.chain_id); chain_found && chain_is_solo(svc, chain) {
 		if coord, coord_found, _ := iface.agent_get_instance(svc.agents, chain.coordinator_agent_instance_id); coord_found && coord.agent_id == agent_id {
@@ -186,7 +206,7 @@ start_task_agent :: proc(svc: ^Service, auth: contracts.Auth_Context, task_id: d
 	fresh, fresh_found, fresh_err := iface.taskchain_get_task(svc.repo, task_id)
 	if !fresh_found || fresh_err.code != .None do return false, fresh_err
 	if is_agent_not_running_block(fresh.blocked_on_json) {
-		return false, domain.domain_error(.Conflict, jsonx.extract_string(fresh.blocked_on_json, "reason", "Agent failed to start", true, context.temp_allocator))
+		return false, domain.domain_error(.Conflict, jsonx.extract_string(fresh.blocked_on_json, "detail", "Agent failed to start; refresh the card for details", true, context.temp_allocator))
 	}
 	return true, domain.Domain_Error{}
 }

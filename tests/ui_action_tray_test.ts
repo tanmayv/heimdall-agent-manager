@@ -187,17 +187,30 @@ test('chat tray Start agent stays visible with an inline failure and retry', asy
   const saved: any = {};
   for (const key of ['window', 'document', 'HTMLElement', 'Node', 'IS_REACT_ACT_ENVIRONMENT']) saved[key] = (globalThis as any)[key];
   Object.assign(globalThis, { window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, Node: dom.window.Node, IS_REACT_ACT_ENVIRONMENT: true });
+  (globalThis as any).requestAnimationFrame = (cb: (t: number) => void) => setTimeout(() => cb(Date.now()), 0);
+  (globalThis as any).cancelAnimationFrame = (h: any) => clearTimeout(h);
+  dom.window.requestAnimationFrame = (globalThis as any).requestAnimationFrame;
+  dom.window.cancelAnimationFrame = (globalThis as any).cancelAnimationFrame;
   const previousFetch = globalThis.fetch;
   let requests = 0;
-  globalThis.fetch = (async () => {
-    requests += 1;
-    return requests === 1
-      ? { ok: false, status: 409, text: async () => JSON.stringify({ error: { message: 'Launch refused: bridge offline' } }) }
-      : { ok: true };
+  globalThis.fetch = (async (input: any) => {
+    const url = new URL(String(input?.url ?? input), 'http://localhost');
+    const json = (data: any) => ({ ok: true, status: 200, headers: { get: () => 'application/json' }, text: async () => JSON.stringify({ data }), json: async () => ({ data }) });
+    if (url.pathname.endsWith('/agents')) return json([{ agent_id: 'agt_replacement', name: 'vault:v2:7e57000000000001:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', state: 'active' }]);
+    if (url.pathname.endsWith('/fleets')) return json([{ agent_id: 'agt_replacement', roles: ['worker'], paused_roles: [] }]);
+    if (url.pathname.endsWith('/tasks/task_start')) return json({ task_id: 'task_start', brief: { assignee: 'agt_current', reviewers: [], review_roles: [] }, leases: [] });
+    if (url.pathname.endsWith('/accept')) {
+      requests += 1;
+      return requests === 1
+        ? { ok: false, status: 409, text: async () => JSON.stringify({ error: { message: 'Launch refused: bridge offline' } }) }
+        : { ok: true };
+    }
+    return json([]);
   }) as any;
   const store = await makeVaultStore();
   const root = createRoot(dom.window.document.getElementById('root')!);
-  const item = taskItem('start', { attention: 'blocked', badge: 'agent_not_running', block_id: 'b1' }, {
+  const item = taskItem('start', { attention: 'blocked', badge: 'agent_not_running', block_id: 'b1',
+    start_agent: { agent_id: 'agt_current', agent_name: 'Smoke worker', bridge_id: 'brg_device', bridge_name: 'Mundus', detail: 'Stopped by the user', diagnostic: 'Raw failure', can_delegate: true } }, {
     primary_op: 'agent.start', operations: [{ op: 'agent.start', label: 'Start agent' }], rationale: 'worker on bridge b is stopped',
   });
   const q = (id: string) => dom.window.document.querySelector('[data-debug-id="' + id + '"]') as HTMLElement | null;
@@ -207,7 +220,11 @@ test('chat tray Start agent stays visible with an inline failure and retry', asy
     }) })); });
     assert.ok(q('action-tray-start-agent-crd_start'));
     assert.equal(q('action-tray-answer'), null);
-    assert.match(dom.window.document.body.textContent || '', /worker on bridge b is stopped/);
+    assert.match(dom.window.document.body.textContent || '', /Smoke worker on Mundus is not running/);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 40)); });
+    const replacement = [...dom.window.document.querySelectorAll('option')].find((option) => option.value === 'agt_replacement');
+    assert.equal(replacement?.textContent, 'Encrypted agent (unlock vault to view name)');
+    assert.doesNotMatch(dom.window.document.body.textContent || '', /vault:v2:/, 'encrypted identity never appears in the action tray');
     await act(async () => { q('action-tray-start-agent-crd_start')!.click(); });
     assert.match(q('action-tray-start-agent-error-crd_start')!.textContent || '', /bridge offline/);
     assert.ok(q('action-tray-card-blocked'));
@@ -217,6 +234,7 @@ test('chat tray Start agent stays visible with an inline failure and retry', asy
   } finally {
     await act(async () => root.unmount());
     store.dispatch(heimdallApi.util.resetApiState());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
     globalThis.fetch = previousFetch;
     for (const key of Object.keys(saved)) (globalThis as any)[key] = saved[key];
     dom.window.close();

@@ -44,6 +44,8 @@ export type AttentionTaskDetails = {
   /** Identity of the block a blocked card shows; sent back with Answer. */
   block_id?: string;
   holder_instance_id?: string;
+  /** Structured legacy dispatch context; names never come from error prose. */
+  start_agent?: { agent_id: string; agent_name: string; bridge_id: string; bridge_name: string; detail: string; diagnostic: string; can_delegate: boolean };
   /** A review card on a held task (task hold): the verdict still counts; the gate resumes on release. */
   held?: boolean;
   hold_reason?: string;

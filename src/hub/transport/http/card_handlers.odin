@@ -266,6 +266,7 @@ card_decision_from_body :: proc(body: string) -> card_service.Card_Decision {
 		summary       = json_string(body, "summary"),
 		findings_json = findings,
 		expected_block = json_string(body, "expected_block"),
+		replacement_agent_id = json_string(body, "replacement_agent_id"),
 	}
 }
 
