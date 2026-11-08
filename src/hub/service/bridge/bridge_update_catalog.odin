@@ -162,7 +162,9 @@ compare_semver :: proc(v1, v2: string) -> int {
 is_bridge_update_available :: proc(bridge_version, bridge_commit, latest_version, latest_commit: string) -> bool {
 	if latest_version == "" do return false
 	if bridge_version == "" do return true
-	cmp := compare_semver(bridge_version, latest_version)
+	// SemVer precedence (prerelease-aware), matching the Bridge's own refusal of
+	// older targets: "0.5.50" is newer than "0.5.50-subagents.2".
+	cmp := bridge_plan_compare_version(bridge_version, latest_version)
 	if cmp < 0 do return true
 	if cmp > 0 do return false
 
@@ -220,7 +222,7 @@ resolve_bridge_update_info :: proc(catalog: ^Bridge_Update_Catalog, bridge: doma
 				info.fallback_reason = fmt.tprintf("%s; %s", promoted.fallback_reason, info.fallback_reason)
 			}
 		}
-		if promoted.latest_version != "" && compare_semver(pin, promoted.latest_version) < 0 {
+		if promoted.latest_version != "" && bridge_plan_compare_version(pin, promoted.latest_version) < 0 {
 			pin_warning := fmt.tprintf("Operator pin %s is older than promoted release %s", pin, promoted.latest_version)
 			if info.warning == "" {
 				info.warning = pin_warning

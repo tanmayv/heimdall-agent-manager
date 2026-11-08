@@ -199,6 +199,13 @@ test_bridge_update_catalog_semver_comparisons :: proc(t: ^testing.T) {
 	testing.expect(t, is_bridge_update_available("", "", "0.2.0", "c2"), "empty bridge version must report update available")
 	testing.expect(t, !is_bridge_update_available("0.3.0", "c1", "0.2.0", "c2"), "newer bridge semver must not report update available")
 	testing.expect(t, !is_bridge_update_available("0.1.0", "c1", "", "c2"), "empty latest version must report no update")
+	// Prerelease precedence must match the Bridge's refusal logic.
+	testing.expect(t, !is_bridge_update_available("0.5.50", "c1", "0.5.50-subagents.2", "c2"), "release must not be offered its own prerelease")
+	testing.expect(t, is_bridge_update_available("0.5.50-subagents.2", "c1", "0.5.50", "c2"), "prerelease must be offered its release")
+	testing.expect(t, is_bridge_update_available("0.5.50-subagents.1", "c1", "0.5.50-subagents.2", "c2"), "older prerelease must be offered newer prerelease")
+	testing.expect(t, !is_bridge_update_available("0.5.50-subagents.3", "c1", "0.5.50-subagents.2", "c2"), "newer prerelease must not be offered older prerelease")
+	testing.expect(t, !is_bridge_update_available("0.5.50-subagents.10", "c1", "0.5.50-subagents.9", "c2"), "numeric prerelease identifiers compare by value")
+	testing.expect(t, is_bridge_update_available("0.5.49", "c1", "0.5.50-subagents.2", "c2"), "older release must be offered a newer core prerelease")
 }
 
 // REQ-P2-CATALOG: Tracking allocator asserts zero heap memory leaks and zero bad frees
