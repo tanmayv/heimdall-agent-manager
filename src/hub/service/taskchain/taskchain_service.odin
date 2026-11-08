@@ -1030,9 +1030,9 @@ create_task_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Conte
 		kind = input.kind,
 		priority = input.has_priority ? input.priority : .P2,
 		brief_json = brief,
-		// Solo chains default to "the user reviews" (REQ-SOLO-1a); an explicit
-		// value from the caller always wins.
-		requires_user_approval = input.requires_user_approval if input.has_requires_user_approval else (service.engine != nil && taskv2.chain_is_solo(service.engine, chain)),
+		// No chain (solo included) defaults to "the user reviews" (REQ-SOLO-1a,
+		// F1); an explicit value from the caller always wins.
+		requires_user_approval = input.requires_user_approval if input.has_requires_user_approval else false,
 		bridge_id = input.bridge_id,
 		created_at = now,
 		updated_at = now,

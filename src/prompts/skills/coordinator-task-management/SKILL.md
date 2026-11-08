@@ -170,8 +170,8 @@ Rules: never hold a task just to postpone it, and never hold when the user's inp
 ## 8. Solo mode
 The chain is solo when you are the Soloist or hold a worker fleet row yourself. Then:
 - You pull work with `lease next` (nothing is pushed), work it per `worker-task-management`, and `lease submit`. Lapsed leases are not counted as attempts.
-- New tasks default to `requires_user_approval`; the user reviews from their attention deck. To opt a task out: `task update <id> --no-require-user-approval`.
-- You never review your own work (`403 solo_self_review`).
+- New tasks do NOT default to `requires_user_approval`; a task with no review roles is done on submit. Add `--require-user-approval` when the user wants to review a task; they then review it from their attention deck. On Bridge-owned (owner-local) chains only the user can remove an explicit `requires_user_approval`; `--no-require-user-approval` from an agent is refused there.
+- You may post `review post --on-behalf-of user` for a task that does not require user approval; for one that does, only the user's own verdict counts (`403 solo_self_review`).
 - `[taskv2] solo: task … is ready for you` means pull it with `lease next`.
 - Urgent request mid-task: create the task, then `lease switch <task_id> --summary "<where you left off>"`.
 
