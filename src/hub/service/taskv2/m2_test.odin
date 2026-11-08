@@ -163,7 +163,11 @@ test_oscillation_guard_parks_after_three_rounds :: proc(t: ^testing.T) {
 	}
 	parked := get_task(fx, "task_1")
 	testing.expect_value(t, parked.state, domain.Task_State.Backlog)
-	testing.expect(t, strings.contains(parked.blocked_on_json, "oscillation"), "oscillation guard → blocked_on human")
+	testing.expect(t, strings.contains(parked.blocked_on_json, "oscillation"), "oscillation guard → blocked_on coordinator")
+	// F1: routed to the coordinator, not the user's attention queue
+	testing.expect(t, strings.contains(parked.blocked_on_json, `"kind":"coordinator"`), parked.blocked_on_json)
+	okind, _ := user_attention(&fx.svc, parked)
+	testing.expect(t, okind == .None, "oscillation is not user attention")
 	_, held := lease_of(fx, "inst_w1")
 	testing.expect(t, !held, "no grant while parked")
 	// the human answers → ready again → granted, and oscillation counter resets (M2-m2)

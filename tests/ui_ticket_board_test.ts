@@ -189,6 +189,9 @@ test('REQ-B4: the attempt shows once, without "of N"; it warns only when the hub
   assert.deepEqual(attemptInfo(makeTask({ task_id: 'x', attempt_no: 6 })), { no: 6, max: 5, exhausted: false, label: 'Attempt 6' });
   const spent = makeTask({ task_id: 'y', attempt_no: 5, blocked_on: { kind: 'human', reason: 'budget_exhausted', since_ms: NOW } as any });
   assert.equal(attemptInfo(spent).exhausted, true);
+  // F1: the hub now parks a spent budget for the coordinator.
+  const spentCoord = makeTask({ task_id: 'y2', attempt_no: 5, blocked_on: { kind: 'coordinator', reason: 'budget_exhausted', since_ms: NOW } as any });
+  assert.equal(attemptInfo(spentCoord).exhausted, true);
   assert.equal(attemptInfo(makeTask({ task_id: 'z', attempt_no: 2, brief: { budget: { max_attempts: 3 } } })).max, 3);
 });
 

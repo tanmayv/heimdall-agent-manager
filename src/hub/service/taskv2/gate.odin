@@ -162,8 +162,10 @@ User_Attention :: enum { None, Review, Blocked }
 //              review_requested_from_user) and the user has not approved this
 //              attempt.
 //   Blocked  — blocked_on set and the user can resolve it: every system block
-//              (kind human, reason merge_conflict | budget_exhausted |
-//              oscillation | blocked) and any agent block except kind "task"
+//              still waiting on a human (kind human, reason blocked, and legacy
+//              merge_conflict | budget_exhausted | oscillation rows) and any
+//              agent block except kind "task" or kind "coordinator" (loop
+//              guards and merge conflicts go to the coordinator, F1)
 //              (cleared automatically, C3-2) and the v2 backfill of legacy
 //              paused tasks (reason paused_before_v2). `badge` is the reason for
 //              the three system ones, else "question". A held task is never
@@ -209,6 +211,8 @@ blocked_on_user :: proc(task: domain.Task) -> (bool, string) {
 	// agent_not_running block (above; Start agent does not answer) stays
 	// actionable. Matches the attention candidate query, which skips holds.
 	if task_is_held(task) do return false, ""
+	// Loop guards and merge conflicts wait on the chain coordinator (F1).
+	if jsonx.extract_string(raw, "kind", "", true, context.temp_allocator) == "coordinator" do return false, ""
 	reason := jsonx.extract_string(raw, "reason", "", true, context.temp_allocator)
 	switch reason {
 	case "paused_before_v2": return false, ""

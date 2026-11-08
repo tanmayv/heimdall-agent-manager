@@ -249,15 +249,48 @@ run_merge :: proc(svc: ^Service, m: Merge_Effect) {
 	u, uok, _ := begin_uow(svc)
 	if !uok do return
 	saved, _, rok, _ := record_event(svc, &u, task, hub_actor(), kind, json_end(&p))
+	auto_reconcile := false
+	if rok && outcome == .Conflict && merge_conflict_auto_reconcile_allowed(svc, saved) {
+		// F1: the reconcile attempt (a non-counting attempt that merges the
+		// directory's branch into the task's and resubmits) starts at once.
+		// Bounded: past MERGE_AUTO_RECONCILE_MAX conflicts without a merge the
+		// task stays parked for the coordinator.
+		ap := json_begin()
+		json_bool(&ap, "auto", true)
+		json_str(&ap, "reason", "merge_conflict_auto_reconcile")
+		if s2, _, aok, _ := record_event(svc, &u, saved, hub_actor(), EV_ANSWERED, json_end(&ap)); aok {
+			saved = s2
+			auto_reconcile = true
+		} else {
+			rok = false
+		}
+	}
 	if rok && outcome != .Merged {
 		line := fmt.tprintf("[taskv2] merge %s: task %s (%s) branch %s did not merge into %s: %s",
 			"conflict" if outcome == .Conflict else "failed", saved.task_id, saved.title, m.branch, m.repo, first_line_trimmed(detail))
+		if auto_reconcile do line = fmt.tprintf("%s — a reconcile attempt was started automatically", line)
 		effect_notify_coordinator(svc, &u, saved.chain_id, saved.owner_user_id, "merge_conflict" if outcome == .Conflict else "merge_failed", line)
 	}
 	if rok {
 		rok, _ = after_chain_change(svc, &u, saved.chain_id, saved.owner_user_id, .Task_Updated)
 	}
 	_, _ = end_uow(svc, &u, rok)
+}
+
+// MERGE_AUTO_RECONCILE_MAX: consecutive merge conflicts (no merge between)
+// that are auto-answered with a reconcile attempt before the task is left
+// parked for the coordinator (F1).
+MERGE_AUTO_RECONCILE_MAX :: 1
+
+merge_conflict_auto_reconcile_allowed :: proc(svc: ^Service, task: domain.Task) -> bool {
+	evs, err := iface.taskchain_list_events_by_task(svc.repo, task.task_id, task.owner_user_id)
+	if err.code != .None do return false
+	conflicts := 0
+	for i := len(evs) - 1; i >= 0; i -= 1 {
+		if evs[i].kind == EV_MERGED do break
+		if evs[i].kind == EV_MERGE_CONFLICT do conflicts += 1
+	}
+	return conflicts <= MERGE_AUTO_RECONCILE_MAX
 }
 
 // merge_pending: the task's latest completion has no merge outcome yet (the

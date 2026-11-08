@@ -224,7 +224,7 @@ fold_task :: proc(events: []domain.Task_Event, input: Fold_Input) -> Task_View {
 			v.last_release = .Changes_Requested
 			if v.review_rounds >= OSCILLATION_ROUNDS {
 				v.oscillating = true
-				v.blocked_on_json = human_block("oscillation", ev.ts_ms)
+				v.blocked_on_json = coordinator_block("oscillation", ev.ts_ms)
 			}
 			apply_budget(&v, max_attempts, ev.ts_ms)
 		case EV_APPROVED:
@@ -260,12 +260,13 @@ fold_task :: proc(events: []domain.Task_Event, input: Fold_Input) -> Task_View {
 			v.last_release = .Reopened
 		case EV_MERGE_CONFLICT:
 			// The task's branch did not merge into its directory: it is no
-			// longer done. It waits on a human; once answered the next
+			// longer done. It waits on the coordinator (F1; merge.odin
+			// auto-answers the first conflict); once answered the next
 			// (non-counting) attempt reconciles the branch and resubmits.
 			if !v.done do continue
 			v.done = false
 			v.last_release = .Reopened
-			v.blocked_on_json = human_block("merge_conflict", ev.ts_ms)
+			v.blocked_on_json = coordinator_block("merge_conflict", ev.ts_ms)
 		case EV_ANSWERED:
 			infrastructure := is_agent_not_running_block(v.blocked_on_json)
 			v.blocked_on_json = ""
@@ -367,7 +368,7 @@ OSCILLATION_ROUNDS :: 3
 apply_budget :: proc(v: ^Task_View, max_attempts: int, ts_ms: i64) {
 	if v.counting_attempts >= max_attempts && !v.done && !v.cancelled && !v.budget_exhausted {
 		v.budget_exhausted = true
-		v.blocked_on_json = human_block("budget_exhausted", ts_ms)
+		v.blocked_on_json = coordinator_block("budget_exhausted", ts_ms)
 	}
 }
 
@@ -389,6 +390,14 @@ budget_allows_grant :: proc(v: Task_View, max_attempts_in: int) -> bool {
 human_block :: proc(reason: string, since_ms: i64) -> string {
 	// NB: Odin's fmt treats `{`/`}` as argument syntax, hence `{{`/`}}`.
 	return fmt.tprintf(`{{"kind":"human","reason":"%s","since_ms":%d}}`, reason, since_ms)
+}
+
+// coordinator_block: the loop guards (budget, oscillation) and a merge
+// conflict park the task for the CHAIN COORDINATOR, not the user's attention
+// queue (F1). The coordinator re-plans, unblocks or escalates to the user.
+@(private = "file")
+coordinator_block :: proc(reason: string, since_ms: i64) -> string {
+	return fmt.tprintf(`{{"kind":"coordinator","reason":"%s","since_ms":%d}}`, reason, since_ms)
 }
 
 @(private = "file")
