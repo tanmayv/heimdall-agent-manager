@@ -497,8 +497,10 @@ bridge_executor_test_fence_callback :: proc(ctx:rawptr,raw:string,generation:i64
         case "profile":
             profile,err:=profile_lookup("claude","claude",prepare_runtime=false)
             if err!=.None do panic("profile lookup")
-            profile.config.binary_path="/bin/false"
-            if profile_upsert(&profile,nil,now)!=.None do panic("profile mutation")
+            // Any existing executable that differs from the fixture's
+            // profile; /bin/false is absent on NixOS hosts (only /bin/sh).
+            profile.config.binary_path="/bin/sh"
+            if e:=profile_upsert(&profile,nil,now);e!=.None do panic(fmt.tprintf("profile mutation %v",e))
         case "missing","replacement":
             if os.rename(p.resource_path,fmt.tprintf("%s.saved",p.resource_path))!=nil do panic("directory rename")
             if p.resource_mutation=="replacement" && os.make_directory(p.resource_path)!=nil do panic("directory replacement")
