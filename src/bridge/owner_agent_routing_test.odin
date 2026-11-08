@@ -257,6 +257,11 @@ test_owner_prepare_worktree_detached_head_only_when_git_ran :: proc(t:^testing.T
     status,reason:=bridge_owner_prepare_worktree(config,task)
     testing.expect(t,status==.Ok,reason)
 
+    // Hold the runner lock across install -> use -> restore (also guards
+    // owner_head_probe_path); defers run LIFO, so the runner is restored
+    // before the lock is released.
+    vcs_runner_test_lock()
+    defer vcs_runner_test_unlock()
     owner_head_probe_path=work
     vcs_process_runner = proc(args: []string, timeout: time.Duration) -> (stdout, stderr: string, ok, timed_out: bool) {
         intercept:=false

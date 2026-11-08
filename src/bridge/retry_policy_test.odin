@@ -294,6 +294,10 @@ vcs_budget_test_mu: sync.Mutex
 
 @(test)
 test_vcs_network_operations_run_with_network_budget :: proc(t: ^testing.T) {
+	// Hold the runner lock across install -> use -> restore; defers run LIFO, so the
+	// runner is restored before the lock is released.
+	vcs_runner_test_lock()
+	defer vcs_runner_test_unlock()
 	vcs_process_runner = proc(args: []string, timeout: time.Duration) -> (stdout, stderr: string, ok, timed_out: bool) {
 		if len(args) < 4 || args[2] != VCS_BUDGET_TEST_PATH do return bridge_process_run_capture(args, timeout)
 		sync.mutex_lock(&vcs_budget_test_mu)
