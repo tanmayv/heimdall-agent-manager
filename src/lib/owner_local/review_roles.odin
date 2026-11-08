@@ -10,15 +10,17 @@ role_configuration :: proc(s:^Store,chain,task:string)->([]string,bool) {
     if !ok || len(rows)!=1 do return nil,false
     return rows[0],true
 }
-role_configure :: proc(s:^Store,c:json.Object,body:string,children:[]Child,seq:i64)->string {
+role_configure :: proc(s:^Store,c:json.Object,body:string,children:[]Child,seq:i64,device:=false)->string {
     p,valid:=contracts.owner_parse(body,"review_roles")
     if !valid do return "malformed"
     chain,task:=field(c,"chain_id"),field(c,"task_id")
     config,_,configured:=lifecycle_config(s,chain,task)
     if !configured do return "invalid_scope"
     prior:i64
-    if previous,found:=role_configuration(s,chain,task);found do prior=number(previous[0])
+    prior_user:=false
+    if previous,found:=role_configuration(s,chain,task);found { prior=number(previous[0]);prior_user=previous[1]=="1" }
     if number(field(p,"configuration_revision"))!=prior+1 do return "stale_revision"
+    if !approval_ratchet_allows(prior_user,field(p,"requires_user_approval")=="1",device) do return "invalid_scope"
     state,ok:=query(s.db,"SELECT state FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)
     if !ok || len(state)!=1 do return "storage_error"
     if state[0][0]!="ready" && state[0][0]!="in_review" do return "operation_conflict"
@@ -66,13 +68,15 @@ role_gate :: proc(s:^Store,chain,task,attempt:string)->(string,bool) {
     if control_held(s,chain,task) do return "in_review",true
     config,_,valid:=lifecycle_config(s,chain,task)
     if !valid do return "",false
-    reviews,ok:=query(s.db,"SELECT reviewer_agent_id,principal_id,verdict FROM local_reviews WHERE chain_id=? AND task_id=? AND attempt=?",chain,task,attempt)
+    reviews,ok:=query(s.db,"SELECT reviewer_agent_id,principal_id,verdict,principal_kind FROM local_reviews WHERE chain_id=? AND task_id=? AND attempt=?",chain,task,attempt)
     if !ok do return "",false
     independent,user:=false,false
     for row in reviews {
         if row[2]=="request_changes" do return "ready",true
         if row[0]==field(config,"reviewer_agent_id") do independent=true
-        if row[0]==row[1] && row[0]!=field(config,"reviewer_agent_id") do user=true
+        // Only a device-signed verdict is the user (R2-1). An agent row, even a
+        // coordinator's review.human on the user's behalf, never is.
+        if row[3]=="device" && row[0]==row[1] && row[0]!=field(config,"reviewer_agent_id") do user=true
     }
     role_configs,roles_read:=query(s.db,"SELECT revision,requires_user_approval FROM local_role_configs WHERE chain_id=? AND task_id=? ORDER BY revision DESC LIMIT 1",chain,task)
     if !roles_read do return "",false
@@ -96,4 +100,33 @@ role_gate :: proc(s:^Store,chain,task,attempt:string)->(string,bool) {
     if !language_policy_ready(s,chain,task) do return "in_review",true
     if !independent do return "in_review",true
     return ("merge_pending" if field(config,"merge_policy")=="git" else "done"),true
+}
+
+// ---- user-approval ratchet (R2-1) -----------------------------------------
+// An agent principal may add requires_user_approval but never remove it; a
+// device (the user) may do either. Every path that can change a user-approval
+// source applies this: requirements.edit (brief), review.roles (role config).
+// lifecycle.configure carries no flag. A future task split must call
+// task_user_approval_required on the parent and keep the flag on each child
+// unless the split is device-signed.
+approval_ratchet_allows :: proc(prior,next,device:bool) -> bool { return device || !prior || next }
+
+// The brief's own flag, read exactly as the gate reads submissions.
+brief_user_approval :: proc(s:^Store,brief:string) -> bool {
+    rows,ok:=query(s.db,"SELECT json_valid(?1) AND json_extract(?1,'$.requires_user_approval')=1",brief)
+    return ok && len(rows)==1 && rows[0][0]=="1"
+}
+requirements_user_approval :: proc(s:^Store,chain,task:string) -> (required:bool,ok:bool) {
+    req,has:=lifecycle_requirements(s,chain,task)
+    if !has do return false,true
+    return brief_user_approval(s,req[1]),true
+}
+// Any mutable user-approval source of the task (brief or latest role config).
+task_user_approval_required :: proc(s:^Store,chain,task:string) -> (required:bool,ok:bool) {
+    brief,read:=requirements_user_approval(s,chain,task)
+    if !read do return false,false
+    if brief do return true,true
+    rows,roles_ok:=query(s.db,"SELECT requires_user_approval FROM local_role_configs WHERE chain_id=? AND task_id=? ORDER BY revision DESC LIMIT 1",chain,task)
+    if !roles_ok do return false,false
+    return len(rows)==1 && rows[0][0]=="1",true
 }

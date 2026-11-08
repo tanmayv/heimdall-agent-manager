@@ -380,3 +380,56 @@ test('a failed review scan clears the reviews loading state', async () => {
     clearKeyringSession();
   }
 });
+
+// R2-1/R3-1: a ticket whose brief requires the user's approval says so and
+// offers the device-signed verdict; an agent's relay "on behalf of the user"
+// does not clear the notice, the user's own device approval does.
+test('a ticket waiting on the user shows a notice until a device-signed approval exists', async () => {
+  const env = await ownerTestSession();
+  const { session } = env;
+  let deviceApproved = false;
+  const calls: OwnerCall[] = [];
+  const send = fakeOwner(session, async (call) => {
+    calls.push(call);
+    const task = call.command.task_id;
+    switch (call.method) {
+      case 'chain.read': return { chain_id: 'chain_owned', task_id: '', revision: '1', title: 'Live chain title', description: '', defaults_json: '{}',
+        items: [{ task_id: 'task_1', title: 'Fix login', priority: 'p1', revision: '3' }], next_cursor: '' };
+      case 'work.read': return { chain_id: 'chain_owned', publish_state: 'published', status: 'active', work_revision: '1', pending_proposal_id: '', next_cursor: '', items: [], pending_proposal: null };
+      case 'runtime.read': return { revision: '3', fleet: [], leases: [], config: [],
+        requirements: [['1', JSON.stringify({ goal: 'Fix it', acceptance: ['Works'], requires_user_approval: true })]],
+        state: [[deviceApproved ? 'done' : 'in_review', '1', '']], submission: [['1', '', '1', 'Fixed', 'agt_worker']], controls: [],
+        attempts: { attempt_no: '1', last_release: '', work_lease_id: '', completeness: 'full' } };
+      case 'task.read': return { chain_id: 'chain_owned', task_id: task, revision: '3', title: 'Fix login', body: '', priority: 'p1', items: [], next_cursor: '' };
+      case 'migration.archive.read': return { chain_id: 'chain_owned', migration_id: '', next_cursor: '', items: [] };
+      case 'history.read': return { chain_id: 'chain_owned', next_cursor: '', items: [
+        { seq: '7', task_id: 'task_1', ts_ms: '1', actor_kind: 'agent', actor_id: 'inst_coordinator', kind: 'review.post', operation_id: 'op_relay', completeness: 'full', evidence_bytes: '10' },
+      ] };
+      case 'history.fetch': return { seq: '7', offset: '0', next_offset: '', completeness: 'full',
+        evidence: JSON.stringify({ payload: JSON.stringify({ attempt: '1', verdict: 'approve', summary: 'User said LGTM in chat' }) }) };
+      case 'review.post': deviceApproved = true; return { chain_id: 'chain_owned', task_id: task, revision: '4' };
+      default: return { code: 'invalid_scope' };
+    }
+  });
+  const ui = mountDom();
+  try {
+    await act(async () => ui.root.render(React.createElement(OwnerChainView, { chain: summary(env), send, session: async () => session })));
+    await ui.flush();
+    assert.ok(ui.$('owner-chain-task-awaiting-user-task_1'), 'the ticket list flags the ticket');
+    await ui.click('owner-chain-task-task_1');
+    assert.match(ui.$('owner-chain-reviews')!.textContent!, /Approved.*inst_coordinator.*User said LGTM/s, 'the agent relay is listed');
+    assert.match(ui.$('owner-chain-awaiting-user')?.textContent ?? '', /Waiting on you/, 'an agent relay does not clear the notice');
+    assert.ok(ui.$('owner-chain-review-approve') && ui.$('owner-chain-review-request_changes'), 'the device-signed verdict is offered');
+    await ui.type('owner-chain-review-summary', 'Approved by me');
+    await ui.click('owner-chain-review-approve');
+    const review = calls.find((c) => c.method === 'review.post');
+    assert.ok(review, 'review.post was sent: ' + (ui.$('owner-chain-error')?.textContent ?? ''));
+    assert.equal(review!.payload.verdict, 'approve');
+    assert.equal(review!.command.principal_id, session.identity.deviceId, 'the verdict is signed by this device');
+    assert.equal(ui.$('owner-chain-awaiting-user'), null, 'the notice clears once the gate settles');
+    assert.equal(ui.$('owner-chain-task-awaiting-user-task_1'), null);
+  } finally {
+    await ui.restore();
+    clearKeyringSession();
+  }
+});

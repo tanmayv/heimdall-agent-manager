@@ -279,16 +279,20 @@ export interface OwnerRuntime {
   lifecycle: string; attempt: string;
   control: { mode: string; reason: string; waitingOn: string } | null;
   leased: boolean;
-  requirements: { revision: string; goal: string; acceptance: string[]; raw: string } | null;
+  requirements: { revision: string; goal: string; acceptance: string[]; requiresUserApproval: boolean; raw: string } | null;
   submission: { attempt: string; head: string; requirementsRevision: string; summary: string; author: string } | null;
   attemptNo: number;
 }
 
-function parseBrief(raw: string): { goal: string; acceptance: string[] } {
+function parseBrief(raw: string): { goal: string; acceptance: string[]; requiresUserApproval: boolean } {
   try {
     const b = JSON.parse(raw);
-    return { goal: String(b?.goal ?? ''), acceptance: Array.isArray(b?.acceptance) ? b.acceptance.map(String) : [] };
-  } catch { return { goal: '', acceptance: [] }; }
+    return {
+      goal: String(b?.goal ?? ''), acceptance: Array.isArray(b?.acceptance) ? b.acceptance.map(String) : [],
+      // The owner gate reads the brief's flag as json_extract(...)=1.
+      requiresUserApproval: b?.requires_user_approval === true || b?.requires_user_approval === 1,
+    };
+  } catch { return { goal: '', acceptance: [], requiresUserApproval: false }; }
 }
 
 export function parseOwnerRuntime(data: any): OwnerRuntime {
@@ -324,6 +328,20 @@ export function ownerTaskState(rt: OwnerRuntime): { state: OwnerTaskState; held:
 export interface OwnerReview {
   source: 'archived' | 'owner';
   attempt: string; verdict: string; reviewer: string; role: string; summary: string; at: string;
+  /** Signed by a device (the user), not an agent. Only these satisfy a user-approval gate. */
+  byDevice: boolean;
+}
+
+/**
+ * The ticket waits on the user: it is in review, its brief requires the user's
+ * approval and (when the reviews are known) no device-signed approval of the
+ * current attempt exists yet. An agent's relay ("on behalf of the user") never
+ * counts. Role-configured and workflow user gates are not visible here.
+ */
+export function ownerAwaitingUser(rt: OwnerRuntime, reviews?: OwnerReview[]): boolean {
+  if (rt.lifecycle !== 'in_review' || !rt.requirements?.requiresUserApproval) return false;
+  if (rt.control?.mode === 'cancelled') return false;
+  return !(reviews ?? []).some((r) => r.source === 'owner' && r.byDevice && r.verdict === 'approve' && r.attempt === rt.attempt);
 }
 
 /** Reviews carried over verbatim from the Hub at migration (none for native chains). */
@@ -350,7 +368,7 @@ export async function readArchivedReviews(session: OwnerSession, bridgeId: strin
       out.push({
         source: 'archived', attempt: String(r.attempt_no ?? ''), verdict: String(r.verdict ?? ''),
         reviewer: r.reviewer_kind === 'user' ? 'You' : String(r.reviewer_agent_id || r.reviewer_instance_id || 'Agent'),
-        role: String(r.role ?? ''), summary: findings, at: String(r.created_at ?? ''),
+        role: String(r.role ?? ''), summary: findings, at: String(r.created_at ?? ''), byDevice: r.reviewer_kind === 'user',
       });
     }
     cursor = String(data.next_cursor || '');
@@ -403,6 +421,7 @@ export async function readOwnerReviews(
       source: 'owner', attempt: String(payload.attempt ?? ''), verdict: String(payload.verdict ?? ''),
       reviewer: e.actor_kind === 'agent' ? String(e.actor_id || 'Agent') : (e.actor_id === session.identity.deviceId ? 'You' : 'Device ' + String(e.actor_id || '').slice(0, 8)),
       role: String(payload.role ?? ''), summary: String(payload.summary ?? ''), at: Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : '',
+      byDevice: e.actor_kind === 'device',
     });
   }
   // Newest first, like the rest of the view.

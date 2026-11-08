@@ -54,7 +54,7 @@ fleet_policy_round_trip_history_cas_and_restart :: proc(t:^testing.T) {
     testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,fleet_policy_test_read(f).code,"ok")
     rows,_=query(f.store.db,"SELECT (SELECT count(*) FROM local_fleet_policy_versions),(SELECT schema_version FROM runtime_database),(SELECT version FROM schema_migrations)")
-    testing.expect_value(t,encode(rows),encode([1][3]string{{"2","34","34"}}))
+    testing.expect_value(t,encode(rows),encode([1][3]string{{"2","35","35"}}))
     testing.expect(t,!exec(f.store.db,"UPDATE local_fleet_policy_versions SET provider='other'"))
     testing.expect(t,!exec(f.store.db,"DELETE FROM local_fleet_policy_models"))
     rows,_=query(f.store.db,"PRAGMA foreign_key_check")

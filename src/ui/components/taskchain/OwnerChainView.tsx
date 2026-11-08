@@ -8,7 +8,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Button, StatusDot, type Tone } from '@ui';
 import {
-  freshOwnerSession, isOwnerOffline, ownerCall, ownerErrorMessage, ownerOfflineMessage, ownerRelaySend, ownerTaskState,
+  freshOwnerSession, isOwnerOffline, ownerAwaitingUser, ownerCall, ownerErrorMessage, ownerOfflineMessage, ownerRelaySend, ownerTaskState,
   ownerExpectedRevision, readArchivedReviews, readOwnerChain, readOwnerChainStatus, readOwnerReviews, readOwnerRuntime, readOwnerSubmission, readOwnerTask,
   type OwnerChainDetail, type OwnerChainStatus, type OwnerChainSummary, type OwnerReview, type OwnerRuntime, type OwnerSend,
   type OwnerSubmission, type OwnerTaskDetail, type OwnerTaskState,
@@ -273,6 +273,9 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
                       {st && <Badge tone={STATE_TONE[st.state]} data-debug-id={`owner-chain-task-state-${t.taskId}`}>{TASK_STATE_LABELS[st.state]}</Badge>}
                       {st?.held && <Badge tone="warning">Held</Badge>}
                       {st?.blocked && <Badge tone="danger">Blocked</Badge>}
+                      {rt && ownerAwaitingUser(rt, task?.taskId === t.taskId && !task.reviewsLoading ? task.reviews : undefined) && (
+                        <Badge tone="warning" data-debug-id={`owner-chain-task-awaiting-user-${t.taskId}`}>Waiting on you</Badge>
+                      )}
                       {t.priority && t.priority !== 'p2' && <Badge tone="neutral">{t.priority.toUpperCase()}</Badge>}
                     </span>
                   </button>
@@ -314,6 +317,12 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
                   <Badge tone="neutral">{task.detail.priority.toUpperCase()}</Badge>
                 </div>
               </div>
+
+              {editable && ownerAwaitingUser(task.runtime, task.reviewsLoading ? undefined : task.reviews) && (
+                <div role="status" data-debug-id="owner-chain-awaiting-user" className="rounded-lg border border-warning/30 bg-warning-soft px-3 py-2 text-sm text-warning">
+                  Waiting on you: this ticket needs your approval. Approve or request changes under Reviews; an agent’s review on your behalf does not count.
+                </div>
+              )}
 
               {editable && <div className="flex flex-wrap gap-2">
                 {ts.held

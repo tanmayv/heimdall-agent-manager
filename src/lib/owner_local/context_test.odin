@@ -151,7 +151,7 @@ context_v9_upgrade_collision_commit_failure_preserves_combined_lineage :: proc(t
     after,_:=query(f.store.db,"SELECT (SELECT count(*) FROM local_grant_policy),(SELECT count(*) FROM local_leases),(SELECT count(*) FROM command_receipts),(SELECT count(*) FROM task_requirements)")
     for value,i in original[0] do testing.expect_value(t,after[0][i],value)
     rows,_=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
-    testing.expect(t,rows[0][0]=="34" && rows[0][1]=="34")
+    testing.expect(t,rows[0][0]=="35" && rows[0][1]=="35")
     testing.expect_value(t,lifecycle_call(f,lease_child(),"requirements.present","v10_present","{\"requirements_revision\":\"1\"}",cap).code,"ok")
     rows,_=query(f.store.db,"PRAGMA foreign_key_check")
     testing.expect_value(t,len(rows),0)
