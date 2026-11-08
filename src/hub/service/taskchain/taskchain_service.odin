@@ -1077,6 +1077,28 @@ task_has_work_lease :: proc(service: ^Taskchain_Service, task_id: domain.Task_ID
 	return false
 }
 
+// user_approval_ratchet_error (F1/B1): only the user may lower a task's
+// approval bar. An agent token (coordinator included) may set
+// requires_user_approval but never clear it, whether through the flag or the
+// brief key, and may not move a gate's approver away from "user". Otherwise a
+// coordinator could clear the flag and then approve on the user's behalf.
+user_approval_ratchet_error :: proc(auth: contracts.Auth_Context, task: domain.Task, new_brief: string, input: Update_Task_Input) -> domain.Domain_Error {
+	if contracts.is_user_auth(auth) do return {}
+	refused :: proc(what: string) -> domain.Domain_Error {
+		return domain.domain_error(.Forbidden, fmt.tprintf("only the user can %s", what), `{"code":"user_approval_ratchet"}`)
+	}
+	if task.requires_user_approval && input.has_requires_user_approval && !input.requires_user_approval do return refused("remove requires_user_approval")
+	old_b, old_present := jsonx.extract_bool_literal(task.brief_json, "requires_user_approval", true)
+	new_b, new_present := jsonx.extract_bool_literal(new_brief, "requires_user_approval", true)
+	if old_present && old_b && !(new_present && new_b) && !(input.has_requires_user_approval && input.requires_user_approval) {
+		return refused("remove requires_user_approval")
+	}
+	old_approver := taskv2.gate_approver_policy(domain.Task{brief_json = task.brief_json})
+	new_approver := taskv2.gate_approver_policy(domain.Task{brief_json = new_brief})
+	if old_approver == "user" && new_approver != "user" do return refused("change a gate's approver away from the user")
+	return {}
+}
+
 update_task_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID, input: Update_Task_Input) -> (domain.Task, bool, domain.Domain_Error) {
 	task, ok, err := get_task(service, auth, task_id)
 	if !ok do return domain.Task{}, false, err
@@ -1125,6 +1147,7 @@ update_task_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Conte
 		new_brief = applied
 	}
 	brief_keys := brief_changed_keys(task.brief_json, new_brief)
+	if rerr := user_approval_ratchet_error(auth, task, new_brief, input); rerr.code != .None do return {}, false, rerr
     if input.require_requirements_context && taskv2.requirements_differ(task.brief_json, new_brief) {
         if input.expected_requirements_revision < 1 || strings.trim_space(input.requirements_reason) == "" {
             return {}, false, domain.domain_error(.Validation_Failed, "requirement edits require expected_requirements_revision and an explicit requirements_reason")

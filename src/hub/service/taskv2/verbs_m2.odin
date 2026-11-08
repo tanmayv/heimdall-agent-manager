@@ -372,6 +372,13 @@ review_post :: proc(svc: ^Service, auth: contracts.Auth_Context, input: Review_I
 			_, _ = end_uow(svc, &u, false)
 			return {}, false, domain.domain_error(.Forbidden, "in solo mode a task that requires user approval is reviewed by the user", `{"code":"solo_self_review"}`)
 		}
+		// F1/B1: an explicit requires_user_approval is satisfied only by the
+		// user's own verdict; a coordinator relay of an approval is refused
+		// (relays still work for unflagged tasks and for request_changes).
+		if task.requires_user_approval && input.verdict == "approve" && strings.trim_space(input.on_behalf_of) == "user" {
+			_, _ = end_uow(svc, &u, false)
+			return {}, false, domain.domain_error(.Forbidden, "this task requires the user's own approval; ask the user to approve it in Heimdall", `{"code":"user_approval_required"}`)
+		}
 		if task.state != .In_Review {
 			_, _ = end_uow(svc, &u, false)
 			return {}, false, domain.domain_error(.Conflict, "task is not awaiting review")
