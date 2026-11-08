@@ -22,6 +22,10 @@ Store :: struct {
     tx_thread:int,
     tx_failed,unusable:bool,
     search_ready:bool,
+    // Why the last top-level transaction did not commit (begin refusal or the
+    // SQLite error seen before its rollback); see storage_diagnostic.
+    last_failure:[256]u8,
+    last_failure_len:int,
 }
 SCHEMA :: #load("schema.sql")
 MAX_RECORDS :: 100000
@@ -42,41 +46,49 @@ Signer :: struct {
 }
 
 open :: proc(s: ^Store, path, account, owner, owner_key: string) -> bool {
-    if s.db != nil || account == "" || owner == "" || owner_key == "" do return false
+    if s.db != nil || account == "" || owner == "" || owner_key == "" { storage_failure_note(s,"open: already open or empty identity",DB(nil)); return false }
     // SQLite holds an OS byte-range lock on a separate lifetime lock database.
     // A second process cannot serve this profile, including between transactions.
-    if sqlite3_open(strings.clone_to_cstring(fmt.tprintf("%s.writer",path), context.temp_allocator), &s.writer) != 0 { close(s);return false }
-    if !exec(s.writer, "CREATE TABLE IF NOT EXISTS writer_lock(id INTEGER); BEGIN EXCLUSIVE;") { close(s); return false }
-    if sqlite3_open(strings.clone_to_cstring(path, context.temp_allocator), &s.db) != 0 { close(s); return false }
+    if sqlite3_open(strings.clone_to_cstring(fmt.tprintf("%s.writer",path), context.temp_allocator), &s.writer) != 0 { storage_failure_note(s,"open: writer database",s.writer); close(s);return false }
+    if !exec(s.writer, "CREATE TABLE IF NOT EXISTS writer_lock(id INTEGER); BEGIN EXCLUSIVE;") { storage_failure_note(s,"open: writer lock",s.writer); close(s); return false }
+    if sqlite3_open(strings.clone_to_cstring(path, context.temp_allocator), &s.db) != 0 { storage_failure_note(s,"open: database"); close(s); return false }
     when ODIN_OS != .Windows {
-        if os.chmod(path,{.Read_User,.Write_User})!=nil || os.chmod(fmt.tprintf("%s.writer",path),{.Read_User,.Write_User})!=nil {close(s);return false}
+        if os.chmod(path,{.Read_User,.Write_User})!=nil || os.chmod(fmt.tprintf("%s.writer",path),{.Read_User,.Write_User})!=nil {storage_failure_note(s,"open: chmod database");close(s);return false}
     }
     // Reject a mismatched account/owner before even migrating an existing DB.
+    // migrate() commits the schema before the identity row below is claimed in
+    // its own transaction, so a process killed between the two (e.g. stopped
+    // during its first open) leaves runtime_database with no row. No owner data
+    // can exist then (every transaction requires the identity row): such a store
+    // is unclaimed and is claimed here, never refused forever.
     tables,tables_ok:=query(s.db,"SELECT name FROM sqlite_master WHERE type='table' AND name='runtime_database'")
-    if !tables_ok {close(s);return false}
+    if !tables_ok {storage_failure_note(s,"open: read schema");close(s);return false}
     if len(tables)>0 {
         identity,identity_ok:=query(s.db,"SELECT account_id,owner_bridge_id,owner_key_id FROM runtime_database WHERE singleton=1")
-        if !identity_ok || len(identity)!=1 || identity[0][0]!=account || identity[0][1]!=owner || identity[0][2]!=owner_key {close(s);return false}
+        if !identity_ok || len(identity)>1 || len(identity)==1 && (identity[0][0]!=account || identity[0][1]!=owner || identity[0][2]!=owner_key) {
+            storage_failure_note(s,"open: stored identity differs" if identity_ok else "open: read identity")
+            close(s);return false
+        }
     }
-    if !migrate(s.db) { close(s); return false }
-    if !exec(s.db, "BEGIN IMMEDIATE") { close(s); return false }
+    if !migrate(s.db) { storage_failure_note(s,"open: schema migration"); close(s); return false }
+    if !exec(s.db, "BEGIN IMMEDIATE") { storage_failure_note(s,"open: begin"); close(s); return false }
     _, inserted := query(s.db, "INSERT OR IGNORE INTO runtime_database(singleton,account_id,owner_bridge_id,owner_key_id,database_id) VALUES(1,?,?,?,lower(hex(randomblob(16))))", account, owner, owner_key)
     rows, read := query(s.db, "SELECT account_id,owner_bridge_id,owner_key_id FROM runtime_database WHERE singleton=1")
     if !inserted || !read || len(rows)!=1 || rows[0][0]!=account || rows[0][1]!=owner || rows[0][2]!=owner_key {
-        _ = exec(s.db, "ROLLBACK"); close(s); return false
+        storage_failure_note(s,"open: claim identity"); _ = exec(s.db, "ROLLBACK"); close(s); return false
     }
     // A prior claim may have performed I/O before the process died. Retry its
     // exact identity/payload; consumers deduplicate, never invent a new effect.
-    if !exec(s.db, "UPDATE runtime_database SET incarnation=incarnation+1; UPDATE runtime_intents SET state='pending',claim_incarnation=0 WHERE state='claimed'; COMMIT") { close(s); return false }
+    if !exec(s.db, "UPDATE runtime_database SET incarnation=incarnation+1; UPDATE runtime_intents SET state='pending',claim_incarnation=0 WHERE state='claimed'; COMMIT") { storage_failure_note(s,"open: incarnation"); close(s); return false }
     state,state_ok:=query(s.db,"SELECT incarnation FROM runtime_database WHERE singleton=1")
-    if !state_ok || len(state)!=1 { close(s);return false }
+    if !state_ok || len(state)!=1 { storage_failure_note(s,"open: read incarnation"); close(s);return false }
     s.incarnation=number(state[0][0])
     s.account=strings.clone(account); s.owner=strings.clone(owner); s.owner_key=strings.clone(owner_key)
     _=search_rebuild(s)
     when ODIN_OS != .Windows {
         for suffix in ([2]string{"-wal","-shm"}) {
             file:=fmt.tprintf("%s%s",path,suffix)
-            if os.exists(file) && os.chmod(file,{.Read_User,.Write_User})!=nil {close(s);return false}
+            if os.exists(file) && os.chmod(file,{.Read_User,.Write_User})!=nil {storage_failure_note(s,"open: chmod wal/shm");close(s);return false}
         }
     }
     return true

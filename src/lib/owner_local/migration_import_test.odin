@@ -3,6 +3,7 @@ package owner_local
 
 import "core:encoding/json"
 import "core:fmt"
+import "core:os"
 import "core:slice"
 import "core:strings"
 import "core:testing"
@@ -529,4 +530,72 @@ migration_discard_failure_partway_rolls_back_completely :: proc(t:^testing.T) {
     testing.expect_value(t,migration_test_import(f,second).code,"ok")
     missing,_:=migration_test_unexempted_guards(f.store.db)
     testing.expect_value(t,len(missing),0)
+}
+
+// H2: a migration import storage_error must be diagnosable. The Bridge only
+// replies "storage_error"; storage_diagnostic keeps the SQLite cause seen
+// before the rollback, a begin refusal of an unusable store, and an open that
+// lost the writer lock, without blocking on a held transaction.
+@(test)
+migration_import_storage_error_is_diagnosable :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f)
+    rows:=migration_test_rows(f)
+    first:=migration_test_build(f,"mig_first",rows)
+    if !testing.expect_value(t,migration_test_import(f,first).code,"ok") do return
+    testing.expect(t,migration_abandon(&f.store,"mig_first"))
+    testing.expect(t,exec(f.store.db,`CREATE TABLE zz_discard_fail(chain_id TEXT NOT NULL); INSERT INTO zz_discard_fail VALUES('legacy_chain');
+      CREATE TRIGGER zz_discard_fail_no_delete BEFORE DELETE ON zz_discard_fail BEGIN SELECT RAISE(ABORT,'injected discard failure'); END`))
+    second:=migration_test_build(f,"mig_second",rows)
+    testing.expect_value(t,migration_test_import(f,second).code,"storage_error")
+    diag:=storage_diagnostic(&f.store)
+    testing.expectf(t,strings.contains(diag,"rollback: sqlite 1811 injected discard failure") && strings.contains(diag,"unusable=false"),"rollback cause kept: %s",diag)
+    // A transaction still held never blocks the diagnostic.
+    tx:Transaction
+    if !testing.expect(t,transaction_begin(&f.store,&tx)) do return
+    held:=storage_diagnostic(&f.store)
+    testing.expectf(t,strings.has_prefix(held,"transaction held by thread") && strings.contains(held,"injected discard failure"),"held lock still reports the cause: %s",held)
+    // An ordinary rollback (no SQLite error) never overwrites the cause.
+    transaction_rollback(&tx)
+    testing.expect(t,strings.contains(storage_diagnostic(&f.store),"rollback: sqlite 1811 injected discard failure"))
+    // An unusable connection refuses every transaction until reopened.
+    f.store.unusable=true
+    testing.expect_value(t,migration_import(&f.store,Migration_Import_Input{second.selection,second.genesis,second.manifest,second.documents},f.creator,f.owner,1,"head",1000,&f.kr,Signer{&f.owner_priv,test_sign}).code,"storage_error")
+    testing.expect(t,strings.contains(storage_diagnostic(&f.store),"begin refused: store closed or unusable"))
+    f.store.unusable=false
+    // A second writer of the same profile cannot open it; the cause is kept.
+    other:Store
+    testing.expect(t,!open(&other,f.path,"account","bridge","bridge_key"))
+    testing.expectf(t,strings.contains(storage_diagnostic(&other),"open: writer lock: sqlite 5 database is locked"),"writer lock cause kept: %s",storage_diagnostic(&other))
+}
+
+// H2 root cause: the first open() commits the schema (migrate) before it
+// claims the identity row in a second transaction. A Bridge stopped between
+// the two left runtime_database empty, and every later open refused the store
+// ("stored identity differs") until the profile was deleted: the owner
+// migration e2e then answered storage_error for every import. An unclaimed
+// store is now claimed; a claimed store of another identity is still refused.
+@(test)
+store_open_claims_schema_left_without_identity :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f)
+    path:=fmt.tprintf("%s-unclaimed",f.path)
+    defer for suffix in ([4]string{"","-wal","-shm",".writer"}) do _=os.remove(fmt.tprintf("%s%s",path,suffix))
+    // The killed first open: schema committed, identity never claimed.
+    db:DB
+    if !testing.expect(t,sqlite3_open(strings.clone_to_cstring(path,context.temp_allocator),&db)==0) do return
+    testing.expect(t,migrate(db))
+    rows,_:=query(db,"SELECT count(*) FROM runtime_database")
+    testing.expect_value(t,rows[0][0],"0")
+    _=sqlite3_close(db)
+    s:Store
+    if !testing.expect(t,open(&s,path,"account","bridge","bridge_key"),"an unclaimed store is claimed") do return
+    claimed,_:=query(s.db,"SELECT account_id,owner_bridge_id,owner_key_id,incarnation FROM runtime_database")
+    testing.expect_value(t,encode(claimed),encode([1][4]string{{"account","bridge","bridge_key","1"}}))
+    close(&s)
+    // Once claimed, another identity is still refused, with the cause kept.
+    testing.expect(t,!open(&s,path,"account","bridge","other_key"))
+    testing.expect(t,strings.contains(storage_diagnostic(&s),"open: stored identity differs"))
+    testing.expect(t,open(&s,path,"account","bridge","bridge_key"))
+    close(&s)
 }

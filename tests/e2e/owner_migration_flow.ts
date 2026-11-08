@@ -5,7 +5,18 @@ import { prepareOwnerOperation, openOwnerReply, ownerRelayFile } from '../../src
 import { prepareMigrationRequest } from '../../src/ui/api/ownerMigrationClient.ts';
 import { encryptVaultText } from '../../src/ui/utils/vaultContent.ts';
 
-export async function ownerMigrationFlow({session,bridgeId,hub,http,expect,cli,stopOwner,restartOwner}:any) {
+export async function ownerMigrationFlow({session,bridgeId,hub,http,expect,cli,stopOwner,restartOwner,ownerLog}:any) {
+  // Each import attempt's outcome plus the owner Bridge's storage diagnostics,
+  // so a failed retry loop says whether the error was persistent and why.
+  const attempts=(list:string[])=>' attempts=['+list.join(',')+']';
+  const bridgeDiagnostics=()=>{
+    const lines=String(ownerLog?.() ?? '').split('\n').filter((l)=>l.includes('owner_migration_import storage_error'));
+    return lines.length? ' owner Bridge: '+lines.slice(-5).join(' | ') : '';
+  };
+  const outcome=(r:any)=>{
+    let error:any={};try{error=JSON.parse(r.raw).error ?? {};}catch{}
+    return r.status+':'+(r.data?.state ?? error.details?.code ?? error.code ?? '?');
+  };
   const enc=(s:string)=>encryptVaultText(s,session.keyring);
   const created=await http(hub,'POST','/api/v1/task-chains',{body:{title:await enc('Legacy migration chain'),description:await enc('Moved by R3'),kind:'mixed_work'}});
   expect(created.status===200 || created.status===201,'legacy chain created on the Hub: '+created.status+' '+created.raw);
@@ -38,16 +49,16 @@ export async function ownerMigrationFlow({session,bridgeId,hub,http,expect,cli,s
   expect(lateRetry.status>=400,'the aborted selection never freezes or cuts over again: '+lateRetry.status);
   const fresh=await http(hub,'GET','/api/v1/owner-local/migrations/preflight?chain_id='+encodeURIComponent(secondId));
   const remigrate=await prepareMigrationRequest(session,secondId,bridgeId,fresh.data.work_revision);
-  let again:any;
-  for(let i=0;i<20;i++){ again=await http(hub,'POST','/api/v1/owner-local/migrations',{body:remigrate}); if(again.status===200) break; await new Promise((r)=>setTimeout(r,1000)); }
-  expect(again.status===200 && again.data.state==='imported','after abort the chain re-migrates to the same owner Bridge: '+again.raw);
-  let moved:any;
+  let again:any;const againTried:string[]=[];
+  for(let i=0;i<20;i++){ again=await http(hub,'POST','/api/v1/owner-local/migrations',{body:remigrate});againTried.push(outcome(again)); if(again.status===200) break; await new Promise((r)=>setTimeout(r,1000)); }
+  expect(again.status===200 && again.data.state==='imported','after abort the chain re-migrates to the same owner Bridge: '+again.raw+(again.status===200?'':attempts(againTried)+bridgeDiagnostics()));
+  let moved:any;const movedTried:string[]=[];
   for(let i=0;i<20;i++){
-    moved=await http(hub,'POST','/api/v1/owner-local/migrations',{body:request});
+    moved=await http(hub,'POST','/api/v1/owner-local/migrations',{body:request});movedTried.push(outcome(moved));
     if(moved.status===200) break;
     await new Promise((r)=>setTimeout(r,1000));
   }
-  expect(moved.status===200 && moved.data.state==='imported','exact retry imports and cuts over: '+moved.raw);
+  expect(moved.status===200 && moved.data.state==='imported','exact retry imports and cuts over: '+moved.raw+(moved.status===200?'':attempts(movedTried)+bridgeDiagnostics()));
   const replay=await http(hub,'POST','/api/v1/owner-local/migrations',{body:request});
   expect(replay.status===200 && replay.data.replayed && replay.data.manifest_digest===moved.data.manifest_digest,'same digest replays');
   const legacyWrite=await http(hub,'PUT','/api/v1/task-chains/'+chainId+'/summary',{body:{body:'after cutover'}});
