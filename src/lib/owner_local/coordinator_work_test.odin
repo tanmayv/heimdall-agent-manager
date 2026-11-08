@@ -527,3 +527,50 @@ cw_reads_expose_the_policy_and_split_links :: proc(t:^testing.T) {
     chain:=agent_run(f,coord,"chain.read","read_chain","",`{"cursor":"","limit":"10"}`,"0")
     testing.expect_value(t,field(cc_result(chain),"coordinator_force_done"),"1")
 }
+
+// Gaps found on audit: the device path never force-submits or force-completes
+// (both are coordinator operations), a coordinator that only HELD a lease of
+// the task is still its worker (REQ-CC-13), and an agent cannot split a task
+// escalated to a human (the device can).
+@(test)
+cw_device_refusals_lease_holder_self_guard_and_escalated_split :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    coord:=agent_coordinator_child()
+    {
+        f:=fixture(t);defer destroy(f);lifecycle_seed(t,f);agent_seat_coordinator(t,f,coord)
+        cw_handoff(t,f,lifecycle_ready(t,f))
+        p:=cw_submit(f,"device submit","1")
+        testing.expect_value(t,invoke(f,command(f,"lifecycle.force_submit","device_fs","task",p,agent_task_revision(f,"task")),p).code,"invalid_scope")
+        testing.expect_value(t,cc_scalar(f,"SELECT count(*) FROM local_submissions"),"0")
+        // Once submitted by the coordinator, the device cannot force-done either.
+        testing.expect_value(t,cw_run(f,coord,"lifecycle.force_submit","fs",cw_submit(f,"x","1")).code,"ok")
+        d:=cw_complete(f,"device done","1")
+        testing.expect_value(t,invoke(f,command(f,"task.complete","device_done","task",d,agent_task_revision(f,"task")),d).code,"invalid_scope")
+        testing.expect_value(t,cc_scalar(f,"SELECT state FROM lifecycle_state"),"in_review")
+    }
+    // Lease holder: the coordinator's instance held the task's lease although
+    // the configured author is another agent id.
+    {
+        holder:=lease_child();holder.agent_id="coordinator_agent"
+        f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
+        if !cw_worker_submit(t,f,lifecycle_ready(t,f)) do return
+        // The worker's instance is then seated as the chain coordinator.
+        agent_seat_coordinator(t,f,holder)
+        worked,ok:=agent_self_worked(&f.store,"chain","task",holder)
+        testing.expect(t,ok && worked,"a lease holder worked the task")
+        testing.expect_value(t,cw_run(f,holder,"task.complete","holder_done",cw_complete(f,"mine","1")).code,"invalid_scope")
+        testing.expect_value(t,agent_run(f,holder,"review.post","holder_relay","task",lifecycle_verdict(),agent_task_revision(f,"task")).code,"invalid_scope")
+        testing.expect_value(t,cc_scalar(f,"SELECT state FROM lifecycle_state"),"in_review")
+    }
+    // Escalated to a human: the coordinator cannot split it away; the user can.
+    {
+        f:=fixture(t);defer destroy(f);lifecycle_seed(t,f);agent_seat_coordinator(t,f,coord)
+        testing.expect_value(t,cc_call(f,coord,"task.escalate","escalate",cc_reason(f,"needs a decision")).code,"ok")
+        body:=`{"reason":"r","children":[{"task_id":"c1","title":"a"}]}`
+        testing.expect_value(t,cw_run(f,coord,"task.split","agent_split",cw_split(f,body)).code,"invalid_scope")
+        testing.expect_value(t,cc_scalar(f,"SELECT count(*) FROM tasks WHERE task_id='c1'"),"0")
+        p:=cw_split(f,body)
+        testing.expect_value(t,invoke(f,command(f,"task.split","device_split","task",p,agent_task_revision(f,"task")),p).code,"ok")
+        testing.expect_value(t,cc_scalar(f,"SELECT mode FROM local_controls WHERE task_id='task'"),"cancelled")
+    }
+}
