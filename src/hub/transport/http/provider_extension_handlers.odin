@@ -482,7 +482,9 @@ extension_apply_report :: proc(
 					   item.state == "present" &&
 					   item.extension_state == "present" &&
 					   item.extension_version != "" &&
-					   bridge_service.compare_semver(
+					   // SemVer precedence, matching the Bridge: a pre-release
+					   // ("0.5.50-subagents.1") is below its release.
+					   bridge_service.bridge_plan_compare_version(
 						   item.extension_version,
 						   descriptor.min_version,
 					   ) <

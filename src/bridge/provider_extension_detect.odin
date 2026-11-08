@@ -68,14 +68,19 @@ bridge_provider_extension_supported :: proc(ext: Bridge_Catalog_Extension) -> bo
 	return len(ext.detect_argv) > 0 && strings.trim_space(ext.plugin_id) != ""
 }
 
-// bridge_provider_extension_version_compare compares dotted numeric versions
-// ("v1.2.10" > "1.2.9"); a pre-release/build suffix and missing parts count as 0.
+// bridge_provider_extension_version_compare compares versions with SemVer
+// precedence: dotted numeric core first ("v1.2.10" > "1.2.9"; missing core parts
+// count as 0), then a release outranks its own pre-release
+// ("0.5.50-subagents.1" < "0.5.50"), pre-release identifiers compare per SemVer
+// (numeric < alphanumeric, numerics by value), and build metadata ("+...") is
+// ignored. Equal strings are always equal.
 bridge_provider_extension_version_compare :: proc(a, b: string) -> int {
-	normalize :: proc(v: string) -> string {
+	split :: proc(v: string) -> (core: string, pre: string, has_pre: bool) {
 		v := strings.trim_space(v)
 		if strings.has_prefix(v, "v") || strings.has_prefix(v, "V") do v = v[1:]
-		if cut := strings.index_any(v, "-+ "); cut >= 0 do v = v[:cut]
-		return v
+		if cut := strings.index_any(v, "+ "); cut >= 0 do v = v[:cut]
+		if dash := strings.index_byte(v, '-'); dash >= 0 do return v[:dash], v[dash + 1:], true
+		return v, "", false
 	}
 	next_part :: proc(rest: ^string) -> int {
 		if len(rest^) == 0 do return 0
@@ -91,11 +96,45 @@ bridge_provider_extension_version_compare :: proc(a, b: string) -> int {
 		value, _ := strconv.parse_int(part[:digits])
 		return value
 	}
-	ra, rb := normalize(a), normalize(b)
-	for len(ra) > 0 || len(rb) > 0 {
-		pa, pb := next_part(&ra), next_part(&rb)
-		if pa < pb do return -1
-		if pa > pb do return 1
+	next_ident :: proc(rest: ^string) -> string {
+		part := rest^
+		if dot := strings.index_byte(part, '.'); dot >= 0 {
+			rest^ = part[dot + 1:]
+			return part[:dot]
+		}
+		rest^ = ""
+		return part
+	}
+	numeric :: proc(s: string) -> bool {
+		if len(s) == 0 do return false
+		for c in transmute([]u8)s do if c < '0' || c > '9' do return false
+		return true
+	}
+	ca, pa, has_pa := split(a)
+	cb, pb, has_pb := split(b)
+	for len(ca) > 0 || len(cb) > 0 {
+		na, nb := next_part(&ca), next_part(&cb)
+		if na < nb do return -1
+		if na > nb do return 1
+	}
+	if has_pa != has_pb do return -1 if has_pa else 1
+	for len(pa) > 0 || len(pb) > 0 {
+		// A longer identifier list outranks its own prefix.
+		if len(pa) == 0 do return -1
+		if len(pb) == 0 do return 1
+		ia, ib := next_ident(&pa), next_ident(&pb)
+		if ia == ib do continue
+		num_a, num_b := numeric(ia), numeric(ib)
+		switch {
+		case num_a && num_b:
+			// Compare by value without overflow: strip leading zeros, then length.
+			ta, tb := strings.trim_left(ia, "0"), strings.trim_left(ib, "0")
+			if len(ta) != len(tb) do return -1 if len(ta) < len(tb) else 1
+			if ta != tb do return -1 if ta < tb else 1
+		case num_a: return -1
+		case num_b: return 1
+		case: return -1 if ia < ib else 1
+		}
 	}
 	return 0
 }

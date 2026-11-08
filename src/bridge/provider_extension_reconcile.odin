@@ -50,7 +50,7 @@ Bridge_Extension_Condition :: enum {
 	Outdated,
 	Broken,
 	Foreign,
-	Unknown, // not inspected (the install lock was not acquired)
+	Unknown, // not inspected (install lock not acquired, or no catalog detector)
 }
 
 BRIDGE_EXTENSION_CONDITION_NAMES := [Bridge_Extension_Condition]string {
@@ -334,6 +334,14 @@ bridge_extension_ensure :: proc(provider, ext_path, bin_path: string, deadline: 
 		pre_state = strings.clone(r.extension_state, context.temp_allocator)
 		pre_version = strings.clone(r.extension_version, context.temp_allocator)
 		break
+	}
+	// Without a catalog detector for the provider (no Hub catalog cached in this
+	// data dir yet, or one that predates extension descriptors) no install can
+	// ever verify: refuse before removing whatever is registered now.
+	if pre_state == "unsupported" {
+		bridge_provider_paths_destroy_all(&pre)
+		return bridge_extension_fail_result(.Unknown, "detection_unavailable",
+			fmt.tprintf("cannot verify the %s extension: the cached provider catalog has no extension detector for %s; registration left unchanged; retry from Ninjy once this Bridge has synced the catalog from the Hub", prov, prov))
 	}
 	mp_path, mp_registered := "", false
 	if mp_name := bridge_extension_marketplace_name(prov); mp_name != "" {

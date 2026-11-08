@@ -18,6 +18,7 @@ package main
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import "core:sync"
 import "core:time"
 import contracts "odin_test:contracts"
 import bridgesvc "odin_test:lib/bridgesvc"
@@ -161,10 +162,31 @@ bridge_extensions_prune_shared :: proc(keep: string) {
 	}
 }
 
+// bridge_extensions_use_data_dir points the provider catalog (and the lazily
+// loaded provider-path store) at the profile's data dir. `ham-bridge setup` and
+// `ham-bridge extensions sync` run without a loaded bridge config, so discovery
+// otherwise read <default data dir>/bridge/provider_catalog.json: absent on a
+// fresh machine, or a legacy single-profile catalog whose providers carry no
+// extension descriptor, so every installed extension verified as "unsupported".
+bridge_extensions_use_data_dir :: proc(data_dir: string) {
+	dir := strings.trim_space(data_dir)
+	if dir == "" || strings.trim_space(bridge_config.data_dir) == dir do return
+	bridge_config.data_dir = strings.clone(dir) // process-lifetime configuration
+	sync.rw_mutex_lock(&bridge_launch_configuration_mutex)
+	sync.rw_mutex_lock(&bridge_provider_catalog_mutex)
+	// Snapshots are immutable and retained; dropping the pointer frees nothing.
+	bridge_provider_catalog_snapshot = nil
+	bridge_provider_catalog_loaded = false
+	sync.rw_mutex_unlock(&bridge_provider_catalog_mutex)
+	sync.rw_mutex_unlock(&bridge_launch_configuration_mutex)
+	bridge_provider_catalog_init()
+}
+
 // bridge_extensions_sync_installed publishes the profile's installed
 // <data_dir>/extensions to the shared root and ensures every provider against
 // the newest shared release (the profile copy when publishing fails).
 bridge_extensions_sync_installed :: proc(data_dir: string, on_line: proc(data: rawptr, line: Bridge_Extension_Sync_Line) = nil, data: rawptr = nil) -> (lines: []Bridge_Extension_Sync_Line, failures: int, note: string) {
+	bridge_extensions_use_data_dir(data_dir)
 	ext_root := bridgesvc.pjoin(data_dir, "extensions")
 	shared, published, msg := bridge_extensions_publish_shared(ext_root, data_dir)
 	root := shared if published && shared != "" else ext_root
@@ -181,6 +203,8 @@ bridge_extensions_sync_providers :: proc(ext_root: string, on_line: proc(data: r
 	providers := BRIDGE_EXTENSION_PROVIDERS
 	detected := bridge_extension_discover(providers[:])
 	defer bridge_provider_paths_destroy_all(&detected)
+	// Discovery only probes catalog providers; with none, "not detected" would lie.
+	catalog_known := len(detected) > 0 || bridge_provider_catalog_provider_count() > 0
 	for prov in providers {
 		bin := ""
 		for d in detected {
@@ -195,6 +219,7 @@ bridge_extensions_sync_providers :: proc(ext_root: string, on_line: proc(data: r
 		case bin == "":
 			line.ok, line.skipped = true, true
 			line.line = fmt.tprintf("%s: CLI not detected, skipped", prov)
+			if !catalog_known do line.line = fmt.tprintf("%s: skipped, no provider catalog synced from the Hub yet (install it from Ninjy once this Bridge is connected)", prov)
 		case !os.is_dir(ext):
 			line.line = fmt.tprintf("%s: bundle has no %s", prov, ext)
 		case:
