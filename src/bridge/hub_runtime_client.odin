@@ -2845,6 +2845,10 @@ bridge_runtime_now_ms :: proc() -> i64 {
 
 // bridge_runtime_record_failure attaches err to a "failed" instance so the next
 // agent_instance_status carries it. A no-op unless the instance is failed.
+// A new failure is a new state: it advances state_seq and queues a status push,
+// otherwise a relaunch that fails again ("failed" -> "failed") would repeat the
+// previous sequence and the Hub would drop the report as stale, leaving the
+// instance launching with the first error.
 bridge_runtime_record_failure :: proc(instance_id: string, err: Bridge_Error, detail:string="") {
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
@@ -2854,6 +2858,8 @@ bridge_runtime_record_failure :: proc(instance_id: string, err: Bridge_Error, de
 			inst.last_error = err
 			inst.last_error_detail = strings.clone(detail,runtime.default_allocator())
 			inst.has_last_error = true
+			inst.state_seq = bridge_runtime_next_state_seq(inst.state_seq, bridge_runtime_now_ms())
+			bridge_runtime_enqueue_status_push_locked(instance_id)
 		}
 		return
 	}

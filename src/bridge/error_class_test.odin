@@ -302,6 +302,42 @@ test_err_proto_failed_instance_status_carries_last_error :: proc(t: ^testing.T) 
 	testing.expect(t, !found, starting)
 }
 
+// A relaunch that fails again stays "failed" -> "failed". The new failure must
+// still advance state_seq and queue a push, or the Hub drops it as stale and
+// keeps showing the first error while the instance sits in launching.
+@(test)
+test_err_proto_repeated_launch_failure_advances_seq_and_pushes :: proc(t: ^testing.T) {
+	id := "inst_err_proto_refail"
+	first_cmd := `{"type":"launch_agent","payload":{"agent_instance_id":"inst_err_proto_refail","launch_epoch":"epoch_one","run_count":1}}`
+	second_cmd := `{"type":"launch_agent","payload":{"agent_instance_id":"inst_err_proto_refail","launch_epoch":"epoch_two","run_count":2}}`
+	bridge_executor_local_note_failure(first_cmd, "project path is not an existing directory", bridge_error(.agent_launch_failed, .denied))
+	first := bridge_instance_status_json(id)
+	defer delete(first)
+	first_seq, _ := bridge_provider_json_extract_int(first, "state_seq")
+	werr, found := contracts.wire_error_parse(first, context.temp_allocator)
+	testing.expect(t, found && werr.cause != "provider_missing", first)
+	testing.expect_value(t, extract_json_string(first, "launch_epoch", "", context.temp_allocator), "epoch_one")
+	sync.mutex_lock(&bridge_runtime_mutex)
+	for i := len(bridge_runtime_status_outgoing) - 1; i >= 0; i -= 1 {
+		if bridge_runtime_status_outgoing[i] == id do ordered_remove(&bridge_runtime_status_outgoing, i)
+	}
+	sync.mutex_unlock(&bridge_runtime_mutex)
+
+	bridge_executor_local_note_failure(second_cmd, "provider profile unavailable", bridge_error(.provider_missing))
+	second := bridge_instance_status_json(id)
+	defer delete(second)
+	second_seq, _ := bridge_provider_json_extract_int(second, "state_seq")
+	testing.expect(t, second_seq > first_seq, second)
+	werr, found = contracts.wire_error_parse(second, context.temp_allocator)
+	testing.expect(t, found && werr.cause == "provider_missing", second)
+	testing.expect_value(t, extract_json_string(second, "launch_epoch", "", context.temp_allocator), "epoch_two")
+	queued := false
+	sync.mutex_lock(&bridge_runtime_mutex)
+	for queued_id in bridge_runtime_status_outgoing do if queued_id == id do queued = true
+	sync.mutex_unlock(&bridge_runtime_mutex)
+	testing.expect(t, queued, "the repeated failure is pushed to the Hub immediately")
+}
+
 // REQ-ERR-PROTO-A: a parked recoverable wake resumes on its trigger: unsealing the
 // vault for vault_locked, a slow re-check for causes with no local signal.
 @(test)
