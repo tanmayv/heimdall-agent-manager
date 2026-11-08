@@ -30,6 +30,9 @@ execution_notification_intent :: proc(tx:^Transaction,c:json.Object,child_raw:st
 execution_notification_current_locked :: proc(s:^Store,c:Intent_Claim,now:i64)->(json.Object,i64,string) {
     if !transaction_current(s.active) || c.kind!="executor.notification" || c.incarnation!=s.incarnation ||
        c.digest!=payload_hash(c.payload) {return nil,0,"no_current_target"}
+    // The held-control join below bypasses control_active, so apply the same
+    // migration quarantine gate here: no notice is signed or fenced for it.
+    if migration_quarantined(s,c.chain) do return nil,0,"no_current_target"
     rows,read:=query(s.db,`SELECT b.document,i.commit_seq,l.expires_ms,l.hard_ms,l.deadline_version,j.lease_command,j.child_json,
         d.clock_high_ms,d.recovery_state
       FROM runtime_intents i JOIN command_receipts r
