@@ -90,7 +90,7 @@ work_decide :: proc(s:^Store,c,p:json.Object,seq,now:i64)->string {
     if _,ok=query(s.db,"INSERT INTO local_work_decisions VALUES(?,?,?,?,?,?,?,?,?)",chain,id,fmt.tprintf("%d",seq),field(p,"decision"),field(p,"note"),encode(result),work_time(now),"user",s.account);!ok do return "storage_error"
     return "ok"
 }
-work_command :: proc(s:^Store,c:json.Object,body:string,seq,now:i64)->string {
+work_command :: proc(s:^Store,c:json.Object,body:string,seq,now:i64,agent:=false)->string {
     method,chain:=field(c,"method"),field(c,"chain_id")
     if !work_chain_active(s,chain) do return "operation_conflict"
     if method=="workflow.draft" do return work_queue_run(s,c,body,seq,now)
@@ -157,7 +157,7 @@ work_command :: proc(s:^Store,c:json.Object,body:string,seq,now:i64)->string {
         if len(removed)>0 do return "ok"
         if _,ok:=query(s.db,"INSERT INTO local_work_dependency_removals VALUES(?,?,?,?,?,?,?)",chain,field(p,"dependency_id"),work_time(now),"user",s.account,field(p,"reason"),fmt.tprintf("%d",seq));!ok do return "storage_error"
     case "work.scope": return work_scope(s,c,p,seq,now)
-    case "chain.complete": return work_complete(s,c,p,seq,now)
+    case "chain.complete": return work_complete(s,c,p,seq,now,agent)
     case: return "malformed"
     }
     return "ok"

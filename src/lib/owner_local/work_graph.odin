@@ -97,7 +97,7 @@ work_scope :: proc(s:^Store,c,p:json.Object,seq,now:i64)->string {
     if _,ok:=query(s.db,"INSERT INTO local_work_scope VALUES(?,?,?,?,?,?,?,?,?,?)",fmt.tprintf("%d",seq),chain,field(item,"kind"),field(item,"id"),field(p,"action"),field(p,"reason"),"user",s.account,work_time(now),fmt.tprintf("%d",seq));!ok do return "storage_error"
     return "ok"
 }
-work_complete :: proc(s:^Store,c,p:json.Object,seq,now:i64)->string {
+work_complete :: proc(s:^Store,c,p:json.Object,seq,now:i64,agent:=false)->string {
     chain:=field(c,"chain_id")
     pending,_,read:=work_pending(s,chain)
     if !read do return "storage_error"
@@ -125,7 +125,11 @@ work_complete :: proc(s:^Store,c,p:json.Object,seq,now:i64)->string {
     leases,leases_read:=query(s.db,"SELECT 1 FROM local_leases WHERE chain_id=? AND retired_seq IS NULL UNION SELECT 1 FROM local_review_sessions WHERE chain_id=? LIMIT 1",chain,chain)
     if !leases_read do return "storage_error"
     if len(leases)>0 do return "operation_conflict"
-    if _,ok=query(s.db,"INSERT INTO local_work_completions VALUES(?,?,?,?,?,?,?)",chain,revision[0][0],field(p,"summary"),work_time(now),"user",s.account,fmt.tprintf("%d",seq));!ok do return "storage_error"
+    // The completion names who closed the chain: the user's account, or the
+    // coordinator's agent principal (P-CS CC-A).
+    actor_kind,actor_id:="user",s.account
+    if agent { actor_kind="agent";actor_id=field(c,"principal_id") }
+    if _,ok=query(s.db,"INSERT INTO local_work_completions VALUES(?,?,?,?,?,?,?)",chain,revision[0][0],field(p,"summary"),work_time(now),actor_kind,actor_id,fmt.tprintf("%d",seq));!ok do return "storage_error"
     if _,ok=query(s.db,"UPDATE local_work_chains SET status='completed' WHERE chain_id=?",chain);!ok do return "storage_error"
     return "ok"
 }

@@ -96,7 +96,7 @@ bridge_owner_control_refusal :: proc(owner_method,code:string) -> string {
         return "refused: only the verified chain coordinator may use this control"
     case "operation_conflict":
         switch owner_method {
-        case "task.cancel": return "the task cannot be cancelled now (already cancelled or done, a workflow-generated task — use workflow cancel/retry —, or a dependents repoint would create a cycle)"
+        case "task.cancel": return "the task cannot be cancelled now (already cancelled or done, a task of a workflow-language run — use workflow cancel/retry —, or a dependents repoint would create a cycle)"
         case "task.reopen": return "only a cancelled, done or merge-blocked ordinary task can be reopened"
         case "task.resolve": return "the task is not blocked"
         case "task.hold": return "the task cannot be held in its current state"

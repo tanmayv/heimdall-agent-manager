@@ -298,22 +298,47 @@ cc_cancel_dependents_keep_drop_repoint_are_atomic :: proc(t:^testing.T) {
 }
 
 @(test)
-cc_cancel_refuses_workflow_generated_tasks :: proc(t:^testing.T) {
+cc_cancel_refuses_language_workflow_tasks_but_not_legacy_stages :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
-    f:=fixture(t);defer destroy(f);seed(t,f)
-    coord:=agent_coordinator_child();agent_seat_coordinator(t,f,coord)
-    testing.expect_value(t,advanced_call(f,"workflow.define","define",workflow_test_definition()).code,"ok")
-    testing.expect_value(t,advanced_call(f,"workflow.run","run",`{"run_id":"run","workflow_id":"definition","version":"1"}`).code,"ok")
-    first:=workflow_task_id("chain","run","1","first")
-    testing.expect_value(t,cc_call(f,coord,"task.cancel","agent_cancel",cc_reason(f,"stop stage"),first).code,"operation_conflict")
-    testing.expect_value(t,advanced_call(f,"task.cancel","device_cancel","stop stage",first).code,"operation_conflict")
-    // The coordinator uses workflow.retry instead (workflow.cancel is the
-    // language-run path).
-    testing.expect_value(t,agent_run(f,coord,"workflow.retry","retry","",cc_reason(f,`{"run_id":"run","execution":"1"}`),agent_chain_rev(f)).code,"ok")
-    testing.expect_value(t,cc_scalar(f,"SELECT current_execution FROM local_workflow_runs WHERE run_id='run'"),"2")
-    testing.expect_value(t,cc_scalar(f,"SELECT actor_kind FROM local_events WHERE kind='workflow.retry'"),"agent")
-    testing.expect(t,agent_run(f,coord,"workflow.cancel","wcancel","",cc_reason(f,`{"run_id":"run","execution":"2","reason":"r"}`),agent_chain_rev(f)).code!="invalid_scope","coordinator workflow.cancel is admitted (the engine decides)")
-    testing.expect(t,agent_run(f,coord,"chain.complete","complete","",cc_reason(f,`{"expected_work_revision":"0","summary":"done"}`),agent_chain_rev(f)).code!="invalid_scope","coordinator chain.complete is admitted (the engine decides)")
+    coord:=agent_coordinator_child()
+    // Legacy-run stage tasks stay cancellable on both paths: nothing else can
+    // stop them (workflow.cancel handles pending and language runs only).
+    {
+        f:=fixture(t);defer destroy(f);seed(t,f)
+        agent_seat_coordinator(t,f,coord)
+        testing.expect_value(t,advanced_call(f,"workflow.define","define",workflow_test_definition()).code,"ok")
+        testing.expect_value(t,advanced_call(f,"workflow.run","run",`{"run_id":"run","workflow_id":"definition","version":"1"}`).code,"ok")
+        first:=workflow_task_id("chain","run","1","first");second:=workflow_task_id("chain","run","1","second")
+        testing.expect_value(t,cc_call(f,coord,"task.cancel","agent_cancel",cc_reason(f,"stop stage"),first).code,"ok")
+        testing.expect_value(t,advanced_call(f,"task.cancel","device_cancel","stop stage",second).code,"ok")
+        testing.expect_value(t,cc_scalar(f,"SELECT count(*) FROM local_controls WHERE mode='cancelled'"),"2")
+    }
+    // A coordinator retries a legacy run.
+    {
+        f:=fixture(t);defer destroy(f);seed(t,f)
+        agent_seat_coordinator(t,f,coord)
+        testing.expect_value(t,advanced_call(f,"workflow.define","define",workflow_test_definition()).code,"ok")
+        testing.expect_value(t,advanced_call(f,"workflow.run","run",`{"run_id":"run","workflow_id":"definition","version":"1"}`).code,"ok")
+        testing.expect_value(t,agent_run(f,coord,"workflow.retry","retry","",cc_reason(f,`{"run_id":"run","execution":"1"}`),agent_chain_rev(f)).code,"ok")
+        testing.expect_value(t,cc_scalar(f,"SELECT current_execution FROM local_workflow_runs WHERE run_id='run'"),"2")
+        testing.expect_value(t,cc_scalar(f,"SELECT actor_kind FROM local_events WHERE kind='workflow.retry'"),"agent")
+    }
+    // Language-run tasks are refused on both paths; workflow.cancel stops the run.
+    {
+        f:=fixture(t);defer destroy(f);seed(t,f)
+        agent_seat_coordinator(t,f,coord)
+        spec:=`{"kind":"workflow","v":1,"name":"single","stages":[{"key":"only","brief":{"goal":"Only","acceptance":["done"]}}]}`
+        testing.expect_value(t,language_test_define(f,"single",spec).code,"ok")
+        testing.expect_value(t,language_test_run(f,"single","lrun",`{}`).code,"ok")
+        tasks:=language_tasks(f,"lrun","1","only")
+        if !testing.expect_value(t,len(tasks),1) do return
+        stage:=tasks[0][0]
+        testing.expect_value(t,cc_call(f,coord,"task.cancel","agent_cancel",cc_reason(f,"stop stage"),stage).code,"operation_conflict")
+        testing.expect_value(t,advanced_call(f,"task.cancel","device_cancel","stop stage",stage).code,"operation_conflict")
+        testing.expect_value(t,agent_run(f,lease_child(),"workflow.cancel","w_cancel","",cc_reason(f,`{"run_id":"lrun","execution":"1","reason":"r"}`),agent_chain_rev(f)).code,"invalid_scope")
+        testing.expect_value(t,agent_run(f,coord,"workflow.cancel","wcancel","",cc_reason(f,`{"run_id":"lrun","execution":"1","reason":"wrong inputs"}`),agent_chain_rev(f)).code,"ok")
+        testing.expect_value(t,cc_scalar(f,"SELECT state FROM local_workflow_language_executions WHERE run_id='lrun'"),"cancelled")
+    }
 }
 
 @(test)
@@ -405,4 +430,62 @@ cc_review_roles_only_for_chain_participants_and_merge_retry :: proc(t:^testing.T
 
 func_roles :: proc(f:^Fixture) -> string {
     return encode(doc(map[string]string{"body_cipher"=cipher(f,role_test_config("1"))}))
+}
+
+@(test)
+cc_recheck_and_chain_complete_never_bypass_the_user_gate :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f);user_gate_seed(t,f)
+    coord:=agent_coordinator_child();agent_seat_coordinator(t,f,coord)
+    if !user_gate_reviewed(t,f) do return
+    testing.expect_value(t,user_gate_state(f),"in_review")
+    // Only the independent reviewer approved: recheck leaves it waiting.
+    r:=cc_call(f,coord,"task.recheck","recheck",cc_reason(f,"recheck"))
+    testing.expect(t,r.code=="ok" && field(cc_result(r),"changed")=="0" && field(cc_result(r),"state")=="in_review")
+    testing.expect_value(t,user_gate_state(f),"in_review")
+    complete :: proc(f:^Fixture,agent:Child,op:string) -> Result {
+        body:=encode(doc(map[string]string{"expected_work_revision"=work_revision(f),"summary"="All work done"}))
+        return agent_run(f,agent,"chain.complete",op,"",cc_reason(f,body),agent_chain_rev(f))
+    }
+    testing.expect_value(t,complete(f,coord,"complete_early").code,"operation_conflict")
+    testing.expect_value(t,cc_scalar(f,"SELECT count(*) FROM local_work_completions"),"0")
+    // The user's device approval settles it; the coordinator then closes the
+    // chain and the completion names the agent principal.
+    p:=lifecycle_verdict()
+    testing.expect_value(t,invoke(f,command(f,"review.post","human","task",p,agent_task_revision(f,"task")),p).code,"ok")
+    testing.expect_value(t,user_gate_state(f),"done")
+    testing.expect_value(t,complete(f,lease_child(),"worker_complete").code,"invalid_scope")
+    testing.expect_value(t,complete(f,coord,"complete").code,"ok")
+    testing.expect_value(t,cc_scalar(f,"SELECT actor_kind||':'||actor_id FROM local_work_completions"),"agent:coord_instance")
+}
+
+@(test)
+cc_reassign_revoke_disable_fleet_then_fleet_edit_then_lifecycle_configure :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
+    coord:=agent_coordinator_child();agent_seat_coordinator(t,f,coord)
+    sign:=Signer{&f.owner_priv,test_sign}
+    _=lifecycle_ready(t,f)
+    replacement:=Child{"instance2","epoch2",strings.repeat("e",64,context.temp_allocator),1,"author2"}
+    // Both the replacement and the reviewer are already participants of this chain.
+    agent_add_task(t,f,"zz_home");agent_bind(t,f,"zz_home",replacement)
+    agent_add_task(t,f,"zz_review_home");agent_bind(t,f,"zz_review_home",lifecycle_reviewer())
+    testing.expect_value(t,cc_call(f,coord,"lease.revoke","revoke",cc_revoke(f,"reassigning to instance2","stop","1")).code,"ok")
+    fleet_rev:=cc_scalar(f,"SELECT configuration_revision FROM local_fleet WHERE task_id='task'")
+    testing.expect_value(t,fleet_rev,"2")
+    // fleet.edit names the new instance (strictly newer configuration).
+    p:=encode(doc(map[string]string{"instance_id"=replacement.instance,"configuration_revision"="3","enabled"="1"}))
+    raw:=agent_command(f,coord,"fleet.edit","reassign_fleet","task",p,agent_task_revision(f,"task"))
+    testing.expect_value(t,execute_agent(&f.store,raw,p,coord,f.owner,1000,&f.kr,sign,fleet_child=replacement).code,"ok")
+    // lifecycle.configure makes it the author.
+    config,_,_:=lifecycle_config(&f.store,"chain","task")
+    config["configuration_revision"]=json.String("2");config["author_agent_id"]=json.String("author2")
+    cp:=encode(config)
+    raw=agent_command(f,coord,"lifecycle.configure","reassign_config","task",cp,agent_task_revision(f,"task"))
+    testing.expect_value(t,execute_agent(&f.store,raw,cp,coord,f.owner,1000,&f.kr,sign,proof=Lifecycle_Proof{replacement,lifecycle_reviewer(),true}).code,"ok")
+    // The old child gets nothing; the new one claims the task.
+    old,none:=lease_next(&f.store,lease_child(),f.owner,1000,sign,"lease_old","op_old")
+    testing.expect(t,old.code=="ok" && none.status=="none","the revoked child cannot reclaim")
+    r,pick:=lease_next(&f.store,replacement,f.owner,1000,sign,"lease_new","op_new")
+    testing.expectf(t,r.code=="ok" && pick.status=="granted" && pick.task_id=="task","replacement claims: %s %v",r.code,pick)
 }

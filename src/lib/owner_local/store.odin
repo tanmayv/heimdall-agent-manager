@@ -277,7 +277,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         if code!="ok" do return fail(code)
         wrote=true
     case "chain.draft", "task.publish", "chain.propose", "chain.decide", "chain.publish", "work.dependency.add", "work.dependency.remove", "work.scope", "chain.complete", "workflow.draft":
-        code:=work_command(s,c,body,seq,now)
+        code:=work_command(s,c,body,seq,now,agent_mode)
         if code!="ok" do return fail(code)
         wrote=true
     case "chain.member.set", "chain.directory.set":
