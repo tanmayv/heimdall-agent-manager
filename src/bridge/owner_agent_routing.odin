@@ -15,6 +15,7 @@ package main
 //
 // No agent ever supplies a capability, lease JSON or child identity.
 
+import "base:runtime"
 import "core:crypto"
 import "core:encoding/json"
 import "core:fmt"
@@ -131,7 +132,11 @@ bridge_owner_agent_route :: proc(request_id,method,params:string,rec:Bridge_Loca
     if !unlocked do return bridge_local_response_error(request_id,"vault_locked","owner Bridge vault is locked"),true
     key:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,key_id,pub,"bridge",true,false}
     response,pending,run_dir:=bridge_owner_agent_route_child(request_id,method,p,rec,key,&kr)
-    if pending.active do response=bridge_owner_materialize(request_id,pending,run_dir)
+    if pending.active {
+        block:string
+        response,block=bridge_owner_materialize_checked(request_id,pending,run_dir)
+        if block!="" do response=bridge_owner_block_unavailable_worktree(request_id,pending,rec,key,&kr,block)
+    }
     // Registry publication and merge intents run after the child locks are
     // released, under the owner mutex only (as bridge_owner_handle does).
     bridge_owner_publish()
@@ -278,35 +283,50 @@ bridge_owner_worktree_path_safe :: proc(repo,task:string) -> bool {
     return true
 }
 
+// Why a task worktree could not be materialized. Deterministic failures (the
+// path is squatted by a non-checkout, a symlink, a checkout on another branch,
+// an inconsistent configuration) never fix themselves on retry; the rest may.
+Owner_Worktree_Status :: enum { Ok, Retry, Deterministic }
+
 // Creates repo/.heimdall/worktrees/<task> on branch heimdall/<task> from the
 // configured base when it is missing (claim parity with the Hub path). An
 // existing checkout must be exactly that worktree on exactly that branch.
 // Called only after the owner admitted the claim, without the child locks.
 bridge_owner_ensure_worktree :: proc(config:json.Object,task:string) -> bool {
+    status,_:=bridge_owner_prepare_worktree(config,task)
+    return status==.Ok
+}
+bridge_owner_prepare_worktree :: proc(config:json.Object,task:string) -> (Owner_Worktree_Status,string) {
     get:=contracts.owner_string
-    if get(config,"merge_policy")!="git" do return true
+    if get(config,"merge_policy")!="git" do return .Ok,""
     repo,work,branch,base:=get(config,"repository"),get(config,"worktree"),get(config,"source_branch"),get(config,"base_head")
-    if repo=="" || work!=fmt.tprintf("%s/.heimdall/worktrees/%s",repo,task) || branch!=fmt.tprintf("heimdall/%s",task) || !contracts.owner_field_valid(base,"optional_commit") || base=="" do return false
-    if !bridge_owner_worktree_path_safe(repo,task) do return false
-    if os.exists(work) {
-        if !bridge_taskv2_is_checkout_root(work) do return false
-        current,ok:=bridge_owner_git(work,[]string{"symbolic-ref","--short","HEAD"})
-        return ok && current==branch
+    if repo=="" || work!=fmt.tprintf("%s/.heimdall/worktrees/%s",repo,task) || branch!=fmt.tprintf("heimdall/%s",task) || !contracts.owner_field_valid(base,"optional_commit") || base=="" {
+        return .Deterministic,"the lifecycle configuration does not name repo/.heimdall/worktrees/<task> on heimdall/<task> with a base commit"
     }
-    if top,ok:=bridge_owner_git(repo,[]string{"rev-parse","--show-toplevel"});!ok || top!=repo do return false
+    if !bridge_owner_worktree_path_safe(repo,task) do return .Deterministic,fmt.tprintf("a component of %s is a symlink or not a directory",work)
+    if os.exists(work) {
+        if !bridge_taskv2_is_checkout_root(work) do return .Deterministic,fmt.tprintf("%s exists but is not a git worktree checkout",work)
+        current,ok:=bridge_owner_git(work,[]string{"symbolic-ref","--short","HEAD"})
+        if !ok do return .Deterministic,fmt.tprintf("%s is on a detached HEAD, not branch %s",work,branch)
+        if current!=branch do return .Deterministic,fmt.tprintf("%s is checked out on branch %s, not %s",work,current,branch)
+        return .Ok,""
+    }
+    if top,ok:=bridge_owner_git(repo,[]string{"rev-parse","--show-toplevel"});!ok || top!=repo do return .Retry,fmt.tprintf("%s is not readable as the top of a git repository",repo)
     bridge_taskv2_exclude_worktrees(repo)
     _,_=bridge_owner_git(repo,[]string{"worktree","prune"})
     for dir in ([2]string{fmt.tprintf("%s/.heimdall",repo),fmt.tprintf("%s/.heimdall/worktrees",repo)}) {
-        if !os.exists(dir) && os.make_directory(dir)!=nil do return false
+        if !os.exists(dir) && os.make_directory(dir)!=nil do return .Retry,fmt.tprintf("could not create %s",dir)
     }
     // Re-check after creation: nothing may have been swapped for a symlink.
-    if !bridge_owner_worktree_path_safe(repo,task) || os.exists(work) do return false
+    if !bridge_owner_worktree_path_safe(repo,task) || os.exists(work) do return .Deterministic,fmt.tprintf("%s changed while it was being created (symlink or squatting path)",work)
+    added:bool
     if bridge_taskv2_branch_exists(repo,branch) {
-        _,added:=bridge_owner_git(repo,[]string{"worktree","add",work,branch})
-        return added && bridge_taskv2_is_checkout_root(work)
+        _,added=bridge_owner_git(repo,[]string{"worktree","add",work,branch})
+    } else {
+        _,added=bridge_owner_git(repo,[]string{"worktree","add","-b",branch,work,base})
     }
-    _,added:=bridge_owner_git(repo,[]string{"worktree","add","-b",branch,work,base})
-    return added && bridge_taskv2_is_checkout_root(work)
+    if !added || !bridge_taskv2_is_checkout_root(work) do return .Retry,fmt.tprintf("git worktree add %s (%s) failed",work,branch)
+    return .Ok,""
 }
 
 // Under the child locks: present requirements after a claim (or for the
@@ -330,20 +350,90 @@ bridge_owner_deliver :: proc(ctx:^Owner_Agent_Ctx,st:owner.Agent_Lease_State,sta
     return "ok",""
 }
 
+// Consecutive worktree failures per lease (guarded by bridge_owner_mutex,
+// which the agent route holds while materializing).
+OWNER_WORKTREE_MAX_FAILURES :: 3
+bridge_owner_worktree_failures:map[string]int
+
 // After the child locks: the Git worktree, then TASK.md (which names the
 // Workdir, or says why it is unavailable). The lease is committed either way;
 // a failure is reported now and retried by the next `lease next`.
 bridge_owner_materialize :: proc(request_id:string,pending:Owner_Pending_Delivery,run_dir:string) -> string {
+    response,_:=bridge_owner_materialize_checked(request_id,pending,run_dir)
+    return response
+}
+// block is non-empty when the lease must be blocked instead of retried: the
+// failure is deterministic, or this is the OWNER_WORKTREE_MAX_FAILURES-th
+// consecutive failure for the lease.
+bridge_owner_materialize_checked :: proc(request_id:string,pending:Owner_Pending_Delivery,run_dir:string) -> (response,block:string) {
     command:=pending.command
-    worktree_ok:=bridge_owner_ensure_worktree(pending.config,pending.task)
-    if !worktree_ok {
+    lease:=contracts.owner_string(command,"lease_id")
+    status,reason:=bridge_owner_prepare_worktree(pending.config,pending.task)
+    failures:=0
+    if status==.Ok {
+        bridge_owner_worktree_failure_reset(lease)
+    } else {
+        failures=bridge_owner_worktree_failure_record(lease)
+        work:=contracts.owner_string(pending.config,"worktree")
+        if status==.Deterministic || failures>=OWNER_WORKTREE_MAX_FAILURES {
+            why:="this will not fix itself on retry" if status==.Deterministic else fmt.tprintf("%d consecutive attempts failed",failures)
+            block=fmt.tprintf("task Workdir %s unavailable: %s (%s); fix the repository or worktree, then release the task",work,reason,why)
+            bridge_owner_worktree_failure_reset(lease)
+        }
         command["workdir"]=json.String("")
-        command["workdir_error"]=json.String(fmt.tprintf("could not create or verify %s",contracts.owner_string(pending.config,"worktree")))
+        command["workdir_error"]=json.String(fmt.tprintf("could not create or verify %s: %s",work,reason))
     }
     written:=run_dir!="" && bridge_owner_materialize_context(run_dir,command,pending.present_body)
-    if !worktree_ok do return bridge_local_response_error(request_id,"worktree_unavailable","lease held; the task Workdir could not be created or verified (see TASK.md); run lease next again to retry")
-    if !written do return bridge_local_response_error(request_id,"context_delivery_failed","lease held and requirements presented; TASK.md write failed; run lease next again")
-    return bridge_local_response_data(request_id,bridge_owner_json(pending.next))
+    if status!=.Ok {
+        if block!="" do return bridge_local_response_error(request_id,"worktree_unavailable",fmt.tprintf("%s; the lease is being blocked (waiting on human) so the coordinator is told",block)),block
+        return bridge_local_response_error(request_id,"worktree_unavailable",fmt.tprintf("lease held; the task Workdir could not be created or verified (%s; attempt %d of %d, see TASK.md); run lease next again to retry",reason,failures,OWNER_WORKTREE_MAX_FAILURES)),""
+    }
+    if !written do return bridge_local_response_error(request_id,"context_delivery_failed","lease held and requirements presented; TASK.md write failed; run lease next again"),""
+    return bridge_local_response_data(request_id,bridge_owner_json(pending.next)),""
+}
+bridge_owner_worktree_failure_record :: proc(lease:string) -> int {
+    context.allocator=runtime.heap_allocator() // process-lifetime map, whatever the caller allocates with
+    if bridge_owner_worktree_failures==nil do bridge_owner_worktree_failures=make(map[string]int)
+    if count,found:=bridge_owner_worktree_failures[lease];found {
+        bridge_owner_worktree_failures[lease]=count+1
+        return count+1
+    }
+    // Bounded: a lease that vanished between failures never pins memory.
+    if len(bridge_owner_worktree_failures)>=256 do bridge_owner_worktree_failure_clear()
+    bridge_owner_worktree_failures[strings.clone(lease)]=1
+    return 1
+}
+bridge_owner_worktree_failure_reset :: proc(lease:string) {
+    context.allocator=runtime.heap_allocator() // process-lifetime map, whatever the caller allocates with
+    if lease in bridge_owner_worktree_failures {
+        key,_:=delete_key(&bridge_owner_worktree_failures,lease)
+        delete(key)
+    }
+}
+bridge_owner_worktree_failure_clear :: proc() {
+    context.allocator=runtime.heap_allocator() // process-lifetime map, whatever the caller allocates with
+    for key in bridge_owner_worktree_failures do delete(key)
+    clear(&bridge_owner_worktree_failures)
+}
+
+// Blocks the caller's current lease after an unrecoverable worktree failure
+// (lease.block waiting on human with the reason), so the task leaves the
+// claim loop and shows as blocked to the coordinator. Takes the startup and
+// token locks again (lock order owner -> startup I/O -> token; the caller
+// holds the owner mutex) and re-proves the exact child and lease.
+bridge_owner_block_unavailable_worktree :: proc(request_id:string,pending:Owner_Pending_Delivery,rec:Bridge_Local_Agent_Token_Record,key:contracts.Owner_Verified_Key,kr:^vault.Vault_Keyring,reason:string) -> string {
+    sync.mutex_lock(&bridge_startup_io_mutex);defer sync.mutex_unlock(&bridge_startup_io_mutex)
+    sync.mutex_lock(&bridge_local_token_mutex);defer sync.mutex_unlock(&bridge_local_token_mutex)
+    child,current:=bridge_owner_child_locked(rec.agent_instance_id,rec.token_hash)
+    if !current do return bridge_local_response_error(request_id,"worktree_unavailable",fmt.tprintf("%s; the lease could not be blocked (the caller is no longer the current child)",reason))
+    ctx:=Owner_Agent_Ctx{request_id=request_id,store=&bridge_owner_store,child=child,key=key,kr=kr,now=time.to_unix_nanoseconds(time.now())/1000000}
+    st,has:=owner.agent_lease_state(ctx.store,child)
+    if !has || st.lease_id!=contracts.owner_string(pending.command,"lease_id") do return bridge_local_response_error(request_id,"worktree_unavailable",fmt.tprintf("%s; the lease is no longer held, nothing to block",reason))
+    payload:=bridge_owner_json(map[string]string{"requirements_revision"=st.requirements_revision,"summary"=reason,
+        "next_steps"="fix the task repository/worktree on the owner Bridge, then release the task so it can be claimed again","waiting_on"="human"})
+    r:=bridge_owner_run_input(&ctx,"lease.block",st.chain_id,st.task_id,st.lease_id,st.configuration_revision,st.task_revision,st.capability,payload)
+    if r.code!="ok" do return bridge_local_response_error(request_id,"worktree_unavailable",fmt.tprintf("%s; blocking the lease was refused (%s), it stays held",reason,r.code))
+    return bridge_local_response_error(request_id,"worktree_unavailable",fmt.tprintf("%s; the lease was blocked (waiting on human) and the coordinator must resolve it",reason))
 }
 
 bridge_owner_agent_exec :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -> string {
@@ -681,10 +771,62 @@ bridge_owner_resolve_agent :: proc(ctx:^Owner_Agent_Ctx,chain,agent_id,flag:stri
     return found,"ok",""
 }
 
+// An assignment derived and validated before any mutation: the task's
+// dependencies exist, a reviewer has a worker, the chain has one repository
+// and target branch, the target branch resolves, the worktree path is safe
+// and the worker was launched in the chain repository. Only then does create
+// or update write anything, so a refused assignment is never half-applied
+// (H1: these checks used to run after task.create and fleet.edit committed).
+Owner_Assignment :: struct {
+    configure:bool,
+    // lifecycle.configure payload; configuration_revision is set when applied.
+    config:map[string]string,
+}
+bridge_owner_assignment_preflight :: proc(ctx:^Owner_Agent_Ctx,chain,task:string,st:owner.Agent_Task_State,existing:bool,plan:Owner_Task_Plan,assignee,reviewer:owner.Child) -> (Owner_Assignment,string,string) {
+    for d in plan.deps {
+        if d==task do return {},"invalid_scope","a task cannot depend on itself"
+        _,found,ok:=owner.agent_task_state(ctx.store,chain,d)
+        if !ok do return {},"storage_error","owner store could not be read"
+        if !found do return {},"not_found",fmt.tprintf("--depends-on %s is not a task of this chain",d)
+    }
+    if reviewer.instance=="" do return {},"ok",""
+    author:=assignee
+    if !plan.has_assignee {
+        if !existing || st.fleet_instance=="" || st.fleet_enabled!="1" do return {},"worker_required","assign a worker (--assignee) before a reviewer"
+        live:bool
+        author,live=bridge_owner_child_locked(st.fleet_instance,"")
+        if !live do return {},"invalid_scope","the assigned worker is not running"
+    }
+    template,code:=owner.agent_assignment_template(ctx.store,chain)
+    if code!="ok" do return {},code,"the chain has no single configured repository and target branch (set the chain directory and a target_branch chain default)"
+    config:=make(map[string]string,context.temp_allocator)
+    config["configuration_revision"]="1" // validation placeholder
+    config["author_agent_id"]=author.agent_id;config["reviewer_agent_id"]=reviewer.agent_id;config["reviewer_instance_id"]=reviewer.instance
+    config["directory_id"]=template.directory_id;config["merge_policy"]=template.merge_policy
+    config["repository"]="";config["worktree"]="";config["source_branch"]="";config["target_branch"]="";config["base_head"]=""
+    if template.merge_policy=="git" {
+        base,read:=bridge_owner_git(template.repository,[]string{"rev-parse","--verify",strings.concatenate({"refs/heads/",template.target_branch,"^{commit}"},context.temp_allocator)})
+        if !read do return {},"invalid_scope",fmt.tprintf("target branch %s not found in %s",template.target_branch,template.repository)
+        config["repository"]=template.repository;config["worktree"]=fmt.tprintf("%s/.heimdall/worktrees/%s",template.repository,task)
+        config["source_branch"]=fmt.tprintf("heimdall/%s",task);config["target_branch"]=template.target_branch;config["base_head"]=base
+        launch,found:=bridge_runtime_get_launch(author.instance)
+        if !found do return {},"invalid_scope",fmt.tprintf("worker %s has no launch record on this Bridge",author.agent_id)
+        project:=bridge_fs_canonicalize_existing(launch.project_path);defer delete(project)
+        if project!=config["repository"] && project!=config["worktree"] {
+            return {},"invalid_scope",fmt.tprintf("worker %s was launched in %s, not in the chain repository %s; assign a worker launched in the chain directory",author.agent_id,launch.project_path,template.repository)
+        }
+    }
+    c,valid:=contracts.owner_parse(bridge_owner_json(config),"lifecycle_config_payload")
+    if !valid do return {},"invalid_content","derived lifecycle configuration is invalid"
+    if !bridge_owner_paths(c,task,allow_missing_worktree=true) do return {},"invalid_scope",fmt.tprintf("the chain repository %s cannot host task worktrees for target branch %s",template.repository,template.target_branch)
+    return Owner_Assignment{true,config},"ok",""
+}
+
 // fleet.edit, then (when a reviewer is known) lifecycle.configure, on the
-// user's behalf. The owner re-checks membership, the chain repository and
-// every lifecycle invariant (agent_command_admit, lifecycle_human).
-bridge_owner_assign :: proc(ctx:^Owner_Agent_Ctx,chain,task:string,plan:Owner_Task_Plan,assignee,reviewer:owner.Child) -> (string,string) {
+// user's behalf, from a preflighted assignment. The owner re-checks
+// membership, the chain repository and every lifecycle invariant
+// (agent_command_admit, lifecycle_human).
+bridge_owner_assign :: proc(ctx:^Owner_Agent_Ctx,chain,task:string,plan:Owner_Task_Plan,assignee:owner.Child,pre:Owner_Assignment) -> (string,string) {
     st,ok:=bridge_owner_reload(ctx,chain,task)
     if !ok do return "storage_error","owner store could not be read"
     if plan.has_assignee {
@@ -695,24 +837,11 @@ bridge_owner_assign :: proc(ctx:^Owner_Agent_Ctx,chain,task:string,plan:Owner_Ta
         st,ok=bridge_owner_reload(ctx,chain,task)
         if !ok do return "storage_error","owner store could not be read"
     }
-    if reviewer.instance=="" do return "ok",""
+    if !pre.configure do return "ok",""
     if st.fleet_instance=="" || st.fleet_enabled!="1" do return "worker_required","assign a worker (--assignee) before a reviewer"
-    template,code:=owner.agent_assignment_template(ctx.store,chain)
-    if code!="ok" do return code,"the chain has no single configured repository and target branch (set the chain directory and a target_branch chain default)"
     config_revision,_:=strconv.parse_i64(st.config_max_revision)
-    config:=map[string]string{"configuration_revision"=fmt.tprintf("%d",config_revision+1),"author_agent_id"="","reviewer_agent_id"=reviewer.agent_id,
-        "reviewer_instance_id"=reviewer.instance,"directory_id"=template.directory_id,"merge_policy"=template.merge_policy,
-        "repository"="","worktree"="","source_branch"="","target_branch"="","base_head"=""}
-    defer delete(config)
-    author,live:=bridge_owner_child_locked(st.fleet_instance,"")
-    if !live do return "invalid_scope","the assigned worker is not running"
-    config["author_agent_id"]=author.agent_id
-    if template.merge_policy=="git" {
-        base,read:=bridge_owner_git(template.repository,[]string{"rev-parse","--verify",strings.concatenate({"refs/heads/",template.target_branch,"^{commit}"},context.temp_allocator)})
-        if !read do return "invalid_scope",fmt.tprintf("target branch %s not found in %s",template.target_branch,template.repository)
-        config["repository"]=template.repository;config["worktree"]=fmt.tprintf("%s/.heimdall/worktrees/%s",template.repository,task)
-        config["source_branch"]=fmt.tprintf("heimdall/%s",task);config["target_branch"]=template.target_branch;config["base_head"]=base
-    }
+    config:=pre.config
+    config["configuration_revision"]=fmt.tprintf("%d",config_revision+1)
     raw:=bridge_owner_json(config)
     c,valid:=contracts.owner_parse(raw,"lifecycle_config_payload")
     if !valid do return "invalid_content","derived lifecycle configuration is invalid"
@@ -732,7 +861,7 @@ bridge_owner_dependency :: proc(ctx:^Owner_Agent_Ctx,st:owner.Agent_Task_State,p
 }
 
 // Priority, dependencies, brief and assignment shared by create and update.
-bridge_owner_apply_plan :: proc(ctx:^Owner_Agent_Ctx,chain,task:string,plan:Owner_Task_Plan,assignee,reviewer:owner.Child) -> (string,string) {
+bridge_owner_apply_plan :: proc(ctx:^Owner_Agent_Ctx,chain,task:string,plan:Owner_Task_Plan,assignee:owner.Child,pre:Owner_Assignment) -> (string,string) {
     st,ok:=bridge_owner_reload(ctx,chain,task)
     if !ok do return "storage_error","owner store could not be read"
     if plan.priority!="" {
@@ -752,7 +881,7 @@ bridge_owner_apply_plan :: proc(ctx:^Owner_Agent_Ctx,chain,task:string,plan:Owne
             if code,message:=bridge_owner_dependency(ctx,st,d,true);code!="ok" do return code,message
         }
     }
-    if plan.has_assignee || plan.has_reviewer do return bridge_owner_assign(ctx,chain,task,plan,assignee,reviewer)
+    if plan.has_assignee || plan.has_reviewer do return bridge_owner_assign(ctx,chain,task,plan,assignee,pre)
     return "ok",""
 }
 
@@ -788,16 +917,19 @@ bridge_owner_task_create :: proc(ctx:^Owner_Agent_Ctx,p:json.Object) -> string {
     if unsupported!="" do return unsupported
     assignee,reviewer,failed:=bridge_owner_plan_children(ctx,chain,{},&plan)
     if failed!="" do return failed
+    task:=bridge_owner_fresh_id("task")
+    // Validate the whole assignment before the task exists.
+    pre,pre_code,pre_message:=bridge_owner_assignment_preflight(ctx,chain,task,{},false,plan,assignee,reviewer)
+    if pre_code!="ok" do return bridge_owner_fail(ctx,pre_code,fmt.tprintf("no task created: %s",pre_message))
     title_cipher,ok:=bridge_owner_cipher(ctx,title)
     body_cipher,body_ok:=bridge_owner_cipher(ctx,bridge_owner_pstr(p,"description"))
     if !ok || !body_ok do return bridge_owner_fail(ctx,"vault_locked","cannot seal task content")
-    task:=bridge_owner_fresh_id("task")
     r:=bridge_owner_run_command(ctx,"task.create",chain,task,bridge_owner_chain_rev(ctx,chain),bridge_owner_json(map[string]string{"title_cipher"=title_cipher,"body_cipher"=body_cipher}))
     if r.code!="ok" do return bridge_owner_fail(ctx,r.code,"owner task create refused")
     if brief:=bridge_owner_brief_text(ctx,p);brief!="" {
         if code:=bridge_owner_requirements(ctx,chain,task,brief,"",true);code!="ok" do return bridge_owner_fail(ctx,code,fmt.tprintf("task %s created; requirements refused",task))
     }
-    if code,message:=bridge_owner_apply_plan(ctx,chain,task,plan,assignee,reviewer);code!="ok" do return bridge_owner_fail(ctx,code,fmt.tprintf("task %s created; %s",task,message))
+    if code,message:=bridge_owner_apply_plan(ctx,chain,task,plan,assignee,pre);code!="ok" do return bridge_owner_fail(ctx,code,fmt.tprintf("task %s created; %s",task,message))
     out:=bridge_owner_result_object(r.body)
     out["authority"]=json.Object{"kind"=json.String("owner"),"bridge_id"=json.String(bridge_config.daemon_id)}
     if plan.has_assignee do out["assignee_instance_id"]=json.String(assignee.instance)
@@ -837,6 +969,8 @@ bridge_owner_task_update :: proc(ctx:^Owner_Agent_Ctx,p:json.Object) -> string {
     if reason:=bridge_owner_pstr(p,"expected_requirements_revision");reason!="" && bridge_owner_brief_text(ctx,p)=="" do return bridge_owner_fail(ctx,"bad_request","--expected-requirements-revision needs brief flags")
     assignee,reviewer,failed:=bridge_owner_plan_children(ctx,st.chain_id,st,&plan)
     if failed!="" do return failed
+    pre,pre_code,pre_message:=bridge_owner_assignment_preflight(ctx,st.chain_id,st.task_id,st,true,plan,assignee,reviewer)
+    if pre_code!="ok" do return bridge_owner_fail(ctx,pre_code,fmt.tprintf("task unchanged: %s",pre_message))
     title,description:=bridge_owner_pstr(p,"title"),bridge_owner_pstr(p,"description")
     brief:=bridge_owner_brief_text(ctx,p)
     if title=="" && description=="" && brief=="" && plan.priority=="" && !plan.has_deps && !plan.has_assignee && !plan.has_reviewer {
@@ -861,7 +995,7 @@ bridge_owner_task_update :: proc(ctx:^Owner_Agent_Ctx,p:json.Object) -> string {
         if b,typed:=p["replace_brief"].(json.Boolean);typed do replace=bool(b)
         if code:=bridge_owner_requirements(ctx,st.chain_id,st.task_id,brief,bridge_owner_pstr(p,"expected_requirements_revision"),replace);code!="ok" do return bridge_owner_fail(ctx,code,"owner requirements edit refused")
     }
-    if code,message:=bridge_owner_apply_plan(ctx,st.chain_id,st.task_id,plan,assignee,reviewer);code!="ok" do return bridge_owner_fail(ctx,code,message)
+    if code,message:=bridge_owner_apply_plan(ctx,st.chain_id,st.task_id,plan,assignee,pre);code!="ok" do return bridge_owner_fail(ctx,code,message)
     final,ok:=bridge_owner_reload(ctx,st.chain_id,st.task_id)
     if ok do result=bridge_owner_json(map[string]string{"task_id"=final.task_id,"chain_id"=final.chain_id,"revision"=final.task_revision})
     return bridge_local_response_data(ctx.request_id,result)

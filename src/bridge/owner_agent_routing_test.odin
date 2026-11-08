@@ -156,3 +156,76 @@ test_executor_prepare_run_dir_creates_missing_instances_parent :: proc(t:^testin
     testing.expect(t,err==nil && info.type==.Directory)
     testing.expect(t,bridge_executor_prepare_run_dir(run_dir),"idempotent for an existing run directory")
 }
+
+// H1: a deterministic worktree failure (symlink, squatting non-checkout,
+// checkout on another branch) asks for the lease to be blocked at once; a
+// retryable one only after OWNER_WORKTREE_MAX_FAILURES consecutive failures
+// of the same lease, and a success resets the count.
+@(test)
+test_owner_materialize_blocks_on_deterministic_or_repeated_worktree_failure :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    defer bridge_owner_worktree_failure_clear()
+    root:=fmt.tprintf("%s/.cache/heimdall-tests/owner-worktree-block-%d",os.get_env("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    testing.expect(t,bridge_make_directory_all(fmt.tprintf("%s/repo",root))==nil)
+    testing.expect(t,bridge_make_directory_all(fmt.tprintf("%s/run",root))==nil)
+    testing.expect(t,bridge_make_directory_all(fmt.tprintf("%s/plain",root))==nil)
+    testing.expect(t,bridge_make_directory_all(fmt.tprintf("%s/elsewhere",root))==nil)
+    defer _=os.remove_all(root)
+    repo:=bridge_fs_canonicalize_existing(fmt.tprintf("%s/repo",root));defer delete(repo)
+    plain:=bridge_fs_canonicalize_existing(fmt.tprintf("%s/plain",root));defer delete(plain)
+    owner_routing_git(t,repo,"init","-b","sandbox")
+    testing.expect(t,os.write_entire_file(fmt.tprintf("%s/f.txt",repo),transmute([]byte)string("base\n"))==nil)
+    owner_routing_git(t,repo,"add",".")
+    owner_routing_git(t,repo,"commit","-m","base")
+    base:=owner_routing_git(t,repo,"rev-parse","HEAD")
+    run:=fmt.tprintf("%s/run",root)
+    body:=owner.encode(owner.doc(map[string]string{"requirements_revision"="1","acknowledged"="0","brief"=`{"goal":"g","acceptance":["a"]}`,"chain_summary"="s","context_provenance"=`{"source_digest":"d"}`}))
+    pending :: proc(repo,task,base,lease,body:string) -> Owner_Pending_Delivery {
+        config:=owner.doc(map[string]string{"merge_policy"="git","repository"=repo,"worktree"=fmt.tprintf("%s/.heimdall/worktrees/%s",repo,task),
+            "source_branch"=fmt.tprintf("heimdall/%s",task),"target_branch"="integration","base_head"=base})
+        return Owner_Pending_Delivery{active=true,config=config,configured=true,task=task,present_body=body,
+            command=owner.doc(map[string]string{"chain_id"="chain","task_id"=task,"lease_id"=lease,"instance_id"="inst","workdir"="x","branch"="y"})}
+    }
+    // A plain directory squatting on the worktree path: deterministic.
+    testing.expect(t,bridge_make_directory_all(fmt.tprintf("%s/.heimdall/worktrees/task_squat",repo))==nil)
+    status,reason:=bridge_owner_prepare_worktree(pending(repo,"task_squat",base,"l1",body).config,"task_squat")
+    testing.expect_value(t,status,Owner_Worktree_Status.Deterministic)
+    testing.expect(t,strings.contains(reason,"not a git worktree checkout"),reason)
+    reply,block:=bridge_owner_materialize_checked("r1",pending(repo,"task_squat",base,"l1",body),run)
+    testing.expect(t,block!="" && strings.contains(block,"will not fix itself"),block)
+    testing.expect(t,strings.contains(reply,`"worktree_unavailable"`) && strings.contains(reply,"blocked"),reply)
+    md,_:=os.read_entire_file(fmt.tprintf("%s/TASK.md",run),context.temp_allocator)
+    testing.expect(t,strings.contains(string(md),"Workdir: unavailable"),"TASK.md still says why")
+    // A checkout on another branch: deterministic.
+    testing.expect(t,bridge_owner_ensure_worktree(pending(repo,"task_branch",base,"l2",body).config,"task_branch"))
+    owner_routing_git(t,fmt.tprintf("%s/.heimdall/worktrees/task_branch",repo),"checkout","-b","other")
+    status,reason=bridge_owner_prepare_worktree(pending(repo,"task_branch",base,"l2",body).config,"task_branch")
+    testing.expect(t,status==.Deterministic && strings.contains(reason,"branch other"),reason)
+    _,block=bridge_owner_materialize_checked("r2",pending(repo,"task_branch",base,"l2",body),run)
+    testing.expect(t,block!="")
+    // A symlinked task path: deterministic.
+    testing.expect(t,os.symlink(fmt.tprintf("%s/elsewhere",root),fmt.tprintf("%s/.heimdall/worktrees/task_link",repo))==nil)
+    status,_=bridge_owner_prepare_worktree(pending(repo,"task_link",base,"l3",body).config,"task_link")
+    testing.expect_value(t,status,Owner_Worktree_Status.Deterministic)
+    // A repository that is not (yet) readable as git: retried, and blocked on
+    // the third consecutive failure of the same lease.
+    status,_=bridge_owner_prepare_worktree(pending(plain,"task_retry",base,"l4",body).config,"task_retry")
+    testing.expect_value(t,status,Owner_Worktree_Status.Retry)
+    for attempt in 1..=OWNER_WORKTREE_MAX_FAILURES {
+        reply,block=bridge_owner_materialize_checked("r4",pending(plain,"task_retry",base,"l4",body),run)
+        if attempt<OWNER_WORKTREE_MAX_FAILURES {
+            testing.expectf(t,block=="","attempt %d is retried, not blocked",attempt)
+            testing.expect(t,strings.contains(reply,"run lease next again") && strings.contains(reply,fmt.tprintf("attempt %d of %d",attempt,OWNER_WORKTREE_MAX_FAILURES)),reply)
+        } else do testing.expect(t,block!="" && strings.contains(block,"3 consecutive attempts failed"),block)
+    }
+    // The count is per lease and a success resets it.
+    _,block=bridge_owner_materialize_checked("r5",pending(plain,"task_retry",base,"l5",body),run)
+    testing.expect(t,block=="","another lease starts its own count")
+    _,block=bridge_owner_materialize_checked("r6",pending(plain,"task_retry",base,"l5",body),run)
+    testing.expect(t,block=="")
+    ok_reply,ok_block:=bridge_owner_materialize_checked("r7",pending(repo,"task_ok",base,"l5",body),run)
+    testing.expect(t,ok_block=="" && !strings.contains(ok_reply,"worktree_unavailable"),ok_reply)
+    _,block=bridge_owner_materialize_checked("r8",pending(plain,"task_retry",base,"l5",body),run)
+    testing.expect(t,block=="","the success reset the consecutive-failure count")
+    for task in ([2]string{"task_branch","task_ok"}) do _=owner_routing_git(t,repo,"worktree","remove","--force",fmt.tprintf("%s/.heimdall/worktrees/%s",repo,task))
+}
