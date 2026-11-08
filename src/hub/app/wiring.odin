@@ -617,6 +617,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.card_handlers = http.Card_Handlers{auth = &graph.auth, cards = &graph.cards, clock = &graph.clock}
 	graph.issue_handlers = http.Issue_Handlers{auth = &graph.auth, issues = &graph.issues, clock = &graph.clock}
 	graph.agent_action_handlers.cards = &graph.cards
+	graph.agent_action_handlers.experiments = &graph.experiment_repo
 	graph.router = http.new_router()
 	// R4a: writes to an owner-held chain answer owner_authority before any handler.
 	graph.router.guard = http.owner_authority_guard

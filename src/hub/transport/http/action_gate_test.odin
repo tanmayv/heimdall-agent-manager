@@ -162,12 +162,10 @@ expect_actions_disabled :: proc(t: ^testing.T, name: string, resp: Response) {
 test_actions_routes_refuse_disabled_owner_before_side_effects :: proc(t: ^testing.T) {
 	f := setup_action_gate(t, "action_gate_off")
 	defer teardown_action_gate(f)
-	// Absent row, then an explicit false row: both disabled, zero repository calls.
-	for pass in 0..<2 {
-		if pass == 1 { f.exp.enabled_owner = string(f.wire.owner); f.exp.disabled_row = true }
-		for route in ACTION_USER_ROUTES do expect_actions_disabled(t, route.name, action_gate_call(f, route, false))
-		for route in ACTION_BRIDGE_ROUTES do expect_actions_disabled(t, route.name, action_gate_call(f, route, true))
-	}
+	// F1: Actions default on, so only an explicit false row disables; zero repository calls.
+	f.exp.enabled_owner = string(f.wire.owner); f.exp.disabled_row = true
+	for route in ACTION_USER_ROUTES do expect_actions_disabled(t, route.name, action_gate_call(f, route, false))
+	for route in ACTION_BRIDGE_ROUTES do expect_actions_disabled(t, route.name, action_gate_call(f, route, true))
 	testing.expect_value(t, f.fake.calls, 0)
 }
 
@@ -199,11 +197,13 @@ test_actions_routes_pass_enabled_owner_to_existing_checks :: proc(t: ^testing.T)
 test_actions_gate_is_owner_isolated :: proc(t: ^testing.T) {
 	f := setup_action_gate(t, "action_gate_iso")
 	defer teardown_action_gate(f)
-	// Another user's opt-in never enables this owner or this owner's bridge.
+	// Another user's opt-out never disables this owner or this owner's bridge
+	// (F1: Actions default on for an owner with no row).
 	f.exp.enabled_owner = "someone_else"
-	for route in ACTION_USER_ROUTES do expect_actions_disabled(t, route.name, action_gate_call(f, route, false))
-	for route in ACTION_BRIDGE_ROUTES do expect_actions_disabled(t, route.name, action_gate_call(f, route, true))
-	testing.expect_value(t, f.fake.calls, 0)
+	f.exp.disabled_row = true
+	for route in ACTION_USER_ROUTES do testing.expectf(t, action_gate_call(f, route, false).status != 403, "%s: not gated by another owner's row", route.name)
+	for route in ACTION_BRIDGE_ROUTES do testing.expectf(t, action_gate_call(f, route, true).status != 403, "%s: not gated by another owner's row", route.name)
+	testing.expect(t, f.fake.calls > 0, "existing checks ran for the default-on owner")
 }
 
 @(test)

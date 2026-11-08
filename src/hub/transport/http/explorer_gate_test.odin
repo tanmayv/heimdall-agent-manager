@@ -85,7 +85,8 @@ EXPLORER_ROUTES := [?]Explorer_Route{
 
 @(private = "file")
 Explorer_Exp_Repo :: struct {
-	enabled_owner: string, // the only owner whose project_vcs row is true
+	enabled_owner: string, // the only owner with a stored project_vcs row
+	disabled_row:  bool,   // that row is enabled=false (F1: absent = default on)
 	fail:          bool,
 }
 
@@ -95,7 +96,7 @@ explorer_exp_list :: proc(ctx: rawptr, owner_user_id: string) -> ([dynamic]domai
 	if r.fail do return nil, domain.domain_error(.Internal_Error, "database is locked")
 	out := make([dynamic]domain.Experiment)
 	if r.enabled_owner != "" && owner_user_id == r.enabled_owner {
-		append(&out, domain.Experiment{owner_user_id = strings.clone(owner_user_id), key = strings.clone(domain.PROJECT_VCS_EXPERIMENT_KEY), enabled = true, updated_at = strings.clone("2026-10-25T00:00:00Z")})
+		append(&out, domain.Experiment{owner_user_id = strings.clone(owner_user_id), key = strings.clone(domain.PROJECT_VCS_EXPERIMENT_KEY), enabled = !r.disabled_row, updated_at = strings.clone("2026-10-25T00:00:00Z")})
 	}
 	return out, domain.Domain_Error{}
 }
@@ -202,7 +203,12 @@ test_explorer_routes_refuse_disabled_owner_before_lookup :: proc(t: ^testing.T) 
 	f := setup_explorer_fixture(t)
 	defer teardown_explorer_fixture(f)
 
-	// Absent row = disabled (REQ-EXP-GATE-1); no project/chain lookup, so no relay.
+	// An explicit off row disables (F1: absent = default on); no project/chain
+	// lookup, so no relay.
+	off_owner := explorer_user_id(t, f, "gate_disabled")
+	defer delete(off_owner)
+	f.exp.enabled_owner = off_owner
+	f.exp.disabled_row = true
 	for route in EXPLORER_ROUTES {
 		resp := explorer_call(f, route, "gate_disabled")
 		expect_explorer_disabled(t, route, resp)
@@ -240,14 +246,15 @@ test_explorer_routes_are_owner_isolated :: proc(t: ^testing.T) {
 	defer teardown_explorer_fixture(f)
 	owner := explorer_user_id(t, f, "gate_owner_a")
 	defer delete(owner)
+	// owner_a turned the explorer off; owner_b (no row, default on) is unaffected.
 	f.exp.enabled_owner = owner
+	f.exp.disabled_row = true
 
 	for route in EXPLORER_ROUTES {
+		expect_explorer_disabled(t, route, explorer_call(f, route, "gate_owner_a"))
 		resp := explorer_call(f, route, "gate_owner_b")
-		expect_explorer_disabled(t, route, resp)
+		testing.expectf(t, !strings.contains(resp.body, "experimental_feature_disabled"), "%s: another owner's off does not gate owner_b", route.name)
 	}
-	testing.expect_value(t, f.project_gets, 0)
-	testing.expect_value(t, f.chain_gets, 0)
 }
 
 // Repository failures fail closed with the existing internal-error response.

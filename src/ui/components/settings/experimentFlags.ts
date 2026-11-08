@@ -3,6 +3,9 @@ import type { ExperimentFlag } from '../../api/endpoints/settings';
 // Experiment keys mirror src/hub/domain/experiment.odin.
 export const PROJECT_VCS_EXPERIMENT_KEY = 'project_vcs';
 export const ACTIONS_EXPERIMENT_KEY = 'actions';
+// A per-user setting kept in the same owner-scoped flag store (hub:
+// domain.AUTO_APPROVE_AGENT_MEMORIES_KEY). On by default.
+export const AUTO_APPROVE_AGENT_MEMORIES_KEY = 'auto_approve_agent_memories';
 
 export type ExperimentFlagState = 'loading' | 'disabled' | 'enabled';
 
@@ -37,7 +40,7 @@ export const EXPERIMENTAL_FLAGS: ReadonlyArray<{ key: string; label: string; des
   {
     key: 'lsp',
     label: 'Language Server Protocol (LSP) support',
-    description: 'Experimental LSP integration. Enables in-editor diagnostics and completions. Requires a restart of any active agent session.',
+    description: 'LSP integration. Enables in-editor diagnostics and completions. On by default; turning it on or off requires a restart of any active agent session.',
   },
   {
     key: 'streaming_terminal_pane',
@@ -49,11 +52,16 @@ export const EXPERIMENTAL_FLAGS: ReadonlyArray<{ key: string; label: string; des
     // Named like the Hub's refusal ("Project Explorer is experimental. Enable it in
     // Settings > Experimental…") so users can find the toggle it points to.
     label: 'Project Explorer (Files & VCS)',
-    description: 'Experimental file and version-control explorer for projects and chain directories in conversations and chain overviews. Projects management is unaffected.',
+    description: 'File and version-control explorer for projects and chain directories in conversations and chain overviews. On by default. Projects management is unaffected.',
   },
   {
     key: ACTIONS_EXPERIMENT_KEY,
     label: 'Actions',
-    description: 'Scheduled and on-demand Actions. While off, Actions are hidden and scheduled runs are paused; saved Actions are kept.',
+    description: 'Scheduled and on-demand Actions. On by default. While off, Actions are hidden and scheduled runs are paused; saved Actions are kept.',
+  },
+  {
+    key: AUTO_APPROVE_AGENT_MEMORIES_KEY,
+    label: 'Auto-approve agent memories',
+    description: 'Memories your agents propose are approved immediately instead of waiting in your queue. On by default; turn off to review each proposal.',
   },
 ];

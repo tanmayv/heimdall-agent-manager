@@ -44,9 +44,12 @@ test_experiment_gate_absent_and_false_are_disabled :: proc(t: ^testing.T) {
 	testing.expect_value(t, off.code, domain.Error_Code.Forbidden)
 	testing.expect_value(t, fake.last_owner, "user_a")
 
+	// F1: an absent default-on key (project_vcs) passes; an absent unknown key is refused.
 	absent := experiment_gate_error(&repo, "user_a", domain.PROJECT_VCS_EXPERIMENT_KEY)
-	testing.expect_value(t, absent.code, domain.Error_Code.Forbidden)
-	testing.expect(t, strings.contains(absent.details_json, `"feature":"project_vcs"`))
+	testing.expect_value(t, absent.code, domain.Error_Code.None)
+	unknown := experiment_gate_error(&repo, "user_a", "some_new_flag")
+	testing.expect_value(t, unknown.code, domain.Error_Code.Forbidden)
+	testing.expect(t, strings.contains(unknown.details_json, `"feature":"some_new_flag"`))
 }
 
 @(test)
@@ -64,14 +67,15 @@ test_experiment_gate_enabled_passes :: proc(t: ^testing.T) {
 	testing.expect_value(t, resp.status, 0)
 }
 
-// One owner's opt-in never enables another owner (user or bridge-owner credentials).
+// One owner's setting never applies to another owner (user or bridge-owner
+// credentials): user_a's off does not turn user_b's default-on Actions off.
 @(test)
 test_experiment_gate_is_owner_isolated :: proc(t: ^testing.T) {
-	fake := Gate_Exp_Repo{rows = {{owner_user_id = "user_a", key = domain.ACTIONS_EXPERIMENT_KEY, enabled = true}}}
+	fake := Gate_Exp_Repo{rows = {{owner_user_id = "user_a", key = domain.ACTIONS_EXPERIMENT_KEY, enabled = false}, {owner_user_id = "user_b", key = domain.ACTIONS_EXPERIMENT_KEY, enabled = true}}}
 	repo := gate_repo(&fake)
-	testing.expect_value(t, experiment_gate_error(&repo, "user_a", domain.ACTIONS_EXPERIMENT_KEY).code, domain.Error_Code.None)
+	testing.expect_value(t, experiment_gate_error(&repo, "user_a", domain.ACTIONS_EXPERIMENT_KEY).code, domain.Error_Code.Forbidden)
 	other := experiment_gate_error(&repo, "user_b", domain.ACTIONS_EXPERIMENT_KEY)
-	testing.expect_value(t, other.code, domain.Error_Code.Forbidden)
+	testing.expect_value(t, other.code, domain.Error_Code.None)
 	testing.expect_value(t, fake.last_owner, "user_b")
 
 	calls := fake.calls
@@ -103,7 +107,7 @@ test_experiment_gate_repo_failure_fails_closed :: proc(t: ^testing.T) {
 // REQ-EXP-GATE-3 wire shape: 403, error.code forbidden, exact message, details.
 @(test)
 test_require_experiment_enabled_disabled_response_envelope :: proc(t: ^testing.T) {
-	fake := Gate_Exp_Repo{}
+	fake := Gate_Exp_Repo{rows = {{owner_user_id = "user_a", key = domain.ACTIONS_EXPERIMENT_KEY, enabled = false}}}
 	repo := gate_repo(&fake)
 	ok, resp := require_experiment_enabled(&repo, "user_a", domain.ACTIONS_EXPERIMENT_KEY, "req_3")
 	defer delete(resp.body)
@@ -126,11 +130,11 @@ test_require_experiment_enabled_disabled_response_envelope :: proc(t: ^testing.T
 	testing.expect_value(t, env.error.details.feature, "actions")
 }
 
-// The new flag is opt-in in the settings listing: never listed as on for a fresh user.
+// F1: Actions and Project Explorer are listed as on for a fresh user.
 @(test)
-test_experiment_list_does_not_default_actions_on :: proc(t: ^testing.T) {
+test_experiment_list_defaults_actions_and_project_vcs_on :: proc(t: ^testing.T) {
 	empty := experiment_list_json({})
 	defer delete(empty)
-	testing.expect(t, !strings.contains(empty, `"actions"`))
-	testing.expect(t, !strings.contains(empty, `"project_vcs"`))
+	testing.expect(t, strings.contains(empty, `{"key":"actions","enabled":true`))
+	testing.expect(t, strings.contains(empty, `{"key":"project_vcs","enabled":true`))
 }

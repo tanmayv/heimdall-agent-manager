@@ -25,8 +25,8 @@ default_exp_list :: proc(ctx: rawptr, owner_user_id: string) -> ([dynamic]domain
 @(test)
 test_streaming_terminal_pane_is_default_on :: proc(t: ^testing.T) {
 	testing.expect(t, domain.experiment_default_enabled(domain.STREAMING_TERMINAL_PANE_EXPERIMENT_KEY))
-	testing.expect(t, !domain.experiment_default_enabled(domain.PROJECT_VCS_EXPERIMENT_KEY))
-	testing.expect(t, !domain.experiment_default_enabled("lsp"))
+	testing.expect(t, domain.experiment_default_enabled(domain.PROJECT_VCS_EXPERIMENT_KEY), "F1: project explorer default on")
+	testing.expect(t, domain.experiment_default_enabled("lsp"), "F1: lsp default on")
 
 	never_set := Default_Exp_Repo{rows = {{key = "lsp", enabled = true}}}
 	repo := iface.Experiment_Repository{ctx = rawptr(&never_set), list_by_owner = default_exp_list}
@@ -41,15 +41,40 @@ test_streaming_terminal_pane_is_default_on :: proc(t: ^testing.T) {
 test_experiment_list_includes_unset_default_on_flags :: proc(t: ^testing.T) {
 	empty := experiment_list_json({})
 	defer delete(empty)
-	testing.expect_value(t, empty, `{"ok":true,"experiments":[{"key":"streaming_terminal_pane","enabled":true,"updated_at":""}]}`)
+	testing.expect_value(t, empty, `{"ok":true,"experiments":[{"key":"streaming_terminal_pane","enabled":true,"updated_at":""},{"key":"project_vcs","enabled":true,"updated_at":""},{"key":"actions","enabled":true,"updated_at":""},{"key":"lsp","enabled":true,"updated_at":""},{"key":"auto_approve_agent_memories","enabled":true,"updated_at":""}]}`)
 
 	stored := []domain.Experiment{{key = "lsp", enabled = true, updated_at = "t1"}}
 	with_other := experiment_list_json(stored)
 	defer delete(with_other)
-	testing.expect_value(t, with_other, `{"ok":true,"experiments":[{"key":"lsp","enabled":true,"updated_at":"t1"},{"key":"streaming_terminal_pane","enabled":true,"updated_at":""}]}`)
+	testing.expect_value(t, with_other, `{"ok":true,"experiments":[{"key":"lsp","enabled":true,"updated_at":"t1"},{"key":"streaming_terminal_pane","enabled":true,"updated_at":""},{"key":"project_vcs","enabled":true,"updated_at":""},{"key":"actions","enabled":true,"updated_at":""},{"key":"auto_approve_agent_memories","enabled":true,"updated_at":""}]}`)
 
 	off := []domain.Experiment{{key = domain.STREAMING_TERMINAL_PANE_EXPERIMENT_KEY, enabled = false, updated_at = "t2"}}
 	explicit := experiment_list_json(off)
 	defer delete(explicit)
-	testing.expect_value(t, explicit, `{"ok":true,"experiments":[{"key":"streaming_terminal_pane","enabled":false,"updated_at":"t2"}]}`)
+	testing.expect_value(t, explicit, `{"ok":true,"experiments":[{"key":"streaming_terminal_pane","enabled":false,"updated_at":"t2"},{"key":"project_vcs","enabled":true,"updated_at":""},{"key":"actions","enabled":true,"updated_at":""},{"key":"lsp","enabled":true,"updated_at":""},{"key":"auto_approve_agent_memories","enabled":true,"updated_at":""}]}`)
+}
+
+// F1: agent memory proposals are saved approved while the owner's
+// auto_approve_agent_memories setting is on (the default); off keeps them pending.
+@(test)
+test_agent_memory_proposal_status_follows_user_setting :: proc(t: ^testing.T) {
+	never_set := Default_Exp_Repo{}
+	repo := iface.Experiment_Repository{ctx = rawptr(&never_set), list_by_owner = default_exp_list}
+	testing.expect_value(t, agent_memory_proposal_status(&repo, "user_a"), "active")
+	turned_off := Default_Exp_Repo{rows = {{key = domain.AUTO_APPROVE_AGENT_MEMORIES_KEY, enabled = false}}}
+	repo_off := iface.Experiment_Repository{ctx = rawptr(&turned_off), list_by_owner = default_exp_list}
+	testing.expect_value(t, agent_memory_proposal_status(&repo_off, "user_a"), "pending")
+	testing.expect_value(t, agent_memory_proposal_status(nil, "user_a"), "pending")
+	testing.expect_value(t, agent_memory_proposal_status(&repo, ""), "pending")
+}
+
+// F1: LSP is on for a user who never set the flag; an explicit off is respected.
+@(test)
+test_lsp_experiment_default_on :: proc(t: ^testing.T) {
+	never_set := Default_Exp_Repo{}
+	repo := iface.Experiment_Repository{ctx = rawptr(&never_set), list_by_owner = default_exp_list}
+	testing.expect(t, lsp_experiment_enabled(&repo, "user_a"), "no stored row: lsp on")
+	turned_off := Default_Exp_Repo{rows = {{key = "lsp", enabled = false}}}
+	repo_off := iface.Experiment_Repository{ctx = rawptr(&turned_off), list_by_owner = default_exp_list}
+	testing.expect(t, !lsp_experiment_enabled(&repo_off, "user_a"), "explicit off respected")
 }

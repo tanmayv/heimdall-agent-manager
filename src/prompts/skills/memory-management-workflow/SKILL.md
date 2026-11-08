@@ -32,8 +32,12 @@ For the exact `memory` command syntax (and every other ham-ctl group), see the `
 Template targeting is available through the `--template` scope flag; template is not a memory type.
 
 ## Propose-Review-Approve Workflow
-- Agents propose new memories in `pending` status using `ham-ctl memory propose`.
-- Approval is a HUMAN/operator action — there is no agent `ham-ctl memory approve` verb.
+- Agents propose new memories using `ham-ctl memory propose`. By default the user's
+  **Auto-approve agent memories** setting (Settings -> Experimental,
+  `auto_approve_agent_memories`, on by default) saves a proposal as `active` right away;
+  when the user turns it off, proposals wait in `pending` for review. Check the returned
+  `status`. Propose only what you would want applied immediately.
+- Approval of a pending proposal is a HUMAN/operator action — there is no agent `ham-ctl memory approve` verb.
   A human reviews pending proposals in the Settings -> Memory UI, via `ham-ctl hub memories
   approve <id>` (hub/user token), or by accepting a Curator action card (a `memory.approve`
   operation). Approval flips the status to `active`; proposals can also be edited or rejected.
