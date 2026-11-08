@@ -268,7 +268,7 @@ placement_target_queued :: proc(svc: ^Service, ctx: ^Match_Context, fleet: domai
 		if busy, err := iface.agent_runtime_busy(svc.agents, inst.agent_instance_id); busy || err.code != .None { waiting += 1; continue }
 		if inst.stopped_by == agent.STOPPED_BY_USER do continue
 		if agent.failed_instance_disposition(inst, ctx.now_ms) == .Hold {
-			if werr, typed := agent.instance_last_error(inst); typed && werr.class == .retriable do waiting += 1
+			if _, retrying := agent.instance_auto_retry_due_ms(inst); retrying do waiting += 1
 		}
 	}
 	return waiting >= max(1, fleet.capacity)

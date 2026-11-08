@@ -45,6 +45,10 @@ test_budget_enforced_on_blocks_and_at_grant :: proc(t: ^testing.T) {
 	}
 	parked := get_task(fx, "task_1")
 	testing.expect(t, strings.contains(parked.blocked_on_json, "budget_exhausted"), "third block exhausts a budget of 3")
+	// F1: a spent budget parks the task for the coordinator, not the user
+	testing.expect(t, strings.contains(parked.blocked_on_json, `"kind":"coordinator"`), parked.blocked_on_json)
+	bkind, _ := user_attention(&fx.svc, parked)
+	testing.expect(t, bkind == .None, "budget_exhausted is not user attention")
 	// even after an `answered`, a direct grant is refused: the budget is spent
 	u3, _, _ := begin_uow(&fx.svc)
 	_, _, _, _ = record_event(&fx.svc, &u3, parked, hub_actor(), EV_ANSWERED, "{}")

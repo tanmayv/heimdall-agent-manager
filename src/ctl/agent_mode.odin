@@ -488,6 +488,12 @@ ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
 		tid := pos(tokens, 1)
 		if tid == "" { print_agent_help([]string{"task"}); return }
 		ctl_v2_task_action(endpoint, token, tid, args, "recheck", ctl_empty_object_body())
+	case "start-agent", "restart-agent":
+		// Coordinator/user (F1): start or restart the agent a task waits on
+		// (agent_not_running). Workers are refused by the hub.
+		tid := pos(tokens, 1)
+		if tid == "" { print_agent_help([]string{"task"}); return }
+		ctl_v2_task_action(endpoint, token, tid, args, "start-agent", ctl_empty_object_body())
 	case "fetch":
 		ctl_v2_task_fetch(endpoint, token, tokens, args)
 	case "readiness":
@@ -1960,9 +1966,9 @@ print_help_task_chain :: proc() {
 	fmt.println("  set-description <text> [--chain <id>] | --stdin   Set the chain description")
 	fmt.println("                                      (coordinator only; pass \"\" to clear).")
 	fmt.println("  summary set <text> [--chain <id>] | --stdin       Set/override the chain summary (<=60 lines, coordinator only).")
-	fmt.println("  propose --file <proposal.json> [--auto-approve] [--chain <id>]")
-	fmt.println("                                      Propose a ticket or workflow (creates draft tasks in one UoW;")
-	fmt.println("                                      --auto-approve publishes immediately when the user said 'go ahead').")
+	fmt.println("  propose --file <proposal.json> [--require-decision] [--chain <id>]")
+	fmt.println("                                      Propose a ticket or workflow. Auto-approves and publishes by default;")
+	fmt.println("                                      --require-decision keeps it pending until `decide`.")
 	fmt.println("  decide [<chain-id>] --decision approve|reject [--reason <text>]")
 	fmt.println("                                      Approve or reject a pending proposal on the chain.")
 	fmt.println("  set-status <active|cancelled|archived> [--chain <id>] Change chain status (coordinator only).")
@@ -2008,7 +2014,7 @@ print_help_task_chain :: proc() {
 	fmt.println("  ham-ctl task-chain show chain_abc")
 	fmt.println("  ham-ctl task-chain create --title 'Build feature' --coordinator agt_coord")
 	fmt.println("  ham-ctl task-chain summary set '# Chain summary' --chain chain_abc")
-	fmt.println("  ham-ctl task-chain propose --file proposal.json --auto-approve")
+	fmt.println("  ham-ctl task-chain propose --file proposal.json")
 	fmt.println("  ham-ctl task-chain fleet list chain_abc")
 	fmt.println("  ham-ctl task-chain fleet set chain_abc --agent agt_worker --capacity 4 --roles worker,reviewer --bridge brg_1 --provider claude --model sonnet")
 	fmt.println("  ham-ctl task-chain publish chain_abc")
@@ -2064,6 +2070,8 @@ print_help_task :: proc() {
 	fmt.println("                                          user-approval flag), readiness, dispatch and a done task's merge-back.")
 	fmt.println("                                          Never approves, never touches a live lease; a repeat is a no-op.")
 	fmt.println("                                          Prints {task, changed, actions[], reasons[], message}.")
+	fmt.println("  start-agent <task-id>                   Coordinator/owner: start or restart the agent a task waits on")
+	fmt.println("                                          (agent_not_running). Never clears a user's deliberate stop.")
 	fmt.println("  comments <task-id> [--last N]           Fetch comment bodies; --last N = newest N (max 100).")
 	fmt.println("  fetch <task-id> <ref>                   Fetch one event (#<event_id>), output (output:<task_id>),")
 	fmt.println("                                          facet (facet:<task_id>:<attempt_no>:<kind>), or file at commit")

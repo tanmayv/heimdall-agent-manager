@@ -2,6 +2,7 @@ package taskv2
 
 import "core:fmt"
 import "core:math/rand"
+import "core:strings"
 import "core:testing"
 import domain "odin_test:hub/domain"
 
@@ -181,6 +182,7 @@ test_fold_changes_requested_and_oscillation :: proc(t: ^testing.T) {
 		} else {
 			testing.expect_value(t, v2.state, domain.Task_State.Backlog)
 			testing.expect(t, v2.oscillating, "third round trips the oscillation guard")
+			testing.expect(t, strings.contains(v2.blocked_on_json, `"kind":"coordinator"`), "F1: oscillation parks for the coordinator")
 		}
 	}
 	append(&evs, ev(id, EV_ANSWERED))
@@ -340,4 +342,20 @@ test_fold_ready_infrastructure_block_preserves_handoff_budget :: proc(t: ^testin
 	testing.expect_value(t, view.attempt_no, 1)
 	testing.expect_value(t, view.counting_attempts, 1)
 	testing.expect_value(t, view.state, domain.Task_State.In_Progress)
+}
+
+// F1: the loop guards and a merge conflict park the task for the chain
+// coordinator (blocked_on kind coordinator), not the user's attention queue.
+@(test)
+test_fold_loop_guards_and_merge_conflict_block_on_coordinator :: proc(t: ^testing.T) {
+	merge := []domain.Task_Event{grant(1), ev(2, EV_SUBMITTED, `{"lease_id":"l1","attempt_no":1}`), ev(3, EV_APPROVED), ev(4, EV_MERGE_CONFLICT, `{"branch":"b"}`)}
+	mv := fold_task(merge, input_task())
+	testing.expect_value(t, mv.state, domain.Task_State.Backlog)
+	testing.expect(t, strings.contains(mv.blocked_on_json, `"kind":"coordinator"`) && strings.contains(mv.blocked_on_json, "merge_conflict"), mv.blocked_on_json)
+	held_task := domain.Task{state = .Backlog, blocked_on_json = mv.blocked_on_json}
+	ok, _ := blocked_on_user(held_task)
+	testing.expect(t, !ok, "a coordinator block is not user attention")
+	legacy := domain.Task{state = .Backlog, blocked_on_json = `{"kind":"human","reason":"budget_exhausted","since_ms":1}`}
+	lok, lbadge := blocked_on_user(legacy)
+	testing.expect(t, lok && lbadge == "budget_exhausted", "legacy human rows still reach the user")
 }

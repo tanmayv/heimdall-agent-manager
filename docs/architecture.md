@@ -327,10 +327,12 @@ Engine: [src/hub/service/taskv2](../src/hub/service/taskv2).
 - **Review gate.** `evaluate_gate_in_uow` ([gate.odin](../src/hub/service/taskv2/gate.odin)) evaluates the required review pairs
   ([review_pairs.odin](../src/hub/service/taskv2/review_pairs.odin)) and user approval. `changes_requested` is a gate *result*, not a task state:
   it records `EV_CHANGES_REQUESTED`, and the fold returns the task to `ready` (spending review-round budget), or parks it in `backlog`
-  with a human `oscillation` block after three rounds. Approval records `EV_APPROVED`, and the fold moves the task to `done`.
+  with a coordinator `oscillation` block (`blocked_on.kind=coordinator`, routed to the chain coordinator rather than the user's attention queue) after three rounds. Approval records `EV_APPROVED`, and the fold moves the task to `done`.
 - **Merge-back.** On done, `effect_merge_worktree` queues a `Merge_Effect`; `flush_merges` → `merge_job_run` → `run_merge`
   ([merge.odin](../src/hub/service/taskv2/merge.odin)) sends a merge command to the bridge that owns the task worktree
   (`task_worktree` in lease.odin names the per-task workdir and branch; bridge side: [agent_taskv2_vcs.odin](../src/bridge/agent_taskv2_vcs.odin)).
+  A conflict reopens the task: the first one since the last merge is answered automatically with a non-counting reconcile attempt
+  (`MERGE_AUTO_RECONCILE_MAX`); a repeat parks it with `blocked_on.kind=coordinator` for the chain coordinator.
 - **Timers.** Lease TTL, hard cap, unconfirmed grants, idle TTL, ready-unclaimed, stalled review/dependency, stale hold:
   [timers.odin](../src/hub/service/taskv2/timers.odin) (`fire_due`, run on `timer_thread_proc`).
 - **Unit of work and lock order.** Every mutation runs inside `begin_uow` / `end_uow` ([service.odin](../src/hub/service/taskv2/service.odin)),

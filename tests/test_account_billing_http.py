@@ -135,6 +135,8 @@ class AccountBillingHTTPTest(unittest.TestCase):
         self.addCleanup(self.stop_hub)
         self.env = {key: value for key, value in os.environ.items() if not key.startswith('HEIMDALL_PADDLE_') and key != 'HEIMDALL_BILLING_ENFORCE_PLAN_LIMITS'}
         self.env.update(HEIMDALL_PADDLE_WEBHOOK_SECRET='test_only_secret', HEIMDALL_PADDLE_HOBBYIST_PRICE_ID='pri_approved', HEIMDALL_PADDLE_ENVIRONMENT='sandbox')
+        # Plan limits are opt-in (F1): Paddle settings alone never enforce them.
+        self.env['HEIMDALL_BILLING_ENFORCE_PLAN_LIMITS'] = 'true'
         # Users sign in through the real OIDC browser flow against a mock provider.
         self.mock = MockOIDC.start()
         self.addCleanup(self.mock.stop)
@@ -424,8 +426,12 @@ class AccountBillingHTTPTest(unittest.TestCase):
             self.assertEqual(status, 200)
             return body['data']['entitlements']
 
-        # The webhook-only default is enforced even though checkout is disabled.
+        # Explicit enforcement applies even though checkout is disabled.
         self.assertEqual(entitlements()['max_bridges'], 1)
+        # F1: Paddle settings without the explicit flag do not enforce limits.
+        del self.env['HEIMDALL_BILLING_ENFORCE_PLAN_LIMITS']
+        restart()
+        self.assertEqual(entitlements()['max_bridges'], -1)
         self.env = {key: value for key, value in self.env.items() if not key.startswith('HEIMDALL_PADDLE_')}
         restart()
         self.assertEqual(entitlements(), {

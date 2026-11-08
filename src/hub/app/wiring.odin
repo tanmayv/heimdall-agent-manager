@@ -617,6 +617,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.card_handlers = http.Card_Handlers{auth = &graph.auth, cards = &graph.cards, clock = &graph.clock}
 	graph.issue_handlers = http.Issue_Handlers{auth = &graph.auth, issues = &graph.issues, clock = &graph.clock}
 	graph.agent_action_handlers.cards = &graph.cards
+	graph.agent_action_handlers.experiments = &graph.experiment_repo
 	graph.router = http.new_router()
 	// R4a: writes to an owner-held chain answer owner_authority before any handler.
 	graph.router.guard = http.owner_authority_guard
@@ -876,6 +877,8 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/release", rawptr(&graph.taskchain_handlers), http.hold_task_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/recheck", rawptr(&graph.taskchain_handlers), http.recheck_task_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/tasks/*/recheck", rawptr(&graph.taskchain_handlers), http.recheck_task_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/start-agent", rawptr(&graph.taskchain_handlers), http.start_task_agent_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/tasks/*/start-agent", rawptr(&graph.taskchain_handlers), http.start_task_agent_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/tasks/*/placement-recovery", rawptr(&graph.taskchain_handlers), http.recover_task_placement_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/placement-recovery", rawptr(&graph.taskchain_handlers), http.recover_task_placement_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/cards/*/placement-recovery", rawptr(&graph.card_handlers), http.recover_card_placement_handler)

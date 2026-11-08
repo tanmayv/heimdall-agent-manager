@@ -44,13 +44,13 @@ test_solo_coordinator_pulls_inline_and_is_never_woken_or_stopped :: proc(t: ^tes
 	chain := solo_chain(t, fx, "chain_solo_pull")
 	testing.expect(t, chain_is_solo(&fx.svc, chain), "worker row for the coordinator's agent → solo")
 	wake_log_reset(log)
-	task := publish_solo_task(t, fx, chain, "task_1", brief = `{"goal":"g","review_roles":[]}`)
+	task := publish_solo_task(t, fx, chain, "task_1", brief = `{"goal":"g","review_roles":[],"requires_user_approval":true}`)
 	testing.expect_value(t, task.state, domain.Task_State.Ready)
 	testing.expect(t, !wake_log_has_run(log, "inst_coord"), "the matcher never wake-grants the soloist")
 	_, held := lease_of(fx, "inst_coord")
 	testing.expect(t, !held, "no lease until the soloist pulls")
-	// REQ-SOLO-1a: no requires_user_approval in the brief → the user reviews
-	testing.expect(t, get_task(fx, "task_1").requires_user_approval, "solo default: requires_user_approval")
+	// REQ-SOLO-1a (F1): an explicit requires_user_approval is kept
+	testing.expect(t, get_task(fx, "task_1").requires_user_approval, "explicit requires_user_approval kept")
 	auth := inst_auth("inst_coord")
 	res, nok, nerr := lease_next(&fx.svc, auth, Lease_Next_Input{})
 	if !testing.expect(t, nok, fmt.tprintf("lease next: %s", nerr.message)) do return
@@ -68,6 +68,26 @@ test_solo_coordinator_pulls_inline_and_is_never_woken_or_stopped :: proc(t: ^tes
 	// an explicit value in the brief wins; only an absent key takes the solo default
 	testing.expect(t, !brief_user_approval(&fx.svc, chain, `{"goal":"g","requires_user_approval":false}`), "explicit false wins over the solo default")
 	testing.expect(t, brief_user_approval(&fx.svc, chain, `{"goal":"g","requires_user_approval":true}`), "explicit true kept")
+	testing.expect(t, !brief_user_approval(&fx.svc, chain, `{"goal":"g"}`), "F1: solo default is no user approval")
+}
+
+// F1: a solo task without an explicit requires_user_approval does not wait for
+// the user: with no review roles it is done on submit.
+@(test)
+test_solo_default_no_user_approval_completes_on_submit :: proc(t: ^testing.T) {
+	fx, log, ok := lease_fixture(t, "solo_default")
+	defer lease_fixture_close(fx, log)
+	if !ok do return
+	chain := solo_chain(t, fx, "chain_solo_default")
+	_ = publish_solo_task(t, fx, chain, "task_1", brief = `{"goal":"g","review_roles":[]}`)
+	testing.expect(t, !get_task(fx, "task_1").requires_user_approval, "solo default: no user approval")
+	auth := inst_auth("inst_coord")
+	res, nok, _ := lease_next(&fx.svc, auth, Lease_Next_Input{})
+	if !testing.expect(t, nok && res.status == "granted", "pulled") do return
+	sub, sok, serr := lease_submit(&fx.svc, auth, Submit_Input{summary = "done", vcs_json = GREEN_VCS})
+	if !testing.expect(t, sok, fmt.tprintf("submit: %s", serr.message)) do return
+	testing.expect(t, sub.outcome != "in_review", fmt.tprintf("no user review owed (outcome %s)", sub.outcome))
+	testing.expect(t, get_task(fx, "task_1").state != .In_Review, "not waiting on the user")
 }
 
 @(test)
@@ -173,13 +193,14 @@ test_solo_self_review_refused_and_request_changes_needs_reason :: proc(t: ^testi
 	defer lease_fixture_close(fx, log)
 	if !ok do return
 	chain := solo_chain(t, fx, "chain_solo_review")
-	_ = publish_solo_task(t, fx, chain, "task_1", brief = `{"goal":"g","review_roles":[]}`)
+	_ = publish_solo_task(t, fx, chain, "task_1", brief = `{"goal":"g","review_roles":[],"requires_user_approval":true}`)
 	auth := inst_auth("inst_coord")
 	res, nok, _ := lease_next(&fx.svc, auth, Lease_Next_Input{})
 	if !testing.expect(t, nok && res.status == "granted", "pulled") do return
 	_, sok, serr := lease_submit(&fx.svc, auth, Submit_Input{summary = "done", vcs_json = GREEN_VCS})
 	if !testing.expect(t, sok, fmt.tprintf("submit: %s", serr.message)) do return
-	// the soloist cannot approve on the user's behalf (REQ-SOLO-5)
+	// the soloist cannot approve on the user's behalf a task that explicitly
+	// requires user approval (REQ-SOLO-5)
 	_, rok, rerr := review_post(&fx.svc, auth, Review_Input{task_id = "task_1", verdict = "approve", on_behalf_of = "user"})
 	testing.expect(t, !rok && rerr.code == .Forbidden && strings.contains(rerr.details_json, "solo_self_review"), "solo self-review → 403")
 	testing.expect_value(t, get_task(fx, "task_1").state, domain.Task_State.In_Review)
@@ -218,4 +239,28 @@ test_implicit_solo_worker_row :: proc(t: ^testing.T) {
 	testing.expect(t, !dup, "no implicit row when the agent has a stored row")
 	_, nilsvc := implicit_solo_worker(nil, chain, nil)
 	testing.expect(t, !nilsvc, "nil service → none")
+}
+
+// F1: in solo mode the coordinator may record a verdict on the user's behalf
+// for a task that does not require user approval.
+@(test)
+test_solo_on_behalf_allowed_without_explicit_user_approval :: proc(t: ^testing.T) {
+	fx, log, ok := lease_fixture(t, "solo_obo")
+	defer lease_fixture_close(fx, log)
+	if !ok do return
+	chain := solo_chain(t, fx, "chain_solo_obo")
+	_ = publish_solo_task(t, fx, chain, "task_1", brief = `{"goal":"g","review_roles":[],"requires_user_approval":true}`)
+	auth := inst_auth("inst_coord")
+	res, nok, _ := lease_next(&fx.svc, auth, Lease_Next_Input{})
+	if !testing.expect(t, nok && res.status == "granted", "pulled") do return
+	_, sok, serr := lease_submit(&fx.svc, auth, Submit_Input{summary = "done", vcs_json = GREEN_VCS})
+	if !testing.expect(t, sok, fmt.tprintf("submit: %s", serr.message)) do return
+	testing.expect_value(t, get_task(fx, "task_1").state, domain.Task_State.In_Review)
+	// the user lifted the requirement while the task was in review
+	task := get_task(fx, "task_1")
+	task.requires_user_approval = false
+	_, _, _ = iface.taskchain_save_task(&fx.repo, task)
+	_, rok, rerr := review_post(&fx.svc, auth, Review_Input{task_id = "task_1", verdict = "approve", on_behalf_of = "user"})
+	testing.expect(t, rok, fmt.tprintf("solo on_behalf_of without explicit user approval accepted: %s", rerr.message))
+	testing.expect(t, get_task(fx, "task_1").state != .In_Review, "verdict applied")
 }

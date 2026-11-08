@@ -1060,11 +1060,12 @@ implicit_solo_worker :: proc(svc: ^Service, chain: domain.Task_Chain, fleets: []
 }
 
 // solo_default_user_approval (REQ-SOLO-1a): an explicit value wins (true or
-// false); when the brief/spec says nothing, a solo chain's tasks wait for the
-// user's review and other chains' do not.
+// false); when the brief/spec says nothing, no chain's tasks wait for the
+// user's review (solo included). The user opts a task in explicitly with
+// requires_user_approval; the soloist then cannot approve it on their behalf.
 solo_default_user_approval :: proc(svc: ^Service, chain: domain.Task_Chain, present, value: bool) -> bool {
 	if present do return value
-	return chain_is_solo(svc, chain)
+	return false
 }
 
 // brief_user_approval: solo_default_user_approval over a brief, telling an

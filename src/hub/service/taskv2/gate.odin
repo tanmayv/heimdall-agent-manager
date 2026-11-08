@@ -28,6 +28,12 @@ import jsonx "odin_test:lib/jsonx"
 // change and boot paths keep the plain cancel (F1).
 Gate_Result :: enum { Waiting, Approved, Changes_Requested, Rejected }
 
+// review_is_real_user_approve: the user's own approve on this attempt, not a
+// coordinator relay (reviewer_instance_id set).
+review_is_real_user_approve :: proc(r: domain.Task_Review, attempt_no: int) -> bool {
+	return r.attempt_no == attempt_no && r.verdict == "approve" && r.reviewer_kind == "user" && r.reviewer_instance_id == ""
+}
+
 gate_approver_policy :: proc(task: domain.Task) -> string {
 	approver := jsonx.extract_string(task.brief_json, "approver", "user_or_coordinator", true, context.temp_allocator)
 	if gate_obj, gok := jsonx.extract_raw_object(task.brief_json, "gate", true, context.temp_allocator); gok {
@@ -108,7 +114,9 @@ evaluate_gate_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, t
 	}
 	if task.requires_user_approval {
 		user_ok := false
-		for r in reviews do if r.attempt_no == task.attempt_no && r.verdict == "approve" && r.reviewer_kind == "user" { user_ok = true; break }
+		// Only the user's own verdict (no relaying instance) satisfies an explicit
+		// requires_user_approval (F1/B1); a coordinator's on-behalf relay does not.
+		for r in reviews do if review_is_real_user_approve(r, task.attempt_no) { user_ok = true; break }
 		if !user_ok {
 			effect_notify_coordinator(svc, u, task.chain_id, task.owner_user_id, "review_requested_from_user", fmt.tprintf("[taskv2] review_requested_from_user: task %s (%s) passed review gate and awaits user approval", task.task_id, task.title))
 			metric_gate_evaluated(.Waiting)
@@ -162,8 +170,10 @@ User_Attention :: enum { None, Review, Blocked }
 //              review_requested_from_user) and the user has not approved this
 //              attempt.
 //   Blocked  — blocked_on set and the user can resolve it: every system block
-//              (kind human, reason merge_conflict | budget_exhausted |
-//              oscillation | blocked) and any agent block except kind "task"
+//              still waiting on a human (kind human, reason blocked, and legacy
+//              merge_conflict | budget_exhausted | oscillation rows) and any
+//              agent block except kind "task" or kind "coordinator" (loop
+//              guards and merge conflicts go to the coordinator, F1)
 //              (cleared automatically, C3-2) and the v2 backfill of legacy
 //              paused tasks (reason paused_before_v2). `badge` is the reason for
 //              the three system ones, else "question". A held task is never
@@ -188,7 +198,7 @@ awaits_user_review :: proc(svc: ^Service, task: domain.Task) -> bool {
 		// A decision on this attempt is already in: request_changes moves the
 		// task on; the user's approve is waiting only on agents (or done).
 		if r.verdict == "request_changes" do return false
-		if r.verdict == "approve" && r.reviewer_kind == "user" do return false
+		if r.verdict == "approve" && r.reviewer_kind == "user" && (r.reviewer_instance_id == "" || !task.requires_user_approval) do return false
 	}
 	if task.kind == .Gate {
 		policy := gate_approver_policy(task)
@@ -209,6 +219,8 @@ blocked_on_user :: proc(task: domain.Task) -> (bool, string) {
 	// agent_not_running block (above; Start agent does not answer) stays
 	// actionable. Matches the attention candidate query, which skips holds.
 	if task_is_held(task) do return false, ""
+	// Loop guards and merge conflicts wait on the chain coordinator (F1).
+	if jsonx.extract_string(raw, "kind", "", true, context.temp_allocator) == "coordinator" do return false, ""
 	reason := jsonx.extract_string(raw, "reason", "", true, context.temp_allocator)
 	switch reason {
 	case "paused_before_v2": return false, ""
@@ -301,7 +313,7 @@ gate_unmet_components :: proc(svc: ^Service, task: domain.Task) -> ([]Gate_Unmet
 	reviews, rerr := iface.taskchain_list_reviews_by_task(svc.repo, task.task_id, task.owner_user_id)
 	if rerr.code != .None do return out[:], rerr
 	user_approved := false
-	for r in reviews do if r.attempt_no == task.attempt_no && r.verdict == "approve" && r.reviewer_kind == "user" { user_approved = true; break }
+	for r in reviews do if review_is_real_user_approve(r, task.attempt_no) { user_approved = true; break }
 	if task.kind == .Gate {
 		if !user_approved do append(&out, Gate_Unmet{kind = "user_approval", role = gate_approver_policy(task)})
 		return out[:], domain.Domain_Error{}

@@ -20,7 +20,7 @@ test('uses the stable actions key shared with the hub', () => {
 
 test('Settings > Experimental lists an Actions toggle and keeps existing toggles', () => {
   const keys = EXPERIMENTAL_FLAGS.map((f) => f.key);
-  assert.deepEqual(keys, ['lsp', 'streaming_terminal_pane', PROJECT_VCS_EXPERIMENT_KEY, ACTIONS_EXPERIMENT_KEY]);
+  assert.deepEqual(keys, ['lsp', 'streaming_terminal_pane', PROJECT_VCS_EXPERIMENT_KEY, ACTIONS_EXPERIMENT_KEY, 'auto_approve_agent_memories']);
   assert.equal(new Set(keys).size, keys.length, 'toggle keys are unique');
   const actions = EXPERIMENTAL_FLAGS.find((f) => f.key === ACTIONS_EXPERIMENT_KEY);
   assert.equal(actions?.label, 'Actions');

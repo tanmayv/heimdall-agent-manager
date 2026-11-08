@@ -73,11 +73,11 @@ cat > proposal.json <<'EOF'
   ]
 }
 EOF
-./bin/ham-ctl task-chain propose --file proposal.json [--auto-approve]
+./bin/ham-ctl task-chain propose --file proposal.json [--require-decision]
 ./bin/ham-ctl task-chain decide <chain-id> --decision approve|reject [--reason <text>]
 ```
 - Per-task fields: `id`, `title`, `description`, `priority`, `depends_on`, `brief`. **Put `assignee`, `reviewers` and `requires_user_approval` inside `brief`**; top-level copies are ignored.
-- Without `--auto-approve` the proposal waits for an explicit decision. Existing work continues.
+- Proposals auto-approve by default: briefs are validated and tasks publish (or the workflow starts) at once. Pass `--require-decision` when the user wants to see the plan first; the proposal then waits for `task-chain decide`. Existing work continues.
 - Single tasks: `task create --title … --goal … --acceptance … (repeat) [--assignee agt_…] [--reviewer agt_…] [--review-role <role>] [--require-user-approval] [--input <ref>] [--depends-on <ids>]`, then `task publish <task-id>` or `task-chain publish <chain-id>`.
 - Publish refuses incomplete briefs with `422 brief_incomplete` listing what is missing per task, including `review_role:<r>` when no fleet row holds a role the brief asks for.
 
@@ -120,14 +120,14 @@ Routine events stay quiet. You get one line, `[taskv2] <trigger>: …`, only whe
 |---|---|
 | `proposal_decided` (approved / rejected) | approved: tasks are dispatching, keep the user posted. Rejected: read the reason, revise, propose again |
 | `blocked_on human` | a worker ran `lease block --waiting-on user`. Read the question (`task show <id>`), ask the user with `chat send --questions-file <questions.json>` for a set of questions, or `--options` for one simple choice. Their answer (given in the task's UI) re-readies the task and appears in the worker's `TASK.md` |
-| `budget_exhausted` | read the attempts (`task fetch <id> facet:<id>:<n>:handoff`), then sharpen or split the brief (`task update`) or `workflow retry` |
-| `oscillation` | review rounds keep bouncing: read the open findings (`task show`) and the handoff, make `acceptance` unambiguous |
+| `budget_exhausted` | the task is parked on YOU (`blocked_on.kind=coordinator`), not in the user's queue. Read the attempts (`task fetch <id> facet:<id>:<n>:handoff`), then sharpen or split the brief (`task update`) and `task unblock <id>`, or `workflow retry`; ask the user only if you cannot resolve it |
+| `oscillation` | parked on you (`blocked_on.kind=coordinator`): review rounds keep bouncing: read the open findings (`task show`) and the handoff, make `acceptance` unambiguous, then `task unblock <id>` |
 | `hold_stale` | a task you (or the user) held has had no live lease for a while. If the hold's reason is resolved, `task release <id>`; otherwise leave it held. Repeats once per interval until released |
 | `ready_unclaimed` | no eligible worker: check `task-chain fleet list` and `bridge list`, fix capacity, roles or bridge |
-| `agent_not_running` | A ready task cannot obtain a running agent, or a leased holder exited/lost its heartbeat. `task show <id>` shows `blocked_on.kind=agent_not_running` (legacy `dispatch` is equivalent), with agent/provider/model/bridge/error. The user can choose **Start agent** in the attention deck or chat tray; a failed start stays blocked and shows its error inline for retry. Fix the cause, then use the card or `task unblock <id> [--note <reason>]`; editing the affected fleet row also clears the block. No work attempt budget is spent. Full fleet rows remain queued without blocking |
+| `agent_not_running` | A ready task cannot obtain a running agent, or a leased holder exited/lost its heartbeat. `task show <id>` shows `blocked_on.kind=agent_not_running` (legacy `dispatch` is equivalent), with agent/provider/model/bridge/error. Recoverable launch failures are retried automatically (30s, 2m, 5m) before the agent is parked; fatal ones park at once. You can restart it yourself with `task start-agent <id>` (a user's deliberate stop is never cleared by you), or the user can choose **Start agent** in the attention deck or chat tray; a failed start stays blocked and shows its error inline for retry. Fix the cause, then use the card or `task unblock <id> [--note <reason>]`; editing the affected fleet row also clears the block. No work attempt budget is spent. Full fleet rows remain queued without blocking |
 | stuck `ready` / `in_review` / merge | A task looks stuck: `ready_unclaimed` with free fleet capacity, `in_review` although every owed review is in (e.g. after `--no-require-user-approval`), or a done task whose merge is `pending`/`failed`/`none`. Run `task recheck <id>`: it re-runs the gate, readiness, dispatch and merge-back without approving or touching a live lease, and its `reasons` name what still holds (waiting reviewer, `fleet full n/m`, bridge offline, directory without git). Prefer it to `task hold` + `task release`, which also asks a lease holder to checkpoint (see §5 "Pausing vs deferring") |
 | `review_requested_from_user` | summarise the evidence and point the user to the existing task review UI; if they explicitly decide in chat, record their verdict (§6). No task approval action card is required |
-| `merge_conflict` / `merge_failed` | a done task's branch did not merge; the task returns to its worker with a Merge Conflict section. For `merge_failed` (merge never ran, e.g. bridge offline) check the bridge |
+| `merge_conflict` / `merge_failed` | a done task's branch did not merge. The first conflict starts a reconcile attempt automatically (the task returns to its worker with a Merge Conflict section); a repeat conflict parks it on you (`blocked_on.kind=coordinator`): inspect, then `task unblock <id>` to retry the reconcile. For `merge_failed` (merge never ran, e.g. bridge offline) check the bridge |
 | `gate_rejected` | a workflow gate was rejected: inspect the feedback, talk to the user, and retry the whole run if appropriate |
 | `summary_overflow` | inspect the reported context materialization/storage failure and retry after recovery; summary set only edits curated notes |
 | `work_batch_finished` / `workflow_complete` | assess the goal; add more work or explicitly complete the chain |
@@ -148,12 +148,12 @@ Rules: never hold a task just to postpone it, and never hold when the user's inp
 
 ## 6. Recording the user's verdict
 - Workflow gates with approver `user_or_coordinator`: your own `review post --verdict approve|request_changes` decides.
-- Tasks with `requires_user_approval` and gates with approver `user`: retain the explicit review gate and use the existing task review UI. When the user explicitly decides in chat, record that verdict for them:
+- Tasks with `requires_user_approval` and gates with approver `user` need the user's OWN approval in Heimdall (attention deck / task review UI). The hub refuses a relayed approval (`403 user_approval_required`), ignores relayed rows at the gate, and refuses any agent attempt to clear `requires_user_approval` or move an approver off `user` (`403 user_approval_ratchet`; only the user can). When the user asks for changes in chat, you may still relay that:
   ```bash
-  ./bin/ham-ctl review post <task-id> --verdict approve --on-behalf-of user
   ./bin/ham-ctl review post <task-id> --verdict request_changes --on-behalf-of user \
     --summary "<the user's reason>"
   ```
+- Unflagged tasks: when the user explicitly decides in chat you may record it with `review post <task-id> --verdict approve|request_changes --on-behalf-of user`.
   The user can also approve directly from their attention deck. Do not create or attach a `task.review` action card as a required step. Never infer task approval from a question-answer selection or silence; wait for an explicit review decision. Unrelated action-card operations, such as memory approval, remain available.
 
 ## 7. Closing and out-of-scope defects
@@ -170,8 +170,8 @@ Rules: never hold a task just to postpone it, and never hold when the user's inp
 ## 8. Solo mode
 The chain is solo when you are the Soloist or hold a worker fleet row yourself. Then:
 - You pull work with `lease next` (nothing is pushed), work it per `worker-task-management`, and `lease submit`. Lapsed leases are not counted as attempts.
-- New tasks default to `requires_user_approval`; the user reviews from their attention deck. To opt a task out: `task update <id> --no-require-user-approval`.
-- You never review your own work (`403 solo_self_review`).
+- New tasks do NOT default to `requires_user_approval`; a task with no review roles is done on submit. Add `--require-user-approval` when the user wants to review a task; they then review it from their attention deck. On Bridge-owned (owner-local) chains only the user can remove an explicit `requires_user_approval`; `--no-require-user-approval` from an agent is refused there.
+- You may post `review post --on-behalf-of user` for a task that does not require user approval; for one that does, only the user's own verdict counts (`403 solo_self_review`), and you cannot clear the flag yourself.
 - `[taskv2] solo: task … is ready for you` means pull it with `lease next`.
 - Urgent request mid-task: create the task, then `lease switch <task_id> --summary "<where you left off>"`.
 

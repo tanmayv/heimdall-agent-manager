@@ -46,7 +46,7 @@ soloist_template :: proc() -> domain.Template { t, _ := domain.builtin_template(
 empty_template :: proc() -> domain.Template { t, _ := domain.builtin_template(domain.TEMPLATE_EMPTY_ID); return t }
 
 Content_Service :: struct { agent_configuration_service: ^agent_service.Agent_Service, content: ^iface.Content_Repository, agents: ^iface.Agent_Repository, bridges: ^iface.Bridge_Repository, projects: ^iface.Project_Repository, taskchains: ^iface.Taskchain_Repository, bridge_command_sink: project_service.Bridge_Command_Sink, clock: ^platform.Clock, ids: ^platform.ID_Generator, title_nudge_cooldown_seconds: int, audit_mode: bool, attention: ^contracts.Attention_Notifier }
-Memory_Input :: struct { title,description,body,evidence,status,expires_at: string, proposed_by_instance_id,proposed_in_chain_id: string, agent_ids,template_ids,bridge_ids: []string, project_ids: []domain.Project_ID, type: domain.Memory_Type }
+Memory_Input :: struct { title,description,body,evidence,status,expires_at: string, proposed_by_instance_id,proposed_in_chain_id: string, auto_approved: bool, agent_ids,template_ids,bridge_ids: []string, project_ids: []domain.Project_ID, type: domain.Memory_Type }
 Memory_Update_Input :: struct {
 	title:            string,
 	description:      string,
@@ -115,6 +115,8 @@ create_memory :: proc(s:^Content_Service, auth:contracts.Auth_Context, input:Mem
 		}
 	}
 	m:=domain.Memory{memory_id=platform.generate_id(s.ids,"mem_"),owner_user_id=owner,agent_ids=input.agent_ids,project_ids=input.project_ids,template_ids=input.template_ids,bridge_ids=input.bridge_ids,type=typ,status=status,title=input.title,description=input.description,body=input.body,evidence=input.evidence,expires_at=expires_at,created_at=now,updated_at=now,proposed_by_instance_id=input.proposed_by_instance_id,proposed_in_chain_id=input.proposed_in_chain_id};
+	// F1 audit: an agent proposal approved by the owner's setting, not a person.
+	if input.auto_approved && status=="active" do m.auto_approved_at=now
 	return save_memory(s,m)
 }
 

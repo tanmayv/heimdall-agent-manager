@@ -225,7 +225,7 @@ arm_task_timers :: proc(svc: ^Service, task: domain.Task) {
 	if task.state == .Ready && task.ready_since != "" {
 		timers_arm(svc, .Ready_Unclaimed, string(task.task_id), to_ms(task.ready_since) + READY_UNCLAIMED_SECONDS * 1000, task.ready_since)
 	}
-	if task.blocked_on_json != "" && strings.contains(task.blocked_on_json, `"human"`) {
+	if task.blocked_on_json != "" && (strings.contains(task.blocked_on_json, `"human"`) || strings.contains(task.blocked_on_json, `"kind":"coordinator"`)) {
 		timers_arm(svc, .Blocked_Realert, string(task.task_id), now_ms(svc.clock) + BLOCKED_REALERT_SECONDS * 1000, task.blocked_on_json)
 	}
 	if task.state == .Done && task.kind == .Task && task.stage_key == "" {
@@ -614,7 +614,12 @@ fire_blocked_realert :: proc(svc: ^Service, u: ^Uow, t: Timer) -> Fire_Result {
 	json_raw(&p, "blocked_on", task.blocked_on_json)
 	if _, aok, _ := append_event(svc.repo, svc.clock, task, hub_actor(), EV_BLOCKED_REALERT, json_end(&p)); !aok do return .Failed
 	effect_publish_task(u, task, "blocked_realert")
-	effect_notify_coordinator(svc, u, task.chain_id, task.owner_user_id, "blocked_on human", fmt.tprintf("[taskv2] blocked_on human: task %s (%s) still waiting on human input", task.task_id, task.title))
+	if jsonx.extract_string(task.blocked_on_json, "kind", "", true, context.temp_allocator) == "coordinator" {
+		reason := jsonx.extract_string(task.blocked_on_json, "reason", "", true, context.temp_allocator)
+		effect_notify_coordinator(svc, u, task.chain_id, task.owner_user_id, "blocked_on coordinator", fmt.tprintf("[taskv2] blocked_on coordinator: task %s (%s) still parked (%s) — re-plan, `task unblock`, or ask the user", task.task_id, task.title, reason))
+	} else {
+		effect_notify_coordinator(svc, u, task.chain_id, task.owner_user_id, "blocked_on human", fmt.tprintf("[taskv2] blocked_on human: task %s (%s) still waiting on human input", task.task_id, task.title))
+	}
 	timers_arm(svc, .Blocked_Realert, string(task.task_id), now_ms(svc.clock) + BLOCKED_REALERT_SECONDS * 1000, task.blocked_on_json)
 	return .Acted
 }

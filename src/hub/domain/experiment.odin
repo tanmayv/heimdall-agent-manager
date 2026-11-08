@@ -8,8 +8,15 @@ STREAMING_TERMINAL_PANE_EXPERIMENT_KEY :: "streaming_terminal_pane"
 // VCS views). Projects management itself is not experimental.
 PROJECT_VCS_EXPERIMENT_KEY :: "project_vcs"
 // ACTIONS_EXPERIMENT_KEY gates scheduled and on-demand Actions (REQ-EXP-GATE-1).
-// Off until the user enables it; existing users are never auto-enabled.
+// On by default (F1); a user who turned it off keeps it off (stored row wins).
 ACTIONS_EXPERIMENT_KEY :: "actions"
+// LSP_EXPERIMENT_KEY gates Language Server Protocol support. On by default (F1).
+LSP_EXPERIMENT_KEY :: "lsp"
+// AUTO_APPROVE_AGENT_MEMORIES_KEY is a per-user setting stored with the
+// experiment flags (same owner-scoped, user-controlled key/value store): when on,
+// memories an agent proposes are saved approved (active) instead of pending.
+// On by default (F1); the user turns it off in Settings.
+AUTO_APPROVE_AGENT_MEMORIES_KEY :: "auto_approve_agent_memories"
 
 // EXPERIMENTAL_FEATURE_DISABLED_CODE is error.details.code on the 403 a gated route
 // answers while the owner's flag is off (REQ-EXP-GATE-3). error.code stays "forbidden".
@@ -18,7 +25,7 @@ EXPERIMENTAL_FEATURE_DISABLED_CODE :: "experimental_feature_disabled"
 // EXPERIMENTS_DEFAULT_ON are experiments a user gets when they have never set them.
 // Every other key is off until enabled. A stored row always wins, so turning one of
 // these off in Settings -> Experimental is respected.
-EXPERIMENTS_DEFAULT_ON :: [?]string{STREAMING_TERMINAL_PANE_EXPERIMENT_KEY}
+EXPERIMENTS_DEFAULT_ON :: [?]string{STREAMING_TERMINAL_PANE_EXPERIMENT_KEY, PROJECT_VCS_EXPERIMENT_KEY, ACTIONS_EXPERIMENT_KEY, LSP_EXPERIMENT_KEY, AUTO_APPROVE_AGENT_MEMORIES_KEY}
 
 // experiment_default_enabled is the value of `key` for a user with no stored row.
 experiment_default_enabled :: proc(key: string) -> bool {
@@ -46,6 +53,8 @@ experiment_feature_label :: proc(key: string) -> string {
 	case PROJECT_VCS_EXPERIMENT_KEY: return "Project Explorer"
 	case ACTIONS_EXPERIMENT_KEY:     return "Actions"
 	case STREAMING_TERMINAL_PANE_EXPERIMENT_KEY: return "Streaming Terminal Pane"
+	case LSP_EXPERIMENT_KEY:         return "Language Server Protocol (LSP) support"
+	case AUTO_APPROVE_AGENT_MEMORIES_KEY: return "Auto-approve agent memories"
 	}
 	return key
 }

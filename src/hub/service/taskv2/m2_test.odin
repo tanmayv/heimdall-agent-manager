@@ -163,7 +163,11 @@ test_oscillation_guard_parks_after_three_rounds :: proc(t: ^testing.T) {
 	}
 	parked := get_task(fx, "task_1")
 	testing.expect_value(t, parked.state, domain.Task_State.Backlog)
-	testing.expect(t, strings.contains(parked.blocked_on_json, "oscillation"), "oscillation guard → blocked_on human")
+	testing.expect(t, strings.contains(parked.blocked_on_json, "oscillation"), "oscillation guard → blocked_on coordinator")
+	// F1: routed to the coordinator, not the user's attention queue
+	testing.expect(t, strings.contains(parked.blocked_on_json, `"kind":"coordinator"`), parked.blocked_on_json)
+	okind, _ := user_attention(&fx.svc, parked)
+	testing.expect(t, okind == .None, "oscillation is not user attention")
 	_, held := lease_of(fx, "inst_w1")
 	testing.expect(t, !held, "no grant while parked")
 	// the human answers → ready again → granted, and oscillation counter resets (M2-m2)
@@ -462,22 +466,16 @@ test_m3_r1_r2_r3_end_to_end :: proc(t: ^testing.T) {
 	})
 	if !testing.expect(t, sok2 && sub2.outcome == "in_review", fmt.tprintf("submit t_indep: %s", serr2.message)) do return
 
-	// R3: coordinator proxy review on_behalf_of="user" approves, records actor_kind="coordinator", and — with no command gate — completes the task
-	rev_res, rok, rerr := review_post(&fx.svc, inst_auth("inst_coord"), Review_Input{
+	// R3 (F1/B1): requires_user_approval needs the user's OWN approval — a
+	// coordinator proxy approval is refused; the user's review completes it.
+	_, rok, rerr := review_post(&fx.svc, inst_auth("inst_coord"), Review_Input{
 		task_id      = string(t_indep.task_id),
 		verdict      = "approve",
 		on_behalf_of = "user",
 	})
-	if !testing.expect(t, rok && rev_res.gate == .Approved, fmt.tprintf("proxy review: %s", rerr.message)) do return
-	indep_evs, _ := iface.taskchain_list_events_by_task(&fx.repo, t_indep.task_id, "u1")
-	found_coord_rev := false
-	for ev in indep_evs {
-		if ev.kind == EV_REVIEW_POSTED && ev.actor_kind == ACTOR_COORDINATOR && strings.contains(ev.payload_json, `"on_behalf_of":"user"`) {
-			found_coord_rev = true
-		}
-	}
-	testing.expect(t, found_coord_rev, "proxy review event records actor_kind == coordinator and on_behalf_of == user")
-
+	testing.expect(t, !rok && rerr.code == .Forbidden && strings.contains(rerr.details_json, "user_approval_required"), "proxy approval of a flagged task refused")
+	_, uok, uerr := user_review(&fx.svc, user_auth(), t_indep.task_id, Review_Input{verdict = "approve"})
+	if !testing.expect(t, uok, fmt.tprintf("user review: %s", uerr.message)) do return
 	testing.expect_value(t, get_task(fx, string(t_indep.task_id)).state, domain.Task_State.Done)
 	// Settle the last bridge merge before expecting the batch-finished notice.
 	final_uow, final_began, _ := begin_uow(&fx.svc)

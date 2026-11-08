@@ -577,21 +577,21 @@ fake_experiment_repo :: proc(f: ^Fake_Experiments) -> iface.Experiment_Repositor
 }
 
 @(test)
-test_lsp_experiment_gate_defaults_closed :: proc(t: ^testing.T) {
-	// Flag absent entirely => off. A new user must not get the feature by default.
+test_lsp_experiment_gate_defaults_open :: proc(t: ^testing.T) {
+	// F1: flag absent entirely => on (default-on); the user can still turn it off.
 	absent := Fake_Experiments{present = false}
 	repo_absent := fake_experiment_repo(&absent)
-	testing.expect(t, !lsp_experiment_enabled(&repo_absent, "user_a"), "absent flag must read as off")
+	testing.expect(t, lsp_experiment_enabled(&repo_absent, "user_a"), "absent flag reads as the default (on)")
 
 	// Present but disabled => off.
 	off := Fake_Experiments{key = "lsp", enabled = false, present = true}
 	repo_off := fake_experiment_repo(&off)
 	testing.expect(t, !lsp_experiment_enabled(&repo_off, "user_a"))
 
-	// A DIFFERENT enabled experiment must not open the lsp gate.
-	other := Fake_Experiments{key = "something_else", enabled = true, present = true}
+	// A DIFFERENT disabled experiment must not close the lsp gate.
+	other := Fake_Experiments{key = "something_else", enabled = false, present = true}
 	repo_other := fake_experiment_repo(&other)
-	testing.expect(t, !lsp_experiment_enabled(&repo_other, "user_a"), "another flag must not enable lsp")
+	testing.expect(t, lsp_experiment_enabled(&repo_other, "user_a"), "another flag must not affect lsp")
 
 	// Present and enabled => on.
 	on := Fake_Experiments{key = "lsp", enabled = true, present = true}

@@ -1,6 +1,7 @@
 package http
 
 import "core:fmt"
+import "core:log"
 import "core:time"
 import "core:strings"
 import "core:strconv"
@@ -9,6 +10,7 @@ import "core:unicode/utf8"
 import internal_b64 "core:encoding/base64"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
+import iface "odin_test:hub/repository/iface"
 import auth_service "odin_test:hub/service/auth"
 import agent_service "odin_test:hub/service/agent"
 import bridge_service "odin_test:hub/service/bridge"
@@ -40,6 +42,31 @@ Agent_Action_Handlers :: struct {
 	// task_engine: Task System v2 lease verbs + implicit heartbeat on every
 	// instance-token call. nil in unit tests that do not exercise leases.
 	task_engine: ^taskv2.Service,
+	// experiments: the owner's flag/setting store; read for
+	// auto_approve_agent_memories. nil → proposals stay pending.
+	experiments: ^iface.Experiment_Repository,
+}
+
+// agent_memory_proposal_status: "active" (approved) when the owner's
+// auto_approve_agent_memories setting is on (default on, F1) AND the memory
+// targets only the proposing agent itself (every agent_ids entry is that
+// agent; other dimensions only narrow it further). A memory that would reach
+// other agents, or every agent, stays "pending" for the user. A missing or
+// failing store keeps the safe pending default.
+agent_memory_proposal_status :: proc(repo: ^iface.Experiment_Repository, owner_user_id: string, proposer_agent_id := "", agent_ids: []string = nil) -> string {
+	if repo == nil || owner_user_id == "" || proposer_agent_id == "" || len(agent_ids) == 0 do return "pending"
+	for id in agent_ids do if id != proposer_agent_id do return "pending"
+	exps, err := iface.experiment_list_by_owner(repo, owner_user_id)
+	defer {
+		for exp in exps {
+			delete(exp.owner_user_id)
+			delete(exp.key)
+			delete(exp.updated_at)
+		}
+		delete(exps)
+	}
+	if err.code != .None do return "pending"
+	return "active" if domain.experiment_enabled_in(exps[:], domain.AUTO_APPROVE_AGENT_MEMORIES_KEY) else "pending"
 }
 
 // Lease_Next_Wire is the `lease.next` response: status ∈ granted|current|none.
@@ -526,7 +553,14 @@ agent_action_chain_summary_handler :: proc(ctx: rawptr, req: Request) -> Respons
 	return respond_success(taskv2.json_end(&o), req.request_id, auth_ctx_server_time(req), 200)
 }
 
-// POST /api/v1/agent-actions/chain/propose  params: {chain_id?, tasks?:[...], kind?, rationale?, alternative?, auto_approve?, summary?}
+agent_propose_auto_approve :: proc(params: string) -> bool {
+	if jsonx.extract_bool(params, "require_decision", false, true) do return false
+	return jsonx.extract_bool(params, "auto_approve", true, true)
+}
+
+// POST /api/v1/agent-actions/chain/propose  params: {chain_id?, tasks?:[...], kind?, rationale?, alternative?, auto_approve?, require_decision?, summary?}
+// Agent proposals auto-approve by default (F1); `require_decision: true` (or
+// an explicit `auto_approve: false`) keeps the proposal pending for a decide.
 agent_action_chain_propose_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Action_Handlers)(ctx)
 	auth, inst, ok, resp := require_instance_action_auth(h, req)
@@ -541,7 +575,7 @@ agent_action_chain_propose_handler :: proc(ctx: rawptr, req: Request) -> Respons
 	rationale := json_string(params, "rationale")
 	if rationale == "" do rationale = json_string(params, "summary")
 	alternative := json_string(params, "alternative")
-	auto_approve := jsonx.extract_bool(params, "auto_approve", false, true)
+	auto_approve := agent_propose_auto_approve(params)
 	wf_ref := json_string(params, "workflow")
 	if wf_ref == "" do wf_ref = json_string(params, "template")
 	if wf_ref == "" do wf_ref = json_string(params, "workflow_ref")
@@ -1175,8 +1209,12 @@ agent_action_memory_propose_handler :: proc(ctx: rawptr, req: Request) -> Respon
 	project_ids := json_project_id_array(params, "project_ids")
 	template_ids := json_string_array(params, "template_ids")
 	bridge_ids := json_string_array(params, "bridge_ids")
-	mem, saved, err := content_service.create_memory(h.content, auth, content_service.Memory_Input{agent_ids = agent_ids, project_ids = project_ids, template_ids = template_ids, bridge_ids = bridge_ids, type = domain.memory_type_from_string(json_string(params, "type")), title = json_string(params, "title"), description = json_string(params, "description"), body = json_string(params, "body"), evidence = json_string(params, "evidence"), status = "pending", expires_at = json_string(params, "expires_at"), proposed_by_instance_id = inst.agent_instance_id, proposed_in_chain_id = inst.chain_id})
+	status := agent_memory_proposal_status(h.experiments, string(inst.owner_user_id), inst.agent_id, agent_ids)
+	mem, saved, err := content_service.create_memory(h.content, auth, content_service.Memory_Input{auto_approved = status == "active", agent_ids = agent_ids, project_ids = project_ids, template_ids = template_ids, bridge_ids = bridge_ids, type = domain.memory_type_from_string(json_string(params, "type")), title = json_string(params, "title"), description = json_string(params, "description"), body = json_string(params, "body"), evidence = json_string(params, "evidence"), status = status, expires_at = json_string(params, "expires_at"), proposed_by_instance_id = inst.agent_instance_id, proposed_in_chain_id = inst.chain_id})
 	if !saved do return respond_error(err, req.request_id)
+	if mem.auto_approved_at != "" {
+		log.infof("memory %s auto-approved (auto_approve_agent_memories) for agent %s, proposed by %s", mem.memory_id, inst.agent_id, inst.agent_instance_id)
+	}
 	publish_agent_action(h, inst, "memory_propose", fmt.tprintf("proposed memory \"%s\"", mem.title))
 	b := strings.builder_make()
 	write_memory_json(&b, mem, false)

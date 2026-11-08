@@ -130,11 +130,8 @@ test_entitlements_partial_paddle_config_and_explicit_enforcement_overrides :: pr
 	service := fixture_setup(&fixture, &repo, &clock)
 	defer service_free(&service)
 	configs := []Config{
-		{webhook_secret = "webhook_only"},
-		{api_key = "api_only"},
-		{client_token = "client_only"},
-		{hobbyist_price_id = "price_only"},
 		{enforce_plan_limits = true},
+		{webhook_secret = "webhook_only", enforce_plan_limits = true},
 	}
 	for config in configs {
 		service.config = config
@@ -148,6 +145,12 @@ test_entitlements_partial_paddle_config_and_explicit_enforcement_overrides :: pr
 	service.config = {environment = "sandbox", past_due_grace_seconds = 86400}
 	unconfigured, _ := effective_entitlements(&service, "alice")
 	testing.expect_value(t, unconfigured, domain.unlimited_entitlements())
+	// F1: Paddle credentials alone never enable limits; only the explicit flag does.
+	for paddle_only in ([]Config{{webhook_secret = "webhook_only"}, {api_key = "api_only"}, {client_token = "client_only"}, {hobbyist_price_id = "price_only"}, {environment = "live", api_key = "key", client_token = "token", webhook_secret = "secret", hobbyist_price_id = "price"}}) {
+		service.config = paddle_only
+		unlimited, _ := effective_entitlements(&service, "alice")
+		testing.expect_value(t, unlimited, domain.unlimited_entitlements())
+	}
 	service.config = {webhook_secret = "partial", enforce_plan_limits = false}
 	opted_out, _ := effective_entitlements(&service, "alice")
 	testing.expect_value(t, opted_out, domain.unlimited_entitlements())

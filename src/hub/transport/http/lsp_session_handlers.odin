@@ -44,7 +44,7 @@ import ws "odin_test:lib/ws"
 
 
 // LSP_EXPERIMENT_KEY gates the whole feature (REQ-EXP-1).
-LSP_EXPERIMENT_KEY :: "lsp"
+LSP_EXPERIMENT_KEY :: domain.LSP_EXPERIMENT_KEY
 
 // LSP_IDLE_TIMEOUT bounds a silent socket. It is far longer than the shell
 // stream's 120s because an editor can legitimately sit idle with a language
@@ -488,7 +488,7 @@ Lsp_Session_Stream_Handlers :: struct {
 
 // lsp_experiment_enabled reports the "lsp" flag for this user. The experiment
 // repository exposes only set and list_by_owner — there is no get-by-key — so the
-// owner's flags are listed and scanned. Absent means off.
+// owner's flags are listed and scanned. Absent means the default (on).
 lsp_experiment_enabled :: proc(repo: ^iface.Experiment_Repository, owner_user_id: string) -> bool {
 	exps, err := iface.experiment_list_by_owner(repo, owner_user_id)
 	if err.code != .None do return false
@@ -500,10 +500,8 @@ lsp_experiment_enabled :: proc(repo: ^iface.Experiment_Repository, owner_user_id
 		}
 		delete(exps)
 	}
-	for exp in exps {
-		if exp.key == LSP_EXPERIMENT_KEY do return exp.enabled
-	}
-	return false
+	// A stored row wins; otherwise the default (on, F1).
+	return domain.experiment_enabled_in(exps[:], LSP_EXPERIMENT_KEY)
 }
 
 // lsp_resolve_server picks the configured server for (bridge, language, file_path)

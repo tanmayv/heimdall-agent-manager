@@ -232,6 +232,18 @@ test_m3_ctl_params :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(prop_p, `"tasks":[{"title":"New"}]`), "tasks carried from proposal file")
 	testing.expect(t, strings.contains(prop_p, `"auto_approve":true`), "auto_approve appended")
 
+	// 5b. F1: proposals auto-approve by default; --require-decision (or the
+	// file's require_decision / auto_approve:false) opts in to a pending decision.
+	def_p, def_ok := ctl_v2_task_chain_propose_params([]string{"ham-ctl", "task-chain", "propose", "--file", "p.json"}, `{"tasks":[{"title":"New"}]}`)
+	defer delete(def_p)
+	testing.expect(t, def_ok && strings.contains(def_p, `"auto_approve":true`) && !strings.contains(def_p, "require_decision"), "default proposal auto-approves")
+	req_p, req_ok := ctl_v2_task_chain_propose_params([]string{"ham-ctl", "task-chain", "propose", "--file", "p.json", "--require-decision"}, `{"tasks":[{"title":"New"}]}`)
+	defer delete(req_p)
+	testing.expect(t, req_ok && strings.contains(req_p, `"require_decision":true`) && !strings.contains(req_p, "auto_approve"), "--require-decision keeps the proposal pending")
+	file_p, file_ok := ctl_v2_task_chain_propose_params([]string{"ham-ctl", "task-chain", "propose", "--file", "p.json"}, `{"auto_approve":false,"tasks":[{"title":"New"}]}`)
+	defer delete(file_p)
+	testing.expect(t, file_ok && strings.contains(file_p, `"require_decision":true`), "file auto_approve:false opts in to a decision")
+
 	// 6. task-chain fleet set placement fields
 	fleet_body, fleet_ok := ctl_v2_fleet_set_body([]string{
 		"ham-ctl", "task-chain", "fleet", "set", "ch_1",

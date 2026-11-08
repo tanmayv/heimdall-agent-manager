@@ -657,6 +657,7 @@ MIGRATION_202_OWNER_LOCAL_REGISTRY :: #load("migrations/202_owner_local_registry
 MIGRATION_201_EXTENSION_VERSION_SYNC :: #load("migrations/201_extension_version_sync_0_5_49.sql", string)
 
 MIGRATION_209_EXTENSION_VERSION_SYNC :: #load("migrations/209_extension_version_sync_0_5_50_subagents_1.sql", string)
+MIGRATION_210_MEMORY_AUTO_APPROVED :: #load("migrations/210_memory_auto_approved.sql", string)
 
 migration_order :: [?]string {
 	"001_foundation.sql",
@@ -872,6 +873,7 @@ migration_order :: [?]string {
     "207_owner_legacy_import_cutover.sql",
     "208_owner_legacy_migration_abort.sql",
 	"209_extension_version_sync_0_5_50_subagents_1.sql",
+	"210_memory_auto_approved.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1175,6 +1177,11 @@ run_migrations :: proc(
 			mark_migration_applied(conn, name)
 			continue
 		}
+		if name == "210_memory_auto_approved.sql" &&
+		   table_column_exists(conn, "memories", "auto_approved_at") {
+			mark_migration_applied(conn, name)
+			continue
+		}
 		if name == "089_memory_proposer.sql" &&
 		   table_column_exists(conn, "memories", "proposed_in_chain_id") {
 			mark_migration_applied(conn, name)
@@ -1362,6 +1369,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 		}
 	}
 	if name == "209_extension_version_sync_0_5_50_subagents_1.sql" do return strings.clone(MIGRATION_209_EXTENSION_VERSION_SYNC)
+	if name == "210_memory_auto_approved.sql" do return strings.clone(MIGRATION_210_MEMORY_AUTO_APPROVED)
     if name == "204_owner_legacy_source_fences.sql" do return strings.clone(MIGRATION_204_OWNER_LEGACY_SOURCE_FENCES)
     if name == "205_owner_legacy_effect_identity.sql" do return strings.clone(MIGRATION_205_OWNER_LEGACY_EFFECT_IDENTITY)
     if name == "206_owner_legacy_close_admission.sql" do return strings.clone(MIGRATION_206_OWNER_LEGACY_CLOSE_ADMISSION)

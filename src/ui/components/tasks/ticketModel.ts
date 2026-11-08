@@ -355,7 +355,7 @@ export function attemptInfo(task: Pick<TaskWire, 'attempt_no' | 'brief' | 'block
   const max = Math.max(1, Number(task.brief?.budget?.max_attempts) || DEFAULT_MAX_ATTEMPTS);
   const no = Math.max(1, Number(task.attempt_no) || 1);
   const b: any = task.blocked_on;
-  return { no, max, exhausted: b?.kind === 'human' && b?.reason === 'budget_exhausted', label: `Attempt ${no}` };
+  return { no, max, exhausted: (b?.kind === 'human' || b?.kind === 'coordinator') && b?.reason === 'budget_exhausted', label: `Attempt ${no}` };
 }
 
 export interface LeaseClock {

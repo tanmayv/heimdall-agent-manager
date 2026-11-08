@@ -123,18 +123,37 @@ block_ready_agent_in_uow :: proc(svc: ^Service, u: ^Uow, task: domain.Task, agen
 	return ok
 }
 
-// An explicit user retry makes failed/stopped instances eligible for the normal
-// wake path again. No bridge I/O occurs under the UoW; the matcher dispatches
-// after commit. Re-read afterwards so synchronous launch/send failures are
-// returned to the card as well as persisted in its newly projected reason.
+// An explicit user (or chain coordinator, F1) retry makes failed/stopped
+// instances eligible for the normal wake path again. No bridge I/O occurs under
+// the UoW; the matcher dispatches after commit. Re-read afterwards so
+// synchronous launch/send failures are returned to the card as well as
+// persisted in its newly projected reason. A coordinator never clears a
+// deliberate user stop: only the user restarts what the user stopped.
 start_task_agent :: proc(svc: ^Service, auth: contracts.Auth_Context, task_id: domain.Task_ID, expected_waiting_on := "") -> (bool, domain.Domain_Error) {
-	if !contracts.is_user_auth(auth) do return false, domain.domain_error(.Forbidden, "only the user may start a task agent")
+	is_user := contracts.is_user_auth(auth)
+	caller: domain.Agent_Instance
+	if !is_user {
+		inst, iok, _ := instance_from_auth(svc, auth)
+		if !iok do return false, domain.domain_error(.Forbidden, "only the user or the chain coordinator may start a task agent")
+		caller = inst
+	}
 	u, ok, err := begin_uow(svc)
 	if !ok do return false, err
 	task, found, _ := iface.taskchain_get_task(svc.repo, task_id)
 	if !found || string(task.owner_user_id) != auth.user_id {
 		_, _ = end_uow(svc, &u, false)
 		return false, domain.domain_error(.Not_Found, "task not found")
+	}
+	if !is_user {
+		chain, chain_found, _ := iface.taskchain_get_chain(svc.repo, task.chain_id)
+		if !chain_found || !is_coordinator(svc, chain, caller.agent_instance_id) {
+			_, _ = end_uow(svc, &u, false)
+			return false, domain.domain_error(.Forbidden, "only the user or the chain coordinator may start a task agent")
+		}
+		if coordinator_restarts_recent(svc, task) >= COORDINATOR_RESTART_MAX_PER_HOUR {
+			_, _ = end_uow(svc, &u, false)
+			return false, domain.domain_error(.Conflict, fmt.tprintf("the coordinator already restarted this task's agent %d times in the last hour; ask the user to start it", COORDINATOR_RESTART_MAX_PER_HOUR), `{"code":"coordinator_restart_limit"}`)
+		}
 	}
 	// Card validation happens before this transaction; this second read closes
 	// the race with a newly recorded failure between the two reads.
@@ -155,11 +174,11 @@ start_task_agent :: proc(svc: ^Service, auth: contracts.Auth_Context, task_id: d
 		}
 	}
 	bridge_id := jsonx.extract_string(task.blocked_on_json, "bridge_id", "", true, context.temp_allocator)
-	if reset, reset_err := reset_idle_agent_instances(svc, task.owner_user_id, task.chain_id, agent_id, bridge_id, true); !reset {
+	if reset, reset_err := reset_idle_agent_instances(svc, task.owner_user_id, task.chain_id, agent_id, bridge_id, is_user); !reset {
 		_, _ = end_uow(svc, &u, false)
 		return false, reset_err
 	}
-	_, _, acted, aerr := record_event(svc, &u, task, actor_from_auth(auth), EV_ANSWERED, `{}`)
+	_, _, acted, aerr := record_event(svc, &u, task, actor_from_auth(auth), EV_ANSWERED, `{}` if is_user else `{"restart_by":"coordinator"}`)
 	if acted do acted, aerr = after_chain_change(svc, &u, task.chain_id, task.owner_user_id, .Fleet_Changed)
 	_, cerr := end_uow(svc, &u, acted)
 	if !acted do return false, aerr
@@ -170,6 +189,20 @@ start_task_agent :: proc(svc: ^Service, auth: contracts.Auth_Context, task_id: d
 		return false, domain.domain_error(.Conflict, jsonx.extract_string(fresh.blocked_on_json, "reason", "Agent failed to start", true, context.temp_allocator))
 	}
 	return true, domain.Domain_Error{}
+}
+
+// COORDINATOR_RESTART_MAX_PER_HOUR caps coordinator-initiated agent restarts
+// per task (F1), so a coordinator cannot restart a failing agent forever; past
+// it only the user can start the agent.
+COORDINATOR_RESTART_MAX_PER_HOUR :: 3
+
+coordinator_restarts_recent :: proc(svc: ^Service, task: domain.Task) -> int {
+	evs, err := iface.taskchain_list_events_by_task(svc.repo, task.task_id, task.owner_user_id)
+	if err.code != .None do return COORDINATOR_RESTART_MAX_PER_HOUR // fail closed
+	since := now_ms(svc.clock) - 3600 * 1000
+	n := 0
+	for e in evs do if e.kind == EV_ANSWERED && e.ts_ms >= since && strings.contains(e.payload_json, `"restart_by":"coordinator"`) do n += 1
+	return n
 }
 
 // Called after commit when the wake command could not even be sent. Re-read

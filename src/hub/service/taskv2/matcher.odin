@@ -354,10 +354,10 @@ pick_instance :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.
 		if is_coordinator(svc, ctx.chain, inst.agent_instance_id) do continue
 		disposition := agent.failed_instance_disposition(inst, ctx.now_ms)
 		if disposition == .Hold {
-			if werr, typed := agent.instance_last_error(inst); typed && werr.class == .retriable {
+			if due, retrying := agent.instance_auto_retry_due_ms(inst); retrying {
 				// Standard rematches end at ten minutes; provider backoff may be
-				// longer. Recheck this task just after the actual retry deadline.
-				due := to_ms(inst.stopped_at) + agent.instance_retry_delay_ms(agent.instance_last_error_attempt(inst), werr.retry_after_ms)
+				// longer. Recheck this task just after the actual retry deadline
+				// (retriable backoff, or a recoverable failure's bounded retries).
 				timers_arm(svc, .Rematch, string(task.task_id), due + 1000, domain.task_state_string(task.state))
 				live_count += 1
 				continue
@@ -717,6 +717,14 @@ dispatch_blockers :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.
 				continue
 			}
 			disposition := agent.failed_instance_disposition(inst, ctx.now_ms)
+			if disposition == .Hold {
+				// A failure still inside its automatic retry window is not parked:
+				// say when it retries rather than implying someone must act (F1).
+				if due, retrying := agent.instance_auto_retry_due_ms(inst); retrying {
+					instance_reason = fmt.tprintf("%s; retrying automatically in %ds", instance_failure_reason(inst), max(i64(0), (due - ctx.now_ms + 999) / 1000))
+					continue
+				}
+			}
 			if disposition == .Dead || disposition == .Hold {
 				instance_reason = instance_failure_reason(inst)
 				continue

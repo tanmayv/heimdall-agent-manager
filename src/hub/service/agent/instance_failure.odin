@@ -14,15 +14,23 @@ import jsonx "odin_test:lib/jsonx"
 // The hub obeys its class instead of re-waking blindly:
 //   retriable   -> re-wake with exponential backoff: 60s * 2^(attempt-1), capped at
 //                  30m, never sooner than the bridge's retry_after_ms.
-//   recoverable -> hold: no re-wake and no replacement instance. The cause needs an
-//                  outside fix (login, unseal, config); the bridge's own scheduler
-//                  unparks it on that event, or the user relaunches it.
+//   recoverable -> bounded auto-retry (F1): re-wake after 30s, 2m, then 5m (never
+//                  sooner than retry_after_ms); after RECOVERABLE_AUTO_RETRY_MAX
+//                  consecutive failures, hold: no re-wake and no replacement. The
+//                  cause then needs an outside fix (login, unseal, config); the
+//                  bridge's own scheduler unparks it on that event, or the user or
+//                  the chain coordinator relaunches it.
 //   fatal       -> hold as well: the same launch would fail the same way, so neither
 //                  a re-wake nor a replacement is attempted until the user acts.
 // A failure with no typed error (a crash) is dead and replaceable, as before.
 
 INSTANCE_RETRY_BASE_MS :: 60_000
 INSTANCE_RETRY_MAX_MS :: 1_800_000
+
+// Recoverable launch failures are retried this many times (after failures
+// 1..MAX) with these delays before the instance is parked (F1).
+RECOVERABLE_AUTO_RETRY_MAX :: 3
+RECOVERABLE_RETRY_DELAYS_MS := [RECOVERABLE_AUTO_RETRY_MAX]i64{30_000, 120_000, 300_000}
 
 Failed_Instance_Disposition :: enum {
 	Not_Failed, // not failed: normal handling
@@ -37,7 +45,12 @@ failed_instance_disposition :: proc(inst: domain.Agent_Instance, now_ms: i64) ->
 	werr, found := instance_last_error(inst)
 	if !found do return .Dead
 	switch werr.class {
-	case .fatal, .recoverable:
+	case .fatal:
+		return .Hold
+	case .recoverable:
+		due, retrying := instance_auto_retry_due_ms(inst)
+		if !retrying do return .Hold
+		if now_ms >= due do return .Retry_Now
 		return .Hold
 	case .retriable:
 		failed_ms, ok := platform.rfc3339_to_unix_ms(inst.stopped_at)
@@ -46,6 +59,26 @@ failed_instance_disposition :: proc(inst: domain.Agent_Instance, now_ms: i64) ->
 		return .Hold
 	}
 	return .Dead
+}
+
+// instance_auto_retry_due_ms: when a failed instance will be re-woken on its
+// own. false means it is parked (fatal, recoverable past its retry budget, an
+// untyped failure, or a recoverable failure without a failure time).
+instance_auto_retry_due_ms :: proc(inst: domain.Agent_Instance) -> (i64, bool) {
+	if inst.runtime_status != "failed" do return 0, false
+	werr, found := instance_last_error(inst)
+	if !found do return 0, false
+	failed_ms, ok := platform.rfc3339_to_unix_ms(inst.stopped_at)
+	attempt := instance_last_error_attempt(inst)
+	#partial switch werr.class {
+	case .retriable:
+		if !ok do return 0, true
+		return failed_ms + instance_retry_delay_ms(attempt, werr.retry_after_ms), true
+	case .recoverable:
+		if !ok || attempt > RECOVERABLE_AUTO_RETRY_MAX do return 0, false
+		return failed_ms + max(RECOVERABLE_RETRY_DELAYS_MS[max(attempt, 1) - 1], werr.retry_after_ms), true
+	}
+	return 0, false
 }
 
 // instance_retry_delay_ms is the wait before re-waking after failure number attempt.
@@ -67,6 +100,20 @@ instance_last_error :: proc(inst: domain.Agent_Instance) -> (contracts.Wire_Erro
 instance_last_error_attempt :: proc(inst: domain.Agent_Instance) -> int {
 	if inst.last_error_json == "" do return 0
 	return jsonx.extract_int(inst.last_error_json, "attempt", 1, true)
+}
+
+// instance_last_error_bump_attempt: a "failed" report that carries no error
+// body is still a new consecutive failure (F1): keep the previous typed error
+// and count one more attempt, so bounded auto-retry cannot loop forever on
+// body-less reports. No previous error → "" (an untyped failure). Caller owns
+// the result.
+instance_last_error_bump_attempt :: proc(prev_last_error_json: string) -> string {
+	if prev_last_error_json == "" do return strings.clone("")
+	attempt := jsonx.extract_int(prev_last_error_json, "attempt", 1, true) + 1
+	werr, found := contracts.wire_error_parse(strings.concatenate({"{\"error\":", prev_last_error_json, "}"}, context.temp_allocator), context.temp_allocator)
+	if !found do return strings.clone(prev_last_error_json)
+	obj := contracts.wire_error_json(werr, context.temp_allocator)
+	return fmt.aprintf("%s,\"attempt\":%d}", obj[:len(obj) - 1], attempt)
 }
 
 // instance_last_error_record is the stored last_error for a new failed report:

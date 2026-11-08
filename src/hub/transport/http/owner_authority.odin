@@ -90,7 +90,7 @@ owner_authority_request :: proc(req: Request) -> (Owner_Target_Kind, string) {
 		case "task-chains":
 			if parts[4] != "search" do return .Chain, parts[4]
 		case "tasks":
-			if len(parts) == 6 && (parts[5] == "recheck" || parts[5] == "placement-recovery") do return .Task, parts[4]
+			if len(parts) == 6 && (parts[5] == "recheck" || parts[5] == "placement-recovery" || parts[5] == "start-agent") do return .Task, parts[4]
 		case "workflow-runs":
 			if len(parts) == 6 && (parts[5] == "cancel" || parts[5] == "retry") do return .Run, parts[4]
 		}

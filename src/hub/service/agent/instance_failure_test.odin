@@ -30,9 +30,24 @@ test_err_proto_disposition_per_class :: proc(t: ^testing.T) {
 	// Fatal: the same launch would fail again, so it is neither re-woken nor replaced.
 	testing.expect_value(t, failed_instance_disposition(fatal, failed_ms + 10_000_000), Failed_Instance_Disposition.Hold)
 
-	// Recoverable never re-wakes on its own, however long it waits.
+	// Recoverable (F1): bounded auto-retry 30s, 2m, 5m; parked after the third retry fails.
 	recoverable := failed_instance(`{"code":"provider_unavailable","class":"recoverable","cause":"provider_not_logged_in","message":"","attempt":1}`)
-	testing.expect_value(t, failed_instance_disposition(recoverable, failed_ms + 10_000_000), Failed_Instance_Disposition.Hold)
+	testing.expect_value(t, failed_instance_disposition(recoverable, failed_ms + 29_000), Failed_Instance_Disposition.Hold)
+	testing.expect_value(t, failed_instance_disposition(recoverable, failed_ms + 30_000), Failed_Instance_Disposition.Retry_Now)
+	rec2 := failed_instance(`{"code":"provider_unavailable","class":"recoverable","cause":"provider_not_logged_in","message":"","attempt":2}`)
+	testing.expect_value(t, failed_instance_disposition(rec2, failed_ms + 119_000), Failed_Instance_Disposition.Hold)
+	testing.expect_value(t, failed_instance_disposition(rec2, failed_ms + 120_000), Failed_Instance_Disposition.Retry_Now)
+	rec3 := failed_instance(`{"code":"provider_unavailable","class":"recoverable","cause":"provider_not_logged_in","message":"","attempt":3}`)
+	testing.expect_value(t, failed_instance_disposition(rec3, failed_ms + 299_000), Failed_Instance_Disposition.Hold)
+	testing.expect_value(t, failed_instance_disposition(rec3, failed_ms + 300_000), Failed_Instance_Disposition.Retry_Now)
+	rec4 := failed_instance(`{"code":"provider_unavailable","class":"recoverable","cause":"provider_not_logged_in","message":"","attempt":4}`)
+	testing.expect_value(t, failed_instance_disposition(rec4, failed_ms + 10_000_000), Failed_Instance_Disposition.Hold)
+	_, retrying := instance_auto_retry_due_ms(rec4)
+	testing.expect(t, !retrying, "recoverable is parked after its retry budget")
+	_, fatal_retrying := instance_auto_retry_due_ms(fatal)
+	testing.expect(t, !fatal_retrying, "fatal is never auto-retried")
+	due, rec_retrying := instance_auto_retry_due_ms(recoverable)
+	testing.expect(t, rec_retrying && due == failed_ms + 30_000, "first recoverable retry due after 30s")
 
 	// Retriable backs off exponentially: attempt 3 waits 60s * 4 = 240s.
 	retriable := failed_instance(`{"code":"bridge_busy","class":"retriable","cause":"pty_host_unreachable","message":"","attempt":3}`)
@@ -174,4 +189,19 @@ test_err_proto_failed_stop_result_restores_status :: proc(t: ^testing.T) {
 	cold := `{"type":"command_result","command_id":"cmd_stop_2_inst_lf","ok":false,"error":{"code":"unprocessable_entity","class":"fatal","cause":"stop_failed","message":""},"payload":{"status":"failed","result":{"runtime_status":"unreachable"}}}`
 	testing.expect(t, apply_stop_command_result(&svc, "brg_1", "cmd_stop_2_inst_lf", cold))
 	testing.expect_value(t, r.inst.runtime_status, "unreachable")
+}
+
+// F1: a "failed" report without an error body is still a new attempt, so the
+// bounded recoverable retry cannot loop forever on body-less reports.
+@(test)
+test_err_proto_bodyless_failure_counts_an_attempt :: proc(t: ^testing.T) {
+	prev := `{"code":"provider_unavailable","class":"recoverable","cause":"provider_not_logged_in","message":"login","attempt":3}`
+	bumped := instance_last_error_bump_attempt(prev)
+	defer delete(bumped)
+	testing.expect(t, strings.contains(bumped, `"attempt":4`) && strings.contains(bumped, `"class":"recoverable"`), bumped)
+	_, retrying := instance_auto_retry_due_ms(domain.Agent_Instance{runtime_status = "failed", stopped_at = "2026-10-15T12:00:00Z", last_error_json = bumped})
+	testing.expect(t, !retrying, "past the retry budget: parked")
+	empty := instance_last_error_bump_attempt("")
+	defer delete(empty)
+	testing.expect_value(t, empty, "")
 }
