@@ -656,6 +656,8 @@ MIGRATION_202_OWNER_LOCAL_REGISTRY :: #load("migrations/202_owner_local_registry
 
 MIGRATION_201_EXTENSION_VERSION_SYNC :: #load("migrations/201_extension_version_sync_0_5_49.sql", string)
 
+MIGRATION_209_EXTENSION_VERSION_SYNC :: #load("migrations/209_extension_version_sync_0_5_50_subagents_1.sql", string)
+
 migration_order :: [?]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
@@ -869,6 +871,7 @@ migration_order :: [?]string {
     "206_owner_legacy_close_admission.sql",
     "207_owner_legacy_import_cutover.sql",
     "208_owner_legacy_migration_abort.sql",
+	"209_extension_version_sync_0_5_50_subagents_1.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1358,6 +1361,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 			return string(data)
 		}
 	}
+	if name == "209_extension_version_sync_0_5_50_subagents_1.sql" do return strings.clone(MIGRATION_209_EXTENSION_VERSION_SYNC)
     if name == "204_owner_legacy_source_fences.sql" do return strings.clone(MIGRATION_204_OWNER_LEGACY_SOURCE_FENCES)
     if name == "205_owner_legacy_effect_identity.sql" do return strings.clone(MIGRATION_205_OWNER_LEGACY_EFFECT_IDENTITY)
     if name == "206_owner_legacy_close_admission.sql" do return strings.clone(MIGRATION_206_OWNER_LEGACY_CLOSE_ADMISSION)
