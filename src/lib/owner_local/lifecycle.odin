@@ -31,10 +31,15 @@ brief_valid :: proc(raw:string) -> bool {
     for a in acceptance { text,valid:=a.(json.String);if !valid || strings.trim_space(string(text))=="" do return false }
     return true
 }
-lifecycle_human :: proc(s:^Store,c,p:json.Object,body,raw,payload:string,proof:Lifecycle_Proof) -> string {
+// device: the command was signed by a device key for itself (the user). An
+// agent principal may add requires_user_approval but never remove it.
+lifecycle_human :: proc(s:^Store,c,p:json.Object,body,raw,payload:string,proof:Lifecycle_Proof,device:bool) -> string {
     chain,task,method:=field(c,"chain_id"),field(c,"task_id"),field(c,"method")
     switch method {
     case "lifecycle.configure":
+        // Ratchet: the lifecycle payload carries no requires_user_approval and
+        // a new configuration never touches the brief or role configuration,
+        // so it cannot remove a user gate (lifecycle_configure_keeps_user_gate).
         if !directory_config_authorized(s,chain,p) || !member_authorized(s,chain,proof.author) || !member_authorized(s,chain,proof.reviewer) || !proof.paths_valid || proof.author.agent_id!=field(p,"author_agent_id") ||
            proof.reviewer.agent_id!=field(p,"reviewer_agent_id") || proof.author.agent_id==proof.reviewer.agent_id ||
            proof.reviewer.instance!=field(p,"reviewer_instance_id") || proof.author.instance==proof.reviewer.instance ||
@@ -59,11 +64,14 @@ lifecycle_human :: proc(s:^Store,c,p:json.Object,body,raw,payload:string,proof:L
         state,ok:=query(s.db,"SELECT state FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)
         if !ok do return "storage_error"
         if len(state)==1 && (state[0][0]=="merge_pending" || state[0][0]=="merge_blocked" || state[0][0]=="done") do return "operation_conflict"
+        prior_user,prior_read:=requirements_user_approval(s,chain,task)
+        if !prior_read do return "storage_error"
+        if !approval_ratchet_allows(prior_user,brief_user_approval(s,body),device) do return "invalid_scope"
         if _,ok=query(s.db,"INSERT INTO task_requirements VALUES(?,?,?,?,?,?,?)",chain,task,field(p,"requirements_revision"),body,field(p,"body_cipher"),field(c,"principal_id"),field(c,"operation_id"));!ok do return "storage_error"
         if code:=brief_inputs_pin(s,chain,task,field(p,"requirements_revision"),body);code!="ok" do return code
         if _,ok=query(s.db,"UPDATE lifecycle_state SET state='ready' WHERE chain_id=? AND task_id=?",chain,task);!ok do return "storage_error"
     case "review.post":
-        return lifecycle_review(s,c,p,"",true)
+        return lifecycle_review(s,c,p,"",true,device)
     }
     _,ok:=query(s.db,"UPDATE tasks SET revision=revision+1 WHERE chain_id=? AND task_id=?",chain,task)
     if !ok do return "storage_error"
@@ -72,7 +80,9 @@ lifecycle_human :: proc(s:^Store,c,p:json.Object,body,raw,payload:string,proof:L
 
 // Verdicts always bind the immutable submission. Device approval is recorded
 // separately and never satisfies the required independent agent pair.
-lifecycle_review :: proc(s:^Store,c,p:json.Object,agent:string,human:bool) -> string {
+// human: review.post outside a review session (a device verdict, or an agent's
+// review.human on the user's behalf). Only device=true rows are the user.
+lifecycle_review :: proc(s:^Store,c,p:json.Object,agent:string,human:bool,device:=false) -> string {
     chain,task:=field(c,"chain_id"),field(c,"task_id")
     if !control_active(s,chain,task) do return "operation_conflict"
     config,_,configured:=lifecycle_config(s,chain,task)
@@ -89,7 +99,9 @@ lifecycle_review :: proc(s:^Store,c,p:json.Object,agent:string,human:bool) -> st
     if !human && field(p,"role")!="" {
         if code:=role_record(s,c,p,agent);code!="ok" do return code
     } else {
-        if _,ok=query(s.db,"INSERT INTO local_reviews VALUES(?,?,?,?,?,?,?,?,?,?)",chain,task,field(p,"attempt"),reviewer,field(c,"principal_id"),field(c,"operation_id"),req[0],field(p,"head"),field(p,"verdict"),field(p,"summary"));!ok do return "operation_conflict"
+        kind:="device" if human && device else "agent"
+        if _,ok=query(s.db,`INSERT INTO local_reviews(chain_id,task_id,attempt,reviewer_agent_id,principal_id,operation_id,requirements_revision,head,verdict,summary,principal_kind)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?)`,chain,task,field(p,"attempt"),reviewer,field(c,"principal_id"),field(c,"operation_id"),req[0],field(p,"head"),field(p,"verdict"),field(p,"summary"),kind);!ok do return "operation_conflict"
     }
     next,gate_ok:=role_gate(s,chain,task,field(p,"attempt"))
     if !gate_ok do return "storage_error"

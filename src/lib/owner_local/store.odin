@@ -129,6 +129,9 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     // R4a: an owner-signed agent command (agent_authority.odin) replaces the
     // device grant with the agent policy. Never chain.create or grant.*.
     agent_mode:=agent.instance!=""
+    // Only a device key signing for itself is the user (R2-1). An owner-signed
+    // agent command, including review.human on the user's behalf, is an agent.
+    device:=!agent_mode && key.kind=="device"
     if agent_mode {
         if code:=agent_command_admit(s,c,payload,key,agent);code!="ok" do return fail(code)
         g=agent_grant(s,c,auth_now);has_grant=true
@@ -320,7 +323,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         if code!="ok" do return fail(code)
         wrote=true
     case "review.roles":
-        code:=role_configure(s,c,body,role_children,seq)
+        code:=role_configure(s,c,body,role_children,seq,device)
         if code!="ok" do return fail(code)
         wrote=true
     case "chain.create":
@@ -387,7 +390,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         if code!="ok" do return fail(code)
         wrote=true
     case "lifecycle.configure", "requirements.edit", "review.post":
-        code:=lifecycle_human(s,c,p,body,command_raw,payload,lifecycle_proof)
+        code:=lifecycle_human(s,c,p,body,command_raw,payload,lifecycle_proof,device)
         if code!="ok" do return fail(code)
         if method=="lifecycle.configure" || method=="requirements.edit" {
             if _,ok=query(s.db,"UPDATE local_controls SET resume_state='ready' WHERE chain_id=? AND task_id=?",chain,task);!ok do return fail("storage_error")

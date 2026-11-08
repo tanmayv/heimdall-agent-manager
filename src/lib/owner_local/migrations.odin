@@ -2,7 +2,8 @@ package owner_local
 
 import "core:encoding/json"
 
-SCHEMA_VERSION :: 34
+SCHEMA_VERSION :: 35
+MIGRATION_035 :: #load("migration_035.sql")
 MIGRATION_034 :: #load("migration_034.sql")
 MIGRATION_033 :: #load("migration_033.sql")
 MIGRATION_032 :: #load("migration_032.sql")
@@ -205,6 +206,14 @@ migrate :: proc(db:DB) -> bool {
     if version<=33 {
         if !exec(db,string(MIGRATION_034)) do return false
         if !exec(db,"UPDATE schema_migrations SET version=34 WHERE singleton=1") do return false
+    }
+    if version<=34 {
+        // Re-runnable: the column may survive a test downgrade of the version.
+        columns,read:=query(db,"SELECT 1 FROM pragma_table_info('local_reviews') WHERE name='principal_kind'")
+        if !read do return false
+        if len(columns)==0 && !exec(db,"ALTER TABLE local_reviews ADD COLUMN principal_kind TEXT NOT NULL DEFAULT 'agent' CHECK(principal_kind IN('device','agent'))") do return false
+        if !exec(db,string(MIGRATION_035)) do return false
+        if !exec(db,"UPDATE schema_migrations SET version=35 WHERE singleton=1") do return false
     }
     if !exec(db,"COMMIT") do return false
     committed=true
