@@ -137,15 +137,19 @@ bridge_executor_local_material :: proc(d:executor.Local_Draft)->(Executor_Local_
     return m,true
 }
 
-bridge_executor_local_current_request :: proc(m:Executor_Local_Material)->bool {
+// "ok", or the outcome code for why the exact retained Spawn cannot be
+// rebuilt now: a profile that cannot be read is transient
+// (profile_unavailable); a rebuilt Spawn that differs is a real change of
+// the generation (resources_changed).
+bridge_executor_local_current_request :: proc(m:Executor_Local_Material)->string {
     profile,e:=profile_lookup(m.provider,m.profile,prepare_runtime=false)
-    if e!=.None do return false
+    if e!=.None || !profile.enabled do return "profile_unavailable"
     env:=bridge_prespawn_env(m.run_dir,m.endpoint,m.token,m.request.instance)
     defer {for item in env do delete(item);delete(env)}
     request,built:=bridge_pty_host_build_spawn(m.request.instance,m.run_dir,m.provider,m.model,m.token,env,m.display,m.request.timeout_seconds,m.permission,&profile,inert=true)
-    if !built do return false
+    if !built do return "profile_unavailable"
     defer bridge_pty_host_spawn_request_delete(request)
-    return bridge_executor_local_spawn_digest(request)==bridge_executor_local_spawn_digest(m.request)
+    return "ok" if bridge_executor_local_spawn_digest(request)==bridge_executor_local_spawn_digest(m.request) else "resources_changed"
 }
 
 // A native generation is stable across manual/wake transport forms, command
@@ -211,6 +215,14 @@ bridge_executor_local_refusal :: proc()->Bridge_Error {
     return e
 }
 
+// Needs attention but can resolve without a new generation (the wake loop
+// re-checks recoverable causes); never fatal.
+bridge_executor_local_recoverable :: proc()->Bridge_Error {
+    e:=bridge_error(.agent_launch_failed,.other)
+    e.class=.recoverable
+    return e
+}
+
 // Maps a launch outcome code to the reported detail and typed error class.
 // Transient conditions (a still-live previous child, an unreachable or
 // uncertain daemon) are retriable; generation-level refusals are fatal.
@@ -219,7 +231,14 @@ bridge_executor_local_failure :: proc(code:string)->(string,Bridge_Error) {
     case "vault_locked": return "unlock the execution device",bridge_error(.agent_launch_failed,.denied)
     case "instance_not_drained","executor_uncertain","child_absent","startup_identity_not_current","observation_not_committed","local_admission_not_current":
         return code,bridge_error(.agent_launch_failed,.other,retry_after_ms=5_000)
-    case "invalid_resources": return "provider profile or project directory changed; relaunch",bridge_executor_local_refusal()
+    // A digest of the staged generation no longer matches: a real change.
+    case "resources_changed","invalid_resources": return "provider profile or project directory changed; relaunch",bridge_executor_local_refusal()
+    // Transient: re-checked by the wake loop (periodic / catalog change).
+    case "profile_unavailable": return "provider profile unavailable",bridge_executor_local_recoverable()
+    // Transient: a discovered-model snapshot mid-refresh, a project directory
+    // briefly missing. Backed off and retried.
+    case "model_unavailable": return "model not currently offered by the provider profile",bridge_error(.agent_launch_failed,.other,retry_after_ms=5_000)
+    case "project_directory_unavailable": return "project directory is temporarily unavailable",bridge_error(.agent_launch_failed,.other,retry_after_ms=5_000)
     case "launch_generation_closed": return "this launch generation already ran; relaunch the agent",bridge_executor_local_refusal()
     case "superseded": return "superseded startup generation",bridge_executor_local_refusal()
     case "draft_generation_conflict": return "draft_generation_conflict",bridge_executor_local_refusal()
@@ -235,9 +254,17 @@ bridge_executor_local_failure :: proc(code:string)->(string,Bridge_Error) {
 // Unlike a signed mapping it needs no operator record: the same sandbox check
 // used by project path validation is the only directory precondition.
 bridge_executor_project_directory :: proc(path:string)->(string,bool) {
+    canonical,code:=bridge_executor_project_directory_reason(path)
+    return canonical,code=="ok"
+}
+
+// outside_root is permanent for this generation; a directory inside the root
+// that is (briefly) missing or not a directory is transient.
+bridge_executor_project_directory_reason :: proc(path:string)->(string,string) {
     canonical,within:=bridge_fs_resolve_within(path);defer delete(canonical)
-    if !within || !bridge_validate_project_path_local(canonical,"","").ok do return "",false
-    return strings.clone(canonical,context.temp_allocator),true
+    if !within do return "","outside_root"
+    if !bridge_validate_project_path_local(canonical,"","").ok do return "","project_directory_unavailable"
+    return strings.clone(canonical,context.temp_allocator),"ok"
 }
 
 bridge_executor_local_directory_digest :: proc(path:string)->string {
@@ -308,12 +335,19 @@ bridge_executor_local_stage_draft :: proc(s:^executor.Store,command,purpose,sour
     }
     if _,active:=bridge_provider_catalog_profile(provider);!active do return {},"provider unavailable",bridge_error(.agent_launch_failed,.unsupported)
     pp,e:=profile_lookup(provider,profile,prepare_runtime=false)
-    if e!=.None || !pp.enabled || !profile_has_model(&pp,provider,model) do return {},"provider profile unavailable",bridge_error(.agent_launch_failed,.unsupported)
+    if e!=.None || !pp.enabled {
+        detail,err:=bridge_executor_local_failure("profile_unavailable")
+        return {},detail,err
+    }
+    if !profile_has_model(&pp,provider,model) {
+        detail,err:=bridge_executor_local_failure("model_unavailable")
+        return {},detail,err
+    }
     path:=""
     if d.project_path!="" {
-        canonical,within:=bridge_executor_project_directory(d.project_path)
-        if !within {
-            detail,err:=bridge_executor_local_failure("outside_root")
+        canonical,code:=bridge_executor_project_directory_reason(d.project_path)
+        if code!="ok" {
+            detail,err:=bridge_executor_local_failure(code)
             return {},detail,err
         }
         path=canonical
@@ -408,9 +442,10 @@ bridge_executor_local_launch_native :: proc(s:^executor.Store,draft:executor.Loc
     resources:=executor.Local_Resources{}
     if first {
         if m.run_count<bridge_agent_instance_run_count(m.request.instance) do return "superseded"
-        if !bridge_executor_local_current_request(m) do return "invalid_resources"
-        resources=bridge_executor_resolve_local(s,draft.configuration,m)
-        if !resources.resolved do return "invalid_resources"
+        if code:=bridge_executor_local_current_request(m);code!="ok" do return code
+        code:string
+        resources,code=bridge_executor_resolve_local_reason(s,draft.configuration,m)
+        if !resources.resolved do return code
     }
     current,loaded:=executor.local_draft_native(s,draft.id)
     if !loaded do return "storage_error"

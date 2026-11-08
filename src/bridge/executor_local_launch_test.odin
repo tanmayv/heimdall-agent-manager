@@ -173,33 +173,42 @@ bridge_executor_local_resolver_rechecks_catalog_project_directory_and_full_spawn
     for pair in ([5][2]string{{"provider","claude"},{"model","seed"},{"provider_profile","claude"},{"directory_digest",contracts.owner_payload_digest(directory)},{"spawn_digest",bridge_executor_local_spawn_digest(req)}}) do bridge_executor_test_set(c,pair[0],pair[1])
     resolved:=bridge_executor_resolve_local(&s,executor.encode(c),m)
     testing.expect(t,resolved.resolved && resolved.directory_path==directory)
+    // A changed Spawn is a real change of the generation (fatal).
     changed:=m;changed.request.argv=[]string{"different-command"}
-    testing.expect(t,!bridge_executor_resolve_local(&s,executor.encode(c),changed).resolved)
+    testing.expect_value(t,bridge_executor_test_resolve_reason(&s,c,changed),"resources_changed")
     changed=m;changed.request.env=[][2]string{{"HEIMDALL_EXECUTOR_LOCAL_LAUNCH","1"}}
-    testing.expect(t,!bridge_executor_resolve_local(&s,executor.encode(c),changed).resolved)
+    testing.expect_value(t,bridge_executor_test_resolve_reason(&s,c,changed),"resources_changed")
+    // A model missing from the profile (snapshot mid-refresh) is transient.
     bridge_executor_test_set(c,"model","unknown")
-    testing.expect(t,!bridge_executor_resolve_local(&s,executor.encode(c),m).resolved)
+    testing.expect_value(t,bridge_executor_test_resolve_reason(&s,c,m),"model_unavailable")
+    // An unreadable or disabled profile is transient too.
+    bridge_executor_test_set(c,"model","seed");bridge_executor_test_set(c,"provider_profile","no_such_profile")
+    testing.expect_value(t,bridge_executor_test_resolve_reason(&s,c,m),"profile_unavailable")
+    bridge_executor_test_set(c,"provider_profile","claude")
     bridge_executor_test_set(c,"model","seed")
     // A different project than the configuration bound is refused.
     other:=fmt.tprintf("%s/other",root)
     testing.expect(t,os.make_directory(other)==nil)
     changed=m;changed.command=bridge_executor_test_launch_command(other)
-    testing.expect(t,!bridge_executor_resolve_local(&s,executor.encode(c),changed).resolved)
+    testing.expect_value(t,bridge_executor_test_resolve_reason(&s,c,changed),"resources_changed")
     // A project outside the filesystem root is refused even when bound.
     outside:=bridge_fs_canonicalize_existing(os.get_env("HOME",context.temp_allocator));defer delete(outside)
     _,outside_ok:=bridge_executor_project_directory(outside)
     testing.expect(t,!outside_ok,"a directory outside the Bridge filesystem root is refused")
     changed=m;changed.command=bridge_executor_test_launch_command(outside)
     bound:=c;bridge_executor_test_set(bound,"directory_digest",contracts.owner_payload_digest(outside))
-    testing.expect(t,!bridge_executor_resolve_local(&s,executor.encode(bound),changed).resolved)
+    testing.expect_value(t,bridge_executor_test_resolve_reason(&s,bound,changed),"outside_root")
     // A launch without a project binds the empty digest.
     changed=m;changed.command=`{"type":"launch_agent","payload":{"agent_instance_id":"local_instance"}}`
     bridge_executor_test_set(c,"directory_digest","")
     none:=bridge_executor_resolve_local(&s,executor.encode(c),changed)
     testing.expect(t,none.resolved && none.directory_path=="")
     bridge_executor_test_set(c,"directory_digest",contracts.owner_payload_digest(directory))
+    // A project directory briefly missing (inside the root) is transient.
     testing.expect(t,os.remove(directory)==nil)
-    testing.expect(t,!bridge_executor_resolve_local(&s,executor.encode(c),m).resolved)
+    testing.expect_value(t,bridge_executor_test_resolve_reason(&s,c,m),"project_directory_unavailable")
+    testing.expect(t,os.make_directory(directory)==nil)
+    testing.expect_value(t,bridge_executor_test_resolve_reason(&s,c,m),"ok")
 }
 
 @(test)
@@ -323,4 +332,8 @@ bridge_executor_test_live_local :: proc(s:^executor.Store)->string {
 }
 bridge_executor_test_launch_command :: proc(project:string)->string {
     return strings.concatenate({`{"type":"launch_agent","payload":{"agent_instance_id":"local_instance","project_path":"`,project,`"}}`},context.temp_allocator)
+}
+bridge_executor_test_resolve_reason :: proc(s:^executor.Store,c:json.Object,m:Executor_Local_Material)->string {
+    _,code:=bridge_executor_resolve_local_reason(s,executor.encode(c),m)
+    return code
 }

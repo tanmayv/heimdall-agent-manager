@@ -144,7 +144,7 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="")
     unknown_model:=executor.encode(struct{type,agent_instance_id,provider,model,provider_profile:string,run_count:int}{
         "launch_provider_test","native_unknown_model","claude","not-a-model",selected_profile,1})
     refused,refusal,refusal_err=bridge_runtime_launch_provider_test("unknown_model",unknown_model)
-    testing.expect(t,!refused && refusal=="provider profile unavailable",refusal)
+    testing.expect(t,!refused && strings.contains(refusal,"model") && refusal_err.class==.retriable,refusal)
     // A project outside the Bridge filesystem root is still refused.
     outside:=bridge_fs_canonicalize_existing(fmt.tprintf("%s/..",root));defer delete(outside)
     outside_cmd:=bridge_wake_launch_command_json("outside","native_outside","","worker","claude",selected_model,"native_agent","Native agent","","","","",outside,
@@ -201,8 +201,8 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="")
     // A disabled catalog entry is refused at the dispatch boundary too.
     probe.disable_catalog=true
     next_command,_:=strings.replace_all(command_json,`"run_count":1`,`"run_count":2`,context.temp_allocator)
-    disabled,disabled_detail,_:=bridge_executor_local_stage(next_command,"provider_test",{&probe,bridge_executor_local_test_files,absent})
-    testing.expect(t,!disabled && strings.contains(disabled_detail,"relaunch"),disabled_detail)
+    disabled,disabled_detail,disabled_err:=bridge_executor_local_stage(next_command,"provider_test",{&probe,bridge_executor_local_test_files,absent})
+    testing.expect(t,!disabled && disabled_detail=="provider profile unavailable" && disabled_err.class==.recoverable,disabled_detail)
     bridge_provider_catalog_snapshot.providers[0].state="active"
     probe.disable_catalog=false
     _,old_valid=bridge_agent_token_verify(previous.plaintext_token)

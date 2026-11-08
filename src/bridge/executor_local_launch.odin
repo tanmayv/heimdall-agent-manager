@@ -19,27 +19,38 @@ bridge_executor_local_spawn_digest :: proc(request:Pty_Host_Spawn_Request)->stri
 // from a relay. The project directory is canonicalized again before I/O and
 // must still be the one the configuration bound (inside the filesystem root).
 bridge_executor_resolve_local :: proc(s:^executor.Store,configuration:string,m:Executor_Local_Material)->executor.Local_Resources {
+    resources,_:=bridge_executor_resolve_local_reason(s,configuration,m)
+    return resources
+}
+
+// Returns the resolved resources, or the outcome code: resources_changed when
+// the staged generation's bound facts (instance, Spawn or directory digest)
+// no longer match; outside_root; and the transient profile_unavailable,
+// model_unavailable or project_directory_unavailable.
+bridge_executor_resolve_local_reason :: proc(s:^executor.Store,configuration:string,m:Executor_Local_Material)->(executor.Local_Resources,string) {
     c,valid:=contracts.executor_parse(configuration,"local_configuration")
     request:=m.request
-    if !valid || request.instance!=contracts.owner_string(c,"instance_id") do return {}
+    if !valid || request.instance!=contracts.owner_string(c,"instance_id") do return {},"resources_changed"
     get:=contracts.owner_string
-    for pair in request.env do if strings.has_prefix(pair[0],"HEIMDALL_EXECUTOR_") {return {}}
+    for pair in request.env do if strings.has_prefix(pair[0],"HEIMDALL_EXECUTOR_") {return {},"resources_changed"}
     path:=""
     if project:=bridge_executor_local_descriptor(m.command).project_path;project!="" {
-        canonical,within:=bridge_executor_project_directory(project)
-        if !within do return {}
+        canonical,code:=bridge_executor_project_directory_reason(project)
+        if code!="ok" do return {},code
         path=canonical
     }
-    if bridge_executor_local_directory_digest(path)!=get(c,"directory_digest") do return {}
+    if bridge_executor_local_directory_digest(path)!=get(c,"directory_digest") do return {},"resources_changed"
     provider,model,profile:=get(c,"provider"),get(c,"model"),get(c,"provider_profile")
     // Provider enablement is global; model support belongs to the selected
     // profile (including its custom models and discovered account snapshot).
-    if _,active:=bridge_provider_catalog_profile(provider);!active do return {}
+    if _,active:=bridge_provider_catalog_profile(provider);!active do return {},"profile_unavailable"
     resolved,err:=profile_lookup(provider,profile,prepare_runtime=false)
-    if err!=.None || !resolved.enabled || resolved.provider!=provider || resolved.profile_id!=profile || !profile_has_model(&resolved,provider,model) do return {}
+    if err!=.None || !resolved.enabled do return {},"profile_unavailable"
+    if resolved.provider!=provider || resolved.profile_id!=profile do return {},"resources_changed"
+    if !profile_has_model(&resolved,provider,model) do return {},"model_unavailable"
     digest:=bridge_executor_local_spawn_digest(request)
-    if digest!=get(c,"spawn_digest") do return {}
-    return executor.Local_Resources{contracts.owner_payload_digest(configuration),digest,path,true}
+    if digest!=get(c,"spawn_digest") do return {},"resources_changed"
+    return executor.Local_Resources{contracts.owner_payload_digest(configuration),digest,path,true},"ok"
 }
 
 // Caller holds startup I/O serialization and the shared vault authority gate.

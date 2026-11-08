@@ -424,16 +424,20 @@ test_err_proto_failed_stop_never_stays_stopping :: proc(t: ^testing.T) {
 // same generation; transient conditions stay retriable.
 @(test)
 test_executor_local_failure_codes_map_to_classes :: proc(t: ^testing.T) {
-	fatal := []string{"superseded", "launch_generation_closed", "draft_generation_conflict", "outside_root", "retention_capacity", "draft_cancelled", "generation_required", "invalid_resources"}
+	fatal := []string{"superseded", "launch_generation_closed", "draft_generation_conflict", "outside_root", "retention_capacity", "draft_cancelled", "generation_required", "resources_changed"}
 	for code in fatal {
 		_, err := bridge_executor_local_failure(code)
 		testing.expectf(t, err.class == .fatal, "%s must be fatal, got %v", code, err.class)
 	}
-	retriable := []string{"instance_not_drained", "executor_uncertain", "child_absent", "startup_identity_not_current", "observation_not_committed"}
+	retriable := []string{"instance_not_drained", "executor_uncertain", "child_absent", "startup_identity_not_current", "observation_not_committed", "model_unavailable", "project_directory_unavailable"}
 	for code in retriable {
 		_, err := bridge_executor_local_failure(code)
 		testing.expectf(t, err.class == .retriable, "%s must be retriable, got %v", code, err.class)
 	}
+	// A profile that cannot be read right now needs attention but is re-checked
+	// by the wake loop; it must never be fatal (that parks the agent forever).
+	_, profile := bridge_executor_local_failure("profile_unavailable")
+	testing.expect(t, profile.class == .recoverable, "profile_unavailable must be recoverable")
 	detail, closed := bridge_executor_local_failure("launch_generation_closed")
 	testing.expect(t, strings.contains(detail, "relaunch") && closed.reason == .denied, detail)
 	// The class survives onto the wire the Hub reads.
