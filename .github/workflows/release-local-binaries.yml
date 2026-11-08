@@ -18,8 +18,11 @@ on:
         type: boolean
       skip_darwin_desktop:
         # The macOS app bundle needs a numeric x.y.z[-n] version, so a release
-        # such as v1.2.3-rc.subagents cannot build it. Tag pushes never skip.
-        description: 'Skip the Ninjy macOS desktop app (DMG/zip/pkg); darwin binaries are still built. Needed for non-numeric prerelease versions.'
+        # such as v1.2.3-rc.subagents cannot build it, and the desktop update
+        # channel only accepts numeric versions, so Windows update metadata is
+        # withheld too (clients are never offered such a version). Tag pushes
+        # never skip.
+        description: 'Skip the Ninjy macOS desktop app (DMG/zip/pkg) and omit Windows desktop update metadata (latest.yml, .exe.blockmap); darwin binaries and the Windows .exe are still built. Needed for non-numeric prerelease versions.'
         required: false
         default: false
         type: boolean
@@ -902,8 +905,10 @@ jobs:
             require_file "Ninjy-$clean-$f"
           done
           require_file "Ninjy-$clean-x64.exe"
-          require_file "Ninjy-$clean-x64.exe.blockmap"
-          require_file latest.yml
+          if [ "$skip_mac_desktop" != "true" ]; then
+            require_file "Ninjy-$clean-x64.exe.blockmap"
+            require_file latest.yml
+          fi
           require_file latest-linux.yml
           require_file latest-linux-arm64.yml
           if [ "$skip_mac_desktop" != "true" ]; then
@@ -922,7 +927,11 @@ jobs:
             if [ -f "Ninjy-$clean-x64.zip" ]; then mac_update_arches+=(--arch x64); fi
             python3 "$GITHUB_WORKSPACE/scripts/release/validate-desktop-updates.py" . --version "$clean" --platform mac "${mac_update_arches[@]}"
           fi
-          python3 "$GITHUB_WORKSPACE/scripts/release/validate-desktop-updates.py" . --version "$clean" --platform windows --arch x64
+          # skip_darwin_desktop also withholds Windows update metadata: the
+          # update channel only accepts numeric versions.
+          if [ "$skip_mac_desktop" != "true" ]; then
+            python3 "$GITHUB_WORKSPACE/scripts/release/validate-desktop-updates.py" . --version "$clean" --platform windows --arch x64
+          fi
           if [ "$skip_mac_desktop" != "true" ]; then
             sha256sum Ninjy-*.dmg Ninjy-*.zip Ninjy-*.pkg Ninjy-*.AppImage Ninjy-*.deb Ninjy-*.exe >> SHA256SUMS
           else
@@ -974,7 +983,7 @@ jobs:
           if [ "$skip_mac_desktop" != "true" ]; then
             printf '%s\n' "- Ninjy-*.zip, latest.yml, latest-mac.yml, latest-linux*.yml and the Windows block map (desktop auto-update metadata)" >> "$notes_file"
           else
-            printf '%s\n' "- latest.yml, latest-linux*.yml and the Windows block map (desktop auto-update metadata)" >> "$notes_file"
+            printf '%s\n' "- latest-linux*.yml (Linux desktop auto-update metadata)" >> "$notes_file"
           fi
           cat >> "$notes_file" <<NOTES
           - SHA256SUMS
@@ -989,7 +998,7 @@ jobs:
             fi
           fi
           if [ "$skip_mac_desktop" = "true" ]; then
-            printf '\n%s\n' "The macOS desktop app (DMG/zip/pkg) is not part of this release; macOS uses the heimdall-local-darwin tarball." >> "$notes_file"
+            printf '\n%s\n' "The macOS desktop app (DMG/zip/pkg) and Windows desktop update metadata are not part of this release; macOS uses the heimdall-local-darwin tarball and the Windows installer does not auto-update to it." >> "$notes_file"
           fi
           release_flags=()
           if [ "${{ inputs.draft || false }}" = "true" ]; then release_flags+=(--draft); fi
@@ -1009,9 +1018,9 @@ jobs:
           if [ "${SKIP_DARWIN_DESKTOP:-false}" != "true" ]; then
             release_assets+=(dist/Ninjy-*.dmg dist/Ninjy-*.zip dist/Ninjy-*.zip.blockmap dist/Ninjy-*.pkg)
           fi
-          release_assets+=(dist/Ninjy-*.AppImage dist/Ninjy-*.deb dist/Ninjy-*.exe dist/Ninjy-*.exe.blockmap dist/latest.yml)
+          release_assets+=(dist/Ninjy-*.AppImage dist/Ninjy-*.deb dist/Ninjy-*.exe)
           if [ "${SKIP_DARWIN_DESKTOP:-false}" != "true" ]; then
-            release_assets+=(dist/latest-mac.yml)
+            release_assets+=(dist/Ninjy-*.exe.blockmap dist/latest.yml dist/latest-mac.yml)
           fi
           release_assets+=(dist/latest-linux.yml dist/latest-linux-arm64.yml dist/SHA256SUMS dist/install.sh dist/install.ps1)
           list_release_assets() {
@@ -1067,7 +1076,7 @@ jobs:
             stale_mac_arches=()
             if [ "${SKIP_DARWIN_DESKTOP:-false}" = "true" ]; then
               stale_mac_arches=(arm64 x64)
-              stale_assets+=(latest-mac.yml)
+              stale_assets+=(latest-mac.yml latest.yml "Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.exe.blockmap")
             elif [ "$BUILD_DARWIN_X64" != "true" ]; then
               stale_mac_arches=(x64)
             fi

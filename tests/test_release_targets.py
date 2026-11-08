@@ -205,19 +205,11 @@ elif sys.argv[1:3] == ["release", "delete-asset"]:
             self.assertIn(f"Ninjy-{VERSION[1:]}-x64.exe.blockmap", names)
             self.assertEqual("-x64.zip" in (remote / "latest-mac.yml").read_text(), intel)
 
-    def windows_manifest(self):
-        """A complete latest.yml so the Windows update validation can pass."""
-        import base64, hashlib
-        name = f"Ninjy-{VERSION[1:]}-x64.exe"
-        payload = (self.work / "dist" / name).read_bytes()
-        digest = base64.b64encode(hashlib.sha512(payload).digest()).decode()
-        (self.work / "dist/latest.yml").write_text(
-            f"version: {VERSION[1:]}\nfiles:\n  - url: {name}\n    sha512: {digest}\n    size: {len(payload)}\n"
-            f"path: {name}\nsha512: {digest}\nreleaseDate: '2026-01-01T00:00:00.000Z'\n")
-
-    def drop_mac_desktop(self):
+    def drop_skipped_desktop(self):
+        """What a skip_darwin_desktop run must cope without: the macOS app and
+        all Windows update metadata (only the .exe installer remains)."""
         for path in (self.work / "dist").iterdir():
-            if path.name.startswith("latest-mac") or any(
+            if path.name in ("latest.yml", f"Ninjy-{VERSION[1:]}-x64.exe.blockmap") or path.name.startswith("latest-mac") or any(
                     path.name.startswith(f"Ninjy-{VERSION[1:]}-{arch}.{ext}")
                     for arch in ("arm64", "x64") for ext in ("dmg", "zip", "pkg")):
                 path.unlink()
@@ -255,8 +247,7 @@ elif sys.argv[1:3] == ["release", "delete-asset"]:
             shutil.rmtree(self.work / "dist")
             (self.work / "dist").mkdir()
             self.bundles(intel)
-            self.drop_mac_desktop()
-            self.windows_manifest()
+            self.drop_skipped_desktop()
             self.env["BUILD_DARWIN_X64"] = str(intel).lower()
             self.env["SKIP_DARWIN_DESKTOP"] = "false"
             self.assertNotEqual(self.run_script(script).returncode, 0)
@@ -268,6 +259,8 @@ elif sys.argv[1:3] == ["release", "delete-asset"]:
             self.assertEqual(f"heimdall-local-darwin-amd64-{VERSION}.tar.gz" in sums, intel)
             self.assertNotRegex(sums, r"Ninjy-\S+\.(dmg|zip|pkg)")
             self.assertIn(f"Ninjy-{VERSION[1:]}-x64.exe", sums)
+            self.assertNotIn(".blockmap", sums)
+            self.assertNotIn("latest", sums)
             self.assertFalse((self.work / "dist/latest-mac.yml").exists())
             self.assertEqual(self.run_script("cd dist && sha256sum -c SHA256SUMS").returncode, 0)
         # The skip still requires the darwin binaries tarball.
@@ -278,7 +271,8 @@ elif sys.argv[1:3] == ["release", "delete-asset"]:
         self.gh_stub()
         remote = self.work / "remote-assets"
         remote.mkdir()
-        stale = [f"Ninjy-{VERSION[1:]}-arm64.{ext}" for ext in ("dmg", "zip", "zip.blockmap", "pkg")] + ["latest-mac.yml"]
+        stale = [f"Ninjy-{VERSION[1:]}-arm64.{ext}" for ext in ("dmg", "zip", "zip.blockmap", "pkg")] + [
+            "latest-mac.yml", "latest.yml", f"Ninjy-{VERSION[1:]}-x64.exe.blockmap"]
         for name in stale:
             (remote / name).write_text("stale")
         (self.work / "fixture-release.json").write_text(json.dumps({
@@ -292,8 +286,10 @@ elif sys.argv[1:3] == ["release", "delete-asset"]:
         self.env.update(RELEASE_COMMIT="fixture", EXTRA_NOTES="", GITHUB_SERVER_URL="https://example.invalid",
                         GITHUB_REPOSITORY="fixture/repo", BUILD_DARWIN_X64="false", SKIP_DARWIN_DESKTOP="true")
         self.bundles()
-        self.drop_mac_desktop()
-        self.windows_manifest()
+        self.drop_skipped_desktop()
+        # Even if the Windows job's update metadata is downloaded, it is withheld.
+        for name in ["latest.yml", f"Ninjy-{VERSION[1:]}-x64.exe.blockmap"]:
+            (self.work / "dist" / name).write_text("fixture")
         for script in [workflow_script("release-local-binaries.yml", "Verify tarballs and create SHA256SUMS"),
                        re.sub(r"\$\{\{.*?\}\}", "false", workflow_script(
                            "release-local-binaries.yml", "Create or update GitHub Release"))]:
@@ -307,6 +303,10 @@ elif sys.argv[1:3] == ["release", "delete-asset"]:
         notes = (self.work / "release-notes.md").read_text()
         self.assertNotIn(".dmg", notes)
         self.assertNotIn("latest-mac.yml", notes)
+        self.assertNotIn("latest.yml", notes)
+        self.assertNotIn("block map", notes)
+        self.assertNotIn("latest.yml", names)
+        self.assertFalse(any(n.endswith(".exe.blockmap") for n in names))
         self.assertIn("heimdall-local-darwin-arm64", notes)
 
     def test_promotion_optional_asset_manifest_agreement(self):
