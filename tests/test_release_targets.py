@@ -207,9 +207,10 @@ elif sys.argv[1:3] == ["release", "delete-asset"]:
 
     def drop_skipped_desktop(self):
         """What a skip_darwin_desktop run must cope without: the macOS app and
-        all Windows update metadata (only the .exe installer remains)."""
+        all Windows/Linux update metadata (the .exe, AppImage and .deb remain)."""
         for path in (self.work / "dist").iterdir():
-            if path.name in ("latest.yml", f"Ninjy-{VERSION[1:]}-x64.exe.blockmap") or path.name.startswith("latest-mac") or any(
+            if path.name in ("latest.yml", f"Ninjy-{VERSION[1:]}-x64.exe.blockmap") or path.name.startswith(
+                    ("latest-mac", "latest-linux")) or any(
                     path.name.startswith(f"Ninjy-{VERSION[1:]}-{arch}.{ext}")
                     for arch in ("arm64", "x64") for ext in ("dmg", "zip", "pkg")):
                 path.unlink()
@@ -237,9 +238,15 @@ elif sys.argv[1:3] == ["release", "delete-asset"]:
                      "Build Ninjy AppImage and deb (Linux)"]:
             self.assertNotIn("skip_darwin_desktop", step_if(name), name)
         env = "SKIP_DARWIN_DESKTOP: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_darwin_desktop == true }}"
-        for name in ["Verify tarballs and create SHA256SUMS", "Create or update GitHub Release"]:
+        for name in ["Build Ninjy installer (Windows)", "Verify tarballs and create SHA256SUMS",
+                     "Create or update GitHub Release"]:
             block = text.split(f"      - name: {name}\n", 1)[1].split("        run: |\n", 1)[0]
             self.assertIn(env, block, name)
+        # With the skip, the Windows installer is still signed and verified but is
+        # not marked update-enabled (desktop-update-policy.cjs needs x.y.z).
+        windows = text.split("      - name: Build Ninjy installer (Windows)\n", 1)[1].split("\n      - name:", 1)[0]
+        self.assertIn("if ($env:SKIP_DARWIN_DESKTOP -ne 'true') { $env:HEIMDALL_DESKTOP_SIGNED_RELEASE = '1' }", windows)
+        self.assertIn("if ($signing.Count) {\n            $signature = Get-AuthenticodeSignature", windows)
 
     def test_skip_darwin_desktop_verify(self):
         script = workflow_script("release-local-binaries.yml", "Verify tarballs and create SHA256SUMS")
@@ -272,7 +279,8 @@ elif sys.argv[1:3] == ["release", "delete-asset"]:
         remote = self.work / "remote-assets"
         remote.mkdir()
         stale = [f"Ninjy-{VERSION[1:]}-arm64.{ext}" for ext in ("dmg", "zip", "zip.blockmap", "pkg")] + [
-            "latest-mac.yml", "latest.yml", f"Ninjy-{VERSION[1:]}-x64.exe.blockmap"]
+            "latest-mac.yml", "latest.yml", "latest-linux.yml", "latest-linux-arm64.yml",
+            f"Ninjy-{VERSION[1:]}-x64.exe.blockmap"]
         for name in stale:
             (remote / name).write_text("stale")
         (self.work / "fixture-release.json").write_text(json.dumps({
@@ -288,7 +296,7 @@ elif sys.argv[1:3] == ["release", "delete-asset"]:
         self.bundles()
         self.drop_skipped_desktop()
         # Even if the Windows job's update metadata is downloaded, it is withheld.
-        for name in ["latest.yml", f"Ninjy-{VERSION[1:]}-x64.exe.blockmap"]:
+        for name in ["latest.yml", "latest-linux.yml", "latest-linux-arm64.yml", f"Ninjy-{VERSION[1:]}-x64.exe.blockmap"]:
             (self.work / "dist" / name).write_text("fixture")
         for script in [workflow_script("release-local-binaries.yml", "Verify tarballs and create SHA256SUMS"),
                        re.sub(r"\$\{\{.*?\}\}", "false", workflow_script(
@@ -304,6 +312,10 @@ elif sys.argv[1:3] == ["release", "delete-asset"]:
         self.assertNotIn(".dmg", notes)
         self.assertNotIn("latest-mac.yml", notes)
         self.assertNotIn("latest.yml", notes)
+        self.assertNotIn("latest-linux", notes)
+        self.assertFalse(any(n.startswith("latest") for n in names))
+        for suffix in ["x86_64.AppImage", "arm64.AppImage", "amd64.deb", "arm64.deb"]:
+            self.assertIn(f"Ninjy-{VERSION[1:]}-{suffix}", names)
         self.assertNotIn("block map", notes)
         self.assertNotIn("latest.yml", names)
         self.assertFalse(any(n.endswith(".exe.blockmap") for n in names))

@@ -19,10 +19,11 @@ on:
       skip_darwin_desktop:
         # The macOS app bundle needs a numeric x.y.z[-n] version, so a release
         # such as v1.2.3-rc.subagents cannot build it, and the desktop update
-        # channel only accepts numeric versions, so Windows update metadata is
-        # withheld too (clients are never offered such a version). Tag pushes
+        # channel only accepts numeric versions, so Windows and Linux update
+        # metadata is withheld too (clients are never offered such a version)
+        # and the Windows installer is built with updates disabled. Tag pushes
         # never skip.
-        description: 'Skip the Ninjy macOS desktop app (DMG/zip/pkg) and omit Windows desktop update metadata (latest.yml, .exe.blockmap); darwin binaries and the Windows .exe are still built. Needed for non-numeric prerelease versions.'
+        description: 'Skip the Ninjy macOS desktop app (DMG/zip/pkg) and omit all desktop update metadata (latest.yml, latest-linux*.yml, .exe.blockmap); darwin binaries, the Windows .exe, AppImage and .deb are still built. Needed for non-numeric prerelease versions.'
         required: false
         default: false
         type: boolean
@@ -729,6 +730,7 @@ jobs:
           HEIMDALL_WINDOWS_PUBLISHER_NAME: ${{ vars.WINDOWS_UPDATE_PUBLISHER_NAME }}
           CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          SKIP_DARWIN_DESKTOP: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_darwin_desktop == true }}
         run: |
           scripts/release/stage-windows-desktop-resources.ps1 `
             -Bundle dist/heimdall-local-windows-amd64.zip `
@@ -743,14 +745,16 @@ jobs:
           $signing = @()
           if ($env:HEIMDALL_WINDOWS_PUBLISHER_NAME) {
             if (-not $env:CSC_LINK -or -not $env:CSC_KEY_PASSWORD) { throw 'Windows signed updates require WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD' }
-            $env:HEIMDALL_DESKTOP_SIGNED_RELEASE = '1'
+            # skip_darwin_desktop: still sign the installer, but leave its updates
+            # disabled; desktop-update-policy.cjs rejects non-numeric versions.
+            if ($env:SKIP_DARWIN_DESKTOP -ne 'true') { $env:HEIMDALL_DESKTOP_SIGNED_RELEASE = '1' }
             $signing = @('--config.forceCodeSigning=true', "--config.win.publisherName=$($env:HEIMDALL_WINDOWS_PUBLISHER_NAME)")
           }
           npx electron-builder --win nsis --x64 --publish never `
             --config.extraMetadata.version="${{ needs.prepare.outputs.clean_version }}" @signing
           if ($LASTEXITCODE) { throw "electron-builder failed with exit code $LASTEXITCODE" }
           $installer = Get-Item desktop-dist/Ninjy-*-x64.exe
-          if ($env:HEIMDALL_DESKTOP_SIGNED_RELEASE -eq '1') {
+          if ($signing.Count) {
             $signature = Get-AuthenticodeSignature $installer.FullName
             if ($signature.Status -ne 'Valid' -or -not $signature.SignerCertificate) { throw 'Installer Authenticode validation failed' }
             $publisher = $signature.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
@@ -909,8 +913,10 @@ jobs:
             require_file "Ninjy-$clean-x64.exe.blockmap"
             require_file latest.yml
           fi
-          require_file latest-linux.yml
-          require_file latest-linux-arm64.yml
+          if [ "$skip_mac_desktop" != "true" ]; then
+            require_file latest-linux.yml
+            require_file latest-linux-arm64.yml
+          fi
           if [ "$skip_mac_desktop" != "true" ]; then
             # Default metadata advertises only Apple Silicon. Opt-in Intel runs
             # retain the legacy x64 base while merging both architectures.
@@ -927,8 +933,8 @@ jobs:
             if [ -f "Ninjy-$clean-x64.zip" ]; then mac_update_arches+=(--arch x64); fi
             python3 "$GITHUB_WORKSPACE/scripts/release/validate-desktop-updates.py" . --version "$clean" --platform mac "${mac_update_arches[@]}"
           fi
-          # skip_darwin_desktop also withholds Windows update metadata: the
-          # update channel only accepts numeric versions.
+          # skip_darwin_desktop also withholds Windows and Linux update
+          # metadata: the update channel only accepts numeric versions.
           if [ "$skip_mac_desktop" != "true" ]; then
             python3 "$GITHUB_WORKSPACE/scripts/release/validate-desktop-updates.py" . --version "$clean" --platform windows --arch x64
           fi
@@ -982,8 +988,6 @@ jobs:
           NOTES
           if [ "$skip_mac_desktop" != "true" ]; then
             printf '%s\n' "- Ninjy-*.zip, latest.yml, latest-mac.yml, latest-linux*.yml and the Windows block map (desktop auto-update metadata)" >> "$notes_file"
-          else
-            printf '%s\n' "- latest-linux*.yml (Linux desktop auto-update metadata)" >> "$notes_file"
           fi
           cat >> "$notes_file" <<NOTES
           - SHA256SUMS
@@ -998,7 +1002,7 @@ jobs:
             fi
           fi
           if [ "$skip_mac_desktop" = "true" ]; then
-            printf '\n%s\n' "The macOS desktop app (DMG/zip/pkg) and Windows desktop update metadata are not part of this release; macOS uses the heimdall-local-darwin tarball and the Windows installer does not auto-update to it." >> "$notes_file"
+            printf '\n%s\n' "The macOS desktop app (DMG/zip/pkg) and desktop update metadata are not part of this release; macOS uses the heimdall-local-darwin tarball and installed desktop apps are not offered this version as an update." >> "$notes_file"
           fi
           release_flags=()
           if [ "${{ inputs.draft || false }}" = "true" ]; then release_flags+=(--draft); fi
@@ -1022,7 +1026,10 @@ jobs:
           if [ "${SKIP_DARWIN_DESKTOP:-false}" != "true" ]; then
             release_assets+=(dist/Ninjy-*.exe.blockmap dist/latest.yml dist/latest-mac.yml)
           fi
-          release_assets+=(dist/latest-linux.yml dist/latest-linux-arm64.yml dist/SHA256SUMS dist/install.sh dist/install.ps1)
+          if [ "${SKIP_DARWIN_DESKTOP:-false}" != "true" ]; then
+            release_assets+=(dist/latest-linux.yml dist/latest-linux-arm64.yml)
+          fi
+          release_assets+=(dist/SHA256SUMS dist/install.sh dist/install.ps1)
           list_release_assets() {
             gh release view "$VERSION" --json assets --jq '.assets[].name' > "$RUNNER_TEMP/existing-release-assets.txt"
           }
@@ -1076,7 +1083,7 @@ jobs:
             stale_mac_arches=()
             if [ "${SKIP_DARWIN_DESKTOP:-false}" = "true" ]; then
               stale_mac_arches=(arm64 x64)
-              stale_assets+=(latest-mac.yml latest.yml "Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.exe.blockmap")
+              stale_assets+=(latest-mac.yml latest.yml latest-linux.yml latest-linux-arm64.yml "Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.exe.blockmap")
             elif [ "$BUILD_DARWIN_X64" != "true" ]; then
               stale_mac_arches=(x64)
             fi
