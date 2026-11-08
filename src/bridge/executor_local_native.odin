@@ -178,23 +178,57 @@ bridge_executor_local_retry_matches :: proc(draft:executor.Local_Draft,command:s
 
 
 // A launch that could not start reports a typed failure against the epoch the
-// Hub is waiting on. It never declares a possibly live older child dead.
+// Hub is waiting on. It never declares a possibly live older child dead. The
+// pending epoch is set before record_failure advances state_seq and queues the
+// push, so the pushed report always carries the new epoch.
 bridge_executor_local_note_failure :: proc(command,detail:string,err:Bridge_Error) {
     instance:=extract_json_string(command,"agent_instance_id","");defer delete(instance)
     status,activity,found:=bridge_runtime_status_snapshot(instance)
     defer {delete(status);delete(activity)}
     if found && (status=="running" || status=="starting" || status=="busy" || status=="idle") do return
     bridge_runtime_set_status(instance,"failed","idle")
-    bridge_runtime_record_failure(instance,err,detail)
     epoch:=extract_json_string(command,"launch_epoch","");defer delete(epoch)
     sync.mutex_lock(&bridge_runtime_mutex)
     for &inst in bridge_runtime_instances {
         if inst.agent_instance_id==instance {
-            inst.pending_launch_epoch=strings.clone(epoch,runtime.default_allocator())
+            if inst.pending_launch_epoch!=epoch {
+                old:=inst.pending_launch_epoch
+                inst.pending_launch_epoch=strings.clone(epoch,runtime.default_allocator())
+                if old!="" do delete(old,runtime.default_allocator())
+            }
             break
         }
     }
     sync.mutex_unlock(&bridge_runtime_mutex)
+    bridge_runtime_record_failure(instance,err,detail)
+}
+
+// A permanent refusal: retrying the same generation can never succeed, so the
+// Hub must not auto-retry it; a relaunch issues a fresh generation instead.
+bridge_executor_local_refusal :: proc()->Bridge_Error {
+    e:=bridge_error(.agent_launch_failed,.denied)
+    e.class=.fatal
+    return e
+}
+
+// Maps a launch outcome code to the reported detail and typed error class.
+// Transient conditions (a still-live previous child, an unreachable or
+// uncertain daemon) are retriable; generation-level refusals are fatal.
+bridge_executor_local_failure :: proc(code:string)->(string,Bridge_Error) {
+    switch code {
+    case "vault_locked": return "unlock the execution device",bridge_error(.agent_launch_failed,.denied)
+    case "instance_not_drained","executor_uncertain","child_absent","startup_identity_not_current","observation_not_committed","local_admission_not_current":
+        return code,bridge_error(.agent_launch_failed,.other,retry_after_ms=5_000)
+    case "invalid_resources": return "provider profile or project directory changed; relaunch",bridge_executor_local_refusal()
+    case "launch_generation_closed": return "this launch generation already ran; relaunch the agent",bridge_executor_local_refusal()
+    case "superseded": return "superseded startup generation",bridge_executor_local_refusal()
+    case "draft_generation_conflict": return "draft_generation_conflict",bridge_executor_local_refusal()
+    case "draft_cancelled": return "draft_cancelled",bridge_executor_local_refusal()
+    case "retention_capacity": return "retention_capacity",bridge_executor_local_refusal()
+    case "outside_root": return "project path is not an existing directory inside this Bridge's filesystem root",bridge_executor_local_refusal()
+    case "generation_required": return "exact instance and positive launch generation required",bridge_executor_local_refusal()
+    }
+    return code,bridge_error(.agent_launch_failed,.other)
 }
 
 // Canonical existing project directory inside this Bridge's filesystem root.
@@ -210,11 +244,14 @@ bridge_executor_local_directory_digest :: proc(path:string)->string {
     return "" if path=="" else contracts.owner_payload_digest(path)
 }
 
-// Every ordinary launch (manual, warm wake, task-dispatched worker/reviewer,
-// provider test) arrives as a Hub command relayed from the user's trusted
-// device. The Bridge stages one exact native generation (retained token and
-// command), admits it itself and dispatches the exact child. No device
-// approval, slot policy, capacity or signed directory mapping is consulted.
+// Every Hub-issued launch (manual launch, Hub wake_agent warm/task wake of a
+// worker or reviewer, provider test) arrives as a Hub-built launch_agent JSON
+// command over the Bridge's authenticated Hub connection: the Hub is the
+// launch authority. (A purely local scheduler wake without a Hub generation
+// carries run_count=0 and is refused here.) The Bridge stages one exact
+// native generation (retained token and command), admits it itself and
+// dispatches the exact child. No device approval, slot policy, capacity or
+// signed directory mapping is consulted.
 bridge_executor_local_stage :: proc(command:string,purpose:string,io:Executor_Local_IO={nil,bridge_executor_local_files,""},origin:Executor_Legacy_Origin={},observation_action:executor.Legacy_Action={},observation_entry_index:i64= -1,observation_entry_digest:string="")->(bool,string,Bridge_Error) {
     context.allocator=context.temp_allocator
     generation:=bridge_task_chain_search_generation()
@@ -231,7 +268,10 @@ bridge_executor_local_stage :: proc(command:string,purpose:string,io:Executor_Lo
     source:=bridge_executor_local_source(command,purpose)
     draft,found:=executor.local_draft_source(s,source)
     if found {
-        if !bridge_executor_local_retry_matches(draft,command) do return false,"draft_generation_conflict",bridge_error(.agent_launch_failed,.denied)
+        if !bridge_executor_local_retry_matches(draft,command) {
+            detail,err:=bridge_executor_local_failure("draft_generation_conflict")
+            return false,detail,err
+        }
     } else {
         staged,detail,err:=bridge_executor_local_stage_draft(s,command,purpose,source,account,origin,generation)
         if !staged.ok do return false,detail,err
@@ -239,16 +279,9 @@ bridge_executor_local_stage :: proc(command:string,purpose:string,io:Executor_Lo
     }
     if !bridge_legacy_observe_draft(s,origin,command,draft.id) || !bridge_legacy_action_observe_selected_draft(s,observation_action,command,draft.id,observation_entry_index,observation_entry_digest) do return false,"legacy_observation_unavailable",bridge_error(.agent_launch_failed,.denied)
     code:=bridge_executor_local_launch_native(s,draft,generation,io)
-    switch code {
-    case "ok": return true,"",{}
-    case "vault_locked": return false,"unlock the execution device",bridge_error(.agent_launch_failed,.denied)
-    case "instance_not_drained","executor_uncertain","child_absent","startup_identity_not_current":
-        return false,code,bridge_error(.agent_launch_failed,.other,retry_after_ms=5_000)
-    case "invalid_resources": return false,"provider profile or project directory changed; relaunch",bridge_error(.agent_launch_failed,.denied)
-    case "launch_generation_closed": return false,"this launch generation already ran; relaunch the agent",bridge_error(.agent_launch_failed,.denied)
-    case "superseded": return false,"superseded startup generation",bridge_error(.agent_launch_failed,.denied)
-    }
-    return false,code,bridge_error(.agent_launch_failed,.other)
+    if code=="ok" do return true,"",{}
+    detail,err:=bridge_executor_local_failure(code)
+    return false,detail,err
 }
 
 Executor_Local_Staged :: struct {draft:executor.Local_Draft,ok:bool}
@@ -266,16 +299,23 @@ bridge_executor_local_stage_draft :: proc(s:^executor.Store,command,purpose,sour
     permission:=extract_json_string(command,"permission_mode","");defer delete(permission)
     run,_:=bridge_provider_json_extract_int(command,"run_count")
     if !contracts.owner_field_valid(d.instance_id,"id") || run<=0 || provider=="" || model=="" {
-        return {},"exact instance and positive launch generation required",bridge_error(.agent_launch_failed,.denied)
+        detail,err:=bridge_executor_local_failure("generation_required")
+        return {},detail,err
     }
-    if run<bridge_agent_instance_run_count(d.instance_id) do return {},"superseded startup generation",bridge_error(.agent_launch_failed,.denied)
+    if run<bridge_agent_instance_run_count(d.instance_id) {
+        detail,err:=bridge_executor_local_failure("superseded")
+        return {},detail,err
+    }
     if _,active:=bridge_provider_catalog_profile(provider);!active do return {},"provider unavailable",bridge_error(.agent_launch_failed,.unsupported)
     pp,e:=profile_lookup(provider,profile,prepare_runtime=false)
     if e!=.None || !pp.enabled || !profile_has_model(&pp,provider,model) do return {},"provider profile unavailable",bridge_error(.agent_launch_failed,.unsupported)
     path:=""
     if d.project_path!="" {
         canonical,within:=bridge_executor_project_directory(d.project_path)
-        if !within do return {},"project path is not an existing directory inside this Bridge's filesystem root",bridge_error(.agent_launch_failed,.denied)
+        if !within {
+            detail,err:=bridge_executor_local_failure("outside_root")
+            return {},detail,err
+        }
         path=canonical
     }
     seed:[32]byte
@@ -310,7 +350,10 @@ bridge_executor_local_stage_draft :: proc(s:^executor.Store,command,purpose,sour
     material:=executor.encode(Executor_Local_Material{command,token,assertion,endpoint,run_dir,provider,model,pp.profile_id,permission,d.display_name,purpose,run,request,observed})
     defer crypto.zero_explicit(raw_data(material),len(material))
     draft,staged:=executor.stage_local_draft(s,source,executor.encode(c),material)
-    if staged!="ok" do return {},staged,bridge_error(.agent_launch_failed,.other)
+    if staged!="ok" {
+        detail,err:=bridge_executor_local_failure(staged)
+        return {},detail,err
+    }
     return {draft,true},"",{}
 }
 
@@ -374,6 +417,9 @@ bridge_executor_local_launch_native :: proc(s:^executor.Store,draft:executor.Loc
     if current.launch_id=="" {
         bridge_executor_local_drain_instance(s,m.request.instance,"",socket)
         admitted:=executor.authorize_native_local(s,current.id,bridge_executor_physical_clock(nil),resources)
+        // Staged by an earlier journal incarnation (Bridge restart) and never
+        // admitted: its configuration can never match again. Closed, not stuck.
+        if admitted.code=="stale_incarnation" do return "launch_generation_closed"
         if admitted.code!="ok" do return admitted.code
         current,loaded=executor.local_draft_native(s,draft.id)
         if !loaded || current.launch_id=="" do return "storage_error"
@@ -382,6 +428,9 @@ bridge_executor_local_launch_native :: proc(s:^executor.Store,draft:executor.Loc
     if !ready do return "storage_error"
     if launch.state=="released" || launch.state=="stopping" do return "launch_generation_closed"
     if launch.state=="admitted" {
+        // A retried admission (instance_not_drained, uncertain daemon) must
+        // also release what an older generation of this instance still holds.
+        bridge_executor_local_drain_instance(s,m.request.instance,launch.id,socket)
         listed,read:=bridge_pty_host_list(socket)
         if !read do return "executor_uncertain"
         occupied:=false
@@ -400,11 +449,24 @@ bridge_executor_local_launch_native :: proc(s:^executor.Store,draft:executor.Loc
         descriptor:=bridge_bootstrap_descriptor_from_launch(m.command)
         bridge_runtime_set_pty_process_alive(launch.instance,true)
         bridge_startup_spawned(launch.instance,m.token,pid)
-        bridge_runtime_record_launch(Bridge_Runtime_Launch{agent_id=strings.clone(descriptor.agent_id,runtime.default_allocator()),agent_instance_id=strings.clone(launch.instance,runtime.default_allocator()),
-            run_dir=strings.clone(m.run_dir,runtime.default_allocator()),project_path=strings.clone(descriptor.project_path,runtime.default_allocator()),agent_token=strings.clone(m.token,runtime.default_allocator()),
-            pane_id=strings.clone(fmt.tprintf("pty-host:%d",pid),runtime.default_allocator()),provider_sym=contracts.bridge_log_provider_sym(m.provider),launched_at_ns=time.tick_now()._nsec})
+        pane:=fmt.tprintf("pty-host:%d",pid)
+        // A retry that only re-observes the same live child keeps its launch
+        // record, tool-activity state and wake bookkeeping untouched.
+        if !bridge_executor_local_launch_recorded(launch.instance,pane,m.token) {
+            project:=""
+            if descriptor.project_path!="" {project,_=bridge_executor_project_directory(descriptor.project_path)}
+            bridge_runtime_record_launch(Bridge_Runtime_Launch{agent_id=strings.clone(descriptor.agent_id,runtime.default_allocator()),agent_instance_id=strings.clone(launch.instance,runtime.default_allocator()),
+                run_dir=strings.clone(m.run_dir,runtime.default_allocator()),project_path=strings.clone(project,runtime.default_allocator()),agent_token=strings.clone(m.token,runtime.default_allocator()),
+                pane_id=strings.clone(pane,runtime.default_allocator()),provider_sym=contracts.bridge_log_provider_sym(m.provider),launched_at_ns=time.tick_now()._nsec})
+            bridge_task_wake_note_launched(launch.instance)
+        }
         bridge_pty_host_events_ensure()
-        bridge_task_wake_note_launched(launch.instance)
     }
     return "ok"
+}
+
+bridge_executor_local_launch_recorded :: proc(instance,pane,token:string)->bool {
+    sync.mutex_lock(&bridge_runtime_mutex);defer sync.mutex_unlock(&bridge_runtime_mutex)
+    for l in bridge_runtime_launches do if l.agent_instance_id==instance do return l.pane_id==pane && l.agent_token==token
+    return false
 }

@@ -419,3 +419,26 @@ test_err_proto_failed_stop_never_stays_stopping :: proc(t: ^testing.T) {
 	testing.expect_value(t, status2, "running")
 	testing.expect_value(t, activity2, "busy")
 }
+
+// Generation-level launch refusals are fatal so the Hub never auto-retries the
+// same generation; transient conditions stay retriable.
+@(test)
+test_executor_local_failure_codes_map_to_classes :: proc(t: ^testing.T) {
+	fatal := []string{"superseded", "launch_generation_closed", "draft_generation_conflict", "outside_root", "retention_capacity", "draft_cancelled", "generation_required", "invalid_resources"}
+	for code in fatal {
+		_, err := bridge_executor_local_failure(code)
+		testing.expectf(t, err.class == .fatal, "%s must be fatal, got %v", code, err.class)
+	}
+	retriable := []string{"instance_not_drained", "executor_uncertain", "child_absent", "startup_identity_not_current", "observation_not_committed"}
+	for code in retriable {
+		_, err := bridge_executor_local_failure(code)
+		testing.expectf(t, err.class == .retriable, "%s must be retriable, got %v", code, err.class)
+	}
+	detail, closed := bridge_executor_local_failure("launch_generation_closed")
+	testing.expect(t, strings.contains(detail, "relaunch") && closed.reason == .denied, detail)
+	// The class survives onto the wire the Hub reads.
+	wire := bridge_command_failed_json("cmd_closed", bridge_error_wire(closed, detail), "failed")
+	defer delete(wire)
+	werr, found := contracts.wire_error_parse(wire, context.temp_allocator)
+	testing.expect(t, found && werr.class == .fatal, wire)
+}

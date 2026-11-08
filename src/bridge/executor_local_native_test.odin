@@ -207,6 +207,20 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="")
     probe.disable_catalog=false
     _,old_valid=bridge_agent_token_verify(previous.plaintext_token)
     testing.expect(t,old_valid && os.exists(marker))
+    // Restart with the first generation still only admitted: reopening the
+    // journal releases it, and a retry of that generation is a fatal (never
+    // auto-retried) "generation already ran" instead of a stuck instance.
+    executor.close(&bridge_executor_store)
+    if !testing.expect(t,bridge_executor_open(TEST_VAULT_USER_ID,key_id)) do return
+    reopened,_:=executor.local_launch(&bridge_executor_store,first_launch.id)
+    testing.expect_value(t,reopened.state,"released")
+    closed,closed_detail,closed_err:=bridge_executor_local_stage(command_json,"provider_test",{&probe,bridge_executor_local_test_files,absent})
+    testing.expect(t,!closed && strings.contains(closed_detail,"already ran") && closed_err.class==.fatal,closed_detail)
+    rows,_=executor.query(bridge_executor_store.db,"SELECT count(*) FROM executor_local_launches WHERE instance_id=? AND state!='released'",instance)
+    testing.expect_value(t,rows[0][0],"0")
+    // A generation staged before the restart but never admitted is closed too.
+    stale,stale_detail,stale_err:=bridge_executor_local_stage(next_command,"provider_test",{&probe,bridge_executor_local_test_files,absent})
+    testing.expect(t,!stale && strings.contains(stale_detail,"already ran") && stale_err.class==.fatal,stale_detail)
 
     binary:=os.get_env("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)
     if binary=="" {
@@ -222,6 +236,7 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="")
     for _ in 0..<100 {if bridge_pty_host_ping(socket) {daemon_ready=true;break};time.sleep(10*time.Millisecond)}
     if !testing.expect(t,daemon_ready) do return
     probe.socket=socket
+    live_command,_:=strings.replace_all(command_json,`"run_count":1`,`"run_count":3`,context.temp_allocator)
     // The native endpoint is already running in production. Keep this hermetic
     // provider-test child isolated from the host Bridge's listeners and vault.
     saved_started,saved_endpoint:=bridge_runtime_local_endpoint_started,bridge_runtime_local_endpoint_descriptor
@@ -235,14 +250,14 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="")
     // Force a lost local observation after the physical Spawn. The committed
     // admission must never cause a second Spawn.
     testing.expect(t,executor.exec(bridge_executor_store.db,"CREATE TRIGGER fail_native_observe BEFORE INSERT ON executor_local_observations BEGIN SELECT RAISE(ABORT,'lost native observation'); END"))
-    launched,launch_detail,_:=bridge_executor_local_stage(next_command,"provider_test",{&probe,bridge_executor_local_test_files,socket})
+    launched,launch_detail,_:=bridge_executor_local_stage(live_command,"provider_test",{&probe,bridge_executor_local_test_files,socket})
     testing.expect(t,!launched && launch_detail=="observation_not_committed",launch_detail)
     released,_:=executor.local_launch(&bridge_executor_store,first_launch.id)
     testing.expect_value(t,released.state,"released")
-    draft,found=executor.local_draft_source(&bridge_executor_store,bridge_executor_local_source(next_command,"provider_test"))
+    draft,found=executor.local_draft_source(&bridge_executor_store,bridge_executor_local_source(live_command,"provider_test"))
     if !testing.expect(t,found && draft.launch_id!="") do return
     m,material_ok=bridge_executor_local_material(draft)
-    testing.expect(t,material_ok && m.run_count==2)
+    testing.expect(t,material_ok && m.run_count==3)
     launch,_:=executor.local_launch(&bridge_executor_store,draft.launch_id)
     pid,known:=bridge_pty_host_executor_query(socket,launch.instance,launch.launch_key)
     if !testing.expect(t,known && pid>0) do return
@@ -253,7 +268,7 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="")
     testing.expect(t,new_active,"native dispatch activates the retained random token")
     testing.expect(t,!os.exists(marker),"native dispatch replaces previous bootstrap")
     testing.expect(t,executor.exec(bridge_executor_store.db,"DROP TRIGGER fail_native_observe"))
-    resumed,_,_:=bridge_executor_local_stage(next_command,"provider_test",{&probe,bridge_executor_local_test_files,socket})
+    resumed,_,_:=bridge_executor_local_stage(live_command,"provider_test",{&probe,bridge_executor_local_test_files,socket})
     testing.expect(t,resumed,"native retry observes the exact child")
     same_pid,same_known:=bridge_pty_host_executor_query(socket,launch.instance,launch.launch_key)
     testing.expect(t,same_known && same_pid==pid,"native retry cannot replace the exact live child")
@@ -265,7 +280,7 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="")
     busy_reply:=bridge_executor_operator_handle("busy-policy","executor.operator.install",busy_params)
     testing.expect(t,!strings.contains(busy_reply,"resources_not_drained"),busy_reply)
     // A newer generation for the same live instance waits for the exact child.
-    third_command,_:=strings.replace_all(command_json,`"run_count":1`,`"run_count":3`,context.temp_allocator)
+    third_command,_:=strings.replace_all(command_json,`"run_count":1`,`"run_count":4`,context.temp_allocator)
     blocked,blocked_detail,_:=bridge_executor_local_stage(third_command,"provider_test",{&probe,bridge_executor_local_test_files,socket})
     testing.expect(t,!blocked && blocked_detail=="instance_not_drained",blocked_detail)
     same_pid,same_known=bridge_pty_host_executor_query(socket,launch.instance,launch.launch_key)
@@ -277,6 +292,18 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="")
     rows,_=executor.query(bridge_executor_store.db,"SELECT state FROM executor_local_launches WHERE launch_id=?",launch.id);testing.expect_value(t,rows[0][0],"released")
     stopped,stopped_known:=bridge_pty_host_executor_query(socket,launch.instance,launch.launch_key)
     testing.expect(t,stopped_known && stopped==0)
+    // The same newer generation retried after instance_not_drained now starts.
+    unblocked,unblocked_detail,_:=bridge_executor_local_stage(third_command,"provider_test",{&probe,bridge_executor_local_test_files,socket})
+    testing.expect(t,unblocked,unblocked_detail)
+    third_draft,third_found:=executor.local_draft_source(&bridge_executor_store,bridge_executor_local_source(third_command,"provider_test"))
+    if testing.expect(t,third_found && third_draft.launch_id!="") {
+        third_launch,_:=executor.local_launch(&bridge_executor_store,third_draft.launch_id)
+        third_pid,third_known:=bridge_pty_host_executor_query(socket,third_launch.instance,third_launch.launch_key)
+        testing.expect(t,third_known && third_pid>0)
+        testing.expect(t,executor.stop_local_launch(&bridge_executor_store,third_launch))
+        _,_=bridge_executor_local_reconcile_batch(&bridge_executor_store,socket,"")
+        if third_pid>0 do bridge_shell_test_kill_pid(int(third_pid))
+    }
 
     // Ordinary manual launch uses the real conditional bootstrap HTTP path,
     // cached content-addressed template, native materializer and daemon Spawn.

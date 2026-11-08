@@ -193,29 +193,39 @@ executor_local_final_dispatch_checks_recovery_and_clock :: proc(t:^testing.T) {
     testing.expect_value(t,local_admit(f,stale,local_resources(c),1200).code,"stale_incarnation")
 }
 
-// A restart retains abandoned admissions until an explicit exact cancel.
-// Cancellation is never a substitute for observing a possibly dispatched child.
+// An admission never dispatched by the previous incarnation has no child and
+// can never be dispatched again: reopening releases it, so the instance is not
+// held and the same generation is reported closed rather than stuck.
 @(test)
-executor_local_abandoned_admission_reopen_exact_cancel :: proc(t:^testing.T) {
+executor_local_restart_releases_undispatched_admission :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
     f:=fixture(t);defer destroy(f)
     d,_,r:=local_inputs(t,f)
     launch:=local_snapshot(t,f,local_admit(f,d,r))
+    // A dispatched sibling of another instance must survive the reopen.
+    other,_,ro:=local_inputs(t,f,source="other",instance="other_instance")
+    dispatched:=local_snapshot(t,f,local_admit(f,other,ro))
+    testing.expect(t,local_begin_dispatch(&f.store,dispatched,1100,ro))
     close(&f.store)
     if !testing.expect(t,open(&f.store,f.path,"account","executor","operator")) do return
-    testing.expect(t,complete_recovery(&f.store,9000))
-    recovered,found:=local_launch(&f.store,launch.id)
-    testing.expect(t,found && recovered.state=="admitted")
-    // The old incarnation's admission is fenced from first I/O after restart.
-    testing.expect(t,!local_begin_dispatch(&f.store,recovered,9000,r))
+    released,found:=local_launch(&f.store,launch.id)
+    testing.expect(t,found && released.state=="released")
+    kept,_:=local_launch(&f.store,dispatched.id)
+    testing.expect_value(t,kept.state,"dispatching")
     testing.expect_value(t,local_live(f),"1")
-    testing.expect(t,!cancel_local_admission(&f.store,"unrelated_launch"))
-    testing.expect(t,cancel_local_admission(&f.store,launch.id))
-    testing.expect_value(t,local_live(f),"0")
-    // Re-authorizing the same generation cannot restore a released admission.
+    testing.expect(t,complete_recovery(&f.store,9000)==false)
+    testing.expect(t,!local_begin_dispatch(&f.store,released,9000,r))
+    // Retrying the same generation returns the released admission (closed).
     replay:=local_admit(f,d,r,9000)
     testing.expect(t,replay.code=="ok" && body_field(replay,"state")=="released")
-    testing.expect(t,!local_begin_dispatch(&f.store,recovered,9000,r))
+    // Recovery waits only for the dispatched child's exact observation.
+    testing.expect(t,observe_local_child(&f.store,kept,Child_Observation{kept.instance,kept.launch_key,2,true}))
+    testing.expect(t,complete_recovery(&f.store,9000))
+    // A newer generation of the instance is admitted immediately.
+    c:=document("local_configuration");set(c,"executor_incarnation","2")
+    next,code:=stage_local_draft(&f.store,contracts.owner_payload_digest("native-generation-2"),encode(c),"{}")
+    testing.expect_value(t,code,"ok")
+    testing.expect_value(t,local_admit(f,next,local_resources(c),9000).code,"ok")
 }
 
 @(test)

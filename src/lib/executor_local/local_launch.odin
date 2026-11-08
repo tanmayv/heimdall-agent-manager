@@ -105,9 +105,10 @@ local_dispatch_current :: proc(s:^Store,launch:Local_Launch,now:i64)->bool {
     return ok && len(rows)==1 && local_native_consent(rows[0][0])
 }
 
-// The Bridge's own admission record. It carries no device signature: the
-// launch command already arrived over the trusted Hub path (vault-encrypted
-// payload from the user's device, or the owner Bridge's signed dispatch).
+// The Bridge's own admission record. It carries no device signature. The
+// launch command is Hub-built JSON (launch_agent / wake_agent) received over
+// this Bridge's authenticated Hub connection: the Hub is the launch
+// authority, exactly as for every other Hub runtime command.
 LOCAL_NATIVE_PRINCIPAL :: "native"
 LOCAL_NATIVE_SLOT :: "native_local"
 local_native_consent :: proc(raw:string)->bool {

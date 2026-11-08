@@ -69,7 +69,11 @@ open :: proc(s:^Store,path,account,executor,operator_key:string)->bool {
         if version<14 && !exec(s.db,string(#load("migration_014.sql"))) do return false
         if version<15 && !exec(s.db,string(#load("migration_015.sql"))) do return false
         if version<16 && !exec(s.db,string(#load("migration_016.sql"))) do return false
-        if !exec(s.db,"UPDATE executor_runtime SET incarnation=incarnation+1,recovery_state='reconciling'; UPDATE executor_reservations SET state='released' WHERE state='prepared';") do return false
+        // An admitted local launch never consumed first I/O (dispatching is
+        // committed before any daemon call), so it has no child. The previous
+        // incarnation can never dispatch it: release it so the instance is not
+        // held and a retry reports the generation as closed.
+        if !exec(s.db,"UPDATE executor_runtime SET incarnation=incarnation+1,recovery_state='reconciling'; UPDATE executor_reservations SET state='released' WHERE state='prepared'; UPDATE executor_local_launches SET state='released' WHERE state='admitted';") do return false
     }
     rows,read:=query(s.db,"SELECT incarnation FROM executor_runtime WHERE singleton=1")
     if !read || len(rows)!=1 || !exec(s.db,"COMMIT") do return false

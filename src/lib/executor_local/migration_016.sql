@@ -35,7 +35,7 @@ BEGIN SELECT RAISE(ABORT,'immutable executor identity or version'); END;
 CREATE TRIGGER runtime_no_delete BEFORE DELETE ON executor_runtime BEGIN SELECT RAISE(ABORT,'immutable executor identity'); END;
 INSERT INTO executor_runtime SELECT singleton,16,account_id,executor_bridge_id,operator_key_id,incarnation,clock_high_ms,recovery_state,policy_revision,device_capacity FROM executor_runtime_v15;
 DROP TABLE executor_runtime_v15;
-INSERT OR IGNORE INTO executor_slots VALUES('native_local','',0);
+INSERT INTO executor_slots VALUES('native_local','',0) ON CONFLICT(slot_id) DO UPDATE SET provider_profile='',enabled=0;
 CREATE VIEW executor_live_resources AS
  SELECT slot_id,instance_id,directory_key FROM executor_reservations WHERE state!='released'
  UNION ALL SELECT slot_id,instance_id,directory_key FROM executor_local_launches WHERE state!='released' AND slot_id!='native_local';

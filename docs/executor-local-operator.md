@@ -5,15 +5,18 @@ per-launch browser approval. A manual launch from the conversation page, a warm
 wake, a task-dispatched worker or reviewer, and a managed provider test all
 start directly on any enrolled, unlocked Bridge.
 
-## Why this is safe enough
+## Trust model
 
-The launch command reaches the Bridge only over the trusted path: the Hub relays
-it from the user's own trusted device (the launch payload is vault-encrypted for
-the account), and for Bridge-owned chains it is the owner Bridge's own signed
-dispatch. The earlier local launch guard (an operator-signed slot policy, an
+The launch command is Hub-built JSON (`launch_agent`, or a `wake_agent` run
+entry) delivered over the Bridge's authenticated, enrolled Hub connection. The
+Hub is the launch authority, exactly as it already is for every other runtime
+command (stop, wake, nudge). The payload is not a device-signed or
+device-encrypted consent; the Bridge does not verify a browser signature per
+launch. The earlier local launch guard (an operator-signed slot policy, an
 operator-signed protected directory mapping and a browser "Prepare review" /
-"Approve exact launch" step for every launch) is removed. Product decision:
-encrypted launch payloads from a trusted device are sufficient authorization.
+"Approve exact launch" step for every launch) is removed by product decision.
+A local scheduler wake that has no Hub-issued generation (`run_count` 0) is
+refused.
 
 ## What the Bridge still checks before starting a child
 
@@ -26,7 +29,10 @@ encrypted launch payloads from a trusted device are sufficient authorization.
 - The provider is enabled in the provider catalog and the selected provider
   profile is enabled and offers the requested model.
 - The launch generation (`run_count`) is current. An older generation is
-  refused as superseded; a generation that already ran is not started again.
+  refused as superseded; a generation that already ran (or whose undispatched
+  admission was released by a Bridge restart) is not started again. These
+  refusals are reported as fatal so the Hub does not auto-retry them; a
+  relaunch issues a new generation.
 - One exact live child per instance. A newer generation for an instance whose
   previous child is still alive waits (`instance_not_drained`) until that child
   is stopped or observed absent.
