@@ -105,6 +105,13 @@ complete_check :: proc(s:^Store,chain,task:string,agent:Child) -> (code,reason:s
         if !hread do return "storage_error",""
         if len(heads)!=1 || heads[0][0]=="" do return "operation_conflict","merge_policy git needs a submitted head"
     }
+    // The user's explicit rejection of the latest attempt stands: a device
+    // request_changes on it (the task went back to ready, or the verdict
+    // waits under a hold) is never overridden by force-done. A new
+    // submission (a new attempt) follows the normal rules.
+    rejected,rread:=query(s.db,"SELECT 1 FROM local_reviews WHERE chain_id=? AND task_id=? AND attempt=? AND principal_kind='device' AND verdict='request_changes' LIMIT 1",chain,task,attempt)
+    if !rread do return "storage_error",""
+    if len(rejected)>0 do return "invalid_scope","the user requested changes on the latest attempt; force-done never overrides the user's verdict"
     required,approved,gate_ok:=complete_user_gate(s,chain,task,attempt if state=="in_review" else "0")
     if !gate_ok do return "storage_error",""
     if required && !approved do return "invalid_scope","the task requires the user's approval (device-signed review); force-done never skips it"
@@ -129,12 +136,10 @@ complete_command :: proc(s:^Store,c,p:json.Object,reason:string,seq:i64,agent:Ch
     }
     // Bound to the attempt and head the coordinator saw.
     if attempt!=field(p,"attempt") || head!=field(p,"head") do return "stale_revision",nil
-    skipped:=[]string{"independent_review"}
-    if state=="in_review" {
-        list,read:=complete_skipped_gates(s,chain,task,attempt,config)
-        if !read do return "storage_error",nil
-        skipped=list
-    }
+    // Every agent review the gate would still wait for: the independent
+    // review and each owed role pair (a ready task owes all of them).
+    skipped,skipped_read:=complete_skipped_gates(s,chain,task,attempt if state=="in_review" else "0",config)
+    if !skipped_read do return "storage_error",nil
     next:="merge_pending" if field(config,"merge_policy")=="git" else "done"
     // Any live lease (a ready task) ends; review sessions close.
     if !control_revoke(s,c,seq,"stop") do return "storage_error",nil
@@ -156,7 +161,7 @@ force_submit_command :: proc(s:^Store,c,p:json.Object,reason:string,seq:i64,sour
     if !checked do return "storage_error",nil
     if generated do return "operation_conflict",nil
     if !control_ready(s,chain,task) do return "operation_conflict",nil
-    config,_,configured:=lifecycle_config(s,chain,task)
+    config,binding,configured:=lifecycle_config(s,chain,task)
     if !configured do return "invalid_scope",nil
     req,has_req:=lifecycle_requirements(s,chain,task)
     if !has_req || req[0]!=field(p,"requirements_revision") do return "stale_revision",nil
@@ -177,9 +182,20 @@ force_submit_command :: proc(s:^Store,c,p:json.Object,reason:string,seq:i64,sour
     if !live_read do return "storage_error",nil
     revoked:=len(live)>0
     if revoked && !control_revoke(s,c,seq,"stop") do return "storage_error",nil
-    last,last_read:=query(s.db,"SELECT lease_id,instance_id,launch_epoch,token_generation,run_count FROM local_leases WHERE chain_id=? AND task_id=? AND retired_seq IS NOT NULL ORDER BY retired_seq DESC,rowid DESC LIMIT 1",chain,task)
+    last,last_read:=query(s.db,"SELECT lease_id,instance_id,launch_epoch,token_generation,run_count,configuration_revision FROM local_leases WHERE chain_id=? AND task_id=? AND retired_seq IS NOT NULL ORDER BY retired_seq DESC,rowid DESC LIMIT 1",chain,task)
     if !last_read || len(last)!=1 do return "storage_error",nil
     lease:=last[0][0]
+    // The bound lease belongs to the current configuration (lease.submit
+    // parity, lifecycle_agent.odin): it was granted under the current fleet
+    // revision, its holder is the configured author and never the reviewer.
+    // After a reassignment the old holder's work is not submitted under the
+    // new author's name.
+    fleet_rev,fleet_read:=query(s.db,"SELECT configuration_revision FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task)
+    if !fleet_read do return "storage_error",nil
+    if len(fleet_rev)!=1 || fleet_rev[0][0]!=last[0][5] do return "operation_conflict",nil
+    bound_author,author_parsed:=contracts.owner_request_document(binding[1]);author_obj,is_obj:=bound_author.(json.Object)
+    if !author_parsed || !is_obj || field(author_obj,"instance")!=last[0][1] do return "operation_conflict",nil
+    if last[0][1]==field(config,"reviewer_instance_id") do return "operation_conflict",nil
     // That lease already produced a submission: nothing new to bind.
     used,used_read:=query(s.db,"SELECT 1 FROM local_submissions WHERE lease_id=?",lease)
     if !used_read do return "storage_error",nil
@@ -356,7 +372,14 @@ split_command :: proc(s:^Store,c:json.Object,command_raw,payload,body:string,seq
     if _,ok:=query(s.db,"UPDATE lifecycle_state SET state='ready' WHERE chain_id=? AND task_id=?",chain,task);!ok do return "storage_error",nil
     if !control_record(s,c,doc(map[string]string{"summary"=summary,"destination_task_id"=ids[0]}),seq) do return "storage_error",nil
     if _,ok:=query(s.db,"UPDATE tasks SET revision=revision+1 WHERE chain_id=? AND task_id=?",chain,task);!ok do return "storage_error",nil
-    return "ok",doc(map[string]string{"children"=strings.join(ids[:],",",context.temp_allocator),"dependents"=mode,"original_state"="cancelled"})
+    out:=doc(map[string]string{"children"=strings.join(ids[:],",",context.temp_allocator),"dependents"=mode,"original_state"="cancelled"})
+    runs,runs_read:=work_run_dependents(s,chain,task)
+    if !runs_read do return "storage_error",nil
+    if len(runs)>0 {
+        out["workflow_run_dependents"]=json.String(strings.join(runs,",",context.temp_allocator))
+        out["warning"]=json.String("workflow runs depend on the original task and stay blocked on it; edit their work dependencies to wait on the children")
+    }
+    return "ok",out
 }
 
 // Children copy the original's fleet binding and lifecycle (and review-role)
@@ -434,8 +457,6 @@ split_dependents :: proc(s:^Store,chain,original,mode:string,mapping:json.Object
     }
     for row in rows {
         dependent:=row[0]
-        // A dependent may itself be one of the new children only if it is
-        // listed; the original's own edges never point at its children.
         generated,read:=query(s.db,"SELECT 1 FROM local_workflow_tasks WHERE chain_id=? AND task_id=?",chain,dependent)
         if !read do return "storage_error"
         if len(generated)>0 do return "operation_conflict"
@@ -492,4 +513,16 @@ complete_refusal_locked :: proc(s:^Store,chain,task:string,agent:Child) -> (code
     if !transaction_begin(s,&tx) do return "storage_error",""
     defer transaction_rollback(&tx)
     return complete_check(s,chain,task,agent)
+}
+
+// Workflow runs (work graph) waiting on this task: task.split and task.cancel
+// do not re-point them, so the result warns.
+work_run_dependents :: proc(s:^Store,chain,task:string) -> ([]string,bool) {
+    rows,ok:=query(s.db,`SELECT d.dependent_id FROM local_work_dependencies d WHERE d.chain_id=? AND d.dependent_kind='workflow_run'
+      AND d.prerequisite_kind='task' AND d.prerequisite_id=?
+      AND NOT EXISTS(SELECT 1 FROM local_work_dependency_removals r WHERE r.chain_id=d.chain_id AND r.dependency_id=d.dependency_id) ORDER BY d.dependent_id`,chain,task)
+    if !ok do return nil,false
+    out:=make([dynamic]string,context.temp_allocator)
+    for row in rows do append(&out,row[0])
+    return out[:],true
 }

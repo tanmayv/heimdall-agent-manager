@@ -5,6 +5,7 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:strings"
 import "core:testing"
+import contracts "odin_test:contracts"
 
 // P-CS CC-B: lifecycle.force_submit, task.complete --force, task.split and the
 // REQ-CC-13 self-approval guard on owner chains.
@@ -572,5 +573,94 @@ cw_device_refusals_lease_holder_self_guard_and_escalated_split :: proc(t:^testin
         p:=cw_split(f,body)
         testing.expect_value(t,invoke(f,command(f,"task.split","device_split","task",p,agent_task_revision(f,"task")),p).code,"ok")
         testing.expect_value(t,cc_scalar(f,"SELECT mode FROM local_controls WHERE task_id='task'"),"cancelled")
+    }
+}
+
+// A second worker lease ("lease2") through the requirements ack and submit.
+cw_second_attempt :: proc(t:^testing.T,f:^Fixture) -> bool {
+    child:=lease_child()
+    r:=lease_invoke(f,lease_request(f,child,"lease.claim","claim2","lease2","",agent_task_revision(f,"task")),"",child)
+    if !testing.expect_value(t,r.code,"ok") do return false
+    cap:=result_cap(r)
+    call :: proc(f:^Fixture,child:Child,method,op,payload,cap:string) -> Result {
+        raw:=lease_request(f,child,"lease.heartbeat",op,"lease2",cap,agent_task_revision(f,"task"))
+        c,_:=contracts.owner_parse(raw,"lease_command")
+        c["method"]=json.String(method);c["payload_digest"]=json.String(contracts.owner_payload_digest(payload))
+        signature,_:=test_sign(&f.owner_priv,"lifecycle_command",c);c["signature"]=json.String(signature)
+        return execute_lifecycle(&f.store,encode(c),payload,cap,child,f.owner,1000,Signer{&f.owner_priv,test_sign},Source_Proof{"",true})
+    }
+    p:=`{"requirements_revision":"1"}`
+    if !testing.expect_value(t,call(f,child,"requirements.present","present2",p,cap).code,"ok") do return false
+    if !testing.expect_value(t,call(f,child,"requirements.ack","ack2",p,cap).code,"ok") do return false
+    return testing.expect_value(t,call(f,child,"lease.submit","submit2",`{"requirements_revision":"1","head":"","summary":"Fixed"}`,cap).code,"ok")
+}
+
+// Review fix 1: force-done never overrides the user's device-signed
+// request_changes on the latest attempt, even on an ungated non-git task
+// that went back to ready. A new submission follows the normal rules.
+@(test)
+cw_force_done_never_overrides_a_device_request_changes :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
+    coord:=agent_coordinator_child();agent_seat_coordinator(t,f,coord)
+    if !cw_worker_submit(t,f,lifecycle_ready(t,f)) do return
+    gated,_:=task_user_approval_required(&f.store,"chain","task")
+    testing.expect(t,!gated,"no user-approval source")
+    o:=cc_result(Result{body=lifecycle_verdict()});o["verdict"]=json.String("request_changes");o["summary"]=json.String("not what I asked for")
+    p:=encode(o)
+    testing.expect_value(t,invoke(f,command(f,"review.post","user_rejects","task",p,agent_task_revision(f,"task")),p).code,"ok")
+    testing.expect_value(t,cc_scalar(f,"SELECT state||':'||attempt FROM lifecycle_state"),"ready:1")
+    testing.expect_value(t,cw_run(f,coord,"task.complete","override_user",cw_complete(f,"I disagree","1")).code,"invalid_scope")
+    code,why:=complete_refusal_locked(&f.store,"chain","task",coord)
+    testing.expect(t,code=="invalid_scope" && strings.contains(why,"requested changes"),why)
+    testing.expect_value(t,cc_scalar(f,"SELECT state FROM lifecycle_state"),"ready")
+    // A new attempt: the rejection was of attempt 1, so the normal rules apply.
+    if !cw_second_attempt(t,f) do return
+    testing.expect_value(t,cc_scalar(f,"SELECT state||':'||attempt FROM lifecycle_state"),"in_review:2")
+    r:=cw_run(f,coord,"task.complete","after_fix",cw_complete(f,"reviewer unavailable","2"))
+    testing.expect_value(t,r.code,"ok")
+    testing.expect_value(t,field(cc_result(r),"skipped_gates"),"independent_review")
+}
+
+// Review fix 2: after a reassignment (A's lease retired, fleet -> B, author
+// B, reviewer A) force_submit cannot bind A's lease under B's name.
+@(test)
+cw_force_submit_refuses_a_lease_from_a_previous_configuration :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
+    coord:=agent_coordinator_child();agent_seat_coordinator(t,f,coord)
+    sign:=Signer{&f.owner_priv,test_sign}
+    cw_handoff(t,f,lifecycle_ready(t,f))
+    replacement:=Child{"instance2","epoch2",strings.repeat("e",64,context.temp_allocator),1,"author2"}
+    p:=encode(doc(map[string]string{"instance_id"=replacement.instance,"configuration_revision"="2","enabled"="1"}))
+    testing.expect_value(t,execute(&f.store,command(f,"fleet.edit","reassign_fleet","task",p,agent_task_revision(f,"task")),p,"",f.creator,f.owner,1,"head",1000,&f.kr,sign,replacement).code,"ok")
+    config,_,_:=lifecycle_config(&f.store,"chain","task")
+    config["configuration_revision"]=json.String("2");config["author_agent_id"]=json.String("author2")
+    config["reviewer_agent_id"]=json.String("author");config["reviewer_instance_id"]=json.String("instance")
+    cp:=encode(config)
+    testing.expect_value(t,execute(&f.store,command(f,"lifecycle.configure","reassign_config","task",cp,agent_task_revision(f,"task")),cp,"",f.creator,f.owner,1,"head",1000,&f.kr,sign,{},Lifecycle_Proof{replacement,lease_child(),true}).code,"ok")
+    testing.expect_value(t,cc_scalar(f,"SELECT instance_id||':'||configuration_revision FROM local_leases"),"instance:1")
+    testing.expect_value(t,cw_run(f,coord,"lifecycle.force_submit","old_lease",cw_submit(f,"submit A's work","1")).code,"operation_conflict")
+    testing.expect_value(t,cc_scalar(f,"SELECT count(*) FROM local_submissions"),"0")
+    testing.expect_value(t,cc_scalar(f,"SELECT state FROM lifecycle_state"),"ready")
+}
+
+// Review nit (b): workflow runs waiting on the original are reported.
+@(test)
+cw_split_and_cancel_warn_about_workflow_run_dependents :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    coord:=agent_coordinator_child()
+    for method in ([2]string{"task.split","task.cancel"}) {
+        f:=fixture(t);defer destroy(f);lifecycle_seed(t,f);agent_seat_coordinator(t,f,coord)
+        testing.expect(t,exec(f.store.db,"INSERT INTO local_work_dependencies VALUES('chain','dep_run','workflow_run','run9','task','task','t','user','account',(SELECT max(seq) FROM local_events))"))
+        r:Result
+        if method=="task.split" {
+            r=cw_run(f,coord,"task.split","split",cw_split(f,`{"reason":"r","children":[{"task_id":"c1","title":"a"}]}`))
+        } else {
+            r=cc_call(f,coord,"task.cancel","cancel",cc_reason(f,"gone"))
+        }
+        if !testing.expectf(t,r.code=="ok","%s: %s",method,r.code) do continue
+        out:=cc_result(r)
+        testing.expectf(t,field(out,"workflow_run_dependents")=="run9" && strings.contains(field(out,"warning"),"workflow runs"),"%s: %s",method,r.body)
     }
 }
