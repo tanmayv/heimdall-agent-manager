@@ -214,11 +214,13 @@ async function runtime(cfg, extra = [], waitConnected = null) {
   child.stderr.on('data', (d) => { out += d; });
   let exitCode = null;
   child.once('exit', (c) => { exitCode = c; });
+  // `log` reads the process output as it grows (diagnostics of later steps).
+  const log = () => out;
   for (const deadline = Date.now() + 20_000; ; await sleep(200)) {
-    if (exitCode !== null) return { refused: true, exitCode, out, child };
-    if (waitConnected && await waitConnected()) return { refused: false, out, child };
-    if (!waitConnected && /ham-bridge listening/.test(out)) return { refused: false, out, child };
-    if (Date.now() > deadline) return { refused: false, timeout: true, out, child };
+    if (exitCode !== null) return { refused: true, exitCode, out, child, log };
+    if (waitConnected && await waitConnected()) return { refused: false, out, child, log };
+    if (!waitConnected && /ham-bridge listening/.test(out)) return { refused: false, out, child, log };
+    if (Date.now() > deadline) return { refused: false, timeout: true, out, child, log };
   }
 }
 
@@ -265,7 +267,7 @@ c.commit()
   await step('2 the enrolled runtime starts bound to hub A and connects', async () => {
     const r = await runtime(S.cfgA, [], online(hubA, S.a.bridgeId));
     expect(!r.refused && !r.timeout, `runtime A is online on hub A (${r.refused ? 'refused: ' + r.out : 'ok'})`);
-    S.runA = r.child;
+    S.runA = r.child; S.runALog = r.log;
     const second = await runtime({ ...S.cfgA, port: await freePort() });
     expect(second.refused && /another ham-bridge instance/i.test(second.out), 'a second instance on the same config refuses (instance lock)');
   });
@@ -321,6 +323,7 @@ c.commit()
       const registrySaved = new Map();
       await ownerLocalFlow({
         hub: hubA, approver: S.apA, bridgeId: S.a.bridgeId, http, expect,
+        ownerLog: () => S.runALog?.() ?? '',
         otherAccount: async () => ({ ...hubA, session: await hubLogin(hubA.base, 'owner-local-other-account') }),
         cli: async (relay) => {
           const requestPath = path.join(ROOT, 'signed-request.json');
@@ -412,7 +415,12 @@ c.commit()
           return {repository:repo,worktree,sourceBranch,targetBranch:'integration',baseHead:git(repo,'rev-parse','integration'),head:git(worktree,'rev-parse','HEAD'),targetHead:()=>git(repo,'rev-parse','integration')};
         } : undefined,
         stopOwner: async () => {
-          S.runA.kill(); await sleep(1500);
+          // Wait for the exit (bounded), not a fixed delay: under heavy load
+          // the old runtime must have released its Hub connection and owner
+          // store before the flow relies on it being offline.
+          const old = S.runA; old.kill();
+          if (old.exitCode === null && old.signalCode === null) await Promise.race([new Promise((r) => old.once('exit', r)), sleep(20_000)]);
+          await sleep(1500);
           // Seed an authorized disposable transport instance, bypassing provider
           // launch only. The real local token + Hub bridge/instance checks run.
           const iid = ownerIdForFixture('inst_'), epoch = ownerIdForFixture('epoch_');
@@ -438,7 +446,7 @@ c.commit()
         restartOwner: async () => {
           const restarted = await runtime({ ...S.cfgA, port: await freePort() }, [], online(hubA, S.a.bridgeId));
           expect(!restarted.refused && !restarted.timeout, 'isolated owner restarted');
-          S.runA = restarted.child;
+          S.runA = restarted.child; S.runALog = restarted.log;
         },
         registryFixture: async (action, chainId) => {
           // Fixture control only: no live DBs or credentials are accepted here.
@@ -531,7 +539,39 @@ print("metadata-only Hub SQLite and log verified")
   });
 }
 
+// Linux keeps each enrolled bridge's vault keyring as a `user` key in the
+// kernel user keyring (@u), which outlives this run and counts against the
+// per-user key quota (kernel.keys.maxbytes, 20000 by default). Without this
+// cleanup repeated runs exhaust it and a later enrollment's unseal fails
+// ("could not be read back from the OS keystore"). Only this run's bridges.
+function cleanupLinuxKeyring() {
+  if (process.platform !== 'linux' || CREATED.length === 0) return;
+  const r = spawnSync('python3', ['-c', `import ctypes,os,platform,sys
+nr={'x86_64':250,'aarch64':219}.get(platform.machine())
+if nr is None: sys.exit(0)
+libc=ctypes.CDLL(None,use_errno=True)
+libc.syscall.restype=ctypes.c_long
+def keyctl(*a): return libc.syscall(nr,*[ctypes.c_ulong(x) if isinstance(x,int) else x for x in a])
+U=ctypes.c_ulong(-4 & 0xffffffffffffffff).value
+keyctl(8,U,ctypes.c_ulong(-2 & 0xffffffffffffffff).value)  # KEYCTL_LINK @u into @p: possession
+buf=ctypes.create_string_buffer(65536)
+n=keyctl(11,U,buf,len(buf))  # KEYCTL_READ: the key ids linked in @u
+ids=[int.from_bytes(buf.raw[i:i+4],sys.byteorder) for i in range(0,max(n,0)-max(n,0)%4,4)] if 0<n<=len(buf) else []
+removed=0
+for k in ids:
+  d=ctypes.create_string_buffer(512)
+  m=keyctl(6,k,d,len(d))  # KEYCTL_DESCRIBE: type;uid;gid;perm;description
+  if m<=0: continue
+  desc=d.value.decode(errors='replace').split(';',4)[-1]
+  if any(desc.startswith('heimdall:vault_keyring:'+b+'_') or desc=='heimdall:vault_keyring:'+b for b in sys.argv[1:]):
+    keyctl(3,k); removed+=keyctl(9,k,U)==0  # KEYCTL_REVOKE, KEYCTL_UNLINK
+print(removed)
+`, ...CREATED], { encoding: 'utf8' });
+  console.log(r.status === 0 ? `removed ${r.stdout.trim()} kernel keyring key(s) this run created` : `(keyring cleanup failed: ${r.stderr.trim()})`);
+}
+
 function cleanupCredentials() {
+  cleanupLinuxKeyring();
   if (process.platform !== 'win32') return;
   const ids = CREATED;
   const list = spawnSync('cmdkey', ['/list'], { encoding: 'utf8' }).stdout || '';

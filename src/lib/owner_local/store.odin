@@ -22,6 +22,10 @@ Store :: struct {
     tx_thread:int,
     tx_failed,unusable:bool,
     search_ready:bool,
+    // Why the last top-level transaction did not commit (begin refusal or the
+    // SQLite error seen before its rollback); see storage_diagnostic.
+    last_failure:[256]u8,
+    last_failure_len:int,
 }
 SCHEMA :: #load("schema.sql")
 MAX_RECORDS :: 100000
@@ -46,7 +50,7 @@ open :: proc(s: ^Store, path, account, owner, owner_key: string) -> bool {
     // SQLite holds an OS byte-range lock on a separate lifetime lock database.
     // A second process cannot serve this profile, including between transactions.
     if sqlite3_open(strings.clone_to_cstring(fmt.tprintf("%s.writer",path), context.temp_allocator), &s.writer) != 0 { close(s);return false }
-    if !exec(s.writer, "CREATE TABLE IF NOT EXISTS writer_lock(id INTEGER); BEGIN EXCLUSIVE;") { close(s); return false }
+    if !exec(s.writer, "CREATE TABLE IF NOT EXISTS writer_lock(id INTEGER); BEGIN EXCLUSIVE;") { storage_failure_note(s,"open: writer lock",s.writer); close(s); return false }
     if sqlite3_open(strings.clone_to_cstring(path, context.temp_allocator), &s.db) != 0 { close(s); return false }
     when ODIN_OS != .Windows {
         if os.chmod(path,{.Read_User,.Write_User})!=nil || os.chmod(fmt.tprintf("%s.writer",path),{.Read_User,.Write_User})!=nil {close(s);return false}
@@ -58,8 +62,8 @@ open :: proc(s: ^Store, path, account, owner, owner_key: string) -> bool {
         identity,identity_ok:=query(s.db,"SELECT account_id,owner_bridge_id,owner_key_id FROM runtime_database WHERE singleton=1")
         if !identity_ok || len(identity)!=1 || identity[0][0]!=account || identity[0][1]!=owner || identity[0][2]!=owner_key {close(s);return false}
     }
-    if !migrate(s.db) { close(s); return false }
-    if !exec(s.db, "BEGIN IMMEDIATE") { close(s); return false }
+    if !migrate(s.db) { storage_failure_note(s,"open: schema migration"); close(s); return false }
+    if !exec(s.db, "BEGIN IMMEDIATE") { storage_failure_note(s,"open: begin"); close(s); return false }
     _, inserted := query(s.db, "INSERT OR IGNORE INTO runtime_database(singleton,account_id,owner_bridge_id,owner_key_id,database_id) VALUES(1,?,?,?,lower(hex(randomblob(16))))", account, owner, owner_key)
     rows, read := query(s.db, "SELECT account_id,owner_bridge_id,owner_key_id FROM runtime_database WHERE singleton=1")
     if !inserted || !read || len(rows)!=1 || rows[0][0]!=account || rows[0][1]!=owner || rows[0][2]!=owner_key {

@@ -92,8 +92,12 @@ bridge_owner_migration_import_handle :: proc(conn:^ws.Connection,text:string) {
     if !id_ok do return
     // A replay needs no download: the stored receipt and owner genesis answer.
     sync.mutex_lock(&bridge_owner_mutex)
-    if !bridge_owner_open(account,owner_id) { sync.mutex_unlock(&bridge_owner_mutex);reply.code="storage_error";return }
+    if !bridge_owner_open(account,owner_id) {
+        bridge_owner_migration_log_storage(wire.migration_id,"open")
+        sync.mutex_unlock(&bridge_owner_mutex);reply.code="storage_error";return
+    }
     receipt,lookup,other:=owner.migration_import_lookup(&bridge_owner_store,wire.migration_id,wire.chain_id,wire.manifest_digest)
+    if lookup=="storage_error" do bridge_owner_migration_log_storage(wire.migration_id,"lookup")
     sync.mutex_unlock(&bridge_owner_mutex)
     if lookup=="pending_other" {
         // An earlier import of this chain is still pending. Only the Hub's
@@ -125,11 +129,19 @@ bridge_owner_migration_import_handle :: proc(conn:^ws.Connection,text:string) {
     now:=time.to_unix_nanoseconds(time.now())/1000000
     result:=owner.migration_import(&bridge_owner_store,owner.Migration_Import_Input{wire.selection,bridge_owner_json(genesis),manifest,documents},key,owner_key,version,head,now,&kr,owner.Signer{nil,bridge_owner_sign})
     reply.code=result.code
+    if result.code=="storage_error" do bridge_owner_migration_log_storage(wire.migration_id,"import")
     if result.code=="ok" {
         reply.receipt=result.body
         // The stored bytes, so a later replay returns the identical genesis.
         reply.genesis=owner.genesis_for(&bridge_owner_store,wire.chain_id)
     }
+}
+
+// A storage_error reply carries no detail to the Hub; the Bridge log keeps the
+// SQLite cause and store state so a failed import can be diagnosed. Caller
+// holds bridge_owner_mutex. No chain content is logged.
+bridge_owner_migration_log_storage :: proc(migration,step:string) {
+    fmt.eprintfln("owner_migration_import storage_error migration=%s step=%s %s",migration,step,owner.storage_diagnostic(&bridge_owner_store))
 }
 
 // The nudge carries no authority: it only triggers a Hub state check.

@@ -530,3 +530,37 @@ migration_discard_failure_partway_rolls_back_completely :: proc(t:^testing.T) {
     missing,_:=migration_test_unexempted_guards(f.store.db)
     testing.expect_value(t,len(missing),0)
 }
+
+// H2: a migration import storage_error must be diagnosable. The Bridge only
+// replies "storage_error"; storage_diagnostic keeps the SQLite cause seen
+// before the rollback, a begin refusal of an unusable store, and an open that
+// lost the writer lock, without blocking on a held transaction.
+@(test)
+migration_import_storage_error_is_diagnosable :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f)
+    rows:=migration_test_rows(f)
+    first:=migration_test_build(f,"mig_first",rows)
+    if !testing.expect_value(t,migration_test_import(f,first).code,"ok") do return
+    testing.expect(t,migration_abandon(&f.store,"mig_first"))
+    testing.expect(t,exec(f.store.db,`CREATE TABLE zz_discard_fail(chain_id TEXT NOT NULL); INSERT INTO zz_discard_fail VALUES('legacy_chain');
+      CREATE TRIGGER zz_discard_fail_no_delete BEFORE DELETE ON zz_discard_fail BEGIN SELECT RAISE(ABORT,'injected discard failure'); END`))
+    second:=migration_test_build(f,"mig_second",rows)
+    testing.expect_value(t,migration_test_import(f,second).code,"storage_error")
+    diag:=storage_diagnostic(&f.store)
+    testing.expectf(t,strings.contains(diag,"rollback: sqlite 1811 injected discard failure") && strings.contains(diag,"unusable=false"),"rollback cause kept: %s",diag)
+    // A transaction still held never blocks the diagnostic.
+    tx:Transaction
+    if !testing.expect(t,transaction_begin(&f.store,&tx)) do return
+    testing.expect(t,strings.has_prefix(storage_diagnostic(&f.store),"transaction held by thread"))
+    transaction_rollback(&tx)
+    // An unusable connection refuses every transaction until reopened.
+    f.store.unusable=true
+    testing.expect_value(t,migration_import(&f.store,Migration_Import_Input{second.selection,second.genesis,second.manifest,second.documents},f.creator,f.owner,1,"head",1000,&f.kr,Signer{&f.owner_priv,test_sign}).code,"storage_error")
+    testing.expect(t,strings.contains(storage_diagnostic(&f.store),"begin refused: store closed or unusable"))
+    f.store.unusable=false
+    // A second writer of the same profile cannot open it; the cause is kept.
+    other:Store
+    testing.expect(t,!open(&other,f.path,"account","bridge","bridge_key"))
+    testing.expectf(t,strings.contains(storage_diagnostic(&other),"open: writer lock: sqlite 5 database is locked"),"writer lock cause kept: %s",storage_diagnostic(&other))
+}
