@@ -4,7 +4,7 @@
 // HEIMDALL_E2E_OWNER_LIFECYCLE=1 HEIMDALL_E2E_OWNER_TRANSPARENT_ONLY=1.
 // The agents never see lease JSON, capabilities or owner documents.
 import { prepareOwnerOperation, sendOwnerOperation, ownerId } from '../../src/ui/api/ownerLocalClient.ts';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 
@@ -41,6 +41,18 @@ export async function ownerTransparentFlow({ session, bridgeId, hub, http, expec
     const tid = created.data.task_id;
     const later = coordinator.ctl(['task', 'create', '--chain', cid, '--title', 'transparent-dependent-task', '--goal', 'follow-up', '--acceptance', 'done', '--priority', 'p0', '--depends-on', tid, '--assignee', worker.agentId, '--reviewer', reviewer.agentId]);
     expect(later.ok && later.data?.task_id, 'coordinator creates a dependent task: ' + JSON.stringify(later.reply));
+    // H1: an assignment is validated before anything is written, so an invalid
+    // one creates no task (it used to fail only after task.create/fleet.edit).
+    const taskCount = () => coordinator.ctl(['task-chain', 'show', cid]).data?.tasks?.length;
+    const countBefore = taskCount();
+    const misplaced = coordinator.ctl(['task', 'create', '--chain', cid, '--title', 'misplaced-worker-task', '--goal', 'g', '--acceptance', 'a', '--assignee', reviewer.agentId, '--reviewer', coordinator.agentId]);
+    expect(!misplaced.ok && JSON.stringify(misplaced.reply).includes('invalid_scope') && JSON.stringify(misplaced.reply).includes('chain repository') && JSON.stringify(misplaced.reply).includes('no task created'),
+      'a worker launched outside the chain repository is refused before the task exists: ' + JSON.stringify(misplaced.reply));
+    const reviewerOnly = coordinator.ctl(['task', 'create', '--chain', cid, '--title', 'reviewer-without-worker', '--reviewer', reviewer.agentId]);
+    expect(!reviewerOnly.ok && JSON.stringify(reviewerOnly.reply).includes('worker_required'), 'a reviewer without a worker is refused before the task exists: ' + JSON.stringify(reviewerOnly.reply));
+    const shownAfter = coordinator.ctl(['task-chain', 'show', cid]);
+    expect(typeof countBefore === 'number' && taskCount() === countBefore && !JSON.stringify(shownAfter.data).includes('misplaced-worker-task') && !JSON.stringify(shownAfter.data).includes('reviewer-without-worker'),
+      'an invalid assignment creates no task: ' + JSON.stringify(shownAfter.data?.tasks));
     const outsiderAssign = coordinator.ctl(['task', 'update', later.data.task_id, '--assignee', outsider.agentId]);
     expect(!outsiderAssign.ok && JSON.stringify(outsiderAssign.reply).includes('invalid_scope'), 'assigning an agent that is not a member of this chain is refused: ' + JSON.stringify(outsiderAssign.reply));
     const unsupported = coordinator.ctl(['task', 'update', tid, '--require-user-approval']);
@@ -59,7 +71,7 @@ export async function ownerTransparentFlow({ session, bridgeId, hub, http, expec
     // Unrelated agents never receive the owner task; the worker's lease next
     // claims the unblocked task (the dependent one waits).
     const strangerNext = reviewer.ctl(['lease', 'next']);
-    expect(strangerNext.data?.status !== 'granted' && strangerNext.data?.lease?.task_id !== tid, 'an agent with no bound task is not granted the owner task');
+    expect(strangerNext.ok && strangerNext.data?.status === 'none', 'a reviewer-only agent with no bound task gets status none (answered by the Hub): ' + JSON.stringify(strangerNext.reply) + strangerNext.error);
     const next = worker.ctl(['lease', 'next']);
     expect(next.ok && next.data?.status === 'granted', 'ham-ctl lease next claims the owner task: ' + JSON.stringify(next.reply) + next.error);
     const lease = next.data.lease;
@@ -108,5 +120,17 @@ export async function ownerTransparentFlow({ session, bridgeId, hub, http, expec
       if (Date.now() > deadline) throw new Error('merge gate did not settle: ' + JSON.stringify(state));
     }
     expect(git.targetHead() === head && state.state[0][2] === head, 'bridge_owner_merge moves the target to the reviewed head');
+
+    // H1: a deterministic worktree failure (a plain directory squatting on the
+    // dependent task's worktree path) blocks the lease, waiting on human,
+    // instead of leaving it held for endless lease next retries.
+    const laterId = later.data.task_id;
+    mkdirSync(git.repository + '/.heimdall/worktrees/' + laterId, { recursive: true });
+    const squatted = worker.ctl(['lease', 'next']);
+    expect(!squatted.ok && JSON.stringify(squatted.reply).includes('worktree_unavailable') && JSON.stringify(squatted.reply).includes('the lease was blocked'),
+      'a squatted task worktree blocks the lease: ' + JSON.stringify(squatted.reply) + squatted.error);
+    const blocked = JSON.parse((await human('runtime.read', { taskId: laterId, expectedRevision: '0' })).body);
+    expect(blocked.leases.length === 0 && blocked.controls.length === 1 && blocked.controls[0][0] === 'blocked' && blocked.controls.flat().includes('human'),
+      'the task is blocked waiting on human with no live lease: ' + JSON.stringify({ leases: blocked.leases, controls: blocked.controls }));
   } finally { await worker.stop(); await reviewer.stop(); await coordinator.stop(); await outsider.stop(); }
 }
