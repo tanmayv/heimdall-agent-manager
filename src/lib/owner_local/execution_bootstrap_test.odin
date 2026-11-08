@@ -76,5 +76,5 @@ owner_bootstrap_v26_upgrade_collision_rolls_back_original_activation :: proc(t:^
     testing.expect(t,exec(db,"DROP VIEW owner_execution_bootstraps"));testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     rows,_=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations),database_id,commit_seq,(SELECT activation_json FROM owner_execution_journal) FROM runtime_database")
-    testing.expect(t,rows[0][0]=="33" && rows[0][1]=="33" && rows[0][2]==before[0][0] && rows[0][3]==before[0][1] && rows[0][4]==before[0][2])
+    testing.expect(t,rows[0][0]=="34" && rows[0][1]=="34" && rows[0][2]==before[0][0] && rows[0][3]==before[0][1] && rows[0][4]==before[0][2])
 }

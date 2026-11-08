@@ -45,6 +45,8 @@ interface TaskView {
   detail: OwnerTaskDetail;
   runtime: OwnerRuntime;
   reviews: OwnerReview[];
+  /** The review history scan is still running; the ticket renders meanwhile. */
+  reviewsLoading: boolean;
   reviewsError: string;
   /** The history scan hit its page cap: newer owner reviews may be missing. */
   reviewsTruncated: boolean;
@@ -90,6 +92,8 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
   const [reason, setReason] = useState('');
   const [reviewSummary, setReviewSummary] = useState('');
   const sessionRef = useRef<OwnerSession | null>(null);
+  // The latest loadTask call; an older call's review scan never overwrites it.
+  const taskLoadSeq = useRef(0);
   const live = useRef(true);
   useEffect(() => () => { live.current = false; }, []);
 
@@ -127,22 +131,35 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
     } catch (e) { fail(e); } finally { if (live.current) setLoading(false); }
   }, [bridge, chain.chainId, send, session, fail]);
 
+  // The ticket (brief, comments, runtime) renders as soon as it is read; the
+  // review history scan, which may page through the whole chain history, fills
+  // in the reviews afterwards with its own loading state.
   const loadTask = useCallback(async (taskId: string) => {
+    const seq = ++taskLoadSeq.current;
     if (!taskId) { setTask(null); return; }
     setTaskLoading(true);
+    let s: OwnerSession;
     try {
-      const s = await session();
+      s = await session();
       const [d, rt] = await Promise.all([readOwnerTask(s, bridge, chain.chainId, taskId, send), readOwnerRuntime(s, bridge, chain.chainId, taskId, send)]);
-      let reviews: OwnerReview[] = [], reviewsError = '', reviewsTruncated = false, reviewsMore = false;
-      try {
-        const [archived, owned] = await Promise.all([readArchivedReviews(s, bridge, chain.chainId, taskId, send), readOwnerReviews(s, bridge, chain.chainId, taskId, send)]);
-        reviews = [...owned.reviews, ...archived];
-        reviewsTruncated = owned.truncated; reviewsMore = owned.more;
-      } catch (e) { if (isOwnerOffline(e)) throw e; reviewsError = ownerErrorMessage(e, chain.bridgeName); }
-      if (!live.current) return;
-      setTask({ taskId, detail: d, runtime: rt, reviews, reviewsError, reviewsTruncated, reviewsMore });
+      if (!live.current || seq !== taskLoadSeq.current) return;
+      // A reload of the same ticket keeps its reviews visible while they refresh.
+      setTask((prev) => prev && prev.taskId === taskId
+        ? { ...prev, detail: d, runtime: rt, reviewsLoading: true }
+        : { taskId, detail: d, runtime: rt, reviews: [], reviewsLoading: true, reviewsError: '', reviewsTruncated: false, reviewsMore: false });
       setStates((prev) => ({ ...prev, [taskId]: rt }));
-    } catch (e) { fail(e); } finally { if (live.current) setTaskLoading(false); }
+    } catch (e) { fail(e); return; } finally { if (live.current && seq === taskLoadSeq.current) setTaskLoading(false); }
+    let reviews: OwnerReview[] = [], reviewsError = '', reviewsTruncated = false, reviewsMore = false;
+    try {
+      const [archived, owned] = await Promise.all([readArchivedReviews(s, bridge, chain.chainId, taskId, send), readOwnerReviews(s, bridge, chain.chainId, taskId, send)]);
+      reviews = [...owned.reviews, ...archived];
+      reviewsTruncated = owned.truncated; reviewsMore = owned.more;
+    } catch (e) {
+      if (isOwnerOffline(e)) { if (seq === taskLoadSeq.current) fail(e); return; }
+      reviewsError = ownerErrorMessage(e, chain.bridgeName);
+    }
+    if (!live.current || seq !== taskLoadSeq.current) return;
+    setTask((prev) => prev && prev.taskId === taskId ? { ...prev, reviews, reviewsLoading: false, reviewsError, reviewsTruncated, reviewsMore } : prev);
   }, [bridge, chain.chainId, chain.bridgeName, send, session, fail]);
 
   const openSubmission = useCallback(async (taskId: string, attempt: string) => {
@@ -345,6 +362,7 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
 
               <section data-debug-id="owner-chain-reviews" className="space-y-1">
                 <h4 className="text-xs font-semibold uppercase tracking-wider text-muted">Reviews</h4>
+                {task.reviewsLoading && <p role="status" data-debug-id="owner-chain-reviews-loading" className="text-xs text-muted">Loading reviews…</p>}
                 {task.reviewsError && <p role="alert" className="text-xs text-danger">{task.reviewsError}</p>}
                 {task.reviewsTruncated && (
                   <p role="status" data-debug-id="owner-chain-reviews-truncated" className="text-xs text-warning">
@@ -352,7 +370,7 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
                   </p>
                 )}
                 {task.reviewsMore && <p data-debug-id="owner-chain-reviews-more" className="text-xs text-muted">Showing the latest owner reviews only.</p>}
-                {task.reviews.length === 0 && !task.reviewsError && !task.reviewsTruncated && <p className="text-xs italic text-faint">No reviews.</p>}
+                {task.reviews.length === 0 && !task.reviewsLoading && !task.reviewsError && !task.reviewsTruncated && <p className="text-xs italic text-faint">No reviews.</p>}
                 <ul className="space-y-1.5">
                   {task.reviews.map((r, i) => (
                     <li key={i} data-debug-id={`owner-chain-review-${r.source}-${i}`} className="rounded-lg border border-subtle p-2 text-sm">

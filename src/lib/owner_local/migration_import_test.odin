@@ -429,7 +429,9 @@ migration_import_abandoned_import_is_replaced_by_a_new_migration :: proc(t:^test
     fk,_:=query(f.store.db,"PRAGMA foreign_key_check");testing.expect_value(t,len(fk),0)
     guards,_:=query(f.store.db,"SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name IN('genesis_immutable_delete','migration_import_no_delete','migration_abandoned_no_delete')")
     testing.expect_value(t,guards[0][0],"3")
-    testing.expect(t,!exec(f.store.db,"DELETE FROM chain_genesis"),"delete guards are restored")
+    testing.expect(t,!exec(f.store.db,"DELETE FROM chain_genesis"),"delete guards hold once the discard committed")
+    marker,_:=query(f.store.db,"SELECT count(*) FROM migration_discarding")
+    testing.expect_value(t,marker[0][0],"0")
     // The replacement activates normally; the discarded id stays terminal.
     migration_test_activate(t,f,second,"mig_second")
     testing.expect(t,control_ready(&f.store,"legacy_chain","t_ready"))
@@ -439,4 +441,92 @@ migration_import_abandoned_import_is_replaced_by_a_new_migration :: proc(t:^test
     third:=migration_test_build(f,"mig_third",rows)
     _,code,_=migration_import_lookup(&f.store,"mig_third","legacy_chain",third.digest)
     testing.expect_value(t,code,"operation_conflict")
+}
+
+// Every BEFORE DELETE guard on a table migration_discard deletes from, as
+// "table.trigger", that does not carry the V34 migration_discarding exemption.
+migration_test_unexempted_guards :: proc(db:DB) -> (missing:[]string,checked:int) {
+    targets,ok:=migration_discard_targets(db)
+    if !ok do return slice.clone([]string{"<targets unreadable>"},context.temp_allocator),0
+    out:=make([dynamic]string,context.temp_allocator)
+    for target in targets {
+        guards,read:=query(db,"SELECT name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name=? AND upper(sql) LIKE '%BEFORE DELETE%' ORDER BY name",target[0])
+        if !read { append(&out,target[0]);continue }
+        exemption:=fmt.tprintf("NOT EXISTS(SELECT 1 FROM migration_discarding d WHERE d.%s=OLD.%s)",target[1],target[1])
+        for g in guards {
+            checked+=1
+            if !strings.contains(g[1],exemption) do append(&out,fmt.tprintf("%s.%s",target[0],g[0]))
+        }
+    }
+    return out[:],checked
+}
+
+// H1 (R3 review follow-up): migration_discard never drops guards, so every
+// delete guard on a table it deletes from must carry the static exemption. A
+// future chain-scoped guarded table without it is caught here.
+@(test)
+migration_discard_exemption_covers_every_delete_guard :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f)
+    missing,checked:=migration_test_unexempted_guards(f.store.db)
+    testing.expectf(t,len(missing)==0,"delete guards without the migration_discarding exemption: %v",missing)
+    testing.expectf(t,checked>=80,"expected the chain-scoped delete guards to be checked, got %d",checked)
+    // Every guard in the schema is either exempted or on a table the discard
+    // never touches.
+    all,_:=query(f.store.db,"SELECT count(*) FROM sqlite_master WHERE type='trigger' AND upper(sql) LIKE '%BEFORE DELETE%' AND sql LIKE '%migration_discarding d WHERE%'")
+    testing.expect_value(t,all[0][0],fmt.tprintf("%d",checked))
+    // A new guarded chain-scoped table without the exemption is reported.
+    testing.expect(t,exec(f.store.db,"CREATE TABLE future_chain_rows(chain_id TEXT NOT NULL); CREATE TRIGGER future_chain_rows_no_delete BEFORE DELETE ON future_chain_rows BEGIN SELECT RAISE(ABORT,'immutable'); END"))
+    missing,_=migration_test_unexempted_guards(f.store.db)
+    testing.expect_value(t,encode(missing),encode([]string{"future_chain_rows.future_chain_rows_no_delete"}))
+    // The marker only names an abandoned, never-activated import of the chain.
+    testing.expect(t,!exec(f.store.db,"INSERT INTO migration_discarding VALUES('legacy_chain','mig_none')"))
+    m:=migration_test_build(f,"mig_live",migration_test_rows(f))
+    if !testing.expect_value(t,migration_test_import(f,m).code,"ok") do return
+    testing.expect(t,!exec(f.store.db,"INSERT INTO migration_discarding VALUES('legacy_chain','mig_live')"),"a pending import is not discardable")
+    testing.expect(t,!exec(f.store.db,"DELETE FROM chain_genesis WHERE chain_id='legacy_chain'"))
+}
+
+migration_test_snapshot :: proc(f:^Fixture) -> (triggers,data:string) {
+    rows,_:=query(f.store.db,"SELECT name,tbl_name,sql FROM sqlite_master WHERE type='trigger' ORDER BY name")
+    triggers=encode(rows)
+    targets,_:=migration_discard_targets(f.store.db)
+    b:=strings.builder_make(context.temp_allocator)
+    for target in targets {
+        counts,_:=query(f.store.db,fmt.tprintf("SELECT count(*) FROM %s",target[0]))
+        fmt.sbprintf(&b,"%s=%s;",target[0],counts[0][0])
+    }
+    extra,_:=query(f.store.db,"SELECT (SELECT count(*) FROM migration_discarded),(SELECT count(*) FROM migration_discarding),(SELECT commit_seq FROM runtime_database)")
+    fmt.sbprintf(&b,"%s",encode(extra))
+    return triggers,strings.to_string(b)
+}
+
+// H1: a failure partway through migration_discard (some chain tables already
+// emptied) rolls back completely: the guards' SQL and every row are unchanged.
+@(test)
+migration_discard_failure_partway_rolls_back_completely :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f)
+    rows:=migration_test_rows(f)
+    first:=migration_test_build(f,"mig_first",rows)
+    if !testing.expect_value(t,migration_test_import(f,first).code,"ok") do return
+    testing.expect(t,migration_abandon(&f.store,"mig_first"))
+    // A chain-scoped table that sorts after every real one, with a guard that
+    // has no exemption: the discard fails after deleting the earlier tables.
+    testing.expect(t,exec(f.store.db,`CREATE TABLE zz_discard_fail(chain_id TEXT NOT NULL); INSERT INTO zz_discard_fail VALUES('legacy_chain');
+      CREATE TRIGGER zz_discard_fail_no_delete BEFORE DELETE ON zz_discard_fail BEGIN SELECT RAISE(ABORT,'disk failure'); END`))
+    triggers,data:=migration_test_snapshot(f)
+    testing.expect(t,strings.contains(data,"tasks=4;"),"the abandoned import's rows exist before the discard")
+    second:=migration_test_build(f,"mig_second",rows)
+    testing.expect_value(t,migration_test_import(f,second).code,"storage_error")
+    after_triggers,after_data:=migration_test_snapshot(f)
+    testing.expect_value(t,after_triggers,triggers)
+    testing.expect_value(t,after_data,data)
+    _,code,_:=migration_import_lookup(&f.store,"mig_second","legacy_chain",second.digest)
+    testing.expect_value(t,code,"miss")
+    // Without the failure the same discard succeeds.
+    testing.expect(t,exec(f.store.db,"DROP TABLE zz_discard_fail"))
+    testing.expect_value(t,migration_test_import(f,second).code,"ok")
+    missing,_:=migration_test_unexempted_guards(f.store.db)
+    testing.expect_value(t,len(missing),0)
 }

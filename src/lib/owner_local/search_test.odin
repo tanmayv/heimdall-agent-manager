@@ -137,7 +137,7 @@ search_v4_upgrade_collision_is_atomic_and_preserves_live_history :: proc(t:^test
     testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,len(search_hits(search_for(f,"private"))),1)
     rows,ok=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
-    testing.expect(t,ok && rows[0][0]=="33" && rows[0][1]=="33")
+    testing.expect(t,ok && rows[0][0]=="34" && rows[0][1]=="34")
 }
 
 history_submit :: proc(t:^testing.T,f:^Fixture,lease,revision,summary:string) {
@@ -307,7 +307,7 @@ search_indexes_archived_stage_tasks_at_import_and_rebuild :: proc(t:^testing.T) 
     testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,docs(f),live_docs)
     version,_:=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
-    testing.expect_value(t,encode(version),encode([1][2]string{{"33","33"}}))
+    testing.expect_value(t,encode(version),encode([1][2]string{{"34","34"}}))
     testing.expect(t,exec(f.store.db,"UPDATE tasks SET revision=revision+1 WHERE task_id='t_stage'"))
     testing.expect_value(t,docs(f),live_docs)
 }

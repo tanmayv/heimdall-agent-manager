@@ -66,30 +66,38 @@ migration_abandoned_import :: proc(s:^Store,migration:string) -> (bool,bool) {
 // Removes every row of an abandoned, never-activated import's chain so a new
 // migration of the chain to this owner can replace it. Only import-written
 // rows can exist: the chain was quarantined from import to abandonment. The
-// append-only delete guards of the chain-scoped tables are lifted for this
-// statement only, inside the caller's transaction, and restored verbatim.
+// append-only delete guards are never dropped: since V34 each guard on a table
+// this deletes from exempts rows whose chain (or, for the migration_id-keyed
+// import tables, migration) is named by a migration_discarding marker. The
+// marker is inserted, the rows deleted and the marker removed inside the
+// caller's transaction, so any failure rolls all of it back.
 migration_discard :: proc(s:^Store,chain,old,manifest_digest,replaced_by:string,seq:i64) -> bool {
     if !transaction_current(s.active) do return false
     state,ok:=query(s.db,"SELECT activated_seq IS NULL,EXISTS(SELECT 1 FROM migration_abandoned WHERE migration_id=?) FROM migration_imports WHERE migration_id=? AND chain_id=?",old,old,chain)
     if !ok || len(state)!=1 || state[0][0]!="1" || state[0][1]!="1" do return false
     if !exec(s.db,"PRAGMA defer_foreign_keys=ON") do return false
-    tables:[dynamic][]string
-    tables,ok=query(s.db,`SELECT m.name FROM sqlite_master m WHERE m.type='table' AND m.name!='migration_discarded'
+    targets,listed:=migration_discard_targets(s.db)
+    if !listed do return false
+    if _,ok=query(s.db,"INSERT INTO migration_discarding(chain_id,migration_id) VALUES(?,?)",chain,old);!ok do return false
+    for target in targets {
+        if _,deleted:=query(s.db,fmt.tprintf("DELETE FROM %s WHERE %s=?",target[0],target[1]),chain if target[1]=="chain_id" else old);!deleted do return false
+    }
+    if _,ok=query(s.db,"DELETE FROM migration_discarding WHERE chain_id=?",chain);!ok do return false
+    _,ok=query(s.db,"INSERT INTO migration_discarded VALUES(?,?,?,?,?)",old,chain,manifest_digest,replaced_by,fmt.tprintf("%d",seq))
+    return ok
+}
+
+// The tables migration_discard deletes from, with their key column: every
+// non-virtual table with a chain_id column, then the migration_id-keyed import
+// tables. The discard ledger and its marker are never targets.
+migration_discard_targets :: proc(db:DB) -> ([][2]string,bool) {
+    tables,ok:=query(db,`SELECT m.name FROM sqlite_master m WHERE m.type='table' AND m.name NOT IN('migration_discarded','migration_discarding')
       AND m.sql NOT LIKE 'CREATE VIRTUAL%' AND EXISTS(SELECT 1 FROM pragma_table_info(m.name) p WHERE p.name='chain_id') ORDER BY m.name`)
-    if !ok do return false
+    if !ok do return nil,false
     targets:=make([dynamic][2]string,context.temp_allocator)
     for t in tables do append(&targets,[2]string{t[0],"chain_id"})
     append(&targets,[2]string{"migration_import_documents","migration_id"},[2]string{"migration_abandoned","migration_id"})
-    for target in targets {
-        guards,read:=query(s.db,"SELECT name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name=? AND upper(sql) LIKE '%BEFORE DELETE%'",target[0])
-        if !read do return false
-        for g in guards { if !exec(s.db,fmt.tprintf(`DROP TRIGGER "%s"`,g[0])) do return false }
-        _,deleted:=query(s.db,fmt.tprintf("DELETE FROM %s WHERE %s=?",target[0],target[1]),chain if target[1]=="chain_id" else old)
-        for g in guards { if !exec(s.db,g[1]) do return false }
-        if !deleted do return false
-    }
-    _,ok=query(s.db,"INSERT INTO migration_discarded VALUES(?,?,?,?,?)",old,chain,manifest_digest,replaced_by,fmt.tprintf("%d",seq))
-    return ok
+    return targets[:],true
 }
 
 // Imports whose Hub cutover has not yet been observed: (migration, chain, digest).
