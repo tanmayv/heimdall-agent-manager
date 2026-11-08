@@ -150,6 +150,10 @@ start_task_agent :: proc(svc: ^Service, auth: contracts.Auth_Context, task_id: d
 			_, _ = end_uow(svc, &u, false)
 			return false, domain.domain_error(.Forbidden, "only the user or the chain coordinator may start a task agent")
 		}
+		if coordinator_restarts_recent(svc, task) >= COORDINATOR_RESTART_MAX_PER_HOUR {
+			_, _ = end_uow(svc, &u, false)
+			return false, domain.domain_error(.Conflict, fmt.tprintf("the coordinator already restarted this task's agent %d times in the last hour; ask the user to start it", COORDINATOR_RESTART_MAX_PER_HOUR), `{"code":"coordinator_restart_limit"}`)
+		}
 	}
 	// Card validation happens before this transaction; this second read closes
 	// the race with a newly recorded failure between the two reads.
@@ -174,7 +178,7 @@ start_task_agent :: proc(svc: ^Service, auth: contracts.Auth_Context, task_id: d
 		_, _ = end_uow(svc, &u, false)
 		return false, reset_err
 	}
-	_, _, acted, aerr := record_event(svc, &u, task, actor_from_auth(auth), EV_ANSWERED, `{}`)
+	_, _, acted, aerr := record_event(svc, &u, task, actor_from_auth(auth), EV_ANSWERED, `{}` if is_user else `{"restart_by":"coordinator"}`)
 	if acted do acted, aerr = after_chain_change(svc, &u, task.chain_id, task.owner_user_id, .Fleet_Changed)
 	_, cerr := end_uow(svc, &u, acted)
 	if !acted do return false, aerr
@@ -185,6 +189,20 @@ start_task_agent :: proc(svc: ^Service, auth: contracts.Auth_Context, task_id: d
 		return false, domain.domain_error(.Conflict, jsonx.extract_string(fresh.blocked_on_json, "reason", "Agent failed to start", true, context.temp_allocator))
 	}
 	return true, domain.Domain_Error{}
+}
+
+// COORDINATOR_RESTART_MAX_PER_HOUR caps coordinator-initiated agent restarts
+// per task (F1), so a coordinator cannot restart a failing agent forever; past
+// it only the user can start the agent.
+COORDINATOR_RESTART_MAX_PER_HOUR :: 3
+
+coordinator_restarts_recent :: proc(svc: ^Service, task: domain.Task) -> int {
+	evs, err := iface.taskchain_list_events_by_task(svc.repo, task.task_id, task.owner_user_id)
+	if err.code != .None do return COORDINATOR_RESTART_MAX_PER_HOUR // fail closed
+	since := now_ms(svc.clock) - 3600 * 1000
+	n := 0
+	for e in evs do if e.kind == EV_ANSWERED && e.ts_ms >= since && strings.contains(e.payload_json, `"restart_by":"coordinator"`) do n += 1
+	return n
 }
 
 // Called after commit when the wake command could not even be sent. Re-read

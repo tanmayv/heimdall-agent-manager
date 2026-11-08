@@ -59,6 +59,9 @@ Service :: struct {
 	// not yet recorded); guarded by state_mutex, keys heap-owned (merge.odin).
 	// A second job for the same task would race the first on one command_id.
 	merges_inflight:     map[string]struct{},
+	// test_fail_merge_auto_answer: TEST SEAM. Makes the post-conflict
+	// auto-reconcile write fail, to prove the conflict itself still commits.
+	test_fail_merge_auto_answer: bool,
 	// wake_observer sees every wake_agent push after commit (tests).
 	wake_observer:       proc(ctx: rawptr, cmd: Wake_Command),
 	wake_observer_ctx:   rawptr,

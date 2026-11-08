@@ -717,6 +717,14 @@ dispatch_blockers :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.
 				continue
 			}
 			disposition := agent.failed_instance_disposition(inst, ctx.now_ms)
+			if disposition == .Hold {
+				// A failure still inside its automatic retry window is not parked:
+				// say when it retries rather than implying someone must act (F1).
+				if due, retrying := agent.instance_auto_retry_due_ms(inst); retrying {
+					instance_reason = fmt.tprintf("%s; retrying automatically in %ds", instance_failure_reason(inst), max(i64(0), (due - ctx.now_ms + 999) / 1000))
+					continue
+				}
+			}
 			if disposition == .Dead || disposition == .Hold {
 				instance_reason = instance_failure_reason(inst)
 				continue

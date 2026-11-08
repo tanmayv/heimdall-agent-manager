@@ -102,6 +102,20 @@ instance_last_error_attempt :: proc(inst: domain.Agent_Instance) -> int {
 	return jsonx.extract_int(inst.last_error_json, "attempt", 1, true)
 }
 
+// instance_last_error_bump_attempt: a "failed" report that carries no error
+// body is still a new consecutive failure (F1): keep the previous typed error
+// and count one more attempt, so bounded auto-retry cannot loop forever on
+// body-less reports. No previous error → "" (an untyped failure). Caller owns
+// the result.
+instance_last_error_bump_attempt :: proc(prev_last_error_json: string) -> string {
+	if prev_last_error_json == "" do return strings.clone("")
+	attempt := jsonx.extract_int(prev_last_error_json, "attempt", 1, true) + 1
+	werr, found := contracts.wire_error_parse(strings.concatenate({"{\"error\":", prev_last_error_json, "}"}, context.temp_allocator), context.temp_allocator)
+	if !found do return strings.clone(prev_last_error_json)
+	obj := contracts.wire_error_json(werr, context.temp_allocator)
+	return fmt.aprintf("%s,\"attempt\":%d}", obj[:len(obj) - 1], attempt)
+}
+
 // instance_last_error_record is the stored last_error for a new failed report:
 // the bridge's error object plus a consecutive-failure "attempt" count, which only
 // a successful start (or a deliberate stop) resets. Caller owns the result.

@@ -1198,6 +1198,7 @@ apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_
 		changed^ = (runtime_status != "" && runtime_status != inst.runtime_status) || (activity_status != "" && activity_status != inst.activity_status) || error_json != ""
 	}
 	inst.last_applied_seq = effective_state_seq
+	was_failed := inst.runtime_status == "failed"
 	if runtime_status != "" {
 		if len(inst.runtime_status) > 0 do delete(inst.runtime_status)
 		inst.runtime_status = strings.clone(runtime_status)
@@ -1216,6 +1217,12 @@ apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_
 			recorded := instance_last_error_record(inst.last_error_json, error_json)
 			if len(inst.last_error_json) > 0 do delete(inst.last_error_json)
 			inst.last_error_json = recorded
+		} else if inst.last_error_json != "" && !was_failed {
+			// A body-less failure report after a retry (launching/starting) is
+			// still a new attempt (F1); a repeated report of the same failure is not.
+			bumped := instance_last_error_bump_attempt(inst.last_error_json)
+			delete(inst.last_error_json)
+			inst.last_error_json = bumped
 		}
 	case "launching", "starting":
 		// A retry in flight keeps the failure (and its attempt count) until it succeeds.

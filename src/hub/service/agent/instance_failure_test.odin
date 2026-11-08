@@ -190,3 +190,18 @@ test_err_proto_failed_stop_result_restores_status :: proc(t: ^testing.T) {
 	testing.expect(t, apply_stop_command_result(&svc, "brg_1", "cmd_stop_2_inst_lf", cold))
 	testing.expect_value(t, r.inst.runtime_status, "unreachable")
 }
+
+// F1: a "failed" report without an error body is still a new attempt, so the
+// bounded recoverable retry cannot loop forever on body-less reports.
+@(test)
+test_err_proto_bodyless_failure_counts_an_attempt :: proc(t: ^testing.T) {
+	prev := `{"code":"provider_unavailable","class":"recoverable","cause":"provider_not_logged_in","message":"login","attempt":3}`
+	bumped := instance_last_error_bump_attempt(prev)
+	defer delete(bumped)
+	testing.expect(t, strings.contains(bumped, `"attempt":4`) && strings.contains(bumped, `"class":"recoverable"`), bumped)
+	_, retrying := instance_auto_retry_due_ms(domain.Agent_Instance{runtime_status = "failed", stopped_at = "2026-10-15T12:00:00Z", last_error_json = bumped})
+	testing.expect(t, !retrying, "past the retry budget: parked")
+	empty := instance_last_error_bump_attempt("")
+	defer delete(empty)
+	testing.expect_value(t, empty, "")
+}

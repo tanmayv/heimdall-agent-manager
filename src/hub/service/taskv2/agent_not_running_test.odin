@@ -436,3 +436,42 @@ test_agent_not_running_coordinator_cannot_clear_user_stop :: proc(t: ^testing.T)
 	after, _, _ := iface.agent_get_instance(&fx.agents, "inst_w1")
 	testing.expect_value(t, after.stopped_by, agent.STOPPED_BY_USER)
 }
+
+// F1: coordinator restarts are capped per task (COORDINATOR_RESTART_MAX_PER_HOUR
+// in a rolling hour); the user is never capped; a coordinator of ANOTHER chain
+// is refused.
+@(test)
+test_agent_not_running_coordinator_restart_cap_and_cross_chain :: proc(t: ^testing.T) {
+	fx, log, ok := lease_fixture(t, "anr_cap")
+	defer lease_fixture_close(fx, log)
+	if !ok do return
+	chain := seed_live_chain(t, fx, "chain_anr_cap")
+	seed_fleet(fx, chain, "agt_w")
+	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "stopped")
+	_ = publish_task(t, fx, chain, "task_anr")
+	fx.svc.bridge_command_sink = project.Bridge_Command_Sink{send_runtime_command = proc(ctx: rawptr, cmd: project.Runtime_Command) -> (bool, domain.Domain_Error) {
+		return false, domain.domain_error(.Internal_Error, "launch refused: no credentials")
+	}}
+	on_bridge_hello(&fx.svc, "br_1", nil)
+	task := get_task(fx, "task_anr")
+	if !testing.expect(t, is_agent_not_running_block(task.blocked_on_json), "blocked on its agent") do return
+
+	// another chain's coordinator
+	other := seed_chain(t, fx, "chain_anr_other", true)
+	other.coordinator_agent_instance_id = "inst_coord2"
+	_, _, _ = iface.taskchain_save_chain(&fx.repo, other)
+	seed_instance(fx, other, "inst_coord2", "agt_c", "br_1", "running", "coordinator")
+	started, err := start_task_agent(&fx.svc, inst_auth("inst_coord2"), task.task_id)
+	testing.expect(t, !started && err.code == .Forbidden, fmt.tprintf("cross-chain coordinator refused (%v)", err.code))
+
+	// three coordinator restarts already this hour
+	for _ in 0 ..< COORDINATOR_RESTART_MAX_PER_HOUR {
+		_, _, _ = append_event(&fx.repo, &fx.clock, task, Actor{kind = ACTOR_COORDINATOR, id = "inst_coord"}, EV_ANSWERED, `{"restart_by":"coordinator"}`)
+	}
+	started, err = start_task_agent(&fx.svc, inst_auth("inst_coord"), task.task_id)
+	testing.expect(t, !started && err.code == .Conflict && strings.contains(err.details_json, "coordinator_restart_limit"), fmt.tprintf("capped: %v %s", err.code, err.message))
+	testing.expect_value(t, coordinator_restarts_recent(&fx.svc, task), COORDINATOR_RESTART_MAX_PER_HOUR)
+	// an hour later the window has moved on
+	fixture_advance(fx, 3601)
+	testing.expect_value(t, coordinator_restarts_recent(&fx.svc, task), 0)
+}

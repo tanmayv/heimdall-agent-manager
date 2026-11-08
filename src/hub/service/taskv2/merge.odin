@@ -204,7 +204,8 @@ parse_merge_reply :: proc(reply: string) -> (outcome: Merge_Outcome, detail: str
 	return .Failed, detail
 }
 
-@(private = "file")
+// run_merge: exported for the merge-path tests; production calls it through
+// run_merge_scoped.
 run_merge :: proc(svc: ^Service, m: Merge_Effect) {
     initial, found, _ := iface.taskchain_get_task(svc.repo, domain.Task_ID(m.task_id))
     if !found || !workflow_merge_allowed(svc, initial) do return
@@ -249,32 +250,45 @@ run_merge :: proc(svc: ^Service, m: Merge_Effect) {
 	u, uok, _ := begin_uow(svc)
 	if !uok do return
 	saved, _, rok, _ := record_event(svc, &u, task, hub_actor(), kind, json_end(&p))
-	auto_reconcile := false
-	if rok && outcome == .Conflict && merge_conflict_auto_reconcile_allowed(svc, saved) {
-		// F1: the reconcile attempt (a non-counting attempt that merges the
-		// directory's branch into the task's and resubmits) starts at once.
-		// Bounded: past MERGE_AUTO_RECONCILE_MAX conflicts without a merge the
-		// task stays parked for the coordinator.
-		ap := json_begin()
-		json_bool(&ap, "auto", true)
-		json_str(&ap, "reason", "merge_conflict_auto_reconcile")
-		if s2, _, aok, _ := record_event(svc, &u, saved, hub_actor(), EV_ANSWERED, json_end(&ap)); aok {
-			saved = s2
-			auto_reconcile = true
-		} else {
-			rok = false
-		}
-	}
 	if rok && outcome != .Merged {
 		line := fmt.tprintf("[taskv2] merge %s: task %s (%s) branch %s did not merge into %s: %s",
 			"conflict" if outcome == .Conflict else "failed", saved.task_id, saved.title, m.branch, m.repo, first_line_trimmed(detail))
-		if auto_reconcile do line = fmt.tprintf("%s — a reconcile attempt was started automatically", line)
 		effect_notify_coordinator(svc, &u, saved.chain_id, saved.owner_user_id, "merge_conflict" if outcome == .Conflict else "merge_failed", line)
 	}
 	if rok {
 		rok, _ = after_chain_change(svc, &u, saved.chain_id, saved.owner_user_id, .Task_Updated)
 	}
-	_, _ = end_uow(svc, &u, rok)
+	_, cerr := end_uow(svc, &u, rok)
+	if !rok || cerr.code != .None || outcome != .Conflict do return
+	merge_conflict_auto_reconcile(svc, saved.task_id)
+}
+
+// merge_conflict_auto_reconcile (F1): after the conflict is COMMITTED, start
+// the reconcile attempt (a non-counting attempt that merges the directory's
+// branch into the task's and resubmits) in its own unit of work. If that write
+// fails, only the auto-answer is rolled back: the conflict stays recorded and
+// the task stays parked for the coordinator. Bounded by MERGE_AUTO_RECONCILE_MAX.
+merge_conflict_auto_reconcile :: proc(svc: ^Service, task_id: domain.Task_ID) -> bool {
+	u, uok, _ := begin_uow(svc)
+	if !uok do return false
+	task, found, _ := iface.taskchain_get_task(svc.repo, task_id)
+	if !found || !strings.contains(task.blocked_on_json, `"merge_conflict"`) || !merge_conflict_auto_reconcile_allowed(svc, task) {
+		_, _ = end_uow(svc, &u, false)
+		return false
+	}
+	ap := json_begin()
+	json_bool(&ap, "auto", true)
+	json_str(&ap, "reason", "merge_conflict_auto_reconcile")
+	saved, aok := task, false
+	if !svc.test_fail_merge_auto_answer {
+		saved, _, aok, _ = record_event(svc, &u, task, hub_actor(), EV_ANSWERED, json_end(&ap))
+	}
+	if aok do aok, _ = after_chain_change(svc, &u, saved.chain_id, saved.owner_user_id, .Task_Updated)
+	if aok {
+		effect_notify_coordinator(svc, &u, saved.chain_id, saved.owner_user_id, "merge_conflict", fmt.tprintf("[taskv2] merge conflict: task %s (%s) — a reconcile attempt was started automatically", saved.task_id, saved.title))
+	}
+	_, cerr := end_uow(svc, &u, aok)
+	return aok && cerr.code == .None
 }
 
 // MERGE_AUTO_RECONCILE_MAX: consecutive merge conflicts (no merge between)
