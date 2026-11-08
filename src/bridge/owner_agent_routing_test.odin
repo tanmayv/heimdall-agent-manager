@@ -229,3 +229,54 @@ test_owner_materialize_blocks_on_deterministic_or_repeated_worktree_failure :: p
     testing.expect(t,block=="","the success reset the consecutive-failure count")
     for task in ([2]string{"task_branch","task_ok"}) do _=owner_routing_git(t,repo,"worktree","remove","--force",fmt.tprintf("%s/.heimdall/worktrees/%s",repo,task))
 }
+
+// Only a git that ran and reported a detached HEAD is deterministic: a git
+// that could not be spawned or timed out on `symbolic-ref` is retried. The
+// runner intercepts only this test's unique worktree path, so parallel tests
+// still reach the real runner.
+owner_head_probe_path: string
+owner_head_probe_timed_out: bool
+
+@(test)
+test_owner_prepare_worktree_detached_head_only_when_git_ran :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    root:=fmt.tprintf("%s/.cache/heimdall-tests/owner-worktree-head-%d",os.get_env("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    testing.expect(t,bridge_make_directory_all(fmt.tprintf("%s/repo",root))==nil)
+    defer _=os.remove_all(root)
+    repo:=bridge_fs_canonicalize_existing(fmt.tprintf("%s/repo",root));defer delete(repo)
+    owner_routing_git(t,repo,"init","-b","sandbox")
+    testing.expect(t,os.write_entire_file(fmt.tprintf("%s/f.txt",repo),transmute([]byte)string("base\n"))==nil)
+    owner_routing_git(t,repo,"add",".")
+    owner_routing_git(t,repo,"commit","-m","base")
+    base:=owner_routing_git(t,repo,"rev-parse","HEAD")
+    task:="task_head"
+    work:=fmt.tprintf("%s/.heimdall/worktrees/%s",repo,task)
+    config:=owner.doc(map[string]string{"merge_policy"="git","repository"=repo,"worktree"=work,
+        "source_branch"=fmt.tprintf("heimdall/%s",task),"target_branch"="integration","base_head"=base})
+    testing.expect(t,bridge_owner_ensure_worktree(config,task))
+    status,reason:=bridge_owner_prepare_worktree(config,task)
+    testing.expect(t,status==.Ok,reason)
+
+    owner_head_probe_path=work
+    vcs_process_runner = proc(args: []string, timeout: time.Duration) -> (stdout, stderr: string, ok, timed_out: bool) {
+        intercept:=false
+        for a,i in args do if a=="-C" && i+1<len(args) && args[i+1]==owner_head_probe_path do intercept=true
+        is_symbolic:=false
+        for a in args do if a=="symbolic-ref" do is_symbolic=true
+        if !intercept || !is_symbolic do return bridge_process_run_capture(args, timeout)
+        return "", "", false, owner_head_probe_timed_out
+    }
+    defer vcs_process_runner = bridge_process_run_capture
+    owner_head_probe_timed_out=false
+    status,reason=bridge_owner_prepare_worktree(config,task)
+    testing.expect(t,status==.Retry && strings.contains(reason,"not started or timed out"),reason)
+    owner_head_probe_timed_out=true
+    status,reason=bridge_owner_prepare_worktree(config,task)
+    testing.expect(t,status==.Retry,reason)
+    vcs_process_runner = bridge_process_run_capture
+
+    owner_routing_git(t,work,"checkout","--detach")
+    status,reason=bridge_owner_prepare_worktree(config,task)
+    testing.expect(t,status==.Deterministic && strings.contains(reason,"detached HEAD"),reason)
+    _=owner_routing_git(t,repo,"worktree","remove","--force",work)
+}

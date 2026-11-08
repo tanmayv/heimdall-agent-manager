@@ -11,11 +11,17 @@ import owner "odin_test:lib/owner_local"
 
 // argv-only, bounded existing VCS runner; suppress repository hooks/signing.
 bridge_owner_git :: proc(repo:string,args:[]string) -> (string,bool) {
+    out,_,ok,_:=bridge_owner_git_capture(repo,args)
+    return out,ok
+}
+// Like bridge_owner_git, but also says whether git actually ran: stderr is
+// empty and timed_out may be set when it could not be spawned or was killed.
+bridge_owner_git_capture :: proc(repo:string,args:[]string) -> (out,stderr:string,ok,timed_out:bool) {
     argv:=make([dynamic]string,context.temp_allocator)
     append(&argv,"git","-c","core.hooksPath=/dev/null","-c","commit.gpgSign=false","-c","core.fsmonitor=false","-C",repo)
     append(&argv,..args)
-    out,ok:=vcs_run(argv[:]);defer delete(out)
-    return strings.clone(strings.trim_space(out),context.temp_allocator),ok
+    raw,raw_err,ran_ok,killed:=vcs_process_runner(argv[:],VCS_LOCAL_TIMEOUT);defer {delete(raw);delete(raw_err)}
+    return strings.clone(strings.trim_space(raw),context.temp_allocator),strings.clone(strings.trim_space(raw_err),context.temp_allocator),ran_ok,killed
 }
 // allow_missing_worktree (configuration only): the task worktree may not
 // exist yet; it is created after a claim is admitted. Its path must still be

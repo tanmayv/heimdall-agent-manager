@@ -155,7 +155,10 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
       reviews = [...owned.reviews, ...archived];
       reviewsTruncated = owned.truncated; reviewsMore = owned.more;
     } catch (e) {
-      if (isOwnerOffline(e)) { if (seq === taskLoadSeq.current) fail(e); return; }
+      // A failed scan never leaves "Loading reviews…" behind: an offline owner
+      // also switches the view to its offline state, and the (current) ticket
+      // keeps a worded reviews error for when it is shown again.
+      if (isOwnerOffline(e) && seq === taskLoadSeq.current) fail(e);
       reviewsError = ownerErrorMessage(e, chain.bridgeName);
     }
     if (!live.current || seq !== taskLoadSeq.current) return;

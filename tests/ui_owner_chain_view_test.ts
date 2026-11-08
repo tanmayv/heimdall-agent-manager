@@ -336,3 +336,47 @@ test('the ticket renders before the review history scan finishes, then reviews f
     clearKeyringSession();
   }
 });
+
+// A review scan that fails (here the owner Bridge goes offline mid-scan) never
+// leaves "Loading reviews…" behind: when the owner is back, the ticket shows a
+// worded reviews error instead of a stuck loading state.
+test('a failed review scan clears the reviews loading state', async () => {
+  const env = await ownerTestSession('brg_flaky', 'Desk');
+  const { session } = env;
+  let historyOffline = true;
+  const send = fakeOwner(session, async (call) => {
+    const task = call.command.task_id;
+    switch (call.method) {
+      case 'chain.read': return { chain_id: 'chain_owned', task_id: '', revision: '1', title: 'Live chain title', description: '', defaults_json: '{}',
+        items: [{ task_id: 'task_1', title: 'Fix login', priority: 'p1', revision: '1' }], next_cursor: '' };
+      case 'work.read': return { chain_id: 'chain_owned', publish_state: 'published', status: 'active', work_revision: '1', pending_proposal_id: '', next_cursor: '', items: [], pending_proposal: null };
+      case 'runtime.read': return { revision: '1', fleet: [], leases: [], config: [], requirements: [], state: [['ready', '1', '']], submission: [], controls: [],
+        attempts: { attempt_no: '0', last_release: '', work_lease_id: '', completeness: 'full' } };
+      case 'task.read': return { chain_id: 'chain_owned', task_id: task, revision: '1', title: 'Fix login', body: 'Login fails on Safari', priority: 'p1', items: [], next_cursor: '' };
+      case 'migration.archive.read': return { chain_id: 'chain_owned', migration_id: '', next_cursor: '', items: [] };
+      case 'history.read': return historyOffline ? 'offline' : { chain_id: 'chain_owned', next_cursor: '', items: [] };
+      default: return { code: 'invalid_scope' };
+    }
+  });
+  const ui = mountDom();
+  const render = (online: boolean) => act(async () => ui.root.render(React.createElement(OwnerChainView, { chain: summary(env, { online }), send, session: async () => session })));
+  try {
+    await render(true);
+    await ui.flush();
+    await ui.click('owner-chain-task-task_1');
+    assert.ok(ui.$('owner-chain-offline'), 'the scan failure switches the view offline');
+    historyOffline = false;
+    await render(false);
+    await ui.flush();
+    await render(true);
+    await ui.flush();
+    assert.equal(ui.$('owner-chain-offline'), null, 'the owner is back');
+    assert.equal(ui.$('owner-chain-task-title')!.textContent, 'Fix login');
+    assert.equal(ui.$('owner-chain-reviews-loading'), null, 'no stuck "Loading reviews…"');
+    assert.match(ui.$('owner-chain-reviews')!.textContent!, /Owner Bridge Desk is offline/);
+    assert.ok(!/owner_unavailable/.test(ui.text()), 'the raw code never shows');
+  } finally {
+    await ui.restore();
+    clearKeyringSession();
+  }
+});

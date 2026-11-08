@@ -306,8 +306,17 @@ bridge_owner_prepare_worktree :: proc(config:json.Object,task:string) -> (Owner_
     if !bridge_owner_worktree_path_safe(repo,task) do return .Deterministic,fmt.tprintf("a component of %s is a symlink or not a directory",work)
     if os.exists(work) {
         if !bridge_taskv2_is_checkout_root(work) do return .Deterministic,fmt.tprintf("%s exists but is not a git worktree checkout",work)
-        current,ok:=bridge_owner_git(work,[]string{"symbolic-ref","--short","HEAD"})
-        if !ok do return .Deterministic,fmt.tprintf("%s is on a detached HEAD, not branch %s",work,branch)
+        current,stderr,ok,timed_out:=bridge_owner_git_capture(work,[]string{"symbolic-ref","--short","HEAD"})
+        if !ok {
+            // Only a git that ran and reported a non-symbolic HEAD which still
+            // resolves to a commit is a detached HEAD. A spawn failure, a
+            // timeout, or an unreadable repository may fix itself: retry.
+            if timed_out || stderr=="" do return .Retry,fmt.tprintf("git could not read HEAD of %s (not started or timed out)",work)
+            if _,resolved:=bridge_owner_git(work,[]string{"rev-parse","--verify","--quiet","HEAD^{commit}"});resolved {
+                return .Deterministic,fmt.tprintf("%s is on a detached HEAD, not branch %s",work,branch)
+            }
+            return .Retry,fmt.tprintf("git could not read HEAD of %s: %s",work,stderr)
+        }
         if current!=branch do return .Deterministic,fmt.tprintf("%s is checked out on branch %s, not %s",work,current,branch)
         return .Ok,""
     }

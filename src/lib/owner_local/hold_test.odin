@@ -199,3 +199,27 @@ hold_requirements_rework_clears_deferred_rejection_and_starts_next_attempt :: pr
     testing.expect_value(t,lease_invoke(f,lease_request(f,lease_child(),"lease.claim","replanned","lease2","","9"),"",lease_child()).code,"ok")
     attempt_expect(t,f,2,"")
 }
+
+// A quarantined chain (unactivated migration import) refuses the legacy held
+// checkpoint path even when a matching checkpoint binding exists.
+@(test)
+hold_legacy_checkpoint_refused_while_chain_quarantined :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=fixture(t);defer destroy(f);lifecycle_seed(t,f);cap:=lifecycle_ready(t,f)
+    testing.expect_value(t,control_call(f,"task.hold","hold","4").code,"ok")
+    _,ok:=query(f.store.db,"INSERT INTO local_checkpoints SELECT chain_id,task_id,lease_id,?,capability_json,expires_ms FROM local_leases",encode(lease_child()))
+    testing.expect(t,ok)
+    _,ok=query(f.store.db,"UPDATE local_leases SET retired_seq=99 WHERE retired_seq IS NULL")
+    testing.expect(t,ok)
+    p:=`{"requirements_revision":"1","summary":"legacy checkpoint","next_steps":"continue after release"}`
+    c,parsed:=contracts.owner_parse(lifecycle_raw(f,lease_child(),"lease.handoff","quarantined_checkpoint",p,cap,"5"),"lifecycle_command")
+    if !testing.expect(t,parsed) do return
+    testing.expect(t,control_checkpoint_authorized(&f.store,c,lease_child(),cap,1000),"binding authorizes before quarantine")
+    if !r5_quarantine(t,f) do return
+    testing.expect(t,!control_checkpoint_authorized(&f.store,c,lease_child(),cap,1000),"quarantined chain refuses the checkpoint path")
+    testing.expect(t,lifecycle_call(f,lease_child(),"lease.handoff","quarantined_checkpoint",p,cap,"5").code!="ok")
+    rows,_:=query(f.store.db,"SELECT count(*) FROM local_checkpoints")
+    testing.expect_value(t,rows[0][0],"1")
+    if !r5_activate(t,f) do return
+    testing.expect(t,control_checkpoint_authorized(&f.store,c,lease_child(),cap,1000),"activation restores the binding")
+}

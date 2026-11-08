@@ -241,6 +241,9 @@ work_attempt_record :: proc(s:^Store,chain,task,lease:string) -> (string,bool) {
 control_checkpoint_authorized :: proc(s:^Store,c:json.Object,child:Child,cap:string,now:i64) -> bool {
     method:=field(c,"method")
     if method!="lease.handoff" && method!="review.checkpoint" do return false
+    // A quarantined (unactivated migration import) chain grants no authority,
+    // including this compatibility checkpoint path for held tasks.
+    if migration_quarantined(s,field(c,"chain_id")) do return false
     rows,ok:=query(s.db,"SELECT 1 FROM local_checkpoints p JOIN local_controls m ON m.chain_id=p.chain_id AND m.task_id=p.task_id WHERE p.chain_id=? AND p.task_id=? AND p.lease_id=? AND p.child_json=? AND p.capability_json=? AND p.expires_ms>? AND m.mode='held'",field(c,"chain_id"),field(c,"task_id"),field(c,"lease_id"),encode(child),cap,fmt.tprintf("%d",now))
     return ok && len(rows)==1
 }
