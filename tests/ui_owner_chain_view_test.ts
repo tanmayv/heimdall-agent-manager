@@ -283,3 +283,56 @@ test('owner reviews come from the newest history, past 200 events, with an expli
     assert.equal(capped.reviews[0].summary, 'review at 196');
   } finally { clearKeyringSession(); }
 });
+
+// H1: the ticket renders without waiting for the review history scan (which may
+// page through the whole chain history); reviews load afterwards with their own
+// loading state.
+test('the ticket renders before the review history scan finishes, then reviews fill in', async () => {
+  const env = await ownerTestSession();
+  const { session } = env;
+  let releaseHistory!: () => void;
+  const historyGate = new Promise<void>((resolve) => { releaseHistory = resolve; });
+  let historyReads = 0;
+  const send = fakeOwner(session, async (call) => {
+    const task = call.command.task_id;
+    switch (call.method) {
+      case 'chain.read': return { chain_id: 'chain_owned', task_id: '', revision: '1', title: 'Live chain title', description: '', defaults_json: '{}',
+        items: [{ task_id: 'task_1', title: 'Fix login', priority: 'p1', revision: '1' }], next_cursor: '' };
+      case 'work.read': return { chain_id: 'chain_owned', publish_state: 'published', status: 'active', work_revision: '1', pending_proposal_id: '', next_cursor: '', items: [], pending_proposal: null };
+      case 'runtime.read': return { revision: '1', fleet: [], leases: [], config: [], requirements: [], state: [['ready', '1', '']], submission: [], controls: [],
+        attempts: { attempt_no: '0', last_release: '', work_lease_id: '', completeness: 'full' } };
+      case 'task.read': return { chain_id: 'chain_owned', task_id: task, revision: '1', title: 'Fix login', body: 'Login fails on Safari', priority: 'p1', items: [], next_cursor: '' };
+      case 'migration.archive.read': return { chain_id: 'chain_owned', migration_id: '', next_cursor: '', items: [] };
+      case 'history.read': {
+        historyReads++;
+        await historyGate;
+        return { chain_id: 'chain_owned', next_cursor: '', items: [
+          { seq: '5', task_id: 'task_1', ts_ms: '1', actor_kind: 'agent', actor_id: 'agt_reviewer', kind: 'review.post', operation_id: 'op_r', completeness: 'full', evidence_bytes: '10' },
+        ] };
+      }
+      case 'history.fetch': return { seq: '5', offset: '0', next_offset: '', completeness: 'full',
+        evidence: JSON.stringify({ payload: JSON.stringify({ attempt: '1', verdict: 'approve', summary: 'Late review' }) }) };
+      default: return { code: 'invalid_scope' };
+    }
+  });
+  const ui = mountDom();
+  try {
+    await act(async () => ui.root.render(React.createElement(OwnerChainView, { chain: summary(env), send, session: async () => session })));
+    await ui.flush();
+    await ui.click('owner-chain-task-task_1');
+    assert.ok(historyReads > 0, 'the review scan started');
+    assert.equal(ui.$('owner-chain-task-title')!.textContent, 'Fix login', 'the ticket is rendered while reviews are still loading');
+    assert.match(ui.$('owner-chain-brief')!.textContent!, /Login fails on Safari/);
+    assert.ok(ui.$('owner-chain-reviews-loading'), 'reviews show a loading state');
+    assert.ok(!/No reviews\./.test(ui.$('owner-chain-reviews')!.textContent!), 'no empty state while loading');
+    releaseHistory();
+    await ui.flush();
+    assert.equal(ui.$('owner-chain-reviews-loading'), null);
+    assert.match(ui.$('owner-chain-reviews')!.textContent!, /Approved.*agt_reviewer.*Late review/s);
+    assert.equal(ui.$('owner-chain-error'), null);
+  } finally {
+    releaseHistory();
+    await ui.restore();
+    clearKeyringSession();
+  }
+});
