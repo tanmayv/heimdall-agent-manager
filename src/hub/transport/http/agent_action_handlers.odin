@@ -526,7 +526,14 @@ agent_action_chain_summary_handler :: proc(ctx: rawptr, req: Request) -> Respons
 	return respond_success(taskv2.json_end(&o), req.request_id, auth_ctx_server_time(req), 200)
 }
 
-// POST /api/v1/agent-actions/chain/propose  params: {chain_id?, tasks?:[...], kind?, rationale?, alternative?, auto_approve?, summary?}
+agent_propose_auto_approve :: proc(params: string) -> bool {
+	if jsonx.extract_bool(params, "require_decision", false, true) do return false
+	return jsonx.extract_bool(params, "auto_approve", true, true)
+}
+
+// POST /api/v1/agent-actions/chain/propose  params: {chain_id?, tasks?:[...], kind?, rationale?, alternative?, auto_approve?, require_decision?, summary?}
+// Agent proposals auto-approve by default (F1); `require_decision: true` (or
+// an explicit `auto_approve: false`) keeps the proposal pending for a decide.
 agent_action_chain_propose_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Action_Handlers)(ctx)
 	auth, inst, ok, resp := require_instance_action_auth(h, req)
@@ -541,7 +548,7 @@ agent_action_chain_propose_handler :: proc(ctx: rawptr, req: Request) -> Respons
 	rationale := json_string(params, "rationale")
 	if rationale == "" do rationale = json_string(params, "summary")
 	alternative := json_string(params, "alternative")
-	auto_approve := jsonx.extract_bool(params, "auto_approve", false, true)
+	auto_approve := agent_propose_auto_approve(params)
 	wf_ref := json_string(params, "workflow")
 	if wf_ref == "" do wf_ref = json_string(params, "template")
 	if wf_ref == "" do wf_ref = json_string(params, "workflow_ref")

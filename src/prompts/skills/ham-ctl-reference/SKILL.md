@@ -49,10 +49,11 @@ Groups: `bridge`, `agents`, `task-chain`, `task`, `workflow`, `lease`, `review`,
   description (coordinator only; pass `""` to clear; `--chain` defaults to your chain).
 - `task-chain summary set <text> [--chain <id>]` (or `--stdin`) — set the curated chain summary
   (`<= 60` lines; coordinator only; surfaced in every agent's `TASK.md` context pack).
-- `task-chain propose --file <proposal.json> [--auto-approve] [--chain <id>]` — create a chain
+- `task-chain propose --file <proposal.json> [--require-decision] [--chain <id>]` — create a chain
   proposal (`kind: "task"|"workflow_run"`, `rationale`, `alternative`, `tasks` array or `workflow` + `inputs`) and its draft
-  tasks in a single transaction (coordinator only). With `--auto-approve`, validates briefs and
-  publishes (or runs the proposed workflow) immediately.
+  tasks in a single transaction (coordinator only). By default it auto-approves: validates briefs and
+  publishes (or runs the proposed workflow) immediately. With `--require-decision` the proposal stays
+  pending until `task-chain decide`. (`--auto-approve` is still accepted and is the default.)
 - `task-chain decide <chain-id> --decision approve|reject [--reason <text>]` — approve or reject
   a pending chain proposal (publishes all tasks or starts the proposed workflow atomically on `approve`).
 - `task-chain publish <chain-id>` — validate all task briefs and publish the chain (`422 brief_incomplete` lists missing fields per task, including `review_role:<r>` when no fleet row holds a requested role). `decide` and `publish` need the chain id (positional or `--chain`).

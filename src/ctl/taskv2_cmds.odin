@@ -679,6 +679,9 @@ Ctl_Chain_Propose_Body :: struct {
 	rationale:    string      `json:"rationale,omitempty"`,
 	alternative:  string      `json:"alternative,omitempty"`,
 	auto_approve: Maybe(bool) `json:"auto_approve,omitempty"`,
+	// require_decision: the proposal waits for an explicit decide (opt-in,
+	// F1); without it proposals auto-approve.
+	require_decision: Maybe(bool) `json:"require_decision,omitempty"`,
 	tasks:        json.Value  `json:"tasks,omitempty"`,
 	workflow:     string      `json:"workflow,omitempty"`,
 	inputs:       json.Value  `json:"inputs,omitempty"`,
@@ -711,11 +714,20 @@ ctl_v2_task_chain_propose_body :: proc(args: []string, file_text: string) -> (bo
 	} else {
 		body.alternative = option_value(args, "--alternative", "")
 	}
-	auto_approve := has_flag(args, "--auto-approve")
-	if !auto_approve {
-		if b, bok := obj["auto_approve"].(json.Boolean); bok do auto_approve = bool(b)
+	// Proposals auto-approve by default (F1). `--require-decision` (or
+	// "require_decision": true / "auto_approve": false in the file) keeps the
+	// proposal pending until an explicit decide. `--auto-approve` is accepted
+	// for compatibility and wins over a file-level opt-in.
+	require_decision := has_flag(args, "--require-decision")
+	if !require_decision && !has_flag(args, "--auto-approve") {
+		if b, bok := obj["require_decision"].(json.Boolean); bok && bool(b) do require_decision = true
+		if b, bok := obj["auto_approve"].(json.Boolean); bok && !bool(b) do require_decision = true
 	}
-	if auto_approve do body.auto_approve = true
+	if require_decision {
+		body.require_decision = true
+	} else {
+		body.auto_approve = true
+	}
 
 	if tasks, has_tasks := obj["tasks"].(json.Array); has_tasks {
 		body.tasks = tasks
@@ -758,7 +770,7 @@ ctl_v2_task_chain_propose :: proc(endpoint, token: string, tokens, args: []strin
 	}
 	params, ok := ctl_v2_task_chain_propose_params(args, file_text)
 	if !ok {
-		fmt.println(`{"ok":false,"message":"task-chain propose requires --file <proposal.json> (with tasks array) [--auto-approve] [--chain <id>]"}`)
+		fmt.println(`{"ok":false,"message":"task-chain propose requires --file <proposal.json> (with tasks array) [--require-decision] [--chain <id>]"}`)
 		os.exit(1)
 	}
 	ctl_agent_call_task(endpoint, token, "agent.task_chain.propose", params, args)

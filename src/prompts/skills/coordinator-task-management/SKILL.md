@@ -73,11 +73,11 @@ cat > proposal.json <<'EOF'
   ]
 }
 EOF
-./bin/ham-ctl task-chain propose --file proposal.json [--auto-approve]
+./bin/ham-ctl task-chain propose --file proposal.json [--require-decision]
 ./bin/ham-ctl task-chain decide <chain-id> --decision approve|reject [--reason <text>]
 ```
 - Per-task fields: `id`, `title`, `description`, `priority`, `depends_on`, `brief`. **Put `assignee`, `reviewers` and `requires_user_approval` inside `brief`**; top-level copies are ignored.
-- Without `--auto-approve` the proposal waits for an explicit decision. Existing work continues.
+- Proposals auto-approve by default: briefs are validated and tasks publish (or the workflow starts) at once. Pass `--require-decision` when the user wants to see the plan first; the proposal then waits for `task-chain decide`. Existing work continues.
 - Single tasks: `task create --title … --goal … --acceptance … (repeat) [--assignee agt_…] [--reviewer agt_…] [--review-role <role>] [--require-user-approval] [--input <ref>] [--depends-on <ids>]`, then `task publish <task-id>` or `task-chain publish <chain-id>`.
 - Publish refuses incomplete briefs with `422 brief_incomplete` listing what is missing per task, including `review_role:<r>` when no fleet row holds a role the brief asks for.
 

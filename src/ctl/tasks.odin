@@ -347,7 +347,7 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 		}
 		body, p_ok := ctl_v2_task_chain_propose_body(args, file_text)
 		if !p_ok {
-			fmt.println(`{"ok":false,"message":"task-chains propose requires --file <proposal.json> [--auto-approve] [--chain <id>]"}`)
+			fmt.println(`{"ok":false,"message":"task-chains propose requires --file <proposal.json> [--require-decision] [--chain <id>]"}`)
 			os.exit(1)
 		}
 		ctl_task_chain_request_and_decrypt(transport, {method = .POST, path = ctl_api("agent-actions", "chain", "propose"), body = httpc.json_body(body)}, args)
