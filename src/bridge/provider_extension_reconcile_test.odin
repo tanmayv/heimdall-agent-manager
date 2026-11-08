@@ -513,3 +513,26 @@ test_bridge_extension_replaces_marketplace_from_another_source :: proc(t: ^testi
 	// add (refused) -> remove -> add -> plugin add, with no cleanup pass first.
 	testing.expectf(t, len(verbs) >= 4 && verbs[0] == "marketplace add" && verbs[1] == "marketplace remove" && verbs[2] == "marketplace add" && verbs[3] == "add", "%v", verbs)
 }
+
+// H3: with no catalog detector (state "unsupported") nothing can verify, so the
+// ensure refuses up front instead of removing a working registration and
+// failing verification after the reinstall.
+@(test)
+test_bridge_extension_unsupported_detection_leaves_registration :: proc(t: ^testing.T) {
+	sync.mutex_lock(&test_install_mu)
+	defer sync.mutex_unlock(&test_install_mu)
+	saved := test_install_hook()
+	defer test_install_restore(saved)
+	root := test_install_fixture(t)
+	defer _ = os.remove_all(root)
+	for provider in ([]string{"claude", "codex", "antigravity"}) {
+		test_install_reset(t, fmt.tprintf("%s-unsupported", provider))
+		test_install_pre_state = "unsupported"
+		mp := bridge_extension_marketplace_name(provider)
+		if mp != "" do test_install_marketplaces = fmt.tprintf(`[{{"name":"%s","path":"/home/u/elsewhere/extensions"}}]`, mp)
+		variant := "claude-code" if provider == "claude" else provider
+		r := bridge_extension_ensure(provider, test_install_path({root, variant}), "/fake/provider", time.time_add(time.now(), 30 * time.Second), {})
+		testing.expectf(t, !r.ok && r.code == "detection_unavailable", "%s: %v", provider, r)
+		testing.expectf(t, len(test_install_calls) == 0, "%s: registration touched: %s", provider, test_install_verbs())
+	}
+}

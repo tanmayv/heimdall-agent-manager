@@ -1,8 +1,11 @@
 package main
 
+import "core:crypto/hash"
+import "core:encoding/hex"
 import "core:encoding/json"
 import "core:fmt"
 import "core:os"
+import "core:strings"
 import "core:sync"
 import "core:testing"
 import "core:time"
@@ -62,7 +65,7 @@ test_provider_extension_older_version_is_outdated :: proc(t: ^testing.T) {
 	provider_extension_test_expect(t, `[{"id":"heimdall@heimdall","version":"0.0.9","enabled":true}]`, "outdated", "0.0.9")
 	// Numeric, not lexical, comparison; suffixes and a "v" prefix are tolerated.
 	testing.expect_value(t, bridge_provider_extension_version_compare("0.10.0", "0.9.0"), 1)
-	testing.expect_value(t, bridge_provider_extension_version_compare("v0.1.0-beta", "0.1.0"), 0)
+	testing.expect_value(t, bridge_provider_extension_version_compare("v0.1.0-beta", "0.1.0"), -1)
 	testing.expect_value(t, bridge_provider_extension_version_compare("0.1", "0.1.0"), 0)
 	testing.expect_value(t, bridge_provider_extension_version_compare("1.0.0", "1.0.1"), -1)
 }
@@ -336,4 +339,114 @@ test_provider_extension_antigravity_empty_probe_exit_status :: proc(t: ^testing.
 		_ = os.remove(path)
 		delete(path)
 	}
+}
+
+// H3: SemVer precedence. A pre-release is below its own release, equal strings
+// are equal, build metadata is ignored, identifiers compare per SemVer 11.4.
+@(test)
+test_provider_extension_version_compare_prerelease :: proc(t: ^testing.T) {
+	Case :: struct { a, b: string, want: int }
+	for c in ([]Case{
+		{"0.5.50-subagents.1", "0.5.50-subagents.1", 0},
+		{"v0.5.50-subagents.1", "0.5.50-subagents.1", 0},
+		{"0.5.50-subagents.1", "0.5.50", -1},
+		{"0.5.50", "0.5.50-subagents.1", 1},
+		{"0.5.50-subagents.1", "0.5.49", 1},
+		{"0.5.50-subagents.1", "0.5.51", -1},
+		{"0.5.50-subagents.2", "0.5.50-subagents.1", 1},
+		{"0.5.50-subagents.10", "0.5.50-subagents.9", 1},
+		{"1.0.0-alpha", "1.0.0-alpha.1", -1},
+		{"1.0.0-alpha.1", "1.0.0-alpha.beta", -1},
+		{"1.0.0-alpha.beta", "1.0.0-beta", -1},
+		{"1.0.0-beta.2", "1.0.0-beta.11", -1},
+		{"1.0.0-rc.1", "1.0.0", -1},
+		{"1.0.0+build.5", "1.0.0", 0},
+		{"1.0.0-rc.1+build.5", "1.0.0-rc.1", 0},
+	}) {
+		testing.expectf(t, bridge_provider_extension_version_compare(c.a, c.b) == c.want, "compare(%q, %q) = %d, want %d",
+			c.a, c.b, bridge_provider_extension_version_compare(c.a, c.b), c.want)
+	}
+	// An installed pre-release satisfies the same pre-release minimum.
+	ext := provider_extension_test_descriptor()
+	ext.min_version = "0.5.50-subagents.1"
+	state, version := bridge_provider_extension_evaluate(ext, `[{"id":"heimdall@heimdall","version":"0.5.50-subagents.1","enabled":true}]`, true)
+	defer delete(version)
+	testing.expect_value(t, state, "present")
+	testing.expect_value(t, version, "0.5.50-subagents.1")
+}
+
+provider_extension_test_write_catalog :: proc(t: ^testing.T, data_dir, catalog_json: string) {
+	etag := fmt.tprintf("sha256:%s", provider_extension_test_sha256(catalog_json))
+	testing.expect(t, bridge_make_directory_all(fmt.tprintf("%s/bridge", data_dir)) == nil)
+	b := strings.builder_make(context.temp_allocator)
+	strings.write_string(&b, "{\"catalog_etag\":\"")
+	bridge_runtime_write_json_string(&b, etag)
+	strings.write_string(&b, "\",\"catalog_json\":\"")
+	bridge_runtime_write_json_string(&b, catalog_json)
+	strings.write_string(&b, "\"}\n")
+	testing.expect(t, os.write_entire_file_from_string(fmt.tprintf("%s/bridge/provider_catalog.json", data_dir), strings.to_string(b)) == nil)
+}
+
+provider_extension_test_sha256 :: proc(body: string) -> string {
+	buf: [32]byte
+	hash.hash_string_to_buffer(.SHA256, body, buf[:])
+	return string(hex.encode(buf[:], context.temp_allocator))
+}
+
+// H3 regression: `ham-bridge setup` / `extensions sync` run without a loaded
+// bridge config, so discovery read the default data dir's catalog. On a machine
+// with a legacy single-profile catalog (providers without an extension
+// descriptor) every freshly installed extension verified as
+// `state is "unsupported", version is ""`. Syncing a profile must read that
+// profile's own catalog.
+@(test)
+test_bridge_extensions_sync_reads_profile_catalog :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	saved_dir := bridge_config.data_dir
+	sync.rw_mutex_lock(&bridge_provider_catalog_mutex)
+	saved_snap, saved_loaded := bridge_provider_catalog_snapshot, bridge_provider_catalog_loaded
+	sync.rw_mutex_unlock(&bridge_provider_catalog_mutex)
+	defer {
+		bridge_config.data_dir = saved_dir
+		sync.rw_mutex_lock(&bridge_provider_catalog_mutex)
+		bridge_provider_catalog_snapshot, bridge_provider_catalog_loaded = saved_snap, saved_loaded
+		sync.rw_mutex_unlock(&bridge_provider_catalog_mutex)
+	}
+	root := fmt.tprintf("%s/h3-profile-catalog-%d", bridge_scratch_root(context.temp_allocator), time.to_unix_nanoseconds(time.now()))
+	defer _ = os.remove_all(root)
+	legacy := fmt.tprintf("%s/legacy", root)
+	profile := fmt.tprintf("%s/bridges/heimdall-bridge-hub", root)
+	provider := `"provider":"claude","display_name":"Claude Code","binary":"claude","state":"active","models":[{"model_id":"m","label":"M","state":"active"}]`
+	provider_extension_test_write_catalog(t, legacy, fmt.tprintf(`{{"providers":[{{%s}}]}}`, provider))
+	provider_extension_test_write_catalog(t, profile, fmt.tprintf(`{{"providers":[{{%s,"extension":{{"detect_argv":["plugin","list","--json"],"plugin_id":"heimdall@heimdall","min_version":"0.5.50-subagents.1"}}}}]}}`, provider))
+	installed := `[{"id":"heimdall@heimdall","version":"0.5.50-subagents.1","enabled":true}]`
+
+	// The bug: the process-default catalog has no detector for the provider.
+	bridge_config.data_dir = legacy
+	sync.rw_mutex_lock(&bridge_provider_catalog_mutex)
+	bridge_provider_catalog_snapshot, bridge_provider_catalog_loaded = nil, false
+	sync.rw_mutex_unlock(&bridge_provider_catalog_mutex)
+	legacy_profile, ok := bridge_provider_catalog_profile("claude")
+	testing.expect(t, ok)
+	state, version := bridge_provider_extension_evaluate(legacy_profile.extension, installed, true)
+	testing.expect_value(t, state, "unsupported")
+	testing.expect_value(t, version, "")
+	delete(version)
+
+	// The fix: syncing a profile binds discovery to that profile's catalog.
+	bridge_extensions_use_data_dir(profile)
+	bound_dir := bridge_config.data_dir // cloned for the process lifetime
+	defer delete(bound_dir)
+	testing.expect_value(t, bridge_config.data_dir, profile)
+	bound, bound_ok := bridge_provider_catalog_profile("claude")
+	testing.expect(t, bound_ok)
+	testing.expect(t, bridge_provider_extension_supported(bound.extension))
+	state, version = bridge_provider_extension_evaluate(bound.extension, installed, true)
+	testing.expect_value(t, state, "present")
+	testing.expect_value(t, version, "0.5.50-subagents.1")
+	delete(version)
+	// Binding the same dir again keeps the loaded catalog.
+	bridge_extensions_use_data_dir(profile)
+	testing.expect(t, bridge_provider_catalog_provider_count() == 1)
 }
