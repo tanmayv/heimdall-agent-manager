@@ -62,6 +62,6 @@ export const EXPERIMENTAL_FLAGS: ReadonlyArray<{ key: string; label: string; des
   {
     key: AUTO_APPROVE_AGENT_MEMORIES_KEY,
     label: 'Auto-approve agent memories',
-    description: 'Memories your agents propose are approved immediately instead of waiting in your queue. On by default; turn off to review each proposal.',
+    description: 'Memories an agent proposes for itself only are approved immediately instead of waiting in your queue (memories that reach other agents still wait). On by default; turn off to review every proposal.',
   },
 ];

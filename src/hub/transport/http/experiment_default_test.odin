@@ -54,18 +54,22 @@ test_experiment_list_includes_unset_default_on_flags :: proc(t: ^testing.T) {
 	testing.expect_value(t, explicit, `{"ok":true,"experiments":[{"key":"streaming_terminal_pane","enabled":false,"updated_at":"t2"},{"key":"project_vcs","enabled":true,"updated_at":""},{"key":"actions","enabled":true,"updated_at":""},{"key":"lsp","enabled":true,"updated_at":""},{"key":"auto_approve_agent_memories","enabled":true,"updated_at":""}]}`)
 }
 
-// F1: agent memory proposals are saved approved while the owner's
-// auto_approve_agent_memories setting is on (the default); off keeps them pending.
+// F1: an agent memory proposal is saved approved only while the owner's
+// auto_approve_agent_memories setting is on (the default) AND it targets only
+// the proposing agent itself; anything wider stays pending for the user.
 @(test)
 test_agent_memory_proposal_status_follows_user_setting :: proc(t: ^testing.T) {
 	never_set := Default_Exp_Repo{}
 	repo := iface.Experiment_Repository{ctx = rawptr(&never_set), list_by_owner = default_exp_list}
-	testing.expect_value(t, agent_memory_proposal_status(&repo, "user_a"), "active")
+	testing.expect_value(t, agent_memory_proposal_status(&repo, "user_a", "agt_a", []string{"agt_a"}), "active")
+	testing.expect_value(t, agent_memory_proposal_status(&repo, "user_a", "agt_a", []string{"agt_a", "agt_b"}), "pending")
+	testing.expect_value(t, agent_memory_proposal_status(&repo, "user_a", "agt_a", []string{"agt_b"}), "pending")
+	testing.expect_value(t, agent_memory_proposal_status(&repo, "user_a", "agt_a", nil), "pending")
 	turned_off := Default_Exp_Repo{rows = {{key = domain.AUTO_APPROVE_AGENT_MEMORIES_KEY, enabled = false}}}
 	repo_off := iface.Experiment_Repository{ctx = rawptr(&turned_off), list_by_owner = default_exp_list}
-	testing.expect_value(t, agent_memory_proposal_status(&repo_off, "user_a"), "pending")
-	testing.expect_value(t, agent_memory_proposal_status(nil, "user_a"), "pending")
-	testing.expect_value(t, agent_memory_proposal_status(&repo, ""), "pending")
+	testing.expect_value(t, agent_memory_proposal_status(&repo_off, "user_a", "agt_a", []string{"agt_a"}), "pending")
+	testing.expect_value(t, agent_memory_proposal_status(nil, "user_a", "agt_a", []string{"agt_a"}), "pending")
+	testing.expect_value(t, agent_memory_proposal_status(&repo, "", "agt_a", []string{"agt_a"}), "pending")
 }
 
 // F1: LSP is on for a user who never set the flag; an explicit off is respected.

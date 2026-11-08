@@ -34,9 +34,11 @@ Template targeting is available through the `--template` scope flag; template is
 ## Propose-Review-Approve Workflow
 - Agents propose new memories using `ham-ctl memory propose`. By default the user's
   **Auto-approve agent memories** setting (Settings -> Experimental,
-  `auto_approve_agent_memories`, on by default) saves a proposal as `active` right away;
-  when the user turns it off, proposals wait in `pending` for review. Check the returned
-  `status`. Propose only what you would want applied immediately.
+  `auto_approve_agent_memories`, on by default) saves a proposal as `active` right away
+  ONLY when it targets just you (no `--agent-ids`, or only your own agent id); the hub
+  records `auto_approved_at` for audit. Anything that reaches other agents (other agent
+  ids, or a global memory) waits in `pending` for the user, as does everything when the
+  user turns the setting off. Check the returned `status`.
 - Approval of a pending proposal is a HUMAN/operator action — there is no agent `ham-ctl memory approve` verb.
   A human reviews pending proposals in the Settings -> Memory UI, via `ham-ctl hub memories
   approve <id>` (hub/user token), or by accepting a Curator action card (a `memory.approve`

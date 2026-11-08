@@ -1,6 +1,7 @@
 package http
 
 import "core:fmt"
+import "core:log"
 import "core:time"
 import "core:strings"
 import "core:strconv"
@@ -47,10 +48,14 @@ Agent_Action_Handlers :: struct {
 }
 
 // agent_memory_proposal_status: "active" (approved) when the owner's
-// auto_approve_agent_memories setting is on (default on, F1), else "pending".
-// A missing or failing store keeps the safe pending default.
-agent_memory_proposal_status :: proc(repo: ^iface.Experiment_Repository, owner_user_id: string) -> string {
-	if repo == nil || owner_user_id == "" do return "pending"
+// auto_approve_agent_memories setting is on (default on, F1) AND the memory
+// targets only the proposing agent itself (every agent_ids entry is that
+// agent; other dimensions only narrow it further). A memory that would reach
+// other agents, or every agent, stays "pending" for the user. A missing or
+// failing store keeps the safe pending default.
+agent_memory_proposal_status :: proc(repo: ^iface.Experiment_Repository, owner_user_id: string, proposer_agent_id := "", agent_ids: []string = nil) -> string {
+	if repo == nil || owner_user_id == "" || proposer_agent_id == "" || len(agent_ids) == 0 do return "pending"
+	for id in agent_ids do if id != proposer_agent_id do return "pending"
 	exps, err := iface.experiment_list_by_owner(repo, owner_user_id)
 	defer {
 		for exp in exps {
@@ -1204,8 +1209,12 @@ agent_action_memory_propose_handler :: proc(ctx: rawptr, req: Request) -> Respon
 	project_ids := json_project_id_array(params, "project_ids")
 	template_ids := json_string_array(params, "template_ids")
 	bridge_ids := json_string_array(params, "bridge_ids")
-	mem, saved, err := content_service.create_memory(h.content, auth, content_service.Memory_Input{agent_ids = agent_ids, project_ids = project_ids, template_ids = template_ids, bridge_ids = bridge_ids, type = domain.memory_type_from_string(json_string(params, "type")), title = json_string(params, "title"), description = json_string(params, "description"), body = json_string(params, "body"), evidence = json_string(params, "evidence"), status = agent_memory_proposal_status(h.experiments, string(inst.owner_user_id)), expires_at = json_string(params, "expires_at"), proposed_by_instance_id = inst.agent_instance_id, proposed_in_chain_id = inst.chain_id})
+	status := agent_memory_proposal_status(h.experiments, string(inst.owner_user_id), inst.agent_id, agent_ids)
+	mem, saved, err := content_service.create_memory(h.content, auth, content_service.Memory_Input{auto_approved = status == "active", agent_ids = agent_ids, project_ids = project_ids, template_ids = template_ids, bridge_ids = bridge_ids, type = domain.memory_type_from_string(json_string(params, "type")), title = json_string(params, "title"), description = json_string(params, "description"), body = json_string(params, "body"), evidence = json_string(params, "evidence"), status = status, expires_at = json_string(params, "expires_at"), proposed_by_instance_id = inst.agent_instance_id, proposed_in_chain_id = inst.chain_id})
 	if !saved do return respond_error(err, req.request_id)
+	if mem.auto_approved_at != "" {
+		log.infof("memory %s auto-approved (auto_approve_agent_memories) for agent %s, proposed by %s", mem.memory_id, inst.agent_id, inst.agent_instance_id)
+	}
 	publish_agent_action(h, inst, "memory_propose", fmt.tprintf("proposed memory \"%s\"", mem.title))
 	b := strings.builder_make()
 	write_memory_json(&b, mem, false)

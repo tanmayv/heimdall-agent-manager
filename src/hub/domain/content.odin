@@ -70,6 +70,9 @@ Memory :: struct {
 	// was working on ('' for user-created memories). Set once at creation.
 	proposed_by_instance_id: string,
 	proposed_in_chain_id: string,
+	// auto_approved_at: when the owner's auto_approve_agent_memories setting
+	// approved this agent proposal without a human review ('' otherwise). Audit.
+	auto_approved_at: string,
 }
 
 // CONVERSATION_TITLE_MAX_BYTES bounds the PLAINTEXT conversation title
