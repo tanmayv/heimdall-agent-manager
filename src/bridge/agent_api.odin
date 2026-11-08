@@ -202,6 +202,13 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		// {task_id}: read-only per-edge readiness (REQ-TV2-3b).
 		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "task", "readiness")}
 
+	// P-CS coordinator controls exist only on Bridge-owned chains; the owner
+	// route (owner_agent_controls.odin) serves them before this table runs.
+	case "agent.task.hold", "agent.task.release", "agent.task.cancel", "agent.task.reopen",
+	     "agent.task.unblock", "agent.task.recheck", "agent.task.escalate", "agent.task.merge_retry",
+	     "agent.task.delete", "agent.task.review_roles", "agent.lease.revoke", "agent.task_chain.complete":
+		return Bridge_Agent_Route{kind = .Bad_Request, message = "owner_chain_only: this coordinator control is served only for chains owned by this Bridge; the target chain is not one of them"}
+
 	// ---- workflow (M3b) ---------------------------------------------------
 	case "agent.workflow.templates":
 		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "workflow", "templates")}
@@ -343,6 +350,12 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     "agent.task.list", "agent.task.show", "agent.task.comments", "agent.task.create",
 	     "agent.task.update", "agent.task.depend", "agent.task.comment", "agent.task.fetch",
 	     "agent.task.readiness",
+	     // P-CS coordinator controls: served by the owner store on owner chains
+	     // (owner_agent_controls.odin); no Hub route, so a Hub chain answers
+	     // unknown_method.
+	     "agent.task.hold", "agent.task.release", "agent.task.cancel", "agent.task.reopen",
+	     "agent.task.unblock", "agent.task.recheck", "agent.task.escalate", "agent.task.merge_retry",
+	     "agent.task.delete", "agent.task.review_roles", "agent.lease.revoke", "agent.task_chain.complete",
 	     "agent.lease.next", "agent.lease.heartbeat", "agent.lease.submit", "agent.lease.handoff",
 	     "agent.lease.block", "agent.lease.switch", "agent.review.post",
 	     "agent.workflow.templates", "agent.workflow.define",

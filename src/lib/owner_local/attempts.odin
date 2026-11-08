@@ -58,6 +58,15 @@ attempt_event :: proc(v:^Attempt_View,kind:string,c,p:json.Object,destination:=f
         if v.live || v.in_review {
             attempt_release(v,"replaced");v.in_review=false
         }
+    case "lease.revoke":
+        // A coordinator revoke ends the live work lease (P-CS REQ-CC-5).
+        if v.live do attempt_release(v,"replaced")
+    case "task.escalate":
+        // Blocked on a human: a live holder's lease ends like a block.
+        if v.live do attempt_release(v,"blocked")
+    case "task.recheck":
+        // Recorded only when the gate settled the submitted attempt.
+        v.in_review=false
     case "task.cancel":
         v.live=false;v.in_review=false;v.held=false;v.pending_changes=false
     case "task.hold":
@@ -114,7 +123,8 @@ attempt_scan :: proc(s:^Store,chain,task:string,selected:i64=0,target_lease:stri
           FROM local_events WHERE seq>?3 AND ((chain_id=?1 AND task_id=?2
             AND kind IN('lease.claim','lease.handoff','lease.switch','lease.block',
               'lease.expired','lease.submit','task.reopen','fleet.edit','fleet.reserve','lifecycle.configure',
-              'review.roles','task.hold','task.release','task.cancel','requirements.edit','review.post','review.role.post','dependency.edit'))
+              'review.roles','task.hold','task.release','task.cancel','requirements.edit','review.post','review.role.post','dependency.edit',
+              'lease.revoke','task.escalate','task.recheck'))
             OR kind='lease.switch' OR EXISTS(SELECT 1 FROM local_metadata_retirements r WHERE r.seq=local_events.seq AND r.chain_id=?1 AND r.task_id=?2) OR (chain_id=?1 AND EXISTS(SELECT 1 FROM local_task_retirements r WHERE r.seq=local_events.seq AND r.chain_id=?1 AND r.task_id=?2)))),
           decoded AS (SELECT *,NULLIF(json_extract(evidence,'$.command'),'') AS command,
             NULLIF(json_extract(evidence,'$.payload'),'') AS payload,
@@ -165,7 +175,7 @@ attempt_scan :: proc(s:^Store,chain,task:string,selected:i64=0,target_lease:stri
                 switch row[3] {
                 case "task.cancel": record.outcome="expired:cancelled"
                 case "dependency.edit": record.outcome="expired:dep_added"
-                case "fleet.edit","fleet.reserve","lifecycle.configure","review.roles": record.outcome="expired:replaced"
+                case "fleet.edit","fleet.reserve","lifecycle.configure","review.roles","lease.revoke": record.outcome="expired:replaced"
                 case "lease.expired":
                     if row[11]=="ttl" || row[11]=="hard_cap" {
                         record.outcome=fmt.tprintf("expired:%s",row[11])

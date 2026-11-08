@@ -101,11 +101,12 @@ user_gate_review_roles_ratchet :: proc(t:^testing.T) {
     coord:=agent_coordinator_child();agent_seat_coordinator(t,f,coord)
     children:=[1]Child{role_auditor()}
     testing.expect_value(t,advanced_call(f,"review.roles","roles",role_test_config("1"),"task",children[:]).code,"ok")
-    // review.roles is not an agent verb at all.
-    testing.expect_value(t,agent_run(f,coord,"review.roles","agent_roles","task",encode(doc(map[string]string{"body_cipher"=cipher(f,role_test_config("0"))})),agent_task_revision(f,"task")).code,"invalid_scope")
+    // The coordinator may configure roles (P-CS CC-A) but the ratchet refuses
+    // clearing the flag on the agent path.
+    cleared,_:=contracts.owner_parse(role_test_config("0"),"review_roles");cleared["configuration_revision"]=json.String("2")
+    testing.expect_value(t,agent_run(f,coord,"review.roles","agent_roles","task",encode(doc(map[string]string{"body_cipher"=cipher(f,encode(cleared))})),agent_task_revision(f,"task")).code,"invalid_scope")
     // The owner-side ratchet itself: a non-device principal cannot clear the
     // configured flag, but may keep it; the device may clear it.
-    cleared,_:=contracts.owner_parse(role_test_config("0"),"review_roles");cleared["configuration_revision"]=json.String("2")
     c:=doc(map[string]string{"chain_id"="chain","task_id"="task","principal_id"="coord_instance","operation_id"="ratchet"})
     testing.expect_value(t,role_configure(&f.store,c,encode(cleared),children[:],99,false),"invalid_scope")
     rows,_:=query(f.store.db,"SELECT count(*),max(requires_user_approval) FROM local_role_configs")

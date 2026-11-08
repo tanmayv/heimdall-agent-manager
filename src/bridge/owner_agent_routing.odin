@@ -37,12 +37,14 @@ bridge_owner_routable :: proc(method:string) -> bool {
          "agent.task_chain.show","agent.task_chain.set_summary","agent.chain.summary","agent.task_chain.propose","agent.chain.propose","agent.task_chain.publish":
         return true
     }
-    return false
+    // Coordinator controls (owner_agent_controls.odin).
+    return bridge_owner_control_method(method)!=""
 }
 
-// Lease verbs act on the caller's own lease and name no chain.
+// Lease verbs act on the caller's own lease and name no chain. lease.revoke
+// is a coordinator control on a named task, routed by its task id.
 bridge_owner_lease_method :: proc(method:string) -> bool {
-    return strings.has_prefix(method,"agent.lease.")
+    return strings.has_prefix(method,"agent.lease.") && method!="agent.lease.revoke"
 }
 
 bridge_owner_fresh_id :: proc(prefix:string) -> string {
@@ -209,7 +211,7 @@ bridge_owner_run_input :: proc(ctx:^Owner_Agent_Ctx,method,chain,task,lease,conf
 
 // Coordinator (or own-task worker) commands, signed by the owner key for the
 // proven child; owner.execute applies agent_command_admit.
-bridge_owner_run_command :: proc(ctx:^Owner_Agent_Ctx,method,chain,task,expected,payload:string,fleet_child:owner.Child={},proof:owner.Lifecycle_Proof={}) -> owner.Result {
+bridge_owner_run_command :: proc(ctx:^Owner_Agent_Ctx,method,chain,task,expected,payload:string,fleet_child:owner.Child={},proof:owner.Lifecycle_Proof={},role_children:[]owner.Child=nil) -> owner.Result {
     s:=ctx.store
     c:=make(json.Object,context.temp_allocator)
     values:=map[string]string{"protocol_version"="1","account_id"=s.account,"chain_id"=chain,"immutable_owner_bridge"=s.owner,
@@ -221,7 +223,7 @@ bridge_owner_run_command :: proc(ctx:^Owner_Agent_Ctx,method,chain,task,expected
     signature,signed:=bridge_owner_sign(nil,"command",c)
     if !signed do return owner.Result{code="storage_error"}
     c["signature"]=json.String(signature)
-    return owner.execute_agent(s,bridge_owner_json(c),payload,ctx.child,ctx.key,ctx.now,ctx.kr,bridge_owner_signer(),fleet_child,proof)
+    return owner.execute_agent(s,bridge_owner_json(c),payload,ctx.child,ctx.key,ctx.now,ctx.kr,bridge_owner_signer(),fleet_child,proof,role_children)
 }
 
 // A vault-armored value from ham-ctl is already a cipher under this account's
@@ -442,7 +444,7 @@ bridge_owner_block_unavailable_worktree :: proc(request_id:string,pending:Owner_
         "next_steps"="fix the task repository/worktree on the owner Bridge, then release the task so it can be claimed again","waiting_on"="human"})
     r:=bridge_owner_run_input(&ctx,"lease.block",st.chain_id,st.task_id,st.lease_id,st.configuration_revision,st.task_revision,st.capability,payload)
     if r.code!="ok" do return bridge_local_response_error(request_id,"worktree_unavailable",fmt.tprintf("%s; blocking the lease was refused (%s), it stays held",reason,r.code))
-    return bridge_local_response_error(request_id,"worktree_unavailable",fmt.tprintf("%s; the lease was blocked (waiting on human) and the coordinator must resolve it",reason))
+    return bridge_local_response_error(request_id,"worktree_unavailable",fmt.tprintf("%s; the lease was blocked (waiting on human); once the repository is fixed the coordinator unblocks it (task unblock)",reason))
 }
 
 bridge_owner_agent_exec :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -> string {
@@ -547,6 +549,7 @@ bridge_owner_agent_exec :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object
         if r.code!="ok" do return bridge_owner_fail(ctx,r.code,"owner chain command refused")
         return bridge_local_response_data(ctx.request_id,r.body)
     }
+    if bridge_owner_control_method(method)!="" do return bridge_owner_control(ctx,method,p)
     return bridge_owner_fail(ctx,"bad_request","unsupported owner verb")
 }
 

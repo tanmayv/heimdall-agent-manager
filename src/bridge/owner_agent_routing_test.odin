@@ -285,3 +285,56 @@ test_owner_prepare_worktree_detached_head_only_when_git_ran :: proc(t:^testing.T
     testing.expect(t,status==.Deterministic && strings.contains(reason,"detached HEAD"),reason)
     _=owner_routing_git(t,repo,"worktree","remove","--force",work)
 }
+
+// P-CS CC-A: coordinator controls are owner verbs mapped 1:1 to owner methods;
+// authority itself is decided by the owner store (owner_local tests).
+@(test)
+test_owner_coordinator_controls_route_to_owner_methods :: proc(t:^testing.T) {
+    pairs:=[?][2]string{
+        {"agent.task.hold","task.hold"},{"agent.task.release","task.release"},{"agent.task.cancel","task.cancel"},
+        {"agent.task.reopen","task.reopen"},{"agent.task.unblock","task.resolve"},{"agent.task.recheck","task.recheck"},
+        {"agent.task.escalate","task.escalate"},{"agent.task.merge_retry","merge.retry"},{"agent.task.delete","task.delete"},
+        {"agent.task.review_roles","review.roles"},{"agent.lease.revoke","lease.revoke"},{"agent.task_chain.complete","chain.complete"},
+        {"agent.work.complete","chain.complete"},{"agent.workflow.retry","workflow.retry"},{"agent.workflow.cancel","workflow.cancel"},
+    }
+    for pair in pairs {
+        testing.expectf(t,bridge_owner_routable(pair[0]),"%s is served by the owner when it holds the chain",pair[0])
+        testing.expectf(t,bridge_owner_control_method(pair[0])==pair[1],"%s maps to %s",pair[0],pair[1])
+        testing.expectf(t,bridge_agent_method_allowed(pair[0]),"%s is dispatchable",pair[0])
+    }
+    // workflow.gate stays user-only; workflow.run keeps its Hub route.
+    for m in ([3]string{"agent.workflow.gate","agent.workflow.run","agent.task.split"}) {
+        testing.expectf(t,bridge_owner_control_method(m)=="","%s is not a coordinator control",m)
+    }
+    // revoke names a task; it is not routed by the caller's own lease.
+    testing.expect(t,!bridge_owner_lease_method("agent.lease.revoke"))
+    testing.expect(t,bridge_owner_lease_method("agent.lease.submit"))
+    // On a chain this Bridge does not own the controls fail clearly.
+    for m in ([3]string{"agent.task.cancel","agent.lease.revoke","agent.task.unblock"}) {
+        r:=bridge_agent_route(m,`{"task_id":"t1"}`)
+        testing.expectf(t,r.kind==.Bad_Request && strings.contains(r.message,"owner_chain_only"),"%s on a Hub chain is a typed owner-only error",m)
+    }
+    // Reasons are required before anything is sealed or signed (R2-6).
+    for m in ([6]string{"task.hold","task.release","task.cancel","task.reopen","task.resolve","lease.revoke"}) {
+        _,missing:=bridge_owner_control_fields(m,bridge_owner_params(`{"task_id":"t1"}`))
+        testing.expectf(t,missing!="","%s without a reason is refused",m)
+    }
+    unblock,missing:=bridge_owner_control_fields("task.resolve",bridge_owner_params(`{"note":"repo fixed"}`))
+    testing.expect(t,missing=="" && unblock.reason=="repo fixed","unblock takes --note")
+    recheck,_:=bridge_owner_control_fields("task.recheck",bridge_owner_params(`{}`))
+    testing.expect_value(t,recheck.reason,"recheck")
+    revoke,rm:=bridge_owner_control_fields("lease.revoke",bridge_owner_params(`{"reason":"stalled"}`))
+    testing.expect(t,rm=="" && revoke.mode=="checkpoint" && revoke.disable_fleet=="0","revoke defaults to a checkpoint, fleet kept")
+    revoke,rm=bridge_owner_control_fields("lease.revoke",bridge_owner_params(`{"reason":"reassign","stop":true,"disable_fleet":true}`))
+    testing.expect(t,rm=="" && revoke.mode=="stop" && revoke.disable_fleet=="1")
+    _,rm=bridge_owner_control_fields("lease.revoke",bridge_owner_params(`{"reason":"x","mode":"kill"}`))
+    testing.expect(t,rm!="","unknown revoke mode refused")
+    cancel,cm:=bridge_owner_control_fields("task.cancel",bridge_owner_params(`{"reason":"replaced","repoint":"t2"}`))
+    testing.expect(t,cm=="" && cancel.dependents=="repoint:t2")
+    cancel,cm=bridge_owner_control_fields("task.cancel",bridge_owner_params(`{"reason":"gone","dependents":"drop"}`))
+    testing.expect(t,cm=="" && cancel.dependents=="drop")
+    _,cm=bridge_owner_control_fields("task.cancel",bridge_owner_params(`{"reason":"x","dependents":"sideways"}`))
+    testing.expect(t,cm!="","unknown dependents choice refused")
+    _,cm=bridge_owner_control_fields("task.cancel",bridge_owner_params(`{"reason":"x","dependents":"drop","repoint":"t2"}`))
+    testing.expect(t,cm!="","conflicting dependents flags refused")
+}
