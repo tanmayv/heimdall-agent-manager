@@ -83,7 +83,7 @@ owner_registry_http_pages_live_tombstones_bytes_and_accounts :: proc(t:^testing.
             if pages>3 { testing.expect(t,false,"bounded progress");break }
         }
         testing.expect_value(t,pages,2)
-        testing.expect_value(t,seen,2 if tombstones else 106)
+        testing.expect_value(t,seen,int(2 if tombstones else 106))
     }
     // A page containing only tombstones still advances and is nonterminal.
     empty_page:=owner_local_list_handler(&h,Request{method="GET",headers=headers,query="page=1&chain_id=chain_1&after_chain=chain_1&after_task=",remote_addr="127.0.0.1:4444"})

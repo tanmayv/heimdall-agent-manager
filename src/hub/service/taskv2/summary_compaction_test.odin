@@ -18,7 +18,7 @@ summary_test_rebuild :: proc(t:^testing.T,fx:^Fixture,chain:domain.Task_Chain) {
     before:=scalar_text(fx,"SELECT count(*) FROM task_events WHERE kind='summary_overflow'")
     rebuild_chain_summary_in_uow(&fx.svc,&u,chain)
     after:=scalar_text(fx,"SELECT count(*) FROM task_events WHERE kind='summary_overflow'")
-    testing.expect_value(t,len(u.effects.notifications),1 if before!=after else 0)
+    testing.expect_value(t,len(u.effects.notifications),int(1 if before!=after else 0))
     _,cerr:=end_uow(&fx.svc,&u,true)
     testing.expect(t,cerr.code==.None,cerr.message)
 }

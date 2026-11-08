@@ -85,7 +85,7 @@ legacy_source_nested_effects_wait_for_outer_commit_and_rollback_fences :: proc(t
         testing.expect_value(t,observer.count,0)
         testing.expect_value(t,scalar_int(fx,"SELECT count(*) FROM owner_legacy_source_effects"),1)
         _,_=end_uow(&fx.svc,&outer,commit)
-        testing.expect_value(t,observer.count,1 if commit else 0)
-        testing.expect_value(t,scalar_int(fx,"SELECT count(*) FROM owner_legacy_source_effects"),1 if commit else 0)
+        testing.expect_value(t,observer.count,int(1 if commit else 0))
+        testing.expect_value(t,scalar_int(fx,"SELECT count(*) FROM owner_legacy_source_effects"),int(1 if commit else 0))
     }
 }

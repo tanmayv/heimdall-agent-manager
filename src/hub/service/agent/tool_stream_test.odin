@@ -191,11 +191,11 @@ test_tool_stream_relocation_subscription_reconciliation :: proc(t: ^testing.T) {
         testing.expect_value(t, tool_stream_subscribe(&f.svc, w, ids[:]), "")
         testing.expect_value(t, r.bridge, "brg_b")
         testing.expect_value(t, r.connection_generation, b_generation)
-        testing.expect_value(t, r.viewers, 2 if additional else 1)
+        testing.expect_value(t, r.viewers, int(2 if additional else 1))
         tool_stream_test_clear(&f.a); tool_stream_test_clear(&f.b)
         testing.expect(t, tool_live_apply_bridge(&f.svc, "brg_b", b_generation, "1000", tool_stream_test_baseline(r.token)))
         testing.expect_value(t, len(f.a.queue), 1)
-        testing.expect_value(t, len(f.b.queue), 1 if additional else 0)
+        testing.expect_value(t, len(f.b.queue), int(1 if additional else 0))
         tool_stream_test_free(&f)
     }
 }
@@ -323,7 +323,7 @@ test_tool_stream_terminal_stays_suspended_across_transport_recovery :: proc(t: ^
             testing.expect_value(t, len(f.svc.tool_live.controls), 1)
             testing.expect(t, !f.svc.tool_live.controls[0].attach)
             testing.expect_value(t, f.svc.tool_live.controls[0].token, old_token)
-            testing.expect_value(t, len(f.a.queue), 1 if reconnect else 2)
+            testing.expect_value(t, len(f.a.queue), int(1 if reconnect else 2))
             if !reconnect && len(f.a.queue) > 0 do testing.expect(t, strings.contains(f.a.queue[0].text, `"type":"subscribed"`))
             if len(f.a.queue) > 0 do testing.expect(t, strings.contains(f.a.queue[len(f.a.queue)-1].text, `"type":"unavailable"`))
             tool_stream_test_clear(&f.a)

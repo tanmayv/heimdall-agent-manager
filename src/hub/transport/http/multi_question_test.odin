@@ -332,8 +332,8 @@ test_multi_question_http_parallel_duplicates :: proc(t: ^testing.T) {
 			switch racers[i].status {case 201: inserted += 1; case 200: replayed += 1; case 409: refused += 1}
 		}
 		testing.expect_value(t, inserted, 1)
-		testing.expect_value(t, replayed, 7 if same_key else 0)
-		testing.expect_value(t, refused, 0 if same_key else 7)
+		testing.expect_value(t, replayed, int(7 if same_key else 0))
+		testing.expect_value(t, refused, int(0 if same_key else 7))
 		testing.expect_value(t, sync.atomic_load(&f.notifications) - before, 1)
 		rows, _ := iface.content_list_messages(&f.repo, "chat_mq", source.owner_user_id, 200, "")
 		count := 0

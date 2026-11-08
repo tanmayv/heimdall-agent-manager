@@ -15,19 +15,6 @@ import contracts "odin_test:contracts"
 import executor "odin_test:lib/executor_local"
 import vault "odin_test:lib/vault"
 
-bridge_executor_test_doc :: proc(kind:string)->json.Object {
-    if kind=="bootstrap" || kind=="child_request" || kind=="child_result" {
-        v,_:=contracts.owner_content_document(#load("../contracts/fixtures/executor-child-v1.json",string))
-        root,_:=v.(json.Object)
-        field:="child" if kind=="child_request" else "bootstrap"
-        if kind=="child_result" do field="child_result"
-        o,_:=contracts.executor_parse(contracts.owner_string(root,field),kind)
-        return o
-    }
-    v,_:=contracts.owner_content_document(#load("../contracts/fixtures/executor-v1.json",string));root,_:=v.(json.Object);items,_:=root["valid"].(json.Array)
-    for item in items {row,_:=item.(json.Object);if contracts.owner_string(row,"kind")==kind {o,_:=contracts.executor_parse(contracts.owner_string(row,"raw"),kind);return o}}
-    return nil
-}
 bridge_executor_test_set :: proc(o:json.Object,name,value:string) {m:=o;m[name]=json.String(value)}
 bridge_executor_test_key :: proc(id,key_id:string,scalar:u8)->(ecdsa.Private_Key,contracts.Owner_Verified_Key) {
     private:ecdsa.Private_Key;bytes:[32]byte;bytes[31]=scalar
