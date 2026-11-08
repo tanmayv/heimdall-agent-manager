@@ -5,6 +5,7 @@ from pathlib import Path
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import tarfile
@@ -230,9 +231,13 @@ class MacAndLinuxInstallerTests(unittest.TestCase):
         self.assertIn('npx electron-builder --linux AppImage deb "$arch" --publish never', workflow)
         self.assertIn('scripts/release/build-macos-pkg.sh', workflow)
         self.assertIn('merge-latest-mac.py', workflow)
+        # gh release upload and create share one asset list.
+        self.assertIn('gh release upload "$VERSION" "${release_assets[@]}" --clobber', workflow)
+        self.assertIn('gh release create "$VERSION" "${release_assets[@]}" \\\n', workflow)
+        assets = workflow.split('          release_assets=(', 1)[1].split('          list_release_assets()', 1)[0]
         for asset in ('dist/latest-mac.yml', 'dist/latest-linux.yml', 'dist/latest-linux-arm64.yml',
                       'dist/Ninjy-*.pkg', 'dist/Ninjy-*.AppImage', 'dist/Ninjy-*.deb', 'dist/Ninjy-*.zip'):
-            self.assertEqual(workflow.count(f' {asset} '), 2, asset)  # gh release upload and create
+            self.assertEqual(len(re.findall(r'[ (]' + re.escape(asset) + r'[ )]', assets)), 1, asset)
 
     def test_desktop_updater_is_not_windows_only(self):
         main = read('src/ui/electron/main.cts')

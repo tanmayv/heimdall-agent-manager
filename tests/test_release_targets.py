@@ -205,6 +205,110 @@ elif sys.argv[1:3] == ["release", "delete-asset"]:
             self.assertIn(f"Ninjy-{VERSION[1:]}-x64.exe.blockmap", names)
             self.assertEqual("-x64.zip" in (remote / "latest-mac.yml").read_text(), intel)
 
+    def windows_manifest(self):
+        """A complete latest.yml so the Windows update validation can pass."""
+        import base64, hashlib
+        name = f"Ninjy-{VERSION[1:]}-x64.exe"
+        payload = (self.work / "dist" / name).read_bytes()
+        digest = base64.b64encode(hashlib.sha512(payload).digest()).decode()
+        (self.work / "dist/latest.yml").write_text(
+            f"version: {VERSION[1:]}\nfiles:\n  - url: {name}\n    sha512: {digest}\n    size: {len(payload)}\n"
+            f"path: {name}\nsha512: {digest}\nreleaseDate: '2026-01-01T00:00:00.000Z'\n")
+
+    def drop_mac_desktop(self):
+        for path in (self.work / "dist").iterdir():
+            if path.name.startswith("latest-mac") or any(
+                    path.name.startswith(f"Ninjy-{VERSION[1:]}-{arch}.{ext}")
+                    for arch in ("arm64", "x64") for ext in ("dmg", "zip", "pkg")):
+                path.unlink()
+
+    def test_skip_darwin_desktop_wiring(self):
+        text = (ROOT / ".github/workflows/release-local-binaries.yml").read_text()
+        inputs = text.split("    inputs:\n", 1)[1].split("\npermissions:", 1)[0]
+        skip_input = inputs.split("      skip_darwin_desktop:\n", 1)[1].split("\n      publish_release:", 1)[0]
+        self.assertIn("default: false", skip_input)
+        self.assertIn("type: boolean", skip_input)
+        skip = "!(github.event_name == 'workflow_dispatch' && inputs.skip_darwin_desktop == true)"
+
+        def step_if(name):
+            block = text.split(f"      - name: {name}\n", 1)[1]
+            first = block.splitlines()[0]
+            return first if first.startswith("        if:") else ""
+        for name in ["Set up Node for the desktop app (macOS, Linux)",
+                     "Test desktop bundle provider extensions (macOS)",
+                     "Build, sign, and notarize Ninjy DMG, zip and pkg (macOS)",
+                     "Upload Ninjy DMG, zip and pkg (macOS)"]:
+            self.assertIn(skip, step_if(name), name)
+        # The darwin binaries are still signed, packaged, verified and uploaded.
+        for name in ["Import Developer ID Application certificate (macOS)", "Package heimdall-local tarball",
+                     "Upload target artifact", "Verify release binaries are portable (macOS)",
+                     "Build Ninjy AppImage and deb (Linux)"]:
+            self.assertNotIn("skip_darwin_desktop", step_if(name), name)
+        env = "SKIP_DARWIN_DESKTOP: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_darwin_desktop == true }}"
+        for name in ["Verify tarballs and create SHA256SUMS", "Create or update GitHub Release"]:
+            block = text.split(f"      - name: {name}\n", 1)[1].split("        run: |\n", 1)[0]
+            self.assertIn(env, block, name)
+
+    def test_skip_darwin_desktop_verify(self):
+        script = workflow_script("release-local-binaries.yml", "Verify tarballs and create SHA256SUMS")
+        for intel in [False, True]:
+            shutil.rmtree(self.work / "dist")
+            (self.work / "dist").mkdir()
+            self.bundles(intel)
+            self.drop_mac_desktop()
+            self.windows_manifest()
+            self.env["BUILD_DARWIN_X64"] = str(intel).lower()
+            self.env["SKIP_DARWIN_DESKTOP"] = "false"
+            self.assertNotEqual(self.run_script(script).returncode, 0)
+            self.env["SKIP_DARWIN_DESKTOP"] = "true"
+            result = self.run_script(script)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            sums = (self.work / "dist/SHA256SUMS").read_text()
+            self.assertIn(f"heimdall-local-darwin-arm64-{VERSION}.tar.gz", sums)
+            self.assertEqual(f"heimdall-local-darwin-amd64-{VERSION}.tar.gz" in sums, intel)
+            self.assertNotRegex(sums, r"Ninjy-\S+\.(dmg|zip|pkg)")
+            self.assertIn(f"Ninjy-{VERSION[1:]}-x64.exe", sums)
+            self.assertFalse((self.work / "dist/latest-mac.yml").exists())
+            self.assertEqual(self.run_script("cd dist && sha256sum -c SHA256SUMS").returncode, 0)
+        # The skip still requires the darwin binaries tarball.
+        (self.work / "dist/heimdall-local-darwin-arm64.tar.gz").unlink()
+        self.assertNotEqual(self.run_script(script).returncode, 0)
+
+    def test_skip_darwin_desktop_publish(self):
+        self.gh_stub()
+        remote = self.work / "remote-assets"
+        remote.mkdir()
+        stale = [f"Ninjy-{VERSION[1:]}-arm64.{ext}" for ext in ("dmg", "zip", "zip.blockmap", "pkg")] + ["latest-mac.yml"]
+        for name in stale:
+            (remote / name).write_text("stale")
+        (self.work / "fixture-release.json").write_text(json.dumps({
+            "isDraft": False, "isPrerelease": True, "assets": [{"name": n} for n in stale]}))
+        helper = self.work / "scripts/release"
+        helper.mkdir(parents=True)
+        (helper / "changelog.sh").write_text("#!/bin/sh\nprintf 'Fixture changelog\\n'\n")
+        (helper / "changelog.sh").chmod(0o755)
+        for name in ["install.sh", "install.ps1"]:
+            (self.work / "scripts" / name).write_text("fixture")
+        self.env.update(RELEASE_COMMIT="fixture", EXTRA_NOTES="", GITHUB_SERVER_URL="https://example.invalid",
+                        GITHUB_REPOSITORY="fixture/repo", BUILD_DARWIN_X64="false", SKIP_DARWIN_DESKTOP="true")
+        self.bundles()
+        self.drop_mac_desktop()
+        self.windows_manifest()
+        for script in [workflow_script("release-local-binaries.yml", "Verify tarballs and create SHA256SUMS"),
+                       re.sub(r"\$\{\{.*?\}\}", "false", workflow_script(
+                           "release-local-binaries.yml", "Create or update GitHub Release"))]:
+            result = self.run_script(script)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        names = {p.name for p in remote.iterdir()}
+        for name in stale:
+            self.assertNotIn(name, names)
+        self.assertIn(f"heimdall-local-darwin-arm64-{VERSION}.tar.gz", names)
+        self.assertIn(f"Ninjy-{VERSION[1:]}-x64.exe", names)
+        notes = (self.work / "release-notes.md").read_text()
+        self.assertNotIn(".dmg", notes)
+        self.assertNotIn("latest-mac.yml", notes)
+        self.assertIn("heimdall-local-darwin-arm64", notes)
+
     def test_promotion_optional_asset_manifest_agreement(self):
         self.gh_stub()
         script = workflow_script("promote-release.yml", "Verify the release is a complete candidate")

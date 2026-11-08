@@ -16,6 +16,13 @@ on:
         required: false
         default: false
         type: boolean
+      skip_darwin_desktop:
+        # The macOS app bundle needs a numeric x.y.z[-n] version, so a release
+        # such as v1.2.3-rc.subagents cannot build it. Tag pushes never skip.
+        description: 'Skip the Ninjy macOS desktop app (DMG/zip/pkg); darwin binaries are still built. Needed for non-numeric prerelease versions.'
+        required: false
+        default: false
+        type: boolean
       publish_release:
         description: 'Create/update the GitHub Release after building artifacts'
         required: true
@@ -458,20 +465,22 @@ jobs:
           grep -q 'Apple SecTrust' "$RUNNER_TEMP/probe.txt" || {
             echo "FAIL: the macOS bridge must verify through Apple SecTrust" >&2; exit 1; }
 
+      # skip_darwin_desktop: the darwin tarball above is still built, verified
+      # and uploaded; only the steps feeding the macOS desktop app are skipped.
       - name: Set up Node for the desktop app (macOS, Linux)
-        if: ${{ startsWith(matrix.target, 'darwin-') || startsWith(matrix.target, 'linux-') }}
+        if: ${{ (startsWith(matrix.target, 'darwin-') && !(github.event_name == 'workflow_dispatch' && inputs.skip_darwin_desktop == true)) || startsWith(matrix.target, 'linux-') }}
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
 
       - name: Test desktop bundle provider extensions (macOS)
-        if: ${{ startsWith(matrix.target, 'darwin-') }}
+        if: ${{ startsWith(matrix.target, 'darwin-') && !(github.event_name == 'workflow_dispatch' && inputs.skip_darwin_desktop == true) }}
         shell: bash
         run: python3 -m unittest discover -s tests -p test_desktop_extension_delivery.py
 
       - name: Build, sign, and notarize Ninjy DMG, zip and pkg (macOS)
-        if: ${{ startsWith(matrix.target, 'darwin-') }}
+        if: ${{ startsWith(matrix.target, 'darwin-') && !(github.event_name == 'workflow_dispatch' && inputs.skip_darwin_desktop == true) }}
         shell: bash
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -532,7 +541,7 @@ jobs:
           done
 
       - name: Upload Ninjy DMG, zip and pkg (macOS)
-        if: ${{ startsWith(matrix.target, 'darwin-') }}
+        if: ${{ startsWith(matrix.target, 'darwin-') && !(github.event_name == 'workflow_dispatch' && inputs.skip_darwin_desktop == true) }}
         uses: actions/upload-artifact@v4
         with:
           name: heimdall-desktop-${{ matrix.target }}-${{ needs.prepare.outputs.version }}
@@ -818,6 +827,7 @@ jobs:
       - name: Verify tarballs and create SHA256SUMS
         env:
           BUILD_DARWIN_X64: ${{ github.event_name == 'workflow_dispatch' && inputs.build_darwin_x64 == true }}
+          SKIP_DARWIN_DESKTOP: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_darwin_desktop == true }}
         shell: bash
         run: |
           set -euo pipefail
@@ -873,9 +883,14 @@ jobs:
           versioned+=("heimdall-local-windows-amd64-${version}.zip")
           sha256sum "${versioned[@]}" > SHA256SUMS
           clean="${{ needs.prepare.outputs.clean_version }}"
-          mac_arches=(arm64)
-          if [ "$BUILD_DARWIN_X64" = "true" ]; then
-            mac_arches+=(x64)
+          # skip_darwin_desktop: no macOS app, so no DMG/zip/pkg or latest-mac.yml.
+          skip_mac_desktop="${SKIP_DARWIN_DESKTOP:-false}"
+          mac_arches=()
+          if [ "$skip_mac_desktop" != "true" ]; then
+            mac_arches+=(arm64)
+            if [ "$BUILD_DARWIN_X64" = "true" ]; then
+              mac_arches+=(x64)
+            fi
           fi
           for arch in "${mac_arches[@]}"; do
             require_file "Ninjy-$clean-$arch.dmg"
@@ -891,22 +906,28 @@ jobs:
           require_file latest.yml
           require_file latest-linux.yml
           require_file latest-linux-arm64.yml
-          # Default metadata advertises only Apple Silicon. Opt-in Intel runs
-          # retain the legacy x64 base while merging both architectures.
-          require_file latest-mac-darwin-arm64.yml
-          if [ "$BUILD_DARWIN_X64" = "true" ]; then
-            require_file latest-mac-darwin-amd64.yml
-            python3 "$GITHUB_WORKSPACE/scripts/release/merge-latest-mac.py" \
-              latest-mac-darwin-amd64.yml latest-mac-darwin-arm64.yml > latest-mac.yml
-          else
-            cp latest-mac-darwin-arm64.yml latest-mac.yml
+          if [ "$skip_mac_desktop" != "true" ]; then
+            # Default metadata advertises only Apple Silicon. Opt-in Intel runs
+            # retain the legacy x64 base while merging both architectures.
+            require_file latest-mac-darwin-arm64.yml
+            if [ "$BUILD_DARWIN_X64" = "true" ]; then
+              require_file latest-mac-darwin-amd64.yml
+              python3 "$GITHUB_WORKSPACE/scripts/release/merge-latest-mac.py" \
+                latest-mac-darwin-amd64.yml latest-mac-darwin-arm64.yml > latest-mac.yml
+            else
+              cp latest-mac-darwin-arm64.yml latest-mac.yml
+            fi
+            rm latest-mac-darwin-*.yml
+            mac_update_arches=(--arch arm64)
+            if [ -f "Ninjy-$clean-x64.zip" ]; then mac_update_arches+=(--arch x64); fi
+            python3 "$GITHUB_WORKSPACE/scripts/release/validate-desktop-updates.py" . --version "$clean" --platform mac "${mac_update_arches[@]}"
           fi
-          rm latest-mac-darwin-*.yml
-          mac_update_arches=(--arch arm64)
-          if [ -f "Ninjy-$clean-x64.zip" ]; then mac_update_arches+=(--arch x64); fi
-          python3 "$GITHUB_WORKSPACE/scripts/release/validate-desktop-updates.py" . --version "$clean" --platform mac "${mac_update_arches[@]}"
           python3 "$GITHUB_WORKSPACE/scripts/release/validate-desktop-updates.py" . --version "$clean" --platform windows --arch x64
-          sha256sum Ninjy-*.dmg Ninjy-*.zip Ninjy-*.pkg Ninjy-*.AppImage Ninjy-*.deb Ninjy-*.exe >> SHA256SUMS
+          if [ "$skip_mac_desktop" != "true" ]; then
+            sha256sum Ninjy-*.dmg Ninjy-*.zip Ninjy-*.pkg Ninjy-*.AppImage Ninjy-*.deb Ninjy-*.exe >> SHA256SUMS
+          else
+            sha256sum Ninjy-*.AppImage Ninjy-*.deb Ninjy-*.exe >> SHA256SUMS
+          fi
 
       - name: Create or update GitHub Release
         env:
@@ -914,6 +935,7 @@ jobs:
           RELEASE_COMMIT: ${{ needs.prepare.outputs.commit_sha }}
           VERSION: ${{ needs.prepare.outputs.version }}
           BUILD_DARWIN_X64: ${{ github.event_name == 'workflow_dispatch' && inputs.build_darwin_x64 == true }}
+          SKIP_DARWIN_DESKTOP: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_darwin_desktop == true }}
           # Via env, never inlined into the script: it is free-form user text.
           EXTRA_NOTES: ${{ inputs.notes || '' }}
         shell: bash
@@ -926,6 +948,7 @@ jobs:
           fi
           scripts/release/changelog.sh "$VERSION" "$RELEASE_COMMIT" \
             "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" >> "$notes_file"
+          skip_mac_desktop="${SKIP_DARWIN_DESKTOP:-false}"
           cat >> "$notes_file" <<NOTES
 
           ## Downloads
@@ -937,19 +960,36 @@ jobs:
           - heimdall-local-linux-amd64-$VERSION.tar.gz
           - heimdall-local-linux-arm64-$VERSION.tar.gz
           - heimdall-local-windows-amd64-$VERSION.zip (scripts/install.ps1)
-          - Ninjy-${{ needs.prepare.outputs.clean_version }}-arm64.dmg (signed + notarized macOS app with Bridge)
-          - Ninjy-${{ needs.prepare.outputs.clean_version }}-arm64.pkg (macOS installer: App, Bridge, or both)
+          NOTES
+          # skip_darwin_desktop: no macOS app, so no DMG/pkg/zip or latest-mac.yml.
+          if [ "$skip_mac_desktop" != "true" ]; then
+            printf '%s\n' \
+              "- Ninjy-${{ needs.prepare.outputs.clean_version }}-arm64.dmg (signed + notarized macOS app with Bridge)" \
+              "- Ninjy-${{ needs.prepare.outputs.clean_version }}-arm64.pkg (macOS installer: App, Bridge, or both)" >> "$notes_file"
+          fi
+          cat >> "$notes_file" <<NOTES
           - Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.exe (unsigned Windows installer: App, Bridge, or both)
           - Ninjy-${{ needs.prepare.outputs.clean_version }}-x86_64.AppImage / -arm64.AppImage, -amd64.deb / -arm64.deb (Linux app; App, Bridge, or both on first launch)
-          - Ninjy-*.zip, latest.yml, latest-mac.yml, latest-linux*.yml and the Windows block map (desktop auto-update metadata)
+          NOTES
+          if [ "$skip_mac_desktop" != "true" ]; then
+            printf '%s\n' "- Ninjy-*.zip, latest.yml, latest-mac.yml, latest-linux*.yml and the Windows block map (desktop auto-update metadata)" >> "$notes_file"
+          else
+            printf '%s\n' "- latest.yml, latest-linux*.yml and the Windows block map (desktop auto-update metadata)" >> "$notes_file"
+          fi
+          cat >> "$notes_file" <<NOTES
           - SHA256SUMS
           - install.sh, install.ps1 (bootstraps: download + verify + ham-bridge setup)
           NOTES
           if [ "$BUILD_DARWIN_X64" = "true" ]; then
-            printf '%s\n' \
-              "- heimdall-local-darwin-amd64-$VERSION.tar.gz" \
-              "- Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.dmg (signed + notarized Intel macOS app)" \
-              "- Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.pkg (Intel macOS installer)" >> "$notes_file"
+            printf '%s\n' "- heimdall-local-darwin-amd64-$VERSION.tar.gz" >> "$notes_file"
+            if [ "$skip_mac_desktop" != "true" ]; then
+              printf '%s\n' \
+                "- Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.dmg (signed + notarized Intel macOS app)" \
+                "- Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.pkg (Intel macOS installer)" >> "$notes_file"
+            fi
+          fi
+          if [ "$skip_mac_desktop" = "true" ]; then
+            printf '\n%s\n' "The macOS desktop app (DMG/zip/pkg) is not part of this release; macOS uses the heimdall-local-darwin tarball." >> "$notes_file"
           fi
           release_flags=()
           if [ "${{ inputs.draft || false }}" = "true" ]; then release_flags+=(--draft); fi
@@ -965,11 +1005,20 @@ jobs:
           # integration" despite contents: write (run 41329637092).
           # shellcheck source=scripts/release/gh-retry.sh
           source "$GITHUB_WORKSPACE/scripts/release/gh-retry.sh"
+          release_assets=(dist/heimdall-local-*-"$VERSION".tar.gz dist/heimdall-local-*-"$VERSION".zip)
+          if [ "${SKIP_DARWIN_DESKTOP:-false}" != "true" ]; then
+            release_assets+=(dist/Ninjy-*.dmg dist/Ninjy-*.zip dist/Ninjy-*.zip.blockmap dist/Ninjy-*.pkg)
+          fi
+          release_assets+=(dist/Ninjy-*.AppImage dist/Ninjy-*.deb dist/Ninjy-*.exe dist/Ninjy-*.exe.blockmap dist/latest.yml)
+          if [ "${SKIP_DARWIN_DESKTOP:-false}" != "true" ]; then
+            release_assets+=(dist/latest-mac.yml)
+          fi
+          release_assets+=(dist/latest-linux.yml dist/latest-linux-arm64.yml dist/SHA256SUMS dist/install.sh dist/install.ps1)
           list_release_assets() {
             gh release view "$VERSION" --json assets --jq '.assets[].name' > "$RUNNER_TEMP/existing-release-assets.txt"
           }
           upload_release_assets() {
-            gh release upload "$VERSION" dist/heimdall-local-*-"$VERSION".tar.gz dist/heimdall-local-*-"$VERSION".zip dist/Ninjy-*.dmg dist/Ninjy-*.zip dist/Ninjy-*.zip.blockmap dist/Ninjy-*.pkg dist/Ninjy-*.AppImage dist/Ninjy-*.deb dist/Ninjy-*.exe dist/Ninjy-*.exe.blockmap dist/latest.yml dist/latest-mac.yml dist/latest-linux.yml dist/latest-linux-arm64.yml dist/SHA256SUMS dist/install.sh dist/install.ps1 --clobber
+            gh release upload "$VERSION" "${release_assets[@]}" --clobber
           }
           # Idempotent create: a retry first re-checks for the release, since a
           # failed attempt may still have created it (gh creates a draft, then
@@ -989,7 +1038,7 @@ jobs:
               esac
             fi
             create_attempted=true
-            gh release create "$VERSION" dist/heimdall-local-*-"$VERSION".tar.gz dist/heimdall-local-*-"$VERSION".zip dist/Ninjy-*.dmg dist/Ninjy-*.zip dist/Ninjy-*.zip.blockmap dist/Ninjy-*.pkg dist/Ninjy-*.AppImage dist/Ninjy-*.deb dist/Ninjy-*.exe dist/Ninjy-*.exe.blockmap dist/latest.yml dist/latest-mac.yml dist/latest-linux.yml dist/latest-linux-arm64.yml dist/SHA256SUMS dist/install.sh dist/install.ps1 \
+            gh release create "$VERSION" "${release_assets[@]}" \
               --title "$VERSION" \
               --target "$RELEASE_COMMIT" \
               --notes-file "$notes_file" \
@@ -1007,18 +1056,29 @@ jobs:
               echo "Creating release $VERSION failed; see the attempts above." >&2; exit 1; }
           fi
           if [ "$release_exists" = true ] || [ "$recovered_partial_create" = true ]; then
+            # --clobber replaces matching names but leaves assets omitted by
+            # this run. Remove only this version's optional Intel macOS set (and,
+            # with skip_darwin_desktop, its macOS app set); otherwise those old
+            # assets would outlive their checksum entries.
+            stale_assets=()
             if [ "$BUILD_DARWIN_X64" != "true" ]; then
-              # --clobber replaces matching names but leaves assets omitted by
-              # this run. Remove only this version's optional Intel macOS set;
-              # otherwise its old assets would outlive their checksum entries.
+              stale_assets+=("heimdall-local-darwin-amd64-$VERSION.tar.gz")
+            fi
+            stale_mac_arches=()
+            if [ "${SKIP_DARWIN_DESKTOP:-false}" = "true" ]; then
+              stale_mac_arches=(arm64 x64)
+              stale_assets+=(latest-mac.yml)
+            elif [ "$BUILD_DARWIN_X64" != "true" ]; then
+              stale_mac_arches=(x64)
+            fi
+            for arch in "${stale_mac_arches[@]}"; do
+              for suffix in dmg dmg.blockmap zip zip.blockmap pkg; do
+                stale_assets+=("Ninjy-${{ needs.prepare.outputs.clean_version }}-$arch.$suffix")
+              done
+            done
+            if [ "${#stale_assets[@]}" -gt 0 ]; then
               retry_transient "List assets of release $VERSION" list_release_assets
-              for asset in \
-                "heimdall-local-darwin-amd64-$VERSION.tar.gz" \
-                "Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.dmg" \
-                "Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.dmg.blockmap" \
-                "Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.zip" \
-                "Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.zip.blockmap" \
-                "Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.pkg"; do
+              for asset in "${stale_assets[@]}"; do
                 if grep -Fxq "$asset" "$RUNNER_TEMP/existing-release-assets.txt"; then
                   retry_transient "Delete stale asset $asset" gh_release_delete_asset_if_present "$VERSION" "$asset"
                 fi
