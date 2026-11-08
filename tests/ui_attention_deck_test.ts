@@ -838,12 +838,14 @@ test('deck Start agent shows failed starts inline and permits retry', async () =
   const item = taskItem('start', {
     primary_op: 'agent.start', operations: [{ op: 'agent.start', label: 'Start agent' }],
     rationale: 'Agent worker (codex/model) on bridge b is not running: stopped',
-    details: { priority: 'p1', status: 'backlog', attention: 'blocked', badge: 'agent_not_running', block_id: 'block1', excerpt: null },
+    details: { priority: 'p1', status: 'backlog', attention: 'blocked', badge: 'agent_not_running', block_id: 'block1', excerpt: null,
+      start_agent: { agent_id: 'agt_worker', agent_name: 'Smoke worker', bridge_id: 'brg_device', bridge_name: 'Mundus', detail: 'Stopped by the user', diagnostic: 'Raw failure', can_delegate: false } },
   });
   await withDeck([item], async ({ q, act, text, hits }) => {
     assert.ok(q('[data-debug-id="attention-start-agent"]'));
     assert.match(q('[data-debug-id="attention-card-badge"]').textContent, /Agent not running/);
-    assert.match(text(), /on bridge b is not running: stopped/);
+    assert.match(text(), /Smoke worker on Mundus is not running/);
+    assert.doesNotMatch(q('[data-debug-id="attention-card-facts"]').parentElement.textContent, /on bridge b/);
     assert.equal(q('[data-debug-id="attention-action-answer"]'), null);
     await act(async () => { q('[data-debug-id="attention-start-agent"]').click(); });
     assert.match(q('[data-debug-id="attention-start-agent-error"]').textContent, /credentials missing/);

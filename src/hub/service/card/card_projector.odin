@@ -167,7 +167,7 @@ build_task_card :: proc(s: ^Card_Service, task: domain.Task, kind: taskv2.User_A
 		// Pin WHICH block the card answers: a newer block in the same attempt
 		// (the agent asks again) must not take the answer written for this one.
 		strings.write_string(&guard, `","expected_block":"`)
-		strings.write_string(&guard, attention_block_id(task.blocked_on_json))
+		strings.write_string(&guard, attention_task_block_id(task))
 	}
 	strings.write_string(&guard, `"}`)
 
@@ -201,7 +201,7 @@ build_task_card :: proc(s: ^Card_Service, task: domain.Task, kind: taskv2.User_A
 	contracts.write_json_string(&details, badge)
 	strings.write_string(&details, `","task_kind":"`)
 	contracts.write_json_string(&details, domain.task_kind_string(task.kind))
-	fmt.sbprintf(&details, `","attempt_no":%d,"block_id":"%s","bridge_id":"`, task.attempt_no, attention_block_id(task.blocked_on_json) if kind == .Blocked else "")
+	fmt.sbprintf(&details, `","attempt_no":%d,"block_id":"%s","bridge_id":"`, task.attempt_no, attention_task_block_id(task) if kind == .Blocked else "")
 	contracts.write_json_string(&details, task.bridge_id)
 	strings.write_string(&details, `","holder_instance_id":"`)
 	contracts.write_json_string(&details, holder)
@@ -226,6 +226,10 @@ build_task_card :: proc(s: ^Card_Service, task: domain.Task, kind: taskv2.User_A
 		contracts.write_json_string(&details, jsonx.extract_string(hold, "reason", "", true, context.temp_allocator))
 		strings.write_string(&details, `"`)
 	}
+	if taskv2.is_agent_not_running_block(task.blocked_on_json) {
+		strings.write_string(&details, `,"start_agent":`)
+		strings.write_string(&details, attention_start_agent_context(s, task))
+	}
 	strings.write_string(&details, `}`)
 
 	rationale := "Waiting on your review"
@@ -234,7 +238,7 @@ build_task_card :: proc(s: ^Card_Service, task: domain.Task, kind: taskv2.User_A
 	case kind == .Blocked && badge == "merge_conflict": rationale = "Merge conflict needs you"
 	case kind == .Blocked && badge == "budget_exhausted": rationale = "Out of attempts — needs you"
 	case kind == .Blocked && badge == "oscillation": rationale = "Stuck in review rounds — needs you"
-	case kind == .Blocked && badge == "agent_not_running": rationale = jsonx.extract_string(task.blocked_on_json, "reason", "Agent is not running", true, context.temp_allocator)
+	case kind == .Blocked && badge == "agent_not_running": rationale = "The assigned agent is not running."
 	case kind == .Blocked: rationale = "Agent is asking you"
 	}
 
@@ -258,10 +262,50 @@ build_task_card :: proc(s: ^Card_Service, task: domain.Task, kind: taskv2.User_A
 	}
 }
 
-// attention_block_id identifies one block: a hash of the task's blocked_on
-// JSON, which carries the block's since_ms, kind and reason.
+// Names are separate from diagnostic errors so legacy raw-ID reasons never
+// become the main explanation. Missing/deleted records have readable fallbacks.
+attention_start_agent_context :: proc(s: ^Card_Service, task: domain.Task) -> string {
+	agent_id := jsonx.extract_string(task.blocked_on_json, "agent_id", "", true, context.temp_allocator)
+	bridge_id := jsonx.extract_string(task.blocked_on_json, "bridge_id", "", true, context.temp_allocator)
+	agent_name, bridge_name := "Unavailable or deleted agent", "Unavailable or deleted Bridge"
+	if agent_id == "" do agent_name = "Unassigned agent"
+	if bridge_id == "" do bridge_name = "Unassigned Bridge"
+	if s.taskchains != nil && s.taskchains.agents != nil {
+		if a, found, _ := iface.agent_get(s.taskchains.agents, agent_id); found && a.owner_user_id == task.owner_user_id {
+			agent_name = a.name if a.name != "" else "Unnamed agent"
+		}
+	}
+	if s.taskchains != nil && s.taskchains.engine != nil && s.taskchains.engine.bridges != nil {
+		if b, found, _ := iface.bridge_get_bridge(s.taskchains.engine.bridges, bridge_id); found && b.owner_user_id == task.owner_user_id {
+			bridge_name = b.label if b.label != "" else b.machine_hostname
+			if bridge_name == "" do bridge_name = "Unnamed Bridge"
+		}
+	}
+	obj := make(json.Object, context.temp_allocator)
+	obj["agent_id"], obj["agent_name"] = json.String(agent_id), json.String(agent_name)
+	obj["bridge_id"], obj["bridge_name"] = json.String(bridge_id), json.String(bridge_name)
+	obj["detail"] = json.String(jsonx.extract_string(task.blocked_on_json, "detail", "", true, context.temp_allocator))
+	obj["diagnostic"] = json.String(jsonx.extract_string(task.blocked_on_json, "reason", "", true, context.temp_allocator))
+	obj["can_delegate"] = false
+	if s.taskchains != nil do obj["can_delegate"] = taskv2.task_agent_delegation_available(s.taskchains.engine, task)
+	encoded, _ := json.marshal(obj, allocator = context.temp_allocator)
+	return string(encoded)
+}
+
+// attention_block_id identifies the displayed failure, or hashes older blocks.
 attention_block_id :: proc(blocked_on_json: string) -> string {
+	// A new dispatch failure must have a fresh identity even if retries fail
+	// with identical prose in the same clock tick. Old blocks retain the hash.
+	if id := jsonx.extract_string(blocked_on_json, "failure_id", "", true, context.temp_allocator); id != "" do return id
 	return fmt.tprintf("%08x", hash.fnv32a(transmute([]u8)blocked_on_json))
+}
+
+attention_task_block_id :: proc(task: domain.Task) -> string {
+	if !taskv2.is_agent_not_running_block(task.blocked_on_json) do return attention_block_id(task.blocked_on_json)
+	// A fleet/brief edit may change the assignee without clearing the failure.
+	// Pin the assignment and attempt the user saw as well as the failure itself.
+	assignment := taskv2.brief_assignee(task.brief_json)
+	return fmt.tprintf("%s-%d-%s", attention_block_id(task.blocked_on_json), task.attempt_no, contracts.owner_payload_digest(assignment))
 }
 
 // attention_task_holder: the instance that worked the task — the live work

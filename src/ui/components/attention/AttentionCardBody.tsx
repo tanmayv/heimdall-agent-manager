@@ -3,6 +3,7 @@ import { DecryptedMarkdown, VaultText } from '../vault';
 import type { AttentionItem, AttentionMemoryItem, AttentionMessageItem, AttentionTaskItem } from '../../api/endpoints/attention';
 import { AgentBlockerBody } from './AgentBlockerCard';
 import { PlacementRecovery } from './PlacementRecovery';
+import { StartAgentFailure } from './StartAgentAction';
 import { PRIORITY_LABELS, SCOPE_ROWS, TASK_BADGE_LABELS, expiryLine, formatAge, memoryTypePhrase, reasonLine, urgencyClass } from './attentionModel';
 
 /**
@@ -73,7 +74,7 @@ function TaskBody({ item, now, onOpenConfiguration }: { item: AttentionTaskItem;
         {d.assignee_name ? <li className="rounded-[var(--radius-sm)] bg-surface-raised px-1.5 py-0.5 text-[11px] text-muted">by {d.assignee_name}</li> : null}
       </ul>
       {d.badge === 'agent_not_running' ? (
-        <p role="alert" className="mt-3 text-[13px] text-danger">{item.rationale}</p>
+        <StartAgentFailure item={item} />
       ) : d.excerpt ? (
         <blockquote data-debug-id="attention-card-excerpt" className="mt-3 border-l-2 border-subtle pl-3 text-[13px] text-primary">
           <span className="mb-1 block text-[11px] text-faint">

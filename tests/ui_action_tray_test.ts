@@ -197,7 +197,8 @@ test('chat tray Start agent stays visible with an inline failure and retry', asy
   }) as any;
   const store = await makeVaultStore();
   const root = createRoot(dom.window.document.getElementById('root')!);
-  const item = taskItem('start', { attention: 'blocked', badge: 'agent_not_running', block_id: 'b1' }, {
+  const item = taskItem('start', { attention: 'blocked', badge: 'agent_not_running', block_id: 'b1',
+    start_agent: { agent_id: 'agt_worker', agent_name: 'Smoke worker', bridge_id: 'brg_device', bridge_name: 'Mundus', detail: 'Stopped by the user', diagnostic: 'Raw failure', can_delegate: false } }, {
     primary_op: 'agent.start', operations: [{ op: 'agent.start', label: 'Start agent' }], rationale: 'worker on bridge b is stopped',
   });
   const q = (id: string) => dom.window.document.querySelector('[data-debug-id="' + id + '"]') as HTMLElement | null;
@@ -207,7 +208,7 @@ test('chat tray Start agent stays visible with an inline failure and retry', asy
     }) })); });
     assert.ok(q('action-tray-start-agent-crd_start'));
     assert.equal(q('action-tray-answer'), null);
-    assert.match(dom.window.document.body.textContent || '', /worker on bridge b is stopped/);
+    assert.match(dom.window.document.body.textContent || '', /Smoke worker on Mundus is not running/);
     await act(async () => { q('action-tray-start-agent-crd_start')!.click(); });
     assert.match(q('action-tray-start-agent-error-crd_start')!.textContent || '', /bridge offline/);
     assert.ok(q('action-tray-card-blocked'));

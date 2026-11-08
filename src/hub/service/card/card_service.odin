@@ -535,7 +535,7 @@ evaluate_guard :: proc(s: ^Card_Service, owner: domain.User_ID, card: domain.Car
 		if want := json_obj_string(obj, "expected_attention"); want != "" && want != ("review" if kind == .Review else "blocked") {
 			return false, "task now needs something else from you"
 		}
-		if want := json_obj_string(obj, "expected_block"); want != "" && want != attention_block_id(task.blocked_on_json) {
+		if want := json_obj_string(obj, "expected_block"); want != "" && want != attention_task_block_id(task) {
 			return false, "the task is blocked on something newer"
 		}
 	}
@@ -755,6 +755,9 @@ Card_Decision :: struct {
 	// The card row is re-projected server-side when the agent blocks again, so
 	// only the client knows which question the user actually answered.
 	expected_block: string,
+	// Selected durable worker; accepting agent.start explicitly consents to
+	// starting this replacement for this task. Requires expected_block.
+	replacement_agent_id: string,
 }
 
 // task_card_op: the op a task card advertises (task.review | task.answer), "" for
@@ -824,6 +827,7 @@ reject_card :: proc(s: ^Card_Service, auth: contracts.Auth_Context, id: domain.C
 accept_card :: proc(s: ^Card_Service, auth: contracts.Auth_Context, id: domain.Card_ID, decision := Card_Decision{}) -> (domain.Card, bool, domain.Domain_Error) {
 	card, ok, err := get_card(s, auth, id)
 	if !ok do return domain.Card{}, false, err
+	if decision.replacement_agent_id != "" && task_card_op(card) != "agent.start" do return {}, false, domain.domain_error(.Validation_Failed, "worker delegation requires a Start agent card")
 
 	if card.status != domain.CARD_STATUS_PENDING && card.status != domain.CARD_STATUS_SNOOZED {
 		return domain.Card{}, false, domain.domain_error(.Conflict, fmt.tprintf("card cannot be accepted in status '%s'", card.status))
@@ -872,12 +876,15 @@ accept_card :: proc(s: ^Card_Service, auth: contracts.Auth_Context, id: domain.C
 			if s.taskchains == nil || s.taskchains.engine == nil do return {}, false, domain.domain_error(.Internal_Error, "task engine is not configured")
 			task, found, task_err := iface.taskchain_get_task(s.taskchains.repo, domain.Task_ID(op_arg_string(obj, "task_id")))
 			if !found do return {}, false, task_err
-			block_id := attention_block_id(task.blocked_on_json)
+			block_id := attention_task_block_id(task)
 			guard_block := jsonx.extract_string(card.guard_json, "expected_block", "", true, context.temp_allocator)
 			if (guard_block != "" && guard_block != block_id) || (decision.expected_block != "" && decision.expected_block != block_id) {
 				return {}, false, domain.domain_error(.Conflict, "the agent failure changed; reload the card")
 			}
-			started, start_err := taskv2.start_task_agent(s.taskchains.engine, auth, task.task_id, task.blocked_on_json)
+			if decision.replacement_agent_id != "" && decision.expected_block == "" {
+				return {}, false, domain.domain_error(.Validation_Failed, "delegation requires the displayed failure")
+			}
+			started, start_err := taskv2.start_task_agent(s.taskchains.engine, auth, task.task_id, task.blocked_on_json, decision.replacement_agent_id, taskv2.brief_assignee(task.brief_json), task.attempt_no)
 			if !started do return {}, false, start_err
 			return mark_card_accepted(s, card)
 		}
@@ -930,7 +937,7 @@ accept_card :: proc(s: ^Card_Service, auth: contracts.Auth_Context, id: domain.C
 				task, found, gerr := iface.taskchain_get_task(s.taskchains.repo, tid)
 				if !found {
 					t_err = gerr
-				} else if decision.expected_block != "" && decision.expected_block != attention_block_id(task.blocked_on_json) {
+				} else if decision.expected_block != "" && decision.expected_block != attention_task_block_id(task) {
 					t_err = domain.domain_error(.Conflict, "the agent has asked something newer; reload the card")
 				} else {
 					_, t_ok, t_err = taskv2.task_answer(s.taskchains.engine, task, taskv2.actor_from_auth(user_auth), decision.note)

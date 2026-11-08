@@ -7,6 +7,7 @@ import { useArtifactPreview } from '../ArtifactAttachmentPreview';
 import { taskChangedFiles } from '../tasks/taskV2Types';
 import { DecryptedMarkdown, VaultText } from '../vault';
 import { formatAge } from './attentionModel';
+import { StartAgentFailure } from './StartAgentAction';
 import { artifactIdsFrom, artifactLinksFrom, handoffDecisions, isBlockedItem, needLabel } from './actionTrayModel';
 
 /** Same-origin cookie auth, like the chat pane's attachments (the store's legacy session is not the v1 hub). */
@@ -68,7 +69,7 @@ function askClass(mobile: boolean): string {
 
 function BlockedAsk({ item, mobile }: { item: AttentionTaskItem; mobile: boolean }) {
   const excerpt = item.details.excerpt;
-  if (item.details.badge === 'agent_not_running') return <p role="alert" className="text-[15px] text-danger">{item.rationale}</p>;
+  if (item.details.badge === 'agent_not_running') return <StartAgentFailure item={item} />;
   if (!excerpt?.body) {
     return (
       <p data-debug-id="action-tray-card-no-ask" className="text-[15px] text-muted">

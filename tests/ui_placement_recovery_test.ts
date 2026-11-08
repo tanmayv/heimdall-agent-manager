@@ -72,7 +72,7 @@ test('recovery model: native roles/pauses and active durable identities; drafts 
 });
 
 const json = (data: any, status = 200) => new Response(JSON.stringify({ data }), { status, headers: { 'Content-Type': 'application/json' } });
-type Options = { items?: any[]; task?: any; fleets?: any[]; failures?: Array<{ status: number; message: string }>; onRecover?: (body: any) => void; providerModels?: string[] };
+type Options = { items?: any[]; task?: any; fleets?: any[]; failures?: Array<{ status: number; message: string }>; onRecover?: (body: any) => void; providerModels?: string[]; acceptGate?: Promise<void> };
 async function withRecovery(opts: Options, run: (h: any) => Promise<void>) {
   const { JSDOM } = await import('jsdom');
   const { Provider } = await import('react-redux');
@@ -96,6 +96,12 @@ async function withRecovery(opts: Options, run: (h: any) => Promise<void>) {
     const method = init.method || 'GET';
     const body = init.body ? JSON.parse(init.body) : undefined;
     hits.push({ method, path: url.pathname, body });
+    if (url.pathname.endsWith('/accept')) {
+      await opts.acceptGate;
+      const failure = opts.failures?.shift();
+      if (failure) return new Response(JSON.stringify({ error: { message: failure.message } }), { status: failure.status });
+      return json({});
+    }
     if (url.pathname.endsWith('/placement-recovery')) {
       const failure = opts.failures?.shift();
       if (failure) return new Response(JSON.stringify({ error: { code: failure.status === 409 ? 'conflict' : 'validation_failed', message: failure.message } }), { status: failure.status });
@@ -148,6 +154,51 @@ async function withRecovery(opts: Options, run: (h: any) => Promise<void>) {
   }
 }
 const p = 'attention-placement-review-agt_failed-named';
+
+function startItem(block = 'observed-block'): any {
+  return { ...placement(), card_id: 'crd_start_delegate', provider: 'task_validation', reason: 'agent_not_running', primary_op: 'agent.start', operations: [{ op: 'agent.start', label: 'Start agent' }],
+    details: { priority: 'p1', status: 'backlog', attention: 'blocked', badge: 'agent_not_running', block_id: block, excerpt: null,
+      start_agent: { agent_id: 'agt_failed', agent_name: 'Smoke worker', bridge_id: 'brg_mac', bridge_name: 'MacBook', detail: 'Stopped by the user', diagnostic: 'instance_not_drained', can_delegate: true } } };
+}
+
+test('deck delegation: selected durable worker and exact displayed block, failure remains retryable', async () => {
+  const workerTask = { ...task, state: 'backlog', brief: { assignee: 'agt_failed', reviewers: ['agt_second'], review_roles: [] } };
+  const workerFleets = fleets.map((f) => ({ ...f, roles: ['worker'], paused_roles: f.agent_id === 'agt_paused' ? ['worker'] : [] }));
+  await withRecovery({ items: [startItem()], task: workerTask, fleets: workerFleets, failures: [{ status: 409, message: 'Selected worker is at capacity' }] }, async (h) => {
+    const picker = 'attention-delegate-worker-crd_start_delegate';
+    assert.match(h.text(), /Smoke worker on MacBook is not running/);
+    assert.match(h.text(), /including a worker you stopped/);
+    assert.equal(h.q(`${picker}-apply`).disabled, true);
+    assert.ok(![...h.q(picker).options].some((o: any) => ['agt_failed', 'agt_second', 'agt_paused', 'agt_archived', 'inst_fake'].includes(o.value)));
+    await h.select(picker, 'agt_replacement');
+    assert.equal(h.q(`${picker}-apply`).disabled, false);
+    await h.click(`${picker}-apply`);
+    assert.match(h.q('attention-start-agent-error').textContent, /at capacity/);
+    assert.equal(h.q(picker).value, 'agt_replacement', 'failure retains selection');
+    assert.deepEqual(h.hits.find((r: any) => r.method === 'POST').body, { expected_block: 'observed-block', replacement_agent_id: 'agt_replacement' });
+    await h.serve([startItem('fresh-block')], workerTask);
+    await h.click(`${picker}-apply`);
+    assert.equal(h.hits.filter((r: any) => r.method === 'POST').at(-1).body.expected_block, 'fresh-block');
+    assert.equal(h.q('attention-start-agent-error'), null);
+  });
+});
+
+test('deck delegation: repeated clicks share the in-flight card guard', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  const workerTask = { ...task, state: 'backlog', brief: { assignee: 'agt_failed', reviewers: [], review_roles: [] } };
+  await withRecovery({ items: [startItem()], task: workerTask, fleets: fleets.map((f) => ({ ...f, roles: ['worker'] })), acceptGate: gate }, async (h) => {
+    const picker = 'attention-delegate-worker-crd_start_delegate';
+    await h.select(picker, 'agt_replacement');
+    await act(async () => { h.q(`${picker}-apply`).click(); h.q(`${picker}-apply`).click(); });
+    await h.drain();
+    assert.equal(h.hits.filter((r: any) => r.method === 'POST').length, 1);
+    assert.equal(h.q(`${picker}-apply`).disabled, true);
+    await act(async () => release());
+    await h.drain();
+    assert.equal(h.q(`${picker}-apply`).disabled, false);
+  });
+});
 
 test('deck: effective reviewer bridge, fleet scope confirmation, targeted repair and independent attention retirement', async () => {
   const review = { ...placement(), card_id: 'crd_task_review', provider: 'task_validation', reason: 'awaiting_review', details: { priority: 'p2', attention: 'review', excerpt: null } };

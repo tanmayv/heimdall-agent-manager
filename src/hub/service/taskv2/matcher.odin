@@ -230,6 +230,27 @@ grant_work :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Tas
 	if failure != "" && !queued do block_ready_agent_in_uow(svc, u, task, failed_agent, failed_placement, failure)
 }
 
+// Explicit delegation is scoped to one task and one selected durable worker.
+// Normalize idle candidates only in this private snapshot, then persist only
+// the chosen instance together with its lease. Other user stops remain intact.
+grant_selected_worker :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Task, fleet: domain.Task_Chain_Fleet, placement: Placement) -> (bool, domain.Domain_Error) {
+	if (placement.directory_id != "" && directory_has_work_lease_ctx(ctx, placement.directory_id)) || fleet_row_full(ctx, fleet, placement) do return false, domain.domain_error(.Conflict, "the replacement is at capacity; retry when its work finishes")
+	for inst, i in ctx.instances {
+		if inst.agent_id != fleet.agent_id || inst.bridge_id != placement.bridge_id || ctx.held[inst.agent_instance_id] || instance_is_live(inst) || instance_is_pending(inst) do continue
+		next := inst
+		next.runtime_status, next.stopped_by, next.last_error_json = "stopped", "", ""
+		ctx.instances[i] = next
+	}
+	inst, found, why := pick_instance(svc, u, ctx, task, fleet, placement, domain.FLEET_ROLE_WORKER, "")
+	if !found do return false, domain.domain_error(.Conflict, why if why != "" else "the replacement is unavailable; refresh and retry")
+	// pick_instance retains the runtime-action fence even for explicit consent.
+	if !instance_is_live(inst) && !instance_is_pending(inst) {
+		if _, saved, serr := iface.agent_save_instance(svc.agents, inst); !saved do return false, serr
+	}
+	_, granted, gerr := grant_in_uow(svc, u, Grant_Request{chain = ctx.chain, task = task, instance = inst, kind = domain.LEASE_KIND_WORK, delivery = domain.LEASE_DELIVERY_WAKE, placement = placement, actor = hub_actor(), trigger = .Task_Updated})
+	return granted, gerr
+}
+
 // ---- review pass ---------------------------------------------------------------------
 
 @(private = "file")
@@ -304,7 +325,7 @@ review_lease_live_for :: proc(ctx: ^Match_Context, svc: ^Service, task_id: domai
 
 // Keep provider messages readable in both fleet and solo recovery cards.
 instance_failure_reason :: proc(inst: domain.Agent_Instance) -> string {
-	reason := fmt.tprintf("instance %s is %s", inst.agent_instance_id, inst.runtime_status)
+	reason := fmt.tprintf("Agent process is %s", inst.runtime_status)
 	if message := jsonx.extract_string(inst.last_error_json, "message", "", true, context.temp_allocator); message != "" {
 		return fmt.tprintf("%s: %s", reason, message)
 	}
@@ -348,7 +369,7 @@ pick_instance :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.
 		// do not count it toward capacity. Without another free instance, ask
 		// the user to restart it instead of creating an unsolicited replacement.
 		if inst.stopped_by == agent.STOPPED_BY_USER {
-			failure = fmt.tprintf("instance %s was stopped by the user", inst.agent_instance_id)
+			failure = "Agent was stopped by the user"
 			continue
 		}
 		if is_coordinator(svc, ctx.chain, inst.agent_instance_id) do continue
