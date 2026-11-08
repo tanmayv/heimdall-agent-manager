@@ -67,3 +67,20 @@ owner_registry_list :: proc(ctx:rawptr,account,chain,after_chain,after_task:stri
         append(&out,domain.Owner_Registry_Record{column_text(stmt,0),column_text(stmt,1),column_text(stmt,2),column_text(stmt,3),column_text(stmt,4),column_text(stmt,5),column_text(stmt,6),column_text(stmt,7),column_text(stmt,8),sqlite3_column_int64(stmt,9)})
     }
 }
+
+// Routing rows only: every owner-held chain of the account, one row each.
+owner_registry_routes :: proc(ctx:rawptr,account,chain:string) -> ([]domain.Owner_Registry_Record,domain.Domain_Error) {
+    impl:=(^Taskchain_Repo_SQLite)(ctx)
+    sql:="SELECT chain_id,owner_bridge_id,owner_key_id FROM owner_local_chains WHERE account_id=? AND (?='' OR chain_id=?) ORDER BY chain_id"
+    stmt:sqlite3_stmt
+    if sqlite3_prepare_v2(impl.conn.db,strings.clone_to_cstring(sql,context.temp_allocator),-1,&stmt,nil)!=SQLITE_OK do return nil,domain.domain_error(.Internal_Error,"registry read failed")
+    defer sqlite3_finalize(stmt)
+    bind_text(stmt,1,account);bind_text(stmt,2,chain);bind_text(stmt,3,chain)
+    out:=make([dynamic]domain.Owner_Registry_Record)
+    for {
+        rc:=sqlite3_step(stmt)
+        if rc==SQLITE_DONE do return out[:],{}
+        if rc!=SQLITE_ROW { for &r in out do owner_registry_destroy(&r);delete(out);return nil,domain.domain_error(.Internal_Error,"registry read failed") }
+        append(&out,domain.Owner_Registry_Record{account_id=strings.clone(account),chain_id=column_text(stmt,0),owner_bridge_id=column_text(stmt,1),owner_key_id=column_text(stmt,2)})
+    }
+}

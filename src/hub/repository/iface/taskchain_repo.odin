@@ -67,6 +67,7 @@ Taskchain_Repository :: struct {
     legacy_migration_aborted: Legacy_Migration_Aborted,
     owner_registry_publish: Owner_Registry_Publish,
     owner_registry_list: Owner_Registry_List,
+    owner_registry_routes: Owner_Registry_Routes,
 	ctx: rawptr,
 	get_chain: Task_Chain_Get_Proc,
 	list_chains_by_owner: Task_Chain_List_By_Owner_Proc,

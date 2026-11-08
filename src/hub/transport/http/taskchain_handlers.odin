@@ -143,6 +143,8 @@ Task_Chain_Wire :: struct {
 	updated_at:                    string     `json:"updated_at"`,
 	is_pinned:                     bool       `json:"is_pinned"`,
 	pinned_at:                     string     `json:"pinned_at"`,
+	// R4a: present only for owner-held chains (owner_authority.odin).
+	authority:                     Maybe(Chain_Authority_Wire) `json:"authority,omitempty"`,
 }
 
 Chain_List_Item_Wire :: struct {
@@ -158,6 +160,7 @@ Chain_List_Item_Wire :: struct {
 	user_validation_count:         int    `json:"user_validation_count"`,
 	is_pinned:                     bool   `json:"is_pinned"`,
 	pinned_at:                     string `json:"pinned_at"`,
+	authority:                     Maybe(Chain_Authority_Wire) `json:"authority,omitempty"`,
 }
 
 Chain_Project_Group_Wire :: struct {
@@ -374,6 +377,7 @@ Task_Chain_Detail_Response_Wire :: struct {
 	members:                       []Task_Chain_Member_Wire    `json:"members"`,
 	tasks:                         []Task_Detail_Wire          `json:"tasks"`,
 	directories:                   []Task_Chain_Directory_Wire `json:"directories"`,
+	authority:                     Maybe(Chain_Authority_Wire) `json:"authority,omitempty"`,
 }
 
 Agents_Live_Response_Wire :: struct {
@@ -413,6 +417,7 @@ make_chain_list_item_wire :: proc(it: Chain_List_Item) -> Chain_List_Item_Wire {
 		user_validation_count         = it.user_validation_count,
 		is_pinned                     = it.is_pinned,
 		pinned_at                     = it.pinned_at,
+		authority                     = it.authority,
 	}
 }
 
@@ -811,8 +816,10 @@ list_task_chains_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		if coord_err.code != .None do return respond_error(coord_err, req.request_id)
 		defer delete(coord_chains)
 		wires := make([]Task_Chain_Wire, len(coord_chains), context.temp_allocator)
+		authority, _ := owner_authority_routes(h.taskchains, string(auth_ctx.user_id), "")
 		for chain, i in coord_chains {
 			wires[i] = make_chain_wire(chain)
+			wires[i].authority = owner_authority_wire(authority, string(chain.chain_id))
 		}
 		data, _ := json.marshal(wires, JSON_MARSHAL_OPT, allocator = context.temp_allocator)
 		return respond_list(string(data), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
@@ -1025,6 +1032,7 @@ Chain_List_Item :: struct {
 	user_validation_count:         int,
 	is_pinned:                     bool,
 	pinned_at:                     string,
+	authority:                     Maybe(Chain_Authority_Wire),
 }
 
 // enrich_chain_list_items resolves each chain's project once, memoizing the
@@ -1045,6 +1053,8 @@ enrich_chain_list_items :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Con
 	// A failed rollup must not silently empty the list: fall back to showing every
 	// chain with an unknown (0) count rather than filtering them all away.
 	counts_ok := counts_err.code == .None
+	// R4a: one registry read marks every owner-held (migrated) chain.
+	authority, _ := owner_authority_routes(h.taskchains, string(auth.user_id), "")
 	for c in chains {
 		if !include_archived && c.status == .Archived do continue
 		rollup := task_counts[string(c.chain_id)] or_else iface.Chain_Task_Rollup{}
@@ -1071,6 +1081,7 @@ enrich_chain_list_items :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Con
 			user_validation_count = rollup.user_validation_count,
 			is_pinned = c.is_pinned,
 			pinned_at = c.pinned_at,
+			authority = owner_authority_wire(authority, string(c.chain_id)),
 		})
 	}
 	return items
@@ -1456,6 +1467,9 @@ task_chain_detail_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	chain_id := path_part(req.path, 4)
 	// READ (REQ-SEC-3): owner-scoped detail; a same-owner non-member may view it.
 	chain, got, err := taskchain_service.get_chain_for_read(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id))
+	owner_bridge, owner_held, _ := owner_authority_of(h.taskchains, string(auth_ctx.user_id), chain_id)
+	// A native owner chain has no Hub rows: name its authority instead of 404.
+	if !got && owner_held do return respond_error(owner_authority_error(chain_id, owner_bridge), req.request_id)
 	if !got do return respond_error(err, req.request_id)
 
 	tasks, _ := taskchain_service.list_tasks(h.taskchains, auth_ctx, chain.chain_id)
@@ -1470,6 +1484,7 @@ task_chain_detail_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		delete(dirs)
 	}
 	resp_wire := make_chain_detail_response_wire(h, auth_ctx, chain, members, tasks, deps, dirs)
+	if owner_held do resp_wire.authority = Chain_Authority_Wire{"owner", owner_bridge}
 	data, _ := json.marshal(resp_wire, JSON_MARSHAL_OPT, allocator = context.temp_allocator)
 	return respond_success(string(data), req.request_id, auth_ctx_server_time(req))
 }

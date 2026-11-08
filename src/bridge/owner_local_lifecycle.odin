@@ -3,6 +3,7 @@ package main
 
 import "core:encoding/json"
 import "core:fmt"
+import "core:os"
 import "core:strings"
 import "core:time"
 import contracts "odin_test:contracts"
@@ -16,7 +17,10 @@ bridge_owner_git :: proc(repo:string,args:[]string) -> (string,bool) {
     out,ok:=vcs_run(argv[:]);defer delete(out)
     return strings.clone(strings.trim_space(out),context.temp_allocator),ok
 }
-bridge_owner_paths :: proc(c:json.Object,task:string,check_target:=true) -> bool {
+// allow_missing_worktree (configuration only): the task worktree may not
+// exist yet; it is created after a claim is admitted. Its path must still be
+// safe, and an existing one is fully validated.
+bridge_owner_paths :: proc(c:json.Object,task:string,check_target:=true,allow_missing_worktree:=false) -> bool {
     get:=contracts.owner_string
     if get(c,"merge_policy")=="none" {
         return get(c,"repository")=="" && get(c,"worktree")=="" && get(c,"source_branch")=="" && get(c,"target_branch")=="" && get(c,"base_head")==""
@@ -25,15 +29,32 @@ bridge_owner_paths :: proc(c:json.Object,task:string,check_target:=true) -> bool
     if repo=="" || work!=fmt.tprintf("%s/.heimdall/worktrees/%s",repo,task) || get(c,"source_branch")!=fmt.tprintf("heimdall/%s",task) ||
        get(c,"target_branch")=="" || get(c,"base_head")=="" || get(c,"target_branch")==get(c,"source_branch") { return false }
     canonical,within:=bridge_fs_resolve_within(repo);defer delete(canonical)
+    if !within || canonical!=repo do return false
+    if allow_missing_worktree && !os.exists(work) {
+        if !bridge_owner_worktree_path_safe(repo,task) do return false
+        return bridge_owner_repo_valid(c,repo,check_target)
+    }
     canonical_work,work_within:=bridge_fs_resolve_within(work);defer delete(canonical_work)
-    if !within || !work_within || canonical!=repo || canonical_work!=work do return false
+    if !work_within || canonical_work!=work do return false
     for dir in ([2]string{repo,work}) {
         top,ok:=bridge_owner_git(dir,[]string{"rev-parse","--show-toplevel"})
         if !ok || top!=dir do return false
     }
+    if !bridge_owner_repo_valid(c,repo,check_target) do return false
     common,ok:=bridge_owner_git(repo,[]string{"rev-parse","--path-format=absolute","--git-common-dir"})
     other,other_ok:=bridge_owner_git(work,[]string{"rev-parse","--path-format=absolute","--git-common-dir"})
     if !ok || !other_ok || common!=other do return false
+    source,source_ok:=bridge_owner_git(work,[]string{"symbolic-ref","--short","HEAD"})
+    if !source_ok || source!=get(c,"source_branch") do return false
+    return true
+}
+// Repository-level checks shared by configuration and the full path check:
+// top-level, no custom merge drivers, valid refs, the configured base, and a
+// target branch that no worktree has checked out.
+bridge_owner_repo_valid :: proc(c:json.Object,repo:string,check_target:bool) -> bool {
+    get:=contracts.owner_string
+    top,ok:=bridge_owner_git(repo,[]string{"rev-parse","--show-toplevel"})
+    if !ok || top!=repo do return false
     configuration,config_ok:=bridge_owner_git(repo,[]string{"config","--list"})
     if !config_ok do return false
     for line in strings.split_lines_iterator(&configuration) {
@@ -45,17 +66,14 @@ bridge_owner_paths :: proc(c:json.Object,task:string,check_target:=true) -> bool
     for ref in ([2]string{get(c,"source_branch"),get(c,"target_branch")}) {
         if _,ok:=bridge_owner_git(repo,[]string{"check-ref-format","--branch",ref});!ok do return false
     }
-    source,source_ok:=bridge_owner_git(work,[]string{"symbolic-ref","--short","HEAD"})
-    if !source_ok || source!=get(c,"source_branch") do return false
     base,base_ok:=bridge_owner_git(repo,[]string{"rev-parse","--verify",strings.concatenate({"refs/heads/",get(c,"target_branch"),"^{commit}"},context.temp_allocator)})
     if !base_ok || (check_target && base!=get(c,"base_head")) do return false
-    // An atomic ref CAS must not leave a checked-out worktree inconsistent.
-    // This bounded slice merges into an explicitly un-checked-out target ref.
     worktrees,list_ok:=bridge_owner_git(repo,[]string{"worktree","list","--porcelain"})
     if !list_ok || strings.contains(worktrees,fmt.tprintf("branch refs/heads/%s\n",get(c,"target_branch"))) ||
        strings.has_suffix(worktrees,fmt.tprintf("branch refs/heads/%s",get(c,"target_branch"))) { return false }
     return true
 }
+
 bridge_owner_config_proof :: proc(s:^owner.Store,c:json.Object,chain,task:string) -> owner.Lifecycle_Proof {
     get:=contracts.owner_string
     rows,ok:=owner.query(s.db,"SELECT instance_id FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task)
@@ -63,7 +81,9 @@ bridge_owner_config_proof :: proc(s:^owner.Store,c:json.Object,chain,task:string
     author,aok:=bridge_owner_child_locked(rows[0][0],"")
     reviewer,rok:=bridge_owner_child_locked(get(c,"reviewer_instance_id"),"")
     if !aok || !rok do return {}
-    valid:=bridge_owner_paths(c,task)
+    // The worktree is created only after a claim is admitted (R4a); here it
+    // may be absent, but its path must be safe and the repository valid.
+    valid:=bridge_owner_paths(c,task,allow_missing_worktree=true)
     if get(c,"merge_policy")=="git" {
         launch,found:=bridge_runtime_get_launch(author.instance)
         if !found do return {}

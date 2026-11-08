@@ -49,6 +49,39 @@ capability string, and use a fresh request expiry. Retry the exact same file to
 recover an uncertain outcome; do not mint a new operation ID for a retry.
 A replay is historical evidence, never permission to launch or resume work.
 
+### Ordinary verbs (R4a)
+
+The hand-built request file above is the low-level path and keeps working. On a
+chain its own Bridge owns, an agent can instead use the ordinary verbs with no
+lease JSON, capability or owner document:
+
+```bash
+./bin/ham-ctl lease next                       # claim; creates the Workdir, writes TASK.md
+./bin/ham-ctl lease heartbeat --lease <id> --acknowledge-requirements-revision <n>
+./bin/ham-ctl lease submit --summary "<checks and outcomes>"   # Workdir must be committed
+./bin/ham-ctl review post --task <id> --verdict approve        # the configured reviewer
+```
+
+The Bridge proves the exact live child from the instance token, and one policy
+(`src/lib/owner_local/agent_authority.odin`) authorizes the verb: a worker only
+on its fleet-bound task, the configured reviewer, and the chain's enabled
+coordinator member for `task create|update|comment|show`, `task-chain show|
+summary set|propose|publish` and `review post --on-behalf-of user`. The owner
+key then signs the command. A claim creates `<repo>/.heimdall/worktrees/<task>`
+on `heimdall/<task>` from the configured base, after the claim commits and
+outside the child locks; a failure is reported and on TASK.md, and the next
+`lease next` retries. The coordinator may also create and assign work on the
+user's behalf: `task create|update --priority --depends-on --assignee
+--reviewer` and `task depend` map to `task.priority`, `dependency.edit`,
+`fleet.edit` and `lifecycle.configure`, limited to agents that are running,
+enabled members or fleet workers of this chain on this Bridge, and to the
+chain's single configured directory with its `target_branch` chain default.
+Adding members, grants or outside agents stays human-only; any other flag
+answers `unsupported_on_owner_chain`. Chains the Bridge does not own
+go to the Hub, which answers writes on an owner-held chain with a typed
+`owner_authority` error naming the owner Bridge
+(`src/bridge/owner_agent_routing.odin`, `src/hub/transport/http/owner_authority.odin`).
+
 ## Authority and local persistence
 
 The owner verifies the current human device directory and local read/mutation
@@ -114,6 +147,10 @@ nix develop --command env \
   node --import ./tests/helpers/vaultEndpointHarness.ts \
     tests/e2e/bridge_real_enroll_e2e.mjs
 ```
+
+Add `HEIMDALL_E2E_OWNER_LIFECYCLE=1 HEIMDALL_E2E_OWNER_TRANSPARENT_ONLY=1` to run
+only the ordinary-verb leg (`tests/e2e/owner_transparent_flow.ts`): lease next,
+ACK, submit, coordinator verbs, refusals, review and merge through plain ham-ctl.
 
 This uses disposable OIDC accounts, enrollment and key delivery, real Hub/Bridge/
 CLI binaries, a real PTY daemon and an actual synthetic provider process. It

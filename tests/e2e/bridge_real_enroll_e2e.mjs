@@ -36,6 +36,8 @@ import { deliverKeyringToBridge } from '../../src/ui/utils/vaultBridgeDelivery.t
 import { bridgeUnsealTargetFromRecord } from '../../src/ui/utils/vaultBridgeUnseal.ts';
 import { buildBridgeApproval, buildGenesis, checkBridgeCodeInfo } from '../../src/ui/utils/vaultDeviceFlows.ts';
 import { derivePairKeys, pairApproveMac, pairHubOrigin } from '../../src/ui/utils/vaultPairing.ts';
+import { importKeyring } from '../../src/ui/utils/vaultKeyring.ts';
+import { prepareLocalLaunchOperation, localLaunchRelay, openLocalLaunchReply } from '../../src/ui/api/executorLocalLaunch.ts';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const USER = 'e2e-real-enroll';
@@ -268,6 +270,51 @@ c.commit()
     expect(second.refused && /another ham-bridge instance/i.test(second.out), 'a second instance on the same config refuses (instance lock)');
   });
 
+  // Host-operator launch resources for the synthetic children (explicit,
+  // signed, imported into the running Bridge), then browser launch approval.
+  let executorIdentity = null, executorPolicy = false;
+  const executorDirectories = new Map();
+  const bridgeCli = (...args) => {
+    const r = spawnSync(process.env.HEIMDALL_E2E_BRIDGE_BIN, args, { cwd: S.cfgA.dir, env: ENV, encoding: 'utf8', timeout: 30000 });
+    if (r.status !== 0) throw new Error('ham-bridge ' + args.slice(0, 2).join(' ') + ' failed: ' + r.stdout + r.stderr);
+    return r.stdout.trim();
+  };
+  const installExecutorRecord = (kind, record) => {
+    const file = path.join(ROOT, ownerIdForFixture(kind + '-') + '.json'), signed = file + '.signed';
+    fs.writeFileSync(file, JSON.stringify({ ...record, account_id: executorIdentity.account_id, executor_bridge_id: executorIdentity.executor_bridge_id, key_id: executorIdentity.key_id, signature: '0'.repeat(128) }), { mode: 0o600 });
+    bridgeCli('executor', 'sign', '--config', S.cfgA.config, '--kind', kind, '--file', file, '--output', signed);
+    bridgeCli('executor', 'import', '--config', S.cfgA.config, '--local-run-dir', S.cfgA.local, '--kind', kind, '--file', signed);
+  };
+  async function ensureExecutorResources(projectPath) {
+    if (!executorIdentity) executorIdentity = JSON.parse(bridgeCli('executor', 'identity', '--config', S.cfgA.config).split('\n').pop());
+    if (!executorPolicy) {
+      const slots = Array.from({ length: 8 }, (_, i) => ({ slot_id: 'e2e_slot_' + i, provider_profile: 'codex', enabled: '1' }));
+      installExecutorRecord('policy', { protocol_version: '1', policy_revision: '1', device_capacity: '8', slots_json: JSON.stringify(slots) });
+      executorPolicy = true;
+    }
+    const real = fs.realpathSync(projectPath);
+    if (executorDirectories.has(real)) return;
+    installExecutorRecord('directory', { protocol_version: '1', directory_id: 'e2e_dir_' + executorDirectories.size, revision: '1', directory_path: real, enabled: '1' });
+    executorDirectories.set(real, true);
+  }
+  // Same parsing as LocalLaunchApproval.pendingLaunchDraft (the UI component).
+  const pendingLaunchDraft = (lastError) => {
+    try {
+      const value = JSON.parse(lastError?.message ?? '');
+      if (value.code !== 'launch_authorization_required') return null;
+      return { executorBridge: value.executor_bridge_id, draftId: value.draft_id, revision: value.draft_revision, configurationDigest: value.configuration_digest };
+    } catch { return null; }
+  };
+  async function approveLocalLaunch(draft) {
+    const session = { identity: S.apA.identity, chain: await S.apA.chain(), keyring: await importKeyring(Uint8Array.from(S.apA.keyringBytes), S.apA.userId) };
+    for (const method of ['prepare', 'authorize']) {
+      const transport = await localLaunchRelay(session, await prepareLocalLaunchOperation(session, draft, method));
+      const reply = await http(hubA, 'POST', '/api/v1/executor/local-launch', { body: transport.relay });
+      if (reply.status !== 200) throw new Error('local launch relay ' + method + ': ' + reply.raw);
+      const result = await openLocalLaunchReply(session, transport, reply.data);
+      if (result.code !== 'ok') throw new Error('local launch ' + method + ' refused: ' + result.code);
+    }
+  }
   if (process.env.HEIMDALL_E2E_OWNER_LOCAL === '1') {
     await step('owner-local V1 real relay, persistence, retries and offline listing', async () => {
       const { ownerLocalFlow } = await import('./owner_local_flow.ts');
@@ -287,6 +334,13 @@ c.commit()
           return response.data?.data ?? response.data;
         },
         launchChild: process.env.HEIMDALL_E2E_OWNER_LEASE === '1' ? async (projectPath = '') => {
+          // Every launch is a native local draft: the host operator signs a slot
+          // policy and directory mapping once, and the enrolled browser approves
+          // each exact launch (docs/executor-local-operator.md).
+          // A live launch charges its directory exclusively, so a child without
+          // a repository gets its own disposable workspace project.
+          if (!projectPath) { projectPath = path.join(HOME, ownerIdForFixture('workspace-')); fs.mkdirSync(projectPath, { recursive: true }); }
+          await ensureExecutorResources(projectPath);
           const discovered = await http(hubA, 'POST', '/api/v1/bridges/' + S.a.bridgeId + '/providers/discover', {body:{}});
           expect(discovered.status === 200, 'synthetic provider discovered on disposable Bridge');
           const enabled = await http(hubA, 'PUT', '/api/v1/bridges/' + S.a.bridgeId + '/providers/codex', {body:{enabled:true}});
@@ -312,10 +366,12 @@ c.commit()
             socket=path.join(tmp,'heimdall-'+process.getuid(),hash.toString(16).padStart(16,'0')+'.sock');
           }
           children.push({kill:()=>spawnSync(process.env.HEIMDALL_E2E_PTY_BIN,['--socket',socket,'stop'],{env:ENV,timeout:5000})});
-          let env;
+          let env,approved=false;
           for (const deadline=Date.now()+45000;;await sleep(200)) {
             try {env=JSON.parse(fs.readFileSync(path.join(ROOT,iid+'.env.json'),'utf8'));} catch {}
             const state=await http(hubA,'GET','/api/v1/agent-instances/'+iid);
+            const draft=pendingLaunchDraft(state.data?.last_error);
+            if (draft && !approved) { await approveLocalLaunch(draft); approved=true; }
             if (env && state.data?.runtime_status==='running') break;
             if (Date.now()>deadline) throw new Error('synthetic child never became ready: '+JSON.stringify(state));
           }
@@ -325,9 +381,15 @@ c.commit()
             const reply=called.stdout.trim()?JSON.parse(called.stdout):{};
             return {status:called.status,reply,data:reply.data?.data ?? reply.data,error:called.stderr};
           };
-          return {instanceId:iid,agentId:created.data.agent_id,call,readNotices:()=>{const p=path.join(ROOT,iid+'.env.json.input');return fs.existsSync(p)?fs.readFileSync(p,'utf8'):'';},readTaskMd:()=>fs.readFileSync(path.join(fs.readFileSync(path.join(ROOT,iid+".env.json.cwd"),"utf8"),"TASK.md"),"utf8"),stop:async()=>{await http(hubA,'POST','/api/v1/agent-instances/'+iid+'/stop',{body:{}});await sleep(1500);}};
+          // R4a: ordinary agent verbs, exactly as an agent types them.
+          const ctl = (args) => {
+            const called=spawnSync(process.env.HEIMDALL_E2E_CTL_BIN,['agent',...args],{env:{...ENV,...env},encoding:'utf8',timeout:30000});
+            let reply={};try{reply=called.stdout.trim()?JSON.parse(called.stdout):{};}catch{reply={raw:called.stdout};}
+            return {status:called.status,ok:called.status===0 && reply.ok!==false,reply,data:reply.data?.data ?? reply.data,error:called.stderr};
+          };
+          return {instanceId:iid,agentId:created.data.agent_id,call,ctl,readNotices:()=>{const p=path.join(ROOT,iid+'.env.json.input');return fs.existsSync(p)?fs.readFileSync(p,'utf8'):'';},readTaskMd:()=>fs.readFileSync(path.join(fs.readFileSync(path.join(ROOT,iid+".env.json.cwd"),"utf8"),"TASK.md"),"utf8"),stop:async()=>{await http(hubA,'POST','/api/v1/agent-instances/'+iid+'/stop',{body:{}});await sleep(1500);}};
         } : undefined,
-        prepareGit: process.env.HEIMDALL_E2E_OWNER_LIFECYCLE === '1' ? (taskId, conflict=false) => {
+        prepareGit: process.env.HEIMDALL_E2E_OWNER_LIFECYCLE === '1' ? (taskId, conflict=false, noWorktree=false) => {
           const repo=path.join(HOME,ownerIdForFixture('lifecycle-repo-'));
           fs.mkdirSync(repo,{recursive:true});
           const git=(cwd,...args)=>{
@@ -338,6 +400,8 @@ c.commit()
           git(repo,'init','-b','sandbox');fs.writeFileSync(path.join(repo,'shared.txt'),'base\n');
           git(repo,'add','.');git(repo,'commit','-m','base');git(repo,'branch','integration');
           const worktree=path.join(repo,'.heimdall','worktrees',taskId),sourceBranch='heimdall/'+taskId;
+          // R4a: the owner Bridge creates the worktree itself.
+          if(noWorktree) return {repository:repo,worktree,sourceBranch,targetBranch:'integration',baseHead:git(repo,'rev-parse','integration'),targetHead:()=>git(repo,'rev-parse','integration')};
           git(repo,'worktree','add','-b',sourceBranch,worktree);
           fs.writeFileSync(path.join(worktree,'shared.txt'),'source\n');git(worktree,'add','.');git(worktree,'commit','-m','source');
           if(conflict){
@@ -447,6 +511,9 @@ print("metadata-only Hub SQLite and log verified")
   }
   await step('3 the same bridge pointed at another hub refuses to start', async () => {
     S.runA?.kill();
+    // After owner flows the runtime may take longer than a moment to stop its
+    // children; wait for its exit so its instance lock is released.
+    if (S.runA && S.runA.exitCode === null && S.runA.signalCode === null) await Promise.race([new Promise((r) => S.runA.once('exit', r)), sleep(20_000)]);
     await sleep(500);
     const r = await runtime({ ...S.cfgA, port: await freePort() }, ['--hub', hubB.base]);
     expect(r.refused && /REFUSING TO START/.test(r.out) && /bound to\s+exactly one hub|holds no readable enrollment/i.test(r.out), `hub mismatch -> refused (exit ${r.exitCode})`);
