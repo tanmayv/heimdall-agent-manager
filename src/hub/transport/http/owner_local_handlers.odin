@@ -209,19 +209,15 @@ Executor_Issuance_Command :: struct {
 // executor verifies device consent and owns identity allocation; no task state
 // is granted or changed here.
 executor_issuance_relay_handler :: proc(ctx:rawptr,req:Request)->Response {
-    return executor_device_relay(ctx,req,false)
+    return executor_device_relay(ctx,req)
 }
-executor_local_launch_relay_handler :: proc(ctx:rawptr,req:Request)->Response {
-    return executor_device_relay(ctx,req,true)
-}
-executor_device_relay :: proc(ctx:rawptr,req:Request,local:bool)->Response {
+executor_device_relay :: proc(ctx:rawptr,req:Request)->Response {
     context.allocator=context.temp_allocator
     h:=(^Bridge_Handlers)(ctx)
     auth,ok,resp:=require_auth(h.auth,req)
     if !ok do return resp
     if !contracts.is_user_auth(auth) do return respond_error(domain.domain_error(.Forbidden,"user authentication required"),req.request_id)
-    relay:json.Object;valid:bool
-    if local {relay,valid=contracts.executor_parse(req.body,"local_relay")} else {relay,valid=contracts.owner_parse(req.body,"relay")}
+    relay,valid:=contracts.owner_parse(req.body,"relay")
     if !valid do return respond_error(domain.domain_error(.Validation_Failed,"invalid executor relay"),req.request_id)
     bridge_id:=contracts.owner_string(relay,"bridge_id")
     expires,_:=strconv.parse_i64(contracts.owner_string(relay,"expires_ms"))
@@ -232,7 +228,7 @@ executor_device_relay :: proc(ctx:rawptr,req:Request,local:bool)->Response {
     if bridge.status!=.Online || !project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry,bridge_id) do return respond_success(`{"code":"executor_unavailable"}`,req.request_id,auth_ctx_server_time(req))
     directory,available:=owner_directory(h,auth.user_id)
     if !available do return respond_error(domain.domain_error(.Forbidden,"current directory unavailable"),req.request_id)
-    kind:="executor_local_launch" if local else "executor_issuance"
+    kind:="executor_issuance"
     id:=fmt.tprintf("cmd_%s_%d",kind,time.to_unix_nanoseconds(time.now()))
     command:=Executor_Issuance_Command{kind,id,auth.user_id,req.body,directory}
     reply,received,rerr:=bridge_runtime.send_runtime_command_wait(h.bridge_runtime_registry,project_service.Runtime_Command{bridge_id=bridge_id,command_id=id,body_json=owner_json(command)},10000)

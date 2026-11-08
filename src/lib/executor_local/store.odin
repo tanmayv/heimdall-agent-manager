@@ -49,10 +49,10 @@ open :: proc(s:^Store,path,account,executor,operator_key:string)->bool {
     if len(tables)==0 {
         existing,read:=query(s.db,"SELECT name FROM sqlite_master WHERE type='table'")
         if !read || len(existing)>0 || !exec(s.db,string(#load("schema.sql"))) do return false
-        if _,written:=query(s.db,"INSERT INTO executor_runtime VALUES(1,15,?,?,?,1,0,'ready',0,0)",account,executor,operator_key);!written do return false
+        if _,written:=query(s.db,"INSERT INTO executor_runtime VALUES(1,16,?,?,?,1,0,'ready',0,0)",account,executor,operator_key);!written do return false
     } else {
         rows,read:=query(s.db,"SELECT schema_version,account_id,executor_bridge_id,operator_key_id,incarnation FROM executor_runtime WHERE singleton=1")
-        if !read || len(rows)!=1 || (rows[0][0]!="1" && rows[0][0]!="2" && rows[0][0]!="3" && rows[0][0]!="4" && rows[0][0]!="5" && rows[0][0]!="6" && rows[0][0]!="7" && rows[0][0]!="8" && rows[0][0]!="9" && rows[0][0]!="10" && rows[0][0]!="11" && rows[0][0]!="12" && rows[0][0]!="13" && rows[0][0]!="14" && rows[0][0]!="15") || rows[0][1]!=account || rows[0][2]!=executor || rows[0][3]!=operator_key || number(rows[0][4])==0x7fffffffffffffff do return false
+        if !read || len(rows)!=1 || (rows[0][0]!="1" && rows[0][0]!="2" && rows[0][0]!="3" && rows[0][0]!="4" && rows[0][0]!="5" && rows[0][0]!="6" && rows[0][0]!="7" && rows[0][0]!="8" && rows[0][0]!="9" && rows[0][0]!="10" && rows[0][0]!="11" && rows[0][0]!="12" && rows[0][0]!="13" && rows[0][0]!="14" && rows[0][0]!="15" && rows[0][0]!="16") || rows[0][1]!=account || rows[0][2]!=executor || rows[0][3]!=operator_key || number(rows[0][4])==0x7fffffffffffffff do return false
         version:=number(rows[0][0])
         if version<2 && !exec(s.db,string(#load("migration_002.sql"))) do return false
         if version<3 && !exec(s.db,string(#load("migration_003.sql"))) do return false
@@ -68,7 +68,12 @@ open :: proc(s:^Store,path,account,executor,operator_key:string)->bool {
         if version<13 && !exec(s.db,string(#load("migration_013.sql"))) do return false
         if version<14 && !exec(s.db,string(#load("migration_014.sql"))) do return false
         if version<15 && !exec(s.db,string(#load("migration_015.sql"))) do return false
-        if !exec(s.db,"UPDATE executor_runtime SET incarnation=incarnation+1,recovery_state='reconciling'; UPDATE executor_reservations SET state='released' WHERE state='prepared';") do return false
+        if version<16 && !exec(s.db,string(#load("migration_016.sql"))) do return false
+        // An admitted local launch never consumed first I/O (dispatching is
+        // committed before any daemon call), so it has no child. The previous
+        // incarnation can never dispatch it: release it so the instance is not
+        // held and a retry reports the generation as closed.
+        if !exec(s.db,"UPDATE executor_runtime SET incarnation=incarnation+1,recovery_state='reconciling'; UPDATE executor_reservations SET state='released' WHERE state='prepared'; UPDATE executor_local_launches SET state='released' WHERE state='admitted';") do return false
     }
     rows,read:=query(s.db,"SELECT incarnation FROM executor_runtime WHERE singleton=1")
     if !read || len(rows)!=1 || !exec(s.db,"COMMIT") do return false
@@ -151,6 +156,7 @@ install_policy :: proc(s:^Store,raw:string,key:contracts.Owner_Verified_Key,now:
     v,_:=contracts.owner_request_document(field(o,"slots_json"));slots,_:=v.(json.Array)
     for slot in slots {
         row,_:=slot.(json.Object)
+        if field(row,"slot_id")==LOCAL_NATIVE_SLOT do return fail("invalid_slot")
         if _,written:=query(s.db,"INSERT INTO executor_slots VALUES(?,?,?) ON CONFLICT(slot_id) DO UPDATE SET provider_profile=excluded.provider_profile,enabled=excluded.enabled",field(row,"slot_id"),field(row,"provider_profile"),field(row,"enabled"));!written do return fail("storage_error")
     }
     if _,written:=query(s.db,"INSERT INTO executor_policies VALUES(?,?,?)",field(o,"policy_revision"),digest,raw);!written do return fail("storage_error")
@@ -190,7 +196,8 @@ prepare :: proc(s:^Store,raw:string,key:contracts.Owner_Verified_Key,now:i64,res
     slots,found:=query(s.db,"SELECT 1 FROM executor_slots WHERE slot_id=? AND provider_profile=? AND enabled=1",field(o,"slot_id"),field(o,"provider_profile"))
     if !found do return fail("storage_error")
     if len(slots)!=1 do return fail("invalid_slot")
-    conflicts,checked:=query(s.db,"SELECT 1 FROM executor_live_resources WHERE (slot_id=? OR instance_id=? OR (directory_key!='' AND directory_key=?))",field(o,"slot_id"),field(o,"instance_id"),field(o,"directory_key"))
+    // A native local child of the same instance also excludes a reservation.
+    conflicts,checked:=query(s.db,"SELECT 1 FROM executor_live_resources WHERE (slot_id=? OR instance_id=? OR (directory_key!='' AND directory_key=?)) UNION ALL SELECT 1 FROM executor_local_launches WHERE state!='released' AND instance_id=?",field(o,"slot_id"),field(o,"instance_id"),field(o,"directory_key"),field(o,"instance_id"))
     if !checked do return fail("storage_error")
     if len(conflicts)>0 do return fail("resource_conflict")
     existing,existing_ok:=query(s.db,"SELECT 1 FROM executor_reservations WHERE reservation_id=?",field(o,"reservation_id"))

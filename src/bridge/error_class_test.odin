@@ -302,6 +302,42 @@ test_err_proto_failed_instance_status_carries_last_error :: proc(t: ^testing.T) 
 	testing.expect(t, !found, starting)
 }
 
+// A relaunch that fails again stays "failed" -> "failed". The new failure must
+// still advance state_seq and queue a push, or the Hub drops it as stale and
+// keeps showing the first error while the instance sits in launching.
+@(test)
+test_err_proto_repeated_launch_failure_advances_seq_and_pushes :: proc(t: ^testing.T) {
+	id := "inst_err_proto_refail"
+	first_cmd := `{"type":"launch_agent","payload":{"agent_instance_id":"inst_err_proto_refail","launch_epoch":"epoch_one","run_count":1}}`
+	second_cmd := `{"type":"launch_agent","payload":{"agent_instance_id":"inst_err_proto_refail","launch_epoch":"epoch_two","run_count":2}}`
+	bridge_executor_local_note_failure(first_cmd, "project path is not an existing directory", bridge_error(.agent_launch_failed, .denied))
+	first := bridge_instance_status_json(id)
+	defer delete(first)
+	first_seq, _ := bridge_provider_json_extract_int(first, "state_seq")
+	werr, found := contracts.wire_error_parse(first, context.temp_allocator)
+	testing.expect(t, found && werr.cause != "provider_missing", first)
+	testing.expect_value(t, extract_json_string(first, "launch_epoch", "", context.temp_allocator), "epoch_one")
+	sync.mutex_lock(&bridge_runtime_mutex)
+	for i := len(bridge_runtime_status_outgoing) - 1; i >= 0; i -= 1 {
+		if bridge_runtime_status_outgoing[i] == id do ordered_remove(&bridge_runtime_status_outgoing, i)
+	}
+	sync.mutex_unlock(&bridge_runtime_mutex)
+
+	bridge_executor_local_note_failure(second_cmd, "provider profile unavailable", bridge_error(.provider_missing))
+	second := bridge_instance_status_json(id)
+	defer delete(second)
+	second_seq, _ := bridge_provider_json_extract_int(second, "state_seq")
+	testing.expect(t, second_seq > first_seq, second)
+	werr, found = contracts.wire_error_parse(second, context.temp_allocator)
+	testing.expect(t, found && werr.cause == "provider_missing", second)
+	testing.expect_value(t, extract_json_string(second, "launch_epoch", "", context.temp_allocator), "epoch_two")
+	queued := false
+	sync.mutex_lock(&bridge_runtime_mutex)
+	for queued_id in bridge_runtime_status_outgoing do if queued_id == id do queued = true
+	sync.mutex_unlock(&bridge_runtime_mutex)
+	testing.expect(t, queued, "the repeated failure is pushed to the Hub immediately")
+}
+
 // REQ-ERR-PROTO-A: a parked recoverable wake resumes on its trigger: unsealing the
 // vault for vault_locked, a slow re-check for causes with no local signal.
 @(test)
@@ -382,4 +418,31 @@ test_err_proto_failed_stop_never_stays_stopping :: proc(t: ^testing.T) {
 	defer { delete(status2); delete(activity2) }
 	testing.expect_value(t, status2, "running")
 	testing.expect_value(t, activity2, "busy")
+}
+
+// Generation-level launch refusals are fatal so the Hub never auto-retries the
+// same generation; transient conditions stay retriable.
+@(test)
+test_executor_local_failure_codes_map_to_classes :: proc(t: ^testing.T) {
+	fatal := []string{"superseded", "launch_generation_closed", "draft_generation_conflict", "outside_root", "retention_capacity", "draft_cancelled", "generation_required", "resources_changed"}
+	for code in fatal {
+		_, err := bridge_executor_local_failure(code)
+		testing.expectf(t, err.class == .fatal, "%s must be fatal, got %v", code, err.class)
+	}
+	retriable := []string{"instance_not_drained", "executor_uncertain", "child_absent", "startup_identity_not_current", "observation_not_committed", "model_unavailable", "project_directory_unavailable"}
+	for code in retriable {
+		_, err := bridge_executor_local_failure(code)
+		testing.expectf(t, err.class == .retriable, "%s must be retriable, got %v", code, err.class)
+	}
+	// A profile that cannot be read right now needs attention but is re-checked
+	// by the wake loop; it must never be fatal (that parks the agent forever).
+	_, profile := bridge_executor_local_failure("profile_unavailable")
+	testing.expect(t, profile.class == .recoverable, "profile_unavailable must be recoverable")
+	detail, closed := bridge_executor_local_failure("launch_generation_closed")
+	testing.expect(t, strings.contains(detail, "relaunch") && closed.reason == .denied, detail)
+	// The class survives onto the wire the Hub reads.
+	wire := bridge_command_failed_json("cmd_closed", bridge_error_wire(closed, detail), "failed")
+	defer delete(wire)
+	werr, found := contracts.wire_error_parse(wire, context.temp_allocator)
+	testing.expect(t, found && werr.class == .fatal, wire)
 }

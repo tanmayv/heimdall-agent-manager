@@ -205,3 +205,54 @@ test_err_proto_bodyless_failure_counts_an_attempt :: proc(t: ^testing.T) {
 	defer delete(empty)
 	testing.expect_value(t, empty, "")
 }
+
+// Relaunch after a failure, then a DIFFERENT failure: the Hub must show the
+// second error. The Bridge advances state_seq for every recorded failure;
+// a repeated sequence is (correctly) dropped as stale, which is exactly why a
+// Bridge that did not advance it left the instance launching with error #1.
+@(test)
+test_err_proto_relaunch_second_failure_replaces_first_error :: proc(t: ^testing.T) {
+	r: Lf_Repo
+	r.inst = lf_clone(domain.Agent_Instance{agent_instance_id = "inst_relaunch", owner_user_id = "owner_a", bridge_id = "brg_1", runtime_status = "launching", startup_status = "starting", activity_status = "idle"})
+	defer domain.agent_instance_destroy(&r.inst)
+	repo := iface.Agent_Repository{
+		ctx = rawptr(&r),
+		get_instance = proc(ctx: rawptr, id: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+			return lf_clone((^Lf_Repo)(ctx).inst), true, {}
+		},
+		save_instance = proc(ctx: rawptr, inst: domain.Agent_Instance) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+			r := (^Lf_Repo)(ctx)
+			domain.agent_instance_destroy(&r.inst)
+			r.inst = lf_clone(inst)
+			return inst, true, {}
+		},
+	}
+	clk := platform.Clock{now = proc(ctx: rawptr) -> string { return "2026-10-15T12:00:00Z" }}
+	svc: Agent_Service
+	svc.agents = &repo
+	svc.clock = &clk
+	first := `{"code":"agent_launch_failed","class":"denied","cause":"agent_launch_failed","message":"directory_selection_required"}`
+	second := `{"code":"agent_launch_failed","class":"unsupported","cause":"agent_launch_failed","message":"provider profile unavailable"}`
+
+	saved, applied, _ := apply_bridge_status_report(&svc, "brg_1", "inst_relaunch", 100, "failed", "idle", error_json = first)
+	testing.expect(t, applied)
+	testing.expect(t, strings.contains(saved.last_error_json, "directory_selection_required"), saved.last_error_json)
+	domain.agent_instance_destroy(&saved)
+
+	// The user relaunches: the Hub moves the instance back to launching.
+	delete(r.inst.runtime_status)
+	r.inst.runtime_status = strings.clone("launching")
+
+	// A report that repeats the old sequence is stale and changes nothing.
+	_, stale_applied, _ := apply_bridge_status_report(&svc, "brg_1", "inst_relaunch", 100, "failed", "idle", error_json = second)
+	testing.expect(t, !stale_applied, "a repeated state_seq is dropped")
+	testing.expect_value(t, r.inst.runtime_status, "launching")
+
+	// The Bridge's next failure carries an advanced sequence and is shown.
+	saved, applied, _ = apply_bridge_status_report(&svc, "brg_1", "inst_relaunch", 101, "failed", "idle", error_json = second)
+	testing.expect(t, applied)
+	testing.expect_value(t, saved.runtime_status, "failed")
+	testing.expect(t, strings.contains(saved.last_error_json, "provider profile unavailable"), saved.last_error_json)
+	testing.expect(t, !strings.contains(saved.last_error_json, "directory_selection_required"), saved.last_error_json)
+	domain.agent_instance_destroy(&saved)
+}

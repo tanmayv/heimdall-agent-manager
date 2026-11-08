@@ -86,9 +86,9 @@
     },
     {
       "kind": "local_configuration",
-      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"instance_id\":\"local_instance\",\"launch_epoch\":\"launch_local\",\"run_count\":\"1\",\"token_generation\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"configuration_revision\":\"1\",\"executor_incarnation\":\"1\",\"policy_revision\":\"1\",\"slot_id\":\"slot1\",\"provider\":\"codex\",\"model\":\"model\",\"provider_profile\":\"profile\",\"directory_id\":\"remote_dir\",\"directory_revision\":\"1\",\"directory_key\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"purpose\":\"manual\",\"spawn_digest\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}",
-      "canonical": "heimdall-executor/local_configuration/v1\n1:1,7:account,8:executor,14:local_instance,12:launch_local,1:1,64:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,1:1,1:1,1:1,5:slot1,5:codex,5:model,7:profile,10:remote_dir,1:1,64:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,6:manual,64:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc,",
-      "digest": "0f18fccca1e12238092c3a668f11c6a8490f9a48773b3ec190b6e819774d6ce2"
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"instance_id\":\"local_instance\",\"launch_epoch\":\"launch_local\",\"run_count\":\"1\",\"token_generation\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"configuration_revision\":\"1\",\"executor_incarnation\":\"1\",\"provider\":\"codex\",\"model\":\"model\",\"provider_profile\":\"profile\",\"directory_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"purpose\":\"manual\",\"spawn_digest\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}",
+      "canonical": "heimdall-executor/local_configuration/v1\n1:1,7:account,8:executor,14:local_instance,12:launch_local,1:1,64:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,1:1,1:1,5:codex,5:model,7:profile,64:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,6:manual,64:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc,",
+      "digest": "1df26cf022dea14af0f55dc6d05058b5e56dc944f4a3ee9d9307cd91a23da50a"
     },
     {
       "kind": "local_launch",
@@ -357,7 +357,7 @@
     {
       "name": "local owner purpose rejected",
       "kind": "local_configuration",
-      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"instance_id\":\"local_instance\",\"launch_epoch\":\"launch_local\",\"run_count\":\"1\",\"token_generation\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"configuration_revision\":\"1\",\"executor_incarnation\":\"1\",\"policy_revision\":\"1\",\"slot_id\":\"slot1\",\"provider\":\"codex\",\"model\":\"model\",\"provider_profile\":\"profile\",\"directory_id\":\"remote_dir\",\"directory_revision\":\"1\",\"directory_key\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"purpose\":\"work\",\"spawn_digest\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}"
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"instance_id\":\"local_instance\",\"launch_epoch\":\"launch_local\",\"run_count\":\"1\",\"token_generation\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"configuration_revision\":\"1\",\"executor_incarnation\":\"1\",\"provider\":\"codex\",\"model\":\"model\",\"provider_profile\":\"profile\",\"directory_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"purpose\":\"work\",\"spawn_digest\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}"
     },
     {
       "name": "local consent timeout bounded",
@@ -365,9 +365,9 @@
       "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"principal_id\":\"device\",\"operation_id\":\"local_op\",\"configuration_digest\":\"8e038ce9bc0f9a9d9f66e672bdd2840325871e836d4903880eae011db8eeb1b3\",\"issued_ms\":\"1000\",\"request_expires_ms\":\"61001\",\"key_id\":\"device_key\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}"
     },
     {
-      "name": "local exact directory revision required",
+      "name": "local directory digest must be a hash",
       "kind": "local_configuration",
-      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"instance_id\":\"local_instance\",\"launch_epoch\":\"launch_local\",\"run_count\":\"1\",\"token_generation\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"configuration_revision\":\"1\",\"executor_incarnation\":\"1\",\"policy_revision\":\"1\",\"slot_id\":\"slot1\",\"provider\":\"codex\",\"model\":\"model\",\"provider_profile\":\"profile\",\"directory_id\":\"remote_dir\",\"directory_revision\":\"0\",\"directory_key\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"purpose\":\"manual\",\"spawn_digest\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}"
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"instance_id\":\"local_instance\",\"launch_epoch\":\"launch_local\",\"run_count\":\"1\",\"token_generation\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"configuration_revision\":\"1\",\"executor_incarnation\":\"1\",\"provider\":\"codex\",\"model\":\"model\",\"provider_profile\":\"profile\",\"directory_digest\":\"remote_dir\",\"purpose\":\"manual\",\"spawn_digest\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}"
     },
     {
       "name": "unknown draft method",

@@ -986,10 +986,6 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
         bridge_executor_exchange_handle(conn,text)
         return
     }
-    if type == "executor_local_launch" {
-        bridge_executor_local_handle(conn,text)
-        return
-    }
     if type == "executor_issuance" {
         bridge_executor_issuance_handle(conn,text)
         return
@@ -2619,14 +2615,14 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
     _ = command_id
     _ = deadline_ns
     ok,detail,err=bridge_executor_local_stage(command_json,purpose,origin=origin,observation_action=observation_action,observation_entry_index=observation_entry_index,observation_entry_digest=observation_entry_digest)
-    if !ok do bridge_executor_local_note_pending(command_json,detail,err)
+    if !ok do bridge_executor_local_note_failure(command_json,detail,err)
     return
 }
 
 bridge_runtime_launch_provider_test :: proc(command_id, command_json: string,observation_action:executor.Legacy_Action={}) -> (ok: bool, detail: string, err: Bridge_Error) {
     _ = command_id
     ok,detail,err=bridge_executor_local_stage(command_json,"provider_test",observation_action=observation_action)
-    if !ok do bridge_executor_local_note_pending(command_json,detail,err)
+    if !ok do bridge_executor_local_note_failure(command_json,detail,err)
     return
 }
 
@@ -2849,6 +2845,10 @@ bridge_runtime_now_ms :: proc() -> i64 {
 
 // bridge_runtime_record_failure attaches err to a "failed" instance so the next
 // agent_instance_status carries it. A no-op unless the instance is failed.
+// A new failure is a new state: it advances state_seq and queues a status push,
+// otherwise a relaunch that fails again ("failed" -> "failed") would repeat the
+// previous sequence and the Hub would drop the report as stale, leaving the
+// instance launching with the first error.
 bridge_runtime_record_failure :: proc(instance_id: string, err: Bridge_Error, detail:string="") {
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
@@ -2856,8 +2856,16 @@ bridge_runtime_record_failure :: proc(instance_id: string, err: Bridge_Error, de
 		if inst.agent_instance_id != instance_id do continue
 		if inst.runtime_status == "failed" {
 			inst.last_error = err
-			inst.last_error_detail = strings.clone(detail,runtime.default_allocator())
+			// Readers copy this under bridge_runtime_mutex (status JSON), so the
+			// previous clone can be released here instead of leaking per failure.
+			if inst.last_error_detail != detail {
+				old := inst.last_error_detail
+				inst.last_error_detail = strings.clone(detail,runtime.default_allocator())
+				if old != "" do delete(old, runtime.default_allocator())
+			}
 			inst.has_last_error = true
+			inst.state_seq = bridge_runtime_next_state_seq(inst.state_seq, bridge_runtime_now_ms())
+			bridge_runtime_enqueue_status_push_locked(instance_id)
 		}
 		return
 	}
@@ -3248,7 +3256,15 @@ bridge_runtime_instance_snapshot_locked :: proc(instance_id: string) -> (Bridge_
 }
 
 bridge_instance_status_json :: proc(instance_id: string) -> string {
-	inst, ok := bridge_runtime_instance_snapshot(instance_id)
+	// The failure detail and pending epoch are replaced (and their old clones
+	// freed) by writers holding bridge_runtime_mutex: copy them under the lock.
+	sync.mutex_lock(&bridge_runtime_mutex)
+	inst, ok := bridge_runtime_instance_snapshot_locked(instance_id)
+	if ok {
+		inst.pending_launch_epoch = strings.clone(inst.pending_launch_epoch, context.temp_allocator)
+		inst.last_error_detail = strings.clone(inst.last_error_detail, context.temp_allocator)
+	}
+	sync.mutex_unlock(&bridge_runtime_mutex)
 	if !ok do return strings.clone("{}")
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"agent_instance_status\",\"protocol_version\":1,\"agent_instance_id\":\"")

@@ -346,33 +346,3 @@ executor_resource_relay_requires_exact_registered_owner_bridge :: proc(t:^testin
     response=executor_child_relay_handler(&f.h,req);testing.expect_value(t,response.status,400)
 }
 
-@(test)
-executor_local_launch_relay_requires_user_account_and_keeps_runtime_offline_opaque :: proc(t:^testing.T) {
-    context.allocator=context.temp_allocator
-    f:=search_relay_fixture(t);defer search_relay_fixture_destroy(f)
-    project.bridge_runtime_registry_mark_offline(&f.registry,f.bridge_id,f.generation)
-    id:vault.Vault_Id;id[0]=1
-    key:[32]byte;key[0]=1
-    kr,key_ok:=vault.keyring_from_single_key(f.owner,id,1,key[:])
-    if !testing.expect(t,key_ok) do return
-    defer vault.keyring_wipe(&kr)
-    plain:string="{}"
-    envelope,sealed:=vault.seal(transmute([]byte)plain,&kr)
-    if !testing.expect(t,sealed) do return
-    now:=time.to_unix_nanoseconds(time.now())/1000000
-    body:=owner_json(struct{protocol_version,bridge_id,request_id,expires_ms,envelope:string}{
-        "1",f.bridge_id,"issuance_http",fmt.tprintf("%d",now+60000),envelope})
-    req:=search_relay_request(f,body);req.path="/api/v1/executor/local-launch"
-    // A current account-owned device with no live socket returns unavailable;
-    // neither encrypted payload nor task authority is evaluated at the Hub.
-    response:=executor_local_launch_relay_handler(&f.h,req)
-    testing.expect_value(t,response.status,200)
-    testing.expect(t,strings.contains(response.body,"executor_unavailable"))
-    req.body="{}";response=executor_local_launch_relay_handler(&f.h,req)
-    testing.expect_value(t,response.status,400)
-    req.body=body;req.headers=nil;response=executor_local_launch_relay_handler(&f.h,req)
-    testing.expect(t,response.status==401 || response.status==403)
-    req.headers=http_test_login(t,&f.auth,"executor_other_account")
-    response=executor_local_launch_relay_handler(&f.h,req)
-    testing.expect(t,response.status==403 || response.status==404)
-}

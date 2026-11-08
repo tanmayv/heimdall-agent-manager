@@ -47,7 +47,7 @@ legacy_action_observe_stop :: proc(s:^Store,a:Legacy_Action,index:i64,entry_dige
     if a.id<=0 || a.incarnation<=0 || index< -1 || o.run_count<=0 || o.child_pid<0 ||
        !contracts.owner_hex(entry_digest,64) || !contracts.owner_field_valid(o.instance_id,"id") ||
        !contracts.owner_field_valid(o.launch_id,"id") || !contracts.owner_hex(o.launch_key,64) ||
-       !contracts.owner_hex(o.configuration_digest,64) || !contracts.owner_hex(o.directory_key,64) {return fail("invalid_scope")}
+       !contracts.owner_hex(o.configuration_digest,64) || !(o.directory_key=="" || contracts.owner_hex(o.directory_key,64)) {return fail("invalid_scope")}
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
     if !begin(s) do return fail("storage_error")
     defer rollback(s)

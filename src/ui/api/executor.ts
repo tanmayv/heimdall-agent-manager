@@ -38,9 +38,8 @@ export const executorSchemas = {
     ['issued_ms','positive'],['request_expires_ms','positive'],['key_id','id'],['signature','signature']],
   local_configuration: [['protocol_version','version'],['account_id','id'],['executor_bridge_id','id'],
     ['instance_id','id'],['launch_epoch','id'],['run_count','positive'],['token_generation','hash'],
-    ['configuration_revision','positive'],['executor_incarnation','positive'],['policy_revision','positive'],
-    ['slot_id','id'],['provider','label'],['model','label'],['provider_profile','id'],
-    ['directory_id','id'],['directory_revision','positive'],['directory_key','hash'],
+    ['configuration_revision','positive'],['executor_incarnation','positive'],
+    ['provider','label'],['model','label'],['provider_profile','id'],['directory_digest','optional_hash'],
     ['purpose','executor_local_purpose'],['spawn_digest','hash']],
   bootstrap_content: [['agents_md','document'],['memory_md','optional_document'],['task_md','document'],['skills_json','document']],
   child_request: [["protocol_version", "version"], ["account_id", "id"], ["owner_bridge_id", "id"], ["executor_bridge_id", "id"], ["chain_id", "id"], ["task_id", "id"], ["lease_id", "id"], ["reservation_id", "id"], ["instance_id", "id"], ["launch_epoch", "id"], ["run_count", "positive"], ["token_generation", "hash"], ["configuration_revision", "positive"], ["grant_generation", "positive"], ["owner_incarnation", "positive"], ["executor_incarnation", "positive"], ["prepare_digest", "hash"], ["bootstrap_digest", "hash"], ["input_digest", "hash"], ["launch_key", "hash"], ["deadline_version", "positive"], ["expires_ms", "positive"], ["hard_ms", "positive"], ["issued_ms", "positive"], ["request_expires_ms", "positive"], ["key_id", "id"], ["signature", "signature"]],
@@ -464,6 +463,7 @@ function fieldValid(s: string, kind: string): boolean {
     case 'counter': return integer(s);
     case 'positive': return integer(s) && s !== '0';
     case 'hash': return /^[0-9a-f]{64}$/.test(s);
+    case 'optional_hash': return s === '' || /^[0-9a-f]{64}$/.test(s);
     case 'signature': return /^[0-9a-f]{128}$/.test(s);
     case 'executor_receipt_method': return ['prepare','activate','heartbeat','stop','query'].includes(s);
     case 'executor_state': return ['prepared','active','stopping','released'].includes(s);

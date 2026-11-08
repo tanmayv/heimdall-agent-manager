@@ -697,6 +697,8 @@ vcs_api_wire_struct_roundtrips :: proc(t: ^testing.T) {
 	testing.expect(t, ws_dec.workspaces[0].is_current == true, "workspaces roundtrip is_current")
 }
 
+// Swaps the global bridge_fs_root: the caller must hold bridge_test_config_mutex
+// (both callers do, before keystore_test_mutex), like every other root writer.
 vcs_save_test_pin_tmp_root :: proc() {
 	bridge_fs_root = bridge_fs_canonicalize_existing("/tmp")
 }
