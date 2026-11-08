@@ -10,7 +10,7 @@ role_configuration :: proc(s:^Store,chain,task:string)->([]string,bool) {
     if !ok || len(rows)!=1 do return nil,false
     return rows[0],true
 }
-role_configure :: proc(s:^Store,c:json.Object,body:string,children:[]Child,seq:i64,device:=false,agent:=false)->string {
+role_configure :: proc(s:^Store,c:json.Object,body:string,children:[]Child,seq:i64,device:=false,agent:=false,self:Child={})->string {
     p,valid:=contracts.owner_parse(body,"review_roles")
     if !valid do return "malformed"
     chain,task:=field(c,"chain_id"),field(c,"task_id")
@@ -33,6 +33,8 @@ role_configure :: proc(s:^Store,c:json.Object,body:string,children:[]Child,seq:i
         // A coordinator configures roles only for participants already in
         // this chain (like lifecycle.configure); new members are human-only.
         if agent {
+            // REQ-CC-13: the coordinator never names itself a role reviewer.
+            if field(o,"instance_id")==self.instance || field(o,"agent_id")==self.agent_id do return "invalid_scope"
             participant,read:=agent_chain_participant(s,chain,field(o,"instance_id"))
             if !read do return "storage_error"
             if !participant do return "invalid_scope"
@@ -113,9 +115,9 @@ role_gate :: proc(s:^Store,chain,task,attempt:string)->(string,bool) {
 // An agent principal may add requires_user_approval but never remove it; a
 // device (the user) may do either. Every path that can change a user-approval
 // source applies this: requirements.edit (brief), review.roles (role config).
-// lifecycle.configure carries no flag. A future task split must call
-// task_user_approval_required on the parent and keep the flag on each child
-// unless the split is device-signed.
+// lifecycle.configure carries no flag. task.split (coordinator_work.odin)
+// calls task_user_approval_required on the parent and keeps the flag on each
+// child unless the split is device-signed.
 approval_ratchet_allows :: proc(prior,next,device:bool) -> bool { return device || !prior || next }
 
 // The brief's own flag, read exactly as the gate reads submissions.

@@ -296,6 +296,8 @@ test_owner_coordinator_controls_route_to_owner_methods :: proc(t:^testing.T) {
         {"agent.task.escalate","task.escalate"},{"agent.task.merge_retry","merge.retry"},{"agent.task.delete","task.delete"},
         {"agent.task.review_roles","review.roles"},{"agent.lease.revoke","lease.revoke"},{"agent.task_chain.complete","chain.complete"},
         {"agent.work.complete","chain.complete"},{"agent.workflow.retry","workflow.retry"},{"agent.workflow.cancel","workflow.cancel"},
+        // P-CS CC-B work operations.
+        {"agent.task.submit_review","lifecycle.force_submit"},{"agent.task.complete","task.complete"},{"agent.task.split","task.split"},
     }
     for pair in pairs {
         testing.expectf(t,bridge_owner_routable(pair[0]),"%s is served by the owner when it holds the chain",pair[0])
@@ -303,14 +305,14 @@ test_owner_coordinator_controls_route_to_owner_methods :: proc(t:^testing.T) {
         testing.expectf(t,bridge_agent_method_allowed(pair[0]),"%s is dispatchable",pair[0])
     }
     // workflow.gate stays user-only; workflow.run keeps its Hub route.
-    for m in ([3]string{"agent.workflow.gate","agent.workflow.run","agent.task.split"}) {
+    for m in ([3]string{"agent.workflow.gate","agent.workflow.run","agent.chain.policy"}) {
         testing.expectf(t,bridge_owner_control_method(m)=="","%s is not a coordinator control",m)
     }
     // revoke names a task; it is not routed by the caller's own lease.
     testing.expect(t,!bridge_owner_lease_method("agent.lease.revoke"))
     testing.expect(t,bridge_owner_lease_method("agent.lease.submit"))
     // On a chain this Bridge does not own the controls fail clearly.
-    for m in ([3]string{"agent.task.cancel","agent.lease.revoke","agent.task.unblock"}) {
+    for m in ([6]string{"agent.task.cancel","agent.lease.revoke","agent.task.unblock","agent.task.submit_review","agent.task.complete","agent.task.split"}) {
         r:=bridge_agent_route(m,`{"task_id":"t1"}`)
         testing.expectf(t,r.kind==.Bad_Request && strings.contains(r.message,"owner_chain_only"),"%s on a Hub chain is a typed owner-only error",m)
     }
@@ -337,4 +339,40 @@ test_owner_coordinator_controls_route_to_owner_methods :: proc(t:^testing.T) {
     testing.expect(t,cm!="","unknown dependents choice refused")
     _,cm=bridge_owner_control_fields("task.cancel",bridge_owner_params(`{"reason":"x","dependents":"drop","repoint":"t2"}`))
     testing.expect(t,cm!="","conflicting dependents flags refused")
+}
+
+// P-CS CC-B: submit-for-review, force-done and split need a reason; the split
+// child file is validated and ids are generated before anything is signed.
+@(test)
+test_owner_coordinator_work_operations_require_reasons_and_valid_children :: proc(t:^testing.T) {
+    for m in ([3]string{"lifecycle.force_submit","task.complete","task.split"}) {
+        _,missing:=bridge_owner_control_fields(m,bridge_owner_params(`{"task_id":"t1"}`))
+        testing.expectf(t,missing!="","%s without a reason is refused",m)
+        fields,ok:=bridge_owner_control_fields(m,bridge_owner_params(`{"task_id":"t1","reason":"why"}`))
+        testing.expectf(t,ok=="" && fields.reason=="why","%s takes --reason",m)
+    }
+    testing.expect(t,strings.contains(bridge_owner_control_refusal("lifecycle.force_submit","stale_revision"),"--override-ack"))
+    testing.expect(t,strings.contains(bridge_owner_control_refusal("task.split","invalid_content"),"children"))
+    ctx:Owner_Agent_Ctx
+    observed:=make([dynamic]owner.Child,context.temp_allocator)
+    st:owner.Agent_Task_State
+    for bad in ([4]string{`{}`,`{"children":[]}`,`{"children":[{"body":"no title"}]}`,`{"children":[{"title":"a"}],"dependents":"sideways"}`}) {
+        _,code,_:=bridge_owner_split_body(&ctx,st,bridge_owner_params(bad),"why",&observed)
+        testing.expectf(t,code=="bad_request","%s refused",bad)
+    }
+    _,code,_:=bridge_owner_split_body(&ctx,st,bridge_owner_params(`{"children":[{"title":"a"}],"dependents":"map"}`),"why",&observed)
+    testing.expect_value(t,code,"bad_request")
+    body,ok_code,_:=bridge_owner_split_body(&ctx,st,bridge_owner_params(`{"children":[{"task_id":"c1","title":"a","description":"d","brief":{"goal":"g","acceptance":["x"]}},{"title":"b","unassigned":true}],"dependents":"last"}`),"why",&observed)
+    testing.expect_value(t,ok_code,"ok")
+    v,_:=json.parse_string(body,.JSON,true,context.temp_allocator)
+    o,_:=v.(json.Object)
+    children,_:=o["children"].(json.Array)
+    if testing.expect_value(t,len(children),2) {
+        first,_:=children[0].(json.Object);second,_:=children[1].(json.Object)
+        testing.expect(t,bridge_owner_pstr(first,"task_id")=="c1" && bridge_owner_pstr(first,"body")=="d" && bridge_owner_pobj(first,"brief")!=nil)
+        testing.expect(t,strings.has_prefix(bridge_owner_pstr(second,"task_id"),"task_"),"a missing child id is generated")
+        flag,_:=second["unassigned"].(json.Boolean)
+        testing.expect(t,bool(flag))
+    }
+    testing.expect(t,bridge_owner_pstr(o,"reason")=="why" && bridge_owner_pstr(o,"dependents")=="last")
 }

@@ -211,7 +211,7 @@ bridge_owner_run_input :: proc(ctx:^Owner_Agent_Ctx,method,chain,task,lease,conf
 
 // Coordinator (or own-task worker) commands, signed by the owner key for the
 // proven child; owner.execute applies agent_command_admit.
-bridge_owner_run_command :: proc(ctx:^Owner_Agent_Ctx,method,chain,task,expected,payload:string,fleet_child:owner.Child={},proof:owner.Lifecycle_Proof={},role_children:[]owner.Child=nil) -> owner.Result {
+bridge_owner_run_command :: proc(ctx:^Owner_Agent_Ctx,method,chain,task,expected,payload:string,fleet_child:owner.Child={},proof:owner.Lifecycle_Proof={},role_children:[]owner.Child=nil,source:owner.Source_Proof={}) -> owner.Result {
     s:=ctx.store
     c:=make(json.Object,context.temp_allocator)
     values:=map[string]string{"protocol_version"="1","account_id"=s.account,"chain_id"=chain,"immutable_owner_bridge"=s.owner,
@@ -223,7 +223,7 @@ bridge_owner_run_command :: proc(ctx:^Owner_Agent_Ctx,method,chain,task,expected
     signature,signed:=bridge_owner_sign(nil,"command",c)
     if !signed do return owner.Result{code="storage_error"}
     c["signature"]=json.String(signature)
-    return owner.execute_agent(s,bridge_owner_json(c),payload,ctx.child,ctx.key,ctx.now,ctx.kr,bridge_owner_signer(),fleet_child,proof,role_children)
+    return owner.execute_agent(s,bridge_owner_json(c),payload,ctx.child,ctx.key,ctx.now,ctx.kr,bridge_owner_signer(),fleet_child,proof,role_children,source)
 }
 
 // A vault-armored value from ham-ctl is already a cipher under this account's

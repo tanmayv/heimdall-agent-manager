@@ -551,6 +551,49 @@ owner_fields_revoke_payload := [?]Owner_Field{
     {"mode", "revoke_mode"},
     {"disable_fleet", "flag"},
 }
+// lifecycle.force_submit (P-CS CC-B): the coordinator moves ready -> in_review
+// for the task's last retired lease. head is the Bridge-observed worktree head
+// (never caller input); override_ack=1 is required (with the reason) when the
+// requirements were not acknowledged on that lease.
+Owner_Force_Submit_Payload :: struct {
+    requirements_revision: string,
+    head: string,
+    summary: string,
+    override_ack: string,
+    body_cipher: string,
+}
+@(private)
+owner_fields_force_submit_payload := [?]Owner_Field{
+    {"requirements_revision", "positive"},
+    {"head", "optional_commit"},
+    {"summary", "document"},
+    {"override_ack", "flag"},
+    {"body_cipher", "required_cipher"},
+}
+// task.complete --force (P-CS CC-B): bound to the current attempt and head.
+Owner_Complete_Payload :: struct {
+    attempt: string,
+    head: string,
+    force: string,
+    body_cipher: string,
+}
+@(private)
+owner_fields_complete_payload := [?]Owner_Field{
+    {"attempt", "counter"},
+    {"head", "optional_commit"},
+    {"force", "flag"},
+    {"body_cipher", "required_cipher"},
+}
+// chain.policy.set (device only): one named chain policy flag.
+Owner_Chain_Policy_Payload :: struct {
+    policy: string,
+    value: string,
+}
+@(private)
+owner_fields_chain_policy_payload := [?]Owner_Field{
+    {"policy", "chain_policy"},
+    {"value", "flag"},
+}
 Owner_Handoff_Payload :: struct {
     requirements_revision: string,
     summary: string,
@@ -1795,6 +1838,9 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "cancel_payload": return owner_fields_cancel_payload[:]
     case "delete_reason_payload": return owner_fields_delete_reason_payload[:]
     case "revoke_payload": return owner_fields_revoke_payload[:]
+    case "force_submit_payload": return owner_fields_force_submit_payload[:]
+    case "complete_payload": return owner_fields_complete_payload[:]
+    case "chain_policy_payload": return owner_fields_chain_policy_payload[:]
     case "handoff_payload": return owner_fields_handoff_payload[:]
     case "block_payload": return owner_fields_block_payload[:]
     case "switch_payload": return owner_fields_switch_payload[:]

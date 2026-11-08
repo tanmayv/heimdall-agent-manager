@@ -67,6 +67,18 @@ attempt_event :: proc(v:^Attempt_View,kind:string,c,p:json.Object,destination:=f
     case "task.recheck":
         // Recorded only when the gate settled the submitted attempt.
         v.in_review=false
+    case "lifecycle.force_submit":
+        // The coordinator submitted the last lease's work (P-CS CC-B). A live
+        // holder was stopped first; either way the next grant is a new attempt.
+        attempt_release(v,"submitted");v.in_review=true
+    case "task.complete":
+        // Forced completion settles the attempt under review; a live holder of
+        // a ready task is stopped.
+        if v.live do attempt_release(v,"replaced")
+        v.in_review=false
+    case "task.split":
+        // The original is cancelled into its children.
+        v.live=false;v.in_review=false;v.held=false;v.pending_changes=false
     case "task.cancel":
         v.live=false;v.in_review=false;v.held=false;v.pending_changes=false
     case "task.hold":
@@ -124,7 +136,7 @@ attempt_scan :: proc(s:^Store,chain,task:string,selected:i64=0,target_lease:stri
             AND kind IN('lease.claim','lease.handoff','lease.switch','lease.block',
               'lease.expired','lease.submit','task.reopen','fleet.edit','fleet.reserve','lifecycle.configure',
               'review.roles','task.hold','task.release','task.cancel','requirements.edit','review.post','review.role.post','dependency.edit',
-              'lease.revoke','task.escalate','task.recheck'))
+              'lease.revoke','task.escalate','task.recheck','lifecycle.force_submit','task.complete','task.split'))
             OR kind='lease.switch' OR EXISTS(SELECT 1 FROM local_metadata_retirements r WHERE r.seq=local_events.seq AND r.chain_id=?1 AND r.task_id=?2) OR (chain_id=?1 AND EXISTS(SELECT 1 FROM local_task_retirements r WHERE r.seq=local_events.seq AND r.chain_id=?1 AND r.task_id=?2)))),
           decoded AS (SELECT *,NULLIF(json_extract(evidence,'$.command'),'') AS command,
             NULLIF(json_extract(evidence,'$.payload'),'') AS payload,
@@ -173,9 +185,9 @@ attempt_scan :: proc(s:^Store,chain,task:string,selected:i64=0,target_lease:stri
                 // Native close_attempt stores expiry reasons verbatim with
                 // their prefix (lease.odin:407), separate from fold releases.
                 switch row[3] {
-                case "task.cancel": record.outcome="expired:cancelled"
+                case "task.cancel","task.split": record.outcome="expired:cancelled"
                 case "dependency.edit": record.outcome="expired:dep_added"
-                case "fleet.edit","fleet.reserve","lifecycle.configure","review.roles","lease.revoke": record.outcome="expired:replaced"
+                case "fleet.edit","fleet.reserve","lifecycle.configure","review.roles","lease.revoke","task.complete": record.outcome="expired:replaced"
                 case "lease.expired":
                     if row[11]=="ttl" || row[11]=="hard_cap" {
                         record.outcome=fmt.tprintf("expired:%s",row[11])

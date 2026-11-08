@@ -2,7 +2,8 @@ package owner_local
 
 import "core:encoding/json"
 
-SCHEMA_VERSION :: 35
+SCHEMA_VERSION :: 36
+MIGRATION_036 :: #load("migration_036.sql")
 MIGRATION_035 :: #load("migration_035.sql")
 MIGRATION_034 :: #load("migration_034.sql")
 MIGRATION_033 :: #load("migration_033.sql")
@@ -214,6 +215,10 @@ migrate :: proc(db:DB) -> bool {
         if len(columns)==0 && !exec(db,"ALTER TABLE local_reviews ADD COLUMN principal_kind TEXT NOT NULL DEFAULT 'agent' CHECK(principal_kind IN('device','agent'))") do return false
         if !exec(db,string(MIGRATION_035)) do return false
         if !exec(db,"UPDATE schema_migrations SET version=35 WHERE singleton=1") do return false
+    }
+    if version<=35 {
+        if !exec(db,string(MIGRATION_036)) do return false
+        if !exec(db,"UPDATE schema_migrations SET version=36 WHERE singleton=1") do return false
     }
     if !exec(db,"COMMIT") do return false
     committed=true

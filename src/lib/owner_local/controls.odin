@@ -179,6 +179,15 @@ control_human :: proc(s:^Store,c,p:json.Object,body:string,seq:i64,agent:=false)
             extra=doc(map[string]string{"dependents"=choice,"dependent_task_ids"=strings.join(dependents,",",context.temp_allocator)})
             if choice=="keep" do extra["warning"]=json.String("dependent tasks stay blocked on this cancelled task; drop or repoint their dependency to unblock them")
         }
+        runs,runs_read:=work_run_dependents(s,chain,task)
+        if !runs_read do return "storage_error",nil
+        if len(runs)>0 {
+            if extra==nil do extra=doc(map[string]string{})
+            extra["workflow_run_dependents"]=json.String(strings.join(runs,",",context.temp_allocator))
+            note:="workflow runs depend on this task and stay blocked on it; edit their work dependencies"
+            if prior,has:=extra["warning"].(json.String);has do note=fmt.tprintf("%s; %s",string(prior),note)
+            extra["warning"]=json.String(note)
+        }
         mode="cancelled";next="ready";waiting=""
         if !control_revoke(s,c,seq,"stop") do return "storage_error",nil
     case "task.reopen":

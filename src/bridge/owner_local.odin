@@ -178,6 +178,25 @@ bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
             }
         }
     }
+    // task.split (P-CS CC-B): observe each child's named assignee instance.
+    if contracts.owner_string(command,"method")=="task.split" {
+        if p,ok:=contracts.owner_parse(payload,"comment_payload");ok {
+            if body,opened:=vault.open(contracts.owner_string(p,"body_cipher"),&kr,context.temp_allocator);opened==.Ok {
+                v,valid:=contracts.owner_request_document(body)
+                if o,obj:=v.(json.Object);valid && obj {
+                    if list,array:=o["children"].(json.Array);array {
+                        for item in list {
+                            if spec,is_obj:=item.(json.Object);is_obj {
+                                if instance:=contracts.owner_string(spec,"assignee_instance_id");instance!="" {
+                                    if child,current:=bridge_owner_child_locked(instance,"");current do append(&role_children,child)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     grant_proof:=owner.Grant_Proof{root=floor.root}
     method:=contracts.owner_string(command,"method")
     if method=="grant.set" || method=="grant.recover" {

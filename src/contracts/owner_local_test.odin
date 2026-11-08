@@ -339,3 +339,25 @@ brief_pinned_reference_vocabulary_rejects_mutable_latest_and_unknown_types :: pr
         _,ok:=owner_pinned_ref(raw);testing.expect(t,!ok)
     }
 }
+
+// P-CS CC-B: coordinator work payloads and methods are additive; existing
+// payload shapes are unchanged.
+@(test)
+owner_coordinator_work_payloads_are_strict :: proc(t:^testing.T) {
+    for m in ([4]string{"lifecycle.force_submit","task.complete","task.split","chain.policy.set"}) do testing.expectf(t,owner_method_valid(m),"%s is an owner method",m)
+    testing.expect_value(t,owner_payload_kind("lifecycle.force_submit"),"force_submit_payload")
+    testing.expect_value(t,owner_payload_kind("task.complete"),"complete_payload")
+    testing.expect_value(t,owner_payload_kind("task.split"),"comment_payload")
+    testing.expect_value(t,owner_payload_kind("chain.policy.set"),"chain_policy_payload")
+    _,ok:=owner_parse(`{"policy":"coordinator_force_done","value":"0"}`,"chain_policy_payload")
+    testing.expect(t,ok)
+    _,ok=owner_parse(`{"policy":"anything_else","value":"0"}`,"chain_policy_payload")
+    testing.expect(t,!ok,"only named policies")
+    _,ok=owner_parse(`{"attempt":"1","head":"","force":"yes","body_cipher":""}`,"complete_payload")
+    testing.expect(t,!ok,"force is a flag and the reason cipher is required")
+    _,ok=owner_parse(`{"requirements_revision":"1","head":"not-a-commit","summary":"s","override_ack":"0","body_cipher":""}`,"force_submit_payload")
+    testing.expect(t,!ok,"head must be a commit or empty")
+    // Unchanged: lease submit keeps its exact shape.
+    _,ok=owner_parse(`{"requirements_revision":"1","head":"","summary":"s"}`,"submit_payload")
+    testing.expect(t,ok)
+}
