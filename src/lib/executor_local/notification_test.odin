@@ -1,6 +1,7 @@
 #+feature dynamic-literals
 package executor_local
 import "core:encoding/json"
+import "core:fmt"
 import "core:strings"
 import "core:testing"
 import contracts "odin_test:contracts"
@@ -71,4 +72,59 @@ executor_notification_fence_consumes_one_action_scoped_nonce :: proc(t:^testing.
     testing.expect(t,proof.current && pending.consumed)
     testing.expect(t,!notification_fence_accept(&f.store,&pending,reply,message,f.owner1.public,f.operator.public,1450).current)
     testing.expect(t,!contracts.executor_verify("fence_request",q,f.operator.public))
+}
+
+notification_journal_sequence :: proc(t:^testing.T,s:^Store)->i64 {
+    rows,ok:=query(s.db,"SELECT sequence FROM executor_native_journal WHERE singleton=1")
+    if !testing.expect(t,ok && len(rows)==1) do return -1
+    return number(rows[0][0])
+}
+
+// R5: an owner task.hold notice settles each stage exactly once under the
+// native-journal sequence triggers (migrations 011-015). A lost result write
+// rolls back with the journal unchanged; the retry after loss records one
+// result and every later exact or re-signed replay is read-only.
+@(test)
+executor_notification_hold_notice_settles_once_under_native_journal :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=fixture(t);defer destroy(f)
+    n,raw,_:=notification_fixture(t,f)
+    key:=f.owner1.public
+    // The exact one-line notice the owner task.hold producer emits.
+    message:=fmt.tprintf("[owner-local] task.hold on task %s; inspect owner-local runtime.",field(n,"task_id"))
+    set(n,"message_digest",contracts.owner_payload_digest(message))
+    raw=signed(n,"notification",&f.owner1);n,_=contracts.executor_parse(raw,"notification")
+    triggers,listed:=query(f.store.db,"SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name GLOB 'native_journal_executor_receipts_*'")
+    if !testing.expect(t,listed && triggers[0][0]=="3","receipt inserts/updates/deletes advance the native journal") do return
+    s0:=notification_journal_sequence(t,&f.store)
+    ticket:=encode(Notification_Ticket{"42","opaque-ticket","validated-profile",raw,message})
+    testing.expect_value(t,notification_record(&f.store,n,message,key,"ticket",ticket,1400).code,"ok")
+    s1:=notification_journal_sequence(t,&f.store)
+    testing.expect_value(t,notification_record(&f.store,n,message,key,"dispatch",`{"esc_written":"1"}`,1400).code,"ok")
+    s2:=notification_journal_sequence(t,&f.store)
+    testing.expect(t,s1>s0 && s2>s1,"each committed stage advances the journal")
+    // Lose only result persistence after the physical write.
+    testing.expect(t,exec(f.store.db,"CREATE TRIGGER r5_lost_result BEFORE INSERT ON executor_receipts WHEN NEW.kind='notification.result' BEGIN SELECT RAISE(ABORT,'lost result'); END"))
+    testing.expect_value(t,notification_record(&f.store,n,message,key,"result",`{"status":"delivered"}`,1400).code,"storage_error")
+    testing.expect_value(t,notification_journal_sequence(t,&f.store),s2)
+    testing.expect_value(t,notification_stage(&f.store,n,message,key,"result",1400).code,"not_found")
+    testing.expect(t,exec(f.store.db,"DROP TRIGGER r5_lost_result"))
+    result:=`{"status":"delivered","message_bytes_written":"66"}`
+    settled:=notification_record(&f.store,n,message,key,"result",result,1450)
+    testing.expect(t,settled.code=="ok" && !settled.replay && settled.body==result)
+    s3:=notification_journal_sequence(t,&f.store)
+    testing.expect(t,s3>s2,"the retry after loss commits one result")
+    // Exact retry, a different claimed body and a re-signed transport copy are
+    // all read-only replays of the first stored result.
+    again:=notification_record(&f.store,n,message,key,"result",`{"status":"partial"}`,1450)
+    testing.expect(t,again.code=="ok" && again.replay && again.body==result)
+    set(n,"issued_ms","1460")
+    resigned_raw:=signed(n,"notification",&f.owner1);resigned,_:=contracts.executor_parse(resigned_raw,"notification")
+    replay:=notification_record(&f.store,resigned,message,key,"result",result,1460)
+    testing.expect(t,replay.code=="ok" && replay.replay && replay.body==result)
+    testing.expect_value(t,notification_stage(&f.store,resigned,message,key,"result",1460).body,result)
+    testing.expect_value(t,notification_journal_sequence(t,&f.store),s3)
+    rows,ok:=query(f.store.db,"SELECT kind,count(*) FROM executor_receipts WHERE kind LIKE 'notification.%' GROUP BY kind ORDER BY kind")
+    testing.expect(t,ok && len(rows)==3,"one receipt per stage")
+    for row in rows do testing.expect_value(t,row[1],"1")
 }
