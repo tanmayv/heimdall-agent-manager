@@ -876,6 +876,8 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/release", rawptr(&graph.taskchain_handlers), http.hold_task_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/recheck", rawptr(&graph.taskchain_handlers), http.recheck_task_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/tasks/*/recheck", rawptr(&graph.taskchain_handlers), http.recheck_task_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/start-agent", rawptr(&graph.taskchain_handlers), http.start_task_agent_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/tasks/*/start-agent", rawptr(&graph.taskchain_handlers), http.start_task_agent_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/tasks/*/placement-recovery", rawptr(&graph.taskchain_handlers), http.recover_task_placement_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/placement-recovery", rawptr(&graph.taskchain_handlers), http.recover_task_placement_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/cards/*/placement-recovery", rawptr(&graph.card_handlers), http.recover_card_placement_handler)

@@ -488,6 +488,12 @@ ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
 		tid := pos(tokens, 1)
 		if tid == "" { print_agent_help([]string{"task"}); return }
 		ctl_v2_task_action(endpoint, token, tid, args, "recheck", ctl_empty_object_body())
+	case "start-agent", "restart-agent":
+		// Coordinator/user (F1): start or restart the agent a task waits on
+		// (agent_not_running). Workers are refused by the hub.
+		tid := pos(tokens, 1)
+		if tid == "" { print_agent_help([]string{"task"}); return }
+		ctl_v2_task_action(endpoint, token, tid, args, "start-agent", ctl_empty_object_body())
 	case "fetch":
 		ctl_v2_task_fetch(endpoint, token, tokens, args)
 	case "readiness":
@@ -2064,6 +2070,8 @@ print_help_task :: proc() {
 	fmt.println("                                          user-approval flag), readiness, dispatch and a done task's merge-back.")
 	fmt.println("                                          Never approves, never touches a live lease; a repeat is a no-op.")
 	fmt.println("                                          Prints {task, changed, actions[], reasons[], message}.")
+	fmt.println("  start-agent <task-id>                   Coordinator/owner: start or restart the agent a task waits on")
+	fmt.println("                                          (agent_not_running). Never clears a user's deliberate stop.")
 	fmt.println("  comments <task-id> [--last N]           Fetch comment bodies; --last N = newest N (max 100).")
 	fmt.println("  fetch <task-id> <ref>                   Fetch one event (#<event_id>), output (output:<task_id>),")
 	fmt.println("                                          facet (facet:<task_id>:<attempt_no>:<kind>), or file at commit")

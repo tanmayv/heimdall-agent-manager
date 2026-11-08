@@ -386,3 +386,53 @@ test_agent_not_running_solo_hello_recovers_offline_coordinator :: proc(t: ^testi
 	res, pulled, _ := lease_next(&fx.svc, inst_auth("inst_coord"), Lease_Next_Input{})
 	testing.expect(t, pulled && res.status == "granted", "reconnected coordinator pulls without Start")
 }
+
+// F1: the chain coordinator may start/restart a failed task agent; a worker
+// instance may not.
+@(test)
+test_agent_not_running_coordinator_may_start_worker_refused :: proc(t: ^testing.T) {
+	fx, log, ok := lease_fixture(t, "anr_coord")
+	defer lease_fixture_close(fx, log)
+	if !ok do return
+	chain := seed_live_chain(t, fx, "chain_anr_coord")
+	seed_fleet(fx, chain, "agt_w")
+	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "stopped")
+	seed_instance(fx, chain, "inst_other", "agt_o", "br_1", "running")
+	_ = publish_task(t, fx, chain, "task_anr")
+	fx.svc.bridge_command_sink = project.Bridge_Command_Sink{send_runtime_command = proc(ctx: rawptr, cmd: project.Runtime_Command) -> (bool, domain.Domain_Error) {
+		return false, domain.domain_error(.Internal_Error, "launch refused: no credentials")
+	}}
+	on_bridge_hello(&fx.svc, "br_1", nil)
+	task := get_task(fx, "task_anr")
+	if !testing.expect(t, is_agent_not_running_block(task.blocked_on_json), "launch failure blocks the task") do return
+	fx.svc.bridge_command_sink = {}
+	started, err := start_task_agent(&fx.svc, inst_auth("inst_other"), task.task_id)
+	testing.expect(t, !started && err.code == .Forbidden, fmt.tprintf("a non-coordinator agent is refused (%v)", err.code))
+	testing.expect(t, is_agent_not_running_block(get_task(fx, "task_anr").blocked_on_json), "refusal changes nothing")
+	started, err = start_task_agent(&fx.svc, inst_auth("inst_coord"), task.task_id)
+	testing.expect(t, started && err.code == .None, fmt.tprintf("the chain coordinator may restart the agent: %s", err.message))
+	_, held := lease_of(fx, "inst_w1")
+	testing.expect(t, held && wake_log_has_run(log, "inst_w1"), "coordinator restart dispatches")
+}
+
+// F1: a deliberate user stop is never cleared by the coordinator.
+@(test)
+test_agent_not_running_coordinator_cannot_clear_user_stop :: proc(t: ^testing.T) {
+	fx, log, ok := lease_fixture(t, "anr_coord_stop")
+	defer lease_fixture_close(fx, log)
+	if !ok do return
+	chain := seed_live_chain(t, fx, "chain_anr_coord_stop")
+	seed_fleet(fx, chain, "agt_w")
+	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "stopped")
+	inst, _, _ := iface.agent_get_instance(&fx.agents, "inst_w1")
+	inst.stopped_by = agent.STOPPED_BY_USER
+	_, _, _ = iface.agent_save_instance(&fx.agents, inst)
+	task := publish_task(t, fx, chain, "task_anr")
+	if !is_agent_not_running_block(task.blocked_on_json) {
+		task = get_task(fx, "task_anr")
+	}
+	if !testing.expect(t, is_agent_not_running_block(task.blocked_on_json), fmt.tprintf("user-stopped agent blocks the task: %s", task.blocked_on_json)) do return
+	_, _ = start_task_agent(&fx.svc, inst_auth("inst_coord"), task.task_id)
+	after, _, _ := iface.agent_get_instance(&fx.agents, "inst_w1")
+	testing.expect_value(t, after.stopped_by, agent.STOPPED_BY_USER)
+}

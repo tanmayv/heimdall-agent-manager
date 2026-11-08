@@ -30,9 +30,24 @@ test_err_proto_disposition_per_class :: proc(t: ^testing.T) {
 	// Fatal: the same launch would fail again, so it is neither re-woken nor replaced.
 	testing.expect_value(t, failed_instance_disposition(fatal, failed_ms + 10_000_000), Failed_Instance_Disposition.Hold)
 
-	// Recoverable never re-wakes on its own, however long it waits.
+	// Recoverable (F1): bounded auto-retry 30s, 2m, 5m; parked after the third retry fails.
 	recoverable := failed_instance(`{"code":"provider_unavailable","class":"recoverable","cause":"provider_not_logged_in","message":"","attempt":1}`)
-	testing.expect_value(t, failed_instance_disposition(recoverable, failed_ms + 10_000_000), Failed_Instance_Disposition.Hold)
+	testing.expect_value(t, failed_instance_disposition(recoverable, failed_ms + 29_000), Failed_Instance_Disposition.Hold)
+	testing.expect_value(t, failed_instance_disposition(recoverable, failed_ms + 30_000), Failed_Instance_Disposition.Retry_Now)
+	rec2 := failed_instance(`{"code":"provider_unavailable","class":"recoverable","cause":"provider_not_logged_in","message":"","attempt":2}`)
+	testing.expect_value(t, failed_instance_disposition(rec2, failed_ms + 119_000), Failed_Instance_Disposition.Hold)
+	testing.expect_value(t, failed_instance_disposition(rec2, failed_ms + 120_000), Failed_Instance_Disposition.Retry_Now)
+	rec3 := failed_instance(`{"code":"provider_unavailable","class":"recoverable","cause":"provider_not_logged_in","message":"","attempt":3}`)
+	testing.expect_value(t, failed_instance_disposition(rec3, failed_ms + 299_000), Failed_Instance_Disposition.Hold)
+	testing.expect_value(t, failed_instance_disposition(rec3, failed_ms + 300_000), Failed_Instance_Disposition.Retry_Now)
+	rec4 := failed_instance(`{"code":"provider_unavailable","class":"recoverable","cause":"provider_not_logged_in","message":"","attempt":4}`)
+	testing.expect_value(t, failed_instance_disposition(rec4, failed_ms + 10_000_000), Failed_Instance_Disposition.Hold)
+	_, retrying := instance_auto_retry_due_ms(rec4)
+	testing.expect(t, !retrying, "recoverable is parked after its retry budget")
+	_, fatal_retrying := instance_auto_retry_due_ms(fatal)
+	testing.expect(t, !fatal_retrying, "fatal is never auto-retried")
+	due, rec_retrying := instance_auto_retry_due_ms(recoverable)
+	testing.expect(t, rec_retrying && due == failed_ms + 30_000, "first recoverable retry due after 30s")
 
 	// Retriable backs off exponentially: attempt 3 waits 60s * 4 = 240s.
 	retriable := failed_instance(`{"code":"bridge_busy","class":"retriable","cause":"pty_host_unreachable","message":"","attempt":3}`)

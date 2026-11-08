@@ -123,18 +123,33 @@ block_ready_agent_in_uow :: proc(svc: ^Service, u: ^Uow, task: domain.Task, agen
 	return ok
 }
 
-// An explicit user retry makes failed/stopped instances eligible for the normal
-// wake path again. No bridge I/O occurs under the UoW; the matcher dispatches
-// after commit. Re-read afterwards so synchronous launch/send failures are
-// returned to the card as well as persisted in its newly projected reason.
+// An explicit user (or chain coordinator, F1) retry makes failed/stopped
+// instances eligible for the normal wake path again. No bridge I/O occurs under
+// the UoW; the matcher dispatches after commit. Re-read afterwards so
+// synchronous launch/send failures are returned to the card as well as
+// persisted in its newly projected reason. A coordinator never clears a
+// deliberate user stop: only the user restarts what the user stopped.
 start_task_agent :: proc(svc: ^Service, auth: contracts.Auth_Context, task_id: domain.Task_ID, expected_waiting_on := "") -> (bool, domain.Domain_Error) {
-	if !contracts.is_user_auth(auth) do return false, domain.domain_error(.Forbidden, "only the user may start a task agent")
+	is_user := contracts.is_user_auth(auth)
+	caller: domain.Agent_Instance
+	if !is_user {
+		inst, iok, _ := instance_from_auth(svc, auth)
+		if !iok do return false, domain.domain_error(.Forbidden, "only the user or the chain coordinator may start a task agent")
+		caller = inst
+	}
 	u, ok, err := begin_uow(svc)
 	if !ok do return false, err
 	task, found, _ := iface.taskchain_get_task(svc.repo, task_id)
 	if !found || string(task.owner_user_id) != auth.user_id {
 		_, _ = end_uow(svc, &u, false)
 		return false, domain.domain_error(.Not_Found, "task not found")
+	}
+	if !is_user {
+		chain, chain_found, _ := iface.taskchain_get_chain(svc.repo, task.chain_id)
+		if !chain_found || !is_coordinator(svc, chain, caller.agent_instance_id) {
+			_, _ = end_uow(svc, &u, false)
+			return false, domain.domain_error(.Forbidden, "only the user or the chain coordinator may start a task agent")
+		}
 	}
 	// Card validation happens before this transaction; this second read closes
 	// the race with a newly recorded failure between the two reads.
@@ -155,7 +170,7 @@ start_task_agent :: proc(svc: ^Service, auth: contracts.Auth_Context, task_id: d
 		}
 	}
 	bridge_id := jsonx.extract_string(task.blocked_on_json, "bridge_id", "", true, context.temp_allocator)
-	if reset, reset_err := reset_idle_agent_instances(svc, task.owner_user_id, task.chain_id, agent_id, bridge_id, true); !reset {
+	if reset, reset_err := reset_idle_agent_instances(svc, task.owner_user_id, task.chain_id, agent_id, bridge_id, is_user); !reset {
 		_, _ = end_uow(svc, &u, false)
 		return false, reset_err
 	}

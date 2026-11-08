@@ -1813,6 +1813,32 @@ recover_task_placement_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
+// POST …/task-chains/{cid}/tasks/{tid}/start-agent {} | /api/v1/tasks/{tid}/start-agent {}
+// Start/restart the agent a task is waiting on (agent_not_running). The user,
+// or the chain's coordinator (F1), may call it; workers are refused.
+start_task_agent_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+	if h.task_engine == nil do return respond_error(domain.domain_error(.Internal_Error, "task engine is not configured"), req.request_id)
+	task_id: domain.Task_ID
+	if path_part(req.path, 3) == "tasks" {
+		task_id = domain.Task_ID(path_part(req.path, 4))
+	} else {
+		chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+		task_id = domain.Task_ID(path_part(req.path, 6))
+		if matched, mismatch_resp := require_task_path_scope(h, auth_ctx, chain_id, task_id, req); !matched do return mismatch_resp
+	}
+	started, err := taskv2.start_task_agent(h.task_engine, auth_ctx, task_id)
+	if !started do return respond_error(err, req.request_id)
+	task, tok, _ := iface.taskchain_get_task(h.task_engine.repo, task_id)
+	if tok {
+		publish_task_changed(h, string(task.owner_user_id), string(task.task_id), string(task.chain_id), "updated")
+		publish_chain_changed(h, string(task.owner_user_id), string(task.chain_id), "updated")
+	}
+	return respond_success(`{"started":true}`, req.request_id, auth_ctx_server_time(req))
+}
+
 recheck_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
