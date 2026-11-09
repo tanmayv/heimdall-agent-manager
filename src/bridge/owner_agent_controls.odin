@@ -240,6 +240,11 @@ bridge_owner_control :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -
     }
     out:=bridge_owner_result_object(r.body)
     out["authority"]=json.Object{"kind"=json.String("owner"),"bridge_id"=json.String(bridge_config.daemon_id)}
+    // A task (back) in review owes its reviewers review leases.
+    switch owner_method {
+    case "lifecycle.force_submit","task.release","task.recheck","task.resolve":
+        if dispatched:=bridge_owner_review_plan(ctx,st.chain_id,st.task_id);len(dispatched)>0 do out["review_dispatch"]=dispatched
+    }
     return bridge_local_response_data(ctx.request_id,bridge_owner_json(out))
 }
 

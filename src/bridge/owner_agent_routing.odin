@@ -96,6 +96,12 @@ Owner_Agent_Ctx :: struct {
     pending:Owner_Pending_Delivery,
     // A fleet launch, finished after every lock is released (fleet set).
     launch:Owner_Fleet_Launch,
+    // The calling child's token record (Hub credential for review launches).
+    rec:Bridge_Local_Agent_Token_Record,
+    // Review leases owed after a task entered in_review, dispatched after every
+    // lock is released, and a reviewer's TASK.md (owner_agent_review.odin).
+    reviews:Owner_Review_Dispatch,
+    review_context:Owner_Review_Context,
 }
 
 // A claim/switch commits and presents requirements under the child locks;
@@ -119,65 +125,80 @@ Owner_Pending_Delivery :: struct {
 bridge_owner_agent_route :: proc(request_id,method,params:string,rec:Bridge_Local_Agent_Token_Record) -> (string,bool) {
     if rec.role!=.Agent do return "",false
     if verb:=bridge_owner_instance_verb(method);verb!="" do return bridge_owner_instance_gate(request_id,verb,params,rec)
-    response,handled,launch:=bridge_owner_agent_route_locked(request_id,method,params,rec)
-    if !handled || !launch.active do return response,handled
+    response,handled,launch,reviews:=bridge_owner_agent_route_locked(request_id,method,params,rec)
+    if !handled do return response,handled
+    // Owed review leases are woken (or their reviewers started/launched) with
+    // no lock held.
+    bridge_owner_review_dispatch(reviews)
+    if !launch.active do return response,handled
     return bridge_owner_fleet_launch(request_id,launch,rec),true
 }
 
-bridge_owner_agent_route_locked :: proc(request_id,method,params:string,rec:Bridge_Local_Agent_Token_Record) -> (string,bool,Owner_Fleet_Launch) {
-    if !bridge_owner_routable(method) do return "",false,{}
+bridge_owner_agent_route_locked :: proc(request_id,method,params:string,rec:Bridge_Local_Agent_Token_Record) -> (string,bool,Owner_Fleet_Launch,Owner_Review_Dispatch) {
+    if !bridge_owner_routable(method) do return "",false,{},{}
     account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
-    if account=="" do return "",false,{}
+    if account=="" do return "",false,{},{}
     pub:=bridge_identity_public_key_hex(bridge_config.daemon_id)
     key_id,key_ok:=vault.device_id_from_sign_pub(pub,context.temp_allocator)
-    if !key_ok do return "",false,{}
+    if !key_ok do return "",false,{},{}
     sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
     // Never create an owner store just to answer "not mine".
     if bridge_owner_store.db==nil {
         path:=bridge_owner_store_path(account)
-        if path=="" || !os.exists(path) do return "",false,{}
+        if path=="" || !os.exists(path) do return "",false,{},{}
     }
     // The store exists: an unreadable or busy store is an owner failure,
     // never a reason to send the verb to the Hub.
-    if !bridge_owner_open(account,key_id) do return bridge_local_response_error(request_id,"storage_error","owner store unavailable"),true,{}
+    if !bridge_owner_open(account,key_id) do return bridge_local_response_error(request_id,"storage_error","owner store unavailable"),true,{},{}
     p:=bridge_owner_params(params)
     owned,read:=bridge_owner_targets(&bridge_owner_store,method,p,rec.agent_instance_id)
-    if !read do return bridge_local_response_error(request_id,"storage_error","owner store could not be read; retry"),true,{}
-    if !owned do return "",false,{}
+    if !read do return bridge_local_response_error(request_id,"storage_error","owner store could not be read; retry"),true,{},{}
+    if !owned do return "",false,{},{}
     kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
-    if !unlocked do return bridge_local_response_error(request_id,"vault_locked","owner Bridge vault is locked"),true,{}
+    if !unlocked do return bridge_local_response_error(request_id,"vault_locked","owner Bridge vault is locked"),true,{},{}
     key:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,key_id,pub,"bridge",true,false}
-    response,pending,run_dir,launch:=bridge_owner_agent_route_child(request_id,method,p,rec,key,&kr)
-    if pending.active {
+    response,ctx:=bridge_owner_agent_route_child(request_id,method,p,rec,key,&kr)
+    if ctx.pending.active {
         block:string
-        response,block=bridge_owner_materialize_checked(request_id,pending,run_dir)
-        if block!="" do response=bridge_owner_block_unavailable_worktree(request_id,pending,rec,key,&kr,block)
+        response,block=bridge_owner_materialize_checked(request_id,ctx.pending,ctx.run_dir)
+        if block!="" do response=bridge_owner_block_unavailable_worktree(request_id,ctx.pending,rec,key,&kr,block)
+    }
+    // A reviewer's TASK.md, like a worker's, is written after the child locks.
+    if ctx.review_context.text!="" && !bridge_owner_review_context_write(ctx.review_context) {
+        response=bridge_local_response_error(request_id,"context_delivery_failed","review lease open; TASK.md write failed; run lease next again")
     }
     // Registry publication and merge intents run after the child locks are
     // released, under the owner mutex only (as bridge_owner_handle does).
     bridge_owner_publish()
-    return response,true,launch
+    return response,true,ctx.launch,ctx.reviews
 }
 
 // Lock order owner -> startup I/O -> token, as bridge_owner_agent: stop,
 // rotation and relaunch cannot race admission after exact-child validation.
-bridge_owner_agent_route_child :: proc(request_id,method:string,p:json.Object,rec:Bridge_Local_Agent_Token_Record,key:contracts.Owner_Verified_Key,kr:^vault.Vault_Keyring) -> (string,Owner_Pending_Delivery,string,Owner_Fleet_Launch) {
+bridge_owner_agent_route_child :: proc(request_id,method:string,p:json.Object,rec:Bridge_Local_Agent_Token_Record,key:contracts.Owner_Verified_Key,kr:^vault.Vault_Keyring) -> (string,Owner_Agent_Ctx) {
     sync.mutex_lock(&bridge_startup_io_mutex);defer sync.mutex_unlock(&bridge_startup_io_mutex)
     sync.mutex_lock(&bridge_local_token_mutex);defer sync.mutex_unlock(&bridge_local_token_mutex)
     child,current:=bridge_owner_child_locked(rec.agent_instance_id,rec.token_hash)
-    if !current do return bridge_local_response_error(request_id,"invalid_scope","owner chain: current launched child required"),{},"",{}
+    if !current do return bridge_local_response_error(request_id,"invalid_scope","owner chain: current launched child required"),{}
     run_dir:=""
     if launch,launched:=bridge_runtime_get_launch(child.instance);launched do run_dir=strings.clone(launch.run_dir,context.temp_allocator)
-    ctx:=Owner_Agent_Ctx{request_id=request_id,store=&bridge_owner_store,child=child,key=key,kr=kr,run_dir=run_dir,now=time.to_unix_nanoseconds(time.now())/1000000}
+    ctx:=Owner_Agent_Ctx{request_id=request_id,store=&bridge_owner_store,child=child,key=key,kr=kr,run_dir=run_dir,now=time.to_unix_nanoseconds(time.now())/1000000,rec=rec}
     response:=bridge_owner_agent_exec(&ctx,method,p)
-    return response,ctx.pending,run_dir,ctx.launch
+    return response,ctx
 }
 
 // Whether the verb's target lives in this owner store. read=false means the
 // store could not be read; the caller must fail rather than fall through.
 bridge_owner_targets :: proc(s:^owner.Store,method:string,p:json.Object,instance:string) -> (owned:bool,read:bool) {
     chain,task:=bridge_owner_pstr(p,"chain_id"),bridge_owner_pstr(p,"task_id")
-    // Lease verbs follow the caller's own enabled fleet rows and live lease.
+    // Lease verbs follow the caller's own enabled fleet rows and live lease;
+    // `lease next` of any member of a chain held here (a reviewer with no
+    // fleet row) is served here too: it may owe a review (review_pending).
+    if method=="agent.lease.next" {
+        bound,ok:=owner.agent_lease_bound(s,instance)
+        if !ok || bound do return bound,ok
+        return owner.agent_bound(s,instance)
+    }
     if bridge_owner_lease_method(method) && method!="agent.lease.switch" do return owner.agent_lease_bound(s,instance)
     if task!="" {
         _,found,ok:=owner.agent_task_state(s,chain,task)
@@ -194,7 +215,12 @@ bridge_owner_targets :: proc(s:^owner.Store,method:string,p:json.Object,instance
 bridge_owner_fail :: proc(ctx:^Owner_Agent_Ctx,code,message:string) -> string {
     return bridge_local_response_error(ctx.request_id,code,message)
 }
-bridge_owner_signer :: proc() -> owner.Signer { return owner.Signer{nil,bridge_owner_sign} }
+// Tests substitute the owner key's signer (no enrolled Bridge identity).
+bridge_owner_test_signer:owner.Signer
+bridge_owner_signer :: proc() -> owner.Signer {
+    if bridge_owner_test_signer.sign!=nil do return bridge_owner_test_signer
+    return owner.Signer{nil,bridge_owner_sign}
+}
 
 // Lease and lifecycle inputs are signed exactly like bridge_owner_agent does.
 bridge_owner_run_input :: proc(ctx:^Owner_Agent_Ctx,method,chain,task,lease,configuration,expected,capability,payload:string) -> owner.Result {
@@ -213,7 +239,8 @@ bridge_owner_run_input :: proc(ctx:^Owner_Agent_Ctx,method,chain,task,lease,conf
         kind="lifecycle_command"
         command["payload_digest"]=json.String(contracts.owner_payload_digest(payload))
     }
-    signature,signed:=bridge_owner_sign(nil,kind,command)
+    signer:=bridge_owner_signer()
+    signature,signed:=signer.sign(signer.ctx,kind,command)
     if !signed do return owner.Result{code="storage_error"}
     command["signature"]=json.String(signature)
     if lifecycle {
@@ -234,7 +261,8 @@ bridge_owner_run_command :: proc(ctx:^Owner_Agent_Ctx,method,chain,task,expected
         "signature"=strings.repeat("0",128,context.temp_allocator)}
     defer delete(values)
     for k,v in values do c[k]=json.String(v)
-    signature,signed:=bridge_owner_sign(nil,"command",c)
+    signer:=bridge_owner_signer()
+    signature,signed:=signer.sign(signer.ctx,"command",c)
     if !signed do return owner.Result{code="storage_error"}
     c["signature"]=json.String(signature)
     return owner.execute_agent(s,bridge_owner_json(c),payload,ctx.child,ctx.key,ctx.now,ctx.kr,bridge_owner_signer(),fleet_child,proof,observed_children,source)
@@ -267,6 +295,10 @@ Owner_Agent_Placement :: struct { workdir,directory_path,branch:string }
 Owner_Agent_Lease :: struct {
     lease_id,task_id,chain_id,requirements_revision,acknowledged:string,
     placement:Owner_Agent_Placement,
+    // A review lease (lease next of an owed reviewer): role "reviewer" and the
+    // submitted attempt; the lease id is the submission's.
+    role:string `json:"role,omitempty"`,
+    attempt:string `json:"attempt,omitempty"`,
 }
 Owner_Agent_Task_Ref :: struct { task_id,chain_id:string }
 Owner_Agent_Authority :: struct { kind,bridge_id:string }
@@ -476,7 +508,8 @@ bridge_owner_agent_exec :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object
         _=owner.expire_leases(s,ctx.now)
         r,pick:=owner.lease_next(s,ctx.child,ctx.key,ctx.now,bridge_owner_signer(),bridge_owner_fresh_id("lease"),bridge_owner_fresh_id("op"))
         if r.code!="ok" do return bridge_owner_fail(ctx,r.code,"owner lease next refused")
-        if pick.status=="none" do return bridge_local_response_data(ctx.request_id,bridge_owner_json(Owner_Agent_Next{status="none",authority=bridge_owner_authority()}))
+        // No work: a review this child owes (owner_agent_review.odin).
+        if pick.status=="none" do return bridge_owner_review_next(ctx)
         st,has:=owner.agent_lease_state(s,ctx.child)
         if !has do return bridge_owner_fail(ctx,"lease_lost","lease vanished after claim")
         code,message:=bridge_owner_deliver(ctx,st,pick.status)
@@ -618,6 +651,7 @@ bridge_owner_lease_verb :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object
         if r.code!="ok" do return bridge_owner_fail(ctx,r.code,"owner submit refused (acknowledge the current requirements revision first)")
         out:=bridge_owner_result_object(r.body)
         out["task_id"]=json.String(st.task_id);out["chain_id"]=json.String(st.chain_id)
+        if dispatched:=bridge_owner_review_plan(ctx,st.chain_id,st.task_id);len(dispatched)>0 do out["review_dispatch"]=dispatched
         if head!="" {
             work:=contracts.owner_string(st.config,"worktree")
             dirty,_:=bridge_taskv2_git_dirty(work)
@@ -666,12 +700,17 @@ bridge_owner_lease_verb :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object
     return bridge_owner_fail(ctx,"bad_request","unsupported lease verb")
 }
 
-// review post: the configured reviewer child opens its review capability and
-// posts the bound verdict; --on-behalf-of user is the coordinator relaying the
-// user's decision (never a substitute for the independent reviewer, and never
+// review post: a reviewer child (the configured reviewer or a brief reviewer)
+// opens its review capability and posts its verdict (without --task, on the
+// review it owes); --on-behalf-of user is the coordinator relaying the user's
+// decision (never a substitute for the independent reviewer, and never
 // the user's own approval: that is device-signed only).
 bridge_owner_review :: proc(ctx:^Owner_Agent_Ctx,p:json.Object) -> string {
-    s:=ctx.store
+    p:=p
+    // No --task: the review this reviewer owes (its review lease).
+    if bridge_owner_pstr(p,"task_id")=="" && bridge_owner_pstr(p,"on_behalf_of")!="user" {
+        if chain,task,found,_:=owner.review_pending(ctx.store,ctx.child);found { p["chain_id"]=json.String(chain);p["task_id"]=json.String(task) }
+    }
     st,missing:=bridge_owner_task(ctx,p)
     if missing!="" do return missing
     verdict:=bridge_owner_pstr(p,"verdict")
@@ -693,12 +732,11 @@ bridge_owner_review :: proc(ctx:^Owner_Agent_Ctx,p:json.Object) -> string {
         }
         return bridge_local_response_data(ctx.request_id,bridge_owner_json(out))
     }
-    submitted,read:=owner.query(s.db,"SELECT lease_id FROM local_submissions WHERE chain_id=? AND task_id=? AND attempt=?",st.chain_id,st.task_id,st.attempt)
-    if !read || len(submitted)!=1 do return bridge_owner_fail(ctx,"stale_revision","submission not found")
-    opened:=bridge_owner_run_input(ctx,"review.open",st.chain_id,st.task_id,submitted[0][0],st.configuration_revision,st.task_revision,"",payload)
-    if opened.code!="ok" do return bridge_owner_fail(ctx,opened.code,"owner review open refused")
+    opened,lease,code:=bridge_owner_review_open(ctx,st,verdict,summary)
+    if code=="stale_revision" && lease=="" do return bridge_owner_fail(ctx,code,"submission not found")
+    if code!="ok" do return bridge_owner_fail(ctx,code,"owner review open refused")
     capability:=contracts.owner_string(bridge_owner_result_object(opened.body),"capability")
-    posted:=bridge_owner_run_input(ctx,"review.post",st.chain_id,st.task_id,submitted[0][0],st.configuration_revision,st.task_revision,capability,payload)
+    posted:=bridge_owner_run_input(ctx,"review.post",st.chain_id,st.task_id,lease,st.configuration_revision,st.task_revision,capability,payload)
     if posted.code!="ok" do return bridge_owner_fail(ctx,posted.code,"owner review post refused")
     return bridge_local_response_data(ctx.request_id,posted.body)
 }
@@ -836,7 +874,7 @@ bridge_owner_resolve_agent :: proc(ctx:^Owner_Agent_Ctx,chain,agent_id,flag:stri
     found:owner.Child
     matches:=0
     for instance in participants {
-        if child,live:=bridge_owner_child_locked(instance,"");live && child.agent_id==agent_id { found=child;matches+=1 }
+        if child,live:=bridge_owner_live_child(instance);live && child.agent_id==agent_id { found=child;matches+=1 }
     }
     if matches==0 do return {},"invalid_scope",fmt.tprintf("%s %s is not a running, enabled member or fleet worker of this chain on this Bridge; add it with `ham-ctl task-chain fleet set --agent %s` (or `ham-ctl agents start` its stopped member instance)",flag,agent_id,agent_id)
     if matches>1 do return {},"ambiguous_agent",fmt.tprintf("%s %s matches several running instances in this chain",flag,agent_id)

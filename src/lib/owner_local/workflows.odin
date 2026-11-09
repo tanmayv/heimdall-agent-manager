@@ -115,6 +115,8 @@ workflow_command :: proc(s:^Store,c:json.Object,body:string,seq:i64)->string {
     def,parsed:=contracts.owner_parse(definitions[0][0],"workflow_definition")
     stages,valid_stages:=workflow_stages(def)
     if !parsed || !valid_stages do return "storage_error"
+    // A stage naming its assignee or a chain coordinator as a reviewer never settles.
+    for stage in stages do if code:=brief_reviewers_admissible(s,chain,"",field(stage,"brief"));code!="ok" do return code
     if method=="workflow.run" {
         if _,ok=query(s.db,"INSERT INTO local_workflow_runs VALUES(?,?,?,?,1,1)",chain,run,workflow,version);!ok do return "operation_conflict"
     }

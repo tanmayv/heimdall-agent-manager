@@ -54,6 +54,8 @@ lifecycle_human :: proc(s:^Store,c,p:json.Object,body,raw,payload:string,proof:L
         states,looked:=query(s.db,"SELECT state FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)
         if !looked do return "storage_error",nil
         if len(states)>0 && states[0][0]!="ready" && states[0][0]!="in_review" do return "operation_conflict",nil
+        // The new author never reviews its own task (brief_reviewers_admissible).
+        if req,has:=lifecycle_requirements(s,chain,task);has && slice.contains(brief_reviewers(req[1]),proof.author.agent_id) do return "invalid_scope",nil
         fleet,found:=query(s.db,"SELECT instance_id,launch_epoch,run_count,token_generation,enabled FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task)
         if !found || len(fleet)!=1 || fleet[0][0]!=proof.author.instance || fleet[0][1]!=proof.author.epoch ||
            number(fleet[0][2])!=proof.author.run_count || fleet[0][3]!=proof.author.token_generation || fleet[0][4]!="1" {return "invalid_scope",nil}
@@ -63,6 +65,7 @@ lifecycle_human :: proc(s:^Store,c,p:json.Object,body,raw,payload:string,proof:L
     case "requirements.edit":
         // requirements_reason is this revision's audit note, not brief content.
         if !brief_valid(brief_without_reason(s,body)) do return "invalid_content",nil
+        if code:=brief_reviewers_admissible(s,chain,task,body);code!="ok" do return code,nil
         prior:i64
         prior_brief:=""
         if r,ok:=lifecycle_requirements(s,chain,task);ok { prior=number(r[0]);prior_brief=r[1] }

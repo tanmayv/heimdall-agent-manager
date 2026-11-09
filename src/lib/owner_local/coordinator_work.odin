@@ -333,6 +333,8 @@ split_command :: proc(s:^Store,c:json.Object,command_raw,payload,body:string,seq
                 brief=gated
             }
             if !brief_valid(brief) do return "invalid_content",nil
+            // A child inherits the original's author (its fleet and configuration).
+            if code:=brief_reviewers_admissible(s,chain,task,brief);code!="ok" do return code,nil
             if _,ok:=query(s.db,"INSERT INTO task_requirements VALUES(?,?,1,?,'',?,?)",chain,id,brief,principal,op);!ok do return "storage_error",nil
             if code:=brief_inputs_pin(s,chain,id,"1",brief);code!="ok" do return code,nil
         }

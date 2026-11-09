@@ -69,6 +69,7 @@ language_command :: proc(s:^Store,c:json.Object,raw:string,seq:i64)->(bool,strin
         spec,ok:=language_definition(s,chain,field(p,"workflow_id"),field(p,"version"))
         if !ok do return true,"invalid_scope"
         if _,err:=wf.snapshot(spec,field(p,"inputs"));err.code!=.None do return true,"invalid_content"
+        for stage in spec.stages do if code:=brief_reviewers_admissible(s,chain,"",stage.brief_raw);code!="ok" do return true,code
         if _,ok=query(s.db,"INSERT INTO local_workflow_runs VALUES(?,?,?,?,1,1)",chain,field(p,"run_id"),field(p,"workflow_id"),field(p,"version"));!ok do return true,"operation_conflict"
         if _,ok=query(s.db,"INSERT INTO local_workflow_language_runs VALUES(?,?,?)",chain,field(p,"run_id"),field(p,"inputs"));!ok do return true,"storage_error"
         if !language_execution(s,chain,field(p,"run_id"),"1",c,seq) do return true,"storage_error"
@@ -427,14 +428,12 @@ language_policy_ready :: proc(s:^Store,chain,task:string)->bool {
     if !configured do return false
     if assignee:=field(brief,"assignee");assignee!="" && assignee!=field(config,"author_agent_id") do return false
     // Brief reviewers are approved through the review gate itself; a brief
-    // naming its own author as a reviewer can never settle.
+    // naming its own author or a chain coordinator as a reviewer can never
+    // settle (brief_reviewers_admissible).
     if values,exists:=brief["reviewers"];exists {
         list,array:=values.(json.Array)
         if !array do return false
-        for value in list {
-            text,is_string:=value.(json.String)
-            if !is_string || string(text)==field(config,"author_agent_id") do return false
-        }
+        for value in list do if _,is_string:=value.(json.String);!is_string do return false
     }
-    return true
+    return brief_reviewers_admissible(s,chain,task,req[1])=="ok"
 }

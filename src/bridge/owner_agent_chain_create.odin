@@ -177,15 +177,6 @@ bridge_owner_launch_into_chain :: proc(body,agent:string,rec:Bridge_Local_Agent_
     }
     instance:=bridge_local_extract_json_string(launched.body,"agent_instance_id","",context.temp_allocator)
     if !contracts.owner_field_valid(instance,"id") do return "",fmt.tprintf("launching %s returned no instance id",agent)
-    started:=time.tick_now()
-    for {
-        sync.mutex_lock(&bridge_startup_io_mutex)
-        sync.mutex_lock(&bridge_local_token_mutex)
-        child,current:=bridge_owner_child_locked(instance,"")
-        sync.mutex_unlock(&bridge_local_token_mutex)
-        sync.mutex_unlock(&bridge_startup_io_mutex)
-        if current && child.agent_id==agent do return instance,""
-        if time.duration_milliseconds(time.tick_since(started))>=BRIDGE_CHAIN_CREATE_LAUNCH_WAIT_MS do return "",fmt.tprintf("%s did not start on this Bridge within %ds",instance,BRIDGE_CHAIN_CREATE_LAUNCH_WAIT_MS/1000)
-        time.sleep(2*time.Second)
-    }
+    if waited:=bridge_owner_wait_live(instance,agent);waited!="" do return "",waited
+    return instance,""
 }

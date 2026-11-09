@@ -120,15 +120,68 @@ review_gate_any_listed_reviewer_requests_changes :: proc(t:^testing.T) {
     testing.expect_value(t,lifecycle_call(f,gate_second(),"review.open","late",lifecycle_verdict(),"",gate_task_revision(f)).code,"stale_revision")
 }
 
+// A brief naming the task's author or a chain coordinator as a reviewer can
+// never settle, so every brief source refuses it (invalid_scope).
 @(test)
-review_gate_author_listed_as_reviewer_never_settles :: proc(t:^testing.T) {
+review_gate_brief_never_names_author_or_coordinator :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=cw_split_setup(t);defer destroy(f)
+    coord:=agent_coordinator_child()
+    edit :: proc(f:^Fixture,op,brief:string) -> string {
+        p:=encode(doc(map[string]string{"requirements_revision"="2","body_cipher"=cipher(f,brief)}))
+        return invoke(f,command(f,"requirements.edit",op,"task",p,agent_task_revision(f,"task")),p).code
+    }
+    // requirements.edit: the configured author, a coordinator, the brief's own assignee.
+    testing.expect_value(t,edit(f,"author",`{"goal":"g","acceptance":["a"],"reviewers":["auditor","author"]}`),"invalid_scope")
+    testing.expect_value(t,edit(f,"coord",`{"goal":"g","acceptance":["a"],"reviewers":["coordinator_agent"]}`),"invalid_scope")
+    testing.expect_value(t,edit(f,"assignee",`{"goal":"g","acceptance":["a"],"assignee":"auditor","reviewers":["auditor"]}`),"invalid_scope")
+    testing.expect_value(t,cc_scalar(f,"SELECT max(revision) FROM task_requirements WHERE task_id='task'"),"1")
+    // task.split: a child inherits the original's author.
+    for reviewer,i in ([2]string{"author","coordinator_agent"}) {
+        body:=fmt.tprintf(`{{"reason":"split","dependents":"all","children":[{{"task_id":"c%d","title":"Half","brief":{{"goal":"Half","acceptance":["a"],"reviewers":["%s"]}}}}]}}`,i,reviewer)
+        testing.expectf(t,cw_run(f,coord,"task.split",fmt.tprintf("split_%d",i),cw_split(f,body)).code=="invalid_scope","split naming %s refused",reviewer)
+    }
+    // Proposals, publication and workflow runs share the same check.
+    testing.expect_value(t,work_publish_brief(&f.store,"chain",`{"goal":"g","acceptance":["a"],"reviewers":["coordinator_agent"]}`),"invalid_scope")
+    testing.expect_value(t,brief_reviewers_admissible(&f.store,"chain","",`{"goal":"g","acceptance":["a"],"reviewers":["coordinator_agent"]}`),"invalid_scope")
+    testing.expect_value(t,brief_reviewers_admissible(&f.store,"chain","task",`{"goal":"g","acceptance":["a"],"reviewers":["author"]}`),"invalid_scope")
+    testing.expect_value(t,brief_reviewers_admissible(&f.store,"chain","",`{"goal":"g","acceptance":["a"],"reviewers":["author"]}`),"ok")
+    // Another agent is accepted.
+    testing.expect_value(t,edit(f,"ok",`{"goal":"g","acceptance":["a"],"reviewers":["auditor"]}`),"ok")
+}
+
+// Dispatch: a submitted task owes every reviewer a review lease. review_targets
+// names each owed agent with its member instances; review_pending is what that
+// agent's `lease next` returns, until its verdict is posted.
+@(test)
+review_gate_dispatch_targets_every_owed_reviewer :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
     f:=fixture(t);defer destroy(f)
-    gate_seed(t,f,`["author"]`)
+    gate_seed(t,f,`["auditor","second"]`)
+    agent_seat(t,f,gate_auditor(),"worker");agent_seat(t,f,gate_second(),"worker")
+    targets,ok:=review_targets(&f.store,"chain","task")
+    testing.expect(t,ok && len(targets)==0,"nothing is owed before a submission")
     if !gate_submit(t,f) do return
-    testing.expect_value(t,gate_review(t,f,lease_child(),"self","approve"),"invalid_scope")
-    testing.expect_value(t,gate_review(t,f,lifecycle_reviewer(),"vote_r","approve"),"ok")
-    testing.expect(t,gate_state(f)=="in_review","a brief naming its own author as reviewer never settles")
+    targets,ok=review_targets(&f.store,"chain","task")
+    testing.expect_value(t,encode(targets),`[{"agent_id":"reviewer","instances":["review_instance"]},{"agent_id":"auditor","instances":["audit_instance"]},{"agent_id":"second","instances":["second_instance"]}]`)
+    for child in ([2]Child{gate_auditor(),gate_second()}) {
+        chain,task,found,read:=review_pending(&f.store,child)
+        testing.expectf(t,read && found && chain=="chain" && task=="task","%s has a pending review",child.agent_id)
+    }
+    for child in ([2]Child{gate_stranger(),lease_child()}) {
+        _,_,found,read:=review_pending(&f.store,child)
+        testing.expectf(t,read && !found,"%s reviews nothing",child.agent_id)
+    }
+    testing.expect_value(t,gate_review(t,f,gate_auditor(),"vote_a","approve"),"ok")
+    _,_,found,_:=review_pending(&f.store,gate_auditor())
+    testing.expect(t,!found,"a posted verdict ends the review lease")
+    targets,_=review_targets(&f.store,"chain","task")
+    testing.expect_value(t,len(targets),2)
+    // A held task dispatches nothing.
+    testing.expect_value(t,control_call(f,"task.hold","hold",gate_task_revision(f)).code,"ok")
+    targets,_=review_targets(&f.store,"chain","task")
+    _,_,found,_=review_pending(&f.store,gate_second())
+    testing.expect(t,len(targets)==0 && !found,"held")
 }
 
 @(test)
@@ -158,6 +211,8 @@ lifecycle_config_test :: proc(f:^Fixture)->json.Object {
 migration_037_maps_review_roles_to_reviewer_agents :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
     f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
+    // Attempt 1 is submitted: the role verdicts V37 carries bind a submission.
+    if !gate_submit(t,f) do return
     close(&f.store)
     db:DB
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
@@ -171,7 +226,12 @@ migration_037_maps_review_roles_to_reviewer_agents :: proc(t:^testing.T) {
     testing.expectf(t,exec(db,`INSERT INTO local_fleet_policy_versions SELECT 'chain','perf_agent',seq,'',1,0,0,'','','','["perf"]','','','t','t' FROM local_events ORDER BY seq DESC LIMIT 1`),"setup 4")
     testing.expectf(t,exec(db,`INSERT INTO local_fleet_policy_roles SELECT 'chain','perf_agent',seq,'perf',0 FROM local_events ORDER BY seq DESC LIMIT 1`),"setup 5")
     testing.expectf(t,exec(db,`INSERT INTO local_workflow_definitions VALUES('chain','wf',1,'{"schema":"workflow.v1","title":"WF","stages":[{"key":"a","brief":{"goal":"A","acceptance":["a"]}},{"key":"b","brief":{"goal":"B","acceptance":["b"],"review_roles":["perf"]}}]}')`),"setup 6")
-    testing.expectf(t,exec(db,`UPDATE schema_migrations SET version=36`),"setup 7")
+    // Posted role verdicts on attempt 1: auditor approved as "safety" and
+    // requested changes as "perf"; perf_agent approved as "perf".
+    testing.expectf(t,exec(db,`INSERT INTO local_role_reviews VALUES('chain','task',1,1,'safety','auditor','audit_instance','rv1','approve','fine');
+      INSERT INTO local_role_reviews VALUES('chain','task',1,1,'perf','auditor','audit_instance','rv2','request_changes','slow');
+      INSERT INTO local_role_reviews VALUES('chain','task',1,1,'perf','perf_agent','perf_instance','rv3','approve','fast')`),"setup 7")
+    testing.expectf(t,exec(db,`UPDATE schema_migrations SET version=36`),"setup 8")
     testing.expect_value(t,sqlite3_close(db),0)
     if !testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key")) do return
     check :: proc(t:^testing.T,f:^Fixture) {
@@ -188,6 +248,9 @@ migration_037_maps_review_roles_to_reviewer_agents :: proc(t:^testing.T) {
             {"requirements","task","2","perf","perf_agent","fleet_role"},
             {"requirements","task","2","safety","auditor","task_role_pairs"},
             {"workflow_definition","wf","1","perf","perf_agent","fleet_role"}}))
+        // One review per agent; any request_changes among its roles wins.
+        reviews,_:=query(f.store.db,"SELECT reviewer_agent_id,verdict,principal_kind,attempt FROM local_reviews ORDER BY reviewer_agent_id")
+        testing.expect_value(t,encode(reviews),encode([2][4]string{{"auditor","request_changes","agent","1"},{"perf_agent","approve","agent","1"}}))
         stage,_:=query(f.store.db,"SELECT json_type(definition_json,'$.stages[1].brief.review_roles'),json_extract(definition_json,'$.stages[1].brief.reviewers') FROM local_workflow_definitions WHERE workflow_id='wf'")
         testing.expect_value(t,encode(stage),encode([1][2]string{{"",`["perf_agent"]`}}))
         // The rewritten evidence stays immutable.

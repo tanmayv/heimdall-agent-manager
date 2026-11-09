@@ -292,37 +292,44 @@ bridge_owner_fleet_launch :: proc(request_id:string,launch:Owner_Fleet_Launch,re
     context.allocator=context.temp_allocator
     instance,launch_error:=bridge_owner_launch_into_chain(launch.body,launch.agent,rec)
     if launch_error!="" do return bridge_local_response_error(request_id,"agent_launch_failed",fmt.tprintf("fleet row saved; %s",launch_error))
-    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
-    key_id,_:=vault.device_id_from_sign_pub(bridge_identity_public_key_hex(bridge_config.daemon_id),context.temp_allocator)
-    code,message:="storage_error","owner store unavailable"
-    {
-        sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
-        if bridge_owner_open(account,key_id) {
-            kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
-            code,message="vault_locked","owner Bridge vault is locked"
-            if unlocked {
-                pub:=bridge_identity_public_key_hex(bridge_config.daemon_id)
-                key:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,key_id,pub,"bridge",true,false}
-                sync.mutex_lock(&bridge_startup_io_mutex)
-                sync.mutex_lock(&bridge_local_token_mutex)
-                caller,current:=bridge_owner_child_locked(rec.agent_instance_id,rec.token_hash)
-                child,live:=bridge_owner_child_locked(instance,"")
-                code,message="invalid_scope","the launched instance or the calling coordinator is no longer running"
-                if current && live && child.agent_id==launch.agent {
-                    ctx:=Owner_Agent_Ctx{request_id=request_id,store=&bridge_owner_store,child=caller,key=key,kr=&kr,now=time.to_unix_nanoseconds(time.now())/1000000}
-                    r:=bridge_owner_fleet_member(&ctx,launch.chain,instance,launch.agent,launch.role,true,child)
-                    code,message=r.code,"binding refused by the owner store"
-                }
-                sync.mutex_unlock(&bridge_local_token_mutex)
-                sync.mutex_unlock(&bridge_startup_io_mutex)
-                if code=="ok" do bridge_owner_coordinator_refresh_locked(launch.chain)
-            }
-            bridge_owner_publish()
-        }
-    }
+    code,message:=bridge_owner_fleet_bind(request_id,launch.chain,launch.agent,launch.role,instance,rec.agent_instance_id,rec.token_hash)
     if code!="ok" do return bridge_local_response_error(request_id,code,fmt.tprintf("fleet row saved and %s launched; %s (it stays running unbound: `ham-ctl task-chain fleet set --agent %s --instance %s` retries, `ham-ctl agents stop %s` stops it)",instance,message,launch.agent,instance,instance))
     reply:=launch.reply
     reply["instance_id"]=json.String(instance)
     reply["launched"]=json.Boolean(true)
     return bridge_local_response_data(request_id,bridge_owner_json(reply))
+}
+
+// Binds a launched live instance as an enabled member of the chain, signed
+// for the caller (the chain's coordinator; token_hash "" skips the token
+// check for a coordinator the Bridge acts for, see owner_agent_review.odin).
+// Takes the owner, startup and token locks in that order; the caller holds none.
+bridge_owner_fleet_bind :: proc(request_id,chain,agent,role,instance,caller_instance,caller_token_hash:string) -> (string,string) {
+    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
+    key_id,_:=vault.device_id_from_sign_pub(bridge_identity_public_key_hex(bridge_config.daemon_id),context.temp_allocator)
+    code,message:="storage_error","owner store unavailable"
+    sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
+    if bridge_owner_open(account,key_id) {
+        kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
+        code,message="vault_locked","owner Bridge vault is locked"
+        if unlocked {
+            pub:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+            key:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,key_id,pub,"bridge",true,false}
+            sync.mutex_lock(&bridge_startup_io_mutex)
+            sync.mutex_lock(&bridge_local_token_mutex)
+            caller,current:=bridge_owner_child_locked(caller_instance,caller_token_hash)
+            child,live:=bridge_owner_child_locked(instance,"")
+            code,message="invalid_scope","the launched instance or the calling coordinator is no longer running"
+            if current && live && child.agent_id==agent {
+                ctx:=Owner_Agent_Ctx{request_id=request_id,store=&bridge_owner_store,child=caller,key=key,kr=&kr,now=time.to_unix_nanoseconds(time.now())/1000000}
+                r:=bridge_owner_fleet_member(&ctx,chain,instance,agent,role,true,child)
+                code,message=r.code,"binding refused by the owner store"
+            }
+            sync.mutex_unlock(&bridge_local_token_mutex)
+            sync.mutex_unlock(&bridge_startup_io_mutex)
+            if code=="ok" do bridge_owner_coordinator_refresh_locked(chain)
+        }
+        bridge_owner_publish()
+    }
+    return code,message
 }

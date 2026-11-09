@@ -69,6 +69,93 @@ review_owed :: proc(s:^Store,chain,task,attempt:string,config:json.Object) -> ([
     return out[:],true
 }
 
+// ---- review dispatch ---------------------------------------------------------
+// A task entering in_review (lease.submit, force submit, release, recheck) owes
+// each reviewer in review_owed a review lease: the Bridge wakes a live member
+// instance of that agent, or starts/launches one (owner_agent_routing.odin),
+// and the reviewer's `lease next` returns the pending review (review_pending).
+
+// The agents of the chain's enabled coordinator members (never reviewers).
+chain_coordinator_agents :: proc(s:^Store,chain:string) -> ([]string,bool) {
+    rows,ok:=query(s.db,`SELECT DISTINCT agent_id FROM local_chain_member_versions m WHERE chain_id=? AND enabled=1 AND role='coordinator'
+      AND accepted_seq=(SELECT max(accepted_seq) FROM local_chain_member_versions x WHERE x.chain_id=m.chain_id AND x.instance_id=m.instance_id)`,chain)
+    if !ok do return nil,false
+    out:=make([]string,len(rows),context.temp_allocator)
+    for r,i in rows do out[i]=r[0]
+    return out,true
+}
+
+// A brief naming the task's author (its configured author or the brief's own
+// assignee) or a chain coordinator among its reviewers can never settle
+// (brief_reviewer_authorized refuses both), so every brief source refuses it:
+// requirements.edit, task.split, proposals/publication and workflow runs.
+// task is "" for a brief not bound to a configured task yet.
+brief_reviewers_admissible :: proc(s:^Store,chain,task,brief:string) -> string {
+    reviewers:=brief_reviewers(brief)
+    if len(reviewers)==0 do return "ok"
+    excluded:=make([dynamic]string,context.temp_allocator)
+    if task!="" {
+        if config,_,configured:=lifecycle_config(s,chain,task);configured do append(&excluded,field(config,"author_agent_id"))
+    }
+    if v,ok:=contracts.owner_request_document(brief);ok {
+        if o,obj:=v.(json.Object);obj && field(o,"assignee")!="" do append(&excluded,field(o,"assignee"))
+    }
+    coordinators,read:=chain_coordinator_agents(s,chain)
+    if !read do return "storage_error"
+    for id in reviewers do if slice.contains(excluded[:],id) || slice.contains(coordinators,id) do return "invalid_scope"
+    return "ok"
+}
+
+// One owed reviewer of a task in review and the chain's enabled member
+// instances of that agent (the configured reviewer's bound instance first).
+Review_Target :: struct { agent_id:string, instances:[]string }
+
+// The reviewers a task in review (not held) still owes a verdict, in gate
+// order; empty for any other state. Read-only.
+review_targets :: proc(s:^Store,chain,task:string) -> ([]Review_Target,bool) {
+    tx:Transaction
+    if !transaction_begin(s,&tx) do return nil,false
+    defer transaction_rollback(&tx)
+    out:=make([dynamic]Review_Target,context.temp_allocator)
+    states,ok:=query(s.db,"SELECT state,attempt FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)
+    if !ok do return nil,false
+    if len(states)!=1 || states[0][0]!="in_review" || !control_ready(s,chain,task) do return out[:],true
+    config,_,configured:=lifecycle_config(s,chain,task)
+    if !configured do return out[:],true
+    owed,owed_ok:=review_owed(s,chain,task,states[0][1],config)
+    if !owed_ok do return nil,false
+    for agent in owed {
+        instances:=make([dynamic]string,context.temp_allocator)
+        if agent==field(config,"reviewer_agent_id") && field(config,"reviewer_instance_id")!="" do append(&instances,field(config,"reviewer_instance_id"))
+        rows,read:=query(s.db,`SELECT instance_id FROM local_chain_member_versions m WHERE chain_id=? AND agent_id=? AND enabled=1 AND role!='coordinator'
+          AND accepted_seq=(SELECT max(accepted_seq) FROM local_chain_member_versions x WHERE x.chain_id=m.chain_id AND x.instance_id=m.instance_id) ORDER BY accepted_seq DESC`,chain,agent)
+        if !read do return nil,false
+        for r in rows do if !slice.contains(instances[:],r[0]) do append(&instances,r[0])
+        append(&out,Review_Target{agent,instances[:]})
+    }
+    return out[:],true
+}
+
+// The review lease `lease next` hands this child: the first task in review
+// (not held) whose gate still owes the child's agent a verdict and that the
+// child may review (task_reviewer_authorized). Read-only.
+review_pending :: proc(s:^Store,child:Child) -> (chain,task:string,found,ok:bool) {
+    tx:Transaction
+    if !transaction_begin(s,&tx) do return "","",false,false
+    defer transaction_rollback(&tx)
+    rows,read:=query(s.db,"SELECT chain_id,task_id,attempt FROM lifecycle_state WHERE state='in_review' ORDER BY chain_id,task_id LIMIT 500")
+    if !read do return "","",false,false
+    for row in rows {
+        if !control_ready(s,row[0],row[1]) || !task_reviewer_authorized(s,row[0],row[1],child) do continue
+        config,_,configured:=lifecycle_config(s,row[0],row[1])
+        if !configured do continue
+        owed,owed_ok:=review_owed(s,row[0],row[1],row[2],config)
+        if !owed_ok do return "","",false,false
+        if slice.contains(owed,child.agent_id) do return row[0],row[1],true,true
+    }
+    return "","",false,true
+}
+
 // brief_cleared: the brief's user gate was just cleared on this submitted
 // attempt (requirements.edit), so the submission's snapshot flag no longer
 // applies. A workflow-stage user requirement still does.

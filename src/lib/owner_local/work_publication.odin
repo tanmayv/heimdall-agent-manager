@@ -51,7 +51,7 @@ work_set_pending :: proc(s:^Store,chain:string,p:json.Object,seq:i64)->bool {
     _,ok=query(s.db,"INSERT INTO local_chain_defaults_versions VALUES(?,?,?)",chain,fmt.tprintf("%d",seq),encode(current))
     return ok
 }
-work_publish_brief :: proc(s:^Store,chain,raw:string)->string {
+work_publish_brief :: proc(s:^Store,chain,raw:string,task:="")->string {
     if !brief_valid(raw) do return "invalid_content"
     v,_:=contracts.owner_request_document(raw);b,_:=v.(json.Object)
     if len(strings.trim_space(field(b,"goal")))>2000 do return "invalid_content"
@@ -70,7 +70,8 @@ work_publish_brief :: proc(s:^Store,chain,raw:string)->string {
             if len(rows)==0 do return "invalid_scope"
         }
     }
-    return "ok"
+    // ...and never the task's author or a chain coordinator.
+    return brief_reviewers_admissible(s,chain,task,raw)
 }
 work_spec_brief :: proc(spec:json.Object)->string {
     if v,present:=spec["brief"];present {return encode(v)}
@@ -98,7 +99,7 @@ work_proposal_validate :: proc(s:^Store,chain:string,p:json.Object,seq:i64)->str
         if draft[0][0]!="draft" do continue
         req,has:=lifecycle_requirements(s,chain,row[0])
         if !has do return "invalid_content"
-        if code:=work_publish_brief(s,chain,req[1]);code!="ok" do return code
+        if code:=work_publish_brief(s,chain,req[1],row[0]);code!="ok" do return code
     }
     return "ok"
 }
@@ -108,7 +109,7 @@ work_publish_task :: proc(s:^Store,chain,task:string,seq:i64)->string {
     if len(generated)>0 do return "invalid_scope"
     req,has:=lifecycle_requirements(s,chain,task)
     if !has do return "invalid_content"
-    if code:=work_publish_brief(s,chain,req[1]);code!="ok" do return code
+    if code:=work_publish_brief(s,chain,req[1],task);code!="ok" do return code
     rows,ok:=query(s.db,"SELECT publish_state FROM local_task_publications WHERE chain_id=? AND task_id=? ORDER BY accepted_seq DESC LIMIT 1",chain,task)
     if !ok do return "storage_error"
     if len(rows)==0 || rows[0][0]=="published" do return "ok"

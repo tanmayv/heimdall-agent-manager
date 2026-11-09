@@ -13,6 +13,15 @@ import owner "odin_test:lib/owner_local"
 
 // Caller holds startup I/O then token mutex through the owner commit, so stop/rotation/relaunch
 // cannot race admission after exact-child validation.
+// The exact live child of an instance for an owner decision about ANOTHER
+// instance (assignment, lifecycle proof, review dispatch). Tests substitute
+// bridge_owner_live_probe (no PTY host); caller holds the child locks.
+bridge_owner_live_probe:proc(instance:string) -> (owner.Child,bool)
+bridge_owner_live_child :: proc(instance:string) -> (owner.Child,bool) {
+    if bridge_owner_live_probe!=nil do return bridge_owner_live_probe(instance)
+    return bridge_owner_child_locked(instance,"")
+}
+
 bridge_owner_child_locked :: proc(instance,token_hash:string) -> (owner.Child,bool) {
     inst,found:=bridge_runtime_instance_snapshot(instance)
     if !found || inst.stopped_intent_unix_ms!=0 || !inst.pty_process_alive || !bridge_runtime_status_active(inst.runtime_status) do return {},false
