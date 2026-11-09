@@ -1,11 +1,27 @@
 package main
 
-// P-CS CC-C: agent-mode verbs for the coordinator controls on Bridge-owned
-// chains (src/bridge/owner_agent_controls.odin). Each verb maps to exactly one
-// agent.* method; the Bridge serves it from its owner store, or answers a typed
-// `owner_chain_only` bad_request for a Hub chain. The verbs the Hub also serves
-// (hold, release, unblock, recheck) then fall back to the existing Hub route;
-// every other verb prints the typed error. Refusals are printed verbatim.
+// Coordinator controls (P-CS CC-C, T1) for Bridge-owned (owner) chains. Every
+// verb goes to the Bridge as one agent.* method; on a chain this Bridge owns
+// the owner store serves it (src/bridge/owner_agent_controls.odin). On a legacy
+// Hub chain the Bridge answers the typed `owner_chain_only` bad_request and
+// ham-ctl prints a typed owner_chain_only error: these controls are not
+// implemented for Hub chains. The one exception is hold/release/unblock/
+// recheck, which ham-ctl already sent to their existing Hub routes before the
+// owner controls existed; they keep doing so (ctl_coord_hub_action).
+//
+// Verb                         Owner method
+// task hold|release|unblock|recheck  agent.task.hold|release|unblock|recheck
+// task cancel|reopen|delete|escalate agent.task.cancel|reopen|delete|escalate
+// task submit-for-review       agent.task.submit_review
+// task done --force            agent.task.complete
+// task split                   agent.task.split
+// lease revoke                 agent.lease.revoke
+// merge retry                  agent.task.merge_retry
+// review roles                 agent.task.review_roles
+//
+// A Hub route for a verb is one entry in ctl_coord_hub_action plus its body in
+// ctl_coord_hub_body; nothing else changes. Refusals are printed verbatim; a
+// refused reopen also names its cause (the owner Bridge supplies it).
 
 import "core:encoding/json"
 import "core:fmt"
@@ -13,14 +29,17 @@ import "core:os"
 import "core:strings"
 import httpc "odin_test:lib/httpc"
 
-// Ctl_Coord_Plan is one coordinator control call: the agent method, its params,
-// the Hub fallback action (empty when the verb exists only on owner chains) and
-// a usage error when the flags are incomplete.
+CTL_OWNER_CHAIN_ONLY :: "owner_chain_only"
+
+// Ctl_Coord_Plan is one coordinator control call: the owner agent method and
+// its params, the legacy Hub fallback (action "" = owner chains only) and a
+// usage error when the flags are incomplete.
 Ctl_Coord_Plan :: struct {
-	method:       string,
-	params:       string,
-	hub_fallback: string,
-	error:        string,
+	method:     string,
+	params:     string,
+	hub_action: string,
+	reason:     string,
+	error:      string,
 }
 
 // The verbs `task <verb>` routes here.
@@ -33,7 +52,19 @@ ctl_coord_task_verb :: proc(verb: string) -> bool {
 	return false
 }
 
-// Verbs whose owner method requires a reason (R2-6), checked here so the
+// ctl_coord_hub_action: the pre-existing Hub task action route of a verb, ""
+// when the verb is served only on Bridge-owned chains (every new control).
+ctl_coord_hub_action :: proc(verb: string) -> string {
+	switch verb {
+	case "hold":    return "hold"
+	case "release": return "release"
+	case "unblock": return "answer"
+	case "recheck": return "recheck"
+	}
+	return ""
+}
+
+// Verbs whose owner control requires a reason (R2-6), checked here so the
 // caller sees the flag name before anything is sent.
 @(private = "file")
 ctl_coord_reason_required :: proc(verb: string) -> bool {
@@ -64,13 +95,13 @@ ctl_coord_plan :: proc(verb, tid: string, args: []string, children_json := "", m
 	plan: Ctl_Coord_Plan
 	switch verb {
 	case "hold":
-		plan = {method = "agent.task.hold", hub_fallback = "hold"}
+		plan = {method = "agent.task.hold"}
 	case "release":
-		plan = {method = "agent.task.release", hub_fallback = "release"}
+		plan = {method = "agent.task.release"}
 	case "unblock":
-		plan = {method = "agent.task.unblock", hub_fallback = "answer"}
+		plan = {method = "agent.task.unblock"}
 	case "recheck":
-		plan = {method = "agent.task.recheck", hub_fallback = "recheck"}
+		plan = {method = "agent.task.recheck"}
 	case "reopen":
 		plan = {method = "agent.task.reopen"}
 	case "delete":
@@ -144,7 +175,18 @@ ctl_coord_plan :: proc(verb, tid: string, args: []string, children_json := "", m
 		return {error = usage}
 	}
 	plan.params = json_object_from_slice(fields[:])
+	plan.hub_action = ctl_coord_hub_action(verb)
+	plan.reason = reason
 	return plan
+}
+
+// ctl_coord_hub_body: the body of a verb's legacy Hub route.
+ctl_coord_hub_body :: proc(verb, reason: string) -> httpc.Body {
+	switch verb {
+	case "hold":    return httpc.json_body(Ctl_Task_Reason_Body{reason = reason})
+	case "unblock": return httpc.json_body(Ctl_Task_Note_Body{note = reason})
+	}
+	return ctl_empty_object_body()
 }
 
 // ctl_coord_role_pairs: --role <role>=<agent_id>[@<instance_id>] (repeatable or
@@ -221,6 +263,8 @@ ctl_coord_verb_name :: proc(verb: string) -> string {
 	case "revoke": return "lease revoke"
 	case "merge-retry": return "merge retry"
 	case "review-roles": return "review roles"
+	case "complete": return "task done"
+	case "submit-review": return "task submit-for-review"
 	}
 	return fmt.tprintf("task %s", verb)
 }
@@ -248,7 +292,53 @@ ctl_coord_usage :: proc(verb: string) -> string {
 // ctl_coord_owner_only reports whether the Bridge answered the typed
 // owner_chain_only error (the target chain is not owned by this Bridge).
 ctl_coord_owner_only :: proc(response: string) -> bool {
-	return strings.contains(response, "owner_chain_only")
+	return strings.contains(response, CTL_OWNER_CHAIN_ONLY)
+}
+
+// ctl_coord_owner_only_json: the typed error printed for an owner-chain verb
+// on a legacy Hub chain.
+ctl_coord_owner_only_json :: proc(verb: string) -> string {
+	text := fmt.tprintf("`%s` is a coordinator control of Bridge-owned chains only; this task's chain is a legacy Hub chain, where it is not supported", ctl_coord_verb_name(verb))
+	err := json_object(json_kv("code", CTL_OWNER_CHAIN_ONLY), json_kv("message", text))
+	return json_object(json_kv_raw("ok", "false"), json_kv_raw("error", err))
+}
+
+// Ctl_Coord_Route is what ctl_coord_control does with the Bridge's answer.
+Ctl_Coord_Route :: enum {
+	Print,        // the owner store served (or refused) the control: print verbatim
+	Hub,          // a Hub chain and the verb has a Hub route
+	Owner_Only,   // a Hub chain and the verb is owner-only: typed error
+}
+
+// ctl_coord_route decides from the Bridge's first answer. Only the typed
+// owner_chain_only reply is turned into the typed error (or a pre-existing
+// Hub route); a refusal (worker or reviewer token, foreign chain) is printed
+// as-is and never retried on the Hub.
+ctl_coord_route :: proc(plan: Ctl_Coord_Plan, response: string) -> Ctl_Coord_Route {
+	if !ctl_coord_owner_only(response) do return .Print
+	if plan.hub_action == "" do return .Owner_Only
+	return .Hub
+}
+
+// ctl_coord_refusal_cause names why an owner control was refused, for causes
+// an agent can act on. "" when nothing is recognised.
+ctl_coord_refusal_cause :: proc(response: string) -> string {
+	if !strings.contains(response, `"ok":false`) do return ""
+	message := ""
+	if v, ok := ctl_parse_json_document(response); ok {
+		if o, is_obj := v.(json.Object); is_obj {
+			if e, has := o["error"].(json.Object); has {
+				if m, is_str := e["message"].(json.String); is_str do message = string(m)
+			}
+		}
+	}
+	// The owner Bridge names a reopen's cause itself (owner_local
+	// reopen_refusal_cause): chain not active, consumed by a started dependent, ...
+	if i := strings.index(message, "cannot be reopened: "); i >= 0 do return strings.trim_space(message[i + len("cannot be reopened: "):])
+	if strings.contains(message, "only the verified chain coordinator") || strings.contains(message, "only the chain coordinator") {
+		return "the caller is not this chain's coordinator (worker and reviewer tokens cannot use coordinator controls)"
+	}
+	return ""
 }
 
 // ctl_coord_control runs one coordinator control end to end and exits 1 on
@@ -271,33 +361,138 @@ ctl_coord_control :: proc(endpoint, token, verb, tid: string, args: []string) {
 	if plan.error != "" do ctl_print_error_exit(plan.error)
 	response, ok := ctl_agent_local_call(endpoint, token, plan.method, plan.params)
 	if !ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
-	if ctl_coord_owner_only(response) {
-		if plan.hub_fallback != "" {
-			// A Hub chain: the Hub serves this verb on its own route.
-			ctl_coord_hub_fallback(endpoint, token, tid, args, plan.hub_fallback)
-			return
-		}
-		fmt.println(response)
-		fmt.eprintfln("ham-ctl: `%s` is a coordinator control of Bridge-owned chains only (owner_chain_only); this task's chain is a Hub chain.", ctl_coord_verb_name(verb))
+	switch ctl_coord_route(plan, response) {
+	case .Hub:
+		// A Hub chain: the Hub serves this verb on its own task action route.
+		hub, hub_ok := ctl_v2_task_action_call(endpoint, token, tid, args, plan.hub_action, ctl_coord_hub_body(verb, plan.reason))
+		if !hub_ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
+		ctl_coord_print_and_exit(verb, hub, args)
+	case .Owner_Only:
+		fmt.println(ctl_coord_owner_only_json(verb))
 		os.exit(1)
+	case .Print:
+		ctl_coord_print_and_exit(verb, response, args)
 	}
+}
+
+// ctl_coord_print_and_exit prints a control's answer (decrypted for owner
+// replies); a refused control also prints its cause on stderr.
+@(private = "file")
+ctl_coord_print_and_exit :: proc(verb, response: string, args: []string) {
 	keyring, key_ok := ctl_read_vault_keyring(args, context.temp_allocator)
 	out := ctl_decrypt_json_string(response, keyring, key_ok)
 	fmt.println(out)
-	if strings.contains(response, `"ok":false`) do os.exit(1)
+	if !strings.contains(response, `"ok":false`) do return
+	if cause := ctl_coord_refusal_cause(response); cause != "" {
+		fmt.eprintfln("ham-ctl: %s refused: %s", ctl_coord_verb_name(verb), cause)
+	}
+	os.exit(1)
 }
 
-@(private = "file")
-ctl_coord_hub_fallback :: proc(endpoint, token, tid: string, args: []string, action: string) {
-	switch action {
-	case "hold":
-		ctl_v2_task_hold(endpoint, token, tid, args)
-	case "release":
-		ctl_v2_task_hold(endpoint, token, tid, args, release = true)
-	case "answer":
-		note := option_value(args, "--note", option_value(args, "--reason", ""))
-		ctl_v2_task_action(endpoint, token, tid, args, "answer", httpc.json_body(Ctl_Task_Note_Body{note = note}))
-	case "recheck":
-		ctl_v2_task_action(endpoint, token, tid, args, "recheck", ctl_empty_object_body())
+// ---- --assignee self (T1 REQ 4) ---------------------------------------------
+
+// Ctl_Self_Assignee: the resolved durable agent id, or a refusal code and
+// message (code "" = allowed).
+Ctl_Self_Assignee :: struct {
+	agent_id: string,
+	code:     string,
+	message:  string,
+}
+
+CTL_SELF_SOLO_HINT :: "use solo mode (the coordinator holds a worker fleet row in this chain) or `task done --force`"
+
+// ctl_assignee_self_resolve decides `--assignee self` from the target chain's
+// agent.task_chain.show reply. The owner Bridge adds `caller` {agent_id,
+// instance_id, coordinator, worker_fleet_row}. Allowed only for the chain
+// coordinator in solo mode (it holds an enabled worker fleet row); a legacy
+// Hub chain answers owner_chain_only. Pure: no I/O.
+ctl_assignee_self_resolve :: proc(chain_json: string) -> Ctl_Self_Assignee {
+	chain := ctl_json_data_object(chain_json)
+	auth, has := chain["authority"].(json.Object)
+	if !has || ctl_json_str(auth, "kind") != "owner" {
+		return {code = CTL_OWNER_CHAIN_ONLY, message = "--assignee self is supported only on Bridge-owned chains; this chain is a legacy Hub chain: pass --assignee agt_..."}
 	}
+	caller, has_caller := chain["caller"].(json.Object)
+	agent := ctl_json_str(caller, "agent_id")
+	if !has_caller || !strings.has_prefix(agent, "agt_") do return {code = "self_unresolved", message = "--assignee self: the Bridge did not report your durable agent id (agt_...); pass --assignee agt_..."}
+	if b, _ := caller["coordinator"].(json.Boolean); !bool(b) {
+		return {code = "coordinator_only", message = "--assignee self is only for the chain coordinator in solo mode; you are not the coordinator of this chain (worker and reviewer agents cannot assign tasks)"}
+	}
+	if b, _ := caller["worker_fleet_row"].(json.Boolean); !bool(b) {
+		return {code = "solo_required", message = fmt.tprintf("--assignee self is allowed only in solo mode; %s", CTL_SELF_SOLO_HINT)}
+	}
+	return {agent_id = agent}
+}
+
+// ctl_assignee_is_self: `--assignee self` (also `me`).
+ctl_assignee_is_self :: proc(args: []string) -> bool {
+	a := strings.trim_space(option_value(args, "--assignee", ""))
+	return a == "self" || a == "me"
+}
+
+// ctl_assignee_self_args resolves `--assignee self` against the live chain and
+// returns args with the durable agent id substituted; prints the typed refusal
+// and exits 1 when it is not allowed. The chain is --chain, the task's chain
+// (update, via tid), else the caller's own chain (the Bridge's default).
+ctl_assignee_self_args :: proc(endpoint, token: string, args: []string, tid := "") -> []string {
+	if !ctl_assignee_is_self(args) do return args
+	chain_id := strings.trim_space(option_value(args, "--chain", option_value(args, "--chain-id", "")))
+	if chain_id == "" && tid != "" {
+		if res, ok := ctl_agent_local_call(endpoint, token, "agent.task.show", json_object(json_kv("task_id", tid))); ok {
+			chain_id = extract_json_string_unescaped(res, "chain_id", "", context.temp_allocator)
+		}
+	}
+	params := "{}"
+	if chain_id != "" do params = json_object(json_kv("chain_id", chain_id))
+	chain_json, ok := ctl_agent_local_call(endpoint, token, "agent.task_chain.show", params)
+	if !ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
+	r := ctl_assignee_self_resolve(chain_json)
+	if r.code != "" {
+		fmt.println(json_object(json_kv_raw("ok", "false"), json_kv_raw("error", json_object(json_kv("code", r.code), json_kv("message", r.message)))))
+		os.exit(1)
+	}
+	return ctl_args_replace_value(args, "--assignee", r.agent_id)
+}
+
+// ctl_args_replace_value: a copy of args with the value of every `flag <v>` /
+// `flag=<v>` occurrence replaced.
+ctl_args_replace_value :: proc(args: []string, flag, value: string) -> []string {
+	out := make([dynamic]string, 0, len(args), context.temp_allocator)
+	for i := 0; i < len(args); i += 1 {
+		a := args[i]
+		if a == flag && i + 1 < len(args) {
+			append(&out, a, value)
+			i += 1
+			continue
+		}
+		if strings.has_prefix(a, strings.concatenate({flag, "="}, context.temp_allocator)) {
+			append(&out, strings.concatenate({flag, "=", value}, context.temp_allocator))
+			continue
+		}
+		append(&out, a)
+	}
+	return out[:]
+}
+
+// ctl_json_data_object: the innermost "data" object of a (relayed) envelope,
+// or the document itself when it has none.
+ctl_json_data_object :: proc(text: string) -> json.Object {
+	v, ok := ctl_parse_json_document(text)
+	if !ok do return nil
+	for _ in 0 ..< 4 {
+		o, is_obj := v.(json.Object)
+		if !is_obj do return nil
+		inner, has := o["data"]
+		if !has do return o
+		if _, inner_obj := inner.(json.Object); !inner_obj do return o
+		v = inner
+	}
+	o, _ := v.(json.Object)
+	return o
+}
+
+ctl_json_str :: proc(o: json.Object, key: string) -> string {
+	if o == nil do return ""
+	s, _ := o[key].(json.String)
+	return strings.trim_space(string(s))
 }
