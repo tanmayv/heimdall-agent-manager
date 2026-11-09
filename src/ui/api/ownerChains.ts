@@ -10,7 +10,7 @@
 import { cookieJsonFetch, cookieMutation } from './cookieFetch';
 import { listOwnerRegistryPages, type OwnerRegistryPage } from './ownerRegistryListing';
 import { ownerId, prepareOwnerOperation, sendOwnerOperation, type OwnerInput, type OwnerSession } from './ownerLocalClient';
-import type { OwnerCommand } from './ownerLocal';
+import { ownerDocumentValid, type OwnerCommand } from './ownerLocal';
 import { decryptVaultText } from '../utils/vaultContent';
 import { pinsFromChain, verifyDirectory, type VerifiedChain } from '../utils/vaultDirectoryVerify';
 import { getKeyringSession } from '../utils/vaultKeyringSession';
@@ -36,8 +36,15 @@ export interface OwnerChainSummary {
   pending?: boolean;
   /** The owner's work status; '' or absent when unknown (owner offline or not read). */
   status?: OwnerChainStatus;
-  /** The bound coordinator instance (chain.metadata.read member rows); '' or absent when none or not read. */
+  /**
+   * The bound coordinator instance: '' when none is bound, absent while not
+   * known yet. Read from the owner-signed members on the chain's registry row
+   * when the owner published them, else from the owner's member rows
+   * (chain.metadata.read). See ownerCoordinatorState.
+   */
   coordinatorAgentInstanceId?: string;
+  /** The last owner read of the coordinator failed (it stays absent and is read again on demand). */
+  coordinatorReadFailed?: boolean;
   /**
    * The owner Bridge itself created the chain (agent `task-chain create`;
    * registry creator_id is the owner Bridge). Its owner store enables paired-root
@@ -46,6 +53,46 @@ export interface OwnerChainSummary {
   bridgeCreated?: boolean;
 }
 export type OwnerChainStatus = '' | 'active' | 'completed';
+
+/** What the app knows about a chain's coordinator. */
+export type OwnerCoordinatorState =
+  | { kind: 'bound'; instanceId: string }
+  /** Read: no coordinator is bound. */
+  | { kind: 'none' }
+  /** Not known yet; a read is under way or about to start. */
+  | { kind: 'loading' }
+  /** The owner read failed. */
+  | { kind: 'failed' }
+  /** Not known and the owner Bridge is offline. */
+  | { kind: 'offline' };
+
+/**
+ * The coordinator state of an owner chain. An absent coordinator is never
+ * "none": it is loading until a read returns ('' = none) or fails, and an
+ * offline owner says so. A chain created on this device (pending) is read
+ * once its registry entry lists it; until then it has what it was created with.
+ */
+export function ownerCoordinatorState(chain: Pick<OwnerChainSummary, 'coordinatorAgentInstanceId' | 'coordinatorReadFailed' | 'online' | 'pending'> | undefined): OwnerCoordinatorState {
+  if (!chain) return { kind: 'loading' };
+  const id = chain.coordinatorAgentInstanceId;
+  if (id) return { kind: 'bound', instanceId: id };
+  if (id === '' || chain.pending) return { kind: 'none' };
+  if (!chain.online) return { kind: 'offline' };
+  return chain.coordinatorReadFailed ? { kind: 'failed' } : { kind: 'loading' };
+}
+
+/**
+ * The bound coordinator a chain registry row names: the owner Bridge
+ * republishes its chain row with the member ids and roles (owner-signed,
+ * verified by the Hub on publication) after every membership change. ''
+ * when the row says none is bound; undefined for rows published without
+ * members (older owners), which need an owner read.
+ */
+export function registryCoordinator(registry: unknown): string | undefined {
+  if (!registry || typeof registry !== 'object' || !Object.hasOwn(registry, 'members_json')) return undefined;
+  if (!ownerDocumentValid('registry', registry)) return undefined;
+  return (registry as unknown as { coordinator_instance_id: string }).coordinator_instance_id;
+}
 
 /** Fixed sends for the owner relay; replaced in tests. */
 export type OwnerSend = (relay: unknown) => Promise<unknown>;
@@ -110,11 +157,13 @@ export async function loadOwnerChainSummaries(
       tasks.push({ taskId: String(t.task_id), title: taskTitle ?? '' });
     }
     tasks.sort((a, b) => a.taskId.localeCompare(b.taskId));
+    const coordinator = entry.chain ? registryCoordinator(registry) : undefined;
     out.push({
       chainId, ownerBridgeId: String(head.owner_bridge_id || ''), bridgeName: ownerBridgeName(session.chain, String(head.owner_bridge_id || '')),
       online: head.online === true, title: title ?? '', description: description ?? '', sealed, tasks,
       projectId: '', projectName: '', migrated: false,
       bridgeCreated: !!head.creator_id && head.creator_id === head.owner_bridge_id,
+      ...(coordinator === undefined ? {} : { coordinatorAgentInstanceId: coordinator }),
     });
   }
   return out.sort((a, b) => (a.title || a.chainId).localeCompare(b.title || b.chainId) || a.chainId.localeCompare(b.chainId));

@@ -18,7 +18,7 @@ import type { OwnerCommand } from '../../api/ownerLocal';
 import { TASK_STATE_LABELS } from '../tasks/taskV2Types';
 import OwnerLocalPanel from './OwnerLocalPanel';
 import OwnerCoordinatorControl, { type OwnerCoordinatorApi } from './OwnerCoordinatorControl';
-import { setOwnerChainCoordinator } from '../../api/ownerChainsStore';
+import { ownerChainById, resolveOwnerChainCoordinator, setOwnerChainCoordinator } from '../../api/ownerChainsStore';
 import { bindOwnerCoordinator } from '../../api/ownerCoordinator';
 
 const STATE_TONE: Record<OwnerTaskState, Tone> = {
@@ -98,8 +98,20 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
   const [comment, setComment] = useState('');
   const [reason, setReason] = useState('');
   const [reviewSummary, setReviewSummary] = useState('');
-  const [coordinatorId, setCoordinatorId] = useState(chain.coordinatorAgentInstanceId ?? '');
-  useEffect(() => { setCoordinatorId(chain.coordinatorAgentInstanceId ?? ''); }, [chain.chainId, chain.coordinatorAgentInstanceId]);
+  // undefined while the coordinator is not known yet (never shown as "none").
+  const [coordinatorId, setCoordinatorId] = useState<string | undefined>(chain.coordinatorAgentInstanceId);
+  useEffect(() => { setCoordinatorId(chain.coordinatorAgentInstanceId); }, [chain.chainId, chain.coordinatorAgentInstanceId]);
+  const coordinatorUnknown = coordinatorId === undefined && chain.online && !chain.pending;
+  useEffect(() => {
+    if (!coordinatorUnknown) return;
+    // Shares the snapshot's read when one is in flight; a chain the snapshot
+    // does not list resolves here (a failure is recorded on the snapshot).
+    let cancelled = false;
+    void resolveOwnerChainCoordinator(chain.chainId).then((id) => {
+      if (!cancelled && live.current && !ownerChainById(chain.chainId)) setCoordinatorId((prev) => prev ?? id);
+    });
+    return () => { cancelled = true; };
+  }, [coordinatorUnknown, chain.chainId]);
   const sessionRef = useRef<OwnerSession | null>(null);
   // The latest loadTask call; an older call's review scan never overwrites it.
   const taskLoadSeq = useRef(0);
@@ -278,7 +290,8 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
           <OwnerCoordinatorControl
             chainId={chain.chainId}
             ownerBridgeId={bridge}
-            coordinatorId={coordinatorId}
+            coordinatorId={coordinatorId ?? (chain.pending ? '' : undefined)}
+            lookupFailed={chain.coordinatorReadFailed}
             disabled={!editable || busy}
             bind={bindCoordinator}
             onBound={coordinatorBound}

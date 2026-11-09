@@ -70,7 +70,22 @@ export function fakeOwner(session: OwnerSession, answer: (call: OwnerCall) => Ow
 /** A sealed registry row as the Hub lists it. */
 export async function registryRow(session: OwnerSession, o: {
   chainId: string; taskId?: string; bridgeId: string; online: boolean; chainTitle?: string; taskTitle?: string; deleted?: boolean;
+  /** A chain row published with its members (owner republication): the bound coordinator instance, '' for none. */
+  coordinator?: string;
 }) {
+  if (o.coordinator !== undefined) {
+    const members = o.coordinator ? [{ agent_id: 'agt_' + o.coordinator, instance_id: o.coordinator, role: 'coordinator', enabled: '1' }] : [];
+    const registry = {
+      protocol_version: '1', account_id: USER, chain_id: o.chainId, owner_bridge_id: o.bridgeId, key_id: 'bridge_key',
+      genesis_digest: 'a'.repeat(64), metadata_revision: '2', task_id: '',
+      chain_title_cipher: await encryptVaultText(o.chainTitle ?? 'Chain', session.keyring),
+      chain_description_cipher: await encryptVaultText('', session.keyring),
+      task_title_cipher: '', deleted: '0',
+      coordinator_agent_id: o.coordinator ? 'agt_' + o.coordinator : '', coordinator_instance_id: o.coordinator, members_json: JSON.stringify(members),
+      signature: '0'.repeat(128),
+    };
+    return { chain_id: o.chainId, owner_bridge_id: o.bridgeId, owner_key_id: 'bridge_key', task_id: '', registry_json: JSON.stringify(registry), online: o.online };
+  }
   const registry = {
     protocol_version: '1', account_id: USER, chain_id: o.chainId, owner_bridge_id: o.bridgeId, key_id: 'bridge_key',
     genesis_digest: 'a'.repeat(64), metadata_revision: '1', task_id: o.taskId ?? '',

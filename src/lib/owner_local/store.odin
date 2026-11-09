@@ -523,12 +523,15 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         registry:=doc(map[string]string{"protocol_version"="1","account_id"=s.account,"chain_id"=chain,"owner_bridge_id"=s.owner,"key_id"=s.owner_key,"genesis_digest"=genesis_rows[0][0],"metadata_revision"=fmt.tprintf("%d",seq),"task_id"=task,
           "chain_title_cipher"="","chain_description_cipher"="","task_title_cipher"="","deleted"="0","signature"=strings.repeat("0",128,context.temp_allocator)})
         if method=="task.delete" { registry["deleted"]=json.String("1") } else if creating || method=="chain.edit" { registry["chain_title_cipher"]=p["title_cipher"]; registry["chain_description_cipher"]=p["description_cipher"] } else { registry["task_title_cipher"]=p["title_cipher"] }
+        // The chain row always names the current members (it replaces the previous row).
+        if task=="" && method!="task.delete" && !registry_add_members(s,&registry,chain) do return fail("storage_error")
         if sign.sign==nil do return fail("storage_error")
         signature,signed:=sign.sign(sign.ctx,"registry",registry)
         if !signed do return fail("storage_error")
         registry["signature"]=json.String(signature)
         if !intent_enqueue(&tx,Intent_Input{chain=chain,principal=principal,operation=op,seq=seq,kind="registry",fence="{}",payload=encode(registry)}) do return fail("storage_error")
     }
+    if method=="chain.member.set" && !registry_members_intent(&tx,chain,principal,op,seq) do return fail("storage_error")
     if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=?,directory_version=?,directory_hash=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now),fmt.tprintf("%d",directory_version),directory_hash);!ok do return fail("storage_error")
     if !transaction_commit(&tx) do return fail("storage_error")
     return Result{code="ok",body=result,seq=seq}

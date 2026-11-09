@@ -501,7 +501,10 @@ migration_activate :: proc(s:^Store,migration,manifest_digest:string,now:i64,kr:
             if !sealed_ok do return fail("vault_locked")
             sealed[j]=out
         }
-        if entry[0]=="" { registry["chain_title_cipher"]=json.String(sealed[0]);registry["chain_description_cipher"]=json.String(sealed[1]) } else { registry["task_title_cipher"]=json.String(sealed[0]) }
+        if entry[0]=="" {
+            registry["chain_title_cipher"]=json.String(sealed[0]);registry["chain_description_cipher"]=json.String(sealed[1])
+            if !registry_add_members(s,&registry,chain) do return fail("storage_error")
+        } else { registry["task_title_cipher"]=json.String(sealed[0]) }
         signature,signed:=sign.sign(sign.ctx,"registry",registry)
         if !signed do return fail("storage_error")
         registry["signature"]=json.String(signature)

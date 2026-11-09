@@ -3,6 +3,7 @@ export const ownerSchemas = {
   genesis: [["protocol_version", "version"], ["account_id", "id"], ["chain_id", "id"], ["creation_op", "id"], ["owner_bridge_id", "id"], ["owner_key_id", "id"], ["creator_id", "id"], ["creator_key_id", "id"], ["schema_version", "positive"], ["creator_signature", "signature"], ["owner_signature", "signature"]],
   command: [["protocol_version", "version"], ["account_id", "id"], ["chain_id", "id"], ["immutable_owner_bridge", "id"], ["principal_id", "id"], ["operation_id", "id"], ["method", "method"], ["task_id", "optional"], ["expected_revision", "counter"], ["request_expires_ms", "positive"], ["payload_digest", "hash"], ["key_id", "id"], ["signature", "signature"]],
   registry: [["protocol_version", "version"], ["account_id", "id"], ["chain_id", "id"], ["owner_bridge_id", "id"], ["key_id", "id"], ["genesis_digest", "hash"], ["metadata_revision", "positive"], ["task_id", "optional"], ["chain_title_cipher", "cipher"], ["chain_description_cipher", "cipher"], ["task_title_cipher", "cipher"], ["deleted", "flag"], ["signature", "signature"]],
+  registry_members: [["protocol_version", "version"], ["account_id", "id"], ["chain_id", "id"], ["owner_bridge_id", "id"], ["key_id", "id"], ["genesis_digest", "hash"], ["metadata_revision", "positive"], ["task_id", "optional"], ["chain_title_cipher", "cipher"], ["chain_description_cipher", "cipher"], ["task_title_cipher", "cipher"], ["deleted", "flag"], ["coordinator_agent_id", "optional"], ["coordinator_instance_id", "optional"], ["members_json", "document"], ["signature", "signature"]],
   receipt: [["protocol_version", "version"], ["principal_id", "id"], ["operation_id", "id"], ["method", "method"], ["input_digest", "hash"], ["digest_key_id", "id"], ["request_expires_ms", "positive"], ["result_code", "result_code"], ["result_cipher", "cipher"], ["commit_seq", "positive"], ["replay", "flag"]],
   error: [["protocol_version", "version"], ["code", "error_code"], ["operation_id", "optional"]],
   chain_create_payload: [["genesis_digest", "hash"], ["title_cipher", "required_cipher"], ["description_cipher", "required_cipher"]],
@@ -140,6 +141,24 @@ export interface OwnerRegistry {
   chain_description_cipher: string;
   task_title_cipher: string;
   deleted: string;
+  signature: string;
+}
+export interface OwnerRegistry_Members {
+  protocol_version: string;
+  account_id: string;
+  chain_id: string;
+  owner_bridge_id: string;
+  key_id: string;
+  genesis_digest: string;
+  metadata_revision: string;
+  task_id: string;
+  chain_title_cipher: string;
+  chain_description_cipher: string;
+  task_title_cipher: string;
+  deleted: string;
+  coordinator_agent_id: string;
+  coordinator_instance_id: string;
+  members_json: string;
   signature: string;
 }
 export interface OwnerReceipt {
@@ -918,6 +937,7 @@ export interface OwnerDocuments {
   genesis: OwnerGenesis;
   command: OwnerCommand;
   registry: OwnerRegistry;
+  registry_members: OwnerRegistry_Members;
   receipt: OwnerReceipt;
   error: OwnerError;
   chain_create_payload: OwnerChain_Create_Payload;

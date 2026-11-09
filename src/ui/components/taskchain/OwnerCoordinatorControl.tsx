@@ -56,7 +56,10 @@ export const COORDINATOR_STAGE_TEXT: Record<NewChainCoordinatorStage, string> = 
 export interface OwnerCoordinatorControlProps {
   chainId: string;
   ownerBridgeId: string;
-  coordinatorId: string;
+  /** The bound coordinator; '' when none is bound, undefined while it is looked up. */
+  coordinatorId: string | undefined;
+  /** The owner read of an unknown coordinator failed. */
+  lookupFailed?: boolean;
   disabled?: boolean;
   /** chain.member.set role=coordinator through the owner relay. */
   bind: (instanceId: string, agentId: string) => Promise<void>;
@@ -64,7 +67,7 @@ export interface OwnerCoordinatorControlProps {
   api?: OwnerCoordinatorApi;
 }
 
-export function OwnerCoordinatorControl({ chainId, ownerBridgeId, coordinatorId, disabled, bind, onBound, api = hubCoordinatorApi }: OwnerCoordinatorControlProps) {
+export function OwnerCoordinatorControl({ chainId, ownerBridgeId, coordinatorId, lookupFailed, disabled, bind, onBound, api = hubCoordinatorApi }: OwnerCoordinatorControlProps) {
   const [open, setOpen] = useState(false);
   const [agents, setAgents] = useState<CoordinatorAgentChoice[] | null>(null);
   const [agentId, setAgentId] = useState('');
@@ -105,8 +108,11 @@ export function OwnerCoordinatorControl({ chainId, ownerBridgeId, coordinatorId,
     <div data-debug-id="owner-chain-coordinator" className="flex flex-wrap items-center gap-2 text-xs">
       {coordinatorId
         ? <span data-debug-id="owner-chain-coordinator-id" className="text-muted">Coordinator: <code>{coordinatorId}</code></span>
-        : <span className="text-muted">No coordinator</span>}
-      {!open && (
+        : coordinatorId === '' ? <span data-debug-id="owner-chain-coordinator-none" className="text-muted">No coordinator</span>
+        : lookupFailed ? <span data-debug-id="owner-chain-coordinator-unknown" className="text-muted">Coordinator could not be looked up</span>
+        : <span role="status" data-debug-id="owner-chain-coordinator-loading" className="text-muted">Looking up coordinator…</span>}
+      {/* Start/Replace only once the coordinator is known (or its lookup failed). */}
+      {!open && (coordinatorId !== undefined || lookupFailed) && (
         <Button size="sm" variant="ghost" data-debug-id="owner-chain-start-coordinator" disabled={disabled || running} onClick={() => void openPicker()}>
           {coordinatorId ? 'Replace coordinator' : 'Start coordinator'}
         </Button>

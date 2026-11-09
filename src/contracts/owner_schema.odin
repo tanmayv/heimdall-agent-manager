@@ -89,6 +89,47 @@ owner_fields_registry := [?]Owner_Field{
     {"deleted", "flag"},
     {"signature", "signature"},
 }
+// A chain registry row (task_id "") that also carries the chain's member ids
+// and roles, so the Hub listing names the bound coordinator without a Bridge
+// read. Selected by the presence of members_json; rows without it keep the
+// plain registry shape and signature domain.
+Owner_Registry_Members :: struct {
+    protocol_version: string,
+    account_id: string,
+    chain_id: string,
+    owner_bridge_id: string,
+    key_id: string,
+    genesis_digest: string,
+    metadata_revision: string,
+    task_id: string,
+    chain_title_cipher: string,
+    chain_description_cipher: string,
+    task_title_cipher: string,
+    deleted: string,
+    coordinator_agent_id: string,
+    coordinator_instance_id: string,
+    members_json: string,
+    signature: string,
+}
+@(private)
+owner_fields_registry_members := [?]Owner_Field{
+    {"protocol_version", "version"},
+    {"account_id", "id"},
+    {"chain_id", "id"},
+    {"owner_bridge_id", "id"},
+    {"key_id", "id"},
+    {"genesis_digest", "hash"},
+    {"metadata_revision", "positive"},
+    {"task_id", "optional"},
+    {"chain_title_cipher", "cipher"},
+    {"chain_description_cipher", "cipher"},
+    {"task_title_cipher", "cipher"},
+    {"deleted", "flag"},
+    {"coordinator_agent_id", "optional"},
+    {"coordinator_instance_id", "optional"},
+    {"members_json", "document"},
+    {"signature", "signature"},
+}
 Owner_Receipt :: struct {
     protocol_version: string,
     principal_id: string,
@@ -1807,6 +1848,7 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "genesis": return owner_fields_genesis[:]
     case "command": return owner_fields_command[:]
     case "registry": return owner_fields_registry[:]
+    case "registry_members": return owner_fields_registry_members[:]
     case "receipt": return owner_fields_receipt[:]
     case "error": return owner_fields_error[:]
     case "chain_create_payload": return owner_fields_chain_create_payload[:]

@@ -59,11 +59,41 @@ function fieldValid(s: string, kind: string): boolean {
     default: return false;
   }
 }
+export const OWNER_REGISTRY_MEMBERS_MAX = 64;
+/** One member of a chain registry row (src/contracts/owner_local.odin owner_registry_members_valid). */
+export interface OwnerRegistryMember { agent_id: string; instance_id: string; role: string; enabled: string }
+/**
+ * The member list of a live chain registry row: distinct instances, each with
+ * exactly agent_id/instance_id/role/enabled, and the named coordinator (when
+ * set) one of its enabled coordinator members.
+ */
+function registryMembersValid(o: Record<string, unknown>): boolean {
+  if (o.task_id !== '' || o.deleted !== '0') return false;
+  const agent = String(o.coordinator_agent_id), instance = String(o.coordinator_instance_id);
+  if (instance === '' && agent !== '') return false;
+  let list: unknown;
+  try { list = parseOwnerRequestDocument(String(o.members_json)); } catch { return false; }
+  if (!Array.isArray(list) || list.length > OWNER_REGISTRY_MEMBERS_MAX) return false;
+  const seen = new Set<string>();
+  let coordinator = instance === '';
+  for (const item of list) {
+    if (!item || typeof item !== 'object' || Array.isArray(item) || Object.keys(item).length !== 4) return false;
+    const m = item as Record<string, unknown>;
+    for (const name of ['agent_id', 'instance_id', 'role', 'enabled']) {
+      if (typeof m[name] !== 'string' || !fieldValid(m[name] as string, name === 'enabled' ? 'flag' : 'id')) return false;
+    }
+    if (seen.has(m.instance_id as string)) return false;
+    seen.add(m.instance_id as string);
+    if (m.instance_id === instance && m.agent_id === agent && m.role === 'coordinator' && m.enabled === '1') coordinator = true;
+  }
+  return coordinator;
+}
 export function ownerDocumentValid<K extends OwnerKind>(kind: K, value: unknown): value is OwnerDocuments[K] {
   if (!Object.hasOwn(ownerSchemas, kind) || !value || typeof value !== 'object' || Array.isArray(value)) return false;
   const o = value as Record<string, unknown>;
   if (kind === 'fleet_policy_payload' && Object.hasOwn(o, 'source_revision')) return ownerDocumentValid('fleet_policy_source_payload', value);
   if (kind === 'submit_payload' && Object.hasOwn(o, 'output')) return ownerDocumentValid('submit_output_payload', value);
+  if (kind === 'registry' && Object.hasOwn(o, 'members_json')) return ownerDocumentValid('registry_members', value);
   const fields = ownerSchemas[kind];
   if (Object.keys(o).length !== fields.length) return false;
   for (const [name, type] of fields) if (!Object.hasOwn(o, name) || typeof o[name] !== 'string' || !fieldValid(o[name], type)) return false;
@@ -75,12 +105,13 @@ export function ownerDocumentValid<K extends OwnerKind>(kind: K, value: unknown)
     if (o.ended_ms !== '' && BigInt(String(o.ended_ms)) < BigInt(String(o.started_ms))) return false;
   }
   if (kind === 'native_history_facet' && o.attempt_no === '0' && o.kind !== 'placement') return false;
-  if (kind === 'registry' && o.deleted === '0') {
+  if (kind === 'registry_members' && !registryMembersValid(o)) return false;
+  if ((kind === 'registry' || kind === 'registry_members') && o.deleted === '0') {
     if (o.task_id === '') {
       if (o.chain_title_cipher === '' || o.chain_description_cipher === '' || o.task_title_cipher !== '') return false;
     } else if (o.task_title_cipher === '' || o.chain_title_cipher !== '' || o.chain_description_cipher !== '') return false;
   }
-  if (kind === 'registry' && o.deleted === '1' && (o.chain_title_cipher !== '' || o.chain_description_cipher !== '' || o.task_title_cipher !== '')) return false;
+  if ((kind === 'registry' || kind === 'registry_members') && o.deleted === '1' && (o.chain_title_cipher !== '' || o.chain_description_cipher !== '' || o.task_title_cipher !== '')) return false;
   if (kind === 'receipt' && o.result_code === 'retired' && o.result_cipher !== '') return false;
   if (kind === 'capability' && BigInt(String(o.expires_ms)) > BigInt(String(o.hard_ms))) return false;
   if (kind === 'lease_input' && ((o.method === 'lease.claim') !== (o.capability === ''))) return false;
@@ -153,6 +184,7 @@ export function ownerParse<K extends OwnerKind>(raw: string, kind: K): OwnerDocu
 }
 export function ownerCanonical<K extends OwnerKind>(kind: K, o: OwnerDocuments[K]): string {
   if (kind === 'submit_payload' && Object.hasOwn(o, 'output')) return ownerCanonical('submit_output_payload', o as unknown as OwnerDocuments['submit_output_payload']);
+  if (kind === 'registry' && Object.hasOwn(o, 'members_json')) return ownerCanonical('registry_members', o as unknown as OwnerDocuments['registry_members']);
   if (!ownerDocumentValid(kind, o)) throw new SyntaxError('Invalid owner document');
   const fields = o as unknown as Record<string, string>;
   return 'heimdall-owner-local/' + kind + '/v1\n' + ownerSchemas[kind]

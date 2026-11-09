@@ -67,6 +67,51 @@ member_set :: proc(s:^Store,c,p:json.Object,observed:Child,seq:i64) -> string {
     if _,ok=query(s.db,"INSERT INTO local_chain_member_versions VALUES(?,?,?,?,?,?,?)",chain,instance,fmt.tprintf("%d",seq),agent,field(p,"role"),field(p,"enabled"),encode(child));!ok do return "storage_error"
     return "ok"
 }
+Registry_Member :: struct { agent_id,instance_id,role,enabled:string }
+
+// The chain's members as its registry row names them (only ids and roles):
+// the latest version of each instance, the bound coordinator first and then
+// newest first (bounded), and the bound coordinator, which is the latest
+// enabled coordinator member ("" when none).
+registry_members :: proc(s:^Store,chain:string) -> (agent,instance,members:string,ok:bool) {
+    rows,read:=query(s.db,fmt.tprintf(`SELECT m.agent_id,m.instance_id,m.role,m.enabled FROM local_chain_member_versions m WHERE m.chain_id=?
+      AND m.accepted_seq=(SELECT max(accepted_seq) FROM local_chain_member_versions x WHERE x.chain_id=m.chain_id AND x.instance_id=m.instance_id)
+      ORDER BY (m.enabled=1 AND m.role='coordinator') DESC,m.accepted_seq DESC LIMIT %d`,contracts.OWNER_REGISTRY_MEMBERS_MAX),chain)
+    if !read do return "","","",false
+    list:=make([]Registry_Member,len(rows),context.temp_allocator)
+    for row,i in rows {
+        list[i]={row[0],row[1],row[2],row[3]}
+        if i==0 && row[2]=="coordinator" && row[3]=="1" { agent,instance=row[0],row[1] }
+    }
+    members=encode(list)
+    return agent,instance,members,members!=""
+}
+
+// Adds the chain's members to a chain registry row (task_id ""), which then
+// takes the registry_members shape and signing domain.
+registry_add_members :: proc(s:^Store,registry:^json.Object,chain:string) -> bool {
+    agent,instance,members,ok:=registry_members(s,chain)
+    if !ok do return false
+    registry["coordinator_agent_id"]=json.String(agent)
+    registry["coordinator_instance_id"]=json.String(instance)
+    registry["members_json"]=json.String(members)
+    return true
+}
+
+// After a membership change: republish the chain registry row with the new
+// members so the Hub listing names the bound coordinator. Titles are sealed
+// and the row signed at delivery (registry.prepare), so no keyring or signer
+// is needed in the membership transaction. A quarantined import publishes
+// nothing until migration_activate, which carries the members itself.
+registry_members_intent :: proc(tx:^Transaction,chain,principal,op:string,seq:i64) -> bool {
+    s:=tx.store
+    if migration_quarantined(s,chain) do return true
+    agent,instance,members,ok:=registry_members(s,chain)
+    if !ok do return false
+    payload:=encode(doc(map[string]string{"task_id"="","metadata_revision"=fmt.tprintf("%d",seq),"coordinator_agent_id"=agent,"coordinator_instance_id"=instance,"members_json"=members}))
+    return intent_enqueue(tx,Intent_Input{chain=chain,principal=principal,operation=op,seq=seq,kind="registry.prepare",destination="",fence="{}",payload=payload})
+}
+
 directory_set :: proc(s:^Store,c,p:json.Object,body:string,seq:i64) -> string {
     chain,id:=field(c,"chain_id"),field(p,"directory_id")
     value,parsed:=contracts.owner_content_document(body)
@@ -137,6 +182,10 @@ bind_created_coordinator :: proc(s:^Store,chain:string,child:Child,requested_by:
     result:=encode(map[string]string{"chain_id"=chain,"task_id"="","operation_id"=op,"revision"=fmt.tprintf("%d",next),"instance_id"=child.instance})
     if _,ok=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),chain,"chain.member.set","",fmt.tprintf("%d",next),op);!ok do return fail("storage_error")
     if !event_record(&tx,seq,now,chain,"","agent",requested_by,"chain.member.set",op,"",payload,encode(doc(map[string]string{"title"="","description"="","body"=""})),result) do return fail("storage_error")
+    // The receipt anchors the registry republication in the outbox.
+    if _,ok=query(s.db,"INSERT INTO command_receipts(principal_id,operation_id,chain_id,task_id,method,input_digest,digest_key_id,request_expires_ms,result_json,commit_seq,created_ms) VALUES(?,?,?,'',?,?,?,0,?,?,?)",
+        requested_by,op,chain,"chain.member.set",contracts.owner_payload_digest(payload),s.owner_key,result,fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
+    if !registry_members_intent(&tx,chain,requested_by,op,seq) do return fail("storage_error")
     if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
     if !transaction_commit(&tx) do return fail("storage_error")
     return Result{code="ok",body=result,seq=seq}

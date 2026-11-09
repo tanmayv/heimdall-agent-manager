@@ -127,6 +127,7 @@ owner_document_valid :: proc(kind: string, o: json.Object) -> bool {
     // schema, so existing device payloads keep their exact shape.
     if kind=="control_payload" && "dependents" in o do return owner_document_valid("cancel_payload",o)
     if kind=="delete_payload" && "body_cipher" in o do return owner_document_valid("delete_reason_payload",o)
+    if kind=="registry" && "members_json" in o do return owner_document_valid("registry_members",o)
     schema := owner_schema(kind)
     if len(schema) == 0 || len(o) != len(schema) do return false
     for f in schema {
@@ -149,14 +150,15 @@ owner_document_valid :: proc(kind: string, o: json.Object) -> bool {
     // Placement diagnostics can precede the first work grant. This is an
     // archival facet identity, never a zero-numbered logical work attempt.
     if kind=="native_history_facet" && owner_string(o,"attempt_no")=="0" && owner_string(o,"kind")!="placement" do return false
-    if kind == "registry" && owner_string(o, "deleted") == "0" {
+    if kind == "registry_members" && !owner_registry_members_valid(o) do return false
+    if (kind == "registry" || kind == "registry_members") && owner_string(o, "deleted") == "0" {
         if owner_string(o, "task_id") == "" {
             if owner_string(o, "chain_title_cipher") == "" || owner_string(o, "chain_description_cipher") == "" || owner_string(o, "task_title_cipher") != "" do return false
         } else {
             if owner_string(o, "task_title_cipher") == "" || owner_string(o, "chain_title_cipher") != "" || owner_string(o, "chain_description_cipher") != "" do return false
         }
     }
-    if kind == "registry" && owner_string(o, "deleted") == "1" {
+    if (kind == "registry" || kind == "registry_members") && owner_string(o, "deleted") == "1" {
         if owner_string(o, "chain_title_cipher") != "" || owner_string(o, "chain_description_cipher") != "" || owner_string(o, "task_title_cipher") != "" do return false
     }
     if kind == "receipt" && owner_string(o, "result_code") == "retired" && owner_string(o, "result_cipher") != "" do return false
@@ -171,6 +173,35 @@ owner_document_valid :: proc(kind: string, o: json.Object) -> bool {
         if limit > 100 do return false
     }
     return true
+}
+
+OWNER_REGISTRY_MEMBERS_MAX :: 64
+
+// Member ids and roles on a live chain registry row (never a task row or a
+// tombstone): [{agent_id,instance_id,role,enabled}] with distinct instances,
+// and the named coordinator, when set, one of its enabled coordinator members.
+owner_registry_members_valid :: proc(o: json.Object) -> bool {
+    if owner_string(o, "task_id") != "" || owner_string(o, "deleted") != "0" do return false
+    agent, instance := owner_string(o, "coordinator_agent_id"), owner_string(o, "coordinator_instance_id")
+    if instance == "" && agent != "" do return false
+    v, ok := owner_request_document(owner_string(o, "members_json"))
+    list, is_array := v.(json.Array)
+    if !ok || !is_array || len(list) > OWNER_REGISTRY_MEMBERS_MAX do return false
+    seen := make(map[string]bool, len(list), context.temp_allocator)
+    coordinator := instance == ""
+    for item in list {
+        m, is_object := item.(json.Object)
+        if !is_object || len(m) != 4 do return false
+        for name in ([4]string{"agent_id", "instance_id", "role", "enabled"}) {
+            text, is_string := m[name].(json.String)
+            if !is_string || !owner_field_valid(string(text), "flag" if name == "enabled" else "id") do return false
+        }
+        id := owner_string(m, "instance_id")
+        if seen[id] do return false
+        seen[id] = true
+        if id == instance && owner_string(m, "agent_id") == agent && owner_string(m, "role") == "coordinator" && owner_string(m, "enabled") == "1" do coordinator = true
+    }
+    return coordinator
 }
 
 owner_payload_kind :: proc(method: string) -> string {
@@ -255,6 +286,7 @@ owner_parse :: proc(raw, kind: string) -> (json.Object, bool) {
 // No JSON serialization, escaping, map iteration or float formatting affects bytes.
 owner_canonical :: proc(kind: string, o: json.Object) -> (string, bool) {
     if kind=="submit_payload" && "output" in o do return owner_canonical("submit_output_payload",o)
+    if kind=="registry" && "members_json" in o do return owner_canonical("registry_members",o)
     if !owner_document_valid(kind, o) do return "", false
     b: strings.Builder
     strings.builder_init(&b, context.temp_allocator)

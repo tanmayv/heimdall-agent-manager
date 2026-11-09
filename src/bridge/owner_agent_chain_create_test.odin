@@ -83,4 +83,30 @@ test_owner_chain_create_documents_execute_and_bind_once :: proc(t:^testing.T) {
     testing.expect_value(t,owner.bind_created_coordinator(&s,"chain_a",child,"inst_a",1000).code,"operation_conflict")
     role,coordinator:=bridge_owner_launch_role_from(&s,"chain_a","inst_a","worker","")
     testing.expect(t,role=="coordinator" && coordinator=="inst_a","the bound instance relaunches as coordinator")
+
+    // The bind republishes the chain registry row naming the coordinator, so
+    // the Hub listing shows it without an owner read.
+    probe:=Chain_Create_Registry_Probe{kr=&kr,signer=signer}
+    q:owner.Intent_Completions;defer owner.intent_completions_destroy(&q)
+    testing.expect(t,bridge_owner_publish_batch(&s,&q,1000,&probe,chain_create_registry_probe_send))
+    testing.expect_value(t,len(probe.published),2)
+    last,parsed:=contracts.owner_parse(probe.published[len(probe.published)-1] if len(probe.published)>0 else "","registry")
+    testing.expect(t,parsed && contracts.owner_verify_registry(last,"account","bridge",contracts.owner_string(last,"genesis_digest"),key)==.None)
+    testing.expect_value(t,contracts.owner_string(last,"coordinator_instance_id"),"inst_a")
+    testing.expect_value(t,contracts.owner_string(last,"coordinator_agent_id"),"agt_a")
+}
+
+Chain_Create_Registry_Probe :: struct { kr:^vault.Vault_Keyring, signer:owner.Signer, published:[dynamic]string }
+// The registry delivery of bridge_owner_publish_registry without the Hub:
+// registry rows go out as stored, registry.prepare rows are sealed and signed.
+chain_create_registry_probe_send :: proc(ctx:rawptr,s:^owner.Store,claim:owner.Intent_Claim) -> (bool,string,i64) {
+    p:=(^Chain_Create_Registry_Probe)(ctx)
+    payload:=claim.payload
+    if claim.kind=="registry.prepare" {
+        prepared,ok:=owner.language_registry_prepare(s,claim,p.kr,p.signer)
+        if !ok do return false,"registry_prepare_failed",1000
+        payload=prepared
+    } else if claim.kind!="registry" { return false,"unsupported_kind",1000 }
+    append(&p.published,strings.clone(payload,context.temp_allocator))
+    return true,"200",1000
 }

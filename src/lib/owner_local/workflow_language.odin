@@ -245,9 +245,22 @@ language_registry_prepare :: proc(s:^Store,claim:Intent_Claim,kr:^vault.Vault_Ke
         if !valid || !obj || sign.sign==nil do return "",false
         genesis,found:=query(s.db,"SELECT genesis_digest FROM chain_genesis WHERE chain_id=?",claim.chain)
         if !found || len(genesis)!=1 do return "",false
-        title,sealed:=vault.seal_string(field(p,"title"),kr,context.temp_allocator)
-        if !sealed do return "",false
-        r:=doc(map[string]string{"protocol_version"="1","account_id"=s.account,"chain_id"=claim.chain,"owner_bridge_id"=s.owner,"key_id"=s.owner_key,"genesis_digest"=genesis[0][0],"metadata_revision"=field(p,"metadata_revision"),"task_id"=field(p,"task_id"),"chain_title_cipher"="","chain_description_cipher"="","task_title_cipher"=title,"deleted"="0","signature"=strings.repeat("0",128,context.temp_allocator)})
+        r:=doc(map[string]string{"protocol_version"="1","account_id"=s.account,"chain_id"=claim.chain,"owner_bridge_id"=s.owner,"key_id"=s.owner_key,"genesis_digest"=genesis[0][0],"metadata_revision"=field(p,"metadata_revision"),"task_id"=field(p,"task_id"),"chain_title_cipher"="","chain_description_cipher"="","task_title_cipher"="","deleted"="0","signature"=strings.repeat("0",128,context.temp_allocator)})
+        if field(p,"task_id")=="" {
+            // A chain row republished after a membership change
+            // (registry_members_intent): the current titles, the members as committed.
+            chain,read_chain:=query(s.db,"SELECT title,description FROM task_chains WHERE chain_id=?",claim.chain)
+            if !read_chain || len(chain)!=1 do return "",false
+            title,sealed:=vault.seal_string(chain[0][0],kr,context.temp_allocator)
+            description,sealed_description:=vault.seal_string(chain[0][1],kr,context.temp_allocator)
+            if !sealed || !sealed_description do return "",false
+            r["chain_title_cipher"]=json.String(title);r["chain_description_cipher"]=json.String(description)
+            for name in ([3]string{"coordinator_agent_id","coordinator_instance_id","members_json"}) do r[name]=json.String(field(p,name))
+        } else {
+            title,sealed:=vault.seal_string(field(p,"title"),kr,context.temp_allocator)
+            if !sealed do return "",false
+            r["task_title_cipher"]=json.String(title)
+        }
         sig,signed:=sign.sign(sign.ctx,"registry",r)
         if !signed do return "",false
         r["signature"]=json.String(sig);result=encode(r)

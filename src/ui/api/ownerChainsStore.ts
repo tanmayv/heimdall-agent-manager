@@ -42,7 +42,13 @@ export function subscribeOwnerChains(listener: () => void): () => void {
   return () => { listeners.delete(listener); };
 }
 
-/** Reload the registry for the current vault session. */
+/**
+ * Reload the registry for the current vault session. The listing is published
+ * first: it already names the coordinator of every chain whose owner published
+ * its members on the registry row. Then, concurrently, the work status of the
+ * online chains and the coordinator of those whose row predates the members
+ * are read from their owners, each published as soon as it is known.
+ */
 export async function refreshOwnerChains(): Promise<void> {
   const session = getKeyringSession();
   const mine = ++generation;
@@ -55,41 +61,71 @@ export async function refreshOwnerChains(): Promise<void> {
     if (!current()) return;
     publish({ status: 'ready', chains: withPending(chains) });
     // Work status (active/completed) is owner state: read it from the online
-    // owners, bounded; offline chains stay unknown.
-    const statuses = await readOwnerChainStatuses(session, chains, send, current);
-    if (!current()) return;
-    publish({ status: 'ready', chains: state.chains.map((c) => (statuses.has(c.chainId) ? { ...c, status: statuses.get(c.chainId) } : c)) });
-    // The bound coordinator is owner state too (member rows), read the same way.
-    const coordinators = await readOwnerChainCoordinators(session, chains, current);
-    if (!current()) return;
-    publish({ status: 'ready', chains: state.chains.map((c) => (coordinators.has(c.chainId) ? { ...c, coordinatorAgentInstanceId: coordinators.get(c.chainId) } : c)) });
+    // owners, bounded; offline chains stay unknown. Its reads also recover
+    // access to Bridge-created chains, which an unread coordinator waits for.
+    const statuses = readOwnerChainStatuses(session, chains, send, current).then((read) => {
+      if (current()) publish({ ...state, chains: state.chains.map((c) => (read.has(c.chainId) ? { ...c, status: read.get(c.chainId) } : c)) });
+    });
+    await Promise.all([statuses, readUnknownCoordinators(session, chains, current, statuses)]);
   } catch (error) {
     if (generation !== mine || getKeyringSession() !== session) return;
     publish({ status: 'error', chains: withPending([]), error: error instanceof Error ? error.message : String(error) });
   }
 }
 
-/** Bound coordinators of the online chains, at most four owner reads at once; failures stay unknown. */
-async function readOwnerChainCoordinators(session: Parameters<typeof readOwnerChainCoordinator>[0], chains: OwnerChainSummary[], current: () => boolean): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
-  const queue = chains.filter((c) => c.online && !c.pending);
+type Session = NonNullable<ReturnType<typeof getKeyringSession>>;
+
+/**
+ * Coordinators the listing did not name (registry rows without members), from
+ * the online owners' member rows, at most four reads at once. Each is recorded
+ * as it arrives; a failure is recorded as failed.
+ */
+async function readUnknownCoordinators(session: Session, chains: OwnerChainSummary[], current: () => boolean, recovered: Promise<unknown>): Promise<void> {
+  const queue = chains.filter((c) => c.online && !c.pending && c.coordinatorAgentInstanceId === undefined);
   await Promise.all(Array.from({ length: Math.min(4, queue.length) }, async () => {
     for (let c = queue.shift(); c; c = queue.shift()) {
       if (!current()) return;
-      try { out.set(c.chainId, await readOwnerChainCoordinator(session, c.ownerBridgeId, c.chainId, send)); } catch { /* unknown */ }
+      await readCoordinator(session, c, recovered).catch(() => '');
     }
   }));
-  return out;
 }
 
 const coordinatorReads = new Map<string, Promise<string>>();
 
 /**
+ * One owner read of a chain's coordinator, shared while in flight and recorded
+ * in the snapshot unless it changed meanwhile (a binding from this device or a
+ * newer listing wins). A Bridge-created chain this device has no grant for yet
+ * is read again once `recovered` (the status reads that recover access) settles.
+ */
+function readCoordinator(session: Session, chain: OwnerChainSummary, recovered?: Promise<unknown>): Promise<string> {
+  const { chainId } = chain;
+  let read = coordinatorReads.get(chainId);
+  if (read) return read;
+  const once = () => readOwnerChainCoordinator(session, chain.ownerBridgeId, chainId, send);
+  const record = (patch: Partial<OwnerChainSummary>) => {
+    if (getKeyringSession() !== session || ownerChainById(chainId)?.coordinatorAgentInstanceId !== undefined) return;
+    publish({ ...state, chains: state.chains.map((c) => (c.chainId === chainId ? { ...c, ...patch } : c)) });
+  };
+  read = once()
+    .catch(async (error) => {
+      if (!recovered || !chain.bridgeCreated || !(error instanceof Error) || error.message !== 'invalid_scope') throw error;
+      await recovered;
+      return once();
+    })
+    .then((instanceId) => { record({ coordinatorAgentInstanceId: instanceId, coordinatorReadFailed: false }); return instanceId; })
+    .catch((error) => { record({ coordinatorReadFailed: true }); throw error; })
+    .finally(() => { coordinatorReads.delete(chainId); });
+  coordinatorReads.set(chainId, read);
+  return read;
+}
+
+/**
  * The bound coordinator of an owner chain, or '' when it has none (callers then
- * open the chain view). `known` and a coordinator already read into the
- * snapshot ('' included: read, none bound) are used as is; an online chain
- * whose member rows were not read yet is read once now and recorded. Failures
- * resolve to ''.
+ * open the chain view). `known` and a coordinator already in the snapshot
+ * ('' included: none bound) are used as is; an online chain whose coordinator
+ * is not known yet is read once now (sharing a read already in flight) and
+ * recorded. Failures resolve to '' (and are recorded as failed).
  */
 export async function resolveOwnerChainCoordinator(chainId: string, known?: string): Promise<string> {
   const direct = String(known || '').trim();
@@ -99,23 +135,12 @@ export async function resolveOwnerChainCoordinator(chainId: string, known?: stri
   if (typeof chain.coordinatorAgentInstanceId === 'string') return chain.coordinatorAgentInstanceId;
   const session = getKeyringSession();
   if (!session || !chain.online || chain.pending) return '';
-  let read = coordinatorReads.get(chainId);
-  if (!read) {
-    read = readOwnerChainCoordinator(session, chain.ownerBridgeId, chainId, send)
-      .then((instanceId) => {
-        if (getKeyringSession() === session && ownerChainById(chainId)?.coordinatorAgentInstanceId === undefined) setOwnerChainCoordinator(chainId, instanceId);
-        return instanceId;
-      })
-      .catch(() => '')
-      .finally(() => { coordinatorReads.delete(chainId); });
-    coordinatorReads.set(chainId, read);
-  }
-  return read;
+  return readCoordinator(session, chain).catch(() => '');
 }
 
 /** Records a coordinator bound from this device without reloading the registry. */
 export function setOwnerChainCoordinator(chainId: string, instanceId: string): void {
-  publish({ ...state, chains: state.chains.map((c) => (c.chainId === chainId ? { ...c, coordinatorAgentInstanceId: instanceId } : c)) });
+  publish({ ...state, chains: state.chains.map((c) => (c.chainId === chainId ? { ...c, coordinatorAgentInstanceId: instanceId, coordinatorReadFailed: false } : c)) });
 }
 
 /** A chain created on this device before its registry entry reaches the Hub. */
