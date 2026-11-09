@@ -1,5 +1,6 @@
 package main
 
+import "base:runtime"
 import "core:fmt"
 import "core:os"
 import "core:strings"
@@ -177,4 +178,33 @@ pty_host_test_fence_blocks_deadline_request :: proc(t: ^testing.T) {
 	testing.expect(t, !ok, "deadline request to a live private-dir socket must be refused under test")
 	_, ok = pty_host_request_deadline("unix:/tmp/../run/x.sock", request, 50)
 	testing.expect(t, !ok, "deadline request via dot segments must be refused")
+}
+
+// The executor reconcile sweep calls ensure_daemon with context.allocator =
+// temp_allocator. The cached socket path must survive the sweep's free_all: a
+// temp-allocated cache came back empty on Mundus, so every later spawn failed
+// with "cannot prepare socket directory".
+@(test)
+pty_host_daemon_socket_cache_survives_temp_free :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	sync.mutex_lock(&pty_host_daemon_lock)
+	defer sync.mutex_unlock(&pty_host_daemon_lock)
+	saved := pty_host_daemon_socket
+	pty_host_daemon_socket = ""
+	defer {
+		delete(pty_host_daemon_socket, runtime.default_allocator())
+		pty_host_daemon_socket = saved
+	}
+
+	want := pty_host_socket_path()
+	defer delete(want)
+	{
+		context.allocator = context.temp_allocator
+		_ = pty_host_daemon_socket_cached()
+	}
+	free_all(context.temp_allocator)
+	_ = strings.repeat("x", len(want), context.temp_allocator)
+	testing.expect_value(t, pty_host_daemon_socket, want)
+	testing.expect_value(t, pty_host_daemon_socket_cached(), want)
 }

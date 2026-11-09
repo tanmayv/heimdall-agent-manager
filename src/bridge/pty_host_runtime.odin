@@ -205,6 +205,20 @@ bridge_pty_host_bin :: proc() -> string {
 	return strings.clone("ham-pty-host")
 }
 
+// pty_host_daemon_socket_cached resolves the socket path once into the
+// process-global cache. The cache outlives every call, so it is always taken
+// from the heap, never the caller's allocator: the executor reconcile sweep
+// calls ensure_daemon with context.allocator = temp_allocator, and a cached
+// temp string came back empty after the next free_all. Caller holds
+// pty_host_daemon_lock.
+pty_host_daemon_socket_cached :: proc() -> string {
+	if pty_host_daemon_socket == "" {
+		context.allocator = runtime.default_allocator()
+		pty_host_daemon_socket = pty_host_socket_path()
+	}
+	return pty_host_daemon_socket
+}
+
 // bridge_pty_host_ensure_daemon starts the daemon once (idempotent) and returns
 // its socket path. The daemon is spawned detached (its own process) listening on
 // pty_host_socket_path(); we then poll a Ping until it answers or the deadline
@@ -219,10 +233,7 @@ bridge_pty_host_ensure_daemon :: proc() -> (string, bool) {
 	sync.mutex_lock(&pty_host_daemon_lock)
 	defer sync.mutex_unlock(&pty_host_daemon_lock)
 
-	if pty_host_daemon_socket == "" {
-		pty_host_daemon_socket = pty_host_socket_path()
-	}
-	socket := pty_host_daemon_socket
+	socket := pty_host_daemon_socket_cached()
 	// Under ODIN_TEST never ping, retire or spawn a daemon at a path outside the
 	// test scratch root (a live bridge's socket); see pty_host_test_socket_allowed.
 	if !pty_host_test_socket_allowed(socket) do return "", false
