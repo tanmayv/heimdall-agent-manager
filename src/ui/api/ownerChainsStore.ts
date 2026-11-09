@@ -5,6 +5,7 @@
 import { useEffect, useSyncExternalStore } from 'react';
 import { cookieJsonFetch } from './cookieFetch';
 import { loadOwnerChainSummaries, ownerRelaySend, readOwnerChainStatuses, type OwnerChainSummary, type OwnerSend } from './ownerChains';
+import { readOwnerChainCoordinator } from './ownerCoordinator';
 import type { OwnerRegistryPage } from './ownerRegistryListing';
 import { subscribeTaskChainCreation } from './taskChainCreationEvents';
 import { getKeyringSession, subscribeKeyringSession } from '../utils/vaultKeyringSession';
@@ -58,10 +59,32 @@ export async function refreshOwnerChains(): Promise<void> {
     const statuses = await readOwnerChainStatuses(session, chains, send, current);
     if (!current()) return;
     publish({ status: 'ready', chains: state.chains.map((c) => (statuses.has(c.chainId) ? { ...c, status: statuses.get(c.chainId) } : c)) });
+    // The bound coordinator is owner state too (member rows), read the same way.
+    const coordinators = await readOwnerChainCoordinators(session, chains, current);
+    if (!current()) return;
+    publish({ status: 'ready', chains: state.chains.map((c) => (coordinators.has(c.chainId) ? { ...c, coordinatorAgentInstanceId: coordinators.get(c.chainId) } : c)) });
   } catch (error) {
     if (generation !== mine || getKeyringSession() !== session) return;
     publish({ status: 'error', chains: withPending([]), error: error instanceof Error ? error.message : String(error) });
   }
+}
+
+/** Bound coordinators of the online chains, at most four owner reads at once; failures stay unknown. */
+async function readOwnerChainCoordinators(session: Parameters<typeof readOwnerChainCoordinator>[0], chains: OwnerChainSummary[], current: () => boolean): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const queue = chains.filter((c) => c.online && !c.pending);
+  await Promise.all(Array.from({ length: Math.min(4, queue.length) }, async () => {
+    for (let c = queue.shift(); c; c = queue.shift()) {
+      if (!current()) return;
+      try { out.set(c.chainId, await readOwnerChainCoordinator(session, c.ownerBridgeId, c.chainId, send)); } catch { /* unknown */ }
+    }
+  }));
+  return out;
+}
+
+/** Records a coordinator bound from this device without reloading the registry. */
+export function setOwnerChainCoordinator(chainId: string, instanceId: string): void {
+  publish({ ...state, chains: state.chains.map((c) => (c.chainId === chainId ? { ...c, coordinatorAgentInstanceId: instanceId } : c)) });
 }
 
 /** A chain created on this device before its registry entry reaches the Hub. */

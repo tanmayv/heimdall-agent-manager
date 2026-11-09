@@ -350,6 +350,7 @@ bridge_wake_fetch_enriched_launch_json :: proc(instance_id, command_id: string, 
 	coordinator_display_name := extract_json_string(inst_obj, "coordinator_display_name", "")
 	project_id               := extract_json_string(inst_obj, "project_id", "")
 	project_path             := extract_json_string(inst_obj, "project_path", "")
+	role, coordinator_id = bridge_owner_launch_role(chain_id, instance_id, role, coordinator_id)
 	// REQ-ERR-6: provider/model come from the descriptor. The launch path has no
 	// fallback for them, so an older hub that omits them still yields
 	// provider_missing, which now parks the wake instead of looping. task_id stays

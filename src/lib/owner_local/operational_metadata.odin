@@ -12,8 +12,11 @@ member_authorized :: proc(s:^Store,chain:string,child:Child) -> bool {
     if !ok do return false
     if len(rows)==0 do return true
     if rows[0][0]!=chain do return false
-    members,read:=query(s.db,"SELECT enabled,child_json FROM local_chain_member_versions WHERE chain_id=? AND instance_id=? ORDER BY accepted_seq DESC LIMIT 1",chain,child.instance)
-    return read && len(members)==1 && members[0][0]=="1" && members[0][1]==encode(child)
+    // Membership binds the instance id and its agent, not one launch: the
+    // instance token authenticates the live child, so a restart (new epoch,
+    // run_count, token) stays a member. Leases still fence the exact child.
+    members,read:=query(s.db,"SELECT enabled,agent_id FROM local_chain_member_versions WHERE chain_id=? AND instance_id=? ORDER BY accepted_seq DESC LIMIT 1",chain,child.instance)
+    return read && len(members)==1 && members[0][0]=="1" && members[0][1]==child.agent_id
 }
 // Config evidence is immutable. A changed directory or removed participant
 // requires fresh fleet/lifecycle enrollment instead of reviving stale paths.

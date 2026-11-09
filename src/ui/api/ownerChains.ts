@@ -36,6 +36,8 @@ export interface OwnerChainSummary {
   pending?: boolean;
   /** The owner's work status; '' or absent when unknown (owner offline or not read). */
   status?: OwnerChainStatus;
+  /** The bound coordinator instance (chain.metadata.read member rows); '' or absent when none or not read. */
+  coordinatorAgentInstanceId?: string;
 }
 export type OwnerChainStatus = '' | 'active' | 'completed';
 
@@ -114,7 +116,7 @@ export async function loadOwnerChainSummaries(
 /** An owner chain as an ordinary chain-list row (status is not in the registry). */
 export function ownerChainListItem(o: OwnerChainSummary): ChainListItem & { owner: OwnerChainSummary } {
   return {
-    chainId: o.chainId, title: o.title, status: '', kind: 'ticket', updatedAt: '', coordinatorAgentInstanceId: '',
+    chainId: o.chainId, title: o.title, status: '', kind: 'ticket', updatedAt: '', coordinatorAgentInstanceId: o.coordinatorAgentInstanceId ?? '',
     projectId: o.projectId, projectName: o.projectName, taskCount: o.tasks.length, completedTaskCount: 0,
     userValidationCount: 0, hasUserValidation: false, isPinned: false, pinnedAt: '', owner: o,
   };

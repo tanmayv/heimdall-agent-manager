@@ -413,6 +413,7 @@ bridge_bootstrap_descriptor_from_launch :: proc(command_json: string) -> Bridge_
 		provider                 = bridge_provider_json_extract_string(payload, "name", ""),
 		pack_json                = pack_obj,
 	}
+	d.role, d.coordinator_id = bridge_owner_launch_role(d.chain_id, d.instance_id, d.role, d.coordinator_id)
 	if strings.trim_space(d.role) == "" do d.role = "worker"
 	return d
 }

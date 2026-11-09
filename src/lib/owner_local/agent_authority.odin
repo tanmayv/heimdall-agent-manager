@@ -66,11 +66,21 @@ agent_child_valid :: proc(child:Child) -> bool {
         contracts.owner_field_valid(child.token_generation,"hash") && contracts.owner_field_valid(child.agent_id,"id")
 }
 
-// Exact current coordinator membership: the latest member version for this
-// instance must be enabled, carry role coordinator and name this very launch.
+// Current coordinator membership: the latest member version for this instance
+// must be enabled, carry role coordinator and name the same agent. It binds the
+// instance id, not one launch: the caller's instance token already authenticates
+// the live child, and a restart (new epoch, run_count, token) keeps the binding.
 agent_coordinator :: proc(s:^Store,chain:string,child:Child) -> bool {
-    rows,ok:=query(s.db,"SELECT enabled,role,child_json,agent_id FROM local_chain_member_versions WHERE chain_id=? AND instance_id=? ORDER BY accepted_seq DESC LIMIT 1",chain,child.instance)
-    return ok && len(rows)==1 && rows[0][0]=="1" && rows[0][1]=="coordinator" && rows[0][2]==encode(child) && rows[0][3]==child.agent_id
+    rows,ok:=query(s.db,"SELECT enabled,role,agent_id FROM local_chain_member_versions WHERE chain_id=? AND instance_id=? ORDER BY accepted_seq DESC LIMIT 1",chain,child.instance)
+    return ok && len(rows)==1 && rows[0][0]=="1" && rows[0][1]=="coordinator" && rows[0][2]==child.agent_id
+}
+
+// chain_coordinator_instance: the instance currently bound as this chain's
+// coordinator ("" when none). Used to launch that instance with the
+// coordinator role. Read-only.
+chain_coordinator_instance :: proc(s:^Store,chain:string) -> string {
+    rows,ok:=query(s.db,"SELECT instance_id FROM local_chain_member_versions m WHERE chain_id=? AND enabled=1 AND role='coordinator' AND accepted_seq=(SELECT max(accepted_seq) FROM local_chain_member_versions x WHERE x.chain_id=m.chain_id AND x.instance_id=m.instance_id) ORDER BY accepted_seq DESC LIMIT 1",chain)
+    return rows[0][0] if ok && len(rows)>0 else ""
 }
 
 // chain_summary_current: the chain's latest curated summary text and its

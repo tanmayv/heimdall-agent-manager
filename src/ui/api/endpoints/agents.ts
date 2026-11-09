@@ -830,6 +830,7 @@ export const {
   useListAgentInstancesQuery,
   useFetchAgentInstanceQuery,
   useLaunchAgentInstanceMutation,
+  useCreateAgentInstanceInChainMutation,
   useStopAgentInstanceMutation,
   useRestartAgentInstanceMutation,
   useStartAgentInstanceMutation,

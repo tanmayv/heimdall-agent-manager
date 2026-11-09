@@ -50,8 +50,10 @@ cc_controls_open_only_to_the_verified_chain_coordinator :: proc(t:^testing.T) {
         testing.expectf(t,agent_role(f,"task",worker,verb)==.None,"worker refused %s",verb)
         testing.expectf(t,agent_role(f,"task",reviewer,verb)==.None,"reviewer refused %s",verb)
         testing.expectf(t,agent_role(f,"task",stranger,verb)==.None,"stranger refused %s",verb)
-        stale:=coord;stale.epoch="old_epoch"
-        testing.expectf(t,agent_role(f,"task",stale,verb)==.None,"a stale coordinator launch is refused %s",verb)
+        restarted:=coord;restarted.epoch="new_epoch";restarted.run_count=2
+        testing.expectf(t,agent_role(f,"task",restarted,verb)==.Coordinator,"a restarted coordinator keeps %s",verb)
+        impostor:=coord;impostor.agent_id="other_agent"
+        testing.expectf(t,agent_role(f,"task",impostor,verb)==.None,"another agent on the instance id is refused %s",verb)
     }
     // Still user-only: workflow gates, remote reservations, membership, grants.
     for verb in ([5]string{"workflow.gate","fleet.reserve","chain.member.set","grant.set","workflow.define"}) {

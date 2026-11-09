@@ -75,8 +75,12 @@ agent_policy_worker_own_task_coordinator_chain_verbs_and_foreign_refusal :: proc
     }
     testing.expect_value(t,agent_role(f,"task",coord,"lease.heartbeat"),Agent_Role.None)
     testing.expect_value(t,agent_role(f,"task",coord,"review.open"),Agent_Role.None)
-    stale:=coord;stale.epoch="old_epoch"
-    testing.expect_value(t,agent_role(f,"task",stale,"chain.summary.set"),Agent_Role.None)
+    // The coordinator binding is by instance id: a restarted launch (new epoch)
+    // keeps authority; the instance token already authenticates the live child.
+    restarted:=coord;restarted.epoch="new_epoch";restarted.run_count=2
+    testing.expect_value(t,agent_role(f,"task",restarted,"chain.summary.set"),Agent_Role.Coordinator)
+    impostor:=coord;impostor.agent_id="other_agent"
+    testing.expect_value(t,agent_role(f,"task",impostor,"chain.summary.set"),Agent_Role.None)
 
     // Reviewer: only the configured reviewer child.
     testing.expect_value(t,agent_role(f,"task",reviewer,"review.open"),Agent_Role.Reviewer)

@@ -623,3 +623,46 @@ migration_import_force_held_and_in_review_carried :: proc(t:^testing.T) {
         testing.expect(t,rows[2][0]=="t_review" && rows[2][1]=="held" && strings.contains(rows[2][2],"in_review"),"in-review task imported held")
     }
 }
+
+// An imported chain keeps member rows archive-only, so it starts with no
+// coordinator. The device binds one with chain.member.set; the instance then
+// runs coordinator commands and stays bound across a restart (new epoch,
+// run_count and token), because the binding is by instance id.
+@(test)
+migration_import_chain_binds_coordinator_that_survives_restart :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f)
+    m:=migration_test_build(f,"mig_coord",migration_test_rows(f))
+    if !testing.expect_value(t,migration_test_import(f,m).code,"ok") do return
+    migration_test_activate(t,f,m,"mig_coord")
+    testing.expect_value(t,chain_coordinator_instance(&f.store,"legacy_chain"),"")
+    rev :: proc(f:^Fixture)->string { rows,_:=query(f.store.db,"SELECT revision FROM task_chains WHERE chain_id='legacy_chain'");return rows[0][0] }
+    coord:=agent_coordinator_child()
+    p:=encode(doc(map[string]string{"instance_id"=coord.instance,"agent_id"=coord.agent_id,"role"="coordinator","enabled"="1"}))
+    c:=migration_test_command(f,"chain.member.set","bind_coord","",p,rev(f))
+    if !testing.expect_value(t,execute(&f.store,c,p,f.genesis,f.creator,f.owner,1,"head",1000,&f.kr,Signer{&f.owner_priv,test_sign},coord).code,"ok") do return
+    testing.expect_value(t,chain_coordinator_instance(&f.store,"legacy_chain"),coord.instance)
+
+    run :: proc(f:^Fixture,agent:Child,op,payload,revision:string)->Result {
+        cmd,_:=contracts.owner_parse(agent_command(f,agent,"chain.summary.set",op,"",payload,revision),"command")
+        cmd["chain_id"]=json.String("legacy_chain")
+        sig,_:=test_sign(&f.owner_priv,"command",cmd);cmd["signature"]=json.String(sig)
+        return execute_agent(&f.store,encode(cmd),payload,agent,f.owner,1000,&f.kr,Signer{&f.owner_priv,test_sign})
+    }
+    summary:=encode(doc(map[string]string{"body_cipher"=cipher(f,"imported coordinator summary")}))
+    testing.expect_value(t,run(f,coord,"summary_1",summary,rev(f)).code,"ok")
+    role,_:=agent_authorize_locked(&f.store,"legacy_chain","",coord,"chain.read")
+    testing.expect_value(t,role,Agent_Role.Coordinator)
+
+    // Restart: same instance and agent, new launch identity. No rebind needed.
+    restarted:=Child{coord.instance,"coord_epoch_2",strings.repeat("e",64,context.temp_allocator),2,coord.agent_id}
+    role,_=agent_authorize_locked(&f.store,"legacy_chain","",restarted,"chain.read")
+    testing.expect_value(t,role,Agent_Role.Coordinator)
+    summary2:=encode(doc(map[string]string{"body_cipher"=cipher(f,"after restart")}))
+    testing.expect_value(t,run(f,restarted,"summary_2",summary2,rev(f)).code,"ok")
+    // A different agent reusing the instance id is not the coordinator.
+    impostor:=restarted;impostor.agent_id="other_agent"
+    role,_=agent_authorize_locked(&f.store,"legacy_chain","",impostor,"chain.read")
+    testing.expect(t,role!=.Coordinator,"agent id must match the binding")
+}
+

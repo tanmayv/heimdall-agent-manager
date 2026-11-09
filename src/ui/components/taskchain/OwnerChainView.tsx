@@ -17,6 +17,8 @@ import { ownerId, type OwnerInput, type OwnerSession } from '../../api/ownerLoca
 import type { OwnerCommand } from '../../api/ownerLocal';
 import { TASK_STATE_LABELS } from '../tasks/taskV2Types';
 import OwnerLocalPanel from './OwnerLocalPanel';
+import OwnerCoordinatorControl, { type OwnerCoordinatorApi } from './OwnerCoordinatorControl';
+import { setOwnerChainCoordinator } from '../../api/ownerChainsStore';
 
 const STATE_TONE: Record<OwnerTaskState, Tone> = {
   ready: 'info', in_progress: 'pending', in_review: 'warning', done: 'success', cancelled: 'neutral',
@@ -65,9 +67,11 @@ export interface OwnerChainViewProps {
   send?: OwnerSend;
   /** Session provider; tests replace it. */
   session?: () => Promise<OwnerSession>;
+  /** Hub calls of Start coordinator; tests replace them. */
+  coordinatorApi?: OwnerCoordinatorApi;
 }
 
-export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose, extra, send: sendProp = ownerRelaySend, session: sessionProp = freshOwnerSession }: OwnerChainViewProps) {
+export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose, extra, send: sendProp = ownerRelaySend, session: sessionProp = freshOwnerSession, coordinatorApi }: OwnerChainViewProps) {
   const bridge = chain.ownerBridgeId;
   // Injected transports are read through refs so a caller's inline function
   // never re-triggers the loads.
@@ -93,6 +97,8 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
   const [comment, setComment] = useState('');
   const [reason, setReason] = useState('');
   const [reviewSummary, setReviewSummary] = useState('');
+  const [coordinatorId, setCoordinatorId] = useState(chain.coordinatorAgentInstanceId ?? '');
+  useEffect(() => { setCoordinatorId(chain.coordinatorAgentInstanceId ?? ''); }, [chain.chainId, chain.coordinatorAgentInstanceId]);
   const sessionRef = useRef<OwnerSession | null>(null);
   // The latest loadTask call; an older call's review scan never overwrites it.
   const taskLoadSeq = useRef(0);
@@ -202,6 +208,22 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
     } finally { if (live.current) setBusy(false); }
   }
 
+  // chain.member.set role=coordinator, against the chain revision read right
+  // before binding (the launch wait may outlast the loaded revision).
+  const bindCoordinator = useCallback(async (instanceId: string, agentId: string) => {
+    const s = await session();
+    const fresh = await readOwnerChain(s, bridge, chain.chainId, send);
+    await ownerCall(s, bridge, 'chain.member.set', { chainId: chain.chainId, expectedRevision: fresh.revision, instanceId, agentId, memberRole: 'coordinator' }, send);
+  }, [bridge, chain.chainId, send, session]);
+
+  const coordinatorBound = useCallback((instanceId: string) => {
+    if (!live.current) return;
+    setCoordinatorId(instanceId);
+    setOwnerChainCoordinator(chain.chainId, instanceId);
+    setNotice('Coordinator started and bound.');
+    void loadChain();
+  }, [chain.chainId, loadChain]);
+
   const tasks = useMemo(() => {
     if (detail) return detail.tasks.map((t) => ({ taskId: t.task_id, title: t.title, priority: t.priority }));
     return chain.tasks.map((t) => ({ taskId: t.taskId, title: t.title, priority: '' }));
@@ -252,6 +274,19 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
         <p data-debug-id="owner-chain-readonly" className="mx-4 mt-3 text-xs text-muted">
           {chainStatus === 'completed' ? 'This chain is completed; it is read-only.' : 'The chain’s status could not be read; changes are unavailable.'}
         </p>
+      )}
+      {!offline && detail && (
+        <div className="mx-4 mt-3">
+          <OwnerCoordinatorControl
+            chainId={chain.chainId}
+            ownerBridgeId={bridge}
+            coordinatorId={coordinatorId}
+            disabled={!editable || busy}
+            bind={bindCoordinator}
+            onBound={coordinatorBound}
+            api={coordinatorApi}
+          />
+        </div>
       )}
       {chain.sealed && <p className="mx-4 mt-3 text-xs text-muted">Some titles are sealed with a key this device does not hold.</p>}
 
