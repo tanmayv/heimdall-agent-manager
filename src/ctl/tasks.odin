@@ -13,7 +13,7 @@ import httpc "odin_test:lib/httpc"
 Task_Brief_Wire :: struct {
 	goal:         string   `json:"goal"`,
 	acceptance:   []string `json:"acceptance"`,
-	review_roles: []string `json:"review_roles"`,
+	reviewers:    []string `json:"reviewers"`,
 	assignee:     string   `json:"assignee"`,
 }
 
@@ -28,7 +28,7 @@ Task_Blocked_On_Wire :: struct {
 
 // Task_Created_Data_Wire is the subset of the Task System v2 task wire that the
 // `tasks create` summary reads back: `state` replaces the old `status`, and
-// `brief.assignee` / `brief.review_roles` replace assignee_ref / reviewer_refs.
+// `brief.assignee` / `brief.reviewers` replace assignee_ref / reviewer_refs.
 Task_Created_Data_Wire :: struct {
 	task_id:                string               `json:"task_id"`,
 	state:                  string               `json:"state"`,

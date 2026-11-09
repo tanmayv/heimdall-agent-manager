@@ -6,7 +6,7 @@ import "core:strings"
 import "core:testing"
 
 // Task System v2 wire: tasks carry `state` (not `status`) and a `brief` object
-// (goal/acceptance/verify/review_roles/assignee) instead of assignee_ref /
+// (goal/acceptance/verify/reviewers/assignee) instead of assignee_ref /
 // reviewer_refs. These tests pin the ctl's typed read of a task create response
 // in both the agent-mode (double `data`) and user-mode (single `data`) envelopes.
 

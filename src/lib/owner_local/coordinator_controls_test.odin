@@ -42,7 +42,7 @@ cc_controls_open_only_to_the_verified_chain_coordinator :: proc(t:^testing.T) {
     coord:=agent_coordinator_child();agent_seat_coordinator(t,f,coord)
     worker,reviewer,stranger:=lease_child(),lifecycle_reviewer(),agent_stranger()
     _=lifecycle_ready(t,f) // the worker holds a live lease: still no control authority
-    verbs:=[14]string{"task.hold","task.release","task.cancel","task.reopen","task.resolve","merge.retry","task.delete","review.roles",
+    verbs:=[13]string{"task.hold","task.release","task.cancel","task.reopen","task.resolve","merge.retry","task.delete",
         "chain.complete","workflow.retry","workflow.cancel","lease.revoke","task.recheck","task.escalate"}
     for verb in verbs {
         testing.expectf(t,agent_command_method(verb),"%s is an agent command",verb)
@@ -402,21 +402,15 @@ cc_delete_requires_reason_and_an_unstarted_task :: proc(t:^testing.T) {
 }
 
 @(test)
-cc_review_roles_only_for_chain_participants_and_merge_retry :: proc(t:^testing.T) {
+cc_review_roles_are_gone_and_merge_retry :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
     f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
     coord:=agent_coordinator_child();agent_seat_coordinator(t,f,coord)
-    children:=[1]Child{role_auditor()}
-    roles:=func_roles(f)
-    raw:=agent_command(f,coord,"review.roles","roles_outsider","task",roles,agent_task_revision(f,"task"))
-    testing.expect_value(t,execute_agent(&f.store,raw,roles,coord,f.owner,1000,&f.kr,Signer{&f.owner_priv,test_sign},role_children=children[:]).code,"invalid_scope")
-    // Once the auditor is a fleet worker of this chain it is a participant.
-    agent_add_task(t,f,"audit_home");agent_bind(t,f,"audit_home",role_auditor())
-    raw=agent_command(f,coord,"review.roles","roles","task",roles,agent_task_revision(f,"task"))
-    testing.expect_value(t,execute_agent(&f.store,raw,roles,coord,f.owner,1000,&f.kr,Signer{&f.owner_priv,test_sign},role_children=children[:]).code,"ok")
-    testing.expect_value(t,cc_scalar(f,"SELECT count(*) FROM local_role_pairs"),"2")
-    raw=agent_command(f,lease_child(),"review.roles","worker_roles","task",roles,agent_task_revision(f,"task"))
-    testing.expect_value(t,execute_agent(&f.store,raw,roles,lease_child(),f.owner,1000,&f.kr,Signer{&f.owner_priv,test_sign},role_children=children[:]).code,"invalid_scope")
+    // Reviewers are brief.reviewers agent ids; the role-pair method is gone.
+    roles:=encode(doc(map[string]string{"body_cipher"=cipher(f,`{"configuration_revision":"1","requires_user_approval":"0","pairs":"[]"}`)}))
+    raw:=agent_command(f,coord,"review.roles","roles","task",roles,agent_task_revision(f,"task"))
+    testing.expect(t,execute_agent(&f.store,raw,roles,coord,f.owner,1000,&f.kr,Signer{&f.owner_priv,test_sign}).code!="ok")
+    testing.expect(t,!agent_coordinator_control("review.roles") && agent_verb_role("review.role.post")==.None)
 
     // merge.retry on a merge_blocked task.
     g:=fixture(t);defer destroy(g);lifecycle_seed(t,g,true)
@@ -438,10 +432,6 @@ cc_review_roles_only_for_chain_participants_and_merge_retry :: proc(t:^testing.T
     testing.expect_value(t,cc_call(g,coord,"merge.retry","blank_retry",retry(g," ")).code,"invalid_content")
     testing.expect_value(t,cc_call(g,coord,"merge.retry","retry",retry(g,"target repaired")).code,"ok")
     testing.expect_value(t,cc_scalar(g,"SELECT state FROM lifecycle_state"),"merge_pending")
-}
-
-func_roles :: proc(f:^Fixture) -> string {
-    return encode(doc(map[string]string{"body_cipher"=cipher(f,role_test_config("1"))}))
 }
 
 @(test)

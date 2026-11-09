@@ -8,7 +8,7 @@ export const OWNER_DOCUMENT_MAX = 256 * 1024;
 export const OWNER_REQUEST_TTL_MS = 300000n;
 const ascii = (s: string) => /^[\x20-\x7e]*$/.test(s);
 const decimal = (s: string) => /^(0|[1-9][0-9]*)$/.test(s) && s.length <= 19 && BigInt(s) <= 9223372036854775807n;
-const methods = new Set(['linked.facet.read','envelope.read','linked.put','linked.delete','linked.restore','linked.read','linked.fetch','linked.backup','chain.draft','task.draft','task.publish','chain.propose','chain.decide','chain.publish','work.dependency.add','work.dependency.remove','work.scope','chain.complete','work.read','workflow.draft','chain.member.set','chain.directory.set','chain.defaults.set','chain.summary.set','chain.metadata.read','task.priority','native.metadata.import','native.metadata.read','fleet.policy.set','fleet.policy.read','native.history.import','native.history.read','native.history.fetch','attempt.read','history.read','history.fetch','context.read','workflow.coordinator','grant.set','grant.revoke','grant.read','grant.policy','grant.recover','workflow.cancel','workflow.gate','workflow.define','workflow.run','workflow.retry','workflow.read','source.observe','source.consume','source.ack','source.retire','source.resolve','source.escalate','source.read','dependency.edit','review.roles','task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'chain.edit', 'task.edit', 'task.delete', 'chain.search', 'chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'receipt.read', 'fleet.edit', 'fleet.reserve', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post', 'migration.archive.read']);
+const methods = new Set(['linked.facet.read','envelope.read','linked.put','linked.delete','linked.restore','linked.read','linked.fetch','linked.backup','chain.draft','task.draft','task.publish','chain.propose','chain.decide','chain.publish','work.dependency.add','work.dependency.remove','work.scope','chain.complete','work.read','workflow.draft','chain.member.set','chain.directory.set','chain.defaults.set','chain.summary.set','chain.metadata.read','task.priority','native.metadata.import','native.metadata.read','fleet.policy.set','fleet.policy.read','native.history.import','native.history.read','native.history.fetch','attempt.read','history.read','history.fetch','context.read','workflow.coordinator','grant.set','grant.revoke','grant.read','grant.policy','grant.recover','workflow.cancel','workflow.gate','workflow.define','workflow.run','workflow.retry','workflow.read','source.observe','source.consume','source.ack','source.retire','source.resolve','source.escalate','source.read','dependency.edit','task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'chain.edit', 'task.edit', 'task.delete', 'chain.search', 'chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'receipt.read', 'fleet.edit', 'fleet.reserve', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post', 'migration.archive.read']);
 function fieldValid(s: string, kind: string): boolean {
   if (kind === "document" || kind === "optional_document") return new TextEncoder().encode(s).length <= OWNER_DOCUMENT_MAX && (s !== "" || kind === "optional_document");
   if (kind === 'label') return s.length > 0 && new TextEncoder().encode(s).length <= 256 && !/[\x00-\x1f\x7f]/.test(s);
@@ -27,8 +27,8 @@ function fieldValid(s: string, kind: string): boolean {
     case 'method': return methods.has(s);
     case 'lease_method': return s === 'lease.claim' || s === 'lease.heartbeat';
     case 'coordinator_methods': return s === 'workflow.gate.post';
-    case 'lease_methods': return ['review.role.post,review.checkpoint','lease.claim,lease.heartbeat,requirements.present,requirements.ack,lease.submit,lease.handoff,lease.block,lease.switch','review.post,review.checkpoint','lease.claim,lease.heartbeat','lease.claim,lease.heartbeat,requirements.present,requirements.ack,lease.submit','review.post'].includes(s);
-    case 'lifecycle_method': return ['workflow.gate.post','review.role.open','review.role.post','lease.handoff','lease.block','lease.switch','review.checkpoint','requirements.present','requirements.ack','lease.submit','review.open','review.post'].includes(s);
+    case 'lease_methods': return ['lease.claim,lease.heartbeat,requirements.present,requirements.ack,lease.submit,lease.handoff,lease.block,lease.switch','review.post,review.checkpoint','lease.claim,lease.heartbeat','lease.claim,lease.heartbeat,requirements.present,requirements.ack,lease.submit','review.post'].includes(s);
+    case 'lifecycle_method': return ['workflow.gate.post','lease.handoff','lease.block','lease.switch','review.checkpoint','requirements.present','requirements.ack','lease.submit','review.open','review.post'].includes(s);
     case 'merge_policy': return s === 'none' || s === 'git';
     case 'verdict': return s === 'approve' || s === 'request_changes';
     case 'priority': return ['p0','p1','p2'].includes(s);
@@ -98,7 +98,7 @@ export function ownerDocumentValid<K extends OwnerKind>(kind: K, value: unknown)
   if (Object.keys(o).length !== fields.length) return false;
   for (const [name, type] of fields) if (!Object.hasOwn(o, name) || typeof o[name] !== 'string' || !fieldValid(o[name], type)) return false;
   if (kind === 'command') {
-    if (['task.draft','task.publish','task.priority','native.history.import','native.history.read','native.history.fetch','attempt.read','dependency.edit','review.roles','task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'task.edit', 'task.delete', 'task.create', 'task.comment', 'task.read', 'fleet.edit', 'fleet.reserve', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post'].includes(String(o.method)) !== (o.task_id !== '')) return false;
+    if (['task.draft','task.publish','task.priority','native.history.import','native.history.read','native.history.fetch','attempt.read','dependency.edit','task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'task.edit', 'task.delete', 'task.create', 'task.comment', 'task.read', 'fleet.edit', 'fleet.reserve', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post'].includes(String(o.method)) !== (o.task_id !== '')) return false;
   }
   if (kind === 'native_attempt') {
     if ((o.ended_ms === '') !== (o.outcome === '')) return false;
@@ -124,10 +124,9 @@ export function ownerPayloadKind(method: string): OwnerKind {
     case 'chain.directory.set': return 'directory_payload';
     case 'workflow.coordinator': return 'coordinator_payload';
     case 'workflow.gate.post': return 'workflow_gate';
-    case 'workflow.cancel': case 'workflow.gate': case 'workflow.define': case 'workflow.run': case 'workflow.retry': case 'source.observe': case 'source.consume': case 'source.ack': case 'source.retire': case 'source.resolve': case 'source.escalate': case 'review.roles': return 'control_payload';
+    case 'workflow.cancel': case 'workflow.gate': case 'workflow.define': case 'workflow.run': case 'workflow.retry': case 'source.observe': case 'source.consume': case 'source.ack': case 'source.retire': case 'source.resolve': case 'source.escalate': return 'control_payload';
     case 'workflow.read': case 'source.read': return 'read_payload';
     case 'dependency.edit': return 'dependency_payload';
-    case 'review.role.open': case 'review.role.post': return 'review_role_payload';
     case 'grant.set': case 'grant.recover': return 'grant_payload';
     case 'grant.revoke': return 'grant_revoke_payload';
     case 'grant.policy': return 'grant_policy_payload';

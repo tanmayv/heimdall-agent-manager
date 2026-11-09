@@ -187,13 +187,16 @@ lifecycle_review_commit_failure_rolls_back_verdict_gate_and_intent :: proc(t:^te
 rich_requirements_validate_nested_policy_and_apply_lease_deadline :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
     f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
-    raw:=`{"goal":"Rich native brief","acceptance":["Round trip"],"inputs":["#1"],"budget":{"max_attempts":9,"hard_deadline":2},"reviewers":["reviewer"],"review_roles":[],"output":{"schema":"inline","required":["summary"]}}`
+    raw:=`{"goal":"Rich native brief","acceptance":["Round trip"],"inputs":["#1"],"budget":{"max_attempts":9,"hard_deadline":2},"reviewers":["reviewer"],"output":{"schema":"inline","required":["summary"]}}`
     p:=encode(doc(map[string]string{"requirements_revision"="2","body_cipher"=cipher(f,raw)}))
     testing.expect_value(t,invoke(f,command(f,"requirements.edit","rich_req","task",p,"4"),p).code,"ok")
     req,_:=lifecycle_requirements(&f.store,"chain","task")
     testing.expect_value(t,req[1],raw)
     bad:=encode(doc(map[string]string{"requirements_revision"="3","body_cipher"=cipher(f,`{"goal":"Bad","acceptance":["done"],"budget":{"max_attempts":false}}`)}))
     testing.expect_value(t,invoke(f,command(f,"requirements.edit","bad_budget","task",bad,"5"),bad).code,"invalid_content")
+    // Reviewers are agent ids in brief.reviewers; the legacy role key is refused.
+    roles:=encode(doc(map[string]string{"requirements_revision"="3","body_cipher"=cipher(f,`{"goal":"Roles","acceptance":["done"],"review_roles":["reviewer"]}`)}))
+    testing.expect_value(t,invoke(f,command(f,"requirements.edit","bad_roles","task",roles,"5"),roles).code,"invalid_content")
     child:=lease_child()
     claimed:=lease_invoke(f,lease_request(f,child,"lease.claim","rich_claim","rich_lease","","5"),"",child)
     testing.expect_value(t,claimed.code,"ok")

@@ -88,7 +88,7 @@ test('task detail worker retains typed hold, attempt, provenance and comment pag
   const token = JSON.parse(f.job.payload).chain.title;
   const input = {
     tasks: [{ owner_user_id: f.job.owner, task_id: 'task_a', chain_id: 'chain_a', title: token,
-      inputs: [token, 'output:task_ref'], review_roles: ['reviewer'], reviewers: ['agt_reviewer'],
+      inputs: [token, 'output:task_ref'], reviewers: ['agt_reviewer'],
       blocked_kind: 'agent_not_running', blocked_since_ms: 123, blocked_reason: token,
       hold_reason: token, hold_since_ms: 456, hold_by: 'user', checkpoint_requested: true,
       allowed_actions: ['release', 'recheck'], latest_attempt_no: 2,

@@ -40,7 +40,7 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
   let genesis = '';
   let payload: Record<string, string>;
   if (['chain.draft','task.publish','chain.publish'].includes(method)) payload = { body_cipher: await encryptVaultText(input.body ?? '{}', keyring) };
-  else if (['chain.propose','chain.decide','chain.publish','work.dependency.add','work.dependency.remove','work.scope','chain.complete','workflow.draft','workflow.cancel','workflow.gate','workflow.define','workflow.run','workflow.retry','source.observe','source.consume','source.ack','source.retire','source.resolve','source.escalate','review.roles'].includes(method)) payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring) };
+  else if (['chain.propose','chain.decide','chain.publish','work.dependency.add','work.dependency.remove','work.scope','chain.complete','workflow.draft','workflow.cancel','workflow.gate','workflow.define','workflow.run','workflow.retry','source.observe','source.consume','source.ack','source.retire','source.resolve','source.escalate'].includes(method)) payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'workflow.coordinator') payload = { ...ownerParse(input.body ?? '', 'coordinator_payload') };
   else if (method === 'dependency.edit') payload = { ...ownerParse(input.body ?? '', 'dependency_payload') };
   else if (method === 'grant.set' || method === 'grant.recover') {

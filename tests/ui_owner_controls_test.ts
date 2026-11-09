@@ -6,6 +6,7 @@ import { importKeyring } from '../src/ui/utils/vaultKeyring.ts';
 import { decryptVaultText } from '../src/ui/utils/vaultContent.ts';
 import { prepareOwnerOperation } from '../src/ui/api/ownerLocalClient.ts';
 import { ownerParse, ownerCanonical, ownerLiveAdmit, ownerPayloadKind, ownerVerifySignature } from '../src/ui/api/ownerLocal.ts';
+import { ownerSchemas } from '../src/ui/api/ownerSchema.ts';
 
 test('owner-local attempt budget activation is no longer an owner method', async () => {
   // The owner-local attempt budget was removed by user decision on 2026-11-07.
@@ -63,8 +64,8 @@ test('static workflow and source operations use signed encrypted owner commands 
   const chain = { ...verified, trusted: new Map(verified.trusted) };
   chain.trusted.set('bridge_key', {kind:'bridge',device_id:'bridge_key',row:{bridge_id:'bridge'}} as any);
   const session = {identity,chain,keyring};
-  for (const method of ['workflow.cancel','workflow.gate','workflow.define','workflow.run','workflow.retry','source.observe','source.consume','source.ack','source.retire','source.resolve','source.escalate','review.roles']) {
-    const taskId = method === 'review.roles' ? 'task' : '';
+  for (const method of ['workflow.cancel','workflow.gate','workflow.define','workflow.run','workflow.retry','source.observe','source.consume','source.ack','source.retire','source.resolve','source.escalate']) {
+    const taskId = '';
     const body = '{"private":"source and workflow content"}';
     const op = await prepareOwnerOperation(session,'bridge',method,{chainId:'chain',taskId,expectedRevision:'7',body});
     const command = ownerParse(op.command,'command');
@@ -76,14 +77,12 @@ test('static workflow and source operations use signed encrypted owner commands 
     const grant = {account_id:USER,owner_bridge_id:'bridge',chain_id:'chain',task_id:taskId,principal_id:identity.deviceId,key_id:identity.deviceId,method,revision:1n,expires_ms:BigInt(Date.now()+600000),can_read:true,can_mutate:false,revoked:false};
     assert.equal(ownerLiveAdmit(command,grant,BigInt(Date.now()),7n),'invalid_scope');
   }
-  const pair = {role:'safety',agent_id:'reviewer',instance_id:'instance'};
-  assert.equal(ownerParse(JSON.stringify(pair),'review_pair').role,'safety');
-  assert.throws(()=>ownerParse(JSON.stringify({...pair,approved:'1'}),'review_pair'));
+  // A task's review gate is brief.reviewers + requires_user_approval only.
+  assert.equal(Object.hasOwn(ownerSchemas,'review_pair'),false);
   const fact = {origin_kind:'attention',origin_id:'origin',episode_id:'episode',source_version:'8',resolved:'1',deadline_ms:'0',body:'private source'};
   assert.equal(ownerParse(JSON.stringify(fact),'source_fact').episode_id,'episode');
   assert.throws(()=>ownerParse(JSON.stringify({...fact,source_version:'0'}),'source_fact'));
   assert.throws(()=>ownerParse(JSON.stringify({...fact,owner_bridge_id:'other'}),'source_fact'));
-  assert.equal(ownerPayloadKind('review.role.post'),'review_role_payload');
 });
 
 test('workflow structured output canonicalization and coordinator scope are exact', () => {

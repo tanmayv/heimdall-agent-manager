@@ -426,20 +426,14 @@ language_policy_ready :: proc(s:^Store,chain,task:string)->bool {
     config,_,configured:=lifecycle_config(s,chain,task)
     if !configured do return false
     if assignee:=field(brief,"assignee");assignee!="" && assignee!=field(config,"author_agent_id") do return false
-    for name in ([2]string{"review_roles","reviewers"}) {
-        if values,exists:=brief[name];exists {
-            list,array:=values.(json.Array)
-            if !array do return false
-            for value in list {
-                text,is_string:=value.(json.String)
-                if !is_string do return false
-                if name=="reviewers" && string(text)==field(config,"reviewer_agent_id") do continue
-                column:="role"
-                if name=="reviewers" do column="agent_id"
-                sql:=fmt.tprintf("SELECT 1 FROM local_role_pairs p WHERE p.chain_id=? AND p.task_id=? AND p.%s=? AND p.revision=(SELECT max(revision) FROM local_role_configs c WHERE c.chain_id=p.chain_id AND c.task_id=p.task_id)",column)
-                pairs,read:=query(s.db,sql,chain,task,string(text))
-                if !read || len(pairs)==0 do return false
-            }
+    // Brief reviewers are approved through the review gate itself; a brief
+    // naming its own author as a reviewer can never settle.
+    if values,exists:=brief["reviewers"];exists {
+        list,array:=values.(json.Array)
+        if !array do return false
+        for value in list {
+            text,is_string:=value.(json.String)
+            if !is_string || string(text)==field(config,"author_agent_id") do return false
         }
     }
     return true

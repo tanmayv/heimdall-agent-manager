@@ -17,7 +17,8 @@ import vault "odin_test:lib/vault"
 //   Worker      a child bound by local_fleet to the task: lease and
 //               requirements verbs on that task only; it may read and
 //               comment on the task while it holds a live lease there.
-//   Reviewer    the configured reviewer child (or a review-role child).
+//   Reviewer    the configured reviewer child, or a child of an agent the
+//               task brief names in reviewers.
 //   Coordinator the chain's enabled coordinator member, exactly this launch:
 //               chain-management verbs on behalf of the user, including fleet
 //               management (fleet.policy.set, chain.member.set of workers and
@@ -31,7 +32,7 @@ Agent_Role :: enum { None, Worker, Reviewer, Coordinator }
 agent_verb_role :: proc(verb:string) -> Agent_Role {
     switch verb {
     case "lease.next","lease.claim","lease.heartbeat","lease.submit","lease.handoff","lease.block","lease.switch","requirements.present","requirements.ack": return .Worker
-    case "review.open","review.post","review.role.open","review.role.post","review.checkpoint": return .Reviewer
+    case "review.open","review.post","review.checkpoint": return .Reviewer
     case "task.create","task.edit","task.comment","task.read","chain.read","chain.summary.set","chain.propose","chain.publish","requirements.edit","review.human",
          "task.priority","dependency.edit","fleet.edit","lifecycle.configure",
          "chain.member.set","fleet.policy.set","fleet.policy.read","fleet.instance": return .Coordinator
@@ -48,7 +49,7 @@ agent_verb_role :: proc(verb:string) -> Agent_Role {
 // (membership, fleet policy, instance lifecycle) is agent_command_admit's.
 agent_coordinator_control :: proc(verb:string) -> bool {
     switch verb {
-    case "task.hold","task.release","task.cancel","task.reopen","task.resolve","merge.retry","task.delete","review.roles",
+    case "task.hold","task.release","task.cancel","task.reopen","task.resolve","merge.retry","task.delete",
          "chain.complete","workflow.retry","workflow.cancel","lease.revoke","task.recheck","task.escalate",
          "lifecycle.force_submit","task.complete","task.split": return true
     }
@@ -156,10 +157,7 @@ agent_holder :: proc(s:^Store,chain,task:string,child:Child) -> bool {
 }
 
 agent_reviewer :: proc(s:^Store,chain,task:string,child:Child) -> bool {
-    config,binding,configured:=lifecycle_config(s,chain,task)
-    if !configured || child.agent_id==field(config,"author_agent_id") do return false
-    if encode(child)==binding[2] && child.agent_id==field(config,"reviewer_agent_id") do return true
-    return role_child_authorized(s,chain,task,child,"")
+    return task_reviewer_authorized(s,chain,task,child)
 }
 
 // Caller holds the Store mutex (inside a transaction or under the lock).
@@ -270,10 +268,10 @@ agent_grant :: proc(s:^Store,c:json.Object,now:i64) -> contracts.Owner_Read_Gran
 // agent's behalf. The directory pin is the owner's current one.
 // fleet_child and proof are Bridge-observed facts for fleet.edit and
 // lifecycle.configure, exactly as on the device path.
-execute_agent :: proc(s:^Store,command_raw,payload:string,agent:Child,owner_key:contracts.Owner_Verified_Key,now:i64,kr:^vault.Vault_Keyring,sign:Signer,fleet_child:Child={},proof:Lifecycle_Proof={},role_children:[]Child=nil,source:Source_Proof={}) -> Result {
+execute_agent :: proc(s:^Store,command_raw,payload:string,agent:Child,owner_key:contracts.Owner_Verified_Key,now:i64,kr:^vault.Vault_Keyring,sign:Signer,fleet_child:Child={},proof:Lifecycle_Proof={},observed_children:[]Child=nil,source:Source_Proof={}) -> Result {
     version,hash:=directory_pin(s)
     if version<0 do return fail("storage_error")
-    return execute(s,command_raw,payload,"",owner_key,owner_key,version,hash,now,kr,sign,fleet_child,proof,role_children,agent=agent,source=source)
+    return execute(s,command_raw,payload,"",owner_key,owner_key,version,hash,now,kr,sign,fleet_child,proof,observed_children,agent=agent,source=source)
 }
 
 // Fleet membership on the coordinator's own chain: it enrolls, re-roles and

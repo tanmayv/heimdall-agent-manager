@@ -8,8 +8,9 @@ package main
 // and then relayed to the Hub with the caller's own token.
 //
 // Authority is the owner store's (agent_authority.odin): only the chain's
-// bound coordinator (exact live child) manages the fleet; it enrolls workers
-// and reviewers (never the coordinator role), never removes, disables or
+// bound coordinator (exact live child) manages the fleet; it enrolls worker
+// members, which tasks then assign or name as reviewers (--reviewer) (never
+// the coordinator role), never removes, disables or
 // demotes itself, never stops itself; grants stay human-only.
 //
 // `fleet set` writes the fleet policy row (fleet.policy.set) and, when the
@@ -107,16 +108,11 @@ bridge_owner_fleet_authorize :: proc(ctx:^Owner_Agent_Ctx,chain:string) -> strin
     return bridge_owner_fail(ctx,"invalid_scope","task-chain fleet: only this chain's coordinator manages its fleet")
 }
 
-// Comma-separated roles -> a JSON array ("" when none named).
-bridge_owner_fleet_roles_json :: proc(list:string) -> string {
-    roles:=make([dynamic]string,context.temp_allocator)
-    for part in strings.split(list,",",context.temp_allocator) {
-        role:=strings.trim_space(part)
-        if role!="" && !slice.contains(roles[:],role) do append(&roles,role)
-    }
-    if len(roles)==0 do return ""
-    return bridge_owner_json(roles[:])
-}
+// Fleet rows are worker rows: a task names its reviewer agents in
+// brief.reviewers, so a row carries no other role and
+// pause/resume act on the whole row.
+BRIDGE_OWNER_FLEET_ROLES :: `["worker"]`
+
 bridge_owner_fleet_role_list :: proc(raw:string,paused:bool) -> []string {
     roles,_:=contracts.owner_fleet_roles(raw,paused)
     return roles
@@ -185,18 +181,8 @@ bridge_owner_fleet :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -> 
     switch method {
     case "agent.task_chain.fleet_pause","agent.task_chain.fleet_resume":
         if !found do return bridge_owner_fail(ctx,"not_found",fmt.tprintf("no fleet row for %s in this chain; add it with `task-chain fleet set --agent %s`",agent,agent))
-        named:=bridge_owner_fleet_role_list(bridge_owner_fleet_roles_json(bridge_owner_pstr(p,"roles")),true)
-        paused:=bridge_owner_fleet_role_list(policy.paused_roles_json,true)
-        next:=make([dynamic]string,context.temp_allocator)
-        if method=="agent.task_chain.fleet_pause" {
-            if len(named)==0 || slice.contains(paused,"*") do append(&next,"*")
-            else { for r in paused do append(&next,r); for r in named do if !slice.contains(next[:],r) do append(&next,r) }
-        } else if len(named)>0 {
-            current:=paused
-            if slice.contains(paused,"*") do current=bridge_owner_fleet_role_list(policy.roles_json,false)
-            for r in current do if !slice.contains(named,r) do append(&next,r)
-        }
-        policy.paused_roles_json=bridge_owner_json(next[:]) if len(next)>0 else ""
+        if _,named:=p["roles"];named do return bridge_owner_fail(ctx,"bad_request","task-chain fleet: --roles was removed (fleet rows are worker rows; name reviewers per task with --reviewer)")
+        policy.paused_roles_json=`["*"]` if method=="agent.task_chain.fleet_pause" else ""
         policy.updated_at=bridge_owner_fleet_now(ctx)
         if code,message:=bridge_owner_fleet_write(ctx,chain,policy);code!="ok" do return bridge_owner_fail(ctx,code,message)
         reply["fleet"]=bridge_owner_result_object(bridge_owner_json(policy))
@@ -226,7 +212,7 @@ bridge_owner_fleet :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -> 
     }
     // agent.task_chain.fleet_set
     if !found {
-        policy=contracts.Owner_Fleet_Policy{task_chain_id=chain,agent_id=agent,capacity=1,idle_ttl_seconds=600,roles_json=`["worker"]`,created_at=bridge_owner_fleet_now(ctx)}
+        policy=contracts.Owner_Fleet_Policy{task_chain_id=chain,agent_id=agent,capacity=1,idle_ttl_seconds=600,roles_json=BRIDGE_OWNER_FLEET_ROLES,created_at=bridge_owner_fleet_now(ctx)}
     }
     number :: proc(p:json.Object,key:string,min:i64,out:^i64) -> bool {
         raw:=bridge_owner_pstr(p,key)
@@ -244,7 +230,8 @@ bridge_owner_fleet :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -> 
     if "provider_profile" in p do policy.provider_profile=bridge_owner_pstr(p,"provider_profile")
     if "bridge_id" in p do policy.bridge_id=bridge_owner_pstr(p,"bridge_id")
     if "bridge_models_json" in p do policy.bridge_models_json=bridge_owner_pstr(p,"bridge_models_json")
-    if roles:=bridge_owner_fleet_roles_json(bridge_owner_pstr(p,"roles"));roles!="" do policy.roles_json=roles
+    if _,named:=p["roles"];named do return bridge_owner_fail(ctx,"bad_request","task-chain fleet set: --roles was removed (fleet rows are worker rows; name reviewers per task with --reviewer)")
+    policy.roles_json=BRIDGE_OWNER_FLEET_ROLES
     policy.updated_at=bridge_owner_fleet_now(ctx)
     if code,message:=bridge_owner_fleet_write(ctx,chain,policy);code!="ok" do return bridge_owner_fail(ctx,code,message)
     reply["fleet"]=bridge_owner_result_object(bridge_owner_json(policy))
@@ -267,14 +254,15 @@ bridge_owner_fleet :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -> 
     switch {
     case note!="":
     case policy.bridge_id!="" && policy.bridge_id!=bridge_config.daemon_id: note=fmt.tprintf("placement on %s recorded; agents of a Bridge-owned chain run on its owner Bridge %s, nothing launched",policy.bridge_id,bridge_config.daemon_id)
-    case len(active)==0: note="every role is paused; nothing launched"
+    case len(active)==0: note="the row is paused; nothing launched"
     }
     if note!="" {
         reply["note"]=json.String(note)
         return bridge_local_response_data(ctx.request_id,bridge_owner_json(reply))
     }
-    role:=active[0]
-    if slice.contains(active,"worker") do role="worker"
+    // Every member a fleet row binds is a worker member; a task's reviewers
+    // are such members named in its brief.
+    role:="worker"
     reply["role"]=json.String(role)
     if instance:=bridge_owner_pstr(p,"instance_id");instance!="" {
         // Bind an already running instance of the agent instead of launching.

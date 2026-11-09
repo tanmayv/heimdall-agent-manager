@@ -126,14 +126,6 @@ user_gate_workers_and_reviewers_cannot_change_the_gate :: proc(t:^testing.T) {
     }
     required,ok:=task_user_approval_required(&f.store,"chain","task")
     testing.expect(t,ok && required,"the gate stays on")
-    // Nor the role gate.
-    children:=[1]Child{role_auditor()}
-    testing.expect_value(t,advanced_call(f,"review.roles","roles",role_test_config("1"),"task",children[:]).code,"ok")
-    cleared,_:=contracts.owner_parse(role_test_config("0"),"review_roles");cleared["configuration_revision"]=json.String("2")
-    for agent in ([2]Child{worker,reviewer}) {
-        testing.expect_value(t,agent_run(f,agent,"review.roles",fmt.tprintf("roles_%s",agent.instance),"task",encode(doc(map[string]string{"body_cipher"=cipher(f,encode(cleared))})),agent_task_revision(f,"task")).code,"invalid_scope")
-    }
-    testing.expect_value(t,cc_scalar(f,"SELECT count(*)||':'||max(requires_user_approval) FROM local_role_configs"),"1:1")
 }
 
 @(test)
@@ -177,31 +169,6 @@ user_gate_clearing_with_owed_reviews_or_other_changes_returns_to_ready :: proc(t
         testing.expect_value(t,user_gate_requirements(f,coord,"clear","2",`{"goal":"Different work","acceptance":["Tests pass"],"requires_user_approval":false,"requirements_reason":"rescoped"}`).code,"ok")
         testing.expect_value(t,user_gate_state(f),"ready")
     }
-    // A role-configured user gate still holds after the brief gate is cleared.
-    {
-        f:=fixture(t);defer destroy(f);user_gate_seed(t,f);agent_seat_coordinator(t,f,coord)
-        if !user_gate_reviewed(t,f) do return
-        testing.expect(t,exec(f.store.db,"INSERT INTO local_role_configs VALUES('chain','task',1,1,'[]')"))
-        testing.expect_value(t,user_gate_requirements(f,coord,"clear","2",USER_GATE_CLEARED).code,"ok")
-        testing.expect_value(t,user_gate_state(f),"ready")
-    }
-}
-
-@(test)
-user_gate_coordinator_clears_the_role_gate :: proc(t:^testing.T) {
-    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
-    f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
-    coord:=agent_coordinator_child();agent_seat_coordinator(t,f,coord)
-    children:=[1]Child{role_auditor()}
-    testing.expect_value(t,advanced_call(f,"review.roles","roles",role_test_config("1"),"task",children[:]).code,"ok")
-    cleared,_:=contracts.owner_parse(role_test_config("0"),"review_roles");cleared["configuration_revision"]=json.String("2")
-    agent_add_task(t,f,"audit_home");agent_bind(t,f,"audit_home",role_auditor())
-    roles:=encode(doc(map[string]string{"body_cipher"=cipher(f,encode(cleared))}))
-    raw:=agent_command(f,coord,"review.roles","agent_roles","task",roles,agent_task_revision(f,"task"))
-    testing.expect_value(t,execute_agent(&f.store,raw,roles,coord,f.owner,1000,&f.kr,Signer{&f.owner_priv,test_sign},role_children=children[:]).code,"ok")
-    required,ok:=task_user_approval_required(&f.store,"chain","task")
-    testing.expect(t,ok && !required,"the coordinator cleared the role gate")
-    testing.expect_value(t,user_gate_audit(f,"review.roles"),"agent:coord_instance|agent:coord_instance|1>0||agent_roles")
 }
 
 @(test)
@@ -242,7 +209,7 @@ user_gate_migration_backfills_principal_kind_without_regating :: proc(t:^testing
     rows,_:=query(f.store.db,"SELECT reviewer_agent_id,principal_kind FROM local_reviews ORDER BY reviewer_agent_id")
     testing.expect_value(t,encode(rows),encode([3][2]string{{"coord_instance","agent"},{"device","device"},{"reviewer","agent"}}))
     version,_:=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
-    testing.expect_value(t,encode(version),encode([1][2]string{{"36","36"}}))
+    testing.expect_value(t,encode(version),encode([1][2]string{{"37","37"}}))
     // An attempt already past the gate is not re-gated.
     testing.expect_value(t,user_gate_state(f),"done")
     // Review evidence stays immutable after the backfill.

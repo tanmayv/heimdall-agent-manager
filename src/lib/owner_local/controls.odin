@@ -264,7 +264,7 @@ control_human :: proc(s:^Store,c,p:json.Object,body:string,seq:i64,agent:=false)
         // Re-run the review gate on verdicts already posted (Hub recheck.odin
         // parity): it never approves and records nothing when nothing changes.
         if mode!="ready" || state!="in_review" || len(states)!=1 do return "unchanged",doc(map[string]string{"state"=state,"mode"=mode})
-        gate,valid:=role_gate(s,chain,task,states[0][1])
+        gate,valid:=review_gate(s,chain,task,states[0][1])
         if !valid do return "storage_error",nil
         if gate==state do return "unchanged",doc(map[string]string{"state"=state,"mode"=mode})
         next=gate
@@ -290,7 +290,7 @@ control_human :: proc(s:^Store,c,p:json.Object,body:string,seq:i64,agent:=false)
     }
     if overlay && !control_mode(s,chain,task,mode,resume,reason,waiting) do return "storage_error",nil
     if method=="task.release" && next=="in_review" {
-        gate,valid:=role_gate(s,chain,task,states[0][1])
+        gate,valid:=review_gate(s,chain,task,states[0][1])
         if !valid do return "storage_error",nil
         next=gate
         if next!="in_review" {

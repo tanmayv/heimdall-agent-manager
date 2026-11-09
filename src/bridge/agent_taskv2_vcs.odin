@@ -555,8 +555,8 @@ bridge_taskv2_render_task_md :: proc(pack_json: string, max_bytes: int = BRIDGE_
 	lease_id := jsonx.extract_string(pack_json, "lease_id", jsonx.extract_string(lease_obj, "lease_id", "", true, context.temp_allocator), true, context.temp_allocator)
 	task_id := jsonx.extract_string(pack_json, "task_id", jsonx.extract_string(task_obj, "task_id", "", true, context.temp_allocator), true, context.temp_allocator)
 	lease_kind := jsonx.extract_string(lease_obj, "kind", "work", true, context.temp_allocator)
-	review_role := jsonx.extract_string(lease_obj, "review_role", "", true, context.temp_allocator)
-	role_label := review_role if (lease_kind == "review" && review_role != "") else ("reviewer" if lease_kind == "review" else "worker")
+	// A review lease is held by one of the task's named reviewers.
+	role_label := "reviewer" if lease_kind == "review" else "worker"
 	attempt_no := jsonx.extract_int(pack_json, "attempt_no", jsonx.extract_int(lease_obj, "attempt_no", 1, true), true)
 	max_attempts := jsonx.extract_int(pack_json, "max_attempts", jsonx.extract_int(lease_obj, "max_attempts", 3, true), true)
 	review_rounds := jsonx.extract_int(pack_json, "review_rounds", jsonx.extract_int(lease_obj, "review_rounds", 0, true), true)

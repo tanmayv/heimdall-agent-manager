@@ -19,6 +19,7 @@ package owner_local
 
 import "core:encoding/json"
 import "core:fmt"
+import "core:slice"
 import "core:strings"
 import contracts "odin_test:contracts"
 import vault "odin_test:lib/vault"
@@ -51,8 +52,7 @@ force_done_enabled :: proc(s:^Store,chain:string) -> (bool,bool) {
 }
 
 // Every user-approval source of the task at this attempt (R2-4): the current
-// brief, the submitted brief of the attempt, the latest role configuration and
-// a workflow-language item flag.
+// brief, the submitted brief of the attempt and a workflow-language item flag.
 complete_user_gate :: proc(s:^Store,chain,task,attempt:string) -> (required,approved,ok:bool) {
     required,ok=task_user_approval_required(s,chain,task)
     if !ok do return
@@ -68,15 +68,12 @@ complete_user_gate :: proc(s:^Store,chain,task,attempt:string) -> (required,appr
 // The agent reviews the gate would still wait for at this attempt.
 complete_skipped_gates :: proc(s:^Store,chain,task,attempt:string,config:json.Object) -> ([]string,bool) {
     out:=make([dynamic]string,context.temp_allocator)
-    independent,ok:=query(s.db,"SELECT 1 FROM local_reviews WHERE chain_id=? AND task_id=? AND attempt=? AND reviewer_agent_id=? AND verdict='approve' LIMIT 1",chain,task,attempt,field(config,"reviewer_agent_id"))
+    owed,ok:=review_owed(s,chain,task,attempt,config)
     if !ok do return nil,false
-    if len(independent)==0 do append(&out,"independent_review")
-    owed,read:=query(s.db,`SELECT p.role FROM local_role_pairs p WHERE chain_id=?1 AND task_id=?2
-      AND revision=(SELECT max(revision) FROM local_role_configs c WHERE c.chain_id=p.chain_id AND c.task_id=p.task_id)
-      AND NOT EXISTS(SELECT 1 FROM local_role_reviews r WHERE r.chain_id=p.chain_id AND r.task_id=p.task_id AND r.attempt=?3
-        AND r.role_revision=p.revision AND r.role=p.role AND r.agent_id=p.agent_id AND r.verdict='approve') ORDER BY p.role`,chain,task,attempt)
-    if !read do return nil,false
-    for row in owed do append(&out,fmt.tprintf("role:%s",row[0]))
+    for agent in owed {
+        if agent==field(config,"reviewer_agent_id") do append(&out,"independent_review")
+        else do append(&out,fmt.tprintf("reviewer:%s",agent))
+    }
     return out[:],true
 }
 
@@ -313,8 +310,6 @@ split_command :: proc(s:^Store,c:json.Object,command_raw,payload,body:string,seq
         assigned,valid:=contracts.owner_parse(fleet[0][5],"command")
         if !valid || field(assigned,"method")=="fleet.reserve" do copy_fleet=false
     }
-    roles,rread:=query(s.db,"SELECT revision,requires_user_approval,pairs_json FROM local_role_configs WHERE chain_id=? AND task_id=? ORDER BY revision DESC LIMIT 1",chain,task)
-    if !rread do return "storage_error",nil
     priority,pread:=query(s.db,"SELECT priority FROM local_task_priority_versions WHERE chain_id=? AND task_id=? ORDER BY accepted_seq DESC LIMIT 1",chain,task)
     if !pread do return "storage_error",nil
     publication,pubread:=query(s.db,"SELECT publish_state FROM local_task_publications WHERE chain_id=? AND task_id=? ORDER BY accepted_seq DESC LIMIT 1",chain,task)
@@ -350,7 +345,7 @@ split_command :: proc(s:^Store,c:json.Object,command_raw,payload,body:string,seq
         for row in prerequisites {
             if _,ok:=query(s.db,"INSERT INTO local_dependencies VALUES(?,?,?)",chain,id,row[0]);!ok do return "operation_conflict",nil
         }
-        if code:=split_assign(s,chain,task,id,child,command_raw,payload,principal,op,config,binding,configured,fleet[:],copy_fleet,roles[:],observed,agent_mode);code!="ok" do return code,nil
+        if code:=split_assign(s,chain,task,id,child,brief,command_raw,payload,principal,op,config,binding,configured,fleet[:],copy_fleet,observed,agent_mode);code!="ok" do return code,nil
         if _,ok:=query(s.db,"INSERT INTO local_task_links VALUES(?,?,'split_from',?,?,?,?,?)",chain,id,task,fmt.tprintf("%d",i),stamp,principal,op);!ok do return "storage_error",nil
         if _,ok:=query(s.db,"INSERT INTO local_task_links VALUES(?,?,'split_into',?,?,?,?,?)",chain,task,id,fmt.tprintf("%d",i),stamp,principal,op);!ok do return "storage_error",nil
         append(&ids,id)
@@ -392,10 +387,10 @@ split_command :: proc(s:^Store,c:json.Object,command_raw,payload,body:string,seq
     return "ok",out
 }
 
-// Children copy the original's fleet binding and lifecycle (and review-role)
-// configuration unless the child spec overrides the assignee or asks for an
+// Children copy the original's fleet binding and lifecycle configuration
+// (their reviewers travel in the copied brief) unless the child spec overrides the assignee or asks for an
 // unassigned child. Worktree paths are the child's own.
-split_assign :: proc(s:^Store,chain,original,id:string,child:Split_Child,command_raw,payload,principal,op:string,config:json.Object,binding:[]string,configured:bool,fleet:[][]string,copy_fleet:bool,roles:[][]string,observed:[]Child,agent_mode:bool) -> string {
+split_assign :: proc(s:^Store,chain,original,id:string,child:Split_Child,brief,command_raw,payload,principal,op:string,config:json.Object,binding:[]string,configured:bool,fleet:[][]string,copy_fleet:bool,observed:[]Child,agent_mode:bool) -> string {
     if child.unassigned do return "ok"
     author:Child
     has_author:=false
@@ -433,6 +428,8 @@ split_assign :: proc(s:^Store,chain,original,id:string,child:Split_Child,command
     author_child:=binding[1]
     if child.assignee!="" {
         if author.agent_id==field(config,"reviewer_agent_id") || author.instance==field(config,"reviewer_instance_id") do return "invalid_scope"
+        // Nor may the new author be one of the child brief's reviewers.
+        if slice.contains(brief_reviewers(brief),author.agent_id) do return "invalid_scope"
         next["author_agent_id"]=json.String(author.agent_id)
         author_child=encode(author)
     }
@@ -440,15 +437,6 @@ split_assign :: proc(s:^Store,chain,original,id:string,child:Split_Child,command
     if _,valid:=contracts.owner_parse(raw,"lifecycle_config_payload");!valid do return "invalid_content"
     if _,ok:=query(s.db,"INSERT INTO lifecycle_configs VALUES(?,?,1,?,?,?,?,?,?)",chain,id,raw,command_raw,principal,op,author_child,binding[2]);!ok do return "storage_error"
     if _,ok:=query(s.db,"INSERT INTO lifecycle_state(chain_id,task_id,state) VALUES(?,?,'ready')",chain,id);!ok do return "storage_error"
-    if len(roles)==1 {
-        if _,ok:=query(s.db,"INSERT INTO local_role_configs VALUES(?,?,1,?,?)",chain,id,roles[0][1],roles[0][2]);!ok do return "storage_error"
-        pairs,read:=query(s.db,"SELECT role,agent_id,child_json FROM local_role_pairs WHERE chain_id=? AND task_id=? AND revision=?",chain,original,roles[0][0])
-        if !read do return "storage_error"
-        for pair in pairs {
-            if pair[1]==field(next,"author_agent_id") do return "invalid_scope"
-            if _,ok:=query(s.db,"INSERT INTO local_role_pairs VALUES(?,?,1,?,?,?)",chain,id,pair[0],pair[1],pair[2]);!ok do return "storage_error"
-        }
-    }
     return "ok"
 }
 

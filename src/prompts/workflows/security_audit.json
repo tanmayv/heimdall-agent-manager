@@ -56,7 +56,7 @@
         "acceptance": [
           "Vulnerability remediated; the checks showing it is fixed are reported in the submit summary"
         ],
-        "review_roles": ["reviewer"]
+        "requires_user_approval": true
       }
     }
   ]

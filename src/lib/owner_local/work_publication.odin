@@ -60,15 +60,7 @@ work_publish_brief :: proc(s:^Store,chain,raw:string)->string {
     for value in acceptance {text,_:=value.(json.String);if len(text)>200 do return "invalid_content"}
     _,code:=brief_inputs_resolve(s,chain,raw)
     if code!="ok" do return code
-    if value,present:=b["review_roles"];present {
-        roles,_:=value.(json.Array)
-        for value in roles {
-            role,_:=value.(json.String)
-            rows,ok:=query(s.db,"SELECT 1 FROM local_fleet_policy_current p JOIN local_fleet_policy_roles r ON r.chain_id=p.chain_id AND r.agent_id=p.agent_id AND r.seq=p.seq WHERE p.chain_id=? AND r.role=? AND r.paused=0 LIMIT 1",chain,string(role))
-            if !ok do return "storage_error"
-            if len(rows)==0 do return "invalid_scope"
-        }
-    }
+    // Every named reviewer is an enabled member of this chain.
     if value,present:=b["reviewers"];present {
         reviewers,_:=value.(json.Array)
         for value in reviewers {

@@ -63,7 +63,6 @@ export async function ownerLocalWorkflowsFlow({session,bridgeId,hub,http,cli,lau
     const current=observed.tasks.filter((r:any)=>r[1]==='2').sort((a:any,b:any)=>a[2].localeCompare(b[2]));
     for (const row of current) {
       await bind(row[3]);
-      await human('review.roles',{taskId:row[3],expectedRevision:await revision(row[3]),body:JSON.stringify({configuration_revision:'1',requires_user_approval:'0',pairs:JSON.stringify([{role:'safety',agent_id:auditor.agentId,instance_id:auditor.instanceId}])})});
     }
     expect(worker.call(input(current[1][3],await revision(current[1][3]))).status!==0,'real dependency blocks second stage claim');
     for (const row of current) {
@@ -76,14 +75,9 @@ export async function ownerLocalWorkflowsFlow({session,bridgeId,hub,http,cli,lau
       const submitted=call(worker,'lease.submit',{requirements_revision:'1',head:'',summary:'workflowoutputneedle-'+row[2]},cap);expect(submitted.status===0,'real sequential stage submission');
       const rrev=await revision(tid),verdict={requirements_revision:'1',attempt:'1',head:'',verdict:'approve',summary:'Independent workflow review'};
       const primary=call(reviewer,'review.open',verdict,'',rrev);expect(primary.status===0,'real primary review opens');
-      const role={...verdict,role:'safety'};
-      const safety=call(auditor,'review.role.open',role,'',rrev);expect(safety.status===0,'real required role opens separately');
       const sourceBefore=JSON.parse((await human('source.read')).body).items.find((r:any)=>r[0]==='local.review' && r[1]===tid && r[2]==='1');
       expect(!!sourceBefore,'real canonical review source is available before result consumption');
       expect(call(reviewer,'review.post',verdict,JSON.parse(primary.data.body).capability,rrev).status===0,'real primary approval');
-      const waiting=JSON.parse((await human('runtime.read',{taskId:tid})).body);
-      expect(waiting.state[0][0]==='in_review','primary alone cannot bypass required role');
-      expect(call(auditor,'review.role.post',role,JSON.parse(safety.data.body).capability,await revision(tid)).status===0,'real independent role approval');
       const done=JSON.parse((await human('runtime.read',{taskId:tid})).body);
       expect(done.state[0][0]==='done','stage gate completes before successor eligibility');
       const consumed={origin_kind:'local.review',origin_id:tid,episode_id:'1',source_version:sourceBefore[3],consumer_fence_hash:await ownerPayloadDigest(JSON.parse(primary.data.body).capability),result:'Exact primary review outcome'};

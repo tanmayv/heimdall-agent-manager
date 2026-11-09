@@ -15,7 +15,6 @@ export interface TaskBriefWire {
   goal?: string;
   acceptance?: string[];
   inputs?: unknown[];
-  review_roles?: string[];
   /** Agents named as reviewers of THIS task (hybrid review model). */
   reviewers?: string[];
   assignee?: string;
@@ -34,7 +33,6 @@ export interface TaskBlockedOnWire {
 export interface TaskLeaseWire {
   lease_id: string;
   kind: string;
-  review_role: string;
   holder_instance_id: string;
   attempt_no: number;
   bridge_id: string;

@@ -221,7 +221,7 @@ export function ownerChainListItem(o: OwnerChainSummary): ChainListItem & { owne
  */
 export const OWNER_TASK_REVISION_METHODS: ReadonlySet<string> = new Set([
   'task.publish', 'task.priority', 'native.history.import', 'native.history.read', 'native.history.fetch', 'attempt.read',
-  'dependency.edit', 'review.roles', 'task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry',
+  'dependency.edit', 'task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry',
   'submission.read', 'task.edit', 'task.delete', 'task.comment', 'task.read', 'fleet.edit', 'fleet.reserve', 'runtime.read',
   'lifecycle.configure', 'requirements.edit', 'review.post',
 ]);
@@ -501,7 +501,7 @@ export async function readOwnerReviews(
   for (let page = 0; page < maxPages; page++) {
     const data = await ownerCall(session, bridgeId, 'history.read', { chainId, expectedRevision: '0', cursor, limit: OWNER_HISTORY_PAGE }, send);
     for (const e of Array.isArray(data.items) ? data.items : []) {
-      if (e.task_id === taskId && (e.kind === 'review.post' || e.kind === 'review.role.post')) {
+      if (e.task_id === taskId && e.kind === 'review.post') {
         events.push(e);
         if (events.length > keep) { events.shift(); dropped = true; }
       }

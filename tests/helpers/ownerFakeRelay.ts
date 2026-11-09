@@ -30,7 +30,7 @@ export type OwnerAnswer = 'offline' | { code: string } | Record<string, unknown>
 // execute() and contracts owner_live_admit), deliberately not imported from the
 // UI code under test.
 const TASK_REVISION_METHODS = new Set(['task.publish', 'task.priority', 'native.history.import', 'native.history.read', 'native.history.fetch',
-  'attempt.read', 'dependency.edit', 'review.roles', 'task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry',
+  'attempt.read', 'dependency.edit', 'task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry',
   'submission.read', 'task.edit', 'task.delete', 'task.comment', 'task.read', 'fleet.edit', 'fleet.reserve', 'runtime.read',
   'lifecycle.configure', 'requirements.edit', 'review.post']);
 const READ_METHODS = new Set(['linked.facet.read', 'envelope.read', 'linked.read', 'linked.fetch', 'linked.backup', 'work.read', 'chain.metadata.read',

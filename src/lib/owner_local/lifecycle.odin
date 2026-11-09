@@ -3,6 +3,7 @@ package owner_local
 
 import "core:encoding/json"
 import "core:fmt"
+import "core:slice"
 import "core:strings"
 import contracts "odin_test:contracts"
 import wf "odin_test:lib/workflow_v1"
@@ -41,7 +42,7 @@ lifecycle_human :: proc(s:^Store,c,p:json.Object,body,raw,payload:string,proof:L
     switch method {
     case "lifecycle.configure":
         // The lifecycle payload carries no requires_user_approval and a new
-        // configuration never touches the brief or role configuration, so it
+        // configuration never touches the brief, so it
         // never changes a user gate (lifecycle_configure_keeps_user_gate).
         if !directory_config_authorized(s,chain,p) || !member_authorized(s,chain,proof.author) || !member_authorized(s,chain,proof.reviewer) || !proof.paths_valid || proof.author.agent_id!=field(p,"author_agent_id") ||
            proof.reviewer.agent_id!=field(p,"reviewer_agent_id") || proof.author.agent_id==proof.reviewer.agent_id ||
@@ -81,7 +82,7 @@ lifecycle_human :: proc(s:^Store,c,p:json.Object,body,raw,payload:string,proof:L
         // every other required approval advances. Otherwise, as for any
         // requirements edit, the task returns to ready for a fresh submission.
         if prior_user && !next_user && len(state)==1 && state[0][0]=="in_review" && brief_gate_only_change(prior_brief,body) {
-            gate,gate_ok:=role_gate(s,chain,task,state[0][1],true)
+            gate,gate_ok:=review_gate(s,chain,task,state[0][1],true)
             if !gate_ok do return "storage_error",nil
             if gate!="in_review" do next_state=gate
         }
@@ -113,17 +114,15 @@ lifecycle_review :: proc(s:^Store,c,p:json.Object,agent:string,human:bool,device
     submitted,read:=query(s.db,"SELECT head,requirements_revision,author_agent_id,configuration_revision FROM local_submissions WHERE chain_id=? AND task_id=? AND attempt=?",chain,task,field(p,"attempt"))
     if !read || len(submitted)!=1 do return "storage_error"
     if submitted[0][0]!=field(p,"head") || submitted[0][1]!=req[0] || submitted[0][3]!=field(config,"configuration_revision") do return "stale_revision"
-    if !human && (agent==submitted[0][2] || (field(p,"role")=="" && agent!=field(config,"reviewer_agent_id"))) do return "invalid_scope"
+    // An agent verdict comes from one of the task's reviewers (the configured
+    // reviewer or a brief reviewer), never from the attempt's author.
+    if !human && (agent==submitted[0][2] || !slice.contains(task_reviewers(s,chain,task,config),agent)) do return "invalid_scope"
     reviewer:=agent
     if human do reviewer=field(c,"principal_id")
-    if !human && field(p,"role")!="" {
-        if code:=role_record(s,c,p,agent);code!="ok" do return code
-    } else {
-        kind:="device" if human && device else "agent"
-        if _,ok=query(s.db,`INSERT INTO local_reviews(chain_id,task_id,attempt,reviewer_agent_id,principal_id,operation_id,requirements_revision,head,verdict,summary,principal_kind)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?)`,chain,task,field(p,"attempt"),reviewer,field(c,"principal_id"),field(c,"operation_id"),req[0],field(p,"head"),field(p,"verdict"),field(p,"summary"),kind);!ok do return "operation_conflict"
-    }
-    next,gate_ok:=role_gate(s,chain,task,field(p,"attempt"))
+    kind:="device" if human && device else "agent"
+    if _,ok=query(s.db,`INSERT INTO local_reviews(chain_id,task_id,attempt,reviewer_agent_id,principal_id,operation_id,requirements_revision,head,verdict,summary,principal_kind)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?)`,chain,task,field(p,"attempt"),reviewer,field(c,"principal_id"),field(c,"operation_id"),req[0],field(p,"head"),field(p,"verdict"),field(p,"summary"),kind);!ok do return "operation_conflict"
+    next,gate_ok:=review_gate(s,chain,task,field(p,"attempt"))
     if !gate_ok do return "storage_error"
     if _,ok=query(s.db,"UPDATE lifecycle_state SET state=? WHERE chain_id=? AND task_id=?",next,chain,task);!ok do return "storage_error"
     if next!="in_review" {

@@ -87,7 +87,7 @@ source_lifecycle :: proc(tx:^Transaction,c,p:json.Object,seq,now:i64)->bool {
                 if _,ok=query(s.db,"INSERT INTO source_episodes(chain_id,origin_kind,origin_id,episode_id,source_version,resolved,deadline_ms,body) VALUES(?,'local.review',?,?,?,0,?,?)",chain,task,state[0][1],version,fmt.tprintf("%d",now+LEASE_TTL_MS),"Independent review awaiting required verdicts");!ok do return false
                 if !source_pin(s,c,"local.review",task,state[0][1]) do return false
             }
-            if method=="review.post" || method=="review.role.post" {
+            if method=="review.post" {
                 rows,read:=query(s.db,"SELECT source_version FROM source_episodes WHERE chain_id=? AND origin_kind='local.review' AND origin_id=? AND episode_id=?",chain,task,field(p,"attempt"))
                 if !read do return false
                 // Historical submissions upgraded from V7 have no source row.

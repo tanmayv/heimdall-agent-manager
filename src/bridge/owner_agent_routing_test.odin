@@ -296,7 +296,7 @@ test_owner_coordinator_controls_route_to_owner_methods :: proc(t:^testing.T) {
         {"agent.task.hold","task.hold"},{"agent.task.release","task.release"},{"agent.task.cancel","task.cancel"},
         {"agent.task.reopen","task.reopen"},{"agent.task.unblock","task.resolve"},{"agent.task.recheck","task.recheck"},
         {"agent.task.escalate","task.escalate"},{"agent.task.merge_retry","merge.retry"},{"agent.task.delete","task.delete"},
-        {"agent.task.review_roles","review.roles"},{"agent.lease.revoke","lease.revoke"},{"agent.task_chain.complete","chain.complete"},
+        {"agent.lease.revoke","lease.revoke"},{"agent.task_chain.complete","chain.complete"},
         {"agent.work.complete","chain.complete"},{"agent.workflow.retry","workflow.retry"},{"agent.workflow.cancel","workflow.cancel"},
         // P-CS CC-B work operations.
         {"agent.task.submit_review","lifecycle.force_submit"},{"agent.task.complete","task.complete"},{"agent.task.split","task.split"},
@@ -468,14 +468,36 @@ test_owner_fleet_routes_and_row_helpers :: proc(t:^testing.T) {
     // Wrapper tokens never reach the gate; Hub relay stays the fallback.
     _,handled:=bridge_owner_agent_route("r1","agent.agents.instance_stop",`{"instance_id":"inst_x"}`,Bridge_Local_Agent_Token_Record{agent_instance_id="inst_c",role=.Wrapper})
     testing.expect(t,!handled,"wrapper tokens are not gated by the owner")
-    testing.expect_value(t,bridge_owner_fleet_roles_json(" worker, reviewer ,worker,"),`["worker","reviewer"]`)
-    testing.expect_value(t,bridge_owner_fleet_roles_json(" , "),"")
-    row:=contracts.Owner_Fleet_Policy{roles_json=`["worker","reviewer"]`,paused_roles_json=`["reviewer"]`}
+    // Fleet rows are worker rows (reviewers are named per task).
+    testing.expect_value(t,BRIDGE_OWNER_FLEET_ROLES,`["worker"]`)
+    row:=contracts.Owner_Fleet_Policy{roles_json=BRIDGE_OWNER_FLEET_ROLES}
     active:=bridge_owner_fleet_active_roles(row)
-    testing.expect(t,len(active)==1 && active[0]=="worker","paused roles do not serve")
+    testing.expect(t,len(active)==1 && active[0]=="worker","a worker row serves")
     row.paused_roles_json=`["*"]`
     testing.expect_value(t,len(bridge_owner_fleet_active_roles(row)),0)
     row.roles_json="";row.paused_roles_json=""
     active=bridge_owner_fleet_active_roles(row)
     testing.expect(t,len(active)==1 && active[0]=="worker","no roles means worker")
+}
+
+// A task's reviewers are --reviewer agent ids. The
+// first is the configured independent reviewer; every one goes into the brief
+// (each must approve on the owner).
+@(test)
+test_owner_task_plan_takes_several_reviewers :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    ctx:=Owner_Agent_Ctx{request_id="r1"}
+    parse :: proc(raw:string) -> json.Object {
+        v,_:=json.parse_string(raw,.JSON,true,context.temp_allocator)
+        return v.(json.Object)
+    }
+    plan,failed:=bridge_owner_task_plan(&ctx,parse(`{"reviewers":[" agt_a","agt_b","agt_a"]}`),false)
+    testing.expect_value(t,failed,"")
+    testing.expect(t,plan.has_reviewer && plan.reviewer=="agt_a" && len(plan.reviewers)==2 && plan.reviewers[1]=="agt_b","ordered, trimmed, without duplicates")
+    _,cleared:=bridge_owner_task_plan(&ctx,parse(`{"reviewers":[]}`),true)
+    testing.expect(t,strings.contains(cleared,"unsupported_on_owner_chain"),cleared)
+    _,blank:=bridge_owner_task_plan(&ctx,parse(`{"reviewers":["agt_a",""]}`),false)
+    testing.expect(t,strings.contains(blank,"bad_request"),blank)
+    brief:=bridge_owner_brief_with_reviewers(`{"goal":"g","acceptance":["a"],"reviewers":["old"]}`,plan.reviewers[:])
+    testing.expect(t,strings.contains(brief,`"reviewers":["agt_a","agt_b"]`) && strings.contains(brief,`"goal":"g"`),brief)
 }

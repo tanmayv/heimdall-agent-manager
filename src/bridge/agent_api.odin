@@ -208,7 +208,7 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 	// route (owner_agent_controls.odin) serves them before this table runs.
 	case "agent.task.hold", "agent.task.release", "agent.task.cancel", "agent.task.reopen",
 	     "agent.task.unblock", "agent.task.recheck", "agent.task.escalate", "agent.task.merge_retry",
-	     "agent.task.delete", "agent.task.review_roles", "agent.lease.revoke", "agent.task_chain.complete",
+	     "agent.task.delete", "agent.lease.revoke", "agent.task_chain.complete",
 	     "agent.task.submit_review", "agent.task.complete", "agent.task.split":
 		return Bridge_Agent_Route{kind = .Bad_Request, message = "owner_chain_only: this coordinator control is served only for chains owned by this Bridge; the target chain is not one of them"}
 	// Fleet management of a Bridge-owned chain (owner_agent_fleet.odin); Hub
@@ -363,7 +363,7 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     // unknown_method.
 	     "agent.task.hold", "agent.task.release", "agent.task.cancel", "agent.task.reopen",
 	     "agent.task.unblock", "agent.task.recheck", "agent.task.escalate", "agent.task.merge_retry",
-	     "agent.task.delete", "agent.task.review_roles", "agent.lease.revoke", "agent.task_chain.complete",
+	     "agent.task.delete", "agent.lease.revoke", "agent.task_chain.complete",
 	     "agent.task.submit_review", "agent.task.complete", "agent.task.split",
 	     "agent.task_chain.fleet_list", "agent.task_chain.fleet_set", "agent.task_chain.fleet_pause",
 	     "agent.task_chain.fleet_resume", "agent.task_chain.fleet_remove",

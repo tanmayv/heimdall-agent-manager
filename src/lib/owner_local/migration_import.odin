@@ -311,6 +311,8 @@ migration_project :: proc(s:^Store,chain,principal,key_id,migration:string,rows:
             if _,ok:=query(s.db,"INSERT INTO local_task_priority_versions VALUES(?,?,?,?)",chain,task,stamp,p);!ok do return "storage_error"
         }
         brief,c_ok:=migration_plain(migration_text(t,"brief_json"),kr)
+        // Hub briefs may still name legacy roles; owner briefs name reviewers.
+        if c_ok do brief,c_ok=migration_037_import_brief(s.db,chain,task,brief)
         if c_ok && brief_valid(brief) {
             if _,ok:=query(s.db,"INSERT INTO task_requirements VALUES(?,?,1,?,'',?,?)",chain,task,brief,principal,migration);!ok do return "storage_error"
         } else do summary^["brief_not_imported"]+=1

@@ -187,7 +187,8 @@ language_static_briefs_preserve_output_triggers_and_reject_stage_templates :: pr
 @(test)
 brief_nested_policy_rejects_ignored_or_malformed_behavior :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
-    testing.expect(t,brief_bounded(`{"goal":"Rich","acceptance":["done"],"inputs":["#7","facet:task:1:artifacts"],"budget":{"max_attempts":9,"hard_deadline":30},"gate":{"approver":"user","prompt":"Inspect"},"reviewers":["agt_review"],"review_roles":["security"]}`))
+    testing.expect(t,brief_bounded(`{"goal":"Rich","acceptance":["done"],"inputs":["#7","facet:task:1:artifacts"],"budget":{"max_attempts":9,"hard_deadline":30},"gate":{"approver":"user","prompt":"Inspect"},"reviewers":["agt_review"]}`))
+    testing.expect(t,!brief_bounded(`{"goal":"Roles","acceptance":["done"],"review_roles":["security"]}`),"review roles are gone")
     for raw in ([11]string{
         `{"inputs":"#7"}`, `{"inputs":[7]}`,
         `{"budget":5}`, `{"budget":{"max_attempts":"5"}}`,

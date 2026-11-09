@@ -244,7 +244,7 @@ test('curated summary uses chain scope, mutation CAS and strict encrypted prose;
   assert.throws(()=>ownerParse(JSON.stringify({body_cipher:'plain text'}),'comment_payload'));
 });
 
-test('defaults is a chain-scoped mutation distinct from review-role installation', () => {
+test('defaults is a chain-scoped mutation distinct from task review configuration', () => {
   const c = {...doc('command'),task_id:'',method:'chain.defaults.set',expected_revision:'1'} as OwnerCommand;
   ownerParse(JSON.stringify(c),'command');
   assert.throws(()=>ownerParse(JSON.stringify({...c,task_id:'task'}),'command'));

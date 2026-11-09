@@ -1,6 +1,6 @@
 ---
 name: coordinator-task-management
-description: How a task-chain COORDINATOR runs a Bridge-owned chain of tickets with ham-ctl — propose and publish tasks with complete briefs (`task-chain propose|publish`, `task create|publish`), wire ticket dependencies (`task depend`), set review roles (`review roles`), curate the chain summary so learnings reach every agent, react when work needs you (blocked on a human, parked on the coordinator, stuck, merge conflicts, user reviews), correct tasks with coordinator controls (`task hold|release|unblock|recheck|cancel|reopen|split|done --force`, `lease revoke`, `merge retry`), record user verdicts (`review post --on-behalf-of user`), and close the chain (`task-chain complete`). Covers Solo mode, where the coordinator also does the work, and importing legacy Hub chains. Load whenever you coordinate a chain.
+description: How a task-chain COORDINATOR runs a Bridge-owned chain of tickets with ham-ctl — propose and publish tasks with complete briefs (`task-chain propose|publish`, `task create|publish`), wire ticket dependencies (`task depend`), name each task's reviewers (`--reviewer`), curate the chain summary so learnings reach every agent, react when work needs you (blocked on a human, parked on the coordinator, stuck, merge conflicts, user reviews), correct tasks with coordinator controls (`task hold|release|unblock|recheck|cancel|reopen|split|done --force`, `lease revoke`, `merge retry`), record user verdicts (`review post --on-behalf-of user`), and close the chain (`task-chain complete`). Covers Solo mode, where the coordinator also does the work, and importing legacy Hub chains. Load whenever you coordinate a chain.
 ---
 
 # Coordinator task management (Tickets)
@@ -32,7 +32,7 @@ cat > proposal.json <<'EOF'
     {"id": "t_api", "title": "Commit-diff endpoint", "priority": "p1",
      "brief": {"goal": "Expose paginated commit-diff for chain directories.",
                "acceptance": ["GET …/vcs/commit-diff returns <= 200 hunks", "unit tests cover pagination and pass"],
-               "assignee": "agt_worker_odin", "review_roles": ["reviewer"]}},
+               "assignee": "agt_worker_odin", "reviewers": ["agt_reviewer"]}},
     {"id": "t_ui", "title": "Diff viewer", "depends_on": ["t_api"],
      "brief": {"goal": "Render the commit diff in the task panel.", "acceptance": ["diff renders per file with hunk headers", "UI tests for the viewer pass"],
                "assignee": "agt_worker_ui", "requires_user_approval": true}}
@@ -43,19 +43,19 @@ EOF
 ```
 - Per-task fields: `id`, `title`, `description`, `priority`, `depends_on`, `brief`. **Put `assignee`, `reviewers` and `requires_user_approval` inside `brief`**; top-level copies are ignored.
 - Proposals auto-approve by default: briefs are validated and tasks publish at once. Pass `--require-decision` when the user wants to see the plan first; the user then approves or rejects it in the Heimdall app (there is no agent `decide` verb). Existing work continues. Wait for a pending proposal to be decided before proposing another.
-- Single tasks: `task create --title … --goal … --acceptance … (repeat) [--assignee agt_…] [--reviewer agt_…] [--review-role <role>] [--require-user-approval] [--input <ref>] [--depends-on <ids>]`, then `task publish <task-id>` or `task-chain publish <chain-id>`.
-- Publish refuses incomplete briefs with `422 brief_incomplete` listing what is missing per task, including `review_role:<r>` when no fleet row holds a role the brief asks for.
+- Single tasks: `task create --title … --goal … --acceptance … (repeat) [--assignee agt_…] [--reviewer agt_…]… [--require-user-approval] [--input <ref>] [--depends-on <ids>]`, then `task publish <task-id>` or `task-chain publish <chain-id>`.
+- Publish refuses incomplete briefs with `422 brief_incomplete` listing what is missing per task; a brief whose `reviewers` names an agent that is not an enabled member of the chain fleet is refused.
 
 **A good brief** is self-contained: a goal a newcomer can act on, checkable acceptance items (a ticket needs a non-empty goal and at least one acceptance item; nothing else is required). Do not prescribe a verification command: the worker chooses and reports checks appropriate to the change, and reviewers judge correctness from the diff and that evidence. Add `inputs` (`output:<task>`, `<path>@<rev>`) only for context beyond what dependencies already bring: a task automatically receives the handoff of every task it waits for.
 
-## 3. Fleet and review roles
+## 3. Fleet and reviewers
 Assign work to durable identities (`agt_…`), never `inst_…`. You manage the chain's fleet (the user can too, in the app):
-- `task-chain fleet list` — rows (capacity, roles, bridge, provider/model, pause) and members (`running`).
-- `task-chain fleet set --agent agt_… [--roles worker|reviewer|<role>] [--capacity N] [--provider p --model m] [--project <repo project>]` — saves the row and, when the agent has no member yet, launches it on the owner Bridge and binds it, so `task create --assignee agt_… --reviewer agt_…` dispatches to it. Pass `--project` for the chain repository's project (git tasks need workers launched there); `--instance inst_…` binds a running instance instead. A row for your own agent is your solo row.
-- `task-chain fleet pause|resume --agent agt_… [--roles …]`, `task-chain fleet remove --agent agt_…` (disables its members); `agents start|stop|restart <inst>` for the chain's instances.
+- `task-chain fleet list` — rows (capacity, bridge, provider/model, pause) and members (`running`).
+- `task-chain fleet set --agent agt_… [--capacity N] [--provider p --model m] [--project <repo project>]` — saves the row and, when the agent has no member yet, launches it on the owner Bridge and binds it, so `task create --assignee agt_… --reviewer agt_…` dispatches to it. Pass `--project` for the chain repository's project (git tasks need workers launched there); `--instance inst_…` binds a running instance instead. A row for your own agent is your solo row.
+- `task-chain fleet pause|resume --agent agt_…` (the whole row), `task-chain fleet remove --agent agt_…` (disables its members); `agents start|stop|restart <inst>` for the chain's instances.
 - Limits: you never add a coordinator, never remove, disable, demote or stop yourself; grants stay with the user.
-- Roles: `worker`, `reviewer`, or a custom review role (`security`, `perf`, …). A brief's `review_roles` asks every agent holding that role to review. Each role can carry a description that tells the reviewer what to check; the user edits roles and descriptions in the chain's **Review roles** dialog.
-- Reviewers named on one task (`brief.reviewers` / `--reviewer`) review that task only. Re-target a task's reviewers with `review roles <task-id> --role <role>=agt_… [--require-user-approval]`.
+- Review gate: a task's reviewers are the agents in `brief.reviewers` (`--reviewer agt_…`, repeatable) plus the `requires_user_approval` flag. Every listed reviewer must approve (one `request_changes` sends the task back); with `--require-user-approval` the user must also approve from the Heimdall app. On a Bridge-owned chain the first `--reviewer` is the independent reviewer configured with the `--assignee`; several reviewers need a brief.
+- Every reviewer must be an enabled member of the chain fleet: add it with `task-chain fleet set --agent agt_…` first. Each reviewer opens its own review session on the submitted attempt when it runs `review post`. Re-target a task's reviewers with `task update <task-id> --reviewer agt_… [--reviewer agt_…] [--require-user-approval]`; tell the reviewers in the brief or a comment what to check.
 
 ## 4. Share learnings across the chain
 Agents see only their `TASK.md`. Use the channels the owner Bridge carries forward:
@@ -120,7 +120,7 @@ You can correct tasks directly. Every control takes `--reason` (recorded in the 
 | `task split <id> --child-file <json> --reason … [--dependents all|last|map --map …]` | replace a ready task by children |
 | `lease revoke <id> --reason … [--disable-fleet] [--stop]` | end a live lease (default: ask the holder to checkpoint) |
 | `merge retry <id> --reason …` | retry a failed merge-back |
-| `review roles <id> --role <role>=agt_… [--require-user-approval]` | change who reviews a task |
+| `task update <id> --reviewer agt_… [--reviewer …] [--require-user-approval]` | change who reviews a task |
 | `task create|update … --assignee self` | only in solo mode (you hold a worker fleet row); otherwise refused: use solo mode or `task done --force` |
 
 Submit kept work for review BEFORE `lease revoke --disable-fleet`: it bumps the fleet revision, after which the old lease can no longer be submitted.
@@ -142,9 +142,9 @@ Submit kept work for review BEFORE `lease revoke --disable-fleet`: it bumps the 
 - Unrelated bugs: search `issue list --query …`, vote `issue vote <id>`, or file `issue create --title … --description …`.
 
 ## 8. Solo mode
-The chain is solo when you are the Soloist or hold a worker fleet row yourself (a task assigned to you, or `task-chain fleet set --agent <your agt_id> --roles worker`). Then:
+The chain is solo when you are the Soloist or hold a worker fleet row yourself (a task assigned to you, or `task-chain fleet set --agent <your agt_id>`). Then:
 - You pull work with `lease next` (nothing is pushed), work it per `worker-task-management`, and `lease submit`. Lapsed leases are not counted as attempts.
-- New tasks do NOT default to `requires_user_approval`; a task with no review roles is done on submit. Add `--require-user-approval` when the user wants to review a task; they then review it from their attention deck. The coordinator may also remove it with `--no-require-user-approval --reason "<why>"` (workers and reviewers cannot).
+- New tasks do NOT default to `requires_user_approval`; a task with no reviewers is done on submit. Add `--require-user-approval` when the user wants to review a task; they then review it from their attention deck. The coordinator may also remove it with `--no-require-user-approval --reason "<why>"` (workers and reviewers cannot).
 - You may post `review post --on-behalf-of user` for a task that does not require user approval; for one that does, only the user's own verdict counts (`403 solo_self_review`).
 - When woken with nothing in hand, run `lease next` to pull the next ready task.
 - Urgent request mid-task: create the task, then `lease switch <task_id> --summary "<where you left off>"`.

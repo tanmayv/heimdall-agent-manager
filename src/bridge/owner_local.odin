@@ -162,23 +162,7 @@ bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
             proof=bridge_owner_config_proof(&bridge_owner_store,p,contracts.owner_string(command,"chain_id"),contracts.owner_string(command,"task_id"))
         }
     }
-    role_children:=make([dynamic]owner.Child,context.temp_allocator)
-    if contracts.owner_string(command,"method")=="review.roles" {
-        if p,ok:=contracts.owner_parse(payload,"control_payload");ok {
-            if body,opened:=vault.open(contracts.owner_string(p,"body_cipher"),&kr,context.temp_allocator);opened==.Ok {
-                if config,parsed:=contracts.owner_parse(body,"review_roles");parsed {
-                    v,valid:=contracts.owner_request_document(contracts.owner_string(config,"pairs"))
-                    if a,array:=v.(json.Array);valid && array {
-                        for item in a {
-                            if pair,obj:=item.(json.Object);obj {
-                                if child,current:=bridge_owner_child_locked(contracts.owner_string(pair,"instance_id"),"");current do append(&role_children,child)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    observed_children:=make([dynamic]owner.Child,context.temp_allocator)
     // task.split (P-CS CC-B): observe each child's named assignee instance.
     if contracts.owner_string(command,"method")=="task.split" {
         if p,ok:=contracts.owner_parse(payload,"comment_payload");ok {
@@ -189,7 +173,7 @@ bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
                         for item in list {
                             if spec,is_obj:=item.(json.Object);is_obj {
                                 if instance:=contracts.owner_string(spec,"assignee_instance_id");instance!="" {
-                                    if child,current:=bridge_owner_child_locked(instance,"");current do append(&role_children,child)
+                                    if child,current:=bridge_owner_child_locked(instance,"");current do append(&observed_children,child)
                                 }
                             }
                         }
@@ -218,7 +202,7 @@ bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
             }
         }
     }
-    result:=owner.execute(&bridge_owner_store,command_raw,payload,genesis_raw,key,owner_key,version,head,now,&kr,owner.Signer{nil,bridge_owner_sign},fleet_child,proof,role_children[:],grant_proof,remote_key)
+    result:=owner.execute(&bridge_owner_store,command_raw,payload,genesis_raw,key,owner_key,version,head,now,&kr,owner.Signer{nil,bridge_owner_sign},fleet_child,proof,observed_children[:],grant_proof,remote_key)
     sync.mutex_unlock(&bridge_local_token_mutex)
     sync.mutex_unlock(&bridge_startup_io_mutex)
     if result.code=="ok" && contracts.owner_string(command,"method")=="chain.member.set" {

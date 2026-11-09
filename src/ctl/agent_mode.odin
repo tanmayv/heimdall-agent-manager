@@ -295,10 +295,13 @@ ctl_owner_fleet_params :: proc(sub: string, tokens, args: []string) -> (method, 
 	append(&fields, json_kv("agent_id", agent))
 	switch sub {
 	case "pause", "resume", "remove":
-		if sub != "remove" && has_flag(args, "--roles") do append(&fields, json_kv("roles", option_value(args, "--roles", "")))
+		// Fleet rows are worker rows (reviewers are named per task): pause and
+		// resume act on the whole row, so --roles is not accepted.
+		if has_flag(args, "--roles") do return "", "", false
 		return strings.concatenate({"agent.task_chain.fleet_", sub}, context.temp_allocator), json_object_from_slice(fields[:]), true
 	case "set":
-		flags := [?][2]string{{"--capacity", "capacity"}, {"--min-warm", "min_warm"}, {"--idle-ttl", "idle_ttl_seconds"}, {"--roles", "roles"},
+		if has_flag(args, "--roles") do return "", "", false
+		flags := [?][2]string{{"--capacity", "capacity"}, {"--min-warm", "min_warm"}, {"--idle-ttl", "idle_ttl_seconds"},
 			{"--bridge", "bridge_id"}, {"--provider", "provider"}, {"--model", "model"}, {"--profile", "provider_profile"},
 			{"--bridge-models", "bridge_models_json"}, {"--project", "project_id"}, {"--instance", "instance_id"}}
 		for f in flags {
@@ -402,7 +405,7 @@ ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
 		tid := pos(tokens, 1)
 		if tid == "" { print_agent_help([]string{"task"}); return }
 		ctl_coord_control(endpoint, token, verb, tid, args)
-	case "cancel", "reopen", "delete", "escalate", "merge-retry", "review-roles",
+	case "cancel", "reopen", "delete", "escalate", "merge-retry",
 	     "submit-for-review", "submit-review", "done", "complete", "split":
 		// P-CS coordinator controls of Bridge-owned chains (owner_chain_only
 		// on a Hub chain).
@@ -1334,7 +1337,7 @@ ctl_agentmode_task_create_params :: proc(args: []string) -> string {
 	if has_flag(args, "--require-user-approval") do append(&fields, `"requires_user_approval":true`)
 	if deps, present := ctl_task_depends_on_flag(args, "--depends-on"); present && deps != "" do append(&fields, ctl_v2_json_string_array("depends_on", deps))
 	if b := option_value(args, "--bridge", ""); b != "" do append(&fields, json_kv("bridge_id", b))
-	// Task System v2 brief: --goal/--acceptance/--input/--review-role over an
+	// Task System v2 brief: --goal/--acceptance/--input over an
 	// optional --brief-file base (taskv2_cmds.odin).
 	if brief, ok := ctl_task_brief_field(args); ok do append(&fields, brief)
 	return json_object_from_slice(fields[:])
@@ -1758,7 +1761,7 @@ print_help_overview :: proc() {
 	fmt.println("  vault       Report the vault key source: env override and bridge status (status)")
 	fmt.println("  lease       Task System v2 leases: next, heartbeat, submit, handoff, block (revoke: coordinator)")
 	fmt.println("  verify      Removed (stub for one release): prints {\"ok\":true,\"verify\":\"removed\"} and exits 0")
-	fmt.println("  review      Post a review verdict on the task you were woken to review (post; roles: coordinator)")
+	fmt.println("  review      Post a review verdict on the task you were woken to review (post)")
 	fmt.println("  merge       Retry a merge-blocked task's pending merge (coordinator, Bridge-owned chains)")
 	fmt.println("  context     One-shot snapshot of this instance (chain, task, unread)")
 	fmt.println("  extension   Harness extension hooks → Bridge (hook <provider>, event --stdin, status)")
@@ -1868,7 +1871,7 @@ print_help_task_chain :: proc() {
 	fmt.println("  ham-ctl task-chain show chain_abc")
 	fmt.println("  ham-ctl task-chain summary set '# Chain summary' --chain chain_abc")
 	fmt.println("  ham-ctl task-chain propose --file proposal.json")
-	fmt.println("  ham-ctl task-chain fleet set chain_abc --agent agt_worker --roles worker --project proj_repo")
+	fmt.println("  ham-ctl task-chain fleet set chain_abc --agent agt_worker --project proj_repo")
 	fmt.println("  ham-ctl task-chain complete chain_abc --expected-work-revision 7 --summary 'All work merged; evidence: ...'")
 }
 
@@ -1876,19 +1879,19 @@ print_help_task_chain_fleet :: proc() {
 	fmt.println("ham-ctl task-chain fleet — the fleet of your Bridge-owned chain (coordinator only)")
 	fmt.println("")
 	fmt.println("VERBS (<chain-id> defaults to your chain)")
-	fmt.println("  list [<chain-id>]                       Fleet rows (agent, capacity, roles, placement, pause) and members (running or not).")
+	fmt.println("  list [<chain-id>]                       Fleet rows (agent, capacity, placement, pause) and members (running or not).")
 	fmt.println("  set [<chain-id>] --agent <agt_id> [flags]  Add or change a fleet row. If the agent has no member in the chain")
-	fmt.println("                                          (and the row serves a role on this Bridge) one instance is launched on")
-	fmt.println("                                          this Bridge into the chain and bound as a member, so tasks assigned to")
-	fmt.println("                                          the agt_ id dispatch to it. Your own agent's row is your solo row (nothing launched).")
-	fmt.println("  pause|resume [<chain-id>] --agent <id> [--roles <r,...>]  Pause/resume the row (all roles or the named ones).")
+	fmt.println("                                          (and the row is not paused) one instance is launched on this Bridge")
+	fmt.println("                                          into the chain and bound as a member, so tasks assigned to the agt_ id")
+	fmt.println("                                          dispatch to it and tasks may name it --reviewer. Your own agent's row")
+	fmt.println("                                          is your solo row (nothing launched).")
+	fmt.println("  pause|resume [<chain-id>] --agent <id>  Pause/resume the row.")
 	fmt.println("  remove [<chain-id>] --agent <id>        Disable the agent's members (never yourself) and pause its row.")
 	fmt.println("")
 	fmt.println("FLAGS (set; only the flags you pass change)")
 	fmt.println("  --capacity <N>            Maximum concurrent instances (>= 1; default 1).")
 	fmt.println("  --min-warm <N>            Minimum warm instances (recorded).")
 	fmt.println("  --idle-ttl <seconds>      Idle TTL (default 600).")
-	fmt.println("  --roles <worker,reviewer> Roles the row serves (comma-separated; default worker; any role but coordinator).")
 	fmt.println("  --bridge <bridge_id>      Placement; owner-chain agents run on the owner Bridge (another Bridge is recorded, not launched).")
 	fmt.println("  --provider <p> --model <m> --profile <provider_profile>   Provider/model for launches.")
 	fmt.println("  --bridge-models <json>    Per-bridge {\"<bridge_id>\":{\"provider_profile\",\"provider\",\"model\"}} map.")
@@ -1897,8 +1900,8 @@ print_help_task_chain_fleet :: proc() {
 	fmt.println("")
 	fmt.println("EXAMPLES")
 	fmt.println("  ham-ctl task-chain fleet list")
-	fmt.println("  ham-ctl task-chain fleet set --agent agt_worker --roles worker --provider claude --model sonnet --project proj_repo")
-	fmt.println("  ham-ctl task-chain fleet set --agent agt_rev --roles reviewer,security")
+	fmt.println("  ham-ctl task-chain fleet set --agent agt_worker --provider claude --model sonnet --project proj_repo")
+	fmt.println("  ham-ctl task-chain fleet set --agent agt_rev     # then: task create ... --reviewer agt_rev")
 	fmt.println("  ham-ctl task-chain fleet pause --agent agt_worker")
 	fmt.println("  ham-ctl task-chain fleet remove --agent agt_worker")
 }
@@ -1940,7 +1943,6 @@ print_help_task :: proc() {
 	fmt.println("  escalate <task-id> --reason <text>      Block the task on a human (waiting_on=human); only the user")
 	fmt.println("                                          can clear it, from the Heimdall app (unblock is refused).")
 	fmt.println("  merge-retry <task-id> --reason <text>   Same as `merge retry`.")
-	fmt.println("  review-roles <task-id> --role r=agt_x   Same as `review roles`.")
 	fmt.println("  submit-for-review <task-id> --summary <s> --reason <text> [--override-ack]")
 	fmt.println("                                          Submit the last lease's committed work for review on the")
 	fmt.println("                                          worker's behalf (stops a live lease first). The Bridge")
@@ -1965,9 +1967,13 @@ print_help_task :: proc() {
 	fmt.println("      [--description <d>] [--priority p0|p1|p2] [--assignee <agent-id>|self] [--bridge <bridge-id>]")
 	fmt.println("      [--reviewer <agent-id,...>] [--require-user-approval] [--depends-on <id,id>] [--chain <id>]")
 	fmt.println("      BRIEF (what publish validates): --goal <g> --acceptance <a> (repeatable)")
-	fmt.println("      [--input <ref>]... [--review-role <role>]... [--brief-file <path.json>]")
-	fmt.println("      --brief-file is a JSON object with any of: goal, acceptance, inputs, review_roles,")
-	fmt.println("      assignee, reviewers, budget, output, on_output, requires_user_approval, approver, gate.")
+	fmt.println("      [--input <ref>]... [--brief-file <path.json>]")
+	fmt.println("      --brief-file is a JSON object with any of: goal, acceptance, inputs, assignee,")
+	fmt.println("      reviewers, budget, output, on_output, requires_user_approval, approver, gate.")
+	fmt.println("      Review gate: every --reviewer agent (repeatable) must approve, and with")
+	fmt.println("      --require-user-approval so must the user. Reviewers must be chain members")
+	fmt.println("      (`task-chain fleet set --agent <id>`); on a Bridge-owned chain the first is the")
+	fmt.println("      independent reviewer configured with --assignee.")
 	fmt.println("      Flags override its fields. Other keys are rejected (unknown_brief_fields). --verify,")
 	fmt.println("      --auto-submit and --require-independent-verify were removed: ignored with a warning.")
 	fmt.println("  update <task-id>                        Edit an existing task (coordinator only).")
@@ -1998,7 +2004,7 @@ print_help_task :: proc() {
 	fmt.println("  ham-ctl task show task_1")
 	fmt.println("  ham-ctl task create --title 'Add retry' --goal 'Retry transient 5xx in the client' \\")
 	fmt.println("      --acceptance 'retries 3x with backoff' --acceptance 'unit test covers 503' \\")
-	fmt.println("      --review-role reviewer --assignee agt_worker")
+	fmt.println("      --assignee agt_worker --reviewer agt_reviewer")
 	fmt.println("  Leased tasks allow acceptance-only brief patches:")
 	fmt.println("  ham-ctl task update task_1 --acceptance 'retries 3x with backoff' --acceptance 'logs each retry'")
 	fmt.println("  ham-ctl task update task_1 --assignee agt_worker --reviewer agt_a --reviewer agt_b")

@@ -20,6 +20,7 @@ import "core:crypto"
 import "core:encoding/json"
 import "core:fmt"
 import "core:os"
+import "core:slice"
 import "core:strconv"
 import "core:strings"
 import "core:sync"
@@ -224,7 +225,7 @@ bridge_owner_run_input :: proc(ctx:^Owner_Agent_Ctx,method,chain,task,lease,conf
 
 // Coordinator (or own-task worker) commands, signed by the owner key for the
 // proven child; owner.execute applies agent_command_admit.
-bridge_owner_run_command :: proc(ctx:^Owner_Agent_Ctx,method,chain,task,expected,payload:string,fleet_child:owner.Child={},proof:owner.Lifecycle_Proof={},role_children:[]owner.Child=nil,source:owner.Source_Proof={}) -> owner.Result {
+bridge_owner_run_command :: proc(ctx:^Owner_Agent_Ctx,method,chain,task,expected,payload:string,fleet_child:owner.Child={},proof:owner.Lifecycle_Proof={},observed_children:[]owner.Child=nil,source:owner.Source_Proof={}) -> owner.Result {
     s:=ctx.store
     c:=make(json.Object,context.temp_allocator)
     values:=map[string]string{"protocol_version"="1","account_id"=s.account,"chain_id"=chain,"immutable_owner_bridge"=s.owner,
@@ -236,7 +237,7 @@ bridge_owner_run_command :: proc(ctx:^Owner_Agent_Ctx,method,chain,task,expected
     signature,signed:=bridge_owner_sign(nil,"command",c)
     if !signed do return owner.Result{code="storage_error"}
     c["signature"]=json.String(signature)
-    return owner.execute_agent(s,bridge_owner_json(c),payload,ctx.child,ctx.key,ctx.now,ctx.kr,bridge_owner_signer(),fleet_child,proof,role_children,source)
+    return owner.execute_agent(s,bridge_owner_json(c),payload,ctx.child,ctx.key,ctx.now,ctx.kr,bridge_owner_signer(),fleet_child,proof,observed_children,source)
 }
 
 // A vault-armored value from ham-ctl is already a cipher under this account's
@@ -750,6 +751,10 @@ Owner_Task_Plan :: struct {
     deps:[dynamic]string,
     assignee,reviewer:string,
     has_assignee,has_reviewer:bool,
+    // Every --reviewer in order (reviewer is the first): the first is the
+    // task's configured independent reviewer, and all of them are the brief's
+    // reviewers, each of which must approve (owner review_gate).
+    reviewers:[dynamic]string,
     // --require-user-approval / --no-require-user-approval: the coordinator
     // may add or remove the flag (it lives in the brief); a removal needs
     // --reason, recorded with the requirements revision for the audit.
@@ -759,6 +764,7 @@ Owner_Task_Plan :: struct {
 bridge_owner_task_plan :: proc(ctx:^Owner_Agent_Ctx,p:json.Object,updating:bool) -> (Owner_Task_Plan,string) {
     plan:Owner_Task_Plan
     plan.deps=make([dynamic]string,context.temp_allocator)
+    plan.reviewers=make([dynamic]string,context.temp_allocator)
     plan.reason=strings.trim_space(bridge_owner_plain(ctx,bridge_owner_pstr(p,"requirements_reason")))
     for pair in ([2][2]string{{"request_id","--request-id"},{"notify","--notify"}}) {
         if u:=bridge_owner_unsupported(ctx,p,pair[0],pair[1]);u!="" do return {},u
@@ -799,11 +805,15 @@ bridge_owner_task_plan :: proc(ctx:^Owner_Agent_Ctx,p:json.Object,updating:bool)
     }
     if value,present:=p["reviewers"];present {
         list,is_list:=value.(json.Array)
-        if !is_list || len(list)!=1 do return {},bridge_owner_fail(ctx,"unsupported_on_owner_chain","--reviewer must name exactly one reviewer agent on an owner-held chain (clearing or several reviewers is unsupported)")
-        id,is_text:=list[0].(json.String)
-        if !is_text || strings.trim_space(string(id))=="" do return {},bridge_owner_fail(ctx,"bad_request","--reviewer must be an agent id")
+        if !is_list || len(list)<1 || len(list)>16 do return {},bridge_owner_fail(ctx,"unsupported_on_owner_chain","--reviewer must name 1-16 reviewer agents on an owner-held chain (clearing the reviewers is unsupported)")
+        for item in list {
+            id,is_text:=item.(json.String)
+            trimmed:=strings.trim_space(string(id))
+            if !is_text || !contracts.owner_field_valid(trimmed,"id") do return {},bridge_owner_fail(ctx,"bad_request","--reviewer must be an agent id")
+            if !slice.contains(plan.reviewers[:],trimmed) do append(&plan.reviewers,trimmed)
+        }
         plan.has_reviewer=true
-        plan.reviewer=strings.trim_space(string(id))
+        plan.reviewer=plan.reviewers[0]
     }
     return plan,""
 }
@@ -964,6 +974,15 @@ bridge_owner_plan_children :: proc(ctx:^Owner_Agent_Ctx,chain:string,st:owner.Ag
         if plan.has_assignee && reviewer.agent_id==assignee.agent_id do return {},{},bridge_owner_fail(ctx,"invalid_scope","the reviewer must be a different agent than the assignee")
     }
     if plan.has_assignee && reviewer_agent=="" do return {},{},bridge_owner_fail(ctx,"reviewer_required","an owner task needs an independent --reviewer with its --assignee")
+    // Every further --reviewer must be a running member of this chain too
+    // (`ham-ctl task-chain fleet set --agent <id>` launches and binds one).
+    author:=assignee.agent_id if plan.has_assignee else (contracts.owner_string(st.config,"author_agent_id") if st.configured else "")
+    for id in plan.reviewers {
+        if id==ctx.child.agent_id do return {},{},bridge_owner_fail(ctx,"invalid_scope","the coordinator never reviews a task of its own chain; name another --reviewer")
+        if author!="" && id==author do return {},{},bridge_owner_fail(ctx,"invalid_scope","a reviewer must be a different agent than the assignee")
+        if id==reviewer_agent do continue
+        if _,code,message:=bridge_owner_resolve_agent(ctx,chain,id,"--reviewer");code!="ok" do return {},{},bridge_owner_fail(ctx,code,message)
+    }
     return assignee,reviewer,""
 }
 
@@ -985,6 +1004,8 @@ bridge_owner_task_create :: proc(ctx:^Owner_Agent_Ctx,p:json.Object) -> string {
     if pre_code!="ok" do return bridge_owner_fail(ctx,pre_code,fmt.tprintf("no task created: %s",pre_message))
     // The owner gate reads the flag from the brief, so a gated task needs one.
     if plan.approval && bridge_owner_brief_text(ctx,p)=="" do return bridge_owner_fail(ctx,"bad_request","--require-user-approval on an owner-held chain needs a brief (--goal and --acceptance); no task created")
+    // Several reviewers live in the brief.
+    if len(plan.reviewers)>1 && bridge_owner_brief_text(ctx,p)=="" do return bridge_owner_fail(ctx,"bad_request","several --reviewer on an owner-held chain need a brief (--goal and --acceptance); no task created")
     title_cipher,ok:=bridge_owner_cipher(ctx,title)
     body_cipher,body_ok:=bridge_owner_cipher(ctx,bridge_owner_pstr(p,"description"))
     if !ok || !body_ok do return bridge_owner_fail(ctx,"vault_locked","cannot seal task content")
@@ -992,6 +1013,7 @@ bridge_owner_task_create :: proc(ctx:^Owner_Agent_Ctx,p:json.Object) -> string {
     if r.code!="ok" do return bridge_owner_fail(ctx,r.code,"owner task create refused")
     if brief:=bridge_owner_brief_text(ctx,p);brief!="" {
         if plan.approval do brief=bridge_owner_brief_with_approval(brief)
+        if plan.has_reviewer do brief=bridge_owner_brief_with_reviewers(brief,plan.reviewers[:])
         if code,message:=bridge_owner_requirements(ctx,chain,task,brief,"",true,plan.reason);code!="ok" do return bridge_owner_fail(ctx,code,fmt.tprintf("task %s created; requirements refused%s",task,message))
     }
     if code,message:=bridge_owner_apply_plan(ctx,chain,task,plan,assignee,pre);code!="ok" do return bridge_owner_fail(ctx,code,fmt.tprintf("task %s created; %s",task,message))
@@ -1000,6 +1022,18 @@ bridge_owner_task_create :: proc(ctx:^Owner_Agent_Ctx,p:json.Object) -> string {
     if plan.has_assignee do out["assignee_instance_id"]=json.String(assignee.instance)
     if reviewer.instance!="" do out["reviewer_instance_id"]=json.String(reviewer.instance)
     return bridge_local_response_data(ctx.request_id,bridge_owner_json(out))
+}
+
+// The brief with its reviewers set to the --reviewer agents (every one of
+// them must approve; the owner gate reads them from the brief).
+bridge_owner_brief_with_reviewers :: proc(brief:string,reviewers:[]string) -> string {
+    v,ok:=contracts.owner_content_document(brief)
+    o,obj:=v.(json.Object)
+    if !ok || !obj do return brief
+    list:=make(json.Array,0,len(reviewers),context.temp_allocator)
+    for id in reviewers do append(&list,json.String(id))
+    o["reviewers"]=list
+    return bridge_owner_json(o)
 }
 
 // The brief with requires_user_approval set (the owner gate's source).
@@ -1089,6 +1123,12 @@ bridge_owner_task_update :: proc(ctx:^Owner_Agent_Ctx,p:json.Object) -> string {
             if brief=="" && st.brief=="" do return bridge_owner_fail(ctx,"bad_request","--require-user-approval on an owner-held chain needs a brief (--goal and --acceptance); task unchanged")
             brief=bridge_owner_brief_with_approval(brief if brief!="" else "{}")
         }
+    }
+    if plan.has_reviewer {
+        // Re-targeting reviewers is a requirements edit (merged over the
+        // current brief); a task without a brief keeps only its configured one.
+        if brief=="" && st.brief=="" && len(plan.reviewers)>1 do return bridge_owner_fail(ctx,"bad_request","several --reviewer on an owner-held chain need a brief (--goal and --acceptance); task unchanged")
+        if brief!="" || st.brief!="" do brief=bridge_owner_brief_with_reviewers(brief if brief!="" else "{}",plan.reviewers[:])
     }
     if plan.reason!="" && brief=="" do return bridge_owner_fail(ctx,"bad_request","--reason applies to a requirements edit (brief flags or --no-require-user-approval); task unchanged")
     if title=="" && description=="" && brief=="" && plan.priority=="" && !plan.has_deps && !plan.has_assignee && !plan.has_reviewer && !plan.has_approval {

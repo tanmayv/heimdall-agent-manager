@@ -187,16 +187,6 @@ await step('REQ-B3: the fleet table lists the coordinator; its row opens the con
   await openTicketsTab();
 });
 
-await step('board menu: Review roles opens and Esc closes it', async () => {
-  await S('ticket-board-menu-btn').click();
-  await S('task-board-review-roles-btn').click();
-  await dialogOpen();
-  assert.match(await page.locator('[role="dialog"]').first().innerText(), /Review roles/);
-  await pressEscape();
-  await dialogClosed();
-  await visible('ticket-board-view');
-});
-
 await step('board menu: Manage fleet opens the fleet drawer; Done closes it', async () => {
   await S('ticket-board-menu-btn').click();
   await S('task-board-fleet-btn').click();

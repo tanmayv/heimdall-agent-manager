@@ -94,7 +94,7 @@ export async function ownerLocalMetadataFlow({session,bridgeId,cli,expect,stopOw
   const context=JSON.parse((await call('chain.read')).body).context;
   expect(context.body.includes('retained relay evidence'),'materialized context consumes operational notes');
   liveRevision=JSON.parse((await call('chain.read')).body).revision;
-  const nativeDefaults='{ "review_roles": {"reviewer":"Curated 界 role description"}, "proposal":{"state":"pending"} }';
+  const nativeDefaults='{ "conventions": {"style":"Curated 界 description"}, "proposal":{"state":"pending"} }';
   const defaults=await prepare('chain.defaults.set',{expectedRevision:liveRevision,body:nativeDefaults});
   await invoke(defaults);
   expect((await invoke(defaults)).replay,'defaults exact receipt replays');

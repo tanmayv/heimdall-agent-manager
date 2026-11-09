@@ -122,7 +122,7 @@ grant :: proc(s:^Store, command:json.Object, now:i64) -> (contracts.Owner_Read_G
 // entering here. Its pinned sequence/hash is rechecked under the write lock.
 // The key is a verified current directory member, never a request assertion.
 execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:contracts.Owner_Verified_Key,
-    directory_version:i64,directory_hash:string, now:i64, kr:^vault.Vault_Keyring, sign:Signer, fleet_child:Child={}, lifecycle_proof:Lifecycle_Proof={}, role_children:[]Child=nil, grant_proof:Grant_Proof={}, remote_key:contracts.Owner_Verified_Key={}, agent:Child={}, source:Source_Proof={}, requested_by:string="") -> Result {
+    directory_version:i64,directory_hash:string, now:i64, kr:^vault.Vault_Keyring, sign:Signer, fleet_child:Child={}, lifecycle_proof:Lifecycle_Proof={}, observed_children:[]Child=nil, grant_proof:Grant_Proof={}, remote_key:contracts.Owner_Verified_Key={}, agent:Child={}, source:Source_Proof={}, requested_by:string="") -> Result {
     context.allocator=context.temp_allocator
     c,parsed:=contracts.owner_parse(command_raw,"command")
     if !parsed do return fail("malformed")
@@ -199,7 +199,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     if len(chains)>0 do revision=number(chains[0][0])
     if creating && revision>0 do return fail("operation_conflict")
     if !creating && revision==0 do return fail("invalid_scope")
-    if method=="task.publish" || method=="task.priority"|| method=="native.history.import" || method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="dependency.edit" || method=="review.roles" || method=="task.hold" || method=="task.release" || method=="task.cancel" || method=="task.reopen" || method=="task.resolve" || method=="merge.retry" || method=="lease.revoke" || method=="task.recheck" || method=="task.escalate" || method=="lifecycle.force_submit" || method=="task.complete" || method=="task.split" || method=="submission.read" || method=="task.edit" || method=="task.delete" || method=="task.comment" || method=="task.read" || method=="fleet.edit" || method=="fleet.reserve" || method=="runtime.read" || method=="lifecycle.configure" || method=="requirements.edit" || method=="review.post" {
+    if method=="task.publish" || method=="task.priority"|| method=="native.history.import" || method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="dependency.edit" || method=="task.hold" || method=="task.release" || method=="task.cancel" || method=="task.reopen" || method=="task.resolve" || method=="merge.retry" || method=="lease.revoke" || method=="task.recheck" || method=="task.escalate" || method=="lifecycle.force_submit" || method=="task.complete" || method=="task.split" || method=="submission.read" || method=="task.edit" || method=="task.delete" || method=="task.comment" || method=="task.read" || method=="fleet.edit" || method=="fleet.reserve" || method=="runtime.read" || method=="lifecycle.configure" || method=="requirements.edit" || method=="review.post" {
         tasks,found:=query(s.db,"SELECT revision FROM tasks WHERE chain_id=? AND task_id=?",chain,task)
         if !found do return fail("storage_error")
         if len(tasks)==1 {
@@ -250,7 +250,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         return fail("clock_uncertain")
     }
     if state[0][4]!="ready" do return fail("clock_uncertain")
-    if method=="task.cancel" || method=="task.reopen" || method=="fleet.edit" || method=="fleet.reserve" || method=="lifecycle.configure" || method=="review.roles" || method=="dependency.edit" || method=="merge.retry" ||
+    if method=="task.cancel" || method=="task.reopen" || method=="fleet.edit" || method=="fleet.reserve" || method=="lifecycle.configure" || method=="dependency.edit" || method=="merge.retry" ||
        method=="lease.revoke" || method=="task.escalate" || method=="task.recheck" ||
        method=="lifecycle.force_submit" || method=="task.complete" || method=="task.split" {
         pending,read:=query(s.db,"SELECT 1 FROM deferred_workflow_retirements d WHERE d.chain_id=? AND d.task_id=? AND NOT EXISTS(SELECT 1 FROM deferred_workflow_dispositions r WHERE r.intent_id=d.intent_id) LIMIT 1",chain,task)
@@ -349,11 +349,6 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         code:=dependency_command(s,c,p,seq)
         if code!="ok" do return fail(code)
         wrote=true
-    case "review.roles":
-        code:string
-        code,control_extra=role_configure(s,c,body,role_children,seq,device,agent_mode,agent)
-        if code!="ok" do return fail(code)
-        wrote=true
     case "chain.create":
         _,wrote=query(s.db,"INSERT INTO task_chains VALUES(?,?,?,?,?,1)",chain,principal,key.key_id,title,description)
         if wrote { _,wrote=query(s.db,"INSERT INTO chain_genesis(chain_id,creation_op,genesis_digest,genesis_json) VALUES(?,?,?,?)",chain,op,field(p,"genesis_digest"),genesis_raw) }
@@ -443,7 +438,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         wrote=true
     case "task.split":
         code:string
-        code,control_extra=split_command(s,c,command_raw,payload,body,seq,device,agent_mode,role_children)
+        code,control_extra=split_command(s,c,command_raw,payload,body,seq,device,agent_mode,observed_children)
         if code!="ok" do return fail(code)
         wrote=true
     case "chain.policy.set":

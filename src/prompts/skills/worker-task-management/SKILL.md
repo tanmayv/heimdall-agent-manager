@@ -28,7 +28,7 @@ All commands use `./bin/ham-ctl`. Exact flags: the `ham-ctl-reference` skill or 
 | Woken with `changes_requested` | address every Open Finding, re-check what changed, submit |
 | Woken with **Your Block Was Answered** | continue with the answer; no need to ask again |
 | Any command returns `409 lease_lost` | stop at once; touch nothing |
-| Woken as a reviewer | read the role description (`lease next`), inspect the head and the worker's reported checks, run your own checks only where a concrete concern remains, then `review post` |
+| Woken as a reviewer | read the brief and what the coordinator asked you to check, inspect the head and the worker's reported checks, run your own checks only where a concrete concern remains, then `review post` |
 | Review: everything checks out | `review post --verdict approve` |
 | Review: something is wrong | `review post --verdict request_changes --summary … [--findings-file …]` |
 | Want to postpone this task or do something else first | `lease switch <task_id> --summary …` (solo) or `lease handoff --summary … --next-steps …`; never ask for a hold to postpone work (a hold is the coordinator's pause, and the user cannot answer a held task) |
@@ -43,13 +43,13 @@ The owner Bridge writes `<run_dir>/TASK.md` before your turn. It is your authori
 | Section | What it tells you |
 |---|---|
 | Header | task, chain, `lease_id`, instance, the requirements revision and whether you acknowledged it, and the **Workdir** + branch (or why the Workdir is unavailable: run `lease next` again before working) |
-| Current requirements (complete) | the full brief as JSON: goal, acceptance, inputs, review roles, approvals. It is never truncated |
+| Current requirements (complete) | the full brief as JSON: goal, acceptance, inputs, reviewers, approvals. It is never truncated |
 | Chain summary | done tasks (+ commit), open tasks, coordinator notes and a bounded projection of recent lessons, decisions, dead ends and submissions |
 | Context provenance | where the context came from (sources, cursors) |
 
 Presenting requirements does not acknowledge them: after reading `TASK.md`, run `ham-ctl lease heartbeat --lease <lease-id> --acknowledge-requirements-revision <n>` (see §9). Notices such as a merge conflict to reconcile, an answered block, or review findings to address arrive with the lease and in `task show`; `ham-ctl task show <id>` always has the full brief.
 
-`ham-ctl lease next` returns your lease (`status: current`), grants a ready task (`granted`, rewrites `TASK.md`) or `none`. Its JSON also carries what each review role must check (`lease.review_roles[].description`).
+`ham-ctl lease next` returns your lease (`status: current`), grants a ready task (`granted`, rewrites `TASK.md`) or `none`.
 
 ## 2. Work in the Workdir
 In a git directory every task gets its own checkout: `<dir>/.heimdall/worktrees/<task_id>` on branch `heimdall/<task_id>`. **`cd` to the Workdir and do all edits and commits there.** `lease submit` runs there automatically. When the task is `done` the owner Bridge merges your branch into the directory's branch. Work from tasks you depend on is already merged into your starting point.
@@ -115,7 +115,7 @@ git -C <Workdir> log --oneline -20                # what earlier tasks merged in
 
 ## 7. Reviewing
 When `TASK.md` says `reviewer` (a review lease):
-1. Read the brief, the submitted attempt (summary with the checks the worker reported, handoff) and the role description in `lease next` (`lease.review_roles[].description`): it says what *your* role must check.
+1. Read the brief, the submitted attempt (summary with the checks the worker reported, handoff) and any review focus the coordinator gave in the brief or a comment: it says what *you* must check.
 2. Inspect the change at the submitted head (`git show --stat <head>`, `git show <head>:<path>`).
 3. Judge correctness yourself. Read the diff against the acceptance items and the worker's reported checks. Run your own checks (for example in a detached worktree at the submitted head) only where a concrete concern remains; say what you checked in `--summary` or findings. Your verdict needs no command evidence.
 4. Post the verdict:

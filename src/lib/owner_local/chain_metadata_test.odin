@@ -133,8 +133,8 @@ defaults_signed_cas_exact_history_restart_rollback_and_separate_installation :: 
     cap:=lifecycle_ready(t,f)
     if cap=="" do return
     leases,_:=query(f.store.db,"SELECT lease_id,capability_json,retired_seq FROM local_leases")
-    roles,_:=query(f.store.db,"SELECT * FROM local_role_configs")
-    original:=`{ "review_roles": {"reviewer":"Precise 界 description"}, "proposal":{"state":"pending","priority":7} }`
+    configs,_:=query(f.store.db,"SELECT * FROM lifecycle_configs")
+    original:=`{ "target_branch": {"main":"Precise 界 description"}, "proposal":{"state":"pending","priority":7} }`
     old:=summary_revision(f)
     p:=encode(doc(map[string]string{"body_cipher"=cipher(f,original)}))
     c:=command(f,"chain.defaults.set","defaults_original","",p,old)
@@ -164,8 +164,8 @@ defaults_signed_cas_exact_history_restart_rollback_and_separate_installation :: 
     testing.expect(t,!exec(f.store.db,"DELETE FROM local_chain_defaults_versions"))
     after,_:=query(f.store.db,"SELECT lease_id,capability_json,retired_seq FROM local_leases")
     testing.expect_value(t,encode(after),encode(leases))
-    installed,_:=query(f.store.db,"SELECT * FROM local_role_configs")
-    testing.expect_value(t,encode(installed),encode(roles))
+    installed,_:=query(f.store.db,"SELECT * FROM lifecycle_configs")
+    testing.expect_value(t,encode(installed),encode(configs))
     close(&f.store);testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     row,_=contracts.owner_content_document(context_call(f,"chain.read","defaults_restart","").body)
     obj,_=row.(json.Object)

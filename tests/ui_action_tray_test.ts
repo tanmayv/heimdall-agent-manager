@@ -162,7 +162,7 @@ test('chat tray Start agent stays visible with an inline failure and retry', asy
     const json = (data: any) => ({ ok: true, status: 200, headers: { get: () => 'application/json' }, text: async () => JSON.stringify({ data }), json: async () => ({ data }) });
     if (url.pathname.endsWith('/agents')) return json([{ agent_id: 'agt_replacement', name: 'vault:v2:7e57000000000001:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', state: 'active' }]);
     if (url.pathname.endsWith('/fleets')) return json([{ agent_id: 'agt_replacement', roles: ['worker'], paused_roles: [] }]);
-    if (url.pathname.endsWith('/tasks/task_start')) return json({ task_id: 'task_start', brief: { assignee: 'agt_current', reviewers: [], review_roles: [] }, leases: [] });
+    if (url.pathname.endsWith('/tasks/task_start')) return json({ task_id: 'task_start', brief: { assignee: 'agt_current', reviewers: [] }, leases: [] });
     if (url.pathname.endsWith('/accept')) {
       requests += 1;
       return requests === 1

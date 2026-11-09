@@ -814,45 +814,6 @@ owner_fields_source_page := [?]Owner_Field{
     {"cursor", "optional"},
     {"limit", "positive"},
 }
-Owner_Review_Roles :: struct {
-    configuration_revision: string,
-    requires_user_approval: string,
-    pairs: string,
-}
-@(private)
-owner_fields_review_roles := [?]Owner_Field{
-    {"configuration_revision", "positive"},
-    {"requires_user_approval", "flag"},
-    {"pairs", "document"},
-}
-Owner_Review_Pair :: struct {
-    role: string,
-    agent_id: string,
-    instance_id: string,
-}
-@(private)
-owner_fields_review_pair := [?]Owner_Field{
-    {"role", "id"},
-    {"agent_id", "id"},
-    {"instance_id", "id"},
-}
-Owner_Review_Role_Payload :: struct {
-    requirements_revision: string,
-    attempt: string,
-    head: string,
-    verdict: string,
-    summary: string,
-    role: string,
-}
-@(private)
-owner_fields_review_role_payload := [?]Owner_Field{
-    {"requirements_revision", "positive"},
-    {"attempt", "positive"},
-    {"head", "optional_commit"},
-    {"verdict", "verdict"},
-    {"summary", "document"},
-    {"role", "id"},
-}
 Owner_Grant_Payload :: struct {
     principal_id: string,
     key_id: string,
@@ -1896,9 +1857,6 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "source_fact": return owner_fields_source_fact[:]
     case "source_action": return owner_fields_source_action[:]
     case "source_page": return owner_fields_source_page[:]
-    case "review_roles": return owner_fields_review_roles[:]
-    case "review_pair": return owner_fields_review_pair[:]
-    case "review_role_payload": return owner_fields_review_role_payload[:]
     case "grant_payload": return owner_fields_grant_payload[:]
     case "grant_revoke_payload": return owner_fields_grant_revoke_payload[:]
     case "grant_policy_payload": return owner_fields_grant_policy_payload[:]

@@ -93,7 +93,7 @@ ctl_collect_repeated :: proc(args: []string, names: ..string) -> [dynamic]string
 // (REQ-TV2-4), in the order ham-ctl writes them. The hub owns validation: keys
 // outside it are forwarded and the hub rejects them with unknown_brief_fields
 // instead of ham-ctl dropping them silently.
-CTL_BRIEF_KEYS :: [?]string{"goal", "acceptance", "inputs", "review_roles", "assignee", "reviewers", "budget", "output", "on_output", "requires_user_approval", "approver", "gate"}
+CTL_BRIEF_KEYS :: [?]string{"goal", "acceptance", "inputs", "assignee", "reviewers", "budget", "output", "on_output", "requires_user_approval", "approver", "gate"}
 
 // ctl_brief_clear_flag: `--clear-<field>` sends `"<field>":null`, which the
 // hub's top-level merge reads as "remove this key".
@@ -105,7 +105,7 @@ ctl_brief_clear_flag :: proc(key: string) -> string {
 // ctl_task_brief_flags_present reports whether any brief flag was given, so
 // `task update` without them does not send an (empty) brief.
 ctl_task_brief_flags_present :: proc(args: []string) -> bool {
-	for f in ([?]string{"--goal", "--acceptance", "--input", "--inputs", "--review-role", "--review-roles", "--on-output-workflow", "--output-schema", "--brief-file"}) {
+	for f in ([?]string{"--goal", "--acceptance", "--input", "--inputs", "--on-output-workflow", "--output-schema", "--brief-file"}) {
 		if has_flag(args, f) do return true
 	}
 	for k in CTL_BRIEF_KEYS do if has_flag(args, ctl_brief_clear_flag(k)) do return true
@@ -167,8 +167,6 @@ ctl_task_brief_entries :: proc(args: []string, brief_file_text: string) -> ([]Ct
 	if len(acceptance) > 0 do values["acceptance"] = ctl_json_string_array_value(acceptance[:])
 	inputs := ctl_multi_values(args, "--input", "--inputs")
 	if len(inputs) > 0 do values["inputs"] = ctl_json_string_array_value(inputs)
-	roles := ctl_multi_values(args, "--review-role", "--review-roles")
-	if len(roles) > 0 do values["review_roles"] = ctl_json_string_array_value(roles)
 	if out_schema := strings.trim_space(option_value(args, "--output-schema", "")); out_schema != "" do values["output"] = json.String(out_schema)
 	if on_wf := strings.trim_space(option_value(args, "--on-output-workflow", "")); on_wf != "" {
 		on_output := make(json.Object, allocator = context.temp_allocator)
@@ -327,7 +325,7 @@ ctl_brief_incomplete_render :: proc(response: string) -> (string, bool) {
 			strings.write_byte(&b, '\n')
 		}
 	}
-	strings.write_string(&b, "rules: goal (≤2000 chars); 1..20 acceptance items (≤200 chars each); every review_role needs a fleet row carrying that role.\n")
+	strings.write_string(&b, "rules: goal (≤2000 chars); 1..20 acceptance items (≤200 chars each); every reviewer must be an enabled chain member.\n")
 	return strings.to_string(b), true
 }
 
@@ -594,12 +592,6 @@ ctl_v2_review :: proc(endpoint, token: string, tokens, args: []string) {
 			os.exit(1)
 		}
 		ctl_agent_call_task(endpoint, token, "agent.review.post", params, args)
-	case "roles":
-		// Coordinator of a Bridge-owned chain: required review roles of a task.
-		tid := pos(tokens, 1)
-		if tid == "" do tid = option_value(args, "--task", "")
-		if tid == "" { print_help_review(); return }
-		ctl_coord_control(endpoint, token, "review-roles", tid, args)
 	case:
 		print_help_review()
 	}
@@ -966,17 +958,14 @@ print_help_review :: proc() {
 	fmt.println("      Response: {gate: waiting|approved|changes_requested, task}.")
 	fmt.println("      On a Bridge-owned chain an --on-behalf-of review never counts as the user: only the")
 	fmt.println("      user's device-signed Approve / Request changes in the Heimdall app clears a user gate.")
-	fmt.println("  roles <task-id> --role <role>=<agent_id>[@<instance_id>] [--role ...] | --roles-file <json>")
-	fmt.println("      [--require-user-approval]      Coordinator of a Bridge-owned chain: set the task's required")
-	fmt.println("      review roles. Agents must already run in this chain. A user-approval gate can be added,")
-	fmt.println("      never removed (--no-require-user-approval is refused for agents).")
+	fmt.println("  A task's reviewers are agent ids: `task create|update --reviewer agt_a --reviewer agt_b")
+	fmt.println("      [--require-user-approval]`. Every listed reviewer must approve.")
 	fmt.println("")
 	fmt.println("EXAMPLES")
 	fmt.println("  ham-ctl review post --verdict approve")
 	fmt.println("  ham-ctl review post --verdict request_changes --findings-file findings.json")
 	fmt.println("  ham-ctl review post --verdict request_changes --summary \"the zero case still crashes\"")
 	fmt.println("  ham-ctl review post --task task_1 --verdict approve --on-behalf-of user")
-	fmt.println("  ham-ctl review roles task_1 --role reviewer=agt_reviewer")
 }
 
 print_help_merge :: proc() {

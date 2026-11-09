@@ -45,8 +45,8 @@ test_coord_plan_methods_and_reasons :: proc(t: ^testing.T) {
 test_coord_route_owner_only_and_refusals :: proc(t: ^testing.T) {
 	owner_only := `{"v":1,"id":"r","ok":false,"error":{"code":"bad_request","message":"owner_chain_only: this coordinator control is served only for chains owned by this Bridge; the target chain is not one of them"}}`
 	// A legacy Hub chain: every owner control answers the typed error.
-	for verb in ([?]string{"cancel", "reopen", "delete", "escalate", "merge-retry", "revoke", "done", "submit-for-review", "split", "review-roles"}) {
-		plan := ctl_coord_plan(verb, "task_1", []string{"--reason", "x", "--force", "--summary", "s", "--role", "reviewer=agt_r"}, `[{"title":"a"}]`)
+	for verb in ([?]string{"cancel", "reopen", "delete", "escalate", "merge-retry", "revoke", "done", "submit-for-review", "split"}) {
+		plan := ctl_coord_plan(verb, "task_1", []string{"--reason", "x", "--force", "--summary", "s"}, `[{"title":"a"}]`)
 		testing.expectf(t, plan.error == "", "%s: %s", verb, plan.error)
 		testing.expectf(t, ctl_coord_route(plan, owner_only) == .Owner_Only, "%s on a Hub chain is owner_chain_only", verb)
 		typed := ctl_coord_owner_only_json(verb)
@@ -203,17 +203,13 @@ test_coord_plan_split :: proc(t: ^testing.T) {
 	testing.expect(t, ctl_coord_plan("split", "task_1", []string{"--reason", "big", "--dependents", "some"}, `[{"title":"a"}]`).error != "", "bad dependents")
 }
 
+// Reviewers are agent ids (task create|update --reviewer): the former
+// role-pair verb is no longer a coordinator verb.
 @(test)
-test_coord_plan_review_roles :: proc(t: ^testing.T) {
-	p := ctl_coord_plan("review-roles", "task_1", []string{"--role", "reviewer=agt_r", "--role", "security=agt_s@inst_s", "--require-user-approval"})
-	testing.expect_value(t, p.error, "")
-	testing.expect_value(t, p.method, "agent.task.review_roles")
-	testing.expect(t, strings.contains(p.params, `"pairs":[{"role":"reviewer","agent_id":"agt_r"},{"role":"security","agent_id":"agt_s","instance_id":"inst_s"}]`), p.params)
-	testing.expect(t, strings.contains(p.params, `"requires_user_approval":true`), p.params)
-	testing.expect(t, ctl_coord_plan("review-roles", "task_1", nil).error != "", "a pair is required")
-	testing.expect(t, ctl_coord_plan("review-roles", "task_1", []string{"--role", "reviewer"}).error != "", "role=agent shape")
-	off := ctl_coord_plan("review-roles", "task_1", []string{"--role", "reviewer=agt_r", "--no-require-user-approval"})
-	testing.expect(t, strings.contains(off.params, `"requires_user_approval":false`), "removal is sent; the owner refuses it for agents")
+test_coord_review_roles_removed :: proc(t: ^testing.T) {
+	testing.expect(t, !ctl_coord_task_verb("review-roles"), "review-roles is gone")
+	p := ctl_coord_plan("review-roles", "task_1", []string{"--role", "reviewer=agt_r"})
+	testing.expect(t, p.method == "" && p.error != "", "no review_roles method is planned")
 }
 
 @(test)
@@ -257,14 +253,19 @@ test_owner_fleet_params :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	m, p, ok := ctl_owner_fleet_params("list", []string{}, []string{})
 	testing.expect(t, ok && m == "agent.task_chain.fleet_list" && p == "{}", p)
-	m, p, ok = ctl_owner_fleet_params("set", []string{"chain_1"}, []string{"--agent", "agt_w", "--capacity", "2", "--roles", "worker,reviewer", "--bridge", "", "--model", "sonnet", "--project", "proj_1"})
+	m, p, ok = ctl_owner_fleet_params("set", []string{"chain_1"}, []string{"--agent", "agt_w", "--capacity", "2", "--bridge", "", "--model", "sonnet", "--project", "proj_1"})
 	testing.expect(t, ok && m == "agent.task_chain.fleet_set", m)
-	for want in ([?]string{`"chain_id":"chain_1"`, `"agent_id":"agt_w"`, `"capacity":"2"`, `"roles":"worker,reviewer"`, `"bridge_id":""`, `"model":"sonnet"`, `"project_id":"proj_1"`}) {
+	for want in ([?]string{`"chain_id":"chain_1"`, `"agent_id":"agt_w"`, `"capacity":"2"`, `"bridge_id":""`, `"model":"sonnet"`, `"project_id":"proj_1"`}) {
 		testing.expectf(t, strings.contains(p, want), "%s in %s", want, p)
 	}
 	testing.expect(t, !strings.contains(p, "provider") && !strings.contains(p, "min_warm") && !strings.contains(p, "instance_id"), p)
-	m, p, ok = ctl_owner_fleet_params("pause", []string{}, []string{"--agent", "agt_w", "--roles", "reviewer", "--chain", "chain_2"})
-	testing.expect(t, ok && m == "agent.task_chain.fleet_pause" && strings.contains(p, `"roles":"reviewer"`) && strings.contains(p, `"chain_id":"chain_2"`), p)
+	m, p, ok = ctl_owner_fleet_params("pause", []string{}, []string{"--agent", "agt_w", "--chain", "chain_2"})
+	testing.expect(t, ok && m == "agent.task_chain.fleet_pause" && !strings.contains(p, "roles") && strings.contains(p, `"chain_id":"chain_2"`), p)
+	// Fleet rows are worker rows: --roles is refused on set, pause and resume.
+	for sub in ([?]string{"set", "pause", "resume"}) {
+		_, _, refused := ctl_owner_fleet_params(sub, []string{}, []string{"--agent", "agt_w", "--roles", "reviewer"})
+		testing.expectf(t, !refused, "%s --roles is refused", sub)
+	}
 	m, p, ok = ctl_owner_fleet_params("resume", []string{}, []string{"--agent", "agt_w"})
 	testing.expect(t, ok && m == "agent.task_chain.fleet_resume" && !strings.contains(p, "roles"), p)
 	m, _, ok = ctl_owner_fleet_params("remove", []string{}, []string{"--agent", "agt_w"})

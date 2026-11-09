@@ -11,7 +11,7 @@ import contracts "odin_test:contracts"
 // REQ-CC-13 self-approval guard on owner chains.
 
 cw_run :: proc(f:^Fixture,agent:Child,method,op,payload:string,task:="task",source:=Source_Proof{"",true},children:[]Child=nil) -> Result {
-    return execute_agent(&f.store,agent_command(f,agent,method,op,task,payload,agent_task_revision(f,task)),payload,agent,f.owner,1000,&f.kr,Signer{&f.owner_priv,test_sign},role_children=children,source=source)
+    return execute_agent(&f.store,agent_command(f,agent,method,op,task,payload,agent_task_revision(f,task)),payload,agent,f.owner,1000,&f.kr,Signer{&f.owner_priv,test_sign},observed_children=children,source=source)
 }
 cw_submit :: proc(f:^Fixture,reason:string,override:="0",head:="") -> string {
     return encode(doc(map[string]string{"requirements_revision"="1","head"=head,"summary"="coordinator submitted","override_ack"=override,"body_cipher"=cipher(f,reason)}))
@@ -214,14 +214,6 @@ cw_force_done_never_skips_a_user_approval_source :: proc(t:^testing.T) {
         brief,_:=requirements_user_approval(&f.store,"chain","task")
         testing.expect(t,!brief,"the current brief is not gated")
         testing.expect_value(t,cw_run(f,coord,"task.complete","submission_gate",cw_complete(f,"why","1")).code,"invalid_scope")
-    }
-    // Role configuration source.
-    {
-        f:=fixture(t);defer destroy(f);lifecycle_seed(t,f);agent_seat_coordinator(t,f,coord)
-        if role_test_ready(t,f)=="" do return
-        testing.expect_value(t,cw_run(f,coord,"task.complete","role_gate",cw_complete(f,"why","1")).code,"invalid_scope")
-        code,why:=complete_refusal_locked(&f.store,"chain","task",coord)
-        testing.expect(t,code=="invalid_scope" && strings.contains(why,"user's approval"),why)
     }
     // Workflow-language item source (and the task is workflow-generated).
     {
@@ -455,13 +447,11 @@ cw_split_children_inherit_the_user_gate_unless_cleared :: proc(t:^testing.T) {
         testing.expect(t,!gated,"a device split may drop the gate")
         testing.expect_value(t,cc_scalar(f,"SELECT actor_kind FROM local_events WHERE kind='task.split'"),"device")
     }
-    // Role-configuration gate: copied with the lifecycle to assigned children.
+    // Brief reviewers travel with the copied brief to assigned children.
     {
-        f:=fixture(t);defer destroy(f);lifecycle_seed(t,f);agent_seat_coordinator(t,f,coord)
-        children:=[1]Child{role_auditor()}
-        testing.expect_value(t,advanced_call(f,"review.roles","roles",role_test_config("1"),"task",children[:]).code,"ok")
-        testing.expect_value(t,cw_run(f,coord,"task.split","roles",cw_split(f,`{"reason":"r","children":[{"task_id":"c1","title":"a"}]}`)).code,"ok")
-        testing.expect_value(t,cc_scalar(f,"SELECT requires_user_approval||':'||(SELECT count(*) FROM local_role_pairs WHERE task_id='c1') FROM local_role_configs WHERE task_id='c1'"),"1:2")
+        f:=fixture(t);defer destroy(f);gate_seed(t,f,`["auditor"]`);agent_seat_coordinator(t,f,coord)
+        testing.expect_value(t,cw_run(f,coord,"task.split","reviewers",cw_split(f,`{"reason":"r","children":[{"task_id":"c1","title":"a"}]}`)).code,"ok")
+        testing.expect_value(t,cc_scalar(f,"SELECT json_extract(brief_json,'$.reviewers') FROM task_requirements WHERE task_id='c1'"),`["auditor"]`)
     }
     // Assignee override: a participant of this chain (observed by the Bridge).
     {
@@ -491,19 +481,17 @@ cw_coordinator_never_reviews_or_completes_its_own_work :: proc(t:^testing.T) {
         testing.expect_value(t,cc_scalar(f,"SELECT count(*) FROM local_reviews"),"0")
     }
     coord:=agent_coordinator_child()
-    // It never names itself a role reviewer or the lifecycle reviewer.
+    // It never reviews as a brief reviewer or names itself the lifecycle reviewer.
     {
         f:=fixture(t);defer destroy(f);lifecycle_seed(t,f);agent_seat_coordinator(t,f,coord)
-        roles:=encode(doc(map[string]string{"configuration_revision"="1","requires_user_approval"="0","pairs"=`[{"role":"safety","agent_id":"coordinator_agent","instance_id":"coord_instance"}]`}))
-        p:=encode(doc(map[string]string{"body_cipher"=cipher(f,roles)}))
-        observed:=[1]Child{coord}
-        testing.expect_value(t,cw_run(f,coord,"review.roles","self_role",p,children=observed[:]).code,"invalid_scope")
-        testing.expect_value(t,cc_scalar(f,"SELECT count(*) FROM local_role_configs"),"0")
         config:=encode(doc(map[string]string{"configuration_revision"="2","author_agent_id"="author","reviewer_agent_id"="coordinator_agent","reviewer_instance_id"="coord_instance","directory_id"="directory","merge_policy"="none","repository"="","worktree"="","source_branch"="","target_branch"="","base_head"=""}))
         testing.expect_value(t,cw_run(f,coord,"lifecycle.configure","self_reviewer",config).code,"invalid_scope")
         // A coordinator that did not work the task may relay and complete.
         if !cw_worker_submit(t,f,lifecycle_ready(t,f)) do return
         testing.expect_value(t,cw_run(f,coord,"task.complete","other_done",cw_complete(f,"verified","1")).code,"ok")
+        // Named in the brief's reviewers, it still never reviews.
+        testing.expect(t,exec(f.store.db,`INSERT INTO task_requirements VALUES('chain','task',2,'{"goal":"Complete scoped work","acceptance":["Tests pass"],"reviewers":["coordinator_agent"]}','','device','req2')`))
+        testing.expect(t,!task_reviewer_authorized(&f.store,"chain","task",coord),"the coordinator is never a brief reviewer")
     }
 }
 
@@ -519,7 +507,7 @@ cw_migration_v36_is_rerunnable :: proc(t:^testing.T) {
     testing.expect(t,exec(db,"UPDATE schema_migrations SET version=35"))
     testing.expect_value(t,sqlite3_close(db),0)
     if !testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key")) do return
-    testing.expect_value(t,cc_scalar(f,"SELECT schema_version||':'||(SELECT version FROM schema_migrations) FROM runtime_database"),"36:36")
+    testing.expect_value(t,cc_scalar(f,"SELECT schema_version||':'||(SELECT version FROM schema_migrations) FROM runtime_database"),"37:37")
     enabled,_:=force_done_enabled(&f.store,"chain")
     testing.expect(t,!enabled,"the policy survives the re-run")
 }

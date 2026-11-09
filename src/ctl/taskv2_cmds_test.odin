@@ -17,36 +17,44 @@ test_task_brief_json_from_flags :: proc(t: ^testing.T) {
 		"--acceptance", "retries 3x, with backoff", // comma kept: acceptance is prose
 		"--acceptance", "unit test covers 503",
 		"--input", "#evt_1,facet:t1:1:handoff",
-		"--review-role", "reviewer", "--review-role", "security",
 	}
 	brief, ok := ctl_task_brief_json(args, "")
 	defer delete(brief)
 	testing.expect(t, ok, "brief present")
-	testing.expect_value(t, brief, `{"goal":"Retry transient 5xx","acceptance":["retries 3x, with backoff","unit test covers 503"],"inputs":["#evt_1","facet:t1:1:handoff"],"review_roles":["reviewer","security"]}`)
+	testing.expect_value(t, brief, `{"goal":"Retry transient 5xx","acceptance":["retries 3x, with backoff","unit test covers 503"],"inputs":["#evt_1","facet:t1:1:handoff"]}`)
+	// Reviewers are agent ids (--reviewer); the old role flag is no brief flag.
+	testing.expect(t, !ctl_task_brief_flags_present([]string{"--review-role", "reviewer"}), "review-role is not a brief flag")
+	_, roles_ok := ctl_task_brief_json([]string{"ham-ctl", "--review-role", "reviewer"}, "")
+	testing.expect(t, !roles_ok, "--review-role alone is no brief")
 }
 
 @(test)
 test_task_brief_json_file_base_flags_override :: proc(t: ^testing.T) {
-	file := `{"goal":"from file","acceptance":["a1","a2"],"inputs":["#e9"],"review_roles":["reviewer"],"assignee":"agt_w","budget":{"max_attempts":3},"output":{"schema":"x"},"unknown":1}`
+	file := `{"goal":"from file","acceptance":["a1","a2"],"inputs":["#e9"],"assignee":"agt_w","reviewers":["agt_r"],"budget":{"max_attempts":3},"output":{"schema":"x"},"unknown":1}`
 	// no flags: the whole file is carried; the unknown key is forwarded so the
 	// hub rejects it (unknown_brief_fields) instead of ham-ctl dropping it.
 	base, ok := ctl_task_brief_json([]string{"ham-ctl"}, file)
 	defer delete(base)
 	testing.expect(t, ok, "file alone is a brief")
-	testing.expect_value(t, base, `{"goal":"from file","acceptance":["a1","a2"],"inputs":["#e9"],"review_roles":["reviewer"],"assignee":"agt_w","budget":{"max_attempts":3},"output":{"schema":"x"},"unknown":1}`)
+	testing.expect_value(t, base, `{"goal":"from file","acceptance":["a1","a2"],"inputs":["#e9"],"assignee":"agt_w","reviewers":["agt_r"],"budget":{"max_attempts":3},"output":{"schema":"x"},"unknown":1}`)
+	// A legacy role key is just an unknown key: forwarded, and refused.
+	legacy, lok := ctl_task_brief_json([]string{"ham-ctl"}, `{"goal":"g","review_roles":["x"]}`)
+	defer delete(legacy)
+	testing.expect(t, lok, "legacy file is a brief")
+	testing.expect_value(t, legacy, `{"goal":"g","review_roles":["x"]}`)
 
 	// reviewers and explicit nulls from the file survive; --clear-<field> sends null.
-	rev, rok := ctl_task_brief_json([]string{"ham-ctl", "--clear-review-roles"}, `{"reviewers":["agt_r"],"budget":null}`)
+	rev, rok := ctl_task_brief_json([]string{"ham-ctl", "--clear-assignee"}, `{"reviewers":["agt_r"],"budget":null}`)
 	defer delete(rev)
 	testing.expect(t, rok, "reviewers file is a brief")
-	testing.expect_value(t, rev, `{"review_roles":null,"reviewers":["agt_r"],"budget":null}`)
+	testing.expect_value(t, rev, `{"assignee":null,"reviewers":["agt_r"],"budget":null}`)
 
 	// flags override field by field; untouched file fields survive
 	over, ok2 := ctl_task_brief_json([]string{"ham-ctl", "--goal", "from flag", "--acceptance", "only this"}, file)
 	defer delete(over)
 	testing.expect(t, ok2, "brief present")
 	testing.expect(t, strings.has_prefix(over, `{"goal":"from flag","acceptance":["only this"],"inputs":["#e9"],`), "flags win, file fills the rest")
-	testing.expect(t, strings.contains(over, `"review_roles":["reviewer"]`), "file review_roles kept")
+	testing.expect(t, strings.contains(over, `"reviewers":["agt_r"]`), "file reviewers kept")
 }
 
 @(test)
@@ -87,7 +95,7 @@ test_task_brief_replace_with_empty_file :: proc(t: ^testing.T) {
 @(test)
 test_brief_incomplete_render_agent_envelope :: proc(t: ^testing.T) {
 	// Agent mode: the bridge wraps the hub's 422 body as a JSON string in error.message.
-	hub := `{"error":{"code":"validation_failed","message":"brief incomplete: ...","details":{"code":"brief_incomplete","tasks":[{"task_id":"task_a","missing":["goal","verify"]},{"task_id":"task_b","missing":["review_role:security"]}]}},"meta":{"request_id":"r1"}}`
+	hub := `{"error":{"code":"validation_failed","message":"brief incomplete: ...","details":{"code":"brief_incomplete","tasks":[{"task_id":"task_a","missing":["goal","verify"]},{"task_id":"task_b","missing":["acceptance"]}]}},"meta":{"request_id":"r1"}}`
 	b := strings.builder_make()
 	defer strings.builder_destroy(&b)
 	strings.write_string(&b, `{"v":1,"id":"ham-ctl-agent","ok":false,"error":{"code":"hub_error","message":"`)
@@ -97,7 +105,7 @@ test_brief_incomplete_render_agent_envelope :: proc(t: ^testing.T) {
 	defer delete(text)
 	testing.expect(t, found, "brief_incomplete detected through the bridge envelope")
 	testing.expect(t, strings.contains(text, "task_a: missing goal, verify\n"), "per-task line a")
-	testing.expect(t, strings.contains(text, "task_b: missing review_role:security\n"), "per-task line b")
+	testing.expect(t, strings.contains(text, "task_b: missing acceptance\n"), "per-task line b")
 	testing.expect(t, strings.has_prefix(text, "publish refused: brief incomplete\n"), "header")
 }
 

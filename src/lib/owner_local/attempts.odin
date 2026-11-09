@@ -54,7 +54,7 @@ attempt_event :: proc(v:^Attempt_View,kind:string,c,p:json.Object,destination:=f
         attempt_release(v,"submitted");v.in_review=true
     case "task.reopen":
         attempt_release(v,"reopened");v.in_review=false
-    case "fleet.edit","fleet.reserve","lifecycle.configure","review.roles":
+    case "fleet.edit","fleet.reserve","lifecycle.configure":
         if v.live || v.in_review {
             attempt_release(v,"replaced");v.in_review=false
         }
@@ -96,7 +96,7 @@ attempt_event :: proc(v:^Attempt_View,kind:string,c,p:json.Object,destination:=f
         // Editing a live brief does not retire the work lease. Replacing a
         // submitted brief does invalidate its review.
         if v.in_review { attempt_release(v,"replaced");v.in_review=false }
-    case "review.post","review.role.post":
+    case "review.post":
         if field(p,"verdict")=="request_changes" {
             if v.held { v.pending_changes=true } else {
                 attempt_release(v,"changes_requested");v.in_review=false
@@ -135,7 +135,7 @@ attempt_scan :: proc(s:^Store,chain,task:string,selected:i64=0,target_lease:stri
           FROM local_events WHERE seq>?3 AND ((chain_id=?1 AND task_id=?2
             AND kind IN('lease.claim','lease.handoff','lease.switch','lease.block',
               'lease.expired','lease.submit','task.reopen','fleet.edit','fleet.reserve','lifecycle.configure',
-              'review.roles','task.hold','task.release','task.cancel','requirements.edit','review.post','review.role.post','dependency.edit',
+              'task.hold','task.release','task.cancel','requirements.edit','review.post','dependency.edit',
               'lease.revoke','task.escalate','task.recheck','lifecycle.force_submit','task.complete','task.split'))
             OR kind='lease.switch' OR EXISTS(SELECT 1 FROM local_metadata_retirements r WHERE r.seq=local_events.seq AND r.chain_id=?1 AND r.task_id=?2) OR (chain_id=?1 AND EXISTS(SELECT 1 FROM local_task_retirements r WHERE r.seq=local_events.seq AND r.chain_id=?1 AND r.task_id=?2)))),
           decoded AS (SELECT *,NULLIF(json_extract(evidence,'$.command'),'') AS command,
@@ -187,7 +187,7 @@ attempt_scan :: proc(s:^Store,chain,task:string,selected:i64=0,target_lease:stri
                 switch row[3] {
                 case "task.cancel","task.split": record.outcome="expired:cancelled"
                 case "dependency.edit": record.outcome="expired:dep_added"
-                case "fleet.edit","fleet.reserve","lifecycle.configure","review.roles","lease.revoke","task.complete": record.outcome="expired:replaced"
+                case "fleet.edit","fleet.reserve","lifecycle.configure","lease.revoke","task.complete": record.outcome="expired:replaced"
                 case "lease.expired":
                     if row[11]=="ttl" || row[11]=="hard_cap" {
                         record.outcome=fmt.tprintf("expired:%s",row[11])

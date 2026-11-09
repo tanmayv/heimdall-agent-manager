@@ -7,7 +7,7 @@ These rules govern how you work with Heimdall tickets. Follow them every session
 
 ## 1. Always track work in Heimdall tasks and read `TASK.md`
 Every non-trivial unit of work is tracked in a Heimdall task and dispatched via a lease from the chain's owner Bridge (every chain is Bridge-owned):
-- On wake, the owner Bridge materializes `<run_dir>/TASK.md`: the lease header with your **Workdir** (a per-task git checkout; do all work and commits there) and the requirements revision, the complete current requirements (goal, acceptance, inputs, review roles), the bounded chain summary (done and open tasks, decisions, dead ends, coordinator notes), and its context provenance. After reading it, acknowledge the revision with `{{ctl_bin}} lease heartbeat --lease <lease-id> --acknowledge-requirements-revision <n>`. `ham-ctl task show <id>` has the full brief, reviews and attempts.
+- On wake, the owner Bridge materializes `<run_dir>/TASK.md`: the lease header with your **Workdir** (a per-task git checkout; do all work and commits there) and the requirements revision, the complete current requirements (goal, acceptance, inputs, reviewers), the bounded chain summary (done and open tasks, decisions, dead ends, coordinator notes), and its context provenance. After reading it, acknowledge the revision with `{{ctl_bin}} lease heartbeat --lease <lease-id> --acknowledge-requirements-revision <n>`. `ham-ctl task show <id>` has the full brief, reviews and attempts.
 - Read `TASK.md` first on every wake, or inspect/claim your lease with `{{ctl_bin}} lease next`.
 - Check the inbox using `{{ctl_bin}} chat read` for pending messages before starting anything new.
 - If any command returns `409 lease_lost`, **stop immediately** without touching the working tree or committing further changes — another attempt now owns the task.
@@ -43,7 +43,7 @@ Every executable ticket carries a validated `brief`:
 - `goal`: One-paragraph statement of the outcome.
 - `acceptance`: Non-empty array of concrete, independently checkable criteria. A goal and at least one acceptance item are all a brief needs to publish.
 - `inputs`: Optional array of references (`#<event_id>`, `output:<task_id>`, `facet:<task_id>:<attempt_no>:<kind>`, `<path>@<rev>`) resolved into `TASK.md`. Tasks listed in `depends_on` already pass their handoff automatically; use `inputs` only for extra context.
-- `review_roles`: Required review roles (e.g. `reviewer`, `security`).
+- `reviewers` / `requires_user_approval`: Optional review gate — durable agent ids (`agt_…`) that must each approve, and whether the user must approve too.
 - `output`: Optional output contract (`task_list.v1`, `findings.v1`) for structured results; never required as a stand-in for a command.
 
 Briefs carry no verification command: workers choose the checks and report them, and review verdicts are the gate.
@@ -59,7 +59,7 @@ Briefs carry no verification command: workers choose the checks and report them,
 - `ham-ctl lease block --waiting-on user|task|<system> --reason "<text>" [--ref <id>] [--summary "<text>"]` — block the task on a user decision or an external dependency.
 - `ham-ctl review post [<task_id>] --verdict approve|request_changes [--summary "<reason>"] [--findings-file <json>] [--on-behalf-of user]` — post a review verdict and optional structured findings (`[{"path":"...","line":1,"severity":"blocker","text":"..."}]`).
 - `ham-ctl task show <task_id>` / `ham-ctl task comments <task_id> [--last N]` — read a task's brief, reviews, attempts and comments.
-- `ham-ctl task create --title "<title>" --goal "<goal>" --acceptance "<item>" [--assignee <agt_id>] [--reviewer <agt_id>] [--review-role <role>] [--require-user-approval] [--depends-on <id,id>] [--brief-file <json>]` — create a task.
+- `ham-ctl task create --title "<title>" --goal "<goal>" --acceptance "<item>" [--assignee <agt_id>] [--reviewer <agt_id>]... [--require-user-approval] [--depends-on <id,id>] [--brief-file <json>]` — create a task.
 - `ham-ctl task update <task_id> [...]` — update task fields or brief.
 - `ham-ctl task publish <task_id>` / `ham-ctl task-chain publish <chain_id>` — validate briefs and publish tasks (`422 brief_incomplete` lists any missing brief fields).
 - `ham-ctl task-chain summary set "<text>" [--chain <id>]` (or `--stdin`) — set the chain summary (`<= 60` lines).

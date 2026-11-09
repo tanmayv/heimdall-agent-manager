@@ -45,9 +45,6 @@ export const ownerSchemas = {
   source_fact: [["origin_kind", "id"], ["origin_id", "id"], ["episode_id", "id"], ["source_version", "positive"], ["resolved", "flag"], ["deadline_ms", "counter"], ["body", "document"]],
   source_action: [["origin_kind", "id"], ["origin_id", "id"], ["episode_id", "id"], ["source_version", "positive"], ["consumer_fence_hash", "hash"], ["result", "document"]],
   source_page: [["cursor", "optional"], ["limit", "positive"]],
-  review_roles: [["configuration_revision", "positive"], ["requires_user_approval", "flag"], ["pairs", "document"]],
-  review_pair: [["role", "id"], ["agent_id", "id"], ["instance_id", "id"]],
-  review_role_payload: [["requirements_revision", "positive"], ["attempt", "positive"], ["head", "optional_commit"], ["verdict", "verdict"], ["summary", "document"], ["role", "id"]],
   grant_payload: [["principal_id", "id"], ["key_id", "id"], ["expires_ms", "positive"], ["can_read", "flag"], ["can_mutate", "flag"]],
   grant_revoke_payload: [["principal_id", "id"], ["key_id", "id"]],
   grant_policy_payload: [["policy_revision", "positive"], ["recovery_enabled", "flag"]],
@@ -444,24 +441,6 @@ export interface OwnerSource_Action {
 export interface OwnerSource_Page {
   cursor: string;
   limit: string;
-}
-export interface OwnerReview_Roles {
-  configuration_revision: string;
-  requires_user_approval: string;
-  pairs: string;
-}
-export interface OwnerReview_Pair {
-  role: string;
-  agent_id: string;
-  instance_id: string;
-}
-export interface OwnerReview_Role_Payload {
-  requirements_revision: string;
-  attempt: string;
-  head: string;
-  verdict: string;
-  summary: string;
-  role: string;
 }
 export interface OwnerGrant_Payload {
   principal_id: string;
@@ -979,9 +958,6 @@ export interface OwnerDocuments {
   source_fact: OwnerSource_Fact;
   source_action: OwnerSource_Action;
   source_page: OwnerSource_Page;
-  review_roles: OwnerReview_Roles;
-  review_pair: OwnerReview_Pair;
-  review_role_payload: OwnerReview_Role_Payload;
   grant_payload: OwnerGrant_Payload;
   grant_revoke_payload: OwnerGrant_Revoke_Payload;
   grant_policy_payload: OwnerGrant_Policy_Payload;
