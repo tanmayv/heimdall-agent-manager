@@ -669,6 +669,8 @@ MIGRATION_214_EXTENSION_VERSION_SYNC :: #load("migrations/214_extension_version_
 
 MIGRATION_215_EXTENSION_VERSION_SYNC :: #load("migrations/215_extension_version_sync_0_5_50_subagents_5.sql", string)
 
+MIGRATION_216_EXTENSION_VERSION_SYNC :: #load("migrations/216_extension_version_sync_0_5_50_subagents_6.sql", string)
+
 migration_order :: [?]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
@@ -889,6 +891,7 @@ migration_order :: [?]string {
 	"213_hub_chains_removed.sql",
 	"214_extension_version_sync_0_5_50_subagents_4.sql",
 	"215_extension_version_sync_0_5_50_subagents_5.sql",
+	"216_extension_version_sync_0_5_50_subagents_6.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1383,6 +1386,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 			return string(data)
 		}
 	}
+	if name == "216_extension_version_sync_0_5_50_subagents_6.sql" do return strings.clone(MIGRATION_216_EXTENSION_VERSION_SYNC)
 	if name == "215_extension_version_sync_0_5_50_subagents_5.sql" do return strings.clone(MIGRATION_215_EXTENSION_VERSION_SYNC)
 	if name == "214_extension_version_sync_0_5_50_subagents_4.sql" do return strings.clone(MIGRATION_214_EXTENSION_VERSION_SYNC)
 	if name == "213_hub_chains_removed.sql" do return strings.clone(MIGRATION_213_HUB_CHAINS_REMOVED)
