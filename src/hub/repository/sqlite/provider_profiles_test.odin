@@ -462,28 +462,6 @@ test_profiles_instance_fleet_lease_roundtrip_and_references :: proc(t: ^testing.
 		rerr.code,
 		domain.Error_Code.None,
 	); testing.expect(t, strings.contains(refs, "profile-chain:profile-agent"))
-	_, stored, err = iface.taskchain_save_lease(
-		&tr,
-		domain.Task_Lease {
-			lease_id = "profile-lease",
-			task_id = "profile-task",
-			chain_id = "profile-chain",
-			owner_user_id = "owner",
-			holder_instance_id = "profile-instance",
-			kind = "work",
-			provider = "codex",
-			provider_profile = "codex_two",
-			model = "model",
-			delivery = "wake",
-		},
-	)
-	testing.expect(t, stored, err.message)
-	lease, lease_found, le := iface.taskchain_get_lease(&tr, "profile-lease")
-	testing.expect(
-		t,
-		lease_found,
-		le.message,
-	); testing.expect_value(t, lease.provider_profile, "codex_two")
 	// Followups for two accounts of one driver remain separately durable.
 	for id in ([]string{"claude_one", "claude_two"}) {
 		created, create_err := iface.provider_extension_command_create(

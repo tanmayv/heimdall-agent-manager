@@ -153,11 +153,10 @@ mcp_runtime_authorized :: proc(g:^App_Graph,raw:string,view:mcp.Access_View,tool
 	return mcp_task_write_check(g,raw,view,tool)
 }
 
+// Task leases are held on the owner Bridge (Bridge-owned chains); the Hub has
+// no lease of its own to protect, and a stale legacy current-task pointer must
+// not pin an instance.
 mcp_runtime_idle :: proc(g:^App_Graph,i:domain.Agent_Instance)->string {
-	if i.current_task_id!="" do return "active_task_lease"
-	_,held,err:=iface.taskchain_get_lease_by_holder(&g.repos.taskchains,i.agent_instance_id)
-	if err.code!=.None && err.code!=.Not_Found do return "request_failed"
-	if held do return "active_task_lease"
 	return ""
 }
 mcp_runtime_dispatch_check :: proc(g:^App_Graph,raw:string,view:mcp.Access_View,tool:string,i:domain.Agent_Instance)->string {
