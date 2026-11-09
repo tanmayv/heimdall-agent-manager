@@ -77,7 +77,6 @@ test_accept_card_executes_issue_create :: proc(t: ^testing.T) {
 	card_svc := new_card_service(
 		cards       = &card_repo,
 		projects    = nil,
-		taskchains  = nil,
 		content     = nil,
 		project_svc = nil,
 		agents      = nil,
@@ -152,7 +151,6 @@ test_accept_card_executes_memory_approve :: proc(t: ^testing.T) {
 	card_svc := new_card_service(
 		cards       = &card_repo,
 		projects    = nil,
-		taskchains  = nil,
 		content     = &cnt_svc,
 		project_svc = nil,
 		agents      = nil,
@@ -231,7 +229,6 @@ test_card_default_ttl_24h :: proc(t: ^testing.T) {
 	card_svc := new_card_service(
 		cards       = &card_repo,
 		projects    = nil,
-		taskchains  = nil,
 		content     = nil,
 		project_svc = nil,
 		agents      = nil,

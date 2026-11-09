@@ -13,7 +13,6 @@ import agent_service "odin_test:hub/service/agent"
 import events "odin_test:hub/service/events"
 import project_service "odin_test:hub/service/project"
 import shell_session_svc "odin_test:hub/service/shell_session"
-import taskv2 "odin_test:hub/service/taskv2"
 import card_service "odin_test:hub/service/card"
 import api_http "odin_test:hub/transport/http"
 
@@ -220,30 +219,6 @@ test_refresh_instance_writers_publish :: proc(t: ^testing.T) {
 	tab := refresh_socket_open(t, &f.graph, "alice"); defer refresh_socket_close(&f.graph, tab)
 	bob := refresh_socket_open(t, &f.graph, "bob"); defer refresh_socket_close(&f.graph, bob)
 
-	// taskv2 instance-pointer writes publish only after COMMIT; rollback drops them.
-	flush_ws_socket(tab.client)
-	rolled, began, _ := taskv2.begin_uow(&f.graph.task_engine)
-	if !testing.expect(t, began, "begin_uow") do return
-	taskv2.effect_instance_changed(&rolled, f.inst_id)
-	_, _ = taskv2.end_uow(&f.graph.task_engine, &rolled, false)
-	none, leaked := drain_matching_ws_event(tab.client, `"change":"current_task_changed"`, 300_000_000)
-	defer delete(none)
-	testing.expect(t, !leaked, "rolled-back UoW must not publish")
-
-	committed, began2, _ := taskv2.begin_uow(&f.graph.task_engine)
-	if !testing.expect(t, began2, "begin_uow") do return
-	taskv2.effect_instance_changed(&committed, f.inst_id)
-	taskv2.effect_instance_changed(&committed, f.inst_id)
-	_, _ = taskv2.end_uow(&f.graph.task_engine, &committed, true)
-	frame, got := drain_matching_ws_event(tab.client, `"change":"current_task_changed"`)
-	defer delete(frame)
-	testing.expect(t, got, "committed UoW publishes current_task_changed")
-	testing.expect(t, strings.contains(frame, f.inst_id) && strings.contains(frame, `"current_task_id":`) && strings.contains(frame, `"configuration_revision":`) && strings.contains(frame, `"provider":"claude"`), "instance summary carries task pointer and configuration")
-	testing.expect_value(t, strings.count(frame, `"change":"current_task_changed"`), 1)
-	other, crossed := drain_matching_ws_event(bob.client, f.inst_id, 300_000_000)
-	defer delete(other)
-	testing.expect(t, !crossed, "another owner must not receive alice's instance event")
-
 	// Bridge status reports: a transition reports changed, an identical
 	// liveness beat does not (the digest publishes only on changed).
 	moved := false
@@ -325,57 +300,6 @@ test_refresh_shell_background_publishes_after_write :: proc(t: ^testing.T) {
 	_, again, _ := shell_session_svc._shell_session_set_background_for_owner(svc, "alice", "sh_refresh_run")
 	testing.expect(t, !again, "second background is refused")
 	testing.expect_value(t, f.graph.event_bus.event_seq, seq_before)
-}
-
-@(test)
-test_refresh_workflow_events_name_run_and_stage :: proc(t: ^testing.T) {
-	f: Refresh_Fixture
-	defer refresh_fixture_teardown(&f)
-	if !refresh_fixture_setup(t, &f, "workflow") do return
-	tab := refresh_socket_open(t, &f.graph, "alice"); defer refresh_socket_close(&f.graph, tab)
-
-	flush_ws_socket(tab.client)
-	rolled, began, _ := taskv2.begin_uow(&f.graph.task_engine)
-	if !testing.expect(t, began, "begin_uow") do return
-	taskv2.effect_publish_workflow_stage(&rolled, "chain_wf", "alice", "wfrun_rolled", "build")
-	_, _ = taskv2.end_uow(&f.graph.task_engine, &rolled, false)
-	none, leaked := drain_matching_ws_event(tab.client, "wfrun_rolled", 300_000_000)
-	defer delete(none)
-	testing.expect(t, !leaked, "rolled-back workflow effects must not publish")
-
-	u, began2, _ := taskv2.begin_uow(&f.graph.task_engine)
-	if !testing.expect(t, began2, "begin_uow") do return
-	taskv2.effect_publish_workflow(&u, "chain_wf", "alice", "wfrun_1", "workflow_started")
-	taskv2.effect_publish_workflow_stage(&u, "chain_wf", "alice", "wfrun_1", "build")
-	_, _ = taskv2.end_uow(&f.graph.task_engine, &u, true)
-	frames, got := drain_matching_ws_event(tab.client, `"change":"stage_changed"`)
-	defer delete(frames)
-	testing.expect(t, got, "committed stage expansion publishes workflow_run/stage_changed")
-	testing.expect(t, strings.contains(frames, `"resource":"workflow_run","resource_id":"wfrun_1"`) && strings.contains(frames, `"stage_key":"build"`), "stage event names run and stage")
-	testing.expect(t, strings.contains(frames, `"change":"workflow_started"`) && strings.contains(frames, `"workflow_run_id":"wfrun_1"`), "chain workflow event carries workflow_run_id")
-}
-
-@(test)
-test_refresh_task_effects_dedupe_and_facet_kind :: proc(t: ^testing.T) {
-	f: Refresh_Fixture
-	defer refresh_fixture_teardown(&f)
-	if !refresh_fixture_setup(t, &f, "facet") do return
-	tab := refresh_socket_open(t, &f.graph, "alice"); defer refresh_socket_close(&f.graph, tab)
-	task := domain.Task{task_id = "task_rf", chain_id = "chain_rf", owner_user_id = "alice"}
-
-	flush_ws_socket(tab.client)
-	u, began, _ := taskv2.begin_uow(&f.graph.task_engine)
-	if !testing.expect(t, began, "begin_uow") do return
-	// Two refolds of one task in one UoW, plus one handoff facet write on attempt 2.
-	taskv2.effect_publish_task(&u, task, "updated")
-	taskv2.effect_publish_task(&u, task, "updated")
-	taskv2.effect_publish_facet(&u, task, 2, "handoff")
-	_, _ = taskv2.end_uow(&f.graph.task_engine, &u, true)
-	frames, got := drain_matching_ws_event(tab.client, `"change":"facet_changed"`)
-	defer delete(frames)
-	testing.expect(t, got, "facet write publishes task/facet_changed")
-	testing.expect(t, strings.contains(frames, `"attempt_no":2`) && strings.contains(frames, `"kind":"handoff"`), "facet event carries attempt and kind")
-	testing.expect_value(t, strings.count(frames, `"change":"updated"`), 1)
 }
 
 // refresh_collect returns every frame that arrives within the window (the

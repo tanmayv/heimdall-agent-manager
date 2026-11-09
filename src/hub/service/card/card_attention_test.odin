@@ -59,7 +59,6 @@ test_attention_ranges_counts_and_order :: proc(t: ^testing.T) {
 		testing.expect_value(t, r7.items[1].reason, ATTENTION_REASON_QUESTION)
 		testing.expect_value(t, r7.items[1].primary_op, "")
 		testing.expect_value(t, string(r7.items[2].card.card_id), "crd_task_task_2h")
-		testing.expect_value(t, r7.items[2].primary_op, "task.answer")
 		testing.expect_value(t, r7.items[2].reason, ATTENTION_REASON_AWAITING_REVIEW)
 		// Context resolved in batch: the chain title (ciphertext, verbatim).
 		testing.expect_value(t, r7.items[2].ctx.chain_title, "vault:v2:chain-title")
@@ -124,10 +123,10 @@ test_attention_snoozed_and_resolved_are_hidden :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(rall.items), 4)
 	if len(rall.items) == 4 do testing.expect(t, rall.items[3].snoozed, "snoozed items come last")
 
-	// Acting on a snoozed card works in place (no wake step): approving it
-	// retires it from the Snoozed tab.
+	// A leftover Hub task card cannot be acted on any more: accepting it
+	// retires it (from the Snoozed tab too).
 	_, accepted, _ := accept_card(&h.svc, ph_auth(), attention_task_card_id("task_2h"))
-	testing.expect(t, accepted, "a snoozed card accepts like a pending one")
+	testing.expect(t, !accepted, "a Hub task card is retired, not accepted")
 	ra2, _ := list_attention(&h.svc, ph_auth(), "all", ATTENTION_FILTER_SNOOZED, true)
 	testing.expect_value(t, ra2.counts.snoozed, 0)
 	testing.expect_value(t, len(ra2.items), 0)

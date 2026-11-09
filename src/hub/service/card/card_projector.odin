@@ -12,8 +12,6 @@ import dbt "odin_test:hub/platform/dbtelemetry"
 import domain "odin_test:hub/domain"
 import platform "odin_test:hub/platform"
 import iface "odin_test:hub/repository/iface"
-import taskchain_service "odin_test:hub/service/taskchain"
-import taskv2 "odin_test:hub/service/taskv2"
 import jsonx "odin_test:lib/jsonx"
 
 // Attention card projector (attention deck v1).
@@ -78,7 +76,7 @@ attention_notifier_proc :: proc(ctx: rawptr, owner_user_id: string, source_kind:
 	err: domain.Domain_Error
 	switch source_kind {
 	case contracts.ATTENTION_SOURCE_TASK:
-		ok, err = project_task_card(s, domain.User_ID(owner_user_id), domain.Task_ID(source_id))
+		ok, err = retire_task_card(s, domain.User_ID(owner_user_id), attention_task_card_id(domain.Task_ID(source_id)))
 	case contracts.ATTENTION_SOURCE_AGENT_MESSAGE:
 		ok, err = project_message_card(s, domain.User_ID(owner_user_id), source_id)
 	case contracts.ATTENTION_SOURCE_MEMORY:
@@ -103,301 +101,19 @@ attention_message_card_id :: proc(agent_instance_id: string) -> domain.Card_ID {
 }
 
 // ---------------------------------------------------------------------------
-// task_validation
+// task_validation: the Hub task engine is removed, so a Hub task never
+// qualifies any more. Leftover task and placement cards are retired.
 
-task_user_attention :: proc(s: ^Card_Service, task: domain.Task) -> (taskv2.User_Attention, string) {
-	if s == nil || s.taskchains == nil || s.taskchains.engine == nil do return .None, ""
-	return taskv2.user_attention(s.taskchains.engine, task)
-}
-
-project_task_card :: proc(s: ^Card_Service, owner: domain.User_ID, task_id: domain.Task_ID) -> (bool, domain.Domain_Error) {
+retire_task_card :: proc(s: ^Card_Service, owner: domain.User_ID, id: domain.Card_ID) -> (bool, domain.Domain_Error) {
 	if s == nil || s.attention_repo == nil || s.cards == nil do return true, domain.Domain_Error{}
-	if s.taskchains == nil || s.taskchains.repo == nil do return false, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
 	lock_tok := dbt.timed_lock(&s.projector_mutex, .Projector)
 	defer dbt.timed_unlock(&s.projector_mutex, .Projector, lock_tok)
-
-	task, found, get_err := iface.taskchain_get_task(s.taskchains.repo, task_id)
-	// Only a definite "no such task" may retire a card; any other read failure
-	// leaves the card untouched (reconciliation retries it).
-	if !found && get_err.code != .Not_Found do return false, get_err
-	kind := taskv2.User_Attention.None
-	badge := ""
-	if found && task.owner_user_id == owner do kind, badge = task_user_attention(s, task)
-	qualifies := kind != .None
-	desired: domain.Card
-	if qualifies do desired = build_task_card(s, task, kind, badge)
-	if ok, err := apply_attention_projection(s, owner, attention_task_card_id(task_id), desired, qualifies); !ok do return false, err
-	return project_placement_card(s, owner, task_id, task, found)
-}
-
-// build_task_card renders one task's attention card. A review card advertises
-// task.review (approve; reject = request changes with a summary), a blocked
-// card task.answer (accept with a note). The guard pins the state, the attempt
-// and the attention kind, so a card from an older attempt or an earlier block
-// cannot act on the task as it is now.
-build_task_card :: proc(s: ^Card_Service, task: domain.Task, kind: taskv2.User_Attention, badge: string) -> domain.Card {
-	task_id := string(task.task_id)
-	state := domain.task_state_string(task.state)
-	attention := "review" if kind == .Review else "blocked"
-
-	ops := strings.builder_make(context.temp_allocator)
-	if kind == .Review {
-		strings.write_string(&ops, `[{"op":"task.review","label":"Approve","args":{"task_id":"`)
-	} else if taskv2.is_agent_not_running_block(task.blocked_on_json) {
-		strings.write_string(&ops, `[{"op":"agent.start","label":"Start agent","args":{"task_id":"`)
-	} else {
-		strings.write_string(&ops, `[{"op":"task.answer","label":"Answer","args":{"task_id":"`)
-	}
-	contracts.write_json_string(&ops, task_id)
-	// (No fmt here: fmt reads `}}` as an escaped brace.)
-	strings.write_string(&ops, `","attempt_no":`)
-	strings.write_int(&ops, task.attempt_no)
-	strings.write_string(&ops, `}}]`)
-
-	guard := strings.builder_make(context.temp_allocator)
-	strings.write_string(&guard, `{"task_id":"`)
-	contracts.write_json_string(&guard, task_id)
-	strings.write_string(&guard, `","expected_status":"`)
-	contracts.write_json_string(&guard, state)
-	strings.write_string(&guard, `","expected_attempt":`)
-	strings.write_int(&guard, task.attempt_no)
-	strings.write_string(&guard, `,"expected_attention":"`)
-	strings.write_string(&guard, attention)
-	if kind == .Blocked {
-		// Pin WHICH block the card answers: a newer block in the same attempt
-		// (the agent asks again) must not take the answer written for this one.
-		strings.write_string(&guard, `","expected_block":"`)
-		strings.write_string(&guard, attention_task_block_id(task))
-	}
-	strings.write_string(&guard, `"}`)
-
-	refs := strings.builder_make(context.temp_allocator)
-	strings.write_string(&refs, `[{"type":"task","id":"`)
-	contracts.write_json_string(&refs, task_id)
-	strings.write_string(&refs, `"}]`)
-
-	action_refs := strings.builder_make(context.temp_allocator)
-	strings.write_string(&action_refs, `{"chain_id":"`)
-	contracts.write_json_string(&action_refs, string(task.chain_id))
-	strings.write_string(&action_refs, `","task_id":"`)
-	contracts.write_json_string(&action_refs, task_id)
-	strings.write_string(&action_refs, `"}`)
-
-	holder := attention_task_holder(s, task)
-	excerpt_author, excerpt_body, excerpt_at := attention_task_excerpt(s, task, kind, holder)
-
-	// details: what the deck renders. Vault ciphertext is copied verbatim; the
-	// client decrypts. `status` mirrors `state` for older clients.
-	details := strings.builder_make(context.temp_allocator)
-	strings.write_string(&details, `{"priority":"`)
-	contracts.write_json_string(&details, domain.task_priority_string(task.priority))
-	strings.write_string(&details, `","status":"`)
-	contracts.write_json_string(&details, state)
-	strings.write_string(&details, `","state":"`)
-	contracts.write_json_string(&details, state)
-	strings.write_string(&details, `","attention":"`)
-	contracts.write_json_string(&details, attention)
-	strings.write_string(&details, `","badge":"`)
-	contracts.write_json_string(&details, badge)
-	strings.write_string(&details, `","task_kind":"`)
-	contracts.write_json_string(&details, domain.task_kind_string(task.kind))
-	fmt.sbprintf(&details, `","attempt_no":%d,"block_id":"%s","bridge_id":"`, task.attempt_no, attention_task_block_id(task) if kind == .Blocked else "")
-	contracts.write_json_string(&details, task.bridge_id)
-	strings.write_string(&details, `","holder_instance_id":"`)
-	contracts.write_json_string(&details, holder)
-	strings.write_string(&details, `","assignee_name":"`)
-	contracts.write_json_string(&details, attention_instance_name(s, holder))
-	strings.write_string(&details, `","excerpt":`)
-	if excerpt_body != "" {
-		strings.write_string(&details, `{"author_name":"`)
-		contracts.write_json_string(&details, excerpt_author)
-		strings.write_string(&details, `","body":"`)
-		contracts.write_json_string(&details, excerpt_body)
-		strings.write_string(&details, `","at":"`)
-		contracts.write_json_string(&details, excerpt_at)
-		strings.write_string(&details, `"}`)
-	} else {
-		strings.write_string(&details, `null`)
-	}
-	// A held task keeps its Review card (the user's verdict is still recorded;
-	// the gate resumes on release): the deck shows it as held, with the reason.
-	if hold, held := taskv2.task_hold_object(task.blocked_on_json); held {
-		strings.write_string(&details, `,"held":true,"hold_reason":"`)
-		contracts.write_json_string(&details, jsonx.extract_string(hold, "reason", "", true, context.temp_allocator))
-		strings.write_string(&details, `"`)
-	}
-	if taskv2.is_agent_not_running_block(task.blocked_on_json) {
-		strings.write_string(&details, `,"start_agent":`)
-		strings.write_string(&details, attention_start_agent_context(s, task))
-	}
-	strings.write_string(&details, `}`)
-
-	rationale := "Waiting on your review"
-	switch {
-	case kind == .Review && task.kind == .Gate: rationale = "Approve the plan to continue"
-	case kind == .Blocked && badge == "merge_conflict": rationale = "Merge conflict needs you"
-	case kind == .Blocked && badge == "budget_exhausted": rationale = "Out of attempts — needs you"
-	case kind == .Blocked && badge == "oscillation": rationale = "Stuck in review rounds — needs you"
-	case kind == .Blocked && badge == "agent_not_running": rationale = "The assigned agent is not running."
-	case kind == .Blocked: rationale = "Agent is asking you"
-	}
-
-	return domain.Card{
-		owner_user_id    = task.owner_user_id,
-		title            = task.title,
-		rationale        = rationale,
-		scope            = domain.CARD_SCOPE_TASK,
-		provider         = domain.CARD_PROVIDER_TASK_VALIDATION,
-		kind             = domain.CARD_KIND_TASK,
-		confidence       = 1.0,
-		source_refs_json = strings.to_string(refs),
-		operations_json  = strings.to_string(ops),
-		guard_json       = strings.to_string(guard),
-		action_refs_json = strings.to_string(action_refs),
-		details_json     = strings.to_string(details),
-		// User decision: a task's age is its updated_at.
-		attention_since  = task.updated_at,
-		// A new state, attention kind, block or attempt reactivates the card.
-		source_marker    = fmt.tprintf("v2|%s|%s|%s|%d|%s", state, attention, task.blocked_on_json, task.attempt_no, task.updated_at),
-	}
-}
-
-// Names are separate from diagnostic errors so legacy raw-ID reasons never
-// become the main explanation. Missing/deleted records have readable fallbacks.
-attention_start_agent_context :: proc(s: ^Card_Service, task: domain.Task) -> string {
-	agent_id := jsonx.extract_string(task.blocked_on_json, "agent_id", "", true, context.temp_allocator)
-	bridge_id := jsonx.extract_string(task.blocked_on_json, "bridge_id", "", true, context.temp_allocator)
-	agent_name, bridge_name := "Unavailable or deleted agent", "Unavailable or deleted Bridge"
-	if agent_id == "" do agent_name = "Unassigned agent"
-	if bridge_id == "" do bridge_name = "Unassigned Bridge"
-	if s.taskchains != nil && s.taskchains.agents != nil {
-		if a, found, _ := iface.agent_get(s.taskchains.agents, agent_id); found && a.owner_user_id == task.owner_user_id {
-			agent_name = a.name if a.name != "" else "Unnamed agent"
-		}
-	}
-	if s.taskchains != nil && s.taskchains.engine != nil && s.taskchains.engine.bridges != nil {
-		if b, found, _ := iface.bridge_get_bridge(s.taskchains.engine.bridges, bridge_id); found && b.owner_user_id == task.owner_user_id {
-			bridge_name = b.label if b.label != "" else b.machine_hostname
-			if bridge_name == "" do bridge_name = "Unnamed Bridge"
-		}
-	}
-	obj := make(json.Object, context.temp_allocator)
-	obj["agent_id"], obj["agent_name"] = json.String(agent_id), json.String(agent_name)
-	obj["bridge_id"], obj["bridge_name"] = json.String(bridge_id), json.String(bridge_name)
-	obj["detail"] = json.String(jsonx.extract_string(task.blocked_on_json, "detail", "", true, context.temp_allocator))
-	obj["diagnostic"] = json.String(jsonx.extract_string(task.blocked_on_json, "reason", "", true, context.temp_allocator))
-	obj["can_delegate"] = false
-	if s.taskchains != nil do obj["can_delegate"] = taskv2.task_agent_delegation_available(s.taskchains.engine, task)
-	encoded, _ := json.marshal(obj, allocator = context.temp_allocator)
-	return string(encoded)
-}
-
-// attention_block_id identifies the displayed failure, or hashes older blocks.
-attention_block_id :: proc(blocked_on_json: string) -> string {
-	// A new dispatch failure must have a fresh identity even if retries fail
-	// with identical prose in the same clock tick. Old blocks retain the hash.
-	if id := jsonx.extract_string(blocked_on_json, "failure_id", "", true, context.temp_allocator); id != "" do return id
-	return fmt.tprintf("%08x", hash.fnv32a(transmute([]u8)blocked_on_json))
-}
-
-attention_task_block_id :: proc(task: domain.Task) -> string {
-	if !taskv2.is_agent_not_running_block(task.blocked_on_json) do return attention_block_id(task.blocked_on_json)
-	// A fleet/brief edit may change the assignee without clearing the failure.
-	// Pin the assignment and attempt the user saw as well as the failure itself.
-	assignment := taskv2.brief_assignee(task.brief_json)
-	return fmt.tprintf("%s-%d-%s", attention_block_id(task.blocked_on_json), task.attempt_no, contracts.owner_payload_digest(assignment))
-}
-
-// attention_task_holder: the instance that worked the task — the live work
-// lease holder, else the holder of the latest lease of any kind.
-attention_task_holder :: proc(s: ^Card_Service, task: domain.Task) -> string {
-	if s.taskchains == nil || s.taskchains.repo == nil do return ""
-	leases, err := iface.taskchain_list_leases_by_task(s.taskchains.repo, task.task_id)
-	if err.code != .None do return ""
-	for l in leases do if l.kind == domain.LEASE_KIND_WORK && l.holder_instance_id != "" do return l.holder_instance_id
-	if s.taskchains.engine == nil do return ""
-	return taskv2.last_attempt_holder(s.taskchains.engine, task)
-}
-
-// attention_task_excerpt: what the card quotes. A review quotes the agent's
-// submit summary (gate: the plan stage's output summary when the gate has none);
-// a block quotes its reason (the agent's question, conflicting files). Falls
-// back to the latest task comment.
-attention_task_excerpt :: proc(s: ^Card_Service, task: domain.Task, kind: taskv2.User_Attention, holder: string) -> (author, body, at: string) {
-	eng := s.taskchains.engine
-	if kind == .Blocked {
-		reason := jsonx.extract_string(task.blocked_on_json, "reason", "", true, context.temp_allocator)
-		if reason == "merge_conflict" {
-			// The block only says merge_conflict; the files and git's message are
-			// on the latest merge_conflict event.
-			reason = "The finished branch did not merge."
-			if evs, eerr := iface.taskchain_list_events_by_task(s.taskchains.repo, task.task_id, task.owner_user_id); eerr.code == .None {
-				for i := len(evs) - 1; i >= 0; i -= 1 {
-					if evs[i].kind != taskv2.EV_MERGE_CONFLICT do continue
-					if files := jsonx.extract_string(evs[i].payload_json, "files", "", true, context.temp_allocator); files != "" {
-						reason = fmt.tprintf("The finished branch did not merge. Conflicting files: %s", files)
-					}
-					break
-				}
-			}
-		}
-		if reason != "" do return attention_instance_name(s, holder), reason, task.updated_at
-	} else if eng != nil && task.kind == .Gate {
-		if body, at, ok := attention_gate_plan_excerpt(s, task); ok do return "Plan", body, at
-	} else if eng != nil {
-		if f, ok := taskv2.get_facet(eng, task, task.attempt_no, taskv2.FACET_HANDOFF); ok {
-			if sum := jsonx.extract_string(f.body_json, "summary", "", true, context.temp_allocator); sum != "" {
-				return attention_instance_name(s, holder), sum, f.written_at
-			}
-		}
-	}
-	comments, comments_err := iface.taskchain_list_recent_comments_by_task(s.taskchains.repo, task.task_id, task.owner_user_id, 1)
-	if comments_err.code == .None && len(comments) > 0 {
-		latest := comments[len(comments) - 1]
-		return attention_instance_name(s, latest.author_agent_instance_id), latest.body, latest.created_at
-	}
-	return "", "", ""
-}
-
-// attention_gate_plan_excerpt: what a plan gate asks the user to approve — the
-// output of the stage just before it (the latest done task of the chain created
-// before the gate with an output facet): a task_list renders as a numbered list
-// of item titles/goals, anything else as its summary.
-attention_gate_plan_excerpt :: proc(s: ^Card_Service, gate: domain.Task) -> (string, string, bool) {
-	eng := s.taskchains.engine
-	tasks, err := iface.taskchain_list_tasks_by_chain(s.taskchains.repo, gate.chain_id, gate.owner_user_id)
-	if err.code != .None do return "", "", false
-	best: domain.Task
-	found := false
-	for t in tasks {
-		if t.kind == .Gate || t.state != .Done || t.created_at > gate.created_at do continue
-		if found && t.updated_at <= best.updated_at do continue
-		if _, ok := taskv2.get_facet(eng, t, t.attempt_no, taskv2.FACET_OUTPUT); !ok do continue
-		best = t
-		found = true
-	}
-	if !found do return "", "", false
-	f, _ := taskv2.get_facet(eng, best, best.attempt_no, taskv2.FACET_OUTPUT)
-	b := strings.builder_make(context.temp_allocator)
-	if items_raw, has := jsonx.extract_raw_array(f.body_json, "tasks", true, context.temp_allocator); has {
-		items := taskv2.jsonx_top_level_array_items(items_raw)
-		fmt.sbprintf(&b, "%d task(s) planned:\n", len(items))
-		for it, i in items {
-			label := jsonx.extract_string(it, "title", "", true, context.temp_allocator)
-			if label == "" do label = jsonx.extract_string(it, "goal", "", true, context.temp_allocator)
-			fmt.sbprintf(&b, "%d. %s\n", i + 1, label)
-		}
-	} else {
-		strings.write_string(&b, jsonx.extract_string(f.body_json, "summary", "", true, context.temp_allocator))
-	}
-	body := strings.trim_space(strings.to_string(b))
-	if body == "" do return "", "", false
-	return body, f.written_at, true
+	return apply_attention_projection(s, owner, id, domain.Card{}, false)
 }
 
 attention_instance_name :: proc(s: ^Card_Service, agent_instance_id: string) -> string {
-	if agent_instance_id == "" || s.taskchains == nil || s.taskchains.agents == nil do return ""
-	inst, ok, _ := iface.agent_get_instance(s.taskchains.agents, agent_instance_id)
+	if agent_instance_id == "" || s.agents == nil || s.agents.agents == nil do return ""
+	inst, ok, _ := iface.agent_get_instance(s.agents.agents, agent_instance_id)
 	if !ok do return ""
 	return inst.display_name
 }
@@ -766,34 +482,14 @@ reconcile_attention_owner :: proc(s: ^Card_Service, owner: domain.User_ID, stats
 		stats.last_failure_code = err.code
 	}
 
-	task_ids, task_err := iface.attention_list_validation_task_ids(s.attention_repo, owner)
-	if task_err.code != .None {
-		query_failed(stats, "list validation tasks", task_err)
-	} else {
-		for id in task_ids {
-			ok, err := project_task_card(s, owner, id)
-			project_result(stats, ok, err)
+	for provider in ([]string{domain.CARD_PROVIDER_TASK_VALIDATION, domain.CARD_PROVIDER_TASK_PLACEMENT}) {
+		live, live_err := iface.attention_list_live_cards(s.attention_repo, owner, provider)
+		if live_err.code != .None {
+			query_failed(stats, "list live task cards", live_err)
+			continue
 		}
-	}
-	live_tasks, live_task_err := iface.attention_list_live_cards(s.attention_repo, owner, domain.CARD_PROVIDER_TASK_VALIDATION)
-	if live_task_err.code != .None {
-		query_failed(stats, "list live task cards", live_task_err)
-	} else {
-		for c in live_tasks {
-			id := string(c.card_id)
-			if !strings.has_prefix(id, ATTENTION_TASK_CARD_PREFIX) do continue
-			ok, err := project_task_card(s, owner, domain.Task_ID(id[len(ATTENTION_TASK_CARD_PREFIX):]))
-			project_result(stats, ok, err)
-		}
-	}
-	live_placements, placement_err := iface.attention_list_live_cards(s.attention_repo, owner, CARD_PROVIDER_TASK_PLACEMENT)
-	if placement_err.code != .None {
-		query_failed(stats, "list placement cards", placement_err)
-	} else {
-		for c in live_placements {
-			id := placement_task_id_from_card(c.card_id)
-			if id == "" do continue
-			ok, err := project_task_card(s, owner, id)
+		for c in live {
+			ok, err := retire_task_card(s, owner, c.card_id)
 			project_result(stats, ok, err)
 		}
 	}

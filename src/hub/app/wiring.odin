@@ -23,8 +23,6 @@ import project_service "odin_test:hub/service/project"
 import provider_service "odin_test:hub/service/provider"
 import push_service "odin_test:hub/service/push"
 import search_service "odin_test:hub/service/search"
-import taskchain_service "odin_test:hub/service/taskchain"
-import taskv2 "odin_test:hub/service/taskv2"
 import user_service "odin_test:hub/service/user"
 import billing_service "odin_test:hub/service/billing"
 import vault_directory_service "odin_test:hub/service/vault_directory"
@@ -98,8 +96,6 @@ App_Graph :: struct {
 	agents: agent_service.Agent_Service,
 	projects: project_service.Project_Service,
 	content: content_service.Content_Service,
-	taskchains: taskchain_service.Taskchain_Service,
-	task_engine: taskv2.Service,
 	search: search_service.Search_Service,
 	push: push_service.Push_Service,
 	auth: auth_service.Auth_Service,
@@ -139,43 +135,6 @@ App_Graph :: struct {
 	action_mutex: sync.Mutex,
 	action_bridge_versions: map[string]int,
 	router: http.Router,
-}
-
-// task_engine_on_tasks_changed is the engine → taskchain callback: a task of the
-// chain crossed into or out of a terminal state, so the chain's own status may
-// need to follow (auto-complete when every task is done; reopen on a reopen).
-task_engine_on_tasks_changed :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner: domain.User_ID) {
-	graph := (^App_Graph)(ctx)
-	if graph == nil do return
-	_, _, _ = taskchain_service.sync_chain_status_from_tasks(&graph.taskchains, chain_id, owner)
-}
-
-task_engine_on_instance_terminal :: proc(ctx: rawptr, instance_id: string) {
-	taskv2.on_instance_terminal((^taskv2.Service)(ctx), instance_id)
-}
-
-task_engine_on_instance_activity :: proc(ctx: rawptr, instance_id, activity_status: string) {
-	taskv2.on_instance_activity((^taskv2.Service)(ctx), instance_id, activity_status)
-}
-
-task_engine_on_user_stopped :: proc(ctx: rawptr, instance_id: string) {
-	taskv2.on_instance_user_stopped((^taskv2.Service)(ctx), instance_id)
-}
-
-task_engine_on_start_success :: proc(ctx: rawptr, inst: domain.Agent_Instance) {
-	taskv2.on_start_success((^taskv2.Service)(ctx), inst)
-}
-
-// task_engine_on_instance_changed runs after a taskv2 commit that rewrote an
-// instance's current-task pointer; it re-reads the committed row.
-task_engine_on_instance_changed :: proc(ctx: rawptr, instance_id, change: string) {
-	graph := (^App_Graph)(ctx)
-	if graph == nil do return
-	inst, found, _ := iface.agent_get_instance(&graph.repos.agents, instance_id)
-	if !found do return
-	defer domain.agent_instance_destroy(&inst)
-	if change == "created" do http.publish_instance_created(&graph.event_bus, inst)
-	else do http.publish_instance_changed(&graph.event_bus, inst, change)
 }
 
 // agents_on_reconfiguration_changed publishes the reconfiguration hint and, on
@@ -378,32 +337,6 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.content = content_service.new_content_service_with_runtime(&graph.repos.content, &graph.repos.agents, &graph.repos.bridges, &graph.repos.projects, &graph.repos.taskchains, bridge_command_sink, &graph.clock, &graph.ids)
 	graph.content.agent_configuration_service = &graph.agents
 	graph.content.title_nudge_cooldown_seconds = config.title_nudge_cooldown_seconds
-	graph.taskchains = taskchain_service.new_taskchain_service_with_runtime(&graph.repos.taskchains, &graph.repos.agents, bridge_command_sink, &graph.clock, &graph.ids)
-	graph.taskchains.agent_service = &graph.agents
-	graph.taskchains.event_bus = &graph.event_bus
-	// Task System v2 engine: events + fold + leases + timers + matcher. Every
-	// chain/task mutation in the taskchain service funnels into it; it calls back
-	// (on_tasks_changed) so the chain auto-completes when its last task is done.
-	graph.task_engine = taskv2.new_service(&graph.repos.taskchains, &graph.repos.agents, &graph.repos.bridges, &graph.clock, &graph.ids)
-	graph.task_engine.uow_factory = &graph.uow_factory
-	graph.task_engine.agent_service = &graph.agents
-	graph.task_engine.bridge_command_sink = bridge_command_sink
-	graph.task_engine.event_bus = &graph.event_bus
-	graph.task_engine.on_tasks_changed = task_engine_on_tasks_changed
-	graph.task_engine.on_tasks_changed_ctx = rawptr(graph)
-	graph.task_engine.on_instance_changed = task_engine_on_instance_changed
-	graph.task_engine.on_instance_changed_ctx = rawptr(graph)
-	taskchain_service.set_engine(&graph.taskchains, &graph.task_engine)
-	taskchain_service.set_uow_factory(&graph.taskchains, &graph.uow_factory)
-	// Instance lifecycle → engine: ONE chokepoint for every death path
-	// (taskv2.on_instance_terminal), busy/idle activity, and start-success.
-	graph.agents.hooks = agent_service.Lifecycle_Hooks{
-		ctx              = rawptr(&graph.task_engine),
-		on_terminal      = task_engine_on_instance_terminal,
-		on_activity      = task_engine_on_instance_activity,
-		on_start_success = task_engine_on_start_success,
-		on_user_stopped  = task_engine_on_user_stopped,
-	}
 	graph.agents.resource_events = agent_service.Resource_Event_Hooks{
 		ctx                        = rawptr(graph),
 		on_reconfiguration_changed = agents_on_reconfiguration_changed,
@@ -483,11 +416,6 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.shell_session_service.entitlements = billing_service.entitlement_lookup(&graph.billing)
 	shell_session_svc.shell_metrics_set_service(&graph.shell_session_service)
 	graph.shell_session_service.live_agents = &graph.agents
-	// REQ-SHELL-9 trigger A: a closed chain reaps its servers. Assigned HERE, after the
-	// shell-session service is constructed, rather than next to the other two taskchain
-	// dependencies at their construction above — graph.taskchains is built before this
-	// service exists, so wiring it there would store a pointer to a zero value.
-	graph.taskchains.shell_sessions = &graph.shell_session_service
 	graph.shell_session_stream_handlers = http.Shell_Session_Stream_Handlers{
 		entitlements = billing_service.entitlement_lookup(&graph.billing),
 		auth                = &graph.auth,
@@ -583,7 +511,6 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.cards = card_service.new_card_service(
 		&graph.repos.cards,
 		&graph.repos.projects,
-		&graph.taskchains,
 		&graph.content,
 		&graph.projects,
 		&graph.agents,
@@ -596,9 +523,6 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	// message cards in step with their sources (write-through), so wire it into
 	// the services that own those sources.
 	card_service.init_attention(&graph.cards, &graph.repos.attention)
-	taskchain_service.set_attention_notifier(&graph.taskchains, &graph.cards.attention_notifier)
-	// The task engine re-projects the attention card of every task an event touched.
-	graph.task_engine.attention = &graph.cards.attention_notifier
 	content_service.set_attention_notifier(&graph.content, &graph.cards.attention_notifier)
 	events.init_attention_debouncer(&graph.attention_events, &graph.event_bus)
 	// Agent blockers change the 'Needs you' deck too (kind agent_blocker).
