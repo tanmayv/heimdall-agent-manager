@@ -239,7 +239,11 @@ test_owner_summary_view_reads_owner_show :: proc(t: ^testing.T) {
 	testing.expect_value(t, view, `{"ok":true,"data":{"chain_id":"chain_o","summary":"# Owner summary\nline 2","version":"7","authority":"owner"}}`)
 	empty, empty_owner := ctl_owner_summary_view(`{"ok":true,"data":{"chain_id":"chain_o","authority":{"kind":"owner"}}}`)
 	testing.expect(t, empty_owner && strings.contains(empty, `"summary":""`) && strings.contains(empty, `"version":"0"`), empty)
-	// A Hub chain (no owner authority) and a failed show fall back to the Hub read.
+	// Ciphertext the owner Bridge could not decrypt is refused as vault_locked.
+	locked, locked_owner := ctl_owner_summary_view(`{"ok":true,"data":{"chain_id":"chain_o","authority":{"kind":"owner"},"summary":"vault:v2:abc","summary_version":"3"}}`)
+	testing.expect(t, locked_owner && strings.contains(locked, `"ok":false`) && strings.contains(locked, `"code":"vault_locked"`) && !strings.contains(locked, "vault:v2:abc"), locked)
+	// A non-owner chain and a failed show are not owner views (the caller errors;
+	// Hub chains are removed, so there is no Hub read).
 	_, hub := ctl_owner_summary_view(`{"ok":true,"data":{"chain_id":"chain_h","coordinator_agent_instance_id":"inst"}}`)
 	testing.expect(t, !hub, "hub chain")
 	_, failed := ctl_owner_summary_view(`{"ok":false,"error":{"code":"invalid_scope","message":"owner chain read refused"}}`)

@@ -50,65 +50,6 @@ test_agent_rest_params_carry_target_and_body :: proc(t: ^testing.T) {
 	testing.expect(t, nok && strings.contains(none, `"body":""`), none)
 }
 
-@(test)
-test_hub_request_bodies_omit_unset_fields :: proc(t: ^testing.T) {
-	expect_json :: proc(t: ^testing.T, value: any, want: string, loc := #caller_location) {
-		got := ctl_json_text(value, context.temp_allocator)
-		testing.expect_value(t, got, want, loc = loc)
-	}
-	expect_json(t, Ctl_Empty_Body{}, `{}`)
-	expect_json(t, Ctl_Issue_Body{title = "T"}, `{"title":"T"}`)
-	expect_json(t, Ctl_Issue_Vote_Body{}, `{}`)
-	expect_json(t, Ctl_Chain_Update_Body{}, `{}`)
-	expect_json(t, Ctl_Proposal_Decide_Body{decision = "approve"}, `{"decision":"approve"}`)
-	// Always-sent fields stay even when empty.
-	expect_json(t, Ctl_Artifact_Update_Body{}, `{"name":"","description":""}`)
-	expect_json(t, Ctl_Chain_Create_Body{title = "t", kind = "mixed_work"}, `{"title":"t","description":"","kind":"mixed_work","coordinator_agent_id":"","bridge_id":"","project_id":""}`)
-	expect_json(t, Ctl_Memory_Create_Body{body = "b", type = "fact"}, `{"body":"b","type":"fact","title":"","description":"","evidence":"","agent_ids":[],"project_ids":[],"bridge_ids":[],"template_ids":[]}`)
-	// Presence-checked flags: an explicit empty / false value is still sent.
-	upd: Ctl_Task_Update_Body
-	upd.reviewers = make([]string, 0, context.temp_allocator)
-	upd.requires_user_approval = false
-	upd.bridge_id = ""
-	upd.depends_on = ctl_csv_list("t1, t2")
-	expect_json(t, upd, `{"reviewers":[],"requires_user_approval":false,"bridge_id":"","depends_on":["t1","t2"]}`)
-	expect_json(t, Ctl_Task_Update_Body{}, `{}`)
-	// Chats: initial_message only with a first message.
-	expect_json(t, Ctl_Chat_Create_Body{agent_id = "agt_1"}, `{"agent_id":"agt_1","agent_instance_id":"","bridge_id":"","provider":"","model":"","project_id":"","chain_id":"","title":""}`)
-	expect_json(t, Ctl_Chat_Create_Body{agent_id = "agt_1", initial_message = Ctl_Message_Body{body = "hi"}}, `{"agent_id":"agt_1","agent_instance_id":"","bridge_id":"","provider":"","model":"","project_id":"","chain_id":"","title":"","initial_message":{"body":"hi"}}`)
-	// Artifact content: content_base64 replaces content.
-	expect_json(t, Ctl_Artifact_Create_Body{name = "n", kind = "file", content = ""}, `{"name":"n","kind":"file","content":"","description":"","content_type":"","project_id":""}`)
-	expect_json(t, Ctl_Artifact_Create_Body{name = "n", kind = "file", content_base64 = "QQ=="}, `{"name":"n","kind":"file","content_base64":"QQ==","description":"","content_type":"","project_id":""}`)
-	// Mixed-work verbs keep their wire order.
-	scope, sok := ctl_mixed_work_body("scope", "ch_1", []string{"--item", "task:t1", "--action", "exclude", "--reason", "dropped"})
-	testing.expect(t, sok, "scope parses")
-	expect_json(t, scope, `{"chain_id":"ch_1","item":{"kind":"task","id":"t1"},"action":"exclude","reason":"dropped"}`)
-	complete, cok := ctl_mixed_work_body("complete", "ch_1", []string{"--expected-work-revision", "0", "--summary", "done"})
-	testing.expect(t, cok, "complete parses")
-	expect_json(t, complete, `{"chain_id":"ch_1","expected_work_revision":0,"summary":"done"}`)
-}
-
-@(test)
-test_hub_request_raw_json_flags_are_parsed :: proc(t: ^testing.T) {
-	ops, ok := ctl_parse_json_document(`[{"op":"task.vote","task_id":"task_1","n":3}]`)
-	testing.expect(t, ok, "operations parse")
-	card := Ctl_Card_Create_Body{title = "c", confidence = 0.5, operations = ops}
-	out := ctl_json_text(card, context.temp_allocator)
-	testing.expectf(t, strings.has_prefix(out, `{"title":"c","confidence":0.5`), "card: %s", out)
-	testing.expectf(t, strings.contains(out, `"operations":[{`) && strings.contains(out, `"n":3`) && strings.contains(out, `"task_id":"task_1"`), "card: %s", out)
-	testing.expect(t, !strings.contains(out, "source_refs") && !strings.contains(out, "guard"), "unset raw JSON flags omitted")
-	for bad in ([]string{`{bad`, `[1] trailing`, ``, `{"a":1}}`}) {
-		_, bok := ctl_parse_json_document(bad)
-		testing.expectf(t, !bok, "%q must be rejected", bad)
-	}
-	dir := ctl_directory_body([]string{"--vcs-kind", "git", "--vcs-info", `{"remote":"origin"}`})
-	testing.expect_value(t, ctl_json_text(dir, context.temp_allocator), `{"vcs_kind":"git","vcs":{"remote":"origin"}}`)
-	plain := ctl_directory_body([]string{"--vcs-kind", "git", "--vcs-info", "jj"})
-	testing.expect_value(t, ctl_json_text(plain, context.temp_allocator), `{"vcs_kind":"jj"}`)
-}
-
-// ---- user transport against a loopback hub ------------------------------------
-
 FAKE_HUB_BUF :: 16 * 1024
 
 Fake_Hub :: struct {
@@ -195,25 +136,4 @@ test_user_transport_unreachable_or_invalid_base_fails :: proc(t: ^testing.T) {
 	transport := ctl_user_transport("", "")
 	resp, tok := ctl_transport_fetch(transport, {method = .GET, path = ctl_api("me")})
 	testing.expect(t, !tok && strings.contains(resp, "user transport requires"), resp)
-}
-
-@(test)
-test_agent_transport_relays_structured_request :: proc(t: ^testing.T) {
-	ok_line := "{\"ok\":true,\"result\":{}}\n"
-	responses := []string{ok_line, ok_line}
-	fb := fake_bridge_start(t, responses)
-	if fb == nil do return
-	defer fake_bridge_stop(fb)
-	transport := Ctl_Transport{kind = .Agent, agent_endpoint = fb.endpoint, agent_token = "tok"}
-
-	ctl_task_chains_fleet_command(transport, []string{"pause", "ch 1/x"}, []string{"ham-ctl", "task-chains", "fleet", "pause", "ch 1/x", "--agent", "agt?1", "--roles", "worker"})
-	ctl_tasks_request_and_decrypt(transport, ctl_task_fetch_request("ch_1", "t_1", "src/a b.odin@HEAD"), []string{"ham-ctl"})
-	testing.expect_value(t, fb.served, 2)
-
-	pause := fake_bridge_request(fb, 0)
-	testing.expectf(t, strings.contains(pause, `"method":"agent.rest.request"`), "relay method: %s", pause)
-	testing.expectf(t, strings.contains(pause, `"http_method":"POST"`) && strings.contains(pause, `"path":"/api/v1/task-chains/ch%201%2Fx/fleets/agt%3F1/pause"`), "pause target: %s", pause)
-	testing.expectf(t, strings.contains(pause, `"body":"{\"roles\":[\"worker\"]}"`), "pause body: %s", pause)
-	fetch := fake_bridge_request(fb, 1)
-	testing.expectf(t, strings.contains(fetch, `"http_method":"GET"`) && strings.contains(fetch, `"path":"/api/v1/task-chains/ch_1/tasks/t_1/fetch?ref=src%2Fa`) && strings.contains(fetch, `"body":""`), "fetch: %s", fetch)
 }

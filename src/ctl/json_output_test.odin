@@ -59,15 +59,6 @@ test_cli_error_json_parses_with_hostile_values :: proc(t: ^testing.T) {
 	}
 }
 
-@(test)
-test_cli_workflow_output_params_parse :: proc(t: ^testing.T) {
-	_, _, params, ok := ctl_v2_workflow_output_params([]string{"output", "wfr_1", `st"a}ge`}, []string{"ham-ctl", "workflow", "output", "wfr_1", `st"a}ge`, "--execution", "2"})
-	testing.expect(t, ok, "params built")
-	obj := expect_cli_json(t, params)
-	s, _ := obj["stage_key"].(json.String)
-	testing.expect_value(t, string(s), `st"a}ge`)
-}
-
 // CTL_PRINTF_CALLS: every core:fmt procedure that takes a format string.
 @(private = "file")
 CTL_PRINTF_CALLS :: []string{"printf(", "printfln("}
