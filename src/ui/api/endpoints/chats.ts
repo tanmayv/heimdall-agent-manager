@@ -210,8 +210,8 @@ function guideChatArgs() {
 
 export const chatEndpoints = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
-    createLaunchConversation: build.mutation<any, { agentId: string; projectId?: string; bridgeId?: string; provider?: string; providerProfile?: string; model?: string; body: string; artifactIds?: string[] }>({
-      queryFn: async ({ agentId, projectId, bridgeId, provider, providerProfile, model, body, artifactIds = [] }, api) => {
+    createLaunchConversation: build.mutation<any, { agentId: string; projectId?: string; bridgeId?: string; chainId?: string; provider?: string; providerProfile?: string; model?: string; body: string; artifactIds?: string[] }>({
+      queryFn: async ({ agentId, projectId, bridgeId, chainId, provider, providerProfile, model, body, artifactIds = [] }, api) => {
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
@@ -223,6 +223,8 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
           const payload: any = { agent_id: agentId, initial_message: { body: encBody }, artifact_ids: artifactIds };
           if (projectId) payload.project_id = projectId;
           if (bridgeId) payload.bridge_id = bridgeId;
+          // A chain-bound launch (the Hub accepts only an owner-registry chain).
+          if (chainId) payload.chain_id = chainId;
           if (provider) payload.provider = provider;
           if (providerProfile) payload.provider_profile = providerProfile;
           if (model) payload.model = model;

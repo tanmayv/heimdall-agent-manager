@@ -4,7 +4,7 @@
 // chain.member.set role=coordinator. The bound coordinator is read back from
 // chain.metadata.read member rows.
 
-import { ownerCall, ownerRelaySend, type OwnerSend } from './ownerChains';
+import { ownerCall, ownerRelaySend, readOwnerChain, type OwnerSend } from './ownerChains';
 import type { OwnerSession } from './ownerLocalClient';
 
 /** One chain.metadata.read item (src/lib/owner_local/chain_metadata.odin). */
@@ -88,6 +88,29 @@ export async function readOwnerChainCoordinator(
   return scanOwnerChainCoordinator((cursor) => ownerCall(session, bridgeId, 'chain.metadata.read', { chainId, expectedRevision: '0', cursor, limit: 3 }, send));
 }
 
+/**
+ * chain.member.set role=coordinator for `instanceId`, against the chain
+ * revision read right before binding (a launch wait may outlast a loaded
+ * revision). Authority is per instance: a replaced coordinator keeps it until
+ * its member row is disabled, so the previous one is demoted once the new one
+ * is bound (the owner refuses to disable a chain's last coordinator).
+ */
+export async function bindOwnerCoordinator(
+  session: OwnerSession, bridgeId: string, chainId: string, instanceId: string, agentId: string, send: OwnerSend = ownerRelaySend,
+): Promise<void> {
+  const chainRevision = async () => (await readOwnerChain(session, bridgeId, chainId, send)).revision;
+  const previous = await readOwnerChainCoordinatorMember(session, bridgeId, chainId, send);
+  await ownerCall(session, bridgeId, 'chain.member.set', { chainId, expectedRevision: await chainRevision(), instanceId, agentId, memberRole: 'coordinator' }, send);
+  if (previous && previous.instanceId !== instanceId) {
+    await ownerCall(session, bridgeId, 'chain.member.set', { chainId, expectedRevision: await chainRevision(), instanceId: previous.instanceId, agentId: previous.agentId, memberRole: 'coordinator', enabled: false }, send);
+  }
+}
+
+/** The default coordinator agent is the one with the coordinator slug (the seeded multi-agent workflow agent). */
+export function isCoordinatorAgent(agent: { slug?: string } | null | undefined): boolean {
+  return agent?.slug === 'coordinator';
+}
+
 export type StartCoordinatorStage = 'launching' | 'waiting' | 'binding' | 'restarting' | 'done';
 
 export interface StartCoordinatorDeps {
@@ -147,6 +170,41 @@ export async function startOwnerCoordinator(deps: StartCoordinatorDeps, timeoutM
   await waitUntilRunning(deps, instanceId, timeoutMs, 'restarted');
   deps.onStage?.('done', instanceId);
   return instanceId;
+}
+
+export type NewChainCoordinatorStage = 'creating' | 'registering' | StartCoordinatorStage;
+
+export interface NewChainCoordinatorDeps extends Omit<StartCoordinatorDeps, 'launch' | 'bind' | 'onStage'> {
+  /** chain.create on the owner Bridge; resolves the new chain id. */
+  createChain: () => Promise<string>;
+  /** Resolves once the chain is listed in the owner registry (waitForOwnerChainListed). */
+  waitListed: (chainId: string) => Promise<void>;
+  /** Launches the instance on the owner Bridge with this chain_id; resolves its id. */
+  launch: (chainId: string) => Promise<string>;
+  bind: (chainId: string, instanceId: string) => Promise<void>;
+  /** The chain exists from here on, even if its coordinator then fails to start. */
+  onChainCreated?: (chainId: string) => void;
+  onStage?: (stage: NewChainCoordinatorStage, instanceId: string) => void;
+}
+
+/**
+ * A new chain with a running, bound coordinator: create the chain, wait until
+ * it is in the owner registry (the Hub refuses a chain_id it cannot route, so
+ * launching earlier fails), then launch -> wait -> bind -> restart like
+ * startOwnerCoordinator. The instance is launched chain-bound.
+ */
+export async function createChainWithCoordinator(deps: NewChainCoordinatorDeps, timeoutMs = COORDINATOR_START_TIMEOUT_MS): Promise<{ chainId: string; instanceId: string }> {
+  deps.onStage?.('creating', '');
+  const chainId = await deps.createChain();
+  deps.onChainCreated?.(chainId);
+  deps.onStage?.('registering', '');
+  await deps.waitListed(chainId);
+  const instanceId = await startOwnerCoordinator({
+    ...deps,
+    launch: () => deps.launch(chainId),
+    bind: (id) => deps.bind(chainId, id),
+  }, timeoutMs);
+  return { chainId, instanceId };
 }
 
 /** The instance id in a POST /agent-instances reply. */

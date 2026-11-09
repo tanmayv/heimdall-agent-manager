@@ -6,9 +6,14 @@
 import React, { useState } from 'react';
 import { Button } from '@ui';
 import { cookieJsonFetch, cookieJsonFetchEnvelope, cookieMutation } from '../../api/cookieFetch';
-import { createdInstanceId, startOwnerCoordinator, type StartCoordinatorStage } from '../../api/ownerCoordinator';
+import { createdInstanceId, isCoordinatorAgent, startOwnerCoordinator, type NewChainCoordinatorStage, type StartCoordinatorStage } from '../../api/ownerCoordinator';
 
-export interface CoordinatorAgentChoice { agentId: string; name: string }
+export interface CoordinatorAgentChoice { agentId: string; name: string; slug?: string }
+
+/** The picker's default: the coordinator agent when there is one, else the first agent ('' when none). */
+export function defaultCoordinatorAgentId(agents: CoordinatorAgentChoice[]): string {
+  return (agents.find(isCoordinatorAgent) ?? agents[0])?.agentId ?? '';
+}
 
 /** The Hub calls Start coordinator makes; tests replace them. */
 export interface OwnerCoordinatorApi {
@@ -24,7 +29,7 @@ export const hubCoordinatorApi: OwnerCoordinatorApi = {
     const rows: any[] = Array.isArray(body?.data) ? body.data : (Array.isArray(body) ? body : (body?.data?.agents || []));
     return rows
       .filter((r) => r && r.agent_id && !r.archived_at)
-      .map((r) => ({ agentId: String(r.agent_id), name: String(r.name || r.slug || r.agent_id) }));
+      .map((r) => ({ agentId: String(r.agent_id), name: String(r.name || r.slug || r.agent_id), slug: String(r.slug || '') }));
   },
   async launch({ agentId, chainId, bridgeId }) {
     return createdInstanceId(await cookieMutation('/agent-instances', 'POST', { agent_id: agentId, chain_id: chainId, bridge_id: bridgeId }));
@@ -38,7 +43,9 @@ export const hubCoordinatorApi: OwnerCoordinatorApi = {
   },
 };
 
-const STAGE_TEXT: Record<StartCoordinatorStage, string> = {
+export const COORDINATOR_STAGE_TEXT: Record<NewChainCoordinatorStage, string> = {
+  creating: 'Creating the chain on its owner Bridge…',
+  registering: 'Waiting for the chain to register…',
   launching: 'Launching the coordinator on the owner Bridge…',
   waiting: 'Waiting for the coordinator to start…',
   binding: 'Binding it as the chain’s coordinator…',
@@ -71,7 +78,7 @@ export function OwnerCoordinatorControl({ chainId, ownerBridgeId, coordinatorId,
     try {
       const list = await api.listAgents();
       setAgents(list);
-      if (list.length) setAgentId(list[0].agentId);
+      setAgentId(defaultCoordinatorAgentId(list));
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); setAgents([]); }
   }
 
@@ -122,7 +129,7 @@ export function OwnerCoordinatorControl({ chainId, ownerBridgeId, coordinatorId,
           <Button size="sm" variant="ghost" disabled={running} onClick={() => { setOpen(false); setStage(''); }}>Cancel</Button>
         </>
       )}
-      {stage && <span role="status" data-debug-id="owner-chain-coordinator-stage" className="text-muted">{STAGE_TEXT[stage]}</span>}
+      {stage && <span role="status" data-debug-id="owner-chain-coordinator-stage" className="text-muted">{COORDINATOR_STAGE_TEXT[stage]}</span>}
       {error && <span role="alert" data-debug-id="owner-chain-coordinator-error" className="text-danger">{error}</span>}
     </div>
   );

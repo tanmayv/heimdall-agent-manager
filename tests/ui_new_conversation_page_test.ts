@@ -14,6 +14,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import React from 'react';
 import { makeVaultStore, unlockVault } from './helpers/vaultEndpointHarness.ts';
+import { fakeOwner, ownerTestSession, registryRow, type OwnerCall } from './helpers/ownerFakeRelay.ts';
+import { clearKeyringSession } from '../src/ui/utils/vaultKeyringSession.ts';
 
 const TEST_KEY = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const BOOT_ID = 'b1'.repeat(16);
@@ -47,7 +49,11 @@ type Ctx = {
 };
 
 async function withPage(
-  setup: { bridges?: any[]; prefs?: Record<string, unknown>; reducedMotion?: boolean; storage?: Record<string, string>; failPreferenceWrites?: boolean; width?: number },
+  setup: {
+    bridges?: any[]; prefs?: Record<string, unknown>; reducedMotion?: boolean; storage?: Record<string, string>; failPreferenceWrites?: boolean; width?: number;
+    /** Answers a request before the defaults; undefined falls through to them. */
+    route?: (path: string, method: string, body: any) => unknown | Promise<unknown>;
+  },
   run: (ctx: Ctx) => Promise<void>,
 ) {
   const { JSDOM } = await import('jsdom');
@@ -95,8 +101,9 @@ async function withPage(
       const failure = JSON.stringify({ error: { code: 'unavailable', message: 'Preferences are unavailable.' } });
       return { ok: false, status: 503, headers: { get: () => 'application/json' }, text: async () => failure, json: async () => JSON.parse(failure) } as any;
     }
-    let data: any = {};
-    if (path.endsWith('/me/conversation-launch')) data = prefs;
+    let data: any = setup.route ? await setup.route(path, method, body) : undefined;
+    if (data !== undefined) { /* answered by the test */ }
+    else if (path.endsWith('/me/conversation-launch')) data = prefs;
     else if (path.endsWith('/agents') && method === 'GET') data = AGENTS;
     else if (path.endsWith('/agents') && method === 'POST') data = { agent_id: 'agt_new', name: body.name, state: 'active' };
     else if (path.endsWith('/projects') && method === 'POST') {
@@ -115,6 +122,7 @@ async function withPage(
     else if (path.includes('/agent-instances/')) data = { agent_instance_id: 'inst_new' };
     else if (path.endsWith('/shells') && method === 'POST') data = { session: { session_id: body.session_id, kind: 'shell', status: 'running' } };
     else if (path.includes('/public-key')) data = { unseal_boot_id: BOOT_ID };
+    data ??= {};
     const text = JSON.stringify({ data });
     return { ok: true, status: 200, headers: { get: () => 'application/json' }, text: async () => text, json: async () => JSON.parse(text) } as any;
   };
@@ -222,8 +230,9 @@ test('page renders headline -> meta -> composer -> issues -> footer, without the
 
 test('launching a conversation makes the same API calls, keeps the 420ms launch transition and calls onLaunched', async () => {
   // The saved preferences differ from what hydration picks for the bridge, so one
-  // remember() PATCH is expected, exactly as before the rewrite.
-  await withPage({ prefs: { bridge_id: '' } }, async (ctx) => {
+  // remember() PATCH is expected, exactly as before the rewrite. The soloist is
+  // launched: a coordinator also gets an owner chain (tested below).
+  await withPage({ prefs: { bridge_id: '', agent_id: 'agt_solo' } }, async (ctx) => {
     await ctx.render();
     await until(ctx, () => !/Loading|Checking/.test(issuesText(ctx.doc)) && issuesText(ctx.doc) === '', 'hydration');
     const patches = ctx.calls.filter((c) => c.method === 'PATCH' && c.url.includes('/me/conversation-launch'));
@@ -238,7 +247,8 @@ test('launching a conversation makes the same API calls, keeps the 420ms launch 
     const posts = ctx.calls.filter((c) => c.method === 'POST' && new URL(c.url, 'http://localhost').pathname.endsWith('/chats'));
     assert.equal(posts.length, 1);
     const { initial_message, ...payload } = posts[0].body;
-    assert.deepEqual(payload, { agent_id: 'agt_coord', artifact_ids: [], project_id: 'p_ham', bridge_id: 'b_river', provider: 'claude', model: 'opus' });
+    assert.deepEqual(payload, { agent_id: 'agt_solo', artifact_ids: [], project_id: 'p_ham', bridge_id: 'b_river', provider: 'claude', model: 'opus' });
+    assert.ok(!ctx.calls.some((c) => c.url.includes('/owner-local/')), 'a non-coordinator launch creates no chain');
     const { decryptVaultText } = await import('../src/ui/utils/vaultCrypto.ts');
     assert.equal(await decryptVaultText(String(initial_message.body)), 'Fix the flaky test');
     assert.deepEqual(ctx.launched, ['inst_new']);
@@ -248,6 +258,59 @@ test('launching a conversation makes the same API calls, keeps the 420ms launch 
     assert.equal(ctx.animations[0].options.easing, 'cubic-bezier(0.22, 1, 0.36, 1)');
     assert.equal(ctx.animations[0].options.fill, 'forwards');
   });
+});
+
+test('a coordinator conversation gets an owner chain: chain_id is sent at launch only once the chain is listed, then it is bound and restarted', async () => {
+  const env = await ownerTestSession('b_river', 'riverwood');
+  const owner: OwnerCall[] = [];
+  // One ordered log of owner commands, registry reads and Hub instance calls.
+  const log: string[] = [];
+  const relay = fakeOwner(env.session, (call) => { log.push('owner:' + call.method); return { chain_id: call.command.chain_id, task_id: '', revision: '1' }; }, owner);
+  const createdChain = () => owner.find((c) => c.method === 'chain.create')?.command.chain_id;
+  let registryReads = 0;
+  const route = async (path: string, method: string, body: any) => {
+    if (path.endsWith('/vault/directory')) return env.hub.dir();
+    if (path.endsWith('/owner-local/relay')) return relay(body);
+    if (path.endsWith('/owner-local/chains')) {
+      // The first read predates the owner's registry publish.
+      const listed = Boolean(createdChain()) && ++registryReads > 1;
+      log.push(listed ? 'registry:listed' : 'registry:missing');
+      const items = listed ? [await registryRow(env.session, { chainId: createdChain()!, bridgeId: 'b_river', online: true })] : [];
+      return { items, next_cursor: { after_chain: '', after_task: '' }, terminal: true };
+    }
+    if (path.endsWith('/chats') && method === 'POST') { log.push(`launch:${body.agent_id}:${body.chain_id}`); return { agent_instance_id: 'inst_new' }; }
+    if (path.endsWith('/agent-instances/inst_new/restart')) { log.push('restart'); return {}; }
+    if (path.endsWith('/agent-instances/inst_new')) { log.push('instance'); return { agent_instance_id: 'inst_new', runtime_status: 'running' }; }
+    return undefined;
+  };
+  try {
+    await withPage({ route }, async (ctx) => {
+      await ctx.render();
+      await until(ctx, () => issuesText(ctx.doc) === '', 'hydration');
+      await type(ctx, q(ctx.doc, 'new-convo-composer-input'), 'Plan the release\nwith tickets');
+      await click(ctx, sendButton(ctx.doc));
+      await until(ctx, () => ctx.launched.length > 0, 'onLaunched', 8000);
+
+      const create = owner.find((c) => c.method === 'chain.create')!;
+      assert.equal(create.command.immutable_owner_bridge, 'b_river', 'the chain is owned by the launch bridge');
+      const { decryptVaultText } = await import('../src/ui/utils/vaultContent.ts');
+      assert.equal(await decryptVaultText(create.payload.title_cipher, env.session.keyring), 'Plan the release');
+      const chainId = create.command.chain_id;
+      // 'instance' reads: the launch reply's instance, the running wait, then the wait after the restart.
+      assert.deepEqual(log, [
+        'owner:chain.create', 'registry:missing', 'registry:listed', `launch:agt_coord:${chainId}`, 'instance', 'instance',
+        'owner:chain.metadata.read', 'owner:chain.read', 'owner:chain.member.set', 'restart', 'instance',
+      ]);
+      const bind = owner.find((c) => c.method === 'chain.member.set')!;
+      assert.deepEqual({ chain: bind.command.chain_id, instance: bind.payload.instance_id, agent: bind.payload.agent_id, role: bind.payload.role },
+        { chain: chainId, instance: 'inst_new', agent: 'agt_coord', role: 'coordinator' });
+      assert.deepEqual(ctx.launched, ['inst_new']);
+      const { ownerChainsSnapshot } = await import('../src/ui/api/ownerChainsStore.ts');
+      assert.equal(ownerChainsSnapshot().chains.find((c) => c.chainId === chainId)?.coordinatorAgentInstanceId, 'inst_new', 'the new chain is listed with its coordinator');
+    });
+  } finally {
+    clearKeyringSession();
+  }
 });
 
 test('mode switch swaps the composer body with composerSwap, persists heimdall:new-pane-mode, and opens a shell', async () => {

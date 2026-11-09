@@ -3,6 +3,8 @@ import { useFetchAgentInstanceQuery } from '../../api/endpoints/agents';
 import { useFetchConversationQuery } from '../../api/endpoints/chats';
 import { useFetchProjectQuery } from '../../api/endpoints/projects';
 import { useFetchExperimentsQuery } from '../../api/endpoints/settings';
+import type { OwnerChainSummary } from '../../api/ownerChains';
+import { useOwnerChains } from '../../api/ownerChainsStore';
 import { chainParticipantIdsFromMembers } from '../../store/auxTabGuards';
 import { resolveProjectExplorerAccess, type ProjectExplorerAccess } from '../chat/projectVcsExperiment';
 import { resolveProjectBridgeShellCwd } from '../shells/interactiveShellLaunch';
@@ -44,6 +46,16 @@ export interface AgentAuxContext {
 }
 
 /**
+ * The owner chain whose bound coordinator is `agentInstanceId` ('' when none):
+ * the chain of a coordinator launched before chain-bound launches (its
+ * instance carries no chain_id).
+ */
+export function ownerChainIdForCoordinator(chains: readonly OwnerChainSummary[], agentInstanceId: string): string {
+  if (!agentInstanceId) return '';
+  return chains.find((c) => c.coordinatorAgentInstanceId === agentInstanceId)?.chainId ?? '';
+}
+
+/**
  * `targetChainId` is set for a chain-addressed pane (`chain:<id>`, REQ-TV2-7):
  * the chain then comes from the pane's target instead of being inferred from
  * the agent, and the context is resolved even before the coordinator loads.
@@ -64,6 +76,7 @@ export function useAgentAuxContext(
   );
   const instance: any = instanceData?.instance;
   const conversation: any = convData?.conversation;
+  const ownerChains = useOwnerChains();
 
   const chainId = String(
     targetChainId ||
@@ -71,6 +84,7 @@ export function useAgentAuxContext(
       conversation?.chainId ||
       instance?.chain_id ||
       instance?.chainId ||
+      ownerChainIdForCoordinator(ownerChains.chains, id) ||
       '',
   );
   const projectId = String(
