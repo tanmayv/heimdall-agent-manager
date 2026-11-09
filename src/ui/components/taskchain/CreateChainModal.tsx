@@ -1,161 +1,51 @@
-import React, { useState, useEffect } from 'react';
-import {
-  useCreateTaskChainMutation,
-  useRunWorkflowMutation,
-  useFetchWorkflowTemplatesQuery,
-  useFetchWorkflowDefinitionsQuery,
-} from '../../api/endpoints/tasks';
-import { useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
-import { createChainErrorMessage, createChainFormProblem } from './createChainForm';
+import React, { useState } from 'react';
 import { ChainPlacementField, useChainPlacementChoices } from './ChainPlacementField';
-import { HUB_PLACEMENT, createOwnerChain, freshOwnerSession, ownerErrorMessage, type OwnerChainSummary } from '../../api/ownerChains';
+import { createOwnerChain, freshOwnerSession, ownerErrorMessage, type OwnerChainSummary } from '../../api/ownerChains';
 
 export interface CreateChainModalProps {
   isOpen: boolean;
   onClose: () => void;
-  /** `owner` is set when the chain was created on an owner Bridge. */
+  /** `owner` is the new chain's summary on its owner Bridge. */
   onCreated?: (chainId: string, owner?: OwnerChainSummary) => void;
-  projects?: Array<{ project_id: string; name?: string }>;
-  defaultProjectId?: string;
 }
 
-export const CreateChainModal: React.FC<CreateChainModalProps> = ({
-  isOpen,
-  onClose,
-  onCreated,
-  projects = [],
-  defaultProjectId = '',
-}) => {
-  const [kind, setKind] = useState<'ticket' | 'workflow'>('ticket');
+/**
+ * Creates a Bridge-owned task chain: a signed chain.create with a device-signed
+ * genesis through the owner relay. The Hub no longer stores chains.
+ */
+export const CreateChainModal: React.FC<CreateChainModalProps> = ({ isOpen, onClose, onCreated }) => {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [projectId, setProjectId] = useState(defaultProjectId);
-  const [coordinatorAgentId, setCoordinatorAgentId] = useState('');
   const [submitError, setSubmitError] = useState('');
   // Placement defaults to the user's online Bridge until they choose.
   const placementState = useChainPlacementChoices(isOpen);
   const [placementChoice, setPlacementChoice] = useState('');
-  const [creatingOwner, setCreatingOwner] = useState(false);
-  const placement = kind === 'workflow' ? HUB_PLACEMENT : (placementChoice || placementState.initial);
-  const ownerPlacement = placement !== HUB_PLACEMENT;
-
-  // Workflow template state
-  // The modal stays mounted while closed (it returns null below), so every query is
-  // skipped until it opens.
-  const { data: templatesData } = useFetchWorkflowTemplatesQuery(undefined, { skip: !isOpen });
-  const templates: any[] = templatesData?.templates || [];
-  const { data: defsData } = useFetchWorkflowDefinitionsQuery(undefined, { skip: !isOpen });
-  const definitions: any[] = defsData?.definitions || [];
-
-  const [selectedWorkflowRef, setSelectedWorkflowRef] = useState<string>('');
-  const [workflowInputs, setWorkflowInputs] = useState<Record<string, string>>({});
-
-  const { data: agentsData } = useListAgentIdentitiesQuery(undefined, { skip: !isOpen });
-  const agents: any[] = agentsData?.agents || [];
-
-  const [createTaskChain, { isLoading: isCreatingChain }] = useCreateTaskChainMutation();
-  const [runWorkflow, { isLoading: isRunningWorkflow }] = useRunWorkflowMutation();
-
-  useEffect(() => {
-    if (!selectedWorkflowRef) {
-      if (templates.length > 0) {
-        setSelectedWorkflowRef(`tpl:${templates[0].template_id}`);
-      } else if (definitions.length > 0) {
-        setSelectedWorkflowRef(`def:${definitions[0].def_id}`);
-      }
-    }
-  }, [templates, definitions, selectedWorkflowRef]);
-
-  useEffect(() => {
-    if (!selectedWorkflowRef) return;
-    const initial: Record<string, string> = {};
-    if (selectedWorkflowRef.startsWith('def:')) {
-      const defId = selectedWorkflowRef.slice(4);
-      const curDef = definitions.find((d) => d.def_id === defId);
-      if (curDef?.spec?.inputs && Array.isArray(curDef.spec.inputs)) {
-        curDef.spec.inputs.forEach((inp: any) => {
-          initial[inp.name] = inp.default !== undefined ? String(inp.default) : '';
-        });
-      }
-    } else {
-      const tplId = selectedWorkflowRef.startsWith('tpl:') ? selectedWorkflowRef.slice(4) : selectedWorkflowRef;
-      const curTemplate = templates.find((t) => t.template_id === tplId);
-      if (curTemplate?.inputs) {
-        Object.entries(curTemplate.inputs).forEach(([k, spec]: [string, any]) => {
-          initial[k] = spec.default !== undefined ? String(spec.default) : '';
-        });
-      }
-    }
-    setWorkflowInputs(initial);
-  }, [selectedWorkflowRef, templates, definitions]);
+  const [creating, setCreating] = useState(false);
+  const placement = placementChoice || placementState.initial;
+  const choice = placementState.choices.find((c) => c.bridgeId === placement);
+  const placementReady = Boolean(choice?.online);
 
   if (!isOpen) return null;
 
-  // Until the Bridges are checked the default is not known: never let a fast
-  // submit fall through to the Hub.
-  const placementPending = kind === 'ticket' && placementState.loading && !placementChoice;
-  const formProblem = ownerPlacement ? '' : createChainFormProblem(kind, projectId, coordinatorAgentId);
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim() || formProblem || placementPending) return;
-
+    if (!title.trim() || !placementReady || creating) return;
     setSubmitError('');
+    setCreating(true);
     try {
-      if (ownerPlacement) {
-        const choice = placementState.choices.find((c) => c.bridgeId === placement);
-        setCreatingOwner(true);
-        try {
-          const session = await freshOwnerSession();
-          const chainId = await createOwnerChain(session, placement, { title: title.trim(), description: description.trim() });
-          onCreated?.(chainId, {
-            chainId, ownerBridgeId: placement, bridgeName: choice?.name || placement, online: true,
-            title: title.trim(), description: description.trim(), sealed: false, tasks: [],
-            projectId: '', projectName: '', migrated: false, pending: true, status: 'active',
-          });
-        } catch (err) {
-          setSubmitError(ownerErrorMessage(err, choice?.name));
-        } finally {
-          setCreatingOwner(false);
-        }
-        return;
-      }
-      if (kind === 'workflow') {
-        const payload: any = {
-          name: title.trim(),
-          inputs: workflowInputs,
-          project_id: projectId || undefined,
-        };
-        if (selectedWorkflowRef.startsWith('def:')) {
-          payload.def_id = selectedWorkflowRef.slice(4);
-        } else {
-          payload.template_id = selectedWorkflowRef.startsWith('tpl:')
-            ? selectedWorkflowRef.slice(4)
-            : selectedWorkflowRef;
-        }
-        const res: any = await runWorkflow(payload).unwrap();
-        const cid = res?.chain_id || res?.chain?.chain_id;
-        if (cid) onCreated?.(cid);
-        else onClose();
-      } else {
-        const res: any = await createTaskChain({
-          title: title.trim(),
-          description: description.trim() || undefined,
-          kind: 'ticket',
-          projectId: projectId || undefined,
-          coordinatorAgentId: coordinatorAgentId || undefined,
-        }).unwrap();
-        const cid = res?.chain_id || res?.chain?.chain_id || res?.id;
-        if (cid) onCreated?.(cid);
-        else onClose();
-      }
+      const session = await freshOwnerSession();
+      const chainId = await createOwnerChain(session, placement, { title: title.trim(), description: description.trim() });
+      onCreated?.(chainId, {
+        chainId, ownerBridgeId: placement, bridgeName: choice?.name || placement, online: true,
+        title: title.trim(), description: description.trim(), sealed: false, tasks: [],
+        projectId: '', projectName: '', migrated: false, pending: true, status: 'active',
+      });
     } catch (err) {
-      console.error('Failed to create chain', err);
-      setSubmitError(createChainErrorMessage(err));
+      setSubmitError(ownerErrorMessage(err, choice?.name));
+    } finally {
+      setCreating(false);
     }
   };
-
-  const isSubmitting = isCreatingChain || isRunningWorkflow || creatingOwner;
 
   return (
     <div
@@ -168,6 +58,7 @@ export const CreateChainModal: React.FC<CreateChainModalProps> = ({
           <button
             type="button"
             onClick={onClose}
+            aria-label="Close"
             className="text-faint hover:text-primary text-sm font-bold"
           >
             ✕
@@ -175,79 +66,8 @@ export const CreateChainModal: React.FC<CreateChainModalProps> = ({
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4 text-xs">
-          {/* Kind Selector: Ticket vs Workflow */}
-          <div className="flex flex-col gap-1.5">
-            <span className="font-semibold text-muted uppercase tracking-wider text-[11px]">
-              Chain Kind
-            </span>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                data-debug-id="chain-kind-ticket"
-                onClick={() => setKind('ticket')}
-                className={`flex flex-col gap-1 rounded-xl border p-3 text-left transition-all ${
-                  kind === 'ticket'
-                    ? 'border-accent bg-accent/10 text-primary'
-                    : 'border-subtle bg-surface-raised text-muted hover:border-accent/40'
-                }`}
-              >
-                <span className="font-bold text-xs text-primary">Ticket Chain</span>
-                <span className="text-[11px] leading-tight text-muted">
-                  Standard 5-state tickets with role-based fleet matching and review gates.
-                </span>
-              </button>
+          <ChainPlacementField value={placement} onChange={setPlacementChoice} state={placementState} />
 
-              <button
-                type="button"
-                data-debug-id="chain-kind-workflow"
-                onClick={() => setKind('workflow')}
-                className={`flex flex-col gap-1 rounded-xl border p-3 text-left transition-all ${
-                  kind === 'workflow'
-                    ? 'border-accent bg-accent/10 text-primary'
-                    : 'border-subtle bg-surface-raised text-muted hover:border-accent/40'
-                }`}
-              >
-                <span className="font-bold text-xs text-primary">Workflow Run</span>
-                <span className="text-[11px] leading-tight text-muted">
-                  Declarative multi-stage pipeline with fan-out, gates, and automatic cascade retry.
-                </span>
-              </button>
-            </div>
-          </div>
-
-          <ChainPlacementField
-            value={placement}
-            onChange={setPlacementChoice}
-            state={placementState}
-            hubOnly={kind === 'workflow' ? 'Workflow runs start on the Hub.' : undefined}
-          />
-
-          {ownerPlacement && (projects.length > 0 || agents.length > 0) && (
-            <p data-debug-id="create-chain-owner-fields-note" className="text-[11px] text-muted">
-              Project and coordinator are Hub settings; a chain on your Bridge has neither.
-            </p>
-          )}
-
-          {/* Project selector (Hub chains; an owner chain has no Hub project) */}
-          {projects.length > 0 && !ownerPlacement && (
-            <label className="flex flex-col gap-1 text-muted">
-              <span className="font-semibold text-[11px]">Project</span>
-              <select
-                value={projectId}
-                onChange={(e) => setProjectId(e.target.value)}
-                className="rounded-lg border border-subtle bg-canvas px-3 py-2 text-primary text-xs outline-none focus:border-accent"
-              >
-                <option value="">— Unassigned —</option>
-                {projects.map((p) => (
-                  <option key={p.project_id} value={p.project_id}>
-                    {p.name || p.project_id}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-
-          {/* Title */}
           <label className="flex flex-col gap-1 text-muted">
             <span className="font-semibold text-[11px]">Title</span>
             <input
@@ -255,108 +75,21 @@ export const CreateChainModal: React.FC<CreateChainModalProps> = ({
               required
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder={kind === 'workflow' ? 'e.g. Audit auth routes' : 'e.g. PTY streaming network optimization'}
+              placeholder="e.g. PTY streaming network optimization"
               className="rounded-lg border border-subtle bg-canvas px-3 py-2 text-primary text-xs outline-none focus:border-accent"
             />
           </label>
 
-          {/* Ticket-specific fields */}
-          {kind === 'ticket' && (
-            <>
-              <label className="flex flex-col gap-1 text-muted">
-                <span className="font-semibold text-[11px]">Description</span>
-                <textarea
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  placeholder="Overview of the tickets, objectives, and acceptance guidelines…"
-                  rows={2}
-                  className="rounded-lg border border-subtle bg-canvas p-2.5 text-primary text-xs outline-none focus:border-accent"
-                />
-              </label>
-
-              {agents.length > 0 && !ownerPlacement && (
-                <label className="flex flex-col gap-1 text-muted">
-                  <span className="font-semibold text-[11px]">Coordinator Agent (Optional)</span>
-                  <select
-                    value={coordinatorAgentId}
-                    onChange={(e) => setCoordinatorAgentId(e.target.value)}
-                    className="rounded-lg border border-subtle bg-canvas px-3 py-2 text-primary text-xs outline-none focus:border-accent"
-                  >
-                    <option value="">— None (self-managed) —</option>
-                    {agents.map((a) => (
-                      <option key={a.agent_id || a.id} value={a.agent_id || a.id}>
-                        {a.name || a.agent_id || a.id}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
-            </>
-          )}
-
-          {/* Workflow-specific fields */}
-          {kind === 'workflow' && (
-            <div className="space-y-3 rounded-xl border border-subtle bg-surface-raised p-3">
-              <label className="flex flex-col gap-1 text-muted">
-                <span className="font-semibold text-[11px]">Workflow Template / Definition</span>
-                <select
-                  value={selectedWorkflowRef}
-                  onChange={(e) => setSelectedWorkflowRef(e.target.value)}
-                  className="rounded-lg border border-subtle bg-canvas px-3 py-2 text-primary text-xs outline-none focus:border-accent"
-                >
-                  {templates.length > 0 && (
-                    <optgroup label="Built-in Templates">
-                      {templates.map((t) => (
-                        <option key={t.template_id} value={`tpl:${t.template_id}`}>
-                          {t.name || t.template_id} (v{t.version || 1})
-                        </option>
-                      ))}
-                    </optgroup>
-                  )}
-                  {definitions.length > 0 && (
-                    <optgroup label="Custom Workflow Definitions">
-                      {definitions.map((d) => (
-                        <option key={d.def_id} value={`def:${d.def_id}`}>
-                          {d.spec?.title || d.name} (v{d.version})
-                        </option>
-                      ))}
-                    </optgroup>
-                  )}
-                </select>
-              </label>
-
-              {/* Dynamic Inputs for chosen template */}
-              {Object.keys(workflowInputs).length > 0 && (
-                <div className="space-y-2 pt-2 border-t border-subtle">
-                  <span className="font-semibold text-muted text-[11px] uppercase tracking-wider block">
-                    Workflow Inputs
-                  </span>
-                  {Object.entries(workflowInputs).map(([inputKey, val]) => (
-                    <label key={inputKey} className="flex flex-col gap-1 text-muted">
-                      <span className="font-mono text-[11px] text-primary">{inputKey}</span>
-                      <input
-                        type="text"
-                        value={val}
-                        onChange={(e) =>
-                          setWorkflowInputs((prev) => ({
-                            ...prev,
-                            [inputKey]: e.target.value,
-                          }))
-                        }
-                        className="rounded border border-subtle bg-canvas px-2.5 py-1 text-primary text-xs outline-none focus:border-accent font-mono"
-                      />
-                    </label>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {kind === 'ticket' && formProblem && (
-            <p data-debug-id="create-chain-form-problem" className="rounded-lg border border-subtle bg-surface-raised px-3 py-2 text-[11px] text-muted">
-              {formProblem}
-            </p>
-          )}
+          <label className="flex flex-col gap-1 text-muted">
+            <span className="font-semibold text-[11px]">Description</span>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Overview of the tickets, objectives, and acceptance guidelines…"
+              rows={2}
+              className="rounded-lg border border-subtle bg-canvas p-2.5 text-primary text-xs outline-none focus:border-accent"
+            />
+          </label>
 
           {submitError && (
             <p role="alert" data-debug-id="create-chain-error" className="whitespace-normal text-[11px] text-danger">
@@ -364,7 +97,6 @@ export const CreateChainModal: React.FC<CreateChainModalProps> = ({
             </p>
           )}
 
-          {/* Footer buttons */}
           <div className="flex items-center justify-end gap-2 pt-3 border-t border-subtle">
             <button
               type="button"
@@ -375,14 +107,10 @@ export const CreateChainModal: React.FC<CreateChainModalProps> = ({
             </button>
             <button
               type="submit"
-              disabled={isSubmitting || !title.trim() || Boolean(formProblem) || placementPending}
+              disabled={creating || !title.trim() || !placementReady}
               className="rounded-lg bg-accent px-4 py-2 text-xs font-semibold text-accent-fg hover:opacity-90 transition-opacity disabled:opacity-50"
             >
-              {isSubmitting
-                ? 'Creating…'
-                : kind === 'workflow'
-                  ? 'Start Workflow Run'
-                  : 'Create Ticket Chain'}
+              {creating ? 'Creating…' : 'Create Ticket Chain'}
             </button>
           </div>
         </form>

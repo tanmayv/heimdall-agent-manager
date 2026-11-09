@@ -39,8 +39,8 @@ async function fixture(run: (ctx: any) => Promise<void>) {
     navigator: dom.window.navigator, localStorage: dom.window.localStorage, sessionStorage: dom.window.sessionStorage, ResizeObserver: RO,
     requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window), cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window), IS_REACT_ACT_ENVIRONMENT: true })) install(k, v);
   const reducers: any = { composerContext: context };
-  const modules: Record<string, string> = { chat: 'chatSlice', vault: 'vaultSlice', tasks: 'taskSlice', memory: 'memorySlice', projects: 'projectSlice',
-    home: 'homeSlice', chainView: 'chainViewSlice', attention: 'attentionSlice', cards: 'cardsSlice', toasts: 'toastSlice', notifications: 'notificationsSlice',
+  const modules: Record<string, string> = { chat: 'chatSlice', vault: 'vaultSlice', memory: 'memorySlice', projects: 'projectSlice',
+    home: 'homeSlice', attention: 'attentionSlice', cards: 'cardsSlice', toasts: 'toastSlice', notifications: 'notificationsSlice',
     workspaceLayout: 'workspaceLayoutSlice', auxPanes: 'auxPanesSlice', workspaceChrome: 'workspaceChromeSlice', inputPreferences: 'inputPreferencesSlice',
     searchTitle: 'searchTitleSlice', agentActivity: 'agentActivitySlice', toolActivity: 'toolActivitySlice', deviceVault: 'deviceVaultSlice', shells: 'shellSlice', theme: 'themeSlice' };
   for (const [key, file] of Object.entries(modules)) reducers[key] = (await import('../src/ui/store/' + file + '.ts')).default;
@@ -164,7 +164,7 @@ test('a live reply that fails to decrypt is not hidden by the reveal and settles
     assert.equal(dom.window.document.body.textContent?.includes('unreadable secret'), false);
   });
 });
-test('whole chat pane routes worker Quote into coordinator draft, retains it on failed send and clears only after successful retry', async () => {
+test('whole chat pane stages a Quote in its own draft, retains it on failed send and clears only after successful retry', async () => {
   await fixture(async ({ dom, store, key, render, select, q, wait }) => {
     const posts: any[] = [];
     let failPost = true;
@@ -188,13 +188,11 @@ test('whole chat pane routes worker Quote into coordinator draft, retains it on 
         const isWorker = path.includes('/workerchat/');
         data = isWorker ? [{ message_id: 'm1', direction: 'agent_to_user', sender_agent_instance_id: 'worker', body: 'Quote just this selected message text', created_unix_ms: 100 }] : wireMessages;
         return { ok: true, status: 200, headers: { get: () => 'application/json' }, text: async () => JSON.stringify({ data }), json: async () => ({ data }) } as any;
-      } else if (path.endsWith('/conversation')) data = { chain_id: 'c', coordinator_agent_instance_id: 'coord', conversation_id: 'coordchat', replaced_coordinator_instance_ids: [] };
-      else if (/\/agent-instances\/[^/]+$/.test(path)) data = { agent_instance_id: path.split('/').at(-1), agent_id: 'identity', provider: 'claude', model: 'opus', bridge_id: 'b', runtime_status: 'running' };
+      } else if (/\/agent-instances\/[^/]+$/.test(path)) data = { agent_instance_id: path.split('/').at(-1), agent_id: 'identity', provider: 'claude', model: 'opus', bridge_id: 'b', runtime_status: 'running' };
       else if (path.endsWith('/reconfigurations')) data = { operations: [] };
       else if (path.endsWith('/provider-status')) data = { providers: [{ provider: 'claude', enabled: true, state: 'present', catalog_state: 'active', models: [{ model_id: 'opus', state: 'active' }] }] };
       else if (path.endsWith('/bridges')) data = [{ bridge_id: 'b', status: 'online', runtime_connected: true, reconfiguration_supported: true }];
       else if (path.endsWith('/agents/live')) data = [];
-      else if (path.endsWith('/task-chains/c')) data = { chain_id: 'c', title: 'Test chain', coordinator_agent_instance_id: 'coord', members: [{ agent_instance_id: 'coord', role: 'coordinator' }] };
       else if (path.endsWith('/tasks')) data = [];
       else if (path.endsWith('/attention')) data = { items: url.searchParams.get('kind') === 'task' ? [{
         card_id: 'crd_review', kind: 'task', provider: 'task_validation', title: 'Review task', status: 'pending', snoozed: false,
@@ -203,11 +201,9 @@ test('whole chat pane routes worker Quote into coordinator draft, retains it on 
       }] : [] };
       return { ok, status: 200, headers: { get: () => 'application/json' }, text: async () => JSON.stringify({ data }), json: async () => ({ data }) } as any;
     }) as any;
-    dom.window.localStorage.setItem('heimdall:composer:draft:coord', 'Keep this coordinator draft');
+    dom.window.localStorage.setItem('heimdall:composer:draft:worker', 'Keep this coordinator draft');
     function View() {
-      const [route, setRoute] = React.useState('worker');
-      return React.createElement(AgentChatPane, { agentInstanceId: route, chainTarget: route === 'coord' ? { chainId: 'c' } : undefined,
-        paneId: 'test-pane', isMobile: false, onSwitchAgent: target => { assert.equal(target, 'chain:c'); setRoute('coord'); } });
+      return React.createElement(AgentChatPane, { agentInstanceId: 'worker', paneId: 'test-pane', isMobile: false });
     }
     await render(React.createElement(View));
     await wait(() => dom.window.document.querySelector('.markdown p')?.textContent === 'Quote just this selected message text');
@@ -222,7 +218,7 @@ test('whole chat pane routes worker Quote into coordinator draft, retains it on 
     const { Simulate } = await import('react-dom/test-utils');
     await act(async () => Simulate.change(q('conversation-composer-input'), { target: { value: 'Keep this task response' } } as any));
     assert.equal(q('composer-quote-chips'), null, 'task response does not include chat quote chips');
-    await act(async () => store.dispatch(addComposerQuote({ target: 'chain:c', quote: sample })));
+    await act(async () => store.dispatch(addComposerQuote({ target: 'worker', quote: sample })));
     assert.equal((q('conversation-composer-input') as HTMLTextAreaElement).value, 'Keep this coordinator draft');
     await act(async () => q('action-tray-need-you-pill').click());
     await act(async () => q('action-tray-request-changes').click());
@@ -232,7 +228,7 @@ test('whole chat pane routes worker Quote into coordinator draft, retains it on 
     await act(async () => q('composer-quote-remove-q1').click());
     assert.equal(posts.length, 0, 'Quote only stages context');
     assert.equal(Object.values(dom.window.localStorage).some(v => String(v).includes('Quote just this selected message text')), false, 'selected text is not persisted');
-    assert.equal(store.getState().composerContext.byTarget['chain:c'].length, 1);
+    assert.equal(store.getState().composerContext.byTarget['worker'].length, 1);
     await act(async () => q('conversation-composer-send-btn').click());
     await wait(() => posts.length === 1 && !(q('conversation-composer-send-btn') as HTMLButtonElement).disabled);
     assert.equal((q('conversation-composer-input') as HTMLTextAreaElement).value, 'Keep this coordinator draft');
@@ -242,7 +238,7 @@ test('whole chat pane routes worker Quote into coordinator draft, retains it on 
     assert.match(plain, /^Keep this coordinator draft/);
     assert.match(plain, /Quote just this selected message text/);
     assert.match(plain, /"conversationId": "workerchat"/);
-    assert.equal(posts[0].path, '/api/v1/chats/coordchat/messages');
+    assert.equal(posts[0].path, '/api/v1/chats/workerchat/messages');
     failPost = false; holdPost = true;
     await act(async () => q('conversation-composer-send-btn').click());
     await wait(() => posts.length === 2 && Boolean(postRelease));
@@ -252,20 +248,20 @@ test('whole chat pane routes worker Quote into coordinator draft, retains it on 
     await act(async () => postRelease!());
     await wait(() => !q('composer-quote-chips') && (q('conversation-composer-input') as HTMLTextAreaElement).value === '');
     assert.equal(await decryptVaultText(posts[1].body.body, key), plain, 'retry preserves identical message snapshot');
-    assert.equal(store.getState().composerContext.byTarget['chain:c'].length, 0);
+    assert.equal(store.getState().composerContext.byTarget['worker'].length, 0);
     holdPost = true;
     postRelease = undefined;
-    await act(async () => store.dispatch(addComposerQuote({ target: 'chain:c', quote: { ...sample, id: 'quote-only' } })));
+    await act(async () => store.dispatch(addComposerQuote({ target: 'worker', quote: { ...sample, id: 'quote-only' } })));
     await wait(() => !(q('conversation-composer-send-btn') as HTMLButtonElement).disabled);
     await act(async () => q('conversation-composer-send-btn').click());
     await wait(() => posts.length === 3 && Boolean(postRelease));
-    dom.window.localStorage.setItem('heimdall:composer:draft:coord', 'Newer draft from another pane');
-    await act(async () => store.dispatch(addComposerQuote({ target: 'chain:c', quote: { ...sample, id: 'newer', selectedText: 'A newer quote' } })));
+    dom.window.localStorage.setItem('heimdall:composer:draft:worker', 'Newer draft from another pane');
+    await act(async () => store.dispatch(addComposerQuote({ target: 'worker', quote: { ...sample, id: 'newer', selectedText: 'A newer quote' } })));
     await act(async () => postRelease!());
     await wait(() => !(q('conversation-composer-send-btn') as HTMLButtonElement).disabled);
     assert.match(await decryptVaultText(posts[2].body.body, key), /^Quoted context/, 'quote-only normal Send works');
     assert.equal((q('conversation-composer-input') as HTMLTextAreaElement).value, 'Newer draft from another pane');
-    assert.deepEqual(store.getState().composerContext.byTarget['chain:c'].map((q: QuoteContext) => q.id), ['newer'], 'success consumes only submitted chips');
+    assert.deepEqual(store.getState().composerContext.byTarget['worker'].map((q: QuoteContext) => q.id), ['newer'], 'success consumes only submitted chips');
   });
 });
 

@@ -23,26 +23,19 @@ function taskItem(id: string, details: any = {}, extra: any = {}): any {
 
 const SCOPE = { chainId: 'chain_a', agentInstanceId: 'inst_me' };
 
-test('review tray shows no verification surface, even for legacy verify records', async () => {
+test('review tray card shows the card excerpt and no verification surface', async () => {
   const React = await import('react');
   const { Provider } = await import('react-redux');
   const { renderToStaticMarkup } = await import('react-dom/server');
   const { makeVaultStore } = await import('./helpers/vaultEndpointHarness.ts');
-  const { tasksApi } = await import('../src/ui/api/endpoints/tasks.ts');
   const { ActionTaskCard } = await import('../src/ui/components/attention/ActionTaskCard.tsx');
   const store = await makeVaultStore();
-  // A card and attempt recorded before removal: skip reason and a verify facet.
-  const item = taskItem('legacy', { skip_verify_reason: 'Runner unavailable.' });
-  const args = { chainId: 'chain_a', taskId: 'task_legacy', attemptNo: 1 };
-  await store.dispatch(tasksApi.util.upsertQueryData('fetchTaskFacet', { ...args, kind: 'handoff' }, { facet: { summary: 'Implemented the endpoint.', skip_verify_reason: 'Runner unavailable.' } }));
-  await store.dispatch(tasksApi.util.upsertQueryData('fetchTaskFacet', { ...args, kind: 'verify' }, { facet: { exit_code: 0, command: 'npm test' } }));
+  const item = taskItem('legacy', { skip_verify_reason: 'Runner unavailable.', excerpt: { body: 'Implemented the endpoint.' } });
   const html = renderToStaticMarkup(React.createElement(Provider, { store, children: React.createElement(ActionTaskCard, {
     item, mobile: true, active: true, now: Date.now(), footer: null,
   }) }));
   assert.match(html, /Implemented the endpoint\./);
   assert.doesNotMatch(html, /verif/i);
-  assert.doesNotMatch(html, /npm test/);
-  store.dispatch(tasksApi.util.resetApiState());
 });
 
 test('trayItems keeps blocked and review task items of this chain, in server order', () => {
@@ -145,35 +138,6 @@ test('trayReducer returns the same state when nothing changed (no re-render loop
   assert.equal(tray.trayReducer(s, { type: 'show_items' }), s);
 });
 
-test('artifactIdsFrom: facet refs/paths/urls then ids named in the summary, deduplicated', () => {
-  const facet = { items: [
-    { kind: 'url', url: 'https://hub.example/#/library/artifacts/art_18e01e2af0815535' },
-    { kind: 'file', path: '/tmp/shot.png' },
-    { kind: 'file', ref: 'art_18e01e2afb169bfd' },
-  ] };
-  assert.deepEqual(
-    tray.artifactIdsFrom(facet, 'Screenshots art_18e01e2af0815535 and art_18e01e2b08eced50.'),
-    ['art_18e01e2af0815535', 'art_18e01e2afb169bfd', 'art_18e01e2b08eced50'],
-  );
-  assert.deepEqual(tray.artifactIdsFrom(null, ''), []);
-  assert.deepEqual(tray.artifactIdsFrom([{ kind: 'file', ref: 'art_0123456789abcdef' }]), ['art_0123456789abcdef']);
-});
-
-test('artifactLinksFrom keeps plain http links only', () => {
-  const facet = { items: [
-    { kind: 'url', url: 'https://preview.example/p/sh_1/', label: 'Gallery' },
-    { kind: 'url', url: 'https://hub.example/#/library/artifacts/art_18e01e2af0815535' },
-    { kind: 'preview_port', port: 5173 },
-    { kind: 'link', uri: 'javascript:alert(1)' },
-  ] };
-  assert.deepEqual(tray.artifactLinksFrom(facet), [{ label: 'Gallery', href: 'https://preview.example/p/sh_1/' }]);
-});
-
-test('handoffDecisions accepts strings and objects', () => {
-  assert.deepEqual(tray.handoffDecisions({ decisions: ['use rejectCard', { decision: 'no Delegate on blocked' }, { text: '' }, 7] }), ['use rejectCard', 'no Delegate on blocked']);
-  assert.deepEqual(tray.handoffDecisions(null), []);
-});
-
 test('chat tray Start agent stays visible with an inline failure and retry', async () => {
   const React = await import('react');
   const { act } = React;
@@ -221,10 +185,7 @@ test('chat tray Start agent stays visible with an inline failure and retry', asy
     assert.ok(q('action-tray-start-agent-crd_start'));
     assert.equal(q('action-tray-answer'), null);
     assert.match(dom.window.document.body.textContent || '', /Smoke worker on Mundus is not running/);
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 40)); });
-    const replacement = [...dom.window.document.querySelectorAll('option')].find((option) => option.value === 'agt_replacement');
-    assert.equal(replacement?.textContent, 'Encrypted agent (unlock vault to view name)');
-    assert.doesNotMatch(dom.window.document.body.textContent || '', /vault:v2:/, 'encrypted identity never appears in the action tray');
+    assert.equal(dom.window.document.querySelector('select'), null, 'no Hub fleet delegation picker');
     await act(async () => { q('action-tray-start-agent-crd_start')!.click(); });
     assert.match(q('action-tray-start-agent-error-crd_start')!.textContent || '', /bridge offline/);
     assert.ok(q('action-tray-card-blocked'));

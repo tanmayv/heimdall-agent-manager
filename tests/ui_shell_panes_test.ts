@@ -122,7 +122,7 @@ test('resource chooser and explicit launcher-intent wiring is reusable', () => {
 test('SH-2: every header segment follows the active-pane cue (theme tokens)', () => {
   const chat = read('src/ui/components/workbench/AgentChatPane.tsx');
   assert.match(chat, /data-debug-id="conversation-thread-header"\s+data-pane-active=\{isFocusedPane \? 'true' : 'false'\}/);
-  for (const id of ['conversation-breadcrumb-project', 'conversation-thread-title', 'conversation-chain-agent-switcher-btn']) {
+  for (const id of ['conversation-breadcrumb-project', 'conversation-thread-title', 'conversation-agent-crumb']) {
     assert.match(chat, new RegExp(`data-debug-id="${id}"\\s+data-pane-crumb`));
   }
   const pane = read('src/ui/components/mainWorkspace/ShellMainPane.tsx');

@@ -4,17 +4,14 @@ import { heimdallApi, setupHeimdallApiListeners } from '../api/heimdallApi';
 import { vaultCacheInvalidationMiddleware } from '../api/vaultCacheInvalidation';
 import { paneDeferralResetMiddleware } from '../api/wsInvalidation';
 import { analyticsMiddleware } from '../analytics/milestones';
-import '../api/endpoints/tasks';
 import '../api/endpoints/chats';
 import '../api/endpoints/agents';
 import '../api/endpoints/sidebar';
 import chatReducer from './chatSlice';
-import taskReducer from './taskSlice';
 import memoryReducer from './memorySlice';
 import projectReducer from './projectSlice';
 import homeReducer from './homeSlice';
 import composerContextReducer from './composerContextSlice';
-import chainViewReducer from './chainViewSlice';
 import attentionReducer from './attentionSlice';
 import toastReducer from './toastSlice';
 import notificationsReducer from './notificationsSlice';
@@ -35,11 +32,9 @@ export const priorUserClientStateCleared = createAction('heimdall/priorUserClien
 
 const appReducer = combineReducers({
   chat: chatReducer,
-  tasks: taskReducer,
   memory: memoryReducer,
   projects: projectReducer,
   home: homeReducer,
-  chainView: chainViewReducer,
   composerContext: composerContextReducer,
   attention: attentionReducer,
   toasts: toastReducer,

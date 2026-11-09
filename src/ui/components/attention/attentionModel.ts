@@ -1,5 +1,5 @@
 // Pure view-model helpers for the attention deck (no React; unit-tested).
-import type { AttentionBlockerItem, AttentionCounts, AttentionItem, AttentionKind, PlacementTarget, PlacementRecoveryInput } from '../../api/endpoints/attention';
+import type { AttentionBlockerItem, AttentionCounts, AttentionItem, AttentionKind } from '../../api/endpoints/attention';
 
 /** Messages and Tasks hold live cards; Snoozed holds cards whose snooze is running. */
 export type DeckTab = AttentionKind | 'snoozed';
@@ -123,45 +123,6 @@ export function isPlacementItem(item: AttentionItem): boolean {
   return item.kind === 'task' && item.details.attention === 'placement';
 }
 
-/** Stable across observation refreshes; each review requirement has its own draft. */
-export function placementTargetKey(cardId: string, target: PlacementTarget): string {
-  const f = target.failure;
-  return [cardId, f.phase, f.agent_id, f.role].join(':');
-}
-
-/** No instance/template fallback: native recovery requires an existing fleet role. */
-export function placementIdentityCandidates(target: PlacementTarget, fleets: readonly any[], agents: readonly any[], excluded: readonly string[] = []): ReviewerCandidate[] {
-  const worker = target.failure.phase === 'work';
-  const role = target.failure.role;
-  return agents.filter((a) => {
-    const id = String(a.agent_id || a.id || '');
-    if (!id.startsWith('agt_') || id === target.failure.agent_id || excluded.includes(id) || (a.state || 'active') !== 'active') return false;
-    const row = fleets.find((f) => (f.agent_id || f.agentId) === id);
-    if (!row) return false;
-    const roles: string[] = row.roles || ['worker', 'reviewer'];
-    const paused: string[] = row.paused_roles || [];
-    const required = worker ? ['worker'] : target.identity_action === 'configure_fleet' ? [role] : ['reviewer', 'named-reviewer'];
-    return required.some((r) => roles.includes(r)) && !paused.includes('*') && !required.some((r) => paused.includes(r));
-  }).map((a) => ({ agentId: String(a.agent_id || a.id), name: String(a.name || a.display_name || a.slug || 'Agent'), source: 'fleet' as const }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-}
-
-/** Copy only observation guards, never arbitrary card operations or stale destinations. */
-export function placementRecoveryInput(target: PlacementTarget, action: 'bridge' | 'identity', destination: string): PlacementRecoveryInput {
-  const g = target.guard;
-  const guard = {
-    expected_attempt: g.expected_attempt, phase: g.phase, agent_id: g.agent_id, role: g.role,
-    fingerprint: g.fingerprint, configuration: g.configuration, expected_assignment: g.expected_assignment,
-  };
-  if (action === 'bridge' && target.bridge_action === 'change_bridge') {
-    return { ...guard, action: 'change_bridge', scope: g.phase === 'work' ? 'ticket' : 'chain_fleet', bridge_id: destination };
-  }
-  if (action === 'identity' && target.identity_action !== 'configure_fleet') {
-    return { ...guard, action: target.identity_action, scope: 'ticket', replacement_agent_id: destination };
-  }
-  throw new Error('Use the native fleet or coordinator configuration for this target');
-}
-
 /** The short chip for a task card's attention badge. */
 export const TASK_BADGE_LABELS: Record<string, string> = {
   placement: 'Placement needs repair',
@@ -232,29 +193,6 @@ export function swipeDelta(dx: number, ms = Infinity): -1 | 0 | 1 {
   const far = Math.abs(dx) >= SWIPE_COMMIT_PX || (Math.abs(dx) >= FLICK_PX && ms <= FLICK_MS);
   if (!far) return 0;
   return dx < 0 ? 1 : -1;
-}
-
-/** Built-in reviewer template id (hub domain.TEMPLATE_REVIEWER_ID). */
-export const REVIEWER_TEMPLATE_ID = 'tmpl_reviewer';
-
-export type ReviewerCandidate = { agentId: string; name: string; source: 'fleet' | 'reviewer_template' };
-
-/**
- * Who a task's review can be handed to: the active agents in the task chain's
- * fleet; when the fleet has none, every active agent made from the reviewer
- * template. Ids are for the action only -- the menu renders names.
- */
-export function reviewerCandidates(fleet: ReadonlyArray<{ agent_id?: string; agentId?: string }>, agents: readonly any[]): ReviewerCandidate[] {
-  const active = agents.filter((a) => (a?.agent_id || a?.id) && (a?.state ?? 'active') !== 'archived');
-  const idOf = (a: any) => String(a.agent_id || a.id);
-  const nameOf = (a: any) => String(a.name || a.display_name || a.slug || 'Agent');
-  const inFleet = new Set(fleet.map((f) => String(f.agent_id || f.agentId || '')).filter(Boolean));
-  const fromFleet = active.filter((a) => inFleet.has(idOf(a)));
-  const picked = fromFleet.length > 0 ? fromFleet : active.filter((a) => a?.template_id === REVIEWER_TEMPLATE_ID);
-  const source = fromFleet.length > 0 ? 'fleet' : 'reviewer_template';
-  return picked
-    .map((a) => ({ agentId: idOf(a), name: nameOf(a), source }) as ReviewerCandidate)
-    .sort((x, y) => x.name.localeCompare(y.name));
 }
 
 /** "a fact", "a habit", "an episode", "an expertise", "a skill" (unknown -> "a memory"). */

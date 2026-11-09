@@ -8,10 +8,17 @@ import { signDeviceText } from '../utils/deviceIdentity.ts';
 // chain, the owner Bridge imports it, and the Hub cuts over on the owner's
 // signed receipt. The same signed request can be retried or handed to
 // `ham-ctl task-chain migrate --request-file`.
-export interface MigrationBlocker { code: string; count: number }
+// Preflight lists the live work a move would touch; the Hub no longer refuses a
+// busy chain but neutralizes that work on import and reports it in the result.
+export interface MigrationBlocker { code: string; count: number; items?: string[] }
 export interface MigrationPreflight { chain_id: string; state: string; migration_id: string; owner_bridge_id: string; work_revision: number; blockers: MigrationBlocker[] | null }
 export interface MigrationRequest { selection: string; genesis: string }
-export interface MigrationResult { state: string; migration_id: string; chain_id: string; manifest_digest: string; receipt_digest: string; replayed: boolean; activation_sent: boolean }
+export interface MigrationResult { state: string; migration_id: string; chain_id: string; manifest_digest: string; receipt_digest: string; replayed: boolean; activation_sent: boolean;
+  /** Live work the Hub settled to freeze the chain (live_leases_ended, tasks_force_held, …). */
+  neutralized?: MigrationBlocker[] | null;
+  /** Task ids the Hub force-held because they were in progress. */
+  forced_held?: string[] | null;
+}
 
 const BLOCKER_TEXT: Record<string, string> = {
   live_leases: 'agents still hold leases; wait for them to submit, hand off or expire',
@@ -21,13 +28,21 @@ const BLOCKER_TEXT: Record<string, string> = {
   tasks_in_review: 'tasks are awaiting review; record the verdicts first',
   pending_merges: 'approved work has not been merged back yet',
   merge_conflicts: 'merge conflicts need a human resolution',
+  // Work neutralized by the move (MigrationResult.neutralized).
+  live_leases_ended: 'live leases were ended',
+  tasks_force_held: 'in-progress tasks were held',
+  tasks_in_review_carried: 'tasks in review were carried over for review on the Bridge',
+  workflows_cancelled: 'running workflows were cancelled',
+  merges_closed: 'pending merges were closed',
+  effects_resolved: 'outstanding wakes, stops or merges were resolved',
+  workflow_gates_released: 'workflow gates were released',
 };
 
 export function describeMigrationBlockers(blockers: MigrationBlocker[] | null | undefined): string[] {
   return (blockers ?? []).map((b) => `${b.count} × ${BLOCKER_TEXT[b.code] ?? b.code}`);
 }
 
-// The Hub refuses a busy chain with error.details {code:'migration_blocked', blockers:[...]}.
+// An older Hub refused a busy chain with error.details {code:'migration_blocked', blockers:[...]}.
 export function migrationBlockersFromError(error: unknown): MigrationBlocker[] {
   const blockers = (error as { details?: { blockers?: unknown } } | null)?.details?.blockers;
   return Array.isArray(blockers) ? blockers as MigrationBlocker[] : [];

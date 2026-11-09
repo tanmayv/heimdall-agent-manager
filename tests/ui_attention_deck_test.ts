@@ -359,34 +359,6 @@ test('deck: locked vault shows the lock placeholder instead of ciphertext', asyn
   });
 });
 
-test('deck: delegate picker decrypts durable agent labels and masks them while locked', async () => {
-  const encryptedName = await encryptVaultText('Replacement worker', await keyringFromHex('00'.repeat(32)));
-  const item = taskItem('delegate', {
-    primary_op: 'agent.start', operations: [{ op: 'agent.start', label: 'Start agent' }], rationale: 'The worker is stopped',
-    details: { priority: 'p1', status: 'backlog', attention: 'blocked', badge: 'agent_not_running', block_id: 'b1', excerpt: null,
-      start_agent: { agent_id: 'agt_current', agent_name: 'Current worker', bridge_id: 'brg_device', bridge_name: 'Mundus', detail: 'Stopped', diagnostic: 'instance_not_drained', can_delegate: true } },
-  });
-  const routes = {
-    '/agents': [{ agent_id: 'agt_replacement', name: encryptedName, state: 'active' }],
-    '/fleets': [{ agent_id: 'agt_replacement', roles: ['worker'], paused_roles: [] }],
-    '/tasks/task_secret_delegate': { task_id: 'task_secret_delegate', brief: { assignee: 'agt_current', reviewers: [], review_roles: [] }, leases: [] },
-  };
-  await withDeck([item], async ({ q, act }) => {
-    const select = q('[data-debug-id^="attention-delegate-worker-"]') as HTMLSelectElement;
-    assert.ok(select, 'delegation picker is visible on the deck card');
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 40)); });
-    assert.equal([...select.options].find((option) => option.value === 'agt_replacement')?.textContent, 'Replacement worker');
-    assert.doesNotMatch(select.textContent || '', /vault:v2:/);
-  }, { unlocked: true, routes });
-
-  await withDeck([item], async ({ q, text }) => {
-    const select = q('[data-debug-id^="attention-delegate-worker-"]') as HTMLSelectElement;
-    assert.ok(select, 'delegation picker remains available with a locked vault');
-    assert.equal([...select.options].find((option) => option.value === 'agt_replacement')?.textContent, 'Encrypted agent (unlock vault to view name)');
-    assert.doesNotMatch(text(), /vault:v2:/, 'ciphertext never appears in deck content');
-  }, { routes });
-});
-
 test('deck: a legacy verify skip on a review card is not shown (verification removed)', async () => {
   const item = taskItem('skip');
   item.details.attention = 'review';
@@ -395,40 +367,6 @@ test('deck: a legacy verify skip on a review card is not shown (verification rem
     assert.doesNotMatch(text(), /verif/i);
     assert.equal(q('[data-debug-id="attention-card-verify-skipped"]'), null);
   });
-});
-
-test('task detail: a legacy verify facet renders as a collapsed, read-only record (D2)', async () => {
-  const { Provider } = await import('react-redux');
-  const { renderToStaticMarkup } = await import('react-dom/server');
-  const { TaskDetails } = await import('../src/ui/components/tasks/TaskDetails.tsx');
-  const { tasksApi } = await import('../src/ui/api/endpoints/tasks.ts');
-  const store = await makeVaultStore();
-  const args = { chainId: 'chain_skip', taskId: 'task_skip', attemptNo: 2 };
-  await store.dispatch(tasksApi.util.upsertQueryData('fetchTaskFacet', { ...args, kind: 'handoff' }, { facet: { summary: 'ready', skip_verify_reason: 'Suite could not run on this host.' } }));
-  await store.dispatch(tasksApi.util.upsertQueryData('fetchTaskFacet', { ...args, kind: 'verify' }, { facet: { exit_code: 0, command: 'npm run check', summary: 'old pass' } }));
-  await store.dispatch(tasksApi.util.upsertQueryData('fetchTaskEvents', { chainId: args.chainId, taskId: args.taskId }, {
-    events: [{ event_id: 1, kind: 'submitted', actor_kind: 'agent', actor_id: 'inst_w', ts_ms: 1, payload: { attempt_no: 2, skip_verify_reason: 'Suite could not run on this host.' } }],
-  }));
-  const html = renderToStaticMarkup(React.createElement(Provider, { store, children: React.createElement(TaskDetails, {
-    chainId: args.chainId,
-    task: { task_id: args.taskId, chain_id: args.chainId, title: 'work', state: 'in_review', attempt_no: 2, brief: { goal: 'g', acceptance: ['a'], verify: 'make test' } as any },
-    actions: { busy: false } as any,
-  }) }));
-  // Collapsed: a <details> without the open attribute, titled as legacy history.
-  assert.match(html, /<details data-debug-id="task-details-legacy-verify"(?![^>]*\bopen\b)[^>]*>/);
-  assert.match(html, /Legacy verification record/);
-  assert.match(html, /npm run check/);
-  assert.match(html, /Suite could not run on this host\./);
-  // Never an active surface: no pass/fail badge, no warning banner, no re-run.
-  assert.doesNotMatch(html, />Passed</);
-  assert.doesNotMatch(html, /Verify skipped/);
-  assert.doesNotMatch(html, /task-details-verify-skipped/);
-  assert.doesNotMatch(html, /Re-run/);
-  // A legacy brief.verify is not rendered as the task's command.
-  assert.doesNotMatch(html, /make test/);
-  // The legacy submit event is history inside the collapsed event details.
-  assert.match(html, /data-debug-id="task-timeline-legacy-verify"/);
-  store.dispatch(tasksApi.util.resetApiState());
 });
 
 test('deck: unlocked vault decrypts the card title and excerpt', async () => {
@@ -486,7 +424,7 @@ function typeInto(el: any, value: string) {
   el[key].onChange({ target: el, currentTarget: el });
 }
 
-test('deck: replying or commenting moves on to the next card', async () => {
+test('deck: replying or requesting changes moves on to the next card', async () => {
   await withDeck([messageItem('m'), messageItem('n', { details: { ...messageItem('n').details, excerpt: { author_name: 'soloist #8', body: 'Second question?', at: '2026-10-16T11:40:00Z' } } })], async ({ q, act, text }) => {
     assert.match(text(), /Which approach should I take\?/);
     await act(async () => { (q('[data-debug-id="attention-action-reply"]') as any).click(); });
@@ -500,14 +438,14 @@ test('deck: replying or commenting moves on to the next card', async () => {
   });
   await withDeck([taskItem('a'), taskItem('b')], async ({ q, act, text, hits }) => {
     assert.match(text(), /Review a/);
-    await act(async () => { (q('[data-debug-id="attention-action-comment"]') as any).click(); });
+    await act(async () => { (q('[data-debug-id="attention-action-request-changes"]') as any).click(); });
     const input = q('[data-debug-id="attention-comment-input"]') as any;
-    await act(async () => { typeInto(input, 'Looks fine'); });
+    await act(async () => { typeInto(input, 'Needs a test'); });
     await act(async () => { (q('[data-debug-id="attention-comment-submit"]') as any).click(); });
     await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
-    assert.ok(hits.some((h) => h.startsWith("POST ") && h.includes("task_secret_a") && h.includes("comment")), 'comment posted');
-    assert.match(text(), /Review b/, 'the next card is shown after the comment');
-    assert.match(text(), /2 \/ 2/, 'the commented card stays in the deck');
+    assert.ok(hits.includes('POST /api/v1/cards/crd_task_a/reject'), 'changes requested through the card');
+    assert.ok(!hits.some((h) => h.includes('/task-chains/')), 'no Hub task route is called');
+    assert.match(text(), /Review b/, 'the next card is shown after the request');
   });
 });
 
@@ -566,56 +504,6 @@ test('ws: a burst of attention_changed hints becomes one invalidation', async ()
   assert.equal(invalidations().length, 2, 'a later hint gets its own invalidation');
 });
 
-test('model: reviewer candidates come from the chain fleet, else the reviewer template', () => {
-  const agents = [
-    { agent_id: 'agt_w', name: 'worker', template_id: 'tmpl_worker', state: 'active' },
-    { agent_id: 'agt_r', name: 'codex-reviewer', template_id: 'tmpl_reviewer', state: 'active' },
-    { agent_id: 'agt_r2', name: 'arch-reviewer', template_id: 'tmpl_reviewer', state: 'archived' },
-    { agent_id: 'agt_s', name: 'soloist', template_id: 'tmpl_soloist', state: 'active' },
-  ];
-  assert.deepEqual(model.reviewerCandidates([{ agent_id: 'agt_s' }, { agent_id: 'agt_w' }, { agent_id: 'agt_gone' }], agents),
-    [{ agentId: 'agt_s', name: 'soloist', source: 'fleet' }, { agentId: 'agt_w', name: 'worker', source: 'fleet' }]);
-  assert.deepEqual(model.reviewerCandidates([], agents), [{ agentId: 'agt_r', name: 'codex-reviewer', source: 'reviewer_template' }], 'empty fleet -> active reviewer-template agents');
-  assert.deepEqual(model.reviewerCandidates([{ agent_id: 'agt_r2' }], agents), [{ agentId: 'agt_r', name: 'codex-reviewer', source: 'reviewer_template' }], 'archived fleet agents do not count');
-  assert.deepEqual(model.reviewerCandidates([], [{ agent_id: 'agt_w', name: 'worker', template_id: 'tmpl_worker' }]), []);
-});
-
-test('deck: reviewer menu loads the fleet on demand with a loader, then hands the review over', async () => {
-  const routes = {
-    '/task-chains/chain_secret_id/fleets': [{ agent_id: 'agt_rev' }],
-    '/agents': [
-      { agent_id: 'agt_rev', name: 'codex-reviewer', template_id: 'tmpl_reviewer', state: 'active' },
-      { agent_id: 'agt_other', name: 'worker', template_id: 'tmpl_worker', state: 'active' },
-    ],
-  };
-  await withDeck([taskItem('a')], async ({ q, act, text, hits, holdRoutes, releaseRoutes, scheduler }) => {
-    assert.equal(hits.filter((h) => h.includes('/fleets') || h.includes('/agents')).length, 0, 'nothing fetched until the menu opens');
-    holdRoutes();
-    await act(async () => { (q('[data-debug-id="attention-action-reviewer"]') as any).click(); });
-    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
-    assert.ok(q('[data-debug-id="attention-reviewer-loading"]'), 'loader while the fleet loads');
-    assert.ok(hits.some((h) => h === 'GET /api/v1/task-chains/chain_secret_id/fleets'));
-    assert.ok(hits.some((h) => h.startsWith('GET /api/v1/agents?limit=200')));
-    releaseRoutes();
-    await act(async () => { await new Promise((r) => setTimeout(r, 40)); });
-    assert.equal(q('[data-debug-id="attention-reviewer-loading"]'), null);
-    const options = Array.from(document.querySelectorAll('[data-debug-id="attention-reviewer-option"]')) as any[];
-    assert.deepEqual(options.map((o) => o.textContent), ['codex-reviewer'], 'fleet agents only');
-    assert.match(text(), /this chain's fleet/);
-    assert.doesNotMatch(text(), /agt_/, 'no ids rendered');
-    await act(async () => { options[0].click(); });
-    const pending = scheduler.getSnapshot().pending;
-    assert.equal(pending.length, 1);
-    assert.equal(pending[0].label, 'Handed to codex-reviewer');
-    await act(async () => { await scheduler.flushAll(true); });
-    const patch = hits.indexOf('PATCH /api/v1/task-chains/chain_secret_id/tasks/task_secret_a');
-    assert.ok(patch >= 0, 'reviewer set on the task');
-    // Task System v2 re-gates the task on the reviewer edit itself (stale review
-    // leases replaced, the new reviewer matched), so there is no separate reconcile.
-    assert.equal(hits.indexOf('POST /api/v1/task-chains/chain_secret_id/reconcile'), -1, 'no reconcile call');
-  }, { routes });
-});
-
 test('model: snoozed tab, hide keys, next live tab, wake time', () => {
   const live = taskItem('a');
   const snz = taskItem('z', { snoozed: true, snooze_until: '2026-10-17T09:00:00Z', status: 'snoozed' });
@@ -658,9 +546,9 @@ test('deck: Snoozed tab keeps the original actions; approving a snoozed card wor
     assert.match(text(), /Review z/);
     assert.match(text(), /Snoozed until tomorrow/);
     assert.equal(q('[data-debug-id="attention-action-wake"]'), null, 'no separate wake step');
-    assert.match(text(), /Cancel ticket/, 'says what it does: cancels the ticket');
-    assert.doesNotMatch(text(), /Discard/);
-    for (const a of ['approve', 'comment', 'reviewer', 'snooze', 'cancel-task', 'open']) assert.ok(q(`[data-debug-id="attention-action-${a}"]`), `${a} offered`);
+    assert.doesNotMatch(text(), /Cancel ticket|Discard/);
+    for (const a of ['approve', 'request-changes', 'snooze', 'open']) assert.ok(q(`[data-debug-id="attention-action-${a}"]`), `${a} offered`);
+    for (const a of ['comment', 'reviewer', 'cancel-task']) assert.equal(q(`[data-debug-id="attention-action-${a}"]`), null, `Hub-task action ${a} is gone`);
     await act(async () => { dom.window.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'a', bubbles: true })); });
     const pending = scheduler.getSnapshot().pending;
     assert.equal(pending.length, 1);

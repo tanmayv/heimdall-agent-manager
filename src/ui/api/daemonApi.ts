@@ -34,11 +34,6 @@ export type ProjectAnchor = {
   note: string;
 };
 
-type TaskAgentRequest = {
-  daemonUrl: string;
-  agentToken: string;
-};
-
 async function requestJson(url: string, { method = 'GET', body, headers, timeoutMs = DEFAULT_TIMEOUT_MS }: RequestOptions = {}): Promise<any> {
 
   guardDesktopUpdateRequest(method);
@@ -337,79 +332,6 @@ export async function markChatRead({ daemonUrl, clientInstanceId, clientToken, a
   });
 }
 
-export async function listTaskChains({ daemonUrl, clientToken, createdAfter, createdBefore, limit = 20, offset = 0, status }: Omit<UserRpcRequest, 'clientInstanceId'> & { createdAfter?: number; createdBefore?: number; limit?: number; offset?: number; status?: string }) {
-  let path = `/task-chains?limit=${limit}&offset=${offset}`;
-  if (createdAfter && createdAfter > 0) path += `&created_after=${createdAfter}`;
-  if (createdBefore && createdBefore > 0) path += `&created_before=${createdBefore}`;
-  if (status) path += `&status=${encodeURIComponent(status)}`;
-  return requestJson(joinUrl(daemonUrl, path), {
-    method: 'GET',
-    headers: { 'Authorization': `Bearer ${clientToken}` }
-  });
-}
-
-export async function fetchTaskChain({ daemonUrl, clientToken, chainId }: Omit<UserRpcRequest, 'clientInstanceId'> & { chainId: string }) {
-  const path = `/task-chains/${encodeURIComponent(chainId)}`;
-  return requestJson(joinUrl(daemonUrl, path), {
-    method: 'GET',
-    headers: { 'Authorization': `Bearer ${clientToken}` }
-  });
-}
-
-export async function focusTaskChain({ daemonUrl, clientToken, chainId }: Omit<UserRpcRequest, 'clientInstanceId'> & { chainId: string }) {
-  return requestJson(joinUrl(daemonUrl, `/task-chains/${encodeURIComponent(chainId)}/focus`), {
-    method: 'POST',
-    body: { agent_token: clientToken },
-  });
-}
-
-export async function fetchWorkspace({ daemonUrl, clientToken, chainId }: Omit<UserRpcRequest, 'clientInstanceId'> & { chainId: string }) {
-  return requestJson(joinUrl(daemonUrl, `/chains/${encodeURIComponent(chainId)}/workspace?agent_token=${encodeURIComponent(clientToken)}`));
-}
-
-export async function previewWorkspaceMerge({ daemonUrl, clientToken, chainId }: Omit<UserRpcRequest, 'clientInstanceId'> & { chainId: string }) {
-  return requestJson(joinUrl(daemonUrl, `/chains/${encodeURIComponent(chainId)}/workspace/merge-preview?agent_token=${encodeURIComponent(clientToken)}`));
-}
-
-export async function fetchWorkspaceDiff({ daemonUrl, clientToken, chainId, file = '' }: Omit<UserRpcRequest, 'clientInstanceId'> & { chainId: string; file?: string }) {
-  let path = `/chains/${encodeURIComponent(chainId)}/workspace/diff?agent_token=${encodeURIComponent(clientToken)}`;
-  if (file) path += `&file=${encodeURIComponent(file)}`;
-  return requestJson(joinUrl(daemonUrl, path));
-}
-
-export async function listChainTasks({ daemonUrl, clientToken, chainId, limit = 20, offset = 0 }: Omit<UserRpcRequest, 'clientInstanceId'> & { chainId: string; limit?: number; offset?: number }) {
-  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-  const path = `/task-chains/${encodeURIComponent(chainId)}/tasks?${params.toString()}`;
-  return requestJson(joinUrl(daemonUrl, path), {
-    method: 'GET',
-    headers: { 'Authorization': `Bearer ${clientToken}` }
-  });
-}
-
-export async function fetchTask({ daemonUrl, clientToken, taskId }: Omit<UserRpcRequest, 'clientInstanceId'> & { taskId: string }) {
-  const path = `/tasks/${encodeURIComponent(taskId)}`;
-  return requestJson(joinUrl(daemonUrl, path), {
-    method: 'GET',
-    headers: { 'Authorization': `Bearer ${clientToken}` }
-  });
-}
-
-export async function fetchTaskComments({ daemonUrl, clientToken, taskId, unresolved = false, limit = 20, offset = 0 }: Omit<UserRpcRequest, 'clientInstanceId'> & { taskId: string; unresolved?: boolean; limit?: number; offset?: number }) {
-  const params = new URLSearchParams({ unresolved: String(unresolved), limit: String(limit), offset: String(offset) });
-  const path = `/tasks/${encodeURIComponent(taskId)}/comments?${params.toString()}`;
-  return requestJson(joinUrl(daemonUrl, path), {
-    method: 'GET',
-    headers: { 'Authorization': `Bearer ${clientToken}` }
-  });
-}
-
-export async function fetchTaskComment({ daemonUrl, clientToken, taskId, commentId }: Omit<UserRpcRequest, 'clientInstanceId'> & { taskId: string; commentId: string }) {
-  const path = `/tasks/${encodeURIComponent(taskId)}/comments/${encodeURIComponent(commentId)}`;
-  return requestJson(joinUrl(daemonUrl, path), {
-    method: 'GET',
-    headers: { 'Authorization': `Bearer ${clientToken}` }
-  });
-}
 
 function extensionFromNameOrMime(name = '', mime = ''): string {
   const cleanName = String(name || '').toLowerCase();
@@ -692,73 +614,6 @@ export async function deleteArtifact({ daemonUrl, clientToken, artifactId }: { d
   });
 }
 
-export async function fetchTaskLog({ daemonUrl, clientInstanceId, clientToken, taskId, limit = 50, cursor = 0 }: UserRpcRequest & { taskId: string; limit?: number; cursor?: number }) {
-  return requestJson(joinUrl(daemonUrl, '/user-rpc'), {
-    method: 'POST',
-    body: {
-      action: 'task_log',
-      client_instance_id: clientInstanceId,
-      client_token: clientToken,
-      task_id: taskId,
-      limit,
-      cursor,
-    },
-  });
-}
-
-function taskMutationRequest({ daemonUrl, agentToken, clientInstanceId, clientToken, action, agentPath, body }: any) {
-  if (agentToken) {
-    return requestJson(joinUrl(daemonUrl, agentPath), { method: 'POST', body: { agent_token: agentToken, ...body } });
-  }
-  return requestJson(joinUrl(daemonUrl, '/user-rpc'), { method: 'POST', body: { action, client_instance_id: clientInstanceId, client_token: clientToken, ...body } });
-}
-
-export async function createTaskChain({ daemonUrl, agentToken, clientInstanceId, clientToken, ...chain }: Partial<TaskAgentRequest & UserRpcRequest> & Record<string, any>) {
-  return taskMutationRequest({ daemonUrl, agentToken, clientInstanceId, clientToken, action: 'task_chain_create', agentPath: '/task-chains/create', body: chain });
-}
-
-export async function updateTask({ daemonUrl, agentToken, clientInstanceId, clientToken, taskId, chainId, title, description, acceptanceCriteria, dependsOn }: Partial<TaskAgentRequest & UserRpcRequest> & { taskId: string; chainId?: string; title?: string; description?: string; acceptanceCriteria?: string; dependsOn?: string }) {
-  const body: any = { task_id: taskId, chain_id: chainId || '' };
-  if (title !== undefined) body.title = title;
-  if (description !== undefined) body.description = description;
-  if (acceptanceCriteria !== undefined) body.acceptance_criteria = acceptanceCriteria;
-  if (dependsOn !== undefined) body.depends_on = dependsOn;
-  return taskMutationRequest({ daemonUrl, agentToken, clientInstanceId, clientToken, action: 'task_update', agentPath: '/tasks/update', body });
-}
-
-export async function deleteTask({ daemonUrl, agentToken, clientInstanceId, clientToken, taskId, chainId }: Partial<TaskAgentRequest & UserRpcRequest> & { taskId: string; chainId?: string }) {
-  return taskMutationRequest({ daemonUrl, agentToken, clientInstanceId, clientToken, action: 'task_delete', agentPath: '/tasks/delete', body: { task_id: taskId, chain_id: chainId || '' } });
-}
-
-export async function assignTask({ daemonUrl, agentToken, clientInstanceId, clientToken, taskId, chainId, agentInstanceId }: Partial<TaskAgentRequest & UserRpcRequest> & { taskId: string; chainId?: string; agentInstanceId: string }) {
-  return taskMutationRequest({ daemonUrl, agentToken, clientInstanceId, clientToken, action: 'task_assign', agentPath: '/tasks/assign', body: { task_id: taskId, chain_id: chainId || '', agent_instance_id: agentInstanceId } });
-}
-
-export async function addTaskParticipant({ daemonUrl, agentToken, clientInstanceId, clientToken, taskId, chainId, agentInstanceId, role }: Partial<TaskAgentRequest & UserRpcRequest> & { taskId: string; chainId?: string; agentInstanceId: string; role: string }) {
-  return taskMutationRequest({ daemonUrl, agentToken, clientInstanceId, clientToken, action: 'task_participant', agentPath: '/tasks/participant', body: { task_id: taskId, chain_id: chainId || '', agent_instance_id: agentInstanceId, role } });
-}
-
-export async function removeTaskParticipant({ daemonUrl, agentToken, clientInstanceId, clientToken, taskId, chainId, agentInstanceId, role }: Partial<TaskAgentRequest & UserRpcRequest> & { taskId: string; chainId?: string; agentInstanceId: string; role: string }) {
-  return taskMutationRequest({ daemonUrl, agentToken, clientInstanceId, clientToken, action: 'task_participant_remove', agentPath: '/tasks/participant/remove', body: { task_id: taskId, chain_id: chainId || '', agent_instance_id: agentInstanceId, role } });
-}
-
-export async function resolveTaskComment({ daemonUrl, agentToken, clientInstanceId, clientToken, taskId, chainId, commentId }: Partial<TaskAgentRequest & UserRpcRequest> & { taskId: string; chainId?: string; commentId: string }) {
-  return taskMutationRequest({ daemonUrl, agentToken, clientInstanceId, clientToken, action: 'task_comment_resolve', agentPath: '/tasks/comment-resolve', body: { task_id: taskId, chain_id: chainId || '', comment_id: commentId } });
-}
-
-export async function updateTaskChain({ daemonUrl, agentToken, clientInstanceId, clientToken, chainId, title, description, coordinatorAgentInstanceId, defaultReviewerAgentInstanceId, finalSummary }: Partial<TaskAgentRequest & UserRpcRequest> & { chainId: string; title?: string; description?: string; coordinatorAgentInstanceId?: string; defaultReviewerAgentInstanceId?: string; finalSummary?: string }) {
-  const body: any = { chain_id: chainId };
-  if (title !== undefined) body.title = title;
-  if (description !== undefined) body.description = description;
-  if (coordinatorAgentInstanceId !== undefined) body.coordinator_agent_instance_id = coordinatorAgentInstanceId;
-  if (defaultReviewerAgentInstanceId !== undefined) body.default_reviewer_agent_instance_id = defaultReviewerAgentInstanceId;
-  if (finalSummary !== undefined) body.final_summary = finalSummary;
-  return taskMutationRequest({ daemonUrl, agentToken, clientInstanceId, clientToken, action: 'task_chain_update', agentPath: '/task-chains/update', body });
-}
-
-export async function updateTaskChainStatus({ daemonUrl, agentToken, clientInstanceId, clientToken, chainId, status, finalSummary }: Partial<TaskAgentRequest & UserRpcRequest> & { chainId: string; status: string; finalSummary?: string }) {
-  return taskMutationRequest({ daemonUrl, agentToken, clientInstanceId, clientToken, action: 'task_chain_status', agentPath: '/task-chains/status', body: { chain_id: chainId, status, final_summary: finalSummary || '' } });
-}
 
 function userRpcRequest({ daemonUrl, clientInstanceId, clientToken, action, body = {} }: UserRpcRequest & { action: string; body?: Record<string, any> }) {
   return requestJson(joinUrl(daemonUrl, '/user-rpc'), {

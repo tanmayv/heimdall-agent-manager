@@ -13,7 +13,7 @@ import {
 } from '../../auth/oidcSession';
 import UpgradePrompt from '../billing/UpgradePrompt';
 import { PLAN_LIMIT_EVENT, type PlanLimitDetails } from '../../utils/planLimit';
-import { Fragment, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { Fragment, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import ConversationsHomePage from '../chat/ConversationsHomePage';
 import ConversationSelectorModal from '../chat/ConversationSelectorModal';
@@ -38,8 +38,9 @@ import { cookieJsonFetch, cookieMutation } from '../../api/cookieFetch';
 import { useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
 import { useListSidebarConversationsQuery, type SidebarConversation } from '../../api/endpoints/sidebar';
 import { useGetAgentsLiveQuery, type LiveProject } from '../../api/endpoints/agentsLive';
-import { fetchSidebarTaskChainGroups, type ChainListItem, type ChainProjectGroup } from '../../api/endpoints/tasks';
-import { subscribeTaskChainCreation, taskChainCreationRevision } from '../../api/taskChainCreationEvents';
+import type { ChainProjectGroup } from '../../api/chainListTypes';
+import { ownerChainListItem } from '../../api/ownerChains';
+import { useOwnerChains } from '../../api/ownerChainsStore';
 import { useListBridgesQuery, type Bridge } from '../../api/endpoints/bridgeSupport';
 import { useListShellsQuery } from '../../api/endpoints/shells';
 import { StatusBar } from './statusBar/StatusBar';
@@ -1362,16 +1363,7 @@ function RouteOutlet({
 
 function AuthenticatedShell({ user }: { user: AuthUser }) {
   const [sidebarScrollRoot, setSidebarScrollRoot] = useState<HTMLDivElement | null>(null);
-  const [sidebarChains, setSidebarChains] = useState<ChainListItem[]>([]);
-  const [palettePreviewGroups, setPalettePreviewGroups] = useState<ChainProjectGroup[]>([]);
-  const creationRevision = useSyncExternalStore(subscribeTaskChainCreation, taskChainCreationRevision);
-  useEffect(() => {
-    const controller = new AbortController();
-    void fetchSidebarTaskChainGroups(controller.signal)
-      .then(groups => { if (!controller.signal.aborted) setPalettePreviewGroups(groups); })
-      .catch(() => { /* Sidebar paging/retry remains available if previews fail. */ });
-    return () => controller.abort();
-  }, [creationRevision]);
+  const ownerChains = useOwnerChains();
   // REQ-UI-SIDEBAR-PERSISTENCE: Left sidebar collapsed state persisted in localStorage ('heimdall:shell:sidebar-collapsed')
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     try {
@@ -1581,19 +1573,12 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
     () => countShells(liveShellsQuery.data?.sessions, liveShellsQuery.data?.has_more),
     [liveShellsQuery.data],
   );
-  // Keep the former per-project palette reach, and add every loaded sidebar
-  // page. Preview fetches run only initially/after creation, never on generic
-  // task invalidation. Loaded rows override matching preview rows.
+  // The palette's chains: the Bridge-owned chains of the owner registry,
+  // grouped by project (registry rows carry none yet, so one group).
   const chainGroups = useMemo(() => {
-    const chains = new Map<string, ChainListItem>();
-    for (const group of palettePreviewGroups) {
-      for (const chain of group.chains) chains.set(chain.chainId, {
-        ...chain, projectId: chain.projectId || group.projectId, projectName: chain.projectName || group.projectName,
-      });
-    }
-    for (const chain of sidebarChains) chains.set(chain.chainId, chain);
     const groups = new Map<string, ChainProjectGroup>();
-    for (const chain of chains.values()) {
+    for (const owner of ownerChains.chains) {
+      const chain = ownerChainListItem(owner);
       let group = groups.get(chain.projectId);
       if (!group) {
         group = { projectId: chain.projectId, projectName: chain.projectName || '', chains: [], chainTotal: 0, hasMore: false, nextCursor: '' };
@@ -1603,7 +1588,7 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
       group.chainTotal++;
     }
     return [...groups.values()];
-  }, [sidebarChains, palettePreviewGroups]);
+  }, [ownerChains.chains]);
   const searchChains = useSelector(selectSearchChains);
 
   // Background pre-warm decryption of task chains when groups load or vault unlocks (REQ-SEARCH-DECRYPT-RUNTIME-1)
@@ -2086,7 +2071,6 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
             ))}
           </nav>
           <SidebarTaskChains
-            onChainsChange={setSidebarChains}
             scrollRoot={sidebarScrollRoot}
             active={!isEffectiveCollapsed}
             currentPath={path}

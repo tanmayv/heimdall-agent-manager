@@ -16,7 +16,6 @@
 // surface: Allow / Deny call POST /agent-instances/{id}/blockers/{id}/resolve.
 import { cookieJsonFetch, customQueryError } from '../cookieFetch';
 import { heimdallApi } from '../heimdallApi';
-import { recoverCardPlacement } from '../../services/attention/attentionActions';
 
 export type AttentionRange = '6h' | '24h' | '7d' | 'all';
 export type AttentionKind = 'message' | 'task' | 'memory' | 'agent_blocker';
@@ -174,21 +173,6 @@ function attentionQuery(path: string, range: AttentionRange, kind?: AttentionKin
 
 export const attentionApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
-    recoverPlacement: build.mutation<any, { cardId: string; chainId: string; taskId: string; input: PlacementRecoveryInput }>({
-      queryFn: async ({ cardId, input }) => {
-        try { return { data: await recoverCardPlacement(cardId, input) }; }
-        catch (error) { return { error: customQueryError(error) as any }; }
-      },
-      // Conflicts also reconcile the source card. Never optimistically hide a
-      // task: its independent review/question/Start cards must survive.
-      invalidatesTags: (_result, _error, { chainId, taskId }) => [
-        { type: 'Attention' as const, id: 'ALL' },
-        { type: 'Task' as const, id: taskId },
-        { type: 'TaskChainFleets' as const, id: chainId },
-        { type: 'ChainTasks' as const, id: chainId },
-        { type: 'Chain' as const, id: chainId },
-      ],
-    }),
     getAttentionSummary: build.query<AttentionSummary, { since: AttentionRange }>({
       queryFn: async ({ since }) => {
         try {
@@ -223,4 +207,4 @@ export const attentionApi = heimdallApi.injectEndpoints({
   }),
 });
 
-export const { useGetAttentionSummaryQuery, useGetAttentionQuery, useRecoverPlacementMutation } = attentionApi;
+export const { useGetAttentionSummaryQuery, useGetAttentionQuery } = attentionApi;

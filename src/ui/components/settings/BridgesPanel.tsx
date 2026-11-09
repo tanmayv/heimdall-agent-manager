@@ -34,6 +34,7 @@ import {
 } from './bridgeUpdate';
 import BridgeRecentErrorsCard from './BridgeRecentErrorsCard';
 import PendingEnrollmentsCard from './PendingEnrollmentsCard';
+import LegacyImportAllCard from './LegacyImportAllCard';
 
 // UI-11 / REQ-ENR-8..11: Settings → Bridges, the one place bridges are set up
 // and managed (F29). Desktop app: a "This machine" card (setup wizard, or
@@ -423,6 +424,7 @@ export default function BridgesPanel({ onHeadingChange }: { onHeadingChange?: (h
                       </div>
                       <Text role="body-sm" tone="muted">Bridge-wide defaults cannot be saved yet. Configure provider profiles and their runtime settings from Providers.</Text>
                     </section>
+                    <LegacyImportAllCard bridgeId={id} />
                     <BridgeRecentErrorsCard bridgeId={id} />
                   </div>
                 </div>

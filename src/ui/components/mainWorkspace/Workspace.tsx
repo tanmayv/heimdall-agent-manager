@@ -78,7 +78,6 @@ import { useAgentAuxContext } from '../auxiliary/useAgentAuxContext';
 import { AgentChatPane } from '../workbench/AgentChatPane';
 import { ShellMainPane } from './ShellMainPane';
 import { ChainCoordinatorPane } from './ChainCoordinatorPane';
-import { useFetchTaskChainConversationQuery } from '../../api/endpoints/tasks';
 import { chainIdFromTargetId, chainTargetId } from '../../utils/paneTarget';
 import { getContentPaneIds } from '../../tiling';
 import { MainPaneFrame } from './MainPaneFrame';
@@ -195,16 +194,9 @@ export function Workspace({ focusMessageId, isMobile = false, leading, leadingWi
   } | null>(null);
 
   // Aux context = the focused Main pane's target (single or split view). A chain
-  // target supplies its chain directly and shows its CURRENT coordinator.
+  // target supplies its chain directly (its coordinator is no longer resolved).
   const auxChainId = auxTreeId?.kind === 'chain' ? auxTreeId.chainId : '';
-  const auxChainConversation = useFetchTaskChainConversationQuery(
-    { chainId: auxChainId },
-    { skip: !auxChainId },
-  );
-  const ctxAgentId =
-    auxTreeId?.kind === 'agent'
-      ? auxTreeId.agentInstanceId
-      : auxChainConversation.data?.coordinatorAgentInstanceId || '';
+  const ctxAgentId = auxTreeId?.kind === 'agent' ? auxTreeId.agentInstanceId : '';
   const ctx = useAgentAuxContext(ctxAgentId, auxChainId);
   const hasChain = ctx.isResolved ? Boolean(ctx.chainId) : true;
   // One dock state for every agent conversation: switching conversations (or

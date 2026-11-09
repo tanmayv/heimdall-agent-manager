@@ -91,7 +91,7 @@ test('token events patch instance caches and coalesce the chain usage refetch', 
   try {
     const store = await makeVaultStore();
     const { agentsApi } = await import('../src/ui/api/endpoints/agents.ts');
-    const { taskChainsApi } = await import('../src/ui/api/endpoints/taskChains.ts');
+    const { chainTokenUsageApi: taskChainsApi } = await import('../src/ui/api/endpoints/chainTokenUsage.ts');
     const { handleUserWsEvent, flushQueuedInvalidations, resetQueuedInvalidations } = await import('../src/ui/api/wsInvalidation.ts');
     resetQueuedInvalidations();
     const subs = [

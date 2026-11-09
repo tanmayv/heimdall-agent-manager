@@ -49,8 +49,6 @@ import {
   type AgentRecord,
 } from '../../api/endpoints/agents';
 import { useListProjectsQuery } from '../../api/endpoints/projects';
-import { useFetchTaskChainDetailQuery } from '../../api/endpoints/tasks';
-import { VaultText } from '../vault/VaultText';
 import PaginatedMemoriesSection from '../shared/PaginatedMemoriesSection';
 import { buildRouteHash } from '../../utils/appLocation';
 import { agentFailureSummary } from '../../utils/agentStatus';
@@ -549,9 +547,6 @@ export function LiveInstanceDetailPane({
   const projectName = project?.name || projectId;
   const displayProjectPath = projectPath || project?.default_path || project?.defaultPath || '';
 
-  const chainQuery = useFetchTaskChainDetailQuery({ chainId }, { skip: !chainId });
-  const chain = chainQuery.data?.chain;
-  const chainTitle = chain?.title || chain?.name || chainId;
 
   const agentIdentityQuery = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId });
   const agentRecord = agentIdentityQuery.data?.agent ? normalizeAgent(agentIdentityQuery.data.agent) : null;
@@ -645,10 +640,7 @@ export function LiveInstanceDetailPane({
               data-debug-id="live-instance-chain-link"
               className="group block min-w-0"
             >
-              <Text as="div" role="body" className="font-medium text-primary hover:underline truncate">
-                <VaultText value={chainTitle} fallback={chainId} />
-              </Text>
-              <Text as="div" role="caption" tone="muted" className="truncate font-mono">
+              <Text as="div" role="body" className="truncate font-mono text-primary hover:underline">
                 {chainId}
               </Text>
             </a>

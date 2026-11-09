@@ -376,11 +376,6 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
             encBody = await encryptVaultText(encBody, activeKey);
           }
           if (quoteTarget) {
-            const target = await cookieJsonFetch('/task-chains/' + encodeURIComponent(quoteTarget.chainId) + '/conversation');
-            if (String(target?.conversation_id || target?.conversationId || '') !== conversationId ||
-                String(target?.coordinator_agent_instance_id || target?.coordinatorAgentInstanceId || '') !== quoteTarget.coordinatorAgentInstanceId) {
-              throw new Error('The coordinator changed. Refresh its composer and retry.');
-            }
             const latest: any = api.getState();
             if (!latest.vault?.isUnlocked || getActiveVaultKey() !== activeKey || latest.composerContext?.epoch !== quoteTarget.epoch) throw new Error('Vault state changed. Add the quote again.');
           }

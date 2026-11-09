@@ -3,7 +3,7 @@
 // the hub query. State logic lives in chainTokenUsageModel.ts.
 import React from 'react';
 import { ProgressBar, StatusPill, Text } from '@ui';
-import { useGetTaskChainTokenUsageQuery } from '../../api/endpoints/taskChains';
+import { useGetTaskChainTokenUsageQuery } from '../../api/endpoints/chainTokenUsage';
 import { retainChainTokenUsageView } from '../../api/chainTokenUsageRefresh';
 import { CONTEXT_ESTIMATE_TEXT, CONTEXT_WAITING_TEXT, contextUnavailableText, formatTokens } from '../extension/tokenUsageModel';
 import {

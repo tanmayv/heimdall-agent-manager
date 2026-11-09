@@ -4,8 +4,8 @@
 // only: chain/task titles arrive sealed and are decrypted here with the vault
 // keyring; everything else is read from the owner Bridge through signed,
 // encrypted owner operations (ownerLocalClient). Nothing in this module trusts
-// a Hub copy of an owner chain: a migrated chain's frozen Hub copy only lends
-// its project placement to the owner row and is otherwise dropped.
+// a Hub copy of an owner chain; the Hub task-chain listing is gone, so the
+// registry is the only chain list.
 
 import { cookieJsonFetch, cookieMutation } from './cookieFetch';
 import { listOwnerRegistryPages, type OwnerRegistryPage } from './ownerRegistryListing';
@@ -14,8 +14,7 @@ import type { OwnerCommand } from './ownerLocal';
 import { decryptVaultText } from '../utils/vaultContent';
 import { pinsFromChain, verifyDirectory, type VerifiedChain } from '../utils/vaultDirectoryVerify';
 import { getKeyringSession } from '../utils/vaultKeyringSession';
-import type { ChainListItem } from './endpoints/tasks';
-import { isOwnerHeldChain, type ChainAuthority } from './chainAuthority';
+import type { ChainListItem } from './chainListTypes';
 
 export interface OwnerChainTaskTitle { taskId: string; title: string }
 export interface OwnerChainSummary {
@@ -28,10 +27,10 @@ export interface OwnerChainSummary {
   /** Titles could not be opened with the current keyring. */
   sealed: boolean;
   tasks: OwnerChainTaskTitle[];
-  /** Carried from a migrated chain's frozen Hub copy; empty for native chains. */
+  /** Project placement; the registry carries none yet, so empty. */
   projectId: string;
   projectName: string;
-  /** A frozen Hub copy of this chain exists (it was moved to its Bridge). */
+  /** Imported from a legacy Hub chain (not known from the registry; false). */
   migrated: boolean;
   /** Created here; the owner has not published its registry entry yet. */
   pending?: boolean;
@@ -110,33 +109,6 @@ export async function loadOwnerChainSummaries(
     });
   }
   return out.sort((a, b) => (a.title || a.chainId).localeCompare(b.title || b.chainId) || a.chainId.localeCompare(b.chainId));
-}
-
-/**
- * Owner chains own their identity: a Hub row with the same id is the frozen
- * copy left by migration. Drop it, keep its project placement on the owner row.
- *
- * A Hub row the Hub marks owner-held (R4a `authority:{kind:"owner"}`) is dropped
- * even when no live registry row matches it, e.g. once the owner registry
- * tombstones a moved chain (deleted on its Bridge): the frozen copy must never
- * resurface as an ordinary Hub chain.
- */
-export function mergeOwnerChains<T extends { chainId: string; projectId?: string; projectName?: string; authority?: ChainAuthority }>(
-  hubChains: T[], owners: OwnerChainSummary[],
-): { hub: T[]; owners: OwnerChainSummary[] } {
-  const ids = new Set(owners.map((o) => o.chainId));
-  const copies = new Map<string, T>();
-  const hub = hubChains.filter((c) => {
-    if (ids.has(c.chainId)) { copies.set(c.chainId, c); return false; }
-    return !isOwnerHeldChain(c);
-  });
-  return {
-    hub,
-    owners: owners.map((o) => {
-      const copy = copies.get(o.chainId);
-      return copy ? { ...o, migrated: true, projectId: o.projectId || copy.projectId || '', projectName: o.projectName || copy.projectName || '' } : o;
-    }),
-  };
 }
 
 /** An owner chain as an ordinary chain-list row (status is not in the registry). */
@@ -460,8 +432,7 @@ export function ownerBridgeChoices(chain: VerifiedChain | undefined, bridgeRows:
   return out.sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
 }
 
-/** Default placement: the first online enrolled Bridge, else the Hub. */
+/** Default placement: the first online enrolled Bridge, else the first enrolled one ('' when none). */
 export function defaultChainPlacement(choices: OwnerBridgeChoice[]): string {
-  return choices.find((c) => c.online)?.bridgeId ?? HUB_PLACEMENT;
+  return choices.find((c) => c.online)?.bridgeId ?? choices[0]?.bridgeId ?? '';
 }
-export const HUB_PLACEMENT = 'hub';

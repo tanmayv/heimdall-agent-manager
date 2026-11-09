@@ -1,4 +1,4 @@
-// Task chain overview token usage (T10): normalization of
+// Task chain token usage (T10): normalization of
 // GET /task-chains/{id}/token-usage, the per-agent rows (lifetime total, current
 // context %), per-instance rows, the chain total, the empty state, and that
 // token_usage_changed on a chain instance refreshes the chain's usage.
@@ -93,18 +93,13 @@ test('renders per-agent rows (lifetime + context %), instance rows and the chain
   assert.match(html, /warn 40%, rollover 70%/);
 });
 
-test('token usage lives in the Chain overview panel, not the ticket board; token_usage_changed refreshes the chain usage tag', () => {
+test('token usage is shown on the Bridge-owned chain view; token_usage_changed refreshes the chain usage tag', () => {
   const read = (rel: string) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
-  const panel = read('../src/ui/components/chat/ChainOverviewPanel.tsx');
-  assert.match(panel, /data-debug-id="chain-overview-section-token-usage"/);
-  assert.match(panel, /data-debug-id="chain-overview-section-toggle-tokenUsage"/);
-  assert.match(panel, /<ChainTokenUsageSection chainId=\{chainId\} embedded \/>/);
-  assert.doesNotMatch(read('../src/ui/components/taskchain/TaskChainOverview.tsx'), /ChainTokenUsage|footerSlot/);
-  assert.doesNotMatch(read('../src/ui/components/tasks/TicketBoardView.tsx'), /footerSlot|ChainTokenUsage/);
+  assert.match(read('../src/ui/components/taskchain/TaskChainsPage.tsx'), /extra=\{<ChainTokenUsageSection chainId=\{selectedOwner\.chainId\} embedded \/>\}/);
   const ws = read('../src/ui/api/wsInvalidation.ts');
   // T14: paced per viewed chain (chainTokenUsageRefresh.ts), not one refetch per event.
   assert.match(ws, /tokenChanged \|\| change === 'created'[\s\S]{0,200}requestChainTokenUsageRefresh\(tokenChainId[\s\S]{0,120}type: 'ChainTokenUsage', id \}/);
-  assert.match(read('../src/ui/api/endpoints/taskChains.ts'), /\/task-chains\/\$\{encodeURIComponent\(chainId\)\}\/token-usage/);
+  assert.match(read('../src/ui/api/endpoints/chainTokenUsage.ts'), /\/task-chains\/\$\{encodeURIComponent\(chainId\)\}\/token-usage/);
 });
 
 test('chain rows: waiting / unavailable(provider) come from LIVE instances only', async () => {
@@ -191,28 +186,7 @@ test('chain context carries estimate provenance and effective tokens', async () 
 // mounts the section only while the panel is visible AND the section is expanded, so a
 // hidden pane releases the viewer (no token-usage refetch) and re-mounting catches up
 // via the stale-on-mount refetch. Source-level check, like the sibling relocation test.
-test('overview mounts token usage only while the pane is visible (hidden pane = no viewer, no refetch)', () => {
-  const panel = fs.readFileSync(fileURLToPath(new URL('../src/ui/components/chat/ChainOverviewPanel.tsx', import.meta.url)), 'utf8');
-  assert.match(panel, /const panelVisible = usePaneVisible\(\)/);
-  assert.match(panel, /!isCollapsed\('tokenUsage'\) && panelVisible && <ChainTokenUsageSection chainId=\{chainId\} embedded \/>/);
+test('the token card refetches once when shown after events were dropped while hidden', () => {
   const section = fs.readFileSync(fileURLToPath(new URL('../src/ui/components/taskchain/ChainTokenUsage.tsx', import.meta.url)), 'utf8');
   assert.match(section, /retainChainTokenUsageView\(chainId\)[\s\S]{0,200}if \(view\.stale && !fetchingRef\.current\) refetch\(\)[\s\S]{0,60}return view\.release/);
-});
-
-test('chain overview agent controls render without hover or focus gating', () => {
-  const panel = fs.readFileSync(fileURLToPath(new URL('../src/ui/components/chat/ChainOverviewPanel.tsx', import.meta.url)), 'utf8');
-  const rowStart = panel.indexOf('data-debug-id={`chain-overview-agent-row-${instId}`}');
-  const rowEnd = panel.indexOf('chain-overview-restart-agent-${instId}', rowStart);
-  assert.ok(rowStart > 0 && rowEnd > rowStart, 'agent row block found');
-  const row = panel.slice(rowStart, rowEnd);
-  const wrapper = row.match(/<div\s+className="([^"]*)"\s+onClick=\{\(e\) => e\.stopPropagation\(\)\}/);
-  assert.ok(wrapper, 'controls wrapper with stopPropagation found');
-  const classes = wrapper![1].split(/\s+/);
-  assert.ok(classes.includes('flex') && classes.includes('shrink-0'), 'controls are always flex and never shrink');
-  assert.ok(!classes.includes('hidden'), 'controls are not hidden');
-  assert.ok(!classes.some((c) => c.startsWith('group-hover:') || c.startsWith('group-focus-within:')), 'no hover/focus gating');
-  for (const id of ['open-pty', 'start-agent', 'stop-agent']) {
-    assert.ok(row.includes(`chain-overview-${id}-\${instId}`), `${id} debug id kept`);
-  }
-  assert.ok(row.includes('min-w-0 flex-1 truncate'), 'ticket title still truncates');
 });

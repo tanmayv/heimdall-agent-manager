@@ -118,7 +118,7 @@ test('REQ-MOB-1: mobile window chrome uses 44px round buttons in a 56px row; des
 test('mobile conversation header omits the project breadcrumb segment and first separator', () => {
   const breadcrumb = chatSource.slice(
     chatSource.indexOf('data-debug-id="conversation-thread-breadcrumb"'),
-    chatSource.indexOf('data-debug-id="conversation-chain-agent-switcher-btn"'),
+    chatSource.indexOf('data-debug-id="conversation-agent-crumb"'),
   );
   assert.match(breadcrumb, /\{!isMobile \? \(/);
   assert.match(breadcrumb, /data-debug-id="conversation-breadcrumb-project"/);

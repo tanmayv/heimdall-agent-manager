@@ -3,35 +3,16 @@ import { getKeyringSession } from '../../utils/vaultKeyringSession';
 import OwnerLocalPanel from './OwnerLocalPanel';
 import { OwnerChainView } from './OwnerChainView';
 import { OwnerChainsGroup, filterOwnerChains } from './OwnerChainsGroup';
-import { loadOwnerChainSummaries, mergeOwnerChains, type OwnerChainSummary } from '../../api/ownerChains';
+import { loadOwnerChainSummaries, type OwnerChainSummary } from '../../api/ownerChains';
 import { addPendingOwnerChain, useOwnerChains } from '../../api/ownerChainsStore';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Badge, IconButton, ResourceContainer, ResourceSearchFilter, useViewport } from '@ui';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Badge, ResourceContainer, ResourceSearchFilter, useViewport } from '@ui';
 import Icon from '../Icon';
 import { buildRouteHash } from '../../utils/appLocation';
-import ProjectLaunchModal from '../projects/ProjectLaunchModal';
 import CreateChainModal from './CreateChainModal';
-import WorkflowDefinitionsModal from './WorkflowDefinitionsModal';
-import {
-  useFetchTaskChainGroupsQuery,
-  useFetchTaskChainProjectPageQuery,
-  useLazyFetchTaskChainProjectPageQuery,
-  useUpdateTaskChainMutation,
-  type ChainListItem,
-  type ChainProjectGroup,
-} from '../../api/endpoints/tasks';
-import { useListProjectsQuery, type Project } from '../../api/endpoints/projects';
-import { useArchivedProjectIds } from '../projects/projectModel';
-import { useIsMobile } from '../shell/responsive';
-import { TaskChainOverview } from './TaskChainOverview';
+import { ChainTokenUsageSection } from './ChainTokenUsage';
 import { useSelector } from 'react-redux';
-import { selectIsVaultUnlocked, getActiveVaultKey } from '../../store/vaultSlice';
-import { decryptProjectList } from '../../utils/vaultProjects';
-import { decryptChainList } from '../../utils/vaultChains';
-import { isVaultArmored } from '../../utils/vaultContent';
-import { VaultText } from '../vault/VaultText';
-import { replaceVaultTokens } from '../../utils/vaultCrypto.ts';
-import { chainConversationRoute } from '../../utils/paneTarget.ts';
+import { selectIsVaultUnlocked } from '../../store/vaultSlice';
 
 interface TaskChainsPageProps {
   chainId?: string;
@@ -46,379 +27,13 @@ function shellHash(path: string): string {
   return buildRouteHash(path, '');
 }
 
-// Per-project preview page size for the "Load more" pager. The default view
-// previews up to 5 chains per project (from the grouped endpoint); each Load more
-// then pulls a page of this size via the per-project cursor endpoint.
-const PAGE_SIZE = 20;
-
-// The four status filters, as tabs in the list pane's filter row.
-const STATUS_TABS: { value: 'active' | 'completed' | 'archived' | 'all'; label: string }[] = [
+// The status filters, as tabs in the list pane's filter row. Bridge-owned
+// chains are never archived.
+const STATUS_TABS: { value: 'active' | 'completed' | 'all'; label: string }[] = [
   { value: 'active', label: 'Active' },
   { value: 'completed', label: 'Completed' },
-  { value: 'archived', label: 'Archived' },
   { value: 'all', label: 'All' },
 ];
-
-function statusBadgeClass(status: string): string {
-  switch (String(status || '').toLowerCase()) {
-    case 'active':
-      return 'bg-accent/10 text-accent border-accent/20';
-    case 'completed':
-      return 'bg-success-soft text-success border-success/20';
-    case 'archived':
-      return 'bg-warning-soft text-warning border-warning/30';
-    case 'cancelled':
-      return 'bg-neutral-soft text-muted border-subtle';
-    default:
-      return 'bg-neutral-soft text-muted border-subtle';
-  }
-}
-
-function formatUpdatedAt(value: string): string {
-  if (!value) return '';
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-}
-
-/**
- * What a click on a chain row does (Tickets plan REQ-UI-5, supersedes REQ-TCUI-2):
- * a chain with a coordinator opens its chain-addressed conversation
- * (`/conversations/chain:<id>`, REQ-TV2-7), where the aux Tasks tab already
- * shows the chain. On desktop it goes to `?panel=tasks`; on mobile it goes to the
- * plain conversation route and the sidebar closes. A chain without a coordinator
- * has no chat to open, so the row selects it into the detail pane.
- */
-export function chainRowPrimaryAction(
-  chainId: string,
-  coordinatorInstanceId: string,
-  isMobile: boolean,
-): { kind: 'conversation'; href: string; closeSidebar: boolean } | { kind: 'select' } {
-  const id = String(coordinatorInstanceId || '').trim();
-  if (!id || !String(chainId || '').trim()) return { kind: 'select' };
-  const route = chainConversationRoute(chainId);
-  return isMobile
-    ? { kind: 'conversation', href: shellHash(route), closeSidebar: true }
-    : { kind: 'conversation', href: shellHash(`${route}?panel=tasks`), closeSidebar: false };
-}
-
-// One chain row: status badge + title + updated_at. Clicking the row opens the
-// coordinator's conversation when the chain has one (chainRowPrimaryAction), and
-// otherwise selects the chain into the detail pane. Rows with a coordinator also
-// get a "Task board" icon button that selects the chain into the detail pane, so
-// the board stays one click away.
-function ChainRow({
-  chain,
-  active,
-  onSelect,
-  onArchive,
-  onRestore,
-}: {
-  chain: ChainListItem;
-  active: boolean;
-  onSelect?: (chainId: string) => void;
-  onArchive?: (chainId: string) => void;
-  onRestore?: (chainId: string) => void;
-}) {
-  const coordinator = chain.coordinatorAgentInstanceId;
-  const isMobile = useIsMobile();
-  const isArchived = chain.status === 'archived';
-
-  // Title on its own line, meta beneath it — the same shape `ResourceEntryCard` gives
-  // `IssueRow`. The old single-line row was built for a full-width page; inside
-  // ResourceContainer's <=420px list column its content no longer fits, and the title (the
-  // only `flex-1 min-w-0` item) was the one that collapsed — to literally 0px, so `truncate`
-  // clipped it away entirely and rows rendered with an empty gap where the name should be.
-  const inner = (
-    <>
-      <span className="block min-w-0 truncate text-sm text-primary">
-        <VaultText value={chain.title} fallback={chain.chainId} />
-      </span>
-      <span className="flex min-w-0 flex-wrap items-center gap-2">
-        <span
-          data-debug-id={`task-chains-row-status-${chain.chainId}`}
-          className={`shrink-0 rounded-md border px-2 py-0.5 text-caption font-semibold capitalize ${statusBadgeClass(chain.status)}`}
-        >
-          {chain.status || 'unknown'}
-        </span>
-        {chain.kind === 'workflow' && (
-          <span className="shrink-0 rounded-md bg-accent-soft px-1.5 py-0.5 text-caption font-mono text-accent">
-            workflow
-          </span>
-        )}
-        <span
-          data-debug-id={`task-chains-row-task-count-${chain.chainId}`}
-          className="shrink-0 rounded-md border border-subtle bg-surface-raised px-1.5 py-0.5 text-caption text-muted"
-          title={`${chain.taskCount} ${chain.taskCount === 1 ? 'ticket' : 'tickets'}`}
-        >
-          {chain.taskCount}
-        </span>
-        {chain.updatedAt ? (
-          <span className="shrink-0 text-caption text-faint">{formatUpdatedAt(chain.updatedAt)}</span>
-        ) : null}
-      </span>
-    </>
-  );
-
-  const primary = chainRowPrimaryAction(chain.chainId, coordinator, isMobile);
-  const openRow = () => {
-    if (primary.kind === 'conversation') {
-      window.location.hash = primary.href;
-      if (primary.closeSidebar) window.dispatchEvent(new CustomEvent('heimdall:close-sidebar'));
-      return;
-    }
-    onSelect?.(chain.chainId);
-  };
-
-  return (
-    <div
-      data-debug-id={`task-chains-row-${chain.chainId}`}
-      className={[
-        'flex items-start justify-between gap-2 rounded-xl border px-3 py-2.5 transition-colors',
-        active
-          ? 'border-accent/40 bg-accent/10'
-          : 'border-subtle bg-surface hover:bg-surface-raised',
-      ].join(' ')}
-    >
-      {/* The flex row lives on an inner <span>, NOT on the <button>. Firefox wraps a
-          button's children in an anonymous box, so `display:flex` on the button itself does
-          not make them flex items: the title's `flex-1` collapsed to zero width and the
-          title rendered invisibly (present in the DOM, painted at 0px) while the count and
-          date overflowed and were clipped. Keeping the real <button> preserves the
-          semantics and keyboard behaviour; the inner span does the layout. */}
-      <button
-        type="button"
-        data-debug-id={`task-chains-row-select-${chain.chainId}`}
-        onClick={openRow}
-        aria-current={active ? 'true' : undefined}
-        title={primary.kind === 'conversation' ? 'Open the coordinator chat' : 'Open this task chain'}
-        className="min-w-0 flex-1 text-left"
-      >
-        <span className={`flex w-full min-w-0 flex-col justify-center gap-1.5 overflow-hidden ${isMobile ? 'min-h-11' : 'min-h-[32px]'}`}>
-          {inner}
-        </span>
-      </button>
-
-      <div className="flex shrink-0 items-center gap-2 pl-2" data-debug-id={`task-chains-row-actions-${chain.chainId}`}>
-        {coordinator ? (
-          <IconButton
-            icon="tasks"
-            label="Open ticket board"
-            variant="ghost"
-            size={isMobile ? 'md' : 'sm'}
-            data-debug-id={`task-chains-row-board-btn-${chain.chainId}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              onSelect?.(chain.chainId);
-            }}
-          />
-        ) : null}
-        {isArchived ? (
-          <button
-            type="button"
-            data-debug-id={`task-chains-restore-btn-${chain.chainId}`}
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              onRestore?.(chain.chainId);
-            }}
-            title="Restore chain to active"
-            aria-label="Restore chain to active"
-            className={`rounded-lg border border-subtle bg-surface font-semibold text-primary transition-colors hover:border-strong hover:bg-surface-raised ${isMobile ? 'min-h-11 px-3.5 text-sm' : 'min-h-[32px] px-2.5 py-1 text-xs'}`}
-          >
-            Restore
-          </button>
-        ) : (
-          <button
-            type="button"
-            data-debug-id={`task-chains-archive-btn-${chain.chainId}`}
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              onArchive?.(chain.chainId);
-            }}
-            title="Archive chain"
-            aria-label="Archive chain"
-            className={`rounded-lg border border-subtle bg-surface text-muted transition-colors hover:border-warning/40 hover:bg-warning-soft hover:text-warning ${isMobile ? 'min-h-11 px-3.5 text-sm' : 'min-h-[32px] px-2.5 py-1 text-xs'}`}
-          >
-            Archive chain
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// A collapsible per-project card that previews chains and pages the rest in via
-// the per-project cursor endpoint. `initial*` seed the first page (from either the
-// grouped endpoint or the filtered project fetch); further pages accumulate in
-// local state. Remounts (keyed by projectId) reset state on filter change.
-function ChainGroupCard({
-  projectId,
-  projectName,
-  initialChains,
-  initialHasMore,
-  initialNextCursor,
-  totalCount,
-  onlyWithTasks,
-  filterStatus,
-  filterKind = 'all',
-  matchesSearch,
-  activeChainId,
-  onSelectChain,
-  collapsed,
-  onToggle,
-  onLaunchProject,
-  onArchiveChain,
-  onRestoreChain,
-}: {
-  projectId: string;
-  projectName: string;
-  initialChains: ChainListItem[];
-  initialHasMore: boolean;
-  initialNextCursor: string;
-  totalCount: number;
-  onlyWithTasks: boolean;
-  filterStatus: 'active' | 'completed' | 'archived' | 'all';
-  filterKind?: 'all' | 'ticket' | 'workflow';
-  // Applied here as well as in the page's `groups` memo, so rows pulled in by
-  // "Load more" are filtered by the search box too.
-  matchesSearch: (chain: ChainListItem) => boolean;
-  activeChainId: string;
-  onSelectChain?: (chainId: string) => void;
-  collapsed: boolean;
-  onToggle: () => void;
-  onLaunchProject?: (project: { projectId: string; name: string }) => void;
-  onArchiveChain?: (chainId: string) => void;
-  onRestoreChain?: (chainId: string) => void;
-}) {
-  const isMobile = useIsMobile();
-  const [extra, setExtra] = useState<ChainListItem[]>([]);
-  const [cursor, setCursor] = useState<string>(initialNextCursor);
-  const [hasMore, setHasMore] = useState<boolean>(initialHasMore);
-  const [loadMorePage, { isFetching }] = useLazyFetchTaskChainProjectPageQuery();
-
-  // Reset accumulated pages when the seed changes (e.g. a background refetch of
-  // the grouped list, or the filtered project's first page reloading).
-  useEffect(() => {
-    setExtra([]);
-    setCursor(initialNextCursor);
-    setHasMore(initialHasMore);
-  }, [projectId, initialNextCursor, initialHasMore]);
-
-  const rawChains = useMemo(() => [...initialChains, ...extra], [initialChains, extra]);
-
-  const chains = useMemo(() => {
-    return rawChains.filter((c) => {
-      if (!matchesSearch(c)) return false;
-      if (filterStatus === 'active') return c.status === 'active';
-      if (filterStatus === 'completed') return c.status === 'completed';
-      if (filterStatus === 'archived') return c.status === 'archived';
-      if (filterKind === 'ticket' && c.kind === 'workflow') return false;
-      if (filterKind === 'workflow' && c.kind !== 'workflow') return false;
-      return true;
-    });
-  }, [rawChains, filterStatus, filterKind, matchesSearch]);
-
-  const onLoadMore = async () => {
-    try {
-      const res = await loadMorePage({
-        projectId,
-        limit: PAGE_SIZE,
-        cursor,
-        hasTasks: onlyWithTasks,
-        includeArchived: filterStatus === 'archived' || filterStatus === 'all',
-      }).unwrap();
-      setExtra((prev) => [...prev, ...(res.chains || [])]);
-      setCursor(res.nextCursor || '');
-      setHasMore(Boolean(res.hasMore));
-    } catch {
-      // Leave the button in place so the user can retry; RTK surfaces the error
-      // state on the trigger if needed.
-      setHasMore(true);
-    }
-  };
-
-  const displayName = projectName || (projectId ? projectId : 'Unassigned');
-  const hasProject = Boolean(projectId && projectId !== '__unassigned__');
-
-  return (
-    <div
-      data-debug-id={`task-chains-project-group-${projectId || 'unassigned'}`}
-      className="overflow-hidden rounded-2xl border border-subtle bg-surface"
-    >
-      <div className="flex items-center justify-between gap-2 border-b border-subtle bg-surface-raised px-4 py-3 transition-colors hover:bg-neutral-soft">
-        <button
-          type="button"
-          data-debug-id={`task-chains-project-toggle-${projectId || 'unassigned'}`}
-          onClick={onToggle}
-          className="flex min-w-0 flex-1 items-center gap-3 text-left"
-        >
-          <span className="shrink-0 text-muted">
-            <Icon name={collapsed ? 'chevron-right' : 'chevron-down'} size={14} />
-          </span>
-          <div className="flex min-w-0 items-center gap-2">
-            <Icon name="folder" size={15} className="shrink-0 text-accent" />
-            <span className="truncate text-sm font-semibold text-primary"><VaultText value={displayName} fallback="Unassigned" /></span>
-          </div>
-        </button>
-        <div className="flex shrink-0 items-center gap-2">
-          {hasProject && (
-            <button
-              type="button"
-              data-debug-id={`task-chains-project-launch-btn-${projectId}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                onLaunchProject?.({ projectId, name: projectName || displayName });
-              }}
-              title={`Launch agent for ${displayName}`}
-              aria-label={`Launch agent for ${displayName}`}
-              className={`flex items-center justify-center border border-subtle bg-neutral-soft text-muted transition-colors hover:border-strong hover:bg-surface-raised hover:text-primary ${isMobile ? 'h-11 w-11 rounded-full' : 'h-6 w-6 rounded-lg'}`}
-            >
-              <Icon name="plus" size={isMobile ? 18 : 13} />
-            </button>
-          )}
-          <span
-            data-debug-id={`task-chains-project-count-${projectId || 'unassigned'}`}
-            className="rounded-md border border-subtle bg-surface px-2 py-0.5 text-xs text-muted"
-          >
-            {totalCount} {totalCount === 1 ? 'chain' : 'chains'}
-          </span>
-        </div>
-      </div>
-
-      {!collapsed && (
-        <div className="space-y-2 p-4">
-          {chains.length === 0 ? (
-            <p className="py-2 text-xs italic text-faint">No task chains in this project.</p>
-          ) : (
-            chains.map((chain) => (
-              <ChainRow
-                key={chain.chainId}
-                chain={chain}
-                active={activeChainId === chain.chainId}
-                onSelect={onSelectChain}
-                onArchive={onArchiveChain}
-                onRestore={onRestoreChain}
-              />
-            ))
-          )}
-          {hasMore && (
-            <button
-              type="button"
-              data-debug-id={`task-chains-load-more-${projectId || 'unassigned'}`}
-              onClick={() => void onLoadMore()}
-              disabled={isFetching}
-              className={`mt-1 w-full rounded-xl border border-subtle bg-surface-raised px-3 font-semibold ${isMobile ? 'min-h-11 text-sm' : 'py-2 text-xs'} text-muted transition-colors hover:bg-neutral-soft hover:text-primary disabled:opacity-50`}
-            >
-              {isFetching ? 'Loading…' : 'Load more'}
-            </button>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
 
 export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initialChainId, taskId: focusTaskId, submissionAttempt, isMobile }) => {
   // Read the viewport the same way ResourceContainer does, so the page and the
@@ -432,62 +47,17 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
   const [ownerProbe, setOwnerProbe] = useState<OwnerChainSummary | null>(null);
   const ownerChains = useOwnerChains();
   const [selectedChainId, setSelectedChainId] = useState<string>(initialChainId || '');
-  const [filterProjectId, setFilterProjectId] = useState<string>('');
-  const [filterStatus, setFilterStatus] = useState<'active' | 'completed' | 'archived' | 'all'>('active');
-  const [filterKind, setFilterKind] = useState<'all' | 'ticket' | 'workflow'>('all');
+  const [filterStatus, setFilterStatus] = useState<'active' | 'completed' | 'all'>('active');
   const [showCreateChainModal, setShowCreateChainModal] = useState(false);
-  const [showWorkflowDefsModal, setShowWorkflowDefsModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   // Roughly half of real chains carry no tasks yet and have nothing to show, so
   // the list hides them by default; the toggle brings them back.
   const [onlyWithTasks, setOnlyWithTasks] = useState<boolean>(true);
-  const [showArchivedProjects, setShowArchivedProjects] = useState<boolean>(false);
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  const [launchModalProject, setLaunchModalProject] = useState<{ projectId: string; name: string } | null>(null);
+  const [collapsed, setCollapsed] = useState(false);
 
   useEffect(() => {
     setSelectedChainId(initialChainId || '');
   }, [initialChainId]);
-
-  const shouldIncludeArchived = showArchivedProjects || filterStatus === 'archived' || filterStatus === 'all';
-
-  // The list queries no longer skip when a chain is selected: on desktop the list
-  // and the detail are shown TOGETHER, so the list must stay loaded. Only the
-  // filterProjectId split (grouped endpoint vs per-project endpoint) remains.
-  const groupsQuery = useFetchTaskChainGroupsQuery(
-    { hasTasks: onlyWithTasks, includeArchived: shouldIncludeArchived },
-    { skip: Boolean(filterProjectId) },
-  );
-  const projectPageQuery = useFetchTaskChainProjectPageQuery(
-    { projectId: filterProjectId, limit: PAGE_SIZE, hasTasks: onlyWithTasks, includeArchived: shouldIncludeArchived },
-    { skip: !filterProjectId },
-  );
-  const projectsQuery = useListProjectsQuery();
-  const archivedProjectIds = useArchivedProjectIds();
-
-  const [updateTaskChain] = useUpdateTaskChainMutation();
-
-  const handleArchiveChain = async (chainId: string) => {
-    try {
-      await updateTaskChain({ chainId, status: 'archived' }).unwrap();
-    } catch (err: any) {
-      console.error('Failed to archive task chain:', err);
-    }
-  };
-
-  const handleRestoreChain = async (chainId: string) => {
-    try {
-      await updateTaskChain({ chainId, status: 'active' }).unwrap();
-    } catch (err: any) {
-      console.error('Failed to restore task chain:', err);
-    }
-  };
-
-  const projects: Project[] = useMemo(() => {
-    const list: Project[] = projectsQuery.data?.projects || [];
-    if (showArchivedProjects) return list;
-    return list.filter((p) => !archivedProjectIds.has(p.project_id));
-  }, [projectsQuery.data, showArchivedProjects, archivedProjectIds]);
 
   const isUnlocked = useSelector(selectIsVaultUnlocked);
   useEffect(() => {
@@ -506,155 +76,36 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
     }).catch(() => {});
     return () => controller.abort();
   }, [initialChainId, isUnlocked]); // eslint-disable-line react-hooks/exhaustive-deps
-  const [decryptedProjects, setDecryptedProjects] = useState<Project[]>(projects);
 
-  useEffect(() => {
-    let active = true;
-    const activeKey = getActiveVaultKey();
-    if (!isUnlocked || !activeKey) {
-      setDecryptedProjects(
-        projects.map((p) => ({
-          ...p,
-          name: p.name ? replaceVaultTokens(p.name, '[Encrypted]') : p.name,
-        }))
-      );
-      return;
-    }
-    decryptProjectList(projects, activeKey).then((res) => {
-      if (active) setDecryptedProjects(res);
-    });
-    return () => {
-      active = false;
-    };
-  }, [projects, isUnlocked]);
-
-  const hubGroups: ChainProjectGroup[] = useMemo(() => {
-    const raw = filterProjectId
-      ? (projectPageQuery.data ? [projectPageQuery.data] : [])
-      : (groupsQuery.data?.groups || []);
-    if (!showArchivedProjects) {
-      return raw.filter((g) => !g.projectId || !archivedProjectIds.has(g.projectId));
-    }
-    return raw;
-  }, [filterProjectId, projectPageQuery.data, groupsQuery.data, showArchivedProjects, archivedProjectIds]);
-
-  // Bridge-owned chains own their ids: a Hub row with the same id is the frozen
-  // copy a migration left behind, so it is dropped (lending its project).
-  const { rawGroups, owners } = useMemo(() => {
-    const merged = mergeOwnerChains(hubGroups.flatMap((g) => g.chains), ownerChains.chains);
-    const kept = new Set(merged.hub.map((c) => c.chainId));
-    return {
-      rawGroups: hubGroups.map((g) => {
-        const chains = g.chains.filter((c) => kept.has(c.chainId));
-        const dropped = g.chains.length - chains.length;
-        return dropped ? { ...g, chains, chainTotal: Math.max(0, (g.chainTotal || g.chains.length) - dropped) } : g;
-      }),
-      owners: merged.owners,
-    };
-  }, [hubGroups, ownerChains.chains]);
+  const owners = ownerChains.chains;
   const ownerById = useMemo(() => {
     const map = new Map(owners.map((o) => [o.chainId, o]));
     if (ownerProbe && !map.has(ownerProbe.chainId)) map.set(ownerProbe.chainId, ownerProbe);
     return map;
   }, [owners, ownerProbe]);
 
-  // Chain titles are vault-encrypted, so the search box must match the DECRYPTED
-  // title — matching `chain.title` directly would be matching ciphertext. Titles
-  // are decrypted once into a chainId -> plaintext map; armored titles that cannot
-  // be read (vault locked) are simply absent, so those chains match on chainId only.
-  const allChains = useMemo(() => rawGroups.flatMap((g) => g.chains), [rawGroups]);
-  const [titleByChainId, setTitleByChainId] = useState<Record<string, string>>({});
-
-  useEffect(() => {
-    let active = true;
-    const activeKey = getActiveVaultKey();
-    if (!isUnlocked || !activeKey) {
-      const plain: Record<string, string> = {};
-      for (const chain of allChains) {
-        const raw = String(chain.title || '');
-        if (raw && !isVaultArmored(raw)) plain[chain.chainId] = raw;
-      }
-      setTitleByChainId(plain);
-      return;
-    }
-    decryptChainList(allChains, activeKey)
-      .then((list) => {
-        if (!active) return;
-        const next: Record<string, string> = {};
-        for (const chain of list) {
-          const title = String(chain.title || '');
-          if (title && !isVaultArmored(title)) next[chain.chainId] = title;
-        }
-        setTitleByChainId(next);
-      })
-      .catch(() => {
-        // Search degrades to chainId matching rather than breaking the list.
-        if (active) setTitleByChainId({});
-      });
-    return () => {
-      active = false;
-    };
-  }, [allChains, isUnlocked]);
-
-  const normalizedQuery = searchQuery.trim().toLowerCase();
-  const matchesSearch = useCallback(
-    (chain: ChainListItem) => {
-      if (!normalizedQuery) return true;
-      if (chain.chainId.toLowerCase().includes(normalizedQuery)) return true;
-      const title = titleByChainId[chain.chainId];
-      return Boolean(title) && title.toLowerCase().includes(normalizedQuery);
-    },
-    [normalizedQuery, titleByChainId],
-  );
-
-  const groups: ChainProjectGroup[] = useMemo(() => {
-    return rawGroups
-      .map((g) => {
-        const matching = g.chains.filter((c) => {
-          if (!matchesSearch(c)) return false;
-          if (filterStatus === 'active') return c.status === 'active';
-          if (filterStatus === 'completed') return c.status === 'completed';
-          if (filterStatus === 'archived') return c.status === 'archived';
-          if (filterKind === 'ticket' && c.kind === 'workflow') return false;
-          if (filterKind === 'workflow' && c.kind !== 'workflow') return false;
-          return true;
-        });
-        return {
-          ...g,
-          chains: matching,
-          chainTotal: matching.length,
-        };
-      })
-      .filter((g) => Boolean(filterProjectId) || g.chains.length > 0);
-  }, [rawGroups, filterStatus, filterKind, filterProjectId, matchesSearch]);
-
   const visibleOwners = useMemo(
-    () => filterOwnerChains(owners, { query: searchQuery, status: filterStatus, projectId: filterProjectId, onlyWithTasks, kind: filterKind }),
-    [owners, searchQuery, filterStatus, filterProjectId, onlyWithTasks, filterKind],
+    () => filterOwnerChains(owners, { query: searchQuery, status: filterStatus, projectId: '', onlyWithTasks, kind: 'all' }),
+    [owners, searchQuery, filterStatus, onlyWithTasks],
   );
-  const totalChains = useMemo(() => visibleOwners.length + groups.reduce((sum, g) => sum + (g.chainTotal || g.chains.length), 0), [groups, visibleOwners]);
-  const isLoading = filterProjectId ? projectPageQuery.isLoading : groupsQuery.isLoading;
-  const error = filterProjectId ? projectPageQuery.error : groupsQuery.error;
+  const totalChains = visibleOwners.length;
+  const isLoading = ownerChains.status === 'loading' && owners.length === 0;
+  const error = ownerChains.status === 'error' ? ownerChains.error : '';
 
   // Desktop shows both panes, so an empty detail pane is wasted space: preselect
   // the first visible chain (mirrors IssueListPage). State only — no route push,
   // so '/chains' stays '/chains' until the user actually picks a row.
-  const firstChainId = visibleOwners[0]?.chainId || groups[0]?.chains[0]?.chainId || '';
+  const firstChainId = visibleOwners[0]?.chainId || '';
   useEffect(() => {
     if (twoPane && !selectedChainId && firstChainId) {
       setSelectedChainId(firstChainId);
     }
   }, [twoPane, selectedChainId, firstChainId]);
 
-  const toggleCollapse = (projectId: string) => {
-    const key = projectId || '__unassigned__';
-    setCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
-  };
-
   // Selecting a row syncs the hash route so deep links and the browser back button
   // keep working. AppShell renders TaskChainsPage from the same position for both
   // '/chains' and '/chains/*', so this updates the page in place rather than
-  // remounting it — the filters, collapse state and loaded pages all survive.
+  // remounting it — the filters and collapse state survive.
   const handleSelectChain = (chainId: string) => {
     setSelectedChainId(chainId);
     window.location.hash = shellHash(`/chains/${encodeURIComponent(chainId)}`);
@@ -673,41 +124,13 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
         searchPlaceholder="Search chains…"
         searchDebugId="task-chains-search-input"
         activeTab={filterStatus}
-        onTabChange={(tab) => setFilterStatus(tab as 'active' | 'completed' | 'archived' | 'all')}
-        // The status <Select> this replaces was named by a <label htmlFor>; the tabs list needs
-        // an explicit label or it falls back to ResourceSearchFilter's generic "Filter tabs".
+        onTabChange={(tab) => setFilterStatus(tab as 'active' | 'completed' | 'all')}
         tabsLabel="Filter chains by status"
         tabs={STATUS_TABS.map((tab) => ({
           value: tab.value,
           label: tab.label,
           debugId: `task-chains-filter-status-${tab.value}`,
         }))}
-        filters={[
-          {
-            value: filterProjectId,
-            onChange: setFilterProjectId,
-            options: [
-              { value: '', label: 'All projects' },
-              ...decryptedProjects.map((p) => ({
-                value: p.project_id,
-                label: p.name || p.project_id,
-              })),
-            ],
-            ariaLabel: 'Filter by project',
-            debugId: 'task-chains-project-filter',
-          },
-          {
-            value: filterKind,
-            onChange: (val) => setFilterKind(val as 'all' | 'ticket' | 'workflow'),
-            options: [
-              { value: 'all', label: 'All kinds' },
-              { value: 'ticket', label: 'Tickets' },
-              { value: 'workflow', label: 'Workflows' },
-            ],
-            ariaLabel: 'Filter by kind',
-            debugId: 'task-chains-kind-filter',
-          },
-        ]}
         showFooterCounter
         itemsCount={totalChains}
         itemsLabel="chain"
@@ -727,24 +150,15 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
           />
           Only chains with tickets
         </label>
-
-        <label
-          htmlFor="task-chains-include-archived-filter"
-          className={`inline-flex cursor-pointer items-center gap-2 rounded-xl border border-subtle bg-surface px-3 py-1.5 text-sm text-muted ${isMobileViewport ? 'min-h-11' : 'min-h-[32px]'}`}
-        >
-          <input
-            id="task-chains-include-archived-filter"
-            data-debug-id="task-chains-include-archived-filter"
-            type="checkbox"
-            checked={showArchivedProjects}
-            onChange={(e) => setShowArchivedProjects(e.target.checked)}
-            className="h-4 w-4 accent-accent"
-          />
-          Include archived projects
-        </label>
       </ResourceSearchFilter>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        {ownerChains.status === 'locked' && (
+          <div data-debug-id="task-chains-locked" className="rounded-2xl border border-subtle bg-surface p-6 text-sm text-muted">
+            Unlock the vault on this device to see your Bridge-owned task chains.
+          </div>
+        )}
+
         {isLoading && (
           <div data-debug-id="task-chains-loading" className="rounded-2xl border border-subtle bg-surface p-6 text-sm text-muted">
             Loading task chains…
@@ -753,25 +167,23 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
 
         {!isLoading && error && (
           <div data-debug-id="task-chains-error" className="rounded-xl border border-danger/30 bg-danger-soft p-5 text-sm text-danger">
-            Failed to load task chains: {String((error as any)?.error || (error as any)?.message || error)}
+            Failed to load task chains: {error}
           </div>
         )}
 
         {visibleOwners.length > 0 && (
-          <div className="mb-6">
-            <OwnerChainsGroup
-              chains={visibleOwners}
-              activeChainId={selectedChainId}
-              onSelect={handleSelectChain}
-              loading={ownerChains.status === 'loading'}
-              error={ownerChains.status === 'error' ? ownerChains.error : undefined}
-              collapsed={Boolean(collapsed.__owner__)}
-              onToggle={() => setCollapsed((prev) => ({ ...prev, __owner__: !prev.__owner__ }))}
-            />
-          </div>
+          <OwnerChainsGroup
+            chains={visibleOwners}
+            activeChainId={selectedChainId}
+            onSelect={handleSelectChain}
+            loading={ownerChains.status === 'loading'}
+            error={error || undefined}
+            collapsed={collapsed}
+            onToggle={() => setCollapsed((prev) => !prev)}
+          />
         )}
 
-        {!isLoading && !error && groups.length === 0 && visibleOwners.length === 0 && (
+        {ownerChains.status === 'ready' && !error && visibleOwners.length === 0 && (
           <div
             data-debug-id="task-chains-empty-state"
             className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-subtle bg-surface/50 p-12 text-center"
@@ -781,42 +193,10 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
             </div>
             <h3 className="text-base font-semibold text-primary">No Task Chains</h3>
             <p className="mt-1 max-w-md text-xs leading-relaxed text-muted">
-              {normalizedQuery
+              {searchQuery.trim()
                 ? 'No task chains match your search.'
-                : filterProjectId
-                  ? 'This project has no task chains matching filter.'
-                  : 'Task chains appear here once a coordinator starts a multi-agent workflow.'}
+                : 'Task chains live on your Bridges. Create one, or import legacy Hub chains from Settings → Bridges.'}
             </p>
-          </div>
-        )}
-
-        {!isLoading && !error && groups.length > 0 && (
-          <div data-debug-id="task-chains-project-groups" className="space-y-6">
-            {groups.map((group) => {
-              const key = group.projectId || '__unassigned__';
-              return (
-                <ChainGroupCard
-                  key={key}
-                  projectId={group.projectId}
-                  projectName={group.projectName}
-                  initialChains={group.chains}
-                  initialHasMore={group.hasMore}
-                  initialNextCursor={group.nextCursor}
-                  totalCount={group.chainTotal || group.chains.length}
-                  onlyWithTasks={onlyWithTasks}
-                  filterStatus={filterStatus}
-                  filterKind={filterKind}
-                  matchesSearch={matchesSearch}
-                  activeChainId={selectedChainId}
-                  onSelectChain={handleSelectChain}
-                  collapsed={Boolean(collapsed[key])}
-                  onToggle={() => toggleCollapse(group.projectId)}
-                  onLaunchProject={setLaunchModalProject}
-                  onArchiveChain={handleArchiveChain}
-                  onRestoreChain={handleRestoreChain}
-                />
-              );
-            })}
           </div>
         )}
       </div>
@@ -848,15 +228,6 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
             </button>
             <button
               type="button"
-              data-debug-id="task-chains-workflows-btn"
-              onClick={() => setShowWorkflowDefsModal(true)}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-subtle bg-surface px-3 py-1 text-xs font-semibold text-primary hover:border-accent hover:text-accent transition-colors"
-            >
-              <Icon name="gear" size={14} />
-              <span>Workflows</span>
-            </button>
-            <button
-              type="button"
               data-debug-id="task-chains-new-chain-btn"
               onClick={() => setShowCreateChainModal(true)}
               className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1 text-xs font-semibold text-accent-fg hover:opacity-90 transition-opacity"
@@ -867,7 +238,7 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
           </div>
         </div>
       }
-      description="Multi-agent workflows grouped by project. Select a chain to follow its tickets, dependencies, and reviews."
+      description="Task chains on your Bridges. Select a chain to follow its tickets and reviews."
       breadcrumbs={[{ label: 'Task Chains' }]}
       selectedId={selectedChainId}
       detailTitle="Task Chain"
@@ -883,46 +254,23 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
             focusTaskId={focusTaskId}
             submissionAttempt={submissionAttempt}
             onClose={handleCloseDetail}
+            extra={<ChainTokenUsageSection chainId={selectedOwner.chainId} embedded />}
           />
         ) : selectedChainId ? (
-          <TaskChainOverview
-            // Keyed by chain: switching chains only changes the hash, so without a
-            // key React reuses the overview and keeps the previous chain's task open.
-            key={selectedChainId}
-            embedded
-            chainId={selectedChainId}
-            focusTaskId={focusTaskId}
-            isMobile={isMobile}
-            onClose={handleCloseDetail}
-          />
+          <div data-debug-id="task-chains-unknown-chain" className="p-6 text-sm text-muted">
+            {ownerChains.status === 'locked'
+              ? 'Unlock the vault to open this task chain.'
+              : 'This task chain is not on any of your Bridges. A legacy Hub chain must be imported first (Settings → Bridges → Import all legacy chains).'}
+          </div>
         ) : null
       }
     >
-      <ProjectLaunchModal
-        isOpen={Boolean(launchModalProject)}
-        project={launchModalProject}
-        onClose={() => setLaunchModalProject(null)}
-        onLaunched={(instanceId) => {
-          setLaunchModalProject(null);
-          window.location.hash = buildRouteHash('/conversations/' + encodeURIComponent(instanceId), '');
-        }}
-      />
       <CreateChainModal
         isOpen={showCreateChainModal}
         onClose={() => setShowCreateChainModal(false)}
-        projects={decryptedProjects}
-        defaultProjectId={filterProjectId}
         onCreated={(newChainId, owner) => {
           setShowCreateChainModal(false);
           if (owner) addPendingOwnerChain(owner);
-          handleSelectChain(newChainId);
-        }}
-      />
-      <WorkflowDefinitionsModal
-        isOpen={showWorkflowDefsModal}
-        onClose={() => setShowWorkflowDefsModal(false)}
-        onRunCreated={(newChainId) => {
-          setShowWorkflowDefsModal(false);
           handleSelectChain(newChainId);
         }}
       />

@@ -6,14 +6,11 @@ import {
   type AuxTab,
 } from '../../store/auxTabId';
 import { isAuxContentAllowed } from '../../store/auxTabGuards';
-import ChainOverviewPanel from '../chat/ChainOverviewPanel';
 import {
   EXPERIMENTAL_SETTINGS_HREF,
   projectExplorerUnavailableMessage,
   type ProjectExplorerAccess,
 } from '../chat/projectVcsExperiment';
-import TaskChainOverview, { openAgentConversation } from '../taskchain/TaskChainOverview';
-import { TicketView } from '../tasks/TicketView';
 import { AgentChatPane } from '../workbench/AgentChatPane';
 import { AgentPtyWorkbenchPane } from '../workbench/AgentPtyWorkbenchPane';
 import { PreviewWorkbenchPane } from '../workbench/PreviewWorkbenchPane';
@@ -21,6 +18,7 @@ import { ShellWorkbenchPane } from '../workbench/ShellWorkbenchPane';
 import type { AgentAuxContext } from './useAgentAuxContext';
 import { OpenAgentChatContext } from './openAgentChatContext';
 import ArtifactViewer from '../ArtifactViewer';
+import { buildRouteHash } from '../../utils/appLocation';
 
 const ProjectFilesPanel = React.lazy(() => import('../chat/ProjectFilesPanel'));
 const ProjectVcsPanel = React.lazy(() => import('../chat/ProjectVcsPanel'));
@@ -116,31 +114,19 @@ function renderAuxTabBody({
   }
   switch (c.type) {
     case 'chainOverview':
-      if (!ctx.chainId) {
-        return (
-          <EmptyNotice debugId="aux-overview-no-chain">
-            This agent is not part of a task chain.
-          </EmptyNotice>
-        );
-      }
+    case 'tasks':
+    case 'ticket':
+      // Hub task chains (overview, board, ticket tabs) were removed; chains live
+      // on their owner Bridges and open from the Task Chains page.
       return (
-        <ChainOverviewPanel
-          chainId={ctx.chainId}
-          projectId={ctx.projectId}
-          bridgeId={ctx.bridgeId}
-          agentInstanceId={ctx.agentInstanceId}
-          projectVcsEnabled={ctx.projectVcsEnabled}
-          isMobile={isMobile}
-          onSelectTask={(taskId) => onOpenTab({ type: 'tasks', ...(taskId ? { taskId } : {}) })}
-          onOpenFileDiff={(filePath) => onOpenTab({ type: 'vcs', filePath })}
-          onOpenVcsFiles={() => onOpenTab({ type: 'vcs' })}
-          onOpenAgentChat={(agentInstanceId, title) => {
-            openAgentChat(agentInstanceId, title);
-          }}
-          onOpenAgentPty={(agentInstanceId, title) =>
-            onOpenTab({ type: 'agentPty', agentInstanceId }, title ? `${title} terminal` : undefined)
-          }
-        />
+        <EmptyNotice debugId="aux-hub-chains-removed">
+          <div className="space-y-2">
+            <p>Task boards now live on your Bridges.</p>
+            <a href={buildRouteHash(ctx.chainId ? `/chains/${encodeURIComponent(ctx.chainId)}` : '/chains', '')} className="text-accent underline">
+              Open Task Chains
+            </a>
+          </div>
+        </EmptyNotice>
       );
     case 'files':
       return (
@@ -178,48 +164,6 @@ function renderAuxTabBody({
             onOpenDirectory={(dirPath: string) => onOpenTab({ type: 'files', path: dirPath })}
           />
         </Suspense>
-      );
-    case 'tasks':
-      if (!ctx.chainId) {
-        return (
-          <EmptyNotice debugId="aux-tasks-no-chain">
-            This agent is not part of a task chain.
-          </EmptyNotice>
-        );
-      }
-      return (
-        <TaskChainOverview
-          key={ctx.chainId}
-          chainId={ctx.chainId}
-          focusTaskId={c.taskId}
-          isMobile={isMobile}
-          embedded={true}
-          hideTitleBar={true}
-          onOpenTicket={(taskId, title, focus) => {
-            // A one-shot `taskId` on the board tab is consumed here, so the board
-            // does not reopen the ticket each time it remounts.
-            if (c.taskId) onUpdateTab(tab.id, { taskId: undefined });
-            onOpenTab({ type: 'ticket', chainId: ctx.chainId!, taskId, ...(focus ? { focus } : {}) }, title);
-          }}
-          onOpenAgent={(agentInstanceId) => openAgentConversation(agentInstanceId, isMobile)}
-        />
-      );
-    case 'ticket':
-      // One tab per ticket (REQ-T1); prev / next swap the ticket in this tab.
-      return (
-        <TicketView
-          key={`${c.chainId}:${c.taskId}`}
-          chainId={c.chainId}
-          taskId={c.taskId}
-          isMobile={isMobile}
-          focus={c.focus}
-          onFocusConsumed={() => onUpdateTab(tab.id, { focus: null })}
-          onShowBoard={() => onOpenTab({ type: 'tasks' })}
-          onOpenTicket={(taskId, title) => onOpenTab({ type: 'ticket', chainId: c.chainId, taskId }, title)}
-          onSwitchTicket={(taskId, title) => onRekeyTab(tab.id, { type: 'ticket', chainId: c.chainId, taskId }, title)}
-          onOpenAgent={(agentInstanceId) => openAgentConversation(agentInstanceId, isMobile)}
-          onTitle={(title) => title !== tab.title && onUpdateTab(tab.id, {}, title)}
-        />
       );
     case 'shell': {
       const bound = isProvisionalShellSessionId(c.sessionId) ? undefined : c.sessionId;

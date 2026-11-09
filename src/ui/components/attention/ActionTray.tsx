@@ -4,14 +4,13 @@ import { useDispatch } from 'react-redux';
 import { Icon, Menu } from '@ui';
 import { heimdallApi } from '../../api/heimdallApi';
 import { useGetAttentionQuery, type AttentionTaskItem } from '../../api/endpoints/attention';
-import { useGetTaskChainFleetsQuery, useListAgentIdentitiesQuery } from '../../api/endpoints';
 import { attentionScheduler, type ActionScheduler } from '../../services/attention/actionScheduler';
-import { acceptCard, assignReviewerAgent, rejectCard, snoozeCard } from '../../services/attention/attentionActions';
+import { acceptCard, rejectCard, snoozeCard } from '../../services/attention/attentionActions';
 import { snoozePresets, toHubTimestamp } from '../../services/attention/snoozePresets';
 import { buildRouteHash, navigateTo } from '../../utils/appLocation';
 import { ActionTaskCard } from './ActionTaskCard';
 import { ActionBlockerCard } from './AgentBlockerCard';
-import { clampIndex, hideKey, reviewerCandidates } from './attentionModel';
+import { clampIndex, hideKey } from './attentionModel';
 import { TRAY_MODE_COPY, isBlockedItem, needYouLabel, trayItems, type TrayItem, type TrayModeKind, type TrayScope } from './actionTrayModel';
 
 const NO_ITEMS: TrayItem[] = [];
@@ -72,7 +71,7 @@ export function useSendTrayMode(scheduler: ActionScheduler = attentionScheduler)
   }, [scheduler, invalidate]);
 }
 
-type Panel = null | { kind: 'snooze' | 'delegate'; cardId: string };
+type Panel = null | { kind: 'snooze'; cardId: string };
 
 const ACTION_BTN = 'inline-flex min-h-10 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-full px-3.5 text-[14px] font-medium';
 const ACTION_BTN_MOBILE = 'inline-flex min-h-10 min-w-0 flex-auto items-center justify-center whitespace-nowrap rounded-full px-3 text-[13px] font-medium';
@@ -84,7 +83,7 @@ const ACTION_ICON_BTN = 'grid h-10 w-10 shrink-0 place-items-center rounded-full
  * per page (swipe, or the ‹ i/n › pager). "Composer" switches back to the
  * composer, whose "<n> need you" pill returns here.
  *
- * Actions reuse the deck's services. Approve, Snooze and Delegate are deferred
+ * Actions reuse the deck's services. Approve and Snooze are deferred
  * through the app-level undo scheduler (the shell's Undo toast); Answer and
  * Request changes borrow the composer for their text (`onStartMode`); Open
  * routes to the task.
@@ -156,75 +155,37 @@ export function ActionTray({
     navigateTo(buildRouteHash(`/chains/${encodeURIComponent(item.action_refs.chain_id)}/tasks/${encodeURIComponent(item.action_refs.task_id)}`, ''));
   };
 
-  // Delegate picker: fetched on demand when it opens.
-  const delegateItem = panel?.kind === 'delegate' ? items.find((i) => i.card_id === panel.cardId) : undefined;
-  const reviewerChainId = delegateItem?.kind === 'task' ? delegateItem.action_refs.chain_id : '';
-  const fleetQuery = useGetTaskChainFleetsQuery({ chainId: reviewerChainId }, { skip: !reviewerChainId });
-  const agentsQuery = useListAgentIdentitiesQuery({ limit: 200 }, { skip: !reviewerChainId });
-  const reviewersLoading = !!reviewerChainId && !(fleetQuery.data && agentsQuery.data) && (fleetQuery.isFetching || agentsQuery.isFetching);
-  const reviewersError = !reviewersLoading && (fleetQuery.isError || agentsQuery.isError);
-  const reviewers = fleetQuery.data && agentsQuery.data ? reviewerCandidates(fleetQuery.data, agentsQuery.data.agents || []) : [];
-
   if (items.length === 0) return null;
 
   const renderFooter = (item: AttentionTaskItem) => {
     if (panel?.cardId === item.card_id) {
-      const isDelegate = panel.kind === 'delegate';
       return (
-        <div role="menu" data-debug-id={isDelegate ? 'action-tray-delegate-picker' : 'action-tray-snooze-menu'} className="rounded-[var(--radius-lg)] border border-subtle bg-surface p-1 shadow-panel">
+        <div role="menu" data-debug-id="action-tray-snooze-menu" className="rounded-[var(--radius-lg)] border border-subtle bg-surface p-1 shadow-panel">
           <div className="flex items-center justify-between px-2 pb-1 pt-0.5">
-            <p className="text-[12px] text-muted">{isDelegate ? 'Hand the review to an agent' : 'Snooze until'}</p>
+            <p className="text-[12px] text-muted">Snooze until</p>
             <button type="button" aria-label="Close" data-debug-id="action-tray-panel-close" onClick={() => setPanel(null)} className="grid h-8 w-8 place-items-center rounded-full text-muted hover:text-primary">
               <Icon name="close" size={14} />
             </button>
           </div>
-          {isDelegate ? (
-            reviewersLoading ? <p className="px-2 py-2 text-[13px] text-muted">Loading agents…</p>
-            : reviewersError ? <p role="alert" className="px-2 py-2 text-[13px] text-danger">Could not load agents.</p>
-            : reviewers.length === 0 ? <p className="px-2 py-2 text-[13px] text-muted">No agent in this chain's fleet can review.</p>
-            : (
-              <div className="grid max-h-48 grid-cols-2 gap-0.5 overflow-y-auto">
-                {reviewers.map((r) => (
-                  <button
-                    key={r.agentId}
-                    type="button"
-                    role="menuitem"
-                    data-debug-id={`action-tray-delegate-${r.agentId}`}
-                    onClick={() => schedule(item, `Handed to ${r.name}`, (k) => assignReviewerAgent(item.action_refs, { agentId: r.agentId, displayName: r.name }, k))}
-                    className="flex min-h-11 w-full items-center gap-2.5 rounded-[var(--radius-sm)] px-2 py-1.5 text-left hover:bg-surface-raised"
-                  >
-                    <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-surface-raised text-muted">
-                      <Icon name={r.source === 'reviewer_template' ? 'sparkle' : 'bot'} size={15} />
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[14px] text-primary">{r.name}</span>
-                      <span className="hidden truncate text-[12px] text-faint sm:block">{r.source === 'fleet' ? 'In this chain' : 'Reviewer'}</span>
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )
-          ) : (
-            <div className="grid gap-0.5 sm:grid-cols-2">
-              {snoozePresets(new Date(now)).map((p) => (
-                <button
-                  key={p.id}
-                  type="button"
-                  role="menuitem"
-                  data-debug-id={`action-tray-snooze-${p.id}`}
-                  onClick={() => schedule(item, `Snoozed · ${p.label.toLowerCase()}`, (k) => snoozeCard(item.card_id, toHubTimestamp(p.until), k))}
-                  className="flex min-h-11 w-full items-center gap-2 rounded-[var(--radius-sm)] px-2 text-left text-[14px] text-primary hover:bg-surface-raised"
-                >
-                  <Icon name="clock" size={15} className="text-muted" />
-                  {p.label}
-                </button>
-              ))}
-            </div>
-          )}
+          <div className="grid gap-0.5 sm:grid-cols-2">
+            {snoozePresets(new Date(now)).map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                role="menuitem"
+                data-debug-id={`action-tray-snooze-${p.id}`}
+                onClick={() => schedule(item, `Snoozed · ${p.label.toLowerCase()}`, (k) => snoozeCard(item.card_id, toHubTimestamp(p.until), k))}
+                className="flex min-h-11 w-full items-center gap-2 rounded-[var(--radius-sm)] px-2 text-left text-[14px] text-primary hover:bg-surface-raised"
+              >
+                <Icon name="clock" size={15} className="text-muted" />
+                {p.label}
+              </button>
+            ))}
+          </div>
         </div>
       );
     }
-    if (needsAgentStart(item)) return <StartAgentAction item={item} onDelegate={(id) => void agentStart.start(item, id)} debugPrefix="action-tray" cardId={item.card_id} onStart={() => void agentStart.start(item)} {...agentStart.states[item.card_id]} />;
+    if (needsAgentStart(item)) return <StartAgentAction debugPrefix="action-tray" cardId={item.card_id} onStart={() => void agentStart.start(item)} {...agentStart.states[item.card_id]} />;
     return (
       <ActionRow
         item={item}
@@ -232,7 +193,6 @@ export function ActionTray({
         onAnswer={() => { setPanel(null); onStartMode('answer', item); }}
         onApprove={() => schedule(item, 'Approved', (k) => acceptCard(item.card_id, k))}
         onRequestChanges={() => { setPanel(null); onStartMode('changes', item); }}
-        onDelegate={() => setPanel({ kind: 'delegate', cardId: item.card_id })}
         onSnooze={() => setPanel({ kind: 'snooze', cardId: item.card_id })}
         onOpen={() => openTask(item)}
       />
@@ -300,8 +260,7 @@ export function ActionTray({
 
 /**
  * One compact row. Blocked: Answer (in the composer), more (Snooze, Open).
- * Review: Approve, Request changes (reason in the composer), Delegate, more.
- * Delegating a blocked question has no API yet, so blocked cards offer none.
+ * Review: Approve, Request changes (reason in the composer), more.
  */
 function ActionRow({
   item,
@@ -309,7 +268,6 @@ function ActionRow({
   onAnswer,
   onApprove,
   onRequestChanges,
-  onDelegate,
   onSnooze,
   onOpen,
 }: {
@@ -318,7 +276,6 @@ function ActionRow({
   onAnswer: () => void;
   onApprove: () => void;
   onRequestChanges: () => void;
-  onDelegate: () => void;
   onSnooze: () => void;
   onOpen: () => void;
 }) {
@@ -355,17 +312,6 @@ function ActionRow({
         Request changes
       </button>
       <div className="ml-auto flex shrink-0 items-center">
-        <button
-          type="button"
-          data-debug-id="action-tray-delegate"
-          aria-label="Delegate the review to an agent"
-          title="Delegate the review to an agent"
-          onClick={onDelegate}
-          className={mobile ? ACTION_ICON_BTN : `${ACTION_BTN} text-muted hover:bg-neutral-soft hover:text-primary`}
-        >
-          <Icon name="bot" size={18} />
-          {mobile ? null : <span>Delegate</span>}
-        </button>
         {more}
       </div>
     </div>

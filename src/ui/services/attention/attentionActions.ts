@@ -1,12 +1,7 @@
 // Network calls for deferred attention actions. Plain JSON calls (no vault
 // encryption needed), sent with fetch keepalive when flushing on page exit, which
 // RTK mutations cannot do. Callers invalidate caches after success.
-import { apiUrl, cookieMutation } from '../../api/cookieFetch';
-import type { AttentionTaskRefs, PlacementRecoveryInput } from '../../api/endpoints/attention';
-
-/** Targeted repair preserves unrelated named/role reviews and user approval. */
-export const recoverCardPlacement = (cardId: string, input: PlacementRecoveryInput) =>
-  cookieMutation(`/cards/${encodeURIComponent(cardId)}/placement-recovery`, 'POST', input);
+import { apiUrl } from '../../api/cookieFetch';
 
 async function send(path: string, method: string, body: unknown, keepalive: boolean): Promise<void> {
   const res = await fetch(apiUrl(path), {
@@ -46,21 +41,6 @@ export const rejectCard = (cardId: string, keepalive: boolean, body: { summary?:
 export const snoozeCard = (cardId: string, until: string, keepalive: boolean) =>
   send(`/cards/${enc(cardId)}/snooze`, 'POST', { snooze_until: until }, keepalive);
 
-export const cancelTask = (refs: AttentionTaskRefs, keepalive: boolean) =>
-  send(`/task-chains/${enc(refs.chain_id)}/tasks/${enc(refs.task_id)}/cancel`, 'POST', {}, keepalive);
-
 export const markConversationRead = (conversationId: string, keepalive: boolean) =>
   send(`/chats/${enc(conversationId)}/read`, 'POST', {}, keepalive);
 
-/**
- * Hands the review to a durable agent: it becomes the task's named reviewer and
- * the user's approval is no longer required. The hub re-gates the task on
- * that edit (stale review leases are replaced, the reviewer is matched), so no
- * separate reconcile is needed; the user's card retires server-side.
- */
-export const assignReviewerAgent = async (refs: AttentionTaskRefs, agent: { agentId: string; displayName: string }, keepalive: boolean) => {
-  await send(`/task-chains/${enc(refs.chain_id)}/tasks/${enc(refs.task_id)}`, 'PATCH', {
-    reviewers: [agent.agentId],
-    requires_user_approval: false,
-  }, keepalive);
-};

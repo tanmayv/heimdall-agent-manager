@@ -246,12 +246,10 @@ test('clean aux tabs: surfaces no longer render their own header chrome', () => 
   assert.doesNotMatch(read('src/ui/components/workbench/AgentPtyWorkbenchPane.tsx'), /workbench-agent-pty-header|workbench-agent-pty-selector|workbench-agent-pty-open-chat/);
   assert.doesNotMatch(read('src/ui/components/workbench/ShellWorkbenchPane.tsx'), /workbench-shell-toolbar|workbench-shell-session-select|NewShellDialog/);
   assert.doesNotMatch(read('src/ui/components/workbench/PreviewWorkbenchPane.tsx'), /workbench-preview-toolbar/);
-  assert.doesNotMatch(read('src/ui/components/chat/ChainOverviewPanel.tsx'), /chain-overview-header-toolbar/);
   const chat = read('src/ui/components/workbench/AgentChatPane.tsx');
   assert.match(chat, /\{!isAuxSubagent \? \(\s*<header/, 'sub-agent chat renders no header');
   assert.match(chat, /projectId && !isAuxSubagent/, 'sub-agent chat renders no project chip');
   assert.doesNotMatch(chat, /workbench-chain-overview-popup/, 'floating overview popup is gone');
-  assert.match(read('src/ui/components/auxiliary/AuxTabContent.tsx'), /hideTitleBar=\{true\}/);
 });
 
 test('workspace: URL <-> layout sync (pane set in the URL, replace pushes, no loops), split groups, mobile sheet', async () => {
