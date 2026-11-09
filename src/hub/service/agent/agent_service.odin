@@ -393,19 +393,6 @@ prepare_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 	conv, conv_ok, conv_err := ensure_instance_conversation(service, saved, default_title)
 	if !conv_ok do return domain.Agent_Instance{}, 0, false, conv_err
 	if saved.conversation_id == "" { saved.conversation_id = conv.conversation_id; saved, saved_ok, save_err = iface.agent_save_instance(service.agents, saved); if !saved_ok do return domain.Agent_Instance{}, 0, false, save_err }
-	if service.taskchains != nil && saved.chain_id != "" {
-		members, _ := iface.taskchain_list_members_by_chain(service.taskchains, domain.Task_Chain_ID(saved.chain_id), saved.owner_user_id)
-		role := input.member_role
-		if role == "" {
-			role = "coordinator" if len(members) == 0 else "worker"
-		}
-		now_m := platform.clock_now(service.clock)
-		member := domain.Task_Chain_Member{chain_id = domain.Task_Chain_ID(saved.chain_id), agent_instance_id = saved.agent_instance_id, agent_id = saved.agent_id, owner_user_id = saved.owner_user_id, role = role, created_at = now_m}
-		iface.taskchain_save_member(service.taskchains, member)
-		if role == "coordinator" {
-			update_private_chain_coordinator(service, saved)
-		}
-	}
 	prepared = true
 	return saved, generation, true, domain.Domain_Error{}
 }
@@ -1512,29 +1499,25 @@ require_enabled_support :: proc(service: ^Agent_Service, auth: contracts.Auth_Co
 	return false, domain.domain_error(.Provider_Unavailable, "agent has no enabled bridge support")
 }
 
-update_private_chain_coordinator :: proc(service: ^Agent_Service, inst: domain.Agent_Instance) {
-	if service.taskchains == nil || inst.chain_id == "" do return
-	chain, ok, _ := iface.taskchain_get_chain(service.taskchains, domain.Task_Chain_ID(inst.chain_id))
-	if !ok || chain.owner_user_id != inst.owner_user_id || chain.coordinator_agent_instance_id != "" do return
-	chain.coordinator_agent_instance_id = inst.agent_instance_id
-	chain.updated_at = inst.updated_at
-	_, _, _ = iface.taskchain_save_chain(service.taskchains, chain)
-}
-
+// resolve_instance_chain validates an explicit chain binding. Chains are
+// Bridge-owned: the chain must be the owner's owner-registry route (native or
+// imported) or one of their legacy read-only Hub chain records. Without a
+// chain_id the instance is standalone (the Hub no longer creates a private
+// chain per instance).
 resolve_instance_chain :: proc(service: ^Agent_Service, owner: domain.User_ID, chain_id: string, default_title: string) -> (string, bool, domain.Domain_Error) {
+	if chain_id == "" do return "", true, domain.Domain_Error{}
 	if service.taskchains == nil do return "", false, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
-	if chain_id != "" {
-		chain, ok, err := iface.taskchain_get_chain(service.taskchains, domain.Task_Chain_ID(chain_id))
-		if !ok do return "", false, err
-		if chain.owner_user_id != owner do return "", false, domain.domain_error(.Not_Found, "task chain not found")
-		return string(chain.chain_id), true, domain.Domain_Error{}
+	if service.taskchains.owner_registry_routes != nil {
+		saved := context.allocator; context.allocator = context.temp_allocator; defer context.allocator = saved
+		routes, rerr := service.taskchains.owner_registry_routes(service.taskchains.ctx, string(owner), chain_id)
+		if rerr.code != .None do return "", false, rerr
+		if len(routes) == 1 do return chain_id, true, domain.Domain_Error{}
 	}
-	now := platform.clock_now(service.clock)
-	title := strings.trim_space(default_title); if title == "" do title = "Private conversation"
-	chain := domain.Task_Chain{chain_id = domain.Task_Chain_ID(platform.generate_id(service.ids, "chain_")), owner_user_id = owner, title = title, publish_state = .Published, status = .Active, kind = domain.CHAIN_KIND_MIXED_WORK, last_activity_at = now, title_source = "default", created_at = now, updated_at = now, published_at = now}
-	created, saved, save_err := iface.taskchain_save_chain(service.taskchains, chain)
-	if !saved do return "", false, save_err
-	return string(created.chain_id), true, domain.Domain_Error{}
+	if service.taskchains.get_chain != nil {
+		chain, ok, _ := iface.taskchain_get_chain(service.taskchains, domain.Task_Chain_ID(chain_id))
+		if ok && chain.owner_user_id == owner do return string(chain.chain_id), true, domain.Domain_Error{}
+	}
+	return "", false, domain.domain_error(.Not_Found, "task chain not found")
 }
 
 ensure_instance_conversation :: proc(service: ^Agent_Service, inst: domain.Agent_Instance, default_title: string = "") -> (domain.Chat_Conversation, bool, domain.Domain_Error) {

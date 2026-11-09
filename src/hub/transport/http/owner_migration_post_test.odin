@@ -14,7 +14,6 @@ import domain "odin_test:hub/domain"
 import platform "odin_test:hub/platform"
 import sqlite "odin_test:hub/repository/sqlite"
 import auth_service "odin_test:hub/service/auth"
-import taskchain_service "odin_test:hub/service/taskchain"
 import user_service "odin_test:hub/service/user"
 import vault "odin_test:lib/vault"
 
@@ -98,8 +97,7 @@ owner_migration_post_blockers_offline_concurrency_replay_and_abort :: proc(t:^te
     account:=principal.user_id
     impl:sqlite.Taskchain_Repo_SQLite
     repo:=sqlite.new_taskchain_repository(&impl,&conn)
-    tasks:=taskchain_service.Taskchain_Service{repo=&repo}
-    h:=Bridge_Handlers{auth=&auth,taskchains=&tasks}
+    h:=Bridge_Handlers{auth=&auth,chains=&repo}
     testing.expect(t,vault.p256_private_key_generate(&migration_post_fake.device_priv) && vault.p256_private_key_generate(&migration_post_fake.owner_priv))
     defer {ecdsa.private_key_clear(&migration_post_fake.device_priv);ecdsa.private_key_clear(&migration_post_fake.owner_priv)}
     testing.expect(t,sqlite.exec(&conn,fmt.tprintf(`INSERT INTO task_chains(chain_id,owner_user_id,title,kind,created_at,updated_at) VALUES('chain_a','%s','a','mixed_work','c','u'),('chain_b','%s','b','mixed_work','c','u');

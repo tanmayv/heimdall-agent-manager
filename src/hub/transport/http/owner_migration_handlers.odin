@@ -86,16 +86,16 @@ owner_migration_preflight_handler :: proc(ctx:rawptr,req:Request)->Response {
     if !ok do return resp
     if !contracts.is_user_auth(auth) && auth.kind!=.Instance_Token do return respond_error(domain.domain_error(.Forbidden,"user authentication required"),req.request_id)
     chain_id:=query_value(req.query,"chain_id")
-    chain,exists,err:=h.taskchains.repo.get_chain(h.taskchains.repo.ctx,domain.Task_Chain_ID(chain_id))
+    chain,exists,err:=h.chains.get_chain(h.chains.ctx,domain.Task_Chain_ID(chain_id))
     if err.code!=.None do return respond_error(err,req.request_id)
     if !exists || string(chain.owner_user_id)!=auth.user_id do return respond_error(domain.domain_error(.Not_Found,"task chain not found"),req.request_id)
     out:=Owner_Migration_Preflight{chain_id=chain_id,state="none",work_revision=chain.work_revision}
-    if f,found,ferr:=h.taskchains.repo.legacy_source_get(h.taskchains.repo.ctx,auth.user_id,chain_id);ferr.code!=.None {
+    if f,found,ferr:=h.chains.legacy_source_get(h.chains.ctx,auth.user_id,chain_id);ferr.code!=.None {
         return respond_error(ferr,req.request_id)
     } else if found {
         out.state=f.state;out.migration_id=f.selection.migration_id;out.owner_bridge_id=f.selection.owner_bridge_id
     }
-    blockers,berr:=h.taskchains.repo.legacy_migration_blockers(h.taskchains.repo.ctx,chain_id)
+    blockers,berr:=h.chains.legacy_migration_blockers(h.chains.ctx,chain_id)
     if berr.code!=.None do return respond_error(berr,req.request_id)
     out.blockers=blockers
     return respond_success(owner_json(out),req.request_id,auth_ctx_server_time(req))
@@ -147,7 +147,7 @@ owner_migration_post :: proc(h:^Bridge_Handlers,req:Request,env:Owner_Migration_
        !contracts.owner_verify_signature("genesis",genesis,"creator_signature",device) {
         return respond_error(domain.domain_error(.Forbidden,"migration genesis is not bound to this selection"),req.request_id)
     }
-    chain,exists,cerr:=h.taskchains.repo.get_chain(h.taskchains.repo.ctx,domain.Task_Chain_ID(chain_id))
+    chain,exists,cerr:=h.chains.get_chain(h.chains.ctx,domain.Task_Chain_ID(chain_id))
     if cerr.code!=.None do return respond_error(cerr,req.request_id)
     if !exists || string(chain.owner_user_id)!=account do return respond_error(domain.domain_error(.Not_Found,"task chain not found"),req.request_id)
     if owned,berr:=env.bridge_owned(h,auth,bridge_id);!owned do return respond_error(berr,req.request_id)
@@ -156,13 +156,13 @@ owner_migration_post :: proc(h:^Bridge_Handlers,req:Request,env:Owner_Migration_
     s:=domain.Legacy_Migration_Selection{account,chain_id,migration,bridge_id,owner.key_id,selection_digest,expected}
     // Freshness and CAS gate only a new selection; an exact retry continues
     // the same frozen migration after the request expiry.
-    _,selected,serr:=h.taskchains.repo.legacy_source_get(h.taskchains.repo.ctx,account,chain_id)
+    _,selected,serr:=h.chains.legacy_source_get(h.chains.ctx,account,chain_id)
     if serr.code!=.None do return respond_error(serr,req.request_id)
     if !selected {
         now:=time.to_unix_nanoseconds(time.now())/1000000
         if e:=contracts.owner_migration_admit("migration_selection",selection,now,chain.work_revision);e!=.None do return respond_error(domain.domain_error(.Conflict,fmt.tprintf("migration selection not admitted: %s",contracts.owner_auth_error_code(e))),req.request_id)
     }
-    fence,blockers,ferr:=h.taskchains.repo.legacy_migration_freeze_now(h.taskchains.repo.ctx,s)
+    fence,blockers,ferr:=h.chains.legacy_migration_freeze_now(h.chains.ctx,s)
     if ferr.code!=.None do return respond_error(ferr,req.request_id)
     if len(blockers)>0 do return owner_migration_blocked(blockers,req.request_id)
     export,eerr:=owner_migration_export_cached(h,account,chain_id,migration)
@@ -206,7 +206,7 @@ owner_migration_cutover :: proc(h:^Bridge_Handlers,account,chain_id,migration,ma
     genesis_digest,_:=contracts.owner_digest("genesis",genesis)
     route:=domain.Owner_Registry_Record{account_id=account,chain_id=chain_id,owner_bridge_id=owner.principal_id,owner_key_id=owner.key_id,creator_id=contracts.owner_string(genesis,"creator_id"),genesis_digest=genesis_digest,genesis_json=reply.genesis}
     receipt_digest:=contracts.owner_payload_digest(reply.receipt)
-    replayed,err:=h.taskchains.repo.legacy_migration_cutover(h.taskchains.repo.ctx,account,chain_id,migration,manifest_digest,receipt_digest,route)
+    replayed,err:=h.chains.legacy_migration_cutover(h.chains.ctx,account,chain_id,migration,manifest_digest,receipt_digest,route)
     return receipt_digest,replayed,err
 }
 
@@ -225,7 +225,7 @@ owner_migration_export_handler :: proc(ctx:rawptr,req:Request)->Response {
     if !ok do return resp
     if auth.kind!=.Bridge_Token do return respond_error(domain.domain_error(.Forbidden,"owner Bridge authentication required"),req.request_id)
     migration:=query_value(req.query,"migration_id")
-    f,found,err:=h.taskchains.repo.legacy_migration_get(h.taskchains.repo.ctx,auth.user_id,migration)
+    f,found,err:=h.chains.legacy_migration_get(h.chains.ctx,auth.user_id,migration)
     if err.code!=.None do return respond_error(err,req.request_id)
     if !found || f.selection.owner_bridge_id!=auth.bridge_id do return respond_error(domain.domain_error(.Forbidden,"selected owner Bridge required"),req.request_id)
     export,eerr:=owner_migration_export_cached(h,auth.user_id,f.selection.chain_id,migration)
@@ -249,12 +249,12 @@ owner_migration_state_handler :: proc(ctx:rawptr,req:Request)->Response {
     if !ok do return resp
     if auth.kind!=.Bridge_Token do return respond_error(domain.domain_error(.Forbidden,"owner Bridge authentication required"),req.request_id)
     migration:=query_value(req.query,"migration_id")
-    f,found,err:=h.taskchains.repo.legacy_migration_get(h.taskchains.repo.ctx,auth.user_id,migration)
+    f,found,err:=h.chains.legacy_migration_get(h.chains.ctx,auth.user_id,migration)
     if err.code!=.None do return respond_error(err,req.request_id)
     if !found {
         // Only an explicit abort record says "aborted"; an unknown migration
         // stays 404, which the owner treats as retryable, never as abort.
-        chain,owner_bridge,aborted,aerr:=h.taskchains.repo.legacy_migration_aborted(h.taskchains.repo.ctx,auth.user_id,migration)
+        chain,owner_bridge,aborted,aerr:=h.chains.legacy_migration_aborted(h.chains.ctx,auth.user_id,migration)
         if aerr.code!=.None do return respond_error(aerr,req.request_id)
         if aborted && owner_bridge==auth.bridge_id do return respond_success(owner_json(Owner_Migration_State{migration,chain,"aborted","",owner_bridge}),req.request_id,auth_ctx_server_time(req))
         return respond_error(domain.domain_error(.Not_Found,"migration not found"),req.request_id)
@@ -294,7 +294,7 @@ owner_migration_export_cached :: proc(h:^Bridge_Handlers,account,chain,migration
         }
     }
     sync.mutex_unlock(&owner_migration_export_cache_mutex)
-    export,err:=h.taskchains.repo.legacy_migration_export(h.taskchains.repo.ctx,account,chain,migration)
+    export,err:=h.chains.legacy_migration_export(h.chains.ctx,account,chain,migration)
     if err.code!=.None do return export,err
     a:=runtime.default_allocator()
     entry:=Owner_Migration_Cached_Export{strings.clone(account,a),strings.clone(migration,a),strings.clone(export.manifest,a),strings.clone(export.manifest_digest,a),make([]string,len(export.documents),a)}
@@ -325,11 +325,11 @@ owner_migration_abort_handler :: proc(ctx:rawptr,req:Request)->Response {
     if !owner_migration_abort_authorized(auth) do return respond_error(domain.domain_error(.Forbidden,"aborting a migration needs the account owner's browser session; agent tokens cannot abort"),req.request_id)
     body:Owner_Migration_Abort_Request
     if json.unmarshal_string(req.body,&body,.JSON,context.temp_allocator)!=nil || body.chain_id=="" || body.migration_id=="" do return respond_error(domain.domain_error(.Validation_Failed,"chain_id and migration_id are required"),req.request_id)
-    chain,exists,cerr:=h.taskchains.repo.get_chain(h.taskchains.repo.ctx,domain.Task_Chain_ID(body.chain_id))
+    chain,exists,cerr:=h.chains.get_chain(h.chains.ctx,domain.Task_Chain_ID(body.chain_id))
     if cerr.code!=.None do return respond_error(cerr,req.request_id)
     if !exists || string(chain.owner_user_id)!=auth.user_id do return respond_error(domain.domain_error(.Not_Found,"task chain not found"),req.request_id)
-    fence,selected,_:=h.taskchains.repo.legacy_source_get(h.taskchains.repo.ctx,auth.user_id,body.chain_id)
-    replayed,err:=h.taskchains.repo.legacy_migration_abort(h.taskchains.repo.ctx,auth.user_id,body.chain_id,body.migration_id)
+    fence,selected,_:=h.chains.legacy_source_get(h.chains.ctx,auth.user_id,body.chain_id)
+    replayed,err:=h.chains.legacy_migration_abort(h.chains.ctx,auth.user_id,body.chain_id,body.migration_id)
     if err.code!=.None do return respond_error(err,req.request_id)
     owner_migration_export_evict(auth.user_id,body.migration_id)
     // Lets the owner abandon a quarantined import now; it also does so on its

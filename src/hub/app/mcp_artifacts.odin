@@ -12,7 +12,9 @@ mcp_resource_artifact :: proc(g:^App_Graph,view:mcp.Access_View,c:mcp.Resource_C
 	row:domain.Artifact;ok:bool;err:domain.Domain_Error
 	switch c.tool {
 	case "artifacts.create":
-		if a.task_id!="" && a.chain_id=="" {task,found,e:=iface.taskchain_get_task(&g.repos.taskchains,domain.Task_ID(a.task_id));if !found || e.code!=.None || string(task.owner_user_id)!=view.owner do return "","","not_found";a.chain_id=string(task.chain_id)}
+		// A legacy Hub task still names its chain; an owner-chain task id is
+		// opaque to the Hub (it lives on the owner Bridge).
+		if a.task_id!="" && a.chain_id=="" {if task,found,e:=iface.taskchain_get_task(&g.repos.taskchains,domain.Task_ID(a.task_id));found && e.code==.None {if string(task.owner_user_id)!=view.owner do return "","","not_found";a.chain_id=string(task.chain_id)}}
 		ext:="txt";if a.content_type=="text/markdown" do ext="md";if a.content_type=="application/json" do ext="json"
 		kind:="file";body:=mcp.resource_text(c.sealed,"content")
 		// entry/files creates: the sealed archive token, stored exactly like a

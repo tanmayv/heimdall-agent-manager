@@ -16,7 +16,7 @@ test_task_chain_token_usage_handler :: proc(t: ^testing.T) {
 	path := fmt.tprintf("/api/v1/task-chains/%s/token-usage", f.chain_id)
 
 	// No token data yet: empty state, the fixture instance still listed.
-	resp := task_chain_token_usage_handler(&f.th, wire_cookie_request(f, "GET", path, ""))
+	resp := task_chain_token_usage_handler(&f.bh, wire_cookie_request(f, "GET", path, ""))
 	testing.expect_value(t, resp.status, 200)
 	data := token_usage_data(t, resp.body)
 	testing.expect_value(t, data["has_data"].(json.Boolean), false)
@@ -39,7 +39,7 @@ test_task_chain_token_usage_handler :: proc(t: ^testing.T) {
 	added, _ = iface.agent_add_token_totals(&f.ag_repo, "inst_wire_rev", f.bridge_pin, 1, 10000, 100, 20)
 	testing.expect(t, added)
 
-	resp = task_chain_token_usage_handler(&f.th, wire_cookie_request(f, "GET", path, ""))
+	resp = task_chain_token_usage_handler(&f.bh, wire_cookie_request(f, "GET", path, ""))
 	testing.expect_value(t, resp.status, 200)
 	data = token_usage_data(t, resp.body)
 	testing.expect_value(t, data["has_data"].(json.Boolean), true)
@@ -67,7 +67,7 @@ test_task_chain_token_usage_handler :: proc(t: ^testing.T) {
 	testing.expect(t, !has_ctx, "stopped agent has no current context")
 
 	// Unknown chain -> error, never another owner's data.
-	missing := task_chain_token_usage_handler(&f.th, wire_cookie_request(f, "GET", "/api/v1/task-chains/chain_nope/token-usage", ""))
+	missing := task_chain_token_usage_handler(&f.bh, wire_cookie_request(f, "GET", "/api/v1/task-chains/chain_nope/token-usage", ""))
 	testing.expect(t, missing.status >= 400, "unknown chain is rejected")
 }
 
@@ -80,7 +80,7 @@ test_task_chain_token_usage_handler_estimate :: proc(t: ^testing.T) {
 	path := fmt.tprintf("/api/v1/task-chains/%s/token-usage", f.chain_id)
 	_, _ = iface.agent_update_token_usage(&f.ag_repo, f.instance_id, f.bridge_pin,
 		`{"tool_calls":5,"est_tokens_total":100000,"context_source":"estimate","estimated_context_tokens":150000,"context_window":200000,"run_count":1,"compactions":0,"updated_at_ms":1}`, "2026-11-02T10:00:00Z")
-	resp := task_chain_token_usage_handler(&f.th, wire_cookie_request(f, "GET", path, ""))
+	resp := task_chain_token_usage_handler(&f.bh, wire_cookie_request(f, "GET", path, ""))
 	testing.expect_value(t, resp.status, 200)
 	data := token_usage_data(t, resp.body)
 	agent := data["agents"].(json.Array)[0].(json.Object)

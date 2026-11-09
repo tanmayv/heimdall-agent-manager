@@ -139,9 +139,8 @@ begin_instance_reconfiguration :: proc(service: ^Agent_Service, auth: contracts.
 		next.project_path = path
 	}
 	if inst.chain_id != "" && service.taskchains != nil {
-		chain, chain_ok, chain_err := iface.taskchain_get_chain(service.taskchains, domain.Task_Chain_ID(inst.chain_id))
-		if !chain_ok do return {}, false, chain_err
-		if chain.owner_user_id != inst.owner_user_id do return {}, false, domain.domain_error(.Not_Found, "task chain not found")
+		// The chain is Bridge-owned (or a legacy record); it must still be the owner's.
+		if _, chain_ok, chain_err := resolve_instance_chain(service, inst.owner_user_id, inst.chain_id, ""); !chain_ok do return {}, false, chain_err
 		// Chain membership/kind does not bind this instance to a checkout. Chain
 		// directory records are context references, not owned runtime workspaces.
 		// Moving the instance preserves the chain and its directory references.

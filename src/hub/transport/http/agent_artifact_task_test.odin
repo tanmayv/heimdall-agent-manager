@@ -15,7 +15,6 @@ test_agent_artifact_attribution_uses_authenticated_current_task :: proc(t:^testi
 	impl:sqlite.Content_Repo_SQLite;repo:=sqlite.new_content_repository(&impl,&f.conn)
 	svc:=content_service.new_content_service(&repo,&f.ag_repo,&f.br_repo,nil,&f.tc_repo,&f.clock,&f.ids);f.ah.content=&svc
 	_,saved,_:=iface.agent_save(&f.ag_repo,domain.Agent{agent_id="agt_wire_tb2",owner_user_id=f.owner,name="Worker",slug="artifact-worker"});testing.expect(t,saved)
-	_,saved,_=iface.taskchain_save_task(&f.tc_repo,{task_id="task_artifact_current",chain_id=f.chain_id,owner_user_id=f.owner,title="Current task",state=.In_Progress});testing.expect(t,saved)
 	testing.expect(t,sqlite.exec(&f.conn,"UPDATE agent_instances SET current_task_id='task_artifact_current' WHERE agent_instance_id='inst_wire_tb2';"))
 	body:=strings.clone(`{"agent_instance_id":"inst_wire_tb2","params":{"name":"Synthetic result","kind":"markdown","content":"Synthetic result","task_id":"task_foreign","chain_id":"chain_foreign","agent_id":"agt_foreign"}}`,context.temp_allocator)
 	response:=agent_action_artifact_create_handler(&f.ah,wire_agent_request(f,"artifact/create",body))

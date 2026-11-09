@@ -87,7 +87,7 @@ mcp_resource_project :: proc(g:^App_Graph,view:mcp.Access_View,c:mcp.Resource_Co
 	return string(row.project_id),domain.project_state_string(row.state),""
 }
 mcp_resource_issue_target :: proc(g:^App_Graph,owner,scope,target,chain:string)->string {
-	if chain!="" {row,found,e:=iface.taskchain_get_chain(&g.repos.taskchains,domain.Task_Chain_ID(chain));if !found || e.code!=.None || string(row.owner_user_id)!=owner do return "not_found"}
+	if chain!="" && !mcp_chain_owned(g,owner,chain) do return "not_found"
 	switch scope {
 	case "","global":if target!="" do return "invalid_arguments"
 	case "project":row,found,e:=iface.project_get(&g.repos.projects,domain.Project_ID(target));if !found || e.code!=.None || string(row.owner_user_id)!=owner do return "not_found"

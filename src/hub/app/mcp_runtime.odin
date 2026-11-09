@@ -59,9 +59,7 @@ mcp_runtime_call :: proc(ctx:rawptr,raw:string,view:mcp.Access_View,tool:string,
 		definition,found,err:=agent.get_agent(&g.agents,principal,a.agent_id);if !found || err.code!=.None do return "","not_found"
 		create_title=definition.name
 		revision,ok:=mcp.catalog_agent_revision(&control,definition);if !ok do return "","request_failed";if revision!=a.expected_revision do return "","revision_conflict"
-		chain,chain_found,chain_err:=iface.taskchain_get_chain(&g.repos.taskchains,domain.Task_Chain_ID(a.chain_id))
-		if !chain_found || chain_err.code!=.None || string(chain.owner_user_id)!=view.owner do return "","not_found"
-		if chain.status!=.Active do return "","conflict"
+		if !mcp_chain_owned(g,view.owner,a.chain_id) do return "","not_found"
 	} else {
 		row,found,err:=agent.get_instance(&g.agents,principal,a.agent_instance_id);if !found || err.code!=.None || row.kind!="agent" do return "","not_found";i=row
 		if mcp.runtime_revision(i)!=a.expected_revision do return "","revision_conflict"

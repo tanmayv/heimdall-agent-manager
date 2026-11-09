@@ -1,9 +1,9 @@
 package http
 
-// REQ-EXP-GATE-3/5/6: every project and chain-directory fs/vcs/search route (the
+// REQ-EXP-GATE-3/5/6: every project fs/vcs/search route (the
 // Project Explorer) is refused for an owner without project_vcs BEFORE any project or
 // directory lookup, bridge lookup or relay. These drive the production handlers with
-// real session-cookie auth and counting fake project/taskchain repositories: a refusal
+// real session-cookie auth and counting fake project repositories: a refusal
 // leaves both counters at zero, and an opt-in reaches the existing ownership lookup
 // (the fakes answer not_found, so nothing is relayed and no bridge is needed).
 
@@ -17,7 +17,6 @@ import platform "odin_test:hub/platform"
 import sqlite "odin_test:hub/repository/sqlite"
 import auth_service "odin_test:hub/service/auth"
 import project_service "odin_test:hub/service/project"
-import taskchain_service "odin_test:hub/service/taskchain"
 import user_service "odin_test:hub/service/user"
 
 @(private = "file")
@@ -33,9 +32,6 @@ Explorer_Route :: struct {
 
 @(private = "file")
 PROJECT_PATH :: "/api/v1/projects/prj_gate"
-@(private = "file")
-DIRECTORY_PATH :: "/api/v1/task-chains/chain_gate/directories/dir_gate"
-
 // Every route wiring.odin registers through project_fs_relay, project_vcs_relay,
 // directory_fs_relay and directory_vcs_relay (vcs/commit-diff on a chain directory is
 // the task-review exemption, covered separately below).
@@ -65,22 +61,6 @@ EXPLORER_ROUTES := [?]Explorer_Route{
 	{"project vcs commit", project_handle_vcs_commit, "POST", PROJECT_PATH + "/vcs/commit", "", `{"message":"m"}`, true},
 	{"project vcs upload", project_handle_vcs_upload, "POST", PROJECT_PATH + "/vcs/upload", "", `{}`, true},
 	{"project vcs sync", project_handle_vcs_sync, "POST", PROJECT_PATH + "/vcs/sync", "", `{}`, true},
-	{"directory fs list", list_chain_directory_fs_handler, "GET", DIRECTORY_PATH + "/fs", "path=", "", false},
-	{"directory fs quick-open", quick_open_chain_directory_fs_handler, "GET", DIRECTORY_PATH + "/fs/quick-open", "query=main", "", false},
-	{"directory fs search", search_chain_directory_fs_handler, "GET", DIRECTORY_PATH + "/fs/search", "query=main", "", false},
-	{"directory fs read", read_chain_directory_file_handler, "GET", DIRECTORY_PATH + "/fs/file", "path=a.txt", "", false},
-	{"directory fs create", create_chain_directory_file_handler, "POST", DIRECTORY_PATH + "/fs/file", "", `{"path":"a.txt"}`, false},
-	{"directory fs write", write_chain_directory_file_handler, "PUT", DIRECTORY_PATH + "/fs/file", "", `{"path":"a.txt","content":"x"}`, false},
-	{"directory fs batch write", batch_write_chain_directory_files_handler, "PUT", DIRECTORY_PATH + "/fs/files", "", `{"files":[{"path":"a.txt","content":"x"}]}`, false},
-	{"directory fs mkdir", create_chain_directory_dir_handler, "POST", DIRECTORY_PATH + "/fs/dir", "", `{"path":"d"}`, false},
-	{"directory fs move", move_chain_directory_path_handler, "POST", DIRECTORY_PATH + "/fs/move", "", `{"from":"a","to":"b"}`, false},
-	{"directory fs delete", delete_chain_directory_path_handler, "DELETE", DIRECTORY_PATH + "/fs", "path=a.txt", "", false},
-	{"directory vcs capabilities", chain_directory_handle_vcs_capabilities, "GET", DIRECTORY_PATH + "/vcs/capabilities", "", "", false},
-	{"directory vcs status", chain_directory_handle_vcs_status, "GET", DIRECTORY_PATH + "/vcs/status", "", "", false},
-	{"directory vcs files", chain_directory_handle_vcs_files, "GET", DIRECTORY_PATH + "/vcs/files", "", "", false},
-	{"directory vcs diff", chain_directory_handle_vcs_diff, "GET", DIRECTORY_PATH + "/vcs/diff", "file=a.txt", "", false},
-	{"directory vcs log", chain_directory_handle_vcs_log, "GET", DIRECTORY_PATH + "/vcs/log", "", "", false},
-	{"directory vcs workspaces", chain_directory_handle_vcs_workspaces, "GET", DIRECTORY_PATH + "/vcs/workspaces", "", "", false},
 }
 
 @(private = "file")
@@ -109,13 +89,6 @@ explorer_project_get :: proc(ctx: rawptr, project_id: domain.Project_ID) -> (dom
 }
 
 @(private = "file")
-explorer_chain_get :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID) -> (domain.Task_Chain, bool, domain.Domain_Error) {
-	(^int)(ctx)^ += 1
-	return domain.Task_Chain{}, false, domain.domain_error(.Not_Found, "task chain not found")
-}
-
-
-@(private = "file")
 Explorer_Fixture :: struct {
 	conn:           sqlite.Conn,
 	us_repo_sqlite: sqlite.User_Repo_SQLite,
@@ -127,11 +100,8 @@ Explorer_Fixture :: struct {
 	exp:            Explorer_Exp_Repo,
 	exp_repo:       iface.Experiment_Repository,
 	project_gets:   int,
-	chain_gets:     int,
 	project_repo:   iface.Project_Repository,
 	projects:       project_service.Project_Service,
-	chain_repo:     iface.Taskchain_Repository,
-	taskchains:     taskchain_service.Taskchain_Service,
 	bh:             Bridge_Handlers,
 }
 
@@ -154,12 +124,9 @@ setup_explorer_fixture :: proc(t: ^testing.T) -> ^Explorer_Fixture {
 	f.exp_repo = iface.Experiment_Repository{ctx = rawptr(&f.exp), list_by_owner = explorer_exp_list}
 	f.project_repo = iface.Project_Repository{ctx = rawptr(&f.project_gets), get = explorer_project_get}
 	f.projects = project_service.Project_Service{projects = &f.project_repo}
-	f.chain_repo = iface.Taskchain_Repository{ctx = rawptr(&f.chain_gets), get_chain = explorer_chain_get}
-	f.taskchains = taskchain_service.Taskchain_Service{repo = &f.chain_repo}
 	f.bh = Bridge_Handlers{
 		auth = &f.auth_svc,
 		projects = &f.projects,
-		taskchains = &f.taskchains,
 		experiments = &f.exp_repo,
 	}
 	return f
@@ -214,7 +181,6 @@ test_explorer_routes_refuse_disabled_owner_before_lookup :: proc(t: ^testing.T) 
 		expect_explorer_disabled(t, route, resp)
 	}
 	testing.expect_value(t, f.project_gets, 0)
-	testing.expect_value(t, f.chain_gets, 0)
 }
 
 @(test)
@@ -225,7 +191,7 @@ test_explorer_routes_pass_enabled_owner_to_ownership_checks :: proc(t: ^testing.
 	defer delete(owner)
 	f.exp.enabled_owner = owner
 
-	project_routes, directory_routes := 0, 0
+	project_routes := 0
 	for route in EXPLORER_ROUTES {
 		resp := explorer_call(f, route, "gate_enabled")
 		// The guard passes; the existing project/chain ownership lookup still runs and
@@ -233,10 +199,8 @@ test_explorer_routes_pass_enabled_owner_to_ownership_checks :: proc(t: ^testing.
 		testing.expectf(t, resp.status == 404, "%s: enabled owner reaches ownership lookup, got %d (%s)", route.name, resp.status, resp.body)
 		testing.expectf(t, !strings.contains(resp.body, "experimental_feature_disabled"), "%s: not refused as experimental", route.name)
 		if route.project do project_routes += 1
-		else do directory_routes += 1
 	}
 	testing.expect_value(t, f.project_gets, project_routes)
-	testing.expect_value(t, f.chain_gets, directory_routes)
 }
 
 // Per-owner isolation: one user's opt-in never enables another user.
@@ -270,19 +234,4 @@ test_explorer_routes_fail_closed_on_experiment_repo_error :: proc(t: ^testing.T)
 		testing.expectf(t, strings.contains(resp.body, `"code":"internal_error"`), "%s: internal_error code", route.name)
 	}
 	testing.expect_value(t, f.project_gets, 0)
-	testing.expect_value(t, f.chain_gets, 0)
-}
-
-// Task review (TaskDetails) reads an attempt's diff via the chain-directory
-// vcs/commit-diff route; it stays available without the explorer flag.
-@(test)
-test_explorer_gate_exempts_task_review_commit_diff :: proc(t: ^testing.T) {
-	f := setup_explorer_fixture(t)
-	defer teardown_explorer_fixture(f)
-
-	route := Explorer_Route{"directory vcs commit-diff", chain_directory_handle_vcs_commit_diff, "GET", DIRECTORY_PATH + "/vcs/commit-diff", "base=a&head=b&list_files=true", "", false}
-	resp := explorer_call(f, route, "gate_reviewer")
-	testing.expect(t, !strings.contains(resp.body, "experimental_feature_disabled"), fmt.tprintf("commit-diff not gated: %s", resp.body))
-	testing.expect_value(t, resp.status, 404)
-	testing.expect_value(t, f.chain_gets, 1)
 }

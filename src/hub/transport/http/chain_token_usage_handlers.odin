@@ -21,16 +21,21 @@ import "core:fmt"
 import "core:strings"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
-import taskchain_service "odin_test:hub/service/taskchain"
 
 task_chain_token_usage_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Taskchain_Handlers)(ctx)
+	h := (^Bridge_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
+	context.allocator = context.temp_allocator
 	chain_id := path_part(req.path, 4)
-	// READ (REQ-SEC-3): owner-scoped, a same-owner non-member may view it.
-	chain, got, err := taskchain_service.get_chain_for_read(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id))
-	if !got do return respond_error(err, req.request_id)
+	// Chains are Bridge-owned: the caller's own owner-registry route (native or
+	// imported) authorizes the read; token usage is aggregated from the Hub's
+	// own agent_instances rows bound to that chain.
+	if chain_id == "" || h.chains == nil || h.chains.owner_registry_routes == nil do return respond_error(domain.domain_error(.Not_Found, "task chain not found"), req.request_id)
+	routes, rerr := h.chains.owner_registry_routes(h.chains.ctx, auth_ctx.user_id, chain_id)
+	if rerr.code != .None do return respond_error(rerr, req.request_id)
+	if len(routes) != 1 || routes[0].chain_id != chain_id do return respond_error(domain.domain_error(.Not_Found, "task chain not found"), req.request_id)
+	chain := domain.Task_Chain{chain_id = domain.Task_Chain_ID(chain_id), owner_user_id = domain.User_ID(auth_ctx.user_id)}
 	if h.agents == nil || h.agents.agents == nil do return respond_error(domain.domain_error(.Internal_Error, "agent service is not configured"), req.request_id)
 
 	// Everything below is request-scoped.

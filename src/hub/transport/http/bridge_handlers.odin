@@ -28,8 +28,6 @@ import bridge_runtime_service "odin_test:hub/service/bridge_runtime"
 import content_service "odin_test:hub/service/content"
 import project_service "odin_test:hub/service/project"
 import provider_service "odin_test:hub/service/provider"
-import taskchain_service "odin_test:hub/service/taskchain"
-import taskv2 "odin_test:hub/service/taskv2"
 import ws "odin_test:lib/ws"
 import shell_session_svc "odin_test:hub/service/shell_session"
 import jsonx "odin_test:lib/jsonx"
@@ -42,7 +40,9 @@ Bridge_Handlers :: struct {
 	bridges: ^bridge_service.Bridge_Service,
 	agents: ^agent_service.Agent_Service,
 	content: ^content_service.Content_Service,
-	taskchains: ^taskchain_service.Taskchain_Service,
+	// chains: the legacy chain repository (owner registry, legacy import
+	// fences and exports). The Hub task-chain engine is removed.
+	chains: ^iface.Taskchain_Repository,
 	projects: ^project_service.Project_Service,
 	event_bus: ^events.User_Event_Bus,
 	bridge_runtime_registry: ^project_service.Bridge_Runtime_Registry,
@@ -61,10 +61,6 @@ Bridge_Handlers :: struct {
 	// reads through it. nil in tests that do not wire it (entries are then
 	// validated and counted but not stored).
 	bridge_logs: ^bridge_log_service.Service,
-	// task_engine: Task System v2 — bridge hello re-sends unconfirmed grants,
-	// stops lease-less orphans and re-plans chains with held tasks; the bridge
-	// `busy` push is an implicit heartbeat. nil in tests that do not wire it.
-	task_engine: ^taskv2.Service,
 	// Passwordless vault: a rolled-back enrollment's directory entry is retired.
 	vault: ^vd.Service,
 }
@@ -920,195 +916,6 @@ delete_project_path_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
 }
 
-// --- Task-chain directory filesystem browser (browse/read/CRUD/search) -----
-// Resolves (chain_id, directory_id -> bridge_id, dir.path) via taskchain service.
-// Guards ownership and chain membership (require_auth_any + get_chain), then
-// relays a WS command carrying dir.path as root so the bridge sandboxes every
-// path to the directory root. Same online + live guards as project_fs_relay.
-
-directory_fs_relay :: proc(h: ^Bridge_Handlers, req: Request, cmd: Project_Fs_Command) -> (string, bool, domain.Domain_Error) {
-	auth_ctx, auth_ok, _ := require_auth_any(h.auth, req)
-	if !auth_ok do return "", false, domain.domain_error(.Unauthenticated, "authentication required")
-	if gate_err := explorer_gate_error(h, auth_ctx); gate_err.code != .None do return "", false, gate_err
-	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
-	dir_id := path_part(req.path, 6)
-	if string(chain_id) == "" || dir_id == "" {
-		return "", false, domain.domain_error(.Validation_Failed, "chain_id and directory_id are required")
-	}
-	dir, dir_ok, dir_err := taskchain_service.get_chain_directory(h.taskchains, auth_ctx, chain_id, dir_id)
-	if !dir_ok do return "", false, dir_err
-
-	bridge_id := dir.bridge_id
-	if bridge_id == "" {
-		bridge_id = query_value(req.query, "bridge_id")
-	}
-	if bridge_id == "" {
-		if bridges, list_err := bridge_service.list_bridges(h.bridges, auth_ctx); list_err.code == .None {
-			if len(bridges) == 1 {
-				bridge_id = bridges[0].bridge_id
-			} else {
-				for b in bridges {
-					if b.bridge_id == "brg_local" {
-						bridge_id = "brg_local"
-						break
-					}
-				}
-			}
-		}
-	}
-	if bridge_id == "" {
-		return "", false, domain.domain_error(.Validation_Failed, "bridge_id is required or directory has no bridge configured")
-	}
-
-	bridge, bridge_ok, bridge_err := bridge_service.get_bridge(h.bridges, auth_ctx, bridge_id)
-	if !bridge_ok do return "", false, bridge_err
-	if bridge.status == .Revoked do return "", false, domain.domain_error(.Bridge_Revoked, "bridge is revoked")
-	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry, bridge.bridge_id) {
-		return "", false, domain.domain_error(.Bridge_Offline, fmt.tprintf("Bridge %s is not connected", bridge.bridge_id))
-	}
-
-	command_id := fmt.tprintf("cmd_cdfs_%d", time.to_unix_nanoseconds(time.now()))
-	cmd_body := project_fs_command_json(cmd, command_id, dir.path)
-	reply, reply_ok, reply_err := bridge_runtime_service.send_runtime_command_wait(h.bridge_runtime_registry, project_service.Runtime_Command{bridge_id = bridge.bridge_id, command_id = command_id, body_json = cmd_body}, fs_command_timeout_ms(cmd.command_type))
-	if !reply_ok do return "", false, reply_err
-	return reply, true, domain.Domain_Error{}
-}
-
-list_chain_directory_fs_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	limit := query_int(req.query, "limit", 0)
-	result, ok, err := directory_fs_relay(h, req, Project_Fs_Command{
-		command_type = "fs_list_dir",
-		path = query_value(req.query, "path"),
-		include_hidden = query_bool(req.query, "include_hidden", false),
-		send_include_hidden = true,
-		cursor = query_value(req.query, "cursor"),
-		limit = limit,
-		send_limit = limit > 0,
-	})
-	if !ok do return respond_error(err, req.request_id)
-	return respond_success(result, req.request_id, auth_ctx_server_time(req))
-}
-
-read_chain_directory_file_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	offset := query_int(req.query, "offset", 0)
-	rlimit := query_int(req.query, "limit", 0)
-	result, ok, err := directory_fs_relay(h, req, Project_Fs_Command{
-		command_type = "fs_read_file",
-		path = query_value(req.query, "path"),
-		offset = offset,
-		send_offset = offset > 0,
-		read_limit = rlimit,
-		send_read_limit = rlimit > 0,
-	})
-	if !ok do return respond_error(err, req.request_id)
-	return respond_success(result, req.request_id, auth_ctx_server_time(req))
-}
-
-create_chain_directory_file_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	result, ok, err := directory_fs_relay(h, req, Project_Fs_Command{command_type = "fs_create_file", path = json_string(req.body, "path")})
-	if !ok do return respond_error(err, req.request_id)
-	return respond_success(result, req.request_id, auth_ctx_server_time(req))
-}
-
-write_chain_directory_file_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	path := json_string(req.body, "path")
-	if path == "" do return respond_error(domain.domain_error(.Validation_Failed, "path is required"), req.request_id)
-	content := json_string(req.body, "content")
-	result, ok, err := directory_fs_relay(h, req, Project_Fs_Command{
-		command_type = "fs_write_file",
-		path = path,
-		content = content,
-		send_content = true,
-	})
-	if !ok do return respond_error(err, req.request_id)
-	return respond_success(result, req.request_id, auth_ctx_server_time(req))
-}
-
-batch_write_chain_directory_files_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	files_json, has_files := json_array_raw_balanced(req.body, "files")
-	if !has_files {
-		trimmed := strings.trim_space(req.body)
-		if strings.has_prefix(trimmed, "[") && strings.has_suffix(trimmed, "]") {
-			files_json = trimmed
-			has_files = true
-		}
-	}
-	if !has_files do return respond_error(domain.domain_error(.Validation_Failed, "files array is required"), req.request_id)
-	result, ok, err := directory_fs_relay(h, req, Project_Fs_Command{
-		command_type = "fs_batch_write",
-		raw_files_json = files_json,
-		send_raw_files = true,
-	})
-	if !ok do return respond_error(err, req.request_id)
-	return respond_success(result, req.request_id, auth_ctx_server_time(req))
-}
-
-create_chain_directory_dir_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	result, ok, err := directory_fs_relay(h, req, Project_Fs_Command{command_type = "fs_make_dir", path = json_string(req.body, "path")})
-	if !ok do return respond_error(err, req.request_id)
-	return respond_success(result, req.request_id, auth_ctx_server_time(req))
-}
-
-move_chain_directory_path_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	result, ok, err := directory_fs_relay(h, req, Project_Fs_Command{command_type = "fs_move", from = json_string(req.body, "from"), to = json_string(req.body, "to"), send_from_to = true})
-	if !ok do return respond_error(err, req.request_id)
-	return respond_success(result, req.request_id, auth_ctx_server_time(req))
-}
-
-delete_chain_directory_path_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	result, ok, err := directory_fs_relay(h, req, Project_Fs_Command{command_type = "fs_delete", path = query_value(req.query, "path"), recursive = query_bool(req.query, "recursive", false), send_recursive = true})
-	if !ok do return respond_error(err, req.request_id)
-	return respond_success(result, req.request_id, auth_ctx_server_time(req))
-}
-
-quick_open_chain_directory_fs_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	query := query_value(req.query, "query")
-	limit := query_int(req.query, "limit", 100)
-	result, ok, err := directory_fs_relay(h, req, Project_Fs_Command{
-		command_type = "fs_find_files",
-		query = query,
-		send_query = true,
-		limit = limit,
-		send_limit = limit > 0,
-	})
-	if !ok do return respond_error(err, req.request_id)
-	return respond_success(result, req.request_id, auth_ctx_server_time(req))
-}
-
-search_chain_directory_fs_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	query := query_value(req.query, "query")
-	case_sensitive := query_bool(req.query, "case_sensitive", false)
-	limit := query_int(req.query, "limit", 100)
-	result, ok, err := directory_fs_relay(h, req, Project_Fs_Command{
-		command_type = "fs_grep",
-		query = query,
-		send_query = true,
-		case_sensitive = case_sensitive,
-		send_case_sensitive = true,
-		limit = limit,
-		send_limit = limit > 0,
-	})
-	if !ok do return respond_error(err, req.request_id)
-	return respond_success(result, req.request_id, auth_ctx_server_time(req))
-}
-
-
-// --- Project-scoped VCS relay (read-only) ---------------------------------
-// Resolves (project_id -> bridge_id, root_path) exactly like project_fs_relay,
-// then relays a read-only vcs_* WS command carrying the project root so the
-// bridge computes VCS status/diff against the project checkout. Same owner +
-// online guards as project_fs_relay. The bridge result JSON is returned verbatim.
-
 Project_Vcs_Command :: struct {
 	command_type:  string, // vcs_capabilities | vcs_status | vcs_files | vcs_diff | vcs_log | vcs_commit_diff | vcs_workspaces | vcs_stage | vcs_unstage | vcs_revert
 	path:          string, // file path for diff/write commands; empty for others
@@ -1430,202 +1237,6 @@ project_handle_vcs_sync :: proc(ctx: rawptr, req: Request) -> Response {
 // then relays a read-only vcs_* WS command carrying the directory path so the
 // bridge computes VCS status/diff/commit-diff against the chain directory checkout.
 
-directory_vcs_relay :: proc(h: ^Bridge_Handlers, req: Request, cmd: Project_Vcs_Command) -> (string, bool, domain.Domain_Error) {
-	auth_ctx, auth_ok, _ := require_auth_any(h.auth, req)
-	if !auth_ok do return "", false, domain.domain_error(.Unauthenticated, "authentication required")
-	// Task review (TaskDetails) reads an attempt's commit diff through this relay; that
-	// is a core chain workflow, not the explorer, so only vcs_commit_diff is exempt.
-	if cmd.command_type != "vcs_commit_diff" {
-		if gate_err := explorer_gate_error(h, auth_ctx); gate_err.code != .None do return "", false, gate_err
-	}
-	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
-	dir_id := path_part(req.path, 6)
-	if string(chain_id) == "" || dir_id == "" {
-		return "", false, domain.domain_error(.Validation_Failed, "chain_id and directory_id are required")
-	}
-	dir, dir_ok, dir_err := taskchain_service.get_chain_directory(h.taskchains, auth_ctx, chain_id, dir_id)
-	if !dir_ok do return "", false, dir_err
-
-	bridge_id := dir.bridge_id
-	if bridge_id == "" {
-		bridge_id = query_value(req.query, "bridge_id")
-	}
-	if bridge_id == "" {
-		if bridges, list_err := bridge_service.list_bridges(h.bridges, auth_ctx); list_err.code == .None {
-			if len(bridges) == 1 {
-				bridge_id = bridges[0].bridge_id
-			} else {
-				for b in bridges {
-					if b.bridge_id == "brg_local" {
-						bridge_id = "brg_local"
-						break
-					}
-				}
-			}
-		}
-	}
-	if bridge_id == "" {
-		return "", false, domain.domain_error(.Validation_Failed, "bridge_id is required or directory has no bridge configured")
-	}
-
-	bridge, bridge_ok, bridge_err := bridge_service.get_bridge(h.bridges, auth_ctx, bridge_id)
-	if !bridge_ok do return "", false, bridge_err
-	if bridge.status == .Revoked do return "", false, domain.domain_error(.Bridge_Revoked, "bridge is revoked")
-	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry, bridge.bridge_id) {
-		return "", false, domain.domain_error(.Bridge_Offline, fmt.tprintf("Bridge %s is not connected", bridge.bridge_id))
-	}
-
-	root_path, root_ok, root_err := project_vcs_effective_root(h, req, bridge.bridge_id, dir.path)
-	if !root_ok do return "", false, root_err
-	return project_vcs_send(h, bridge.bridge_id, cmd, root_path)
-}
-
-chain_directory_handle_vcs_capabilities :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	result, ok, err := directory_vcs_relay(h, req, Project_Vcs_Command{command_type = "vcs_capabilities"})
-	if !ok do return respond_error(err, req.request_id)
-	return respond_success(result, req.request_id, auth_ctx_server_time(req))
-}
-
-chain_directory_handle_vcs_status :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	result, ok, err := directory_vcs_relay(h, req, Project_Vcs_Command{command_type = "vcs_status"})
-	if !ok do return respond_error(err, req.request_id)
-	return respond_success(result, req.request_id, auth_ctx_server_time(req))
-}
-
-chain_directory_handle_vcs_files :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	result, ok, err := directory_vcs_relay(h, req, Project_Vcs_Command{
-		command_type = "vcs_files",
-		cursor = query_value(req.query, "cursor"), send_cursor = true,
-		limit = query_int(req.query, "limit", 100), send_limit = true,
-	})
-	if !ok do return respond_error(err, req.request_id)
-	return respond_success(result, req.request_id, auth_ctx_server_time(req))
-}
-
-chain_directory_handle_vcs_diff :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	file := query_value(req.query, "file")
-	if file == "" do file = query_value(req.query, "path")
-	result, ok, err := directory_vcs_relay(h, req, Project_Vcs_Command{
-		command_type = "vcs_diff",
-		path = file, send_path = true,
-		cursor = query_value(req.query, "cursor"), send_cursor = true,
-		limit = query_int(req.query, "limit", 50), send_limit = true,
-	})
-	if !ok do return respond_error(err, req.request_id)
-	return respond_success(result, req.request_id, auth_ctx_server_time(req))
-}
-
-chain_directory_handle_vcs_log :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	result, ok, err := directory_vcs_relay(h, req, Project_Vcs_Command{
-		command_type = "vcs_log",
-		cursor = query_value(req.query, "cursor"), send_cursor = true,
-		limit = query_int(req.query, "limit", 50), send_limit = true,
-	})
-	if !ok do return respond_error(err, req.request_id)
-	return respond_success(result, req.request_id, auth_ctx_server_time(req))
-}
-
-chain_directory_handle_vcs_commit_diff :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	list_files := query_bool(req.query, "list_files", false)
-	base_ref := query_value(req.query, "base_ref")
-	if base_ref == "" do base_ref = query_value(req.query, "base")
-	head_ref := query_value(req.query, "head_ref")
-	if head_ref == "" do head_ref = query_value(req.query, "head")
-	file := query_value(req.query, "file")
-	if file == "" do file = query_value(req.query, "path")
-	result, ok, err := directory_vcs_relay(h, req, Project_Vcs_Command{
-		command_type = "vcs_commit_diff",
-		base_ref = base_ref, send_base_ref = true,
-		head_ref = head_ref, send_head_ref = true,
-		path = file, send_path = true,
-		list_files = list_files, send_list_files = true,
-		cursor = query_value(req.query, "cursor"), send_cursor = !list_files,
-		limit = query_int(req.query, "limit", 50), send_limit = !list_files,
-	})
-	if !ok do return respond_error(err, req.request_id)
-	return respond_success(result, req.request_id, auth_ctx_server_time(req))
-}
-
-chain_directory_handle_vcs_workspaces :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	result, ok, err := directory_vcs_relay(h, req, Project_Vcs_Command{command_type = "vcs_workspaces"})
-	if !ok do return respond_error(err, req.request_id)
-	return respond_success(result, req.request_id, auth_ctx_server_time(req))
-}
-
-// bridge_vcs_show_file_callback relays a vcs_show_file command to a connected
-// bridge so task.fetch can resolve repo-relative paths and dir:<id>:<rev>:<path>
-// refs against the chain directory's checkout.
-bridge_vcs_show_file_callback :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner: domain.User_ID, directory_id, rev, file_path: string) -> (content: string, ok: bool, err: domain.Domain_Error) {
-	h := (^Bridge_Handlers)(ctx)
-	if h == nil || h.bridge_runtime_registry == nil || h.taskchains == nil || h.taskchains.repo == nil {
-		return "", false, domain.domain_error(.Internal_Error, "bridge runtime registry is not configured")
-	}
-	dir, dir_ok, dir_err := iface.taskchain_get_directory(h.taskchains.repo, directory_id, chain_id, owner)
-	if !dir_ok do return "", false, dir_err
-	target_bridge_id := strings.trim_space(dir.bridge_id)
-	if target_bridge_id == "" && h.bridges != nil && h.bridges.repo != nil {
-		if bridges, berr := iface.bridge_list_by_owner(h.bridges.repo, owner); berr.code == .None {
-			if len(bridges) == 1 {
-				target_bridge_id = bridges[0].bridge_id
-			} else {
-				for b in bridges {
-					if b.bridge_id == "brg_local" {
-						target_bridge_id = "brg_local"
-						break
-					}
-				}
-			}
-		}
-	}
-	if target_bridge_id == "" {
-		if project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry, "brg_local") {
-			target_bridge_id = "brg_local"
-		}
-	}
-	if target_bridge_id == "" || !project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry, target_bridge_id) {
-		return "", false, domain.domain_error(.Bridge_Offline, fmt.tprintf("Bridge %s is not connected", target_bridge_id))
-	}
-	command_id := fmt.tprintf("cmd_vshow_%d", time.to_unix_nanoseconds(time.now()))
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"vcs_show_file\",\"command_id\":\"")
-	write_handler_json_string(&b, command_id)
-	strings.write_string(&b, "\",\"root\":\"")
-	write_handler_json_string(&b, dir.path)
-	strings.write_string(&b, "\",\"rev\":\"")
-	write_handler_json_string(&b, rev if rev != "" else "HEAD")
-	strings.write_string(&b, "\",\"path\":\"")
-	write_handler_json_string(&b, file_path)
-	strings.write_string(&b, "\"}")
-	reply, reply_ok, reply_err := bridge_runtime_service.send_runtime_command_wait(
-		h.bridge_runtime_registry,
-		project_service.Runtime_Command{bridge_id = target_bridge_id, command_id = command_id, body_json = strings.to_string(b)},
-		10_000,
-	)
-	if !reply_ok do return "", false, reply_err
-	if !jsonx.extract_bool(reply, "ok", true, true) {
-		err_msg := jsonx.extract_string(reply, "message", "vcs_show_file failed", false)
-		return "", false, domain.domain_error(.Not_Found, err_msg)
-	}
-	return jsonx.extract_string(reply, "content", "", true), true, {}
-}
-
-// --- Agent instance run-dir browser (READ-ONLY) ---------------------------
-// Resolves (instance_id -> owner-checked instance -> bridge_id) then relays a
-// read-only agent_run_dir_* command carrying the instance_id. The bridge computes
-// the run dir from the id (bridge_runtime_default_run_dir) and re-sandboxes every
-// path to it, so the hub never needs to know the run-dir layout. Two-layer owner
-// check: get_instance is same-owner scoped (Not_Found for others) and get_bridge
-// is owner-scoped. Request paths are RELATIVE to the run-dir root. No mutation
-// commands exist for this surface (read-only by construction). The bridge reuses
-// the fs_list_dir_result / fs_read_file_result envelopes, returned verbatim.
-
 Instance_Fs_Command :: struct {
 	command_type:        string,
 	path:                string, // relative to the instance run-dir root
@@ -1869,12 +1480,6 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 			}
 		}
 	}
-	// Task System v2 (plan §2.4, bridge Online): re-send unconfirmed grants on
-	// this bridge, stop[] live non-coordinator instances that hold no lease, and
-	// match_chain for every chain with a held task. Runs AFTER the heartbeat
-	// reconcile above so instances the bridge no longer runs have already
-	// crossed on_instance_terminal.
-	taskv2.on_bridge_hello(h.task_engine, bridge.bridge_id, hello_active)
 	for s in hello_active do delete(s)
 	delete(hello_active)
 	// REQ-SHELL-3: deliver this bridge's OUTSTANDING KILL INTENTS. A kill accepted
@@ -1977,7 +1582,6 @@ bridge_ws_disconnect :: proc(
 	// A replacement already published its newer generation; do not publish old
 	// status summaries after its connection has started.
 	if project_service.bridge_runtime_registry_generation(h.bridge_runtime_registry, bridge_id) != 0 do return
-	taskv2.on_bridge_placement_changed(h.task_engine)
 	if changed {
 		summary := bridge_status_summary_json(domain.bridge_status_string(bridge.status))
 		events.publish_resource_changed(h.event_bus, string(bridge.owner_user_id), "bridge", bridge.bridge_id, "status_changed", summary)

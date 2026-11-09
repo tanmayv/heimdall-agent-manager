@@ -35,7 +35,7 @@ mcp_resource_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Handlers
 	h.control=mcp_resource_control(g);h.mutate_resource=mcp_mutate_resource
 	probe:=MCP_Task_Attention_Probe{factory=&g.uow_factory};notifier:=contracts.Attention_Notifier{ctx=&probe,notify=mcp_task_attention_probe};g.content.attention=&notifier
 	listed:=http.mcp_control_handler(h,{method="POST",path="/api/v1/mcp",headers=headers,body=strings.clone(`{"jsonrpc":"2.0","id":50,"method":"tools/list"}`,context.temp_allocator)})
-	tools:struct {result:struct {tools:[]struct {name:string}}};json.unmarshal_string(listed.body,&tools,.JSON,context.temp_allocator);testing.expect_value(t,len(tools.result.tools),41)
+	tools:struct {result:struct {tools:[]struct {name:string}}};json.unmarshal_string(listed.body,&tools,.JSON,context.temp_allocator);testing.expect_value(t,len(tools.result.tools),30)
 	testing.expect(t,!strings.contains(listed.body,"memories.approve") && !strings.contains(listed.body,"messages.send"))
 	for bad in ([]struct {tool:string,args:json.Object}{
 		{"memories.create",json.Object{"request_id"=json.String("bad"),"body"=json.String("Body"),"status"=json.String("active")}},

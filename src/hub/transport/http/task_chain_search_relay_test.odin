@@ -2,7 +2,6 @@ package http
 
 import "core:testing"
 import "core:encoding/json"
-import taskchain_service "odin_test:hub/service/taskchain"
 import "base:runtime"
 import "core:fmt"
 import "core:net"
@@ -296,7 +295,7 @@ executor_resource_relay_requires_exact_registered_owner_bridge :: proc(t:^testin
     if !testing.expect(t,other_ok) do return
     impl:sqlite.Taskchain_Repo_SQLite
     repo:=sqlite.new_taskchain_repository(&impl,&f.conn)
-    service:=taskchain_service.Taskchain_Service{repo=&repo};f.h.taskchains=&service
+    f.h.chains=&repo
     fixture,_:=contracts.owner_content_document(#load("../../../contracts/fixtures/owner-local-v1.json",string))
     entries,_:=fixture.(json.Object)["valid"].(json.Array)
     registry:json.Object

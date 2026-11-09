@@ -505,9 +505,22 @@ artifact_context_owned :: proc(s:^Content_Service, owner:domain.User_ID, input:A
 	if input.agent_id!="" && !agent_owned(s,owner,input.agent_id) do return false,domain.domain_error(.Not_Found,"artifact context not found")
 	if input.agent_instance_id!="" { if s.agents==nil do return false,domain.domain_error(.Internal_Error,"agent repository is not configured"); inst,ok,_:=iface.agent_get_instance(s.agents,input.agent_instance_id); if !ok || inst.owner_user_id!=owner do return false,domain.domain_error(.Not_Found,"artifact context not found"); if input.agent_id!="" && inst.agent_id!=input.agent_id do return false,domain.domain_error(.Conflict,"artifact context is inconsistent"); if string(input.project_id)!="" && inst.project_id!=input.project_id do return false,domain.domain_error(.Conflict,"artifact context is inconsistent") }
 	if string(input.project_id)!="" { if s.projects==nil do return false,domain.domain_error(.Internal_Error,"project repository is not configured"); p,ok,_:=iface.project_get(s.projects,input.project_id); if !ok || p.owner_user_id!=owner do return false,domain.domain_error(.Not_Found,"artifact context not found") }
-	if input.chain_id!="" { if s.taskchains==nil do return false,domain.domain_error(.Internal_Error,"taskchain repository is not configured"); c,ok,_:=iface.taskchain_get_chain(s.taskchains,domain.Task_Chain_ID(input.chain_id)); if !ok || c.owner_user_id!=owner do return false,domain.domain_error(.Not_Found,"artifact context not found") }
-	if input.task_id!="" { if s.taskchains==nil do return false,domain.domain_error(.Internal_Error,"taskchain repository is not configured"); t,ok,_:=iface.taskchain_get_task(s.taskchains,domain.Task_ID(input.task_id)); if !ok || t.owner_user_id!=owner do return false,domain.domain_error(.Not_Found,"artifact context not found"); if input.chain_id!="" && t.chain_id!=domain.Task_Chain_ID(input.chain_id) do return false,domain.domain_error(.Conflict,"artifact context is inconsistent") }
+	// Chains are Bridge-owned: a chain is the caller's when its owner-registry
+	// route (native or imported) or its legacy read-only Hub record is theirs.
+	// Owner-chain task ids live on the owner Bridge, so a task id is checked
+	// only against a legacy Hub record when one exists.
+	if input.chain_id!="" { if s.taskchains==nil do return false,domain.domain_error(.Internal_Error,"taskchain repository is not configured"); if !artifact_chain_owned(s,owner,input.chain_id) do return false,domain.domain_error(.Not_Found,"artifact context not found") }
+	if input.task_id!="" && s.taskchains!=nil && s.taskchains.get_task!=nil { if t,ok,_:=iface.taskchain_get_task(s.taskchains,domain.Task_ID(input.task_id)); ok { if t.owner_user_id!=owner do return false,domain.domain_error(.Not_Found,"artifact context not found"); if input.chain_id!="" && t.chain_id!=domain.Task_Chain_ID(input.chain_id) do return false,domain.domain_error(.Conflict,"artifact context is inconsistent") } }
 	return true,{}
+}
+artifact_chain_owned :: proc(s:^Content_Service, owner:domain.User_ID, chain_id:string)->bool {
+	if s.taskchains.owner_registry_routes!=nil {
+		saved:=context.allocator;context.allocator=context.temp_allocator;defer context.allocator=saved
+		if routes,err:=s.taskchains.owner_registry_routes(s.taskchains.ctx,string(owner),chain_id);err.code==.None && len(routes)==1 do return true
+	}
+	if s.taskchains.get_chain==nil do return false
+	c,ok,_:=iface.taskchain_get_chain(s.taskchains,domain.Task_Chain_ID(chain_id))
+	return ok && c.owner_user_id==owner
 }
 // conversation_title_from_input seeds the conversation title from an EXPLICIT
 // caller-provided title only, falling back to the given default when none is

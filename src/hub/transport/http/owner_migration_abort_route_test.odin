@@ -7,8 +7,8 @@ import contracts "odin_test:contracts"
 import sqlite "odin_test:hub/repository/sqlite"
 
 // H1 (R4 review follow-up): route-level coverage of
-// POST /api/v1/owner-local/migrations/abort through the router (with the
-// production guard) and real auth resolution. An agent instance token of the
+// POST /api/v1/owner-local/migrations/abort through the router and real auth
+// resolution. An agent instance token of the
 // chain owner's own account is refused with 403 and changes nothing; the
 // owner's browser session aborts the migration.
 @(test)
@@ -18,17 +18,16 @@ owner_migration_abort_route_refuses_instance_token_and_accepts_user_session :: p
 	saved := context.allocator
 	context.allocator = context.temp_allocator
 	defer context.allocator = saved
-	chain := string(f.chain_id)
+	chain := "chain_wire_legacy"
+	wire_seed_legacy_chain(t, f, chain)
 	digest := strings.repeat("a", 64, context.temp_allocator)
 	testing.expect(t, sqlite.exec(&f.conn, fmt.tprintf(`INSERT INTO owner_legacy_source_generations VALUES('%s','%s',0);
 	  INSERT INTO owner_legacy_migrations(migration_id,chain_id,account_id,owner_bridge_id,owner_key_id,selection_digest,state,revision)
 	  VALUES('mig_route','%s','%s','%s','bridge_key','%s','draining',1);`, chain, string(f.owner), chain, string(f.owner), f.bridge_pin, digest)))
 
-	h := Bridge_Handlers{auth = &f.auth_svc, taskchains = &f.tc_svc}
+	h := Bridge_Handlers{auth = &f.auth_svc, chains = &f.tc_repo}
 	router := new_router()
 	defer router_free(&router)
-	router.guard = owner_authority_guard
-	router.guard_ctx = rawptr(&f.th)
 	router_add(&router, "POST", "/api/v1/owner-local/migrations/abort", rawptr(&h), owner_migration_abort_handler)
 	body := strings.concatenate({`{"chain_id":"`, chain, `","migration_id":"mig_route"}`}, context.temp_allocator)
 	request :: proc(body: string, headers: []contracts.HTTP_Header) -> Request {
