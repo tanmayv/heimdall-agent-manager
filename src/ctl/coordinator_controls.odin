@@ -290,9 +290,21 @@ ctl_coord_usage :: proc(verb: string) -> string {
 }
 
 // ctl_coord_owner_only reports whether the Bridge answered the typed
-// owner_chain_only error (the target chain is not owned by this Bridge).
+// owner_chain_only error (the target chain is not owned by this Bridge): a
+// failed envelope whose error code is, or whose message starts with,
+// owner_chain_only. A successful reply that merely mentions the word (e.g. in
+// a task title) never counts, so it is neither re-executed nor misreported.
 ctl_coord_owner_only :: proc(response: string) -> bool {
-	return strings.contains(response, CTL_OWNER_CHAIN_ONLY)
+	v, ok := ctl_parse_json_document(response)
+	if !ok do return false
+	o, is_obj := v.(json.Object)
+	if !is_obj do return false
+	if success, has := o["ok"].(json.Boolean); !has || bool(success) do return false
+	e, has_err := o["error"].(json.Object)
+	if !has_err do return false
+	code, _ := e["code"].(json.String)
+	message, _ := e["message"].(json.String)
+	return string(code) == CTL_OWNER_CHAIN_ONLY || strings.has_prefix(strings.trim_space(string(message)), CTL_OWNER_CHAIN_ONLY)
 }
 
 // ctl_coord_owner_only_json: the typed error printed for an owner-chain verb

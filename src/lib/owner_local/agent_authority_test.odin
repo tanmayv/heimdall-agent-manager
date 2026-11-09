@@ -320,3 +320,21 @@ agent_solo_standing_coordinator_and_worker_row :: proc(t:^testing.T) {
     c,_=agent_solo_standing(&f.store,"elsewhere",coord)
     testing.expect(t,!c,"not the coordinator of another chain")
 }
+
+// T1 review: `task-chain summary get` on an owner chain reads the latest
+// curated summary from the owner store.
+@(test)
+agent_chain_summary_current_reads_latest_curated_summary :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
+    body,version,ok:=chain_summary_current(&f.store,"chain")
+    testing.expect(t,ok && body=="" && version=="0","no summary yet")
+    coord:=agent_coordinator_child();agent_seat_coordinator(t,f,coord)
+    summary:=encode(doc(map[string]string{"body_cipher"=cipher(f,"coordinator summary")}))
+    testing.expect_value(t,agent_run(f,coord,"chain.summary.set","summary","",summary,agent_chain_rev(f)).code,"ok")
+    body,version,ok=chain_summary_current(&f.store,"chain")
+    testing.expect(t,ok && body!="" && version!="0","summary stored")
+    // The owner store keeps the opened text (the Bridge passes it through
+    // bridge_owner_plain, which also tolerates an envelope).
+    testing.expect_value(t,body,"coordinator summary")
+}

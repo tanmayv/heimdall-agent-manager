@@ -346,12 +346,8 @@ ctl_publish_print_and_exit :: proc(response: string) {
 // ctl_v2_task_publish publishes ONE task (coordinator only). The hub route is
 // chain-scoped, so the chain is taken from --chain, else this agent's own chain
 // (context), else the task itself (task show).
-ctl_v2_task_publish :: proc(endpoint, token, tid: string, args: []string, unblock := false) {
-	if unblock {
-		ctl_v2_task_action(endpoint, token, tid, args, "answer", httpc.json_body(Ctl_Task_Note_Body{note = option_value(args, "--note", "")}))
-	} else {
-		ctl_v2_task_action(endpoint, token, tid, args, "publish", ctl_empty_object_body())
-	}
+ctl_v2_task_publish :: proc(endpoint, token, tid: string, args: []string) {
+	ctl_v2_task_action(endpoint, token, tid, args, "publish", ctl_empty_object_body())
 }
 
 // ctl_v2_task_action POSTs `body` to a chain-scoped task action route.
@@ -677,6 +673,20 @@ ctl_v2_task_chain_summary_read_chain :: proc(tokens, args: []string) -> string {
 	return ""
 }
 
+// ctl_owner_summary_view: the summary read of a Bridge-owned chain, built
+// from its owner agent.task_chain.show reply; false for any other chain.
+ctl_owner_summary_view :: proc(show_json: string) -> (string, bool) {
+	if !strings.contains(show_json, `"ok":true`) do return "", false
+	chain := ctl_json_data_object(show_json)
+	auth, has := chain["authority"].(json.Object)
+	if !has || ctl_json_str(auth, "kind") != "owner" do return "", false
+	summary, _ := chain["summary"].(json.String)
+	version := ctl_json_str(chain, "summary_version")
+	if version == "" do version = "0"
+	data := json_object(json_kv("chain_id", ctl_json_str(chain, "chain_id")), json_kv("summary", string(summary)), json_kv("version", version), json_kv("authority", "owner"))
+	return json_object(json_kv_raw("ok", "true"), json_kv_raw("data", data)), true
+}
+
 ctl_v2_task_chain_summary :: proc(endpoint, token: string, tokens, args: []string) {
 	mode, why := ctl_v2_task_chain_summary_mode(tokens, args)
 	switch mode {
@@ -684,6 +694,17 @@ ctl_v2_task_chain_summary :: proc(endpoint, token: string, tokens, args: []strin
 		ctl_print_error_exit(why)
 	case .Read:
 		chain_id := ctl_v2_task_chain_summary_read_chain(tokens, args)
+		// A Bridge-owned chain keeps its summary in the owner store: the owner
+		// agent.task_chain.show carries it (agent.rest.request would reach the Hub).
+		show_params := "{}"
+		if chain_id != "" do show_params = json_object(json_kv("chain_id", chain_id))
+		if show, shown := ctl_agent_local_call(endpoint, token, "agent.task_chain.show", show_params); shown {
+			if view, is_owner := ctl_owner_summary_view(show); is_owner {
+				fmt.println(view)
+				return
+			}
+			if chain_id == "" do chain_id = ctl_json_str(ctl_json_data_object(show), "chain_id")
+		}
 		if chain_id == "" {
 			if res, ok := ctl_agent_local_call(endpoint, token, "agent.context.get", "{}"); ok do chain_id = extract_json_string_unescaped(res, "chain_id", "", context.temp_allocator)
 		}

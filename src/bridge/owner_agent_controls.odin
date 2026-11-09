@@ -86,6 +86,12 @@ bridge_owner_control_fields :: proc(owner_method:string,p:json.Object) -> (Owner
     return out,""
 }
 
+// bridge_owner_reopen_refusal_message: the refusal text of a reopen whose
+// cause owner_local named (ham-ctl prints what follows the colon).
+bridge_owner_reopen_refusal_message :: proc(cause:string) -> string {
+    return fmt.tprintf("task cannot be reopened: %s",cause)
+}
+
 // Typed refusals the coordinator can act on.
 bridge_owner_control_refusal :: proc(owner_method,code:string) -> string {
     switch code {
@@ -237,7 +243,7 @@ bridge_owner_control :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -
         // T1: a refused reopen names its cause (chain not active, consumed by
         // a started dependent, generated workflow task, wrong state).
         if owner_method=="task.reopen" && r.code=="operation_conflict" {
-            if cause:=owner.reopen_refusal_cause(s,st.chain_id,st.task_id);cause!="" do return bridge_owner_fail(ctx,r.code,fmt.tprintf("task cannot be reopened: %s",cause))
+            if cause:=owner.reopen_refusal_cause(s,st.chain_id,st.task_id);cause!="" do return bridge_owner_fail(ctx,r.code,bridge_owner_reopen_refusal_message(cause))
         }
         return bridge_owner_fail(ctx,r.code,bridge_owner_control_refusal(owner_method,r.code))
     }

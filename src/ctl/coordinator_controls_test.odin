@@ -222,4 +222,26 @@ test_coord_owner_only_detection :: proc(t: ^testing.T) {
 	testing.expect(t, !ctl_coord_owner_only(`{"ok":false,"error":{"code":"invalid_scope","message":"refused: only the verified chain coordinator may use this control"}}`), "a refusal is not owner_chain_only")
 	testing.expect(t, ctl_coord_task_verb("split") && ctl_coord_task_verb("submit-for-review") && !ctl_coord_task_verb("hold"), "task verb set")
 	testing.expect(t, !ctl_coord_owner_only(`{"ok":false,"error":{"code":"hub_error","message":"chain must be active"}}`), "a Hub refusal is not owner_chain_only")
+	// Success replies that merely contain the text are never owner_chain_only.
+	testing.expect(t, !ctl_coord_owner_only(`{"v":1,"id":"r","ok":true,"data":{"task_id":"t","title":"owner_chain_only docs"}}`), "success mentioning the word")
+	testing.expect(t, !ctl_coord_owner_only(`{"ok":false,"error":{"code":"operation_conflict","message":"cannot split: see owner_chain_only notes"}}`), "the word mid-message is not the typed error")
+	testing.expect(t, ctl_coord_owner_only(`{"ok":false,"error":{"code":"owner_chain_only","message":"x"}}`), "typed by code")
+	testing.expect(t, !ctl_coord_owner_only(`not json owner_chain_only`), "unparsable reply")
+}
+
+// Review fix: `task-chain summary get` on a Bridge-owned chain reads the owner
+// store's curated summary from agent.task_chain.show, never the Hub.
+@(test)
+test_owner_summary_view_reads_owner_show :: proc(t: ^testing.T) {
+	show := `{"v":1,"id":"x","ok":true,"data":{"chain_id":"chain_o","authority":{"kind":"owner","bridge_id":"br"},"summary":"# Owner summary\nline 2","summary_version":"7","items":[]}}`
+	view, is_owner := ctl_owner_summary_view(show)
+	testing.expect(t, is_owner, "owner chain")
+	testing.expect_value(t, view, `{"ok":true,"data":{"chain_id":"chain_o","summary":"# Owner summary\nline 2","version":"7","authority":"owner"}}`)
+	empty, empty_owner := ctl_owner_summary_view(`{"ok":true,"data":{"chain_id":"chain_o","authority":{"kind":"owner"}}}`)
+	testing.expect(t, empty_owner && strings.contains(empty, `"summary":""`) && strings.contains(empty, `"version":"0"`), empty)
+	// A Hub chain (no owner authority) and a failed show fall back to the Hub read.
+	_, hub := ctl_owner_summary_view(`{"ok":true,"data":{"chain_id":"chain_h","coordinator_agent_instance_id":"inst"}}`)
+	testing.expect(t, !hub, "hub chain")
+	_, failed := ctl_owner_summary_view(`{"ok":false,"error":{"code":"invalid_scope","message":"owner chain read refused"}}`)
+	testing.expect(t, !failed, "failed show")
 }

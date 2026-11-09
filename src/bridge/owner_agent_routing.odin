@@ -525,7 +525,14 @@ bridge_owner_agent_exec :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object
         read["tasks"]=read["items"]
         // T1 (`--assignee self`): who the caller is in this chain, so ham-ctl
         // can resolve self to the durable agent id only in solo mode.
+        read["chain_id"]=json.String(chain)
         read["caller"]=bridge_owner_caller_view(s,chain,ctx.child)
+        // T1 (`task-chain summary get`): the curated summary lives in the
+        // owner store, so owner chains read it here, never from the Hub.
+        if body,version,ok:=owner.chain_summary_current(s,chain);ok {
+            read["summary"]=json.String(bridge_owner_plain(ctx,body))
+            read["summary_version"]=json.String(version)
+        }
         return bridge_local_response_data(ctx.request_id,bridge_owner_json(read))
     case "agent.task_chain.set_summary","agent.chain.summary":
         chain:=bridge_owner_pstr(p,"chain_id")
