@@ -74,7 +74,7 @@ migration_post_request :: proc(account,chain,migration:string,revision:i64)->str
 }
 Migration_Post_Call :: struct { h:^Bridge_Handlers, headers:[]contracts.HTTP_Header, body:string, status:int, response:string }
 
-// Handler-level coverage of the migrate POST: blocker refusal, offline owner,
+// Handler-level coverage of the migrate POST: busy-chain neutralization, offline owner,
 // concurrent identical POSTs, exact replay, and the abort endpoint.
 @(test)
 owner_migration_post_blockers_offline_concurrency_replay_and_abort :: proc(t:^testing.T) {
@@ -83,6 +83,7 @@ owner_migration_post_blockers_offline_concurrency_replay_and_abort :: proc(t:^te
     if !testing.expect(t,opened) do return
     defer sqlite.close(&conn)
     migrated,_:=sqlite.run_migrations(&conn)
+    _ = sqlite.legacy_fixture_allow_seeding(&conn)
     if !testing.expect(t,migrated) do return
     users:sqlite.User_Repo_SQLite
     user_repo:=sqlite.new_user_repository(&users,&conn)
@@ -109,22 +110,20 @@ owner_migration_post_blockers_offline_concurrency_replay_and_abort :: proc(t:^te
     post :: proc(h:^Bridge_Handlers,headers:[]contracts.HTTP_Header,body:string,env:Owner_Migration_Env)->Response {
         return owner_migration_post(h,Request{method="POST",headers=headers,body=body,remote_addr="127.0.0.1:4444"},env)
     }
-    // 1. Busy chain: refused with named blockers and nothing written.
+    // 1. Busy chain, owner offline: no longer refused. The import neutralizes
+    // the live work (lease ended, in-progress task force-held) in the freeze
+    // transaction, and the chain stays frozen until the import is retried.
     testing.expect(t,sqlite.exec(&conn,fmt.tprintf(`INSERT INTO task_leases(lease_id,task_id,chain_id,owner_user_id,attempt_no,holder_instance_id,kind,granted_at,expires_at,hard_deadline_at,delivery)
-      VALUES('lease_a','task_a','chain_a','%s',1,'inst','work','g','e','h','wake')`,account)))
+      VALUES('lease_a','task_a','chain_a','%s',1,'inst','work','g','e','h','wake'); UPDATE tasks SET state='in_progress' WHERE task_id='task_a';`,account)))
     request_a:=migration_post_request(account,"chain_a","mig_a",revision(&conn,"chain_a"))
-    blocked:=post(&h,headers,request_a,migration_post_env(true))
-    testing.expect_value(t,blocked.status,409)
-    testing.expect(t,strings.contains(blocked.body,`"code":"migration_blocked"`) && strings.contains(blocked.body,`"live_leases"`) && strings.contains(blocked.body,`"lease_a"`),blocked.body)
-    _,selected,_:=repo.legacy_source_get(repo.ctx,account,"chain_a")
-    testing.expect(t,!selected,"a refused POST writes nothing")
-    testing.expect(t,sqlite.exec(&conn,"DELETE FROM task_leases"))
-    request_a=migration_post_request(account,"chain_a","mig_a",revision(&conn,"chain_a"))
-    // 2. Owner offline: the chain freezes and stays frozen.
     offline:=post(&h,headers,request_a,migration_post_env(false))
     testing.expect(t,offline.status>=400 && strings.contains(offline.body,"owner_unavailable"),offline.body)
     f,_,_:=repo.legacy_source_get(repo.ctx,account,"chain_a")
     testing.expect_value(t,f.state,"frozen")
+    testing.expect_value(t,f.forced_held_json,`["task_a"]`)
+    testing.expect(t,strings.contains(f.neutralized_json,`"code":"live_leases_ended","count":1,"items":["lease_a"]`),f.neutralized_json)
+    leases,_:=sqlite.legacy_metadata(&conn,"SELECT count(*) FROM task_leases",1)
+    testing.expect_value(t,leases[0][0],"0")
     testing.expect_value(t,migration_post_fake.relays,0)
     // 3. Concurrent identical POSTs both succeed; one route, one import state.
     calls:[2]Migration_Post_Call
@@ -138,7 +137,7 @@ owner_migration_post_blockers_offline_concurrency_replay_and_abort :: proc(t:^te
         })
     }
     for th in threads { thread.join(th);thread.destroy(th) }
-    for call in calls do testing.expectf(t,call.status==200 && strings.contains(call.response,`"state":"imported"`),"concurrent POST: %d %s",call.status,call.response)
+    for call in calls do testing.expectf(t,call.status==200 && strings.contains(call.response,`"state":"imported"`) && strings.contains(call.response,`"forced_held":["task_a"]`),"concurrent POST: %d %s",call.status,call.response)
     routes,_:=sqlite.legacy_metadata(&conn,"SELECT count(*) FROM owner_local_chains WHERE chain_id='chain_a'",1)
     testing.expect_value(t,routes[0][0],"1")
     // 4. Exact replay after cutover: read-only, no new relay.
@@ -154,8 +153,9 @@ owner_migration_post_blockers_offline_concurrency_replay_and_abort :: proc(t:^te
     testing.expect(t,owner_migration_abort_authorized(contracts.Auth_Context{kind=.Session,user_id=account}))
     // 5. An imported migration cannot be aborted.
     testing.expect_value(t,abort(&h,headers,"chain_a","mig_a").status,409)
-    // 6. Abort a frozen migration: the chain is writable again, the same
-    // selection cannot freeze again and a late cutover is refused.
+    // 6. Abort a frozen migration: the chain is a plain legacy record again
+    // (no fence), the same selection cannot freeze again and a late cutover is
+    // refused; a new signed selection may import it.
     request_b:=migration_post_request(account,"chain_b","mig_b",revision(&conn,"chain_b"))
     testing.expect(t,post(&h,headers,request_b,migration_post_env(false)).status>=400)
     testing.expect(t,!sqlite.exec(&conn,"UPDATE tasks SET title='frozen' WHERE task_id='task_b'"))

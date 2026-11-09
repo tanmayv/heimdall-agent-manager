@@ -24,6 +24,10 @@ migration_test_selection :: proc(f:^Fixture,migration:string,owner_bridge:="brid
 
 // Mirrors the Hub exporter: verbatim rows grouped by kind, one document per
 // kind here, and a manifest whose digest is the import identity.
+// Task ids the next built manifest names as force-held by the Hub import.
+@(thread_local)
+migration_test_forced_held: []string
+
 migration_test_export :: proc(f:^Fixture,migration:string,rows:map[string][]string,selection:string)->(string,[]string) {
     sel,_:=contracts.owner_parse(selection,"migration_selection")
     selection_digest,_:=contracts.owner_digest("migration_selection",sel)
@@ -38,7 +42,7 @@ migration_test_export :: proc(f:^Fixture,migration:string,rows:map[string][]stri
         append(&refs,contracts.Owner_Migration_Document_Ref{i64(len(documents)),k.kind,i64(len(list)),i64(len(raw)),contracts.owner_payload_digest(raw)})
         append(&documents,raw)
     }
-    m:=contracts.Owner_Migration_Manifest{contracts.OWNER_MIGRATION_EXPORT_FORMAT,"account","legacy_chain",migration,selection_digest,3,7,kinds[:],refs[:],contracts.OWNER_MIGRATION_ARCHIVAL_ONLY[:]}
+    m:=contracts.Owner_Migration_Manifest{contracts.OWNER_MIGRATION_EXPORT_FORMAT,"account","legacy_chain",migration,selection_digest,3,7,kinds[:],refs[:],contracts.OWNER_MIGRATION_ARCHIVAL_ONLY[:],migration_test_forced_held}
     raw,_:=json.marshal(m,allocator=context.temp_allocator)
     return string(raw),documents[:]
 }
@@ -179,12 +183,6 @@ migration_import_failure_rolls_back_completely :: proc(t:^testing.T) {
     rows,_:=query(f.store.db,"SELECT count(*) FROM local_grants WHERE chain_id='legacy_chain'")
     testing.expect_value(t,rows[0][0],"0")
     testing.expect(t,exec(f.store.db,"DROP TRIGGER migration_fail"))
-    // A busy native state cannot import idle and leaves nothing behind.
-    busy:=migration_test_rows(f)
-    busy["task"]=migration_list([]string{`{"task_id":"t_review","chain_id":"legacy_chain","owner_user_id":"account","title":"r","description":"","publish_state":"published","state":"in_review","priority":"p1","attempt_no":1,"brief_json":"{}","blocked_on_json":""}`})
-    busy["comment"]=nil;busy["dependency"]=nil;busy["work_dependency"]=nil;busy["attempt"]=nil;busy["event"]=nil;busy["facet"]=nil;busy["review"]=nil
-    testing.expect_value(t,migration_test_import(f,migration_test_build(f,"mig_busy",busy)).code,"operation_conflict")
-    testing.expect_value(t,migration_test_counts(f),before)
     testing.expect_value(t,migration_test_import(f,m).code,"ok")
 }
 
@@ -304,22 +302,20 @@ migration_import_workflow_gates_and_stage_tasks :: proc(t:^testing.T) {
         return `{"run_id":"run_1","chain_id":"legacy_chain","owner_user_id":"account","current_execution_no":1}`,fmt.tprintf(`{{"run_id":"run_1","execution_no":1,"chain_id":"legacy_chain","owner_user_id":"account","state":"%s"}}`,state)
     }
     stage :: proc(state:string)->string { return fmt.tprintf(`{{"task_id":"t_stage","chain_id":"legacy_chain","owner_user_id":"account","title":"Stage","description":"","publish_state":"published","state":"%s","kind":"task","priority":"p1","attempt_no":1,"brief_json":"{{\"goal\":\"g\",\"acceptance\":[\"a\"]}}","blocked_on_json":"","workflow_run_id":"run_1","workflow_execution_no":1,"stage_key":"build"}}`,state) }
+    // An ACTIVE gate on a never-succeeded run is still refused (the Hub import
+    // removes such edges and force-holds the ticket first).
     gated:=migration_test_rows(f)
     r,e:=run("failed")
     gated["workflow_run"]=migration_list([]string{r});gated["workflow_execution"]=migration_list([]string{e})
     gated["work_dependency"]=migration_list([]string{`{"dependency_id":"dep_gate","chain_id":"legacy_chain","owner_user_id":"account","dependent_kind":"task","dependent_id":"t_ready","prerequisite_kind":"workflow_run","prerequisite_id":"run_1","created_by_kind":"user","created_by_id":"account","created_at":"x","removed_at":"","removed_by_kind":"","removed_by_id":"","removal_reason":""}`})
     testing.expect_value(t,migration_test_import(f,migration_test_build(f,"mig_gated",gated)).code,"operation_conflict")
-    live:=migration_test_rows(f)
-    r,e=run("running")
-    live["workflow_run"]=migration_list([]string{r});live["workflow_execution"]=migration_list([]string{e})
-    live["task"]=migration_list([]string{live["task"][0],stage("ready")})
-    testing.expect_value(t,migration_test_import(f,migration_test_build(f,"mig_live_stage",live)).code,"operation_conflict")
     rows,_:=query(f.store.db,"SELECT count(*) FROM task_chains")
     testing.expect_value(t,rows[0][0],"0")
-    // A finished run: its succeeded dependency is satisfied and its stage task
-    // (still nominally ready in the Hub) is archival.
+    // A finished (or Hub-import-cancelled) run: its stage task (still nominally
+    // ready in the Hub) is archival. The Hub import cancels every live run, so
+    // a stage task is archived whatever the execution state.
     done:=migration_test_rows(f)
-    r,e=run("failed")
+    r,e=run("cancelled")
     done["workflow_run"]=migration_list([]string{r});done["workflow_execution"]=migration_list([]string{e})
     tasks:=make([dynamic]string)
     for task in done["task"] do append(&tasks,task)
@@ -598,4 +594,33 @@ store_open_claims_schema_left_without_identity :: proc(t:^testing.T) {
     testing.expect(t,strings.contains(storage_diagnostic(&s),"open: stored identity differs"))
     testing.expect(t,open(&s,path,"account","bridge","bridge_key"))
     close(&s)
+}
+
+// The Hub engine is removed, so the Hub import neutralizes busy work before
+// the freeze: a task it force-held (in progress, or released from a workflow
+// gate) arrives held; a task in review is carried over in review.
+@(test)
+migration_import_force_held_and_in_review_carried :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f)
+    busy:=migration_test_rows(f)
+    busy["task"]=migration_list([]string{
+        `{"task_id":"t_busy","chain_id":"legacy_chain","owner_user_id":"account","title":"b","description":"","publish_state":"published","state":"in_progress","priority":"p1","attempt_no":1,"brief_json":"{}","blocked_on_json":""}`,
+        `{"task_id":"t_review","chain_id":"legacy_chain","owner_user_id":"account","title":"r","description":"","publish_state":"published","state":"in_review","priority":"p1","attempt_no":2,"brief_json":"{}","blocked_on_json":""}`,
+        `{"task_id":"t_gated","chain_id":"legacy_chain","owner_user_id":"account","title":"g","description":"","publish_state":"published","state":"ready","priority":"p1","attempt_no":0,"brief_json":"{}","blocked_on_json":""}`,
+    })
+    busy["comment"]=nil;busy["dependency"]=nil;busy["work_dependency"]=nil;busy["attempt"]=nil;busy["event"]=nil;busy["facet"]=nil;busy["review"]=nil
+    migration_test_forced_held=[]string{"t_busy","t_gated"}
+    defer migration_test_forced_held=nil
+    m:=migration_test_build(f,"mig_busy",busy)
+    got:=migration_test_import(f,m)
+    if !testing.expect_value(t,got.code,"ok") do return
+    rows,_:=query(f.store.db,"SELECT task_id,mode,reason FROM local_controls WHERE chain_id='legacy_chain' ORDER BY task_id")
+    testing.expect_value(t,len(rows),2)
+    if len(rows)==2 {
+        testing.expect(t,rows[0][0]=="t_busy" && rows[0][1]=="held" && strings.contains(rows[0][2],"force-held"),"in-progress task imported held")
+        testing.expect(t,rows[1][0]=="t_gated" && rows[1][1]=="held","gate-released ticket imported held")
+    }
+    state,_:=query(f.store.db,"SELECT state,attempt FROM lifecycle_state WHERE chain_id='legacy_chain' AND task_id='t_review'")
+    testing.expect(t,len(state)==1 && state[0][0]=="in_review" && state[0][1]=="2","in-review task carried over in review")
 }

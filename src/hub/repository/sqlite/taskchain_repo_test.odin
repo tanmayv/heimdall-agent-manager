@@ -18,6 +18,7 @@ task_chain_search_changes_destroy_test :: proc(changes: []domain.Task_Chain_Sear
 @(test)
 test_task_chain_search_change_feed_is_monotonic_and_owner_scoped :: proc(t: ^testing.T) {
 	conn, open_ok := tmpl_clone_migrated(t)
+	_ = legacy_fixture_allow_seeding(&conn)
 	if !open_ok do return
 	defer close(&conn)
 
@@ -81,6 +82,7 @@ test_task_chain_search_change_feed_is_monotonic_and_owner_scoped :: proc(t: ^tes
 @(test)
 test_task_bridge_id_sqlite_roundtrip :: proc(t: ^testing.T) {
 	conn, open_ok := tmpl_clone_migrated(t)
+	_ = legacy_fixture_allow_seeding(&conn)
 	if !open_ok do return
 	defer close(&conn)
 
@@ -176,6 +178,7 @@ test_task_bridge_id_sqlite_roundtrip :: proc(t: ^testing.T) {
 	// 4. Populated-DB safety, the migrations.odin:735-752 way: re-running
 	// migrations on a populated DB succeeds and preserves the data.
 	mig_again_ok, mig_again_err := run_migrations(&conn)
+	_ = legacy_fixture_allow_seeding(&conn)
 	testing.expect(t, mig_again_ok, "re-run migrations ok")
 	testing.expect_value(t, mig_again_err.code, domain.Error_Code.None)
 	got_after, ga_ok, _ := iface.taskchain_get_task(&repo, "task_tb_pinned")
@@ -188,6 +191,7 @@ test_task_bridge_id_sqlite_roundtrip :: proc(t: ^testing.T) {
 	if exec(&conn, "ALTER TABLE tasks DROP COLUMN bridge_id;") {
 		testing.expect(t, !table_column_exists(&conn, "tasks", "bridge_id"), "column dropped for pre-upgrade simulation")
 		mig_upgrade_ok, mig_upgrade_err := run_migrations(&conn)
+		_ = legacy_fixture_allow_seeding(&conn)
 		testing.expect(t, mig_upgrade_ok, "re-migrate pre-upgrade populated db ok")
 		testing.expect_value(t, mig_upgrade_err.code, domain.Error_Code.None)
 		testing.expect(t, table_column_exists(&conn, "tasks", "bridge_id"), "column re-added by upgrade")
@@ -203,6 +207,7 @@ test_task_bridge_id_sqlite_roundtrip :: proc(t: ^testing.T) {
 @(test)
 test_taskchain_fleet_sqlite_lifecycle :: proc(t: ^testing.T) {
 	conn, open_ok := tmpl_clone_migrated(t)
+	_ = legacy_fixture_allow_seeding(&conn)
 	if !open_ok do return
 	defer close(&conn)
 
@@ -275,6 +280,7 @@ test_taskchain_fleet_sqlite_lifecycle :: proc(t: ^testing.T) {
 	// 3b. Re-running migrations on a populated DB must succeed without data loss
 	// (the provider/model column upgrade is guarded and idempotent).
 	mig_again_ok, mig_again_err := run_migrations(&conn)
+	_ = legacy_fixture_allow_seeding(&conn)
 	testing.expect(t, mig_again_ok, "re-run migrations ok")
 	testing.expect_value(t, mig_again_err.code, domain.Error_Code.None)
 	fleets1b, f_err1b := iface.taskchain_list_fleets_by_chain(&repo, cid, owner)
@@ -408,6 +414,7 @@ test_taskchain_fleet_sqlite_lifecycle :: proc(t: ^testing.T) {
 @(test)
 test_taskchain_pinned_sqlite_lifecycle :: proc(t: ^testing.T) {
 	conn, open_ok := tmpl_clone_migrated(t)
+	_ = legacy_fixture_allow_seeding(&conn)
 	if !open_ok do return
 	defer close(&conn)
 
@@ -493,6 +500,7 @@ test_taskchain_pinned_sqlite_lifecycle :: proc(t: ^testing.T) {
 @(test)
 test_taskchain_rollup_counts :: proc(t: ^testing.T) {
 	conn, open_ok := tmpl_clone_migrated(t)
+	_ = legacy_fixture_allow_seeding(&conn)
 	if !open_ok do return
 	defer close(&conn)
 
@@ -573,6 +581,7 @@ test_taskchain_rollup_counts :: proc(t: ^testing.T) {
 @(test)
 test_task_v2_fields_sqlite_roundtrip :: proc(t: ^testing.T) {
 	conn, open_ok := tmpl_clone_migrated(t)
+	_ = legacy_fixture_allow_seeding(&conn)
 	if !open_ok do return
 	defer close(&conn)
 

@@ -765,6 +765,7 @@ register_routes :: proc(graph: ^App_Graph) {
     http.router_add(&graph.router,"POST","/api/v1/executor/activate",rawptr(&graph.bridge_handlers),http.executor_activation_relay_handler)
 	http.router_add(&graph.router,"POST","/api/v1/owner-local/registry",rawptr(&graph.bridge_handlers),http.owner_local_publish_handler)
 	http.router_add(&graph.router,"GET","/api/v1/owner-local/chains",rawptr(&graph.bridge_handlers),http.owner_local_list_handler)
+	http.router_add(&graph.router,"GET","/api/v1/owner-local/migrations/legacy-chains",rawptr(&graph.bridge_handlers),http.owner_migration_legacy_chains_handler)
 	http.router_add(&graph.router,"GET","/api/v1/owner-local/migrations/preflight",rawptr(&graph.bridge_handlers),http.owner_migration_preflight_handler)
 	http.router_add(&graph.router,"POST","/api/v1/owner-local/migrations",rawptr(&graph.bridge_handlers),http.owner_migration_handler)
 	http.router_add(&graph.router,"POST","/api/v1/owner-local/migrations/abort",rawptr(&graph.bridge_handlers),http.owner_migration_abort_handler)

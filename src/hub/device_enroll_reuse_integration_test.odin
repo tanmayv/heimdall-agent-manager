@@ -23,6 +23,7 @@ import contracts "odin_test:contracts"
 import app "odin_test:hub/app"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
+import sqlite "odin_test:hub/repository/sqlite"
 import platform "odin_test:hub/platform"
 import api_http "odin_test:hub/transport/http"
 import bridge_service "odin_test:hub/service/bridge"
@@ -58,6 +59,8 @@ reuse_seed_dependents :: proc(t: ^testing.T, graph: ^app.App_Graph, user_id, bri
 	})
 	testing.expect(t, inst_ok, inst_err.message)
 
+	// A legacy (pre-removal) Hub chain row and fleet: re-enrollment keeps them.
+	_ = sqlite.legacy_fixture_allow_seeding(&graph.db)
 	_, chain_ok, chain_err := iface.taskchain_save_chain(&graph.repos.taskchains, domain.Task_Chain{
 		chain_id      = REUSE_CHAIN_ID,
 		owner_user_id = domain.User_ID(user_id),

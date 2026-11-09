@@ -4,7 +4,7 @@ import { importKeyring } from '../../src/ui/utils/vaultKeyring.ts';
 import { createDeviceIdentity, memoryDeviceStore } from '../../src/ui/utils/deviceIdentity.ts';
 import { readFileSync } from 'node:fs';
 
-export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, stopOwner, restartOwner, inspectHub, otherAccount, cli, launchChild, prepareGit, registryFixture, rekeyOwner, ownerLog }: any) {
+export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, stopOwner, restartOwner, inspectHub, otherAccount, cli, launchChild, prepareGit, registryFixture, rekeyOwner, ownerLog, seedLegacy, queryHub }: any) {
   const session = { identity: approver.identity, chain: await approver.chain(), keyring: await importKeyring(Uint8Array.from(approver.keyringBytes), approver.userId) };
   if(process.env.HEIMDALL_E2E_OWNER_LINKED_ONLY==='1'){
     await stopOwner();await restartOwner();
@@ -15,7 +15,7 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
   if(process.env.HEIMDALL_E2E_OWNER_MIGRATION_ONLY==='1'){
     await stopOwner();await restartOwner();
     const {ownerMigrationFlow}=await import('./owner_migration_flow.ts');
-    await ownerMigrationFlow({session,bridgeId,hub,http,expect,cli,stopOwner,restartOwner,ownerLog});
+    await ownerMigrationFlow({session,bridgeId,hub,http,expect,cli,stopOwner,restartOwner,ownerLog,seedLegacy,queryHub});
     return;
   }
   if(process.env.HEIMDALL_E2E_OWNER_AGGREGATE_ONLY==='1'){

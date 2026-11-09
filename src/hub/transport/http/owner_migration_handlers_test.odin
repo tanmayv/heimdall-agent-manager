@@ -35,6 +35,7 @@ owner_migration_cutover_verifies_receipt_then_commits_route_and_import_once :: p
     if !testing.expect(t,opened) do return
     defer sqlite.close(&conn)
     migrated,_:=sqlite.run_migrations(&conn)
+    _ = sqlite.legacy_fixture_allow_seeding(&conn)
     if !testing.expect(t,migrated) do return
     impl:sqlite.Taskchain_Repo_SQLite
     repo:=sqlite.new_taskchain_repository(&impl,&conn)

@@ -10,7 +10,7 @@ owner_export_test_manifest :: proc(doc_raw:string,rows:i64)->Owner_Migration_Man
     for k in OWNER_MIGRATION_EXPORT_KINDS do append(&kinds,Owner_Migration_Kind_Count{k.kind,k.table,1 if k.kind=="chain" else 0})
     refs:=make([dynamic]Owner_Migration_Document_Ref,context.temp_allocator)
     append(&refs,Owner_Migration_Document_Ref{0,"chain",rows,i64(len(doc_raw)),owner_payload_digest(doc_raw)})
-    return {OWNER_MIGRATION_EXPORT_FORMAT,"acct","chain","mig",strings.repeat("a",64,context.temp_allocator),0,3,kinds[:],refs[:],OWNER_MIGRATION_ARCHIVAL_ONLY[:]}
+    return {OWNER_MIGRATION_EXPORT_FORMAT,"acct","chain","mig",strings.repeat("a",64,context.temp_allocator),0,3,kinds[:],refs[:],OWNER_MIGRATION_ARCHIVAL_ONLY[:],nil}
 }
 
 @(test)

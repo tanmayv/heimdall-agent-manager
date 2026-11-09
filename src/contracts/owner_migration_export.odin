@@ -82,6 +82,9 @@ Owner_Migration_Manifest :: struct {
     kinds: []Owner_Migration_Kind_Count,
     documents: []Owner_Migration_Document_Ref,
     archival_only: []Owner_Migration_Note,
+    // Tasks the Hub's one-shot import force-held (in progress, or released from
+    // a never-succeeded workflow gate): the owner imports them held.
+    forced_held: []string,
 }
 
 owner_migration_export_kind :: proc(kind: string) -> (Owner_Export_Kind, bool) {
@@ -111,6 +114,8 @@ owner_migration_manifest_parse :: proc(raw: string) -> (Owner_Migration_Manifest
         per_kind[d.kind] += d.rows
     }
     for k in m.kinds do if per_kind[k.kind] != k.rows do return {}, false
+    if i64(len(m.forced_held)) > per_kind["task"] do return {}, false
+    for id in m.forced_held do if !owner_field_valid(id, "id") do return {}, false
     // A chain always exports itself exactly once.
     return m, len(m.kinds) > 0 && m.kinds[0].rows == 1
 }

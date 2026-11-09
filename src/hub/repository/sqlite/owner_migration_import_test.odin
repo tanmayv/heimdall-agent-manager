@@ -33,8 +33,13 @@ legacy_import_seed_rich :: proc(t:^testing.T,conn:^Conn) -> domain.Legacy_Migrat
     return s
 }
 
+// The Hub engine is removed: a busy chain is no longer refused. The freeze
+// transaction neutralizes it (leases ended, in-progress work force-held,
+// running workflows cancelled, outstanding effects retired, review carried)
+// and records what it did on the selection row; the export names the
+// force-held tasks.
 @(test)
-legacy_import_freeze_refuses_busy_chain_without_any_write :: proc(t:^testing.T) {
+legacy_import_freeze_neutralizes_busy_chain :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
     conn,opened:=tmpl_clone_migrated(t)
     if !opened do return
@@ -43,40 +48,47 @@ legacy_import_freeze_refuses_busy_chain_without_any_write :: proc(t:^testing.T) 
     impl:Taskchain_Repo_SQLite
     repo:=new_taskchain_repository(&impl,&conn)
     testing.expect(t,exec(&conn,`
+      INSERT INTO tasks(task_id,chain_id,owner_user_id,title,created_at,updated_at,state) VALUES('busy','chain','account','busy','time','time','in_progress');
       INSERT INTO task_leases(lease_id,task_id,chain_id,owner_user_id,attempt_no,holder_instance_id,kind,granted_at,expires_at,hard_deadline_at,delivery)
-        VALUES('lease','task','chain','account',1,'inst','work','g','e','h','wake');
-      UPDATE tasks SET state='in_review' WHERE task_id='task';
+        VALUES('lease','busy','chain','account',1,'inst','work','g','e','h','wake');
+      UPDATE tasks SET state='in_review',attempt_no=1 WHERE task_id='task';
+      INSERT INTO owner_legacy_source_generations VALUES('chain','account',1);
+      INSERT INTO owner_legacy_source_effects(effect_id,chain_id,account_id,bridge_id,kind,input_digest,generation,state,command_id)
+        VALUES('eff','chain','account','brg','wake','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',1,'outstanding','cmd_1');
       BEGIN;
       INSERT INTO workflow_runs(run_id,chain_id,owner_user_id,title,definition_ref,spec_json,inputs_json,current_execution_no,request_id,request_hash,created_by_kind,created_by_id,created_at,updated_at,revision)
         VALUES('run','chain','account','Run','def:1','{}','{}',1,'req','hash','user','account','c','u',1);
       INSERT INTO workflow_run_executions(run_id,execution_no,chain_id,owner_user_id,state,resolved_inputs_json,output_manifest_json,revision)
         VALUES('run',1,'chain','account','running','{}','{}',1);
       COMMIT;`))
+    blockers,_:=repo.legacy_migration_blockers(repo.ctx,"chain")
+    testing.expect(t,len(blockers)>=4,"preflight still reports the live work (informational)")
     rows,_:=legacy_metadata(&conn,"SELECT work_revision FROM task_chains WHERE chain_id='chain'",1)
     s.expected_work_revision=legacy_test_number(rows[0][0])
-    _,blockers,err:=repo.legacy_migration_freeze_now(repo.ctx,s)
-    testing.expect_value(t,err.code,domain.Error_Code.None)
-    codes:=make([dynamic]string,context.temp_allocator)
-    for b in blockers do append(&codes,b.code)
-    testing.expect_value(t,strings.join(codes[:],",",context.temp_allocator),"live_leases,running_workflows,tasks_in_review")
-    _,found,_:=repo.legacy_source_get(repo.ctx,"account","chain")
-    testing.expect(t,!found,"a refused selection writes nothing and never strands the chain draining")
-    testing.expect(t,exec(&conn,"UPDATE tasks SET title='still writable' WHERE task_id='task'"))
-    // Once idle, the same selection freezes in one transaction.
-    testing.expect(t,exec(&conn,"DELETE FROM task_leases; UPDATE tasks SET state='ready'; UPDATE workflow_run_executions SET state='succeeded',revision=2"))
-    rows,_=legacy_metadata(&conn,"SELECT work_revision FROM task_chains WHERE chain_id='chain'",1)
-    s.expected_work_revision=legacy_test_number(rows[0][0])
-    f,none,ferr:=repo.legacy_migration_freeze_now(repo.ctx,s)
-    testing.expect(t,ferr.code==.None && len(none)==0 && f.state=="frozen" && contracts.owner_hex(f.quiescence_digest,64))
+    stale:=s;stale.expected_work_revision-=1
+    _,_,serr:=repo.legacy_migration_freeze_now(repo.ctx,stale)
+    testing.expect_value(t,serr.code,domain.Error_Code.Conflict)
+    f,refused,err:=repo.legacy_migration_freeze_now(repo.ctx,s)
+    testing.expectf(t,err.code==.None && len(refused)==0 && f.state=="frozen" && contracts.owner_hex(f.quiescence_digest,64),"busy chain freezes: %v %s",err.code,err.message)
+    testing.expect_value(t,f.forced_held_json,`["busy"]`)
+    for code in ([]string{`"code":"live_leases_ended","count":1,"items":["lease"]`,`"code":"tasks_in_review_carried","count":1,"items":["task"]`,`"code":"workflows_cancelled","count":1,"items":["run:1"]`,`"code":"effects_resolved","count":1,"items":["eff"]`,`"code":"tasks_force_held","count":1,"items":["busy"]`}) {
+        testing.expectf(t,strings.contains(f.neutralized_json,code),"neutralized %s in %s",code,f.neutralized_json)
+    }
+    rows,_=legacy_metadata(&conn,`SELECT (SELECT count(*) FROM task_leases),(SELECT state FROM workflow_run_executions WHERE run_id='run'),(SELECT state FROM owner_legacy_source_effects WHERE effect_id='eff'),(SELECT state FROM tasks WHERE task_id='busy')`,4)
+    testing.expect(t,len(rows)==1 && rows[0][0]=="0" && rows[0][1]=="cancelled" && rows[0][2]=="retired" && rows[0][3]=="in_progress","leases ended, run cancelled, effect retired, legacy rows otherwise untouched")
+    export,eerr:=repo.legacy_migration_export(repo.ctx,"account","chain",s.migration_id)
+    testing.expect_value(t,eerr.code,domain.Error_Code.None)
+    m,parsed:=contracts.owner_migration_manifest_parse(export.manifest)
+    testing.expect(t,parsed && len(m.forced_held)==1 && m.forced_held[0]=="busy","the manifest names the force-held task")
     replay,_,rerr:=repo.legacy_migration_freeze_now(repo.ctx,s)
-    testing.expect(t,rerr.code==.None && replay.revision==f.revision && replay.quiescence_digest==f.quiescence_digest,"exact replay is read-only")
+    testing.expect(t,rerr.code==.None && replay.revision==f.revision && replay.quiescence_digest==f.quiescence_digest && replay.neutralized_json==f.neutralized_json,"exact replay is read-only")
     other:=s;other.owner_bridge_id="another"
     _,_,cerr:=repo.legacy_migration_freeze_now(repo.ctx,other)
     testing.expect_value(t,cerr.code,domain.Error_Code.Conflict)
 }
 
 @(test)
-legacy_import_frozen_writes_rejected_and_pending_merge_blocks :: proc(t:^testing.T) {
+legacy_import_frozen_writes_rejected_and_pending_merge_closed :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
     conn,opened:=tmpl_clone_migrated(t)
     if !opened do return
@@ -90,11 +102,13 @@ legacy_import_frozen_writes_rejected_and_pending_merge_blocks :: proc(t:^testing
       INSERT INTO task_events(task_id,chain_id,owner_user_id,ts_ms,actor_kind,actor_id,kind,payload_json) VALUES('task','chain','account',1,'hub','','approved','{}');`))
     blockers,_:=repo.legacy_migration_blockers(repo.ctx,"chain")
     testing.expect(t,len(blockers)==1 && blockers[0].code=="pending_merges")
-    testing.expect(t,exec(&conn,"INSERT INTO task_events(task_id,chain_id,owner_user_id,ts_ms,actor_kind,actor_id,kind,payload_json) VALUES('task','chain','account',2,'hub','','merged','{}')"))
+    // A pending merge no longer refuses the import: it is closed (imported as
+    // done; the unmerged branch stays where it is) and recorded.
     rows,_:=legacy_metadata(&conn,"SELECT work_revision FROM task_chains WHERE chain_id='chain'",1)
     s.expected_work_revision=legacy_test_number(rows[0][0])
     f,blocked,err:=repo.legacy_migration_freeze_now(repo.ctx,s)
     testing.expect(t,err.code==.None && len(blocked)==0 && f.state=="frozen")
+    testing.expect(t,strings.contains(f.neutralized_json,`"code":"merges_closed","count":1,"items":["task"]`),f.neutralized_json)
     for sql in ([4]string{
       "UPDATE tasks SET title='late' WHERE task_id='task'",
       "INSERT INTO task_comments(comment_id,task_id,chain_id,owner_user_id,body,created_at,updated_at) VALUES('late','task','chain','account','late','t','t')",
@@ -202,9 +216,10 @@ legacy_import_seed_run :: proc(t:^testing.T,conn:^Conn,state:string,run:="run") 
 }
 
 // R3 review blocker: a ticket gated on a workflow run that has not succeeded,
-// and a live workflow stage task, cannot be imported as ordinary tickets.
+// and a live workflow stage task, cannot be imported as ordinary tickets: the
+// import neutralizes them first.
 @(test)
-legacy_import_refuses_workflow_gated_tickets_and_live_stage_tasks :: proc(t:^testing.T) {
+legacy_import_releases_workflow_gates_and_archives_live_stage_tasks :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
     conn,opened:=tmpl_clone_migrated(t)
     if !opened do return
@@ -226,17 +241,17 @@ legacy_import_refuses_workflow_gated_tickets_and_live_stage_tasks :: proc(t:^tes
     testing.expect_value(t,strings.join(codes[:],",",context.temp_allocator),"running_workflows=run:1,workflow_gated_dependencies=dep_gate (task:task needs workflow_run:run),workflow_stage_tasks=stage_live")
     rows,_:=legacy_metadata(&conn,"SELECT work_revision FROM task_chains WHERE chain_id='chain'",1)
     s.expected_work_revision=legacy_test_number(rows[0][0])
-    _,refused,_:=repo.legacy_migration_freeze_now(repo.ctx,s)
-    testing.expect_value(t,len(refused),3)
-    // A failed run still gates its dependent ticket; its stage tasks are now
-    // historical (the owner imports them as non-dispatchable archive).
-    testing.expect(t,exec(&conn,"UPDATE workflow_run_executions SET state='failed',revision=2 WHERE run_id='run'"))
-    blockers,_=repo.legacy_migration_blockers(repo.ctx,"chain")
-    testing.expect(t,len(blockers)==1 && blockers[0].code=="workflow_gated_dependencies" && blockers[0].items[0]=="dep_gate (task:task needs workflow_run:run)")
-    // dep_ok on a succeeded run never gated; a removed edge is archival.
-    testing.expect(t,exec(&conn,"UPDATE work_dependencies SET removed_at='r',removed_by_kind='user',removed_by_id='account',removal_reason='superseded' WHERE dependency_id='dep_gate'"))
-    blockers,_=repo.legacy_migration_blockers(repo.ctx,"chain")
-    testing.expect_value(t,len(blockers),0)
+    f,refused,err:=repo.legacy_migration_freeze_now(repo.ctx,s)
+    testing.expectf(t,err.code==.None && len(refused)==0 && f.state=="frozen","gated chain freezes: %s",err.message)
+    // The running run is cancelled, the never-succeeded gate is removed (kept in
+    // history) and its ticket force-held; dep_ok on a succeeded run is untouched;
+    // the live stage task becomes archival.
+    rows,_=legacy_metadata(&conn,`SELECT (SELECT state FROM workflow_run_executions WHERE run_id='run'),(SELECT removed_by_id FROM work_dependencies WHERE dependency_id='dep_gate'),(SELECT removed_at FROM work_dependencies WHERE dependency_id='dep_ok')`,3)
+    testing.expect(t,len(rows)==1 && rows[0][0]=="cancelled" && rows[0][1]=="legacy_import" && rows[0][2]=="")
+    testing.expect_value(t,f.forced_held_json,`["task"]`)
+    for code in ([]string{`"code":"workflows_cancelled"`,`"code":"workflow_gates_released","count":1,"items":["dep_gate"]`,`"code":"workflow_stage_tasks_archived","count":1,"items":["stage_live"]`}) {
+        testing.expectf(t,strings.contains(f.neutralized_json,code),"neutralized %s in %s",code,f.neutralized_json)
+    }
 }
 
 // R3 review: an unfinished migration can be aborted by the account owner,
@@ -311,4 +326,35 @@ legacy_import_aborted_lookup_is_explicit :: proc(t:^testing.T) {
     testing.expect(t,aborted && chain=="chain" && bridge=="bridge")
     _,_,found,_=repo.legacy_migration_aborted(repo.ctx,"other","migration")
     testing.expect(t,!found)
+}
+
+// Migration 213: nothing creates a Hub chain or task any more; existing rows
+// stay readable, and Import all lists every legacy chain with its state.
+@(test)
+legacy_hub_chain_inserts_refused_and_import_listing :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    conn,opened:=tmpl_clone_migrated(t)
+    if !opened do return
+    defer close(&conn)
+    testing.expect(t,!exec(&conn,"INSERT INTO task_chains(chain_id,owner_user_id,title,created_at,updated_at) VALUES('new','account','t','c','u')"),"a new Hub chain is refused")
+    testing.expect(t,legacy_fixture_allow_seeding(&conn))
+    s:=legacy_seed_source(t,&conn)
+    testing.expect(t,exec(&conn,`CREATE TRIGGER hub_chains_removed_tasks_insert BEFORE INSERT ON tasks BEGIN SELECT RAISE(ABORT,'hub_chains_removed'); END;`))
+    testing.expect(t,!exec(&conn,"INSERT INTO tasks(task_id,chain_id,owner_user_id,title,created_at,updated_at) VALUES('new_task','chain','account','t','c','u')"),"a new Hub task is refused")
+    testing.expect(t,exec(&conn,"UPDATE tasks SET title='legacy rows stay updatable until frozen' WHERE task_id='task'"))
+    impl:Taskchain_Repo_SQLite
+    repo:=new_taskchain_repository(&impl,&conn)
+    f,_,err:=repo.legacy_migration_freeze_now(repo.ctx,s)
+    testing.expect(t,err.code==.None && f.state=="frozen")
+    rows,lerr:=repo.legacy_chain_list(repo.ctx,"account","",10)
+    testing.expect_value(t,lerr.code,domain.Error_Code.None)
+    testing.expect_value(t,len(rows),2)
+    if len(rows)==2 {
+        testing.expect(t,rows[0].chain_id=="chain" && rows[0].state=="frozen" && rows[0].migration_id==s.migration_id && rows[0].task_count==1,"selected chain carries its state")
+        testing.expect(t,rows[1].chain_id=="other" && rows[1].state=="none" && rows[1].migration_id=="","other chain not yet imported")
+    }
+    page,_:=repo.legacy_chain_list(repo.ctx,"account","chain",10)
+    testing.expect(t,len(page)==1 && page[0].chain_id=="other","keyset paging")
+    others,_:=repo.legacy_chain_list(repo.ctx,"someone_else","",10)
+    testing.expect_value(t,len(others),0)
 }

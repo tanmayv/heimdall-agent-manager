@@ -28,6 +28,12 @@ legacy_storage_error :: proc() -> domain.Domain_Error { return domain.domain_err
 legacy_conflict :: proc() -> domain.Domain_Error { return domain.domain_error(.Conflict,"legacy source fence conflicts or remains unresolved") }
 
 legacy_migration_select :: proc(ctx:rawptr,s:domain.Legacy_Migration_Selection) -> domain.Domain_Error {
+    return legacy_migration_select_recorded(ctx,s,"[]","[]")
+}
+
+// Selection with the record of what the import neutralized (written once, on
+// the selection row; the row's identity trigger forbids changing it later).
+legacy_migration_select_recorded :: proc(ctx:rawptr,s:domain.Legacy_Migration_Selection,neutralized_json,forced_held_json:string) -> domain.Domain_Error {
     if s.account_id=="" || s.chain_id=="" || s.migration_id=="" || s.owner_bridge_id=="" || s.owner_key_id=="" || !contracts.owner_hex(s.selection_digest,64) || s.expected_work_revision<0 do return domain.domain_error(.Validation_Failed,"invalid legacy migration selection")
     impl:=(^Taskchain_Repo_SQLite)(ctx)
     factory:SQLite_Unit_Of_Work_Factory
@@ -50,8 +56,15 @@ legacy_migration_select :: proc(ctx:rawptr,s:domain.Legacy_Migration_Selection) 
     if len(rows)!=1 || rows[0][0]!=fmt.tprintf("%d",s.expected_work_revision) do return legacy_conflict()
     _,ok=legacy_metadata(impl.conn,"INSERT OR IGNORE INTO owner_legacy_source_generations VALUES(?,?,0)",0,s.chain_id,s.account_id)
     if !ok do return legacy_storage_error()
-    _,ok=legacy_metadata(impl.conn,`INSERT INTO owner_legacy_migrations(migration_id,chain_id,account_id,owner_bridge_id,owner_key_id,selection_digest,state,revision)
-      VALUES(?,?,?,?,?,?,'draining',1)`,0,s.migration_id,s.chain_id,s.account_id,s.owner_bridge_id,s.owner_key_id,s.selection_digest)
+    // Nothing neutralized: the pre-213 column set (the record columns default
+    // to '[]'), which also keeps the 204..212 upgrade tests' schemas working.
+    if neutralized_json=="[]" && forced_held_json=="[]" {
+        _,ok=legacy_metadata(impl.conn,`INSERT INTO owner_legacy_migrations(migration_id,chain_id,account_id,owner_bridge_id,owner_key_id,selection_digest,state,revision)
+          VALUES(?,?,?,?,?,?,'draining',1)`,0,s.migration_id,s.chain_id,s.account_id,s.owner_bridge_id,s.owner_key_id,s.selection_digest)
+    } else {
+        _,ok=legacy_metadata(impl.conn,`INSERT INTO owner_legacy_migrations(migration_id,chain_id,account_id,owner_bridge_id,owner_key_id,selection_digest,state,revision,neutralized_json,forced_held_json)
+          VALUES(?,?,?,?,?,?,'draining',1,?,?)`,0,s.migration_id,s.chain_id,s.account_id,s.owner_bridge_id,s.owner_key_id,s.selection_digest,neutralized_json,forced_held_json)
+    }
     if !ok do return legacy_conflict()
     committed,err=iface.unit_of_work_commit(&tx)
     return err
@@ -59,14 +72,20 @@ legacy_migration_select :: proc(ctx:rawptr,s:domain.Legacy_Migration_Selection) 
 
 legacy_source_get :: proc(ctx:rawptr,account,chain:string) -> (domain.Legacy_Source_Fence,bool,domain.Domain_Error) {
     impl:=(^Taskchain_Repo_SQLite)(ctx)
-    rows,ok:=legacy_metadata(impl.conn,`SELECT m.migration_id,m.owner_bridge_id,m.owner_key_id,m.selection_digest,m.state,m.quiescence_digest,m.revision,g.generation,m.manifest_digest,m.receipt_digest
+    rows,ok:=legacy_metadata(impl.conn,`SELECT m.migration_id,m.owner_bridge_id,m.owner_key_id,m.selection_digest,m.state,m.quiescence_digest,m.revision,g.generation,m.manifest_digest,m.receipt_digest,m.neutralized_json,m.forced_held_json
       FROM owner_legacy_migrations m JOIN owner_legacy_source_generations g ON g.chain_id=m.chain_id AND g.account_id=m.account_id
-      WHERE m.account_id=? AND m.chain_id=?`,10,account,chain)
+      WHERE m.account_id=? AND m.chain_id=?`,12,account,chain)
+    if !ok {
+        // Pre-213 schema (upgrade tests): no neutralization record columns.
+        rows,ok=legacy_metadata(impl.conn,`SELECT m.migration_id,m.owner_bridge_id,m.owner_key_id,m.selection_digest,m.state,m.quiescence_digest,m.revision,g.generation,m.manifest_digest,m.receipt_digest,'[]','[]'
+          FROM owner_legacy_migrations m JOIN owner_legacy_source_generations g ON g.chain_id=m.chain_id AND g.account_id=m.account_id
+          WHERE m.account_id=? AND m.chain_id=?`,12,account,chain)
+    }
     if !ok do return {},false,legacy_storage_error()
     if len(rows)==0 do return {},false,{}
     r:=rows[0]
     revision,_:=strconv.parse_i64(r[6]);generation,_:=strconv.parse_i64(r[7])
-    return domain.Legacy_Source_Fence{selection={account_id=account,chain_id=chain,migration_id=r[0],owner_bridge_id=r[1],owner_key_id=r[2],selection_digest=r[3]},state=r[4],quiescence_digest=r[5],revision=revision,generation=generation,manifest_digest=r[8],receipt_digest=r[9]},true,{}
+    return domain.Legacy_Source_Fence{selection={account_id=account,chain_id=chain,migration_id=r[0],owner_bridge_id=r[1],owner_key_id=r[2],selection_digest=r[3]},state=r[4],quiescence_digest=r[5],revision=revision,generation=generation,manifest_digest=r[8],receipt_digest=r[9],neutralized_json=r[10],forced_held_json=r[11]},true,{}
 }
 
 legacy_effect_prepare :: proc(ctx:rawptr,e:domain.Legacy_Source_Effect) -> (i64,domain.Domain_Error) {

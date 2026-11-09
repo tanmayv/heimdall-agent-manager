@@ -42,6 +42,7 @@ ph_open :: proc(t: ^testing.T, h: ^Projector_Harness, name: string) {
 	testing.expectf(t, ok, "open db: %s", err.message)
 	h.conn = conn
 	mig_ok, mig_err := sqlite.run_migrations(&h.conn)
+	_ = sqlite.legacy_fixture_allow_seeding(&h.conn)
 	testing.expectf(t, mig_ok, "migrations: %s", mig_err.message)
 	h.cards = sqlite.new_card_repository(&h.card_impl, &h.conn)
 	h.attention = sqlite.new_attention_repository(&h.attention_impl, &h.conn)

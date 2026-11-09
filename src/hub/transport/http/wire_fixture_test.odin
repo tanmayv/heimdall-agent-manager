@@ -119,6 +119,7 @@ wire_setup :: proc(t: ^testing.T, tag: string) -> ^wire_fixture {
 	f.conn = conn
 
 	mig_ok, mig_err := sqlite.run_migrations(&f.conn)
+	_ = sqlite.legacy_fixture_allow_seeding(&f.conn)
 	testing.expect(t, mig_ok, "migrations ok")
 	testing.expect_value(t, mig_err.code, domain.Error_Code.None)
 

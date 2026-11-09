@@ -16,8 +16,9 @@ import vd "odin_test:hub/service/vault_directory"
 import vault "odin_test:lib/vault"
 
 // R3 one-shot legacy import (Hub side).
-//   GET  /api/v1/owner-local/migrations/preflight?chain_id=  (user)   blockers + work revision
-//   POST /api/v1/owner-local/migrations                     (user)   select+freeze, relay import, cutover
+//   GET  /api/v1/owner-local/migrations/legacy-chains?after=&limit=  (user)  every legacy chain + import state (Import all)
+//   GET  /api/v1/owner-local/migrations/preflight?chain_id=  (user)   live work the import will neutralize + work revision
+//   POST /api/v1/owner-local/migrations                     (user)   neutralize+select+freeze, relay import, cutover
 //   GET  /api/v1/owner-local/migrations/export?migration_id=&part=  (owner Bridge) manifest (part=manifest) or document N
 //   GET  /api/v1/owner-local/migrations/state?migration_id= (owner Bridge) state for activation
 // The Hub never activates the owner: after its cutover commits it only nudges
@@ -55,11 +56,26 @@ Owner_Migration_Abort_Request :: struct { chain_id,migration_id:string }
 Owner_Migration_Preflight :: struct {
     chain_id,state,migration_id,owner_bridge_id:string,
     work_revision:i64,
+    // Live work the import will neutralize (informational; never a refusal).
     blockers:[]domain.Legacy_Migration_Blocker,
+    // Once selected: what the import neutralized and the force-held task ids.
+    neutralized:json.Value,
+    forced_held:json.Value,
 }
 Owner_Migration_Result :: struct {
     state,migration_id,chain_id,manifest_digest,receipt_digest:string,
     replayed,activation_sent:bool,
+    neutralized:json.Value,
+    forced_held:json.Value,
+}
+Owner_Migration_Legacy_Chain :: struct {
+    chain_id,title,status:string,
+    work_revision,task_count:i64,
+    state,migration_id,owner_bridge_id:string,
+}
+Owner_Migration_Legacy_Page :: struct {
+    items:[]Owner_Migration_Legacy_Chain,
+    next_after:string,
 }
 Owner_Migration_Import_Command :: struct {
     type,command_id,account_id,migration_id,chain_id,selection,genesis,manifest_digest:string,
@@ -72,9 +88,33 @@ Owner_Migration_Import_Reply :: struct { type,command_id,code,receipt,genesis:st
 Owner_Migration_Part :: struct { migration_id,manifest_digest,part,body:string }
 Owner_Migration_State :: struct { migration_id,chain_id,state,manifest_digest,owner_bridge_id:string }
 
-owner_migration_blocked :: proc(blockers:[]domain.Legacy_Migration_Blocker,request_id:string)->Response {
-    detail:=owner_json(struct{code:string,blockers:[]domain.Legacy_Migration_Blocker}{"migration_blocked",blockers})
-    return respond_error(domain.domain_error(.Conflict,"chain has live work; settle it before migrating",detail),request_id)
+// The recorded neutralization of a selected migration, as JSON values.
+owner_migration_record :: proc(f:domain.Legacy_Source_Fence)->(neutralized,forced_held:json.Value) {
+    neutralized=json.Array{}
+    forced_held=json.Array{}
+    if v,err:=json.parse_string(f.neutralized_json,allocator=context.temp_allocator);err==nil && f.neutralized_json!="" do neutralized=v
+    if v,err:=json.parse_string(f.forced_held_json,allocator=context.temp_allocator);err==nil && f.forced_held_json!="" do forced_held=v
+    return
+}
+
+// GET /api/v1/owner-local/migrations/legacy-chains?after=&limit=: every legacy
+// Hub chain of the account with its import state, for Settings → Bridge
+// "Import all". Imported chains are listed too (state tells the client to skip).
+owner_migration_legacy_chains_handler :: proc(ctx:rawptr,req:Request)->Response {
+    context.allocator=context.temp_allocator
+    h:=(^Bridge_Handlers)(ctx)
+    auth,ok,resp:=require_auth_any(h.auth,req)
+    if !ok do return resp
+    if !contracts.is_user_auth(auth) || auth.kind==.Instance_Token do return respond_error(domain.domain_error(.Forbidden,"user authentication required"),req.request_id)
+    if h.chains==nil || h.chains.legacy_chain_list==nil do return respond_error(domain.domain_error(.Internal_Error,"legacy chain listing is not configured"),req.request_id)
+    limit:=query_int(req.query,"limit",100)
+    if limit<1 || limit>200 do limit=200
+    rows,err:=h.chains.legacy_chain_list(h.chains.ctx,auth.user_id,query_value(req.query,"after"),limit)
+    if err.code!=.None do return respond_error(err,req.request_id)
+    page:=Owner_Migration_Legacy_Page{items=make([]Owner_Migration_Legacy_Chain,len(rows))}
+    for r,i in rows do page.items[i]=Owner_Migration_Legacy_Chain{r.chain_id,r.title,r.status,r.work_revision,r.task_count,r.state,r.migration_id,r.owner_bridge_id}
+    if len(rows)==limit do page.next_after=rows[len(rows)-1].chain_id
+    return respond_success(owner_json(page),req.request_id,auth_ctx_server_time(req))
 }
 
 owner_migration_preflight_handler :: proc(ctx:rawptr,req:Request)->Response {
@@ -94,6 +134,7 @@ owner_migration_preflight_handler :: proc(ctx:rawptr,req:Request)->Response {
         return respond_error(ferr,req.request_id)
     } else if found {
         out.state=f.state;out.migration_id=f.selection.migration_id;out.owner_bridge_id=f.selection.owner_bridge_id
+        out.neutralized,out.forced_held=owner_migration_record(f)
     }
     blockers,berr:=h.chains.legacy_migration_blockers(h.chains.ctx,chain_id)
     if berr.code!=.None do return respond_error(berr,req.request_id)
@@ -162,12 +203,14 @@ owner_migration_post :: proc(h:^Bridge_Handlers,req:Request,env:Owner_Migration_
         now:=time.to_unix_nanoseconds(time.now())/1000000
         if e:=contracts.owner_migration_admit("migration_selection",selection,now,chain.work_revision);e!=.None do return respond_error(domain.domain_error(.Conflict,fmt.tprintf("migration selection not admitted: %s",contracts.owner_auth_error_code(e))),req.request_id)
     }
-    fence,blockers,ferr:=h.chains.legacy_migration_freeze_now(h.chains.ctx,s)
+    // Busy legacy work is neutralized in the freeze transaction (the Hub engine
+    // that used to drain it is gone); the result reports what was neutralized.
+    fence,_,ferr:=h.chains.legacy_migration_freeze_now(h.chains.ctx,s)
     if ferr.code!=.None do return respond_error(ferr,req.request_id)
-    if len(blockers)>0 do return owner_migration_blocked(blockers,req.request_id)
     export,eerr:=owner_migration_export_cached(h,account,chain_id,migration)
     if eerr.code!=.None do return respond_error(eerr,req.request_id)
     result:=Owner_Migration_Result{state=fence.state,migration_id=migration,chain_id=chain_id,manifest_digest=export.manifest_digest}
+    result.neutralized,result.forced_held=owner_migration_record(fence)
     if fence.state=="imported" {
         // Exact retry after cutover: nudge activation again; the Bridge also
         // re-derives it from Hub state on its own.
@@ -307,16 +350,18 @@ owner_migration_export_cached :: proc(h:^Bridge_Handlers,account,chain,migration
     return export,{}
 }
 
-// Abort returns a frozen chain to the legacy writer and abandons any owner-side
-// import: a human decision. Agent instance tokens (any agent of the account)
+// Abort turns a selected or frozen chain back into a read-only legacy record
+// (the Hub engine is removed, so there is no legacy writer to return to) and
+// abandons any owner-side import: a human decision. The chain can be imported
+// again with a new signed selection. Agent instance tokens (any agent of the account)
 // are refused; only the user's own authenticated session may abort.
 owner_migration_abort_authorized :: proc(auth:contracts.Auth_Context)->bool {
     return contracts.is_user_auth(auth) && auth.kind!=.Instance_Token
 }
 // POST /api/v1/owner-local/migrations/abort {chain_id,migration_id}: the
-// account owner returns a selected or frozen chain to its legacy writer. A
-// quarantined owner-side import of it is never activated: the Hub never
-// reports it imported again.
+// account owner abandons a selected or frozen migration; the chain stays a
+// read-only legacy record that can be imported again. A quarantined owner-side
+// import of it is never activated: the Hub never reports it imported again.
 owner_migration_abort_handler :: proc(ctx:rawptr,req:Request)->Response {
     context.allocator=context.temp_allocator
     h:=(^Bridge_Handlers)(ctx)
