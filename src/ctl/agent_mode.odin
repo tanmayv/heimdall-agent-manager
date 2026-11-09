@@ -236,8 +236,11 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 		append(&fields, json_kv("description", option_value(args, "--description", "")))
 		if v := strings.trim_space(option_value(args, "--coordinator-agent", "")); v != "" do append(&fields, json_kv("coordinator_agent_id", v))
 		ctl_agent_call(endpoint, token, "agent.task_chain.create", json_object_from_slice(fields[:]))
+	case "fleet", "fleets":
+		// Fleet of a Bridge-owned chain, managed by its coordinator (owner_agent_fleet.odin).
+		ctl_v2_task_chain_fleet(endpoint, token, tokens[1:], args)
 	case "", "list", "set-title", "set-description", "set-status", "status", "archive", "unarchive",
-	     "pin", "unpin", "directory", "directories", "fleet", "fleets", "decide", "proposal",
+	     "pin", "unpin", "directory", "directories", "decide", "proposal",
 	     "graph", "depend", "remove-dependency", "scope":
 		// Hub task chains are removed: these verbs only ever reached the Hub.
 		// Bridge-owned chains are created and listed in the UI (or through
@@ -275,6 +278,43 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 	case:
 		print_agent_help([]string{"task-chain"})
 	}
+}
+
+// ctl_owner_fleet_params maps `task-chain fleet <sub> [<chain-id>] ...` to the
+// owner Bridge method and its params. ok=false prints usage. Flags are sent
+// only when given, so `fleet set` changes only what it names (`--bridge ""`
+// clears a value). Pure: unit-tested.
+ctl_owner_fleet_params :: proc(sub: string, tokens, args: []string) -> (method, params: string, ok: bool) {
+	fields := make([dynamic]string, context.temp_allocator)
+	chain := pos(tokens, 0)
+	if chain == "" do chain = option_value(args, "--chain", option_value(args, "--chain-id", ""))
+	if chain != "" do append(&fields, json_kv("chain_id", chain))
+	if sub == "" || sub == "list" do return "agent.task_chain.fleet_list", json_object_from_slice(fields[:]), true
+	agent := option_value(args, "--agent", option_value(args, "--agent-id", ""))
+	if agent == "" do return "", "", false
+	append(&fields, json_kv("agent_id", agent))
+	switch sub {
+	case "pause", "resume", "remove":
+		if sub != "remove" && has_flag(args, "--roles") do append(&fields, json_kv("roles", option_value(args, "--roles", "")))
+		return strings.concatenate({"agent.task_chain.fleet_", sub}, context.temp_allocator), json_object_from_slice(fields[:]), true
+	case "set":
+		flags := [?][2]string{{"--capacity", "capacity"}, {"--min-warm", "min_warm"}, {"--idle-ttl", "idle_ttl_seconds"}, {"--roles", "roles"},
+			{"--bridge", "bridge_id"}, {"--provider", "provider"}, {"--model", "model"}, {"--profile", "provider_profile"},
+			{"--bridge-models", "bridge_models_json"}, {"--project", "project_id"}, {"--instance", "instance_id"}}
+		for f in flags {
+			if has_flag(args, f[0]) do append(&fields, json_kv(f[1], option_value(args, f[0], "")))
+		}
+		return "agent.task_chain.fleet_set", json_object_from_slice(fields[:]), true
+	}
+	return "", "", false
+}
+
+ctl_v2_task_chain_fleet :: proc(endpoint, token: string, tokens, args: []string) {
+	sub := pos(tokens, 0)
+	if has_flag(args, "--help") || has_flag(args, "-h") || sub == "help" { print_help_task_chain_fleet(); return }
+	method, params, ok := ctl_owner_fleet_params(sub, tokens[1:] if len(tokens) > 0 else tokens, args)
+	if !ok { print_help_task_chain_fleet(); os.exit(2) }
+	ctl_agent_call(endpoint, token, method, params)
 }
 
 // ---- task (one command per action) --------------------------------------
@@ -1669,6 +1709,7 @@ print_agent_help :: proc(cmd: []string) {
 	case "bridge", "bridges": print_help_bridge(); return
 	case "agents": print_help_agents(); return
 	case "task-chain", "task-chains", "chain", "chains":
+		if sub == "fleet" || sub == "fleets" { print_help_task_chain_fleet(); return }
 		print_help_task_chain()
 		return
 	case "task", "tasks": print_help_task(); return
@@ -1774,6 +1815,8 @@ print_help_agents :: proc() {
 	fmt.println("  start   <agent-instance-id>          Start a STOPPED instance (409 if already running).")
 	fmt.println("  stop    <agent-instance-id> [--reason <t>]   Stop a running instance.")
 	fmt.println("  restart <agent-instance-id>          Restart (stop-then-start) an instance.")
+	fmt.println("  (an instance of a Bridge-owned chain: only that chain's coordinator may start/stop/restart it,")
+	fmt.println("   and never stop itself)")
 	fmt.println("")
 	fmt.println("EXAMPLES")
 	fmt.println("  ham-ctl agents list")
@@ -1788,7 +1831,7 @@ print_help_task_chain :: proc() {
 	fmt.println("Chains are Bridge-owned (the Hub task-chain engine is removed). Chains are created in the")
 	fmt.println("Heimdall app or with `task-chain create` (owned by your Bridge); legacy Hub chains are imported")
 	fmt.println("from Settings → Bridge (Import all). Verbs that only reached the Hub (list, set-title,")
-	fmt.println("set-description, set-status, archive, pin, directory, fleet, decide, graph, depend,")
+	fmt.println("set-description, set-status, archive, pin, directory, decide, graph, depend,")
 	fmt.println("remove-dependency, scope) answer hub_chains_removed.")
 	fmt.println("")
 	fmt.println("VERBS")
@@ -1809,6 +1852,7 @@ print_help_task_chain :: proc() {
 	fmt.println("  complete <chain-id> --expected-work-revision <N> --summary <text>")
 	fmt.println("                                      Complete the chain (coordinator only; every ticket done).")
 	fmt.println("  token-usage [<chain-id>]            Per-agent (and per-instance) + chain total token usage, JSON.")
+	fmt.println("  fleet list|set|pause|resume|remove  Manage the chain's fleet (coordinator only; see `task-chain fleet --help`).")
 	fmt.println("  migrate --chain <id> --owner <bridge-id> [--request-file <signed.json>]")
 	fmt.println("                                      Move one legacy chain to its owner Bridge (one-shot). Without")
 	fmt.println("                                      --request-file prints the preflight. The selection must be signed")
@@ -1824,7 +1868,39 @@ print_help_task_chain :: proc() {
 	fmt.println("  ham-ctl task-chain show chain_abc")
 	fmt.println("  ham-ctl task-chain summary set '# Chain summary' --chain chain_abc")
 	fmt.println("  ham-ctl task-chain propose --file proposal.json")
+	fmt.println("  ham-ctl task-chain fleet set chain_abc --agent agt_worker --roles worker --project proj_repo")
 	fmt.println("  ham-ctl task-chain complete chain_abc --expected-work-revision 7 --summary 'All work merged; evidence: ...'")
+}
+
+print_help_task_chain_fleet :: proc() {
+	fmt.println("ham-ctl task-chain fleet — the fleet of your Bridge-owned chain (coordinator only)")
+	fmt.println("")
+	fmt.println("VERBS (<chain-id> defaults to your chain)")
+	fmt.println("  list [<chain-id>]                       Fleet rows (agent, capacity, roles, placement, pause) and members (running or not).")
+	fmt.println("  set [<chain-id>] --agent <agt_id> [flags]  Add or change a fleet row. If the agent has no member in the chain")
+	fmt.println("                                          (and the row serves a role on this Bridge) one instance is launched on")
+	fmt.println("                                          this Bridge into the chain and bound as a member, so tasks assigned to")
+	fmt.println("                                          the agt_ id dispatch to it. Your own agent's row is your solo row (nothing launched).")
+	fmt.println("  pause|resume [<chain-id>] --agent <id> [--roles <r,...>]  Pause/resume the row (all roles or the named ones).")
+	fmt.println("  remove [<chain-id>] --agent <id>        Disable the agent's members (never yourself) and pause its row.")
+	fmt.println("")
+	fmt.println("FLAGS (set; only the flags you pass change)")
+	fmt.println("  --capacity <N>            Maximum concurrent instances (>= 1; default 1).")
+	fmt.println("  --min-warm <N>            Minimum warm instances (recorded).")
+	fmt.println("  --idle-ttl <seconds>      Idle TTL (default 600).")
+	fmt.println("  --roles <worker,reviewer> Roles the row serves (comma-separated; default worker; any role but coordinator).")
+	fmt.println("  --bridge <bridge_id>      Placement; owner-chain agents run on the owner Bridge (another Bridge is recorded, not launched).")
+	fmt.println("  --provider <p> --model <m> --profile <provider_profile>   Provider/model for launches.")
+	fmt.println("  --bridge-models <json>    Per-bridge {\"<bridge_id>\":{\"provider_profile\",\"provider\",\"model\"}} map.")
+	fmt.println("  --project <project_id>    Launch in this project (use the chain repository's project so it can take git tasks).")
+	fmt.println("  --instance <inst_id>      Bind this running instance of the agent instead of launching one.")
+	fmt.println("")
+	fmt.println("EXAMPLES")
+	fmt.println("  ham-ctl task-chain fleet list")
+	fmt.println("  ham-ctl task-chain fleet set --agent agt_worker --roles worker --provider claude --model sonnet --project proj_repo")
+	fmt.println("  ham-ctl task-chain fleet set --agent agt_rev --roles reviewer,security")
+	fmt.println("  ham-ctl task-chain fleet pause --agent agt_worker")
+	fmt.println("  ham-ctl task-chain fleet remove --agent agt_worker")
 }
 
 print_help_task :: proc() {

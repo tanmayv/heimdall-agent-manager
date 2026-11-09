@@ -1,0 +1,340 @@
+#+feature dynamic-literals
+package main
+
+// Fleet management by the coordinator of a chain this Bridge owns (user
+// decision: Hub-chain parity). `ham-ctl task-chain fleet list|set|pause|
+// resume|remove` reach the Bridge as agent.task_chain.fleet_*; `ham-ctl agents
+// start|stop|restart <inst>` for an instance of an owner chain are gated here
+// and then relayed to the Hub with the caller's own token.
+//
+// Authority is the owner store's (agent_authority.odin): only the chain's
+// bound coordinator (exact live child) manages the fleet; it enrolls workers
+// and reviewers (never the coordinator role), never removes, disables or
+// demotes itself, never stops itself; grants stay human-only.
+//
+// `fleet set` writes the fleet policy row (fleet.policy.set) and, when the
+// agent has no enabled member here, launches it on THIS Bridge into the chain
+// (Hub POST /agent-instances with chain_id + bridge_id and the caller's token),
+// waits with no locks held for the live child, then binds it as an enabled
+// member (chain.member.set with the Bridge-observed child), which republishes
+// registry_members. A task assigned to the agent then resolves to that member
+// (bridge_owner_resolve_agent) and dispatches through its fleet row.
+//
+// Lock order: bridge_owner_mutex -> bridge_startup_io_mutex ->
+// bridge_local_token_mutex; the launch wait holds none of them.
+
+import "core:encoding/json"
+import "core:fmt"
+import "core:os"
+import "core:slice"
+import "core:strconv"
+import "core:strings"
+import "core:sync"
+import "core:time"
+import contracts "odin_test:contracts"
+import owner "odin_test:lib/owner_local"
+import vault "odin_test:lib/vault"
+
+bridge_owner_fleet_method :: proc(method:string) -> bool {
+    switch method {
+    case "agent.task_chain.fleet_list","agent.task_chain.fleet_set","agent.task_chain.fleet_pause","agent.task_chain.fleet_resume","agent.task_chain.fleet_remove": return true
+    }
+    return false
+}
+
+// agent.agents.instance_* -> start|stop|restart ("" for any other method).
+bridge_owner_instance_verb :: proc(method:string) -> string {
+    switch method {
+    case "agent.agents.instance_start": return "start"
+    case "agent.agents.instance_stop": return "stop"
+    case "agent.agents.instance_restart": return "restart"
+    }
+    return ""
+}
+
+// A launch decided under the locks and finished after them.
+Owner_Fleet_Launch :: struct {
+    active:bool,
+    chain,agent,role,body:string,
+    reply:json.Object, // the policy result, completed with the instance
+}
+
+// `agents start|stop|restart <inst>`: an instance of a chain this Bridge owns
+// may be controlled only by that chain's coordinator. Allowed calls return
+// handled=false so the ordinary Hub relay runs with the caller's own token;
+// instances of no owner chain keep the Hub behaviour unchanged.
+bridge_owner_instance_gate :: proc(request_id,verb,params:string,rec:Bridge_Local_Agent_Token_Record) -> (string,bool) {
+    target:=bridge_agent_instance_id(params)
+    if target=="" do return "",false
+    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
+    if account=="" do return "",false
+    key_id,key_ok:=vault.device_id_from_sign_pub(bridge_identity_public_key_hex(bridge_config.daemon_id),context.temp_allocator)
+    if !key_ok do return "",false
+    sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
+    if bridge_owner_store.db==nil {
+        path:=bridge_owner_store_path(account)
+        if path=="" || !os.exists(path) do return "",false
+    }
+    if !bridge_owner_open(account,key_id) do return bridge_local_response_error(request_id,"storage_error","owner store unavailable"),true
+    chains,ok:=owner.agent_instance_chains(&bridge_owner_store,target)
+    if !ok do return bridge_local_response_error(request_id,"storage_error","owner store could not be read; retry"),true
+    if len(chains)==0 do return "",false
+    refused:=fmt.tprintf("agents %s %s: only the coordinator of chain %s may start, stop or restart its agents (and it never stops itself)",verb,target,chains[0])
+    if len(chains)>1 do return bridge_local_response_error(request_id,"invalid_scope",refused),true
+    sync.mutex_lock(&bridge_startup_io_mutex)
+    sync.mutex_lock(&bridge_local_token_mutex)
+    child,current:=bridge_owner_child_locked(rec.agent_instance_id,rec.token_hash)
+    sync.mutex_unlock(&bridge_local_token_mutex)
+    sync.mutex_unlock(&bridge_startup_io_mutex)
+    if !current do return bridge_local_response_error(request_id,"invalid_scope","owner chain: current launched child required"),true
+    code:=owner.agent_instance_control(&bridge_owner_store,chains[0],target,verb,child)
+    if code=="storage_error" do return bridge_local_response_error(request_id,code,"owner store could not be read; retry"),true
+    if code!="ok" do return bridge_local_response_error(request_id,code,refused),true
+    return "",false
+}
+
+bridge_owner_fleet_chain :: proc(ctx:^Owner_Agent_Ctx,p:json.Object) -> string {
+    chain:=bridge_owner_pstr(p,"chain_id")
+    if chain=="" do chain=owner.agent_home_chain(ctx.store,ctx.child)
+    return chain
+}
+
+// Coordinator-only (re-checked by the store on every write).
+bridge_owner_fleet_authorize :: proc(ctx:^Owner_Agent_Ctx,chain:string) -> string {
+    role,code:=owner.agent_authorize_locked(ctx.store,chain,"",ctx.child,"fleet.policy.read")
+    if role==.Coordinator do return ""
+    if code=="storage_error" do return bridge_owner_fail(ctx,code,"owner store could not be read; retry")
+    return bridge_owner_fail(ctx,"invalid_scope","task-chain fleet: only this chain's coordinator manages its fleet")
+}
+
+// Comma-separated roles -> a JSON array ("" when none named).
+bridge_owner_fleet_roles_json :: proc(list:string) -> string {
+    roles:=make([dynamic]string,context.temp_allocator)
+    for part in strings.split(list,",",context.temp_allocator) {
+        role:=strings.trim_space(part)
+        if role!="" && !slice.contains(roles[:],role) do append(&roles,role)
+    }
+    if len(roles)==0 do return ""
+    return bridge_owner_json(roles[:])
+}
+bridge_owner_fleet_role_list :: proc(raw:string,paused:bool) -> []string {
+    roles,_:=contracts.owner_fleet_roles(raw,paused)
+    return roles
+}
+
+// The roles a policy row serves now (roles minus paused ones).
+bridge_owner_fleet_active_roles :: proc(policy:contracts.Owner_Fleet_Policy) -> []string {
+    paused:=bridge_owner_fleet_role_list(policy.paused_roles_json,true)
+    if slice.contains(paused,"*") do return nil
+    out:=make([dynamic]string,context.temp_allocator)
+    for role in bridge_owner_fleet_role_list(policy.roles_json,false) do if !slice.contains(paused,role) do append(&out,role)
+    return out[:]
+}
+
+bridge_owner_fleet_now :: proc(ctx:^Owner_Agent_Ctx) -> string { return action_scheduler_format_rfc3339_utc(ctx.now) }
+
+// fleet.policy.set of a whole row, signed for the coordinator.
+bridge_owner_fleet_write :: proc(ctx:^Owner_Agent_Ctx,chain:string,policy:contracts.Owner_Fleet_Policy) -> (string,string) {
+    raw:=bridge_owner_json(policy)
+    if _,valid:=contracts.owner_fleet_policy_parse(raw);!valid do return "bad_request","invalid fleet row (capacity >= 1, min-warm/idle-ttl >= 0, roles a-z0-9_-, a provider with a profile)"
+    body,sealed:=bridge_owner_cipher(ctx,raw)
+    if !sealed do return "vault_locked","cannot seal the fleet row"
+    r:=bridge_owner_run_command(ctx,"fleet.policy.set",chain,"",bridge_owner_chain_rev(ctx,chain),bridge_owner_json(map[string]string{"body_cipher"=body}))
+    if r.code!="ok" do return r.code,"fleet policy refused by the owner store"
+    return "ok",""
+}
+
+// chain.member.set for the coordinator; fleet_child is the observed live child
+// for an enabled row (unused for a removal).
+bridge_owner_fleet_member :: proc(ctx:^Owner_Agent_Ctx,chain,instance,agent,role:string,enabled:bool,child:owner.Child={}) -> owner.Result {
+    payload:=bridge_owner_json(map[string]string{"instance_id"=instance,"agent_id"=agent,"role"=role,"enabled"=("1" if enabled else "0")})
+    return bridge_owner_run_command(ctx,"chain.member.set",chain,"",bridge_owner_chain_rev(ctx,chain),payload,fleet_child=child)
+}
+
+Owner_Fleet_Member_View :: struct { instance_id,agent_id,role:string, enabled,running:bool }
+
+bridge_owner_fleet_members :: proc(ctx:^Owner_Agent_Ctx,chain:string) -> ([]Owner_Fleet_Member_View,bool) {
+    _,members,ok:=owner.agent_fleet_view(ctx.store,chain)
+    if !ok do return nil,false
+    out:=make([]Owner_Fleet_Member_View,len(members),context.temp_allocator)
+    for m,i in members {
+        _,live:=bridge_owner_child_locked(m.instance_id,"")
+        out[i]={m.instance_id,m.agent_id,m.role,m.enabled=="1",live}
+    }
+    return out,true
+}
+
+// Caller holds the owner, startup and token locks (bridge_owner_agent_exec).
+bridge_owner_fleet :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -> string {
+    chain:=bridge_owner_fleet_chain(ctx,p)
+    if chain=="" do return bridge_owner_fail(ctx,"bad_request","task-chain fleet: name the chain (<chain-id>)")
+    if refused:=bridge_owner_fleet_authorize(ctx,chain);refused!="" do return refused
+    if method=="agent.task_chain.fleet_list" {
+        policies,_,ok:=owner.agent_fleet_view(ctx.store,chain)
+        members,read:=bridge_owner_fleet_members(ctx,chain)
+        if !ok || !read do return bridge_owner_fail(ctx,"storage_error","owner store could not be read; retry")
+        Fleet_List :: struct { chain_id:string, fleet:[]contracts.Owner_Fleet_Policy, members:[]Owner_Fleet_Member_View, authority:Owner_Agent_Authority }
+        return bridge_local_response_data(ctx.request_id,bridge_owner_json(Fleet_List{chain,policies,members,bridge_owner_authority()}))
+    }
+    agent:=bridge_owner_pstr(p,"agent_id")
+    if !contracts.owner_field_valid(agent,"id") do return bridge_owner_fail(ctx,"bad_request","task-chain fleet: --agent <agt_id> is required")
+    policy,found,ok:=owner.agent_fleet_policy(ctx.store,chain,agent)
+    if !ok do return bridge_owner_fail(ctx,"storage_error","owner store could not be read; retry")
+    reply:=make(json.Object,context.temp_allocator)
+    reply["chain_id"]=json.String(chain);reply["agent_id"]=json.String(agent);reply["authority"]=json.Object{"kind"=json.String("owner"),"bridge_id"=json.String(bridge_config.daemon_id)}
+    switch method {
+    case "agent.task_chain.fleet_pause","agent.task_chain.fleet_resume":
+        if !found do return bridge_owner_fail(ctx,"not_found",fmt.tprintf("no fleet row for %s in this chain; add it with `task-chain fleet set --agent %s`",agent,agent))
+        named:=bridge_owner_fleet_role_list(bridge_owner_fleet_roles_json(bridge_owner_pstr(p,"roles")),true)
+        paused:=bridge_owner_fleet_role_list(policy.paused_roles_json,true)
+        next:=make([dynamic]string,context.temp_allocator)
+        if method=="agent.task_chain.fleet_pause" {
+            if len(named)==0 || slice.contains(paused,"*") do append(&next,"*")
+            else { for r in paused do append(&next,r); for r in named do if !slice.contains(next[:],r) do append(&next,r) }
+        } else if len(named)>0 {
+            current:=paused
+            if slice.contains(paused,"*") do current=bridge_owner_fleet_role_list(policy.roles_json,false)
+            for r in current do if !slice.contains(named,r) do append(&next,r)
+        }
+        policy.paused_roles_json=bridge_owner_json(next[:]) if len(next)>0 else ""
+        policy.updated_at=bridge_owner_fleet_now(ctx)
+        if code,message:=bridge_owner_fleet_write(ctx,chain,policy);code!="ok" do return bridge_owner_fail(ctx,code,message)
+        reply["fleet"]=bridge_owner_result_object(bridge_owner_json(policy))
+        reply["note"]=json.String("pause/resume record the row's dispatch state; live leases continue")
+        return bridge_local_response_data(ctx.request_id,bridge_owner_json(reply))
+    case "agent.task_chain.fleet_remove":
+        members,read:=bridge_owner_fleet_members(ctx,chain)
+        if !read do return bridge_owner_fail(ctx,"storage_error","owner store could not be read; retry")
+        removed:=make([dynamic]string,context.temp_allocator)
+        for m in members {
+            // The coordinator never removes itself (nor another coordinator).
+            if m.agent_id!=agent || !m.enabled || m.instance_id==ctx.child.instance || m.role=="coordinator" do continue
+            r:=bridge_owner_fleet_member(ctx,chain,m.instance_id,m.agent_id,m.role,false)
+            if r.code!="ok" do return bridge_owner_fail(ctx,r.code,fmt.tprintf("removing member %s was refused",m.instance_id))
+            append(&removed,m.instance_id)
+        }
+        if found && !strings.contains(policy.paused_roles_json,`"*"`) {
+            policy.paused_roles_json=`["*"]`;policy.updated_at=bridge_owner_fleet_now(ctx)
+            if code,message:=bridge_owner_fleet_write(ctx,chain,policy);code!="ok" do return bridge_owner_fail(ctx,code,message)
+        }
+        if !found && len(removed)==0 do return bridge_owner_fail(ctx,"not_found",fmt.tprintf("%s has no fleet row or removable member in this chain (the coordinator never removes itself)",agent))
+        list:=make(json.Array,0,len(removed),context.temp_allocator)
+        for r in removed do append(&list,json.String(r))
+        reply["removed_instances"]=list
+        reply["note"]=json.String("removed members stay bound to this chain for life; stop their instances with `ham-ctl agents stop <inst>`")
+        return bridge_local_response_data(ctx.request_id,bridge_owner_json(reply))
+    }
+    // agent.task_chain.fleet_set
+    if !found {
+        policy=contracts.Owner_Fleet_Policy{task_chain_id=chain,agent_id=agent,capacity=1,idle_ttl_seconds=600,roles_json=`["worker"]`,created_at=bridge_owner_fleet_now(ctx)}
+    }
+    number :: proc(p:json.Object,key:string,min:i64,out:^i64) -> bool {
+        raw:=bridge_owner_pstr(p,key)
+        if raw=="" do return true
+        n,parsed:=strconv.parse_i64(raw)
+        if !parsed || n<min do return false
+        out^=n
+        return true
+    }
+    if !number(p,"capacity",1,&policy.capacity) || !number(p,"min_warm",0,&policy.min_warm) || !number(p,"idle_ttl_seconds",0,&policy.idle_ttl_seconds) {
+        return bridge_owner_fail(ctx,"bad_request","task-chain fleet set: --capacity >= 1, --min-warm and --idle-ttl >= 0")
+    }
+    if "provider" in p do policy.provider=bridge_owner_pstr(p,"provider")
+    if "model" in p do policy.model=bridge_owner_pstr(p,"model")
+    if "provider_profile" in p do policy.provider_profile=bridge_owner_pstr(p,"provider_profile")
+    if "bridge_id" in p do policy.bridge_id=bridge_owner_pstr(p,"bridge_id")
+    if "bridge_models_json" in p do policy.bridge_models_json=bridge_owner_pstr(p,"bridge_models_json")
+    if roles:=bridge_owner_fleet_roles_json(bridge_owner_pstr(p,"roles"));roles!="" do policy.roles_json=roles
+    policy.updated_at=bridge_owner_fleet_now(ctx)
+    if code,message:=bridge_owner_fleet_write(ctx,chain,policy);code!="ok" do return bridge_owner_fail(ctx,code,message)
+    reply["fleet"]=bridge_owner_result_object(bridge_owner_json(policy))
+    // Launch (or bind a named instance) only when the agent has no enabled
+    // member here and the row serves a role now on this Bridge.
+    active:=bridge_owner_fleet_active_roles(policy)
+    note:=""
+    members,read:=bridge_owner_fleet_members(ctx,chain)
+    if !read do return bridge_owner_fail(ctx,"storage_error","owner store could not be read; retry")
+    if agent==ctx.child.agent_id {
+        note="solo row: you work this agent's tasks yourself; nothing launched"
+    } else {
+        for m in members {
+            if m.agent_id!=agent || !m.enabled do continue
+            reply["instance_id"]=json.String(m.instance_id)
+            note=fmt.tprintf("already a member: %s (%s)",m.instance_id,"running" if m.running else "stopped; `ham-ctl agents start` it")
+            break
+        }
+    }
+    switch {
+    case note!="":
+    case policy.bridge_id!="" && policy.bridge_id!=bridge_config.daemon_id: note=fmt.tprintf("placement on %s recorded; agents of a Bridge-owned chain run on its owner Bridge %s, nothing launched",policy.bridge_id,bridge_config.daemon_id)
+    case len(active)==0: note="every role is paused; nothing launched"
+    }
+    if note!="" {
+        reply["note"]=json.String(note)
+        return bridge_local_response_data(ctx.request_id,bridge_owner_json(reply))
+    }
+    role:=active[0]
+    if slice.contains(active,"worker") do role="worker"
+    reply["role"]=json.String(role)
+    if instance:=bridge_owner_pstr(p,"instance_id");instance!="" {
+        // Bind an already running instance of the agent instead of launching.
+        child,live:=bridge_owner_child_locked(instance,"")
+        if !live || child.agent_id!=agent do return bridge_owner_fail(ctx,"invalid_scope",fmt.tprintf("--instance %s is not a running instance of %s on this Bridge",instance,agent))
+        r:=bridge_owner_fleet_member(ctx,chain,instance,agent,role,true,child)
+        if r.code!="ok" do return bridge_owner_fail(ctx,r.code,fmt.tprintf("binding %s as a %s member was refused (an instance serves one chain for life)",instance,role))
+        reply["instance_id"]=json.String(instance)
+        return bridge_local_response_data(ctx.request_id,bridge_owner_json(reply))
+    }
+    model,provider,profile:=policy.model,policy.provider,policy.provider_profile
+    if models,valid:=contracts.owner_fleet_models(policy.bridge_models_json);valid {
+        if m,pinned:=models[bridge_config.daemon_id];pinned { model,provider,profile=m.model,m.provider,m.provider_profile }
+    }
+    body:=map[string]string{"agent_id"=agent,"chain_id"=chain,"bridge_id"=bridge_config.daemon_id}
+    if provider!="" do body["provider"]=provider
+    if model!="" do body["model"]=model
+    if profile!="" do body["provider_profile"]=profile
+    if project:=bridge_owner_pstr(p,"project_id");project!="" do body["project_id"]=project
+    ctx.launch=Owner_Fleet_Launch{true,chain,agent,role,bridge_owner_json(body),reply}
+    return ""
+}
+
+// After the owner route released every lock: launch, wait for the live child,
+// then bind it as an enabled member under the locks.
+bridge_owner_fleet_launch :: proc(request_id:string,launch:Owner_Fleet_Launch,rec:Bridge_Local_Agent_Token_Record) -> string {
+    context.allocator=context.temp_allocator
+    instance,launch_error:=bridge_owner_launch_into_chain(launch.body,launch.agent,rec)
+    if launch_error!="" do return bridge_local_response_error(request_id,"agent_launch_failed",fmt.tprintf("fleet row saved; %s",launch_error))
+    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
+    key_id,_:=vault.device_id_from_sign_pub(bridge_identity_public_key_hex(bridge_config.daemon_id),context.temp_allocator)
+    code,message:="storage_error","owner store unavailable"
+    {
+        sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
+        if bridge_owner_open(account,key_id) {
+            kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
+            code,message="vault_locked","owner Bridge vault is locked"
+            if unlocked {
+                pub:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+                key:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,key_id,pub,"bridge",true,false}
+                sync.mutex_lock(&bridge_startup_io_mutex)
+                sync.mutex_lock(&bridge_local_token_mutex)
+                caller,current:=bridge_owner_child_locked(rec.agent_instance_id,rec.token_hash)
+                child,live:=bridge_owner_child_locked(instance,"")
+                code,message="invalid_scope","the launched instance or the calling coordinator is no longer running"
+                if current && live && child.agent_id==launch.agent {
+                    ctx:=Owner_Agent_Ctx{request_id=request_id,store=&bridge_owner_store,child=caller,key=key,kr=&kr,now=time.to_unix_nanoseconds(time.now())/1000000}
+                    r:=bridge_owner_fleet_member(&ctx,launch.chain,instance,launch.agent,launch.role,true,child)
+                    code,message=r.code,"binding refused by the owner store"
+                }
+                sync.mutex_unlock(&bridge_local_token_mutex)
+                sync.mutex_unlock(&bridge_startup_io_mutex)
+                if code=="ok" do bridge_owner_coordinator_refresh_locked(launch.chain)
+            }
+            bridge_owner_publish()
+        }
+    }
+    if code!="ok" do return bridge_local_response_error(request_id,code,fmt.tprintf("fleet row saved and %s launched; %s (it stays running unbound: `ham-ctl task-chain fleet set --agent %s --instance %s` retries, `ham-ctl agents stop %s` stops it)",instance,message,launch.agent,instance,instance))
+    reply:=launch.reply
+    reply["instance_id"]=json.String(instance)
+    reply["launched"]=json.Boolean(true)
+    return bridge_local_response_data(request_id,bridge_owner_json(reply))
+}

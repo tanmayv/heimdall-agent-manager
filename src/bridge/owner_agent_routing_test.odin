@@ -8,6 +8,7 @@ import "core:strings"
 import "core:sync"
 import "core:testing"
 import "core:time"
+import contracts "odin_test:contracts"
 import owner "odin_test:lib/owner_local"
 
 owner_routing_git :: proc(t:^testing.T,dir:string,args:..string) -> string {
@@ -446,4 +447,35 @@ test_owner_launch_role_never_waits_on_owner_mutex :: proc(t:^testing.T) {
     bridge_owner_coordinator_cache_set("chain_lock_order","")
     role,coord=bridge_owner_launch_role("chain_lock_order","inst_bound","worker","")
     testing.expect(t,role=="worker" && coord=="","an unbound (demoted) chain launches as worker")
+}
+
+// Fleet management of an owner chain: fleet verbs are owner-routed, typed
+// owner-only elsewhere; agents start/stop/restart are gated (then relayed).
+// Authority itself is the owner store's (owner_local coordinator_fleet_test).
+@(test)
+test_owner_fleet_routes_and_row_helpers :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    for m in ([5]string{"agent.task_chain.fleet_list","agent.task_chain.fleet_set","agent.task_chain.fleet_pause","agent.task_chain.fleet_resume","agent.task_chain.fleet_remove"}) {
+        testing.expectf(t,bridge_owner_routable(m) && bridge_owner_fleet_method(m),"%s is served by the owner",m)
+        testing.expectf(t,bridge_agent_method_allowed(m),"%s is dispatchable",m)
+        r:=bridge_agent_route(m,`{"chain_id":"c1","agent_id":"agt_w"}`)
+        testing.expectf(t,r.kind==.Bad_Request && strings.contains(r.message,"owner_chain_only"),"%s on a non-owner chain is a typed owner-only error",m)
+    }
+    testing.expect_value(t,bridge_owner_instance_verb("agent.agents.instance_start"),"start")
+    testing.expect_value(t,bridge_owner_instance_verb("agent.agents.instance_stop"),"stop")
+    testing.expect_value(t,bridge_owner_instance_verb("agent.agents.instance_restart"),"restart")
+    testing.expect_value(t,bridge_owner_instance_verb("agent.agents.new_instance"),"")
+    // Wrapper tokens never reach the gate; Hub relay stays the fallback.
+    _,handled:=bridge_owner_agent_route("r1","agent.agents.instance_stop",`{"instance_id":"inst_x"}`,Bridge_Local_Agent_Token_Record{agent_instance_id="inst_c",role=.Wrapper})
+    testing.expect(t,!handled,"wrapper tokens are not gated by the owner")
+    testing.expect_value(t,bridge_owner_fleet_roles_json(" worker, reviewer ,worker,"),`["worker","reviewer"]`)
+    testing.expect_value(t,bridge_owner_fleet_roles_json(" , "),"")
+    row:=contracts.Owner_Fleet_Policy{roles_json=`["worker","reviewer"]`,paused_roles_json=`["reviewer"]`}
+    active:=bridge_owner_fleet_active_roles(row)
+    testing.expect(t,len(active)==1 && active[0]=="worker","paused roles do not serve")
+    row.paused_roles_json=`["*"]`
+    testing.expect_value(t,len(bridge_owner_fleet_active_roles(row)),0)
+    row.roles_json="";row.paused_roles_json=""
+    active=bridge_owner_fleet_active_roles(row)
+    testing.expect(t,len(active)==1 && active[0]=="worker","no roles means worker")
 }

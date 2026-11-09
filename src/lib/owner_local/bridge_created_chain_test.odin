@@ -86,7 +86,7 @@ bridge_created_chain_enables_recovery_and_only_own_owner_key_creates :: proc(t:^
 }
 
 @(test)
-bridge_created_chain_binds_one_coordinator_and_agents_stay_out_of_membership_and_grants :: proc(t:^testing.T) {
+bridge_created_chain_binds_one_coordinator_and_agents_stay_out_of_grants :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
     f:=fixture(t);defer destroy(f);seed(t,f)
     testing.expect_value(t,bridge_create(f,"bchain",f.owner,&f.owner_priv).code,"ok")
@@ -112,7 +112,8 @@ bridge_created_chain_binds_one_coordinator_and_agents_stay_out_of_membership_and
     rows,_=query(f.store.db,"SELECT count(*) FROM local_chain_member_versions")
     testing.expect_value(t,rows[0][0],"1")
 
-    // The bound coordinator works the chain, but membership and grants stay
+    // The bound coordinator works the chain, but it never grants the
+    // coordinator role (fleet members are workers/reviewers), grants stay
     // human-only, and it can never create a chain itself.
     summary:=encode(doc(map[string]string{"body_cipher"=cipher(f,"plan")}))
     testing.expect_value(t,bridge_agent_command(f,"bchain",coord,"chain.summary.set","coord_summary",summary,bridge_chain_rev(f,"bchain")).code,"ok")

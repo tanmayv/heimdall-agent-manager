@@ -19,7 +19,9 @@ import vault "odin_test:lib/vault"
 //               comment on the task while it holds a live lease there.
 //   Reviewer    the configured reviewer child (or a review-role child).
 //   Coordinator the chain's enabled coordinator member, exactly this launch:
-//               chain-management verbs on behalf of the user.
+//               chain-management verbs on behalf of the user, including fleet
+//               management (fleet.policy.set, chain.member.set of workers and
+//               reviewers, instance start/stop/restart). grant.* stay human.
 //
 // Every other combination, including an agent bound to another chain, is
 // refused with invalid_scope.
@@ -31,7 +33,8 @@ agent_verb_role :: proc(verb:string) -> Agent_Role {
     case "lease.next","lease.claim","lease.heartbeat","lease.submit","lease.handoff","lease.block","lease.switch","requirements.present","requirements.ack": return .Worker
     case "review.open","review.post","review.role.open","review.role.post","review.checkpoint": return .Reviewer
     case "task.create","task.edit","task.comment","task.read","chain.read","chain.summary.set","chain.propose","chain.publish","requirements.edit","review.human",
-         "task.priority","dependency.edit","fleet.edit","lifecycle.configure": return .Coordinator
+         "task.priority","dependency.edit","fleet.edit","lifecycle.configure",
+         "chain.member.set","fleet.policy.set","fleet.policy.read","fleet.instance": return .Coordinator
     }
     if agent_coordinator_control(verb) do return .Coordinator
     return .None
@@ -40,8 +43,9 @@ agent_verb_role :: proc(verb:string) -> Agent_Role {
 // Coordinator controls on an owner chain (P-CS CC-A, REQ-CC-1..5,8,10,11 and
 // R2-5): the verified chain coordinator drives tasks without holding a lease.
 // Worker, reviewer and foreign-chain tokens are refused with invalid_scope by
-// agent_authorize. workflow.gate stays user-only; fleet.reserve, membership
-// and grants stay human-only.
+// agent_authorize. workflow.gate stays user-only; fleet.reserve (remote
+// executor reservations) and grants stay human-only. Fleet management
+// (membership, fleet policy, instance lifecycle) is agent_command_admit's.
 agent_coordinator_control :: proc(verb:string) -> bool {
     switch verb {
     case "task.hold","task.release","task.cancel","task.reopen","task.resolve","merge.retry","task.delete","review.roles",
@@ -94,13 +98,47 @@ chain_summary_current :: proc(s:^Store,chain:string) -> (body:string,version:str
 }
 
 // agent_solo_standing: whether this exact launch is the chain's coordinator
-// and whether it holds an enabled worker fleet row in the chain (solo mode,
-// T1 `--assignee self`). Read-only.
+// and whether it holds a worker fleet row in the chain (solo mode, T1
+// `--assignee self`): an enabled task fleet row, or a current fleet policy
+// row for its own agent with the worker role unpaused. Read-only.
 agent_solo_standing :: proc(s:^Store,chain:string,child:Child) -> (coordinator:bool,worker_row:bool) {
     coordinator=agent_coordinator(s,chain,child)
-    rows,ok:=query(s.db,"SELECT 1 FROM local_fleet WHERE chain_id=? AND instance_id=? AND enabled=1 LIMIT 1",chain,child.instance)
+    rows,ok:=query(s.db,`SELECT 1 FROM local_fleet WHERE chain_id=?1 AND instance_id=?2 AND enabled=1
+      UNION ALL SELECT 1 FROM local_fleet_policy_current p JOIN local_fleet_policy_roles r ON r.chain_id=p.chain_id AND r.agent_id=p.agent_id AND r.seq=p.seq
+      WHERE p.chain_id=?1 AND p.agent_id=?3 AND r.role='worker' AND r.paused=0 AND NOT EXISTS(SELECT 1 FROM local_fleet_policy_roles x
+        WHERE x.chain_id=p.chain_id AND x.agent_id=p.agent_id AND x.seq=p.seq AND x.paused=1 AND x.role IN ('worker','*')) LIMIT 1`,chain,child.instance,child.agent_id)
     worker_row=ok && len(rows)>0
     return
+}
+
+// Fleet of an owner chain as `task-chain fleet list` shows it: the current
+// policy row per agent and the latest version of each member. Read-only.
+Agent_Fleet_Member :: struct { instance_id,agent_id,role,enabled:string }
+agent_fleet_view :: proc(s:^Store,chain:string) -> (policies:[]contracts.Owner_Fleet_Policy,members:[]Agent_Fleet_Member,ok:bool) {
+    tx:Transaction
+    if !transaction_begin(s,&tx) do return nil,nil,false
+    defer transaction_rollback(&tx)
+    rows,read:=query(s.db,"SELECT * FROM local_fleet_policy_current WHERE chain_id=? ORDER BY agent_id",chain)
+    if !read do return nil,nil,false
+    policies=make([]contracts.Owner_Fleet_Policy,len(rows),context.temp_allocator)
+    for row,i in rows do policies[i]=fleet_policy_document(row)
+    rows,read=query(s.db,`SELECT instance_id,agent_id,role,enabled FROM local_chain_member_versions m WHERE chain_id=?
+      AND accepted_seq=(SELECT max(accepted_seq) FROM local_chain_member_versions x WHERE x.chain_id=m.chain_id AND x.instance_id=m.instance_id) ORDER BY accepted_seq`,chain)
+    if !read do return nil,nil,false
+    members=make([]Agent_Fleet_Member,len(rows),context.temp_allocator)
+    for row,i in rows do members[i]={row[0],row[1],row[2],row[3]}
+    return policies,members,true
+}
+
+// The current fleet policy row of one agent in this chain. Read-only.
+agent_fleet_policy :: proc(s:^Store,chain,agent:string) -> (policy:contracts.Owner_Fleet_Policy,found:bool,ok:bool) {
+    tx:Transaction
+    if !transaction_begin(s,&tx) do return {},false,false
+    defer transaction_rollback(&tx)
+    rows,read:=query(s.db,"SELECT * FROM local_fleet_policy_current WHERE chain_id=? AND agent_id=?",chain,agent)
+    if !read do return {},false,false
+    if len(rows)!=1 do return {},false,true
+    return fleet_policy_document(rows[0]),true,true
 }
 
 // The fleet row binds the task to this exact launch.
@@ -166,7 +204,7 @@ agent_authorize_locked :: proc(s:^Store,chain,task:string,child:Child,verb:strin
 agent_command_method :: proc(method:string) -> bool {
     switch method {
     case "task.create","task.edit","task.comment","task.read","chain.read","chain.summary.set","chain.propose","chain.publish","requirements.edit","review.post",
-         "task.priority","dependency.edit","fleet.edit","lifecycle.configure": return true
+         "task.priority","dependency.edit","fleet.edit","lifecycle.configure","chain.member.set","fleet.policy.set","fleet.policy.read": return true
     }
     return agent_coordinator_control(method)
 }
@@ -186,10 +224,16 @@ agent_command_admit :: proc(s:^Store,c:json.Object,payload:string,key:contracts.
     chain:=field(c,"chain_id")
     role,code:=agent_authorize(s,chain,field(c,"task_id"),agent,verb)
     if role==.None do return code
-    // Assignment on the user's behalf is limited to agents already enrolled
-    // in THIS chain (an enabled member or fleet worker) and to the chain's
-    // configured repository. New members and grants stay human-only.
+    // Assignment on the user's behalf is limited to agents enrolled in THIS
+    // chain (an enabled member or fleet worker) and to the chain's configured
+    // repository. The coordinator enrolls agents itself (chain.member.set);
+    // grants stay human-only (never on the agent allowlist).
     switch method {
+    case "chain.member.set":
+        if code:=agent_member_admit(s,chain,p,agent);code!="ok" do return code
+    case "fleet.policy.set":
+        // Native-history imports carry a source revision: device only.
+        if field(p,"source_revision")!="" do return "invalid_scope"
     case "review.post":
         // REQ-CC-13 (Hub solo_self_review parity): a coordinator that worked
         // the task as its worker never reviews it, not even as a relay.
@@ -230,6 +274,48 @@ execute_agent :: proc(s:^Store,command_raw,payload:string,agent:Child,owner_key:
     version,hash:=directory_pin(s)
     if version<0 do return fail("storage_error")
     return execute(s,command_raw,payload,"",owner_key,owner_key,version,hash,now,kr,sign,fleet_child,proof,role_children,agent=agent,source=source)
+}
+
+// Fleet membership on the coordinator's own chain: it enrolls, re-roles and
+// removes workers and reviewers (any role but coordinator). It never touches
+// its own membership (no removal, disable or demotion of itself) nor another
+// coordinator member, and never grants the coordinator role. member_set then
+// requires the Bridge-observed live child for an enabled row and keeps an
+// instance in one chain for life. Caller holds the Store mutex.
+agent_member_admit :: proc(s:^Store,chain:string,p:json.Object,agent:Child) -> string {
+    instance:=field(p,"instance_id")
+    if instance==agent.instance || field(p,"agent_id")=="" || field(p,"role")=="coordinator" do return "invalid_scope"
+    prior,ok:=query(s.db,"SELECT role,enabled FROM local_chain_member_versions WHERE chain_id=? AND instance_id=? ORDER BY accepted_seq DESC LIMIT 1",chain,instance)
+    if !ok do return "storage_error"
+    if len(prior)==1 && prior[0][0]=="coordinator" && prior[0][1]=="1" do return "invalid_scope"
+    return "ok"
+}
+
+// The chain's coordinator may start, stop and restart the instances of its
+// own chain (members and fleet workers); it never stops itself. Read-only.
+agent_instance_control :: proc(s:^Store,chain,target,verb:string,child:Child) -> string {
+    tx:Transaction
+    if !transaction_begin(s,&tx) do return "storage_error"
+    defer transaction_rollback(&tx)
+    role,code:=agent_authorize(s,chain,"",child,"fleet.instance")
+    if role!=.Coordinator do return code if code!="ok" else "invalid_scope"
+    if verb=="stop" && target==child.instance do return "invalid_scope"
+    rows,ok:=query(s.db,"SELECT 1 FROM local_member_chains WHERE instance_id=?1 AND chain_id=?2 UNION ALL SELECT 1 FROM local_fleet WHERE instance_id=?1 AND chain_id=?2 LIMIT 1",target,chain)
+    if !ok do return "storage_error"
+    return "ok" if len(rows)>0 else "invalid_scope"
+}
+
+// The owner chains an instance belongs to on this Bridge (lifetime membership
+// or fleet rows); normally zero or one. ok=false only on a storage failure.
+agent_instance_chains :: proc(s:^Store,instance:string) -> ([]string,bool) {
+    tx:Transaction
+    if !transaction_begin(s,&tx) do return nil,false
+    defer transaction_rollback(&tx)
+    rows,ok:=query(s.db,"SELECT chain_id FROM local_member_chains WHERE instance_id=?1 UNION SELECT chain_id FROM local_fleet WHERE instance_id=?1",instance)
+    if !ok do return nil,false
+    out:=make([]string,len(rows),context.temp_allocator)
+    for r,i in rows do out[i]=r[0]
+    return out,true
 }
 
 // An enabled current member (latest version) or an enabled fleet worker of

@@ -9,8 +9,9 @@ test_static_skills_ham_ctl_reference_content :: proc(t: ^testing.T) {
 	for skill in STATIC_SKILLS {
 		if skill.slug == "ham-ctl-reference" {
 			found = true
-			// Hub task chains are removed: no Hub chain creation; legacy chains migrate.
-			testing.expect(t, !strings.contains(skill.content, "task-chain create --title"), "ham-ctl-reference must not document removed Hub chain creation")
+			// Hub task chains are removed; agents create Bridge-owned chains through their Bridge.
+			testing.expect(t, strings.contains(skill.content, "task-chain create --title"), "ham-ctl-reference must document Bridge-owned chain creation")
+			testing.expect(t, strings.contains(skill.content, "--coordinator-agent"), "ham-ctl-reference must document the coordinator binding on create")
 			testing.expect(t, strings.contains(skill.content, "hub_chains_removed"), "ham-ctl-reference must name the hub_chains_removed refusal")
 			testing.expect(t, strings.contains(skill.content, "task-chain migrate"), "ham-ctl-reference must document task-chain migrate")
 			testing.expect(t, !strings.contains(skill.content, "Pub/Sub subscription mechanism"), "ham-ctl-reference must not document removed Pub/Sub subscriptions")

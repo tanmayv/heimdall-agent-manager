@@ -148,8 +148,9 @@ directory_config_authorized :: proc(s:^Store,chain:string,p:json.Object) -> bool
 // Agent `task-chain create`: the ONE coordinator binding an agent may cause.
 // Only on a chain whose genesis creator is this owner Bridge key, only as the
 // chain's first membership, and only for a proven live child (member_set
-// validation). General chain.member.set and grant.* stay human-only
-// (agent_command_admit). Recorded and attributed like a member version.
+// validation). Afterwards the bound coordinator enrolls workers and reviewers
+// with chain.member.set (agent_member_admit: never the coordinator role, never
+// itself); grant.* stay human-only. Recorded and attributed like a member version.
 bind_created_coordinator :: proc(s:^Store,chain:string,child:Child,requested_by:string,now:i64) -> Result {
     context.allocator=context.temp_allocator
     if s.db==nil || now<0 || !agent_child_valid(child) || !contracts.owner_field_valid(requested_by,"id") do return fail("invalid_scope")

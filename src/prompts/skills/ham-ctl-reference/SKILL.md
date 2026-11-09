@@ -39,13 +39,14 @@ Groups: `bridge`, `agents`, `task-chain`, `task`, `workflow`, `lease`, `review`,
 - `agents start <instance-id>` — start a STOPPED instance (errors if already running).
 - `agents stop <instance-id> [--reason <t>]` — stop a running instance.
 - `agents restart <instance-id>` — restart (stop-then-start) an instance.
+- For an instance of a Bridge-owned chain, `agents start|stop|restart` is allowed only for that chain's coordinator (never `stop` on itself); others get `invalid_scope`.
 
 ## task-chain — your Bridge-owned task chain
 Every chain is Bridge-owned: its tasks, leases, reviews, fleet, workflow runs and summary live in the owner
 Bridge's local store, and these verbs are routed to that owner. Chains are renamed, archived and given
-directories and a fleet in the Heimdall app; they are created there or with `task-chain create`. Verbs that only
+directories in the Heimdall app; they are created there or with `task-chain create`. Verbs that only
 reached the removed Hub engine (`list`, `set-title`, `set-description`, `set-status`, `archive`, `unarchive`,
-`pin`, `unpin`, `directory`, `fleet`, `decide`, `graph`, `depend`, `remove-dependency`, `scope`) answer
+`pin`, `unpin`, `directory`, `decide`, `graph`, `depend`, `remove-dependency`, `scope`) answer
 `{"ok":false,"code":"hub_chains_removed"}`.
 
 - `task-chain create --title <t> [--description <d>] [--coordinator-agent <agt_id>]` — your Bridge creates and
@@ -53,7 +54,18 @@ reached the removed Hub engine (`list`, `set-title`, `set-description`, `set-sta
   into the new chain, binds and restarts with the coordinator role. Returns
   `{"chain_id","coordinator_instance_id","authority":{"kind":"owner","bridge_id"}}`. An instance belongs to one
   chain for life: if you already belong to a chain, use `--coordinator-agent`. The user opens the chain in the
-  app (their paired-root device recovers access automatically). Agents never change members or grants afterwards.
+  app (their paired-root device recovers access automatically). The bound coordinator then manages the fleet
+  (`task-chain fleet`); grants stay with the user.
+- `task-chain fleet list|set|pause|resume|remove [<chain-id>]` — the chain's fleet; **coordinator only** (others:
+  `invalid_scope`). `list` prints fleet rows and members (`running`). `set --agent <agt> [--capacity N]
+  [--min-warm N] [--idle-ttl S] [--roles worker,reviewer,…] [--bridge <id>] [--provider <p>] [--model <m>]
+  [--profile <pp>] [--bridge-models <json>] [--project <project_id>] [--instance <inst>]` saves the row (only the
+  flags you pass change) and, if the agent has no member in the chain, launches one instance on the owner Bridge
+  into the chain and binds it as a `worker` (or its first role) member — tasks `--assignee agt_…` then dispatch to
+  it. `--instance` binds a running instance instead; `--project` launches in the chain repository's project (needed
+  for git tasks); another `--bridge` is recorded but not launched; your own agent's row is your solo row.
+  `pause|resume --agent <agt> [--roles …]` pause or resume the row; `remove --agent <agt>` disables its members
+  and pauses the row. You never add a coordinator, nor remove, disable or demote yourself.
 
 - `task-chain show [<chain-id>]` — show a chain (defaults to your current chain): its `tasks`, `work_revision`,
   `pending_proposal_id`, `summary`, and who you are in it (`caller`).

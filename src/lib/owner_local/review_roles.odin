@@ -31,8 +31,9 @@ role_configure :: proc(s:^Store,c:json.Object,body:string,children:[]Child,seq:i
     for pair in pairs {
         o,obj:=pair.(json.Object)
         if !obj || !contracts.owner_document_valid("review_pair",o) || field(o,"agent_id")==field(config,"author_agent_id") do return "invalid_scope",nil
-        // A coordinator configures roles only for participants already in
-        // this chain (like lifecycle.configure); new members are human-only.
+        // A coordinator configures roles for participants of this chain
+        // (like lifecycle.configure); it enrolls new ones itself first
+        // (chain.member.set / `task-chain fleet set`).
         if agent {
             // REQ-CC-13: the coordinator never names itself a role reviewer.
             if field(o,"instance_id")==self.instance || field(o,"agent_id")==self.agent_id do return "invalid_scope",nil

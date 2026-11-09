@@ -9,7 +9,7 @@ You plan, triage, publish and steer. Leased **workers** and **reviewers** do the
 
 Every chain is **Bridge-owned**: its tasks, leases, reviews, fleet, workflow runs and summary live in the owner Bridge's local store, and `ham-ctl` routes your task, lease and review verbs to that owner. The Hub only knows which Bridge owns the chain (plus chat, agents, artifacts, memory and projects). Leases make tasks `in_progress`, submits make them `in_review`, passing reviews make them `done`. There is no status verb for tasks. Commands use `./bin/ham-ctl`; exact flags are in `ham-ctl-reference` or `ham-ctl <group> --help`.
 
-Chains are renamed, archived and given their directories and fleet in the Heimdall app; `ham-ctl` has no verbs for that (`task-chain list|set-title|fleet|directory|graph|decide|scope …` answer `{"ok":false,"code":"hub_chains_removed"}`). To start a new chain yourself, `./bin/ham-ctl task-chain create --title <t> [--description <d>] [--coordinator-agent <agt_id>]`: your Bridge owns it and binds you (or the named agent, launched on your Bridge) as its only coordinator; the user then sees it in the app. Membership and grants beyond that first binding stay with the user.
+Chains are renamed, archived and given their directories in the Heimdall app; `ham-ctl` has no verbs for that (`task-chain list|set-title|directory|graph|decide|scope …` answer `{"ok":false,"code":"hub_chains_removed"}`). To start a new chain yourself, `./bin/ham-ctl task-chain create --title <t> [--description <d>] [--coordinator-agent <agt_id>]`: your Bridge owns it and binds you (or the named agent, launched on your Bridge) as its only coordinator; the user then sees it in the app. You then manage its fleet (§3); grants stay with the user.
 
 ## 1. Inspect the chain
 ```bash
@@ -49,7 +49,11 @@ EOF
 **A good brief** is self-contained: a goal a newcomer can act on, checkable acceptance items (a ticket needs a non-empty goal and at least one acceptance item; nothing else is required). Do not prescribe a verification command: the worker chooses and reports checks appropriate to the change, and reviewers judge correctness from the diff and that evidence. Add `inputs` (`output:<task>`, `<path>@<rev>`) only for context beyond what dependencies already bring: a task automatically receives the handoff of every task it waits for.
 
 ## 3. Fleet and review roles
-Assign work to durable identities (`agt_…`), never `inst_…`. The chain's fleet (which agents work it, their capacity, roles, bridge, provider and model) is edited by the user in the chain's fleet settings in the Heimdall app; ask the user when capacity, roles or placement must change.
+Assign work to durable identities (`agt_…`), never `inst_…`. You manage the chain's fleet (the user can too, in the app):
+- `task-chain fleet list` — rows (capacity, roles, bridge, provider/model, pause) and members (`running`).
+- `task-chain fleet set --agent agt_… [--roles worker|reviewer|<role>] [--capacity N] [--provider p --model m] [--project <repo project>]` — saves the row and, when the agent has no member yet, launches it on the owner Bridge and binds it, so `task create --assignee agt_… --reviewer agt_…` dispatches to it. Pass `--project` for the chain repository's project (git tasks need workers launched there); `--instance inst_…` binds a running instance instead. A row for your own agent is your solo row.
+- `task-chain fleet pause|resume --agent agt_… [--roles …]`, `task-chain fleet remove --agent agt_…` (disables its members); `agents start|stop|restart <inst>` for the chain's instances.
+- Limits: you never add a coordinator, never remove, disable, demote or stop yourself; grants stay with the user.
 - Roles: `worker`, `reviewer`, or a custom review role (`security`, `perf`, …). A brief's `review_roles` asks every agent holding that role to review. Each role can carry a description that tells the reviewer what to check; the user edits roles and descriptions in the chain's **Review roles** dialog.
 - Reviewers named on one task (`brief.reviewers` / `--reviewer`) review that task only. Re-target a task's reviewers with `review roles <task-id> --role <role>=agt_… [--require-user-approval]`.
 
@@ -81,7 +85,7 @@ Routine events stay quiet. The owner Bridge wakes you with a one-line `[owner-lo
 | Blocked on a human (`lease block --waiting-on user`, or `task escalate`) | Read the question (`task show <id>`), ask the user with `chat send --questions-file <questions.json>` for a set of questions, or `--options` for one simple choice. Their answer (given in the task's UI) re-readies the task and appears in the worker's `TASK.md`. An escalation is cleared only by the user |
 | Parked on you (`blocked_on.kind=coordinator`: attempt budget exhausted, or review rounds keep bouncing) | Read the attempts and open findings (`task show`, `task comments`), sharpen or split the brief (`task update`, `task split`), make `acceptance` unambiguous, then `task unblock <id> --reason "<what changed>"`; ask the user only if you cannot resolve it |
 | A held task's reason is resolved | `task release <id> --reason "<why>"`; otherwise leave it held |
-| Ready but unclaimed, or `blocked_on.kind=agent_not_running` | Check `bridge list` and ask the user to fix the fleet (capacity, roles, bridge) or start the agent from the task's **Start agent** card. A user's deliberate stop is never cleared by you. Infrastructure failures spend no attempt budget |
+| Ready but unclaimed, or `blocked_on.kind=agent_not_running` | Check `task-chain fleet list` and `bridge list`; fix the fleet (`task-chain fleet set|resume`) or `agents start` the stopped member, or ask the user (the task's **Start agent** card). A user's deliberate stop is never cleared by you. Infrastructure failures spend no attempt budget |
 | Stuck `ready` / `in_review` / merge | `task recheck <id>`: it re-runs the gate, readiness, dispatch and merge-back without approving or touching a live lease, and its `reasons` name what still holds (waiting reviewer, `fleet full n/m`, bridge offline, directory without git). Prefer it to `task hold` + `task release` |
 | A task needs the user's review | Summarise the evidence and point the user to the existing task review UI; if they explicitly decide in chat, record their verdict (§6). No task approval action card is required |
 | Merge conflict / failed merge-back | The first conflict returns the task to its worker with a Merge Conflict note; a repeat parks it on you: inspect, then `merge retry <id> --reason …` or `task unblock <id> --reason …`. For a merge that never ran (bridge offline) check the bridge |
@@ -138,7 +142,7 @@ Submit kept work for review BEFORE `lease revoke --disable-fleet`: it bumps the 
 - Unrelated bugs: search `issue list --query …`, vote `issue vote <id>`, or file `issue create --title … --description …`.
 
 ## 8. Solo mode
-The chain is solo when you are the Soloist or hold a worker fleet row yourself. Then:
+The chain is solo when you are the Soloist or hold a worker fleet row yourself (a task assigned to you, or `task-chain fleet set --agent <your agt_id> --roles worker`). Then:
 - You pull work with `lease next` (nothing is pushed), work it per `worker-task-management`, and `lease submit`. Lapsed leases are not counted as attempts.
 - New tasks do NOT default to `requires_user_approval`; a task with no review roles is done on submit. Add `--require-user-approval` when the user wants to review a task; they then review it from their attention deck. The coordinator may also remove it with `--no-require-user-approval --reason "<why>"` (workers and reviewers cannot).
 - You may post `review post --on-behalf-of user` for a task that does not require user approval; for one that does, only the user's own verdict counts (`403 solo_self_review`).

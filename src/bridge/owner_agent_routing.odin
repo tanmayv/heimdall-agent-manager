@@ -37,8 +37,9 @@ bridge_owner_routable :: proc(method:string) -> bool {
          "agent.task_chain.show","agent.task_chain.set_summary","agent.chain.summary","agent.task_chain.propose","agent.chain.propose","agent.task_chain.publish":
         return true
     }
-    // Coordinator controls (owner_agent_controls.odin).
-    return bridge_owner_control_method(method)!=""
+    // Coordinator controls (owner_agent_controls.odin) and fleet management
+    // (owner_agent_fleet.odin).
+    return bridge_owner_control_method(method)!="" || bridge_owner_fleet_method(method)
 }
 
 // Lease verbs act on the caller's own lease and name no chain. lease.revoke
@@ -92,6 +93,8 @@ Owner_Agent_Ctx :: struct {
     now:i64,
     // Checkout + TASK.md delivery, finished after the child locks are released.
     pending:Owner_Pending_Delivery,
+    // A fleet launch, finished after every lock is released (fleet set).
+    launch:Owner_Fleet_Launch,
 }
 
 // A claim/switch commits and presents requirements under the child locks;
@@ -109,31 +112,41 @@ Owner_Pending_Delivery :: struct {
 }
 
 // Returns handled=false when this Bridge does not own the target, so the
-// caller continues with the Hub route.
+// caller continues with the Hub route. `agents start|stop|restart` of an owner
+// chain's instance is gated here and then relayed to the Hub; a fleet launch
+// runs after the owner route released every lock.
 bridge_owner_agent_route :: proc(request_id,method,params:string,rec:Bridge_Local_Agent_Token_Record) -> (string,bool) {
-    if rec.role!=.Agent || !bridge_owner_routable(method) do return "",false
+    if rec.role!=.Agent do return "",false
+    if verb:=bridge_owner_instance_verb(method);verb!="" do return bridge_owner_instance_gate(request_id,verb,params,rec)
+    response,handled,launch:=bridge_owner_agent_route_locked(request_id,method,params,rec)
+    if !handled || !launch.active do return response,handled
+    return bridge_owner_fleet_launch(request_id,launch,rec),true
+}
+
+bridge_owner_agent_route_locked :: proc(request_id,method,params:string,rec:Bridge_Local_Agent_Token_Record) -> (string,bool,Owner_Fleet_Launch) {
+    if !bridge_owner_routable(method) do return "",false,{}
     account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
-    if account=="" do return "",false
+    if account=="" do return "",false,{}
     pub:=bridge_identity_public_key_hex(bridge_config.daemon_id)
     key_id,key_ok:=vault.device_id_from_sign_pub(pub,context.temp_allocator)
-    if !key_ok do return "",false
+    if !key_ok do return "",false,{}
     sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
     // Never create an owner store just to answer "not mine".
     if bridge_owner_store.db==nil {
         path:=bridge_owner_store_path(account)
-        if path=="" || !os.exists(path) do return "",false
+        if path=="" || !os.exists(path) do return "",false,{}
     }
     // The store exists: an unreadable or busy store is an owner failure,
     // never a reason to send the verb to the Hub.
-    if !bridge_owner_open(account,key_id) do return bridge_local_response_error(request_id,"storage_error","owner store unavailable"),true
+    if !bridge_owner_open(account,key_id) do return bridge_local_response_error(request_id,"storage_error","owner store unavailable"),true,{}
     p:=bridge_owner_params(params)
     owned,read:=bridge_owner_targets(&bridge_owner_store,method,p,rec.agent_instance_id)
-    if !read do return bridge_local_response_error(request_id,"storage_error","owner store could not be read; retry"),true
-    if !owned do return "",false
+    if !read do return bridge_local_response_error(request_id,"storage_error","owner store could not be read; retry"),true,{}
+    if !owned do return "",false,{}
     kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
-    if !unlocked do return bridge_local_response_error(request_id,"vault_locked","owner Bridge vault is locked"),true
+    if !unlocked do return bridge_local_response_error(request_id,"vault_locked","owner Bridge vault is locked"),true,{}
     key:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,key_id,pub,"bridge",true,false}
-    response,pending,run_dir:=bridge_owner_agent_route_child(request_id,method,p,rec,key,&kr)
+    response,pending,run_dir,launch:=bridge_owner_agent_route_child(request_id,method,p,rec,key,&kr)
     if pending.active {
         block:string
         response,block=bridge_owner_materialize_checked(request_id,pending,run_dir)
@@ -142,21 +155,21 @@ bridge_owner_agent_route :: proc(request_id,method,params:string,rec:Bridge_Loca
     // Registry publication and merge intents run after the child locks are
     // released, under the owner mutex only (as bridge_owner_handle does).
     bridge_owner_publish()
-    return response,true
+    return response,true,launch
 }
 
 // Lock order owner -> startup I/O -> token, as bridge_owner_agent: stop,
 // rotation and relaunch cannot race admission after exact-child validation.
-bridge_owner_agent_route_child :: proc(request_id,method:string,p:json.Object,rec:Bridge_Local_Agent_Token_Record,key:contracts.Owner_Verified_Key,kr:^vault.Vault_Keyring) -> (string,Owner_Pending_Delivery,string) {
+bridge_owner_agent_route_child :: proc(request_id,method:string,p:json.Object,rec:Bridge_Local_Agent_Token_Record,key:contracts.Owner_Verified_Key,kr:^vault.Vault_Keyring) -> (string,Owner_Pending_Delivery,string,Owner_Fleet_Launch) {
     sync.mutex_lock(&bridge_startup_io_mutex);defer sync.mutex_unlock(&bridge_startup_io_mutex)
     sync.mutex_lock(&bridge_local_token_mutex);defer sync.mutex_unlock(&bridge_local_token_mutex)
     child,current:=bridge_owner_child_locked(rec.agent_instance_id,rec.token_hash)
-    if !current do return bridge_local_response_error(request_id,"invalid_scope","owner chain: current launched child required"),{},""
+    if !current do return bridge_local_response_error(request_id,"invalid_scope","owner chain: current launched child required"),{},"",{}
     run_dir:=""
     if launch,launched:=bridge_runtime_get_launch(child.instance);launched do run_dir=strings.clone(launch.run_dir,context.temp_allocator)
     ctx:=Owner_Agent_Ctx{request_id=request_id,store=&bridge_owner_store,child=child,key=key,kr=kr,run_dir=run_dir,now=time.to_unix_nanoseconds(time.now())/1000000}
     response:=bridge_owner_agent_exec(&ctx,method,p)
-    return response,ctx.pending,run_dir
+    return response,ctx.pending,run_dir,ctx.launch
 }
 
 // Whether the verb's target lives in this owner store. read=false means the
@@ -560,6 +573,7 @@ bridge_owner_agent_exec :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object
         return bridge_local_response_data(ctx.request_id,r.body)
     }
     if bridge_owner_control_method(method)!="" do return bridge_owner_control(ctx,method,p)
+    if bridge_owner_fleet_method(method) do return bridge_owner_fleet(ctx,method,p)
     return bridge_owner_fail(ctx,"bad_request","unsupported owner verb")
 }
 
@@ -814,7 +828,7 @@ bridge_owner_resolve_agent :: proc(ctx:^Owner_Agent_Ctx,chain,agent_id,flag:stri
     for instance in participants {
         if child,live:=bridge_owner_child_locked(instance,"");live && child.agent_id==agent_id { found=child;matches+=1 }
     }
-    if matches==0 do return {},"invalid_scope",fmt.tprintf("%s %s is not a running, enabled member or fleet worker of this chain on this Bridge (adding members is human-only)",flag,agent_id)
+    if matches==0 do return {},"invalid_scope",fmt.tprintf("%s %s is not a running, enabled member or fleet worker of this chain on this Bridge; add it with `ham-ctl task-chain fleet set --agent %s` (or `ham-ctl agents start` its stopped member instance)",flag,agent_id,agent_id)
     if matches>1 do return {},"ambiguous_agent",fmt.tprintf("%s %s matches several running instances in this chain",flag,agent_id)
     return found,"ok",""
 }

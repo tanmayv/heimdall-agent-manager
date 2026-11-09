@@ -96,9 +96,13 @@ agent_policy_worker_own_task_coordinator_chain_verbs_and_foreign_refusal :: proc
     testing.expect(t,role==.None && code=="invalid_scope")
     testing.expect_value(t,agent_role(f,"missing",coord,"task.read"),Agent_Role.None)
     testing.expect_value(t,agent_role(f,"task",coord,"grant.set"),Agent_Role.None)
-    // Membership and grants stay human-only (fleet.edit is coordinator assignment, R4a review).
-    testing.expect_value(t,agent_role(f,"task",coord,"chain.member.set"),Agent_Role.None)
+    // Fleet management (membership, policy) is the coordinator's; remote
+    // reservations and grants stay human-only; workers get none of it.
+    testing.expect_value(t,agent_role(f,"",coord,"chain.member.set"),Agent_Role.Coordinator)
+    testing.expect_value(t,agent_role(f,"",coord,"fleet.policy.set"),Agent_Role.Coordinator)
     testing.expect_value(t,agent_role(f,"task",coord,"fleet.reserve"),Agent_Role.None)
+    testing.expect_value(t,agent_role(f,"",worker,"chain.member.set"),Agent_Role.None)
+    testing.expect_value(t,agent_role(f,"",worker,"fleet.policy.set"),Agent_Role.None)
     testing.expect_value(t,agent_role(f,"task",worker,"fleet.edit"),Agent_Role.None)
 
     // Holding a live lease lets the worker read and comment on that task only.

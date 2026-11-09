@@ -211,6 +211,11 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 	     "agent.task.delete", "agent.task.review_roles", "agent.lease.revoke", "agent.task_chain.complete",
 	     "agent.task.submit_review", "agent.task.complete", "agent.task.split":
 		return Bridge_Agent_Route{kind = .Bad_Request, message = "owner_chain_only: this coordinator control is served only for chains owned by this Bridge; the target chain is not one of them"}
+	// Fleet management of a Bridge-owned chain (owner_agent_fleet.odin); Hub
+	// task-chain fleets are removed.
+	case "agent.task_chain.fleet_list", "agent.task_chain.fleet_set", "agent.task_chain.fleet_pause",
+	     "agent.task_chain.fleet_resume", "agent.task_chain.fleet_remove":
+		return Bridge_Agent_Route{kind = .Bad_Request, message = "owner_chain_only: task-chain fleet is served only for chains owned by this Bridge, by their coordinator; the target chain is not one of them"}
 
 	// ---- workflow (M3b) ---------------------------------------------------
 	case "agent.workflow.templates":
@@ -360,6 +365,8 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     "agent.task.unblock", "agent.task.recheck", "agent.task.escalate", "agent.task.merge_retry",
 	     "agent.task.delete", "agent.task.review_roles", "agent.lease.revoke", "agent.task_chain.complete",
 	     "agent.task.submit_review", "agent.task.complete", "agent.task.split",
+	     "agent.task_chain.fleet_list", "agent.task_chain.fleet_set", "agent.task_chain.fleet_pause",
+	     "agent.task_chain.fleet_resume", "agent.task_chain.fleet_remove",
 	     "agent.lease.next", "agent.lease.heartbeat", "agent.lease.submit", "agent.lease.handoff",
 	     "agent.lease.block", "agent.lease.switch", "agent.review.post",
 	     "agent.workflow.templates", "agent.workflow.define",

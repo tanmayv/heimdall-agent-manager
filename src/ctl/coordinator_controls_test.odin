@@ -249,3 +249,28 @@ test_owner_summary_view_reads_owner_show :: proc(t: ^testing.T) {
 	_, failed := ctl_owner_summary_view(`{"ok":false,"error":{"code":"invalid_scope","message":"owner chain read refused"}}`)
 	testing.expect(t, !failed, "failed show")
 }
+
+// `task-chain fleet` on a Bridge-owned chain: each verb maps to its owner
+// method; set sends only the flags given (so an empty --bridge clears it).
+@(test)
+test_owner_fleet_params :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	m, p, ok := ctl_owner_fleet_params("list", []string{}, []string{})
+	testing.expect(t, ok && m == "agent.task_chain.fleet_list" && p == "{}", p)
+	m, p, ok = ctl_owner_fleet_params("set", []string{"chain_1"}, []string{"--agent", "agt_w", "--capacity", "2", "--roles", "worker,reviewer", "--bridge", "", "--model", "sonnet", "--project", "proj_1"})
+	testing.expect(t, ok && m == "agent.task_chain.fleet_set", m)
+	for want in ([?]string{`"chain_id":"chain_1"`, `"agent_id":"agt_w"`, `"capacity":"2"`, `"roles":"worker,reviewer"`, `"bridge_id":""`, `"model":"sonnet"`, `"project_id":"proj_1"`}) {
+		testing.expectf(t, strings.contains(p, want), "%s in %s", want, p)
+	}
+	testing.expect(t, !strings.contains(p, "provider") && !strings.contains(p, "min_warm") && !strings.contains(p, "instance_id"), p)
+	m, p, ok = ctl_owner_fleet_params("pause", []string{}, []string{"--agent", "agt_w", "--roles", "reviewer", "--chain", "chain_2"})
+	testing.expect(t, ok && m == "agent.task_chain.fleet_pause" && strings.contains(p, `"roles":"reviewer"`) && strings.contains(p, `"chain_id":"chain_2"`), p)
+	m, p, ok = ctl_owner_fleet_params("resume", []string{}, []string{"--agent", "agt_w"})
+	testing.expect(t, ok && m == "agent.task_chain.fleet_resume" && !strings.contains(p, "roles"), p)
+	m, _, ok = ctl_owner_fleet_params("remove", []string{}, []string{"--agent", "agt_w"})
+	testing.expect(t, ok && m == "agent.task_chain.fleet_remove", m)
+	_, _, ok = ctl_owner_fleet_params("set", []string{}, []string{"--capacity", "2"})
+	testing.expect(t, !ok, "set needs --agent")
+	_, _, ok = ctl_owner_fleet_params("bogus", []string{}, []string{"--agent", "agt_w"})
+	testing.expect(t, !ok, "unknown verb")
+}

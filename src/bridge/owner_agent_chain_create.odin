@@ -8,8 +8,8 @@ package main
 // key). The store enables root recovery for such a chain, so the user's app
 // opens it with grant.recover. Exactly one coordinator is then bound through
 // owner.bind_created_coordinator: the calling child, or a named agent launched
-// on this Bridge into the new chain. Membership and grants otherwise stay
-// human-only (agent_command_admit).
+// on this Bridge into the new chain. The bound coordinator then manages the
+// fleet (owner_agent_fleet.odin); grants stay human-only (agent_command_admit).
 //
 // Lock order is the owner one: bridge_owner_mutex -> bridge_startup_io_mutex
 // -> bridge_local_token_mutex. Waiting for a named agent's launch holds none.
@@ -160,7 +160,15 @@ bridge_owner_chain_create_locked :: proc(rec:Bridge_Local_Agent_Token_Record,nam
 // caller's Hub credential, then waits (no locks held) until it is a live
 // child here. Returns the instance id, or a reason.
 bridge_owner_chain_launch_coordinator :: proc(chain,agent:string,rec:Bridge_Local_Agent_Token_Record) -> (string,string) {
-    body:=bridge_owner_json(map[string]string{"agent_id"=agent,"chain_id"=chain,"bridge_id"=bridge_config.daemon_id})
+    return bridge_owner_launch_into_chain(bridge_owner_json(map[string]string{"agent_id"=agent,"chain_id"=chain,"bridge_id"=bridge_config.daemon_id}),agent,rec)
+}
+
+// Hub POST /api/v1/agent-instances with `body` (agent_id, chain_id, this
+// bridge_id, optional provider/model/profile/project) and the caller's token;
+// shared by the coordinator launch and fleet launches (owner_agent_fleet.odin).
+// The caller holds no lock: the wait polls the live child under the startup
+// and token locks only.
+bridge_owner_launch_into_chain :: proc(body,agent:string,rec:Bridge_Local_Agent_Token_Record) -> (string,string) {
     launched:=bridge_local_relay_raw(.POST,route_path("api","v1","agent-instances"),nil,body,rec)
     if !launched.ok || launched.status<200 || launched.status>=300 {
         detail:=launched.body

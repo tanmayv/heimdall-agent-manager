@@ -26,7 +26,7 @@ export async function ownerTransparentFlow({ session, bridgeId, hub, http, expec
   };
   try {
     // The human sets up only the chain: its repository, target branch and
-    // members. Granting membership stays human-only.
+    // members (the coordinator may also enroll workers/reviewers itself).
     await human('chain.create', { expectedRevision: '0', title: 'transparent-private-chain', description: 'transparent-private-description' });
     const directoryId = ownerId('dir_'), now = new Date().toISOString();
     await human('chain.directory.set', { expectedRevision: await chainRevision(), directoryId, body: JSON.stringify({ directory_id: directoryId, chain_id: cid, owner_user_id: session.identity.userId, path: git.repository, bridge_id: bridgeId, vcs_kind: 'git', vcs_info_json: '{}', created_at: now, updated_at: now }) });

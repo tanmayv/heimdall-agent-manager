@@ -55,10 +55,16 @@ cc_controls_open_only_to_the_verified_chain_coordinator :: proc(t:^testing.T) {
         impostor:=coord;impostor.agent_id="other_agent"
         testing.expectf(t,agent_role(f,"task",impostor,verb)==.None,"another agent on the instance id is refused %s",verb)
     }
-    // Still user-only: workflow gates, remote reservations, membership, grants.
-    for verb in ([5]string{"workflow.gate","fleet.reserve","chain.member.set","grant.set","workflow.define"}) {
+    // Still user-only: workflow gates, remote reservations, grants.
+    for verb in ([6]string{"workflow.gate","fleet.reserve","grant.set","grant.recover","grant.revoke","workflow.define"}) {
         testing.expectf(t,!agent_command_method(verb),"%s stays off the agent allowlist",verb)
         testing.expectf(t,agent_role(f,"task",coord,verb)==.None,"%s stays human-only",verb)
+    }
+    // Fleet management is the bound coordinator's, never a worker's or reviewer's.
+    for verb in ([3]string{"chain.member.set","fleet.policy.set","fleet.policy.read"}) {
+        testing.expectf(t,agent_command_method(verb),"%s is an agent command",verb)
+        testing.expectf(t,agent_role(f,"",coord,verb)==.Coordinator,"coordinator may %s",verb)
+        for who in ([3]Child{worker,reviewer,stranger}) do testing.expectf(t,agent_role(f,"",who,verb)==.None,"%s refused %s",who.instance,verb)
     }
     // Admission: every new method refuses worker/reviewer/stranger tokens.
     reason:=cc_reason(f,"why")
