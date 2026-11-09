@@ -252,6 +252,13 @@ legacy_import_releases_workflow_gates_and_archives_live_stage_tasks :: proc(t:^t
     for code in ([]string{`"code":"workflows_cancelled"`,`"code":"workflow_gates_released","count":1,"items":["dep_gate"]`,`"code":"workflow_stage_tasks_archived","count":1,"items":["stage_live"]`}) {
         testing.expectf(t,strings.contains(f.neutralized_json,code),"neutralized %s in %s",code,f.neutralized_json)
     }
+    _,aerr:=repo.legacy_migration_abort(repo.ctx,"account","chain","migration")
+    testing.expect_value(t,aerr.code,domain.Error_Code.None)
+    rows,_=legacy_metadata(&conn,"SELECT work_revision FROM task_chains WHERE chain_id='chain'",1)
+    fresh:=s;fresh.migration_id="migration_refreeze";fresh.selection_digest=strings.repeat("d",64,context.temp_allocator);fresh.expected_work_revision=legacy_test_number(rows[0][0])
+    f2,refused2,err2:=repo.legacy_migration_freeze_now(repo.ctx,fresh)
+    testing.expectf(t,err2.code==.None && len(refused2)==0 && f2.state=="frozen","re-freeze after abort: %s",err2.message)
+    testing.expect_value(t,f2.forced_held_json,`["task"]`)
 }
 
 // R3 review: an unfinished migration can be aborted by the account owner,

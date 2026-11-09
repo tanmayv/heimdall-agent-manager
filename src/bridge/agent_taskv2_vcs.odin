@@ -344,7 +344,7 @@ bridge_taskv2_write_dependencies :: proc(b: ^strings.Builder, deps: []Bridge_Tas
 		case d.output != "" && !d.dropped:
 			fmt.sbprintf(b, "- **Output**: `%s`\n", d.output)
 		case d.output != "" || d.output_omitted:
-			fmt.sbprintf(b, "- **Output**: omitted for size — fetch with `ham-ctl task fetch %s %s`\n", task_id, ref)
+			fmt.sbprintf(b, "- **Output**: omitted for size (`%s`) — inspect with `ham-ctl task show %s`\n", ref, d.task_id)
 		case d.output_ref != "":
 			fmt.sbprintf(b, "- **Output**: see `%s` under Resolved Inputs\n", d.output_ref)
 		}
@@ -453,11 +453,11 @@ bridge_taskv2_build_task_md :: proc(d: ^Bridge_Task_Md_Doc, alloc := context.tem
 			if inp.dropped && inp.fetch != "" {
 				fmt.sbprintf(&b, "- `%s`: output omitted; fetch the pinned generation with `%s`\n", inp.ref, inp.fetch)
 			} else if inp.dropped {
-				fmt.sbprintf(&b, "- `%s`: omitted for size — fetch with `ham-ctl task fetch %s %s`\n", inp.ref, d.task_id, inp.ref)
+				fmt.sbprintf(&b, "- `%s`: omitted for size — inspect with `ham-ctl task show %s`\n", inp.ref, d.task_id)
 			} else if inp.resolved {
 				fmt.sbprintf(&b, "- `%s`: %s\n", inp.ref, inp.body)
 			} else {
-				fmt.sbprintf(&b, "- `%s`: _(unresolved — `ham-ctl task fetch %s %s`)_\n", inp.ref, d.task_id, inp.ref)
+				fmt.sbprintf(&b, "- `%s`: _(unresolved — inspect with `ham-ctl task show %s`)_\n", inp.ref, d.task_id)
 			}
 		}
 	}
@@ -481,7 +481,7 @@ bridge_taskv2_build_task_md :: proc(d: ^Bridge_Task_Md_Doc, alloc := context.tem
 			fmt.sbprintf(&b, "- **Last Heartbeat Note**: %s\n", d.prev_note)
 		}
 		if d.drop_handoff_summary {
-			fmt.sbprintf(&b, "- **Handoff Summary**: omitted for size — fetch with `ham-ctl task fetch %s facet:%s:%d:handoff`\n", d.task_id, d.task_id, d.prev_attempt_no)
+			fmt.sbprintf(&b, "- **Handoff Summary**: omitted for size (`facet:%s:%d:handoff`) — inspect with `ham-ctl task show %s`\n", d.task_id, d.prev_attempt_no, d.task_id)
 		} else if d.handoff_summary != "" {
 			fmt.sbprintf(&b, "- **Handoff Summary**: %s\n", d.handoff_summary)
 		}
