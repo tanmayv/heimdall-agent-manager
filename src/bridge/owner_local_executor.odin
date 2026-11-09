@@ -167,6 +167,9 @@ bridge_owner_executor_snapshot :: proc(_:rawptr,s:^owner.Store,c:owner.Intent_Cl
 // This function deliberately has no Store parameter. It may block on the Hub
 // while the receiving executor calls back into owner handlers on another thread.
 bridge_owner_executor_exchange :: proc(_:rawptr,c:owner.Intent_Claim,snapshot:string)->(string,i64) {
+    // Acquire first: it may wait for a renewal, which must not eat into the
+    // request expiry computed below.
+    credential:=bridge_credential_snapshot();defer delete(credential)
     now:=time.to_unix_nanoseconds(time.now())/1000000
     pin:Owner_Executor_Pin
     outcome:=Owner_Executor_Outcome{code="executor_unavailable"}
@@ -212,7 +215,6 @@ bridge_owner_executor_exchange :: proc(_:rawptr,c:owner.Intent_Claim,snapshot:st
     if !wrapped do return bridge_owner_json(outcome),now
     relay:=struct{protocol_version,chain_id,bridge_id,request_id,expires_ms,envelope:string}{
         "1",c.chain,c.destination,request_id,fmt.tprintf("%d",expires),outer}
-    credential:=bridge_credential_snapshot();defer delete(credential)
     headers:=[?]httpc.Header{httpc.bearer(credential)}
     if pin.generation!=bridge_task_chain_search_generation() || sync.atomic_load(&bridge_hub_traffic_stopped) {outcome.code="vault_locked";return bridge_owner_json(outcome),now}
     route:="activate" if c.kind=="executor.activate" || c.kind=="executor.heartbeat" else "relay"
