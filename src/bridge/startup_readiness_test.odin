@@ -343,20 +343,29 @@ startup_watchdog_still_expires_after_fallback :: proc(t: ^testing.T) {
 }
 
 @(test)
-startup_duplicate_signals_cannot_reset_exhausted_launch :: proc(t: ^testing.T) {
+startup_exhausted_relay_rearms_in_background :: proc(t: ^testing.T) {
     sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
     rec := startup_test_launch("startup_finite", "startup_finite")
     accepted, _ := bridge_startup_accept(rec, 1001)
     testing.expect(t, accepted)
     startup_test_relay_ok = false
     for now: i64 = 1002; now < 3_601_002; now += 1000 {
+        // Duplicate signals neither reset the budget nor add relays.
         bridge_startup_accept(rec, now)
         startup_test_tick(rec.agent_instance_id, now)
     }
-    testing.expect_value(t, startup_test_relays, 6)
+    // An exhausted budget is re-armed after a cool-down, never parked: the
+    // relay keeps retrying in the background at a bounded rate.
+    testing.expect(t, startup_test_relays > 6, "exhausted relay is re-armed")
+    testing.expect(t, startup_test_relays <= 6 * (3_600_000 / BRIDGE_START_SUCCESS_REARM_MS + 1), "re-arm respects the cool-down")
     key := bridge_startup_receipt_key(rec)
     defer delete(key)
-    testing.expect_value(t, bridge_retry_status(key).state, Bridge_Operation_State.Exhausted)
+    state := bridge_retry_status(key).state
+    testing.expect(t, state != .Waiting_Repair && state != .Exhausted, "relay is never left terminal")
+    startup_test_relay_ok = true
+    for now: i64 = 3_601_002; now < 3_800_002; now += 1000 do startup_test_tick(rec.agent_instance_id, now)
+    snap, _ := bridge_runtime_instance_snapshot(rec.agent_instance_id)
+    testing.expect(t, snap.startup.ready_delivered, "a recovered hub receives readiness")
     rotated := rec
     rotated.token_hash = "rotated-local-token"
     testing.expect_value(t, bridge_startup_receipt_key(rotated), key)
@@ -375,7 +384,7 @@ startup_stop_before_response :: proc(rec: Bridge_Local_Agent_Token_Record, timeo
     return {ok = true}
 }
 @(test)
-startup_typed_terminal_rejection_does_not_retry_and_late_stop_does_not_complete :: proc(t: ^testing.T) {
+startup_typed_rejection_rearms_slowly_and_late_stop_does_not_complete :: proc(t: ^testing.T) {
     sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
     context.allocator = runtime.heap_allocator()
     for class in ([]contracts.Bridge_Error_Class{.fatal, .recoverable}) {
@@ -385,7 +394,12 @@ startup_typed_terminal_rejection_does_not_retry_and_late_stop_does_not_complete 
         for now: i64 = 1002; now < 3_601_002; now += 1000 {
             bridge_startup_tick(now, startup_typed_reject, startup_test_deliver, rec.agent_instance_id)
         }
-        testing.expect_value(t, startup_test_relays, 1)
+        // A typed rejection is not retried on the fast schedule, but it is not
+        // parked either: the relay is re-armed after each cool-down.
+        testing.expect(t, startup_test_relays > 1 && startup_test_relays <= 3_600_000 / BRIDGE_START_SUCCESS_REARM_MS + 1, "typed rejection is re-armed at the cool-down rate")
+        key := bridge_startup_receipt_key(rec)
+        testing.expect(t, bridge_retry_status(key).state != .Waiting_Repair, "typed rejection is not parked")
+        delete(key)
     }
     rec := startup_test_launch("stopped-startup", "stopped-startup")
     bridge_startup_accept(rec, 1001)
@@ -395,4 +409,32 @@ startup_typed_terminal_rejection_does_not_retry_and_late_stop_does_not_complete 
     key := bridge_startup_receipt_key(rec)
     defer delete(key)
     testing.expect_value(t, bridge_retry_status(key).state, Bridge_Operation_State.Cancelled)
+}
+
+// A receipt parked by an older Bridge (or a non-retriable reject) is re-armed
+// when the agent repeats start_success; stopped launches stay cancelled.
+@(test)
+startup_parked_relay_is_rearmed_not_reported :: proc(t: ^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+    context.allocator = runtime.heap_allocator()
+    rec := startup_test_launch("startup_parked", "startup_parked")
+    accepted, _ := bridge_startup_accept(rec, 1001)
+    testing.expect(t, accepted)
+    key := bridge_startup_receipt_key(rec)
+    defer delete(key)
+    bridge_retry_reserve(key, 1002)
+    bridge_retry_finish(key, 1003, false, contracts.wire_error(.Conflict), park_on_failure = true)
+    testing.expect_value(t, bridge_retry_status(key).state, Bridge_Operation_State.Waiting_Repair)
+    testing.expect(t, bridge_startup_relay_rearm(rec, 0, 0), "parked relay re-armed")
+    testing.expect_value(t, bridge_retry_status(key).state, Bridge_Operation_State.Pending)
+    snap, _ := bridge_runtime_instance_snapshot(rec.agent_instance_id)
+    testing.expect(t, snap.startup.ready_pending && snap.startup.relay_state == .Pending)
+    startup_test_tick(rec.agent_instance_id, 2000)
+    testing.expect_value(t, startup_test_relays, 1)
+    snap, _ = bridge_runtime_instance_snapshot(rec.agent_instance_id)
+    testing.expect(t, snap.startup.ready_delivered, "re-armed relay delivers readiness")
+
+    bridge_retry_cancel(key)
+    bridge_runtime_mark_stop_intent(rec.agent_instance_id)
+    testing.expect(t, !bridge_startup_relay_rearm(rec, 0, 0), "a stopped launch is not re-armed")
 }

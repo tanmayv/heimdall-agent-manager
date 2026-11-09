@@ -237,6 +237,33 @@ bridge_startup_relay :: proc(rec: Bridge_Local_Agent_Token_Record, timeout_ms: i
     return {ok = ok && resp.status >= 200 && resp.status < 300, error = bridge_operation_http_error(resp, ok)}
 }
 
+// A terminal start_success relay is re-armed after this cool-down rather than
+// parked: the agent is alive, so readiness keeps being reported in the background.
+BRIDGE_START_SUCCESS_REARM_MS :: 60_000
+
+// bridge_startup_relay_rearm resets a terminal relay receipt and schedules the
+// next readiness relay at next_ms. Stopped, superseded or delivered launches
+// are left alone.
+bridge_startup_relay_rearm :: proc(rec: Bridge_Local_Agent_Token_Record, generation: u64, next_ms: i64) -> bool {
+	key := bridge_startup_receipt_key(rec)
+	defer delete(key)
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	for &current in bridge_runtime_instances {
+		if current.agent_instance_id != rec.agent_instance_id do continue
+		if (generation != 0 && current.startup.generation != generation) || current.startup.ready_delivered ||
+		   current.stopped_intent_unix_ms != 0 || current.runtime_status == "stopped" || current.runtime_status == "stopping" {
+			return false
+		}
+		if !bridge_retry_rearm_startup_relay(key) do return false
+		current.startup.ready_pending = true
+		current.startup.relay_state = .Pending
+		current.startup.next_attempt_ms = next_ms
+		return true
+	}
+	return false
+}
+
 bridge_startup_deliver :: proc(instance_id: string, timeout_ms: int) -> bool {
 	socket := pty_host_socket_path()
 	defer delete(socket)
@@ -315,6 +342,9 @@ bridge_startup_tick :: proc(now: i64, relay := bridge_startup_relay, deliver := 
             delete(key)
             sync.mutex_unlock(&bridge_startup_io_mutex)
             sync.mutex_unlock(&bridge_executor_mutex)
+            if ready && (budget.state == .Waiting_Repair || budget.state == .Exhausted) {
+                bridge_startup_relay_rearm(inst.startup.rec, job.generation, now + BRIDGE_START_SUCCESS_REARM_MS)
+            }
             continue
         }
         started := time.tick_now()
@@ -380,6 +410,9 @@ bridge_startup_tick :: proc(now: i64, relay := bridge_startup_relay, deliver := 
         if !ready {
             sync.mutex_unlock(&bridge_startup_io_mutex)
             sync.mutex_unlock(&bridge_executor_mutex)
+        }
+        if ready && !ok && (finished.state == .Waiting_Repair || finished.state == .Exhausted) {
+            bridge_startup_relay_rearm(inst.startup.rec, job.generation, now + BRIDGE_START_SUCCESS_REARM_MS)
         }
 		if report_failure do fmt.eprintln("bridge startup reminder not acknowledged for", job.id, "— bounded recovery pending; inspect readiness status")
 	}

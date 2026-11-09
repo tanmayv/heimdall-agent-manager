@@ -569,7 +569,8 @@ bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,wire:Executor_Exc
             fmt.tprintf("physical_resource_%s",mutation),&fence_probe,material.bootstrap,material.body,launch_io,true)
         testing.expect_value(t,rejected,"invalid_resources")
         refused_pid,refused_known:=bridge_pty_host_executor_query(socket,intent.instance,intent.launch_key)
-        testing.expect(t,!refused_known && refused_pid==0,"resource changes reject before first Spawn")
+        // The daemon never spawned this key: it reports trusted absence.
+        testing.expect(t,refused_known && refused_pid==0,"resource changes reject before first Spawn")
         switch mutation {
         case "catalog":
             sync.rw_mutex_lock(&bridge_launch_configuration_mutex)

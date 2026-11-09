@@ -134,7 +134,9 @@ bridge_executor_local_real_daemon_lost_observation_restart_and_exact_stop :: pro
     same_pid,same_known=bridge_pty_host_executor_query(socket,replacement.instance,replacement.launch_key)
     testing.expect(t,same_known && same_pid==pid,"fenced legacy force-stop leaves exact child alive")
     launch=replacement;recovered=replacement
-    // Daemon loss cannot prove absence or refund this warm charge.
+    // Daemon restart: the child died with the old daemon and the new one holds
+    // no child for its key. That is trusted exact absence, so the charge is
+    // released and recovery reaches ready instead of staying 'reconciling'.
     _=os.process_kill(process);_,_=os.process_wait(process);process_live=false
     bridge_shell_test_kill_pid(int(pid));child_live=false
     _=os.remove(socket)
@@ -144,13 +146,39 @@ bridge_executor_local_real_daemon_lost_observation_restart_and_exact_stop :: pro
     ready=false
     for _ in 0..<100 {if bridge_pty_host_ping(socket) {ready=true;break};time.sleep(10*time.Millisecond)}
     testing.expect(t,ready)
-    delivered,reason=bridge_executor_local_dispatch(&s,recovered,{}, {},socket)
-    testing.expect(t,!delivered && reason=="executor_uncertain")
-    testing.expect_value(t,bridge_executor_test_live_local(&s),"1")
-    // A fresh daemon cannot close an unknown prior launch key or stop a replacement.
-    testing.expect(t,executor.stop_local_launch(&s,recovered))
+    executor.close(&s);testing.expect(t,executor.open(&s,path,"account","executor","operator"))
+    testing.expect(t,!executor.complete_recovery(&s,bridge_executor_physical_clock(nil)),"a reopened journal starts reconciling")
     _,reconciled=bridge_executor_local_reconcile_batch(&s,socket,"");testing.expect(t,reconciled)
-    rows,_:=executor.query(s.db,"SELECT state FROM executor_local_launches WHERE launch_id=?",recovered.id);testing.expect_value(t,rows[0][0],"stopping")
+    testing.expect_value(t,bridge_executor_test_live_local(&s),"0")
+    rows,_:=executor.query(s.db,"SELECT recovery_state FROM executor_runtime");testing.expect_value(t,rows[0][0],"ready")
+    // Failed spawn then Bridge restart: the daemon records the key as Failed
+    // with no child. The observation is trusted absence, the row is released,
+    // and after reopening the journal recovers and a new launch succeeds.
+    // A fresh instance: local_instance is behind the legacy barrier above.
+    broken_req:=Pty_Host_Spawn_Request{instance="local_retry",argv=[]string{"/nonexistent/heimdall-executor-probe"},rows=24,cols=80}
+    bridge_executor_test_set(c,"instance_id","local_retry")
+    bridge_executor_test_set(c,"executor_incarnation",fmt.tprintf("%d",s.incarnation))
+    bridge_executor_test_set(c,"spawn_digest",bridge_executor_local_spawn_digest(broken_req))
+    broken,broken_resources,broken_admitted:=bridge_executor_test_native_launch(t,&s,c,"broken",bridge_executor_physical_clock(nil))
+    if !broken_admitted do return
+    delivered,reason=bridge_executor_local_dispatch(&s,broken,broken_req,broken_resources,socket)
+    testing.expect(t,delivered && reason=="child_absent",reason)
+    failed_pid,failed_known:=bridge_pty_host_executor_query(socket,broken.instance,broken.launch_key)
+    testing.expect(t,failed_known && failed_pid==0,"a Failed launch key is trusted absence")
+    testing.expect_value(t,bridge_executor_test_live_local(&s),"0")
+    executor.close(&s);testing.expect(t,executor.open(&s,path,"account","executor","operator"))
+    _,reconciled=bridge_executor_local_reconcile_batch(&s,socket,"");testing.expect(t,reconciled)
+    rows,_=executor.query(s.db,"SELECT recovery_state FROM executor_runtime");testing.expect_value(t,rows[0][0],"ready")
+    bridge_executor_test_set(c,"executor_incarnation",fmt.tprintf("%d",s.incarnation))
+    fresh_req:=req;fresh_req.instance="local_retry"
+    bridge_executor_test_set(c,"spawn_digest",bridge_executor_local_spawn_digest(fresh_req))
+    fresh,fresh_resources,fresh_admitted:=bridge_executor_test_native_launch(t,&s,c,"after-restart",bridge_executor_physical_clock(nil))
+    if !fresh_admitted do return
+    delivered,reason=bridge_executor_local_dispatch(&s,fresh,fresh_req,fresh_resources,socket)
+    testing.expect(t,delivered && reason=="child_present",reason)
+    fresh_pid,fresh_known:=bridge_pty_host_executor_query(socket,fresh.instance,fresh.launch_key)
+    testing.expect(t,fresh_known && fresh_pid>0)
+    if fresh_known && fresh_pid>0 {_=bridge_pty_host_executor_close(socket,fresh.instance,fresh.launch_key);bridge_shell_test_kill_pid(int(fresh_pid))}
 }
 
 @(test)

@@ -46,6 +46,8 @@ startup_action_concurrent_retries_have_one_note_hook_and_wake :: proc(t: ^testin
 	if !testing.expect(t, conv_ok, "conversation fixture") do return
 	_, msg_ok, _ := iface.content_save_message(&content_repo, domain.Chat_Message{message_id = "msg_unread", conversation_id = "chat_startup", owner_user_id = f.owner, direction = "user_to_agent", body = "Pending work", artifact_ids_json = "[]", message_type = "text", created_at = "2026-10-22T10:00:00Z"})
 	if !testing.expect(t, msg_ok, "unread inbound fixture") do return
+	// A launch reports start_success while the instance is still starting.
+	testing.expect(t, sqlite.exec(&f.conn, "UPDATE agent_instances SET runtime_status='starting', startup_status='starting' WHERE agent_instance_id='inst_wire_tb2';"))
 	body := strings.concatenate({`{"agent_instance_id":"`, f.instance_id, `","params":{}}`})
 	defer delete(body)
 	req := wire_agent_request(f, "start-success", body)
@@ -78,19 +80,26 @@ startup_action_concurrent_retries_have_one_note_hook_and_wake :: proc(t: ^testin
 	conv, _, _ = iface.content_get_conversation(&content_repo, "chat_startup")
 	testing.expect_value(t, conv.unread_count, 1)
 
-	// A normal relaunch keeps launch_epoch unchanged. Its old assertion still
-	// authenticates, so the explicit generation fence must reject delayed work.
+	// start_success is a lenient indicator: a valid token suffices. A relaunch
+	// (same epoch, run_count bumped) accepts a stale or missing run_count, fires
+	// the ready hooks once, and later repeats are no-ops.
 	testing.expect(t, sqlite.exec(&f.conn, "UPDATE agent_instances SET run_count=2, runtime_status='starting', startup_status='starting' WHERE agent_instance_id='inst_wire_tb2';"))
 	old_body := strings.concatenate({`{"agent_instance_id":"`, f.instance_id, `","params":{"run_count":1}}`})
 	defer delete(old_body)
 	req.body = old_body
-	testing.expect(t, agent_action_start_success_handler(&f.ah, req).status != 200, "same-epoch old generation rejected")
+	testing.expect_value(t, agent_action_start_success_handler(&f.ah, req).status, 200)
+	testing.expect_value(t, counts.hooks, 2)
 	req.body = body
-	testing.expect(t, agent_action_start_success_handler(&f.ah, req).status != 200, "missing generation cannot bypass a relaunch fence")
-	testing.expect_value(t, counts.hooks, 1)
+	testing.expect_value(t, agent_action_start_success_handler(&f.ah, req).status, 200)
 	current_body := strings.concatenate({`{"agent_instance_id":"`, f.instance_id, `","params":{"run_count":2}}`})
 	defer delete(current_body)
 	req.body = current_body
+	testing.expect_value(t, agent_action_start_success_handler(&f.ah, req).status, 200)
+	testing.expect_value(t, counts.hooks, 2)
+
+	// An already running/ready instance without a startup note (e.g. a renamed
+	// receipt) is still a no-op: 200 and no hooks.
+	testing.expect(t, sqlite.exec(&f.conn, "UPDATE agent_instances SET started_at='2026-10-22T11:00:00Z' WHERE agent_instance_id='inst_wire_tb2';"))
 	testing.expect_value(t, agent_action_start_success_handler(&f.ah, req).status, 200)
 	testing.expect_value(t, counts.hooks, 2)
 
@@ -100,7 +109,7 @@ startup_action_concurrent_retries_have_one_note_hook_and_wake :: proc(t: ^testin
 	testing.expect(t, sqlite.exec(&f.conn, "UPDATE agent_instances SET launch_epoch='startup_epoch_2', run_count=run_count+1, runtime_status='starting', startup_status='starting' WHERE agent_instance_id='inst_wire_tb2';"))
 	inst, _, _ = iface.agent_get_instance(&f.ag_repo, f.instance_id)
 	stale := agent_action_start_success_handler(&f.ah, req)
-	testing.expect(t, stale.status != 200, "old launch assertion is rejected")
+	testing.expect(t, stale.status != 200, "a superseded launch token does not authenticate")
 	new_assertion := agent_service.instance_assertion_token(inst)
 	defer delete(new_assertion)
 	f.agent_headers[1].value = new_assertion
@@ -113,15 +122,31 @@ startup_action_concurrent_retries_have_one_note_hook_and_wake :: proc(t: ^testin
 	testing.expect_value(t, counts.hooks, 3)
 	rows, _ = iface.content_list_messages(&content_repo, "chat_startup", f.owner, 20, "")
 	testing.expect_value(t, len(rows), 4)
-	// A new stopped epoch has no receipt: a valid credential still cannot revive it.
+
+	// The same generation later marked failed/stopped (e.g. a misclassified
+	// launch failure) while the agent is alive: a valid token records readiness
+	// again, without rerunning this generation's hooks or duplicating its note.
+	testing.expect(t, sqlite.exec(&f.conn, "UPDATE agent_instances SET runtime_status='failed', startup_status='failed' WHERE agent_instance_id='inst_wire_tb2';"))
+	resp = agent_action_start_success_handler(&f.ah, req)
+	testing.expect_value(t, resp.status, 200)
+	after, _, _ := iface.agent_get_instance(&f.ag_repo, f.instance_id)
+	testing.expect_value(t, after.runtime_status, "running")
+	testing.expect_value(t, after.startup_status, "ready")
+	testing.expect_value(t, counts.hooks, 3)
+	rows, _ = iface.content_list_messages(&content_repo, "chat_startup", f.owner, 20, "")
+	testing.expect_value(t, len(rows), 4)
+
+	// A new stopped epoch with a valid credential is marked ready once.
 	testing.expect(t, sqlite.exec(&f.conn, "UPDATE agent_instances SET launch_epoch='startup_epoch_3', runtime_status='stopped', startup_status='stopped' WHERE agent_instance_id='inst_wire_tb2';"))
 	inst, _, _ = iface.agent_get_instance(&f.ag_repo, f.instance_id)
 	stopped_assertion := agent_service.instance_assertion_token(inst)
 	defer delete(stopped_assertion)
 	f.agent_headers[1].value = stopped_assertion
 	resp = agent_action_start_success_handler(&f.ah, req)
-	testing.expect(t, resp.status != 200, "stopped launch cannot be resurrected")
-	after, _, _ := iface.agent_get_instance(&f.ag_repo, f.instance_id)
-	testing.expect_value(t, after.runtime_status, "stopped")
-	testing.expect_value(t, counts.hooks, 3)
+	testing.expect_value(t, resp.status, 200)
+	after, _, _ = iface.agent_get_instance(&f.ag_repo, f.instance_id)
+	testing.expect_value(t, after.runtime_status, "running")
+	testing.expect_value(t, counts.hooks, 4)
+	testing.expect_value(t, agent_action_start_success_handler(&f.ah, req).status, 200)
+	testing.expect_value(t, counts.hooks, 4)
 }

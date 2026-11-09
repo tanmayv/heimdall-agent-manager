@@ -540,22 +540,26 @@ verify_instance_token :: proc(service: ^Agent_Service, token: string) -> (contra
 	return contracts.Auth_Context{kind = .Instance_Token, user_id = string(inst.owner_user_id), agent_instance_id = inst.agent_instance_id, bridge_id = inst.bridge_id}, inst, true, domain.Domain_Error{}
 }
 
-mark_instance_start_success :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, expected_run_count := -1) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
-	if service == nil do return {}, false, domain.domain_error(.Internal_Error, "agent service is not configured")
+// start_success is an idempotent readiness indicator: a valid instance token is
+// sufficient. It never rejects a stale run_count or an inactive status; a repeat
+// for an instance that is already running/ready is a no-op (changed=false) and
+// does not rerun the ready hooks. fire_hooks=false records readiness for a
+// generation whose ready hooks already ran (its startup note exists).
+mark_instance_start_success :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, fire_hooks := true) -> (inst: domain.Agent_Instance, changed: bool, ok: bool, err: domain.Domain_Error) {
+	if service == nil do return {}, false, false, domain.domain_error(.Internal_Error, "agent service is not configured")
 	sync.lock(&service.reconfiguration_mutex)
-	saved, ok, err := mark_instance_start_success_locked(service, auth, expected_run_count)
+	inst, changed, ok, err = mark_instance_start_success_locked(service, auth)
 	sync.unlock(&service.reconfiguration_mutex)
-	if ok && service.hooks.on_start_success != nil do service.hooks.on_start_success(service.hooks.ctx, saved)
-	return saved, ok, err
+	if ok && changed && fire_hooks && service.hooks.on_start_success != nil do service.hooks.on_start_success(service.hooks.ctx, inst)
+	return
 }
 
-mark_instance_start_success_locked :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, expected_run_count: int) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
-	if auth.kind != .Instance_Token || auth.agent_instance_id == "" do return domain.Agent_Instance{}, false, domain.domain_error(.Forbidden, "instance token is required")
+mark_instance_start_success_locked :: proc(service: ^Agent_Service, auth: contracts.Auth_Context) -> (domain.Agent_Instance, bool, bool, domain.Domain_Error) {
+	if auth.kind != .Instance_Token || auth.agent_instance_id == "" do return domain.Agent_Instance{}, false, false, domain.domain_error(.Forbidden, "instance token is required")
 	inst, ok, err := iface.agent_get_instance(service.agents, auth.agent_instance_id)
-	if !ok do return domain.Agent_Instance{}, false, err
-	if inst.owner_user_id != domain.User_ID(auth.user_id) do return domain.Agent_Instance{}, false, domain.domain_error(.Not_Found, "agent instance not found")
-	if expected_run_count >= 0 && inst.run_count != expected_run_count do return {}, false, domain.domain_error(.Conflict, "superseded startup generation")
-	if inst.runtime_status == "stopped" || inst.runtime_status == "stopping" || inst.runtime_status == "failed" do return {}, false, domain.domain_error(.Conflict, "startup signal is for an inactive launch")
+	if !ok do return domain.Agent_Instance{}, false, false, err
+	if inst.owner_user_id != domain.User_ID(auth.user_id) do return domain.Agent_Instance{}, false, false, domain.domain_error(.Not_Found, "agent instance not found")
+	if instance_start_success_is_noop(inst) do return inst, false, true, domain.Domain_Error{}
 	now := platform.clock_now(service.clock)
 	inst.runtime_status = "running"
 	inst.startup_status = "ready"
@@ -565,7 +569,13 @@ mark_instance_start_success_locked :: proc(service: ^Agent_Service, auth: contra
 	inst.stopped_at = ""
 	inst.updated_at = now
 	saved, saved_ok, save_err := iface.agent_save_instance(service.agents, inst)
-	return saved, saved_ok, save_err
+	return saved, saved_ok, saved_ok, save_err
+}
+
+// instance_start_success_is_noop reports whether a start_success for inst has
+// nothing left to record: the instance is already running and ready.
+instance_start_success_is_noop :: proc(inst: domain.Agent_Instance) -> bool {
+	return inst.runtime_status == "running" && inst.startup_status == "ready"
 }
 
 bootstrap_skill_file_content :: proc(m: domain.Memory, name: string) -> string {

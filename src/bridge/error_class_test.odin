@@ -431,13 +431,20 @@ test_executor_local_failure_codes_map_to_classes :: proc(t: ^testing.T) {
 		_, err := bridge_executor_local_failure(code)
 		testing.expectf(t, err.class == .fatal, "%s must be fatal, got %v", code, err.class)
 	}
-	retriable := []string{"instance_not_drained", "executor_uncertain", "child_absent", "startup_identity_not_current", "observation_not_committed", "model_unavailable", "project_directory_unavailable"}
+	retriable := []string{"instance_not_drained", "child_absent", "startup_identity_not_current", "observation_not_committed", "model_unavailable", "project_directory_unavailable"}
 	for code in retriable {
 		_, err := bridge_executor_local_failure(code)
 		testing.expectf(t, err.class == .retriable, "%s must be retriable, got %v", code, err.class)
 	}
 	// A profile that cannot be read right now needs attention but is re-checked
 	// by the wake loop; it must never be fatal (that parks the agent forever).
+	// Executor journal recovery resolves on the Bridge's own reconcile sweep:
+	// explicit, recoverable, with a retry floor, never agent_launch_failed/other/retriable.
+	for code in ([]string{"recovery_required", "executor_uncertain"}) {
+		recovery_detail, recovering := bridge_executor_local_failure(code)
+		testing.expectf(t, recovering.class == .recoverable && recovering.reason == .executor_recovery && recovering.retry_after_ms > 0, "%s: %v", code, recovering)
+		testing.expect_value(t, recovery_detail, code)
+	}
 	_, profile := bridge_executor_local_failure("profile_unavailable")
 	testing.expect(t, profile.class == .recoverable, "profile_unavailable must be recoverable")
 	detail, closed := bridge_executor_local_failure("launch_generation_closed")

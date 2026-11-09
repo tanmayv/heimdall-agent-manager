@@ -849,13 +849,17 @@ impl Daemon {
         agent.deadline.lock().unwrap().renew(secret, version, expires_ms, hard_ms)?;
         Ok(agent.pid)
     }
-    /// Unknown keys after daemon loss stay uncertain, never falsely absent.
+    /// The live child registry is authoritative for this daemon. A key it never
+    /// spawned (daemon restart lost the in-memory table) or whose spawn failed
+    /// has no child here, so it reports trusted absence (0) unless a live child
+    /// still carries that exact key. Only an in-flight spawn stays uncertain.
     pub fn executor_launch_pid(&self, instance: &str, key: &str) -> Result<i32> {
         let _lifecycle=self.lifecycle.lock().unwrap();
         let launches=self.executor_launches.lock().unwrap();
-        let prior=launches.get(key).ok_or_else(||anyhow!("executor: unknown launch key; recovery required"))?;
-        if prior.instance!=instance { return Err(anyhow!("executor: instance mismatch")); }
-        if matches!(prior.state,ExecutorLaunchState::Failed|ExecutorLaunchState::Uncertain) { return Err(anyhow!("executor: launch uncertain")); }
+        if let Some(prior)=launches.get(key) {
+            if prior.instance!=instance { return Err(anyhow!("executor: instance mismatch")); }
+            if matches!(prior.state,ExecutorLaunchState::Uncertain) { return Err(anyhow!("executor: launch uncertain")); }
+        }
         let agents=self.agents.lock().unwrap();
         Ok(match agents.get(instance) {
             Some(agent) if executor_launch_key(&agent.spec)?==Some(key) && agent.alive.load(Ordering::SeqCst) => agent.pid,
@@ -2061,7 +2065,8 @@ mod tests {
         let pid=daemon.spawn(spec.clone()).unwrap();
         assert_eq!(daemon.spawn(spec.clone()).unwrap(),pid);
         assert_eq!(daemon.executor_launch_pid("local-warm",&key).unwrap(),pid);
-        assert!(Daemon::new().executor_launch_pid("local-warm",&key).is_err());
+        // A restarted daemon has no child for the old key: trusted absence.
+        assert_eq!(Daemon::new().executor_launch_pid("local-warm",&key).unwrap(),0);
         let mut changed=spec.clone();changed.argv.push("-i".into());
         assert!(daemon.spawn(changed).is_err());
         assert!(daemon.close_executor("local-warm",&"e".repeat(64)).is_err());
@@ -2207,7 +2212,8 @@ mod tests {
         assert!(daemon.close_executor("executor-replace",&old).is_err());
         assert_eq!(daemon.executor_launch_pid("executor-replace",&new).unwrap(),pid);
         assert_eq!(daemon.executor_launch_pid("executor-replace",&old).unwrap(),0);
-        assert!(Daemon::new().executor_launch_pid("executor-replace",&new).is_err());
+        // A restarted daemon holds no child for either key: trusted absence.
+        assert_eq!(Daemon::new().executor_launch_pid("executor-replace",&new).unwrap(),0);
         daemon.shutdown();
     }
     #[test]
@@ -2224,12 +2230,13 @@ mod tests {
     }
     #[test]
     #[cfg(unix)]
-    fn executor_failed_launch_and_duplicate_reserved_env_stay_uncertain() {
+    fn executor_failed_launch_reports_absence_and_duplicate_reserved_env_rejects() {
         let daemon=Daemon::new();let key="e".repeat(64);
         let spec=executor_spec("executor-failed","/nonexistent/heimdall-executor-probe",&key);
         assert!(daemon.spawn(spec.clone()).is_err());
         assert!(daemon.spawn(spec).is_err());
-        assert!(daemon.executor_launch_pid("executor-failed",&key).is_err());
+        // A failed spawn never produced a child: trusted absence releases the journal row.
+        assert_eq!(daemon.executor_launch_pid("executor-failed",&key).unwrap(),0);
         assert!(daemon.close_executor("executor-failed",&key).is_err());
         let mut duplicate=executor_spec("executor-duplicate","/nonexistent",&"f".repeat(64));
         duplicate.env.push((EXECUTOR_LAUNCH_KEY.into(),"f".repeat(64)));

@@ -188,18 +188,19 @@ bridge_executor_real_daemon_ledger_dispatch_and_stale_stop :: proc(t:^testing.T)
     ready=false
     for _ in 0..<100 {if bridge_pty_host_ping(socket) {ready=true;break};time.sleep(10*time.Millisecond)}
     if !testing.expect(t,ready) do return
-    _,known_after_loss:=bridge_pty_host_executor_query(socket,"instance",crash.launch_key)
-    testing.expect(t,!known_after_loss,"new daemon cannot attest old key absence")
+    // The restarted daemon holds no child for the old key: the crashed child
+    // died with it (killed above), so the query is a trusted exact absence and
+    // the stop releases the charge instead of leaving the journal stuck.
+    lost_pid,known_after_loss:=bridge_pty_host_executor_query(socket,"instance",crash.launch_key)
+    testing.expect(t,known_after_loss && lost_pid==0,"new daemon reports trusted absence for a key it never spawned")
     testing.expect(t,executor.expire(&s,base+12000))
     crash_stop,_:=executor.take_intent(&s,base+12000);io_now=base+12000
     delivered,reason=bridge_executor_dispatch(&s,crash_stop,base+12000,socket,{},nil,nil,&io_now,bridge_executor_test_clock)
-    testing.expect(t,!delivered && reason=="executor_uncertain")
+    testing.expect(t,delivered && reason=="child_absent",reason)
     cursor,reconciled=bridge_executor_reconcile_batch(&s,base+12000,socket,"",&io_now,bridge_executor_test_clock)
-    testing.expect(t,reconciled && cursor=="crash","unknown daemon results advance the bounded sweep without releasing charge")
-    cursor,reconciled=bridge_executor_reconcile_batch(&s,base+12000,socket,cursor,&io_now,bridge_executor_test_clock)
-    testing.expect(t,reconciled && cursor=="","completed sweep wraps to revisit unresolved exact children")
+    testing.expect(t,reconciled && cursor=="","no unresolved exact children remain after daemon loss")
     rows,ok=executor.query(s.db,"SELECT count(*) FROM executor_reservations WHERE state!='released'")
-    testing.expect(t,ok && rows[0][0]=="1","daemon loss never silently frees unknown resources")
+    testing.expect(t,ok && rows[0][0]=="0","daemon loss releases the absent child's charge")
 }
 
 Bridge_Executor_Late_Proof :: struct {proof:executor.Current_Owner_Fence,clock:^i64,later:i64}

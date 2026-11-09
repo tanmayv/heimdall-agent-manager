@@ -21,7 +21,6 @@ import push_service "odin_test:hub/service/push"
 import provider_service "odin_test:hub/service/provider"
 import card_service "odin_test:hub/service/card"
 import "core:encoding/json"
-import jsonx "odin_test:lib/jsonx"
 
 Agent_Action_Handlers :: struct {
 	auth: ^auth_service.Auth_Service,
@@ -758,21 +757,24 @@ agent_action_start_success_handler :: proc(ctx: rawptr, req: Request) -> Respons
 	h := (^Agent_Action_Handlers)(ctx)
 	// Authenticate after serialization so a queued request is rechecked against
 	// the current launch assertion. Duplicate retries must not rerun ready hooks.
+	// start_success is a lenient indicator: a valid instance token is sufficient,
+	// so a stale or missing run_count and an inactive status never 409.
 	sync.mutex_lock(&agent_start_success_mutex)
 	defer sync.mutex_unlock(&agent_start_success_mutex)
 	auth, current, ok, resp := require_instance_action_auth(h, req)
 	if !ok do return resp
-	params := json_object_raw(req.body, "params")
-	expected, has_generation := jsonx.extract_int_found(params, "run_count")
-	// Legacy/initial runs have no prior generation to confuse with this one.
-	// Relaunches require the fence: omission must not bypass a stale-run check.
-	if expected < 0 || (expected > 0 && expected != current.run_count) || ((!has_generation || expected == 0) && current.run_count > 1) {
-		return respond_error(domain.domain_error(.Conflict, "Startup generation is missing or stale. Update the bridge with the hub, then relaunch this agent."), req.request_id)
-	}
 	if current.kind != "provider_test" {
 		note, exists, read_err := content_service.get_agent_startup_message(h.content, auth, current)
 		if read_err.code != .None && read_err.code != .Not_Found do return respond_error(read_err, req.request_id)
 		if exists {
+			// This generation's ready hooks already ran. If the instance was
+			// since marked inactive, record readiness again without rerunning them.
+			if !agent_service.instance_start_success_is_noop(current) {
+				revived, changed, revived_ok, revive_err := agent_service.mark_instance_start_success(h.agents, auth, fire_hooks = false)
+				if !revived_ok do return respond_error(revive_err, req.request_id)
+				if changed do publish_instance_changed(h.event_bus, revived, "status_changed")
+				current = revived
+			}
 			b := strings.builder_make()
 			strings.write_string(&b, "{\"instance\":"); write_agent_instance_json(&b, current)
 			strings.write_string(&b, ",\"startup_message\":"); write_message_json(&b, note, h.content)
@@ -780,8 +782,13 @@ agent_action_start_success_handler :: proc(ctx: rawptr, req: Request) -> Respons
 			return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 		}
 	}
-	inst, saved, err := agent_service.mark_instance_start_success(h.agents, auth, current.run_count)
+	inst, changed, saved, err := agent_service.mark_instance_start_success(h.agents, auth)
 	if !saved do return respond_error(err, req.request_id)
+	if !changed {
+		// Already running/ready: acknowledge without rerunning ready hooks.
+		b := strings.builder_make(); strings.write_string(&b, "{\"instance\":"); write_agent_instance_json(&b, inst); strings.write_byte(&b, '}')
+		return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+	}
 	// running/ready was written: tell the owner's UI, and let an in-flight
 	// reconfiguration observe readiness now rather than on the next reaper pass.
 	publish_instance_changed(h.event_bus, inst, "status_changed")

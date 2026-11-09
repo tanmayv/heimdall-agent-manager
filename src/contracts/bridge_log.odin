@@ -178,6 +178,9 @@ Bridge_Log_Sym :: enum u8 {
 	launch_agent, wake_agent, shell_start, shell_restart, agent_pty_input, provider_test, bridge_update,
 	// stage (appended: values above keep their numbers)
 	windows_credential_manager,
+	// reason (appended): the local executor journal is reconciling or a daemon
+	// observation was not yet conclusive; launches resume once recovery is ready.
+	executor_recovery,
 }
 
 BRIDGE_LOG_SYM_NAMES :: [Bridge_Log_Sym]string{
@@ -215,6 +218,7 @@ BRIDGE_LOG_SYM_NAMES :: [Bridge_Log_Sym]string{
 	.linux_keyring    = "linux_keyring",
 	.macos_keychain   = "macos_keychain",
 	.windows_credential_manager = "windows_credential_manager",
+	.executor_recovery = "executor_recovery",
 	.sqlite           = "sqlite",
 	.eof              = "eof",
 	.timeout          = "timeout",

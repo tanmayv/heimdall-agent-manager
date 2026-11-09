@@ -11,7 +11,8 @@ import vault "odin_test:lib/vault"
 bridge_executor_local_reconcile_after:string
 
 // Bounded safety work only: there is no launch or owner-task mutation here.
-// Unknown daemon results retain the device charge and are revisited next sweep.
+// A daemon that holds no child for a key reports trusted absence and releases
+// the charge; unreachable daemon results retain it and are revisited next sweep.
 // The caller holds bridge_executor_mutex; only exact local daemon I/O runs here.
 bridge_executor_reconcile_batch :: proc(s:^executor.Store,now:i64,socket,after:string,
     clock_ctx:rawptr=nil,clock:Executor_Now=bridge_executor_physical_clock)->(next:string,ok:bool) {
@@ -38,6 +39,11 @@ bridge_executor_reconcile_once :: proc(after:string)->(string,bool) {
     public:=bridge_identity_public_key_hex(bridge_config.daemon_id)
     key,valid:=vault.device_id_from_sign_pub(public,context.temp_allocator)
     if !valid || account=="" do return after,false
+    // Bring the pty-host daemon up first (outside the executor lock: it may
+    // spawn). Without it every exact query is unknown and recovery after a
+    // Bridge or daemon restart never reaches ready. A down daemon still lets
+    // expiry run; its queries stay uncertain and are revisited next sweep.
+    _,_=bridge_pty_host_ensure_daemon()
     sync.mutex_lock(&bridge_executor_mutex);defer sync.mutex_unlock(&bridge_executor_mutex)
     if !bridge_executor_open(account,key) do return after,false
     socket:=pty_host_socket_path();defer delete(socket)

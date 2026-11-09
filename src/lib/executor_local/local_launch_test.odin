@@ -299,3 +299,32 @@ executor_local_native_admission_failed_commit_leaves_draft_pending :: proc(t:^te
     testing.expect(t,exec(f.store.db,"DROP TRIGGER admit_commit_fault_trigger"))
     testing.expect_value(t,local_admit(f,d,r).code,"ok")
 }
+
+// A daemon that lost its launch table (or recorded a failed spawn) reports
+// trusted exact absence. That alone releases the dispatched row and completes
+// recovery, so launches resume instead of failing recovery_required forever.
+@(test)
+executor_local_absent_observation_after_restart_completes_recovery :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=fixture(t);defer destroy(f)
+    d,_,r:=local_inputs(t,f)
+    launch:=local_snapshot(t,f,local_admit(f,d,r))
+    testing.expect(t,local_begin_dispatch(&f.store,launch,1100,r))
+    close(&f.store)
+    if !testing.expect(t,open(&f.store,f.path,"account","executor","operator")) do return
+    testing.expect(t,!complete_recovery(&f.store,9000),"a dispatched row keeps the journal reconciling")
+    c:=document("local_configuration");set(c,"executor_incarnation","2")
+    blocked,code:=stage_local_draft(&f.store,contracts.owner_payload_digest("blocked-generation"),encode(c),"{}")
+    testing.expect_value(t,code,"ok")
+    testing.expect_value(t,local_admit(f,blocked,local_resources(c),9000).code,"recovery_required")
+    recovered,found:=local_launch(&f.store,launch.id);testing.expect(t,found)
+    testing.expect(t,observe_local_child(&f.store,recovered,Child_Observation{launch.instance,launch.launch_key,2,false}))
+    testing.expect_value(t,local_live(f),"0")
+    testing.expect(t,complete_recovery(&f.store,9000))
+    rows,_:=query(f.store.db,"SELECT recovery_state FROM executor_runtime")
+    testing.expect_value(t,rows[0][0],"ready")
+    next,next_code:=stage_local_draft(&f.store,contracts.owner_payload_digest("after-recovery"),encode(c),"{}")
+    testing.expect_value(t,next_code,"ok")
+    fresh:=local_snapshot(t,f,local_admit(f,next,local_resources(c),9000))
+    testing.expect(t,local_begin_dispatch(&f.store,fresh,9100,local_resources(c)))
+}

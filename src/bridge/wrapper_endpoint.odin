@@ -474,15 +474,21 @@ bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec
 		return bridge_local_response_data(request_id, relay.body)
 	}
 	if method == "agent.start_success" {
+		// start_success is an indicator: never a failure the agent must handle.
+		// Relay problems are logged and retried in the background.
 		accepted, newly_ready := bridge_startup_accept(rec, bridge_runtime_now_ms())
-		if !accepted do return bridge_local_response_error(request_id, "stale_launch", "Startup signal does not belong to an active launch")
+		if !accepted {
+			fmt.eprintln("bridge start_success ignored for", rec.agent_instance_id, "— not an active launch on this bridge")
+			return bridge_local_response_data(request_id, `{"accepted":false,"reconcile":"Skipped","attempts":0}`)
+		}
 		if newly_ready do bridge_rollover_on_start_success(rec.agent_instance_id)
 		bridge_startup_worker_ensure_started()
 		key := bridge_startup_receipt_key(rec)
         defer delete(key)
         budget := bridge_retry_status(key)
-        if budget.state == .Waiting_Repair || budget.state == .Exhausted || budget.state == .Cancelled {
-            return bridge_local_response_error(request_id, "startup_reconciliation_stopped", fmt.tprintf("Startup reconciliation %v after %d attempts (code=%v class=%v)", budget.state, budget.attempts, budget.code, budget.class))
+        if (budget.state == .Waiting_Repair || budget.state == .Exhausted) && bridge_startup_relay_rearm(rec, 0, 0) {
+            bridge_startup_worker_ensure_started()
+            budget = bridge_retry_status(key)
         }
         return bridge_local_response_data(request_id, fmt.tprintf("{{\"accepted\":true,\"reconcile\":\"%v\",\"attempts\":%d}}", budget.state, budget.attempts))
 	}

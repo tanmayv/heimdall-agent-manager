@@ -236,6 +236,24 @@ bridge_retry_reopen_retriable :: proc(key: string) -> bool {
     return true
 }
 
+// bridge_retry_rearm_startup_relay gives a start_success relay receipt that
+// ended Waiting_Repair or Exhausted a fresh budget. start_success is an
+// indicator, so its relay is retried in the background and never parked.
+// Cancelled (stopped) and Succeeded receipts are left alone.
+bridge_retry_rearm_startup_relay :: proc(key: string) -> bool {
+    if !strings.has_prefix(key, "ready:") || !strings.has_suffix(key, ":relay") do return false
+    sync.mutex_lock(&bridge_retry_journal_mutex)
+    defer sync.mutex_unlock(&bridge_retry_journal_mutex)
+    b := bridge_retry_journal_get_locked(key)
+    if b == nil || !(b.state == .Waiting_Repair || b.state == .Exhausted) do return false
+    identity := bridge_local_hash_token(key)
+    fmt.eprintfln("STARTUP_RELAY_REARM identity=%s state=%v attempts=%d code=%v class=%v", identity, b.state, b.attempts, b.code, b.class)
+    delete(identity)
+    b^ = {}
+    if !bridge_retry_journal_flush_locked() { b.state = .Waiting_Repair; return false }
+    return true
+}
+
 bridge_retry_record_target :: proc(key, target: string) -> bool {
     sync.mutex_lock(&bridge_retry_journal_mutex)
     defer sync.mutex_unlock(&bridge_retry_journal_mutex)

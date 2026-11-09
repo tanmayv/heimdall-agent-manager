@@ -223,13 +223,24 @@ bridge_executor_local_recoverable :: proc()->Bridge_Error {
     return e
 }
 
+// The executor journal is reconciling (recovery_required) or the daemon could
+// not yet attest an exact child (executor_uncertain). The Bridge's reconcile
+// sweep resolves both on its own within seconds, so this is a bounded,
+// recoverable wait on the same generation, never a fresh relaunch.
+bridge_executor_local_recovering :: proc()->Bridge_Error {
+    e:=bridge_error(.agent_launch_failed,.executor_recovery,retry_after_ms=5_000)
+    e.class=.recoverable
+    return e
+}
+
 // Maps a launch outcome code to the reported detail and typed error class.
-// Transient conditions (a still-live previous child, an unreachable or
-// uncertain daemon) are retriable; generation-level refusals are fatal.
+// Transient conditions (a still-live previous child) are retriable; executor
+// recovery is recoverable; generation-level refusals are fatal.
 bridge_executor_local_failure :: proc(code:string)->(string,Bridge_Error) {
     switch code {
     case "vault_locked": return "unlock the execution device",bridge_error(.agent_launch_failed,.denied)
-    case "instance_not_drained","executor_uncertain","child_absent","startup_identity_not_current","observation_not_committed","local_admission_not_current":
+    case "recovery_required","executor_uncertain": return code,bridge_executor_local_recovering()
+    case "instance_not_drained","child_absent","startup_identity_not_current","observation_not_committed","local_admission_not_current":
         return code,bridge_error(.agent_launch_failed,.other,retry_after_ms=5_000)
     // A digest of the staged generation no longer matches: a real change.
     case "resources_changed","invalid_resources": return "provider profile or project directory changed; relaunch",bridge_executor_local_refusal()
