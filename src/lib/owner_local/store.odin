@@ -344,7 +344,8 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         if code!="ok" do return fail(code)
         wrote=true
     case "review.roles":
-        code:=role_configure(s,c,body,role_children,seq,device,agent_mode,agent)
+        code:string
+        code,control_extra=role_configure(s,c,body,role_children,seq,device,agent_mode,agent)
         if code!="ok" do return fail(code)
         wrote=true
     case "chain.create":
@@ -440,7 +441,8 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         if !device do return fail("invalid_scope")
         _,wrote=query(s.db,"INSERT INTO local_chain_policies VALUES(?,?,?,?,?,?)",chain,field(p,"policy"),field(p,"value"),fmt.tprintf("%d",seq),principal,op)
     case "lifecycle.configure", "requirements.edit", "review.post":
-        code:=lifecycle_human(s,c,p,body,command_raw,payload,lifecycle_proof,device)
+        code:string
+        code,control_extra=lifecycle_human(s,c,p,body,command_raw,payload,lifecycle_proof,device)
         if code!="ok" do return fail(code)
         if method=="lifecycle.configure" || method=="requirements.edit" {
             if _,ok=query(s.db,"UPDATE local_controls SET resume_state='ready' WHERE chain_id=? AND task_id=?",chain,task);!ok do return fail("storage_error")
@@ -481,6 +483,16 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     if !source_lifecycle(&tx,c,p,seq,now) do return fail("storage_error")
     if !control_intents(&tx,c,seq) do return fail("storage_error")
     if method=="review.post" && !lifecycle_merge_intent(&tx,c,p,seq) do return fail("storage_error")
+    if method=="requirements.edit" {
+        // Clearing the user gate may settle the submitted attempt: bind the
+        // merge to that immutable submission under the current requirements.
+        submitted,read:=query(s.db,"SELECT attempt,head FROM local_submissions WHERE chain_id=? AND task_id=? ORDER BY attempt DESC LIMIT 1",chain,task)
+        if !read do return fail("storage_error")
+        if len(submitted)==1 {
+            bound:=doc(map[string]string{"attempt"=submitted[0][0],"head"=submitted[0][1],"requirements_revision"=field(p,"requirements_revision")})
+            if !lifecycle_merge_intent(&tx,c,bound,seq) do return fail("storage_error")
+        }
+    }
     if method=="task.release" || method=="task.recheck" || method=="task.complete" {
         // A release (or recheck) may settle verdicts recorded under the hold. Bind a new
         // merge intent to that immutable submission, never to release input.

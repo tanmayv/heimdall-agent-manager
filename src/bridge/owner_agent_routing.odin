@@ -726,14 +726,17 @@ Owner_Task_Plan :: struct {
     deps:[dynamic]string,
     assignee,reviewer:string,
     has_assignee,has_reviewer:bool,
-    // --require-user-approval: agents may add the flag (it lives in the brief)
-    // but never remove it; only the user's device can (R2-1 ratchet).
+    // --require-user-approval / --no-require-user-approval: the coordinator
+    // may add or remove the flag (it lives in the brief); a removal needs
+    // --reason, recorded with the requirements revision for the audit.
     has_approval,approval:bool,
+    reason:string,
 }
 bridge_owner_task_plan :: proc(ctx:^Owner_Agent_Ctx,p:json.Object,updating:bool) -> (Owner_Task_Plan,string) {
     plan:Owner_Task_Plan
     plan.deps=make([dynamic]string,context.temp_allocator)
-    for pair in ([3][2]string{{"requirements_reason","--reason"},{"request_id","--request-id"},{"notify","--notify"}}) {
+    plan.reason=strings.trim_space(bridge_owner_plain(ctx,bridge_owner_pstr(p,"requirements_reason")))
+    for pair in ([2][2]string{{"request_id","--request-id"},{"notify","--notify"}}) {
         if u:=bridge_owner_unsupported(ctx,p,pair[0],pair[1]);u!="" do return {},u
     }
     if b,present:=p["requires_user_approval"];present && b!=nil {
@@ -956,7 +959,7 @@ bridge_owner_task_create :: proc(ctx:^Owner_Agent_Ctx,p:json.Object) -> string {
     if r.code!="ok" do return bridge_owner_fail(ctx,r.code,"owner task create refused")
     if brief:=bridge_owner_brief_text(ctx,p);brief!="" {
         if plan.approval do brief=bridge_owner_brief_with_approval(brief)
-        if code,message:=bridge_owner_requirements(ctx,chain,task,brief,"",true);code!="ok" do return bridge_owner_fail(ctx,code,fmt.tprintf("task %s created; requirements refused%s",task,message))
+        if code,message:=bridge_owner_requirements(ctx,chain,task,brief,"",true,plan.reason);code!="ok" do return bridge_owner_fail(ctx,code,fmt.tprintf("task %s created; requirements refused%s",task,message))
     }
     if code,message:=bridge_owner_apply_plan(ctx,chain,task,plan,assignee,pre);code!="ok" do return bridge_owner_fail(ctx,code,fmt.tprintf("task %s created; %s",task,message))
     out:=bridge_owner_result_object(r.body)
@@ -983,30 +986,42 @@ bridge_owner_brief_approval :: proc(brief:string) -> (value:bool,present:bool) {
     b,is_bool:=flag.(json.Boolean)
     return is_bool && bool(b),true
 }
-BRIDGE_OWNER_RATCHET_MESSAGE :: ": requires_user_approval can be added by an agent but only removed by the user (device-signed requirements edit)"
+BRIDGE_OWNER_CLEAR_REASON_MESSAGE :: ": clearing requires_user_approval needs --reason (recorded in the audit)"
+
+// The brief with the requirements revision reason set (or a stale one dropped).
+bridge_owner_brief_with_reason :: proc(brief,reason:string) -> string {
+    v,ok:=contracts.owner_content_document(brief)
+    o,obj:=v.(json.Object)
+    if !ok || !obj do return brief
+    delete_key(&o,"requirements_reason")
+    if reason!="" do o["requirements_reason"]=json.String(reason)
+    return bridge_owner_json(o)
+}
 
 // requirements.edit with the next revision. Without --replace-brief the new
-// keys merge over the current brief, as on the Hub. The user-approval ratchet
-// (owner lifecycle_human) refuses an agent removal; a replacement brief that
-// merely omits the flag keeps it.
-bridge_owner_requirements :: proc(ctx:^Owner_Agent_Ctx,chain,task,brief,expected:string,replace:bool) -> (string,string) {
+// keys merge over the current brief, as on the Hub. A replacement brief that
+// merely omits requires_user_approval keeps it; only an explicit false (with
+// a reason) clears it, which re-evaluates the review gate on the owner.
+bridge_owner_requirements :: proc(ctx:^Owner_Agent_Ctx,chain,task,brief,expected:string,replace:bool,reason:="") -> (string,string) {
     st,ok:=bridge_owner_reload(ctx,chain,task)
     if !ok do return "not_found",""
     if expected!="" && expected!=st.requirements_revision do return "stale_revision",""
     body:=brief
     current,_:=bridge_owner_brief_approval(st.brief)
     next,explicit:=bridge_owner_brief_approval(brief)
-    if current && explicit && !next do return "invalid_scope",BRIDGE_OWNER_RATCHET_MESSAGE
+    if current && explicit && !next && reason=="" do return "bad_request",BRIDGE_OWNER_CLEAR_REASON_MESSAGE
     if current && !explicit do body=bridge_owner_brief_with_approval(body)
     if !replace && st.brief!="" {
         old,old_ok:=contracts.owner_content_document(st.brief)
-        new,new_ok:=contracts.owner_content_document(brief)
+        new,new_ok:=contracts.owner_content_document(body)
         o,o_obj:=old.(json.Object);n,n_obj:=new.(json.Object)
         if old_ok && new_ok && o_obj && n_obj {
             for k,v in n do o[k]=v
             body=bridge_owner_json(o)
         }
     }
+    // The reason belongs to this revision only, never carried forward.
+    body=bridge_owner_brief_with_reason(body,reason)
     revision,_:=strconv.parse_i64(st.requirements_revision)
     sealed,sealed_ok:=bridge_owner_cipher(ctx,body)
     if !sealed_ok do return "vault_locked",""
@@ -1029,12 +1044,20 @@ bridge_owner_task_update :: proc(ctx:^Owner_Agent_Ctx,p:json.Object) -> string {
     brief:=bridge_owner_brief_text(ctx,p)
     if plan.has_approval {
         current,_:=bridge_owner_brief_approval(st.brief)
-        if current && !plan.approval do return bridge_owner_fail(ctx,"invalid_scope",fmt.tprintf("task unchanged%s",BRIDGE_OWNER_RATCHET_MESSAGE))
+        if current && !plan.approval {
+            if plan.reason=="" do return bridge_owner_fail(ctx,"bad_request",fmt.tprintf("task unchanged%s",BRIDGE_OWNER_CLEAR_REASON_MESSAGE))
+            v,parsed:=contracts.owner_content_document(brief if brief!="" else "{}")
+            o,obj:=v.(json.Object)
+            if !parsed || !obj do return bridge_owner_fail(ctx,"bad_request","the brief must be a JSON object; task unchanged")
+            o["requires_user_approval"]=json.Boolean(false)
+            brief=bridge_owner_json(o)
+        }
         if plan.approval && !current {
             if brief=="" && st.brief=="" do return bridge_owner_fail(ctx,"bad_request","--require-user-approval on an owner-held chain needs a brief (--goal and --acceptance); task unchanged")
             brief=bridge_owner_brief_with_approval(brief if brief!="" else "{}")
         }
     }
+    if plan.reason!="" && brief=="" do return bridge_owner_fail(ctx,"bad_request","--reason applies to a requirements edit (brief flags or --no-require-user-approval); task unchanged")
     if title=="" && description=="" && brief=="" && plan.priority=="" && !plan.has_deps && !plan.has_assignee && !plan.has_reviewer && !plan.has_approval {
         return bridge_owner_fail(ctx,"bad_request","task update needs at least one field to change")
     }
@@ -1055,7 +1078,7 @@ bridge_owner_task_update :: proc(ctx:^Owner_Agent_Ctx,p:json.Object) -> string {
     if brief!="" {
         replace:=false
         if b,typed:=p["replace_brief"].(json.Boolean);typed do replace=bool(b)
-        if code,message:=bridge_owner_requirements(ctx,st.chain_id,st.task_id,brief,bridge_owner_pstr(p,"expected_requirements_revision"),replace);code!="ok" do return bridge_owner_fail(ctx,code,fmt.tprintf("owner requirements edit refused%s",message))
+        if code,message:=bridge_owner_requirements(ctx,st.chain_id,st.task_id,brief,bridge_owner_pstr(p,"expected_requirements_revision"),replace,plan.reason);code!="ok" do return bridge_owner_fail(ctx,code,fmt.tprintf("owner requirements edit refused%s",message))
     }
     if code,message:=bridge_owner_apply_plan(ctx,st.chain_id,st.task_id,plan,assignee,pre);code!="ok" do return bridge_owner_fail(ctx,code,message)
     final,ok:=bridge_owner_reload(ctx,st.chain_id,st.task_id)

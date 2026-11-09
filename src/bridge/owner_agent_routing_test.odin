@@ -376,3 +376,21 @@ test_owner_coordinator_work_operations_require_reasons_and_valid_children :: pro
     }
     testing.expect(t,bridge_owner_pstr(o,"reason")=="why" && bridge_owner_pstr(o,"dependents")=="last")
 }
+
+@(test)
+test_owner_brief_reason_is_per_revision_and_flag_explicit :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    // A reason replaces any carried-over one; no reason drops a stale one.
+    with:=bridge_owner_brief_with_reason(`{"goal":"g","acceptance":["a"],"requirements_reason":"old"}`,"new")
+    v,_:=json.parse_string(with,.JSON,true,context.temp_allocator)
+    testing.expect_value(t,v.(json.Object)["requirements_reason"].(json.String),"new")
+    without:=bridge_owner_brief_with_reason(`{"goal":"g","acceptance":["a"],"requirements_reason":"old"}`,"")
+    testing.expect(t,!strings.contains(without,"requirements_reason"),without)
+    // The flag is read as explicit true/false or absent.
+    on,present:=bridge_owner_brief_approval(`{"goal":"g","requires_user_approval":true}`)
+    testing.expect(t,on && present)
+    on,present=bridge_owner_brief_approval(`{"goal":"g","requires_user_approval":false}`)
+    testing.expect(t,!on && present)
+    on,present=bridge_owner_brief_approval(`{"goal":"g"}`)
+    testing.expect(t,!on && !present)
+}

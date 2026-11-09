@@ -31,51 +31,71 @@ brief_valid :: proc(raw:string) -> bool {
     for a in acceptance { text,valid:=a.(json.String);if !valid || strings.trim_space(string(text))=="" do return false }
     return true
 }
-// device: the command was signed by a device key for itself (the user). An
-// agent principal may add requires_user_approval but never remove it.
-lifecycle_human :: proc(s:^Store,c,p:json.Object,body,raw,payload:string,proof:Lifecycle_Proof,device:bool) -> string {
+// device: the command was signed by a device key for itself (the user). The
+// user or the verified chain coordinator (agent_authority admits
+// requirements.edit for the coordinator only) may add or remove
+// requires_user_approval; a change is audited in the returned extra.
+lifecycle_human :: proc(s:^Store,c,p:json.Object,body,raw,payload:string,proof:Lifecycle_Proof,device:bool) -> (string,json.Object) {
     chain,task,method:=field(c,"chain_id"),field(c,"task_id"),field(c,"method")
+    extra:json.Object
     switch method {
     case "lifecycle.configure":
-        // Ratchet: the lifecycle payload carries no requires_user_approval and
-        // a new configuration never touches the brief or role configuration,
-        // so it cannot remove a user gate (lifecycle_configure_keeps_user_gate).
+        // The lifecycle payload carries no requires_user_approval and a new
+        // configuration never touches the brief or role configuration, so it
+        // never changes a user gate (lifecycle_configure_keeps_user_gate).
         if !directory_config_authorized(s,chain,p) || !member_authorized(s,chain,proof.author) || !member_authorized(s,chain,proof.reviewer) || !proof.paths_valid || proof.author.agent_id!=field(p,"author_agent_id") ||
            proof.reviewer.agent_id!=field(p,"reviewer_agent_id") || proof.author.agent_id==proof.reviewer.agent_id ||
            proof.reviewer.instance!=field(p,"reviewer_instance_id") || proof.author.instance==proof.reviewer.instance ||
-           proof.author.epoch=="" || proof.reviewer.epoch=="" { return "invalid_scope" }
+           proof.author.epoch=="" || proof.reviewer.epoch=="" { return "invalid_scope",nil }
         previous,read:=query(s.db,"SELECT revision FROM lifecycle_configs WHERE chain_id=? AND task_id=? ORDER BY revision DESC LIMIT 1",chain,task)
-        if !read do return "storage_error"
-        if len(previous)>0 && number(previous[0][0])>=number(field(p,"configuration_revision")) do return "stale_revision"
+        if !read do return "storage_error",nil
+        if len(previous)>0 && number(previous[0][0])>=number(field(p,"configuration_revision")) do return "stale_revision",nil
         states,looked:=query(s.db,"SELECT state FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)
-        if !looked do return "storage_error"
-        if len(states)>0 && states[0][0]!="ready" && states[0][0]!="in_review" do return "operation_conflict"
+        if !looked do return "storage_error",nil
+        if len(states)>0 && states[0][0]!="ready" && states[0][0]!="in_review" do return "operation_conflict",nil
         fleet,found:=query(s.db,"SELECT instance_id,launch_epoch,run_count,token_generation,enabled FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task)
         if !found || len(fleet)!=1 || fleet[0][0]!=proof.author.instance || fleet[0][1]!=proof.author.epoch ||
-           number(fleet[0][2])!=proof.author.run_count || fleet[0][3]!=proof.author.token_generation || fleet[0][4]!="1" {return "invalid_scope"}
-        if _,ok:=query(s.db,"INSERT INTO lifecycle_configs VALUES(?,?,?,?,?,?,?,?,?)",chain,task,field(p,"configuration_revision"),payload,raw,field(c,"principal_id"),field(c,"operation_id"),encode(proof.author),encode(proof.reviewer));!ok do return "storage_error"
-        if _,ok:=query(s.db,"INSERT OR IGNORE INTO lifecycle_state(chain_id,task_id,state) VALUES(?,?,'ready')",chain,task);!ok do return "storage_error"
-        if _,ok:=query(s.db,"UPDATE lifecycle_state SET state='ready' WHERE chain_id=? AND task_id=?",chain,task);!ok do return "storage_error"
+           number(fleet[0][2])!=proof.author.run_count || fleet[0][3]!=proof.author.token_generation || fleet[0][4]!="1" {return "invalid_scope",nil}
+        if _,ok:=query(s.db,"INSERT INTO lifecycle_configs VALUES(?,?,?,?,?,?,?,?,?)",chain,task,field(p,"configuration_revision"),payload,raw,field(c,"principal_id"),field(c,"operation_id"),encode(proof.author),encode(proof.reviewer));!ok do return "storage_error",nil
+        if _,ok:=query(s.db,"INSERT OR IGNORE INTO lifecycle_state(chain_id,task_id,state) VALUES(?,?,'ready')",chain,task);!ok do return "storage_error",nil
+        if _,ok:=query(s.db,"UPDATE lifecycle_state SET state='ready' WHERE chain_id=? AND task_id=?",chain,task);!ok do return "storage_error",nil
     case "requirements.edit":
-        if !brief_valid(body) do return "invalid_content"
+        // requirements_reason is this revision's audit note, not brief content.
+        if !brief_valid(brief_without_reason(s,body)) do return "invalid_content",nil
         prior:i64
-        if r,ok:=lifecycle_requirements(s,chain,task);ok do prior=number(r[0])
-        if number(field(p,"requirements_revision"))!=prior+1 do return "stale_revision"
-        state,ok:=query(s.db,"SELECT state FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)
-        if !ok do return "storage_error"
-        if len(state)==1 && (state[0][0]=="merge_pending" || state[0][0]=="merge_blocked" || state[0][0]=="done") do return "operation_conflict"
-        prior_user,prior_read:=requirements_user_approval(s,chain,task)
-        if !prior_read do return "storage_error"
-        if !approval_ratchet_allows(prior_user,brief_user_approval(s,body),device) do return "invalid_scope"
-        if _,ok=query(s.db,"INSERT INTO task_requirements VALUES(?,?,?,?,?,?,?)",chain,task,field(p,"requirements_revision"),body,field(p,"body_cipher"),field(c,"principal_id"),field(c,"operation_id"));!ok do return "storage_error"
-        if code:=brief_inputs_pin(s,chain,task,field(p,"requirements_revision"),body);code!="ok" do return code
-        if _,ok=query(s.db,"UPDATE lifecycle_state SET state='ready' WHERE chain_id=? AND task_id=?",chain,task);!ok do return "storage_error"
+        prior_brief:=""
+        if r,ok:=lifecycle_requirements(s,chain,task);ok { prior=number(r[0]);prior_brief=r[1] }
+        if number(field(p,"requirements_revision"))!=prior+1 do return "stale_revision",nil
+        state,ok:=query(s.db,"SELECT state,attempt FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)
+        if !ok do return "storage_error",nil
+        if len(state)==1 && (state[0][0]=="merge_pending" || state[0][0]=="merge_blocked" || state[0][0]=="done") do return "operation_conflict",nil
+        prior_user,next_user:=brief_user_approval(s,prior_brief),brief_user_approval(s,body)
+        reason:=brief_requirements_reason(s,body)
+        // An agent (the coordinator) clearing the gate must say why (audit).
+        if prior_user && !next_user && !device && reason=="" do return "invalid_content",nil
+        if _,ok=query(s.db,"INSERT INTO task_requirements VALUES(?,?,?,?,?,?,?)",chain,task,field(p,"requirements_revision"),body,field(p,"body_cipher"),field(c,"principal_id"),field(c,"operation_id"));!ok do return "storage_error",nil
+        if code:=brief_inputs_pin(s,chain,task,field(p,"requirements_revision"),body);code!="ok" do return code,nil
+        next_state:="ready"
+        // Clearing only the gate of a submitted attempt re-evaluates its review
+        // gate without the brief's user requirement: an attempt already holding
+        // every other required approval advances. Otherwise, as for any
+        // requirements edit, the task returns to ready for a fresh submission.
+        if prior_user && !next_user && len(state)==1 && state[0][0]=="in_review" && brief_gate_only_change(prior_brief,body) {
+            gate,gate_ok:=role_gate(s,chain,task,state[0][1],true)
+            if !gate_ok do return "storage_error",nil
+            if gate!="in_review" do next_state=gate
+        }
+        if next_state!="ready" {
+            if _,ok=query(s.db,"DELETE FROM local_review_sessions WHERE chain_id=? AND task_id=?",chain,task);!ok do return "storage_error",nil
+        }
+        if _,ok=query(s.db,"UPDATE lifecycle_state SET state=? WHERE chain_id=? AND task_id=?",next_state,chain,task);!ok do return "storage_error",nil
+        if prior_user!=next_user do extra=user_approval_audit(c,prior_user,next_user,device,reason,next_state)
     case "review.post":
-        return lifecycle_review(s,c,p,"",true,device)
+        return lifecycle_review(s,c,p,"",true,device),nil
     }
     _,ok:=query(s.db,"UPDATE tasks SET revision=revision+1 WHERE chain_id=? AND task_id=?",chain,task)
-    if !ok do return "storage_error"
-    return "ok"
+    if !ok do return "storage_error",nil
+    return "ok",extra
 }
 
 // Verdicts always bind the immutable submission. Device approval is recorded

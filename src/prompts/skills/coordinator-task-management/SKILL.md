@@ -148,7 +148,7 @@ Rules: never hold a task just to postpone it, and never hold when the user's inp
 
 ## 6. Recording the user's verdict
 - Workflow gates with approver `user_or_coordinator`: your own `review post --verdict approve|request_changes` decides.
-- Tasks with `requires_user_approval` and gates with approver `user` need the user's OWN approval in Heimdall (attention deck / task review UI). The hub refuses a relayed approval (`403 user_approval_required`), ignores relayed rows at the gate, and refuses any agent attempt to clear `requires_user_approval` or move an approver off `user` (`403 user_approval_ratchet`; only the user can). When the user asks for changes in chat, you may still relay that:
+- Tasks with `requires_user_approval` and gates with approver `user` need the user's OWN approval in Heimdall (attention deck / task review UI). The hub refuses a relayed approval (`403 user_approval_required`), ignores relayed rows at the gate, and on Hub chains refuses any agent attempt to clear `requires_user_approval` or move an approver off `user` (`403 user_approval_ratchet`; only the user can). On Bridge-owned (owner-local) chains you, the chain coordinator, may add or remove the flag yourself (`task update <id> --no-require-user-approval --reason "<why>"`); the change is audited, and clearing it re-evaluates the review gate, so a task already holding every other approval completes. While the flag is on, only the user's own approval counts. When the user asks for changes in chat, you may still relay that:
   ```bash
   ./bin/ham-ctl review post <task-id> --verdict request_changes --on-behalf-of user \
     --summary "<the user's reason>"
@@ -170,8 +170,8 @@ Rules: never hold a task just to postpone it, and never hold when the user's inp
 ## 8. Solo mode
 The chain is solo when you are the Soloist or hold a worker fleet row yourself. Then:
 - You pull work with `lease next` (nothing is pushed), work it per `worker-task-management`, and `lease submit`. Lapsed leases are not counted as attempts.
-- New tasks do NOT default to `requires_user_approval`; a task with no review roles is done on submit. Add `--require-user-approval` when the user wants to review a task; they then review it from their attention deck. On Bridge-owned (owner-local) chains only the user can remove an explicit `requires_user_approval`; `--no-require-user-approval` from an agent is refused there.
-- You may post `review post --on-behalf-of user` for a task that does not require user approval; for one that does, only the user's own verdict counts (`403 solo_self_review`), and you cannot clear the flag yourself.
+- New tasks do NOT default to `requires_user_approval`; a task with no review roles is done on submit. Add `--require-user-approval` when the user wants to review a task; they then review it from their attention deck. On Bridge-owned (owner-local) chains the coordinator may also remove it with `--no-require-user-approval --reason "<why>"` (workers and reviewers cannot); on Hub chains only the user can.
+- You may post `review post --on-behalf-of user` for a task that does not require user approval; for one that does, only the user's own verdict counts (`403 solo_self_review`); on Hub chains you cannot clear the flag yourself.
 - `[taskv2] solo: task … is ready for you` means pull it with `lease next`.
 - Urgent request mid-task: create the task, then `lease switch <task_id> --summary "<where you left off>"`.
 

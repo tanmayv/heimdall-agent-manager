@@ -94,13 +94,13 @@ bridge_owner_control_refusal :: proc(owner_method,code:string) -> string {
         case "task.resolve","task.cancel","task.hold":
             return "refused: only the chain coordinator may do this, and a task escalated to a human is cleared only by the user from the Heimdall app"
         case "review.roles":
-            return "refused: only the chain coordinator may configure review roles, for agents already in this chain, and it may add but never remove a user-approval gate"
+            return "refused: only the chain coordinator may configure review roles, for agents already in this chain"
         case "task.delete":
             return "refused: only the chain coordinator may delete a task"
         case "lifecycle.force_submit":
             return "refused: only the chain coordinator may submit for review, and the worktree head must be clean and descend from the base"
         case "task.split":
-            return "refused: only the chain coordinator may split; an agent cannot drop the original's user-approval gate on a child, assign agents outside this chain, or split a task escalated to a human"
+            return "refused: only the chain coordinator may split; an agent cannot assign agents outside this chain, or split a task escalated to a human"
         }
         return "refused: only the verified chain coordinator may use this control"
     case "operation_conflict":
@@ -241,7 +241,8 @@ bridge_owner_control :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -
 
 // review.roles for a coordinator: pairs [{role, agent_id[, instance_id]}];
 // each agent must already be a running participant of this chain. The flag
-// defaults to the current one (agents may add it, never remove it).
+// defaults to the current one; the coordinator may add or remove it (audited
+// in the owner result).
 bridge_owner_review_roles_body :: proc(ctx:^Owner_Agent_Ctx,st:owner.Agent_Task_State,p:json.Object,children:^[dynamic]owner.Child) -> (string,string,string) {
     s:=ctx.store
     list,is_list:=p["pairs"].(json.Array)

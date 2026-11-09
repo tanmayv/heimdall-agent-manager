@@ -2,12 +2,14 @@
 package owner_local
 
 import "core:encoding/json"
+import "core:fmt"
 import "core:strings"
 import "core:testing"
 import contracts "odin_test:contracts"
 
-// R2-1/R3-1: only a device-signed review is the user; an agent principal may
-// add requires_user_approval but never remove it.
+// R2-1/R3-1: only a device-signed review is the user. The user or the
+// verified chain coordinator may add or remove requires_user_approval (audited;
+// clearing re-evaluates the review gate); workers and reviewers may not.
 
 USER_GATE_BRIEF :: `{"goal":"Complete scoped work","acceptance":["Tests pass"],"requires_user_approval":true}`
 
@@ -72,49 +74,134 @@ user_gate_agent_request_changes_still_returns_the_task :: proc(t:^testing.T) {
     testing.expect_value(t,user_gate_state(f),"ready")
 }
 
-@(test)
-user_gate_requirements_ratchet_agents_add_only :: proc(t:^testing.T) {
-    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
-    f:=fixture(t);defer destroy(f);user_gate_seed(t,f)
-    coord:=agent_coordinator_child();agent_seat_coordinator(t,f,coord)
-    // An agent cannot drop the flag, by omission or explicitly.
-    testing.expect_value(t,user_gate_requirements(f,coord,"drop","2",`{"goal":"g","acceptance":["a"]}`).code,"invalid_scope")
-    testing.expect_value(t,user_gate_requirements(f,coord,"unset","2",`{"goal":"g","acceptance":["a"],"requires_user_approval":false}`).code,"invalid_scope")
-    required,ok:=task_user_approval_required(&f.store,"chain","task")
-    testing.expect(t,ok && required,"a refused agent edit leaves the gate in place")
-    // Keeping it is an ordinary edit.
-    testing.expect_value(t,user_gate_requirements(f,coord,"keep","2",`{"goal":"g2","acceptance":["a"],"requires_user_approval":true}`).code,"ok")
-    // The user's device may remove it.
-    testing.expect_value(t,user_gate_requirements(f,{},"device_unset","3",`{"goal":"g3","acceptance":["a"]}`).code,"ok")
-    required,ok=task_user_approval_required(&f.store,"chain","task")
-    testing.expect(t,ok && !required,"a device edit removes the gate")
-    // An agent may add it back.
-    testing.expect_value(t,user_gate_requirements(f,coord,"add","4",USER_GATE_BRIEF).code,"ok")
-    required,ok=task_user_approval_required(&f.store,"chain","task")
-    testing.expect(t,ok && required,"an agent adds the gate")
+USER_GATE_CLEARED :: `{"goal":"Complete scoped work","acceptance":["Tests pass"],"requires_user_approval":false,"requirements_reason":"user asked to skip their review"}`
+
+// The audit recorded with the latest event of kind:
+// event actor|change actor|old>new|reason|operation (empty without a change).
+user_gate_audit :: proc(f:^Fixture,kind:string) -> string {
+    rows,_:=query(f.store.db,`SELECT e.actor_kind||':'||e.actor_id||'|'||COALESCE(json_extract(c.v,'$.actor_kind')||':'||json_extract(c.v,'$.actor_id')||'|'||
+        json_extract(c.v,'$.old')||'>'||json_extract(c.v,'$.new')||'|'||json_extract(c.v,'$.reason')||'|'||json_extract(c.v,'$.operation_id'),'')
+      FROM local_events e,(SELECT json_extract(json_extract(evidence_json,'$.result'),'$.user_approval_change') AS v,seq FROM local_events) c
+      WHERE c.seq=e.seq AND e.kind=? ORDER BY e.seq DESC LIMIT 1`,kind)
+    return rows[0][0] if len(rows)==1 else ""
 }
 
 @(test)
-user_gate_review_roles_ratchet :: proc(t:^testing.T) {
+user_gate_coordinator_adds_and_removes_the_brief_gate :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f);user_gate_seed(t,f)
+    coord:=agent_coordinator_child();agent_seat_coordinator(t,f,coord)
+    // Omitting the flag is an ordinary edit that clears it too (the Bridge
+    // keeps it on omission); an agent removal must carry a reason.
+    testing.expect_value(t,user_gate_requirements(f,coord,"no_reason","2",`{"goal":"g","acceptance":["a"],"requires_user_approval":false}`).code,"invalid_content")
+    required,ok:=task_user_approval_required(&f.store,"chain","task")
+    testing.expect(t,ok && required,"a refused edit leaves the gate in place")
+    testing.expect_value(t,user_gate_requirements(f,coord,"clear","2",`{"goal":"g","acceptance":["a"],"requires_user_approval":false,"requirements_reason":"user said no review"}`).code,"ok")
+    required,ok=task_user_approval_required(&f.store,"chain","task")
+    testing.expect(t,ok && !required,"the coordinator removed the gate")
+    testing.expect_value(t,user_gate_audit(f,"requirements.edit"),"agent:coord_instance|agent:coord_instance|1>0|user said no review|clear")
+    // The coordinator may add it back (audited, no reason needed).
+    testing.expect_value(t,user_gate_requirements(f,coord,"add","3",USER_GATE_BRIEF).code,"ok")
+    required,ok=task_user_approval_required(&f.store,"chain","task")
+    testing.expect(t,ok && required,"the coordinator added the gate")
+    testing.expect_value(t,user_gate_audit(f,"requirements.edit"),"agent:coord_instance|agent:coord_instance|0>1||add")
+    // An edit that keeps it records no change.
+    testing.expect_value(t,user_gate_requirements(f,coord,"keep","4",`{"goal":"g2","acceptance":["a"],"requires_user_approval":true}`).code,"ok")
+    testing.expect_value(t,user_gate_audit(f,"requirements.edit"),"agent:coord_instance|")
+    // The user's device may remove it without a reason.
+    testing.expect_value(t,user_gate_requirements(f,{},"device_unset","5",`{"goal":"g3","acceptance":["a"]}`).code,"ok")
+    required,ok=task_user_approval_required(&f.store,"chain","task")
+    testing.expect(t,ok && !required,"a device edit removes the gate")
+    testing.expect_value(t,user_gate_audit(f,"requirements.edit"),"device:device|device:device|1>0||device_unset")
+}
+
+@(test)
+user_gate_workers_and_reviewers_cannot_change_the_gate :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f);user_gate_seed(t,f)
+    worker,reviewer:=lease_child(),lifecycle_reviewer()
+    agent_seat(t,f,reviewer,"reviewer")
+    for agent in ([2]Child{worker,reviewer}) {
+        testing.expect_value(t,user_gate_requirements(f,agent,fmt.tprintf("clear_%s",agent.instance),"2",USER_GATE_CLEARED).code,"invalid_scope")
+    }
+    required,ok:=task_user_approval_required(&f.store,"chain","task")
+    testing.expect(t,ok && required,"the gate stays on")
+    // Nor the role gate.
+    children:=[1]Child{role_auditor()}
+    testing.expect_value(t,advanced_call(f,"review.roles","roles",role_test_config("1"),"task",children[:]).code,"ok")
+    cleared,_:=contracts.owner_parse(role_test_config("0"),"review_roles");cleared["configuration_revision"]=json.String("2")
+    for agent in ([2]Child{worker,reviewer}) {
+        testing.expect_value(t,agent_run(f,agent,"review.roles",fmt.tprintf("roles_%s",agent.instance),"task",encode(doc(map[string]string{"body_cipher"=cipher(f,encode(cleared))})),agent_task_revision(f,"task")).code,"invalid_scope")
+    }
+    testing.expect_value(t,cc_scalar(f,"SELECT count(*)||':'||max(requires_user_approval) FROM local_role_configs"),"1:1")
+}
+
+@(test)
+user_gate_clearing_reevaluates_the_review_gate :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f);user_gate_seed(t,f)
+    coord:=agent_coordinator_child();agent_seat_coordinator(t,f,coord)
+    if !user_gate_reviewed(t,f) do return
+    // The independent approval is held; an agent relay never satisfies the
+    // active user gate.
+    p:=lifecycle_verdict()
+    testing.expect_value(t,agent_run(f,coord,"review.post","relay","task",p,agent_task_revision(f,"task")).code,"ok")
+    testing.expect_value(t,user_gate_state(f),"in_review")
+    // Clearing only the gate settles the submitted attempt.
+    r:=user_gate_requirements(f,coord,"clear","2",USER_GATE_CLEARED)
+    testing.expect_value(t,r.code,"ok")
+    testing.expect(t,strings.contains(r.body,`"state":"done"`),r.body)
+    testing.expect_value(t,user_gate_state(f),"done")
+    testing.expect_value(t,cc_scalar(f,"SELECT count(*) FROM local_review_sessions"),"0")
+    testing.expect_value(t,user_gate_audit(f,"requirements.edit"),"agent:coord_instance|agent:coord_instance|1>0|user asked to skip their review|clear")
+}
+
+@(test)
+user_gate_clearing_with_owed_reviews_or_other_changes_returns_to_ready :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    coord:=agent_coordinator_child()
+    // The independent reviewer has not approved yet: the attempt cannot settle.
+    {
+        f:=fixture(t);defer destroy(f);user_gate_seed(t,f);agent_seat_coordinator(t,f,coord)
+        cap:=lifecycle_ready(t,f)
+        if cap=="" do return
+        testing.expect_value(t,lifecycle_call(f,lease_child(),"lease.submit","submit",`{"requirements_revision":"1","head":"","summary":"Checks pass"}`,cap).code,"ok")
+        testing.expect_value(t,user_gate_state(f),"in_review")
+        testing.expect_value(t,user_gate_requirements(f,coord,"clear","2",USER_GATE_CLEARED).code,"ok")
+        testing.expect_value(t,user_gate_state(f),"ready")
+    }
+    // Clearing together with a content change is an ordinary requirements edit.
+    {
+        f:=fixture(t);defer destroy(f);user_gate_seed(t,f);agent_seat_coordinator(t,f,coord)
+        if !user_gate_reviewed(t,f) do return
+        testing.expect_value(t,user_gate_requirements(f,coord,"clear","2",`{"goal":"Different work","acceptance":["Tests pass"],"requires_user_approval":false,"requirements_reason":"rescoped"}`).code,"ok")
+        testing.expect_value(t,user_gate_state(f),"ready")
+    }
+    // A role-configured user gate still holds after the brief gate is cleared.
+    {
+        f:=fixture(t);defer destroy(f);user_gate_seed(t,f);agent_seat_coordinator(t,f,coord)
+        if !user_gate_reviewed(t,f) do return
+        testing.expect(t,exec(f.store.db,"INSERT INTO local_role_configs VALUES('chain','task',1,1,'[]')"))
+        testing.expect_value(t,user_gate_requirements(f,coord,"clear","2",USER_GATE_CLEARED).code,"ok")
+        testing.expect_value(t,user_gate_state(f),"ready")
+    }
+}
+
+@(test)
+user_gate_coordinator_clears_the_role_gate :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
     f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
     coord:=agent_coordinator_child();agent_seat_coordinator(t,f,coord)
     children:=[1]Child{role_auditor()}
     testing.expect_value(t,advanced_call(f,"review.roles","roles",role_test_config("1"),"task",children[:]).code,"ok")
-    // The coordinator may configure roles (P-CS CC-A) but the ratchet refuses
-    // clearing the flag on the agent path.
     cleared,_:=contracts.owner_parse(role_test_config("0"),"review_roles");cleared["configuration_revision"]=json.String("2")
-    testing.expect_value(t,agent_run(f,coord,"review.roles","agent_roles","task",encode(doc(map[string]string{"body_cipher"=cipher(f,encode(cleared))})),agent_task_revision(f,"task")).code,"invalid_scope")
-    // The owner-side ratchet itself: a non-device principal cannot clear the
-    // configured flag, but may keep it; the device may clear it.
-    c:=doc(map[string]string{"chain_id"="chain","task_id"="task","principal_id"="coord_instance","operation_id"="ratchet"})
-    testing.expect_value(t,role_configure(&f.store,c,encode(cleared),children[:],99,false),"invalid_scope")
-    rows,_:=query(f.store.db,"SELECT count(*),max(requires_user_approval) FROM local_role_configs")
-    testing.expect_value(t,encode(rows),encode([1][2]string{{"1","1"}}))
-    testing.expect_value(t,advanced_call(f,"review.roles","device_clear",encode(cleared),"task",children[:]).code,"ok")
+    agent_add_task(t,f,"audit_home");agent_bind(t,f,"audit_home",role_auditor())
+    roles:=encode(doc(map[string]string{"body_cipher"=cipher(f,encode(cleared))}))
+    raw:=agent_command(f,coord,"review.roles","agent_roles","task",roles,agent_task_revision(f,"task"))
+    testing.expect_value(t,execute_agent(&f.store,raw,roles,coord,f.owner,1000,&f.kr,Signer{&f.owner_priv,test_sign},role_children=children[:]).code,"ok")
     required,ok:=task_user_approval_required(&f.store,"chain","task")
-    testing.expect(t,ok && !required,"the device cleared the role gate")
-    testing.expect(t,approval_ratchet_allows(false,true,false) && approval_ratchet_allows(true,true,false) && !approval_ratchet_allows(true,false,false) && approval_ratchet_allows(true,false,true))
+    testing.expect(t,ok && !required,"the coordinator cleared the role gate")
+    testing.expect_value(t,user_gate_audit(f,"review.roles"),"agent:coord_instance|agent:coord_instance|1>0||agent_roles")
 }
 
 @(test)

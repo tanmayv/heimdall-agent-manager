@@ -55,11 +55,14 @@ export async function ownerTransparentFlow({ session, bridgeId, hub, http, expec
       'an invalid assignment creates no task: ' + JSON.stringify(shownAfter.data?.tasks));
     const outsiderAssign = coordinator.ctl(['task', 'update', later.data.task_id, '--assignee', outsider.agentId]);
     expect(!outsiderAssign.ok && JSON.stringify(outsiderAssign.reply).includes('invalid_scope'), 'assigning an agent that is not a member of this chain is refused: ' + JSON.stringify(outsiderAssign.reply));
-    // R2-1 ratchet: an agent may add the user-approval gate, never remove it.
+    // The coordinator may add and remove the user-approval gate; a removal
+    // needs --reason (audited on the owner).
     const gated = coordinator.ctl(['task', 'update', later.data.task_id, '--require-user-approval']);
     expect(gated.ok, 'a coordinator may add --require-user-approval on an owner chain: ' + JSON.stringify(gated.reply));
-    const ungated = coordinator.ctl(['task', 'update', later.data.task_id, '--no-require-user-approval']);
-    expect(!ungated.ok && JSON.stringify(ungated.reply).includes('only removed by the user'), 'an agent cannot remove the user-approval gate: ' + JSON.stringify(ungated.reply));
+    const unreasoned = coordinator.ctl(['task', 'update', later.data.task_id, '--no-require-user-approval']);
+    expect(!unreasoned.ok && JSON.stringify(unreasoned.reply).includes('needs --reason'), 'removing the user-approval gate needs a reason: ' + JSON.stringify(unreasoned.reply));
+    const ungated = coordinator.ctl(['task', 'update', later.data.task_id, '--no-require-user-approval', '--reason', 'the user waived their review']);
+    expect(ungated.ok, 'a coordinator may remove the user-approval gate with a reason: ' + JSON.stringify(ungated.reply));
     const unsupported = coordinator.ctl(['task', 'update', tid, '--title', 'x', '--request-id', 'transparent-unsupported']);
     expect(!unsupported.ok && JSON.stringify(unsupported.reply).includes('unsupported_on_owner_chain'), 'an unsupported flag is a typed error, never a silent success');
     const workerCreate = worker.ctl(['task', 'create', '--chain', cid, '--title', 'not-allowed']);

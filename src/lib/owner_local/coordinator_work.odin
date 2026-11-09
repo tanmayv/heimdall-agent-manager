@@ -262,16 +262,17 @@ split_parse :: proc(body:string) -> (reason,mode:string,children:[]Split_Child,m
     return reason,mode,out[:],mapping,true
 }
 
-// The brief with requires_user_approval forced on unless it is explicitly
-// false (refused by the caller for an agent).
-split_brief_with_approval :: proc(brief:string) -> (string,bool) {
+// A child of a gated original inherits requires_user_approval unless its
+// brief explicitly sets it false (cleared: the coordinator removes the gate,
+// audited in the split result).
+split_brief_with_approval :: proc(brief:string) -> (gated:string,cleared:bool) {
     v,ok:=contracts.owner_request_document(brief);o,obj:=v.(json.Object)
     if !ok || !obj do return brief,false
     if flag,has:=o["requires_user_approval"];has {
-        if b,typed:=flag.(json.Boolean);typed && !bool(b) do return brief,false
+        if b,typed:=flag.(json.Boolean);typed && !bool(b) do return brief,true
     }
     o["requires_user_approval"]=json.Boolean(true)
-    return encode(o),true
+    return encode(o),false
 }
 
 // Atomic split inside execute()'s transaction; any refusal rolls back the
@@ -296,7 +297,8 @@ split_command :: proc(s:^Store,c:json.Object,command_raw,payload,body:string,seq
     if !sread do return "storage_error",nil
     // R2-8: never while in review or merging, and not once finished.
     if len(states)==1 && states[0][0]!="ready" do return "operation_conflict",nil
-    // The original's approval obligation (ratchet for agent principals).
+    // The original's approval obligation, inherited by each child unless the
+    // child brief explicitly clears it.
     original_gated,gate_read:=task_user_approval_required(s,chain,task)
     if !gate_read do return "storage_error",nil
     original_brief:=""
@@ -321,18 +323,18 @@ split_command :: proc(s:^Store,c:json.Object,command_raw,payload,body:string,seq
     if !dread do return "storage_error",nil
     stamp:=fmt.tprintf("%d",seq)
     ids:=make([dynamic]string,context.temp_allocator)
+    cleared_ids:=make([dynamic]string,context.temp_allocator)
     for child,i in children {
         id:=child.task_id
         exists,eread:=query(s.db,"SELECT 1 FROM tasks WHERE task_id=?1 UNION ALL SELECT 1 FROM task_deletions WHERE task_id=?1 LIMIT 1",id)
         if !eread do return "storage_error",nil
         if len(exists)>0 do return "operation_conflict",nil
         if _,ok:=query(s.db,"INSERT INTO tasks VALUES(?,?,?,?,1)",chain,id,child.title,child.body);!ok do return "storage_error",nil
-        brief:=child.brief if child.brief!="" else original_brief
+        brief:=brief_without_reason(s,child.brief if child.brief!="" else original_brief)
         if brief!="" {
             if original_gated && !device {
-                gated,kept:=split_brief_with_approval(brief)
-                // An agent cannot drop the original's user-approval gate.
-                if !kept do return "invalid_scope",nil
+                gated,cleared:=split_brief_with_approval(brief)
+                if cleared do append(&cleared_ids,id)
                 brief=gated
             }
             if !brief_valid(brief) do return "invalid_content",nil
@@ -353,10 +355,11 @@ split_command :: proc(s:^Store,c:json.Object,command_raw,payload,body:string,seq
         if _,ok:=query(s.db,"INSERT INTO local_task_links VALUES(?,?,'split_into',?,?,?,?,?)",chain,task,id,fmt.tprintf("%d",i),stamp,principal,op);!ok do return "storage_error",nil
         append(&ids,id)
     }
-    // Ratchet (R2-1/R2-8): for an agent every child keeps the user gate the
-    // original had, whichever source carried it.
+    // R2-1/R2-8: for an agent every child keeps the user gate the original
+    // had, whichever source carried it, unless its brief explicitly cleared it.
     if original_gated && !device {
-        for id in ids {
+        outer: for id in ids {
+            for cleared in cleared_ids do if cleared==id do continue outer
             gated,read:=task_user_approval_required(s,chain,id)
             if !read do return "storage_error",nil
             if !gated do return "invalid_scope",nil
@@ -373,6 +376,13 @@ split_command :: proc(s:^Store,c:json.Object,command_raw,payload,body:string,seq
     if !control_record(s,c,doc(map[string]string{"summary"=summary,"destination_task_id"=ids[0]}),seq) do return "storage_error",nil
     if _,ok:=query(s.db,"UPDATE tasks SET revision=revision+1 WHERE chain_id=? AND task_id=?",chain,task);!ok do return "storage_error",nil
     out:=doc(map[string]string{"children"=strings.join(ids[:],",",context.temp_allocator),"dependents"=mode,"original_state"="cancelled"})
+    if len(cleared_ids)>0 {
+        // Audit: the children whose inherited user gate the split cleared.
+        audit:=user_approval_audit(c,true,false,device,reason,"ready")
+        change:=audit["user_approval_change"].(json.Object)
+        change["task_ids"]=json.String(strings.join(cleared_ids[:],",",context.temp_allocator))
+        out["user_approval_change"]=change
+    }
     runs,runs_read:=work_run_dependents(s,chain,task)
     if !runs_read do return "storage_error",nil
     if len(runs)>0 {
