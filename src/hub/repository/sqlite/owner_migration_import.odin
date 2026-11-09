@@ -139,7 +139,7 @@ legacy_migration_neutralize :: proc(conn:^Conn,s:domain.Legacy_Migration_Selecti
           WHERE chain_id=?1 AND state IN ('draft','pending','running')`,0,chain,now);!ok do return nil,nil,legacy_storage_error()
     }
     legacy_neutralized_append(&out,LEGACY_NEUTRALIZED_WORKFLOWS,legacy_column(rows))
-    rows,ok=legacy_metadata(conn,`SELECT d.dependency_id,d.dependent_kind,d.dependent_id FROM work_dependencies d WHERE d.chain_id=?1 AND d.removed_at='' AND d.prerequisite_kind='workflow_run'
+    rows,ok=legacy_metadata(conn,`SELECT d.dependency_id,d.dependent_kind,d.dependent_id FROM work_dependencies d WHERE d.chain_id=?1 AND (d.removed_at='' OR (d.removed_by_kind='hub' AND d.removed_by_id='legacy_import')) AND d.prerequisite_kind='workflow_run'
       AND NOT EXISTS(SELECT 1 FROM workflow_runs r JOIN workflow_run_executions e ON e.run_id=r.run_id AND e.execution_no=r.current_execution_no
         WHERE r.run_id=d.prerequisite_id AND e.state='succeeded') ORDER BY d.dependency_id`,3,chain)
     if !ok do return nil,nil,legacy_storage_error()

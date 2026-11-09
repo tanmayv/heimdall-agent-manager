@@ -37,7 +37,7 @@ test_bridge_taskv2_render_task_md_dependencies :: proc(t: ^testing.T) {
 	capped := bridge_taskv2_render_task_md(DEP_PACK, len(md) - 10)
 	defer delete(capped)
 	testing.expect(t, !strings.contains(capped, "DEP_OUTPUT_BODY_"), "output dropped for size")
-	testing.expect(t, strings.contains(capped, "ham-ctl task fetch task_b output:task_a"), "fetch pointer for the dropped output")
+	testing.expect(t, strings.contains(capped, "ham-ctl task show task_a"), "task show pointer for the dropped output")
 	testing.expect(t, strings.contains(capped, "DEP_SUMMARY_TABLE_ADDED") && strings.contains(capped, "DEP_DEAD_END_BCRYPT"), "summary + dead ends kept")
 	testing.expect(t, strings.contains(capped, "KEEP_THE_BRIEF_GOAL"), "brief kept")
 

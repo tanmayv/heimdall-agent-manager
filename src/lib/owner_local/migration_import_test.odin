@@ -616,11 +616,10 @@ migration_import_force_held_and_in_review_carried :: proc(t:^testing.T) {
     got:=migration_test_import(f,m)
     if !testing.expect_value(t,got.code,"ok") do return
     rows,_:=query(f.store.db,"SELECT task_id,mode,reason FROM local_controls WHERE chain_id='legacy_chain' ORDER BY task_id")
-    testing.expect_value(t,len(rows),2)
-    if len(rows)==2 {
+    testing.expect_value(t,len(rows),3)
+    if len(rows)==3 {
         testing.expect(t,rows[0][0]=="t_busy" && rows[0][1]=="held" && strings.contains(rows[0][2],"force-held"),"in-progress task imported held")
         testing.expect(t,rows[1][0]=="t_gated" && rows[1][1]=="held","gate-released ticket imported held")
+        testing.expect(t,rows[2][0]=="t_review" && rows[2][1]=="held" && strings.contains(rows[2][2],"in_review"),"in-review task imported held")
     }
-    state,_:=query(f.store.db,"SELECT state,attempt FROM lifecycle_state WHERE chain_id='legacy_chain' AND task_id='t_review'")
-    testing.expect(t,len(state)==1 && state[0][0]=="in_review" && state[0][1]=="2","in-review task carried over in review")
 }

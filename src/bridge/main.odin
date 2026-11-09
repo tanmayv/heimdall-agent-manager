@@ -280,7 +280,6 @@ main :: proc() {
 	// for a non-expiring legacy credential.
 	bridge_credential_refresh_start(bridge_config.credential_file)
 	bridge_hub_runtime_start()
-	bridge_task_chain_search_start()
     bridge_owner_maintenance_start()
     bridge_owner_executor_start()
     bridge_executor_reconcile_start()

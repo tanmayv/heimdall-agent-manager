@@ -317,7 +317,8 @@ migration_project :: proc(s:^Store,chain,principal,key_id,migration:string,rows:
         // Carry the native terminal/blocked state into live lifecycle and
         // controls (R2 follow-up). The Hub import neutralized busy work: a
         // force-held task (in progress, or released from a workflow gate) is
-        // imported held; a task in review is carried over in review.
+        // imported held; a task in review is also imported held so it can be
+        // released to re-run or completed without requiring a local submission.
         native_state,blocked:=migration_text(t,"state"),migration_text(t,"blocked_on_json")
         force_held:=slice.contains(forced_held,task)
         switch {
@@ -330,9 +331,6 @@ migration_project :: proc(s:^Store,chain,principal,key_id,migration:string,rows:
         case force_held || native_state=="in_progress":
             if _,ok:=query(s.db,"INSERT INTO local_controls VALUES(?,?,'held','ready','imported: force-held by the legacy import (was in progress)','')",chain,task);!ok do return "storage_error"
             summary^["task_force_held"]+=1
-        case native_state=="in_review":
-            if _,ok:=query(s.db,"INSERT INTO lifecycle_state(chain_id,task_id,state,attempt) VALUES(?,?,'in_review',?)",chain,task,migration_text(t,"attempt_no"));!ok do return "storage_error"
-            summary^["task_in_review_carried"]+=1
         case blocked!="":
             reason,waiting:="imported: blocked in legacy chain","human"
             if v,valid:=contracts.owner_content_document(blocked);valid {
@@ -342,6 +340,9 @@ migration_project :: proc(s:^Store,chain,principal,key_id,migration:string,rows:
                 }
             }
             if _,ok:=query(s.db,"INSERT INTO local_controls VALUES(?,?,'blocked','ready',?,?)",chain,task,reason,waiting);!ok do return "storage_error"
+        case native_state=="in_review":
+            if _,ok:=query(s.db,"INSERT INTO local_controls VALUES(?,?,'held','ready','imported: force-held by the legacy import (was in_review; release to re-run or complete)','')",chain,task);!ok do return "storage_error"
+            summary^["task_in_review_carried"]+=1
         }
         summary^["task"]+=1
     }
