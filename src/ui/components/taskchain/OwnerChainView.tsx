@@ -9,7 +9,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Badge, Button, StatusDot, type Tone } from '@ui';
 import {
   freshOwnerSession, isOwnerOffline, ownerAwaitingUser, ownerCall, ownerErrorMessage, ownerOfflineMessage, ownerRelaySend, ownerTaskState,
-  ownerExpectedRevision, readArchivedReviews, readOwnerChain, readOwnerChainStatus, readOwnerReviews, readOwnerRuntime, readOwnerSubmission, readOwnerTask,
+  ownerExpectedRevision, readArchivedReviews, readOwnerChain, readOwnerChainStatus, readOwnerReviews, readOwnerRuntime, readOwnerSubmission, readOwnerTask, withOwnerRecovery,
   type OwnerChainDetail, type OwnerChainStatus, type OwnerChainSummary, type OwnerReview, type OwnerRuntime, type OwnerSend,
   type OwnerSubmission, type OwnerTaskDetail, type OwnerTaskState,
 } from '../../api/ownerChains';
@@ -123,7 +123,7 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
     try {
       const s = await session();
       const [d, status] = await Promise.all([
-        readOwnerChain(s, bridge, chain.chainId, send),
+        withOwnerRecovery(s, chain, () => readOwnerChain(s, bridge, chain.chainId, send), send),
         readOwnerChainStatus(s, bridge, chain.chainId, send).catch((e) => { if (isOwnerOffline(e)) throw e; return '' as OwnerChainStatus; }),
       ]);
       if (!live.current) return;

@@ -225,7 +225,18 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 
 	verb := pos(tokens, 0)
 	switch verb {
-	case "", "list", "create", "set-title", "set-description", "set-status", "status", "archive", "unarchive",
+	case "create":
+		// Agent chain creation: the caller's Bridge creates and owns the chain
+		// (Bridge-signed genesis) and binds the caller, or --coordinator-agent,
+		// as its coordinator. The user reads it in the app (root recovery).
+		title := strings.trim_space(option_value(args, "--title", ""))
+		if title == "" { fmt.eprintln("task-chain create: --title is required"); os.exit(2) }
+		fields := make([dynamic]string)
+		append(&fields, json_kv("title", title))
+		append(&fields, json_kv("description", option_value(args, "--description", "")))
+		if v := strings.trim_space(option_value(args, "--coordinator-agent", "")); v != "" do append(&fields, json_kv("coordinator_agent_id", v))
+		ctl_agent_call(endpoint, token, "agent.task_chain.create", json_object_from_slice(fields[:]))
+	case "", "list", "set-title", "set-description", "set-status", "status", "archive", "unarchive",
 	     "pin", "unpin", "directory", "directories", "fleet", "fleets", "decide", "proposal",
 	     "graph", "depend", "remove-dependency", "scope":
 		// Hub task chains are removed: these verbs only ever reached the Hub.
@@ -1775,11 +1786,17 @@ print_help_task_chain :: proc() {
 	fmt.println("ham-ctl task-chain — your Bridge-owned task chain")
 	fmt.println("")
 	fmt.println("Chains are Bridge-owned (the Hub task-chain engine is removed). Chains are created in the")
-	fmt.println("Heimdall app; legacy Hub chains are imported from Settings → Bridge (Import all). Verbs that")
-	fmt.println("only reached the Hub (list, create, set-title, set-description, set-status, archive, pin,")
-	fmt.println("directory, fleet, decide, graph, depend, remove-dependency, scope) answer hub_chains_removed.")
+	fmt.println("Heimdall app or with `task-chain create` (owned by your Bridge); legacy Hub chains are imported")
+	fmt.println("from Settings → Bridge (Import all). Verbs that only reached the Hub (list, set-title,")
+	fmt.println("set-description, set-status, archive, pin, directory, fleet, decide, graph, depend,")
+	fmt.println("remove-dependency, scope) answer hub_chains_removed.")
 	fmt.println("")
 	fmt.println("VERBS")
+	fmt.println("  create --title <t> [--description <d>] [--coordinator-agent <agt_id>]")
+	fmt.println("                                      Create a chain owned by your Bridge. You are bound as its")
+	fmt.println("                                      coordinator, or the named agent is launched on your Bridge")
+	fmt.println("                                      in the new chain and bound instead. Prints chain_id and")
+	fmt.println("                                      coordinator_instance_id. The user opens it in the app.")
 	fmt.println("  show [<chain-id>]                   Show a chain (defaults to your current chain).")
 	fmt.println("  summary get|show [<chain-id>|--chain <id>]       Print the chain summary (read-only; never writes),")
 	fmt.println("                                                   read from the owner store. vault_locked when the")
@@ -1802,6 +1819,8 @@ print_help_task_chain :: proc() {
 	fmt.println("                                      owner's browser session may; agents cannot.")
 	fmt.println("")
 	fmt.println("EXAMPLES")
+	fmt.println("  ham-ctl task-chain create --title 'Release 1.2' --description 'Ship the release'")
+	fmt.println("  ham-ctl task-chain create --title 'Docs pass' --coordinator-agent agt_writer")
 	fmt.println("  ham-ctl task-chain show chain_abc")
 	fmt.println("  ham-ctl task-chain summary set '# Chain summary' --chain chain_abc")
 	fmt.println("  ham-ctl task-chain propose --file proposal.json")

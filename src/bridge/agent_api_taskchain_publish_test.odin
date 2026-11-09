@@ -40,13 +40,13 @@ bridge_task_chain_publish_method_allowed :: proc(t: ^testing.T) {
 	testing.expect(t, bridge_agent_method_allowed("agent.task_chain.create"), "create is in the agent method allowlist")
 }
 
+// Agent chain creation is served by this Bridge as the owner (Bridge-signed
+// genesis); it never reaches the removed Hub task-chain endpoint.
 @(test)
-bridge_task_chain_create_routes_raw_post :: proc(t: ^testing.T) {
+bridge_task_chain_create_routes_local_owner_create :: proc(t: ^testing.T) {
 	r := bridge_agent_route("agent.task_chain.create", `{"title":"test chain"}`)
-	testing.expect(t, r.kind == .Raw, "create routes .Raw (plain hub route, not an agent-actions envelope)")
-	testing.expect(t, r.http_method == .POST, "create is a POST")
-	testing.expect_value(t, bridge_agent_route_target(r), "/api/v1/task-chains")
-	testing.expect(t, r.send_body, "create takes a request body")
+	testing.expect(t, r.kind == .Local, "create is served by the owner Bridge")
+	testing.expect_value(t, r.local_op, "task_chain.create")
 }
 
 // Task System v2: the subscribe/unsubscribe, status, set_current, vote and nudge

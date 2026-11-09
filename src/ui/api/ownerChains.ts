@@ -38,6 +38,12 @@ export interface OwnerChainSummary {
   status?: OwnerChainStatus;
   /** The bound coordinator instance (chain.metadata.read member rows); '' or absent when none or not read. */
   coordinatorAgentInstanceId?: string;
+  /**
+   * The owner Bridge itself created the chain (agent `task-chain create`;
+   * registry creator_id is the owner Bridge). Its owner store enables paired-root
+   * recovery from creation, so the app recovers access automatically.
+   */
+  bridgeCreated?: boolean;
 }
 export type OwnerChainStatus = '' | 'active' | 'completed';
 
@@ -108,6 +114,7 @@ export async function loadOwnerChainSummaries(
       chainId, ownerBridgeId: String(head.owner_bridge_id || ''), bridgeName: ownerBridgeName(session.chain, String(head.owner_bridge_id || '')),
       online: head.online === true, title: title ?? '', description: description ?? '', sealed, tasks,
       projectId: '', projectName: '', migrated: false,
+      bridgeCreated: !!head.creator_id && head.creator_id === head.owner_bridge_id,
     });
   }
   return out.sort((a, b) => (a.title || a.chainId).localeCompare(b.title || b.chainId) || a.chainId.localeCompare(b.chainId));
@@ -157,10 +164,47 @@ export async function readOwnerChainStatuses(
   await Promise.all(Array.from({ length: Math.min(4, queue.length) }, async () => {
     for (let c = queue.shift(); c; c = queue.shift()) {
       if (!current()) return;
-      try { out.set(c.chainId, await readOwnerChainStatus(session, c.ownerBridgeId, c.chainId, send)); } catch { out.set(c.chainId, ''); }
+      try { out.set(c.chainId, await withOwnerRecovery(session, c, () => readOwnerChainStatus(session, c.ownerBridgeId, c.chainId, send), send)); } catch { out.set(c.chainId, ''); }
     }
   }));
   return out;
+}
+
+/* Automatic paired-root recovery (Bridge-created chains) ---------------- */
+
+const GRANT_RECOVERY_TTL_MS = 30 * 24 * 60 * 60 * 1000 - 5 * 60 * 1000;
+/** device:chain pairs already attempted this page lifetime: recovery runs once. */
+const recoveryAttempted = new Set<string>();
+export function resetOwnerRecoveryAttempts(): void { recoveryAttempted.clear(); }
+
+/**
+ * grant.recover for this device on a chain its owner Bridge created for an
+ * agent: the same signed operation as the manual "Recover access as paired
+ * root" button. Reads the chain revision with root-scoped grant.read first.
+ */
+export async function recoverOwnerChainAccess(session: OwnerSession, bridgeId: string, chainId: string, send: OwnerSend = ownerRelaySend): Promise<void> {
+  const grants = await ownerCall(session, bridgeId, 'grant.read', { chainId, expectedRevision: '0', cursor: '', limit: 1 }, send);
+  await ownerCall(session, bridgeId, 'grant.recover', {
+    chainId, expectedRevision: String(grants.revision ?? '0'), grantPrincipal: session.identity.deviceId,
+    grantExpiresMs: String(Date.now() + GRANT_RECOVERY_TTL_MS), grantCanMutate: true,
+  }, send);
+}
+
+/**
+ * Runs an owner read; when it fails for want of a grant (invalid_scope) on a
+ * Bridge-created chain and this device is the paired root, recovers access
+ * once and retries. Device-created chains are never auto-recovered.
+ */
+export async function withOwnerRecovery<T>(
+  session: OwnerSession, chain: Pick<OwnerChainSummary, 'chainId' | 'ownerBridgeId' | 'bridgeCreated'>, read: () => Promise<T>, send: OwnerSend = ownerRelaySend,
+): Promise<T> {
+  try { return await read(); } catch (e) {
+    const key = session.identity.deviceId + ':' + chain.chainId;
+    if (!(e instanceof Error) || e.message !== 'invalid_scope' || !chain.bridgeCreated || session.identity.deviceId !== session.chain.rootDeviceId || recoveryAttempted.has(key)) throw e;
+    recoveryAttempted.add(key);
+    await recoverOwnerChainAccess(session, chain.ownerBridgeId, chain.chainId, send);
+    return await read();
+  }
 }
 
 const OWNER_ERROR_TEXT: Record<string, string> = {

@@ -308,12 +308,23 @@ owner_verify_genesis :: proc(o: json.Object, account, recipient_bridge: string, 
     if !owner_document_valid("genesis", o) do return .Malformed
     if owner_string(o, "account_id") != account || creator.account_id != account || owner.account_id != account do return .Invalid_Scope
     if owner_string(o, "owner_bridge_id") != recipient_bridge || owner.principal_id != recipient_bridge do return .Owner_Mismatch
-    if creator.kind != "device" || owner.kind != "bridge" ||
-       creator.principal_id != owner_string(o, "creator_id") || creator.key_id != owner_string(o, "creator_key_id") ||
+    if owner.kind != "bridge" || creator.principal_id != owner_string(o, "creator_id") || creator.key_id != owner_string(o, "creator_key_id") ||
        owner.key_id != owner_string(o, "owner_key_id") { return .Invalid_Scope }
+    if creator.kind != "device" && !owner_genesis_bridge_creator(o, recipient_bridge, creator, owner) do return .Invalid_Scope
     if !owner_verify_signature("genesis", o, "creator_signature", creator) ||
        !owner_verify_signature("genesis", o, "owner_signature", owner) { return .Bad_Signature }
     return .None
+}
+
+// A non-device creator is accepted ONLY as the chain's own owner Bridge key
+// (agent `task-chain create`): same principal, key id and public key as the
+// verified owner, named as creator and owner in the genesis. Never any other
+// Bridge key, even an enrolled one in the same account.
+owner_genesis_bridge_creator :: proc(o: json.Object, recipient_bridge: string, creator, owner: Owner_Verified_Key) -> bool {
+    return creator.kind == "bridge" && owner.kind == "bridge" && recipient_bridge != "" &&
+       creator.principal_id == recipient_bridge && owner.principal_id == recipient_bridge &&
+       creator.key_id == owner.key_id && creator.public_key == owner.public_key && creator.account_id == owner.account_id &&
+       owner_string(o, "creator_id") == owner_string(o, "owner_bridge_id") && owner_string(o, "creator_key_id") == owner_string(o, "owner_key_id")
 }
 
 // Run before receipt lookup and RECHECK grant inside the owner transaction.
@@ -325,8 +336,13 @@ owner_authenticate_command :: proc(o: json.Object, payload: string, key: Owner_V
     if owner_string(o, "account_id") != grant.account_id || key.account_id != grant.account_id ||
        owner_string(o, "chain_id") != grant.chain_id || owner_string(o, "principal_id") != grant.principal_id ||
        key.principal_id != grant.principal_id || owner_string(o, "key_id") != grant.key_id || key.key_id != grant.key_id ||
-       owner_string(o, "method") != grant.method || (grant.task_id != "" && owner_string(o, "task_id") != grant.task_id) ||
-       key.kind != "device" { return .Invalid_Scope }
+       owner_string(o, "method") != grant.method || (grant.task_id != "" && owner_string(o, "task_id") != grant.task_id) { return .Invalid_Scope }
+    // Only chain.create may be signed by a Bridge key, and only by the chain's
+    // own owner key (principal == owner Bridge, key id == owner key id). The
+    // creation binding/genesis verify that key against the verified owner.
+    if key.kind != "device" && (key.kind != "bridge" || owner_string(o, "method") != "chain.create" ||
+       key.principal_id != grant.owner_bridge_id || owner_string(o, "immutable_owner_bridge") != grant.owner_bridge_id ||
+       owner_string(o, "principal_id") != grant.owner_bridge_id) { return .Invalid_Scope }
     if owner_string(o, "immutable_owner_bridge") != grant.owner_bridge_id do return .Owner_Mismatch
     if !owner_verify_signature("command", o, "signature", key) do return .Bad_Signature
     if owner_payload_digest(payload) != owner_string(o, "payload_digest") do return .Digest_Mismatch

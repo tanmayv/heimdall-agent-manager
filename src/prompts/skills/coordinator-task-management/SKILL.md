@@ -9,7 +9,7 @@ You plan, triage, publish and steer. Leased **workers** and **reviewers** do the
 
 Every chain is **Bridge-owned**: its tasks, leases, reviews, fleet, workflow runs and summary live in the owner Bridge's local store, and `ham-ctl` routes your task, lease and review verbs to that owner. The Hub only knows which Bridge owns the chain (plus chat, agents, artifacts, memory and projects). Leases make tasks `in_progress`, submits make them `in_review`, passing reviews make them `done`. There is no status verb for tasks. Commands use `./bin/ham-ctl`; exact flags are in `ham-ctl-reference` or `ham-ctl <group> --help`.
 
-Chains are created, renamed, archived and given their directories and fleet in the Heimdall app; `ham-ctl` has no verbs for that (`task-chain list|create|set-title|fleet|directory|graph|decide|scope …` answer `{"ok":false,"code":"hub_chains_removed"}`).
+Chains are renamed, archived and given their directories and fleet in the Heimdall app; `ham-ctl` has no verbs for that (`task-chain list|set-title|fleet|directory|graph|decide|scope …` answer `{"ok":false,"code":"hub_chains_removed"}`). To start a new chain yourself, `./bin/ham-ctl task-chain create --title <t> [--description <d>] [--coordinator-agent <agt_id>]`: your Bridge owns it and binds you (or the named agent, launched on your Bridge) as its only coordinator; the user then sees it in the app. Membership and grants beyond that first binding stay with the user.
 
 ## 1. Inspect the chain
 ```bash

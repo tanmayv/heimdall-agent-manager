@@ -42,10 +42,18 @@ Groups: `bridge`, `agents`, `task-chain`, `task`, `workflow`, `lease`, `review`,
 
 ## task-chain — your Bridge-owned task chain
 Every chain is Bridge-owned: its tasks, leases, reviews, fleet, workflow runs and summary live in the owner
-Bridge's local store, and these verbs are routed to that owner. Chains are created, renamed, archived and
-given directories and a fleet in the Heimdall app. Verbs that only reached the removed Hub engine (`list`,
-`create`, `set-title`, `set-description`, `set-status`, `archive`, `unarchive`, `pin`, `unpin`, `directory`,
-`fleet`, `decide`, `graph`, `depend`, `remove-dependency`, `scope`) answer `{"ok":false,"code":"hub_chains_removed"}`.
+Bridge's local store, and these verbs are routed to that owner. Chains are renamed, archived and given
+directories and a fleet in the Heimdall app; they are created there or with `task-chain create`. Verbs that only
+reached the removed Hub engine (`list`, `set-title`, `set-description`, `set-status`, `archive`, `unarchive`,
+`pin`, `unpin`, `directory`, `fleet`, `decide`, `graph`, `depend`, `remove-dependency`, `scope`) answer
+`{"ok":false,"code":"hub_chains_removed"}`.
+
+- `task-chain create --title <t> [--description <d>] [--coordinator-agent <agt_id>]` — your Bridge creates and
+  owns a new chain and binds its one coordinator: you (default), or the named agent, which your Bridge launches
+  into the new chain, binds and restarts with the coordinator role. Returns
+  `{"chain_id","coordinator_instance_id","authority":{"kind":"owner","bridge_id"}}`. An instance belongs to one
+  chain for life: if you already belong to a chain, use `--coordinator-agent`. The user opens the chain in the
+  app (their paired-root device recovers access automatically). Agents never change members or grants afterwards.
 
 - `task-chain show [<chain-id>]` — show a chain (defaults to your current chain): its `tasks`, `work_revision`,
   `pending_proposal_id`, `summary`, and who you are in it (`caller`).

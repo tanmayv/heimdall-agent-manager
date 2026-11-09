@@ -72,3 +72,55 @@ owner_registry_bound_publication_survives_creator_revocation :: proc(t:^testing.
     grant:=contracts.Owner_Read_Grant{"acct_1","brg_1","chain_1","dev_1","device_key","task_1","task.comment",1,1000000,true,true,false}
     testing.expect_value(t,contracts.owner_authenticate_command(command,contracts.owner_string(fixture,"payload"),creator,grant,1000),contracts.Owner_Auth_Error.Bad_Signature)
 }
+
+// Agent `task-chain create`: the owner Bridge's own bound key may be the
+// genesis creator; a different enrolled Bridge key never is.
+@(test)
+owner_publication_accepts_only_own_owner_bridge_as_creator :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    mint :: proc(t:^testing.T,priv:^ecdsa.Private_Key,principal,key_id:string)->contracts.Owner_Verified_Key {
+        testing.expect(t,vault.p256_private_key_generate(priv))
+        pub:[65]byte;ecdsa.private_key_public_bytes(priv,pub[:])
+        return contracts.Owner_Verified_Key{"acct_1",principal,key_id,strings.clone(vault.hex_encode_lower(pub[:],context.temp_allocator)),"bridge",true,false}
+    }
+    sign :: proc(t:^testing.T,priv:^ecdsa.Private_Key,kind:string,o:^json.Object,field:string) {
+        canonical,_:=contracts.owner_canonical(kind,o^)
+        sig,ok:=vault.sign_p256(priv,transmute([]byte)canonical)
+        testing.expect(t,ok)
+        o^[field]=json.String(strings.clone(vault.hex_encode_lower(sig.sig[:],context.temp_allocator)))
+    }
+    documents :: proc(t:^testing.T,creator_id,creator_key:string,creator,owner:^ecdsa.Private_Key,owner_key:string)->(json.Object,json.Object,string) {
+        zeros:=strings.repeat("0",128)
+        g:=make(json.Object)
+        for pair in ([11][2]string{{"protocol_version","1"},{"account_id","acct_1"},{"chain_id","chain_1"},{"creation_op","op_1"},{"owner_bridge_id","brg_1"},{"owner_key_id",owner_key},
+            {"creator_id",creator_id},{"creator_key_id",creator_key},{"schema_version","1"},{"creator_signature",zeros},{"owner_signature",zeros}}) { g[pair[0]]=json.String(pair[1]) }
+        sign(t,creator,"genesis",&g,"creator_signature");sign(t,owner,"genesis",&g,"owner_signature")
+        digest,_:=contracts.owner_digest("genesis",g)
+        cipher:="vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+        r:=make(json.Object)
+        for pair in ([13][2]string{{"protocol_version","1"},{"account_id","acct_1"},{"chain_id","chain_1"},{"owner_bridge_id","brg_1"},{"key_id",owner_key},{"genesis_digest",digest},
+            {"metadata_revision","1"},{"task_id",""},{"chain_title_cipher",cipher},{"chain_description_cipher",cipher},{"task_title_cipher",""},{"deleted","0"},{"signature",zeros}}) { r[pair[0]]=json.String(pair[1]) }
+        sign(t,owner,"registry",&r,"signature")
+        raw,_:=json.marshal(g)
+        return g,r,string(raw)
+    }
+    own,other:ecdsa.Private_Key
+    defer {ecdsa.private_key_clear(&own);ecdsa.private_key_clear(&other)}
+    owner:=mint(t,&own,"brg_1","brg_key_1")
+    stranger:=mint(t,&other,"brg_2","brg_key_2")
+    unapproved:=contracts.Owner_Verified_Key{"acct_1","",""," ","device",false,false}
+    g,r,raw:=documents(t,"brg_1","brg_key_1",&own,&own,"brg_key_1")
+    ck:=owner_publication_creator(g,"brg_1",owner,unapproved)
+    testing.expect(t,ck==owner,"the owner Bridge's own key is the creator")
+    testing.expect(t,owner_publication_verified(g,r,raw,"acct_1","brg_1",ck,owner,nil),"Bridge-created genesis publishes")
+    // A different Bridge's key as creator falls to the device lookup and fails.
+    g,r,raw=documents(t,"brg_2","brg_key_2",&other,&own,"brg_key_1")
+    ck=owner_publication_creator(g,"brg_1",owner,unapproved)
+    testing.expect(t,ck==unapproved)
+    testing.expect(t,!owner_publication_verified(g,r,raw,"acct_1","brg_1",ck,owner,nil),"foreign Bridge creator refused")
+    testing.expect(t,!owner_publication_verified(g,r,raw,"acct_1","brg_1",stranger,owner,nil),"even when presented as its own verified key")
+    // Claiming the owner's ids with another key: the creator signature fails.
+    g,r,raw=documents(t,"brg_1","brg_key_1",&other,&own,"brg_key_1")
+    ck=owner_publication_creator(g,"brg_1",owner,unapproved)
+    testing.expect(t,!owner_publication_verified(g,r,raw,"acct_1","brg_1",ck,owner,nil),"forged owner-creator signature refused")
+}

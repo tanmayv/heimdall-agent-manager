@@ -190,17 +190,32 @@ export async function ownerVerifySignature<K extends OwnerKind>(kind: K, o: Owne
     return await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, pub, unhex(sig), bytes(ownerCanonical(kind, o)));
   } catch { return false; }
 }
+/**
+ * A non-device genesis creator is accepted ONLY as the chain's own owner Bridge
+ * key (agent `task-chain create`): same principal, key id and public key as the
+ * verified owner, named as creator and owner. Never another Bridge key.
+ */
+export function ownerGenesisBridgeCreator(o: OwnerGenesis, recipientBridge: string, creator: OwnerVerifiedKey, owner: OwnerVerifiedKey): boolean {
+  return creator.kind === 'bridge' && owner.kind === 'bridge' && recipientBridge !== '' &&
+    creator.principal_id === recipientBridge && owner.principal_id === recipientBridge &&
+    creator.key_id === owner.key_id && creator.public_key === owner.public_key && creator.account_id === owner.account_id &&
+    o.creator_id === o.owner_bridge_id && o.creator_key_id === o.owner_key_id;
+}
 export async function ownerVerifyGenesis(o: OwnerGenesis, account: string, recipientBridge: string, creator: OwnerVerifiedKey, owner: OwnerVerifiedKey): Promise<OwnerError> {
   if (!ownerDocumentValid('genesis', o)) return 'malformed';
   if (o.account_id !== account || creator.account_id !== account || owner.account_id !== account) return 'invalid_scope';
   if (o.owner_bridge_id !== recipientBridge || owner.principal_id !== recipientBridge) return 'owner_mismatch';
-  if (creator.kind !== 'device' || owner.kind !== 'bridge' || creator.principal_id !== o.creator_id || creator.key_id !== o.creator_key_id || owner.key_id !== o.owner_key_id) return 'invalid_scope';
+  if (owner.kind !== 'bridge' || creator.principal_id !== o.creator_id || creator.key_id !== o.creator_key_id || owner.key_id !== o.owner_key_id) return 'invalid_scope';
+  if (creator.kind !== 'device' && !ownerGenesisBridgeCreator(o, recipientBridge, creator, owner)) return 'invalid_scope';
   return await ownerVerifySignature('genesis', o, 'creator_signature', creator) && await ownerVerifySignature('genesis', o, 'owner_signature', owner) ? 'none' : 'bad_signature';
 }
 export async function ownerAuthenticateCommand(o: OwnerCommand, payload: string, key: OwnerVerifiedKey, grant: OwnerReadGrant, nowMs: bigint): Promise<OwnerError> {
   if (!ownerDocumentValid('command', o) || bytes(payload).length > OWNER_DOCUMENT_MAX) return 'malformed';
   if (nowMs < 0n || grant.revision < 1n || grant.expires_ms <= nowMs || grant.revoked || !grant.can_read) return 'invalid_scope';
-  if (o.account_id !== grant.account_id || key.account_id !== grant.account_id || o.chain_id !== grant.chain_id || o.principal_id !== grant.principal_id || key.principal_id !== grant.principal_id || o.key_id !== grant.key_id || key.key_id !== grant.key_id || o.method !== grant.method || (grant.task_id !== '' && o.task_id !== grant.task_id) || key.kind !== 'device') return 'invalid_scope';
+  if (o.account_id !== grant.account_id || key.account_id !== grant.account_id || o.chain_id !== grant.chain_id || o.principal_id !== grant.principal_id || key.principal_id !== grant.principal_id || o.key_id !== grant.key_id || key.key_id !== grant.key_id || o.method !== grant.method || (grant.task_id !== '' && o.task_id !== grant.task_id)) return 'invalid_scope';
+  // Only chain.create may be signed by a Bridge key: the chain's own owner.
+  if (key.kind !== 'device' && (key.kind !== 'bridge' || o.method !== 'chain.create' || key.principal_id !== grant.owner_bridge_id ||
+    o.immutable_owner_bridge !== grant.owner_bridge_id || o.principal_id !== grant.owner_bridge_id)) return 'invalid_scope';
   if (o.immutable_owner_bridge !== grant.owner_bridge_id) return 'owner_mismatch';
   if (!await ownerVerifySignature('command', o, 'signature', key)) return 'bad_signature';
   if (await ownerPayloadDigest(payload) !== o.payload_digest) return 'digest_mismatch';

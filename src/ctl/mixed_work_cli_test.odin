@@ -61,3 +61,21 @@ test_agent_mode_task_chain_complete_routes_to_agent_work :: proc(t: ^testing.T) 
 	ticket_depend := fake_bridge_request(fb, 1)
 	testing.expectf(t, strings.contains(ticket_depend, `"method":"agent.task.depend"`) && strings.contains(ticket_depend, `"task_id":"task_r"`) && strings.contains(ticket_depend, `"depends_on_task_id":"task_p"`), "task: ref stays a ticket dependency: %s", ticket_depend)
 }
+
+// Agent chain creation is served by the caller's Bridge as owner: the verb
+// sends agent.task_chain.create with title, description and the optional
+// coordinator agent (no hub_chains_removed).
+@(test)
+test_agent_mode_task_chain_create_routes_to_owner_bridge :: proc(t: ^testing.T) {
+	ok_line := "{\"ok\":true,\"data\":{\"chain_id\":\"chain_x\"}}\n"
+	responses := []string{ok_line, ok_line}
+	fb := fake_bridge_start(t, responses)
+	if fb == nil do return
+	defer fake_bridge_stop(fb)
+	ctl_v2_task_chain(fb.endpoint, "tok", []string{"create"}, []string{"ham-ctl", "task-chain", "create", "--title", "Release", "--description", "Ship it"})
+	ctl_v2_task_chain(fb.endpoint, "tok", []string{"create"}, []string{"ham-ctl", "task-chain", "create", "--title", "Docs", "--coordinator-agent", "agt_writer"})
+	testing.expect_value(t, fb.served, 2)
+	first, second := fake_bridge_request(fb, 0), fake_bridge_request(fb, 1)
+	testing.expectf(t, strings.contains(first, `"method":"agent.task_chain.create"`) && strings.contains(first, `"title":"Release"`) && strings.contains(first, `"description":"Ship it"`) && !strings.contains(first, "coordinator_agent_id"), "default create: %s", first)
+	testing.expectf(t, strings.contains(second, `"title":"Docs"`) && strings.contains(second, `"coordinator_agent_id":"agt_writer"`), "named coordinator: %s", second)
+}

@@ -99,3 +99,45 @@ directory_config_authorized :: proc(s:^Store,chain:string,p:json.Object) -> bool
     if !valid || !obj do return false
     return field(p,"merge_policy")=="none" || field(p,"repository")==field(d,"path")
 }
+
+// Agent `task-chain create`: the ONE coordinator binding an agent may cause.
+// Only on a chain whose genesis creator is this owner Bridge key, only as the
+// chain's first membership, and only for a proven live child (member_set
+// validation). General chain.member.set and grant.* stay human-only
+// (agent_command_admit). Recorded and attributed like a member version.
+bind_created_coordinator :: proc(s:^Store,chain:string,child:Child,requested_by:string,now:i64) -> Result {
+    context.allocator=context.temp_allocator
+    if s.db==nil || now<0 || !agent_child_valid(child) || !contracts.owner_field_valid(requested_by,"id") do return fail("invalid_scope")
+    tx:Transaction
+    if !transaction_begin(s,&tx) do return fail("storage_error")
+    defer transaction_rollback(&tx)
+    state,ok:=query(s.db,"SELECT commit_seq,clock_high_ms,recovery_state FROM runtime_database WHERE singleton=1")
+    if !ok || len(state)!=1 do return fail("storage_error")
+    rows,read:=query(s.db,"SELECT t.creator,t.creator_key,t.revision,g.genesis_json FROM task_chains t JOIN chain_genesis g USING(chain_id) WHERE t.chain_id=?",chain)
+    if !read do return fail("storage_error")
+    if len(rows)!=1 || rows[0][0]!=s.owner || rows[0][1]!=s.owner_key do return fail("invalid_scope")
+    genesis,parsed:=contracts.owner_parse(rows[0][3],"genesis")
+    if !parsed || field(genesis,"creator_id")!=s.owner || field(genesis,"creator_key_id")!=s.owner_key || field(genesis,"owner_bridge_id")!=s.owner || field(genesis,"owner_key_id")!=s.owner_key do return fail("invalid_scope")
+    members,found:=query(s.db,"SELECT 1 FROM local_chain_member_versions WHERE chain_id=? LIMIT 1",chain)
+    if !found do return fail("storage_error")
+    if len(members)>0 do return fail("operation_conflict")
+    if now<number(state[0][1]) {
+        if !mark_clock_uncertain(&tx) do return fail("storage_error")
+        return fail("clock_uncertain")
+    }
+    if state[0][2]!="ready" do return fail("clock_uncertain")
+    if !work_chain_active(s,chain) do return fail("operation_conflict")
+    seq,next:=number(state[0][0])+1,number(rows[0][2])+1
+    op:=fmt.tprintf("bind_%s",chain)
+    c:=doc(map[string]string{"chain_id"=chain,"task_id"="","method"="chain.member.set","principal_id"=requested_by,"operation_id"=op})
+    p:=doc(map[string]string{"instance_id"=child.instance,"agent_id"=child.agent_id,"role"="coordinator","enabled"="1"})
+    payload:=encode(p)
+    if code:=member_set(s,c,p,child,seq);code!="ok" do return fail(code)
+    if _,ok=query(s.db,"UPDATE task_chains SET revision=revision+1 WHERE chain_id=?",chain);!ok do return fail("storage_error")
+    result:=encode(map[string]string{"chain_id"=chain,"task_id"="","operation_id"=op,"revision"=fmt.tprintf("%d",next),"instance_id"=child.instance})
+    if _,ok=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),chain,"chain.member.set","",fmt.tprintf("%d",next),op);!ok do return fail("storage_error")
+    if !event_record(&tx,seq,now,chain,"","agent",requested_by,"chain.member.set",op,"",payload,encode(doc(map[string]string{"title"="","description"="","body"=""})),result) do return fail("storage_error")
+    if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
+    if !transaction_commit(&tx) do return fail("storage_error")
+    return Result{code="ok",body=result,seq=seq}
+}

@@ -88,7 +88,7 @@ owner_local_publish_handler :: proc(ctx:rawptr,req:Request)->Response {
     if serr.code!=.None || !bound do return respond_error(domain.domain_error(.Forbidden,"owner identity mismatch"),req.request_id)
     bk:=contracts.Owner_Verified_Key{account,auth.bridge_id,owner.id,owner.sign_public_key,"bridge",true,false}
     digest,_:=contracts.owner_digest("genesis",genesis)
-    ck:=contracts.Owner_Verified_Key{account,creator.id,creator.id,creator.sign_public_key,"device",approved && creator.kind=="browser",false}
+    ck:=owner_publication_creator(genesis,auth.bridge_id,bk,contracts.Owner_Verified_Key{account,creator.id,creator.id,creator.sign_public_key,"device",approved && creator.kind=="browser",false})
     if !owner_publication_verified(genesis,registry,contracts.owner_string(publication,"genesis"),account,auth.bridge_id,ck,bk,existing) do return respond_error(domain.domain_error(.Forbidden,"invalid owner signatures"),req.request_id)
     if _,exists,_:=h.chains.get_chain(h.chains.ctx,domain.Task_Chain_ID(chain));exists {
         // Only a chain whose legacy writer was retired by an imported cutover
@@ -101,6 +101,13 @@ owner_local_publish_handler :: proc(ctx:rawptr,req:Request)->Response {
     err:=h.chains.owner_registry_publish(h.chains.ctx,r)
     if err.code!=.None do return respond_error(err,req.request_id)
     return respond_success(`{"published":true}`,req.request_id,auth_ctx_server_time(req))
+}
+// The genesis creator key: an approved browser directory key, or (agent
+// `task-chain create`) this owner Bridge's OWN bound key, never any other
+// directory key. owner_verify_genesis then enforces the exact pairing.
+owner_publication_creator :: proc(genesis:json.Object,bridge:string,owner,device:contracts.Owner_Verified_Key)->contracts.Owner_Verified_Key {
+    if contracts.owner_string(genesis,"creator_id")==bridge && contracts.owner_string(genesis,"creator_key_id")==owner.key_id && owner.kind=="bridge" && owner.principal_id==bridge do return owner
+    return device
 }
 // A bound genesis is authenticated historical evidence. Never reconstruct it
 // using a different key or promote a revoked creator into a current command key.
@@ -129,6 +136,9 @@ Owner_Listing_Page :: struct {
 Owner_Listing :: struct {
     chain_id,owner_bridge_id,owner_key_id,task_id,registry_json:string,
     online:bool,
+    // Routing metadata only: lets the app recover root access to a chain its
+    // owner Bridge created for an agent. The owner store enforces recovery.
+    creator_id:string,
 }
 owner_local_list_handler :: proc(ctx:rawptr,req:Request)->Response {
     context.allocator=context.temp_allocator
@@ -157,7 +167,7 @@ owner_local_list_handler :: proc(ctx:rawptr,req:Request)->Response {
         registry,valid:=contracts.owner_parse(row.registry_json,"registry")
         live:=valid && contracts.owner_string(registry,"deleted")!="1"
         if live {
-            entry:=Owner_Listing{row.chain_id,row.owner_bridge_id,row.owner_key_id,row.task_id,row.registry_json,project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry,row.owner_bridge_id)}
+            entry:=Owner_Listing{row.chain_id,row.owner_bridge_id,row.owner_key_id,row.task_id,row.registry_json,project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry,row.owner_bridge_id),row.creator_id}
             append(&out,entry)
             if len(owner_json(Owner_Listing_Page{out[:],Owner_Listing_Cursor{row.chain_id,row.task_id},false}))>262144 {
                 resize(&out,len(out)-1)
@@ -195,7 +205,7 @@ owner_local_list_all :: proc(h:^Bridge_Handlers,account,chain:string,headers_onl
             if !valid || contracts.owner_string(registry,"deleted")=="1" do continue
             bytes+=len(row.registry_json)+256
             if bytes>OWNER_LIST_UNPAGED_MAX_BYTES do return nil,.Over_Bound
-            append(&out,Owner_Listing{row.chain_id,row.owner_bridge_id,row.owner_key_id,row.task_id,row.registry_json,project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry,row.owner_bridge_id)})
+            append(&out,Owner_Listing{row.chain_id,row.owner_bridge_id,row.owner_key_id,row.task_id,row.registry_json,project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry,row.owner_bridge_id),row.creator_id})
         }
         if len(rows)<=100 do return out[:],.Complete
     }

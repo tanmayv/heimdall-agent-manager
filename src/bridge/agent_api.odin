@@ -110,7 +110,9 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 
 	// ---- task-chain -------------------------------------------------------
 	case "agent.task_chain.create":
-		return Bridge_Agent_Route{kind = .Raw, http_method = .POST, path = route_path("api", "v1", "task-chains"), send_body = true}
+		// Served by this Bridge as the owner (owner_agent_chain_create.odin);
+		// the Hub task-chain create endpoint is removed.
+		return Bridge_Agent_Route{kind = .Local, local_op = "task_chain.create"}
 	case "agent.task_chain.list":
 		// coordinated_by_me -> chains this agent coordinates (hub defaults the
 		// coordinator to the caller's own instance from the instance token).
@@ -455,6 +457,7 @@ bridge_agent_rewrite_params :: proc(method, params: string) -> string {
 // decrypted task-chain hits), and the shell/vault/telemetry ops below.
 bridge_local_handle_agent_local_op :: proc(request_id, op, params: string, rec: Bridge_Local_Agent_Token_Record) -> string {
     if op=="owner_local.lease" do return bridge_owner_agent(request_id,params,rec)
+    if op=="task_chain.create" do return bridge_owner_chain_create(request_id,params,rec)
 	if op == "bridge.list" {
 		scope := strings.trim_space(bridge_local_extract_json_string(params, "scope", "all"))
 		if scope == "" do scope = "all"

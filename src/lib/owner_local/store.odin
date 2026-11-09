@@ -122,7 +122,7 @@ grant :: proc(s:^Store, command:json.Object, now:i64) -> (contracts.Owner_Read_G
 // entering here. Its pinned sequence/hash is rechecked under the write lock.
 // The key is a verified current directory member, never a request assertion.
 execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:contracts.Owner_Verified_Key,
-    directory_version:i64,directory_hash:string, now:i64, kr:^vault.Vault_Keyring, sign:Signer, fleet_child:Child={}, lifecycle_proof:Lifecycle_Proof={}, role_children:[]Child=nil, grant_proof:Grant_Proof={}, remote_key:contracts.Owner_Verified_Key={}, agent:Child={}, source:Source_Proof={}) -> Result {
+    directory_version:i64,directory_hash:string, now:i64, kr:^vault.Vault_Keyring, sign:Signer, fleet_child:Child={}, lifecycle_proof:Lifecycle_Proof={}, role_children:[]Child=nil, grant_proof:Grant_Proof={}, remote_key:contracts.Owner_Verified_Key={}, agent:Child={}, source:Source_Proof={}, requested_by:string="") -> Result {
     context.allocator=context.temp_allocator
     c,parsed:=contracts.owner_parse(command_raw,"command")
     if !parsed do return fail("malformed")
@@ -162,6 +162,10 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         genesis,valid=contracts.owner_parse(genesis_raw,"genesis")
         if !valid do return fail("malformed")
         if e:=contracts.owner_verify_genesis(genesis,s.account,s.owner,key,owner_key); e!=.None do return auth_fail(e)
+        // The only non-device creator is this store's own owner key (agent
+        // `task-chain create` through the Bridge); never another Bridge key.
+        if key.kind!="device" && (agent_mode || key.kind!="bridge" || key.principal_id!=s.owner || key.key_id!=s.owner_key ||
+           key.public_key!=owner_key.public_key || principal!=s.owner) { return fail("invalid_scope") }
         if !contracts.owner_create_binding(c,genesis,payload) do return fail("digest_mismatch")
         if !has_grant {
             existing,looked:=query(s.db,"SELECT chain_id FROM task_chains WHERE chain_id=?",chain)
@@ -169,6 +173,8 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
             g=contracts.Owner_Read_Grant{account_id=s.account,owner_bridge_id=s.owner,chain_id=chain,principal_id=principal,key_id=key.key_id,method=method,revision=1,expires_ms=now+GRANT_MAX_TTL_MS,can_read=true,can_mutate=true}
         }
     } else if !has_grant { return fail("invalid_scope") }
+    bridge_created:=creating && !agent_mode && key.kind=="bridge"
+    if !agent_mode && !bridge_created && key.kind!="device" do return fail("invalid_scope")
     if !agent_mode { if e:=contracts.owner_authenticate_command(c,payload,key,g,auth_now);e!=.None do return auth_fail(e) }
     digest,_:=contracts.owner_digest("command",c)
     receipts,receipt_ok:=query(s.db,"SELECT method,input_digest,result_json,commit_seq,chain_id,task_id FROM command_receipts WHERE principal_id=? AND operation_id=?",principal,op)
@@ -351,7 +357,11 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     case "chain.create":
         _,wrote=query(s.db,"INSERT INTO task_chains VALUES(?,?,?,?,?,1)",chain,principal,key.key_id,title,description)
         if wrote { _,wrote=query(s.db,"INSERT INTO chain_genesis(chain_id,creation_op,genesis_digest,genesis_json) VALUES(?,?,?,?)",chain,op,field(p,"genesis_digest"),genesis_raw) }
-        if wrote { _,wrote=query(s.db,"INSERT INTO local_grants VALUES(?,?,?,1,?,1,1,0)",chain,principal,key.key_id,fmt.tprintf("%d",now+GRANT_MAX_TTL_MS)) }
+        // A Bridge-created chain has no device grant: the user reaches it by
+        // root recovery, enabled here by the store, never by the caller.
+        if wrote && bridge_created {
+            _,wrote=query(s.db,"INSERT INTO local_grant_policy VALUES(?,1,1)",chain)
+        } else if wrote { _,wrote=query(s.db,"INSERT INTO local_grants VALUES(?,?,?,1,?,1,1,0)",chain,principal,key.key_id,fmt.tprintf("%d",now+GRANT_MAX_TTL_MS)) }
     case "grant.set", "grant.revoke", "grant.policy", "grant.recover":
         code:=grant_write(s,c,p,command_raw,payload,key,grant_proof,now,seq)
         if code!="ok" do return fail(code)
@@ -479,7 +489,10 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     if !workflow_publications(&tx,c,body,seq,kr,sign) do return fail("storage_error")
     if !source_intent(&tx,c,body,seq) do return fail("storage_error")
     if !workflow_refresh(s) do return fail("storage_error")
-    if !event_record(&tx,seq,now,chain,task,("agent" if agent_mode else "device"),principal,method,op,command_raw,payload,content,result) do return fail("storage_error")
+    actor_kind,actor_id:=("agent" if agent_mode else "device"),principal
+    // A Bridge-created chain is attributed to the requesting agent instance.
+    if bridge_created { actor_kind="agent" if requested_by!="" else "bridge"; if requested_by!="" do actor_id=requested_by }
+    if !event_record(&tx,seq,now,chain,task,actor_kind,actor_id,method,op,command_raw,payload,content,result) do return fail("storage_error")
     if !source_lifecycle(&tx,c,p,seq,now) do return fail("storage_error")
     if !control_intents(&tx,c,seq) do return fail("storage_error")
     if method=="review.post" && !lifecycle_merge_intent(&tx,c,p,seq) do return fail("storage_error")
