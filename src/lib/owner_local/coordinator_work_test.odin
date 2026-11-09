@@ -418,15 +418,26 @@ cw_split_refused_states_and_rollback_on_mid_way_failure :: proc(t:^testing.T) {
 }
 
 @(test)
-cw_split_ratchet_keeps_the_user_gate_on_children :: proc(t:^testing.T) {
+cw_split_children_inherit_the_user_gate_unless_cleared :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
     coord:=agent_coordinator_child()
-    // Brief-gated original.
+    // Brief-gated original: the coordinator may clear the gate on a child
+    // explicitly (audited with the split reason).
     {
         f:=fixture(t);defer destroy(f);user_gate_seed(t,f);agent_seat_coordinator(t,f,coord)
-        drop:=`{"reason":"r","children":[{"task_id":"c1","title":"a","brief":{"goal":"A","acceptance":["ok"],"requires_user_approval":false}}]}`
-        testing.expect_value(t,cw_run(f,coord,"task.split","drop",cw_split(f,drop)).code,"invalid_scope")
-        testing.expect_value(t,cc_scalar(f,"SELECT count(*) FROM tasks WHERE task_id='c1'"),"0")
+        drop:=`{"reason":"user waived review","children":[{"task_id":"c1","title":"a","brief":{"goal":"A","acceptance":["ok"],"requires_user_approval":false}},{"task_id":"c2","title":"b"}]}`
+        r:=cw_run(f,coord,"task.split","drop",cw_split(f,drop))
+        testing.expect_value(t,r.code,"ok")
+        gated,_:=task_user_approval_required(&f.store,"chain","c1")
+        testing.expect(t,!gated,"the coordinator cleared the gate on c1")
+        gated,_=task_user_approval_required(&f.store,"chain","c2")
+        testing.expect(t,gated,"c2 inherits the gate")
+        testing.expect_value(t,cc_scalar(f,"SELECT json_extract(v,'$.actor_kind')||':'||json_extract(v,'$.actor_id')||'|'||json_extract(v,'$.old')||'>'||json_extract(v,'$.new')||'|'||json_extract(v,'$.reason')||'|'||json_extract(v,'$.task_ids') FROM (SELECT json_extract(json_extract(evidence_json,'$.result'),'$.user_approval_change') AS v FROM local_events WHERE kind='task.split')"),
+            "agent:coord_instance|1>0|user waived review|c1")
+    }
+    // Omission inherits the gate.
+    {
+        f:=fixture(t);defer destroy(f);user_gate_seed(t,f);agent_seat_coordinator(t,f,coord)
         keep:=`{"reason":"r","children":[{"task_id":"c1","title":"a","brief":{"goal":"A","acceptance":["ok"]}},{"task_id":"c2","title":"b"},{"task_id":"c3","title":"c","unassigned":true}]}`
         testing.expect_value(t,cw_run(f,coord,"task.split","keep",cw_split(f,keep)).code,"ok")
         for id in ([3]string{"c1","c2","c3"}) {
