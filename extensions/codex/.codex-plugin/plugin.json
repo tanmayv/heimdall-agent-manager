@@ -1,6 +1,6 @@
 {
   "name": "heimdall",
-  "version": "0.5.50-subagents.3",
+  "version": "0.5.50-subagents.4",
   "description": "Heimdall Codex lifecycle and permission hooks",
   "hooks": "./hooks/hooks.json"
 }
