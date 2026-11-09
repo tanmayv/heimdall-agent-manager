@@ -50,6 +50,8 @@ Error_Code :: enum {
 	Question_Invalid,
 	// R4a: the chain is held by its owner Bridge; details name that Bridge.
 	Owner_Authority,
+	// The Hub task-chain engine is removed; chains are Bridge-owned only.
+	Hub_Chains_Removed,
 }
 
 Error_Code_Info :: struct {
@@ -83,6 +85,7 @@ ERROR_CODE_TABLE :: [Error_Code]Error_Code_Info{
 	.Question_Invalid     = {"question_invalid",     .fatal,       400},
 	.Vault_Locked         = {"vault_locked",         .recoverable, 423}, // RFC 4918 Locked: retry after unseal
 	.Owner_Authority      = {"owner_authority",      .recoverable, 409}, // write through the owner Bridge named in details
+	.Hub_Chains_Removed   = {"hub_chains_removed",   .fatal,       410}, // Hub chains are gone; use a Bridge-owned chain
 }
 
 error_code_string :: proc(code: Error_Code) -> string {

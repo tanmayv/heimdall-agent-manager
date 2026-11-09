@@ -28,6 +28,8 @@ test_error_code_table_keeps_existing_http_statuses :: proc(t: ^testing.T) {
 	testing.expect_value(t, error_code_class(.Bridge_Busy), Bridge_Error_Class.retriable)
 	testing.expect_value(t, error_code_class(.Vault_Locked), Bridge_Error_Class.recoverable)
 	testing.expect_value(t, error_code_class(.Validation_Failed), Bridge_Error_Class.fatal)
+	testing.expect_value(t, error_code_http_status(.Hub_Chains_Removed), 410)
+	testing.expect_value(t, error_code_string(.Hub_Chains_Removed), "hub_chains_removed")
 }
 
 @(test)

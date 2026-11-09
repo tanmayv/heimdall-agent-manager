@@ -226,6 +226,8 @@ mcp_control_handler :: proc(ctx:rawptr,req:Request)->(response:Response) {
 		if args_object {files,has_files:=arguments["files"];if has_files {_,files_object=files.(json.Object)}}
 		if !nok || string(name)!="artifacts.create" || !files_object do return mcp_rpc_error(id,-32602,"request_too_large: only artifacts.create with entry/files accepts more than 512 KiB")
 	}
+	// Hub chains are removed: chains.create answers the typed refusal.
+	if nok && string(name)=="chains.create" do return mcp_tool_result(id,"hub_chains_removed",true)
 	args,args_ok:=mcp_arguments(string(name),params["arguments"])
 	defer {
 		for text in ([]string{args.catalog.name,args.catalog.slug,args.catalog.instructions}) do if text!="" do crypto.zero_explicit(raw_data(text),len(text))
