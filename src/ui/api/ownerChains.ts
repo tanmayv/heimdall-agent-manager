@@ -380,6 +380,8 @@ export interface OwnerRuntime {
   lifecycle: string; attempt: string;
   control: { mode: string; reason: string; waitingOn: string } | null;
   leased: boolean;
+  /** The instance holding the live lease ('' when none). */
+  holder: string;
   requirements: { revision: string; goal: string; acceptance: string[]; requiresUserApproval: boolean; raw: string } | null;
   submission: { attempt: string; head: string; requirementsRevision: string; summary: string; author: string } | null;
   attemptNo: number;
@@ -404,6 +406,7 @@ export function parseOwnerRuntime(data: any): OwnerRuntime {
     lifecycle: state?.[0] ?? 'ready', attempt: state?.[1] ?? '0',
     control: controls ? { mode: controls[0], reason: controls[2] ?? '', waitingOn: controls[3] ?? '' } : null,
     leased: Array.isArray(data?.leases) && data.leases.length > 0,
+    holder: Array.isArray(data?.leases?.[0]) ? String(data.leases[0][1] ?? '') : '',
     requirements: req ? { revision: req[0], raw: req[1] ?? '', ...parseBrief(req[1] ?? '') } : null,
     submission: sub ? { attempt: sub[0], head: sub[1] ?? '', requirementsRevision: sub[2] ?? '', summary: sub[3] ?? '', author: sub[4] ?? '' } : null,
     attemptNo: Number(data?.attempts?.attempt_no ?? 0) || 0,

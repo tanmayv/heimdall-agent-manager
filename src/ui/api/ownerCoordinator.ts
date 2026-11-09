@@ -82,6 +82,38 @@ export async function readOwnerChainCoordinatorMember(
   return scanOwnerChainCoordinatorMember((cursor) => ownerCall(session, bridgeId, 'chain.metadata.read', { chainId, expectedRevision: '0', cursor, limit: 3 }, send));
 }
 
+/** One chain member (the latest version of its member row). */
+export interface OwnerChainMember { instanceId: string; agentId: string; role: string; enabled: boolean }
+
+/** The latest member row per instance among metadata items, newest first. */
+export function membersFromMetadataItems(items: OwnerMetadataItem[]): OwnerChainMember[] {
+  const out = new Map<string, OwnerChainMember>();
+  for (const item of items) {
+    if (item?.kind !== 'member' || item.current !== '1') continue;
+    let body: any = {};
+    try { body = JSON.parse(String(item.body || '{}')); } catch { continue; }
+    const instanceId = String(body?.instance_id || item.entity_id || '');
+    if (!instanceId || out.has(instanceId)) continue;
+    out.set(instanceId, { instanceId, agentId: String(body?.agent_id || ''), role: String(body?.role || ''), enabled: item.enabled === '1' });
+  }
+  return [...out.values()];
+}
+
+/** Every member of a chain (bounded metadata scan, like the coordinator read). */
+export async function readOwnerChainMembers(
+  session: OwnerSession, bridgeId: string, chainId: string, send: OwnerSend = ownerRelaySend, maxPages = COORDINATOR_SCAN_PAGES,
+): Promise<OwnerChainMember[]> {
+  const items: OwnerMetadataItem[] = [];
+  let cursor = '';
+  for (let page = 0; page < maxPages; page += 1) {
+    const data = await ownerCall(session, bridgeId, 'chain.metadata.read', { chainId, expectedRevision: '0', cursor, limit: 3 }, send);
+    if (Array.isArray(data?.items)) items.push(...data.items);
+    cursor = String(data?.next_cursor || '');
+    if (!cursor) break;
+  }
+  return membersFromMetadataItems(items);
+}
+
 export async function readOwnerChainCoordinator(
   session: OwnerSession, bridgeId: string, chainId: string, send: OwnerSend = ownerRelaySend,
 ): Promise<string> {

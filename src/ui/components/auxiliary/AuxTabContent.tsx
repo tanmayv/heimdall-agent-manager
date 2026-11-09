@@ -18,7 +18,7 @@ import { ShellWorkbenchPane } from '../workbench/ShellWorkbenchPane';
 import type { AgentAuxContext } from './useAgentAuxContext';
 import { OpenAgentChatContext } from './openAgentChatContext';
 import ArtifactViewer from '../ArtifactViewer';
-import { buildRouteHash } from '../../utils/appLocation';
+import { OwnerChainAuxPane, openAgentConversation } from '../taskchain/OwnerChainAuxPane';
 
 const ProjectFilesPanel = React.lazy(() => import('../chat/ProjectFilesPanel'));
 const ProjectVcsPanel = React.lazy(() => import('../chat/ProjectVcsPanel'));
@@ -113,20 +113,47 @@ function renderAuxTabBody({
     return <ExplorerUnavailableNotice access={ctx.projectExplorerAccess ?? 'loading'} />;
   }
   switch (c.type) {
+    // Chain panes of a Bridge-owned chain: every read is a signed owner read
+    // (OwnerChainAuxPane), the chain comes from the owner registry snapshot.
     case 'chainOverview':
-    case 'tasks':
-    case 'ticket':
-      // Hub task chains (overview, board, ticket tabs) were removed; chains live
-      // on their owner Bridges and open from the Task Chains page.
       return (
-        <EmptyNotice debugId="aux-hub-chains-removed">
-          <div className="space-y-2">
-            <p>Task boards now live on your Bridges.</p>
-            <a href={buildRouteHash(ctx.chainId ? `/chains/${encodeURIComponent(ctx.chainId)}` : '/chains', '')} className="text-accent underline">
-              Open Task Chains
-            </a>
-          </div>
-        </EmptyNotice>
+        <OwnerChainAuxPane
+          chainId={ctx.chainId}
+          layout="overview"
+          onOpenTicket={(taskId) => onOpenTab({ type: 'tasks', ...(taskId ? { taskId } : {}) })}
+          onOpenAgent={(agentInstanceId, title) => {
+            openAgentChat(agentInstanceId, title);
+          }}
+        />
+      );
+    case 'tasks':
+      return (
+        <OwnerChainAuxPane
+          key={ctx.chainId}
+          chainId={ctx.chainId}
+          layout="board"
+          taskId={c.taskId}
+          // A one-shot `taskId` on the board tab is consumed once its ticket
+          // opens, so the board does not reopen it each time it remounts.
+          onFocusConsumed={() => onUpdateTab(tab.id, { taskId: undefined })}
+          onOpenTicket={(taskId, title) => onOpenTab({ type: 'ticket', chainId: ctx.chainId, taskId }, title)}
+          onOpenAgent={(agentInstanceId) => openAgentConversation(agentInstanceId, isMobile)}
+        />
+      );
+    case 'ticket':
+      // One tab per ticket (REQ-T1); prev / next swap the ticket in this tab.
+      return (
+        <OwnerChainAuxPane
+          key={`${c.chainId}:${c.taskId}`}
+          chainId={c.chainId}
+          layout="ticket"
+          taskId={c.taskId}
+          onShowBoard={() => onOpenTab({ type: 'tasks' })}
+          onOpenTicket={(taskId, title) => onOpenTab({ type: 'ticket', chainId: c.chainId, taskId }, title)}
+          onSwitchTicket={(taskId, title) => onRekeyTab(tab.id, { type: 'ticket', chainId: c.chainId, taskId }, title)}
+          onOpenAgent={(agentInstanceId) => openAgentConversation(agentInstanceId, isMobile)}
+          onTitle={(title) => title !== tab.title && onUpdateTab(tab.id, {}, title)}
+        />
       );
     case 'files':
       return (

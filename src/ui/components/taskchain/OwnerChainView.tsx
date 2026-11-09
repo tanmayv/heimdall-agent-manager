@@ -19,12 +19,19 @@ import { TASK_STATE_LABELS } from '../tasks/taskV2Types';
 import OwnerLocalPanel from './OwnerLocalPanel';
 import OwnerCoordinatorControl, { type OwnerCoordinatorApi } from './OwnerCoordinatorControl';
 import { ownerChainById, resolveOwnerChainCoordinator, setOwnerChainCoordinator } from '../../api/ownerChainsStore';
-import { bindOwnerCoordinator } from '../../api/ownerCoordinator';
+import { bindOwnerCoordinator, readOwnerChainMembers, type OwnerChainMember } from '../../api/ownerCoordinator';
 
 const STATE_TONE: Record<OwnerTaskState, Tone> = {
   ready: 'info', in_progress: 'pending', in_review: 'warning', done: 'success', cancelled: 'neutral',
 };
 const RUNTIME_LIMIT = 50;
+const STATE_ORDER: OwnerTaskState[] = ['ready', 'in_progress', 'in_review', 'done', 'cancelled'];
+
+/** What a background refresh compares to decide whether the open ticket changed. */
+function runtimeKey(rt: OwnerRuntime | undefined): string {
+  if (!rt) return '';
+  return [rt.revision, rt.lifecycle, rt.leased, rt.holder, rt.control?.mode ?? '', rt.attemptNo, rt.submission?.attempt ?? ''].join('|');
+}
 
 function formatWhen(value: string): string {
   if (!value) return '';
@@ -57,8 +64,28 @@ interface TaskView {
   reviewsMore: boolean;
 }
 
+/**
+ * `page` (the Task Chains page): ticket list beside the selected ticket. The
+ * aux panes of a coordinator conversation show one part each: `overview`
+ * (status, agents, attention, tickets), `board` (tickets by state) and
+ * `ticket` (one ticket); their ticket clicks open ticket tabs via onOpenTicket.
+ */
+export type OwnerChainLayout = 'page' | 'overview' | 'board' | 'ticket';
+
 export interface OwnerChainViewProps {
   chain: OwnerChainSummary;
+  layout?: OwnerChainLayout;
+  /** Aux layouts: a ticket click opens it (the page selects it in place). */
+  onOpenTicket?: (taskId: string, title: string) => void;
+  /** Ticket layout: back to the board, and prev / next in the same tab. */
+  onShowBoard?: () => void;
+  onSwitchTicket?: (taskId: string, title: string) => void;
+  /** An agent (member or lease holder) was clicked. */
+  onOpenAgent?: (instanceId: string, title?: string) => void;
+  /** Ticket layout: the ticket's title once read. */
+  onTitle?: (title: string) => void;
+  /** Re-read the owner this often (ms) while the page is visible; 0 = only on Refresh. */
+  refreshMs?: number;
   focusTaskId?: string;
   submissionAttempt?: string;
   onClose?: () => void;
@@ -72,7 +99,10 @@ export interface OwnerChainViewProps {
   coordinatorApi?: OwnerCoordinatorApi;
 }
 
-export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose, extra, send: sendProp = ownerRelaySend, session: sessionProp = freshOwnerSession, coordinatorApi }: OwnerChainViewProps) {
+export function OwnerChainView({
+  chain, layout = 'page', onOpenTicket, onShowBoard, onSwitchTicket, onOpenAgent, onTitle, refreshMs = 0,
+  focusTaskId, submissionAttempt, onClose, extra, send: sendProp = ownerRelaySend, session: sessionProp = freshOwnerSession, coordinatorApi,
+}: OwnerChainViewProps) {
   const bridge = chain.ownerBridgeId;
   // Injected transports are read through refs so a caller's inline function
   // never re-triggers the loads.
@@ -87,6 +117,7 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
   const [detail, setDetail] = useState<OwnerChainDetail | null>(null);
   const [chainStatus, setChainStatus] = useState<OwnerChainStatus>(chain.status ?? '');
   const [states, setStates] = useState<Record<string, OwnerRuntime>>({});
+  const [members, setMembers] = useState<OwnerChainMember[] | null>(null);
   const [selected, setSelected] = useState(focusTaskId || '');
   const [task, setTask] = useState<TaskView | null>(null);
   const [taskLoading, setTaskLoading] = useState(false);
@@ -130,8 +161,9 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
     return s;
   }, [sessionOf]);
 
-  const loadChain = useCallback(async () => {
-    setLoading(true);
+  // `quiet` (background refresh) keeps the list as is instead of showing loading.
+  const loadChain = useCallback(async (quiet = false): Promise<{ detail: OwnerChainDetail; states: Record<string, OwnerRuntime> } | null> => {
+    if (!quiet) setLoading(true);
     try {
       const s = await session();
       const [d, status] = await Promise.all([
@@ -148,9 +180,15 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
           try { next[id] = await readOwnerRuntime(s, bridge, chain.chainId, id, send); } catch (e) { if (isOwnerOffline(e)) throw e; }
         }
       }));
+      // The overview lists the chain's agents: its member rows.
+      if (layout === 'overview') {
+        const m = await readOwnerChainMembers(s, bridge, chain.chainId, send).catch((e) => { if (isOwnerOffline(e)) throw e; return null; });
+        if (live.current) setMembers(m);
+      }
       if (live.current) setStates(next);
-    } catch (e) { fail(e); } finally { if (live.current) setLoading(false); }
-  }, [bridge, chain.chainId, send, session, fail]);
+      return { detail: d, states: next };
+    } catch (e) { fail(e); return null; } finally { if (live.current && !quiet) setLoading(false); }
+  }, [bridge, chain.chainId, send, session, fail, layout]);
 
   // The ticket (brief, comments, runtime) renders as soon as it is read; the
   // review history scan, which may page through the whole chain history, fills
@@ -200,6 +238,35 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
     if (focusTaskId && submissionAttempt && !offline) void openSubmission(focusTaskId, submissionAttempt);
   }, [focusTaskId, submissionAttempt]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Background refresh (aux panes): owner chains have no push events, so the
+  // chain is re-read on an interval while the page is visible and the owner is
+  // reachable; the open ticket is re-read only when its revision or runtime moved.
+  const pollState = useRef({ offline, busy, selected, task });
+  pollState.current = { offline, busy, selected, task };
+  useEffect(() => {
+    if (!refreshMs || !(chain.online || chain.pending)) return;
+    let running = false;
+    const timer = setInterval(() => {
+      const p = pollState.current;
+      if (running || p.offline || p.busy || (typeof document !== 'undefined' && document.visibilityState === 'hidden')) return;
+      running = true;
+      void loadChain(true).then((r) => {
+        const cur = pollState.current;
+        if (!r || !cur.selected || !live.current) return;
+        const row = r.detail.tasks.find((t) => t.task_id === cur.selected);
+        const loaded = cur.task?.taskId === cur.selected ? cur.task : null;
+        if (!loaded || (row && row.revision !== loaded.detail.revision) || (r.states[cur.selected] && runtimeKey(r.states[cur.selected]) !== runtimeKey(loaded.runtime))) {
+          return loadTask(cur.selected);
+        }
+      }).finally(() => { running = false; });
+    }, refreshMs);
+    return () => clearInterval(timer);
+  }, [refreshMs, chain.online, chain.pending, loadChain, loadTask]);
+
+  useEffect(() => {
+    if (layout === 'ticket' && task?.detail.title) onTitle?.(task.detail.title);
+  }, [layout, task?.detail.title]); // eslint-disable-line react-hooks/exhaustive-deps
+
   async function mutate(method: OwnerCommand['method'], input: Omit<OwnerInput, 'chainId' | 'expectedRevision'>, done: string): Promise<boolean> {
     setBusy(true); setError(''); setNotice('');
     try {
@@ -245,6 +312,58 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
   const ts = task ? ownerTaskState(task.runtime) : null;
   // Changes only on a reachable owner whose chain is confirmed active.
   const editable = !offline && Boolean(detail) && chainStatus === 'active';
+  const aux = layout !== 'page';
+  const showChainInfo = layout === 'page' || layout === 'overview';
+  // The page selects a ticket in place; aux panes open it in a ticket tab.
+  const openTicket = (taskId: string, ticketTitle: string) => {
+    if (aux) onOpenTicket?.(taskId, ticketTitle || taskId); else setSelected(taskId);
+  };
+  const stateOf = (taskId: string) => (states[taskId] ? ownerTaskState(states[taskId]) : null);
+  const awaitingUser = (taskId: string) => {
+    const rt = states[taskId];
+    return Boolean(rt && ownerAwaitingUser(rt, task?.taskId === taskId && !task.reviewsLoading ? task.reviews : undefined));
+  };
+
+  // Agents: the chain's member rows (overview reads them) and every live lease
+  // holder, with the tickets each one holds.
+  const agents = useMemo(() => {
+    if (layout !== 'overview') return [];
+    const rows = new Map<string, { instanceId: string; agentId: string; role: string; enabled: boolean; tickets: { taskId: string; title: string }[] }>();
+    for (const m of members ?? []) rows.set(m.instanceId, { ...m, tickets: [] });
+    if (coordinatorId && !rows.has(coordinatorId)) rows.set(coordinatorId, { instanceId: coordinatorId, agentId: '', role: 'coordinator', enabled: true, tickets: [] });
+    for (const t of tasks) {
+      const holder = states[t.taskId]?.holder;
+      if (!holder) continue;
+      const row = rows.get(holder) ?? { instanceId: holder, agentId: '', role: '', enabled: true, tickets: [] };
+      row.tickets.push({ taskId: t.taskId, title: t.title || t.taskId });
+      rows.set(holder, row);
+    }
+    return [...rows.values()].sort((a, b) => Number(b.role === 'coordinator') - Number(a.role === 'coordinator') || Number(b.enabled) - Number(a.enabled));
+  }, [layout, members, coordinatorId, tasks, states]);
+
+  const ticketCard = (t: { taskId: string; title: string; priority: string }) => {
+    const st = stateOf(t.taskId);
+    return (
+      <li key={t.taskId}>
+        <button type="button" data-debug-id={`owner-chain-task-${t.taskId}`} disabled={offline}
+          onClick={() => openTicket(t.taskId, t.title)}
+          className={`flex w-full min-w-0 flex-col gap-1 rounded-lg border px-3 py-2 text-left ${selected === t.taskId && !aux ? 'border-accent/40 bg-accent/10' : 'border-subtle bg-surface hover:bg-surface-raised'} disabled:cursor-default`}>
+          <span className="truncate text-sm text-primary">{t.title || t.taskId}</span>
+          <span className="flex flex-wrap items-center gap-1.5">
+            {st && <Badge tone={STATE_TONE[st.state]} data-debug-id={`owner-chain-task-state-${t.taskId}`}>{TASK_STATE_LABELS[st.state]}</Badge>}
+            {st?.held && <Badge tone="warning">Held</Badge>}
+            {st?.blocked && <Badge tone="danger">Blocked</Badge>}
+            {awaitingUser(t.taskId) && <Badge tone="warning" data-debug-id={`owner-chain-task-awaiting-user-${t.taskId}`}>Waiting on you</Badge>}
+            {t.priority && t.priority !== 'p2' && <Badge tone="neutral">{t.priority.toUpperCase()}</Badge>}
+          </span>
+        </button>
+      </li>
+    );
+  };
+  const selectedIndex = tasks.findIndex((t) => t.taskId === selected);
+  const prevTicket = selectedIndex > 0 ? tasks[selectedIndex - 1] : null;
+  const nextTicket = selectedIndex >= 0 && selectedIndex < tasks.length - 1 ? tasks[selectedIndex + 1] : null;
+  const attention = tasks.filter((t) => awaitingUser(t.taskId) || stateOf(t.taskId)?.blocked || stateOf(t.taskId)?.held);
 
   return (
     <div data-debug-id="owner-chain-view" className="flex h-full min-w-0 flex-col overflow-y-auto text-left">
@@ -285,7 +404,7 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
           {chainStatus === 'completed' ? 'This chain is completed; it is read-only.' : 'The chain’s status could not be read; changes are unavailable.'}
         </p>
       )}
-      {!offline && detail && (
+      {!offline && detail && showChainInfo && (
         <div className="mx-4 mt-3">
           <OwnerCoordinatorControl
             chainId={chain.chainId}
@@ -301,39 +420,78 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
       )}
       {chain.sealed && <p className="mx-4 mt-3 text-xs text-muted">Some titles are sealed with a key this device does not hold.</p>}
 
-      {description ? <p data-debug-id="owner-chain-description" className="whitespace-pre-wrap px-4 pt-3 text-sm text-muted">{description}</p> : null}
-      {extra ? <div className="px-4 pt-3">{extra}</div> : null}
+      {showChainInfo && description ? <p data-debug-id="owner-chain-description" className="whitespace-pre-wrap px-4 pt-3 text-sm text-muted">{description}</p> : null}
+      {showChainInfo && extra ? <div className="px-4 pt-3">{extra}</div> : null}
 
-      <div className="grid min-h-0 flex-1 gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
-        <section aria-label="Tickets" className="min-w-0 space-y-2">
+      {layout === 'overview' && (
+        <div data-debug-id="owner-chain-overview" className="space-y-4 px-4 pt-4">
+          {detail && tasks.length > 0 && (
+            <div data-debug-id="owner-chain-overview-counts" className="flex flex-wrap gap-1.5">
+              {STATE_ORDER.map((state) => {
+                const n = tasks.filter((t) => stateOf(t.taskId)?.state === state).length;
+                return n ? <Badge key={state} tone={STATE_TONE[state]} data-debug-id={`owner-chain-count-${state}`}>{TASK_STATE_LABELS[state]} · {n}</Badge> : null;
+              })}
+            </div>
+          )}
+          <section aria-label="Agents" data-debug-id="owner-chain-agents" className="space-y-1.5">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">Agents</h3>
+            {offline ? <p className="text-xs italic text-faint">Unavailable while the owner Bridge is offline.</p>
+              : members === null && loading ? <p role="status" className="text-xs text-muted">Loading agents…</p>
+              : agents.length === 0 ? <p data-debug-id="owner-chain-no-agents" className="text-xs italic text-faint">No agents yet.</p>
+              : (
+                <ul className="space-y-1.5">
+                  {agents.map((a) => (
+                    <li key={a.instanceId} data-debug-id={`owner-chain-agent-${a.instanceId}`} className="flex min-w-0 flex-wrap items-center gap-1.5 rounded-lg border border-subtle px-3 py-2 text-sm">
+                      <button type="button" data-debug-id={`owner-chain-agent-open-${a.instanceId}`} disabled={!onOpenAgent}
+                        onClick={() => onOpenAgent?.(a.instanceId)}
+                        className="min-w-0 truncate font-mono text-xs text-primary hover:underline disabled:no-underline" title={a.agentId || a.instanceId}>
+                        {a.instanceId}
+                      </button>
+                      {a.role && <Badge tone={a.role === 'coordinator' ? 'info' : 'neutral'}>{a.role}</Badge>}
+                      {!a.enabled && <Badge tone="neutral">Removed</Badge>}
+                      {a.tickets.map((t) => (
+                        <button key={t.taskId} type="button" data-debug-id={`owner-chain-agent-ticket-${a.instanceId}-${t.taskId}`} onClick={() => openTicket(t.taskId, t.title)}
+                          className="min-w-0 truncate text-xs text-accent hover:underline">
+                          on {t.title}
+                        </button>
+                      ))}
+                    </li>
+                  ))}
+                </ul>
+              )}
+          </section>
+          {attention.length > 0 && (
+            <section aria-label="Needs attention" data-debug-id="owner-chain-attention" className="space-y-1.5">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-warning">Needs attention</h3>
+              <ul className="space-y-1.5">{attention.map(ticketCard)}</ul>
+            </section>
+          )}
+        </div>
+      )}
+
+      <div className={`grid min-h-0 flex-1 gap-4 p-4 ${layout === 'page' ? 'lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]' : ''}`}>
+        {layout !== 'ticket' && <section aria-label="Tickets" data-debug-id={`owner-chain-tickets-${layout}`} className="min-w-0 space-y-2">
           <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">Tickets {loading && <span className="normal-case">· loading…</span>}</h3>
           {tasks.length === 0 && !loading && <p data-debug-id="owner-chain-no-tasks" className="text-xs italic text-faint">No tickets yet.</p>}
-          <ul className="space-y-1.5">
-            {tasks.map((t) => {
-              const rt = states[t.taskId];
-              const st = rt ? ownerTaskState(rt) : null;
-              return (
-                <li key={t.taskId}>
-                  <button type="button" data-debug-id={`owner-chain-task-${t.taskId}`} disabled={offline}
-                    onClick={() => setSelected(t.taskId)}
-                    className={`flex w-full min-w-0 flex-col gap-1 rounded-lg border px-3 py-2 text-left ${selected === t.taskId ? 'border-accent/40 bg-accent/10' : 'border-subtle bg-surface hover:bg-surface-raised'} disabled:cursor-default`}>
-                    <span className="truncate text-sm text-primary">{t.title || t.taskId}</span>
-                    <span className="flex flex-wrap items-center gap-1.5">
-                      {st && <Badge tone={STATE_TONE[st.state]} data-debug-id={`owner-chain-task-state-${t.taskId}`}>{TASK_STATE_LABELS[st.state]}</Badge>}
-                      {st?.held && <Badge tone="warning">Held</Badge>}
-                      {st?.blocked && <Badge tone="danger">Blocked</Badge>}
-                      {rt && ownerAwaitingUser(rt, task?.taskId === t.taskId && !task.reviewsLoading ? task.reviews : undefined) && (
-                        <Badge tone="warning" data-debug-id={`owner-chain-task-awaiting-user-${t.taskId}`}>Waiting on you</Badge>
-                      )}
-                      {t.priority && t.priority !== 'p2' && <Badge tone="neutral">{t.priority.toUpperCase()}</Badge>}
-                    </span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
+          {layout === 'board' ? (
+            // The board: tickets grouped by state (tickets whose state is not read yet last).
+            <div className="space-y-3">
+              {[...STATE_ORDER, null].map((state) => {
+                const column = tasks.filter((t) => (stateOf(t.taskId)?.state ?? null) === state);
+                if (column.length === 0) return null;
+                return (
+                  <div key={state ?? 'unknown'} data-debug-id={`owner-chain-board-column-${state ?? 'unknown'}`} className="space-y-1.5">
+                    <h4 className="text-xs font-semibold text-muted">{state ? TASK_STATE_LABELS[state] : 'State unknown'} · {column.length}</h4>
+                    <ul className="space-y-1.5">{column.map(ticketCard)}</ul>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <ul className="space-y-1.5">{tasks.map(ticketCard)}</ul>
+          )}
           {detail?.truncated && <p className="text-xs text-muted">Showing the first {detail.tasks.length} tickets.</p>}
-          {editable && (
+          {editable && layout !== 'overview' && (
             <form data-debug-id="owner-chain-create-task-form" className="space-y-1.5 rounded-lg border border-subtle p-3" onSubmit={(e) => {
               e.preventDefault();
               if (!newTitle.trim()) return;
@@ -347,9 +505,18 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
               <Button size="sm" type="submit" variant="primary" data-debug-id="owner-chain-create-task" disabled={busy || !newTitle.trim()}>Create ticket</Button>
             </form>
           )}
-        </section>
+        </section>}
 
-        <section aria-label="Ticket details" data-debug-id="owner-chain-task-detail" className="min-w-0 space-y-4">
+        {(layout === 'page' || layout === 'ticket') && <section aria-label="Ticket details" data-debug-id="owner-chain-task-detail" className="min-w-0 space-y-4">
+          {layout === 'ticket' && (
+            <div data-debug-id="owner-chain-ticket-nav" className="flex flex-wrap items-center gap-2">
+              {onShowBoard && <Button size="sm" variant="ghost" data-debug-id="owner-chain-show-board" onClick={onShowBoard}>Board</Button>}
+              {onSwitchTicket && <>
+                <Button size="sm" variant="ghost" data-debug-id="owner-chain-prev-ticket" disabled={!prevTicket} onClick={() => prevTicket && onSwitchTicket(prevTicket.taskId, prevTicket.title || prevTicket.taskId)}>Previous</Button>
+                <Button size="sm" variant="ghost" data-debug-id="owner-chain-next-ticket" disabled={!nextTicket} onClick={() => nextTicket && onSwitchTicket(nextTicket.taskId, nextTicket.title || nextTicket.taskId)}>Next</Button>
+              </>}
+            </div>
+          )}
           {offline ? null : !selected ? (
             <p className="text-sm text-muted">Select a ticket to see its brief, comments, submissions and reviews.</p>
           ) : taskLoading && !task ? (
@@ -492,7 +659,7 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
               </section>
             </>
           ) : null}
-        </section>
+        </section>}
       </div>
 
       {debug && (
