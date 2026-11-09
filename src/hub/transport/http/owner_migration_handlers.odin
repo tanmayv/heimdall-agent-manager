@@ -92,8 +92,8 @@ Owner_Migration_State :: struct { migration_id,chain_id,state,manifest_digest,ow
 owner_migration_record :: proc(f:domain.Legacy_Source_Fence)->(neutralized,forced_held:json.Value) {
     neutralized=json.Array{}
     forced_held=json.Array{}
-    if v,err:=json.parse_string(f.neutralized_json,allocator=context.temp_allocator);err==nil && f.neutralized_json!="" do neutralized=v
-    if v,err:=json.parse_string(f.forced_held_json,allocator=context.temp_allocator);err==nil && f.forced_held_json!="" do forced_held=v
+    if v,err:=json.parse_string(f.neutralized_json,parse_integers=true,allocator=context.temp_allocator);err==nil && f.neutralized_json!="" do neutralized=v
+    if v,err:=json.parse_string(f.forced_held_json,parse_integers=true,allocator=context.temp_allocator);err==nil && f.forced_held_json!="" do forced_held=v
     return
 }
 

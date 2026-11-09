@@ -106,10 +106,10 @@ export async function ownerMigrationFlow({session,bridgeId,hub,http,expect,cli,s
     try{ read=JSON.parse((await relay(BUSY,'chain.read',{expectedRevision:'0'})).body); }catch{await new Promise((r)=>setTimeout(r,1000));}
   }
   expect(read && JSON.stringify(read).includes('Legacy busy chain'),'owner serves the imported busy chain decrypted locally: '+JSON.stringify(read));
-  const held=JSON.parse((await relay(BUSY,'task.read',{taskId:'task_busy_progress',expectedRevision:'0'})).body);
-  expect(JSON.stringify(held).includes('held'),'the force-held task is held on the owner: '+JSON.stringify(held));
-  const review=JSON.parse((await relay(BUSY,'task.read',{taskId:'task_busy_review',expectedRevision:'0'})).body);
-  expect(JSON.stringify(review).includes('in_review'),'the in-review task is carried over in review: '+JSON.stringify(review));
+  const held=JSON.parse((await relay(BUSY,'runtime.read',{taskId:'task_busy_progress',expectedRevision:'0'})).body);
+  expect(JSON.stringify(held.controls ?? []).includes('"held"'),'the force-held task is held on the owner: '+JSON.stringify(held));
+  const review=JSON.parse((await relay(BUSY,'runtime.read',{taskId:'task_busy_review',expectedRevision:'0'})).body);
+  expect(JSON.stringify(review.state ?? []).includes('"in_review"'),'the in-review task is carried over in review: '+JSON.stringify(review));
 
   let registered=false;
   for(let i=0;i<20 && !registered;i++){

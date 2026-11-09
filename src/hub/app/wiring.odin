@@ -777,6 +777,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	// legacy Hub chain/task/workflow route, and every agent verb that would
 	// have reached the Hub engine, answers 410 hub_chains_removed. The routes
 	// kept above (owner-local, search relay, token usage) match first.
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/lease/next", rawptr(&graph.agent_action_handlers), http.agent_action_lease_next_handler)
 	for prefix in ([]string{"/api/v1/task-chains/**", "/api/v1/tasks/**", "/api/v1/workflows/**", "/api/v1/workflow-runs/**",
 		"/api/v1/bridge/task-chain-search/**", "/api/v1/cards/*/placement-recovery",
 		"/api/v1/agent-actions/tasks/**", "/api/v1/agent-actions/task/**", "/api/v1/agent-actions/task-chain/**",

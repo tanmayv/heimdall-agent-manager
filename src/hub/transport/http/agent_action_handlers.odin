@@ -996,3 +996,15 @@ require_instance_action_auth :: proc(h: ^Agent_Action_Handlers, req: Request) ->
 	if !inst_ok do return contracts.Auth_Context{}, domain.Agent_Instance{}, false, respond_error(inst_err, req.request_id)
 	return auth, inst, true, Response{}
 }
+
+// POST /api/v1/agent-actions/lease/next. An instance's leases live on its
+// chain's owner Bridge, which answers lease next for any instance bound there;
+// the Bridge forwards only callers it holds nothing for. Hub task chains are
+// removed, so the Hub has no work to offer: status none (not an error, so an
+// idle agent's habitual `lease next` stays quiet).
+agent_action_lease_next_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	_, _, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	return respond_success(`{"lease":null,"pack":null,"status":"none","task":null}`, req.request_id, auth_ctx_server_time(req), 200)
+}

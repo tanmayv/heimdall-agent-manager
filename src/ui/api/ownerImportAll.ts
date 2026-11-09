@@ -73,9 +73,14 @@ function errorMessage(error: unknown): string {
   return raw || 'Import failed';
 }
 
-/** A refusal because the chain's work revision moved since it was listed. */
+/**
+ * A refusal because the chain's work revision moved since it was listed. An
+ * offline owner Bridge also answers 409 (bridge_offline): that is not a
+ * conflict — the chain stays frozen for an exact retry, so it is not aborted.
+ */
 export function isMigrationConflict(error: unknown): boolean {
   const e = error as { code?: unknown; status?: unknown } | null;
+  if (e?.code === 'bridge_offline') return false;
   return e?.code === 'migration_conflict' || e?.status === 409;
 }
 

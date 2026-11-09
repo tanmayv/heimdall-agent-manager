@@ -145,3 +145,18 @@ test('a second conflict fails that chain only; a changed vault session stops the
   const stopping = { ...deps, isCurrent: () => current, onProgress: () => { current = false; } };
   await assert.rejects(importAllLegacyChains('bridge_a', stopping), /Vault session changed/);
 });
+
+test('an offline owner Bridge (409 bridge_offline) fails the chain without aborting its frozen move', async () => {
+  const h = harness([chain('chain_off')]);
+  const post = h.deps.post;
+  h.deps.post = async (path: string, body: any) => {
+    if (path === '/api/v1/owner-local/migrations') {
+      h.calls.push('IMPORT chain_off');
+      throw new ApiError('owner Bridge is offline', 409, 'bridge_offline');
+    }
+    return post(path, body);
+  };
+  const results = await importAllLegacyChains('bridge_1', h.deps);
+  assert.equal(results[0].outcome, 'failed');
+  assert.deepEqual(h.calls.filter((c) => c.startsWith('IMPORT') || c.startsWith('ABORT')), ['IMPORT chain_off']);
+});

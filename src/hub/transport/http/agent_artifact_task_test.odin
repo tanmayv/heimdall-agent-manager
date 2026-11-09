@@ -27,3 +27,16 @@ test_agent_artifact_attribution_uses_authenticated_current_task :: proc(t:^testi
 	testing.expect_value(t,wire.data.agent_instance_id,f.instance_id)
 	row,found,_:=iface.content_get_artifact(&repo,wire.data.artifact_id);testing.expect(t,found && row.task_id=="task_artifact_current")
 }
+
+// Hub task chains are removed: the Hub answers an agent's `lease next` with
+// status none (owner Bridges answer for the chains they hold); other Hub task
+// verbs are the typed 410.
+@(test)
+test_agent_lease_next_is_none_and_hub_task_verbs_are_gone :: proc(t:^testing.T) {
+	context.allocator=context.temp_allocator
+	f:=wire_setup(t,"lease-none");defer wire_teardown(f)
+	next:=agent_action_lease_next_handler(&f.ah,wire_agent_request(f,"lease-next",`{"agent_instance_id":"inst_wire_tb2","params":{}}`))
+	testing.expectf(t,next.status==200 && strings.contains(next.body,`"status":"none"`),"lease next: %d %s",next.status,next.body)
+	gone:=hub_chains_removed_handler(nil,wire_agent_request(f,"create",`{}`))
+	testing.expectf(t,gone.status==410 && strings.contains(gone.body,`"code":"hub_chains_removed"`),"gone: %d %s",gone.status,gone.body)
+}
