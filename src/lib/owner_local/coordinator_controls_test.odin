@@ -97,6 +97,10 @@ cc_hold_release_cancel_reopen_resolve_require_reasons_and_audit_the_agent :: pro
     testing.expect_value(t,cc_heartbeat(f,"after_cancel",cap),"invalid_scope")
     testing.expect_value(t,cc_call(f,coord,"task.reopen","reopen",cc_reason(f,"needed after all")).code,"ok")
     testing.expect_value(t,cc_scalar(f,"SELECT mode FROM local_controls"),"ready")
+    // T1: a second reopen is refused and the cause is named.
+    testing.expect_value(t,cc_call(f,coord,"task.reopen","reopen_again",cc_reason(f,"again")).code,"operation_conflict")
+    cause:=reopen_refusal_cause(&f.store,"chain","task")
+    testing.expectf(t,strings.contains(cause,"not cancelled, done or merge-blocked"),"reopen cause: %q",cause)
     // Audit: each control is a handoff by the coordinator and an agent event
     // carrying the reason.
     rows,_:=query(f.store.db,"SELECT kind,principal_id,summary FROM local_handoffs WHERE kind LIKE 'task.%' ORDER BY seq")

@@ -73,6 +73,26 @@ agent_coordinator :: proc(s:^Store,chain:string,child:Child) -> bool {
     return ok && len(rows)==1 && rows[0][0]=="1" && rows[0][1]=="coordinator" && rows[0][2]==encode(child) && rows[0][3]==child.agent_id
 }
 
+// chain_summary_current: the chain's latest curated summary text and its
+// accepted_seq; ("","0") when none.
+// Read-only (T1: `task-chain summary get` on owner chains).
+chain_summary_current :: proc(s:^Store,chain:string) -> (body:string,version:string,ok:bool) {
+    rows,read:=query(s.db,"SELECT curated_body,accepted_seq FROM local_chain_summary_versions WHERE chain_id=? ORDER BY accepted_seq DESC LIMIT 1",chain)
+    if !read do return "","",false
+    if len(rows)==0 do return "","0",true
+    return rows[0][0],rows[0][1],true
+}
+
+// agent_solo_standing: whether this exact launch is the chain's coordinator
+// and whether it holds an enabled worker fleet row in the chain (solo mode,
+// T1 `--assignee self`). Read-only.
+agent_solo_standing :: proc(s:^Store,chain:string,child:Child) -> (coordinator:bool,worker_row:bool) {
+    coordinator=agent_coordinator(s,chain,child)
+    rows,ok:=query(s.db,"SELECT 1 FROM local_fleet WHERE chain_id=? AND instance_id=? AND enabled=1 LIMIT 1",chain,child.instance)
+    worker_row=ok && len(rows)>0
+    return
+}
+
 // The fleet row binds the task to this exact launch.
 agent_worker :: proc(s:^Store,chain,task:string,child:Child) -> bool {
     rows,ok:=query(s.db,"SELECT instance_id,enabled,launch_epoch,run_count,token_generation FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task)

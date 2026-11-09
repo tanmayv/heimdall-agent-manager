@@ -47,7 +47,8 @@ Groups: `bridge`, `agents`, `task-chain`, `task`, `workflow`, `lease`, `review`,
 - `task-chain set-title <title> [--chain <id>]` — rename a chain (coordinator only).
 - `task-chain set-description <text> [--chain <id>]` (or `--stdin`) — set the chain
   description (coordinator only; pass `""` to clear; `--chain` defaults to your chain).
-- `task-chain summary set <text> [--chain <id>]` (or `--stdin`) — set the curated chain summary
+- `task-chain summary get|show [<chain-id>]` — print the chain summary (read-only)
+- `task-chain summary set <text> [--chain <id>]` (or `--stdin`) — set the curated chain summary; only `set` (or `--body/--file/--stdin`) writes
   (`<= 60` lines; coordinator only; surfaced in every agent's `TASK.md` context pack).
 - `task-chain propose --file <proposal.json> [--require-decision] [--chain <id>]` — create a chain
   proposal (`kind: "task"|"workflow_run"`, `rationale`, `alternative`, `tasks` array or `workflow` + `inputs`) and its draft
@@ -680,3 +681,6 @@ caller's own agent. "Global" scope = omit the scope flags. Repeatable or comma-s
 - MCP: `tasks.get` returns an opaque `revision`; pass it as `expected_revision` to `tasks.update`, with `reason` and `request_id`. This is distinct from the CLI's numeric `requirements_revision`. Replay identical arguments/request ID after an ambiguous response; reread on conflict. MCP cannot acknowledge another agent's lease or approve reviews.
 
 For significant changes to the objective/deliverable/approach, see the coordinator skill: record the decision on the original task and create a self-contained linked replacement, preserving the audit trail and required approvals.
+
+## Coordinator controls (Bridge-owned chains)
+`task cancel|reopen|delete|escalate|submit-for-review|done --force|split`, `lease revoke`, `merge retry`, `review roles` and `--assignee self` (solo mode only) act on Bridge-owned chains; on a legacy Hub chain they answer the typed error `owner_chain_only`. `task hold|release|unblock|recheck` work on both. See `coordinator-task-management` for the verb table and `ham-ctl task --help` for flags.

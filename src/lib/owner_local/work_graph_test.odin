@@ -3,6 +3,7 @@ package owner_local
 
 import "core:encoding/json"
 import "core:fmt"
+import "core:strings"
 import "core:testing"
 import contracts "odin_test:contracts"
 
@@ -65,6 +66,9 @@ work_generation_receipts_strict_success_completion_restart_and_consumed_output_g
     testing.expect_value(t,work_complete_call(f,"stale_complete",stale).code,"stale_revision")
     testing.expect_value(t,work_call(f,"work.dependency.add","started_contract",`{"dependency_id":"reverse","dependent":{"kind":"task","id":"first"},"prerequisite":{"kind":"task","id":"second"}}`).code,"operation_conflict")
     testing.expect_value(t,work_call(f,"task.reopen","consumed_reopen","Replace consumed output","first",work_task_revision(f,"first")).code,"operation_conflict")
+    // T1: the refusal names its cause and the consuming dependent.
+    cause:=reopen_refusal_cause(&f.store,"chain","first")
+    testing.expectf(t,strings.contains(cause,"consumed by a started dependent") && strings.contains(cause,"task second"),"reopen cause: %q",cause)
     before:=encode(rows);revision:=work_revision(f)
     close(&f.store);testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     rows,_=query(f.store.db,"SELECT dependent_id,dependent_generation,prerequisite_id,prerequisite_generation,output_manifest_json FROM local_work_inputs")

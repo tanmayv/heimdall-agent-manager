@@ -86,6 +86,12 @@ bridge_owner_control_fields :: proc(owner_method:string,p:json.Object) -> (Owner
     return out,""
 }
 
+// bridge_owner_reopen_refusal_message: the refusal text of a reopen whose
+// cause owner_local named (ham-ctl prints what follows the colon).
+bridge_owner_reopen_refusal_message :: proc(cause:string) -> string {
+    return fmt.tprintf("task cannot be reopened: %s",cause)
+}
+
 // Typed refusals the coordinator can act on.
 bridge_owner_control_refusal :: proc(owner_method,code:string) -> string {
     switch code {
@@ -114,7 +120,7 @@ bridge_owner_control_refusal :: proc(owner_method,code:string) -> string {
         case "lease.revoke": return "the task has no live lease to revoke"
         case "task.delete": return "only an unstarted task (no lease, assignment, configuration or history) can be deleted"
         case "merge.retry": return "the task is not merge-blocked with a pending merge"
-        case "lifecycle.force_submit": return "only a ready, not held/blocked/cancelled, ordinary task that has had a lease (whose last lease has not already submitted) can be submitted for review"
+        case "lifecycle.force_submit": return "only a ready, not held/blocked/cancelled, ordinary task that has had a lease (whose last lease has not already submitted, by the configured author under the current fleet revision) can be submitted for review. Hint: `lease revoke --disable-fleet` (and `fleet.edit`) bump the fleet revision, after which the old holder's work can no longer be submitted; to keep that work run `task submit-for-review` first (it stops a live lease itself), and reassign (lease revoke --disable-fleet -> fleet.edit -> lifecycle.configure) only for work you do not submit"
         case "task.split": return "only a ready (not in review, merging, done or cancelled) ordinary task can be split, child ids must be new, and dependents cannot be generated workflow tasks or form a cycle"
         }
     case "stale_revision":
@@ -233,7 +239,14 @@ bridge_owner_control :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -
         payload=bridge_owner_json(map[string]string{"body_cipher"=sealed_reason})
     }
     r:=bridge_owner_run_command(ctx,owner_method,st.chain_id,st.task_id,st.task_revision,payload,role_children=role_children[:],source=source)
-    if r.code!="ok" do return bridge_owner_fail(ctx,r.code,bridge_owner_control_refusal(owner_method,r.code))
+    if r.code!="ok" {
+        // T1: a refused reopen names its cause (chain not active, consumed by
+        // a started dependent, generated workflow task, wrong state).
+        if owner_method=="task.reopen" && r.code=="operation_conflict" {
+            if cause:=owner.reopen_refusal_cause(s,st.chain_id,st.task_id);cause!="" do return bridge_owner_fail(ctx,r.code,bridge_owner_reopen_refusal_message(cause))
+        }
+        return bridge_owner_fail(ctx,r.code,bridge_owner_control_refusal(owner_method,r.code))
+    }
     out:=bridge_owner_result_object(r.body)
     out["authority"]=json.Object{"kind"=json.String("owner"),"bridge_id"=json.String(bridge_config.daemon_id)}
     return bridge_local_response_data(ctx.request_id,bridge_owner_json(out))

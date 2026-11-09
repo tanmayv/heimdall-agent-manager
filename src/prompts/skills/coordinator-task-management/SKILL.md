@@ -105,6 +105,8 @@ Agents see only their `TASK.md`. Use the channels the Hub carries forward:
 | Extra context for one task | `brief.inputs` | that task |
 | Lessons that outlive the chain (build quirks, project rules) | `ham-ctl memory propose` (project scope) | future chains |
 
+Read the summary with `task-chain summary get` (or `show`); it never writes. Only `summary set <text>|--file <path>|--stdin` writes.
+
 The runtime projects a bounded chain summary from retained source history and separate curated notes. Keep notes short and current. `summary set` edits notes; it cannot remove immutable handoff history. Successful automatic compaction needs no action. A source-read failure requires storage diagnosis and retry; fetch original task facets for evidence.
 ```bash
 ./bin/ham-ctl task-chain summary set --stdin <<'EOF'
@@ -145,6 +147,26 @@ Routine events stay quiet. You get one line, `[taskv2] <trigger>: …`, only whe
 | Pause dispatch deliberately (re-route to another identity or model, re-plan, wait on an external event) | `task hold <id> --reason "<why and what releases it>"`, then `task release <id>` |
 
 Rules: never hold a task just to postpone it, and never hold when the user's input is needed (the user cannot answer a held task). Release every hold you set as soon as its reason is resolved.
+
+### Coordinator controls (Bridge-owned chains)
+On a chain owned by your Bridge you can correct tasks directly. Every control takes `--reason` (recorded in the audit trail as "by coordinator"); only the chain coordinator may use them, and refusals are printed verbatim. Legacy Hub chains are not supported for these verbs: they answer `{"ok":false,"error":{"code":"owner_chain_only",…}}`.
+
+| Verb | Bridge-owned chain | Legacy Hub chain |
+|---|---|---|
+| `task hold|release|unblock|recheck <id>` | yes | yes (existing Hub routes) |
+| `task cancel <id> --reason … [--dependents drop|keep|repoint --to <id>]` | yes | `owner_chain_only` |
+| `task reopen <id> --reason …` (cancelled, done or merge-blocked) | yes; a refusal names its cause (chain not active, consumed by a started dependent, generated workflow task, wrong state) | `owner_chain_only` |
+| `task delete <id> --reason …` (unstarted task only) | yes | `owner_chain_only` |
+| `task escalate <id> --reason …` (block on a human; only the user clears it) | yes | `owner_chain_only` |
+| `task submit-for-review <id> --summary … --reason … [--override-ack]` | yes | `owner_chain_only` |
+| `task done <id> --force --reason …` (skips only the agent review, never a user approval) | yes | `owner_chain_only` |
+| `task split <id> --child-file <json> --reason … [--dependents all|last|map --map …]` | yes | `owner_chain_only` |
+| `lease revoke <id> --reason … [--disable-fleet] [--stop]` | yes | `owner_chain_only` |
+| `merge retry <id> --reason …` | yes | `owner_chain_only` |
+| `review roles <id> --role <role>=agt_… [--require-user-approval]` | yes | `owner_chain_only` |
+| `task create|update … --assignee self` | yes, only in solo mode (you hold a worker fleet row); otherwise refused: use solo mode or `task done --force` | `owner_chain_only` |
+
+Submit kept work for review BEFORE `lease revoke --disable-fleet`: it bumps the fleet revision, after which the old lease can no longer be submitted.
 
 ## 6. Recording the user's verdict
 - Workflow gates with approver `user_or_coordinator`: your own `review post --verdict approve|request_changes` decides.

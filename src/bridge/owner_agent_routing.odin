@@ -523,6 +523,16 @@ bridge_owner_agent_exec :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object
         read:=bridge_owner_result_object(r.body)
         read["authority"]=json.Object{"kind"=json.String("owner"),"bridge_id"=json.String(bridge_config.daemon_id)}
         read["tasks"]=read["items"]
+        // T1 (`--assignee self`): who the caller is in this chain, so ham-ctl
+        // can resolve self to the durable agent id only in solo mode.
+        read["chain_id"]=json.String(chain)
+        read["caller"]=bridge_owner_caller_view(s,chain,ctx.child)
+        // T1 (`task-chain summary get`): the curated summary lives in the
+        // owner store, so owner chains read it here, never from the Hub.
+        if body,version,ok:=owner.chain_summary_current(s,chain);ok {
+            read["summary"]=json.String(bridge_owner_plain(ctx,body))
+            read["summary_version"]=json.String(version)
+        }
         return bridge_local_response_data(ctx.request_id,bridge_owner_json(read))
     case "agent.task_chain.set_summary","agent.chain.summary":
         chain:=bridge_owner_pstr(p,"chain_id")
@@ -779,6 +789,15 @@ bridge_owner_task_plan :: proc(ctx:^Owner_Agent_Ctx,p:json.Object,updating:bool)
         plan.reviewer=strings.trim_space(string(id))
     }
     return plan,""
+}
+
+// bridge_owner_caller_view: the caller's durable agent id, whether it is this
+// chain's coordinator and whether it holds an enabled worker fleet row here
+// (solo mode: the coordinator also works tasks). Read-only.
+bridge_owner_caller_view :: proc(s:^owner.Store,chain:string,child:owner.Child) -> json.Object {
+    coordinator,worker_row:=owner.agent_solo_standing(s,chain,child)
+    return json.Object{"agent_id"=json.String(child.agent_id),"instance_id"=json.String(child.instance),
+        "coordinator"=json.Boolean(coordinator),"worker_fleet_row"=json.Boolean(worker_row)}
 }
 
 // The exact live child of a durable agent id among this chain's current

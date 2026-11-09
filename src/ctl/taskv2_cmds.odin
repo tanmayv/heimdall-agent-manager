@@ -346,33 +346,21 @@ ctl_publish_print_and_exit :: proc(response: string) {
 // ctl_v2_task_publish publishes ONE task (coordinator only). The hub route is
 // chain-scoped, so the chain is taken from --chain, else this agent's own chain
 // (context), else the task itself (task show).
-ctl_v2_task_publish :: proc(endpoint, token, tid: string, args: []string, unblock := false) {
-	if unblock {
-		ctl_v2_task_action(endpoint, token, tid, args, "answer", httpc.json_body(Ctl_Task_Note_Body{note = option_value(args, "--note", "")}))
-	} else {
-		ctl_v2_task_action(endpoint, token, tid, args, "publish", ctl_empty_object_body())
-	}
-}
-
-// ctl_v2_task_hold: `task hold <id> --reason <text>` / `task release <id>`
-// (coordinator or owner, REQ-TV2-5). Hold stops new dispatch; on a leased task
-// it asks the holder to checkpoint and hand off. Release of an unheld task is
-// a no-op with a message.
-ctl_v2_task_hold :: proc(endpoint, token, tid: string, args: []string, release := false) {
-	if release {
-		ctl_v2_task_action(endpoint, token, tid, args, "release", ctl_empty_object_body())
-		return
-	}
-	reason := strings.trim_space(option_value(args, "--reason", ""))
-	if reason == "" {
-		fmt.println(`{"ok":false,"message":"task hold requires --reason <text>"}`)
-		os.exit(1)
-	}
-	ctl_v2_task_action(endpoint, token, tid, args, "hold", httpc.json_body(Ctl_Task_Reason_Body{reason = reason}))
+ctl_v2_task_publish :: proc(endpoint, token, tid: string, args: []string) {
+	ctl_v2_task_action(endpoint, token, tid, args, "publish", ctl_empty_object_body())
 }
 
 // ctl_v2_task_action POSTs `body` to a chain-scoped task action route.
 ctl_v2_task_action :: proc(endpoint, token, tid: string, args: []string, action: string, body: httpc.Body) {
+	response, ok := ctl_v2_task_action_call(endpoint, token, tid, args, action, body)
+	if !ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
+	ctl_publish_print_and_exit(response)
+}
+
+// ctl_v2_task_action_call resolves the task's chain (--chain, the task, else
+// this agent's chain) and POSTs `body` to its Hub task action route; returns
+// the relayed response. Exits 1 when no chain can be resolved.
+ctl_v2_task_action_call :: proc(endpoint, token, tid: string, args: []string, action: string, body: httpc.Body) -> (string, bool) {
 	chain_id := option_value(args, "--chain", "")
 	if chain_id == "" {
 		if res, ok := ctl_agent_local_call(endpoint, token, "agent.task.show", json_object(json_kv("task_id", tid))); ok {
@@ -388,9 +376,7 @@ ctl_v2_task_action :: proc(endpoint, token, tid: string, args: []string, action:
 		fmt.println(`{"ok":false,"message":"could not resolve the task's chain; pass --chain <id>"}`)
 		os.exit(1)
 	}
-	response, ok := ctl_agent_rest_local(endpoint, token, {method = .POST, path = ctl_api("task-chains", chain_id, "tasks", tid, action), body = body})
-	if !ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
-	ctl_publish_print_and_exit(response)
+	return ctl_agent_rest_local(endpoint, token, {method = .POST, path = ctl_api("task-chains", chain_id, "tasks", tid, action), body = body})
 }
 
 // ---- lease verbs --------------------------------------------------------------
@@ -608,6 +594,12 @@ ctl_v2_review :: proc(endpoint, token: string, tokens, args: []string) {
 			os.exit(1)
 		}
 		ctl_agent_call_task(endpoint, token, "agent.review.post", params, args)
+	case "roles":
+		// Coordinator of a Bridge-owned chain: required review roles of a task.
+		tid := pos(tokens, 1)
+		if tid == "" do tid = option_value(args, "--task", "")
+		if tid == "" { print_help_review(); return }
+		ctl_coord_control(endpoint, token, "review-roles", tid, args)
 	case:
 		print_help_review()
 	}
@@ -622,23 +614,47 @@ Ctl_Chain_Summary_Body :: struct {
 	summary:  string `json:"summary"`,
 }
 
+// Ctl_Summary_Mode: what `task-chain summary ...` does. Only an explicit write
+// (`set`, or --summary/--body/--file/--stdin) ever writes; `get`/`show` and a
+// bare `summary` read. Any other word is refused instead of being stored as
+// the summary (it used to overwrite the summary with the literal word).
+Ctl_Summary_Mode :: enum {
+	Invalid,
+	Read,
+	Write,
+}
+
+ctl_v2_task_chain_summary_write_flags :: proc(args: []string) -> bool {
+	return has_flag(args, "--summary") || has_flag(args, "--body") || has_flag(args, "--file") || has_flag(args, "--stdin")
+}
+
+ctl_v2_task_chain_summary_mode :: proc(tokens, args: []string) -> (Ctl_Summary_Mode, string) {
+	switch pos(tokens, 0) {
+	case "get", "show", "read", "view":
+		if ctl_v2_task_chain_summary_write_flags(args) do return .Invalid, "task-chain summary get is read-only; use `task-chain summary set <text>|--file <path>|--stdin` to write"
+		return .Read, ""
+	case "set":
+		return .Write, ""
+	case "":
+		if ctl_v2_task_chain_summary_write_flags(args) do return .Write, ""
+		return .Read, ""
+	}
+	return .Invalid, fmt.tprintf("unknown task-chain summary subcommand %q: use `summary get|show [--chain <id>]` to read or `summary set <text>|--file <path>|--stdin` to write", pos(tokens, 0))
+}
+
+// ctl_v2_task_chain_summary_body builds a WRITE (mode .Write only): the text
+// comes from --summary/--body, --file, --stdin, or the positional after `set`.
 ctl_v2_task_chain_summary_body :: proc(tokens, args: []string, stdin_text := "", file_text := "") -> (Ctl_Chain_Summary_Body, bool) {
-	sub := pos(tokens, 0)
+	if mode, _ := ctl_v2_task_chain_summary_mode(tokens, args); mode != .Write do return {}, false
 	summary := strings.trim_space(option_value(args, "--summary", option_value(args, "--body", "")))
 	if file_text != "" && summary == "" {
 		summary = strings.trim_right_space(file_text)
 	} else if has_flag(args, "--stdin") {
 		summary = stdin_text
-	} else if summary == "" {
-		if sub == "set" {
-			summary = pos(tokens, 1)
-		} else {
-			summary = sub
-		}
+	} else if summary == "" && pos(tokens, 0) == "set" {
+		summary = pos(tokens, 1)
 	}
-	if summary == "" && !has_flag(args, "--summary") && !has_flag(args, "--body") && !has_flag(args, "--file") && !has_flag(args, "--stdin") {
-		return {}, false
-	}
+	if summary == "" && !ctl_v2_task_chain_summary_write_flags(args) do return {}, false
 	return Ctl_Chain_Summary_Body{chain_id = option_value(args, "--chain", option_value(args, "--chain-id", "")), summary = summary}, true
 }
 
@@ -649,7 +665,58 @@ ctl_v2_task_chain_summary_params :: proc(tokens, args: []string, stdin_text := "
 	return ctl_json_text(body), true
 }
 
+// ctl_v2_task_chain_summary_read_chain: the chain a read targets: --chain, the
+// positional after get/show, else "" (the caller's own chain).
+ctl_v2_task_chain_summary_read_chain :: proc(tokens, args: []string) -> string {
+	if v := strings.trim_space(option_value(args, "--chain", option_value(args, "--chain-id", ""))); v != "" do return v
+	if pos(tokens, 0) != "" do return strings.trim_space(pos(tokens, 1))
+	return ""
+}
+
+// ctl_owner_summary_view: the summary read of a Bridge-owned chain, built
+// from its owner agent.task_chain.show reply; false for any other chain.
+ctl_owner_summary_view :: proc(show_json: string) -> (string, bool) {
+	if !strings.contains(show_json, `"ok":true`) do return "", false
+	chain := ctl_json_data_object(show_json)
+	auth, has := chain["authority"].(json.Object)
+	if !has || ctl_json_str(auth, "kind") != "owner" do return "", false
+	summary, _ := chain["summary"].(json.String)
+	version := ctl_json_str(chain, "summary_version")
+	if version == "" do version = "0"
+	data := json_object(json_kv("chain_id", ctl_json_str(chain, "chain_id")), json_kv("summary", string(summary)), json_kv("version", version), json_kv("authority", "owner"))
+	return json_object(json_kv_raw("ok", "true"), json_kv_raw("data", data)), true
+}
+
 ctl_v2_task_chain_summary :: proc(endpoint, token: string, tokens, args: []string) {
+	mode, why := ctl_v2_task_chain_summary_mode(tokens, args)
+	switch mode {
+	case .Invalid:
+		ctl_print_error_exit(why)
+	case .Read:
+		chain_id := ctl_v2_task_chain_summary_read_chain(tokens, args)
+		// A Bridge-owned chain keeps its summary in the owner store: the owner
+		// agent.task_chain.show carries it (agent.rest.request would reach the Hub).
+		show_params := "{}"
+		if chain_id != "" do show_params = json_object(json_kv("chain_id", chain_id))
+		if show, shown := ctl_agent_local_call(endpoint, token, "agent.task_chain.show", show_params); shown {
+			if view, is_owner := ctl_owner_summary_view(show); is_owner {
+				fmt.println(view)
+				return
+			}
+			if chain_id == "" do chain_id = ctl_json_str(ctl_json_data_object(show), "chain_id")
+		}
+		if chain_id == "" {
+			if res, ok := ctl_agent_local_call(endpoint, token, "agent.context.get", "{}"); ok do chain_id = extract_json_string_unescaped(res, "chain_id", "", context.temp_allocator)
+		}
+		if chain_id == "" do ctl_print_error_exit("task-chain summary get: could not resolve the chain; pass --chain <id>")
+		response, ok := ctl_agent_rest_local(endpoint, token, {method = .GET, path = ctl_api("task-chains", chain_id, "summary")})
+		if !ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
+		keyring, key_ok := ctl_read_vault_keyring(args, context.temp_allocator)
+		fmt.println(ctl_decrypt_json_string(response, keyring, key_ok))
+		if strings.contains(response, `"ok":false`) do os.exit(1)
+		return
+	case .Write:
+	}
 	stdin_text := ""
 	file_text := ""
 	if path := option_value(args, "--file", ""); path != "" {
@@ -665,7 +732,7 @@ ctl_v2_task_chain_summary :: proc(endpoint, token: string, tokens, args: []strin
 	}
 	params, ok := ctl_v2_task_chain_summary_params(tokens, args, stdin_text, file_text)
 	if !ok {
-		fmt.println(`{"ok":false,"message":"task-chain summary requires set <text>, --body <text>, --file <path>, or --stdin [--chain <id>]"}`)
+		fmt.println(`{"ok":false,"message":"task-chain summary set requires <text>, --body <text>, --file <path>, or --stdin [--chain <id>]"}`)
 		os.exit(1)
 	}
 	ctl_agent_call_task(endpoint, token, "agent.task_chain.set_summary", params, args)
@@ -955,12 +1022,31 @@ print_help_review :: proc() {
 	fmt.println("      findings file is a JSON array of {path?, line?, severity?, text}.")
 	fmt.println("      Coordinator instances can pass `--on-behalf-of user` when the user said so in chat.")
 	fmt.println("      Response: {gate: waiting|approved|changes_requested, task}.")
+	fmt.println("      On a Bridge-owned chain an --on-behalf-of review never counts as the user: only the")
+	fmt.println("      user's device-signed Approve / Request changes in the Heimdall app clears a user gate.")
+	fmt.println("  roles <task-id> --role <role>=<agent_id>[@<instance_id>] [--role ...] | --roles-file <json>")
+	fmt.println("      [--require-user-approval]      Coordinator of a Bridge-owned chain: set the task's required")
+	fmt.println("      review roles. Agents must already run in this chain. A user-approval gate can be added,")
+	fmt.println("      never removed (--no-require-user-approval is refused for agents).")
 	fmt.println("")
 	fmt.println("EXAMPLES")
 	fmt.println("  ham-ctl review post --verdict approve")
 	fmt.println("  ham-ctl review post --verdict request_changes --findings-file findings.json")
 	fmt.println("  ham-ctl review post --verdict request_changes --summary \"the zero case still crashes\"")
 	fmt.println("  ham-ctl review post --task task_1 --verdict approve --on-behalf-of user")
+	fmt.println("  ham-ctl review roles task_1 --role reviewer=agt_reviewer")
+}
+
+print_help_merge :: proc() {
+	fmt.println("ham-ctl merge — merge-back controls (coordinator, Bridge-owned chains)")
+	fmt.println("")
+	fmt.println("VERBS")
+	fmt.println("  retry <task-id> --reason <text>   Retry the unchanged pending merge of a merge-blocked task")
+	fmt.println("                                    (after the conflict or base problem was fixed). On a Hub")
+	fmt.println("                                    chain this answers owner_chain_only.")
+	fmt.println("")
+	fmt.println("EXAMPLES")
+	fmt.println("  ham-ctl merge retry task_1 --reason \"rebased main; conflict resolved\"")
 }
 
 print_help_verify :: proc() {

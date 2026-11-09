@@ -49,6 +49,11 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 	case "task", "tasks": ctl_v2_task(endpoint, token, rest, args); return
 	case "lease":         ctl_v2_lease(endpoint, token, rest, args); return
 	case "review":        ctl_v2_review(endpoint, token, rest, args); return
+	case "merge":
+		// `merge retry <task-id> --reason <text>` (coordinator, Bridge-owned chains).
+		if pos(rest, 0) != "retry" || pos(rest, 1) == "" { print_help_merge(); return }
+		ctl_coord_control(endpoint, token, "merge-retry", pos(rest, 1), args)
+		return
 	case "verify":        ctl_v2_verify(endpoint, token, rest, args); return
 	case "workflow", "workflows": ctl_v2_workflow(endpoint, token, rest, args); return
 	case "chat", "chats", "conversation", "conversations": ctl_v2_chat(endpoint, token, rest, args); return
@@ -314,8 +319,14 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 		ctl_v2_task_chain_fleet(endpoint, token, tokens[1:], args)
 	case "token-usage", "usage":
 		ctl_task_chain_token_usage(Ctl_Transport{kind = .Agent, agent_endpoint = endpoint, agent_token = token}, tokens[1:], args)
-	case "summary", "set-summary":
+	case "summary":
 		ctl_v2_task_chain_summary(endpoint, token, tokens[1:], args)
+	case "set-summary":
+		// Legacy alias: always a write (`set-summary <text>` == `summary set <text>`).
+		set_tokens := make([dynamic]string, 0, len(tokens), context.temp_allocator)
+		append(&set_tokens, "set")
+		append(&set_tokens, ..tokens[1:])
+		ctl_v2_task_chain_summary(endpoint, token, set_tokens[:], args)
 	case "propose":
 		ctl_v2_task_chain_propose(endpoint, token, tokens[1:], args)
 	case "decide", "proposal":
@@ -434,7 +445,9 @@ ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
 			}
 		}
 		if !ctl_task_reviewer_flags_valid(args, false) do return
-		params := ctl_agentmode_task_create_params(args)
+		// T1: --assignee self -> the caller's agt_ id, solo chains only.
+		create_args := ctl_assignee_self_args(endpoint, token, args)
+		params := ctl_agentmode_task_create_params(create_args)
 		ctl_agent_call(endpoint, token, "agent.task.create", params)
 	case "comment":
 		tid := pos(tokens, 1)
@@ -466,28 +479,29 @@ ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
 		tid := pos(tokens, 1)
 		if tid == "" { print_agent_help([]string{"task"}); return }
 		if !ctl_task_reviewer_flags_valid(args, true) do return
-		params := ctl_agentmode_task_update_params(tid, args)
+		update_args := ctl_assignee_self_args(endpoint, token, args, tid)
+		params := ctl_agentmode_task_update_params(tid, update_args)
 		ctl_agent_call(endpoint, token, "agent.task.update", params)
 	case "publish":
 		// Coordinator only. 422 brief_incomplete is rendered per task (taskv2_cmds.odin).
 		tid := pos(tokens, 1)
 		if tid == "" { print_agent_help([]string{"task"}); return }
 		ctl_v2_task_publish(endpoint, token, tid, args)
-	case "unblock":
-		tid := pos(tokens, 1)
-		if tid == "" { print_agent_help([]string{"task"}); return }
-		ctl_v2_task_publish(endpoint, token, tid, args, unblock = true)
-	case "hold", "release":
+	case "unblock", "hold", "release", "recheck":
 		// Coordinator/owner (REQ-TV2-5): hold stops new dispatch and asks a
-		// current holder to checkpoint; release lets the task dispatch again.
+		// current holder to checkpoint; release lets the task dispatch again;
+		// recheck recomputes the gate; unblock clears a blocker. Tried on the
+		// Bridge-owned chain first (coordinator_controls.odin), then the Hub.
 		tid := pos(tokens, 1)
 		if tid == "" { print_agent_help([]string{"task"}); return }
-		ctl_v2_task_hold(endpoint, token, tid, args, release = verb == "release")
-	case "recheck":
-		// Coordinator/owner: recompute gate, readiness, dispatch and merge-back.
+		ctl_coord_control(endpoint, token, verb, tid, args)
+	case "cancel", "reopen", "delete", "escalate", "merge-retry", "review-roles",
+	     "submit-for-review", "submit-review", "done", "complete", "split":
+		// P-CS coordinator controls of Bridge-owned chains (owner_chain_only
+		// on a Hub chain).
 		tid := pos(tokens, 1)
 		if tid == "" { print_agent_help([]string{"task"}); return }
-		ctl_v2_task_action(endpoint, token, tid, args, "recheck", ctl_empty_object_body())
+		ctl_coord_control(endpoint, token, verb, tid, args)
 	case "start-agent", "restart-agent":
 		// Coordinator/user (F1): start or restart the agent a task waits on
 		// (agent_not_running). Workers are refused by the hub.
@@ -1845,6 +1859,7 @@ print_agent_help :: proc(cmd: []string) {
 	case "task", "tasks": print_help_task(); return
 	case "lease": print_help_lease(); return
 	case "review": print_help_review(); return
+	case "merge": print_help_merge(); return
 	case "verify": print_help_verify(); return
 	case "workflow", "workflows": print_help_workflow(); return
 	case "chat", "chats", "conversation", "conversations": print_help_chat(); return
@@ -1885,9 +1900,10 @@ print_help_overview :: proc() {
 	fmt.println("  issue       Issues, bugs, and blockers (list, show, create, update, comment, vote, unvote)")
 	fmt.println("  projects    Manage projects (list, show, create, update)")
 	fmt.println("  vault       Report the vault key source: env override and bridge status (status)")
-	fmt.println("  lease       Task System v2 leases: next, heartbeat, submit, handoff, block")
+	fmt.println("  lease       Task System v2 leases: next, heartbeat, submit, handoff, block (revoke: coordinator)")
 	fmt.println("  verify      Removed (stub for one release): prints {\"ok\":true,\"verify\":\"removed\"} and exits 0")
-	fmt.println("  review      Post a review verdict on the task you were woken to review (post)")
+	fmt.println("  review      Post a review verdict on the task you were woken to review (post; roles: coordinator)")
+	fmt.println("  merge       Retry a merge-blocked task's pending merge (coordinator, Bridge-owned chains)")
 	fmt.println("  context     One-shot snapshot of this instance (chain, task, unread)")
 	fmt.println("  extension   Harness extension hooks → Bridge (hook <provider>, event --stdin, status)")
 	fmt.println("  start-success  Signal this instance is ready")
@@ -1965,7 +1981,10 @@ print_help_task_chain :: proc() {
 	fmt.println("  set-title <title> [--chain <id>]    Rename a chain (coordinator only).")
 	fmt.println("  set-description <text> [--chain <id>] | --stdin   Set the chain description")
 	fmt.println("                                      (coordinator only; pass \"\" to clear).")
-	fmt.println("  summary set <text> [--chain <id>] | --stdin       Set/override the chain summary (<=60 lines, coordinator only).")
+	fmt.println("  summary get|show [<chain-id>|--chain <id>]       Print the chain summary (read-only; never writes). A Bridge-owned")
+	fmt.println("                                                   chain's summary is read from its owner store.")
+	fmt.println("  summary set <text>|--file <path>|--stdin [--chain <id>]  Set/override the chain summary (<=60 lines,")
+	fmt.println("                                                   coordinator only). Only `set` (or --body/--file/--stdin) writes.")
 	fmt.println("  propose --file <proposal.json> [--require-decision] [--chain <id>]")
 	fmt.println("                                      Propose a ticket or workflow. Auto-approves and publishes by default;")
 	fmt.println("                                      --require-decision keeps it pending until `decide`.")
@@ -2070,6 +2089,49 @@ print_help_task :: proc() {
 	fmt.println("                                          user-approval flag), readiness, dispatch and a done task's merge-back.")
 	fmt.println("                                          Never approves, never touches a live lease; a repeat is a no-op.")
 	fmt.println("                                          Prints {task, changed, actions[], reasons[], message}.")
+	fmt.println("")
+	fmt.println("  COORDINATOR CONTROLS (P-CS) — Bridge-owned (owner) chains. On a legacy Hub chain every verb below")
+	fmt.println("  except hold/release/unblock/recheck answers {\"ok\":false,\"error\":{\"code\":\"owner_chain_only\"}}:")
+	fmt.println("  Hub chains are not supported for these controls.")
+	fmt.println("    verb                          owner chain   legacy Hub chain")
+	fmt.println("    hold/release/unblock/recheck  yes           yes (existing Hub routes)")
+	fmt.println("    cancel/reopen/delete/escalate yes           owner_chain_only")
+	fmt.println("    submit-for-review/done/split  yes           owner_chain_only")
+	fmt.println("    lease revoke/merge retry      yes           owner_chain_only")
+	fmt.println("    review roles                  yes           owner_chain_only")
+	fmt.println("  Only the chain coordinator may use them; refusals are printed verbatim. A --reason is")
+	fmt.println("  mandatory where shown and is recorded in the task's audit trail as \"by coordinator\".")
+	fmt.println("  On Bridge-owned chains release and unblock also need --reason (or --note).")
+	fmt.println("  cancel <task-id> --reason <text>        Cancel a task (refused on workflow-run tasks: use workflow cancel).")
+	fmt.println("      [--dependents drop|keep|repoint --to <task-id>]  drop: remove the edge; keep: dependents")
+	fmt.println("                                          stay blocked; repoint: they wait on <task-id> instead.")
+	fmt.println("  reopen <task-id> --reason <text>        Reopen a cancelled, done or merge-blocked ordinary task. A refusal")
+	fmt.println("                                          names its cause (chain not active, consumed by a started")
+	fmt.println("                                          dependent, generated workflow task, wrong state).")
+	fmt.println("  delete <task-id> --reason <text>        Delete an unstarted task (no lease, assignment or history).")
+	fmt.println("  escalate <task-id> --reason <text>      Block the task on a human (waiting_on=human); only the user")
+	fmt.println("                                          can clear it, from the Heimdall app (unblock is refused).")
+	fmt.println("  merge-retry <task-id> --reason <text>   Same as `merge retry`.")
+	fmt.println("  review-roles <task-id> --role r=agt_x   Same as `review roles`.")
+	fmt.println("  submit-for-review <task-id> --summary <s> --reason <text> [--override-ack]")
+	fmt.println("                                          Submit the last lease's committed work for review on the")
+	fmt.println("                                          worker's behalf (stops a live lease first). The Bridge")
+	fmt.println("                                          observes the worktree head (no --head). --override-ack is")
+	fmt.println("                                          needed when the requirements were not acknowledged.")
+	fmt.println("  done <task-id> --force --reason <text>  Complete a task skipping only the independent agent review.")
+	fmt.println("                                          Refused when any user approval is required, after a user")
+	fmt.println("                                          request_changes, on workflow tasks, with merge_policy=git and")
+	fmt.println("                                          no submitted head, or when the user turned the chain policy")
+	fmt.println("                                          coordinator_force_done off. The user is notified.")
+	fmt.println("  split <task-id> --child-file <json> --reason <text> [--dependents all|last|map --map <json|file>]")
+	fmt.println("                                          Replace a ready task by 1-32 children (the original is")
+	fmt.println("                                          cancelled; split_from/split_into links are kept). Child file:")
+	fmt.println("                                          [{title, body?, brief?, assignee?}] or {children:[...]}.")
+	fmt.println("                                          Children inherit the original's user-approval gate.")
+	fmt.println("  Reassign a task: lease revoke <task-id> --disable-fleet --reason ... -> fleet edit (new instance)")
+	fmt.println("  -> lifecycle configure (new author). Submit kept work for review BEFORE revoking with")
+	fmt.println("  --disable-fleet: it bumps the fleet revision, after which the old lease cannot be submitted.")
+	fmt.println("")
 	fmt.println("  start-agent <task-id>                   Coordinator/owner: start or restart the agent a task waits on")
 	fmt.println("                                          (agent_not_running). Never clears a user's deliberate stop.")
 	fmt.println("  comments <task-id> [--last N]           Fetch comment bodies; --last N = newest N (max 100).")
@@ -2077,7 +2139,7 @@ print_help_task :: proc() {
 	fmt.println("                                          facet (facet:<task_id>:<attempt_no>:<kind>), or file at commit")
 	fmt.println("                                          (dir:<dir_id>:<rev>:<path>, <path>@<rev>, or <path>).")
 	fmt.println("  create --title <t>                      Create a task (draft until published).")
-	fmt.println("      [--description <d>] [--priority p0|p1|p2] [--assignee <agent-id>] [--bridge <bridge-id>]")
+	fmt.println("      [--description <d>] [--priority p0|p1|p2] [--assignee <agent-id>|self] [--bridge <bridge-id>]")
 	fmt.println("      [--reviewer <agent-id,...>] [--require-user-approval] [--depends-on <id,id>] [--chain <id>]")
 	fmt.println("      BRIEF (what publish validates): --goal <g> --acceptance <a> (repeatable)")
 	fmt.println("      [--input <ref>]... [--review-role <role>]... [--brief-file <path.json>]")
@@ -2086,7 +2148,7 @@ print_help_task :: proc() {
 	fmt.println("      Flags override its fields. Other keys are rejected (unknown_brief_fields). --verify,")
 	fmt.println("      --auto-submit and --require-independent-verify were removed: ignored with a warning.")
 	fmt.println("  update <task-id>                        Edit an existing task (coordinator only).")
-	fmt.println("      [--title <t>] [--description <d>] [--priority p0|p1|p2] [--assignee <agent-id>]")
+	fmt.println("      [--title <t>] [--description <d>] [--priority p0|p1|p2] [--assignee <agent-id>|self]")
 	fmt.println("      [--reviewer <agent-id,...>] [--require-user-approval | --no-require-user-approval]")
 	fmt.println("      [--depends-on <id,id>] [--bridge <bridge-id>] + the same BRIEF flags as create")
 	fmt.println("      [--clear-<field>]... [--replace-brief]")
@@ -2111,6 +2173,8 @@ print_help_task :: proc() {
 	fmt.println("")
 	fmt.println("  --assignee / --reviewer take durable agent ids (agt_...); --reviewer is repeatable or")
 	fmt.println("  comma-separated. Instance pins (inst_...) were removed in Task System v2 and are rejected.")
+	fmt.println("  --assignee self resolves to your own agt_ id, only for the coordinator of a Bridge-owned chain in")
+	fmt.println("  solo mode (it holds a worker fleet row); otherwise it is refused: use solo mode or `task done --force`.")
 	fmt.println("")
 	fmt.println("EXAMPLES")
 	fmt.println("  ham-ctl task show task_1")
@@ -2126,6 +2190,10 @@ print_help_task :: proc() {
 	fmt.println("  ham-ctl task fetch task_1 src/main.odin@HEAD")
 	fmt.println("  ham-ctl task readiness task_1   (why a task is not ready: each prerequisite's state, merge state and reason)")
 	fmt.println("  ham-ctl task comment task_1 --body 'pushed fix' --notify inst_rev")
+	fmt.println("  ham-ctl task cancel task_1 --reason 'superseded by task_2' --dependents repoint --to task_2")
+	fmt.println("  ham-ctl task submit-for-review task_1 --summary 'worker finished; tests pass' --reason 'worker stalled after commit'")
+	fmt.println("  ham-ctl task done task_1 --force --reason 'docs-only change; reviewer unavailable'")
+	fmt.println("  ham-ctl task split task_1 --child-file children.json --reason 'too large for one lease'")
 }
 
 print_help_chat :: proc() {
@@ -2280,6 +2348,12 @@ ctl_v2_lease :: proc(endpoint, token: string, tokens, args: []string) {
 		ctl_v2_lease_switch(endpoint, token, args, pos(tokens, 1))
 	case "block":
 		ctl_v2_lease_block(endpoint, token, args)
+	case "revoke":
+		// Coordinator of a Bridge-owned chain: revoke the live lease on a task.
+		tid := pos(tokens, 1)
+		if tid == "" do tid = option_value(args, "--task", "")
+		if tid == "" { print_help_lease(); return }
+		ctl_coord_control(endpoint, token, "revoke", tid, args)
 	case:
 		print_help_lease()
 	}
@@ -2312,6 +2386,11 @@ print_help_lease :: proc() {
 	fmt.println("                             nothing changed and you still hold the current task.")
 	fmt.println("  block --waiting-on <kind> --reason <text> [--ref <id>] [--summary <s>]")
 	fmt.println("                             Park the task on something external (kind: user|task|…).")
+	fmt.println("  revoke <task-id> --reason <text> [--disable-fleet] [--stop | --mode checkpoint|stop]")
+	fmt.println("                             Coordinator of a Bridge-owned chain: revoke the task's live lease")
+	fmt.println("                             (default checkpoint: the holder is asked to hand off). --disable-fleet")
+	fmt.println("                             also disables the task's fleet row so the same child cannot reclaim it;")
+	fmt.println("                             it bumps the fleet revision (submit-for-review the old work first).")
 	fmt.println("")
 	fmt.println("  Handoff flags: --decision <text> and --dead-end <text> (repeat for each item) and --next-steps <s>,")
 	fmt.println("  or --handoff-file <json> instead. Decisions and dead ends reach every task that waits for this one")
@@ -2333,4 +2412,5 @@ print_help_lease :: proc() {
 	fmt.println("  ham-ctl lease handoff --summary \"half done\" --next-steps \"wire the CLI flag; add tests\"")
 	fmt.println("  ham-ctl lease switch task_123 --summary \"paused after the parser\" --next-steps \"finish the printer\"")
 	fmt.println("  ham-ctl lease block --waiting-on user --reason \"need the staging credentials\"")
+	fmt.println("  ham-ctl lease revoke task_1 --disable-fleet --reason \"reassigning to agt_other\"")
 }

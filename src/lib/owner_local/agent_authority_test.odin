@@ -300,3 +300,41 @@ agent_bindings_for_lease_routing_ignore_disabled_rows_and_reviewers :: proc(t:^t
     _,found,read:=agent_task_state(&f.store,"","missing")
     testing.expect(t,read && !found,"a task this store does not hold is not found, not an error")
 }
+
+// T1 `--assignee self`: the coordinator is solo only while it holds an
+// enabled worker fleet row in the chain; workers and strangers are never
+// the coordinator.
+@(test)
+agent_solo_standing_coordinator_and_worker_row :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f);seed(t,f)
+    coord:=agent_coordinator_child();agent_seat_coordinator(t,f,coord)
+    c,w:=agent_solo_standing(&f.store,"chain",coord)
+    testing.expect(t,c && !w,"a coordinator without a fleet row is not solo")
+    agent_add_task(t,f,"solo_task");agent_bind(t,f,"solo_task",coord)
+    c,w=agent_solo_standing(&f.store,"chain",coord)
+    testing.expect(t,c && w,"a coordinator holding a worker fleet row is solo")
+    c,w=agent_solo_standing(&f.store,"chain",agent_stranger())
+    testing.expect(t,!c && !w,"a stranger is neither")
+    // A coordinator seated in another chain is foreign here.
+    c,_=agent_solo_standing(&f.store,"elsewhere",coord)
+    testing.expect(t,!c,"not the coordinator of another chain")
+}
+
+// T1 review: `task-chain summary get` on an owner chain reads the latest
+// curated summary from the owner store.
+@(test)
+agent_chain_summary_current_reads_latest_curated_summary :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
+    body,version,ok:=chain_summary_current(&f.store,"chain")
+    testing.expect(t,ok && body=="" && version=="0","no summary yet")
+    coord:=agent_coordinator_child();agent_seat_coordinator(t,f,coord)
+    summary:=encode(doc(map[string]string{"body_cipher"=cipher(f,"coordinator summary")}))
+    testing.expect_value(t,agent_run(f,coord,"chain.summary.set","summary","",summary,agent_chain_rev(f)).code,"ok")
+    body,version,ok=chain_summary_current(&f.store,"chain")
+    testing.expect(t,ok && body!="" && version!="0","summary stored")
+    // The owner store keeps the opened text (the Bridge passes it through
+    // bridge_owner_plain, which also tolerates an envelope).
+    testing.expect_value(t,body,"coordinator summary")
+}
