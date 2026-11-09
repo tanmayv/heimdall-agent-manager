@@ -5,6 +5,7 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import "core:sync"
 import "core:testing"
 import "core:time"
 import owner "odin_test:lib/owner_local"
@@ -422,4 +423,27 @@ test_owner_launch_role_from_bound_coordinator :: proc(t:^testing.T) {
     testing.expect(t,owner.exec(store.db,`INSERT INTO local_chain_member_versions VALUES('chain','inst_coord','6','agt_coord','coordinator','0','{}');`))
     role,coord=bridge_owner_launch_role_from(&store,"chain","inst_coord","worker","")
     testing.expect(t,role=="worker" && coord=="","a disabled (replaced) coordinator launches as worker")
+}
+
+// Lock order: owner requests take bridge_owner_mutex then
+// bridge_startup_io_mutex; launches hold bridge_startup_io_mutex while building
+// descriptors. The launch-role lookup must therefore never wait on
+// bridge_owner_mutex. With both held here (as an owner request racing a
+// launch would), it answers from the leaf-locked cache without blocking.
+@(test)
+test_owner_launch_role_never_waits_on_owner_mutex :: proc(t:^testing.T) {
+    bridge_owner_coordinator_cache_set("chain_lock_order","inst_bound")
+    sync.mutex_lock(&bridge_owner_mutex)
+    sync.mutex_lock(&bridge_startup_io_mutex)
+    role,coord:=bridge_owner_launch_role("chain_lock_order","inst_bound","worker","")
+    other,other_coord:=bridge_owner_launch_role("chain_lock_order","inst_worker","worker","")
+    unknown,unknown_coord:=bridge_owner_launch_role("chain_never_seen","inst_bound","worker","")
+    sync.mutex_unlock(&bridge_startup_io_mutex)
+    sync.mutex_unlock(&bridge_owner_mutex)
+    testing.expect(t,role=="coordinator" && coord=="inst_bound","cached binding gives the coordinator role")
+    testing.expect(t,other=="worker" && other_coord=="inst_bound","other instances learn the coordinator id")
+    testing.expect(t,unknown=="worker" && unknown_coord=="","an unknown chain keeps the Hub role instead of blocking")
+    bridge_owner_coordinator_cache_set("chain_lock_order","")
+    role,coord=bridge_owner_launch_role("chain_lock_order","inst_bound","worker","")
+    testing.expect(t,role=="worker" && coord=="","an unbound (demoted) chain launches as worker")
 }

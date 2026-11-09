@@ -34,6 +34,7 @@ bridge_owner_open :: proc(account,key_id:string)->bool {
     saved:=context.allocator;context.allocator=runtime.default_allocator()
     opened:=owner.open(&bridge_owner_store,fmt.tprintf("%s/runtime.sqlite",path),account,bridge_config.daemon_id,key_id)
     context.allocator=saved
+    if opened do bridge_owner_coordinator_refresh_all_locked()
     return opened
 }
 bridge_owner_publish :: proc() {
@@ -220,6 +221,9 @@ bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
     result:=owner.execute(&bridge_owner_store,command_raw,payload,genesis_raw,key,owner_key,version,head,now,&kr,owner.Signer{nil,bridge_owner_sign},fleet_child,proof,role_children[:],grant_proof,remote_key)
     sync.mutex_unlock(&bridge_local_token_mutex)
     sync.mutex_unlock(&bridge_startup_io_mutex)
+    if result.code=="ok" && contracts.owner_string(command,"method")=="chain.member.set" {
+        bridge_owner_coordinator_refresh_locked(contracts.owner_string(command,"chain_id"))
+    }
     digest,_:=contracts.owner_digest("command",command)
     response:=Owner_Result_Plain{request_id,digest,result.code,result.body,fmt.tprintf("%d",result.seq),result.replay}
     if bridge_task_chain_search_generation()!=search_generation {reply.code="vault_locked";return}

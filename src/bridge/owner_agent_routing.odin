@@ -1105,26 +1105,70 @@ bridge_owner_task_update :: proc(ctx:^Owner_Agent_Ctx,p:json.Object) -> string {
     return bridge_local_response_data(ctx.request_id,result)
 }
 
+// Each owner chain's bound coordinator, cached under a leaf mutex. Launch paths
+// hold bridge_startup_io_mutex, which owner requests take AFTER
+// bridge_owner_mutex, so a launch must never wait on bridge_owner_mutex. Owner
+// paths (which already hold it) refresh the cache when the store opens and
+// after every accepted chain.member.set; launches only read it. Nothing is
+// locked while bridge_owner_coordinator_mutex is held.
+bridge_owner_coordinator_mutex: sync.Mutex
+bridge_owner_coordinators: map[string]string
+
+bridge_owner_coordinator_cache_set :: proc(chain_id, bound: string) {
+    context.allocator=runtime.default_allocator()
+    sync.mutex_lock(&bridge_owner_coordinator_mutex)
+    defer sync.mutex_unlock(&bridge_owner_coordinator_mutex)
+    if bridge_owner_coordinators==nil do bridge_owner_coordinators=make(map[string]string)
+    if chain_id in bridge_owner_coordinators { key,old:=delete_key(&bridge_owner_coordinators,chain_id);delete(key);delete(old) }
+    bridge_owner_coordinators[strings.clone(chain_id)]=strings.clone(bound)
+}
+
+// (bound, known): known=false when the chain was never refreshed.
+bridge_owner_coordinator_cache_get :: proc(chain_id: string) -> (string, bool) {
+    sync.mutex_lock(&bridge_owner_coordinator_mutex)
+    defer sync.mutex_unlock(&bridge_owner_coordinator_mutex)
+    bound,known:=bridge_owner_coordinators[chain_id]
+    return strings.clone(bound,context.temp_allocator),known
+}
+
+// Caller holds bridge_owner_mutex with the store open.
+bridge_owner_coordinator_refresh_locked :: proc(chain_id: string) {
+    bridge_owner_coordinator_cache_set(chain_id,owner.chain_coordinator_instance(&bridge_owner_store,chain_id))
+}
+
+// Caller holds bridge_owner_mutex with the store open: seed every chain.
+bridge_owner_coordinator_refresh_all_locked :: proc() {
+    rows,ok:=owner.query(bridge_owner_store.db,"SELECT chain_id FROM task_chains")
+    if !ok do return
+    for row in rows do bridge_owner_coordinator_refresh_locked(row[0])
+}
+
 // bridge_owner_launch_role: an instance bound as its owner chain's coordinator
 // launches with the coordinator role. The Hub keeps no row for Bridge-owned
 // chains, so its launch descriptor always says worker; the owner store is
-// authoritative. Launch paths (executor_local files/startup, wake enrichment)
-// never hold bridge_owner_mutex, so this blocks rather than silently keeping
-// the Hub's role while the store is busy.
+// authoritative. Reads the leaf-locked cache; a chain never refreshed is
+// loaded only if bridge_owner_mutex is free right now (try_lock never waits,
+// so no lock-order inversion with bridge_startup_io_mutex).
 bridge_owner_launch_role :: proc(chain_id, instance_id, role, coordinator_id: string) -> (string, string) {
     if chain_id=="" || instance_id=="" do return role,coordinator_id
-    sync.mutex_lock(&bridge_owner_mutex)
-    defer sync.mutex_unlock(&bridge_owner_mutex)
-    if bridge_owner_store.db==nil do return role,coordinator_id
-    return bridge_owner_launch_role_from(&bridge_owner_store,chain_id,instance_id,role,coordinator_id)
+    bound,known:=bridge_owner_coordinator_cache_get(chain_id)
+    if !known && sync.mutex_try_lock(&bridge_owner_mutex) {
+        if bridge_owner_store.db!=nil do bridge_owner_coordinator_refresh_locked(chain_id)
+        sync.mutex_unlock(&bridge_owner_mutex)
+        bound,known=bridge_owner_coordinator_cache_get(chain_id)
+    }
+    return bridge_owner_launch_role_resolve(bound,instance_id,role,coordinator_id)
+}
+
+bridge_owner_launch_role_resolve :: proc(bound, instance_id, role, coordinator_id: string) -> (string, string) {
+    if bound=="" do return role,coordinator_id
+    if bound==instance_id do return "coordinator",instance_id
+    return role,strings.clone(bound)
 }
 
 // bridge_owner_launch_role_from resolves the launch role against an open owner
 // store: the bound coordinator launches as coordinator; any other instance
 // keeps its role and learns the bound coordinator's id. Unbound: unchanged.
 bridge_owner_launch_role_from :: proc(s:^owner.Store, chain_id, instance_id, role, coordinator_id: string) -> (string, string) {
-    bound:=owner.chain_coordinator_instance(s,chain_id)
-    if bound=="" do return role,coordinator_id
-    if bound==instance_id do return "coordinator",instance_id
-    return role,strings.clone(bound)
+    return bridge_owner_launch_role_resolve(owner.chain_coordinator_instance(s,chain_id),instance_id,role,coordinator_id)
 }
