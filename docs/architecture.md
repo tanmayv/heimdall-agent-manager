@@ -26,8 +26,8 @@ The flake builds each Odin binary from its package directory ([flake.nix](../fla
 
 | Binary | Source | Language | Role |
 |---|---|---|---|
-| `ham-hub` | [src/hub](../src/hub) (`main.odin`) | Odin | Central server: HTTP + WebSocket API, SQLite store, task engine, MCP surface, OIDC auth, metrics. One per deployment. |
-| `ham-bridge` | [src/bridge](../src/bridge) (`main.odin`) | Odin | Per-machine agent that holds an outbound WebSocket to the hub, launches/stops agents and shells, serves the agent-local API, manages worktrees/filesystem/VCS. |
+| `ham-hub` | [src/hub](../src/hub) (`main.odin`) | Odin | Central server: HTTP + WebSocket API, SQLite store, chain owner registry (no task engine: chains are Bridge-owned), MCP surface, OIDC auth, metrics. One per deployment. |
+| `ham-bridge` | [src/bridge](../src/bridge) (`main.odin`) | Odin | Per-machine agent that holds an outbound WebSocket to the hub, owns the task chains created on it (owner-local store: tasks, leases, reviews, gate, merge-back, fleet, workflows), launches/stops agents and shells, serves the agent-local API, manages worktrees/filesystem/VCS. |
 | `ham-pty-host` | [tools/pty_host](../tools/pty_host) (`tools/pty_host/src/main.rs`, `daemon.rs`) | Rust | Per-machine PTY daemon: spawns agent processes under a PTY, keeps a VT screen model, fans output out to attached clients over a unix socket. |
 | `ham-ctl` | [src/ctl](../src/ctl) (`main.odin`) | Odin | The CLI. *Agent mode* ([agent_mode.odin](../src/ctl/agent_mode.odin)) talks to the local bridge with the instance token; *hub/user mode* ([hub_mode.odin](../src/ctl/hub_mode.odin)) talks to the hub directly. |
 | `ham-dev-proxy` | [src/dev_proxy](../src/dev_proxy) | Odin | Local dev-only reverse proxy that signs in to a (mock) OIDC provider on behalf of a selected dev user and forwards to the hub ([proxy.odin](../src/dev_proxy/proxy.odin), [broker.odin](../src/dev_proxy/broker.odin)); has its own management UI/API ([ui.odin](../src/dev_proxy/ui.odin), [api.odin](../src/dev_proxy/api.odin)). |
@@ -62,7 +62,7 @@ their events ([extension_ingest.odin](../src/bridge/extension_ingest.odin),
 agent sees), `skills/<name>/` (the canonical skills: `ham-ctl-reference`, `worker-task-management`,
 `coordinator-task-management`, `heimdall-ctl-communication`, `memory-management-workflow`,
 `search-command`, `heimdall-preview-setup`, `artifact-authoring`) and `workflows/*.json`
-(built-in workflow definitions). At hub build time `tools/gen_static_skills` compiles the skills into
+(workflow definitions). At hub build time `tools/gen_static_skills` compiles the skills into
 [static_skills_gen.odin](../src/hub/service/agent/static_skills_gen.odin) (flake.nix runs
 `odin run tools/gen_static_skills -collection:odin_test=src -- src/prompts/skills src/hub/service/agent/static_skills_gen.odin`).
 
@@ -147,15 +147,15 @@ repository/sqlite  implementations, migrations, unit of work
 
 ### `src/hub/domain`
 
-Plain types and errors, no I/O: `agent.odin`, `bridge.odin`, `taskchain.odin` (`Task_State`: `backlog`, `ready`,
-`in_progress`, `in_review`, `done`, `cancelled`), `taskv2.odin`, `workflow_run.odin`, `mixed_work.odin`,
-`project.odin`, `provider.odin`, `shell_session.odin`, `card.odin`, `action.odin`, `content.odin`, `search.odin`,
+Plain types and errors, no I/O: `agent.odin`, `bridge.odin`, `owner_registry.odin` (which Bridge owns each chain),
+`owner_migration.odin` (legacy chain import records), `taskchain.odin` / `taskv2.odin` / `workflow_run.odin` / `mixed_work.odin`
+(types of the read-only legacy Hub chain rows that import reads), `project.odin`, `provider.odin`, `shell_session.odin`, `card.odin`, `action.odin`, `content.odin`, `search.odin`,
 `billing.odin`, `user.odin`, `vault_directory.odin`, `errors.odin` (`Domain_Error`), `ids.odin`, and more.
 
 ### Repositories
 
-- [repository/iface](../src/hub/repository/iface) — one interface per aggregate (`taskv2_repo.odin`, `taskchain_repo.odin`,
-  `agent_repo.odin`, `content_repo.odin`, …) and [unit_of_work.odin](../src/hub/repository/iface/unit_of_work.odin).
+- [repository/iface](../src/hub/repository/iface) — one interface per aggregate (`owner_registry.odin`, `owner_migration.odin`,
+  `taskchain_repo.odin` (legacy-row reads only), `agent_repo.odin`, `content_repo.odin`, …) and [unit_of_work.odin](../src/hub/repository/iface/unit_of_work.odin).
 - [repository/sqlite](../src/hub/repository/sqlite) — implementations (`*_repo_sqlite.odin`), connection handling
   ([conn.odin](../src/hub/repository/sqlite/conn.odin)), transactions ([tx.odin](../src/hub/repository/sqlite/tx.odin)),
   FTS search ([search_fts.odin](../src/hub/repository/sqlite/search_fts.odin), [fts_repair.odin](../src/hub/repository/sqlite/fts_repair.odin)),
@@ -185,10 +185,11 @@ Plain types and errors, no I/O: `agent.odin`, `bridge.odin`, `taskchain.odin` (`
 | [push](../src/hub/service/push) | Web Push enrollment, VAPID, payload encryption and send. |
 | [search](../src/hub/service/search) | Cross-entity search service over the FTS indexes. |
 | [shell_session](../src/hub/service/shell_session) | Interactive/background shell sessions: create, viewers, output fan-out, snapshots, retention, reaping. |
-| [taskchain](../src/hub/service/taskchain) | Task chains (coordinator-owned groups of tasks): brief contract, control policy, review roles, placement recovery. |
-| [taskv2](../src/hub/service/taskv2) | The Task System v2 engine: event-sourced task fold, leases, matcher/placement, review gate, merge-back, timers, workflows, wake effects. |
 | [user](../src/hub/service/user) | User records and conversation launch preferences. |
 | [vault_directory](../src/hub/service/vault_directory) | Server-side view of the device/vault directory (statements are verified, never decrypted). |
+
+There is no `taskchain` or `taskv2` service: the Hub task-chain engine is removed. Task leases, reviews, the gate,
+merge-back and workflows live in [src/lib/owner_local](../src/lib/owner_local) and `src/bridge/owner_*.odin` (section 5.2).
 
 Also under `src/hub`: [bootcache](../src/hub/bootcache/epoch.odin) (content epoch counter that invalidates bridge-side
 bootstrap caches) and [platform](../src/hub/platform) (clock, id generation, randomness, DB telemetry).
@@ -201,9 +202,11 @@ authenticates; [respond.odin](../src/hub/transport/http/respond.odin) and `parse
 (files `*_handlers.odin`): agents and instances (`agent_*`), agent actions from `ham-ctl` (`agent_action_handlers.odin`),
 bridges (`bridge_*`, including `bridge_enroll_ws.odin`, heartbeat inventory, auto-update, diagnostics, logs, proxy relay),
 auth/session/device-auth/OIDC gate, content (conversations, messages, memories, artifacts), projects, providers and
-extensions, shell sessions and jobs (`shell_*`, including binary stream frames and screen snapshots), task chains and
-mixed work, MCP (`mcp_*`), search, cards/actions/attention, billing, push, issues, vault directory, metrics
-(`metrics_*`), LSP, experiments, and the tool-activity relay.
+extensions, shell sessions and jobs (`shell_*`, including binary stream frames and screen snapshots), the owner-local
+relay and legacy chain import (`owner_local_handlers.odin`, `owner_migration_handlers.odin`), MCP (`mcp_*`), search, cards/actions/attention, billing, push, issues, vault directory, metrics
+(`metrics_*`), LSP, experiments, and the tool-activity relay. Every former Hub `/task-chains/**`, `/tasks/**`,
+`/workflows/**` and `/workflow-runs/**` route, and the agent actions and MCP `chains.*`/`tasks.*`/`events.wait` tools that
+only reached the engine, answer `410 {"code":"hub_chains_removed"}` ([hub_chains_removed.odin](../src/hub/transport/http/hub_chains_removed.odin)).
 
 ---
 
@@ -247,7 +250,10 @@ The bridge is a flat Odin package (`package main`, [src/bridge](../src/bridge));
   `update_cmd.odin`, `release_fetch.odin`, `bridge_update`/`bridge_uninstall` commands, `recovery_command.odin`.
 - **Filesystem and VCS.** [fs_management.odin](../src/bridge/fs_management.odin) (sandboxed `fs_*` commands confined to a trusted root),
   `vcs_api.odin` with `vcs_git.odin`/`vcs_jj.odin` (backing the UI's VCS panel and the task worktree/merge commands),
-  `agent_taskv2_vcs.odin`, `project_path_validation.odin`.
+  `agent_taskv2_vcs.odin` (per-task worktrees), `project_path_validation.odin`.
+- **Owner-local chains.** `owner_local*.odin` (store access, leases, context/`TASK.md`, lifecycle and merge-back,
+  executor delivery), `owner_agent_routing.odin` (routes `ham-ctl lease|task|review|task-chain` verbs to the owner store),
+  `owner_agent_controls.odin` (coordinator controls), `owner_migration.odin` (legacy chain import). See section 5.2.
 - **Local proxy.** [local_proxy.odin](../src/bridge/local_proxy.odin) — `http://127.0.0.1:<port>/proxy/<session>/…`
   forwarded over the hub WebSocket to the bridge that owns the target shell session.
 - **Other.** `tray_*.odin` (desktop tray companion), `lsp_session.odin`, `tool_activity_live.odin`,
@@ -282,7 +288,7 @@ The bridge is a flat Odin package (`package main`, [src/bridge](../src/bridge));
 
 ### 5.1 Agent launch and bootstrap
 
-1. A launch is requested (UI REST, MCP, or the task matcher). [agent_service.odin](../src/hub/service/agent/agent_service.odin)
+1. A launch is requested (UI REST, MCP, or an owner Bridge's fleet). [agent_service.odin](../src/hub/service/agent/agent_service.odin)
    `create_instance` → `prepare_instance` validates the provider/model and saves the instance;
    `reserve_runtime_launch` and `send_instance_launch` send a `launch_agent` command to the owning bridge through
    `service/bridge_runtime` (`send_runtime_command`). `restart_instance` reuses the path.
@@ -302,47 +308,48 @@ The bridge is a flat Odin package (`package main`, [src/bridge](../src/bridge));
    `bridge_pty_host_spawn` sends it to the `ham-pty-host` daemon, which starts the provider CLI under a PTY
    ([daemon.rs](../tools/pty_host/src/daemon.rs), [host.rs](../tools/pty_host/src/host.rs)).
 5. The agent runs `ham-ctl start-success` (agent mode → `agent.start_success`); the hub handler in
-   [agent_action_handlers.odin](../src/hub/transport/http/agent_action_handlers.odin) calls `mark_instance_start_success`, and the task engine's
-   `on_start_success` ([lease.odin](../src/hub/service/taskv2/lease.odin)) confirms any pending lease.
+   [agent_action_handlers.odin](../src/hub/transport/http/agent_action_handlers.odin) calls `mark_instance_start_success`; for owner-chain
+   work the agent then claims its lease from the owner Bridge with `ham-ctl lease next`.
 
-### 5.2 Task System v2 lifecycle
+### 5.2 Bridge-owned task chain lifecycle
 
-Design record: [plans/task-system-v2.md](plans/task-system-v2.md) and [fsm_task_chain_engine.md](fsm_task_chain_engine.md).
-Engine: [src/hub/service/taskv2](../src/hub/service/taskv2).
+Every task chain is owned by one Bridge. Its durable state lives in that Bridge's owner-local SQLite store
+([src/lib/owner_local](../src/lib/owner_local), `store.odin`, one store per enrolled account in a private directory); the Hub keeps
+only the owner registry used for routing ([owner_registry.odin](../src/hub/domain/owner_registry.odin)). Chains are created in the
+UI on a Bridge. Historical design: [plans/task-system-v2.md](plans/task-system-v2.md) (the removed Hub engine).
 
-- **State is a fold of events.** [fold.odin](../src/hub/service/taskv2/fold.odin) `fold_task` is a pure function from a task's ordered
-  events to its state (`backlog`/`ready`/`in_progress`/`in_review`/`done`/`cancelled`); `tasks.state` is a cached projection that
-  `refold_task` / `refold_chain` ([service.odin](../src/hub/service/taskv2/service.odin)) rewrite after every event, with
-  [fold_cache.odin](../src/hub/service/taskv2/fold_cache.odin) as a cache. Attempt budgets and review-round limits are encoded in the fold rules.
-- **Publishing.** `chain_propose` / `chain_proposal_decide` / `approve_and_publish_chain_in_uow` ([verbs_m2.odin](../src/hub/service/taskv2/verbs_m2.odin)),
-  validated against [brief_schema.odin](../src/hub/service/taskv2/brief_schema.odin) (`validate_brief_for_publish`).
-- **Matching and leases.** `match_chain_in_uow` ([matcher.odin](../src/hub/service/taskv2/matcher.odin)) pairs ready tasks and owed
-  reviews with fleet members (`pick_instance`, `grant_work`, `grant_reviews`, JIT launch via `jit_prepare`); placement/model
-  resolution is in [placement.odin](../src/hub/service/taskv2/placement.odin). Leases: `grant_attempt_in_uow`, `heartbeat_in_uow`,
-  `release_in_uow`, `expire_lease_in_uow` ([lease.odin](../src/hub/service/taskv2/lease.odin)). The agent-facing context pack is
-  `build_pack_json` ([pack.odin](../src/hub/service/taskv2/pack.odin)) → `TASK.md`.
-- **Verbs.** `lease_next`, `lease_heartbeat` ([verbs.odin](../src/hub/service/taskv2/verbs.odin)); `lease_submit`, `lease_handoff`, `lease_block`,
-  `lease_switch`, `review_post`, `user_review`, `task_reopen`, `task_hold`, `task_fetch` ([verbs_m2.odin](../src/hub/service/taskv2/verbs_m2.odin)).
-  These are reached through `ham-ctl lease|review|task …` (see [src/ctl/taskv2_cmds.odin](../src/ctl/taskv2_cmds.odin)) and the MCP task tools.
-- **Review gate.** `evaluate_gate_in_uow` ([gate.odin](../src/hub/service/taskv2/gate.odin)) evaluates the required review pairs
-  ([review_pairs.odin](../src/hub/service/taskv2/review_pairs.odin)) and user approval. `changes_requested` is a gate *result*, not a task state:
-  it records `EV_CHANGES_REQUESTED`, and the fold returns the task to `ready` (spending review-round budget), or parks it in `backlog`
-  with a coordinator `oscillation` block (`blocked_on.kind=coordinator`, routed to the chain coordinator rather than the user's attention queue) after three rounds. Approval records `EV_APPROVED`, and the fold moves the task to `done`.
-- **Merge-back.** On done, `effect_merge_worktree` queues a `Merge_Effect`; `flush_merges` → `merge_job_run` → `run_merge`
-  ([merge.odin](../src/hub/service/taskv2/merge.odin)) sends a merge command to the bridge that owns the task worktree
-  (`task_worktree` in lease.odin names the per-task workdir and branch; bridge side: [agent_taskv2_vcs.odin](../src/bridge/agent_taskv2_vcs.odin)).
-  A conflict reopens the task: the first one since the last merge is answered automatically with a non-counting reconcile attempt
-  (`MERGE_AUTO_RECONCILE_MAX`); a repeat parks it with `blocked_on.kind=coordinator` for the chain coordinator.
-- **Timers.** Lease TTL, hard cap, unconfirmed grants, idle TTL, ready-unclaimed, stalled review/dependency, stale hold:
-  [timers.odin](../src/hub/service/taskv2/timers.odin) (`fire_due`, run on `timer_thread_proc`).
-- **Unit of work and lock order.** Every mutation runs inside `begin_uow` / `end_uow` ([service.odin](../src/hub/service/taskv2/service.odin)),
-  which opens a SQLite transaction guarded by the process-wide `tx_mutex` ([tx.odin](../src/hub/repository/sqlite/tx.odin)). Side effects
-  (bridge wakes, stops, publishes, merges, nudges, coordinator notices) are *recorded* in `Effects` and only flushed (`flush_effects`) after the commit
-  and after the lock is released; a rolled-back transaction cancels its reservations. The **only legal lock order** is
-  `tx_mutex` → `Bridge_Runtime_Connection.state_mutex`: code holding a connection's `state_mutex` must never open a unit of work.
-  [src/lib/lockorder](../src/lib/lockorder/lockorder.odin) enforces it (panics in debug builds, counts violations in release).
-- **Workflows.** [workflow.odin](../src/hub/service/taskv2/workflow.odin), `workflow_execution.odin` run the JSON definitions in
-  `src/prompts/workflows/`; mixed ticket/workflow chains are in `mixed_work.odin`.
+- **Transactions and effects.** Every owner command runs in one store transaction (`transaction.odin`); side effects (agent
+  wakes, stops, merges, notices) are enqueued as outbox intents (`outbox.odin`) inside that transaction and executed only after
+  commit by the Bridge's executor ([owner_local_executor.odin](../src/bridge/owner_local_executor.odin)). Events are immutable
+  evidence (`events.odin`); a rejected command leaves no history.
+- **Publishing.** `task-chain propose|publish` and `task create|publish` validate briefs (`lifecycle.odin`, `work_publication.odin`);
+  ticket dependencies form the chain's work graph (`work_graph.odin`), and `task-chain complete` checks it against the expected
+  `work_revision` (`completions.odin`).
+- **Leases.** `lease next|heartbeat|submit|handoff|switch|block` are owner verbs (`leases.odin`, `attempts.odin`;
+  Bridge side [owner_local_leases.odin](../src/bridge/owner_local_leases.odin)). The fleet policy (`fleet_policy.odin`,
+  `native_fleet.odin`) decides which durable agents may hold work or review leases. The agent-facing context is
+  rendered to `TASK.md` by [owner_local_context.odin](../src/bridge/owner_local_context.odin): the complete current
+  requirements plus a bounded chain summary (`context.odin`).
+- **Routing.** [owner_agent_routing.odin](../src/bridge/owner_agent_routing.odin) serves the ordinary agent verbs
+  (`ham-ctl lease|review|task|task-chain …`) from the owner store when this Bridge owns the target chain; coordinator
+  controls (hold, release, cancel, reopen, split, done --force, revoke, merge retry, review roles) are
+  [owner_agent_controls.odin](../src/bridge/owner_agent_controls.odin) / `controls.odin`, `coordinator_work.odin`.
+- **Review gate.** Required reviewers, review roles and the user-approval ratchet are in `review_roles.odin`: an agent may add
+  `requires_user_approval` but never remove it. `changes_requested` returns the task to its worker; repeated rounds park it on
+  the coordinator.
+- **Merge-back.** When a task is done, the owner Bridge merges its per-task branch into the directory's branch
+  ([owner_local_lifecycle.odin](../src/bridge/owner_local_lifecycle.odin), `bridge_owner_merge`). A conflict returns the task to its
+  worker for reconciliation; a repeat parks it on the coordinator.
+- **Workflows.** Workflow runs of a Bridge-owned chain are executed by `workflows.odin`, `workflow_language.odin` and
+  `workflow_coordinator.odin` and steered whole with `ham-ctl workflow retry|cancel`.
+- **Legacy Hub chains.** Rows of the removed Hub engine stay in the Hub database read-only. Settings → Bridges → **Import all
+  legacy chains** (or `ham-ctl task-chain migrate --chain <id> --owner <bridge>` for one) imports them: the Hub freezes and
+  exports the chain ([owner_migration.odin](../src/hub/repository/sqlite/owner_migration.odin),
+  [owner_migration_import.odin](../src/hub/repository/sqlite/owner_migration_import.odin)), neutralizing busy work in one
+  transaction and recording what it did (live leases ended, in-progress tasks force-held, in-review tasks kept in review,
+  running workflows cancelled, gates on never-succeeded runs released with their tickets force-held, pending merges closed,
+  outstanding effects retired); the owner Bridge verifies and imports it ([owner_migration.odin](../src/bridge/owner_migration.odin),
+  `migration_import.odin`). Re-running skips imported chains; an aborted import leaves the chain a read-only legacy record.
 
 ### 5.3 Chat message delivery and wake notifications
 
@@ -353,9 +360,9 @@ Engine: [src/hub/service/taskv2](../src/hub/service/taskv2).
 3. On the bridge, `bridge_hub_handle_command` (`type == "notify_agent_message"`) calls `bridge_pty_host_deliver_to_agent`
    ([pty_host_runtime.odin](../src/bridge/pty_host_runtime.odin)), which types a one-line notice into the agent's PTY (bracketed paste, then Enter).
    The message body is *not* in the notice: the agent reads it with `ham-ctl chat read`.
-4. Task notifications use sibling commands (`notify_task_nudge`, `task_status_changed_notify`). Waking an idle or absent agent is `wake_agent`:
-   the task engine's `effect_wake_lease` / `flush_wakes` ([wake.odin](../src/hub/service/taskv2/wake.odin)) batch wake entries per bridge/chain, and the
-   bridge side is [agent_wake.odin](../src/bridge/agent_wake.odin) (`bridge_task_wake_if_needed`, with gating and backoff in `bridge_wake_gate`).
+4. Task wakes for Bridge-owned chains come from the owner Bridge's executor (outbox intents delivered after commit,
+   [owner_local_executor.odin](../src/bridge/owner_local_executor.odin)); the bridge-side wake gating and backoff is
+   [agent_wake.odin](../src/bridge/agent_wake.odin) (`bridge_task_wake_if_needed`, `bridge_wake_gate`).
 5. Live UI updates ride the user WebSocket fed by `service/events` (`event_bus.odin`, `attention_debouncer.odin`).
 
 ### 5.4 Provider catalog and model resolution
@@ -367,8 +374,8 @@ Engine: [src/hub/service/taskv2](../src/hub/service/taskv2).
   `apply_model_discovery_report`, `apply_effective_models` ([provider_models.odin](../src/hub/service/provider/provider_models.odin)).
   Model probes run only on an explicit `provider_models_discover` ([provider_model_discovery.odin](../src/bridge/provider_model_discovery.odin)).
 - **Resolution at launch:** `validate_launchable` checks an explicit provider/model against the catalog ∩ bridge support, and never silently substitutes.
-  For task leases, `resolve_launch_model` / `lease_launch_model` ([placement.odin](../src/hub/service/taskv2/placement.odin)) fill empty
-  values from the catalog (rank, then id) intersected with the bridge; fleet rows can pin a model or profile per bridge.
+  For task leases on a Bridge-owned chain, the chain's fleet policy (`src/lib/owner_local/fleet_policy.odin`) can pin a provider,
+  model or profile per bridge.
 - Provider profiles (custom args/env per provider): [provider_profiles.odin](../src/hub/service/provider/provider_profiles.odin) and
   [bridge provider_profiles.odin](../src/bridge/provider_profiles.odin); see [provider-profiles.md](provider-profiles.md).
 
@@ -417,7 +424,7 @@ Engine: [src/hub/service/taskv2](../src/hub/service/taskv2).
 
 | Kind | Where | How to run |
 |---|---|---|
-| Odin unit/integration | `*_test.odin` next to the code (e.g. [src/hub/service/taskv2](../src/hub/service/taskv2), [src/bridge](../src/bridge), [src/ctl](../src/ctl)), plus package-level suites in [tests/](../tests) (`hub_*_test.odin`, `device_auth_*_test.odin`, `bridge_*_test.odin`) | `odin test <package-dir> -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/<unique>` (always a unique `-out`, binary under `$HOME`; see [AGENTS.md](../AGENTS.md) "Running Odin Tests"). Inside the dev shell from [flake.nix](../flake.nix) (`nix develop`). |
+| Odin unit/integration | `*_test.odin` next to the code (e.g. [src/lib/owner_local](../src/lib/owner_local), [src/bridge](../src/bridge), [src/ctl](../src/ctl)), plus package-level suites in [tests/](../tests) (`hub_*_test.odin`, `device_auth_*_test.odin`, `bridge_*_test.odin`) | `odin test <package-dir> -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/<unique>` (always a unique `-out`, binary under `$HOME`; see [AGENTS.md](../AGENTS.md) "Running Odin Tests"). Inside the dev shell from [flake.nix](../flake.nix) (`nix develop`). |
 | Rust (`ham-pty-host`) | `#[test]` modules in [tools/pty_host/src](../tools/pty_host/src) | `cargo test -- --test-threads=1` in `tools/pty_host`; Nix runs the same via crane (`cargoTestExtraArgs` in flake.nix). |
 | TypeScript unit/UI | [tests/ui_*_test.ts](../tests), `tests/*.test.ts`, [tests/helpers](../tests/helpers) | `npm test` (Node's built-in runner with [vaultEndpointHarness.ts](../tests/helpers/vaultEndpointHarness.ts); the explicit file list is the `test` script in [package.json](../package.json)), `npm run typecheck` (`tsc -b`), `npm run test:task-chain-search`, `npm run test:pane-transport`. |
 | Python and shell | [tests/test_*.py](../tests), `tests/e2e_*.sh`, `tests/*.sh` (installers, release targets, dev proxy, hub HTTP APIs, shell/proxy end-to-end) | `python3 tests/test_<name>.py` or `python3 -m unittest discover -s tests -p 'test_*.py'`; `bash tests/e2e_<name>.sh` (some need a built hub/bridge). |

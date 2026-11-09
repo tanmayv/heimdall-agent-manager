@@ -1,60 +1,26 @@
 ---
 name: coordinator-task-management
-description: How a task-chain COORDINATOR runs a chain of tickets with ham-ctl — choose tickets or workflow runs within one mixed-work chain, propose and publish tasks with complete briefs (`task-chain propose|decide|publish`, `task create`), run workflows (`ham-ctl workflow …`), set up the fleet and review roles (`task-chain fleet set`), curate the chain summary so learnings reach every agent, react to `[taskv2]` notifications (blocked_on human, budget_exhausted, oscillation, ready_unclaimed, review_requested_from_user, merge_conflict, gate_rejected, work_batch_finished, workflow_complete, …), record user verdicts (`review post --on-behalf-of user`), and close the chain. Covers Solo mode, where the coordinator also does the work. Load whenever you coordinate a chain.
+description: How a task-chain COORDINATOR runs a Bridge-owned chain of tickets with ham-ctl — propose and publish tasks with complete briefs (`task-chain propose|publish`, `task create|publish`), wire ticket dependencies (`task depend`), set review roles (`review roles`), curate the chain summary so learnings reach every agent, react when work needs you (blocked on a human, parked on the coordinator, stuck, merge conflicts, user reviews), correct tasks with coordinator controls (`task hold|release|unblock|recheck|cancel|reopen|split|done --force`, `lease revoke`, `merge retry`), record user verdicts (`review post --on-behalf-of user`), and close the chain (`task-chain complete`). Covers Solo mode, where the coordinator also does the work, and importing legacy Hub chains. Load whenever you coordinate a chain.
 ---
 
 # Coordinator task management (Tickets)
 
 You plan, triage, publish and steer. Leased **workers** and **reviewers** do the work, unless the chain runs in **Solo mode** (§8), where you are also the worker and the user reviews.
 
-The Hub owns task state: leases make tasks `in_progress`, submits make them `in_review`, passing reviews make them `done`. There is no status verb for tasks. Commands use `./bin/ham-ctl`; exact flags are in `ham-ctl-reference` or `ham-ctl <group> --help`.
+Every chain is **Bridge-owned**: its tasks, leases, reviews, fleet, workflow runs and summary live in the owner Bridge's local store, and `ham-ctl` routes your task, lease and review verbs to that owner. The Hub only knows which Bridge owns the chain (plus chat, agents, artifacts, memory and projects). Leases make tasks `in_progress`, submits make them `in_review`, passing reviews make them `done`. There is no status verb for tasks. Commands use `./bin/ham-ctl`; exact flags are in `ham-ctl-reference` or `ham-ctl <group> --help`.
 
-## 1. Choose the next work item, not a chain type
-Every task chain is `mixed_work`. You remain coordinator of the same chain, team,
-and directories throughout. Add ordinary tickets when their briefs are known;
-add workflow runs for recurring recipes or discovery followed by fan-out. Reassess
-this choice as work evolves. Neither choice creates a second chain.
+Chains are created, renamed, archived and given their directories and fleet in the Heimdall app; `ham-ctl` has no verbs for that (`task-chain list|create|set-title|fleet|directory|graph|decide|scope …` answer `{"ok":false,"code":"hub_chains_removed"}`).
 
-Ordinary tickets remain editable. Workflow-generated stage tasks are engine-managed;
-inspect their run and use whole-run retry/cancel rather than editing stage identities.
-Configure shared fleet roles before starting a recipe; runs never widen the fleet.
-
+## 1. Inspect the chain
 ```bash
-./bin/ham-ctl workflow templates
-./bin/ham-ctl workflow run fix_flaky_tests --chain <chain-id> --request-id <stable-key> \
-  --input suite=src/auth --input test_command="make test-auth" \
-  --after task:<investigation-id>
-./bin/ham-ctl workflow list --chain <chain-id>
-./bin/ham-ctl workflow status <run-id>
-./bin/ham-ctl workflow output <run-id> <stage-key> [--execution <n>]
-./bin/ham-ctl workflow history <run-id>
-./bin/ham-ctl workflow retry <run-id> --expected-revision <revision> --reason "<why>"
-./bin/ham-ctl workflow cancel <run-id> --execution <number> --reason "<why>"
-./bin/ham-ctl task-chain depend --chain <chain-id> --item task:<validation-id> --on workflow_run:<run-id>
+./bin/ham-ctl task-chain show            # your chain: tasks, work_revision, pending proposal, summary
+./bin/ham-ctl task list                  # tasks with comment summaries
+./bin/ham-ctl task show <task-id>        # one task: brief, requirements revision, blocked_on, reviews
+./bin/ham-ctl task comments <task-id> --last 20
 ```
+Dependencies are between tickets of the same chain: `task depend <task-id> --on <prerequisite-task-id>` adds one; `--depends-on <ids>` on `task create`/`task update` sets (and on update replaces) the whole list. Cancelled tasks do not satisfy prerequisites; repoint dependents when you cancel (§5 controls).
 
-To fan out over a list you already know, define a stage with
-`"for_each": "inputs.<array-input>"` and pass the list with `--inputs-file`; no
-echo stage is needed. An empty list completes that stage with zero tasks. See
-ham-ctl-reference "Authoring workflow definitions" for item placeholders.
-
-Creation request keys are caller-selected and reused on network retries. A key
-with different inputs fails. Retry creates a new execution with fresh tasks and
-preserves all old attempts. Stage/cascade retry is unsupported. If outputs have
-already been consumed, retry/reopen is refused with consumer references; create
-replacement work and explicitly change the future dependency graph instead.
-
-Use `task-chain graph [<chain-id>]` to inspect dependencies, scope history, and
-`work_revision`. Dependencies can join any ticket or whole run in this same chain.
-For a ticket waiting on a run, `task depend <task-id> --on workflow_run:<run-id>`
-is the same graph edge; `--depends-on` on `task create`/`update` takes ticket ids only.
-Cancelled, failed, or excluded items do not satisfy prerequisites. Remove an edge
-explicitly with `task-chain remove-dependency --dependency <id> --reason "<why>"`.
-The graph verbs default to your chain; only you (the coordinator) or the owner may change it.
-
-A new proposal can add work to an active chain mid-work. Its `kind` is `task` or
-`workflow_run`, describing the proposed item, never changing the chain type.
-Decide a pending proposal before proposing another.
+Workflow runs that already exist on a Bridge-owned chain (for example one carried over by an import) are steered as a whole: `workflow retry <run-id> --expected-revision <n> --reason "<why>"` or `workflow cancel <run-id> --execution <n> --reason "<why>"`. Their generated stage tasks are engine-managed; do not edit, reopen or cancel them individually.
 
 ## 2. Propose, approve, publish
 ```bash
@@ -65,7 +31,7 @@ cat > proposal.json <<'EOF'
   "tasks": [
     {"id": "t_api", "title": "Commit-diff endpoint", "priority": "p1",
      "brief": {"goal": "Expose paginated commit-diff for chain directories.",
-               "acceptance": ["GET …/vcs/commit-diff returns <= 200 hunks", "taskchain unit tests cover pagination and pass"],
+               "acceptance": ["GET …/vcs/commit-diff returns <= 200 hunks", "unit tests cover pagination and pass"],
                "assignee": "agt_worker_odin", "review_roles": ["reviewer"]}},
     {"id": "t_ui", "title": "Diff viewer", "depends_on": ["t_api"],
      "brief": {"goal": "Render the commit diff in the task panel.", "acceptance": ["diff renders per file with hunk headers", "UI tests for the viewer pass"],
@@ -74,29 +40,21 @@ cat > proposal.json <<'EOF'
 }
 EOF
 ./bin/ham-ctl task-chain propose --file proposal.json [--require-decision]
-./bin/ham-ctl task-chain decide <chain-id> --decision approve|reject [--reason <text>]
 ```
 - Per-task fields: `id`, `title`, `description`, `priority`, `depends_on`, `brief`. **Put `assignee`, `reviewers` and `requires_user_approval` inside `brief`**; top-level copies are ignored.
-- Proposals auto-approve by default: briefs are validated and tasks publish (or the workflow starts) at once. Pass `--require-decision` when the user wants to see the plan first; the proposal then waits for `task-chain decide`. Existing work continues.
+- Proposals auto-approve by default: briefs are validated and tasks publish at once. Pass `--require-decision` when the user wants to see the plan first; the user then approves or rejects it in the Heimdall app (there is no agent `decide` verb). Existing work continues. Wait for a pending proposal to be decided before proposing another.
 - Single tasks: `task create --title … --goal … --acceptance … (repeat) [--assignee agt_…] [--reviewer agt_…] [--review-role <role>] [--require-user-approval] [--input <ref>] [--depends-on <ids>]`, then `task publish <task-id>` or `task-chain publish <chain-id>`.
 - Publish refuses incomplete briefs with `422 brief_incomplete` listing what is missing per task, including `review_role:<r>` when no fleet row holds a role the brief asks for.
 
 **A good brief** is self-contained: a goal a newcomer can act on, checkable acceptance items (a ticket needs a non-empty goal and at least one acceptance item; nothing else is required). Do not prescribe a verification command: the worker chooses and reports checks appropriate to the change, and reviewers judge correctness from the diff and that evidence. Add `inputs` (`output:<task>`, `<path>@<rev>`) only for context beyond what dependencies already bring: a task automatically receives the handoff of every task it waits for.
 
 ## 3. Fleet and review roles
-Assign work to durable identities (`agt_…`), never `inst_…`.
-```bash
-./bin/ham-ctl task-chain fleet list [<chain-id>]
-./bin/ham-ctl task-chain fleet set <chain-id> --agent agt_worker_odin \
-  --capacity 2 --roles worker,reviewer [--min-warm 1] [--idle-ttl 300] \
-  [--bridge brg_main] [--provider claude --model claude-sonnet-5-5]
-```
+Assign work to durable identities (`agt_…`), never `inst_…`. The chain's fleet (which agents work it, their capacity, roles, bridge, provider and model) is edited by the user in the chain's fleet settings in the Heimdall app; ask the user when capacity, roles or placement must change.
 - Roles: `worker`, `reviewer`, or a custom review role (`security`, `perf`, …). A brief's `review_roles` asks every agent holding that role to review. Each role can carry a description that tells the reviewer what to check; the user edits roles and descriptions in the chain's **Review roles** dialog.
-- Reviewers named on one task (`brief.reviewers` / `--reviewer`) review that task only.
-- Each agent's bridge comes from: the task's bridge pin, then its fleet row's bridge, then the chain's first directory, then your own bridge.
+- Reviewers named on one task (`brief.reviewers` / `--reviewer`) review that task only. Re-target a task's reviewers with `review roles <task-id> --role <role>=agt_… [--require-user-approval]`.
 
 ## 4. Share learnings across the chain
-Agents see only their `TASK.md`. Use the channels the Hub carries forward:
+Agents see only their `TASK.md`. Use the channels the owner Bridge carries forward:
 
 | What | Where | Who sees it |
 |---|---|---|
@@ -105,9 +63,9 @@ Agents see only their `TASK.md`. Use the channels the Hub carries forward:
 | Extra context for one task | `brief.inputs` | that task |
 | Lessons that outlive the chain (build quirks, project rules) | `ham-ctl memory propose` (project scope) | future chains |
 
-Read the summary with `task-chain summary get` (or `show`); it never writes. Only `summary set <text>|--file <path>|--stdin` writes.
+Read the summary with `task-chain summary get` (or `show`); it never writes and reads only the owner store (`vault_locked` when the owner Bridge cannot decrypt it; it never prints ciphertext). Only `summary set <text>|--file <path>|--stdin` writes.
 
-The runtime projects a bounded chain summary from retained source history and separate curated notes. Keep notes short and current. `summary set` edits notes; it cannot remove immutable handoff history. Successful automatic compaction needs no action. A source-read failure requires storage diagnosis and retry; fetch original task facets for evidence.
+The owner Bridge projects a bounded chain summary from retained source history and separate curated notes. Keep notes short and current. `summary set` edits notes; it cannot remove immutable handoff history.
 ```bash
 ./bin/ham-ctl task-chain summary set --stdin <<'EOF'
 Conventions: tests with `pytest -q`; never edit legacy/.
@@ -115,24 +73,19 @@ Decided: token hashes are sha256 (t_api).
 EOF
 ```
 
-## 5. React to `[taskv2]` notifications
-Routine events stay quiet. You get one line, `[taskv2] <trigger>: …`, only when something needs you:
+## 5. When work needs you
+Routine events stay quiet. The owner Bridge wakes you with a one-line `[owner-local] <method> on task <id>; …` message, or the task shows up in the user's attention deck, when something needs a decision. Inspect with `task show <id>` (its `blocked_on`, reviews and attempts) and `task comments <id>`, then:
 
-| Trigger | Do this |
+| Situation | Do this |
 |---|---|
-| `proposal_decided` (approved / rejected) | approved: tasks are dispatching, keep the user posted. Rejected: read the reason, revise, propose again |
-| `blocked_on human` | a worker ran `lease block --waiting-on user`. Read the question (`task show <id>`), ask the user with `chat send --questions-file <questions.json>` for a set of questions, or `--options` for one simple choice. Their answer (given in the task's UI) re-readies the task and appears in the worker's `TASK.md` |
-| `budget_exhausted` | the task is parked on YOU (`blocked_on.kind=coordinator`), not in the user's queue. Read the attempts (`task fetch <id> facet:<id>:<n>:handoff`), then sharpen or split the brief (`task update`) and `task unblock <id>`, or `workflow retry`; ask the user only if you cannot resolve it |
-| `oscillation` | parked on you (`blocked_on.kind=coordinator`): review rounds keep bouncing: read the open findings (`task show`) and the handoff, make `acceptance` unambiguous, then `task unblock <id>` |
-| `hold_stale` | a task you (or the user) held has had no live lease for a while. If the hold's reason is resolved, `task release <id>`; otherwise leave it held. Repeats once per interval until released |
-| `ready_unclaimed` | no eligible worker: check `task-chain fleet list` and `bridge list`, fix capacity, roles or bridge |
-| `agent_not_running` | A ready task cannot obtain a running agent, or a leased holder exited/lost its heartbeat. `task show <id>` shows `blocked_on.kind=agent_not_running` (legacy `dispatch` is equivalent), with agent/provider/model/bridge/error. Recoverable launch failures are retried automatically (30s, 2m, 5m) before the agent is parked; fatal ones park at once. You can restart it yourself with `task start-agent <id>` (a user's deliberate stop is never cleared by you), or the user can choose **Start agent** in the attention deck or chat tray; a failed start stays blocked and shows its error inline for retry. Fix the cause, then use the card or `task unblock <id> [--note <reason>]`; editing the affected fleet row also clears the block. No work attempt budget is spent. Full fleet rows remain queued without blocking |
-| stuck `ready` / `in_review` / merge | A task looks stuck: `ready_unclaimed` with free fleet capacity, `in_review` although every owed review is in (e.g. after `--no-require-user-approval`), or a done task whose merge is `pending`/`failed`/`none`. Run `task recheck <id>`: it re-runs the gate, readiness, dispatch and merge-back without approving or touching a live lease, and its `reasons` name what still holds (waiting reviewer, `fleet full n/m`, bridge offline, directory without git). Prefer it to `task hold` + `task release`, which also asks a lease holder to checkpoint (see §5 "Pausing vs deferring") |
-| `review_requested_from_user` | summarise the evidence and point the user to the existing task review UI; if they explicitly decide in chat, record their verdict (§6). No task approval action card is required |
-| `merge_conflict` / `merge_failed` | a done task's branch did not merge. The first conflict starts a reconcile attempt automatically (the task returns to its worker with a Merge Conflict section); a repeat conflict parks it on you (`blocked_on.kind=coordinator`): inspect, then `task unblock <id>` to retry the reconcile. For `merge_failed` (merge never ran, e.g. bridge offline) check the bridge |
-| `gate_rejected` | a workflow gate was rejected: inspect the feedback, talk to the user, and retry the whole run if appropriate |
-| `summary_overflow` | inspect the reported context materialization/storage failure and retry after recovery; summary set only edits curated notes |
-| `work_batch_finished` / `workflow_complete` | assess the goal; add more work or explicitly complete the chain |
+| Blocked on a human (`lease block --waiting-on user`, or `task escalate`) | Read the question (`task show <id>`), ask the user with `chat send --questions-file <questions.json>` for a set of questions, or `--options` for one simple choice. Their answer (given in the task's UI) re-readies the task and appears in the worker's `TASK.md`. An escalation is cleared only by the user |
+| Parked on you (`blocked_on.kind=coordinator`: attempt budget exhausted, or review rounds keep bouncing) | Read the attempts and open findings (`task show`, `task comments`), sharpen or split the brief (`task update`, `task split`), make `acceptance` unambiguous, then `task unblock <id> --reason "<what changed>"`; ask the user only if you cannot resolve it |
+| A held task's reason is resolved | `task release <id> --reason "<why>"`; otherwise leave it held |
+| Ready but unclaimed, or `blocked_on.kind=agent_not_running` | Check `bridge list` and ask the user to fix the fleet (capacity, roles, bridge) or start the agent from the task's **Start agent** card. A user's deliberate stop is never cleared by you. Infrastructure failures spend no attempt budget |
+| Stuck `ready` / `in_review` / merge | `task recheck <id>`: it re-runs the gate, readiness, dispatch and merge-back without approving or touching a live lease, and its `reasons` name what still holds (waiting reviewer, `fleet full n/m`, bridge offline, directory without git). Prefer it to `task hold` + `task release` |
+| A task needs the user's review | Summarise the evidence and point the user to the existing task review UI; if they explicitly decide in chat, record their verdict (§6). No task approval action card is required |
+| Merge conflict / failed merge-back | The first conflict returns the task to its worker with a Merge Conflict note; a repeat parks it on you: inspect, then `merge retry <id> --reason …` or `task unblock <id> --reason …`. For a merge that never ran (bridge offline) check the bridge |
+| A batch of work finished | Assess the goal; add more work or explicitly complete the chain (§7) |
 
 ### Pausing vs deferring: when to `task hold`
 `task hold` is a deliberate stop: nothing dispatches until someone runs `task release`. A hold never gives the user an Answer card, so the user cannot answer a held task. A Review card the user already owes, or a nested **Start agent** action, stays in their deck. Pick the command that matches what you want:
@@ -144,33 +97,32 @@ Routine events stay quiet. You get one line, `[taskv2] <trigger>: …`, only whe
 | This task must run after another | `task update <id> --depends-on <id>` (or `task depend`) |
 | This task is less urgent | `task update <id> --priority p2` |
 | You need the user's answer or decision | `lease block --waiting-on user --reason "<question>"`, which gives the user an answerable card |
-| Pause dispatch deliberately (re-route to another identity or model, re-plan, wait on an external event) | `task hold <id> --reason "<why and what releases it>"`, then `task release <id>` |
+| Pause dispatch deliberately (re-route to another identity or model, re-plan, wait on an external event) | `task hold <id> --reason "<why and what releases it>"`, then `task release <id> --reason …` |
 
 Rules: never hold a task just to postpone it, and never hold when the user's input is needed (the user cannot answer a held task). Release every hold you set as soon as its reason is resolved.
 
-### Coordinator controls (Bridge-owned chains)
-On a chain owned by your Bridge you can correct tasks directly. Every control takes `--reason` (recorded in the audit trail as "by coordinator"); only the chain coordinator may use them, and refusals are printed verbatim. Legacy Hub chains are not supported for these verbs: they answer `{"ok":false,"error":{"code":"owner_chain_only",…}}`.
+### Coordinator controls
+You can correct tasks directly. Every control takes `--reason` (recorded in the audit trail as "by coordinator"); only the chain coordinator may use them, and refusals are printed verbatim.
 
-| Verb | Bridge-owned chain | Legacy Hub chain |
-|---|---|---|
-| `task hold|release|unblock|recheck <id>` | yes | yes (existing Hub routes) |
-| `task cancel <id> --reason … [--dependents drop|keep|repoint --to <id>]` | yes | `owner_chain_only` |
-| `task reopen <id> --reason …` (cancelled, done or merge-blocked) | yes; a refusal names its cause (chain not active, consumed by a started dependent, generated workflow task, wrong state) | `owner_chain_only` |
-| `task delete <id> --reason …` (unstarted task only) | yes | `owner_chain_only` |
-| `task escalate <id> --reason …` (block on a human; only the user clears it) | yes | `owner_chain_only` |
-| `task submit-for-review <id> --summary … --reason … [--override-ack]` | yes | `owner_chain_only` |
-| `task done <id> --force --reason …` (skips only the agent review, never a user approval) | yes | `owner_chain_only` |
-| `task split <id> --child-file <json> --reason … [--dependents all|last|map --map …]` | yes | `owner_chain_only` |
-| `lease revoke <id> --reason … [--disable-fleet] [--stop]` | yes | `owner_chain_only` |
-| `merge retry <id> --reason …` | yes | `owner_chain_only` |
-| `review roles <id> --role <role>=agt_… [--require-user-approval]` | yes | `owner_chain_only` |
-| `task create|update … --assignee self` | yes, only in solo mode (you hold a worker fleet row); otherwise refused: use solo mode or `task done --force` | `owner_chain_only` |
+| Verb | Effect |
+|---|---|
+| `task hold|release|unblock|recheck <id>` | pause, resume, clear a block, re-evaluate (release and unblock also take `--reason` or `--note`) |
+| `task cancel <id> --reason … [--dependents drop|keep|repoint --to <id>]` | cancel; decide what its dependents wait on |
+| `task reopen <id> --reason …` | reopen a cancelled, done or merge-blocked task; a refusal names its cause (chain not active, consumed by a started dependent, generated workflow task, wrong state) |
+| `task delete <id> --reason …` | delete an unstarted task |
+| `task escalate <id> --reason …` | block on a human; only the user clears it |
+| `task submit-for-review <id> --summary … --reason … [--override-ack]` | submit the last lease's committed work on the worker's behalf |
+| `task done <id> --force --reason …` | complete skipping only the agent review, never a user approval |
+| `task split <id> --child-file <json> --reason … [--dependents all|last|map --map …]` | replace a ready task by children |
+| `lease revoke <id> --reason … [--disable-fleet] [--stop]` | end a live lease (default: ask the holder to checkpoint) |
+| `merge retry <id> --reason …` | retry a failed merge-back |
+| `review roles <id> --role <role>=agt_… [--require-user-approval]` | change who reviews a task |
+| `task create|update … --assignee self` | only in solo mode (you hold a worker fleet row); otherwise refused: use solo mode or `task done --force` |
 
 Submit kept work for review BEFORE `lease revoke --disable-fleet`: it bumps the fleet revision, after which the old lease can no longer be submitted.
 
 ## 6. Recording the user's verdict
-- Workflow gates with approver `user_or_coordinator`: your own `review post --verdict approve|request_changes` decides.
-- Tasks with `requires_user_approval` and gates with approver `user` need the user's OWN approval in Heimdall (attention deck / task review UI). The hub refuses a relayed approval (`403 user_approval_required`), ignores relayed rows at the gate, and refuses any agent attempt to clear `requires_user_approval` or move an approver off `user` (`403 user_approval_ratchet`; only the user can). When the user asks for changes in chat, you may still relay that:
+- Tasks with `requires_user_approval` (and gates whose approver is `user`) need the user's OWN approval in Heimdall (attention deck / task review UI). A relayed approval is refused (`403 user_approval_required`), and any agent attempt to clear `requires_user_approval` is refused (only the user can). When the user asks for changes in chat, you may still relay that:
   ```bash
   ./bin/ham-ctl review post <task-id> --verdict request_changes --on-behalf-of user \
     --summary "<the user's reason>"
@@ -179,22 +131,18 @@ Submit kept work for review BEFORE `lease revoke --disable-fleet`: it bumps the 
   The user can also approve directly from their attention deck. Do not create or attach a `task.review` action card as a required step. Never infer task approval from a question-answer selection or silence; wait for an explicit review decision. Unrelated action-card operations, such as memory approval, remain available.
 
 ## 7. Closing and out-of-scope defects
-- Completion is explicit. Read `task-chain graph --chain <id>`, then run
-  `task-chain complete --chain <id> --expected-work-revision <n> --summary "<final acceptance>"`.
-  Every included ticket must be published and done; every included run must have
-  succeeded; no live leases or pending proposal may remain. At least one success
-  is required. A changed revision requires a fresh inspection, not a blind retry.
-- Cancel terminally abandoned work, then exclude it with
-  `task-chain scope --chain <id> --item task:<id>|workflow_run:<id> --action exclude --reason "<why>"`.
-  Exclusion is auditable and never makes a failed prerequisite successful.
+- Completion is explicit. Read `work_revision` from `task-chain show`, then run
+  `task-chain complete <chain-id> --expected-work-revision <n> --summary "<final acceptance>"`.
+  Every ticket must be published and done (or cancelled), every carried-over workflow run settled, and no live leases or pending proposal may remain. A changed revision requires a fresh inspection, not a blind retry.
+- Abandoned work: `task cancel <id> --reason … --dependents drop|keep|repoint --to <id>`, or `task delete` for an unstarted task.
 - Unrelated bugs: search `issue list --query …`, vote `issue vote <id>`, or file `issue create --title … --description …`.
 
 ## 8. Solo mode
 The chain is solo when you are the Soloist or hold a worker fleet row yourself. Then:
 - You pull work with `lease next` (nothing is pushed), work it per `worker-task-management`, and `lease submit`. Lapsed leases are not counted as attempts.
-- New tasks do NOT default to `requires_user_approval`; a task with no review roles is done on submit. Add `--require-user-approval` when the user wants to review a task; they then review it from their attention deck. On Bridge-owned (owner-local) chains only the user can remove an explicit `requires_user_approval`; `--no-require-user-approval` from an agent is refused there.
+- New tasks do NOT default to `requires_user_approval`; a task with no review roles is done on submit. Add `--require-user-approval` when the user wants to review a task; they then review it from their attention deck. Only the user can remove an explicit `requires_user_approval`; `--no-require-user-approval` from an agent is refused.
 - You may post `review post --on-behalf-of user` for a task that does not require user approval; for one that does, only the user's own verdict counts (`403 solo_self_review`), and you cannot clear the flag yourself.
-- `[taskv2] solo: task … is ready for you` means pull it with `lease next`.
+- When woken with nothing in hand, run `lease next` to pull the next ready task.
 - Urgent request mid-task: create the task, then `lease switch <task_id> --summary "<where you left off>"`.
 
 ## 9. Live requirement amendments and significant changes
@@ -208,7 +156,7 @@ Use a native requirement amendment when the user changes acceptance details or c
   --expected-requirements-revision <n> --reason "<what changed and why>"
 ```
 
-Repeated acceptance flags replace the list; include every item that should remain. A revision conflict requires a fresh read and deliberate reconciliation, not a blind retry. In the UI use **Change requirements**, provide goal, acceptance and reason, and inspect the task's revision, read status and **Requirement changes** history. MCP clients use `tasks.get` then `tasks.update` with `expected_revision`, `reason` and an idempotent `request_id`; consult the CLI reference and MCP documentation for the distinct concurrency fields.
+Repeated acceptance flags replace the list; include every item that should remain. A revision conflict requires a fresh read and deliberate reconciliation, not a blind retry. In the UI use **Change requirements**, provide goal, acceptance and reason, and inspect the task's revision, read status and **Requirement changes** history.
 
 Native delivery prompts active workers to refresh `lease next`, read the new `TASK.md`, and acknowledge the exact revision on their own lease. Do not acknowledge for them. An edit after submission invalidates stale review evidence: reviewers checkpoint and worker rework must be submitted before current approval. Comments preserve discussion but do not wake agents or change their brief. Preserve existing review gates.
 
@@ -219,3 +167,8 @@ For a significant change to objective, deliverable or approach that invalidates 
 3. Checkpoint active work before redirecting it. In solo mode, `lease switch <replacement-id> --summary "..."` preserves progress. Explicitly rewire future dependencies and keep terminal/workflow lifecycle restrictions. A reference link preserves provenance; a dependency should exist only when the new task actually requires successful completion of the old one.
 
 Do not overwrite the original into an unrelated assignment or treat the scope change as approval of unfinished work.
+
+## 10. Legacy Hub chains
+Chains created before Hub task chains were removed remain on the Hub as read-only records (no data is dropped) until they are imported to a Bridge. The user imports them from **Settings → Bridges → Import all legacy chains**: one click imports every not-yet-imported chain, and re-running skips those already imported. One chain can also be moved with `ham-ctl task-chain migrate --chain <id> --owner <bridge-id>`, which needs a request signed by an enrolled browser device (agents only relay it).
+
+Busy chains are imported too. The import neutralizes live work in one transaction and records what it did: live leases end, in-progress tasks are force-held on the owner, in-review tasks carry over in review, running workflows are cancelled, workflow gates on never-succeeded runs are released (their tickets force-held), pending merges are closed (imported done; unmerged work stays on its branch), and outstanding effects are retired. After an import, review the force-held tasks and `task release` them as appropriate. An aborted, unfinished import leaves the chain a read-only legacy record that can be imported again.

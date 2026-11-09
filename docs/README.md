@@ -10,7 +10,7 @@ Groups:
 4. [Historical](#historical): superseded documents kept for context.
 5. [Data and fixtures](#data-and-fixtures): `txt`, `json`, `html` and `png` files.
 
-> **Task engine:** [fsm_task_chain_engine.md](fsm_task_chain_engine.md) is a **historical proposal** and does not describe the runtime. The current engine is `src/hub/service/taskv2` (spec and status: [plans/task-system-v2.md](plans/task-system-v2.md)).
+> **Task engine:** every task chain is Bridge-owned: tasks, leases, reviews, the gate, merge-back, fleet and workflows live in the owner Bridge's local store (`src/lib/owner_local`, `src/bridge/owner_*.odin`; see [architecture.md](architecture.md) section 5.2). The Hub task-chain engine (Task System v2, `src/hub/service/taskv2` and `src/hub/service/taskchain`) is removed; its routes answer `410 hub_chains_removed`, and legacy Hub chains are imported to a Bridge from Settings → Bridges → Import all legacy chains. [plans/task-system-v2.md](plans/task-system-v2.md) and [fsm_task_chain_engine.md](fsm_task_chain_engine.md) are **historical**.
 
 ## Current reference
 
@@ -26,8 +26,8 @@ Groups:
 - [reference/db-telemetry.md](reference/db-telemetry.md): hub DB latency and lock-contention telemetry (phase 1): configuration, metrics and call-site attribution.
 - [reference/task-placement-failures.md](reference/task-placement-failures.md): native placement-failure snapshots stored in `task_attempt_facets` (REQ-PLACE-1).
 - [reference/task-placement-recovery.md](reference/task-placement-recovery.md): the `task_placement` attention cards and recovery APIs built on placement-failure snapshots (REQ-PLACE-2/3).
-- [plans/task-system-v2.md](plans/task-system-v2.md): Task System v2 specification and implementation status; the current task engine.
-- [fleet-management.md](fleet-management.md): per-chain, per-agent fleet launch settings and the `bridge_models` API field.
+- [plans/task-system-v2.md](plans/task-system-v2.md): Task System v2 specification; **historical** (the Hub engine it describes is removed; its task semantics carried over to Bridge-owned chains).
+- [fleet-management.md](fleet-management.md): per-chain, per-agent fleet launch settings and the `bridge_models` field (written for the removed Hub `/task-chains/{id}/fleets` routes; fleets are now owner-local).
 - [owner-local-workflow-language.md](owner-local-workflow-language.md): original workflow.v1 language matrix, dynamic expansion, structured outputs, sibling triggers and explicit coordinator gate authority.
 - [owner-local-workflows.md](owner-local-workflows.md): bounded static owner-local DAGs, required review roles, source recovery, runnable demo and explicit M2 parity gaps.
 - [multi-question-messages.md](multi-question-messages.md): version 1 multi-question message form and the agent CLI JSON format.
@@ -168,7 +168,7 @@ Point-in-time findings. File paths, commit ids and numbers reflect the snapshot 
 
 Superseded or one-off records kept for context. Do not treat them as current behavior.
 
-- [fsm_task_chain_engine.md](fsm_task_chain_engine.md): **historical proposal** for a pre-Task-v2 finite-state-machine engine, never implemented. The current engine is `src/hub/service/taskv2`; see [plans/task-system-v2.md](plans/task-system-v2.md).
+- [fsm_task_chain_engine.md](fsm_task_chain_engine.md): **historical proposal** for a pre-Task-v2 finite-state-machine engine, never implemented. Chains are now Bridge-owned; see [architecture.md](architecture.md) section 5.2.
 - [bridge_update_pipeline_design.md](bridge_update_pipeline_design.md): superseded bridge update pipeline design; the out-of-process supervisor script was removed, and `ham-bridge update` replaces it. Kept for the hub, UI and protocol design.
 - [plans/pane-streaming-network-and-compression-plan.md](plans/pane-streaming-network-and-compression-plan.md): superseded pane streaming audit and plan, kept for its numbers; see [plans/pty-streaming-binary-wire.md](plans/pty-streaming-binary-wire.md).
 - [ui-rebuild/memory-redesign-spec.md](ui-rebuild/memory-redesign-spec.md): the user's verbatim Memory redesign spec, with several clauses since superseded.

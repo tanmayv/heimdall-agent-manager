@@ -6,8 +6,8 @@
 These rules govern how you work with Heimdall tickets. Follow them every session.
 
 ## 1. Always track work in Heimdall tasks and read `TASK.md`
-Every non-trivial unit of work is tracked in a Heimdall task and dispatched via a hub-managed lease:
-- On wake, the bridge materializes `<run_dir>/TASK.md`: the lease header with your **Workdir** (a per-task git checkout; do all work and commits there), notices (Solo Mode, Your Block Was Answered, Rejected At The Gate, Merge Conflict), the brief (goal, acceptance), the chain summary, **the handoffs of the tasks this one waits for**, resolved inputs, where you are and the previous attempt, open findings, the wake reason, and the 11-rule protocol card. `ham-ctl task show <id>` has the full brief.
+Every non-trivial unit of work is tracked in a Heimdall task and dispatched via a lease from the chain's owner Bridge (every chain is Bridge-owned):
+- On wake, the owner Bridge materializes `<run_dir>/TASK.md`: the lease header with your **Workdir** (a per-task git checkout; do all work and commits there) and the requirements revision, the complete current requirements (goal, acceptance, inputs, review roles), the bounded chain summary (done and open tasks, decisions, dead ends, coordinator notes), and its context provenance. After reading it, acknowledge the revision with `{{ctl_bin}} lease heartbeat --lease <lease-id> --acknowledge-requirements-revision <n>`. `ham-ctl task show <id>` has the full brief, reviews and attempts.
 - Read `TASK.md` first on every wake, or inspect/claim your lease with `{{ctl_bin}} lease next`.
 - Check the inbox using `{{ctl_bin}} chat read` for pending messages before starting anything new.
 - If any command returns `409 lease_lost`, **stop immediately** without touching the working tree or committing further changes — another attempt now owns the task.
@@ -15,9 +15,9 @@ Every non-trivial unit of work is tracked in a Heimdall task and dispatched via 
 ## 2. Coordinator vs Worker vs Reviewer responsibilities
 - **Coordinator** (`coordinator_agent_instance_id`):
   - The **only** free-form user channel for the chain (`chat send --to user`).
-  - Triages incoming work (`ticket` vs `workflow`) and proposes the chain DAG with `ham-ctl task-chain propose --file <proposal.json> [--require-decision]`.
+  - Triages incoming work and proposes tickets with `ham-ctl task-chain propose --file <proposal.json> [--require-decision]`, wiring order with `ham-ctl task depend <task-id> --on <task-id>`.
   - Maintains the chain summary (`<= 60` lines) via `ham-ctl task-chain summary set <text>` (or `--stdin`).
-  - Reacts to one-line `[taskv2] <trigger>:` notifications (`proposal_decided`, `blocked_on human`, `dispatch_failed`, `budget_exhausted`, `oscillation`, `ready_unclaimed`, `review_requested_from_user`, `merge_conflict`, `merge_failed`, `gate_rejected`, `summary_overflow`, `chain_complete`; `solo` in solo mode).
+  - Reacts when work needs it (a task blocked on a human, parked on the coordinator, stuck, in merge conflict, or awaiting the user's review): inspects with `ham-ctl task show <id>` and corrects with the coordinator controls (`task hold|release|unblock|recheck|cancel|reopen|split`, `merge retry`, `lease revoke`).
   - Posts proxy user reviews when the user approves in chat: `ham-ctl review post --task <id> --verdict approve|request_changes --on-behalf-of user`.
 - **Worker** (assignee):
   - Executes the leased task described in `TASK.md`.
@@ -27,7 +27,7 @@ Every non-trivial unit of work is tracked in a Heimdall task and dispatched via 
   - Records every decision others might re-open and every dead end with `--decision` / `--dead-end`: the tasks that wait for this one, and later attempts, receive them.
 - **Reviewer**:
   - Woken with a `review` lease when a task enters `in_review`.
-  - Inspects the attempt's `vcs`, `handoff`, and `artifacts` facets in `TASK.md` (and fetches truncated/referenced items via `ham-ctl task fetch <task_id> <ref>`), and the checks the worker reported.
+  - Inspects the submitted head, handoff and artifacts (`TASK.md`, `ham-ctl task show <task_id>`, `git show <head>`), and the checks the worker reported.
   - Judges correctness independently; runs its own checks (for example in a detached worktree at `vcs.head`) only where a concrete concern remains. The verdict needs no command evidence.
   - Records the review verdict via `ham-ctl review post --task <id> --verdict approve|request_changes [--summary "<reason>"] [--findings-file <json>]` (findings: `[{"path","line","severity","text"}]`).
 
@@ -48,16 +48,7 @@ Every executable ticket carries a validated `brief`:
 
 Briefs carry no verification command: workers choose the checks and report them, and review verdicts are the gate.
 
-When `TASK.md` exceeds the 8k-token (`32 KiB`) cap, the bridge drops large sections in strict order (`resolved inputs` -> `dependency outputs` -> `previous handoff summary` -> `description`) — never slicing mid-field and never dropping `brief`, `dead_ends`, or open `findings` — and inserts a pointer:
-```bash
-ham-ctl task fetch <task_id> <ref>
-```
-Supported `<ref>` formats for `ham-ctl task fetch <task_id> <ref>`:
-- `#<event_id>` — fetch a task event by its integer ID (e.g. `#123`).
-- `output:<task_id>` — fetch a predecessor task's `output` facet.
-- `facet:<task_id>:<attempt_no>:<kind>` — fetch an attempt facet (`vcs`, `handoff`, `output`, `runtime`, `artifacts`).
-- `dir:<directory_id>:<rev>:<path>` — fetch a file at a specific revision from a chain directory.
-- `<path>@<rev>` or `<path>` — fetch a file at `<rev>` or at the task's latest `vcs.head`.
+`TASK.md` always carries the complete requirements; only the derived chain summary is bounded. For more context use `ham-ctl task show <task_id>`, `ham-ctl task comments <task_id>` and `ham-ctl task-chain summary get`.
 
 ## 5. `ham-ctl` Tickets Cheatsheet
 - `ham-ctl lease next` — inspect current lease (`status: "current"`) or claim next ready task (`status: "granted"`); updates `<run_dir>/TASK.md`.
@@ -67,11 +58,12 @@ Supported `<ref>` formats for `ham-ctl task fetch <task_id> <ref>`:
 - `ham-ctl lease switch <task_id> --summary "<text>"` — solo mode: hand off the current task and take another ready one.
 - `ham-ctl lease block --waiting-on user|task|<system> --reason "<text>" [--ref <id>] [--summary "<text>"]` — block the task on a user decision or an external dependency.
 - `ham-ctl review post [<task_id>] --verdict approve|request_changes [--summary "<reason>"] [--findings-file <json>] [--on-behalf-of user]` — post a review verdict and optional structured findings (`[{"path":"...","line":1,"severity":"blocker","text":"..."}]`).
-- `ham-ctl task fetch <task_id> <ref>` — fetch an event, facet, or file-at-commit reference on demand.
-- `ham-ctl task create --title "<title>" --goal "<goal>" --acceptance "<item>" [--assignee <agt_id>] [--reviewer <agt_id>] [--review-role <role>] [--require-user-approval] [--depends-on <id,id>] [--brief-file <json>]` — create a v2 task.
+- `ham-ctl task show <task_id>` / `ham-ctl task comments <task_id> [--last N]` — read a task's brief, reviews, attempts and comments.
+- `ham-ctl task create --title "<title>" --goal "<goal>" --acceptance "<item>" [--assignee <agt_id>] [--reviewer <agt_id>] [--review-role <role>] [--require-user-approval] [--depends-on <id,id>] [--brief-file <json>]` — create a task.
 - `ham-ctl task update <task_id> [...]` — update task fields or brief.
 - `ham-ctl task publish <task_id>` / `ham-ctl task-chain publish <chain_id>` — validate briefs and publish tasks (`422 brief_incomplete` lists any missing brief fields).
 - `ham-ctl task-chain summary set "<text>" [--chain <id>]` (or `--stdin`) — set the chain summary (`<= 60` lines).
 - `ham-ctl task-chain propose --file <proposal.json> [--require-decision] [--chain <id>]` — create a chain proposal and its tasks in a single transaction; auto-approves and publishes unless `--require-decision`.
-- `ham-ctl task-chain decide <chain_id> --decision approve|reject [--reason "<text>"]` — approve or reject a pending chain proposal.
-- `ham-ctl task-chain fleet set <chain_id> --agent <agt_id> --capacity <N> [--min-warm <M>] [--idle-ttl <sec>] [--roles worker,reviewer] [--bridge <brg_id>] [--provider <p>] [--model <m>] [--bridge-models <json> | --bridge-models-file <path>]` — configure fleet capacity and placement.
+- `ham-ctl task depend <task_id> --on <task_id>` — add one ticket prerequisite.
+- `ham-ctl task-chain show` — the chain's tasks, `work_revision`, pending proposal and summary; `ham-ctl task-chain complete <chain_id> --expected-work-revision <n> --summary "<text>"` closes it.
+- A proposal made with `--require-decision` is approved or rejected by the user in the Heimdall app; the chain's fleet and directories are edited there too.

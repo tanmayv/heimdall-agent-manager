@@ -101,20 +101,19 @@ work starts, regardless of size. There is no carve-out for "quick fixes."
    `inst_...` id.
 4. **Keep tasks current.** Record findings and evidence via structured handoff/artifacts and task comments, and submit a
    task for review with the checks you ran and their outcomes in the summary.
-5. **Choose work per item.** Every chain is `mixed_work`. Keep the same chain and
-   coordinator while adding ordinary tickets or workflow runs as the work evolves.
-   Use `ham-ctl workflow templates`, `workflow run <ref> --chain <id> --request-id <stable-key>`,
-   and `workflow list --chain <id>`. Workflow stage tasks are engine-managed; inspect
-   them with `workflow status/output/history` and use whole-run retry or cancellation.
+5. **Keep the work graph in tickets.** The chain is owned by its Bridge; add tickets as the
+   work evolves and wire their order with `ham-ctl task depend <task-id> --on <task-id>`
+   (or `--depends-on` on `task create`/`task update`). Inspect the chain with
+   `ham-ctl task-chain show` and `ham-ctl task list`. The fleet, directories and chain
+   settings are edited by the user in the Heimdall app.
 6. **Close the loop explicitly.** Finishing a batch does not complete the chain.
-   Read `ham-ctl task-chain graph --chain <id>` for the current work revision and
-   ticket/run prerequisites. Every included ticket must be done and every included
-   workflow run must succeed, with no active leases or pending proposal. Then use
-   `ham-ctl task-chain complete --chain <id> --expected-work-revision <n> --summary "<final acceptance>"`.
+   Read the current `work_revision` from `ham-ctl task-chain show`. Every ticket must be
+   done (or cancelled), with no active leases or pending proposal. Then use
+   `ham-ctl task-chain complete <chain-id> --expected-work-revision <n> --summary "<final acceptance>"`.
 
 > Tickets: Read `TASK.md` in your run directory on every wake. Use `task-chain propose`,
-> `task-chain summary set`, `task create/update/publish`, `lease next/heartbeat/submit/handoff/block`,
-> `review post [--on-behalf-of user]`, and `task fetch`.
+> `task-chain summary set`, `task create/update/publish/depend`, `lease next/heartbeat/submit/handoff/block`,
+> `review post [--on-behalf-of user]`, and `task show`/`task comments` for more context.
 
 Load the `coordinator-task-management` skill for exact task syntax and the lifecycle.
 {{/is_coordinator}}

@@ -8,11 +8,13 @@ already bitten us. The deep dive is [docs/architecture.md](docs/architecture.md)
 ## 1. What Heimdall is
 
 Heimdall is a Hub-and-Bridge multi-agent orchestration system. The **Hub** (`ham-hub`, Odin) owns
-durable state (SQLite), authorization, chat, memory, projects, artifacts and the Task System v2
-engine, and serves the HTTP/WebSocket APIs. One **Bridge** (`ham-bridge`, Odin) runs per execution
+durable state (SQLite), authorization, chat, memory, projects, artifacts, cards and the chain owner
+registry, and serves the HTTP/WebSocket APIs. One **Bridge** (`ham-bridge`, Odin) runs per execution
 device, holds an outbound WebSocket to the Hub, and launches and supervises local agents, shell
-sessions and VCS worktrees. `ham-pty-host` (Rust) is the Bridge's local daemon that runs each
-provider CLI (Claude Code, Codex, ...) under a PTY. `ham-ctl` (Odin) is the CLI that agents and
+sessions and VCS worktrees. Task chains are **Bridge-owned**: each chain's tasks, leases, reviews,
+fleet, workflows and summary live in its owner Bridge's local store (`src/lib/owner_local`); the Hub
+only routes to the owner; the former Hub task engine (Task System v2) is removed. `ham-pty-host`
+(Rust) is the Bridge's local daemon that runs each provider CLI (Claude Code, Codex, ...) under a PTY. `ham-ctl` (Odin) is the CLI that agents and
 operators use. The **UI** is React/TypeScript/Redux, shipped as a web app and an Electron app.
 The Hub coordinates work on Bridges; it never launches agent processes on the Hub host.
 
@@ -47,11 +49,11 @@ src/
     domain/             durable record types and errors (no I/O)
     repository/iface/   storage interfaces + unit of work
     repository/sqlite/  SQLite implementations, numbered migrations/
-    service/            one package per domain area; taskv2/ is the lease/review/workflow engine
+    service/            one package per domain area (no task engine: chains are Bridge-owned)
     transport/http/     router, middleware, handlers, WebSocket streams, mcp_tools.json
   bridge/               flat Odin package: hub client, bootstrap, pty-host runtime, shells, extensions
   ctl/                  ham-ctl: agent_mode.odin (to bridge), hub_mode.odin (to hub), *_cmds.odin
-  lib/                  httpc, ws, vault, vcs, local_socket, lockorder, jsonx, metrics, ...
+  lib/                  owner_local (Bridge-owned chain store), httpc, ws, vault, vcs, local_socket, ...
   prompts/              shipped bootstrap text, canonical skills/, workflows/*.json
   templates/            built-in agent role templates
   ui/                   React/Redux app (api/, store/, components/, hooks/) and electron/
@@ -69,7 +71,8 @@ docs/                   architecture, guides, designs, audits (indexed in docs/R
 | --- | --- |
 | A REST/WebSocket route or handler | `src/hub/transport/http/` (`router.odin`, `*_handlers.odin`) |
 | Business rules for an area (agents, content, shells, billing, ...) | `src/hub/service/<area>/` |
-| Task leases, reviews, gate, merge-back, workflows | `src/hub/service/taskv2/` |
+| Task leases, reviews, gate, merge-back, workflows | `src/lib/owner_local/`, `src/bridge/owner_*.odin` |
+| Legacy Hub chain import | `src/hub/repository/sqlite/owner_migration*.odin`, `src/lib/owner_local/migration_import.odin`, `src/bridge/owner_migration.odin` |
 | A table, query or migration | `src/hub/repository/sqlite/` (+ `repository/iface/`, `domain/`) |
 | A hub-to-bridge command | `src/bridge/hub_runtime_client.odin` (`bridge_hub_handle_command`), `hub_command_dispatch.odin` |
 | Agent bootstrap files | `src/bridge/bootstrap_*.odin`, `src/hub/service/agent/`, `src/prompts/` |
@@ -126,17 +129,18 @@ odin test src/hub/transport/http -collection:odin_test=src -out:$HOME/.cache/hei
 
 Records: [src/hub/domain](src/hub/domain), auth contracts: [src/contracts/auth.odin](src/contracts/auth.odin).
 
-- **Durable state vs runtime projections.** The Hub persists agents, instances, tasks, workflows,
-  chat, memory, projects, artifacts, authorization and audit state in SQLite. Live Bridge
+- **Durable state vs runtime projections.** The Hub persists agents, instances, the chain owner registry,
+  chat, memory, projects, artifacts, authorization and audit state in SQLite; each Bridge persists the tasks, leases,
+  reviews and workflows of the chains it owns in its owner-local store. Live Bridge
   connections, runtime maps, viewer queues, pending permission prompts and tool activity are
   transient projections and never substitute for durable records ([docs/runtime-registry.md](docs/runtime-registry.md)).
   A live process, an instance record and a task lease are three different things: a task can await
   review while its worker has stopped, and disconnection alone does not prove a process died.
-- **Task v2 unit of work.** Every taskv2 mutation runs in one unit of work (`begin_uow`/`end_uow`);
-  side effects (wakes, stops, merges, notices) are recorded and flushed only after commit. Lock
-  order is `tx_mutex` -> `state_mutex` and nothing holding a connection's `state_mutex` may open a
-  unit of work; [src/lib/lockorder](src/lib/lockorder/lockorder.odin) enforces it
-  ([service.odin](src/hub/service/taskv2/service.odin)).
+- **Owner-local transactions.** Every chain mutation commits in one owner-store transaction on its
+  Bridge; side effects (wakes, stops, merges, notices) are recorded as outbox intents and run only
+  after commit ([src/lib/owner_local](src/lib/owner_local)). The Hub has no chain/task write path:
+  its `/task-chains`, `/tasks`, `/workflows` and `/workflow-runs` routes and the MCP `chains.*`,
+  `tasks.*`, `events.wait` tools answer `410 hub_chains_removed`.
 - **Auth boundaries.** Humans use OIDC/browser sessions ([docs/auth-oidc.md](docs/auth-oidc.md),
   [docs/desktop-auth.md](docs/desktop-auth.md)); Bridges use enrolled Bridge credentials; agents use
   per-instance tokens through the local Bridge. Owner scoping is enforced by
@@ -148,7 +152,7 @@ Records: [src/hub/domain](src/hub/domain), auth contracts: [src/contracts/auth.o
   type. Proposals need human approval before becoming bootstrap knowledge
   ([reference](docs/reference/heimdall_memory_system_and_bootstrap.md)).
 - **Notifications carry no payload.** A terminal wake notice only tells the agent to run
-  `ham-ctl chat read` or fetch its task pack; never infer message bodies, tool results or task
+  `ham-ctl chat read` or `lease next`; never infer message bodies, tool results or task
   completion from a notice or a terminal screen.
 - **One outbound HTTP client.** `src/lib/httpc` (libcurl) is the ONLY outbound HTTP(S) client
   ([README](src/lib/httpc/README.md)). Requests are structured (parsed base URL, path segments,
@@ -164,7 +168,7 @@ Records: [src/hub/domain](src/hub/domain), auth contracts: [src/contracts/auth.o
 
 Full walkthroughs with function names: [docs/architecture.md](docs/architecture.md) section 5.
 
-**Agent launch and bootstrap.** UI/CLI/MCP/task matcher requests an instance; the Hub validates
+**Agent launch and bootstrap.** UI/CLI/MCP or an owner Bridge's fleet requests an instance; the Hub validates
 ownership and provider/model, then sends `launch_agent` to the owning Bridge
 ([agent_service.odin](src/hub/service/agent/agent_service.odin)). The Bridge issues an instance token,
 clean-slates the run dir, fetches the content-addressed manifest and blobs
@@ -176,8 +180,9 @@ shim. It then spawns the provider through `ham-pty-host`. The agent signals read
 Workdir, never in the bootstrap directory.
 
 **Task lifecycle.** Stored states: `backlog`, `ready`, `in_progress`, `in_review`, `done`,
-`cancelled` ([taskchain.odin](src/hub/domain/taskchain.odin), [fold.odin](src/hub/service/taskv2/fold.odin));
-state is a fold of events, never set by hand.
+`cancelled`, held in the owner Bridge's store ([src/lib/owner_local](src/lib/owner_local)); state is
+driven by leases, reviews and dependencies, never set by hand. Chains are created in the Heimdall app
+on a Bridge.
 - Create tasks with a non-empty goal and acceptance items; publish drafts. Assign work to durable
   `agt_...` identities. Workers choose and report their own checks; briefs carry no verify command.
 - A work lease makes a ready task `in_progress`; one instance holds at most one lease and a task has at
@@ -188,26 +193,31 @@ state is a fold of events, never set by hand.
 - `lease submit` releases for review, `lease handoff` returns unfinished work, `lease block` records
   an external dependency. There is no manual status transition.
 - Reviews: `review post --verdict approve|request_changes`. The gate
-  ([gate.odin](src/hub/service/taskv2/gate.odin)) checks required reviewers, fleet review roles and user
+  ([review_roles.odin](src/lib/owner_local/review_roles.odin)) checks required reviewers, fleet review roles and user
   approval; authors never review their own work; a request for changes wins. `changes_requested`
   is a gate result, not a state (task returns to `ready`; three rounds park it with a human block).
 - Merge-back is separate from review: the task branch is merged through the directory's Bridge
-  ([merge.odin](src/hub/service/taskv2/merge.odin)); conflicts stay visible and block dependents.
-- Dependencies need success. Chains mix tickets and workflow runs (`ham-ctl workflow ...`); do not edit
-  stage identities. Finishing a batch does not complete a chain: inspect `task-chain graph`, then
+  ([owner_local_lifecycle.odin](src/bridge/owner_local_lifecycle.odin)); conflicts stay visible and block dependents.
+- Dependencies need success (`task depend`). Workflow runs of a Bridge-owned chain are steered whole
+  (`workflow retry|cancel`); do not edit stage identities. Finishing a batch does not complete a chain:
+  read `work_revision` from `task-chain show`, then
   `task-chain complete <id> --expected-work-revision <n> --summary ...` once everything succeeded, no
   leases remain and proposals are decided. The summary must state results, checks and outcomes,
   commits, paths and limits, plus a `good`/`bad` quality rating with rationale.
 - **Solo mode:** the coordinator is also a worker, pulls with `lease next`, defaults to user review,
   cannot approve its own work and stays running across submits; other lease holders are stopped on
-  release and re-bootstrapped ([lease.odin](src/hub/service/taskv2/lease.odin)).
+  release and re-bootstrapped ([leases.odin](src/lib/owner_local/leases.odin)).
+- **Legacy Hub chains** stay on the Hub read-only until imported (Settings → Bridges → Import all
+  legacy chains, or `ham-ctl task-chain migrate` for one chain). Busy chains are neutralized during
+  import (leases ended, in-progress tasks force-held, running workflows cancelled, pending merges
+  closed) and the import records what it did.
 - Keep required user gates; record a verdict on the user's behalf only after an explicit decision,
   never from silence or an answer selection.
 
 **Chat and wake notifications.** Messages are durable; the Hub sends `notify_agent_message` and the
 Bridge types a one-line notice into the PTY ([content_service.odin](src/hub/service/content/content_service.odin),
-[pty_host_runtime.odin](src/bridge/pty_host_runtime.odin)). Task wakes are batched by
-[wake.odin](src/hub/service/taskv2/wake.odin) / [agent_wake.odin](src/bridge/agent_wake.odin). Use chat
+[pty_host_runtime.odin](src/bridge/pty_host_runtime.odin)). Task wakes come from the
+owner Bridge ([owner_local.odin](src/bridge/owner_local.odin), [agent_wake.odin](src/bridge/agent_wake.odin)). Use chat
 (`ham-ctl chat read|send --to user|<inst_id>`) for user-facing talk and task comments / submit
 summaries for technical evidence, decisions and dead ends. Agents use the generated `./bin/ham-ctl`;
 operator commands live under `ham-ctl hub` (check `ham-ctl help hub`).
@@ -222,7 +232,7 @@ provider, so preserve the native-prompt fallback when a permission hook cannot d
 
 ## 6. Conventions
 
-- **Commit subjects** follow `git log`: `UI: ...`, `taskv2: ...`, `Hub: ...`, `Billing: ...`,
+- **Commit subjects** follow `git log`: `UI: ...`, `ham-ctl/Bridge: ...`, `Hub: ...`, `Billing: ...`,
   `docs: ...`, imperative and specific. Commit in the task Workdir; do not push (the hub merges).
 - **Contracts first.** Change the wire/schema contract in `src/contracts/` (and its TypeScript/Hub
   mirrors) before the implementations; see `.agents/skills/contracts-first`.
