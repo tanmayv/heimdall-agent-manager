@@ -82,6 +82,37 @@ async function readOwnerChainCoordinators(session: Parameters<typeof readOwnerCh
   return out;
 }
 
+const coordinatorReads = new Map<string, Promise<string>>();
+
+/**
+ * The bound coordinator of an owner chain, or '' when it has none (callers then
+ * open the chain view). `known` and a coordinator already read into the
+ * snapshot ('' included: read, none bound) are used as is; an online chain
+ * whose member rows were not read yet is read once now and recorded. Failures
+ * resolve to ''.
+ */
+export async function resolveOwnerChainCoordinator(chainId: string, known?: string): Promise<string> {
+  const direct = String(known || '').trim();
+  if (direct || !chainId) return direct;
+  const chain = ownerChainById(chainId);
+  if (!chain) return '';
+  if (typeof chain.coordinatorAgentInstanceId === 'string') return chain.coordinatorAgentInstanceId;
+  const session = getKeyringSession();
+  if (!session || !chain.online || chain.pending) return '';
+  let read = coordinatorReads.get(chainId);
+  if (!read) {
+    read = readOwnerChainCoordinator(session, chain.ownerBridgeId, chainId, send)
+      .then((instanceId) => {
+        if (getKeyringSession() === session && ownerChainById(chainId)?.coordinatorAgentInstanceId === undefined) setOwnerChainCoordinator(chainId, instanceId);
+        return instanceId;
+      })
+      .catch(() => '')
+      .finally(() => { coordinatorReads.delete(chainId); });
+    coordinatorReads.set(chainId, read);
+  }
+  return read;
+}
+
 /** Records a coordinator bound from this device without reloading the registry. */
 export function setOwnerChainCoordinator(chainId: string, instanceId: string): void {
   publish({ ...state, chains: state.chains.map((c) => (c.chainId === chainId ? { ...c, coordinatorAgentInstanceId: instanceId } : c)) });
@@ -116,7 +147,7 @@ export function useOwnerChains(): OwnerChainsState {
 
 /** Tests only. */
 export function resetOwnerChainsForTest(page?: (path: string) => Promise<OwnerRegistryPage>, relay?: OwnerSend): void {
-  state = LOCKED; loadedFor = null; generation++; pending.clear();
+  state = LOCKED; loadedFor = null; generation++; pending.clear(); coordinatorReads.clear();
   fetchPage = page ?? cookieJsonFetch;
   send = relay ?? ownerRelaySend;
   listeners.forEach((l) => l());

@@ -29,6 +29,8 @@ export function homeChainsFromOwners(owners: OwnerChainSummary[]): HomeChainItem
     chainId: o.chainId, title: o.title || '', status: o.status || '', updatedAt: '',
     projectId: o.projectId || '', projectName: o.projectName || '',
     owner: { bridgeId: o.ownerBridgeId, bridgeName: o.bridgeName, online: o.online },
+    // The bound coordinator (owner member rows) once read; a row opens its conversation.
+    ...(o.coordinatorAgentInstanceId ? { coordinatorAgentInstanceId: o.coordinatorAgentInstanceId } : {}),
   }));
 }
 

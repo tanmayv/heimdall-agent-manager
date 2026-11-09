@@ -4,20 +4,24 @@ import { Icon, StatusDot } from '@ui';
 import { selectSearchChains } from '../../store/searchTitleSlice';
 import { selectIsVaultUnlocked } from '../../store/vaultSlice';
 import { buildRouteHash } from '../../utils/appLocation';
+import { chainConversationRoute } from '../../utils/paneTarget';
 import { navigateToHash } from '../../utils/conversationUrl';
 import { searchTaskChainsEncrypted, taskChainSearchErrorMessage } from '../../utils/taskChainSearch';
 import { useAuthUser } from '../auth/AuthUserContext';
 import { chainStatusDot } from '../ui/patterns/commandPaletteLogic';
 import { VaultText } from '../vault/VaultText';
-import { refreshOwnerChains, useOwnerChains } from '../../api/ownerChainsStore';
+import { refreshOwnerChains, resolveOwnerChainCoordinator, useOwnerChains } from '../../api/ownerChainsStore';
 import {
   filterHomeChains, homeChainsFromOwners, homeChainsFromSearchHits,
   HOME_RECENT_CHAIN_LIMIT, HOME_REMOTE_SEARCH_MIN_CHARS, type HomeChainItem,
 } from '../home/homeChainSearchLogic';
 
-/** A chain row opens its submission (search match) or the chain view. */
+/**
+ * A chain row opens the chain's coordinator conversation (REQ-TV2-7); a
+ * submission search match opens that immutable attempt instead.
+ */
 function chainRoute(chain: HomeChainItem): string {
-  return chain.submissionRoute || `/chains/${encodeURIComponent(chain.chainId)}`;
+  return chain.submissionRoute || chainConversationRoute(chain.chainId);
 }
 
 export interface SidebarTaskChainsProps {
@@ -67,10 +71,16 @@ export function SidebarTaskChains({ currentPath, onNavigate }: SidebarTaskChains
   }, [searchKey, trimmed, unlocked, user?.user_id, loaded]);
   const activeRemote = unlocked && remote?.key === searchKey ? remote : null;
   const rows = trimmed ? activeRemote?.rows ?? filterHomeChains(loaded, trimmed, titles, Infinity) : loaded;
-  const open = (event: React.MouseEvent<HTMLAnchorElement>, chain: HomeChainItem) => {
+  const open = async (event: React.MouseEvent<HTMLAnchorElement>, chain: HomeChainItem) => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
-    navigateToHash(buildRouteHash(chainRoute(chain), ''));
+    if (chain.submissionRoute) {
+      navigateToHash(buildRouteHash(chain.submissionRoute, ''));
+    } else {
+      // Without a bound coordinator the chain view is where one is started.
+      const coordinator = await resolveOwnerChainCoordinator(chain.chainId, chain.coordinatorAgentInstanceId);
+      navigateToHash(buildRouteHash(coordinator ? chainConversationRoute(chain.chainId) : `/chains/${encodeURIComponent(chain.chainId)}`, ''));
+    }
     onNavigate?.();
   };
   return (
@@ -99,10 +109,10 @@ export function SidebarTaskChains({ currentPath, onNavigate }: SidebarTaskChains
         ) : rows.map(chain => (
           <li key={chain.rowKey || chain.chainId}>
             <a href={buildRouteHash(chainRoute(chain), '')}
-              onClick={event => open(event, chain)}
+              onClick={event => void open(event, chain)}
               data-debug-id={chain.firstInGroup === false ? `sidebar-chain-match-row-${(chain.rowKey || chain.chainId).replace(/\u0000/g, '-')}` : `sidebar-chain-row-${chain.chainId}`}
               aria-current={currentPath === chainRoute(chain) ? 'page' : undefined}
-              title="Open task chain"
+              title={chain.submissionRoute ? 'Open submission' : 'Open coordinator conversation'}
               className={`flex min-h-11 min-w-0 items-center gap-2 rounded-xl px-2.5 py-2 hover:bg-neutral-soft ${currentPath === chainRoute(chain) ? 'bg-neutral-soft font-semibold' : ''}`}>
               {chain.owner
                 ? <StatusDot size="sm" tone={chain.owner.online ? 'success' : 'neutral'} label={chain.owner.online ? 'Owner Bridge online' : 'Owner Bridge offline'} />
