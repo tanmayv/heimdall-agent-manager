@@ -40,136 +40,39 @@ Groups: `bridge`, `agents`, `task-chain`, `task`, `workflow`, `lease`, `review`,
 - `agents stop <instance-id> [--reason <t>]` — stop a running instance.
 - `agents restart <instance-id>` — restart (stop-then-start) an instance.
 
-## task-chain — your task chains
-- `task-chain list [--mine] [--project <id>]` — chains (`--mine` = ones you coordinate).
-- `task-chain show [<chain-id>]` — show a chain (defaults to your current chain), including embedded `tasks` and `directories`.
-- `task-chain create --title <title> [--description <desc>] [--kind <kind>] [--coordinator <agt_id>] [--bridge <brg_id>] [--project <proj_id>] [--provider <p>]` — create a task chain. If `--coordinator` is provided, provisions or assigns the coordinator agent instance.
-- `task-chain set-title <title> [--chain <id>]` — rename a chain (coordinator only).
-- `task-chain set-description <text> [--chain <id>]` (or `--stdin`) — set the chain
-  description (coordinator only; pass `""` to clear; `--chain` defaults to your chain).
-- `task-chain summary get|show [<chain-id>]` — print the chain summary (read-only)
-- `task-chain summary set <text> [--chain <id>]` (or `--stdin`) — set the curated chain summary; only `set` (or `--body/--file/--stdin`) writes
-  (`<= 60` lines; coordinator only; surfaced in every agent's `TASK.md` context pack).
-- `task-chain propose --file <proposal.json> [--require-decision] [--chain <id>]` — create a chain
-  proposal (`kind: "task"|"workflow_run"`, `rationale`, `alternative`, `tasks` array or `workflow` + `inputs`) and its draft
-  tasks in a single transaction (coordinator only). By default it auto-approves: validates briefs and
-  publishes (or runs the proposed workflow) immediately. With `--require-decision` the proposal stays
-  pending until `task-chain decide`. (`--auto-approve` is still accepted and is the default.)
-- `task-chain decide <chain-id> --decision approve|reject [--reason <text>]` — approve or reject
-  a pending chain proposal (publishes all tasks or starts the proposed workflow atomically on `approve`).
-- `task-chain publish <chain-id>` — validate all task briefs and publish the chain (`422 brief_incomplete` lists missing fields per task, including `review_role:<r>` when no fleet row holds a requested role). `decide` and `publish` need the chain id (positional or `--chain`).
-- `task-chain set-status --status <active|cancelled|archived> [--chain <id>]` — change
-  the chain status (coordinator only). Completion uses `task-chain complete` with a work revision and final summary.
-- `task-chain archive [<chain-id>]` / `unarchive [<chain-id>]` — archive or restore a chain (coordinator only).
-- `task-chain pin <chain-id>` / `unpin <chain-id>` — pin a chain to the top of the sidebar.
+## task-chain — your Bridge-owned task chain
+Every chain is Bridge-owned: its tasks, leases, reviews, fleet, workflow runs and summary live in the owner
+Bridge's local store, and these verbs are routed to that owner. Chains are created, renamed, archived and
+given directories and a fleet in the Heimdall app. Verbs that only reached the removed Hub engine (`list`,
+`create`, `set-title`, `set-description`, `set-status`, `archive`, `unarchive`, `pin`, `unpin`, `directory`,
+`fleet`, `decide`, `graph`, `depend`, `remove-dependency`, `scope`) answer `{"ok":false,"code":"hub_chains_removed"}`.
 
-### Relevant directories (`task-chain directory`)
-Associate one or more working directories (local checkouts, CitC workspaces, repos) with a task chain so participating agents and the UI know which workspaces/directories are in scope. Directories are also embedded directly in `task-chain show [<chain-id>]` and `GET /api/v1/task-chains/:id` output under the `"directories"` array.
-
-- `task-chain directory list [--chain <id>]` — list relevant directories for a task chain (`--chain` defaults to your current chain).
-- `task-chain directory add --path <path> [--bridge <bridge_id>] [--vcs-kind <kind>] [--chain <id>]` — associate a directory with the chain.
-- `task-chain directory update <directory-id> [--path <path>] [--bridge <bridge_id>] [--vcs-kind <kind>] [--chain <id>]` — update an existing directory entry.
-- `task-chain directory remove <directory-id> [--chain <id>]` — disassociate a directory from the chain.
-
-#### Directory JSON shape (lean payload)
-Directory objects use a lean payload shape containing only operational fields. To keep coordination lightweight, metadata like timestamps (`created_at`, `updated_at`) and authorship/owner fields are intentionally omitted:
-
-```json
-{
-  "directory_id": "dir_18d7a123bc45de67",
-  "path": "/usr/local/google/home/tanmayvijay/heimdall-cloudtop",
-  "bridge_id": "brg_18d03379a7d6d47b",
-  "vcs_kind": "git",
-  "vcs": {}
-}
-```
-
-Fields:
-- `directory_id`: Unique identifier for the directory record (`dir_...`).
-- `path`: Target directory path on the bridge host.
-- `bridge_id`: Identifier of the bridge where the directory resides.
-- `vcs_kind`: Version control system kind (`git`, `citc`, `jj`, or empty).
-- `vcs`: Object containing VCS-specific details (branch, commit, status, etc.).
-
-#### Command examples
-```bash
-# List directories for the current chain
-ham-ctl task-chain directory list
-
-# List directories for a specific chain
-ham-ctl task-chain directory list --chain chain_18d711c5384a0119
-
-# Add a directory to the chain
-ham-ctl task-chain directory add --path /usr/local/google/home/tanmayvijay/heimdall-cloudtop --bridge brg_18d03379a7d6d47b --vcs-kind git
-
-# Add a directory to a specific chain
-ham-ctl task-chain directory add --chain chain_18d711c5384a0119 --path /google/src/cloud/tanmayvijay/heimdall --vcs-kind citc
-
-# Update an existing directory's path or bridge
-ham-ctl task-chain directory update dir_18d7a123bc45de67 --path /usr/local/google/home/tanmayvijay/heimdall-cloudtop-v2
-
-# Remove a directory from the chain
-ham-ctl task-chain directory remove dir_18d7a123bc45de67
-
-# View chain details with embedded directories
-ham-ctl task-chain show chain_18d711c5384a0119
-```
+- `task-chain show [<chain-id>]` — show a chain (defaults to your current chain): its `tasks`, `work_revision`,
+  `pending_proposal_id`, `summary`, and who you are in it (`caller`).
+- `task-chain summary get|show [<chain-id>|--chain <id>]` — print the chain summary (read-only; never writes).
+  It reads only the owner store: `vault_locked` when the owner Bridge cannot decrypt it (ciphertext is never
+  printed), and an error for a chain your Bridge does not own (no Hub fallback).
+- `task-chain summary set <text>|--file <path>|--stdin [--chain <id>]` — set the curated chain summary; only `set`
+  (or `--body/--file/--stdin`) writes (`<= 60` lines; coordinator only; surfaced in every agent's `TASK.md`).
+- `task-chain propose --file <proposal.json> [--require-decision] [--chain <id>]` — create a proposal
+  (`kind: "task"`, `rationale`, `alternative`, `tasks` array) and its draft tasks in a single transaction
+  (coordinator only). By default it auto-approves: validates briefs and publishes immediately. With
+  `--require-decision` the proposal stays pending until the user decides it in the Heimdall app.
+- `task-chain publish <chain-id>` — validate all task briefs and publish the chain (`422 brief_incomplete` lists missing fields per task, including `review_role:<r>` when no fleet row holds a requested role).
+- `task-chain complete <chain-id> --expected-work-revision <n> --summary <text>` — explicitly accept the final
+  result (coordinator only). Every ticket must be done or cancelled, with no live leases or pending proposal.
+  Read a fresh `work_revision` from `task-chain show` first (a stale one is a conflict). Finishing a batch
+  never closes the chain automatically.
+- `task-chain migrate --chain <id> --owner <bridge-id> [--request-file <signed.json>]` — move one legacy Hub
+  chain to its owner Bridge (see "Legacy Hub chains" below). Without `--request-file` prints the preflight.
+- `task-chain owner-local relay --request-file <browser-export.json>` — relay a browser-signed owner-local
+  request to the Hub (agents relay only; they cannot sign).
 
 ### Token usage (`task-chain token-usage`)
 - `task-chain token-usage [<chain-id>]` — per-agent (with its instances) and chain-total token usage, JSON (defaults to your chain). Each `lifetime` is `{total_tokens, context_tokens, est_tool_tokens, output_tokens, runs}`: counted runs (added at each hub stop/restart) plus the latest run when not counted yet; `total_tokens` = context (sum of runs) + output. An agent's `context` is the highest current % of window among its live instances. `has_data:false` when nothing was reported. A context figure is the provider's (`context_source` = its usage source) or, when the provider reports none, an estimate (`context_source:"estimate"`, `estimated_context_tokens` = tool-traffic tokens × 1.5; `context_tokens` stays provider-only). `usage_supported:false` means the provider cannot report context; absent means unknown. `warn_pct` / `rollover_pct` come from the bridge's shipped config, per row.
 
-### Fleet management (`task-chain fleet`)
-Configure and inspect agent concurrency caps and placement (fleets) for a task chain. Fleets allow tasks to be assigned to durable agent types (`agt_...`) instead of individual instances (`inst_...`). Heimdall dynamically routes or provisions worker and reviewer instances to satisfy fleet capacity and placement rules.
-
-- `task-chain fleet list [<chain-id>]` — list fleet capacities, placement (`roles`, `bridge_id`, `provider`, `model`, `bridge_models`), and live active worker counts for a chain (defaults to current chain if omitted).
-- `task-chain fleet set <chain-id> --agent <agent_id> --capacity <N> [--min-warm <M>] [--idle-ttl <seconds>] [--roles worker,reviewer] [--bridge <bridge_id>] [--provider <p>] [--model <m>] [--bridge-models <json>] [--bridge-models-file <path>]` — configure fleet capacity and placement for an agent class on the chain.
-
-#### Fleet JSON shape
-`task-chain fleet list` returns a JSON array of fleet configurations:
-```json
-[
-  {
-    "chain_id": "chain_18d711c5384a0119",
-    "agent_id": "agt_worker",
-    "capacity": 3,
-    "active_count": 1,
-    "min_warm": 0,
-    "idle_ttl_seconds": 300,
-    "roles": ["worker", "reviewer"],
-    "bridge_id": "brg_main",
-    "provider": "claude",
-    "model": "claude-opus-4-6",
-    "bridge_models": {},
-    "created_at": "2026-09-24T00:00:00Z",
-    "updated_at": "2026-09-24T00:00:00Z"
-  }
-]
-```
-
-Fields:
-- `chain_id`: Unique identifier of the task chain (`chain_...`).
-- `agent_id`: Durable agent template identifier (`agt_...`).
-- `capacity`: Maximum concurrent running worker instances allocated for this agent on the chain.
-- `active_count`: Currently active (running or busy) worker instances assigned to tasks in this chain.
-- `min_warm`: Minimum warm standby instances to maintain.
-- `idle_ttl_seconds`: Time before idle instances are stopped or decommissioned.
-- `roles`: Allowed lease roles for this fleet row (`["worker"]`, `["reviewer"]`, or `["worker", "reviewer"]`).
-- `bridge_id`, `provider`, `model`, `bridge_models`: Optional placement and model overrides.
-
-#### Command examples
-```bash
-# List fleets for the current chain
-ham-ctl task-chain fleet list
-
-# Set worker fleet capacity and placement
-ham-ctl task-chain fleet set chain_18d711c5384a0119 --agent agt_worker --capacity 4 --roles worker --bridge brg_main
-
-# Set reviewer fleet capacity with warm standby and idle timeout
-ham-ctl task-chain fleet set chain_18d711c5384a0119 --agent agt_reviewer --capacity 2 --min-warm 1 --idle-ttl 600 --roles reviewer
-```
-
 ## task, lease, review — Tickets
-Tickets are the work items in a chain. The CLI, API and events keep the technical name `task`: `ham-ctl task …` verbs, `task_…` ids, `/tasks/` routes and `[taskv2]` notifications.
+Tickets are the work items in a chain. The CLI keeps the technical name `task`: `ham-ctl task …` verbs and `task_…` ids. Every verb below is routed to the chain's owner Bridge.
 A positional `<task-id>` identifies the task and is enough on its own (task ids are
 globally unique — you rarely need `--chain`).
 
@@ -177,18 +80,17 @@ globally unique — you rarely need `--chain`).
   (count, last_comment_at, author, preview) — NOT full comment bodies.
 - `task show <task-id> [--chain <id>]` — a task + its `brief` + `comment_summary` + facets.
 - `task comments <task-id> [--last N]` — fetch comment BODIES; `--last N` = newest N (max 100).
-- `task create --title <t> [--description <d>] [--priority p0|p1|p2] [--assignee <agt_id>] [--reviewer <agt_id,agt_id,...>] [--depends-on <id,id>] [--bridge <bridge-id>] [--chain <id>] [--goal <g>] [--acceptance <a>]... [--input <ref>]... [--review-role <r>]... [--output-schema <task_list.v1|findings.v1>] [--on-output-workflow <name>] [--require-user-approval] [--brief-file <path.json>]` — create a task.
+- `task create --title <t> [--description <d>] [--priority p0|p1|p2] [--assignee <agt_id>] [--reviewer <agt_id,agt_id,...>] [--depends-on <id,id>] [--bridge <bridge-id>] [--chain <id>] [--goal <g>] [--acceptance <a>]... [--input <ref>]... [--review-role <r>]... [--output-schema <task_list.v1|findings.v1>] [--require-user-approval] [--brief-file <path.json>]` — create a task.
   `--assignee` and `--reviewer` take durable agent IDs (`agt_...`) only.
-- `task update <task-id> [--title <t>] [--description <d>] [--priority p0|p1|p2] [--assignee <agt_id>] [--reviewer <agt_id,agt_id,...>] [--depends-on <id,id>] [--bridge <bridge-id>] [--goal <g>] [--acceptance <a>]... [--input <ref>]... [--review-role <r>]... [--output-schema <task_list.v1|findings.v1>] [--on-output-workflow <name>] [--require-user-approval | --no-require-user-approval] [--brief-file <path.json>]` — edit an existing task.
+- `task update <task-id> [--title <t>] [--description <d>] [--priority p0|p1|p2] [--assignee <agt_id>] [--reviewer <agt_id,agt_id,...>] [--depends-on <id,id>] [--bridge <bridge-id>] [--goal <g>] [--acceptance <a>]... [--input <ref>]... [--review-role <r>]... [--output-schema <task_list.v1|findings.v1>] [--require-user-approval | --no-require-user-approval] [--brief-file <path.json>]` — edit an existing task.
 - `task publish <task-id>` — validate the task's brief and publish it. A brief needs a non-empty `goal` and at least one `acceptance` item; nothing else is required (`422 brief_incomplete` lists what is missing).
-- `task start-agent <task-id>` — chain coordinator (or the user) starts/restarts the agent a task waits on (`agent_not_running`); workers are refused, and a user's deliberate stop is only cleared by the user. Recoverable launch failures already auto-retry three times (30s, 2m, 5m) before parking.
-- `task unblock <task-id> [--note <reason>]` — coordinator/owner clears a block and retries matching. Unavailable agents carry `blocked_on.kind=agent_not_running` (legacy `dispatch` is supported) and an agent/provider/model/bridge/error reason. Fix the cause first. The user can click **Start agent** (`agent.start {task_id}`) on the attention card or chat tray; failures keep the block, update its reason and show the error inline for retry. Updating the affected fleet row also clears its blocks. Infrastructure failures do not consume work attempt budget; a full fleet row is normal queueing. A solo coordinator remains pull-only: an explicit user Start launches it before clearing the block, then it pulls the ready task.
-- `task recheck <task-id>` — coordinator/owner: recompute what the Hub would decide for the task now — the review gate against the CURRENT reviewers, review roles and user-approval flag; dependency readiness; a `bridge_offline` agent block whose bridge is back; dispatch against fleet capacity, roles, pause and bridge state; and a done task's pending/failed merge-back (only when the task was already done and no merge job for it is still running; a task the re-check itself moves to done gets its one merge from that transition). Never approves (it only counts verdicts already posted), never touches a task with a live lease, never spends an attempt; a call that changes nothing records nothing. Prints `{task, changed, actions[], reasons[], message}`: `actions` say what changed (`state: in_review → done`, `dispatched: work lease …`, `merge-back re-queued …`), `reasons` say what still holds it (`waiting on review from agt_x (role reviewer)`, `agt_w: fleet full 2/2 on bridge …`, `agt_w: bridge … is offline`, `chain directory … already has a live work lease (vcs_kind "")`, `merge pending: the merge-back is in flight on bridge …`, `merge none: chain directory … has vcs_kind ""`). Use it instead of `task hold` + `task release` to unstick a task. Also `POST /api/v1/tasks/{id}/recheck` and the **Re-check** item in the task card menu.
+- `task unblock <task-id> --reason <text>` (or `--note`) — coordinator/owner clears a block and retries matching. Unavailable agents carry `blocked_on.kind=agent_not_running` and an agent/provider/model/bridge/error reason. Fix the cause first; the user can click **Start agent** on the task's attention card (failures keep the block and show the error inline for retry). Updating the affected fleet row in the app also clears its blocks. Infrastructure failures do not consume work attempt budget; a full fleet row is normal queueing. An escalation (`task escalate`) is cleared only by the user.
+- `task recheck <task-id>` — coordinator/owner: recompute what the owner Bridge would decide for the task now — the review gate against the CURRENT reviewers, review roles and user-approval flag; dependency readiness; a `bridge_offline` agent block whose bridge is back; dispatch against fleet capacity, roles, pause and bridge state; and a done task's pending/failed merge-back (only when the task was already done and no merge job for it is still running; a task the re-check itself moves to done gets its one merge from that transition). Never approves (it only counts verdicts already posted), never touches a task with a live lease, never spends an attempt; a call that changes nothing records nothing. Prints `{task, changed, actions[], reasons[], message}`: `actions` say what changed (`state: in_review → done`, `dispatched: work lease …`, `merge-back re-queued …`), `reasons` say what still holds it (`waiting on review from agt_x (role reviewer)`, `agt_w: fleet full 2/2 on bridge …`, `agt_w: bridge … is offline`, `chain directory … already has a live work lease (vcs_kind "")`, `merge pending: the merge-back is in flight on bridge …`, `merge none: chain directory … has vcs_kind ""`). Use it instead of `task hold` + `task release` to unstick a task. Also the **Re-check** item in the task card menu.
 - `task hold <task-id> --reason <text>` — coordinator/owner only: stop dispatching the task until someone runs `task release`. No work or review lease is granted, the review gate freezes (verdicts are still recorded), and `task answer` is refused. A current lease is NOT revoked: its holder sees **Checkpoint Requested** in TASK.md and should `lease handoff`, after which the task parks in `backlog`. A hold never gives the user an Answer card: the user cannot answer a held task. A Review card the user already owes stays (their verdict is still recorded, and the gate resumes on release), and so does a nested agent-not-running **Start agent** action. Use it only to pause deliberately (re-routing to another identity or model, re-planning, waiting on an external event). Do NOT use it to postpone work (`lease switch`/`lease handoff`, `--depends-on`, `--priority`) or to ask the user (`lease block --waiting-on user`). Prints `{task, changed, checkpoint_requested, message}`; holding a held task is a no-op.
-- `task release <task-id>` — coordinator/owner: clear a hold. The task can be dispatched again, and an `in_review` task has its gate re-evaluated. Release itself never changes the attempt number. A task that was handed off at a checkpoint continues as the same attempt, and review leases keep the current attempt. A fresh work grant still counts as usual: the first lease of a task that was never leased, or a new lease after one expired while held, starts a new attempt. Releasing an unheld task is a no-op.
+- `task release <task-id> --reason <text>` — coordinator/owner: clear a hold. The task can be dispatched again, and an `in_review` task has its gate re-evaluated. Release itself never changes the attempt number. A task that was handed off at a checkpoint continues as the same attempt, and review leases keep the current attempt. A fresh work grant still counts as usual: the first lease of a task that was never leased, or a new lease after one expired while held, starts a new attempt. Releasing an unheld task is a no-op.
 - `task comment <task-id> --body <t>` (or `--stdin`) `[--notify <id,id>]` — add a comment.
-- `task depend <task-id> --on <task-id>|task:<task-id>|workflow_run:<run-id> [--chain <id>]` — add one prerequisite to a ticket. A `workflow_run:` prerequisite becomes a chain-level graph edge on the whole run (the ticket stays ineligible until that run succeeds). Other typed refs (stage keys, `workflow:` names, issues) are rejected with guidance; use `task-chain depend` for run-on-ticket or run-on-run edges. `--depends-on` on `task create`/`task update` takes ticket ids only (`task:<id>` accepted) and `update --depends-on` replaces the whole list.
-- `task fetch <task-id> <ref>` — fetch one event (`#<event_id>`), output (`output:<task_id>`), facet (`facet:<task_id>:<attempt_no>:<kind>`), or file-at-commit (`dir:<dir_id>:<rev>:<path>`, `<path>@<rev>`, or `<path>`) referenced by `TASK.md`.
+- `task depend <task-id> --on <task-id>|task:<task-id> [--chain <id>]` — add one ticket prerequisite. `workflow_run:` prerequisites were Hub graph edges and answer `hub_chains_removed`. `--depends-on` on `task create`/`task update` takes ticket ids (`task:<id>` accepted) and `update --depends-on` replaces the whole list.
+- `task fetch`, `task readiness`, `task start-agent` and `task restart-agent` were Hub-only and answer `hub_chains_removed`; read context with `task show`, `task comments` and `task-chain summary get`.
 - `lease next` — inspect the lease you hold (status `current`) or claim the next ready task inline (status `granted`), updating `<run_dir>/TASK.md`; returns `none` when idle.
 - `lease heartbeat [--note <text>]` — extend the lease TTL and optionally record a progress note. On `409 lease_lost`, stop immediately without touching the working tree.
 - `lease submit --summary <s> [handoff flags] [--output-file <json>] [--artifacts-file <json>] [--artifacts <json>] [--lease <id>]` — finish the attempt (task → `in_review`, or `done` with no review gates). Nothing is executed or gated on a command: report the checks you chose, their exact commands and outcomes in `--summary`. Validates `output` against the brief's output contract (`task_list.v1`, `findings.v1`).
@@ -200,44 +102,15 @@ globally unique — you rarely need `--chain`).
 
 ### Task states
 A task carries a `state`: `backlog`, `ready`, `in_progress`, `in_review`, `done`, `cancelled`.
-State is driven by the hub (leases, reviews, dependencies); agents do not set it directly.
+State is driven by the owner Bridge (leases, reviews, dependencies); agents do not set it directly.
 The v1 verbs `task status`, `task vote`, `task nudge` and `task set-current` no longer exist.
 
-### Mixed work
-All chains have `kind: mixed_work`. Choose tickets or workflow runs per item while
-keeping the same chain, coordinator, team, and directories. See coordinator-task-management.
-
-## workflow — runs inside a mixed-work task chain
-- `workflow templates` lists built-ins and owner definitions; `workflow define --file <definition.json>` saves a version.
-- `workflow run <ref> --chain <id> --request-id <stable-key> [--title <text>] [--input k=v ...] [--inputs-file <json>] [--after task:<id>|workflow_run:<id> ...]` snapshots a recipe into that chain. Reuse the request key on network retries.
-- `workflow list --chain <id>` lists runs and the chain work revision.
-- `workflow status <run-id> [--execution <n>]` inspects a current or historical execution.
-- `workflow output <run-id> <stage-key> [--execution <n>]` reads outputs.
-- `workflow history <run-id>` reads executions and lifecycle events.
-- `workflow retry <run-id> --expected-revision <n> --reason <text>` creates fresh execution/tasks for a terminal run. Consumed outputs block retry. Stage/cascade retry is unsupported.
+## workflow — runs of Bridge-owned chains
+Hub workflows are removed: `workflow templates|list|define|run|status|output|history` answer `hub_chains_removed`.
+Runs that exist on a Bridge-owned chain (for example carried over by an import) are steered as a whole:
+- `workflow retry <run-id> --expected-revision <n> --reason <text>` creates a fresh execution/tasks for a terminal run. Consumed outputs block retry. Stage/cascade retry is unsupported.
 - `workflow cancel <run-id> --execution <number> [--reason <text>]` cancels only that run.
-- Agents may omit `--chain` on create/list to use their own chain; run IDs are explicit.
-- Configure the chain fleet before starting; recipes never create fleet rows.
-
-### Authoring workflow definitions (fan-out)
-- A stage may set `for_each` to fan out one task per array item. Two sources are supported:
-  - Stage output: `"<stage>.outputs[0].<field>"` (also `<stage>.output.<field>`, `stage.<stage>.output.<field>`, or `<stage>.outputs[].<field>` to concatenate every instance's array). The stage must be in `depends_on` and declare an output contract.
-  - Workflow input: `"inputs.<name>"` (alias `workflow.input.<name>`), a top-level input that is a JSON array. No echo stage is needed. If the definition declares `inputs`, the name must be declared with `"type": "array"` (or `list`, `array<...>`, `T[]`); an array `default` is allowed. Nested paths (`inputs.a.b`) are rejected at `workflow define`.
-- Supply array inputs with `--inputs-file <json>` (for example `{"subtopics":[{"key":"auth","title":"Auth"},"billing"]}`); `--input k=v` always passes a string.
-- A missing or `null` input uses the declared array `default`; otherwise `workflow run` rejects it, and also rejects a non-array value or more than 256 items, before anything is created, so a bad input never dispatches part of a run. The value is resolved from the run's immutable input snapshot; `workflow retry` re-expands from that same snapshot.
-- Items expand in array order: item *i* becomes `stage_index` *i*, and re-reconciliation never duplicates a task.
-- An empty array is valid: the stage completes with zero tasks and its downstream stages start as usual.
-- At most 256 items per fan-out stage (input or stage output). A stage output over the limit fails the run at expansion (`workflow_fan_out_too_large`) without creating that stage's tasks.
-- Placeholders per item: `{{item.<field>}}` for object items (`{{item.key}}` falls back to `id`, then `item_<index>`; an item `priority` overrides the stage priority), `{{item}}` for the whole item (a string item renders unquoted, a number as written, an object as JSON), plus `{{stage.index}}` and `{{stage.count}}`. Scalar items have no fields: `{{item.<field>}}` is empty (except `{{item.key}}`, which is `item_<index>`) and item `priority` does not apply. `{{inputs.<name>}}` for an array input renders the JSON array (or its declared default).
-
-### Mixed-work graph, scope, and completion
-Same verbs and flags in agent mode and user mode. The chain is positional (`task-chain graph <chain-id>`) or `--chain <id>`; `graph`, `depend`, `remove-dependency` and `scope` default to your own chain, `complete` always needs an explicit chain id. Mutations require the chain owner or its coordinator; other agents get `403 Forbidden`.
-- `task-chain graph [<chain-id>]` reads dependency (with dependency ids) and scope history plus `work_revision`.
-- `task-chain depend [<chain-id>] --item task:<id>|workflow_run:<id> --on task:<id>|workflow_run:<id>` adds an acyclic prerequisite before the consumer starts (idempotent).
-- `task-chain remove-dependency [<chain-id>] --dependency <id> --reason <text>` explicitly removes an edge without erasing provenance or consumption receipts.
-- `task-chain scope [<chain-id>] --item task:<id>|workflow_run:<id> --action include|exclude --reason <text>` records a scope decision. Exclusion requires terminal work and does not unblock dependents.
-- `task-chain complete <chain-id> --expected-work-revision <n> --summary <text>` explicitly accepts the final result. Every included item must succeed, with no leases or pending proposal. Read a fresh graph revision first (a stale one is a `work_changed` conflict). Finishing a batch never closes the chain automatically.
-- Generated stage tasks cannot be manually created, edited, reopened, or cancelled; use run controls. Historical executions remain readable.
+- Generated stage tasks cannot be manually created, edited, reopened, or cancelled; use run controls.
 
 ## issue — track, discuss, and vote on issues and blockers
 Manage defects, toolchain quirks, environment problems, and out-of-scope bugs across
@@ -352,7 +225,7 @@ ham-ctl issue update iss_18d7a123bc45de67 --status fixed
   `--to` is REQUIRED: `user` for the bound user, or an exact agent-instance-id for
   agent-to-agent.
 - `chat set-title <title>` — DEPRECATED: conversation titles are no longer used. Do not
-  call it; name your work with `task-chain set-title` (coordinator only) instead.
+  call it; chains are renamed in the Heimdall app.
 
 ### Grouped questions (`chat send --questions-file`)
 Use one grouped message for a set of questions. For one simple choice, flat
@@ -678,9 +551,12 @@ caller's own agent. "Global" scope = omit the scope flags. Repeatable or comma-s
 - `lease next` refreshes the context pack and `TASK.md`. After reading it, `lease heartbeat --lease <id> --acknowledge-requirements-revision <n>` acknowledges that exact revision on the caller's lease. Ordinary heartbeats do not acknowledge.
 - Submit/review evidence is revision-bound. Changes after submission require worker rework and fresh review; comments cannot substitute for a native amendment or acknowledgement.
 - UI: **Change requirements** edits goal/acceptance with a reason; task details show revision/read status and **Requirement changes** history.
-- MCP: `tasks.get` returns an opaque `revision`; pass it as `expected_revision` to `tasks.update`, with `reason` and `request_id`. This is distinct from the CLI's numeric `requirements_revision`. Replay identical arguments/request ID after an ambiguous response; reread on conflict. MCP cannot acknowledge another agent's lease or approve reviews.
+- MCP: the Hub `chains.*`, `tasks.*` and `events.wait` tools are removed (`hub_chains_removed`); amend requirements with `task update` or in the app.
 
 For significant changes to the objective/deliverable/approach, see the coordinator skill: record the decision on the original task and create a self-contained linked replacement, preserving the audit trail and required approvals.
 
-## Coordinator controls (Bridge-owned chains)
-`task cancel|reopen|delete|escalate|submit-for-review|done --force|split`, `lease revoke`, `merge retry`, `review roles` and `--assignee self` (solo mode only) act on Bridge-owned chains; on a legacy Hub chain they answer the typed error `owner_chain_only`. `task hold|release|unblock|recheck` work on both. See `coordinator-task-management` for the verb table and `ham-ctl task --help` for flags.
+## Coordinator controls
+`task hold|release|unblock|recheck|cancel|reopen|delete|escalate|submit-for-review|done --force|split`, `lease revoke`, `merge retry`, `review roles` and `--assignee self` (solo mode only) are coordinator controls on Bridge-owned chains; a `--reason` is required where the help shows it and is recorded in the audit trail. See `coordinator-task-management` for the verb table and `ham-ctl task --help` for flags.
+
+## Legacy Hub chains
+Chains from before the Hub task-chain engine was removed stay on the Hub as read-only records (no data dropped). The user imports them from **Settings → Bridges → Import all legacy chains**: one click imports every not-yet-imported chain; re-running skips those already imported. `task-chain migrate --chain <id> --owner <bridge-id>` moves one chain and needs a request signed by an enrolled browser device (agents relay only). Busy chains are imported too, neutralized in one Hub transaction that records what it did: live leases end, in-progress tasks are force-held on the owner, in-review tasks carry over in review, running workflows are cancelled, workflow gates on never-succeeded runs are released (their tickets force-held), pending merges are closed (imported done; unmerged work stays on its branch), and outstanding effects are retired. Aborting an unfinished import (only the account owner's browser session can) leaves the chain a read-only legacy record that can be imported again. User-mode `ham-ctl task-chains|tasks|workflow …` (except `task-chain token-usage`) and `ham-ctl hub tasks|task-chains` answer `hub_chains_removed`.

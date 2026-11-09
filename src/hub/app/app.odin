@@ -5,7 +5,6 @@ import "core:thread"
 import metrics "odin_test:lib/metrics"
 import http "odin_test:hub/transport/http"
 import bridge_service "odin_test:hub/service/bridge"
-import taskv2 "odin_test:hub/service/taskv2"
 
 run :: proc(config: Hub_Config) -> (bool, string) {
 	graph: App_Graph
@@ -25,11 +24,6 @@ run :: proc(config: Hub_Config) -> (bool, string) {
 	// Promoted bridge releases: fetched now and every 30 min off the request path;
 	// GET /bridges and update checks read only the in-memory snapshot.
 	bridge_service.bridge_catalog_refresher_start(&graph.bridge_update_catalog)
-	// Task System v2: rebuild timers from the columns, heal lease-less
-	// in_progress rows, match every Active chain once, then run the thin timer
-	// thread (1 s probe of the in-memory heap; the columns stay the truth).
-	taskv2.boot(&graph.task_engine)
-	_ = taskv2.start_timer_thread(&graph.task_engine)
 	// Private Prometheus endpoint, off unless --metrics-addr is set.
 	start_metrics_listener(metrics.global(), config.metrics_addr)
 	if config.ui_origin == "" do fmt.eprintln("ham-hub WARNING: --ui-origin is empty; CSRF protection is disabled")

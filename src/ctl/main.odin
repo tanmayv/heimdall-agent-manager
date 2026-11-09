@@ -129,15 +129,19 @@ main :: proc() {
 		return
 	}
 
-	// User-mode (no agent context): legacy hub-scoped task/chain commands.
+	// User mode (no agent context): the Hub task-chain commands are removed.
+	// Chain token usage stays (the Hub still aggregates it for owner chains).
 	if cmd[0] == "task-chains" || cmd[0] == "task-chain" || cmd[0] == "chains" || cmd[0] == "chain" {
-		ctl_task_chains_command(cmd[:], os.args)
-		return
+		action := pos(cmd[1:], 0)
+		if action == "token-usage" || action == "usage" {
+			if transport, ok := resolve_ctl_transport(os.args); ok do ctl_task_chain_token_usage(transport, cmd[2:], os.args)
+			return
+		}
+		ctl_hub_chains_removed_exit(fmt.tprintf("task-chain %s", action))
 	}
 
 	if cmd[0] == "tasks" || cmd[0] == "task" {
-		ctl_tasks_command(cmd[:], os.args)
-		return
+		ctl_hub_chains_removed_exit(fmt.tprintf("task %s", pos(cmd[1:], 0)))
 	}
 
 	if cmd[0] == "actions" || cmd[0] == "action" || cmd[0] == "scheduled-prompts" || cmd[0] == "scheduled-prompt" {

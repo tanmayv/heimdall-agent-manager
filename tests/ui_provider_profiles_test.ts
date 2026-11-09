@@ -18,12 +18,6 @@ const { decryptVaultText, encryptVaultText } = await import('../src/ui/utils/vau
 const { heimdallApi } = await import('../src/ui/api/heimdallApi.ts');
 const { sealVaultEnvelope } = await import('../src/ui/utils/vaultCrypto.ts');
 const { importRawKeyHex } = await import('./helpers/vaultTestKeyring.ts');
-const {
-  fleetApplyRequests,
-  changedFleetEntries,
-  providerModelModified,
-  resolvedFleetProviderModel,
-} = await import('../src/ui/components/tasks/fleetSelection.ts');
 const response = (data: any, status = 200): any => ({
   ok: status < 400,
   status,
@@ -162,53 +156,6 @@ test('real profile API seals every operation and authenticates response nonce; s
   } finally {
     globalThis.fetch = oldFetch;
     await lockVaultFully(store);
-    store.dispatch(heimdallApi.util.resetApiState());
-  }
-});
-
-test('fleet same-driver account change survives change detection, restart decision and actual wire', async () => {
-  const original = [
-    {
-      agent_id: 'worker',
-      capacity: 1,
-      provider: 'claude',
-      provider_profile: 'claude_one',
-      model: 'same',
-      bridge_models: {},
-    },
-  ];
-  const draft = { worker: { provider: 'claude', provider_profile: 'claude_two', model: 'same' } };
-  assert.equal(providerModelModified(original, 'worker', draft), true);
-  const changed = changedFleetEntries(original, { worker: 1 }, draft);
-  assert.equal(changed[0]?.provider_profile, 'claude_two');
-  const request = fleetApplyRequests(changed, changed)[0];
-  assert.equal(request.provider_profile, 'claude_two');
-  assert.equal(request.restartLiveInstances, true);
-  assert.deepEqual(
-    resolvedFleetProviderModel(
-      { provider: 'claude', provider_profile: 'claude_missing', model: '' },
-      [{ provider: 'claude', profile_id: 'claude_one', models: ['same'] }],
-    ),
-    { provider: 'claude', provider_profile: 'claude_missing', model: '' },
-  );
-  const store = await makeVaultStore();
-  const oldFetch = globalThis.fetch;
-  let sent: any;
-  globalThis.fetch = async (_u: any, init: any) => {
-    sent = JSON.parse(init.body);
-    return response({ agent_id: 'worker' });
-  };
-  try {
-    const { taskChainsApi } = await import('../src/ui/api/endpoints/taskChains.ts');
-    await store
-      .dispatch(
-        taskChainsApi.endpoints.updateTaskChainFleet.initiate({ chainId: 'chain', ...request }),
-      )
-      .unwrap();
-    assert.equal(sent.provider, 'claude');
-    assert.equal(sent.provider_profile, 'claude_two');
-  } finally {
-    globalThis.fetch = oldFetch;
     store.dispatch(heimdallApi.util.resetApiState());
   }
 });

@@ -185,7 +185,8 @@ async function fixture(options: {
     } else {
       child = React.createElement(TaskChainSelectorModal, {
         open: true, onClose: () => { closes++; }, currentChainId: options.currentChainId,
-        onSelectChain: (c) => selections.push(c), ...props,
+        // The chain list is the owner registry snapshot; fixtures pass rows directly.
+        chainGroups: groups, onSelectChain: (c) => selections.push(c), ...props,
       });
     }
     await act(async () => {
@@ -263,37 +264,7 @@ test('rendered selector is flat, newest first locally/filtering; current selecti
   });
 });
 
-test('agent-chat project A searches globally, keeps project B after remote completion and Enter replaces the originating pane', async () => {
-  const pending = deferred<Reply>();
-  await fixture({ workspace: true, respond: () => pending.promise }, async (c) => {
-    const layout = await import('../src/ui/store/workspaceLayoutSlice.ts');
-    await c.wait(() => Boolean(c.el('conversation-thread-title')), 'agent breadcrumb');
-    const originalPane = layout.findPaneByAgent(c.store.getState().workspaceLayout.tree, 'a')!;
-    const frame = c.el(`main-pane-frame-${originalPane}`);
-    await c.wait(() => /Pane project One|p1/.test(frame.textContent || ''), 'caller project A context');
-    await c.click(frame.querySelector('[data-debug-id="conversation-thread-title"]'));
-    await c.wait(() => c.ids().length === 3);
-    await c.type('match');
-    await c.wait(() => c.requests.length === 1, 'encrypted relay request');
-    assert.equal(c.requests[0].project_id, '', 'pane project must never restrict encrypted search');
-    assert.equal(c.requests[0].limit, 40);
-    assert.ok(c.ids().includes('middle'), 'project B present before remote completion');
-    await c.tick();
-    pending.resolve({ hits: [hit('old', '2026-01-01', 'p1'), hit('middle', '2026-02-01'), hit('new', '2026-03-01', 'p1')] });
-    await c.wait(() => !c.el('task-chain-search-state'), 'remote settled');
-    assert.deepEqual(c.ids(), ['new', 'middle', 'old'], 'flat interleaved remote recency replaces relevance order');
-    assert.equal(c.doc.querySelector('[role="group"]'), null);
-    await c.press('ArrowDown');
-    assert.equal(c.active(), 'middle');
-    await c.press('Enter');
-    // REQ-TV2-7: the originating pane's TARGET becomes the chain; pane b is untouched.
-    await c.wait(() => layout.findPaneByAgent(c.store.getState().workspaceLayout.tree, 'chain:middle') === originalPane);
-    assert.deepEqual(layout.selectMainAgentIds(c.store.getState()), ['chain:middle', 'b']);
-    assert.equal(c.dom.window.location.hash, '#/conversations/chain:middle+b?focused=chain:middle');
-  });
-});
-
-test('unscoped standalone picker sorts remote rows; click resolves missing coordinator and routes fall back correctly', async () => {
+test('unscoped standalone picker sorts remote rows; a chain without a coordinator opens its chain view', async () => {
   await fixture({ respond: () => ({ hits: [hit('no-coord', '2026-01-01'), hit('remote-detail', '2026-04-01')] }) }, async (c) => {
     await c.wait(() => c.ids().length === 3);
     await c.type('match');
@@ -302,8 +273,8 @@ test('unscoped standalone picker sorts remote rows; click resolves missing coord
     await c.render({ onSelectChain: undefined, onNavigate: (route: string) => c.routes.push(route) });
     await c.click(c.el('chain-selector-item-remote-detail'));
     await c.wait(() => c.routes.length === 1);
-    assert.equal(c.routes[0], '/conversations/chain:remote-detail', 'a chain with a coordinator opens by chain');
-    assert.ok(c.details.includes('remote-detail'));
+    assert.equal(c.routes[0], '/chains/remote-detail', 'no coordinator is resolved from the Hub');
+    assert.deepEqual(c.details, [], 'the removed Hub chain detail is never read');
     await c.render({ onSelectChain: undefined, onNavigate: undefined });
     await c.click(c.el('chain-selector-item-no-coord'));
     await c.wait(() => c.dom.window.location.hash === '#/chains/no-coord');
@@ -391,8 +362,9 @@ test('progressive rows follow recency, expose current beyond 80, and wrap-up/dow
     for (let i = 0; i < 80; i++) await c.press('ArrowDown');
     assert.equal(c.active(), 'row-044');
     await c.press('Enter');
-    await c.wait(() => c.selections.length === 1);
-    assert.equal(c.selections[0].chainId, 'row-044');
+    // No coordinator conversation: the chain opens in its chain view.
+    await c.wait(() => c.dom.window.location.hash === '#/chains/row-044');
+    assert.equal(c.selections.length, 0);
   });
 });
 

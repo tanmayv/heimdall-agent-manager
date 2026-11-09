@@ -59,13 +59,15 @@ export interface OwnerChainViewProps {
   focusTaskId?: string;
   submissionAttempt?: string;
   onClose?: () => void;
+  /** Extra sections under the description (the page passes the chain's token usage). */
+  extra?: React.ReactNode;
   /** The owner relay; tests replace it. */
   send?: OwnerSend;
   /** Session provider; tests replace it. */
   session?: () => Promise<OwnerSession>;
 }
 
-export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose, send: sendProp = ownerRelaySend, session: sessionProp = freshOwnerSession }: OwnerChainViewProps) {
+export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose, extra, send: sendProp = ownerRelaySend, session: sessionProp = freshOwnerSession }: OwnerChainViewProps) {
   const bridge = chain.ownerBridgeId;
   // Injected transports are read through refs so a caller's inline function
   // never re-triggers the loads.
@@ -254,6 +256,7 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
       {chain.sealed && <p className="mx-4 mt-3 text-xs text-muted">Some titles are sealed with a key this device does not hold.</p>}
 
       {description ? <p data-debug-id="owner-chain-description" className="whitespace-pre-wrap px-4 pt-3 text-sm text-muted">{description}</p> : null}
+      {extra ? <div className="px-4 pt-3">{extra}</div> : null}
 
       <div className="grid min-h-0 flex-1 gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
         <section aria-label="Tickets" className="min-w-0 space-y-2">

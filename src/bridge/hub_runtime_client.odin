@@ -1579,7 +1579,8 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		// Only a SUCCESSFUL unseal moved the vault; a failed one left it where it was,
 		// and reporting there would be a no-op the hub would have to filter out.
 		if ok do bridge_hub_send_vault_status(conn)
-		if ok do bridge_task_chain_search_refresh_async()
+		// (The Hub task-chain search feed is removed with Hub chains; nothing
+		// to refresh after an unseal.)
 		return
 	}
 	if type == "bridge_enrollment_result" {

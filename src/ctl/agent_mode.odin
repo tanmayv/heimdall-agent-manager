@@ -225,76 +225,17 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 
 	verb := pos(tokens, 0)
 	switch verb {
-	case "", "list":
-		fields := make([dynamic]string)
-		defer delete(fields)
-		if has_flag(args, "--mine") do append(&fields, json_kv_raw("coordinated_by_me", "true"))
-		if has_flag(args, "--pinned") do append(&fields, json_kv_raw("pinned", "true"))
-		if v := option_value(args, "--project", ""); v != "" do append(&fields, json_kv("project_id", v))
-		ctl_agent_call_and_decrypt(endpoint, token, "agent.task_chain.list", json_object_from_slice(fields[:]), args)
-	case "create":
-		title := option_value(args, "--title", pos(tokens, 1))
-		if title == "" { print_agent_help([]string{"task-chain"}); return }
-		params := ctl_agentmode_task_chain_create_params(args, pos(tokens, 1))
-		defer delete(params)
-		ctl_agent_call(endpoint, token, "agent.task_chain.create", params)
+	case "", "list", "create", "set-title", "set-description", "set-status", "status", "archive", "unarchive",
+	     "pin", "unpin", "directory", "directories", "fleet", "fleets", "decide", "proposal",
+	     "graph", "depend", "remove-dependency", "scope":
+		// Hub task chains are removed: these verbs only ever reached the Hub.
+		// Bridge-owned chains are created and listed in the UI (or through
+		// their owner Bridge); legacy chains are imported from Settings → Bridge.
+		ctl_hub_chains_removed_exit(fmt.tprintf("task-chain %s", verb))
 	case "show":
 		cid := option_value(args, "--chain", pos(tokens, 1))
 		if cid != "" { ctl_agent_call_and_decrypt(endpoint, token, "agent.task_chain.show", json_object(json_kv("chain_id", cid)), args) }
 		else { ctl_agent_call_and_decrypt(endpoint, token, "agent.task_chain.show", "{}", args) }
-	case "set-title":
-		title := option_value(args, "--title", pos(tokens, 1))
-		if title == "" { print_agent_help([]string{"task-chain"}); return }
-		// REQ-VCAP-4: check the PLAINTEXT budget before encrypting, so the error
-		// is in the units the caller controls (the Hub only sees ciphertext).
-		if !is_vault_armored(title) && !ctl_check_plaintext_cap("chain title", title, CTL_CHAIN_TITLE_MAX_BYTES) { os.exit(1) }
-		keyring := ctl_vault_keyring_for_write(args)
-		if !is_vault_armored(title) {
-			title = ctl_seal_or_exit(title, keyring)
-		}
-		fields := make([dynamic]string)
-		defer delete(fields)
-		append(&fields, json_kv("title", title))
-		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
-		ctl_agent_call(endpoint, token, "agent.task_chain.set_title", json_object_from_slice(fields[:]))
-	case "set-description":
-		// coordinator-only; pass "" to clear. --chain defaults to your chain.
-		desc := option_value(args, "--description", pos(tokens, 1))
-		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do desc = string(data) }
-		// REQ-VCAP-4: check the PLAINTEXT budget before encrypting, so the error
-		// is in the units the caller controls (the Hub only sees ciphertext).
-		if !is_vault_armored(desc) && !ctl_check_plaintext_cap("chain description", desc, CTL_CHAIN_DESCRIPTION_MAX_BYTES) { os.exit(1) }
-		keyring := ctl_vault_keyring_for_write(args)
-		if desc != "" && !is_vault_armored(desc) {
-			desc = ctl_seal_or_exit(desc, keyring)
-		}
-		fields := make([dynamic]string)
-		defer delete(fields)
-		append(&fields, json_kv("description", desc))
-		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
-		ctl_agent_call(endpoint, token, "agent.task_chain.set_description", json_object_from_slice(fields[:]))
-	case "set-status", "status":
-		status := option_value(args, "--status", pos(tokens, 1))
-		if status == "" { print_agent_help([]string{"task-chain"}); return }
-		fields := make([dynamic]string)
-		defer delete(fields)
-		append(&fields, json_kv("status", status))
-		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
-		ctl_agent_call(endpoint, token, "agent.task_chain.set_status", json_object_from_slice(fields[:]))
-	case "archive":
-		cid := option_value(args, "--chain", pos(tokens, 1))
-		fields := make([dynamic]string)
-		defer delete(fields)
-		append(&fields, json_kv("status", "archived"))
-		if cid != "" do append(&fields, json_kv("chain_id", cid))
-		ctl_agent_call(endpoint, token, "agent.task_chain.set_status", json_object_from_slice(fields[:]))
-	case "unarchive":
-		cid := option_value(args, "--chain", pos(tokens, 1))
-		fields := make([dynamic]string)
-		defer delete(fields)
-		append(&fields, json_kv("status", "active"))
-		if cid != "" do append(&fields, json_kv("chain_id", cid))
-		ctl_agent_call(endpoint, token, "agent.task_chain.set_status", json_object_from_slice(fields[:]))
 	case "publish":
 		// Coordinator only (enforced hub-side). Flips the chain Draft -> Published and
 		// cascades Published to its tasks, which is what makes them schedulable.
@@ -305,18 +246,6 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 		response, ok := ctl_agent_local_call(endpoint, token, "agent.task_chain.publish", json_object(json_kv("chain_id", cid)))
 		if !ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
 		ctl_publish_print_and_exit(response)
-	case "pin":
-		cid := option_value(args, "--chain", pos(tokens, 1))
-		if cid == "" { print_agent_help([]string{"task-chain"}); return }
-		ctl_agent_call(endpoint, token, "agent.task_chain.pin", json_object(json_kv("chain_id", cid), json_kv_raw("pinned", "true")))
-	case "unpin":
-		cid := option_value(args, "--chain", pos(tokens, 1))
-		if cid == "" { print_agent_help([]string{"task-chain"}); return }
-		ctl_agent_call(endpoint, token, "agent.task_chain.pin", json_object(json_kv("chain_id", cid), json_kv_raw("pinned", "false")))
-	case "directory", "directories":
-		ctl_task_chains_command(tokens, args)
-	case "fleet", "fleets":
-		ctl_v2_task_chain_fleet(endpoint, token, tokens[1:], args)
 	case "token-usage", "usage":
 		ctl_task_chain_token_usage(Ctl_Transport{kind = .Agent, agent_endpoint = endpoint, agent_token = token}, tokens[1:], args)
 	case "summary":
@@ -329,84 +258,12 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 		ctl_v2_task_chain_summary(endpoint, token, set_tokens[:], args)
 	case "propose":
 		ctl_v2_task_chain_propose(endpoint, token, tokens[1:], args)
-	case "decide", "proposal":
-		cid := option_value(args, "--chain", option_value(args, "--chain-id", pos(tokens, 1)))
-		decision := strings.trim_space(option_value(args, "--decision", ""))
-		if cid == "" || (decision != "approve" && decision != "reject") {
-			fmt.println(`{"ok":false,"message":"task-chain decide requires --chain <id> --decision approve|reject [--reason <text>]"}`)
-			os.exit(1)
-		}
-		body := Ctl_Proposal_Decide_Body{decision = decision, reason = option_value(args, "--reason", "")}
-		params := ctl_agent_rest_params_or_exit({method = .POST, path = ctl_api("task-chains", cid, "proposal", "decide"), body = httpc.json_body(body)})
-		ctl_agent_call_task(endpoint, token, "agent.rest.request", params, args)
-	case "graph", "depend", "remove-dependency", "scope", "complete":
-		// Mixed-work graph verbs: same parser as user mode, relayed through the
-		// authenticated agent.work.* Bridge routes (Hub enforces owner/coordinator).
+	case "complete":
+		// chain.complete of a Bridge-owned chain (owner-routed agent.work.complete).
 		ctl_mixed_work_command(Ctl_Transport{kind = .Agent, agent_endpoint = endpoint, agent_token = token}, verb, args, pos(tokens, 1))
 	case:
 		print_agent_help([]string{"task-chain"})
 	}
-}
-
-ctl_v2_task_chain_fleet :: proc(endpoint, token: string, tokens, args: []string) {
-	if has_flag(args, "--help") || has_flag(args, "-h") || (len(tokens) > 0 && tokens[0] == "help") {
-		print_help_task_chain_fleet()
-		return
-	}
-	sub := pos(tokens, 0)
-	if sub == "" || sub == "list" {
-		chain_id := pos(tokens, 1)
-		if chain_id == "" do chain_id = option_value(args, "--chain", option_value(args, "--chain-id", ""))
-		if chain_id == "" {
-			res, ok := ctl_agent_local_call(endpoint, token, "agent.context.get", "{}")
-			if ok {
-				chain_id = extract_json_string_unescaped(res, "chain_id", "")
-			}
-		}
-		if chain_id == "" {
-			fmt.println("usage: ham-ctl task-chain fleet list <chain-id>")
-			return
-		}
-		ctl_agent_rest(endpoint, token, {method = .GET, path = ctl_api("task-chains", chain_id, "fleets")})
-		return
-	}
-	if sub == "pause" || sub == "resume" {
-		// REQ-TV2-5: stop/restart NEW dispatch to a row; live leases continue.
-		chain_id := pos(tokens, 1)
-		if chain_id == "" do chain_id = option_value(args, "--chain", option_value(args, "--chain-id", ""))
-		if chain_id == "" {
-			if res, ok := ctl_agent_local_call(endpoint, token, "agent.context.get", "{}"); ok do chain_id = extract_json_string_unescaped(res, "chain_id", "")
-		}
-		agent_id := option_value(args, "--agent", option_value(args, "--agent-id", ""))
-		if chain_id == "" || agent_id == "" {
-			fmt.printfln("usage: ham-ctl task-chain fleet %s [<chain-id>] --agent <agent_id> [--roles <worker,reviewer>]", sub)
-			return
-		}
-		ctl_agent_rest(endpoint, token, {method = .POST, path = ctl_api("task-chains", chain_id, "fleets", agent_id, sub), body = httpc.json_body(ctl_v2_fleet_pause_body(args))})
-		return
-	}
-	if sub == "set" {
-		chain_id := pos(tokens, 1)
-		if chain_id == "" do chain_id = option_value(args, "--chain", option_value(args, "--chain-id", ""))
-		if chain_id == "" {
-			res, ok := ctl_agent_local_call(endpoint, token, "agent.context.get", "{}")
-			if ok {
-				chain_id = extract_json_string_unescaped(res, "chain_id", "")
-			}
-		}
-		agent_id := option_value(args, "--agent", option_value(args, "--agent-id", ""))
-		bm_file, _ := ctl_read_json_file_flag(args, "--bridge-models-file")
-		body, body_ok := ctl_v2_fleet_set_body(args, bm_file)
-		if chain_id == "" || agent_id == "" || !body_ok {
-			fmt.println("usage: ham-ctl task-chain fleet set <chain-id> --agent <agent_id> --capacity <N> [--roles <worker,reviewer>] [--bridge <id>] [--provider <p>] [--model <m>] [--bridge-models <json>]")
-			return
-		}
-		ctl_agent_rest(endpoint, token, {method = .PUT, path = ctl_api("task-chains", chain_id, "fleets", agent_id), body = httpc.json_body(body)})
-		return
-	}
-	// Fallback: if sub is a chain_id
-	chain_id := sub
-	ctl_agent_rest(endpoint, token, {method = .GET, path = ctl_api("task-chains", chain_id, "fleets")})
 }
 
 // ---- task (one command per action) --------------------------------------
@@ -467,9 +324,8 @@ ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
 		case .Task:
 			ctl_agent_call_task(endpoint, token, "agent.task.depend", json_object(json_kv("task_id", tid), json_kv("depends_on_task_id", prereq)), args)
 		case .Workflow_Run:
-			// A whole workflow run is a chain-level graph prerequisite (the canonical
-			// mixed-work edge), not a ticket row: route through agent.work.depend.
-			ctl_agent_call_task(endpoint, token, "agent.work.depend", ctl_task_depend_workflow_params(option_value(args, "--chain", ""), tid, prereq), args)
+			// Workflow-run prerequisites were Hub mixed-work edges.
+			ctl_hub_chains_removed_exit("task depend --on workflow_run:")
 		}
 	case "update":
 		// Edit an already-created task: title/description/priority/assignee/
@@ -502,19 +358,8 @@ ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
 		tid := pos(tokens, 1)
 		if tid == "" { print_agent_help([]string{"task"}); return }
 		ctl_coord_control(endpoint, token, verb, tid, args)
-	case "start-agent", "restart-agent":
-		// Coordinator/user (F1): start or restart the agent a task waits on
-		// (agent_not_running). Workers are refused by the hub.
-		tid := pos(tokens, 1)
-		if tid == "" { print_agent_help([]string{"task"}); return }
-		ctl_v2_task_action(endpoint, token, tid, args, "start-agent", ctl_empty_object_body())
-	case "fetch":
-		ctl_v2_task_fetch(endpoint, token, tokens, args)
-	case "readiness":
-		// Read-only: per-edge prerequisite state, merge state and why it is unsatisfied.
-		tid := pos(tokens, 1)
-		if tid == "" { print_agent_help([]string{"task"}); return }
-		ctl_agent_call_task(endpoint, token, "agent.task.readiness", json_object(json_kv("task_id", tid)), args)
+	case "start-agent", "restart-agent", "fetch", "readiness":
+		ctl_hub_chains_removed_exit(fmt.tprintf("task %s", verb))
 	case:
 		print_agent_help([]string{"task"})
 	}
@@ -1418,43 +1263,6 @@ ctl_agentmode_memory_propose_params :: proc(args: []string) -> string {
 	return json_object_from_slice(fields[:])
 }
 
-ctl_agentmode_task_chain_create_params :: proc(args: []string, positional_title: string = "") -> string {
-	title := option_value(args, "--title", positional_title)
-	desc := option_value(args, "--description", "")
-	if has_flag(args, "--stdin") {
-		data, err := os.read_entire_file("/dev/stdin", context.allocator)
-		if err == nil do desc = string(data)
-	}
-	keyring := ctl_vault_keyring_for_write(args)
-	if title != "" && !is_vault_armored(title) {
-		title = ctl_seal_or_exit(title, keyring)
-	}
-	if desc != "" && !is_vault_armored(desc) {
-		desc = ctl_seal_or_exit(desc, keyring)
-	}
-	fields := make([dynamic]string)
-	defer delete(fields)
-	append(&fields, json_kv("title", title))
-	if desc != "" do append(&fields, json_kv("description", desc))
-	append(&fields, json_kv("kind", option_value(args, "--kind", "team_work")))
-	if coord := option_value(args, "--coordinator", option_value(args, "--coordinator-agent-id", "")); coord != "" {
-		append(&fields, json_kv("coordinator_agent_id", coord))
-	}
-	if bridge := option_value(args, "--bridge", option_value(args, "--bridge-id", "")); bridge != "" {
-		append(&fields, json_kv("bridge_id", bridge))
-	}
-	if project := option_value(args, "--project", option_value(args, "--project-id", "")); project != "" {
-		append(&fields, json_kv("project_id", project))
-	}
-	if provider := option_value(args, "--provider", ""); provider != "" {
-		append(&fields, json_kv("provider", provider))
-	}
-	if model := option_value(args, "--model", ""); model != "" {
-		append(&fields, json_kv("model", model))
-	}
-	return json_object_from_slice(fields[:])
-}
-
 ctl_agentmode_task_create_params :: proc(args: []string) -> string {
 	title := option_value(args, "--title", "")
 	desc := option_value(args, "--description", "")
@@ -1850,10 +1658,6 @@ print_agent_help :: proc(cmd: []string) {
 	case "bridge", "bridges": print_help_bridge(); return
 	case "agents": print_help_agents(); return
 	case "task-chain", "task-chains", "chain", "chains":
-		if sub == "fleet" || sub == "fleets" {
-			print_help_task_chain_fleet()
-			return
-		}
 		print_help_task_chain()
 		return
 	case "task", "tasks": print_help_task(); return
@@ -1968,103 +1772,40 @@ print_help_agents :: proc() {
 }
 
 print_help_task_chain :: proc() {
-	fmt.println("ham-ctl task-chain — your task chains")
+	fmt.println("ham-ctl task-chain — your Bridge-owned task chain")
+	fmt.println("")
+	fmt.println("Chains are Bridge-owned (the Hub task-chain engine is removed). Chains are created in the")
+	fmt.println("Heimdall app; legacy Hub chains are imported from Settings → Bridge (Import all). Verbs that")
+	fmt.println("only reached the Hub (list, create, set-title, set-description, set-status, archive, pin,")
+	fmt.println("directory, fleet, decide, graph, depend, remove-dependency, scope) answer hub_chains_removed.")
 	fmt.println("")
 	fmt.println("VERBS")
-	fmt.println("  list [--mine] [--pinned] [--project <id>]   List chains (--mine = ones you coordinate, --pinned = pinned).")
 	fmt.println("  show [<chain-id>]                   Show a chain (defaults to your current chain).")
-	fmt.println("  create --title <title>              Create a task chain.")
-	fmt.println("      [--description <text>] [--kind <kind>] [--coordinator <id>]")
-	fmt.println("      [--bridge <id>] [--project <id>] [--provider <p>] [--model <t>]")
-	fmt.println("  pin <chain-id>                      Pin a task chain to the top of the sidebar.")
-	fmt.println("  unpin <chain-id>                    Unpin a task chain.")
-	fmt.println("  set-title <title> [--chain <id>]    Rename a chain (coordinator only).")
-	fmt.println("  set-description <text> [--chain <id>] | --stdin   Set the chain description")
-	fmt.println("                                      (coordinator only; pass \"\" to clear).")
-	fmt.println("  summary get|show [<chain-id>|--chain <id>]       Print the chain summary (read-only; never writes). A Bridge-owned")
-	fmt.println("                                                   chain's summary is read from its owner store.")
+	fmt.println("  summary get|show [<chain-id>|--chain <id>]       Print the chain summary (read-only; never writes),")
+	fmt.println("                                                   read from the owner store. vault_locked when the")
+	fmt.println("                                                   owner Bridge cannot decrypt it.")
 	fmt.println("  summary set <text>|--file <path>|--stdin [--chain <id>]  Set/override the chain summary (<=60 lines,")
 	fmt.println("                                                   coordinator only). Only `set` (or --body/--file/--stdin) writes.")
 	fmt.println("  propose --file <proposal.json> [--require-decision] [--chain <id>]")
-	fmt.println("                                      Propose a ticket or workflow. Auto-approves and publishes by default;")
-	fmt.println("                                      --require-decision keeps it pending until `decide`.")
-	fmt.println("  decide [<chain-id>] --decision approve|reject [--reason <text>]")
-	fmt.println("                                      Approve or reject a pending proposal on the chain.")
-	fmt.println("  set-status <active|cancelled|archived> [--chain <id>] Change chain status (coordinator only).")
-	fmt.println("  archive [<chain-id>]                Archive a task chain (coordinator only).")
-	fmt.println("  unarchive [<chain-id>]              Restore an archived task chain to active (coordinator only).")
-	fmt.println("  publish <chain-id>                  Publish a DRAFT chain (coordinator only). Cascades")
-	fmt.println("                                      published to its tasks — until then nothing in the")
-	fmt.println("                                      chain is scheduled.")
-	fmt.println("  directory <add|update|remove|list>  Manage task chain relevant directories.")
-	fmt.println("  fleet <list|set|pause|resume>       Manage chain fleet capacities, roles, placement, and dispatch pause.")
+	fmt.println("                                      Propose tickets. Auto-approves and publishes by default.")
+	fmt.println("  publish <chain-id>                  Publish a DRAFT chain (coordinator only).")
+	fmt.println("  complete <chain-id> --expected-work-revision <N> --summary <text>")
+	fmt.println("                                      Complete the chain (coordinator only; every ticket done).")
 	fmt.println("  token-usage [<chain-id>]            Per-agent (and per-instance) + chain total token usage, JSON.")
 	fmt.println("  migrate --chain <id> --owner <bridge-id> [--request-file <signed.json>]")
-	fmt.println("                                      Move a legacy chain to its owner Bridge (one-shot). Without")
-	fmt.println("                                      --request-file prints the preflight (blockers, work revision).")
-	fmt.println("                                      The selection must be signed by an enrolled browser device")
-	fmt.println("                                      (task chain page: Move to Bridge, or its export); agents relay only.")
+	fmt.println("                                      Move one legacy chain to its owner Bridge (one-shot). Without")
+	fmt.println("                                      --request-file prints the preflight. The selection must be signed")
+	fmt.println("                                      by an enrolled browser device (Settings → Bridge → Import all, or")
+	fmt.println("                                      the owner-local panel export); agents relay only. Busy chains are")
+	fmt.println("                                      imported too: in-progress tasks are force-held and live leases end.")
 	fmt.println("  migrate --abort                     Explains how to abort an unfinished migration: only the account")
-	fmt.println("                                      owner's browser session may (owner-local panel); agents cannot.")
-	fmt.println("")
-	fmt.println("MIXED-WORK GRAPH (every chain is mixed_work: tickets and workflow runs share one graph)")
-	fmt.println("  Refs are typed: task:<task-id> (an ordinary ticket) or workflow_run:<run-id> (a whole run;")
-	fmt.println("  stage tasks are engine-managed and cannot be graph endpoints). [<chain-id>] defaults to")
-	fmt.println("  your chain (or --chain <id>). Mutations need the chain owner or its coordinator.")
-	fmt.println("  graph [<chain-id>]                  Dependencies (with dependency ids), scope decisions,")
-	fmt.println("                                      work_revision and completion summary.")
-	fmt.println("  depend [<chain-id>] --item <ref> --on <ref>")
-	fmt.println("                                      Add a prerequisite edge (idempotent; the dependent must")
-	fmt.println("                                      not have started). The dependent becomes eligible only")
-	fmt.println("                                      after the prerequisite SUCCEEDS (failed/cancelled never do).")
-	fmt.println("  remove-dependency [<chain-id>] --dependency <wdep-id> --reason <text>")
-	fmt.println("                                      Remove an edge (kept in history for audit).")
-	fmt.println("  scope [<chain-id>] --item <ref> --action include|exclude --reason <text>")
-	fmt.println("                                      Record a scope decision (excluded work never satisfies a")
-	fmt.println("                                      prerequisite; it must be terminal before completion).")
-	fmt.println("  complete <chain-id> --expected-work-revision <N> --summary <text>")
-	fmt.println("                                      Complete the chain (explicit id required; N comes from")
-	fmt.println("                                      `graph`; a stale N is a work_changed conflict). Every")
-	fmt.println("                                      included ticket/run must have succeeded. Finishing a")
-	fmt.println("                                      batch never completes the chain.")
+	fmt.println("                                      owner's browser session may; agents cannot.")
 	fmt.println("")
 	fmt.println("EXAMPLES")
-	fmt.println("  ham-ctl task-chain list --mine")
 	fmt.println("  ham-ctl task-chain show chain_abc")
-	fmt.println("  ham-ctl task-chain create --title 'Build feature' --coordinator agt_coord")
 	fmt.println("  ham-ctl task-chain summary set '# Chain summary' --chain chain_abc")
 	fmt.println("  ham-ctl task-chain propose --file proposal.json")
-	fmt.println("  ham-ctl task-chain fleet list chain_abc")
-	fmt.println("  ham-ctl task-chain fleet set chain_abc --agent agt_worker --capacity 4 --roles worker,reviewer --bridge brg_1 --provider claude --model sonnet")
-	fmt.println("  ham-ctl task-chain publish chain_abc")
-	fmt.println("  ham-ctl task-chain graph")
-	fmt.println("  ham-ctl task-chain depend --item task:task_report --on workflow_run:wrun_research")
 	fmt.println("  ham-ctl task-chain complete chain_abc --expected-work-revision 7 --summary 'All work merged; evidence: ...'")
-}
-
-print_help_task_chain_fleet :: proc() {
-	fmt.println("ham-ctl task-chain fleet — fleet management for task chains")
-	fmt.println("")
-	fmt.println("VERBS")
-	fmt.println("  list <chain-id>                             List fleet capacities, roles, placement, and active agent counts.")
-	fmt.println("  set <chain-id> --agent <id> --capacity <N>  Set or adjust fleet capacity, roles, and placement for an agent.")
-	fmt.println("  pause [<chain-id>] --agent <id> [--roles …] Stop NEW leases to the agent (all roles or the named ones); current work continues.")
-	fmt.println("  resume [<chain-id>] --agent <id> [--roles …] Allow new leases again.")
-	fmt.println("")
-	fmt.println("FLAGS (set)")
-	fmt.println("  --agent <agent_id>        Durable agent ID (e.g. agt_worker).")
-	fmt.println("  --capacity <N>            Maximum concurrent instances for this agent on the chain (>= 1; use pause to stop dispatch).")
-	fmt.println("  --min-warm <N>            Minimum warm idle instances to maintain (optional).")
-	fmt.println("  --idle-ttl <seconds>      Idle TTL before scaling down warm instances (default: 600).")
-	fmt.println("  --roles <worker,reviewer> Roles this fleet row can serve (repeatable or comma-separated).")
-	fmt.println("  --bridge <bridge_id>      Pin fleet placement to a specific bridge (pass \"\" to inherit).")
-	fmt.println("  --provider <provider>     Provider override for this fleet row (pass \"\" to inherit).")
-	fmt.println("  --model <model>           Model override for this fleet row (pass \"\" to inherit).")
-	fmt.println("  --bridge-models <json>    Per-bridge provider/model map JSON object.")
-	fmt.println("")
-	fmt.println("EXAMPLES")
-	fmt.println("  ham-ctl task-chain fleet list chain_abc")
-	fmt.println("  ham-ctl task-chain fleet set chain_abc --agent agt_worker --capacity 4 --roles worker,reviewer --bridge brg_1 --provider claude --model sonnet")
 }
 
 print_help_task :: proc() {
@@ -2074,8 +1815,8 @@ print_help_task :: proc() {
 	fmt.println("Task System v2: `status`, `vote`, `nudge`, `set-current`, `subscribe` and `unsubscribe`")
 	fmt.println("were removed. Work flows through leases: `ham-ctl lease next|submit|handoff|block`")
 	fmt.println("and `ham-ctl review post` (see `ham-ctl lease --help`).")
-	fmt.println("Positional <task-id> identifies the task and is enough on its own — task ids are")
-	fmt.println("globally unique, so you never need --chain (the Hub derives the chain for you).")
+	fmt.println("Positional <task-id> identifies the task and is enough on its own; the task lives on its")
+	fmt.println("chain's owner Bridge (Hub task chains are removed).")
 	fmt.println("")
 	fmt.println("VERBS")
 	fmt.println("  list                                    List your chain's tasks; each carries a comment_summary")
@@ -2090,15 +1831,7 @@ print_help_task :: proc() {
 	fmt.println("                                          Never approves, never touches a live lease; a repeat is a no-op.")
 	fmt.println("                                          Prints {task, changed, actions[], reasons[], message}.")
 	fmt.println("")
-	fmt.println("  COORDINATOR CONTROLS (P-CS) — Bridge-owned (owner) chains. On a legacy Hub chain every verb below")
-	fmt.println("  except hold/release/unblock/recheck answers {\"ok\":false,\"error\":{\"code\":\"owner_chain_only\"}}:")
-	fmt.println("  Hub chains are not supported for these controls.")
-	fmt.println("    verb                          owner chain   legacy Hub chain")
-	fmt.println("    hold/release/unblock/recheck  yes           yes (existing Hub routes)")
-	fmt.println("    cancel/reopen/delete/escalate yes           owner_chain_only")
-	fmt.println("    submit-for-review/done/split  yes           owner_chain_only")
-	fmt.println("    lease revoke/merge retry      yes           owner_chain_only")
-	fmt.println("    review roles                  yes           owner_chain_only")
+	fmt.println("  COORDINATOR CONTROLS (P-CS) — Bridge-owned chains:")
 	fmt.println("  Only the chain coordinator may use them; refusals are printed verbatim. A --reason is")
 	fmt.println("  mandatory where shown and is recorded in the task's audit trail as \"by coordinator\".")
 	fmt.println("  On Bridge-owned chains release and unblock also need --reason (or --note).")
@@ -2132,12 +1865,7 @@ print_help_task :: proc() {
 	fmt.println("  -> lifecycle configure (new author). Submit kept work for review BEFORE revoking with")
 	fmt.println("  --disable-fleet: it bumps the fleet revision, after which the old lease cannot be submitted.")
 	fmt.println("")
-	fmt.println("  start-agent <task-id>                   Coordinator/owner: start or restart the agent a task waits on")
-	fmt.println("                                          (agent_not_running). Never clears a user's deliberate stop.")
 	fmt.println("  comments <task-id> [--last N]           Fetch comment bodies; --last N = newest N (max 100).")
-	fmt.println("  fetch <task-id> <ref>                   Fetch one event (#<event_id>), output (output:<task_id>),")
-	fmt.println("                                          facet (facet:<task_id>:<attempt_no>:<kind>), or file at commit")
-	fmt.println("                                          (dir:<dir_id>:<rev>:<path>, <path>@<rev>, or <path>).")
 	fmt.println("  create --title <t>                      Create a task (draft until published).")
 	fmt.println("      [--description <d>] [--priority p0|p1|p2] [--assignee <agent-id>|self] [--bridge <bridge-id>]")
 	fmt.println("      [--reviewer <agent-id,...>] [--require-user-approval] [--depends-on <id,id>] [--chain <id>]")
@@ -2163,13 +1891,8 @@ print_help_task :: proc() {
 	fmt.println("                                          brief_incomplete lists the missing fields per task.")
 	fmt.println("  comment <task-id> --body <t>            Add a comment (the only way to comment).")
 	fmt.println("      [--notify <id,id>]")
-	fmt.println("  depend <task-id> --on <prerequisite>    Add one prerequisite to a ticket. <prerequisite> is")
-	fmt.println("      [--chain <id>]                      <task-id>, task:<task-id>, or workflow_run:<run-id> (a")
-	fmt.println("                                          chain-level graph edge on the whole run; --chain defaults")
-	fmt.println("                                          to your chain). Other kinds are rejected; use")
-	fmt.println("                                          `task-chain depend` for run-on-ticket or run-on-run edges.")
-	fmt.println("                                          `update --depends-on` replaces the ticket-id list and takes")
-	fmt.println("                                          ticket ids only.")
+	fmt.println("  depend <task-id> --on <prerequisite>    Add one prerequisite to a ticket: <task-id> or task:<task-id>.")
+	fmt.println("                                          `update --depends-on` replaces the ticket-id list.")
 	fmt.println("")
 	fmt.println("  --assignee / --reviewer take durable agent ids (agt_...); --reviewer is repeatable or")
 	fmt.println("  comma-separated. Instance pins (inst_...) were removed in Task System v2 and are rejected.")

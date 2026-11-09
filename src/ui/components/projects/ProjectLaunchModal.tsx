@@ -3,11 +3,6 @@ import { useState, useMemo, useEffect } from 'react';
 import { Button, Checkbox, Icon, Modal, Select } from '@ui';
 import { VaultText, useDecryptedText } from '../vault/VaultText';
 import {
-  useListTaskChainsQuery,
-  useFetchTaskChainDetailQuery,
-  ChainListItem,
-} from '../../api/endpoints/tasks';
-import {
   useListAgentIdentitiesQuery,
   useListAgentInstancesQuery,
   useStartAgentInstanceMutation,
@@ -28,7 +23,7 @@ export type ProjectLaunchModalProps = {
   onLaunched?: (instanceId: string) => void;
 };
 
-type TabKey = 'chain' | 'new' | 'existing';
+type TabKey = 'new' | 'existing';
 
 const ACTIVE_STATUSES = new Set([
   'running',
@@ -54,13 +49,7 @@ export default function ProjectLaunchModal({
   onClose,
   onLaunched,
 }: ProjectLaunchModalProps) {
-  const [activeTab, setActiveTab] = useState<TabKey>('chain');
-
-  // Tab 1 state
-  const [chainCursor, setChainCursor] = useState<string>('');
-  const [chainCursorHistory, setChainCursorHistory] = useState<string[]>([]);
-  const [selectedChainId, setSelectedChainId] = useState<string>('');
-  const [selectedChainAgentIds, setSelectedChainAgentIds] = useState<Set<string>>(new Set());
+  const [activeTab, setActiveTab] = useState<TabKey>('new');
 
   // Tab 2 state
   const [agentsPage, setAgentsPage] = useState<number>(0);
@@ -82,25 +71,6 @@ export default function ProjectLaunchModal({
   // Queries
   const projectId = project?.projectId || '';
   const { text: decryptedProjectName } = useDecryptedText(project?.name);
-
-  // Tab 1: Task chains for project
-  const chainsQuery = useListTaskChainsQuery(
-    { projectId, limit: 10, cursor: chainCursor },
-    { skip: !isOpen || !projectId || activeTab !== 'chain' }
-  );
-  const chains: ChainListItem[] = chainsQuery.data?.chains || [];
-  const chainHasMore = Boolean(chainsQuery.data?.hasMore);
-  const chainNextCursor = chainsQuery.data?.nextCursor || '';
-
-  // Selected chain detail
-  const chainDetailQuery = useFetchTaskChainDetailQuery(
-    { chainId: selectedChainId },
-    { skip: !isOpen || !selectedChainId || activeTab !== 'chain' }
-  );
-  const chainDetail = chainDetailQuery.data?.chain || null;
-  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-  const chainMembers: any[] = chainDetail?.members || [];
-  const coordinatorAgentInstanceId = chainDetail?.coordinatorAgentInstanceId || '';
 
   // Tab 2: Durable agents catalog via useListAgentIdentitiesQuery (cookie-auth /api/v1/agents)
   const AGENTS_PAGE_SIZE = 10;
@@ -197,10 +167,6 @@ export default function ProjectLaunchModal({
   // Reset state when modal opens or active project changes
   useEffect(() => {
     if (isOpen) {
-      setChainCursor('');
-      setChainCursorHistory([]);
-      setSelectedChainId('');
-      setSelectedChainAgentIds(new Set());
       setAgentsPage(0);
       setSelectedNewAgentIds(new Set());
       setSelectedBridgeId('');
@@ -221,106 +187,7 @@ export default function ProjectLaunchModal({
     }
   }, [availableBridges, selectedBridgeId, bridgesQuery.isLoading]);
 
-  // When chains load, auto-select first chain if none selected
-  useEffect(() => {
-    if (activeTab === 'chain' && !selectedChainId && chains.length > 0) {
-      setSelectedChainId(chains[0].chainId);
-    }
-  }, [activeTab, selectedChainId, chains]);
-
-  // When chainDetail loads, coordinator agent is checked by default ONLY if not already active
-  useEffect(() => {
-    if (chainDetail) {
-      const coordId = chainDetail.coordinatorAgentInstanceId;
-      if (coordId) {
-        const coordMember = (chainDetail.members || []).find(
-          // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-          (m: any) =>
-            // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-            m.agentInstanceId === coordId ||
-            m.agent_instance_id === coordId ||
-            m.role === 'coordinator'
-        );
-        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-        const coordStatus = coordMember?.runtimeStatus || coordMember?.runtime_status || '';
-        if (!isInstanceActive(coordStatus)) {
-          setSelectedChainAgentIds(new Set([coordId]));
-        } else {
-          setSelectedChainAgentIds(new Set());
-        }
-      } else {
-        setSelectedChainAgentIds(new Set());
-      }
-    }
-  }, [chainDetail?.chainId, chainDetail?.coordinatorAgentInstanceId, chainDetail?.members]);
-
   if (!isOpen || !project) return null;
-
-  // Tab 1 handlers
-  const toggleChainAgent = (instanceId: string, isActive?: boolean) => {
-    if (!instanceId || isActive) return;
-    setSelectedChainAgentIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(instanceId)) next.delete(instanceId);
-      else next.add(instanceId);
-      return next;
-    });
-  };
-
-  const handleStartChainAgents = async () => {
-    const ids = Array.from(selectedChainAgentIds).filter(Boolean);
-    if (ids.length === 0) return;
-    setIsActionRunning(true);
-    setFeedback(null);
-    try {
-      let startedCount = 0;
-      let alreadyRunningCount = 0;
-      for (const instanceId of ids) {
-        try {
-          await startAgentInstance({ instanceId }).unwrap();
-          startedCount++;
-        } catch (err: any) {
-          const errStr = String(
-            err?.data?.error?.message ||
-            err?.data?.error ||
-            err?.error ||
-            err?.message ||
-            ''
-          ).toLowerCase();
-          const isAlreadyRunning =
-            err?.status === 409 ||
-            err?.data?.status === 409 ||
-            errStr.includes('already_running') ||
-            errStr.includes('already running');
-          if (isAlreadyRunning) {
-            alreadyRunningCount++;
-          } else {
-            throw err;
-          }
-        }
-      }
-      setFeedback({
-        type: 'success',
-        message: `Successfully started ${startedCount} chain agent instance(s)${
-          alreadyRunningCount > 0 ? ` (${alreadyRunningCount} already running)` : ''
-        }.`,
-      });
-      // Navigate to the first started instance when a handler is provided;
-      // otherwise fall back to just closing the modal (backward compatible).
-      if (onLaunched) {
-        onLaunched(ids[0]);
-      } else {
-        onClose();
-      }
-    } catch (err: any) {
-      setFeedback({
-        type: 'error',
-        message: String(err?.data?.error?.message || err?.error || err?.message || 'Failed to start agents'),
-      });
-    } finally {
-      setIsActionRunning(false);
-    }
-  };
 
   // Tab 2 handlers
   const toggleNewAgent = (agentId: string) => {
@@ -453,21 +320,6 @@ export default function ProjectLaunchModal({
         <div className="shrink-0 flex items-center gap-2 border-b border-subtle pb-2.5 mb-3">
           <button
             type="button"
-            data-debug-id="project-launch-tab-chain"
-            onClick={() => {
-              setActiveTab('chain');
-              setFeedback(null);
-            }}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-              activeTab === 'chain'
-                ? 'bg-neutral-soft text-primary font-semibold shadow-sm'
-                : 'text-muted hover:text-primary hover:bg-neutral-soft'
-            }`}
-          >
-            Existing Task Chain Agent
-          </button>
-          <button
-            type="button"
             data-debug-id="project-launch-tab-new"
             onClick={() => {
               setActiveTab('new');
@@ -515,196 +367,6 @@ export default function ProjectLaunchModal({
 
         {/* Scrollable / Flexible Content Area */}
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-          {/* TAB 1: Existing Task Chain Agent */}
-          {activeTab === 'chain' && (
-            <div className="flex-1 min-h-0 flex flex-col space-y-3 overflow-hidden">
-              {chainsQuery.isLoading ? (
-                <div className="py-8 text-center text-xs text-muted">Loading task chains…</div>
-              ) : chains.length === 0 ? (
-                <div
-                  data-debug-id="project-launch-chains-empty"
-                  className="rounded-xl border border-subtle bg-surface-raised py-8 text-center text-xs text-muted"
-                >
-                  No task chains found for this project.
-                </div>
-              ) : (
-                <>
-                  {/* Task chains list section */}
-                  <div className="shrink-0 space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <span className="text-caption font-semibold uppercase tracking-[0.14em] text-muted">
-                        Select Task Chain
-                      </span>
-                      {(chainHasMore || chainCursorHistory.length > 0) && (
-                        <div className="flex items-center gap-1.5">
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            disabled={chainCursorHistory.length === 0 || isActionRunning}
-                            onClick={() => {
-                              const newHistory = [...chainCursorHistory];
-                              const prev = newHistory.pop() || '';
-                              setChainCursorHistory(newHistory);
-                              setChainCursor(prev);
-                            }}
-                          >
-                            Previous
-                          </Button>
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            disabled={!chainHasMore || !chainNextCursor || isActionRunning}
-                            onClick={() => {
-                              setChainCursorHistory((prev) => [...prev, chainCursor]);
-                              setChainCursor(chainNextCursor);
-                            }}
-                          >
-                            Next
-                          </Button>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Scrollable chains grid */}
-                    <div className="max-h-36 overflow-y-auto pr-1 grid gap-2 sm:grid-cols-2">
-                      {chains.map((chain) => {
-                        const isSelected = chain.chainId === selectedChainId;
-                        return (
-                          <button
-                            key={chain.chainId}
-                            type="button"
-                            data-debug-id={`project-launch-chain-item-${chain.chainId}`}
-                            onClick={() => setSelectedChainId(chain.chainId)}
-                            className={`flex flex-col items-start rounded-xl border p-2.5 text-left transition-all ${
-                              isSelected
-                                ? 'border-accent/60 bg-accent/10 shadow-sm'
-                                : 'border-subtle bg-surface hover:bg-surface-raised'
-                            }`}
-                          >
-                            <span className="truncate w-full text-xs font-medium text-primary">
-                              {chain.title || chain.chainId}
-                            </span>
-                            <div className="mt-1 flex items-center gap-2 text-[10px] text-muted">
-                              <span className="rounded bg-neutral-soft px-1.5 py-0.5 capitalize">
-                                {chain.status || 'active'}
-                              </span>
-                              <span>{chain.taskCount} task{chain.taskCount === 1 ? '' : 's'}</span>
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {/* Chain Agents List */}
-                  {selectedChainId && (
-                    <div className="flex-1 min-h-0 flex flex-col rounded-xl border border-subtle bg-surface p-3 overflow-hidden">
-                      <div className="shrink-0 flex items-center justify-between pb-2">
-                        <span className="text-caption font-semibold uppercase tracking-[0.14em] text-muted">
-                          Chain Agents
-                        </span>
-                        {chainMembers.length > 0 && (
-                          <span className="text-[10px] text-faint">
-                            {selectedChainAgentIds.size} of {chainMembers.length} selected
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-1.5">
-                        {chainDetailQuery.isLoading ? (
-                          <div className="py-4 text-center text-xs text-muted">Loading chain agents…</div>
-                        ) : chainMembers.length === 0 ? (
-                          <div className="py-3 text-center text-xs text-muted">
-                            No agents found in this task chain.
-                          </div>
-                        ) : (
-                          chainMembers.map((member) => {
-                            // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-                            const memberInstanceId = String(
-                              member.agent_instance_id ||
-                              member.agentInstanceId ||
-                              member.instance_id ||
-                              member.id ||
-                              ''
-                            ).trim();
-                            if (!memberInstanceId) return null;
-                            // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-                            const isCoordinator =
-                              memberInstanceId === coordinatorAgentInstanceId ||
-                              member.agentInstanceId === coordinatorAgentInstanceId ||
-                              member.agent_instance_id === coordinatorAgentInstanceId ||
-                              member.role === 'coordinator';
-                            const isChecked = selectedChainAgentIds.has(memberInstanceId);
-                            // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-                            const memberStatus = String(
-                              member.runtimeStatus || member.runtime_status || 'offline'
-                            ).toLowerCase();
-                            const isActive = isInstanceActive(memberStatus);
-
-                            return (
-                              <label
-                                key={memberInstanceId}
-                                data-debug-id={`project-launch-chain-agent-row-${memberInstanceId}`}
-                                className={`flex items-center gap-3 rounded-lg border px-3 py-2 transition-colors ${
-                                  isActive
-                                    ? 'border-transparent opacity-60 cursor-not-allowed bg-neutral-soft/30'
-                                    : isChecked
-                                    ? 'border-subtle bg-neutral-soft cursor-pointer'
-                                    : 'border-transparent hover:bg-neutral-soft cursor-pointer'
-                                }`}
-                              >
-                                <Checkbox
-                                  data-debug-id={`project-launch-chain-agent-checkbox-${memberInstanceId}`}
-                                  checked={isChecked}
-                                  disabled={isActive}
-                                  onChange={() => toggleChainAgent(memberInstanceId, isActive)}
-                                />
-                                <div className="min-w-0 flex-1 flex items-center gap-2">
-                                  <span
-                                    className={`truncate text-xs ${
-                                      isCoordinator
-                                        ? 'text-warning font-semibold'
-                                        : 'text-primary'
-                                    }`}
-                                  >
-                                    {/* TODO(FIX): Replace loose fallback chain with canonical typed schema property */}
-                                    {member.displayName || member.agentId || memberInstanceId}
-                                  </span>
-                                  {isCoordinator && (
-                                    <span className="rounded-full bg-warning-soft border border-warning/30 px-2 py-0.5 text-[10px] font-semibold text-warning">
-                                      Coordinator
-                                    </span>
-                                  )}
-                                  {member.role && !isCoordinator && (
-                                    <span className="rounded bg-neutral-soft px-1.5 py-0.2 text-[10px] text-muted capitalize">
-                                      {member.role}
-                                    </span>
-                                  )}
-                                </div>
-                                {isActive ? (
-                                  <span
-                                    data-debug-id={`project-launch-chain-agent-active-badge-${memberInstanceId}`}
-                                    className="rounded-full bg-success-soft border border-success/30 px-2 py-0.5 text-[10px] font-semibold text-success"
-                                  >
-                                    Active ({memberStatus})
-                                  </span>
-                                ) : (
-                                  <span className="font-mono text-[10.5px] text-faint">
-                                    {memberStatus}
-                                  </span>
-                                )}
-                              </label>
-                            );
-                          })
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          )}
-
           {/* TAB 2: New Agent Instance */}
           {activeTab === 'new' && (
             <div className="flex-1 min-h-0 flex flex-col space-y-2 overflow-hidden">
@@ -955,17 +617,6 @@ export default function ProjectLaunchModal({
           >
             Cancel
           </Button>
-
-          {activeTab === 'chain' && (
-            <Button
-              variant="primary"
-              data-debug-id="project-launch-start-chain-agents-btn"
-              disabled={selectedChainAgentIds.size === 0 || isActionRunning}
-              onClick={handleStartChainAgents}
-            >
-              {isActionRunning ? 'Starting…' : 'Start Selected Agents'}
-            </Button>
-          )}
 
           {activeTab === 'new' && (
             <Button

@@ -31,8 +31,8 @@ mcp_artifact_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Handlers
 	g.issues=issue.new_issue_service(&g.repos.issues,&g.clock,&g.ids)
 	h.control=mcp_resource_control(g);h.mutate_resource=mcp_mutate_resource
 	listed:=http.mcp_control_handler(h,{method="POST",path="/api/v1/mcp",headers=headers,body=strings.clone(`{"jsonrpc":"2.0","id":50,"method":"tools/list"}`,context.temp_allocator)})
-	tools:struct {result:struct {tools:[]struct {name:string}}};json.unmarshal_string(listed.body,&tools,.JSON,context.temp_allocator);testing.expect_value(t,len(tools.result.tools),46)
-	create:=json.Object{"request_id"=json.String("artifact_create"),"name"=json.String("Private result.md"),"description"=json.String("Private summary"),"content"=json.String("# Private result\nTask finished."),"content_type"=json.String("text/markdown"),"task_id"=json.String("task_comment"),"agent_id"=json.String("agt_placement")}
+	tools:struct {result:struct {tools:[]struct {name:string}}};json.unmarshal_string(listed.body,&tools,.JSON,context.temp_allocator);testing.expect_value(t,len(tools.result.tools),35)
+	create:=json.Object{"request_id"=json.String("artifact_create"),"name"=json.String("Private result.md"),"description"=json.String("Private summary"),"content"=json.String("# Private result\nTask finished."),"content_type"=json.String("text/markdown"),"task_id"=json.String("task_comment"),"chain_id"=json.String("chain_comment"),"agent_id"=json.String("agt_placement")}
 	response:=mcp_resource_heap_call(h,headers,"artifacts.create",create);result:=mcp_task_test_output(t,response);if result==nil do return
 	id:=result["resource_id"].(json.String);testing.expect(t,result["link"].(json.String)==json.String(strings.concatenate({"artifact://",string(id)},context.temp_allocator)))
 	testing.expect(t,response.body==mcp_resource_heap_call(h,headers,"artifacts.create",create).body)
@@ -103,7 +103,6 @@ mcp_artifact_bounds_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_H
 		page:=mcp_task_test_output(t,mcp_resource_heap_call(h,headers,"artifacts.list",args));if page==nil do return
 		rows,_:=page["records"].(json.Array);for item in rows {row,_:=item.(json.Object);id:=string(row["artifact_id"].(json.String));testing.expect(t,!seen[id]);seen[id]=true}
 		cursor=mcp.resource_text(page,"next_cursor");if cursor=="" do break
-		if len(seen)==1 {bad:=json.Object{"task_id"=json.String("task_missing"),"limit"=json.Integer(1),"cursor"=json.String(cursor)};testing.expect(t,strings.contains(mcp_resource_heap_call(h,headers,"artifacts.list",bad).body,"not_found"))}
 	}
 	testing.expect(t,seen["art_page_a"] && seen["art_page_b"])
 }
@@ -113,7 +112,7 @@ mcp_artifact_security_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control
 		args:=json.Object{"artifact_id"=json.String("art_foreign")};if action!="get" {args["request_id"]=json.String("foreign");args["expected_revision"]=json.String(strings.repeat("0",64,context.temp_allocator))};if action=="update" do args["name"]=json.String("Never change")
 		response:=mcp_resource_heap_call(h,headers,strings.concatenate({"artifacts.",action},context.temp_allocator),args);testing.expect(t,strings.contains(response.body,"not_found") && !strings.contains(response.body,"foreign content"))
 	}
-	for field,id in (map[string]string{"agent_id"="agt_placement_foreign","project_id"="proj_missing","chain_id"="chain_missing","task_id"="task_missing","agent_instance_id"="inst_missing"}) {
+	for field,id in (map[string]string{"agent_id"="agt_placement_foreign","project_id"="proj_missing","chain_id"="chain_missing","agent_instance_id"="inst_missing"}) {
 		args:=make(json.Object,context.temp_allocator);for k,v in create do args[k]=v;args[field]=json.String(id);args["request_id"]=json.String(strings.concatenate({"foreign_",field},context.temp_allocator))
 		testing.expect(t,strings.contains(mcp_resource_heap_call(h,headers,"artifacts.create",args).body,"not_found"))
 	}
@@ -146,7 +145,7 @@ mcp_artifact_security_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control
 mcp_artifact_bundle_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Handlers,headers:[]contracts.HTTP_Header,view:mcp.Access_View) {
 	png:=[]byte{0x89,'P','N','G',0x0d,0x0a,0x1a,0x0a,0x00,0xff};png64,_:=base64.encode(png,allocator=context.temp_allocator)
 	files:=json.Object{"index.html"=json.Object{"text"=json.String("<!doctype html><link rel=stylesheet href=styles.css><img src=logo.png>")},"styles.css"=json.Object{"text"=json.String("body {color:red}")},"logo.png"=json.Object{"base64"=json.String(png64),"type"=json.String("image/png")}}
-	create:=json.Object{"request_id"=json.String("bundle_create"),"name"=json.String("Site"),"description"=json.String("Static site"),"entry"=json.String("index.html"),"files"=files,"task_id"=json.String("task_comment")}
+	create:=json.Object{"request_id"=json.String("bundle_create"),"name"=json.String("Site"),"description"=json.String("Static site"),"entry"=json.String("index.html"),"files"=files,"task_id"=json.String("task_comment"),"chain_id"=json.String("chain_comment")}
 	response:=mcp_resource_heap_call(h,headers,"artifacts.create",create);result:=mcp_task_test_output(t,response);if result==nil do return
 	id:=string(result["resource_id"].(json.String))
 	testing.expect(t,response.body==mcp_resource_heap_call(h,headers,"artifacts.create",create).body,"bundle create replays its receipt")

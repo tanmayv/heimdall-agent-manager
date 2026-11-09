@@ -7,7 +7,6 @@ const { heimdallApi } = await import('../src/ui/api/heimdallApi.ts');
 const { bridgeSupportApi } = await import('../src/ui/api/endpoints/bridgeSupport.ts');
 const { providerSetupApi, refreshBridgeProviderCatalog } = await import('../src/ui/components/providers/providerSetupApi.ts');
 const { normalizeModelCatalog, modelCatalogSummary } = await import('../src/ui/components/providers/modelCatalogStatus.ts');
-const { resolvedFleetProviderModel } = await import('../src/ui/components/tasks/fleetSelection.ts');
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 30));
 function response(data: any, status = 200): any {
@@ -23,8 +22,6 @@ test('catalog metadata preserves empty results, old-bridge fallback and last-goo
   assert.match(modelCatalogSummary(normalizeModelCatalog({})), /Built-in model list/);
   assert.match(modelCatalogSummary({ models_has_snapshot: true, models_state: 'timeout' }), /keeping the last successful list/);
   assert.doesNotMatch(modelCatalogSummary({ models_has_snapshot: true, models_state: 'success' }), /Built-in|failed/);
-  assert.deepEqual(resolvedFleetProviderModel({ provider: 'codex', model: 'saved-unavailable' }, [{ provider: 'codex', models: [] }]),
-    { provider: 'codex', model: 'saved-unavailable' });
 });
 
 test('setup detection and enable changes never fetch models; explicit refresh serializes two stages without retry', async () => {
@@ -152,8 +149,6 @@ test('mounted picker probes only on Refresh, preserves unavailable selections, a
     assert.equal(configurationWire.model, 'new-seed-absent-id', 'selected ID reaches the actual reconfiguration request unchanged');
     const cached = bridgeSupportApi.endpoints.listBridgeProviders.select({ bridgeId: 'a' })(store.getState()).data;
     assert.deepEqual(cached.providers[0].models, ['new-seed-absent-id']);
-    assert.deepEqual(resolvedFleetProviderModel({ provider: 'codex', model: '' }, cached.providers),
-      { provider: 'codex', model: 'new-seed-absent-id' });
 
     // Enrollment automatically detects binaries, then waits for the explicitly
     // labelled enable-and-refresh action before requesting any model metadata.

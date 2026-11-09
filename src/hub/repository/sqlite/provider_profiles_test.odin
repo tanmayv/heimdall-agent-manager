@@ -24,6 +24,7 @@ test_profiles_migration_preserves_default_provider_meaning :: proc(t: ^testing.T
 		),
 	)
 	ok, err = run_migrations(&conn)
+	_ = legacy_fixture_allow_seeding(&conn)
 	if !testing.expect(t, ok, err.message) do return
 	impl: Provider_Repo_SQLite
 	repo := new_provider_repository(&impl, &conn)
@@ -44,12 +45,14 @@ test_profiles_migration_preserves_default_provider_meaning :: proc(t: ^testing.T
 	inst, found, _ := iface.agent_get_instance(&ar, "profiles-inst")
 	testing.expect(t, found); testing.expect_value(t, inst.provider_profile, "claude")
 	ok, err = run_migrations(&conn)
+	_ = legacy_fixture_allow_seeding(&conn)
 	testing.expect(t, ok, err.message)
 	testing.expect(
 		t,
 		exec(&conn, "DELETE FROM schema_migrations WHERE version='169_provider_profiles.sql';"),
 	)
 	ok, err = run_migrations(&conn)
+	_ = legacy_fixture_allow_seeding(&conn)
 	testing.expect(t, ok, err.message)
 	testing.expect(
 		t,
@@ -72,6 +75,7 @@ test_profiles_migration_preserves_default_provider_meaning :: proc(t: ^testing.T
 test_profiles_reconcile_missing_references_scope_and_reset :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	conn, ok := tmpl_clone_migrated(t)
+	_ = legacy_fixture_allow_seeding(&conn)
 	if !ok do return
 	defer close(&conn)
 	testing.expect(
@@ -173,6 +177,7 @@ test_profiles_reconcile_missing_references_scope_and_reset :: proc(t: ^testing.T
 test_profiles_reconcile_validation_is_atomic_and_driver_bound :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	conn, ok := tmpl_clone_migrated(t)
+	_ = legacy_fixture_allow_seeding(&conn)
 	if !ok do return
 	defer close(&conn)
 	testing.expect(
@@ -249,6 +254,7 @@ test_profiles_reconcile_validation_is_atomic_and_driver_bound :: proc(t: ^testin
 test_profiles_model_status_settings_isolate_accounts_and_custom_models :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	conn, ok := tmpl_clone_migrated(t)
+	_ = legacy_fixture_allow_seeding(&conn)
 	if !ok do return
 	defer close(&conn)
 	testing.expect(
@@ -377,6 +383,7 @@ profile_test_text :: proc(conn: ^Conn, query: string) -> string {
 test_profiles_instance_fleet_lease_roundtrip_and_references :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	conn, ok := tmpl_clone_migrated(t)
+	_ = legacy_fixture_allow_seeding(&conn)
 	if !ok do return
 	defer close(&conn)
 	testing.expect(
@@ -462,28 +469,6 @@ test_profiles_instance_fleet_lease_roundtrip_and_references :: proc(t: ^testing.
 		rerr.code,
 		domain.Error_Code.None,
 	); testing.expect(t, strings.contains(refs, "profile-chain:profile-agent"))
-	_, stored, err = iface.taskchain_save_lease(
-		&tr,
-		domain.Task_Lease {
-			lease_id = "profile-lease",
-			task_id = "profile-task",
-			chain_id = "profile-chain",
-			owner_user_id = "owner",
-			holder_instance_id = "profile-instance",
-			kind = "work",
-			provider = "codex",
-			provider_profile = "codex_two",
-			model = "model",
-			delivery = "wake",
-		},
-	)
-	testing.expect(t, stored, err.message)
-	lease, lease_found, le := iface.taskchain_get_lease(&tr, "profile-lease")
-	testing.expect(
-		t,
-		lease_found,
-		le.message,
-	); testing.expect_value(t, lease.provider_profile, "codex_two")
 	// Followups for two accounts of one driver remain separately durable.
 	for id in ([]string{"claude_one", "claude_two"}) {
 		created, create_err := iface.provider_extension_command_create(
@@ -546,6 +531,7 @@ test_profiles_reconfiguration_commits_account_selection_atomically :: proc(t: ^t
 test_discovery_report_keeps_default_profile_binary_path :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	conn, ok := tmpl_clone_migrated(t)
+	_ = legacy_fixture_allow_seeding(&conn)
 	if !ok do return
 	defer close(&conn)
 	testing.expect(t, exec(&conn, "INSERT INTO bridges(bridge_id,owner_user_id,created_at,updated_at) VALUES('path-b','owner','','');"))

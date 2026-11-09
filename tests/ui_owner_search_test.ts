@@ -12,7 +12,7 @@ import { fakeOwner, ownerTestSession, registryRow, type OwnerCall } from './help
 import { decryptVaultText } from '../src/ui/utils/vaultContent.ts';
 import { clearKeyringSession } from '../src/ui/utils/vaultKeyringSession.ts';
 import { limitHitsByChain, searchOwnerChains } from '../src/ui/api/ownerSearchClient.ts';
-import { filterOwnerSearchHits, loadProjectOwnerChainIds, searchTaskChainsEncrypted } from '../src/ui/utils/taskChainSearch.ts';
+import { filterOwnerSearchHits, searchTaskChainsEncrypted } from '../src/ui/utils/taskChainSearch.ts';
 import { homeChainsFromSearchHits } from '../src/ui/components/home/homeChainSearchLogic.ts';
 
 const CHAINS = 130;
@@ -87,33 +87,10 @@ test('project and status filters apply to local hits where owner metadata allows
   assert.deepEqual(filterOwnerSearchHits(hits, {}), hits);
   assert.deepEqual(filterOwnerSearchHits(hits, { status: 'archived' }), [], 'owner chains are never archived');
   assert.deepEqual(filterOwnerSearchHits(hits, { status: 'active' }).map((h) => h.filters_unverified), [['status'], ['status']], 'kept and labelled');
-  assert.deepEqual(filterOwnerSearchHits(hits, { projectId: 'proj_1' }), [], 'without a Hub authority row an owner chain has no project');
+  assert.deepEqual(filterOwnerSearchHits(hits, { projectId: 'proj_1' }), [], 'an owner chain has no project');
   assert.deepEqual(filterOwnerSearchHits(hits, { projectId: 'proj_1' }, new Set(['moved'])).map((h) => h.chain_id), ['moved'],
-    'a migrated chain matches its project through its Hub authority row; the native chain does not');
+    'a chain known to be in the project is kept');
   assert.deepEqual(filterOwnerSearchHits(hits, { projectId: 'proj_1', status: 'archived' }, new Set(['moved'])), [], 'never archived');
-  assert.deepEqual(filterOwnerSearchHits(hits, { projectId: 'proj_1', status: 'active' }, new Set(['moved'])).map((h) => [h.chain_id, h.filters_unverified]),
-    [['moved', ['status']]]);
-});
-
-test('project owner ids come from every page of the Hub project listing, authority rows only', async () => {
-  const paths: string[] = [];
-  const pages: Record<string, any> = {
-    '': { chains: [
-      { chain_id: 'moved_a', project_id: 'proj_1', authority: { kind: 'owner', bridge_id: 'brg' } },
-      { chain_id: 'legacy', project_id: 'proj_1' },
-      { chain_id: 'odd', project_id: 'proj_1', authority: { kind: 'hub' } },
-    ], has_more: true, next_cursor: 'c1' },
-    c1: { chains: [{ chain_id: 'moved_b', project_id: 'proj_1', authority: { kind: 'owner', bridge_id: 'brg' } }], has_more: true, next_cursor: 'c1' },
-  };
-  const ids = await loadProjectOwnerChainIds('proj_1', async (path) => {
-    paths.push(path);
-    const u = new URL(path, 'https://hub.example.test');
-    assert.equal(u.pathname, '/api/v1/task-chains');
-    assert.equal(u.searchParams.get('project_id'), 'proj_1');
-    return pages[u.searchParams.get('cursor') || ''];
-  });
-  assert.deepEqual([...ids].sort(), ['moved_a', 'moved_b']);
-  assert.equal(paths.length, 2, 'a repeated cursor stops paging');
 });
 
 test('the combined search pages the owner registry and filters local hits', async () => {
@@ -137,14 +114,7 @@ test('the combined search pages the owner registry and filters local hits', asyn
     }
     if (u.pathname === '/api/v1/owner-local/relay') return ok(await w.send(JSON.parse(init.body)));
     if (u.pathname === '/api/v1/bridges') return ok([]);
-    if (u.pathname === '/api/v1/task-chains' && u.searchParams.get('project_id') === 'proj_1') {
-      // id(5) moved from the Hub into proj_1: its frozen copy carries the owner authority.
-      return ok({ project_id: 'proj_1', chains: [
-        { chain_id: id(5), project_id: 'proj_1', authority: { kind: 'owner', bridge_id: w.env.bridgeId } },
-        { chain_id: 'legacy_hub', project_id: 'proj_1' },
-      ], has_more: false, next_cursor: '' });
-    }
-    if (u.pathname === '/api/v1/task-chains' && u.searchParams.get('project_id') === 'proj_broken') return new Response('{}', { status: 500 });
+    assert.notEqual(u.pathname, '/api/v1/task-chains', 'the removed Hub chain listing is never read');
     return new Response('{}', { status: 404 });
   }) as typeof fetch;
   try {
@@ -159,12 +129,7 @@ test('the combined search pages the owner registry and filters local hits', asyn
     assert.equal(active.hits.length, 5, 'unverifiable status keeps local hits');
     assert.ok(active.hits.every((h) => h.filters_unverified?.includes('status')));
     const project = await searchTaskChainsEncrypted('needle', user, { limit: 20, projectId: 'proj_1' });
-    assert.deepEqual([...new Set(project.hits.map((h) => h.chain_id))], [id(5)], 'a migrated chain in the project matches via its Hub authority row');
-    assert.equal(project.hits.length, 4, 'every hit of the matching chain is kept');
-    const other = await searchTaskChainsEncrypted('needle', user, { limit: 20, projectId: 'proj_2' });
-    assert.deepEqual(other.hits, [], 'owner chains outside the project are excluded');
-    const broken = await searchTaskChainsEncrypted('needle', user, { limit: 20, projectId: 'proj_broken' });
-    assert.deepEqual(broken.hits, [], 'an unreadable project listing proves no project');
+    assert.deepEqual(project.hits, [], 'owner chains carry no project, so a project filter excludes them');
   } finally {
     globalThis.fetch = saved;
     clearKeyringSession();

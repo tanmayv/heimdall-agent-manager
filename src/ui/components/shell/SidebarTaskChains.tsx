@@ -1,62 +1,39 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { useDispatch, useSelector } from 'react-redux';
-import { Icon, StatusDot, useInfiniteList } from '@ui';
-import { fetchSidebarTaskChainPage, type ChainListItem } from '../../api/endpoints/tasks';
-import { subscribeTaskChainCreation, taskChainCreationRevision } from '../../api/taskChainCreationEvents';
+import { useEffect, useMemo, useState } from 'react';
+import { useSelector } from 'react-redux';
+import { Icon, StatusDot } from '@ui';
 import { selectSearchChains } from '../../store/searchTitleSlice';
 import { selectIsVaultUnlocked } from '../../store/vaultSlice';
 import { buildRouteHash } from '../../utils/appLocation';
-import { chainConversationRoute } from '../../utils/paneTarget';
 import { navigateToHash } from '../../utils/conversationUrl';
-import { resolveChainConversationAgent } from '../../utils/chainConversation';
 import { searchTaskChainsEncrypted, taskChainSearchErrorMessage } from '../../utils/taskChainSearch';
 import { useAuthUser } from '../auth/AuthUserContext';
 import { chainStatusDot } from '../ui/patterns/commandPaletteLogic';
 import { VaultText } from '../vault/VaultText';
-import { useOwnerChains } from '../../api/ownerChainsStore';
+import { refreshOwnerChains, useOwnerChains } from '../../api/ownerChainsStore';
 import {
-  filterHomeChains, homeChainsFromFlatList, homeChainsFromSearchHits, homeChainsWithOwners,
+  filterHomeChains, homeChainsFromOwners, homeChainsFromSearchHits,
   HOME_RECENT_CHAIN_LIMIT, HOME_REMOTE_SEARCH_MIN_CHARS, type HomeChainItem,
 } from '../home/homeChainSearchLogic';
 
-export interface SidebarTaskChainsProps {
-  scrollRoot: HTMLElement | null;
-  active: boolean;
-  currentPath: string;
-  onNavigate?: () => void;
-  onChainsChange?: (chains: ChainListItem[]) => void;
+/** A chain row opens its submission (search match) or the chain view. */
+function chainRoute(chain: HomeChainItem): string {
+  return chain.submissionRoute || `/chains/${encodeURIComponent(chain.chainId)}`;
 }
 
-/** One list inside the navigation scroller. No timer, focus/reconnect fetch,
- * RTK subscription, or per-row task fetch: only initial load, paging, retry and
- * the successful-creation signal can fetch a list page.
+export interface SidebarTaskChainsProps {
+  scrollRoot?: HTMLElement | null;
+  active?: boolean;
+  currentPath: string;
+  onNavigate?: () => void;
+}
+
+/** The Bridge-owned chains of the shared owner-registry snapshot, with Bridge
+ * search. No timer, focus/reconnect fetch or per-row fetch: the registry loads
+ * once per vault session (ownerChainsStore).
  */
-export function SidebarTaskChains({ scrollRoot, active, currentPath, onNavigate, onChainsChange }: SidebarTaskChainsProps) {
-  const dispatch = useDispatch();
-  const creationRevision = useSyncExternalStore(subscribeTaskChainCreation, taskChainCreationRevision);
-  const seenCursors = useRef(new Set<string>());
-  const fetchPage = useCallback(async ({ cursor, signal }: { cursor: string; signal: AbortSignal }) => {
-    if (!cursor) seenCursors.current.clear();
-    const page = await fetchSidebarTaskChainPage({ cursor, signal });
-    signal.throwIfAborted();
-    // Reject a cyclic cursor rather than issuing repeated automatic requests.
-    if (page.has_more && seenCursors.current.has(page.next_cursor)) {
-      throw new Error('Task chain pagination did not advance');
-    }
-    seenCursors.current.add(cursor);
-    return page;
-  }, []);
-  const list = useInfiniteList<ChainListItem>({
-    fetchPage,
-    getItemId: chain => chain.chainId,
-    resetKey: String(creationRevision),
-    root: scrollRoot,
-    rootMargin: '120px',
-  });
-  useEffect(() => { onChainsChange?.(list.items); }, [list.items, onChainsChange]);
+export function SidebarTaskChains({ currentPath, onNavigate }: SidebarTaskChainsProps) {
   const owners = useOwnerChains();
-  // Bridge-owned chains come from the owner registry; their frozen Hub copies drop out.
-  const loaded = useMemo(() => homeChainsWithOwners(homeChainsFromFlatList(list.items), owners.chains), [list.items, owners.chains]);
+  const loaded = useMemo(() => homeChainsFromOwners(owners.chains), [owners.chains]);
   const titles = useSelector(selectSearchChains) as Record<string, { decryptedTitle?: string }>;
   const unlocked = useSelector(selectIsVaultUnlocked);
   const user = useAuthUser();
@@ -90,21 +67,10 @@ export function SidebarTaskChains({ scrollRoot, active, currentPath, onNavigate,
   }, [searchKey, trimmed, unlocked, user?.user_id, loaded]);
   const activeRemote = unlocked && remote?.key === searchKey ? remote : null;
   const rows = trimmed ? activeRemote?.rows ?? filterHomeChains(loaded, trimmed, titles, Infinity) : loaded;
-  const canPage = active && !trimmed && list.status === 'ready' && list.hasMore && !list.isPaging && !list.pagingError;
-  // Reattach after each page: if the sentinel is still visible, IntersectionObserver
-  // emits its initial entry again. This fills tall viewports and short/duplicate pages.
-  const sentinelRef = useCallback((node: HTMLDivElement | null) => {
-    list.sentinelRef(canPage ? node : null);
-  }, [list.sentinelRef, canPage, list.pagesLoaded]);
-
-  const open = async (event: React.MouseEvent<HTMLAnchorElement>, chain: HomeChainItem) => {
+  const open = (event: React.MouseEvent<HTMLAnchorElement>, chain: HomeChainItem) => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
-    if (chain.submissionRoute) { navigateToHash(buildRouteHash(chain.submissionRoute, "")); onNavigate?.(); return; }
-    // An owner chain has no Hub coordinator conversation: open its chain view.
-    if (chain.owner) { navigateToHash(buildRouteHash(`/chains/${encodeURIComponent(chain.chainId)}`, '')); onNavigate?.(); return; }
-    const coordinator = await resolveChainConversationAgent(dispatch, chain.chainId, chain.coordinatorAgentInstanceId);
-    navigateToHash(buildRouteHash(coordinator ? chainConversationRoute(chain.chainId) : `/chains/${encodeURIComponent(chain.chainId)}`, ''));
+    navigateToHash(buildRouteHash(chainRoute(chain), ''));
     onNavigate?.();
   };
   return (
@@ -121,21 +87,23 @@ export function SidebarTaskChains({ scrollRoot, active, currentPath, onNavigate,
           {activeRemote.state === 'searching' ? 'Searching unlocked Bridges…' : activeRemote.state === 'stale' ? 'Results may be stale.' : activeRemote.error}
         </p>
       ) : null}
-      <ul aria-label="Task chains" aria-busy={list.isLoadingInitial || list.isPaging} className="space-y-0.5">
-        {(list.status === 'loading' || list.status === 'idle') && !list.items.length ? (
+      <ul aria-label="Task chains" aria-busy={owners.status === 'loading'} className="space-y-0.5">
+        {owners.status === 'locked' ? (
+          <li data-debug-id="sidebar-chain-locked" className="px-2.5 py-3 text-sm text-muted">Unlock the vault to see your task chains.</li>
+        ) : owners.status === 'loading' && !loaded.length ? (
           <li role="status" className="px-2.5 py-3 text-sm text-muted">Loading task chains…</li>
-        ) : list.status === 'error' && !list.items.length ? null : rows.length === 0 ? (
+        ) : owners.status === 'error' && !loaded.length ? null : rows.length === 0 ? (
           <li data-debug-id="sidebar-chain-empty" className="px-2.5 py-3 text-sm text-muted">
             {trimmed ? 'No matching task chains.' : 'No task chains yet.'}
           </li>
         ) : rows.map(chain => (
           <li key={chain.rowKey || chain.chainId}>
-            <a href={buildRouteHash(chain.submissionRoute || (chain.owner ? `/chains/${encodeURIComponent(chain.chainId)}` : chainConversationRoute(chain.chainId)), '')}
-              onClick={event => void open(event, chain)}
+            <a href={buildRouteHash(chainRoute(chain), '')}
+              onClick={event => open(event, chain)}
               data-debug-id={chain.firstInGroup === false ? `sidebar-chain-match-row-${(chain.rowKey || chain.chainId).replace(/\u0000/g, '-')}` : `sidebar-chain-row-${chain.chainId}`}
-              aria-current={currentPath === chainConversationRoute(chain.chainId) ? 'page' : undefined}
-              title="Open coordinator conversation"
-              className={`flex min-h-11 min-w-0 items-center gap-2 rounded-xl px-2.5 py-2 hover:bg-neutral-soft ${currentPath === chainConversationRoute(chain.chainId) ? 'bg-neutral-soft font-semibold' : ''}`}>
+              aria-current={currentPath === chainRoute(chain) ? 'page' : undefined}
+              title="Open task chain"
+              className={`flex min-h-11 min-w-0 items-center gap-2 rounded-xl px-2.5 py-2 hover:bg-neutral-soft ${currentPath === chainRoute(chain) ? 'bg-neutral-soft font-semibold' : ''}`}>
               {chain.owner
                 ? <StatusDot size="sm" tone={chain.owner.online ? 'success' : 'neutral'} label={chain.owner.online ? 'Owner Bridge online' : 'Owner Bridge offline'} />
                 : <StatusDot size="sm" {...chainStatusDot(chain.status)} label={chain.status || 'unknown'} />}
@@ -156,16 +124,13 @@ export function SidebarTaskChains({ scrollRoot, active, currentPath, onNavigate,
           </li>
         ))}
       </ul>
-      {list.status === 'error' || list.pagingError ? (
+      {owners.status === 'error' ? (
         <div role="status" className="px-2.5 py-2 text-xs text-muted">
-          <p>{list.pagingError ? 'Could not load more task chains.' : 'Could not load task chains.'}</p>
-          <button type="button" data-debug-id="sidebar-chain-retry" onClick={list.pagingError ? list.loadMore : list.reload}
+          <p>Could not load task chains.</p>
+          <button type="button" data-debug-id="sidebar-chain-retry" onClick={() => void refreshOwnerChains()}
             className="min-h-11 rounded-xl px-3 text-sm text-accent hover:bg-neutral-soft">Retry</button>
         </div>
       ) : null}
-      {list.isLoadingInitial && list.items.length > 0 ? <p role="status" className="px-2.5 py-3 text-xs text-muted">Refreshing task chains…</p> : null}
-      {list.isPaging ? <p role="status" className="px-2.5 py-3 text-xs text-muted">Loading more task chains…</p> : null}
-      <div ref={sentinelRef} data-debug-id="sidebar-chain-sentinel" aria-hidden="true" className="h-px" />
     </section>
   );
 }

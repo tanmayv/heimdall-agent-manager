@@ -7,8 +7,7 @@
  * `ProjectDetailActions` is the header cluster, `ProjectDetailBody` is the stack of
  * surface cards.
  *
- * Cards: Overview (markdown description) · Bridge paths · Details · Linked
- * resources.
+ * Cards: Overview (markdown description) · Bridge paths · Details.
  *
  * What is deliberately absent, so nobody re-adds it:
  *  - **Created.** `created_at` is not serialised (`project_handlers.odin:77-79`),
@@ -35,7 +34,6 @@ import {
   Button,
   Icon,
   IconButton,
-  Link,
   Panel,
   ResourceDetailHeader,
   ResourceSectionCard,
@@ -59,9 +57,7 @@ import {
   type ProjectRecord,
 } from '../../api/endpoints/projects';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
-import { useListTaskChainsQuery } from '../../api/endpoints/tasks';
 import PaginatedMemoriesSection from '../shared/PaginatedMemoriesSection';
-import { buildRouteHash } from '../../utils/appLocation';
 import {
   VERB_LABEL,
   absoluteTime,
@@ -402,104 +398,6 @@ function BridgePathsCard({ record }: { record: ProjectRecord }) {
   );
 }
 
-/**
- * One linked-resource list (REQ-UI-12).
- *
- * Every one of these degrades rather than errors: a project page is still useful
- * when the chains endpoint is down, and an `Alert` per card would bury the project
- * under other resources' problems.
- */
-function LinkedList({
-  items,
-  loading,
-  failed,
-  emptyLabel,
-  debugId,
-}: {
-  items: { id: string; label: string; sub?: string; href: string }[];
-  loading: boolean;
-  failed: boolean;
-  emptyLabel: string;
-  debugId: string;
-}) {
-  if (loading) {
-    return (
-      <div className="flex items-center gap-2" data-debug-id={`${debugId}-loading`}>
-        <Spinner size="sm" />
-        <Text as="span" role="body-sm" tone="muted">Loading…</Text>
-      </div>
-    );
-  }
-  if (failed) {
-    // "Couldn't load" and "there are none" are different facts — the catalog-state
-    // rule from Amendment 5, applied to a linked list.
-    return (
-      <Text as="div" role="body-sm" tone="muted" data-debug-id={`${debugId}-failed`}>
-        Couldn&apos;t load these right now.
-      </Text>
-    );
-  }
-  if (items.length === 0) {
-    return (
-      <Text as="div" role="body-sm" tone="muted" data-debug-id={`${debugId}-empty`}>
-        {emptyLabel}
-      </Text>
-    );
-  }
-  return (
-    <ul className="flex flex-col" data-debug-id={debugId}>
-      {items.map((item) => (
-        <li key={item.id} className="border-t border-subtle py-1.5 first:border-0 first:pt-0">
-          <a
-            href={item.href}
-            data-debug-id={`${debugId}-${item.id}`}
-            className="flex min-w-0 flex-col rounded-[var(--radius-sm)] focus-visible:shadow-focus focus-visible:outline-none"
-          >
-            <Text as="span" role="body-sm" className="truncate">{item.label}</Text>
-            {item.sub ? <Text as="span" role="caption" tone="muted" className="truncate">{item.sub}</Text> : null}
-          </a>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-/** How many of each linked resource a card previews before linking out. */
-const LINKED_PREVIEW = 5;
-
-function LinkedResources({ record }: { record: ProjectRecord }) {
-  const projectId = record.projectId;
-
-  const chainsQuery = useListTaskChainsQuery({ projectId, limit: LINKED_PREVIEW });
-
-  const chains = (chainsQuery.data?.chains || []).slice(0, LINKED_PREVIEW).map((chain: any) => ({
-    id: String(chain.chainId),
-    label: String(chain.title || chain.chainId),
-    sub: String(chain.status || ''),
-    href: buildRouteHash(`/chains/${encodeURIComponent(String(chain.chainId))}`, ''),
-  }));
-
-  return (
-    <Card
-      title="Chains"
-      debugId="project-view-chains-card"
-      action={
-        <Link href={buildRouteHash('/chains', `project=${encodeURIComponent(projectId)}`)} data-debug-id="project-view-chains-all">
-          All chains
-        </Link>
-      }
-    >
-      <LinkedList
-        items={chains}
-        loading={chainsQuery.isLoading}
-        failed={Boolean(chainsQuery.error)}
-        emptyLabel="No chains on this project yet."
-        debugId="project-view-chains"
-      />
-    </Card>
-  );
-}
-
 /* ------------------------------------------------------------------ *
  * The body
  * ------------------------------------------------------------------ */
@@ -599,7 +497,6 @@ export function ProjectDetailBody({
         </div>
       </Card>
 
-      <LinkedResources record={record} />
     </>
   );
 

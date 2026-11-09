@@ -1,4 +1,4 @@
-import type { ChainProjectGroup } from '../../api/endpoints/tasks';
+import type { ChainProjectGroup } from '../../api/chainListTypes';
 import type { SearchItem } from '../../store/searchTitleSlice';
 import { isVaultArmored } from '../../utils/vaultContent.ts';
 

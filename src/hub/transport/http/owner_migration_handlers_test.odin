@@ -8,7 +8,6 @@ import "core:testing"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import sqlite "odin_test:hub/repository/sqlite"
-import taskchain_service "odin_test:hub/service/taskchain"
 import vault "odin_test:lib/vault"
 
 migration_http_doc :: proc(values:map[string]string)->json.Object {
@@ -36,11 +35,11 @@ owner_migration_cutover_verifies_receipt_then_commits_route_and_import_once :: p
     if !testing.expect(t,opened) do return
     defer sqlite.close(&conn)
     migrated,_:=sqlite.run_migrations(&conn)
+    _ = sqlite.legacy_fixture_allow_seeding(&conn)
     if !testing.expect(t,migrated) do return
     impl:sqlite.Taskchain_Repo_SQLite
     repo:=sqlite.new_taskchain_repository(&impl,&conn)
-    tasks:=taskchain_service.Taskchain_Service{repo=&repo}
-    h:=Bridge_Handlers{taskchains=&tasks}
+    h:=Bridge_Handlers{chains=&repo}
     testing.expect(t,sqlite.exec(&conn,`INSERT INTO task_chains(chain_id,owner_user_id,title,kind,created_at,updated_at) VALUES('chain','account','t','mixed_work','c','u')`))
     device_priv,owner_priv:ecdsa.Private_Key
     testing.expect(t,vault.p256_private_key_generate(&device_priv) && vault.p256_private_key_generate(&owner_priv))

@@ -86,7 +86,7 @@ mcp_runtime_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Handlers,
 		iface.bridge_provider_setting_upsert(&g.provider_repo,{bridge_id=bridge_id,provider="claude",enabled=true})
 	}
 	list:=http.mcp_control_handler(h,{method="POST",path="/api/v1/mcp",headers=headers,body=strings.clone(`{"jsonrpc":"2.0","id":50,"method":"tools/list"}`,context.temp_allocator)})
-	tools:struct {result:struct {tools:[]struct {name:string}}};json.unmarshal_string(list.body,&tools,.JSON,context.temp_allocator);testing.expect_value(t,len(tools.result.tools),25)
+	tools:struct {result:struct {tools:[]struct {name:string}}};json.unmarshal_string(list.body,&tools,.JSON,context.temp_allocator);testing.expect_value(t,len(tools.result.tools),14)
 	for bad in ([]struct {tool:string,args:json.Object}{
 		{"instances.start",json.Object{"agent_instance_id"=json.String("agt_wrong"),"request_id"=json.String("x"),"expected_revision"=json.String(strings.repeat("a",64,context.temp_allocator))}},
 		{"instances.stop",json.Object{"agent_instance_id"=json.String("inst_a"),"request_id"=json.String("x"),"expected_revision"=json.String(strings.repeat("a",64,context.temp_allocator)),"force"=json.Boolean(true)}},
@@ -127,10 +127,6 @@ mcp_runtime_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Handlers,
 	start["request_id"]=json.String("runtime_stale");testing.expect(t,strings.contains(mcp_runtime_heap_call(h,headers,"instances.start",start).body,"revision_conflict"))
 	i,_,_=iface.agent_get_instance(&g.repos.agents,string(id));i.runtime_status="running";i.startup_status="ready";_,_,_=iface.agent_save_instance(&g.repos.agents,i)
 	result=mcp_runtime_poll_transaction_test(t,g,h,headers,string(id));if result==nil do return;testing.expect(t,result["status"].(json.String)=="completed")
-	// Existing placement task holds a real native lease on B: lifecycle cannot
-	// silently drop it or its checkpoint. Callers must explicitly hold work first.
-	stop_busy:=json.Object{"agent_instance_id"=json.String("inst_placement_b"),"request_id"=json.String("runtime_busy"),"expected_revision"=mcp_runtime_test_revision(g,"inst_placement_b")}
-	testing.expect(t,strings.contains(mcp_runtime_heap_call(h,headers,"instances.stop",stop_busy).body,"active_task_lease"));testing.expect_value(t,len(sink.commands),2)
 	// Full cross-provider/bridge move: stopping is not completion; only native
 	// stop acknowledgement then destination readiness can complete the operation.
 	move:=json.Object{"agent_instance_id"=id,"bridge_id"=json.String("brg_placement_b"),"project_id"=json.String(""),"provider"=json.String("claude"),"provider_profile"=json.String("claude"),"model"=json.String(claude_model),"request_id"=json.String("runtime_move"),"expected_revision"=mcp_runtime_test_revision(g,string(id))}

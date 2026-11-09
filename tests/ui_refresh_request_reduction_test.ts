@@ -233,19 +233,6 @@ test('pane queryFns keep the HTTP status, and 401/403/404 are terminal', async (
   } finally { net.restore(); }
 });
 
-test('review findings come from review_posted events of the current attempt', async () => {
-  const { reviewsPostedForAttempt } = await import('../src/ui/components/tasks/taskEvents.ts');
-  const events = [
-    { kind: 'review_posted', payload: { attempt_no: 1, verdict: 'request_changes', reviewer: 'agt_r', findings: ['old'] } },
-    { kind: 'review_posted', payload: { attempt_no: 2, verdict: 'approve', reviewer: 'agt_r', findings: [] } },
-    { kind: 'review_posted', payload: { attempt_no: 2, verdict: 'request_changes', reviewer: 'user', findings: [{ message: 'fix X' }], summary: 'one issue' } },
-    { kind: 'comment', payload: { attempt_no: 2 } },
-  ];
-  assert.deepEqual(reviewsPostedForAttempt(events, 2), [
-    { reviewer: 'user', verdict: 'request_changes', findings: [{ message: 'fix X' }], summary: 'one issue' },
-  ]);
-});
-
 test('mark-read requires the selected tab to be on screen', async () => {
   const { paneShouldMarkRead, visiblePollInterval } = await import('../src/ui/components/workbench/paneVisibility.tsx');
   const base = { isActiveTab: true, paneVisible: true, conversationId: 'c', agentInstanceId: 'i', unreadCount: 2 };
@@ -295,34 +282,6 @@ async function withDom(routes: Routes, run: (h: { hits: string[]; store: any; re
     dom.window.close();
   }
 }
-
-test('closed task modals and the fleet drawer send no requests; opening fetches', async () => {
-  await withDom({
-    '/agents': { body: { data: [{ agent_id: 'agt_1', name: 'One' }], page: { has_more: false } } },
-    '/workflows/templates': { body: { data: { templates: [] } } },
-    '/workflows/definitions': { body: { data: { definitions: [] } } },
-  }, async ({ hits, render }) => {
-    const { CreateChainModal } = await import('../src/ui/components/taskchain/CreateChainModal.tsx');
-    const { ReviewRolesModal } = await import('../src/ui/components/tasks/ReviewRolesModal.tsx');
-    const { TaskEditModal } = await import('../src/ui/components/tasks/TaskEditModal.tsx');
-    const { FleetManagementDrawer } = await import('../src/ui/components/tasks/FleetManagementDrawer.tsx');
-    const task: any = { task_id: 't1', chain_id: 'ch1', state: 'ready', brief: {}, depends_on: [] };
-    const tree = (open: boolean) => React.createElement(React.Fragment, null,
-      React.createElement(CreateChainModal, { isOpen: open, onClose: () => {} }),
-      React.createElement(ReviewRolesModal, { chainId: 'ch1', open: false, onClose: () => {} }),
-      React.createElement(TaskEditModal, { chainId: 'ch1', task, field: null, onClose: () => {} }),
-      React.createElement(FleetManagementDrawer, { chainId: 'ch1', isOpen: false, onClose: () => {} }),
-    );
-    await render(tree(false));
-    assert.deepEqual(hits, [], `closed UI made requests: ${hits.join(', ')}`);
-
-    await render(tree(true));
-    assert.equal(count(hits, (h) => h.startsWith('GET /api/v1/agents?')), 1, hits.join(', '));
-    assert.equal(count(hits, (h) => h === 'GET /api/v1/workflows/templates'), 1);
-    assert.equal(count(hits, (h) => h === 'GET /api/v1/workflows/definitions'), 1);
-    assert.equal(count(hits, (h) => h.includes('/fleets') || h.includes('/review-roles') || h.includes('/bridges')), 0, hits.join(', '));
-  });
-});
 
 test('runtime picker fetches provider status for the selected bridge only', async () => {
   await withDom({

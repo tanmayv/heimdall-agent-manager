@@ -1,7 +1,9 @@
 import { ownerSubmissionRoute } from '../../utils/ownerSubmissionNavigation';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { useFetchTaskChainGroupsQuery, type ChainProjectGroup } from '../../api/endpoints/tasks';
+import type { ChainProjectGroup } from '../../api/chainListTypes';
+import { ownerChainListItem } from '../../api/ownerChains';
+import { useOwnerChains } from '../../api/ownerChainsStore';
 import {
   selectSearchChains,
   setBulkChainTitles,
@@ -18,7 +20,6 @@ import { Icon, StatusDot } from '../ui/primitives';
 import { useDialogA11y } from '../ui/composites/useDialogA11y';
 import { taskChainRoute, chainStatusDot } from '../ui/patterns/commandPaletteLogic';
 import { buildRouteHash } from '../../utils/appLocation';
-import { resolveChainConversationAgent } from '../../utils/chainConversation';
 import {
   searchTaskChainsEncrypted,
   taskChainSearchErrorMessage,
@@ -106,14 +107,14 @@ export function TaskChainSelectorModal({
     }
   });
 
-  const { data: groupsData, isLoading } = useFetchTaskChainGroupsQuery(
-    { includeArchived: true },
-    { skip: !open },
-  );
-
-  const resolvedGroups = useMemo(() => {
-    return chainGroupsProp ?? groupsData?.groups ?? [];
-  }, [chainGroupsProp, groupsData]);
+  // Every chain is Bridge-owned: the owner registry snapshot is the list.
+  const ownerChains = useOwnerChains();
+  const isLoading = ownerChains.status === 'loading';
+  const resolvedGroups = useMemo<ChainProjectGroup[]>(() => {
+    if (chainGroupsProp) return chainGroupsProp;
+    const chains = ownerChains.chains.map(ownerChainListItem);
+    return chains.length ? [{ projectId: '', projectName: '', chains, chainTotal: chains.length, hasMore: false, nextCursor: '' }] : [];
+  }, [chainGroupsProp, ownerChains.chains]);
 
   // Background batch decryption of armored titles
   useEffect(() => {
@@ -276,10 +277,9 @@ export function TaskChainSelectorModal({
     }
   };
 
-  // Opening a chain opens its chain-addressed coordinator conversation
-  // (taskChainRoute -> `chain:<id>`); the coordinator's existence is resolved
-  // from the chain detail when the list row doesn't carry it. `onSelectChain`
-  // hosts place `chainTargetId(chain.chainId)` when a coordinator exists.
+  // A chain with a known coordinator opens as its chain-addressed conversation
+  // (`onSelectChain` hosts place `chainTargetId(chain.chainId)`); any other
+  // chain opens its chain view.
   const handleSelect = (chain: ChainSelectorItem) => {
     onClose();
     if (chain.submissionRoute) {
@@ -287,19 +287,17 @@ export function TaskChainSelectorModal({
       else window.location.hash = buildRouteHash(chain.submissionRoute, "");
       return;
     }
-    void resolveChainConversationAgent(dispatch, chain.chainId, chain.coordinatorAgentInstanceId).then((coordinator) => {
-      const resolved = { chainId: chain.chainId, coordinatorAgentInstanceId: coordinator || undefined };
-      if (onSelectChain) {
-        onSelectChain(resolved);
-        return;
-      }
-      const route = taskChainRoute(resolved);
-      if (onNavigate) {
-        onNavigate(route);
-      } else {
-        window.location.hash = buildRouteHash(route, '');
-      }
-    });
+    const resolved = { chainId: chain.chainId, coordinatorAgentInstanceId: chain.coordinatorAgentInstanceId || undefined };
+    if (onSelectChain && resolved.coordinatorAgentInstanceId) {
+      onSelectChain(resolved);
+      return;
+    }
+    const route = taskChainRoute(resolved);
+    if (onNavigate) {
+      onNavigate(route);
+    } else {
+      window.location.hash = buildRouteHash(route, '');
+    }
   };
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {

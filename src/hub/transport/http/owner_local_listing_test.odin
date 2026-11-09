@@ -9,7 +9,6 @@ import domain "odin_test:hub/domain"
 import platform "odin_test:hub/platform"
 import sqlite "odin_test:hub/repository/sqlite"
 import auth_service "odin_test:hub/service/auth"
-import taskchain_service "odin_test:hub/service/taskchain"
 import user_service "odin_test:hub/service/user"
 import project_service "odin_test:hub/service/project"
 
@@ -34,9 +33,8 @@ owner_registry_http_pages_live_tombstones_bytes_and_accounts :: proc(t:^testing.
     if !testing.expect(t,valid) do return
     impl:sqlite.Taskchain_Repo_SQLite
     repo:=sqlite.new_taskchain_repository(&impl,&conn)
-    tasks:=taskchain_service.Taskchain_Service{repo=&repo}
     runtime:project_service.Bridge_Runtime_Registry
-    h:=Bridge_Handlers{auth=&auth,taskchains=&tasks,bridge_runtime_registry=&runtime}
+    h:=Bridge_Handlers{auth=&auth,chains=&repo,bridge_runtime_registry=&runtime}
     fixture,_:=json.parse_string(#load("../../../contracts/fixtures/owner-local-v1.json",string),.JSON,true,context.temp_allocator)
     entries:=fixture.(json.Object)["valid"].(json.Array)
     registry:json.Object
@@ -148,9 +146,8 @@ owner_registry_unpaged_listing_walks_past_one_hundred_rows :: proc(t:^testing.T)
     if !testing.expect(t,valid) do return
     impl:sqlite.Taskchain_Repo_SQLite
     repo:=sqlite.new_taskchain_repository(&impl,&conn)
-    tasks:=taskchain_service.Taskchain_Service{repo=&repo}
     runtime:project_service.Bridge_Runtime_Registry
-    h:=Bridge_Handlers{auth=&auth,taskchains=&tasks,bridge_runtime_registry=&runtime}
+    h:=Bridge_Handlers{auth=&auth,chains=&repo,bridge_runtime_registry=&runtime}
     fixture,_:=json.parse_string(#load("../../../contracts/fixtures/owner-local-v1.json",string),.JSON,true,context.temp_allocator)
     registry:json.Object
     for entry in fixture.(json.Object)["valid"].(json.Array) {

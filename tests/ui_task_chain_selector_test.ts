@@ -39,7 +39,7 @@ import {
   INITIAL_VISIBLE_COUNT,
   type ChainSelectorItem,
 } from '../src/ui/components/chains/taskChainSelectorLogic.ts';
-import type { ChainProjectGroup } from '../src/ui/api/endpoints/tasks.ts';
+import type { ChainProjectGroup } from '../src/ui/api/chainListTypes.ts';
 import { taskChainRoute } from '../src/ui/components/ui/patterns/commandPaletteLogic.ts';
 import { isVaultArmored, encryptVaultText } from '../src/ui/utils/vaultContent.ts';
 import { batchDecryptTitles } from '../src/ui/utils/vaultSearch.ts';

@@ -8,11 +8,14 @@ import "core:strings"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
+import platform "odin_test:hub/platform"
+import "core:time"
 
-// R3 one-shot import, Hub source side. Selection and freeze happen in ONE Hub
-// transaction after the blocker check, so no lease, effect, workflow stage or
-// merge can start between the check and the freeze. The Hub computes the
-// quiescence digest over exactly the facts it checked.
+// R3 one-shot import, Hub source side. The Hub task-chain engine is removed,
+// so nothing can drain busy legacy work any more: neutralization, selection
+// and freeze happen in ONE Hub transaction. Live work is neutralized with the
+// importer's own SQL (legacy_migration_neutralize) and recorded on the
+// selection row; the Hub computes the quiescence digest after it.
 
 SQLITE_INTEGER :: 1
 SQLITE_NULL :: 5
@@ -24,6 +27,8 @@ legacy_count :: proc(conn:^Conn,sql:string,args:..string) -> (i64,bool) {
     return n,parsed
 }
 
+// Each code names live work in a legacy chain. Preflight reports these as
+// information; the import neutralizes them (see legacy_migration_neutralize).
 // Each code names live work the import would otherwise drop or silently
 // release. Every query lists the blocking identities (first 20 are reported).
 // A task awaiting review or merge has an unresolved execution; a ticket gated
@@ -73,8 +78,109 @@ legacy_quiescence_digest :: proc(s:domain.Legacy_Migration_Selection,generation,
     return contracts.owner_payload_digest(facts)
 }
 
-// Select and freeze atomically. An exact replay of a frozen or imported
-// selection returns its fence unchanged. Blockers refuse without writing.
+// Neutralization codes recorded on the selection row ({code,count,items}).
+LEGACY_NEUTRALIZED_LEASES :: "live_leases_ended"
+LEGACY_NEUTRALIZED_HELD :: "tasks_force_held"
+LEGACY_NEUTRALIZED_IN_REVIEW :: "tasks_in_review_carried"
+LEGACY_NEUTRALIZED_WORKFLOWS :: "workflows_cancelled"
+LEGACY_NEUTRALIZED_GATES :: "workflow_gates_released"
+LEGACY_NEUTRALIZED_STAGES :: "workflow_stage_tasks_archived"
+LEGACY_NEUTRALIZED_MERGES :: "merges_closed"
+LEGACY_NEUTRALIZED_EFFECTS :: "effects_resolved"
+
+legacy_neutralized_append :: proc(out:^[dynamic]domain.Legacy_Migration_Blocker,code:string,items:[]string) {
+    if len(items)==0 do return
+    head:=make([dynamic]string,context.temp_allocator)
+    for it in items[:min(len(items),20)] do append(&head,it)
+    append(out,domain.Legacy_Migration_Blocker{code,i64(len(items)),head[:]})
+}
+legacy_column :: proc(rows:[][]string,i:=0) -> []string {
+    out:=make([]string,len(rows),context.temp_allocator)
+    for r,j in rows do out[j]=r[i]
+    return out
+}
+
+// legacy_migration_neutralize settles every live blocker of a legacy chain in
+// the caller's transaction, before selection (no legacy fence exists yet, so
+// the guard triggers do not apply), and returns what it did plus the ids of
+// the tasks the owner must import as held:
+//   live leases          ended (rows deleted; holders keep running unmanaged)
+//   in_progress tasks    force-held on the owner (Hub rows untouched)
+//   in_review tasks      carried over in review (recorded only)
+//   running workflows    every draft/pending/running execution cancelled
+//   workflow gates       edges on runs that never succeeded removed; their
+//                        dependent tickets force-held
+//   stage tasks          of a cancelled or run-less stage: archival on import
+//   pending merges       closed: imported as done, unmerged work stays on its
+//                        branch (recorded only)
+//   outstanding effects  retired with an import-neutralized digest
+legacy_migration_neutralize :: proc(conn:^Conn,s:domain.Legacy_Migration_Selection,now:string) -> (neutralized:[]domain.Legacy_Migration_Blocker,forced_held:[]string,err:domain.Domain_Error) {
+    out:=make([dynamic]domain.Legacy_Migration_Blocker,context.temp_allocator)
+    held:=make([dynamic]string,context.temp_allocator)
+    seen:=make(map[string]bool,context.temp_allocator)
+    hold :: proc(held:^[dynamic]string,seen:^map[string]bool,id:string) { if !seen[id] { seen[id]=true;append(held,id) } }
+    chain:=s.chain_id
+    rows,ok:=legacy_metadata(conn,"SELECT lease_id FROM task_leases WHERE chain_id=?1 OR task_id IN (SELECT task_id FROM tasks WHERE chain_id=?1) ORDER BY lease_id",1,chain)
+    if !ok do return nil,nil,legacy_storage_error()
+    if len(rows)>0 {
+        if _,ok=legacy_metadata(conn,"DELETE FROM task_leases WHERE chain_id=?1 OR task_id IN (SELECT task_id FROM tasks WHERE chain_id=?1)",0,chain);!ok do return nil,nil,legacy_storage_error()
+    }
+    legacy_neutralized_append(&out,LEGACY_NEUTRALIZED_LEASES,legacy_column(rows))
+    rows,ok=legacy_metadata(conn,"SELECT task_id FROM tasks WHERE chain_id=?1 AND state='in_progress' ORDER BY task_id",1,chain)
+    if !ok do return nil,nil,legacy_storage_error()
+    for r in rows do hold(&held,&seen,r[0])
+    rows,ok=legacy_metadata(conn,"SELECT task_id FROM tasks WHERE chain_id=?1 AND state='in_review' ORDER BY task_id",1,chain)
+    if !ok do return nil,nil,legacy_storage_error()
+    legacy_neutralized_append(&out,LEGACY_NEUTRALIZED_IN_REVIEW,legacy_column(rows))
+    rows,ok=legacy_metadata(conn,"SELECT run_id||':'||execution_no FROM workflow_run_executions WHERE chain_id=?1 AND state IN ('draft','pending','running') ORDER BY run_id,execution_no",1,chain)
+    if !ok do return nil,nil,legacy_storage_error()
+    if len(rows)>0 {
+        if _,ok=legacy_metadata(conn,`UPDATE workflow_run_executions SET state='cancelled',revision=revision+1,ended_at=?2,failure_code='legacy_import',failure_detail='cancelled by the one-shot legacy import'
+          WHERE chain_id=?1 AND state IN ('draft','pending','running')`,0,chain,now);!ok do return nil,nil,legacy_storage_error()
+    }
+    legacy_neutralized_append(&out,LEGACY_NEUTRALIZED_WORKFLOWS,legacy_column(rows))
+    rows,ok=legacy_metadata(conn,`SELECT d.dependency_id,d.dependent_kind,d.dependent_id FROM work_dependencies d WHERE d.chain_id=?1 AND d.removed_at='' AND d.prerequisite_kind='workflow_run'
+      AND NOT EXISTS(SELECT 1 FROM workflow_runs r JOIN workflow_run_executions e ON e.run_id=r.run_id AND e.execution_no=r.current_execution_no
+        WHERE r.run_id=d.prerequisite_id AND e.state='succeeded') ORDER BY d.dependency_id`,3,chain)
+    if !ok do return nil,nil,legacy_storage_error()
+    for r in rows {
+        if _,ok=legacy_metadata(conn,`UPDATE work_dependencies SET removed_at=?2,removed_by_kind='hub',removed_by_id='legacy_import',removal_reason='workflow run never succeeded; released by the one-shot legacy import'
+          WHERE dependency_id=?1 AND removed_at=''`,0,r[0],now);!ok do return nil,nil,legacy_storage_error()
+        if r[1]=="task" {
+            live,read:=legacy_metadata(conn,"SELECT 1 FROM tasks WHERE task_id=?1 AND chain_id=?2 AND state NOT IN ('done','cancelled')",1,r[2],chain)
+            if !read do return nil,nil,legacy_storage_error()
+            if len(live)>0 do hold(&held,&seen,r[2])
+        }
+    }
+    legacy_neutralized_append(&out,LEGACY_NEUTRALIZED_GATES,legacy_column(rows))
+    rows,ok=legacy_metadata(conn,`SELECT task_id FROM tasks WHERE chain_id=?1 AND (workflow_run_id!='' OR stage_key!='' OR kind='gate') AND state NOT IN ('done','cancelled') ORDER BY task_id`,1,chain)
+    if !ok do return nil,nil,legacy_storage_error()
+    legacy_neutralized_append(&out,LEGACY_NEUTRALIZED_STAGES,legacy_column(rows))
+    merges:=make([dynamic]string,context.temp_allocator)
+    for b in LEGACY_MIGRATION_BLOCKER_SQL {
+        if b[0]!="pending_merges" && b[0]!="merge_conflicts" do continue
+        rows,ok=legacy_metadata(conn,b[1],1,chain)
+        if !ok do return nil,nil,legacy_storage_error()
+        for r in rows do append(&merges,r[0])
+    }
+    legacy_neutralized_append(&out,LEGACY_NEUTRALIZED_MERGES,merges[:])
+    rows,ok=legacy_metadata(conn,"SELECT effect_id FROM owner_legacy_source_effects WHERE chain_id=?1 AND state='outstanding' ORDER BY effect_id",1,chain)
+    if !ok do return nil,nil,legacy_storage_error()
+    for r in rows {
+        digest:=contracts.owner_payload_digest(fmt.tprintf("heimdall-legacy-import-neutralized/v1\n%s\n%s\n",s.migration_id,r[0]))
+        if _,ok=legacy_metadata(conn,"UPDATE owner_legacy_source_effects SET state='retired',retirement_digest=?2 WHERE effect_id=?1 AND state='outstanding'",0,r[0],digest);!ok do return nil,nil,legacy_storage_error()
+    }
+    legacy_neutralized_append(&out,LEGACY_NEUTRALIZED_EFFECTS,legacy_column(rows))
+    // The force-held list is recorded too (all of it: the owner holds exactly these).
+    if len(held)>0 do append(&out,domain.Legacy_Migration_Blocker{LEGACY_NEUTRALIZED_HELD,i64(len(held)),held[:min(len(held),20)]})
+    return out[:],held[:],{}
+}
+
+// Neutralize, select and freeze atomically. An exact replay of a frozen or
+// imported selection returns its fence unchanged. The signed selection's
+// expected work revision is checked BEFORE neutralization (which itself
+// advances the legacy work revision); the selection row then records the
+// post-neutralization revision and what was neutralized.
 legacy_migration_freeze_now :: proc(ctx:rawptr,s:domain.Legacy_Migration_Selection) -> (domain.Legacy_Source_Fence,[]domain.Legacy_Migration_Blocker,domain.Domain_Error) {
     impl:=(^Taskchain_Repo_SQLite)(ctx)
     factory:SQLite_Unit_Of_Work_Factory
@@ -93,12 +199,22 @@ legacy_migration_freeze_now :: proc(ctx:rawptr,s:domain.Legacy_Migration_Selecti
         aborted,read:=legacy_metadata(impl.conn,"SELECT 1 FROM owner_legacy_aborted_migrations WHERE migration_id=?",1,s.migration_id)
         if !read do return {},nil,legacy_storage_error()
         if len(aborted)>0 do return {},nil,domain.domain_error(.Conflict,"this migration was aborted; sign a new selection",`{"code":"migration_aborted"}`)
+        current,cur_ok:=legacy_metadata(impl.conn,`SELECT work_revision FROM task_chains WHERE chain_id=? AND owner_user_id=?
+          AND NOT EXISTS(SELECT 1 FROM owner_local_chains WHERE chain_id=?)`,1,s.chain_id,s.account_id,s.chain_id)
+        if !cur_ok do return {},nil,legacy_storage_error()
+        if len(current)!=1 || current[0][0]!=fmt.tprintf("%d",s.expected_work_revision) do return {},nil,legacy_conflict()
     }
-    blockers,berr:=legacy_migration_blockers(ctx,s.chain_id)
-    if berr.code!=.None do return {},nil,berr
-    if len(blockers)>0 do return {},blockers,{}
+    neutralized,forced,nerr:=legacy_migration_neutralize(impl.conn,s,legacy_now())
+    if nerr.code!=.None do return {},nil,nerr
     if !found {
-        if serr:=legacy_migration_select(ctx,s);serr.code!=.None do return {},nil,serr
+        revision,rev_ok:=legacy_count(impl.conn,"SELECT work_revision FROM task_chains WHERE chain_id=?1",s.chain_id)
+        if !rev_ok do return {},nil,legacy_storage_error()
+        recorded:=s;recorded.expected_work_revision=revision
+        n_raw,_:=json.marshal(neutralized,allocator=context.temp_allocator)
+        h_raw,_:=json.marshal(forced,allocator=context.temp_allocator)
+        n_text:=string(n_raw) if len(neutralized)>0 else "[]"
+        h_text:=string(h_raw) if len(forced)>0 else "[]"
+        if serr:=legacy_migration_select_recorded(ctx,recorded,n_text,h_text);serr.code!=.None do return {},nil,serr
     }
     f,found,ferr=legacy_source_get(ctx,s.account_id,s.chain_id)
     if ferr.code!=.None || !found do return {},nil,legacy_storage_error()
@@ -110,6 +226,10 @@ legacy_migration_freeze_now :: proc(ctx:rawptr,s:domain.Legacy_Migration_Selecti
     if ferr.code!=.None do return {},nil,ferr
     committed,err=iface.unit_of_work_commit(&tx)
     return f,nil,err
+}
+
+legacy_now :: proc() -> string {
+    return platform.format_rfc3339_utc(time.now())
 }
 
 legacy_json_string :: proc(b:^strings.Builder,s:string) {
@@ -186,6 +306,9 @@ legacy_migration_export :: proc(ctx:rawptr,account,chain,migration:string) -> (d
         }
     }
     m.kinds=kinds[:];m.documents=refs[:];m.archival_only=contracts.OWNER_MIGRATION_ARCHIVAL_ONLY[:]
+    if f.forced_held_json!="" && f.forced_held_json!="[]" {
+        if json.unmarshal_string(f.forced_held_json,&m.forced_held,.JSON,context.temp_allocator)!=nil do return {},legacy_storage_error()
+    }
     raw,merr:=json.marshal(m,allocator=context.temp_allocator)
     if merr!=nil || len(raw)>contracts.OWNER_MIGRATION_MANIFEST_MAX do return {},legacy_storage_error()
     return domain.Legacy_Migration_Export{string(raw),contracts.owner_payload_digest(string(raw)),documents[:]},{}
@@ -274,4 +397,31 @@ legacy_migration_aborted :: proc(ctx:rawptr,account,migration:string) -> (chain,
     if !ok do return "","",false,legacy_storage_error()
     if len(rows)!=1 do return "","",false,{}
     return rows[0][0],rows[0][1],true,{}
+}
+
+// Every legacy chain of the account (oldest id first, keyset after `after`),
+// with its import state. Bounded by limit (1..200).
+legacy_chain_list :: proc(ctx:rawptr,account,after:string,limit:int) -> ([]domain.Legacy_Chain_Row,domain.Domain_Error) {
+    impl:=(^Taskchain_Repo_SQLite)(ctx)
+    n:=clamp(limit,1,200)
+    rows,ok:=legacy_metadata(impl.conn,fmt.tprintf(`SELECT c.chain_id,c.title,c.status,c.work_revision,(SELECT count(*) FROM tasks t WHERE t.chain_id=c.chain_id),
+        COALESCE(m.state,''),COALESCE(m.migration_id,''),COALESCE(m.owner_bridge_id,'')
+      FROM task_chains c LEFT JOIN owner_legacy_migrations m ON m.chain_id=c.chain_id AND m.account_id=c.owner_user_id
+      WHERE c.owner_user_id=?1 AND c.chain_id>?2 ORDER BY c.chain_id LIMIT %d`,n),8,account,after)
+    if !ok do return nil,legacy_storage_error()
+    out:=make([]domain.Legacy_Chain_Row,len(rows),context.temp_allocator)
+    for r,i in rows {
+        revision,_:=strconv.parse_i64(r[3]);tasks,_:=strconv.parse_i64(r[4])
+        state:=r[5] if r[5]!="" else "none"
+        out[i]=domain.Legacy_Chain_Row{chain_id=r[0],title=r[1],status=r[2],work_revision=revision,task_count=tasks,state=state,migration_id=r[6],owner_bridge_id=r[7]}
+    }
+    return out,{}
+}
+
+// TEST SEAM: legacy fixtures. Migration 213 refuses every new task_chains and
+// tasks row (Hub chains are removed). Tests that need a legacy Hub chain to
+// import seed it on a test database after dropping those two triggers.
+// Production code never calls this.
+legacy_fixture_allow_seeding :: proc(conn:^Conn) -> bool {
+    return exec(conn,"DROP TRIGGER IF EXISTS hub_chains_removed_task_chains_insert; DROP TRIGGER IF EXISTS hub_chains_removed_tasks_insert;")
 }

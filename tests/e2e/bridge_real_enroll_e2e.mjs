@@ -415,6 +415,31 @@ c.commit()
           expect(!restarted.refused && !restarted.timeout, 'isolated owner restarted');
           S.runA = restarted.child; S.runALog = restarted.log;
         },
+        // Fixture control only: seed pre-removal legacy Hub chain rows straight
+        // into the throwaway Hub DB (migration 213 refuses new task_chains/tasks
+        // rows, so its two insert triggers are dropped for the seed and then
+        // recreated exactly). Statements are [sql, params] pairs.
+        seedLegacy: async (statements) => {
+          const seeded = spawnSync('python3', ['-c', `import sqlite3,sys,json
+c=sqlite3.connect(sys.argv[1])
+c.execute("BEGIN IMMEDIATE")
+c.execute("DROP TRIGGER IF EXISTS hub_chains_removed_task_chains_insert")
+c.execute("DROP TRIGGER IF EXISTS hub_chains_removed_tasks_insert")
+for sql,params in json.loads(sys.argv[2]): c.execute(sql,params)
+c.execute("CREATE TRIGGER hub_chains_removed_task_chains_insert BEFORE INSERT ON task_chains BEGIN SELECT RAISE(ABORT,'hub_chains_removed'); END")
+c.execute("CREATE TRIGGER hub_chains_removed_tasks_insert BEFORE INSERT ON tasks BEGIN SELECT RAISE(ABORT,'hub_chains_removed'); END")
+c.commit()
+`, path.join(ROOT, 'hub-a', 'hub.db'), JSON.stringify(statements)], { encoding: 'utf8' });
+          if (seeded.status !== 0) throw new Error('legacy fixture seed failed: ' + seeded.stderr);
+        },
+        queryHub: async (sql, params = []) => {
+          const probe = spawnSync('python3', ['-c', `import sqlite3,sys,json
+c=sqlite3.connect(sys.argv[1])
+print(json.dumps(c.execute(sys.argv[2],json.loads(sys.argv[3])).fetchall()))
+`, path.join(ROOT, 'hub-a', 'hub.db'), sql, JSON.stringify(params)], { encoding: 'utf8' });
+          if (probe.status !== 0) throw new Error('hub query failed: ' + probe.stderr);
+          return JSON.parse(probe.stdout);
+        },
         registryFixture: async (action, chainId) => {
           // Fixture control only: no live DBs or credentials are accepted here.
           if (action === 'publish') {

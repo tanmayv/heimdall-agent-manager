@@ -1,6 +1,6 @@
 // R4b: Bridge-owned chains are listed from the owner registry (paged, sealed
-// titles opened client-side); a migrated chain shows once, as an owner chain,
-// and its frozen Hub copy only lends its project placement.
+// titles opened client-side). The registry is the only chain list: the Hub
+// task-chain listing is gone.
 //
 // RUN: node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_owner_chain_list_test.ts
 
@@ -8,10 +8,8 @@ import './helpers/vaultEndpointHarness.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ownerTestSession, registryRow } from './helpers/ownerFakeRelay.ts';
-import { loadOwnerChainSummaries, mergeOwnerChains, ownerChainListItem } from '../src/ui/api/ownerChains.ts';
+import { loadOwnerChainSummaries, ownerChainListItem } from '../src/ui/api/ownerChains.ts';
 import { filterOwnerChains } from '../src/ui/components/taskchain/OwnerChainsGroup.tsx';
-import { homeChainsFromFlatList, homeChainsWithOwners } from '../src/ui/components/home/homeChainSearchLogic.ts';
-import { isOwnerHeldChain, parseChainAuthority } from '../src/ui/api/chainAuthority.ts';
 import { clearKeyringSession } from '../src/ui/utils/vaultKeyringSession.ts';
 
 test('owner chains are listed across registry pages with decrypted chain and task titles', async () => {
@@ -54,63 +52,6 @@ test('owner chains are listed across registry pages with decrypted chain and tas
   assert.equal(item.taskCount, 2);
   assert.equal(item.owner.ownerBridgeId, bridgeId);
   clearKeyringSession();
-});
-
-test('a migrated chain shows once as an owner chain and keeps its Hub project', async () => {
-  const owner = { chainId: 'moved', ownerBridgeId: 'brg', bridgeName: 'Home', online: true, title: 'Moved chain', description: '', sealed: false, tasks: [], projectId: '', projectName: '', migrated: false };
-  const native = { ...owner, chainId: 'native', title: 'Native chain' };
-  const hub = [
-    { chainId: 'moved', projectId: 'proj_1', projectName: 'Apollo', title: 'frozen copy' },
-    { chainId: 'legacy', projectId: 'proj_2', projectName: 'Zeus', title: 'Hub chain' },
-  ];
-  const merged = mergeOwnerChains(hub, [owner, native]);
-  assert.deepEqual(merged.hub.map((c) => c.chainId), ['legacy'], 'the frozen Hub copy is dropped');
-  const moved = merged.owners.find((o) => o.chainId === 'moved')!;
-  assert.equal(moved.migrated, true);
-  assert.equal(moved.projectId, 'proj_1');
-  assert.equal(moved.projectName, 'Apollo');
-  assert.equal(merged.owners.find((o) => o.chainId === 'native')!.migrated, false);
-
-  const home = homeChainsWithOwners(
-    [{ chainId: 'moved', title: 'frozen', status: 'active', projectId: 'proj_1', projectName: 'Apollo', updatedAt: '2026-01-01' },
-     { chainId: 'legacy', title: 'Hub chain', status: 'active', projectId: '', projectName: '', updatedAt: '2026-01-02' }],
-    [owner, native],
-  );
-  assert.deepEqual(home.map((c) => c.chainId), ['moved', 'native', 'legacy'], 'owner chains first, each chain once');
-  assert.equal(home[0].title, 'Moved chain');
-  assert.equal(home[0].projectName, 'Apollo');
-  assert.deepEqual(home[0].owner, { bridgeId: 'brg', bridgeName: 'Home', online: true });
-  assert.equal(home[2].owner, undefined);
-});
-
-test('a Hub row marked owner-held stays hidden even when the owner registry tombstones the chain', () => {
-  const authority = { kind: 'owner' as const, bridgeId: 'brg' };
-  const hub = [
-    { chainId: 'moved', projectId: 'proj_1', projectName: 'Apollo', title: 'frozen copy', authority },
-    { chainId: 'gone', projectId: 'proj_1', projectName: 'Apollo', title: 'frozen copy of a deleted chain', authority },
-    { chainId: 'legacy', projectId: 'proj_2', projectName: 'Zeus', title: 'Hub chain' },
-  ];
-  const owner = { chainId: 'moved', ownerBridgeId: 'brg', bridgeName: 'Home', online: true, title: 'Moved chain', description: '', sealed: false, tasks: [], projectId: '', projectName: '', migrated: false };
-  const merged = mergeOwnerChains(hub, [owner]);
-  assert.deepEqual(merged.hub.map((c) => c.chainId), ['legacy'], 'the tombstoned chain\'s frozen copy is not listed again');
-  assert.equal(merged.owners[0].projectId, 'proj_1', 'the live owner row still lends its Hub project');
-  assert.deepEqual(mergeOwnerChains(hub, []).hub.map((c) => c.chainId), ['legacy'], 'no registry rows at all: frozen copies stay hidden');
-
-  const flat = homeChainsFromFlatList([
-    { chainId: 'gone', title: 'frozen', status: 'active', projectId: 'proj_1', projectName: 'Apollo', updatedAt: '2026-01-02', coordinatorAgentInstanceId: '', taskCount: 0, completedTaskCount: 0, userValidationCount: 0, hasUserValidation: false, isPinned: false, pinnedAt: '', authority },
-    { chainId: 'legacy', title: 'Hub chain', status: 'active', projectId: '', projectName: '', updatedAt: '2026-01-01', coordinatorAgentInstanceId: '', taskCount: 0, completedTaskCount: 0, userValidationCount: 0, hasUserValidation: false, isPinned: false, pinnedAt: '' },
-  ]);
-  assert.deepEqual(flat[0].authority, authority, 'the flat home list keeps the authority');
-  assert.deepEqual(homeChainsWithOwners(flat, []).map((c) => c.chainId), ['legacy']);
-  assert.deepEqual(homeChainsWithOwners(flat, [owner]).map((c) => c.chainId), ['moved', 'legacy']);
-});
-
-test('the Hub chain authority parses only the owner kind', () => {
-  assert.deepEqual(parseChainAuthority({ kind: 'owner', bridge_id: 'brg_1' }), { kind: 'owner', bridgeId: 'brg_1' });
-  assert.equal(parseChainAuthority(undefined), undefined);
-  assert.equal(parseChainAuthority({ kind: 'hub' }), undefined);
-  assert.equal(isOwnerHeldChain({ authority: parseChainAuthority({ kind: 'owner', bridge_id: 'b' }) }), true);
-  assert.equal(isOwnerHeldChain({}), false);
 });
 
 test('chain list filters apply to owner chains where the registry allows', () => {

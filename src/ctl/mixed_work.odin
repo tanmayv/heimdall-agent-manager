@@ -181,11 +181,3 @@ Ctl_Task_Depend_Workflow_Body :: struct {
 	dependent:    Ctl_Work_Ref `json:"dependent"`,
 	prerequisite: Ctl_Work_Ref `json:"prerequisite"`,
 }
-
-ctl_task_depend_workflow_body :: proc(chain_id, task_id, run_id: string) -> Ctl_Task_Depend_Workflow_Body {
-	return {chain_id = chain_id, dependent = {kind = "task", id = task_id}, prerequisite = {kind = "workflow_run", id = run_id}}
-}
-
-ctl_task_depend_workflow_params :: proc(chain_id, task_id, run_id: string) -> string {
-	return ctl_json_text(ctl_task_depend_workflow_body(chain_id, task_id, run_id), context.temp_allocator)
-}

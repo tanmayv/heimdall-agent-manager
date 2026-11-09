@@ -223,7 +223,7 @@ migration_import :: proc(s:^Store,input:Migration_Import_Input,device,owner_key:
     seq:=comment_base+i64(len(migration_rows(rows,"comment")))
     stamp:=fmt.tprintf("%d",seq)
     summary:=make(map[string]i64)
-    if code:=migration_project(s,chain,principal,field(selection,"key_id"),migration,rows,seq,comment_base,now,kr,&summary);code!="ok" do return fail(code)
+    if code:=migration_project(s,chain,principal,field(selection,"key_id"),migration,rows,seq,comment_base,now,kr,&summary,manifest.forced_held);code!="ok" do return fail(code)
     if _,ok=query(s.db,"INSERT INTO chain_genesis(chain_id,creation_op,genesis_digest,genesis_json,import_manifest_hash) VALUES(?,?,?,?,?)",chain,migration,genesis_digest,input.genesis_raw,manifest_digest);!ok do return fail("storage_error")
     if code:=migration_native_history(s,chain,rows,seq,&summary);code!="ok" do return fail(code)
 
@@ -257,7 +257,7 @@ migration_import :: proc(s:^Store,input:Migration_Import_Input,device,owner_key:
 
 // Live projection. Titles, descriptions and bodies are decrypted from the
 // legacy vault ciphertext; IDs and authors are the legacy ones.
-migration_project :: proc(s:^Store,chain,principal,key_id,migration:string,rows:Migration_Rows,seq,comment_base,now:i64,kr:^vault.Vault_Keyring,summary:^map[string]i64) -> string {
+migration_project :: proc(s:^Store,chain,principal,key_id,migration:string,rows:Migration_Rows,seq,comment_base,now:i64,kr:^vault.Vault_Keyring,summary:^map[string]i64,forced_held:[]string={}) -> string {
     stamp:=fmt.tprintf("%d",seq)
     c:=migration_rows(rows,"chain")[0]
     title,t_ok:=migration_plain(migration_text(c,"title"),kr)
@@ -275,9 +275,10 @@ migration_project :: proc(s:^Store,chain,principal,key_id,migration:string,rows:
     if defaults:=migration_text(c,"defaults_json");defaults!="" && defaults!="{}" {
         if _,ok:=query(s.db,"INSERT INTO local_chain_defaults_versions VALUES(?,?,?)",chain,stamp,defaults);!ok do return "invalid_content"
     }
-    // Workflow runs are archival on the owner. Their current execution state
-    // decides whether a gated ticket or a stage task could become dispatchable
-    // here; the Hub refuses those chains before freeze, and so does the owner.
+    // Workflow runs are archival on the owner. The Hub import cancels every
+    // live execution and releases gates on runs that never succeeded (their
+    // tickets arrive force-held); an active gate on an unsucceeded run is
+    // still refused here as a defence.
     current:=make(map[string]string)
     for r in migration_rows(rows,"workflow_run") do current[migration_text(r,"run_id")]=migration_text(r,"current_execution_no")
     execution:=make(map[string]string)
@@ -294,10 +295,6 @@ migration_project :: proc(s:^Store,chain,principal,key_id,migration:string,rows:
         if !contracts.owner_field_valid(task,"id") do return "invalid_content"
         run,stage_key,kind:=migration_text(t,"workflow_run_id"),migration_text(t,"stage_key"),migration_text(t,"kind")
         stage:=run!="" || stage_key!="" || kind=="gate"
-        if stage && migration_text(t,"state")!="done" && migration_text(t,"state")!="cancelled" {
-            live:=execution[fmt.tprintf("%s/%s",run,migration_text(t,"workflow_execution_no"))]
-            if run=="" || live=="draft" || live=="pending" || live=="running" do return "operation_conflict"
-        }
         task_title,a:=migration_plain(migration_text(t,"title"),kr)
         body,b:=migration_plain(migration_text(t,"description"),kr)
         if !a || !b do return "invalid_content"
@@ -318,15 +315,24 @@ migration_project :: proc(s:^Store,chain,principal,key_id,migration:string,rows:
             if _,ok:=query(s.db,"INSERT INTO task_requirements VALUES(?,?,1,?,'',?,?)",chain,task,brief,principal,migration);!ok do return "storage_error"
         } else do summary^["brief_not_imported"]+=1
         // Carry the native terminal/blocked state into live lifecycle and
-        // controls (R2 follow-up). Busy states were refused before freeze.
+        // controls (R2 follow-up). The Hub import neutralized busy work: a
+        // force-held task (in progress, or released from a workflow gate) is
+        // imported held; a task in review is carried over in review.
         native_state,blocked:=migration_text(t,"state"),migration_text(t,"blocked_on_json")
+        force_held:=slice.contains(forced_held,task)
         switch {
         case native_state=="done":
             if _,ok:=query(s.db,"INSERT INTO lifecycle_state(chain_id,task_id,state,attempt) VALUES(?,?,'done',?)",chain,task,migration_text(t,"attempt_no"));!ok do return "storage_error"
         case native_state=="cancelled":
             if _,ok:=query(s.db,"INSERT INTO local_controls VALUES(?,?,'cancelled','ready','imported: cancelled in legacy chain','')",chain,task);!ok do return "storage_error"
-        case native_state=="in_progress" || native_state=="in_review":
-            return "operation_conflict"
+        case stage:
+            // Archived stage history: never dispatchable, nothing to carry.
+        case force_held || native_state=="in_progress":
+            if _,ok:=query(s.db,"INSERT INTO local_controls VALUES(?,?,'held','ready','imported: force-held by the legacy import (was in progress)','')",chain,task);!ok do return "storage_error"
+            summary^["task_force_held"]+=1
+        case native_state=="in_review":
+            if _,ok:=query(s.db,"INSERT INTO lifecycle_state(chain_id,task_id,state,attempt) VALUES(?,?,'in_review',?)",chain,task,migration_text(t,"attempt_no"));!ok do return "storage_error"
+            summary^["task_in_review_carried"]+=1
         case blocked!="":
             reason,waiting:="imported: blocked in legacy chain","human"
             if v,valid:=contracts.owner_content_document(blocked);valid {

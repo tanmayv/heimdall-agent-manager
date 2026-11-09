@@ -22,7 +22,7 @@
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import type { ChainProjectGroup } from '../../../api/endpoints/tasks';
+import type { ChainProjectGroup } from '../../../api/chainListTypes';
 import {
   selectSearchChains,
   setBulkChainTitles,
@@ -38,7 +38,6 @@ import { VaultText, useDecryptedText } from '../../vault/VaultText';
 import { Icon, StatusDot, type IconName } from '../primitives';
 import { runtimeStatusToTone } from './RuntimeChip';
 import { useDialogA11y } from '../composites/useDialogA11y';
-import { resolveChainConversationAgent } from '../../../utils/chainConversation';
 import { THEMES } from '../../../theme/registry';
 import {
   type PaletteConversation,
@@ -449,15 +448,6 @@ export function CommandPalette({
   }, [activeIndex]);
 
   function activate(result: PaletteResult) {
-    // A chain row without a known coordinator would land on the chain page:
-    // resolve its coordinator so the chain opens as its conversation.
-    if (result.kind === 'chain' && result.route?.startsWith('/chains/')) {
-      onClose();
-      void resolveChainConversationAgent(dispatch, result.chainId).then((coordinator) => {
-        onNavigate(coordinator ? taskChainRoute({ chainId: result.chainId, coordinatorAgentInstanceId: coordinator }) : result.route);
-      });
-      return;
-    }
     if (result.kind === 'navigate' || result.kind === 'conversation' || result.kind === 'chain') {
       if (result.route) {
         onNavigate(result.route);

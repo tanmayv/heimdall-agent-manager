@@ -92,8 +92,8 @@ async function endpointFixture(run: (ctx: any) => Promise<void>) {
 test('real send endpoint encrypts body and source together; no plaintext quote metadata or worker send', async () => {
   await endpointFixture(async ({ send, requests, key }) => {
     const result = await send(); assert.equal(result.error, undefined);
-    assert.equal(requests.length, 2);
-    assert.match(requests[0].url, /task-chains\/chain1\/conversation/);
+    assert.equal(requests.length, 1, 'no Hub chain conversation lookup before the send');
+    assert.doesNotMatch(requests[0].url, /task-chains/);
     const post = requests.find((r: any) => r.method === 'POST');
     assert.match(post.url, /chats\/coordchat\/messages/);
     assert.deepEqual(Object.keys(post.body).sort(), ['artifact_ids', 'body']);
@@ -101,24 +101,6 @@ test('real send endpoint encrypts body and source together; no plaintext quote m
     assert.equal(await decryptVaultText(post.body.body, key), quotedMessageBody('Please explain', [quote()]));
     assert.deepEqual(post.body.artifact_ids, ['art1']);
     assert.equal(JSON.stringify(requests).includes(quote().selectedText), false);
-  });
-});
-test('changed coordinator rejects before POST and leaves pending chips intact', async () => {
-  await endpointFixture(async ({ send, requests, store, setCoordinator }) => {
-    store.dispatch(addComposerQuote({ target: 'chain:chain1', quote: quote() }));
-    setCoordinator('replacement');
-    const result = await send(); assert.match(result.error.error, /coordinator changed/);
-    assert.equal(requests.filter((r: any) => r.method === 'POST').length, 0);
-    assert.equal(store.getState().composerContext.byTarget['chain:chain1'].length, 1);
-  });
-});
-test('lock during coordinator validation purges chips and prevents plaintext or stale encrypted POST', async () => {
-  await endpointFixture(async ({ send, requests, store, setBeforeReturn }) => {
-    store.dispatch(addComposerQuote({ target: 'chain:chain1', quote: quote() }));
-    setBeforeReturn(() => store.dispatch(keyringCleared()));
-    const result = await send(); assert.equal(result.data, undefined);
-    assert.equal(requests.filter((r: any) => r.method === 'POST').length, 0);
-    assert.deepEqual(store.getState().composerContext.byTarget, {});
   });
 });
 test('locked quote send fails before any network call', async () => {

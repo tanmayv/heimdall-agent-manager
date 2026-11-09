@@ -422,47 +422,6 @@ test('reconfiguration progress is event-driven: one GET per phase event, none on
   } finally { net.restore(); }
 });
 
-test('task facet_changed refetches only that (task, attempt, kind) facet; other facets stay cached', async () => {
-  const net = installRoutes({
-    '/facets/output': { body: { data: { kind: 'output', body: { summary: 'x' } } } },
-    '/facets/verify': { body: { data: { kind: 'verify', body: { exit_code: 0 } } } },
-  });
-  try {
-    const store = await makeStore();
-    const { tasksApi } = await import('../src/ui/api/endpoints/tasks.ts');
-    const { handleUserWsEvent } = await import('../src/ui/api/wsInvalidation.ts');
-    const subs = [
-      store.dispatch(tasksApi.endpoints.fetchTaskFacet.initiate({ chainId: 'c1', taskId: 't1', attemptNo: 1, kind: 'output' })),
-      store.dispatch(tasksApi.endpoints.fetchTaskFacet.initiate({ chainId: 'c1', taskId: 't1', attemptNo: 1, kind: 'verify' })),
-    ];
-    await Promise.all(subs);
-    net.hits.length = 0;
-    handleUserWsEvent(store.dispatch, { type: 'resource_changed', resource: 'task', resource_id: 't1', change: 'facet_changed', summary: { task_id: 't1', chain_id: 'c1', attempt_no: 1, kind: 'output' } });
-    await settle();
-    assert.deepEqual(net.hits, ['GET /api/v1/task-chains/c1/tasks/t1/attempts/1/facets/output']);
-    for (const s of subs) s.unsubscribe();
-  } finally { net.restore(); }
-});
-
-test('workflow stage change refetches the chain workflow runs once', async () => {
-  const net = installRoutes({
-    '/task-chains/c1/workflow-runs': { body: { data: { runs: [{ run_id: 'wr1', stages: [] }], work_revision: 1 } } },
-  });
-  try {
-    const store = await makeStore();
-    const { workflowRunsApi } = await import('../src/ui/api/endpoints/workflowRuns.ts');
-    const { handleUserWsEvent } = await import('../src/ui/api/wsInvalidation.ts');
-    const sub = store.dispatch(workflowRunsApi.endpoints.fetchChainWorkflowRuns.initiate({ chainId: 'c1' }));
-    await sub;
-    net.hits.length = 0;
-    handleUserWsEvent(store.dispatch, { type: 'resource_changed', resource: 'workflow_run', resource_id: 'wr1', change: 'stage_changed', summary: { workflow_run_id: 'wr1', chain_id: 'c1', stage_key: 's2' } });
-    handleUserWsEvent(store.dispatch, { type: 'resource_changed', resource: 'task_chain', resource_id: 'c1', change: 'workflow_started', summary: { task_chain_id: 'c1', chain_id: 'c1', workflow_run_id: 'wr1' } });
-    await settle();
-    assert.equal(count(net.hits, (h) => h.includes('/workflow-runs')), 1, `one coalesced fetch; saw ${net.hits.join(', ')}`);
-    sub.unsubscribe();
-  } finally { net.restore(); }
-});
-
 test('shell retention prune (empty resource_id, owner-scoped) refreshes the shell lists', async () => {
   const net = installRoutes({ '/shells': { body: { data: { sessions: [] } } } });
   try {
@@ -540,11 +499,10 @@ test('covered steady polls stay retired in their callers', () => {
   assert.match(appShell, /useGetAgentsLiveQuery\(undefined, \{ refetchOnFocus: true \}\)/);
   const pane = read('src/ui/components/workbench/AgentChatPane.tsx');
   const paneQueries = pane.match(/use(FetchConversation|FetchConversationMessages|FetchAgentInstance|GetAgentsLive|ListBridges|FetchTaskChainDetail)Query\([^;]*?\);/gs) || [];
-  assert.ok(paneQueries.length >= 6, `found ${paneQueries.length} pane queries`);
+  assert.ok(paneQueries.length >= 5, `found ${paneQueries.length} pane queries`);
   for (const q of paneQueries) assert.doesNotMatch(q, /pollingInterval/, `pane query still polls: ${q.slice(0, 80)}`);
   // The only pane poll left is the active-operation fallback, and it is 0 while idle.
   assert.match(pane, /RECONFIGURATION_ACTIVE_FALLBACK_MS\)\s*\n\s*: 0,/);
-  assert.doesNotMatch(read('src/ui/components/taskchain/TaskChainOverview.tsx'), /pollingInterval: 5000/);
   assert.doesNotMatch(read('src/ui/components/auxiliary/AuxDock.tsx'), /pollingInterval/);
   assert.doesNotMatch(read('src/ui/components/auxiliary/useAgentAuxContext.ts'), /pollingInterval/);
 });

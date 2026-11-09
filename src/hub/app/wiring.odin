@@ -23,8 +23,6 @@ import project_service "odin_test:hub/service/project"
 import provider_service "odin_test:hub/service/provider"
 import push_service "odin_test:hub/service/push"
 import search_service "odin_test:hub/service/search"
-import taskchain_service "odin_test:hub/service/taskchain"
-import taskv2 "odin_test:hub/service/taskv2"
 import user_service "odin_test:hub/service/user"
 import billing_service "odin_test:hub/service/billing"
 import vault_directory_service "odin_test:hub/service/vault_directory"
@@ -98,8 +96,6 @@ App_Graph :: struct {
 	agents: agent_service.Agent_Service,
 	projects: project_service.Project_Service,
 	content: content_service.Content_Service,
-	taskchains: taskchain_service.Taskchain_Service,
-	task_engine: taskv2.Service,
 	search: search_service.Search_Service,
 	push: push_service.Push_Service,
 	auth: auth_service.Auth_Service,
@@ -112,7 +108,7 @@ App_Graph :: struct {
 	agent_handlers: http.Agent_Handlers,
 	project_handlers: http.Project_Handlers,
 	content_handlers: http.Content_Handlers,
-	taskchain_handlers: http.Taskchain_Handlers,
+	agents_live_handlers: http.Agents_Live_Handlers,
 	search_handlers: http.Search_Handlers,
 	skills_handlers: http.Skills_Handlers,
 	push_handlers: http.Push_Handlers,
@@ -139,43 +135,6 @@ App_Graph :: struct {
 	action_mutex: sync.Mutex,
 	action_bridge_versions: map[string]int,
 	router: http.Router,
-}
-
-// task_engine_on_tasks_changed is the engine → taskchain callback: a task of the
-// chain crossed into or out of a terminal state, so the chain's own status may
-// need to follow (auto-complete when every task is done; reopen on a reopen).
-task_engine_on_tasks_changed :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner: domain.User_ID) {
-	graph := (^App_Graph)(ctx)
-	if graph == nil do return
-	_, _, _ = taskchain_service.sync_chain_status_from_tasks(&graph.taskchains, chain_id, owner)
-}
-
-task_engine_on_instance_terminal :: proc(ctx: rawptr, instance_id: string) {
-	taskv2.on_instance_terminal((^taskv2.Service)(ctx), instance_id)
-}
-
-task_engine_on_instance_activity :: proc(ctx: rawptr, instance_id, activity_status: string) {
-	taskv2.on_instance_activity((^taskv2.Service)(ctx), instance_id, activity_status)
-}
-
-task_engine_on_user_stopped :: proc(ctx: rawptr, instance_id: string) {
-	taskv2.on_instance_user_stopped((^taskv2.Service)(ctx), instance_id)
-}
-
-task_engine_on_start_success :: proc(ctx: rawptr, inst: domain.Agent_Instance) {
-	taskv2.on_start_success((^taskv2.Service)(ctx), inst)
-}
-
-// task_engine_on_instance_changed runs after a taskv2 commit that rewrote an
-// instance's current-task pointer; it re-reads the committed row.
-task_engine_on_instance_changed :: proc(ctx: rawptr, instance_id, change: string) {
-	graph := (^App_Graph)(ctx)
-	if graph == nil do return
-	inst, found, _ := iface.agent_get_instance(&graph.repos.agents, instance_id)
-	if !found do return
-	defer domain.agent_instance_destroy(&inst)
-	if change == "created" do http.publish_instance_created(&graph.event_bus, inst)
-	else do http.publish_instance_changed(&graph.event_bus, inst, change)
 }
 
 // agents_on_reconfiguration_changed publishes the reconfiguration hint and, on
@@ -378,32 +337,6 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.content = content_service.new_content_service_with_runtime(&graph.repos.content, &graph.repos.agents, &graph.repos.bridges, &graph.repos.projects, &graph.repos.taskchains, bridge_command_sink, &graph.clock, &graph.ids)
 	graph.content.agent_configuration_service = &graph.agents
 	graph.content.title_nudge_cooldown_seconds = config.title_nudge_cooldown_seconds
-	graph.taskchains = taskchain_service.new_taskchain_service_with_runtime(&graph.repos.taskchains, &graph.repos.agents, bridge_command_sink, &graph.clock, &graph.ids)
-	graph.taskchains.agent_service = &graph.agents
-	graph.taskchains.event_bus = &graph.event_bus
-	// Task System v2 engine: events + fold + leases + timers + matcher. Every
-	// chain/task mutation in the taskchain service funnels into it; it calls back
-	// (on_tasks_changed) so the chain auto-completes when its last task is done.
-	graph.task_engine = taskv2.new_service(&graph.repos.taskchains, &graph.repos.agents, &graph.repos.bridges, &graph.clock, &graph.ids)
-	graph.task_engine.uow_factory = &graph.uow_factory
-	graph.task_engine.agent_service = &graph.agents
-	graph.task_engine.bridge_command_sink = bridge_command_sink
-	graph.task_engine.event_bus = &graph.event_bus
-	graph.task_engine.on_tasks_changed = task_engine_on_tasks_changed
-	graph.task_engine.on_tasks_changed_ctx = rawptr(graph)
-	graph.task_engine.on_instance_changed = task_engine_on_instance_changed
-	graph.task_engine.on_instance_changed_ctx = rawptr(graph)
-	taskchain_service.set_engine(&graph.taskchains, &graph.task_engine)
-	taskchain_service.set_uow_factory(&graph.taskchains, &graph.uow_factory)
-	// Instance lifecycle → engine: ONE chokepoint for every death path
-	// (taskv2.on_instance_terminal), busy/idle activity, and start-success.
-	graph.agents.hooks = agent_service.Lifecycle_Hooks{
-		ctx              = rawptr(&graph.task_engine),
-		on_terminal      = task_engine_on_instance_terminal,
-		on_activity      = task_engine_on_instance_activity,
-		on_start_success = task_engine_on_start_success,
-		on_user_stopped  = task_engine_on_user_stopped,
-	}
 	graph.agents.resource_events = agent_service.Resource_Event_Hooks{
 		ctx                        = rawptr(graph),
 		on_reconfiguration_changed = agents_on_reconfiguration_changed,
@@ -483,11 +416,6 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.shell_session_service.entitlements = billing_service.entitlement_lookup(&graph.billing)
 	shell_session_svc.shell_metrics_set_service(&graph.shell_session_service)
 	graph.shell_session_service.live_agents = &graph.agents
-	// REQ-SHELL-9 trigger A: a closed chain reaps its servers. Assigned HERE, after the
-	// shell-session service is constructed, rather than next to the other two taskchain
-	// dependencies at their construction above — graph.taskchains is built before this
-	// service exists, so wiring it there would store a pointer to a zero value.
-	graph.taskchains.shell_sessions = &graph.shell_session_service
 	graph.shell_session_stream_handlers = http.Shell_Session_Stream_Handlers{
 		entitlements = billing_service.entitlement_lookup(&graph.billing),
 		auth                = &graph.auth,
@@ -531,7 +459,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		bridges = &graph.bridges,
 		agents = &graph.agents,
 		content = &graph.content,
-		taskchains = &graph.taskchains,
+		chains = &graph.repos.taskchains,
 		projects = &graph.projects,
 		event_bus = &graph.event_bus,
 		bridge_runtime_registry = &graph.bridge_runtime_registry,
@@ -539,12 +467,9 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		lsp_sessions = &graph.lsp_session_registry,
 		providers = &graph.providers,
 		bridge_logs = &graph.bridge_logs,
-		task_engine = &graph.task_engine,
 		vault = &graph.vault_directory,
 		experiments = &graph.experiment_repo,
 	}
-	graph.task_engine.vcs_show_file = http.bridge_vcs_show_file_callback
-	graph.task_engine.vcs_show_file_ctx = rawptr(&graph.bridge_handlers)
 	bridge_log_service.start(&graph.bridge_logs)
 	graph.agent_handlers = http.Agent_Handlers{
 		entitlements = billing_service.entitlement_lookup(&graph.billing),
@@ -558,13 +483,13 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	}
 	graph.project_handlers = http.Project_Handlers{auth = &graph.auth, projects = &graph.projects}
 	graph.content_handlers = http.Content_Handlers{auth = &graph.auth, agents = &graph.agents, content = &graph.content, event_bus = &graph.event_bus}
-	graph.taskchain_handlers = http.Taskchain_Handlers{auth = &graph.auth, taskchains = &graph.taskchains, agents = &graph.agents, content = &graph.content, projects = &graph.projects, event_bus = &graph.event_bus, task_engine = &graph.task_engine, shell_sessions = &graph.shell_session_service}
+	graph.agents_live_handlers = http.Agents_Live_Handlers{auth = &graph.auth, agents = &graph.agents, projects = &graph.projects}
 	graph.search_handlers = http.Search_Handlers{auth = &graph.auth, search = &graph.search}
 	graph.skills_handlers = http.Skills_Handlers{auth = &graph.auth}
 	graph.push_handlers = http.Push_Handlers{auth = &graph.auth, push = &graph.push, vapid_public_key = config.vapid_public_key}
 	graph.device_auth_handlers = http.Device_Auth_Handlers{service = &graph.device_auth, auth = &graph.auth, push = &graph.push, public_app_origin = config.public_app_origin, ui_origin = config.ui_origin, vault = &graph.vault_directory, event_bus = &graph.event_bus, pairing_hub_origins = config.pairing_hub_origin_list, bridges = &graph.bridges}
 	graph.vault_directory_handlers = http.Vault_Directory_Handlers{auth = &graph.auth, vault = &graph.vault_directory, device_auth = &graph.device_auth, bridges = &graph.bridges, event_bus = &graph.event_bus, push = &graph.push, public_app_origin = config.public_app_origin}
-	graph.agent_action_handlers = http.Agent_Action_Handlers{auth = &graph.auth, agents = &graph.agents, bridges = &graph.bridges, content = &graph.content, taskchains = &graph.taskchains, search = &graph.search, event_bus = &graph.event_bus, push = &graph.push, public_app_origin = config.public_app_origin, task_engine = &graph.task_engine}
+	graph.agent_action_handlers = http.Agent_Action_Handlers{auth = &graph.auth, agents = &graph.agents, bridges = &graph.bridges, content = &graph.content, search = &graph.search, event_bus = &graph.event_bus, push = &graph.push, public_app_origin = config.public_app_origin}
 	graph.action_bridge_versions = make(map[string]int)
 	graph.action_handlers = http.Action_Handlers{
 		auth = &graph.auth,
@@ -586,7 +511,6 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.cards = card_service.new_card_service(
 		&graph.repos.cards,
 		&graph.repos.projects,
-		&graph.taskchains,
 		&graph.content,
 		&graph.projects,
 		&graph.agents,
@@ -599,9 +523,6 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	// message cards in step with their sources (write-through), so wire it into
 	// the services that own those sources.
 	card_service.init_attention(&graph.cards, &graph.repos.attention)
-	taskchain_service.set_attention_notifier(&graph.taskchains, &graph.cards.attention_notifier)
-	// The task engine re-projects the attention card of every task an event touched.
-	graph.task_engine.attention = &graph.cards.attention_notifier
 	content_service.set_attention_notifier(&graph.content, &graph.cards.attention_notifier)
 	events.init_attention_debouncer(&graph.attention_events, &graph.event_bus)
 	// Agent blockers change the 'Needs you' deck too (kind agent_blocker).
@@ -619,9 +540,6 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.agent_action_handlers.cards = &graph.cards
 	graph.agent_action_handlers.experiments = &graph.experiment_repo
 	graph.router = http.new_router()
-	// R4a: writes to an owner-held chain answer owner_authority before any handler.
-	graph.router.guard = http.owner_authority_guard
-	graph.router.guard_ctx = rawptr(&graph.taskchain_handlers)
 	if config.mcp_oauth_spike {
 		mcp_service.init(&graph.mcp_spike)
 		graph.mcp_spike_handlers = {auth = &graph.auth, store = &graph.mcp_spike, origin = strings.trim_right(config.ui_origin, "/")}
@@ -793,7 +711,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/agents", rawptr(&graph.agent_handlers), http.create_agent_handler)
 	// Registered BEFORE the /agents/* wildcard so the literal "live" tree endpoint
 	// (project -> live-chains -> agents) is not swallowed by agent_detail_handler.
-	http.router_add(&graph.router, "GET", "/api/v1/agents/live", rawptr(&graph.taskchain_handlers), http.agents_live_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/agents/live", rawptr(&graph.agents_live_handlers), http.agents_live_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agents/*", rawptr(&graph.agent_handlers), http.agent_detail_handler)
 	http.router_add(&graph.router, "PATCH", "/api/v1/agents/*", rawptr(&graph.agent_handlers), http.update_agent_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agents/*/archive", rawptr(&graph.agent_handlers), http.archive_agent_handler)
@@ -838,9 +756,6 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/projects/*/vcs/commit", rawptr(&graph.bridge_handlers), http.project_handle_vcs_commit)
 	http.router_add(&graph.router, "POST", "/api/v1/projects/*/vcs/upload", rawptr(&graph.bridge_handlers), http.project_handle_vcs_upload)
 	http.router_add(&graph.router, "POST", "/api/v1/projects/*/vcs/sync", rawptr(&graph.bridge_handlers), http.project_handle_vcs_sync)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains", rawptr(&graph.taskchain_handlers), http.list_task_chains_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/bridge/task-chain-search/documents", rawptr(&graph.taskchain_handlers), http.task_chain_search_documents_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains", rawptr(&graph.taskchain_handlers), http.create_task_chain_handler)
 	http.router_add(&graph.router,"POST","/api/v1/owner-local/relay",rawptr(&graph.bridge_handlers),http.owner_local_relay_handler)
     http.router_add(&graph.router,"POST","/api/v1/executor/fence",rawptr(&graph.bridge_handlers),http.executor_fence_relay_handler)
     http.router_add(&graph.router,"POST","/api/v1/executor/child",rawptr(&graph.bridge_handlers),http.executor_child_relay_handler)
@@ -850,144 +765,34 @@ register_routes :: proc(graph: ^App_Graph) {
     http.router_add(&graph.router,"POST","/api/v1/executor/activate",rawptr(&graph.bridge_handlers),http.executor_activation_relay_handler)
 	http.router_add(&graph.router,"POST","/api/v1/owner-local/registry",rawptr(&graph.bridge_handlers),http.owner_local_publish_handler)
 	http.router_add(&graph.router,"GET","/api/v1/owner-local/chains",rawptr(&graph.bridge_handlers),http.owner_local_list_handler)
+	http.router_add(&graph.router,"GET","/api/v1/owner-local/migrations/legacy-chains",rawptr(&graph.bridge_handlers),http.owner_migration_legacy_chains_handler)
 	http.router_add(&graph.router,"GET","/api/v1/owner-local/migrations/preflight",rawptr(&graph.bridge_handlers),http.owner_migration_preflight_handler)
 	http.router_add(&graph.router,"POST","/api/v1/owner-local/migrations",rawptr(&graph.bridge_handlers),http.owner_migration_handler)
 	http.router_add(&graph.router,"POST","/api/v1/owner-local/migrations/abort",rawptr(&graph.bridge_handlers),http.owner_migration_abort_handler)
 	http.router_add(&graph.router,"GET","/api/v1/owner-local/migrations/export",rawptr(&graph.bridge_handlers),http.owner_migration_export_handler)
 	http.router_add(&graph.router,"GET","/api/v1/owner-local/migrations/state",rawptr(&graph.bridge_handlers),http.owner_migration_state_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/search/relay", rawptr(&graph.bridge_handlers), http.task_chain_search_relay_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*", rawptr(&graph.taskchain_handlers), http.task_chain_detail_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/summary", rawptr(&graph.taskchain_handlers), http.get_task_chain_summary_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/token-usage", rawptr(&graph.taskchain_handlers), http.task_chain_token_usage_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/conversation", rawptr(&graph.taskchain_handlers), http.get_task_chain_conversation_handler)
-	http.router_add(&graph.router, "PUT", "/api/v1/task-chains/*/summary", rawptr(&graph.taskchain_handlers), http.put_task_chain_summary_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/propose", rawptr(&graph.taskchain_handlers), http.propose_task_chain_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/proposal/decide", rawptr(&graph.taskchain_handlers), http.decide_task_chain_proposal_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/publish", rawptr(&graph.taskchain_handlers), http.publish_task_chain_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/complete", rawptr(&graph.taskchain_handlers), http.complete_task_chain_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/pin", rawptr(&graph.taskchain_handlers), http.pin_task_chain_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/tasks", rawptr(&graph.taskchain_handlers), http.list_tasks_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks", rawptr(&graph.taskchain_handlers), http.create_task_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/publish", rawptr(&graph.taskchain_handlers), http.publish_task_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/review", rawptr(&graph.taskchain_handlers), http.user_review_task_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/reopen", rawptr(&graph.taskchain_handlers), http.reopen_task_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/answer", rawptr(&graph.taskchain_handlers), http.answer_task_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/hold", rawptr(&graph.taskchain_handlers), http.hold_task_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/release", rawptr(&graph.taskchain_handlers), http.hold_task_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/recheck", rawptr(&graph.taskchain_handlers), http.recheck_task_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/tasks/*/recheck", rawptr(&graph.taskchain_handlers), http.recheck_task_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/start-agent", rawptr(&graph.taskchain_handlers), http.start_task_agent_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/tasks/*/start-agent", rawptr(&graph.taskchain_handlers), http.start_task_agent_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/tasks/*/placement-recovery", rawptr(&graph.taskchain_handlers), http.recover_task_placement_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/placement-recovery", rawptr(&graph.taskchain_handlers), http.recover_task_placement_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/cards/*/placement-recovery", rawptr(&graph.card_handlers), http.recover_card_placement_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/tasks/*/fetch", rawptr(&graph.taskchain_handlers), http.fetch_task_ref_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/tasks/*/readiness", rawptr(&graph.taskchain_handlers), http.task_readiness_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/tasks/*/events", rawptr(&graph.taskchain_handlers), http.list_task_events_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/tasks/*/attempts/*/facets/*", rawptr(&graph.taskchain_handlers), http.get_task_facet_handler)
-	http.router_add(&graph.router, "PATCH", "/api/v1/task-chains/*", rawptr(&graph.taskchain_handlers), http.patch_task_chain_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/members", rawptr(&graph.taskchain_handlers), http.list_chain_members_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/members", rawptr(&graph.taskchain_handlers), http.add_chain_member_handler)
-	http.router_add(&graph.router, "DELETE", "/api/v1/task-chains/*/members/*", rawptr(&graph.taskchain_handlers), http.remove_chain_member_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/directories", rawptr(&graph.taskchain_handlers), http.list_chain_directories_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/directories", rawptr(&graph.taskchain_handlers), http.add_chain_directory_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/directories/*", rawptr(&graph.taskchain_handlers), http.get_chain_directory_handler)
-	http.router_add(&graph.router, "PATCH", "/api/v1/task-chains/*/directories/*", rawptr(&graph.taskchain_handlers), http.patch_chain_directory_handler)
-	http.router_add(&graph.router, "DELETE", "/api/v1/task-chains/*/directories/*", rawptr(&graph.taskchain_handlers), http.remove_chain_directory_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/fleets", rawptr(&graph.taskchain_handlers), http.list_chain_fleets_handler)
-	http.router_add(&graph.router, "PUT", "/api/v1/task-chains/*/fleets/*", rawptr(&graph.taskchain_handlers), http.upsert_chain_fleet_handler)
-	http.router_add(&graph.router, "DELETE", "/api/v1/task-chains/*/fleets/*", rawptr(&graph.taskchain_handlers), http.delete_chain_fleet_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/fleets/*/pause", rawptr(&graph.taskchain_handlers), http.pause_chain_fleet_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/fleets/*/resume", rawptr(&graph.taskchain_handlers), http.pause_chain_fleet_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/review-roles", rawptr(&graph.taskchain_handlers), http.list_chain_review_roles_handler)
-	http.router_add(&graph.router, "PUT", "/api/v1/task-chains/*/review-roles/*", rawptr(&graph.taskchain_handlers), http.upsert_chain_review_role_handler)
-	http.router_add(&graph.router, "DELETE", "/api/v1/task-chains/*/review-roles/*", rawptr(&graph.taskchain_handlers), http.delete_chain_review_role_handler)
-	// Task chain directory filesystem browser (resolves chain+directory -> bridge+path, relays fs_* WS commands).
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/directories/*/fs", rawptr(&graph.bridge_handlers), http.list_chain_directory_fs_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/directories/*/fs/quick-open", rawptr(&graph.bridge_handlers), http.quick_open_chain_directory_fs_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/directories/*/fs/search", rawptr(&graph.bridge_handlers), http.search_chain_directory_fs_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/directories/*/fs/file", rawptr(&graph.bridge_handlers), http.read_chain_directory_file_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/directories/*/fs/file", rawptr(&graph.bridge_handlers), http.create_chain_directory_file_handler)
-	http.router_add(&graph.router, "PUT", "/api/v1/task-chains/*/directories/*/fs/file", rawptr(&graph.bridge_handlers), http.write_chain_directory_file_handler)
-	http.router_add(&graph.router, "PUT", "/api/v1/task-chains/*/directories/*/fs/files", rawptr(&graph.bridge_handlers), http.batch_write_chain_directory_files_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/directories/*/fs/dir", rawptr(&graph.bridge_handlers), http.create_chain_directory_dir_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/directories/*/fs/move", rawptr(&graph.bridge_handlers), http.move_chain_directory_path_handler)
-	http.router_add(&graph.router, "DELETE", "/api/v1/task-chains/*/directories/*/fs", rawptr(&graph.bridge_handlers), http.delete_chain_directory_path_handler)
-	// Task chain directory VCS relay (resolves chain+directory -> bridge+path, relays vcs_* WS commands).
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/directories/*/vcs/capabilities", rawptr(&graph.bridge_handlers), http.chain_directory_handle_vcs_capabilities)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/directories/*/vcs/status", rawptr(&graph.bridge_handlers), http.chain_directory_handle_vcs_status)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/directories/*/vcs/files", rawptr(&graph.bridge_handlers), http.chain_directory_handle_vcs_files)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/directories/*/vcs/diff", rawptr(&graph.bridge_handlers), http.chain_directory_handle_vcs_diff)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/directories/*/vcs/log", rawptr(&graph.bridge_handlers), http.chain_directory_handle_vcs_log)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/directories/*/vcs/commit-diff", rawptr(&graph.bridge_handlers), http.chain_directory_handle_vcs_commit_diff)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/directories/*/vcs/workspaces", rawptr(&graph.bridge_handlers), http.chain_directory_handle_vcs_workspaces)
-	http.router_add(&graph.router, "GET", "/api/v1/workflows/templates", rawptr(&graph.taskchain_handlers), http.workflow_templates_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/workflows/definitions", rawptr(&graph.taskchain_handlers), http.workflow_list_definitions_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/workflows/definitions", rawptr(&graph.taskchain_handlers), http.workflow_define_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/workflows/define", rawptr(&graph.taskchain_handlers), http.workflow_define_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/work/complete", rawptr(&graph.agent_action_handlers), http.agent_action_work_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/work/scope", rawptr(&graph.agent_action_handlers), http.agent_action_work_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/work/remove-dependency", rawptr(&graph.agent_action_handlers), http.agent_action_work_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/work/depend", rawptr(&graph.agent_action_handlers), http.agent_action_work_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/work/graph", rawptr(&graph.agent_action_handlers), http.agent_action_work_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/work/complete", rawptr(&graph.taskchain_handlers), http.mixed_work_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/work/scope", rawptr(&graph.taskchain_handlers), http.mixed_work_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/work/remove-dependency", rawptr(&graph.taskchain_handlers), http.mixed_work_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/work/depend", rawptr(&graph.taskchain_handlers), http.mixed_work_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/work/graph", rawptr(&graph.taskchain_handlers), http.mixed_work_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/workflow-runs/*/cancel", rawptr(&graph.taskchain_handlers), http.workflow_cancel_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/workflow-runs/*/retry", rawptr(&graph.taskchain_handlers), http.workflow_retry_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/workflow-runs/*/executions", rawptr(&graph.taskchain_handlers), http.workflow_history_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/workflow-runs/*/output", rawptr(&graph.taskchain_handlers), http.workflow_output_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/workflow-runs/*", rawptr(&graph.taskchain_handlers), http.workflow_status_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/workflow-runs", rawptr(&graph.taskchain_handlers), http.workflow_run_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/workflow-runs", rawptr(&graph.taskchain_handlers), http.workflow_runs_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/tasks/*", rawptr(&graph.taskchain_handlers), http.get_task_handler)
-	http.router_add(&graph.router, "PATCH", "/api/v1/task-chains/*/tasks/*", rawptr(&graph.taskchain_handlers), http.patch_task_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/cancel", rawptr(&graph.taskchain_handlers), http.cancel_task_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/tasks/*/comments", rawptr(&graph.taskchain_handlers), http.list_task_comments_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/comments", rawptr(&graph.taskchain_handlers), http.create_task_comment_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/token-usage", rawptr(&graph.bridge_handlers), http.task_chain_token_usage_handler)
+	// The Hub task-chain engine is removed (chains are Bridge-owned): every
+	// legacy Hub chain/task/workflow route, and every agent verb that would
+	// have reached the Hub engine, answers 410 hub_chains_removed. The routes
+	// kept above (owner-local, search relay, token usage) match first.
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/lease/next", rawptr(&graph.agent_action_handlers), http.agent_action_lease_next_handler)
+	for prefix in ([]string{"/api/v1/task-chains/**", "/api/v1/tasks/**", "/api/v1/workflows/**", "/api/v1/workflow-runs/**",
+		"/api/v1/bridge/task-chain-search/**", "/api/v1/cards/*/placement-recovery",
+		"/api/v1/agent-actions/tasks/**", "/api/v1/agent-actions/task/**", "/api/v1/agent-actions/task-chain/**",
+		"/api/v1/agent-actions/lease/**", "/api/v1/agent-actions/review/**", "/api/v1/agent-actions/chain/**",
+		"/api/v1/agent-actions/work/**", "/api/v1/agent-actions/workflow/**"}) {
+		http.router_add(&graph.router, "ANY", prefix, nil, http.hub_chains_removed_handler)
+	}
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/send-to-user", rawptr(&graph.agent_action_handlers), http.agent_action_chat_send_to_user_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/send-to-agent", rawptr(&graph.agent_action_handlers), http.agent_action_chat_send_to_agent_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/previous-context", rawptr(&graph.agent_action_handlers), http.agent_action_chat_previous_context_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/fetch", rawptr(&graph.agent_action_handlers), http.agent_action_chat_fetch_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/read", rawptr(&graph.agent_action_handlers), http.agent_action_chat_read_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/conversation/set-title", rawptr(&graph.agent_action_handlers), http.agent_action_conversation_set_title_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/set-title", rawptr(&graph.agent_action_handlers), http.agent_action_chain_set_title_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/set-description", rawptr(&graph.agent_action_handlers), http.agent_action_chain_set_description_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/set-status", rawptr(&graph.agent_action_handlers), http.agent_action_chain_set_status_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/show", rawptr(&graph.agent_action_handlers), http.agent_action_chain_show_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/summary", rawptr(&graph.agent_action_handlers), http.agent_action_chain_summary_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/summary/set", rawptr(&graph.agent_action_handlers), http.agent_action_chain_summary_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/propose", rawptr(&graph.agent_action_handlers), http.agent_action_chain_propose_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/workflow/templates", rawptr(&graph.agent_action_handlers), http.agent_action_workflow_templates_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/workflow/list", rawptr(&graph.agent_action_handlers), http.agent_action_workflow_list_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/workflow/define", rawptr(&graph.agent_action_handlers), http.agent_action_workflow_define_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/workflow/run", rawptr(&graph.agent_action_handlers), http.agent_action_workflow_run_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/workflow/runs", rawptr(&graph.agent_action_handlers), http.agent_action_workflow_runs_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/workflow/history", rawptr(&graph.agent_action_handlers), http.agent_action_workflow_history_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/workflow/status", rawptr(&graph.agent_action_handlers), http.agent_action_workflow_status_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/workflow/output", rawptr(&graph.agent_action_handlers), http.agent_action_workflow_output_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/workflow/retry", rawptr(&graph.agent_action_handlers), http.agent_action_workflow_retry_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/workflow/cancel", rawptr(&graph.agent_action_handlers), http.agent_action_workflow_cancel_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/agents/live", rawptr(&graph.agent_action_handlers), http.agent_action_agents_live_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/context", rawptr(&graph.agent_action_handlers), http.agent_action_context_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/tasks/list", rawptr(&graph.agent_action_handlers), http.agent_action_task_list_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/tasks/show", rawptr(&graph.agent_action_handlers), http.agent_action_task_show_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/tasks/comments", rawptr(&graph.agent_action_handlers), http.agent_action_task_comments_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/tasks/create", rawptr(&graph.agent_action_handlers), http.agent_action_task_create_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/tasks/update", rawptr(&graph.agent_action_handlers), http.agent_action_task_update_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/tasks/depend", rawptr(&graph.agent_action_handlers), http.agent_action_task_depend_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/tasks/comment", rawptr(&graph.agent_action_handlers), http.agent_action_task_comment_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/lease/next", rawptr(&graph.agent_action_handlers), http.agent_action_lease_next_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/lease/heartbeat", rawptr(&graph.agent_action_handlers), http.agent_action_lease_heartbeat_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/lease/submit", rawptr(&graph.agent_action_handlers), http.agent_action_lease_submit_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/lease/handoff", rawptr(&graph.agent_action_handlers), http.agent_action_lease_handoff_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/lease/switch", rawptr(&graph.agent_action_handlers), http.agent_action_lease_switch_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/lease/block", rawptr(&graph.agent_action_handlers), http.agent_action_lease_block_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/review/post", rawptr(&graph.agent_action_handlers), http.agent_action_review_post_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/task/fetch", rawptr(&graph.agent_action_handlers), http.agent_action_task_fetch_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/task/readiness", rawptr(&graph.agent_action_handlers), http.agent_action_task_readiness_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/artifacts/create", rawptr(&graph.agent_action_handlers), http.agent_action_artifact_create_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/artifacts/list", rawptr(&graph.agent_action_handlers), http.agent_action_artifact_list_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/artifacts/show", rawptr(&graph.agent_action_handlers), http.agent_action_artifact_show_handler)

@@ -2,7 +2,6 @@ import { Icon } from '@ui';
 import { DecryptedMarkdown, VaultText } from '../vault';
 import type { AttentionItem, AttentionMemoryItem, AttentionMessageItem, AttentionTaskItem } from '../../api/endpoints/attention';
 import { AgentBlockerBody } from './AgentBlockerCard';
-import { PlacementRecovery } from './PlacementRecovery';
 import { StartAgentFailure } from './StartAgentAction';
 import { PRIORITY_LABELS, SCOPE_ROWS, TASK_BADGE_LABELS, expiryLine, formatAge, memoryTypePhrase, reasonLine, urgencyClass } from './attentionModel';
 
@@ -45,7 +44,9 @@ function TaskBody({ item, now, onOpenConfiguration }: { item: AttentionTaskItem;
   if (d.attention === 'placement') return (
     <>
       <h3 data-debug-id="attention-card-title" className="text-[17px] font-semibold text-primary"><VaultText value={item.title} fallback="Untitled ticket" /></h3>
-      <PlacementRecovery item={item} onOpenConfiguration={onOpenConfiguration} />
+      <p data-debug-id="attention-placement-unavailable" className="mt-2 text-[13px] text-muted">
+        This ticket could not be placed. Placement repair for Hub tickets is no longer available; open the chain on its Bridge instead.
+      </p>
     </>
   );
   return (

@@ -71,10 +71,18 @@ export async function ownerTransparentFlow({ session, bridgeId, hub, http, expec
     git.sourceBranch = 'heimdall/' + tid;
     expect(!existsSync(git.worktree), 'no task worktree exists before the claim');
 
-    // Hub: the native owner chain names its authority instead of a 404.
+    // Hub: Hub chain routes are gone (410 hub_chains_removed); the owner
+    // registry names the chain's owner Bridge.
     const detail = await http(hub, 'GET', '/api/v1/task-chains/' + cid);
     const detailError = JSON.parse(detail.raw).error;
-    expect(detail.status === 409 && detailError?.code === 'owner_authority' && detailError?.details?.bridge_id === bridgeId, 'Hub answers typed owner_authority naming the owner Bridge');
+    expect(detail.status === 410 && detailError?.code === 'hub_chains_removed', 'Hub chain detail answers 410 hub_chains_removed: ' + detail.raw);
+    let routed = false;
+    for (let i = 0; i < 20 && !routed; i++) {
+      const rows = await http(hub, 'GET', '/api/v1/owner-local/chains?chain_id=' + encodeURIComponent(cid));
+      routed = rows.status === 200 && (rows.data ?? []).some((r: any) => r.chain_id === cid && r.owner_bridge_id === bridgeId);
+      if (!routed) await new Promise((r) => setTimeout(r, 500));
+    }
+    expect(routed, 'the owner registry names the owner Bridge');
 
     // Unrelated agents never receive the owner task; the worker's lease next
     // claims the unblocked task (the dependent one waits).

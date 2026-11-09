@@ -7,8 +7,8 @@ import contracts "odin_test:contracts"
 import sqlite "odin_test:hub/repository/sqlite"
 
 // H1 (R4 review follow-up): route-level coverage of
-// POST /api/v1/owner-local/migrations/abort through the router (with the
-// production guard) and real auth resolution. An agent instance token of the
+// POST /api/v1/owner-local/migrations/abort through the router and real auth
+// resolution. An agent instance token of the
 // chain owner's own account is refused with 403 and changes nothing; the
 // owner's browser session aborts the migration.
 @(test)
@@ -18,17 +18,16 @@ owner_migration_abort_route_refuses_instance_token_and_accepts_user_session :: p
 	saved := context.allocator
 	context.allocator = context.temp_allocator
 	defer context.allocator = saved
-	chain := string(f.chain_id)
+	chain := "chain_wire_legacy"
+	wire_seed_legacy_chain(t, f, chain)
 	digest := strings.repeat("a", 64, context.temp_allocator)
 	testing.expect(t, sqlite.exec(&f.conn, fmt.tprintf(`INSERT INTO owner_legacy_source_generations VALUES('%s','%s',0);
 	  INSERT INTO owner_legacy_migrations(migration_id,chain_id,account_id,owner_bridge_id,owner_key_id,selection_digest,state,revision)
 	  VALUES('mig_route','%s','%s','%s','bridge_key','%s','draining',1);`, chain, string(f.owner), chain, string(f.owner), f.bridge_pin, digest)))
 
-	h := Bridge_Handlers{auth = &f.auth_svc, taskchains = &f.tc_svc}
+	h := Bridge_Handlers{auth = &f.auth_svc, chains = &f.tc_repo}
 	router := new_router()
 	defer router_free(&router)
-	router.guard = owner_authority_guard
-	router.guard_ctx = rawptr(&f.th)
 	router_add(&router, "POST", "/api/v1/owner-local/migrations/abort", rawptr(&h), owner_migration_abort_handler)
 	body := strings.concatenate({`{"chain_id":"`, chain, `","migration_id":"mig_route"}`}, context.temp_allocator)
 	request :: proc(body: string, headers: []contracts.HTTP_Header) -> Request {
@@ -52,4 +51,24 @@ owner_migration_abort_route_refuses_instance_token_and_accepts_user_session :: p
 	// Still refused for the agent after the abort (replay is a human verb too).
 	again := router_dispatch(&router, request(body, f.agent_headers[:]))
 	testing.expect_value(t, again.status, 403)
+}
+
+// Settings → Bridge "Import all" lists every legacy chain of the caller with
+// its import state; instance tokens are refused (a human imports).
+@(test)
+owner_migration_legacy_chains_lists_states_for_the_user_only :: proc(t: ^testing.T) {
+	f := wire_setup(t, "legacy-chains")
+	defer wire_teardown(f)
+	saved := context.allocator
+	context.allocator = context.temp_allocator
+	defer context.allocator = saved
+	wire_seed_legacy_chain(t, f, "chain_legacy_a")
+	wire_seed_legacy_chain(t, f, "chain_legacy_b")
+	h := Bridge_Handlers{auth = &f.auth_svc, chains = &f.tc_repo}
+	list := owner_migration_legacy_chains_handler(&h, wire_cookie_request(f, "GET", "/api/v1/owner-local/migrations/legacy-chains", ""))
+	testing.expectf(t, list.status == 200 && strings.contains(list.body, `"chain_id":"chain_legacy_a"`) && strings.contains(list.body, `"chain_id":"chain_legacy_b"`) && strings.contains(list.body, `"state":"none"`) && strings.contains(list.body, `"next_after":""`), "listing: %s", list.body)
+	page := owner_migration_legacy_chains_handler(&h, Request{method = "GET", path = "/api/v1/owner-local/migrations/legacy-chains", query = "limit=1", request_id = "r", remote_addr = "127.0.0.1:4444", headers = f.user_headers})
+	testing.expectf(t, page.status == 200 && strings.contains(page.body, `"next_after":"chain_legacy_a"`) && !strings.contains(page.body, "chain_legacy_b"), "page: %s", page.body)
+	agent := owner_migration_legacy_chains_handler(&h, Request{method = "GET", path = "/api/v1/owner-local/migrations/legacy-chains", request_id = "r", remote_addr = "127.0.0.1:4444", headers = f.agent_headers[:]})
+	testing.expect_value(t, agent.status, 403)
 }

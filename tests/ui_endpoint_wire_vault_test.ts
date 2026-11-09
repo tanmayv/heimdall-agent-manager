@@ -62,7 +62,6 @@ const vaultReducer = vaultSlice.default;
 const { setActiveVaultKey, getActiveVaultKey,
         isVaultArmored, encryptVaultText } = await import(`${R}/src/ui/utils/vaultCrypto.ts`);
 const artifacts = await import(`${R}/src/ui/api/endpoints/artifacts.ts`);
-const taskChains = await import(`${R}/src/ui/api/endpoints/taskChains.ts`);
 
 const KEY_HEX_RAW = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const KEY_HEX = await keyringFromHex(KEY_HEX_RAW);
@@ -171,31 +170,6 @@ test('UNLOCKED: updateArtifact sends vault:v2:7e57000000000001:e1: name and desc
   assert.ok(isVaultArmored(b.description), 'updated description must be armored');
 });
 
-test('UNLOCKED: createTaskChain sends vault:v2:7e57000000000001:e1: title and description on the wire', async () => {
-  captured = []; nextResponseBody = { data: { chain_id: 'chain_1' } };
-  const store = makeStore();
-  await unlock(store);
-  await go(store, taskChains.taskChainsApi.endpoints.createTaskChain.initiate({
-    title: 'Secret Chain Title', description: 'secret chain description',
-  } as any));
-  const b = body(c => c.method === 'POST' && /task-chains/.test(c.url));
-  assert.ok(isVaultArmored(b.title), `chain title must be armored, got: ${String(b.title).slice(0, 60)}`);
-  assert.ok(isVaultArmored(b.description), 'chain description must be armored');
-  assert.ok(!String(b.title).includes('Secret'), 'plaintext chain title must NOT appear on the wire');
-});
-
-test('UNLOCKED: updateTaskChain sends vault:v2:7e57000000000001:e1: title and description on the wire', async () => {
-  captured = []; nextResponseBody = { data: { chain_id: 'chain_1' } };
-  const store = makeStore();
-  await unlock(store);
-  await go(store, taskChains.taskChainsApi.endpoints.updateTaskChain.initiate({
-    chainId: 'chain_1', title: 'Renamed Chain', description: 'renamed chain description',
-  } as any));
-  const b = body(c => c.method === 'PATCH');
-  assert.ok(isVaultArmored(b.title), 'updated chain title must be armored');
-  assert.ok(isVaultArmored(b.description), 'updated chain description must be armored');
-});
-
 test('UNLOCKED: fetchArtifactTextContent decrypts pre-existing armored content to plaintext', async () => {
   captured = [];
   const key = await keyringFromHex(KEY_HEX_RAW);
@@ -218,7 +192,7 @@ test('UNLOCKED: fetchArtifactTextContent decrypts pre-existing armored content t
 // STATE: ENCRYPTION DISABLED (no vault configured, no key) — plaintext passthrough
 // =============================================================================
 
-test('DISABLED: createArtifact and createTaskChain send plaintext unchanged, no throw', async () => {
+test('DISABLED: createArtifact sends plaintext unchanged, no throw', async () => {
   captured = []; nextResponseBody = { data: { artifact: { artifact_id: 'art_2' } } };
   setActiveVaultKey(null, null);
   const store = makeStore();                       // never unlocked
@@ -232,13 +206,6 @@ test('DISABLED: createArtifact and createTaskChain send plaintext unchanged, no 
   assert.equal(a.name, 'Public Artifact', 'plaintext name must pass through untouched');
   assert.equal(a.description, 'public description', 'plaintext description must pass through untouched');
 
-  captured = []; nextResponseBody = { data: { chain_id: 'chain_2' } };
-  await go(store, taskChains.taskChainsApi.endpoints.createTaskChain.initiate({
-    title: 'Public Chain', description: 'public chain description',
-  } as any));
-  const c2 = body(c => c.method === 'POST' && /task-chains/.test(c.url));
-  assert.equal(c2.title, 'Public Chain', 'plaintext chain title must pass through untouched');
-  assert.equal(c2.description, 'public chain description');
 });
 
 test('DISABLED: fetchArtifactTextContent returns pre-existing plaintext unchanged', async () => {
@@ -270,13 +237,6 @@ test('UNLOCKED: already-armored name/title is NOT re-encrypted (no double armor)
   const b = body(c => c.method === 'POST');
   assert.equal(b.name, preArmoredName, 'already-armored name must be sent byte-identical');
 
-  captured = []; nextResponseBody = { data: { chain_id: 'chain_3' } };
-  const preArmoredTitle = await encryptVaultText('already encrypted title', key);
-  await go(store, taskChains.taskChainsApi.endpoints.createTaskChain.initiate({
-    title: preArmoredTitle, description: 'fresh chain description',
-  } as any));
-  const c3 = body(c => c.method === 'POST' && /task-chains/.test(c.url));
-  assert.equal(c3.title, preArmoredTitle, 'already-armored chain title must be sent byte-identical');
 });
 
 // =============================================================================
@@ -299,12 +259,6 @@ test('LOCKED: writes do not throw and armored reads stay armored (locked placeho
   } as any));
   assert.equal(res.data?.text, armored, 'locked: ciphertext is preserved for the locked placeholder, not corrupted');
 
-  captured = []; nextResponseBody = { data: { chain_id: 'chain_4' } };
-  await go(store, taskChains.taskChainsApi.endpoints.createTaskChain.initiate({
-    title: 'Chain while locked',
-  } as any));
-  const b = body(c => c.method === 'POST' && /task-chains/.test(c.url));
-  assert.equal(b.title, 'Chain while locked', 'locked: write proceeds in plaintext without throwing');
 });
 
 // =============================================================================
@@ -313,65 +267,4 @@ test('LOCKED: writes do not throw and armored reads stay armored (locked placeho
 // The two files cannot be reverted (shared working tree), so instead evaluate the
 // EXACT pre-fix operand against a real, fully unlocked store.
 // =============================================================================
-
-test('live requirements seal changed fields and preserve the reviewed revision without a fresh read', async () => {
-  const tasks = await import('../src/ui/api/endpoints/tasks.ts');
-  const store = makeStore();
-  await unlock(store);
-  captured = []; nextResponseBody = { data: { ok: true } };
-  const result = await go(store, tasks.tasksApi.endpoints.updateTaskDetail.initiate({
-    chainId: 'chain_live', taskId: 'task_live', brief: { goal: 'New private goal' },
-    expectedRequirementsRevision: 7, requirementsReason: 'Private reason',
-  }));
-  assertNoError(result, 'requirement edit');
-  const change = body(c => c.method === 'PATCH');
-  assert.match(change.brief.goal, /^vault:v2:/);
-  assert.match(change.requirements_reason, /^vault:v2:/);
-  assert.equal(change.expected_requirements_revision, 7);
-  assert.equal(change.brief.acceptance, undefined, 'unchanged criteria are not re-encrypted or overwritten');
-  assert.ok(change.request_id);
-  assert.ok(!JSON.stringify(change).includes('Private reason'));
-  captured = [];
-  await go(store, tasks.tasksApi.endpoints.userReviewTask.initiate({
-    chainId: 'chain_live', taskId: 'task_live', verdict: 'approve',
-    requirementsRevision: 7, expectedAttemptNo: 3, expectedHead: 'reviewed-head',
-  }));
-  const review = body(c => c.method === 'POST');
-  assert.equal(review.requirements_revision, 7);
-  assert.equal(review.expected_attempt_no, 3);
-  assert.equal(review.expected_head, 'reviewed-head');
-  assert.equal(captured.filter(c => c.method === 'GET').length, 0, 'approval never fetches a newer context implicitly');
-  store.dispatch(heimdallApi.util.resetApiState());
-});
-
-test('requirement edits fail closed while locked and surface conflicts without an automatic retry', async () => {
-  const tasks = await import('../src/ui/api/endpoints/tasks.ts');
-  const store = makeStore();
-  setActiveVaultKey(null);
-  store.dispatch(keyringCleared());
-  captured = [];
-  let result = await go(store, tasks.tasksApi.endpoints.updateTaskDetail.initiate({
-    chainId: 'chain_live', taskId: 'task_live', brief: { acceptance: ['private criterion'] },
-    expectedRequirementsRevision: 7, requirementsReason: 'reason',
-  }));
-  assert.ok(result.error);
-  assert.equal(captured.length, 0);
-  await unlock(store);
-  nextResponseStatus = 409;
-  nextResponseBody = { error: { code: 'conflict', message: 'Requirements changed; reload the task' } };
-  try {
-    result = await go(store, tasks.tasksApi.endpoints.updateTaskDetail.initiate({
-      chainId: 'chain_live', taskId: 'task_live', brief: { acceptance: ['private criterion'] },
-      expectedRequirementsRevision: 7, requirementsReason: 'reason',
-    }));
-    assert.ok(result.error);
-    assert.match(result.error.error, /reload/i);
-    assert.equal(captured.length, 1);
-    assert.equal(captured[0].body.expected_requirements_revision, 7);
-  } finally {
-    nextResponseStatus = 200; nextResponseBody = { data: { ok: true } };
-    store.dispatch(heimdallApi.util.resetApiState());
-  }
-});
-
 

@@ -52,8 +52,14 @@ import {
 } from '../../api/endpoints/projectFs';
 import { LOSSY_NAME_HINT } from '../../api/endpoints/bridgeFs';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
-import { useFetchTaskChainDetailQuery, useAddChainDirectoryMutation, type TaskChainDirectory } from '../../api/endpoints/tasks';
-import BridgeDirectoryPicker from '../BridgeDirectoryPicker';
+/** An extra directory of the agent's chain, as passed in by the caller. */
+export type TaskChainDirectory = {
+  directoryId: string;
+  path: string;
+  bridgeId: string;
+  vcsKind: string;
+  vcs?: Record<string, any>;
+};
 import SearchInFilesDrawer from './SearchInFilesDrawer';
 import { ProjectCommandPaletteModal } from './ProjectCommandPaletteModal';
 import { type EditorCommandContext } from '../../commands/editorCommands';
@@ -504,14 +510,7 @@ export default function ProjectFilesPanel({
   const { theme } = useTheme();
 
   // Task Chain Directories & Bridge Resolution (REQ-UI-TASK-CHAIN-DIRECTORY-SELECTOR, REQ-UI-DIRECTORY-BRIDGE-DISPLAY)
-  const chainDetailQuery = useFetchTaskChainDetailQuery(
-    { chainId: chainId || '' },
-    { skip: !chainId, pollingInterval: 120000 }
-  );
-  const taskChainDirectories: TaskChainDirectory[] = useMemo(() => {
-    if (propDirectories && propDirectories.length > 0) return propDirectories;
-    return chainDetailQuery.data?.chain?.directories || [];
-  }, [propDirectories, chainDetailQuery.data?.chain?.directories]);
+  const taskChainDirectories: TaskChainDirectory[] = useMemo(() => propDirectories || [], [propDirectories]);
 
   const bridgesQuery = useListBridgesQuery(undefined);
   const bridges = useMemo(() => bridgesQuery.data?.bridges || [], [bridgesQuery.data?.bridges]);
@@ -523,7 +522,6 @@ export default function ProjectFilesPanel({
   const [isQuickOpenOpen, setIsQuickOpenOpen] = useState(false);
 
   // Add Directory Modal state (REQ-UI-ADD-DIRECTORY-MODAL)
-  const [isAddDirectoryOpen, setIsAddDirectoryOpen] = useState(false);
 
   // Scoped Search in Files Drawer state (Cmd+Shift+F / Ctrl+Shift+F) (REQ-SEARCH-UI-PANEL-1, REQ-SEARCH-SHORTCUTS-1)
   const [isSearchDrawerOpen, setIsSearchDrawerOpen] = useState(Boolean(initialOpenSearchInFiles));
@@ -911,7 +909,7 @@ export default function ProjectFilesPanel({
       isReadOnly: false,
     }));
 
-    const memberRoster = propMembers || chainDetailQuery.data?.chain?.members || [];
+    const memberRoster = propMembers || [];
     const agentRunDirs: DirectoryItem[] = [];
     const seenInstances = new Set<string>();
 
@@ -946,7 +944,7 @@ export default function ProjectFilesPanel({
     }
 
     return [primary, ...extras, ...agentRunDirs];
-  }, [projectName, primaryRoot, bridgeId, taskChainDirectories, propMembers, chainDetailQuery.data?.chain?.members, agentInstanceId]);
+  }, [projectName, primaryRoot, bridgeId, taskChainDirectories, propMembers, agentInstanceId]);
 
   const activeDirectory = useMemo(() => {
     return availableDirectories.find((d) => d.id === activeDirectoryId) || availableDirectories[0];
@@ -2282,17 +2280,6 @@ export default function ProjectFilesPanel({
                   debugPrefix={debugPrefix}
                 />
 
-                {/* '+' icon button to open Add Chain Directory modal (REQ-UI-ADD-DIRECTORY-MODAL) */}
-                <button
-                  data-debug-id="add-task-chain-directory-btn"
-                  type="button"
-                  onClick={() => setIsAddDirectoryOpen(true)}
-                  title="Add Directory to Task Chain"
-                  aria-label="Add Directory to Task Chain"
-                  className="grid h-5 w-5 shrink-0 place-items-center rounded hover:bg-neutral-soft text-muted hover:text-primary transition-colors"
-                >
-                  <Icon name="plus" size={12} />
-                </button>
 
                 {/* Dedicated Bridge Name Badge for Active Directory */}
                 <span
@@ -3072,17 +3059,6 @@ export default function ProjectFilesPanel({
         initialQuery={commandPaletteInitialQuery}
       />
 
-      {/* Add Directory Modal (REQ-UI-ADD-DIRECTORY-MODAL) */}
-      <AddChainDirectoryModal
-        isOpen={isAddDirectoryOpen}
-        onClose={() => setIsAddDirectoryOpen(false)}
-        chainId={chainId}
-        bridges={bridges}
-        initialBridgeId={bridgeId || activeDirectory.bridgeId}
-        onDirectoryAdded={(newDirId) => {
-          switchDirectory(newDirId);
-        }}
-      />
     </div>
   );
 }
@@ -3316,230 +3292,6 @@ export function ProjectQuickOpenModal({
             <span><kbd className="rounded border border-subtle bg-neutral-soft px-1.5 py-0.5">↑↓</kbd> navigate</span>
             <span><kbd className="rounded border border-subtle bg-neutral-soft px-1.5 py-0.5">↵</kbd> select</span>
           </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-export function AddChainDirectoryModal({
-  isOpen,
-  onClose,
-  chainId,
-  bridges = [],
-  initialBridgeId = '',
-  onDirectoryAdded,
-}: {
-  isOpen: boolean;
-  onClose: () => void;
-  chainId?: string;
-  bridges?: any[];
-  initialBridgeId?: string;
-  onDirectoryAdded: (newDirId: string) => void;
-}) {
-  const panelRef = useRef<HTMLDivElement | null>(null);
-  useDialogA11y(isOpen, onClose, panelRef);
-
-  const [addChainDirectory] = useAddChainDirectoryMutation();
-  const [error, setError] = useState<string>('');
-
-  const normalizedBridges = useMemo(() => {
-    const list = Array.isArray(bridges) ? bridges : [];
-    if (list.length > 0) return list;
-    return [{ bridge_id: 'local', name: 'local', status: 'online' }];
-  }, [bridges]);
-
-  const [selectedBridgeId, setSelectedBridgeId] = useState<string>(() => {
-    if (initialBridgeId) return initialBridgeId;
-    const online = normalizedBridges.find(
-      (b: any) => b.status === 'online' || b.runtime_status === 'online'
-    );
-    return String(
-      online?.bridge_id ||
-        online?.bridgeId ||
-        online?.id ||
-        normalizedBridges[0]?.bridge_id ||
-        normalizedBridges[0]?.bridgeId ||
-        normalizedBridges[0]?.id ||
-        'local'
-    );
-  });
-
-  useEffect(() => {
-    if (isOpen) {
-      setError('');
-      if (initialBridgeId) {
-        setSelectedBridgeId(initialBridgeId);
-      } else if (!selectedBridgeId && normalizedBridges.length > 0) {
-        const online = normalizedBridges.find(
-          (b: any) => b.status === 'online' || b.runtime_status === 'online'
-        );
-        setSelectedBridgeId(
-          String(
-            online?.bridge_id ||
-              online?.bridgeId ||
-              online?.id ||
-              normalizedBridges[0]?.bridge_id ||
-              normalizedBridges[0]?.bridgeId ||
-              normalizedBridges[0]?.id ||
-              'local'
-          )
-        );
-      }
-    }
-  }, [isOpen, initialBridgeId, normalizedBridges]);
-
-  const activeBridgeInfo = useMemo(() => {
-    return getBridgeDisplay(selectedBridgeId, normalizedBridges);
-  }, [selectedBridgeId, normalizedBridges]);
-
-  const handlePick = async (chosenPath: string) => {
-    if (!chainId) {
-      setError('Task chain ID is required to link directory');
-      return;
-    }
-    if (!chosenPath) {
-      setError('Please choose a valid directory path');
-      return;
-    }
-    setError('');
-    try {
-      const res = await addChainDirectory({
-        chainId,
-        path: chosenPath,
-        bridgeId: selectedBridgeId,
-      }).unwrap();
-
-      const newDirId =
-        res?.directory_id ||
-        res?.directoryId ||
-        res?.data?.directory_id ||
-        res?.data?.directoryId;
-
-      onClose();
-      if (newDirId) {
-        onDirectoryAdded(String(newDirId));
-      }
-    } catch (err: any) {
-      setError(
-        String(err?.data?.error || err?.error || err?.message || 'Failed to add directory')
-      );
-    }
-  };
-
-  if (!isOpen) return null;
-
-  return (
-    <div
-      data-debug-id="add-chain-directory-modal-backdrop"
-      role="presentation"
-      // REQ-MODAL-2: `app-viewport-height`, not `inset-0` — see the OVERLAYS note in `src/ui/styles.css`.
-      className="fixed inset-x-0 top-0 app-viewport-height z-modal flex items-center justify-center bg-surface-overlay/80 p-4 backdrop-blur-sm"
-      onClick={onClose}
-    >
-      <div
-        ref={panelRef}
-        tabIndex={-1}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Add Directory to Task Chain"
-        data-debug-id="add-chain-directory-modal"
-        className="flex max-h-[calc(var(--app-viewport-height)*0.9)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-subtle bg-surface shadow-overlay outline-none"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between border-b border-subtle px-4 py-3">
-          <div className="flex items-center gap-2">
-            <span className="grid h-7 w-7 place-items-center rounded-md bg-accent/15 text-accent">
-              <Icon name="folder" size={16} />
-            </span>
-            <div>
-              <h2 className="text-sm font-semibold text-primary">Add Directory to Task Chain</h2>
-              <p className="text-[11px] text-muted">Select a bridge host and browse to link a workspace directory</p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close dialog"
-            className="grid h-7 w-7 place-items-center rounded-md text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
-          >
-            <Icon name="close" size={14} />
-          </button>
-        </div>
-
-        {/* Bridge Selector (strictly NO native select tags) */}
-        <div className="flex flex-col gap-2 border-b border-subtle bg-surface-overlay/40 px-4 py-3">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-muted">Select Bridge Host:</span>
-            <span className="text-[11px] text-faint">
-              Active: <span className="font-semibold text-primary">{activeBridgeInfo.name}</span>
-            </span>
-          </div>
-          <div data-debug-id="add-chain-dir-bridge-selector" className="flex flex-wrap items-center gap-2">
-            {normalizedBridges.map((b: any) => {
-              const bId = String(b.bridge_id || b.bridgeId || b.id || '');
-              const bInfo = getBridgeDisplay(bId, normalizedBridges);
-              const isSelected = selectedBridgeId === bInfo.id;
-              return (
-                <button
-                  key={bInfo.id}
-                  type="button"
-                  data-debug-id={`add-chain-dir-bridge-option-${bInfo.id}`}
-                  onClick={() => setSelectedBridgeId(bInfo.id)}
-                  className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs transition-colors ${
-                    isSelected
-                      ? 'border-accent bg-accent/10 text-primary font-semibold shadow-xs'
-                      : 'border-subtle bg-surface text-muted hover:border-subtle-hover hover:text-primary'
-                  }`}
-                >
-                  <span
-                    className={`h-2 w-2 rounded-full shrink-0 ${
-                      bInfo.isOnline ? 'bg-success shadow-xs' : 'bg-muted/40'
-                    }`}
-                  />
-                  <span className="truncate">{bInfo.name}</span>
-                  <span className="font-mono text-[10.5px] text-faint">({bInfo.id})</span>
-                  <span
-                    data-debug-id={`bridge-online-badge-${bInfo.id}`}
-                    className={`rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${
-                      bInfo.isOnline
-                        ? 'bg-success/15 text-success'
-                        : 'bg-muted/15 text-muted'
-                    }`}
-                  >
-                    {bInfo.isOnline ? 'online' : 'offline'}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {error ? (
-          <div
-            data-debug-id="add-chain-dir-error"
-            className="flex items-center gap-2 border-b border-danger/30 bg-danger/10 px-4 py-2 text-xs text-danger"
-          >
-            <Icon name="alert" size={14} className="shrink-0" />
-            <span className="flex-1">{error}</span>
-            <button
-              type="button"
-              onClick={() => setError('')}
-              className="text-danger hover:opacity-80"
-            >
-              <Icon name="close" size={12} />
-            </button>
-          </div>
-        ) : null}
-
-        <div className="flex-1 overflow-y-auto p-4">
-          <BridgeDirectoryPicker
-            debugId="add-chain-dir-picker"
-            bridgeId={selectedBridgeId}
-            bridgeLabel={activeBridgeInfo.name}
-            onPick={handlePick}
-            onClose={onClose}
-          />
         </div>
       </div>
     </div>

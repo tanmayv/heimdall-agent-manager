@@ -10,8 +10,6 @@ import domain "odin_test:hub/domain"
 import platform "odin_test:hub/platform"
 import iface "odin_test:hub/repository/iface"
 import ownership "odin_test:hub/service/ownership"
-import taskchain_service "odin_test:hub/service/taskchain"
-import taskv2 "odin_test:hub/service/taskv2"
 import jsonx "odin_test:lib/jsonx"
 import content_service "odin_test:hub/service/content"
 import project_service "odin_test:hub/service/project"
@@ -126,51 +124,6 @@ validate_card_operations :: proc(ops_json: string) -> (bool, string) {
 	return true, ""
 }
 
-// op_review_input reads a task.review op's optional verdict (approve |
-// request_changes; default approve), summary and findings (a JSON array, inline
-// or as a string). request_changes needs a summary, matching reject_card. Used
-// by validate_op_required_args (create / update / accept) and the accept_card
-// executor so both read the op the same way. findings_json uses temp_allocator.
-op_review_input :: proc(op_obj: json.Object) -> (taskv2.Review_Input, bool, string) {
-	input := taskv2.Review_Input{
-		task_id       = op_arg_string(op_obj, "task_id"),
-		verdict       = strings.trim_space(op_arg_string(op_obj, "verdict")),
-		summary       = op_arg_string(op_obj, "summary"),
-		findings_json = "[]",
-	}
-	if op_has_arg(op_obj, "verdict") && input.verdict == "" do return {}, false, "\"verdict\" must be \"approve\" or \"request_changes\""
-	switch input.verdict {
-	case "": input.verdict = "approve"
-	case "approve", "request_changes":
-	case: return {}, false, fmt.tprintf("unknown verdict %q (want \"approve\" or \"request_changes\")", input.verdict)
-	}
-	if input.verdict == "request_changes" && strings.trim_space(input.summary) == "" {
-		return {}, false, "verdict \"request_changes\" requires a non-empty \"summary\" (say what needs to change)"
-	}
-	if op_has_arg(op_obj, "findings") {
-		v: json.Value
-		if args_obj, is_args := op_obj["args"].(json.Object); is_args {
-			if av, present := args_obj["findings"]; present do v = av
-		}
-		if v == nil do v = op_obj["findings"]
-		#partial switch f in v {
-		case json.Array:
-			data, merr := json.marshal(v, allocator = context.temp_allocator)
-			if merr != nil do return {}, false, "\"findings\" could not be encoded"
-			input.findings_json = string(data)
-		case json.String:
-			if strings.trim_space(string(f)) != "" {
-				if !is_valid_json_array(string(f)) do return {}, false, "\"findings\" must be a JSON array"
-				input.findings_json = string(f)
-			}
-		case json.Null:
-		case:
-			return {}, false, "\"findings\" must be a JSON array"
-		}
-	}
-	return input, true, ""
-}
-
 op_field_missing :: proc(field: string) -> string { return fmt.tprintf("missing required field \"%s\"", field) }
 
 // validate_op_required_args holds the per-op required-field rules. Every case here
@@ -178,14 +131,9 @@ op_field_missing :: proc(field: string) -> string { return fmt.tprintf("missing 
 // unrecognized op name is rejected so unknown ops are caught at create, not accept.
 validate_op_required_args :: proc(op_name: string, op_obj: json.Object) -> (bool, string) {
 	switch op_name {
-	case "agent.start":
-		if op_arg_string(op_obj, "task_id") == "" do return false, op_field_missing("task_id")
-	case "task.review", "task.answer":
-		if op_arg_string(op_obj, "task_id") == "" do return false, op_field_missing("task_id")
-		if !op_has_arg(op_obj, "attempt_no") do return false, op_field_missing("attempt_no")
-		if op_name == "task.review" {
-			if _, ok, reason := op_review_input(op_obj); !ok do return false, reason
-		}
+	case "agent.start", "task.review", "task.answer", "task_chain.set_status":
+		// Hub task chains are removed: these Hub task-engine ops no longer execute.
+		return false, "Hub task chains are removed; this card operation is no longer supported"
 	case "memory.approve", "memory.reject", "memory.update", "memory.delete", "memory.archive":
 		if op_arg_string(op_obj, "memory_id") == "" && op_arg_string(op_obj, "id") == "" do return false, op_field_missing("memory_id")
 	case "memory.create":
@@ -193,9 +141,6 @@ validate_op_required_args :: proc(op_name: string, op_obj: json.Object) -> (bool
 		if op_arg_string(op_obj, "body") == "" do return false, op_field_missing("body")
 	case "issue.create":
 		if op_arg_string(op_obj, "title") == "" do return false, op_field_missing("title")
-	case "task_chain.set_status":
-		if op_arg_string(op_obj, "chain_id") == "" && op_arg_string(op_obj, "id") == "" do return false, op_field_missing("chain_id")
-		if op_arg_string(op_obj, "status") == "" do return false, op_field_missing("status")
 	case "project.update":
 		if op_arg_string(op_obj, "project_id") == "" && op_arg_string(op_obj, "id") == "" do return false, op_field_missing("project_id")
 		if op_arg_string(op_obj, "name") == "" && op_arg_string(op_obj, "description") == "" do return false, "requires at least one of \"name\" or \"description\""
@@ -215,16 +160,6 @@ validate_op_required_args :: proc(op_name: string, op_obj: json.Object) -> (bool
 		return false, fmt.tprintf("unsupported card operation: %s", op_name)
 	}
 	return true, ""
-}
-
-chain_status_str :: proc(st: domain.Task_Chain_Status) -> string {
-	switch st {
-	case .Active: return "active"
-	case .Completed: return "completed"
-	case .Cancelled: return "cancelled"
-	case .Archived: return "archived"
-	}
-	return "active"
 }
 
 Card_Input :: struct {
@@ -277,7 +212,6 @@ Card_Filter :: struct {
 Card_Service :: struct {
 	cards:       ^iface.Card_Repository,
 	projects:    ^iface.Project_Repository,
-	taskchains:  ^taskchain_service.Taskchain_Service,
 	content:     ^content_service.Content_Service,
 	project_svc: ^project_service.Project_Service,
 	agents:      ^agent_service.Agent_Service,
@@ -298,7 +232,6 @@ Card_Service :: struct {
 new_card_service :: proc(
 	cards:       ^iface.Card_Repository,
 	projects:    ^iface.Project_Repository,
-	taskchains:  ^taskchain_service.Taskchain_Service = nil,
 	content:     ^content_service.Content_Service = nil,
 	project_svc: ^project_service.Project_Service = nil,
 	agents:      ^agent_service.Agent_Service = nil,
@@ -310,7 +243,6 @@ new_card_service :: proc(
 	return Card_Service{
 		cards       = cards,
 		projects    = projects,
-		taskchains  = taskchains,
 		content     = content,
 		project_svc = project_svc,
 		agents      = agents,
@@ -412,8 +344,7 @@ sync_projected_cards :: proc(s: ^Card_Service, owner: domain.User_ID) {
 		default_ttl = platform.expires_at_after_seconds(24 * 3600)
 	}
 
-	// Task cards come only from the write-through projector (card_projector.odin,
-	// taskv2.user_attention); there is no list-time task provider.
+	// Hub task cards are gone with the Hub task engine; there is no task provider.
 
 	// Memory-proposal deterministic provider. Superseded by the projector
 	// (card_projector.odin) whenever that is wired.
@@ -501,44 +432,12 @@ evaluate_guard :: proc(s: ^Card_Service, owner: domain.User_ID, card: domain.Car
 	obj, is_obj := val.(json.Object)
 	if !is_obj do return false, "guard must be a JSON object"
 
-	task_id := json_obj_string(obj, "task_id")
-	expected_status := json_obj_string(obj, "expected_status")
-
-	if task_id != "" {
-		if s.taskchains == nil || s.taskchains.repo == nil do return false, "task repository not configured"
-		task, task_ok, _ := iface.taskchain_get_task(s.taskchains.repo, domain.Task_ID(task_id))
-		if !task_ok || task.owner_user_id != owner {
-			return false, "referenced task does not exist"
-		}
-		if card.provider == CARD_PROVIDER_TASK_PLACEMENT {
-			return placement_card_guard(s, task, card), "placement observation changed"
-		}
-		if expected_status != "" {
-			actual_status := domain.task_state_string(task.state)
-			if actual_status != expected_status {
-				return false, fmt.tprintf("task state is %s, expected %s", actual_status, expected_status)
-			}
-		}
-		// The card was computed for one attempt and one kind of attention (a
-		// review or a block); a newer attempt or a different need makes it stale.
-		if v, has := obj["expected_attempt"]; has {
-			if n, is_num := v.(json.Float); is_num && int(n) != task.attempt_no {
-				return false, fmt.tprintf("task is on attempt %d, the card was for attempt %d", task.attempt_no, int(n))
-			} else if n, is_int := v.(json.Integer); is_int && int(n) != task.attempt_no {
-				return false, fmt.tprintf("task is on attempt %d, the card was for attempt %d", task.attempt_no, int(n))
-			}
-		}
-		// Consistency with the projector: a task card only belongs on the user's
-		// feed while the task awaits the user (taskv2.user_attention).
-		kind, _ := task_user_attention(s, task)
-		if kind == .None do return false, "task no longer awaits you"
-		if want := json_obj_string(obj, "expected_attention"); want != "" && want != ("review" if kind == .Review else "blocked") {
-			return false, "task now needs something else from you"
-		}
-		if want := json_obj_string(obj, "expected_block"); want != "" && want != attention_task_block_id(task) {
-			return false, "the task is blocked on something newer"
-		}
+	// A card guarded on a Hub task or chain is stale: the Hub task engine and
+	// its chains are removed.
+	if json_obj_string(obj, "task_id") != "" || json_obj_string(obj, "chain_id") != "" {
+		return false, "Hub task chains are removed"
 	}
+	expected_status := json_obj_string(obj, "expected_status")
 
 	mem_id := json_obj_string(obj, "memory_proposal_id")
 	if mem_id == "" do mem_id = json_obj_string(obj, "memory_id")
@@ -551,21 +450,6 @@ evaluate_guard :: proc(s: ^Card_Service, owner: domain.User_ID, card: domain.Car
 		if expected_status != "" {
 			if mem.status != expected_status {
 				return false, fmt.tprintf("memory status is %s, expected %s", mem.status, expected_status)
-			}
-		}
-	}
-
-	chain_id := json_obj_string(obj, "chain_id")
-	if chain_id != "" {
-		if s.taskchains == nil || s.taskchains.repo == nil do return false, "taskchain repository not configured"
-		chain, chain_ok, _ := iface.taskchain_get_chain(s.taskchains.repo, domain.Task_Chain_ID(chain_id))
-		if !chain_ok || chain.owner_user_id != owner {
-			return false, "referenced chain does not exist"
-		}
-		if expected_status != "" {
-			actual_status := chain_status_str(chain.status)
-			if actual_status != expected_status {
-				return false, fmt.tprintf("chain status is %s, expected %s", actual_status, expected_status)
 			}
 		}
 	}
@@ -616,7 +500,7 @@ get_card :: proc(s: ^Card_Service, auth: contracts.Auth_Context, id: domain.Card
 	c, ok, err := iface.card_get(s.cards, id)
 	if !ok {
 		id_str := string(id)
-		if strings.has_prefix(id_str, "crd_task_") || strings.has_prefix(id_str, "crd_mem_") || strings.has_prefix(id_str, ATTENTION_PLACEMENT_CARD_PREFIX) {
+		if strings.has_prefix(id_str, "crd_task_") || strings.has_prefix(id_str, "crd_mem_") {
 			sync_projected_cards(s, owner)
 			c, ok, err = iface.card_get(s.cards, id)
 			if !ok do return domain.Card{}, false, err
@@ -695,8 +579,8 @@ update_card_status :: proc(s: ^Card_Service, auth: contracts.Auth_Context, id: d
 update_card :: proc(s: ^Card_Service, auth: contracts.Auth_Context, id: domain.Card_ID, input: Card_Update_Input) -> (domain.Card, bool, domain.Domain_Error) {
 	card, ok, err := get_card(s, auth, id)
 	if !ok do return domain.Card{}, false, err
-	if card.provider == CARD_PROVIDER_TASK_PLACEMENT && (input.has_operations || input.has_guard || input.has_provider || input.has_source_refs) {
-		return {}, false, domain.domain_error(.Conflict, "placement cards are source-backed; use placement recovery")
+	if card.provider == domain.CARD_PROVIDER_TASK_PLACEMENT && (input.has_operations || input.has_guard || input.has_provider || input.has_source_refs) {
+		return {}, false, domain.domain_error(.Conflict, "placement cards are source-backed")
 	}
 
 	if input.has_title {
@@ -760,32 +644,6 @@ Card_Decision :: struct {
 	replacement_agent_id: string,
 }
 
-// task_card_op: the op a task card advertises (task.review | task.answer), "" for
-// a card from before Task System v2 (task.vote), which no longer executes.
-task_card_op :: proc(card: domain.Card) -> string {
-	if strings.contains(card.operations_json, `"op":"agent.start"`) do return "agent.start"
-	if strings.contains(card.operations_json, `"op":"task.answer"`) do return "task.answer"
-	if strings.contains(card.operations_json, `"op":"task.review"`) do return "task.review"
-	return ""
-}
-
-// check_task_card_guard re-checks a task card against the live task; a stale
-// card is retired to resolved and the caller gets a Conflict.
-check_task_card_guard :: proc(s: ^Card_Service, card: domain.Card) -> (domain.Task, bool, domain.Domain_Error) {
-	guard_ok, guard_reason := evaluate_guard(s, card.owner_user_id, card)
-	if !guard_ok || task_card_op(card) == "" {
-		if guard_ok do guard_reason = "this legacy card is no longer supported"
-		now := platform.clock_now(s.clock)
-		_, _ = iface.card_update_status(s.cards, card.card_id, domain.CARD_STATUS_RESOLVED, now)
-		notify_card_changed(s, card.owner_user_id, card.kind)
-		return domain.Task{}, false, domain.domain_error(.Conflict, fmt.tprintf("card precondition changed: %s", guard_reason))
-	}
-	task_id := jsonx.extract_string(card.guard_json, "task_id", "", true, context.temp_allocator)
-	task, tok, terr := iface.taskchain_get_task(s.taskchains.repo, domain.Task_ID(task_id))
-	if !tok do return domain.Task{}, false, terr
-	return task, true, domain.Domain_Error{}
-}
-
 reject_card :: proc(s: ^Card_Service, auth: contracts.Auth_Context, id: domain.Card_ID, decision := Card_Decision{}) -> (domain.Card, bool, domain.Domain_Error) {
 	card, ok, err := get_card(s, auth, id)
 	if !ok do return domain.Card{}, false, err
@@ -800,19 +658,11 @@ reject_card :: proc(s: ^Card_Service, auth: contracts.Auth_Context, id: domain.C
 	}
 
 	// For provider cards, execute negative action:
-	if card.provider == domain.CARD_PROVIDER_TASK_VALIDATION {
-		// Reject on a review card is Request changes (a gate re-plans with the
-		// summary); it runs through the same guard as Accept so a card from an
-		// older attempt cannot request changes on a newer one. A blocked card is
-		// answered (accept) or its task cancelled, never "rejected".
-		task, tok, terr := check_task_card_guard(s, card)
-		if !tok do return domain.Card{}, false, terr
-		if task_card_op(card) != "task.review" do return domain.Card{}, false, domain.domain_error(.Conflict, "a blocked task is answered or cancelled, not rejected")
-		if strings.trim_space(decision.summary) == "" do return domain.Card{}, false, domain.domain_error(.Validation_Failed, "say what needs to change")
-		if s.taskchains == nil || s.taskchains.engine == nil do return domain.Card{}, false, domain.domain_error(.Internal_Error, "task engine is not configured")
-		findings := decision.findings_json if strings.trim_space(decision.findings_json) != "" else "[]"
-		_, rv_ok, rv_err := taskv2.user_review(s.taskchains.engine, user_auth, task.task_id, taskv2.Review_Input{task_id = string(task.task_id), verdict = "request_changes", summary = decision.summary, findings_json = findings})
-		if !rv_ok do return domain.Card{}, false, rv_err
+	if card.provider == domain.CARD_PROVIDER_TASK_VALIDATION || card.provider == domain.CARD_PROVIDER_TASK_PLACEMENT {
+		now := platform.clock_now(s.clock)
+		_, _ = iface.card_update_status(s.cards, card.card_id, domain.CARD_STATUS_RESOLVED, now)
+		notify_card_changed(s, card.owner_user_id, card.kind)
+		return domain.Card{}, false, domain.domain_error(.Conflict, "card precondition changed: Hub task chains are removed")
 	} else if card.provider == domain.CARD_PROVIDER_MEMORY_PROPOSAL {
 		mem_id := strings.trim_prefix(string(card.card_id), "crd_mem_")
 		if s.content != nil {
@@ -827,10 +677,17 @@ reject_card :: proc(s: ^Card_Service, auth: contracts.Auth_Context, id: domain.C
 accept_card :: proc(s: ^Card_Service, auth: contracts.Auth_Context, id: domain.Card_ID, decision := Card_Decision{}) -> (domain.Card, bool, domain.Domain_Error) {
 	card, ok, err := get_card(s, auth, id)
 	if !ok do return domain.Card{}, false, err
-	if decision.replacement_agent_id != "" && task_card_op(card) != "agent.start" do return {}, false, domain.domain_error(.Validation_Failed, "worker delegation requires a Start agent card")
+	if decision.replacement_agent_id != "" do return {}, false, domain.domain_error(.Validation_Failed, "worker delegation is no longer supported: Hub task chains are removed")
 
 	if card.status != domain.CARD_STATUS_PENDING && card.status != domain.CARD_STATUS_SNOOZED {
 		return domain.Card{}, false, domain.domain_error(.Conflict, fmt.tprintf("card cannot be accepted in status '%s'", card.status))
+	}
+	// Hub task cards outlived their engine: retire them instead of acting.
+	if card.provider == domain.CARD_PROVIDER_TASK_VALIDATION || card.provider == domain.CARD_PROVIDER_TASK_PLACEMENT {
+		now := platform.clock_now(s.clock)
+		_, _ = iface.card_update_status(s.cards, card.card_id, domain.CARD_STATUS_RESOLVED, now)
+		notify_card_changed(s, card.owner_user_id, card.kind)
+		return domain.Card{}, false, domain.domain_error(.Conflict, "card precondition changed: Hub task chains are removed")
 	}
 	// A message card is answered (reply / mark read), never accepted: accepting
 	// it would hide the question without the agent ever hearing back.
@@ -869,26 +726,6 @@ accept_card :: proc(s: ^Card_Service, auth: contracts.Auth_Context, id: domain.C
 		return domain.Card{}, false, domain.domain_error(.Validation_Failed, "operations must be a JSON array")
 	}
 
-	// Start runs its own transaction: failed launch reasons must survive.
-	if len(ops_arr) == 1 {
-		if obj, valid := ops_arr[0].(json.Object); valid && json_obj_string(obj, "op") == "agent.start" {
-			if !contracts.is_user_auth(auth) do return {}, false, domain.domain_error(.Forbidden, "only the user may start a task agent")
-			if s.taskchains == nil || s.taskchains.engine == nil do return {}, false, domain.domain_error(.Internal_Error, "task engine is not configured")
-			task, found, task_err := iface.taskchain_get_task(s.taskchains.repo, domain.Task_ID(op_arg_string(obj, "task_id")))
-			if !found do return {}, false, task_err
-			block_id := attention_task_block_id(task)
-			guard_block := jsonx.extract_string(card.guard_json, "expected_block", "", true, context.temp_allocator)
-			if (guard_block != "" && guard_block != block_id) || (decision.expected_block != "" && decision.expected_block != block_id) {
-				return {}, false, domain.domain_error(.Conflict, "the agent failure changed; reload the card")
-			}
-			if decision.replacement_agent_id != "" && decision.expected_block == "" {
-				return {}, false, domain.domain_error(.Validation_Failed, "delegation requires the displayed failure")
-			}
-			started, start_err := taskv2.start_task_agent(s.taskchains.engine, auth, task.task_id, task.blocked_on_json, decision.replacement_agent_id, taskv2.brief_assignee(task.brief_json), task.attempt_no)
-			if !started do return {}, false, start_err
-			return mark_card_accepted(s, card)
-		}
-	}
 	has_uow := s.uow_factory != nil
 	uow: iface.Unit_Of_Work
 	if has_uow {
@@ -913,41 +750,6 @@ accept_card :: proc(s: ^Card_Service, auth: contracts.Auth_Context, id: domain.C
 		op_name := json_obj_string(op_obj, "op")
 
 		switch op_name {
-		case "task.review", "task.answer":
-			// Task System v2: review posts the user's verdict; Answer clears the
-			// block (the agent's question, a merge conflict, an exhausted budget).
-			// The engine nests its unit of work inside this one.
-			if s.taskchains == nil || s.taskchains.engine == nil {
-				if has_uow do iface.unit_of_work_rollback(&uow)
-				return domain.Card{}, false, domain.domain_error(.Internal_Error, "task engine is not configured")
-			}
-			tid := domain.Task_ID(op_arg_string(op_obj, "task_id"))
-			t_ok := false
-			t_err: domain.Domain_Error
-			if op_name == "task.review" {
-				// args.verdict (default approve), args.summary and args.findings;
-				// validate_card_operations already rejected a bad verdict above.
-				review, r_ok, r_reason := op_review_input(op_obj)
-				if !r_ok {
-					t_err = domain.domain_error(.Validation_Failed, r_reason)
-				} else {
-					_, t_ok, t_err = taskv2.user_review(s.taskchains.engine, user_auth, tid, review)
-				}
-			} else {
-				task, found, gerr := iface.taskchain_get_task(s.taskchains.repo, tid)
-				if !found {
-					t_err = gerr
-				} else if decision.expected_block != "" && decision.expected_block != attention_task_block_id(task) {
-					t_err = domain.domain_error(.Conflict, "the agent has asked something newer; reload the card")
-				} else {
-					_, t_ok, t_err = taskv2.task_answer(s.taskchains.engine, task, taskv2.actor_from_auth(user_auth), decision.note)
-				}
-			}
-			if !t_ok {
-				if has_uow do iface.unit_of_work_rollback(&uow)
-				return domain.Card{}, false, t_err
-			}
-
 		case "memory.approve":
 			mid := op_arg_string(op_obj, "memory_id")
 			if mid == "" do mid = op_arg_string(op_obj, "id")
@@ -1050,21 +852,6 @@ accept_card :: proc(s: ^Card_Service, auth: contracts.Auth_Context, id: domain.C
 			if !u_ok {
 				if has_uow do iface.unit_of_work_rollback(&uow)
 				return domain.Card{}, false, u_err
-			}
-
-		case "task_chain.set_status":
-			cid := op_arg_string(op_obj, "chain_id")
-			if cid == "" do cid = op_arg_string(op_obj, "id")
-			st_str := op_arg_string(op_obj, "status")
-			if s.taskchains == nil {
-				if has_uow do iface.unit_of_work_rollback(&uow)
-				return domain.Card{}, false, domain.domain_error(.Internal_Error, "taskchain service is not configured")
-			}
-			st := taskchain_service.chain_status_from_string(st_str)
-			_, ch_ok, ch_err := taskchain_service.change_chain_status(s.taskchains, user_auth, domain.Task_Chain_ID(cid), st)
-			if !ch_ok {
-				if has_uow do iface.unit_of_work_rollback(&uow)
-				return domain.Card{}, false, ch_err
 			}
 
 		case "issue.create":

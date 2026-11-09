@@ -193,9 +193,8 @@ function base(target: { projectId?: string; chainId?: string; directoryId?: stri
   if (target?.agentInstanceId) {
     return `/agent-instances/${encodeURIComponent(target.agentInstanceId)}/fs`;
   }
-  if (target?.chainId && target?.directoryId && target?.directoryId !== 'primary') {
-    return `/task-chains/${encodeURIComponent(target.chainId)}/directories/${encodeURIComponent(target.directoryId)}/fs`;
-  }
+  // Hub chain directories (/task-chains/<id>/directories/<dir>/fs) are gone
+  // with the Hub task chains; every other target reads the project.
   return `/projects/${encodeURIComponent(target?.projectId || '')}/fs`;
 }
 

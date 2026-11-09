@@ -8,7 +8,7 @@ import { messageOptionsEligible, visibleMessageOptions } from '../chat/types';
 import { selectActiveVaultKey, selectIsVaultUnlocked } from '../../store/vaultSlice';
 import { decryptVaultText, isVaultArmored, getActiveVaultKey } from '../../utils/vaultContent';
 import { VaultText } from '../vault/VaultText';
-import { Icon, Spinner, type IconName } from '@ui';
+import { Icon, type IconName } from '@ui';
 import { heimdallApi } from '../../api/heimdallApi';
 import {
   ATTENTION_RANGES,
@@ -23,14 +23,11 @@ import {
   type AttentionTaskItem,
 } from '../../api/endpoints/attention';
 import {
-  useAddTaskCommentMutation,
-  useGetTaskChainFleetsQuery,
-  useListAgentIdentitiesQuery,
   useMarkConversationReadMutation,
   useSendConversationMessageMutation,
 } from '../../api/endpoints';
 import { attentionScheduler, type ActionScheduler } from '../../services/attention/actionScheduler';
-import { acceptCard, assignReviewerAgent, cancelTask, markConversationRead, rejectCard, snoozeCard } from '../../services/attention/attentionActions';
+import { acceptCard, markConversationRead, rejectCard, snoozeCard } from '../../services/attention/attentionActions';
 import { ATTENTION_RANGE_LABELS } from '../../services/attention/attentionPrefs';
 import { snoozePresets, toHubTimestamp } from '../../services/attention/snoozePresets';
 import { appendArtifactLinks } from '../../utils/artifactUpload';
@@ -39,11 +36,11 @@ import { useDialogA11y } from '../ui/composites/useDialogA11y';
 import { AttentionCardBody } from './AttentionCardBody';
 import { openBlockerAgent, useResolveBlocker } from './AgentBlockerCard';
 import { AttentionComposer, type ComposerSubmit } from './AttentionComposer';
-import { DECK_TABS, clampIndex, defaultTab, hideKey, nextLiveTab, reviewerCandidates, stepIndex, swipeAxis, swipeDelta, tabCounts, visibleItems, type DeckTab } from './attentionModel';
+import { DECK_TABS, clampIndex, defaultTab, hideKey, nextLiveTab, stepIndex, swipeAxis, swipeDelta, tabCounts, visibleItems, type DeckTab } from './attentionModel';
 
 const NO_ITEMS: AttentionItem[] = [];
 
-type Popover = null | 'snooze' | 'reviewer';
+type Popover = null | 'snooze';
 type Composer = null | 'reply' | 'comment' | 'answer';
 
 /** The deck sheet slides up from the bottom on open and back down on close. */
@@ -287,18 +284,8 @@ export function AttentionDeck({
   };
 
   // Immediate (encrypting) actions.
-  const [addComment] = useAddTaskCommentMutation();
   const [sendMessage] = useSendConversationMessageMutation();
   const [markRead] = useMarkConversationReadMutation();
-
-  // Reviewer menu: fetched on demand when it opens -- the chain's fleet, plus the
-  // agent list for names (and the reviewer-template fallback).
-  const reviewerChainId = open && popover === 'reviewer' && current?.kind === 'task' ? current.action_refs.chain_id : '';
-  const fleetQuery = useGetTaskChainFleetsQuery({ chainId: reviewerChainId }, { skip: !reviewerChainId });
-  const agentsQuery = useListAgentIdentitiesQuery({ limit: 200 }, { skip: !reviewerChainId });
-  const reviewersLoading = !!reviewerChainId && (fleetQuery.isFetching || agentsQuery.isFetching) && !(fleetQuery.data && agentsQuery.data);
-  const reviewersError = !reviewersLoading && (fleetQuery.isError || agentsQuery.isError);
-  const reviewers = fleetQuery.data && agentsQuery.data ? reviewerCandidates(fleetQuery.data, agentsQuery.data.agents || []) : [];
 
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (noticeTimer.current) clearTimeout(noticeTimer.current); }, []);
@@ -341,30 +328,20 @@ export function AttentionDeck({
     setComposer(null);
   };
 
-  const submitComment = async (item: AttentionTaskItem, value: ComposerSubmit, verdict: 'comment' | 'ngtm') => {
+  // Request changes through the card (its guard pins the attempt), with the
+  // reason; on a plan gate this re-plans with it.
+  const submitChanges = async (item: AttentionTaskItem, value: ComposerSubmit) => {
     const body = appendArtifactLinks(value.text, value.attachments.map((a) => a.link)).trim();
-    const { chain_id: chainId, task_id: taskId } = item.action_refs;
-    if (verdict === 'ngtm') {
-      scheduler.settle(hideKey(item));
-      setSlide('right');
-      try {
-        // Through the card (its guard pins the attempt): Request changes with the
-        // reason; on a plan gate this re-plans with it.
-        await rejectCard(item.card_id, false, { summary: body });
-      } catch (err) {
-        scheduler.unsettle(hideKey(item));
-        throw err;
-      }
-      invalidate();
-      say('Changes requested');
-    } else {
-      await (addComment({ chainId, taskId, body }) as any).unwrap();
-      invalidate();
-      say('Comment posted');
-      // A comment does not settle the review, so the card stays in the deck;
-      // move on to the next one anyway.
-      go(1);
+    scheduler.settle(hideKey(item));
+    setSlide('right');
+    try {
+      await rejectCard(item.card_id, false, { summary: body });
+    } catch (err) {
+      scheduler.unsettle(hideKey(item));
+      throw err;
     }
+    invalidate();
+    say('Changes requested');
     setComposer(null);
   };
 
@@ -424,19 +401,12 @@ export function AttentionDeck({
     { key: 'o', label: 'Open ticket', icon: 'arrow-right', debug: 'open', run: () => openSource(current) },
   ] : current.kind === 'task' && current.details.attention === 'blocked' ? [
     { key: 'a', label: needsAgentStart(current) ? 'Start agent' : 'Answer', icon: 'chat', tone: 'success', debug: 'answer', run: () => { if (needsAgentStart(current)) { void agentStart.start(current); return; } setPopover(null); setComposer(composer === 'answer' ? null : 'answer'); } },
-    { key: 'c', label: 'Comment', icon: 'chat', debug: 'comment', run: () => { setPopover(null); setComposer(composer === 'comment' ? null : 'comment'); } },
     { key: 's', label: 'Snooze', icon: 'clock', debug: 'snooze', run: () => { setComposer(null); setPopover(popover === 'snooze' ? null : 'snooze'); } },
-    { key: 'x', label: 'Cancel ticket', icon: 'stop', tone: 'danger', debug: 'cancel-task', run: () => schedule(current, 'Ticket cancelled', (k) => cancelTask((current as AttentionTaskItem).action_refs, k)) },
     { key: 'o', label: 'Open', icon: 'arrow-right', debug: 'open', run: () => openSource(current) },
   ] : current.kind === 'task' ? [
     { key: 'a', label: 'Approve', icon: 'check', tone: 'success', debug: 'approve', run: () => schedule(current, 'Approved', (k) => acceptCard(current.card_id, k)) },
-    { key: 'c', label: 'Comment', icon: 'chat', debug: 'comment', run: () => { setPopover(null); setComposer(composer === 'comment' ? null : 'comment'); } },
-    ...(current.details.badge === 'gate' ? [] : [
-      { key: 'r', label: 'Reviewer', icon: 'bot' as IconName, debug: 'reviewer', run: () => { setComposer(null); setPopover(popover === 'reviewer' ? null : 'reviewer'); } },
-    ]),
+    { key: 'c', label: 'Request changes', icon: 'pencil', debug: 'request-changes', run: () => { setPopover(null); setComposer(composer === 'comment' ? null : 'comment'); } },
     { key: 's', label: 'Snooze', icon: 'clock', debug: 'snooze', run: () => { setComposer(null); setPopover(popover === 'snooze' ? null : 'snooze'); } },
-    // Cancels the task itself (the card resolves with it), so it says so.
-    { key: 'x', label: 'Cancel ticket', icon: 'stop', tone: 'danger', debug: 'cancel-task', run: () => schedule(current, 'Ticket cancelled', (k) => cancelTask((current as AttentionTaskItem).action_refs, k)) },
     { key: 'o', label: 'Open', icon: 'arrow-right', debug: 'open', run: () => openSource(current) },
   ] : current.kind === 'memory' ? [
     { key: 'a', label: 'Approve', icon: 'check', tone: 'success', debug: 'approve', run: () => schedule(current, 'Memory approved', (k) => acceptCard(current.card_id, k)) },
@@ -630,13 +600,11 @@ export function AttentionDeck({
                 {composer === 'comment' && current.kind === 'task' ? (
                   <AttentionComposer
                     debugId="attention-comment"
-                    placeholder="Write a comment…"
+                    placeholder="What should change?"
                     originKind="task_comment"
                     originRef={`${current.action_refs.chain_id}:${current.action_refs.task_id}`}
-                    submitLabel="Comment"
-                    secondaryLabel={current.details.attention === 'blocked' ? undefined : 'Request changes'}
-                    onSubmit={(v) => submitComment(current, v, 'comment')}
-                    onSecondary={(v) => submitComment(current, v, 'ngtm')}
+                    submitLabel="Request changes"
+                    onSubmit={(v) => submitChanges(current, v)}
                     onCancel={() => setComposer(null)}
                   />
                 ) : null}
@@ -674,39 +642,6 @@ export function AttentionDeck({
             </div>
           ) : null}
 
-          {popover === 'reviewer' && current?.kind === 'task' ? (
-            <div role="menu" data-debug-id="attention-reviewer-menu" data-no-drag className="absolute bottom-2 left-1/2 z-10 max-h-64 w-72 -translate-x-1/2 overflow-y-auto rounded-[var(--radius-md)] border border-subtle bg-surface p-1 shadow-panel">
-              <p className="px-2 py-1 text-[11px] uppercase tracking-wide text-faint">
-                Hand the review to{reviewers.length > 0 ? (reviewers[0].source === 'fleet' ? ' · this chain\'s fleet' : ' · reviewer agents') : ''}
-              </p>
-              {reviewersLoading ? (
-                <p data-debug-id="attention-reviewer-loading" className="flex items-center gap-2 px-2 py-1.5 text-[12px] text-muted">
-                  <Spinner size="sm" label="Finding reviewers…" /> Finding reviewers…
-                </p>
-              ) : reviewersError ? (
-                <p data-debug-id="attention-reviewer-error" className="px-2 py-1.5 text-[12px] text-danger">
-                  Couldn't load agents.{' '}
-                  <button type="button" className="underline" onClick={() => { fleetQuery.refetch(); agentsQuery.refetch(); }}>Retry</button>
-                </p>
-              ) : reviewers.length === 0 ? (
-                <p data-debug-id="attention-reviewer-empty" className="px-2 py-1.5 text-[12px] text-muted">No reviewer agents set up for this chain.</p>
-              ) : (
-                reviewers.map((r) => (
-                  <button
-                    key={r.agentId}
-                    role="menuitem"
-                    type="button"
-                    data-debug-id="attention-reviewer-option"
-                    onClick={() => schedule(current, `Handed to ${r.name}`, (k) => assignReviewerAgent(current.action_refs, { agentId: r.agentId, displayName: r.name }, k))}
-                    className="flex w-full items-center gap-2 rounded-[var(--radius-sm)] px-2 py-1.5 text-left text-[13px] text-primary hover:bg-surface-raised"
-                  >
-                    <Icon name="bot" size={14} />
-                    <span className="truncate">{r.name}</span>
-                  </button>
-                ))
-              )}
-            </div>
-          ) : null}
         </div>
 
         {/* Quick replies sit outside the scrolling card, just above the arrows, so a
@@ -748,7 +683,7 @@ export function AttentionDeck({
 
         <nav aria-label="Card actions" data-debug-id="attention-deck-dock" data-attention-dock className="mx-4 mb-4 flex justify-around rounded-[var(--radius-lg)] border border-subtle bg-surface-raised px-1 py-1.5" style={{ visibility: current ? 'visible' : 'hidden' }}>
           {dock.map((d) => current && needsAgentStart(current) && d.debug === 'answer' ? (
-            <StartAgentAction key={current.card_id} item={current.kind === 'task' ? current : undefined} onDelegate={(id) => void agentStart.start(current, id)} debugPrefix="attention" onStart={() => void agentStart.start(current)} {...agentStart.states[current.card_id]} />
+            <StartAgentAction key={current.card_id} debugPrefix="attention" onStart={() => void agentStart.start(current)} {...agentStart.states[current.card_id]} />
           ) : (
             <button
               key={d.debug}

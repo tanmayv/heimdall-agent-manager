@@ -15,6 +15,7 @@ legacy_source_guard_inventory :: proc(t:^testing.T) {
     if !testing.expect(t,opened) do return
     defer close(&conn)
     migrated,err:=run_migrations(&conn)
+    _ = legacy_fixture_allow_seeding(&conn)
     if !testing.expectf(t,migrated,"migration: %s",err.message) do return
     rows,ok:=legacy_metadata(&conn,`SELECT m.name,p.name FROM sqlite_master m JOIN pragma_table_info(m.name) p
       WHERE m.type='table' AND p.name IN ('chain_id','task_chain_id','task_id','conversation_id') ORDER BY m.name,p.name`,2)
@@ -35,6 +36,7 @@ legacy_source_guard_inventory :: proc(t:^testing.T) {
 }
 
 legacy_seed_source :: proc(t:^testing.T,conn:^Conn) -> domain.Legacy_Migration_Selection {
+    _ = legacy_fixture_allow_seeding(conn)
     testing.expect(t,exec(conn,`INSERT INTO task_chains(chain_id,owner_user_id,title,kind,created_at,updated_at)
       VALUES('chain','account','source','mixed_work','time','time'),('other','account','other','mixed_work','time','time');
       INSERT INTO tasks(task_id,chain_id,owner_user_id,title,created_at,updated_at)
@@ -57,6 +59,7 @@ legacy_test_number :: proc(s:string)->i64 {
 @(test)
 legacy_selection_freeze_cas_replay_and_canonical_write_backstops :: proc(t:^testing.T) {
     conn,opened:=tmpl_clone_migrated(t)
+    _ = legacy_fixture_allow_seeding(&conn)
     if !opened do return
     defer close(&conn)
     s:=legacy_seed_source(t,&conn)
@@ -113,6 +116,7 @@ legacy_source_schema_failure_rolls_back_all_guards_and_marker_then_retries :: pr
             testing.expect(t,exec(&conn,"CREATE TRIGGER owner_legacy_guard_tasks_update BEFORE UPDATE ON tasks BEGIN SELECT 1; END"))
         }
         migrated,_=run_migrations(&conn)
+        _ = legacy_fixture_allow_seeding(&conn)
         testing.expect(t,!migrated)
         testing.expect(t,!sqlite_object_exists(&conn,"owner_legacy_migrations"),"partial schema must roll back")
         testing.expect(t,!migration_applied(&conn,"204_owner_legacy_source_fences.sql"),"failed schema must not be marked applied")
@@ -123,6 +127,7 @@ legacy_source_schema_failure_rolls_back_all_guards_and_marker_then_retries :: pr
             testing.expect(t,exec(&conn,"DROP TRIGGER owner_legacy_guard_tasks_update"))
         }
         migrated,_=run_migrations(&conn)
+        _ = legacy_fixture_allow_seeding(&conn)
         testing.expect(t,migrated)
         testing.expect(t,migration_applied(&conn,"204_owner_legacy_source_fences.sql"))
         rows,ok:=legacy_metadata(&conn,"SELECT title FROM tasks WHERE task_id='task'",1)
@@ -139,6 +144,7 @@ legacy_source_frozen_state_and_write_refusal_survive_real_reopen :: proc(t:^test
     if !testing.expect(t,opened) do return
     defer close(&conn)
     migrated,_:=run_migrations(&conn)
+    _ = legacy_fixture_allow_seeding(&conn)
     if !testing.expect(t,migrated) do return
     s:=legacy_seed_source(t,&conn)
     impl:Taskchain_Repo_SQLite
@@ -151,6 +157,7 @@ legacy_source_frozen_state_and_write_refusal_survive_real_reopen :: proc(t:^test
     conn,opened,_=open(path)
     if !testing.expect(t,opened) do return
     migrated,_=run_migrations(&conn)
+    _ = legacy_fixture_allow_seeding(&conn)
     testing.expect(t,migrated,"ordinary restart cannot implicitly resume a frozen source")
     restored,found,err:=repo.legacy_source_get(repo.ctx,"account","chain")
     testing.expect(t,found && err.code==.None && restored.state=="frozen" && restored.quiescence_digest==proof && restored.revision==2)
@@ -161,6 +168,7 @@ legacy_source_frozen_state_and_write_refusal_survive_real_reopen :: proc(t:^test
 @(test)
 legacy_effect_fence_is_precommit_exact_replay_and_blocks_empty_lease_freeze :: proc(t:^testing.T) {
     conn,opened:=tmpl_clone_migrated(t)
+    _ = legacy_fixture_allow_seeding(&conn)
     if !opened do return
     defer close(&conn)
     s:=legacy_seed_source(t,&conn)
@@ -215,6 +223,7 @@ legacy_test_selection :: proc() -> domain.Legacy_Migration_Selection {
 legacy_effect_command_identity_does_not_relabel_or_merge_dispatches :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
     conn,opened:=tmpl_clone_migrated(t)
+    _ = legacy_fixture_allow_seeding(&conn)
     if !testing.expect(t,opened) do return
     defer close(&conn)
     _=legacy_seed_source(t,&conn)
@@ -258,11 +267,13 @@ legacy_effect_v204_upgrade_retains_unknown_association_and_rolls_back :: proc(t:
     testing.expect(t,written)
     testing.expect(t,exec(&conn,"CREATE TEMP TRIGGER reject_205_marker BEFORE INSERT ON schema_migrations WHEN NEW.version='205_owner_legacy_effect_identity.sql' BEGIN SELECT RAISE(ABORT,'marker failure'); END"))
     migrated,_=run_migrations(&conn)
+    _ = legacy_fixture_allow_seeding(&conn)
     testing.expect(t,!migrated && !migration_applied(&conn,"205_owner_legacy_effect_identity.sql"))
     rows,read:=legacy_metadata(&conn,"SELECT 1 FROM pragma_table_info('owner_legacy_source_effects') WHERE name='command_id'",1)
     testing.expect(t,read && len(rows)==0,"failed migration rolls back added column")
     testing.expect(t,exec(&conn,"DROP TRIGGER reject_205_marker"))
     migrated,_=run_migrations(&conn);testing.expect(t,migrated)
+    _ = legacy_fixture_allow_seeding(&conn)
     rows,read=legacy_metadata(&conn,"SELECT effect_id,input_digest,state,command_id FROM owner_legacy_source_effects",4)
     testing.expect(t,read && len(rows)==1 && rows[0][0]=="old_effect" && rows[0][1]==digest && rows[0][2]=="outstanding" && rows[0][3]=="","old association remains unknown, never inferred from effect ID")
     testing.expect(t,!exec(&conn,"UPDATE owner_legacy_source_effects SET command_id='guessed_old_command'"))
@@ -272,6 +283,7 @@ legacy_effect_v204_upgrade_retains_unknown_association_and_rolls_back :: proc(t:
 legacy_selection_closes_all_ordinary_effect_admission_without_changing_inventory :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
     conn,opened:=tmpl_clone_migrated(t)
+    _ = legacy_fixture_allow_seeding(&conn)
     if !testing.expect(t,opened) do return
     defer close(&conn)
     selection:=legacy_seed_source(t,&conn)
@@ -325,11 +337,13 @@ legacy_close_admission_v205_upgrade_rolls_back_and_retries :: proc(t:^testing.T)
     testing.expect_value(t,repo.legacy_migration_select(repo.ctx,s).code,domain.Error_Code.None)
     testing.expect(t,exec(&conn,"CREATE TEMP TRIGGER reject_206_marker BEFORE INSERT ON schema_migrations WHEN NEW.version='206_owner_legacy_close_admission.sql' BEGIN SELECT RAISE(ABORT,'marker failure'); END"))
     migrated,_=run_migrations(&conn)
+    _ = legacy_fixture_allow_seeding(&conn)
     testing.expect(t,!migrated && !migration_applied(&conn,"206_owner_legacy_close_admission.sql"))
     rows,read:=legacy_metadata(&conn,"SELECT sql FROM sqlite_master WHERE name='owner_legacy_effect_admission'",1)
     testing.expect(t,read && len(rows)==1 && strings.contains(rows[0][0],"NEW.kind='wake'"),"failed upgrade restores original trigger atomically")
     testing.expect(t,exec(&conn,"DROP TRIGGER reject_206_marker"))
     migrated,_=run_migrations(&conn)
+    _ = legacy_fixture_allow_seeding(&conn)
     testing.expect(t,migrated && migration_applied(&conn,"206_owner_legacy_close_admission.sql"))
     rows,read=legacy_metadata(&conn,"SELECT sql FROM sqlite_master WHERE name='owner_legacy_effect_admission'",1)
     testing.expect(t,read && len(rows)==1 && !strings.contains(rows[0][0],"NEW.kind='wake'"))

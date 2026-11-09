@@ -140,8 +140,8 @@ test_title_mutation_live_events_and_flat_listing :: proc(t: ^testing.T) {
 		headers     = alice[:],
 	})
 
-	// 3. Create Task Chain 1
-	chain1_res := api_http.router_dispatch(&graph.router, api_http.Request{
+	// 3. Hub task chains are removed: creation answers 410 hub_chains_removed.
+	chain_res := api_http.router_dispatch(&graph.router, api_http.Request{
 		method      = "POST",
 		path        = "/api/v1/task-chains",
 		body        = `{"title":"Chain Alpha"}`,
@@ -149,34 +149,11 @@ test_title_mutation_live_events_and_flat_listing :: proc(t: ^testing.T) {
 		remote_addr = "127.0.0.1",
 		headers     = alice[:],
 	})
-	testing.expect_value(t, chain1_res.status, 201)
+	testing.expect_value(t, chain_res.status, 410)
+	testing.expect(t, strings.contains(chain_res.body, `"code":"hub_chains_removed"`), "chain creation refused with hub_chains_removed")
+	chain1_id := "chain_owner_alpha"
 
-	chain1_id := ""
-	if cid_idx := strings.index(chain1_res.body, "\"chain_id\":\""); cid_idx >= 0 {
-		rest := chain1_res.body[cid_idx + len("\"chain_id\":\""):]
-		if end := strings.index_byte(rest, '"'); end >= 0 do chain1_id = strings.clone(rest[:end])
-	}
-	defer delete(chain1_id)
-
-	// 4. Create Task Chain 2
-	chain2_res := api_http.router_dispatch(&graph.router, api_http.Request{
-		method      = "POST",
-		path        = "/api/v1/task-chains",
-		body        = `{"title":"Chain Beta"}`,
-		request_id  = "req_tm_6",
-		remote_addr = "127.0.0.1",
-		headers     = alice[:],
-	})
-	testing.expect_value(t, chain2_res.status, 201)
-
-	chain2_id := ""
-	if cid2_idx := strings.index(chain2_res.body, "\"chain_id\":\""); cid2_idx >= 0 {
-		rest := chain2_res.body[cid2_idx + len("\"chain_id\":\""):]
-		if end := strings.index_byte(rest, '"'); end >= 0 do chain2_id = strings.clone(rest[:end])
-	}
-	defer delete(chain2_id)
-
-	inst_body := strings.concatenate({`{"agent_id":"`, agent_id, `","bridge_id":"`, bridge_id, `","chain_id":"`, chain1_id, `","provider":"claude","model":"claude-sonnet-5-5"}`})
+	inst_body := strings.concatenate({`{"agent_id":"`, agent_id, `","bridge_id":"`, bridge_id, `","provider":"claude","model":"claude-sonnet-5-5"}`})
 	defer delete(inst_body)
 	inst_res := api_http.router_dispatch(&graph.router, api_http.Request{
 		method      = "POST",
@@ -209,10 +186,8 @@ test_title_mutation_live_events_and_flat_listing :: proc(t: ^testing.T) {
 		{name = "Authorization", value = bridge_auth_val},
 	}
 
-	// TEST A: agent_action_chain_set_title_handler broadcasts resource_changed (task_chain updated)
+	// TEST A: Hub chain verbs are gone: chain/set-title answers 410.
 	{
-		flush_ws_socket(browser)
-		seq_before := graph.event_bus.event_seq
 		chain_rename_body := strings.concatenate({`{"agent_instance_id":"`, inst_id, `","params":{"chain_id":"`, chain1_id, `","title":"Renamed Chain by Agent"}}`})
 		defer delete(chain_rename_body)
 		chain_rename_res := api_http.router_dispatch(&graph.router, api_http.Request{
@@ -223,14 +198,8 @@ test_title_mutation_live_events_and_flat_listing :: proc(t: ^testing.T) {
 			remote_addr = "127.0.0.1",
 			headers     = bridge_auth_headers[:],
 		})
-		testing.expect_value(t, chain_rename_res.status, 200)
-		testing.expect(t, graph.event_bus.event_seq > seq_before, "event bus seq must increment on agent chain title rename")
-
-		msg_str, recv_ok := drain_matching_ws_event(browser, `"resource":"task_chain"`)
-		defer delete(msg_str)
-		testing.expect(t, recv_ok, "TEST A: browser must receive task_chain WebSocket event frame")
-		testing.expect(t, strings.contains(msg_str, `"change":"updated"`), "TEST A event must specify change=updated")
-		testing.expect(t, strings.contains(msg_str, chain1_id), "TEST A event must contain chain1_id")
+		testing.expect_value(t, chain_rename_res.status, 410)
+		testing.expect(t, strings.contains(chain_rename_res.body, "hub_chains_removed"), "TEST A: typed refusal")
 	}
 
 	// TEST B: agent_action_conversation_set_title_handler broadcasts resource_changed (conversation updated)
@@ -281,49 +250,17 @@ test_title_mutation_live_events_and_flat_listing :: proc(t: ^testing.T) {
 		testing.expect(t, strings.contains(msg_str, conv_id), "TEST C event must contain conversation_id")
 	}
 
-	// TEST D: GET /api/v1/task-chains?flat=1 returns a flat JSON array without preview capping
-	{
-		flat_res := api_http.router_dispatch(&graph.router, api_http.Request{
+	// TEST D: every Hub chain listing shape answers 410 hub_chains_removed.
+	for query in ([]string{"flat=1", "all=1", ""}) {
+		res := api_http.router_dispatch(&graph.router, api_http.Request{
 			method      = "GET",
 			path        = "/api/v1/task-chains",
-			query       = "flat=1",
-			request_id  = "req_tm_flat",
+			query       = query,
+			request_id  = "req_tm_list",
 			remote_addr = "127.0.0.1",
 			headers     = alice[:],
 		})
-		testing.expect_value(t, flat_res.status, 200)
-		testing.expect(t, strings.contains(flat_res.body, "\"data\":[{\"chain_id\":\""), "flat listing must return array of chains directly under data")
-		testing.expect(t, strings.contains(flat_res.body, chain1_id), "flat listing must contain chain1")
-		testing.expect(t, strings.contains(flat_res.body, chain2_id), "flat listing must contain chain2")
-		testing.expect(t, !strings.contains(flat_res.body, "\"chains\":["), "flat listing must not have nested chains array")
-	}
-
-	// TEST E: GET /api/v1/task-chains?all=1 also returns flat format
-	{
-		all_res := api_http.router_dispatch(&graph.router, api_http.Request{
-			method      = "GET",
-			path        = "/api/v1/task-chains",
-			query       = "all=1",
-			request_id  = "req_tm_all",
-			remote_addr = "127.0.0.1",
-			headers     = alice[:],
-		})
-		testing.expect_value(t, all_res.status, 200)
-		testing.expect(t, strings.contains(all_res.body, "\"data\":[{\"chain_id\":\""), "all=1 listing must return flat array of chains")
-		testing.expect(t, !strings.contains(all_res.body, "\"chains\":["), "all=1 listing must not have nested chains array")
-	}
-
-	// TEST F: GET /api/v1/task-chains (default, without flat) returns project-grouped view
-	{
-		grouped_res := api_http.router_dispatch(&graph.router, api_http.Request{
-			method      = "GET",
-			path        = "/api/v1/task-chains",
-			request_id  = "req_tm_grouped",
-			remote_addr = "127.0.0.1",
-			headers     = alice[:],
-		})
-		testing.expect_value(t, grouped_res.status, 200)
-		testing.expect(t, strings.contains(grouped_res.body, "\"project_id\":"), "grouped listing must contain project_id")
-		testing.expect(t, strings.contains(grouped_res.body, "\"chains\":["), "grouped listing must contain nested chains array")
+		testing.expect_value(t, res.status, 410)
+		testing.expect(t, strings.contains(res.body, "hub_chains_removed"), "listing refused")
 	}
 }

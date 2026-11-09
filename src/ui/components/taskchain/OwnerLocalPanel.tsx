@@ -80,12 +80,11 @@ export default function OwnerLocalPanel({ onClose, initialChainId = "", initialB
     return preflight;
   }
   // One-shot move of a legacy Hub chain: this device signs the selection and
-  // genesis; the Hub freezes, the owner imports, the Hub cuts over. A refusal
-  // lists the live work that must settle first and changes nothing.
+  // genesis; the Hub freezes (neutralizing live work), the owner imports, the
+  // Hub cuts over. The result lists the work that was neutralized.
   async function migrate() {
     const s = await current();
     const preflight = await migrationPreflight();
-    if (describeMigrationBlockers(preflight.blockers).length > 0) return;
     if (preflight.state !== 'none' && preflight.owner_bridge_id !== bridge) throw new Error('This chain is already being moved to ' + preflight.owner_bridge_id);
     const request = migration.request && preflight.state !== 'none' ? migration.request : await prepareMigrationRequest(s, chainId, bridge, preflight.work_revision);
     setMigration({ preflight, refusals: [], request });
@@ -147,7 +146,7 @@ export default function OwnerLocalPanel({ onClose, initialChainId = "", initialB
     </fieldset>
     <fieldset className="border border-subtle p-3 my-3">
       <legend>Move a legacy chain to its owner Bridge</legend>
-      <p>One-shot and irreversible: the Hub freezes the chain, the selected Bridge imports it in one transaction, and only after the Hub retires its own writer does the Bridge accept work. Chains with live leases, running workflows, pending reviews or merges are refused until they settle. A failed import leaves the chain frozen; retry the same move.</p>
+      <p>One-shot and irreversible: the Hub freezes the chain, the selected Bridge imports it in one transaction, and only after the Hub retires its own writer does the Bridge accept work. Live work is neutralized first: in-progress tasks are held, live leases are ended, and running workflows and pending merges are cancelled. A failed import leaves the chain frozen; retry the same move.</p>
       <button data-debug-id="owner-local-migration-check" disabled={busy || !chainId} onClick={() => void run(async () => { await migrationPreflight(); })}>Check migration</button>
       <button data-debug-id="owner-local-migration-move" disabled={busy || !bridge || !chainId} onClick={() => void run(migrate)}>Move to Bridge</button>
       <button data-debug-id="owner-local-migration-export" disabled={busy || !migration.request} onClick={() => {
@@ -166,8 +165,10 @@ export default function OwnerLocalPanel({ onClose, initialChainId = "", initialB
       {detail?.migration_id && Array.isArray(detail.items) && <ul data-debug-id="owner-local-migration-archive">{detail.items.map((item: any) => { const r = JSON.parse(item.record); return <li key={item.doc_index + ':' + item.row}>{item.kind === 'review' ? `${r.task_id} attempt ${r.attempt_no}: ${r.verdict} by ${r.reviewer_kind}${r.reviewer_agent_id ? ' ' + r.reviewer_agent_id : ''}${r.role ? ' (' + r.role + ')' : ''} — findings ${r.findings_json}` : item.record}</li>; })}</ul>}
       {detail?.migration_id && detail.next_cursor && <button data-debug-id="owner-local-migration-archive-next" disabled={busy} onClick={() => void run(() => perform('migration.archive.read', { archiveKind: 'review', archiveTaskId: taskId, cursor: detail.next_cursor }))}>Next archived reviews</button>}
       {migration.preflight && <p>State: {migration.preflight.state}{migration.preflight.migration_id ? ' (' + migration.preflight.migration_id + ' to ' + migration.preflight.owner_bridge_id + ')' : ''}; work revision {migration.preflight.work_revision}</p>}
-      {migration.refusals.length > 0 && <div role="alert"><p>Migration refused until this work settles:</p><ul>{migration.refusals.map((r) => <li key={r}>{r}</li>)}</ul></div>}
+      {migration.refusals.length > 0 && <div role="status"><p>Live work on this chain (the move neutralizes it):</p><ul>{migration.refusals.map((r) => <li key={r}>{r}</li>)}</ul></div>}
       {migration.result && <p>Migration {migration.result.state}{migration.result.replayed ? ' (replayed)' : ''}; manifest {migration.result.manifest_digest.slice(0, 12)}…; {migration.result.activation_sent ? 'owner Bridge notified' : 'owner Bridge activates on reconnect'}</p>}
+      {migration.result && describeMigrationBlockers(migration.result.neutralized).length > 0 && <div data-debug-id="owner-local-migration-neutralized"><p>Neutralized by the move:</p><ul>{describeMigrationBlockers(migration.result.neutralized).map((r) => <li key={r}>{r}</li>)}</ul></div>}
+      {migration.result && (migration.result.forced_held?.length ?? 0) > 0 && <p data-debug-id="owner-local-migration-forced-held">{migration.result.forced_held!.length} tasks force-held: {migration.result.forced_held!.join(', ')}</p>}
     </fieldset>
     <div className="flex flex-wrap gap-3">
       {(['context.read', 'workflow.coordinator', 'workflow.cancel', 'workflow.gate', 'workflow.define', 'workflow.run', 'workflow.retry', 'workflow.read', 'source.observe', 'source.consume', 'source.ack', 'source.retire', 'source.resolve', 'source.escalate', 'source.read', 'dependency.edit', 'review.roles', 'task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'chain.edit', 'task.edit', 'task.delete', 'chain.search', 'chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post'] as const).map((method) => <button key={method} data-debug-id={'owner-local-' + method.replace('.', '-')} disabled={busy || !bridge} onClick={() => void run(() => perform(method))}>{{ 'context.read': 'Read full context evidence', 'workflow.coordinator': 'Bind workflow coordinator', 'workflow.cancel': 'Cancel workflow execution', 'workflow.gate': 'Record workflow gate verdict', 'workflow.define': 'Save workflow definition', 'workflow.run': 'Start workflow', 'workflow.retry': 'Retry workflow', 'workflow.read': 'Read workflows', 'source.observe': 'Record source fact', 'source.consume': 'Record source result', 'source.ack': 'Acknowledge source', 'source.retire': 'Retire source', 'source.resolve': 'Close resolved source card', 'source.escalate': 'Escalate source', 'source.read': 'Read pending sources', 'dependency.edit': 'Edit dependency', 'review.roles': 'Configure required review roles', 'task.hold': 'Hold task', 'task.release': 'Release hold', 'task.cancel': 'Cancel task', 'task.reopen': 'Reopen task', 'task.resolve': 'Resolve human block', 'merge.retry': 'Retry unchanged merge', 'submission.read': 'Read submission attempt', 'chain.edit': 'Edit chain', 'task.edit': 'Edit task', 'task.delete': 'Delete unstarted task', 'chain.search': 'Search chain', 'chain.create': 'Create chain', 'task.create': 'Create task', 'task.comment': 'Add comment', 'chain.read': 'Read chain', 'task.read': 'Read task', 'fleet.edit': 'Assign local instance', 'runtime.read': 'Read runtime', 'lifecycle.configure': 'Configure review and merge', 'requirements.edit': 'Save requirements', 'review.post': 'Record human verdict' }[method]}</button>)}

@@ -1,8 +1,6 @@
 import { announceTaskChainCreated } from './taskChainCreationEvents';
 import { analytics } from '../analytics/analytics';
 import { heimdallApi, HEIMDALL_TAG_TYPES } from './heimdallApi';
-import { tasksApi } from './endpoints/tasks';
-import { normalizeChain, workspaceApi } from './endpoints/workspace';
 import { chatEndpoints } from './endpoints/chats';
 import { agentsApi, patchAgentCachesFromWs } from './endpoints/agents';
 import { agentsLiveApi } from './endpoints/agentsLive';
@@ -17,15 +15,12 @@ import {
 import { patchMemoryCachesFromWs } from './endpoints/memory';
 import { bridgeSupportApi } from './endpoints/bridgeSupport';
 import { AGENT_BLOCKERS_CHANGE } from '../components/extension/blockersModel';
-import { upsertTaskInList, upsertTaskLogEvent } from './taskCache';
 import { attentionEventReceived } from '../store/attentionSlice';
 import { announcePaneVaultLocked } from '../utils/vaultLockedError';
 import { runMcpWorker } from '../services/mcpWorker';
 import { GUIDE_AGENT_ID, appendMessage, chatEventReceived, patchChatMessageStatus } from '../store/chatSlice';
-import { wsChainViewRefreshRequested } from '../store/chainViewSlice';
 import { wsRefreshRequested } from '../store/homeSlice';
 import { auditEndedReceived, auditStartedReceived, memoryEventReceived } from '../store/memorySlice';
-import { taskEventReceived } from '../store/taskSlice';
 import { shellSessionEventReceived } from '../store/shellSlice';
 import { agentActionReceived } from '../store/agentActivitySlice';
 import { fireNotificationForWsEvent } from '../services/notificationService';
@@ -36,73 +31,14 @@ import { clearDirtyMarks, deferIfHidden } from './paneDeferral';
 import { requestChainTokenUsageRefresh } from './chainTokenUsageRefresh';
 
 // Focus context read at WS-event time (populated by the shell from the live
-// route). Only focusedChainId is consumed — it lets a resource/chat/agent event
-// for the chain the user is currently viewing trigger an extra chain-view
-// refresh. Other former fields (selectedAgentId, visibleChatAgentId,
+// route). focusedChainId drove the Hub chain-view refresh, which is gone with
+// the Hub task chains; the field is kept for callers. Other former fields (selectedAgentId, visibleChatAgentId,
 // focusedCoordinatorAgentInstanceId, guidePanelOpen) were never populated and had
 // no live consumer, so they were removed; foreground notification suppression now
 // derives the open conversation from the route hash inside notificationService.
 type WsCtx = {
   focusedChainId?: string;
 };
-
-// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-function normalizeTask(task: any) {
-  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-  const result: any = {
-    id: task.task_id,
-    taskId: task.task_id,
-    chainId: task.chain_id || '',
-    title: task.title || '',
-    priority: task.priority || 'normal',
-    status: task.status || 'pending',
-    assigneeAgentInstanceId: task.assignee_agent_instance_id || '',
-    reviewerAgentInstanceId: task.reviewer_agent_instance_id || '',
-    coordinatorAgentInstanceId: task.coordinator_agent_instance_id || '',
-    dependsOn: task.depends_on || '',
-    createdBy: task.created_by || '',
-    createdAtUnixMs: Number(task.created_at_unix_ms || 0),
-    updatedAtUnixMs: Number(task.updated_at_unix_ms || 0),
-    notActionableReason: task.not_actionable_reason || '',
-    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    votes: (task.votes || []).map((vote: any) => ({
-      reviewerAgentInstanceId: vote.reviewer_agent_instance_id,
-      approved: Boolean(vote.approved),
-      comment: vote.comment || '',
-    })),
-    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    participants: (task.participants || []).map((participant: any) => ({
-      agentInstanceId: participant.agent_instance_id,
-      role: participant.role,
-    })),
-    unresolvedCommentCount: Number(task.unresolved_comment_count || 0),
-    commentIds: task.comment_ids || [],
-  };
-  if (task.description !== undefined) {
-    result.description = task.description;
-  }
-  if (task.acceptance_criteria !== undefined) {
-    result.acceptanceCriteria = task.acceptance_criteria;
-  }
-  return result;
-}
-
-// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-function normalizeTaskLogEvent(event: any) {
-  return {
-    eventId: event.event_id || '',
-    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-    kind: event.kind || event.event || '',
-    taskId: event.task_id || '',
-    chainId: event.chain_id || '',
-    status: event.status || '',
-    body: event.body || '',
-    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-    authorAgentInstanceId: event.author_agent_instance_id || event.changed_by || '',
-    createdUnixMs: Number(event.created_unix_ms || 0),
-    commentId: event.comment_id || '',
-  };
-}
 
 type ChatMessage = {
   id: string;
@@ -218,147 +154,16 @@ function applyChatMessageToCaches(dispatch: any, message: ChatMessage, rawMessag
   }
 }
 
-type InFlightTaskEntry = {
-  inFlight: boolean;
-  pending: boolean;
-};
-
-const inFlightTasks = new Map<string, InFlightTaskEntry>();
-
-// Directly patches a task into RTK Query caches (fetchTask, fetchChainTaskDetail,
-// fetchTaskChainDetail, and fetchChainTasks) so the sidebar task chain overview and
-// thread page progress update in real time without a manual page refresh.
-export function patchTaskInChainCaches(dispatch: any, normalizedTask: any, explicitChainId?: string) {
-  if (!normalizedTask?.taskId && !normalizedTask?.id) return;
-  const taskId = String(normalizedTask.taskId || normalizedTask.id);
-  const chainId = String(explicitChainId || normalizedTask.chainId || '');
-
-  // 1. Update fetchTask query
-  dispatch(tasksApi.util.upsertQueryData('fetchTask', { taskId }, { task: normalizedTask }));
-
-  if (chainId) {
-    // 2. Update fetchChainTaskDetail query (used when task detail/description is expanded)
-    dispatch(tasksApi.util.upsertQueryData('fetchChainTaskDetail', { chainId, taskId }, { task: normalizedTask }));
-
-    // 3. Patch fetchTaskChainDetail query (used by TaskChainOverview in the sidebar and thread page)
-    dispatch(tasksApi.util.updateQueryData('fetchTaskChainDetail', { chainId }, (draft: any) => {
-      if (!draft?.chain) return;
-      const list = draft.chain.tasks || (draft.chain.tasks = []);
-      const idx = list.findIndex((t: any) => String(t.taskId || t.id) === taskId);
-      if (idx >= 0) {
-        list[idx] = { ...list[idx], ...normalizedTask };
-      } else {
-        list.push(normalizedTask);
-      }
-    }));
-
-    // 4. Patch fetchChainTasks query
-    dispatch(tasksApi.util.updateQueryData('fetchChainTasks', { chainId }, (draft: any) => {
-      if (!draft) return;
-      upsertTaskInList(draft.tasks || (draft.tasks = []), normalizedTask);
-    }));
-  }
-}
-
-// Auto-loads the single corresponding task from the server with in-flight deduplication
-// and coalescing. If multiple WS events arrive for the same task in rapid succession,
-// exactly one request is in-flight at a time, followed by at most one pending re-fetch.
-export function autoLoadTaskFromWs(dispatch: any, chainId: string, taskId: string): void {
-  if (!taskId) return;
-  const key = `${chainId || ''}:${taskId}`;
-  const existing = inFlightTasks.get(key);
-  if (existing?.inFlight) {
-    existing.pending = true;
-    return;
-  }
-  inFlightTasks.set(key, { inFlight: true, pending: false });
-
-  const executeFetch = () => {
-    const fetchAction = chainId
-      ? tasksApi.endpoints.fetchChainTaskDetail.initiate({ chainId, taskId }, { subscribe: false, forceRefetch: true })
-      : tasksApi.endpoints.fetchTask.initiate({ taskId }, { subscribe: false, forceRefetch: true });
-
-    dispatch(fetchAction)
-      .unwrap()
-      .then((data: any) => {
-        const rawTask = data?.task;
-        if (!rawTask) return;
-        const normalized = rawTask.taskId ? rawTask : normalizeTask(rawTask);
-        patchTaskInChainCaches(dispatch, normalized, chainId);
-      })
-      .catch((_err: any) => {
-        /* silent catch: network failure or task was deleted */
-      })
-      .finally(() => {
-        const entry = inFlightTasks.get(key);
-        if (entry?.pending) {
-          entry.pending = false;
-          executeFetch();
-        } else {
-          inFlightTasks.delete(key);
-        }
-      });
-  };
-
-  executeFetch();
-}
-
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function handleTaskEvent(dispatch: any, payload: any) {
-  dispatch(taskEventReceived(payload));
-  if (payload.chain) {
-    const chain = normalizeChain(payload.chain);
-    if (chain.chainId) {
-      dispatch(workspaceApi.util.upsertQueryData('fetchChain', { chainId: chain.chainId }, { chain }));
-      // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-      dispatch(workspaceApi.util.updateQueryData('listChains', undefined, (draft: any) => {
-        const rows = draft?.chains || (draft.chains = []);
-        // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-        const index = rows.findIndex((item: any) => item.chainId === chain.chainId);
-        if (index >= 0) rows[index] = { ...rows[index], ...chain };
-        else rows.unshift(chain);
-      }));
-    }
-  }
-
   // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   const taskId = String(payload.task_id || payload.task?.task_id || '');
   // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   const chainId = String(payload.chain_id || payload.chain?.chain_id || payload.task?.chain_id || '');
   dispatch(wsRefreshRequested(`task_event:${chainId || taskId || 'unknown'}`));
 
-  if (payload.task && taskId) {
-    patchTaskInChainCaches(dispatch, normalizeTask(payload.task), chainId);
-  } else if (taskId) {
-    autoLoadTaskFromWs(dispatch, chainId, taskId);
-  }
-
-  // Chain-level list count invalidation only. Do NOT invalidate { type: 'Chain', id: chainId }
-  // or { type: 'ChainTasks', id: chainId } to prevent reloading all tasks in the chain.
+  // Hub task caches are gone with the Hub task board; only list counts refresh.
   dispatch(heimdallApi.util.invalidateTags([{ type: 'ChainList', id: 'ALL' }]));
-  if (taskId) {
-    dispatch(heimdallApi.util.invalidateTags([{ type: 'TaskLog', id: taskId }]));
-  }
-
-  if (taskId) {
-    const eventRecord = normalizeTaskLogEvent(payload);
-    const patchLog = (args: { taskId: string; limit?: number }) => {
-      // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-      dispatch(tasksApi.util.updateQueryData('fetchTaskLog', args, (draft: any) => {
-        if (!draft) return;
-        const events = draft.events || (draft.events = []);
-        const inserted = upsertTaskLogEvent(events, eventRecord);
-        if (inserted) draft.total = Number(draft.total || 0) + 1;
-      }));
-    };
-    patchLog({ taskId });
-    patchLog({ taskId, limit: 50 });
-    dispatch(heimdallApi.util.invalidateTags([
-      { type: 'Task', id: taskId },
-      { type: 'TaskLog', id: taskId },
-      { type: 'TaskComments', id: taskId },
-    ]));
-  }
 }
 
 function dispatchSearchTitleUpsert(
@@ -619,7 +424,6 @@ function handleChatEvent(dispatch: any, payload: any, ctx: WsCtx) {
     });
   }
   const eventChainId = String(payload.chain_id || '');
-  const focusedChainId = String(ctx.focusedChainId || '');
   const hasInlineMessage = Boolean(payload.message);
   const message = hasInlineMessage ? normalizeChatMessage(payload.message) : null;
   const direction = String(payload.direction || payload.message?.direction || '');
@@ -638,7 +442,6 @@ function handleChatEvent(dispatch: any, payload: any, ctx: WsCtx) {
     if (!isStatusOnlyEvent && direction !== 'agent_to_agent') expireConversationOptions(conversationId);
     const messageId = String(payload.fetch_id || payload.message_id || '');
     queueMessageInvalidation(dispatch, conversationId, [{ type: 'Chat', id: conversationId }], messageId);
-    if (eventChainId) dispatch(wsChainViewRefreshRequested(`chat_event:${focusedChainId || eventChainId}:${messageId}`));
     return;
   }
   if (isStatusOnlyEvent) {
@@ -654,9 +457,6 @@ function handleChatEvent(dispatch: any, payload: any, ctx: WsCtx) {
       dispatch(chatEndpoints.endpoints.fetchChatMessage.initiate({ messageId }, { subscribe: false })).unwrap().catch(() => undefined);
     }
     return;
-  }
-  if (eventChainId) {
-    dispatch(wsChainViewRefreshRequested(`chat_event:${focusedChainId || eventChainId}:${payload.message_id || ''}`));
   }
 
   if (message && agentId) {
@@ -717,9 +517,6 @@ function handleAgentActionEvent(dispatch: any, payload: any) {
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function handleMergeDecisionPending(dispatch: any, payload: any, ctx: WsCtx) {
   const chainId = String(payload.chain_id || '');
-  if (chainId && ctx.focusedChainId === chainId) {
-    dispatch(wsChainViewRefreshRequested(`merge_decision_pending:${chainId}`));
-  }
   if (chainId) {
     dispatch(heimdallApi.util.invalidateTags([
       { type: 'Workspace', id: chainId },
@@ -735,9 +532,6 @@ function handleAgentEvent(dispatch: any, payload: any, ctx: WsCtx) {
   const agentId = String(payload.target_agent_instance_id || payload.agent_instance_id || payload.agent?.agent_instance_id || payload.record?.agent_instance_id || '');
   patchAgentCachesFromWs(dispatch, payload);
   dispatch(wsRefreshRequested(`${payload.type}:${agentId}`));
-  if (ctx.focusedChainId) {
-    dispatch(wsChainViewRefreshRequested(`${payload.type}:${agentId}`));
-  }
 }
 
 // UI-BE-7: the hub's event bus (src/hub/service/events/event_bus.odin) emits a
@@ -983,11 +777,6 @@ function handleResourceChanged(dispatch: any, payload: any, ctx: WsCtx) {
           : [{ type: 'Task', id: taskId }]);
         return;
       }
-      // Auto-load the specific updated task with in-flight deduplication and patch caches:
-      if (taskId) {
-        autoLoadTaskFromWs(dispatch, chainId, taskId);
-      }
-
       // Granular tag invalidation: invalidate Task, TaskLog, TaskComments for taskId,
       // ChainList ('ALL') for chain-level task count rollups, and PINNED_LIST + GROUPED_LIST
       // so sidebar chain attention badges and rollups clear dynamically without full refresh.
@@ -1004,9 +793,6 @@ function handleResourceChanged(dispatch: any, payload: any, ctx: WsCtx) {
         tags.push({ type: 'TaskComments', id: taskId });
       }
       dispatch(heimdallApi.util.invalidateTags(tags));
-      if (chainId && ctx.focusedChainId === chainId) {
-        dispatch(wsChainViewRefreshRequested(`resource_changed:task:${taskId || resourceId}`));
-      }
       return;
     }
     case 'task_chain': {
@@ -1037,9 +823,6 @@ function handleResourceChanged(dispatch: any, payload: any, ctx: WsCtx) {
       if (chainChange.startsWith('workflow_') && chainId) {
         const runId = String(summary.workflow_run_id || '');
         queueInvalidation(dispatch, [{ type: 'WorkflowRuns', id: chainId }, ...(runId ? [{ type: 'WorkflowRuns', id: runId }] : [])]);
-      }
-      if (chainId && ctx.focusedChainId === chainId) {
-        dispatch(wsChainViewRefreshRequested(`resource_changed:task_chain:${chainId}`));
       }
       const rawTitle = String(
         summary.title ||
@@ -1112,9 +895,6 @@ function handleResourceChanged(dispatch: any, payload: any, ctx: WsCtx) {
         { type: 'WorkflowRuns', id: resourceId },
         ...(chainId ? [{ type: 'WorkflowRuns', id: chainId }] : []),
       ]);
-      if (chainId && ctx.focusedChainId === chainId) {
-        dispatch(wsChainViewRefreshRequested(`resource_changed:workflow_run:${resourceId}`));
-      }
       return;
     }
     case 'agent_id':
@@ -1189,7 +969,6 @@ export function resyncAfterReconnect(dispatch: any) {
   // signals, which no tag reaches. The conversation pane re-anchors its older pages
   // when the refetched newest page no longer overlaps them (AgentChatPane).
   dispatch(shellSessionEventReceived({ sessionId: '' }));
-  dispatch(wsChainViewRefreshRequested('user_ws_resync'));
 }
 
 // Attention deck: attention_changed is an invalidation hint only ({kinds}, no

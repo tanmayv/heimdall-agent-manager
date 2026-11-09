@@ -15,13 +15,24 @@ Legacy_Source_Fence :: struct {
     state,quiescence_digest:string,
     revision,generation:i64,
     manifest_digest,receipt_digest:string,
+    // What the import neutralized before the freeze (JSON array of
+    // Legacy_Migration_Blocker) and the task ids it force-held (JSON array).
+    neutralized_json,forced_held_json:string,
 }
 
-// R3 one-shot import. A blocker refuses selection before any write; codes are
-// stable for the UI and ham-ctl.
+// R3 one-shot import. The Hub engine is removed, so busy work no longer refuses
+// selection: the import neutralizes it in the freeze transaction and records
+// what it did with the same {code,count,items} shape. Codes are stable for the
+// UI and ham-ctl.
 Legacy_Migration_Blocker :: struct { code:string, count:i64, items:[]string }
 // Verbatim export of one frozen chain. manifest_digest is the import identity.
 Legacy_Migration_Export :: struct {
     manifest,manifest_digest:string,
     documents:[]string,
+}
+// One legacy Hub chain as Import all lists it. state: none|draining|frozen|imported.
+Legacy_Chain_Row :: struct {
+    chain_id,title,status:string,
+    work_revision,task_count:i64,
+    state,migration_id,owner_bridge_id:string,
 }

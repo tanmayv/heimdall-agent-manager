@@ -127,38 +127,8 @@ record_activity_and_maybe_nudge :: proc(s: ^Content_Service, conversation_id: st
 	c.last_activity_at = now
 	c.updated_at = now
 	iface.content_save_conversation(s.content, c)
-	// Conversation titles are deprecated: a conversation outside any chain has no
-	// title to nudge for (REQ-TN-A).
-	if c.chain_id == "" || s.taskchains == nil do return
-	chain, chain_ok, _ := iface.taskchain_get_chain(s.taskchains, domain.Task_Chain_ID(c.chain_id))
-	if !chain_ok do return
-	chain.last_activity_at = now
-	chain.updated_at = now
-	if saved, saved_ok, _ := iface.taskchain_save_chain(s.taskchains, chain); saved_ok do chain = saved
-
-	// 2) Evaluate the CHAIN's nudge gate. Eligibility is agent ACTIVITY alone — any
-	// real message in the conversation (no human required).
-	has_activity := conversation_has_any_activity(s, c)
-	now_ms, _ := platform_rfc3339_to_unix_ms(now)
-	last_activity_ms, _ := platform_rfc3339_to_unix_ms(chain.last_activity_at)
-	last_nudge_ms, _ := platform_rfc3339_to_unix_ms(chain.last_title_nudge_at)
-	decision := evaluate_title_nudge(chain.title_source, has_activity, last_activity_ms, last_nudge_ms, now_ms, s.title_nudge_cooldown_seconds)
-	if !decision.should_nudge do return
-
-	// 3) Resolve the coordinator; skip WITHOUT stamping unless it is live (REQ-TN-B/D).
-	if s.agents == nil do return
-	members, members_err := iface.taskchain_list_members_by_chain(s.taskchains, chain.chain_id, chain.owner_user_id)
-	if members_err.code != .None do return
-	target_id := title_nudge_coordinator_instance(members, chain.coordinator_agent_instance_id)
-	if target_id == "" do return
-	inst, inst_ok, _ := iface.agent_get_instance(s.agents, target_id)
-	if !inst_ok || !title_nudge_target_is_live(inst) do return
-
-	// 4) Deliver ONE nudge; stamp the chain only when the bridge accepted it.
-	if !deliver_title_nudge(s, inst, string(chain.chain_id)) do return
-	chain.last_title_nudge_at = now
-	chain.updated_at = now
-	iface.taskchain_save_chain(s.taskchains, chain)
+	// Chain titles are Bridge-owned (the Hub task-chain engine is removed): the
+	// Hub no longer tracks chain activity or nudges a coordinator for a title.
 }
 
 // deliver_title_nudge sends a single title-nudge runtime command to the chain

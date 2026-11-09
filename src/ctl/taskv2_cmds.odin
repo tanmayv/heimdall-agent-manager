@@ -681,6 +681,11 @@ ctl_owner_summary_view :: proc(show_json: string) -> (string, bool) {
 	auth, has := chain["authority"].(json.Object)
 	if !has || ctl_json_str(auth, "kind") != "owner" do return "", false
 	summary, _ := chain["summary"].(json.String)
+	// The owner Bridge returns ciphertext when it cannot decrypt (vault locked):
+	// refuse rather than print an envelope as if it were the summary.
+	if strings.has_prefix(string(summary), "vault:") {
+		return json_object(json_kv_raw("ok", "false"), json_kv("code", "vault_locked"), json_kv("message", "the owner Bridge could not decrypt the chain summary (vault locked); unlock the Bridge vault and retry")), true
+	}
 	version := ctl_json_str(chain, "summary_version")
 	if version == "" do version = "0"
 	data := json_object(json_kv("chain_id", ctl_json_str(chain, "chain_id")), json_kv("summary", string(summary)), json_kv("version", version), json_kv("authority", "owner"))
@@ -698,23 +703,17 @@ ctl_v2_task_chain_summary :: proc(endpoint, token: string, tokens, args: []strin
 		// agent.task_chain.show carries it (agent.rest.request would reach the Hub).
 		show_params := "{}"
 		if chain_id != "" do show_params = json_object(json_kv("chain_id", chain_id))
-		if show, shown := ctl_agent_local_call(endpoint, token, "agent.task_chain.show", show_params); shown {
-			if view, is_owner := ctl_owner_summary_view(show); is_owner {
-				fmt.println(view)
-				return
-			}
-			if chain_id == "" do chain_id = ctl_json_str(ctl_json_data_object(show), "chain_id")
+		show, shown := ctl_agent_local_call(endpoint, token, "agent.task_chain.show", show_params)
+		if !shown { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
+		if view, is_owner := ctl_owner_summary_view(show); is_owner {
+			fmt.println(view)
+			if strings.contains(view, `"ok":false`) do os.exit(1)
+			return
 		}
-		if chain_id == "" {
-			if res, ok := ctl_agent_local_call(endpoint, token, "agent.context.get", "{}"); ok do chain_id = extract_json_string_unescaped(res, "chain_id", "", context.temp_allocator)
-		}
-		if chain_id == "" do ctl_print_error_exit("task-chain summary get: could not resolve the chain; pass --chain <id>")
-		response, ok := ctl_agent_rest_local(endpoint, token, {method = .GET, path = ctl_api("task-chains", chain_id, "summary")})
-		if !ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
-		keyring, key_ok := ctl_read_vault_keyring(args, context.temp_allocator)
-		fmt.println(ctl_decrypt_json_string(response, keyring, key_ok))
-		if strings.contains(response, `"ok":false`) do os.exit(1)
-		return
+		// Hub task chains are removed: every chain is Bridge-owned, so a reply
+		// that is not an owner chain is an error, never a Hub fallback.
+		if strings.contains(show, `"ok":false`) { fmt.println(show); os.exit(1) }
+		ctl_print_error_exit("task-chain summary get: not a Bridge-owned chain (Hub task chains are removed); pass --chain <owner chain id>")
 	case .Write:
 	}
 	stdin_text := ""
@@ -849,10 +848,6 @@ Ctl_Fleet_Pause_Body :: struct {
 	roles: []string `json:"roles"`,
 }
 
-ctl_v2_fleet_pause_body :: proc(args: []string) -> Ctl_Fleet_Pause_Body {
-	return {roles = ctl_multi_values(args, "--role", "--roles")}
-}
-
 // Ctl_Fleet_Set_Body: PUT /api/v1/task-chains/<id>/fleets/<agent>. Placement
 // fields are presence-checked (an explicit empty value is sent).
 Ctl_Fleet_Set_Body :: struct {
@@ -865,59 +860,6 @@ Ctl_Fleet_Set_Body :: struct {
 	model:            Maybe(string) `json:"model,omitempty"`,
 	bridge_models:    json.Value    `json:"bridge_models,omitempty"`,
 }
-
-ctl_v2_fleet_set_body :: proc(args: []string, bridge_models_file_json := "") -> (body: Ctl_Fleet_Set_Body, ok: bool) {
-	capacity_str := option_value(args, "--capacity", "")
-	roles := ctl_multi_values(args, "--role", "--roles")
-	has_placement := len(roles) > 0 || has_flag(args, "--bridge") || has_flag(args, "--bridge-id") || has_flag(args, "--provider") || has_flag(args, "--model") || has_flag(args, "--bridge-models") || bridge_models_file_json != ""
-	if capacity_str == "" && !has_placement do return {}, false
-
-	// The value is sent as given: the hub rejects capacity < 1 and names the
-	// pause verb (REQ-TV2-5). An unparsable value is a usage error, not 1.
-	body.capacity = 1
-	if capacity_str != "" {
-		c, c_ok := strconv_parse_int_agent(capacity_str)
-		if !c_ok do return {}, false
-		body.capacity = c
-	}
-	if mw := option_value(args, "--min-warm", ""); mw != "" {
-		if v, v_ok := strconv_parse_int_agent(mw); v_ok do body.min_warm = v
-	}
-	if ttl := option_value(args, "--idle-ttl", option_value(args, "--idle-ttl-seconds", "")); ttl != "" {
-		if v, v_ok := strconv_parse_int_agent(ttl); v_ok do body.idle_ttl_seconds = v
-	}
-	body.roles = roles
-	if has_flag(args, "--bridge") || has_flag(args, "--bridge-id") {
-		body.bridge_id = option_value(args, "--bridge", option_value(args, "--bridge-id", ""))
-	}
-	if has_flag(args, "--provider") do body.provider = option_value(args, "--provider", "")
-	if has_flag(args, "--model") do body.model = option_value(args, "--model", "")
-	bm_raw := bridge_models_file_json
-	if bm_raw == "" {
-		bm_raw = strings.trim_space(option_value(args, "--bridge-models", ""))
-	}
-	if bm_raw != "" {
-		bm, bm_ok := ctl_parse_json_document(bm_raw)
-		if !bm_ok do return {}, false
-		body.bridge_models = bm
-	}
-	return body, true
-}
-
-// ---- task fetch ------------------------------------------------------------------
-
-ctl_v2_task_fetch :: proc(endpoint, token: string, tokens, args: []string) {
-	tid := pos(tokens, 1)
-	ref := pos(tokens, 2)
-	if ref == "" do ref = option_value(args, "--ref", "")
-	if tid == "" || ref == "" {
-		fmt.println(`{"ok":false,"message":"task fetch requires <task_id> <ref>; ref is #<event_id>, output:<task_id>, facet:<task_id>:<attempt_no>:<kind>, dir:<dir_id>:<rev>:<path>, <path>@<rev>, or <path>"}`)
-		os.exit(1)
-	}
-	ctl_agent_call_task(endpoint, token, "agent.task.fetch", json_object(json_kv("task_id", tid), json_kv("ref", ref)), args)
-}
-
-// ---- lease peek -------------------------------------------------------------------
 
 // Ctl_Lease_Peek is what the lease verbs need from a `lease next` peek: where
 // the leased task's work lives, for the bridge's vcs enrichment.
@@ -1070,21 +1012,6 @@ Ctl_Workflow_Define_Body :: struct {
 	definition: json.Value `json:"definition"`,
 }
 
-ctl_v2_workflow_define_body :: proc(args: []string, file_text: string) -> (Ctl_Workflow_Define_Body, bool) {
-	trimmed := strings.trim_space(file_text)
-	if trimmed == "" || trimmed[0] != '{' do return {}, false
-	parsed, ok := ctl_parse_json_document(trimmed)
-	if !ok do return {}, false
-	if _, is_obj := parsed.(json.Object); !is_obj do return {}, false
-	return Ctl_Workflow_Define_Body{name = strings.trim_space(option_value(args, "--name", "")), definition = parsed}, true
-}
-
-ctl_v2_workflow_define_params :: proc(args: []string, file_text: string) -> (string, bool) {
-	body, ok := ctl_v2_workflow_define_body(args, file_text)
-	if !ok do return "", false
-	return ctl_json_text(body), true
-}
-
 // ctl_v2_workflow_inputs_value merges the --inputs-file (or a JSON --inputs)
 // object with repeated --input k=v (a flag wins over the file's key). nil when
 // there are no inputs; ok=false on a malformed value. Temp-allocated.
@@ -1135,70 +1062,11 @@ Ctl_Workflow_Run_Body :: struct {
 	prerequisites: []Ctl_Work_Ref `json:"prerequisites"`,
 }
 
-// Run identity is distinct from its containing chain. Creation requires a caller
-// request key so a network retry can never silently create duplicate work.
-ctl_v2_workflow_run_body :: proc(tokens, args: []string, inputs_file_text := "", def_file_text := "") -> (body: Ctl_Workflow_Run_Body, ok: bool) {
-	ref := strings.trim_space(option_value(args, "--ref", pos(tokens, 1)))
-	request_id := strings.trim_space(option_value(args, "--request-id", ""))
-	if ref == "" || request_id == "" || def_file_text != "" do return {}, false
-	for flag in ([?]string{"--file", "--template", "--workflow", "--name", "--project", "--bridge", "--coordinator", "--description"}) { if has_flag(args, flag) do return {}, false }
-	inputs, iok := ctl_v2_workflow_inputs_value(args, inputs_file_text)
-	if !iok do return {}, false
-	if inputs == nil do inputs = make(json.Object, allocator = context.temp_allocator)
-	body = Ctl_Workflow_Run_Body{
-		ref        = ref,
-		request_id = request_id,
-		inputs     = inputs,
-		chain_id   = option_value(args, "--chain", ""),
-		title      = option_value(args, "--title", ""),
-	}
-	prerequisites := ctl_collect_repeated(args, "--after")
-	defer delete(prerequisites)
-	refs := make([dynamic]Ctl_Work_Ref, 0, len(prerequisites), context.temp_allocator)
-	for item in prerequisites {
-		work_ref, valid := ctl_work_ref(item)
-		if !valid do return {}, false
-		append(&refs, work_ref)
-	}
-	body.prerequisites = refs[:]
-	return body, true
-}
-
-ctl_v2_workflow_run_params :: proc(tokens, args: []string, inputs_file_text := "", def_file_text := "") -> (string, bool) {
-	body, ok := ctl_v2_workflow_run_body(tokens, args, inputs_file_text, def_file_text)
-	if !ok do return "", false
-	return ctl_json_text(body), true
-}
-
 // Ctl_Workflow_Status_Params: agent.workflow.status/history/output params.
 Ctl_Workflow_Status_Params :: struct {
 	run_id:       string     `json:"run_id"`,
 	execution_no: Maybe(i64) `json:"execution_no,omitempty"`,
 	stage_key:    string     `json:"stage_key,omitempty"`,
-}
-
-ctl_v2_workflow_status_value :: proc(tokens, args: []string) -> (value: Ctl_Workflow_Status_Params, ok: bool) {
-	value.run_id = strings.trim_space(option_value(args, "--run", pos(tokens, 1)))
-	if no := option_value(args, "--execution", ""); no != "" {
-		n, parsed := strconv.parse_i64(no)
-		if !parsed || n <= 0 do return {}, false
-		value.execution_no = n
-	}
-	return value, true
-}
-
-ctl_v2_workflow_status_params :: proc(tokens, args: []string) -> (run_id, params: string) {
-	value, ok := ctl_v2_workflow_status_value(tokens, args)
-	if !ok do return "", "{}"
-	return value.run_id, ctl_json_text(value)
-}
-
-ctl_v2_workflow_output_params :: proc(tokens, args: []string) -> (run_id, stage_key, params: string, ok: bool) {
-	value, vok := ctl_v2_workflow_status_value(tokens, args)
-	stage := option_value(args, "--stage", pos(tokens, 2))
-	if !vok || value.run_id == "" || stage == "" do return "", "", "", false
-	value.stage_key = stage
-	return value.run_id, stage, ctl_json_text(value), true
 }
 
 // Ctl_Workflow_Retry_Body: POST /api/v1/workflow-runs/<id>/retry and the
@@ -1249,56 +1117,10 @@ ctl_v2_workflow_cancel_params :: proc(tokens, args: []string) -> (run_id, params
 ctl_v2_workflow :: proc(endpoint, token: string, tokens, args: []string) {
 	verb := pos(tokens, 0)
 	switch verb {
-	case "", "templates":
-		ctl_agent_call_task(endpoint, token, "agent.workflow.templates", "{}", args)
-	case "list":
-        params := json_object(json_kv("chain_id", option_value(args, "--chain", "")))
-        ctl_agent_call_task(endpoint, token, "agent.workflow.runs", params, args)
-    case "history":
-        id, params := ctl_v2_workflow_status_params(tokens, args)
-        if id == "" { fmt.println(`{"ok":false,"message":"workflow history requires a run ID"}`); os.exit(1) }
-        ctl_agent_call_task(endpoint, token, "agent.workflow.history", params, args)
-    case "define":
-        file_text := ""
-		path := option_value(args, "--file", pos(tokens, 1))
-		if path != "" {
-			data, err := os.read_entire_file(path, context.allocator)
-			if err != nil {
-				ctl_print_error_exit(fmt.tprintf("--file %s: cannot read", path))
-			}
-			file_text = string(data)
-		} else if has_flag(args, "--stdin") {
-			if data, err := os.read_entire_file("/dev/stdin", context.allocator); err == nil {
-				file_text = string(data)
-			}
-		}
-		params, ok := ctl_v2_workflow_define_params(args, file_text)
-		if !ok {
-			fmt.println(`{"ok":false,"message":"workflow define requires --file <def.json> (or --stdin)"}`)
-			os.exit(1)
-		}
-		ctl_agent_call_task(endpoint, token, "agent.workflow.define", params, args)
-	case "run":
-		in_text, _ := ctl_read_json_file_flag(args, "--inputs-file")
-		def_text, _ := ctl_read_json_file_flag(args, "--file")
-		params, ok := ctl_v2_workflow_run_params(tokens, args, in_text, def_text)
-		if !ok {
-			fmt.println(`{"ok":false,"message":"workflow run requires <ref> --request-id <key> [--chain <id>] [--input k=v] [--after task:<id>|workflow_run:<id>]"}`)
-			os.exit(1)
-		}
-		ctl_agent_call_task(endpoint, token, "agent.workflow.run", params, args)
-	case "status":
-		_, params := ctl_v2_workflow_status_params(tokens, args)
-		defer delete(params)
-		ctl_agent_call_task(endpoint, token, "agent.workflow.status", params, args)
-	case "output":
-		_, _, params, ok := ctl_v2_workflow_output_params(tokens, args)
-		if !ok {
-			fmt.println(`{"ok":false,"message":"workflow output requires <run_id> <stage_key>"}`)
-			os.exit(1)
-		}
-		defer delete(params)
-		ctl_agent_call_task(endpoint, token, "agent.workflow.output", params, args)
+	case "", "templates", "list", "history", "define", "run", "status", "output":
+		// Hub workflows are removed with the Hub task-chain engine; retry and
+		// cancel remain for runs of Bridge-owned chains.
+		ctl_hub_chains_removed_exit(fmt.tprintf("workflow %s", verb if verb != "" else "templates"))
 	case "retry":
 		_, _, params, ok := ctl_v2_workflow_retry_params(tokens, args)
 		if !ok {
@@ -1319,113 +1141,17 @@ ctl_v2_workflow :: proc(endpoint, token: string, tokens, args: []string) {
 
 ctl_workflow_user_mode :: proc(cmd, args: []string) {
 	tokens := cmd[1:] if len(cmd) > 1 else []string{}
-	verb := pos(tokens, 0)
-	if verb == "help" || has_flag(args, "--help") || has_flag(args, "-h") {
+	if pos(tokens, 0) == "help" || has_flag(args, "--help") || has_flag(args, "-h") {
 		print_help_workflow()
 		return
 	}
-	transport, tok := resolve_ctl_transport(args)
-	if !tok do os.exit(1)
-	if transport.kind == .Agent {
-		ctl_v2_workflow(transport.agent_endpoint, transport.agent_token, tokens, args)
-		return
-	}
-	if transport.user_base_url == "" || transport.user_token == "" {
-		fmt.println(`{"ok":false,"message":"workflow in user mode requires --hub-url and --user-token (or HAM_HUB_URL/HEIMDALL_HUB_URL and HAM_HUB_USER_TOKEN/HEIMDALL_USER_TOKEN)"}`)
-		os.exit(1)
-	}
-	switch verb {
-	case "", "templates":
-		ctl_tasks_request_and_decrypt(transport, {method = .GET, path = ctl_api("workflows", "templates")}, args)
-	case "list":
-        cid := option_value(args, "--chain", "")
-        if cid == "" { fmt.println(`{"ok":false,"message":"workflow list requires --chain"}`); os.exit(1) }
-        ctl_tasks_request_and_decrypt(transport, {method = .GET, path = ctl_api("task-chains", cid, "workflow-runs")}, args)
-    case "history":
-        id, _ := ctl_v2_workflow_status_params(tokens, args)
-        if id == "" { fmt.println(`{"ok":false,"message":"workflow history requires a run ID"}`); os.exit(1) }
-        ctl_tasks_request_and_decrypt(transport, {method = .GET, path = ctl_api("workflow-runs", id, "executions")}, args)
-    case "define":
-        file_text := ""
-		path := option_value(args, "--file", pos(tokens, 1))
-		if path != "" {
-			data, err := os.read_entire_file(path, context.allocator)
-			if err != nil {
-				ctl_print_error_exit(fmt.tprintf("--file %s: cannot read", path))
-			}
-			file_text = string(data)
-		} else if has_flag(args, "--stdin") {
-			if data, err := os.read_entire_file("/dev/stdin", context.allocator); err == nil {
-				file_text = string(data)
-			}
-		}
-		body, ok := ctl_v2_workflow_define_body(args, file_text)
-		if !ok {
-			fmt.println(`{"ok":false,"message":"workflow define requires --file <def.json> (or --stdin)"}`)
-			os.exit(1)
-		}
-		ctl_tasks_request_and_decrypt(transport, {method = .POST, path = ctl_api("workflows", "definitions"), body = httpc.json_body(body)}, args)
-	case "run":
-		in_text, _ := ctl_read_json_file_flag(args, "--inputs-file")
-		def_text, _ := ctl_read_json_file_flag(args, "--file")
-		body, ok := ctl_v2_workflow_run_body(tokens, args, in_text, def_text)
-		if !ok {
-			fmt.println(`{"ok":false,"message":"workflow run requires <ref> --request-id <key> [--chain <id>] [--input k=v] [--after task:<id>|workflow_run:<id>]"}`)
-			os.exit(1)
-		}
-		cid := option_value(args, "--chain", "")
-        if cid == "" { fmt.println(`{"ok":false,"message":"workflow run in user mode requires --chain"}`); os.exit(1) }
-        ctl_tasks_request_and_decrypt(transport, {method = .POST, path = ctl_api("task-chains", cid, "workflow-runs"), body = httpc.json_body(body)}, args)
-	case "status":
-		cid, _ := ctl_v2_workflow_status_params(tokens, args)
-		if cid == "" {
-			fmt.println(`{"ok":false,"message":"workflow status requires <run_id>"}`)
-			os.exit(1)
-		}
-		query := []httpc.Query_Param{{"execution_no", option_value(args, "--execution", "0")}}
-		ctl_tasks_request_and_decrypt(transport, {method = .GET, path = ctl_api("workflow-runs", cid), query = query}, args)
-	case "output":
-		cid, stage, _, ok := ctl_v2_workflow_output_params(tokens, args)
-		if !ok || cid == "" {
-			fmt.println(`{"ok":false,"message":"workflow output requires <run_id> <stage_key>"}`)
-			os.exit(1)
-		}
-		query := []httpc.Query_Param{{"stage_key", stage}, {"execution_no", option_value(args, "--execution", "0")}}
-		ctl_tasks_request_and_decrypt(transport, {method = .GET, path = ctl_api("workflow-runs", cid, "output"), query = query}, args)
-	case "retry":
-		body, ok := ctl_v2_workflow_retry_body(tokens, args)
-		if !ok || body.run_id == "" {
-			fmt.println(`{"ok":false,"message":"workflow retry requires <run_id> --expected-revision <n> --reason <text>"}`)
-			os.exit(1)
-		}
-		ctl_tasks_request_and_decrypt(transport, {method = .POST, path = ctl_api("workflow-runs", body.run_id, "retry"), body = httpc.json_body(body)}, args)
-	case "cancel":
-		body, _ := ctl_v2_workflow_cancel_body(tokens, args)
-		if body.run_id == "" {
-			fmt.println(`{"ok":false,"message":"workflow cancel requires <run_id> --execution <number>"}`)
-			os.exit(1)
-		}
-		ctl_tasks_request_and_decrypt(transport, {method = .POST, path = ctl_api("workflow-runs", body.run_id, "cancel"), body = httpc.json_body(body)}, args)
-	case:
-		print_help_workflow()
-	}
+	ctl_hub_chains_removed_exit("workflow")
 }
 
 print_help_workflow :: proc() {
- fmt.println("ham-ctl workflow: runs inside an existing task chain; owner or coordinator controls them")
- fmt.println("  templates | define --file <definition.json>")
- fmt.println("  run <ref> --chain <id> --request-id <key> [--title <text>] [--input k=v ...] [--inputs-file <json>] [--after task:<id>|workflow_run:<id> ...]")
- fmt.println("  list --chain <id>")
- fmt.println("  status <run_id> [--execution <n>]")
- fmt.println("  output <run_id> <stage_key> [--execution <n>]")
- fmt.println("  history <run_id>")
- fmt.println("  retry <run_id> --expected-revision <n> --reason <text>")
+ fmt.println("ham-ctl workflow: Hub workflows are removed with the Hub task-chain engine.")
+ fmt.println("  retry <run_id> --expected-revision <n> --reason <text>   (a run of a Bridge-owned chain)")
  fmt.println("  cancel <run_id> --execution <number> [--reason <text>]")
- fmt.println("Fan-out: a stage may set \"for_each\": \"inputs.<array-input>\" (pass the list via --inputs-file; --input k=v is always a string)")
- fmt.println("  or \"<stage>.outputs[0].<field>\"; at most 256 items per stage. A missing/null input uses its declared default, otherwise invalid")
- fmt.println("  inputs fail before anything is created. An empty array completes the stage with zero tasks.")
- fmt.println("A retry creates a fresh execution. Consumed outputs block retry. Stage retry is unsupported.")
- fmt.println("Agent mode may omit --chain when creating/listing runs; run IDs are always explicit.")
 }
 
 
@@ -1495,4 +1221,12 @@ ctl_migration_request_parse :: proc(raw,chain,owner:string)->(Ctl_Migration_Requ
     get:=contracts.owner_string
     if get(selection,"chain_id")!=chain || get(selection,"owner_bridge_id")!=owner || get(genesis,"chain_id")!=chain || get(genesis,"creation_op")!=get(selection,"migration_id") do return {},false
     return request,true
+}
+
+// ctl_hub_chains_removed_exit: the typed refusal for a verb that only ever
+// reached the removed Hub task-chain engine.
+ctl_hub_chains_removed_exit :: proc(what: string) -> ! {
+	fmt.println(json_object(json_kv_raw("ok", "false"), json_kv("code", "hub_chains_removed"),
+		json_kv("message", fmt.tprintf("%s: Hub task chains are removed; chains are Bridge-owned (import legacy chains from Settings → Bridge)", what))))
+	os.exit(1)
 }

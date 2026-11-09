@@ -18,7 +18,6 @@ import {
   Modal,
   StatusDot,
   runtimeStateFromStatus,
-  runtimeStateLabel,
   runtimeStatusToTone,
 } from '@ui';
 import {
@@ -52,19 +51,11 @@ import {
   useListBridgesQuery,
   type BridgeCapability,
 } from '../../api/endpoints/bridgeSupport';
-import {
-  useFetchChainTasksQuery,
-  useFetchTaskChainConversationQuery,
-  useLazyFetchTaskChainConversationQuery,
-  useFetchTaskChainDetailQuery,
-  useUpdateTaskChainMutation,
-} from '../../api/endpoints/tasks';
 import { chainTargetId } from '../../utils/paneTarget';
 import { selectActiveVaultKey } from '../../store/vaultSlice';
 import type { AuxContent } from '../../store/auxTabId';
 import { buildRouteHash } from '../../utils/appLocation';
 import { buildConversationHash } from '../../utils/conversationUrl';
-import { useRegisterActions } from '../../services/shortcuts/useRegisterActions';
 import { readComposerDraft, writeComposerDraft } from '../../utils/clientPersistence';
 import { conversationConfigurationIssues } from '../../utils/conversationConfigurationValidity';
 import {
@@ -91,7 +82,7 @@ import QuoteSelectionPopover from '../chat/QuoteSelectionPopover';
 import ComposerContextChips from '../chat/ComposerContextChips';
 import { addComposerQuote, removeComposerQuote, consumeComposerQuotes, selectComposerQuotes } from '../../store/composerContextSlice';
 import { quoteLimitError, quotedMessageBody, type QuoteContext } from '../../utils/quoteContext';
-import { VaultText, useDecryptedText } from '../vault/VaultText';
+import { VaultText } from '../vault/VaultText';
 import { resolveRenameTarget } from './renameTarget';
 import { decryptPaneCaptureBody } from '../../utils/vaultChats';
 import { VAULT_LOCKED_MARKER } from '../../utils/vaultCrypto';
@@ -117,7 +108,6 @@ import {
   type ConversationMessagesRead,
 } from '../../api/conversationMessageEvents';
 import { permissionToggleRequest, permissionToggleState } from './permissionToggleModel';
-import { type TaskLike } from '../chat/chainTaskInference';
 import { groupTranscriptMessages, isAgentStartMessage } from '../chat/transcriptGrouping';
 import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from '../chat/types';
 import type { SplitDirection } from '../../tiling/types';
@@ -769,7 +759,6 @@ export function AgentChatPane({
 }: AgentChatPaneProps) {
   const dispatch = useDispatch<any>();
   const reduxStore = useStore<any>();
-  const [resolveQuoteCoordinator] = useLazyFetchTaskChainConversationQuery();
   const [normalSendBusy, setNormalSendBusy] = useState(false);
   const sendingRef = useRef(false);
   const mountedRef = useRef(true);
@@ -809,7 +798,6 @@ export function AgentChatPane({
   usePaneDeferredRefresh(conversationId, paneVisible, messagesQuery.refetch, messagesQuery);
   const [fetchOlderMessages, olderMessagesState] = useLazyFetchConversationMessagesQuery();
   const [updateConversationTitle, updateTitleState] = useUpdateConversationTitleMutation();
-  const [updateTaskChain, updateChainState] = useUpdateTaskChainMutation();
   const [requestPaneCapture, requestPaneCaptureState] = useRequestPaneCaptureMutation();
   const [sendMessage] = useSendConversationMessageMutation();
   const [answerQuestions] = useAnswerConversationQuestionsMutation();
@@ -831,7 +819,7 @@ export function AgentChatPane({
     chainTarget?.chainId || conversation?.chain_id || conversation?.chainId || '',
   );
   const ownTargetId = chainTarget?.chainId ? chainTargetId(chainTarget.chainId) : agentInstanceId;
-  const quoteTargetId = chainTargetId(chainId);
+  const quoteTargetId = ownTargetId;
   const quotes = useSelector((state: any) => selectComposerQuotes(state, ownTargetId));
   const quoteEpoch = useSelector((state: any) => state.composerContext?.epoch ?? 0);
   const quoteFocusRevision = useSelector((state: any) => state.composerContext?.focusTarget === ownTargetId ? state.composerContext.focusRevision : 0);
@@ -847,59 +835,11 @@ export function AgentChatPane({
 
   const configurationInputBlockedRef = useRef(false);
 
-  const chainTasksQuery = useFetchChainTasksQuery({ chainId }, { skip: !chainId });
-  const chainDetailQuery = useFetchTaskChainDetailQuery(
-    { chainId },
-    { skip: !chainId },
-  );
-  const chainProgress = useMemo(() => {
-    const allTasks: TaskLike[] = (chainDetailQuery.data?.chain?.tasks ||
-      chainTasksQuery.data?.tasks ||
-      []) as TaskLike[];
-    const tasks = allTasks.filter((t: TaskLike) => t.status !== 'cancelled');
-    const total = tasks.length;
-    const done = tasks.filter(
-      (t: TaskLike) => t.status === 'validated_good' || t.status === 'completed',
-    ).length;
-    return { total, done };
-  }, [chainDetailQuery.data, chainTasksQuery.data]);
   const rawTitle = String(conversation?.title || '').trim();
   const editableTitle = rawTitle && !looksLikeInternalId(rawTitle) ? rawTitle : title;
-  const chainTitle = String(
-    chainDetailQuery.data?.chain?.title || chainTarget?.title || '',
-  ).trim();
-  // REQ-CR-1: Rename targets the chain title (decrypted, as VaultText shows it) when
-  // this conversation belongs to a chain, else the conversation title.
-  const decryptedChainTitle = useDecryptedText(chainTitle);
-  const renameTarget = resolveRenameTarget({
-    chainId,
-    decryptedChainTitle: decryptedChainTitle.text,
-    chainTitleUnreadable: decryptedChainTitle.isLocked || decryptedChainTitle.isDecrypting,
-    conversationTitle: editableTitle,
-  });
+  const chainTitle = String(chainTarget?.title || '').trim();
+  const renameTarget = resolveRenameTarget({ conversationTitle: editableTitle });
   const renameSeed = renameTarget.seed;
-  // Legacy instance link (REQ-TV2-7): when this instance was its chain's
-  // coordinator and has since been replaced, offer the chain-addressed URL.
-  const chainConversationQuery = useFetchTaskChainConversationQuery(
-    { chainId },
-    { skip: !chainId },
-  );
-  const replacedCoordinator = Boolean(
-    !chainTarget &&
-      chainId &&
-      agentInstanceId &&
-      chainConversationQuery.data?.coordinatorAgentInstanceId &&
-      chainConversationQuery.data.coordinatorAgentInstanceId !== agentInstanceId &&
-      chainConversationQuery.data.replacedCoordinatorInstanceIds.includes(agentInstanceId),
-  );
-  const openCurrentChainCoordinator = () => {
-    const target = chainTargetId(chainId);
-    if (!target) return;
-    if (onSwitchAgent) onSwitchAgent(target);
-    else if (typeof window !== 'undefined') {
-      window.location.hash = buildConversationHash([target]);
-    }
-  };
 
   // agent_instance/* events carry the complete instance summary (status, config,
   // current task, run_count/started_at for restarts) and are patched into this entry.
@@ -1220,7 +1160,6 @@ export function AgentChatPane({
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [chainSelectorOpen, setChainSelectorOpen] = useState(false);
   const [chainSelectorPlacement, setChainSelectorPlacement] = useState<'replace' | 'right' | 'bottom'>('replace');
-  const [chainAgentSwitcherOpen, setChainAgentSwitcherOpen] = useState(false);
 
   useEffect(() => {
     if (!chainSelectorRequest) return;
@@ -1228,52 +1167,6 @@ export function AgentChatPane({
     setChainSelectorOpen(true);
     onChainSelectorRequestHandled?.(chainSelectorRequest.id);
   }, [chainSelectorRequest, onChainSelectorRequestHandled]);
-
-  const chainAgentGroups = useMemo(() => {
-    const chain = chainDetailQuery.data?.chain;
-    const members = (chain?.members || []) as any[];
-    if (!chainId || members.length === 0) return [];
-    const coordinator = String(chain?.coordinatorAgentInstanceId || '');
-    return [
-      {
-        projectId: chainId,
-        projectName: 'Agents in this chain',
-        conversations: members
-          .filter((m) => m?.agentInstanceId)
-          .map((m) => ({
-            conversationId: String(m.agentInstanceId),
-            agentInstanceId: String(m.agentInstanceId),
-            title: String(m.displayName || m.agentInstanceId),
-            agentName: m.displayName ? String(m.displayName) : undefined,
-            isCoordinator: String(m.agentInstanceId) === coordinator,
-            runtimeStatus: m.runtimeStatus || undefined,
-            activityStatus: m.activityStatus || undefined,
-            unreadCount: 0,
-          })),
-      },
-    ];
-  }, [chainDetailQuery.data, chainId]);
-
-  const chainAgentOptions = chainAgentGroups[0]?.conversations || [];
-  const canOpenChainAgentSwitcher = (
-    variant === 'main'
-    && isFocusedPane
-    && Boolean(paneId)
-    && Boolean(chainId)
-    && chainAgentOptions.length > 0
-  );
-  useRegisterActions([{
-    id: `workspace.open-chain-agents.${variant}.${paneId || routeInstanceId}`,
-    title: 'Agents in this task chain',
-    category: 'Workspace',
-    sequence: ['s', 'o', 'a'],
-    isEnabled: () => canOpenChainAgentSwitcher,
-    run: () => {
-      if (!canOpenChainAgentSwitcher) return;
-      setChainAgentSwitcherOpen(true);
-      refetchIfStarted(chainDetailQuery);
-    },
-  }]);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   useEffect(() => {
@@ -1442,14 +1335,6 @@ export function AgentChatPane({
     () => groupTranscriptMessages(chatMessages),
     [chatMessages],
   );
-  const liveChain = chainDetailQuery.data?.chain;
-  const isChainCoordinator = Boolean(chainId) && (
-    String(liveChain?.coordinatorAgentInstanceId || liveChain?.coordinator_agent_instance_id || '') === agentInstanceId ||
-    (liveChain?.members || []).some((member: any) =>
-      String(member.agentInstanceId || member.agent_instance_id || '') === agentInstanceId &&
-      (member.role === 'coordinator' || member.isCoordinator === true))
-  );
-
   const needsStart = runtimeNeedsStart(runtimeStatus);
   const runtimeStopping = runtimeIsStopping(runtimeStatus);
   const runtimeActionBusy =
@@ -1705,13 +1590,7 @@ export function AgentChatPane({
     }
     setTitleError('');
     try {
-      if (renameTarget.kind === 'chain') {
-        // Vault-aware: encrypts the title when the vault is unlocked, and invalidates
-        // the chain detail and chain list tags so the header and sidebar refresh.
-        await updateTaskChain({ chainId, title: next }).unwrap();
-      } else {
-        await updateConversationTitle({ conversationId, title: next }).unwrap();
-      }
+      await updateConversationTitle({ conversationId, title: next }).unwrap();
       setRenaming(false);
     } catch (err: any) {
       setTitleError(errMsg(err, 'Rename failed'));
@@ -2236,9 +2115,7 @@ export function AgentChatPane({
             const epoch = (reduxStore.getState() as any).composerContext?.epoch;
             const generation = routeGeneration.current;
             const capturedKey = selectActiveVaultKey();
-            if (!quoteVaultUnlocked || !quoteTargetId) throw new Error('A chain coordinator and unlocked Vault are required.');
-            const coordinator = await resolveQuoteCoordinator({ chainId }, false).unwrap();
-            if (!coordinator.coordinatorAgentInstanceId || !coordinator.conversationId) throw new Error('The chain coordinator is unavailable.');
+            if (!quoteVaultUnlocked || !quoteTargetId) throw new Error('An unlocked Vault is required.');
             if (!mountedRef.current || generation !== routeGeneration.current || (reduxStore.getState() as any).composerContext?.epoch !== epoch || currentTargetRef.current !== ownTargetId || selectActiveVaultKey() !== capturedKey) throw new Error('The selection changed. Select the text again.');
             const quote: QuoteContext = { version: 1, id: crypto.randomUUID(), selectedText, capturedAt: Date.now(), source: {
               kind: 'agent_message', messageId: message.messageId, conversationId, agentInstanceId, chainId,
@@ -2248,9 +2125,8 @@ export function AgentChatPane({
             const error = quoteLimitError(selectComposerQuotes(reduxStore.getState(), quoteTargetId), quote);
             if (error) throw new Error(error);
             dispatch(addComposerQuote({ target: quoteTargetId, quote }));
-            if (ownTargetId !== quoteTargetId) openCurrentChainCoordinator();
           } : undefined}
-          quoteDisabledReason={!chainId ? 'This message has no chain coordinator.' : !chainConversationQuery.data?.coordinatorAgentInstanceId ? 'The chain coordinator is unavailable.' : ''} />
+          />
         {message.artifactIds && message.artifactIds.length > 0 && (
           <div className="mt-2 flex max-w-full flex-wrap gap-2">
             {message.artifactIds.map((id) => (
@@ -2871,26 +2747,6 @@ export function AgentChatPane({
                   </button>
                 </div>
               ) : null}
-              {replacedCoordinator ? (
-                <div
-                  data-debug-id="conversation-replaced-coordinator"
-                  role="status"
-                  className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-subtle bg-neutral-soft px-3 py-2 text-xs text-muted"
-                >
-                  <span className="min-w-0 flex-1">
-                    This agent no longer coordinates{' '}
-                    <VaultText value={chainTitle} fallback="this task chain" as="span" />.
-                  </span>
-                  <button
-                    type="button"
-                    data-debug-id="conversation-open-chain-coordinator-btn"
-                    onClick={openCurrentChainCoordinator}
-                    className="min-h-9 rounded-lg border border-subtle px-3 text-xs font-medium text-primary hover:bg-surface-raised"
-                  >
-                    Open current coordinator
-                  </button>
-                </div>
-              ) : null}
               {pendingReconfig && stagedConfigurationIssues.length > 0 ? (
                 <div
                   data-debug-id="conversation-apply-blocked-reasons"
@@ -3214,7 +3070,7 @@ export function AgentChatPane({
                 aria-label={renameTarget.saveLabel}
                 title="Save"
                 onClick={() => void saveRenameTitle()}
-                disabled={updateTitleState.isLoading || updateChainState.isLoading || !titleDraft.trim()}
+                disabled={updateTitleState.isLoading || !titleDraft.trim()}
                 className={`grid ${isMobile ? 'h-11 w-11 rounded-full' : 'h-9 w-9 rounded-xl'} shrink-0 place-items-center bg-accent text-accent-fg hover:opacity-90 disabled:opacity-50`}
               >
                 <Icon name="check" size={16} />
@@ -3273,18 +3129,10 @@ export function AgentChatPane({
                 />
               </button>
               <span className="shrink-0 text-faint">/</span>
-              <button
-                type="button"
-                data-debug-id="conversation-chain-agent-switcher-btn"
+              <span
+                data-debug-id="conversation-agent-crumb"
                 data-pane-crumb
-                aria-label="Switch agent in this task chain"
-                aria-haspopup="dialog"
-                aria-expanded={chainAgentSwitcherOpen}
-                onClick={() => {
-                  setChainAgentSwitcherOpen(true);
-                  refetchIfStarted(chainDetailQuery);
-                }}
-                className={`flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-0.5 text-primary hover:bg-neutral-soft ${isMobile ? 'min-h-11 text-[15px]' : ''}`}
+                className={`flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-0.5 text-primary ${isMobile ? 'min-h-11 text-[15px]' : ''}`}
               >
                 {/* REQ-PORT-5: on mobile the runtime dot lives in the composer card instead. */}
                 {!isMobile ? (
@@ -3305,17 +3153,13 @@ export function AgentChatPane({
                 <span className="truncate">
                   <VaultText
                     value={
-                      chainAgentGroups[0]?.conversations.find(
-                        (member) => member.agentInstanceId === agentInstanceId,
-                      )?.title ||
                       agentDisplayName ||
                       agentId
                     }
                     fallback="Agent"
                   />
                 </span>
-                <Icon name="chevron-down" size={13} className="shrink-0 text-muted" />
-              </button>
+              </span>
             </div>
           )}
           {titleError ? (
@@ -3365,7 +3209,7 @@ export function AgentChatPane({
               onClick={beginRenameFromHeader}
             >
               <Icon name="pencil" size={15} />
-              <span>{renameTarget.kind === 'chain' ? 'Rename chain' : 'Rename'}</span>
+              <span>Rename</span>
             </Menu.Item>
             <Menu.Item
               data-debug-id="conversation-thread-refresh-btn"
@@ -3575,13 +3419,7 @@ export function AgentChatPane({
             conversationId={conversationId}
             enabled={isActiveTab && paneVisible}
             instanceId={agentInstanceId}
-            members={isChainCoordinator ? [
-              { instanceId: agentInstanceId, displayName: agentDisplayName },
-              ...(liveChain?.members || []).map((member: any) => ({
-                instanceId: String(member.agentInstanceId || member.agent_instance_id || ''),
-                displayName: String(member.displayName || member.display_name || ''),
-              })),
-            ] : [{ instanceId: agentInstanceId, displayName: agentDisplayName }]}
+            members={[{ instanceId: agentInstanceId, displayName: agentDisplayName }]}
             onOpenShell={(sessionId) => navigateTo(shellViewHref(sessionId))}
           />
         </ChatMessageList>
@@ -3670,69 +3508,6 @@ export function AgentChatPane({
         </Modal.Footer>
       </Modal>
 
-      <Modal
-        open={chainAgentSwitcherOpen}
-        onOpenChange={setChainAgentSwitcherOpen}
-        title="Agents in this task chain"
-        size="md"
-        data-debug-id="conversation-chain-agent-modal"
-      >
-        <Modal.Body>
-          <div className="space-y-2">
-            {(chainAgentGroups[0]?.conversations || []).map((member) => (
-              <button
-                key={member.agentInstanceId}
-                type="button"
-                data-debug-id={`conversation-chain-agent-option-${member.agentInstanceId}`}
-                aria-pressed={member.agentInstanceId === agentInstanceId}
-                onClick={() => {
-                  setChainAgentSwitcherOpen(false);
-                  if (member.agentInstanceId === agentInstanceId) return;
-                  // The coordinator is addressed by chain so the pane follows a
-                  // coordinator replacement (REQ-TV2-7).
-                  const memberTarget =
-                    member.isCoordinator && chainId ? chainTargetId(chainId) : member.agentInstanceId;
-                  if (onSwitchAgent) {
-                    // The workspace swaps the target in THIS pane (deduped: a target
-                    // already open elsewhere is focused instead) and syncs the URL.
-                    onSwitchAgent(memberTarget, member.title);
-                  } else if (typeof window !== 'undefined') {
-                    window.location.hash = buildConversationHash([memberTarget]);
-                  }
-                }}
-                className={`flex min-h-14 w-full items-center gap-3 rounded-xl border px-3 py-3 text-left ${
-                  member.agentInstanceId === agentInstanceId
-                    ? 'border-accent bg-accent/10'
-                    : 'border-subtle hover:bg-neutral-soft'
-                }`}
-              >
-                <StatusDot
-                  size="sm"
-                  tone={runtimeStatusToTone(member.runtimeStatus)}
-                  label={runtimeStateLabel(runtimeStateFromStatus(member.runtimeStatus))}
-                />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium text-primary">
-                    <VaultText value={member.title} fallback="Agent" />
-                  </span>
-                  {member.isCoordinator ? (
-                    <span className="text-xs text-muted">Coordinator</span>
-                  ) : null}
-                </span>
-                {member.agentInstanceId === agentInstanceId ? (
-                  <Icon name="check" size={18} className="text-accent" />
-                ) : null}
-              </button>
-            ))}
-            {!chainAgentGroups[0]?.conversations.length ? (
-              <p className="text-sm text-muted">
-                No agents are available in this task chain.
-              </p>
-            ) : null}
-          </div>
-        </Modal.Body>
-      </Modal>
-
       <TaskChainSelectorModal
         open={chainSelectorOpen}
         onClose={() => setChainSelectorOpen(false)}
@@ -3771,7 +3546,6 @@ export function AgentChatPane({
         }}
         actions={[]}
         actionsEnabled={actionsAccess === 'enabled'}
-        conversationGroups={chainAgentGroups}
       />
     </div>
   );

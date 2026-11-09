@@ -41,8 +41,9 @@ walls:
   record the work and the evidence used to accept it.
 - **Provider choice.** Provider launch recipes and model catalogs let you select the available
   coding agent and model on each Bridge, with native extensions for supported runtime signals.
-- **Cross-device fleet.** Agents execute on your devices while the Hub coordinates their work,
-  including ordinary tickets and staged workflow runs in the same chain.
+- **Cross-device fleet.** Agents execute on your devices. Each task chain is owned by one
+  Bridge, which keeps its tasks, leases, reviews and workflow runs in a local store; the Hub
+  routes to that owner and carries chat, memory, artifacts and projects.
 
 ## Architecture
 
@@ -50,10 +51,13 @@ Heimdall is a Hub-and-Bridge system. A central Hub owns durable shared state; a 
 execution device manages its local processes. The desktop and web UI show conversations,
 tasks, memory, artifacts, shells, and runtime activity.
 
-- **Hub (`ham-hub`, Odin).** Authenticates requests and coordinates agents, task leases,
-  reviews, dependencies, workflow runs, projects, and content through SQLite-backed services.
-- **Bridge (`ham-bridge`, Odin).** Connects to the Hub, materializes agent bootstrap files,
-  discovers local providers/models, and handles tracked shell jobs and project files.
+- **Hub (`ham-hub`, Odin).** Authenticates requests and keeps agents, chat, memory, artifacts,
+  projects, cards and the registry of which Bridge owns each chain in SQLite-backed services.
+  It has no task engine: chain, task and workflow routes answer `410 hub_chains_removed`.
+- **Bridge (`ham-bridge`, Odin).** Connects to the Hub, owns the task chains created on it
+  (tasks, leases, reviews, review gate, merge-back, fleet and workflow runs in its local
+  owner store), materializes agent bootstrap files, discovers local providers/models, and
+  handles tracked shell jobs and project files.
 - **Terminal host (`ham-pty-host`, Rust).** The Bridge's local daemon for launching agent
   processes and managing terminal input, output, and screen state. Agent launches no longer
   use the old wrapper/tmux runtime.
@@ -70,15 +74,15 @@ See [the contributor architecture guide](AGENTS.md), [runtime connection lifecyc
 
 1. Describe the goal to the Coordinator.
 2. The Coordinator creates a plan and publishes tasks with goals, acceptance items, and
-   dependencies, or starts a staged workflow run.
+   dependencies on the chain's owner Bridge.
 3. Eligible workers receive leases. Each reads its task context and works in the named
    checkout; Git-backed tasks use their own worktree.
 4. The worker records checks and decisions and submits the attempt. Required reviewers use
    `approve` or `request_changes`; tasks that require user approval also wait for your verdict.
 5. Accepted Git-backed work is merged through its Bridge. Merge failures and conflicts remain
    visible, and downstream work waits for successful prerequisites.
-6. The Coordinator explicitly completes the chain after all included tickets and workflow
-   runs succeed and no leases or pending proposal remain. Useful lessons can be proposed as
+6. The Coordinator explicitly completes the chain after all its tickets are done and no
+   leases or pending proposal remain. Useful lessons can be proposed as
    durable memories for your review.
 
 In Solo mode, the Coordinator pulls and implements each task itself and the user reviews.
@@ -189,7 +193,7 @@ A Coordinator holds the plan, owns the chain, and is your point of contact. Flee
 which durable agents can work or review, their capacity, and their launch settings. Tasks can
 name reviewers or require every fleet member holding a review role.
 
-The task engine grants leases and releases them on submission, handoff, blocking, or expiry.
+The chain's owner Bridge grants leases and releases them on submission, handoff, blocking, or expiry.
 Ordinary non-coordinator holders are stopped on release and re-bootstrapped when reused. An
 instance record may be reused without carrying forward the previous provider conversation.
 The task context pack carries the structured handoff instead.
@@ -299,16 +303,24 @@ from task work, and humans decide what becomes durable knowledge.
 
 ### Task Chain
 
-A coordinated collection of work. Every chain can contain ordinary tickets and workflow
-runs, with explicit dependencies between them. A task's brief names its goal, acceptance,
+A coordinated collection of work, owned by one Bridge and created in the Heimdall app on that
+Bridge. It contains tickets with explicit dependencies between them. A task's brief names its goal, acceptance,
 assignee, and review policy; leases and review verdicts record its attempts.
 
 Task completion requires its current review gate. Chain completion is a separate, explicit
 operation that checks all included work, merge outcomes, active leases, pending proposals,
 and the current work revision. Finishing the current batch alone does not complete it.
 
-**Connected to:** Project, Coordinator instance, fleet identities, tasks, workflow runs,
+**Connected to:** Project, owner Bridge, Coordinator instance, fleet identities, tasks,
 directories, review records, and shared chain context.
+
+**Legacy Hub chains.** Chains created before chains became Bridge-owned stay on the Hub as
+read-only records until imported. Use **Settings → Bridges → Import all legacy chains** (one
+click; re-running skips chains already imported) or `ham-ctl task-chain migrate --chain <id>
+--owner <bridge>` for one chain. Busy chains are imported too: live leases end, in-progress
+tasks are force-held, in-review tasks stay in review, running workflows are cancelled and
+pending merges are closed (unmerged work stays on its branch), and the import records what it
+did. An aborted import leaves the chain read-only and importable again.
 
 ---
 
@@ -364,12 +376,12 @@ settings, and provider extensions.
 
 ### Task recheck
 
-The task engine re-evaluates eligible work as relevant events occur: dependencies, reviews,
+The owner Bridge re-evaluates eligible work as relevant events occur: dependencies, reviews,
 lease releases/expiry, fleet changes, and Bridge lifecycle updates. To investigate a stuck task,
 use `ham-ctl task recheck <task-id>`. It recomputes gate/readiness/dispatch and merge recovery
 without approving work or disturbing a live lease.
 
-Use `ham-ctl task-chain graph` for dependencies and the current work revision. Complete a
+Use `ham-ctl task-chain show` for the chain's tasks and the current work revision. Complete a
 finished chain explicitly:
 
 ```bash
