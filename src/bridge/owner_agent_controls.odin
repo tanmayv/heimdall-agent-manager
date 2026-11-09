@@ -233,7 +233,14 @@ bridge_owner_control :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -
         payload=bridge_owner_json(map[string]string{"body_cipher"=sealed_reason})
     }
     r:=bridge_owner_run_command(ctx,owner_method,st.chain_id,st.task_id,st.task_revision,payload,role_children=role_children[:],source=source)
-    if r.code!="ok" do return bridge_owner_fail(ctx,r.code,bridge_owner_control_refusal(owner_method,r.code))
+    if r.code!="ok" {
+        // T1: a refused reopen names its cause (chain not active, consumed by
+        // a started dependent, generated workflow task, wrong state).
+        if owner_method=="task.reopen" && r.code=="operation_conflict" {
+            if cause:=owner.reopen_refusal_cause(s,st.chain_id,st.task_id);cause!="" do return bridge_owner_fail(ctx,r.code,fmt.tprintf("task cannot be reopened: %s",cause))
+        }
+        return bridge_owner_fail(ctx,r.code,bridge_owner_control_refusal(owner_method,r.code))
+    }
     out:=bridge_owner_result_object(r.body)
     out["authority"]=json.Object{"kind"=json.String("owner"),"bridge_id"=json.String(bridge_config.daemon_id)}
     return bridge_local_response_data(ctx.request_id,bridge_owner_json(out))

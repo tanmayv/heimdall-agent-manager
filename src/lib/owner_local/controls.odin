@@ -93,6 +93,35 @@ control_workflow_generated :: proc(s:^Store,chain,task:string) -> (bool,bool) {
     if !ok do return false,false
     return len(rows)>0 && !migration_archived_task(s,chain,task),true
 }
+// reopen_refusal_cause names why task.reopen answered operation_conflict
+// (T1: reopen errors must name their cause). Read-only, mirrors the checks of
+// control_human's task.reopen branch in order; "" when no cause is found.
+reopen_refusal_cause :: proc(s:^Store,chain,task:string) -> string {
+    if status,ok:=query(s.db,"SELECT status FROM local_work_chains WHERE chain_id=?",chain);ok && len(status)==1 && status[0][0]!="active" {
+        return fmt.tprintf("chain not active (status %s)",status[0][0])
+    }
+    if migration_archived_task(s,chain,task) do return "an archived workflow stage imported from the Hub cannot be reopened"
+    consumers,ok:=query(s.db,"SELECT DISTINCT dependent_kind,dependent_id FROM local_work_inputs WHERE chain_id=? AND prerequisite_kind='task' AND prerequisite_id=? ORDER BY dependent_kind,dependent_id",chain,task)
+    if !ok do return ""
+    if len(consumers)>0 {
+        names:=make([dynamic]string,context.temp_allocator)
+        for row in consumers do append(&names,fmt.tprintf("%s %s",row[0],row[1]))
+        return fmt.tprintf("consumed by a started dependent (%s); create replacement work instead",strings.join(names[:],", ",context.temp_allocator))
+    }
+    if generated,read:=query(s.db,"SELECT 1 FROM local_workflow_language_items WHERE task_id=?",task);read && len(generated)>0 {
+        return "a generated workflow task: retry or cancel the workflow run instead"
+    }
+    if triggered,read:=query(s.db,"SELECT 1 FROM local_workflow_output_triggers WHERE chain_id=? AND source_task=? AND consumed=1 LIMIT 1",chain,task);read && len(triggered)>0 {
+        return "consumed by a started workflow run (its output trigger fired); create replacement work instead"
+    }
+    state,mode:="ready","ready"
+    if rows,read:=query(s.db,"SELECT state FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task);read && len(rows)==1 do state=rows[0][0]
+    if rows,read:=query(s.db,"SELECT mode FROM local_controls WHERE chain_id=? AND task_id=?",chain,task);read && len(rows)==1 do mode=rows[0][0]
+    if mode!="cancelled" && state!="done" && state!="merge_blocked" {
+        return fmt.tprintf("not cancelled, done or merge-blocked (state %s, control %s)",state,mode)
+    }
+    return ""
+}
 // task.cancel dependents handling (R2-2), inside the cancel transaction:
 // keep leaves dependents waiting (reported as a warning), drop removes their
 // edge to the cancelled task, repoint:<task> moves the edge to another task

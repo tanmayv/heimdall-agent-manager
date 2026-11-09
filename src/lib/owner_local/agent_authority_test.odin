@@ -300,3 +300,23 @@ agent_bindings_for_lease_routing_ignore_disabled_rows_and_reviewers :: proc(t:^t
     _,found,read:=agent_task_state(&f.store,"","missing")
     testing.expect(t,read && !found,"a task this store does not hold is not found, not an error")
 }
+
+// T1 `--assignee self`: the coordinator is solo only while it holds an
+// enabled worker fleet row in the chain; workers and strangers are never
+// the coordinator.
+@(test)
+agent_solo_standing_coordinator_and_worker_row :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f);seed(t,f)
+    coord:=agent_coordinator_child();agent_seat_coordinator(t,f,coord)
+    c,w:=agent_solo_standing(&f.store,"chain",coord)
+    testing.expect(t,c && !w,"a coordinator without a fleet row is not solo")
+    agent_add_task(t,f,"solo_task");agent_bind(t,f,"solo_task",coord)
+    c,w=agent_solo_standing(&f.store,"chain",coord)
+    testing.expect(t,c && w,"a coordinator holding a worker fleet row is solo")
+    c,w=agent_solo_standing(&f.store,"chain",agent_stranger())
+    testing.expect(t,!c && !w,"a stranger is neither")
+    // A coordinator seated in another chain is foreign here.
+    c,_=agent_solo_standing(&f.store,"elsewhere",coord)
+    testing.expect(t,!c,"not the coordinator of another chain")
+}
