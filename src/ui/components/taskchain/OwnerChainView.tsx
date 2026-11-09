@@ -19,6 +19,7 @@ import { TASK_STATE_LABELS } from '../tasks/taskV2Types';
 import OwnerLocalPanel from './OwnerLocalPanel';
 import OwnerCoordinatorControl, { type OwnerCoordinatorApi } from './OwnerCoordinatorControl';
 import { setOwnerChainCoordinator } from '../../api/ownerChainsStore';
+import { readOwnerChainCoordinatorMember } from '../../api/ownerCoordinator';
 
 const STATE_TONE: Record<OwnerTaskState, Tone> = {
   ready: 'info', in_progress: 'pending', in_review: 'warning', done: 'success', cancelled: 'neutral',
@@ -212,8 +213,19 @@ export function OwnerChainView({ chain, focusTaskId, submissionAttempt, onClose,
   // before binding (the launch wait may outlast the loaded revision).
   const bindCoordinator = useCallback(async (instanceId: string, agentId: string) => {
     const s = await session();
-    const fresh = await readOwnerChain(s, bridge, chain.chainId, send);
-    await ownerCall(s, bridge, 'chain.member.set', { chainId: chain.chainId, expectedRevision: fresh.revision, instanceId, agentId, memberRole: 'coordinator' }, send);
+    const previous = await readOwnerChainCoordinatorMember(s, bridge, chain.chainId, send);
+    const fresh = await chainRevision(s);
+    await ownerCall(s, bridge, 'chain.member.set', { chainId: chain.chainId, expectedRevision: fresh, instanceId, agentId, memberRole: 'coordinator' }, send);
+    // Authority is per instance: a replaced coordinator keeps it until its
+    // member row is disabled. Demote it once the new one is bound (the owner
+    // refuses to disable a chain's last coordinator).
+    if (previous && previous.instanceId !== instanceId) {
+      await ownerCall(s, bridge, 'chain.member.set', { chainId: chain.chainId, expectedRevision: await chainRevision(s), instanceId: previous.instanceId, agentId: previous.agentId, memberRole: 'coordinator', enabled: false }, send);
+    }
+
+    async function chainRevision(sess: typeof s): Promise<string> {
+      return (await readOwnerChain(sess, bridge, chain.chainId, send)).revision;
+    }
   }, [bridge, chain.chainId, send, session]);
 
   const coordinatorBound = useCallback((instanceId: string) => {

@@ -394,3 +394,32 @@ test_owner_brief_reason_is_per_revision_and_flag_explicit :: proc(t:^testing.T) 
     on,present=bridge_owner_brief_approval(`{"goal":"g"}`)
     testing.expect(t,!on && !present)
 }
+
+// The owner store decides an owner chain's launch role: the bound coordinator
+// launches as coordinator, other instances learn its id, and an unbound chain
+// keeps the Hub's role. A later disable (replace) unbinds.
+@(test)
+test_owner_launch_role_from_bound_coordinator :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    path:=fmt.tprintf("%s/.cache/heimdall-tests/owner-launch-role-%d.sqlite",os.get_env("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    store:owner.Store
+    if !testing.expect(t,owner.open(&store,path,"account","bridge","bridge_key")) do return
+    defer {
+        owner.close(&store)
+        for suffix in ([4]string{"","-wal","-shm",".writer"}) do _=os.remove(fmt.tprintf("%s%s",path,suffix))
+    }
+    // Seed member versions directly; their accepted_seq would normally
+    // reference a local_events row written by chain.member.set.
+    testing.expect(t,owner.exec(store.db,`PRAGMA foreign_keys=OFF; INSERT INTO task_chains VALUES('chain','device','device','title','description',1);`))
+    role,coord:=bridge_owner_launch_role_from(&store,"chain","inst_coord","worker","")
+    testing.expect(t,role=="worker" && coord=="","unbound chain keeps the Hub role")
+    testing.expect(t,owner.exec(store.db,`INSERT INTO local_member_chains VALUES('inst_coord','chain');
+      INSERT INTO local_chain_member_versions VALUES('chain','inst_coord','5','agt_coord','coordinator','1','{}');`))
+    role,coord=bridge_owner_launch_role_from(&store,"chain","inst_coord","worker","")
+    testing.expect(t,role=="coordinator" && coord=="inst_coord","bound instance launches as coordinator")
+    role,coord=bridge_owner_launch_role_from(&store,"chain","inst_worker","worker","")
+    testing.expect(t,role=="worker" && coord=="inst_coord","other instances learn the bound coordinator")
+    testing.expect(t,owner.exec(store.db,`INSERT INTO local_chain_member_versions VALUES('chain','inst_coord','6','agt_coord','coordinator','0','{}');`))
+    role,coord=bridge_owner_launch_role_from(&store,"chain","inst_coord","worker","")
+    testing.expect(t,role=="worker" && coord=="","a disabled (replaced) coordinator launches as worker")
+}

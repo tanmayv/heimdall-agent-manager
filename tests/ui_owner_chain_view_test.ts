@@ -445,6 +445,7 @@ test('start coordinator on an imported chain launches on the owner Bridge, waits
       case 'chain.read': return { chain_id: 'chain_owned', task_id: '', revision: String(chainRev), title: 'Imported chain', description: '', defaults_json: '{}', items: [], next_cursor: '' };
       case 'work.read': return { chain_id: 'chain_owned', publish_state: 'published', status: 'active', work_revision: '1', pending_proposal_id: '', next_cursor: '', items: [], pending_proposal: null };
       case 'chain.member.set': chainRev++; return { chain_id: 'chain_owned', revision: String(chainRev) };
+      case 'chain.metadata.read': return { chain_id: 'chain_owned', items: [], next_cursor: '' };
       default: return { code: 'invalid_scope' };
     }
   }, calls, revisions);
@@ -454,6 +455,7 @@ test('start coordinator on an imported chain launches on the owner Bridge, waits
     listAgents: async () => [{ agentId: 'agt_coord', name: 'Coordinator agent' }],
     launch: async (input: { agentId: string; chainId: string; bridgeId: string }) => { hub.push(`launch:${input.agentId}:${input.chainId}:${input.bridgeId}`); return 'inst_coord'; },
     status: async (id: string) => { hub.push('status:' + id); statusReads += 1; return 'running'; },
+    restart: async (id: string) => { hub.push('restart:' + id); },
   };
   const ui = mountDom();
   try {
@@ -463,15 +465,60 @@ test('start coordinator on an imported chain launches on the owner Bridge, waits
     await ui.click('owner-chain-start-coordinator');
     assert.equal((ui.$('owner-chain-coordinator-agent') as HTMLSelectElement).value, 'agt_coord');
     await ui.click('owner-chain-coordinator-launch');
-    assert.deepEqual(hub, [`launch:agt_coord:chain_owned:${env.bridgeId}`, 'status:inst_coord'], 'launched on the owner Bridge before binding');
-    assert.equal(statusReads, 1);
+    assert.deepEqual(hub, [`launch:agt_coord:chain_owned:${env.bridgeId}`, 'status:inst_coord', 'restart:inst_coord', 'status:inst_coord'], 'launched on the owner Bridge, bound, then relaunched as coordinator');
+    assert.equal(statusReads, 2);
     const bind = calls.find((c) => c.method === 'chain.member.set');
+    assert.equal(calls.filter((c) => c.method === 'chain.member.set').length, 1, 'no previous coordinator to demote');
     assert.ok(bind, 'chain.member.set was sent: ' + (ui.$('owner-chain-coordinator-error')?.textContent ?? ''));
     assert.deepEqual({ instance: bind!.payload.instance_id, agent: bind!.payload.agent_id, role: bind!.payload.role, enabled: bind!.payload.enabled },
       { instance: 'inst_coord', agent: 'agt_coord', role: 'coordinator', enabled: '1' });
     assert.equal(bind!.command.expected_revision, '3', 'bound against the chain revision read right before');
     assert.equal(ui.$('owner-chain-coordinator-id')!.textContent, 'Coordinator: inst_coord');
     assert.ok(ui.$('owner-chain-start-coordinator')!.textContent!.includes('Replace coordinator'));
+  } finally {
+    await ui.restore();
+    clearKeyringSession();
+  }
+});
+
+test('replacing a coordinator binds the new instance and then disables the previous one', async () => {
+  const env = await ownerTestSession();
+  const { session } = env;
+  const calls: OwnerCall[] = [];
+  let chainRev = 3;
+  const revisions = { chain: () => String(chainRev), task: () => '1' };
+  const send = fakeOwner(session, async (call) => {
+    switch (call.method) {
+      case 'chain.read': return { chain_id: 'chain_owned', task_id: '', revision: String(chainRev), title: 'Imported chain', description: '', defaults_json: '{}', items: [], next_cursor: '' };
+      case 'work.read': return { chain_id: 'chain_owned', publish_state: 'published', status: 'active', work_revision: '1', pending_proposal_id: '', next_cursor: '', items: [], pending_proposal: null };
+      case 'chain.member.set': chainRev++; return { chain_id: 'chain_owned', revision: String(chainRev) };
+      case 'chain.metadata.read': return { chain_id: 'chain_owned', next_cursor: '', items: [
+        { kind: 'member', entity_id: 'inst_old', accepted_seq: '9', current: '1', enabled: '1', body: JSON.stringify({ instance_id: 'inst_old', agent_id: 'agt_old', role: 'coordinator' }) },
+      ] };
+      default: return { code: 'invalid_scope' };
+    }
+  }, calls, revisions);
+  const hub: string[] = [];
+  let statusReads = 0;
+  const coordinatorApi = {
+    listAgents: async () => [{ agentId: 'agt_coord', name: 'Coordinator agent' }],
+    launch: async (input: { agentId: string; chainId: string; bridgeId: string }) => { hub.push(`launch:${input.agentId}:${input.chainId}:${input.bridgeId}`); return 'inst_coord'; },
+    status: async (id: string) => { hub.push('status:' + id); statusReads += 1; return 'running'; },
+    restart: async (id: string) => { hub.push('restart:' + id); },
+  };
+  const ui = mountDom();
+  try {
+    await act(async () => ui.root.render(React.createElement(OwnerChainView, { chain: summary(env, { tasks: [] }), send, session: async () => session, coordinatorApi })));
+    await ui.flush();
+    await ui.click('owner-chain-start-coordinator');
+    await ui.click('owner-chain-coordinator-launch');
+    const sets = calls.filter((c) => c.method === 'chain.member.set');
+    assert.equal(sets.length, 2, 'bind new, then demote old: ' + (ui.$('owner-chain-coordinator-error')?.textContent ?? ''));
+    assert.deepEqual({ instance: sets[0].payload.instance_id, role: sets[0].payload.role, enabled: sets[0].payload.enabled }, { instance: 'inst_coord', role: 'coordinator', enabled: '1' });
+    assert.deepEqual({ instance: sets[1].payload.instance_id, agent: sets[1].payload.agent_id, role: sets[1].payload.role, enabled: sets[1].payload.enabled },
+      { instance: 'inst_old', agent: 'agt_old', role: 'coordinator', enabled: '0' });
+    assert.equal(sets[1].command.expected_revision, '4', 'demoted against the revision after the new bind');
+    assert.equal(statusReads, 2);
   } finally {
     await ui.restore();
     clearKeyringSession();

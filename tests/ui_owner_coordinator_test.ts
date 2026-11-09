@@ -55,36 +55,48 @@ test('owner chain list rows carry the bound coordinator', () => {
   assert.equal(ownerChainListItem({ ...summary, coordinatorAgentInstanceId: 'inst_coord' }).coordinatorAgentInstanceId, 'inst_coord');
 });
 
-test('start coordinator launches, waits until running, then binds', async () => {
+test('start coordinator launches, waits until running, binds, then restarts it with the coordinator role', async () => {
   const log: string[] = [];
-  const statuses = ['starting', '', 'running'];
+  const statuses = ['starting', '', 'running', 'launching', 'running'];
   let clock = 0;
   const id = await startOwnerCoordinator({
     launch: async () => { log.push('launch'); return 'inst_new'; },
     status: async (instanceId) => { log.push('status:' + instanceId); return statuses.shift() ?? 'running'; },
     bind: async (instanceId) => { log.push('bind:' + instanceId); },
+    restart: async (instanceId) => { log.push('restart:' + instanceId); },
     onStage: (stage) => log.push('stage:' + stage),
     sleep: async (ms) => { clock += ms; },
     now: () => clock,
   });
   assert.equal(id, 'inst_new');
   assert.deepEqual(log, [
-    'stage:launching', 'launch', 'stage:waiting', 'status:inst_new', 'status:inst_new', 'status:inst_new', 'stage:binding', 'bind:inst_new', 'stage:done',
+    'stage:launching', 'launch', 'stage:waiting', 'status:inst_new', 'status:inst_new', 'status:inst_new', 'stage:binding', 'bind:inst_new',
+    'stage:restarting', 'restart:inst_new', 'status:inst_new', 'status:inst_new', 'stage:done',
   ]);
+});
+
+test('start coordinator reports a relaunch that fails after the bind', async () => {
+  const statuses = ['running', 'failed'];
+  let restarted = 0;
+  await assert.rejects(startOwnerCoordinator({
+    launch: async () => 'inst_re', status: async () => statuses.shift() ?? 'failed', bind: async () => {},
+    restart: async () => { restarted += 1; }, sleep: async () => {},
+  }), /failed before it restarted/);
+  assert.equal(restarted, 1);
 });
 
 test('start coordinator never binds an instance that failed or did not start in time', async () => {
   let bound = 0;
   await assert.rejects(startOwnerCoordinator({
-    launch: async () => 'inst_fail', status: async () => 'failed', bind: async () => { bound += 1; }, sleep: async () => {},
+    launch: async () => 'inst_fail', status: async () => 'failed', bind: async () => { bound += 1; }, restart: async () => {}, sleep: async () => {},
   }), /failed before it started/);
   let clock = 0;
   await assert.rejects(startOwnerCoordinator({
-    launch: async () => 'inst_slow', status: async () => 'starting', bind: async () => { bound += 1; },
+    launch: async () => 'inst_slow', status: async () => 'starting', bind: async () => { bound += 1; }, restart: async () => {},
     sleep: async (ms) => { clock += ms; }, now: () => clock,
   }, 10_000), /did not start in time/);
   await assert.rejects(startOwnerCoordinator({
-    launch: async () => '', status: async () => 'running', bind: async () => { bound += 1; }, sleep: async () => {},
+    launch: async () => '', status: async () => 'running', bind: async () => { bound += 1; }, restart: async () => {}, sleep: async () => {},
   }), /not created/);
   assert.equal(bound, 0);
 });

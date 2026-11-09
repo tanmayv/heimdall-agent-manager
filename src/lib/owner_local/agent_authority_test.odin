@@ -342,3 +342,23 @@ agent_chain_summary_current_reads_latest_curated_summary :: proc(t:^testing.T) {
     // bridge_owner_plain, which also tolerates an envelope).
     testing.expect_value(t,body,"coordinator summary")
 }
+
+// Replace: bind a new coordinator, then disable the previous one. Authority is
+// per instance, so the old instance loses coordinator verbs only once disabled.
+@(test)
+agent_replaced_coordinator_loses_authority_after_disable :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f);seed(t,f)
+    old:=agent_coordinator_child();agent_seat_coordinator(t,f,old)
+    next:=Child{"next_coord","next_epoch",strings.repeat("f",64,context.temp_allocator),1,"next_agent"}
+    p:=encode(doc(map[string]string{"instance_id"=next.instance,"agent_id"=next.agent_id,"role"="coordinator","enabled"="1"}))
+    c:=command(f,"chain.member.set","seat_next","",p,agent_chain_rev(f))
+    testing.expect_value(t,execute(&f.store,c,p,f.genesis,f.creator,f.owner,1,"head",1000,&f.kr,Signer{&f.owner_priv,test_sign},next).code,"ok")
+    testing.expect_value(t,agent_role(f,"task",old,"chain.summary.set"),Agent_Role.Coordinator)
+    off:=encode(doc(map[string]string{"instance_id"=old.instance,"agent_id"=old.agent_id,"role"="coordinator","enabled"="0"}))
+    c=command(f,"chain.member.set","demote_old","",off,agent_chain_rev(f))
+    testing.expect_value(t,execute(&f.store,c,off,f.genesis,f.creator,f.owner,1,"head",1000,&f.kr,Signer{&f.owner_priv,test_sign},Child{}).code,"ok")
+    testing.expect_value(t,agent_role(f,"task",old,"chain.summary.set"),Agent_Role.None)
+    testing.expect_value(t,agent_role(f,"task",next,"chain.summary.set"),Agent_Role.Coordinator)
+    testing.expect_value(t,chain_coordinator_instance(&f.store,"chain"),next.instance)
+}

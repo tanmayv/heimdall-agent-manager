@@ -15,6 +15,7 @@ export interface OwnerCoordinatorApi {
   listAgents: () => Promise<CoordinatorAgentChoice[]>;
   launch: (input: { agentId: string; chainId: string; bridgeId: string }) => Promise<string>;
   status: (instanceId: string) => Promise<string>;
+  restart: (instanceId: string) => Promise<void>;
 }
 
 export const hubCoordinatorApi: OwnerCoordinatorApi = {
@@ -32,12 +33,16 @@ export const hubCoordinatorApi: OwnerCoordinatorApi = {
     const data: any = await cookieJsonFetch(`/agent-instances/${encodeURIComponent(instanceId)}`);
     return String(data?.runtime_status || data?.instance?.runtime_status || '');
   },
+  async restart(instanceId) {
+    await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}/restart`, 'POST', {});
+  },
 };
 
 const STAGE_TEXT: Record<StartCoordinatorStage, string> = {
   launching: 'Launching the coordinator on the owner Bridge…',
   waiting: 'Waiting for the coordinator to start…',
   binding: 'Binding it as the chain’s coordinator…',
+  restarting: 'Restarting it with the coordinator role…',
   done: 'Coordinator bound.',
 };
 
@@ -77,6 +82,7 @@ export function OwnerCoordinatorControl({ chainId, ownerBridgeId, coordinatorId,
       const id = await startOwnerCoordinator({
         launch: () => api.launch({ agentId, chainId, bridgeId: ownerBridgeId }),
         status: api.status,
+        restart: api.restart,
         bind: (instanceId) => bind(instanceId, agentId),
         onStage: (s) => setStage(s),
       });
