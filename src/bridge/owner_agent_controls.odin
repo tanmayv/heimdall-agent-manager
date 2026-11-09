@@ -114,7 +114,7 @@ bridge_owner_control_refusal :: proc(owner_method,code:string) -> string {
         case "lease.revoke": return "the task has no live lease to revoke"
         case "task.delete": return "only an unstarted task (no lease, assignment, configuration or history) can be deleted"
         case "merge.retry": return "the task is not merge-blocked with a pending merge"
-        case "lifecycle.force_submit": return "only a ready, not held/blocked/cancelled, ordinary task that has had a lease (whose last lease has not already submitted) can be submitted for review"
+        case "lifecycle.force_submit": return "only a ready, not held/blocked/cancelled, ordinary task that has had a lease (whose last lease has not already submitted, by the configured author under the current fleet revision) can be submitted for review. Hint: `lease revoke --disable-fleet` (and `fleet.edit`) bump the fleet revision, after which the old holder's work can no longer be submitted; to keep that work run `task submit-for-review` first (it stops a live lease itself), and reassign (lease revoke --disable-fleet -> fleet.edit -> lifecycle.configure) only for work you do not submit"
         case "task.split": return "only a ready (not in review, merging, done or cancelled) ordinary task can be split, child ids must be new, and dependents cannot be generated workflow tasks or form a cycle"
         }
     case "stale_revision":

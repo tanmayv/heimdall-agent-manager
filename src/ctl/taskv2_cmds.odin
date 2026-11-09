@@ -608,6 +608,12 @@ ctl_v2_review :: proc(endpoint, token: string, tokens, args: []string) {
 			os.exit(1)
 		}
 		ctl_agent_call_task(endpoint, token, "agent.review.post", params, args)
+	case "roles":
+		// Coordinator of a Bridge-owned chain: required review roles of a task.
+		tid := pos(tokens, 1)
+		if tid == "" do tid = option_value(args, "--task", "")
+		if tid == "" { print_help_review(); return }
+		ctl_coord_control(endpoint, token, "review-roles", tid, args)
 	case:
 		print_help_review()
 	}
@@ -955,12 +961,31 @@ print_help_review :: proc() {
 	fmt.println("      findings file is a JSON array of {path?, line?, severity?, text}.")
 	fmt.println("      Coordinator instances can pass `--on-behalf-of user` when the user said so in chat.")
 	fmt.println("      Response: {gate: waiting|approved|changes_requested, task}.")
+	fmt.println("      On a Bridge-owned chain an --on-behalf-of review never counts as the user: only the")
+	fmt.println("      user's device-signed Approve / Request changes in the Heimdall app clears a user gate.")
+	fmt.println("  roles <task-id> --role <role>=<agent_id>[@<instance_id>] [--role ...] | --roles-file <json>")
+	fmt.println("      [--require-user-approval]      Coordinator of a Bridge-owned chain: set the task's required")
+	fmt.println("      review roles. Agents must already run in this chain. A user-approval gate can be added,")
+	fmt.println("      never removed (--no-require-user-approval is refused for agents).")
 	fmt.println("")
 	fmt.println("EXAMPLES")
 	fmt.println("  ham-ctl review post --verdict approve")
 	fmt.println("  ham-ctl review post --verdict request_changes --findings-file findings.json")
 	fmt.println("  ham-ctl review post --verdict request_changes --summary \"the zero case still crashes\"")
 	fmt.println("  ham-ctl review post --task task_1 --verdict approve --on-behalf-of user")
+	fmt.println("  ham-ctl review roles task_1 --role reviewer=agt_reviewer")
+}
+
+print_help_merge :: proc() {
+	fmt.println("ham-ctl merge — merge-back controls (coordinator, Bridge-owned chains)")
+	fmt.println("")
+	fmt.println("VERBS")
+	fmt.println("  retry <task-id> --reason <text>   Retry the unchanged pending merge of a merge-blocked task")
+	fmt.println("                                    (after the conflict or base problem was fixed). On a Hub")
+	fmt.println("                                    chain this answers owner_chain_only.")
+	fmt.println("")
+	fmt.println("EXAMPLES")
+	fmt.println("  ham-ctl merge retry task_1 --reason \"rebased main; conflict resolved\"")
 }
 
 print_help_verify :: proc() {
