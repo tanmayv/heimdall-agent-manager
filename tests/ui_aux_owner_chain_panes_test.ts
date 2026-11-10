@@ -169,18 +169,31 @@ test('the Chain overview shows the owner chain: status, ticket states, agents an
   }
 });
 
-test('the Tickets board groups tickets by state, opens tickets as tabs and consumes a one-shot ticket', async () => {
+test('the Tickets board is origin/main\'s board over owner data, opens tickets as tabs and consumes a one-shot ticket', async () => {
   const ui = await mount({ render: (_env, h) => aux({ type: 'tasks', taskId: 'task_2' }, h) });
   try {
     assert.deepEqual(ui.opened[0], { content: { type: 'ticket', chainId: CHAIN, taskId: 'task_2' }, title: 'Write docs' }, 'the focused ticket opens once');
     assert.deepEqual(ui.updated[0].patch, { taskId: undefined }, 'and the board tab forgets it');
-    assert.match(ui.$('owner-chain-board-column-in_progress')!.textContent!, /In progress · 1.*Fix login/s);
-    assert.match(ui.$('owner-chain-board-column-ready')!.textContent!, /Ready · 1.*Write docs.*Held/s);
-    assert.match(ui.$('owner-chain-board-column-done')!.textContent!, /Done · 1.*Ship/s);
+    assert.ok(ui.$('ticket-board-view'), 'the restored TicketBoard renders');
+    assert.match(ui.$('ticket-board-progress-caption')!.textContent!, /1 of 3 done/);
+    assert.match(ui.$('task-board-section-in_progress')!.textContent!, /In progress.*1.*Fix login/s);
+    assert.match(ui.$('task-board-section-held')!.textContent!, /Held.*1.*Write docs/s);
+    assert.equal(ui.$('task-board-section-finished'), null, 'the Open filter hides finished tickets');
     assert.equal(ui.$('owner-chain-task-detail'), null);
-    await ui.click('owner-chain-task-task_3');
+
+    await ui.click('task-card-toggle-task_1');
+    assert.deepEqual(ui.opened.at(-1), { content: { type: 'ticket', chainId: CHAIN, taskId: 'task_1' }, title: 'Fix login' });
+    await ui.click('ticket-board-filter-all');
+    await ui.click('ticket-board-finished-row-task_3');
     assert.deepEqual(ui.opened.at(-1), { content: { type: 'ticket', chainId: CHAIN, taskId: 'task_3' }, title: 'Ship' });
-    assert.equal(ui.opened.length, 2, 'the one-shot ticket is not reopened');
+    assert.equal(ui.opened.length, 3, 'the one-shot ticket is not reopened');
+
+    // A card action runs the owner command against that ticket's revision.
+    await ui.click('task-action-release-task_2');
+    const release = ui.calls.find((c) => c.method === 'task.release');
+    assert.ok(release, 'Release hold on the card sends task.release');
+    assert.equal(release!.command.task_id, 'task_2');
+    assert.equal(release!.command.expected_revision, '1', 'the card uses the listed revision of its own ticket');
     assertNoHubChainReads(ui.hubPaths);
   } finally {
     await ui.cleanup();
@@ -272,10 +285,12 @@ test('the panes re-read their owner on an interval and show changes', async () =
     }),
   });
   try {
-    assert.equal(ui.$('owner-chain-task-task_4'), null);
+    await ui.click('ticket-board-filter-all');
+    assert.equal(ui.$('ticket-board-finished-row-task_4'), null);
     owner.state.tasks = [...owner.state.tasks, { task_id: 'task_4', title: 'Audit log', revision: '1', priority: 'p2' }];
     await ui.settle(60);
-    assert.match(ui.$('owner-chain-task-task_4')!.textContent!, /Audit log/, 'a ticket added on the owner appears without a manual refresh');
+    assert.match(ui.$('ticket-board-filter-all')!.textContent!, /All\s*4/);
+    assert.match(ui.$('ticket-board-finished-row-task_4')!.textContent!, /Audit log/, 'a ticket added on the owner appears without a manual refresh');
   } finally {
     await ui.cleanup();
   }

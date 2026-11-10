@@ -17,10 +17,13 @@ import { ownerId, type OwnerInput, type OwnerSession } from '../../api/ownerLoca
 import type { OwnerCommand } from '../../api/ownerLocal';
 import { TASK_STATE_LABELS } from '../tasks/taskV2Types';
 import { EMPTY_TASK_NAMES } from '../tasks/taskNames';
-import { leaseClock } from '../tasks/ticketModel';
+import { leaseClock, ticketKeys } from '../tasks/ticketModel';
 import { TicketAttemptsCard } from '../tasks/TicketAttemptsCard';
 import { TicketCard } from '../tasks/TicketCard';
-import { ownerTaskWire } from '../tasks/ownerTaskAdapter';
+import { ownerTaskWire, ownerTaskWires } from '../tasks/ownerTaskAdapter';
+import { TicketBoard } from '../tasks/TicketBoard';
+import type { BoardTicketActions } from '../tasks/BoardTicketCard';
+import type { TaskWire } from '../../api/taskWire';
 import OwnerLocalPanel from './OwnerLocalPanel';
 import OwnerCoordinatorControl, { type OwnerCoordinatorApi } from './OwnerCoordinatorControl';
 import { ownerChainById, resolveOwnerChainCoordinator, setOwnerChainCoordinator } from '../../api/ownerChainsStore';
@@ -275,13 +278,15 @@ export function OwnerChainView({
     if (layout === 'ticket' && task?.detail.title) onTitle?.(task.detail.title);
   }, [layout, task?.detail.title]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function mutate(method: OwnerCommand['method'], input: Omit<OwnerInput, 'chainId' | 'expectedRevision'>, done: string): Promise<boolean> {
+  // `taskRevision` names the revision of a ticket that is not the open one
+  // (board card actions); the open ticket's revision is used otherwise.
+  async function mutate(method: OwnerCommand['method'], input: Omit<OwnerInput, 'chainId' | 'expectedRevision'>, done: string, taskRevisionOverride?: string): Promise<boolean> {
     setBusy(true); setError(''); setNotice('');
     try {
       const s = await session();
       // Task-scoped methods are checked against the task revision, everything
       // else (task.create included) against the chain revision.
-      const taskRevision = input.taskId && task?.taskId === input.taskId ? task.detail.revision : '0';
+      const taskRevision = taskRevisionOverride ?? (input.taskId && task?.taskId === input.taskId ? task.detail.revision : '0');
       const expectedRevision = ownerExpectedRevision(method, detail?.revision ?? '0', taskRevision);
       await ownerCall(s, bridge, method, { chainId: chain.chainId, expectedRevision, ...input }, send);
       if (!live.current) return true;
@@ -354,6 +359,22 @@ export function OwnerChainView({
     }
     return [...rows.values()].sort((a, b) => Number(b.role === 'coordinator') - Number(a.role === 'coordinator') || Number(b.enabled) - Number(a.enabled));
   }, [layout, members, coordinatorId, tasks, states]);
+
+  // The board's ticket wires, keys and per-ticket card actions (owner commands).
+  const boardWires = useMemo(() => (layout === 'board' && detail ? ownerTaskWires(chain.chainId, bridge, detail.tasks, states) : []), [layout, detail, states, chain.chainId, bridge]);
+  const boardKeys = useMemo(() => ticketKeys(boardWires), [boardWires]);
+  const boardActions = (t: TaskWire): BoardTicketActions => {
+    const revision = detail?.tasks.find((r) => r.task_id === t.task_id)?.revision ?? '0';
+    const run = (method: OwnerCommand['method'], done: string, body = '') => mutate(method, { taskId: t.task_id, body }, done, revision);
+    return {
+      busy: busy || offline || !editable,
+      error: '',
+      hold: (reason) => (reason.trim() ? run('task.hold', 'Ticket held.', reason.trim()) : Promise.resolve(false)),
+      release: () => run('task.release', 'Hold released.'),
+      cancel: () => run('task.cancel', 'Ticket cancelled.'),
+      reopen: () => run('task.reopen', 'Ticket reopened.'),
+    };
+  };
 
   const ticketCard = (t: { taskId: string; title: string; priority: string }) => {
     const st = stateOf(t.taskId);
@@ -507,19 +528,18 @@ export function OwnerChainView({
           <Text as="h3" role="overline" tone="muted">Tickets {loading && <span role="status" className="normal-case">· loading…</span>}</Text>
           {tasks.length === 0 && !loading && <EmptyState data-debug-id="owner-chain-no-tasks" icon="layers" title="No tickets yet" description="Tickets the coordinator or you create appear here." />}
           {layout === 'board' ? (
-            // The board: tickets grouped by state (tickets whose state is not read yet last).
-            <div className="space-y-3">
-              {[...STATE_ORDER, null].map((state) => {
-                const column = tasks.filter((t) => (stateOf(t.taskId)?.state ?? null) === state);
-                if (column.length === 0) return null;
-                return (
-                  <div key={state ?? 'unknown'} data-debug-id={`owner-chain-board-column-${state ?? 'unknown'}`} className="space-y-1.5">
-                    <Text as="h4" role="label" tone="muted">{state ? TASK_STATE_LABELS[state] : 'State unknown'} · {column.length}</Text>
-                    <ul className="space-y-1.5">{column.map(ticketCard)}</ul>
-                  </div>
-                );
-              })}
-            </div>
+            // origin/main's ticket board over the owner-local reads (ownerTaskAdapter).
+            boardWires.length > 0 && (
+              <TicketBoard
+                chainId={chain.chainId}
+                tasks={boardWires}
+                keys={boardKeys}
+                actionsFor={boardActions}
+                editFields={[]}
+                onOpenTicket={(taskId) => openTicket(taskId, boardWires.find((w) => w.task_id === taskId)?.title ?? '')}
+                onEditTicket={(taskId) => openTicket(taskId, boardWires.find((w) => w.task_id === taskId)?.title ?? '')}
+              />
+            )
           ) : (
             <ul className="space-y-1.5">{tasks.map(ticketCard)}</ul>
           )}
