@@ -679,3 +679,38 @@ test('ownerRequirementHistoryEntries pairs each change with the previous one', a
   assert.deepEqual(entries.map((e) => [e.revision, e.actorKind, e.before.goal, e.after.goal, e.eventId]), [[2, 'user', 'A', 'B', 9], [1, 'agent', '', 'A', 4]]);
   assert.equal(entries[0].tsMs, Date.parse('2026-11-10T00:00:00Z'));
 });
+
+test('a ticket shows its handoffs on demand: summary, next steps, waiting on and head, newest first', async () => {
+  const owner = chainOwner();
+  const payloads: Record<string, unknown> = {
+    '5': { requirements_revision: '1', summary: 'Half done; OAuth flow works', next_steps: 'Wire the Safari fix' },
+    '8': { requirements_revision: '1', summary: 'Need the client id', next_steps: '', waiting_on: 'human' },
+    '11': { requirements_revision: '1', summary: 'Login fixed everywhere', head: 'c'.repeat(40) },
+  };
+  const ui = await mount({
+    answer: (call) => {
+      if (call.method === 'runtime.read' && call.command.task_id === 'task_1') return { ...runtime({ lease: 'inst_worker' }), attempts: { attempt_no: '2', last_release: '', work_lease_id: '', completeness: 'full' } };
+      if (call.method === 'history.read') return { chain_id: CHAIN, next_cursor: '', items: [
+        { seq: '5', kind: 'lease.handoff', task_id: 'task_1', actor_kind: 'agent', actor_id: 'inst_worker', ts_ms: '1794200000000' },
+        { seq: '6', kind: 'lease.handoff', task_id: 'task_2', actor_kind: 'agent', actor_id: 'inst_worker', ts_ms: '1794200000500' },
+        { seq: '7', kind: 'task.comment', task_id: 'task_1', actor_kind: 'agent', actor_id: 'inst_worker', ts_ms: '1794200000600' },
+        { seq: '8', kind: 'lease.block', task_id: 'task_1', actor_kind: 'agent', actor_id: 'inst_worker', ts_ms: '1794200001000' },
+        { seq: '11', kind: 'lease.submit', task_id: 'task_1', actor_kind: 'agent', actor_id: 'inst_worker', ts_ms: '1794200002000' },
+      ] };
+      if (call.method === 'history.fetch') return { evidence: JSON.stringify({ payload: JSON.stringify(payloads[call.payload.seq ?? ''] ?? {}) }), next_offset: '' };
+      return owner.answer(call);
+    },
+    render: (_env, h) => aux({ type: 'ticket', chainId: CHAIN, taskId: 'task_1' }, h),
+  });
+  try {
+    assert.equal(ui.calls.filter((c) => c.method === 'history.fetch').length, 0, 'nothing is scanned until asked');
+    await ui.click('owner-chain-handoffs-show');
+    const rows = [...ui.$('owner-chain-handoffs')!.querySelectorAll('li[data-debug-id]')].map((li) => li.getAttribute('data-debug-id'));
+    assert.deepEqual(rows, ['owner-chain-handoff-11', 'owner-chain-handoff-8', 'owner-chain-handoff-5'], 'this ticket only, newest first');
+    assert.match(ui.$('owner-chain-handoff-11')!.textContent!, /Submitted.*inst_worker.*cccccccccccc.*Login fixed everywhere/s);
+    assert.match(ui.$('owner-chain-handoff-8')!.textContent!, /Blocked.*Need the client id.*Waiting on human/s);
+    assert.match(ui.$('owner-chain-handoff-5')!.textContent!, /Handed off.*Half done.*Next steps.*Wire the Safari fix/s);
+  } finally {
+    await ui.cleanup();
+  }
+});

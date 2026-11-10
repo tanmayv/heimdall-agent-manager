@@ -732,6 +732,61 @@ export function ownerFleetPolicyDocument(row: OwnerFleetPolicy, change: OwnerFle
   return JSON.stringify(doc);
 }
 
+/** The decoded payload of one history event (history.fetch evidence, chunked). */
+async function ownerEventPayload(session: OwnerSession, bridgeId: string, chainId: string, seq: string, send: OwnerSend): Promise<any> {
+  let evidence = '', offset = '0';
+  for (let chunk = 0; chunk < 8; chunk++) {
+    const part = await ownerCall(session, bridgeId, 'history.fetch', { chainId, expectedRevision: '0', eventSeq: seq, offset }, send);
+    evidence += String(part.evidence ?? '');
+    offset = String(part.next_offset || '');
+    if (!offset) break;
+  }
+  try { return JSON.parse(String(JSON.parse(evidence).payload || '{}')); } catch { return {}; }
+}
+
+const HANDOFF_KINDS = new Set(['lease.handoff', 'lease.block', 'lease.switch', 'lease.submit']);
+/** One agent hand-back of a ticket: a handoff, block, switch or submit, with what it said. */
+export interface OwnerHandoff {
+  seq: string; kind: 'lease.handoff' | 'lease.block' | 'lease.switch' | 'lease.submit';
+  summary: string; nextSteps: string; waitingOn: string; head: string; requirementsRevision: string;
+  actorId: string; at: string;
+}
+
+/**
+ * A ticket's handoffs (the latest `keep`, newest first): lease.handoff /
+ * block / switch / submit events of the bounded history, each read from its
+ * evidence. Summaries and next steps stay as written (vault text included).
+ */
+export async function readOwnerHandoffs(
+  session: OwnerSession, bridgeId: string, chainId: string, taskId: string, send: OwnerSend = ownerRelaySend,
+  keep = 10, maxPages = OWNER_HISTORY_MAX_PAGES,
+): Promise<{ handoffs: OwnerHandoff[]; truncated: boolean; more: boolean }> {
+  const events: any[] = [];
+  let cursor = '', dropped = false;
+  for (let page = 0; page < maxPages; page++) {
+    const data = await ownerCall(session, bridgeId, 'history.read', { chainId, expectedRevision: '0', cursor, limit: OWNER_HISTORY_PAGE }, send);
+    for (const e of Array.isArray(data.items) ? data.items : []) {
+      if (e.task_id === taskId && HANDOFF_KINDS.has(String(e.kind))) {
+        events.push(e);
+        if (events.length > keep) { events.shift(); dropped = true; }
+      }
+    }
+    cursor = String(data.next_cursor || '');
+    if (!cursor) break;
+  }
+  const handoffs: OwnerHandoff[] = [];
+  for (const e of events) {
+    const p = await ownerEventPayload(session, bridgeId, chainId, String(e.seq), send);
+    const ms = Number(e.ts_ms);
+    handoffs.push({
+      seq: String(e.seq ?? ''), kind: e.kind, summary: String(p.summary ?? ''), nextSteps: String(p.next_steps ?? ''),
+      waitingOn: String(p.waiting_on ?? ''), head: String(p.head ?? ''), requirementsRevision: String(p.requirements_revision ?? ''),
+      actorId: String(e.actor_id || ''), at: Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : '',
+    });
+  }
+  return { handoffs: handoffs.reverse(), truncated: Boolean(cursor), more: dropped };
+}
+
 export interface OwnerSubmission { attempt: string; summary: string; head: string; author: string; requirementsRevision: string; complete: boolean }
 export async function readOwnerSubmission(session: OwnerSession, bridgeId: string, chainId: string, taskId: string, attempt: string, send: OwnerSend = ownerRelaySend): Promise<OwnerSubmission> {
   let summary = '', offset = '0', first: any = null;

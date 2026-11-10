@@ -9,7 +9,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Badge, Button, Checkbox, EmptyState, FormField, IconButton, Input, Select, StatusDot, StatusPill, Text, Textarea, type Tone } from '@ui';
 import {
   freshOwnerSession, isOwnerOffline, ownerAwaitingUser, ownerCall, ownerErrorMessage, ownerOfflineMessage, ownerRelaySend, ownerTaskState,
-  ownerActivityLabel, ownerExpectedRevision, readArchivedReviews, readOwnerActivity, readOwnerRequirementHistory, readOwnerChain, readOwnerChainStatus, readOwnerFleetPolicies, readOwnerReviews, ownerFleetPolicyDocument, readOwnerRuntime, readOwnerDependencies, readOwnerSubmission, readOwnerTask, readOwnerWorkRevision, withOwnerRecovery,
+  ownerActivityLabel, ownerExpectedRevision, readArchivedReviews, readOwnerActivity, readOwnerRequirementHistory, readOwnerChain, readOwnerChainStatus, readOwnerFleetPolicies, readOwnerHandoffs, readOwnerReviews, ownerFleetPolicyDocument, readOwnerRuntime, readOwnerDependencies, readOwnerSubmission, readOwnerTask, readOwnerWorkRevision, withOwnerRecovery,
   type OwnerActivity, type OwnerRequirementChange, type OwnerChainDetail, type OwnerChainStatus, type OwnerDependency, type OwnerChainSummary, type OwnerReview, type OwnerRuntime, type OwnerSend,
   type OwnerSubmission, type OwnerTaskDetail, type OwnerTaskState, type OwnerFleetPolicy, type OwnerFleetPolicyChange,
 } from '../../api/ownerChains';
@@ -33,6 +33,7 @@ import OwnerLocalPanel from './OwnerLocalPanel';
 import OwnerCoordinatorControl, { hubCoordinatorApi, type OwnerCoordinatorApi } from './OwnerCoordinatorControl';
 import OwnerAddAgentControl, { type ChainAgentRole } from './OwnerAddAgentControl';
 import OwnerFleetTable from './OwnerFleetTable';
+import { OwnerHandoffsCard, type OwnerHandoffsState } from './OwnerHandoffsCard';
 import { ownerChainById, resolveOwnerChainCoordinator, setOwnerChainCoordinator } from '../../api/ownerChainsStore';
 import { bindOwnerCoordinator, readOwnerChainMembers, type OwnerChainMember } from '../../api/ownerCoordinator';
 
@@ -161,6 +162,7 @@ export function OwnerChainView({
   const [agentStatus, setAgentStatus] = useState<Record<string, string>>({});
   // The open ticket's requirement history, read when shown: null when hidden.
   const [reqView, setReqView] = useState<'current' | 'changes'>('current');
+  const [handoffs, setHandoffs] = useState<(OwnerHandoffsState & { taskId: string }) | null>(null);
   const [reqHistory, setReqHistory] = useState<{ taskId: string; changes: OwnerRequirementChange[] | null; error: string; more: boolean } | null>(null);
   // The overview's recent chain history (history.read); null until read.
   const [activity, setActivity] = useState<{ events: OwnerActivity[]; truncated: boolean } | null>(null);
@@ -469,6 +471,16 @@ export function OwnerChainView({
   function removeAgent(a: { instanceId: string; agentId: string; role: string }) {
     if (!window.confirm(`Remove ${a.instanceId} from this chain? Its instance keeps running until you stop it.`)) return Promise.resolve(false);
     return mutate('chain.member.set', { instanceId: a.instanceId, agentId: a.agentId, memberRole: a.role || 'worker', enabled: false }, 'Agent removed from the chain.');
+  }
+
+  async function showHandoffs(taskId: string) {
+    setHandoffs({ taskId, handoffs: null, error: '', more: false });
+    try {
+      const h = await readOwnerHandoffs(await session(), bridge, chain.chainId, taskId, send);
+      if (live.current) setHandoffs((cur) => (cur?.taskId === taskId ? { taskId, handoffs: h.handoffs, error: '', more: h.more } : cur));
+    } catch (e) {
+      if (live.current) setHandoffs((cur) => (cur?.taskId === taskId ? { taskId, handoffs: [], error: ownerErrorMessage(e), more: false } : cur));
+    }
   }
 
   async function showRequirementHistory(taskId: string) {
@@ -1113,6 +1125,9 @@ export function OwnerChainView({
               </TicketCard>
 
               {wire && wire.attempt_no > 0 && <TicketAttemptsCard task={wire} names={EMPTY_TASK_NAMES} lease={leaseClock(wire, Date.now())} />}
+              {wire && wire.attempt_no > 0 && !offline && (
+                <OwnerHandoffsCard state={handoffs?.taskId === task.taskId ? handoffs : null} onShow={() => void showHandoffs(task.taskId)} formatWhen={formatWhen} />
+              )}
               <section data-debug-id="owner-chain-submissions" className="space-y-1">
                 <Text as="h4" role="overline" tone="muted">Submissions</Text>
                 {task.runtime.attemptNo === 0 && !task.runtime.submission
