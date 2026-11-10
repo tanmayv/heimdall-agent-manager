@@ -12,16 +12,22 @@ import { useOwnerChains } from '../../api/ownerChainsStore';
 import type { OwnerSession } from '../../api/ownerLocalClient';
 import type { OwnerTicketEditFocus } from '../../store/auxTabId';
 import { buildRouteHash, navigateTo } from '../../utils/appLocation';
+import { chainConversationRoute, chainIdFromTargetId, chainTargetId } from '../../utils/paneTarget';
 import { ChainTokenUsageSection } from './ChainTokenUsage';
 import { OwnerChainView } from './OwnerChainView';
 
 /** Owner chains have no push events: the aux panes re-read their owner this often while visible. */
 export const OWNER_AUX_REFRESH_MS = 30_000;
 
-/** Opens an agent's conversation in Main (with the tasks panel on desktop). */
-export function openAgentConversation(instanceId: string, isMobile = false): void {
-  if (!instanceId) return;
-  navigateTo(buildRouteHash(`/conversations/${encodeURIComponent(instanceId)}`, isMobile ? '' : '?panel=tasks'));
+/**
+ * Opens a conversation in Main (with the tasks panel on desktop). A `chain:<id>`
+ * target opens the chain's canonical conversation URL, the one the sidebar uses.
+ */
+export function openAgentConversation(targetId: string, isMobile = false): void {
+  if (!targetId) return;
+  const chainId = chainIdFromTargetId(targetId);
+  const route = chainId ? chainConversationRoute(chainId) : `/conversations/${encodeURIComponent(targetId)}`;
+  navigateTo(buildRouteHash(route, isMobile ? '' : '?panel=tasks'));
   if (isMobile) window.dispatchEvent(new CustomEvent('heimdall:close-sidebar'));
 }
 
@@ -122,7 +128,8 @@ export function OwnerChainAuxPane({
       onEditFocusConsumed={onEditFocusConsumed}
       onShowBoard={onShowBoard}
       onSwitchTicket={onSwitchTicket}
-      onOpenAgent={onOpenAgent}
+      // The chain's coordinator opens as the chain conversation, not its instance.
+      onOpenAgent={onOpenAgent && ((id, title) => onOpenAgent(id && id === chain.coordinatorAgentInstanceId ? chainTargetId(chain.chainId) : id, title))}
       onTitle={onTitle}
       extra={layout === 'overview' ? <ChainTokenUsageSection chainId={chain.chainId} embedded /> : undefined}
       overview={layout === 'overview' ? {

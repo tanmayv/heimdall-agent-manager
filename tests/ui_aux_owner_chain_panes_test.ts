@@ -179,6 +179,9 @@ test('the Chain overview is origin/main\'s ChainOverviewPanel over the owner cha
     assert.deepEqual(ui.opened.at(-1)!.content, { type: 'tasks' }, 'All tasks opens the board');
     await ui.click('chain-overview-agent-row-inst_worker');
     assert.deepEqual(ui.opened.at(-1)!.content, { type: 'subagentChat', agentInstanceId: 'inst_worker' }, 'an agent opens its chat in an aux tab');
+    const before = ui.opened.length;
+    await ui.click('chain-overview-agent-row-inst_coord');
+    assert.equal(ui.opened.length, before, 'the coordinator is this chain conversation: no aux tab, no instance URL');
     assert.ok(ui.calls.some((c) => c.method === 'chain.metadata.read'), 'agents come from the owner member rows');
     assertNoHubChainReads(ui.hubPaths);
   } finally {
@@ -868,4 +871,25 @@ test('New ticket on the board creates the ticket, saves its brief and what it wa
   } finally {
     await ui.cleanup();
   }
+});
+
+test('openAgentConversation opens a chain target at the canonical chain URL and an instance at its own', async () => {
+  const { openAgentConversation } = await import('../src/ui/components/taskchain/OwnerChainAuxPane.tsx');
+  openAgentConversation('chain:chain_x');
+  assert.equal(win.location.hash, '#/conversations/chain:chain_x?panel=tasks', 'the same URL the sidebar opens');
+  const closed: string[] = [];
+  const onClose = (e: Event) => closed.push(e.type);
+  win.addEventListener('heimdall:close-sidebar', onClose);
+  const NodeCustomEvent = globalThis.CustomEvent;
+  Object.defineProperty(globalThis, 'CustomEvent', { value: win.CustomEvent, writable: true, configurable: true });
+  try {
+    openAgentConversation('chain:chain_x', true);
+  } finally {
+    Object.defineProperty(globalThis, 'CustomEvent', { value: NodeCustomEvent, writable: true, configurable: true });
+    win.removeEventListener('heimdall:close-sidebar', onClose);
+  }
+  assert.equal(win.location.hash, '#/conversations/chain:chain_x', 'mobile opens it without the tasks panel');
+  assert.deepEqual(closed, ['heimdall:close-sidebar']);
+  openAgentConversation('inst_worker');
+  assert.equal(win.location.hash, '#/conversations/inst_worker?panel=tasks');
 });

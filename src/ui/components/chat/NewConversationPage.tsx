@@ -11,6 +11,7 @@ import { useCreateArtifactMutation } from '../../api/endpoints/artifacts';
 import { useGetConversationLaunchPreferencesQuery, useSaveConversationLaunchSelectionMutation, useSetAgentFavoriteMutation } from '../../api/endpoints/conversationLaunch';
 import { selectIsVaultUnlocked } from '../../store/vaultSlice';
 import { buildRouteHash, getRouteSearch, getRoutePathname } from '../../utils/appLocation';
+import { chainConversationRoute, chainIdFromTargetId, chainTargetId } from '../../utils/paneTarget';
 import { apiErrorText } from '../../api/cookieFetch';
 import { createOwnerChain, freshOwnerSession, ownerErrorMessage, waitForOwnerChainListed } from '../../api/ownerChains';
 import { addPendingOwnerChain } from '../../api/ownerChainsStore';
@@ -86,10 +87,11 @@ export interface NewConversationPageProps {
   embedded?: boolean;
   footer?: ReactNode;
   /**
-   * Called with the new agent instance id (or shell session id) instead of
+   * Called with the new pane target (an agent instance id, a shell session id,
+   * or `chain:<id>` for a coordinator chain conversation) instead of
    * navigating to it (a Main new-chat pane puts the new conversation into THAT pane).
    */
-  onLaunched?: (agentInstanceId: string) => void;
+  onLaunched?: (paneTargetId: string) => void;
   /** Explicit shortcut intent. It selects the initial mode without rewriting the saved preference. */
   launchIntent?: LauncherIntent;
 }
@@ -273,9 +275,13 @@ export default function NewConversationPage({ embedded = false, footer, onLaunch
     });
   }, [capabilities]);
 
+  /** Opens a launched pane target: an instance id, or `chain:<id>` for a chain conversation. */
   function openLaunched(id: string) {
     if (onLaunched) onLaunched(id);
-    else window.location.hash = buildRouteHash(`/conversations/${encodeURIComponent(id)}`, '');
+    else {
+      const chainId = chainIdFromTargetId(id);
+      window.location.hash = buildRouteHash(chainId ? chainConversationRoute(chainId) : `/conversations/${encodeURIComponent(id)}`, '');
+    }
   }
 
   // Shell mode (SH-1): the launch logic lives in useShellLaunch; the bridge is the
@@ -389,7 +395,8 @@ export default function NewConversationPage({ embedded = false, footer, onLaunch
         onStage: (stage, instance) => { if (instance) launched = instance; setCoordinatorStage(stage); },
       });
       pending(chainId, instanceId);
-      return instanceId;
+      // The chain's canonical conversation target, the same one the sidebar opens.
+      return chainTargetId(chainId);
     } catch (e) {
       if (launched) throw new Error(`The conversation started, but it is not yet the chain’s coordinator: ${message(e)} Open the chain from Task Chains to start its coordinator.`);
       if (made) throw new Error(`The chain was created, but its coordinator did not start: ${message(e)} Open the chain from Task Chains to start one.`);

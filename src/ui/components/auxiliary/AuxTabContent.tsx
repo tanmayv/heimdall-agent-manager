@@ -19,6 +19,7 @@ import type { AgentAuxContext } from './useAgentAuxContext';
 import { OpenAgentChatContext } from './openAgentChatContext';
 import ArtifactViewer from '../ArtifactViewer';
 import { OwnerChainAuxPane, openAgentConversation } from '../taskchain/OwnerChainAuxPane';
+import { chainIdFromTargetId } from '../../utils/paneTarget';
 
 const ProjectFilesPanel = React.lazy(() => import('../chat/ProjectFilesPanel'));
 const ProjectVcsPanel = React.lazy(() => import('../chat/ProjectVcsPanel'));
@@ -88,6 +89,13 @@ export function AuxTabContent({
   // the focused Main agent itself is already in Main (handled, no-op).
   const openAgentChat = (agentInstanceId: string, title?: string) => {
     if (!agentInstanceId) return false;
+    // A chain's coordinator is its chain conversation: this one is already Main,
+    // another chain's opens at its canonical URL.
+    const chainId = chainIdFromTargetId(agentInstanceId);
+    if (chainId) {
+      if (chainId !== ctx.chainId) openAgentConversation(agentInstanceId, isMobile);
+      return true;
+    }
     if (agentInstanceId !== ctx.agentInstanceId) onOpenTab({ type: 'subagentChat', agentInstanceId }, title);
     return true;
   };

@@ -9,6 +9,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Badge, ResourceContainer, ResourceSearchFilter, useViewport } from '@ui';
 import Icon from '../Icon';
 import { buildRouteHash } from '../../utils/appLocation';
+import { chainConversationRoute } from '../../utils/paneTarget';
 import CreateChainModal from './CreateChainModal';
 import { ChainTokenUsageSection } from './ChainTokenUsage';
 import { useSelector } from 'react-redux';
@@ -271,7 +272,10 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
         onCreated={(newChainId, owner) => {
           setShowCreateChainModal(false);
           if (owner) addPendingOwnerChain(owner);
-          handleSelectChain(newChainId);
+          // A chain with a coordinator opens its conversation at the canonical
+          // chain URL (the sidebar's); without one, the chain page.
+          if (owner?.coordinatorAgentInstanceId) window.location.hash = shellHash(chainConversationRoute(newChainId));
+          else handleSelectChain(newChainId);
         }}
       />
     </ResourceContainer>

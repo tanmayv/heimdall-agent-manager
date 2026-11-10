@@ -304,7 +304,7 @@ test('a coordinator conversation gets an owner chain: chain_id is sent at launch
       const bind = owner.find((c) => c.method === 'chain.member.set')!;
       assert.deepEqual({ chain: bind.command.chain_id, instance: bind.payload.instance_id, agent: bind.payload.agent_id, role: bind.payload.role },
         { chain: chainId, instance: 'inst_new', agent: 'agt_coord', role: 'coordinator' });
-      assert.deepEqual(ctx.launched, ['inst_new']);
+      assert.deepEqual(ctx.launched, [`chain:${chainId}`], 'a coordinator conversation opens at the canonical chain target');
       const { ownerChainsSnapshot } = await import('../src/ui/api/ownerChainsStore.ts');
       assert.equal(ownerChainsSnapshot().chains.find((c) => c.chainId === chainId)?.coordinatorAgentInstanceId, 'inst_new', 'the new chain is listed with its coordinator');
     });
