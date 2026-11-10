@@ -120,12 +120,23 @@ async function renderModal(bridgeStatus: string, bridgesReady: Promise<void> = P
     globalThis.fetch = saved;
     clearKeyringSession();
   };
-  return { env, calls, hubPosts, created, log, $, typeTitle, submit, submitButton, settle, cleanup, container };
+  const advancedToggle = () => container.querySelector('button[aria-controls="create-chain-advanced"]') as HTMLButtonElement | null;
+  const openAdvanced = async () => {
+    if (advancedToggle()?.getAttribute('aria-expanded') === 'true') return;
+    await act(async () => { advancedToggle()!.click(); });
+  };
+  return { env, calls, hubPosts, created, log, $, typeTitle, submit, submitButton, settle, cleanup, container, advancedToggle, openAdvanced };
 }
 
 test('the create modal defaults to the owner Bridge and creates there with a signed genesis', async () => {
   const ui = await renderModal('online');
   try {
+    // Title + Description by default; the defaulted placement and coordinator wait under Advanced.
+    assert.equal(ui.advancedToggle()!.getAttribute('aria-expanded'), 'false', 'Advanced starts closed');
+    assert.equal(ui.$('create-chain-advanced'), null);
+    assert.equal(ui.$('create-chain-coordinator-agent'), null);
+    assert.match(ui.advancedToggle()!.closest('section')!.textContent!, /Advanced.*·.*Coordinator/s, 'the closed Advanced names its defaults');
+    await ui.openAdvanced();
     assert.equal(ui.$('create-chain-placement-bridge-brg_home-input')!.checked, true, 'the online owner Bridge is the default');
     assert.equal(ui.$('create-chain-placement-hub'), null, 'there is no Hub placement');
 
@@ -188,6 +199,7 @@ test('a coordinator that fails to launch leaves the created chain openable', asy
 test('with no online owner Bridge the modal cannot create and says why', async () => {
   const ui = await renderModal('offline');
   try {
+    assert.ok(ui.$('create-chain-advanced'), 'Advanced opens itself to say why the placement cannot be used');
     assert.equal(ui.$('create-chain-placement-hub'), null);
     assert.equal(ui.$('create-chain-placement-bridge-brg_home-input')!.disabled, true);
     assert.match(ui.$('create-chain-placement-note')!.textContent!, /None of your enrolled Bridges is online/);
@@ -207,6 +219,7 @@ test('a fast submit cannot create while the Bridges are still being checked', as
     await ui.settle();
     release();
     await ui.settle();
+    await ui.openAdvanced();
     assert.equal(ui.$('create-chain-placement-bridge-brg_home-input')!.checked, true);
     await ui.submit();
     assert.equal(ui.calls[0]?.method, 'chain.create');

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Alert, Button, FormField, IconButton, Input, Select, Text, Textarea } from '@ui';
+import { Alert, Button, FormField, IconButton, Input, SectionHeader, Select, Text, Textarea } from '@ui';
 import { ChainPlacementField, useChainPlacementChoices } from './ChainPlacementField';
 import { COORDINATOR_STAGE_TEXT, defaultCoordinatorAgentId, hubCoordinatorApi, type CoordinatorAgentChoice, type OwnerCoordinatorApi } from './OwnerCoordinatorControl';
 import { createOwnerChain, freshOwnerSession, ownerErrorMessage, waitForOwnerChainListed, type OwnerChainSummary, type OwnerRegistryWaitOptions } from '../../api/ownerChains';
@@ -14,6 +14,17 @@ export interface CreateChainModalProps {
   coordinatorApi?: OwnerCoordinatorApi;
   /** Registry wait options; tests replace the clock. */
   registryWait?: OwnerRegistryWaitOptions;
+}
+
+/** The Bridge the last chain was placed on; the next chain defaults to it. */
+export const LAST_CHAIN_PLACEMENT_KEY = 'heimdall:last-chain-placement';
+
+function readLastPlacement(): string {
+  try { return window.localStorage.getItem(LAST_CHAIN_PLACEMENT_KEY) || ''; } catch { return ''; }
+}
+
+function rememberPlacement(bridgeId: string): void {
+  try { window.localStorage.setItem(LAST_CHAIN_PLACEMENT_KEY, bridgeId); } catch { /* per-device convenience only */ }
 }
 
 /**
@@ -36,9 +47,15 @@ export const CreateChainModal: React.FC<CreateChainModalProps> = ({ isOpen, onCl
   const [stage, setStage] = useState<NewChainCoordinatorStage | ''>('');
   // A chain created whose coordinator did not start; the user can still open it.
   const [created, setCreated] = useState<OwnerChainSummary | null>(null);
-  const placement = placementChoice || placementState.initial;
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  // The last-used Bridge while it is online, else the placement default.
+  const lastPlacement = readLastPlacement();
+  const lastOnline = placementState.choices.some((c) => c.bridgeId === lastPlacement && c.online);
+  const placement = placementChoice || (lastOnline ? lastPlacement : placementState.initial);
   const choice = placementState.choices.find((c) => c.bridgeId === placement);
   const placementReady = Boolean(choice?.online);
+  // Advanced opens itself when its defaults cannot be used, so the reason shows.
+  const advancedShown = advancedOpen || (!placementState.loading && !placementReady) || (agents !== null && !agentId);
 
   // A reopened modal starts a new chain.
   useEffect(() => { if (!isOpen) { setCreated(null); setStage(''); setSubmitError(''); } }, [isOpen]);
@@ -60,6 +77,7 @@ export const CreateChainModal: React.FC<CreateChainModalProps> = ({ isOpen, onCl
     if (!title.trim() || !placementReady || !agentId || creating) return;
     setSubmitError('');
     setCreating(true);
+    rememberPlacement(placement);
     // Set by the chain.create step (a closure, so not a narrowed local).
     const made: { owner: OwnerChainSummary | null } = { owner: null };
     try {
@@ -106,21 +124,6 @@ export const CreateChainModal: React.FC<CreateChainModalProps> = ({ isOpen, onCl
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          <ChainPlacementField value={placement} onChange={setPlacementChoice} state={placementState} />
-
-          <FormField label="Coordinator">
-            <Select
-              data-debug-id="create-chain-coordinator-agent"
-              name="coordinator_agent"
-              width="full"
-              value={agentId}
-              disabled={creating || Boolean(created) || !agents?.length}
-              onChange={setAgentId}
-              placeholder={!agents ? 'Loading agents…' : 'No agents'}
-              options={(agents ?? []).map((a) => ({ value: a.agentId, label: a.name }))}
-            />
-          </FormField>
-
           <FormField label="Title">
             <Input
               required
@@ -138,6 +141,36 @@ export const CreateChainModal: React.FC<CreateChainModalProps> = ({ isOpen, onCl
               rows={2}
             />
           </FormField>
+
+          <section className="space-y-3">
+            <SectionHeader
+              level="h3"
+              title="Advanced"
+              description={[choice?.name || placement, agents?.find((a) => a.agentId === agentId)?.name].filter(Boolean).join(' · ') || undefined}
+              collapsible
+              expanded={advancedShown}
+              onToggle={setAdvancedOpen}
+              controls="create-chain-advanced"
+            />
+            {advancedShown && (
+              <div id="create-chain-advanced" data-debug-id="create-chain-advanced" className="space-y-4">
+                <ChainPlacementField value={placement} onChange={setPlacementChoice} state={placementState} />
+
+                <FormField label="Coordinator">
+                  <Select
+                    data-debug-id="create-chain-coordinator-agent"
+                    name="coordinator_agent"
+                    width="full"
+                    value={agentId}
+                    disabled={creating || Boolean(created) || !agents?.length}
+                    onChange={setAgentId}
+                    placeholder={!agents ? 'Loading agents…' : 'No agents'}
+                    options={(agents ?? []).map((a) => ({ value: a.agentId, label: a.name }))}
+                  />
+                </FormField>
+              </div>
+            )}
+          </section>
 
           {stage && (
             <Text as="p" role="caption" tone="muted" aria-live="polite" data-debug-id="create-chain-stage">{COORDINATOR_STAGE_TEXT[stage]}</Text>
