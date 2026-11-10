@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseOwnerRuntime, type OwnerReview } from '../src/ui/api/ownerChains.ts';
-import { ownerTaskWire, ownerTaskWires } from '../src/ui/components/tasks/ownerTaskAdapter.ts';
+import { ownerRequirementsDoc, ownerTaskWire, ownerTaskWires } from '../src/ui/components/tasks/ownerTaskAdapter.ts';
 import { taskHold } from '../src/ui/components/tasks/taskV2Types.ts';
 
 const brief = JSON.stringify({ goal: 'Ship it', acceptance: ['a', 'b'], reviewers: ['agt_rev'], requires_user_approval: true, depends_on: ['task_dep'] });
@@ -77,4 +77,12 @@ test('rows without a runtime render as ready with listing data', () => {
   assert.equal(w.state, 'ready');
   assert.equal(w.brief, null);
   assert.equal(w.requires_user_approval, false);
+});
+
+test('ownerRequirementsDoc replaces the edited brief fields and keeps the rest verbatim', () => {
+  const raw = JSON.stringify({ goal: 'Old', acceptance: ['a'], assignee: 'agt_w', depends_on: ['task_0'], reviewers: ['agt_old'], requires_user_approval: true, requirements_reason: 'previous note' });
+  const next = JSON.parse(ownerRequirementsDoc(raw, { goal: ' New goal ', acceptance: ['one', ' ', 'two '], reviewers: ['agt_a', 'agt_b', 'agt_a', ''], requiresUserApproval: false, reason: ' tightened ' }));
+  assert.deepEqual(next, { goal: 'New goal', acceptance: ['one', 'two'], assignee: 'agt_w', depends_on: ['task_0'], reviewers: ['agt_a', 'agt_b'], requirements_reason: 'tightened' });
+  const bare = JSON.parse(ownerRequirementsDoc('', { goal: 'G', acceptance: [], reviewers: [], requiresUserApproval: true, reason: '' }));
+  assert.deepEqual(bare, { goal: 'G', acceptance: [], requires_user_approval: true }, 'no reviewers key, no stale reason, the gate flag only when set');
 });

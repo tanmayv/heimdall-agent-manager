@@ -103,7 +103,7 @@ test('owner chain view renders tickets, brief, comments, submissions and reviews
         taskRevs[call.command.task_id] = 1;
         return { chain_id: 'chain_owned', task_id: call.command.task_id, revision: String(chainRev) };
       }
-      case 'review.post': case 'task.hold': case 'task.edit': case 'task.priority': taskRevs[task]++; return { chain_id: 'chain_owned', task_id: task, revision: String(taskRevs[task]) };
+      case 'requirements.edit': case 'review.post': case 'task.hold': case 'task.edit': case 'task.priority': taskRevs[task]++; return { chain_id: 'chain_owned', task_id: task, revision: String(taskRevs[task]) };
       case 'chain.edit': chainRev++; return { chain_id: 'chain_owned', task_id: '', revision: String(chainRev) };
       case 'chain.complete': chainRev++; return { chain_id: 'chain_owned', task_id: '', revision: String(chainRev) };
       case 'runtime.read': return task === 'task_1'
@@ -254,6 +254,24 @@ test('owner chain view renders tickets, brief, comments, submissions and reviews
     assert.equal(JSON.parse(await decryptVaultText(remove.payload.body_cipher, session.keyring)).dependency_id, addDoc.dependency_id);
     await ui.flush();
     assert.equal(ui.$('owner-chain-dep-task_2'), null, 'the removed dependency is gone after the re-read');
+
+    // Requirements: edit goal, acceptance, reviewers and the approval gate.
+    await ui.click('owner-chain-requirements-edit');
+    assert.equal((ui.$('owner-chain-requirements-goal') as HTMLTextAreaElement).value, 'Users can sign in', 'the editor starts from the saved brief');
+    assert.equal((ui.$('owner-chain-requirements-acceptance') as HTMLTextAreaElement).value, 'SSO works\nErrors are shown');
+    await ui.type('owner-chain-requirements-acceptance', 'SSO works\nErrors are shown\nSafari works');
+    await ui.type('owner-chain-requirements-reviewers', 'agt_sec, agt_perf');
+    await ui.click('owner-chain-requirements-approval');
+    await ui.type('owner-chain-requirements-reason', 'Safari was missing');
+    await ui.click('owner-chain-requirements-save');
+    const reqEdit = calls.find((c) => c.method === 'requirements.edit')!;
+    assert.ok(reqEdit, 'requirements.edit was sent: ' + (ui.$('owner-chain-error')?.textContent ?? ''));
+    assert.equal(reqEdit.command.task_id, 'task_1');
+    assert.equal(reqEdit.payload.requirements_revision, '3', 'names the next requirements revision');
+    assert.deepEqual(JSON.parse(await decryptVaultText(reqEdit.payload.body_cipher, session.keyring)), {
+      goal: 'Users can sign in', acceptance: ['SSO works', 'Errors are shown', 'Safari works'], reviewers: ['agt_sec', 'agt_perf'], requires_user_approval: true, requirements_reason: 'Safari was missing',
+    });
+    assert.equal(ui.$('owner-chain-notice')!.textContent, 'Requirements updated.');
 
     await ui.click('owner-chain-complete');
     await ui.type('owner-chain-complete-summary', 'Login shipped');

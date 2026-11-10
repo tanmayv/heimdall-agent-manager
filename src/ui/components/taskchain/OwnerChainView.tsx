@@ -6,7 +6,7 @@
 // stays reachable behind "Advanced/debug".
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Badge, Button, EmptyState, FormField, IconButton, Input, Select, StatusDot, StatusPill, Text, Textarea, type Tone } from '@ui';
+import { Alert, Badge, Button, Checkbox, EmptyState, FormField, IconButton, Input, Select, StatusDot, StatusPill, Text, Textarea, type Tone } from '@ui';
 import {
   freshOwnerSession, isOwnerOffline, ownerAwaitingUser, ownerCall, ownerErrorMessage, ownerOfflineMessage, ownerRelaySend, ownerTaskState,
   ownerExpectedRevision, readArchivedReviews, readOwnerChain, readOwnerChainStatus, readOwnerReviews, readOwnerRuntime, readOwnerDependencies, readOwnerSubmission, readOwnerTask, readOwnerWorkRevision, withOwnerRecovery,
@@ -20,7 +20,7 @@ import { EMPTY_TASK_NAMES } from '../tasks/taskNames';
 import { leaseClock, ticketKeys } from '../tasks/ticketModel';
 import { TicketAttemptsCard } from '../tasks/TicketAttemptsCard';
 import { TicketCard } from '../tasks/TicketCard';
-import { ownerTaskWire, ownerTaskWires } from '../tasks/ownerTaskAdapter';
+import { ownerRequirementsDoc, ownerTaskWire, ownerTaskWires } from '../tasks/ownerTaskAdapter';
 import { TicketBoard } from '../tasks/TicketBoard';
 import type { BoardTicketActions } from '../tasks/BoardTicketCard';
 import type { TaskWire } from '../../api/taskWire';
@@ -142,6 +142,8 @@ export function OwnerChainView({
   // Ticket dependencies (work.read), read when a ticket opens; null until read.
   const [deps, setDeps] = useState<{ items: OwnerDependency[]; truncated: boolean } | null>(null);
   const [newDep, setNewDep] = useState('');
+  // The requirements being edited for the open ticket (null when closed).
+  const [reqDraft, setReqDraft] = useState<{ taskId: string; goal: string; acceptance: string; reviewers: string; approval: boolean; reason: string } | null>(null);
   // Complete chain: the summary being written (null when the form is closed).
   const [completeSummary, setCompleteSummary] = useState<string | null>(null);
   const [taskDraft, setTaskDraft] = useState<{ taskId: string; title: string; body: string } | null>(null);
@@ -711,6 +713,47 @@ export function OwnerChainView({
                     ) : null}
                   </div>
                 ) : <Text as="p" role="caption" tone="muted">No requirements saved.</Text>}
+                {editable && ts.state !== 'done' && (reqDraft?.taskId !== task.taskId ? (
+                  <Button size="sm" variant="ghost" className="mt-2" data-debug-id="owner-chain-requirements-edit" disabled={busy || ts.merge !== ''}
+                    onClick={() => setReqDraft({
+                      taskId: task.taskId,
+                      goal: task.runtime.requirements?.goal ?? '',
+                      acceptance: (task.runtime.requirements?.acceptance ?? []).join('\n'),
+                      reviewers: (wire?.brief?.reviewers ?? []).join(', '),
+                      approval: Boolean(task.runtime.requirements?.requiresUserApproval),
+                      reason: '',
+                    })}>{task.runtime.requirements ? 'Change requirements' : 'Add requirements'}</Button>
+                ) : (
+                  <form data-debug-id="owner-chain-requirements-form" className="mt-3 space-y-2" onSubmit={(e) => {
+                    e.preventDefault();
+                    if (!reqDraft.goal.trim()) return;
+                    const body = ownerRequirementsDoc(task.runtime.requirements?.raw ?? '', {
+                      goal: reqDraft.goal, acceptance: reqDraft.acceptance.split('\n'), reviewers: reqDraft.reviewers.split(/[\s,]+/),
+                      requiresUserApproval: reqDraft.approval, reason: reqDraft.reason,
+                    });
+                    const next = String((Number(task.runtime.requirements?.revision) || 0) + 1);
+                    void mutate('requirements.edit', { taskId: task.taskId, body, requirementsRevision: next }, 'Requirements updated.').then((ok) => { if (ok) setReqDraft(null); });
+                  }}>
+                    <FormField label="Goal" required>
+                      <Textarea size="sm" rows={3} data-debug-id="owner-chain-requirements-goal" value={reqDraft.goal} onChange={(v) => setReqDraft((d) => d && { ...d, goal: v })} />
+                    </FormField>
+                    <FormField label="Acceptance" hint="One criterion per line.">
+                      <Textarea size="sm" rows={4} data-debug-id="owner-chain-requirements-acceptance" value={reqDraft.acceptance} onChange={(v) => setReqDraft((d) => d && { ...d, acceptance: v })} />
+                    </FormField>
+                    <FormField label="Reviewers" hint="Agent ids, separated by commas. Not the assignee or the coordinator.">
+                      <Input size="sm" data-debug-id="owner-chain-requirements-reviewers" value={reqDraft.reviewers} onChange={(v) => setReqDraft((d) => d && { ...d, reviewers: v })} />
+                    </FormField>
+                    <Checkbox size="sm" data-debug-id="owner-chain-requirements-approval" checked={reqDraft.approval} onChange={(v) => setReqDraft((d) => d && { ...d, approval: v })} label="Needs your approval before it is done" />
+                    <FormField label="Why it changed" hint="Kept in the requirement history; agents see it.">
+                      <Input size="sm" data-debug-id="owner-chain-requirements-reason" value={reqDraft.reason} onChange={(v) => setReqDraft((d) => d && { ...d, reason: v })} />
+                    </FormField>
+                    <Text as="p" role="caption" tone="muted">Saving sends the ticket back to Ready for a fresh submission.</Text>
+                    <div className="flex gap-2">
+                      <Button size="sm" type="submit" variant="primary" data-debug-id="owner-chain-requirements-save" disabled={busy || !reqDraft.goal.trim()}>Save requirements</Button>
+                      <Button size="sm" type="button" variant="ghost" disabled={busy} onClick={() => setReqDraft(null)}>Cancel</Button>
+                    </div>
+                  </form>
+                ))}
                 {(task.runtime.holder || wire?.merge) && (
                   <dl data-debug-id="owner-chain-lease" className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
                     {task.runtime.holder && <><Text as="span" role="caption" tone="muted">Lease holder</Text><Text as="code" role="code-sm" truncate>{task.runtime.holder}</Text></>}

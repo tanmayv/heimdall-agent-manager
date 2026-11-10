@@ -125,3 +125,31 @@ export function ownerTaskWire(src: OwnerTaskSource): TaskWire {
 export function ownerTaskWires(chainId: string, bridgeId: string, rows: OwnerTaskRow[], runtimes: Record<string, OwnerRuntime | undefined>): TaskWire[] {
   return rows.map((row) => ownerTaskWire({ chainId, bridgeId, taskId: row.task_id, row, runtime: runtimes[row.task_id] ?? null }));
 }
+
+/** The brief fields the ticket page edits (requirements.edit). */
+export interface OwnerRequirementsEdit {
+  goal: string;
+  acceptance: string[];
+  /** Reviewer agent ids (the reviewer-ids model). */
+  reviewers: string[];
+  requiresUserApproval: boolean;
+  /** This revision's audit note; never part of the brief content. */
+  reason: string;
+}
+
+/**
+ * The next requirements document: the current brief with the edited fields
+ * replaced. Fields the page does not edit (assignee, depends_on, inputs, …)
+ * are kept verbatim; a previous revision's reason is never carried over.
+ */
+export function ownerRequirementsDoc(raw: string, edit: OwnerRequirementsEdit): string {
+  const brief: Record<string, unknown> = { ...rawBrief(raw) };
+  delete brief.requirements_reason;
+  brief.goal = edit.goal.trim();
+  brief.acceptance = edit.acceptance.map((a) => a.trim()).filter(Boolean);
+  const reviewers = [...new Set(edit.reviewers.map((r) => r.trim()).filter(Boolean))];
+  if (reviewers.length) brief.reviewers = reviewers; else delete brief.reviewers;
+  if (edit.requiresUserApproval) brief.requires_user_approval = true; else delete brief.requires_user_approval;
+  if (edit.reason.trim()) brief.requirements_reason = edit.reason.trim();
+  return JSON.stringify(brief);
+}
