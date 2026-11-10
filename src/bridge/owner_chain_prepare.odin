@@ -29,8 +29,11 @@ import contracts "odin_test:contracts"
 import owner "odin_test:lib/owner_local"
 import vault "odin_test:lib/vault"
 
-// chain -> the agent its coordinator runs and, once launched, the instance.
-Owner_Pending_Coordinator :: struct { agent, instance: string }
+// chain -> the agent its coordinator runs ('' after a Bridge restart: the
+// first instance launched into the chain) and, once launched, the instance.
+// binding: a post-live bind is running; a relaunch of the claimed instance
+// starts another only when none is (a failed or timed-out bind is retried).
+Owner_Pending_Coordinator :: struct { agent, instance: string, binding: bool }
 
 bridge_owner_pending_mutex: sync.Mutex
 bridge_owner_pending: map[string]Owner_Pending_Coordinator
@@ -43,7 +46,7 @@ bridge_owner_pending_set :: proc(chain, agent: string) {
     sync.mutex_lock(&bridge_owner_pending_mutex);defer sync.mutex_unlock(&bridge_owner_pending_mutex)
     if bridge_owner_pending==nil do bridge_owner_pending=make(map[string]Owner_Pending_Coordinator)
     bridge_owner_pending_clear_locked(chain)
-    bridge_owner_pending[strings.clone(chain)]=Owner_Pending_Coordinator{strings.clone(agent),""}
+    bridge_owner_pending[strings.clone(chain)]=Owner_Pending_Coordinator{agent=strings.clone(agent)}
 }
 
 bridge_owner_pending_clear :: proc(chain: string) {
@@ -59,25 +62,42 @@ bridge_owner_pending_clear_locked :: proc(chain: string) {
     delete(key);delete(old.agent);delete(old.instance)
 }
 
-// The launch of `instance` into a pending chain: (is_coordinator, first). The
+// A Bridge-created chain found unbound in the store (refresh): pending for
+// whichever instance launches into it first, unless already pending.
+bridge_owner_pending_adopt :: proc(chain: string) {
+    context.allocator=runtime.default_allocator()
+    sync.mutex_lock(&bridge_owner_pending_mutex);defer sync.mutex_unlock(&bridge_owner_pending_mutex)
+    if bridge_owner_pending==nil do bridge_owner_pending=make(map[string]Owner_Pending_Coordinator)
+    if chain in bridge_owner_pending do return
+    bridge_owner_pending[strings.clone(chain)]=Owner_Pending_Coordinator{}
+}
+
+// The launch of `instance` into a pending chain: (is_coordinator, bind). The
 // first instance launched claims the pending slot; a relaunch of that same
-// instance stays the coordinator; any other instance is not.
-bridge_owner_pending_claim :: proc(chain, instance: string) -> (agent: string, coordinator, first: bool) {
+// instance stays the coordinator; any other instance is not. bind: start the
+// post-live bind (the claim, or a relaunch while no bind is running).
+bridge_owner_pending_claim :: proc(chain, instance: string) -> (agent: string, coordinator, bind: bool) {
     sync.mutex_lock(&bridge_owner_pending_mutex);defer sync.mutex_unlock(&bridge_owner_pending_mutex)
     p,found:=&bridge_owner_pending[chain]
     if !found do return
-    if p.instance=="" {
-        p.instance=strings.clone(instance,runtime.default_allocator())
-        return strings.clone(p.agent,context.temp_allocator),true,true
-    }
-    return strings.clone(p.agent,context.temp_allocator),p.instance==instance,false
+    if p.instance=="" do p.instance=strings.clone(instance,runtime.default_allocator())
+    if p.instance!=instance do return strings.clone(p.agent,context.temp_allocator),false,false
+    bind=!p.binding
+    p.binding=true
+    return strings.clone(p.agent,context.temp_allocator),true,bind
+}
+
+// The bind for `chain` ended without binding: a later relaunch retries it.
+bridge_owner_pending_bind_failed :: proc(chain: string) {
+    sync.mutex_lock(&bridge_owner_pending_mutex);defer sync.mutex_unlock(&bridge_owner_pending_mutex)
+    if p,found:=&bridge_owner_pending[chain];found do p.binding=false
 }
 
 // A pending chain's boot role for `instance` (no bound coordinator yet). The
-// first claim starts the post-live bind.
+// claim, or a relaunch with no bind running, starts the post-live bind.
 bridge_owner_pending_launch_role :: proc(chain, instance: string) -> bool {
-    agent,coordinator,first:=bridge_owner_pending_claim(chain,instance)
-    if first do bridge_owner_pending_bind_start(chain,instance,agent)
+    agent,coordinator,bind:=bridge_owner_pending_claim(chain,instance)
+    if bind do bridge_owner_pending_bind_start(chain,instance,agent)
     return coordinator
 }
 
@@ -101,7 +121,8 @@ bridge_owner_pending_bind_start :: proc(chain, instance, agent: string) {
 bridge_owner_pending_bind :: proc(chain, instance, agent: string) {
     context.allocator=context.temp_allocator
     if waited:=bridge_owner_wait_live(instance,agent);waited!="" {
-        fmt.eprintfln("owner chain %s: coordinator %s not bound: %s",chain,instance,waited)
+        fmt.eprintfln("owner chain %s: coordinator %s not bound: %s (retried at its next launch)",chain,instance,waited)
+        bridge_owner_pending_bind_failed(chain)
         return
     }
     sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
@@ -110,11 +131,12 @@ bridge_owner_pending_bind :: proc(chain, instance, agent: string) {
     sync.mutex_lock(&bridge_local_token_mutex)
     child,current:=bridge_owner_child_locked(instance,"")
     code:="invalid_scope"
-    if current && child.agent_id==agent do code=owner.bind_created_coordinator(&bridge_owner_store,chain,child,bridge_config.daemon_id,time.to_unix_nanoseconds(time.now())/1000000).code
+    if current && (agent=="" || child.agent_id==agent) do code=owner.bind_created_coordinator(&bridge_owner_store,chain,child,bridge_config.daemon_id,time.to_unix_nanoseconds(time.now())/1000000).code
     sync.mutex_unlock(&bridge_local_token_mutex)
     sync.mutex_unlock(&bridge_startup_io_mutex)
     if code!="ok" {
-        fmt.eprintfln("owner chain %s: coordinator binding of %s refused (%s)",chain,instance,code)
+        fmt.eprintfln("owner chain %s: coordinator binding of %s refused (%s); retried at its next launch",chain,instance,code)
+        bridge_owner_pending_bind_failed(chain)
         return
     }
     bridge_owner_coordinator_refresh_locked(chain)
@@ -158,16 +180,20 @@ bridge_owner_chain_create_execute_locked :: proc(in_: Owner_Create_Inputs, chain
 // Creates a pending chain for `agent`'s coordinator: (chain, code, message).
 // title/description are vault tokens sealed by the user's app (the Hub never
 // sees them in plain text) or, for agent and test callers, plain text.
-bridge_owner_chain_prepare :: proc(agent, title, description: string) -> (string, string, string) {
+// chain_id is the Hub-chosen id (so a prepare whose reply was lost can still be
+// discarded); empty picks a fresh one. An existing chain id is refused.
+bridge_owner_chain_prepare :: proc(agent, title, description: string, chain_id: string = "") -> (string, string, string) {
     context.allocator=context.temp_allocator
     if !contracts.owner_field_valid(agent,"id") do return "","bad_request","owner_chain_prepare: invalid agent_id"
+    if chain_id!="" && (!strings.has_prefix(chain_id,"chain_") || !contracts.owner_field_valid(chain_id,"id")) do return "","bad_request","owner_chain_prepare: invalid chain_id"
     if strings.trim_space(title)=="" do return "","bad_request","owner_chain_prepare: a chain title is required"
     kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
     if !unlocked do return "","vault_locked","the owner Bridge vault is locked"
     in_,code,message:=bridge_owner_create_inputs(strings.trim_space(title),description,&kr)
     if code=="vault_locked" && vault.is_armored(title) do return "","bad_request","owner_chain_prepare: the chain title is not sealed for this vault"
     if code!="ok" do return "",code,message
-    chain,op:=bridge_owner_chain_id("chain_"),bridge_owner_chain_id("op_")
+    chain,op:=chain_id,bridge_owner_chain_id("op_")
+    if chain=="" do chain=bridge_owner_chain_id("chain_")
     sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
     if !bridge_owner_open(in_.account,in_.key.key_id) do return "","storage_error","owner store unavailable"
     if created:=bridge_owner_chain_create_execute_locked(in_,chain,op,bridge_config.daemon_id,&kr);created!="ok" do return "",created,"the owner store rejected the new chain"
@@ -177,12 +203,12 @@ bridge_owner_chain_prepare :: proc(agent, title, description: string) -> (string
     return chain,"ok",""
 }
 
-// Hub runtime command `owner_chain_prepare {command_id, agent_id, title, description}`.
+// Hub runtime command `owner_chain_prepare {command_id, agent_id, chain_id, title, description}`.
 bridge_owner_chain_prepare_handle :: proc(conn: ^ws.Connection, text: string) {
     context.allocator=context.temp_allocator
-    wire:struct{type,command_id,agent_id,title,description:string}
+    wire:struct{type,command_id,agent_id,chain_id,title,description:string}
     if json.unmarshal_string(text,&wire,.JSON,context.temp_allocator)!=nil do return
-    chain,code,message:=bridge_owner_chain_prepare(wire.agent_id,wire.title,wire.description)
+    chain,code,message:=bridge_owner_chain_prepare(wire.agent_id,wire.title,wire.description,wire.chain_id)
     result:=bridge_owner_json(struct{type,command_id,code,message,chain_id:string}{"command_result",wire.command_id,code,message,chain})
     bridge_runtime_cache_command(wire.command_id,result)
     if conn!=nil do _=bridge_hub_send(conn,result)

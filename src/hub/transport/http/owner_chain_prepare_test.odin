@@ -45,7 +45,7 @@ test_create_chat_owner_chain_refusal_saves_nothing :: proc(t: ^testing.T) {
 	@(static) probe: Owner_Prepare_Probe
 	probe = {fail = domain.domain_error(.Vault_Locked, "the Bridge could not create the task chain: the owner Bridge vault is locked")}
 	f.handlers.prepare_ctx = &probe
-	f.handlers.prepare_owner_chain = proc(ctx: rawptr, bridge_id, agent_id, title, description: string) -> (string, domain.Domain_Error) {
+	f.handlers.prepare_owner_chain = proc(ctx: rawptr, bridge_id, agent_id, chain_id, title, description: string) -> (string, domain.Domain_Error) {
 		p := (^Owner_Prepare_Probe)(ctx)
 		sync.atomic_add(&p.calls, 1)
 		p.bridge, p.agent, p.title, p.description = strings.clone(bridge_id, context.temp_allocator), strings.clone(agent_id, context.temp_allocator), strings.clone(title, context.temp_allocator), strings.clone(description, context.temp_allocator)
@@ -83,7 +83,7 @@ test_create_chat_owner_chain_launch_failure_discards_the_chain :: proc(t: ^testi
 	@(static) probe: Owner_Prepare_Probe
 	probe = {chain = "chain_rollback"}
 	f.handlers.prepare_ctx = &probe
-	f.handlers.prepare_owner_chain = proc(ctx: rawptr, bridge_id, agent_id, title, description: string) -> (string, domain.Domain_Error) {
+	f.handlers.prepare_owner_chain = proc(ctx: rawptr, bridge_id, agent_id, chain_id, title, description: string) -> (string, domain.Domain_Error) {
 		p := (^Owner_Prepare_Probe)(ctx)
 		sync.atomic_add(&p.calls, 1)
 		return p.chain, p.fail

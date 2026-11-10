@@ -189,7 +189,7 @@ bridge_owner_wait_live :: proc(instance,agent:string) -> string {
         child,current:=bridge_owner_child_locked(instance,"")
         sync.mutex_unlock(&bridge_local_token_mutex)
         sync.mutex_unlock(&bridge_startup_io_mutex)
-        if current && child.agent_id==agent do return ""
+        if current && (agent=="" || child.agent_id==agent) do return ""
         if time.duration_milliseconds(time.tick_since(started))>=BRIDGE_CHAIN_CREATE_LAUNCH_WAIT_MS do return fmt.tprintf("%s did not start on this Bridge within %ds",instance,BRIDGE_CHAIN_CREATE_LAUNCH_WAIT_MS/1000)
         time.sleep(2*time.Second)
     }

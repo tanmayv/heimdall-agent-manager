@@ -1263,7 +1263,11 @@ bridge_owner_coordinator_cache_get :: proc(chain_id: string) -> (string, bool) {
 
 // Caller holds bridge_owner_mutex with the store open.
 bridge_owner_coordinator_refresh_locked :: proc(chain_id: string) {
-    bridge_owner_coordinator_cache_set(chain_id,owner.chain_coordinator_instance(&bridge_owner_store,chain_id))
+    bound:=owner.chain_coordinator_instance(&bridge_owner_store,chain_id)
+    bridge_owner_coordinator_cache_set(chain_id,bound)
+    // A prepared chain whose bind never happened (wait timeout, refusal, or a
+    // Bridge restart lost the in-memory pending entry) is pending again.
+    if bound=="" && owner.created_chain_unbound(&bridge_owner_store,chain_id) do bridge_owner_pending_adopt(chain_id)
 }
 
 // Caller holds bridge_owner_mutex with the store open: seed every chain.

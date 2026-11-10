@@ -240,3 +240,12 @@ discard_created_chain :: proc(s:^Store,chain,requested_by:string,now:i64,sign:Si
     if !transaction_commit(&tx) do return fail("storage_error")
     return Result{code="ok",body=result,seq=seq}
 }
+
+// A Bridge-created chain still waiting for its first (coordinator) binding:
+// created with this owner key, active, with no member and no task. The Bridge
+// rebuilds its pending coordinator state from these after a restart.
+created_chain_unbound :: proc(s:^Store,chain:string) -> bool {
+    if s.db==nil || !work_chain_active(s,chain) do return false
+    rows,ok:=query(s.db,"SELECT 1 FROM task_chains t WHERE t.chain_id=? AND t.creator=? AND t.creator_key=? AND NOT EXISTS(SELECT 1 FROM local_chain_member_versions m WHERE m.chain_id=t.chain_id) AND NOT EXISTS(SELECT 1 FROM tasks k WHERE k.chain_id=t.chain_id)",chain,s.owner,s.owner_key)
+    return ok && len(rows)==1
+}

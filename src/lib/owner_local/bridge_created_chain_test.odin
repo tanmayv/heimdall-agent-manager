@@ -164,3 +164,20 @@ bridge_created_chain_discard_retires_and_tombstones_only_an_unused_chain :: proc
     rows,_=query(f.store.db,"SELECT count(*) FROM runtime_intents WHERE chain_id='bchain' AND kind='registry'")
     testing.expect_value(t,rows[0][0],"2")
 }
+
+@(test)
+bridge_created_chain_unbound_until_bound_used_or_discarded :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f);seed(t,f)
+    sign:=Signer{&f.owner_priv,test_sign}
+    testing.expect_value(t,bridge_create(f,"bchain",f.owner,&f.owner_priv).code,"ok")
+    testing.expect_value(t,bridge_create(f,"gone",f.owner,&f.owner_priv).code,"ok")
+    testing.expect(t,created_chain_unbound(&f.store,"bchain"))
+    testing.expect(t,!created_chain_unbound(&f.store,"chain")) // device-created
+    testing.expect(t,!created_chain_unbound(&f.store,"missing"))
+    coord:=Child{"inst_creator","coord_epoch",strings.repeat("c",64,context.temp_allocator),1,"agt_creator"}
+    testing.expect_value(t,bind_created_coordinator(&f.store,"bchain",coord,"inst_creator",1000).code,"ok")
+    testing.expect(t,!created_chain_unbound(&f.store,"bchain"))
+    testing.expect_value(t,discard_created_chain(&f.store,"gone","bridge",1000,sign).code,"ok")
+    testing.expect(t,!created_chain_unbound(&f.store,"gone"))
+}

@@ -7,8 +7,15 @@ package http
 // create_instance resolves the chain, and the instance boots as its
 // coordinator (src/bridge/owner_chain_prepare.odin). Nothing is saved when the
 // Bridge refuses.
+//
+// The Hub chooses the chain id. A prepare whose reply never arrives (the wait
+// expired, the Bridge went away) may still have created the chain, so the Hub
+// then sends owner_chain_discard for that id: commands on the Bridge key run
+// in order, so the discard follows the prepare, and a discard of a chain that
+// was never created is refused harmlessly.
 
 import "base:runtime"
+import "core:crypto"
 import "core:fmt"
 import "core:strings"
 import "core:time"
@@ -20,24 +27,42 @@ import project_service "odin_test:hub/service/project"
 OWNER_CHAIN_PREPARE_WAIT_MS :: 20_000
 OWNER_CHAIN_TITLE_MAX :: 80
 
-// (chain_id, error). ctx is Content_Handlers.prepare_ctx.
-Owner_Chain_Prepare_Proc :: proc(ctx: rawptr, bridge_id, agent_id, title, description: string) -> (string, domain.Domain_Error)
+// (chain_id, error). ctx is Content_Handlers.prepare_ctx; chain_id is the
+// Hub-chosen id (owner_chain_new_id).
+Owner_Chain_Prepare_Proc :: proc(ctx: rawptr, bridge_id, agent_id, chain_id, title, description: string) -> (string, domain.Domain_Error)
+
+// A fresh chain id, in the Bridge's own chain_<32 hex> shape.
+owner_chain_new_id :: proc() -> string {
+	raw: [16]byte
+	crypto.rand_bytes(raw[:])
+	b := strings.builder_make(context.temp_allocator)
+	strings.write_string(&b, "chain_")
+	for x in raw do fmt.sbprintf(&b, "%02x", x)
+	return strings.to_string(b)
+}
 
 // The default: the owner_chain_prepare runtime command on the launch Bridge.
-owner_chain_prepare_via_runtime :: proc(ctx: rawptr, bridge_id, agent_id, title, description: string) -> (string, domain.Domain_Error) {
+owner_chain_prepare_via_runtime :: proc(ctx: rawptr, bridge_id, agent_id, chain_id, title, description: string) -> (string, domain.Domain_Error) {
 	registry := cast(^project_service.Bridge_Runtime_Registry)ctx
 	if registry == nil do return "", domain.domain_error(.Internal_Error, "bridge runtime is not configured")
 	id := fmt.tprintf("cmd_owner_prepare_%d", time.to_unix_nanoseconds(time.now()))
 	b := strings.builder_make(context.temp_allocator)
 	strings.write_string(&b, `{"type":"owner_chain_prepare","command_id":"`); write_handler_json_string(&b, id)
 	strings.write_string(&b, `","agent_id":"`); write_handler_json_string(&b, agent_id)
+	strings.write_string(&b, `","chain_id":"`); write_handler_json_string(&b, chain_id)
 	strings.write_string(&b, `","title":"`); write_handler_json_string(&b, title)
 	strings.write_string(&b, `","description":"`); write_handler_json_string(&b, description)
 	strings.write_string(&b, `"}`)
 	reply, received, err := bridge_runtime.send_runtime_command_wait(registry, project_service.Runtime_Command{bridge_id = bridge_id, command_id = id, body_json = strings.to_string(b)}, OWNER_CHAIN_PREPARE_WAIT_MS)
-	if !received do return "", err
+	if !received {
+		// The Bridge may have created the chain before the wait expired.
+		_ = owner_chain_discard_via_runtime(ctx, bridge_id, chain_id)
+		return "", err
+	}
 	defer delete(reply, runtime.default_allocator())
-	return owner_chain_prepare_result(reply)
+	chain, prepare_err := owner_chain_prepare_result(reply)
+	if chain != "" && chain != chain_id do return "", domain.domain_error(.Conflict, "the Bridge created a different task chain than requested")
+	return chain, prepare_err
 }
 
 // Rollback when the launch fails after a prepare: the Bridge retires the

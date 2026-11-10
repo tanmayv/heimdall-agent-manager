@@ -133,7 +133,7 @@ create_chat_handler :: proc(ctx:rawptr, req:Request)->Response{
 		if json_bool(req.body,"create_owner_chain") && input.chain_id=="" {
 			if input.bridge_id=="" do return respond_error(domain.domain_error(.Validation_Failed,"create_owner_chain needs a bridge_id"),req.request_id)
 			if h.prepare_owner_chain==nil do return respond_error(domain.domain_error(.Not_Implemented,"owner chain creation is not configured"),req.request_id)
-			chain,prepare_err:=h.prepare_owner_chain(h.prepare_ctx,input.bridge_id,input.agent_id,owner_chain_title(json_string(req.body,"chain_title"),input.initial_body),json_string(req.body,"chain_description"))
+			chain,prepare_err:=h.prepare_owner_chain(h.prepare_ctx,input.bridge_id,input.agent_id,owner_chain_new_id(),owner_chain_title(json_string(req.body,"chain_title"),input.initial_body),json_string(req.body,"chain_description"))
 			if chain=="" do return respond_error(prepare_err,req.request_id)
 			input.chain_id=chain
 			prepared=true
