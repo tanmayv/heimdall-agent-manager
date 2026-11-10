@@ -137,6 +137,7 @@ function renderAuxTabBody({
           // opens, so the board does not reopen it each time it remounts.
           onFocusConsumed={() => onUpdateTab(tab.id, { taskId: undefined })}
           onOpenTicket={(taskId, title) => onOpenTab({ type: 'ticket', chainId: ctx.chainId, taskId }, title)}
+          onEditTicket={(taskId, title, focus) => onOpenTab({ type: 'ticket', chainId: ctx.chainId, taskId, focus }, title)}
           onOpenAgent={(agentInstanceId) => openAgentConversation(agentInstanceId, isMobile)}
         />
       );
@@ -153,6 +154,8 @@ function renderAuxTabBody({
           onSwitchTicket={(taskId, title) => onRekeyTab(tab.id, { type: 'ticket', chainId: c.chainId, taskId }, title)}
           onOpenAgent={(agentInstanceId) => openAgentConversation(agentInstanceId, isMobile)}
           onTitle={(title) => title !== tab.title && onUpdateTab(tab.id, {}, title)}
+          editFocus={c.focus === 'edit_requirements' || c.focus === 'edit_deps' ? c.focus : null}
+          onEditFocusConsumed={() => onUpdateTab(tab.id, { focus: null })}
         />
       );
     case 'files':

@@ -8,6 +8,7 @@ import { ButtonLink, EmptyState, Spinner } from '@ui';
 import type { OwnerSend } from '../../api/ownerChains';
 import { useOwnerChains } from '../../api/ownerChainsStore';
 import type { OwnerSession } from '../../api/ownerLocalClient';
+import type { OwnerTicketEditFocus } from '../../store/auxTabId';
 import { buildRouteHash, navigateTo } from '../../utils/appLocation';
 import { ChainTokenUsageSection } from './ChainTokenUsage';
 import { OwnerChainView } from './OwnerChainView';
@@ -28,6 +29,11 @@ export interface OwnerChainAuxPaneProps {
   /** Ticket layout: the ticket shown. Board layout: a ticket to open once. */
   taskId?: string;
   onOpenTicket: (taskId: string, title: string) => void;
+  /** Board layout: the card's Edit menu; opens the ticket with that editor. */
+  onEditTicket?: (taskId: string, title: string, focus: OwnerTicketEditFocus) => void;
+  /** Ticket layout: open this editor once the ticket loads, then report it consumed. */
+  editFocus?: OwnerTicketEditFocus | null;
+  onEditFocusConsumed?: () => void;
   onShowBoard?: () => void;
   onSwitchTicket?: (taskId: string, title: string) => void;
   onOpenAgent?: (instanceId: string, title?: string) => void;
@@ -50,7 +56,7 @@ function Notice({ debugId, title, role, action }: { debugId: string; title: Reac
 }
 
 export function OwnerChainAuxPane({
-  chainId, layout, taskId, onOpenTicket, onShowBoard, onSwitchTicket, onOpenAgent, onTitle, onFocusConsumed,
+  chainId, layout, taskId, onOpenTicket, onEditTicket, editFocus, onEditFocusConsumed, onShowBoard, onSwitchTicket, onOpenAgent, onTitle, onFocusConsumed,
   refreshMs = OWNER_AUX_REFRESH_MS, send, session,
 }: OwnerChainAuxPaneProps) {
   const owners = useOwnerChains();
@@ -93,6 +99,9 @@ export function OwnerChainAuxPane({
       focusTaskId={layout === 'ticket' ? taskId : undefined}
       refreshMs={refreshMs}
       onOpenTicket={onOpenTicket}
+      onEditTicket={onEditTicket}
+      editFocus={layout === 'ticket' ? editFocus : undefined}
+      onEditFocusConsumed={onEditFocusConsumed}
       onShowBoard={onShowBoard}
       onSwitchTicket={onSwitchTicket}
       onOpenAgent={onOpenAgent}

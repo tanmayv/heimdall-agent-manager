@@ -26,6 +26,8 @@ import { ownerRequirementsDoc, ownerTaskWire, ownerTaskWires } from '../tasks/ow
 import { TicketBoard } from '../tasks/TicketBoard';
 import type { BoardTicketActions } from '../tasks/BoardTicketCard';
 import type { TaskWire } from '../../api/taskWire';
+import type { OwnerTicketEditFocus } from '../../store/auxTabId';
+import type { TaskEditField } from '../tasks/BoardTicketCard';
 import OwnerLocalPanel from './OwnerLocalPanel';
 import OwnerCoordinatorControl, { hubCoordinatorApi, type OwnerCoordinatorApi } from './OwnerCoordinatorControl';
 import OwnerAddAgentControl, { type ChainAgentRole } from './OwnerAddAgentControl';
@@ -38,6 +40,8 @@ const STATE_TONE: Record<OwnerTaskState, Tone> = {
 };
 const RUNTIME_LIMIT = 50;
 const STATE_ORDER: OwnerTaskState[] = ['ready', 'in_progress', 'in_review', 'done', 'cancelled'];
+/** The board card Edit menu: reviewers live in the requirements (reviewer ids + your approval). */
+const OWNER_EDIT_FIELDS: readonly TaskEditField[] = ['requirements', 'reviewers', 'deps'];
 
 /** A chain agent's instance runtime_status (Hub) as a pill; '' when unknown. */
 const AGENT_STATUS: Record<string, { label: string; tone: Tone }> = {
@@ -106,6 +110,11 @@ export interface OwnerChainViewProps {
   layout?: OwnerChainLayout;
   /** Aux layouts: a ticket click opens it (the page selects it in place). */
   onOpenTicket?: (taskId: string, title: string) => void;
+  /** Board layout (aux): a card's Edit menu opens the ticket with that editor. */
+  onEditTicket?: (taskId: string, title: string, focus: OwnerTicketEditFocus) => void;
+  /** Open this editor once the focused ticket loads; reported consumed once. */
+  editFocus?: OwnerTicketEditFocus | null;
+  onEditFocusConsumed?: () => void;
   /** Ticket layout: back to the board, and prev / next in the same tab. */
   onShowBoard?: () => void;
   onSwitchTicket?: (taskId: string, title: string) => void;
@@ -129,7 +138,7 @@ export interface OwnerChainViewProps {
 }
 
 export function OwnerChainView({
-  chain, layout = 'page', onOpenTicket, onShowBoard, onSwitchTicket, onOpenAgent, onTitle, refreshMs = 0,
+  chain, layout = 'page', onOpenTicket, onEditTicket, editFocus, onEditFocusConsumed, onShowBoard, onSwitchTicket, onOpenAgent, onTitle, refreshMs = 0,
   focusTaskId, submissionAttempt, onClose, extra, send: sendProp = ownerRelaySend, session: sessionProp = freshOwnerSession, coordinatorApi,
 }: OwnerChainViewProps) {
   const bridge = chain.ownerBridgeId;
@@ -557,6 +566,33 @@ export function OwnerChainView({
     };
   };
 
+  // Opens the requirements editor (goal, acceptance, reviewers, your approval).
+  function startReqEdit(t: TaskView) {
+    setReqDraft({
+      taskId: t.taskId,
+      goal: t.runtime.requirements?.goal ?? '',
+      acceptance: (t.runtime.requirements?.acceptance ?? []).join('\n'),
+      reviewers: (wire?.task_id === t.taskId ? wire.brief?.reviewers ?? [] : []).join(', '),
+      approval: Boolean(t.runtime.requirements?.requiresUserApproval),
+      reason: '',
+    });
+  }
+  // The board's Edit menu: the aux board opens a ticket tab with the editor;
+  // the page selects the ticket in place and opens it there.
+  const [pendingEdit, setPendingEdit] = useState<OwnerTicketEditFocus | null>(editFocus ?? null);
+  function editTicket(taskId: string, title: string, field: TaskEditField) {
+    const focus: OwnerTicketEditFocus = field === 'deps' ? 'edit_deps' : 'edit_requirements';
+    if (aux) { onEditTicket?.(taskId, title || taskId, focus); return; }
+    setSelected(taskId); setPendingEdit(focus);
+  }
+  useEffect(() => {
+    if (!pendingEdit || !task || task.taskId !== selected || !editable) return;
+    if (pendingEdit === 'edit_requirements') startReqEdit(task);
+    else document.querySelector<HTMLElement>('[data-debug-id="owner-chain-dependencies"]')?.scrollIntoView?.({ block: 'center' });
+    setPendingEdit(null);
+    onEditFocusConsumed?.();
+  }, [pendingEdit, task, selected, editable]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // The decision block's actions as owner commands on the open ticket.
   const decisionActions = (t: TaskView): TicketDecisionActions => {
     const sub = t.runtime.submission;
@@ -823,10 +859,10 @@ export function OwnerChainView({
                 tasks={boardWires}
                 keys={boardKeys}
                 actionsFor={boardActions}
-                editFields={[]}
+                editFields={OWNER_EDIT_FIELDS}
                 fleetSlot={<OwnerFleetTable rows={fleet.rows} error={fleet.error} names={agentNames} editable={editable} busy={busy} save={saveFleet} />}
                 onOpenTicket={(taskId) => openTicket(taskId, boardWires.find((w) => w.task_id === taskId)?.title ?? '')}
-                onEditTicket={(taskId) => openTicket(taskId, boardWires.find((w) => w.task_id === taskId)?.title ?? '')}
+                onEditTicket={(taskId, field) => editTicket(taskId, boardWires.find((w) => w.task_id === taskId)?.title ?? '', field)}
               />
             )
           ) : (
@@ -954,14 +990,7 @@ export function OwnerChainView({
                 ) : <Text as="p" role="caption" tone="muted">No requirements saved.</Text>}
                 {editable && ts.state !== 'done' && (reqDraft?.taskId !== task.taskId ? (
                   <Button size="sm" variant="ghost" className="mt-2" data-debug-id="owner-chain-requirements-edit" disabled={busy || ts.merge !== ''}
-                    onClick={() => setReqDraft({
-                      taskId: task.taskId,
-                      goal: task.runtime.requirements?.goal ?? '',
-                      acceptance: (task.runtime.requirements?.acceptance ?? []).join('\n'),
-                      reviewers: (wire?.brief?.reviewers ?? []).join(', '),
-                      approval: Boolean(task.runtime.requirements?.requiresUserApproval),
-                      reason: '',
-                    })}>{task.runtime.requirements ? 'Change requirements' : 'Add requirements'}</Button>
+                    onClick={() => startReqEdit(task)}>{task.runtime.requirements ? 'Change requirements' : 'Add requirements'}</Button>
                 ) : (
                   <form data-debug-id="owner-chain-requirements-form" className="mt-3 space-y-2" onSubmit={(e) => {
                     e.preventDefault();

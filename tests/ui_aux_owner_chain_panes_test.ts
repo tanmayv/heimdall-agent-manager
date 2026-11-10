@@ -612,3 +612,21 @@ test('the ticket tab restores origin/main decision block: hold release, answer a
     await review.cleanup();
   }
 });
+
+test('the board card Edit menu opens the ticket tab with the requirements editor open, once', async () => {
+  const board = await mount({ render: (_env, h) => aux({ type: 'tasks' }, h) });
+  try {
+    await board.click('task-card-more-task_1');
+    await board.click('task-card-edit-requirements-task_1');
+    assert.deepEqual(board.opened.at(-1)!.content, { type: 'ticket', chainId: CHAIN, taskId: 'task_1', focus: 'edit_requirements' });
+  } finally {
+    await board.cleanup();
+  }
+  const ticket = await mount({ render: (_env, h) => aux({ type: 'ticket', chainId: CHAIN, taskId: 'task_1', focus: 'edit_requirements' }, h) });
+  try {
+    assert.ok(ticket.$('owner-chain-requirements-form'), 'the requirements editor is open');
+    assert.ok(ticket.updated.some((u) => u.patch?.focus === null), 'the one-shot focus is consumed');
+  } finally {
+    await ticket.cleanup();
+  }
+});
