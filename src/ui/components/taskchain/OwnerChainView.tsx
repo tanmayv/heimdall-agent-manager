@@ -9,7 +9,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Badge, Button, EmptyState, FormField, Input, Select, StatusDot, StatusPill, Text, Textarea, type Tone } from '@ui';
 import {
   freshOwnerSession, isOwnerOffline, ownerAwaitingUser, ownerCall, ownerErrorMessage, ownerOfflineMessage, ownerRelaySend, ownerTaskState,
-  ownerExpectedRevision, readArchivedReviews, readOwnerChain, readOwnerChainStatus, readOwnerReviews, readOwnerRuntime, readOwnerSubmission, readOwnerTask, withOwnerRecovery,
+  ownerExpectedRevision, readArchivedReviews, readOwnerChain, readOwnerChainStatus, readOwnerReviews, readOwnerRuntime, readOwnerSubmission, readOwnerTask, readOwnerWorkRevision, withOwnerRecovery,
   type OwnerChainDetail, type OwnerChainStatus, type OwnerChainSummary, type OwnerReview, type OwnerRuntime, type OwnerSend,
   type OwnerSubmission, type OwnerTaskDetail, type OwnerTaskState,
 } from '../../api/ownerChains';
@@ -139,6 +139,8 @@ export function OwnerChainView({
   const [reviewSummary, setReviewSummary] = useState('');
   // Inline editors: null when closed, else the draft.
   const [chainDraft, setChainDraft] = useState<{ title: string; description: string } | null>(null);
+  // Complete chain: the summary being written (null when the form is closed).
+  const [completeSummary, setCompleteSummary] = useState<string | null>(null);
   const [taskDraft, setTaskDraft] = useState<{ taskId: string; title: string; body: string } | null>(null);
   // undefined while the coordinator is not known yet (never shown as "none").
   const [coordinatorId, setCoordinatorId] = useState<string | undefined>(chain.coordinatorAgentInstanceId);
@@ -303,6 +305,18 @@ export function OwnerChainView({
     } finally { if (live.current) setBusy(false); }
   }
 
+  // chain.complete names the owner's current work revision (work.read).
+  async function completeChain(summary: string): Promise<boolean> {
+    let workRevision: string;
+    try {
+      workRevision = await readOwnerWorkRevision(await session(), bridge, chain.chainId, send);
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+    return mutate('chain.complete', { body: JSON.stringify({ expected_work_revision: workRevision, summary }) }, 'Chain completed.');
+  }
+
   // chain.member.set role=coordinator (and demotion of a replaced one).
   const bindCoordinator = useCallback(async (instanceId: string, agentId: string) => {
     await bindOwnerCoordinator(await session(), bridge, chain.chainId, instanceId, agentId, send);
@@ -424,6 +438,9 @@ export function OwnerChainView({
           {editable && showChainInfo && !chainDraft && (
             <Button size="sm" variant="ghost" data-debug-id="owner-chain-edit" disabled={busy} onClick={() => setChainDraft({ title, description: description ?? '' })}>Edit chain</Button>
           )}
+          {editable && showChainInfo && completeSummary === null && (
+            <Button size="sm" variant="ghost" data-debug-id="owner-chain-complete" disabled={busy} onClick={() => setCompleteSummary('')}>Complete chain</Button>
+          )}
           <Button size="sm" variant="ghost" data-debug-id="owner-chain-refresh" disabled={loading || busy} onClick={() => { setOffline(false); void loadChain(); if (selected) void loadTask(selected); }}>Refresh</Button>
           <Button size="sm" variant="ghost" data-debug-id="owner-chain-debug-toggle" aria-pressed={debug} onClick={() => setDebug((v) => !v)}>Advanced/debug</Button>
           {onClose && <Button size="sm" variant="ghost" data-debug-id="owner-chain-close" onClick={onClose}>Close</Button>}
@@ -445,6 +462,21 @@ export function OwnerChainView({
           <div className="flex gap-2">
             <Button size="sm" type="submit" variant="primary" data-debug-id="owner-chain-edit-save" disabled={busy || !chainDraft.title.trim()}>Save</Button>
             <Button size="sm" type="button" variant="ghost" disabled={busy} onClick={() => setChainDraft(null)}>Cancel</Button>
+          </div>
+        </form>
+      )}
+      {editable && completeSummary !== null && (
+        <form data-debug-id="owner-chain-complete-form" className="mx-4 mt-3 space-y-2 rounded-lg border border-subtle bg-surface-raised p-3" onSubmit={(e) => {
+          e.preventDefault();
+          if (!completeSummary.trim()) return;
+          void completeChain(completeSummary.trim()).then((ok) => { if (ok) setCompleteSummary(null); });
+        }}>
+          <FormField label="Summary" hint="What the chain delivered. Completing makes the chain read-only.">
+            <Textarea size="sm" rows={3} data-debug-id="owner-chain-complete-summary" value={completeSummary} onChange={(v) => setCompleteSummary(v)} />
+          </FormField>
+          <div className="flex gap-2">
+            <Button size="sm" type="submit" variant="primary" data-debug-id="owner-chain-complete-save" disabled={busy || !completeSummary.trim()}>Complete chain</Button>
+            <Button size="sm" type="button" variant="ghost" disabled={busy} onClick={() => setCompleteSummary(null)}>Cancel</Button>
           </div>
         </form>
       )}

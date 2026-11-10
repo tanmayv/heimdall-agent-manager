@@ -86,6 +86,7 @@ test('owner chain view renders tickets, brief, comments, submissions and reviews
       }
       case 'review.post': case 'task.hold': case 'task.edit': case 'task.priority': taskRevs[task]++; return { chain_id: 'chain_owned', task_id: task, revision: String(taskRevs[task]) };
       case 'chain.edit': chainRev++; return { chain_id: 'chain_owned', task_id: '', revision: String(chainRev) };
+      case 'chain.complete': chainRev++; return { chain_id: 'chain_owned', task_id: '', revision: String(chainRev) };
       case 'runtime.read': return task === 'task_1'
         ? { revision: String(taskRevs.task_1), fleet: [], leases: [], config: [], requirements: [['2', JSON.stringify({ goal: 'Users can sign in', acceptance: ['SSO works', 'Errors are shown'] })]],
             state: [['in_review', '2', '']], submission: [['2', 'a'.repeat(40), '2', 'Implemented SSO', 'agt_worker']], controls: [],
@@ -210,6 +211,15 @@ test('owner chain view renders tickets, brief, comments, submissions and reviews
     assert.ok(priority, 'task.priority was sent: ' + (ui.$('owner-chain-error')?.textContent ?? ''));
     assert.equal(priority.payload.priority, 'p0');
     assert.equal(ui.$('owner-chain-error'), null, 'no management change was refused as stale');
+
+    await ui.click('owner-chain-complete');
+    await ui.type('owner-chain-complete-summary', 'Login shipped');
+    await ui.click('owner-chain-complete-save');
+    const complete = calls.find((c) => c.method === 'chain.complete')!;
+    assert.ok(complete, 'chain.complete was sent: ' + (ui.$('owner-chain-error')?.textContent ?? ''));
+    assert.equal(complete.command.expected_revision, '9', 'chain-scoped');
+    assert.deepEqual(JSON.parse(await decryptVaultText(complete.payload.body_cipher, session.keyring)), { expected_work_revision: '1', summary: 'Login shipped' }, 'names the work revision from work.read');
+    assert.equal(ui.$('owner-chain-notice')!.textContent, 'Chain completed.');
 
     await ui.click('owner-chain-debug-toggle');
     assert.ok(ui.dom.window.document.querySelector('[aria-label="Owner-local tasks"]'), 'the raw console stays reachable behind Advanced/debug');

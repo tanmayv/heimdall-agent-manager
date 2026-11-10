@@ -235,6 +235,12 @@ export async function readOwnerChainStatus(session: OwnerSession, bridgeId: stri
   return data.status === 'active' || data.status === 'completed' ? data.status : '';
 }
 
+/** The owner's work revision (work.read), which chain.complete must name. */
+export async function readOwnerWorkRevision(session: OwnerSession, bridgeId: string, chainId: string, send: OwnerSend = ownerRelaySend): Promise<string> {
+  const data = await ownerCall(session, bridgeId, 'work.read', { chainId, expectedRevision: '0', cursor: '', limit: 1 }, send);
+  return String(data.work_revision ?? '0');
+}
+
 /**
  * Statuses for the online chains of a listing, bounded at four concurrent owner
  * reads. Offline or failing chains stay unknown ('').
