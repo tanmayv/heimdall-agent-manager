@@ -27,6 +27,16 @@ owner_json :: proc(v:$T)->string { b,_:=json.marshal(v,allocator=context.temp_al
 owner_registry_rows :: proc(h:^Bridge_Handlers,account,chain,after_chain,after_task:string,limit:int,headers_only:bool=false)->([]domain.Owner_Registry_Record,domain.Domain_Error) {
     return h.chains.owner_registry_list(h.chains.ctx,account,chain,after_chain,after_task,limit,headers_only)
 }
+// Who may use the owner-local relay and registry listing: the user, a Bridge
+// of the account (its token's user_id scopes every lookup to that account),
+// and, for the relay only, an agent instance. Rows and bridges are always
+// looked up under auth.user_id, so another account sees nothing.
+owner_local_caller_admitted :: proc(auth:contracts.Auth_Context,relay:bool)->bool {
+    if contracts.is_user_auth(auth) do return true
+    if auth.user_id=="" do return false
+    if auth.kind==.Bridge_Token do return auth.bridge_id!=""
+    return relay && auth.kind==.Instance_Token
+}
 Owner_Relay_Command :: struct {
     type,command_id,account_id,relay:string,
     directory:vault.Directory_Verification_Input,
@@ -36,7 +46,10 @@ owner_local_relay_handler :: proc(ctx:rawptr,req:Request)->Response {
     h:=(^Bridge_Handlers)(ctx)
     auth,ok,resp:=require_auth_any(h.auth,req)
     if !ok do return resp
-    if !contracts.is_user_auth(auth) && auth.kind!=.Instance_Token do return respond_error(domain.domain_error(.Forbidden,"user authentication required"),req.request_id)
+    // Another paired Bridge of the account relays its agents' owner-chain
+    // verbs (origin/main parity: the Hub served every Bridge of the account).
+    // The owner Bridge still verifies the signing key in the directory.
+    if !owner_local_caller_admitted(auth,true) do return respond_error(domain.domain_error(.Forbidden,"user authentication required"),req.request_id)
     relay,valid:=contracts.owner_parse(req.body,"relay")
     if !valid do return respond_error(domain.domain_error(.Validation_Failed,"invalid owner relay"),req.request_id)
     bridge_id,chain:=contracts.owner_string(relay,"bridge_id"),contracts.owner_string(relay,"chain_id")
@@ -145,7 +158,7 @@ owner_local_list_handler :: proc(ctx:rawptr,req:Request)->Response {
     h:=(^Bridge_Handlers)(ctx)
     auth,ok,resp:=require_auth(h.auth,req)
     if !ok do return resp
-    if !contracts.is_user_auth(auth) do return respond_error(domain.domain_error(.Forbidden,"user authentication required"),req.request_id)
+    if !owner_local_caller_admitted(auth,false) do return respond_error(domain.domain_error(.Forbidden,"user authentication required"),req.request_id)
     chain:=query_value(req.query,"chain_id")
     paged:=query_value(req.query,"page")=="1"
     headers_only:=query_value(req.query,"headers_only")=="1"

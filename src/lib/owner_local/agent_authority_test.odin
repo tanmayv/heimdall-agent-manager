@@ -63,7 +63,7 @@ agent_policy_worker_own_task_coordinator_chain_verbs_and_foreign_refusal :: proc
     for verb in ([5]string{"chain.summary.set","task.create","chain.publish","review.human","task.edit"}) {
         testing.expect_value(t,agent_role(f,"task",worker,verb),Agent_Role.None)
     }
-    testing.expect_value(t,agent_role(f,"task",worker,"task.comment"),Agent_Role.None)
+    testing.expect_value(t,agent_role(f,"task",worker,"task.comment"),Agent_Role.Worker) // any agent of the account
     testing.expect_value(t,agent_role(f,"task",worker,"review.open"),Agent_Role.None)
     // A stale launch of the same instance is a different child.
     relaunched:=worker;relaunched.run_count=2
@@ -87,8 +87,14 @@ agent_policy_worker_own_task_coordinator_chain_verbs_and_foreign_refusal :: proc
     testing.expect_value(t,agent_role(f,"task",reviewer,"lease.heartbeat"),Agent_Role.None)
     testing.expect_value(t,agent_role(f,"task",reviewer,"chain.summary.set"),Agent_Role.None)
 
-    // A foreign or unrelated agent is refused everything, including reads.
-    for verb in ([6]string{"lease.next","task.read","chain.read","chain.summary.set","review.open","task.comment"}) {
+    // An unrelated agent of the account may read any chain/task and comment on
+    // a task (origin/main parity), and nothing else.
+    for verb in ([3]string{"task.read","chain.read","task.comment"}) {
+        testing.expect_value(t,agent_role(f,"task",stranger,verb),Agent_Role.Worker)
+    }
+    testing.expect_value(t,agent_role(f,"",stranger,"chain.read"),Agent_Role.Worker)
+    testing.expect_value(t,agent_role(f,"",stranger,"task.comment"),Agent_Role.None) // a comment needs a task
+    for verb in ([7]string{"lease.next","chain.summary.set","review.open","task.edit","task.create","chain.member.set","task.hold"}) {
         testing.expect_value(t,agent_role(f,"task",stranger,verb),Agent_Role.None)
     }
     // Unknown chain, unknown task and unknown verbs are refused.
@@ -110,7 +116,8 @@ agent_policy_worker_own_task_coordinator_chain_verbs_and_foreign_refusal :: proc
     if pick=="" do return
     testing.expect_value(t,agent_role(f,"task",worker,"task.comment"),Agent_Role.Worker)
     testing.expect_value(t,agent_role(f,"task",worker,"task.read"),Agent_Role.Worker)
-    testing.expect_value(t,agent_role(f,"other",worker,"task.read"),Agent_Role.None)
+    testing.expect_value(t,agent_role(f,"other",worker,"task.read"),Agent_Role.Worker) // any task of the account
+    testing.expect_value(t,agent_role(f,"other",worker,"task.edit"),Agent_Role.None)
 }
 
 @(test)
@@ -119,9 +126,12 @@ agent_policy_member_of_another_chain_is_foreign :: proc(t:^testing.T) {
     f:=fixture(t);defer destroy(f);seed(t,f)
     coord:=agent_coordinator_child();agent_seat_coordinator(t,f,coord)
     testing.expect_value(t,agent_role(f,"task",coord,"chain.read"),Agent_Role.Coordinator)
-    // Lifetime binding to another chain makes the same child foreign here.
+    // Lifetime binding to another chain makes the same child foreign here: it
+    // keeps only the account-wide reads and comments (origin/main parity).
     testing.expect(t,exec(f.store.db,"INSERT INTO task_chains VALUES('elsewhere','device','device','t','d',1); DROP TRIGGER local_member_chains_no_update; UPDATE local_member_chains SET chain_id='elsewhere' WHERE instance_id='coord_instance';"))
-    testing.expect_value(t,agent_role(f,"task",coord,"chain.read"),Agent_Role.None)
+    testing.expect_value(t,agent_role(f,"task",coord,"chain.read"),Agent_Role.Worker)
+    testing.expect_value(t,agent_role(f,"task",coord,"chain.summary.set"),Agent_Role.None)
+    testing.expect_value(t,agent_role(f,"task",coord,"task.edit"),Agent_Role.None)
 }
 
 @(test)
@@ -145,9 +155,11 @@ agent_commands_execute_for_coordinator_and_refuse_everyone_else :: proc(t:^testi
 
     worker,stranger:=lease_child(),agent_stranger()
     // Worker without a lease, a stranger and a forged (device-key) signature.
-    testing.expect_value(t,agent_run(f,worker,"task.comment","w_comment","task",comment,agent_task_revision(f,"task")).code,"invalid_scope")
+    testing.expect_value(t,agent_run(f,worker,"task.comment","w_comment","task",comment,agent_task_revision(f,"task")).code,"ok") // any agent of the account
     testing.expect_value(t,agent_run(f,worker,"chain.summary.set","w_summary","",summary,agent_chain_rev(f)).code,"invalid_scope")
-    testing.expect_value(t,agent_run(f,stranger,"task.read","s_read","task",`{"cursor":"","limit":"10"}`,"0").code,"invalid_scope")
+    s_read:=agent_run(f,stranger,"task.read","s_read","task",`{"cursor":"","limit":"10"}`,"0")
+    testing.expect(t,s_read.code=="ok" && strings.contains(s_read.body,"coordinator comment"),"a non-member agent of the account reads the task")
+    testing.expect_value(t,agent_run(f,stranger,"task.edit","s_edit","task",created,agent_task_revision(f,"task")).code,"invalid_scope")
     testing.expect_value(t,agent_run(f,coord,"task.comment","forged","task",comment,agent_task_revision(f,"task"),1).code,"bad_signature")
     // Principal must be the proven child; methods outside the allowlist fail.
     other:=coord;other.instance="someone_else"

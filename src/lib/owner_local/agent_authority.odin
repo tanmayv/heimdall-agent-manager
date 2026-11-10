@@ -24,8 +24,10 @@ import vault "odin_test:lib/vault"
 //               management (fleet.policy.set, chain.member.set of workers and
 //               reviewers, instance start/stop/restart). grant.* stay human.
 //
-// Every other combination, including an agent bound to another chain, is
-// refused with invalid_scope.
+// Any proven agent of the account may also read any chain or task and
+// comment on a task (agent_account_verb, origin/main parity). Every other
+// combination, including an agent bound to another chain, is refused with
+// invalid_scope.
 Agent_Role :: enum { None, Worker, Reviewer, Coordinator }
 
 // The verb classes. review.human is review.post recorded on behalf of the user.
@@ -54,6 +56,13 @@ agent_coordinator_control :: proc(verb:string) -> bool {
          "lifecycle.force_submit","task.complete","task.split": return true
     }
     return false
+}
+
+// Verbs any proven agent of the account may use on any owner chain, as the
+// Hub allowed on origin/main (agent_action_handlers chain_show, task_show,
+// task_comment): reading a chain or task and commenting on a task.
+agent_account_verb :: proc(verb:string) -> bool {
+    return verb=="chain.read" || verb=="task.read" || verb=="task.comment"
 }
 
 // Controls whose agent form must carry a non-empty reason (R2-6). The reason
@@ -166,12 +175,20 @@ agent_authorize :: proc(s:^Store,chain,task:string,child:Child,verb:string) -> (
     chains,ok:=query(s.db,"SELECT 1 FROM task_chains WHERE chain_id=?",chain)
     if !ok do return .None,"storage_error"
     if len(chains)!=1 do return .None,"invalid_scope"
-    // A child bound to another chain (lifetime membership) is foreign here.
-    if !member_authorized(s,chain,child) do return .None,"invalid_scope"
     if task!="" && verb!="task.create" {
         tasks,read:=query(s.db,"SELECT 1 FROM tasks WHERE chain_id=? AND task_id=?",chain,task)
         if !read do return .None,"storage_error"
         if len(tasks)!=1 do return .None,"invalid_scope"
+    }
+    // origin/main parity (REQ-SEC-3): any agent of the account may view any
+    // chain or task of this owner and comment on a task, member or not. The
+    // caller already proved the live child of this account; changes stay
+    // role-gated below, and the chain's coordinator keeps its role.
+    account:=agent_account_verb(verb) && (verb!="task.comment" || task!="")
+    // A child bound to another chain (lifetime membership) is foreign here.
+    if !member_authorized(s,chain,child) {
+        if account do return .Worker,"ok"
+        return .None,"invalid_scope"
     }
     switch agent_verb_role(verb) {
     case .Worker:
@@ -182,8 +199,8 @@ agent_authorize :: proc(s:^Store,chain,task:string,child:Child,verb:string) -> (
         return .None,"invalid_scope"
     case .Coordinator:
         if agent_coordinator(s,chain,child) do return .Coordinator,"ok"
-        // A worker may read and comment on its own leased task, nothing else.
-        if (verb=="task.read" || verb=="task.comment") && task!="" && agent_holder(s,chain,task,child) do return .Worker,"ok"
+        // Any other agent of the account only reads and comments.
+        if account do return .Worker,"ok"
         return .None,"invalid_scope"
     case .None:
     }
