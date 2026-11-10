@@ -33,6 +33,8 @@ const { Provider } = await import('react-redux');
 const { makeVaultStore } = await import('./helpers/vaultEndpointHarness.ts');
 // The ticket decision block renders vault markdown, which reads the app store.
 const store = await makeVaultStore();
+// Owner chains open only with the vault unlocked; the ticket tab masks and locks its editors otherwise.
+store.dispatch((await import('../src/ui/store/vaultSlice.ts')).keyringInstalled({ currentEpoch: 1 }));
 const view = (props: any) => React.createElement(Provider, { store }, React.createElement(OwnerChainView, props));
 
 function mountDom() {
@@ -143,7 +145,10 @@ test('owner chain view renders tickets, brief, comments, submissions and reviews
   }, calls, revisions);
   const ui = mountDom();
   try {
-    await act(async () => ui.root.render(view({ chain: summary(env), send, session: async () => session })));
+    // The reviewer picker names the Hub's agents.
+    const coordinatorApi = { listAgents: async () => [{ agentId: 'agt_sec', name: 'Security' }, { agentId: 'agt_perf', name: 'Performance' }],
+      launch: async () => '', status: async () => 'running', restart: async () => undefined };
+    await act(async () => ui.root.render(view({ chain: summary(env), send, session: async () => session, coordinatorApi })));
     await ui.flush();
     assert.equal(ui.$('owner-chain-title')!.textContent, 'Live chain title');
     assert.match(ui.$('owner-chain-bridge-state')!.textContent!, /Home Bridge · online/);
@@ -153,30 +158,37 @@ test('owner chain view renders tickets, brief, comments, submissions and reviews
     assert.match(ui.$('owner-chain-task-task_2')!.textContent!, /Held/);
 
     await ui.click('owner-chain-task-task_1');
-    assert.equal(ui.$('owner-chain-task-title')!.textContent, 'Fix login');
-    assert.match(ui.$('owner-chain-brief')!.textContent!, /Login fails on Safari/);
-    // The restored ticket card frame carries the requirements revision in its header.
+    // origin/main's ticket tab (TicketView) over the owner reads.
+    assert.equal(ui.$('ticket-view-title')!.textContent, 'Fix login');
+    assert.match(ui.$('ticket-view-description')!.textContent!, /Login fails on Safari/, 'the ticket body shows beside its goal');
     assert.match(ui.$('task-requirements-status')!.textContent!, /Rev 2/, 'the requirements card carries the revision');
     assert.match(ui.$('ticket-view-requirements')!.textContent!, /Requirements.*Rev \d.*Users can sign in.*SSO works.*Errors are shown/s, 'origin/main requirements card');
-    const imported = ui.$('owner-chain-comment-cmt_legacy')!;
+    assert.match(ui.$('ticket-view-state')!.textContent!, /In review/);
+    await ui.click('ticket-activity-tab-comments');
+    const imported = ui.$('ticket-comment-cmt_legacy')!;
     assert.match(imported.textContent!, /inst_author.*Imported comment/s);
     assert.equal(imported.querySelector('time')!.getAttribute('datetime'), '2025-04-03T12:00:00Z', 'comments keep their timestamps');
-    const reviews = ui.$('owner-chain-reviews')!.textContent!;
-    assert.match(reviews, /Approved.*You.*attempt 1.*Looks right/s, 'owner review from event history');
-    assert.match(reviews, /Changes requested.*agt_reviewer \(security\).*attempt 1.*Archived from Hub.*Validate the redirect/s, 'archived migration review');
-    assert.ok(ui.$('owner-chain-attempt-1') && ui.$('owner-chain-attempt-2'), 'attempt history');
-    await ui.click('owner-chain-attempt-2');
-    assert.match(ui.$('owner-chain-submission')!.textContent!, /Attempt 2.*agt_worker.*Summary of attempt 2/s);
+    await ui.click('ticket-activity-tab-reviews');
+    const reviews = ui.$('ticket-activity-feed-reviews')!.textContent!;
+    assert.match(reviews, /You.*Approved.*attempt 1.*Looks right/s, 'owner review from event history');
+    assert.match(reviews, /Reviewer.*\(security\).*Changes requested.*attempt 1.*Archived from Hub.*Validate the redirect/s, 'archived migration review');
+    // Changes: each attempt's submission, read when the card opens or an attempt is picked.
+    await ui.click('ticket-view-changes-toggle');
+    assert.ok(ui.$('ticket-view-changes-attempt-1') && ui.$('ticket-view-changes-attempt-2'), 'attempt history');
+    assert.match(ui.$('task-details-output')!.textContent!, /Attempt 2.*Worker.*Summary of attempt 2/s, 'the current attempt first');
+    await ui.click('ticket-view-changes-attempt-1');
+    assert.match(ui.$('task-details-output')!.textContent!, /Attempt 1.*Summary of attempt 1/s);
     assert.ok(ui.$('ticket-view-approve-btn'), 'an in-review ticket offers a verdict (origin/main decision block)');
     assert.ok(!ui.text().includes('{"'), 'no raw JSON is rendered');
 
-    await ui.type('owner-chain-comment-input', 'Please also cover Firefox');
-    await ui.click('owner-chain-comment-submit');
+    await ui.click('ticket-activity-tab-comments');
+    await ui.type('comment-composer-input', 'Please also cover Firefox');
+    await ui.click('ticket-view-comment-send-btn');
     const comment = calls.find((c) => c.method === 'task.comment')!;
     assert.equal(comment.command.task_id, 'task_1');
     assert.equal(comment.command.expected_revision, '3', 'the command is bound to the task revision just read');
     assert.equal(await decryptVaultText(comment.payload.body_cipher, session.keyring), 'Please also cover Firefox');
-    assert.match(ui.$('owner-chain-comments')!.textContent!, /You.*Please also cover Firefox/s);
+    assert.match(ui.$('ticket-activity-feed-comments')!.textContent!, /You.*Please also cover Firefox/s);
     assert.equal(ui.$('owner-chain-notice')!.textContent, 'Comment added.');
 
     // As on origin/main, Approve takes no note; the owner payload gets a fixed summary.
@@ -186,8 +198,13 @@ test('owner chain view renders tickets, brief, comments, submissions and reviews
     assert.deepEqual({ attempt: review.payload.attempt, head: review.payload.head, rr: review.payload.requirements_revision, verdict: review.payload.verdict, summary: review.payload.summary },
       { attempt: '2', head: 'a'.repeat(40), rr: '2', verdict: 'approve', summary: 'Approved.' });
 
-    await ui.click('owner-chain-hold');
-    assert.equal(calls.filter((c) => c.method === 'task.hold').length, 1);
+    // Hold asks for a reason (origin/main HoldReasonDialog) and sends it with task.hold.
+    await ui.click('ticket-view-hold-btn');
+    await ui.type('task-hold-reason-input', 'Waiting for the design');
+    await ui.click('task-hold-confirm-btn');
+    const hold = calls.filter((c) => c.method === 'task.hold');
+    assert.equal(hold.length, 1);
+    assert.equal(await decryptVaultText(hold[0].payload.body_cipher, session.keyring), 'Waiting for the design');
     assert.equal(ui.$('owner-chain-error'), null, 'no change was refused as stale');
 
     // Creating a ticket is chain-scoped: bound to the chain revision.
@@ -217,17 +234,19 @@ test('owner chain view renders tickets, brief, comments, submissions and reviews
     assert.equal(ui.$('owner-chain-notice')!.textContent, 'Chain updated.');
 
     await ui.click('owner-chain-task-task_1');
-    await ui.click('owner-chain-task-edit');
-    assert.equal((ui.$('owner-chain-task-edit-body') as HTMLTextAreaElement).value, 'Login fails on Safari');
-    await ui.type('owner-chain-task-edit-title', 'Fix login on Safari');
-    await ui.click('owner-chain-task-edit-save');
+    await ui.click('ticket-view-more-btn');
+    await ui.click('ticket-view-edit-details');
+    assert.equal((ui.$('task-edit-description') as HTMLTextAreaElement).value, 'Login fails on Safari');
+    await ui.type('task-edit-title', 'Fix login on Safari');
+    await ui.click('task-edit-save');
     const taskEdit = calls.find((c) => c.method === 'task.edit')!;
     assert.ok(taskEdit, 'task.edit was sent: ' + (ui.$('owner-chain-error')?.textContent ?? ''));
     assert.equal(taskEdit.command.task_id, 'task_1');
     assert.equal(await decryptVaultText(taskEdit.payload.title_cipher, session.keyring), 'Fix login on Safari');
     assert.equal(ui.$('owner-chain-notice')!.textContent, 'Ticket updated.');
+    assert.equal(ui.$('task-edit-modal'), null, 'the dialog closes after a save');
 
-    await ui.click('owner-chain-task-priority');
+    await ui.click('ticket-view-priority-select');
     const p0 = [...ui.dom.window.document.querySelectorAll('[role="option"]')].find((o) => /P0/.test(o.textContent || '')) as HTMLElement | undefined;
     assert.ok(p0, 'the priority menu lists P0');
     await act(async () => { p0!.click(); });
@@ -237,47 +256,60 @@ test('owner chain view renders tickets, brief, comments, submissions and reviews
     assert.equal(priority.payload.priority, 'p0');
     assert.equal(ui.$('owner-chain-error'), null, 'no management change was refused as stale');
 
-    // Dependencies: task_1 waits for nothing (dep_old was removed) and blocks task_2.
+    // Dependencies: task_1 waits for nothing (dep_old was removed) and unblocks task_2.
     await ui.flush();
-    assert.match(ui.$('owner-chain-dependencies')!.textContent!, /waits for nothing/);
-    assert.match(ui.$('owner-chain-dep-blocks')!.textContent!, /Blocks: Write docs/);
-    await ui.click('owner-chain-dep-add');
-    const docs = [...ui.dom.window.document.querySelectorAll('[role="option"]')].find((o) => /Write docs/.test(o.textContent || '')) as HTMLElement | undefined;
-    assert.ok(docs, 'the dependency picker lists the other tickets');
-    await act(async () => { docs!.click(); });
-    await ui.flush();
-    await ui.click('owner-chain-dep-add-save');
+    assert.ok(ui.$('ticket-view-unblocks-task_2'), 'the linked tickets come from the owner dependencies');
+    await ui.click('ticket-view-add-dependency-btn');
+    assert.equal((ui.$('task-edit-dep-task_2') as HTMLInputElement).checked, false, 'task_1 waits for nothing yet');
+    await ui.click('task-edit-dep-task_2');
+    await ui.click('task-edit-save');
     const add = calls.find((c) => c.method === 'work.dependency.add')!;
     assert.ok(add, 'work.dependency.add was sent: ' + (ui.$('owner-chain-error')?.textContent ?? ''));
     const addDoc = JSON.parse(await decryptVaultText(add.payload.body_cipher, session.keyring));
     assert.deepEqual({ dependent: addDoc.dependent, prerequisite: addDoc.prerequisite }, { dependent: { kind: 'task', id: 'task_1' }, prerequisite: { kind: 'task', id: 'task_2' } });
     assert.match(addDoc.dependency_id, /^dep_/);
     await ui.flush();
-    assert.ok(ui.$('owner-chain-dep-task_2'), 'the ticket now waits for Write docs');
-    await ui.click('owner-chain-dep-remove-task_2');
+    assert.ok(ui.$('ticket-view-linked-task_2'), 'the ticket now waits for Write docs');
+    await ui.click('ticket-view-add-dependency-btn');
+    assert.equal((ui.$('task-edit-dep-task_2') as HTMLInputElement).checked, true);
+    await ui.click('task-edit-dep-task_2');
+    await ui.click('task-edit-save');
     const remove = calls.find((c) => c.method === 'work.dependency.remove')!;
     assert.ok(remove, 'work.dependency.remove was sent');
     assert.equal(JSON.parse(await decryptVaultText(remove.payload.body_cipher, session.keyring)).dependency_id, addDoc.dependency_id);
     await ui.flush();
-    assert.equal(ui.$('owner-chain-dep-task_2'), null, 'the removed dependency is gone after the re-read');
+    assert.equal(ui.$('ticket-view-linked-task_2'), null, 'the removed dependency is gone after the re-read');
 
-    // Requirements: edit goal, acceptance, reviewers and the approval gate.
-    await ui.click('ticket-view-requirements-change-btn');
-    assert.equal((ui.$('owner-chain-requirements-goal') as HTMLTextAreaElement).value, 'Users can sign in', 'the editor starts from the saved brief');
-    assert.equal((ui.$('owner-chain-requirements-acceptance') as HTMLTextAreaElement).value, 'SSO works\nErrors are shown');
-    await ui.type('owner-chain-requirements-acceptance', 'SSO works\nErrors are shown\nSafari works');
-    await ui.type('owner-chain-requirements-reviewers', 'agt_sec, agt_perf');
-    await ui.click('owner-chain-requirements-approval');
-    await ui.type('owner-chain-requirements-reason', 'Safari was missing');
-    await ui.click('owner-chain-requirements-save');
+    // Requirements: amend goal and acceptance with a reason (origin/main editor).
+    await ui.click('ticket-view-change-requirements-btn');
+    assert.equal((ui.$('task-requirements-goal') as HTMLTextAreaElement).value, 'Users can sign in', 'the editor starts from the saved brief');
+    assert.equal((ui.$('task-requirements-acceptance-1') as HTMLInputElement).value, 'Errors are shown');
+    await ui.click('task-requirements-acceptance-add');
+    await ui.type('task-requirements-acceptance-2', 'Safari works');
+    await ui.type('task-requirements-reason', 'Safari was missing');
+    await ui.click('task-requirements-save');
     const reqEdit = calls.find((c) => c.method === 'requirements.edit')!;
     assert.ok(reqEdit, 'requirements.edit was sent: ' + (ui.$('owner-chain-error')?.textContent ?? ''));
     assert.equal(reqEdit.command.task_id, 'task_1');
     assert.equal(reqEdit.payload.requirements_revision, '3', 'names the next requirements revision');
     assert.deepEqual(JSON.parse(await decryptVaultText(reqEdit.payload.body_cipher, session.keyring)), {
-      goal: 'Users can sign in', acceptance: ['SSO works', 'Errors are shown', 'Safari works'], reviewers: ['agt_sec', 'agt_perf'], requires_user_approval: true, requirements_reason: 'Safari was missing',
+      goal: 'Users can sign in', acceptance: ['SSO works', 'Errors are shown', 'Safari works'], requirements_reason: 'Safari was missing',
     });
     assert.equal(ui.$('owner-chain-notice')!.textContent, 'Requirements updated.');
+    assert.equal(ui.$('task-requirements-modal'), null, 'the editor closes after a save');
+
+    // Reviewers and your approval are requirements too (origin/main reviewers dialog).
+    await ui.click('ticket-view-more-btn');
+    await ui.click('ticket-view-edit-reviewers');
+    await ui.click('task-edit-reviewer-agt_sec');
+    await ui.click('task-edit-reviewer-agt_perf');
+    await ui.click('task-edit-user-approval');
+    await ui.click('task-edit-save');
+    const reviewersEdit = calls.filter((c) => c.method === 'requirements.edit')[1];
+    assert.ok(reviewersEdit, 'the reviewers were saved: ' + (ui.$('task-edit-error')?.textContent ?? ''));
+    assert.deepEqual(JSON.parse(await decryptVaultText(reviewersEdit.payload.body_cipher, session.keyring)), {
+      goal: 'Users can sign in', acceptance: ['SSO works', 'Errors are shown'], reviewers: ['agt_sec', 'agt_perf'], requires_user_approval: true, requirements_reason: 'Changed the reviewers.',
+    });
 
     await ui.click('owner-chain-complete');
     await ui.type('owner-chain-complete-summary', 'Login shipped');
@@ -289,10 +321,12 @@ test('owner chain view renders tickets, brief, comments, submissions and reviews
     assert.equal(ui.$('owner-chain-notice')!.textContent, 'Chain completed.');
 
     // An unstarted ticket can be deleted (after a confirm); a started one cannot.
-    assert.equal(ui.$('owner-chain-delete'), null, 'task_1 has attempts: no Delete');
+    await ui.click('ticket-view-more-btn');
+    assert.equal(ui.$('ticket-view-menu-delete'), null, 'task_1 has attempts: no Delete');
     await ui.click('owner-chain-task-task_2');
     (ui.dom.window as any).confirm = () => true;
-    await ui.click('owner-chain-delete');
+    await ui.click('ticket-view-more-btn');
+    await ui.click('ticket-view-menu-delete');
     const del = calls.find((c) => c.method === 'task.delete')!;
     assert.ok(del, 'task.delete was sent: ' + (ui.$('owner-chain-error')?.textContent ?? ''));
     assert.equal(del.command.task_id, 'task_2');
@@ -369,8 +403,12 @@ test('a completed owner chain shows its status and offers no changes', async () 
     assert.match(ui.$('owner-chain-readonly')!.textContent!, /completed; it is read-only/);
     assert.equal(ui.$('owner-chain-create-task-form'), null);
     await ui.click('owner-chain-task-task_1');
-    assert.equal(ui.$('owner-chain-task-title')!.textContent, 'Fix login');
-    for (const id of ['owner-chain-comment-input', 'owner-chain-hold', 'owner-chain-cancel', 'owner-chain-reopen', 'ticket-view-approve-btn', 'answer-send-btn']) assert.equal(ui.$(id), null, id);
+    assert.equal(ui.$('ticket-view-title')!.textContent, 'Fix login');
+    for (const id of ['comment-composer-input', 'ticket-view-quick-actions', 'ticket-view-hold-btn', 'ticket-view-reopen-btn', 'ticket-view-release-btn',
+      'ticket-view-change-requirements-btn', 'ticket-view-approve-btn', 'answer-send-btn']) assert.equal(ui.$(id), null, id);
+    await ui.click('ticket-view-more-btn');
+    for (const id of ['ticket-view-edit-details', 'ticket-view-edit-reviewers', 'ticket-view-menu-delete', 'ticket-view-menu-cancel']) assert.equal(ui.$(id), null, id);
+    assert.ok(ui.$('ticket-view-menu-copy_id'), 'Copy ID stays');
     assert.ok(calls.every((c) => c.method.endsWith('.read') || c.method === 'history.read'), 'only reads were sent');
   } finally {
     await ui.restore();
@@ -452,14 +490,15 @@ test('the ticket renders before the review history scan finishes, then reviews f
     await ui.flush();
     await ui.click('owner-chain-task-task_1');
     assert.ok(historyReads > 0, 'the review scan started');
-    assert.equal(ui.$('owner-chain-task-title')!.textContent, 'Fix login', 'the ticket is rendered while reviews are still loading');
-    assert.match(ui.$('owner-chain-brief')!.textContent!, /Login fails on Safari/);
-    assert.ok(ui.$('owner-chain-reviews-loading'), 'reviews show a loading state');
-    assert.ok(!/No reviews\./.test(ui.$('owner-chain-reviews')!.textContent!), 'no empty state while loading');
+    assert.equal(ui.$('ticket-view-title')!.textContent, 'Fix login', 'the ticket is rendered while reviews are still loading');
+    assert.match(ui.$('ticket-view-description')!.textContent!, /Login fails on Safari/);
+    await ui.click('ticket-activity-tab-reviews');
+    assert.match(ui.$('ticket-activity-feed-reviews')!.textContent!, /Loading reviews…/, 'reviews show a loading state');
+    assert.ok(!/No reviews yet/.test(ui.$('ticket-activity-feed-reviews')!.textContent!), 'no empty state while loading');
     releaseHistory();
     await ui.flush();
-    assert.equal(ui.$('owner-chain-reviews-loading'), null);
-    assert.match(ui.$('owner-chain-reviews')!.textContent!, /Approved.*agt_reviewer.*Late review/s);
+    assert.ok(!/Loading reviews/.test(ui.$('ticket-activity-feed-reviews')!.textContent!));
+    assert.match(ui.$('ticket-activity-feed-reviews')!.textContent!, /Reviewer.*Approved.*Late review/s);
     assert.equal(ui.$('owner-chain-error'), null);
   } finally {
     releaseHistory();
@@ -502,9 +541,10 @@ test('a failed review scan clears the reviews loading state', async () => {
     await render(true);
     await ui.flush();
     assert.equal(ui.$('owner-chain-offline'), null, 'the owner is back');
-    assert.equal(ui.$('owner-chain-task-title')!.textContent, 'Fix login');
-    assert.equal(ui.$('owner-chain-reviews-loading'), null, 'no stuck "Loading reviews…"');
-    assert.match(ui.$('owner-chain-reviews')!.textContent!, /Owner Bridge Desk is offline/);
+    assert.equal(ui.$('ticket-view-title')!.textContent, 'Fix login');
+    await ui.click('ticket-activity-tab-reviews');
+    assert.ok(!/Loading reviews/.test(ui.$('ticket-activity-feed-reviews')!.textContent!), 'no stuck "Loading reviews…"');
+    assert.match(ui.$('ticket-activity-feed-reviews')!.textContent!, /Owner Bridge Desk is offline/);
     assert.ok(!/owner_unavailable/.test(ui.text()), 'the raw code never shows');
   } finally {
     await ui.restore();
@@ -548,15 +588,16 @@ test('a ticket waiting on the user shows a notice until a device-signed approval
     await ui.flush();
     assert.ok(ui.$('owner-chain-task-awaiting-user-task_1'), 'the ticket list flags the ticket');
     await ui.click('owner-chain-task-task_1');
-    assert.match(ui.$('owner-chain-reviews')!.textContent!, /Approved.*inst_coordinator.*User said LGTM/s, 'the agent relay is listed');
-    assert.match(ui.$('owner-chain-awaiting-user')?.textContent ?? '', /Your review/, 'an agent relay does not clear the ask');
+    await ui.click('ticket-activity-tab-reviews');
+    assert.match(ui.$('ticket-activity-feed-reviews')!.textContent!, /An agent.*Approved.*User said LGTM/s, 'the agent relay is listed');
+    assert.match(ui.$('your-review-block')?.textContent ?? '', /Your review/, 'an agent relay does not clear the ask');
     assert.ok(ui.$('ticket-view-approve-btn') && ui.$('ticket-view-request-changes-btn'), 'the device-signed verdict is offered');
     await ui.click('ticket-view-approve-btn');
     const review = calls.find((c) => c.method === 'review.post');
     assert.ok(review, 'review.post was sent: ' + (ui.$('owner-chain-error')?.textContent ?? ''));
     assert.equal(review!.payload.verdict, 'approve');
     assert.equal(review!.command.principal_id, session.identity.deviceId, 'the verdict is signed by this device');
-    assert.equal(ui.$('owner-chain-awaiting-user'), null, 'the notice clears once the gate settles');
+    assert.equal(ui.$('your-review-block'), null, 'the ask clears once the gate settles');
     assert.equal(ui.$('owner-chain-task-awaiting-user-task_1'), null);
   } finally {
     await ui.restore();

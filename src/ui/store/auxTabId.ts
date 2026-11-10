@@ -68,7 +68,7 @@ export type AuxContent =
     };
 
 /** Bridge-owned ticket tabs: the board's Edit menu opens the ticket with this editor open. */
-export type OwnerTicketEditFocus = 'edit_requirements' | 'edit_deps';
+export type OwnerTicketEditFocus = 'edit_requirements' | 'edit_reviewers' | 'edit_deps';
 
 export interface AuxTab {
   /** Content-derived id, see {@link auxTabId}. */
