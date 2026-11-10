@@ -25,7 +25,7 @@ import { TicketBoard } from '../tasks/TicketBoard';
 import type { BoardTicketActions } from '../tasks/BoardTicketCard';
 import type { TaskWire } from '../../api/taskWire';
 import OwnerLocalPanel from './OwnerLocalPanel';
-import OwnerCoordinatorControl, { type OwnerCoordinatorApi } from './OwnerCoordinatorControl';
+import OwnerCoordinatorControl, { hubCoordinatorApi, type OwnerCoordinatorApi } from './OwnerCoordinatorControl';
 import { ownerChainById, resolveOwnerChainCoordinator, setOwnerChainCoordinator } from '../../api/ownerChainsStore';
 import { bindOwnerCoordinator, readOwnerChainMembers, type OwnerChainMember } from '../../api/ownerCoordinator';
 
@@ -34,6 +34,23 @@ const STATE_TONE: Record<OwnerTaskState, Tone> = {
 };
 const RUNTIME_LIMIT = 50;
 const STATE_ORDER: OwnerTaskState[] = ['ready', 'in_progress', 'in_review', 'done', 'cancelled'];
+
+/** A chain agent's instance runtime_status (Hub) as a pill; '' when unknown. */
+const AGENT_STATUS: Record<string, { label: string; tone: Tone }> = {
+  running: { label: 'Running', tone: 'success' },
+  launching: { label: 'Starting', tone: 'pending' },
+  starting: { label: 'Starting', tone: 'pending' },
+  stopping: { label: 'Stopping', tone: 'pending' },
+  stopped: { label: 'Stopped', tone: 'neutral' },
+  failed: { label: 'Failed', tone: 'danger' },
+};
+
+/** Which runtime controls an agent row offers for its instance status. */
+export function agentRuntimeActions(status: string): ('start' | 'stop' | 'restart')[] {
+  if (status === 'running') return ['stop', 'restart'];
+  if (status === 'stopped' || status === 'failed') return ['start'];
+  return [];
+}
 
 /** What a background refresh compares to decide whether the open ticket changed. */
 function runtimeKey(rt: OwnerRuntime | undefined): string {
@@ -126,6 +143,8 @@ export function OwnerChainView({
   const [chainStatus, setChainStatus] = useState<OwnerChainStatus>(chain.status ?? '');
   const [states, setStates] = useState<Record<string, OwnerRuntime>>({});
   const [members, setMembers] = useState<OwnerChainMember[] | null>(null);
+  // Hub runtime_status per agent instance (overview agent rows).
+  const [agentStatus, setAgentStatus] = useState<Record<string, string>>({});
   const [selected, setSelected] = useState(focusTaskId || '');
   const [task, setTask] = useState<TaskView | null>(null);
   const [taskLoading, setTaskLoading] = useState(false);
@@ -348,6 +367,42 @@ export function OwnerChainView({
     return mutate('chain.complete', { body: JSON.stringify({ expected_work_revision: workRevision, summary }) }, 'Chain completed.');
   }
 
+  const hubApi = coordinatorApi ?? hubCoordinatorApi;
+  const hubApiRef = useRef(hubApi); hubApiRef.current = hubApi;
+  // Each member row's instance status, re-read whenever the members are.
+  const readAgentStatus = useCallback(async (ids: string[]) => {
+    const next: Record<string, string> = {};
+    await Promise.all(ids.map(async (id) => { next[id] = await hubApiRef.current.status(id).catch(() => ''); }));
+    if (live.current) setAgentStatus((prev) => ({ ...prev, ...next }));
+  }, []);
+  useEffect(() => {
+    if (layout !== 'overview' || offline || !members) return;
+    const ids = members.filter((m) => m.enabled).map((m) => m.instanceId);
+    if (ids.length) void readAgentStatus(ids);
+  }, [layout, offline, members, readAgentStatus]);
+
+  // Start / stop / restart a chain agent's instance through the Hub.
+  async function agentRuntime(instanceId: string, action: 'start' | 'stop' | 'restart') {
+    const call = action === 'restart' ? hubApi.restart : hubApi[action];
+    if (!call) return;
+    setBusy(true); setError(''); setNotice('');
+    try {
+      await call(instanceId);
+      if (!live.current) return;
+      setAgentStatus((prev) => ({ ...prev, [instanceId]: action === 'stop' ? 'stopping' : 'launching' }));
+      setNotice(action === 'stop' ? 'Stopping the agent.' : action === 'start' ? 'Starting the agent.' : 'Restarting the agent.');
+    } catch (e) {
+      if (live.current) setError(e instanceof Error ? e.message : String(e));
+    } finally { if (live.current) setBusy(false); }
+  }
+
+  // Removes a worker or reviewer from the chain: its member row is disabled
+  // (the coordinator is replaced, never removed). Its instance keeps running.
+  function removeAgent(a: { instanceId: string; agentId: string; role: string }) {
+    if (!window.confirm(`Remove ${a.instanceId} from this chain? Its instance keeps running until you stop it.`)) return Promise.resolve(false);
+    return mutate('chain.member.set', { instanceId: a.instanceId, agentId: a.agentId, memberRole: a.role || 'worker', enabled: false }, 'Agent removed from the chain.');
+  }
+
   // chain.member.set role=coordinator (and demotion of a replaced one).
   const bindCoordinator = useCallback(async (instanceId: string, agentId: string) => {
     await bindOwnerCoordinator(await session(), bridge, chain.chainId, instanceId, agentId, send);
@@ -566,12 +621,30 @@ export function OwnerChainView({
                       </button>
                       {a.role && <Badge tone={a.role === 'coordinator' ? 'info' : 'neutral'}>{a.role}</Badge>}
                       {!a.enabled && <StatusPill tone="neutral">Removed</StatusPill>}
+                      {a.enabled && AGENT_STATUS[agentStatus[a.instanceId] ?? ''] && (
+                        <StatusPill tone={AGENT_STATUS[agentStatus[a.instanceId]].tone} data-debug-id={`owner-chain-agent-status-${a.instanceId}`}>{AGENT_STATUS[agentStatus[a.instanceId]].label}</StatusPill>
+                      )}
                       {a.tickets.map((t) => (
                         <button key={t.taskId} type="button" data-debug-id={`owner-chain-agent-ticket-${a.instanceId}-${t.taskId}`} onClick={() => openTicket(t.taskId, t.title)}
                           className="min-w-0 truncate text-caption text-accent hover:underline">
                           on {t.title}
                         </button>
                       ))}
+                      {a.enabled && (
+                        <span className="ml-auto flex items-center gap-0.5">
+                          {agentRuntimeActions(agentStatus[a.instanceId] ?? '').map((action) => (
+                            <IconButton key={action} size="sm" variant="ghost" disabled={busy}
+                              icon={action === 'start' ? 'play' : action === 'stop' ? 'stop' : 'refresh'}
+                              label={`${action === 'start' ? 'Start' : action === 'stop' ? 'Stop' : 'Restart'} ${a.instanceId}`}
+                              data-debug-id={`owner-chain-agent-${action}-${a.instanceId}`}
+                              onClick={() => void agentRuntime(a.instanceId, action)} />
+                          ))}
+                          {a.role !== 'coordinator' && a.agentId && (
+                            <IconButton size="sm" variant="ghost" icon="trash" disabled={busy} label={`Remove ${a.instanceId} from the chain`}
+                              data-debug-id={`owner-chain-agent-remove-${a.instanceId}`} onClick={() => void removeAgent(a)} />
+                          )}
+                        </span>
+                      )}
                     </li>
                   ))}
                 </ul>

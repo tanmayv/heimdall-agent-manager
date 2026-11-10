@@ -21,6 +21,9 @@ export interface OwnerCoordinatorApi {
   launch: (input: { agentId: string; chainId: string; bridgeId: string }) => Promise<string>;
   status: (instanceId: string) => Promise<string>;
   restart: (instanceId: string) => Promise<void>;
+  /** Start / stop a chain agent's instance (the overview's agent rows). */
+  start?: (instanceId: string) => Promise<void>;
+  stop?: (instanceId: string) => Promise<void>;
 }
 
 export const hubCoordinatorApi: OwnerCoordinatorApi = {
@@ -40,6 +43,12 @@ export const hubCoordinatorApi: OwnerCoordinatorApi = {
   },
   async restart(instanceId) {
     await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}/restart`, 'POST', {});
+  },
+  async start(instanceId) {
+    await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}/start`, 'POST', {});
+  },
+  async stop(instanceId) {
+    await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}/stop`, 'POST', { force: false, reason: 'user_requested' });
   },
 };
 

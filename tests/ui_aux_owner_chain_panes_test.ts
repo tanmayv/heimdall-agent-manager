@@ -80,6 +80,8 @@ async function mount(o: {
   online?: boolean;
   registered?: boolean;
   locked?: boolean;
+  /** Hub (non-owner) answers by path; the default answers {}. */
+  hub?: (path: string, init: any) => unknown;
   render: (env: OwnerTestEnv, h: { opened: Opened[]; updated: any[]; rekeyed: Opened[]; send: (relay: unknown) => Promise<unknown> }) => React.ReactElement;
 }) {
   const env = await ownerTestSession('brg_home', 'Home Bridge');
@@ -93,6 +95,7 @@ async function mount(o: {
   resetOwnerChainsForTest((async () => ({ items: rows, next_cursor: { after_chain: '', after_task: '' }, terminal: true })) as any, send as any);
   if (o.locked) clearKeyringSession();
   const hubPaths: string[] = [];
+  const hubCalls: { path: string; method: string; body: any }[] = [];
   const saved = globalThis.fetch;
   globalThis.fetch = (async (input: any, init: any = {}) => {
     const u = new URL(String(input?.url ?? input), 'http://localhost');
@@ -100,7 +103,8 @@ async function mount(o: {
     if (u.pathname === '/api/v1/vault/directory') return ok(env.hub.dir());
     if (u.pathname === '/api/v1/owner-local/relay') return ok(await send(JSON.parse(init.body)));
     hubPaths.push(u.pathname);
-    return ok({});
+    hubCalls.push({ path: u.pathname, method: String(init.method || 'GET'), body: init.body ? JSON.parse(init.body) : null });
+    return ok(o.hub?.(u.pathname, init) ?? {});
   }) as typeof fetch;
   const store = await makeVaultStore();
   const opened: Opened[] = [], updated: any[] = [], rekeyed: Opened[] = [];
@@ -120,7 +124,7 @@ async function mount(o: {
     resetOwnerChainsForTest();
     clearKeyringSession();
   };
-  return { $, click, settle, calls, hubPaths, opened, updated, rekeyed, cleanup, container };
+  return { $, click, settle, calls, hubPaths, hubCalls, opened, updated, rekeyed, cleanup, container };
 }
 
 const ctx = (chainId = CHAIN) => ({
@@ -294,4 +298,52 @@ test('the panes re-read their owner on an interval and show changes', async () =
   } finally {
     await ui.cleanup();
   }
+});
+
+test('overview agent rows show each instance status and start / stop / restart / remove it', async () => {
+  const owner = chainOwner();
+  const status: Record<string, string> = { inst_worker: 'running', inst_coord: 'stopped' };
+  const ui = await mount({
+    answer: (call) => (call.method === 'chain.member.set' ? { chain_id: CHAIN, revision: '8' } : owner.answer(call)),
+    hub: (path) => {
+      const m = /^\/api\/v1\/agent-instances\/([^/]+)$/.exec(path);
+      return m ? { runtime_status: status[m[1]] ?? '' } : {};
+    },
+    render: (_env, h) => aux({ type: 'chainOverview' }, h),
+  });
+  try {
+    assert.equal(ui.$('owner-chain-agent-status-inst_worker')!.textContent, 'Running');
+    assert.equal(ui.$('owner-chain-agent-status-inst_coord')!.textContent, 'Stopped');
+    assert.ok(ui.$('owner-chain-agent-stop-inst_worker') && ui.$('owner-chain-agent-restart-inst_worker'));
+    assert.equal(ui.$('owner-chain-agent-start-inst_worker'), null, 'a running agent is not offered Start');
+    assert.ok(ui.$('owner-chain-agent-start-inst_coord'));
+    assert.equal(ui.$('owner-chain-agent-stop-inst_coord'), null);
+    assert.equal(ui.$('owner-chain-agent-remove-inst_coord'), null, 'the coordinator is replaced, never removed');
+
+    await ui.click('owner-chain-agent-stop-inst_worker');
+    assert.deepEqual(ui.hubCalls.filter((c) => c.method === 'POST').map((c) => c.path), ['/api/v1/agent-instances/inst_worker/stop']);
+    assert.equal(ui.$('owner-chain-agent-status-inst_worker')!.textContent, 'Stopping');
+    assert.match(ui.$('owner-chain-notice')!.textContent!, /Stopping the agent/);
+    await ui.click('owner-chain-agent-start-inst_coord');
+    assert.equal(ui.hubCalls.filter((c) => c.method === 'POST').at(-1)!.path, '/api/v1/agent-instances/inst_coord/start');
+
+    win.confirm = () => true;
+    await ui.click('owner-chain-agent-remove-inst_worker');
+    const set = ui.calls.find((c) => c.method === 'chain.member.set');
+    assert.ok(set, 'remove sends chain.member.set');
+    assert.deepEqual({ ...set!.payload }, { instance_id: 'inst_worker', agent_id: 'agt_worker', role: 'worker', enabled: '0' });
+    assert.equal(set!.command.expected_revision, '7', 'checked against the chain revision');
+    assertNoHubChainReads(ui.hubPaths);
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('agentRuntimeActions offers stop/restart when running, start when stopped or failed, nothing while changing', async () => {
+  const { agentRuntimeActions } = await import('../src/ui/components/taskchain/OwnerChainView.tsx');
+  assert.deepEqual(agentRuntimeActions('running'), ['stop', 'restart']);
+  assert.deepEqual(agentRuntimeActions('stopped'), ['start']);
+  assert.deepEqual(agentRuntimeActions('failed'), ['start']);
+  assert.deepEqual(agentRuntimeActions('launching'), []);
+  assert.deepEqual(agentRuntimeActions(''), []);
 });
