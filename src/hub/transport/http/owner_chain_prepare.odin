@@ -40,6 +40,25 @@ owner_chain_prepare_via_runtime :: proc(ctx: rawptr, bridge_id, agent_id, title,
 	return owner_chain_prepare_result(reply)
 }
 
+// Rollback when the launch fails after a prepare: the Bridge retires the
+// unused chain and tombstones its registry row (owner_chain_discard). Best
+// effort: the launch error is what the caller sees. ctx is prepare_ctx.
+Owner_Chain_Discard_Proc :: proc(ctx: rawptr, bridge_id, chain_id: string) -> bool
+
+owner_chain_discard_via_runtime :: proc(ctx: rawptr, bridge_id, chain_id: string) -> bool {
+	registry := cast(^project_service.Bridge_Runtime_Registry)ctx
+	if registry == nil do return false
+	id := fmt.tprintf("cmd_owner_discard_%s", chain_id)
+	b := strings.builder_make(context.temp_allocator)
+	strings.write_string(&b, `{"type":"owner_chain_discard","command_id":"`); write_handler_json_string(&b, id)
+	strings.write_string(&b, `","chain_id":"`); write_handler_json_string(&b, chain_id)
+	strings.write_string(&b, `"}`)
+	reply, received, _ := bridge_runtime.send_runtime_command_wait(registry, project_service.Runtime_Command{bridge_id = bridge_id, command_id = id, body_json = strings.to_string(b)}, OWNER_CHAIN_PREPARE_WAIT_MS)
+	if !received do return false
+	defer delete(reply, runtime.default_allocator())
+	return json_string(reply, "code", context.temp_allocator) == "ok"
+}
+
 // The Bridge's command_result {code, message, chain_id} as (chain_id, error).
 owner_chain_prepare_result :: proc(reply: string) -> (string, domain.Domain_Error) {
 	code := json_string(reply, "code", context.temp_allocator)

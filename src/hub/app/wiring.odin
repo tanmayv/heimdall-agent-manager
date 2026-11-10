@@ -482,7 +482,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		experiments    = &graph.experiment_repo,
 	}
 	graph.project_handlers = http.Project_Handlers{auth = &graph.auth, projects = &graph.projects}
-	graph.content_handlers = http.Content_Handlers{auth = &graph.auth, agents = &graph.agents, content = &graph.content, event_bus = &graph.event_bus, prepare_owner_chain = http.owner_chain_prepare_via_runtime, prepare_ctx = &graph.bridge_runtime_registry}
+	graph.content_handlers = http.Content_Handlers{auth = &graph.auth, agents = &graph.agents, content = &graph.content, event_bus = &graph.event_bus, prepare_owner_chain = http.owner_chain_prepare_via_runtime, discard_owner_chain = http.owner_chain_discard_via_runtime, prepare_ctx = &graph.bridge_runtime_registry}
 	graph.agents_live_handlers = http.Agents_Live_Handlers{auth = &graph.auth, agents = &graph.agents, projects = &graph.projects}
 	graph.search_handlers = http.Search_Handlers{auth = &graph.auth, search = &graph.search}
 	graph.skills_handlers = http.Skills_Handlers{auth = &graph.auth}

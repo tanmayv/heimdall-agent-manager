@@ -317,6 +317,10 @@ bridge_command_spec :: proc(command_type: string) -> (Bridge_Command_Spec, bool)
         // coordinator launch. Serialized by the owner mutex; never retried
         // blindly (a retry would create a second chain).
         return Bridge_Command_Spec{class = .Interactive, priority = .Interactive, key_kind = .Bridge, queued = true, requires_id = true, timeout_ms = 15_000, cost_units = 2}, true
+    case "owner_chain_discard":
+        // The rollback of a prepare whose launch failed. Idempotent (a repeat
+        // returns the first result), so a retry is safe.
+        return Bridge_Command_Spec{class = .Interactive, priority = .Interactive, key_kind = .Bridge, queued = true, requires_id = true, timeout_ms = 15_000, cost_units = 1, retry_safe = true}, true
     case "owner_migration_activate":
         // A nudge only: activation is re-derived from Hub state.
         return Bridge_Command_Spec{class = .General_IO, priority = .Interactive, queued = true, requires_id = true, timeout_ms = 15_000, cost_units = 1, retry_safe = true}, true

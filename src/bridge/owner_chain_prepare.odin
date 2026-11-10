@@ -187,3 +187,35 @@ bridge_owner_chain_prepare_handle :: proc(conn: ^ws.Connection, text: string) {
     bridge_runtime_cache_command(wire.command_id,result)
     if conn!=nil do _=bridge_hub_send(conn,result)
 }
+
+// Rollback of a prepare whose launch failed: the Hub sends
+// `owner_chain_discard {command_id, chain_id}`. Only a Bridge-created chain
+// with no member and no task is discarded (owner.discard_created_chain): it is
+// retired and its registry row is tombstoned, so it leaves the Hub listing.
+// A chain whose coordinator is already bound is kept (operation_conflict).
+bridge_owner_chain_discard :: proc(chain: string) -> (string, string) {
+    context.allocator=context.temp_allocator
+    if !contracts.owner_field_valid(chain,"id") do return "bad_request","owner_chain_discard: invalid chain_id"
+    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
+    key_id,key_ok:=vault.device_id_from_sign_pub(bridge_identity_public_key_hex(bridge_config.daemon_id),context.temp_allocator)
+    if account=="" || !key_ok do return "invalid_scope","this Bridge is not enrolled"
+    sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
+    if !bridge_owner_open(account,key_id) do return "storage_error","owner store unavailable"
+    code:=owner.discard_created_chain(&bridge_owner_store,chain,bridge_config.daemon_id,time.to_unix_nanoseconds(time.now())/1000000,bridge_owner_signer()).code
+    if code!="ok" do return code,"the owner store kept the chain"
+    bridge_owner_pending_clear(chain)
+    bridge_owner_coordinator_refresh_locked(chain)
+    bridge_owner_publish()
+    return "ok",""
+}
+
+// Hub runtime command `owner_chain_discard {command_id, chain_id}`.
+bridge_owner_chain_discard_handle :: proc(conn: ^ws.Connection, text: string) {
+    context.allocator=context.temp_allocator
+    wire:struct{type,command_id,chain_id:string}
+    if json.unmarshal_string(text,&wire,.JSON,context.temp_allocator)!=nil do return
+    code,message:=bridge_owner_chain_discard(wire.chain_id)
+    result:=bridge_owner_json(struct{type,command_id,code,message,chain_id:string}{"command_result",wire.command_id,code,message,wire.chain_id})
+    bridge_runtime_cache_command(wire.command_id,result)
+    if conn!=nil do _=bridge_hub_send(conn,result)
+}

@@ -1072,6 +1072,10 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
         bridge_owner_chain_prepare_handle(conn,text)
         return
     }
+    if type == "owner_chain_discard" {
+        bridge_owner_chain_discard_handle(conn,text)
+        return
+    }
     if type == "owner_migration_import" {
         bridge_owner_migration_import_handle(conn,text)
         return

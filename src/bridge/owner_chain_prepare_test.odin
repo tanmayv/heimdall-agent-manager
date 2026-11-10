@@ -60,4 +60,9 @@ test_owner_chain_prepare_command_and_refusals :: proc(t:^testing.T) {
     testing.expect_value(t,code,"bad_request")
     _,code,_=bridge_owner_chain_prepare("agt_coord","   ","")
     testing.expect_value(t,code,"bad_request")
+    // The rollback command is idempotent, so the Hub may retry it.
+    discard,discard_known:=bridge_command_spec("owner_chain_discard")
+    testing.expect(t,discard_known && discard.queued && discard.requires_id && discard.retry_safe,"queued, needs a command id, safe to retry")
+    code,_=bridge_owner_chain_discard("bad id/../")
+    testing.expect_value(t,code,"bad_request")
 }

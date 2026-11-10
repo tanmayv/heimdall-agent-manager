@@ -27,7 +27,15 @@ test_owner_chain_prepare_result_and_title :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(owner_chain_title(strings.repeat("é", 100, context.temp_allocator), "")), 160)
 }
 
-Owner_Prepare_Probe :: struct { calls: int, bridge, agent, title, description: string, fail: domain.Domain_Error }
+Owner_Prepare_Probe :: struct { calls, discards: int, bridge, agent, title, description, chain, discarded: string, fail: domain.Domain_Error }
+
+@(private = "file")
+owner_prepare_probe_discard :: proc(ctx: rawptr, bridge_id, chain_id: string) -> bool {
+	p := (^Owner_Prepare_Probe)(ctx)
+	sync.atomic_add(&p.discards, 1)
+	p.discarded = strings.clone(strings.concatenate({bridge_id, "/", chain_id}, context.temp_allocator), context.temp_allocator)
+	return true
+}
 
 @(test)
 test_create_chat_owner_chain_refusal_saves_nothing :: proc(t: ^testing.T) {
@@ -41,8 +49,9 @@ test_create_chat_owner_chain_refusal_saves_nothing :: proc(t: ^testing.T) {
 		p := (^Owner_Prepare_Probe)(ctx)
 		sync.atomic_add(&p.calls, 1)
 		p.bridge, p.agent, p.title, p.description = strings.clone(bridge_id, context.temp_allocator), strings.clone(agent_id, context.temp_allocator), strings.clone(title, context.temp_allocator), strings.clone(description, context.temp_allocator)
-		return "", p.fail
+		return p.chain, p.fail
 	}
+	f.handlers.discard_owner_chain = owner_prepare_probe_discard
 	before := list_chat_conversations_count(t, &f)
 
 	// No bridge: refused before the Bridge is asked.
@@ -59,6 +68,34 @@ test_create_chat_owner_chain_refusal_saves_nothing :: proc(t: ^testing.T) {
 	testing.expect_value(t, probe.agent, "agt_coord")
 	testing.expect_value(t, probe.title, "Plan the release")
 	testing.expect_value(t, probe.description, "d")
+	testing.expect_value(t, probe.discards, 0) // nothing was created, nothing to roll back
+	testing.expect_value(t, list_chat_conversations_count(t, &f), before)
+}
+
+// The Bridge created the chain but the launch fails (here: the chain is not
+// in this Hub's registry, so create_instance refuses it). The chain is
+// discarded on its Bridge and no conversation is saved.
+@(test)
+test_create_chat_owner_chain_launch_failure_discards_the_chain :: proc(t: ^testing.T) {
+	f: MQ_HTTP_Fixture
+	mq_http_open(t, &f, "owner_prepare_rollback")
+	defer mq_http_base_close(f.base)
+	@(static) probe: Owner_Prepare_Probe
+	probe = {chain = "chain_rollback"}
+	f.handlers.prepare_ctx = &probe
+	f.handlers.prepare_owner_chain = proc(ctx: rawptr, bridge_id, agent_id, title, description: string) -> (string, domain.Domain_Error) {
+		p := (^Owner_Prepare_Probe)(ctx)
+		sync.atomic_add(&p.calls, 1)
+		return p.chain, p.fail
+	}
+	f.handlers.discard_owner_chain = owner_prepare_probe_discard
+	before := list_chat_conversations_count(t, &f)
+	body := strings.concatenate({`{"agent_id":"agt_coord","bridge_id":"`, f.base.bridge_id, `","create_owner_chain":true,"initial_message":{"body":"Plan"}}`}, context.temp_allocator)
+	failed := create_chat_handler(&f.handlers, mq_http_req(f.base, "/api/v1/chats", body))
+	testing.expect(t, failed.status >= 400, "the launch error is returned")
+	testing.expect_value(t, probe.calls, 1)
+	testing.expect_value(t, probe.discards, 1)
+	testing.expect_value(t, probe.discarded, strings.concatenate({f.base.bridge_id, "/chain_rollback"}, context.temp_allocator))
 	testing.expect_value(t, list_chat_conversations_count(t, &f), before)
 }
 

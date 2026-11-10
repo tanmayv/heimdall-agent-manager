@@ -131,3 +131,36 @@ bridge_created_chain_binds_one_coordinator_and_agents_stay_out_of_grants :: proc
     rows,_=query(f.store.db,"SELECT (SELECT count(*) FROM local_chain_member_versions),(SELECT count(*) FROM local_grants WHERE chain_id='bchain'),(SELECT recovery_enabled FROM local_grant_policy WHERE chain_id='bchain')")
     testing.expect_value(t,encode(rows),encode([1][3]string{{"1","0","1"}}))
 }
+
+@(test)
+bridge_created_chain_discard_retires_and_tombstones_only_an_unused_chain :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f);seed(t,f)
+    sign:=Signer{&f.owner_priv,test_sign}
+    testing.expect_value(t,bridge_create(f,"bchain",f.owner,&f.owner_priv).code,"ok")
+    testing.expect_value(t,bridge_create(f,"bound",f.owner,&f.owner_priv).code,"ok")
+    // A device-created chain, a missing one and one with a member are refused.
+    testing.expect_value(t,discard_created_chain(&f.store,"chain","bridge",1000,sign).code,"invalid_scope")
+    testing.expect_value(t,discard_created_chain(&f.store,"missing","bridge",1000,sign).code,"invalid_scope")
+    testing.expect_value(t,discard_created_chain(&f.store,"bchain","bridge",1000,{}).code,"invalid_scope")
+    coord:=Child{"inst_creator","coord_epoch",strings.repeat("c",64,context.temp_allocator),1,"agt_creator"}
+    testing.expect_value(t,bind_created_coordinator(&f.store,"bound",coord,"inst_creator",1000).code,"ok")
+    testing.expect_value(t,discard_created_chain(&f.store,"bound","bridge",1000,sign).code,"operation_conflict")
+    testing.expect(t,work_chain_active(&f.store,"bound"))
+
+    first:=discard_created_chain(&f.store,"bchain","bridge",1000,sign)
+    testing.expect_value(t,first.code,"ok")
+    testing.expect(t,!work_chain_active(&f.store,"bchain"))
+    rows,_:=query(f.store.db,"SELECT json_extract(payload_json,'$.deleted'),json_extract(payload_json,'$.task_id'),json_extract(payload_json,'$.chain_title_cipher') FROM runtime_intents WHERE chain_id='bchain' AND kind='registry' ORDER BY commit_seq DESC LIMIT 1")
+    testing.expect_value(t,encode(rows),encode([1][3]string{{"1","",""}}))
+    tomb,_:=query(f.store.db,"SELECT payload_json FROM runtime_intents WHERE chain_id='bchain' AND kind='registry' ORDER BY commit_seq DESC LIMIT 1")
+    parsed,valid:=contracts.owner_parse(tomb[0][0],"registry")
+    testing.expect(t,valid && contracts.owner_string(parsed,"deleted")=="1")
+    rows,_=query(f.store.db,"SELECT kind FROM local_events WHERE chain_id='bchain' ORDER BY seq")
+    testing.expect_value(t,encode(rows),encode([2][1]string{{"chain.create"},{"chain.discard"}}))
+    // A repeat returns the first result and enqueues nothing new.
+    again:=discard_created_chain(&f.store,"bchain","bridge",1000,sign)
+    testing.expect(t,again.code=="ok" && again.body==first.body)
+    rows,_=query(f.store.db,"SELECT count(*) FROM runtime_intents WHERE chain_id='bchain' AND kind='registry'")
+    testing.expect_value(t,rows[0][0],"2")
+}

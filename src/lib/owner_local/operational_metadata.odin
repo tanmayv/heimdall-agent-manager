@@ -3,6 +3,7 @@ package owner_local
 
 import "core:encoding/json"
 import "core:fmt"
+import "core:strings"
 import contracts "odin_test:contracts"
 
 // Existing explicit enrollments remain valid until operational membership is
@@ -187,6 +188,54 @@ bind_created_coordinator :: proc(s:^Store,chain:string,child:Child,requested_by:
     if _,ok=query(s.db,"INSERT INTO command_receipts(principal_id,operation_id,chain_id,task_id,method,input_digest,digest_key_id,request_expires_ms,result_json,commit_seq,created_ms) VALUES(?,?,?,'',?,?,?,0,?,?,?)",
         requested_by,op,chain,"chain.member.set",contracts.owner_payload_digest(payload),s.owner_key,result,fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
     if !registry_members_intent(&tx,chain,requested_by,op,seq) do return fail("storage_error")
+    if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
+    if !transaction_commit(&tx) do return fail("storage_error")
+    return Result{code="ok",body=result,seq=seq}
+}
+
+// One-step coordinator conversation rollback (POST /chats create_owner_chain):
+// the chain was created for a coordinator whose launch then failed. Only a
+// chain whose genesis creator is this owner Bridge key, with no member and no
+// task, is discarded. The store is append-only (no chain rows are deleted), so
+// the chain is retired (status completed: no work can start) and its registry
+// row is tombstoned (deleted=1), so the Hub listing drops it. A repeat is ok.
+discard_created_chain :: proc(s:^Store,chain,requested_by:string,now:i64,sign:Signer) -> Result {
+    context.allocator=context.temp_allocator
+    if s.db==nil || now<0 || sign.sign==nil || !contracts.owner_field_valid(requested_by,"id") do return fail("invalid_scope")
+    tx:Transaction
+    if !transaction_begin(s,&tx) do return fail("storage_error")
+    defer transaction_rollback(&tx)
+    state,ok:=query(s.db,"SELECT commit_seq,clock_high_ms,recovery_state FROM runtime_database WHERE singleton=1")
+    if !ok || len(state)!=1 do return fail("storage_error")
+    rows,read:=query(s.db,"SELECT t.creator,t.creator_key,t.revision,g.genesis_digest FROM task_chains t JOIN chain_genesis g USING(chain_id) WHERE t.chain_id=?",chain)
+    if !read do return fail("storage_error")
+    if len(rows)!=1 || rows[0][0]!=s.owner || rows[0][1]!=s.owner_key do return fail("invalid_scope")
+    op:=fmt.tprintf("discard_%s",chain)
+    done,seen:=query(s.db,"SELECT result_json FROM command_receipts WHERE principal_id=? AND operation_id=? AND chain_id=?",requested_by,op,chain)
+    if !seen do return fail("storage_error")
+    if len(done)==1 do return Result{code="ok",body=done[0][0]}
+    used,found:=query(s.db,"SELECT 1 FROM local_chain_member_versions WHERE chain_id=? UNION ALL SELECT 1 FROM tasks WHERE chain_id=? LIMIT 1",chain,chain)
+    if !found do return fail("storage_error")
+    if len(used)>0 do return fail("operation_conflict")
+    if now<number(state[0][1]) {
+        if !mark_clock_uncertain(&tx) do return fail("storage_error")
+        return fail("clock_uncertain")
+    }
+    if state[0][2]!="ready" do return fail("clock_uncertain")
+    seq,next:=number(state[0][0])+1,number(rows[0][2])+1
+    if _,ok=query(s.db,"UPDATE local_work_chains SET status='completed' WHERE chain_id=?",chain);!ok do return fail("storage_error")
+    if _,ok=query(s.db,"UPDATE task_chains SET revision=revision+1 WHERE chain_id=?",chain);!ok do return fail("storage_error")
+    result:=encode(map[string]string{"chain_id"=chain,"task_id"="","operation_id"=op,"revision"=fmt.tprintf("%d",next),"discarded"="1"})
+    if _,ok=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),chain,"chain.discard","",fmt.tprintf("%d",next),op);!ok do return fail("storage_error")
+    if !event_record(&tx,seq,now,chain,"","agent",requested_by,"chain.discard",op,"","{}",encode(doc(map[string]string{"title"="","description"="","body"=""})),result) do return fail("storage_error")
+    if _,ok=query(s.db,"INSERT INTO command_receipts(principal_id,operation_id,chain_id,task_id,method,input_digest,digest_key_id,request_expires_ms,result_json,commit_seq,created_ms) VALUES(?,?,?,'',?,?,?,0,?,?,?)",
+        requested_by,op,chain,"chain.discard",contracts.owner_payload_digest("{}"),s.owner_key,result,fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
+    registry:=doc(map[string]string{"protocol_version"="1","account_id"=s.account,"chain_id"=chain,"owner_bridge_id"=s.owner,"key_id"=s.owner_key,"genesis_digest"=rows[0][3],"metadata_revision"=fmt.tprintf("%d",seq),"task_id"="",
+      "chain_title_cipher"="","chain_description_cipher"="","task_title_cipher"="","deleted"="1","signature"=strings.repeat("0",128,context.temp_allocator)})
+    signature,signed:=sign.sign(sign.ctx,"registry",registry)
+    if !signed do return fail("storage_error")
+    registry["signature"]=json.String(signature)
+    if !intent_enqueue(&tx,Intent_Input{chain=chain,principal=requested_by,operation=op,seq=seq,kind="registry",fence="{}",payload=encode(registry)}) do return fail("storage_error")
     if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
     if !transaction_commit(&tx) do return fail("storage_error")
     return Result{code="ok",body=result,seq=seq}
