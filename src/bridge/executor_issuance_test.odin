@@ -174,7 +174,7 @@ bridge_executor_issuance_mounted_scenario :: proc(t:^testing.T,native:=false,sto
     exchange:=executor.encode(struct{scope,envelope,selection:string}{executor.encode(scope),token,selected})
     outer,outer_ok:=vault.seal(transmute([]byte)exchange,&kr);testing.expect(t,outer_ok)
     relay:=executor.encode(struct{protocol_version,chain_id,bridge_id,request_id,expires_ms,envelope:string}{"1","chain",id,"mounted_issuance",fmt.tprintf("%d",now+60000),outer})
-    wire:=Executor_Issuance_Wire{"executor_issuance","mounted_issuance",TEST_VAULT_USER_ID,relay,directory}
+    wire:=Executor_Issuance_Wire{"executor_issuance","mounted_issuance",TEST_VAULT_USER_ID,"",relay,directory}
     bridge_executor_issuance_handle(nil,executor.encode(wire))
     cached,found:=bridge_runtime_cached_command(wire.command_id);if !testing.expect(t,found) do return
     response_value,_:=contracts.owner_content_document(cached);response,_:=response_value.(json.Object)

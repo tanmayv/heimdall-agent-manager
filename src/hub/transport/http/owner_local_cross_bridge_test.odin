@@ -19,3 +19,24 @@ owner_local_admits_a_same_account_bridge_token :: proc(t:^testing.T) {
     testing.expect(t,!owner_local_caller_admitted(contracts.Auth_Context{kind=.Enrollment_Token,user_id="alice"},true))
     testing.expect(t,!owner_local_caller_admitted(contracts.Auth_Context{},true))
 }
+
+// Cross-Bridge placement: the chain's owner Bridge (a Bridge token of the
+// account) relays an issuance request to another Bridge and is named to it as
+// from_bridge_id; the executor admits a Bridge consent only from that Bridge.
+@(test)
+executor_issuance_admits_user_or_another_account_bridge :: proc(t:^testing.T) {
+    from,ok:=executor_issuance_sender(contracts.Auth_Context{kind=.Bridge_Token,user_id="alice",bridge_id="brg_a"},"brg_b")
+    testing.expect(t,ok && from=="brg_a","another Bridge of the account relays and is named")
+    _,ok=executor_issuance_sender(contracts.Auth_Context{kind=.Bridge_Token,user_id="alice",bridge_id="brg_b"},"brg_b")
+    testing.expect(t,!ok,"a Bridge never relays issuance to itself")
+    _,ok=executor_issuance_sender(contracts.Auth_Context{kind=.Bridge_Token,bridge_id="brg_a"},"brg_b")
+    testing.expect(t,!ok,"a bridge token without an account is refused")
+    _,ok=executor_issuance_sender(contracts.Auth_Context{kind=.Bridge_Token,user_id="alice"},"brg_b")
+    testing.expect(t,!ok,"a bridge token without a bridge id is refused")
+    _,ok=executor_issuance_sender(contracts.Auth_Context{kind=.Instance_Token,user_id="alice",agent_instance_id="inst_1"},"brg_b")
+    testing.expect(t,!ok,"an agent token never relays issuance")
+    _,ok=executor_issuance_sender(contracts.Auth_Context{kind=.Enrollment_Token,user_id="alice"},"brg_b")
+    testing.expect(t,!ok)
+    _,ok=executor_issuance_sender(contracts.Auth_Context{},"brg_b")
+    testing.expect(t,!ok)
+}

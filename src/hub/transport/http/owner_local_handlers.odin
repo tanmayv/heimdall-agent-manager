@@ -273,24 +273,37 @@ owner_local_list_all :: proc(h:^Bridge_Handlers,account,chain:string,headers_onl
 }
 
 Executor_Issuance_Command :: struct {
-    type,command_id,account_id,relay:string,
+    // from_bridge_id: the Bridge whose token relayed the request ("" for a
+    // user). The executor admits a Bridge-signed consent only from this exact
+    // Bridge, so another Bridge of the account cannot consent as the owner.
+    type,command_id,account_id,from_bridge_id,relay:string,
     directory:vault.Directory_Verification_Input,
 }
 // The Hub transports opaque bytes and enrolled directory evidence only. The
-// executor verifies device consent and owns identity allocation; no task state
-// is granted or changed here.
+// executor verifies consent (a device, or the chain's owner Bridge) and owns
+// identity allocation; no task state is granted or changed here.
+// Who may relay an issuance request: the user, or (cross-Bridge placement,
+// origin/main parity) another Bridge of the account, which is then named to
+// the executor as from_bridge_id. A Bridge never relays to itself. The bridge
+// lookup below stays scoped to auth.user_id, so another account sees nothing.
+executor_issuance_sender :: proc(auth:contracts.Auth_Context,target:string)->(string,bool) {
+    if contracts.is_user_auth(auth) do return "",true
+    if auth.kind!=.Bridge_Token || auth.user_id=="" || auth.bridge_id=="" || auth.bridge_id==target do return "",false
+    return auth.bridge_id,true
+}
 executor_issuance_relay_handler :: proc(ctx:rawptr,req:Request)->Response {
     return executor_device_relay(ctx,req)
 }
 executor_device_relay :: proc(ctx:rawptr,req:Request)->Response {
     context.allocator=context.temp_allocator
     h:=(^Bridge_Handlers)(ctx)
-    auth,ok,resp:=require_auth(h.auth,req)
+    auth,ok,resp:=require_auth_or_bridge_token(h.auth,req)
     if !ok do return resp
-    if !contracts.is_user_auth(auth) do return respond_error(domain.domain_error(.Forbidden,"user authentication required"),req.request_id)
     relay,valid:=contracts.owner_parse(req.body,"relay")
     if !valid do return respond_error(domain.domain_error(.Validation_Failed,"invalid executor relay"),req.request_id)
     bridge_id:=contracts.owner_string(relay,"bridge_id")
+    from_bridge,admitted:=executor_issuance_sender(auth,bridge_id)
+    if !admitted do return respond_error(domain.domain_error(.Forbidden,"user or another Bridge of the account required"),req.request_id)
     expires,_:=strconv.parse_i64(contracts.owner_string(relay,"expires_ms"))
     now:=time.to_unix_nanoseconds(time.now())/1000000
     if expires<=now || expires-now>60000 do return respond_error(domain.domain_error(.Validation_Failed,"relay expired"),req.request_id)
@@ -301,7 +314,7 @@ executor_device_relay :: proc(ctx:rawptr,req:Request)->Response {
     if !available do return respond_error(domain.domain_error(.Forbidden,"current directory unavailable"),req.request_id)
     kind:="executor_issuance"
     id:=fmt.tprintf("cmd_%s_%d",kind,time.to_unix_nanoseconds(time.now()))
-    command:=Executor_Issuance_Command{kind,id,auth.user_id,req.body,directory}
+    command:=Executor_Issuance_Command{kind,id,auth.user_id,from_bridge,req.body,directory}
     reply,received,rerr:=bridge_runtime.send_runtime_command_wait(h.bridge_runtime_registry,project_service.Runtime_Command{bridge_id=bridge_id,command_id=id,body_json=owner_json(command)},10000)
     if !received do return respond_error(rerr,req.request_id)
     defer delete(reply,runtime.default_allocator())

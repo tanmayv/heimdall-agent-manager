@@ -70,19 +70,20 @@ bridge_executor_resolve_issuance :: proc(s:^executor.Store,selection_raw:string)
 // paired directory (approved, unrevoked, this account):
 //   - a browser device of the account (principal_id is its key id), or
 //   - the chain's owner Bridge (origin/main parity: its coordinator places work
-//     on any Bridge of the account, with no device prompt). The consent must
-//     name that Bridge as owner_bridge_id and principal_id, it must be an
-//     approved Bridge key whose id derives from its public key, and it is never
-//     this executor's own key (a Bridge cannot consent to work for itself).
+//     on any Bridge of the account, with no device prompt). The Hub must have
+//     relayed the request from that Bridge's token (from_bridge_id), the consent
+//     must name it as owner_bridge_id and principal_id, it must be an approved
+//     Bridge key whose id derives from its public key, and it is never this
+//     executor's own key (a Bridge cannot consent to work for itself).
 // executor_verify then checks the signature against the returned key.
-bridge_executor_consent_key :: proc(dir:^vault.Verified_Directory,consent:json.Object,account,self_key_id:string)->(contracts.Owner_Verified_Key,bool) {
+bridge_executor_consent_key :: proc(dir:^vault.Verified_Directory,consent:json.Object,account,self_key_id,from_bridge:string)->(contracts.Owner_Verified_Key,bool) {
     get:=contracts.owner_string
     if device,found:=dir.trusted[get(consent,"principal_id")];found && device.kind=="browser" {
         return contracts.Owner_Verified_Key{account,device.id,device.id,device.sign_public_key,"device",true,false},true
     }
     key_id,principal:=get(consent,"key_id"),get(consent,"principal_id")
     bridge,found:=dir.trusted[key_id]
-    if !found || bridge.kind!="bridge" || key_id==self_key_id || principal=="" || principal!=get(consent,"owner_bridge_id") ||
+    if !found || bridge.kind!="bridge" || key_id==self_key_id || principal=="" || principal!=from_bridge || principal!=get(consent,"owner_bridge_id") ||
        principal==get(consent,"executor_bridge_id") {return {},false}
     derived,derived_ok:=vault.device_id_from_sign_pub(bridge.sign_public_key,context.temp_allocator)
     if !derived_ok || derived!=key_id do return {},false
@@ -90,7 +91,9 @@ bridge_executor_consent_key :: proc(dir:^vault.Verified_Directory,consent:json.O
 }
 
 Executor_Issuance_Wire :: struct {
-    type,command_id,account_id,relay:string,
+    // from_bridge_id: set by the Hub from the relaying Bridge's token, "" when
+    // the user relayed it (bridge_executor_consent_key).
+    type,command_id,account_id,from_bridge_id,relay:string,
     directory:vault.Directory_Verification_Input,
 }
 bridge_executor_issuance_handle :: proc(conn:^ws.Connection,text:string) {
@@ -143,7 +146,7 @@ bridge_executor_issuance_handle :: proc(conn:^ws.Connection,text:string) {
     if !trusted do return
     enrolled,self_ok:=dir.trusted[key_id]
     if !self_ok || enrolled.kind!="bridge" || enrolled.sign_public_key!=public do return
-    device,consenter_ok:=bridge_executor_consent_key(&dir,consent,account,key_id)
+    device,consenter_ok:=bridge_executor_consent_key(&dir,consent,account,key_id,wire.from_bridge_id)
     if !consenter_ok do return
     self:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,key_id,public,"bridge",true,false}
     verified,authenticated:=channel.open_signed(get(exchange,"envelope"),&kr,scope,device,now,context.temp_allocator)

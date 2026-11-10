@@ -47,32 +47,40 @@ test_executor_consent_key_admits_device_or_owner_bridge :: proc(t:^testing.T) {
     // An approved entry whose id does not derive from its key.
     dir.trusted["key_mismatched"]={id="key_mismatched",kind="bridge",sign_public_key=stranger_pub}
 
-    key,ok:=bridge_executor_consent_key(&dir,executor_consent_test_consent(device_id,device_id,"brg_owner"),"acct_1",self_id)
+    key,ok:=bridge_executor_consent_key(&dir,executor_consent_test_consent(device_id,device_id,"brg_owner"),"acct_1",self_id,"brg_owner")
     testing.expect(t,ok && key.kind=="device" && key.key_id==device_id && key.principal_id==device_id && key.account_id=="acct_1","a browser device consents")
 
-    key,ok=bridge_executor_consent_key(&dir,executor_consent_test_consent("brg_owner",owner_id,"brg_owner"),"acct_1",self_id)
+    key,ok=bridge_executor_consent_key(&dir,executor_consent_test_consent("brg_owner",owner_id,"brg_owner"),"acct_1",self_id,"brg_owner")
     testing.expect(t,ok && key.kind=="bridge" && key.key_id==owner_id && key.principal_id=="brg_owner" && key.public_key==owner_pub,"the chain's owner Bridge consents")
 
-    _,ok=bridge_executor_consent_key(&dir,executor_consent_test_consent("brg_other",owner_id,"brg_owner"),"acct_1",self_id)
+    // The owner's consent relayed by the user (no from_bridge) or by another
+    // Bridge is refused: only the owner Bridge's own token carries it.
+    _,ok=bridge_executor_consent_key(&dir,executor_consent_test_consent("brg_owner",owner_id,"brg_owner"),"acct_1",self_id,"")
+    testing.expect(t,!ok,"a Bridge consent relayed by the user is refused")
+    _,ok=bridge_executor_consent_key(&dir,executor_consent_test_consent("brg_owner",owner_id,"brg_owner"),"acct_1",self_id,"brg_other")
+    testing.expect(t,!ok,"a Bridge consent relayed by another Bridge is refused")
+    key,ok=bridge_executor_consent_key(&dir,executor_consent_test_consent(device_id,device_id,"brg_owner"),"acct_1",self_id,"")
+    testing.expect(t,ok && key.kind=="device","a user-relayed device consent is unchanged")
+    _,ok=bridge_executor_consent_key(&dir,executor_consent_test_consent("brg_other",owner_id,"brg_owner"),"acct_1",self_id,"brg_other")
     testing.expect(t,!ok,"a Bridge naming another principal than the owner never consents")
-    _,ok=bridge_executor_consent_key(&dir,executor_consent_test_consent("brg_exec",self_id,"brg_exec"),"acct_1",self_id)
+    _,ok=bridge_executor_consent_key(&dir,executor_consent_test_consent("brg_exec",self_id,"brg_exec"),"acct_1",self_id,"brg_owner")
     testing.expect(t,!ok,"the executor never consents for itself (own key)")
-    _,ok=bridge_executor_consent_key(&dir,executor_consent_test_consent("brg_exec",owner_id,"brg_exec"),"acct_1",self_id)
+    _,ok=bridge_executor_consent_key(&dir,executor_consent_test_consent("brg_exec",owner_id,"brg_exec"),"acct_1",self_id,"brg_owner")
     testing.expect(t,!ok,"a consent whose owner is the executor is refused")
-    _,ok=bridge_executor_consent_key(&dir,executor_consent_test_consent("brg_owner","key_mismatched","brg_owner"),"acct_1",self_id)
+    _,ok=bridge_executor_consent_key(&dir,executor_consent_test_consent("brg_owner","key_mismatched","brg_owner"),"acct_1",self_id,"brg_owner")
     testing.expect(t,!ok,"a key id that does not derive from its public key never consents")
-    _,ok=bridge_executor_consent_key(&dir,executor_consent_test_consent("",owner_id,""),"acct_1",self_id)
+    _,ok=bridge_executor_consent_key(&dir,executor_consent_test_consent("",owner_id,""),"acct_1",self_id,"brg_owner")
     testing.expect(t,!ok,"an empty principal never consents")
 
     // Unpaired, revoked or other-account keys are absent from this account's
     // verified directory (vault.directory_verify keeps only approved,
     // unrevoked devices of the paired root), so they never resolve.
     unpaired_id,_:=executor_consent_test_key(t)
-    _,ok=bridge_executor_consent_key(&dir,executor_consent_test_consent("brg_owner",unpaired_id,"brg_owner"),"acct_1",self_id)
+    _,ok=bridge_executor_consent_key(&dir,executor_consent_test_consent("brg_owner",unpaired_id,"brg_owner"),"acct_1",self_id,"brg_owner")
     testing.expect(t,!ok,"a Bridge key outside the verified directory never consents")
-    _,ok=bridge_executor_consent_key(&dir,executor_consent_test_consent(unpaired_id,unpaired_id,"brg_owner"),"acct_1",self_id)
+    _,ok=bridge_executor_consent_key(&dir,executor_consent_test_consent(unpaired_id,unpaired_id,"brg_owner"),"acct_1",self_id,"brg_owner")
     testing.expect(t,!ok,"a device outside the verified directory never consents")
     delete_key(&dir.trusted,owner_id)
-    _,ok=bridge_executor_consent_key(&dir,executor_consent_test_consent("brg_owner",owner_id,"brg_owner"),"acct_1",self_id)
+    _,ok=bridge_executor_consent_key(&dir,executor_consent_test_consent("brg_owner",owner_id,"brg_owner"),"acct_1",self_id,"brg_owner")
     testing.expect(t,!ok,"a revoked (no longer trusted) owner Bridge key never consents")
 }
