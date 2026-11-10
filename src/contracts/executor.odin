@@ -267,13 +267,25 @@ executor_canonical :: proc(kind:string,o:json.Object)->(string,bool) {
     }
     return strings.to_string(b),true
 }
+// Consents and local launches are a person's (a device key); everything else
+// is a Bridge's. Cross-Bridge placement (origin/main parity: a chain's
+// coordinator places work on any Bridge of the account) also admits an
+// issuance consent signed by the chain's OWNER Bridge: its key must claim
+// principal_id == owner_bridge_id, so another Bridge of the account cannot
+// consent for a chain it does not own. The caller verifies that key against
+// the paired directory (enrolled, unrevoked, same account) first.
+executor_signer_kind :: proc(kind:string,o:json.Object,key:Owner_Verified_Key)->bool {
+    if kind!="issuance_consent" && kind!="local_launch" && kind!="local_draft" do return key.kind=="bridge"
+    if key.kind=="device" do return true
+    return kind=="issuance_consent" && key.kind=="bridge" && key.principal_id==owner_string(o,"owner_bridge_id")
+}
 executor_digest :: proc(kind:string,o:json.Object)->(string,bool) {
     canonical,ok:=executor_canonical(kind,o)
     if !ok do return "",false
     return owner_payload_digest(canonical),true
 }
 executor_verify :: proc(kind:string,o:json.Object,key:Owner_Verified_Key)->bool {
-    if !key.enrolled || key.revoked || (key.kind!="device" if kind=="issuance_consent" || kind=="local_launch" || kind=="local_draft" else key.kind!="bridge") || key.account_id!=owner_string(o,"account_id") ||
+    if !key.enrolled || key.revoked || !executor_signer_kind(kind,o,key) || key.account_id!=owner_string(o,"account_id") ||
        key.key_id!=owner_string(o,"key_id") { return false }
     identity:="owner_bridge_id"
     if kind=="notification_result" || kind=="notification_fence_request" || kind=="policy" || kind=="receipt" || kind=="fence_request" || kind=="enrollment" || kind=="issuance_receipt" || kind=="directory" || kind=="child_request" || kind=="local_result" do identity="executor_bridge_id"
