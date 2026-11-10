@@ -235,6 +235,31 @@ export async function readOwnerChainStatus(session: OwnerSession, bridgeId: stri
   return data.status === 'active' || data.status === 'completed' ? data.status : '';
 }
 
+/** An active work dependency between two tickets (work.read 'dependency' items). */
+export interface OwnerDependency { dependencyId: string; dependent: string; prerequisite: string }
+
+/**
+ * The chain's active ticket-to-ticket dependencies. work.read pages at most
+ * three items, so this follows the cursor, bounded at `maxPages` (truncated
+ * reports that the bound was hit).
+ */
+export async function readOwnerDependencies(session: OwnerSession, bridgeId: string, chainId: string, send: OwnerSend = ownerRelaySend, maxPages = 100): Promise<{ items: OwnerDependency[]; truncated: boolean }> {
+  const items: OwnerDependency[] = [];
+  let cursor = '';
+  for (let page = 0; page < maxPages; page++) {
+    const data = await ownerCall(session, bridgeId, 'work.read', { chainId, expectedRevision: '0', cursor, limit: 3 }, send);
+    for (const it of Array.isArray(data.items) ? data.items : []) {
+      if (it?.kind !== 'dependency') continue;
+      const r = typeof it.record === 'string' ? JSON.parse(it.record) : it.record;
+      if (!r || r.removed_at || r.dependent?.kind !== 'task' || r.prerequisite?.kind !== 'task') continue;
+      items.push({ dependencyId: String(r.dependency_id), dependent: String(r.dependent.id), prerequisite: String(r.prerequisite.id) });
+    }
+    cursor = String(data.next_cursor ?? '');
+    if (!cursor) return { items, truncated: false };
+  }
+  return { items, truncated: true };
+}
+
 /** The owner's work revision (work.read), which chain.complete must name. */
 export async function readOwnerWorkRevision(session: OwnerSession, bridgeId: string, chainId: string, send: OwnerSend = ownerRelaySend): Promise<string> {
   const data = await ownerCall(session, bridgeId, 'work.read', { chainId, expectedRevision: '0', cursor: '', limit: 1 }, send);

@@ -6,11 +6,11 @@
 // stays reachable behind "Advanced/debug".
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Badge, Button, EmptyState, FormField, Input, Select, StatusDot, StatusPill, Text, Textarea, type Tone } from '@ui';
+import { Alert, Badge, Button, EmptyState, FormField, IconButton, Input, Select, StatusDot, StatusPill, Text, Textarea, type Tone } from '@ui';
 import {
   freshOwnerSession, isOwnerOffline, ownerAwaitingUser, ownerCall, ownerErrorMessage, ownerOfflineMessage, ownerRelaySend, ownerTaskState,
-  ownerExpectedRevision, readArchivedReviews, readOwnerChain, readOwnerChainStatus, readOwnerReviews, readOwnerRuntime, readOwnerSubmission, readOwnerTask, readOwnerWorkRevision, withOwnerRecovery,
-  type OwnerChainDetail, type OwnerChainStatus, type OwnerChainSummary, type OwnerReview, type OwnerRuntime, type OwnerSend,
+  ownerExpectedRevision, readArchivedReviews, readOwnerChain, readOwnerChainStatus, readOwnerReviews, readOwnerRuntime, readOwnerDependencies, readOwnerSubmission, readOwnerTask, readOwnerWorkRevision, withOwnerRecovery,
+  type OwnerChainDetail, type OwnerChainStatus, type OwnerDependency, type OwnerChainSummary, type OwnerReview, type OwnerRuntime, type OwnerSend,
   type OwnerSubmission, type OwnerTaskDetail, type OwnerTaskState,
 } from '../../api/ownerChains';
 import { ownerId, type OwnerInput, type OwnerSession } from '../../api/ownerLocalClient';
@@ -139,6 +139,9 @@ export function OwnerChainView({
   const [reviewSummary, setReviewSummary] = useState('');
   // Inline editors: null when closed, else the draft.
   const [chainDraft, setChainDraft] = useState<{ title: string; description: string } | null>(null);
+  // Ticket dependencies (work.read), read when a ticket opens; null until read.
+  const [deps, setDeps] = useState<{ items: OwnerDependency[]; truncated: boolean } | null>(null);
+  const [newDep, setNewDep] = useState('');
   // Complete chain: the summary being written (null when the form is closed).
   const [completeSummary, setCompleteSummary] = useState<string | null>(null);
   const [taskDraft, setTaskDraft] = useState<{ taskId: string; title: string; body: string } | null>(null);
@@ -303,6 +306,32 @@ export function OwnerChainView({
       if (e instanceof Error && e.message === 'stale_revision') { await loadChain(); if (input.taskId && input.taskId === selected) await loadTask(input.taskId); }
       return false;
     } finally { if (live.current) setBusy(false); }
+  }
+
+  const loadDeps = useCallback(async () => {
+    try {
+      const d = await readOwnerDependencies(await session(), bridge, chain.chainId, send);
+      if (live.current) setDeps(d);
+    } catch (e) {
+      if (live.current) setDeps(null);
+      if (isOwnerOffline(e)) fail(e);
+    }
+  }, [bridge, chain.chainId, send, session, fail]);
+  const showsTicket = layout === 'page' || layout === 'ticket';
+  // Only once the owner answered the chain read: an offline owner is asked nothing.
+  const ownerReady = !offline && Boolean(detail);
+  useEffect(() => { if (showsTicket && selected && ownerReady) void loadDeps(); }, [showsTicket, selected, ownerReady, loadDeps]);
+
+  async function addDependency(taskId: string, prerequisite: string): Promise<boolean> {
+    const doc = { dependency_id: ownerId('dep_'), dependent: { kind: 'task', id: taskId }, prerequisite: { kind: 'task', id: prerequisite } };
+    const ok = await mutate('work.dependency.add', { body: JSON.stringify(doc) }, 'Dependency added.');
+    if (ok) await loadDeps();
+    return ok;
+  }
+  async function removeDependency(dependencyId: string): Promise<boolean> {
+    const ok = await mutate('work.dependency.remove', { body: JSON.stringify({ dependency_id: dependencyId, reason: 'Removed from the ticket page' }) }, 'Dependency removed.');
+    if (ok) await loadDeps();
+    return ok;
   }
 
   // chain.complete names the owner's current work revision (work.read).
@@ -688,6 +717,41 @@ export function OwnerChainView({
                     {wire?.merge && <><Text as="span" role="caption" tone="muted">Merge</Text><Text as="span" role="caption">{wire.merge.state}{wire.merge.head ? ' · ' : ''}{wire.merge.head && <Text as="code" role="code-sm">{wire.merge.head.slice(0, 12)}</Text>}</Text></>}
                   </dl>
                 )}
+              </TicketCard>
+
+              <TicketCard debugId="owner-chain-dependencies" title="Waits for">
+                {deps === null ? <Text as="p" role="caption" tone="muted">Loading dependencies…</Text> : (() => {
+                  const waits = deps.items.filter((d) => d.dependent === task.taskId);
+                  const blocks = deps.items.filter((d) => d.prerequisite === task.taskId);
+                  const titleOf = (id: string) => tasks.find((t) => t.taskId === id)?.title || id;
+                  const options = tasks.filter((t) => t.taskId !== task.taskId && !waits.some((d) => d.prerequisite === t.taskId));
+                  return (
+                    <div className="space-y-2">
+                      {waits.length === 0 ? <Text as="p" role="caption" tone="muted">This ticket waits for nothing.</Text> : (
+                        <ul className="space-y-1">
+                          {waits.map((d) => (
+                            <li key={d.dependencyId} data-debug-id={`owner-chain-dep-${d.prerequisite}`} className="flex min-w-0 items-center gap-2">
+                              <Text as="span" role="body-sm" truncate className="min-w-0 flex-1">{titleOf(d.prerequisite)}</Text>
+                              {stateOf(d.prerequisite) && <StatusPill tone={STATE_TONE[stateOf(d.prerequisite)!.state]}>{TASK_STATE_LABELS[stateOf(d.prerequisite)!.state]}</StatusPill>}
+                              {editable && <IconButton icon="close" size="sm" variant="ghost" label={`Stop waiting for ${titleOf(d.prerequisite)}`} data-debug-id={`owner-chain-dep-remove-${d.prerequisite}`} disabled={busy} onClick={() => void removeDependency(d.dependencyId)} />}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      {blocks.length > 0 && <Text as="p" role="caption" tone="muted" data-debug-id="owner-chain-dep-blocks">Blocks: {blocks.map((d) => titleOf(d.dependent)).join(', ')}</Text>}
+                      {deps.truncated && <Text as="p" role="caption" tone="muted">Only the first dependencies were read.</Text>}
+                      {editable && options.length > 0 && (
+                        <div className="flex items-end gap-2">
+                          <FormField label="Add a ticket it waits for" className="min-w-0 flex-1">
+                            <Select size="sm" name="owner-chain-dep-add" data-debug-id="owner-chain-dep-add" value={newDep} onChange={setNewDep}
+                              options={options.map((t) => ({ value: t.taskId, label: t.title || t.taskId }))} placeholder="Choose a ticket" />
+                          </FormField>
+                          <Button size="sm" data-debug-id="owner-chain-dep-add-save" disabled={busy || !newDep} onClick={() => void addDependency(task.taskId, newDep).then((ok) => { if (ok) setNewDep(''); })}>Add</Button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </TicketCard>
 
               {wire && wire.attempt_no > 0 && <TicketAttemptsCard task={wire} names={EMPTY_TASK_NAMES} lease={leaseClock(wire, Date.now())} />}

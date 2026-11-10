@@ -69,6 +69,13 @@ test('owner chain view renders tickets, brief, comments, submissions and reviews
   const taskRevs: Record<string, number> = { task_1: 3, task_2: 1 };
   const tasks = [{ task_id: 'task_1', title: 'Fix login', priority: 'p1' }, { task_id: 'task_2', title: 'Write docs', priority: 'p2' }];
   const revisions = { chain: () => String(chainRev), task: (_c: string, t: string) => String(taskRevs[t] ?? 0) };
+  // Dependencies come from work.read, three items a page.
+  const depItems: any[] = [
+    { kind: 'proposal', key: 'p1', accepted_seq: '1', record: { proposal_id: 'p1' } },
+    { kind: 'dependency', key: 'dep_old', accepted_seq: '2', record: { dependency_id: 'dep_old', dependent: { kind: 'task', id: 'task_1' }, prerequisite: { kind: 'task', id: 'task_2' }, removed_at: '2026-01-01T00:00:00Z' } },
+    { kind: 'scope', key: '1', accepted_seq: '3', record: {} },
+    { kind: 'dependency', key: 'dep_1', accepted_seq: '4', record: { dependency_id: 'dep_1', dependent: { kind: 'task', id: 'task_2' }, prerequisite: { kind: 'task', id: 'task_1' }, removed_at: '' } },
+  ];
   let comments = [
     { operation_id: 'cmt_legacy', principal_id: 'inst_author', body: 'Imported comment', seq: '1', created_at: '2025-04-03T12:00:00Z' },
   ];
@@ -77,7 +84,19 @@ test('owner chain view renders tickets, brief, comments, submissions and reviews
     switch (call.method) {
       case 'chain.read': return { chain_id: 'chain_owned', task_id: '', revision: String(chainRev), title: 'Live chain title', description: 'Live description', defaults_json: '{}',
         items: tasks.map((t) => ({ ...t, revision: String(taskRevs[t.task_id]) })), next_cursor: '' };
-      case 'work.read': return { chain_id: 'chain_owned', publish_state: 'published', status: 'active', work_revision: '1', pending_proposal_id: '', next_cursor: '', items: [], pending_proposal: null };
+      case 'work.read': {
+        const offset = Number(String(call.payload.cursor || 'work:0').split(':')[1]);
+        const limit = Number(call.payload.limit) === 3 ? 3 : 0;
+        const next = limit && offset + 3 < depItems.length ? `work:${offset + 3}` : '';
+        return { chain_id: 'chain_owned', publish_state: 'published', status: 'active', work_revision: '1', pending_proposal_id: '', next_cursor: next, items: limit ? depItems.slice(offset, offset + 3) : [], pending_proposal: null };
+      }
+      case 'work.dependency.add': case 'work.dependency.remove': {
+        chainRev++;
+        const doc = JSON.parse(await decryptVaultText(call.payload.body_cipher, session.keyring));
+        if (call.method === 'work.dependency.add') depItems.push({ kind: 'dependency', key: doc.dependency_id, accepted_seq: String(depItems.length + 1), record: { ...doc, removed_at: '' } });
+        else for (const it of depItems) if (it.key === doc.dependency_id) it.record = { ...it.record, removed_at: '2026-11-10T00:00:00Z' };
+        return { chain_id: 'chain_owned', task_id: '', revision: String(chainRev) };
+      }
       case 'task.create': {
         chainRev++;
         tasks.push({ task_id: call.command.task_id, title: await decryptVaultText(call.payload.title_cipher, session.keyring), priority: 'p2' });
@@ -212,12 +231,36 @@ test('owner chain view renders tickets, brief, comments, submissions and reviews
     assert.equal(priority.payload.priority, 'p0');
     assert.equal(ui.$('owner-chain-error'), null, 'no management change was refused as stale');
 
+    // Dependencies: task_1 waits for nothing (dep_old was removed) and blocks task_2.
+    await ui.flush();
+    assert.match(ui.$('owner-chain-dependencies')!.textContent!, /waits for nothing/);
+    assert.match(ui.$('owner-chain-dep-blocks')!.textContent!, /Blocks: Write docs/);
+    await ui.click('owner-chain-dep-add');
+    const docs = [...ui.dom.window.document.querySelectorAll('[role="option"]')].find((o) => /Write docs/.test(o.textContent || '')) as HTMLElement | undefined;
+    assert.ok(docs, 'the dependency picker lists the other tickets');
+    await act(async () => { docs!.click(); });
+    await ui.flush();
+    await ui.click('owner-chain-dep-add-save');
+    const add = calls.find((c) => c.method === 'work.dependency.add')!;
+    assert.ok(add, 'work.dependency.add was sent: ' + (ui.$('owner-chain-error')?.textContent ?? ''));
+    const addDoc = JSON.parse(await decryptVaultText(add.payload.body_cipher, session.keyring));
+    assert.deepEqual({ dependent: addDoc.dependent, prerequisite: addDoc.prerequisite }, { dependent: { kind: 'task', id: 'task_1' }, prerequisite: { kind: 'task', id: 'task_2' } });
+    assert.match(addDoc.dependency_id, /^dep_/);
+    await ui.flush();
+    assert.ok(ui.$('owner-chain-dep-task_2'), 'the ticket now waits for Write docs');
+    await ui.click('owner-chain-dep-remove-task_2');
+    const remove = calls.find((c) => c.method === 'work.dependency.remove')!;
+    assert.ok(remove, 'work.dependency.remove was sent');
+    assert.equal(JSON.parse(await decryptVaultText(remove.payload.body_cipher, session.keyring)).dependency_id, addDoc.dependency_id);
+    await ui.flush();
+    assert.equal(ui.$('owner-chain-dep-task_2'), null, 'the removed dependency is gone after the re-read');
+
     await ui.click('owner-chain-complete');
     await ui.type('owner-chain-complete-summary', 'Login shipped');
     await ui.click('owner-chain-complete-save');
     const complete = calls.find((c) => c.method === 'chain.complete')!;
     assert.ok(complete, 'chain.complete was sent: ' + (ui.$('owner-chain-error')?.textContent ?? ''));
-    assert.equal(complete.command.expected_revision, '9', 'chain-scoped');
+    assert.equal(complete.command.expected_revision, '11', 'chain-scoped (after the two dependency changes)');
     assert.deepEqual(JSON.parse(await decryptVaultText(complete.payload.body_cipher, session.keyring)), { expected_work_revision: '1', summary: 'Login shipped' }, 'names the work revision from work.read');
     assert.equal(ui.$('owner-chain-notice')!.textContent, 'Chain completed.');
 
