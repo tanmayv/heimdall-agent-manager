@@ -105,6 +105,7 @@ test('owner chain view renders tickets, brief, comments, submissions and reviews
       }
       case 'requirements.edit': case 'review.post': case 'task.hold': case 'task.edit': case 'task.priority': taskRevs[task]++; return { chain_id: 'chain_owned', task_id: task, revision: String(taskRevs[task]) };
       case 'chain.edit': chainRev++; return { chain_id: 'chain_owned', task_id: '', revision: String(chainRev) };
+      case 'task.delete': { chainRev++; const i = tasks.findIndex((t) => t.task_id === task); if (i >= 0) tasks.splice(i, 1); return { chain_id: 'chain_owned', task_id: task, revision: String(chainRev) }; }
       case 'chain.complete': chainRev++; return { chain_id: 'chain_owned', task_id: '', revision: String(chainRev) };
       case 'runtime.read': return task === 'task_1'
         ? { revision: String(taskRevs.task_1), fleet: [], leases: [], config: [], requirements: [['2', JSON.stringify({ goal: 'Users can sign in', acceptance: ['SSO works', 'Errors are shown'] })]],
@@ -281,6 +282,18 @@ test('owner chain view renders tickets, brief, comments, submissions and reviews
     assert.equal(complete.command.expected_revision, '11', 'chain-scoped (after the two dependency changes)');
     assert.deepEqual(JSON.parse(await decryptVaultText(complete.payload.body_cipher, session.keyring)), { expected_work_revision: '1', summary: 'Login shipped' }, 'names the work revision from work.read');
     assert.equal(ui.$('owner-chain-notice')!.textContent, 'Chain completed.');
+
+    // An unstarted ticket can be deleted (after a confirm); a started one cannot.
+    assert.equal(ui.$('owner-chain-delete'), null, 'task_1 has attempts: no Delete');
+    await ui.click('owner-chain-task-task_2');
+    (ui.dom.window as any).confirm = () => true;
+    await ui.click('owner-chain-delete');
+    const del = calls.find((c) => c.method === 'task.delete')!;
+    assert.ok(del, 'task.delete was sent: ' + (ui.$('owner-chain-error')?.textContent ?? ''));
+    assert.equal(del.command.task_id, 'task_2');
+    assert.equal(del.command.expected_revision, String(taskRevs.task_2), 'bound to the ticket revision');
+    assert.equal(ui.$('owner-chain-task-task_2'), null, 'the deleted ticket leaves the list');
+    assert.equal(ui.$('owner-chain-error'), null, 'the deleted ticket is not re-read');
 
     await ui.click('owner-chain-debug-toggle');
     assert.ok(ui.dom.window.document.querySelector('[aria-label="Owner-local tasks"]'), 'the raw console stays reachable behind Advanced/debug');

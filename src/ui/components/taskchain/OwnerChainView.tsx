@@ -287,7 +287,7 @@ export function OwnerChainView({
 
   // `taskRevision` names the revision of a ticket that is not the open one
   // (board card actions); the open ticket's revision is used otherwise.
-  async function mutate(method: OwnerCommand['method'], input: Omit<OwnerInput, 'chainId' | 'expectedRevision'>, done: string, taskRevisionOverride?: string): Promise<boolean> {
+  async function mutate(method: OwnerCommand['method'], input: Omit<OwnerInput, 'chainId' | 'expectedRevision'>, done: string, taskRevisionOverride?: string, reloadTask = true): Promise<boolean> {
     setBusy(true); setError(''); setNotice('');
     try {
       const s = await session();
@@ -301,7 +301,7 @@ export function OwnerChainView({
       await loadChain();
       // Only the open ticket is re-read: task.create names a new task that is
       // not selected, and loading it would show it under another selection.
-      if (input.taskId && input.taskId === selected) await loadTask(input.taskId);
+      if (reloadTask && input.taskId && input.taskId === selected) await loadTask(input.taskId);
       return true;
     } catch (e) {
       fail(e);
@@ -684,6 +684,16 @@ export function OwnerChainView({
                 {ts.held
                   ? <Button size="sm" data-debug-id="owner-chain-release" disabled={busy} onClick={() => void mutate('task.release', { taskId: task.taskId, body: reason }, 'Hold released.')}>Release hold</Button>
                   : ts.state !== 'cancelled' && ts.state !== 'done' && <Button size="sm" data-debug-id="owner-chain-hold" disabled={busy} onClick={() => void mutate('task.hold', { taskId: task.taskId, body: reason }, 'Ticket held.')}>Hold</Button>}
+                {ts.state === 'ready' && task.runtime.attemptNo === 0 && !task.runtime.holder && (
+                  <Button size="sm" variant="danger" data-debug-id="owner-chain-delete" disabled={busy} onClick={() => {
+                    if (!window.confirm(`Delete “${task.detail.title || task.taskId}”? This cannot be undone.`)) return;
+                    void mutate('task.delete', { taskId: task.taskId }, 'Ticket deleted.', undefined, false).then((ok) => {
+                      if (!ok || !live.current) return;
+                      setSelected(''); setTask(null);
+                      if (layout === 'ticket') onShowBoard?.();
+                    });
+                  }}>Delete ticket</Button>
+                )}
                 {ts.state === 'cancelled'
                   ? <Button size="sm" data-debug-id="owner-chain-reopen" disabled={busy} onClick={() => void mutate('task.reopen', { taskId: task.taskId, body: reason }, 'Ticket reopened.')}>Reopen</Button>
                   : ts.state !== 'done' && <Button size="sm" variant="danger" data-debug-id="owner-chain-cancel" disabled={busy} onClick={() => void mutate('task.cancel', { taskId: task.taskId, body: reason }, 'Ticket cancelled.')}>Cancel ticket</Button>}
