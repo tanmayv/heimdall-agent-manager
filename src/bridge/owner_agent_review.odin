@@ -157,11 +157,11 @@ bridge_owner_review_execute :: proc(d:^Owner_Review_Dispatch) {
     }
 }
 
-// Types the review-lease line into a live child (no lock held).
+// Types the review-lease line into a live child (no lock held). The socket is
+// the process-global cached path (bridge_pty_host_ensure_daemon): never freed.
 bridge_owner_review_nudge :: proc(instance,line:string) -> bool {
     socket,ok:=bridge_pty_host_ensure_daemon()
     if !ok do return false
-    defer delete(socket)
     return bridge_pty_host_deliver_line(socket,instance,line)
 }
 

@@ -220,7 +220,9 @@ pty_host_daemon_socket_cached :: proc() -> string {
 }
 
 // bridge_pty_host_ensure_daemon starts the daemon once (idempotent) and returns
-// its socket path. The daemon is spawned detached (its own process) listening on
+// its socket path, which is the process-global cache (pty_host_daemon_socket):
+// callers must NEVER free it, or every later call pings a reused, garbage path
+// and retires the healthy daemon. The daemon is spawned detached (its own process) listening on
 // pty_host_socket_path(); we then poll a Ping until it answers or the deadline
 // passes. Safe to call on every launch.
 //
