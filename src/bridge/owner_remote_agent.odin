@@ -145,10 +145,21 @@ bridge_owner_remote_lookup :: proc(chain,task:string) -> (string,bool,string) {
     response,err:=bridge_hub_http_send({method=.GET,url=bridge_hub_url(),path={"api","v1","owner-local","chains"},query=q[:],headers=headers[:]})
     defer httpc.response_destroy(&response)
     if err!=.None || response.status!=200 do return "",false,fmt.tprintf("the Hub owner registry could not be read (%d)",response.status)
-    listing:struct{data:[]struct{chain_id,task_id,owner_bridge_id:string}}
+    listing:struct{data:[]Owner_Remote_Registry_Row}
     if json.unmarshal(response.body,&listing,.JSON,context.temp_allocator)!=nil do return "",false,"malformed owner registry listing"
-    for row in listing.data {
-        if (chain!="" && row.chain_id==chain && (task=="" || row.task_id==task || row.task_id=="")) || (chain=="" && row.task_id==task) do return row.owner_bridge_id,true,""
+    owner_bridge,found:=bridge_owner_remote_match(listing.data,chain,task)
+    return owner_bridge,found,""
+}
+
+Owner_Remote_Registry_Row :: struct{chain_id,task_id,owner_bridge_id:string}
+
+// The owner Bridge of a chain (its chain row, or a task row of that chain) or
+// of a task named alone (its task row). A row with no owner never matches.
+bridge_owner_remote_match :: proc(rows:[]Owner_Remote_Registry_Row,chain,task:string) -> (string,bool) {
+    for row in rows {
+        if row.owner_bridge_id=="" do continue
+        if chain!="" && row.chain_id==chain && (task=="" || row.task_id==task || row.task_id=="") do return row.owner_bridge_id,true
+        if chain=="" && task!="" && row.task_id==task do return row.owner_bridge_id,true
     }
-    return "",false,""
+    return "",false
 }
