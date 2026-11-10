@@ -29,6 +29,11 @@ for (const [key, value] of Object.entries({ window: dom.window, document: dom.wi
 dom.window.HTMLElement.prototype.scrollIntoView = function scrollIntoView() {};
 const { createRoot } = await import('react-dom/client');
 const { OwnerChainView } = await import('../src/ui/components/taskchain/OwnerChainView.tsx');
+const { Provider } = await import('react-redux');
+const { makeVaultStore } = await import('./helpers/vaultEndpointHarness.ts');
+// The ticket decision block renders vault markdown, which reads the app store.
+const store = await makeVaultStore();
+const view = (props: any) => React.createElement(Provider, { store }, React.createElement(OwnerChainView, props));
 
 function mountDom() {
   const container = dom.window.document.createElement('div');
@@ -138,7 +143,7 @@ test('owner chain view renders tickets, brief, comments, submissions and reviews
   }, calls, revisions);
   const ui = mountDom();
   try {
-    await act(async () => ui.root.render(React.createElement(OwnerChainView, { chain: summary(env), send, session: async () => session })));
+    await act(async () => ui.root.render(view({ chain: summary(env), send, session: async () => session })));
     await ui.flush();
     assert.equal(ui.$('owner-chain-title')!.textContent, 'Live chain title');
     assert.match(ui.$('owner-chain-bridge-state')!.textContent!, /Home Bridge · online/);
@@ -162,7 +167,7 @@ test('owner chain view renders tickets, brief, comments, submissions and reviews
     assert.ok(ui.$('owner-chain-attempt-1') && ui.$('owner-chain-attempt-2'), 'attempt history');
     await ui.click('owner-chain-attempt-2');
     assert.match(ui.$('owner-chain-submission')!.textContent!, /Attempt 2.*agt_worker.*Summary of attempt 2/s);
-    assert.ok(ui.$('owner-chain-review-approve'), 'an in-review ticket offers a verdict');
+    assert.ok(ui.$('ticket-view-approve-btn'), 'an in-review ticket offers a verdict (origin/main decision block)');
     assert.ok(!ui.text().includes('{"'), 'no raw JSON is rendered');
 
     await ui.type('owner-chain-comment-input', 'Please also cover Firefox');
@@ -174,12 +179,12 @@ test('owner chain view renders tickets, brief, comments, submissions and reviews
     assert.match(ui.$('owner-chain-comments')!.textContent!, /You.*Please also cover Firefox/s);
     assert.equal(ui.$('owner-chain-notice')!.textContent, 'Comment added.');
 
-    await ui.type('owner-chain-review-summary', 'Ship it');
-    await ui.click('owner-chain-review-approve');
+    // As on origin/main, Approve takes no note; the owner payload gets a fixed summary.
+    await ui.click('ticket-view-approve-btn');
     const review = calls.find((c) => c.method === 'review.post')!;
     assert.equal(review.command.expected_revision, '4', 'after the comment the task revision moved on');
     assert.deepEqual({ attempt: review.payload.attempt, head: review.payload.head, rr: review.payload.requirements_revision, verdict: review.payload.verdict, summary: review.payload.summary },
-      { attempt: '2', head: 'a'.repeat(40), rr: '2', verdict: 'approve', summary: 'Ship it' });
+      { attempt: '2', head: 'a'.repeat(40), rr: '2', verdict: 'approve', summary: 'Approved.' });
 
     await ui.click('owner-chain-hold');
     assert.equal(calls.filter((c) => c.method === 'task.hold').length, 1);
@@ -310,7 +315,7 @@ test('an offline owner shows registry metadata and an explicit offline state, wi
   const ui = mountDom();
   try {
     // Listed offline: nothing is requested from the owner.
-    await act(async () => ui.root.render(React.createElement(OwnerChainView, { chain: summary(env, { online: false }), send, session: async () => env.session })));
+    await act(async () => ui.root.render(view({ chain: summary(env, { online: false }), send, session: async () => env.session })));
     await ui.flush();
     assert.equal(calls.length, 0);
     assert.equal(ui.$('owner-chain-offline')!.textContent, 'Owner Bridge Laptop is offline — details and changes unavailable');
@@ -321,7 +326,7 @@ test('an offline owner shows registry metadata and an explicit offline state, wi
     assert.equal(ui.$('owner-chain-create-task-form'), null, 'no changes are offered offline');
 
     // Listed online but unreachable: the relay answer becomes the same state.
-    await act(async () => ui.root.render(React.createElement(OwnerChainView, { key: 'b', chain: summary(env, { online: true }), send, session: async () => env.session })));
+    await act(async () => ui.root.render(view({ key: 'b', chain: summary(env, { online: true }), send, session: async () => env.session })));
     await ui.flush();
     assert.ok(calls.length > 0);
     assert.equal(ui.$('owner-chain-offline')!.textContent, 'Owner Bridge Laptop is offline — details and changes unavailable');
@@ -358,14 +363,14 @@ test('a completed owner chain shows its status and offers no changes', async () 
   }, calls);
   const ui = mountDom();
   try {
-    await act(async () => ui.root.render(React.createElement(OwnerChainView, { chain: summary(env, { migrated: false }), send, session: async () => session })));
+    await act(async () => ui.root.render(view({ chain: summary(env, { migrated: false }), send, session: async () => session })));
     await ui.flush();
     assert.equal(ui.$('owner-chain-status')!.textContent, 'Completed');
     assert.match(ui.$('owner-chain-readonly')!.textContent!, /completed; it is read-only/);
     assert.equal(ui.$('owner-chain-create-task-form'), null);
     await ui.click('owner-chain-task-task_1');
     assert.equal(ui.$('owner-chain-task-title')!.textContent, 'Fix login');
-    for (const id of ['owner-chain-comment-input', 'owner-chain-hold', 'owner-chain-cancel', 'owner-chain-reopen', 'owner-chain-review-approve']) assert.equal(ui.$(id), null, id);
+    for (const id of ['owner-chain-comment-input', 'owner-chain-hold', 'owner-chain-cancel', 'owner-chain-reopen', 'ticket-view-approve-btn', 'answer-send-btn']) assert.equal(ui.$(id), null, id);
     assert.ok(calls.every((c) => c.method.endsWith('.read') || c.method === 'history.read'), 'only reads were sent');
   } finally {
     await ui.restore();
@@ -443,7 +448,7 @@ test('the ticket renders before the review history scan finishes, then reviews f
   });
   const ui = mountDom();
   try {
-    await act(async () => ui.root.render(React.createElement(OwnerChainView, { chain: summary(env), send, session: async () => session })));
+    await act(async () => ui.root.render(view({ chain: summary(env), send, session: async () => session })));
     await ui.flush();
     await ui.click('owner-chain-task-task_1');
     assert.ok(historyReads > 0, 'the review scan started');
@@ -485,7 +490,7 @@ test('a failed review scan clears the reviews loading state', async () => {
     }
   });
   const ui = mountDom();
-  const render = (online: boolean) => act(async () => ui.root.render(React.createElement(OwnerChainView, { chain: summary(env, { online }), send, session: async () => session })));
+  const render = (online: boolean) => act(async () => ui.root.render(view({ chain: summary(env, { online }), send, session: async () => session })));
   try {
     await render(true);
     await ui.flush();
@@ -539,15 +544,14 @@ test('a ticket waiting on the user shows a notice until a device-signed approval
   });
   const ui = mountDom();
   try {
-    await act(async () => ui.root.render(React.createElement(OwnerChainView, { chain: summary(env), send, session: async () => session })));
+    await act(async () => ui.root.render(view({ chain: summary(env), send, session: async () => session })));
     await ui.flush();
     assert.ok(ui.$('owner-chain-task-awaiting-user-task_1'), 'the ticket list flags the ticket');
     await ui.click('owner-chain-task-task_1');
     assert.match(ui.$('owner-chain-reviews')!.textContent!, /Approved.*inst_coordinator.*User said LGTM/s, 'the agent relay is listed');
-    assert.match(ui.$('owner-chain-awaiting-user')?.textContent ?? '', /Waiting on you/, 'an agent relay does not clear the notice');
-    assert.ok(ui.$('owner-chain-review-approve') && ui.$('owner-chain-review-request_changes'), 'the device-signed verdict is offered');
-    await ui.type('owner-chain-review-summary', 'Approved by me');
-    await ui.click('owner-chain-review-approve');
+    assert.match(ui.$('owner-chain-awaiting-user')?.textContent ?? '', /Your review/, 'an agent relay does not clear the ask');
+    assert.ok(ui.$('ticket-view-approve-btn') && ui.$('ticket-view-request-changes-btn'), 'the device-signed verdict is offered');
+    await ui.click('ticket-view-approve-btn');
     const review = calls.find((c) => c.method === 'review.post');
     assert.ok(review, 'review.post was sent: ' + (ui.$('owner-chain-error')?.textContent ?? ''));
     assert.equal(review!.payload.verdict, 'approve');
@@ -585,7 +589,7 @@ test('start coordinator on an imported chain launches on the owner Bridge, waits
   };
   const ui = mountDom();
   try {
-    await act(async () => ui.root.render(React.createElement(OwnerChainView, { chain: summary(env, { tasks: [] }), send, session: async () => session, coordinatorApi })));
+    await act(async () => ui.root.render(view({ chain: summary(env, { tasks: [] }), send, session: async () => session, coordinatorApi })));
     await ui.flush();
     assert.match(ui.$('owner-chain-coordinator')!.textContent!, /No coordinator/);
     await ui.click('owner-chain-start-coordinator');
@@ -635,7 +639,7 @@ test('replacing a coordinator binds the new instance and then disables the previ
   };
   const ui = mountDom();
   try {
-    await act(async () => ui.root.render(React.createElement(OwnerChainView, { chain: summary(env, { tasks: [] }), send, session: async () => session, coordinatorApi })));
+    await act(async () => ui.root.render(view({ chain: summary(env, { tasks: [] }), send, session: async () => session, coordinatorApi })));
     await ui.flush();
     await ui.click('owner-chain-start-coordinator');
     await ui.click('owner-chain-coordinator-launch');

@@ -539,3 +539,76 @@ test('ownerFleetPolicyDocument and parseOwnerFleetPolicy round-trip a row and pa
   assert.throws(() => ownerFleetPolicyDocument(row, { capacity: 1.5 }, now), /at least 1/);
   assert.equal(parseOwnerFleetPolicy({}), null);
 });
+
+test('the ticket tab restores origin/main decision block: hold release, answer a blocker, request changes', async () => {
+  const owner = chainOwner();
+  let taskRevision = 3;
+  const ui = await mount({
+    answer: (call) => {
+      const task = call.command.task_id;
+      if (call.method === 'runtime.read' && task === 'task_1') return { ...runtime(), controls: [['blocked', 'ready', 'Which OAuth provider?', 'human']] };
+      if (call.method === 'runtime.read' && task === 'task_3') return { ...runtime({ state: 'in_review' }), submission: [['1', 'b'.repeat(40), '1', 'Shipped the build', 'agt_worker']] };
+      if (call.method === 'task.read') return { ...(owner.answer(call) as any), revision: String(taskRevision) };
+      if (['task.comment', 'task.resolve', 'task.release', 'review.post'].includes(call.method)) { taskRevision += 1; return { chain_id: CHAIN, task_id: task, revision: String(taskRevision) }; }
+      return owner.answer(call);
+    },
+    render: (_env, h) => aux({ type: 'ticket', chainId: CHAIN, taskId: 'task_2' }, h),
+  });
+  try {
+    assert.ok(ui.$('task-hold-block'), 'a held ticket shows the hold card');
+    await ui.click('task-hold-release-btn');
+    assert.ok(ui.calls.some((c) => c.method === 'task.release' && c.command.task_id === 'task_2'));
+  } finally {
+    await ui.cleanup();
+  }
+
+  const typeInto = async (h: Awaited<ReturnType<typeof mount>>, id: string, v: string) => act(async () => {
+    const el = h.$(id) as HTMLTextAreaElement;
+    Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, 'value')!.set!.call(el, v);
+    el.dispatchEvent(new win.Event('input', { bubbles: true }));
+  });
+  const blocked = await mount({
+    answer: (call) => {
+      const task = call.command.task_id;
+      if (call.method === 'runtime.read' && task === 'task_1') return { ...runtime(), controls: [['blocked', 'ready', 'Which OAuth provider?', 'human']] };
+      if (call.method === 'task.read') return { ...(owner.answer(call) as any), revision: String(taskRevision) };
+      if (call.method === 'task.comment' || call.method === 'task.resolve') { taskRevision += 1; return { chain_id: CHAIN, task_id: task, revision: String(taskRevision) }; }
+      return owner.answer(call);
+    },
+    render: (_env, h) => aux({ type: 'ticket', chainId: CHAIN, taskId: 'task_1' }, h),
+  });
+  try {
+    assert.match(blocked.$('answer-blocker-block')!.textContent!, /Your answer.*Which OAuth provider\?/s);
+    assert.equal((blocked.$('answer-send-btn') as HTMLButtonElement).disabled, true, 'an empty answer is not sent');
+    await typeInto(blocked, 'answer-composer-input', 'Use Google');
+    await blocked.click('answer-send-btn');
+    const comment = blocked.calls.find((c) => c.method === 'task.comment')!;
+    const resolve = blocked.calls.find((c) => c.method === 'task.resolve')!;
+    assert.ok(comment && resolve, 'the answer is a comment, then task.resolve');
+    assert.ok(blocked.calls.indexOf(comment) < blocked.calls.indexOf(resolve));
+    assert.equal(Number(resolve.command.expected_revision), Number(comment.command.expected_revision) + 1, 'resolve is bound to the revision after the comment');
+  } finally {
+    await blocked.cleanup();
+  }
+
+  const review = await mount({
+    answer: (call) => {
+      if (call.method === 'runtime.read' && call.command.task_id === 'task_3') return { ...runtime({ state: 'in_review' }), submission: [['1', 'b'.repeat(40), '1', 'Shipped the build', 'agt_worker']] };
+      if (call.method === 'review.post') return { chain_id: CHAIN, task_id: 'task_3', revision: '4' };
+      return owner.answer(call);
+    },
+    render: (_env, h) => aux({ type: 'ticket', chainId: CHAIN, taskId: 'task_3' }, h),
+  });
+  try {
+    const block = review.$('your-review-block')!;
+    assert.match(block.textContent!, /Your review.*head bbbbbbb/s);
+    assert.equal((review.$('ticket-view-request-changes-btn') as HTMLButtonElement).disabled, true, 'request changes needs a note');
+    await typeInto(review, 'your-review-composer-input', 'Add a changelog entry');
+    assert.equal((review.$('ticket-view-approve-btn') as HTMLButtonElement).disabled, true, 'approve sends no note, so it waits while one is typed');
+    await review.click('ticket-view-request-changes-btn');
+    const post = review.calls.find((c) => c.method === 'review.post')!;
+    assert.deepEqual({ verdict: post.payload.verdict, attempt: post.payload.attempt, head: post.payload.head }, { verdict: 'request_changes', attempt: '1', head: 'b'.repeat(40) });
+  } finally {
+    await review.cleanup();
+  }
+});

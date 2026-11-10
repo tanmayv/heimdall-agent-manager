@@ -21,6 +21,7 @@ import { formatDuration, leaseClock, progressCaption, progressCounts, ticketKeys
 import { TicketProgressBar } from '../tasks/TicketProgressBar';
 import { TicketAttemptsCard } from '../tasks/TicketAttemptsCard';
 import { TicketCard } from '../tasks/TicketCard';
+import { TicketDecisionBlock, type TicketDecisionActions } from '../tasks/TicketDecisionBlock';
 import { ownerRequirementsDoc, ownerTaskWire, ownerTaskWires } from '../tasks/ownerTaskAdapter';
 import { TicketBoard } from '../tasks/TicketBoard';
 import type { BoardTicketActions } from '../tasks/BoardTicketCard';
@@ -162,7 +163,6 @@ export function OwnerChainView({
   const [newBody, setNewBody] = useState('');
   const [comment, setComment] = useState('');
   const [reason, setReason] = useState('');
-  const [reviewSummary, setReviewSummary] = useState('');
   // Inline editors: null when closed, else the draft.
   const [chainDraft, setChainDraft] = useState<{ title: string; description: string } | null>(null);
   // Ticket dependencies (work.read), read when a ticket opens; null until read.
@@ -557,6 +557,31 @@ export function OwnerChainView({
     };
   };
 
+  // The decision block's actions as owner commands on the open ticket.
+  const decisionActions = (t: TaskView): TicketDecisionActions => {
+    const sub = t.runtime.submission;
+    const verdict = (v: 'approve' | 'request_changes', body: string) => (sub
+      ? mutate('review.post', { taskId: t.taskId, verdict: v, body, attempt: sub.attempt, head: sub.head, requirementsRevision: sub.requirementsRevision },
+        v === 'approve' ? 'Approval recorded.' : 'Change request recorded.')
+      : Promise.resolve(false));
+    return {
+      busy: busy || !editable,
+      release: () => mutate('task.release', { taskId: t.taskId, body: '' }, 'Hold released.'),
+      // The owner review payload needs a summary; Approve carries no note (as on origin/main).
+      approve: () => verdict('approve', 'Approved.'),
+      requestChanges: (body) => verdict('request_changes', body.trim()),
+      comment: (body) => mutate('task.comment', { taskId: t.taskId, body: body.trim() }, 'Comment added.'),
+      // An answer is a comment, then task.resolve returns the blocked ticket to ready.
+      answer: async (body) => {
+        if (!(await mutate('task.comment', { taskId: t.taskId, body: body.trim() }, 'Answer sent.'))) return false;
+        try {
+          const fresh = await readOwnerTask(await session(), bridge, chain.chainId, t.taskId, send);
+          return await mutate('task.resolve', { taskId: t.taskId }, 'Answer sent; the ticket is ready again.', fresh.revision);
+        } catch (e) { fail(e); return false; }
+      },
+    };
+  };
+
   const ticketCard = (t: { taskId: string; title: string; priority: string }) => {
     const st = stateOf(t.taskId);
     return (
@@ -850,9 +875,12 @@ export function OwnerChainView({
                 </div>
               </div>
 
-              {editable && ownerAwaitingUser(task.runtime, task.reviewsLoading ? undefined : task.reviews) && (
-                <div data-debug-id="owner-chain-awaiting-user">
-                  <Alert tone="warning" title="Waiting on you">This ticket needs your approval. Approve or request changes under Reviews; an agent’s review on your behalf does not count.</Alert>
+              {editable && wire && (
+                // origin/main's decision block (hold, blocked on you, your review) over owner commands.
+                <div data-debug-id={ownerAwaitingUser(task.runtime, task.reviewsLoading ? undefined : task.reviews) ? 'owner-chain-awaiting-user' : undefined}>
+                  <TicketDecisionBlock task={wire} names={EMPTY_TASK_NAMES} now={Date.now()} actions={decisionActions(task)}
+                    submission={task.runtime.submission ? { summary: task.runtime.submission.summary, head: task.runtime.submission.head } : undefined}
+                    reviewable={ts.state === 'in_review' && Boolean(task.runtime.submission)} />
                 </div>
               )}
 
@@ -1096,22 +1124,6 @@ export function OwnerChainView({
                     </li>
                   ))}
                 </ul>
-                {editable && ts.state === 'in_review' && task.runtime.submission && (
-                  <div className="space-y-1.5 rounded-lg border border-subtle bg-surface-raised p-3">
-                    <Textarea size="sm" aria-label="Review summary" placeholder="Review summary" data-debug-id="owner-chain-review-summary" value={reviewSummary} onChange={setReviewSummary} rows={2} />
-                    <div className="flex gap-2">
-                      {(['approve', 'request_changes'] as const).map((verdict) => (
-                        <Button key={verdict} size="sm" variant={verdict === 'approve' ? 'primary' : 'secondary'} data-debug-id={`owner-chain-review-${verdict}`} disabled={busy}
-                          onClick={() => void mutate('review.post', {
-                            taskId: task.taskId, verdict, body: reviewSummary,
-                            attempt: task.runtime.submission!.attempt, head: task.runtime.submission!.head, requirementsRevision: task.runtime.submission!.requirementsRevision,
-                          }, verdict === 'approve' ? 'Approval recorded.' : 'Change request recorded.').then((ok) => { if (ok) setReviewSummary(''); })}>
-                          {verdict === 'approve' ? 'Approve' : 'Request changes'}
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
-                )}
               </section>
 
               <section data-debug-id="owner-chain-comments" className="space-y-1">
