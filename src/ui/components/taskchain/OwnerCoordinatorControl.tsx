@@ -4,7 +4,7 @@
 // their legacy members archive-only, so this is how they get a coordinator.
 
 import React, { useState } from 'react';
-import { Button } from '@ui';
+import { Button, Select, Text } from '@ui';
 import { cookieJsonFetch, cookieJsonFetchEnvelope, cookieMutation } from '../../api/cookieFetch';
 import { createdInstanceId, isCoordinatorAgent, startOwnerCoordinator, type NewChainCoordinatorStage, type StartCoordinatorStage } from '../../api/ownerCoordinator';
 
@@ -105,12 +105,12 @@ export function OwnerCoordinatorControl({ chainId, ownerBridgeId, coordinatorId,
   }
 
   return (
-    <div data-debug-id="owner-chain-coordinator" className="flex flex-wrap items-center gap-2 text-xs">
+    <div data-debug-id="owner-chain-coordinator" className="flex flex-wrap items-center gap-2">
       {coordinatorId
-        ? <span data-debug-id="owner-chain-coordinator-id" className="text-muted">Coordinator: <code>{coordinatorId}</code></span>
-        : coordinatorId === '' ? <span data-debug-id="owner-chain-coordinator-none" className="text-muted">No coordinator</span>
-        : lookupFailed ? <span data-debug-id="owner-chain-coordinator-unknown" className="text-muted">Coordinator could not be looked up</span>
-        : <span role="status" data-debug-id="owner-chain-coordinator-loading" className="text-muted">Looking up coordinator…</span>}
+        ? <Text as="span" role="caption" tone="muted" data-debug-id="owner-chain-coordinator-id">Coordinator: <Text as="code" role="code-sm">{coordinatorId}</Text></Text>
+        : coordinatorId === '' ? <Text as="span" role="caption" tone="muted" data-debug-id="owner-chain-coordinator-none">No coordinator</Text>
+        : lookupFailed ? <Text as="span" role="caption" tone="muted" data-debug-id="owner-chain-coordinator-unknown">Coordinator could not be looked up</Text>
+        : <Text as="span" role="caption" tone="muted" aria-live="polite" data-debug-id="owner-chain-coordinator-loading">Looking up coordinator…</Text>}
       {/* Start/Replace only once the coordinator is known (or its lookup failed). */}
       {!open && (coordinatorId !== undefined || lookupFailed) && (
         <Button size="sm" variant="ghost" data-debug-id="owner-chain-start-coordinator" disabled={disabled || running} onClick={() => void openPicker()}>
@@ -119,24 +119,23 @@ export function OwnerCoordinatorControl({ chainId, ownerBridgeId, coordinatorId,
       )}
       {open && (
         <>
-          <select
+          <Select
+            size="sm"
             data-debug-id="owner-chain-coordinator-agent"
             aria-label="Coordinator agent"
-            className="rounded border border-subtle bg-transparent px-2 py-1"
+            name="coordinator_agent"
             value={agentId}
             disabled={running || !agents}
-            onChange={(e) => setAgentId(e.target.value)}
-          >
-            {!agents && <option value="">Loading agents…</option>}
-            {agents?.length === 0 && <option value="">No agents</option>}
-            {agents?.map((a) => <option key={a.agentId} value={a.agentId}>{a.name}</option>)}
-          </select>
+            onChange={setAgentId}
+            placeholder={!agents ? 'Loading agents…' : 'No agents'}
+            options={(agents ?? []).map((a) => ({ value: a.agentId, label: a.name }))}
+          />
           <Button size="sm" data-debug-id="owner-chain-coordinator-launch" disabled={disabled || running || !agentId} onClick={() => void start()}>Launch</Button>
           <Button size="sm" variant="ghost" disabled={running} onClick={() => { setOpen(false); setStage(''); }}>Cancel</Button>
         </>
       )}
-      {stage && <span role="status" data-debug-id="owner-chain-coordinator-stage" className="text-muted">{COORDINATOR_STAGE_TEXT[stage]}</span>}
-      {error && <span role="alert" data-debug-id="owner-chain-coordinator-error" className="text-danger">{error}</span>}
+      {stage && <Text as="span" role="caption" tone="muted" aria-live="polite" data-debug-id="owner-chain-coordinator-stage">{COORDINATOR_STAGE_TEXT[stage]}</Text>}
+      {error && <Text as="span" role="caption" tone="danger" data-debug-id="owner-chain-coordinator-error">{error}</Text>}
     </div>
   );
 }

@@ -4,6 +4,7 @@
 // page; the chain itself comes from the shared owner registry snapshot.
 
 import React, { useEffect, useRef } from 'react';
+import { ButtonLink, EmptyState, Spinner } from '@ui';
 import type { OwnerSend } from '../../api/ownerChains';
 import { useOwnerChains } from '../../api/ownerChainsStore';
 import type { OwnerSession } from '../../api/ownerLocalClient';
@@ -39,10 +40,11 @@ export interface OwnerChainAuxPaneProps {
   session?: () => Promise<OwnerSession>;
 }
 
-function Notice({ debugId, children }: { debugId: string; children: React.ReactNode }) {
+/** A pane that has nothing to show yet: the shared empty state, centred in the pane. */
+function Notice({ debugId, title, role, action }: { debugId: string; title: React.ReactNode; role?: 'status' | 'alert'; action?: React.ReactNode }) {
   return (
-    <div data-debug-id={debugId} className="grid h-full min-h-[160px] place-items-center p-6 text-center text-xs text-muted">
-      <div className="space-y-2">{children}</div>
+    <div data-debug-id={debugId} role={role} className="grid h-full place-items-center p-6">
+      <EmptyState title={title} action={action} />
     </div>
   );
 }
@@ -65,26 +67,23 @@ export function OwnerChainAuxPane({
   }, [layout, taskId, chain]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!chainId) {
-    return <Notice debugId={`aux-${layout}-no-chain`}><p>This agent is not part of a task chain.</p></Notice>;
+    return <Notice debugId={`aux-${layout}-no-chain`} title="This agent is not part of a task chain." />;
   }
   if (!chain) {
     const link = (
-      <a href={buildRouteHash(`/chains/${encodeURIComponent(chainId)}`, '')} className="text-accent underline">Open Task Chains</a>
+      <ButtonLink size="sm" href={buildRouteHash(`/chains/${encodeURIComponent(chainId)}`, '')}>Open Task Chains</ButtonLink>
     );
-    if (owners.status === 'locked') return <Notice debugId="aux-owner-chain-locked"><p>Unlock the vault to see this task chain.</p></Notice>;
-    if (owners.status === 'loading') return <Notice debugId="aux-owner-chain-loading"><p role="status">Loading task chain…</p></Notice>;
-    if (owners.status === 'error') {
-      return <Notice debugId="aux-owner-chain-error"><p role="alert">Task chains could not be loaded{owners.error ? `: ${owners.error}` : '.'}</p>{link}</Notice>;
+    if (owners.status === 'locked') return <Notice debugId="aux-owner-chain-locked" title="Unlock the vault to see this task chain." />;
+    if (owners.status === 'loading') {
+      return <Notice debugId="aux-owner-chain-loading" role="status" title={<span className="inline-flex items-center gap-2"><Spinner size="sm" />Loading task chain…</span>} />;
     }
-    return (
-      <Notice debugId="aux-owner-chain-missing">
-        <p>This task chain is not on any of your Bridges.</p>
-        {link}
-      </Notice>
-    );
+    if (owners.status === 'error') {
+      return <Notice debugId="aux-owner-chain-error" role="alert" title={`Task chains could not be loaded${owners.error ? `: ${owners.error}` : '.'}`} action={link} />;
+    }
+    return <Notice debugId="aux-owner-chain-missing" title="This task chain is not on any of your Bridges." action={link} />;
   }
   if (layout === 'ticket' && !taskId) {
-    return <Notice debugId="aux-owner-ticket-missing"><p>No ticket selected.</p></Notice>;
+    return <Notice debugId="aux-owner-ticket-missing" title="No ticket selected." />;
   }
   return (
     <OwnerChainView

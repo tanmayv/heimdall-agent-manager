@@ -124,7 +124,9 @@ test('owner chain view renders tickets, brief, comments, submissions and reviews
     await ui.click('owner-chain-task-task_1');
     assert.equal(ui.$('owner-chain-task-title')!.textContent, 'Fix login');
     assert.match(ui.$('owner-chain-brief')!.textContent!, /Login fails on Safari/);
-    assert.match(ui.$('owner-chain-requirements')!.textContent!, /Rev 2.*Users can sign in.*SSO works.*Errors are shown/s);
+    // The restored ticket card frame carries the requirements revision in its header.
+    assert.match(ui.$('owner-chain-brief')!.textContent!, /Brief.*Rev 2/s);
+    assert.match(ui.$('owner-chain-requirements')!.textContent!, /Users can sign in.*Acceptance.*SSO works.*Errors are shown/s);
     const imported = ui.$('owner-chain-comment-cmt_legacy')!;
     assert.match(imported.textContent!, /inst_author.*Imported comment/s);
     assert.equal(imported.querySelector('time')!.getAttribute('datetime'), '2025-04-03T12:00:00Z', 'comments keep their timestamps');
@@ -463,7 +465,8 @@ test('start coordinator on an imported chain launches on the owner Bridge, waits
     await ui.flush();
     assert.match(ui.$('owner-chain-coordinator')!.textContent!, /No coordinator/);
     await ui.click('owner-chain-start-coordinator');
-    assert.equal((ui.$('owner-chain-coordinator-agent') as HTMLSelectElement).value, 'agt_coord');
+    // The @ui Select mirrors its value to a hidden input named after the field.
+    assert.equal((ui.$('owner-chain-coordinator')!.querySelector('input[name="coordinator_agent"]') as HTMLInputElement).value, 'agt_coord');
     await ui.click('owner-chain-coordinator-launch');
     assert.deepEqual(hub, [`launch:agt_coord:chain_owned:${env.bridgeId}`, 'status:inst_coord', 'restart:inst_coord', 'status:inst_coord'], 'launched on the owner Bridge, bound, then relaunched as coordinator');
     assert.equal(statusReads, 2);

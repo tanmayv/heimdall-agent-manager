@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { Alert, Button, FormField, IconButton, Input, Select, Text, Textarea } from '@ui';
 import { ChainPlacementField, useChainPlacementChoices } from './ChainPlacementField';
 import { COORDINATOR_STAGE_TEXT, defaultCoordinatorAgentId, hubCoordinatorApi, type CoordinatorAgentChoice, type OwnerCoordinatorApi } from './OwnerCoordinatorControl';
 import { createOwnerChain, freshOwnerSession, ownerErrorMessage, waitForOwnerChainListed, type OwnerChainSummary, type OwnerRegistryWaitOptions } from '../../api/ownerChains';
@@ -98,87 +99,64 @@ export const CreateChainModal: React.FC<CreateChainModalProps> = ({ isOpen, onCl
       data-debug-id="create-chain-modal"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
     >
-      <div className="w-full max-w-lg rounded-2xl border border-subtle bg-surface p-6 text-left shadow-2xl space-y-4">
+      <div role="dialog" aria-modal="true" aria-labelledby="create-chain-title" className="w-full max-w-lg space-y-4 rounded-[var(--radius-xl)] border border-subtle bg-surface-raised p-6 text-left shadow-2xl">
         <div className="flex items-center justify-between border-b border-subtle pb-3">
-          <h2 className="text-base font-bold text-primary">New Task Chain</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="text-faint hover:text-primary text-sm font-bold"
-          >
-            ✕
-          </button>
+          <Text as="h2" role="heading" id="create-chain-title">New task chain</Text>
+          <IconButton icon="close" label="Close" size="sm" onClick={onClose} />
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4 text-xs">
+        <form onSubmit={handleSubmit} className="space-y-4">
           <ChainPlacementField value={placement} onChange={setPlacementChoice} state={placementState} />
 
-          <label className="flex flex-col gap-1 text-muted">
-            <span className="font-semibold text-[11px]">Coordinator</span>
-            <select
+          <FormField label="Coordinator">
+            <Select
               data-debug-id="create-chain-coordinator-agent"
-              aria-label="Coordinator agent"
+              name="coordinator_agent"
+              width="full"
               value={agentId}
               disabled={creating || Boolean(created) || !agents?.length}
-              onChange={(e) => setAgentId(e.target.value)}
-              className="rounded-lg border border-subtle bg-canvas px-3 py-2 text-primary text-xs outline-none focus:border-accent"
-            >
-              {!agents && <option value="">Loading agents…</option>}
-              {agents?.length === 0 && <option value="">No agents</option>}
-              {agents?.map((a) => <option key={a.agentId} value={a.agentId}>{a.name}</option>)}
-            </select>
-          </label>
+              onChange={setAgentId}
+              placeholder={!agents ? 'Loading agents…' : 'No agents'}
+              options={(agents ?? []).map((a) => ({ value: a.agentId, label: a.name }))}
+            />
+          </FormField>
 
-          <label className="flex flex-col gap-1 text-muted">
-            <span className="font-semibold text-[11px]">Title</span>
-            <input
-              type="text"
+          <FormField label="Title">
+            <Input
               required
               value={title}
-              onChange={(e) => setTitle(e.target.value)}
+              onChange={setTitle}
               placeholder="e.g. PTY streaming network optimization"
-              className="rounded-lg border border-subtle bg-canvas px-3 py-2 text-primary text-xs outline-none focus:border-accent"
             />
-          </label>
+          </FormField>
 
-          <label className="flex flex-col gap-1 text-muted">
-            <span className="font-semibold text-[11px]">Description</span>
-            <textarea
+          <FormField label="Description">
+            <Textarea
               value={description}
-              onChange={(e) => setDescription(e.target.value)}
+              onChange={setDescription}
               placeholder="Overview of the tickets, objectives, and acceptance guidelines…"
               rows={2}
-              className="rounded-lg border border-subtle bg-canvas p-2.5 text-primary text-xs outline-none focus:border-accent"
             />
-          </label>
+          </FormField>
 
           {stage && (
-            <p role="status" data-debug-id="create-chain-stage" className="text-[11px] text-muted">{COORDINATOR_STAGE_TEXT[stage]}</p>
+            <Text as="p" role="caption" tone="muted" aria-live="polite" data-debug-id="create-chain-stage">{COORDINATOR_STAGE_TEXT[stage]}</Text>
           )}
 
           {submitError && (
-            <p role="alert" data-debug-id="create-chain-error" className="whitespace-normal text-[11px] text-danger">
-              {submitError}
-            </p>
+            <div data-debug-id="create-chain-error"><Alert tone="danger">{submitError}</Alert></div>
           )}
 
-          <div className="flex items-center justify-end gap-2 pt-3 border-t border-subtle">
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-lg border border-subtle bg-surface px-3 py-2 text-xs font-semibold text-muted hover:text-primary transition-colors"
-            >
-              Cancel
-            </button>
-            <button
+          <div className="flex items-center justify-end gap-2 border-t border-subtle pt-3">
+            <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+            <Button
               type="submit"
+              variant="primary"
               data-debug-id="create-chain-submit"
               disabled={!created && (creating || !title.trim() || !placementReady || !agentId)}
-              className="rounded-lg bg-accent px-4 py-2 text-xs font-semibold text-accent-fg hover:opacity-90 transition-opacity disabled:opacity-50"
             >
-              {created ? 'Open chain' : creating ? 'Creating…' : 'Create Ticket Chain'}
-            </button>
+              {created ? 'Open chain' : creating ? 'Creating…' : 'Create chain'}
+            </Button>
           </div>
         </form>
       </div>

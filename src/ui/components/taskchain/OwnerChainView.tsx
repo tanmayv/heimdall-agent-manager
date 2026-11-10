@@ -6,7 +6,7 @@
 // stays reachable behind "Advanced/debug".
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Badge, Button, StatusDot, type Tone } from '@ui';
+import { Alert, Badge, Button, EmptyState, Input, StatusDot, StatusPill, Text, Textarea, type Tone } from '@ui';
 import {
   freshOwnerSession, isOwnerOffline, ownerAwaitingUser, ownerCall, ownerErrorMessage, ownerOfflineMessage, ownerRelaySend, ownerTaskState,
   ownerExpectedRevision, readArchivedReviews, readOwnerChain, readOwnerChainStatus, readOwnerReviews, readOwnerRuntime, readOwnerSubmission, readOwnerTask, withOwnerRecovery,
@@ -16,6 +16,11 @@ import {
 import { ownerId, type OwnerInput, type OwnerSession } from '../../api/ownerLocalClient';
 import type { OwnerCommand } from '../../api/ownerLocal';
 import { TASK_STATE_LABELS } from '../tasks/taskV2Types';
+import { EMPTY_TASK_NAMES } from '../tasks/taskNames';
+import { leaseClock } from '../tasks/ticketModel';
+import { TicketAttemptsCard } from '../tasks/TicketAttemptsCard';
+import { TicketCard } from '../tasks/TicketCard';
+import { ownerTaskWire } from '../tasks/ownerTaskAdapter';
 import OwnerLocalPanel from './OwnerLocalPanel';
 import OwnerCoordinatorControl, { type OwnerCoordinatorApi } from './OwnerCoordinatorControl';
 import { ownerChainById, resolveOwnerChainCoordinator, setOwnerChainCoordinator } from '../../api/ownerChainsStore';
@@ -310,6 +315,10 @@ export function OwnerChainView({
   const description = detail?.description ?? chain.description;
   const s = sessionRef.current;
   const ts = task ? ownerTaskState(task.runtime) : null;
+  // The open ticket in the ticket wire shape the restored ticket cards render.
+  const wire = useMemo(() => (task ? ownerTaskWire({
+    chainId: chain.chainId, bridgeId: bridge, taskId: task.taskId, detail: task.detail, runtime: task.runtime, reviews: task.reviews,
+  }) : null), [task, chain.chainId, bridge]);
   // Changes only on a reachable owner whose chain is confirmed active.
   const editable = !offline && Boolean(detail) && chainStatus === 'active';
   const aux = layout !== 'page';
@@ -347,13 +356,13 @@ export function OwnerChainView({
       <li key={t.taskId}>
         <button type="button" data-debug-id={`owner-chain-task-${t.taskId}`} disabled={offline}
           onClick={() => openTicket(t.taskId, t.title)}
-          className={`flex w-full min-w-0 flex-col gap-1 rounded-lg border px-3 py-2 text-left ${selected === t.taskId && !aux ? 'border-accent/40 bg-accent/10' : 'border-subtle bg-surface hover:bg-surface-raised'} disabled:cursor-default`}>
-          <span className="truncate text-sm text-primary">{t.title || t.taskId}</span>
+          className={`flex w-full min-w-0 flex-col gap-1 rounded-lg border px-3 py-2 text-left ${selected === t.taskId && !aux ? 'border-strong bg-neutral-soft' : 'border-subtle bg-surface-raised hover:bg-neutral-soft'} disabled:cursor-default`}>
+          <Text as="span" role="body-sm" truncate>{t.title || t.taskId}</Text>
           <span className="flex flex-wrap items-center gap-1.5">
-            {st && <Badge tone={STATE_TONE[st.state]} data-debug-id={`owner-chain-task-state-${t.taskId}`}>{TASK_STATE_LABELS[st.state]}</Badge>}
-            {st?.held && <Badge tone="warning">Held</Badge>}
-            {st?.blocked && <Badge tone="danger">Blocked</Badge>}
-            {awaitingUser(t.taskId) && <Badge tone="warning" data-debug-id={`owner-chain-task-awaiting-user-${t.taskId}`}>Waiting on you</Badge>}
+            {st && <StatusPill tone={STATE_TONE[st.state]} data-debug-id={`owner-chain-task-state-${t.taskId}`}>{TASK_STATE_LABELS[st.state]}</StatusPill>}
+            {st?.held && <StatusPill tone="warning">Held</StatusPill>}
+            {st?.blocked && <StatusPill tone="danger">Blocked</StatusPill>}
+            {awaitingUser(t.taskId) && <StatusPill tone="warning" data-debug-id={`owner-chain-task-awaiting-user-${t.taskId}`}>Waiting on you</StatusPill>}
             {t.priority && t.priority !== 'p2' && <Badge tone="neutral">{t.priority.toUpperCase()}</Badge>}
           </span>
         </button>
@@ -369,7 +378,7 @@ export function OwnerChainView({
     <div data-debug-id="owner-chain-view" className="flex h-full min-w-0 flex-col overflow-y-auto text-left">
       <header className="flex flex-wrap items-start justify-between gap-2 border-b border-subtle px-4 py-3">
         <div className="min-w-0">
-          <h2 data-debug-id="owner-chain-title" className="truncate text-base font-semibold text-primary">{title}</h2>
+          <Text as="h2" role="heading" truncate data-debug-id="owner-chain-title">{title}</Text>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted">
             <Badge tone="info" data-debug-id="owner-chain-owner-badge">Bridge-owned</Badge>
             <span className="inline-flex items-center gap-1.5" data-debug-id="owner-chain-bridge-state">
@@ -377,9 +386,9 @@ export function OwnerChainView({
               {chain.bridgeName} · {offline ? 'offline' : 'online'}
             </span>
             {!offline && detail && (
-              <Badge tone={chainStatus === 'active' ? 'info' : chainStatus === 'completed' ? 'success' : 'neutral'} data-debug-id="owner-chain-status">
+              <StatusPill tone={chainStatus === 'active' ? 'info' : chainStatus === 'completed' ? 'success' : 'neutral'} data-debug-id="owner-chain-status">
                 {chainStatus === 'active' ? 'Active' : chainStatus === 'completed' ? 'Completed' : 'Status unknown'}
-              </Badge>
+              </StatusPill>
             )}
             {chain.migrated && <Badge tone="neutral">Moved from Hub</Badge>}
             {chain.pending && <Badge tone="pending">Registering</Badge>}
@@ -393,16 +402,14 @@ export function OwnerChainView({
       </header>
 
       {offline && (
-        <div role="status" data-debug-id="owner-chain-offline" className="mx-4 mt-3 rounded-lg border border-warning/30 bg-warning-soft px-3 py-2 text-sm text-warning">
-          {ownerOfflineMessage(chain.bridgeName)}
-        </div>
+        <div data-debug-id="owner-chain-offline" className="mx-4 mt-3"><Alert tone="warning">{ownerOfflineMessage(chain.bridgeName)}</Alert></div>
       )}
-      {error && <div role="alert" data-debug-id="owner-chain-error" className="mx-4 mt-3 rounded-lg border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger">{error}</div>}
-      {notice && !error && <div role="status" data-debug-id="owner-chain-notice" className="mx-4 mt-3 text-xs text-muted">{notice}</div>}
+      {error && <div data-debug-id="owner-chain-error" className="mx-4 mt-3"><Alert tone="danger">{error}</Alert></div>}
+      {notice && !error && <Text as="p" role="caption" tone="muted" aria-live="polite" data-debug-id="owner-chain-notice" className="mx-4 mt-3">{notice}</Text>}
       {!offline && detail && chainStatus !== 'active' && (
-        <p data-debug-id="owner-chain-readonly" className="mx-4 mt-3 text-xs text-muted">
+        <Text as="p" role="caption" tone="muted" data-debug-id="owner-chain-readonly" className="mx-4 mt-3">
           {chainStatus === 'completed' ? 'This chain is completed; it is read-only.' : 'The chain’s status could not be read; changes are unavailable.'}
-        </p>
+        </Text>
       )}
       {!offline && detail && showChainInfo && (
         <div className="mx-4 mt-3">
@@ -418,9 +425,9 @@ export function OwnerChainView({
           />
         </div>
       )}
-      {chain.sealed && <p className="mx-4 mt-3 text-xs text-muted">Some titles are sealed with a key this device does not hold.</p>}
+      {chain.sealed && <Text as="p" role="caption" tone="muted" className="mx-4 mt-3">Some titles are sealed with a key this device does not hold.</Text>}
 
-      {showChainInfo && description ? <p data-debug-id="owner-chain-description" className="whitespace-pre-wrap px-4 pt-3 text-sm text-muted">{description}</p> : null}
+      {showChainInfo && description ? <Text as="p" role="body-sm" tone="muted" data-debug-id="owner-chain-description" className="whitespace-pre-wrap px-4 pt-3">{description}</Text> : null}
       {showChainInfo && extra ? <div className="px-4 pt-3">{extra}</div> : null}
 
       {layout === 'overview' && (
@@ -429,29 +436,29 @@ export function OwnerChainView({
             <div data-debug-id="owner-chain-overview-counts" className="flex flex-wrap gap-1.5">
               {STATE_ORDER.map((state) => {
                 const n = tasks.filter((t) => stateOf(t.taskId)?.state === state).length;
-                return n ? <Badge key={state} tone={STATE_TONE[state]} data-debug-id={`owner-chain-count-${state}`}>{TASK_STATE_LABELS[state]} · {n}</Badge> : null;
+                return n ? <StatusPill key={state} tone={STATE_TONE[state]} data-debug-id={`owner-chain-count-${state}`}>{TASK_STATE_LABELS[state]} · {n}</StatusPill> : null;
               })}
             </div>
           )}
           <section aria-label="Agents" data-debug-id="owner-chain-agents" className="space-y-1.5">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">Agents</h3>
-            {offline ? <p className="text-xs italic text-faint">Unavailable while the owner Bridge is offline.</p>
-              : members === null && loading ? <p role="status" className="text-xs text-muted">Loading agents…</p>
-              : agents.length === 0 ? <p data-debug-id="owner-chain-no-agents" className="text-xs italic text-faint">No agents yet.</p>
+            <Text as="h3" role="overline" tone="muted">Agents</Text>
+            {offline ? <Text as="p" role="caption" tone="muted">Unavailable while the owner Bridge is offline.</Text>
+              : members === null && loading ? <Text as="p" role="caption" tone="muted" aria-live="polite">Loading agents…</Text>
+              : agents.length === 0 ? <EmptyState data-debug-id="owner-chain-no-agents" title="No agents yet" description="Start the coordinator; it adds workers and reviewers to the fleet." />
               : (
                 <ul className="space-y-1.5">
                   {agents.map((a) => (
-                    <li key={a.instanceId} data-debug-id={`owner-chain-agent-${a.instanceId}`} className="flex min-w-0 flex-wrap items-center gap-1.5 rounded-lg border border-subtle px-3 py-2 text-sm">
+                    <li key={a.instanceId} data-debug-id={`owner-chain-agent-${a.instanceId}`} className="flex min-w-0 flex-wrap items-center gap-1.5 rounded-lg border border-subtle bg-surface-raised px-3 py-2">
                       <button type="button" data-debug-id={`owner-chain-agent-open-${a.instanceId}`} disabled={!onOpenAgent}
                         onClick={() => onOpenAgent?.(a.instanceId)}
-                        className="min-w-0 truncate font-mono text-xs text-primary hover:underline disabled:no-underline" title={a.agentId || a.instanceId}>
-                        {a.instanceId}
+                        className="min-w-0 truncate hover:underline disabled:no-underline" title={a.agentId || a.instanceId}>
+                        <Text as="code" role="code-sm">{a.instanceId}</Text>
                       </button>
                       {a.role && <Badge tone={a.role === 'coordinator' ? 'info' : 'neutral'}>{a.role}</Badge>}
-                      {!a.enabled && <Badge tone="neutral">Removed</Badge>}
+                      {!a.enabled && <StatusPill tone="neutral">Removed</StatusPill>}
                       {a.tickets.map((t) => (
                         <button key={t.taskId} type="button" data-debug-id={`owner-chain-agent-ticket-${a.instanceId}-${t.taskId}`} onClick={() => openTicket(t.taskId, t.title)}
-                          className="min-w-0 truncate text-xs text-accent hover:underline">
+                          className="min-w-0 truncate text-caption text-accent hover:underline">
                           on {t.title}
                         </button>
                       ))}
@@ -462,7 +469,7 @@ export function OwnerChainView({
           </section>
           {attention.length > 0 && (
             <section aria-label="Needs attention" data-debug-id="owner-chain-attention" className="space-y-1.5">
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-warning">Needs attention</h3>
+              <Text as="h3" role="overline" tone="warning">Needs attention</Text>
               <ul className="space-y-1.5">{attention.map(ticketCard)}</ul>
             </section>
           )}
@@ -471,8 +478,8 @@ export function OwnerChainView({
 
       <div className={`grid min-h-0 flex-1 gap-4 p-4 ${layout === 'page' ? 'lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]' : ''}`}>
         {layout !== 'ticket' && <section aria-label="Tickets" data-debug-id={`owner-chain-tickets-${layout}`} className="min-w-0 space-y-2">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">Tickets {loading && <span className="normal-case">· loading…</span>}</h3>
-          {tasks.length === 0 && !loading && <p data-debug-id="owner-chain-no-tasks" className="text-xs italic text-faint">No tickets yet.</p>}
+          <Text as="h3" role="overline" tone="muted">Tickets {loading && <span role="status" className="normal-case">· loading…</span>}</Text>
+          {tasks.length === 0 && !loading && <EmptyState data-debug-id="owner-chain-no-tasks" icon="layers" title="No tickets yet" description="Tickets the coordinator or you create appear here." />}
           {layout === 'board' ? (
             // The board: tickets grouped by state (tickets whose state is not read yet last).
             <div className="space-y-3">
@@ -481,7 +488,7 @@ export function OwnerChainView({
                 if (column.length === 0) return null;
                 return (
                   <div key={state ?? 'unknown'} data-debug-id={`owner-chain-board-column-${state ?? 'unknown'}`} className="space-y-1.5">
-                    <h4 className="text-xs font-semibold text-muted">{state ? TASK_STATE_LABELS[state] : 'State unknown'} · {column.length}</h4>
+                    <Text as="h4" role="label" tone="muted">{state ? TASK_STATE_LABELS[state] : 'State unknown'} · {column.length}</Text>
                     <ul className="space-y-1.5">{column.map(ticketCard)}</ul>
                   </div>
                 );
@@ -490,18 +497,16 @@ export function OwnerChainView({
           ) : (
             <ul className="space-y-1.5">{tasks.map(ticketCard)}</ul>
           )}
-          {detail?.truncated && <p className="text-xs text-muted">Showing the first {detail.tasks.length} tickets.</p>}
+          {detail?.truncated && <Text as="p" role="caption" tone="muted">Showing the first {detail.tasks.length} tickets.</Text>}
           {editable && layout !== 'overview' && (
-            <form data-debug-id="owner-chain-create-task-form" className="space-y-1.5 rounded-lg border border-subtle p-3" onSubmit={(e) => {
+            <form data-debug-id="owner-chain-create-task-form" className="space-y-1.5 rounded-lg border border-subtle bg-surface-raised p-3" onSubmit={(e) => {
               e.preventDefault();
               if (!newTitle.trim()) return;
               const taskId = ownerId('task_');
               void mutate('task.create', { taskId, title: newTitle.trim(), body: newBody.trim() }, 'Ticket created.').then((ok) => { if (ok) { setNewTitle(''); setNewBody(''); } });
             }}>
-              <input aria-label="New ticket title" placeholder="New ticket title" data-debug-id="owner-chain-new-task-title" value={newTitle} onChange={(e) => setNewTitle(e.target.value)}
-                className="w-full rounded-md border border-subtle bg-canvas px-2 py-1.5 text-sm text-primary" />
-              <textarea aria-label="New ticket description" placeholder="Description (optional)" data-debug-id="owner-chain-new-task-body" value={newBody} onChange={(e) => setNewBody(e.target.value)} rows={2}
-                className="w-full rounded-md border border-subtle bg-canvas px-2 py-1.5 text-sm text-primary" />
+              <Input size="sm" aria-label="New ticket title" placeholder="New ticket title" data-debug-id="owner-chain-new-task-title" value={newTitle} onChange={setNewTitle} />
+              <Textarea size="sm" aria-label="New ticket description" placeholder="Description (optional)" data-debug-id="owner-chain-new-task-body" value={newBody} onChange={setNewBody} rows={2} />
               <Button size="sm" type="submit" variant="primary" data-debug-id="owner-chain-create-task" disabled={busy || !newTitle.trim()}>Create ticket</Button>
             </form>
           )}
@@ -518,25 +523,26 @@ export function OwnerChainView({
             </div>
           )}
           {offline ? null : !selected ? (
-            <p className="text-sm text-muted">Select a ticket to see its brief, comments, submissions and reviews.</p>
+            <EmptyState title="No ticket selected" description="Select a ticket to see its brief, attempts, reviews and comments." />
           ) : taskLoading && !task ? (
-            <p role="status" className="text-sm text-muted">Loading ticket…</p>
+            <Text as="p" role="body-sm" tone="muted" aria-live="polite">Loading ticket…</Text>
           ) : task && ts ? (
             <>
               <div>
-                <h3 data-debug-id="owner-chain-task-title" className="text-base font-semibold text-primary">{task.detail.title || task.taskId}</h3>
+                <Text as="h3" role="heading" data-debug-id="owner-chain-task-title">{task.detail.title || task.taskId}</Text>
+                <Text as="code" role="code-sm" tone="muted">{task.taskId}</Text>
                 <div className="mt-1 flex flex-wrap gap-1.5">
-                  <Badge tone={STATE_TONE[ts.state]} data-debug-id="owner-chain-task-detail-state">{TASK_STATE_LABELS[ts.state]}</Badge>
-                  {ts.held && <Badge tone="warning">Held{task.runtime.control?.reason ? ': ' + task.runtime.control.reason : ''}</Badge>}
-                  {ts.blocked && <Badge tone="danger">Blocked{task.runtime.control?.waitingOn ? ' on ' + task.runtime.control.waitingOn : ''}</Badge>}
-                  {ts.merge && <Badge tone="pending">{ts.merge === 'merge_blocked' ? 'Merge blocked' : 'Merge pending'}</Badge>}
+                  <StatusPill tone={STATE_TONE[ts.state]} data-debug-id="owner-chain-task-detail-state">{TASK_STATE_LABELS[ts.state]}</StatusPill>
+                  {ts.held && <StatusPill tone="warning">Held{task.runtime.control?.reason ? ': ' + task.runtime.control.reason : ''}</StatusPill>}
+                  {ts.blocked && <StatusPill tone="danger">Blocked{task.runtime.control?.waitingOn ? ' on ' + task.runtime.control.waitingOn : ''}</StatusPill>}
+                  {ts.merge && <StatusPill tone="pending">{ts.merge === 'merge_blocked' ? 'Merge blocked' : 'Merge pending'}</StatusPill>}
                   <Badge tone="neutral">{task.detail.priority.toUpperCase()}</Badge>
                 </div>
               </div>
 
               {editable && ownerAwaitingUser(task.runtime, task.reviewsLoading ? undefined : task.reviews) && (
-                <div role="status" data-debug-id="owner-chain-awaiting-user" className="rounded-lg border border-warning/30 bg-warning-soft px-3 py-2 text-sm text-warning">
-                  Waiting on you: this ticket needs your approval. Approve or request changes under Reviews; an agent’s review on your behalf does not count.
+                <div data-debug-id="owner-chain-awaiting-user">
+                  <Alert tone="warning" title="Waiting on you">This ticket needs your approval. Approve or request changes under Reviews; an agent’s review on your behalf does not count.</Alert>
                 </div>
               )}
 
@@ -547,30 +553,45 @@ export function OwnerChainView({
                 {ts.state === 'cancelled'
                   ? <Button size="sm" data-debug-id="owner-chain-reopen" disabled={busy} onClick={() => void mutate('task.reopen', { taskId: task.taskId, body: reason }, 'Ticket reopened.')}>Reopen</Button>
                   : ts.state !== 'done' && <Button size="sm" variant="danger" data-debug-id="owner-chain-cancel" disabled={busy} onClick={() => void mutate('task.cancel', { taskId: task.taskId, body: reason }, 'Ticket cancelled.')}>Cancel ticket</Button>}
-                <input aria-label="Reason (optional)" placeholder="Reason (optional)" data-debug-id="owner-chain-control-reason" value={reason} onChange={(e) => setReason(e.target.value)}
-                  className="min-w-0 flex-1 rounded-md border border-subtle bg-canvas px-2 py-1 text-xs text-primary" />
+                <Input size="sm" className="min-w-0 flex-1" aria-label="Reason (optional)" placeholder="Reason (optional)" data-debug-id="owner-chain-control-reason" value={reason} onChange={setReason} />
               </div>}
 
-              <section data-debug-id="owner-chain-brief" className="space-y-1">
-                <h4 className="text-xs font-semibold uppercase tracking-wider text-muted">Brief</h4>
-                {task.detail.body ? <p className="whitespace-pre-wrap text-sm text-primary">{task.detail.body}</p> : <p className="text-xs italic text-faint">No description.</p>}
+              <TicketCard debugId="owner-chain-brief" title="Brief" aside={wire?.requirements ? <Badge tone="neutral">Rev {wire.requirements.revision}</Badge> : undefined}>
+                {task.detail.body ? <Text as="p" role="body-sm" className="whitespace-pre-wrap">{task.detail.body}</Text> : <Text as="p" role="caption" tone="muted">No description.</Text>}
                 {task.runtime.requirements ? (
-                  <div data-debug-id="owner-chain-requirements" className="rounded-lg border border-subtle p-3">
-                    <p className="text-xs text-muted">Requirements · Rev {task.runtime.requirements.revision}</p>
-                    {task.runtime.requirements.goal && <p className="mt-1 whitespace-pre-wrap text-sm text-primary">{task.runtime.requirements.goal}</p>}
+                  <div data-debug-id="owner-chain-requirements" className="mt-3 space-y-2">
+                    {task.runtime.requirements.goal && <Text as="p" role="body-sm" className="whitespace-pre-wrap">{task.runtime.requirements.goal}</Text>}
                     {task.runtime.requirements.acceptance.length > 0 && (
-                      <ul className="mt-1 list-disc pl-5 text-sm text-primary">
-                        {task.runtime.requirements.acceptance.map((a, i) => <li key={i}>{a}</li>)}
-                      </ul>
+                      <>
+                        <Text as="h4" role="overline" tone="muted">Acceptance</Text>
+                        <ul className="list-disc space-y-1 pl-5">
+                          {task.runtime.requirements.acceptance.map((a, i) => <li key={i}><Text as="span" role="body-sm">{a}</Text></li>)}
+                        </ul>
+                      </>
                     )}
+                    {(wire?.brief?.reviewers?.length || wire?.requires_user_approval) ? (
+                      <Text as="p" role="caption" tone="muted" data-debug-id="owner-chain-reviewers">
+                        Reviewers: {[...(wire?.brief?.reviewers ?? []), ...(wire?.requires_user_approval ? ['you'] : [])].join(', ')}
+                      </Text>
+                    ) : null}
+                    {wire?.depends_on?.length ? (
+                      <Text as="p" role="caption" tone="muted" data-debug-id="owner-chain-deps">Depends on: {wire.depends_on.map((d) => <Text key={d} as="code" role="code-sm" className="mr-1">{d}</Text>)}</Text>
+                    ) : null}
                   </div>
-                ) : <p className="text-xs italic text-faint">No requirements saved.</p>}
-              </section>
+                ) : <Text as="p" role="caption" tone="muted">No requirements saved.</Text>}
+                {(task.runtime.holder || wire?.merge) && (
+                  <dl data-debug-id="owner-chain-lease" className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
+                    {task.runtime.holder && <><Text as="span" role="caption" tone="muted">Lease holder</Text><Text as="code" role="code-sm" truncate>{task.runtime.holder}</Text></>}
+                    {wire?.merge && <><Text as="span" role="caption" tone="muted">Merge</Text><Text as="span" role="caption">{wire.merge.state}{wire.merge.head ? ' · ' : ''}{wire.merge.head && <Text as="code" role="code-sm">{wire.merge.head.slice(0, 12)}</Text>}</Text></>}
+                  </dl>
+                )}
+              </TicketCard>
 
+              {wire && wire.attempt_no > 0 && <TicketAttemptsCard task={wire} names={EMPTY_TASK_NAMES} lease={leaseClock(wire, Date.now())} />}
               <section data-debug-id="owner-chain-submissions" className="space-y-1">
-                <h4 className="text-xs font-semibold uppercase tracking-wider text-muted">Submissions</h4>
+                <Text as="h4" role="overline" tone="muted">Submissions</Text>
                 {task.runtime.attemptNo === 0 && !task.runtime.submission
-                  ? <p className="text-xs italic text-faint">No attempts yet.</p>
+                  ? <Text as="p" role="caption" tone="muted">No attempts yet.</Text>
                   : (
                     <ul className="flex flex-wrap gap-1.5">
                       {Array.from({ length: Math.max(task.runtime.attemptNo, Number(task.runtime.submission?.attempt ?? 0)) }, (_, i) => String(i + 1)).map((n) => (
@@ -581,42 +602,39 @@ export function OwnerChainView({
                     </ul>
                   )}
                 {submission && (
-                  <div data-debug-id="owner-chain-submission" className="rounded-lg border border-subtle p-3 text-sm">
-                    <p className="text-xs text-muted">Attempt {submission.attempt}{submission.author ? ' · by ' + submission.author : ''}{submission.head ? ' · ' + submission.head.slice(0, 12) : ''}</p>
-                    <p className="mt-1 whitespace-pre-wrap text-primary">{submission.summary || 'No summary.'}</p>
+                  <div data-debug-id="owner-chain-submission" className="rounded-lg border border-subtle bg-surface-raised p-3">
+                    <Text as="p" role="caption" tone="muted">Attempt {submission.attempt}{submission.author ? ' · by ' + submission.author : ''}{submission.head ? ' · ' : ''}{submission.head && <Text as="code" role="code-sm">{submission.head.slice(0, 12)}</Text>}</Text>
+                    <Text as="p" role="body-sm" className="mt-1 whitespace-pre-wrap">{submission.summary || 'No summary.'}</Text>
                   </div>
                 )}
               </section>
 
               <section data-debug-id="owner-chain-reviews" className="space-y-1">
-                <h4 className="text-xs font-semibold uppercase tracking-wider text-muted">Reviews</h4>
-                {task.reviewsLoading && <p role="status" data-debug-id="owner-chain-reviews-loading" className="text-xs text-muted">Loading reviews…</p>}
-                {task.reviewsError && <p role="alert" className="text-xs text-danger">{task.reviewsError}</p>}
+                <Text as="h4" role="overline" tone="muted">Reviews</Text>
+                {task.reviewsLoading && <Text as="p" role="caption" tone="muted" aria-live="polite" data-debug-id="owner-chain-reviews-loading">Loading reviews…</Text>}
+                {task.reviewsError && <Alert tone="danger">{task.reviewsError}</Alert>}
                 {task.reviewsTruncated && (
-                  <p role="status" data-debug-id="owner-chain-reviews-truncated" className="text-xs text-warning">
-                    This chain’s history is longer than the view scans; newer reviews may be missing. Use Advanced/debug to read the full history.
-                  </p>
+                  <div data-debug-id="owner-chain-reviews-truncated"><Alert tone="warning">This chain’s history is longer than the view scans; newer reviews may be missing. Use Advanced/debug to read the full history.</Alert></div>
                 )}
-                {task.reviewsMore && <p data-debug-id="owner-chain-reviews-more" className="text-xs text-muted">Showing the latest owner reviews only.</p>}
-                {task.reviews.length === 0 && !task.reviewsLoading && !task.reviewsError && !task.reviewsTruncated && <p className="text-xs italic text-faint">No reviews.</p>}
+                {task.reviewsMore && <Text as="p" role="caption" tone="muted" data-debug-id="owner-chain-reviews-more">Showing the latest owner reviews only.</Text>}
+                {task.reviews.length === 0 && !task.reviewsLoading && !task.reviewsError && !task.reviewsTruncated && <Text as="p" role="caption" tone="muted">No reviews.</Text>}
                 <ul className="space-y-1.5">
                   {task.reviews.map((r, i) => (
-                    <li key={i} data-debug-id={`owner-chain-review-${r.source}-${i}`} className="rounded-lg border border-subtle p-2 text-sm">
-                      <span className="flex flex-wrap items-center gap-1.5 text-xs text-muted">
-                        <Badge tone={r.verdict === 'approve' ? 'success' : 'danger'}>{r.verdict === 'approve' ? 'Approved' : 'Changes requested'}</Badge>
-                        <span>{r.reviewer}{r.role ? ' (' + r.role + ')' : ''}</span>
+                    <li key={i} data-debug-id={`owner-chain-review-${r.source}-${i}`} className="rounded-lg border border-subtle bg-surface-raised p-2">
+                      <span className="flex flex-wrap items-center gap-1.5 text-caption text-muted">
+                        <StatusPill tone={r.verdict === 'approve' ? 'success' : 'danger'}>{r.verdict === 'approve' ? 'Approved' : 'Changes requested'}</StatusPill>
+                        <span>{r.byDevice ? 'You' : <Text as="code" role="code-sm">{r.reviewer}</Text>}{r.role ? ' (' + r.role + ')' : ''}</span>
                         {r.attempt && <span>· attempt {r.attempt}</span>}
                         {r.at && <span>· {formatWhen(r.at)}</span>}
                         {r.source === 'archived' && <Badge tone="neutral">Archived from Hub</Badge>}
                       </span>
-                      {r.summary && <p className="mt-1 whitespace-pre-wrap text-primary">{r.summary}</p>}
+                      {r.summary && <Text as="p" role="body-sm" className="mt-1 whitespace-pre-wrap">{r.summary}</Text>}
                     </li>
                   ))}
                 </ul>
                 {editable && ts.state === 'in_review' && task.runtime.submission && (
-                  <div className="space-y-1.5 rounded-lg border border-subtle p-3">
-                    <textarea aria-label="Review summary" placeholder="Review summary" data-debug-id="owner-chain-review-summary" value={reviewSummary} onChange={(e) => setReviewSummary(e.target.value)} rows={2}
-                      className="w-full rounded-md border border-subtle bg-canvas px-2 py-1.5 text-sm text-primary" />
+                  <div className="space-y-1.5 rounded-lg border border-subtle bg-surface-raised p-3">
+                    <Textarea size="sm" aria-label="Review summary" placeholder="Review summary" data-debug-id="owner-chain-review-summary" value={reviewSummary} onChange={setReviewSummary} rows={2} />
                     <div className="flex gap-2">
                       {(['approve', 'request_changes'] as const).map((verdict) => (
                         <Button key={verdict} size="sm" variant={verdict === 'approve' ? 'primary' : 'secondary'} data-debug-id={`owner-chain-review-${verdict}`} disabled={busy}
@@ -633,27 +651,26 @@ export function OwnerChainView({
               </section>
 
               <section data-debug-id="owner-chain-comments" className="space-y-1">
-                <h4 className="text-xs font-semibold uppercase tracking-wider text-muted">Comments</h4>
-                {task.detail.comments.length === 0 && <p className="text-xs italic text-faint">No comments yet.</p>}
+                <Text as="h4" role="overline" tone="muted">Comments</Text>
+                {task.detail.comments.length === 0 && <Text as="p" role="caption" tone="muted">No comments yet.</Text>}
                 <ul className="space-y-1.5">
                   {task.detail.comments.map((c) => (
-                    <li key={c.principal_id + ':' + c.operation_id} data-debug-id={`owner-chain-comment-${c.operation_id}`} className="rounded-lg border border-subtle p-2">
-                      <span className="flex flex-wrap gap-1.5 text-xs text-muted">
-                        <span className="font-semibold text-primary">{principalLabel(s, c.principal_id)}</span>
+                    <li key={c.principal_id + ':' + c.operation_id} data-debug-id={`owner-chain-comment-${c.operation_id}`} className="rounded-lg border border-subtle bg-surface-raised p-2">
+                      <span className="flex flex-wrap gap-1.5 text-caption text-muted">
+                        <Text as="span" role="label">{principalLabel(s, c.principal_id)}</Text>
                         {c.created_at && <time dateTime={c.created_at}>{formatWhen(c.created_at)}</time>}
                       </span>
-                      <p className="mt-1 whitespace-pre-wrap text-sm text-primary">{c.body}</p>
+                      <Text as="p" role="body-sm" className="mt-1 whitespace-pre-wrap">{c.body}</Text>
                     </li>
                   ))}
                 </ul>
-                {task.detail.truncated && <p className="text-xs text-muted">Showing the first {task.detail.comments.length} comments.</p>}
+                {task.detail.truncated && <Text as="p" role="caption" tone="muted">Showing the first {task.detail.comments.length} comments.</Text>}
                 {editable && <form className="space-y-1.5" onSubmit={(e) => {
                   e.preventDefault();
                   if (!comment.trim()) return;
                   void mutate('task.comment', { taskId: task.taskId, body: comment.trim() }, 'Comment added.').then((ok) => { if (ok) setComment(''); });
                 }}>
-                  <textarea aria-label="Add a comment" placeholder="Add a comment" data-debug-id="owner-chain-comment-input" value={comment} onChange={(e) => setComment(e.target.value)} rows={2}
-                    className="w-full rounded-md border border-subtle bg-canvas px-2 py-1.5 text-sm text-primary" />
+                  <Textarea size="sm" aria-label="Add a comment" placeholder="Add a comment" data-debug-id="owner-chain-comment-input" value={comment} onChange={setComment} rows={2} />
                   <Button size="sm" type="submit" data-debug-id="owner-chain-comment-submit" disabled={busy || !comment.trim()}>Comment</Button>
                 </form>}
               </section>

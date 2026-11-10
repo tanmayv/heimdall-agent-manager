@@ -129,7 +129,8 @@ test('the create modal defaults to the owner Bridge and creates there with a sig
     assert.equal(ui.$('create-chain-placement-bridge-brg_home-input')!.checked, true, 'the online owner Bridge is the default');
     assert.equal(ui.$('create-chain-placement-hub'), null, 'there is no Hub placement');
 
-    assert.equal((ui.$('create-chain-coordinator-agent') as unknown as HTMLSelectElement).value, 'agt_coord', 'the coordinator agent is the default');
+    assert.equal((ui.container.querySelector('input[name="coordinator_agent"]') as HTMLInputElement).value, 'agt_coord', 'the coordinator agent is the default');
+    assert.match(ui.$('create-chain-coordinator-agent')!.textContent!, /Coordinator/);
 
     await ui.typeTitle('Bridge-first chain');
     await ui.submit();
