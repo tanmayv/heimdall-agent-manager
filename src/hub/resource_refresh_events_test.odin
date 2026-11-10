@@ -469,3 +469,62 @@ test_refresh_shell_retention_and_seeding_publish :: proc(t: ^testing.T) {
 	testing.expect_value(t, strings.count(seeded, `"resource":"agent"`), 4)
 	testing.expect_value(t, strings.count(seeded, `"change":"created"`), 4)
 }
+
+// A second Bridge for `headers`' account, online with claude enabled, and one
+// agent instance launched on it.
+// root_seed names the account's root device (another account needs its own).
+a2a_bridge_instance :: proc(t: ^testing.T, f: ^Refresh_Fixture, headers: []contracts.HTTP_Header, label, slug: string, root_seed: u16 = VT_ROOT_SEED) -> (bridge_id, token, inst_id, conv_id: string, ok: bool) {
+	enrolled: bool
+	bridge_id, token, enrolled = device_enroll_test_bridge(&f.graph, headers, label, root_seed = root_seed)
+	if !testing.expect(t, enrolled, "bridge enroll") do return
+	if b, b_ok, _ := iface.bridge_get_bridge(f.graph.bridges.repo, bridge_id); b_ok { b.status = .Online; _, _, _ = iface.bridge_save_bridge(f.graph.bridges.repo, b) }
+	project_service.bridge_runtime_registry_mark_live(f.graph.agents.bridge_runtime_registry, bridge_id, false, "")
+	_, _ = iface.bridge_provider_status_upsert(f.graph.agents.providers, domain.Bridge_Provider_Status{bridge_id = bridge_id, provider = "claude", state = "present", checked_at = "2026-10-01T00:00:00Z"})
+	_, _ = iface.bridge_provider_setting_upsert(f.graph.agents.providers, domain.Bridge_Provider_Setting{bridge_id = bridge_id, provider = "claude", enabled = true, updated_at = "2026-10-01T00:00:00Z"})
+	agent_res := api_http.router_dispatch(&f.graph.router, api_http.Request{method = "POST", path = "/api/v1/agents", body = fmt.aprintf(`{{"name":"%s","slug":"%s","default_provider":"claude","default_model":"claude-sonnet-5-5"}}`, slug, slug), request_id = fmt.aprintf("req_a2a_agent_%s", slug), remote_addr = "127.0.0.1", headers = headers})
+	if !testing.expectf(t, agent_res.status == 201, "agent create: %d %s", agent_res.status, agent_res.body) do return
+	agent_id := refresh_json_field(agent_res.body, "agent_id")
+	api_http.router_dispatch(&f.graph.router, api_http.Request{method = "PATCH", path = fmt.aprintf("/api/v1/agents/%s/bridge-support/%s", agent_id, bridge_id), body = `{"enabled":true,"provider":"claude","model":"claude-sonnet-5-5"}`, request_id = fmt.aprintf("req_a2a_support_%s", slug), remote_addr = "127.0.0.1", headers = headers})
+	inst_res := api_http.router_dispatch(&f.graph.router, api_http.Request{method = "POST", path = "/api/v1/agent-instances", body = fmt.aprintf(`{{"agent_id":"%s","bridge_id":"%s","provider":"claude","model":"claude-sonnet-5-5"}}`, agent_id, bridge_id), request_id = fmt.aprintf("req_a2a_inst_%s", slug), remote_addr = "127.0.0.1", headers = headers})
+	if !testing.expectf(t, inst_res.status == 201, "instance create: %d %s", inst_res.status, inst_res.body) do return
+	inst_id = refresh_json_field(inst_res.body, "agent_instance_id")
+	conv_id = refresh_json_field(inst_res.body, "conversation_id")
+	ok = testing.expect(t, inst_id != "" && conv_id != "", "instance and conversation ids")
+	return
+}
+
+a2a_send :: proc(f: ^Refresh_Fixture, token, from, to, body: string) -> api_http.Response {
+	headers := []contracts.HTTP_Header{{name = "Authorization", value = fmt.aprintf("Bearer %s", token)}}
+	return api_http.router_dispatch(&f.graph.router, api_http.Request{method = "POST", path = "/api/v1/agent-actions/chat/send-to-agent", body = fmt.aprintf(`{{"agent_instance_id":"%s","params":{{"to_instance":"%s","body":"%s"}}}}`, from, to, body), request_id = fmt.aprintf("req_a2a_%s", body), remote_addr = "127.0.0.1", headers = headers})
+}
+
+// Cross-Bridge agent-to-agent chat (origin/main parity, task_18e6b219bcee55fa
+// revision 2): agents on two Bridges of one account message each other in both
+// directions; an agent of another account cannot reach them.
+@(test)
+test_agent_to_agent_crosses_account_bridges :: proc(t: ^testing.T) {
+	f: Refresh_Fixture
+	defer refresh_fixture_teardown(&f)
+	if !refresh_fixture_setup(t, &f, "a2a_bridges") do return
+	b_bridge, b_token, b_inst, b_conv, b_ok := a2a_bridge_instance(t, &f, f.alice[:], "Second Bridge", "second-coder")
+	if !b_ok do return
+	testing.expect(t, b_bridge != f.bridge_id, "a distinct Bridge")
+
+	to_b := a2a_send(&f, f.bridge_token, f.inst_id, b_inst, "a-to-b")
+	if !testing.expectf(t, to_b.status == 201, "A->B: %d %s", to_b.status, to_b.body) do return
+	testing.expect(t, strings.contains(to_b.body, b_conv), "lands in B's conversation")
+	to_a := a2a_send(&f, b_token, b_inst, f.inst_id, "b-to-a")
+	if !testing.expectf(t, to_a.status == 201, "B->A: %d %s", to_a.status, to_a.body) do return
+	testing.expect(t, strings.contains(to_a.body, f.conv_id), "lands in A's conversation")
+
+	// Bridge B's token cannot speak for the instance on A.
+	spoof := a2a_send(&f, b_token, f.inst_id, b_inst, "spoof")
+	testing.expectf(t, spoof.status != 201, "a Bridge token never sends as another Bridge's instance: %d", spoof.status)
+
+	// Another account's agent reaches neither, and they cannot reach it.
+	bob := hub_test_user_headers(&f.graph, "bob")
+	_, bob_token, bob_inst, _, bob_ok := a2a_bridge_instance(t, &f, bob[:], "Bob Bridge", "bob-coder", root_seed = VT_ROOT_SEED + 900)
+	if !bob_ok do return
+	testing.expect_value(t, a2a_send(&f, bob_token, bob_inst, f.inst_id, "bob-to-a").status, 404)
+	testing.expect_value(t, a2a_send(&f, b_token, b_inst, bob_inst, "b-to-bob").status, 404)
+}

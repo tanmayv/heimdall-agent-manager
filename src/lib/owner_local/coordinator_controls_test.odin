@@ -55,8 +55,9 @@ cc_controls_open_only_to_the_verified_chain_coordinator :: proc(t:^testing.T) {
         impostor:=coord;impostor.agent_id="other_agent"
         testing.expectf(t,agent_role(f,"task",impostor,verb)==.None,"another agent on the instance id is refused %s",verb)
     }
-    // Still user-only: workflow gates, remote reservations (grant.* no longer exists).
-    for verb in ([6]string{"workflow.gate","fleet.reserve","grant.set","grant.recover","grant.revoke","workflow.define"}) {
+    // Still user-only: workflow gates (grant.* no longer exists). Remote
+    // reservations are the coordinator's (cross-Bridge placement).
+    for verb in ([5]string{"workflow.gate","grant.set","grant.recover","grant.revoke","workflow.define"}) {
         testing.expectf(t,!agent_command_method(verb),"%s stays off the agent allowlist",verb)
         testing.expectf(t,agent_role(f,"task",coord,verb)==.None,"%s stays human-only",verb)
     }

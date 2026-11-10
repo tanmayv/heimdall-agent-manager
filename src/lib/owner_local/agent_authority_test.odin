@@ -103,10 +103,12 @@ agent_policy_worker_own_task_coordinator_chain_verbs_and_foreign_refusal :: proc
     testing.expect_value(t,agent_role(f,"missing",coord,"task.read"),Agent_Role.None)
     testing.expect_value(t,agent_role(f,"task",coord,"grant.set"),Agent_Role.None)
     // Fleet management (membership, policy) is the coordinator's; remote
-    // reservations and grants stay human-only; workers get none of it.
+    // reservations (placing a task on another account Bridge) included;
+    // workers get none of it.
     testing.expect_value(t,agent_role(f,"",coord,"chain.member.set"),Agent_Role.Coordinator)
     testing.expect_value(t,agent_role(f,"",coord,"fleet.policy.set"),Agent_Role.Coordinator)
-    testing.expect_value(t,agent_role(f,"task",coord,"fleet.reserve"),Agent_Role.None)
+    testing.expect_value(t,agent_role(f,"task",coord,"fleet.reserve"),Agent_Role.Coordinator)
+    testing.expect_value(t,agent_role(f,"task",worker,"fleet.reserve"),Agent_Role.None)
     testing.expect_value(t,agent_role(f,"",worker,"chain.member.set"),Agent_Role.None)
     testing.expect_value(t,agent_role(f,"",worker,"fleet.policy.set"),Agent_Role.None)
     testing.expect_value(t,agent_role(f,"task",worker,"fleet.edit"),Agent_Role.None)

@@ -54,12 +54,12 @@ DEVICE_TEST_CAPABILITIES :: `{"capabilities":[{"provider":"claude","models":["no
 // `ok` is false if any step failed; callers assert on it so a provisioning failure
 // reports as itself rather than as a confusing downstream error.
 // commit=false leaves the enrollment PENDING (as before the vault key is delivered).
-device_enroll_test_bridge :: proc(graph: ^app.App_Graph, headers: []contracts.HTTP_Header, label: string, commit := true) -> (bridge_id: string, bridge_token: string, ok: bool) {
+device_enroll_test_bridge :: proc(graph: ^app.App_Graph, headers: []contracts.HTTP_Header, label: string, commit := true, root_seed: u16 = VT_ROOT_SEED) -> (bridge_id: string, bridge_token: string, ok: bool) {
 	// Passwordless vault: a bridge enrolls only into an existing directory, with a
 	// vault approval (signed by the root device) naming its persistent identity key.
-	user_id, version, vault_ok := vt_ensure_vault(graph, headers)
+	user_id, version, vault_ok := vt_ensure_vault(graph, headers, root_seed)
 	if !vault_ok do return "", "", false
-	br, approval := vt_bridge_approval(graph, user_id, version)
+	br, approval := vt_bridge_approval(graph, user_id, version, root_seed)
 	// Hub-blind pairing: the bridge derives these from its own code; any 64-hex stand-in will do here.
 	pair_lookup := vt_lookup(br.sign_pub)
 	authorize_body := strings.concatenate({

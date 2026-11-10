@@ -205,3 +205,41 @@ remote_assignment_preserves_native_defaults_and_enforces_capacity :: proc(t:^tes
     rows,_:=query(f.store.db,"SELECT count(*) FROM local_assignment_history")
     testing.expect_value(t,rows[0][0],"1")
 }
+
+// Cross-Bridge placement (origin/main parity, #10): the chain's bound
+// coordinator signs fleet.reserve through the owner Bridge in agent mode. The
+// executor Bridge's enrollment attestation is still required and checked
+// against its approved, same-account, unrevoked key; workers and strangers
+// never reserve.
+@(test)
+remote_assignment_coordinator_reserves_and_others_are_refused :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=fixture(t);defer destroy(f);seed(t,f);remote_test_policy(t,f)
+    coord:=agent_coordinator_child();agent_seat_coordinator(t,f,coord)
+    key:=f.creator;key.kind="bridge";key.principal_id="executor";key.key_id="operator"
+    payload:=remote_test_payload(f,key,remote_test_config(key))
+    call :: proc(f:^Fixture,who:Child,op,payload:string,key:contracts.Owner_Verified_Key)->Result {
+        raw:=agent_command(f,who,"fleet.reserve",op,"task",payload,agent_task_revision(f,"task"))
+        return execute_agent(&f.store,raw,payload,who,f.owner,1000,&f.kr,Signer{&f.owner_priv,test_sign},remote_key=key)
+    }
+    before:=fleet_policy_test_state(f)
+    for who in ([2]Child{lease_child(),agent_stranger()}) {
+        testing.expectf(t,call(f,who,fmt.tprintf("reserve_%s",who.instance),payload,key).code=="invalid_scope","%s cannot reserve",who.instance)
+    }
+    for i in 0..<4 {
+        wrong:=key
+        switch i {case 0:wrong.revoked=true
+        case 1:wrong.account_id="other_account"
+        case 2:wrong.principal_id="other_executor"
+        case 3:wrong={}}
+        testing.expectf(t,call(f,coord,fmt.tprintf("wrong_%d",i),payload,wrong).code=="invalid_scope","executor key variant %d refused",i)
+    }
+    testing.expect_value(t,fleet_policy_test_state(f),before)
+    accepted:=call(f,coord,"coord_reserve",payload,key)
+    if !testing.expect_value(t,accepted.code,"ok") do return
+    rows,ok:=query(f.store.db,"SELECT f.instance_id,h.principal_id,json_extract(h.command_json,'$.method') FROM local_fleet f JOIN local_assignment_history h ON h.chain_id=f.chain_id AND h.task_id=f.task_id AND h.revision=f.configuration_revision WHERE f.chain_id='chain' AND f.task_id='task'")
+    testing.expect(t,ok && len(rows)==1)
+    testing.expect_value(t,rows[0][0],"instance")
+    testing.expect_value(t,rows[0][1],coord.instance)
+    testing.expect_value(t,rows[0][2],"fleet.reserve")
+}

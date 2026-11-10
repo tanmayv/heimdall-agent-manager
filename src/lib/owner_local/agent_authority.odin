@@ -22,7 +22,8 @@ import vault "odin_test:lib/vault"
 //   Coordinator the chain's enabled coordinator member, exactly this launch:
 //               chain-management verbs on behalf of the user, including fleet
 //               management (fleet.policy.set, chain.member.set of workers and
-//               reviewers, instance start/stop/restart). grant.* stay human.
+//               reviewers, instance start/stop/restart, fleet.reserve of a
+//               task on another Bridge of the account).
 //
 // Any proven agent of the account may also read any chain or task and
 // comment on a task (agent_account_verb, origin/main parity). Every other
@@ -37,7 +38,7 @@ agent_verb_role :: proc(verb:string) -> Agent_Role {
     case "review.open","review.post","review.checkpoint": return .Reviewer
     case "task.create","task.edit","task.comment","task.read","chain.read","chain.summary.set","chain.propose","chain.publish","requirements.edit","review.human",
          "task.priority","dependency.edit","fleet.edit","lifecycle.configure",
-         "chain.member.set","fleet.policy.set","fleet.policy.read","fleet.instance": return .Coordinator
+         "chain.member.set","fleet.policy.set","fleet.policy.read","fleet.instance","fleet.reserve": return .Coordinator
     }
     if agent_coordinator_control(verb) do return .Coordinator
     return .None
@@ -46,9 +47,11 @@ agent_verb_role :: proc(verb:string) -> Agent_Role {
 // Coordinator controls on an owner chain (P-CS CC-A, REQ-CC-1..5,8,10,11 and
 // R2-5): the verified chain coordinator drives tasks without holding a lease.
 // Worker, reviewer and foreign-chain tokens are refused with invalid_scope by
-// agent_authorize. workflow.gate stays user-only; fleet.reserve (remote
-// executor reservations) and grants stay human-only. Fleet management
-// (membership, fleet policy, instance lifecycle) is agent_command_admit's.
+// agent_authorize. workflow.gate stays user-only. Fleet management
+// (membership, fleet policy, instance lifecycle, and fleet.reserve placing a
+// task on another Bridge of the account) is agent_command_admit's; a
+// reservation still needs the executor Bridge's signed enrollment attestation
+// (remote_assignment_child), so the coordinator cannot invent a remote child.
 agent_coordinator_control :: proc(verb:string) -> bool {
     switch verb {
     case "task.hold","task.release","task.cancel","task.reopen","task.resolve","merge.retry","task.delete",
@@ -219,7 +222,7 @@ agent_authorize_locked :: proc(s:^Store,chain,task:string,child:Child,verb:strin
 agent_command_method :: proc(method:string) -> bool {
     switch method {
     case "task.create","task.edit","task.comment","task.read","chain.read","chain.summary.set","chain.propose","chain.publish","requirements.edit","review.post",
-         "task.priority","dependency.edit","fleet.edit","lifecycle.configure","chain.member.set","fleet.policy.set","fleet.policy.read": return true
+         "task.priority","dependency.edit","fleet.edit","fleet.reserve","lifecycle.configure","chain.member.set","fleet.policy.set","fleet.policy.read": return true
     }
     return agent_coordinator_control(method)
 }
@@ -284,11 +287,13 @@ agent_grant :: proc(s:^Store,c:json.Object,now:i64) -> contracts.Owner_Read_Gran
 // Coordinator (and own-task worker) commands, signed by the owner key on the
 // agent's behalf. The directory pin is the owner's current one.
 // fleet_child and proof are Bridge-observed facts for fleet.edit and
-// lifecycle.configure, exactly as on the device path.
-execute_agent :: proc(s:^Store,command_raw,payload:string,agent:Child,owner_key:contracts.Owner_Verified_Key,now:i64,kr:^vault.Vault_Keyring,sign:Signer,fleet_child:Child={},proof:Lifecycle_Proof={},observed_children:[]Child=nil,source:Source_Proof={}) -> Result {
+// lifecycle.configure, exactly as on the device path. remote_key is the
+// executor Bridge key a fleet.reserve attestation is checked against, verified
+// by the caller in the current directory (same account, enrolled, not revoked).
+execute_agent :: proc(s:^Store,command_raw,payload:string,agent:Child,owner_key:contracts.Owner_Verified_Key,now:i64,kr:^vault.Vault_Keyring,sign:Signer,fleet_child:Child={},proof:Lifecycle_Proof={},observed_children:[]Child=nil,source:Source_Proof={},remote_key:contracts.Owner_Verified_Key={}) -> Result {
     version,hash:=directory_pin(s)
     if version<0 do return fail("storage_error")
-    return execute(s,command_raw,payload,"",owner_key,owner_key,version,hash,now,kr,sign,fleet_child,proof,observed_children,agent=agent,source=source)
+    return execute(s,command_raw,payload,"",owner_key,owner_key,version,hash,now,kr,sign,fleet_child,proof,observed_children,remote_key=remote_key,agent=agent,source=source)
 }
 
 // Fleet membership on the coordinator's own chain: it enrolls, re-roles and
