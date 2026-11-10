@@ -77,23 +77,17 @@ bridge_owner_chain_create :: proc(request_id,params:string,rec:Bridge_Local_Agen
     title,description,named:=bridge_owner_pstr(p,"title"),bridge_owner_pstr(p,"description"),bridge_owner_pstr(p,"coordinator_agent_id")
     if title=="" do return bridge_local_response_error(request_id,"bad_request","task-chain create: --title is required")
     if named!="" && !contracts.owner_field_valid(named,"id") do return bridge_local_response_error(request_id,"bad_request","task-chain create: invalid --coordinator-agent")
-    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
-    pub:=bridge_identity_public_key_hex(bridge_config.daemon_id)
-    key_id,key_ok:=vault.device_id_from_sign_pub(pub,context.temp_allocator)
-    if account=="" || !key_ok do return bridge_local_response_error(request_id,"invalid_scope","task-chain create: this Bridge is not enrolled")
     kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
     if !unlocked do return bridge_local_response_error(request_id,"vault_locked","owner Bridge vault is locked")
-    title_cipher,t_ok:=vault.seal_string(title,&kr,context.temp_allocator)
-    description_cipher,d_ok:=vault.seal_string(description,&kr,context.temp_allocator)
-    if !t_ok || !d_ok do return bridge_local_response_error(request_id,"vault_locked","task-chain create: could not seal the title")
-    key:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,key_id,pub,"bridge",true,false}
+    in_,in_code,in_message:=bridge_owner_create_inputs(title,description,&kr)
+    if in_code!="ok" do return bridge_local_response_error(request_id,in_code,fmt.tprintf("task-chain create: %s",in_message))
     chain,op:=bridge_owner_chain_id("chain_"),bridge_owner_chain_id("op_")
     coordinator:=""
     {
         sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
         // An explicit create may create the owner store.
-        if !bridge_owner_open(account,key_id) do return bridge_local_response_error(request_id,"storage_error","owner store unavailable")
-        code,message:=bridge_owner_chain_create_locked(rec,named,account,key,chain,op,title_cipher,description_cipher,&kr)
+        if !bridge_owner_open(in_.account,in_.key.key_id) do return bridge_local_response_error(request_id,"storage_error","owner store unavailable")
+        code,message:=bridge_owner_chain_create_locked(rec,named,in_,chain,op,&kr)
         if code=="ok" && named=="" {
             coordinator=rec.agent_instance_id
             bridge_owner_coordinator_refresh_locked(chain)
@@ -109,7 +103,7 @@ bridge_owner_chain_create :: proc(request_id,params:string,rec:Bridge_Local_Agen
     {
         sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
         code:="storage_error"
-        if bridge_owner_open(account,key_id) {
+        if bridge_owner_open(in_.account,in_.key.key_id) {
             sync.mutex_lock(&bridge_startup_io_mutex)
             sync.mutex_lock(&bridge_local_token_mutex)
             child,current:=bridge_owner_child_locked(instance,"")
@@ -132,7 +126,7 @@ bridge_owner_chain_create :: proc(request_id,params:string,rec:Bridge_Local_Agen
 
 // Caller holds bridge_owner_mutex with the store open. Proves the calling
 // child, creates the chain with the owner key, and (default) binds the caller.
-bridge_owner_chain_create_locked :: proc(rec:Bridge_Local_Agent_Token_Record,named,account:string,key:contracts.Owner_Verified_Key,chain,op,title_cipher,description_cipher:string,kr:^vault.Vault_Keyring) -> (string,string) {
+bridge_owner_chain_create_locked :: proc(rec:Bridge_Local_Agent_Token_Record,named:string,in_:Owner_Create_Inputs,chain,op:string,kr:^vault.Vault_Keyring) -> (string,string) {
     sync.mutex_lock(&bridge_startup_io_mutex);defer sync.mutex_unlock(&bridge_startup_io_mutex)
     sync.mutex_lock(&bridge_local_token_mutex);defer sync.mutex_unlock(&bridge_local_token_mutex)
     child,current:=bridge_owner_child_locked(rec.agent_instance_id,rec.token_hash)
@@ -143,13 +137,10 @@ bridge_owner_chain_create_locked :: proc(rec:Bridge_Local_Agent_Token_Record,nam
         if !read do return "storage_error","owner store could not be read"
         if len(bound)>0 do return "invalid_scope",fmt.tprintf("this instance already belongs to chain %s; use --coordinator-agent <agt_id>",bound[0][0])
     }
+    if created:=bridge_owner_chain_create_execute_locked(in_,chain,op,child.instance,kr);created!="ok" {
+        return created,created=="storage_error" ? "task-chain create: signing or storage failed" : "task-chain create rejected by the owner store"
+    }
     now:=time.to_unix_nanoseconds(time.now())/1000000
-    genesis,command,payload,built:=bridge_owner_chain_create_documents(account,bridge_config.daemon_id,key.key_id,chain,op,title_cipher,description_cipher,now,bridge_owner_signer())
-    if !built do return "storage_error","task-chain create: signing failed"
-    version,hash:=owner.directory_pin(&bridge_owner_store)
-    if version<0 do return "storage_error","owner store could not be read"
-    created:=owner.execute(&bridge_owner_store,command,payload,genesis,key,key,version,hash,now,kr,bridge_owner_signer(),requested_by=child.instance)
-    if created.code!="ok" do return created.code,"task-chain create rejected by the owner store"
     if named!="" do return "ok",""
     bound:=owner.bind_created_coordinator(&bridge_owner_store,chain,child,child.instance,now)
     if bound.code!="ok" do return bound.code,fmt.tprintf("chain %s created; coordinator binding refused",chain)

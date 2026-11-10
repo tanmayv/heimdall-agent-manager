@@ -312,6 +312,11 @@ bridge_command_spec :: proc(command_type: string) -> (Bridge_Command_Spec, bool)
         // local import transaction is serialized by the owner mutex. Never
         // retried blindly; the Hub retries the same digest.
         return Bridge_Command_Spec{class = .General_IO, priority = .Interactive, queued = true, requires_id = true, timeout_ms = 120_000, cost_units = 4}, true
+    case "owner_chain_prepare":
+        // POST /chats create_owner_chain: the Hub waits on it before the
+        // coordinator launch. Serialized by the owner mutex; never retried
+        // blindly (a retry would create a second chain).
+        return Bridge_Command_Spec{class = .Interactive, priority = .Interactive, key_kind = .Bridge, queued = true, requires_id = true, timeout_ms = 15_000, cost_units = 2}, true
     case "owner_migration_activate":
         // A nudge only: activation is re-derived from Hub state.
         return Bridge_Command_Spec{class = .General_IO, priority = .Interactive, queued = true, requires_id = true, timeout_ms = 15_000, cost_units = 1, retry_safe = true}, true

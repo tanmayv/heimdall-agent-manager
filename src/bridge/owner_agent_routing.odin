@@ -1287,6 +1287,9 @@ bridge_owner_launch_role :: proc(chain_id, instance_id, role, coordinator_id: st
         sync.mutex_unlock(&bridge_owner_mutex)
         bound,known=bridge_owner_coordinator_cache_get(chain_id)
     }
+    // A chain prepared for a one-step coordinator conversation boots its
+    // first instance as coordinator before the binding exists (owner_chain_prepare.odin).
+    if bound=="" && bridge_owner_pending_launch_role(chain_id,instance_id) do return "coordinator",instance_id
     return bridge_owner_launch_role_resolve(bound,instance_id,role,coordinator_id)
 }
 
