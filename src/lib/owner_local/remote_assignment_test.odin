@@ -242,4 +242,23 @@ remote_assignment_coordinator_reserves_and_others_are_refused :: proc(t:^testing
     testing.expect_value(t,rows[0][0],"instance")
     testing.expect_value(t,rows[0][1],coord.instance)
     testing.expect_value(t,rows[0][2],"fleet.reserve")
+    // The owner Bridge then pairs the reserved remote author with a local
+    // reviewer (bridge_owner_remote_configure): merge_policy none, the author
+    // proven by the reservation's fleet row. A proof naming another instance
+    // than the reservation is refused.
+    fleet,read:=query(f.store.db,"SELECT instance_id,launch_epoch,run_count,token_generation FROM local_fleet WHERE chain_id='chain' AND task_id='task'")
+    if !testing.expect(t,read && len(fleet)==1) do return
+    author:=Child{fleet[0][0],fleet[0][1],fleet[0][3],number(fleet[0][2]),"author"}
+    reviewer:=lifecycle_reviewer();agent_seat(t,f,reviewer,"reviewer")
+    configure :: proc(f:^Fixture,coord,author,reviewer:Child,op,revision:string)->Result {
+        config:=encode(doc(map[string]string{"configuration_revision"=revision,"author_agent_id"=author.agent_id,"reviewer_agent_id"=reviewer.agent_id,"reviewer_instance_id"=reviewer.instance,"directory_id"="owner_none","merge_policy"="none","repository"="","worktree"="","source_branch"="","target_branch"="","base_head"=""}))
+        raw:=agent_command(f,coord,"lifecycle.configure",op,"task",config,agent_task_revision(f,"task"))
+        return execute_agent(&f.store,raw,config,coord,f.owner,1000,&f.kr,Signer{&f.owner_priv,test_sign},{},Lifecycle_Proof{author,reviewer,true})
+    }
+    impostor:=author;impostor.instance="other_instance"
+    testing.expect_value(t,configure(f,coord,impostor,reviewer,"config_impostor","1").code,"invalid_scope")
+    testing.expect_value(t,configure(f,lease_child(),author,reviewer,"config_worker","1").code,"invalid_scope")
+    if !testing.expect_value(t,configure(f,coord,author,reviewer,"config_remote","1").code,"ok") do return
+    owed,owed_ok:=query(f.store.db,"SELECT json_extract(config_json,'$.reviewer_instance_id'),json_extract(config_json,'$.merge_policy') FROM lifecycle_configs WHERE chain_id='chain' AND task_id='task'")
+    testing.expectf(t,owed_ok && len(owed)==1 && owed[0][0]==reviewer.instance && owed[0][1]=="none","the remote task owes its review to the local reviewer: %v",owed)
 }

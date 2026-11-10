@@ -1066,10 +1066,11 @@ bridge_owner_plan_children :: proc(ctx:^Owner_Agent_Ctx,chain:string,st:owner.Ag
         if _,code,message:=bridge_owner_resolve_agent(ctx,chain,id,"--reviewer");code!="ok" do return {},{},bridge_owner_fail(ctx,code,message)
     }
     // A remote assignee is reserved by fleet.reserve after the locks, not by
-    // fleet.edit; its reviewers are recorded in the brief. Pairing them with
-    // lifecycle.configure needs a live local author (bridge_owner_config_proof)
-    // and is not done for a remote worker yet.
+    // fleet.edit; its reviewers are recorded in the brief. The worker/reviewer
+    // pair is configured right after the reservation, with the reserved
+    // remote child as author (bridge_owner_remote_configure).
     if ctx.remote.active {
+        ctx.remote.reviewer=reviewer
         plan.has_assignee=false
         return {},{},""
     }

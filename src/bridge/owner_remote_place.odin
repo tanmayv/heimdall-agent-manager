@@ -33,6 +33,9 @@ Owner_Remote_Place :: struct {
     // The chain's git repository on this Bridge ("" for a non-git chain): a
     // hint so the executor runs in its own checkout of the same project.
     repository:string,
+    // The task's reviewer (a live member here), paired with the reserved
+    // remote author by lifecycle.configure after fleet.reserve.
+    reviewer:owner.Child,
 }
 
 // Whether the agent is placed on another Bridge: its fleet policy names a
@@ -53,7 +56,7 @@ bridge_owner_remote_target :: proc(s:^owner.Store,chain,agent:string) -> (place:
     }
     repository:=""
     if template,code:=owner.agent_assignment_template(s,chain);code=="ok" && template.merge_policy=="git" do repository=template.repository
-    return Owner_Remote_Place{true,chain,"",agent,policy.bridge_id,provider,model,repository},"ok",""
+    return Owner_Remote_Place{true,chain,"",agent,policy.bridge_id,provider,model,repository,{}},"ok",""
 }
 
 // The owner-side facts a consent and its reply are checked against, read
@@ -138,6 +141,34 @@ bridge_owner_remote_reserve_locked :: proc(ctx:^Owner_Agent_Ctx,place:Owner_Remo
     payload:=bridge_owner_json(map[string]string{"instance_id"=instance,"configuration_revision"=pin.configuration_revision,"enabled"="1","body_cipher"=body})
     r:=bridge_owner_run_command(ctx,"fleet.reserve",place.chain,place.task,st.task_revision,payload,remote_key=pin.remote_key)
     if r.code!="ok" do return r.code,"the owner store refused the remote reservation"
+    return bridge_owner_remote_configure(ctx,place)
+}
+
+// lifecycle.configure for a remote author, as bridge_owner_assign does for a
+// local one. The author is the child fleet.reserve recorded from the
+// executor's verified enrollment (the store re-checks it against local_fleet);
+// the reviewer must be a live member here. A remote author's commits stay in
+// the executor Bridge's checkout (no merge-back, user 15:30Z), so the
+// configuration is merge_policy none: the owner never inspects a worktree it
+// does not have.
+bridge_owner_remote_configure :: proc(ctx:^Owner_Agent_Ctx,place:Owner_Remote_Place) -> (string,string) {
+    if place.reviewer.instance=="" do return "ok",""
+    st,ok:=bridge_owner_reload(ctx,place.chain,place.task)
+    if !ok do return "storage_error","owner store could not be read"
+    rows,read:=owner.query(ctx.store.db,"SELECT instance_id,launch_epoch,run_count,token_generation,enabled FROM local_fleet WHERE chain_id=? AND task_id=?",place.chain,place.task)
+    if !read || len(rows)!=1 || rows[0][4]!="1" do return "storage_error","the remote reservation is not recorded"
+    run_count,_:=strconv.parse_i64(rows[0][2])
+    author:=owner.Child{instance=rows[0][0],epoch=rows[0][1],token_generation=rows[0][3],run_count=run_count,agent_id=place.agent}
+    reviewer,live:=bridge_owner_live_child(place.reviewer.instance)
+    if !live || reviewer.agent_id!=place.reviewer.agent_id do return "invalid_scope",fmt.tprintf("reviewer %s is no longer running; the worker is placed on %s but not paired (retry with `ham-ctl task update %s --reviewer %s`)",place.reviewer.agent_id,place.executor_bridge,place.task,place.reviewer.agent_id)
+    revision,_:=strconv.parse_i64(st.config_max_revision)
+    config:=map[string]string{"configuration_revision"=fmt.tprintf("%d",revision+1),"author_agent_id"=author.agent_id,
+        "reviewer_agent_id"=reviewer.agent_id,"reviewer_instance_id"=reviewer.instance,"directory_id"="owner_none","merge_policy"="none",
+        "repository"="","worktree"="","source_branch"="","target_branch"="","base_head"=""}
+    raw:=bridge_owner_json(config)
+    if _,valid:=contracts.owner_parse(raw,"lifecycle_config_payload");!valid do return "invalid_content","derived lifecycle configuration is invalid"
+    r:=bridge_owner_run_command(ctx,"lifecycle.configure",place.chain,place.task,st.task_revision,raw,proof=owner.Lifecycle_Proof{author,reviewer,true})
+    if r.code!="ok" do return r.code,"pairing the remote worker with its reviewer was refused"
     return "ok",""
 }
 
