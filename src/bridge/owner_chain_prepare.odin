@@ -130,10 +130,18 @@ bridge_owner_create_inputs :: proc(title, description: string, kr: ^vault.Vault_
     pub:=bridge_identity_public_key_hex(bridge_config.daemon_id)
     key_id,key_ok:=vault.device_id_from_sign_pub(pub,context.temp_allocator)
     if account=="" || !key_ok do return {},"invalid_scope","this Bridge is not enrolled"
-    title_cipher,t_ok:=vault.seal_string(title,kr,context.temp_allocator)
-    description_cipher,d_ok:=vault.seal_string(description,kr,context.temp_allocator)
+    title_cipher,t_ok:=bridge_owner_seal_text(title,kr)
+    description_cipher,d_ok:=bridge_owner_seal_text(description,kr)
     if !t_ok || !d_ok do return {},"vault_locked","could not seal the chain title"
     return Owner_Create_Inputs{account,contracts.Owner_Verified_Key{account,bridge_config.daemon_id,key_id,pub,"bridge",true,false},title_cipher,description_cipher},"ok",""
+}
+
+// A text the user's app already sealed (the Hub only relays it) is kept as
+// is once it opens with this vault; plain text is sealed here.
+bridge_owner_seal_text :: proc(text: string, kr: ^vault.Vault_Keyring) -> (string, bool) {
+    if !vault.is_armored(text) do return vault.seal_string(text,kr,context.temp_allocator)
+    _,opened:=vault.open(text,kr,context.temp_allocator)
+    return text,opened==.Ok
 }
 
 // Caller holds bridge_owner_mutex with the store open: the signed genesis and
@@ -148,6 +156,8 @@ bridge_owner_chain_create_execute_locked :: proc(in_: Owner_Create_Inputs, chain
 }
 
 // Creates a pending chain for `agent`'s coordinator: (chain, code, message).
+// title/description are vault tokens sealed by the user's app (the Hub never
+// sees them in plain text) or, for agent and test callers, plain text.
 bridge_owner_chain_prepare :: proc(agent, title, description: string) -> (string, string, string) {
     context.allocator=context.temp_allocator
     if !contracts.owner_field_valid(agent,"id") do return "","bad_request","owner_chain_prepare: invalid agent_id"
@@ -155,6 +165,7 @@ bridge_owner_chain_prepare :: proc(agent, title, description: string) -> (string
     kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
     if !unlocked do return "","vault_locked","the owner Bridge vault is locked"
     in_,code,message:=bridge_owner_create_inputs(strings.trim_space(title),description,&kr)
+    if code=="vault_locked" && vault.is_armored(title) do return "","bad_request","owner_chain_prepare: the chain title is not sealed for this vault"
     if code!="ok" do return "",code,message
     chain,op:=bridge_owner_chain_id("chain_"),bridge_owner_chain_id("op_")
     sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)

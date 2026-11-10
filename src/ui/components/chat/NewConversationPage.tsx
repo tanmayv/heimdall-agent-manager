@@ -13,9 +13,8 @@ import { selectIsVaultUnlocked } from '../../store/vaultSlice';
 import { buildRouteHash, getRouteSearch, getRoutePathname } from '../../utils/appLocation';
 import { chainConversationRoute, chainIdFromTargetId, chainTargetId } from '../../utils/paneTarget';
 import { apiErrorText } from '../../api/cookieFetch';
-import { createOwnerChain, freshOwnerSession, ownerErrorMessage, waitForOwnerChainListed } from '../../api/ownerChains';
 import { addPendingOwnerChain } from '../../api/ownerChainsStore';
-import { bindOwnerCoordinator, createChainWithCoordinator, isCoordinatorAgent, type NewChainCoordinatorStage } from '../../api/ownerCoordinator';
+import { isCoordinatorAgent } from '../../api/ownerCoordinator';
 import { artifactKindForFile, artifactLinkFromResponse, artifactMimeForFile, artifactUploadName, clipboardFilesFromEvent } from '../../utils/artifactUpload';
 import { composerBridgeIsOnline } from '../../utils/composerBridgeOptions';
 import { getActiveVaultKey } from '../../utils/vaultContent';
@@ -25,7 +24,6 @@ import ModelCatalogRefresh from '../providers/ModelCatalogRefresh';
 import { useIsMobile } from '../shell/responsive';
 import { resolveProjectBridgeShellCwd } from '../shells/interactiveShellLaunch';
 import { useShellLaunch } from '../shells/useShellLaunch';
-import { COORDINATOR_STAGE_TEXT, hubCoordinatorApi } from '../taskchain/OwnerCoordinatorControl';
 import { resolveProjectExplorerAccess } from './projectVcsExperiment';
 import type { RuntimeSelection } from './RuntimeConfigurationOptions';
 import { AgentMenu, type NewFavoriteAgent } from './launcher/AgentMenu';
@@ -147,7 +145,6 @@ export default function NewConversationPage({ embedded = false, footer, onLaunch
   const menuOpen = Boolean(headlineMenu) || runtimeMenuOpen || agentMenuOpen;
   const [managementError, setManagementError] = useState('');
   const [transitioning, setTransitioning] = useState(false);
-  const [coordinatorStage, setCoordinatorStage] = useState<NewChainCoordinatorStage | ''>('');
   const composerRef = useRef<HTMLDivElement>(null);
   const launchAnimation = useRef<Animation | null>(null);
   useEffect(() => () => launchAnimation.current?.cancel(), []);
@@ -353,55 +350,31 @@ export default function NewConversationPage({ embedded = false, footer, onLaunch
       const distance = Math.max(0, bottom - 16 - bounds.bottom);
       launchAnimation.current = composer.animate([{ transform: 'translateY(0)' }, { transform: `translateY(${distance}px)` }], { duration: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 420, easing: 'cubic-bezier(0.22, 1, 0.36, 1)', fill: 'forwards' });
     }
-    const launchConversation = async (chainId?: string): Promise<string> => {
-      const result = await launch({ agentId, projectId: projectId || undefined, bridgeId: runtime.bridgeId, chainId, provider: runtime.provider, providerProfile: runtime.providerProfile, model: runtime.model, body: draft.trim() || 'Please review the attached files.', artifactIds: attachments.map(a => a.id!).filter(Boolean) }).unwrap();
+    // One POST /chats, like origin/main. A coordinator agent's conversation
+    // also asks its Bridge for a new chain (titled by the message's first
+    // line); it boots as that chain's coordinator and opens at the chain's
+    // canonical URL.
+    const coordinator = isCoordinatorAgent(selectedAgent);
+    const title = (draft.trim().split('\n')[0] || selectedAgent?.name || 'Coordinator').slice(0, 80);
+    try {
+      const result = await launch({
+        agentId, projectId: projectId || undefined, bridgeId: runtime.bridgeId,
+        ...(coordinator ? { createOwnerChain: true, chainTitle: title } : {}),
+        provider: runtime.provider, providerProfile: runtime.providerProfile, model: runtime.model,
+        body: draft.trim() || 'Please review the attached files.', artifactIds: attachments.map(a => a.id!).filter(Boolean),
+      }).unwrap();
       const id = result.instance?.agent_instance_id || result.conversation?.agent_instance_id;
       if (!id) throw new Error('Launch did not return an agent instance ID.');
-      return id;
-    };
-    try {
-      const id = isCoordinatorAgent(selectedAgent) ? await launchCoordinator(launchConversation) : await launchConversation();
+      const chainId = coordinator ? String(result.conversation?.chain_id || result.instance?.chain_id || '') : '';
+      if (chainId) {
+        addPendingOwnerChain({
+          chainId, ownerBridgeId: runtime.bridgeId, bridgeName: selectedBridge?.label || runtime.bridgeId, online: true, title, description: '', sealed: false, tasks: [],
+          projectId: '', projectName: '', migrated: false, status: 'active', coordinatorAgentInstanceId: id,
+        });
+      }
       await launchAnimation.current?.finished.catch(() => undefined);
-      openLaunched(id);
-    } catch (e) { launchAnimation.current?.cancel(); launchAnimation.current = null; setTransitioning(false); setCoordinatorStage(''); setError(message(e)); submitRef.current = false; }
-  }
-  /**
-   * A coordinator conversation runs its own chain: create an owner chain on the
-   * selected bridge, wait for its registry entry, launch the conversation bound
-   * to it, then bind the instance as the chain's coordinator (and relaunch it
-   * with that role).
-   */
-  async function launchCoordinator(launchConversation: (chainId: string) => Promise<string>): Promise<string> {
-    const bridgeId = runtime.bridgeId;
-    const bridgeLabel = selectedBridge?.label || bridgeId;
-    const title = (draft.trim().split('\n')[0] || selectedAgent?.name || 'Coordinator').slice(0, 80);
-    const session = await freshOwnerSession();
-    let made = '';
-    let launched = '';
-    const pending = (chainId: string, coordinatorAgentInstanceId?: string) => addPendingOwnerChain({
-      chainId, ownerBridgeId: bridgeId, bridgeName: bridgeLabel, online: true, title, description: '', sealed: false, tasks: [],
-      projectId: '', projectName: '', migrated: false, status: 'active', coordinatorAgentInstanceId,
-    });
-    try {
-      const { chainId, instanceId } = await createChainWithCoordinator({
-        createChain: () => createOwnerChain(session, bridgeId, { title, description: '' }).catch((e) => { throw new Error(ownerErrorMessage(e, bridgeLabel)); }),
-        // The chain exists from here on: list it even if the coordinator then fails.
-        onChainCreated: (id) => { made = id; pending(id); },
-        waitListed: (id) => waitForOwnerChainListed(id),
-        launch: launchConversation,
-        status: hubCoordinatorApi.status,
-        restart: hubCoordinatorApi.restart,
-        bind: (id, instance) => bindOwnerCoordinator(session, bridgeId, id, instance, agentId),
-        onStage: (stage, instance) => { if (instance) launched = instance; setCoordinatorStage(stage); },
-      });
-      pending(chainId, instanceId);
-      // The chain's canonical conversation target, the same one the sidebar opens.
-      return chainTargetId(chainId);
-    } catch (e) {
-      if (launched) throw new Error(`The conversation started, but it is not yet the chain’s coordinator: ${message(e)} Open the chain from Task Chains to start its coordinator.`);
-      if (made) throw new Error(`The chain was created, but its coordinator did not start: ${message(e)} Open the chain from Task Chains to start one.`);
-      throw e;
-    }
+      openLaunched(chainId ? chainTargetId(chainId) : id);
+    } catch (e) { launchAnimation.current?.cancel(); launchAnimation.current = null; setTransitioning(false); setError(message(e)); submitRef.current = false; }
   }
   function openShell() {
     if (openShellDisabled) return;
@@ -432,7 +405,7 @@ export default function NewConversationPage({ embedded = false, footer, onLaunch
   // With the banner up it carries the bridge problem; the quiet line would repeat it.
   const bannerCovers = (line: string) => showBanner && (line === bridgeIssueText('agent', bridgeClauseShown) || line === bridgeIssueText('shell', bridgeClauseShown));
   const statusLines = (paneMode === 'agent'
-    ? (sending ? [coordinatorStage ? COORDINATOR_STAGE_TEXT[coordinatorStage] : `Creating conversation and starting on ${selectedBridge?.label || 'selected bridge'}…`] : issues)
+    ? (sending ? [`Creating conversation and starting on ${selectedBridge?.label || 'selected bridge'}…`] : issues)
     : shellIssues).filter(line => !bannerCovers(line));
   const alertText = paneMode === 'agent' ? error || preferenceError : shell.errorMessage || preferenceError;
 
@@ -530,7 +503,7 @@ export default function NewConversationPage({ embedded = false, footer, onLaunch
         <input ref={fileRef} data-debug-id="new-convo-upload-input" type="file" multiple className="hidden" onChange={e => { if (!disabled) Array.from(e.target.files || []).forEach(f => void upload(f)); e.target.value = ''; }} />
       </div>
       {/* The coordinator setup outlasts the launch transition: keep its stage visible. */}
-      <div data-debug-id="new-convo-launch-status" className={`-mt-3 flex flex-col gap-2 ${transitioning && !coordinatorStage ? 'pointer-events-none opacity-0' : ''}`}>
+      <div data-debug-id="new-convo-launch-status" className={`-mt-3 flex flex-col gap-2 ${transitioning ? 'pointer-events-none opacity-0' : ''}`}>
         {paneMode === 'shell' && shell.upgradeDetails ? <UpgradePrompt details={shell.upgradeDetails} debugId="shell-launch-upgrade" subtle /> : null}
         <div role="status" data-debug-id="new-convo-launch-issues" className="flex flex-col gap-1 empty:hidden">
           {statusLines.map(line => <Text key={line} role="body-sm" tone="muted" className="m-0">{line}</Text>)}

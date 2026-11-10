@@ -210,8 +210,8 @@ function guideChatArgs() {
 
 export const chatEndpoints = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
-    createLaunchConversation: build.mutation<any, { agentId: string; projectId?: string; bridgeId?: string; chainId?: string; provider?: string; providerProfile?: string; model?: string; body: string; artifactIds?: string[] }>({
-      queryFn: async ({ agentId, projectId, bridgeId, chainId, provider, providerProfile, model, body, artifactIds = [] }, api) => {
+    createLaunchConversation: build.mutation<any, { agentId: string; projectId?: string; bridgeId?: string; chainId?: string; createOwnerChain?: boolean; chainTitle?: string; chainDescription?: string; provider?: string; providerProfile?: string; model?: string; body: string; artifactIds?: string[] }>({
+      queryFn: async ({ agentId, projectId, bridgeId, chainId, createOwnerChain, chainTitle, chainDescription, provider, providerProfile, model, body, artifactIds = [] }, api) => {
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
@@ -225,6 +225,15 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
           if (bridgeId) payload.bridge_id = bridgeId;
           // A chain-bound launch (the Hub accepts only an owner-registry chain).
           if (chainId) payload.chain_id = chainId;
+          // A coordinator conversation: the launch Bridge creates its chain in
+          // the same request. The title and description travel sealed; the
+          // Hub only relays them to the Bridge.
+          else if (createOwnerChain) {
+            if (!activeKey) throw new Error("This device's vault keys are not installed yet.");
+            payload.create_owner_chain = true;
+            payload.chain_title = await encryptVaultText(chainTitle || 'Coordinator', activeKey);
+            if (chainDescription) payload.chain_description = await encryptVaultText(chainDescription, activeKey);
+          }
           if (provider) payload.provider = provider;
           if (providerProfile) payload.provider_profile = providerProfile;
           if (model) payload.model = model;

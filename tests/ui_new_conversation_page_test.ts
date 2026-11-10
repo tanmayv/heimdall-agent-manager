@@ -260,27 +260,20 @@ test('launching a conversation makes the same API calls, keeps the 420ms launch 
   });
 });
 
-test('a coordinator conversation gets an owner chain: chain_id is sent at launch only once the chain is listed, then it is bound and restarted', async () => {
+test('a coordinator conversation is one POST /chats: its Bridge creates the chain, and it opens at the chain URL', async () => {
   const env = await ownerTestSession('b_river', 'riverwood');
-  const owner: OwnerCall[] = [];
-  // One ordered log of owner commands, registry reads and Hub instance calls.
   const log: string[] = [];
-  const relay = fakeOwner(env.session, (call) => { log.push('owner:' + call.method); return { chain_id: call.command.chain_id, task_id: '', revision: '1' }; }, owner);
-  const createdChain = () => owner.find((c) => c.method === 'chain.create')?.command.chain_id;
-  let registryReads = 0;
+  const posts: any[] = [];
   const route = async (path: string, method: string, body: any) => {
     if (path.endsWith('/vault/directory')) return env.hub.dir();
-    if (path.endsWith('/owner-local/relay')) return relay(body);
-    if (path.endsWith('/owner-local/chains')) {
-      // The first read predates the owner's registry publish.
-      const listed = Boolean(createdChain()) && ++registryReads > 1;
-      log.push(listed ? 'registry:listed' : 'registry:missing');
-      const items = listed ? [await registryRow(env.session, { chainId: createdChain()!, bridgeId: 'b_river', online: true })] : [];
-      return { items, next_cursor: { after_chain: '', after_task: '' }, terminal: true };
+    if (path.includes('/owner-local/') && method !== 'GET') { log.push('owner:' + path); return {}; }
+    if (path.endsWith('/chats') && method === 'POST') {
+      posts.push(body);
+      log.push('chats');
+      return { agent_instance_id: 'inst_new', chain_id: 'chain_new' };
     }
-    if (path.endsWith('/chats') && method === 'POST') { log.push(`launch:${body.agent_id}:${body.chain_id}`); return { agent_instance_id: 'inst_new' }; }
-    if (path.endsWith('/agent-instances/inst_new/restart')) { log.push('restart'); return {}; }
-    if (path.endsWith('/agent-instances/inst_new')) { log.push('instance'); return { agent_instance_id: 'inst_new', runtime_status: 'running' }; }
+    if (path.includes('/restart')) { log.push('restart'); return {}; }
+    if (path.endsWith('/agent-instances/inst_new')) { log.push('instance'); return { agent_instance_id: 'inst_new', chain_id: 'chain_new', runtime_status: 'starting' }; }
     return undefined;
   };
   try {
@@ -291,26 +284,39 @@ test('a coordinator conversation gets an owner chain: chain_id is sent at launch
       await click(ctx, sendButton(ctx.doc));
       await until(ctx, () => ctx.launched.length > 0, 'onLaunched', 8000);
 
-      const create = owner.find((c) => c.method === 'chain.create')!;
-      assert.equal(create.command.immutable_owner_bridge, 'b_river', 'the chain is owned by the launch bridge');
+      assert.deepEqual(log, ['chats', 'instance'], 'one launch request (plus the reply instance read): no owner relay, polling, bind or restart');
+      assert.equal(posts.length, 1);
+      const [post] = posts;
+      assert.equal(post.agent_id, 'agt_coord');
+      assert.equal(post.bridge_id, 'b_river', 'the chain is owned by the launch bridge');
+      assert.equal(post.create_owner_chain, true);
+      assert.equal(post.chain_id, undefined);
+      assert.match(post.chain_title, /^vault:/, 'the Hub only relays the sealed title');
       const { decryptVaultText } = await import('../src/ui/utils/vaultContent.ts');
-      assert.equal(await decryptVaultText(create.payload.title_cipher, env.session.keyring), 'Plan the release');
-      const chainId = create.command.chain_id;
-      // 'instance' reads: the launch reply's instance, the running wait, then the wait after the restart.
-      assert.deepEqual(log, [
-        'owner:chain.create', 'registry:missing', 'registry:listed', `launch:agt_coord:${chainId}`, 'instance', 'instance',
-        'owner:chain.metadata.read', 'owner:chain.read', 'owner:chain.member.set', 'restart', 'instance',
-      ]);
-      const bind = owner.find((c) => c.method === 'chain.member.set')!;
-      assert.deepEqual({ chain: bind.command.chain_id, instance: bind.payload.instance_id, agent: bind.payload.agent_id, role: bind.payload.role },
-        { chain: chainId, instance: 'inst_new', agent: 'agt_coord', role: 'coordinator' });
-      assert.deepEqual(ctx.launched, [`chain:${chainId}`], 'a coordinator conversation opens at the canonical chain target');
+      const { getActiveVaultKey } = await import('../src/ui/utils/vaultCrypto.ts');
+      assert.equal(await decryptVaultText(post.chain_title, getActiveVaultKey()!), 'Plan the release', 'titled by the first line of the message');
+      assert.deepEqual(ctx.launched, ['chain:chain_new'], 'a coordinator conversation opens at the canonical chain target');
       const { ownerChainsSnapshot } = await import('../src/ui/api/ownerChainsStore.ts');
-      assert.equal(ownerChainsSnapshot().chains.find((c) => c.chainId === chainId)?.coordinatorAgentInstanceId, 'inst_new', 'the new chain is listed with its coordinator');
+      assert.equal(ownerChainsSnapshot().chains.find((c) => c.chainId === 'chain_new')?.coordinatorAgentInstanceId, 'inst_new', 'the new chain is listed with its coordinator');
     });
   } finally {
     clearKeyringSession();
   }
+});
+
+test('a refused coordinator chain shows the Bridge error and opens nothing', async () => {
+  const route = async (path: string, method: string) => {
+    if (path.endsWith('/chats') && method === 'POST') throw new Error('the Bridge could not create the task chain: the owner Bridge vault is locked');
+    return undefined;
+  };
+  await withPage({ route }, async (ctx) => {
+    await ctx.render();
+    await until(ctx, () => issuesText(ctx.doc) === '', 'hydration');
+    await type(ctx, q(ctx.doc, 'new-convo-composer-input'), 'Plan');
+    await click(ctx, sendButton(ctx.doc));
+    await until(ctx, () => /vault is locked/.test(ctx.doc.body.textContent || ''), 'error shown', 8000);
+    assert.deepEqual(ctx.launched, []);
+  });
 });
 
 test('mode switch swaps the composer body with composerSwap, persists heimdall:new-pane-mode, and opens a shell', async () => {
