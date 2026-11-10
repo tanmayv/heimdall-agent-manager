@@ -38,6 +38,33 @@ bridge_executor_directory_fetch :: proc(generation:i64)->(vault.Directory_Verifi
     if json.unmarshal_string(httpc.text(response),&wire,.JSON,context.temp_allocator)!=nil do return {},false
     return wire.data,true
 }
+// The directory plus the Hub's Bridge id -> key routing hint (bridge_keys).
+// The hint is never trusted alone: the caller verifies the key as an approved
+// bridge key of the signed directory (owner.verify_executor_directory), and
+// the executor refuses a consent that names any key but its own.
+Executor_Directory_Bridge_Key :: struct {bridge_id,device_id:string}
+bridge_executor_directory_parse :: proc(body,bridge_id:string)->(dir:vault.Directory_Verification_Input,key_id:string,ok:bool) {
+    wire:struct{data:vault.Directory_Verification_Input}
+    if json.unmarshal_string(body,&wire,.JSON,context.temp_allocator)!=nil do return
+    keys:struct{data:struct{bridge_keys:[]Executor_Directory_Bridge_Key}}
+    if json.unmarshal_string(body,&keys,.JSON,context.temp_allocator)!=nil do return
+    for k in keys.data.bridge_keys {
+        if k.bridge_id!=bridge_id || k.device_id=="" do continue
+        // Two current keys for one Bridge is ambiguous; refuse rather than guess.
+        if key_id!="" && key_id!=k.device_id do return {},"",false
+        key_id=k.device_id
+    }
+    return wire.data,key_id,key_id!=""
+}
+bridge_executor_directory_bridge_key :: proc(generation:i64,bridge_id:string)->(vault.Directory_Verification_Input,string,bool) {
+    credential:=bridge_credential_snapshot();defer delete(credential)
+    headers:=[?]httpc.Header{httpc.bearer(credential)}
+    if generation!=bridge_task_chain_search_generation() || sync.atomic_load(&bridge_hub_traffic_stopped) do return {},"",false
+    response,err:=bridge_http_request_retry({method=.GET,url=bridge_hub_url(),path={"api","v1","executor","directory"},headers=headers[:],timeout_ms=5000})
+    defer httpc.response_destroy(&response)
+    if err!=.None || response.status!=200 || len(httpc.text(response))>3*1024*1024 || generation!=bridge_task_chain_search_generation() do return {},"",false
+    return bridge_executor_directory_parse(httpc.text(response),bridge_id)
+}
 bridge_executor_reverse_exchange :: proc(request_raw,kind,input:string,generation:i64)->Executor_Fence_Outcome {
     now:=time.to_unix_nanoseconds(time.now())/1000000
     q,valid:=contracts.executor_parse(request_raw,kind)

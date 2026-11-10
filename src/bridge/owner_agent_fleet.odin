@@ -253,7 +253,7 @@ bridge_owner_fleet :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -> 
     }
     switch {
     case note!="":
-    case policy.bridge_id!="" && policy.bridge_id!=bridge_config.daemon_id: note=fmt.tprintf("placement on %s recorded; agents of a Bridge-owned chain run on its owner Bridge %s, nothing launched",policy.bridge_id,bridge_config.daemon_id)
+    case policy.bridge_id!="" && policy.bridge_id!=bridge_config.daemon_id: note=fmt.tprintf("placement on %s recorded; nothing launched here: a task assigned to %s is reserved on %s (owner_remote_place.odin)",policy.bridge_id,agent,policy.bridge_id)
     case len(active)==0: note="the row is paused; nothing launched"
     }
     if note!="" {

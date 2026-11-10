@@ -102,6 +102,9 @@ Owner_Agent_Ctx :: struct {
     // lock is released, and a reviewer's TASK.md (owner_agent_review.odin).
     reviews:Owner_Review_Dispatch,
     review_context:Owner_Review_Context,
+    // An assignee placed on another account Bridge (owner_remote_place.odin),
+    // reserved after every lock is released.
+    remote:Owner_Remote_Place,
 }
 
 // A claim/switch commits and presents requirements under the child locks;
@@ -125,39 +128,40 @@ Owner_Pending_Delivery :: struct {
 bridge_owner_agent_route :: proc(request_id,method,params:string,rec:Bridge_Local_Agent_Token_Record) -> (string,bool) {
     if rec.role!=.Agent do return "",false
     if verb:=bridge_owner_instance_verb(method);verb!="" do return bridge_owner_instance_gate(request_id,verb,params,rec)
-    response,handled,launch,reviews:=bridge_owner_agent_route_locked(request_id,method,params,rec)
+    response,handled,launch,reviews,remote:=bridge_owner_agent_route_locked(request_id,method,params,rec)
     // Not ours: another Bridge of the account may own it (cross-Bridge read and
     // comment, owner_remote_agent.odin), else the Hub route as before.
     if !handled do return bridge_owner_remote_agent_send(request_id,method,params,rec)
     // Owed review leases are woken (or their reviewers started/launched) with
     // no lock held.
     bridge_owner_review_dispatch(reviews)
+    if remote.active && bridge_owner_response_ok(response) do return bridge_owner_remote_place_reply(request_id,response,remote,rec),true
     if !launch.active do return response,handled
     return bridge_owner_fleet_launch(request_id,launch,rec),true
 }
 
-bridge_owner_agent_route_locked :: proc(request_id,method,params:string,rec:Bridge_Local_Agent_Token_Record) -> (string,bool,Owner_Fleet_Launch,Owner_Review_Dispatch) {
-    if !bridge_owner_routable(method) do return "",false,{},{}
+bridge_owner_agent_route_locked :: proc(request_id,method,params:string,rec:Bridge_Local_Agent_Token_Record) -> (string,bool,Owner_Fleet_Launch,Owner_Review_Dispatch,Owner_Remote_Place) {
+    if !bridge_owner_routable(method) do return "",false,{},{},{}
     account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
-    if account=="" do return "",false,{},{}
+    if account=="" do return "",false,{},{},{}
     pub:=bridge_identity_public_key_hex(bridge_config.daemon_id)
     key_id,key_ok:=vault.device_id_from_sign_pub(pub,context.temp_allocator)
-    if !key_ok do return "",false,{},{}
+    if !key_ok do return "",false,{},{},{}
     sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
     // Never create an owner store just to answer "not mine".
     if bridge_owner_store.db==nil {
         path:=bridge_owner_store_path(account)
-        if path=="" || !os.exists(path) do return "",false,{},{}
+        if path=="" || !os.exists(path) do return "",false,{},{},{}
     }
     // The store exists: an unreadable or busy store is an owner failure,
     // never a reason to send the verb to the Hub.
-    if !bridge_owner_open(account,key_id) do return bridge_local_response_error(request_id,"storage_error","owner store unavailable"),true,{},{}
+    if !bridge_owner_open(account,key_id) do return bridge_local_response_error(request_id,"storage_error","owner store unavailable"),true,{},{},{}
     p:=bridge_owner_params(params)
     owned,read:=bridge_owner_targets(&bridge_owner_store,method,p,rec.agent_instance_id)
-    if !read do return bridge_local_response_error(request_id,"storage_error","owner store could not be read; retry"),true,{},{}
-    if !owned do return "",false,{},{}
+    if !read do return bridge_local_response_error(request_id,"storage_error","owner store could not be read; retry"),true,{},{},{}
+    if !owned do return "",false,{},{},{}
     kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
-    if !unlocked do return bridge_local_response_error(request_id,"vault_locked","owner Bridge vault is locked"),true,{},{}
+    if !unlocked do return bridge_local_response_error(request_id,"vault_locked","owner Bridge vault is locked"),true,{},{},{}
     key:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,key_id,pub,"bridge",true,false}
     response,ctx:=bridge_owner_agent_route_child(request_id,method,p,rec,key,&kr)
     if ctx.pending.active {
@@ -172,7 +176,7 @@ bridge_owner_agent_route_locked :: proc(request_id,method,params:string,rec:Brid
     // Registry publication and merge intents run after the child locks are
     // released, under the owner mutex only (as bridge_owner_handle does).
     bridge_owner_publish()
-    return response,true,ctx.launch,ctx.reviews
+    return response,true,ctx.launch,ctx.reviews,ctx.remote
 }
 
 // Lock order owner -> startup I/O -> token, as bridge_owner_agent: stop,
@@ -254,7 +258,7 @@ bridge_owner_run_input :: proc(ctx:^Owner_Agent_Ctx,method,chain,task,lease,conf
 
 // Coordinator (or own-task worker) commands, signed by the owner key for the
 // proven child; owner.execute applies agent_command_admit.
-bridge_owner_run_command :: proc(ctx:^Owner_Agent_Ctx,method,chain,task,expected,payload:string,fleet_child:owner.Child={},proof:owner.Lifecycle_Proof={},observed_children:[]owner.Child=nil,source:owner.Source_Proof={}) -> owner.Result {
+bridge_owner_run_command :: proc(ctx:^Owner_Agent_Ctx,method,chain,task,expected,payload:string,fleet_child:owner.Child={},proof:owner.Lifecycle_Proof={},observed_children:[]owner.Child=nil,source:owner.Source_Proof={},remote_key:contracts.Owner_Verified_Key={}) -> owner.Result {
     s:=ctx.store
     c:=make(json.Object,context.temp_allocator)
     values:=map[string]string{"protocol_version"="1","account_id"=s.account,"chain_id"=chain,"immutable_owner_bridge"=s.owner,
@@ -267,7 +271,7 @@ bridge_owner_run_command :: proc(ctx:^Owner_Agent_Ctx,method,chain,task,expected
     signature,signed:=signer.sign(signer.ctx,"command",c)
     if !signed do return owner.Result{code="storage_error"}
     c["signature"]=json.String(signature)
-    return owner.execute_agent(s,bridge_owner_json(c),payload,ctx.child,ctx.key,ctx.now,ctx.kr,bridge_owner_signer(),fleet_child,proof,observed_children,source)
+    return owner.execute_agent(s,bridge_owner_json(c),payload,ctx.child,ctx.key,ctx.now,ctx.kr,bridge_owner_signer(),fleet_child,proof,observed_children,source,remote_key)
 }
 
 // A vault-armored value from ham-ctl is already a cipher under this account's
@@ -1034,7 +1038,15 @@ bridge_owner_plan_children :: proc(ctx:^Owner_Agent_Ctx,chain:string,st:owner.Ag
     code,message:string
     if plan.has_assignee {
         assignee,code,message=bridge_owner_resolve_agent(ctx,chain,plan.assignee,"--assignee")
-        if code!="ok" do return {},{},bridge_owner_fail(ctx,code,message)
+        if code!="ok" {
+            // No live child here: an agent whose fleet policy names another
+            // account Bridge is placed there after the locks (#9/#10).
+            place,remote_code,remote_message:=bridge_owner_remote_target(ctx.store,chain,plan.assignee)
+            if remote_code=="" do return {},{},bridge_owner_fail(ctx,code,message)
+            if remote_code!="ok" do return {},{},bridge_owner_fail(ctx,remote_code,remote_message)
+            ctx.remote=place
+            assignee=owner.Child{agent_id=plan.assignee}
+        }
     }
     reviewer_agent:=plan.reviewer
     if !plan.has_reviewer && plan.has_assignee && st.configured do reviewer_agent=contracts.owner_string(st.config,"reviewer_agent_id")
@@ -1053,6 +1065,14 @@ bridge_owner_plan_children :: proc(ctx:^Owner_Agent_Ctx,chain:string,st:owner.Ag
         if id==reviewer_agent do continue
         if _,code,message:=bridge_owner_resolve_agent(ctx,chain,id,"--reviewer");code!="ok" do return {},{},bridge_owner_fail(ctx,code,message)
     }
+    // A remote assignee is reserved by fleet.reserve after the locks, not by
+    // fleet.edit; its reviewers are recorded in the brief. Pairing them with
+    // lifecycle.configure needs a live local author (bridge_owner_config_proof)
+    // and is not done for a remote worker yet.
+    if ctx.remote.active {
+        plan.has_assignee=false
+        return {},{},""
+    }
     return assignee,reviewer,""
 }
 
@@ -1069,6 +1089,7 @@ bridge_owner_task_create :: proc(ctx:^Owner_Agent_Ctx,p:json.Object) -> string {
     assignee,reviewer,failed:=bridge_owner_plan_children(ctx,chain,{},&plan)
     if failed!="" do return failed
     task:=bridge_owner_fresh_id("task")
+    ctx.remote.task=task
     // Validate the whole assignment before the task exists.
     pre,pre_code,pre_message:=bridge_owner_assignment_preflight(ctx,chain,task,{},false,plan,assignee,reviewer)
     if pre_code!="ok" do return bridge_owner_fail(ctx,pre_code,fmt.tprintf("no task created: %s",pre_message))
@@ -1183,6 +1204,7 @@ bridge_owner_task_update :: proc(ctx:^Owner_Agent_Ctx,p:json.Object) -> string {
     if reason:=bridge_owner_pstr(p,"expected_requirements_revision");reason!="" && bridge_owner_brief_text(ctx,p)=="" do return bridge_owner_fail(ctx,"bad_request","--expected-requirements-revision needs brief flags")
     assignee,reviewer,failed:=bridge_owner_plan_children(ctx,st.chain_id,st,&plan)
     if failed!="" do return failed
+    ctx.remote.task=st.task_id
     pre,pre_code,pre_message:=bridge_owner_assignment_preflight(ctx,st.chain_id,st.task_id,st,true,plan,assignee,reviewer)
     if pre_code!="ok" do return bridge_owner_fail(ctx,pre_code,fmt.tprintf("task unchanged: %s",pre_message))
     title,description:=bridge_owner_pstr(p,"title"),bridge_owner_pstr(p,"description")
@@ -1209,7 +1231,7 @@ bridge_owner_task_update :: proc(ctx:^Owner_Agent_Ctx,p:json.Object) -> string {
         if brief!="" || st.brief!="" do brief=bridge_owner_brief_with_reviewers(brief if brief!="" else "{}",plan.reviewers[:])
     }
     if plan.reason!="" && brief=="" do return bridge_owner_fail(ctx,"bad_request","--reason applies to a requirements edit (brief flags or --no-require-user-approval); task unchanged")
-    if title=="" && description=="" && brief=="" && plan.priority=="" && !plan.has_deps && !plan.has_assignee && !plan.has_reviewer && !plan.has_approval {
+    if title=="" && description=="" && brief=="" && plan.priority=="" && !plan.has_deps && !plan.has_assignee && !plan.has_reviewer && !plan.has_approval && !ctx.remote.active {
         return bridge_owner_fail(ctx,"bad_request","task update needs at least one field to change")
     }
     result:="{}"
