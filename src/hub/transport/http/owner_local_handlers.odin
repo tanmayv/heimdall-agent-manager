@@ -346,7 +346,37 @@ executor_directory_handler :: proc(ctx:rawptr,req:Request)->Response {
     if auth.kind!=.Bridge_Token do return respond_error(domain.domain_error(.Forbidden,"executor Bridge authentication required"),req.request_id)
     directory,available:=owner_directory(h,auth.user_id)
     if !available do return respond_error(domain.domain_error(.Forbidden,"current directory unavailable"),req.request_id)
-    return respond_success(owner_json(directory),req.request_id,auth_ctx_server_time(req))
+    keys,keys_ok:=owner_directory_bridge_keys(h,auth.user_id)
+    if !keys_ok do return respond_error(domain.domain_error(.Forbidden,"current directory unavailable"),req.request_id)
+    d:=directory
+    reply:=Executor_Directory_Reply{d.owner,d.root_device_id,d.head_hash,d.version,d.current_epoch,d.log,d.devices,d.pin_seq,d.pin_hash,d.vault_id,keys}
+    return respond_success(owner_json(reply),req.request_id,auth_ctx_server_time(req))
+}
+
+// The executor directory plus which approved Bridge key belongs to which
+// Bridge id. The signed directory names keys, not Bridge ids, and an owner
+// Bridge consenting to issuance on another Bridge (cross-Bridge placement)
+// must name that Bridge's key. The mapping is a routing hint only: the key
+// is still verified as an approved bridge key in the signed directory, and
+// the executor refuses a consent naming any key but its own.
+Executor_Directory_Bridge_Key :: struct {bridge_id,device_id:string}
+Executor_Directory_Reply :: struct {
+    owner,root_device_id,head_hash:string,
+    version,current_epoch:i64,
+    log:[]vault.Directory_Log_Item,
+    devices:[]vault.Directory_Device_Item,
+    pin_seq:i64,
+    pin_hash,vault_id:string,
+    bridge_keys:[]Executor_Directory_Bridge_Key,
+}
+owner_directory_bridge_keys :: proc(h:^Bridge_Handlers,account:string)->([]Executor_Directory_Bridge_Key,bool) {
+    snapshot,err:=vd.get_directory(h.vault,account)
+    if err.code!=.None do return nil,false
+    keys:=make([dynamic]Executor_Directory_Bridge_Key,context.temp_allocator)
+    for device in snapshot.devices {
+        if device.kind=="bridge" && device.status==.Approved && device.bridge_id!="" && device.retired_at=="" do append(&keys,Executor_Directory_Bridge_Key{device.bridge_id,device.device_id})
+    }
+    return keys[:],true
 }
 executor_reverse_relay :: proc(ctx:rawptr,req:Request,child:bool)->Response {
     context.allocator=context.temp_allocator

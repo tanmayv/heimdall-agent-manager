@@ -528,3 +528,32 @@ test_agent_to_agent_crosses_account_bridges :: proc(t: ^testing.T) {
 	testing.expect_value(t, a2a_send(&f, bob_token, bob_inst, f.inst_id, "bob-to-a").status, 404)
 	testing.expect_value(t, a2a_send(&f, b_token, b_inst, bob_inst, "b-to-bob").status, 404)
 }
+
+// Cross-Bridge placement (task_18e6b219bcee55fa #9/#10): the executor
+// directory a Bridge reads names every current Bridge key of its own account
+// by Bridge id, so an owner Bridge can address its consent to another Bridge's
+// key; another account's Bridges are never listed.
+@(test)
+test_executor_directory_lists_account_bridge_keys :: proc(t: ^testing.T) {
+	f: Refresh_Fixture
+	defer refresh_fixture_teardown(&f)
+	if !refresh_fixture_setup(t, &f, "dir_bridge_keys") do return
+	b_bridge, b_token, _, _, b_ok := a2a_bridge_instance(t, &f, f.alice[:], "Second Bridge", "second-coder")
+	if !b_ok do return
+	bob := hub_test_user_headers(&f.graph, "bob")
+	bob_bridge, bob_token, _, _, bob_ok := a2a_bridge_instance(t, &f, bob[:], "Bob Bridge", "bob-coder", root_seed = VT_ROOT_SEED + 900)
+	if !bob_ok do return
+	read :: proc(f: ^Refresh_Fixture, token, id: string) -> api_http.Response {
+		headers := []contracts.HTTP_Header{{name = "Authorization", value = fmt.aprintf("Bearer %s", token)}}
+		return api_http.router_dispatch(&f.graph.router, api_http.Request{method = "GET", path = "/api/v1/executor/directory", request_id = fmt.aprintf("req_dir_%s", id), remote_addr = "127.0.0.1", headers = headers})
+	}
+	for token, i in ([2]string{f.bridge_token, b_token}) {
+		res := read(&f, token, fmt.aprintf("alice_%d", i))
+		if !testing.expectf(t, res.status == 200, "directory read: %d %s", res.status, res.body) do continue
+		testing.expectf(t, strings.contains(res.body, `"bridge_keys":[`), "bridge_keys present: %s", res.body)
+		testing.expectf(t, strings.contains(res.body, fmt.aprintf(`"bridge_id":"%s"`, f.bridge_id)) && strings.contains(res.body, fmt.aprintf(`"bridge_id":"%s"`, b_bridge)), "both account Bridges are named: %s", res.body)
+		testing.expectf(t, !strings.contains(res.body, bob_bridge), "another account's Bridge is never named: %s", res.body)
+	}
+	bob_res := read(&f, bob_token, "bob")
+	testing.expectf(t, bob_res.status == 200 && strings.contains(bob_res.body, bob_bridge) && !strings.contains(bob_res.body, b_bridge), "bob sees only his own Bridge: %s", bob_res.body)
+}
