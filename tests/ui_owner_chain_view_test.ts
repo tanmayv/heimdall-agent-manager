@@ -156,8 +156,8 @@ test('owner chain view renders tickets, brief, comments, submissions and reviews
     assert.equal(ui.$('owner-chain-task-title')!.textContent, 'Fix login');
     assert.match(ui.$('owner-chain-brief')!.textContent!, /Login fails on Safari/);
     // The restored ticket card frame carries the requirements revision in its header.
-    assert.match(ui.$('owner-chain-brief')!.textContent!, /Brief.*Rev 2/s);
-    assert.match(ui.$('owner-chain-requirements')!.textContent!, /Users can sign in.*Acceptance.*SSO works.*Errors are shown/s);
+    assert.match(ui.$('task-requirements-status')!.textContent!, /Rev 2/, 'the requirements card carries the revision');
+    assert.match(ui.$('ticket-view-requirements')!.textContent!, /Requirements.*Rev \d.*Users can sign in.*SSO works.*Errors are shown/s, 'origin/main requirements card');
     const imported = ui.$('owner-chain-comment-cmt_legacy')!;
     assert.match(imported.textContent!, /inst_author.*Imported comment/s);
     assert.equal(imported.querySelector('time')!.getAttribute('datetime'), '2025-04-03T12:00:00Z', 'comments keep their timestamps');
@@ -262,7 +262,7 @@ test('owner chain view renders tickets, brief, comments, submissions and reviews
     assert.equal(ui.$('owner-chain-dep-task_2'), null, 'the removed dependency is gone after the re-read');
 
     // Requirements: edit goal, acceptance, reviewers and the approval gate.
-    await ui.click('owner-chain-requirements-edit');
+    await ui.click('ticket-view-requirements-change-btn');
     assert.equal((ui.$('owner-chain-requirements-goal') as HTMLTextAreaElement).value, 'Users can sign in', 'the editor starts from the saved brief');
     assert.equal((ui.$('owner-chain-requirements-acceptance') as HTMLTextAreaElement).value, 'SSO works\nErrors are shown');
     await ui.type('owner-chain-requirements-acceptance', 'SSO works\nErrors are shown\nSafari works');

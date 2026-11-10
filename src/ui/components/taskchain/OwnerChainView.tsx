@@ -22,7 +22,8 @@ import { TicketProgressBar } from '../tasks/TicketProgressBar';
 import { TicketAttemptsCard } from '../tasks/TicketAttemptsCard';
 import { TicketCard } from '../tasks/TicketCard';
 import { TicketDecisionBlock, type TicketDecisionActions } from '../tasks/TicketDecisionBlock';
-import { ownerRequirementsDoc, ownerTaskWire, ownerTaskWires } from '../tasks/ownerTaskAdapter';
+import { ownerRequirementHistoryEntries, ownerRequirementsDoc, ownerTaskWire, ownerTaskWires } from '../tasks/ownerTaskAdapter';
+import { TicketRequirementsCard } from '../tasks/TicketRequirementsCard';
 import { TicketBoard } from '../tasks/TicketBoard';
 import type { BoardTicketActions } from '../tasks/BoardTicketCard';
 import type { TaskWire } from '../../api/taskWire';
@@ -159,6 +160,7 @@ export function OwnerChainView({
   // Hub runtime_status per agent instance (overview agent rows).
   const [agentStatus, setAgentStatus] = useState<Record<string, string>>({});
   // The open ticket's requirement history, read when shown: null when hidden.
+  const [reqView, setReqView] = useState<'current' | 'changes'>('current');
   const [reqHistory, setReqHistory] = useState<{ taskId: string; changes: OwnerRequirementChange[] | null; error: string; more: boolean } | null>(null);
   // The overview's recent chain history (history.read); null until read.
   const [activity, setActivity] = useState<{ events: OwnerActivity[]; truncated: boolean } | null>(null);
@@ -965,19 +967,20 @@ export function OwnerChainView({
                 <Input size="sm" className="min-w-0 flex-1" aria-label="Reason (optional)" placeholder="Reason (optional)" data-debug-id="owner-chain-control-reason" value={reason} onChange={setReason} />
               </div>}
 
-              <TicketCard debugId="owner-chain-brief" title="Brief" aside={wire?.requirements ? <Badge tone="neutral">Rev {wire.requirements.revision}</Badge> : undefined}>
+              {wire && task.runtime.requirements && (
+                // origin/main's requirements card: goal, acceptance, Current / Changes.
+                <TicketRequirementsCard task={wire} names={EMPTY_TASK_NAMES} now={Date.now()} highlight={false} masked={false}
+                  history={reqHistory?.taskId === task.taskId && reqHistory.changes ? ownerRequirementHistoryEntries(reqHistory.changes) : null}
+                  view={reqView}
+                  onViewChange={(v) => { setReqView(v); if (v === 'changes' && reqHistory?.taskId !== task.taskId) void showRequirementHistory(task.taskId); }}
+                  canEdit={editable && ts.state !== 'done' && ts.merge === '' && reqDraft?.taskId !== task.taskId && !busy}
+                  onChange={() => startReqEdit(task)}
+                  onSeeChanges={() => { if (reqHistory?.taskId !== task.taskId) void showRequirementHistory(task.taskId); }} />
+              )}
+              <TicketCard debugId="owner-chain-brief" title="Brief">
                 {task.detail.body ? <Text as="p" role="body-sm" className="whitespace-pre-wrap">{task.detail.body}</Text> : <Text as="p" role="caption" tone="muted">No description.</Text>}
                 {task.runtime.requirements ? (
                   <div data-debug-id="owner-chain-requirements" className="mt-3 space-y-2">
-                    {task.runtime.requirements.goal && <Text as="p" role="body-sm" className="whitespace-pre-wrap">{task.runtime.requirements.goal}</Text>}
-                    {task.runtime.requirements.acceptance.length > 0 && (
-                      <>
-                        <Text as="h4" role="overline" tone="muted">Acceptance</Text>
-                        <ul className="list-disc space-y-1 pl-5">
-                          {task.runtime.requirements.acceptance.map((a, i) => <li key={i}><Text as="span" role="body-sm">{a}</Text></li>)}
-                        </ul>
-                      </>
-                    )}
                     {(wire?.brief?.reviewers?.length || wire?.requires_user_approval) ? (
                       <Text as="p" role="caption" tone="muted" data-debug-id="owner-chain-reviewers">
                         Reviewers: {[...(wire?.brief?.reviewers ?? []), ...(wire?.requires_user_approval ? ['you'] : [])].join(', ')}
@@ -989,8 +992,9 @@ export function OwnerChainView({
                   </div>
                 ) : <Text as="p" role="caption" tone="muted">No requirements saved.</Text>}
                 {editable && ts.state !== 'done' && (reqDraft?.taskId !== task.taskId ? (
-                  <Button size="sm" variant="ghost" className="mt-2" data-debug-id="owner-chain-requirements-edit" disabled={busy || ts.merge !== ''}
-                    onClick={() => startReqEdit(task)}>{task.runtime.requirements ? 'Change requirements' : 'Add requirements'}</Button>
+                  // With requirements, the requirements card above offers Change requirements.
+                  !task.runtime.requirements && <Button size="sm" variant="ghost" className="mt-2" data-debug-id="owner-chain-requirements-edit" disabled={busy || ts.merge !== ''}
+                    onClick={() => startReqEdit(task)}>Add requirements</Button>
                 ) : (
                   <form data-debug-id="owner-chain-requirements-form" className="mt-3 space-y-2" onSubmit={(e) => {
                     e.preventDefault();

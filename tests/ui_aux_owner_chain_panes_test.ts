@@ -630,3 +630,52 @@ test('the board card Edit menu opens the ticket tab with the requirements editor
     await ticket.cleanup();
   }
 });
+
+test('the ticket shows origin/main requirements card; Changes diffs the latest edit from the owner history', async () => {
+  const { encryptVaultText } = await import('../src/ui/utils/vaultCrypto.ts');
+  const owner = chainOwner();
+  const edits: Record<string, { revision: string; doc: unknown }> = {
+    '4': { revision: '1', doc: { goal: 'Fix login', acceptance: ['Works on Safari'] } },
+    '9': { revision: '2', doc: { goal: 'Fix login everywhere', acceptance: ['Works on Safari', 'Works on Firefox'], requirements_reason: 'Firefox fails too' } },
+  };
+  const ui = await mount({
+    answer: async (call) => {
+      if (call.method === 'runtime.read' && call.command.task_id === 'task_1') {
+        return { ...runtime(), requirements: [['2', JSON.stringify({ goal: 'Fix login everywhere', acceptance: ['Works on Safari', 'Works on Firefox'] })]] };
+      }
+      if (call.method === 'history.read') return { chain_id: CHAIN, next_cursor: '', items: [
+        { seq: '4', kind: 'requirements.edit', task_id: 'task_1', actor_kind: 'device', actor_id: 'dev_x', ts_ms: '1794200000000' },
+        { seq: '9', kind: 'requirements.edit', task_id: 'task_1', actor_kind: 'agent', actor_id: 'inst_coord', ts_ms: '1794200002000' },
+      ] };
+      if (call.method === 'history.fetch') {
+        const e = edits[call.payload.seq ?? ''];
+        const payload = JSON.stringify({ requirements_revision: e.revision, body_cipher: await encryptVaultText(JSON.stringify(e.doc)) });
+        return { evidence: JSON.stringify({ payload }), next_offset: '' };
+      }
+      return owner.answer(call);
+    },
+    render: (_env, h) => aux({ type: 'ticket', chainId: CHAIN, taskId: 'task_1' }, h),
+  });
+  try {
+    const card = ui.$('ticket-view-requirements')!;
+    assert.match(card.textContent!, /Requirements.*Rev 2.*Fix login everywhere.*Works on Firefox/s);
+    assert.ok(ui.$('ticket-view-requirements-change-btn'), 'Change requirements lives on the card');
+    await ui.click('ticket-view-requirements-changes');
+    await ui.settle();
+    const diff = ui.$('ticket-view-requirements-diff')!;
+    assert.match(diff.textContent!, /Since rev 1.*Fix login.*Fix login everywhere.*Add.*Works on Firefox/s);
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('ownerRequirementHistoryEntries pairs each change with the previous one', async () => {
+  const { ownerRequirementHistoryEntries } = await import('../src/ui/components/tasks/ownerTaskAdapter.ts');
+  const base = { reason: '', actorId: 'x', readable: true };
+  const entries = ownerRequirementHistoryEntries([
+    { ...base, seq: '9', revision: '2', goal: 'B', acceptance: ['b'], actorKind: 'device', at: '2026-11-10T00:00:00Z' },
+    { ...base, seq: '4', revision: '1', goal: 'A', acceptance: ['a'], actorKind: 'agent', at: '' },
+  ]);
+  assert.deepEqual(entries.map((e) => [e.revision, e.actorKind, e.before.goal, e.after.goal, e.eventId]), [[2, 'user', 'A', 'B', 9], [1, 'agent', '', 'A', 4]]);
+  assert.equal(entries[0].tsMs, Date.parse('2026-11-10T00:00:00Z'));
+});

@@ -6,7 +6,8 @@
 // components never learn about owner operations.
 
 import type { TaskReviewWire, TaskWire } from '../../api/taskWire';
-import { ownerTaskState, type OwnerComment, type OwnerReview, type OwnerRuntime, type OwnerTaskDetail, type OwnerTaskRow } from '../../api/ownerChains';
+import type { RequirementRevisionEntry } from './ticketModel';
+import { ownerTaskState, type OwnerComment, type OwnerRequirementChange, type OwnerReview, type OwnerRuntime, type OwnerTaskDetail, type OwnerTaskRow } from '../../api/ownerChains';
 
 export interface OwnerTaskSource {
   chainId: string;
@@ -155,4 +156,27 @@ export function ownerRequirementsDoc(raw: string, edit: OwnerRequirementsEdit): 
   if (edit.requiresUserApproval) brief.requires_user_approval = true; else delete brief.requires_user_approval;
   if (edit.reason.trim()) brief.requirements_reason = edit.reason.trim();
   return JSON.stringify(brief);
+}
+
+/**
+ * Owner requirement history (newest first, readOwnerRequirementHistory) as
+ * origin/main's revision entries: each change's "before" is the next older
+ * change (empty for the first one, or when it could not be decrypted). A
+ * device actor is the user.
+ */
+export function ownerRequirementHistoryEntries(changes: OwnerRequirementChange[]): RequirementRevisionEntry[] {
+  return changes.map((c, i) => {
+    const prev = changes[i + 1];
+    const ms = c.at ? Date.parse(c.at) : 0;
+    return {
+      revision: Number(c.revision) || 0,
+      actorKind: c.actorKind === 'device' ? 'user' : c.actorKind,
+      actorId: c.actorId,
+      tsMs: Number.isFinite(ms) ? ms : 0,
+      reason: c.reason,
+      before: prev?.readable ? { goal: prev.goal, acceptance: prev.acceptance } : { goal: '', acceptance: [] },
+      after: { goal: c.goal, acceptance: c.acceptance },
+      eventId: Number(c.seq) || null,
+    };
+  });
 }
