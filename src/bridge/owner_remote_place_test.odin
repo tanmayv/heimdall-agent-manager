@@ -78,6 +78,9 @@ test_owner_remote_assignee_is_placed_on_its_fleet_bridge :: proc(t:^testing.T) {
     testing.expect_value(t,ctx.remote.executor_bridge,"bridge_b")
     testing.expect_value(t,ctx.remote.provider,"claude")
     testing.expect_value(t,ctx.remote.model,"claude-sonnet-5-5")
+    // A chain with no repository sends no checkout hint (the executor runs
+    // in its scratch directory); a git chain sends its repository.
+    testing.expect_value(t,ctx.remote.repository,"")
     rows,_:=owner.query(r.store.db,"SELECT count(*) FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task)
     testing.expectf(t,len(rows)==1 && rows[0][0]=="0","no local fleet row before the reservation: %v",rows)
 

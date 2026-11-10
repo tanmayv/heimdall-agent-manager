@@ -276,7 +276,10 @@ Executor_Issuance_Command :: struct {
     // from_bridge_id: the Bridge whose token relayed the request ("" for a
     // user). The executor admits a Bridge-signed consent only from this exact
     // Bridge, so another Bridge of the account cannot consent as the owner.
-    type,command_id,account_id,from_bridge_id,relay:string,
+    // project_path: an unsigned hint for an owner-Bridge relay that names its
+    // chain repository (query owner_repository): the same Hub project's path
+    // on the executor Bridge ("" when none). The executor re-validates it.
+    type,command_id,account_id,from_bridge_id,relay,project_path:string,
     directory:vault.Directory_Verification_Input,
 }
 // The Hub transports opaque bytes and enrolled directory evidence only. The
@@ -314,7 +317,11 @@ executor_device_relay :: proc(ctx:rawptr,req:Request)->Response {
     if !available do return respond_error(domain.domain_error(.Forbidden,"current directory unavailable"),req.request_id)
     kind:="executor_issuance"
     id:=fmt.tprintf("cmd_%s_%d",kind,time.to_unix_nanoseconds(time.now()))
-    command:=Executor_Issuance_Command{kind,id,auth.user_id,from_bridge,req.body,directory}
+    project_path:=""
+    if repository:=query_value(req.query,"owner_repository");repository!="" && from_bridge!="" {
+        project_path=project_service.resolve_peer_path(h.projects,domain.User_ID(auth.user_id),from_bridge,repository,bridge_id)
+    }
+    command:=Executor_Issuance_Command{kind,id,auth.user_id,from_bridge,req.body,project_path,directory}
     reply,received,rerr:=bridge_runtime.send_runtime_command_wait(h.bridge_runtime_registry,project_service.Runtime_Command{bridge_id=bridge_id,command_id=id,body_json=owner_json(command)},10000)
     if !received do return respond_error(rerr,req.request_id)
     defer delete(reply,runtime.default_allocator())

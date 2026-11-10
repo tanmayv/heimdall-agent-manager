@@ -313,6 +313,36 @@ resolve_effective_path :: proc(service: ^Project_Service, auth: contracts.Auth_C
 	return project.default_path, true, domain.Domain_Error{}
 }
 
+// Cross-Bridge git work (user 15:30Z): the active project of owner whose
+// effective path on from_bridge is from_path, mapped to its effective path on
+// to_bridge. "" when no project matches or it has no path there. A routing
+// hint only: the executor Bridge re-validates the path inside its own file
+// root and falls back to a scratch directory.
+PEER_PATH_PAGE :: 100
+PEER_PATH_MAX_PAGES :: 10
+resolve_peer_path :: proc(service: ^Project_Service, owner: domain.User_ID, from_bridge, from_path, to_bridge: string) -> string {
+	if service == nil || service.projects == nil || owner == "" || from_bridge == "" || to_bridge == "" do return ""
+	want := strings.trim_right(strings.trim_space(from_path), "/")
+	if want == "" do return ""
+	effective :: proc(service: ^Project_Service, project: domain.Project, bridge_id: string) -> string {
+		if path, found, _ := iface.project_get_bridge_path(service.projects, project.project_id, bridge_id); found && strings.trim_space(path.path) != "" do return path.path
+		return project.default_path
+	}
+	cursor := ""
+	for _ in 0 ..< PEER_PATH_MAX_PAGES {
+		projects, err := iface.project_list_by_owner(service.projects, owner, PEER_PATH_PAGE, cursor)
+		if err.code != .None do return ""
+		for p in projects {
+			if p.state != .Active || p.owner_user_id != owner do continue
+			if strings.trim_right(strings.trim_space(effective(service, p, from_bridge)), "/") != want do continue
+			return strings.trim_space(effective(service, p, to_bridge))
+		}
+		if len(projects) < PEER_PATH_PAGE do return ""
+		cursor = projects[len(projects) - 1].created_at
+	}
+	return ""
+}
+
 Fs_Target :: struct { bridge_id: string, root_path: string }
 
 // resolve_fs_target maps a project (owned by the caller) to the (bridge_id, root)

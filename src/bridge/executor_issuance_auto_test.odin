@@ -64,6 +64,23 @@ test_executor_auto_issuance_resolves_without_operator_mapping :: proc(t:^testing
     other:=make(json.Object);other["chain_id"]=json.String("chain_other")
     separate:=bridge_executor_resolve_auto_issuance(s,other,requested,self)
     testing.expect(t,separate.resolved && separate.directory_path!=resources.directory_path)
+    // Git tickets (user 15:30Z): the Hub's hint names this Bridge's checkout
+    // of the chain's project, so the work runs there.
+    checkout:=fmt.tprintf("%s/checkout",root)
+    if !testing.expect(t,os.make_directory(checkout)==nil) do return
+    hinted:=bridge_executor_resolve_auto_issuance(s,consent,requested,self,checkout)
+    if !testing.expect(t,hinted.resolved,"a valid project hint resolves") do return
+    testing.expect_value(t,hinted.directory_path,checkout)
+    hinted_selection,_:=contracts.executor_parse(hinted.selection,"issuance_selection")
+    testing.expect(t,strings.has_prefix(get(hinted_selection,"directory_id"),"project_"),"the checkout is mapped as a project directory")
+    hinted_mapping,hinted_mapped:=executor.directory_mapping(s,get(hinted_selection,"directory_id"))
+    testing.expect(t,hinted_mapped && hinted_mapping.path==checkout,"self-mapped with the executor's own key")
+    // A missing, outside-root or non-directory hint falls back to the
+    // chain's scratch directory: never a refusal.
+    for bad in ([3]string{fmt.tprintf("%s/missing",root),"/",fmt.tprintf("%s/runtime.sqlite",executor_root)}) {
+        fallback:=bridge_executor_resolve_auto_issuance(s,consent,requested,self,bad)
+        testing.expectf(t,fallback.resolved && fallback.directory_path==resources.directory_path,"hint %s falls back to scratch",bad)
+    }
     // Refusals: an explicit selection, an unknown model, another key.
     explicit:=executor.encode(struct{provider,model,provider_profile,directory_id,policy_revision,slot_id:string}{"claude","seed","claude","dir","1","slot1"})
     testing.expect(t,!bridge_executor_resolve_auto_issuance(s,consent,explicit,self).resolved,"explicit selections use the operator resolver")

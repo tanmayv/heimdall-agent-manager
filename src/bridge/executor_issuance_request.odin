@@ -126,15 +126,19 @@ Executor_Issuance_HTTP_Reply :: struct {data:struct{type,request_id,code,envelop
 // token: the Hub admits only the user or a Bridge token here and stamps
 // from_bridge_id from it). Returns the executor's code, request id and sealed
 // reply for bridge_executor_issuance_reply_open.
-bridge_executor_issuance_send :: proc(request:Executor_Issuance_Request)->(code,request_id,envelope:string,ok:bool) {
+// repository: the owner chain's git repository on this Bridge ("" for none),
+// sent as the unsigned query hint owner_repository so the Hub can name the
+// same project's checkout on the executor Bridge (Executor_Issuance_Wire).
+bridge_executor_issuance_send :: proc(request:Executor_Issuance_Request,repository:="")->(code,request_id,envelope:string,ok:bool) {
     context.allocator=context.temp_allocator
     generation:=bridge_task_chain_search_generation()
     credential:=bridge_credential_snapshot();defer delete(credential)
     headers:=[?]httpc.Header{httpc.bearer(credential)}
     if sync.atomic_load(&bridge_hub_traffic_stopped) do return
     expires:=contracts.executor_number(request.scope,"request_expires_ms")
+    query:=[1]httpc.Query_Param{{"owner_repository",repository}}
     response,err:=bridge_http_request_retry({method=.POST,url=bridge_hub_url(),path={"api","v1","executor","issuance"},
-        headers=headers[:],body=httpc.json_body(request.relay_body),timeout_ms=15000},deadline_ns=expires*1000000)
+        query=query[:] if repository!="" else nil,headers=headers[:],body=httpc.json_body(request.relay_body),timeout_ms=15000},deadline_ns=expires*1000000)
     defer httpc.response_destroy(&response)
     if err!=.None || response.status!=200 || len(httpc.text(response))>3*1024*1024 || generation!=bridge_task_chain_search_generation() do return
     reply:Executor_Issuance_HTTP_Reply

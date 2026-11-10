@@ -30,6 +30,9 @@ import vault "odin_test:lib/vault"
 Owner_Remote_Place :: struct {
     active:bool,
     chain,task,agent,executor_bridge,provider,model:string,
+    // The chain's git repository on this Bridge ("" for a non-git chain): a
+    // hint so the executor runs in its own checkout of the same project.
+    repository:string,
 }
 
 // Whether the agent is placed on another Bridge: its fleet policy names a
@@ -48,7 +51,9 @@ bridge_owner_remote_target :: proc(s:^owner.Store,chain,agent:string) -> (place:
     if provider=="" || model=="" {
         return {},"invalid_scope",fmt.tprintf("agent %s is placed on Bridge %s but its fleet policy names no provider and model; set them with `ham-ctl task-chain fleet set --agent %s --provider <p> --model <m>`",agent,policy.bridge_id,agent)
     }
-    return Owner_Remote_Place{true,chain,"",agent,policy.bridge_id,provider,model},"ok",""
+    repository:=""
+    if template,code:=owner.agent_assignment_template(s,chain);code=="ok" && template.merge_policy=="git" do repository=template.repository
+    return Owner_Remote_Place{true,chain,"",agent,policy.bridge_id,provider,model,repository},"ok",""
 }
 
 // The owner-side facts a consent and its reply are checked against, read
@@ -153,7 +158,7 @@ bridge_owner_remote_place :: proc(request_id:string,place:Owner_Remote_Place,rec
         configuration_revision=pin.configuration_revision,owner_incarnation=pin.owner_incarnation,provider=place.provider,model=place.model,now=now}
     request,built:=bridge_executor_issuance_request(input,&kr,{nil,bridge_executor_consent_sign})
     if !built do return "storage_error","the issuance consent could not be built",""
-    reply_code,reply_request,envelope,sent:=bridge_executor_issuance_send(request)
+    reply_code,reply_request,envelope,sent:=bridge_executor_issuance_send(request,place.repository)
     if !sent do return "executor_unavailable",fmt.tprintf("Bridge %s did not answer the placement request",place.executor_bridge),""
     if reply_code!="ok" do return reply_code,fmt.tprintf("Bridge %s refused the placement (%s)",place.executor_bridge,reply_code),""
     bundle,opened:=bridge_executor_issuance_reply_open(request,reply_code,reply_request,envelope,&kr,pin.owner_key,pin.remote_key,time.to_unix_nanoseconds(time.now())/1000000)

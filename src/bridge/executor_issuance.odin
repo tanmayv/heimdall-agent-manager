@@ -78,13 +78,16 @@ bridge_executor_resolve_issuance :: proc(s:^executor.Store,selection_raw:string)
 //     With no policy at all, it installs revision 1 with one slot for the
 //     profile, signed by its own operator key. An operator policy without a
 //     slot for the profile is kept (the operator owns it; refused);
-//   - directory: a per-chain scratch directory under this executor's private
-//     root (inside the Bridge's file root, $HOME by default), self-mapped with
-//     its own operator key. Paths are computed here, never taken from the
-//     request.
+//   - directory: this Bridge's own checkout of the owner chain's repository
+//     when the Hub names one (project_hint, user 15:30Z: git tickets run in
+//     B's checkout, no merge-back) and it is a valid project directory inside
+//     this Bridge's file root; otherwise a per-chain scratch directory under
+//     this executor's private root. Either is self-mapped with its own
+//     operator key. A bad or missing hint falls back to scratch, never a
+//     refusal. Nothing in the signed request names a path.
 // The chosen selectors go back in the signed remote_configuration.
 BRIDGE_EXECUTOR_AUTO_CAPACITY :: "4"
-bridge_executor_resolve_auto_issuance :: proc(s:^executor.Store,consent:json.Object,selection_raw:string,self:contracts.Owner_Verified_Key)->executor.Issuance_Resources {
+bridge_executor_resolve_auto_issuance :: proc(s:^executor.Store,consent:json.Object,selection_raw:string,self:contracts.Owner_Verified_Key,project_hint:="")->executor.Issuance_Resources {
     selection,valid:=contracts.executor_parse(selection_raw,"issuance_selection")
     if !valid || !contracts.executor_selection_auto(selection) || self.key_id!=s.operator_key do return {}
     get:=contracts.owner_string
@@ -103,14 +106,8 @@ bridge_executor_resolve_auto_issuance :: proc(s:^executor.Store,consent:json.Obj
         revision,slot,found=executor.auto_slot(s,profile.profile_id)
         if !found do return {}
     }
-    root,rooted:=bridge_executor_root(s.account)
-    if !rooted do return {}
-    chain:=contracts.owner_payload_digest(get(consent,"chain_id"))[:24]
-    path:=fmt.tprintf("%s/scratch/%s",root,chain)
-    if bridge_make_directory_all(path,{.Read_User,.Write_User,.Execute_User})!=nil do return {}
-    canonical,within:=bridge_executor_canonical_directory(path)
-    if !within do return {}
-    directory_id:=fmt.tprintf("scratch_%s",chain)
+    canonical,directory_id,placed:=bridge_executor_auto_directory(s.account,get(consent,"chain_id"),project_hint)
+    if !placed do return {}
     key:=executor.directory_key(s.executor,canonical)
     mapping,mapped:=executor.directory_mapping(s,directory_id)
     if !mapped || mapping.path!=canonical || mapping.key!=key {
@@ -127,6 +124,27 @@ bridge_executor_resolve_auto_issuance :: proc(s:^executor.Store,consent:json.Obj
     if _,chosen_ok:=contracts.executor_parse(chosen,"issuance_selection");!chosen_ok do return {}
     return executor.Issuance_Resources{selection_digest=contracts.owner_payload_digest(selection_raw),directory_key=key,
         directory_path=canonical,selection=chosen,resolved=true}
+}
+
+// The directory an owner-Bridge consent runs in: the hinted project checkout
+// when it is a valid project directory inside this Bridge's file root, else
+// the chain's scratch directory (created on demand).
+bridge_executor_auto_directory :: proc(account,chain_id,project_hint:string)->(canonical,directory_id:string,ok:bool) {
+    if project_hint!="" {
+        if project,valid:=bridge_executor_project_directory(project_hint);valid {
+            if c,within:=bridge_executor_canonical_directory(project);within {
+                return c,fmt.tprintf("project_%s",contracts.owner_payload_digest(c)[:24]),true
+            }
+        }
+    }
+    root,rooted:=bridge_executor_root(account)
+    if !rooted do return "","",false
+    chain:=contracts.owner_payload_digest(chain_id)[:24]
+    path:=fmt.tprintf("%s/scratch/%s",root,chain)
+    if bridge_make_directory_all(path,{.Read_User,.Write_User,.Execute_User})!=nil do return "","",false
+    c,within:=bridge_executor_canonical_directory(path)
+    if !within do return "","",false
+    return c,fmt.tprintf("scratch_%s",chain),true
 }
 
 // The key that may consent to an issuance on this executor, from the verified
@@ -155,8 +173,10 @@ bridge_executor_consent_key :: proc(dir:^vault.Verified_Directory,consent:json.O
 
 Executor_Issuance_Wire :: struct {
     // from_bridge_id: set by the Hub from the relaying Bridge's token, "" when
-    // the user relayed it (bridge_executor_consent_key).
-    type,command_id,account_id,from_bridge_id,relay:string,
+    // the user relayed it (bridge_executor_consent_key). project_path: the
+    // Hub's unsigned hint for an owner-Bridge consent, this Bridge's checkout
+    // of the owner chain's repository ("" when none); re-validated here.
+    type,command_id,account_id,from_bridge_id,relay,project_path:string,
     directory:vault.Directory_Verification_Input,
 }
 bridge_executor_issuance_handle :: proc(conn:^ws.Connection,text:string) {
@@ -220,7 +240,7 @@ bridge_executor_issuance_handle :: proc(conn:^ws.Connection,text:string) {
     // names it and every later launch fence binds it.
     resources:executor.Issuance_Resources
     if device.kind=="bridge" {
-        resources=bridge_executor_resolve_auto_issuance(s,consent,get(exchange,"selection"),self)
+        resources=bridge_executor_resolve_auto_issuance(s,consent,get(exchange,"selection"),self,wire.project_path)
     } else {
         if contracts.executor_number(scope,"executor_incarnation")!=s.incarnation {reply.code="stale_incarnation";return}
         resources=bridge_executor_resolve_issuance(s,get(exchange,"selection"))
