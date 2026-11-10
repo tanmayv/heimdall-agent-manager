@@ -18,6 +18,7 @@ import {
   Modal,
   StatusDot,
   runtimeStateFromStatus,
+  runtimeStateLabel,
   runtimeStatusToTone,
 } from '@ui';
 import {
@@ -33,6 +34,7 @@ import {
 import {
   useFetchAgentInstanceQuery,
   useFetchAgentIdentityQuery,
+  useListAgentIdentitiesQuery,
   useApplyInstanceConfigurationMutation,
   useRetryInstanceConfigurationMutation,
   useListInstanceReconfigurationsQuery,
@@ -52,6 +54,8 @@ import {
   type BridgeCapability,
 } from '../../api/endpoints/bridgeSupport';
 import { chainTargetId } from '../../utils/paneTarget';
+import { ownerChainSwitcherMembers, useOwnerChainMembers } from '../../api/ownerChainMembers';
+import { useRegisterActions } from '../../services/shortcuts/useRegisterActions';
 import { selectActiveVaultKey } from '../../store/vaultSlice';
 import type { AuxContent } from '../../store/auxTabId';
 import { buildRouteHash } from '../../utils/appLocation';
@@ -837,7 +841,11 @@ export function AgentChatPane({
 
   const rawTitle = String(conversation?.title || '').trim();
   const editableTitle = rawTitle && !looksLikeInternalId(rawTitle) ? rawTitle : title;
-  const chainTitle = String(chainTarget?.title || '').trim();
+  // The Bridge-owned chain this conversation's agent belongs to (owner-local
+  // member rows; Hub task chains are gone) feeds the header's agent switcher.
+  const ownerChainMembers = useOwnerChainMembers(agentInstanceId, chainId);
+  const ownerChain = ownerChainMembers.chain;
+  const chainTitle = String(chainTarget?.title || ownerChain?.title || '').trim();
   const renameTarget = resolveRenameTarget({ conversationTitle: editableTitle });
   const renameSeed = renameTarget.seed;
 
@@ -849,6 +857,26 @@ export function AgentChatPane({
   );
   const instance = instanceQuery.data?.instance || null;
   const { data: liveProjects } = useGetAgentsLiveQuery(undefined);
+  // Member display names come from the agent identities, as on the owner chain overview.
+  const { data: agentIdentitiesData } = useListAgentIdentitiesQuery(undefined, { skip: !ownerChain });
+  const chainAgentOptions = useMemo(() => {
+    const names: Record<string, string> = {};
+    for (const a of agentIdentitiesData?.agents ?? []) {
+      if (a?.agent_id) names[String(a.agent_id)] = String(a.name || a.slug || a.agent_id);
+    }
+    const runtime = new Map<string, string>();
+    for (const proj of liveProjects ?? []) {
+      for (const chain of proj.chains ?? []) {
+        for (const agent of chain.liveAgents ?? []) runtime.set(agent.agentInstanceId, agent.runtimeStatus);
+      }
+    }
+    return ownerChainSwitcherMembers({
+      chain: ownerChain,
+      members: ownerChainMembers.members,
+      agentInstanceId,
+      names,
+    }).map((member) => ({ ...member, runtimeStatus: runtime.get(member.instanceId) || '' }));
+  }, [agentIdentitiesData, liveProjects, ownerChain, ownerChainMembers.members, agentInstanceId]);
   const agentIdentityQuery = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId });
   const agentIdentity = agentIdentityQuery.data?.agent || null;
   const agentDisplayName = String(
@@ -1167,6 +1195,27 @@ export function AgentChatPane({
     setChainSelectorOpen(true);
     onChainSelectorRequestHandled?.(chainSelectorRequest.id);
   }, [chainSelectorRequest, onChainSelectorRequestHandled]);
+
+  const [chainAgentSwitcherOpen, setChainAgentSwitcherOpen] = useState(false);
+  const reloadOwnerChainMembers = ownerChainMembers.reload;
+  const canOpenChainAgentSwitcher = (
+    variant === 'main'
+    && isFocusedPane
+    && Boolean(paneId)
+    && chainAgentOptions.length > 0
+  );
+  useRegisterActions([{
+    id: `workspace.open-chain-agents.${variant}.${paneId || routeInstanceId}`,
+    title: 'Agents in this task chain',
+    category: 'Workspace',
+    sequence: ['s', 'o', 'a'],
+    isEnabled: () => canOpenChainAgentSwitcher,
+    run: () => {
+      if (!canOpenChainAgentSwitcher) return;
+      setChainAgentSwitcherOpen(true);
+      reloadOwnerChainMembers();
+    },
+  }]);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   useEffect(() => {
@@ -3016,6 +3065,32 @@ export function AgentChatPane({
     );
   }
 
+  // The header's agent crumb: a plain label, or the chain member switcher's
+  // trigger when the agent is in a Bridge-owned chain.
+  const agentCrumbInner = (
+    <>
+      {/* REQ-PORT-5: on mobile the runtime dot lives in the composer card instead. */}
+      {!isMobile ? (
+        <StatusDot
+          size="sm"
+          tone={runtimeStatusToTone(runtimeStatus)}
+          label={
+            needsStart
+              ? 'Stopped'
+              : runtimeStopping
+              ? 'Stopping'
+              : isStarting
+              ? 'Starting'
+              : 'Running'
+          }
+        />
+      ) : null}
+      <span className="truncate">
+        <VaultText value={agentDisplayName || agentId} fallback="Agent" />
+      </span>
+    </>
+  );
+
   return (
     <div
       data-debug-id={`workbench-agent-chat-pane-${agentInstanceId}`}
@@ -3129,37 +3204,32 @@ export function AgentChatPane({
                 />
               </button>
               <span className="shrink-0 text-faint">/</span>
-              <span
-                data-debug-id="conversation-agent-crumb"
-                data-pane-crumb
-                className={`flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-0.5 text-primary ${isMobile ? 'min-h-11 text-[15px]' : ''}`}
-              >
-                {/* REQ-PORT-5: on mobile the runtime dot lives in the composer card instead. */}
-                {!isMobile ? (
-                  <StatusDot
-                    size="sm"
-                    tone={runtimeStatusToTone(runtimeStatus)}
-                    label={
-                      needsStart
-                        ? 'Stopped'
-                        : runtimeStopping
-                        ? 'Stopping'
-                        : isStarting
-                        ? 'Starting'
-                        : 'Running'
-                    }
-                  />
-                ) : null}
-                <span className="truncate">
-                  <VaultText
-                    value={
-                      agentDisplayName ||
-                      agentId
-                    }
-                    fallback="Agent"
-                  />
+              {chainAgentOptions.length > 0 ? (
+                <button
+                  type="button"
+                  data-debug-id="conversation-chain-agent-switcher-btn"
+                  data-pane-crumb
+                  aria-label="Switch agent in this task chain"
+                  aria-haspopup="dialog"
+                  aria-expanded={chainAgentSwitcherOpen}
+                  onClick={() => {
+                    setChainAgentSwitcherOpen(true);
+                    reloadOwnerChainMembers();
+                  }}
+                  className={`flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-0.5 text-primary hover:bg-neutral-soft ${isMobile ? 'min-h-11 text-[15px]' : ''}`}
+                >
+                  {agentCrumbInner}
+                  <Icon name="chevron-down" size={13} className="shrink-0 text-muted" />
+                </button>
+              ) : (
+                <span
+                  data-debug-id="conversation-agent-crumb"
+                  data-pane-crumb
+                  className={`flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-0.5 text-primary ${isMobile ? 'min-h-11 text-[15px]' : ''}`}
+                >
+                  {agentCrumbInner}
                 </span>
-              </span>
+              )}
             </div>
           )}
           {titleError ? (
@@ -3506,6 +3576,67 @@ export function AgentChatPane({
             Apply
           </button>
         </Modal.Footer>
+      </Modal>
+
+      <Modal
+        open={chainAgentSwitcherOpen}
+        onOpenChange={setChainAgentSwitcherOpen}
+        title="Agents in this task chain"
+        size="md"
+        data-debug-id="conversation-chain-agent-modal"
+      >
+        <Modal.Body>
+          <div className="space-y-2">
+            {chainAgentOptions.map((member) => (
+              <button
+                key={member.instanceId}
+                type="button"
+                data-debug-id={`conversation-chain-agent-option-${member.instanceId}`}
+                aria-pressed={member.instanceId === agentInstanceId}
+                onClick={() => {
+                  setChainAgentSwitcherOpen(false);
+                  if (member.instanceId === agentInstanceId) return;
+                  if (onSwitchAgent) {
+                    // The workspace swaps the target in THIS pane (deduped: a target
+                    // already open elsewhere is focused instead) and syncs the URL.
+                    onSwitchAgent(member.instanceId, member.title);
+                  } else if (typeof window !== 'undefined') {
+                    window.location.hash = buildConversationHash([member.instanceId]);
+                  }
+                }}
+                className={`flex min-h-14 w-full items-center gap-3 rounded-xl border px-3 py-3 text-left ${
+                  member.instanceId === agentInstanceId
+                    ? 'border-accent bg-accent/10'
+                    : 'border-subtle hover:bg-neutral-soft'
+                }`}
+              >
+                <StatusDot
+                  size="sm"
+                  tone={runtimeStatusToTone(member.runtimeStatus)}
+                  label={runtimeStateLabel(runtimeStateFromStatus(member.runtimeStatus))}
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium text-primary">
+                    <VaultText value={member.title} fallback="Agent" />
+                  </span>
+                  {member.role ? (
+                    <span className="text-xs text-muted">
+                      {member.role.charAt(0).toUpperCase() + member.role.slice(1)}
+                    </span>
+                  ) : null}
+                </span>
+                {member.instanceId === agentInstanceId ? (
+                  <Icon name="check" size={18} className="text-accent" />
+                ) : null}
+              </button>
+            ))}
+            {!chainAgentOptions.length ? (
+              <p className="text-sm text-muted">
+                No agents are available in this task chain.
+              </p>
+            ) : null}
+          </div>
+        </Modal.Body>
       </Modal>
 
       <TaskChainSelectorModal
