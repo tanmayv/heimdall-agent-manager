@@ -214,3 +214,13 @@ test('a fast submit cannot create while the Bridges are still being checked', as
     await ui.cleanup();
   }
 });
+
+test('Create chain lands on the canonical chain:<id> conversation URL with a coordinator, else the chain page', async () => {
+  const { createdChainHash } = await import('../src/ui/components/taskchain/TaskChainsPage.tsx');
+  const { buildRouteHash } = await import('../src/ui/utils/appLocation.ts');
+  const { chainConversationRoute } = await import('../src/ui/utils/paneTarget.ts');
+  assert.equal(createdChainHash('chain_new', 'inst_coord'), buildRouteHash(chainConversationRoute('chain_new'), ''), 'the same URL the sidebar and New conversation open');
+  assert.match(createdChainHash('chain_new', 'inst_coord'), /chain(:|%3A)chain_new/);
+  assert.equal(createdChainHash('chain_new', ''), buildRouteHash('/chains/chain_new', ''), 'no coordinator: the chain page');
+  assert.equal(createdChainHash('chain_new', null), buildRouteHash('/chains/chain_new', ''));
+});

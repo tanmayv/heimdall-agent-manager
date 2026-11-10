@@ -304,6 +304,31 @@ test('a coordinator conversation is one POST /chats: its Bridge creates the chai
   }
 });
 
+test('without onLaunched, a coordinator conversation writes the canonical chain URL to the location', async () => {
+  const env = await ownerTestSession('b_river', 'riverwood');
+  const route = async (path: string, method: string) => {
+    if (path.endsWith('/vault/directory')) return env.hub.dir();
+    if (path.endsWith('/chats') && method === 'POST') return { agent_instance_id: 'inst_new', chain_id: 'chain_new' };
+    if (path.endsWith('/agent-instances/inst_new')) return { agent_instance_id: 'inst_new', chain_id: 'chain_new', runtime_status: 'starting' };
+    return undefined;
+  };
+  try {
+    await withPage({ route }, async (ctx) => {
+      await ctx.render({ onLaunched: undefined });
+      await until(ctx, () => issuesText(ctx.doc) === '', 'hydration');
+      await type(ctx, q(ctx.doc, 'new-convo-composer-input'), 'Plan the release');
+      await click(ctx, sendButton(ctx.doc));
+      const { buildRouteHash } = await import('../src/ui/utils/appLocation.ts');
+      const { chainConversationRoute } = await import('../src/ui/utils/paneTarget.ts');
+      const expected = buildRouteHash(chainConversationRoute('chain_new'), '');
+      await until(ctx, () => ctx.win.location.hash === expected, 'the chain URL', 8000);
+      assert.match(ctx.win.location.hash, /chain(:|%3A)chain_new/, 'the same chain:<id> URL the sidebar opens');
+    });
+  } finally {
+    clearKeyringSession();
+  }
+});
+
 test('a refused coordinator chain shows the Bridge error and opens nothing', async () => {
   const route = async (path: string, method: string) => {
     if (path.endsWith('/chats') && method === 'POST') throw new Error('the Bridge could not create the task chain: the owner Bridge vault is locked');

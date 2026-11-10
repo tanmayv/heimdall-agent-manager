@@ -28,6 +28,12 @@ function shellHash(path: string): string {
   return buildRouteHash(path, '');
 }
 
+// Where Create chain lands: a chain with a coordinator opens its conversation
+// at the canonical chain URL (the sidebar's); without one, the chain page.
+export function createdChainHash(chainId: string, coordinatorAgentInstanceId?: string | null): string {
+  return shellHash(coordinatorAgentInstanceId ? chainConversationRoute(chainId) : `/chains/${encodeURIComponent(chainId)}`);
+}
+
 // The status filters, as tabs in the list pane's filter row. Bridge-owned
 // chains are never archived.
 const STATUS_TABS: { value: 'active' | 'completed' | 'all'; label: string }[] = [
@@ -272,9 +278,7 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
         onCreated={(newChainId, owner) => {
           setShowCreateChainModal(false);
           if (owner) addPendingOwnerChain(owner);
-          // A chain with a coordinator opens its conversation at the canonical
-          // chain URL (the sidebar's); without one, the chain page.
-          if (owner?.coordinatorAgentInstanceId) window.location.hash = shellHash(chainConversationRoute(newChainId));
+          if (owner?.coordinatorAgentInstanceId) window.location.hash = createdChainHash(newChainId, owner.coordinatorAgentInstanceId);
           else handleSelectChain(newChainId);
         }}
       />
