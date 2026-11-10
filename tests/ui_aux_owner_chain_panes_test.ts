@@ -23,9 +23,12 @@ win.matchMedia = (q: string) => ({ matches: false, media: q, addEventListener() 
 const raf = (cb: any) => setTimeout(cb, 0), caf = (id: any) => clearTimeout(id);
 win.requestAnimationFrame = raf; win.cancelAnimationFrame = caf;
 for (const [key, value] of Object.entries({ window: win, document: win.document, navigator: win.navigator, HTMLElement: win.HTMLElement, Node: win.Node,
-  requestAnimationFrame: raf, cancelAnimationFrame: caf, IS_REACT_ACT_ENVIRONMENT: true })) {
+  requestAnimationFrame: raf, cancelAnimationFrame: caf, IS_REACT_ACT_ENVIRONMENT: true,
+  // jsdom has no CSS namespace; the @ui Select escapes option ids with it.
+  CSS: { escape: (v: string) => v.replace(/[^\w-]/g, (c) => '\\' + c) } })) {
   Object.defineProperty(globalThis, key, { value, writable: true, configurable: true });
 }
+win.HTMLElement.prototype.scrollIntoView = function scrollIntoView() {};
 const { createRoot } = await import('react-dom/client');
 const { act } = await import('react');
 const { Provider } = await import('react-redux');
@@ -346,4 +349,47 @@ test('agentRuntimeActions offers stop/restart when running, start when stopped o
   assert.deepEqual(agentRuntimeActions('failed'), ['start']);
   assert.deepEqual(agentRuntimeActions('launching'), []);
   assert.deepEqual(agentRuntimeActions(''), []);
+});
+
+test('Add agent launches the chosen agent on the owner Bridge, waits until it runs and binds it as a reviewer', async () => {
+  const owner = chainOwner();
+  const ui = await mount({
+    answer: (call) => (call.method === 'chain.member.set' ? { chain_id: CHAIN, revision: '8' } : owner.answer(call)),
+    hub: (path, init) => {
+      if (path === '/api/v1/agents') return [{ agent_id: 'agt_review', name: 'Security reviewer', slug: 'security' }];
+      if (path === '/api/v1/agent-instances' && init.method === 'POST') return { agent_instance_id: 'inst_new' };
+      if (path === '/api/v1/agent-instances/inst_new') return { runtime_status: 'running' };
+      return {};
+    },
+    render: (_env, h) => aux({ type: 'chainOverview' }, h),
+  });
+  try {
+    await ui.click('owner-chain-add-agent-open');
+    await ui.click('owner-chain-add-agent-role');
+    const reviewer = [...win.document.querySelectorAll('[role="option"]')].find((o: any) => /Reviewer/.test(o.textContent || '')) as HTMLElement | undefined;
+    assert.ok(reviewer, 'the role menu lists Reviewer');
+    await act(async () => { reviewer!.click(); });
+    await ui.settle();
+    await ui.click('owner-chain-add-agent-launch');
+    await ui.settle(80);
+    const launch = ui.hubCalls.find((c) => c.path === '/api/v1/agent-instances' && c.method === 'POST');
+    assert.deepEqual(launch?.body, { agent_id: 'agt_review', chain_id: CHAIN, bridge_id: 'brg_home' }, 'launched chain-bound on the owner Bridge');
+    const set = ui.calls.find((c) => c.method === 'chain.member.set');
+    assert.ok(set, 'bound with chain.member.set: ' + (ui.$('owner-chain-add-agent-error')?.textContent ?? ''));
+    assert.deepEqual({ ...set!.payload }, { instance_id: 'inst_new', agent_id: 'agt_review', role: 'reviewer', enabled: '1' });
+    assert.equal(ui.hubCalls.filter((c) => /\/restart$/.test(c.path)).length, 0, 'a worker or reviewer is not restarted');
+    assert.equal(ui.$('owner-chain-notice')!.textContent, 'Added inst_new as reviewer.');
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('addOwnerChainAgent stops on a failed launch and never binds an instance that did not start', async () => {
+  const { addOwnerChainAgent } = await import('../src/ui/api/ownerCoordinator.ts');
+  const bound: string[] = [];
+  await assert.rejects(addOwnerChainAgent({ launch: async () => 'inst_x', status: async () => 'failed', bind: async (id) => { bound.push(id); } }), /agent instance failed before it started/);
+  let t = 0;
+  await assert.rejects(addOwnerChainAgent({ launch: async () => 'inst_y', status: async () => 'launching', bind: async (id) => { bound.push(id); }, sleep: async () => {}, now: () => (t += 50_000) }), /agent instance did not start in time/);
+  await assert.rejects(addOwnerChainAgent({ launch: async () => '', status: async () => 'running', bind: async (id) => { bound.push(id); } }), /not created/);
+  assert.deepEqual(bound, []);
 });

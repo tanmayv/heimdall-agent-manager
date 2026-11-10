@@ -167,15 +167,15 @@ export const COORDINATOR_START_TIMEOUT_MS = 120_000;
 const COORDINATOR_POLL_MS = 2_000;
 const TERMINAL_STATUSES = new Set(['stopped', 'failed']);
 
-async function waitUntilRunning(deps: StartCoordinatorDeps, instanceId: string, timeoutMs: number, what: string): Promise<void> {
+async function waitUntilRunning(deps: Pick<StartCoordinatorDeps, 'status' | 'sleep' | 'now'>, instanceId: string, timeoutMs: number, what: string, who = 'coordinator'): Promise<void> {
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const now = deps.now ?? Date.now;
   const deadline = now() + timeoutMs;
   for (;;) {
     const status = await deps.status(instanceId).catch(() => '');
     if (status === 'running') return;
-    if (TERMINAL_STATUSES.has(status)) throw new Error(`The coordinator instance ${status} before it ${what}.`);
-    if (now() >= deadline) throw new Error(`The coordinator instance did not ${what === 'started' ? 'start' : 'restart'} in time.`);
+    if (TERMINAL_STATUSES.has(status)) throw new Error(`The ${who} instance ${status} before it ${what}.`);
+    if (now() >= deadline) throw new Error(`The ${who} instance did not ${what === 'started' ? 'start' : 'restart'} in time.`);
     await sleep(COORDINATOR_POLL_MS);
   }
 }
@@ -200,6 +200,34 @@ export async function startOwnerCoordinator(deps: StartCoordinatorDeps, timeoutM
   deps.onStage?.('restarting', instanceId);
   await deps.restart(instanceId);
   await waitUntilRunning(deps, instanceId, timeoutMs, 'restarted');
+  deps.onStage?.('done', instanceId);
+  return instanceId;
+}
+
+export type AddChainAgentStage = 'launching' | 'waiting' | 'binding' | 'done';
+
+export interface AddChainAgentDeps extends Pick<StartCoordinatorDeps, 'status' | 'sleep' | 'now'> {
+  /** Launches an instance of the agent on the owner Bridge, chain-bound; resolves its id. */
+  launch: () => Promise<string>;
+  /** chain.member.set with the chosen role (worker or reviewer) for the running instance. */
+  bind: (instanceId: string) => Promise<void>;
+  onStage?: (stage: AddChainAgentStage, instanceId: string) => void;
+}
+
+/**
+ * Adds a worker or reviewer to a chain's fleet: launch -> wait until running
+ * -> bind. Like the coordinator, binding needs the live child. No restart:
+ * an instance that is not the coordinator already boots with the worker role,
+ * and a reviewer receives its reviews through lease next.
+ */
+export async function addOwnerChainAgent(deps: AddChainAgentDeps, timeoutMs = COORDINATOR_START_TIMEOUT_MS): Promise<string> {
+  deps.onStage?.('launching', '');
+  const instanceId = await deps.launch();
+  if (!instanceId) throw new Error('The agent instance was not created.');
+  deps.onStage?.('waiting', instanceId);
+  await waitUntilRunning(deps, instanceId, timeoutMs, 'started', 'agent');
+  deps.onStage?.('binding', instanceId);
+  await deps.bind(instanceId);
   deps.onStage?.('done', instanceId);
   return instanceId;
 }

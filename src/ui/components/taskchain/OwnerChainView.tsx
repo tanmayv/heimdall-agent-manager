@@ -26,6 +26,7 @@ import type { BoardTicketActions } from '../tasks/BoardTicketCard';
 import type { TaskWire } from '../../api/taskWire';
 import OwnerLocalPanel from './OwnerLocalPanel';
 import OwnerCoordinatorControl, { hubCoordinatorApi, type OwnerCoordinatorApi } from './OwnerCoordinatorControl';
+import OwnerAddAgentControl, { type ChainAgentRole } from './OwnerAddAgentControl';
 import { ownerChainById, resolveOwnerChainCoordinator, setOwnerChainCoordinator } from '../../api/ownerChainsStore';
 import { bindOwnerCoordinator, readOwnerChainMembers, type OwnerChainMember } from '../../api/ownerCoordinator';
 
@@ -403,6 +404,19 @@ export function OwnerChainView({
     return mutate('chain.member.set', { instanceId: a.instanceId, agentId: a.agentId, memberRole: a.role || 'worker', enabled: false }, 'Agent removed from the chain.');
   }
 
+  // chain.member.set for an added worker or reviewer, against the chain
+  // revision read right before binding (the launch wait may outlast the loaded one).
+  const bindMember = useCallback(async (instanceId: string, agentId: string, role: ChainAgentRole) => {
+    const s = await session();
+    const { revision } = await readOwnerChain(s, bridge, chain.chainId, send);
+    await ownerCall(s, bridge, 'chain.member.set', { chainId: chain.chainId, expectedRevision: revision, instanceId, agentId, memberRole: role }, send);
+  }, [bridge, chain.chainId, send, session]);
+  const memberAdded = useCallback((instanceId: string, role: ChainAgentRole) => {
+    if (!live.current) return;
+    setNotice(`Added ${instanceId} as ${role}.`);
+    void loadChain(true);
+  }, [loadChain]);
+
   // chain.member.set role=coordinator (and demotion of a replaced one).
   const bindCoordinator = useCallback(async (instanceId: string, agentId: string) => {
     await bindOwnerCoordinator(await session(), bridge, chain.chainId, instanceId, agentId, send);
@@ -606,7 +620,12 @@ export function OwnerChainView({
             </div>
           )}
           <section aria-label="Agents" data-debug-id="owner-chain-agents" className="space-y-1.5">
-            <Text as="h3" role="overline" tone="muted">Agents</Text>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <Text as="h3" role="overline" tone="muted">Agents</Text>
+              {!offline && detail && (
+                <OwnerAddAgentControl chainId={chain.chainId} ownerBridgeId={bridge} disabled={busy} bind={bindMember} onAdded={memberAdded} api={coordinatorApi} />
+              )}
+            </div>
             {offline ? <Text as="p" role="caption" tone="muted">Unavailable while the owner Bridge is offline.</Text>
               : members === null && loading ? <Text as="p" role="caption" tone="muted" aria-live="polite">Loading agents…</Text>
               : agents.length === 0 ? <EmptyState data-debug-id="owner-chain-no-agents" title="No agents yet" description="Start the coordinator; it adds workers and reviewers to the fleet." />
