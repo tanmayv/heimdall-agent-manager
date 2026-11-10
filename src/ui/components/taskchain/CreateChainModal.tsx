@@ -1,19 +1,17 @@
 import React, { useEffect, useState } from 'react';
 import { Alert, Button, FormField, IconButton, Input, SectionHeader, Select, Text, Textarea } from '@ui';
 import { ChainPlacementField, useChainPlacementChoices } from './ChainPlacementField';
-import { COORDINATOR_STAGE_TEXT, defaultCoordinatorAgentId, hubCoordinatorApi, type CoordinatorAgentChoice, type OwnerCoordinatorApi } from './OwnerCoordinatorControl';
-import { createOwnerChain, freshOwnerSession, ownerErrorMessage, waitForOwnerChainListed, type OwnerChainSummary, type OwnerRegistryWaitOptions } from '../../api/ownerChains';
-import { bindOwnerCoordinator, createChainWithCoordinator, type NewChainCoordinatorStage } from '../../api/ownerCoordinator';
+import { defaultCoordinatorAgentId, hubCoordinatorApi, type CoordinatorAgentChoice, type OwnerCoordinatorApi } from './OwnerCoordinatorControl';
+import type { OwnerChainSummary } from '../../api/ownerChains';
+import { useCreateLaunchConversationMutation } from '../../api/endpoints/chats';
 
 export interface CreateChainModalProps {
   isOpen: boolean;
   onClose: () => void;
   /** `owner` is the new chain's summary on its owner Bridge. */
   onCreated?: (chainId: string, owner?: OwnerChainSummary) => void;
-  /** Hub calls of the coordinator launch; tests replace them. */
-  coordinatorApi?: OwnerCoordinatorApi;
-  /** Registry wait options; tests replace the clock. */
-  registryWait?: OwnerRegistryWaitOptions;
+  /** The coordinator agent list; tests replace it. */
+  coordinatorApi?: Pick<OwnerCoordinatorApi, 'listAgents'>;
 }
 
 /** The Bridge the last chain was placed on; the next chain defaults to it. */
@@ -28,13 +26,14 @@ function rememberPlacement(bridgeId: string): void {
 }
 
 /**
- * Creates a Bridge-owned task chain: a signed chain.create with a device-signed
- * genesis through the owner relay (the Hub no longer stores chains). Then it
- * starts the chain's coordinator: once the chain is in the owner registry, an
- * instance of the chosen agent (the coordinator agent by default) launches on
- * the owner Bridge bound to the chain, and is bound with chain.member.set.
+ * Creates a Bridge-owned task chain with its coordinator in ONE request, the
+ * same one a coordinator New conversation makes: POST /chats with
+ * create_owner_chain. The placement Bridge creates the chain with its owner
+ * key and the coordinator boots bound to it; the title and description travel
+ * sealed. Nothing is left behind when the Bridge refuses.
  */
-export const CreateChainModal: React.FC<CreateChainModalProps> = ({ isOpen, onClose, onCreated, coordinatorApi = hubCoordinatorApi, registryWait }) => {
+export const CreateChainModal: React.FC<CreateChainModalProps> = ({ isOpen, onClose, onCreated, coordinatorApi = hubCoordinatorApi }) => {
+  const [launch] = useCreateLaunchConversationMutation();
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [submitError, setSubmitError] = useState('');
@@ -44,9 +43,6 @@ export const CreateChainModal: React.FC<CreateChainModalProps> = ({ isOpen, onCl
   const [creating, setCreating] = useState(false);
   const [agents, setAgents] = useState<CoordinatorAgentChoice[] | null>(null);
   const [agentId, setAgentId] = useState('');
-  const [stage, setStage] = useState<NewChainCoordinatorStage | ''>('');
-  // A chain created whose coordinator did not start; the user can still open it.
-  const [created, setCreated] = useState<OwnerChainSummary | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   // The last-used Bridge while it is online, else the placement default.
   const lastPlacement = readLastPlacement();
@@ -58,7 +54,7 @@ export const CreateChainModal: React.FC<CreateChainModalProps> = ({ isOpen, onCl
   const advancedShown = advancedOpen || (!placementState.loading && !placementReady) || (agents !== null && !agentId);
 
   // A reopened modal starts a new chain.
-  useEffect(() => { if (!isOpen) { setCreated(null); setStage(''); setSubmitError(''); } }, [isOpen]);
+  useEffect(() => { if (!isOpen) setSubmitError(''); }, [isOpen]);
   useEffect(() => {
     if (!isOpen || agents) return;
     let live = true;
@@ -73,40 +69,22 @@ export const CreateChainModal: React.FC<CreateChainModalProps> = ({ isOpen, onCl
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (created) { onCreated?.(created.chainId, created); return; }
     if (!title.trim() || !placementReady || !agentId || creating) return;
     setSubmitError('');
     setCreating(true);
     rememberPlacement(placement);
-    // Set by the chain.create step (a closure, so not a narrowed local).
-    const made: { owner: OwnerChainSummary | null } = { owner: null };
     try {
-      const session = await freshOwnerSession();
-      const { chainId, instanceId } = await createChainWithCoordinator({
-        createChain: () => createOwnerChain(session, placement, { title: title.trim(), description: description.trim() }),
-        onChainCreated: (chainId) => {
-          made.owner = {
-            chainId, ownerBridgeId: placement, bridgeName: choice?.name || placement, online: true,
-            title: title.trim(), description: description.trim(), sealed: false, tasks: [],
-            projectId: '', projectName: '', migrated: false, pending: true, status: 'active',
-          };
-        },
-        waitListed: (chainId) => waitForOwnerChainListed(chainId, registryWait),
-        launch: (chainId) => coordinatorApi.launch({ agentId, chainId, bridgeId: placement }),
-        status: coordinatorApi.status,
-        restart: coordinatorApi.restart,
-        bind: (chainId, id) => bindOwnerCoordinator(session, placement, chainId, id, agentId),
-        onStage: (s) => setStage(s),
+      const result = await launch({ agentId, bridgeId: placement, createOwnerChain: true, chainTitle: title.trim(), chainDescription: description.trim(), body: '' }).unwrap();
+      const chainId = String(result.conversation?.chain_id || result.instance?.chain_id || '');
+      const instanceId = String(result.conversation?.agent_instance_id || result.instance?.agent_instance_id || '');
+      if (!chainId) throw new Error('The Bridge did not return the new chain.');
+      onCreated?.(chainId, {
+        chainId, ownerBridgeId: placement, bridgeName: choice?.name || placement, online: true,
+        title: title.trim(), description: description.trim(), sealed: false, tasks: [],
+        projectId: '', projectName: '', migrated: false, pending: true, status: 'active', coordinatorAgentInstanceId: instanceId || undefined,
       });
-      onCreated?.(chainId, { ...made.owner!, coordinatorAgentInstanceId: instanceId });
-    } catch (err) {
-      setStage('');
-      if (made.owner) {
-        setCreated(made.owner);
-        setSubmitError(`The chain was created, but its coordinator did not start: ${err instanceof Error ? err.message : String(err)} Open the chain to start one.`);
-      } else {
-        setSubmitError(ownerErrorMessage(err, choice?.name));
-      }
+    } catch (err: any) {
+      setSubmitError(String(err?.error || err?.message || err));
     } finally {
       setCreating(false);
     }
@@ -162,7 +140,7 @@ export const CreateChainModal: React.FC<CreateChainModalProps> = ({ isOpen, onCl
                     name="coordinator_agent"
                     width="full"
                     value={agentId}
-                    disabled={creating || Boolean(created) || !agents?.length}
+                    disabled={creating || !agents?.length}
                     onChange={setAgentId}
                     placeholder={!agents ? 'Loading agents…' : 'No agents'}
                     options={(agents ?? []).map((a) => ({ value: a.agentId, label: a.name }))}
@@ -171,10 +149,6 @@ export const CreateChainModal: React.FC<CreateChainModalProps> = ({ isOpen, onCl
               </div>
             )}
           </section>
-
-          {stage && (
-            <Text as="p" role="caption" tone="muted" aria-live="polite" data-debug-id="create-chain-stage">{COORDINATOR_STAGE_TEXT[stage]}</Text>
-          )}
 
           {submitError && (
             <div data-debug-id="create-chain-error"><Alert tone="danger">{submitError}</Alert></div>
@@ -186,9 +160,9 @@ export const CreateChainModal: React.FC<CreateChainModalProps> = ({ isOpen, onCl
               type="submit"
               variant="primary"
               data-debug-id="create-chain-submit"
-              disabled={!created && (creating || !title.trim() || !placementReady || !agentId)}
+              disabled={creating || !title.trim() || !placementReady || !agentId}
             >
-              {created ? 'Open chain' : creating ? 'Creating…' : 'Create chain'}
+              {creating ? 'Creating…' : 'Create chain'}
             </Button>
           </div>
         </form>

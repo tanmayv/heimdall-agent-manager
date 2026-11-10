@@ -169,40 +169,6 @@ export async function loadOwnerChainSummaries(
   return out.sort((a, b) => (a.title || a.chainId).localeCompare(b.title || b.chainId) || a.chainId.localeCompare(b.chainId));
 }
 
-export const OWNER_REGISTRY_WAIT_MS = 15_000;
-const OWNER_REGISTRY_POLL_MS = 1_000;
-
-export interface OwnerRegistryWaitOptions {
-  fetchPage?: (path: string) => Promise<OwnerRegistryPage>;
-  sleep?: (ms: number) => Promise<void>;
-  now?: () => number;
-  timeoutMs?: number;
-}
-
-/**
- * Polls the owner registry listing until `chainId` is listed (not tombstoned).
- * The Hub accepts a chain_id on an instance launch only once the chain is in
- * its owner registry (agent_service resolve_instance_chain). The owner Bridge
- * publishes the entry right after chain.create, but only the listing proves it
- * arrived. A failed page read counts as not listed yet; throws on timeout.
- */
-export async function waitForOwnerChainListed(chainId: string, options: OwnerRegistryWaitOptions = {}): Promise<void> {
-  const fetchPage = options.fetchPage ?? cookieJsonFetch;
-  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  const now = options.now ?? Date.now;
-  const deadline = now() + (options.timeoutMs ?? OWNER_REGISTRY_WAIT_MS);
-  for (;;) {
-    const rows = await listOwnerRegistryPages(fetchPage, () => true).catch(() => [] as any[]);
-    if (rows.some((row) => row?.chain_id === chainId && !isTombstone(row))) return;
-    if (now() >= deadline) throw new Error('The new chain was not registered in time.');
-    await sleep(OWNER_REGISTRY_POLL_MS);
-  }
-}
-
-function isTombstone(row: any): boolean {
-  try { return JSON.parse(String(row.registry_json || '{}')).deleted === '1'; } catch { return false; }
-}
-
 /** An owner chain as an ordinary chain-list row (status is not in the registry). */
 export function ownerChainListItem(o: OwnerChainSummary): ChainListItem & { owner: OwnerChainSummary } {
   return {

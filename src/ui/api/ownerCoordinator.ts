@@ -232,41 +232,6 @@ export async function addOwnerChainAgent(deps: AddChainAgentDeps, timeoutMs = CO
   return instanceId;
 }
 
-export type NewChainCoordinatorStage = 'creating' | 'registering' | StartCoordinatorStage;
-
-export interface NewChainCoordinatorDeps extends Omit<StartCoordinatorDeps, 'launch' | 'bind' | 'onStage'> {
-  /** chain.create on the owner Bridge; resolves the new chain id. */
-  createChain: () => Promise<string>;
-  /** Resolves once the chain is listed in the owner registry (waitForOwnerChainListed). */
-  waitListed: (chainId: string) => Promise<void>;
-  /** Launches the instance on the owner Bridge with this chain_id; resolves its id. */
-  launch: (chainId: string) => Promise<string>;
-  bind: (chainId: string, instanceId: string) => Promise<void>;
-  /** The chain exists from here on, even if its coordinator then fails to start. */
-  onChainCreated?: (chainId: string) => void;
-  onStage?: (stage: NewChainCoordinatorStage, instanceId: string) => void;
-}
-
-/**
- * A new chain with a running, bound coordinator: create the chain, wait until
- * it is in the owner registry (the Hub refuses a chain_id it cannot route, so
- * launching earlier fails), then launch -> wait -> bind -> restart like
- * startOwnerCoordinator. The instance is launched chain-bound.
- */
-export async function createChainWithCoordinator(deps: NewChainCoordinatorDeps, timeoutMs = COORDINATOR_START_TIMEOUT_MS): Promise<{ chainId: string; instanceId: string }> {
-  deps.onStage?.('creating', '');
-  const chainId = await deps.createChain();
-  deps.onChainCreated?.(chainId);
-  deps.onStage?.('registering', '');
-  await deps.waitListed(chainId);
-  const instanceId = await startOwnerCoordinator({
-    ...deps,
-    launch: () => deps.launch(chainId),
-    bind: (id) => deps.bind(chainId, id),
-  }, timeoutMs);
-  return { chainId, instanceId };
-}
-
 /** The instance id in a POST /agent-instances reply. */
 export function createdInstanceId(data: any): string {
   return String(data?.agent_instance_id || data?.instance?.agent_instance_id || data?.data?.agent_instance_id || data?.instance_id || '');

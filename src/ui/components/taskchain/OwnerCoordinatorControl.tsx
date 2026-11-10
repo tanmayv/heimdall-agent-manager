@@ -6,7 +6,7 @@
 import React, { useState } from 'react';
 import { Button, Select, Text } from '@ui';
 import { cookieJsonFetch, cookieJsonFetchEnvelope, cookieMutation } from '../../api/cookieFetch';
-import { createdInstanceId, isCoordinatorAgent, startOwnerCoordinator, type NewChainCoordinatorStage, type StartCoordinatorStage } from '../../api/ownerCoordinator';
+import { createdInstanceId, isCoordinatorAgent, startOwnerCoordinator, type StartCoordinatorStage } from '../../api/ownerCoordinator';
 
 export interface CoordinatorAgentChoice { agentId: string; name: string; slug?: string }
 
@@ -52,9 +52,7 @@ export const hubCoordinatorApi: OwnerCoordinatorApi = {
   },
 };
 
-export const COORDINATOR_STAGE_TEXT: Record<NewChainCoordinatorStage, string> = {
-  creating: 'Creating the chain on its owner Bridge…',
-  registering: 'Waiting for the chain to register…',
+export const COORDINATOR_STAGE_TEXT: Record<StartCoordinatorStage, string> = {
   launching: 'Launching the coordinator on the owner Bridge…',
   waiting: 'Waiting for the coordinator to start…',
   binding: 'Binding it as the chain’s coordinator…',
