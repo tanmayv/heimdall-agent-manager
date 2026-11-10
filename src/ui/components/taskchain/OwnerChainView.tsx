@@ -24,6 +24,7 @@ import { TicketCard } from '../tasks/TicketCard';
 import { TicketDecisionBlock, type TicketDecisionActions } from '../tasks/TicketDecisionBlock';
 import { ownerRequirementHistoryEntries, ownerRequirementsDoc, ownerTaskWire, ownerTaskWires } from '../tasks/ownerTaskAdapter';
 import { TicketRequirementsCard } from '../tasks/TicketRequirementsCard';
+import { TicketLinkedCard } from '../tasks/TicketLinkedCard';
 import { TicketBoard } from '../tasks/TicketBoard';
 import type { BoardTicketActions } from '../tasks/BoardTicketCard';
 import type { TaskWire } from '../../api/taskWire';
@@ -565,8 +566,15 @@ export function OwnerChainView({
   }, [layout, members, coordinatorId, tasks, states]);
 
   // The board's ticket wires, keys and per-ticket card actions (owner commands).
-  const boardWires = useMemo(() => ((layout === 'board' || layout === 'overview') && detail ? ownerTaskWires(chain.chainId, bridge, detail.tasks, states) : []), [layout, detail, states, chain.chainId, bridge]);
+  const boardWires = useMemo(() => (detail ? ownerTaskWires(chain.chainId, bridge, detail.tasks, states) : []), [detail, states, chain.chainId, bridge]);
   const boardKeys = useMemo(() => ticketKeys(boardWires), [boardWires]);
+  // Linked tickets: the owner's dependencies (work.read), not the brief, say what waits for what.
+  const linkedWires = useMemo(() => {
+    if (!deps) return boardWires;
+    const waits = new Map<string, string[]>();
+    for (const d of deps.items) waits.set(d.dependent, [...(waits.get(d.dependent) ?? []), d.prerequisite]);
+    return boardWires.map((w) => ({ ...w, depends_on: waits.get(w.task_id) ?? [] }));
+  }, [boardWires, deps]);
   const boardActions = (t: TaskWire): BoardTicketActions => {
     const revision = detail?.tasks.find((r) => r.task_id === t.task_id)?.revision ?? '0';
     const run = (method: OwnerCommand['method'], done: string, body = '') => mutate(method, { taskId: t.task_id, body }, done, revision);
@@ -1089,6 +1097,7 @@ export function OwnerChainView({
                 )}
               </TicketCard>
 
+              {wire && deps && <TicketLinkedCard task={linkedWires.find((w) => w.task_id === wire.task_id) ?? wire} tasks={linkedWires} keys={boardKeys} onOpenTicket={(id) => openTicket(id, tasks.find((t) => t.taskId === id)?.title || id)} />}
               <TicketCard debugId="owner-chain-dependencies" title="Waits for">
                 {deps === null ? <Text as="p" role="caption" tone="muted">Loading dependencies…</Text> : (() => {
                   const waits = deps.items.filter((d) => d.dependent === task.taskId);

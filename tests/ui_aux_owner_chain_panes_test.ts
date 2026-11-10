@@ -714,3 +714,25 @@ test('a ticket shows its handoffs on demand: summary, next steps, waiting on and
     await ui.cleanup();
   }
 });
+
+test('the ticket shows origin/main linked tickets from the owner dependencies: what it waits for and unblocks', async () => {
+  const owner = chainOwner();
+  const ui = await mount({
+    answer: (call) => (call.method === 'work.read'
+      ? { chain_id: CHAIN, publish_state: 'published', status: 'active', work_revision: '1', pending_proposal_id: '', next_cursor: '', pending_proposal: null,
+        items: [
+          { kind: 'dependency', key: 'dep_1', accepted_seq: '2', record: { dependency_id: 'dep_1', dependent: { kind: 'task', id: 'task_1' }, prerequisite: { kind: 'task', id: 'task_3' }, removed_at: '' } },
+          { kind: 'dependency', key: 'dep_2', accepted_seq: '3', record: { dependency_id: 'dep_2', dependent: { kind: 'task', id: 'task_2' }, prerequisite: { kind: 'task', id: 'task_1' }, removed_at: '' } },
+        ] }
+      : owner.answer(call)),
+    render: (_env, h) => aux({ type: 'ticket', chainId: CHAIN, taskId: 'task_1' }, h),
+  });
+  try {
+    const linked = ui.$('ticket-view-linked');
+    assert.ok(linked, 'linked tickets card');
+    assert.match(linked!.textContent!, /Waits for.*Ship.*Done.*Unblocks.*Write docs/s);
+    assert.ok(ui.$('ticket-view-unblocks-task_2'));
+  } finally {
+    await ui.cleanup();
+  }
+});
