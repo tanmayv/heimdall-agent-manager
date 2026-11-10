@@ -6,6 +6,7 @@ import "core:fmt"
 import "core:strings"
 import "core:testing"
 import contracts "odin_test:contracts"
+import executor "odin_test:lib/executor_local"
 
 execution_child_test_request :: proc(x:^Execution_Test,b:json.Object,input:string,now:i64)->string {
     r:=make(json.Object,context.temp_allocator)
@@ -128,4 +129,78 @@ owner_execution_child_lost_submit_reply_replays_after_native_lease_retirement ::
     testing.expect_value(t,fleet_policy_test_state(f),before)
     fresh:=lifecycle_raw(f,child,"lease.submit","new_submit",payload,cap,"5")
     testing.expect(t,execute_lifecycle(&f.store,fresh,payload,cap,child,f.owner,2100,{&f.owner_priv,test_sign}).code!="ok")
+}
+
+// Cross-Bridge placement end to end on the owner side (task_18e6bd3b4d699669):
+// the chain's coordinator (not a device) reserves the task on executor Bridge
+// B and pairs the reserved remote author with a reviewer; B's executor
+// prepares and commits, the owner bootstraps, and B's child works the task
+// over the signed child channel (agent.owner_local.lease ->
+// execution_child): requirements, heartbeat-free submit, and the review is
+// then owed to the paired reviewer.
+@(test)
+owner_execution_coordinator_placed_remote_worker_leases_submits_and_owes_review :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    x:=new(Execution_Test);x.owner=fixture(t);f:=x.owner
+    x.path=fmt.aprintf("%s.executor",f.path)
+    defer execution_test_destroy(x)
+    x.host_key=f.creator;x.host_key.kind="bridge";x.host_key.principal_id="executor";x.host_key.key_id="operator"
+    seed(t,f);remote_test_policy(t,f)
+    coord:=agent_coordinator_child();agent_seat_coordinator(t,f,coord)
+    reviewer:=lifecycle_reviewer();agent_seat(t,f,reviewer,"reviewer")
+    // fleet.reserve signed for the coordinator (agent mode), no device.
+    payload:=remote_test_payload(f,x.host_key,remote_test_config(x.host_key))
+    reserve:=agent_command(f,coord,"fleet.reserve","coord_reserve","task",payload,agent_task_revision(f,"task"))
+    if !testing.expect_value(t,execute_agent(&f.store,reserve,payload,coord,f.owner,1000,&f.kr,Signer{&f.owner_priv,test_sign},remote_key=x.host_key).code,"ok") do return
+    if !testing.expect(t,executor.open(&x.host,x.path,"account","executor","operator")) do return
+    policy:=execution_test_document("policy")
+    testing.expect_value(t,executor.install_policy(&x.host,execution_test_signed(f,policy,"policy",true),x.host_key,1000).code,"ok")
+    p:=execution_test_document("prepare")
+    for pair in ([5][2]string{{"owner_bridge_id","bridge"},{"key_id","bridge_key"},{"launch_epoch","epoch"},{"lease_id","lease"},{"hard_ms","3601000"}}) do p[pair[0]]=json.String(pair[1])
+    x.prepare=execution_test_signed(f,p,"prepare")
+    // Pairing (bridge_owner_remote_configure): the reserved author is the
+    // remote child, the reviewer a member here, merge_policy none.
+    fleet,_:=query(f.store.db,"SELECT instance_id,launch_epoch,run_count,token_generation FROM local_fleet WHERE chain_id='chain' AND task_id='task'")
+    if !testing.expect(t,len(fleet)==1) do return
+    author:=Child{fleet[0][0],fleet[0][1],fleet[0][3],number(fleet[0][2]),"author"}
+    config:=encode(doc(map[string]string{"configuration_revision"="1","author_agent_id"="author","reviewer_agent_id"=reviewer.agent_id,
+        "reviewer_instance_id"=reviewer.instance,"directory_id"="owner_none","merge_policy"="none","repository"="",
+        "worktree"="","source_branch"="","target_branch"="","base_head"=""}))
+    configure:=agent_command(f,coord,"lifecycle.configure","coord_config","task",config,agent_task_revision(f,"task"))
+    if !testing.expect_value(t,execute_agent(&f.store,configure,config,coord,f.owner,1000,&f.kr,Signer{&f.owner_priv,test_sign},{},Lifecycle_Proof{author,reviewer,true}).code,"ok") do return
+    lifecycle_edit(t,f,"1",agent_task_revision(f,"task"))
+    rev:=agent_task_revision(f,"task")
+    x.lease=lease_request(f,lease_child(),"lease.claim","claim","lease","",rev)
+    testing.expect_value(t,execution_prepare_start(&f.store,x.prepare,x.lease,f.owner,1000).code,"ok")
+    x.receipt=execution_test_prepare(t,x)
+    if !testing.expect_value(t,execution_test_commit(x).code,"ok") do return
+    claim:=execution_test_claim(t,f)
+    snapshot:=execution_bootstrap(&f.store,claim,"Worker","","[]",f.owner,1200,{&f.owner_priv,execution_test_sign})
+    if !testing.expect_value(t,snapshot.code,"ok") do return
+    bundle,_:=contracts.owner_content_document(snapshot.body);o,_:=bundle.(json.Object)
+    b,_:=contracts.executor_parse(field(o,"bootstrap"),"bootstrap")
+    caps,_:=query(f.store.db,"SELECT capability_json FROM local_leases WHERE lease_id='lease'")
+    if !testing.expect(t,len(caps)==1,"the remote child holds the task's lease") do return
+    cap:=caps[0][0]
+    ack:=`{"requirements_revision":"1"}`
+    testing.expect_value(t,lifecycle_call(f,lease_child(),"requirements.present","present",ack,cap,rev,{},1200).code,"ok")
+    testing.expect_value(t,lifecycle_call(f,lease_child(),"requirements.ack","ack",ack,cap,rev,{},1200).code,"ok")
+    submit:=`{"requirements_revision":"1","head":"","summary":"Checks pass"}`
+    input:=encode(contracts.Owner_Lifecycle_Input{"1","chain","task","lease","1",rev,"remote_submit","lease.submit","2000",cap,submit})
+    request:=execution_child_test_request(x,b,input,1300)
+    // Another executor key (another Bridge) cannot speak for B's child.
+    stranger:=x.host_key;stranger.key_id="other_operator";stranger.principal_id="other_executor"
+    _,forged:=execution_child(&f.store,request,input,stranger,f.owner,1300)
+    testing.expect(t,!forged,"only the reserved executor's key attests its child")
+    child,valid:=execution_child(&f.store,request,input,x.host_key,f.owner,1300)
+    if !testing.expect(t,valid) do return
+    testing.expect_value(t,encode(child),encode(author))
+    raw:=lifecycle_raw(f,child,"lease.submit","remote_submit",submit,cap,rev)
+    if !testing.expect_value(t,execute_lifecycle(&f.store,raw,submit,cap,child,f.owner,1300,{&f.owner_priv,test_sign},{"",true}).code,"ok") do return
+    state,_:=query(f.store.db,"SELECT state FROM lifecycle_state WHERE chain_id='chain' AND task_id='task'")
+    testing.expectf(t,len(state)==1 && state[0][0]=="in_review","the remote submission is in review: %v",state)
+    _,task,found,ok:=review_pending(&f.store,reviewer)
+    testing.expectf(t,ok && found && task=="task","the paired reviewer owes the review (found=%v task=%s)",found,task)
+    _,_,coord_owes,_:=review_pending(&f.store,coord)
+    testing.expect(t,!coord_owes,"the coordinator never reviews its own chain")
 }
