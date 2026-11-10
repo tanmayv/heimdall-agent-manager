@@ -1068,6 +1068,10 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		bridge_owner_handle(conn, text)
 		return
 	}
+    if type == "owner_remote_agent" {
+        bridge_owner_remote_agent_handle(conn,text)
+        return
+    }
     if type == "owner_chain_prepare" {
         bridge_owner_chain_prepare_handle(conn,text)
         return

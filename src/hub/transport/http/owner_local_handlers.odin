@@ -73,6 +73,54 @@ owner_local_relay_handler :: proc(ctx:rawptr,req:Request)->Response {
     defer delete(reply,runtime.default_allocator())
     return respond_success(reply,req.request_id,auth_ctx_server_time(req))
 }
+// Cross-Bridge agent access (origin/main parity): another paired Bridge of the
+// account relays one of its agents' read/comment verbs to the Bridge that owns
+// the chain. Bridge tokens only. The Hub binds from_bridge_id to the caller's
+// token and routes only to the chain's registered owner Bridge of the same
+// account; the owner verifies the sealed, signed request itself
+// (bridge/owner_remote_agent.odin).
+Owner_Agent_Relay_Body :: struct { chain_id,task_id,request,signature:string }
+owner_local_agent_relay_handler :: proc(ctx:rawptr,req:Request)->Response {
+    context.allocator=context.temp_allocator
+    h:=(^Bridge_Handlers)(ctx)
+    auth,ok,resp:=require_auth_or_bridge_token(h.auth,req)
+    if !ok do return resp
+    if auth.kind!=.Bridge_Token || auth.user_id=="" || auth.bridge_id=="" do return respond_error(domain.domain_error(.Forbidden,"a Bridge of the account is required"),req.request_id)
+    body:Owner_Agent_Relay_Body
+    if json.unmarshal_string(req.body,&body,.JSON,context.temp_allocator)!=nil || body.request=="" || len(body.request)>contracts.OWNER_DOCUMENT_MAX*2 do return respond_error(domain.domain_error(.Validation_Failed,"invalid agent relay"),req.request_id)
+    owner_bridge,found,code:=owner_local_route(h,auth.user_id,body.chain_id,body.task_id)
+    if code!=.Complete do return respond_error(domain.domain_error(.Internal_Error,"registry read failed"),req.request_id)
+    if !found do return respond_error(domain.domain_error(.Not_Found,"no owner chain or task with that id in this account"),req.request_id)
+    if owner_bridge==auth.bridge_id do return respond_error(domain.domain_error(.Validation_Failed,"the caller owns that chain"),req.request_id)
+    bridge,owned,berr:=bridge_service.get_bridge(h.bridges,auth,owner_bridge)
+    if !owned do return respond_error(berr,req.request_id)
+    if bridge.status!=.Online || !project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry,owner_bridge) do return respond_success(`{"code":"owner_unavailable"}`,req.request_id,auth_ctx_server_time(req))
+    directory,available:=owner_directory(h,auth.user_id)
+    if !available do return respond_error(domain.domain_error(.Forbidden,"current directory unavailable"),req.request_id)
+    id:=fmt.tprintf("cmd_owner_agent_%d",time.to_unix_nanoseconds(time.now()))
+    command:=struct{type,command_id,account_id,from_bridge_id,request,signature:string,directory:vault.Directory_Verification_Input}{
+        "owner_remote_agent",id,auth.user_id,auth.bridge_id,body.request,body.signature,directory}
+    reply,received,rerr:=bridge_runtime.send_runtime_command_wait(h.bridge_runtime_registry,project_service.Runtime_Command{bridge_id=owner_bridge,command_id=id,body_json=owner_json(command)},10000)
+    if !received do return respond_error(rerr,req.request_id)
+    defer delete(reply,runtime.default_allocator())
+    return respond_success(reply,req.request_id,auth_ctx_server_time(req))
+}
+// The owner Bridge of a chain (by chain id) or of a task (by task id, from the
+// task rows of the registry) in this account.
+owner_local_route :: proc(h:^Bridge_Handlers,account,chain,task:string)->(string,bool,Owner_List_All_Code) {
+    if chain!="" {
+        rows,err:=owner_registry_rows(h,account,chain,"","",1)
+        if err.code!=.None do return "",false,.Read_Failed
+        if len(rows)==0 || rows[0].chain_id!=chain do return "",false,.Complete
+        return rows[0].owner_bridge_id,true,.Complete
+    }
+    if task=="" do return "",false,.Complete
+    // Task rows are not headers (headers_only lists chain rows only).
+    all,code:=owner_local_list_all(h,account,"",false)
+    if code!=.Complete do return "",false,code
+    for r in all do if r.task_id==task do return r.owner_bridge_id,true,.Complete
+    return "",false,.Complete
+}
 owner_local_publish_handler :: proc(ctx:rawptr,req:Request)->Response {
     context.allocator=context.temp_allocator
     h:=(^Bridge_Handlers)(ctx)

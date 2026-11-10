@@ -126,7 +126,9 @@ bridge_owner_agent_route :: proc(request_id,method,params:string,rec:Bridge_Loca
     if rec.role!=.Agent do return "",false
     if verb:=bridge_owner_instance_verb(method);verb!="" do return bridge_owner_instance_gate(request_id,verb,params,rec)
     response,handled,launch,reviews:=bridge_owner_agent_route_locked(request_id,method,params,rec)
-    if !handled do return response,handled
+    // Not ours: another Bridge of the account may own it (cross-Bridge read and
+    // comment, owner_remote_agent.odin), else the Hub route as before.
+    if !handled do return bridge_owner_remote_agent_send(request_id,method,params,rec)
     // Owed review leases are woken (or their reviewers started/launched) with
     // no lock held.
     bridge_owner_review_dispatch(reviews)

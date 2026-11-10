@@ -757,6 +757,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/projects/*/vcs/upload", rawptr(&graph.bridge_handlers), http.project_handle_vcs_upload)
 	http.router_add(&graph.router, "POST", "/api/v1/projects/*/vcs/sync", rawptr(&graph.bridge_handlers), http.project_handle_vcs_sync)
 	http.router_add(&graph.router,"POST","/api/v1/owner-local/relay",rawptr(&graph.bridge_handlers),http.owner_local_relay_handler)
+	http.router_add(&graph.router,"POST","/api/v1/owner-local/agent-relay",rawptr(&graph.bridge_handlers),http.owner_local_agent_relay_handler)
     http.router_add(&graph.router,"POST","/api/v1/executor/fence",rawptr(&graph.bridge_handlers),http.executor_fence_relay_handler)
     http.router_add(&graph.router,"POST","/api/v1/executor/child",rawptr(&graph.bridge_handlers),http.executor_child_relay_handler)
     http.router_add(&graph.router,"GET","/api/v1/executor/directory",rawptr(&graph.bridge_handlers),http.executor_directory_handler)
