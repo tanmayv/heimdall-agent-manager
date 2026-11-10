@@ -28,16 +28,17 @@ export function limitHitsByChain<T extends { chain_id: string }>(hits: T[], limi
 
 // Queries the immutable owners rather than hedging between unrelated databases.
 // The listing is routing input only: every query is independently device-signed
-// and the owner intersects it with its current local grant. The listing may be
+// and the owner admits any paired, unrevoked device of the account. The listing may be
 // any length (callers page the registry); concurrency stays bounded at four.
 // Every hit of a chain is kept, grouped by chain (chain order is the listing's).
 export async function searchOwnerChains(
   session: OwnerSession, rows: OwnerSearchListing[], query: string, limit: number,
   send: (body: unknown) => Promise<unknown>, signal?: AbortSignal,
-): Promise<{ hits: OwnerSearchHit[]; ownedIds: Set<string>; stale: boolean }> {
+): Promise<{ hits: OwnerSearchHit[]; ownedIds: Set<string>; stale: boolean; refused: { chainId: string; code: string }[] }> {
   const chains = rows.filter((r) => !r.task_id);
   const groups: OwnerSearchHit[][] = chains.map(() => []);
   const ownedIds = new Set(rows.map((r) => r.chain_id));
+  const refused: { chainId: string; code: string }[] = [];
   let stale = false, next = 0;
   // Bounded concurrency and output; no query/text crosses the Hub unsealed.
   await Promise.all(Array.from({ length: Math.min(4, chains.length) }, async () => {
@@ -61,11 +62,12 @@ export async function searchOwnerChains(
         group.sort((a, b) => kindRank(a.kind) - kindRank(b.kind) || String(a.task_id ?? '').localeCompare(String(b.task_id ?? '')) || Number(a.attempt || 0) - Number(b.attempt || 0));
         groups[index] = group;
       } catch (error) {
-        // Revocation is a denial, never a stale result fallback.
-        if (error instanceof Error && error.message === 'invalid_scope') continue;
+        // A refused or failed chain is never skipped silently: the result is
+        // incomplete (stale) and the refusal is reported with its code.
+        refused.push({ chainId: row.chain_id, code: error instanceof Error ? error.message : String(error) });
         stale = true;
       }
     }
   }));
-  return { hits: limitHitsByChain(groups.flat(), limit), ownedIds, stale };
+  return { hits: limitHitsByChain(groups.flat(), limit), ownedIds, stale, refused };
 }

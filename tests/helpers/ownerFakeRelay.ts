@@ -35,7 +35,7 @@ const TASK_REVISION_METHODS = new Set(['task.publish', 'task.priority', 'native.
   'lifecycle.configure', 'requirements.edit', 'review.post']);
 const READ_METHODS = new Set(['linked.facet.read', 'envelope.read', 'linked.read', 'linked.fetch', 'linked.backup', 'work.read', 'chain.metadata.read',
   'native.metadata.read', 'fleet.policy.read', 'native.history.read', 'native.history.fetch', 'attempt.read', 'history.read', 'history.fetch',
-  'context.read', 'grant.read', 'workflow.read', 'source.read', 'submission.read', 'chain.search', 'chain.read', 'task.read', 'receipt.read',
+  'context.read', 'workflow.read', 'source.read', 'submission.read', 'chain.search', 'chain.read', 'task.read', 'receipt.read',
   'runtime.read', 'migration.archive.read']);
 
 export interface OwnerRevisions { chain: (chainId: string) => string; task: (chainId: string, taskId: string) => string }

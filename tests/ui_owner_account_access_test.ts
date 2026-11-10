@@ -10,7 +10,8 @@ import './helpers/vaultEndpointHarness.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fakeOwner, ownerTestSession, registryRow, type OwnerCall } from './helpers/ownerFakeRelay.ts';
-import { loadOwnerChainSummaries, readOwnerChain, readOwnerChainStatuses } from '../src/ui/api/ownerChains.ts';
+import { loadOwnerChainSummaries, ownerErrorMessage, readOwnerChain, readOwnerChainStatuses } from '../src/ui/api/ownerChains.ts';
+import { prepareOwnerOperation } from '../src/ui/api/ownerLocalClient.ts';
 import { ownerGenesisBridgeCreator } from '../src/ui/api/ownerLocal.ts';
 import { clearKeyringSession } from '../src/ui/utils/vaultKeyringSession.ts';
 
@@ -72,4 +73,22 @@ test('the genesis mirror accepts only the chain\'s own owner Bridge key as creat
   assert.equal(ownerGenesisBridgeCreator({ ...g, creator_id: 'brg_2', creator_key_id: 'brg2_key' }, 'brg_1', { ...owner, principal_id: 'brg_2', key_id: 'brg2_key' }, owner), false, 'a foreign Bridge');
   assert.equal(ownerGenesisBridgeCreator(g, 'brg_2', owner, owner), false, 'a different recipient');
   assert.equal(ownerGenesisBridgeCreator(g, 'brg_1', { ...owner, kind: 'device' }, owner), false);
+});
+
+test('grant methods are gone: the app cannot sign grant.* at all', async () => {
+  const { session, bridgeId } = await ownerTestSession();
+  try {
+    for (const method of ['grant.set', 'grant.revoke', 'grant.read', 'grant.policy', 'grant.recover']) {
+      await assert.rejects(prepareOwnerOperation(session, bridgeId, method as any, { chainId: 'chain_a', expectedRevision: '0' }), undefined, method);
+    }
+  } finally { clearKeyringSession(); }
+});
+
+test('Bridge relay refusals other than authorization have their own text, not "no access"', () => {
+  const noAccess = ownerErrorMessage(new Error('invalid_scope'));
+  for (const code of ['account_mismatch', 'expired', 'stale_epoch', 'directory_unverified', 'vault_locked', 'owner_mismatch']) {
+    const text = ownerErrorMessage(new Error(code));
+    assert.notEqual(text, noAccess, code);
+    assert.ok(!text.includes('refused the request ('), `${code} has dedicated text: ${text}`);
+  }
 });

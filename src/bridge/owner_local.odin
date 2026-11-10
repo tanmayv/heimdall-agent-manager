@@ -95,7 +95,10 @@ bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
     relay,valid:=contracts.owner_parse(wire.relay,"relay")
     if !valid do return
     request_id:=contracts.owner_string(relay,"request_id")
-    reply:=struct {type,command_id,request_id,code,envelope:string}{"command_result",wire.command_id,request_id,"invalid_scope",""}
+    // Every early exit names its own reason: invalid_scope is reserved for a
+    // real authorization refusal (the store), so the app never reports "no
+    // access" for clock skew, a stale epoch or an unverified directory.
+    reply:=struct {type,command_id,request_id,code,envelope:string}{"command_result",wire.command_id,request_id,"malformed",""}
     defer {
         // Publication can perform I/O after sealing; lock may arrive meanwhile.
         if bridge_task_chain_search_generation()!=search_generation {reply.code="vault_locked";reply.envelope=""}
@@ -104,14 +107,14 @@ bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
         if conn!=nil do _=bridge_hub_send(conn,result)
     }
     account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
-    if wire.account_id!=account || contracts.owner_string(relay,"bridge_id")!=bridge_config.daemon_id do return
+    if wire.account_id!=account || contracts.owner_string(relay,"bridge_id")!=bridge_config.daemon_id { reply.code="account_mismatch";return }
     expires,_:=strconv.parse_i64(contracts.owner_string(relay,"expires_ms"))
     now:=time.to_unix_nanoseconds(time.now())/1000000
-    if expires<=now || expires-now>60000 do return
+    if expires<=now || expires-now>60000 { reply.code="expired";return }
     kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
     if !unlocked { reply.code="vault_locked";return }
     plain,opened:=bridge_open_current_epoch_token(contracts.owner_string(relay,"envelope"),&kr,context.temp_allocator)
-    if !opened do return
+    if !opened { reply.code="stale_epoch";return }
     request,parsed:=contracts.owner_parse(plain,"request")
     if !parsed do return
     command_raw,payload,genesis_raw:=contracts.owner_string(request,"command"),contracts.owner_string(request,"payload"),contracts.owner_string(request,"genesis")
@@ -123,11 +126,11 @@ bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
     sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
     if !bridge_owner_open(account,owner_id) {reply.code="storage_error";return}
     floor,status:=keystore_read_epoch_floor(bridge_config.daemon_id)
-    if status!=.Found || !floor.root.set do return
+    if status!=.Found || !floor.root.set { reply.code="directory_unverified";return }
     pin_seq,pin_hash:=owner.directory_pin(&bridge_owner_store)
-    key,owner_key,version,head,trusted:=owner.verify_directory(bridge_owner_json(wire.directory),account,bridge_config.daemon_id,owner_pub,contracts.owner_string(command,"principal_id"),contracts.owner_string(command,"key_id"),floor.root,pin_seq,pin_hash,&kr)
-    if !trusted do return
-    if !owner.observe_directory(&bridge_owner_store,version,head) do return
+    key,owner_key,version,head,verified:=owner.verify_directory_code(bridge_owner_json(wire.directory),account,bridge_config.daemon_id,owner_pub,contracts.owner_string(command,"principal_id"),contracts.owner_string(command,"key_id"),floor.root,pin_seq,pin_hash,&kr)
+    if verified!="ok" { reply.code=verified;return }
+    if !owner.observe_directory(&bridge_owner_store,version,head) { reply.code="directory_unverified";return }
     if contracts.owner_string(command,"method")=="chain.create" {
         genesis,gvalid:=contracts.owner_parse(genesis_raw,"genesis")
         if !gvalid || contracts.owner_string(genesis,"owner_bridge_id")!=bridge_config.daemon_id || contracts.owner_string(genesis,"owner_key_id")!=owner_key.key_id || !contracts.owner_verify_signature("genesis",genesis,"creator_signature",key) do return
@@ -182,14 +185,7 @@ bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
             }
         }
     }
-    grant_proof:=owner.Grant_Proof{root=floor.root}
     method:=contracts.owner_string(command,"method")
-    if method=="grant.set" || method=="grant.recover" {
-        if p,ok:=contracts.owner_parse(payload,"grant_payload");ok {
-            target,_,target_version,target_head,target_ok:=owner.verify_directory(bridge_owner_json(wire.directory),account,bridge_config.daemon_id,owner_pub,contracts.owner_string(p,"principal_id"),contracts.owner_string(p,"key_id"),floor.root,version,head,&kr)
-            if target_ok && target_version==version && target_head==head do grant_proof.target=target
-        }
-    }
     remote_key:contracts.Owner_Verified_Key
     if method=="fleet.reserve" {
         if p,ok:=contracts.owner_parse(payload,"fleet_reserve_payload");ok {
@@ -202,7 +198,7 @@ bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
             }
         }
     }
-    result:=owner.execute(&bridge_owner_store,command_raw,payload,genesis_raw,key,owner_key,version,head,now,&kr,owner.Signer{nil,bridge_owner_sign},fleet_child,proof,observed_children[:],grant_proof,remote_key)
+    result:=owner.execute(&bridge_owner_store,command_raw,payload,genesis_raw,key,owner_key,version,head,now,&kr,owner.Signer{nil,bridge_owner_sign},fleet_child,proof,observed_children[:],remote_key)
     sync.mutex_unlock(&bridge_local_token_mutex)
     sync.mutex_unlock(&bridge_startup_io_mutex)
     if result.code=="ok" && contracts.owner_string(command,"method")=="chain.member.set" {

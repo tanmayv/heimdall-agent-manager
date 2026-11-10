@@ -9,6 +9,8 @@ import "core:testing"
 import contracts "odin_test:contracts"
 import vault "odin_test:lib/vault"
 
+// The 30-day bound migration_008 applied to legacy grant rows.
+LEGACY_GRANT_TTL_MS :: 30*24*60*60*1000
 Grant_Device :: struct { priv:ecdsa.Private_Key, key:contracts.Owner_Verified_Key, root:vault.Root_Pin }
 grant_device :: proc(t:^testing.T)->Grant_Device {
     d:Grant_Device
@@ -29,9 +31,9 @@ grant_command :: proc(f:^Fixture,key:contracts.Owner_Verified_Key,priv:^ecdsa.Pr
     sig,_:=test_sign(priv,"command",c);c["signature"]=json.String(sig)
     return encode(c)
 }
-grant_call :: proc(f:^Fixture,c,p:string,key:contracts.Owner_Verified_Key,proof:Grant_Proof={},now:i64=1000)->Result {
+grant_call :: proc(f:^Fixture,c,p:string,key:contracts.Owner_Verified_Key,now:i64=1000)->Result {
     if !observe_directory(&f.store,1,"head") do return fail("invalid_scope")
-    return execute(&f.store,c,p,f.genesis,key,f.owner,1,"head",now,&f.kr,Signer{&f.owner_priv,test_sign},grant_proof=proof)
+    return execute(&f.store,c,p,f.genesis,key,f.owner,1,"head",now,&f.kr,Signer{&f.owner_priv,test_sign})
 }
 grant_revision :: proc(f:^Fixture)->string {
     rows,_:=query(f.store.db,"SELECT revision FROM task_chains WHERE chain_id='chain'")
@@ -40,48 +42,31 @@ grant_revision :: proc(f:^Fixture)->string {
 grant_payload :: proc(key:contracts.Owner_Verified_Key,expires:i64=10000,mutate:bool=true)->string {
     return encode(doc(map[string]string{"principal_id"=key.principal_id,"key_id"=key.key_id,"expires_ms"=fmt.tprintf("%d",expires),"can_read"="1","can_mutate"="1" if mutate else "0"}))
 }
-grant_admin_call :: proc(f:^Fixture,method,op,p:string,proof:Grant_Proof={},now:i64=1000)->Result {
-    return grant_call(f,command(f,method,op,"",p,grant_revision(f),now+1000),p,f.creator,proof,now)
-}
+// Per-chain grants are gone: grant.* is no longer a method, chain.create
+// issues no grant or recovery policy, and a second paired device needs none.
 @(test)
-grant_changes_are_atomic_and_list_cursors_are_revision_bound :: proc(t:^testing.T) {
+grant_methods_are_removed_and_chain_create_issues_no_grant :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
     f:=fixture(t);defer destroy(f);seed(t,f)
     b:=grant_device(t);defer ecdsa.private_key_clear(&b.priv)
+    rows,_:=query(f.store.db,"SELECT (SELECT count(*) FROM local_grants),(SELECT count(*) FROM local_grant_policy),(SELECT count(*) FROM local_grant_audit)")
+    testing.expect_value(t,encode(rows),encode([1][3]string{{"0","0","0"}}))
     p:=grant_payload(b.key)
-    testing.expect(t,exec(f.store.db,"CREATE TRIGGER grant_receipt_failure BEFORE INSERT ON command_receipts BEGIN SELECT RAISE(ABORT,'synthetic failure'); END;"))
-    testing.expect_value(t,grant_admin_call(f,"grant.set","atomic",p,Grant_Proof{target=b.key}).code,"storage_error")
-    rows,_:=query(f.store.db,"SELECT (SELECT count(*) FROM local_grants),(SELECT count(*) FROM local_grant_audit),(SELECT revision FROM task_chains)")
-    testing.expect(t,rows[0][0]=="1" && rows[0][1]=="0" && rows[0][2]=="2")
-    testing.expect(t,exec(f.store.db,"DROP TRIGGER grant_receipt_failure"))
-    testing.expect_value(t,grant_admin_call(f,"grant.set","atomic",p,Grant_Proof{target=b.key}).code,"ok")
+    for method in ([5]string{"grant.set","grant.recover","grant.revoke","grant.policy","grant.read"}) {
+        testing.expect(t,!contracts.owner_method_valid(method))
+        testing.expect_value(t,grant_call(f,command(f,method,fmt.tprintf("gone_%s",method),"",p,grant_revision(f),2000),p,f.creator).code,"malformed")
+    }
     read:=`{"cursor":"","limit":"1"}`
-    result:=grant_call(f,command(f,"grant.read","page","",read,"0"),read,f.creator)
-    testing.expect_value(t,result.code,"ok")
-    page:struct{revision,policy_revision,recovery_enabled,next_cursor:string,grants:[][]string}
-    testing.expect_value(t,json.unmarshal_string(result.body,&page,.JSON,context.temp_allocator),nil)
-    testing.expect(t,len(page.grants)==1 && page.next_cursor!="" && page.recovery_enabled=="0")
-    next:=encode(doc(map[string]string{"cursor"=page.next_cursor,"limit"="1"}))
-    result=grant_call(f,command(f,"grant.read","next","",next,"0"),next,f.creator)
-    testing.expect_value(t,result.code,"ok")
-    testing.expect_value(t,json.unmarshal_string(result.body,&page,.JSON,context.temp_allocator),nil)
-    testing.expect(t,len(page.grants)==1 && page.next_cursor=="")
-    policy:=`{"policy_revision":"1","recovery_enabled":"1"}`
-    testing.expect_value(t,grant_admin_call(f,"grant.policy","change",policy).code,"ok")
-    testing.expect_value(t,grant_call(f,command(f,"grant.read","stale","",next,"0"),next,f.creator).code,"stale_cursor")
-    rows,_=query(f.store.db,"SELECT command_json,payload_json FROM local_grant_audit WHERE operation_id='atomic'")
-    c,ok:=contracts.owner_parse(rows[0][0],"command")
-    testing.expect(t,ok && rows[0][1]==p && contracts.owner_verify_signature("command",c,"signature",f.creator))
-    close(&f.store)
-    testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
-    read_command:=grant_command(f,b.key,&b.priv,"chain.read","after_restart","",read,"0")
-    testing.expect_value(t,grant_call(f,read_command,read,b.key).code,"ok")
+    second:=grant_command(f,b.key,&b.priv,"chain.read","second_reads","",read,"0")
+    testing.expect_value(t,grant_call(f,second,read,b.key).code,"ok")
 }
 
 @(test)
 grants_v7_upgrade_bounds_legacy_authority_and_rolls_back_collision_and_commit_failure :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
     f:=fixture(t);defer destroy(f);seed(t,f)
+    // A legacy store's grant row, as chain.create wrote it before grants were removed.
+    testing.expect(t,exec(f.store.db,fmt.tprintf("INSERT INTO local_grants VALUES('chain','%s','%s',1,'%d',1,1,0)",f.creator.principal_id,f.creator.key_id,1000+LEGACY_GRANT_TTL_MS)))
     close(&f.store)
     db:DB
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
@@ -108,7 +93,7 @@ grants_v7_upgrade_bounds_legacy_authority_and_rolls_back_collision_and_commit_fa
     testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     rows,_=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT expires_ms FROM local_grants),(SELECT count(*) FROM local_grant_policy),(SELECT body FROM tasks),(SELECT count(*) FROM command_receipts) FROM runtime_database")
-    testing.expect(t,rows[0][0]=="37" && rows[0][1]=="37" && number(rows[0][2])==1000+GRANT_MAX_TTL_MS && rows[0][3]=="0" && rows[0][4]=="private body" && rows[0][5]=="2")
+    testing.expect(t,rows[0][0]=="37" && rows[0][1]=="37" && number(rows[0][2])==1000+LEGACY_GRANT_TTL_MS && rows[0][3]=="0" && rows[0][4]=="private body" && rows[0][5]=="2")
 }
 @(test)
 paired_devices_share_account_access_and_unpaired_revoked_or_foreign_are_refused :: proc(t:^testing.T) {
@@ -152,4 +137,26 @@ paired_devices_share_account_access_and_unpaired_revoked_or_foreign_are_refused 
     testing.expect(t,grant_call(f,stale,comment,b.key,now=1000).code!="ok","no revival below the durable clock")
     rows,_:=query(f.store.db,"SELECT count(*) FROM task_comments")
     testing.expect_value(t,rows[0][0],"1")
+}
+
+// The Bridge replies with the directory refusal reason instead of a blanket
+// invalid_scope: unusable evidence is directory_unverified, another account's
+// directory is account_mismatch.
+@(test)
+verify_directory_code_names_the_reason :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    d:=grant_device(t);defer ecdsa.private_key_clear(&d.priv)
+    kr:vault.Vault_Keyring
+    other:=`{"owner":"other_account","root_device_id":"","head_hash":"","version":1,"current_epoch":1,"log":[],"devices":[]}`
+    _,_,_,_,code:=verify_directory_code(other,"account","bridge",d.key.public_key,d.key.principal_id,d.key.key_id,{},1,"head",&kr)
+    testing.expect_value(t,code,"directory_unverified") // no paired root at all
+    _,_,_,_,code=verify_directory_code(other,"account","bridge",d.key.public_key,d.key.principal_id,d.key.key_id,d.root,1,"head",&kr)
+    testing.expect_value(t,code,"account_mismatch")
+    _,_,_,_,code=verify_directory_code("not json","account","bridge",d.key.public_key,d.key.principal_id,d.key.key_id,d.root,1,"head",&kr)
+    testing.expect_value(t,code,"directory_unverified")
+    unsigned:=`{"owner":"account","root_device_id":"","head_hash":"","version":1,"current_epoch":1,"log":[],"devices":[]}`
+    _,_,_,_,code=verify_directory_code(unsigned,"account","bridge",d.key.public_key,d.key.principal_id,d.key.key_id,d.root,1,"head",&kr)
+    testing.expect_value(t,code,"directory_unverified")
+    _,_,_,_,ok:=verify_directory(unsigned,"account","bridge",d.key.public_key,d.key.principal_id,d.key.key_id,d.root,1,"head",&kr)
+    testing.expect(t,!ok)
 }

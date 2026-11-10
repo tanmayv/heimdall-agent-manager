@@ -1,3 +1,9 @@
+> **Removed (2026-11-10).** Per-chain device grants, `grant.*`, the recovery
+> policy and paired-root recovery no longer exist. Owner chains use
+> account-level trust: every paired, unrevoked device of the account reads and
+> changes every owner chain. The tables stay for migration history. This
+> document is kept as history only.
+
 # Owner-local device grants and recovery
 
 The immutable owner Bridge stores and enforces these grants. Vault content keys

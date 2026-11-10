@@ -12,7 +12,6 @@ export interface OwnerInput {
   chainId: string; taskId?: string; expectedRevision: string;
   priority?: 'p0' | 'p1' | 'p2'; archiveKind?: string; archiveTaskId?: string; query?: string; limit?: number; offset?: string; eventSeq?: string; nativeSourceRevision?: string; nativeHistoryKind?: string; nativeHistoryKey?: string;
   title?: string; description?: string; body?: string; cursor?: string; operationId?: string;
-  grantPrincipal?: string; grantExpiresMs?: string; grantCanMutate?: boolean; recoveryEnabled?: boolean; policyRevision?: string;
   directoryId?: string; agentId?: string; memberRole?: string;
   instanceId?: string; configurationRevision?: string; enabled?: boolean;
   lifecycleConfig?: Record<string, string>; requirementsRevision?: string; attempt?: string; head?: string; verdict?: 'approve' | 'request_changes';
@@ -35,7 +34,6 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
     if (new TextEncoder().encode(text).length > plainLimit || new TextEncoder().encode(JSON.stringify(text)).length > encodedLimit) throw new Error(`Owner ${field} is limited to ${plainLimit} UTF-8 bytes and ${encodedLimit} JSON-encoded bytes`);
   }
   if (method === "chain.search" && (new TextEncoder().encode(input.query ?? "").length > 256 || (input.query ?? "").trim().length < 2 || !Number.isInteger(input.limit ?? 20) || (input.limit ?? 20) < 1 || (input.limit ?? 20) > 50)) throw new Error("Search requires 2–256 UTF-8 bytes and a limit of 1–50");
-  if (method === 'grant.recover' && identity.deviceId !== chain.rootDeviceId) throw new Error('Recovery requires the currently enrolled paired root');
   const operationId = input.operationId ?? ownerId('op_');
   let genesis = '';
   let payload: Record<string, string>;
@@ -43,15 +41,6 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
   else if (['chain.propose','chain.decide','chain.publish','work.dependency.add','work.dependency.remove','work.scope','chain.complete','workflow.draft','workflow.cancel','workflow.gate','workflow.define','workflow.run','workflow.retry','source.observe','source.consume','source.ack','source.retire','source.resolve','source.escalate'].includes(method)) payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'workflow.coordinator') payload = { ...ownerParse(input.body ?? '', 'coordinator_payload') };
   else if (method === 'dependency.edit') payload = { ...ownerParse(input.body ?? '', 'dependency_payload') };
-  else if (method === 'grant.set' || method === 'grant.recover') {
-    const target = chain.trusted.get(input.grantPrincipal ?? '');
-    if (!target || target.kind !== 'browser') throw new Error('Grant recipient must be a currently enrolled browser');
-    const expires = input.grantExpiresMs ?? '';
-    if (!/^[1-9][0-9]*$/.test(expires) || BigInt(expires) <= BigInt(Date.now()) || BigInt(expires) - BigInt(Date.now()) > 2592000000n) throw new Error('Grant expiry must be within 30 days');
-    payload = { principal_id: target.device_id, key_id: target.device_id, expires_ms: expires, can_read: '1', can_mutate: input.grantCanMutate ? '1' : '0' };
-  }
-  else if (method === 'grant.revoke') payload = { principal_id: input.grantPrincipal ?? '', key_id: input.grantPrincipal ?? '' };
-  else if (method === 'grant.policy') payload = { policy_revision: input.policyRevision ?? '', recovery_enabled: input.recoveryEnabled ? '1' : '0' };
   else if (method === 'chain.edit') payload = { title_cipher: await encryptVaultText(input.title ?? '', keyring), description_cipher: await encryptVaultText(input.description ?? '', keyring) };
   else if (method === 'chain.search') payload = { query_cipher: await encryptVaultText(input.query ?? '', keyring), limit: String(input.limit ?? 20) };
   else if (method === 'task.delete') payload = { protocol_version: '1' };

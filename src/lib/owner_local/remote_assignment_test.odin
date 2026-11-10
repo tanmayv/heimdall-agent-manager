@@ -38,7 +38,7 @@ remote_test_payload :: proc(f:^Fixture,key:contracts.Owner_Verified_Key,c:json.O
 }
 remote_test_call :: proc(f:^Fixture,payload,op:string,key:contracts.Owner_Verified_Key,revision:="1",now:i64=1000)->Result {
     c:=command(f,"fleet.reserve",op,"task",payload,revision)
-    return execute(&f.store,c,payload,"",f.creator,f.owner,1,"head",now,&f.kr,{&f.owner_priv,test_sign},{},{},nil,{},key)
+    return execute(&f.store,c,payload,"",f.creator,f.owner,1,"head",now,&f.kr,{&f.owner_priv,test_sign},{},{},nil,key)
 }
 remote_test_seed :: proc(t:^testing.T,f:^Fixture,key:contracts.Owner_Verified_Key) {
     seed(t,f);remote_test_policy(t,f)
@@ -201,7 +201,7 @@ remote_assignment_preserves_native_defaults_and_enforces_capacity :: proc(t:^tes
     config["launch_epoch"]=json.String("second_epoch");config["slot_id"]=json.String("slot2")
     payload=remote_test_payload(f,key,config)
     command_raw:=command(f,"fleet.reserve","over_capacity","second",payload,"1")
-    testing.expect_value(t,execute(&f.store,command_raw,payload,"",f.creator,f.owner,1,"head",1000,&f.kr,{&f.owner_priv,test_sign},{},{},nil,{},key).code,"invalid_scope")
+    testing.expect_value(t,execute(&f.store,command_raw,payload,"",f.creator,f.owner,1,"head",1000,&f.kr,{&f.owner_priv,test_sign},{},{},nil,key).code,"invalid_scope")
     rows,_:=query(f.store.db,"SELECT count(*) FROM local_assignment_history")
     testing.expect_value(t,rows[0][0],"1")
 }

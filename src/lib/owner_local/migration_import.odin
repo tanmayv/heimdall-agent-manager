@@ -264,7 +264,6 @@ migration_project :: proc(s:^Store,chain,principal,key_id,migration:string,rows:
     description,d_ok:=migration_plain(migration_text(c,"description"),kr)
     if !t_ok || !d_ok do return "invalid_content"
     if _,ok:=query(s.db,"INSERT INTO task_chains VALUES(?,?,?,?,?,1)",chain,principal,key_id,title,description);!ok do return "storage_error"
-    if _,ok:=query(s.db,"INSERT INTO local_grants VALUES(?,?,?,1,?,1,1,0)",chain,principal,key_id,fmt.tprintf("%d",now+GRANT_MAX_TTL_MS));!ok do return "storage_error"
     // Owner-local chains are active or completed; cancelled/archived chains
     // admit no further work, which is the completed behavior.
     status:="active" if migration_text(c,"status")=="active" else "completed"

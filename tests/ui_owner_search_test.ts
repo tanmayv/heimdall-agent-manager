@@ -53,6 +53,7 @@ test('owner search covers more than 100 chains and keeps every hit of a chain, g
     assert.ok(w.maxInFlight() <= 4, 'bounded concurrency');
     assert.equal(result.stale, true, 'an offline owner marks the result stale');
     assert.equal(result.ownedIds.size, CHAINS);
+    assert.deepEqual(result.refused, [{ chainId: id(64), code: 'invalid_scope' }], 'a refused chain is reported, never skipped silently');
     assert.deepEqual(result.hits.map((h) => [h.chain_id, h.kind]), [
       [id(5), 'chain'], [id(5), 'task'], [id(5), 'comment'], [id(5), 'output'], [id(120), 'archived_task'],
     ]);

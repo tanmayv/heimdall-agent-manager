@@ -75,8 +75,8 @@ test_owner_chain_create_documents_execute_and_bind_once :: proc(t:^testing.T) {
     testing.expect(t,contracts.owner_create_binding(cj,gj,p))
     created:=owner.execute(&s,c,p,g,key,key,0,"",1000,&kr,signer,requested_by="inst_a")
     testing.expect_value(t,created.code,"ok")
-    rows,_:=owner.query(s.db,"SELECT (SELECT recovery_enabled FROM local_grant_policy WHERE chain_id='chain_a'),(SELECT actor_id FROM local_events WHERE kind='chain.create'),(SELECT count(*) FROM runtime_intents WHERE kind='registry')")
-    testing.expect_value(t,bridge_owner_json(rows),`[["1","inst_a","1"]]`)
+    rows,_:=owner.query(s.db,"SELECT (SELECT count(*) FROM local_grant_policy)+(SELECT count(*) FROM local_grants),(SELECT actor_id FROM local_events WHERE kind='chain.create'),(SELECT count(*) FROM runtime_intents WHERE kind='registry')")
+    testing.expect_value(t,bridge_owner_json(rows),`[["0","inst_a","1"]]`)
 
     child:=owner.Child{"inst_a","epoch_a",strings.repeat("a",64,context.temp_allocator),1,"agt_a"}
     testing.expect_value(t,owner.bind_created_coordinator(&s,"chain_a",child,"inst_a",1000).code,"ok")

@@ -182,16 +182,15 @@ test_owner_review_dispatch_reaches_every_reviewer_end_to_end :: proc(t:^testing.
     relay,_:=review_test_exec(r,coord,"agent.review.post",fmt.tprintf(`{{"task_id":"%s","verdict":"approve","on_behalf_of":"user"}}`,task))
     testing.expectf(t,strings.contains(contracts.owner_string(review_test_data(relay),"note"),"user's own review"),"relay: %v",relay)
     testing.expect_value(t,review_test_state(r,task),"in_review")
-    // ...the user's own (device-signed) review does: a device granted on
-    // this Bridge-created chain.
+    // ...the user's own (device-signed) review does: any paired device of the
+    // account, with no per-chain grant (account-level trust).
     dpriv:ecdsa.Private_Key;defer ecdsa.private_key_clear(&dpriv)
-    device:=chain_create_test_key(t,&dpriv,"device_user","device_key");device.kind="device"
-    testing.expect(t,owner.exec(r.store.db,fmt.tprintf("INSERT INTO local_grants VALUES('%s','device_user','device_key',1,%d,1,1,0)",chain,now+3600000)))
+    device:=chain_create_test_key(t,&dpriv,"device_user","device_user");device.kind="device"
     after,_,_:=owner.agent_task_state(&r.store,chain,task)
     verdict:=bridge_owner_json(map[string]string{"requirements_revision"=after.requirements_revision,"attempt"=after.attempt,"head"=after.head,"verdict"="approve","summary"="user approves"})
     human:=owner.doc(map[string]string{"protocol_version"="1","account_id"="account","chain_id"=chain,"immutable_owner_bridge"="bridge","principal_id"="device_user",
         "operation_id"="op_user","method"="review.post","task_id"=task,"expected_revision"=after.task_revision,"request_expires_ms"=fmt.tprintf("%d",now+300000),
-        "payload_digest"=contracts.owner_payload_digest(verdict),"key_id"="device_key","signature"=strings.repeat("0",128,context.temp_allocator)})
+        "payload_digest"=contracts.owner_payload_digest(verdict),"key_id"="device_user","signature"=strings.repeat("0",128,context.temp_allocator)})
     sig,_:=chain_create_test_sign(&dpriv,"command",human);human["signature"]=json.String(sig)
     user:=owner.execute(&r.store,bridge_owner_json(human),verdict,g,device,r.key,0,"",time.to_unix_nanoseconds(time.now())/1000000,&r.kr,signer)
     testing.expect_value(t,user.code,"ok")

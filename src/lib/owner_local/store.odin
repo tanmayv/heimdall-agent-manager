@@ -115,7 +115,7 @@ doc :: proc(values: map[string]string) -> json.Object {
 // entering here. Its pinned sequence/hash is rechecked under the write lock.
 // The key is a verified current directory member, never a request assertion.
 execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:contracts.Owner_Verified_Key,
-    directory_version:i64,directory_hash:string, now:i64, kr:^vault.Vault_Keyring, sign:Signer, fleet_child:Child={}, lifecycle_proof:Lifecycle_Proof={}, observed_children:[]Child=nil, grant_proof:Grant_Proof={}, remote_key:contracts.Owner_Verified_Key={}, agent:Child={}, source:Source_Proof={}, requested_by:string="") -> Result {
+    directory_version:i64,directory_hash:string, now:i64, kr:^vault.Vault_Keyring, sign:Signer, fleet_child:Child={}, lifecycle_proof:Lifecycle_Proof={}, observed_children:[]Child=nil, remote_key:contracts.Owner_Verified_Key={}, agent:Child={}, source:Source_Proof={}, requested_by:string="") -> Result {
     context.allocator=context.temp_allocator
     c,parsed:=contracts.owner_parse(command_raw,"command")
     if !parsed do return fail("malformed")
@@ -128,10 +128,10 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     if !ok || len(state)!=1 do return fail("storage_error")
     if directory_version!=number(state[0][2]) || directory_hash!=state[0][3] do return fail("invalid_scope")
     method,chain,task,principal,op:=field(c,"method"),field(c,"chain_id"),field(c,"task_id"),field(c,"principal_id"),field(c,"operation_id")
-    if now<0 || now>0x7fffffffffffffff-GRANT_MAX_TTL_MS do return fail("invalid_scope")
+    if now<0 || now>0x7fffffffffffffff-contracts.OWNER_REQUEST_TTL_MS do return fail("invalid_scope")
     auth_now:=max(now,number(state[0][1]))
     // R4a: an owner-signed agent command (agent_authority.odin) is admitted by
-    // the agent policy. Never chain.create or grant.*.
+    // the agent policy. Never chain.create.
     agent_mode:=agent.instance!=""
     // Only a device key signing for itself is the user (R2-1). An owner-signed
     // agent command, including review.human on the user's behalf, is an agent.
@@ -210,7 +210,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         }
     }
     if e:=contracts.owner_live_admit(c,g,auth_now,revision);e!=.None do return auth_fail(e)
-    read:=method=="linked.facet.read" || method=="envelope.read" || method=="linked.read" || method=="linked.fetch" || method=="linked.backup" || method=="work.read" || method=="chain.metadata.read" || method=="native.metadata.read" || method=="fleet.policy.read" || method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="history.read" || method=="history.fetch" || method=="context.read" || method=="grant.read" || method=="workflow.read" || method=="source.read" || method=="submission.read" || method=="chain.search" || method=="chain.read" || method=="task.read" || method=="receipt.read" || method=="runtime.read" || method=="migration.archive.read"
+    read:=method=="linked.facet.read" || method=="envelope.read" || method=="linked.read" || method=="linked.fetch" || method=="linked.backup" || method=="work.read" || method=="chain.metadata.read" || method=="native.metadata.read" || method=="fleet.policy.read" || method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="history.read" || method=="history.fetch" || method=="context.read" || method=="workflow.read" || method=="source.read" || method=="submission.read" || method=="chain.search" || method=="chain.read" || method=="task.read" || method=="receipt.read" || method=="runtime.read" || method=="migration.archive.read"
     if read {
         if method=="chain.search" && (kr==nil || kr.current_epoch==0) do return fail("invalid_content")
         result:Result
@@ -232,9 +232,6 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         } else if method=="migration.archive.read" {
             read_p,_:=contracts.owner_parse(payload,"archive_read_payload")
             result=migration_archive_read(s,c,read_p)
-        } else if method=="grant.read" {
-            p,_:=contracts.owner_parse(payload,"read_payload")
-            result=grant_read(s,c,p,revision,key,grant_proof)
         } else { result=search_result(s,c,payload,now,kr) if method=="chain.search" else read_result(s,c,payload,revision) }
         if result.code!="ok" do return result
         if !transaction_commit(&tx) do return fail("storage_error")
@@ -279,9 +276,9 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         if strings.trim_space(body)=="" do return fail("invalid_content")
     }
     // An imported chain is quarantined until the Hub cutover is observed:
-    // no mutation of any kind, including grants, before activation.
+    // no mutation of any kind before activation.
     if !creating && migration_quarantined(s,chain) do return fail("operation_conflict")
-    if !creating && !strings.has_prefix(method,"grant.") && !work_chain_active(s,chain) do return fail("operation_conflict")
+    if !creating && !work_chain_active(s,chain) do return fail("operation_conflict")
     seq:=number(state[0][0])+1
     next:=revision+1
     wrote:=false
@@ -347,15 +344,8 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     case "chain.create":
         _,wrote=query(s.db,"INSERT INTO task_chains VALUES(?,?,?,?,?,1)",chain,principal,key.key_id,title,description)
         if wrote { _,wrote=query(s.db,"INSERT INTO chain_genesis(chain_id,creation_op,genesis_digest,genesis_json) VALUES(?,?,?,?)",chain,op,field(p,"genesis_digest"),genesis_raw) }
-        // A Bridge-created chain has no device grant: the user reaches it by
-        // root recovery, enabled here by the store, never by the caller.
-        if wrote && bridge_created {
-            _,wrote=query(s.db,"INSERT INTO local_grant_policy VALUES(?,1,1)",chain)
-        } else if wrote { _,wrote=query(s.db,"INSERT INTO local_grants VALUES(?,?,?,1,?,1,1,0)",chain,principal,key.key_id,fmt.tprintf("%d",now+GRANT_MAX_TTL_MS)) }
-    case "grant.set", "grant.revoke", "grant.policy", "grant.recover":
-        code:=grant_write(s,c,p,command_raw,payload,key,grant_proof,now,seq)
-        if code!="ok" do return fail(code)
-        wrote=true
+        // No per-chain grant is issued: every paired device of the account
+        // reaches every chain (account-level trust in execute above).
     case "chain.edit":
         _,wrote=query(s.db,"UPDATE task_chains SET title=?,description=?,revision=revision+1 WHERE chain_id=?",title,description,chain)
     case "task.edit", "task.delete":

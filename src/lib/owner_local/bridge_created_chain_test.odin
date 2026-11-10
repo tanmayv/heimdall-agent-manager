@@ -10,7 +10,8 @@ import contracts "odin_test:contracts"
 import vault "odin_test:lib/vault"
 
 // Agent `task-chain create`: the owner Bridge key is the genesis creator. The
-// store enables root recovery, and the one narrow coordinator bind follows.
+// store issues no grant (every paired device reads every chain), and the one
+// narrow coordinator bind follows.
 
 bridge_genesis :: proc(f:^Fixture,chain,creator_id,creator_key:string,creator:^ecdsa.Private_Key) -> string {
     g:=doc(map[string]string{"protocol_version"="1","account_id"="account","chain_id"=chain,"creation_op"=fmt.tprintf("create_%s",chain),"owner_bridge_id"="bridge","owner_key_id"="bridge_key","creator_id"=creator_id,"creator_key_id"=creator_key,"schema_version"="1","creator_signature"=strings.repeat("0",128,context.temp_allocator),"owner_signature"=strings.repeat("0",128,context.temp_allocator)})
@@ -38,7 +39,7 @@ bridge_chain_rev :: proc(f:^Fixture,chain:string) -> string {
 }
 
 @(test)
-bridge_created_chain_enables_recovery_and_only_own_owner_key_creates :: proc(t:^testing.T) {
+bridge_created_chain_has_no_grant_and_only_own_owner_key_creates :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
     f:=fixture(t);defer destroy(f);seed(t,f)
     // A foreign enrolled Bridge key, under its own id or claiming the owner's.
@@ -51,17 +52,17 @@ bridge_created_chain_enables_recovery_and_only_own_owner_key_creates :: proc(t:^
     rows,_:=query(f.store.db,"SELECT count(*) FROM task_chains")
     testing.expect_value(t,rows[0][0],"1")
 
-    // The owner key creates; recovery is on, no grant exists, event attributed.
+    // The owner key creates; no grant or recovery policy exists, event attributed.
     testing.expect_value(t,bridge_create(f,"bchain",f.owner,&f.owner_priv).code,"ok")
     rows,_=query(f.store.db,"SELECT creator,creator_key,(SELECT revision||':'||recovery_enabled FROM local_grant_policy WHERE chain_id='bchain'),(SELECT count(*) FROM local_grants WHERE chain_id='bchain') FROM task_chains WHERE chain_id='bchain'")
-    testing.expect_value(t,encode(rows),encode([1][4]string{{"bridge","bridge_key","1:1","0"}}))
+    testing.expect_value(t,encode(rows),encode([1][4]string{{"bridge","bridge_key","","0"}}))
     rows,_=query(f.store.db,"SELECT actor_kind,actor_id FROM local_events WHERE chain_id='bchain' AND kind='chain.create'")
     testing.expect_value(t,encode(rows),encode([1][2]string{{"agent","inst_creator"}}))
     outbox,_:=query(f.store.db,"SELECT count(*) FROM runtime_intents WHERE chain_id='bchain' AND kind='registry'")
     testing.expect_value(t,outbox[0][0],"1")
-    // A device-created chain keeps its creator grant and no recovery policy.
+    // A device-created chain gets no grant either (account-level trust).
     rows,_=query(f.store.db,"SELECT (SELECT count(*) FROM local_grant_policy WHERE chain_id='chain'),(SELECT count(*) FROM local_grants WHERE chain_id='chain')")
-    testing.expect_value(t,encode(rows),encode([1][2]string{{"0","1"}}))
+    testing.expect_value(t,encode(rows),encode([1][2]string{{"0","0"}}))
 
     // The Bridge key signs nothing else, even on its own chain.
     edit:=encode(doc(map[string]string{"title_cipher"=cipher(f,"t"),"description_cipher"=cipher(f,"d")}))
@@ -81,13 +82,12 @@ bridge_created_chain_enables_recovery_and_only_own_owner_key_creates :: proc(t:^
     revoked_key:=stranger.key;revoked_key.revoked=true
     revoked_read:=grant_command(f,stranger.key,&stranger.priv,"chain.read","revoked_device","",read,"0",chain="bchain")
     testing.expect_value(t,grant_call(f,revoked_read,read,revoked_key).code,"invalid_scope")
+    // There is no recovery any more: grant.recover is not a method.
     gp:=grant_payload(root.key)
-    wrong:=grant_command(f,stranger.key,&stranger.priv,"grant.recover","stranger_recover","",gp,bridge_chain_rev(f,"bchain"),chain="bchain")
-    testing.expect_value(t,grant_call(f,wrong,gp,stranger.key,Grant_Proof{root=root.root,target=root.key}).code,"invalid_scope")
     recover:=grant_command(f,root.key,&root.priv,"grant.recover","root_recover","",gp,bridge_chain_rev(f,"bchain"),chain="bchain")
-    testing.expect_value(t,grant_call(f,recover,gp,root.key,Grant_Proof{root=root.root,target=root.key}).code,"ok")
-    after:=grant_command(f,root.key,&root.priv,"chain.read","root_after","",read,"0",chain="bchain")
-    got:=grant_call(f,after,read,root.key)
+    testing.expect_value(t,grant_call(f,recover,gp,root.key).code,"malformed")
+    after:=grant_command(f,stranger.key,&stranger.priv,"chain.read","second_after","",read,"0",chain="bchain")
+    got:=grant_call(f,after,read,stranger.key)
     testing.expect(t,got.code=="ok" && strings.contains(got.body,"agent chain"))
 }
 
@@ -131,11 +131,11 @@ bridge_created_chain_binds_one_coordinator_and_agents_stay_out_of_grants :: proc
         payload:=gp
         if method=="grant.policy" do payload=`{"policy_revision":"2","recovery_enabled":"0"}`
         if method=="grant.revoke" do payload=encode(doc(map[string]string{"principal_id"=root.key.principal_id,"key_id"=root.key.key_id}))
-        testing.expect_value(t,bridge_agent_command(f,"bchain",coord,method,fmt.tprintf("coord_%s",method),payload,bridge_chain_rev(f,"bchain")).code,"invalid_scope")
+        testing.expect_value(t,bridge_agent_command(f,"bchain",coord,method,fmt.tprintf("coord_%s",method),payload,bridge_chain_rev(f,"bchain")).code,"malformed")
     }
     testing.expect_value(t,bridge_agent_command(f,"bchain3",coord,"chain.create","coord_create",gp,"0").code,"invalid_scope")
     rows,_=query(f.store.db,"SELECT (SELECT count(*) FROM local_chain_member_versions),(SELECT count(*) FROM local_grants WHERE chain_id='bchain'),(SELECT recovery_enabled FROM local_grant_policy WHERE chain_id='bchain')")
-    testing.expect_value(t,encode(rows),encode([1][3]string{{"1","0","1"}}))
+    testing.expect_value(t,encode(rows),encode([1][3]string{{"1","0",""}}))
 }
 
 @(test)

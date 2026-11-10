@@ -82,11 +82,11 @@ additive_migration_preserves_v1_and_rolls_back_partial_ddl :: proc(t:^testing.T)
 identity_revision_scope_and_incarnation_guards :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
     f:=fixture(t);defer destroy(f);seed(t,f)
-    for sql in ([8]string{
+    for sql in ([7]string{
       "UPDATE runtime_database SET account_id='other'", "UPDATE runtime_database SET owner_bridge_id='other'",
       "UPDATE runtime_database SET database_id='other'", "UPDATE runtime_database SET commit_seq=0",
       "UPDATE task_chains SET title='unversioned'", "UPDATE tasks SET revision=revision+2",
-      "UPDATE tasks SET chain_id='other',revision=revision+1", "UPDATE local_grants SET can_mutate=0",
+      "UPDATE tasks SET chain_id='other',revision=revision+1",
     }) { testing.expectf(t,!exec(f.store.db,sql),"guard rejects %s",sql) }
     testing.expect(t,!exec(f.store.db,`INSERT INTO task_comments(chain_id,task_id,operation_id,principal_id,body,seq) VALUES('another_chain','task','cross','device','wrong',3)`),"composite task scope")
     testing.expect(t,!exec(f.store.db,`INSERT INTO command_receipts(principal_id,operation_id,chain_id,task_id,method,input_digest,digest_key_id,request_expires_ms,result_json,commit_seq)
@@ -333,11 +333,6 @@ tombstones_expired_misses_and_read_revocation :: proc(t:^testing.T) {
     c:=command(f,"task.comment","old_comment","task",p,"1")
     result:=invoke(f,c,p)
     testing.expect_value(t,result.code,"ok")
-    // Receipt retention exceeds the original bounded grant. Renew explicitly;
-    // this test isolates receipt/tombstone behavior from authorization expiry.
-    renewal:=encode(doc(map[string]string{"principal_id"="device","key_id"="device","expires_ms"=fmt.tprintf("%d",2001+GRANT_MAX_TTL_MS),"can_read"="1","can_mutate"="1"}))
-    renewal_command:=command(f,"grant.set","renew_before_retention","",renewal,"3",4000)
-    testing.expect_value(t,execute(&f.store,renewal_command,renewal,f.genesis,f.creator,f.owner,1,"head",2001,&f.kr,Signer{&f.owner_priv,test_sign},grant_proof=Grant_Proof{target=f.creator}).code,"ok")
     late:=RECEIPT_RETENTION_MS+2000
     n,ok:=compact_receipts(&f.store,late)
     testing.expect(t,ok && n==1,"pending registry effects pin their full receipts")
@@ -355,7 +350,7 @@ tombstones_expired_misses_and_read_revocation :: proc(t:^testing.T) {
     n,ok=compact_receipts(&f.store,late)
     testing.expect(t,ok && n==2)
     rows,_:=query(f.store.db,"SELECT (SELECT count(*) FROM command_receipts),(SELECT count(*) FROM operation_tombstones),(SELECT count(*) FROM task_comments)")
-    testing.expect(t,rows[0][0]=="1" && rows[0][1]=="3" && rows[0][2]=="1")
+    testing.expectf(t,rows[0][0]=="0" && rows[0][1]=="3" && rows[0][2]=="1","counts %v",rows)
 }
 
 @(test)

@@ -106,7 +106,6 @@ workflow_definition_and_same_chain_dependency_cycles_reject :: proc(t:^testing.T
 workflow_v8_upgrade_collision_and_commit_failure_preserve_live_capability :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
     f:=fixture(t);defer destroy(f);lifecycle_seed(t,f);cap:=lifecycle_ready(t,f)
-    testing.expect_value(t,grant_admin_call(f,"grant.policy","upgrade_policy",`{"policy_revision":"1","recovery_enabled":"1"}`,Grant_Proof{}).code,"ok")
     preserved_sql:=`SELECT (SELECT json_group_array(json_array(chain_id,principal_id,key_id,revision,expires_ms,can_read,can_mutate,revoked)) FROM local_grants),
       (SELECT json_group_array(json_array(chain_id,revision,recovery_enabled)) FROM local_grant_policy),
       (SELECT json_group_array(json_array(seq,command_json,payload_json)) FROM local_grant_audit),

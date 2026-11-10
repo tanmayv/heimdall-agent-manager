@@ -5,11 +5,11 @@ package main
 //
 // This Bridge creates a chain it owns with its OWN owner key as the genesis
 // creator (contracts.owner_genesis_bridge_creator; never any other Bridge
-// key). The store enables root recovery for such a chain, so the user's app
-// opens it with grant.recover. Exactly one coordinator is then bound through
-// owner.bind_created_coordinator: the calling child, or a named agent launched
-// on this Bridge into the new chain. The bound coordinator then manages the
-// fleet (owner_agent_fleet.odin); grants stay human-only (agent_command_admit).
+// key). Every paired device of the account reads it like any other owner
+// chain (account-level trust in owner.execute). Exactly one coordinator is then
+// bound through owner.bind_created_coordinator: the calling child, or a named
+// agent launched on this Bridge into the new chain. The bound coordinator then
+// manages the fleet (owner_agent_fleet.odin).
 //
 // Lock order is the owner one: bridge_owner_mutex -> bridge_startup_io_mutex
 // -> bridge_local_token_mutex. Waiting for a named agent's launch holds none.

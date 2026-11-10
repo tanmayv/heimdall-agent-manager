@@ -71,9 +71,9 @@ fleet_coordinator_enrolls_members_sets_policy_and_keeps_the_limits :: proc(t:^te
         r:=agent_run(f,who,"fleet.policy.set",fmt.tprintf("%s_policy",who.instance),"",fleet_policy_payload_for(f,"other_agent",`["worker"]`,""),agent_chain_rev(f))
         testing.expectf(t,r.code=="invalid_scope","%s cannot set fleet policy",who.instance)
     }
-    // Grants stay human-only.
+    // grant.* is no longer a method at all.
     grant:=encode(doc(map[string]string{"principal_id"="device","key_id"="device"}))
-    testing.expect_value(t,agent_run(f,coord,"grant.revoke","coord_grant","",grant,agent_chain_rev(f)).code,"invalid_scope")
+    testing.expect_value(t,agent_run(f,coord,"grant.revoke","coord_grant","",grant,agent_chain_rev(f)).code,"malformed")
 
     // Fleet policy rows: provider/model/bridge/capacity/min-warm/idle-ttl, pause and resume.
     testing.expect_value(t,agent_run(f,coord,"fleet.policy.set","policy","",fleet_policy_payload_for(f,"other_agent",`["worker","reviewer"]`,""),agent_chain_rev(f)).code,"ok")

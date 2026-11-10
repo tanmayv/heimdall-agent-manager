@@ -256,8 +256,13 @@ const OWNER_ERROR_TEXT: Record<string, string> = {
   malformed: 'The owner Bridge rejected a malformed request.',
   bad_signature: 'The owner Bridge rejected this device’s signature.',
   digest_mismatch: 'The owner Bridge rejected a request that did not match its signature.',
-  expired: 'The request expired before the owner Bridge received it. Try again.',
+  expired: 'The request expired before the owner Bridge received it. Check that this device’s clock is correct, then try again.',
   revoked: 'This device has been revoked.',
+  account_mismatch: 'That owner Bridge belongs to a different account than this session.',
+  stale_epoch: 'The vault key changed. Refresh the vault session on this device, then try again.',
+  directory_unverified: 'The owner Bridge could not verify this account’s device list. Reload the page; if it persists, re-pair the owner Bridge.',
+  owner_mismatch: 'That chain is owned by a different Bridge.',
+  vault_locked: 'The owner Bridge’s vault is locked. Unlock it on that machine, then try again.',
 };
 
 export function isOwnerOffline(error: unknown): boolean {
