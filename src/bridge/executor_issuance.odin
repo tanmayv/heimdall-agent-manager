@@ -63,7 +63,7 @@ bridge_executor_resolve_issuance :: proc(s:^executor.Store,selection_raw:string)
     if !bridge_provider_catalog_has_model(provider,model) do return {}
     resolved,err:=profile_lookup(provider,profile)
     if err!=.None || !resolved.enabled || resolved.provider!=provider || resolved.profile_id!=profile do return {}
-    return executor.Issuance_Resources{contracts.owner_payload_digest(selection_raw),mapping.key,canonical,true}
+    return executor.Issuance_Resources{selection_digest=contracts.owner_payload_digest(selection_raw),directory_key=mapping.key,directory_path=canonical,resolved=true}
 }
 
 // The key that may consent to an issuance on this executor, from the verified

@@ -15,6 +15,10 @@ import vault "odin_test:lib/vault"
 // requested selectors; this proof does not authorize a launch or consume a slot.
 Issuance_Resources :: struct {
     selection_digest,directory_key,directory_path:string,
+    // For an owner-Bridge (auto) consent only: the concrete selection this
+    // executor chose for itself (same provider and model, no "auto"). Empty
+    // for a device consent, whose explicit selection is used as is.
+    selection:string,
     resolved:bool,
 }
 issuance_sign :: proc(o:json.Object,kind:string,sign:Signer,key:contracts.Owner_Verified_Key)->(string,bool) {
@@ -23,7 +27,8 @@ issuance_sign :: proc(o:json.Object,kind:string,sign:Signer,key:contracts.Owner_
     m:=o;m["signature"]=json.String(signature)
     return encode(m),contracts.executor_verify(kind,m,key)
 }
-// Only enrolled device consent may allocate a remote identity. Current device
+// Only enrolled device consent, or the chain's owner Bridge with an auto
+// selection (cross-Bridge placement), may allocate a remote identity. Current device
 // and executor keys must be resolved from paired enrollment before this call.
 // Replays return original immutable historical output; no resolver, randomness,
 // signer, policy or incarnation refresh is needed to return a saved result.
@@ -36,7 +41,7 @@ issue :: proc(s:^Store,consent_raw,selection_raw:string,device_key,executor_key:
     if !scope(s,consent) || !contracts.executor_verify("issuance_consent",consent,device_key) ||
        !executor_key.enrolled || executor_key.revoked || executor_key.kind!="bridge" || executor_key.account_id!=s.account ||
        executor_key.principal_id!=s.executor || executor_key.key_id!=field(consent,"executor_key_id") ||
-       field(consent,"owner_bridge_id")==s.executor {return fail("invalid_scope")}
+       field(consent,"owner_bridge_id")==s.executor || !contracts.executor_selection_admissible(selection,device_key) {return fail("invalid_scope")}
     digest,_:=contracts.executor_digest("issuance_consent",consent)
     selection_digest:=contracts.owner_payload_digest(selection_raw)
     if field(consent,"selection_digest")!=selection_digest do return fail("digest_mismatch")
@@ -55,6 +60,12 @@ issue :: proc(s:^Store,consent_raw,selection_raw:string,device_key,executor_key:
     if !resources.resolved || resources.selection_digest!=selection_digest ||
        !contracts.owner_field_valid(resources.directory_key,"hash") || resources.directory_path=="" ||
        !contracts.owner_field_valid(resources.directory_path,"path") {return fail("invalid_resources")}
+    if contracts.executor_selection_auto(selection) {
+        chosen,chosen_ok:=contracts.executor_parse(resources.selection,"issuance_selection")
+        if !chosen_ok || field(chosen,"provider")!=field(selection,"provider") || field(chosen,"model")!=field(selection,"model") do return fail("invalid_resources")
+        for name in ([3]string{"provider_profile","directory_id","slot_id"}) do if field(chosen,name)==contracts.EXECUTOR_AUTO_SELECTOR do return fail("invalid_resources")
+        selection=chosen
+    } else if resources.selection!="" && resources.selection!=selection_raw {return fail("invalid_resources")}
     mapping,mapped:=query(s.db,"SELECT directory_path,directory_key,enabled FROM executor_directories WHERE directory_id=? ORDER BY revision DESC LIMIT 1",field(selection,"directory_id"))
     if !mapped do return fail("storage_error")
     if len(mapping)!=1 || mapping[0][2]!="1" || mapping[0][0]!=resources.directory_path || mapping[0][1]!=resources.directory_key do return fail("invalid_resources")

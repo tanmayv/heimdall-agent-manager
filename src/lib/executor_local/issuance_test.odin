@@ -14,7 +14,7 @@ issuance_inputs :: proc(f:^Fixture)->(string,string,Issuance_Resources) {
     selection:=encode(document("issuance_selection"))
     c:=document("issuance_consent");set(c,"selection_digest",contracts.owner_payload_digest(selection))
     consent:=signed(c,"issuance_consent",&f.owner2)
-    return consent,selection,Issuance_Resources{contracts.owner_payload_digest(selection),directory_key("executor","/repo"),"/repo",true}
+    return consent,selection,Issuance_Resources{selection_digest=contracts.owner_payload_digest(selection),directory_key=directory_key("executor","/repo"),directory_path="/repo",resolved=true}
 }
 issue_fixture :: proc(f:^Fixture,consent,selection:string,resources:Issuance_Resources,now:i64=1100)->Result {
     return issue(&f.store,consent,selection,f.owner2.public,f.operator.public,now,resources,Signer{&f.operator,sign_receipt})

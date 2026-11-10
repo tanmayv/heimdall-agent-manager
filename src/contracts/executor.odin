@@ -379,6 +379,26 @@ executor_query_receipt_matches :: proc(r,q:json.Object,key:Owner_Verified_Key,no
     return owner_string(r,"input_digest")==digest
 }
 
+// An owner-Bridge consent (cross-Bridge placement, user decision 15:30Z option b)
+// names only provider and model: the executor's B-local selectors are the
+// literal EXECUTOR_AUTO_SELECTOR (policy_revision "1"), and the executor
+// resolves its own policy, slot, profile and directory, returning them in the
+// signed remote_configuration. A device consent always names every selector.
+EXECUTOR_AUTO_SELECTOR :: "auto"
+executor_selection_auto :: proc(selection:json.Object)->bool {
+    return owner_string(selection,"provider_profile")==EXECUTOR_AUTO_SELECTOR && owner_string(selection,"directory_id")==EXECUTOR_AUTO_SELECTOR &&
+        owner_string(selection,"slot_id")==EXECUTOR_AUTO_SELECTOR && owner_string(selection,"policy_revision")=="1"
+}
+// Whether a selection fits the consenting key: auto only for an owner-Bridge
+// consent, explicit only for a device consent.
+executor_selection_admissible :: proc(selection:json.Object,consent_key:Owner_Verified_Key)->bool {
+    auto:=executor_selection_auto(selection)
+    if consent_key.kind=="bridge" do return auto
+    if auto do return false
+    for name in ([3]string{"provider_profile","directory_id","slot_id"}) do if owner_string(selection,name)==EXECUTOR_AUTO_SELECTOR do return false
+    return true
+}
+
 // Verify the requested selectors and generated response together. This does not
 // authorize a task grant, reserve capacity, or establish a current launch fence.
 executor_issuance_matches :: proc(receipt,consent:json.Object,selection_raw,configuration_raw:string,
@@ -394,8 +414,14 @@ executor_issuance_matches :: proc(receipt,consent:json.Object,selection_raw,conf
     for name in ([9]string{"protocol_version","account_id","owner_bridge_id","executor_bridge_id","executor_key_id","chain_id","task_id","agent_id","configuration_revision"}) {
         if owner_string(c,name)!=owner_string(consent,name) do return false
     }
+    if !executor_selection_admissible(selection,device_key) do return false
+    // An auto selection binds provider and model; the executor's signed
+    // configuration names the selectors it chose (never "auto").
+    auto:=executor_selection_auto(selection)
     for name in ([6]string{"provider","model","provider_profile","directory_id","policy_revision","slot_id"}) {
-        if owner_string(c,name)!=owner_string(selection,name) do return false
+        if auto && name!="provider" && name!="model" {
+            if owner_string(c,name)==EXECUTOR_AUTO_SELECTOR do return false
+        } else if owner_string(c,name)!=owner_string(selection,name) {return false}
     }
     request_digest,_:=executor_digest("issuance_consent",consent)
     enrollment_digest,_:=executor_digest("enrollment",enrollment)

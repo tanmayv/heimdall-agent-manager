@@ -114,10 +114,17 @@ open_issuance :: proc(token:string,kr:^vault.Vault_Keyring,expected,consent:json
     config,c_ok:=contracts.owner_parse(contracts.owner_string(bundle,"configuration"),"remote_configuration")
     if !valid || !r_ok || !e_ok || !c_ok ||
        !contracts.executor_issuance_matches(receipt,consent,selection,contracts.owner_string(bundle,"configuration"),enrollment,device_key,executor_key,now,current_admission) ||
-       (current_admission && contracts.owner_string(config,"executor_incarnation")!=contracts.owner_string(expected,"executor_incarnation")) {
+       (current_admission && !issuance_auto(selection) && contracts.owner_string(config,"executor_incarnation")!=contracts.owner_string(expected,"executor_incarnation")) {
         crypto.zero_explicit(raw_data(plain),len(plain));delete(plain,allocator);return "",false
     }
     return plain,true
+}
+
+// An owner-Bridge (auto) request cannot know the executor's incarnation; the
+// executor's signed configuration names it and later launch fences bind it.
+issuance_auto :: proc(selection:string)->bool {
+    o,ok:=contracts.executor_parse(selection,"issuance_selection")
+    return ok && contracts.executor_selection_auto(o)
 }
 
 // Child results use a separately signed owner receipt over the exact result
