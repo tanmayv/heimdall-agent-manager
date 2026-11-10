@@ -9,9 +9,9 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Badge, Button, Checkbox, EmptyState, FormField, IconButton, Input, Select, StatusDot, StatusPill, Text, Textarea, type Tone } from '@ui';
 import {
   freshOwnerSession, isOwnerOffline, ownerAwaitingUser, ownerCall, ownerErrorMessage, ownerOfflineMessage, ownerRelaySend, ownerTaskState,
-  ownerActivityLabel, ownerExpectedRevision, readArchivedReviews, readOwnerActivity, readOwnerRequirementHistory, readOwnerChain, readOwnerChainStatus, readOwnerReviews, readOwnerRuntime, readOwnerDependencies, readOwnerSubmission, readOwnerTask, readOwnerWorkRevision, withOwnerRecovery,
+  ownerActivityLabel, ownerExpectedRevision, readArchivedReviews, readOwnerActivity, readOwnerRequirementHistory, readOwnerChain, readOwnerChainStatus, readOwnerFleetPolicies, readOwnerReviews, ownerFleetPolicyDocument, readOwnerRuntime, readOwnerDependencies, readOwnerSubmission, readOwnerTask, readOwnerWorkRevision, withOwnerRecovery,
   type OwnerActivity, type OwnerRequirementChange, type OwnerChainDetail, type OwnerChainStatus, type OwnerDependency, type OwnerChainSummary, type OwnerReview, type OwnerRuntime, type OwnerSend,
-  type OwnerSubmission, type OwnerTaskDetail, type OwnerTaskState,
+  type OwnerSubmission, type OwnerTaskDetail, type OwnerTaskState, type OwnerFleetPolicy, type OwnerFleetPolicyChange,
 } from '../../api/ownerChains';
 import { ownerId, type OwnerInput, type OwnerSession } from '../../api/ownerLocalClient';
 import type { OwnerCommand } from '../../api/ownerLocal';
@@ -28,6 +28,7 @@ import type { TaskWire } from '../../api/taskWire';
 import OwnerLocalPanel from './OwnerLocalPanel';
 import OwnerCoordinatorControl, { hubCoordinatorApi, type OwnerCoordinatorApi } from './OwnerCoordinatorControl';
 import OwnerAddAgentControl, { type ChainAgentRole } from './OwnerAddAgentControl';
+import OwnerFleetTable from './OwnerFleetTable';
 import { ownerChainById, resolveOwnerChainCoordinator, setOwnerChainCoordinator } from '../../api/ownerChainsStore';
 import { bindOwnerCoordinator, readOwnerChainMembers, type OwnerChainMember } from '../../api/ownerCoordinator';
 
@@ -402,6 +403,41 @@ export function OwnerChainView({
     if (ids.length) void readAgentStatus(ids);
   }, [layout, offline, members, readAgentStatus]);
 
+  // Agent display names (Hub agents list), read once per view.
+  const [agentNames, setAgentNames] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if ((layout !== 'overview' && layout !== 'board') || offline) return;
+    let cancelled = false;
+    Promise.resolve().then(() => hubApiRef.current.listAgents()).then((list) => {
+      if (!cancelled && live.current) setAgentNames(Object.fromEntries(list.map((a) => [a.agentId, a.name])));
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [layout, offline]);
+
+  // Fleet rows (fleet.policy.read), re-read when the chain revision changes:
+  // every fleet.policy.set bumps it.
+  const [fleet, setFleet] = useState<{ rows: OwnerFleetPolicy[] | null; error: string }>({ rows: null, error: '' });
+  const fleetKey = (layout === 'overview' || layout === 'board') && !offline && detail ? detail.revision : '';
+  useEffect(() => {
+    if (!fleetKey) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await readOwnerFleetPolicies(await session(), bridge, chain.chainId, send);
+        if (!cancelled && live.current) setFleet({ rows, error: '' });
+      } catch (e) {
+        if (!cancelled && live.current) setFleet((f) => ({ rows: f.rows, error: f.rows ? '' : ownerErrorMessage(e) }));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [fleetKey, bridge, chain.chainId, send, session]);
+  function saveFleet(row: OwnerFleetPolicy, change: OwnerFleetPolicyChange): Promise<boolean> {
+    let body: string;
+    try { body = ownerFleetPolicyDocument(row, change); } catch (e) { setError(e instanceof Error ? e.message : String(e)); return Promise.resolve(false); }
+    const done = change.paused === true ? 'Fleet row paused.' : change.paused === false ? 'Fleet row resumed.' : 'Fleet row saved.';
+    return mutate('fleet.policy.set', { body }, done);
+  }
+
   // Start / stop / restart a chain agent's instance through the Hub.
   async function agentRuntime(instanceId: string, action: 'start' | 'stop' | 'restart') {
     const call = action === 'restart' ? hubApi.restart : hubApi[action];
@@ -679,8 +715,9 @@ export function OwnerChainView({
                       <button type="button" data-debug-id={`owner-chain-agent-open-${a.instanceId}`} disabled={!onOpenAgent}
                         onClick={() => onOpenAgent?.(a.instanceId)}
                         className="min-w-0 truncate hover:underline disabled:no-underline" title={a.agentId || a.instanceId}>
-                        <Text as="code" role="code-sm">{a.instanceId}</Text>
+                        {agentNames[a.agentId] ? <Text as="span" role="label">{agentNames[a.agentId]}</Text> : <Text as="code" role="code-sm">{a.instanceId}</Text>}
                       </button>
+                      {agentNames[a.agentId] && <Text as="code" role="code-sm" tone="muted" data-debug-id={`owner-chain-agent-instance-${a.instanceId}`}>{a.instanceId}</Text>}
                       {a.role && <Badge tone={a.role === 'coordinator' ? 'info' : 'neutral'}>{a.role}</Badge>}
                       {!a.enabled && <StatusPill tone="neutral">Removed</StatusPill>}
                       {a.enabled && AGENT_STATUS[agentStatus[a.instanceId] ?? ''] && (
@@ -712,6 +749,9 @@ export function OwnerChainView({
                 </ul>
               )}
           </section>
+          {!offline && detail && (
+            <OwnerFleetTable rows={fleet.rows} error={fleet.error} names={agentNames} editable={editable} busy={busy} save={saveFleet} />
+          )}
           {attention.length > 0 && (
             <section aria-label="Needs attention" data-debug-id="owner-chain-attention" className="space-y-1.5">
               <Text as="h3" role="overline" tone="warning">Needs attention</Text>
@@ -759,6 +799,7 @@ export function OwnerChainView({
                 keys={boardKeys}
                 actionsFor={boardActions}
                 editFields={[]}
+                fleetSlot={<OwnerFleetTable rows={fleet.rows} error={fleet.error} names={agentNames} editable={editable} busy={busy} save={saveFleet} />}
                 onOpenTicket={(taskId) => openTicket(taskId, boardWires.find((w) => w.task_id === taskId)?.title ?? '')}
                 onEditTicket={(taskId) => openTicket(taskId, boardWires.find((w) => w.task_id === taskId)?.title ?? '')}
               />

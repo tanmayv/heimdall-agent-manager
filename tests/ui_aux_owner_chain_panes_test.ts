@@ -458,3 +458,84 @@ test('a ticket shows its requirement history on demand: each change decrypted, n
     await ui.cleanup();
   }
 });
+
+const FLEET_ROW = {
+  provider_profile: '', task_chain_id: CHAIN, agent_id: 'agt_worker', capacity: 2, min_warm: 0, idle_ttl_seconds: 600,
+  bridge_models_json: '', provider: 'claude', model: 'opus', roles_json: '["worker"]', bridge_id: '', paused_roles_json: '',
+  created_at: '2026-11-01T00:00:00Z', updated_at: '2026-11-01T00:00:00Z',
+};
+
+test('the overview shows the fleet with agent names; pause and edit write fleet.policy.set', async () => {
+  const { decryptVaultText } = await import('../src/ui/utils/vaultCrypto.ts');
+  const owner = chainOwner();
+  const ui = await mount({
+    answer: (call) => {
+      if (call.method === 'fleet.policy.read') return { chain_id: CHAIN, revision: '7', next_cursor: '', items: [{ policy: FLEET_ROW, accepted_seq: '5', source_revision: '' }] };
+      if (call.method === 'fleet.policy.set') return { chain_id: CHAIN, revision: '8' };
+      return owner.answer(call);
+    },
+    hub: (path) => (path === '/api/v1/agents' ? [{ agent_id: 'agt_worker', name: 'Backend worker' }] : {}),
+    render: (_env, h) => aux({ type: 'chainOverview' }, h),
+  });
+  try {
+    const row = ui.$('owner-chain-fleet-agt_worker')!;
+    assert.match(row.textContent!, /Backend worker.*agt_worker.*Active.*claude · opus · capacity 2/s);
+    assert.match(ui.$('owner-chain-agent-inst_worker')!.textContent!, /Backend worker.*inst_worker/s, 'agent rows show the display name and the instance id');
+
+    await ui.click('owner-chain-fleet-pause-agt_worker');
+    let set = ui.calls.filter((c) => c.method === 'fleet.policy.set').at(-1)!;
+    assert.equal(set.command.expected_revision, '7', 'checked against the chain revision');
+    let doc = JSON.parse(await decryptVaultText(set.payload.body_cipher!));
+    assert.equal(doc.paused_roles_json, '["*"]');
+    assert.equal(doc.created_at, FLEET_ROW.created_at, 'created_at is kept (the store refuses a new one)');
+    assert.equal(Object.keys(doc).length, 14);
+    assert.match(ui.$('owner-chain-notice')!.textContent!, /Fleet row paused/);
+
+    await ui.click('owner-chain-fleet-edit-agt_worker');
+    const input = (id: string, v: string) => act(async () => {
+      const el = ui.$(id)!.querySelector('input') ?? ui.$(id) as HTMLInputElement;
+      const setter = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(el, v); el.dispatchEvent(new win.Event('input', { bubbles: true }));
+    });
+    await input('owner-chain-fleet-capacity', '0');
+    await ui.click('owner-chain-fleet-save');
+    assert.match(ui.$('owner-chain-fleet-form-error')!.textContent!, /at least 1/);
+    await input('owner-chain-fleet-capacity', '4');
+    await input('owner-chain-fleet-model', 'sonnet');
+    await ui.click('owner-chain-fleet-save');
+    set = ui.calls.filter((c) => c.method === 'fleet.policy.set').at(-1)!;
+    doc = JSON.parse(await decryptVaultText(set.payload.body_cipher!));
+    assert.deepEqual([doc.capacity, doc.model, doc.provider], [4, 'sonnet', 'claude']);
+    assert.equal(ui.$('owner-chain-fleet-form-agt_worker'), null, 'the form closes after a save');
+    assertNoHubChainReads(ui.hubPaths);
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('the board shows the fleet in its fleet slot; an empty fleet says how rows are added', async () => {
+  const owner = chainOwner();
+  const ui = await mount({
+    answer: (call) => (call.method === 'fleet.policy.read' ? { chain_id: CHAIN, revision: '7', next_cursor: '', items: [] } : owner.answer(call)),
+    render: (_env, h) => aux({ type: 'tasks' }, h),
+  });
+  try {
+    assert.ok(ui.$('owner-chain-no-fleet'), 'empty fleet state');
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('ownerFleetPolicyDocument and parseOwnerFleetPolicy round-trip a row and pause/resume it', async () => {
+  const { ownerFleetPolicyDocument, parseOwnerFleetPolicy } = await import('../src/ui/api/ownerChains.ts');
+  const row = parseOwnerFleetPolicy({ ...FLEET_ROW, paused_roles_json: '["*"]' })!;
+  assert.equal(row.paused, true);
+  assert.deepEqual(row.roles, ['worker']);
+  const now = new Date('2026-11-10T05:00:00.123Z');
+  const resumed = JSON.parse(ownerFleetPolicyDocument(row, { paused: false }, now));
+  assert.deepEqual(resumed, { ...FLEET_ROW, updated_at: '2026-11-10T05:00:00Z' });
+  const cleared = JSON.parse(ownerFleetPolicyDocument({ ...row, document: { ...row.document, provider_profile: 'p' } }, { provider: ' ' }, now));
+  assert.deepEqual([cleared.provider, cleared.provider_profile], ['', ''], 'a profile needs a provider');
+  assert.throws(() => ownerFleetPolicyDocument(row, { capacity: 1.5 }, now), /at least 1/);
+  assert.equal(parseOwnerFleetPolicy({}), null);
+});

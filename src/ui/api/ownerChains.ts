@@ -671,6 +671,67 @@ export async function readOwnerRequirementHistory(
   return { changes: changes.reverse(), truncated: Boolean(cursor), more: dropped };
 }
 
+/** One fleet row (fleet.policy.read): how an agent is placed and whether it takes new work. */
+export interface OwnerFleetPolicy {
+  agentId: string; provider: string; model: string; providerProfile: string; bridgeId: string;
+  capacity: number; minWarm: number; idleTtlSeconds: number; roles: string[]; paused: boolean;
+  /** The stored document, kept whole so an edit rewrites every field it does not change. */
+  document: Record<string, unknown>;
+}
+export interface OwnerFleetPolicyChange { provider?: string; model?: string; bridgeId?: string; capacity?: number; paused?: boolean }
+
+function fleetRoles(raw: unknown): string[] {
+  try { const v = raw ? JSON.parse(String(raw)) : []; return Array.isArray(v) ? v.map(String) : []; } catch { return []; }
+}
+export function parseOwnerFleetPolicy(doc: any): OwnerFleetPolicy | null {
+  if (!doc || typeof doc !== 'object' || !doc.agent_id) return null;
+  const roles = fleetRoles(doc.roles_json);
+  return {
+    agentId: String(doc.agent_id), provider: String(doc.provider ?? ''), model: String(doc.model ?? ''),
+    providerProfile: String(doc.provider_profile ?? ''), bridgeId: String(doc.bridge_id ?? ''),
+    capacity: Number(doc.capacity ?? 1), minWarm: Number(doc.min_warm ?? 0), idleTtlSeconds: Number(doc.idle_ttl_seconds ?? 0),
+    roles: roles.length ? roles : ['worker'], paused: fleetRoles(doc.paused_roles_json).includes('*'), document: { ...doc },
+  };
+}
+
+/** Every fleet row of a chain (fleet.policy.read pages, ordered by agent id). */
+export async function readOwnerFleetPolicies(session: OwnerSession, bridgeId: string, chainId: string, send: OwnerSend = ownerRelaySend, maxPages = 20): Promise<OwnerFleetPolicy[]> {
+  const rows: OwnerFleetPolicy[] = [];
+  let cursor = '';
+  for (let page = 0; page < maxPages; page++) {
+    const data = await ownerCall(session, bridgeId, 'fleet.policy.read', { chainId, expectedRevision: '0', cursor, limit: 20 }, send);
+    for (const item of Array.isArray(data.items) ? data.items : []) {
+      const row = parseOwnerFleetPolicy(item?.policy);
+      if (row) rows.push(row);
+    }
+    cursor = String(data.next_cursor || '');
+    if (!cursor) break;
+  }
+  return rows;
+}
+
+/**
+ * The fleet.policy.set document for an edited row: the stored document with
+ * the changed fields (created_at is kept, the store refuses a new one), a new
+ * updated_at, and paused_roles_json ["*"] or "" for pause/resume (as
+ * `ham-ctl task-chain fleet pause|resume`).
+ */
+export function ownerFleetPolicyDocument(row: OwnerFleetPolicy, change: OwnerFleetPolicyChange, now = new Date()): string {
+  const doc: Record<string, unknown> = { ...row.document };
+  if (change.provider !== undefined) doc.provider = change.provider.trim();
+  if (change.model !== undefined) doc.model = change.model.trim();
+  if (change.bridgeId !== undefined) doc.bridge_id = change.bridgeId.trim();
+  if (change.capacity !== undefined) {
+    if (!Number.isInteger(change.capacity) || change.capacity < 1) throw new Error('Capacity must be a whole number of at least 1.');
+    doc.capacity = change.capacity;
+  }
+  if (change.paused !== undefined) doc.paused_roles_json = change.paused ? '["*"]' : '';
+  // A provider profile names a provider; clearing the provider clears it too.
+  if (!doc.provider) doc.provider_profile = '';
+  doc.updated_at = now.toISOString().replace(/\.\d{3}Z$/, 'Z');
+  return JSON.stringify(doc);
+}
+
 export interface OwnerSubmission { attempt: string; summary: string; head: string; author: string; requirementsRevision: string; complete: boolean }
 export async function readOwnerSubmission(session: OwnerSession, bridgeId: string, chainId: string, taskId: string, attempt: string, send: OwnerSend = ownerRelaySend): Promise<OwnerSubmission> {
   let summary = '', offset = '0', first: any = null;
