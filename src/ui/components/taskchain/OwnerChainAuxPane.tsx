@@ -5,6 +5,8 @@
 
 import React, { useEffect, useRef } from 'react';
 import { ButtonLink, EmptyState, Spinner } from '@ui';
+import { useGetProjectVcsStatusQuery, useListVcsFilesQuery } from '../../api/endpoints/projectVcs';
+import { usePaneVisible, visiblePollInterval } from '../workbench/paneVisibility';
 import type { OwnerSend } from '../../api/ownerChains';
 import { useOwnerChains } from '../../api/ownerChainsStore';
 import type { OwnerSession } from '../../api/ownerLocalClient';
@@ -41,6 +43,14 @@ export interface OwnerChainAuxPaneProps {
   /** Board layout: the one-shot taskId was opened. */
   onFocusConsumed?: () => void;
   refreshMs?: number;
+  /** Overview layout: the conversation's agent and project (the VCS summary of origin/main's overview). */
+  agentInstanceId?: string;
+  projectId?: string;
+  bridgeId?: string;
+  projectVcsEnabled?: boolean;
+  onOpenFileDiff?: (filePath: string) => void;
+  onOpenVcsFiles?: () => void;
+  onOpenAgentPty?: (instanceId: string, title?: string) => void;
   /** Tests replace the owner transport. */
   send?: OwnerSend;
   session?: () => Promise<OwnerSession>;
@@ -57,10 +67,18 @@ function Notice({ debugId, title, role, action }: { debugId: string; title: Reac
 
 export function OwnerChainAuxPane({
   chainId, layout, taskId, onOpenTicket, onEditTicket, editFocus, onEditFocusConsumed, onShowBoard, onSwitchTicket, onOpenAgent, onTitle, onFocusConsumed,
-  refreshMs = OWNER_AUX_REFRESH_MS, send, session,
+  refreshMs = OWNER_AUX_REFRESH_MS, agentInstanceId, projectId = '', bridgeId = '', projectVcsEnabled = false, onOpenFileDiff, onOpenVcsFiles, onOpenAgentPty,
+  send, session,
 }: OwnerChainAuxPaneProps) {
   const owners = useOwnerChains();
   const chain = owners.chains.find((c) => c.chainId === chainId);
+
+  // The overview's VCS summary: the project's working tree (Hub project VCS,
+  // not a chain endpoint), slow-polled only while the pane is on screen.
+  const vcsOn = layout === 'overview' && projectVcsEnabled && Boolean(projectId);
+  const slowPoll = visiblePollInterval(usePaneVisible(), 30000);
+  const vcsStatus = useGetProjectVcsStatusQuery({ projectId, bridgeId }, { skip: !vcsOn, pollingInterval: slowPoll });
+  const vcsFiles = useListVcsFilesQuery({ projectId, bridgeId, limit: 100 }, { skip: !vcsOn, pollingInterval: slowPoll });
 
   // A board opened for a ticket (from the overview) opens that ticket's tab once.
   const opened = useRef(false);
@@ -107,6 +125,11 @@ export function OwnerChainAuxPane({
       onOpenAgent={onOpenAgent}
       onTitle={onTitle}
       extra={layout === 'overview' ? <ChainTokenUsageSection chainId={chain.chainId} embedded /> : undefined}
+      overview={layout === 'overview' ? {
+        agentInstanceId,
+        vcs: vcsOn ? { branch: vcsStatus.data?.branch, files: vcsFiles.data?.files ?? [] } : null,
+        onOpenFileDiff, onOpenVcsFiles, onOpenAgentPty,
+      } : undefined}
       {...(send ? { send } : {})}
       {...(session ? { session } : {})}
     />

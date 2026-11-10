@@ -120,10 +120,19 @@ function renderAuxTabBody({
         <OwnerChainAuxPane
           chainId={ctx.chainId}
           layout="overview"
+          agentInstanceId={ctx.agentInstanceId}
+          projectId={ctx.projectId}
+          bridgeId={ctx.bridgeId}
+          projectVcsEnabled={ctx.projectVcsEnabled && ctx.projectExplorerAccess === 'enabled'}
           onOpenTicket={(taskId) => onOpenTab({ type: 'tasks', ...(taskId ? { taskId } : {}) })}
           onOpenAgent={(agentInstanceId, title) => {
             openAgentChat(agentInstanceId, title);
           }}
+          onOpenFileDiff={(filePath) => onOpenTab({ type: 'vcs', filePath })}
+          onOpenVcsFiles={() => onOpenTab({ type: 'vcs' })}
+          onOpenAgentPty={(agentInstanceId, title) =>
+            onOpenTab({ type: 'agentPty', agentInstanceId }, title ? `${title} terminal` : undefined)
+          }
         />
       );
     case 'tasks':

@@ -151,23 +151,30 @@ function assertNoHubChainReads(paths: string[]) {
   assert.deepEqual(paths.filter((p) => /task-chains|\/tasks|\/chains/.test(p) && !/token-usage/.test(p)), []);
 }
 
-test('the Chain overview shows the owner chain: status, ticket states, agents and attention; tickets and agents open', async () => {
+test('the Chain overview is origin/main\'s ChainOverviewPanel over the owner chain: agents, ongoing tickets; tickets and agents open', async () => {
   const ui = await mount({ render: (_env, h) => aux({ type: 'chainOverview' }, h) });
   try {
     assert.equal(ui.$('owner-chain-title')!.textContent, 'Live chain title');
     assert.equal(ui.$('owner-chain-status')!.textContent, 'Active');
     assert.match(ui.$('owner-chain-description')!.textContent!, /Live description/);
-    assert.equal(ui.$('owner-chain-count-in_progress')!.textContent, 'In progress · 1');
-    assert.equal(ui.$('owner-chain-count-ready')!.textContent, 'Ready · 1');
-    assert.equal(ui.$('owner-chain-count-done')!.textContent, 'Done · 1');
-    assert.match(ui.$('owner-chain-agent-inst_coord')!.textContent!, /inst_coord.*coordinator/s);
-    assert.match(ui.$('owner-chain-agent-inst_worker')!.textContent!, /inst_worker.*worker.*on Fix login/s);
-    assert.match(ui.$('owner-chain-attention')!.textContent!, /Write docs.*Held/s);
+    assert.ok(ui.$('chain-overview-panel'), 'the restored overview panel renders');
+    assert.match(ui.$('chain-overview-section-agents')!.textContent!, /Chain agents \(2\)/);
+    assert.match(ui.$('chain-overview-agent-row-inst_coord')!.textContent!, /inst_coord.*coordinator/s);
+    assert.match(ui.$('chain-overview-agent-row-inst_worker')!.textContent!, /inst_worker.*worker/s);
+    assert.equal(ui.$('chain-overview-agent-ticket-inst_worker')!.textContent, 'Fix login', 'a member shows the ticket it holds');
+    assert.match(ui.$('chain-overview-section-ongoing-tasks')!.textContent!, /Ongoing tasks \(1\)/);
+    assert.match(ui.$('chain-overview-ongoing-task-task_1')!.textContent!, /P1.*In progress.*Fix login.*Worker: inst_worker/s);
+    assert.equal(ui.$('chain-overview-section-attention'), null, 'a held ticket is not waiting on you');
+    assert.equal(ui.$('chain-overview-section-artifacts'), null, 'owner chains have no Hub artifacts section');
+    assert.equal(ui.$('chain-overview-section-vcs'), null, 'no VCS section without the project VCS experiment');
+    assert.ok(ui.$('chain-overview-section-token-usage'), 'token usage is the overview section');
     assert.equal(ui.$('owner-chain-task-detail'), null, 'the overview shows no ticket detail');
 
-    await ui.click('owner-chain-task-task_1');
+    await ui.click('chain-overview-ongoing-task-task_1');
     assert.deepEqual(ui.opened.at(-1)!.content, { type: 'tasks', taskId: 'task_1' }, 'a ticket opens the board focused on it');
-    await ui.click('owner-chain-agent-open-inst_worker');
+    await ui.click('chain-overview-all-tasks');
+    assert.deepEqual(ui.opened.at(-1)!.content, { type: 'tasks' }, 'All tasks opens the board');
+    await ui.click('chain-overview-agent-row-inst_worker');
     assert.deepEqual(ui.opened.at(-1)!.content, { type: 'subagentChat', agentInstanceId: 'inst_worker' }, 'an agent opens its chat in an aux tab');
     assert.ok(ui.calls.some((c) => c.method === 'chain.metadata.read'), 'agents come from the owner member rows');
     assertNoHubChainReads(ui.hubPaths);
@@ -234,7 +241,7 @@ test('an offline owner shows the registry tickets with an offline state and asks
     assert.equal(ui.$('owner-chain-offline')!.textContent, 'Owner Bridge Home Bridge is offline — details and changes unavailable');
     assert.equal(ui.$('owner-chain-title')!.textContent, 'Registry title');
     assert.ok(ui.$('owner-chain-task-task_1') && ui.$('owner-chain-task-task_2'), 'registry tickets still list');
-    assert.match(ui.$('owner-chain-agents')!.textContent!, /Unavailable while the owner Bridge is offline/);
+    assert.equal(ui.$('chain-overview-panel'), null, 'no owner details while offline');
     assert.equal(ui.calls.length, 0);
     assert.equal(ui.$('owner-chain-error'), null);
   } finally {
@@ -277,8 +284,8 @@ test('a chain not on any Bridge, a locked vault, no chain, no access and an empt
     render: (_env, h) => aux({ type: 'chainOverview' }, h),
   });
   try {
-    assert.ok(blank.$('owner-chain-no-tasks'), 'no tickets yet');
-    assert.ok(blank.$('owner-chain-agent-inst_coord'), 'the registry coordinator is still listed');
+    assert.match(blank.$('chain-overview-section-ongoing-tasks')!.textContent!, /No tickets in progress or in review/, 'no tickets yet');
+    assert.ok(blank.$('chain-overview-agent-row-inst_coord'), 'the registry coordinator is still listed');
   } finally { await blank.cleanup(); }
 });
 
@@ -309,29 +316,32 @@ test('overview agent rows show each instance status and start / stop / restart /
   const ui = await mount({
     answer: (call) => (call.method === 'chain.member.set' ? { chain_id: CHAIN, revision: '8' } : owner.answer(call)),
     hub: (path) => {
+      if (path === '/api/v1/agents') return [{ agent_id: 'agt_worker', name: 'Backend worker' }];
       const m = /^\/api\/v1\/agent-instances\/([^/]+)$/.exec(path);
       return m ? { runtime_status: status[m[1]] ?? '' } : {};
     },
     render: (_env, h) => aux({ type: 'chainOverview' }, h),
   });
   try {
-    assert.equal(ui.$('owner-chain-agent-status-inst_worker')!.textContent, 'Running');
-    assert.equal(ui.$('owner-chain-agent-status-inst_coord')!.textContent, 'Stopped');
-    assert.ok(ui.$('owner-chain-agent-stop-inst_worker') && ui.$('owner-chain-agent-restart-inst_worker'));
-    assert.equal(ui.$('owner-chain-agent-start-inst_worker'), null, 'a running agent is not offered Start');
-    assert.ok(ui.$('owner-chain-agent-start-inst_coord'));
-    assert.equal(ui.$('owner-chain-agent-stop-inst_coord'), null);
-    assert.equal(ui.$('owner-chain-agent-remove-inst_coord'), null, 'the coordinator is replaced, never removed');
+    assert.match(ui.$('chain-overview-agent-row-inst_worker')!.textContent!, /Backend worker/, 'agent rows show the agent display name');
+    assert.equal(ui.$('chain-overview-agent-status-inst_worker')!.textContent, 'Running');
+    assert.equal(ui.$('chain-overview-agent-status-inst_coord')!.textContent, 'Stopped');
+    assert.ok(ui.$('chain-overview-stop-agent-inst_worker') && ui.$('chain-overview-restart-agent-inst_worker'));
+    assert.equal(ui.$('chain-overview-start-agent-inst_worker'), null, 'a running agent is not offered Start');
+    assert.ok(ui.$('chain-overview-start-agent-inst_coord'));
+    assert.equal(ui.$('chain-overview-stop-agent-inst_coord'), null);
+    assert.equal(ui.$('chain-overview-remove-agent-inst_coord'), null, 'the coordinator is replaced, never removed');
 
-    await ui.click('owner-chain-agent-stop-inst_worker');
+    await ui.click('chain-overview-stop-agent-inst_worker');
     assert.deepEqual(ui.hubCalls.filter((c) => c.method === 'POST').map((c) => c.path), ['/api/v1/agent-instances/inst_worker/stop']);
-    assert.equal(ui.$('owner-chain-agent-status-inst_worker')!.textContent, 'Stopping');
+    assert.equal(ui.$('chain-overview-agent-status-inst_worker')!.textContent, 'Stopping');
     assert.match(ui.$('owner-chain-notice')!.textContent!, /Stopping the agent/);
-    await ui.click('owner-chain-agent-start-inst_coord');
+    assert.deepEqual(ui.opened, [], 'a row control does not open the agent chat');
+    await ui.click('chain-overview-start-agent-inst_coord');
     assert.equal(ui.hubCalls.filter((c) => c.method === 'POST').at(-1)!.path, '/api/v1/agent-instances/inst_coord/start');
 
     win.confirm = () => true;
-    await ui.click('owner-chain-agent-remove-inst_worker');
+    await ui.click('chain-overview-remove-agent-inst_worker');
     const set = ui.calls.find((c) => c.method === 'chain.member.set');
     assert.ok(set, 'remove sends chain.member.set');
     assert.deepEqual({ ...set!.payload }, { instance_id: 'inst_worker', agent_id: 'agt_worker', role: 'worker', enabled: '0' });
@@ -343,8 +353,9 @@ test('overview agent rows show each instance status and start / stop / restart /
 });
 
 test('agentRuntimeActions offers stop/restart when running, start when stopped or failed, nothing while changing', async () => {
-  const { agentRuntimeActions } = await import('../src/ui/components/taskchain/OwnerChainView.tsx');
+  const { agentRuntimeActions } = await import('../src/ui/components/tasks/ownerChainAdapter.ts');
   assert.deepEqual(agentRuntimeActions('running'), ['stop', 'restart']);
+  assert.deepEqual(agentRuntimeActions('idle'), ['stop', 'restart']);
   assert.deepEqual(agentRuntimeActions('stopped'), ['start']);
   assert.deepEqual(agentRuntimeActions('failed'), ['start']);
   assert.deepEqual(agentRuntimeActions('launching'), []);
@@ -394,7 +405,7 @@ test('addOwnerChainAgent stops on a failed launch and never binds an instance th
   assert.deepEqual(bound, []);
 });
 
-test('the overview shows chain progress and the latest activity, newest first, with ticket links', async () => {
+test('the overview shows the latest activity, newest first, with ticket links', async () => {
   const owner = chainOwner();
   const history = [
     { seq: '1', kind: 'task.create', task_id: 'task_1', actor_kind: 'agent', actor_id: 'inst_coord', ts_ms: '1794200000000' },
@@ -410,8 +421,7 @@ test('the overview shows chain progress and the latest activity, newest first, w
     render: (_env, h) => aux({ type: 'chainOverview' }, h),
   });
   try {
-    assert.match(ui.$('owner-chain-progress')!.getAttribute('aria-label')!, /1 done, 1 in progress or review, 1 ready or waiting/);
-    assert.ok(ui.$('owner-chain-progress-caption')!.textContent!.length > 0);
+    assert.ok(ui.$('chain-overview-section-activity'), 'activity is an overview section');
     const rows = [...ui.$('owner-chain-activity')!.querySelectorAll('li')].map((li) => li.getAttribute('data-debug-id'));
     assert.deepEqual(rows, ['owner-chain-activity-3', 'owner-chain-activity-1'], 'newest first; bookkeeping events are left out');
     assert.match(ui.$('owner-chain-activity-3')!.textContent!, /inst_reviewer.*Reviewed.*Ship/s);
@@ -465,7 +475,7 @@ const FLEET_ROW = {
   created_at: '2026-11-01T00:00:00Z', updated_at: '2026-11-01T00:00:00Z',
 };
 
-test('the overview shows the fleet with agent names; pause and edit write fleet.policy.set', async () => {
+test('the board shows the fleet with agent names; pause and edit write fleet.policy.set', async () => {
   const { decryptVaultText } = await import('../src/ui/utils/vaultCrypto.ts');
   const owner = chainOwner();
   const ui = await mount({
@@ -475,12 +485,12 @@ test('the overview shows the fleet with agent names; pause and edit write fleet.
       return owner.answer(call);
     },
     hub: (path) => (path === '/api/v1/agents' ? [{ agent_id: 'agt_worker', name: 'Backend worker' }] : {}),
-    render: (_env, h) => aux({ type: 'chainOverview' }, h),
+    render: (_env, h) => aux({ type: 'tasks' }, h),
   });
   try {
     const row = ui.$('owner-chain-fleet-agt_worker')!;
     assert.match(row.textContent!, /Backend worker.*agt_worker.*Active.*claude · opus · capacity 2/s);
-    assert.match(ui.$('owner-chain-agent-inst_worker')!.textContent!, /Backend worker.*inst_worker/s, 'agent rows show the display name and the instance id');
+    assert.equal(ui.$('chain-overview-panel'), null, 'the fleet lives on the board, as on origin/main');
 
     await ui.click('owner-chain-fleet-pause-agt_worker');
     let set = ui.calls.filter((c) => c.method === 'fleet.policy.set').at(-1)!;
@@ -732,6 +742,97 @@ test('the ticket shows origin/main linked tickets from the owner dependencies: w
     assert.ok(linked, 'linked tickets card');
     assert.match(linked!.textContent!, /Waits for.*Ship.*Done.*Unblocks.*Write docs/s);
     assert.ok(ui.$('ticket-view-unblocks-task_2'));
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('the overview\'s Attention needed lists a ticket waiting on your approval; Approve signs review.post', async () => {
+  const owner = chainOwner();
+  const ui = await mount({
+    answer: (call) => {
+      if (call.method === 'runtime.read' && call.command.task_id === 'task_1') {
+        return { ...runtime({ state: 'in_review' }), requirements: [['2', JSON.stringify({ goal: 'Fix it', acceptance: ['Works on Safari'], requires_user_approval: true })]],
+          submission: [['1', 'a'.repeat(40), '2', 'Fixed', 'agt_worker']] };
+      }
+      if (call.method === 'review.post') return { chain_id: CHAIN, task_id: 'task_1', revision: '4' };
+      return owner.answer(call);
+    },
+    render: (_env, h) => aux({ type: 'chainOverview' }, h),
+  });
+  try {
+    assert.match(ui.$('chain-overview-attention-task-task_1')!.textContent!, /Review required by you.*Fix login.*Reviewer: You/s);
+    await ui.click('chain-overview-attention-toggle-task_1');
+    assert.match(ui.$('chain-overview-attention-review-task_1')!.textContent!, /Acceptance criteria.*Works on Safari/s);
+    await ui.click('chain-overview-vote-lgtm-task_1');
+    const review = ui.calls.find((c) => c.method === 'review.post');
+    assert.ok(review, 'review.post was sent: ' + (ui.$('owner-chain-error')?.textContent ?? ''));
+    assert.equal(review!.command.task_id, 'task_1');
+    assert.equal(review!.command.expected_revision, '3', 'bound to the listed ticket revision');
+    assert.deepEqual([review!.payload.verdict, review!.payload.attempt, review!.payload.requirements_revision], ['approve', '1', '2']);
+    assert.equal(ui.$('owner-chain-notice')!.textContent, 'Approval recorded.');
+    await ui.click('chain-overview-attention-open-task_1');
+    assert.deepEqual(ui.opened.at(-1)!.content, { type: 'tasks', taskId: 'task_1' });
+    assertNoHubChainReads(ui.hubPaths);
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('New ticket on the board creates the ticket, saves its brief and what it waits for as owner commands', async () => {
+  const { decryptVaultText } = await import('../src/ui/utils/vaultCrypto.ts');
+  const owner = chainOwner();
+  const ui = await mount({
+    answer: (call) => {
+      if (call.method === 'task.create') {
+        owner.state.tasks = [...owner.state.tasks, { task_id: call.command.task_id, title: 'Add audit log', revision: '1', priority: 'p2' }];
+        return { chain_id: CHAIN, task_id: call.command.task_id, revision: '8' };
+      }
+      if (call.method === 'task.read' && !['task_1', 'task_2', 'task_3'].includes(call.command.task_id)) {
+        return { chain_id: CHAIN, task_id: call.command.task_id, revision: '1', title: 'Add audit log', body: '', priority: 'p2', items: [], next_cursor: '' };
+      }
+      if (call.method === 'runtime.read' && !['task_1', 'task_2', 'task_3'].includes(call.command.task_id)) return runtime();
+      if (call.method === 'requirements.edit') return { chain_id: CHAIN, task_id: call.command.task_id, revision: '2' };
+      if (call.method === 'work.dependency.add') return { chain_id: CHAIN, revision: '9' };
+      return owner.answer(call);
+    },
+    render: (_env, h) => aux({ type: 'tasks' }, h),
+  });
+  try {
+    // The modal renders in a portal on the document body, outside the pane.
+    const doc$ = (id: string) => win.document.querySelector(`[data-debug-id="${id}"]`) as HTMLElement | null;
+    const type = (id: string, v: string) => act(async () => {
+      const el = doc$(id) as HTMLInputElement | HTMLTextAreaElement;
+      assert.ok(el, 'missing ' + id);
+      const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value')!.set!;
+      setter.call(el, v); el.dispatchEvent(new win.Event('input', { bubbles: true }));
+    });
+    const press = async (id: string) => { const el = doc$(id); assert.ok(el, 'missing ' + id); await act(async () => { el!.click(); }); await ui.settle(); };
+    await ui.click('task-board-new-task-btn');
+    await type('create-task-title-input', 'Add audit log');
+    await type('create-task-goal-input', 'Writes are logged');
+    await type('create-task-acceptance-input', 'One row per write');
+    await press('create-task-require-user-approval-checkbox');
+    await press('create-task-depends-on-task_1');
+    await press('create-task-submit-btn');
+    await ui.settle();
+    const created = ui.calls.find((c) => c.method === 'task.create');
+    assert.ok(created, 'task.create was sent: ' + (doc$('create-task-error')?.textContent ?? ''));
+    assert.equal(await decryptVaultText(created!.payload.title_cipher!), 'Add audit log');
+    const req = ui.calls.find((c) => c.method === 'requirements.edit');
+    assert.ok(req, 'requirements.edit was sent: ' + (doc$('create-task-error')?.textContent ?? ''));
+    assert.equal(req!.command.task_id, created!.command.task_id);
+    assert.equal(req!.command.expected_revision, '1', 'bound to the new ticket revision');
+    assert.equal(req!.payload.requirements_revision, '1');
+    assert.deepEqual(JSON.parse(await decryptVaultText(req!.payload.body_cipher!)), { goal: 'Writes are logged', acceptance: ['One row per write'], requires_user_approval: true });
+    const dep = ui.calls.find((c) => c.method === 'work.dependency.add');
+    assert.ok(dep, 'work.dependency.add was sent');
+    const doc = JSON.parse(await decryptVaultText(dep!.payload.body_cipher!));
+    assert.deepEqual([doc.dependent, doc.prerequisite], [{ kind: 'task', id: created!.command.task_id }, { kind: 'task', id: 'task_1' }]);
+    assert.equal(doc$('create-task-modal'), null, 'the modal closes');
+    assert.equal(ui.$('owner-chain-notice')!.textContent, 'Ticket created.');
+    assert.match(ui.$(`task-card-${created!.command.task_id}`)!.textContent!, /Add audit log/, 'the new ticket is on the board');
+    assertNoHubChainReads(ui.hubPaths);
   } finally {
     await ui.cleanup();
   }
