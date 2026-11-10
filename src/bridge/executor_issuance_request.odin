@@ -23,8 +23,11 @@ import executor "odin_test:lib/executor_local"
 Executor_Issuance_Request_Input :: struct {
     account,owner_bridge,owner_key_id,executor_bridge,executor_key_id:string,
     chain_id,task_id,agent_id,configuration_revision:string,
+    // The executor's incarnation is not known here: an owner-Bridge consent
+    // uses an auto selection, the executor chooses its own selectors and its
+    // signed configuration names the incarnation ("" sends 1, not a fence).
     owner_incarnation,executor_incarnation:string,
-    selection:json.Object,
+    provider,model:string,
     operation_id:string, // "" generates a fresh one
     now:i64,
 }
@@ -58,8 +61,10 @@ bridge_executor_issuance_request :: proc(input:Executor_Issuance_Request_Input,k
     context.allocator=context.temp_allocator
     if input.owner_bridge=="" || input.executor_bridge=="" || input.owner_bridge==input.executor_bridge ||
        input.owner_key_id=="" || input.executor_key_id=="" || input.owner_key_id==input.executor_key_id || sign.sign==nil {return}
-    selection:=executor.encode(input.selection)
-    if _,valid:=contracts.executor_parse(selection,"issuance_selection");!valid do return
+    auto:=contracts.EXECUTOR_AUTO_SELECTOR
+    selection:=executor.encode(struct{provider,model,provider_profile,directory_id,policy_revision,slot_id:string}{input.provider,input.model,auto,auto,"1",auto})
+    if parsed,valid:=contracts.executor_parse(selection,"issuance_selection");!valid || !contracts.executor_selection_auto(parsed) do return
+    executor_incarnation:=input.executor_incarnation if input.executor_incarnation!="" else "1"
     operation:=input.operation_id
     if operation=="" {
         generated,generated_ok:=bridge_executor_random_id("issue_")
@@ -88,7 +93,7 @@ bridge_executor_issuance_request :: proc(input:Executor_Issuance_Request_Input,k
     for pair in ([15][2]string{{"protocol_version","1"},{"account_id",input.account},{"owner_bridge_id",input.owner_bridge},
         {"executor_bridge_id",input.executor_bridge},{"chain_id",input.chain_id},{"reservation_id",""},{"request_id",request_id},
         {"method","enrollment"},{"direction","request"},{"input_digest",input_digest},{"fence_digest",contracts.owner_string(consent,"selection_digest")},
-        {"owner_incarnation",input.owner_incarnation},{"executor_incarnation",input.executor_incarnation},
+        {"owner_incarnation",input.owner_incarnation},{"executor_incarnation",executor_incarnation},
         {"issued_ms",fmt.tprintf("%d",input.now)},{"request_expires_ms",fmt.tprintf("%d",input.now+EXECUTOR_ISSUANCE_REQUEST_TTL_MS)}}) {scope[pair[0]]=json.String(pair[1])}
     if _,valid:=contracts.executor_parse(executor.encode(scope),"transport_scope");!valid do return
     envelope,sealed:=channel.seal(consent_raw,kr,scope,input.now)

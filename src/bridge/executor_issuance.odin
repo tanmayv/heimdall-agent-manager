@@ -18,11 +18,15 @@ import executor "odin_test:lib/executor_local"
 bridge_executor_store:executor.Store
 bridge_executor_mutex:sync.Mutex
 
+bridge_executor_root :: proc(account:string)->(string,bool) {
+    dir,ok:=bridge_vault_bridge_dir(bridge_config.daemon_id,context.temp_allocator)
+    if !ok do return "",false
+    return fmt.tprintf("%sexecutor-local-%s",dir,contracts.owner_payload_digest(account)),true
+}
 bridge_executor_open :: proc(account,key:string)->bool {
     if bridge_executor_store.db!=nil do return bridge_executor_store.account==account && bridge_executor_store.operator_key==key
-    dir,ok:=bridge_vault_bridge_dir(bridge_config.daemon_id,context.temp_allocator)
+    path,ok:=bridge_executor_root(account)
     if !ok do return false
-    path:=fmt.tprintf("%sexecutor-local-%s",dir,contracts.owner_payload_digest(account))
     if bridge_make_directory_all(path,{.Read_User,.Write_User,.Execute_User})!=nil do return false
     when ODIN_OS!=.Windows {
         if os.chmod(path,{.Read_User,.Write_User,.Execute_User})!=nil do return false
@@ -64,6 +68,65 @@ bridge_executor_resolve_issuance :: proc(s:^executor.Store,selection_raw:string)
     resolved,err:=profile_lookup(provider,profile)
     if err!=.None || !resolved.enabled || resolved.provider!=provider || resolved.profile_id!=profile do return {}
     return executor.Issuance_Resources{selection_digest=contracts.owner_payload_digest(selection_raw),directory_key=mapping.key,directory_path=canonical,resolved=true}
+}
+
+// Owner-Bridge consent (cross-Bridge placement, user decision 15:30Z option b):
+// the consent names only provider and model. This executor chooses for itself,
+// with no operator mapping:
+//   - profile: the provider's default profile on this Bridge (enabled);
+//   - policy/slot: the current policy's first enabled slot for that profile.
+//     With no policy at all, it installs revision 1 with one slot for the
+//     profile, signed by its own operator key. An operator policy without a
+//     slot for the profile is kept (the operator owns it; refused);
+//   - directory: a per-chain scratch directory under this executor's private
+//     root (inside the Bridge's file root, $HOME by default), self-mapped with
+//     its own operator key. Paths are computed here, never taken from the
+//     request.
+// The chosen selectors go back in the signed remote_configuration.
+BRIDGE_EXECUTOR_AUTO_CAPACITY :: "4"
+bridge_executor_resolve_auto_issuance :: proc(s:^executor.Store,consent:json.Object,selection_raw:string,self:contracts.Owner_Verified_Key)->executor.Issuance_Resources {
+    selection,valid:=contracts.executor_parse(selection_raw,"issuance_selection")
+    if !valid || !contracts.executor_selection_auto(selection) || self.key_id!=s.operator_key do return {}
+    get:=contracts.owner_string
+    provider,model:=get(selection,"provider"),get(selection,"model")
+    if !bridge_provider_catalog_has_model(provider,model) do return {}
+    profile,err:=profile_lookup(provider,provider,context.temp_allocator,false)
+    if err!=.None || !profile.enabled || profile.provider!=provider || !contracts.owner_field_valid(profile.profile_id,"id") do return {}
+    revision,slot,found:=executor.auto_slot(s,profile.profile_id)
+    if !found {
+        if revision!=0 do return {}
+        slots:=executor.encode([1]struct{slot_id,provider_profile,enabled:string}{{fmt.tprintf("auto_%s",profile.profile_id),profile.profile_id,"1"}})
+        record:=executor.encode(struct{protocol_version,account_id,executor_bridge_id,policy_revision,device_capacity,slots_json,key_id,signature:string}{
+            "1",s.account,s.executor,"1",BRIDGE_EXECUTOR_AUTO_CAPACITY,slots,s.operator_key,strings.repeat("0",128,context.temp_allocator)})
+        signed,code:=bridge_executor_operator_sign_record("policy",record)
+        if code!="ok" || executor.install_policy(s,signed,self,bridge_executor_physical_clock(nil)).code!="ok" do return {}
+        revision,slot,found=executor.auto_slot(s,profile.profile_id)
+        if !found do return {}
+    }
+    root,rooted:=bridge_executor_root(s.account)
+    if !rooted do return {}
+    chain:=contracts.owner_payload_digest(get(consent,"chain_id"))[:24]
+    path:=fmt.tprintf("%s/scratch/%s",root,chain)
+    if bridge_make_directory_all(path,{.Read_User,.Write_User,.Execute_User})!=nil do return {}
+    canonical,within:=bridge_executor_canonical_directory(path)
+    if !within do return {}
+    directory_id:=fmt.tprintf("scratch_%s",chain)
+    key:=executor.directory_key(s.executor,canonical)
+    mapping,mapped:=executor.directory_mapping(s,directory_id)
+    if !mapped || mapping.path!=canonical || mapping.key!=key {
+        latest,latest_ok:=executor.directory_latest_revision(s,directory_id)
+        if !latest_ok do return {}
+        next:=latest+1
+        record:=executor.encode(struct{protocol_version,account_id,executor_bridge_id,directory_id,revision,directory_path,enabled,key_id,signature:string}{
+            "1",s.account,s.executor,directory_id,fmt.tprintf("%d",next),canonical,"1",s.operator_key,strings.repeat("0",128,context.temp_allocator)})
+        signed,code:=bridge_executor_operator_sign_record("directory",record)
+        if code!="ok" || executor.install_directory(s,signed,self,bridge_executor_physical_clock(nil),canonical).code!="ok" do return {}
+    }
+    chosen:=executor.encode(struct{provider,model,provider_profile,directory_id,policy_revision,slot_id:string}{
+        provider,model,profile.profile_id,directory_id,fmt.tprintf("%d",revision),slot})
+    if _,chosen_ok:=contracts.executor_parse(chosen,"issuance_selection");!chosen_ok do return {}
+    return executor.Issuance_Resources{selection_digest=contracts.owner_payload_digest(selection_raw),directory_key=key,
+        directory_path=canonical,selection=chosen,resolved=true}
 }
 
 // The key that may consent to an issuance on this executor, from the verified
@@ -152,8 +215,16 @@ bridge_executor_issuance_handle :: proc(conn:^ws.Connection,text:string) {
     verified,authenticated:=channel.open_signed(get(exchange,"envelope"),&kr,scope,device,now,context.temp_allocator)
     if !authenticated do return
     defer crypto.zero_explicit(raw_data(verified),len(verified))
-    if contracts.executor_number(scope,"executor_incarnation")!=s.incarnation {reply.code="stale_incarnation";return}
-    resources:=bridge_executor_resolve_issuance(s,get(exchange,"selection"))
+    // An owner-Bridge consent cannot know this executor's incarnation (its
+    // auto selection asks this executor to choose); the signed configuration
+    // names it and every later launch fence binds it.
+    resources:executor.Issuance_Resources
+    if device.kind=="bridge" {
+        resources=bridge_executor_resolve_auto_issuance(s,consent,get(exchange,"selection"),self)
+    } else {
+        if contracts.executor_number(scope,"executor_incarnation")!=s.incarnation {reply.code="stale_incarnation";return}
+        resources=bridge_executor_resolve_issuance(s,get(exchange,"selection"))
+    }
     // No transaction spans resolver filesystem/profile I/O. issue rechecks the
     // signed mapping/policy under its own transaction before generating facts.
     result:=executor.issue(s,verified,get(exchange,"selection"),device,self,time.to_unix_nanoseconds(time.now())/1000000,

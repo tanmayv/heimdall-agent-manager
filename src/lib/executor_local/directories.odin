@@ -20,6 +20,14 @@ directory_mapping :: proc(s:^Store,id:string)->(Directory_Mapping,bool) {
     if !ok || len(rows)!=1 || rows[0][3]!="1" do return {},false
     return Directory_Mapping{rows[0][0],rows[0][1],number(rows[0][2])},true
 }
+// The latest revision of a mapping, enabled or not (0 when never mapped).
+directory_latest_revision :: proc(s:^Store,id:string)->(i64,bool) {
+    sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
+    if s.db==nil || s.unusable do return 0,false
+    rows,ok:=query(s.db,"SELECT coalesce(max(revision),0) FROM executor_directories WHERE directory_id=?",id)
+    if !ok || len(rows)!=1 do return 0,false
+    return number(rows[0][0]),true
+}
 // Only host operator authority can provision a mapping. An enabled new mapping
 // needs the Bridge's freshly canonicalized existing directory under its trusted
 // root. Raw remote path assertions cannot satisfy this trusted local proof.

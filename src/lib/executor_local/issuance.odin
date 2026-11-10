@@ -119,3 +119,15 @@ issue :: proc(s:^Store,consent_raw,selection_raw:string,device_key,executor_key:
     if !commit(s) do return fail("storage_error")
     return Result{code="ok",body=body}
 }
+
+// Owner-Bridge (auto) selection: the current policy revision and the first
+// enabled slot for profile. revision 0 means no policy is installed yet.
+auto_slot :: proc(s:^Store,profile:string)->(revision:i64,slot:string,ok:bool) {
+    sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
+    if s.db==nil || s.unusable do return 0,"",false
+    rows,read:=query(s.db,"SELECT policy_revision,(SELECT slot_id FROM executor_slots WHERE provider_profile=? AND enabled=1 ORDER BY slot_id LIMIT 1) FROM executor_runtime WHERE singleton=1",profile)
+    if !read || len(rows)!=1 do return 0,"",false
+    revision=number(rows[0][0])
+    if revision<=0 || rows[0][1]=="" do return revision,"",false
+    return revision,strings.clone(rows[0][1]),true
+}

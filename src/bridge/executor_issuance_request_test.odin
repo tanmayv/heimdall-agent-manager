@@ -41,12 +41,9 @@ test_executor_issuance_request_is_admitted_by_the_executor :: proc(t:^testing.T)
     if !testing.expect(t,kr_ok) do return
     defer vault.keyring_wipe(&kr)
 
-    selection:=make(json.Object)
-    for pair in ([6][2]string{{"provider","claude"},{"model","default"},{"provider_profile","claude"},
-        {"directory_id","dir_remote"},{"policy_revision","1"},{"slot_id","slot1"}}) {selection[pair[0]]=json.String(pair[1])}
     input:=Executor_Issuance_Request_Input{account="acct_1",owner_bridge="brg_owner",owner_key_id=owner_key_id,
         executor_bridge="brg_exec",executor_key_id=exec_id,chain_id="chain_1",task_id="task_1",agent_id="agt_1",
-        configuration_revision="1",owner_incarnation="1",executor_incarnation="2",selection=selection,now=1_000_000}
+        configuration_revision="1",owner_incarnation="1",executor_incarnation="2",provider="claude",model="default",now=1_000_000}
     signer:=executor.Signer{&owner_private,executor_request_test_signer}
     request,ok:=bridge_executor_issuance_request(input,&kr,signer)
     if !testing.expect(t,ok,"the owner Bridge builds a request") do return
@@ -93,6 +90,8 @@ test_executor_issuance_request_is_admitted_by_the_executor :: proc(t:^testing.T)
     testing.expect(t,contracts.executor_number(scope,"request_expires_ms")<=contracts.executor_number(relay,"expires_ms"),"scope expires within the relay")
     testing.expect_value(t,get(scope,"executor_incarnation"),"2")
     testing.expect_value(t,get(exchange,"selection"),request.selection)
+    chosen,_:=contracts.executor_parse(request.selection,"issuance_selection")
+    testing.expect(t,contracts.executor_selection_auto(chosen),"an owner Bridge names only provider and model")
     raw,clear:=channel.open(get(exchange,"envelope"),&kr,scope,1_000_000)
     testing.expect(t,clear && raw==request.consent,"the sealed consent is the signed consent")
     verified,authenticated:=channel.open_signed(get(exchange,"envelope"),&kr,scope,key,1_000_000)
@@ -116,7 +115,7 @@ test_executor_issuance_request_is_admitted_by_the_executor :: proc(t:^testing.T)
     same_key:=input;same_key.executor_key_id=owner_key_id
     _,ok=bridge_executor_issuance_request(same_key,&kr,signer)
     testing.expect(t,!ok,"the executor key is never the owner key")
-    bad:=input;bad.selection=make(json.Object)
+    bad:=input;bad.provider=""
     _,ok=bridge_executor_issuance_request(bad,&kr,signer)
     testing.expect(t,!ok,"an invalid selection is refused")
     _,ok=bridge_executor_issuance_request(input,&kr,executor.Signer{})
