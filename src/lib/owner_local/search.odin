@@ -65,17 +65,16 @@ search_result :: proc(s:^Store,c:json.Object,payload:string,now:i64,kr:^vault.Va
     budget:=SEARCH_VM_BUDGET
     sqlite3_progress_handler(s.db,1000,search_budget,&budget)
     defer sqlite3_progress_handler(s.db,0,nil,nil)
-    // Materialize authorization before MATCH/snippet extraction.
+    // Materialize the chain scope before MATCH/snippet extraction. execute
+    // admitted the signer (account-level trust), so there is no grant join.
     rows,queried:=query(s.db,`WITH allowed AS MATERIALIZED (
-      SELECT d.* FROM search_docs d JOIN local_grants g ON g.chain_id=d.chain_id
-      WHERE d.chain_id=? AND g.principal_id=? AND g.key_id=? AND g.can_read=1
-        AND g.revoked=0 AND g.expires_ms>?
+      SELECT d.* FROM search_docs d WHERE d.chain_id=?
     )
     SELECT d.chain_id,d.task_id,d.kind,d.object_id,d.revision,
            d.title,snippet(search_fts,1,'','',' … ',24)
     FROM allowed d JOIN search_fts ON search_fts.rowid=d.rowid
     WHERE search_fts MATCH ? ORDER BY d.kind,d.object_id LIMIT ?`,
-      field(c,"chain_id"),field(c,"principal_id"),field(c,"key_id"),fmt.tprintf("%d",now),literal,fmt.tprintf("%d",limit))
+      field(c,"chain_id"),literal,fmt.tprintf("%d",limit))
     if !queried do return fail("storage_error")
     state,read:=query(s.db,"SELECT commit_seq FROM runtime_database WHERE singleton=1")
     if !read || len(state)!=1 do return fail("storage_error")

@@ -91,7 +91,7 @@ context_bounded_projection_full_retrieval_restart_and_auth :: proc(t:^testing.T)
     _,_=query(f.store.db,"INSERT INTO task_chains VALUES('other','other','other','private','private',1)")
     c,_:=contracts.owner_parse(command(f,"context.read","other_scope","",read_payload,"0"),"command")
     c["chain_id"]=json.String("other");sig,_:=test_sign(&f.creator_priv,"command",c);c["signature"]=json.String(sig)
-    testing.expect(t,invoke(f,encode(c),read_payload).code!="ok","chain authorization precedes source enumeration")
+    testing.expect_value(t,invoke(f,encode(c),read_payload).code,"ok") // account-level trust: any paired device reads any chain of this owner
 }
 
 @(test)

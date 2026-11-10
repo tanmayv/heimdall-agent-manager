@@ -9,7 +9,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Badge, Button, EmptyState, FormField, Input, StatusDot, StatusPill, Text, Textarea } from '@ui';
 import {
   freshOwnerSession, isOwnerOffline, ownerCall, ownerErrorMessage, ownerOfflineMessage, ownerRelaySend, ownerTaskState,
-  ownerActivityLabel, ownerExpectedRevision, readArchivedReviews, readOwnerActivity, readOwnerRequirementHistory, readOwnerChain, readOwnerChainStatus, readOwnerFleetPolicies, readOwnerHandoffs, readOwnerReviews, ownerFleetPolicyDocument, readOwnerRuntime, readOwnerDependencies, readOwnerSubmission, readOwnerTask, readOwnerTaskActivity, readOwnerWorkRevision, withOwnerRecovery,
+  ownerActivityLabel, ownerExpectedRevision, readArchivedReviews, readOwnerActivity, readOwnerRequirementHistory, readOwnerChain, readOwnerChainStatus, readOwnerFleetPolicies, readOwnerHandoffs, readOwnerReviews, ownerFleetPolicyDocument, readOwnerRuntime, readOwnerDependencies, readOwnerSubmission, readOwnerTask, readOwnerTaskActivity, readOwnerWorkRevision,
   type OwnerActivity, type OwnerRequirementChange, type OwnerChainDetail, type OwnerChainStatus, type OwnerDependency, type OwnerChainSummary, type OwnerReview, type OwnerRuntime, type OwnerSend,
   type OwnerSubmission, type OwnerTaskDetail, type OwnerFleetPolicy, type OwnerFleetPolicyChange,
 } from '../../api/ownerChains';
@@ -210,7 +210,7 @@ export function OwnerChainView({
     try {
       const s = await session();
       const [d, status] = await Promise.all([
-        withOwnerRecovery(s, chain, () => readOwnerChain(s, bridge, chain.chainId, send), send),
+        readOwnerChain(s, bridge, chain.chainId, send),
         readOwnerChainStatus(s, bridge, chain.chainId, send).catch((e) => { if (isOwnerOffline(e)) throw e; return '' as OwnerChainStatus; }),
       ]);
       if (!live.current) return;

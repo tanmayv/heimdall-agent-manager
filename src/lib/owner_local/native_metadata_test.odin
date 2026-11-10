@@ -113,7 +113,7 @@ native_metadata_pages_bind_source_kind_and_current_read_authority :: proc(t:^tes
     testing.expect_value(t,native_metadata_test_call(f,string(NATIVE_DIRECTORIES),"directories","3").code,"ok")
     testing.expect_value(t,native_metadata_test_read(f,"directory","native_revision_7",cursor).code,"stale_cursor")
     testing.expect_value(t,native_metadata_test_read(f,"member","absent").code,"invalid_scope")
-    testing.expect(t,exec(f.store.db,"UPDATE local_grants SET revoked=1,revision=revision+1"))
+    f.creator.revoked=true // the device itself is revoked (account-level trust; no per-chain grant)
     testing.expect_value(t,native_metadata_test_read(f,"member").code,"invalid_scope")
 }
 
@@ -239,7 +239,7 @@ native_facts_import_statement_commit_rollback_replay_and_scope :: proc(t:^testin
         root["source_revision"]=json.String("new_source")
         testing.expect_value(t,native_metadata_test_call(f,encode(root),"owner","3").code,"operation_conflict")
         testing.expect_value(t,native_metadata_test_state(f),before)
-        testing.expect(t,exec(f.store.db,"UPDATE local_grants SET revoked=1,revision=revision+1"))
+        f.creator.revoked=true // the device itself is revoked (account-level trust; no per-chain grant)
         testing.expect_value(t,native_metadata_test_read(f,bundle.kind).code,"invalid_scope")
         destroy(f)
     }

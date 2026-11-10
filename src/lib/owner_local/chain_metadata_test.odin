@@ -59,9 +59,9 @@ summary_signed_cas_exact_history_restart_context_and_scope :: proc(t:^testing.T)
     testing.expect_value(t,context_call(f,"chain.metadata.read","restart_summary","").code,"ok")
     ctx=context_call(f,"chain.read","cleared_context","")
     testing.expect(t,ctx.code=="ok" && !strings.contains(ctx.body,"Curated notes:"))
-    testing.expect(t,exec(f.store.db,"UPDATE local_grants SET can_mutate=0,revision=revision+1"))
+    f.creator.revoked=true // a revoked device can neither change nor read the chain
     testing.expect_value(t,summary_call(f,"forbidden","summary_readonly",summary_revision(f)).code,"invalid_scope")
-    testing.expect_value(t,context_call(f,"chain.metadata.read","readonly_summary","").code,"ok")
+    testing.expect_value(t,context_call(f,"chain.metadata.read","readonly_summary","").code,"invalid_scope")
 }
 @(test)
 summary_statement_and_commit_rollback_preserve_context_and_receipts :: proc(t:^testing.T) {

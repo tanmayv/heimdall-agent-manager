@@ -111,13 +111,6 @@ doc :: proc(values: map[string]string) -> json.Object {
     for k,v in values { o[k]=json.String(v) }
     return o
 }
-grant :: proc(s:^Store, command:json.Object, now:i64) -> (contracts.Owner_Read_Grant,bool) {
-    rows,ok:=query(s.db,"SELECT revision,expires_ms,can_read,can_mutate,revoked FROM local_grants WHERE chain_id=? AND principal_id=? AND key_id=?",field(command,"chain_id"),field(command,"principal_id"),field(command,"key_id"))
-    if !ok || len(rows)!=1 do return {},false
-    r:=rows[0]
-    return contracts.Owner_Read_Grant{account_id=s.account,owner_bridge_id=s.owner,chain_id=field(command,"chain_id"),principal_id=field(command,"principal_id"),key_id=field(command,"key_id"),method=field(command,"method"),
-        revision=number(r[0]),expires_ms=number(r[1]),can_read=r[2]=="1",can_mutate=r[3]=="1",revoked=r[4]=="1"},true
-}
 // Directory verification is done by the Bridge against its paired root before
 // entering here. Its pinned sequence/hash is rechecked under the write lock.
 // The key is a verified current directory member, never a request assertion.
@@ -137,24 +130,22 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     method,chain,task,principal,op:=field(c,"method"),field(c,"chain_id"),field(c,"task_id"),field(c,"principal_id"),field(c,"operation_id")
     if now<0 || now>0x7fffffffffffffff-GRANT_MAX_TTL_MS do return fail("invalid_scope")
     auth_now:=max(now,number(state[0][1]))
-    g,has_grant:=grant(s,c,auth_now)
-    // R4a: an owner-signed agent command (agent_authority.odin) replaces the
-    // device grant with the agent policy. Never chain.create or grant.*.
+    // R4a: an owner-signed agent command (agent_authority.odin) is admitted by
+    // the agent policy. Never chain.create or grant.*.
     agent_mode:=agent.instance!=""
     // Only a device key signing for itself is the user (R2-1). An owner-signed
     // agent command, including review.human on the user's behalf, is an agent.
     device:=!agent_mode && key.kind=="device"
+    // Account-level trust: every paired, unrevoked device of this account reads
+    // and changes every chain of this owner. `key` is a member of the current
+    // directory verified against the paired root (unpaired and revoked devices
+    // never verify), so there is no per-chain or per-device grant to hold.
+    // Signature, freshness and revocation are checked below.
+    g:=contracts.Owner_Read_Grant{account_id=s.account,owner_bridge_id=s.owner,chain_id=chain,principal_id=principal,key_id=key.key_id,method=method,revision=1,expires_ms=auth_now+contracts.OWNER_REQUEST_TTL_MS,can_read=true,can_mutate=true}
     if agent_mode {
         if code:=agent_command_admit(s,c,payload,key,agent);code!="ok" do return fail(code)
-        g=agent_grant(s,c,auth_now);has_grant=true
-    } else if method=="grant.recover" || (method=="grant.read" && grant_root(key,grant_proof) && (!has_grant || g.expires_ms<=auth_now || g.revoked || !g.can_read)) {
-        _,enabled,policy_ok:=grant_policy(s,chain)
-        if !policy_ok do return fail("storage_error")
-        if !enabled || !grant_root(key,grant_proof) do return fail("invalid_scope")
-        // Root recovery authorizes this operation only, never chain content.
-        g=contracts.Owner_Read_Grant{account_id=s.account,owner_bridge_id=s.owner,chain_id=chain,principal_id=principal,key_id=key.key_id,method=method,revision=1,expires_ms=now+contracts.OWNER_REQUEST_TTL_MS,can_read=true,can_mutate=true}
-        has_grant=true
-    } else if strings.has_prefix(method,"grant.") && !grant_admin(s,chain,key,grant_proof) { return fail("invalid_scope") }
+        g=agent_grant(s,c,auth_now)
+    } else if key.account_id!=s.account || !key.enrolled || key.revoked || key.kind=="device" && key.principal_id!=key.key_id { return fail("invalid_scope") }
     genesis:json.Object
     creating:=method=="chain.create"
     if creating {
@@ -167,12 +158,16 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         if key.kind!="device" && (agent_mode || key.kind!="bridge" || key.principal_id!=s.owner || key.key_id!=s.owner_key ||
            key.public_key!=owner_key.public_key || principal!=s.owner) { return fail("invalid_scope") }
         if !contracts.owner_create_binding(c,genesis,payload) do return fail("digest_mismatch")
-        if !has_grant {
-            existing,looked:=query(s.db,"SELECT chain_id FROM task_chains WHERE chain_id=?",chain)
-            if !looked || len(existing)>0 do return fail("invalid_scope")
-            g=contracts.Owner_Read_Grant{account_id=s.account,owner_bridge_id=s.owner,chain_id=chain,principal_id=principal,key_id=key.key_id,method=method,revision=1,expires_ms=now+GRANT_MAX_TTL_MS,can_read=true,can_mutate=true}
+        existing,looked:=query(s.db,"SELECT chain_id FROM task_chains WHERE chain_id=?",chain)
+        if !looked do return fail("storage_error")
+        if len(existing)>0 {
+            // An exact retry replays its receipt below; any other create of an
+            // existing chain is refused.
+            replayed,rl:=query(s.db,"SELECT 1 FROM command_receipts WHERE principal_id=? AND operation_id=? AND chain_id=?",principal,field(c,"operation_id"),chain)
+            if !rl do return fail("storage_error")
+            if len(replayed)==0 do return fail("invalid_scope")
         }
-    } else if !has_grant { return fail("invalid_scope") }
+    }
     bridge_created:=creating && !agent_mode && key.kind=="bridge"
     if !agent_mode && !bridge_created && key.kind!="device" do return fail("invalid_scope")
     if !agent_mode { if e:=contracts.owner_authenticate_command(c,payload,key,g,auth_now);e!=.None do return auth_fail(e) }
@@ -214,7 +209,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
             revision=0
         }
     }
-    if e:=contracts.owner_live_admit(c,g,now,revision);e!=.None do return auth_fail(e)
+    if e:=contracts.owner_live_admit(c,g,auth_now,revision);e!=.None do return auth_fail(e)
     read:=method=="linked.facet.read" || method=="envelope.read" || method=="linked.read" || method=="linked.fetch" || method=="linked.backup" || method=="work.read" || method=="chain.metadata.read" || method=="native.metadata.read" || method=="fleet.policy.read" || method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="history.read" || method=="history.fetch" || method=="context.read" || method=="grant.read" || method=="workflow.read" || method=="source.read" || method=="submission.read" || method=="chain.search" || method=="chain.read" || method=="task.read" || method=="receipt.read" || method=="runtime.read" || method=="migration.archive.read"
     if read {
         if method=="chain.search" && (kr==nil || kr.current_epoch==0) do return fail("invalid_content")

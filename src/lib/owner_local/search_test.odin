@@ -63,7 +63,7 @@ search_scope_signature_read_right_and_revocation_precede_snippets :: proc(t:^tes
     c,_:=contracts.owner_parse(raw,"command")
     c["signature"]=json.String(strings.repeat("0",128,context.temp_allocator))
     testing.expect_value(t,invoke(f,encode(c),p).code,"bad_signature")
-    _,_=query(f.store.db,"UPDATE local_grants SET revoked=1,revision=revision+1")
+    f.creator.revoked=true // the device itself is revoked
     result=search_for(f,"private")
     testing.expect(t,result.code=="invalid_scope" && result.body=="")
 }
@@ -208,7 +208,7 @@ search_all_retained_attempts_rebuild_restart_exact_read_and_denial :: proc(t:^te
     signature,_:=test_sign(&f.creator_priv,"command",c);c["signature"]=json.String(signature)
     denied:=invoke(f,encode(c),p)
     testing.expect(t,denied.code=="invalid_scope" && denied.body=="")
-    _,_=query(f.store.db,"UPDATE local_grants SET revoked=1,revision=revision+1 WHERE chain_id='chain'")
+    f.creator.revoked=true // the device itself is revoked
     denied=history_read(f,"1")
     testing.expect(t,denied.code=="invalid_scope" && denied.body=="")
     denied=search_for(f,"historicalfirstneedle")

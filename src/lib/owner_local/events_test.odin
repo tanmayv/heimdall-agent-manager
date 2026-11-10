@@ -53,7 +53,7 @@ event_history_preserves_exact_bytes_auth_replay_and_restart :: proc(t:^testing.T
     // still allow history, revocation denies inventory and exact fetch alike.
     _,_=query(f.store.db,"UPDATE local_grants SET can_mutate=0,revision=revision+1")
     testing.expect_value(t,history_call(f,"history.fetch",`{"seq":"3","offset":"0"}`).code,"ok")
-    _,_=query(f.store.db,"UPDATE local_grants SET revoked=1,revision=revision+1")
+    f.creator.revoked=true // the device itself is revoked (account-level trust; no per-chain grant)
     testing.expect_value(t,history_call(f,"history.read",`{"cursor":"","limit":"100"}`).code,"invalid_scope")
     testing.expect_value(t,history_call(f,"history.fetch",`{"seq":"3","offset":"0"}`).code,"invalid_scope")
 }

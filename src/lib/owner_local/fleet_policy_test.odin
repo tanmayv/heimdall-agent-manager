@@ -107,10 +107,8 @@ fleet_policy_pagination_is_revision_bound_and_read_grants_are_enforced :: proc(t
     policy["capacity"]=json.Integer(3)
     testing.expect_value(t,fleet_policy_test_call(f,encode(policy),"changed","5").code,"ok")
     testing.expect_value(t,fleet_policy_test_read(f,cursor,"1").code,"stale_cursor")
-    _,_=query(f.store.db,"UPDATE local_grants SET can_mutate=0,revision=revision+1")
     testing.expect_value(t,fleet_policy_test_read(f).code,"ok")
-    testing.expect_value(t,fleet_policy_test_call(f,encode(policy),"denied","6").code,"invalid_scope")
-    _,_=query(f.store.db,"UPDATE local_grants SET revoked=1,revision=revision+1")
+    f.creator.revoked=true // the device itself is revoked (account-level trust; no per-chain grant)
     testing.expect_value(t,fleet_policy_test_read(f).code,"invalid_scope")
 }
 

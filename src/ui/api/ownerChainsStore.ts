@@ -61,12 +61,11 @@ export async function refreshOwnerChains(): Promise<void> {
     if (!current()) return;
     publish({ status: 'ready', chains: withPending(chains) });
     // Work status (active/completed) is owner state: read it from the online
-    // owners, bounded; offline chains stay unknown. Its reads also recover
-    // access to Bridge-created chains, which an unread coordinator waits for.
+    // owners, bounded; offline chains stay unknown.
     const statuses = readOwnerChainStatuses(session, chains, send, current).then((read) => {
       if (current()) publish({ ...state, chains: state.chains.map((c) => (read.has(c.chainId) ? { ...c, status: read.get(c.chainId) } : c)) });
     });
-    await Promise.all([statuses, readUnknownCoordinators(session, chains, current, statuses)]);
+    await Promise.all([statuses, readUnknownCoordinators(session, chains, current)]);
   } catch (error) {
     if (generation !== mine || getKeyringSession() !== session) return;
     publish({ status: 'error', chains: withPending([]), error: error instanceof Error ? error.message : String(error) });
@@ -80,12 +79,12 @@ type Session = NonNullable<ReturnType<typeof getKeyringSession>>;
  * the online owners' member rows, at most four reads at once. Each is recorded
  * as it arrives; a failure is recorded as failed.
  */
-async function readUnknownCoordinators(session: Session, chains: OwnerChainSummary[], current: () => boolean, recovered: Promise<unknown>): Promise<void> {
+async function readUnknownCoordinators(session: Session, chains: OwnerChainSummary[], current: () => boolean): Promise<void> {
   const queue = chains.filter((c) => c.online && !c.pending && c.coordinatorAgentInstanceId === undefined);
   await Promise.all(Array.from({ length: Math.min(4, queue.length) }, async () => {
     for (let c = queue.shift(); c; c = queue.shift()) {
       if (!current()) return;
-      await readCoordinator(session, c, recovered).catch(() => '');
+      await readCoordinator(session, c).catch(() => '');
     }
   }));
 }
@@ -95,10 +94,9 @@ const coordinatorReads = new Map<string, Promise<string>>();
 /**
  * One owner read of a chain's coordinator, shared while in flight and recorded
  * in the snapshot unless it changed meanwhile (a binding from this device or a
- * newer listing wins). A Bridge-created chain this device has no grant for yet
- * is read again once `recovered` (the status reads that recover access) settles.
+ * newer listing wins).
  */
-function readCoordinator(session: Session, chain: OwnerChainSummary, recovered?: Promise<unknown>): Promise<string> {
+function readCoordinator(session: Session, chain: OwnerChainSummary): Promise<string> {
   const { chainId } = chain;
   let read = coordinatorReads.get(chainId);
   if (read) return read;
@@ -108,11 +106,6 @@ function readCoordinator(session: Session, chain: OwnerChainSummary, recovered?:
     publish({ ...state, chains: state.chains.map((c) => (c.chainId === chainId ? { ...c, ...patch } : c)) });
   };
   read = once()
-    .catch(async (error) => {
-      if (!recovered || !chain.bridgeCreated || !(error instanceof Error) || error.message !== 'invalid_scope') throw error;
-      await recovered;
-      return once();
-    })
     .then((instanceId) => { record({ coordinatorAgentInstanceId: instanceId, coordinatorReadFailed: false }); return instanceId; })
     .catch((error) => { record({ coordinatorReadFailed: true }); throw error; })
     .finally(() => { coordinatorReads.delete(chainId); });

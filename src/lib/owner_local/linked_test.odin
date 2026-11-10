@@ -65,10 +65,8 @@ linked_signed_roundtrip_replay_search_restart_and_revocation :: proc(t:^testing.
     testing.expect_value(t,linked_test_call(f,"linked.put","same_body",raw).code,"ok")
     changed:=linked_test_object(f,"message","message_original","changed body")
     testing.expect_value(t,linked_test_call(f,"linked.put","conflicting",changed).code,"operation_conflict")
-    _,_=query(f.store.db,"UPDATE local_grants SET can_mutate=0,revision=revision+1")
     testing.expect_value(t,linked_test_fetch(f,"message","message_original").code,"ok")
-    testing.expect_value(t,linked_test_call(f,"linked.put","read_only",raw).code,"invalid_scope")
-    _,_=query(f.store.db,"UPDATE local_grants SET revoked=1,revision=revision+1")
+    f.creator.revoked=true // the device itself is revoked (account-level trust; no per-chain grant)
     testing.expect_value(t,linked_test_fetch(f,"message","message_original").code,"invalid_scope")
     testing.expect_value(t,invoke(f,signed,payload).code,"invalid_scope")
 }
@@ -226,7 +224,7 @@ linked_signed_inventory_and_restore_reject_substituted_scope_and_stale_keys :: p
     substituted:=linked_test_json(raw);substituted["body_cipher"]=json.String(cipher(other,"wrong vault key"))
     substituted["object_id"]=json.String("bad_cipher")
     testing.expect_value(t,linked_test_call(f,"linked.put","bad_cipher",encode(substituted)).code,"invalid_content")
-    _,_=query(f.store.db,"UPDATE local_grants SET revoked=1,revision=revision+1")
+    f.creator.revoked=true // the device itself is revoked (account-level trust; no per-chain grant)
     testing.expect_value(t,linked_test_call(f,"linked.backup","revoked_backup",`{"cursor":"","limit":"100"}`).code,"invalid_scope")
     testing.expect_value(t,linked_test_call(f,"envelope.read","revoked_envelopes",`{"cursor":"","limit":"100"}`).code,"invalid_scope")
 }

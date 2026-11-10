@@ -47,9 +47,9 @@ priority_signed_update_reads_history_replay_restart_and_scope :: proc(t:^testing
     value,_=contracts.owner_content_document(got.body);row,_=value.(json.Object)
     testing.expect_value(t,field(row,"priority"),"p1")
     testing.expect_value(t,invoke(f,command(f,"task.priority","missing","missing",p,"1"),p).code,"invalid_scope")
-    _,_=query(f.store.db,"UPDATE local_grants SET can_mutate=0,revision=revision+1")
+    f.creator.revoked=true // a revoked device can neither change nor read the chain
     testing.expect_value(t,priority_call(f,"p0","read_only","3").code,"invalid_scope")
-    testing.expect_value(t,priority_read(f,"task.read","task").code,"ok")
+    testing.expect_value(t,priority_read(f,"task.read","task").code,"invalid_scope")
 }
 @(test)
 priority_statement_and_commit_failures_leave_revisions_history_and_receipts_unchanged :: proc(t:^testing.T) {

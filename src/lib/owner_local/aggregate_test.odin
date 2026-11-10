@@ -201,7 +201,7 @@ aggregate_new_record_rollback_owner_account_chain_cursor_and_read_revocation :: 
     testing.expect(t,exec(f.store.db,"UPDATE local_grants SET can_mutate=0,revision=revision+1"))
     testing.expect(t,metadata_replay(f,"rich_review").replay)
     testing.expect_value(t,native_metadata_test_read(f,"review","rich_source_7").code,"ok")
-    testing.expect(t,exec(f.store.db,"UPDATE local_grants SET revoked=1,revision=revision+1"))
+    f.creator.revoked=true // the device itself is revoked (account-level trust; no per-chain grant)
     testing.expect_value(t,native_metadata_test_read(f,"review","rich_source_7").code,"invalid_scope")
     testing.expect_value(t,metadata_replay(f,"rich_review").code,"invalid_scope")
 }
@@ -256,7 +256,7 @@ aggregate_signed_workflow_source_inventories_survive_restart_and_revoke :: proc(
         testing.expect_value(t,cold.code,"ok")
         testing.expect_value(t,cold.body,warm.body)
     }
-    testing.expect(t,exec(f.store.db,"UPDATE local_grants SET can_read=0,revision=revision+1"))
+    f.creator.revoked=true // the device itself is revoked (account-level trust; no per-chain grant)
     for method,i in ([2]string{"workflow.read","source.read"}) {
         testing.expect_value(t,invoke(f,command(f,method,fmt.tprintf("inventory_revoked_%d",i),"",p,"0"),p).code,"invalid_scope")
     }

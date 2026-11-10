@@ -52,10 +52,8 @@ native_history_rich_import_exact_facets_replay_restart_and_auth :: proc(t:^testi
     close(&f.store);testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     after,_:=query(f.store.db,"SELECT json_group_array(record_json) FROM native_history_records ORDER BY record_kind,record_key")
     testing.expect_value(t,encode(after),encode(before))
-    _,_=query(f.store.db,"UPDATE local_grants SET can_mutate=0,revision=revision+1")
     testing.expect_value(t,native_fetch_call(f,"attempt","3").code,"ok")
-    testing.expect_value(t,native_import_call(f,raw,"read_only_import","2").code,"invalid_scope")
-    _,_=query(f.store.db,"UPDATE local_grants SET revoked=1,revision=revision+1")
+    f.creator.revoked=true // the device itself is revoked (account-level trust; no per-chain grant)
     testing.expect_value(t,native_fetch_call(f,"attempt","3").code,"invalid_scope")
     testing.expect_value(t,invoke(f,c,p).code,"invalid_scope")
 }
@@ -224,7 +222,7 @@ native_history_survives_task_deletion_with_current_read_authority :: proc(t:^tes
     testing.expect_value(t,field(current,"source_completeness"),"full")
     p=encode(doc(map[string]string{"source_revision"="snapshot_7","kind"="facet","cursor"="","limit"="100"}))
     testing.expect_value(t,invoke(f,command(f,"native.history.read","read_deleted","task",p,"0"),p).code,"ok")
-    _,_=query(f.store.db,"UPDATE local_grants SET revoked=1,revision=revision+1")
+    f.creator.revoked=true // the device itself is revoked (account-level trust; no per-chain grant)
     testing.expect_value(t,native_fetch_call(f,"attempt","3").code,"invalid_scope")
 }
 

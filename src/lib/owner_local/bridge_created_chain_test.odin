@@ -69,12 +69,18 @@ bridge_created_chain_enables_recovery_and_only_own_owner_key_creates :: proc(t:^
     sig,_:=test_sign(&f.owner_priv,"command",c);c["signature"]=json.String(sig)
     testing.expect_value(t,execute(&f.store,encode(c),edit,"",f.owner,f.owner,1,"head",1000,&f.kr,Signer{&f.owner_priv,test_sign}).code,"invalid_scope")
 
-    // The paired root recovers a grant, then reads; no other device can.
+    // Account-level trust: the paired root and any other paired device read a
+    // Bridge-created chain directly, with no grant and no recovery.
     root:=grant_device(t);defer ecdsa.private_key_clear(&root.priv)
     read:=`{"cursor":"","limit":"20"}`
     before:=grant_command(f,root.key,&root.priv,"chain.read","root_before","",read,"0",chain="bchain")
-    testing.expect_value(t,grant_call(f,before,read,root.key).code,"invalid_scope")
+    testing.expect_value(t,grant_call(f,before,read,root.key).code,"ok")
     stranger:=grant_device(t);defer ecdsa.private_key_clear(&stranger.priv)
+    second:=grant_command(f,stranger.key,&stranger.priv,"chain.read","second_device","",read,"0",chain="bchain")
+    testing.expect_value(t,grant_call(f,second,read,stranger.key).code,"ok")
+    revoked_key:=stranger.key;revoked_key.revoked=true
+    revoked_read:=grant_command(f,stranger.key,&stranger.priv,"chain.read","revoked_device","",read,"0",chain="bchain")
+    testing.expect_value(t,grant_call(f,revoked_read,read,revoked_key).code,"invalid_scope")
     gp:=grant_payload(root.key)
     wrong:=grant_command(f,stranger.key,&stranger.priv,"grant.recover","stranger_recover","",gp,bridge_chain_rev(f,"bchain"),chain="bchain")
     testing.expect_value(t,grant_call(f,wrong,gp,stranger.key,Grant_Proof{root=root.root,target=root.key}).code,"invalid_scope")

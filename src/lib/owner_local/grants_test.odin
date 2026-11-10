@@ -44,127 +44,6 @@ grant_admin_call :: proc(f:^Fixture,method,op,p:string,proof:Grant_Proof={},now:
     return grant_call(f,command(f,method,op,"",p,grant_revision(f),now+1000),p,f.creator,proof,now)
 }
 @(test)
-signed_grants_scope_mutation_replay_search_revocation_and_expiry :: proc(t:^testing.T) {
-    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
-    f:=fixture(t);defer destroy(f);seed(t,f)
-    b:=grant_device(t);defer ecdsa.private_key_clear(&b.priv)
-    read:=`{"cursor":"","limit":"20"}`
-    c:=grant_command(f,b.key,&b.priv,"task.read","before","task",read,"0")
-    testing.expect_value(t,grant_call(f,c,read,b.key).code,"invalid_scope")
-    p:=grant_payload(b.key,5000,false)
-    testing.expect_value(t,grant_admin_call(f,"grant.set","grant_b",p,Grant_Proof{target=b.key}).code,"ok")
-    testing.expect_value(t,grant_call(f,c,read,b.key).code,"ok")
-    search:=encode(doc(map[string]string{"query_cipher"=cipher(f,"private"),"limit"="20"}))
-    search_c:=grant_command(f,b.key,&b.priv,"chain.search","search_b","",search,"0")
-    found:=grant_call(f,search_c,search,b.key)
-    testing.expect(t,found.code=="ok" && strings.contains(found.body,"private body"))
-    comment:=encode(doc(map[string]string{"body_cipher"=cipher(f,"B signed comment")}))
-    write:=grant_command(f,b.key,&b.priv,"task.comment","write_b","task",comment,"1")
-    testing.expect_value(t,grant_call(f,write,comment,b.key).code,"invalid_scope")
-    p=grant_payload(b.key,5000,true)
-    testing.expect_value(t,grant_admin_call(f,"grant.set","upgrade_b",p,Grant_Proof{target=b.key}).code,"ok")
-    first:=grant_call(f,write,comment,b.key)
-    testing.expect_value(t,first.code,"ok")
-    p=grant_payload(b.key,5000,false)
-    testing.expect_value(t,grant_admin_call(f,"grant.set","downgrade_b",p,Grant_Proof{target=b.key}).code,"ok")
-    replay:=grant_call(f,write,comment,b.key,now=3000)
-    testing.expect(t,replay.code=="ok" && replay.replay && replay.body==first.body,"current read grant permits historical reply without new write authority")
-    revoke:=encode(doc(map[string]string{"principal_id"=b.key.principal_id,"key_id"=b.key.key_id}))
-    testing.expect_value(t,grant_admin_call(f,"grant.revoke","revoke_b",revoke).code,"ok")
-    for raw,i in ([3]string{c,write,search_c}) {
-        payload:=read if i==0 else comment if i==1 else search
-        denied:=grant_call(f,raw,payload,b.key)
-        testing.expect(t,denied.code=="invalid_scope" && denied.body=="","revocation precedes replies and snippets")
-    }
-    p=grant_payload(b.key,4000,true)
-    testing.expect_value(t,grant_admin_call(f,"grant.set","renew_b",p,Grant_Proof{target=b.key}).code,"ok")
-    testing.expect_value(t,grant_call(f,c,read,b.key,now=3999).code,"expired")
-    fresh:=grant_command(f,b.key,&b.priv,"task.read","fresh","task",read,"0",4500)
-    testing.expect_value(t,grant_call(f,fresh,read,b.key,now=3999).code,"ok")
-    testing.expect_value(t,grant_call(f,write,comment,b.key,now=4000).code,"invalid_scope")
-    testing.expect_value(t,grant_call(f,search_c,search,b.key,now=4000).code,"invalid_scope")
-    rows,_:=query(f.store.db,"SELECT count(*),(SELECT count(*) FROM task_comments) FROM local_grant_audit")
-    testing.expect(t,rows[0][0]=="5" && rows[0][1]=="1","grant updates audited and comment never duplicated")
-}
-@(test)
-grants_reject_delegated_admin_wrong_account_chain_key_and_unenrolled_target :: proc(t:^testing.T) {
-    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
-    f:=fixture(t);defer destroy(f);seed(t,f)
-    b:=grant_device(t);defer ecdsa.private_key_clear(&b.priv)
-    p:=grant_payload(b.key)
-    testing.expect_value(t,grant_admin_call(f,"grant.set","missing_target",p).code,"invalid_scope")
-    revoked:=b.key;revoked.revoked=true
-    testing.expect_value(t,grant_admin_call(f,"grant.set","revoked_target",p,Grant_Proof{target=revoked}).code,"invalid_scope")
-    other:=b.key;other.account_id="other"
-    testing.expect_value(t,grant_admin_call(f,"grant.set","foreign_target",p,Grant_Proof{target=other}).code,"invalid_scope")
-    testing.expect_value(t,grant_admin_call(f,"grant.set","b",p,Grant_Proof{target=b.key}).code,"ok")
-    for method,i in ([4]string{"grant.set","grant.revoke","grant.policy","grant.read"}) {
-        payload:=p
-        switch method {
-        case "grant.revoke":payload=encode(doc(map[string]string{"principal_id"=b.key.principal_id,"key_id"=b.key.key_id}))
-        case "grant.policy":payload=`{"policy_revision":"1","recovery_enabled":"1"}`
-        case "grant.read":payload=`{"cursor":"","limit":"20"}`
-        }
-        raw:=grant_command(f,b.key,&b.priv,method,fmt.tprintf("delegate_%d",i),"",payload,grant_revision(f))
-        testing.expect_value(t,grant_call(f,raw,payload,b.key,Grant_Proof{target=b.key}).code,"invalid_scope")
-    }
-    read:=`{"cursor":"","limit":"20"}`
-    raw:=grant_command(f,b.key,&b.priv,"chain.read","other_chain","",read,"0",chain="ungranted")
-    testing.expect_value(t,grant_call(f,raw,read,b.key).code,"invalid_scope")
-    raw=grant_command(f,b.key,&b.priv,"chain.read","same_chain","",read,"0")
-    testing.expect_value(t,grant_call(f,raw,read,other).code,"invalid_scope")
-    other=b.key;other.key_id="another_key"
-    testing.expect_value(t,grant_call(f,raw,read,other).code,"invalid_scope")
-    other=b.key;other.enrolled=false
-    testing.expect_value(t,grant_call(f,raw,read,other).code,"bad_signature")
-    p=grant_payload(b.key,1000+GRANT_MAX_TTL_MS+1)
-    testing.expect_value(t,grant_admin_call(f,"grant.set","unbounded",p,Grant_Proof{target=b.key}).code,"expired")
-    rows,_:=query(f.store.db,"SELECT count(*) FROM local_grant_audit")
-    testing.expect_value(t,rows[0][0],"1")
-}
-@(test)
-paired_root_recovery_requires_explicit_policy_current_signature_and_immutable_binding :: proc(t:^testing.T) {
-    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
-    f:=fixture(t);defer destroy(f);seed(t,f)
-    root:=grant_device(t);defer ecdsa.private_key_clear(&root.priv)
-    b:=grant_device(t);defer ecdsa.private_key_clear(&b.priv)
-    p:=grant_payload(b.key)
-    proof:=Grant_Proof{root=root.root,target=b.key}
-    recovery:=grant_command(f,root.key,&root.priv,"grant.recover","recover","",p,grant_revision(f))
-    testing.expect_value(t,grant_call(f,recovery,p,root.key,proof).code,"invalid_scope")
-    policy:=`{"policy_revision":"1","recovery_enabled":"1"}`
-    testing.expect_value(t,grant_admin_call(f,"grant.policy","enable_recovery",policy).code,"ok")
-    testing.expect_value(t,grant_admin_call(f,"grant.policy","stale_policy",policy).code,"stale_revision")
-    revoke:=`{"principal_id":"device","key_id":"device"}`
-    testing.expect_value(t,grant_admin_call(f,"grant.revoke","revoke_creator",revoke).code,"ok")
-    testing.expect_value(t,grant_admin_call(f,"grant.policy","revoked_creator",policy).code,"invalid_scope")
-    root_read:=grant_command(f,root.key,&root.priv,"grant.read","policy_read","",`{"cursor":"","limit":"20"}`,"0")
-    listed:=grant_call(f,root_read,`{"cursor":"","limit":"20"}`,root.key,proof)
-    testing.expect(t,listed.code=="ok" && strings.contains(listed.body,"policy_revision"))
-    recovery=grant_command(f,root.key,&root.priv,"grant.recover","recover","",p,grant_revision(f))
-    wrong_proof:=proof;wrong_proof.root=b.root
-    testing.expect_value(t,grant_call(f,recovery,p,root.key,wrong_proof).code,"invalid_scope")
-    revoked:=root.key;revoked.revoked=true
-    testing.expect_value(t,grant_call(f,recovery,p,revoked,proof).code,"invalid_scope")
-    fake:=grant_command(f,root.key,&b.priv,"grant.recover","bad_signature","",p,grant_revision(f))
-    testing.expect_value(t,grant_call(f,fake,p,root.key,proof).code,"bad_signature")
-    testing.expect_value(t,grant_call(f,recovery,p,root.key,proof).code,"ok")
-    read:=`{"cursor":"","limit":"20"}`
-    testing.expect_value(t,grant_call(f,grant_command(f,b.key,&b.priv,"task.read","replaced","task",read,"0"),read,b.key).code,"ok")
-    // Root may recover its own bounded access, then explicitly disable policy.
-    own:=grant_payload(root.key)
-    own_command:=grant_command(f,root.key,&root.priv,"grant.recover","root_access","",own,grant_revision(f))
-    testing.expect_value(t,grant_call(f,own_command,own,root.key,Grant_Proof{root=root.root,target=root.key}).code,"ok")
-    disable:=`{"policy_revision":"2","recovery_enabled":"0"}`
-    disable_command:=grant_command(f,root.key,&root.priv,"grant.policy","disable","",disable,grant_revision(f))
-    testing.expect_value(t,grant_call(f,disable_command,disable,root.key,proof).code,"ok")
-    testing.expect_value(t,grant_call(f,recovery,p,root.key,proof).code,"invalid_scope")
-    rows,_:=query(f.store.db,"SELECT creator,creator_key,(SELECT genesis_json FROM chain_genesis),(SELECT owner_bridge_id FROM runtime_database),(SELECT owner_key_id FROM runtime_database) FROM task_chains")
-    testing.expect(t,rows[0][0]=="device" && rows[0][1]=="device" && rows[0][2]==f.genesis && rows[0][3]=="bridge" && rows[0][4]=="bridge_key")
-    testing.expect(t,!exec(f.store.db,"UPDATE local_grant_audit SET payload_json='forged'"),"signed grant evidence immutable")
-}
-
-@(test)
 grant_changes_are_atomic_and_list_cursors_are_revision_bound :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
     f:=fixture(t);defer destroy(f);seed(t,f)
@@ -231,21 +110,46 @@ grants_v7_upgrade_bounds_legacy_authority_and_rolls_back_collision_and_commit_fa
     rows,_=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT expires_ms FROM local_grants),(SELECT count(*) FROM local_grant_policy),(SELECT body FROM tasks),(SELECT count(*) FROM command_receipts) FROM runtime_database")
     testing.expect(t,rows[0][0]=="37" && rows[0][1]=="37" && number(rows[0][2])==1000+GRANT_MAX_TTL_MS && rows[0][3]=="0" && rows[0][4]=="private body" && rows[0][5]=="2")
 }
-
 @(test)
-grant_expiry_cannot_revive_below_durable_clock_high_water :: proc(t:^testing.T) {
+paired_devices_share_account_access_and_unpaired_revoked_or_foreign_are_refused :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
     f:=fixture(t);defer destroy(f);seed(t,f)
+    // A second paired device of the account: no grant row, no recovery.
     b:=grant_device(t);defer ecdsa.private_key_clear(&b.priv)
-    p:=grant_payload(b.key,4000,true)
-    testing.expect_value(t,grant_admin_call(f,"grant.set","bounded",p,Grant_Proof{target=b.key}).code,"ok")
-    comment:=encode(doc(map[string]string{"body_cipher"=cipher(f,"before expiry")}))
-    c:=grant_command(f,b.key,&b.priv,"task.comment","old","task",comment,"1")
-    testing.expect_value(t,grant_call(f,c,comment,b.key).code,"ok")
+    read:=`{"cursor":"","limit":"20"}`
+    c:=grant_command(f,b.key,&b.priv,"task.read","b_read","task",read,"0")
+    testing.expect_value(t,grant_call(f,c,read,b.key).code,"ok")
+    search:=encode(doc(map[string]string{"query_cipher"=cipher(f,"private"),"limit"="20"}))
+    found:=grant_call(f,grant_command(f,b.key,&b.priv,"chain.search","b_search","",search,"0"),search,b.key)
+    testing.expect(t,found.code=="ok" && strings.contains(found.body,"private body"),"search covers the chain without a grant")
+    comment:=encode(doc(map[string]string{"body_cipher"=cipher(f,"B signed comment")}))
+    write:=grant_command(f,b.key,&b.priv,"task.comment","b_write","task",comment,"1")
+    first:=grant_call(f,write,comment,b.key)
+    testing.expect_value(t,first.code,"ok")
+    replay:=grant_call(f,write,comment,b.key,now=1500)
+    testing.expect(t,replay.code=="ok" && replay.replay && replay.body==first.body)
+    // Refusals: revoked, unenrolled, another account, a mismatched key id.
+    for i in 0..<4 {
+        k:=b.key
+        switch i {
+        case 0:k.revoked=true
+        case 1:k.enrolled=false
+        case 2:k.account_id="other"
+        case 3:k.key_id="another_key"
+        }
+        for raw,j in ([2]string{c,write}) {
+            denied:=grant_call(f,raw,read if j==0 else comment,k)
+            testing.expect(t,denied.code=="invalid_scope" && denied.body=="","an unpaired, revoked or foreign key gets nothing, not even a replay")
+        }
+    }
+    // A key not signing for itself (wrong signer) is a bad signature.
+    forged:=grant_command(f,b.key,&f.creator_priv,"task.read","forged","task",read,"0")
+    testing.expect_value(t,grant_call(f,forged,read,b.key).code,"bad_signature")
+    // Freshness: a request that expired below the durable clock high water is refused.
     edit:=encode(doc(map[string]string{"title_cipher"=cipher(f,"later durable observation"),"description_cipher"=cipher(f,"clock")}))
-    later:=command(f,"chain.edit","later","",edit,grant_revision(f),6000)
-    testing.expect_value(t,grant_call(f,later,edit,f.creator,now=5000).code,"ok")
-    testing.expect_value(t,grant_call(f,c,comment,b.key,now=1000).code,"invalid_scope")
-    rows,_:=query(f.store.db,"SELECT expires_ms FROM local_grants WHERE principal_id='device'")
-    testing.expect_value(t,number(rows[0][0]),1000+GRANT_MAX_TTL_MS)
+    testing.expect_value(t,grant_call(f,command(f,"chain.edit","later","",edit,grant_revision(f),6000),edit,f.creator,now=5000).code,"ok")
+    stale:=grant_command(f,b.key,&b.priv,"task.comment","stale","task",comment,"0",2000)
+    testing.expect(t,grant_call(f,stale,comment,b.key,now=1000).code!="ok","no revival below the durable clock")
+    rows,_:=query(f.store.db,"SELECT count(*) FROM task_comments")
+    testing.expect_value(t,rows[0][0],"1")
 }

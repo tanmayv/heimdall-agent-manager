@@ -82,7 +82,7 @@ receipt_replay_precedes_expiry_revision_and_mutation_rights :: proc(t:^testing.T
     testing.expect(t,replay.code=="ok" && replay.replay && replay.body==first.body,"expired request replays without mutation permission")
     changed:=command(f,"task.comment","comment","task",p,"0",4000)
     testing.expect_value(t,invoke(f,changed,p,3000).code,"operation_conflict")
-    _,_=query(f.store.db,"UPDATE local_grants SET revoked=1,revision=revision+1")
+    f.creator.revoked=true // the device itself is revoked (account-level trust; no per-chain grant)
     testing.expect_value(t,invoke(f,c,p,3000).code,"invalid_scope")
     rows,_:=query(f.store.db,"SELECT count(*) FROM task_comments")
     testing.expect_value(t,rows[0][0],"1")

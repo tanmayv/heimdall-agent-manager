@@ -53,7 +53,7 @@ attempt_records_preserve_native_continuation_times_mapping_and_restart :: proc(t
     testing.expect_value(t,field(obj,"native_attempt"),"1")
     rows,ok:=query(f.store.db,"SELECT (SELECT attempt FROM local_work_attempts WHERE lease_id='lease2'),(SELECT attempt FROM local_submissions WHERE lease_id='lease2')")
     testing.expect(t,ok && rows[0][0]=="2" && rows[0][1]=="1","compatibility IDs remain unchanged")
-    _,ok=query(f.store.db,"UPDATE local_grants SET can_read=0,revision=revision+1");testing.expect(t,ok)
+    f.creator.revoked=true // the device itself is revoked (account-level trust; no per-chain grant)
     p=`{"attempt":"1"}`
     testing.expect_value(t,invoke(f,command(f,"attempt.read","revoked_record","task",p,"0"),p,1300).code,"invalid_scope")
 }
@@ -142,7 +142,7 @@ attempts_native_handoff_continuation_replay_restart_and_output_keys :: proc(t:^t
     testing.expect(t,!("counting_attempts" in view) && !("budget" in obj),"runtime.read reports no attempt budget")
     testing.expect_value(t,field(view,"completeness"),"full")
     // Current read revocation still precedes native history inspection.
-    _,_=query(f.store.db,"UPDATE local_grants SET can_read=0,revision=revision+1")
+    f.creator.revoked=true // the device itself is revoked (account-level trust; no per-chain grant)
     testing.expect_value(t,invoke(f,command(f,"runtime.read","revoked_attempts","task",`{"cursor":"","limit":"1"}`,"0"),`{"cursor":"","limit":"1"}`).code,"invalid_scope")
 }
 

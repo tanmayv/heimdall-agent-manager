@@ -346,9 +346,9 @@ tombstones_expired_misses_and_read_revocation :: proc(t:^testing.T) {
     testing.expect_value(t,invoke(f,changed,p,late).code,"operation_conflict")
     miss:=command(f,"task.comment","expired_miss","task",p,"2")
     testing.expect_value(t,invoke(f,miss,p,late).code,"expired")
-    testing.expect(t,exec(f.store.db,"UPDATE local_grants SET can_read=0,revision=revision+1"))
-    testing.expect(t,invoke(f,c,p,late).code=="invalid_scope","even tombstone identity is read-authorized")
-    testing.expect(t,exec(f.store.db,"UPDATE local_grants SET can_read=1,revision=revision+1"))
+    f.creator.revoked=true
+    testing.expect(t,invoke(f,c,p,late).code=="invalid_scope","even tombstone identity needs an unrevoked device")
+    f.creator.revoked=false
     claims,claimed:=intent_claim_due(&f.store,late)
     testing.expect(t,claimed && len(claims)==2)
     for claim in claims do testing.expect(t,intent_result(&f.store,claim,true,"done",late))
