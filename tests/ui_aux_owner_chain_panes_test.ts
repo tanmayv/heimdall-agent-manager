@@ -422,3 +422,39 @@ test('the overview shows chain progress and the latest activity, newest first, w
     await ui.cleanup();
   }
 });
+
+test('a ticket shows its requirement history on demand: each change decrypted, newest first, with its reason', async () => {
+  const { encryptVaultText } = await import('../src/ui/utils/vaultCrypto.ts');
+  const owner = chainOwner();
+  const edits: Record<string, { revision: string; doc: unknown }> = {
+    '4': { revision: '1', doc: { goal: 'Fix login', acceptance: ['Works on Safari'] } },
+    '9': { revision: '2', doc: { goal: 'Fix login everywhere', acceptance: ['Works on Safari', 'Works on Firefox'], requirements_reason: 'Firefox fails too' } },
+  };
+  const ui = await mount({
+    answer: async (call) => {
+      if (call.method === 'history.read') return { chain_id: CHAIN, next_cursor: '', items: [
+        { seq: '4', kind: 'requirements.edit', task_id: 'task_1', actor_kind: 'device', actor_id: 'dev_x', ts_ms: '1794200000000' },
+        { seq: '7', kind: 'requirements.edit', task_id: 'task_2', actor_kind: 'device', actor_id: 'dev_x', ts_ms: '1794200001000' },
+        { seq: '9', kind: 'requirements.edit', task_id: 'task_1', actor_kind: 'agent', actor_id: 'inst_coord', ts_ms: '1794200002000' },
+      ] };
+      if (call.method === 'history.fetch') {
+        const e = edits[call.payload.seq ?? ''];
+        if (!e) return { code: 'not_found' };
+        const payload = JSON.stringify({ requirements_revision: e.revision, body_cipher: await encryptVaultText(JSON.stringify(e.doc)) });
+        return { evidence: JSON.stringify({ payload }), next_offset: '' };
+      }
+      return owner.answer(call);
+    },
+    render: (_env, h) => aux({ type: 'ticket', chainId: CHAIN, taskId: 'task_1' }, h),
+  });
+  try {
+    assert.equal(ui.$('owner-chain-requirements-history'), null, 'hidden until asked for');
+    await ui.click('owner-chain-requirements-history-show');
+    const rows = [...ui.$('owner-chain-requirements-history')!.querySelectorAll('li[data-debug-id]')].map((li) => li.getAttribute('data-debug-id'));
+    assert.deepEqual(rows, ['owner-chain-requirements-change-9', 'owner-chain-requirements-change-4'], 'only this ticket, newest first');
+    assert.match(ui.$('owner-chain-requirements-change-9')!.textContent!, /Rev 2.*inst_coord.*Firefox fails too.*Fix login everywhere.*Works on Firefox/s);
+    assert.match(ui.$('owner-chain-requirements-change-4')!.textContent!, /Rev 1.*Works on Safari/s);
+  } finally {
+    await ui.cleanup();
+  }
+});

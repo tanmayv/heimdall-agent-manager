@@ -9,8 +9,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Badge, Button, Checkbox, EmptyState, FormField, IconButton, Input, Select, StatusDot, StatusPill, Text, Textarea, type Tone } from '@ui';
 import {
   freshOwnerSession, isOwnerOffline, ownerAwaitingUser, ownerCall, ownerErrorMessage, ownerOfflineMessage, ownerRelaySend, ownerTaskState,
-  ownerActivityLabel, ownerExpectedRevision, readArchivedReviews, readOwnerActivity, readOwnerChain, readOwnerChainStatus, readOwnerReviews, readOwnerRuntime, readOwnerDependencies, readOwnerSubmission, readOwnerTask, readOwnerWorkRevision, withOwnerRecovery,
-  type OwnerActivity, type OwnerChainDetail, type OwnerChainStatus, type OwnerDependency, type OwnerChainSummary, type OwnerReview, type OwnerRuntime, type OwnerSend,
+  ownerActivityLabel, ownerExpectedRevision, readArchivedReviews, readOwnerActivity, readOwnerRequirementHistory, readOwnerChain, readOwnerChainStatus, readOwnerReviews, readOwnerRuntime, readOwnerDependencies, readOwnerSubmission, readOwnerTask, readOwnerWorkRevision, withOwnerRecovery,
+  type OwnerActivity, type OwnerRequirementChange, type OwnerChainDetail, type OwnerChainStatus, type OwnerDependency, type OwnerChainSummary, type OwnerReview, type OwnerRuntime, type OwnerSend,
   type OwnerSubmission, type OwnerTaskDetail, type OwnerTaskState,
 } from '../../api/ownerChains';
 import { ownerId, type OwnerInput, type OwnerSession } from '../../api/ownerLocalClient';
@@ -147,6 +147,8 @@ export function OwnerChainView({
   const [members, setMembers] = useState<OwnerChainMember[] | null>(null);
   // Hub runtime_status per agent instance (overview agent rows).
   const [agentStatus, setAgentStatus] = useState<Record<string, string>>({});
+  // The open ticket's requirement history, read when shown: null when hidden.
+  const [reqHistory, setReqHistory] = useState<{ taskId: string; changes: OwnerRequirementChange[] | null; error: string; more: boolean } | null>(null);
   // The overview's recent chain history (history.read); null until read.
   const [activity, setActivity] = useState<{ events: OwnerActivity[]; truncated: boolean } | null>(null);
   const [selected, setSelected] = useState(focusTaskId || '');
@@ -420,6 +422,17 @@ export function OwnerChainView({
   function removeAgent(a: { instanceId: string; agentId: string; role: string }) {
     if (!window.confirm(`Remove ${a.instanceId} from this chain? Its instance keeps running until you stop it.`)) return Promise.resolve(false);
     return mutate('chain.member.set', { instanceId: a.instanceId, agentId: a.agentId, memberRole: a.role || 'worker', enabled: false }, 'Agent removed from the chain.');
+  }
+
+  async function showRequirementHistory(taskId: string) {
+    setReqHistory({ taskId, changes: null, error: '', more: false });
+    try {
+      const h = await readOwnerRequirementHistory(await session(), bridge, chain.chainId, taskId, send);
+      if (live.current) setReqHistory((prev) => prev?.taskId === taskId ? { taskId, changes: h.changes, error: '', more: h.more || h.truncated } : prev);
+    } catch (e) {
+      if (isOwnerOffline(e)) fail(e);
+      if (live.current) setReqHistory((prev) => prev?.taskId === taskId ? { taskId, changes: [], error: ownerErrorMessage(e, chain.bridgeName), more: false } : prev);
+    }
   }
 
   // chain.member.set for an added worker or reviewer, against the chain
@@ -889,7 +902,11 @@ export function OwnerChainView({
                       requiresUserApproval: reqDraft.approval, reason: reqDraft.reason,
                     });
                     const next = String((Number(task.runtime.requirements?.revision) || 0) + 1);
-                    void mutate('requirements.edit', { taskId: task.taskId, body, requirementsRevision: next }, 'Requirements updated.').then((ok) => { if (ok) setReqDraft(null); });
+                    void mutate('requirements.edit', { taskId: task.taskId, body, requirementsRevision: next }, 'Requirements updated.').then((ok) => {
+                      if (!ok) return;
+                      setReqDraft(null);
+                      if (reqHistory?.taskId === task.taskId) void showRequirementHistory(task.taskId);
+                    });
                   }}>
                     <FormField label="Goal" required>
                       <Textarea size="sm" rows={3} data-debug-id="owner-chain-requirements-goal" value={reqDraft.goal} onChange={(v) => setReqDraft((d) => d && { ...d, goal: v })} />
@@ -911,6 +928,43 @@ export function OwnerChainView({
                     </div>
                   </form>
                 ))}
+                {reqHistory?.taskId !== task.taskId ? (
+                  <Button size="sm" variant="ghost" className="mt-2" data-debug-id="owner-chain-requirements-history-show" disabled={offline}
+                    onClick={() => void showRequirementHistory(task.taskId)}>Requirement history</Button>
+                ) : (
+                  <section aria-label="Requirement history" data-debug-id="owner-chain-requirements-history" className="mt-3 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <Text as="h4" role="overline" tone="muted">Requirement history</Text>
+                      <IconButton size="sm" variant="ghost" icon="close" label="Hide requirement history" onClick={() => setReqHistory(null)} />
+                    </div>
+                    {reqHistory.changes === null ? <Text as="p" role="caption" tone="muted" aria-live="polite">Loading requirement history…</Text>
+                      : reqHistory.error ? <Alert tone="danger">{reqHistory.error}</Alert>
+                      : reqHistory.changes.length === 0 ? <Text as="p" role="caption" tone="muted" data-debug-id="owner-chain-requirements-history-empty">The requirements have not been changed since the ticket was created.</Text>
+                      : (
+                        <ol className="space-y-2">
+                          {reqHistory.changes.map((c) => (
+                            <li key={c.seq} data-debug-id={`owner-chain-requirements-change-${c.seq}`} className="space-y-1 border-l-2 border-subtle pl-3">
+                              <div className="flex flex-wrap items-baseline gap-x-1.5">
+                                {c.revision && <Badge tone="neutral">Rev {c.revision}</Badge>}
+                                <Text as="span" role="caption">{principalLabel(sessionRef.current, c.actorId)}</Text>
+                                {c.at && <Text as="span" role="caption" tone="faint">{formatWhen(c.at)}</Text>}
+                              </div>
+                              {c.reason && <Text as="p" role="body-sm">{c.reason}</Text>}
+                              {!c.readable ? <Text as="p" role="caption" tone="muted">These requirements cannot be decrypted with this vault.</Text> : (
+                                <>
+                                  {c.goal && <Text as="p" role="body-sm" tone="muted" className="whitespace-pre-wrap">{c.goal}</Text>}
+                                  {c.acceptance.length > 0 && (
+                                    <ul className="list-disc space-y-0.5 pl-5">{c.acceptance.map((a, i) => <li key={i}><Text as="span" role="caption" tone="muted">{a}</Text></li>)}</ul>
+                                  )}
+                                </>
+                              )}
+                            </li>
+                          ))}
+                        </ol>
+                      )}
+                    {reqHistory.more && <Text as="p" role="caption" tone="muted">Older changes are not shown.</Text>}
+                  </section>
+                )}
                 {(task.runtime.holder || wire?.merge) && (
                   <dl data-debug-id="owner-chain-lease" className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
                     {task.runtime.holder && <><Text as="span" role="caption" tone="muted">Lease holder</Text><Text as="code" role="code-sm" truncate>{task.runtime.holder}</Text></>}

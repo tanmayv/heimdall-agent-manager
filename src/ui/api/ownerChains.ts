@@ -617,6 +617,60 @@ export async function readOwnerActivity(
   return { events: events.reverse(), truncated: Boolean(cursor) };
 }
 
+/** One requirements.edit of a ticket, decrypted from its history evidence. */
+export interface OwnerRequirementChange {
+  seq: string; revision: string; goal: string; acceptance: string[]; reason: string; actorKind: string; actorId: string; at: string;
+  /** False when the saved requirements could not be decrypted (another vault epoch, or damaged evidence). */
+  readable: boolean;
+}
+
+/**
+ * A ticket's requirement history: its requirements.edit events (the latest
+ * `keep`), newest first. Each change's requirements document is read from the
+ * event evidence (history.fetch) and decrypted with the vault keyring.
+ */
+export async function readOwnerRequirementHistory(
+  session: OwnerSession, bridgeId: string, chainId: string, taskId: string, send: OwnerSend = ownerRelaySend,
+  keep = 10, maxPages = OWNER_HISTORY_MAX_PAGES,
+): Promise<{ changes: OwnerRequirementChange[]; truncated: boolean; more: boolean }> {
+  const events: any[] = [];
+  let cursor = '', dropped = false;
+  for (let page = 0; page < maxPages; page++) {
+    const data = await ownerCall(session, bridgeId, 'history.read', { chainId, expectedRevision: '0', cursor, limit: OWNER_HISTORY_PAGE }, send);
+    for (const e of Array.isArray(data.items) ? data.items : []) {
+      if (e.task_id === taskId && e.kind === 'requirements.edit') {
+        events.push(e);
+        if (events.length > keep) { events.shift(); dropped = true; }
+      }
+    }
+    cursor = String(data.next_cursor || '');
+    if (!cursor) break;
+  }
+  const changes: OwnerRequirementChange[] = [];
+  for (const e of events) {
+    let evidence = '', offset = '0';
+    for (let chunk = 0; chunk < 8; chunk++) {
+      const part = await ownerCall(session, bridgeId, 'history.fetch', { chainId, expectedRevision: '0', eventSeq: String(e.seq), offset }, send);
+      evidence += String(part.evidence ?? '');
+      offset = String(part.next_offset || '');
+      if (!offset) break;
+    }
+    let payload: any = {};
+    try { payload = JSON.parse(String(JSON.parse(evidence).payload || '{}')); } catch { payload = {}; }
+    let doc: any = null;
+    const text = await openTitle(String(payload.body_cipher || ''), session);
+    try { doc = text ? JSON.parse(text) : null; } catch { doc = null; }
+    const ms = Number(e.ts_ms);
+    changes.push({
+      seq: String(e.seq ?? ''), revision: String(payload.requirements_revision ?? ''),
+      goal: String(doc?.goal ?? ''), acceptance: Array.isArray(doc?.acceptance) ? doc.acceptance.map(String) : [],
+      reason: String(doc?.requirements_reason ?? ''), actorKind: String(e.actor_kind || ''), actorId: String(e.actor_id || ''),
+      at: Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : '', readable: doc !== null,
+    });
+  }
+  return { changes: changes.reverse(), truncated: Boolean(cursor), more: dropped };
+}
+
 export interface OwnerSubmission { attempt: string; summary: string; head: string; author: string; requirementsRevision: string; complete: boolean }
 export async function readOwnerSubmission(session: OwnerSession, bridgeId: string, chainId: string, taskId: string, attempt: string, send: OwnerSend = ownerRelaySend): Promise<OwnerSubmission> {
   let summary = '', offset = '0', first: any = null;
