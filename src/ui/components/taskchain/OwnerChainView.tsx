@@ -17,7 +17,7 @@ import { ownerId, type OwnerInput, type OwnerSession } from '../../api/ownerLoca
 import type { OwnerCommand } from '../../api/ownerLocal';
 import { TASK_STATE_LABELS } from '../tasks/taskV2Types';
 import { EMPTY_TASK_NAMES } from '../tasks/taskNames';
-import { leaseClock, ticketKeys } from '../tasks/ticketModel';
+import { formatDuration, leaseClock, ticketKeys } from '../tasks/ticketModel';
 import { TicketAttemptsCard } from '../tasks/TicketAttemptsCard';
 import { TicketCard } from '../tasks/TicketCard';
 import { ownerRequirementsDoc, ownerTaskWire, ownerTaskWires } from '../tasks/ownerTaskAdapter';
@@ -757,6 +757,8 @@ export function OwnerChainView({
                 {(task.runtime.holder || wire?.merge) && (
                   <dl data-debug-id="owner-chain-lease" className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
                     {task.runtime.holder && <><Text as="span" role="caption" tone="muted">Lease holder</Text><Text as="code" role="code-sm" truncate>{task.runtime.holder}</Text></>}
+                    {task.runtime.lease?.expiresMs ? <><Text as="span" role="caption" tone="muted">Lease left</Text><Text as="span" role="caption" data-debug-id="owner-chain-lease-left" className="tabular-nums">{formatDuration(Math.max(0, task.runtime.lease.expiresMs - Date.now()))}</Text></> : null}
+                    {task.runtime.lease?.hardMs ? <><Text as="span" role="caption" tone="muted">Hard deadline</Text><Text as="span" role="caption" data-debug-id="owner-chain-lease-hard" className="tabular-nums">in {formatDuration(Math.max(0, task.runtime.lease.hardMs - Date.now()))}</Text></> : null}
                     {wire?.merge && <><Text as="span" role="caption" tone="muted">Merge</Text><Text as="span" role="caption">{wire.merge.state}{wire.merge.head ? ' · ' : ''}{wire.merge.head && <Text as="code" role="code-sm">{wire.merge.head.slice(0, 12)}</Text>}</Text></>}
                   </dl>
                 )}

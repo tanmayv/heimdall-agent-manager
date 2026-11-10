@@ -109,8 +109,11 @@ export function ownerTaskWire(src: OwnerTaskSource): TaskWire {
     merge,
     leases: rt?.holder
       ? [{
-        lease_id: '', kind: 'work', holder_instance_id: rt.holder, attempt_no: attempt, bridge_id: src.bridgeId,
-        granted_at: '', confirmed_at: '', expires_at: '', hard_deadline_at: '', delivery: '',
+        lease_id: rt.lease?.id ?? '', kind: 'work', holder_instance_id: rt.holder, attempt_no: attempt, bridge_id: src.bridgeId,
+        granted_at: '', confirmed_at: '',
+        expires_at: rt.lease?.expiresMs ? new Date(rt.lease.expiresMs).toISOString() : '',
+        hard_deadline_at: rt.lease?.hardMs ? new Date(rt.lease.hardMs).toISOString() : '',
+        delivery: '',
       }]
       : [],
     reviews,

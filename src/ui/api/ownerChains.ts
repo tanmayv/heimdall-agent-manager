@@ -413,6 +413,8 @@ export interface OwnerRuntime {
   leased: boolean;
   /** The instance holding the live lease ('' when none). */
   holder: string;
+  /** The live lease's id, expiry and hard deadline (epoch ms; 0 when unknown). */
+  lease: { id: string; expiresMs: number; hardMs: number } | null;
   requirements: { revision: string; goal: string; acceptance: string[]; requiresUserApproval: boolean; raw: string } | null;
   submission: { attempt: string; head: string; requirementsRevision: string; summary: string; author: string } | null;
   attemptNo: number;
@@ -438,6 +440,10 @@ export function parseOwnerRuntime(data: any): OwnerRuntime {
     control: controls ? { mode: controls[0], reason: controls[2] ?? '', waitingOn: controls[3] ?? '' } : null,
     leased: Array.isArray(data?.leases) && data.leases.length > 0,
     holder: Array.isArray(data?.leases?.[0]) ? String(data.leases[0][1] ?? '') : '',
+    // leases rows: lease_id, instance_id, expires_ms, hard_ms, deadline_version.
+    lease: Array.isArray(data?.leases?.[0])
+      ? { id: String(data.leases[0][0] ?? ''), expiresMs: Number(data.leases[0][2]) || 0, hardMs: Number(data.leases[0][3]) || 0 }
+      : null,
     requirements: req ? { revision: req[0], raw: req[1] ?? '', ...parseBrief(req[1] ?? '') } : null,
     submission: sub ? { attempt: sub[0], head: sub[1] ?? '', requirementsRevision: sub[2] ?? '', summary: sub[3] ?? '', author: sub[4] ?? '' } : null,
     attemptNo: Number(data?.attempts?.attempt_no ?? 0) || 0,
