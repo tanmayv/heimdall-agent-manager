@@ -13,7 +13,11 @@ import content_service "odin_test:hub/service/content"
 import events "odin_test:hub/service/events"
 import jsonx "odin_test:lib/jsonx"
 
-Content_Handlers :: struct { auth: ^auth_service.Auth_Service, agents: ^agent_service.Agent_Service, content: ^content_service.Content_Service, event_bus: ^events.User_Event_Bus }
+Content_Handlers :: struct {
+	auth: ^auth_service.Auth_Service, agents: ^agent_service.Agent_Service, content: ^content_service.Content_Service, event_bus: ^events.User_Event_Bus,
+	// POST /chats create_owner_chain (owner_chain_prepare.odin); tests replace it.
+	prepare_owner_chain: Owner_Chain_Prepare_Proc, prepare_ctx: rawptr,
+}
 
 list_memories_handler :: proc(ctx:rawptr, req:Request)->Response{
 	h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp
@@ -121,6 +125,15 @@ create_chat_handler :: proc(ctx:rawptr, req:Request)->Response{
 		if h.agents==nil do return respond_error(domain.domain_error(.Internal_Error,"agent service is not configured"),req.request_id)
 		initial:=content_service.Message_Input{body=input.initial_body,artifact_ids_json=input.artifact_ids_json}
 		if strings.trim_space(input.initial_body)!="" { if msg_ok,msg_err:=content_service.validate_initial_message(h.content,auth,initial); !msg_ok do return respond_error(msg_err,req.request_id) }
+		// A one-step coordinator conversation: the launch Bridge creates its
+		// chain first and the instance boots as that chain's coordinator.
+		if json_bool(req.body,"create_owner_chain") && input.chain_id=="" {
+			if input.bridge_id=="" do return respond_error(domain.domain_error(.Validation_Failed,"create_owner_chain needs a bridge_id"),req.request_id)
+			if h.prepare_owner_chain==nil do return respond_error(domain.domain_error(.Not_Implemented,"owner chain creation is not configured"),req.request_id)
+			chain,prepare_err:=h.prepare_owner_chain(h.prepare_ctx,input.bridge_id,input.agent_id,owner_chain_title(json_string(req.body,"chain_title"),input.initial_body),json_string(req.body,"chain_description"))
+			if chain=="" do return respond_error(prepare_err,req.request_id)
+			input.chain_id=chain
+		}
 		inst,created,create_err:=agent_service.create_instance(h.agents,auth,agent_service.Create_Instance_Input{agent_id=input.agent_id,bridge_id=input.bridge_id,provider=input.provider,provider_profile=input.provider_profile,model=input.model,project_id=input.project_id,chain_id=input.chain_id})
 		if !created do return respond_error(create_err,req.request_id)
 		c,found,find_err:=content_service.get_conversation_by_instance(h.content,auth,inst.agent_instance_id)
