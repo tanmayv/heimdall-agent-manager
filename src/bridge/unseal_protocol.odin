@@ -862,7 +862,7 @@ bridge_identity_sign_bytes :: proc(msg:[]byte) -> (string,bool) {
 bridge_owner_sign :: proc(ctx:rawptr,kind:string,o:json.Object)->(string,bool) {
     canonical:string
     valid:bool
-    if kind=="executor.notification" || kind=="executor.notification_result" || kind=="executor.notification_fence_request" || kind=="executor.notification_fence_reply" || kind=="executor.local_result" || kind=="executor.child_result" || kind=="executor.bootstrap" || kind=="executor.child_request" || kind=="executor.prepare" || kind=="executor.action" || kind=="executor.fence_reply" || kind=="executor.fence_request" || kind=="executor.enrollment" || kind=="executor.issuance_receipt" || kind=="executor.receipt" {
+    if kind=="executor.notification" || kind=="executor.notification_result" || kind=="executor.notification_fence_request" || kind=="executor.notification_fence_reply" || kind=="executor.local_result" || kind=="executor.child_result" || kind=="executor.bootstrap" || kind=="executor.child_request" || kind=="executor.prepare" || kind=="executor.action" || kind=="executor.fence_reply" || kind=="executor.fence_request" || kind=="executor.enrollment" || kind=="executor.issuance_receipt" || kind=="executor.issuance_consent" || kind=="executor.receipt" {
         // Resource intents have a separate signing domain from task commands.
         canonical,valid=contracts.executor_canonical(strings.trim_prefix(kind,"executor."),o)
     } else {
