@@ -6,7 +6,7 @@
 // stays reachable behind "Advanced/debug".
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Badge, Button, EmptyState, Input, StatusDot, StatusPill, Text, Textarea, type Tone } from '@ui';
+import { Alert, Badge, Button, EmptyState, FormField, Input, Select, StatusDot, StatusPill, Text, Textarea, type Tone } from '@ui';
 import {
   freshOwnerSession, isOwnerOffline, ownerAwaitingUser, ownerCall, ownerErrorMessage, ownerOfflineMessage, ownerRelaySend, ownerTaskState,
   ownerExpectedRevision, readArchivedReviews, readOwnerChain, readOwnerChainStatus, readOwnerReviews, readOwnerRuntime, readOwnerSubmission, readOwnerTask, withOwnerRecovery,
@@ -134,6 +134,9 @@ export function OwnerChainView({
   const [comment, setComment] = useState('');
   const [reason, setReason] = useState('');
   const [reviewSummary, setReviewSummary] = useState('');
+  // Inline editors: null when closed, else the draft.
+  const [chainDraft, setChainDraft] = useState<{ title: string; description: string } | null>(null);
+  const [taskDraft, setTaskDraft] = useState<{ taskId: string; title: string; body: string } | null>(null);
   // undefined while the coordinator is not known yet (never shown as "none").
   const [coordinatorId, setCoordinatorId] = useState<string | undefined>(chain.coordinatorAgentInstanceId);
   useEffect(() => { setCoordinatorId(chain.coordinatorAgentInstanceId); }, [chain.chainId, chain.coordinatorAgentInstanceId]);
@@ -284,11 +287,13 @@ export function OwnerChainView({
       if (!live.current) return true;
       setNotice(done);
       await loadChain();
-      if (input.taskId) await loadTask(input.taskId);
+      // Only the open ticket is re-read: task.create names a new task that is
+      // not selected, and loading it would show it under another selection.
+      if (input.taskId && input.taskId === selected) await loadTask(input.taskId);
       return true;
     } catch (e) {
       fail(e);
-      if (e instanceof Error && e.message === 'stale_revision') { await loadChain(); if (input.taskId) await loadTask(input.taskId); }
+      if (e instanceof Error && e.message === 'stale_revision') { await loadChain(); if (input.taskId && input.taskId === selected) await loadTask(input.taskId); }
       return false;
     } finally { if (live.current) setBusy(false); }
   }
@@ -395,12 +400,33 @@ export function OwnerChainView({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {editable && showChainInfo && !chainDraft && (
+            <Button size="sm" variant="ghost" data-debug-id="owner-chain-edit" disabled={busy} onClick={() => setChainDraft({ title, description: description ?? '' })}>Edit chain</Button>
+          )}
           <Button size="sm" variant="ghost" data-debug-id="owner-chain-refresh" disabled={loading || busy} onClick={() => { setOffline(false); void loadChain(); if (selected) void loadTask(selected); }}>Refresh</Button>
           <Button size="sm" variant="ghost" data-debug-id="owner-chain-debug-toggle" aria-pressed={debug} onClick={() => setDebug((v) => !v)}>Advanced/debug</Button>
           {onClose && <Button size="sm" variant="ghost" data-debug-id="owner-chain-close" onClick={onClose}>Close</Button>}
         </div>
       </header>
 
+      {editable && chainDraft && (
+        <form data-debug-id="owner-chain-edit-form" className="mx-4 mt-3 space-y-2 rounded-lg border border-subtle bg-surface-raised p-3" onSubmit={(e) => {
+          e.preventDefault();
+          if (!chainDraft.title.trim()) return;
+          void mutate('chain.edit', { title: chainDraft.title.trim(), description: chainDraft.description.trim() }, 'Chain updated.').then((ok) => { if (ok) setChainDraft(null); });
+        }}>
+          <FormField label="Title">
+            <Input size="sm" data-debug-id="owner-chain-edit-title" value={chainDraft.title} onChange={(v) => setChainDraft((d) => d && { ...d, title: v })} />
+          </FormField>
+          <FormField label="Description">
+            <Textarea size="sm" rows={3} data-debug-id="owner-chain-edit-description" value={chainDraft.description} onChange={(v) => setChainDraft((d) => d && { ...d, description: v })} />
+          </FormField>
+          <div className="flex gap-2">
+            <Button size="sm" type="submit" variant="primary" data-debug-id="owner-chain-edit-save" disabled={busy || !chainDraft.title.trim()}>Save</Button>
+            <Button size="sm" type="button" variant="ghost" disabled={busy} onClick={() => setChainDraft(null)}>Cancel</Button>
+          </div>
+        </form>
+      )}
       {offline && (
         <div data-debug-id="owner-chain-offline" className="mx-4 mt-3"><Alert tone="warning">{ownerOfflineMessage(chain.bridgeName)}</Alert></div>
       )}
@@ -546,7 +572,32 @@ export function OwnerChainView({
                 </div>
               )}
 
-              {editable && <div className="flex flex-wrap gap-2">
+              {editable && taskDraft?.taskId === task.taskId && (
+                <form data-debug-id="owner-chain-task-edit-form" className="space-y-2 rounded-lg border border-subtle bg-surface-raised p-3" onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!taskDraft.title.trim()) return;
+                  void mutate('task.edit', { taskId: task.taskId, title: taskDraft.title.trim(), body: taskDraft.body.trim() }, 'Ticket updated.').then((ok) => { if (ok) setTaskDraft(null); });
+                }}>
+                  <FormField label="Title">
+                    <Input size="sm" data-debug-id="owner-chain-task-edit-title" value={taskDraft.title} onChange={(v) => setTaskDraft((d) => d && { ...d, title: v })} />
+                  </FormField>
+                  <FormField label="Description">
+                    <Textarea size="sm" rows={3} data-debug-id="owner-chain-task-edit-body" value={taskDraft.body} onChange={(v) => setTaskDraft((d) => d && { ...d, body: v })} />
+                  </FormField>
+                  <div className="flex gap-2">
+                    <Button size="sm" type="submit" variant="primary" data-debug-id="owner-chain-task-edit-save" disabled={busy || !taskDraft.title.trim()}>Save</Button>
+                    <Button size="sm" type="button" variant="ghost" disabled={busy} onClick={() => setTaskDraft(null)}>Cancel</Button>
+                  </div>
+                </form>
+              )}
+
+              {editable && <div className="flex flex-wrap items-center gap-2">
+                {ts.state !== 'done' && ts.state !== 'cancelled' && taskDraft?.taskId !== task.taskId && (
+                  <Button size="sm" variant="ghost" data-debug-id="owner-chain-task-edit" disabled={busy} onClick={() => setTaskDraft({ taskId: task.taskId, title: task.detail.title, body: task.detail.body })}>Edit ticket</Button>
+                )}
+                <Select size="sm" aria-label="Priority" data-debug-id="owner-chain-task-priority" name="priority" value={task.detail.priority} disabled={busy}
+                  onChange={(v) => { if (v !== task.detail.priority) void mutate('task.priority', { taskId: task.taskId, priority: v as 'p0' | 'p1' | 'p2' }, 'Priority updated.'); }}
+                  options={[{ value: 'p0', label: 'P0 · urgent' }, { value: 'p1', label: 'P1 · high' }, { value: 'p2', label: 'P2 · normal' }]} />
                 {ts.held
                   ? <Button size="sm" data-debug-id="owner-chain-release" disabled={busy} onClick={() => void mutate('task.release', { taskId: task.taskId, body: reason }, 'Hold released.')}>Release hold</Button>
                   : ts.state !== 'cancelled' && ts.state !== 'done' && <Button size="sm" data-debug-id="owner-chain-hold" disabled={busy} onClick={() => void mutate('task.hold', { taskId: task.taskId, body: reason }, 'Ticket held.')}>Hold</Button>}

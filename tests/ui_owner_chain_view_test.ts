@@ -20,9 +20,13 @@ import type { OwnerChainSummary } from '../src/ui/api/ownerChains.ts';
 // first loaded, so the DOM exists before react-dom and the view are imported.
 const dom = new JSDOM('<div id="root"></div>', { url: 'https://hub.example.test/', pretendToBeVisual: true });
 for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator,
-  HTMLElement: dom.window.HTMLElement, Node: dom.window.Node, IS_REACT_ACT_ENVIRONMENT: true })) {
+  HTMLElement: dom.window.HTMLElement, Node: dom.window.Node, IS_REACT_ACT_ENVIRONMENT: true,
+  // jsdom has no CSS namespace; the @ui Select escapes option ids with it.
+  CSS: { escape: (v: string) => v.replace(/[^\w-]/g, (c) => '\\' + c) } })) {
   Object.defineProperty(globalThis, key, { value, writable: true, configurable: true });
 }
+// The @ui Select scrolls its active option into view; jsdom does no layout.
+dom.window.HTMLElement.prototype.scrollIntoView = function scrollIntoView() {};
 const { createRoot } = await import('react-dom/client');
 const { OwnerChainView } = await import('../src/ui/components/taskchain/OwnerChainView.tsx');
 
@@ -80,7 +84,8 @@ test('owner chain view renders tickets, brief, comments, submissions and reviews
         taskRevs[call.command.task_id] = 1;
         return { chain_id: 'chain_owned', task_id: call.command.task_id, revision: String(chainRev) };
       }
-      case 'review.post': case 'task.hold': taskRevs[task]++; return { chain_id: 'chain_owned', task_id: task, revision: String(taskRevs[task]) };
+      case 'review.post': case 'task.hold': case 'task.edit': case 'task.priority': taskRevs[task]++; return { chain_id: 'chain_owned', task_id: task, revision: String(taskRevs[task]) };
+      case 'chain.edit': chainRev++; return { chain_id: 'chain_owned', task_id: '', revision: String(chainRev) };
       case 'runtime.read': return task === 'task_1'
         ? { revision: String(taskRevs.task_1), fleet: [], leases: [], config: [], requirements: [['2', JSON.stringify({ goal: 'Users can sign in', acceptance: ['SSO works', 'Errors are shown'] })]],
             state: [['in_review', '2', '']], submission: [['2', 'a'.repeat(40), '2', 'Implemented SSO', 'agt_worker']], controls: [],
@@ -170,6 +175,41 @@ test('owner chain view renders tickets, brief, comments, submissions and reviews
     assert.equal(ui.$('owner-chain-notice')!.textContent, 'Ticket created.');
     assert.match(ui.$(`owner-chain-task-${created.command.task_id}`)!.textContent!, /Add audit log/);
     assert.equal((ui.$('owner-chain-new-task-title') as HTMLInputElement).value, '', 'the form clears after success');
+
+    // Coordinator-level management: edit the chain, edit a ticket, change its priority.
+    await ui.click('owner-chain-edit');
+    assert.equal((ui.$('owner-chain-edit-title') as HTMLInputElement).value, 'Live chain title', 'the editor starts from the live title');
+    await ui.type('owner-chain-edit-title', 'Renamed chain');
+    await ui.type('owner-chain-edit-description', 'New overview');
+    await ui.click('owner-chain-edit-save');
+    const chainEdit = calls.find((c) => c.method === 'chain.edit')!;
+    assert.ok(chainEdit, 'chain.edit was sent: ' + (ui.$('owner-chain-error')?.textContent ?? ''));
+    assert.equal(chainEdit.command.expected_revision, '8', 'chain-scoped: bound to the chain revision');
+    assert.equal(await decryptVaultText(chainEdit.payload.title_cipher, session.keyring), 'Renamed chain');
+    assert.equal(await decryptVaultText(chainEdit.payload.description_cipher, session.keyring), 'New overview');
+    assert.equal(ui.$('owner-chain-edit-form'), null, 'the editor closes after success');
+    assert.equal(ui.$('owner-chain-notice')!.textContent, 'Chain updated.');
+
+    await ui.click('owner-chain-task-task_1');
+    await ui.click('owner-chain-task-edit');
+    assert.equal((ui.$('owner-chain-task-edit-body') as HTMLTextAreaElement).value, 'Login fails on Safari');
+    await ui.type('owner-chain-task-edit-title', 'Fix login on Safari');
+    await ui.click('owner-chain-task-edit-save');
+    const taskEdit = calls.find((c) => c.method === 'task.edit')!;
+    assert.ok(taskEdit, 'task.edit was sent: ' + (ui.$('owner-chain-error')?.textContent ?? ''));
+    assert.equal(taskEdit.command.task_id, 'task_1');
+    assert.equal(await decryptVaultText(taskEdit.payload.title_cipher, session.keyring), 'Fix login on Safari');
+    assert.equal(ui.$('owner-chain-notice')!.textContent, 'Ticket updated.');
+
+    await ui.click('owner-chain-task-priority');
+    const p0 = [...ui.dom.window.document.querySelectorAll('[role="option"]')].find((o) => /P0/.test(o.textContent || '')) as HTMLElement | undefined;
+    assert.ok(p0, 'the priority menu lists P0');
+    await act(async () => { p0!.click(); });
+    await ui.flush();
+    const priority = calls.find((c) => c.method === 'task.priority')!;
+    assert.ok(priority, 'task.priority was sent: ' + (ui.$('owner-chain-error')?.textContent ?? ''));
+    assert.equal(priority.payload.priority, 'p0');
+    assert.equal(ui.$('owner-chain-error'), null, 'no management change was refused as stale');
 
     await ui.click('owner-chain-debug-toggle');
     assert.ok(ui.dom.window.document.querySelector('[aria-label="Owner-local tasks"]'), 'the raw console stays reachable behind Advanced/debug');
