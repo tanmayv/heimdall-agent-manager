@@ -6,25 +6,27 @@
 // stays reachable behind "Advanced/debug".
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Badge, Button, Checkbox, EmptyState, FormField, IconButton, Input, Select, StatusDot, StatusPill, Text, Textarea, type Tone } from '@ui';
+import { Alert, Badge, Button, EmptyState, FormField, IconButton, Input, StatusDot, StatusPill, Text, Textarea, type Tone } from '@ui';
 import {
   freshOwnerSession, isOwnerOffline, ownerAwaitingUser, ownerCall, ownerErrorMessage, ownerOfflineMessage, ownerRelaySend, ownerTaskState,
-  ownerActivityLabel, ownerExpectedRevision, readArchivedReviews, readOwnerActivity, readOwnerRequirementHistory, readOwnerChain, readOwnerChainStatus, readOwnerFleetPolicies, readOwnerHandoffs, readOwnerReviews, ownerFleetPolicyDocument, readOwnerRuntime, readOwnerDependencies, readOwnerSubmission, readOwnerTask, readOwnerWorkRevision, withOwnerRecovery,
+  ownerActivityLabel, ownerExpectedRevision, readArchivedReviews, readOwnerActivity, readOwnerRequirementHistory, readOwnerChain, readOwnerChainStatus, readOwnerFleetPolicies, readOwnerHandoffs, readOwnerReviews, ownerFleetPolicyDocument, readOwnerRuntime, readOwnerDependencies, readOwnerSubmission, readOwnerTask, readOwnerTaskActivity, readOwnerWorkRevision, withOwnerRecovery,
   type OwnerActivity, type OwnerRequirementChange, type OwnerChainDetail, type OwnerChainStatus, type OwnerDependency, type OwnerChainSummary, type OwnerReview, type OwnerRuntime, type OwnerSend,
   type OwnerSubmission, type OwnerTaskDetail, type OwnerTaskState, type OwnerFleetPolicy, type OwnerFleetPolicyChange,
 } from '../../api/ownerChains';
 import { ownerId, type OwnerInput, type OwnerSession } from '../../api/ownerLocalClient';
 import type { OwnerCommand } from '../../api/ownerLocal';
 import { TASK_STATE_LABELS } from '../tasks/taskV2Types';
-import { EMPTY_TASK_NAMES } from '../tasks/taskNames';
-import { formatDuration, leaseClock, progressCaption, progressCounts, ticketKeys } from '../tasks/ticketModel';
+import { buildTaskNames } from '../tasks/taskNames';
+import { progressCaption, progressCounts, ticketKeys } from '../tasks/ticketModel';
 import { TicketProgressBar } from '../tasks/TicketProgressBar';
-import { TicketAttemptsCard } from '../tasks/TicketAttemptsCard';
-import { TicketCard } from '../tasks/TicketCard';
-import { TicketDecisionBlock, type TicketDecisionActions } from '../tasks/TicketDecisionBlock';
-import { ownerRequirementHistoryEntries, ownerRequirementsDoc, ownerTaskWire, ownerTaskWires } from '../tasks/ownerTaskAdapter';
-import { TicketRequirementsCard } from '../tasks/TicketRequirementsCard';
-import { TicketLinkedCard } from '../tasks/TicketLinkedCard';
+import type { TicketDecisionActions } from '../tasks/TicketDecisionBlock';
+import {
+  ownerCommentItems, ownerDependencyChanges, ownerHandoffItems, ownerPrerequisites, ownerRequirementHistoryEntries, ownerRequirementsDoc, ownerReviewItems,
+  ownerTicketEvents, ownerTaskWire, ownerTaskWires,
+} from '../tasks/ownerTaskAdapter';
+import { TicketView, type TicketEditFocus, type TicketViewActions } from '../tasks/TicketView';
+import type { TaskEditChange, TaskEditField as TicketEditField } from '../tasks/TaskEditModal';
+import type { TicketFeed, TicketEventItem, TicketHandoffItem } from '../tasks/TicketActivity';
 import { TicketBoard } from '../tasks/TicketBoard';
 import type { BoardTicketActions } from '../tasks/BoardTicketCard';
 import type { TaskWire } from '../../api/taskWire';
@@ -34,7 +36,6 @@ import OwnerLocalPanel from './OwnerLocalPanel';
 import OwnerCoordinatorControl, { hubCoordinatorApi, type OwnerCoordinatorApi } from './OwnerCoordinatorControl';
 import OwnerAddAgentControl, { type ChainAgentRole } from './OwnerAddAgentControl';
 import OwnerFleetTable from './OwnerFleetTable';
-import { OwnerHandoffsCard, type OwnerHandoffsState } from './OwnerHandoffsCard';
 import { ownerChainById, resolveOwnerChainCoordinator, setOwnerChainCoordinator } from '../../api/ownerChainsStore';
 import { bindOwnerCoordinator, readOwnerChainMembers, type OwnerChainMember } from '../../api/ownerCoordinator';
 
@@ -45,6 +46,10 @@ const RUNTIME_LIMIT = 50;
 const STATE_ORDER: OwnerTaskState[] = ['ready', 'in_progress', 'in_review', 'done', 'cancelled'];
 /** The board card Edit menu: reviewers live in the requirements (reviewer ids + your approval). */
 const OWNER_EDIT_FIELDS: readonly TaskEditField[] = ['requirements', 'reviewers', 'deps'];
+/** The ticket tab's More menu: reviewers (requirements), dependencies, and title and description (task.edit). */
+const OWNER_TICKET_EDIT_FIELDS: readonly TicketEditField[] = ['reviewers', 'deps', 'details'];
+/** A board card's editor focus as the ticket tab's editor. */
+const EDIT_FOCUS: Record<OwnerTicketEditFocus, TicketEditFocus> = { edit_requirements: 'requirements', edit_reviewers: 'reviewers', edit_deps: 'deps' };
 
 /** A chain agent's instance runtime_status (Hub) as a pill; '' when unknown. */
 const AGENT_STATUS: Record<string, { label: string; tone: Tone }> = {
@@ -161,9 +166,9 @@ export function OwnerChainView({
   const [members, setMembers] = useState<OwnerChainMember[] | null>(null);
   // Hub runtime_status per agent instance (overview agent rows).
   const [agentStatus, setAgentStatus] = useState<Record<string, string>>({});
-  // The open ticket's requirement history, read when shown: null when hidden.
-  const [reqView, setReqView] = useState<'current' | 'changes'>('current');
-  const [handoffs, setHandoffs] = useState<(OwnerHandoffsState & { taskId: string }) | null>(null);
+  // The open ticket's Activity feeds, each read when its tab first opens.
+  const [handoffs, setHandoffs] = useState<(TicketFeed<TicketHandoffItem> & { taskId: string }) | null>(null);
+  const [taskEvents, setTaskEvents] = useState<(TicketFeed<TicketEventItem> & { taskId: string }) | null>(null);
   const [reqHistory, setReqHistory] = useState<{ taskId: string; changes: OwnerRequirementChange[] | null; error: string; more: boolean } | null>(null);
   // The overview's recent chain history (history.read); null until read.
   const [activity, setActivity] = useState<{ events: OwnerActivity[]; truncated: boolean } | null>(null);
@@ -171,22 +176,17 @@ export function OwnerChainView({
   const [task, setTask] = useState<TaskView | null>(null);
   const [taskLoading, setTaskLoading] = useState(false);
   const [submission, setSubmission] = useState<OwnerSubmission | null>(null);
+  const [submissionState, setSubmissionState] = useState<{ attempt: string; loading: boolean; error: string }>({ attempt: '', loading: false, error: '' });
   const [busy, setBusy] = useState(false);
   const [debug, setDebug] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newBody, setNewBody] = useState('');
-  const [comment, setComment] = useState('');
-  const [reason, setReason] = useState('');
   // Inline editors: null when closed, else the draft.
   const [chainDraft, setChainDraft] = useState<{ title: string; description: string } | null>(null);
   // Ticket dependencies (work.read), read when a ticket opens; null until read.
   const [deps, setDeps] = useState<{ items: OwnerDependency[]; truncated: boolean } | null>(null);
-  const [newDep, setNewDep] = useState('');
-  // The requirements being edited for the open ticket (null when closed).
-  const [reqDraft, setReqDraft] = useState<{ taskId: string; goal: string; acceptance: string; reviewers: string; approval: boolean; reason: string } | null>(null);
   // Complete chain: the summary being written (null when the form is closed).
   const [completeSummary, setCompleteSummary] = useState<string | null>(null);
-  const [taskDraft, setTaskDraft] = useState<{ taskId: string; title: string; body: string } | null>(null);
   // undefined while the coordinator is not known yet (never shown as "none").
   const [coordinatorId, setCoordinatorId] = useState<string | undefined>(chain.coordinatorAgentInstanceId);
   useEffect(() => { setCoordinatorId(chain.coordinatorAgentInstanceId); }, [chain.chainId, chain.coordinatorAgentInstanceId]);
@@ -204,6 +204,10 @@ export function OwnerChainView({
   const sessionRef = useRef<OwnerSession | null>(null);
   // The latest loadTask call; an older call's review scan never overwrites it.
   const taskLoadSeq = useRef(0);
+  // The last refused change, worded (the ticket dialogs show it).
+  const lastError = useRef({ message: '', stale: false });
+  // The ticket whose event feed is open: a re-read of that ticket refreshes it.
+  const eventsFor = useRef('');
   const live = useRef(true);
   useEffect(() => () => { live.current = false; }, []);
 
@@ -248,6 +252,19 @@ export function OwnerChainView({
     } catch (e) { fail(e); return null; } finally { if (live.current && !quiet) setLoading(false); }
   }, [bridge, chain.chainId, send, session, fail, layout]);
 
+  // A ticket's Activity events (its history.read events), newest first.
+  const loadEvents = useCallback(async (taskId: string) => {
+    eventsFor.current = taskId;
+    setTaskEvents((cur) => (cur?.taskId === taskId ? { ...cur, loading: true } : { taskId, items: null, loading: true }));
+    try {
+      const r = await readOwnerTaskActivity(await session(), bridge, chain.chainId, taskId, send);
+      if (live.current) setTaskEvents((cur) => (cur?.taskId === taskId ? { taskId, items: ownerTicketEvents(r.events), truncated: r.truncated, loading: false } : cur));
+    } catch (e) {
+      if (isOwnerOffline(e)) fail(e);
+      if (live.current) setTaskEvents((cur) => (cur?.taskId === taskId ? { ...cur, loading: false, error: ownerErrorMessage(e, chain.bridgeName) } : cur));
+    }
+  }, [bridge, chain.chainId, chain.bridgeName, send, session, fail]);
+
   // The ticket (brief, comments, runtime) renders as soon as it is read; the
   // review history scan, which may page through the whole chain history, fills
   // in the reviews afterwards with its own loading state.
@@ -265,6 +282,7 @@ export function OwnerChainView({
         ? { ...prev, detail: d, runtime: rt, reviewsLoading: true }
         : { taskId, detail: d, runtime: rt, reviews: [], reviewsLoading: true, reviewsError: '', reviewsTruncated: false, reviewsMore: false });
       setStates((prev) => ({ ...prev, [taskId]: rt }));
+      if (eventsFor.current === taskId) void loadEvents(taskId);
     } catch (e) { fail(e); return; } finally { if (live.current && seq === taskLoadSeq.current) setTaskLoading(false); }
     let reviews: OwnerReview[] = [], reviewsError = '', reviewsTruncated = false, reviewsMore = false;
     try {
@@ -280,18 +298,27 @@ export function OwnerChainView({
     }
     if (!live.current || seq !== taskLoadSeq.current) return;
     setTask((prev) => prev && prev.taskId === taskId ? { ...prev, reviews, reviewsLoading: false, reviewsError, reviewsTruncated, reviewsMore } : prev);
-  }, [bridge, chain.chainId, chain.bridgeName, send, session, fail]);
+  }, [bridge, chain.chainId, chain.bridgeName, send, session, fail, loadEvents]);
 
+  // One attempt's submission (the ticket's Changes); a failed read stays in the card.
   const openSubmission = useCallback(async (taskId: string, attempt: string) => {
+    setSubmissionState({ attempt, loading: true, error: '' });
     try {
       const s = await session();
       const sub = await readOwnerSubmission(s, bridge, chain.chainId, taskId, attempt, send);
-      if (live.current) setSubmission(sub);
-    } catch (e) { fail(e); }
-  }, [bridge, chain.chainId, send, session, fail]);
+      if (live.current) { setSubmission(sub); setSubmissionState({ attempt, loading: false, error: '' }); }
+    } catch (e) {
+      if (isOwnerOffline(e)) fail(e);
+      if (live.current) setSubmissionState({ attempt, loading: false, error: ownerErrorMessage(e, chain.bridgeName) });
+    }
+  }, [bridge, chain.chainId, chain.bridgeName, send, session, fail]);
 
   useEffect(() => { if (chain.online || chain.pending) void loadChain(); }, [chain.chainId, chain.online, chain.pending, loadChain]);
-  useEffect(() => { setSubmission(null); if (selected && !offline) void loadTask(selected); }, [selected]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    setSubmission(null); setSubmissionState({ attempt: '', loading: false, error: '' });
+    eventsFor.current = '';
+    if (selected && !offline) void loadTask(selected);
+  }, [selected]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (focusTaskId && submissionAttempt && !offline) void openSubmission(focusTaskId, submissionAttempt);
   }, [focusTaskId, submissionAttempt]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -321,14 +348,11 @@ export function OwnerChainView({
     return () => clearInterval(timer);
   }, [refreshMs, chain.online, chain.pending, loadChain, loadTask]);
 
-  useEffect(() => {
-    if (layout === 'ticket' && task?.detail.title) onTitle?.(task.detail.title);
-  }, [layout, task?.detail.title]); // eslint-disable-line react-hooks/exhaustive-deps
-
   // `taskRevision` names the revision of a ticket that is not the open one
   // (board card actions); the open ticket's revision is used otherwise.
   async function mutate(method: OwnerCommand['method'], input: Omit<OwnerInput, 'chainId' | 'expectedRevision'>, done: string, taskRevisionOverride?: string, reloadTask = true): Promise<boolean> {
     setBusy(true); setError(''); setNotice('');
+    lastError.current = { message: '', stale: false };
     try {
       const s = await session();
       // Task-scoped methods are checked against the task revision, everything
@@ -345,6 +369,7 @@ export function OwnerChainView({
       return true;
     } catch (e) {
       fail(e);
+      lastError.current = { message: isOwnerOffline(e) ? ownerOfflineMessage(chain.bridgeName) : ownerErrorMessage(e, chain.bridgeName), stale: e instanceof Error && e.message === 'stale_revision' };
       if (e instanceof Error && e.message === 'stale_revision') { await loadChain(); if (input.taskId && input.taskId === selected) await loadTask(input.taskId); }
       return false;
     } finally { if (live.current) setBusy(false); }
@@ -378,6 +403,18 @@ export function OwnerChainView({
     return () => { cancelled = true; };
   }, [activityKey, bridge, chain.chainId, send, session, fail]);
   useEffect(() => { if (showsTicket && selected && ownerReady) void loadDeps(); }, [showsTicket, selected, ownerReady, loadDeps]);
+  // The ticket names its agents from the chain's member rows, read once (the overview re-reads them with the chain).
+  useEffect(() => {
+    if (!showsTicket || !ownerReady || members !== null) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const m = await readOwnerChainMembers(await session(), bridge, chain.chainId, send);
+        if (!cancelled && live.current) setMembers(m);
+      } catch (e) { if (isOwnerOffline(e)) fail(e); }
+    })();
+    return () => { cancelled = true; };
+  }, [showsTicket, ownerReady, members, bridge, chain.chainId, send, session, fail]);
 
   async function addDependency(taskId: string, prerequisite: string): Promise<boolean> {
     const doc = { dependency_id: ownerId('dep_'), dependent: { kind: 'task', id: taskId }, prerequisite: { kind: 'task', id: prerequisite } };
@@ -420,7 +457,7 @@ export function OwnerChainView({
   // Agent display names (Hub agents list), read once per view.
   const [agentNames, setAgentNames] = useState<Record<string, string>>({});
   useEffect(() => {
-    if ((layout !== 'overview' && layout !== 'board') || offline) return;
+    if (offline) return;
     let cancelled = false;
     Promise.resolve().then(() => hubApiRef.current.listAgents()).then((list) => {
       if (!cancelled && live.current) setAgentNames(Object.fromEntries(list.map((a) => [a.agentId, a.name])));
@@ -475,12 +512,13 @@ export function OwnerChainView({
   }
 
   async function showHandoffs(taskId: string) {
-    setHandoffs({ taskId, handoffs: null, error: '', more: false });
+    setHandoffs({ taskId, items: null });
     try {
       const h = await readOwnerHandoffs(await session(), bridge, chain.chainId, taskId, send);
-      if (live.current) setHandoffs((cur) => (cur?.taskId === taskId ? { taskId, handoffs: h.handoffs, error: '', more: h.more } : cur));
+      if (live.current) setHandoffs((cur) => (cur?.taskId === taskId ? { taskId, items: ownerHandoffItems(h.handoffs), more: h.more, truncated: h.truncated } : cur));
     } catch (e) {
-      if (live.current) setHandoffs((cur) => (cur?.taskId === taskId ? { taskId, handoffs: [], error: ownerErrorMessage(e), more: false } : cur));
+      if (isOwnerOffline(e)) fail(e);
+      if (live.current) setHandoffs((cur) => (cur?.taskId === taskId ? { taskId, items: [], error: ownerErrorMessage(e, chain.bridgeName) } : cur));
     }
   }
 
@@ -528,8 +566,6 @@ export function OwnerChainView({
 
   const title = detail?.title || chain.title || chain.chainId;
   const description = detail?.description ?? chain.description;
-  const s = sessionRef.current;
-  const ts = task ? ownerTaskState(task.runtime) : null;
   // The open ticket in the ticket wire shape the restored ticket cards render.
   const wire = useMemo(() => (task ? ownerTaskWire({
     chainId: chain.chainId, bridgeId: bridge, taskId: task.taskId, detail: task.detail, runtime: task.runtime, reviews: task.reviews,
@@ -588,32 +624,14 @@ export function OwnerChainView({
     };
   };
 
-  // Opens the requirements editor (goal, acceptance, reviewers, your approval).
-  function startReqEdit(t: TaskView) {
-    setReqDraft({
-      taskId: t.taskId,
-      goal: t.runtime.requirements?.goal ?? '',
-      acceptance: (t.runtime.requirements?.acceptance ?? []).join('\n'),
-      reviewers: (wire?.task_id === t.taskId ? wire.brief?.reviewers ?? [] : []).join(', '),
-      approval: Boolean(t.runtime.requirements?.requiresUserApproval),
-      reason: '',
-    });
-  }
   // The board's Edit menu: the aux board opens a ticket tab with the editor;
-  // the page selects the ticket in place and opens it there.
+  // the page selects the ticket in place and the ticket opens that editor.
   const [pendingEdit, setPendingEdit] = useState<OwnerTicketEditFocus | null>(editFocus ?? null);
   function editTicket(taskId: string, title: string, field: TaskEditField) {
-    const focus: OwnerTicketEditFocus = field === 'deps' ? 'edit_deps' : 'edit_requirements';
+    const focus: OwnerTicketEditFocus = field === 'deps' ? 'edit_deps' : field === 'reviewers' ? 'edit_reviewers' : 'edit_requirements';
     if (aux) { onEditTicket?.(taskId, title || taskId, focus); return; }
     setSelected(taskId); setPendingEdit(focus);
   }
-  useEffect(() => {
-    if (!pendingEdit || !task || task.taskId !== selected || !editable) return;
-    if (pendingEdit === 'edit_requirements') startReqEdit(task);
-    else document.querySelector<HTMLElement>('[data-debug-id="owner-chain-dependencies"]')?.scrollIntoView?.({ block: 'center' });
-    setPendingEdit(null);
-    onEditFocusConsumed?.();
-  }, [pendingEdit, task, selected, editable]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The decision block's actions as owner commands on the open ticket.
   const decisionActions = (t: TaskView): TicketDecisionActions => {
@@ -640,6 +658,67 @@ export function OwnerChainView({
     };
   };
 
+  // Every change the ticket tab offers, as owner commands on the open ticket.
+  const ticketActions = (t: TaskView, w: TaskWire): TicketViewActions => {
+    const run = (method: OwnerCommand['method'], done: string, body = '') => mutate(method, { taskId: t.taskId, body }, done);
+    const failure = (ok: boolean) => (ok ? '' : lastError.current.message || 'The change was not saved.');
+    const flags = ownerTaskState(t.runtime);
+    const req = t.runtime.requirements;
+    const reqRevision = Number(req?.revision) || 0;
+    // requirements.edit replaces the whole document: fields not edited are kept.
+    const saveRequirements = async (edit: { goal: string; acceptance: string[]; reviewers: string[]; requiresUserApproval: boolean; reason: string }) => {
+      const body = ownerRequirementsDoc(req?.raw ?? '', edit);
+      const ok = await mutate('requirements.edit', { taskId: t.taskId, body, requirementsRevision: String(reqRevision + 1) }, 'Requirements updated.');
+      if (ok && reqHistory?.taskId === t.taskId) void showRequirementHistory(t.taskId);
+      return ok;
+    };
+    const reviewers = w.brief?.reviewers ?? [];
+    return {
+      ...decisionActions(t),
+      error,
+      hold: (reason) => (reason.trim() ? run('task.hold', 'Ticket held.', reason.trim()) : Promise.resolve(false)),
+      release: () => run('task.release', 'Hold released.'),
+      cancel: () => run('task.cancel', 'Ticket cancelled.'),
+      reopen: () => run('task.reopen', 'Ticket reopened.'),
+      // Only an unstarted ticket (no attempt, no lease) may be deleted.
+      remove: flags.state === 'ready' && t.runtime.attemptNo === 0 && !t.runtime.holder
+        ? async () => {
+          const ok = await mutate('task.delete', { taskId: t.taskId }, 'Ticket deleted.', undefined, false);
+          if (ok && live.current) {
+            setSelected(''); setTask(null);
+            if (layout === 'ticket') onShowBoard?.();
+          }
+          return ok;
+        }
+        : undefined,
+      setPriority: async (priority) => failure(await mutate('task.priority', { taskId: t.taskId, priority: priority as 'p0' | 'p1' | 'p2' }, 'Priority updated.')),
+      amendRequirements: async (a) => {
+        // The draft was based on an older revision: keep it beside the newer one.
+        if (a.baseRevision !== reqRevision) return { error: 'The requirements changed.', conflict: true };
+        const ok = await saveRequirements({ goal: a.goal, acceptance: a.acceptance, reviewers, requiresUserApproval: Boolean(req?.requiresUserApproval), reason: a.reason });
+        return ok ? { error: '' } : { error: lastError.current.message || 'The requirements were not saved.', conflict: lastError.current.stale };
+      },
+      saveEdit: async (change: TaskEditChange) => {
+        if (change.field === 'reviewers') {
+          // Reviewers and your approval live in the requirements document.
+          if (!req) return 'Add requirements first: the reviewers are part of them.';
+          return failure(await saveRequirements({ goal: req.goal, acceptance: req.acceptance, reviewers: change.reviewers, requiresUserApproval: change.requiresUserApproval, reason: 'Changed the reviewers.' }));
+        }
+        if (change.field === 'deps') {
+          if (!deps) return 'The dependencies are still loading.';
+          const plan = ownerDependencyChanges(t.taskId, deps.items, change.dependsOn);
+          for (const id of plan.add) if (!(await addDependency(t.taskId, id))) return failure(false);
+          for (const id of plan.remove) if (!(await removeDependency(id))) return failure(false);
+          return '';
+        }
+        if (change.field === 'details') {
+          return failure(await mutate('task.edit', { taskId: t.taskId, title: change.title, body: change.description }, 'Ticket updated.'));
+        }
+        return 'The assignee of a Bridge-owned ticket is set by its fleet.';
+      },
+    };
+  };
+
   const ticketCard = (t: { taskId: string; title: string; priority: string }) => {
     const st = stateOf(t.taskId);
     return (
@@ -659,10 +738,80 @@ export function OwnerChainView({
       </li>
     );
   };
-  const selectedIndex = tasks.findIndex((t) => t.taskId === selected);
-  const prevTicket = selectedIndex > 0 ? tasks[selectedIndex - 1] : null;
-  const nextTicket = selectedIndex >= 0 && selectedIndex < tasks.length - 1 ? tasks[selectedIndex + 1] : null;
   const attention = tasks.filter((t) => awaitingUser(t.taskId) || stateOf(t.taskId)?.blocked || stateOf(t.taskId)?.held);
+
+  // origin/main's ticket tab over the owner-local reads and owner commands.
+  const ticketWire = useMemo(() => (wire && deps ? { ...wire, depends_on: ownerPrerequisites(wire.task_id, deps.items) } : wire), [wire, deps]);
+  const ticketTickets = useMemo(() => (ticketWire ? linkedWires.map((w) => (w.task_id === ticketWire.task_id ? ticketWire : w)) : linkedWires), [linkedWires, ticketWire]);
+  const names = useMemo(() => buildTaskNames({
+    tasks: boardWires,
+    identities: Object.entries(agentNames).map(([agent_id, name]) => ({ agent_id, name })),
+    members: (members ?? []).map((m) => ({ agentInstanceId: m.instanceId, agentId: m.agentId })),
+  }), [boardWires, agentNames, members]);
+  const agentChoices = useMemo(() => Object.entries(agentNames).map(([agentId, name]) => ({ agentId, name })), [agentNames]);
+  const commentAuthor = (principal: string) => (/^inst_/.test(principal) && names.instance(principal)) || principalLabel(sessionRef.current, principal);
+  const attemptCount = task ? Math.max(task.runtime.attemptNo, Number(task.runtime.submission?.attempt ?? 0)) : 0;
+  const ticketView = task && ticketWire && task.taskId === selected ? (
+    <TicketView
+      key={task.taskId}
+      chainId={chain.chainId}
+      taskId={task.taskId}
+      task={ticketWire}
+      loading={taskLoading}
+      tickets={ticketTickets}
+      keys={boardKeys}
+      names={names}
+      actions={ticketActions(task, ticketWire)}
+      placement={{ bridge: chain.bridgeName || bridge, model: '' }}
+      readOnly={!editable}
+      editFields={OWNER_TICKET_EDIT_FIELDS}
+      agents={agentChoices}
+      allowFirstRequirements
+      requirementHistory={{
+        entries: reqHistory?.taskId === task.taskId && reqHistory.changes ? ownerRequirementHistoryEntries(reqHistory.changes) : null,
+        loading: reqHistory?.taskId === task.taskId && reqHistory.changes === null,
+        error: reqHistory?.taskId === task.taskId ? reqHistory.error : '',
+        onNeed: () => { if (reqHistory?.taskId !== task.taskId) void showRequirementHistory(task.taskId); },
+      }}
+      activity={{
+        comments: { items: ownerCommentItems(task.detail.comments, commentAuthor), more: task.detail.truncated },
+        events: taskEvents?.taskId === task.taskId ? taskEvents : { items: null },
+        handoffs: handoffs?.taskId === task.taskId ? handoffs : { items: null },
+        reviews: {
+          items: task.reviewsLoading && !task.reviews.length ? null : ownerReviewItems(task.reviews),
+          loading: task.reviewsLoading, error: task.reviewsError, truncated: task.reviewsTruncated, more: task.reviewsMore,
+        },
+        onOpen: (tab) => {
+          if ((tab === 'all' || tab === 'raw') && eventsFor.current !== task.taskId) void loadEvents(task.taskId);
+          if (tab === 'handoffs' && handoffs?.taskId !== task.taskId) void showHandoffs(task.taskId);
+        },
+      }}
+      changes={{
+        changes: submission ? {
+          attempt: Number(submission.attempt) || 0, files: [], output: submission.summary || (submission.head ? 'No summary.' : ''), head: submission.head,
+          author: submission.author ? names.participant(submission.author) || submission.author : '',
+        } : null,
+        loading: submissionState.loading,
+        error: submissionState.error,
+        attempts: Array.from({ length: attemptCount }, (_, i) => i + 1),
+        focusAttempt: focusTaskId === task.taskId && submissionAttempt ? Number(submissionAttempt) || null : null,
+        onLoad: (n) => {
+          // An attempt that never started has no submission to read.
+          if (n > attemptCount) { setSubmission({ attempt: String(n), summary: '', head: '', author: '', requirementsRevision: '', complete: true }); return; }
+          if (submission?.attempt !== String(n)) void openSubmission(task.taskId, String(n));
+        },
+      }}
+      submission={task.runtime.submission ? { summary: task.runtime.submission.summary, head: task.runtime.submission.head } : undefined}
+      reviewable={ownerTaskState(task.runtime).state === 'in_review' && Boolean(task.runtime.submission)}
+      editFocus={pendingEdit ? EDIT_FOCUS[pendingEdit] : null}
+      onEditFocusConsumed={() => { setPendingEdit(null); onEditFocusConsumed?.(); }}
+      onShowBoard={() => (layout === 'ticket' ? onShowBoard?.() : setSelected(''))}
+      onOpenTicket={(id, ticketTitle) => openTicket(id, ticketTitle)}
+      onSwitchTicket={(id, ticketTitle) => (layout === 'ticket' && onSwitchTicket ? onSwitchTicket(id, ticketTitle) : setSelected(id))}
+      onOpenAgent={(id, name) => onOpenAgent?.(id, name)}
+      onTitle={layout === 'ticket' ? onTitle : undefined}
+    />
+  ) : taskLoading || (selected && !offline && !task) ? <Text as="p" role="body-sm" tone="muted" aria-live="polite" className="p-4">Loading ticket…</Text> : null;
 
   return (
     <div data-debug-id="owner-chain-view" className="flex h-full min-w-0 flex-col overflow-y-auto text-left">
@@ -733,7 +882,8 @@ export function OwnerChainView({
       {offline && (
         <div data-debug-id="owner-chain-offline" className="mx-4 mt-3"><Alert tone="warning">{ownerOfflineMessage(chain.bridgeName)}</Alert></div>
       )}
-      {error && <div data-debug-id="owner-chain-error" className="mx-4 mt-3"><Alert tone="danger">{error}</Alert></div>}
+      {/* A ticket tab shows a failed change under the ticket's header instead. */}
+      {error && !(layout === 'ticket' && ticketWire) && <div data-debug-id="owner-chain-error" className="mx-4 mt-3"><Alert tone="danger">{error}</Alert></div>}
       {notice && !error && <Text as="p" role="caption" tone="muted" aria-live="polite" data-debug-id="owner-chain-notice" className="mx-4 mt-3">{notice}</Text>}
       {!offline && detail && chainStatus !== 'active' && (
         <Text as="p" role="caption" tone="muted" data-debug-id="owner-chain-readonly" className="mx-4 mt-3">
@@ -869,7 +1019,7 @@ export function OwnerChainView({
         </div>
       )}
 
-      <div className={`grid min-h-0 flex-1 gap-4 p-4 ${layout === 'page' ? 'lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]' : ''}`}>
+      <div className={`grid min-h-0 flex-1 ${layout === 'ticket' ? '' : 'gap-4 p-4'} ${layout === 'page' ? 'lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]' : ''}`}>
         {layout !== 'ticket' && <section aria-label="Tickets" data-debug-id={`owner-chain-tickets-${layout}`} className="min-w-0 space-y-2">
           <Text as="h3" role="overline" tone="muted">Tickets {loading && <span role="status" className="normal-case">· loading…</span>}</Text>
           {tasks.length === 0 && !loading && <EmptyState data-debug-id="owner-chain-no-tasks" icon="layers" title="No tickets yet" description="Tickets the coordinator or you create appear here." />}
@@ -905,310 +1055,10 @@ export function OwnerChainView({
           )}
         </section>}
 
-        {(layout === 'page' || layout === 'ticket') && <section aria-label="Ticket details" data-debug-id="owner-chain-task-detail" className="min-w-0 space-y-4">
-          {layout === 'ticket' && (
-            <div data-debug-id="owner-chain-ticket-nav" className="flex flex-wrap items-center gap-2">
-              {onShowBoard && <Button size="sm" variant="ghost" data-debug-id="owner-chain-show-board" onClick={onShowBoard}>Board</Button>}
-              {onSwitchTicket && <>
-                <Button size="sm" variant="ghost" data-debug-id="owner-chain-prev-ticket" disabled={!prevTicket} onClick={() => prevTicket && onSwitchTicket(prevTicket.taskId, prevTicket.title || prevTicket.taskId)}>Previous</Button>
-                <Button size="sm" variant="ghost" data-debug-id="owner-chain-next-ticket" disabled={!nextTicket} onClick={() => nextTicket && onSwitchTicket(nextTicket.taskId, nextTicket.title || nextTicket.taskId)}>Next</Button>
-              </>}
-            </div>
-          )}
+        {(layout === 'page' || layout === 'ticket') && <section aria-label="Ticket details" data-debug-id="owner-chain-task-detail" className="min-w-0">
           {offline ? null : !selected ? (
-            <EmptyState title="No ticket selected" description="Select a ticket to see its brief, attempts, reviews and comments." />
-          ) : taskLoading && !task ? (
-            <Text as="p" role="body-sm" tone="muted" aria-live="polite">Loading ticket…</Text>
-          ) : task && ts ? (
-            <>
-              <div>
-                <Text as="h3" role="heading" data-debug-id="owner-chain-task-title">{task.detail.title || task.taskId}</Text>
-                <Text as="code" role="code-sm" tone="muted">{task.taskId}</Text>
-                <div className="mt-1 flex flex-wrap gap-1.5">
-                  <StatusPill tone={STATE_TONE[ts.state]} data-debug-id="owner-chain-task-detail-state">{TASK_STATE_LABELS[ts.state]}</StatusPill>
-                  {ts.held && <StatusPill tone="warning">Held{task.runtime.control?.reason ? ': ' + task.runtime.control.reason : ''}</StatusPill>}
-                  {ts.blocked && <StatusPill tone="danger">Blocked{task.runtime.control?.waitingOn ? ' on ' + task.runtime.control.waitingOn : ''}</StatusPill>}
-                  {ts.merge && <StatusPill tone="pending">{ts.merge === 'merge_blocked' ? 'Merge blocked' : 'Merge pending'}</StatusPill>}
-                  <Badge tone="neutral">{task.detail.priority.toUpperCase()}</Badge>
-                </div>
-              </div>
-
-              {editable && wire && (
-                // origin/main's decision block (hold, blocked on you, your review) over owner commands.
-                <div data-debug-id={ownerAwaitingUser(task.runtime, task.reviewsLoading ? undefined : task.reviews) ? 'owner-chain-awaiting-user' : undefined}>
-                  <TicketDecisionBlock task={wire} names={EMPTY_TASK_NAMES} now={Date.now()} actions={decisionActions(task)}
-                    submission={task.runtime.submission ? { summary: task.runtime.submission.summary, head: task.runtime.submission.head } : undefined}
-                    reviewable={ts.state === 'in_review' && Boolean(task.runtime.submission)} />
-                </div>
-              )}
-
-              {editable && taskDraft?.taskId === task.taskId && (
-                <form data-debug-id="owner-chain-task-edit-form" className="space-y-2 rounded-lg border border-subtle bg-surface-raised p-3" onSubmit={(e) => {
-                  e.preventDefault();
-                  if (!taskDraft.title.trim()) return;
-                  void mutate('task.edit', { taskId: task.taskId, title: taskDraft.title.trim(), body: taskDraft.body.trim() }, 'Ticket updated.').then((ok) => { if (ok) setTaskDraft(null); });
-                }}>
-                  <FormField label="Title">
-                    <Input size="sm" data-debug-id="owner-chain-task-edit-title" value={taskDraft.title} onChange={(v) => setTaskDraft((d) => d && { ...d, title: v })} />
-                  </FormField>
-                  <FormField label="Description">
-                    <Textarea size="sm" rows={3} data-debug-id="owner-chain-task-edit-body" value={taskDraft.body} onChange={(v) => setTaskDraft((d) => d && { ...d, body: v })} />
-                  </FormField>
-                  <div className="flex gap-2">
-                    <Button size="sm" type="submit" variant="primary" data-debug-id="owner-chain-task-edit-save" disabled={busy || !taskDraft.title.trim()}>Save</Button>
-                    <Button size="sm" type="button" variant="ghost" disabled={busy} onClick={() => setTaskDraft(null)}>Cancel</Button>
-                  </div>
-                </form>
-              )}
-
-              {editable && <div className="flex flex-wrap items-center gap-2">
-                {ts.state !== 'done' && ts.state !== 'cancelled' && taskDraft?.taskId !== task.taskId && (
-                  <Button size="sm" variant="ghost" data-debug-id="owner-chain-task-edit" disabled={busy} onClick={() => setTaskDraft({ taskId: task.taskId, title: task.detail.title, body: task.detail.body })}>Edit ticket</Button>
-                )}
-                <Select size="sm" aria-label="Priority" data-debug-id="owner-chain-task-priority" name="priority" value={task.detail.priority} disabled={busy}
-                  onChange={(v) => { if (v !== task.detail.priority) void mutate('task.priority', { taskId: task.taskId, priority: v as 'p0' | 'p1' | 'p2' }, 'Priority updated.'); }}
-                  options={[{ value: 'p0', label: 'P0 · urgent' }, { value: 'p1', label: 'P1 · high' }, { value: 'p2', label: 'P2 · normal' }]} />
-                {ts.held
-                  ? <Button size="sm" data-debug-id="owner-chain-release" disabled={busy} onClick={() => void mutate('task.release', { taskId: task.taskId, body: reason }, 'Hold released.')}>Release hold</Button>
-                  : ts.state !== 'cancelled' && ts.state !== 'done' && <Button size="sm" data-debug-id="owner-chain-hold" disabled={busy} onClick={() => void mutate('task.hold', { taskId: task.taskId, body: reason }, 'Ticket held.')}>Hold</Button>}
-                {ts.state === 'ready' && task.runtime.attemptNo === 0 && !task.runtime.holder && (
-                  <Button size="sm" variant="danger" data-debug-id="owner-chain-delete" disabled={busy} onClick={() => {
-                    if (!window.confirm(`Delete “${task.detail.title || task.taskId}”? This cannot be undone.`)) return;
-                    void mutate('task.delete', { taskId: task.taskId }, 'Ticket deleted.', undefined, false).then((ok) => {
-                      if (!ok || !live.current) return;
-                      setSelected(''); setTask(null);
-                      if (layout === 'ticket') onShowBoard?.();
-                    });
-                  }}>Delete ticket</Button>
-                )}
-                {ts.state === 'cancelled'
-                  ? <Button size="sm" data-debug-id="owner-chain-reopen" disabled={busy} onClick={() => void mutate('task.reopen', { taskId: task.taskId, body: reason }, 'Ticket reopened.')}>Reopen</Button>
-                  : ts.state !== 'done' && <Button size="sm" variant="danger" data-debug-id="owner-chain-cancel" disabled={busy} onClick={() => void mutate('task.cancel', { taskId: task.taskId, body: reason }, 'Ticket cancelled.')}>Cancel ticket</Button>}
-                <Input size="sm" className="min-w-0 flex-1" aria-label="Reason (optional)" placeholder="Reason (optional)" data-debug-id="owner-chain-control-reason" value={reason} onChange={setReason} />
-              </div>}
-
-              {wire && task.runtime.requirements && (
-                // origin/main's requirements card: goal, acceptance, Current / Changes.
-                <TicketRequirementsCard task={wire} names={EMPTY_TASK_NAMES} now={Date.now()} highlight={false} masked={false}
-                  history={reqHistory?.taskId === task.taskId && reqHistory.changes ? ownerRequirementHistoryEntries(reqHistory.changes) : null}
-                  view={reqView}
-                  onViewChange={(v) => { setReqView(v); if (v === 'changes' && reqHistory?.taskId !== task.taskId) void showRequirementHistory(task.taskId); }}
-                  canEdit={editable && ts.state !== 'done' && ts.merge === '' && reqDraft?.taskId !== task.taskId && !busy}
-                  onChange={() => startReqEdit(task)}
-                  onSeeChanges={() => { if (reqHistory?.taskId !== task.taskId) void showRequirementHistory(task.taskId); }} />
-              )}
-              <TicketCard debugId="owner-chain-brief" title="Brief">
-                {task.detail.body ? <Text as="p" role="body-sm" className="whitespace-pre-wrap">{task.detail.body}</Text> : <Text as="p" role="caption" tone="muted">No description.</Text>}
-                {task.runtime.requirements ? (
-                  <div data-debug-id="owner-chain-requirements" className="mt-3 space-y-2">
-                    {(wire?.brief?.reviewers?.length || wire?.requires_user_approval) ? (
-                      <Text as="p" role="caption" tone="muted" data-debug-id="owner-chain-reviewers">
-                        Reviewers: {[...(wire?.brief?.reviewers ?? []), ...(wire?.requires_user_approval ? ['you'] : [])].join(', ')}
-                      </Text>
-                    ) : null}
-                    {wire?.depends_on?.length ? (
-                      <Text as="p" role="caption" tone="muted" data-debug-id="owner-chain-deps">Depends on: {wire.depends_on.map((d) => <Text key={d} as="code" role="code-sm" className="mr-1">{d}</Text>)}</Text>
-                    ) : null}
-                  </div>
-                ) : <Text as="p" role="caption" tone="muted">No requirements saved.</Text>}
-                {editable && ts.state !== 'done' && (reqDraft?.taskId !== task.taskId ? (
-                  // With requirements, the requirements card above offers Change requirements.
-                  !task.runtime.requirements && <Button size="sm" variant="ghost" className="mt-2" data-debug-id="owner-chain-requirements-edit" disabled={busy || ts.merge !== ''}
-                    onClick={() => startReqEdit(task)}>Add requirements</Button>
-                ) : (
-                  <form data-debug-id="owner-chain-requirements-form" className="mt-3 space-y-2" onSubmit={(e) => {
-                    e.preventDefault();
-                    if (!reqDraft.goal.trim()) return;
-                    const body = ownerRequirementsDoc(task.runtime.requirements?.raw ?? '', {
-                      goal: reqDraft.goal, acceptance: reqDraft.acceptance.split('\n'), reviewers: reqDraft.reviewers.split(/[\s,]+/),
-                      requiresUserApproval: reqDraft.approval, reason: reqDraft.reason,
-                    });
-                    const next = String((Number(task.runtime.requirements?.revision) || 0) + 1);
-                    void mutate('requirements.edit', { taskId: task.taskId, body, requirementsRevision: next }, 'Requirements updated.').then((ok) => {
-                      if (!ok) return;
-                      setReqDraft(null);
-                      if (reqHistory?.taskId === task.taskId) void showRequirementHistory(task.taskId);
-                    });
-                  }}>
-                    <FormField label="Goal" required>
-                      <Textarea size="sm" rows={3} data-debug-id="owner-chain-requirements-goal" value={reqDraft.goal} onChange={(v) => setReqDraft((d) => d && { ...d, goal: v })} />
-                    </FormField>
-                    <FormField label="Acceptance" hint="One criterion per line.">
-                      <Textarea size="sm" rows={4} data-debug-id="owner-chain-requirements-acceptance" value={reqDraft.acceptance} onChange={(v) => setReqDraft((d) => d && { ...d, acceptance: v })} />
-                    </FormField>
-                    <FormField label="Reviewers" hint="Agent ids, separated by commas. Not the assignee or the coordinator.">
-                      <Input size="sm" data-debug-id="owner-chain-requirements-reviewers" value={reqDraft.reviewers} onChange={(v) => setReqDraft((d) => d && { ...d, reviewers: v })} />
-                    </FormField>
-                    <Checkbox size="sm" data-debug-id="owner-chain-requirements-approval" checked={reqDraft.approval} onChange={(v) => setReqDraft((d) => d && { ...d, approval: v })} label="Needs your approval before it is done" />
-                    <FormField label="Why it changed" hint="Kept in the requirement history; agents see it.">
-                      <Input size="sm" data-debug-id="owner-chain-requirements-reason" value={reqDraft.reason} onChange={(v) => setReqDraft((d) => d && { ...d, reason: v })} />
-                    </FormField>
-                    <Text as="p" role="caption" tone="muted">Saving sends the ticket back to Ready for a fresh submission.</Text>
-                    <div className="flex gap-2">
-                      <Button size="sm" type="submit" variant="primary" data-debug-id="owner-chain-requirements-save" disabled={busy || !reqDraft.goal.trim()}>Save requirements</Button>
-                      <Button size="sm" type="button" variant="ghost" disabled={busy} onClick={() => setReqDraft(null)}>Cancel</Button>
-                    </div>
-                  </form>
-                ))}
-                {reqHistory?.taskId !== task.taskId ? (
-                  <Button size="sm" variant="ghost" className="mt-2" data-debug-id="owner-chain-requirements-history-show" disabled={offline}
-                    onClick={() => void showRequirementHistory(task.taskId)}>Requirement history</Button>
-                ) : (
-                  <section aria-label="Requirement history" data-debug-id="owner-chain-requirements-history" className="mt-3 space-y-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <Text as="h4" role="overline" tone="muted">Requirement history</Text>
-                      <IconButton size="sm" variant="ghost" icon="close" label="Hide requirement history" onClick={() => setReqHistory(null)} />
-                    </div>
-                    {reqHistory.changes === null ? <Text as="p" role="caption" tone="muted" aria-live="polite">Loading requirement history…</Text>
-                      : reqHistory.error ? <Alert tone="danger">{reqHistory.error}</Alert>
-                      : reqHistory.changes.length === 0 ? <Text as="p" role="caption" tone="muted" data-debug-id="owner-chain-requirements-history-empty">The requirements have not been changed since the ticket was created.</Text>
-                      : (
-                        <ol className="space-y-2">
-                          {reqHistory.changes.map((c) => (
-                            <li key={c.seq} data-debug-id={`owner-chain-requirements-change-${c.seq}`} className="space-y-1 border-l-2 border-subtle pl-3">
-                              <div className="flex flex-wrap items-baseline gap-x-1.5">
-                                {c.revision && <Badge tone="neutral">Rev {c.revision}</Badge>}
-                                <Text as="span" role="caption">{principalLabel(sessionRef.current, c.actorId)}</Text>
-                                {c.at && <Text as="span" role="caption" tone="faint">{formatWhen(c.at)}</Text>}
-                              </div>
-                              {c.reason && <Text as="p" role="body-sm">{c.reason}</Text>}
-                              {!c.readable ? <Text as="p" role="caption" tone="muted">These requirements cannot be decrypted with this vault.</Text> : (
-                                <>
-                                  {c.goal && <Text as="p" role="body-sm" tone="muted" className="whitespace-pre-wrap">{c.goal}</Text>}
-                                  {c.acceptance.length > 0 && (
-                                    <ul className="list-disc space-y-0.5 pl-5">{c.acceptance.map((a, i) => <li key={i}><Text as="span" role="caption" tone="muted">{a}</Text></li>)}</ul>
-                                  )}
-                                </>
-                              )}
-                            </li>
-                          ))}
-                        </ol>
-                      )}
-                    {reqHistory.more && <Text as="p" role="caption" tone="muted">Older changes are not shown.</Text>}
-                  </section>
-                )}
-                {(task.runtime.holder || wire?.merge) && (
-                  <dl data-debug-id="owner-chain-lease" className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
-                    {task.runtime.holder && <><Text as="span" role="caption" tone="muted">Lease holder</Text><Text as="code" role="code-sm" truncate>{task.runtime.holder}</Text></>}
-                    {task.runtime.lease?.expiresMs ? <><Text as="span" role="caption" tone="muted">Lease left</Text><Text as="span" role="caption" data-debug-id="owner-chain-lease-left" className="tabular-nums">{formatDuration(Math.max(0, task.runtime.lease.expiresMs - Date.now()))}</Text></> : null}
-                    {task.runtime.lease?.hardMs ? <><Text as="span" role="caption" tone="muted">Hard deadline</Text><Text as="span" role="caption" data-debug-id="owner-chain-lease-hard" className="tabular-nums">in {formatDuration(Math.max(0, task.runtime.lease.hardMs - Date.now()))}</Text></> : null}
-                    {wire?.merge && <><Text as="span" role="caption" tone="muted">Merge</Text><Text as="span" role="caption">{wire.merge.state}{wire.merge.head ? ' · ' : ''}{wire.merge.head && <Text as="code" role="code-sm">{wire.merge.head.slice(0, 12)}</Text>}</Text></>}
-                  </dl>
-                )}
-              </TicketCard>
-
-              {wire && deps && <TicketLinkedCard task={linkedWires.find((w) => w.task_id === wire.task_id) ?? wire} tasks={linkedWires} keys={boardKeys} onOpenTicket={(id) => openTicket(id, tasks.find((t) => t.taskId === id)?.title || id)} />}
-              <TicketCard debugId="owner-chain-dependencies" title="Waits for">
-                {deps === null ? <Text as="p" role="caption" tone="muted">Loading dependencies…</Text> : (() => {
-                  const waits = deps.items.filter((d) => d.dependent === task.taskId);
-                  const blocks = deps.items.filter((d) => d.prerequisite === task.taskId);
-                  const titleOf = (id: string) => tasks.find((t) => t.taskId === id)?.title || id;
-                  const options = tasks.filter((t) => t.taskId !== task.taskId && !waits.some((d) => d.prerequisite === t.taskId));
-                  return (
-                    <div className="space-y-2">
-                      {waits.length === 0 ? <Text as="p" role="caption" tone="muted">This ticket waits for nothing.</Text> : (
-                        <ul className="space-y-1">
-                          {waits.map((d) => (
-                            <li key={d.dependencyId} data-debug-id={`owner-chain-dep-${d.prerequisite}`} className="flex min-w-0 items-center gap-2">
-                              <Text as="span" role="body-sm" truncate className="min-w-0 flex-1">{titleOf(d.prerequisite)}</Text>
-                              {stateOf(d.prerequisite) && <StatusPill tone={STATE_TONE[stateOf(d.prerequisite)!.state]}>{TASK_STATE_LABELS[stateOf(d.prerequisite)!.state]}</StatusPill>}
-                              {editable && <IconButton icon="close" size="sm" variant="ghost" label={`Stop waiting for ${titleOf(d.prerequisite)}`} data-debug-id={`owner-chain-dep-remove-${d.prerequisite}`} disabled={busy} onClick={() => void removeDependency(d.dependencyId)} />}
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                      {blocks.length > 0 && <Text as="p" role="caption" tone="muted" data-debug-id="owner-chain-dep-blocks">Blocks: {blocks.map((d) => titleOf(d.dependent)).join(', ')}</Text>}
-                      {deps.truncated && <Text as="p" role="caption" tone="muted">Only the first dependencies were read.</Text>}
-                      {editable && options.length > 0 && (
-                        <div className="flex items-end gap-2">
-                          <FormField label="Add a ticket it waits for" className="min-w-0 flex-1">
-                            <Select size="sm" name="owner-chain-dep-add" data-debug-id="owner-chain-dep-add" value={newDep} onChange={setNewDep}
-                              options={options.map((t) => ({ value: t.taskId, label: t.title || t.taskId }))} placeholder="Choose a ticket" />
-                          </FormField>
-                          <Button size="sm" data-debug-id="owner-chain-dep-add-save" disabled={busy || !newDep} onClick={() => void addDependency(task.taskId, newDep).then((ok) => { if (ok) setNewDep(''); })}>Add</Button>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
-              </TicketCard>
-
-              {wire && wire.attempt_no > 0 && <TicketAttemptsCard task={wire} names={EMPTY_TASK_NAMES} lease={leaseClock(wire, Date.now())} />}
-              {wire && wire.attempt_no > 0 && !offline && (
-                <OwnerHandoffsCard state={handoffs?.taskId === task.taskId ? handoffs : null} onShow={() => void showHandoffs(task.taskId)} formatWhen={formatWhen} />
-              )}
-              <section data-debug-id="owner-chain-submissions" className="space-y-1">
-                <Text as="h4" role="overline" tone="muted">Submissions</Text>
-                {task.runtime.attemptNo === 0 && !task.runtime.submission
-                  ? <Text as="p" role="caption" tone="muted">No attempts yet.</Text>
-                  : (
-                    <ul className="flex flex-wrap gap-1.5">
-                      {Array.from({ length: Math.max(task.runtime.attemptNo, Number(task.runtime.submission?.attempt ?? 0)) }, (_, i) => String(i + 1)).map((n) => (
-                        <li key={n}>
-                          <Button size="sm" variant={submission?.attempt === n ? 'primary' : 'secondary'} data-debug-id={`owner-chain-attempt-${n}`} onClick={() => void openSubmission(task.taskId, n)}>Attempt {n}</Button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                {submission && (
-                  <div data-debug-id="owner-chain-submission" className="rounded-lg border border-subtle bg-surface-raised p-3">
-                    <Text as="p" role="caption" tone="muted">Attempt {submission.attempt}{submission.author ? ' · by ' + submission.author : ''}{submission.head ? ' · ' : ''}{submission.head && <Text as="code" role="code-sm">{submission.head.slice(0, 12)}</Text>}</Text>
-                    <Text as="p" role="body-sm" className="mt-1 whitespace-pre-wrap">{submission.summary || 'No summary.'}</Text>
-                  </div>
-                )}
-              </section>
-
-              <section data-debug-id="owner-chain-reviews" className="space-y-1">
-                <Text as="h4" role="overline" tone="muted">Reviews</Text>
-                {task.reviewsLoading && <Text as="p" role="caption" tone="muted" aria-live="polite" data-debug-id="owner-chain-reviews-loading">Loading reviews…</Text>}
-                {task.reviewsError && <Alert tone="danger">{task.reviewsError}</Alert>}
-                {task.reviewsTruncated && (
-                  <div data-debug-id="owner-chain-reviews-truncated"><Alert tone="warning">This chain’s history is longer than the view scans; newer reviews may be missing. Use Advanced/debug to read the full history.</Alert></div>
-                )}
-                {task.reviewsMore && <Text as="p" role="caption" tone="muted" data-debug-id="owner-chain-reviews-more">Showing the latest owner reviews only.</Text>}
-                {task.reviews.length === 0 && !task.reviewsLoading && !task.reviewsError && !task.reviewsTruncated && <Text as="p" role="caption" tone="muted">No reviews.</Text>}
-                <ul className="space-y-1.5">
-                  {task.reviews.map((r, i) => (
-                    <li key={i} data-debug-id={`owner-chain-review-${r.source}-${i}`} className="rounded-lg border border-subtle bg-surface-raised p-2">
-                      <span className="flex flex-wrap items-center gap-1.5 text-caption text-muted">
-                        <StatusPill tone={r.verdict === 'approve' ? 'success' : 'danger'}>{r.verdict === 'approve' ? 'Approved' : 'Changes requested'}</StatusPill>
-                        <span>{r.byDevice ? 'You' : <Text as="code" role="code-sm">{r.reviewer}</Text>}{r.role ? ' (' + r.role + ')' : ''}</span>
-                        {r.attempt && <span>· attempt {r.attempt}</span>}
-                        {r.at && <span>· {formatWhen(r.at)}</span>}
-                        {r.source === 'archived' && <Badge tone="neutral">Archived from Hub</Badge>}
-                      </span>
-                      {r.summary && <Text as="p" role="body-sm" className="mt-1 whitespace-pre-wrap">{r.summary}</Text>}
-                    </li>
-                  ))}
-                </ul>
-              </section>
-
-              <section data-debug-id="owner-chain-comments" className="space-y-1">
-                <Text as="h4" role="overline" tone="muted">Comments</Text>
-                {task.detail.comments.length === 0 && <Text as="p" role="caption" tone="muted">No comments yet.</Text>}
-                <ul className="space-y-1.5">
-                  {task.detail.comments.map((c) => (
-                    <li key={c.principal_id + ':' + c.operation_id} data-debug-id={`owner-chain-comment-${c.operation_id}`} className="rounded-lg border border-subtle bg-surface-raised p-2">
-                      <span className="flex flex-wrap gap-1.5 text-caption text-muted">
-                        <Text as="span" role="label">{principalLabel(s, c.principal_id)}</Text>
-                        {c.created_at && <time dateTime={c.created_at}>{formatWhen(c.created_at)}</time>}
-                      </span>
-                      <Text as="p" role="body-sm" className="mt-1 whitespace-pre-wrap">{c.body}</Text>
-                    </li>
-                  ))}
-                </ul>
-                {task.detail.truncated && <Text as="p" role="caption" tone="muted">Showing the first {task.detail.comments.length} comments.</Text>}
-                {editable && <form className="space-y-1.5" onSubmit={(e) => {
-                  e.preventDefault();
-                  if (!comment.trim()) return;
-                  void mutate('task.comment', { taskId: task.taskId, body: comment.trim() }, 'Comment added.').then((ok) => { if (ok) setComment(''); });
-                }}>
-                  <Textarea size="sm" aria-label="Add a comment" placeholder="Add a comment" data-debug-id="owner-chain-comment-input" value={comment} onChange={setComment} rows={2} />
-                  <Button size="sm" type="submit" data-debug-id="owner-chain-comment-submit" disabled={busy || !comment.trim()}>Comment</Button>
-                </form>}
-              </section>
-            </>
-          ) : null}
+            <EmptyState title="No ticket selected" description="Select a ticket to see its requirements, activity and changes." />
+          ) : ticketView}
         </section>}
       </div>
 

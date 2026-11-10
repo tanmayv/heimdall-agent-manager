@@ -36,6 +36,7 @@ const { AuxTabContent } = await import('../src/ui/components/auxiliary/AuxTabCon
 const { OwnerChainAuxPane } = await import('../src/ui/components/taskchain/OwnerChainAuxPane.tsx');
 const { resetOwnerChainsForTest } = await import('../src/ui/api/ownerChainsStore.ts');
 const { heimdallApi } = await import('../src/ui/api/heimdallApi.ts');
+const { keyringInstalled } = await import('../src/ui/store/vaultSlice.ts');
 
 const CHAIN = 'chain_owned';
 const runtime = (o: { state?: string; lease?: string; controls?: string[] } = {}) => ({
@@ -110,6 +111,8 @@ async function mount(o: {
     return ok(o.hub?.(u.pathname, init) ?? {});
   }) as typeof fetch;
   const store = await makeVaultStore();
+  // The ticket tab masks and locks its editors while the vault is locked.
+  if (!o.locked) store.dispatch(keyringInstalled({ currentEpoch: 1 }));
   const opened: Opened[] = [], updated: any[] = [], rekeyed: Opened[] = [];
   const container = win.document.createElement('div');
   win.document.body.appendChild(container);
@@ -207,21 +210,26 @@ test('the Tickets board is origin/main\'s board over owner data, opens tickets a
   }
 });
 
-test('a ticket tab shows the brief, comments and reviews, goes back to the board and steps prev / next', async () => {
+test('a ticket tab is origin/main\'s ticket view: description, comments and reviews, back to the board, prev / next', async () => {
   const ui = await mount({ render: (_env, h) => aux({ type: 'ticket', chainId: CHAIN, taskId: 'task_1' }, h) });
   try {
-    assert.equal(ui.$('owner-chain-task-title')!.textContent, 'Fix login');
-    assert.match(ui.$('owner-chain-brief')!.textContent!, /Login fails on Safari/);
-    assert.match(ui.$('owner-chain-comments')!.textContent!, /inst_worker.*Working on it/s);
-    assert.match(ui.$('owner-chain-reviews')!.textContent!, /Changes requested.*agt_reviewer \(security\)/s);
+    assert.ok(ui.$('ticket-view-task_1'), 'origin/main TicketView');
+    assert.equal(ui.$('ticket-view-title')!.textContent, 'Fix login');
+    assert.match(ui.$('ticket-view-description')!.textContent!, /Login fails on Safari/);
+    await ui.click('ticket-activity-tab-comments');
+    assert.match(ui.$('ticket-activity-feed-comments')!.textContent!, /inst_worker.*Working on it/s);
+    await ui.click('ticket-activity-tab-reviews');
+    assert.match(ui.$('ticket-activity-feed-reviews')!.textContent!, /Reviewer.*\(security\).*Changes requested.*Archived from Hub/s);
+    assert.match(ui.$('ticket-view-agents')!.textContent!, /Assignee · has the lease/, 'the lease holder is in the Agents card');
     assert.equal(ui.$('owner-chain-tickets-ticket'), null, 'a ticket tab has no ticket list');
-    assert.ok(ui.updated.some((u) => u.title === 'Fix login'), 'the tab is titled after the ticket');
+    assert.ok(ui.updated.some((u) => /Fix login/.test(u.title ?? '')), 'the tab is titled after the ticket');
 
-    await ui.click('owner-chain-show-board');
+    await ui.click('ticket-view-breadcrumb-tickets');
     assert.deepEqual(ui.opened.at(-1)!.content, { type: 'tasks' });
-    assert.equal((ui.$('owner-chain-prev-ticket') as HTMLButtonElement).disabled, true, 'the first ticket has no previous');
-    await ui.click('owner-chain-next-ticket');
-    assert.deepEqual(ui.rekeyed.at(-1), { content: { type: 'ticket', chainId: CHAIN, taskId: 'task_2' }, title: 'Write docs' });
+    assert.equal((ui.$('ticket-view-prev-btn') as HTMLButtonElement).disabled, true, 'the first ticket has no previous');
+    await ui.click('ticket-view-next-btn');
+    assert.deepEqual(ui.rekeyed.at(-1)!.content, { type: 'ticket', chainId: CHAIN, taskId: 'task_2' });
+    assert.match(ui.rekeyed.at(-1)!.title!, /Write docs/);
     assertNoHubChainReads(ui.hubPaths);
   } finally {
     await ui.cleanup();
@@ -448,12 +456,12 @@ test('a ticket shows its requirement history on demand: each change decrypted, n
     render: (_env, h) => aux({ type: 'ticket', chainId: CHAIN, taskId: 'task_1' }, h),
   });
   try {
-    assert.equal(ui.$('owner-chain-requirements-history'), null, 'hidden until asked for');
-    await ui.click('owner-chain-requirements-history-show');
-    const rows = [...ui.$('owner-chain-requirements-history')!.querySelectorAll('li[data-debug-id]')].map((li) => li.getAttribute('data-debug-id'));
-    assert.deepEqual(rows, ['owner-chain-requirements-change-9', 'owner-chain-requirements-change-4'], 'only this ticket, newest first');
-    assert.match(ui.$('owner-chain-requirements-change-9')!.textContent!, /Rev 2.*inst_coord.*Firefox fails too.*Fix login everywhere.*Works on Firefox/s);
-    assert.match(ui.$('owner-chain-requirements-change-4')!.textContent!, /Rev 1.*Works on Safari/s);
+    assert.equal(ui.calls.filter((c) => c.method === 'history.fetch').length, 0, 'nothing is decrypted until asked for');
+    await ui.click('ticket-activity-tab-requirements');
+    const rows = [...ui.$('task-requirements-history')!.querySelectorAll('li[data-debug-id]')].map((li) => li.getAttribute('data-debug-id'));
+    assert.deepEqual(rows, ['ticket-requirement-change-2', 'ticket-requirement-change-1'], 'only this ticket, newest first');
+    assert.match(ui.$('ticket-requirement-change-2')!.textContent!, /Rev 2.*Coord.*changed requirements.*Firefox fails too.*Fix login.*Fix login everywhere.*Works on Firefox/s);
+    assert.match(ui.$('ticket-requirement-change-1')!.textContent!, /Rev 1.*You.*Works on Safari/s, 'a device edit is the user');
   } finally {
     await ui.cleanup();
   }
@@ -624,7 +632,27 @@ test('the board card Edit menu opens the ticket tab with the requirements editor
   }
   const ticket = await mount({ render: (_env, h) => aux({ type: 'ticket', chainId: CHAIN, taskId: 'task_1', focus: 'edit_requirements' }, h) });
   try {
-    assert.ok(ticket.$('owner-chain-requirements-form'), 'the requirements editor is open');
+    // The editor is a modal (rendered outside the pane).
+    assert.ok(win.document.querySelector('[data-debug-id="task-requirements-editor"]'), 'the requirements editor is open');
+    assert.ok(ticket.updated.some((u) => u.patch?.focus === null), 'the one-shot focus is consumed');
+  } finally {
+    await ticket.cleanup();
+  }
+});
+
+test('the board card Edit › reviewers opens the ticket tab with origin/main reviewers dialog open', async () => {
+  // task_1 is being worked on (its people are locked); task_2 is waiting.
+  const board = await mount({ render: (_env, h) => aux({ type: 'tasks' }, h) });
+  try {
+    await board.click('task-card-more-task_2');
+    await board.click('task-card-edit-reviewers-task_2');
+    assert.deepEqual(board.opened.at(-1)!.content, { type: 'ticket', chainId: CHAIN, taskId: 'task_2', focus: 'edit_reviewers' });
+  } finally {
+    await board.cleanup();
+  }
+  const ticket = await mount({ render: (_env, h) => aux({ type: 'ticket', chainId: CHAIN, taskId: 'task_2', focus: 'edit_reviewers' }, h) });
+  try {
+    assert.ok(win.document.querySelector('[data-debug-id="task-edit-user-approval"]'), 'the reviewers dialog is open');
     assert.ok(ticket.updated.some((u) => u.patch?.focus === null), 'the one-shot focus is consumed');
   } finally {
     await ticket.cleanup();
@@ -704,12 +732,16 @@ test('a ticket shows its handoffs on demand: summary, next steps, waiting on and
   });
   try {
     assert.equal(ui.calls.filter((c) => c.method === 'history.fetch').length, 0, 'nothing is scanned until asked');
-    await ui.click('owner-chain-handoffs-show');
-    const rows = [...ui.$('owner-chain-handoffs')!.querySelectorAll('li[data-debug-id]')].map((li) => li.getAttribute('data-debug-id'));
-    assert.deepEqual(rows, ['owner-chain-handoff-11', 'owner-chain-handoff-8', 'owner-chain-handoff-5'], 'this ticket only, newest first');
-    assert.match(ui.$('owner-chain-handoff-11')!.textContent!, /Submitted.*inst_worker.*cccccccccccc.*Login fixed everywhere/s);
-    assert.match(ui.$('owner-chain-handoff-8')!.textContent!, /Blocked.*Need the client id.*Waiting on human/s);
-    assert.match(ui.$('owner-chain-handoff-5')!.textContent!, /Handed off.*Half done.*Next steps.*Wire the Safari fix/s);
+    await ui.click('ticket-activity-tab-handoffs');
+    const rows = [...ui.$('ticket-activity-feed-handoffs')!.querySelectorAll('li[data-debug-id]')].map((li) => li.getAttribute('data-debug-id'));
+    assert.deepEqual(rows, ['ticket-handoff-11', 'ticket-handoff-8', 'ticket-handoff-5'], 'this ticket only, newest first');
+    assert.match(ui.$('ticket-handoff-11')!.textContent!, /Worker.*Submitted.*cccccccccccc.*Login fixed everywhere/s);
+    assert.match(ui.$('ticket-handoff-8')!.textContent!, /Blocked.*Need the client id.*Waiting on human/s);
+    assert.match(ui.$('ticket-handoff-5')!.textContent!, /Handed off.*Half done.*Next steps.*Wire the Safari fix/s);
+    // The All feed lists every event of this ticket, described.
+    await ui.click('ticket-activity-tab-all');
+    assert.match(ui.$('ticket-activity-feed-all')!.textContent!, /Worker.*submitted for review.*Worker.*blocked the ticket.*Worker.*commented.*Worker.*handed the ticket off/s);
+    assert.ok(!/Write docs/.test(ui.$('ticket-activity-feed-all')!.textContent!), 'other tickets\' events stay out');
   } finally {
     await ui.cleanup();
   }

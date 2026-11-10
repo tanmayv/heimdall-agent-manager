@@ -96,3 +96,76 @@ test('ownerRequirementsDoc replaces the edited brief fields and keeps the rest v
   const bare = JSON.parse(ownerRequirementsDoc('', { goal: 'G', acceptance: [], reviewers: [], requiresUserApproval: true, reason: '' }));
   assert.deepEqual(bare, { goal: 'G', acceptance: [], requires_user_approval: true }, 'no reviewers key, no stale reason, the gate flag only when set');
 });
+
+test('the ticket tab feeds: events, handoffs, reviews and comments in the TicketActivity shapes', async () => {
+  const { ownerTicketEvents, ownerTicketEventText, ownerActorKind, ownerHandoffItems, ownerReviewItems, ownerCommentItems } = await import('../src/ui/components/tasks/ownerTaskAdapter.ts');
+  assert.equal(ownerActorKind('device'), 'user', 'a device is the user');
+  assert.equal(ownerActorKind('agent'), 'agent');
+  assert.equal(ownerActorKind(''), 'agent');
+  assert.equal(ownerTicketEventText('task.comment'), 'commented');
+  assert.equal(ownerTicketEventText('some.new.kind'), 'some.new.kind', 'an unknown kind shows as itself');
+
+  const events = ownerTicketEvents([
+    { seq: '9', kind: 'lease.submit', taskId: 'task_1', actorKind: 'agent', actorId: 'inst_w', at: '2026-11-10T01:00:00.000Z' },
+    { seq: '3', kind: 'task.hold', taskId: 'task_1', actorKind: 'device', actorId: 'dev_1', at: '' },
+  ]);
+  assert.deepEqual(events.map((e) => [e.id, e.actorKind, e.text, e.tsMs]), [
+    ['9', 'agent', 'submitted for review', Date.parse('2026-11-10T01:00:00.000Z')],
+    ['3', 'user', 'held the ticket', 0],
+  ]);
+  assert.equal((events[0].raw as any).kind, 'lease.submit', 'Raw events keep the record as read');
+
+  const handoffs = ownerHandoffItems([
+    { seq: '11', kind: 'lease.submit', summary: 'Done', nextSteps: '', waitingOn: '', head: 'c'.repeat(40), requirementsRevision: '2', actorId: 'inst_w', at: '2026-11-10T02:00:00Z' },
+    { seq: '8', kind: 'lease.block', summary: 'Need id', nextSteps: 'Ask', waitingOn: 'human', head: '', requirementsRevision: '2', actorId: 'inst_w', at: '' },
+  ]);
+  assert.deepEqual(handoffs.map((h) => [h.id, h.label, h.tone, h.waitingOn, h.nextSteps]), [['11', 'Submitted', 'success', '', ''], ['8', 'Blocked', 'warning', 'human', 'Ask']]);
+
+  const reviews = ownerReviewItems([
+    { source: 'owner', attempt: '2', verdict: 'approve', reviewer: 'dev_1', role: '', summary: 'LGTM', at: '2026-11-10T00:00:00Z', byDevice: true },
+    { source: 'archived', attempt: '1', verdict: 'request_changes', reviewer: 'agt_rev', role: 'security', summary: 'Fix', at: '', byDevice: false },
+  ]);
+  assert.deepEqual(reviews.map((r) => [r.id, r.actorKind, r.actorId, r.archived, r.role]), [['owner-0', 'user', 'user', false, ''], ['archived-1', 'agent', 'agt_rev', true, 'security']]);
+
+  const comments = ownerCommentItems([
+    { operation_id: 'op1', principal_id: 'inst_w', body: 'first', seq: '1', created_at: '2026-11-10T00:00:00Z' },
+    { operation_id: '', principal_id: 'dev_1', body: 'second', seq: '2', created_at: '2026-11-10T01:00:00Z' },
+  ], (p) => (p === 'dev_1' ? 'You' : p));
+  assert.deepEqual(comments, [
+    { id: 'dev_1:2', author: 'You', body: 'second', at: '2026-11-10T01:00:00Z' },
+    { id: 'op1', author: 'inst_w', body: 'first', at: '2026-11-10T00:00:00Z' },
+  ], 'newest first, each with its author label');
+});
+
+test('owner dependencies: what a ticket waits for, and the edits that make it wait for a new set', async () => {
+  const { ownerPrerequisites, ownerDependencyChanges } = await import('../src/ui/components/tasks/ownerTaskAdapter.ts');
+  const deps = [
+    { dependencyId: 'dep_a', dependent: 'task_1', prerequisite: 'task_2' },
+    { dependencyId: 'dep_b', dependent: 'task_1', prerequisite: 'task_3' },
+    { dependencyId: 'dep_c', dependent: 'task_4', prerequisite: 'task_1' },
+  ];
+  assert.deepEqual(ownerPrerequisites('task_1', deps), ['task_2', 'task_3']);
+  assert.deepEqual(ownerPrerequisites('task_4', deps), ['task_1']);
+  assert.deepEqual(ownerDependencyChanges('task_1', deps, ['task_3', 'task_5']), { add: ['task_5'], remove: ['dep_a'] });
+  assert.deepEqual(ownerDependencyChanges('task_1', deps, ['task_2', 'task_3']), { add: [], remove: [] }, 'no change sends nothing');
+  assert.deepEqual(ownerDependencyChanges('task_1', deps, ['task_1', '']), { add: [], remove: ['dep_a', 'dep_b'] }, 'a ticket never waits for itself');
+});
+
+test('readOwnerTaskActivity keeps only that ticket\'s events, newest first, without bookkeeping', async () => {
+  const { fakeOwner, ownerTestSession } = await import('./helpers/ownerFakeRelay.ts');
+  const { readOwnerTaskActivity } = await import('../src/ui/api/ownerChains.ts');
+  const { clearKeyringSession } = await import('../src/ui/utils/vaultKeyringSession.ts');
+  const env = await ownerTestSession();
+  const items = [
+    { seq: '1', task_id: 'task_1', kind: 'task.create', actor_kind: 'device', actor_id: 'd', ts_ms: '1' },
+    { seq: '2', task_id: 'task_2', kind: 'task.comment', actor_kind: 'agent', actor_id: 'i', ts_ms: '2' },
+    { seq: '3', task_id: 'task_1', kind: 'source.delivery', actor_kind: 'agent', actor_id: 'i', ts_ms: '3' },
+    { seq: '4', task_id: 'task_1', kind: 'task.comment', actor_kind: 'agent', actor_id: 'i', ts_ms: '4' },
+  ];
+  const send = fakeOwner(env.session, (call) => (call.method === 'history.read' ? { chain_id: 'chain_1', next_cursor: '', items } : { code: 'invalid_scope' }));
+  try {
+    const r = await readOwnerTaskActivity(env.session, env.bridgeId, 'chain_1', 'task_1', send);
+    assert.deepEqual(r.events.map((e) => e.seq), ['4', '1']);
+    assert.equal(r.truncated, false);
+  } finally { clearKeyringSession(); }
+});

@@ -154,7 +154,7 @@ function renderAuxTabBody({
           onSwitchTicket={(taskId, title) => onRekeyTab(tab.id, { type: 'ticket', chainId: c.chainId, taskId }, title)}
           onOpenAgent={(agentInstanceId) => openAgentConversation(agentInstanceId, isMobile)}
           onTitle={(title) => title !== tab.title && onUpdateTab(tab.id, {}, title)}
-          editFocus={c.focus === 'edit_requirements' || c.focus === 'edit_deps' ? c.focus : null}
+          editFocus={c.focus === 'edit_requirements' || c.focus === 'edit_reviewers' || c.focus === 'edit_deps' ? c.focus : null}
           onEditFocusConsumed={() => onUpdateTab(tab.id, { focus: null })}
         />
       );

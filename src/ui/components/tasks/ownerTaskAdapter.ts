@@ -5,9 +5,14 @@
 // by the Task Chains page and the aux panes, so the restored presentational
 // components never learn about owner operations.
 
+import type { Tone } from '@ui';
 import type { TaskReviewWire, TaskWire } from '../../api/taskWire';
 import type { RequirementRevisionEntry } from './ticketModel';
-import { ownerTaskState, type OwnerComment, type OwnerRequirementChange, type OwnerReview, type OwnerRuntime, type OwnerTaskDetail, type OwnerTaskRow } from '../../api/ownerChains';
+import type { TicketCommentItem, TicketEventItem, TicketHandoffItem, TicketReviewItem } from './TicketActivity';
+import {
+  ownerTaskState, type OwnerActivity, type OwnerComment, type OwnerDependency, type OwnerHandoff, type OwnerRequirementChange, type OwnerReview,
+  type OwnerRuntime, type OwnerTaskDetail, type OwnerTaskRow,
+} from '../../api/ownerChains';
 
 export interface OwnerTaskSource {
   chainId: string;
@@ -179,4 +184,107 @@ export function ownerRequirementHistoryEntries(changes: OwnerRequirementChange[]
       eventId: Number(c.seq) || null,
     };
   });
+}
+
+/* Ticket tab (TicketView) feeds -------------------------------------- */
+
+function isoMs(at: string): number {
+  const ms = at ? Date.parse(at) : 0;
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+/** An owner history actor in the ticket feeds' terms: a device is the user. */
+export function ownerActorKind(kind: string): string {
+  return kind === 'device' ? 'user' : kind || 'agent';
+}
+
+const TICKET_EVENT_TEXT: Record<string, string> = {
+  'task.create': 'created the ticket', 'task.edit': 'edited the ticket', 'task.delete': 'deleted the ticket',
+  'task.priority': 'changed the priority', 'task.hold': 'held the ticket', 'task.release': 'released the hold',
+  'task.cancel': 'cancelled the ticket', 'task.reopen': 'reopened the ticket', 'task.resolve': 'answered the blocker',
+  'task.comment': 'commented', 'requirements.edit': 'changed the requirements', 'review.post': 'posted a review',
+  'work.dependency.add': 'added a dependency', 'work.dependency.remove': 'removed a dependency',
+  'lease.claim': 'took the ticket', 'lease.submit': 'submitted for review', 'lease.handoff': 'handed the ticket off',
+  'lease.block': 'blocked the ticket', 'lease.switch': 'switched away', 'lease.release': 'released the lease',
+  'merge.merged': 'merged the work', 'merge.retry': 'retried the merge',
+};
+
+/** What an owner history event did to a ticket, as a sentence rest ("commented"). */
+export function ownerTicketEventText(kind: string): string {
+  return TICKET_EVENT_TEXT[kind] ?? kind;
+}
+
+/** A ticket's owner history (newest first) as its Activity events. */
+export function ownerTicketEvents(events: OwnerActivity[]): TicketEventItem[] {
+  return events.map((e) => ({
+    id: e.seq || `${e.kind}:${e.at}`,
+    kind: e.kind,
+    actorKind: ownerActorKind(e.actorKind),
+    actorId: e.actorId,
+    text: ownerTicketEventText(e.kind),
+    tsMs: isoMs(e.at),
+    raw: e,
+  }));
+}
+
+const HANDOFF_KIND: Record<OwnerHandoff['kind'], { label: string; tone: Tone }> = {
+  'lease.submit': { label: 'Submitted', tone: 'success' },
+  'lease.handoff': { label: 'Handed off', tone: 'info' },
+  'lease.block': { label: 'Blocked', tone: 'warning' },
+  'lease.switch': { label: 'Switched away', tone: 'neutral' },
+};
+
+/** Owner handoffs (handoff, block, switch, submit; newest first) as the Handoffs feed. */
+export function ownerHandoffItems(handoffs: OwnerHandoff[]): TicketHandoffItem[] {
+  return handoffs.map((h) => ({
+    id: h.seq,
+    label: HANDOFF_KIND[h.kind]?.label ?? h.kind,
+    tone: HANDOFF_KIND[h.kind]?.tone ?? 'neutral',
+    actorKind: 'agent',
+    actorId: h.actorId,
+    tsMs: isoMs(h.at),
+    summary: h.summary,
+    nextSteps: h.nextSteps,
+    waitingOn: h.waitingOn,
+    head: h.head,
+    requirementsRevision: h.requirementsRevision,
+  }));
+}
+
+/** Owner and archived reviews as the Reviews feed (a device-signed review is the user's). */
+export function ownerReviewItems(reviews: OwnerReview[]): TicketReviewItem[] {
+  return reviews.map((r, i) => ({
+    id: `${r.source}-${i}`,
+    verdict: r.verdict,
+    actorKind: r.byDevice ? 'user' : 'agent',
+    actorId: r.byDevice ? 'user' : r.reviewer,
+    role: r.role,
+    attempt: r.attempt,
+    tsMs: isoMs(r.at),
+    summary: r.summary,
+    archived: r.source === 'archived',
+  }));
+}
+
+/** Owner comments (oldest first) as the Comments feed, newest first. */
+export function ownerCommentItems(comments: OwnerComment[], author: (principalId: string) => string): TicketCommentItem[] {
+  return comments.map((c) => ({ id: c.operation_id || `${c.principal_id}:${c.seq}`, author: author(c.principal_id), body: c.body, at: c.created_at })).reverse();
+}
+
+/** The tickets `taskId` waits for, per the owner dependencies. */
+export function ownerPrerequisites(taskId: string, deps: OwnerDependency[]): string[] {
+  return deps.filter((d) => d.dependent === taskId).map((d) => d.prerequisite);
+}
+
+/**
+ * The dependency edits that make `taskId` wait for exactly `wanted`: the
+ * prerequisites to add, and the dependency ids to remove.
+ */
+export function ownerDependencyChanges(taskId: string, deps: OwnerDependency[], wanted: string[]): { add: string[]; remove: string[] } {
+  const current = deps.filter((d) => d.dependent === taskId);
+  const want = new Set(wanted.filter((id) => id && id !== taskId));
+  return {
+    add: [...want].filter((id) => !current.some((d) => d.prerequisite === id)),
+    remove: current.filter((d) => !want.has(d.prerequisite)).map((d) => d.dependencyId),
+  };
 }

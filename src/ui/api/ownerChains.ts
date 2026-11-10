@@ -599,6 +599,20 @@ export async function readOwnerActivity(
   session: OwnerSession, bridgeId: string, chainId: string, send: OwnerSend = ownerRelaySend,
   keep = 20, maxPages = OWNER_HISTORY_MAX_PAGES,
 ): Promise<{ events: OwnerActivity[]; truncated: boolean }> {
+  return scanOwnerActivity(session, bridgeId, chainId, '', send, keep, maxPages);
+}
+
+/** One ticket's latest `keep` history events, newest first (its Activity feed). */
+export async function readOwnerTaskActivity(
+  session: OwnerSession, bridgeId: string, chainId: string, taskId: string, send: OwnerSend = ownerRelaySend,
+  keep = 50, maxPages = OWNER_HISTORY_MAX_PAGES,
+): Promise<{ events: OwnerActivity[]; truncated: boolean }> {
+  return scanOwnerActivity(session, bridgeId, chainId, taskId, send, keep, maxPages);
+}
+
+async function scanOwnerActivity(
+  session: OwnerSession, bridgeId: string, chainId: string, taskId: string, send: OwnerSend, keep: number, maxPages: number,
+): Promise<{ events: OwnerActivity[]; truncated: boolean }> {
   const events: OwnerActivity[] = [];
   let cursor = '';
   for (let page = 0; page < maxPages; page++) {
@@ -606,6 +620,7 @@ export async function readOwnerActivity(
     for (const e of Array.isArray(data.items) ? data.items : []) {
       const kind = String(e?.kind || '');
       if (!kind || ACTIVITY_HIDDEN.has(kind)) continue;
+      if (taskId && String(e.task_id || '') !== taskId) continue;
       const ms = Number(e.ts_ms);
       events.push({ seq: String(e.seq ?? ''), kind, taskId: String(e.task_id || ''), actorKind: String(e.actor_kind || ''), actorId: String(e.actor_id || ''),
         at: Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : '' });
