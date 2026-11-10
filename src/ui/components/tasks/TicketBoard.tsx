@@ -9,6 +9,7 @@ import { VaultText } from '../vault/VaultText';
 import { BoardTicketCard, type BoardTicketActions, type TaskEditField, type TicketOpenFocus } from './BoardTicketCard';
 import { useTicketClock } from './useTicketClock';
 import { EMPTY_TASK_NAMES, type TaskNames } from './taskNames';
+import { TicketProgressBar } from './TicketProgressBar';
 import {
   attemptInfo,
   boardFilterCounts,
@@ -17,7 +18,6 @@ import {
   needsYouHeadline,
   progressCaption,
   progressCounts,
-  progressSegments,
   type BoardFilter,
   type FinishedOrder,
 } from './ticketModel';
@@ -56,20 +56,6 @@ export interface TicketBoardProps {
   workSlot?: React.ReactNode;
   hasWorkflowRuns?: boolean;
 }
-
-const SEGMENT_CLASS: Record<string, string> = {
-  done: 'bg-success',
-  in_progress: 'bg-info',
-  ready: 'bg-faint',
-  cancelled: 'bg-strong',
-};
-
-const SEGMENT_LABEL: Record<string, string> = {
-  done: 'done',
-  in_progress: 'in progress or review',
-  ready: 'ready or waiting',
-  cancelled: 'cancelled',
-};
 
 /** Vault-locked notice shared by the board and the ticket tab (edge states). */
 export function VaultLockedBanner({ debugId, editing = false }: { debugId: string; editing?: boolean }) {
@@ -126,7 +112,6 @@ export const TicketBoard: React.FC<TicketBoardProps> = ({
   const counts = useMemo(() => boardFilterCounts(tasks), [tasks]);
   const groups = useMemo(() => groupTickets(tasks, filter, order), [tasks, filter, order]);
   const progress = useMemo(() => progressCounts(summaryTasks), [summaryTasks]);
-  const segments = progressSegments(progress);
   const caption = progressCaption(progress);
   const headline = useMemo(() => needsYouHeadline(summaryTasks, keys), [summaryTasks, keys]);
   const masked = !vaultUnlocked && tasks.some((t) => isVaultArmored(t.title));
@@ -183,18 +168,7 @@ export const TicketBoard: React.FC<TicketBoardProps> = ({
 
         {progress.total > 0 && (
           <div className="flex flex-col gap-2">
-            <div
-              role="img"
-              aria-label={segments.map((s) => `${s.count} ${SEGMENT_LABEL[s.key]}`).join(', ')}
-              data-debug-id="ticket-board-progress"
-              className="flex h-1.5 w-full gap-0.5 overflow-hidden rounded-pill bg-neutral-soft"
-            >
-              {segments
-                .filter((s) => s.count > 0)
-                .map((s) => (
-                  <span key={s.key} className={`h-full ${SEGMENT_CLASS[s.key]}`} style={{ width: `${s.percent}%` }} />
-                ))}
-            </div>
+            <TicketProgressBar counts={progress} debugId="ticket-board-progress" />
             <div className="flex flex-wrap items-center justify-between gap-2">
               <Text as="p" role="caption" tone="muted" data-debug-id="ticket-board-progress-caption">
                 <span className="font-semibold text-primary">{caption.lead}</span>

@@ -393,3 +393,32 @@ test('addOwnerChainAgent stops on a failed launch and never binds an instance th
   await assert.rejects(addOwnerChainAgent({ launch: async () => '', status: async () => 'running', bind: async (id) => { bound.push(id); } }), /not created/);
   assert.deepEqual(bound, []);
 });
+
+test('the overview shows chain progress and the latest activity, newest first, with ticket links', async () => {
+  const owner = chainOwner();
+  const history = [
+    { seq: '1', kind: 'task.create', task_id: 'task_1', actor_kind: 'agent', actor_id: 'inst_coord', ts_ms: '1794200000000' },
+    { seq: '2', kind: 'registry.prepare', task_id: '', actor_kind: 'bridge', actor_id: 'brg_home', ts_ms: '1794200001000' },
+    { seq: '3', kind: 'review.post', task_id: 'task_3', actor_kind: 'agent', actor_id: 'inst_reviewer', ts_ms: '1794200002000' },
+  ];
+  const ui = await mount({
+    answer: (call) => {
+      if (call.method !== 'history.read') return owner.answer(call);
+      // Two pages, oldest first, like the owner.
+      return call.payload.cursor ? { chain_id: CHAIN, next_cursor: '', items: history.slice(2) } : { chain_id: CHAIN, next_cursor: 'c1', items: history.slice(0, 2) };
+    },
+    render: (_env, h) => aux({ type: 'chainOverview' }, h),
+  });
+  try {
+    assert.match(ui.$('owner-chain-progress')!.getAttribute('aria-label')!, /1 done, 1 in progress or review, 1 ready or waiting/);
+    assert.ok(ui.$('owner-chain-progress-caption')!.textContent!.length > 0);
+    const rows = [...ui.$('owner-chain-activity')!.querySelectorAll('li')].map((li) => li.getAttribute('data-debug-id'));
+    assert.deepEqual(rows, ['owner-chain-activity-3', 'owner-chain-activity-1'], 'newest first; bookkeeping events are left out');
+    assert.match(ui.$('owner-chain-activity-3')!.textContent!, /inst_reviewer.*Reviewed.*Ship/s);
+    assert.match(ui.$('owner-chain-activity-1')!.textContent!, /inst_coord.*Created.*Fix login/s);
+    await ui.click('owner-chain-activity-ticket-1');
+    assert.deepEqual(ui.opened.at(-1)!.content, { type: 'tasks', taskId: 'task_1' });
+  } finally {
+    await ui.cleanup();
+  }
+});

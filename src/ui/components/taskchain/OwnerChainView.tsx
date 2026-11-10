@@ -9,15 +9,16 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Badge, Button, Checkbox, EmptyState, FormField, IconButton, Input, Select, StatusDot, StatusPill, Text, Textarea, type Tone } from '@ui';
 import {
   freshOwnerSession, isOwnerOffline, ownerAwaitingUser, ownerCall, ownerErrorMessage, ownerOfflineMessage, ownerRelaySend, ownerTaskState,
-  ownerExpectedRevision, readArchivedReviews, readOwnerChain, readOwnerChainStatus, readOwnerReviews, readOwnerRuntime, readOwnerDependencies, readOwnerSubmission, readOwnerTask, readOwnerWorkRevision, withOwnerRecovery,
-  type OwnerChainDetail, type OwnerChainStatus, type OwnerDependency, type OwnerChainSummary, type OwnerReview, type OwnerRuntime, type OwnerSend,
+  ownerActivityLabel, ownerExpectedRevision, readArchivedReviews, readOwnerActivity, readOwnerChain, readOwnerChainStatus, readOwnerReviews, readOwnerRuntime, readOwnerDependencies, readOwnerSubmission, readOwnerTask, readOwnerWorkRevision, withOwnerRecovery,
+  type OwnerActivity, type OwnerChainDetail, type OwnerChainStatus, type OwnerDependency, type OwnerChainSummary, type OwnerReview, type OwnerRuntime, type OwnerSend,
   type OwnerSubmission, type OwnerTaskDetail, type OwnerTaskState,
 } from '../../api/ownerChains';
 import { ownerId, type OwnerInput, type OwnerSession } from '../../api/ownerLocalClient';
 import type { OwnerCommand } from '../../api/ownerLocal';
 import { TASK_STATE_LABELS } from '../tasks/taskV2Types';
 import { EMPTY_TASK_NAMES } from '../tasks/taskNames';
-import { formatDuration, leaseClock, ticketKeys } from '../tasks/ticketModel';
+import { formatDuration, leaseClock, progressCaption, progressCounts, ticketKeys } from '../tasks/ticketModel';
+import { TicketProgressBar } from '../tasks/TicketProgressBar';
 import { TicketAttemptsCard } from '../tasks/TicketAttemptsCard';
 import { TicketCard } from '../tasks/TicketCard';
 import { ownerRequirementsDoc, ownerTaskWire, ownerTaskWires } from '../tasks/ownerTaskAdapter';
@@ -146,6 +147,8 @@ export function OwnerChainView({
   const [members, setMembers] = useState<OwnerChainMember[] | null>(null);
   // Hub runtime_status per agent instance (overview agent rows).
   const [agentStatus, setAgentStatus] = useState<Record<string, string>>({});
+  // The overview's recent chain history (history.read); null until read.
+  const [activity, setActivity] = useState<{ events: OwnerActivity[]; truncated: boolean } | null>(null);
   const [selected, setSelected] = useState(focusTaskId || '');
   const [task, setTask] = useState<TaskView | null>(null);
   const [taskLoading, setTaskLoading] = useState(false);
@@ -342,6 +345,21 @@ export function OwnerChainView({
   const showsTicket = layout === 'page' || layout === 'ticket';
   // Only once the owner answered the chain read: an offline owner is asked nothing.
   const ownerReady = !offline && Boolean(detail);
+  // The overview's Activity is re-read when the chain, a ticket or a ticket's
+  // runtime changed, not on every background poll.
+  const activityKey = layout === 'overview' && ownerReady && detail
+    ? [detail.revision, ...detail.tasks.map((t) => t.revision), ...Object.keys(states).sort().map((id) => runtimeKey(states[id]))].join('|') : '';
+  useEffect(() => {
+    if (!activityKey) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const a = await readOwnerActivity(await session(), bridge, chain.chainId, send);
+        if (!cancelled && live.current) setActivity(a);
+      } catch (e) { if (isOwnerOffline(e)) fail(e); }
+    })();
+    return () => { cancelled = true; };
+  }, [activityKey, bridge, chain.chainId, send, session, fail]);
   useEffect(() => { if (showsTicket && selected && ownerReady) void loadDeps(); }, [showsTicket, selected, ownerReady, loadDeps]);
 
   async function addDependency(taskId: string, prerequisite: string): Promise<boolean> {
@@ -475,7 +493,7 @@ export function OwnerChainView({
   }, [layout, members, coordinatorId, tasks, states]);
 
   // The board's ticket wires, keys and per-ticket card actions (owner commands).
-  const boardWires = useMemo(() => (layout === 'board' && detail ? ownerTaskWires(chain.chainId, bridge, detail.tasks, states) : []), [layout, detail, states, chain.chainId, bridge]);
+  const boardWires = useMemo(() => ((layout === 'board' || layout === 'overview') && detail ? ownerTaskWires(chain.chainId, bridge, detail.tasks, states) : []), [layout, detail, states, chain.chainId, bridge]);
   const boardKeys = useMemo(() => ticketKeys(boardWires), [boardWires]);
   const boardActions = (t: TaskWire): BoardTicketActions => {
     const revision = detail?.tasks.find((r) => r.task_id === t.task_id)?.revision ?? '0';
@@ -611,6 +629,18 @@ export function OwnerChainView({
 
       {layout === 'overview' && (
         <div data-debug-id="owner-chain-overview" className="space-y-4 px-4 pt-4">
+          {detail && boardWires.length > 0 && (() => {
+            const counts = progressCounts(boardWires);
+            const caption = progressCaption(counts);
+            return (
+              <div className="space-y-1.5">
+                <TicketProgressBar counts={counts} debugId="owner-chain-progress" />
+                <Text as="p" role="caption" tone="muted" data-debug-id="owner-chain-progress-caption">
+                  <span className="font-semibold text-primary">{caption.lead}</span>{caption.rest ? ` · ${caption.rest}` : ''}
+                </Text>
+              </div>
+            );
+          })()}
           {detail && tasks.length > 0 && (
             <div data-debug-id="owner-chain-overview-counts" className="flex flex-wrap gap-1.5">
               {STATE_ORDER.map((state) => {
@@ -673,6 +703,31 @@ export function OwnerChainView({
             <section aria-label="Needs attention" data-debug-id="owner-chain-attention" className="space-y-1.5">
               <Text as="h3" role="overline" tone="warning">Needs attention</Text>
               <ul className="space-y-1.5">{attention.map(ticketCard)}</ul>
+            </section>
+          )}
+          {!offline && activity && (
+            <section aria-label="Activity" data-debug-id="owner-chain-activity" className="space-y-1.5">
+              <Text as="h3" role="overline" tone="muted">Activity</Text>
+              {activity.events.length === 0 ? <EmptyState data-debug-id="owner-chain-no-activity" title="No activity yet" description="Changes to the chain and its tickets appear here." />
+                : (
+                  <ul className="space-y-1">
+                    {activity.events.map((e) => {
+                      const title = e.taskId ? (tasks.find((t) => t.taskId === e.taskId)?.title || e.taskId) : '';
+                      return (
+                        <li key={e.seq} data-debug-id={`owner-chain-activity-${e.seq}`} className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
+                          <Text as="span" role="body-sm">{principalLabel(sessionRef.current, e.actorId)}</Text>
+                          <Text as="span" role="body-sm" tone="muted">{ownerActivityLabel(e.kind)}</Text>
+                          {title && (
+                            <button type="button" data-debug-id={`owner-chain-activity-ticket-${e.seq}`} onClick={() => openTicket(e.taskId, title)}
+                              className="min-w-0 truncate text-body-sm text-accent hover:underline">{title}</button>
+                          )}
+                          {e.at && <Text as="span" role="caption" tone="faint" className="ml-auto">{formatWhen(e.at)}</Text>}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              {activity.truncated && <Text as="p" role="caption" tone="muted">Older activity is not shown.</Text>}
             </section>
           )}
         </div>

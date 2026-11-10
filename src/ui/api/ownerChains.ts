@@ -569,6 +569,54 @@ export async function readOwnerReviews(
   return { reviews: reviews.reverse(), truncated: Boolean(cursor), more: dropped };
 }
 
+/** One chain history event, as the overview's Activity lists it. */
+export interface OwnerActivity { seq: string; kind: string; taskId: string; actorKind: string; actorId: string; at: string }
+
+const ACTIVITY_LABELS: Record<string, string> = {
+  'chain.create': 'Created the chain', 'chain.edit': 'Edited the chain', 'chain.complete': 'Completed the chain',
+  'chain.member.set': 'Changed the chain members', 'fleet.policy.set': 'Changed the fleet policy',
+  'task.create': 'Created', 'task.edit': 'Edited', 'task.delete': 'Deleted', 'task.priority': 'Changed the priority of',
+  'task.hold': 'Held', 'task.release': 'Released', 'task.cancel': 'Cancelled', 'task.reopen': 'Reopened', 'task.resolve': 'Resolved',
+  'task.comment': 'Commented on', 'requirements.edit': 'Changed the requirements of', 'review.post': 'Reviewed',
+  'work.dependency.add': 'Added a dependency', 'work.dependency.remove': 'Removed a dependency',
+  'lease.submit': 'Submitted', 'merge.merged': 'Merged', 'merge.retry': 'Retried the merge of',
+};
+
+/** A readable verb for a history event kind (the kind itself when unknown). */
+export function ownerActivityLabel(kind: string): string {
+  return ACTIVITY_LABELS[kind] ?? kind;
+}
+
+/** Internal bookkeeping events the Activity list leaves out. */
+const ACTIVITY_HIDDEN = new Set(['registry.prepare', 'source.delivery', 'executor.notification', 'executor.activate']);
+
+/**
+ * The chain's latest `keep` history events, newest first. history.read pages
+ * oldest first, so the whole (bounded) history is paged and only the tail is
+ * kept; `truncated` when the page bound ended the scan.
+ */
+export async function readOwnerActivity(
+  session: OwnerSession, bridgeId: string, chainId: string, send: OwnerSend = ownerRelaySend,
+  keep = 20, maxPages = OWNER_HISTORY_MAX_PAGES,
+): Promise<{ events: OwnerActivity[]; truncated: boolean }> {
+  const events: OwnerActivity[] = [];
+  let cursor = '';
+  for (let page = 0; page < maxPages; page++) {
+    const data = await ownerCall(session, bridgeId, 'history.read', { chainId, expectedRevision: '0', cursor, limit: OWNER_HISTORY_PAGE }, send);
+    for (const e of Array.isArray(data.items) ? data.items : []) {
+      const kind = String(e?.kind || '');
+      if (!kind || ACTIVITY_HIDDEN.has(kind)) continue;
+      const ms = Number(e.ts_ms);
+      events.push({ seq: String(e.seq ?? ''), kind, taskId: String(e.task_id || ''), actorKind: String(e.actor_kind || ''), actorId: String(e.actor_id || ''),
+        at: Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : '' });
+      if (events.length > keep) events.shift();
+    }
+    cursor = String(data.next_cursor || '');
+    if (!cursor) break;
+  }
+  return { events: events.reverse(), truncated: Boolean(cursor) };
+}
+
 export interface OwnerSubmission { attempt: string; summary: string; head: string; author: string; requirementsRevision: string; complete: boolean }
 export async function readOwnerSubmission(session: OwnerSession, bridgeId: string, chainId: string, taskId: string, attempt: string, send: OwnerSend = ownerRelaySend): Promise<OwnerSubmission> {
   let summary = '', offset = '0', first: any = null;
