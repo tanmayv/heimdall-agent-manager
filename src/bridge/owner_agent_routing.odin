@@ -560,7 +560,14 @@ bridge_owner_agent_exec :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object
         if missing!="" do return missing
         prerequisite:=bridge_owner_pstr(p,"depends_on_task_id")
         if prerequisite=="" do return bridge_owner_fail(ctx,"bad_request","task depend requires --on <task_id>")
-        if code,message:=bridge_owner_dependency(ctx,st,prerequisite,true);code!="ok" do return bridge_owner_fail(ctx,code,message)
+        if prerequisite==st.task_id do return bridge_owner_fail(ctx,"invalid_scope","a task cannot depend on itself")
+        // Name an unknown prerequisite instead of a bare refusal; an existing edge is kept as is.
+        if _,found,read:=owner.agent_task_state(s,st.chain_id,prerequisite);!read || !found {
+            return bridge_owner_fail(ctx,"not_found" if read else "storage_error",fmt.tprintf("--on %s is not a task of this chain",prerequisite))
+        }
+        if !slice.contains(st.dependencies,prerequisite) {
+            if code,message:=bridge_owner_dependency(ctx,st,prerequisite,true);code!="ok" do return bridge_owner_fail(ctx,code,message)
+        }
         return bridge_local_response_data(ctx.request_id,bridge_owner_json(map[string]string{"task_id"=st.task_id,"chain_id"=st.chain_id,"depends_on_task_id"=prerequisite}))
     case "agent.task_chain.show":
         chain:=bridge_owner_pstr(p,"chain_id")
@@ -832,7 +839,8 @@ bridge_owner_task_plan :: proc(ctx:^Owner_Agent_Ctx,p:json.Object,updating:bool)
             if !is_text do return {},bridge_owner_fail(ctx,"bad_request","depends_on must be a list of task ids")
             if trimmed:=strings.trim_space(string(id));trimmed!="" {
                 if strings.contains(trimmed,":") do return {},bridge_owner_fail(ctx,"unsupported_on_owner_chain","--depends-on workflow runs are not supported on an owner-held chain")
-                append(&plan.deps,trimmed)
+                // A repeated id is one edge (a second insert would be refused).
+                if !slice.contains(plan.deps[:],trimmed) do append(&plan.deps,trimmed)
             }
         }
     }
@@ -970,6 +978,28 @@ bridge_owner_dependency :: proc(ctx:^Owner_Agent_Ctx,st:owner.Agent_Task_State,p
     return "ok",""
 }
 
+// The edges of a task create's --depends-on, all or nothing: when one is
+// refused, the edges already added are removed and the new task is deleted,
+// so a create never leaves a dependency-free task behind.
+bridge_owner_create_dependencies :: proc(ctx:^Owner_Agent_Ctx,chain,task:string,deps:[]string) -> (string,string) {
+    st,ok:=bridge_owner_reload(ctx,chain,task)
+    if !ok do return "storage_error",fmt.tprintf("task %s created; owner store could not be read to add its dependencies",task)
+    for d,i in deps {
+        code,message:=bridge_owner_dependency(ctx,st,d,true)
+        if code=="ok" do continue
+        removed:=true
+        for added in deps[:i] do if c,_:=bridge_owner_dependency(ctx,st,added,false);c!="ok" do removed=false
+        if removed {
+            current,read:=bridge_owner_reload(ctx,chain,task)
+            reason,sealed:=bridge_owner_cipher(ctx,fmt.tprintf("task create rolled back: %s",message))
+            removed=read && sealed && bridge_owner_run_command(ctx,"task.delete",chain,task,current.task_revision,bridge_owner_json(map[string]string{"protocol_version"="1","body_cipher"=reason})).code=="ok"
+        }
+        if removed do return code,fmt.tprintf("no task created: %s",message)
+        return code,fmt.tprintf("task %s created but %s, and it could not be removed; delete it with `ham-ctl task delete %s`",task,message,task)
+    }
+    return "ok",""
+}
+
 // Priority, dependencies, brief and assignment shared by create and update.
 bridge_owner_apply_plan :: proc(ctx:^Owner_Agent_Ctx,chain,task:string,plan:Owner_Task_Plan,assignee:owner.Child,pre:Owner_Assignment) -> (string,string) {
     st,ok:=bridge_owner_reload(ctx,chain,task)
@@ -1049,6 +1079,14 @@ bridge_owner_task_create :: proc(ctx:^Owner_Agent_Ctx,p:json.Object) -> string {
     if !ok || !body_ok do return bridge_owner_fail(ctx,"vault_locked","cannot seal task content")
     r:=bridge_owner_run_command(ctx,"task.create",chain,task,bridge_owner_chain_rev(ctx,chain),bridge_owner_json(map[string]string{"title_cipher"=title_cipher,"body_cipher"=body_cipher}))
     if r.code!="ok" do return bridge_owner_fail(ctx,r.code,"owner task create refused")
+    // Every --depends-on edge is recorded right after the create, before the
+    // brief and the assignment. A task is claimable only once assigned
+    // (owner agent_claimable), so it never reaches a worker without its
+    // prerequisites; a refused edge removes the new task again.
+    if plan.has_deps {
+        if code,message:=bridge_owner_create_dependencies(ctx,chain,task,plan.deps[:]);code!="ok" do return bridge_owner_fail(ctx,code,message)
+        plan.has_deps=false
+    }
     if brief:=bridge_owner_brief_text(ctx,p);brief!="" {
         if plan.approval do brief=bridge_owner_brief_with_approval(brief)
         if plan.has_reviewer do brief=bridge_owner_brief_with_reviewers(brief,plan.reviewers[:])
