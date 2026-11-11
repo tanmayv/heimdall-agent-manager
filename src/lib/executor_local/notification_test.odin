@@ -4,6 +4,7 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:strings"
 import "core:testing"
+import "core:time"
 import contracts "odin_test:contracts"
 
 notification_fixture :: proc(t:^testing.T,f:^Fixture)->(json.Object,string,string) {
@@ -68,6 +69,7 @@ executor_notification_fence_consumes_one_action_scoped_nonce :: proc(t:^testing.
     set(r,"request_digest",digest);set(r,"prepare_digest",field(n,"prepare_digest"));set(r,"owner_commit_seq",field(n,"owner_commit_seq"))
     set(r,"checked_ms","1450");set(r,"key_id",f.owner1.public.key_id)
     reply:=signed(r,"notification_fence_reply",&f.owner1)
+    pending.started=time.tick_now() // a loaded run must not hit the monotonic expiry
     proof:=notification_fence_accept(&f.store,&pending,reply,message,f.owner1.public,f.operator.public,1450)
     testing.expect(t,proof.current && pending.consumed)
     testing.expect(t,!notification_fence_accept(&f.store,&pending,reply,message,f.owner1.public,f.operator.public,1450).current)

@@ -93,6 +93,14 @@ execution_test_challenge :: proc(t:^testing.T,x:^Execution_Test,claim:Intent_Cla
 execution_test_fence_reply :: proc(x:^Execution_Test,request:string,now:i64=1200)->Result {
     return execution_fence_reply(&x.owner.store,request,x.host_key,x.owner.owner,1,"head",now,{&x.owner.owner_priv,execution_test_sign})
 }
+// fence_accept also bounds an exchange by monotonic time since the challenge.
+// Tests of the other rules restart that clock first so a loaded multithreaded
+// run cannot expire them; ..._monotonic_timeout_survives_frozen_wall_clock
+// keeps the real elapsed-time check.
+execution_test_accept :: proc(x:^Execution_Test,p:^executor.Fence_Challenge,reply:string,owner_key:contracts.Owner_Verified_Key,now:i64)->executor.Current_Owner_Fence {
+    p.started=time.tick_now()
+    return executor.fence_accept(&x.host,p,reply,owner_key,x.host_key,now)
+}
 
 @(test)
 owner_execution_signed_fence_exchange_is_exact_and_single_use :: proc(t:^testing.T) {
@@ -110,11 +118,11 @@ owner_execution_signed_fence_exchange_is_exact_and_single_use :: proc(t:^testing
     reply:=execution_test_fence_reply(x,pending.request)
     if !testing.expect_value(t,reply.code,"ok") do return
     testing.expect_value(t,fleet_policy_test_state(f),before)
-    mismatch:=executor.fence_accept(&x.host,&other,reply.body,f.owner,x.host_key,1200)
+    mismatch:=execution_test_accept(x,&other,reply.body,f.owner,1200)
     testing.expect(t,!mismatch.current && !other.consumed)
-    proof:=executor.fence_accept(&x.host,&pending,reply.body,f.owner,x.host_key,1200)
+    proof:=execution_test_accept(x,&pending,reply.body,f.owner,1200)
     testing.expect(t,proof.current && pending.consumed && proof.commit_seq==grant.seq)
-    again:=executor.fence_accept(&x.host,&pending,reply.body,f.owner,x.host_key,1200)
+    again:=execution_test_accept(x,&pending,reply.body,f.owner,1200)
     testing.expect(t,!again.current)
     testing.expect_value(t,executor.action(&x.host,grant.body,f.owner,1200,proof).code,"ok")
 }
@@ -149,23 +157,23 @@ owner_execution_signed_fence_rejects_substitution_revocation_and_expiry :: proc(
     denied=execution_fence_reply(&f.store,pending.request,x.host_key,f.owner,1,"other",1200,{&f.owner_priv,execution_test_sign})
     testing.expect_value(t,denied.code,"invalid_scope")
     revoked=f.owner;revoked.revoked=true
-    denied_proof:=executor.fence_accept(&x.host,&pending,reply.body,revoked,x.host_key,1200)
+    denied_proof:=execution_test_accept(x,&pending,reply.body,revoked,1200)
     testing.expect(t,!denied_proof.current && !pending.consumed)
     for now in ([3]i64{1149,3000,10000}) {
         testing.expect(t,execution_test_fence_reply(x,pending.request,now).code!="ok")
         timed:=pending
-        proof:=executor.fence_accept(&x.host,&timed,reply.body,f.owner,x.host_key,now)
+        proof:=execution_test_accept(x,&timed,reply.body,f.owner,now)
         testing.expect(t,!proof.current)
         if now>=3000 {
             testing.expect(t,timed.consumed)
-            proof=executor.fence_accept(&x.host,&timed,reply.body,f.owner,x.host_key,1200)
+            proof=execution_test_accept(x,&timed,reply.body,f.owner,1200)
             testing.expect(t,!proof.current,"clock rollback cannot revive an expired exchange")
         }
     }
     response,_:=contracts.executor_parse(reply.body,"fence_reply")
     response["owner_commit_seq"]=json.String("999")
     forged:=execution_test_signed(f,response,"fence_reply")
-    proof:=executor.fence_accept(&x.host,&pending,forged,f.owner,x.host_key,1200)
+    proof:=execution_test_accept(x,&pending,forged,f.owner,1200)
     testing.expect(t,!proof.current && !pending.consumed)
     // A validly signed response from the wrong domain cannot pass verification.
     testing.expect(t,!contracts.executor_verify("fence_reply",response,x.host_key))
@@ -190,7 +198,7 @@ owner_execution_signed_fence_rejects_retired_claim_and_both_runtime_restarts :: 
     close(&f.store);testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,execution_test_fence_reply(x,pending.request).code,"invalid_scope")
     executor.close(&x.host);testing.expect(t,executor.open(&x.host,x.path,"account","executor","operator"))
-    proof:=executor.fence_accept(&x.host,&pending,reply.body,f.owner,x.host_key,1200)
+    proof:=execution_test_accept(x,&pending,reply.body,f.owner,1200)
     testing.expect(t,!proof.current && !pending.consumed)
 }
 
@@ -423,7 +431,7 @@ owner_execution_renewal_outbox_is_atomic_exact_and_fresh :: proc(t:^testing.T) {
     defer executor.fence_challenge_destroy(&pending)
     reply:=execution_test_fence_reply(x,pending.request,1300)
     if !testing.expect_value(t,reply.code,"ok") do return
-    proof:=executor.fence_accept(&x.host,&pending,reply.body,f.owner,x.host_key,1300)
+    proof:=execution_test_accept(x,&pending,reply.body,f.owner,1300)
     testing.expect(t,proof.current && proof.commit_seq==renewed.seq)
     testing.expect_value(t,executor.action(&x.host,claim.payload,f.owner,1300,proof).code,"ok")
     testing.expect_value(t,executor.action(&x.host,claim.payload,f.owner,1300).code,"ok")

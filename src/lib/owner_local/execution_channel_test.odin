@@ -36,9 +36,9 @@ owner_execution_encrypted_callback_binds_claim_and_rejects_account_key_forgery :
     response["direction"]=json.String("response")
     reply,opened:=channel.open_signed(result.body,&f.kr,response,f.owner,1200,context.temp_allocator)
     if !testing.expect(t,opened) do return
-    proof:=executor.fence_accept(&x.host,&pending,reply,f.owner,x.host_key,1200)
+    proof:=execution_test_accept(x,&pending,reply,f.owner,1200)
     testing.expect(t,proof.current && pending.consumed)
-    testing.expect(t,!executor.fence_accept(&x.host,&pending,reply,f.owner,x.host_key,1200).current)
+    testing.expect(t,!execution_test_accept(x,&pending,reply,f.owner,1200).current)
     // An account key holder can encrypt a different payload but cannot sign
     // as the enrolled executor or substitute its exact request digest.
     request["signature"]=json.String(strings.repeat("0",128,context.temp_allocator))

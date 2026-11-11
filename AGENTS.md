@@ -120,7 +120,10 @@ odin test src/hub/transport/http -collection:odin_test=src -out:$HOME/.cache/hei
     effect runs on the test's thread;
   - state that worker threads must share (the shell session map, the pty-host test socket, local
     token records, the launch registry) is guarded by holding `bridge_test_config_mutex` for the test;
-  - per-test temp dirs and sockets (unique name with pid + nanoseconds), port 0 for listeners.
+  - per-test temp dirs and sockets (unique name with pid + nanoseconds), port 0 for listeners;
+  - a loaded multithreaded run is slow, so do not let real elapsed time decide a test that is not
+    about timeouts (e.g. restart `Fence_Challenge.started` before `fence_accept`, as
+    `execution_test_accept` does in `src/lib/owner_local`).
 - Frontend: `npm run typecheck` (`tsc -b`), `npm test` (Node test runner; the file list is in
   `package.json`), `npm run build` (typecheck + Vite + Electron). `npm run dev` runs Vite + Electron;
   `npm run dev:preview` runs the live-data preview ([docs/dev-preview.md](docs/dev-preview.md)).
