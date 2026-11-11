@@ -298,6 +298,7 @@ main :: proc() {
 	bridge_credential_refresh_start(bridge_cfg().credential_file)
 	bridge_hub_runtime_start()
     bridge_owner_maintenance_start()
+    bridge_owner_notice_start()
     bridge_owner_executor_start()
     bridge_executor_reconcile_start()
 	bridge_action_scheduler_start()
