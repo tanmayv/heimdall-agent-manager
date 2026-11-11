@@ -19,9 +19,10 @@ test_owner_chain_prepare_result_and_title :: proc(t: ^testing.T) {
 	testing.expect_value(t, err.code, domain.Error_Code.Conflict)
 
 	testing.expect_value(t, owner_chain_title("Explicit", "Plan it"), "Explicit")
-	testing.expect_value(t, owner_chain_title("", "  Plan the release\nwith tickets"), "Plan the release")
+	// Never the first message: the run's default '<agent-name> #<n>' instead.
+	testing.expect_value(t, owner_chain_title("", "coordinator #7"), "coordinator #7")
 	testing.expect_value(t, owner_chain_title("", ""), "Coordinator")
-	testing.expect_value(t, owner_chain_title("", "vault:v2:abc:e1:sealed"), "Coordinator") // a sealed message is never read
+	testing.expect_value(t, owner_chain_title("", "   "), "Coordinator")
 	sealed := strings.concatenate({"vault:v2:abc:e1:", strings.repeat("x", 200, context.temp_allocator)}, context.temp_allocator)
 	testing.expect_value(t, owner_chain_title(sealed, ""), sealed) // a sealed title is relayed untouched
 	testing.expect_value(t, len(owner_chain_title(strings.repeat("é", 100, context.temp_allocator), "")), 160)
@@ -66,7 +67,10 @@ test_create_chat_owner_chain_refusal_saves_nothing :: proc(t: ^testing.T) {
 	testing.expect_value(t, probe.calls, 1)
 	testing.expect_value(t, probe.bridge, f.base.bridge_id)
 	testing.expect_value(t, probe.agent, "agt_coord")
-	testing.expect_value(t, probe.title, "Plan the release")
+	// Never the first message (as on origin/main): the run's default title, or
+	// "Coordinator" when the agent cannot be named (this fixture has no agent row).
+	testing.expect(t, probe.title != "Plan the release", "the chain is not titled from the message")
+	testing.expect_value(t, probe.title, "Coordinator")
 	testing.expect_value(t, probe.description, "d")
 	testing.expect_value(t, probe.discards, 0) // nothing was created, nothing to roll back
 	testing.expect_value(t, list_chat_conversations_count(t, &f), before)

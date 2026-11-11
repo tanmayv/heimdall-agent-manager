@@ -291,13 +291,13 @@ test('a coordinator conversation is one POST /chats: its Bridge creates the chai
       assert.equal(post.bridge_id, 'b_river', 'the chain is owned by the launch bridge');
       assert.equal(post.create_owner_chain, true);
       assert.equal(post.chain_id, undefined);
-      assert.match(post.chain_title, /^vault:/, 'the Hub only relays the sealed title');
-      const { decryptVaultText } = await import('../src/ui/utils/vaultContent.ts');
-      const { getActiveVaultKey } = await import('../src/ui/utils/vaultCrypto.ts');
-      assert.equal(await decryptVaultText(post.chain_title, getActiveVaultKey()!), 'Plan the release', 'titled by the first line of the message');
+      // Not titled from the message (as on origin/main): the Hub gives the chain the
+      // run's default '<agent-name> #<n>' and the coordinator is nudged to rename it.
+      assert.equal(post.chain_title, undefined, 'no chain title is derived from the first message');
       assert.deepEqual(ctx.launched, ['chain:chain_new'], 'a coordinator conversation opens at the canonical chain target');
       const { ownerChainsSnapshot } = await import('../src/ui/api/ownerChainsStore.ts');
       assert.equal(ownerChainsSnapshot().chains.find((c) => c.chainId === 'chain_new')?.coordinatorAgentInstanceId, 'inst_new', 'the new chain is listed with its coordinator');
+      assert.notEqual(ownerChainsSnapshot().chains.find((c) => c.chainId === 'chain_new')?.title, 'Plan the release', 'the pending chain is not titled from the message');
     });
   } finally {
     clearKeyringSession();

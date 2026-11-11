@@ -101,17 +101,14 @@ owner_chain_prepare_result :: proc(reply: string) -> (string, domain.Domain_Erro
 }
 
 // The chain's title: the explicit one (the app sends it sealed and it is
-// relayed untouched), else the first line of a plain-text message, else a
-// fallback. A sealed message is never read. Plain text: at most
-// OWNER_CHAIN_TITLE_MAX runes.
-owner_chain_title :: proc(chain_title, initial_body: string) -> string {
+// relayed untouched), else the run's default '<agent-name> #<n>', else a
+// fallback. Never the first message: as on origin/main, a new conversation's
+// chain keeps a default title until its coordinator sets a real one. Plain
+// text: at most OWNER_CHAIN_TITLE_MAX runes.
+owner_chain_title :: proc(chain_title, default_title: string) -> string {
 	title := strings.trim_space(chain_title)
 	if strings.has_prefix(title, "vault:") do return title
-	if title == "" && !strings.has_prefix(strings.trim_space(initial_body), "vault:") {
-		first := strings.trim_space(initial_body)
-		if nl := strings.index_byte(first, '\n'); nl >= 0 do first = strings.trim_space(first[:nl])
-		title = first
-	}
+	if title == "" do title = strings.trim_space(default_title)
 	if title == "" do title = "Coordinator"
 	runes := 0
 	for _, i in title {

@@ -130,15 +130,24 @@ create_chat_handler :: proc(ctx:rawptr, req:Request)->Response{
 		// A one-step coordinator conversation: the launch Bridge creates its
 		// chain first and the instance boots as that chain's coordinator.
 		prepared:=false
+		default_title:=""
 		if json_bool(req.body,"create_owner_chain") && input.chain_id=="" {
 			if input.bridge_id=="" do return respond_error(domain.domain_error(.Validation_Failed,"create_owner_chain needs a bridge_id"),req.request_id)
 			if h.prepare_owner_chain==nil do return respond_error(domain.domain_error(.Not_Implemented,"owner chain creation is not configured"),req.request_id)
-			chain,prepare_err:=h.prepare_owner_chain(h.prepare_ctx,input.bridge_id,input.agent_id,owner_chain_new_id(),owner_chain_title(json_string(req.body,"chain_title"),input.initial_body),json_string(req.body,"chain_description"))
+			// The chain and the run share one default '<agent-name> #<n>' title,
+			// never the first message (as on origin/main).
+			if strings.trim_space(json_string(req.body,"chain_title"))=="" {
+				// A missing or foreign agent is reported by create_instance below
+				// (which also discards the prepared chain); the chain is then
+				// briefly titled "Coordinator".
+				if minted,minted_ok,_:=agent_service.mint_default_title(h.agents,auth,input.agent_id); minted_ok do default_title=minted
+			}
+			chain,prepare_err:=h.prepare_owner_chain(h.prepare_ctx,input.bridge_id,input.agent_id,owner_chain_new_id(),owner_chain_title(json_string(req.body,"chain_title"),default_title),json_string(req.body,"chain_description"))
 			if chain=="" do return respond_error(prepare_err,req.request_id)
 			input.chain_id=chain
 			prepared=true
 		}
-		inst,created,create_err:=agent_service.create_instance(h.agents,auth,agent_service.Create_Instance_Input{agent_id=input.agent_id,bridge_id=input.bridge_id,provider=input.provider,provider_profile=input.provider_profile,model=input.model,project_id=input.project_id,chain_id=input.chain_id})
+		inst,created,create_err:=agent_service.create_instance(h.agents,auth,agent_service.Create_Instance_Input{default_title=default_title,agent_id=input.agent_id,bridge_id=input.bridge_id,provider=input.provider,provider_profile=input.provider_profile,model=input.model,project_id=input.project_id,chain_id=input.chain_id})
 		if !created {
 			// No conversation was saved; leave no unused chain behind either.
 			if prepared && h.discard_owner_chain!=nil do _=h.discard_owner_chain(h.prepare_ctx,input.bridge_id,input.chain_id)

@@ -351,15 +351,15 @@ export default function NewConversationPage({ embedded = false, footer, onLaunch
       launchAnimation.current = composer.animate([{ transform: 'translateY(0)' }, { transform: `translateY(${distance}px)` }], { duration: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 420, easing: 'cubic-bezier(0.22, 1, 0.36, 1)', fill: 'forwards' });
     }
     // One POST /chats, like origin/main. A coordinator agent's conversation
-    // also asks its Bridge for a new chain (titled by the message's first
-    // line); it boots as that chain's coordinator and opens at the chain's
-    // canonical URL.
+    // also asks its Bridge for a new chain; it boots as that chain's
+    // coordinator and opens at the chain's canonical URL. The chain is NOT
+    // titled from the message: the Hub gives it the run's default
+    // '<agent-name> #<n>' and the coordinator is nudged to set a real title.
     const coordinator = isCoordinatorAgent(selectedAgent);
-    const title = (draft.trim().split('\n')[0] || selectedAgent?.name || 'Coordinator').slice(0, 80);
     try {
       const result = await launch({
         agentId, projectId: projectId || undefined, bridgeId: runtime.bridgeId,
-        ...(coordinator ? { createOwnerChain: true, chainTitle: title } : {}),
+        ...(coordinator ? { createOwnerChain: true } : {}),
         provider: runtime.provider, providerProfile: runtime.providerProfile, model: runtime.model,
         body: draft.trim() || 'Please review the attached files.', artifactIds: attachments.map(a => a.id!).filter(Boolean),
       }).unwrap();
@@ -368,7 +368,7 @@ export default function NewConversationPage({ embedded = false, footer, onLaunch
       const chainId = coordinator ? String(result.conversation?.chain_id || result.instance?.chain_id || '') : '';
       if (chainId) {
         addPendingOwnerChain({
-          chainId, ownerBridgeId: runtime.bridgeId, bridgeName: selectedBridge?.label || runtime.bridgeId, online: true, title, description: '', sealed: false, tasks: [],
+          chainId, ownerBridgeId: runtime.bridgeId, bridgeName: selectedBridge?.label || runtime.bridgeId, online: true, title: String(result.conversation?.title || selectedAgent?.name || 'Coordinator'), description: '', sealed: false, tasks: [],
           projectId: '', projectName: '', migrated: false, status: 'active', coordinatorAgentInstanceId: id,
         });
       }

@@ -151,6 +151,9 @@ List_Instances_Filter :: struct {
 }
 
 Create_Instance_Input :: struct {
+	// default_title: an already minted '<agent-name> #<n>' (mint_default_title) to
+	// use instead of minting another, so a run and its new owner chain share one.
+	default_title: string,
 	provider_profile: string,
 	agent_id: string,
 	bridge_id: string,
@@ -364,7 +367,7 @@ prepare_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 	// Mint one per-agent global counter for this run and derive the default title
 	// "<agent-name> #<n>". The same default title is used for the (new) chain and
 	// the conversation so a run is identifiable before the agent/user renames it.
-	default_title := default_title_for_agent(service, owner, agent)
+	default_title := input.default_title if strings.trim_space(input.default_title) != "" else default_title_for_agent(service, owner, agent)
 	// A delegated adapter can reuse an already sealed owned label. Appending a
 	// plaintext counter to an armored vault token would corrupt that token.
 	if default_title_override!="" do default_title=default_title_override
@@ -1575,6 +1578,17 @@ default_title_for_agent :: proc(service: ^Agent_Service, owner: domain.User_ID, 
 	n, ok, _ := iface.agent_next_title_counter(service.agents, agent.agent_id, owner, now)
 	if !ok || n <= 0 do return name
 	return fmt.tprintf("%s #%d", name, n)
+}
+
+// mint_default_title mints the next '<agent-name> #<n>' for a run of `agent_id`
+// ahead of create_instance, for a caller that must name something else first (the
+// one-step coordinator conversation names its new owner chain with it).
+mint_default_title :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, agent_id: string) -> (string, bool, domain.Domain_Error) {
+	owner, owner_ok, owner_err := ownership.owner_from_auth(auth)
+	if !owner_ok do return "", false, owner_err
+	agent, agent_ok, agent_err := get_agent(service, auth, agent_id)
+	if !agent_ok do return "", false, agent_err
+	return default_title_for_agent(service, owner, agent), true, {}
 }
 
 resolve_provider_model :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, agent_id, bridge_id: string, req: Run_Request) -> (domain.Resolved_Provider_Model, bool, domain.Domain_Error) {

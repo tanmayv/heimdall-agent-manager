@@ -231,7 +231,8 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
           else if (createOwnerChain) {
             if (!activeKey) throw new Error("This device's vault keys are not installed yet.");
             payload.create_owner_chain = true;
-            payload.chain_title = await encryptVaultText(chainTitle || 'Coordinator', activeKey);
+            // No title: the Hub names the chain with the run's default '<agent-name> #<n>'.
+            if (chainTitle?.trim()) payload.chain_title = await encryptVaultText(chainTitle, activeKey);
             if (chainDescription) payload.chain_description = await encryptVaultText(chainDescription, activeKey);
           }
           if (provider) payload.provider = provider;
