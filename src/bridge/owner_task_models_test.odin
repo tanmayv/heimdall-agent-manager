@@ -304,4 +304,31 @@ test_owner_task_agent_model_dedicated_member :: proc(t:^testing.T) {
     _=rctx
     models:=map[string]Owner_Agent_Model{"agt_r"=Owner_Agent_Model{"codex","gpt-5.5"}}
     testing.expect(t,!bridge_owner_instance_serves(&r.store,chain,"inst_dr","agt_r",models),"the claude reviewer does not serve a codex review")
+
+    // Review round 2 (major): a dedicated launch for an EXISTING row is rolled
+    // back by stopping its instance only; the row stays enabled.
+    ensure_test_r=r;ensure_test_coord=coord
+    ensure_test_launched=make([dynamic]string,context.temp_allocator)
+    ensure_test_stopped=make([dynamic]string,context.temp_allocator)
+    bridge_owner_fleet_ensure_effects=Owner_Fleet_Ensure_Effects{set=ensure_test_set,launch=ensure_test_launch_ok,pause=ensure_test_pause,stop=ensure_test_stop}
+    defer {bridge_owner_fleet_ensure_effects={};ensure_test_launched=nil;ensure_test_stopped=nil;ensure_test_r=nil}
+    rec:=Bridge_Local_Agent_Token_Record{agent_instance_id=coord_instance,role=.Agent}
+    refused,_,_,ensured:=bridge_owner_task_fleet_ensure("req_ded","agent.task.update",fmt.tprintf(`{{"chain_id":"%s","task_id":"%s","reviewers":["agt_r"],"agent_models":{{"agt_r":"codex/gpt-5.5"}}}}`,chain,task),rec)
+    testing.expectf(t,refused=="" && len(ensure_test_launched)==1 && ensure_test_launched[0]=="agt_r","a dedicated member is launched: %q %v",refused,ensure_test_launched)
+    testing.expectf(t,len(ensured.added)==0 && len(ensured.launched)==1 && ensured.launched[0]=="inst_l_agt_r","only the instance is recorded: %v %v",ensured.added,ensured.launched)
+    bridge_owner_task_fleet_rollback("req_ded",ensured,rec)
+    rpolicy,_,_:=owner.agent_fleet_policy(&r.store,chain,"agt_r")
+    testing.expectf(t,!strings.contains(rpolicy.paused_roles_json,`"*"`),"the existing row stays enabled: %s",rpolicy.paused_roles_json)
+    testing.expectf(t,len(ensure_test_stopped)==1 && ensure_test_stopped[0]=="inst_l_agt_r","the dedicated instance is stopped: %v",ensure_test_stopped)
+
+    // Review round 2 (minor): a stopped member does not block the dedicated
+    // launch for an overridden agent (it would restart with the old selection).
+    stopped_r:=review_test_child("inst_dr_stopped","agt_r")
+    {
+        ctx:=review_test_ctx(r,coord)
+        testing.expect_value(t,bridge_owner_fleet_member(&ctx,chain,stopped_r.instance,"agt_r","worker",true,stopped_r).code,"ok")
+    }
+    _,ectx=review_test_exec(r,coord,"agent.task_chain.fleet_set",fmt.tprintf(`{{"chain_id":"%s","agent_id":"agt_r","ensure":"1","task_id":"%s","override_provider":"codex","override_model":"gpt-5.5"}}`,chain,task))
+    testing.expectf(t,ectx.launch.active && ectx.launch.dedicated,"stopped member ignored for an override: %v",ectx.launch)
+
 }

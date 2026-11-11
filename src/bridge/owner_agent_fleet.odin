@@ -58,6 +58,9 @@ Owner_Fleet_Launch :: struct {
     active:bool,
     chain,agent,role,body:string,
     reply:json.Object, // the policy result, completed with the instance
+    // A dedicated member for a task's provider/model on an EXISTING row: a
+    // refused verb stops its instance but never pauses the row.
+    dedicated:bool,
 }
 
 // `agents start|stop|restart <inst>`: an instance of a chain this Bridge owns
@@ -225,7 +228,7 @@ bridge_owner_fleet :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -> 
             reply["note"]=json.String("dedicated member for the task's provider/model")
             body:=map[string]string{"agent_id"=agent,"chain_id"=chain,"bridge_id"=bridge_cfg().daemon_id}
             bridge_owner_launch_body_model(&body,policy,bridge_cfg().daemon_id,agent,ensure_models)
-            ctx.launch=Owner_Fleet_Launch{true,chain,agent,role,bridge_owner_json(body),reply}
+            ctx.launch=Owner_Fleet_Launch{true,chain,agent,role,bridge_owner_json(body),reply,true}
             return ""
         }
         reply["note"]=json.String("fleet row exists")
@@ -304,7 +307,7 @@ bridge_owner_fleet :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -> 
     // ensure for a task: its per-agent override beats the row.
     bridge_owner_launch_body_model(&body,policy,bridge_cfg().daemon_id,agent,ensure_models)
     if project:=bridge_owner_pstr(p,"project_id");project!="" do body["project_id"]=project
-    ctx.launch=Owner_Fleet_Launch{true,chain,agent,role,bridge_owner_json(body),reply}
+    ctx.launch=Owner_Fleet_Launch{true,chain,agent,role,bridge_owner_json(body),reply,false}
     return ""
 }
 
@@ -329,15 +332,22 @@ bridge_owner_fleet_ensure_dedicated :: proc(ctx:^Owner_Agent_Ctx,chain,agent:str
     if agent==ctx.child.agent_id || bridge_owner_fleet_ensure_run_bridge(ctx,chain,p)!="" do return false
     members,read:=bridge_owner_fleet_members(ctx,chain)
     if !read do return false
-    live:=0
+    live,stopped:=0,0
+    _,overridden:=models[agent]
     for m in members {
         if m.agent_id!=agent || !m.enabled do continue
         // Live as the matcher and the task route see it (bridge_owner_live_child).
-        if child,live:=bridge_owner_live_child(m.instance_id);!live || child.agent_id!=agent do return false
+        // A stopped member is waited for only without an override: a restart
+        // keeps its old selection, so the matcher never restarts it for one.
+        if child,is_live:=bridge_owner_live_child(m.instance_id);!is_live || child.agent_id!=agent {
+            if overridden { stopped+=1;continue }
+            return false
+        }
         if bridge_owner_instance_serves(ctx.store,chain,m.instance_id,agent,models) do return false
         live+=1
     }
-    return live>0
+    // Overridden with only stopped members: they would restart with the old selection.
+    return live>0 || stopped>0
 }
 
 // The other Bridge an ensured task runs on ("" = this Bridge): the verb's
@@ -492,14 +502,15 @@ bridge_owner_task_fleet_ensure :: proc(request_id,method,params:string,rec:Bridg
         if !l.active do continue
         launched:=launch(request_id,l,rec)
         if bridge_owner_response_ok(launched) {
-            append(&ensured.added,agent)
+            // Only a row this ensure created is paused by a rollback.
+            if !l.dedicated do append(&ensured.added,agent)
             if out,parsed:=json.parse_string(launched,.JSON,true,context.temp_allocator);parsed==nil {
                 obj,_:=out.(json.Object);data,_:=obj["data"].(json.Object)
                 if instance:=contracts.owner_string(data,"instance_id");instance!="" do append(&ensured.launched,instance)
             }
             continue
         }
-        pause(request_id,l.chain,agent,rec)
+        if !l.dedicated do pause(request_id,l.chain,agent,rec)
         if !block_failed do return launched,"","",ensured
         message:=launched
         if out,parsed:=json.parse_string(launched,.JSON,true,context.temp_allocator);parsed==nil {

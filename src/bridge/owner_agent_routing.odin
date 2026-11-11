@@ -881,6 +881,9 @@ Owner_Task_Plan :: struct {
     // (owner_task_models.odin); an empty provider clears that agent's.
     has_agent_models:bool,
     agent_models:map[string]Owner_Agent_Model,
+    // The matcher's chosen member (internal): bound when it is a live
+    // instance of the assignee running the task's selection.
+    assignee_instance:string,
 }
 bridge_owner_task_plan :: proc(ctx:^Owner_Agent_Ctx,p:json.Object,updating:bool) -> (Owner_Task_Plan,string) {
     plan:Owner_Task_Plan
@@ -930,6 +933,7 @@ bridge_owner_task_plan :: proc(ctx:^Owner_Agent_Ctx,p:json.Object,updating:bool)
     if _,present:=p["assignee"];present {
         plan.has_assignee=true
         plan.assignee=bridge_owner_pstr(p,"assignee")
+        plan.assignee_instance=bridge_owner_pstr(p,"assignee_instance_id")
         if plan.assignee=="" do return {},bridge_owner_fail(ctx,"unsupported_on_owner_chain","clearing --assignee is not supported on an owner-held chain")
     }
     if value,present:=p["reviewers"];present {
@@ -979,7 +983,7 @@ bridge_owner_plan_remote_reviewer :: proc(s:^owner.Store,chain,agent:string,remo
 // agent's effective selection for the task (models: its overrides) is taken,
 // the first such one; live instances that all run another provider/model give
 // agent_not_serving (fleet ensure launches a dedicated one first).
-bridge_owner_resolve_agent :: proc(ctx:^Owner_Agent_Ctx,chain,agent_id,flag:string,models:map[string]Owner_Agent_Model=nil,select:=false) -> (owner.Child,string,string) {
+bridge_owner_resolve_agent :: proc(ctx:^Owner_Agent_Ctx,chain,agent_id,flag:string,models:map[string]Owner_Agent_Model=nil,select:=false,prefer:="") -> (owner.Child,string,string) {
     participants,ok:=owner.agent_chain_participants(ctx.store,chain)
     if !ok do return {},"storage_error","owner store could not be read"
     found:owner.Child
@@ -995,7 +999,8 @@ bridge_owner_resolve_agent :: proc(ctx:^Owner_Agent_Ctx,chain,agent_id,flag:stri
             if !bridge_owner_instance_matches(instance,want) do continue
             // The first matching instance, a lease-free one first.
             leased,_:=owner.instance_leased(ctx.store,instance)
-            if serving==0 || (!leased && found_leased) { found=child;found_leased=leased }
+            if serving==0 || (!leased && found_leased) || (prefer!="" && instance==prefer) { found=child;found_leased=leased }
+            if prefer!="" && found.instance==prefer do found_leased=false // the preferred one stays chosen
             serving+=1
             continue
         }
@@ -1181,7 +1186,7 @@ bridge_owner_plan_children :: proc(ctx:^Owner_Agent_Ctx,chain:string,st:owner.Ag
         ctx.remote=place
         assignee=owner.Child{agent_id=plan.assignee}
     } else if plan.has_assignee {
-        assignee,code,message=bridge_owner_resolve_agent(ctx,chain,plan.assignee,"--assignee",bridge_owner_plan_models(st.brief,plan.agent_models),true)
+        assignee,code,message=bridge_owner_resolve_agent(ctx,chain,plan.assignee,"--assignee",bridge_owner_plan_models(st.brief,plan.agent_models),true,plan.assignee_instance)
         if code!="ok" && !pinned {
             // No live child here: an agent whose fleet policy names another
             // account Bridge is placed there after the locks (#9/#10).

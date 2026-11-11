@@ -154,7 +154,7 @@ bridge_owner_match_assign :: proc(ctx:^Owner_Agent_Ctx,out:^[dynamic]Owner_Revie
                 if busy[m.instance_id] do continue
                 if leased,lease_ok:=owner.instance_leased(ctx.store,m.instance_id);!lease_ok || leased do continue
                 cctx:=Owner_Agent_Ctx{request_id=bridge_owner_fresh_id("req"),store=ctx.store,child=coordinator,key=ctx.key,kr=ctx.kr,now=ctx.now}
-                params:=bridge_owner_params(fmt.tprintf(`{{"chain_id":"%s","task_id":"%s","assignee":"%s"}}`,task.chain_id,task.task_id,m.agent_id))
+                params:=bridge_owner_params(fmt.tprintf(`{{"chain_id":"%s","task_id":"%s","assignee":"%s","assignee_instance_id":"%s"}}`,task.chain_id,task.task_id,m.agent_id,m.instance_id))
                 if result:=bridge_owner_result_object(bridge_owner_agent_exec(&cctx,"agent.task.update",params));!bridge_owner_reclaim_ok(result) {
                     fmt.eprintfln("owner matcher: assigning %s to %s refused: %v",task.task_id,m.agent_id,result["error"])
                     continue
