@@ -336,10 +336,23 @@ startup_watchdog_still_expires_after_fallback :: proc(t: ^testing.T) {
 	}
 	bridge_runtime_expire_stale_locked(121000)
 	sync.mutex_unlock(&bridge_runtime_mutex)
+	// task_18e70f303f8384fe: the process is alive, so the watchdog keeps it
+	// running (never an orphaned 'failed' live agent) and injects nothing more.
 	snap, _ := bridge_runtime_instance_snapshot(rec.agent_instance_id)
-	testing.expect_value(t, snap.runtime_status, "failed")
+	testing.expect_value(t, snap.runtime_status, "running")
 	startup_test_tick(rec.agent_instance_id, 121001)
 	testing.expect_value(t, startup_test_deliveries, 1)
+	// A launch whose process is gone still expires to failed.
+	dead := startup_test_launch("startup_watchdog_dead", "startup_watchdog_dead")
+	startup_test_tick(dead.agent_instance_id, 31000)
+	sync.mutex_lock(&bridge_runtime_mutex)
+	for &inst in bridge_runtime_instances {
+		if inst.agent_instance_id == dead.agent_instance_id { inst.last_seen_unix_ms = 121000; inst.pty_process_alive = false }
+	}
+	bridge_runtime_expire_stale_locked(121000)
+	sync.mutex_unlock(&bridge_runtime_mutex)
+	gone, _ := bridge_runtime_instance_snapshot(dead.agent_instance_id)
+	testing.expect_value(t, gone.runtime_status, "failed")
 }
 
 @(test)
