@@ -737,7 +737,12 @@ export function OwnerChainView({
     }
   }
   const createActions: TaskChainCreateActions | undefined = editable
-    ? { agentOptions: ownerAgentOptions(agentNames), create: createTicket }
+    ? {
+      agentOptions: ownerAgentOptions(agentNames),
+      create: createTicket,
+      // The owner Bridge is the default: '' pins nothing.
+      bridgeOptions: runBridgeOptions.map((o) => (o.value === bridge ? { ...o, value: '' } : o)),
+    }
     : undefined;
 
   // The chain overview's actions: agent runtime through the Hub, removal and

@@ -160,7 +160,7 @@ test('TaskChainOverview shows a skeleton, an error, and creates a ticket through
     await ui.click('create-task-submit-btn');
     assert.equal(ui.$('create-task-modal'), null, 'the modal closes once created');
     assert.deepEqual(created.at(-1), {
-      title: 'Add audit log', description: '', goal: 'Writes are logged', acceptance: ['One row per write', 'Viewable'], reviewers: [], requiresUserApproval: true, dependsOn: ['task_1'],
+      title: 'Add audit log', description: '', goal: 'Writes are logged', acceptance: ['One row per write', 'Viewable'], reviewers: [], requiresUserApproval: true, dependsOn: ['task_1'], runBridgeId: '',
     });
     assert.deepEqual(ui.fetched, []);
   } finally {
@@ -178,6 +178,7 @@ test('the seams\' pure helpers: checklist lines, status words, replacement links
   const base = { title: 'T', description: '', goal: '', acceptance: [], reviewers: [], requiresUserApproval: false, dependsOn: [] };
   assert.equal(createTaskInputError(base), '');
   assert.match(createTaskInputError({ ...base, goal: 'x'.repeat(2001) }), /goal exceeds 2000/);
+  assert.match(createTaskInputError({ ...base, goal: '', runBridgeId: 'brg_b' }), /goal.*run Bridge/, 'a run Bridge pin needs a brief');
   assert.match(createTaskInputError({ ...base, acceptance: Array.from({ length: 21 }, () => 'a') }), /at most 20/);
   assert.match(createTaskInputError({ ...base, acceptance: ['x'.repeat(201)] }), /exceeds 200/);
 });

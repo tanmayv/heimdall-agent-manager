@@ -77,6 +77,10 @@ test('ownerCreateTaskPlan: task.create fields, the brief as requirements and ded
   assert.deepEqual(plan.dependsOn, ['task_1', 'task_2']);
   const bare = ownerCreateTaskPlan({ title: 'T', description: '', goal: ' ', acceptance: [''], reviewers: [], requiresUserApproval: false, dependsOn: [] });
   assert.equal(bare.requirements, null, 'no brief: no requirements.edit');
+  const pinned = ownerCreateTaskPlan({ title: 'T', description: '', goal: 'G', acceptance: [], reviewers: [], requiresUserApproval: false, dependsOn: [], runBridgeId: ' brg_b ' });
+  assert.equal(JSON.parse(pinned.requirements!).run_bridge_id, 'brg_b', 'the run Bridge pin goes into the brief');
+  const unpinned = ownerCreateTaskPlan({ title: 'T', description: '', goal: 'G', acceptance: [], reviewers: [], requiresUserApproval: false, dependsOn: [], runBridgeId: '' });
+  assert.equal('run_bridge_id' in JSON.parse(unpinned.requirements!), false, "'' is the owner Bridge: no pin");
 });
 
 test('ownerAgentOptions sorts agents by name; agentRuntimeActions follows the instance status', () => {

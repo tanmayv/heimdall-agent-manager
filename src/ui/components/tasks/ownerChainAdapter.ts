@@ -118,6 +118,8 @@ export interface CreateTaskInput {
   requiresUserApproval: boolean;
   /** Task ids the new ticket waits for. */
   dependsOn: string[];
+  /** The run Bridge pin ('' or absent: the owner Bridge). */
+  runBridgeId?: string;
 }
 
 /** The owner commands that create one ticket: task.create, then its brief and its waits. */
@@ -131,12 +133,12 @@ export interface OwnerCreateTaskPlan {
 export function ownerCreateTaskPlan(input: CreateTaskInput): OwnerCreateTaskPlan {
   const acceptance = input.acceptance.map((a) => a.trim()).filter(Boolean);
   const reviewers = input.reviewers.map((r) => r.trim()).filter(Boolean);
-  const hasBrief = Boolean(input.goal.trim()) || acceptance.length > 0 || reviewers.length > 0 || input.requiresUserApproval;
+  const runBridgeId = input.runBridgeId?.trim() || '';
+  const hasBrief = Boolean(input.goal.trim()) || acceptance.length > 0 || reviewers.length > 0 || input.requiresUserApproval || Boolean(runBridgeId);
+  const brief = hasBrief ? ownerRequirementsDoc('', { goal: input.goal, acceptance, reviewers, requiresUserApproval: input.requiresUserApproval, reason: '' }) : null;
   return {
     task: { title: input.title.trim(), body: input.description.trim() },
-    requirements: hasBrief
-      ? ownerRequirementsDoc('', { goal: input.goal, acceptance, reviewers, requiresUserApproval: input.requiresUserApproval, reason: '' })
-      : null,
+    requirements: brief && runBridgeId ? JSON.stringify({ ...JSON.parse(brief), run_bridge_id: runBridgeId }) : brief,
     dependsOn: [...new Set(input.dependsOn.map((d) => d.trim()).filter(Boolean))],
   };
 }

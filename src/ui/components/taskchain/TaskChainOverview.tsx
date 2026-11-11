@@ -32,6 +32,8 @@ export interface TaskChainCreateActions {
   agentOptions: { value: string; label: string }[];
   /** Resolves to an error message, or '' once the ticket exists. */
   create: (input: CreateTaskInput) => Promise<string>;
+  /** Run-Bridge choices for a new ticket; the first ('') is the default. */
+  bridgeOptions?: { value: string; text: string }[];
 }
 
 export interface TaskChainOverviewProps {
@@ -162,6 +164,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
           existingTasks={tasks}
           agentOptions={create.agentOptions}
           create={create.create}
+          bridgeOptions={create.bridgeOptions}
           onClose={() => setShowNewTaskModal(false)}
         />
       )}

@@ -2,8 +2,8 @@
 // the agent choices and the create action (for a Bridge-owned chain, owner
 // commands: task.create, requirements.edit, work.dependency.add), so the modal
 // calls no Hub task endpoint. Owner tickets have no review roles (reviewers are
-// agent ids plus your approval), no per-ticket bridge pin and no assignee; those
-// fields of origin/main are left out.
+// agent ids plus your approval) and no assignee; those fields of origin/main
+// are left out. The bridge pin is the ticket's run Bridge (owner Bridge by default).
 
 import React, { useMemo, useState } from 'react';
 import { Button, Checkbox, FormField, Icon, IconButton, Input, Modal, ModalBody, ModalFooter, Select, StatusPill, Textarea } from '@ui';
@@ -27,6 +27,8 @@ export interface CreateTaskModalProps {
   agentOptions: { value: string; label: string }[];
   /** Creates the ticket; resolves to an error message, or '' on success. */
   create: (input: CreateTaskInput) => Promise<string>;
+  /** Run-Bridge choices; the first ('') is the default. Absent: no Bridge field. */
+  bridgeOptions?: { value: string; text: string }[];
 }
 
 /** The modal's own validation of what it collected; '' when it can be created. */
@@ -36,6 +38,7 @@ export function createTaskInputError(input: CreateTaskInput): string {
   const acceptance = input.acceptance.filter((a) => a.trim());
   if (acceptance.length > BRIEF_ACCEPTANCE_MAX) return `Acceptance criteria are limited to at most ${BRIEF_ACCEPTANCE_MAX} items.`;
   if (acceptance.some((a) => a.trim().length > BRIEF_ACCEPTANCE_ITEM_MAX)) return `An acceptance criterion exceeds ${BRIEF_ACCEPTANCE_ITEM_MAX} characters.`;
+  if (input.runBridgeId?.trim() && !input.goal.trim()) return 'Add a goal: the run Bridge is part of the brief.';
   return '';
 }
 
@@ -46,6 +49,7 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
   existingTasks = [],
   agentOptions,
   create,
+  bridgeOptions,
 }) => {
   const [isCreating, setIsCreating] = useState(false);
   const [title, setTitle] = useState('');
@@ -56,6 +60,7 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
   const [reviewerAgentId, setReviewerAgentId] = useState('');
   const [requiresUserApproval, setRequiresUserApproval] = useState(false);
   const [dependsOnIds, setDependsOnIds] = useState<string[]>([]);
+  const [runBridgeId, setRunBridgeId] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
   const options = useMemo(() => [{ value: '', label: 'Select agent…' }, ...agentOptions], [agentOptions]);
@@ -70,7 +75,7 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
     e.preventDefault();
     setErrorMsg('');
     const input: CreateTaskInput = {
-      title, description: desc, goal, acceptance: acceptanceText.split(/\r?\n/), reviewers, requiresUserApproval, dependsOn: dependsOnIds,
+      title, description: desc, goal, acceptance: acceptanceText.split(/\r?\n/), reviewers, requiresUserApproval, dependsOn: dependsOnIds, runBridgeId,
     };
     const invalid = createTaskInputError(input);
     if (invalid) { setErrorMsg(invalid); return; }
@@ -79,7 +84,7 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
       const failed = await create(input);
       if (failed) { setErrorMsg(failed); return; }
       setTitle(''); setDesc(''); setGoal(''); setAcceptanceText('');
-      setReviewers([]); setReviewerAgentId(''); setRequiresUserApproval(false); setDependsOnIds([]);
+      setReviewers([]); setReviewerAgentId(''); setRequiresUserApproval(false); setDependsOnIds([]); setRunBridgeId('');
       onSuccess?.();
       onClose();
     } finally {
@@ -209,6 +214,23 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
               </Button>
             </div>
           </div>
+
+          {bridgeOptions && (
+            <div>
+              <label className="block font-semibold text-primary mb-1">Bridge</label>
+              <Select
+                data-debug-id="create-task-bridge-select"
+                aria-label="Run Bridge"
+                width="full"
+                value={runBridgeId}
+                onChange={setRunBridgeId}
+                options={bridgeOptions}
+              />
+              <p className="text-[11px] text-muted mt-1">
+                Where the ticket&apos;s assignee and reviewers run; the owner Bridge unless you pick another.
+              </p>
+            </div>
+          )}
 
           {existingTasks.length > 0 && (
             <div className="space-y-2 border-t border-subtle pt-3">
