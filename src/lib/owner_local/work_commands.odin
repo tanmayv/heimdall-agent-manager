@@ -169,7 +169,11 @@ work_after_event :: proc(tx:^Transaction,chain,task,kind,principal,op,payload:st
     if kind=="lease.claim" || kind=="lease.submit" || kind=="lifecycle.force_submit" {
         generated,read:=query(s.db,"SELECT 1 FROM local_workflow_tasks WHERE chain_id=? AND task_id=?",chain,task)
         if !read do return false
-        if len(generated)==0 && !work_capture_inputs(s,chain,"task",task,seq,now) do return false
+        // A submit with no reviewer owed settles to done at once; its inputs
+        // were captured at the claim and a terminal task captures none.
+        settled,state_read:=query(s.db,"SELECT 1 FROM lifecycle_state WHERE chain_id=? AND task_id=? AND state='done'",chain,task)
+        if !state_read do return false
+        if len(generated)==0 && len(settled)==0 && !work_capture_inputs(s,chain,"task",task,seq,now) do return false
     }
     if kind=="lease.switch" {
         value,valid:=contracts.owner_request_document(payload);p,obj:=value.(json.Object)

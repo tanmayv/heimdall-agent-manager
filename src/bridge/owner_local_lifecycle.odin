@@ -85,7 +85,10 @@ bridge_owner_config_proof :: proc(s:^owner.Store,c:json.Object,chain,task:string
     rows,ok:=owner.query(s.db,"SELECT instance_id FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task)
     if !ok || len(rows)!=1 do return {}
     author,aok:=bridge_owner_live_child(rows[0][0])
-    reviewer,rok:=bridge_owner_live_child(get(c,"reviewer_instance_id"))
+    // No reviewer is valid; a named reviewer must be a live child.
+    reviewer:owner.Child
+    rok:=true
+    if get(c,"reviewer_instance_id")!="" do reviewer,rok=bridge_owner_live_child(get(c,"reviewer_instance_id"))
     if !aok || !rok do return {}
     // The worktree is created only after a claim is admitted (R4a); here it
     // may be absent, but its path must be safe and the repository valid.

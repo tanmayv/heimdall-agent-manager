@@ -941,7 +941,10 @@ bridge_owner_assignment_preflight :: proc(ctx:^Owner_Agent_Ctx,chain,task:string
         if !ok do return {},"storage_error","owner store could not be read"
         if !found do return {},"not_found",fmt.tprintf("--depends-on %s is not a task of this chain",d)
     }
-    if reviewer.instance=="" do return {},"ok",""
+    // An assignee is configured with or without a reviewer: no reviewer is
+    // valid (origin/main parity), and the task is done on submit unless the
+    // user's approval is required.
+    if reviewer.instance=="" && !plan.has_assignee do return {},"ok",""
     author:=assignee
     if !plan.has_assignee {
         if !existing || st.fleet_instance=="" || st.fleet_enabled!="1" do return {},"worker_required","assign a worker (--assignee) before a reviewer"
@@ -1083,7 +1086,6 @@ bridge_owner_plan_children :: proc(ctx:^Owner_Agent_Ctx,chain:string,st:owner.Ag
         if code!="ok" do return {},{},bridge_owner_fail(ctx,code,message)
         if plan.has_assignee && reviewer.agent_id==assignee.agent_id do return {},{},bridge_owner_fail(ctx,"invalid_scope","the reviewer must be a different agent than the assignee")
     }
-    if plan.has_assignee && reviewer_agent=="" do return {},{},bridge_owner_fail(ctx,"reviewer_required","an owner task needs an independent --reviewer with its --assignee")
     // Every further --reviewer must be a running member of this chain too
     // (`ham-ctl task-chain fleet set --agent <id>` launches and binds one), or
     // an agent placed on another account Bridge (fleet set --bridge).

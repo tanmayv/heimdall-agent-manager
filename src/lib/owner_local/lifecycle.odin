@@ -44,10 +44,14 @@ lifecycle_human :: proc(s:^Store,c,p:json.Object,body,raw,payload:string,proof:L
         // The lifecycle payload carries no requires_user_approval and a new
         // configuration never touches the brief, so it
         // never changes a user gate (lifecycle_configure_keeps_user_gate).
-        if !directory_config_authorized(s,chain,p) || !member_authorized(s,chain,proof.author) || !member_authorized(s,chain,proof.reviewer) || !proof.paths_valid || proof.author.agent_id!=field(p,"author_agent_id") ||
-           proof.reviewer.agent_id!=field(p,"reviewer_agent_id") || proof.author.agent_id==proof.reviewer.agent_id ||
-           proof.reviewer.instance!=field(p,"reviewer_instance_id") || proof.author.instance==proof.reviewer.instance ||
-           proof.author.epoch=="" || proof.reviewer.epoch=="" { return "invalid_scope",nil }
+        // No reviewer is valid (origin/main parity): the task is done on
+        // submit unless the user's approval is required. A reviewer, when
+        // set, is a live member and never the author.
+        reviewed:=field(p,"reviewer_agent_id")!="" || field(p,"reviewer_instance_id")!=""
+        if !directory_config_authorized(s,chain,p) || !member_authorized(s,chain,proof.author) || !proof.paths_valid || proof.author.agent_id!=field(p,"author_agent_id") || proof.author.epoch=="" { return "invalid_scope",nil }
+        if reviewed && (!member_authorized(s,chain,proof.reviewer) || proof.reviewer.agent_id!=field(p,"reviewer_agent_id") || proof.author.agent_id==proof.reviewer.agent_id ||
+           proof.reviewer.instance!=field(p,"reviewer_instance_id") || proof.author.instance==proof.reviewer.instance || proof.reviewer.epoch=="") { return "invalid_scope",nil }
+        if !reviewed && proof.reviewer.instance!="" do return "invalid_scope",nil
         previous,read:=query(s.db,"SELECT revision FROM lifecycle_configs WHERE chain_id=? AND task_id=? ORDER BY revision DESC LIMIT 1",chain,task)
         if !read do return "storage_error",nil
         if len(previous)>0 && number(previous[0][0])>=number(field(p,"configuration_revision")) do return "stale_revision",nil

@@ -130,8 +130,16 @@ execute_lifecycle :: proc(s:^Store,raw,payload,cap_raw:string,child:Child,key:co
             }
             if _,ok=query(s.db,"UPDATE local_leases SET retired_seq=? WHERE lease_id=?",fmt.tprintf("%d",seq),lease);!ok do return fail("storage_error")
             if _,ok=query(s.db,"UPDATE lifecycle_state SET state='in_review',attempt=? WHERE chain_id=? AND task_id=?",fmt.tprintf("%d",attempt),chain,task);!ok do return fail("storage_error")
+            // No reviewer owed and no user gate: the task settles on submit
+            // (done, or merge_pending under a git merge policy), as origin/main
+            // does when a task has no review roles.
+            settled,gate_ok:=review_gate(s,chain,task,fmt.tprintf("%d",attempt))
+            if !gate_ok do return fail("storage_error")
+            if settled!="in_review" {
+                if _,ok=query(s.db,"UPDATE lifecycle_state SET state=? WHERE chain_id=? AND task_id=?",settled,chain,task);!ok do return fail("storage_error")
+            }
             if _,ok=query(s.db,"UPDATE tasks SET revision=revision+1 WHERE chain_id=? AND task_id=?",chain,task);!ok do return fail("storage_error")
-            result=encode(doc(map[string]string{"state"="in_review","attempt"=fmt.tprintf("%d",attempt),"requirements_revision"=req[0],"head"=source.head,"revision"=fmt.tprintf("%d",number(tasks[0][0])+1)}))
+            result=encode(doc(map[string]string{"state"=settled,"attempt"=fmt.tprintf("%d",attempt),"requirements_revision"=req[0],"head"=source.head,"revision"=fmt.tprintf("%d",number(tasks[0][0])+1)}))
         }
     } else {
         if field(c,"configuration_revision")!=field(config,"configuration_revision") do return fail("stale_revision")
@@ -184,6 +192,15 @@ execute_lifecycle :: proc(s:^Store,raw,payload,cap_raw:string,child:Child,key:co
     if !workflow_refresh(s) do return fail("storage_error")
     if !source_lifecycle(&tx,c,p,seq,now) do return fail("storage_error")
     if method=="review.post" && !lifecycle_merge_intent(&tx,c,p,seq) do return fail("storage_error")
+    if method=="lease.submit" {
+        // A submit that settled to merge_pending (no reviewer owed) merges
+        // that immutable submission.
+        v,_:=json.parse_string(result,.JSON,true,context.temp_allocator)
+        settled,_:=v.(json.Object)
+        submitted:=field(settled,"attempt") if field(settled,"state")=="merge_pending" else ""
+        bound:=doc(map[string]string{"attempt"=submitted,"head"=field(p,"head"),"requirements_revision"=req[0]})
+        if submitted!="" && !lifecycle_merge_intent(&tx,c,bound,seq) do return fail("storage_error")
+    }
     if !event_record(&tx,seq,now,chain,task,"agent",child.instance,method,op,raw,payload,encode(child),result) do return fail("storage_error")
     if _,ok=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),chain,method,task,req[0],op);!ok do return fail("storage_error")
     if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")

@@ -397,8 +397,8 @@ Owner_Lifecycle_Config_Payload :: struct {
 owner_fields_lifecycle_config_payload := [?]Owner_Field{
     {"configuration_revision", "positive"},
     {"author_agent_id", "id"},
-    {"reviewer_agent_id", "id"},
-    {"reviewer_instance_id", "id"},
+    {"reviewer_agent_id", "optional"},
+    {"reviewer_instance_id", "optional"},
     {"directory_id", "id"},
     {"merge_policy", "merge_policy"},
     {"repository", "path"},
