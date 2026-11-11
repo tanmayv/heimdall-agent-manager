@@ -282,7 +282,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     // An imported chain is quarantined until the Hub cutover is observed:
     // no mutation of any kind before activation.
     if !creating && migration_quarantined(s,chain) do return fail("operation_conflict")
-    if !creating && !work_chain_active(s,chain) do return fail("operation_conflict")
+    if !creating && !work_chain_active(s,chain) && !inactive_chain_method(method) do return fail("operation_conflict")
     seq:=number(state[0][0])+1
     next:=revision+1
     wrote:=false
@@ -533,4 +533,22 @@ comment_time :: proc(ms:i64) -> string {
     y,mon,d:=time.date(t)
     h,mi,sec:=time.clock_from_time(t)
     return fmt.tprintf("%04d-%02d-%02dT%02d:%02d:%02d.%03dZ",y,int(mon),d,h,mi,sec,ms%1000)
+}
+
+// #11 (origin/main parity): the edits a chain that is no longer active still
+// accepts. origin/main gates only creation, controls, dependencies, scope,
+// proposals, completion, workflows and leases on an active chain
+// (taskv2/mixed_work.odin work_control_chain, taskchain_service.odin:979,
+// control_policy.odin:23); task update/edit/requirements, publish, cancel,
+// comments, fleet edits, chain edit, members/summary and user review are not
+// (taskchain_service.odin update_task_impl, :1222, :2179, :1256, :1889,
+// update_chain_impl, verbs_m2.odin user_review). Leases never start on an
+// inactive chain (task_dispatchable), so none of these runs work.
+inactive_chain_method :: proc(method:string) -> bool {
+    switch method {
+    case "task.edit", "task.priority", "requirements.edit", "lifecycle.configure", "fleet.edit", "task.publish", "task.cancel",
+         "task.comment", "review.post", "fleet.policy.set", "chain.edit", "chain.member.set", "chain.directory.set", "chain.summary.set", "chain.defaults.set":
+        return true
+    }
+    return false
 }

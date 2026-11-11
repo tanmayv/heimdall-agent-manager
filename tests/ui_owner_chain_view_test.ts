@@ -408,7 +408,7 @@ test('owner refusals are worded, not raw codes', async () => {
   assert.equal(ownerErrorMessage(new Error('owner_unavailable'), 'Desk'), 'Owner Bridge Desk is offline — details and changes unavailable');
 });
 
-test('a completed owner chain shows its status and offers no changes', async () => {
+test('a completed owner chain shows its status, offers no new work, and keeps ticket edits (origin/main parity)', async () => {
   const env = await ownerTestSession();
   const { session } = env;
   const calls: OwnerCall[] = [];
@@ -428,16 +428,18 @@ test('a completed owner chain shows its status and offers no changes', async () 
     await act(async () => ui.root.render(view({ chain: summary(env, { migrated: false }), send, session: async () => session })));
     await ui.flush();
     assert.equal(ui.$('owner-chain-status')!.textContent, 'Completed');
-    assert.match(ui.$('owner-chain-readonly')!.textContent!, /completed; it is read-only/);
+    assert.match(ui.$('owner-chain-readonly')!.textContent!, /completed: no new tickets or work/);
     assert.ok(ui.$('ticket-board-view'));
     assert.equal(ui.$('task-board-new-task-btn'), null, 'a completed chain offers no New ticket');
     await ui.openTicket('task_1');
     assert.equal(ui.$('ticket-view-title')!.textContent, 'Fix login');
-    for (const id of ['comment-composer-input', 'ticket-view-quick-actions', 'ticket-view-hold-btn', 'ticket-view-reopen-btn', 'ticket-view-release-btn',
-      'ticket-view-change-requirements-btn', 'ticket-view-approve-btn', 'answer-send-btn']) assert.equal(ui.$(id), null, id);
+    // As on origin/main, comments and ticket edits stay available; the owner
+    // store still refuses controls and new work on a completed chain.
+    assert.ok(ui.$('comment-composer-input'), 'comments stay');
     await ui.click('ticket-view-more-btn');
-    for (const id of ['ticket-view-edit-details', 'ticket-view-edit-reviewers', 'ticket-view-menu-delete', 'ticket-view-menu-cancel']) assert.equal(ui.$(id), null, id);
+    // (Edits of this ticket follow its own state: it is done, as on origin/main TicketView.tsx:230.)
     assert.ok(ui.$('ticket-view-menu-copy_id'), 'Copy ID stays');
+    assert.equal(ui.$('owner-chain-complete'), null, 'no Complete chain on a completed chain');
     assert.ok(calls.every((c) => c.method.endsWith('.read') || c.method === 'history.read'), 'only reads were sent');
   } finally {
     await ui.restore();

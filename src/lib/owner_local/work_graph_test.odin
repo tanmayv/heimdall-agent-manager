@@ -76,6 +76,13 @@ work_generation_receipts_strict_success_completion_restart_and_consumed_output_g
     testing.expect_value(t,work_complete_call(f,"complete",revision).code,"ok")
     testing.expect(t,metadata_replay(f,"complete").replay)
     testing.expect_value(t,work_call(f,"chain.propose","after_complete",work_plan()).code,"operation_conflict")
+    // #11 (origin/main parity, inactive_chain_method): a completed chain still
+    // takes comments and task edits; controls and dependency edits are refused.
+    testing.expect_value(t,work_call(f,"task.comment","comment_after_complete","Post-mortem note","first",work_task_revision(f,"first")).code,"ok")
+    testing.expect_value(t,work_call(f,"task.hold","hold_after_complete","Hold it","second",work_task_revision(f,"second")).code,"operation_conflict")
+    testing.expect_value(t,work_call(f,"work.dependency.add","dep_after_complete",`{"dependency_id":"late","dependent":{"kind":"task","id":"second"},"prerequisite":{"kind":"task","id":"first"}}`).code,"operation_conflict")
+    testing.expect(t,inactive_chain_method("task.edit") && inactive_chain_method("requirements.edit") && inactive_chain_method("review.post") && inactive_chain_method("task.cancel"))
+    testing.expect(t,!inactive_chain_method("task.create") && !inactive_chain_method("task.hold") && !inactive_chain_method("task.reopen") && !inactive_chain_method("dependency.edit") && !inactive_chain_method("lifecycle.force_submit") && !inactive_chain_method("task.complete"))
     rows,_=query(f.store.db,"SELECT summary,work_revision FROM local_work_completions")
     testing.expect(t,len(rows)==1 && rows[0][1]==revision)
 }

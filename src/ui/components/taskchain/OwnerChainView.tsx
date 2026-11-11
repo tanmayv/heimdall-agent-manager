@@ -558,8 +558,12 @@ export function OwnerChainView({
   const wire = useMemo(() => (task ? ownerTaskWire({
     chainId: chain.chainId, bridgeId: bridge, taskId: task.taskId, detail: task.detail, runtime: task.runtime, reviews: task.reviews,
   }) : null), [task, chain.chainId, bridge]);
-  // Changes only on a reachable owner whose chain is confirmed active.
-  const editable = !offline && Boolean(detail) && chainStatus === 'active';
+  // Changes only on a reachable owner. As on origin/main, a chain that is no
+  // longer active still takes ticket edits, comments, reviews, fleet and chain
+  // edits (owner_local inactive_chain_method); new tickets and completing the
+  // chain need it active.
+  const editable = !offline && Boolean(detail) && (chainStatus === 'active' || chainStatus === 'completed');
+  const active = editable && chainStatus === 'active';
   const aux = layout !== 'page';
   const showChainInfo = layout === 'page' || layout === 'overview';
   // The page selects a ticket in place; aux panes open it in a ticket tab.
@@ -743,7 +747,7 @@ export function OwnerChainView({
       if (created) void loadChain(true);
     }
   }
-  const createActions: TaskChainCreateActions | undefined = editable
+  const createActions: TaskChainCreateActions | undefined = active
     ? {
       agentOptions: ownerAgentOptions(agentNames),
       create: createTicket,
@@ -904,7 +908,7 @@ export function OwnerChainView({
           {editable && showChainInfo && !chainDraft && (
             <Button size="sm" variant="ghost" data-debug-id="owner-chain-edit" disabled={busy} onClick={() => setChainDraft({ title, description: description ?? '' })}>Edit chain</Button>
           )}
-          {editable && showChainInfo && completeSummary === null && (
+          {active && showChainInfo && completeSummary === null && (
             <Button size="sm" variant="ghost" data-debug-id="owner-chain-complete" disabled={busy} onClick={() => setCompleteSummary('')}>Complete chain</Button>
           )}
           <Button size="sm" variant="ghost" data-debug-id="owner-chain-refresh" disabled={loading || busy} onClick={() => { setOffline(false); void loadChain(); if (selected) void loadTask(selected); }}>Refresh</Button>
@@ -931,13 +935,13 @@ export function OwnerChainView({
           </div>
         </form>
       )}
-      {editable && completeSummary !== null && (
+      {active && completeSummary !== null && (
         <form data-debug-id="owner-chain-complete-form" className="mx-4 mt-3 space-y-2 rounded-lg border border-subtle bg-surface-raised p-3" onSubmit={(e) => {
           e.preventDefault();
           if (!completeSummary.trim()) return;
           void completeChain(completeSummary.trim()).then((ok) => { if (ok) setCompleteSummary(null); });
         }}>
-          <FormField label="Summary" hint="What the chain delivered. Completing makes the chain read-only.">
+          <FormField label="Summary" hint="What the chain delivered. Completing stops new work; its tickets can still be edited and commented on.">
             <Textarea size="sm" rows={3} data-debug-id="owner-chain-complete-summary" value={completeSummary} onChange={(v) => setCompleteSummary(v)} />
           </FormField>
           <div className="flex gap-2">
@@ -954,7 +958,7 @@ export function OwnerChainView({
       {notice && !error && <Text as="p" role="caption" tone="muted" aria-live="polite" data-debug-id="owner-chain-notice" className="mx-4 mt-3">{notice}</Text>}
       {!offline && detail && chainStatus !== 'active' && (
         <Text as="p" role="caption" tone="muted" data-debug-id="owner-chain-readonly" className="mx-4 mt-3">
-          {chainStatus === 'completed' ? 'This chain is completed; it is read-only.' : 'The chain’s status could not be read; changes are unavailable.'}
+          {chainStatus === 'completed' ? 'This chain is completed: no new tickets or work; tickets can still be edited, reviewed and commented on.' : 'The chain’s status could not be read; changes are unavailable.'}
         </Text>
       )}
       {!offline && detail && showChainInfo && (
