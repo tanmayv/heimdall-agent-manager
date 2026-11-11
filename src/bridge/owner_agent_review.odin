@@ -300,9 +300,9 @@ bridge_owner_review_bind :: proc(chain,instance,agent,coordinator:string) -> (st
 
 // `lease next` with no work: the review this child owes, opened (its review
 // session) and delivered as a reviewer TASK.md.
-bridge_owner_review_next :: proc(ctx:^Owner_Agent_Ctx) -> string {
+bridge_owner_review_next :: proc(ctx:^Owner_Agent_Ctx,only_chain:="") -> string {
     none:=bridge_local_response_data(ctx.request_id,bridge_owner_json(Owner_Agent_Next{status="none",authority=bridge_owner_authority()}))
-    chain,task,found,read:=owner.review_pending(ctx.store,ctx.child)
+    chain,task,found,read:=owner.review_pending(ctx.store,ctx.child,only_chain)
     if !read do return bridge_owner_fail(ctx,"storage_error","owner store could not be read; retry")
     if !found do return none
     st,known,ok:=owner.agent_task_state(ctx.store,chain,task)

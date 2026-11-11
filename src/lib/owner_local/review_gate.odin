@@ -152,11 +152,12 @@ review_targets :: proc(s:^Store,chain,task:string) -> ([]Review_Target,bool) {
 // The review lease `lease next` hands this child: the first task in review
 // (not held) whose gate still owes the child's agent a verdict and that the
 // child may review (task_reviewer_authorized). Read-only.
-review_pending :: proc(s:^Store,child:Child) -> (chain,task:string,found,ok:bool) {
+review_pending :: proc(s:^Store,child:Child,only_chain:="") -> (chain,task:string,found,ok:bool) {
     tx:Transaction
     if !transaction_begin(s,&tx) do return "","",false,false
     defer transaction_rollback(&tx)
-    rows,read:=query(s.db,"SELECT chain_id,task_id,attempt FROM lifecycle_state WHERE state='in_review' ORDER BY chain_id,task_id LIMIT 500")
+    // only_chain scopes the search to one chain (a relayed `lease next` names it).
+    rows,read:=query(s.db,"SELECT chain_id,task_id,attempt FROM lifecycle_state WHERE state='in_review' AND (?1='' OR chain_id=?1) ORDER BY chain_id,task_id LIMIT 500",only_chain)
     if !read do return "","",false,false
     for row in rows {
         if !control_ready(s,row[0],row[1]) || !task_reviewer_authorized(s,row[0],row[1],child) do continue

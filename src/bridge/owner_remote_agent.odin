@@ -105,7 +105,8 @@ bridge_owner_remote_agent_exec :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json
     ctx.store.relayed_from=from_bridge
     defer ctx.store.relayed_from=""
     if method!="agent.lease.next" do return bridge_owner_agent_exec(ctx,method,p),""
-    response=bridge_owner_review_next(ctx)
+    // Only a review of the chain the relaying Bridge named.
+    response=bridge_owner_review_next(ctx,bridge_owner_pstr(p,"chain_id"))
     // The relaying Bridge writes the reviewer's TASK.md from this text
     // (bridge_owner_remote_review_context_write); there is no run_dir here.
     if ctx.review_context.text=="" do return response,""

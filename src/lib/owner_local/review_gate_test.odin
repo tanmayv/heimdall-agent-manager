@@ -167,6 +167,10 @@ review_gate_dispatch_targets_every_owed_reviewer :: proc(t:^testing.T) {
     for child in ([2]Child{gate_auditor(),gate_second()}) {
         chain,task,found,read:=review_pending(&f.store,child)
         testing.expectf(t,read && found && chain=="chain" && task=="task","%s has a pending review",child.agent_id)
+        _,_,found,read=review_pending(&f.store,child,"chain")
+        testing.expectf(t,read && found,"%s: scoped to its chain",child.agent_id)
+        _,_,found,read=review_pending(&f.store,child,"other_chain")
+        testing.expectf(t,read && !found,"%s: nothing owed in another chain",child.agent_id)
     }
     for child in ([2]Child{gate_stranger(),lease_child()}) {
         _,_,found,read:=review_pending(&f.store,child)
