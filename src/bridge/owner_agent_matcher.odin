@@ -132,19 +132,25 @@ bridge_owner_match_assign :: proc(ctx:^Owner_Agent_Ctx,out:^[dynamic]Owner_Revie
                 }
                 continue
             }
-            has_member:=false
+            // serving: a live member already runs the task's effective selection
+            // (busy or not: capacity, no new launch); stoppable: a stopped
+            // member to start instead of launching.
+            serving,stoppable:=false,false
             for m in members {
                 if m.agent_id!=policy.agent_id || m.enabled!="1" || m.role=="coordinator" do continue
-                has_member=true
                 child,live:=bridge_owner_live_child(m.instance_id)
                 if !live || child.agent_id!=m.agent_id {
-                    // A restart keeps its old selection: not for an overridden task.
-                    if stopped.instance_id=="" && !overridden do stopped=m
+                    // A restart keeps its old selection: never for an overridden task.
+                    if !overridden {
+                        stoppable=true
+                        if stopped.instance_id=="" do stopped=m
+                    }
                     continue
                 }
                 // A warm instance with another provider/model than the task's
-                // override is not reused (a dedicated one is launched below).
-                if !bridge_owner_instance_serves(m.instance_id,m.agent_id,models) do continue
+                // effective selection is not reused (a dedicated one is launched below).
+                if !bridge_owner_instance_serves(ctx.store,task.chain_id,m.instance_id,m.agent_id,models) do continue
+                serving=true
                 if busy[m.instance_id] do continue
                 if leased,lease_ok:=owner.instance_leased(ctx.store,m.instance_id);!lease_ok || leased do continue
                 cctx:=Owner_Agent_Ctx{request_id=bridge_owner_fresh_id("req"),store=ctx.store,child=coordinator,key=ctx.key,kr=ctx.kr,now=ctx.now}
@@ -157,7 +163,9 @@ bridge_owner_match_assign :: proc(ctx:^Owner_Agent_Ctx,out:^[dynamic]Owner_Revie
                 break
             }
             if assigned do break
-            if (!has_member || overridden) && missing.agent_id=="" { missing=owner.Agent_Fleet_Member{agent_id=policy.agent_id};launch_policy=policy }
+            // Launch only when no member runs (or can restart into) the task's
+            // selection; the launch key's back-off bounds a pending one.
+            if !serving && !stoppable && missing.agent_id=="" { missing=owner.Agent_Fleet_Member{agent_id=policy.agent_id};launch_policy=policy }
         }
         if assigned do continue
         if pinned || (remote_agent!="" && stopped.instance_id=="" && missing.agent_id=="") {
@@ -181,7 +189,9 @@ bridge_owner_match_assign :: proc(ctx:^Owner_Agent_Ctx,out:^[dynamic]Owner_Revie
         d:=bridge_owner_match_dispatch(ctx.store,out,task.chain_id)
         if d.rec.instance_token=="" do continue
         action:="start" if wake.action==.Start else "launch"
-        if !bridge_owner_match_due(fmt.tprintf("%s|%s|%s",task.chain_id,wake.agent,action),ctx.now,force) do continue
+        // A launch is pending until its member is live: even an event run does
+        // not launch the agent again within the back-off (no unbounded launches).
+        if !bridge_owner_match_due(fmt.tprintf("%s|%s|%s",task.chain_id,wake.agent,action),ctx.now,force && action!="launch") do continue
         pending[wake.agent]=true
         append(&d.wakes,wake)
     }

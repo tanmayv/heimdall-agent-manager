@@ -708,6 +708,8 @@ export function OwnerChainView({
       setAgentModel: async (agentId: string, value: string) => {
         if (!req) { setError('Add requirements first: the model overrides are part of them.'); return false; }
         const ok = await mutate('requirements.edit', { taskId: t.taskId, body: ownerAgentModelDoc(req.raw ?? '', agentId, value), requirementsRevision: String(reqRevision + 1) }, 'Model override updated.');
+        // The owner Bridge checks the provider/model against the account catalog.
+        if (!ok && value.trim()) setError(`${value.trim()} is not an active provider/model of this account (${lastError.current.message || 'refused'}).`);
         if (ok && reqHistory?.taskId === t.taskId) void showRequirementHistory(t.taskId);
         return ok;
       },

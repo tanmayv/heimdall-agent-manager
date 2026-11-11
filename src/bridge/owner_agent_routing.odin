@@ -975,13 +975,35 @@ bridge_owner_plan_remote_reviewer :: proc(s:^owner.Store,chain,agent:string,remo
 // The exact live child of a durable agent id among this chain's current
 // enabled members and fleet workers on this Bridge. Caller holds the child
 // locks (bridge_owner_child_locked).
-bridge_owner_resolve_agent :: proc(ctx:^Owner_Agent_Ctx,chain,agent_id,flag:string) -> (owner.Child,string,string) {
+// select (a task's assignee/reviewer): only an instance launched with the
+// agent's effective selection for the task (models: its overrides) is taken,
+// the first such one; live instances that all run another provider/model give
+// agent_not_serving (fleet ensure launches a dedicated one first).
+bridge_owner_resolve_agent :: proc(ctx:^Owner_Agent_Ctx,chain,agent_id,flag:string,models:map[string]Owner_Agent_Model=nil,select:=false) -> (owner.Child,string,string) {
     participants,ok:=owner.agent_chain_participants(ctx.store,chain)
     if !ok do return {},"storage_error","owner store could not be read"
     found:owner.Child
-    matches:=0
+    matches,serving:=0,0
+    found_leased:=false
+    want:Owner_Agent_Model
+    if select do want=bridge_owner_agent_selection(ctx.store,chain,agent_id,models)
     for instance in participants {
-        if child,live:=bridge_owner_live_child(instance);live && child.agent_id==agent_id { found=child;matches+=1 }
+        child,live:=bridge_owner_live_child(instance)
+        if !live || child.agent_id!=agent_id do continue
+        matches+=1
+        if select {
+            if !bridge_owner_instance_matches(instance,want) do continue
+            // The first matching instance, a lease-free one first.
+            leased,_:=owner.instance_leased(ctx.store,instance)
+            if serving==0 || (!leased && found_leased) { found=child;found_leased=leased }
+            serving+=1
+            continue
+        }
+        found=child
+    }
+    if select && matches>0 {
+        if serving==0 do return {},"agent_not_serving",fmt.tprintf("%s %s has no running instance in this chain with %s%s%s; none was bound (the matcher launches one)",flag,agent_id,want.provider,"/" if want.model!="" else "",want.model)
+        return found,"ok",""
     }
     if matches==0 do return {},"invalid_scope",fmt.tprintf("%s %s is not a running, enabled member or fleet worker of this chain on this Bridge; add it with `ham-ctl task-chain fleet set --agent %s` (or `ham-ctl agents start` its stopped member instance)",flag,agent_id,agent_id)
     if matches>1 do return {},"ambiguous_agent",fmt.tprintf("%s %s matches several running instances in this chain",flag,agent_id)
@@ -1159,7 +1181,7 @@ bridge_owner_plan_children :: proc(ctx:^Owner_Agent_Ctx,chain:string,st:owner.Ag
         ctx.remote=place
         assignee=owner.Child{agent_id=plan.assignee}
     } else if plan.has_assignee {
-        assignee,code,message=bridge_owner_resolve_agent(ctx,chain,plan.assignee,"--assignee")
+        assignee,code,message=bridge_owner_resolve_agent(ctx,chain,plan.assignee,"--assignee",bridge_owner_plan_models(st.brief,plan.agent_models),true)
         if code!="ok" && !pinned {
             // No live child here: an agent whose fleet policy names another
             // account Bridge is placed there after the locks (#9/#10).
@@ -1184,7 +1206,7 @@ bridge_owner_plan_children :: proc(ctx:^Owner_Agent_Ctx,chain:string,st:owner.Ag
                 code,message="invalid_scope",fmt.tprintf("--reviewer %s has no fleet row in this chain; `ham-ctl task-chain fleet set --agent %s` adds one",reviewer_agent,reviewer_agent)
             }
         } else {
-            reviewer,code,message=bridge_owner_resolve_agent(ctx,chain,reviewer_agent,"--reviewer")
+            reviewer,code,message=bridge_owner_resolve_agent(ctx,chain,reviewer_agent,"--reviewer",bridge_owner_plan_models(st.brief,plan.agent_models),true)
         }
         if code!="ok" && (plan.has_reviewer || remote_pin) {
             // A primary reviewer placed on another account Bridge (or of a

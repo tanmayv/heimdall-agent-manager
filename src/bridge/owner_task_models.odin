@@ -20,6 +20,7 @@ import "core:strings"
 import "core:sync"
 import contracts "odin_test:contracts"
 import owner "odin_test:lib/owner_local"
+import vault "odin_test:lib/vault"
 
 Owner_Agent_Model :: struct { provider,model:string }
 
@@ -147,17 +148,31 @@ bridge_owner_launch_body_model :: proc(body:^map[string]string,policy:contracts.
     if profile!="" do body["provider_profile"]=profile
 }
 
-// Whether a live instance may serve agent's work on a task: true unless the
-// task overrides agent and the instance's launch record names another
-// provider/model (an unknown launch is not second-guessed).
-bridge_owner_instance_serves :: proc(instance,agent:string,models:map[string]Owner_Agent_Model) -> bool {
+// The selection an agent of a task runs with on this Bridge: the task override,
+// else the fleet row's per-Bridge entry, else the row ({} = unconstrained).
+bridge_owner_agent_selection :: proc(s:^owner.Store,chain,agent:string,models:map[string]Owner_Agent_Model) -> Owner_Agent_Model {
+    policy,_,_:=owner.agent_fleet_policy(s,chain,agent)
     override,has:=models[agent]
-    if !has do return true
-    if bridge_owner_instance_serves_hook!=nil do return bridge_owner_instance_serves_hook(instance,override)
+    provider,model,_:=bridge_owner_effective_model(policy,bridge_cfg().daemon_id,override,has)
+    return Owner_Agent_Model{provider,model}
+}
+
+// Whether an instance may serve work that wants `want` (the task's EFFECTIVE
+// selection, bridge_owner_agent_selection): its launch record names the same
+// provider (and model, when want names one). An unconstrained want, or an
+// instance with no known launch selection, is not second-guessed.
+bridge_owner_instance_matches :: proc(instance:string,want:Owner_Agent_Model) -> bool {
+    if want.provider=="" do return true
+    if bridge_owner_instance_serves_hook!=nil do return bridge_owner_instance_serves_hook(instance,want)
     launch,known:=bridge_runtime_get_launch(instance)
     if !known || launch.provider=="" do return true
-    if launch.provider!=override.provider do return false
-    return override.model=="" || launch.model==override.model
+    if launch.provider!=want.provider do return false
+    return want.model=="" || launch.model==want.model
+}
+
+// bridge_owner_instance_matches against the agent's effective selection for a task.
+bridge_owner_instance_serves :: proc(s:^owner.Store,chain,instance,agent:string,models:map[string]Owner_Agent_Model) -> bool {
+    return bridge_owner_instance_matches(instance,bridge_owner_agent_selection(s,chain,agent,models))
 }
 @(thread_local)
 bridge_owner_instance_serves_hook:proc(instance:string,want:Owner_Agent_Model) -> bool
@@ -174,4 +189,20 @@ bridge_owner_effective_model :: proc(policy:contracts.Owner_Fleet_Policy,bridge:
         return provider,model,""
     }
     return bridge_owner_fleet_launch_model(policy,bridge)
+}
+
+// A requirements_payload whose brief names agent_models: every provider (and
+// named model) is an active catalog entry. A payload without them, or one this
+// Bridge cannot open, is left to the owner store's own checks.
+bridge_owner_requirements_models_valid :: proc(payload:string,kr:^vault.Vault_Keyring) -> bool {
+    p,ok:=contracts.owner_parse(payload,"requirements_payload")
+    if !ok do return true
+    body,opened:=vault.open(contracts.owner_string(p,"body_cipher"),kr,context.temp_allocator)
+    if opened!=.Ok do return true
+    v,parsed:=contracts.owner_content_document(body)
+    o,obj:=v.(json.Object)
+    if !parsed || !obj do return true
+    if _,has:=o["agent_models"];!has do return true
+    _,_,message:=bridge_owner_agent_models_param(o)
+    return message==""
 }

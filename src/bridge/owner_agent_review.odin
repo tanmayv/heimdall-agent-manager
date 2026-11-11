@@ -115,7 +115,7 @@ bridge_owner_review_plan :: proc(ctx:^Owner_Agent_Ctx,chain,task:string) -> json
         // (a stopped member would restart with its old selection).
         _,overridden:=models[target.agent_id]
         for instance in target.instances {
-            if child,live:=bridge_owner_live_child(instance);live && child.agent_id==target.agent_id && bridge_owner_instance_serves(instance,target.agent_id,models) { wake.action=.Nudge;wake.instance=instance;break }
+            if child,live:=bridge_owner_live_child(instance);live && child.agent_id==target.agent_id && bridge_owner_instance_serves(ctx.store,chain,instance,target.agent_id,models) { wake.action=.Nudge;wake.instance=instance;break }
         }
         if wake.action==.Launch && len(target.instances)>0 && !overridden {
             // A stopped member keeps its membership across a restart.

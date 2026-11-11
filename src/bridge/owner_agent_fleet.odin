@@ -213,7 +213,21 @@ bridge_owner_fleet :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -> 
     // agent.task_chain.fleet_set
     // ensure (task create/update, bridge_owner_task_fleet_ensure): an agent
     // that already has a row keeps it untouched.
+    // A task whose selection for this agent (its override, else the row) no
+    // live member runs gets a dedicated member launched with it, so the task
+    // route binds a matching instance (owner_task_models.odin); a stopped or
+    // pending member is waited for, never duplicated.
+    ensure_models:=bridge_owner_fleet_ensure_models(ctx,chain,agent,p)
     if found && bridge_owner_pstr(p,"ensure")=="1" {
+        if bridge_owner_fleet_ensure_dedicated(ctx,chain,agent,p,ensure_models) {
+            role:="worker"
+            reply["role"]=json.String(role)
+            reply["note"]=json.String("dedicated member for the task's provider/model")
+            body:=map[string]string{"agent_id"=agent,"chain_id"=chain,"bridge_id"=bridge_cfg().daemon_id}
+            bridge_owner_launch_body_model(&body,policy,bridge_cfg().daemon_id,agent,ensure_models)
+            ctx.launch=Owner_Fleet_Launch{true,chain,agent,role,bridge_owner_json(body),reply}
+            return ""
+        }
         reply["note"]=json.String("fleet row exists")
         return bridge_local_response_data(ctx.request_id,bridge_owner_json(reply))
     }
@@ -252,6 +266,8 @@ bridge_owner_fleet :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -> 
     } else {
         for m in members {
             if m.agent_id!=agent || !m.enabled do continue
+            // A running member with another provider/model than the task's is not this task's.
+            if m.running && !bridge_owner_instance_serves(ctx.store,chain,m.instance_id,agent,ensure_models) do continue
             reply["instance_id"]=json.String(m.instance_id)
             note=fmt.tprintf("already a member: %s (%s)",m.instance_id,"running" if m.running else "stopped; `ham-ctl agents start` it")
             break
@@ -285,19 +301,43 @@ bridge_owner_fleet :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -> 
         return bridge_local_response_data(ctx.request_id,bridge_owner_json(reply))
     }
     body:=map[string]string{"agent_id"=agent,"chain_id"=chain,"bridge_id"=bridge_cfg().daemon_id}
-    // ensure for a task: its per-agent override (this verb's, else the
-    // task's) beats the row (owner_task_models.odin).
-    models:map[string]Owner_Agent_Model
-    if override:=bridge_owner_pstr(p,"override_provider");override!="" {
-        models=make(map[string]Owner_Agent_Model,context.temp_allocator)
-        models[agent]=Owner_Agent_Model{override,bridge_owner_pstr(p,"override_model")}
-    } else if task:=bridge_owner_pstr(p,"task_id");task!="" {
-        models=bridge_owner_task_models(ctx.store,chain,task)
-    }
-    bridge_owner_launch_body_model(&body,policy,bridge_cfg().daemon_id,agent,models)
+    // ensure for a task: its per-agent override beats the row.
+    bridge_owner_launch_body_model(&body,policy,bridge_cfg().daemon_id,agent,ensure_models)
     if project:=bridge_owner_pstr(p,"project_id");project!="" do body["project_id"]=project
     ctx.launch=Owner_Fleet_Launch{true,chain,agent,role,bridge_owner_json(body),reply}
     return ""
+}
+
+// The overrides an ensure for a task launches agent with: this verb's
+// (override_provider, or override_clear = the fleet default), else the
+// task's stored ones (task_id). nil outside a task ensure.
+bridge_owner_fleet_ensure_models :: proc(ctx:^Owner_Agent_Ctx,chain,agent:string,p:json.Object) -> map[string]Owner_Agent_Model {
+    if bridge_owner_pstr(p,"ensure")!="1" do return nil
+    if bridge_owner_pstr(p,"override_clear")=="1" do return nil
+    if override:=bridge_owner_pstr(p,"override_provider");override!="" {
+        models:=make(map[string]Owner_Agent_Model,context.temp_allocator)
+        models[agent]=Owner_Agent_Model{override,bridge_owner_pstr(p,"override_model")}
+        return models
+    }
+    if task:=bridge_owner_pstr(p,"task_id");task!="" do return bridge_owner_task_models(ctx.store,chain,task)
+    return nil
+}
+
+// An ensure for a task that runs here, whose agent has live members but none
+// running the task's selection, and no stopped member: launch a dedicated one.
+bridge_owner_fleet_ensure_dedicated :: proc(ctx:^Owner_Agent_Ctx,chain,agent:string,p:json.Object,models:map[string]Owner_Agent_Model) -> bool {
+    if agent==ctx.child.agent_id || bridge_owner_fleet_ensure_run_bridge(ctx,chain,p)!="" do return false
+    members,read:=bridge_owner_fleet_members(ctx,chain)
+    if !read do return false
+    live:=0
+    for m in members {
+        if m.agent_id!=agent || !m.enabled do continue
+        // Live as the matcher and the task route see it (bridge_owner_live_child).
+        if child,live:=bridge_owner_live_child(m.instance_id);!live || child.agent_id!=agent do return false
+        if bridge_owner_instance_serves(ctx.store,chain,m.instance_id,agent,models) do return false
+        live+=1
+    }
+    return live>0
 }
 
 // The other Bridge an ensured task runs on ("" = this Bridge): the verb's
@@ -423,7 +463,9 @@ bridge_owner_task_fleet_ensure :: proc(request_id,method,params:string,rec:Bridg
     run_bridge:=strings.trim_space(bridge_owner_pstr(p,"bridge_id"))
     task_id:=bridge_owner_pstr(p,"task_id")
     if method=="agent.task.split" {named_bridge=false;task_id=""}
-    agent_models,_,_:=bridge_owner_agent_models_param(p)
+    agent_models,_,models_error:=bridge_owner_agent_models_param(p)
+    // An invalid --agent-model is refused by the task route: launch nothing for it.
+    if models_error!="" do return "","","",Owner_Fleet_Ensured{chain=chain}
     ensured=Owner_Fleet_Ensured{chain=chain,added=make([dynamic]string),launched=make([dynamic]string)}
     for agent in agents {
         // The task route refuses ids that are not agent ids with its own message.
@@ -431,10 +473,12 @@ bridge_owner_task_fleet_ensure :: proc(request_id,method,params:string,rec:Bridg
         body:=map[string]string{"agent_id"=agent,"ensure"="1"}
         if chain!="" do body["chain_id"]=chain
         if named_bridge do body["run_bridge_id"]=run_bridge
-        else if task_id!="" do body["task_id"]=task_id
-        // This verb's --agent-model for the agent (an update without one
-        // reads the task's from task_id).
-        if m,has:=agent_models[agent];has && m.provider!="" {body["override_provider"]=m.provider;body["override_model"]=m.model;body["task_id"]=task_id}
+        if task_id!="" do body["task_id"]=task_id
+        // This verb's --agent-model for the agent (set, or cleared = the fleet
+        // default); without one the task's stored override (task_id) applies.
+        if m,has:=agent_models[agent];has {
+            if m.provider!="" {body["override_provider"]=m.provider;body["override_model"]=m.model} else do body["override_clear"]="1"
+        }
         response,handled,l:=set(request_id,bridge_owner_json(body),rec)
         // Not an owner chain, or not the coordinator: the task route decides.
         // A new row whose launch is pending has no reply yet ("").

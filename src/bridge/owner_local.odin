@@ -198,7 +198,14 @@ bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
             }
         }
     }
-    result:=owner.execute(&bridge_owner_store,command_raw,payload,genesis_raw,key,owner_key,version,head,now,&kr,owner.Signer{nil,bridge_owner_sign},fleet_child,proof,observed_children[:],remote_key)
+    result:owner.Result
+    // A device requirements edit (ticket UI) naming a per-agent provider/model
+    // is checked against the catalog like `task --agent-model` (owner_task_models.odin).
+    if method=="requirements.edit" && !bridge_owner_requirements_models_valid(payload,&kr) {
+        result=owner.Result{code="invalid_content"}
+    } else {
+        result=owner.execute(&bridge_owner_store,command_raw,payload,genesis_raw,key,owner_key,version,head,now,&kr,owner.Signer{nil,bridge_owner_sign},fleet_child,proof,observed_children[:],remote_key)
+    }
     sync.mutex_unlock(&bridge_local_token_mutex)
     sync.mutex_unlock(&bridge_startup_io_mutex)
     if result.code=="ok" && contracts.owner_string(command,"method")=="chain.member.set" {
