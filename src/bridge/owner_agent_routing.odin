@@ -130,12 +130,18 @@ bridge_owner_agent_route :: proc(request_id,method,params:string,rec:Bridge_Loca
     if rec.role!=.Agent do return "",false
     if verb:=bridge_owner_instance_verb(method);verb!="" do return bridge_owner_instance_gate(request_id,verb,params,rec)
     failed_agent,failure:string
-    if method=="agent.task.create" || method=="agent.task.update" {
+    ensured:Owner_Fleet_Ensured
+    if method=="agent.task.create" || method=="agent.task.update" || method=="agent.task.split" {
         refused:string
-        refused,failed_agent,failure=bridge_owner_task_fleet_ensure(request_id,params,rec,method=="agent.task.update")
-        if refused!="" do return refused,true
+        refused,failed_agent,failure,ensured=bridge_owner_task_fleet_ensure(request_id,method,params,rec,method=="agent.task.update")
+        if refused!="" {
+            bridge_owner_task_fleet_rollback(request_id,ensured,rec)
+            return refused,true
+        }
     }
     response,handled,launch,reviews,remote:=bridge_owner_agent_route_locked(request_id,method,params,rec)
+    // Refused after its agents were ensured: nothing stays launched for it.
+    if handled && !bridge_owner_response_ok(response) do bridge_owner_task_fleet_rollback(request_id,ensured,rec)
     // The update applied; its agent could not be launched (M1 item 5).
     if failed_agent!="" && handled && bridge_owner_response_ok(response) {
         _=bridge_owner_block_not_running(bridge_owner_pstr(bridge_owner_params(params),"task_id"),failed_agent,failure)

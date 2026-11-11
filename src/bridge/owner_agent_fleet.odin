@@ -306,54 +306,151 @@ bridge_owner_fleet_launch :: proc(request_id:string,launch:Owner_Fleet_Launch,re
     return bridge_local_response_data(request_id,bridge_owner_json(reply))
 }
 
-// M1 item 10 (origin/main ensure_fleet_role): `task create|update --assignee
-// <agt> --reviewer <agt>` needs no prior `task-chain fleet set`. Before the
-// task route runs, every named agent without a fleet row in the chain gets
-// one (capacity 1, idle TTL 600s) and, unless it is the coordinator itself
-// (solo row) or placed on another Bridge, is launched here and bound as a
-// member, exactly as `fleet set` does. The Hub launch refuses unknown,
-// other-account and archived agents; their new row is paused so it never
-// dispatches. Returns "" to continue with the task route, else the refusal.
-// The caller holds no lock.
+// M1 item 10 (origin/main ensure_fleet_role): `task create|update|split`
+// naming agents (--assignee, --reviewer, a split child's assignee or brief
+// reviewers) needs no prior `task-chain fleet set`. Before the task route
+// runs, every named agent without a fleet row in the chain gets one
+// (capacity 1, idle TTL 600s) and, unless it is the coordinator itself (solo
+// row) or placed on another Bridge, is launched here and bound as a member,
+// exactly as `fleet set` does. The Hub launch refuses unknown, other-account
+// and archived agents; their new row is paused so it never dispatches.
+// Requests the task route would refuse anyway (a reviewer that is the
+// assignee, the coordinator as reviewer) are refused first, so they launch
+// nothing; any other refusal of the task verb rolls the ensure back
+// (bridge_owner_task_fleet_rollback). The caller holds no lock.
 // On task.update (block_failed) a launch failure does not refuse the update:
 // it returns the agent and the launch error, and the caller blocks the task
 // agent_not_running once the update applied (bridge_owner_block_not_running).
-bridge_owner_task_fleet_ensure :: proc(request_id,params:string,rec:Bridge_Local_Agent_Token_Record,block_failed:=false) -> (refused,failed_agent,failure:string) {
-    context.allocator=context.temp_allocator
-    p:=bridge_owner_params(params)
-    agents:=make([dynamic]string)
-    if assignee:=strings.trim_space(bridge_owner_pstr(p,"assignee"));assignee!="" do append(&agents,assignee)
-    if list,is_list:=p["reviewers"].(json.Array);is_list {
-        for item in list {
-            id,_:=item.(json.String)
-            if trimmed:=strings.trim_space(string(id));trimmed!="" && !slice.contains(agents[:],trimmed) do append(&agents,trimmed)
-        }
+Owner_Fleet_Ensured :: struct {
+    chain:string,
+    // Agents whose row this ensure created and launched, and their instances.
+    // A solo (coordinator) or remote row launches nothing and is kept.
+    added,launched:[dynamic]string
+}
+
+// Effects, replaceable by tests; nil members use the real Bridge paths.
+Owner_Fleet_Ensure_Effects :: struct {
+    set:proc(request_id,body:string,rec:Bridge_Local_Agent_Token_Record) -> (string,bool,Owner_Fleet_Launch),
+    launch:proc(request_id:string,launch:Owner_Fleet_Launch,rec:Bridge_Local_Agent_Token_Record) -> string,
+    pause:proc(request_id,chain,agent:string,rec:Bridge_Local_Agent_Token_Record),
+    stop:proc(instance:string,rec:Bridge_Local_Agent_Token_Record) -> bool,
+}
+@(thread_local)
+bridge_owner_fleet_ensure_effects:Owner_Fleet_Ensure_Effects
+
+// The agents a task verb names, and the refusal the task route would give
+// for a reviewer that is the assignee or the calling coordinator.
+bridge_owner_task_fleet_agents :: proc(method:string,p:json.Object,caller_agent:string) -> (agents:[dynamic]string,code,message:string) {
+    agents=make([dynamic]string,context.temp_allocator)
+    add :: proc(agents:^[dynamic]string,id:string) {
+        if trimmed:=strings.trim_space(id);trimmed!="" && !slice.contains(agents[:],trimmed) do append(agents,trimmed)
     }
+    // One task's assignee and reviewers: refused as the task route does.
+    task :: proc(agents:^[dynamic]string,assignee:string,reviewers:json.Array,caller_agent:string) -> (string,string) {
+        assignee:=strings.trim_space(assignee)
+        add(agents,assignee)
+        for item in reviewers {
+            id,_:=item.(json.String)
+            reviewer:=strings.trim_space(string(id))
+            if reviewer=="" do continue
+            if caller_agent!="" && reviewer==caller_agent do return "invalid_scope","the coordinator never reviews a task of its own chain; name another --reviewer"
+            if assignee!="" && reviewer==assignee do return "invalid_scope","a reviewer must be a different agent than the assignee"
+            add(agents,reviewer)
+        }
+        return "",""
+    }
+    if method=="agent.task.split" {
+        list,_:=p["children"].(json.Array)
+        for item in list {
+            spec,_:=item.(json.Object)
+            brief,_:=spec["brief"].(json.Object)
+            reviewers,_:=brief["reviewers"].(json.Array)
+            if code,message=task(&agents,bridge_owner_pstr(spec,"assignee"),reviewers,caller_agent);code!="" do return
+        }
+        return
+    }
+    reviewers,_:=p["reviewers"].(json.Array)
+    code,message=task(&agents,bridge_owner_pstr(p,"assignee"),reviewers,caller_agent)
+    return
+}
+
+bridge_owner_task_fleet_ensure :: proc(request_id,method,params:string,rec:Bridge_Local_Agent_Token_Record,block_failed:=false) -> (refused,failed_agent,failure:string,ensured:Owner_Fleet_Ensured) {
+    context.allocator=context.temp_allocator
+    e:=bridge_owner_fleet_ensure_effects
+    set:=e.set if e.set!=nil else bridge_owner_fleet_ensure_set
+    launch:=e.launch if e.launch!=nil else bridge_owner_fleet_launch
+    pause:=e.pause if e.pause!=nil else bridge_owner_fleet_ensure_pause
+    p:=bridge_owner_params(params)
+    caller_agent:=""
+    if e.set==nil {
+        if l,has:=bridge_runtime_get_launch(rec.agent_instance_id);has do caller_agent=l.agent_id
+    }
+    agents,code,message:=bridge_owner_task_fleet_agents(method,p,caller_agent)
+    if code!="" do return bridge_local_response_error(request_id,code,fmt.tprintf("%s; no agent launched",message)),"","",ensured
     chain:=bridge_owner_pstr(p,"chain_id")
+    ensured=Owner_Fleet_Ensured{chain=chain,added=make([dynamic]string),launched=make([dynamic]string)}
     for agent in agents {
-        // The task route refuses ids that are not agent ids, and a coordinator
-        // reviewing its own chain, with its own messages.
+        // The task route refuses ids that are not agent ids with its own message.
         if !contracts.owner_field_valid(agent,"id") do continue
         body:=map[string]string{"agent_id"=agent,"ensure"="1"}
         if chain!="" do body["chain_id"]=chain
-        response,handled,launch,_,_:=bridge_owner_agent_route_locked(request_id,"agent.task_chain.fleet_set",bridge_owner_json(body),rec)
+        response,handled,l:=set(request_id,bridge_owner_json(body),rec)
         // Not an owner chain, or not the coordinator: the task route decides.
-        if !handled || !bridge_owner_response_ok(response) do return "","",""
-        if !launch.active do continue
-        launched:=bridge_owner_fleet_launch(request_id,launch,rec)
-        if bridge_owner_response_ok(launched) do continue
-        pause:=map[string]string{"agent_id"=agent,"chain_id"=launch.chain}
-        _,_,_,_,_=bridge_owner_agent_route_locked(request_id,"agent.task_chain.fleet_pause",bridge_owner_json(pause),rec)
-        if !block_failed do return launched,"",""
+        // A new row whose launch is pending has no reply yet ("").
+        if !handled || !(bridge_owner_response_ok(response) || (response=="" && l.active)) do return "","","",ensured
+        if out,parsed:=json.parse_string(response,.JSON,true,context.temp_allocator);parsed==nil {
+            obj,_:=out.(json.Object);data,_:=obj["data"].(json.Object)
+            if contracts.owner_string(data,"note")=="fleet row exists" do continue
+            if ensured.chain=="" do ensured.chain=contracts.owner_string(data,"chain_id")
+        }
+        if ensured.chain=="" do ensured.chain=l.chain
+        if !l.active do continue
+        launched:=launch(request_id,l,rec)
+        if bridge_owner_response_ok(launched) {
+            append(&ensured.added,agent)
+            if out,parsed:=json.parse_string(launched,.JSON,true,context.temp_allocator);parsed==nil {
+                obj,_:=out.(json.Object);data,_:=obj["data"].(json.Object)
+                if instance:=contracts.owner_string(data,"instance_id");instance!="" do append(&ensured.launched,instance)
+            }
+            continue
+        }
+        pause(request_id,l.chain,agent,rec)
+        if !block_failed do return launched,"","",ensured
         message:=launched
         if out,parsed:=json.parse_string(launched,.JSON,true,context.temp_allocator);parsed==nil {
             if obj,is_obj:=out.(json.Object);is_obj {
                 if e,has:=obj["error"].(json.Object);has do message=contracts.owner_string(e,"message")
             }
         }
-        return "",agent,message
+        return "",agent,message,ensured
     }
-    return "","",""
+    return "","","",ensured
+}
+
+// The task verb was refused after its agents were ensured: the rows created
+// for them are paused (never dispatched) and the instances launched for them
+// stopped. A later task naming the agent is refused until the coordinator
+// runs `task-chain fleet set --agent <id>` again (the resolve refusal says so).
+bridge_owner_task_fleet_rollback :: proc(request_id:string,ensured:Owner_Fleet_Ensured,rec:Bridge_Local_Agent_Token_Record) {
+    e:=bridge_owner_fleet_ensure_effects
+    pause:=e.pause if e.pause!=nil else bridge_owner_fleet_ensure_pause
+    stop:=e.stop if e.stop!=nil else bridge_owner_fleet_ensure_stop
+    for agent in ensured.added do pause(request_id,ensured.chain,agent,rec)
+    for instance in ensured.launched do if !stop(instance,rec) do fmt.eprintln("bridge owner: stopping",instance,"after a refused task verb failed")
+}
+
+bridge_owner_fleet_ensure_set :: proc(request_id,body:string,rec:Bridge_Local_Agent_Token_Record) -> (string,bool,Owner_Fleet_Launch) {
+    response,handled,l,_,_:=bridge_owner_agent_route_locked(request_id,"agent.task_chain.fleet_set",body,rec)
+    return response,handled,l
+}
+bridge_owner_fleet_ensure_pause :: proc(request_id,chain,agent:string,rec:Bridge_Local_Agent_Token_Record) {
+    body:=map[string]string{"agent_id"=agent}
+    if chain!="" do body["chain_id"]=chain
+    _,_,_,_,_=bridge_owner_agent_route_locked(request_id,"agent.task_chain.fleet_pause",bridge_owner_json(body),rec)
+}
+bridge_owner_fleet_ensure_stop :: proc(instance:string,rec:Bridge_Local_Agent_Token_Record) -> bool {
+    stopped:=bridge_local_relay_raw(.POST,route_path("api","v1","agent-instances",instance,"stop"),nil,"{}",rec)
+    return stopped.ok && stopped.status>=200 && stopped.status<300
 }
 
 // Blocks a ready, unleased owner task whose agent could not be launched

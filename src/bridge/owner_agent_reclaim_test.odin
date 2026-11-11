@@ -5,6 +5,8 @@ import "core:crypto/ecdsa"
 import "core:encoding/json"
 import "core:fmt"
 import "core:os"
+import "core:slice"
+import "core:strings"
 import "core:sync"
 import "core:testing"
 import "core:time"
@@ -168,4 +170,127 @@ test_owner_task_fleet_ensure_adds_missing_rows_only :: proc(t:^testing.T) {
     testing.expectf(t,!ctx.launch.active,"the coordinator's own agent is never launched: %v",out)
     _,solo,_:=owner.agent_fleet_policy(&r.store,chain,"agt_c")
     testing.expect(t,solo,"the coordinator gets a solo row")
+}
+
+ensure_test_r:^Review_Test
+ensure_test_coord:owner.Child
+ensure_test_launched:[dynamic]string
+ensure_test_stopped:[dynamic]string
+ensure_test_set :: proc(request_id,body:string,rec:Bridge_Local_Agent_Token_Record) -> (string,bool,Owner_Fleet_Launch) {
+    ctx:=review_test_ctx(ensure_test_r,ensure_test_coord)
+    raw:=bridge_owner_agent_exec(&ctx,"agent.task_chain.fleet_set",bridge_owner_params(body))
+    return raw,true,ctx.launch
+}
+ensure_test_launch_ok :: proc(request_id:string,launch:Owner_Fleet_Launch,rec:Bridge_Local_Agent_Token_Record) -> string {
+    append(&ensure_test_launched,launch.agent)
+    return bridge_local_response_data(request_id,fmt.tprintf(`{{"instance_id":"inst_l_%s","launched":true}}`,launch.agent))
+}
+ensure_test_launch_fails :: proc(request_id:string,launch:Owner_Fleet_Launch,rec:Bridge_Local_Agent_Token_Record) -> string {
+    append(&ensure_test_launched,launch.agent)
+    return bridge_local_response_error(request_id,"agent_launch_failed",fmt.tprintf("fleet row saved; launching %s failed (HTTP 404): unknown agent",launch.agent))
+}
+ensure_test_pause :: proc(request_id,chain,agent:string,rec:Bridge_Local_Agent_Token_Record) {
+    _,_=review_test_exec(ensure_test_r,ensure_test_coord,"agent.task_chain.fleet_pause",fmt.tprintf(`{{"chain_id":"%s","agent_id":"%s"}}`,chain,agent))
+}
+ensure_test_stop :: proc(instance:string,rec:Bridge_Local_Agent_Token_Record) -> bool {
+    append(&ensure_test_stopped,instance)
+    return true
+}
+
+// M1 item 10 review findings: requests the task route refuses anyway launch
+// nothing; an unknown/other-account/archived agent (the Hub launch fails)
+// refuses task create with its new row paused, while task update applies and
+// reports the agent for the agent_not_running block; task split ensures rows
+// for its children's assignees and brief reviewers; a refused task verb rolls
+// the ensure back (rows paused, launched instances stopped).
+@(test)
+test_owner_task_fleet_ensure_refusals_split_and_rollback :: proc(t:^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex);defer sync.mutex_unlock(&bridge_test_config_mutex)
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    r:=new(Review_Test,context.temp_allocator)
+    priv:ecdsa.Private_Key;defer ecdsa.private_key_clear(&priv)
+    r.key=chain_create_test_key(t,&priv,"bridge","bridge_key")
+    signer:=owner.Signer{&priv,chain_create_test_sign}
+    old_daemon:=bridge_cfg().daemon_id;bridge_cfg().daemon_id="bridge"
+    bridge_owner_test_signer=signer;bridge_owner_live_probe=review_test_probe
+    review_test_live=make([dynamic]owner.Child,context.temp_allocator)
+    ensure_test_launched=make([dynamic]string,context.temp_allocator)
+    ensure_test_stopped=make([dynamic]string,context.temp_allocator)
+    bridge_owner_fleet_ensure_effects=Owner_Fleet_Ensure_Effects{set=ensure_test_set,launch=ensure_test_launch_fails,pause=ensure_test_pause,stop=ensure_test_stop}
+    defer {
+        bridge_cfg().daemon_id=old_daemon;bridge_owner_test_signer={};bridge_owner_live_probe=nil;review_test_live=nil
+        bridge_owner_fleet_ensure_effects={};ensure_test_launched=nil;ensure_test_stopped=nil;ensure_test_r=nil
+    }
+    r.root=fmt.tprintf("%s/.cache/heimdall-tests/owner-ensure-refuse-%d",bridge_env_get("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    testing.expect(t,bridge_make_directory_all(r.root)==nil)
+    defer _=os.remove_all(r.root)
+    if !testing.expect(t,owner.open(&r.store,fmt.tprintf("%s/runtime.sqlite",r.root),"account","bridge","bridge_key")) do return
+    defer owner.close(&r.store)
+    vid,_:=vault.vault_id_from_root_sign_pub(r.key.public_key)
+    secret:[32]byte;secret[0]=7
+    r.kr,_=vault.keyring_from_single_key("account",vid,1,secret[:]);defer vault.keyring_wipe(&r.kr)
+    chain:="chain_ensure_refuse"
+    now:=time.to_unix_nanoseconds(time.now())/1000000
+    tc,_:=vault.seal_string("ensure refusals",&r.kr,context.temp_allocator)
+    dc,_:=vault.seal_string("",&r.kr,context.temp_allocator)
+    g,c,p,built:=bridge_owner_chain_create_documents("account","bridge","bridge_key",chain,"op_ensure_refuse",tc,dc,now,signer)
+    testing.expect(t,built)
+    if !testing.expect_value(t,owner.execute(&r.store,c,p,g,r.key,r.key,0,"",now,&r.kr,signer,requested_by="inst_c").code,"ok") do return
+    coord:=review_test_child("inst_c","agt_c")
+    if !testing.expect_value(t,owner.bind_created_coordinator(&r.store,chain,coord,"inst_c",now).code,"ok") do return
+    append(&review_test_live,coord)
+    ensure_test_r=r;ensure_test_coord=coord
+    rec:=Bridge_Local_Agent_Token_Record{agent_instance_id="inst_c",role=.Agent}
+    paused :: proc(r:^Review_Test,chain,agent:string) -> (bool,bool) {
+        policy,found,_:=owner.agent_fleet_policy(&r.store,chain,agent)
+        return found,strings.contains(policy.paused_roles_json,`"*"`)
+    }
+
+    // author==reviewer: refused before any row or launch.
+    refused,_,_,_:=bridge_owner_task_fleet_ensure("req_1","agent.task.create",fmt.tprintf(`{{"chain_id":"%s","title":"x","assignee":"agt_x","reviewers":["agt_x"]}}`,chain),rec)
+    testing.expectf(t,strings.contains(refused,"different agent"),"author==reviewer refused: %s",refused)
+    has_row,_:=paused(r,chain,"agt_x")
+    testing.expectf(t,!has_row && len(ensure_test_launched)==0,"no row, no launch: %v",ensure_test_launched)
+    // The coordinator as reviewer (the caller's agent): refused the same way.
+    _,code,_:=bridge_owner_task_fleet_agents("agent.task.create",bridge_owner_params(`{"assignee":"agt_w","reviewers":["agt_c"]}`),"agt_c")
+    testing.expect_value(t,code,"invalid_scope")
+    _,code,_=bridge_owner_task_fleet_agents("agent.task.split",bridge_owner_params(`{"children":[{"title":"a","assignee":"agt_s","brief":{"reviewers":["agt_s"]}}]}`),"agt_c")
+    testing.expect_value(t,code,"invalid_scope")
+
+    // Unknown/other-account/archived agent on create: refused, row paused.
+    refused,_,_,_=bridge_owner_task_fleet_ensure("req_2","agent.task.create",fmt.tprintf(`{{"chain_id":"%s","title":"x","assignee":"agt_bad"}}`,chain),rec)
+    testing.expectf(t,strings.contains(refused,"agent_launch_failed"),"create refused agent_launch_failed: %s",refused)
+    is_paused:bool
+    has_row,is_paused=paused(r,chain,"agt_bad")
+    testing.expectf(t,has_row && is_paused,"the new row is paused: %v %v",has_row,is_paused)
+    // On update: not refused; the agent and error go to the agent_not_running block.
+    failed_agent,failure:string
+    refused,failed_agent,failure,_=bridge_owner_task_fleet_ensure("req_3","agent.task.update",fmt.tprintf(`{{"chain_id":"%s","task_id":"task_any","assignee":"agt_bad2"}}`,chain),rec,true)
+    testing.expectf(t,refused=="" && failed_agent=="agt_bad2" && strings.contains(failure,"unknown agent"),"update reports the agent: %q %q %q",refused,failed_agent,failure)
+    _,is_paused=paused(r,chain,"agt_bad2")
+    testing.expect(t,is_paused,"its new row is paused")
+
+    // Split: rows for a child's assignee and brief reviewers, launched.
+    bridge_owner_fleet_ensure_effects.launch=ensure_test_launch_ok
+    clear(&ensure_test_launched)
+    ensured:Owner_Fleet_Ensured
+    refused,_,_,ensured=bridge_owner_task_fleet_ensure("req_4","agent.task.split",fmt.tprintf(`{{"chain_id":"%s","task_id":"task_any","children":[{{"title":"a","assignee":"agt_s","brief":{{"goal":"g","acceptance":["x"],"reviewers":["agt_r"]}}}},{{"title":"b"}}]}}`,chain),rec)
+    testing.expectf(t,refused=="","split ensure continues: %s",refused)
+    testing.expectf(t,len(ensure_test_launched)==2 && slice.contains(ensure_test_launched[:],"agt_s") && slice.contains(ensure_test_launched[:],"agt_r"),"assignee and reviewer launched: %v",ensure_test_launched)
+    for agent in ([]string{"agt_s","agt_r"}) {
+        found,off:=paused(r,chain,agent)
+        testing.expectf(t,found && !off,"%s has an active row",agent)
+    }
+    testing.expectf(t,len(ensured.added)==2 && len(ensured.launched)==2,"ensure records what it did: %v",ensured)
+    // Rollback (the task verb was refused): rows paused, instances stopped.
+    bridge_owner_task_fleet_rollback("req_5",ensured,rec)
+    for agent in ([]string{"agt_s","agt_r"}) {
+        _,off:=paused(r,chain,agent)
+        testing.expectf(t,off,"%s's row is paused after the rollback",agent)
+    }
+    testing.expectf(t,len(ensure_test_stopped)==2 && slice.contains(ensure_test_stopped[:],"inst_l_agt_s"),"launched instances stopped: %v",ensure_test_stopped)
+    // The coordinator's solo row is never rolled back.
+    clear(&ensure_test_launched)
+    _,_,_,ensured=bridge_owner_task_fleet_ensure("req_6","agent.task.create",fmt.tprintf(`{{"chain_id":"%s","title":"solo","assignee":"agt_c"}}`,chain),rec)
+    testing.expectf(t,len(ensured.added)==0 && len(ensure_test_launched)==0,"solo row: nothing to roll back: %v",ensured)
 }
