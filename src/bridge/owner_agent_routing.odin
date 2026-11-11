@@ -433,6 +433,9 @@ bridge_owner_prepare_worktree :: proc(config:json.Object,task:string) -> (Owner_
 bridge_owner_deliver :: proc(ctx:^Owner_Agent_Ctx,st:owner.Agent_Lease_State,status:string) -> (string,string) {
     out:=Owner_Agent_Lease{lease_id=st.lease_id,task_id=st.task_id,chain_id=st.chain_id,requirements_revision=st.requirements_revision,acknowledged="0"}
     out.placement=bridge_owner_placement(st.config,st.configured)
+    // A chain with no project directory still runs (as on origin/main): the
+    // agent works in its run directory and the lease says so (no merge-back).
+    if out.placement.workdir=="" && ctx.run_dir!="" do out.placement={ctx.run_dir,ctx.run_dir,""}
     next:=Owner_Agent_Next{status,out,Owner_Agent_Task_Ref{st.task_id,st.chain_id},bridge_owner_authority()}
     if !st.configured {
         ctx.pending=Owner_Pending_Delivery{active=false,next=next}

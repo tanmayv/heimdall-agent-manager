@@ -92,9 +92,21 @@ bridge_executor_resolve_auto_issuance :: proc(s:^executor.Store,consent:json.Obj
     if !valid || !contracts.executor_selection_auto(selection) || self.key_id!=s.operator_key do return {}
     get:=contracts.owner_string
     provider,model:=get(selection,"provider"),get(selection,"model")
-    if !bridge_provider_catalog_has_model(provider,model) do return {}
+    // The account catalog decides, like a local launch: this Bridge's observed
+    // model list may name aliases only (claude 2.1.295 reports 'sonnet',
+    // 'claude-sonnet-5', not 'claude-sonnet-5-5'), which refused every placement
+    // with invalid_resources (REQ-E2E-1 dawnstar-b, task_18e70e69aca835a7).
+    if !bridge_provider_catalog_has_model(provider,model) {
+        if _,_,active:=bridge_owner_agent_model_resolve(provider,model);!active || model=="" {
+            fmt.eprintfln("bridge executor: placement refused: %s/%s is neither observed on this Bridge nor an active catalog model",provider,model)
+            return {}
+        }
+    }
     profile,err:=profile_lookup(provider,provider,context.temp_allocator,false)
-    if err!=.None || !profile.enabled || profile.provider!=provider || !contracts.owner_field_valid(profile.profile_id,"id") do return {}
+    if err!=.None || !profile.enabled || profile.provider!=provider || !contracts.owner_field_valid(profile.profile_id,"id") {
+        fmt.eprintfln("bridge executor: placement refused: no enabled default %s profile on this Bridge",provider)
+        return {}
+    }
     revision,slot,found:=executor.auto_slot(s,profile.profile_id)
     if !found {
         if revision!=0 do return {}

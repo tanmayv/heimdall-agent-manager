@@ -90,6 +90,13 @@ test_owner_claim_creates_task_worktree_and_task_md :: proc(t:^testing.T) {
     md,read:=os.read_entire_file(fmt.tprintf("%s/TASK.md",run),context.temp_allocator)
     testing.expect(t,read==nil)
     text:=string(md)
+    // task_18e70e69aca835a7: a chain with no project directory names the run
+    // directory as the Workdir (no branch, nothing merged back).
+    {
+        nodir:=owner.doc(map[string]string{"chain_id"="chain","task_id"=task,"lease_id"="lease_nodir","instance_id"="inst","workdir"=run,"branch"=""})
+        rendered:=bridge_owner_render_context(nodir,body)
+        testing.expectf(t,strings.contains(rendered,fmt.tprintf("Workdir: `%s` (this chain has no project directory",run)),"no-directory Workdir line: %s",rendered)
+    }
     testing.expect(t,strings.contains(text,fmt.tprintf("Workdir: `%s` on branch `heimdall/%s`",work,task)),"TASK.md names the Workdir")
     testing.expect(t,strings.contains(text,"ham-ctl lease heartbeat --lease lease_routing --acknowledge-requirements-revision 2"),"TASK.md gives the exact ACK command")
     testing.expect(t,strings.contains(text,"Ship it") && strings.contains(text,"## Chain summary"))

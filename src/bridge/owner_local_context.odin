@@ -16,7 +16,9 @@ bridge_owner_render_context :: proc(command:json.Object,body:string) -> string {
     get:=contracts.owner_string
     if get(result,"requirements_revision")=="" || get(result,"brief")=="" || get(result,"context_provenance")=="" do return ""
     workdir:=""
-    if work:=get(command,"workdir");work!="" {
+    if work:=get(command,"workdir");work!="" && get(command,"branch")=="" {
+        workdir=fmt.tprintf("- Workdir: `%s` (this chain has no project directory: your run directory; nothing is merged back). Do the work there.\n",work)
+    } else if work!="" {
         workdir=fmt.tprintf("- Workdir: `%s` on branch `%s`. `cd` there and do all work and commits in it; it is merged into the target branch after review.\n",work,get(command,"branch"))
     } else if problem:=get(command,"workdir_error");problem!="" {
         workdir=fmt.tprintf("- Workdir: unavailable (%s). Your lease is held; run `ham-ctl lease next` again to retry before working.\n",problem)

@@ -64,6 +64,18 @@ test_executor_auto_issuance_resolves_without_operator_mapping :: proc(t:^testing
     other:=make(json.Object);other["chain_id"]=json.String("chain_other")
     separate:=bridge_executor_resolve_auto_issuance(s,other,requested,self)
     testing.expect(t,separate.resolved && separate.directory_path!=resources.directory_path)
+    // task_18e70e69aca835a7: a model this Bridge never observed (its claude
+    // reports aliases only) but the account catalog lists as active is placed;
+    // an inactive or unknown one is still refused.
+    bridge_provider_catalog_default_hook=[]Bridge_Catalog_Provider{{provider="claude",state="active",models=[]Bridge_Catalog_Model{{model_id="claude-sonnet-5-5",state="active"},{model_id="claude-old",state="retired"}}}}
+    defer bridge_provider_catalog_default_hook=nil
+    catalog_only:=executor.encode(struct{provider,model,provider_profile,directory_id,policy_revision,slot_id:string}{"claude","claude-sonnet-5-5",auto,auto,"1",auto})
+    placed:=bridge_executor_resolve_auto_issuance(s,consent,catalog_only,self)
+    testing.expect(t,placed.resolved,"an active catalog model the Bridge has not observed is placed")
+    for bad in ([2]string{"claude-old","claude-nope"}) {
+        refused:=executor.encode(struct{provider,model,provider_profile,directory_id,policy_revision,slot_id:string}{"claude",bad,auto,auto,"1",auto})
+        testing.expectf(t,!bridge_executor_resolve_auto_issuance(s,consent,refused,self).resolved,"%s is refused",bad)
+    }
     // Git tickets (user 15:30Z): the Hub's hint names this Bridge's checkout
     // of the chain's project, so the work runs there.
     checkout:=fmt.tprintf("%s/checkout",root)
