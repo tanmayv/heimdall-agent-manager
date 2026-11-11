@@ -14,12 +14,13 @@ import {
   type OwnerSubmission, type OwnerTaskDetail, type OwnerFleetPolicy, type OwnerFleetPolicyChange,
 } from '../../api/ownerChains';
 import { ownerId, type OwnerInput, type OwnerSession } from '../../api/ownerLocalClient';
+import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
 import type { OwnerCommand } from '../../api/ownerLocal';
 import { buildTaskNames } from '../tasks/taskNames';
 import { ticketKeys } from '../tasks/ticketModel';
 import type { TicketDecisionActions } from '../tasks/TicketDecisionBlock';
 import {
-  ownerCommentItems, ownerDependencyChanges, ownerHandoffItems, ownerPrerequisites, ownerRequirementHistoryEntries, ownerRequirementsDoc, ownerReviewItems,
+  ownerCommentItems, ownerDependencyChanges, ownerHandoffItems, ownerPrerequisites, ownerRequirementHistoryEntries, ownerRequirementsDoc, ownerReviewItems, ownerRunBridgeDoc, ownerRunBridgeOptions,
   ownerTicketEvents, ownerTaskWire, ownerTaskWires,
 } from '../tasks/ownerTaskAdapter';
 import { TicketView, type TicketEditFocus, type TicketViewActions } from '../tasks/TicketView';
@@ -126,13 +127,19 @@ export interface OwnerChainViewProps {
   session?: () => Promise<OwnerSession>;
   /** Hub calls of Start coordinator; tests replace them. */
   coordinatorApi?: OwnerCoordinatorApi;
+  /** The account's Bridges (run-Bridge choices); tests replace the Hub list. */
+  bridges?: any[];
 }
 
 export function OwnerChainView({
   chain, layout = 'page', onOpenTicket, onEditTicket, editFocus, onEditFocusConsumed, onShowBoard, onSwitchTicket, onOpenAgent, onTitle, refreshMs = 0,
-  focusTaskId, submissionAttempt, onClose, extra, overview, send: sendProp = ownerRelaySend, session: sessionProp = freshOwnerSession, coordinatorApi,
+  focusTaskId, submissionAttempt, onClose, extra, overview, send: sendProp = ownerRelaySend, session: sessionProp = freshOwnerSession, coordinatorApi, bridges: bridgesProp,
 }: OwnerChainViewProps) {
   const bridge = chain.ownerBridgeId;
+  // The account's Bridges: a ticket's run Bridge may be any of them.
+  const bridgesQuery = useListBridgesQuery(undefined, { skip: Boolean(bridgesProp) });
+  const accountBridges: any[] = useMemo(() => bridgesProp ?? bridgesQuery.data?.bridges ?? [], [bridgesProp, bridgesQuery.data]);
+  const runBridgeOptions = useMemo(() => ownerRunBridgeOptions(accountBridges, bridge, chain.bridgeName), [accountBridges, bridge, chain.bridgeName]);
   // Injected transports are read through refs so a caller's inline function
   // never re-triggers the loads.
   const sendRef = useRef(sendProp); sendRef.current = sendProp;
@@ -685,6 +692,14 @@ export function OwnerChainView({
         }
         return 'The assignee of a Bridge-owned ticket is set by its fleet.';
       },
+      // The run Bridge lives in the brief (run_bridge_id); the owner Bridge clears it.
+      pinBridge: async (bridgeId: string) => {
+        if (!req) { setError('Add requirements first: the run Bridge is part of them.'); return false; }
+        if (bridgeId === (w.bridge_id || bridge)) return true;
+        const ok = await mutate('requirements.edit', { taskId: t.taskId, body: ownerRunBridgeDoc(req.raw ?? '', bridgeId, bridge), requirementsRevision: String(reqRevision + 1) }, 'Run Bridge updated.');
+        if (ok && reqHistory?.taskId === t.taskId) void showRequirementHistory(t.taskId);
+        return ok;
+      },
     };
   };
 
@@ -788,7 +803,11 @@ export function OwnerChainView({
       keys={boardKeys}
       names={names}
       actions={ticketActions(task, ticketWire)}
-      placement={{ bridge: chain.bridgeName || bridge, model: '' }}
+      placement={{
+        bridge: runBridgeOptions.find((o) => o.value === (ticketWire.bridge_id || bridge))?.text || ticketWire.bridge_id || chain.bridgeName || bridge,
+        model: '',
+        bridgeOptions: runBridgeOptions.some((o) => o.value === ticketWire.bridge_id) ? runBridgeOptions : [...runBridgeOptions, { value: ticketWire.bridge_id, text: ticketWire.bridge_id }],
+      }}
       readOnly={!editable}
       editFields={OWNER_TICKET_EDIT_FIELDS}
       agents={agentChoices}

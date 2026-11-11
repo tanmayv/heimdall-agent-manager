@@ -35,7 +35,7 @@ const { makeVaultStore } = await import('./helpers/vaultEndpointHarness.ts');
 const store = await makeVaultStore();
 // Owner chains open only with the vault unlocked; the ticket tab masks and locks its editors otherwise.
 store.dispatch((await import('../src/ui/store/vaultSlice.ts')).keyringInstalled({ currentEpoch: 1 }));
-const view = (props: any) => React.createElement(Provider, { store }, React.createElement(OwnerChainView, props));
+const view = (props: any) => React.createElement(Provider, { store }, React.createElement(OwnerChainView, { bridges: [{ bridge_id: 'brg_b', name: 'riverwood' }], ...props }));
 
 function mountDom() {
   const container = dom.window.document.createElement('div');
@@ -324,6 +324,19 @@ test('owner chain view renders tickets, brief, comments, submissions and reviews
     assert.deepEqual(JSON.parse(await decryptVaultText(reviewersEdit.payload.body_cipher, session.keyring)), {
       goal: 'Users can sign in', acceptance: ['SSO works', 'Errors are shown'], reviewers: ['agt_sec', 'agt_perf'], requires_user_approval: true, requirements_reason: 'Changed the reviewers.',
     });
+
+    // The run Bridge: the owner Bridge by default, any account Bridge as a brief pin.
+    assert.match(ui.$('ticket-view-bridge-select')!.textContent!, /Home Bridge \(owner, default\)/);
+    await ui.click('ticket-view-bridge-select');
+    const riverwood = [...ui.dom.window.document.querySelectorAll('[role="option"]')].find((o) => /riverwood/.test(o.textContent || '')) as HTMLElement | undefined;
+    assert.ok(riverwood, 'the Bridge menu lists the account Bridges');
+    await act(async () => { riverwood!.click(); });
+    await ui.flush();
+    const pin = calls.filter((c) => c.method === 'requirements.edit')[2];
+    assert.ok(pin, 'the run Bridge was saved: ' + (ui.$('owner-chain-error')?.textContent ?? ''));
+    const pinned = JSON.parse(await decryptVaultText(pin.payload.body_cipher, session.keyring));
+    assert.equal(pinned.run_bridge_id, 'brg_b');
+    assert.deepEqual([pinned.goal, pinned.acceptance], ['Users can sign in', ['SSO works', 'Errors are shown']], 'the pin keeps the rest of the brief');
 
     await ui.click('owner-chain-complete');
     await ui.type('owner-chain-complete-summary', 'Login shipped');

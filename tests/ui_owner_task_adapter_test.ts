@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseOwnerRuntime, type OwnerReview } from '../src/ui/api/ownerChains.ts';
-import { ownerRequirementsDoc, ownerTaskWire, ownerTaskWires } from '../src/ui/components/tasks/ownerTaskAdapter.ts';
+import { ownerRequirementsDoc, ownerRunBridgeDoc, ownerRunBridgeOptions, ownerTaskWire, ownerTaskWires } from '../src/ui/components/tasks/ownerTaskAdapter.ts';
 import { taskHold } from '../src/ui/components/tasks/taskV2Types.ts';
 import { leaseClock } from '../src/ui/components/tasks/ticketModel.ts';
 
@@ -95,6 +95,45 @@ test('ownerRequirementsDoc replaces the edited brief fields and keeps the rest v
   assert.deepEqual(next, { goal: 'New goal', acceptance: ['one', 'two'], assignee: 'agt_w', depends_on: ['task_0'], reviewers: ['agt_a', 'agt_b'], requirements_reason: 'tightened' });
   const bare = JSON.parse(ownerRequirementsDoc('', { goal: 'G', acceptance: [], reviewers: [], requiresUserApproval: true, reason: '' }));
   assert.deepEqual(bare, { goal: 'G', acceptance: [], requires_user_approval: true }, 'no reviewers key, no stale reason, the gate flag only when set');
+});
+
+test('run Bridge: the brief pin, else the owner Bridge; pinning the owner Bridge clears it', () => {
+  const src = (raw: string) => ownerTaskWire({
+    chainId: 'chain_1', bridgeId: 'brg_owner', taskId: 'task_1', row: { task_id: 'task_1', title: 't', revision: '1', priority: 'p2' },
+    runtime: runtime({ requirements: [['1', raw]] }),
+  });
+  assert.equal(src(brief).bridge_id, 'brg_owner');
+  assert.equal(ownerTaskWire({ chainId: 'chain_1', bridgeId: 'brg_owner', taskId: 'task_1', runtime: null }).bridge_id, 'brg_owner');
+  const pinned = ownerRunBridgeDoc(brief, 'brg_b', 'brg_owner');
+  assert.equal(JSON.parse(pinned).run_bridge_id, 'brg_b');
+  assert.equal(JSON.parse(pinned).goal, 'Ship it');
+  assert.match(JSON.parse(pinned).requirements_reason, /brg_b/);
+  assert.equal(src(pinned).bridge_id, 'brg_b');
+  for (const reset of ['brg_owner', '', '  ']) {
+    const doc = JSON.parse(ownerRunBridgeDoc(pinned, reset, 'brg_owner'));
+    assert.equal('run_bridge_id' in doc, false, `reset with '${reset}'`);
+    assert.deepEqual(doc.reviewers, ['agt_rev']);
+  }
+  assert.equal(src(ownerRunBridgeDoc(pinned, 'brg_owner', 'brg_owner')).bridge_id, 'brg_owner');
+  // requirements.edit keeps the pin (fields not edited survive).
+  assert.equal(JSON.parse(ownerRequirementsDoc(pinned, { goal: 'g', acceptance: [], reviewers: [], requiresUserApproval: false, reason: '' })).run_bridge_id, 'brg_b');
+});
+
+test('run Bridge choices: owner first as default, then the account\'s non-revoked Bridges', () => {
+  const opts = ownerRunBridgeOptions([
+    { bridge_id: 'brg_owner', name: 'here' },
+    { bridge_id: 'brg_b', name: 'riverwood' },
+    { id: 'brg_c', label: '' },
+    { bridge_id: 'brg_gone', name: 'old', status: 'revoked' },
+    { bridge_id: 'brg_gone2', name: 'old2', revoked_at: '2026-11-01T00:00:00Z' },
+    { name: 'no id' },
+  ], 'brg_owner', 'here');
+  assert.deepEqual(opts, [
+    { value: 'brg_owner', text: 'here (owner, default)' },
+    { value: 'brg_b', text: 'riverwood' },
+    { value: 'brg_c', text: 'brg_c' },
+  ]);
+  assert.deepEqual(ownerRunBridgeOptions([], 'brg_owner', ''), [{ value: 'brg_owner', text: 'brg_owner (owner, default)' }]);
 });
 
 test('the ticket tab feeds: events, handoffs, reviews and comments in the TicketActivity shapes', async () => {

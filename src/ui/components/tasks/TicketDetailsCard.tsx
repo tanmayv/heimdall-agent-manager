@@ -1,7 +1,7 @@
 // origin/main's ticket Details card behind a props seam: the caller resolves
 // the placement (bridge, model) and supplies the priority and bridge-pin
-// changes. Without `onPinBridge` the bridge is shown, not offered (a
-// Bridge-owned ticket always runs on its owner Bridge).
+// changes. Without `pinBridge` the bridge is shown, not offered (a
+// Bridge-owned ticket offers its run Bridge, the owner Bridge by default).
 
 import React, { useState } from 'react';
 import { Badge, Icon, IconButton, Select, Text } from '@ui';

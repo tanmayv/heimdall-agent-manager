@@ -16,7 +16,7 @@ import {
 
 export interface OwnerTaskSource {
   chainId: string;
-  /** The owner Bridge, reported as the ticket's bridge. */
+  /** The owner Bridge: the ticket's bridge unless its brief pins run_bridge_id. */
   bridgeId: string;
   taskId: string;
   /** The chain listing row (always present). */
@@ -92,7 +92,7 @@ export function ownerTaskWire(src: OwnerTaskSource): TaskWire {
     kind: 'work',
     priority: detail?.priority || src.row?.priority || 'p2',
     attempt_no: attempt,
-    bridge_id: src.bridgeId,
+    bridge_id: ownerRunBridge(brief, src.bridgeId),
     brief: rt?.requirements
       ? { ...brief, goal: rt.requirements.goal, acceptance: rt.requirements.acceptance, reviewers }
       : null,
@@ -160,6 +160,41 @@ export function ownerRequirementsDoc(raw: string, edit: OwnerRequirementsEdit): 
   if (reviewers.length) brief.reviewers = reviewers; else delete brief.reviewers;
   if (edit.requiresUserApproval) brief.requires_user_approval = true; else delete brief.requires_user_approval;
   if (edit.reason.trim()) brief.requirements_reason = edit.reason.trim();
+  return JSON.stringify(brief);
+}
+
+/** The ticket's run Bridge: the brief's run_bridge_id, else the owner Bridge. */
+export function ownerRunBridge(brief: Record<string, unknown>, ownerBridgeId: string): string {
+  const pin = typeof brief.run_bridge_id === 'string' ? brief.run_bridge_id.trim() : '';
+  return pin || ownerBridgeId;
+}
+
+/**
+ * The run-Bridge choices: the owner Bridge first (the default), then the
+ * account's other non-revoked Bridges.
+ */
+export function ownerRunBridgeOptions(
+  bridges: { bridge_id?: string; id?: string; name?: string; label?: string; status?: string; revoked_at?: string }[],
+  ownerBridgeId: string,
+  ownerName: string,
+): { value: string; text: string }[] {
+  const others = bridges
+    .map((b) => ({ id: String(b.bridge_id || b.id || ''), name: String(b.name || b.label || ''), revoked: Boolean(b.revoked_at) || String(b.status || '').toLowerCase() === 'revoked' }))
+    .filter((b) => b.id && b.id !== ownerBridgeId && !b.revoked)
+    .map((b) => ({ value: b.id, text: b.name || b.id }));
+  return [{ value: ownerBridgeId, text: `${ownerName || ownerBridgeId} (owner, default)` }, ...others];
+}
+
+/**
+ * The next requirements document with the run Bridge pinned to `bridgeId`;
+ * '' or the owner Bridge clears the pin (the owner Bridge is the default).
+ */
+export function ownerRunBridgeDoc(raw: string, bridgeId: string, ownerBridgeId: string): string {
+  const brief: Record<string, unknown> = { ...rawBrief(raw) };
+  delete brief.requirements_reason;
+  const pin = bridgeId.trim();
+  if (pin && pin !== ownerBridgeId) brief.run_bridge_id = pin; else delete brief.run_bridge_id;
+  brief.requirements_reason = pin && pin !== ownerBridgeId ? `Run Bridge set to ${pin}.` : 'Run Bridge reset to the owner Bridge.';
   return JSON.stringify(brief);
 }
 
