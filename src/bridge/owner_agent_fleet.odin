@@ -283,10 +283,7 @@ bridge_owner_fleet :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -> 
         reply["instance_id"]=json.String(instance)
         return bridge_local_response_data(ctx.request_id,bridge_owner_json(reply))
     }
-    model,provider,profile:=policy.model,policy.provider,policy.provider_profile
-    if models,valid:=contracts.owner_fleet_models(policy.bridge_models_json);valid {
-        if m,pinned:=models[bridge_cfg().daemon_id];pinned { model,provider,profile=m.model,m.provider,m.provider_profile }
-    }
+    provider,model,profile:=bridge_owner_fleet_launch_model(policy,bridge_cfg().daemon_id)
     body:=map[string]string{"agent_id"=agent,"chain_id"=chain,"bridge_id"=bridge_cfg().daemon_id}
     if provider!="" do body["provider"]=provider
     if model!="" do body["model"]=model
@@ -294,6 +291,16 @@ bridge_owner_fleet :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -> 
     if project:=bridge_owner_pstr(p,"project_id");project!="" do body["project_id"]=project
     ctx.launch=Owner_Fleet_Launch{true,chain,agent,role,bridge_owner_json(body),reply}
     return ""
+}
+
+// The provider, model and profile a fleet row launches with on bridge: its
+// per-Bridge entry (`fleet set --bridge-models`), else the row's own.
+bridge_owner_fleet_launch_model :: proc(policy:contracts.Owner_Fleet_Policy,bridge:string) -> (provider,model,profile:string) {
+    provider,model,profile=policy.provider,policy.model,policy.provider_profile
+    if models,valid:=contracts.owner_fleet_models(policy.bridge_models_json);valid {
+        if m,pinned:=models[bridge];pinned { provider,model,profile=m.provider,m.model,m.provider_profile }
+    }
+    return
 }
 
 // After the owner route released every lock: launch, wait for the live child,

@@ -213,3 +213,15 @@ test_owner_task_run_bridge_default_override_and_placement :: proc(t:^testing.T) 
     code,message:=bridge_owner_run_bridge_check("bridge_unknown")
     testing.expectf(t,code!="ok","unverifiable Bridge refused: %s %s",code,message)
 }
+
+// Gap 6: every local launch (fleet set, matcher JIT, reviewer dispatch) uses
+// the row's per-Bridge entry for this Bridge, else the row's own model.
+@(test)
+test_owner_fleet_launch_model_honors_bridge_models :: proc(t:^testing.T) {
+    policy:=contracts.Owner_Fleet_Policy{provider="claude",model="claude-sonnet-5-5",
+        bridge_models_json=`{"bridge_b":{"provider_profile":"p_b","provider":"codex","model":"gpt-5.5"}}`}
+    provider,model,profile:=bridge_owner_fleet_launch_model(policy,"bridge_b")
+    testing.expectf(t,provider=="codex" && model=="gpt-5.5" && profile=="p_b","per-Bridge entry: %s %s %s",provider,model,profile)
+    provider,model,profile=bridge_owner_fleet_launch_model(policy,"bridge_a")
+    testing.expectf(t,provider=="claude" && model=="claude-sonnet-5-5" && profile=="","row default elsewhere: %s %s %s",provider,model,profile)
+}

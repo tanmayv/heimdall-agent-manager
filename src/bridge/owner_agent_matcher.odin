@@ -139,9 +139,10 @@ bridge_owner_match_assign :: proc(ctx:^Owner_Agent_Ctx,out:^[dynamic]Owner_Revie
             wake=Owner_Review_Wake{action=.Start,chain=task.chain_id,task=task.task_id,agent=stopped.agent_id,instance=stopped.instance_id,worker=true,rematch=true}
         case missing.agent_id!="":
             body:=map[string]string{"agent_id"=missing.agent_id,"chain_id"=task.chain_id,"bridge_id"=bridge_cfg().daemon_id}
-            if launch_policy.provider!="" do body["provider"]=launch_policy.provider
-            if launch_policy.model!="" do body["model"]=launch_policy.model
-            if launch_policy.provider_profile!="" do body["provider_profile"]=launch_policy.provider_profile
+            provider,model,profile:=bridge_owner_fleet_launch_model(launch_policy,bridge_cfg().daemon_id)
+            if provider!="" do body["provider"]=provider
+            if model!="" do body["model"]=model
+            if profile!="" do body["provider_profile"]=profile
             wake=Owner_Review_Wake{action=.Launch,chain=task.chain_id,task=task.task_id,agent=missing.agent_id,body=bridge_owner_json(body),worker=true,rematch=true}
         case:
             continue // every fleet worker is busy (capacity reached)

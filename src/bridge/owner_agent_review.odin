@@ -99,9 +99,10 @@ bridge_owner_review_plan :: proc(ctx:^Owner_Agent_Ctx,chain,task:string) -> json
             }
             body:=map[string]string{"agent_id"=target.agent_id,"chain_id"=chain,"bridge_id"=bridge_cfg().daemon_id}
             if policy,has,policy_ok:=owner.agent_fleet_policy(ctx.store,chain,target.agent_id);policy_ok && has {
-                if policy.provider!="" do body["provider"]=policy.provider
-                if policy.model!="" do body["model"]=policy.model
-                if policy.provider_profile!="" do body["provider_profile"]=policy.provider_profile
+                provider,model,profile:=bridge_owner_fleet_launch_model(policy,bridge_cfg().daemon_id)
+                if provider!="" do body["provider"]=provider
+                if model!="" do body["model"]=model
+                if profile!="" do body["provider_profile"]=profile
             }
             wake.body=bridge_owner_json(body)
         }
