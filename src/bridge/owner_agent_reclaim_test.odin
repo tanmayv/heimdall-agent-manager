@@ -113,3 +113,59 @@ test_owner_restarted_worker_reclaims_its_task :: proc(t:^testing.T) {
     task5,_:=lease_of(back)
     testing.expectf(t,task5==solo,"the restarted coordinator reclaims its own task: %v",back)
 }
+
+// M1 item 10: task create/update ensure a fleet row per named agent
+// (bridge_owner_task_fleet_ensure runs fleet_set with ensure=1). A new agent
+// gets a row and a launch; an existing row is left untouched; the
+// coordinator's own agent gets a solo row and nothing is launched.
+@(test)
+test_owner_task_fleet_ensure_adds_missing_rows_only :: proc(t:^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex);defer sync.mutex_unlock(&bridge_test_config_mutex)
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    r:=new(Review_Test,context.temp_allocator)
+    priv:ecdsa.Private_Key;defer ecdsa.private_key_clear(&priv)
+    r.key=chain_create_test_key(t,&priv,"bridge","bridge_key")
+    signer:=owner.Signer{&priv,chain_create_test_sign}
+    old_daemon:=bridge_cfg().daemon_id;bridge_cfg().daemon_id="bridge"
+    bridge_owner_test_signer=signer;bridge_owner_live_probe=review_test_probe
+    review_test_live=make([dynamic]owner.Child,context.temp_allocator)
+    defer {bridge_cfg().daemon_id=old_daemon;bridge_owner_test_signer={};bridge_owner_live_probe=nil;review_test_live=nil}
+    r.root=fmt.tprintf("%s/.cache/heimdall-tests/owner-ensure-%d",bridge_env_get("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    testing.expect(t,bridge_make_directory_all(r.root)==nil)
+    defer _=os.remove_all(r.root)
+    if !testing.expect(t,owner.open(&r.store,fmt.tprintf("%s/runtime.sqlite",r.root),"account","bridge","bridge_key")) do return
+    defer owner.close(&r.store)
+    vid,_:=vault.vault_id_from_root_sign_pub(r.key.public_key)
+    secret:[32]byte;secret[0]=7
+    r.kr,_=vault.keyring_from_single_key("account",vid,1,secret[:]);defer vault.keyring_wipe(&r.kr)
+    chain:="chain_ensure"
+    now:=time.to_unix_nanoseconds(time.now())/1000000
+    tc,_:=vault.seal_string("ensure chain",&r.kr,context.temp_allocator)
+    dc,_:=vault.seal_string("",&r.kr,context.temp_allocator)
+    g,c,p,built:=bridge_owner_chain_create_documents("account","bridge","bridge_key",chain,"op_ensure",tc,dc,now,signer)
+    testing.expect(t,built)
+    if !testing.expect_value(t,owner.execute(&r.store,c,p,g,r.key,r.key,0,"",now,&r.kr,signer,requested_by="inst_c").code,"ok") do return
+    coord:=review_test_child("inst_c","agt_c")
+    if !testing.expect_value(t,owner.bind_created_coordinator(&r.store,chain,coord,"inst_c",now).code,"ok") do return
+    append(&review_test_live,coord)
+    ensure :: proc(r:^Review_Test,coord:owner.Child,chain,agent:string) -> (json.Object,Owner_Agent_Ctx) {
+        return review_test_exec(r,coord,"agent.task_chain.fleet_set",fmt.tprintf(`{{"chain_id":"%s","agent_id":"%s","ensure":"1"}}`,chain,agent))
+    }
+
+    out,ctx:=ensure(r,coord,chain,"agt_new")
+    // The reply is completed after the launch, with no lock held.
+    testing.expectf(t,len(out)==0,"a new agent's row waits for its launch: %v",out)
+    testing.expectf(t,ctx.launch.active && ctx.launch.agent=="agt_new" && ctx.launch.role=="worker","and is launched as a worker: %v",ctx.launch)
+    policy,found,read:=owner.agent_fleet_policy(&r.store,chain,"agt_new")
+    testing.expectf(t,read && found && policy.capacity==1 && policy.idle_ttl_seconds==600,"default row capacity 1, idle 600s: %v",policy)
+
+    out,ctx=ensure(r,coord,chain,"agt_new")
+    testing.expectf(t,contracts.owner_string(review_test_data(out),"note")=="fleet row exists" && !ctx.launch.active,"an existing row is untouched: %v",out)
+    again,_,_:=owner.agent_fleet_policy(&r.store,chain,"agt_new")
+    testing.expect_value(t,again.updated_at,policy.updated_at)
+
+    out,ctx=ensure(r,coord,chain,"agt_c")
+    testing.expectf(t,!ctx.launch.active,"the coordinator's own agent is never launched: %v",out)
+    _,solo,_:=owner.agent_fleet_policy(&r.store,chain,"agt_c")
+    testing.expect(t,solo,"the coordinator gets a solo row")
+}

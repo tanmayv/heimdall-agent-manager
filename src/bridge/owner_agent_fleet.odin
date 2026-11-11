@@ -211,6 +211,12 @@ bridge_owner_fleet :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -> 
         return bridge_local_response_data(ctx.request_id,bridge_owner_json(reply))
     }
     // agent.task_chain.fleet_set
+    // ensure (task create/update, bridge_owner_task_fleet_ensure): an agent
+    // that already has a row keeps it untouched.
+    if found && bridge_owner_pstr(p,"ensure")=="1" {
+        reply["note"]=json.String("fleet row exists")
+        return bridge_local_response_data(ctx.request_id,bridge_owner_json(reply))
+    }
     if !found {
         policy=contracts.Owner_Fleet_Policy{task_chain_id=chain,agent_id=agent,capacity=1,idle_ttl_seconds=600,roles_json=BRIDGE_OWNER_FLEET_ROLES,created_at=bridge_owner_fleet_now(ctx)}
     }
@@ -298,6 +304,46 @@ bridge_owner_fleet_launch :: proc(request_id:string,launch:Owner_Fleet_Launch,re
     reply["instance_id"]=json.String(instance)
     reply["launched"]=json.Boolean(true)
     return bridge_local_response_data(request_id,bridge_owner_json(reply))
+}
+
+// M1 item 10 (origin/main ensure_fleet_role): `task create|update --assignee
+// <agt> --reviewer <agt>` needs no prior `task-chain fleet set`. Before the
+// task route runs, every named agent without a fleet row in the chain gets
+// one (capacity 1, idle TTL 600s) and, unless it is the coordinator itself
+// (solo row) or placed on another Bridge, is launched here and bound as a
+// member, exactly as `fleet set` does. The Hub launch refuses unknown,
+// other-account and archived agents; their new row is paused so it never
+// dispatches. Returns "" to continue with the task route, else the refusal.
+// The caller holds no lock.
+bridge_owner_task_fleet_ensure :: proc(request_id,params:string,rec:Bridge_Local_Agent_Token_Record) -> string {
+    context.allocator=context.temp_allocator
+    p:=bridge_owner_params(params)
+    agents:=make([dynamic]string)
+    if assignee:=strings.trim_space(bridge_owner_pstr(p,"assignee"));assignee!="" do append(&agents,assignee)
+    if list,is_list:=p["reviewers"].(json.Array);is_list {
+        for item in list {
+            id,_:=item.(json.String)
+            if trimmed:=strings.trim_space(string(id));trimmed!="" && !slice.contains(agents[:],trimmed) do append(&agents,trimmed)
+        }
+    }
+    chain:=bridge_owner_pstr(p,"chain_id")
+    for agent in agents {
+        // The task route refuses ids that are not agent ids, and a coordinator
+        // reviewing its own chain, with its own messages.
+        if !contracts.owner_field_valid(agent,"id") do continue
+        body:=map[string]string{"agent_id"=agent,"ensure"="1"}
+        if chain!="" do body["chain_id"]=chain
+        response,handled,launch,_,_:=bridge_owner_agent_route_locked(request_id,"agent.task_chain.fleet_set",bridge_owner_json(body),rec)
+        // Not an owner chain, or not the coordinator: the task route decides.
+        if !handled || !bridge_owner_response_ok(response) do return ""
+        if !launch.active do continue
+        launched:=bridge_owner_fleet_launch(request_id,launch,rec)
+        if bridge_owner_response_ok(launched) do continue
+        pause:=map[string]string{"agent_id"=agent,"chain_id"=launch.chain}
+        _,_,_,_,_=bridge_owner_agent_route_locked(request_id,"agent.task_chain.fleet_pause",bridge_owner_json(pause),rec)
+        return launched
+    }
+    return ""
 }
 
 // Binds a launched live instance as an enabled member of the chain, signed
