@@ -821,7 +821,7 @@ bridge_lsp_handle_start :: proc(conn: ^ws.Connection, text: string) {
 	ctx.session_id = strings.clone(session_id, lsp_heap())
 	ctx.stdout_r   = stdout_r
 	ctx.process    = process
-	thread.run_with_data(rawptr(ctx), bridge_lsp_read_worker)
+	bridge_thread_run_with_data(rawptr(ctx), bridge_lsp_read_worker)
 
 	fmt.println("bridge lsp_start: session", session_id, "pid", process.pid, "cmd", cmd_str)
 	send_result(conn, session_id, command_id, true, "", detected_root)

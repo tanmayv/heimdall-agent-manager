@@ -57,7 +57,7 @@ owner_executor_probe_batch :: proc(w:^Owner_Executor_Worker,p:^Owner_Executor_Pr
     return bridge_owner_executor_batch(w,p.store,p.mutex,now,p,owner_executor_probe_snapshot,owner_executor_probe_exchange,owner_executor_probe_accept)
 }
 owner_executor_probe_store :: proc(t:^testing.T,s:^owner.Store)->string {
-    path:=fmt.tprintf("%s/.cache/heimdall-tests/executor-worker-%d.sqlite",os.get_env("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    path:=fmt.tprintf("%s/.cache/heimdall-tests/executor-worker-%d.sqlite",bridge_env_get("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
     if !testing.expect(t,owner.open(s,path,"account","bridge","bridge_key")) do return ""
     if !testing.expect(t,owner.exec(s.db,`INSERT INTO task_chains VALUES('chain','device','device','title','description',1);
       INSERT INTO command_receipts(principal_id,operation_id,chain_id,task_id,method,input_digest,digest_key_id,request_expires_ms,result_json,commit_seq)
@@ -119,7 +119,7 @@ test_owner_executor_worker_allows_concurrent_owner_callback_and_fences_late_repl
         defer bridge_owner_executor_destroy(&w)
         p:=Owner_Executor_Probe{store=&s,mutex=&mutex,block=true}
         race:=Owner_Executor_Race{&w,&p}
-        worker:=thread.create_and_start_with_data(&race,proc(data:rawptr) {
+        worker:=bridge_thread_start_with_data(&race,proc(data:rawptr) {
             context.allocator=context.temp_allocator
             r:=(^Owner_Executor_Race)(data)
             r.probe.result=owner_executor_probe_batch(r.worker,r.probe,1000)

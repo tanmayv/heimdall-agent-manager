@@ -94,7 +94,7 @@ bridge_task_chain_search_handle_command :: proc(conn: ^ws.Connection, text: stri
 	envelope := extract_json_string(text, "envelope", ""); defer delete(envelope)
 	expires_at_ms := i64(extract_json_int(text, "expires_at_ms", 0))
 	now_ms := time.to_unix_nanoseconds(time.now()) / 1_000_000
-	if request_id == "" || owner_user_id == "" || bridge_id != bridge_config.daemon_id || expires_at_ms < now_ms || expires_at_ms > now_ms + 5_000 || len(envelope) > 32_768 {
+	if request_id == "" || owner_user_id == "" || bridge_id != bridge_cfg().daemon_id || expires_at_ms < now_ms || expires_at_ms > now_ms + 5_000 || len(envelope) > 32_768 {
 		task_chain_search_send_error(conn, command_id, request_id, "invalid_envelope"); return
 	}
 	kr, key_ok := bridge_read_vault_keyring()

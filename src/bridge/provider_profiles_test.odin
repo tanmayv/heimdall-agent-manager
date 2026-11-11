@@ -23,7 +23,7 @@ profile_test_setup :: proc(t: ^testing.T) -> string {
 	sync.mutex_lock(&g_profile_test_mu)
 	dir := strings.concatenate(
 		{
-			os.get_env("TMPDIR", context.temp_allocator) if os.get_env("TMPDIR", context.temp_allocator) != "" else "/tmp",
+			bridge_env_get("TMPDIR", context.temp_allocator) if bridge_env_get("TMPDIR", context.temp_allocator) != "" else "/tmp",
 			"/ham-profile-test-",
 			random_hex_string_temp(8),
 		},

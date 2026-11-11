@@ -34,7 +34,7 @@ DAY_MS :: i64(24 * 60 * 60 * 1000)
 // package's tests stay independent of each other's leftovers.
 @(private = "file")
 _retention_dir :: proc(name: string) -> string {
-	bridge_config.data_dir = name
+	bridge_cfg().data_dir = name
 	dir := bridge_shell_output_dir()
 	_ = os.make_directory_all(dir)
 	return dir
@@ -109,8 +109,8 @@ bridge_shell8_boundary_reclaims_only_past_the_window :: proc(t: ^testing.T) {
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	bridge_shell_test_reset()
 	defer bridge_shell_test_reset()
-	saved := bridge_config.data_dir
-	defer { bridge_config.data_dir = saved }
+	saved := bridge_cfg().data_dir
+	defer { bridge_cfg().data_dir = saved }
 	dir := _retention_dir("/tmp/ham-shell8-boundary")
 	defer delete(dir)
 	_clean_dir(dir)
@@ -149,8 +149,8 @@ bridge_shell8_live_session_output_survives_any_age :: proc(t: ^testing.T) {
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	bridge_shell_test_reset()
 	defer bridge_shell_test_reset()
-	saved := bridge_config.data_dir
-	defer { bridge_config.data_dir = saved }
+	saved := bridge_cfg().data_dir
+	defer { bridge_cfg().data_dir = saved }
 	dir := _retention_dir("/tmp/ham-shell8-live")
 	defer delete(dir)
 	_clean_dir(dir)
@@ -191,8 +191,8 @@ bridge_shell8_terminal_map_entry_does_not_protect_output :: proc(t: ^testing.T) 
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	bridge_shell_test_reset()
 	defer bridge_shell_test_reset()
-	saved := bridge_config.data_dir
-	defer { bridge_config.data_dir = saved }
+	saved := bridge_cfg().data_dir
+	defer { bridge_cfg().data_dir = saved }
 	dir := _retention_dir("/tmp/ham-shell8-terminal")
 	defer delete(dir)
 	_clean_dir(dir)
@@ -214,8 +214,8 @@ bridge_shell8_three_states_are_distinguishable :: proc(t: ^testing.T) {
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	bridge_shell_test_reset()
 	defer bridge_shell_test_reset()
-	saved := bridge_config.data_dir
-	defer { bridge_config.data_dir = saved }
+	saved := bridge_cfg().data_dir
+	defer { bridge_cfg().data_dir = saved }
 	dir := _retention_dir("/tmp/ham-shell8-states")
 	defer delete(dir)
 	_clean_dir(dir)
@@ -250,8 +250,8 @@ bridge_shell8_empty_output_is_not_reclaimed :: proc(t: ^testing.T) {
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	bridge_shell_test_reset()
 	defer bridge_shell_test_reset()
-	saved := bridge_config.data_dir
-	defer { bridge_config.data_dir = saved }
+	saved := bridge_cfg().data_dir
+	defer { bridge_cfg().data_dir = saved }
 	dir := _retention_dir("/tmp/ham-shell8-empty")
 	defer delete(dir)
 	_clean_dir(dir)
@@ -282,8 +282,8 @@ bridge_shell8_open_reader_sees_whole_file :: proc(t: ^testing.T) {
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	bridge_shell_test_reset()
 	defer bridge_shell_test_reset()
-	saved := bridge_config.data_dir
-	defer { bridge_config.data_dir = saved }
+	saved := bridge_cfg().data_dir
+	defer { bridge_cfg().data_dir = saved }
 	dir := _retention_dir("/tmp/ham-shell8-concurrent")
 	defer delete(dir)
 	_clean_dir(dir)
@@ -334,8 +334,8 @@ bridge_shell8_tombstones_age_out_after_rows :: proc(t: ^testing.T) {
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	bridge_shell_test_reset()
 	defer bridge_shell_test_reset()
-	saved := bridge_config.data_dir
-	defer { bridge_config.data_dir = saved }
+	saved := bridge_cfg().data_dir
+	defer { bridge_cfg().data_dir = saved }
 	dir := _retention_dir("/tmp/ham-shell8-tombstones")
 	defer delete(dir)
 	_clean_dir(dir)
@@ -371,8 +371,8 @@ bridge_shell8_sweep_is_debounced_not_timed :: proc(t: ^testing.T) {
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	bridge_shell_test_reset()
 	defer bridge_shell_test_reset()
-	saved := bridge_config.data_dir
-	defer { bridge_config.data_dir = saved }
+	saved := bridge_cfg().data_dir
+	defer { bridge_cfg().data_dir = saved }
 	dir := _retention_dir("/tmp/ham-shell8-debounce")
 	defer delete(dir)
 	_clean_dir(dir)

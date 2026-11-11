@@ -706,7 +706,7 @@ bridge_fs_run_dir_root :: proc(instance_id: string) -> (root: string, ok: bool) 
 	// request leak.
 	run_dir := bridge_runtime_default_run_dir(id)
 	defer delete(run_dir, context.allocator)
-	base_root := strings.trim_right(bridge_config.local_endpoint_run_dir, "/")
+	base_root := strings.trim_right(bridge_cfg().local_endpoint_run_dir, "/")
 	if base_root == "" do base_root = bridge_scratch_local_default(context.temp_allocator)
 	base_raw := strings.concatenate({base_root, "/instances"}, context.allocator)
 	defer delete(base_raw, context.allocator)
@@ -1039,7 +1039,7 @@ bridge_fs_write_file :: proc(requested: string, content: string, sandbox_root: s
 	// path (heimdall-fs-write-v3 AAD, finding N4 + P4 root binding) under the current
 	// epoch; plaintext, a content envelope, or a token for another path, root, bridge
 	// or vault is refused.
-	decrypted, dec_ok := vault.fs_write_open(content, &vault_kr, bridge_config.daemon_id, root, requested, vault_kr.current_epoch, context.allocator)
+	decrypted, dec_ok := vault.fs_write_open(content, &vault_kr, bridge_cfg().daemon_id, root, requested, vault_kr.current_epoch, context.allocator)
 	if !dec_ok {
 		return Bridge_Fs_Write_File_Result{
 			ok = false,

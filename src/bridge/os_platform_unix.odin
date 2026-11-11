@@ -224,7 +224,7 @@ bridge_os_path_is_explicit :: proc(value: string) -> bool {
 
 // bridge_os_default_shell is the interactive shell: $SHELL, else /bin/sh.
 bridge_os_default_shell :: proc() -> string {
-	shell_env := os.get_env("SHELL", context.temp_allocator)
+	shell_env := bridge_env_get("SHELL", context.temp_allocator)
 	return shell_env if len(shell_env) > 0 else "/bin/sh"
 }
 
@@ -277,7 +277,7 @@ bridge_os_spawn_new_session :: proc(argv: []string) -> bool {
 	exe := argv[0]
 	if strings.index_byte(exe, '/') < 0 {
 		found := false
-		for dir in strings.split(os.get_env("PATH", context.temp_allocator), ":", context.temp_allocator) {
+		for dir in strings.split(bridge_env_get("PATH", context.temp_allocator), ":", context.temp_allocator) {
 			if dir == "" do continue
 			candidate := fmt.tprintf("%s/%s", dir, exe)
 			if bridge_os_is_executable(candidate) && os.is_file(candidate) {

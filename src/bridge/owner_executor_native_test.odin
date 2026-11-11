@@ -241,9 +241,9 @@ native_owner_prepare_spawn :: proc(ctx:rawptr,s:^executor.Store,intent:executor.
 }
 native_owner_physical :: proc(t:^testing.T,p:^Native_Owner_Proof,wire:Executor_Exchange_Wire,
     activation:owner.Intent_Claim,content:json.Object) {
-    binary:=os.get_env("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)
-    args_file:=os.get_env("HEIMDALL_NATIVE_ARGS",context.temp_allocator)
-    ctl:=os.get_env("HEIMDALL_NATIVE_CTL",context.temp_allocator)
+    binary:=bridge_env_get("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)
+    args_file:=bridge_env_get("HEIMDALL_NATIVE_ARGS",context.temp_allocator)
+    ctl:=bridge_env_get("HEIMDALL_NATIVE_CTL",context.temp_allocator)
     if !testing.expect(t,binary!="" && ctl!="" && args_file!="","explicit private native proof binaries/args required") {return}
     suffix:=fmt.tprintf("%d",time.to_unix_nanoseconds(time.now()))
     socket:=fmt.tprintf("/tmp/ham-native-owner-%s.sock",suffix)
@@ -260,24 +260,24 @@ native_owner_physical :: proc(t:^testing.T,p:^Native_Owner_Proof,wire:Executor_E
     ready:=false
     for _ in 0..<100 {if bridge_pty_host_ping(socket) {ready=true;break};time.sleep(10*time.Millisecond)}
     if !testing.expect(t,ready) {return}
-    prior_run:=bridge_config.local_endpoint_run_dir
-    bridge_config.local_endpoint_run_dir=fmt.tprintf("%s/native-runtime",p.work)
-    defer bridge_config.local_endpoint_run_dir=prior_run
-    if !testing.expect(t,bridge_make_directory_all(fmt.tprintf("%s/instances",bridge_config.local_endpoint_run_dir))==nil) {return}
+    prior_run:=bridge_cfg().local_endpoint_run_dir
+    bridge_cfg().local_endpoint_run_dir=fmt.tprintf("%s/native-runtime",p.work)
+    defer bridge_cfg().local_endpoint_run_dir=prior_run
+    if !testing.expect(t,bridge_make_directory_all(fmt.tprintf("%s/instances",bridge_cfg().local_endpoint_run_dir))==nil) {return}
     physical:=Native_Owner_Physical{owner=p,socket=socket,endpoint=fmt.tprintf("unix:%s",endpoint_path),args_file=args_file}
     listener,listening:=local_socket.listen(endpoint_path,8)
     if !testing.expect(t,listening) {return}
     physical.listener=listener
-    server:=thread.create_and_start_with_data(&physical,native_owner_hook_server)
+    server:=bridge_thread_start_with_data(&physical,native_owner_hook_server)
     defer {
         sync.atomic_store(&physical.stop,true)
         wake,connected:=local_socket.dial(endpoint_path);if connected do local_socket.close(wake)
         thread.join(server);thread.destroy(server);local_socket.close(listener);_=os.remove(endpoint_path)
         delete(physical.native_path,runtime.default_allocator());delete(physical.native_session,runtime.default_allocator())
     }
-    old_ctl,had_ctl:=os.lookup_env("HEIMDALL_HAM_CTL_BIN",context.temp_allocator)
-    _=os.set_env("HEIMDALL_HAM_CTL_BIN",ctl)
-    defer {if had_ctl {_=os.set_env("HEIMDALL_HAM_CTL_BIN",old_ctl)} else {os.unset_env("HEIMDALL_HAM_CTL_BIN")}}
+    old_ctl,had_ctl:=bridge_env_lookup("HEIMDALL_HAM_CTL_BIN",context.temp_allocator)
+    bridge_test_env_set("HEIMDALL_HAM_CTL_BIN",ctl)
+    defer {if had_ctl {bridge_test_env_set("HEIMDALL_HAM_CTL_BIN",old_ctl)} else {bridge_test_env_unset("HEIMDALL_HAM_CTL_BIN")}}
     io:=Executor_Launch_IO{&physical,native_owner_prepare_spawn,socket}
     action,_:=contracts.executor_parse(activation.payload,"action")
     receipt,code:=bridge_executor_test_exchange(t,wire,action,"action",p.owner_private,p.kr,p.host,"native_owner_activate",
@@ -639,8 +639,8 @@ native_owner_accept_result :: proc(t:^testing.T,p:^Native_Owner_Proof,claim:owne
     // the same real test-root unseal path; never relabel the executor as owner.
     // The owner identity/fresh anti-rollback floor were created by normal
     // test enrollment before the device approved its key in the paired log.
-    previous:=bridge_config.daemon_id;bridge_config.daemon_id=safe_owner_id
-    defer {bridge_config.daemon_id=previous;bridge_unseal_forget_identity()}
+    previous:=bridge_cfg().daemon_id;bridge_cfg().daemon_id=safe_owner_id
+    defer {bridge_cfg().daemon_id=previous;bridge_unseal_forget_identity()}
     bridge_unseal_forget_identity()
     now:=bridge_executor_physical_clock(nil)
     payload:=test_create_unseal_v2_payload(safe_owner_id,p.kr,now,"native_owner_result_pair")

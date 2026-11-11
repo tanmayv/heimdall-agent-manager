@@ -244,7 +244,7 @@ bridge_pty_stream_worker_start :: proc(session_id, shell_id: string, conn: ^ws.C
 	}
 	sync.mutex_unlock(&bridge_pty_stream_map.mu)
 
-	thread.run_with_data(rawptr(worker), bridge_pty_stream_reader_worker)
+	bridge_thread_run_with_data(rawptr(worker), bridge_pty_stream_reader_worker)
 	return true
 }
 

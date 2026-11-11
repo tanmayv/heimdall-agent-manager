@@ -30,7 +30,7 @@ test_background_probe_has_no_console_and_preserves_streams :: proc(t: ^testing.T
 	env := make([dynamic]string, context.temp_allocator)
 	for entry in os.environ(context.temp_allocator) or_else nil do append(&env, entry)
 	append(&env, "HEIMDALL_HIDDEN_TEST=probe-env")
-	shell := fmt.tprintf("%s/System32/WindowsPowerShell/v1.0/powershell.exe", os.get_env("SystemRoot", context.temp_allocator))
+	shell := fmt.tprintf("%s/System32/WindowsPowerShell/v1.0/powershell.exe", bridge_env_get("SystemRoot", context.temp_allocator))
 	process, err := bridge_os_start_hidden({command = {shell, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded}, stdin = input_r, stdout = output_w, stderr = output_w, env = env[:], working_dir = path})
 	os.close(output_w)
 	testing.expect(t, err == nil)
@@ -56,7 +56,7 @@ test_background_probe_does_not_inherit_other_handles :: proc(t: ^testing.T) {
 	log := win.CreateFileW(wpath, win.GENERIC_WRITE, 0, &security, win.CREATE_ALWAYS, win.FILE_ATTRIBUTE_NORMAL, nil)
 	testing.expect(t, log != win.INVALID_HANDLE_VALUE)
 	if log == win.INVALID_HANDLE_VALUE do return
-	shell := fmt.tprintf("%s/System32/WindowsPowerShell/v1.0/powershell.exe", os.get_env("SystemRoot", context.temp_allocator))
+	shell := fmt.tprintf("%s/System32/WindowsPowerShell/v1.0/powershell.exe", bridge_env_get("SystemRoot", context.temp_allocator))
 	child, err := bridge_os_start_hidden({command = {shell, "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 10"}})
 	win.CloseHandle(log)
 	testing.expect(t, err == nil)
@@ -70,7 +70,7 @@ test_background_probe_does_not_inherit_other_handles :: proc(t: ^testing.T) {
 
 @(test)
 test_background_probe_keeps_deadline_cleanup :: proc(t: ^testing.T) {
-	shell := fmt.tprintf("%s/System32/WindowsPowerShell/v1.0/powershell.exe", os.get_env("SystemRoot", context.temp_allocator))
+	shell := fmt.tprintf("%s/System32/WindowsPowerShell/v1.0/powershell.exe", bridge_env_get("SystemRoot", context.temp_allocator))
 	started := time.now()
 	output, errors, ok, timed_out := bridge_process_run_capture({shell, "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"}, 100*time.Millisecond)
 	defer { delete(output); delete(errors) }

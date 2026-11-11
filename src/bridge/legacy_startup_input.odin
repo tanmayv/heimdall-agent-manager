@@ -9,7 +9,7 @@ import executor "odin_test:lib/executor_local"
 // identities must agree before a startup reminder can write to the PTY.
 // Unknown historical children are never replaced or treated as absent.
 bridge_legacy_startup_input_allowed_locked :: proc(s:^executor.Store,inst:Bridge_Runtime_Instance,socket:string)->bool {
-    if s==nil do return bridge_config.daemon_id=="" // Pre-enrollment remains unknown.
+    if s==nil do return bridge_cfg().daemon_id=="" // Pre-enrollment remains unknown.
     if !bridge_startup_rec_current(inst.startup.rec) || inst.startup.pty_pid<=0 || inst.startup.rec.run_count<=0 do return false
     sync.mutex_lock(&s.mutex)
     if s.db==nil || s.unusable {sync.mutex_unlock(&s.mutex);return false}

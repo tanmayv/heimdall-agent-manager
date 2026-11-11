@@ -1047,7 +1047,7 @@ bridge_shell_session_reconcile_now :: proc() {
 	// bridge_expand_home allocates only when the path starts with "~/", so free
 	// it only when it actually handed back a different allocation. This runs on
 	// every reconnect, outside any arena.
-	raw_dir := strings.trim_space(bridge_config.data_dir)
+	raw_dir := strings.trim_space(bridge_cfg().data_dir)
 	if raw_dir == "" do raw_dir = "~/.local/share/heimdall"
 	data_dir := bridge_expand_home(raw_dir)
 	defer if raw_data(data_dir) != raw_data(raw_dir) do delete(data_dir)
@@ -1373,7 +1373,7 @@ bridge_shell_session_reconcile :: proc(m: ^Bridge_Shell_Session_Map, daemon_agen
 			kctx.pid         = i32(s.pid)
 			kctx.cmd         = strings.clone(s.cmd)
 			kctx.started_at  = strings.clone(s.started_at)
-			thread.run_with_data(rawptr(kctx), bridge_shell_session_orphan_kill_worker)
+			bridge_thread_run_with_data(rawptr(kctx), bridge_shell_session_orphan_kill_worker)
 		}
 
 		// REQ-RECON-2: mark dead in the local map, remove spec, notify hub.

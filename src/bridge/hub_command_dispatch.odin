@@ -609,7 +609,7 @@ bridge_command_dispatch :: proc(conn: ^ws.Connection, text: string, generation: 
 bridge_command_dispatch_enqueue :: proc(conn:^ws.Connection,text,command_type,command_id:string,spec:Bridge_Command_Spec,generation:i64,native_binary:bool=false,native_ordering_key:string="")->bool {
     class:=spec.class
     mcp_large:=bridge_command_dispatch_is_mcp_large(command_type,len(text))
-	paired_required := bridge_legacy_dispatch_requires_observation(spec) && bridge_config.daemon_id!=""
+	paired_required := bridge_legacy_dispatch_requires_observation(spec) && bridge_cfg().daemon_id!=""
 	input_digest := contracts.owner_payload_digest(text)
 	ordering_key := strings.clone(native_ordering_key) if native_binary else bridge_command_ordering_key(command_type, text)
 	defer delete(ordering_key)

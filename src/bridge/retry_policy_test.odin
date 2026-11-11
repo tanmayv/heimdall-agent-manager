@@ -74,7 +74,7 @@ retry_test_serve :: proc(t: ^testing.T, srv: ^Retry_Test_Server) {
 	bound_ep, _ := net.bound_endpoint(listener)
 	srv.listener = listener
 	srv.url = fmt.tprintf("http://127.0.0.1:%d", bound_ep.port)
-	srv.thread = thread.create_and_start_with_data(rawptr(srv), proc(data: rawptr) {
+	srv.thread = bridge_thread_start_with_data(rawptr(srv), proc(data: rawptr) {
 		srv := (^Retry_Test_Server)(data)
 		for srv.requests < len(srv.responses) {
 			client, _, accept_err := net.accept_tcp(srv.listener)
@@ -170,6 +170,9 @@ test_bridge_http_attempt_retriable_by_method :: proc(t: ^testing.T) {
 
 @(test)
 test_bridge_launch_dedupe_idempotency :: proc(t: ^testing.T) {
+	// Process-wide Bridge state (bridge_runtime_record_launch) is shared with other tests.
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	bridge_runtime_init()
 
 	// 1. Command caching deduplication

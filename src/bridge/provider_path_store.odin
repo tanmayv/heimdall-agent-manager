@@ -53,7 +53,7 @@ bridge_provider_discovery_test_key: string
 bridge_provider_discovery_test_key_scans: u64
 
 bridge_provider_paths_path :: proc() -> string {
-	data_dir := strings.trim_space(bridge_config.data_dir)
+	data_dir := strings.trim_space(bridge_cfg().data_dir)
 	if data_dir == "" do data_dir = "~/.local/share/heimdall"
 	expanded := bridge_expand_home(data_dir)
 	defer if raw_data(expanded) != raw_data(data_dir) do delete(expanded)

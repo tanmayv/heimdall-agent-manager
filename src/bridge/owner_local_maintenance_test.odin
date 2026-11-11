@@ -17,7 +17,7 @@ owner_maintenance_test_send :: proc(ctx:rawptr,s:^owner.Store,claim:owner.Intent
 test_owner_local_periodic_batch_expires_and_publishes_after_commit :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
     s:owner.Store
-    path:=fmt.tprintf("%s/.cache/heimdall-tests/owner-maintenance-%d.sqlite",os.get_env("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    path:=fmt.tprintf("%s/.cache/heimdall-tests/owner-maintenance-%d.sqlite",bridge_env_get("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
     if !testing.expect(t,owner.open(&s,path,"account","bridge","bridge_key")) do return
     q:owner.Intent_Completions
     defer {

@@ -50,7 +50,7 @@ test_owner_chain_create_documents_execute_and_bind_once :: proc(t:^testing.T) {
     defer {ecdsa.private_key_clear(&priv);ecdsa.private_key_clear(&other)}
     key:=chain_create_test_key(t,&priv,"bridge","bridge_key")
     alien:=chain_create_test_key(t,&other,"bridge","bridge_key")
-    root:=fmt.tprintf("%s/.cache/heimdall-tests/owner-chain-create-%d",os.get_env("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    root:=fmt.tprintf("%s/.cache/heimdall-tests/owner-chain-create-%d",bridge_env_get("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
     testing.expect(t,bridge_make_directory_all(root)==nil)
     defer _=os.remove_all(root)
     s:owner.Store

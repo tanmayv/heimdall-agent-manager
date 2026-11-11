@@ -732,7 +732,7 @@ vcs_api_save_writes_file :: proc(t: ^testing.T) {
 	defer test_env_restore(&env)
 	test_bridge_a, _ := keystore_test_bridge_ids()
 	prev_daemon := keystore_test_set_daemon_id(test_bridge_a)
-	defer bridge_config.daemon_id = prev_daemon
+	defer bridge_cfg().daemon_id = prev_daemon
 	vcs_save_test_pin_tmp_root()
 	repo := vcs_test_make_marker_repo("save-write", ".git")
 	defer vcs_test_rm(repo)

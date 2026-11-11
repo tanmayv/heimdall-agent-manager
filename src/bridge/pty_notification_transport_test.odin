@@ -29,7 +29,7 @@ pty_notification_transport_distinguishes_receipt_uncertainty_and_unsupported :: 
     Server::struct {listener:posix.FD,frames:[15][]byte}
     server:=Server{listener=listener}
     defer for frame in server.frames do delete(frame,runtime.heap_allocator())
-    worker:=thread.create_and_start_with_data(&server,proc(data:rawptr) {
+    worker:=bridge_thread_start_with_data(&server,proc(data:rawptr) {
         context.allocator=runtime.heap_allocator()
         s:=(^Server)(data)
         for i in 0..<15 {
@@ -94,10 +94,10 @@ pty_notification_transport_distinguishes_receipt_uncertainty_and_unsupported :: 
 pty_notification_malformed_lifecycle_reaches_daemon_after_current_child_fences :: proc(t:^testing.T) {
     sync.mutex_lock(&bridge_test_config_mutex);defer sync.mutex_unlock(&bridge_test_config_mutex)
     context.allocator=context.temp_allocator
-    saved_config:=bridge_config;defer bridge_config=saved_config
+    saved_config:=bridge_cfg()^;defer bridge_cfg()^=saved_config
     saved_records:=bridge_local_token_records;defer bridge_local_token_records=saved_records
-    bridge_config.local_endpoint_run_dir="/tmp"
-    bridge_config.daemon_id=fmt.tprintf("notification-route-%d",os.get_pid())
+    bridge_cfg().local_endpoint_run_dir="/tmp"
+    bridge_cfg().daemon_id=fmt.tprintf("notification-route-%d",os.get_pid())
     path:=pty_host_socket_path()
     _=posix.unlink(cstring(raw_data(path)));defer _=posix.unlink(cstring(raw_data(path)))
     rec:=Bridge_Local_Agent_Token_Record{agent_instance_id="inst",token_hash="key",instance_token="assertion~epoch",run_count=1,role=.Agent}
@@ -115,7 +115,7 @@ pty_notification_malformed_lifecycle_reaches_daemon_after_current_child_fences :
     Server::struct {listener:posix.FD,frames:[12][]byte}
     server:=Server{listener=listener}
     defer for frame in server.frames do delete(frame,runtime.heap_allocator())
-    worker:=thread.create_and_start_with_data(&server,proc(data:rawptr) {
+    worker:=bridge_thread_start_with_data(&server,proc(data:rawptr) {
         context.allocator=runtime.heap_allocator()
         s:=(^Server)(data)
         for i in 0..<12 {

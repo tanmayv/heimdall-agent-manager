@@ -48,10 +48,10 @@ loopback_request :: proc(auth: string) -> string {
 test_blank_configured_token_authorizes_nothing :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
-	saved := bridge_config.bridge_token
-	defer bridge_config.bridge_token = saved
+	saved := bridge_cfg().bridge_token
+	defer bridge_cfg().bridge_token = saved
 
-	bridge_config.bridge_token = ""
+	bridge_cfg().bridge_token = ""
 	testing.expect(t, !bridge_loopback_authorized(loopback_request("")), "a blank configured token must not authorize a request with no Authorization header")
 	testing.expect(t, !bridge_loopback_authorized(loopback_request("Bearer ")), "a blank configured token must not authorize an empty bearer")
 	testing.expect(t, !bridge_loopback_authorized(loopback_request("Bearer anything")), "a blank configured token must not authorize an arbitrary token")
@@ -62,7 +62,7 @@ test_blank_configured_token_authorizes_nothing :: proc(t: ^testing.T) {
 	// WHITESPACE-ONLY IS STILL BLANK. A token file containing just a newline, or a
 	// config value of " ", must not be treated as a real credential — otherwise the
 	// fix is one stray space away from being undone.
-	bridge_config.bridge_token = "   "
+	bridge_cfg().bridge_token = "   "
 	testing.expect(t, !bridge_loopback_authorized(loopback_request("")), "a whitespace-only configured token must not authorize an unauthenticated request")
 	testing.expect(t, !bridge_loopback_authorized(loopback_request("Bearer    ")), "a whitespace-only configured token must not authorize a whitespace bearer")
 }
@@ -72,10 +72,10 @@ test_blank_configured_token_authorizes_nothing :: proc(t: ^testing.T) {
 test_configured_token_authorizes_only_the_matching_bearer :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
-	saved := bridge_config.bridge_token
-	defer bridge_config.bridge_token = saved
+	saved := bridge_cfg().bridge_token
+	defer bridge_cfg().bridge_token = saved
 
-	bridge_config.bridge_token = "hba_brg_test.secret"
+	bridge_cfg().bridge_token = "hba_brg_test.secret"
 	testing.expect(t, bridge_loopback_authorized(loopback_request("Bearer hba_brg_test.secret")), "the matching bearer must be authorized")
 	testing.expect(t, !bridge_loopback_authorized(loopback_request("Bearer hba_brg_test.wrong")), "a wrong secret must be refused")
 	testing.expect(t, !bridge_loopback_authorized(loopback_request("Bearer hba_brg_test.secretx")), "a token with the right prefix must still be compared in full")
@@ -96,10 +96,10 @@ test_configured_token_authorizes_only_the_matching_bearer :: proc(t: ^testing.T)
 test_surrounding_whitespace_in_the_configured_token_does_not_break_authorization :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
-	saved := bridge_config.bridge_token
-	defer bridge_config.bridge_token = saved
+	saved := bridge_cfg().bridge_token
+	defer bridge_cfg().bridge_token = saved
 
-	bridge_config.bridge_token = "  hba_brg_test.secret\n"
+	bridge_cfg().bridge_token = "  hba_brg_test.secret\n"
 	testing.expect(t, bridge_loopback_authorized(loopback_request("Bearer hba_brg_test.secret")), "a configured token with surrounding whitespace must still authorize its own correctly-formed request")
 	testing.expect(t, !bridge_loopback_authorized(loopback_request("Bearer wrong")), "trimming must not weaken the comparison")
 }

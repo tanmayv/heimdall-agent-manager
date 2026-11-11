@@ -48,7 +48,24 @@ Bridge_Config :: struct {
 	pty_host_runtime: bool,
 }
 
-bridge_config: Bridge_Config
+// The running Bridge's configuration. Read and write it through bridge_cfg():
+// tests (each a thread of one process) get a private per-thread copy.
+@(private = "file")
+g_bridge_config: Bridge_Config
+@(thread_local, private = "file")
+g_bridge_config_test: Bridge_Config
+
+@(thread_local, private = "file")
+g_bridge_config_inherited: ^Bridge_Config
+
+bridge_cfg :: #force_inline proc "contextless" () -> ^Bridge_Config {
+	when ODIN_TEST {
+		if g_bridge_config_inherited != nil do return g_bridge_config_inherited
+		return &g_bridge_config_test
+	} else {
+		return &g_bridge_config
+	}
+}
 bridge_sequence: i64
 
 main :: proc() {
@@ -187,18 +204,18 @@ main :: proc() {
         }
         startup_cfg := bridge_config_from_args(os.args)
         if m, pending := bridge_reenroll_pending(bridge_hub_traffic_config_path, startup_cfg.daemon_id); pending {
-            bridge_config = startup_cfg
+            bridge_cfg()^ = startup_cfg
             bridge_reenroll_park(bridge_hub_traffic_config_path, m)
         }
     }
     // Offline recovery must acquire exclusion before any durable-state repair.
     if !recovery_command do _ = bridge_enroll_atomic_recover(os.args)
-	bridge_config = bridge_config_from_args(os.args)
-	default_credential_path := bridge_enroll_default_credential_path(bridge_config.daemon_url, strings.trim_space(bridge_config.daemon_id))
-	bridge_adopt_default_credential_if_needed(&bridge_config, default_credential_path)
+	bridge_cfg()^ = bridge_config_from_args(os.args)
+	default_credential_path := bridge_enroll_default_credential_path(bridge_cfg().daemon_url, strings.trim_space(bridge_cfg().daemon_id))
+	bridge_adopt_default_credential_if_needed(bridge_cfg(), default_credential_path)
 	delete(default_credential_path)
     if recovery_command {
-        if !bridge_recovery_resume(bridge_config, cfg_lib.config_path_from_args(os.args), os.args[2] == "resume-refresh") do os.exit(1)
+        if !bridge_recovery_resume(bridge_cfg()^, cfg_lib.config_path_from_args(os.args), os.args[2] == "resume-refresh") do os.exit(1)
         fmt.println("recovery resumed; restart the bridge with the repaired configuration")
         return
     }
@@ -210,37 +227,37 @@ main :: proc() {
 	// guard applies only to ordinary runtime starts.
 	// F21: a profile the hub refused (revoked, refresh 401, vault key never delivered)
 	// parks until it is re-enrolled instead of exiting non-zero into a crash loop.
-	if m, pending := bridge_reenroll_pending(cfg_lib.config_path_from_args(os.args), bridge_config.daemon_id); pending {
+	if m, pending := bridge_reenroll_pending(cfg_lib.config_path_from_args(os.args), bridge_cfg().daemon_id); pending {
 		bridge_reenroll_park(cfg_lib.config_path_from_args(os.args), m)
 	}
-	if bridge_refuse_tokenless_start(bridge_config) {
+	if bridge_refuse_tokenless_start(bridge_cfg()^) {
 		config_path := cfg_lib.config_path_from_args(os.args)
-		bridge_reenroll_mark(config_path, bridge_config.daemon_url, bridge_config.daemon_id, .Credential_Missing)
-		if m, pending := bridge_reenroll_pending(config_path, bridge_config.daemon_id); pending do bridge_reenroll_park(config_path, m)
+		bridge_reenroll_mark(config_path, bridge_cfg().daemon_url, bridge_cfg().daemon_id, .Credential_Missing)
+		if m, pending := bridge_reenroll_pending(config_path, bridge_cfg().daemon_id); pending do bridge_reenroll_park(config_path, m)
 		os.exit(1)
 	}
 	// Multi-bridge isolation: bind vault state to the configured hub and refuse a hub
 	// mismatch or a second instance on the same config/scope.
-	if !bridge_bind_runtime_hub(bridge_config, cfg_lib.config_path_from_args(os.args)) do os.exit(1)
-	bridge_fs_init(bridge_config.fs_root, bridge_config.fs_read_page_bytes)
+	if !bridge_bind_runtime_hub(bridge_cfg()^, cfg_lib.config_path_from_args(os.args)) do os.exit(1)
+	bridge_fs_init(bridge_cfg().fs_root, bridge_cfg().fs_read_page_bytes)
 	vcs_init()
 	bridge_provider_store_init()
 	bridge_provider_catalog_init()
 	bridge_provider_paths_init()
 	bridge_provider_startup_log()
-	bootstrap_cache_init(&bootstrap_global_cache, bridge_config.data_dir, bridge_config.bootstrap_cache_max_bytes)
+	bootstrap_cache_init(&bootstrap_global_cache, bridge_cfg().data_dir, bridge_cfg().bootstrap_cache_max_bytes)
 	if has_flag(os.args, "--bootstrap-fetch") {
 		instance_id := option_value(os.args, "--instance-id", "")
 		run_dir := option_value(os.args, "--run-dir", "")
-		bridge_endpoint := option_value(os.args, "--bridge-endpoint", os.get_env_alloc("HEIMDALL_BRIDGE_ENDPOINT", context.allocator))
-		agent_token := option_value(os.args, "--agent-token", os.get_env_alloc("HEIMDALL_AGENT_TOKEN", context.allocator))
+		bridge_endpoint := option_value(os.args, "--bridge-endpoint", bridge_env_get_alloc("HEIMDALL_BRIDGE_ENDPOINT", context.allocator))
+		agent_token := option_value(os.args, "--agent-token", bridge_env_get_alloc("HEIMDALL_AGENT_TOKEN", context.allocator))
 		provider := option_value(os.args, "--provider", "")
 		credential_snapshot_146 := bridge_credential_snapshot()
 		defer delete(credential_snapshot_146)
-		if !bridge_bootstrap_fetch_manifest_and_materialize(bridge_config.daemon_url, credential_snapshot_146, instance_id, run_dir, bridge_endpoint, agent_token, provider, &bootstrap_global_cache) {
+		if !bridge_bootstrap_fetch_manifest_and_materialize(bridge_cfg().daemon_url, credential_snapshot_146, instance_id, run_dir, bridge_endpoint, agent_token, provider, &bootstrap_global_cache) {
 			credential_snapshot_147 := bridge_credential_snapshot()
 			defer delete(credential_snapshot_147)
-			if !bridge_bootstrap_fetch_and_materialize(bridge_config.daemon_url, credential_snapshot_147, instance_id, run_dir, bridge_endpoint, agent_token, provider) {
+			if !bridge_bootstrap_fetch_and_materialize(bridge_cfg().daemon_url, credential_snapshot_147, instance_id, run_dir, bridge_endpoint, agent_token, provider) {
 				fmt.eprintln("bootstrap fetch/materialization failed")
 				os.exit(1)
 			}
@@ -261,7 +278,7 @@ main :: proc() {
 	// outlive and reconnect after a bridge restart, so recovery requires the local
 	// JSONL socket before any new launch command arrives.
 	if endpoint, endpoint_ok := bridge_runtime_ensure_local_endpoint(); endpoint_ok {
-		local_config := bridge_local_endpoint_config_default(bridge_config.local_endpoint_run_dir, bridge_config.local_endpoint_port)
+		local_config := bridge_local_endpoint_config_default(bridge_cfg().local_endpoint_run_dir, bridge_cfg().local_endpoint_port)
 		fmt.println("bridge local endpoint", endpoint, "fallback", bridge_local_endpoint_env_value(local_config, false), "socket_mode", "0600")
 	}
 	// Wake state must exist before the hub worker can run a launch, which
@@ -278,15 +295,15 @@ main :: proc() {
 	// Hub runtime dials, so the first dial after a restart (or a wake) never presents
 	// a credential whose replacement is already on disk or due. Renewal stays a no-op
 	// for a non-expiring legacy credential.
-	bridge_credential_refresh_start(bridge_config.credential_file)
+	bridge_credential_refresh_start(bridge_cfg().credential_file)
 	bridge_hub_runtime_start()
     bridge_owner_maintenance_start()
     bridge_owner_executor_start()
     bridge_executor_reconcile_start()
 	bridge_action_scheduler_start()
 	bridge_auto_update_start()
-	if bridge_config.chunk_bytes <= 0 do bridge_config.chunk_bytes = contracts.BRIDGE_WS_DEFAULT_CHUNK_BYTES
-	_ = run_bridge_server(bridge_config)
+	if bridge_cfg().chunk_bytes <= 0 do bridge_cfg().chunk_bytes = contracts.BRIDGE_WS_DEFAULT_CHUNK_BYTES
+	_ = run_bridge_server(bridge_cfg()^)
 	bridge_telemetry_stop()
 }
 
@@ -615,7 +632,7 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 	cfg.daemon_url = option_value(args, "--daemon-url", cfg.daemon_url)
 	cfg.daemon_url = option_value(args, "--hub", cfg.daemon_url)
 	cfg.daemon_id = option_value(args, "--daemon-id", cfg.daemon_id)
-	bridge_token_file := option_value(args, "--bridge-token-file", os.get_env("HAM_BRIDGE_TOKEN_FILE", context.allocator))
+	bridge_token_file := option_value(args, "--bridge-token-file", bridge_env_get("HAM_BRIDGE_TOKEN_FILE", context.allocator))
 	// REQ-IMPL-4: remembered so the refresh worker knows which file to rewrite when
 	// it rotates an expiring credential. Empty when the token came from --bridge-token
 	// or config.toml, and the worker then declines to rotate rather than rotating
@@ -683,7 +700,7 @@ run_bridge_server :: proc(cfg: Bridge_Config) -> bool {
 	for {
 		client, _, accept_err := net.accept_tcp(listener)
 		if accept_err != nil do continue
-		thread.run_with_poly_data(client, handle_bridge_client)
+		bridge_thread_run_with_poly_data(client, handle_bridge_client)
 	}
 }
 
@@ -778,9 +795,9 @@ bridge_health_json :: proc() -> string {
 	strings.write_string(&b, fmt.tprintf("%d", contracts.BRIDGE_LOOPBACK_CONTRACT_VERSION))
 	strings.write_string(&b, `,"ws_frame_version":`)
 	strings.write_string(&b, fmt.tprintf("%d", contracts.BRIDGE_WS_FRAME_VERSION))
-	strings.write_string(&b, `,"self_daemon_id":"`); json_write_string(&b, bridge_config.daemon_id)
+	strings.write_string(&b, `,"self_daemon_id":"`); json_write_string(&b, bridge_cfg().daemon_id)
 	strings.write_string(&b, `","bridge_id":"ham-bridge","chunk_bytes":`)
-	strings.write_string(&b, fmt.tprintf("%d", bridge_config.chunk_bytes))
+	strings.write_string(&b, fmt.tprintf("%d", bridge_cfg().chunk_bytes))
 	strings.write_string(&b, `,"large_payload_target_bytes":`)
 	strings.write_string(&b, fmt.tprintf("%d", contracts.BRIDGE_WS_LARGE_PAYLOAD_TARGET_BYTES))
 	strings.write_string(&b, `}`)
@@ -829,7 +846,7 @@ bridge_unsupported_route_json :: proc(method, route: string) -> string {
 }
 
 bridge_payload_needs_chunking :: proc(payload: []byte) -> bool {
-	return len(payload) > bridge_config.chunk_bytes
+	return len(payload) > bridge_cfg().chunk_bytes
 }
 
 bridge_ws_chunk_count :: proc(total_bytes, chunk_bytes: int) -> int {
@@ -1125,11 +1142,11 @@ bridge_now_unix_ms :: proc() -> i64 {
 // is "no keyring" and does NOT fall through to the OS store.
 bridge_read_vault_keyring :: proc() -> (vault.Vault_Keyring, bool) {
 	if kr, present, ok := bridge_captured_env_keyring(); present do return kr, ok
-	if env_val, found := os.lookup_env("HEIMDALL_VAULT_KEYRING", context.temp_allocator); found {
+	if env_val, found := bridge_env_lookup("HEIMDALL_VAULT_KEYRING", context.temp_allocator); found {
 		kr, present, ok := bridge_keyring_from_env_value(env_val)
 		if present do return kr, ok
 	}
-	return keystore_read_vault_keyring(bridge_config.daemon_id)
+	return keystore_read_vault_keyring(bridge_cfg().daemon_id)
 }
 
 // bridge_current_vault_epoch returns the keyring's current epoch, or 0 when locked.
@@ -1168,31 +1185,50 @@ BRIDGE_PARENT_SESSION_ENV :: [?]string{
 	"CLAUDE_EFFORT",
 }
 
+// bridge_cfg_inherit makes a test worker thread share its spawning test's config.
+bridge_cfg_inherit :: proc(cfg: ^Bridge_Config) {
+	when ODIN_TEST do g_bridge_config_inherited = cfg
+}
+
 // The HEIMDALL_VAULT_KEYRING override as captured at startup (finding L3). main
 // moves it out of the process environment before anything is spawned, so no
 // agent, shell, pty-host or helper child can inherit the keyring.
+Bridge_Env_Keyring_Capture :: struct {
+	kr:      vault.Vault_Keyring,
+	present: bool,
+	ok:      bool,
+}
 @(private = "file")
-g_bridge_env_keyring: vault.Vault_Keyring
-@(private = "file")
-g_bridge_env_keyring_present: bool
-@(private = "file")
-g_bridge_env_keyring_ok: bool
+g_bridge_env_keyring: Bridge_Env_Keyring_Capture
+// Tests capture per thread: a captured keyring must not unlock concurrent tests.
+@(thread_local, private = "file")
+g_bridge_env_keyring_test: Bridge_Env_Keyring_Capture
 @(private = "file")
 g_bridge_env_keyring_mu: sync.Mutex
+
+@(private = "file")
+bridge_env_keyring_capture :: #force_inline proc "contextless" () -> ^Bridge_Env_Keyring_Capture {
+	when ODIN_TEST {
+		return &g_bridge_env_keyring_test
+	} else {
+		return &g_bridge_env_keyring
+	}
+}
 
 // bridge_capture_keyring_env_override reads HEIMDALL_VAULT_KEYRING into memory and
 // removes it from the environment. Returns false only if it could not be removed.
 bridge_capture_keyring_env_override :: proc() -> bool {
-	env_val, found := os.lookup_env("HEIMDALL_VAULT_KEYRING", context.temp_allocator)
+	env_val, found := bridge_env_lookup("HEIMDALL_VAULT_KEYRING", context.temp_allocator)
 	if !found do return true
 	defer crypto.zero_explicit(raw_data(env_val), len(env_val))
 	sync.mutex_lock(&g_bridge_env_keyring_mu)
-	vault.keyring_wipe(&g_bridge_env_keyring)
+	cap := bridge_env_keyring_capture()
+	vault.keyring_wipe(&cap.kr)
 	kr, present, ok := bridge_keyring_from_env_value(env_val)
-	g_bridge_env_keyring, g_bridge_env_keyring_present, g_bridge_env_keyring_ok = kr, present, ok
+	cap^ = {kr, present, ok}
 	sync.mutex_unlock(&g_bridge_env_keyring_mu)
-	_ = os.unset_env("HEIMDALL_VAULT_KEYRING")
-	_, still := os.lookup_env("HEIMDALL_VAULT_KEYRING", context.temp_allocator)
+	bridge_env_unset("HEIMDALL_VAULT_KEYRING")
+	_, still := bridge_env_lookup("HEIMDALL_VAULT_KEYRING", context.temp_allocator)
 	return !still
 }
 
@@ -1200,17 +1236,19 @@ bridge_capture_keyring_env_override :: proc() -> bool {
 bridge_captured_env_keyring :: proc() -> (kr: vault.Vault_Keyring, present: bool, ok: bool) {
 	sync.mutex_lock(&g_bridge_env_keyring_mu)
 	defer sync.mutex_unlock(&g_bridge_env_keyring_mu)
-	if !g_bridge_env_keyring_present do return {}, false, false
-	if !g_bridge_env_keyring_ok do return {}, true, false
-	return g_bridge_env_keyring, true, true
+	cap := bridge_env_keyring_capture()
+	if !cap.present do return {}, false, false
+	if !cap.ok do return {}, true, false
+	return cap.kr, true, true
 }
 
 // bridge_forget_captured_env_keyring drops the captured override (tests).
 bridge_forget_captured_env_keyring :: proc() {
 	sync.mutex_lock(&g_bridge_env_keyring_mu)
 	defer sync.mutex_unlock(&g_bridge_env_keyring_mu)
-	vault.keyring_wipe(&g_bridge_env_keyring)
-	g_bridge_env_keyring_present, g_bridge_env_keyring_ok = false, false
+	cap := bridge_env_keyring_capture()
+	vault.keyring_wipe(&cap.kr)
+	cap.present, cap.ok = false, false
 }
 
 // bridge_strip_parent_session_env removes BRIDGE_PARENT_SESSION_ENV from the

@@ -38,24 +38,24 @@ pty_host_flag_truthy_parsing :: proc(t: ^testing.T) {
 pty_host_always_enabled :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
-	old_pty := bridge_config.pty_host_runtime
-	defer { bridge_config.pty_host_runtime = old_pty }
+	old_pty := bridge_cfg().pty_host_runtime
+	defer { bridge_cfg().pty_host_runtime = old_pty }
 
 	// DEL-1: ham-pty-host is the only agent-launch runtime; the tmux path was
 	// removed, so bridge_pty_host_runtime_enabled() is always true regardless of
 	// the (now no-op) config flag / env override.
-	old := os.get_env_alloc("HEIMDALL_BRIDGE_PTY_HOST", context.allocator)
+	old := bridge_env_get_alloc("HEIMDALL_BRIDGE_PTY_HOST", context.allocator)
 	defer {
-		if strings.trim_space(old) != "" { _ = os.set_env("HEIMDALL_BRIDGE_PTY_HOST", old) } else { _ = os.unset_env("HEIMDALL_BRIDGE_PTY_HOST") }
+		if strings.trim_space(old) != "" { bridge_test_env_set("HEIMDALL_BRIDGE_PTY_HOST", old) } else { bridge_test_env_unset("HEIMDALL_BRIDGE_PTY_HOST") }
 	}
-	_ = os.unset_env("HEIMDALL_BRIDGE_PTY_HOST")
-	bridge_config.pty_host_runtime = false
+	bridge_test_env_unset("HEIMDALL_BRIDGE_PTY_HOST")
+	bridge_cfg().pty_host_runtime = false
 	testing.expect(t, bridge_pty_host_runtime_enabled(), "always enabled even with config false + no env")
 
-	_ = os.set_env("HEIMDALL_BRIDGE_PTY_HOST", "0")
+	bridge_test_env_set("HEIMDALL_BRIDGE_PTY_HOST", "0")
 	testing.expect(t, bridge_pty_host_runtime_enabled(), "env 0 no longer re-enables the removed tmux path")
 
-	bridge_config.pty_host_runtime = false
+	bridge_cfg().pty_host_runtime = false
 }
 
 @(test)
@@ -192,7 +192,7 @@ pty_host_deliver_line_gates_bracketed_paste :: proc(t: ^testing.T) {
 	}
 	ctx := Server_Ctx{listener_fd = listener_fd, allocator = runtime.heap_allocator()}
 	defer for payload in ctx.payloads do if len(payload) > 0 do delete(payload, ctx.allocator)
-	th := thread.create_and_start_with_data(rawptr(&ctx), proc(data: rawptr) {
+	th := bridge_thread_start_with_data(rawptr(&ctx), proc(data: rawptr) {
 		s := (^Server_Ctx)(data)
 		context.allocator = s.allocator
 		for s.count < len(s.payloads) {
@@ -323,7 +323,7 @@ pty_host_deliver_task_nudge_interrupt_sends_esc :: proc(t: ^testing.T) {
 	ctx := Server_Ctx{listener_fd = listener_fd, payload_allocator = pty_host_nudge_payload_allocator()}
 	defer if len(ctx.first_payload) > 0 do delete(ctx.first_payload, ctx.payload_allocator)
 
-	th := thread.create_and_start_with_data(rawptr(&ctx), proc(data: rawptr) {
+	th := bridge_thread_start_with_data(rawptr(&ctx), proc(data: rawptr) {
 		s := (^Server_Ctx)(data)
 		context.allocator = s.payload_allocator
 		for s.total_conns < 3 {
@@ -392,7 +392,7 @@ pty_host_deliver_task_nudge_no_interrupt_no_esc :: proc(t: ^testing.T) {
 	ctx := Server_Ctx{listener_fd = listener_fd, payload_allocator = pty_host_nudge_payload_allocator()}
 	defer if len(ctx.first_payload) > 0 do delete(ctx.first_payload, ctx.payload_allocator)
 
-	th := thread.create_and_start_with_data(rawptr(&ctx), proc(data: rawptr) {
+	th := bridge_thread_start_with_data(rawptr(&ctx), proc(data: rawptr) {
 		s := (^Server_Ctx)(data)
 		context.allocator = s.payload_allocator
 		for s.total_conns < 2 {
@@ -1190,9 +1190,9 @@ pane_large_encrypted_snapshot_splits_before_encryption :: proc(t: ^testing.T) {
 	defer sync.mutex_unlock(&keystore_test_mutex)
 	bridge_pty_stream_reset()
 	defer bridge_pty_stream_reset()
-	prev_key, found := os.lookup_env("HEIMDALL_VAULT_KEYRING", context.allocator)
-	defer { if found { _ = os.set_env("HEIMDALL_VAULT_KEYRING", prev_key); delete(prev_key) } else { os.unset_env("HEIMDALL_VAULT_KEYRING") } }
-	_ = os.set_env("HEIMDALL_VAULT_KEYRING", test_keyring_env_value(TEST_ENC_VAULT_KEY))
+	prev_key, found := bridge_env_lookup("HEIMDALL_VAULT_KEYRING", context.allocator)
+	defer { if found { bridge_test_env_set("HEIMDALL_VAULT_KEYRING", prev_key); delete(prev_key) } else { bridge_test_env_unset("HEIMDALL_VAULT_KEYRING") } }
+	bridge_test_env_set("HEIMDALL_VAULT_KEYRING", test_keyring_env_value(TEST_ENC_VAULT_KEY))
 	worker := Bridge_PTY_Stream_Worker{active = true, emitting_snapshot = true, fd = -1}
 	source := strings.repeat("λ", 256 * 1024)
 	defer delete(source)
@@ -1321,13 +1321,13 @@ bridge_br4_ensure_daemon_retires_a_live_prior_daemon_first :: proc(t: ^testing.T
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 
-	saved_socket := pty_host_daemon_socket
-	saved_started := pty_host_daemon_started
+	saved_socket := pty_host_daemon().socket
+	saved_started := pty_host_daemon().started
 	saved_process := pty_host_daemon_process
 	saved_has := pty_host_daemon_has_process
 	defer {
-		pty_host_daemon_socket = saved_socket
-		pty_host_daemon_started = saved_started
+		pty_host_daemon().socket = saved_socket
+		pty_host_daemon().started = saved_started
 		pty_host_daemon_process = saved_process
 		pty_host_daemon_has_process = saved_has
 	}
@@ -1346,10 +1346,10 @@ bridge_br4_ensure_daemon_retires_a_live_prior_daemon_first :: proc(t: ^testing.T
 	cscript := strings.clone_to_cstring(script)
 	defer delete(cscript)
 	_ = posix.chmod(cscript, {.IRUSR, .IWUSR, .IXUSR})
-	saved_bin := os.get_env_alloc("HEIMDALL_HAM_PTY_HOST_BIN", context.allocator)
+	saved_bin := bridge_env_get_alloc("HEIMDALL_HAM_PTY_HOST_BIN", context.allocator)
 	defer delete(saved_bin)
-	_ = os.set_env("HEIMDALL_HAM_PTY_HOST_BIN", script)
-	defer { if saved_bin != "" do _ = os.set_env("HEIMDALL_HAM_PTY_HOST_BIN", saved_bin); else do _ = os.unset_env("HEIMDALL_HAM_PTY_HOST_BIN") }
+	bridge_test_env_set("HEIMDALL_HAM_PTY_HOST_BIN", script)
+	defer { if saved_bin != "" do bridge_test_env_set("HEIMDALL_HAM_PTY_HOST_BIN", saved_bin); else do bridge_test_env_unset("HEIMDALL_HAM_PTY_HOST_BIN") }
 
 	prior, err := os.process_start(os.Process_Desc{command = []string{"sleep", "600"}})
 	testing.expect(t, err == nil, "fake prior daemon started")

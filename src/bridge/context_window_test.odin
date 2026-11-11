@@ -17,10 +17,10 @@ import "core:testing"
 // and returns a restore proc. Callers hold bridge_test_config_mutex.
 @(private = "file")
 ctxwin_scratch_begin :: proc(tag: string) -> (saved, scratch: string) {
-	saved = bridge_config.data_dir
-	scratch = fmt.aprintf("%s/.cache/heimdall-tests/ctxwin-%s-%d", os.get_env("HOME", context.temp_allocator), tag, os.get_pid())
+	saved = bridge_cfg().data_dir
+	scratch = fmt.aprintf("%s/.cache/heimdall-tests/ctxwin-%s-%d", bridge_env_get("HOME", context.temp_allocator), tag, os.get_pid())
 	_ = os.remove_all(scratch)
-	bridge_config.data_dir = scratch
+	bridge_cfg().data_dir = scratch
 	bridge_context_window_reload_for_test()
 	return
 }
@@ -28,7 +28,7 @@ ctxwin_scratch_begin :: proc(tag: string) -> (saved, scratch: string) {
 @(private = "file")
 ctxwin_scratch_end :: proc(saved, scratch: string) {
 	_ = os.remove_all(scratch)
-	bridge_config.data_dir = saved
+	bridge_cfg().data_dir = saved
 	bridge_context_window_reload_for_test()
 	delete(scratch)
 }

@@ -204,7 +204,7 @@ startup_concurrent_cli_hello_session_claim_once :: proc(t: ^testing.T) {
 	races := [3]Race{{rec = rec}, {rec = rec, event = "hello"}, {rec = rec, event = "session"}}
 	workers: [3]^thread.Thread
 	for &race, i in races {
-		workers[i] = thread.create_and_start_with_data(rawptr(&race), proc(data: rawptr) {
+		workers[i] = bridge_thread_start_with_data(rawptr(&race), proc(data: rawptr) {
 			r := (^Race)(data)
 			if r.event == "" {
 				_, r.first = bridge_startup_accept(r.rec, 1001)
@@ -250,9 +250,9 @@ startup_fallback_quiet_missing_or_broken_extension :: proc(t: ^testing.T) {
 @(test)
 startup_producer_serializes_physical_write_and_releases_network_relay :: proc(t:^testing.T) {
     sync.mutex_lock(&bridge_test_config_mutex);defer sync.mutex_unlock(&bridge_test_config_mutex)
-    saved_id:=bridge_config.daemon_id
-    bridge_config.daemon_id="" // Pre-enrollment fixture, never a coverage claim.
-    defer bridge_config.daemon_id=saved_id
+    saved_id:=bridge_cfg().daemon_id
+    bridge_cfg().daemon_id="" // Pre-enrollment fixture, never a coverage claim.
+    defer bridge_cfg().daemon_id=saved_id
     id:="startup_gate_order"
     rec:=startup_test_launch(id,id)
     bridge_startup_tick(31000,deliver=proc(_:string,_:int)->bool {

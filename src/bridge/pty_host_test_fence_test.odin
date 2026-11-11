@@ -7,7 +7,7 @@ import "core:strings"
 import "core:sync"
 import "core:testing"
 
-// T11: tests share the process-global pty_host_daemon_socket. Assigning a
+// T11: each test thread has its own pty_host_daemon().socket. Assigning a
 // temp-allocated (or soon-freed) string to it left a dangling pointer that other
 // threads' ensure_daemon / ping then dialled: the suite was observed connecting to
 // a LIVE bridge's /tmp/heimdall-<uid>/<hash>.sock. These helpers install an OWNED
@@ -23,15 +23,15 @@ Pty_Host_Test_Swap :: struct {
 pty_host_test_install_socket :: proc(path: string) -> Pty_Host_Test_Swap {
 	sync.mutex_lock(&pty_host_daemon_lock)
 	defer sync.mutex_unlock(&pty_host_daemon_lock)
-	s := Pty_Host_Test_Swap{installed = strings.clone(path), old_socket = pty_host_daemon_socket, old_started = pty_host_daemon_started}
-	pty_host_daemon_socket, pty_host_daemon_started = s.installed, true
+	s := Pty_Host_Test_Swap{installed = strings.clone(path), old_socket = pty_host_daemon().socket, old_started = pty_host_daemon().started}
+	pty_host_daemon().socket, pty_host_daemon().started = s.installed, true
 	return s
 }
 
 pty_host_test_restore_socket :: proc(s: Pty_Host_Test_Swap) {
 	sync.mutex_lock(&pty_host_daemon_lock)
 	defer sync.mutex_unlock(&pty_host_daemon_lock)
-	pty_host_daemon_socket, pty_host_daemon_started = s.old_socket, s.old_started
+	pty_host_daemon().socket, pty_host_daemon().started = s.old_socket, s.old_started
 	delete(s.installed)
 }
 
@@ -48,10 +48,10 @@ pty_host_test_fence_refuses_live_and_non_temp_paths :: proc(t: ^testing.T) {
 
 	// The default path with an unconfigured bridge resolves under the scratch root.
 	sync.mutex_lock(&bridge_test_config_mutex)
-	saved := bridge_config
-	bridge_config = {}
+	saved := bridge_cfg()^
+	bridge_cfg()^ = {}
 	def := pty_host_socket_path()
-	bridge_config = saved
+	bridge_cfg()^ = saved
 	sync.mutex_unlock(&bridge_test_config_mutex)
 	defer delete(def)
 	testing.expect(t, pty_host_test_socket_allowed(def), fmt.tprintf("default socket path must be test-safe: %s", def))
@@ -190,11 +190,11 @@ pty_host_daemon_socket_cache_survives_temp_free :: proc(t: ^testing.T) {
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	sync.mutex_lock(&pty_host_daemon_lock)
 	defer sync.mutex_unlock(&pty_host_daemon_lock)
-	saved := pty_host_daemon_socket
-	pty_host_daemon_socket = ""
+	saved := pty_host_daemon().socket
+	pty_host_daemon().socket = ""
 	defer {
-		delete(pty_host_daemon_socket, runtime.default_allocator())
-		pty_host_daemon_socket = saved
+		delete(pty_host_daemon().socket, runtime.default_allocator())
+		pty_host_daemon().socket = saved
 	}
 
 	want := pty_host_socket_path()
@@ -205,6 +205,6 @@ pty_host_daemon_socket_cache_survives_temp_free :: proc(t: ^testing.T) {
 	}
 	free_all(context.temp_allocator)
 	_ = strings.repeat("x", len(want), context.temp_allocator)
-	testing.expect_value(t, pty_host_daemon_socket, want)
+	testing.expect_value(t, pty_host_daemon().socket, want)
 	testing.expect_value(t, pty_host_daemon_socket_cached(), want)
 }

@@ -47,7 +47,7 @@ v2_close :: proc(f: ^V2_Fixture) {
 	_ = keystore_delete_identity_key(f.id_a)
 	bridge_unseal_forget_identity()
 	unseal_nonce_cache_clear(&g_unseal_nonce_cache)
-	bridge_config.daemon_id = f.prev_daemon_id
+	bridge_cfg().daemon_id = f.prev_daemon_id
 }
 
 @(private = "file")
@@ -648,7 +648,7 @@ test_v2_fs_read_uses_one_vault_snapshot :: proc(t: ^testing.T) {
 	// Injected per test thread (bridge_fs_test_vault_hook), not a global swap.
 	bridge_fs_test_vault_hook = proc() -> (Vault_Status, vault.Vault_Keyring) {
 		status, kr := bridge_vault_status_and_key()
-		keystore_lock_and_purge(bridge_config.daemon_id)
+		keystore_lock_and_purge(bridge_cfg().daemon_id)
 		return status, kr
 	}
 	defer bridge_fs_test_vault_hook = nil
@@ -681,7 +681,7 @@ test_v2_keyring_env_override_is_scrubbed_from_children :: proc(t: ^testing.T) {
 	defer bridge_forget_captured_env_keyring()
 
 	testing.expect(t, bridge_capture_keyring_env_override(), "override captured")
-	_, still_set := os.lookup_env("HEIMDALL_VAULT_KEYRING", context.temp_allocator)
+	_, still_set := bridge_env_lookup("HEIMDALL_VAULT_KEYRING", context.temp_allocator)
 	testing.expect(t, !still_set, "no child can inherit HEIMDALL_VAULT_KEYRING")
 	kr, ok := bridge_read_vault_keyring()
 	defer vault.keyring_wipe(&kr)

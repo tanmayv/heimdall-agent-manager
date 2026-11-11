@@ -115,20 +115,20 @@ test_codex_own_launch_args_only_for_default_codex :: proc(t: ^testing.T) {
 	defer _ = os.remove_all(root)
 	home := fmt.tprintf("%s/codex-home", root)
 	testing.expect(t, os.make_directory_all(fmt.tprintf("%s/plugins/cache/heimdall-codex-bridge-x/heimdall/0.5.30", home)) == nil)
-	saved_home := os.get_env("CODEX_HOME", context.temp_allocator)
+	saved_home := bridge_env_get("CODEX_HOME", context.temp_allocator)
 	defer {
 		if saved_home != "" {
-			_ = os.set_env("CODEX_HOME", saved_home)
+			bridge_test_env_set("CODEX_HOME", saved_home)
 		} else {
-			os.unset_env("CODEX_HOME")
+			bridge_test_env_unset("CODEX_HOME")
 		}
 	}
-	_ = os.set_env("CODEX_HOME", home)
+	bridge_test_env_set("CODEX_HOME", home)
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
-	saved_data := bridge_config.data_dir
-	defer bridge_config.data_dir = saved_data
-	bridge_config.data_dir = fmt.tprintf("%s/bridges/bridge-x", root)
+	saved_data := bridge_cfg().data_dir
+	defer bridge_cfg().data_dir = saved_data
+	bridge_cfg().data_dir = fmt.tprintf("%s/bridges/bridge-x", root)
 
 	args := bridge_pty_host_default_profile_args("codex")
 	testing.expect_value(t, len(args), 4)
@@ -138,7 +138,7 @@ test_codex_own_launch_args_only_for_default_codex :: proc(t: ^testing.T) {
 	testing.expect(t, bridge_pty_host_default_profile_args("claude-code") == nil)
 	testing.expect(t, bridge_pty_host_default_profile_args("antigravity") == nil)
 	// Another bridge (no own plugin installed) keeps the shared release.
-	bridge_config.data_dir = fmt.tprintf("%s/bridges/bridge-y", root)
+	bridge_cfg().data_dir = fmt.tprintf("%s/bridges/bridge-y", root)
 	testing.expect(t, bridge_pty_host_default_profile_args("codex") == nil)
 }
 

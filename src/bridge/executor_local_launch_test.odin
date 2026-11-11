@@ -16,7 +16,7 @@ import executor "odin_test:lib/executor_local"
 @(test)
 bridge_executor_local_real_daemon_lost_observation_restart_and_exact_stop :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
-    binary:=os.get_env("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)
+    binary:=bridge_env_get("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)
     if binary=="" {
         when #config(EXECUTOR_TEST_REQUIRED,false) {testing.fail_now(t,"HEIMDALL_EXECUTOR_TEST_PTY must name the real daemon")}
         else {fmt.eprintln("[skip] local executor proof requires HEIMDALL_EXECUTOR_TEST_PTY");return}
@@ -32,7 +32,7 @@ bridge_executor_local_real_daemon_lost_observation_restart_and_exact_stop :: pro
     ready:=false
     for _ in 0..<100 {if bridge_pty_host_ping(socket) {ready=true;break};time.sleep(10*time.Millisecond)}
     if !testing.expect(t,ready && bridge_pty_host_local_executor_capable(socket)) do return
-    path:=fmt.tprintf("%s/.cache/heimdall-tests/local-live-%s.sqlite",os.get_env("HOME",context.temp_allocator),suffix)
+    path:=fmt.tprintf("%s/.cache/heimdall-tests/local-live-%s.sqlite",bridge_env_get("HOME",context.temp_allocator),suffix)
     s:executor.Store
     if !testing.expect(t,executor.open(&s,path,"account","executor","operator")) do return
     defer {executor.close(&s);for ext in ([4]string{"","-wal","-shm",".writer"}) do _=os.remove(fmt.tprintf("%s%s",path,ext))}
@@ -220,7 +220,7 @@ bridge_executor_local_resolver_rechecks_catalog_project_directory_and_full_spawn
     changed=m;changed.command=bridge_executor_test_launch_command(other)
     testing.expect_value(t,bridge_executor_test_resolve_reason(&s,c,changed),"resources_changed")
     // A project outside the filesystem root is refused even when bound.
-    outside:=bridge_fs_canonicalize_existing(os.get_env("HOME",context.temp_allocator));defer delete(outside)
+    outside:=bridge_fs_canonicalize_existing(bridge_env_get("HOME",context.temp_allocator));defer delete(outside)
     _,outside_ok:=bridge_executor_project_directory(outside)
     testing.expect(t,!outside_ok,"a directory outside the Bridge filesystem root is refused")
     changed=m;changed.command=bridge_executor_test_launch_command(outside)
@@ -242,7 +242,7 @@ bridge_executor_local_resolver_rechecks_catalog_project_directory_and_full_spawn
 @(test)
 bridge_legacy_barrier_prevents_native_first_io_after_native_admission :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
-    binary:=os.get_env("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)
+    binary:=bridge_env_get("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)
     if binary=="" {
         when #config(EXECUTOR_TEST_REQUIRED,false) {testing.fail_now(t,"HEIMDALL_EXECUTOR_TEST_PTY must name the real daemon")}
         else {fmt.eprintln("[skip] local executor proof requires HEIMDALL_EXECUTOR_TEST_PTY");return}
@@ -258,7 +258,7 @@ bridge_legacy_barrier_prevents_native_first_io_after_native_admission :: proc(t:
     ready:=false
     for _ in 0..<100 {if bridge_pty_host_ping(socket) {ready=true;break};time.sleep(10*time.Millisecond)}
     if !testing.expect(t,ready && bridge_pty_host_local_executor_capable(socket)) do return
-    path:=fmt.tprintf("%s/.cache/heimdall-tests/local-barrier-%s.sqlite",os.get_env("HOME",context.temp_allocator),suffix)
+    path:=fmt.tprintf("%s/.cache/heimdall-tests/local-barrier-%s.sqlite",bridge_env_get("HOME",context.temp_allocator),suffix)
     s:executor.Store
     if !testing.expect(t,executor.open(&s,path,"account","executor","operator")) do return
     defer {executor.close(&s);for ext in ([4]string{"","-wal","-shm",".writer"}) do _=os.remove(fmt.tprintf("%s%s",path,ext))}

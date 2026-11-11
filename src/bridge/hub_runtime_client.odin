@@ -79,7 +79,7 @@ bridge_vault_status :: proc() -> Vault_Status {
 // `status == .Unlocked`, never on anything weaker.
 bridge_vault_status_and_key :: proc() -> (status: Vault_Status, kr: vault.Vault_Keyring) {
 	if k, ok := bridge_read_vault_keyring(); ok do return .Unlocked, k
-	bridge_id := bridge_config.daemon_id
+	bridge_id := bridge_cfg().daemon_id
 	if keystore_bridge_id_is_enrolled(bridge_id) && bridge_identity_state(bridge_id) == .Ready do return .Locked, {}
 	return .Not_Enrolled, {}
 }
@@ -344,7 +344,7 @@ bridge_hub_take_replaced_backoff :: proc() -> (backoff_s: int, replaced: bool) {
 bridge_hub_runtime_worker :: proc() {
 	credential_snapshot_337, _ := bridge_credential_peek()
 	defer delete(credential_snapshot_337)
-	if strings.trim_space(bridge_config.daemon_url) == "" || strings.trim_space(credential_snapshot_337) == "" {
+	if strings.trim_space(bridge_cfg().daemon_url) == "" || strings.trim_space(credential_snapshot_337) == "" {
 		fmt.println("bridge hub runtime disabled: missing daemon_url or bridge_token (has the bridge enrolled? check the bridge_token/--bridge-token-file)")
 		return
 	}
@@ -370,7 +370,7 @@ bridge_hub_runtime_worker :: proc() {
 	}
 	for {
 		if sync.atomic_load(&bridge_hub_traffic_stopped) do return
-		ws_url := bridge_hub_ws_url(bridge_config.daemon_url)
+		ws_url := bridge_hub_ws_url(bridge_cfg().daemon_url)
 		if ws_url == "" {
 			fmt.println("bridge hub runtime disabled: daemon_url must be an http:// or https:// base URL")
 			return
@@ -424,7 +424,7 @@ bridge_hub_runtime_worker :: proc() {
 				if msg_type == "bridge_ready" {
 					ready_bridge_id := extract_json_string(text, "bridge_id", "")
 					if ready_bridge_id != "" {
-						bridge_config.daemon_id = ready_bridge_id
+						bridge_cfg().daemon_id = ready_bridge_id
 					} else {
 						delete(ready_bridge_id)
 					}
@@ -478,16 +478,16 @@ bridge_hub_runtime_worker :: proc() {
 			// for up to 5s, and doing that inline would stall the WS service loop
 			// (heartbeats and command replies) on every reconnect. The shell_exited
 			// events it enqueues are drained by the loop started just below.
-			thread.run(bridge_shell_session_reconcile_now)
+			bridge_thread_run(bridge_shell_session_reconcile_now)
 			// REQ-BR-1: and periodically in between, so a lost exit is reported within
 			// one sweep interval instead of waiting for the next reconnect.
 			bridge_shell_session_sweep_ensure_started()
 			// REQ-REAP-STARTUP-1: reconcile surviving agent instances on pty-host
 			// against Hub's active instance list on reconnect to reap orphaned processes.
-			thread.run(bridge_agent_instance_reconcile_now)
+			bridge_thread_run(bridge_agent_instance_reconcile_now)
 			// REQ-REAP-SHELL-1: reconcile surviving shell sessions on pty-host
 			// against Hub's active shells list on reconnect to reap orphaned processes.
-			thread.run(bridge_shell_orphan_reconcile_now)
+			bridge_thread_run(bridge_shell_orphan_reconcile_now)
 			bridge_action_scheduler_connection_changed()
             sync.atomic_store(&bridge_hub_runtime_up, true)
 			if !bridge_hub_is_enroll_only_runtime() do bridge_local_status_write(true)
@@ -581,7 +581,7 @@ bridge_hub_error_log_message :: proc(text: string) -> string {
 	defer delete(path)
 	if path == "/settings/account" {
 		// The UI uses hash routing; accept only the hub-owned account path.
-		return strings.concatenate({"hub rejected bridge session after hello: ", detail, " Upgrade: ", strings.trim_right(bridge_config.daemon_url, "/"), "/#/settings/account"})
+		return strings.concatenate({"hub rejected bridge session after hello: ", detail, " Upgrade: ", strings.trim_right(bridge_cfg().daemon_url, "/"), "/#/settings/account"})
 	}
 	return strings.concatenate({"hub rejected bridge session after hello: ", detail})
 }
@@ -1577,7 +1577,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 			// after the key AND the credential are persisted (enroll_atomic.odin).
 			ok, err_msg = bridge_enroll_atomic_on_unseal(text, now_ms)
 		} else {
-			ok, err_msg = bridge_unseal_decrypt_and_verify(text, bridge_config.daemon_id, now_ms)
+			ok, err_msg = bridge_unseal_decrypt_and_verify(text, bridge_cfg().daemon_id, now_ms)
 		}
 
 		reply := Bridge_Vault_Command_Result{type = "bridge_unseal_result", command_id = command_id, ok = ok, status = "unlocked"}
@@ -1637,7 +1637,7 @@ bridge_update_progress_json :: proc(command_id, bridge_id, stage: string, progre
 }
 
 bridge_update_send_progress :: proc(conn: ^ws.Connection, command_id, stage: string, progress_percent: int, message: string) -> bool {
-	frame := bridge_update_progress_json(command_id, bridge_config.daemon_id, stage, progress_percent, message)
+	frame := bridge_update_progress_json(command_id, bridge_cfg().daemon_id, stage, progress_percent, message)
 	defer delete(frame)
 	if conn == nil do return false
 	return bridge_hub_send(conn, frame)
@@ -1810,7 +1810,7 @@ bridge_hub_handle_update_command :: proc(conn: ^ws.Connection, text: string) {
 	ok, detail := bridge_runtime_apply_update(conn, command_id, target_version, download_url, sha256, force, drain_timeout)
 	if !ok {
 		fmt.println("bridge update failed:", detail)
-		fail_progress := bridge_update_progress_json(command_id, bridge_config.daemon_id, "failed", 0, detail)
+		fail_progress := bridge_update_progress_json(command_id, bridge_cfg().daemon_id, "failed", 0, detail)
 		defer delete(fail_progress)
 		if conn != nil do _ = bridge_hub_send(conn, fail_progress)
 
@@ -1887,7 +1887,7 @@ bridge_update_stop_pty_host :: proc(socket: string) -> (ok: bool, detail: string
 	// Reap it if this process started it, and make the next use start a new one.
 	sync.mutex_lock(&pty_host_daemon_lock)
 	_ = bridge_pty_host_daemon_process_running(&pty_host_daemon_process, &pty_host_daemon_has_process)
-	pty_host_daemon_started = false
+	pty_host_daemon().started = false
 	sync.mutex_unlock(&pty_host_daemon_lock)
 	return true, ""
 }
@@ -1938,7 +1938,7 @@ bridge_runtime_apply_update :: proc(
 	_ = bridge_update_send_progress(conn, command_id, "preparing", 10, "Preparing update staging directory...")
 
 	// 2. Resolve data and staging directories
-	data_dir := bridge_expand_home(bridge_config.data_dir)
+	data_dir := bridge_expand_home(bridge_cfg().data_dir)
 	if strings.trim_space(data_dir) == "" {
 		data_dir = bridge_os_default_data_dir()
 	}
@@ -2768,8 +2768,8 @@ bridge_runtime_stop_agent_unfenced :: proc(instance_id: string, force:bool,launc
 }
 
 bridge_runtime_ensure_local_endpoint :: proc() -> (string, bool) {
-	if bridge_config.local_endpoint_port == 0 do bridge_config.local_endpoint_port = 49324
-	local_config := bridge_local_endpoint_config_default(bridge_config.local_endpoint_run_dir, bridge_config.local_endpoint_port)
+	if bridge_cfg().local_endpoint_port == 0 do bridge_cfg().local_endpoint_port = 49324
+	local_config := bridge_local_endpoint_config_default(bridge_cfg().local_endpoint_run_dir, bridge_cfg().local_endpoint_port)
 	if !bridge_runtime_local_endpoint_started {
 		bridge_runtime_local_endpoint_unix_started = bridge_local_endpoint_start_unix(local_config)
 		bridge_runtime_local_endpoint_loopback_started = bridge_local_endpoint_start_loopback(local_config)
@@ -2828,7 +2828,7 @@ bridge_runtime_startup_detection_arg :: proc(sd: cfg_lib.Startup_Detection_Confi
 }
 
 bridge_runtime_find_on_path :: proc(name: string) -> string {
-	path := os.get_env_alloc("PATH", context.allocator)
+	path := bridge_env_get_alloc("PATH", context.allocator)
 	defer delete(path)
 	start := 0
 	for start <= len(path) {
@@ -2859,7 +2859,7 @@ bridge_runtime_find_on_path :: proc(name: string) -> string {
 }
 
 bridge_runtime_default_run_dir :: proc(instance_id: string) -> string {
-	base := strings.trim_right(bridge_config.local_endpoint_run_dir, "/")
+	base := strings.trim_right(bridge_cfg().local_endpoint_run_dir, "/")
 	if base == "" do base = bridge_scratch_local_default(context.temp_allocator)
 	return strings.concatenate({base, "/instances/", bridge_runtime_safe_part(instance_id)})
 }
@@ -3428,7 +3428,7 @@ bridge_hub_vault_status_for_report :: proc() -> string {
 	enroll_only := bridge_hub_is_enroll_only_runtime()
 	status := bridge_vault_status_reported(enroll_only)
 	if status == .Unlocked do return "unlocked"
-	if !enroll_only && status == .Locked && bridge_vault_unpaired(strings.trim_space(bridge_config.daemon_id)) do return "unpaired"
+	if !enroll_only && status == .Locked && bridge_vault_unpaired(strings.trim_space(bridge_cfg().daemon_id)) do return "unpaired"
 	return "locked"
 }
 
@@ -4328,7 +4328,7 @@ bridge_hub_hello_json :: proc() -> string {
 		// instead of bridge_credential_revoked (permanent park).
 		credential_refresh_on_invalid = true,
 	}
-	unseal := bridge_unseal_hello_fields(bridge_config.daemon_id)
+	unseal := bridge_unseal_hello_fields(bridge_cfg().daemon_id)
 	hello.identity_state = unseal.identity_state
 	hello.unseal_boot_id = unseal.unseal_boot_id
 	hello.unseal_key_signature = unseal.unseal_key_signature
@@ -4915,7 +4915,7 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 
 	// Binding before freshness: a spec for another bridge, session, kind or bridge
 	// process must not consume a nonce slot here.
-	if bind_err := bridge_enc_spec_check_binding(spec, bridge_config.daemon_id, session_id, cmd_wire.kind, bridge_unseal_boot_id()); bind_err != "" {
+	if bind_err := bridge_enc_spec_check_binding(spec, bridge_cfg().daemon_id, session_id, cmd_wire.kind, bridge_unseal_boot_id()); bind_err != "" {
 		send_error(conn, session_id, command_id, "invalid_vault_key", bind_err)
 		return
 	}
@@ -5146,7 +5146,7 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 		label             = strings.clone(label, map_heap),
 		cmd               = strings.clone(cmd, map_heap),
 		cwd               = strings.clone(cwd, map_heap),
-		bridge_id         = strings.clone(bridge_config.daemon_id, map_heap),
+		bridge_id         = strings.clone(bridge_cfg().daemon_id, map_heap),
 		project_id        = strings.clone(project_id, map_heap),
 		chain_id          = strings.clone(chain_id, map_heap),
 		agent_instance_id = strings.clone(agent_iid, map_heap),
@@ -5183,7 +5183,7 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 	// either way. It is also the better crash ordering: a crash between the two now
 	// leaves a spec with no map entry, which reconcile's orphan path already handles,
 	// rather than a map entry with no spec, which a restart simply loses.
-	data_dir := bridge_expand_home(bridge_config.data_dir)
+	data_dir := bridge_expand_home(bridge_cfg().data_dir)
 	if strings.trim_space(data_dir) == "" do data_dir = bridge_expand_home("~/.local/share/heimdall")
 	bridge_shell_session_save_spec(data_dir, sess)
 
@@ -5454,7 +5454,7 @@ bridge_shell_kill_arm :: proc(session_id: string, shell_id: string) {
 	ctx := new(Bridge_Shell_Kill_Ctx)
 	ctx.session_id = strings.clone(session_id)
 	ctx.shell_id   = strings.clone(shell_id)
-	thread.run_with_data(rawptr(ctx), bridge_shell_kill_worker)
+	bridge_thread_run_with_data(rawptr(ctx), bridge_shell_kill_worker)
 }
 
 // bridge_hub_handle_shell_background handles the "shell_background" command
@@ -5561,7 +5561,7 @@ bridge_hub_handle_shell_set_port :: proc(conn: ^ws.Connection, text: string) {
 	}
 	defer bridge_shell_session_snapshot_destroy(&bridge_shell_session_map, updated)
 
-	data_dir := bridge_expand_home(bridge_config.data_dir)
+	data_dir := bridge_expand_home(bridge_cfg().data_dir)
 	if strings.trim_space(data_dir) == "" do data_dir = bridge_expand_home("~/.local/share/heimdall")
 	bridge_shell_session_save_spec(data_dir, updated)
 
@@ -5685,7 +5685,7 @@ bridge_hub_handle_shell_restart :: proc(conn: ^ws.Connection, text: string) {
 		// PERSISTED, not just held in memory: the spec is what a restarted BRIDGE
 		// reloads, and a bridge that came back on the OLD run number would stamp every
 		// exit with it and have them all discarded hub-side as stale.
-		data_dir := bridge_expand_home(bridge_config.data_dir)
+		data_dir := bridge_expand_home(bridge_cfg().data_dir)
 		if strings.trim_space(data_dir) == "" do data_dir = bridge_expand_home("~/.local/share/heimdall")
 		bridge_shell_session_save_spec(data_dir, updated)
 		bridge_tool_live_shell(updated, true, sess.run_seq)
@@ -6037,8 +6037,8 @@ bridge_hub_runtime_start :: proc() {
 	bridge_shell_exited_outbox_restore()
 	credential_snapshot_5593, _ := bridge_credential_peek()
 	defer delete(credential_snapshot_5593)
-	if strings.trim_space(credential_snapshot_5593) != "" && strings.trim_space(bridge_config.daemon_url) != "" {
-		thread.run(bridge_hub_runtime_worker)
+	if strings.trim_space(credential_snapshot_5593) != "" && strings.trim_space(bridge_cfg().daemon_url) != "" {
+		bridge_thread_run(bridge_hub_runtime_worker)
 	}
 }
 
@@ -6160,7 +6160,7 @@ bridge_hub_handle_tunnel_open :: proc(conn: ^ws.Connection, text: string) {
 	sync.mutex_unlock(&bridge_tunnel_mu)
 
 	// Start TCP→WS pump on a background thread.
-	thread.run_with_data(rawptr(stream), bridge_tunnel_tcp_to_ws_worker)
+	bridge_thread_run_with_data(rawptr(stream), bridge_tunnel_tcp_to_ws_worker)
 }
 
 // BRIDGE_TUNNEL_RECV_TIMEOUT is the tunnel reader's periodic wake.  It is a backstop, not

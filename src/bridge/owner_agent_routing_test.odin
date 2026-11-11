@@ -45,7 +45,7 @@ test_owner_agent_routing_only_owner_verbs_for_agent_tokens :: proc(t:^testing.T)
 @(test)
 test_owner_claim_creates_task_worktree_and_task_md :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
-    root:=fmt.tprintf("%s/.cache/heimdall-tests/owner-routing-%d",os.get_env("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    root:=fmt.tprintf("%s/.cache/heimdall-tests/owner-routing-%d",bridge_env_get("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
     testing.expect(t,bridge_make_directory_all(fmt.tprintf("%s/repo",root))==nil)
     testing.expect(t,bridge_make_directory_all(fmt.tprintf("%s/run",root))==nil)
     defer _=os.remove_all(root)
@@ -110,7 +110,7 @@ test_owner_claim_creates_task_worktree_and_task_md :: proc(t:^testing.T) {
 @(test)
 test_owner_worktree_refuses_symlinked_components_and_wrong_branch :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
-    root:=fmt.tprintf("%s/.cache/heimdall-tests/owner-worktree-safety-%d",os.get_env("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    root:=fmt.tprintf("%s/.cache/heimdall-tests/owner-worktree-safety-%d",bridge_env_get("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
     testing.expect(t,bridge_make_directory_all(fmt.tprintf("%s/repo",root))==nil)
     testing.expect(t,bridge_make_directory_all(fmt.tprintf("%s/elsewhere",root))==nil)
     defer _=os.remove_all(root)
@@ -149,7 +149,7 @@ test_owner_worktree_refuses_symlinked_components_and_wrong_branch :: proc(t:^tes
 @(test)
 test_executor_prepare_run_dir_creates_missing_instances_parent :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
-    root:=fmt.tprintf("%s/.cache/heimdall-tests/run-dir-%d",os.get_env("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    root:=fmt.tprintf("%s/.cache/heimdall-tests/run-dir-%d",bridge_env_get("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
     defer _=os.remove_all(root)
     run_dir:=fmt.tprintf("%s/local/instances/inst_fresh",root)
     testing.expect(t,!bridge_os_prepare_private_dir(run_dir),"the plain private mkdir is non-recursive (the fresh-Bridge failure)")
@@ -167,7 +167,7 @@ test_executor_prepare_run_dir_creates_missing_instances_parent :: proc(t:^testin
 test_owner_materialize_blocks_on_deterministic_or_repeated_worktree_failure :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
     defer bridge_owner_worktree_failure_clear()
-    root:=fmt.tprintf("%s/.cache/heimdall-tests/owner-worktree-block-%d",os.get_env("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    root:=fmt.tprintf("%s/.cache/heimdall-tests/owner-worktree-block-%d",bridge_env_get("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
     testing.expect(t,bridge_make_directory_all(fmt.tprintf("%s/repo",root))==nil)
     testing.expect(t,bridge_make_directory_all(fmt.tprintf("%s/run",root))==nil)
     testing.expect(t,bridge_make_directory_all(fmt.tprintf("%s/plain",root))==nil)
@@ -242,7 +242,7 @@ owner_head_probe_timed_out: bool
 @(test)
 test_owner_prepare_worktree_detached_head_only_when_git_ran :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
-    root:=fmt.tprintf("%s/.cache/heimdall-tests/owner-worktree-head-%d",os.get_env("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    root:=fmt.tprintf("%s/.cache/heimdall-tests/owner-worktree-head-%d",bridge_env_get("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
     testing.expect(t,bridge_make_directory_all(fmt.tprintf("%s/repo",root))==nil)
     defer _=os.remove_all(root)
     repo:=bridge_fs_canonicalize_existing(fmt.tprintf("%s/repo",root));defer delete(repo)
@@ -403,7 +403,7 @@ test_owner_brief_reason_is_per_revision_and_flag_explicit :: proc(t:^testing.T) 
 @(test)
 test_owner_launch_role_from_bound_coordinator :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
-    path:=fmt.tprintf("%s/.cache/heimdall-tests/owner-launch-role-%d.sqlite",os.get_env("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    path:=fmt.tprintf("%s/.cache/heimdall-tests/owner-launch-role-%d.sqlite",bridge_env_get("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
     store:owner.Store
     if !testing.expect(t,owner.open(&store,path,"account","bridge","bridge_key")) do return
     defer {

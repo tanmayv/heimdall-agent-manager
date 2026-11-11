@@ -48,22 +48,22 @@ bridge_owner_remote_agent_handle :: proc(conn:^ws.Connection,text:string) {
 // Returns a refusal code, or "ok" and the sealed local-response JSON of the verb
 // (its own ok/error inside, exactly what a local agent would get).
 bridge_owner_remote_agent :: proc(wire:Owner_Remote_Agent_Command) -> (string,string) {
-    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
+    account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
     if account=="" || wire.account_id!=account do return "account_mismatch",""
     kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
     if !unlocked do return "vault_locked",""
     request,opened:=vault.open(wire.request,&kr,context.temp_allocator)
     if opened!=.Ok do return "stale_epoch",""
-    owner_pub:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+    owner_pub:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     owner_id,id_ok:=vault.device_id_from_sign_pub(owner_pub,context.temp_allocator)
     if !id_ok do return "malformed",""
     sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
     if !bridge_owner_open(account,owner_id) do return "storage_error",""
-    floor,status:=keystore_read_epoch_floor(bridge_config.daemon_id)
+    floor,status:=keystore_read_epoch_floor(bridge_cfg().daemon_id)
     if status!=.Found || !floor.root.set do return "directory_unverified",""
     pin_seq,pin_hash:=owner.directory_pin(&bridge_owner_store)
     now:=time.to_unix_nanoseconds(time.now())/1000000
-    r,child,_,code:=owner.remote_agent_admit(bridge_owner_json(wire.directory),account,bridge_config.daemon_id,request,wire.signature,floor.root,pin_seq,pin_hash,&kr,now)
+    r,child,_,code:=owner.remote_agent_admit(bridge_owner_json(wire.directory),account,bridge_cfg().daemon_id,request,wire.signature,floor.root,pin_seq,pin_hash,&kr,now)
     if code!="ok" do return code,""
     // The Hub authenticated the sending Bridge; its signed claim must match.
     if r.from_bridge_id!=wire.from_bridge_id do return "invalid_scope",""
@@ -75,7 +75,7 @@ bridge_owner_remote_agent :: proc(wire:Owner_Remote_Agent_Command) -> (string,st
     if !owned do return "not_found",""
     // A relayed review is the reviewer's own verdict, never the user's.
     if r.method=="agent.review.post" && bridge_owner_pstr(p,"on_behalf_of")!="" do return "invalid_scope",""
-    key:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,owner_id,owner_pub,"bridge",true,false}
+    key:=contracts.Owner_Verified_Key{account,bridge_cfg().daemon_id,owner_id,owner_pub,"bridge",true,false}
     ctx:=Owner_Agent_Ctx{request_id=r.request_id,store=&bridge_owner_store,child=child,key=key,kr=&kr,now=now}
     // The store trusts the relayed reviewer by agent id for this call only
     // (relayed_reviewer_authorized); every other verb keeps its checks.
@@ -98,16 +98,16 @@ bridge_owner_remote_agent_send :: proc(request_id,method,params:string,rec:Bridg
     p:=bridge_owner_params(params)
     chain,task:=bridge_owner_pstr(p,"chain_id"),bridge_owner_pstr(p,"task_id")
     if chain=="" && task=="" do return "",false
-    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
+    account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
     if account=="" do return "",false
-    pub:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+    pub:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     key_id,key_ok:=vault.device_id_from_sign_pub(pub,context.temp_allocator)
     if !key_ok do return "",false
     // The signed request names its owner Bridge (the owner checks it), so look
     // the owner up in the account registry first. An unreadable registry or an
     // unknown id keeps the old route.
     owner_bridge,found,lookup_err:=bridge_owner_remote_lookup(chain,task)
-    if lookup_err!="" || !found || owner_bridge==bridge_config.daemon_id do return "",false
+    if lookup_err!="" || !found || owner_bridge==bridge_cfg().daemon_id do return "",false
     // Prove the exact live child, as a local owner verb does; no lock is held
     // across the Hub round trip.
     child:owner.Child
@@ -120,7 +120,7 @@ bridge_owner_remote_agent_send :: proc(request_id,method,params:string,rec:Bridg
     if !current do return bridge_local_response_error(request_id,"invalid_scope","owner chain: current launched child required"),true
     kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
     if !unlocked do return bridge_local_response_error(request_id,"vault_locked","this Bridge's vault is locked"),true
-    req:=owner.Remote_Agent_Request{account_id=account,owner_bridge_id=owner_bridge,from_bridge_id=bridge_config.daemon_id,from_key_id=key_id,
+    req:=owner.Remote_Agent_Request{account_id=account,owner_bridge_id=owner_bridge,from_bridge_id=bridge_cfg().daemon_id,from_key_id=key_id,
         request_id=request_id,method=method,params=params,expires_ms=time.to_unix_nanoseconds(time.now())/1000000+30000,
         instance=child.instance,epoch=child.epoch,token_generation=child.token_generation,agent_id=child.agent_id,run_count=child.run_count}
     raw:=bridge_owner_json(req)

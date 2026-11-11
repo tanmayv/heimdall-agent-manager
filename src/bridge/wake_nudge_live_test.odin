@@ -89,7 +89,7 @@ test_wake_nudge_unknown_native_admission_keeps_process_and_refuses_task_md :: pr
 	}
 	server := Server{listener = listener}
 	defer delete(server.typed)
-	worker := thread.create_and_start_with_data(&server, proc(data: rawptr) {
+	worker := bridge_thread_start_with_data(&server, proc(data: rawptr) {
 		context.allocator = runtime.heap_allocator()
 		s := (^Server)(data)
 		for !sync.atomic_load(&s.stop) {

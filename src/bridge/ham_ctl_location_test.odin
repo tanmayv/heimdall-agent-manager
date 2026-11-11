@@ -12,7 +12,7 @@ import bridgesvc "odin_test:lib/bridgesvc"
 
 @(private = "file")
 ham_ctl_loc_test_dir :: proc(t: ^testing.T, tag: string) -> string {
-	dir := fmt.aprintf("%s/.cache/heimdall-tests/ham-ctl-loc-%s-%d", os.get_env("HOME", context.temp_allocator), tag, int(posix.getpid()))
+	dir := fmt.aprintf("%s/.cache/heimdall-tests/ham-ctl-loc-%s-%d", bridge_env_get("HOME", context.temp_allocator), tag, int(posix.getpid()))
 	_ = os.remove_all(dir)
 	testing.expect(t, os.make_directory_all(dir) == nil, "test dir")
 	return dir

@@ -135,7 +135,7 @@ bridge_owner_executor_snapshot :: proc(_:rawptr,s:^owner.Store,c:owner.Intent_Cl
     config,valid:=owner.remote_assignment_configuration(rows[0][0])
     if !valid || contracts.owner_string(config,"executor_bridge_id")!=c.destination do return "",false
     if stopping {
-        public:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+        public:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
         key:=contracts.Owner_Verified_Key{s.account,s.owner,s.owner_key,public,"bridge",true,false}
         result:=owner.execution_stop_request(s,c,key,now,{nil,bridge_owner_sign})
         if result.code!="ok" && result.code!="released" do return "",false
@@ -146,7 +146,7 @@ bridge_owner_executor_snapshot :: proc(_:rawptr,s:^owner.Store,c:owner.Intent_Cl
         return bridge_owner_json(Owner_Executor_Pin{key_id=contracts.owner_string(config,"executor_key_id"),
             generation=bridge_task_chain_search_generation()}),true
     }
-    public:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+    public:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     key:=contracts.Owner_Verified_Key{s.account,s.owner,s.owner_key,public,"bridge",true,false}
     if c.kind=="executor.notification" {
         result:=owner.execution_notification(s,c,key,now,{nil,bridge_owner_sign})
@@ -234,7 +234,7 @@ bridge_owner_executor_exchange :: proc(_:rawptr,c:owner.Intent_Claim,snapshot:st
 // later older directory roll back a newer verified paired log.
 bridge_owner_executor_directory :: proc(s:^owner.Store,input:vault.Directory_Verification_Input,pin:Owner_Executor_Pin,
     c:owner.Intent_Claim,kr:^vault.Vault_Keyring)->(contracts.Owner_Verified_Key,bool,bool) {
-    floor,status:=keystore_read_epoch_floor(bridge_config.daemon_id)
+    floor,status:=keystore_read_epoch_floor(bridge_cfg().daemon_id)
     if status!=.Found || !floor.root.set || input.owner!=s.account do return {},false,true
     seq,head:=owner.directory_pin(s)
     if seq<0 do return {},false,false
@@ -249,7 +249,7 @@ bridge_owner_executor_directory :: proc(s:^owner.Store,input:vault.Directory_Ver
     peer,enrolled:=dir.trusted[pin.key_id]
     own,owner_ok:=dir.trusted[s.owner_key]
     derived,derived_ok:=vault.device_id_from_sign_pub(peer.sign_public_key,context.temp_allocator)
-    public:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+    public:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     if !enrolled || peer.kind!="bridge" || !derived_ok || derived!=pin.key_id || !owner_ok || own.kind!="bridge" || own.sign_public_key!=public do return {},false,true
     key:=contracts.Owner_Verified_Key{s.account,c.destination,pin.key_id,peer.sign_public_key,"bridge",true,false}
     p,parsed:=contracts.executor_parse(c.fence,"prepare")
@@ -309,8 +309,8 @@ bridge_owner_executor_accept :: proc(_:rawptr,s:^owner.Store,c:owner.Intent_Clai
 
 bridge_owner_executor_once :: proc() {
     context.allocator=context.temp_allocator
-    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
-    public:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+    account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
+    public:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     key_id,valid:=vault.device_id_from_sign_pub(public,context.temp_allocator)
     if !valid || account=="" do return
     sync.mutex_lock(&bridge_owner_mutex)
@@ -333,5 +333,5 @@ bridge_owner_executor_loop :: proc() {
     }
 }
 bridge_owner_executor_start :: proc() {
-    if _,started:=sync.atomic_compare_exchange_strong(&bridge_owner_executor_started,false,true);started do thread.run(bridge_owner_executor_loop)
+    if _,started:=sync.atomic_compare_exchange_strong(&bridge_owner_executor_started,false,true);started do bridge_thread_run(bridge_owner_executor_loop)
 }

@@ -407,7 +407,7 @@ bridge_shell_run_cap_start :: proc(session_id: string, kind: Bridge_Shell_Sessio
 	heap := runtime.default_allocator()
 	ctx := new(Bridge_Shell_Run_Cap_Ctx, heap)
 	ctx.session_id = strings.clone(session_id, heap)
-	thread.run_with_data(rawptr(ctx), bridge_shell_run_cap_worker)
+	bridge_thread_run_with_data(rawptr(ctx), bridge_shell_run_cap_worker)
 }
 
 @(private = "file")
@@ -469,5 +469,5 @@ bridge_shell_run_cap_worker :: proc(data: rawptr) {
 	kctx := new(Bridge_Shell_Kill_Ctx)
 	kctx.session_id = strings.clone(ctx.session_id)
 	kctx.shell_id   = strings.clone(shell_id)
-	thread.run_with_data(rawptr(kctx), bridge_shell_kill_worker)
+	bridge_thread_run_with_data(rawptr(kctx), bridge_shell_kill_worker)
 }

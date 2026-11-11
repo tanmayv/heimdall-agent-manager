@@ -244,7 +244,7 @@ vcs_ns_char_to_status_mapping :: proc(t: ^testing.T) {
 @(test)
 vcs_detect_provider_on_repo :: proc(t: ^testing.T) {
 	// This checkout is a git repo and (per the task) has no .jj.
-	home := strings.trim_space(os.get_env("HOME", context.temp_allocator))
+	home := strings.trim_space(bridge_env_get("HOME", context.temp_allocator))
 	if home == "" do return
 	repo := strings.concatenate({home, "/heimdall-agent-manager"}, context.temp_allocator)
 	if !vcs_git_detect(repo) do return // skip if the checkout is elsewhere

@@ -24,17 +24,17 @@ bundle_fixture_begin :: proc(name: string) -> (f: Bundle_Fixture) {
 		dir, _ := filepath.join({f.root, "extensions", provider}, context.temp_allocator)
 		_ = bridge_make_directory_all(dir)
 	}
-	f.saved, f.has_env = os.lookup_env("HEIMDALL_BRIDGE_DATA_DIR", context.allocator)
-	_ = os.set_env("HEIMDALL_BRIDGE_DATA_DIR", f.root)
+	f.saved, f.has_env = bridge_env_lookup("HEIMDALL_BRIDGE_DATA_DIR", context.allocator)
+	bridge_test_env_set("HEIMDALL_BRIDGE_DATA_DIR", f.root)
 	return
 }
 
 bundle_fixture_end :: proc(f: ^Bundle_Fixture) {
 	if f.has_env {
-		_ = os.set_env("HEIMDALL_BRIDGE_DATA_DIR", f.saved)
+		bridge_test_env_set("HEIMDALL_BRIDGE_DATA_DIR", f.saved)
 		delete(f.saved)
 	} else {
-		_ = os.unset_env("HEIMDALL_BRIDGE_DATA_DIR")
+		bridge_test_env_unset("HEIMDALL_BRIDGE_DATA_DIR")
 	}
 	_ = os.remove_all(f.root)
 	delete(f.root)
@@ -78,17 +78,17 @@ test_bridge_get_bundled_extension_path_env_override :: proc(t: ^testing.T) {
 	custom_antigravity, _ := filepath.join({test_dir, "extensions", "antigravity"}, context.temp_allocator)
 	testing.expect(t, bridge_make_directory_all(custom_antigravity) == nil, "mkdir custom antigravity")
 
-	saved_env, has_env := os.lookup_env("HEIMDALL_BRIDGE_DATA_DIR", context.allocator)
+	saved_env, has_env := bridge_env_lookup("HEIMDALL_BRIDGE_DATA_DIR", context.allocator)
 	defer {
 		if has_env {
-			_ = os.set_env("HEIMDALL_BRIDGE_DATA_DIR", saved_env)
+			bridge_test_env_set("HEIMDALL_BRIDGE_DATA_DIR", saved_env)
 			delete(saved_env)
 		} else {
-			_ = os.unset_env("HEIMDALL_BRIDGE_DATA_DIR")
+			bridge_test_env_unset("HEIMDALL_BRIDGE_DATA_DIR")
 		}
 	}
 
-	_ = os.set_env("HEIMDALL_BRIDGE_DATA_DIR", test_dir)
+	bridge_test_env_set("HEIMDALL_BRIDGE_DATA_DIR", test_dir)
 	resolved := bridge_get_bundled_extension_path("antigravity", context.allocator)
 	defer delete(resolved)
 

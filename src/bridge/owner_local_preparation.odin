@@ -18,7 +18,7 @@ bridge_owner_prepare_chain,bridge_owner_prepare_task:string
 // only; the retained opaque response survives transient database failures.
 bridge_owner_preparation_once :: proc(s:^owner.Store) {
     now:=time.to_unix_nanoseconds(time.now())/1000000
-    public:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+    public:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     own:=contracts.Owner_Verified_Key{s.account,s.owner,s.owner_key,public,"bridge",true,false}
     sync.mutex_lock(&bridge_owner_mutex)
     // Rotate a bounded scan, so inadmissible early assignments cannot starve
@@ -130,7 +130,7 @@ bridge_owner_preparation_accept :: proc(_:rawptr,s:^owner.Store,c:owner.Intent_C
        reply.request_id!=contracts.owner_string(scope,"request_id") || reply.type!="command_result" || reply.code!="ok" {return true,false,"invalid_executor_reply"}
     raw,authenticated:=channel.open_signed(reply.envelope,&kr,scope,key,now,context.temp_allocator)
     if !authenticated do return true,false,"invalid_executor_receipt"
-    public:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+    public:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     own:=contracts.Owner_Verified_Key{s.account,s.owner,s.owner_key,public,"bridge",true,false}
     result:owner.Result
     if c.kind=="executor.prepare" {

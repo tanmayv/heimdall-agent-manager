@@ -231,7 +231,7 @@ bridge_hub_handle_provider_profile_op :: proc(conn: ^ws.Connection, text: string
 	op, err := profile_op_open(
 		sealed,
 		&kr,
-		bridge_config.daemon_id,
+		bridge_cfg().daemon_id,
 		bridge_unseal_boot_id(),
 		bridge_now_unix_ms(),
 	)

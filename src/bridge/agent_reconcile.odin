@@ -168,7 +168,7 @@ bridge_agent_instance_reconcile_now :: proc() {
 
 	credential_snapshot_168 := bridge_credential_snapshot()
 	defer delete(credential_snapshot_168)
-	if strings.trim_space(bridge_config.daemon_url) == "" || strings.trim_space(credential_snapshot_168) == "" {
+	if strings.trim_space(bridge_cfg().daemon_url) == "" || strings.trim_space(credential_snapshot_168) == "" {
 		return
 	}
 
@@ -185,7 +185,7 @@ bridge_agent_instance_reconcile_now :: proc() {
 
 	resp, http_err := bridge_http_request_retry({
 		method = .GET, url = bridge_hub_url(), path = {"api", "v1", "agent-instances"},
-		query = {{"bridge_id", bridge_config.daemon_id}, {"limit", "200"}}, headers = headers[:],
+		query = {{"bridge_id", bridge_cfg().daemon_id}, {"limit", "200"}}, headers = headers[:],
 	})
 	defer httpc.response_destroy(&resp)
 	if http_err != .None do return

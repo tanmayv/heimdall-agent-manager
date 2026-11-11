@@ -12,9 +12,9 @@ import "core:testing"
 startup_wake_unsigned_legacy_token_cannot_confirm_or_replace_child :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
     st:=p1c_test_setup(t);defer p1c_test_teardown(st)
-    prior:=bridge_config.daemon_id
-    bridge_config.daemon_id="unsigned_unpaired_native_wake"
-    defer {bridge_config.daemon_id=prior}
+    prior:=bridge_cfg().daemon_id
+    bridge_cfg().daemon_id="unsigned_unpaired_native_wake"
+    defer {bridge_cfg().daemon_id=prior}
     id:="unsigned_wake_instance"
     token:=bridge_agent_token_issue(id,"legacy-transport-only",.Agent,4)
     path:=fmt.tprintf("%s/previous-bootstrap",st.dir)

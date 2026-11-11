@@ -350,12 +350,12 @@ test_wake_unpark_triggers_for_recoverable_causes :: proc(t: ^testing.T) {
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	sync.mutex_lock(&keystore_test_mutex)
 	defer sync.mutex_unlock(&keystore_test_mutex)
-	prev_key, had_key := os.lookup_env("HEIMDALL_VAULT_KEYRING", context.allocator)
+	prev_key, had_key := bridge_env_lookup("HEIMDALL_VAULT_KEYRING", context.allocator)
 	defer {
 		if had_key {
-			os.set_env("HEIMDALL_VAULT_KEYRING", prev_key)
+			bridge_test_env_set("HEIMDALL_VAULT_KEYRING", prev_key)
 		} else {
-			os.unset_env("HEIMDALL_VAULT_KEYRING")
+			bridge_test_env_unset("HEIMDALL_VAULT_KEYRING")
 		}
 		delete(prev_key)
 	}
@@ -366,9 +366,9 @@ test_wake_unpark_triggers_for_recoverable_causes :: proc(t: ^testing.T) {
 	testing.expect_value(t, locked.err.class, contracts.Bridge_Error_Class.recoverable)
 	locked.catalog_etag = bridge_provider_catalog_current_etag()
 	defer delete(locked.catalog_etag)
-	os.set_env("HEIMDALL_VAULT_KEYRING", "not-a-valid-key") // set but invalid: locked, no fallthrough
+	bridge_test_env_set("HEIMDALL_VAULT_KEYRING", "not-a-valid-key") // set but invalid: locked, no fallthrough
 	testing.expect_value(t, bridge_wake_unpark_trigger(&locked, BRIDGE_WAKE_PARK_PROBE_MS), "")
-	os.set_env("HEIMDALL_VAULT_KEYRING", test_keyring_env_value(TEST_VAULT_KEY_HEX))
+	bridge_test_env_set("HEIMDALL_VAULT_KEYRING", test_keyring_env_value(TEST_VAULT_KEY_HEX))
 	testing.expect_value(t, bridge_wake_unpark_trigger(&locked, BRIDGE_WAKE_PARK_PROBE_MS), "") // probed this tick already
 	testing.expect_value(t, bridge_wake_unpark_trigger(&locked, 2 * BRIDGE_WAKE_PARK_PROBE_MS), "vault_unsealed")
 
@@ -482,9 +482,9 @@ wake_test_caller_arena_reset :: proc(t: ^testing.T, attempt: bool) {
 		bridge_agent_wake, bridge_wake_once = saved_map, saved_once
 	}
 	// Empty URL makes the attempt fail locally without launching or networking.
-	saved_url := bridge_config.daemon_url
-	bridge_config.daemon_url = ""
-	defer { bridge_config.daemon_url = saved_url }
+	saved_url := bridge_cfg().daemon_url
+	bridge_cfg().daemon_url = ""
+	defer { bridge_cfg().daemon_url = saved_url }
 	backing := make([]byte, 64 * 1024)
 	defer delete(backing)
 	arena: mem.Arena

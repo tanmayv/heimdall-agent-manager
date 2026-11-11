@@ -29,11 +29,11 @@ p1c_test_setup :: proc(t: ^testing.T) -> P1c_Test_State {
 	testing.expect(t, os.make_directory(dir, {.Read_User, .Write_User, .Execute_User}) == nil)
 	st := P1c_Test_State {
 		dir          = dir,
-		data_dir     = bridge_config.data_dir,
+		data_dir     = bridge_cfg().data_dir,
 		store_path   = g_profile_test_store_path,
 		test_catalog = g_profile_test_catalog,
 	}
-	bridge_config.data_dir = profile_join(dir, "data")
+	bridge_cfg().data_dir = profile_join(dir, "data")
 	g_profile_test_store_path = profile_join(dir, "provider_profiles.json")
 	names := make([]string, 5, context.temp_allocator)
 	copy(names, []string{"claude", "codex", "pi", "copilot", "antigravity"})
@@ -97,7 +97,7 @@ p1c_test_teardown :: proc(st: P1c_Test_State) {
 	bridge_models_last_key, bridge_models_last_completed =
 		st.models_last_key, st.models_last_completed
 	sync.mutex_unlock(&bridge_models_mu)
-	bridge_config.data_dir = st.data_dir
+	bridge_cfg().data_dir = st.data_dir
 	g_profile_test_store_path, g_profile_test_catalog = st.store_path, st.test_catalog
 	_ = os.remove_all(st.dir)
 	sync.mutex_unlock(&g_profile_test_mu)

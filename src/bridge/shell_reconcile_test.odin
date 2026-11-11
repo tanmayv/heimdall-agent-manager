@@ -239,11 +239,11 @@ bridge_br1_sweep_finalizes_a_run_the_daemon_reports_exited :: proc(t: ^testing.T
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	bridge_shell_test_reset()
 	defer bridge_shell_test_reset()
-	saved := bridge_config.data_dir
-	defer { bridge_config.data_dir = saved }
+	saved := bridge_cfg().data_dir
+	defer { bridge_cfg().data_dir = saved }
 	dir := fmt.aprintf("/tmp/ham-br1-exited-%d", os.get_pid())
 	defer delete(dir)
-	bridge_config.data_dir = dir
+	bridge_cfg().data_dir = dir
 	exit_sweep_queue_init()
 
 	sid := "sh_br1_exited"
@@ -297,11 +297,11 @@ bridge_br1_sweep_finalizes_an_unknown_run_only_when_its_pid_is_gone :: proc(t: ^
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	bridge_shell_test_reset()
 	defer bridge_shell_test_reset()
-	saved := bridge_config.data_dir
-	defer { bridge_config.data_dir = saved }
+	saved := bridge_cfg().data_dir
+	defer { bridge_cfg().data_dir = saved }
 	dir := fmt.aprintf("/tmp/ham-br1-lost-%d", os.get_pid())
 	defer delete(dir)
-	bridge_config.data_dir = dir
+	bridge_cfg().data_dir = dir
 	exit_sweep_queue_init()
 
 	sid := "sh_br1_lost"
@@ -349,11 +349,11 @@ bridge_br1_sweep_skips_what_it_must_not_touch :: proc(t: ^testing.T) {
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	bridge_shell_test_reset()
 	defer bridge_shell_test_reset()
-	saved := bridge_config.data_dir
-	defer { bridge_config.data_dir = saved }
+	saved := bridge_cfg().data_dir
+	defer { bridge_cfg().data_dir = saved }
 	dir := fmt.aprintf("/tmp/ham-br1-skip-%d", os.get_pid())
 	defer delete(dir)
-	bridge_config.data_dir = dir
+	bridge_cfg().data_dir = dir
 	exit_sweep_queue_init()
 
 	failed := exit_sweep_session("sh_br1_failed", .Failed, 4_000_003, 1, true)

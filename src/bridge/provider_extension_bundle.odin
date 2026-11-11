@@ -88,7 +88,7 @@ bridge_provider_directory_variants :: proc(provider: string, allocator := contex
 // profile's update may prune an older shared release.
 bridge_get_profile_extension_path :: proc(provider: string, allocator := context.allocator) -> string {
 	prov := strings.trim_space(provider)
-	if data_dir := strings.trim_space(bridge_config.data_dir); data_dir != "" && prov != "" {
+	if data_dir := strings.trim_space(bridge_cfg().data_dir); data_dir != "" && prov != "" {
 		base := path_join({expand_home_temp(data_dir, context.temp_allocator), "extensions"}, context.temp_allocator)
 		for variant in bridge_provider_directory_variants(prov, context.temp_allocator) {
 			candidate_path := path_join({base, variant}, context.temp_allocator)
@@ -103,14 +103,14 @@ bridge_bundled_extension_base_candidates :: proc(allocator := context.allocator)
 	candidates := make([dynamic]string, allocator)
 
 	// 1. $HEIMDALL_BRIDGE_DATA_DIR / $BRIDGE_DATA_DIR
-	if env_dir := strings.trim_space(os.get_env("HEIMDALL_BRIDGE_DATA_DIR", context.temp_allocator)); env_dir != "" {
+	if env_dir := strings.trim_space(bridge_env_get("HEIMDALL_BRIDGE_DATA_DIR", context.temp_allocator)); env_dir != "" {
 		expanded := expand_home_temp(env_dir, allocator)
 		append(&candidates, path_join({expanded, "extensions"}, allocator))
 		if strings.has_suffix(strings.trim_right(expanded, "/\\"), "extensions") {
 			append(&candidates, strings.clone(expanded, allocator))
 		}
 	}
-	if env_dir := strings.trim_space(os.get_env("BRIDGE_DATA_DIR", context.temp_allocator)); env_dir != "" {
+	if env_dir := strings.trim_space(bridge_env_get("BRIDGE_DATA_DIR", context.temp_allocator)); env_dir != "" {
 		expanded := expand_home_temp(env_dir, allocator)
 		append(&candidates, path_join({expanded, "extensions"}, allocator))
 		if strings.has_suffix(strings.trim_right(expanded, "/\\"), "extensions") {
@@ -120,7 +120,7 @@ bridge_bundled_extension_base_candidates :: proc(allocator := context.allocator)
 
 	// 2. bridge_config.data_dir: the newest shared release every profile of this
 	// OS user registers from, then the profile's own copy.
-	if data_dir := strings.trim_space(bridge_config.data_dir); data_dir != "" {
+	if data_dir := strings.trim_space(bridge_cfg().data_dir); data_dir != "" {
 		expanded := expand_home_temp(data_dir, allocator)
 		if shared := bridge_extensions_newest_shared(bridge_extensions_shared_root(expanded)); shared != "" {
 			append(&candidates, strings.clone(shared, allocator))
@@ -159,7 +159,7 @@ bridge_bundled_extension_base_candidates :: proc(allocator := context.allocator)
 		append(&candidates, expand_home_temp("~/Library/Application Support/heimdall/extensions", allocator))
 	}
 	when ODIN_OS == .Windows {
-		if local := strings.trim_space(os.get_env("LOCALAPPDATA", context.temp_allocator)); local != "" {
+		if local := strings.trim_space(bridge_env_get("LOCALAPPDATA", context.temp_allocator)); local != "" {
 			append(&candidates, path_join({local, "heimdall", "extensions"}, allocator))
 		}
 	}

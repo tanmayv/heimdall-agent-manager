@@ -45,7 +45,7 @@ ext_blk_start :: proc(instance_id: string, req: Bridge_Ext_Permission_Request) -
 	r := new(Ext_Blk_Run, runtime.heap_allocator())
 	r.rec = ext_blk_rec(instance_id)
 	r.req = req
-	r.th = thread.create_and_start_with_data(rawptr(r), proc(data: rawptr) {
+	r.th = bridge_thread_start_with_data(rawptr(r), proc(data: rawptr) {
 		run := (^Ext_Blk_Run)(data)
 		run.out = bridge_ext_permission_run(run.rec, run.req)
 	})

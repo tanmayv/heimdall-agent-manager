@@ -374,10 +374,10 @@ bridge_enroll_atomic_recover :: proc(args: []string) -> Bridge_Enroll_Recovery {
 // command line and the credential held in memory, since nothing is on disk yet.
 @(private = "file")
 bridge_enroll_atomic_seed_config :: proc(args: []string, cred: Bridge_Enroll_Credential, api_base: string) {
-	bridge_config = bridge_config_from_args(args)
-	bridge_config.bridge_token = strings.clone(strings.trim_space(cred.access_token))
-	bridge_config.daemon_id = strings.clone(cred.bridge_id)
-	bridge_config.daemon_url = strings.clone(api_base)
+	bridge_cfg()^ = bridge_config_from_args(args)
+	bridge_cfg().bridge_token = strings.clone(strings.trim_space(cred.access_token))
+	bridge_cfg().daemon_id = strings.clone(cred.bridge_id)
+	bridge_cfg().daemon_url = strings.clone(api_base)
 }
 
 // bridge_enroll_atomic_rolled_back prints the single outcome a failed atomic

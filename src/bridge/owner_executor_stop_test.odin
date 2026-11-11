@@ -15,7 +15,7 @@ import executor "odin_test:lib/executor_local"
  // executor daemon -> correlated signed absence. No provider support claim.
 native_owner_remote_stop :: proc(t:^testing.T,p:^Native_Owner_Proof,wire:Executor_Exchange_Wire,
     activation:owner.Intent_Claim,content:json.Object,owner_path:string) {
-    binary:=os.get_env("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)
+    binary:=bridge_env_get("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)
     if binary=="" {
         when #config(EXECUTOR_TEST_REQUIRED,false) {testing.fail_now(t,"actual stop proof requires daemon")}
         else {fmt.eprintln("[skip] actual stop proof requires daemon")}
@@ -30,9 +30,9 @@ native_owner_remote_stop :: proc(t:^testing.T,p:^Native_Owner_Proof,wire:Executo
     for _ in 0..<100 {if bridge_pty_host_ping(socket) {ready=true;break};time.sleep(10*time.Millisecond)}
     if !testing.expect(t,ready) do return
     swap:=pty_host_test_install_socket(socket);defer pty_host_test_restore_socket(swap)
-    old_ctl,had_ctl:=os.lookup_env("HEIMDALL_HAM_CTL_BIN",context.temp_allocator)
-    _=os.set_env("HEIMDALL_HAM_CTL_BIN","/bin/sh")
-    defer {if had_ctl {_=os.set_env("HEIMDALL_HAM_CTL_BIN",old_ctl)} else {os.unset_env("HEIMDALL_HAM_CTL_BIN")}}
+    old_ctl,had_ctl:=bridge_env_lookup("HEIMDALL_HAM_CTL_BIN",context.temp_allocator)
+    bridge_test_env_set("HEIMDALL_HAM_CTL_BIN","/bin/sh")
+    defer {if had_ctl {bridge_test_env_set("HEIMDALL_HAM_CTL_BIN",old_ctl)} else {bridge_test_env_unset("HEIMDALL_HAM_CTL_BIN")}}
     probe:=Executor_Test_Prepare{fmt.tprintf("%s/remote-stop-child",p.work),0}
     io:=Executor_Launch_IO{&probe,bridge_executor_test_physical_prepare,socket}
     physical:=Native_Owner_Physical{owner=p,socket=socket}

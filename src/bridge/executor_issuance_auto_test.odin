@@ -20,7 +20,7 @@ test_executor_auto_issuance_resolves_without_operator_mapping :: proc(t:^testing
     st:=p1c_test_setup(t);defer p1c_test_teardown(st)
     sync.mutex_lock(&keystore_test_mutex);defer sync.mutex_unlock(&keystore_test_mutex)
     id,_:=keystore_test_bridge_ids()
-    prior_id:=keystore_test_set_daemon_id(id);defer {bridge_config.daemon_id=prior_id}
+    prior_id:=keystore_test_set_daemon_id(id);defer {bridge_cfg().daemon_id=prior_id}
     keystore_lock_and_purge(id);_=keystore_delete_identity_key(id);bridge_unseal_forget_identity()
     unseal_nonce_cache_clear(&g_unseal_nonce_cache);bridge_unseal_init()
     if !testing.expect(t,test_provision_identity(id)) do return

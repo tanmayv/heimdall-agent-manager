@@ -60,8 +60,8 @@ bridge_pty_host_events_ensure :: proc() {
 	if pty_host_events_started do return
 	pty_host_events_started = true
 	pty_host_activity_queue = make([dynamic]string)
-	thread.run(bridge_pty_host_events_worker)
-	thread.run(bridge_pty_host_activity_worker)
+	bridge_thread_run(bridge_pty_host_events_worker)
+	bridge_thread_run(bridge_pty_host_activity_worker)
 }
 
 // bridge_pty_host_enqueue_screen_changed queues an instance for activity
@@ -183,7 +183,7 @@ bridge_pty_host_events_run_once :: proc(socket: string, sweep_after_subscribe :=
 	}
 	// Subscribed: from here on no exit is missed, so sweeping now catches every exit
 	// that happened while we were not listening.
-	if sweep_after_subscribe do thread.run(bridge_shell_session_sweep_now)
+	if sweep_after_subscribe do bridge_thread_run(bridge_shell_session_sweep_now)
 
 	last_frame := time.tick_now()
 	last_check := last_frame

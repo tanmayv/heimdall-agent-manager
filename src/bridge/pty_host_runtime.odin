@@ -63,8 +63,32 @@ bridge_pty_host_truthy :: proc(v: string) -> bool {
 
 // ---- daemon lazy-start --------------------------------------------------
 
-pty_host_daemon_started: bool
-pty_host_daemon_socket:  string
+// The lazily started pty-host daemon. Read it through pty_host_daemon(): test
+// builds keep one per test thread (inherited by its workers, bridge_thread_*), so
+// concurrent tests never share a daemon socket.
+Pty_Host_Daemon :: struct {
+	started: bool,
+	socket:  string,
+}
+@(private = "file")
+g_pty_host_daemon: Pty_Host_Daemon
+@(thread_local, private = "file")
+g_pty_host_daemon_test: Pty_Host_Daemon
+@(thread_local, private = "file")
+g_pty_host_daemon_inherited: ^Pty_Host_Daemon
+
+pty_host_daemon :: #force_inline proc "contextless" () -> ^Pty_Host_Daemon {
+	when ODIN_TEST {
+		if g_pty_host_daemon_inherited != nil do return g_pty_host_daemon_inherited
+		return &g_pty_host_daemon_test
+	} else {
+		return &g_pty_host_daemon
+	}
+}
+
+pty_host_daemon_inherit :: proc(d: ^Pty_Host_Daemon) {
+	when ODIN_TEST do g_pty_host_daemon_inherited = d
+}
 pty_host_daemon_lock:    sync.Mutex
 
 // REQ-BR-4: the daemon process THIS bridge started, kept so it can be reaped and, if
@@ -198,7 +222,7 @@ bridge_pty_host_instance_wants_bracketed_paste :: proc(instance: string) -> bool
 // Always an owned allocation, so the caller can free it on every path (the env value
 // used to leak on each daemon start, and the literal fallback could not be freed).
 bridge_pty_host_bin :: proc() -> string {
-	v := os.get_env_alloc("HEIMDALL_HAM_PTY_HOST_BIN", context.allocator)
+	v := bridge_env_get_alloc("HEIMDALL_HAM_PTY_HOST_BIN", context.allocator)
 	if strings.trim_space(v) != "" do return v
 	delete(v)
 	if found := bridge_runtime_find_on_path("ham-pty-host"); found != "" do return found
@@ -212,15 +236,15 @@ bridge_pty_host_bin :: proc() -> string {
 // temp string came back empty after the next free_all. Caller holds
 // pty_host_daemon_lock.
 pty_host_daemon_socket_cached :: proc() -> string {
-	if pty_host_daemon_socket == "" {
+	if pty_host_daemon().socket == "" {
 		context.allocator = runtime.default_allocator()
-		pty_host_daemon_socket = pty_host_socket_path()
+		pty_host_daemon().socket = pty_host_socket_path()
 	}
-	return pty_host_daemon_socket
+	return pty_host_daemon().socket
 }
 
 // bridge_pty_host_ensure_daemon starts the daemon once (idempotent) and returns
-// its socket path, which is the process-global cache (pty_host_daemon_socket):
+// its socket path, which is the cache in pty_host_daemon().socket (per test thread in test builds):
 // callers must NEVER free it, or every later call pings a reused, garbage path
 // and retires the healthy daemon. The daemon is spawned detached (its own process) listening on
 // pty_host_socket_path(); we then poll a Ping until it answers or the deadline
@@ -245,12 +269,12 @@ bridge_pty_host_ensure_daemon :: proc() -> (string, bool) {
 
 	// Already up on this bridge's own socket (this process started it, or a prior
 	// instance of THIS bridge left it running across a restart)?
-	if pty_host_daemon_started && bridge_pty_host_ping(socket) {
+	if pty_host_daemon().started && bridge_pty_host_ping(socket) {
 		bridge_dependency_breaker_record(breaker_key, true)
 		return socket, true
 	}
 	if bridge_pty_host_ping(socket) {
-		pty_host_daemon_started = true
+		pty_host_daemon().started = true
 		bridge_dependency_breaker_record(breaker_key, true)
 		return socket, true
 	}
@@ -262,7 +286,7 @@ bridge_pty_host_ensure_daemon :: proc() -> (string, bool) {
 		for _ in 0..<3 {
 			time.sleep(500 * time.Millisecond)
 			if bridge_pty_host_ping(socket) {
-				pty_host_daemon_started = true
+				pty_host_daemon().started = true
 				bridge_dependency_breaker_record(breaker_key, true)
 				return socket, true
 			}
@@ -301,7 +325,7 @@ bridge_pty_host_ensure_daemon :: proc() -> (string, bool) {
 	deadline := time.time_add(time.now(), 5 * time.Second)
 	for time.now()._nsec < deadline._nsec {
 		if bridge_pty_host_ping(socket) {
-			pty_host_daemon_started = true
+			pty_host_daemon().started = true
 			bridge_dependency_breaker_record(breaker_key, true)
 			return socket, true
 		}

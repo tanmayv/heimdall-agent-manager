@@ -60,6 +60,9 @@ _ownership_session :: proc(m: ^Bridge_Shell_Session_Map, session_id: string, she
 // is precisely why it is the one to prefer.
 @(test)
 bridge_shell11_reads_never_alias_map_memory :: proc(t: ^testing.T) {
+	// The shell session map is process-wide (worker threads read it).
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	track: mem.Tracking_Allocator
 	mem.tracking_allocator_init(&track, context.allocator)
 	defer mem.tracking_allocator_destroy(&track)
@@ -129,6 +132,9 @@ bridge_shell11_reads_never_alias_map_memory :: proc(t: ^testing.T) {
 // the tracking allocator would report the mismatch.
 @(test)
 bridge_shell11_register_frees_superseded_strings :: proc(t: ^testing.T) {
+	// The shell session map is process-wide (worker threads read it).
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	track: mem.Tracking_Allocator
 	mem.tracking_allocator_init(&track, context.allocator)
 	defer mem.tracking_allocator_destroy(&track)
@@ -171,6 +177,9 @@ bridge_shell11_register_frees_superseded_strings :: proc(t: ^testing.T) {
 // and an untested guard is a guess.
 @(test)
 bridge_shell11_aliasing_reregister_is_not_a_double_free :: proc(t: ^testing.T) {
+	// The shell session map is process-wide (worker threads read it).
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	track: mem.Tracking_Allocator
 	mem.tracking_allocator_init(&track, context.allocator)
 	defer mem.tracking_allocator_destroy(&track)
@@ -247,6 +256,9 @@ _churn_rereg_worker :: proc(data: rawptr) {
 //   3. zero bad frees across the whole race (no double free, no allocator mismatch)
 @(test)
 bridge_shell11_kill_path_key_survives_concurrent_reregister :: proc(t: ^testing.T) {
+	// The shell session map is process-wide (worker threads read it).
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	track: mem.Tracking_Allocator
 	mem.tracking_allocator_init(&track, context.allocator)
 	defer mem.tracking_allocator_destroy(&track)
@@ -258,7 +270,7 @@ bridge_shell11_kill_path_key_survives_concurrent_reregister :: proc(t: ^testing.
 	bridge_shell_session_register(&m, &sess)
 
 	ctx := Churn_Ctx{m = &m, rounds = 200, held_intact = true, held_aliased = false}
-	th := thread.create_and_start_with_data(rawptr(&ctx), _churn_rereg_worker)
+	th := bridge_thread_start_with_data(rawptr(&ctx), _churn_rereg_worker)
 	defer thread.destroy(th)
 
 	// The reader plays bridge_hub_handle_shell_kill: take the daemon key, then block
@@ -307,6 +319,9 @@ bridge_shell11_kill_path_key_survives_concurrent_reregister :: proc(t: ^testing.
 // guarantee nothing checks is a comment.
 @(test)
 bridge_shell11_register_consumes_its_argument :: proc(t: ^testing.T) {
+	// The shell session map is process-wide (worker threads read it).
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	track: mem.Tracking_Allocator
 	mem.tracking_allocator_init(&track, context.allocator)
 	defer mem.tracking_allocator_destroy(&track)
@@ -347,6 +362,9 @@ bridge_shell11_register_consumes_its_argument :: proc(t: ^testing.T) {
 // produces a pointer the map cannot free.
 @(test)
 bridge_shell11_precall_copy_still_aliases_so_reconcile_clones_first :: proc(t: ^testing.T) {
+	// The shell session map is process-wide (worker threads read it).
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	track: mem.Tracking_Allocator
 	mem.tracking_allocator_init(&track, context.allocator)
 	defer mem.tracking_allocator_destroy(&track)
@@ -412,6 +430,9 @@ _writer_race_rereg_worker :: proc(data: rawptr) {
 // the map's pointer; the clone is what makes the gap survivable.
 @(test)
 bridge_shell11_writer_path_id_survives_concurrent_reregister :: proc(t: ^testing.T) {
+	// The shell session map is process-wide (worker threads read it).
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	track: mem.Tracking_Allocator
 	mem.tracking_allocator_init(&track, context.allocator)
 	defer mem.tracking_allocator_destroy(&track)
@@ -424,7 +445,7 @@ bridge_shell11_writer_path_id_survives_concurrent_reregister :: proc(t: ^testing
 	bridge_shell_session_register(&m, &seed)
 
 	ctx := Writer_Race_Ctx{m = &m, rounds = 200, held_intact = true}
-	th := thread.create_and_start_with_data(rawptr(&ctx), _writer_race_rereg_worker)
+	th := bridge_thread_start_with_data(rawptr(&ctx), _writer_race_rereg_worker)
 	defer thread.destroy(th)
 
 	for !ctx.stop {
@@ -473,6 +494,9 @@ bridge_shell11_writer_path_id_survives_concurrent_reregister :: proc(t: ^testing
 // removes.
 @(test)
 bridge_shell11_no_growth_under_session_churn :: proc(t: ^testing.T) {
+	// The shell session map is process-wide (worker threads read it).
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	track: mem.Tracking_Allocator
 	mem.tracking_allocator_init(&track, context.allocator)
 	defer mem.tracking_allocator_destroy(&track)
@@ -539,6 +563,9 @@ bridge_shell11_no_growth_under_session_churn :: proc(t: ^testing.T) {
 // of each accessor returns before it clones, and this is what keeps that true.
 @(test)
 bridge_shell11_failed_reads_allocate_nothing :: proc(t: ^testing.T) {
+	// The shell session map is process-wide (worker threads read it).
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	track: mem.Tracking_Allocator
 	mem.tracking_allocator_init(&track, context.allocator)
 	defer mem.tracking_allocator_destroy(&track)
@@ -599,6 +626,9 @@ bridge_shell11_failed_reads_allocate_nothing :: proc(t: ^testing.T) {
 // a reset that leaked would make every round's growth look like the reset's fault.
 @(test)
 bridge_shell11_map_reset_frees_entries :: proc(t: ^testing.T) {
+	// The shell session map is process-wide (worker threads read it).
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	track: mem.Tracking_Allocator
 	mem.tracking_allocator_init(&track, context.allocator)
 	defer mem.tracking_allocator_destroy(&track)

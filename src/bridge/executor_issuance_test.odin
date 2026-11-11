@@ -81,8 +81,8 @@ bridge_executor_issuance_mounted_scenario :: proc(t:^testing.T,native:=false,sto
     st:=p1c_test_setup(t);defer p1c_test_teardown(st)
     selected_provider,selected_model:="claude","seed"
     if native && !stop_only {
-        selected_provider="codex";selected_model=os.get_env("HEIMDALL_NATIVE_MODEL",context.temp_allocator)
-        binary:=os.get_env("HEIMDALL_NATIVE_CODEX",context.temp_allocator)
+        selected_provider="codex";selected_model=bridge_env_get("HEIMDALL_NATIVE_MODEL",context.temp_allocator)
+        binary:=bridge_env_get("HEIMDALL_NATIVE_CODEX",context.temp_allocator)
         if !testing.expect(t,binary!="" && selected_model!="","explicit native executable/model required") do return
         bridge_provider_catalog_snapshot.providers[0].provider="codex"
         bridge_provider_catalog_snapshot.providers[0].binary=binary
@@ -94,7 +94,7 @@ bridge_executor_issuance_mounted_scenario :: proc(t:^testing.T,native:=false,sto
     }
     sync.mutex_lock(&keystore_test_mutex);defer sync.mutex_unlock(&keystore_test_mutex)
     id,owner_runtime_id:=keystore_test_bridge_ids()
-    prior_id:=keystore_test_set_daemon_id(id);defer {bridge_config.daemon_id=prior_id}
+    prior_id:=keystore_test_set_daemon_id(id);defer {bridge_cfg().daemon_id=prior_id}
     keystore_lock_and_purge(id);_=keystore_delete_identity_key(id);bridge_unseal_forget_identity()
     unseal_nonce_cache_clear(&g_unseal_nonce_cache);bridge_unseal_init()
     if !testing.expect(t,test_provision_identity(id)) do return
@@ -196,9 +196,9 @@ bridge_executor_issuance_mounted_scenario :: proc(t:^testing.T,native:=false,sto
     defer ecdsa.private_key_clear(&owner_private)
     if native {
         owner_key.principal_id=owner_runtime_id
-        prior_native_id:=bridge_config.daemon_id
-        bridge_config.daemon_id=owner_runtime_id
-        defer {bridge_config.daemon_id=prior_native_id;bridge_unseal_forget_identity()}
+        prior_native_id:=bridge_cfg().daemon_id
+        bridge_cfg().daemon_id=owner_runtime_id
+        defer {bridge_cfg().daemon_id=prior_native_id;bridge_unseal_forget_identity()}
         keystore_lock_and_purge(owner_runtime_id);_=keystore_delete_identity_key(owner_runtime_id)
         bridge_unseal_forget_identity()
         if !testing.expect(t,test_provision_identity(owner_runtime_id)) do return
@@ -325,7 +325,7 @@ bridge_executor_issuance_mounted_scenario :: proc(t:^testing.T,native:=false,sto
             testing.expect_value(t,rows[0][0],"1")
             // Trusted test-daemon absence drains the charge before the next
             // reservation. No physical provider/absence claim is inferred.
-            if os.get_env("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)!="" {
+            if bridge_env_get("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)!="" {
                 bridge_executor_test_bootstrap_real_child(t,peer_wire,prepared,action,&owner_private,owner_key,peer_directory,&kr)
             } else {
                 when #config(EXECUTOR_TEST_REQUIRED,false) {testing.fail_now(t,"real bootstrap daemon required")}
@@ -527,7 +527,7 @@ bridge_executor_test_fence_callback :: proc(ctx:rawptr,raw:string,generation:i64
 
 bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,wire:Executor_Exchange_Wire,p,a:json.Object,owner_private:^ecdsa.Private_Key,owner_key:contracts.Owner_Verified_Key,
     directory:vault.Directory_Verification_Input,kr:^vault.Vault_Keyring) {
-    binary:=os.get_env("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)
+    binary:=bridge_env_get("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)
     if !testing.expect(t,binary!="","real bootstrap integration requires the built PTY daemon") do return
     suffix:=fmt.tprintf("%d",time.to_unix_nanoseconds(time.now()))
     socket:=fmt.tprintf("/tmp/ham-bootstrap-%s.sock",suffix)
@@ -544,11 +544,11 @@ bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,wire:Executor_Exc
     defer _=bridge_pty_host_executor_close(socket,intent.instance,intent.launch_key)
     material,available:=executor.launch_material(&bridge_executor_store,intent,now)
     if !testing.expect(t,available) do return
-    dir:=fmt.tprintf("%s/.cache/heimdall-tests/bootstrap-live-%s",os.get_env("HOME",context.temp_allocator),suffix)
+    dir:=fmt.tprintf("%s/.cache/heimdall-tests/bootstrap-live-%s",bridge_env_get("HOME",context.temp_allocator),suffix)
     defer bridge_prespawn_rmdir_all(dir)
-    prev,had:=os.lookup_env("HEIMDALL_HAM_CTL_BIN",context.temp_allocator)
-    defer {if had {_=os.set_env("HEIMDALL_HAM_CTL_BIN",prev)} else {os.unset_env("HEIMDALL_HAM_CTL_BIN")}}
-    _=os.set_env("HEIMDALL_HAM_CTL_BIN","/bin/sh")
+    prev,had:=bridge_env_lookup("HEIMDALL_HAM_CTL_BIN",context.temp_allocator)
+    defer {if had {bridge_test_env_set("HEIMDALL_HAM_CTL_BIN",prev)} else {bridge_test_env_unset("HEIMDALL_HAM_CTL_BIN")}}
+    bridge_test_env_set("HEIMDALL_HAM_CTL_BIN","/bin/sh")
     result,written:=bridge_executor_materialize(dir,"unix:/isolated-bootstrap-child.sock",material,"claude")
     if !testing.expect(t,written) do return
     defer bridge_prespawn_result_delete(result)
@@ -558,7 +558,7 @@ bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,wire:Executor_Exc
     launch_io:=Executor_Launch_IO{&prepare_probe,bridge_executor_test_physical_prepare,socket}
     fence_probe:=Executor_Fence_Test_Probe{private=owner_private,kr=kr,directory=directory,action=a,owner_key=owner_key,prepare_probe=&prepare_probe}
     self_key:=contracts.Owner_Verified_Key{bridge_executor_store.account,bridge_executor_store.executor,bridge_executor_store.operator_key,
-        bridge_identity_public_key_hex(bridge_config.daemon_id),"bridge",true,false}
+        bridge_identity_public_key_hex(bridge_cfg().daemon_id),"bridge",true,false}
     config,_:=contracts.owner_parse(material.configuration,"remote_configuration")
     mapping,_:=executor.directory_mapping(&bridge_executor_store,contracts.owner_string(config,"directory_id"))
     original_profile,profile_error:=profile_lookup("claude","claude",prepare_runtime=false)
@@ -639,7 +639,7 @@ bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,wire:Executor_Exc
         contracts.owner_string(bootstrap,"lease_id"),contracts.owner_string(bootstrap,"configuration_revision"),"1","live_child_hb","lease.heartbeat",
         contracts.owner_string(a,"request_expires_ms"),"existing_capability"})
     self:=contracts.Owner_Verified_Key{bridge_executor_store.account,bridge_executor_store.executor,bridge_executor_store.operator_key,
-        bridge_identity_public_key_hex(bridge_config.daemon_id),"bridge",true,false}
+        bridge_identity_public_key_hex(bridge_cfg().daemon_id),"bridge",true,false}
     attested:=bridge_executor_child_attest(&bridge_executor_store,intent.instance,material.token_secret,input,socket,owner_key,self,{nil,bridge_executor_sign})
     if !testing.expect_value(t,attested.code,"ok") do return
     child_request,valid:=contracts.executor_parse(attested.body,"child_request")

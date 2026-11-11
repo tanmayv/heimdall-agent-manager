@@ -17,7 +17,7 @@ test_daemon_does_not_inherit_bridge_log_handles :: proc(t: ^testing.T) {
 	log := win.CreateFileW(wpath, win.GENERIC_WRITE, 0, &security, win.CREATE_ALWAYS, win.FILE_ATTRIBUTE_NORMAL, nil)
 	testing.expect(t, log != win.INVALID_HANDLE_VALUE)
 	if log == win.INVALID_HANDLE_VALUE do return
-	shell := strings.concatenate({os.get_env("SystemRoot", context.temp_allocator), "/System32/WindowsPowerShell/v1.0/powershell.exe"}, context.temp_allocator)
+	shell := strings.concatenate({bridge_env_get("SystemRoot", context.temp_allocator), "/System32/WindowsPowerShell/v1.0/powershell.exe"}, context.temp_allocator)
 	child, err := bridge_os_start_daemon([]string{shell, "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 10"})
 	win.CloseHandle(log)
 	testing.expect(t, err == nil)

@@ -37,17 +37,17 @@ test_bridge_taskv2_render_task_md_description_decrypted :: proc(t: ^testing.T) {
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	sync.mutex_lock(&keystore_test_mutex)
 	defer sync.mutex_unlock(&keystore_test_mutex)
-	prev_key, had_key := os.lookup_env("HEIMDALL_VAULT_KEYRING", context.allocator)
+	prev_key, had_key := bridge_env_lookup("HEIMDALL_VAULT_KEYRING", context.allocator)
 	defer {
 		if had_key {
-			_ = os.set_env("HEIMDALL_VAULT_KEYRING", prev_key)
+			bridge_test_env_set("HEIMDALL_VAULT_KEYRING", prev_key)
 		} else {
-			os.unset_env("HEIMDALL_VAULT_KEYRING")
+			bridge_test_env_unset("HEIMDALL_VAULT_KEYRING")
 		}
 		delete(prev_key)
 	}
 	key := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	_ = os.set_env("HEIMDALL_VAULT_KEYRING", test_keyring_env_value(key))
+	bridge_test_env_set("HEIMDALL_VAULT_KEYRING", test_keyring_env_value(key))
 
 	token := test_vault_seal("SECRET_DESCRIPTION_PLAINTEXT", key, allocator = context.temp_allocator)
 	md := bridge_taskv2_render_task_md(desc_pack(token), 32_000)

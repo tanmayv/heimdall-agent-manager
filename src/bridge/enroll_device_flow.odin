@@ -285,7 +285,7 @@ bridge_enroll_hostname :: proc(allocator := context.allocator) -> string {
 		name := strings.trim_space(string(data))
 		if name != "" do return strings.clone(name, allocator)
 	}
-	if env, found := os.lookup_env("HOSTNAME", context.temp_allocator); found {
+	if env, found := bridge_env_lookup("HOSTNAME", context.temp_allocator); found {
 		name := strings.trim_space(env)
 		if name != "" do return strings.clone(name, allocator)
 	}
@@ -299,7 +299,7 @@ bridge_enroll_hostname :: proc(allocator := context.allocator) -> string {
 bridge_enroll_os_user :: proc(allocator := context.allocator) -> string {
 	if name := bridge_os_user_name(allocator); name != "" do return name
 	for key in ([?]string{"USER", "LOGNAME"}) {
-		if env, found := os.lookup_env(key, context.temp_allocator); found {
+		if env, found := bridge_env_lookup(key, context.temp_allocator); found {
 			name := strings.trim_space(env)
 			if name != "" do return strings.clone(name, allocator)
 		}
@@ -781,7 +781,7 @@ bridge_credential_refresh_start :: proc(credential_file: string) {
 	if !bridge_credential_recover_at_start(env) {
 		fmt.eprintln("bridge credential: a pending rotated pair could not be committed before the first connection; the renewal worker keeps retrying the local commit")
 	}
-	thread.run(bridge_credential_refresh_worker)
+	bridge_thread_run(bridge_credential_refresh_worker)
 }
 
 g_bridge_renewal_env: ^Bridge_Renewal_Env
@@ -963,10 +963,10 @@ bridge_enroll_wait_for_vault_delivery :: proc(args: []string, bridge_id: string)
 	// REQ-T2-3: this process exits right after the restart below, so it must not be
 	// the one that tells the hub the vault is unlocked. See bridge_hub_vault_status_for_report.
 	bridge_hub_set_enroll_only_runtime(true)
-	bridge_config = bridge_config_from_args(args)
+	bridge_cfg()^ = bridge_config_from_args(args)
 	credential_snapshot_963 := bridge_credential_snapshot()
 	defer delete(credential_snapshot_963)
-	if strings.trim_space(credential_snapshot_963) == "" || bridge_config.daemon_id != bridge_id {
+	if strings.trim_space(credential_snapshot_963) == "" || bridge_cfg().daemon_id != bridge_id {
 		fmt.eprintln("bridge enroll FAILED: the saved credential could not be loaded for vault delivery")
 		return false, false
 	}
@@ -1502,7 +1502,7 @@ bridge_enroll_token_file_from_args :: proc(args: []string, hub_url, bridge_id: s
 	if explicit := option_value(args, "--bridge-token-file", ""); strings.trim_space(explicit) != "" {
 		return strings.clone(strings.trim_space(explicit), allocator)
 	}
-	if env, found := os.lookup_env("HAM_BRIDGE_TOKEN_FILE", context.temp_allocator); found {
+	if env, found := bridge_env_lookup("HAM_BRIDGE_TOKEN_FILE", context.temp_allocator); found {
 		if strings.trim_space(env) != "" do return strings.clone(strings.trim_space(env), allocator)
 	}
 	// Default under the operator's own config directory, so `enroll --hub <url>` needs
@@ -1827,7 +1827,7 @@ bridge_refresh_apply_rejection :: proc(config_path, api_base, bridge_id, path, r
     bridge_hub_stop_traffic(true)
     _ = os.remove(refresh_path); _ = os.remove(path); _ = os.remove(request_path)
     bridge_credential_meta_remove(path)
-    sync.mutex_lock(&g_bridge_credential_mu); bridge_config.bridge_token = ""; sync.mutex_unlock(&g_bridge_credential_mu)
+    sync.mutex_lock(&g_bridge_credential_mu); bridge_cfg().bridge_token = ""; sync.mutex_unlock(&g_bridge_credential_mu)
     bridge_credential_set_phase(.Reenroll_Required, "refresh_rejected", err.code)
     _ = bridge_credential_bump_epoch()
     bridge_reenroll_mark(config_path, api_base, bridge_id, .Refresh_Rejected)

@@ -39,7 +39,7 @@ test_owner_local_publication_recovers_result_write_and_commit_failure_in_process
     for commit_failure in ([2]bool{false,true}) {
         for first_success in ([2]bool{false,true}) {
             s:owner.Store
-            path:=fmt.tprintf("%s/.cache/heimdall-tests/owner-delivery-%d-%v-%v.sqlite",os.get_env("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()),commit_failure,first_success)
+            path:=fmt.tprintf("%s/.cache/heimdall-tests/owner-delivery-%d-%v-%v.sqlite",bridge_env_get("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()),commit_failure,first_success)
             if !testing.expect(t,owner.open(&s,path,"account","bridge","bridge_key")) do continue
             q:owner.Intent_Completions
             defer {

@@ -83,8 +83,8 @@ test_bridge_telemetry_command_toggle :: proc(t: ^testing.T) {
 test_bridge_telemetry_lifecycle :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
-	os.set_env("TELEMETRY_PORT", "29871")
-	bridge_config.daemon_id = "test-daemon-lifecycle"
+	bridge_test_env_set("TELEMETRY_PORT", "29871")
+	bridge_cfg().daemon_id = "test-daemon-lifecycle"
 
 	// Ensure stopped to begin
 	_ = bridge_telemetry_stop()

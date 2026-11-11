@@ -78,7 +78,7 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="")
     }
     sync.mutex_lock(&keystore_test_mutex);defer sync.mutex_unlock(&keystore_test_mutex)
     id,_:=keystore_test_bridge_ids()
-    prior_id:=keystore_test_set_daemon_id(id);defer {bridge_config.daemon_id=prior_id}
+    prior_id:=keystore_test_set_daemon_id(id);defer {bridge_cfg().daemon_id=prior_id}
     keystore_lock_and_purge(id);_=keystore_delete_identity_key(id);bridge_unseal_forget_identity()
     unseal_nonce_cache_clear(&g_unseal_nonce_cache);bridge_unseal_init()
     if !testing.expect(t,test_provision_identity(id)) do return
@@ -124,10 +124,10 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="")
     testing.expect(t,strings.contains(rejection,"invalid_scope"),"agent transport cannot replace pinned operator signature")
     sign_wire:=executor.encode(struct{v:int,id,method,token:string,params:type_of(forged_params)}{1,"no-sign-rpc","executor.operator.sign","agent-token-is-not-operator",forged_params})
     testing.expect(t,strings.contains(bridge_local_endpoint_handle_jsonl_line(sign_wire),"unauthenticated"),"no signing RPC")
-    old_run_dir:=bridge_config.local_endpoint_run_dir
-    bridge_config.local_endpoint_run_dir=fmt.tprintf("%s/runtime",root)
-    defer {bridge_config.local_endpoint_run_dir=old_run_dir}
-    testing.expect(t,bridge_make_directory_all(fmt.tprintf("%s/instances",bridge_config.local_endpoint_run_dir))==nil)
+    old_run_dir:=bridge_cfg().local_endpoint_run_dir
+    bridge_cfg().local_endpoint_run_dir=fmt.tprintf("%s/runtime",root)
+    defer {bridge_cfg().local_endpoint_run_dir=old_run_dir}
+    testing.expect(t,bridge_make_directory_all(fmt.tprintf("%s/instances",bridge_cfg().local_endpoint_run_dir))==nil)
     pp:=Provider_Profile{profile_id=selected_profile,provider="claude",enabled=true,config=Provider_Profile_Config{binary_path="/bin/sh"}}
     if model_mode=="custom" do pp.config.custom_models=[]string{selected_model}
     bridge_provider_catalog_snapshot.providers[0].model_flag="-s"
@@ -224,7 +224,7 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="")
     stale,stale_detail,stale_err:=bridge_executor_local_stage(next_command,"provider_test",{&probe,bridge_executor_local_test_files,absent})
     testing.expect(t,!stale && strings.contains(stale_detail,"already ran") && stale_err.class==.fatal,stale_detail)
 
-    binary:=os.get_env("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)
+    binary:=bridge_env_get("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)
     if binary=="" {
         when #config(EXECUTOR_TEST_REQUIRED,false) {testing.fail_now(t,"real native dispatch requires HEIMDALL_EXECUTOR_TEST_PTY")}
         else {fmt.eprintln("[skip] native actual-launch proof requires HEIMDALL_EXECUTOR_TEST_PTY");return}
@@ -244,9 +244,9 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="")
     saved_started,saved_endpoint:=bridge_runtime_local_endpoint_started,bridge_runtime_local_endpoint_descriptor
     bridge_runtime_local_endpoint_started=true;bridge_runtime_local_endpoint_descriptor=m.endpoint
     defer {bridge_runtime_local_endpoint_started=saved_started;bridge_runtime_local_endpoint_descriptor=saved_endpoint}
-    old_ctl,had_ctl:=os.lookup_env("HEIMDALL_HAM_CTL_BIN",context.temp_allocator)
-    _=os.set_env("HEIMDALL_HAM_CTL_BIN","/bin/sh")
-    defer {if had_ctl {_=os.set_env("HEIMDALL_HAM_CTL_BIN",old_ctl)} else {os.unset_env("HEIMDALL_HAM_CTL_BIN")}}
+    old_ctl,had_ctl:=bridge_env_lookup("HEIMDALL_HAM_CTL_BIN",context.temp_allocator)
+    bridge_test_env_set("HEIMDALL_HAM_CTL_BIN","/bin/sh")
+    defer {if had_ctl {bridge_test_env_set("HEIMDALL_HAM_CTL_BIN",old_ctl)} else {bridge_test_env_unset("HEIMDALL_HAM_CTL_BIN")}}
     // A newer generation releases the undispatched first admission and starts
     // the exact child with no approval.
     // Force a lost local observation after the physical Spawn. The committed
@@ -314,9 +314,9 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="")
     defer net.close(http_listener)
     _=net.set_option(http_listener,.Receive_Timeout,5*time.Second)
     bound,_:=net.bound_endpoint(http_listener)
-    old_url,old_credential:=bridge_config.daemon_url,bridge_config.bridge_token
-    bridge_config.daemon_url=fmt.tprintf("http://127.0.0.1:%d",bound.port);bridge_config.bridge_token="isolated-test-only"
-    defer {bridge_config.daemon_url=old_url;bridge_config.bridge_token=old_credential}
+    old_url,old_credential:=bridge_cfg().daemon_url,bridge_cfg().bridge_token
+    bridge_cfg().daemon_url=fmt.tprintf("http://127.0.0.1:%d",bound.port);bridge_cfg().bridge_token="isolated-test-only"
+    defer {bridge_cfg().daemon_url=old_url;bridge_cfg().bridge_token=old_credential}
     old_cache:=bootstrap_global_cache;bootstrap_global_cache={}
     bootstrap_cache_init(&bootstrap_global_cache,fmt.tprintf("%s/native-cache",root),1024*1024)
     defer {bootstrap_global_cache=old_cache}
@@ -325,7 +325,7 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="")
     testing.expect(t,bootstrap_cache_put(&bootstrap_global_cache,hash,template))
     Http :: struct{listener:net.TCP_Socket,hash:string,served:bool}
     http:=Http{http_listener,hash,false}
-    http_worker:=thread.create_and_start_with_data(&http,proc(ctx:rawptr) {
+    http_worker:=bridge_thread_start_with_data(&http,proc(ctx:rawptr) {
         context.allocator=context.temp_allocator
         p:=(^Http)(ctx)
         client,_,err:=net.accept_tcp(p.listener);if err!=nil do return
@@ -471,7 +471,7 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="")
     {
     // The bootstrap server served its one manual request. Refuse further
     // manifest fetches immediately instead of waiting on a closed backlog.
-    bridge_config.daemon_url="http://127.0.0.1:1"
+    bridge_cfg().daemon_url="http://127.0.0.1:1"
     // Actual wake ingress must retain the original parent/entry bytes in
     // the immutable native draft.
     observed_instance:=fmt.tprintf("native_observed_%s",variant)
@@ -568,7 +568,7 @@ encode_rows :: proc(rows:[dynamic][]string)->string {
 bridge_executor_test_operator_provision :: proc(t:^testing.T,kind,raw,root:string)->string {
     context.allocator=context.temp_allocator
     config:=fmt.tprintf("%s/operator.toml",root)
-    content:=fmt.tprintf("[daemon]\ndaemon_id = \"%s\"\ndata_dir = \"%s\"\n[wrapper]\ndaemon_url = \"%s\"\n[bridge]\nfs_root = \"%s\"\n",bridge_config.daemon_id,bridge_config.data_dir,bridge_keystore_hub(),root)
+    content:=fmt.tprintf("[daemon]\ndaemon_id = \"%s\"\ndata_dir = \"%s\"\n[wrapper]\ndaemon_url = \"%s\"\n[bridge]\nfs_root = \"%s\"\n",bridge_cfg().daemon_id,bridge_cfg().data_dir,bridge_keystore_hub(),root)
     testing.expect(t,os.write_entire_file(config,content)==nil)
     input:=fmt.tprintf("%s/%s-input.json",root,kind)
     output:=fmt.tprintf("%s/%s-signed.json",root,kind)
@@ -583,7 +583,7 @@ bridge_executor_test_operator_provision :: proc(t:^testing.T,kind,raw,root:strin
     for verb in ([2]string{"import","inspect"}) {
         listener,listening:=local_socket.listen(endpoint.unix_socket_path,2)
         if !testing.expect(t,listening) do return ""
-        worker:=thread.create_and_start_with_data(&listener,proc(ctx:rawptr) {
+        worker:=bridge_thread_start_with_data(&listener,proc(ctx:rawptr) {
             context.allocator=context.temp_allocator
             listener:=(^local_socket.Socket)(ctx)^
             client,connected:=local_socket.accept(listener)

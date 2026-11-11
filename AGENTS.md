@@ -107,6 +107,20 @@ odin test src/hub/transport/http -collection:odin_test=src -out:$HOME/.cache/hei
 
 - Always pass `-collection:odin_test=src` and a **unique `-out:` under `$HOME`**, never `/tmp`
   (see [Gotchas](#7-gotchas)). A unique name also keeps parallel runs from clobbering each other.
+- Run suites multithreaded (the default). Do **not** pass `-define:ODIN_TEST_THREADS=1`; a test
+  that only passes serially is a bug. Odin runs every test as a thread of ONE process, so tests
+  must be hermetic:
+  - never `os.set_env`/`os.unset_env`: in `src/bridge` use `bridge_test_env_set`/`_unset`
+    (per-thread overrides read by `bridge_env_get`/`bridge_env_lookup`, also seen by `lib/config`);
+  - in `src/bridge` read/write the config through `bridge_cfg()` (a per-thread copy in test builds)
+    and start worker threads with `bridge_thread_run*` / `bridge_thread_start_with_*`, which hand the
+    spawning test's config and env overrides to the worker;
+  - test hooks (`bridge_owner_*_effect(s)`, `bridge_codex_own_*_hook`, `bridge_provider_reprobe_hook`,
+    `bridge_rollover_effects`) are `@(thread_local)`; set them with the matching `*_sync` flag so the
+    effect runs on the test's thread;
+  - state that worker threads must share (the shell session map, the pty-host test socket, local
+    token records, the launch registry) is guarded by holding `bridge_test_config_mutex` for the test;
+  - per-test temp dirs and sockets (unique name with pid + nanoseconds), port 0 for listeners.
 - Frontend: `npm run typecheck` (`tsc -b`), `npm test` (Node test runner; the file list is in
   `package.json`), `npm run build` (typecheck + Vite + Electron). `npm run dev` runs Vite + Electron;
   `npm run dev:preview` runs the live-data preview ([docs/dev-preview.md](docs/dev-preview.md)).

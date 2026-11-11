@@ -312,7 +312,7 @@ test_shell_cwd_resolve_wrapper_reads_the_real_home :: proc(t: ^testing.T) {
 	defer mem.tracking_allocator_destroy(&track)
 	context.allocator = mem.tracking_allocator(&track)
 
-	home := os.get_env("HOME", context.temp_allocator)
+	home := bridge_env_get("HOME", context.temp_allocator)
 	if strings.trim_space(home) == "" {
 		// A bridge host with no HOME is not a case to fail on: the injected-home test
 		// covers that branch, and this one has nothing left to compare against.

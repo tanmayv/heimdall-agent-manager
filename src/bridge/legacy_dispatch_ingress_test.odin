@@ -51,7 +51,7 @@ bridge_legacy_ingress_retains_reconnect_and_deadline_before_worker :: proc(t:^te
     // Exercise the production writer with executor I/O deliberately blocked.
     // The reader must still acquire dispatch, process reconnect, and return.
     sync.mutex_lock(&bridge_executor_mutex)
-    writer:=thread.create_and_start_with_data(rawptr(store),bridge_legacy_ingress_test_writer)
+    writer:=bridge_thread_start_with_data(rawptr(store),bridge_legacy_ingress_test_writer)
     observed_writing:=false
     started:=time.tick_now()
     for time.tick_since(started)<5*time.Second {

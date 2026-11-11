@@ -11,7 +11,7 @@ import owner "odin_test:lib/owner_local"
 @(test)
 test_owner_context_atomic_delivery_and_explicit_budget_failure :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
-    dir:=fmt.tprintf("%s/.cache/heimdall-tests/context-delivery-%d",os.get_env("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    dir:=fmt.tprintf("%s/.cache/heimdall-tests/context-delivery-%d",bridge_env_get("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
     testing.expect(t,bridge_make_directory_all(dir)==nil);defer _=os.remove_all(dir)
     command:=owner.doc(map[string]string{"chain_id"="chain","task_id"="task","lease_id"="exact_lease","instance_id"="exact_child"})
     brief:="{\"goal\":\"保留 exact current requirements\",\"acceptance\":[\"current criterion\"]}"

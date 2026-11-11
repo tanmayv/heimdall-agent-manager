@@ -58,7 +58,7 @@ bridge_provider_catalog_loaded: bool
 bridge_provider_catalog_snapshot: ^Bridge_Provider_Catalog_Snapshot
 
 bridge_provider_catalog_path :: proc() -> string {
-	data_dir := strings.trim_space(bridge_config.data_dir)
+	data_dir := strings.trim_space(bridge_cfg().data_dir)
 	if data_dir == "" do data_dir = "~/.local/share/heimdall"
 	expanded := bridge_expand_home(data_dir)
 	defer if raw_data(expanded) != raw_data(data_dir) do delete(expanded)
@@ -175,7 +175,7 @@ bridge_provider_catalog_publish_and_probe :: proc(snapshot: ^Bridge_Provider_Cat
 	// A fresh bridge starts with no catalog, so startup probing finds nothing
 	// ("catalog=0 present=0"). The first sync that brings providers in must probe
 	// them, or the bridge only sees installed CLIs after a restart.
-	if !had_providers && snapshot != nil && len(snapshot.providers) > 0 do bridge_provider_reprobe_hook()
+	if !had_providers && snapshot != nil && len(snapshot.providers) > 0 do (bridge_provider_reprobe_hook if bridge_provider_reprobe_hook != nil else bridge_provider_reprobe_async)()
 }
 
 bridge_provider_catalog_provider_count :: proc() -> int {
@@ -187,12 +187,13 @@ bridge_provider_catalog_provider_count :: proc() -> int {
 }
 
 // Test seam: replaced by a counter in tests so no thread or real PATH probe runs.
-bridge_provider_reprobe_hook: proc() = bridge_provider_reprobe_async
+@(thread_local)
+bridge_provider_reprobe_hook: proc() // nil: bridge_provider_reprobe_async
 
 bridge_provider_reprobe_async :: proc() {
 	// Tests that apply catalogs must not probe the host PATH or write the real store.
 	when ODIN_TEST do return
-	thread.run(proc() {
+	bridge_thread_run(proc() {
 		results := bridge_provider_discover(nil)
 		for &result in results do bridge_provider_path_destroy(&result)
 		delete(results)

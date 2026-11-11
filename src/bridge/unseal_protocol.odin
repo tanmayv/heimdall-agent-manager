@@ -853,7 +853,7 @@ bridge_unseal_decrypt_and_verify :: proc(
 // (owner_remote_agent.odin).
 bridge_identity_sign_bytes :: proc(msg:[]byte) -> (string,bool) {
     sync.mutex_lock(&g_bridge_identity_mu);defer sync.mutex_unlock(&g_bridge_identity_mu)
-    if !g_bridge_identity_loaded || string(g_bridge_identity_owner_buf[:g_bridge_identity_owner_len])!=bridge_config.daemon_id do return "",false
+    if !g_bridge_identity_loaded || string(g_bridge_identity_owner_buf[:g_bridge_identity_owner_len])!=bridge_cfg().daemon_id do return "",false
     sig,signed:=vault.sign_p256(&g_bridge_identity_priv,msg)
     if !signed do return "",false
     return vault.hex_encode_lower(sig.sig[:],context.temp_allocator),true
@@ -875,7 +875,7 @@ bridge_owner_sign :: proc(ctx:rawptr,kind:string,o:json.Object)->(string,bool) {
     sync.mutex_lock(&g_bridge_identity_mu);defer sync.mutex_unlock(&g_bridge_identity_mu)
     // Called inside the owner UoW for registry intents. The request path loads
     // the enrolled identity before opening it; never touch the keystore here.
-    if !g_bridge_identity_loaded || string(g_bridge_identity_owner_buf[:g_bridge_identity_owner_len])!=bridge_config.daemon_id do return "",false
+    if !g_bridge_identity_loaded || string(g_bridge_identity_owner_buf[:g_bridge_identity_owner_len])!=bridge_cfg().daemon_id do return "",false
     sig,signed:=vault.sign_p256(&g_bridge_identity_priv,transmute([]byte)canonical)
     if !signed do return "",false
     return vault.hex_encode_lower(sig.sig[:],context.temp_allocator),true

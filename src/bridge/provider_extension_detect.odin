@@ -155,13 +155,13 @@ bridge_antigravity_plugin_enabled_state :: proc(plugin_id: string, paths: []stri
 	if paths != nil {
 		append(&candidates, ..paths)
 	} else {
-		if gemini_cfg := os.get_env("GEMINI_CONFIG_DIR", context.temp_allocator); gemini_cfg != "" {
+		if gemini_cfg := bridge_env_get("GEMINI_CONFIG_DIR", context.temp_allocator); gemini_cfg != "" {
 			c1, _ := filepath.join({gemini_cfg, "config.json"}, context.temp_allocator)
 			append(&candidates, c1)
 			c2, _ := filepath.join({gemini_cfg, "config", "config.json"}, context.temp_allocator)
 			append(&candidates, c2)
 		}
-		home := os.get_env("HOME", context.temp_allocator)
+		home := bridge_env_get("HOME", context.temp_allocator)
 		if home != "" {
 			c3, _ := filepath.join({home, ".gemini", "config", "config.json"}, context.temp_allocator)
 			append(&candidates, c3)
@@ -194,13 +194,13 @@ bridge_provider_extension_installed_manifest_version :: proc(plugin_id: string, 
 	if paths != nil {
 		append(&candidates, ..paths)
 	} else {
-		if gemini_cfg := os.get_env("GEMINI_CONFIG_DIR", context.temp_allocator); gemini_cfg != "" {
+		if gemini_cfg := bridge_env_get("GEMINI_CONFIG_DIR", context.temp_allocator); gemini_cfg != "" {
 			c1, _ := filepath.join({gemini_cfg, "plugins", plugin_id, "plugin.json"}, context.temp_allocator)
 			append(&candidates, c1)
 			c2, _ := filepath.join({gemini_cfg, "config", "plugins", plugin_id, "plugin.json"}, context.temp_allocator)
 			append(&candidates, c2)
 		}
-		home := os.get_env("HOME", context.temp_allocator)
+		home := bridge_env_get("HOME", context.temp_allocator)
 		if home != "" {
 			c3, _ := filepath.join({home, ".gemini", "config", "plugins", plugin_id, "plugin.json"}, context.temp_allocator)
 			append(&candidates, c3)

@@ -54,7 +54,7 @@ Bridge_Ext_Permission_Outcome :: struct {
 
 // bridge_ext_permission_default_timeout_ms reads the bridge-wide default.
 bridge_ext_permission_default_timeout_ms :: proc() -> int {
-	raw := os.get_env(BRIDGE_EXT_PERMISSION_TIMEOUT_ENV, context.temp_allocator)
+	raw := bridge_env_get(BRIDGE_EXT_PERMISSION_TIMEOUT_ENV, context.temp_allocator)
 	if v, ok := strconv.parse_int(strings.trim_space(raw)); ok && v > 0 do return v
 	return BRIDGE_EXT_PERMISSION_DEFAULT_TIMEOUT_MS
 }

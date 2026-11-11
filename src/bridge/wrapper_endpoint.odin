@@ -64,7 +64,7 @@ bridge_local_endpoint_start_unix :: proc(config: Bridge_Local_Endpoint_Config) -
 		local_socket.close(fd)
 		return false
 	}
-	thread.run_with_poly_data(fd, bridge_local_endpoint_accept_unix_loop)
+	bridge_thread_run_with_poly_data(fd, bridge_local_endpoint_accept_unix_loop)
 	return true
 }
 
@@ -76,7 +76,7 @@ bridge_local_endpoint_start_loopback :: proc(config: Bridge_Local_Endpoint_Confi
 		net.close(listener)
 		return false
 	}
-	thread.run_with_poly_data(listener, bridge_local_endpoint_accept_loop)
+	bridge_thread_run_with_poly_data(listener, bridge_local_endpoint_accept_loop)
 	return true
 }
 
@@ -84,7 +84,7 @@ bridge_local_endpoint_accept_unix_loop :: proc(listener: local_socket.Socket) {
 	for {
 		client, ok := local_socket.accept(listener)
 		if !ok do continue
-		thread.run_with_poly_data(client, bridge_local_endpoint_unix_client_thread)
+		bridge_thread_run_with_poly_data(client, bridge_local_endpoint_unix_client_thread)
 	}
 }
 
@@ -193,7 +193,7 @@ bridge_local_endpoint_unix_client_thread :: proc(client: local_socket.Socket) {
 					_ = local_socket.send(client, bytes)
 					return
 				}
-				if bridge_config.local_proxy_enabled && bridge_proxy_looks_like_http(first_line_str) {
+				if bridge_cfg().local_proxy_enabled && bridge_proxy_looks_like_http(first_line_str) {
 					bridge_local_proxy_serve_unix(client, bridge_line_reader_pending(&reader))
 					proxy_owned = true
 					return
@@ -221,7 +221,7 @@ bridge_local_endpoint_accept_loop :: proc(listener: net.TCP_Socket) {
 	for {
 		client, _, err := net.accept_tcp(listener)
 		if err != nil do continue
-		thread.run_with_poly_data(client, bridge_local_endpoint_client_thread)
+		bridge_thread_run_with_poly_data(client, bridge_local_endpoint_client_thread)
 	}
 }
 
@@ -262,7 +262,7 @@ bridge_local_endpoint_client_thread :: proc(client: net.TCP_Socket) {
 					_, _ = net.send_tcp(client, transmute([]byte)resp)
 					return
 				}
-				if bridge_config.local_proxy_enabled && bridge_proxy_looks_like_http(first_line_str) {
+				if bridge_cfg().local_proxy_enabled && bridge_proxy_looks_like_http(first_line_str) {
 					bridge_local_proxy_serve_tcp(client, bridge_line_reader_pending(&reader))
 					proxy_owned = true
 					return

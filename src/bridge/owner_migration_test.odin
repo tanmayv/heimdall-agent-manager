@@ -37,7 +37,7 @@ migration_test_sign :: proc(ctx:rawptr,kind:string,o:json.Object)->(string,bool)
 @(test)
 test_owner_migration_activation_waits_for_hub_cutover_across_restart :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
-    path:=fmt.tprintf("%s/.cache/heimdall-tests/owner-migration-activate-%d.sqlite",os.get_env("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    path:=fmt.tprintf("%s/.cache/heimdall-tests/owner-migration-activate-%d.sqlite",bridge_env_get("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
     store:owner.Store
     if !testing.expect(t,owner.open(&store,path,"account","bridge","bridge_key")) do return
     defer {

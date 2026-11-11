@@ -248,7 +248,7 @@ BRIDGE_SETUP_PATH_MARK :: "__HAM_SETUP_PATH__"
 // (interactive too: zsh users commonly extend PATH in .zshrc). Output around
 // the markers is ignored (motd, prompts); any failure or timeout yields "".
 bridge_setup_login_shell_path :: proc() -> string {
-	shell, _ := os.lookup_env("SHELL", context.temp_allocator)
+	shell, _ := bridge_env_lookup("SHELL", context.temp_allocator)
 	if shell == "" || !os.exists(shell) do return ""
 	script := "printf '" + BRIDGE_SETUP_PATH_MARK + "%s" + BRIDGE_SETUP_PATH_MARK + "' \"$PATH\""
 	stdout, _, ok, _ := bridge_process_run_capture({shell, "-ilc", script}, 5 * time.Second)
@@ -277,17 +277,17 @@ bridge_setup_windows_user :: proc(domain, name: string) -> string {
 }
 
 bridge_setup_render_input :: proc(s: ^Bridge_Setup) -> bridgesvc.Render_Input {
-	path, _ := os.lookup_env("PATH", context.temp_allocator)
+	path, _ := bridge_env_lookup("PATH", context.temp_allocator)
 	when ODIN_OS != .Windows {
-		home, _ := os.lookup_env("HOME", context.temp_allocator)
-		user, _ := os.lookup_env("USER", context.temp_allocator)
+		home, _ := bridge_env_lookup("HOME", context.temp_allocator)
+		user, _ := bridge_env_lookup("USER", context.temp_allocator)
 		path = bridge_setup_service_path(path, bridge_setup_login_shell_path(), home, user, bridge_setup_dir_exists)
 	}
-	tv, _ := os.lookup_env("TERMUX_VERSION", context.temp_allocator)
+	tv, _ := bridge_env_lookup("TERMUX_VERSION", context.temp_allocator)
 	windows_user := ""
 	if s.host.os == .Windows {
-		domain, _ := os.lookup_env("USERDOMAIN", context.temp_allocator)
-		name, _ := os.lookup_env("USERNAME", context.temp_allocator)
+		domain, _ := bridge_env_lookup("USERDOMAIN", context.temp_allocator)
+		name, _ := bridge_env_lookup("USERNAME", context.temp_allocator)
 		windows_user = bridge_setup_windows_user(domain, name)
 	}
 	return {hub = s.profile.hub_url, profile = s.profile.profile, path_env = path, termux_version = tv, windows_user = windows_user, bridge_port = s.ports[0], endpoint_port = s.ports[1]}

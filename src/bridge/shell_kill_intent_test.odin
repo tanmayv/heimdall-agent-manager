@@ -396,11 +396,11 @@ bridge_br2_refused_kill_of_a_gone_run_is_finalized_and_reported :: proc(t: ^test
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	bridge_shell_test_reset()
 	defer bridge_shell_test_reset()
-	saved := bridge_config.data_dir
-	defer { bridge_config.data_dir = saved }
+	saved := bridge_cfg().data_dir
+	defer { bridge_cfg().data_dir = saved }
 	dir := fmt.aprintf("/tmp/ham-br2-refused-%d", os.get_pid())
 	defer delete(dir)
-	bridge_config.data_dir = dir
+	bridge_cfg().data_dir = dir
 	exit_sweep_queue_init()
 
 	// (a) the daemon still lists it, exited.

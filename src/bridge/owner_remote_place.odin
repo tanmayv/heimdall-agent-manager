@@ -69,8 +69,8 @@ Owner_Remote_Pin :: struct {
 }
 
 bridge_owner_remote_pin :: proc(request_id:string,place:Owner_Remote_Place,dir:vault.Directory_Verification_Input,executor_key:string,rec:Bridge_Local_Agent_Token_Record) -> (pin:Owner_Remote_Pin,code,message:string) {
-    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
-    key_id,_:=vault.device_id_from_sign_pub(bridge_identity_public_key_hex(bridge_config.daemon_id),context.temp_allocator)
+    account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
+    key_id,_:=vault.device_id_from_sign_pub(bridge_identity_public_key_hex(bridge_cfg().daemon_id),context.temp_allocator)
     sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
     if !bridge_owner_open(account,key_id) do return {},"storage_error","owner store unavailable"
     kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
@@ -78,7 +78,7 @@ bridge_owner_remote_pin :: proc(request_id:string,place:Owner_Remote_Place,dir:v
     s:=&bridge_owner_store
     owner_key,version,head,trusted:=bridge_owner_fence_directory(s,dir,&kr)
     if !trusted do return {},"directory_unverified","the account directory could not be verified at the owner pin"
-    floor,status:=keystore_read_epoch_floor(bridge_config.daemon_id)
+    floor,status:=keystore_read_epoch_floor(bridge_cfg().daemon_id)
     if status!=.Found do return {},"directory_unverified","no paired root"
     remote,r_version,r_head,approved:=owner.verify_executor_directory(bridge_owner_json(dir),account,place.executor_bridge,executor_key,floor.root,version,head,&kr)
     if !approved || r_version!=version || r_head!=head {
@@ -109,7 +109,7 @@ bridge_owner_remote_reservation :: proc(bundle:string) -> (reservation,instance:
 
 // fleet.reserve signed for the calling coordinator (exact live child).
 bridge_owner_remote_reserve :: proc(request_id:string,place:Owner_Remote_Place,pin:Owner_Remote_Pin,reservation,instance:string,rec:Bridge_Local_Agent_Token_Record) -> (string,string) {
-    key_id,_:=vault.device_id_from_sign_pub(bridge_identity_public_key_hex(bridge_config.daemon_id),context.temp_allocator)
+    key_id,_:=vault.device_id_from_sign_pub(bridge_identity_public_key_hex(bridge_cfg().daemon_id),context.temp_allocator)
     sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
     if !bridge_owner_open(pin.account,key_id) do return "storage_error","owner store unavailable"
     kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
@@ -184,7 +184,7 @@ bridge_owner_remote_place :: proc(request_id:string,place:Owner_Remote_Place,rec
     kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
     if !unlocked do return "vault_locked","owner Bridge vault is locked",""
     now:=time.to_unix_nanoseconds(time.now())/1000000
-    input:=Executor_Issuance_Request_Input{account=pin.account,owner_bridge=bridge_config.daemon_id,owner_key_id=pin.owner_key_id,
+    input:=Executor_Issuance_Request_Input{account=pin.account,owner_bridge=bridge_cfg().daemon_id,owner_key_id=pin.owner_key_id,
         executor_bridge=place.executor_bridge,executor_key_id=executor_key,chain_id=place.chain,task_id=place.task,agent_id=place.agent,
         configuration_revision=pin.configuration_revision,owner_incarnation=pin.owner_incarnation,provider=place.provider,model=place.model,now=now}
     request,built:=bridge_executor_issuance_request(input,&kr,{nil,bridge_executor_consent_sign})

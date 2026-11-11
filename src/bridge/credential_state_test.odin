@@ -87,20 +87,20 @@ Cs_Fixture :: struct {
 cs_setup :: proc(tag: string) -> ^Cs_Fixture {
 	f := new(Cs_Fixture)
 	hub_pause_test_reset()
-	f.saved_config = bridge_config
+	f.saved_config = bridge_cfg()^
 	f.saved_state = g_bridge_cred
 	f.saved_clock = g_bridge_credential_clock
-	f.dir = fmt.aprintf("%s/.cache/heimdall-tests/cred-state-%s-%d-%d", os.get_env("HOME", context.temp_allocator), tag, os.get_pid(), time.to_unix_nanoseconds(time.now()))
+	f.dir = fmt.aprintf("%s/.cache/heimdall-tests/cred-state-%s-%d-%d", bridge_env_get("HOME", context.temp_allocator), tag, os.get_pid(), time.to_unix_nanoseconds(time.now()))
 	f.credential_file = fmt.aprintf("%s/credential", f.dir)
 	sync.atomic_store(&cs_wall, CS_T0_WALL)
 	sync.atomic_store(&cs_mono, 1000)
 	g_bridge_credential_clock = {wall_ms = cs_wall_ms, mono_ms = cs_mono_ms}
-	bridge_config.daemon_url = CS_HUB
-	bridge_config.daemon_id = fmt.aprintf("brg_cs%s", tag)
-	bridge_config.bridge_token = "hba_g0.secret"
+	bridge_cfg().daemon_url = CS_HUB
+	bridge_cfg().daemon_id = fmt.aprintf("brg_cs%s", tag)
+	bridge_cfg().bridge_token = "hba_g0.secret"
 	cs_hub = {now = CS_T0_WALL, access = "hba_g0.secret", access_until = CS_T0_WALL + 3600_000}
 	_ = bridge_write_secret_file(bridge_enroll_refresh_file_for(f.credential_file, context.temp_allocator), "hbf_g0.secret")
-	_ = bridge_write_credential_file(f.credential_file, CS_HUB, bridge_config.daemon_id, "hba_g0.secret")
+	_ = bridge_write_credential_file(f.credential_file, CS_HUB, bridge_cfg().daemon_id, "hba_g0.secret")
 	g_bridge_cred = {
 		renewable = true, epoch = 1, generation = 1, known = true,
 		issued_wall_ms = CS_T0_WALL, issued_mono_ms = 1000, expires_in_s = 3600, phase = .Valid,
@@ -113,7 +113,7 @@ cs_setup :: proc(tag: string) -> ^Cs_Fixture {
 }
 
 cs_teardown :: proc(f: ^Cs_Fixture) {
-	bridge_config = f.saved_config
+	bridge_cfg()^ = f.saved_config
 	g_bridge_cred = f.saved_state
 	g_bridge_credential_clock = f.saved_clock
 	sync.atomic_store(&bridge_credential_reauth_wanted_generation, 0)
@@ -165,7 +165,7 @@ cred_sleep_past_expiry_refreshes_before_first_dial :: proc(t: ^testing.T) {
 	testing.expect_value(t, g_bridge_cred.suspend_detected, 1)
 
 	// The real ordering: the runtime dials while the worker runs on its own thread.
-	worker := thread.create_and_start_with_poly_data(&f.env, proc(env: ^Bridge_Renewal_Env) {
+	worker := bridge_thread_start_with_poly_data(&f.env, proc(env: ^Bridge_Renewal_Env) {
 		context.allocator = runtime.heap_allocator()
 		bridge_credential_renewal_loop(env)
 	})
@@ -179,7 +179,7 @@ cred_sleep_past_expiry_refreshes_before_first_dial :: proc(t: ^testing.T) {
 	testing.expect_value(t, g_bridge_cred.generation, u64(2))
 	testing.expect_value(t, cs_read(f.credential_file), "hba_g1.secret")
 	testing.expect_value(t, cs_read(bridge_enroll_refresh_file_for(f.credential_file, context.temp_allocator)), "hbf_g1.secret")
-	meta, meta_ok := bridge_credential_meta_load(f.credential_file, CS_HUB, bridge_config.daemon_id, "hba_g1.secret")
+	meta, meta_ok := bridge_credential_meta_load(f.credential_file, CS_HUB, bridge_cfg().daemon_id, "hba_g1.secret")
 	testing.expect(t, meta_ok && meta.expires_in == 3600 && meta.access_token_id == "g1", "expiry metadata is bound to the new access token")
 	testing.expect_value(t, sync.atomic_load(&bridge_credential_reauth_wanted_generation), u64(2))
 }
@@ -300,7 +300,7 @@ cred_typed_invalid_grant_requires_reenrollment :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
 	context.allocator = runtime.heap_allocator()
 	f := cs_setup("s2"); defer cs_teardown(f)
-	_ = bridge_credential_meta_write(f.credential_file, CS_HUB, bridge_config.daemon_id, "hba_g0.secret", CS_T0_WALL, 3600, 2_592_000, 1)
+	_ = bridge_credential_meta_write(f.credential_file, CS_HUB, bridge_cfg().daemon_id, "hba_g0.secret", CS_T0_WALL, 3600, 2_592_000, 1)
 	cs_hub.mode = .Invalid_Grant
 	cs_advance(31 * 86_400_000, 0) // asleep past the refresh lifetime
 	outcome, _ := cs_drive(f)
@@ -355,11 +355,11 @@ cred_generation_mismatch_writes_then_parks :: proc(t: ^testing.T) {
 	// Written: the received pair is on disk, with its metadata; the pending record is gone.
 	testing.expect_value(t, cs_read(f.credential_file), "hba_g1.secret")
 	testing.expect_value(t, cs_read(bridge_enroll_refresh_file_for(f.credential_file, context.temp_allocator)), "hbf_g1.secret")
-	_, meta_ok := bridge_credential_meta_load(f.credential_file, CS_HUB, bridge_config.daemon_id, "hba_g1.secret")
+	_, meta_ok := bridge_credential_meta_load(f.credential_file, CS_HUB, bridge_cfg().daemon_id, "hba_g1.secret")
 	testing.expect(t, meta_ok)
 	testing.expect(t, !os.exists(f.env.pending_path))
 	// Published, then parked: nothing is handed out, dialled or sent.
-	testing.expect_value(t, bridge_config.bridge_token, "hba_g1.secret")
+	testing.expect_value(t, bridge_cfg().bridge_token, "hba_g1.secret")
 	_, _, ok := bridge_credential_acquire(0)
 	testing.expect(t, !ok, "a parked owner hands out no credential")
 	_, http_err := bridge_hub_http_send_using({}, proc(req: httpc.Request) -> (httpc.Response, httpc.Error) { return {}, .None })
@@ -396,7 +396,7 @@ cred_pending_pair_is_recovered_before_the_first_dial :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
 	context.allocator = runtime.heap_allocator()
 	f := cs_setup("s6c"); defer cs_teardown(f)
-	pending := Bridge_Refresh_Pending{version = 1, key = f.env.key, api_base = CS_HUB, bridge_id = bridge_config.daemon_id, first_ms = CS_T0_WALL,
+	pending := Bridge_Refresh_Pending{version = 1, key = f.env.key, api_base = CS_HUB, bridge_id = bridge_cfg().daemon_id, first_ms = CS_T0_WALL,
 		credential = {access_token = "hba_pend.secret", refresh_token = "hbf_pend.secret", expires_in = 3600}}
 	testing.expect(t, bridge_refresh_pending_save(f.env.pending_path, pending))
 	cs_hub.access = "hba_pend.secret" // the Hub rotated before the crash
@@ -499,7 +499,7 @@ cred_snapshot_is_expiry_aware :: proc(t: ^testing.T) {
 	delete(fresh)
 	testing.expect(t, !g_bridge_cred.renewal_requested)
 	cs_advance(7_200_000, 0)
-	worker := thread.create_and_start_with_poly_data(&f.env, proc(env: ^Bridge_Renewal_Env) {
+	worker := bridge_thread_start_with_poly_data(&f.env, proc(env: ^Bridge_Renewal_Env) {
 		context.allocator = runtime.heap_allocator()
 		bridge_credential_renewal_loop(env)
 	})
@@ -540,12 +540,12 @@ cred_metadata_is_bound_to_the_access_token :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
 	context.allocator = runtime.heap_allocator()
 	f := cs_setup("meta"); defer cs_teardown(f)
-	testing.expect(t, bridge_credential_meta_write(f.credential_file, CS_HUB, bridge_config.daemon_id, "hba_g0.secret", CS_T0_WALL, 3600, 2_592_000, 1))
-	meta, ok := bridge_credential_meta_load(f.credential_file, CS_HUB, bridge_config.daemon_id, "hba_g0.secret")
+	testing.expect(t, bridge_credential_meta_write(f.credential_file, CS_HUB, bridge_cfg().daemon_id, "hba_g0.secret", CS_T0_WALL, 3600, 2_592_000, 1))
+	meta, ok := bridge_credential_meta_load(f.credential_file, CS_HUB, bridge_cfg().daemon_id, "hba_g0.secret")
 	testing.expect(t, ok && meta.issued_wall_ms == CS_T0_WALL && meta.access_token_id == "g0")
-	_, ok = bridge_credential_meta_load(f.credential_file, CS_HUB, bridge_config.daemon_id, "hba_other.secret")
+	_, ok = bridge_credential_meta_load(f.credential_file, CS_HUB, bridge_cfg().daemon_id, "hba_other.secret")
 	testing.expect(t, !ok, "a replaced access file makes the metadata unknown")
-	_, ok = bridge_credential_meta_load(f.credential_file, "https://other.test", bridge_config.daemon_id, "hba_g0.secret")
+	_, ok = bridge_credential_meta_load(f.credential_file, "https://other.test", bridge_cfg().daemon_id, "hba_g0.secret")
 	testing.expect(t, !ok)
 	data, _ := os.read_entire_file(bridge_credential_meta_path(f.credential_file), context.temp_allocator)
 	testing.expect(t, !strings.contains(string(data), "secret"), "no token material in metadata")
@@ -603,7 +603,7 @@ cred_recovered_pair_keeps_its_receipt_age :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
 	context.allocator = runtime.heap_allocator()
 	f := cs_setup("m2"); defer cs_teardown(f)
-	pending := Bridge_Refresh_Pending{version = 1, key = f.env.key, api_base = CS_HUB, bridge_id = bridge_config.daemon_id, first_ms = CS_T0_WALL - 5_000,
+	pending := Bridge_Refresh_Pending{version = 1, key = f.env.key, api_base = CS_HUB, bridge_id = bridge_cfg().daemon_id, first_ms = CS_T0_WALL - 5_000,
 		credential = {access_token = "hba_old.secret", refresh_token = "hbf_old.secret", expires_in = 3600, received_wall_ms = CS_T0_WALL}}
 	testing.expect(t, bridge_refresh_pending_save(f.env.pending_path, pending))
 	// The process restarts two hours later (fresh monotonic clock).
@@ -614,11 +614,11 @@ cred_recovered_pair_keeps_its_receipt_age :: proc(t: ^testing.T) {
 	testing.expect_value(t, g_bridge_cred.issued_mono_ms, i64(0))
 	needs, _ := bridge_credential_evaluate(cs_wall_ms(), cs_mono_ms())
 	testing.expect(t, needs, "a recovered pair received 2 h ago is due immediately")
-	meta, ok := bridge_credential_meta_load(f.credential_file, CS_HUB, bridge_config.daemon_id, "hba_old.secret")
+	meta, ok := bridge_credential_meta_load(f.credential_file, CS_HUB, bridge_cfg().daemon_id, "hba_old.secret")
 	testing.expect(t, ok && meta.issued_wall_ms == CS_T0_WALL, "metadata records the receipt time")
 	// A record from an older binary (no receipt time) falls back to first_ms.
 	f2 := cs_setup("m2old"); defer cs_teardown(f2)
-	pending.key = f2.env.key; pending.bridge_id = bridge_config.daemon_id
+	pending.key = f2.env.key; pending.bridge_id = bridge_cfg().daemon_id
 	pending.credential.received_wall_ms = 0
 	testing.expect(t, bridge_refresh_pending_save(f2.env.pending_path, pending))
 	cs_advance(7_200_000, 0)

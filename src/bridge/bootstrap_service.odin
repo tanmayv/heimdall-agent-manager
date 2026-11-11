@@ -322,7 +322,7 @@ bridge_bootstrap_ham_ctl_path :: proc() -> string {
 	// installed next to this ham-bridge, then `ham-ctl` on PATH. There is
 	// intentionally no config-file entry — the env var keeps the ctl bound to the
 	// same build as the bridge without a stale hardcoded path in config.toml.
-	env := os.get_env_alloc("HEIMDALL_HAM_CTL_BIN", context.allocator)
+	env := bridge_env_get_alloc("HEIMDALL_HAM_CTL_BIN", context.allocator)
 	exe, _ := os.get_executable_path(context.temp_allocator)
 	return bridge_bootstrap_resolve_ham_ctl(env, exe)
 }

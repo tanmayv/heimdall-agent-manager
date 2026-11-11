@@ -172,29 +172,29 @@ bridge_bootstrap_shim_omits_vault_key :: proc(t: ^testing.T) {
 	defer sync.mutex_unlock(&keystore_test_mutex)
 	// Point the resolver at a real executable so rendering can succeed; the shim
 	// only embeds this path, it never runs it.
-	prev, had := os.lookup_env("HEIMDALL_HAM_CTL_BIN", context.allocator)
+	prev, had := bridge_env_lookup("HEIMDALL_HAM_CTL_BIN", context.allocator)
 	defer {
 		if had {
-			_ = os.set_env("HEIMDALL_HAM_CTL_BIN", prev)
+			bridge_test_env_set("HEIMDALL_HAM_CTL_BIN", prev)
 		} else {
-			os.unset_env("HEIMDALL_HAM_CTL_BIN")
+			bridge_test_env_unset("HEIMDALL_HAM_CTL_BIN")
 		}
 		delete(prev)
 	}
-	_ = os.set_env("HEIMDALL_HAM_CTL_BIN", "/bin/sh")
+	bridge_test_env_set("HEIMDALL_HAM_CTL_BIN", "/bin/sh")
 
 	// A key IS configured while this renders, which is the whole point: even with a
 	// key available, the shim must not capture it.
-	prev_key, had_key := os.lookup_env("HEIMDALL_VAULT_KEYRING", context.allocator)
+	prev_key, had_key := bridge_env_lookup("HEIMDALL_VAULT_KEYRING", context.allocator)
 	defer {
 		if had_key {
-			_ = os.set_env("HEIMDALL_VAULT_KEYRING", prev_key)
+			bridge_test_env_set("HEIMDALL_VAULT_KEYRING", prev_key)
 		} else {
-			os.unset_env("HEIMDALL_VAULT_KEYRING")
+			bridge_test_env_unset("HEIMDALL_VAULT_KEYRING")
 		}
 		delete(prev_key)
 	}
-	_ = os.set_env("HEIMDALL_VAULT_KEYRING", test_keyring_env_value("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"))
+	bridge_test_env_set("HEIMDALL_VAULT_KEYRING", test_keyring_env_value("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"))
 
 	script, ok := bridge_bootstrap_render_ham_ctl_shim("unix:/tmp/bridge.sock", "hlat_tok_1", "inst_abc")
 	testing.expect(t, ok, "shim must render when ham-ctl resolves")
@@ -227,29 +227,29 @@ bridge_bootstrap_written_wrapper_omits_vault_key :: proc(t: ^testing.T) {
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	sync.mutex_lock(&keystore_test_mutex)
 	defer sync.mutex_unlock(&keystore_test_mutex)
-	prev, had := os.lookup_env("HEIMDALL_HAM_CTL_BIN", context.allocator)
+	prev, had := bridge_env_lookup("HEIMDALL_HAM_CTL_BIN", context.allocator)
 	defer {
 		if had {
-			_ = os.set_env("HEIMDALL_HAM_CTL_BIN", prev)
+			bridge_test_env_set("HEIMDALL_HAM_CTL_BIN", prev)
 		} else {
-			os.unset_env("HEIMDALL_HAM_CTL_BIN")
+			bridge_test_env_unset("HEIMDALL_HAM_CTL_BIN")
 		}
 		delete(prev)
 	}
-	_ = os.set_env("HEIMDALL_HAM_CTL_BIN", "/bin/sh")
+	bridge_test_env_set("HEIMDALL_HAM_CTL_BIN", "/bin/sh")
 
 	// A key IS configured while the wrapper is written: that is the condition under
 	// which the old code baked it in.
-	prev_key, had_key := os.lookup_env("HEIMDALL_VAULT_KEYRING", context.allocator)
+	prev_key, had_key := bridge_env_lookup("HEIMDALL_VAULT_KEYRING", context.allocator)
 	defer {
 		if had_key {
-			_ = os.set_env("HEIMDALL_VAULT_KEYRING", prev_key)
+			bridge_test_env_set("HEIMDALL_VAULT_KEYRING", prev_key)
 		} else {
-			os.unset_env("HEIMDALL_VAULT_KEYRING")
+			bridge_test_env_unset("HEIMDALL_VAULT_KEYRING")
 		}
 		delete(prev_key)
 	}
-	_ = os.set_env("HEIMDALL_VAULT_KEYRING", test_keyring_env_value("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"))
+	bridge_test_env_set("HEIMDALL_VAULT_KEYRING", test_keyring_env_value("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"))
 
 	run_dir := fmt.aprintf("/tmp/heimdall-bridge-wrapper-test-%d", int(posix.getpid()))
 	defer delete(run_dir)

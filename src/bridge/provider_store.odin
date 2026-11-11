@@ -156,7 +156,7 @@ bridge_runtime_agent_argv_for_profile :: proc(profile: Bridge_Provider_Profile, 
 	rp := bridge_agent_runtime_profile(profile)
 	// T6: a context rollover restart tells the agent to read its previous_context.
 	rp.starter_prompt_suffix = bridge_rollover_launch_prompt_line(agent_instance_id)
-	return agent_runtime.build_agent_command(rp, model, bridge_config.daemon_url, agent_token, agent_instance_id, permission_mode)
+	return agent_runtime.build_agent_command(rp, model, bridge_cfg().daemon_url, agent_token, agent_instance_id, permission_mode)
 }
 
 bridge_runtime_shell_command_for_profile :: proc(profile: Bridge_Provider_Profile, model, agent_token, agent_instance_id: string) -> string {

@@ -36,10 +36,10 @@ test_executor_bootstrap_materializes_owner_content_without_hub_and_local_shim ::
         bridge_provider_catalog_snapshot=saved;bridge_provider_catalog_loaded=loaded
         sync.rw_mutex_unlock(&bridge_provider_catalog_mutex)
     }
-    prev,had:=os.lookup_env("HEIMDALL_HAM_CTL_BIN",context.temp_allocator)
-    defer {if had {_=os.set_env("HEIMDALL_HAM_CTL_BIN",prev)} else {os.unset_env("HEIMDALL_HAM_CTL_BIN")}}
-    _=os.set_env("HEIMDALL_HAM_CTL_BIN","/bin/sh")
-    dir:=fmt.tprintf("%s/.cache/heimdall-tests/bootstrap-material-%d",os.get_env("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    prev,had:=bridge_env_lookup("HEIMDALL_HAM_CTL_BIN",context.temp_allocator)
+    defer {if had {bridge_test_env_set("HEIMDALL_HAM_CTL_BIN",prev)} else {bridge_test_env_unset("HEIMDALL_HAM_CTL_BIN")}}
+    bridge_test_env_set("HEIMDALL_HAM_CTL_BIN","/bin/sh")
+    dir:=fmt.tprintf("%s/.cache/heimdall-tests/bootstrap-material-%d",bridge_env_get("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
     defer bridge_prespawn_rmdir_all(dir)
     bridge_prespawn_test_write(t,dir,"stale.txt","old")
     material:=bridge_executor_bootstrap_test_material()
@@ -63,7 +63,7 @@ test_executor_bootstrap_materializes_owner_content_without_hub_and_local_shim ::
 @(test)
 test_executor_bootstrap_denies_content_substitution_and_planted_root_symlink :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
-    dir:=fmt.tprintf("%s/.cache/heimdall-tests/bootstrap-reject-%d",os.get_env("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    dir:=fmt.tprintf("%s/.cache/heimdall-tests/bootstrap-reject-%d",bridge_env_get("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
     target:=fmt.tprintf("%s-target",dir)
     defer bridge_prespawn_rmdir_all(dir);defer bridge_prespawn_rmdir_all(target)
     material:=bridge_executor_bootstrap_test_material()

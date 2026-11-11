@@ -239,7 +239,7 @@ bridge_owner_control :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -
         return bridge_owner_fail(ctx,r.code,bridge_owner_control_refusal(owner_method,r.code))
     }
     out:=bridge_owner_result_object(r.body)
-    out["authority"]=json.Object{"kind"=json.String("owner"),"bridge_id"=json.String(bridge_config.daemon_id)}
+    out["authority"]=json.Object{"kind"=json.String("owner"),"bridge_id"=json.String(bridge_cfg().daemon_id)}
     // A task (back) in review owes its reviewers review leases.
     switch owner_method {
     case "lifecycle.force_submit","task.release","task.recheck","task.resolve":

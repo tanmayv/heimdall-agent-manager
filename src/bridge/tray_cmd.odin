@@ -197,7 +197,7 @@ bridge_tray_pid_is_tray :: proc(pid: int) -> bool {
 
 bridge_tray_desktop_env :: proc(args: []string) -> bridgesvc.Desktop_Env {
 	env :: proc(key: string) -> string {
-		v, _ := os.lookup_env(key, context.temp_allocator)
+		v, _ := bridge_env_lookup(key, context.temp_allocator)
 		return v
 	}
 	return {

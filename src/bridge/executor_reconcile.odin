@@ -35,8 +35,8 @@ bridge_executor_reconcile_batch :: proc(s:^executor.Store,now:i64,socket,after:s
 
 bridge_executor_reconcile_once :: proc(after:string)->(string,bool) {
     context.allocator=context.temp_allocator
-    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
-    public:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+    account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
+    public:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     key,valid:=vault.device_id_from_sign_pub(public,context.temp_allocator)
     if !valid || account=="" do return after,false
     // Bring the pty-host daemon up first (outside the executor lock: it may
@@ -71,4 +71,4 @@ bridge_executor_reconcile_worker :: proc() {
         time.sleep(time.Second)
     }
 }
-bridge_executor_reconcile_start :: proc() {thread.run(bridge_executor_reconcile_worker)}
+bridge_executor_reconcile_start :: proc() {bridge_thread_run(bridge_executor_reconcile_worker)}

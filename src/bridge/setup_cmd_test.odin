@@ -91,7 +91,7 @@ test_bridge_setup_wants_separate_account :: proc(t: ^testing.T) {
 // profile, and the enrolled one is left alone.
 @(test)
 test_bridge_setup_headless_enrolled_profile_defaults_to_separate :: proc(t: ^testing.T) {
-	home := fmt.aprintf("%s/.cache/heimdall-tests/setup-separate-%d", os.get_env("HOME", context.temp_allocator), os.get_pid())
+	home := fmt.aprintf("%s/.cache/heimdall-tests/setup-separate-%d", bridge_env_get("HOME", context.temp_allocator), os.get_pid())
 	defer delete(home)
 	_ = os.remove_all(home)
 	defer os.remove_all(home)

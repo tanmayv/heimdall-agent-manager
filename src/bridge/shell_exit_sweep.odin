@@ -230,7 +230,7 @@ bridge_shell_session_sweep_ensure_started :: proc() {
 	defer sync.mutex_unlock(&_shell_exit_sweep_mu)
 	if _shell_exit_sweep_started do return
 	_shell_exit_sweep_started = true
-	thread.run(proc() {
+	bridge_thread_run(proc() {
 		for {
 			time.sleep(SHELL_EXIT_SWEEP_INTERVAL)
 			bridge_shell_session_sweep_now()

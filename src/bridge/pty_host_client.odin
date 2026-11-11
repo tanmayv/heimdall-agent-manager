@@ -610,7 +610,7 @@ pty_host_reply_delete :: proc(r: Pty_Host_Reply) {
 // A bridge-specific directory already scopes the daemon; shared directories
 // retain an identity suffix so multiple bridges never share a daemon.
 pty_host_socket_path :: proc() -> string {
-	base := strings.trim_right(bridge_config.local_endpoint_run_dir, "/")
+	base := strings.trim_right(bridge_cfg().local_endpoint_run_dir, "/")
 	if base == "" do base = bridge_scratch_local_default(context.temp_allocator)
 	// A daemon serves exactly one bridge. Use the directory identity when
 	// available; otherwise put the identity in the name for shared run dirs.
@@ -636,11 +636,11 @@ pty_host_socket_path :: proc() -> string {
 //   3. "default" — last resort for an unconfigured single bridge.
 // Caller owns the returned string.
 pty_host_bridge_identity :: proc() -> string {
-	if id := strings.trim_space(bridge_config.daemon_id); id != "" && id != "local-daemon" {
+	if id := strings.trim_space(bridge_cfg().daemon_id); id != "" && id != "local-daemon" {
 		return bridge_runtime_safe_part(id)
 	}
-	if bridge_config.local_endpoint_port != 0 {
-		return fmt.aprintf("port-%d", bridge_config.local_endpoint_port)
+	if bridge_cfg().local_endpoint_port != 0 {
+		return fmt.aprintf("port-%d", bridge_cfg().local_endpoint_port)
 	}
 	return strings.clone("default")
 }

@@ -38,8 +38,8 @@ bridge_legacy_targets_allowed :: proc(s:^executor.Store,targets:[]executor.Legac
 // Caller holds bridge_executor_mutex. Reopen the durable journal after restart;
 // an unopened in-memory Store is never evidence that no barrier exists.
 bridge_legacy_global_store :: proc()->^executor.Store {
-    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
-    public:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+    account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
+    public:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     key,identified:=vault.device_id_from_sign_pub(public,context.temp_allocator)
     if account=="" || !identified || !bridge_executor_open(account,key) do return nil
     return &bridge_executor_store

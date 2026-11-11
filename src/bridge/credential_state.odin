@@ -257,7 +257,7 @@ bridge_credential_acquire :: proc(wait_ms := BRIDGE_CREDENTIAL_ACQUIRE_WAIT_MS, 
 			if bridge_credential_phase_blocks_traffic(s.phase) do return strings.clone("", allocator), s.generation, false
 		}
 	}
-	return strings.clone(bridge_config.bridge_token, allocator), s.generation, true
+	return strings.clone(bridge_cfg().bridge_token, allocator), s.generation, true
 }
 
 // bridge_credential_peek returns the current credential with no expiry check and no
@@ -265,7 +265,7 @@ bridge_credential_acquire :: proc(wait_ms := BRIDGE_CREDENTIAL_ACQUIRE_WAIT_MS, 
 bridge_credential_peek :: proc(allocator := context.allocator) -> (token: string, generation: u64) {
 	sync.mutex_lock(&g_bridge_credential_mu)
 	defer sync.mutex_unlock(&g_bridge_credential_mu)
-	return strings.clone(bridge_config.bridge_token, allocator), g_bridge_cred.generation
+	return strings.clone(bridge_cfg().bridge_token, allocator), g_bridge_cred.generation
 }
 
 bridge_credential_current_generation :: proc() -> u64 {
@@ -296,7 +296,7 @@ bridge_credential_publish :: proc(cred: Bridge_Enroll_Credential, base_generatio
 	sync.mutex_lock(&g_bridge_credential_mu)
 	s := &g_bridge_cred
 	consistent = !check_base || s.generation == base_generation
-	bridge_config.bridge_token = strings.clone(cred.access_token, runtime.heap_allocator())
+	bridge_cfg().bridge_token = strings.clone(cred.access_token, runtime.heap_allocator())
 	s.generation += 1
 	s.known = true
 	s.issued_wall_ms = now_wall
@@ -554,7 +554,7 @@ bridge_credential_meta_remove :: proc(credential_file: string) {
 bridge_credential_activate :: proc(credential_file: string, renewable: bool) {
 	token, _ := bridge_credential_peek(context.temp_allocator)
 	meta, has_meta := Bridge_Credential_Meta{}, false
-	if renewable do meta, has_meta = bridge_credential_meta_load(credential_file, bridge_config.daemon_url, bridge_config.daemon_id, token)
+	if renewable do meta, has_meta = bridge_credential_meta_load(credential_file, bridge_cfg().daemon_url, bridge_cfg().daemon_id, token)
 	now_wall, _ := bridge_credential_now()
 	sync.mutex_lock(&g_bridge_credential_mu)
 	s := &g_bridge_cred
@@ -602,8 +602,8 @@ Bridge_Renewal_Outcome :: enum {
 }
 
 bridge_renewal_env_make :: proc(credential_file: string) -> Bridge_Renewal_Env {
-	api_base := bridge_config.daemon_url
-	bridge_id := strings.trim_space(bridge_config.daemon_id)
+	api_base := bridge_cfg().daemon_url
+	bridge_id := strings.trim_space(bridge_cfg().daemon_id)
 	return Bridge_Renewal_Env{
 		credential_file = credential_file,
 		refresh_path = bridge_enroll_refresh_file_for(credential_file),

@@ -39,11 +39,21 @@ Bridge_Codex_Own_Unregister :: proc(data_dir: string) -> (ok: bool, msg: string)
 
 // Called by bridge_extension_ensure/remove for the default Codex profile and by
 // `ham-bridge uninstall`; tests replace these (they would touch the real
-// ~/.codex/config.toml).
-bridge_codex_own_ensure_hook: Bridge_Codex_Own_Ensure = bridge_codex_own_ensure
-bridge_codex_own_remove_hook: Bridge_Codex_Own_Remove = bridge_codex_own_remove
-bridge_codex_own_heal_hook: Bridge_Codex_Own_Heal = proc() -> (int, string) { return bridge_codex_own_heal(bridge_codex_default_home()) }
-bridge_codex_own_unregister_hook: Bridge_Codex_Own_Unregister = bridge_codex_own_unregister
+// ~/.codex/config.toml). Per thread (tests run concurrently); nil is the real one.
+@(thread_local)
+bridge_codex_own_ensure_hook: Bridge_Codex_Own_Ensure
+@(thread_local)
+bridge_codex_own_remove_hook: Bridge_Codex_Own_Remove
+@(thread_local)
+bridge_codex_own_heal_hook: Bridge_Codex_Own_Heal
+@(thread_local)
+bridge_codex_own_unregister_hook: Bridge_Codex_Own_Unregister
+
+bridge_codex_own_heal_fn :: proc() -> Bridge_Codex_Own_Heal { return bridge_codex_own_heal_hook if bridge_codex_own_heal_hook != nil else Bridge_Codex_Own_Heal(bridge_codex_own_heal_default) }
+bridge_codex_own_ensure_fn :: proc() -> Bridge_Codex_Own_Ensure { return bridge_codex_own_ensure_hook if bridge_codex_own_ensure_hook != nil else Bridge_Codex_Own_Ensure(bridge_codex_own_ensure) }
+bridge_codex_own_remove_fn :: proc() -> Bridge_Codex_Own_Remove { return bridge_codex_own_remove_hook if bridge_codex_own_remove_hook != nil else Bridge_Codex_Own_Remove(bridge_codex_own_remove) }
+bridge_codex_own_unregister_fn :: proc() -> Bridge_Codex_Own_Unregister { return bridge_codex_own_unregister_hook if bridge_codex_own_unregister_hook != nil else Bridge_Codex_Own_Unregister(bridge_codex_own_unregister) }
+bridge_codex_own_heal_default :: proc() -> (int, string) { return bridge_codex_own_heal(bridge_codex_default_home()) }
 
 // bridge_codex_own_marketplace_name_for maps a bridge service name to its
 // marketplace name: lower-case letters, digits and '-' only (it is also a TOML
@@ -62,7 +72,7 @@ bridge_codex_own_marketplace_name_for :: proc(service: string, allocator := cont
 }
 
 bridge_codex_own_data_dir :: proc() -> string {
-	data_dir := strings.trim_space(bridge_config.data_dir)
+	data_dir := strings.trim_space(bridge_cfg().data_dir)
 	if data_dir == "" do return ""
 	return codex_own_expand_home(data_dir, context.temp_allocator)
 }
@@ -85,7 +95,7 @@ bridge_codex_own_plugin_id :: proc(marketplace: string) -> string {
 
 // The CODEX_HOME agents of the default profile use: $CODEX_HOME, else ~/.codex.
 bridge_codex_default_home :: proc() -> string {
-	if env := strings.trim_space(os.get_env("CODEX_HOME", context.temp_allocator)); env != "" do return codex_own_expand_home(env, context.temp_allocator)
+	if env := strings.trim_space(bridge_env_get("CODEX_HOME", context.temp_allocator)); env != "" do return codex_own_expand_home(env, context.temp_allocator)
 	return codex_own_expand_home("~/.codex", context.temp_allocator)
 }
 

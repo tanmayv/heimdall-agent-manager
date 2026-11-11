@@ -156,7 +156,7 @@ bridge_agent_token_invalidate_instance :: proc(agent_instance_id: string) -> int
 // leaving those agents permanently unauthenticated on reconnect. The namespace
 // key is the bridge's local_endpoint_run_dir, which is already unique per bridge.
 bridge_agent_token_store_namespace :: proc() -> string {
-	run_dir := strings.trim_space(bridge_config.local_endpoint_run_dir)
+	run_dir := strings.trim_space(bridge_cfg().local_endpoint_run_dir)
 	if run_dir == "" do return "default"
 	// Slugify the run dir into a single safe path segment.
 	b := strings.builder_make()
@@ -174,13 +174,13 @@ bridge_agent_token_store_namespace :: proc() -> string {
 }
 
 bridge_agent_token_store_path :: proc() -> string {
-	data_dir := bridge_expand_home(bridge_config.data_dir)
+	data_dir := bridge_expand_home(bridge_cfg().data_dir)
 	expanded_default := false
 	if strings.trim_space(data_dir) == "" {
 		data_dir = bridge_expand_home("~/.local/share/heimdall")
 		expanded_default = true
 	}
-	defer if expanded_default || data_dir != bridge_config.data_dir do delete(data_dir)
+	defer if expanded_default || data_dir != bridge_cfg().data_dir do delete(data_dir)
 	ns := bridge_agent_token_store_namespace()
 	defer if ns != "default" do delete(ns)
 	return strings.concatenate({strings.trim_right(data_dir, "/"), "/bridge/", ns, "/local-tokens.jsonl"})
@@ -190,13 +190,13 @@ bridge_agent_token_store_path :: proc() -> string {
 // We migrate records for THIS bridge out of it on first load so tokens issued by
 // the previous build are not lost across the upgrade.
 bridge_agent_token_store_legacy_path :: proc() -> string {
-	data_dir := bridge_expand_home(bridge_config.data_dir)
+	data_dir := bridge_expand_home(bridge_cfg().data_dir)
 	expanded_default := false
 	if strings.trim_space(data_dir) == "" {
 		data_dir = bridge_expand_home("~/.local/share/heimdall")
 		expanded_default = true
 	}
-	defer if expanded_default || data_dir != bridge_config.data_dir do delete(data_dir)
+	defer if expanded_default || data_dir != bridge_cfg().data_dir do delete(data_dir)
 	return strings.concatenate({strings.trim_right(data_dir, "/"), "/bridge/local-tokens.jsonl"})
 }
 

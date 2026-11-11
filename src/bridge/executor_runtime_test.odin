@@ -32,7 +32,7 @@ bridge_executor_test_owner :: proc(ctx:rawptr,_:executor.Intent)->executor.Curre
 @(test)
 bridge_executor_real_daemon_ledger_dispatch_and_stale_stop :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
-    binary:=os.get_env("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)
+    binary:=bridge_env_get("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)
     if binary=="" {
         when #config(EXECUTOR_TEST_REQUIRED,false) {
             testing.fail_now(t,"HEIMDALL_EXECUTOR_TEST_PTY must name the built real daemon")
@@ -56,7 +56,7 @@ bridge_executor_real_daemon_ledger_dispatch_and_stale_stop :: proc(t:^testing.T)
     ready:=false
     for _ in 0..<100 {if bridge_pty_host_ping(socket) {ready=true;break};time.sleep(10*time.Millisecond)}
     if !testing.expect(t,ready,"real daemon must be available") do return
-    path:=fmt.tprintf("%s/.cache/heimdall-tests/executor-live-%s.sqlite",os.get_env("HOME",context.temp_allocator),suffix)
+    path:=fmt.tprintf("%s/.cache/heimdall-tests/executor-live-%s.sqlite",bridge_env_get("HOME",context.temp_allocator),suffix)
     s:executor.Store
     if !testing.expect(t,executor.open(&s,path,"account","executor","operator")) do return
     defer {
@@ -86,7 +86,7 @@ bridge_executor_real_daemon_ledger_dispatch_and_stale_stop :: proc(t:^testing.T)
     denied:=proof;denied.current=false
     delivered,reason:=bridge_executor_dispatch(&s,intent,base+1200,socket,req,&denied,bridge_executor_test_owner,&io_now,bridge_executor_test_clock)
     testing.expect(t,!delivered && reason=="owner_fence_not_current")
-    old_binary:=os.get_env("HEIMDALL_EXECUTOR_OLD_PTY",context.temp_allocator)
+    old_binary:=bridge_env_get("HEIMDALL_EXECUTOR_OLD_PTY",context.temp_allocator)
     if old_binary!="" {
         old_socket:=fmt.tprintf("/tmp/ham-executor-old-%s.sock",suffix)
         old_swap:=pty_host_test_install_socket(old_socket);defer pty_host_test_restore_socket(old_swap)
@@ -212,7 +212,7 @@ bridge_executor_test_late_owner :: proc(ctx:rawptr,_:executor.Intent)->executor.
 @(test)
 bridge_executor_expiry_during_owner_check_and_clock_regression_fail_before_io :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
-    path:=fmt.tprintf("%s/.cache/heimdall-tests/executor-late-%d.sqlite",os.get_env("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    path:=fmt.tprintf("%s/.cache/heimdall-tests/executor-late-%d.sqlite",bridge_env_get("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
     s:executor.Store
     if !testing.expect(t,executor.open(&s,path,"account","executor","operator")) do return
     defer {
@@ -269,7 +269,7 @@ bridge_executor_physical_fence_rechecks_wall_and_monotonic_expiry :: proc(t:^tes
 @(test)
 bridge_executor_renewal_exact_ipc :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
-    binary:=os.get_env("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)
+    binary:=bridge_env_get("HEIMDALL_EXECUTOR_TEST_PTY",context.temp_allocator)
     if binary=="" {
         when #config(EXECUTOR_TEST_REQUIRED,false) {
             testing.fail_now(t,"HEIMDALL_EXECUTOR_TEST_PTY must name the built real daemon")
@@ -320,7 +320,7 @@ bridge_executor_physical_authority_gate_linearizes_vault_invalidation :: proc(t:
     generation:=bridge_task_chain_search_generation()
     if !testing.expect(t,bridge_executor_authority_begin(generation)) do return
     race:struct {started,finished:bool}
-    worker:=thread.create_and_start_with_data(&race,proc(data:rawptr) {
+    worker:=bridge_thread_start_with_data(&race,proc(data:rawptr) {
         r:=(^struct {started,finished:bool})(data)
         sync.atomic_store(&r.started,true)
         bridge_task_chain_search_lock()

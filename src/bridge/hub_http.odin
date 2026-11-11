@@ -69,7 +69,7 @@ bridge_hub_http_note_auth_rejection :: proc(req: httpc.Request, wire: contracts.
 // libcurl. An invalid URL yields the zero Url, which httpc.send rejects with
 // .Invalid_Url before any I/O.
 bridge_hub_url :: proc(raw := "") -> httpc.Url {
-	text := raw if raw != "" else bridge_config.daemon_url
+	text := raw if raw != "" else bridge_cfg().daemon_url
 	u, _ := httpc.parse_url(text)
 	return u
 }

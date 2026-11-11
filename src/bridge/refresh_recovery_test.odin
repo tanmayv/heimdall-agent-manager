@@ -146,7 +146,7 @@ refresh_lost_reply_is_recovered_by_a_retry_with_the_same_request_id :: proc(t: ^
 refresh_restart_after_retriable_terminal_receipt_retries :: proc(t: ^testing.T) {
     sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
     context.allocator = runtime.heap_allocator()
-    dir := fmt.tprintf("%s/.cache/heimdall-tests/refresh-journal-%d", os.get_env("HOME", context.temp_allocator), time.to_unix_nanoseconds(time.now()))
+    dir := fmt.tprintf("%s/.cache/heimdall-tests/refresh-journal-%d", bridge_env_get("HOME", context.temp_allocator), time.to_unix_nanoseconds(time.now()))
     defer os.remove_all(dir)
     path := fmt.tprintf("%s/retry-journal-v1.json", dir)
     journal := `{"version":1,"receipts":[` +
@@ -177,7 +177,7 @@ refresh_restart_after_retriable_terminal_receipt_retries :: proc(t: ^testing.T) 
 refresh_request_id_is_durable_and_scoped :: proc(t: ^testing.T) {
     sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
     context.allocator = runtime.heap_allocator()
-    dir := fmt.tprintf("%s/.cache/heimdall-tests/refresh-request-%d", os.get_env("HOME", context.temp_allocator), time.to_unix_nanoseconds(time.now()))
+    dir := fmt.tprintf("%s/.cache/heimdall-tests/refresh-request-%d", bridge_env_get("HOME", context.temp_allocator), time.to_unix_nanoseconds(time.now()))
     defer os.remove_all(dir)
     path := bridge_refresh_request_path(fmt.tprintf("%s/credential", dir))
     first, ok1 := bridge_refresh_request_ensure(path, "refresh:h:b", "h", "b")

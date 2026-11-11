@@ -19,7 +19,7 @@ bridge_legacy_dispatch_requires_observation :: proc(spec:Bridge_Command_Spec)->b
 // inability to open the journal refuses the action before its handler executes.
 bridge_legacy_dispatch_store_locked :: proc(injected:^executor.Store)->(^executor.Store,bool) {
     if injected!=nil do return injected,true
-    if bridge_config.daemon_id=="" do return nil,true
+    if bridge_cfg().daemon_id=="" do return nil,true
     store:=bridge_legacy_global_store()
     return store,store!=nil
 }

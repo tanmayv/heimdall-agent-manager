@@ -37,20 +37,20 @@ bridge_test_config_mutex: sync.Mutex
 bridge_token_store_namespace_is_per_bridge :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
-	saved := bridge_config.local_endpoint_run_dir
-	defer { bridge_config.local_endpoint_run_dir = saved }
+	saved := bridge_cfg().local_endpoint_run_dir
+	defer { bridge_cfg().local_endpoint_run_dir = saved }
 
-	bridge_config.local_endpoint_run_dir = "/tmp/heimdall-bridge-local"
+	bridge_cfg().local_endpoint_run_dir = "/tmp/heimdall-bridge-local"
 	a := bridge_agent_token_store_namespace()
 	defer delete(a)
-	bridge_config.local_endpoint_run_dir = "/tmp/heimdall-bridge-local-macbook-remote"
+	bridge_cfg().local_endpoint_run_dir = "/tmp/heimdall-bridge-local-macbook-remote"
 	b := bridge_agent_token_store_namespace()
 	defer delete(b)
 	testing.expect(t, a != b, "distinct run dirs must yield distinct namespaces")
 	testing.expect(t, !strings.contains(a, "/"), "namespace must be a single safe path segment")
 	testing.expect(t, !strings.contains(b, "/"), "namespace must be a single safe path segment")
 
-	bridge_config.local_endpoint_run_dir = ""
+	bridge_cfg().local_endpoint_run_dir = ""
 	testing.expect(t, bridge_agent_token_store_namespace() == "default", "empty run dir -> default namespace")
 }
 
@@ -61,29 +61,29 @@ bridge_token_store_two_bridges_do_not_clobber :: proc(t: ^testing.T) {
 	// Isolate to a scratch data dir so we never touch a real store. Run-scoped by pid
 	// so two CONCURRENT `odin test` processes cannot share it (see the note above).
 	scratch := fmt.aprintf("/tmp/ham-token-store-test-%d", os.get_pid())
-	saved_dir := bridge_config.local_endpoint_run_dir
-	saved_data := bridge_config.data_dir
+	saved_dir := bridge_cfg().local_endpoint_run_dir
+	saved_data := bridge_cfg().data_dir
 	defer {
-		bridge_config.local_endpoint_run_dir = saved_dir
-		bridge_config.data_dir = saved_data
+		bridge_cfg().local_endpoint_run_dir = saved_dir
+		bridge_cfg().data_dir = saved_data
 		delete(scratch)
 	}
-	bridge_config.data_dir = scratch
+	bridge_cfg().data_dir = scratch
 
 	// Bridge A issues a token.
-	bridge_config.local_endpoint_run_dir = "/tmp/bridgeA"
+	bridge_cfg().local_endpoint_run_dir = "/tmp/bridgeA"
 	bridge_agent_token_store_init()
 	issue_a := bridge_agent_token_issue("inst_A", "hit_inst_A", .Wrapper)
 	rec_a, ok_a := bridge_agent_token_verify(issue_a.plaintext_token)
 	testing.expect(t, ok_a && rec_a.agent_instance_id == "inst_A", "bridge A token verifies after issue")
 
 	// Bridge B (different run dir) issues its own token; this MUST NOT wipe A.
-	bridge_config.local_endpoint_run_dir = "/tmp/bridgeB"
+	bridge_cfg().local_endpoint_run_dir = "/tmp/bridgeB"
 	bridge_agent_token_store_init() // reloads B's (separate) store into memory
 	_ = bridge_agent_token_issue("inst_B", "hit_inst_B", .Wrapper)
 
 	// Reload bridge A's store from disk; its token must still be present.
-	bridge_config.local_endpoint_run_dir = "/tmp/bridgeA"
+	bridge_cfg().local_endpoint_run_dir = "/tmp/bridgeA"
 	bridge_agent_token_store_init()
 	rec_a2, ok_a2 := bridge_agent_token_verify(issue_a.plaintext_token)
 	testing.expect(t, ok_a2 && rec_a2.agent_instance_id == "inst_A", "bridge A token SURVIVES bridge B issuing its own token")
@@ -96,15 +96,15 @@ bridge_token_store_save_load_roundtrip :: proc(t: ^testing.T) {
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	// Run-scoped by pid: shared across concurrent processes otherwise (see note above).
 	data_dir := fmt.aprintf("/tmp/ham-token-store-rt-%d", os.get_pid())
-	saved_dir := bridge_config.local_endpoint_run_dir
-	saved_data := bridge_config.data_dir
+	saved_dir := bridge_cfg().local_endpoint_run_dir
+	saved_data := bridge_cfg().data_dir
 	defer {
-		bridge_config.local_endpoint_run_dir = saved_dir
-		bridge_config.data_dir = saved_data
+		bridge_cfg().local_endpoint_run_dir = saved_dir
+		bridge_cfg().data_dir = saved_data
 		delete(data_dir)
 	}
-	bridge_config.data_dir = data_dir
-	bridge_config.local_endpoint_run_dir = "/tmp/bridgeRT"
+	bridge_cfg().data_dir = data_dir
+	bridge_cfg().local_endpoint_run_dir = "/tmp/bridgeRT"
 
 	bridge_agent_token_store_init()
 	issue := bridge_agent_token_issue("inst_RT", "hit_inst_RT", .Agent, 4)
@@ -131,15 +131,15 @@ bridge_token_invalidate_instance_reaps_all_roles :: proc(t: ^testing.T) {
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	// Run-scoped by pid: shared across concurrent processes otherwise (see note above).
 	data_dir := fmt.aprintf("/tmp/ham-token-store-reap-%d", os.get_pid())
-	saved_dir := bridge_config.local_endpoint_run_dir
-	saved_data := bridge_config.data_dir
+	saved_dir := bridge_cfg().local_endpoint_run_dir
+	saved_data := bridge_cfg().data_dir
 	defer {
-		bridge_config.local_endpoint_run_dir = saved_dir
-		bridge_config.data_dir = saved_data
+		bridge_cfg().local_endpoint_run_dir = saved_dir
+		bridge_cfg().data_dir = saved_data
 		delete(data_dir)
 	}
-	bridge_config.data_dir = data_dir
-	bridge_config.local_endpoint_run_dir = "/tmp/bridgeREAP"
+	bridge_cfg().data_dir = data_dir
+	bridge_cfg().local_endpoint_run_dir = "/tmp/bridgeREAP"
 	bridge_agent_token_store_init()
 	// Hermetic: drop any records persisted by a prior run so counts are exact.
 	os.remove(bridge_agent_token_store_path())

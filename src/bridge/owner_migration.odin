@@ -79,15 +79,15 @@ bridge_owner_migration_import_handle :: proc(conn:^ws.Connection,text:string) {
         bridge_runtime_cache_command(wire.command_id,result)
         if conn!=nil do _=bridge_hub_send(conn,result)
     }
-    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
+    account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
     selection,sel_ok:=contracts.owner_parse(wire.selection,"migration_selection")
     genesis,gen_ok:=contracts.owner_parse(wire.genesis,"genesis")
     get:=contracts.owner_string
-    if !sel_ok || !gen_ok || wire.account_id!=account || get(selection,"account_id")!=account || get(selection,"owner_bridge_id")!=bridge_config.daemon_id ||
+    if !sel_ok || !gen_ok || wire.account_id!=account || get(selection,"account_id")!=account || get(selection,"owner_bridge_id")!=bridge_cfg().daemon_id ||
        get(selection,"migration_id")!=wire.migration_id || get(selection,"chain_id")!=wire.chain_id || !contracts.owner_hex(wire.manifest_digest,64) { return }
     kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
     if !unlocked { reply.code="vault_locked";return }
-    owner_pub:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+    owner_pub:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     owner_id,id_ok:=vault.device_id_from_sign_pub(owner_pub,context.temp_allocator)
     if !id_ok do return
     // A replay needs no download: the stored receipt and owner genesis answer.
@@ -117,12 +117,12 @@ bridge_owner_migration_import_handle :: proc(conn:^ws.Connection,text:string) {
     manifest,documents,downloaded:=bridge_owner_migration_download(wire.migration_id,wire.manifest_digest)
     if !downloaded { reply.code="digest_mismatch";return }
     sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
-    floor,status:=keystore_read_epoch_floor(bridge_config.daemon_id)
+    floor,status:=keystore_read_epoch_floor(bridge_cfg().daemon_id)
     if status!=.Found || !floor.root.set do return
     pin_seq,pin_hash:=owner.directory_pin(&bridge_owner_store)
-    key,owner_key,version,head,trusted:=owner.verify_directory(bridge_owner_json(wire.directory),account,bridge_config.daemon_id,owner_pub,get(selection,"principal_id"),get(selection,"key_id"),floor.root,pin_seq,pin_hash,&kr)
+    key,owner_key,version,head,trusted:=owner.verify_directory(bridge_owner_json(wire.directory),account,bridge_cfg().daemon_id,owner_pub,get(selection,"principal_id"),get(selection,"key_id"),floor.root,pin_seq,pin_hash,&kr)
     if !trusted || !owner.observe_directory(&bridge_owner_store,version,head) do return
-    if get(genesis,"owner_bridge_id")!=bridge_config.daemon_id || get(genesis,"owner_key_id")!=owner_key.key_id || !contracts.owner_verify_signature("genesis",genesis,"creator_signature",key) do return
+    if get(genesis,"owner_bridge_id")!=bridge_cfg().daemon_id || get(genesis,"owner_key_id")!=owner_key.key_id || !contracts.owner_verify_signature("genesis",genesis,"creator_signature",key) do return
     signature,signed:=bridge_owner_sign(nil,"genesis",genesis)
     if !signed do return
     genesis["owner_signature"]=json.String(signature)
@@ -161,8 +161,8 @@ bridge_owner_migration_reconcile :: proc(force:bool) -> int {
     last:=sync.atomic_load(&bridge_owner_migration_last_reconcile)
     if !force && now-last<30000 do return 0
     sync.atomic_store(&bridge_owner_migration_last_reconcile,now)
-    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
-    owner_id,id_ok:=vault.device_id_from_sign_pub(bridge_identity_public_key_hex(bridge_config.daemon_id),context.temp_allocator)
+    account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
+    owner_id,id_ok:=vault.device_id_from_sign_pub(bridge_identity_public_key_hex(bridge_cfg().daemon_id),context.temp_allocator)
     if account=="" || !id_ok do return 0
     kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
     if !unlocked do return 0

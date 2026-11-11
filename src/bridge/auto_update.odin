@@ -128,7 +128,7 @@ bridge_auto_update_quiet_with_host :: proc(
 
 bridge_auto_update_start :: proc() {
 	_, refusal := bridge_update_via_ham_bridge(contracts.APP_VERSION)
-	if refusal == "" do thread.run(bridge_auto_update_worker)
+	if refusal == "" do bridge_thread_run(bridge_auto_update_worker)
 }
 
 bridge_auto_update_worker :: proc() {

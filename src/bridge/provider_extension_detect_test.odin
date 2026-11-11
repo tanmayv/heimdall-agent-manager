@@ -403,12 +403,12 @@ provider_extension_test_sha256 :: proc(body: string) -> string {
 test_bridge_extensions_sync_reads_profile_catalog :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
-	saved_dir := bridge_config.data_dir
+	saved_dir := bridge_cfg().data_dir
 	sync.rw_mutex_lock(&bridge_provider_catalog_mutex)
 	saved_snap, saved_loaded := bridge_provider_catalog_snapshot, bridge_provider_catalog_loaded
 	sync.rw_mutex_unlock(&bridge_provider_catalog_mutex)
 	defer {
-		bridge_config.data_dir = saved_dir
+		bridge_cfg().data_dir = saved_dir
 		sync.rw_mutex_lock(&bridge_provider_catalog_mutex)
 		bridge_provider_catalog_snapshot, bridge_provider_catalog_loaded = saved_snap, saved_loaded
 		sync.rw_mutex_unlock(&bridge_provider_catalog_mutex)
@@ -423,7 +423,7 @@ test_bridge_extensions_sync_reads_profile_catalog :: proc(t: ^testing.T) {
 	installed := `[{"id":"heimdall@heimdall","version":"0.5.50-subagents.1","enabled":true}]`
 
 	// The bug: the process-default catalog has no detector for the provider.
-	bridge_config.data_dir = legacy
+	bridge_cfg().data_dir = legacy
 	sync.rw_mutex_lock(&bridge_provider_catalog_mutex)
 	bridge_provider_catalog_snapshot, bridge_provider_catalog_loaded = nil, false
 	sync.rw_mutex_unlock(&bridge_provider_catalog_mutex)
@@ -436,9 +436,9 @@ test_bridge_extensions_sync_reads_profile_catalog :: proc(t: ^testing.T) {
 
 	// The fix: syncing a profile binds discovery to that profile's catalog.
 	bridge_extensions_use_data_dir(profile)
-	bound_dir := bridge_config.data_dir // cloned for the process lifetime
+	bound_dir := bridge_cfg().data_dir // cloned for the process lifetime
 	defer delete(bound_dir)
-	testing.expect_value(t, bridge_config.data_dir, profile)
+	testing.expect_value(t, bridge_cfg().data_dir, profile)
 	bound, bound_ok := bridge_provider_catalog_profile("claude")
 	testing.expect(t, bound_ok)
 	testing.expect(t, bridge_provider_extension_supported(bound.extension))

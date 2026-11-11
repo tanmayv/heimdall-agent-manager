@@ -57,7 +57,7 @@ bridge_owner_fresh_id :: proc(prefix:string) -> string {
 }
 
 bridge_owner_store_path :: proc(account:string) -> string {
-    dir,ok:=bridge_vault_bridge_dir(bridge_config.daemon_id,context.temp_allocator)
+    dir,ok:=bridge_vault_bridge_dir(bridge_cfg().daemon_id,context.temp_allocator)
     if !ok do return ""
     return fmt.tprintf("%sowner-local-%s/runtime.sqlite",dir,contracts.owner_payload_digest(account))
 }
@@ -143,9 +143,9 @@ bridge_owner_agent_route :: proc(request_id,method,params:string,rec:Bridge_Loca
 
 bridge_owner_agent_route_locked :: proc(request_id,method,params:string,rec:Bridge_Local_Agent_Token_Record) -> (string,bool,Owner_Fleet_Launch,Owner_Review_Dispatch,Owner_Remote_Place) {
     if !bridge_owner_routable(method) do return "",false,{},{},{}
-    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
+    account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
     if account=="" do return "",false,{},{},{}
-    pub:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+    pub:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     key_id,key_ok:=vault.device_id_from_sign_pub(pub,context.temp_allocator)
     if !key_ok do return "",false,{},{},{}
     sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
@@ -163,7 +163,7 @@ bridge_owner_agent_route_locked :: proc(request_id,method,params:string,rec:Brid
     if !owned do return "",false,{},{},{}
     kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
     if !unlocked do return bridge_local_response_error(request_id,"vault_locked","owner Bridge vault is locked"),true,{},{},{}
-    key:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,key_id,pub,"bridge",true,false}
+    key:=contracts.Owner_Verified_Key{account,bridge_cfg().daemon_id,key_id,pub,"bridge",true,false}
     response,ctx:=bridge_owner_agent_route_child(request_id,method,p,rec,key,&kr)
     if ctx.pending.active {
         block:string
@@ -315,7 +315,7 @@ Owner_Agent_Next :: struct {
     task:Maybe(Owner_Agent_Task_Ref) `json:"task,omitempty"`,
     authority:Owner_Agent_Authority,
 }
-bridge_owner_authority :: proc() -> Owner_Agent_Authority { return {"owner",bridge_config.daemon_id} }
+bridge_owner_authority :: proc() -> Owner_Agent_Authority { return {"owner",bridge_cfg().daemon_id} }
 
 bridge_owner_placement :: proc(config:json.Object,configured:bool) -> Owner_Agent_Placement {
     if !configured || contracts.owner_string(config,"merge_policy")!="git" do return {}
@@ -584,7 +584,7 @@ bridge_owner_agent_exec :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object
         r:=bridge_owner_run_command(ctx,"chain.read",chain,"","0",`{"cursor":"","limit":"100"}`)
         if r.code!="ok" do return bridge_owner_fail(ctx,r.code,"owner chain read refused")
         read:=bridge_owner_result_object(r.body)
-        read["authority"]=json.Object{"kind"=json.String("owner"),"bridge_id"=json.String(bridge_config.daemon_id)}
+        read["authority"]=json.Object{"kind"=json.String("owner"),"bridge_id"=json.String(bridge_cfg().daemon_id)}
         read["tasks"]=read["items"]
         // T1 (`--assignee self`): who the caller is in this chain, so ham-ctl
         // can resolve self to the durable agent id only in solo mode.
@@ -848,7 +848,7 @@ bridge_owner_task_plan :: proc(ctx:^Owner_Agent_Ctx,p:json.Object,updating:bool)
         plan.has_approval=true
         plan.approval=bool(v)
     }
-    if bridge:=bridge_owner_pstr(p,"bridge_id");bridge!="" && bridge!=bridge_config.daemon_id {
+    if bridge:=bridge_owner_pstr(p,"bridge_id");bridge!="" && bridge!=bridge_cfg().daemon_id {
         return {},bridge_owner_fail(ctx,"unsupported_on_owner_chain","--bridge other than the owner Bridge is not supported on an owner-held chain")
     }
     if _,present:=p["bridge_id"];present && bridge_owner_pstr(p,"bridge_id")=="" && updating {
@@ -1158,7 +1158,7 @@ bridge_owner_task_create :: proc(ctx:^Owner_Agent_Ctx,p:json.Object) -> string {
     }
     if code,message:=bridge_owner_apply_plan(ctx,chain,task,plan,assignee,pre);code!="ok" do return bridge_owner_fail(ctx,code,fmt.tprintf("task %s created; %s",task,message))
     out:=bridge_owner_result_object(r.body)
-    out["authority"]=json.Object{"kind"=json.String("owner"),"bridge_id"=json.String(bridge_config.daemon_id)}
+    out["authority"]=json.Object{"kind"=json.String("owner"),"bridge_id"=json.String(bridge_cfg().daemon_id)}
     if plan.has_assignee do out["assignee_instance_id"]=json.String(assignee.instance)
     if reviewer.instance!="" do out["reviewer_instance_id"]=json.String(reviewer.instance)
     return bridge_local_response_data(ctx.request_id,bridge_owner_json(out))

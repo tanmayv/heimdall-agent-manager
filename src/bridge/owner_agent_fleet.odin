@@ -67,9 +67,9 @@ Owner_Fleet_Launch :: struct {
 bridge_owner_instance_gate :: proc(request_id,verb,params:string,rec:Bridge_Local_Agent_Token_Record) -> (string,bool) {
     target:=bridge_agent_instance_id(params)
     if target=="" do return "",false
-    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
+    account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
     if account=="" do return "",false
-    key_id,key_ok:=vault.device_id_from_sign_pub(bridge_identity_public_key_hex(bridge_config.daemon_id),context.temp_allocator)
+    key_id,key_ok:=vault.device_id_from_sign_pub(bridge_identity_public_key_hex(bridge_cfg().daemon_id),context.temp_allocator)
     if !key_ok do return "",false
     sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
     if bridge_owner_store.db==nil {
@@ -177,7 +177,7 @@ bridge_owner_fleet :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -> 
     policy,found,ok:=owner.agent_fleet_policy(ctx.store,chain,agent)
     if !ok do return bridge_owner_fail(ctx,"storage_error","owner store could not be read; retry")
     reply:=make(json.Object,context.temp_allocator)
-    reply["chain_id"]=json.String(chain);reply["agent_id"]=json.String(agent);reply["authority"]=json.Object{"kind"=json.String("owner"),"bridge_id"=json.String(bridge_config.daemon_id)}
+    reply["chain_id"]=json.String(chain);reply["agent_id"]=json.String(agent);reply["authority"]=json.Object{"kind"=json.String("owner"),"bridge_id"=json.String(bridge_cfg().daemon_id)}
     switch method {
     case "agent.task_chain.fleet_pause","agent.task_chain.fleet_resume":
         if !found do return bridge_owner_fail(ctx,"not_found",fmt.tprintf("no fleet row for %s in this chain; add it with `task-chain fleet set --agent %s`",agent,agent))
@@ -253,7 +253,7 @@ bridge_owner_fleet :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -> 
     }
     switch {
     case note!="":
-    case policy.bridge_id!="" && policy.bridge_id!=bridge_config.daemon_id: note=fmt.tprintf("placement on %s recorded; nothing launched here: a task assigned to %s is reserved on %s (owner_remote_place.odin)",policy.bridge_id,agent,policy.bridge_id)
+    case policy.bridge_id!="" && policy.bridge_id!=bridge_cfg().daemon_id: note=fmt.tprintf("placement on %s recorded; nothing launched here: a task assigned to %s is reserved on %s (owner_remote_place.odin)",policy.bridge_id,agent,policy.bridge_id)
     case len(active)==0: note="the row is paused; nothing launched"
     }
     if note!="" {
@@ -275,9 +275,9 @@ bridge_owner_fleet :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -> 
     }
     model,provider,profile:=policy.model,policy.provider,policy.provider_profile
     if models,valid:=contracts.owner_fleet_models(policy.bridge_models_json);valid {
-        if m,pinned:=models[bridge_config.daemon_id];pinned { model,provider,profile=m.model,m.provider,m.provider_profile }
+        if m,pinned:=models[bridge_cfg().daemon_id];pinned { model,provider,profile=m.model,m.provider,m.provider_profile }
     }
-    body:=map[string]string{"agent_id"=agent,"chain_id"=chain,"bridge_id"=bridge_config.daemon_id}
+    body:=map[string]string{"agent_id"=agent,"chain_id"=chain,"bridge_id"=bridge_cfg().daemon_id}
     if provider!="" do body["provider"]=provider
     if model!="" do body["model"]=model
     if profile!="" do body["provider_profile"]=profile
@@ -305,16 +305,16 @@ bridge_owner_fleet_launch :: proc(request_id:string,launch:Owner_Fleet_Launch,re
 // check for a coordinator the Bridge acts for, see owner_agent_review.odin).
 // Takes the owner, startup and token locks in that order; the caller holds none.
 bridge_owner_fleet_bind :: proc(request_id,chain,agent,role,instance,caller_instance,caller_token_hash:string) -> (string,string) {
-    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
-    key_id,_:=vault.device_id_from_sign_pub(bridge_identity_public_key_hex(bridge_config.daemon_id),context.temp_allocator)
+    account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
+    key_id,_:=vault.device_id_from_sign_pub(bridge_identity_public_key_hex(bridge_cfg().daemon_id),context.temp_allocator)
     code,message:="storage_error","owner store unavailable"
     sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
     if bridge_owner_open(account,key_id) {
         kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
         code,message="vault_locked","owner Bridge vault is locked"
         if unlocked {
-            pub:=bridge_identity_public_key_hex(bridge_config.daemon_id)
-            key:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,key_id,pub,"bridge",true,false}
+            pub:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
+            key:=contracts.Owner_Verified_Key{account,bridge_cfg().daemon_id,key_id,pub,"bridge",true,false}
             sync.mutex_lock(&bridge_startup_io_mutex)
             sync.mutex_lock(&bridge_local_token_mutex)
             caller,current:=bridge_owner_child_locked(caller_instance,caller_token_hash)

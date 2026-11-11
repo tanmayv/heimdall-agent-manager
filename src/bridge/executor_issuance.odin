@@ -19,7 +19,7 @@ bridge_executor_store:executor.Store
 bridge_executor_mutex:sync.Mutex
 
 bridge_executor_root :: proc(account:string)->(string,bool) {
-    dir,ok:=bridge_vault_bridge_dir(bridge_config.daemon_id,context.temp_allocator)
+    dir,ok:=bridge_vault_bridge_dir(bridge_cfg().daemon_id,context.temp_allocator)
     if !ok do return "",false
     return fmt.tprintf("%sexecutor-local-%s",dir,contracts.owner_payload_digest(account)),true
 }
@@ -32,7 +32,7 @@ bridge_executor_open :: proc(account,key:string)->bool {
         if os.chmod(path,{.Read_User,.Write_User,.Execute_User})!=nil do return false
     }
     saved:=context.allocator;context.allocator=runtime.default_allocator()
-    opened:=executor.open(&bridge_executor_store,fmt.tprintf("%s/runtime.sqlite",path),account,bridge_config.daemon_id,key)
+    opened:=executor.open(&bridge_executor_store,fmt.tprintf("%s/runtime.sqlite",path),account,bridge_cfg().daemon_id,key)
     context.allocator=saved
     if opened do _=executor.complete_recovery(&bridge_executor_store,time.to_unix_nanoseconds(time.now())/1000000)
     return opened
@@ -195,9 +195,9 @@ bridge_executor_issuance_handle :: proc(conn:^ws.Connection,text:string) {
         if conn!=nil do _=bridge_hub_send(conn,result)
     }
     now:=time.to_unix_nanoseconds(time.now())/1000000
-    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
+    account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
     expires:=contracts.executor_number(relay,"expires_ms")
-    if wire.account_id!=account || get(relay,"bridge_id")!=bridge_config.daemon_id ||
+    if wire.account_id!=account || get(relay,"bridge_id")!=bridge_cfg().daemon_id ||
        expires<=now || expires-now>contracts.EXECUTOR_TRANSPORT_TTL_MS {return}
     kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
     if !unlocked {reply.code="vault_locked";return}
@@ -207,7 +207,7 @@ bridge_executor_issuance_handle :: proc(conn:^ws.Connection,text:string) {
     exchange,parsed:=contracts.executor_parse(plain,"issuance_exchange")
     scope,scoped:=contracts.executor_parse(get(exchange,"scope"),"transport_scope")
     if !parsed || !scoped || get(scope,"method")!="enrollment" || get(scope,"direction")!="request" ||
-       get(scope,"account_id")!=account || get(scope,"executor_bridge_id")!=bridge_config.daemon_id ||
+       get(scope,"account_id")!=account || get(scope,"executor_bridge_id")!=bridge_cfg().daemon_id ||
        get(scope,"chain_id")!=get(relay,"chain_id") || get(scope,"request_id")!=get(relay,"request_id") ||
        contracts.executor_number(scope,"request_expires_ms")>expires {return}
     // Decryption grants no authority. Parse solely to choose the enrolled key,
@@ -217,10 +217,10 @@ bridge_executor_issuance_handle :: proc(conn:^ws.Connection,text:string) {
     defer crypto.zero_explicit(raw_data(raw),len(raw))
     consent,c_ok:=contracts.executor_parse(raw,"issuance_consent")
     if !c_ok do return
-    public:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+    public:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     key_id,k_ok:=vault.device_id_from_sign_pub(public,context.temp_allocator)
     if !k_ok || get(consent,"executor_key_id")!=key_id do return
-    floor,status:=keystore_read_epoch_floor(bridge_config.daemon_id)
+    floor,status:=keystore_read_epoch_floor(bridge_cfg().daemon_id)
     if status!=.Found || !floor.root.set do return
     sync.mutex_lock(&bridge_executor_mutex);defer sync.mutex_unlock(&bridge_executor_mutex)
     if !bridge_executor_open(account,key_id) {reply.code="storage_error";return}
@@ -231,7 +231,7 @@ bridge_executor_issuance_handle :: proc(conn:^ws.Connection,text:string) {
     if !self_ok || enrolled.kind!="bridge" || enrolled.sign_public_key!=public do return
     device,consenter_ok:=bridge_executor_consent_key(&dir,consent,account,key_id,wire.from_bridge_id)
     if !consenter_ok do return
-    self:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,key_id,public,"bridge",true,false}
+    self:=contracts.Owner_Verified_Key{account,bridge_cfg().daemon_id,key_id,public,"bridge",true,false}
     verified,authenticated:=channel.open_signed(get(exchange,"envelope"),&kr,scope,device,now,context.temp_allocator)
     if !authenticated do return
     defer crypto.zero_explicit(raw_data(verified),len(verified))

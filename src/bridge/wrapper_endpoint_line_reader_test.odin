@@ -171,7 +171,7 @@ wrapper_tcp_loop_answers_a_multi_mib_line_and_the_next :: proc(t: ^testing.T) {
 	pair := line_reader_pair_open(t)
 	defer net.close(pair.listener)
 	// The client thread owns pair.server and closes it when the peer goes away.
-	worker := thread.create_and_start_with_poly_data(pair.server, bridge_local_endpoint_client_thread)
+	worker := bridge_thread_start_with_poly_data(pair.server, bridge_local_endpoint_client_thread)
 	defer {
 		net.close(pair.peer)
 		thread.join(worker)
@@ -218,7 +218,7 @@ read_http_request_reassembles_fragments_and_frees :: proc(t: ^testing.T) {
 		body[:30000],
 		body[30000:],
 	}}
-	worker := thread.create_and_start_with_poly_data(&sender, proc(s: ^Http_Fragment_Sender) {
+	worker := bridge_thread_start_with_poly_data(&sender, proc(s: ^Http_Fragment_Sender) {
 		for part in s.parts {
 			_ = bridge_tcp_send_all(s.sock, transmute([]u8)part)
 			time.sleep(20 * time.Millisecond)

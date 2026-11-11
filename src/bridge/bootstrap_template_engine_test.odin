@@ -154,16 +154,16 @@ bt_memory_decouple_manifest_and_file_set :: proc(t: ^testing.T) {
 	// 2. bridge_bootstrap_build_file_set builds MEMORY.md into files
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
-	prev, had := os.lookup_env("HEIMDALL_HAM_CTL_BIN", context.allocator)
+	prev, had := bridge_env_lookup("HEIMDALL_HAM_CTL_BIN", context.allocator)
 	defer {
 		if had {
-			_ = os.set_env("HEIMDALL_HAM_CTL_BIN", prev)
+			bridge_test_env_set("HEIMDALL_HAM_CTL_BIN", prev)
 		} else {
-			os.unset_env("HEIMDALL_HAM_CTL_BIN")
+			bridge_test_env_unset("HEIMDALL_HAM_CTL_BIN")
 		}
 		delete(prev)
 	}
-	_ = os.set_env("HEIMDALL_HAM_CTL_BIN", "/bin/sh")
+	bridge_test_env_set("HEIMDALL_HAM_CTL_BIN", "/bin/sh")
 
 	cache: Bootstrap_Cache
 	tmp := fmt.tprintf("/tmp/ham-test-mem-decouple-%d", os.get_pid())
@@ -219,16 +219,16 @@ bt_memory_decouple_materialize_run_dir :: proc(t: ^testing.T) {
 
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
-	prev, had := os.lookup_env("HEIMDALL_HAM_CTL_BIN", context.allocator)
+	prev, had := bridge_env_lookup("HEIMDALL_HAM_CTL_BIN", context.allocator)
 	defer {
 		if had {
-			_ = os.set_env("HEIMDALL_HAM_CTL_BIN", prev)
+			bridge_test_env_set("HEIMDALL_HAM_CTL_BIN", prev)
 		} else {
-			os.unset_env("HEIMDALL_HAM_CTL_BIN")
+			bridge_test_env_unset("HEIMDALL_HAM_CTL_BIN")
 		}
 		delete(prev)
 	}
-	_ = os.set_env("HEIMDALL_HAM_CTL_BIN", "/bin/sh")
+	bridge_test_env_set("HEIMDALL_HAM_CTL_BIN", "/bin/sh")
 
 	cache: Bootstrap_Cache
 	cache_dir := fmt.tprintf("/tmp/ham-test-mat-cache-%d", os.get_pid())
@@ -294,16 +294,16 @@ test_bootstrap_sha256 :: proc(body: string) -> string {
 bootstrap_run_dir_ctl_routes_to_each_bridge :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
-	previous, existed := os.lookup_env("HEIMDALL_HAM_CTL_BIN", context.allocator)
+	previous, existed := bridge_env_lookup("HEIMDALL_HAM_CTL_BIN", context.allocator)
 	defer {
 		if existed {
-			_ = os.set_env("HEIMDALL_HAM_CTL_BIN", previous)
+			bridge_test_env_set("HEIMDALL_HAM_CTL_BIN", previous)
 		} else {
-			os.unset_env("HEIMDALL_HAM_CTL_BIN")
+			bridge_test_env_unset("HEIMDALL_HAM_CTL_BIN")
 		}
 		delete(previous)
 	}
-	_ = os.set_env("HEIMDALL_HAM_CTL_BIN", "/bin/sh")
+	bridge_test_env_set("HEIMDALL_HAM_CTL_BIN", "/bin/sh")
 	endpoints := []string{"tcp:127.0.0.1:50324", "tcp:127.0.0.1:50326", "unix:/tmp/bridge-own/socket"}
 	for endpoint in endpoints {
 		shim, ok := bridge_bootstrap_render_ham_ctl_shim(endpoint, "agent-test-token", "instance-test")
@@ -352,18 +352,18 @@ bt_file_set_decrypts_vault_tokens :: proc(t: ^testing.T) {
 	})
 	defer delete(manifest)
 
-	prev, had := os.lookup_env("HEIMDALL_HAM_CTL_BIN", context.allocator)
+	prev, had := bridge_env_lookup("HEIMDALL_HAM_CTL_BIN", context.allocator)
 	defer {
 		if had {
-			_ = os.set_env("HEIMDALL_HAM_CTL_BIN", prev)
+			bridge_test_env_set("HEIMDALL_HAM_CTL_BIN", prev)
 		} else {
-			os.unset_env("HEIMDALL_HAM_CTL_BIN")
+			bridge_test_env_unset("HEIMDALL_HAM_CTL_BIN")
 		}
 		delete(prev)
 	}
-	_ = os.set_env("HEIMDALL_HAM_CTL_BIN", "/bin/sh")
-	os.set_env("HEIMDALL_VAULT_KEYRING", test_keyring_env_value(TEST_VAULT_KEY_HEX))
-	defer os.unset_env("HEIMDALL_VAULT_KEYRING")
+	bridge_test_env_set("HEIMDALL_HAM_CTL_BIN", "/bin/sh")
+	bridge_test_env_set("HEIMDALL_VAULT_KEYRING", test_keyring_env_value(TEST_VAULT_KEY_HEX))
+	defer bridge_test_env_unset("HEIMDALL_VAULT_KEYRING")
 
 	cache: Bootstrap_Cache
 	tmp := fmt.tprintf("/tmp/ham-test-bootstrap-decrypt-%d", os.get_pid())

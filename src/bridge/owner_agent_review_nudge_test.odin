@@ -43,7 +43,7 @@ test_owner_review_nudge_keeps_the_cached_daemon_socket :: proc(t: ^testing.T) {
 		stop: bool,
 	}
 	server := Server{listener = listener}
-	worker := thread.create_and_start_with_data(&server, proc(data: rawptr) {
+	worker := bridge_thread_start_with_data(&server, proc(data: rawptr) {
 		context.allocator = runtime.heap_allocator()
 		s := (^Server)(data)
 		for !sync.atomic_load(&s.stop) {
@@ -73,7 +73,7 @@ test_owner_review_nudge_keeps_the_cached_daemon_socket :: proc(t: ^testing.T) {
 
 	for i in 0..<2 {
 		testing.expectf(t, bridge_owner_review_nudge("inst_review_nudge", "New review lease"), "wake %d reaches the daemon", i)
-		testing.expectf(t, strings.clone(pty_host_daemon_socket, context.temp_allocator) == path, "the cached daemon socket is intact after wake %d", i)
+		testing.expectf(t, strings.clone(pty_host_daemon().socket, context.temp_allocator) == path, "the cached daemon socket is intact after wake %d", i)
 	}
 	sync.atomic_store(&server.stop, true)
 	thread.join(worker)

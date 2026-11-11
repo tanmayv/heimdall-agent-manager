@@ -29,7 +29,7 @@ startup_transport_requires_matching_host_receipt :: proc(t: ^testing.T) {
 	Server :: struct { listener: posix.FD, frames: [4][]byte }
 	server := Server{listener = listener}
 	defer for frame in server.frames do delete(frame, runtime.heap_allocator())
-	worker := thread.create_and_start_with_data(&server, proc(data: rawptr) {
+	worker := bridge_thread_start_with_data(&server, proc(data: rawptr) {
 		context.allocator = runtime.heap_allocator()
 		s := (^Server)(data)
 		for i in 0..<4 {
@@ -98,7 +98,7 @@ startup_launch_query_rejects_missing_unsupported_and_mismatched_replies :: proc(
 	if !testing.expect(t, posix.listen(listener, 4) == .OK) do return
 	Server :: struct { listener: posix.FD }
 	server := Server{listener = listener}
-	worker := thread.create_and_start_with_data(&server, proc(data: rawptr) {
+	worker := bridge_thread_start_with_data(&server, proc(data: rawptr) {
 		context.allocator = runtime.heap_allocator()
 		s := (^Server)(data)
 		for i in 0..<6 {

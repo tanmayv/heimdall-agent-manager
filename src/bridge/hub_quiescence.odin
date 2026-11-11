@@ -56,9 +56,9 @@ bridge_hub_stop_traffic :: proc(final: bool) {
     bridge_hub_traffic_final = bridge_hub_traffic_final || final
     if bridge_hub_traffic_config_path == "" do return // non-runtime callers / tests
     if bridge_hub_traffic_final {
-        bridge_reenroll_mark(bridge_hub_traffic_config_path, bridge_config.daemon_url, bridge_config.daemon_id, .Revoked)
+        bridge_reenroll_mark(bridge_hub_traffic_config_path, bridge_cfg().daemon_url, bridge_cfg().daemon_id, .Revoked)
     }
-    pause := Bridge_Hub_Pause{hub = bridge_config.daemon_url, bridge_id = bridge_config.daemon_id, final = bridge_hub_traffic_final}
+    pause := Bridge_Hub_Pause{hub = bridge_cfg().daemon_url, bridge_id = bridge_cfg().daemon_id, final = bridge_hub_traffic_final}
     bytes, err := json.marshal(pause, allocator = context.temp_allocator)
     if err != nil || !bridge_retry_atomic_write(bridge_hub_pause_path(bridge_hub_traffic_config_path), bytes) {
         fmt.eprintln("bridge: could not persist Hub traffic pause; keep this process parked until local state is repaired")

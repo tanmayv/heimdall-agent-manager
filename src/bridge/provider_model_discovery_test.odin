@@ -124,7 +124,7 @@ test_model_discovery_failure_retains_snapshot_and_empty_replaces :: proc(t: ^tes
 }
 
 model_test_fixture :: proc(t: ^testing.T, body: string) -> (string, string) {
-	dir := fmt.aprintf("%s/.cache/heimdall-tests/model-probe-%d", os.get_env("HOME", context.temp_allocator), time.to_unix_nanoseconds(time.now()))
+	dir := fmt.aprintf("%s/.cache/heimdall-tests/model-probe-%d", bridge_env_get("HOME", context.temp_allocator), time.to_unix_nanoseconds(time.now()))
 	if !testing.expect(t, bridge_make_directory_all(dir) == nil) { delete(dir); return "", "" }
 	path := strings.concatenate({dir, "/fixture.sh"})
 	if !testing.expect(t, os.write_entire_file(path, strings.concatenate({"#!/bin/sh\n", body}, context.temp_allocator)) == nil) { delete(path); delete(dir); return "", "" }
@@ -233,10 +233,10 @@ test_model_discovery_coalesces_queued_overlap_only :: proc(t: ^testing.T) {
 
 	// A later explicit click must run again. Isolate persistence and give it an
 	// empty detection snapshot: an actual attempt now reports absent, not success.
-	old_dir := bridge_config.data_dir
-	dir := fmt.aprintf("%s/.cache/heimdall-tests/model-coalesce-%d", os.get_env("HOME", context.temp_allocator), completed)
-	bridge_config.data_dir = dir
-	defer { bridge_config.data_dir = old_dir; _ = os.remove_all(dir); delete(dir) }
+	old_dir := bridge_cfg().data_dir
+	dir := fmt.aprintf("%s/.cache/heimdall-tests/model-coalesce-%d", bridge_env_get("HOME", context.temp_allocator), completed)
+	bridge_cfg().data_dir = dir
+	defer { bridge_cfg().data_dir = old_dir; _ = os.remove_all(dir); delete(dir) }
 	sync.rw_mutex_lock(&bridge_provider_paths_mutex)
 	old_paths, old_paths_loaded := bridge_provider_paths, bridge_provider_paths_loaded
 	bridge_provider_paths = nil; bridge_provider_paths_loaded = true

@@ -21,16 +21,16 @@ bridge_executor_operator_sign_record :: proc(kind,raw:string)->(string,string) {
     if kind!="policy" && kind!="directory" do return "","malformed"
     o,valid:=contracts.executor_parse(raw,kind)
     if !valid do return "","malformed"
-    public:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+    public:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     key_id,identified:=vault.device_id_from_sign_pub(public,context.temp_allocator)
-    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
+    account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
     get:=contracts.owner_string
-    if !identified || account=="" || get(o,"account_id")!=account || get(o,"executor_bridge_id")!=bridge_config.daemon_id || get(o,"key_id")!=key_id do return "","invalid_scope"
+    if !identified || account=="" || get(o,"account_id")!=account || get(o,"executor_bridge_id")!=bridge_cfg().daemon_id || get(o,"key_id")!=key_id do return "","invalid_scope"
     if kind=="directory" && get(o,"enabled")=="1" {
         if _,canonical:=bridge_executor_canonical_directory(get(o,"directory_path"));!canonical do return "","invalid_resources"
     }
     identity:Bridge_Identity_Record
-    if keystore_read_identity(bridge_config.daemon_id,&identity)!=.Found do return "","operator_key_unavailable"
+    if keystore_read_identity(bridge_cfg().daemon_id,&identity)!=.Found do return "","operator_key_unavailable"
     defer crypto.zero_explicit(&identity,size_of(identity))
     private:ecdsa.Private_Key
     if !ecdsa.private_key_set_bytes(&private,.SECP256R1,identity.scalar[:]) do return "","operator_key_unavailable"
@@ -53,11 +53,11 @@ bridge_executor_operator_handle :: proc(id,method,params:string)->string {
     kind,raw:=contracts.owner_string(request,"kind"),contracts.owner_string(request,"document")
     if kind!="policy" && kind!="directory" do return bridge_local_response_error(id,"malformed","unsupported operator record")
     generation:=bridge_task_chain_search_generation()
-    public:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+    public:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     key_id,identified:=vault.device_id_from_sign_pub(public,context.temp_allocator)
-    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
+    account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
     if !identified || account=="" do return bridge_local_response_error(id,"invalid_scope","paired host operator identity required")
-    key:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,key_id,public,"bridge",true,false}
+    key:=contracts.Owner_Verified_Key{account,bridge_cfg().daemon_id,key_id,public,"bridge",true,false}
     doc,valid:=contracts.executor_parse(raw,kind)
     if !valid || !contracts.executor_verify(kind,doc,key) do return bridge_local_response_error(id,"invalid_scope","pinned host operator signature required")
     sync.mutex_lock(&bridge_executor_mutex);defer sync.mutex_unlock(&bridge_executor_mutex)
@@ -113,7 +113,7 @@ bridge_executor_operator_command :: proc(args:[]string)->bool {
     if args[2]=="sign" {
         output:=option_value(args,"--output","")
         if output=="" || os.exists(output) {fmt.eprintln("explicit new --output file required; existing files are never overwritten");return false}
-        prior:=bridge_config;bridge_config=cfg;defer {bridge_config=prior}
+        prior:=bridge_cfg()^;bridge_cfg()^=cfg;defer {bridge_cfg()^=prior}
         if !bridge_keystore_set_hub(cfg.daemon_url) {fmt.eprintln("operator keystore scope unavailable");return false}
         bridge_fs_init(cfg.fs_root,cfg.fs_read_page_bytes)
         signed,code:=bridge_executor_operator_sign_record(kind,string(bytes))

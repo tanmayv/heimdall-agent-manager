@@ -70,7 +70,7 @@ bridge_task_chain_search_change_parse_failure :: proc(changes: ^[dynamic]Task_Ch
 bridge_hub_task_chain_document_fetch :: proc(after_revision: i64) -> (body: string, ok: bool) {
 	credential_snapshot_69 := bridge_credential_snapshot()
 	defer delete(credential_snapshot_69)
-	if strings.trim_space(bridge_config.daemon_url) == "" || strings.trim_space(credential_snapshot_69) == "" do return "", false
+	if strings.trim_space(bridge_cfg().daemon_url) == "" || strings.trim_space(credential_snapshot_69) == "" do return "", false
 	credential_snapshot_75 := bridge_credential_snapshot()
 	defer delete(credential_snapshot_75)
 	headers := [?]httpc.Header{httpc.bearer(credential_snapshot_75)}
@@ -258,7 +258,7 @@ bridge_task_chain_search_refresh_once :: proc() {
 }
 
 bridge_task_chain_search_refresh_async :: proc() {
-	thread.run(bridge_task_chain_search_refresh_once)
+	bridge_thread_run(bridge_task_chain_search_refresh_once)
 }
 
 bridge_task_chain_search_refresh_worker :: proc() {
@@ -277,5 +277,5 @@ bridge_task_chain_search_start :: proc() {
 	}
 	bridge_task_chain_search_refresh_started = true
 	sync.mutex_unlock(&bridge_task_chain_search_refresh_mutex)
-	thread.run(bridge_task_chain_search_refresh_worker)
+	bridge_thread_run(bridge_task_chain_search_refresh_worker)
 }

@@ -23,7 +23,7 @@ bridge_owner_json :: proc(v:$T)->string { b,_:=json.marshal(v,allocator=context.
 
 bridge_owner_open :: proc(account,key_id:string)->bool {
     if bridge_owner_store.db!=nil do return bridge_owner_store.account==account && bridge_owner_store.owner_key==key_id
-    dir,ok:=bridge_vault_bridge_dir(bridge_config.daemon_id,context.temp_allocator)
+    dir,ok:=bridge_vault_bridge_dir(bridge_cfg().daemon_id,context.temp_allocator)
     if !ok { owner.storage_failure_note(&bridge_owner_store,"bridge: no state directory");return false }
     path:=fmt.tprintf("%sowner-local-%s",dir,contracts.owner_payload_digest(account))
     if err:=bridge_make_directory_all(path,{.Read_User,.Write_User,.Execute_User});err!=nil { owner.storage_failure_note(&bridge_owner_store,"bridge: create store directory");return false }
@@ -32,7 +32,7 @@ bridge_owner_open :: proc(account,key_id:string)->bool {
     }
     // Use the real allocator for the process-lifetime owner identity strings.
     saved:=context.allocator;context.allocator=runtime.default_allocator()
-    opened:=owner.open(&bridge_owner_store,fmt.tprintf("%s/runtime.sqlite",path),account,bridge_config.daemon_id,key_id)
+    opened:=owner.open(&bridge_owner_store,fmt.tprintf("%s/runtime.sqlite",path),account,bridge_cfg().daemon_id,key_id)
     context.allocator=saved
     if opened do bridge_owner_coordinator_refresh_all_locked()
     return opened
@@ -106,8 +106,8 @@ bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
         bridge_runtime_cache_command(wire.command_id,result)
         if conn!=nil do _=bridge_hub_send(conn,result)
     }
-    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
-    if wire.account_id!=account || contracts.owner_string(relay,"bridge_id")!=bridge_config.daemon_id { reply.code="account_mismatch";return }
+    account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
+    if wire.account_id!=account || contracts.owner_string(relay,"bridge_id")!=bridge_cfg().daemon_id { reply.code="account_mismatch";return }
     expires,_:=strconv.parse_i64(contracts.owner_string(relay,"expires_ms"))
     now:=time.to_unix_nanoseconds(time.now())/1000000
     if expires<=now || expires-now>60000 { reply.code="expired";return }
@@ -120,20 +120,20 @@ bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
     command_raw,payload,genesis_raw:=contracts.owner_string(request,"command"),contracts.owner_string(request,"payload"),contracts.owner_string(request,"genesis")
     command,command_ok:=contracts.owner_parse(command_raw,"command")
     if !command_ok || contracts.owner_string(command,"chain_id")!=contracts.owner_string(relay,"chain_id") do return
-    owner_pub:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+    owner_pub:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     owner_id,id_ok:=vault.device_id_from_sign_pub(owner_pub,context.temp_allocator)
     if !id_ok do return
     sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
     if !bridge_owner_open(account,owner_id) {reply.code="storage_error";return}
-    floor,status:=keystore_read_epoch_floor(bridge_config.daemon_id)
+    floor,status:=keystore_read_epoch_floor(bridge_cfg().daemon_id)
     if status!=.Found || !floor.root.set { reply.code="directory_unverified";return }
     pin_seq,pin_hash:=owner.directory_pin(&bridge_owner_store)
-    key,owner_key,version,head,verified:=owner.verify_directory_code(bridge_owner_json(wire.directory),account,bridge_config.daemon_id,owner_pub,contracts.owner_string(command,"principal_id"),contracts.owner_string(command,"key_id"),floor.root,pin_seq,pin_hash,&kr)
+    key,owner_key,version,head,verified:=owner.verify_directory_code(bridge_owner_json(wire.directory),account,bridge_cfg().daemon_id,owner_pub,contracts.owner_string(command,"principal_id"),contracts.owner_string(command,"key_id"),floor.root,pin_seq,pin_hash,&kr)
     if verified!="ok" { reply.code=verified;return }
     if !owner.observe_directory(&bridge_owner_store,version,head) { reply.code="directory_unverified";return }
     if contracts.owner_string(command,"method")=="chain.create" {
         genesis,gvalid:=contracts.owner_parse(genesis_raw,"genesis")
-        if !gvalid || contracts.owner_string(genesis,"owner_bridge_id")!=bridge_config.daemon_id || contracts.owner_string(genesis,"owner_key_id")!=owner_key.key_id || !contracts.owner_verify_signature("genesis",genesis,"creator_signature",key) do return
+        if !gvalid || contracts.owner_string(genesis,"owner_bridge_id")!=bridge_cfg().daemon_id || contracts.owner_string(genesis,"owner_key_id")!=owner_key.key_id || !contracts.owner_verify_signature("genesis",genesis,"creator_signature",key) do return
         signature,signed:=bridge_owner_sign(nil,"genesis",genesis)
         if !signed do return
         genesis["owner_signature"]=json.String(signature)

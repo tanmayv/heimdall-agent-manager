@@ -22,14 +22,14 @@ import vault "odin_test:lib/vault"
 // so every output record is sealed and the helpers below decrypt it.
 @(private = "file")
 _p1_unlock_vault :: proc() -> (prev_key: string, had_key: bool) {
-	prev_key, had_key = os.lookup_env("HEIMDALL_VAULT_KEYRING", context.allocator)
-	_ = os.set_env("HEIMDALL_VAULT_KEYRING", test_keyring_env_value(TEST_ENC_VAULT_KEY))
+	prev_key, had_key = bridge_env_lookup("HEIMDALL_VAULT_KEYRING", context.allocator)
+	bridge_test_env_set("HEIMDALL_VAULT_KEYRING", test_keyring_env_value(TEST_ENC_VAULT_KEY))
 	return
 }
 
 @(private = "file")
 _p1_restore_vault :: proc(prev_key: string, had_key: bool) {
-	if had_key { _ = os.set_env("HEIMDALL_VAULT_KEYRING", prev_key); delete(prev_key) } else { os.unset_env("HEIMDALL_VAULT_KEYRING") }
+	if had_key { bridge_test_env_set("HEIMDALL_VAULT_KEYRING", prev_key); delete(prev_key) } else { bridge_test_env_unset("HEIMDALL_VAULT_KEYRING") }
 }
 
 // pty_test_decode_output decodes one bridge->hub pty_wire OUTPUT frame as the hub would
@@ -190,9 +190,9 @@ pty_drain_encrypts_once_per_merged_frame_and_round_trips :: proc(t: ^testing.T) 
 	defer sync.mutex_unlock(&keystore_test_mutex)
 	bridge_pty_stream_reset()
 	defer bridge_pty_stream_reset()
-	prev_key, found := os.lookup_env("HEIMDALL_VAULT_KEYRING", context.allocator)
-	defer { if found { _ = os.set_env("HEIMDALL_VAULT_KEYRING", prev_key); delete(prev_key) } else { os.unset_env("HEIMDALL_VAULT_KEYRING") } }
-	_ = os.set_env("HEIMDALL_VAULT_KEYRING", test_keyring_env_value(TEST_ENC_VAULT_KEY))
+	prev_key, found := bridge_env_lookup("HEIMDALL_VAULT_KEYRING", context.allocator)
+	defer { if found { bridge_test_env_set("HEIMDALL_VAULT_KEYRING", prev_key); delete(prev_key) } else { bridge_test_env_unset("HEIMDALL_VAULT_KEYRING") } }
+	bridge_test_env_set("HEIMDALL_VAULT_KEYRING", test_keyring_env_value(TEST_ENC_VAULT_KEY))
 
 	w := Bridge_PTY_Stream_Worker{active = true, fd = -1}
 	bridge_pty_stream_emit_frame(&w, "sh_enc", transmute([]byte)string("hello "))

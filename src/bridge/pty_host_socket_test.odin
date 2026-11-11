@@ -25,12 +25,12 @@ Pty_Host_Socket_Test_Save :: struct {
 }
 
 pty_host_socket_test_snapshot :: proc() -> Pty_Host_Socket_Test_Save {
-	return {bridge_config.local_endpoint_run_dir, bridge_config.daemon_id, bridge_config.local_endpoint_port}
+	return {bridge_cfg().local_endpoint_run_dir, bridge_cfg().daemon_id, bridge_cfg().local_endpoint_port}
 }
 pty_host_socket_test_restore :: proc(s: Pty_Host_Socket_Test_Save) {
-	bridge_config.local_endpoint_run_dir = s.run_dir
-	bridge_config.daemon_id = s.daemon
-	bridge_config.local_endpoint_port = s.port
+	bridge_cfg().local_endpoint_run_dir = s.run_dir
+	bridge_cfg().daemon_id = s.daemon
+	bridge_cfg().local_endpoint_port = s.port
 }
 
 @(test)
@@ -41,14 +41,14 @@ pty_host_socket_differs_by_bridge_id_same_run_dir :: proc(t: ^testing.T) {
 	defer pty_host_socket_test_restore(save)
 
 	// Both bridges use the DEFAULT run dir; only the bridge (daemon) id differs.
-	bridge_config.local_endpoint_run_dir = "/tmp/heimdall-bridge-local"
-	bridge_config.local_endpoint_port = 0
+	bridge_cfg().local_endpoint_run_dir = "/tmp/heimdall-bridge-local"
+	bridge_cfg().local_endpoint_port = 0
 
-	bridge_config.daemon_id = "brg_aaa"
+	bridge_cfg().daemon_id = "brg_aaa"
 	a := pty_host_socket_path()
 	defer delete(a)
 
-	bridge_config.daemon_id = "brg_bbb"
+	bridge_cfg().daemon_id = "brg_bbb"
 	b := pty_host_socket_path()
 	defer delete(b)
 
@@ -65,9 +65,9 @@ pty_host_socket_stable_for_same_bridge_id :: proc(t: ^testing.T) {
 	save := pty_host_socket_test_snapshot()
 	defer pty_host_socket_test_restore(save)
 
-	bridge_config.local_endpoint_run_dir = "/tmp/heimdall-bridge-local"
-	bridge_config.daemon_id = "brg_stable"
-	bridge_config.local_endpoint_port = 0
+	bridge_cfg().local_endpoint_run_dir = "/tmp/heimdall-bridge-local"
+	bridge_cfg().daemon_id = "brg_stable"
+	bridge_cfg().local_endpoint_port = 0
 
 	a := pty_host_socket_path()
 	defer delete(a)
@@ -83,24 +83,24 @@ pty_host_socket_falls_back_to_port_then_default :: proc(t: ^testing.T) {
 	save := pty_host_socket_test_snapshot()
 	defer pty_host_socket_test_restore(save)
 
-	bridge_config.local_endpoint_run_dir = "/tmp/heimdall-bridge-local"
+	bridge_cfg().local_endpoint_run_dir = "/tmp/heimdall-bridge-local"
 
 	// No real bridge id (default "local-daemon") + a port => port discriminates,
 	// so two default-id bridges on different ports still differ.
-	bridge_config.daemon_id = "local-daemon"
-	bridge_config.local_endpoint_port = 49324
+	bridge_cfg().daemon_id = "local-daemon"
+	bridge_cfg().local_endpoint_port = 49324
 	p1 := pty_host_socket_path()
 	defer delete(p1)
 	testing.expect(t, strings.contains(p1, "port-49324"), "falls back to port discriminator")
 
-	bridge_config.local_endpoint_port = 49325
+	bridge_cfg().local_endpoint_port = 49325
 	p2 := pty_host_socket_path()
 	defer delete(p2)
 	testing.expect(t, p1 != p2, "different ports => different sockets under default id")
 
 	// No id and no port => a stable default (single unconfigured bridge).
-	bridge_config.daemon_id = ""
-	bridge_config.local_endpoint_port = 0
+	bridge_cfg().daemon_id = ""
+	bridge_cfg().local_endpoint_port = 0
 	d := pty_host_socket_path()
 	defer delete(d)
 	testing.expect(t, strings.contains(d, "pty-host-default.sock"), "last-resort default socket name")
@@ -113,9 +113,9 @@ pty_host_socket_respects_custom_run_dir :: proc(t: ^testing.T) {
 	save := pty_host_socket_test_snapshot()
 	defer pty_host_socket_test_restore(save)
 
-	bridge_config.local_endpoint_run_dir = "/var/run/heimdall-b1/"
-	bridge_config.daemon_id = "brg_x"
-	bridge_config.local_endpoint_port = 0
+	bridge_cfg().local_endpoint_run_dir = "/var/run/heimdall-b1/"
+	bridge_cfg().daemon_id = "brg_x"
+	bridge_cfg().local_endpoint_port = 0
 	p := pty_host_socket_path()
 	defer delete(p)
 	testing.expect_value(t, p, "/var/run/heimdall-b1/pty-host-brg_x.sock")
@@ -128,14 +128,14 @@ pty_host_socket_bridge_directory_avoids_duplicate_identity :: proc(t: ^testing.T
 	save := pty_host_socket_test_snapshot()
 	defer pty_host_socket_test_restore(save)
 
-	bridge_config.daemon_id = "brg_18d03379a7d6d47b"
-	bridge_config.local_endpoint_run_dir = "/home/tanmay/.local/share/heimdall/bridges/brg_18d03379a7d6d47b/run/"
+	bridge_cfg().daemon_id = "brg_18d03379a7d6d47b"
+	bridge_cfg().local_endpoint_run_dir = "/home/tanmay/.local/share/heimdall/bridges/brg_18d03379a7d6d47b/run/"
 	p := pty_host_socket_path()
 	defer delete(p)
 	testing.expect_value(t, p, "/home/tanmay/.local/share/heimdall/bridges/brg_18d03379a7d6d47b/run/pty-host.sock")
 	testing.expect(t, len(p) < 104, "installed socket must fit Linux and macOS limits")
 
-	bridge_config.daemon_id = "brg_other"
+	bridge_cfg().daemon_id = "brg_other"
 	other := pty_host_socket_path()
 	defer delete(other)
 	testing.expect(t, other != p, "another bridge cannot adopt this directory's daemon")
@@ -150,15 +150,15 @@ bridge_unix_socket_long_paths_bind_and_stay_distinct :: proc(t: ^testing.T) {
 
 	base := strings.repeat("/very-long-runtime-directory", 8)
 	defer delete(base)
-	bridge_config.local_endpoint_run_dir = base
-	bridge_config.daemon_id = "brg_one"
+	bridge_cfg().local_endpoint_run_dir = base
+	bridge_cfg().daemon_id = "brg_one"
 	pty := pty_host_socket_path()
 	defer delete(pty)
 	endpoint := bridge_local_endpoint_config_default(base, 49325)
 	defer delete(endpoint.unix_socket_path)
 	testing.expect(t, len(pty) <= 103 && len(endpoint.unix_socket_path) <= 103)
 	testing.expect(t, pty != endpoint.unix_socket_path, "socket roles must remain distinct")
-	bridge_config.daemon_id = "brg_two"
+	bridge_cfg().daemon_id = "brg_two"
 	other := pty_host_socket_path()
 	defer delete(other)
 	testing.expect(t, pty != other, "bridges sharing a directory must remain distinct")

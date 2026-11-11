@@ -317,7 +317,7 @@ bridge_uninstall_run :: proc(data: rawptr, step: bridgesvc.Uninstall_Step) -> (b
 		// CODEX_HOME comes from this shell, which may differ from the bridge
 		// service's; another bridge's heal drops a leftover once the source is gone.
 		lock_path, locked := bridge_extension_lock("codex", time.time_add(time.now(), BRIDGE_UNINSTALL_CODEX_LOCK_WAIT))
-		ok, msg := bridge_codex_own_unregister_hook(l.data_dir)
+		ok, msg := bridge_codex_own_unregister_fn()(l.data_dir)
 		if locked do bridge_extension_unlock("codex", lock_path)
 		if !ok do return false, .Busy, msg
 		n, busy, left := bridge_uninstall_remove(u, paths.extensions)
@@ -489,7 +489,7 @@ bridge_uninstall_relocate :: proc(l: bridgesvc.Layout, args: []string) -> (reloc
 	if has_flag(args, BRIDGE_UNINSTALL_RELOCATED_FLAG) do return false, false
 	exe, _ := os.get_executable_path(context.temp_allocator)
 	if !bridge_exe_in_bin_dir(exe, l.bin_dir) do return false, false
-	tmp, _ := os.lookup_env("TEMP", context.temp_allocator)
+	tmp, _ := bridge_env_lookup("TEMP", context.temp_allocator)
 	if tmp == "" do return false, false
 	copy_path := bridgesvc.pjoin(tmp, fmt.tprintf("%s%d.exe", BRIDGE_UNINSTALL_COPY_PREFIX, os.get_pid()))
 	if os.copy_file(copy_path, exe) != nil do return false, false
@@ -539,9 +539,9 @@ bridge_uninstall_spawn_detached :: proc(service_name: string, purge: bool) -> (o
 	if exe == "" do return false, "cannot resolve the bridge executable"
 	tmp_dir := ""
 	when ODIN_OS == .Windows {
-		tmp_dir, _ = os.lookup_env("TEMP", context.temp_allocator)
+		tmp_dir, _ = bridge_env_lookup("TEMP", context.temp_allocator)
 	} else {
-		tmp_dir, _ = os.lookup_env("TMPDIR", context.temp_allocator)
+		tmp_dir, _ = bridge_env_lookup("TMPDIR", context.temp_allocator)
 		if tmp_dir == "" do tmp_dir = "/tmp"
 	}
 	copy_path := bridgesvc.pjoin(tmp_dir, fmt.tprintf("%s%d%s", BRIDGE_UNINSTALL_COPY_PREFIX, os.get_pid(), BRIDGE_EXE_SUFFIX))

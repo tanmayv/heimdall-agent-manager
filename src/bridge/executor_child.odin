@@ -35,7 +35,7 @@ bridge_executor_child_keys :: proc(s:^executor.Store,b:json.Object,d:vault.Direc
     get:=contracts.owner_string
     own,self_ok:=dir.trusted[s.operator_key]
     peer,owner_ok:=dir.trusted[get(b,"key_id")]
-    public:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+    public:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     if !self_ok || own.kind!="bridge" || own.sign_public_key!=public || !owner_ok || peer.kind!="bridge" do return {},{},false
     host:=contracts.Owner_Verified_Key{s.account,s.executor,s.operator_key,public,"bridge",true,false}
     source:=contracts.Owner_Verified_Key{s.account,get(b,"owner_bridge_id"),peer.id,peer.sign_public_key,"bridge",true,false}
@@ -56,8 +56,8 @@ bridge_executor_agent :: proc(request_id,input,secret:string,
     transport:Executor_Child_Transport={nil,bridge_executor_child_fetch,bridge_executor_child_send},socket_path:string="",method:string="agent.owner_local.lease")->(string,bool) {
     if method!="agent.owner_local.lease" && method!="agent.start_success" && method!="agent.extension.event" do return "",false
     generation:=bridge_task_chain_search_generation()
-    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
-    public:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+    account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
+    public:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     self,self_ok:=vault.device_id_from_sign_pub(public,context.temp_allocator)
     if !self_ok || account=="" do return "",false
     sync.mutex_lock(&bridge_executor_mutex)

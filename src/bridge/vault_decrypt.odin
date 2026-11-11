@@ -86,7 +86,7 @@ bridge_vault_lock :: proc() {
 	bridge_vault_lock_inner()
 }
 bridge_vault_lock_inner :: proc() {
-	keystore_lock_and_purge(bridge_config.daemon_id)
+	keystore_lock_and_purge(bridge_cfg().daemon_id)
 	bridge_task_chain_search_lock_inner()
 }
 
@@ -98,11 +98,11 @@ bridge_vault_reset :: proc() {
 	sync.mutex_lock(&g_unseal_install_mu);defer sync.mutex_unlock(&g_unseal_install_mu)
 	sync.rw_mutex_lock(&bridge_vault_io_mutex);defer sync.rw_mutex_unlock(&bridge_vault_io_mutex)
 	bridge_vault_lock_inner()
-	_ = keystore_delete_identity_key(bridge_config.daemon_id)
-	_ = keystore_identity_backup_drop(bridge_config.daemon_id)
+	_ = keystore_delete_identity_key(bridge_cfg().daemon_id)
+	_ = keystore_identity_backup_drop(bridge_cfg().daemon_id)
 	bridge_unseal_forget_identity()
 	when ODIN_OS == .Linux {
-		if keystore_android_selected() do _ = keystore_android_delete_keystore_key(bridge_config.daemon_id)
+		if keystore_android_selected() do _ = keystore_android_delete_keystore_key(bridge_cfg().daemon_id)
 	}
 }
 

@@ -42,25 +42,25 @@ fixture_open :: proc(t: ^testing.T, label: string, enrolled: bool, key: string) 
 	keystore_lock_and_purge(id_a)
 	_ = keystore_delete_identity_key(id_a)
 	bridge_unseal_forget_identity()
-	f.prev_key, f.had_key = os.lookup_env("HEIMDALL_VAULT_KEYRING", context.allocator)
-	os.unset_env("HEIMDALL_VAULT_KEYRING")
+	f.prev_key, f.had_key = bridge_env_lookup("HEIMDALL_VAULT_KEYRING", context.allocator)
+	bridge_test_env_unset("HEIMDALL_VAULT_KEYRING")
 
 	f.sb, ok = bridge_vault_test_sandbox_open(t, label)
 	if !ok do return
 
 	if enrolled do testing.expect(t, test_provision_identity(id_a), "identity provisioned")
-	if key != "" do _ = os.set_env("HEIMDALL_VAULT_KEYRING", test_keyring_env_value(key))
+	if key != "" do bridge_test_env_set("HEIMDALL_VAULT_KEYRING", test_keyring_env_value(key))
 	return f, true
 }
 
 @(private = "file")
 fixture_close :: proc(f: ^Vault_Gate_Fixture) {
 	bridge_vault_test_sandbox_close(&f.sb)
-	if f.had_key { _ = os.set_env("HEIMDALL_VAULT_KEYRING", f.prev_key); delete(f.prev_key) } else { os.unset_env("HEIMDALL_VAULT_KEYRING") }
+	if f.had_key { bridge_test_env_set("HEIMDALL_VAULT_KEYRING", f.prev_key); delete(f.prev_key) } else { bridge_test_env_unset("HEIMDALL_VAULT_KEYRING") }
 	keystore_lock_and_purge(f.bridge_id)
 	_ = keystore_delete_identity_key(f.bridge_id)
 	bridge_unseal_forget_identity()
-	bridge_config.daemon_id = f.prev_daemon_id
+	bridge_cfg().daemon_id = f.prev_daemon_id
 }
 
 @(private = "file")

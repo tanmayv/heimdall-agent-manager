@@ -90,7 +90,7 @@ test_spawn_direct_child_run :: proc(name, cmd, data_dir: string) -> (session_id:
 		session_id      = strings.clone(sid, map_heap),
 		kind            = .Run,
 		cmd             = strings.clone(cmd, map_heap),
-		bridge_id       = strings.clone(bridge_config.daemon_id, map_heap),
+		bridge_id       = strings.clone(bridge_cfg().daemon_id, map_heap),
 		pid             = process.pid,
 		status          = .Running,
 		started_at      = strings.clone(start_time, map_heap),
@@ -168,11 +168,11 @@ bridge_shell2_conversion_releases_the_blocked_caller :: proc(t: ^testing.T) {
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	bridge_shell_test_reset()
 	defer bridge_shell_test_reset()
-	saved := bridge_config.data_dir
-	defer { bridge_config.data_dir = saved }
+	saved := bridge_cfg().data_dir
+	defer { bridge_cfg().data_dir = saved }
 	dir := test_data_dir("convert")
 	defer delete(dir)
-	bridge_config.data_dir = dir
+	bridge_cfg().data_dir = dir
 
 	// Register the session by hand rather than spawning: the conversion is a state
 	// transition on a LIVE run, and driving it directly is what keeps this test
@@ -190,7 +190,7 @@ bridge_shell2_conversion_releases_the_blocked_caller :: proc(t: ^testing.T) {
 	bridge_shell_session_register(&bridge_shell_session_map, &sess)
 
 	ctx := Convert_Ctx{session_id = session_id}
-	th := thread.create_and_start_with_data(rawptr(&ctx), convert_worker)
+	th := bridge_thread_start_with_data(rawptr(&ctx), convert_worker)
 	defer thread.destroy(th)
 
 	resp := bridge_shell_run_wait_response("req_conv", session_id, 5_000)
@@ -215,11 +215,11 @@ bridge_shell2_conversion_is_one_way :: proc(t: ^testing.T) {
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	bridge_shell_test_reset()
 	defer bridge_shell_test_reset()
-	saved := bridge_config.data_dir
-	defer { bridge_config.data_dir = saved }
+	saved := bridge_cfg().data_dir
+	defer { bridge_cfg().data_dir = saved }
 	dir := test_data_dir("oneway")
 	defer delete(dir)
-	bridge_config.data_dir = dir
+	bridge_cfg().data_dir = dir
 
 	session_id := "shl_oneway_test"
 	reg := Bridge_Shell_Session{
@@ -253,11 +253,11 @@ bridge_shell2_dropping_the_waiter_does_not_touch_the_run :: proc(t: ^testing.T) 
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	bridge_shell_test_reset()
 	defer bridge_shell_test_reset()
-	saved := bridge_config.data_dir
-	defer { bridge_config.data_dir = saved }
+	saved := bridge_cfg().data_dir
+	defer { bridge_cfg().data_dir = saved }
 	dir := test_data_dir("drop")
 	defer delete(dir)
-	bridge_config.data_dir = dir
+	bridge_cfg().data_dir = dir
 
 	session_id := "shl_drop_test"
 	reg := Bridge_Shell_Session{
@@ -314,11 +314,11 @@ bridge_shell2_reconcile_leaves_a_live_direct_child_run_alone :: proc(t: ^testing
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	bridge_shell_test_reset()
 	defer bridge_shell_test_reset()
-	saved := bridge_config.data_dir
-	defer { bridge_config.data_dir = saved }
+	saved := bridge_cfg().data_dir
+	defer { bridge_cfg().data_dir = saved }
 	dir := test_data_dir("recon-live")
 	defer delete(dir)
-	bridge_config.data_dir = dir
+	bridge_cfg().data_dir = dir
 
 	session_id, spawned_pid, spawn_ok := test_spawn_direct_child_run("recon-live", "sleep 30", dir)
 	testing.expect(t, spawn_ok, "direct-child run spawned")
@@ -350,11 +350,11 @@ bridge_shell2_reconcile_reports_a_dead_run_whose_exit_was_missed :: proc(t: ^tes
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	bridge_shell_test_reset()
 	defer bridge_shell_test_reset()
-	saved := bridge_config.data_dir
-	defer { bridge_config.data_dir = saved }
+	saved := bridge_cfg().data_dir
+	defer { bridge_cfg().data_dir = saved }
 	dir := test_data_dir("recon-dead")
 	defer delete(dir)
-	bridge_config.data_dir = dir
+	bridge_cfg().data_dir = dir
 
 	// A session the map believes is running, with a pid that is not ours. This is
 	// exactly the state a dropped exit event leaves behind.
@@ -394,11 +394,11 @@ bridge_shell2_reconcile_after_restart_leaves_no_untracked_orphan :: proc(t: ^tes
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	bridge_shell_test_reset()
 	defer bridge_shell_test_reset()
-	saved := bridge_config.data_dir
-	defer { bridge_config.data_dir = saved }
+	saved := bridge_cfg().data_dir
+	defer { bridge_cfg().data_dir = saved }
 	dir := test_data_dir("recon-restart")
 	defer delete(dir)
-	bridge_config.data_dir = dir
+	bridge_cfg().data_dir = dir
 
 	session_id, pid, spawn_ok := test_spawn_direct_child_run("recon-restart", "sleep 30", dir)
 	testing.expect(t, spawn_ok, "direct-child run spawned")
@@ -477,11 +477,11 @@ bridge_shell2_a_legacy_spec_is_reclaimed_from_the_roster :: proc(t: ^testing.T) 
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	bridge_shell_test_reset()
 	defer bridge_shell_test_reset()
-	saved := bridge_config.data_dir
-	defer { bridge_config.data_dir = saved }
+	saved := bridge_cfg().data_dir
+	defer { bridge_cfg().data_dir = saved }
 	dir := test_data_dir("legacy")
 	defer delete(dir)
-	bridge_config.data_dir = dir
+	bridge_cfg().data_dir = dir
 
 	// A spec with NO pty_host key, exactly as a pre-REQ-SHELL-2 bridge wrote it,
 	// and an EMPTY map — which is the post-restart state where this actually bites.
@@ -523,11 +523,11 @@ bridge_shell2_a_legacy_spec_the_roster_does_not_know_is_still_resolved :: proc(t
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	bridge_shell_test_reset()
 	defer bridge_shell_test_reset()
-	saved := bridge_config.data_dir
-	defer { bridge_config.data_dir = saved }
+	saved := bridge_cfg().data_dir
+	defer { bridge_cfg().data_dir = saved }
 	dir := test_data_dir("legacy-miss")
 	defer delete(dir)
-	bridge_config.data_dir = dir
+	bridge_cfg().data_dir = dir
 
 	session_id := "shl_legacy_gone"
 	spec_dir := strings.concatenate({dir, "/shell_sessions"})
@@ -565,6 +565,9 @@ bridge_shell2_a_legacy_spec_the_roster_does_not_know_is_still_resolved :: proc(t
 // a watchdog at all.
 @(test)
 bridge_shell2_only_runs_are_capped :: proc(t: ^testing.T) {
+	// The shell session map is process-wide (worker threads read it).
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	// bridge_shell_run_cap_start is a no-op for every kind but Run. Calling it for
 	// the other two must start nothing; if it ever did, a server would acquire a
 	// 30-minute death sentence.

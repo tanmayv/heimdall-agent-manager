@@ -64,7 +64,7 @@ bridge_owner_chain_create_documents :: proc(account,bridge,key_id,chain,op,title
 bridge_owner_chain_create_reply :: proc(request_id,chain,coordinator,warning:string) -> string {
     out:=make(json.Object,context.temp_allocator)
     authority:=make(json.Object,context.temp_allocator)
-    authority["kind"]=json.String("owner");authority["bridge_id"]=json.String(bridge_config.daemon_id)
+    authority["kind"]=json.String("owner");authority["bridge_id"]=json.String(bridge_cfg().daemon_id)
     out["chain_id"]=json.String(chain);out["coordinator_instance_id"]=json.String(coordinator);out["authority"]=authority
     if warning!="" do out["warning"]=json.String(warning)
     return bridge_local_response_data(request_id,bridge_owner_json(out))
@@ -151,7 +151,7 @@ bridge_owner_chain_create_locked :: proc(rec:Bridge_Local_Agent_Token_Record,nam
 // caller's Hub credential, then waits (no locks held) until it is a live
 // child here. Returns the instance id, or a reason.
 bridge_owner_chain_launch_coordinator :: proc(chain,agent:string,rec:Bridge_Local_Agent_Token_Record) -> (string,string) {
-    return bridge_owner_launch_into_chain(bridge_owner_json(map[string]string{"agent_id"=agent,"chain_id"=chain,"bridge_id"=bridge_config.daemon_id}),agent,rec)
+    return bridge_owner_launch_into_chain(bridge_owner_json(map[string]string{"agent_id"=agent,"chain_id"=chain,"bridge_id"=bridge_cfg().daemon_id}),agent,rec)
 }
 
 // Hub POST /api/v1/agent-instances with `body` (agent_id, chain_id, this

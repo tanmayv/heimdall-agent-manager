@@ -170,8 +170,8 @@ bridge_extensions_prune_shared :: proc(keep: string) {
 // extension descriptor, so every installed extension verified as "unsupported".
 bridge_extensions_use_data_dir :: proc(data_dir: string) {
 	dir := strings.trim_space(data_dir)
-	if dir == "" || strings.trim_space(bridge_config.data_dir) == dir do return
-	bridge_config.data_dir = strings.clone(dir) // process-lifetime configuration
+	if dir == "" || strings.trim_space(bridge_cfg().data_dir) == dir do return
+	bridge_cfg().data_dir = strings.clone(dir) // process-lifetime configuration
 	sync.rw_mutex_lock(&bridge_launch_configuration_mutex)
 	sync.rw_mutex_lock(&bridge_provider_catalog_mutex)
 	// Snapshots are immutable and retained; dropping the pointer frees nothing.
@@ -249,7 +249,7 @@ bridge_extensions_command :: proc(args: []string) -> bool {
 	}
 	json_progress := has_flag(args, "--json-progress")
 	data_dir := strings.trim_space(option_value(args, "--data-dir", ""))
-	if data_dir == "" do data_dir = strings.trim_space(bridge_config.data_dir)
+	if data_dir == "" do data_dir = strings.trim_space(bridge_cfg().data_dir)
 	if data_dir == "" {
 		fmt.eprintln("ham-bridge extensions sync: --data-dir is required")
 		return false

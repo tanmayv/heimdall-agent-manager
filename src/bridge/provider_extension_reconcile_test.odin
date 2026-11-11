@@ -63,7 +63,7 @@ test_bridge_extension_classify_shared_root :: proc(t: ^testing.T) {
 // newest release wins whichever profile installs last, and pruning keeps it.
 @(test)
 test_bridge_extensions_shared_root_publish :: proc(t: ^testing.T) {
-	base := test_install_path({os.get_env("TMPDIR", context.temp_allocator) if os.get_env("TMPDIR", context.temp_allocator) != "" else "/tmp",
+	base := test_install_path({bridge_env_get("TMPDIR", context.temp_allocator) if bridge_env_get("TMPDIR", context.temp_allocator) != "" else "/tmp",
 		fmt.tprintf("ham-shared-ext-%d", time.to_unix_nanoseconds(time.now()))})
 	defer _ = os.remove_all(base)
 	data_root := test_install_path({base, "heimdall", "bridges"})
@@ -108,15 +108,15 @@ test_bridge_extensions_shared_root_publish :: proc(t: ^testing.T) {
 test_bridge_extensions_profile_registration_survives_prune :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
-	base := test_install_path({os.get_env("TMPDIR", context.temp_allocator) if os.get_env("TMPDIR", context.temp_allocator) != "" else "/tmp",
+	base := test_install_path({bridge_env_get("TMPDIR", context.temp_allocator) if bridge_env_get("TMPDIR", context.temp_allocator) != "" else "/tmp",
 		fmt.tprintf("ham-shared-ext-pp-%d-%d", os.get_pid(), time.to_unix_nanoseconds(time.now()))})
 	defer _ = os.remove_all(base)
 	data_root := test_install_path({base, "heimdall", "bridges"})
 	a := test_install_path({data_root, "heimdall-bridge-hub"})
 	testing.expect(t, os.make_directory_all(test_install_path({a, "extensions", "claude-code"})) == nil)
-	saved_data := bridge_config.data_dir
-	defer bridge_config.data_dir = saved_data
-	bridge_config.data_dir = a
+	saved_data := bridge_cfg().data_dir
+	defer bridge_cfg().data_dir = saved_data
+	bridge_cfg().data_dir = a
 
 	// Release N is the newest shared release when the provider profile installs.
 	shared, ok, msg := bridge_extensions_publish_shared(test_install_path({a, "extensions"}), a)
@@ -371,7 +371,7 @@ test_race_runner :: proc(args: []string, timeout: time.Duration) -> (stdout, std
 	if spawn {
 		// B starts while A is between install and verify: the window in which
 		// B's cleanup used to remove A's fresh install.
-		test_race.second = thread.create_and_start_with_data(nil, test_race_second)
+		test_race.second = bridge_thread_start_with_data(nil, test_race_second)
 		time.sleep(500 * time.Millisecond)
 		sync.mutex_lock(&test_race.mu)
 		test_race.blocked_calls = len(test_race.verbs) - before

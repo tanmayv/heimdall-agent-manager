@@ -20,7 +20,7 @@ Owner_Executor_Fence_Command :: struct {
 // execution_fence_reply; enrollment alone confers no task authority.
 bridge_owner_fence_directory :: proc(s:^owner.Store,input:vault.Directory_Verification_Input,
     kr:^vault.Vault_Keyring)->(contracts.Owner_Verified_Key,i64,string,bool) {
-    floor,status:=keystore_read_epoch_floor(bridge_config.daemon_id)
+    floor,status:=keystore_read_epoch_floor(bridge_cfg().daemon_id)
     if status!=.Found || !floor.root.set || input.owner!=s.account do return {},0,"",false
     seq,head:=owner.directory_pin(s)
     if seq<0 do return {},0,"",false
@@ -32,7 +32,7 @@ bridge_owner_fence_directory :: proc(s:^owner.Store,input:vault.Directory_Verifi
     if !root_ok || !vault.root_pin_equal(&paired,&root) || !owner.observe_directory(s,dir.version,dir.head_hash) do return {},0,"",false
     if !vault.directory_verify_keyring(&dir,kr) do return {},0,"",false
     own,own_ok:=dir.trusted[s.owner_key]
-    public:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+    public:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     if !own_ok || own.kind!="bridge" || own.sign_public_key!=public do return {},0,"",false
     return contracts.Owner_Verified_Key{s.account,s.owner,s.owner_key,public,"bridge",true,false},dir.version,dir.head_hash,true
 }
@@ -57,8 +57,8 @@ bridge_owner_executor_fence_handle :: proc(conn:^ws.Connection,text:string,child
     }
     now:=time.to_unix_nanoseconds(time.now())/1000000
     expires:=contracts.executor_number(relay,"expires_ms")
-    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
-    if wire.account_id!=account || get(relay,"bridge_id")!=bridge_config.daemon_id || expires<=now || expires-now>contracts.EXECUTOR_FENCE_TTL_MS do return
+    account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
+    if wire.account_id!=account || get(relay,"bridge_id")!=bridge_cfg().daemon_id || expires<=now || expires-now>contracts.EXECUTOR_FENCE_TTL_MS do return
     kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
     if !unlocked {reply.code="vault_locked";return}
     plain,opened:=bridge_open_current_epoch_token(get(relay,"envelope"),&kr,context.temp_allocator)
@@ -69,11 +69,11 @@ bridge_owner_executor_fence_handle :: proc(conn:^ws.Connection,text:string,child
     notification:=!child && get(scope,"method")=="notification_fence_request"
     request_kind:="child_request" if child else ("notification_fence_request" if notification else "fence_request")
     if !parsed || !scoped || get(scope,"method")!=request_kind || get(scope,"direction")!="request" ||
-       get(scope,"account_id")!=account || get(scope,"owner_bridge_id")!=bridge_config.daemon_id ||
+       get(scope,"account_id")!=account || get(scope,"owner_bridge_id")!=bridge_cfg().daemon_id ||
        get(scope,"executor_bridge_id")!=wire.executor_bridge_id ||
        get(scope,"chain_id")!=get(relay,"chain_id") || get(scope,"request_id")!=get(relay,"request_id") ||
        contracts.executor_number(scope,"request_expires_ms")>expires {return}
-    public:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+    public:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     self,self_ok:=vault.device_id_from_sign_pub(public,context.temp_allocator)
     if !self_ok do return
     sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
@@ -88,7 +88,7 @@ bridge_owner_executor_fence_handle :: proc(conn:^ws.Connection,text:string,child
     defer crypto.zero_explicit(raw_data(raw),len(raw))
     request,r_ok:=contracts.executor_parse(raw,request_kind)
     if !r_ok do return
-    floor,status:=keystore_read_epoch_floor(bridge_config.daemon_id)
+    floor,status:=keystore_read_epoch_floor(bridge_cfg().daemon_id)
     if status!=.Found do return
     key,key_version,key_head,key_ok:=owner.verify_executor_directory(bridge_owner_json(wire.directory),account,
         get(scope,"executor_bridge_id"),get(request,"key_id"),floor.root,version,head,&kr)

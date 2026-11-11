@@ -96,7 +96,7 @@ bridge_extension_other_profiles: Bridge_Extension_Other_Profiles = bridge_extens
 // user other than this bridge's own (its data dir is <data root>/<service>).
 // They share the provider registration, so it must outlive this profile.
 bridge_extension_count_other_profiles :: proc() -> int {
-	own := bridgesvc.pbase(strings.trim_space(bridge_config.data_dir))
+	own := bridgesvc.pbase(strings.trim_space(bridge_cfg().data_dir))
 	n := 0
 	for name in bridgesvc.list_services(bridge_service_host()) do if name != own do n += 1
 	return n
@@ -303,12 +303,12 @@ bridge_extension_ensure :: proc(provider, ext_path, bin_path: string, deadline: 
 	// deleted source, and Codex then fails every `plugin list`, including the
 	// shared registration's check below: drop those first.
 	if prov == "codex" && sink.profile == nil {
-		if healed, heal_msg := bridge_codex_own_heal_hook(); healed > 0 || heal_msg != "" {
+		if healed, heal_msg := bridge_codex_own_heal_fn()(); healed > 0 || heal_msg != "" {
 			bridge_extension_sink_progress(sink, "installing", 5, fmt.tprintf("Removed %d stale bridge Codex marketplace(s)%s%s", healed, "; " if heal_msg != "" else "", heal_msg))
 		}
 	}
 	defer if prov == "codex" && sink.profile == nil {
-		own_ok, own_msg := bridge_codex_own_ensure_hook(bin_path, install_deadline, sink.env)
+		own_ok, own_msg := bridge_codex_own_ensure_fn()(bin_path, install_deadline, sink.env)
 		bridge_extension_sink_progress(sink, "installing", 90, own_ok ? own_msg : fmt.tprintf("This bridge's own Codex plugin was not registered (%s); agents use the shared one", own_msg))
 	}
 	bundled_version := bridge_provider_extension_read_manifest_version(ext_path, prov)
@@ -433,7 +433,7 @@ bridge_extension_remove :: proc(provider, bin_path: string, deadline: time.Time,
 	}
 	defer bridge_extension_unlock(prov, lock_path)
 	// This bridge's own Codex plugin is never shared with another profile.
-	if prov == "codex" && sink.profile == nil do bridge_codex_own_remove_hook(bin_path, install_deadline, sink.env)
+	if prov == "codex" && sink.profile == nil do bridge_codex_own_remove_fn()(bin_path, install_deadline, sink.env)
 	// The OS user's registration is shared by every profile of this OS user;
 	// removing it for one Ninjy account would break the others' agents. A
 	// per-account provider profile registers in its own config dir instead.

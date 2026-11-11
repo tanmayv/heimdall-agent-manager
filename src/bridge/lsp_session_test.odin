@@ -609,7 +609,7 @@ test_lsp_outgoing_queue_is_bounded_and_backpressures :: proc(t: ^testing.T) {
 	full := bridge_lsp_outgoing_queued_bytes()
 
 	w := Lsp_Budget_Writer{session_id = session_id, frame = filler}
-	th := thread.create_and_start_with_data(rawptr(&w), proc(data: rawptr) {
+	th := bridge_thread_start_with_data(rawptr(&w), proc(data: rawptr) {
 		w := (^Lsp_Budget_Writer)(data)
 		w.queued = bridge_lsp_enqueue_data(w.session_id, w.frame)
 		sync.atomic_store(&w.returned, true)

@@ -63,8 +63,8 @@ keystore_test_bridge_ids :: proc() -> (a: string, b: string) {
 // keystore_test_set_daemon_id points the running bridge at id and returns the
 // previous value for the caller to restore. Hold bridge_test_config_mutex.
 keystore_test_set_daemon_id :: proc(id: string) -> (prev: string) {
-	prev = bridge_config.daemon_id
-	bridge_config.daemon_id = id
+	prev = bridge_cfg().daemon_id
+	bridge_cfg().daemon_id = id
 	return
 }
 
@@ -388,7 +388,7 @@ bridge_vault_test_sandbox_open :: proc(t: ^testing.T, label: string) -> (sb: Bri
 	n := sync.atomic_add(&bridge_vault_test_sandbox_counter, 1)
 	tmp_root := "/tmp"
 	when ODIN_OS == .Windows {
-		if v, found := os.lookup_env("TEMP", context.temp_allocator); found do tmp_root = v
+		if v, found := bridge_env_lookup("TEMP", context.temp_allocator); found do tmp_root = v
 	}
 	sb.dir = fmt.aprintf("%s/heimdall-bridge-vault-test-%s-%d-%d", tmp_root, label, os.get_pid(), n)
 	if derr := os.make_directory_all(sb.dir); derr != nil {
@@ -400,14 +400,11 @@ bridge_vault_test_sandbox_open :: proc(t: ^testing.T, label: string) -> (sb: Bri
 		testing.expectf(t, false, "sandbox config dir %s could not be created (%v) — refusing to run", cfg_dir, derr)
 		return sb, false
 	}
-	sb.prev_home, sb.had_home = os.lookup_env("HOME", context.allocator)
-	sb.prev_hd_home, sb.had_hd_home = os.lookup_env("HEIMDALL_HOME", context.allocator)
+	sb.prev_home, sb.had_home = bridge_env_lookup("HOME", context.allocator)
+	sb.prev_hd_home, sb.had_hd_home = bridge_env_lookup("HEIMDALL_HOME", context.allocator)
 	sb.redirected = true
-	if os.set_env("HOME", sb.dir) != nil || os.set_env("HEIMDALL_HOME", sb.dir) != nil {
-		testing.expect(t, false, "could not redirect HOME/HEIMDALL_HOME — refusing to run")
-		bridge_vault_test_sandbox_close(&sb)
-		return sb, false
-	}
+	bridge_test_env_set("HOME", sb.dir)
+	bridge_test_env_set("HEIMDALL_HOME", sb.dir)
 	rel := "~/.config/heimdall/x"
 	bridge_path := bridge_expand_home(rel)
 	defer if raw_data(bridge_path) != raw_data(rel) do delete(bridge_path)
@@ -425,11 +422,11 @@ bridge_vault_test_sandbox_close :: proc(sb: ^Bridge_Vault_Test_Sandbox) {
 	if sb.closed do return
 	sb.closed = true
 	if sb.redirected {
-		if sb.had_home do _ = os.set_env("HOME", sb.prev_home)
-		else do os.unset_env("HOME")
+		if sb.had_home do bridge_test_env_set("HOME", sb.prev_home)
+		else do bridge_test_env_unset("HOME")
 		delete(sb.prev_home)
-		if sb.had_hd_home do _ = os.set_env("HEIMDALL_HOME", sb.prev_hd_home)
-		else do os.unset_env("HEIMDALL_HOME")
+		if sb.had_hd_home do bridge_test_env_set("HEIMDALL_HOME", sb.prev_hd_home)
+		else do bridge_test_env_unset("HEIMDALL_HOME")
 		delete(sb.prev_hd_home)
 		sb.redirected = false
 	}
@@ -451,15 +448,15 @@ Test_Env_Restore :: struct {
 
 test_env_set :: proc(name, value: string) -> (r: Test_Env_Restore) {
 	r.name = name
-	r.prev, r.had = os.lookup_env(name, context.allocator)
-	if value == "" do os.unset_env(name)
-	else do _ = os.set_env(name, value)
+	r.prev, r.had = bridge_env_lookup(name, context.allocator)
+	if value == "" do bridge_test_env_unset(name)
+	else do bridge_test_env_set(name, value)
 	return
 }
 
 test_env_restore :: proc(r: ^Test_Env_Restore) {
-	if r.had do _ = os.set_env(r.name, r.prev)
-	else do os.unset_env(r.name)
+	if r.had do bridge_test_env_set(r.name, r.prev)
+	else do bridge_test_env_unset(r.name)
 	delete(r.prev)
 	r.prev = ""
 }

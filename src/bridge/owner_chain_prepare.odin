@@ -38,7 +38,9 @@ Owner_Pending_Coordinator :: struct { agent, instance: string, binding: bool }
 bridge_owner_pending_mutex: sync.Mutex
 bridge_owner_pending: map[string]Owner_Pending_Coordinator
 // The post-live bind; tests replace it (and run it on the calling thread).
+@(thread_local)
 bridge_owner_pending_bind_effect: proc(chain, instance, agent: string)
+@(thread_local)
 bridge_owner_pending_sync_effects: bool
 
 bridge_owner_pending_set :: proc(chain, agent: string) {
@@ -108,7 +110,7 @@ bridge_owner_pending_bind_start :: proc(chain, instance, agent: string) {
     Job :: struct { chain, instance, agent: string, effect: proc(chain, instance, agent: string) }
     job:=new(Job,runtime.heap_allocator())
     job^=Job{strings.clone(chain,runtime.heap_allocator()),strings.clone(instance,runtime.heap_allocator()),strings.clone(agent,runtime.heap_allocator()),effect}
-    thread.run_with_poly_data(job,proc(j:^Job) {
+    bridge_thread_run_with_poly_data(job,proc(j:^Job) {
         j.effect(j.chain,j.instance,j.agent)
         delete(j.chain,runtime.heap_allocator());delete(j.instance,runtime.heap_allocator());delete(j.agent,runtime.heap_allocator())
         free(j,runtime.heap_allocator())
@@ -131,7 +133,7 @@ bridge_owner_pending_bind :: proc(chain, instance, agent: string) {
     sync.mutex_lock(&bridge_local_token_mutex)
     child,current:=bridge_owner_child_locked(instance,"")
     code:="invalid_scope"
-    if current && (agent=="" || child.agent_id==agent) do code=owner.bind_created_coordinator(&bridge_owner_store,chain,child,bridge_config.daemon_id,time.to_unix_nanoseconds(time.now())/1000000).code
+    if current && (agent=="" || child.agent_id==agent) do code=owner.bind_created_coordinator(&bridge_owner_store,chain,child,bridge_cfg().daemon_id,time.to_unix_nanoseconds(time.now())/1000000).code
     sync.mutex_unlock(&bridge_local_token_mutex)
     sync.mutex_unlock(&bridge_startup_io_mutex)
     if code!="ok" {
@@ -148,14 +150,14 @@ bridge_owner_pending_bind :: proc(chain, instance, agent: string) {
 Owner_Create_Inputs :: struct { account: string, key: contracts.Owner_Verified_Key, title_cipher, description_cipher: string }
 
 bridge_owner_create_inputs :: proc(title, description: string, kr: ^vault.Vault_Keyring) -> (in_: Owner_Create_Inputs, code, message: string) {
-    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
-    pub:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+    account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
+    pub:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     key_id,key_ok:=vault.device_id_from_sign_pub(pub,context.temp_allocator)
     if account=="" || !key_ok do return {},"invalid_scope","this Bridge is not enrolled"
     title_cipher,t_ok:=bridge_owner_seal_text(title,kr)
     description_cipher,d_ok:=bridge_owner_seal_text(description,kr)
     if !t_ok || !d_ok do return {},"vault_locked","could not seal the chain title"
-    return Owner_Create_Inputs{account,contracts.Owner_Verified_Key{account,bridge_config.daemon_id,key_id,pub,"bridge",true,false},title_cipher,description_cipher},"ok",""
+    return Owner_Create_Inputs{account,contracts.Owner_Verified_Key{account,bridge_cfg().daemon_id,key_id,pub,"bridge",true,false},title_cipher,description_cipher},"ok",""
 }
 
 // A text the user's app already sealed (the Hub only relays it) is kept as
@@ -170,7 +172,7 @@ bridge_owner_seal_text :: proc(text: string, kr: ^vault.Vault_Keyring) -> (strin
 // chain.create with this Bridge's owner key (creator == owner).
 bridge_owner_chain_create_execute_locked :: proc(in_: Owner_Create_Inputs, chain, op, requested_by: string, kr: ^vault.Vault_Keyring) -> string {
     now:=time.to_unix_nanoseconds(time.now())/1000000
-    genesis,command,payload,built:=bridge_owner_chain_create_documents(in_.account,bridge_config.daemon_id,in_.key.key_id,chain,op,in_.title_cipher,in_.description_cipher,now,bridge_owner_signer())
+    genesis,command,payload,built:=bridge_owner_chain_create_documents(in_.account,bridge_cfg().daemon_id,in_.key.key_id,chain,op,in_.title_cipher,in_.description_cipher,now,bridge_owner_signer())
     if !built do return "storage_error"
     version,hash:=owner.directory_pin(&bridge_owner_store)
     if version<0 do return "storage_error"
@@ -196,7 +198,7 @@ bridge_owner_chain_prepare :: proc(agent, title, description: string, chain_id: 
     if chain=="" do chain=bridge_owner_chain_id("chain_")
     sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
     if !bridge_owner_open(in_.account,in_.key.key_id) do return "","storage_error","owner store unavailable"
-    if created:=bridge_owner_chain_create_execute_locked(in_,chain,op,bridge_config.daemon_id,&kr);created!="ok" do return "",created,"the owner store rejected the new chain"
+    if created:=bridge_owner_chain_create_execute_locked(in_,chain,op,bridge_cfg().daemon_id,&kr);created!="ok" do return "",created,"the owner store rejected the new chain"
     // The run's default '<agent-name> #<n>' title: its coordinator is nudged
     // to set a real one (owner title_nudge.odin). Best effort: a failure only
     // means no nudge.
@@ -226,12 +228,12 @@ bridge_owner_chain_prepare_handle :: proc(conn: ^ws.Connection, text: string) {
 bridge_owner_chain_discard :: proc(chain: string) -> (string, string) {
     context.allocator=context.temp_allocator
     if !contracts.owner_field_valid(chain,"id") do return "bad_request","owner_chain_discard: invalid chain_id"
-    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
-    key_id,key_ok:=vault.device_id_from_sign_pub(bridge_identity_public_key_hex(bridge_config.daemon_id),context.temp_allocator)
+    account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
+    key_id,key_ok:=vault.device_id_from_sign_pub(bridge_identity_public_key_hex(bridge_cfg().daemon_id),context.temp_allocator)
     if account=="" || !key_ok do return "invalid_scope","this Bridge is not enrolled"
     sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
     if !bridge_owner_open(account,key_id) do return "storage_error","owner store unavailable"
-    code:=owner.discard_created_chain(&bridge_owner_store,chain,bridge_config.daemon_id,time.to_unix_nanoseconds(time.now())/1000000,bridge_owner_signer()).code
+    code:=owner.discard_created_chain(&bridge_owner_store,chain,bridge_cfg().daemon_id,time.to_unix_nanoseconds(time.now())/1000000,bridge_owner_signer()).code
     if code!="ok" do return code,"the owner store kept the chain"
     bridge_owner_pending_clear(chain)
     bridge_owner_coordinator_refresh_locked(chain)

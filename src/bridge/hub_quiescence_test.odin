@@ -31,9 +31,9 @@ test_hub_pause_blocks_http_retries_refresh_and_reconnect :: proc(t: ^testing.T) 
     hub_pause_test_reset()
     defer hub_pause_test_reset()
     hub_pause_fetch_count = 0
-    saved_config := bridge_config
-    defer { bridge_config = saved_config }
-    bridge_config = {daemon_url = "https://fixture.example", daemon_id = "brg_paused", bridge_token = "fixture"}
+    saved_config := bridge_cfg()^
+    defer { bridge_cfg()^ = saved_config }
+    bridge_cfg()^ = {daemon_url = "https://fixture.example", daemon_id = "brg_paused", bridge_token = "fixture"}
     resp, err := bridge_hub_http_send_using({}, hub_pause_fetch)
     httpc.response_destroy(&resp)
     testing.expect_value(t, err, httpc.Error.None)
@@ -65,17 +65,17 @@ test_hub_pause_is_durable_and_only_temporary_pause_resumes :: proc(t: ^testing.T
     defer sync.mutex_unlock(&bridge_test_config_mutex)
     hub_pause_test_reset()
     defer hub_pause_test_reset()
-    saved_config := bridge_config
-    defer { bridge_config = saved_config }
-    dir := fmt.tprintf("%s/.cache/heimdall-tests/hub-pause-%d-%d", os.get_env("HOME", context.temp_allocator), os.get_pid(), time.to_unix_nanoseconds(time.now()))
+    saved_config := bridge_cfg()^
+    defer { bridge_cfg()^ = saved_config }
+    dir := fmt.tprintf("%s/.cache/heimdall-tests/hub-pause-%d-%d", bridge_env_get("HOME", context.temp_allocator), os.get_pid(), time.to_unix_nanoseconds(time.now()))
     defer os.remove_all(dir)
     config := fmt.tprintf("%s/config.toml", dir)
     testing.expect(t, bridge_retry_atomic_write(config, transmute([]byte)string("fixture")))
-    bridge_config = {daemon_url = "https://fixture.example", daemon_id = "brg_test_paused"}
+    bridge_cfg()^ = {daemon_url = "https://fixture.example", daemon_id = "brg_test_paused"}
     bridge_hub_traffic_config_path = config
     bridge_hub_stop_traffic(false)
     pause, exists, valid := bridge_hub_pause_read(config)
-    testing.expect(t, exists && valid && !pause.final && pause.bridge_id == bridge_config.daemon_id)
+    testing.expect(t, exists && valid && !pause.final && pause.bridge_id == bridge_cfg().daemon_id)
     when ODIN_OS != .Windows {
         alias := fmt.tprintf("%s/alias.toml", dir)
         testing.expect(t, os.symlink(config, alias) == nil)
@@ -85,9 +85,9 @@ test_hub_pause_is_durable_and_only_temporary_pause_resumes :: proc(t: ^testing.T
     testing.expect(t, !strings.contains(string(bytes), "token"), "marker contains identity only")
     // Rollback alone cannot clear the on-disk fence. A restart sees it too.
     testing.expect(t, os.exists(bridge_hub_pause_path(config)))
-    wrong := bridge_config; wrong.daemon_id = "brg_other"
+    wrong := bridge_cfg()^; wrong.daemon_id = "brg_other"
     testing.expect(t, !bridge_hub_resume_sunset(wrong, config))
-    testing.expect(t, bridge_hub_resume_sunset(bridge_config, config))
+    testing.expect(t, bridge_hub_resume_sunset(bridge_cfg()^, config))
     testing.expect(t, sync.atomic_load(&bridge_hub_traffic_stopped), "activation requires a fresh process")
     // A final notice upgrades a temporary suspension and cannot be undone by
     // a late temporary notice or the sunset recovery command.
@@ -95,12 +95,12 @@ test_hub_pause_is_durable_and_only_temporary_pause_resumes :: proc(t: ^testing.T
     bridge_hub_stop_traffic(false)
     pause, exists, valid = bridge_hub_pause_read(config)
     testing.expect(t, exists && valid && pause.final)
-    testing.expect(t, !bridge_hub_resume_sunset(bridge_config, config))
+    testing.expect(t, !bridge_hub_resume_sunset(bridge_cfg()^, config))
     testing.expect(t, bridge_hub_pause_clear_enrolled(config), "successful enrollment clears even final pause")
     testing.expect(t, bridge_retry_atomic_write(bridge_hub_pause_path(config), transmute([]byte)string("corrupt")))
     _, exists, valid = bridge_hub_pause_read(config)
     testing.expect(t, exists && !valid)
-    testing.expect(t, !bridge_hub_resume_sunset(bridge_config, config))
+    testing.expect(t, !bridge_hub_resume_sunset(bridge_cfg()^, config))
 }
 
 Hub_Pause_Writer :: struct {conn: ^ws.Connection, entered, done, sent: bool}

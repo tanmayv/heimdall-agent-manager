@@ -51,7 +51,7 @@ import vault "odin_test:lib/vault"
 // holds the mutex passes config_locked=true.
 @(private = "file")
 fs_test_base :: proc(config_locked := false) -> string {
-	base := os.get_env_alloc("TMPDIR", context.allocator)
+	base := bridge_env_get_alloc("TMPDIR", context.allocator)
 	if strings.trim_space(base) == "" do base = "/tmp"
 	base = strings.trim_right(base, "/")
 	if resolved, rerr := os.get_absolute_path(base, context.allocator); rerr == nil do base = resolved
@@ -472,12 +472,12 @@ fs_project_root_override_rejects_root_outside_bridge :: proc(t: ^testing.T) {
 fs_run_dir_root_resolves_within_instances_base :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
-	saved_dir := bridge_config.local_endpoint_run_dir
-	defer { bridge_config.local_endpoint_run_dir = saved_dir }
+	saved_dir := bridge_cfg().local_endpoint_run_dir
+	defer { bridge_cfg().local_endpoint_run_dir = saved_dir }
 
 	base := fs_test_make_root(t, "rundir_base", config_locked = true)
 	defer fs_test_cleanup(base)
-	bridge_config.local_endpoint_run_dir = base
+	bridge_cfg().local_endpoint_run_dir = base
 	// The instance dir need not exist yet (agent may not have launched).
 	root, ok := bridge_fs_run_dir_root("inst_abc123")
 	defer if ok do delete(root)
@@ -489,12 +489,12 @@ fs_run_dir_root_resolves_within_instances_base :: proc(t: ^testing.T) {
 fs_run_dir_root_sanitizes_instance_id :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
-	saved_dir := bridge_config.local_endpoint_run_dir
-	defer { bridge_config.local_endpoint_run_dir = saved_dir }
+	saved_dir := bridge_cfg().local_endpoint_run_dir
+	defer { bridge_cfg().local_endpoint_run_dir = saved_dir }
 
 	base := fs_test_make_root(t, "rundir_sanitize", config_locked = true)
 	defer fs_test_cleanup(base)
-	bridge_config.local_endpoint_run_dir = base
+	bridge_cfg().local_endpoint_run_dir = base
 	// Slashes are stripped by bridge_runtime_safe_part, so a traversal-looking id
 	// collapses to a single contained component (cannot escape the instances base).
 	dirty := "inst/../../etc"
@@ -517,8 +517,8 @@ fs_run_dir_root_rejects_empty_instance_id :: proc(t: ^testing.T) {
 fs_run_dir_root_canonicalizes_symlinked_base :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
-	saved_dir := bridge_config.local_endpoint_run_dir
-	defer { bridge_config.local_endpoint_run_dir = saved_dir }
+	saved_dir := bridge_cfg().local_endpoint_run_dir
+	defer { bridge_cfg().local_endpoint_run_dir = saved_dir }
 
 	// Regression: on hosts where the instances base traverses a symlink (e.g.
 	// macOS /tmp -> /private/tmp), the raw (unresolved) base failed to prefix-match
@@ -534,7 +534,7 @@ fs_run_dir_root_canonicalizes_symlinked_base :: proc(t: ^testing.T) {
 		testing.expect(t, false, "could not create symlink base (platform lacks symlink support)")
 		return
 	}
-	bridge_config.local_endpoint_run_dir = link_base
+	bridge_cfg().local_endpoint_run_dir = link_base
 
 	root, ok := bridge_fs_run_dir_root("inst_symlink1")
 	defer if ok do delete(root)
@@ -1169,13 +1169,13 @@ fs_vault_read_file_encryption_lifecycle :: proc(t: ^testing.T) {
 	sync.mutex_lock(&keystore_test_mutex)
 	defer sync.mutex_unlock(&keystore_test_mutex)
 
-	prev_key, had_key := os.lookup_env("HEIMDALL_VAULT_KEYRING", context.allocator)
+	prev_key, had_key := bridge_env_lookup("HEIMDALL_VAULT_KEYRING", context.allocator)
 	defer {
 		if had_key {
-			_ = os.set_env("HEIMDALL_VAULT_KEYRING", prev_key)
+			bridge_test_env_set("HEIMDALL_VAULT_KEYRING", prev_key)
 			delete(prev_key)
 		} else {
-			os.unset_env("HEIMDALL_VAULT_KEYRING")
+			bridge_test_env_unset("HEIMDALL_VAULT_KEYRING")
 		}
 	}
 
@@ -1186,7 +1186,7 @@ fs_vault_read_file_encryption_lifecycle :: proc(t: ^testing.T) {
 	test_key := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 	// 1. With active vault key: read_file encrypts content as a v2 vault token
-	_ = os.set_env("HEIMDALL_VAULT_KEYRING", test_keyring_env_value(test_key))
+	bridge_test_env_set("HEIMDALL_VAULT_KEYRING", test_keyring_env_value(test_key))
 	res_enc := bridge_fs_read_file("confidential.txt", root)
 	defer delete(res_enc.content)
 	testing.expect(t, res_enc.ok && res_enc.viewable, "read encrypted ok")
@@ -1197,7 +1197,7 @@ fs_vault_read_file_encryption_lifecycle :: proc(t: ^testing.T) {
 	testing.expect_value(t, decrypted, "classified data 12345")
 
 	// 2. Without a keyring the read is refused (there is no plaintext mode).
-	_ = os.set_env("HEIMDALL_VAULT_KEYRING", "unconfigured_key")
+	bridge_test_env_set("HEIMDALL_VAULT_KEYRING", "unconfigured_key")
 	res_locked := bridge_fs_read_file("confidential.txt", root)
 	defer delete(res_locked.content)
 	testing.expect(t, !res_locked.ok && res_locked.error_code == "vault_locked", "read without a keyring is vault_locked")
@@ -1214,7 +1214,7 @@ test_fs_write_seal :: proc(plaintext, key_hex, root, path: string, epoch: u32 = 
 	nonce: [vault.NONCE_BYTES]byte
 	crypto.rand_bytes(nonce[:])
 	canonical_root, _ := bridge_fs_effective_root(root)
-	tok, _ := vault.fs_write_seal_with_nonce(transmute([]byte)plaintext, key[:], test_vault_id(), epoch, bridge_config.daemon_id, canonical_root, path, nonce[:], context.temp_allocator)
+	tok, _ := vault.fs_write_seal_with_nonce(transmute([]byte)plaintext, key[:], test_vault_id(), epoch, bridge_cfg().daemon_id, canonical_root, path, nonce[:], context.temp_allocator)
 	return tok
 }
 
@@ -1227,15 +1227,15 @@ fs_vault_write_file_requires_path_bound_ciphertext :: proc(t: ^testing.T) {
 	// Writes are sealed for THIS bridge id (the AAD binds it).
 	test_bridge_a, _ := keystore_test_bridge_ids()
 	prev_daemon := keystore_test_set_daemon_id(test_bridge_a)
-	defer bridge_config.daemon_id = prev_daemon
+	defer bridge_cfg().daemon_id = prev_daemon
 
-	prev_key, had_key := os.lookup_env("HEIMDALL_VAULT_KEYRING", context.allocator)
+	prev_key, had_key := bridge_env_lookup("HEIMDALL_VAULT_KEYRING", context.allocator)
 	defer {
 		if had_key {
-			_ = os.set_env("HEIMDALL_VAULT_KEYRING", prev_key)
+			bridge_test_env_set("HEIMDALL_VAULT_KEYRING", prev_key)
 			delete(prev_key)
 		} else {
-			os.unset_env("HEIMDALL_VAULT_KEYRING")
+			bridge_test_env_unset("HEIMDALL_VAULT_KEYRING")
 		}
 	}
 
@@ -1244,7 +1244,7 @@ fs_vault_write_file_requires_path_bound_ciphertext :: proc(t: ^testing.T) {
 
 	test_key := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	wrong_key := "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
-	_ = os.set_env("HEIMDALL_VAULT_KEYRING", test_keyring_env_value(test_key))
+	bridge_test_env_set("HEIMDALL_VAULT_KEYRING", test_keyring_env_value(test_key))
 
 	expect_rejected :: proc(t: ^testing.T, root, path, content, why: string) {
 		res := bridge_fs_write_file(path, content, root)
@@ -1280,7 +1280,7 @@ fs_vault_write_file_requires_path_bound_ciphertext :: proc(t: ^testing.T) {
 	expect_rejected(t, root, "tampered.txt", tampered, "tampered ciphertext")
 
 	// 3. Without a keyring the write is vault_locked.
-	_ = os.set_env("HEIMDALL_VAULT_KEYRING", "unconfigured_key")
+	bridge_test_env_set("HEIMDALL_VAULT_KEYRING", "unconfigured_key")
 	res_locked := bridge_fs_write_file("locked.txt", test_fs_write_seal("x", test_key, root, "locked.txt"), root)
 	testing.expect(t, !res_locked.ok && res_locked.error_code == "vault_locked", res_locked.error_code)
 }
@@ -1294,15 +1294,15 @@ fs_vault_batch_write_enforces_decryption_per_item :: proc(t: ^testing.T) {
 	// Writes are sealed for THIS bridge id (the AAD binds it).
 	test_bridge_a, _ := keystore_test_bridge_ids()
 	prev_daemon := keystore_test_set_daemon_id(test_bridge_a)
-	defer bridge_config.daemon_id = prev_daemon
+	defer bridge_cfg().daemon_id = prev_daemon
 
-	prev_key, had_key := os.lookup_env("HEIMDALL_VAULT_KEYRING", context.allocator)
+	prev_key, had_key := bridge_env_lookup("HEIMDALL_VAULT_KEYRING", context.allocator)
 	defer {
 		if had_key {
-			_ = os.set_env("HEIMDALL_VAULT_KEYRING", prev_key)
+			bridge_test_env_set("HEIMDALL_VAULT_KEYRING", prev_key)
 			delete(prev_key)
 		} else {
-			os.unset_env("HEIMDALL_VAULT_KEYRING")
+			bridge_test_env_unset("HEIMDALL_VAULT_KEYRING")
 		}
 	}
 
@@ -1311,7 +1311,7 @@ fs_vault_batch_write_enforces_decryption_per_item :: proc(t: ^testing.T) {
 
 	test_key := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	wrong_key := "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
-	_ = os.set_env("HEIMDALL_VAULT_KEYRING", test_keyring_env_value(test_key))
+	bridge_test_env_set("HEIMDALL_VAULT_KEYRING", test_keyring_env_value(test_key))
 
 	items := make([dynamic]Bridge_Fs_Write_Item)
 	defer delete(items)

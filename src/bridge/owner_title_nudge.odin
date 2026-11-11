@@ -24,7 +24,9 @@ import owner "odin_test:lib/owner_local"
 import vault "odin_test:lib/vault"
 
 // Tests substitute the delivery (no PTY host) and run synchronously.
+@(thread_local)
 bridge_owner_title_nudge_deliver_effect: proc(instance, notice: string) -> bool
+@(thread_local)
 bridge_owner_title_nudge_sync: bool
 
 bridge_owner_title_nudge_notice :: proc() -> string {
@@ -48,7 +50,7 @@ bridge_owner_title_activity :: proc(instance: string) {
     Job :: struct { instance: string }
     job:=new(Job,runtime.heap_allocator())
     job.instance=strings.clone(instance,runtime.heap_allocator())
-    thread.run_with_poly_data(job,proc(j:^Job) {
+    bridge_thread_run_with_poly_data(job,proc(j:^Job) {
         bridge_owner_title_activity_run(j.instance)
         delete(j.instance,runtime.heap_allocator())
         free(j,runtime.heap_allocator())
@@ -83,9 +85,9 @@ bridge_owner_title_activity_run :: proc(instance: string) -> bool {
 // Opens the existing owner store; never creates one just for activity.
 // Caller holds bridge_owner_mutex.
 bridge_owner_title_store_locked :: proc() -> bool {
-    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
+    account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
     if account=="" do return false
-    key_id,key_ok:=vault.device_id_from_sign_pub(bridge_identity_public_key_hex(bridge_config.daemon_id),context.temp_allocator)
+    key_id,key_ok:=vault.device_id_from_sign_pub(bridge_identity_public_key_hex(bridge_cfg().daemon_id),context.temp_allocator)
     if !key_ok do return false
     if bridge_owner_store.db==nil {
         path:=bridge_owner_store_path(account)

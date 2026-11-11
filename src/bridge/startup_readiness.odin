@@ -39,14 +39,14 @@ Bridge_Startup_Work_Kind :: enum { All, Readiness, Fallback }
 
 bridge_startup_worker_ensure_started :: proc() {
 	if _, swapped := sync.atomic_compare_exchange_strong(&bridge_startup_worker_started, false, true); swapped {
-		thread.run(proc() {
+		bridge_thread_run(proc() {
 			for {
 				time.sleep(100 * time.Millisecond)
 				bridge_startup_tick(bridge_runtime_now_ms(), kind = .Fallback)
 				free_all(context.temp_allocator)
 			}
 		})
-		thread.run(proc() {
+		bridge_thread_run(proc() {
 			for {
 				time.sleep(100 * time.Millisecond)
 				bridge_startup_tick(bridge_runtime_now_ms(), kind = .Readiness)

@@ -19,7 +19,7 @@ bridge_telemetry_process: os.Process
 bridge_telemetry_active_conf_path: string
 
 bridge_telemetry_get_hostname :: proc(allocator := context.allocator) -> string {
-	if h := os.get_env("HOSTNAME", allocator); h != "" do return h
+	if h := bridge_env_get("HOSTNAME", allocator); h != "" do return h
 	when ODIN_OS != .Windows {
 		buf: [256]byte
 		if posix.gethostname(raw_data(buf[:]), len(buf)) == .OK {
@@ -31,12 +31,12 @@ bridge_telemetry_get_hostname :: proc(allocator := context.allocator) -> string 
 }
 
 bridge_telemetry_get_port :: proc(allocator := context.allocator) -> string {
-	if p := os.get_env("TELEMETRY_PORT", allocator); p != "" do return p
+	if p := bridge_env_get("TELEMETRY_PORT", allocator); p != "" do return p
 	return strings.clone("9273", allocator)
 }
 
 bridge_telemetry_get_template :: proc(allocator := context.allocator) -> string {
-	if path := os.get_env("TELEGRAF_CONF_TEMPLATE", context.temp_allocator); path != "" {
+	if path := bridge_env_get("TELEGRAF_CONF_TEMPLATE", context.temp_allocator); path != "" {
 		if data, err := os.read_entire_file(path, allocator); err == nil {
 			return string(data)
 		}
@@ -105,7 +105,7 @@ bridge_telemetry_start :: proc() -> bool {
 		}
 	}
 
-	bridge_id := bridge_config.daemon_id
+	bridge_id := bridge_cfg().daemon_id
 	if strings.trim_space(bridge_id) == "" do bridge_id = "local-daemon"
 
 	hostname := bridge_telemetry_get_hostname(context.temp_allocator)
@@ -126,7 +126,7 @@ bridge_telemetry_start :: proc() -> bool {
 	cmd: [dynamic]string
 	defer delete(cmd)
 
-	if bin := os.get_env("TELEGRAF_BIN", context.temp_allocator); strings.trim_space(bin) != "" {
+	if bin := bridge_env_get("TELEGRAF_BIN", context.temp_allocator); strings.trim_space(bin) != "" {
 		append(&cmd, bin, "--config", conf_file)
 	} else if path := bridge_runtime_find_on_path("telegraf"); path != "" {
 		append(&cmd, path, "--config", conf_file)

@@ -88,9 +88,9 @@ bridge_legacy_dispatch_restart_refuses_stale_queue_and_observes_new_paired_work 
 
 @(test)
 bridge_legacy_dispatch_unconfigured_compatibility_preserves_paired_requirement :: proc(t:^testing.T) {
-    saved:=bridge_config.daemon_id
-    defer bridge_config.daemon_id=saved
-    bridge_config.daemon_id=""
+    saved:=bridge_cfg().daemon_id
+    defer bridge_cfg().daemon_id=saved
+    bridge_cfg().daemon_id=""
     job:=Bridge_Dispatch_Job{text=`{"type":"wake_agent","payload":{"run":[]}}`,command_type="wake_agent"}
     testing.expect(t,bridge_legacy_dispatch_start(&job),"unconfigured compatibility remains unknown, not verified coverage")
     job.paired_observation_required=true

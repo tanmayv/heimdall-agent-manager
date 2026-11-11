@@ -16,6 +16,7 @@ package main
 
 import "core:mem"
 import "core:strings"
+import "core:sync"
 import "core:testing"
 
 @(private = "file")
@@ -49,6 +50,9 @@ _inv_session :: proc(m: ^Bridge_Shell_Session_Map, session_id: string, status: B
 // diff exists to resolve, out of nothing.
 @(test)
 test_inventory_lists_only_live_sessions :: proc(t: ^testing.T) {
+	// The shell session map is process-wide (worker threads read it).
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	track: mem.Tracking_Allocator
 	mem.tracking_allocator_init(&track, context.allocator)
 	defer mem.tracking_allocator_destroy(&track)
@@ -84,6 +88,9 @@ test_inventory_lists_only_live_sessions :: proc(t: ^testing.T) {
 // the hub refuses the entry, and the untracked process stays untracked.
 @(test)
 test_inventory_entry_carries_the_adoptable_columns :: proc(t: ^testing.T) {
+	// The shell session map is process-wide (worker threads read it).
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	track: mem.Tracking_Allocator
 	mem.tracking_allocator_init(&track, context.allocator)
 	defer mem.tracking_allocator_destroy(&track)
@@ -118,6 +125,9 @@ test_inventory_entry_carries_the_adoptable_columns :: proc(t: ^testing.T) {
 // that restarted and lost everything — would never be reported at all.
 @(test)
 test_inventory_is_sent_when_empty :: proc(t: ^testing.T) {
+	// The shell session map is process-wide (worker threads read it).
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	track: mem.Tracking_Allocator
 	mem.tracking_allocator_init(&track, context.allocator)
 	defer mem.tracking_allocator_destroy(&track)
@@ -137,6 +147,9 @@ test_inventory_is_sent_when_empty :: proc(t: ^testing.T) {
 // processes are alive — a bound turning into a kill switch.
 @(test)
 test_inventory_marks_itself_truncated_at_the_cap :: proc(t: ^testing.T) {
+	// The shell session map is process-wide (worker threads read it).
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	track: mem.Tracking_Allocator
 	mem.tracking_allocator_init(&track, context.allocator)
 	defer mem.tracking_allocator_destroy(&track)

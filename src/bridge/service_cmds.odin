@@ -18,7 +18,7 @@ import contracts "odin_test:contracts"
 // bridge_service_host describes this machine for bridgesvc (temp-allocated).
 bridge_service_host :: proc() -> bridgesvc.Host {
 	env :: proc(key: string) -> string {
-		v, _ := os.lookup_env(key, context.temp_allocator)
+		v, _ := bridge_env_lookup(key, context.temp_allocator)
 		return v
 	}
 	host := bridgesvc.Host{home = env("HOME"), uid = bridge_os_uid()}
@@ -64,7 +64,7 @@ bridge_service_resolve :: proc(host: bridgesvc.Host, args: []string) -> (name: s
 		if !ok do return "", fmt.tprintf("invalid --hub %q or --profile %q (profile: [a-z0-9][a-z0-9-]{{0,30}})", hub, profile)
 		return p.service_name, ""
 	}
-	if env, found := os.lookup_env("HEIMDALL_BRIDGE_SERVICE_NAME", context.temp_allocator); found && env != "" {
+	if env, found := bridge_env_lookup("HEIMDALL_BRIDGE_SERVICE_NAME", context.temp_allocator); found && env != "" {
 		env = strings.trim_suffix(env, ".service")
 		if bridge_service_name_safe(env) do return env, ""
 	}
@@ -323,7 +323,7 @@ bridge_local_status_write :: proc(connected: bool) {
 		connected  = connected,
 		vault      = bridge_hub_vault_status_for_report(),
 		version    = contracts.APP_VERSION,
-		bridge_id  = strings.trim_space(bridge_config.daemon_id),
+		bridge_id  = strings.trim_space(bridge_cfg().daemon_id),
 		updated_at = time.to_unix_seconds(time.now()),
 		auth       = bridge_credential_auth_status(),
 	}
@@ -356,7 +356,7 @@ bridge_enroll_service_for :: proc(host: bridgesvc.Host, args: []string) -> (name
 			append(&candidates, p.service_name)
 		}
 	}
-	if env, found := os.lookup_env("HEIMDALL_BRIDGE_SERVICE_NAME", context.temp_allocator); found && env != "" {
+	if env, found := bridge_env_lookup("HEIMDALL_BRIDGE_SERVICE_NAME", context.temp_allocator); found && env != "" {
 		append(&candidates, strings.trim_suffix(env, ".service"))
 	}
 	switch host.os {

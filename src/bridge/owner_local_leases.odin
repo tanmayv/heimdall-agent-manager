@@ -57,8 +57,8 @@ bridge_owner_agent :: proc(request_id,params:string,rec:Bridge_Local_Agent_Token
     lifecycle:=false
     if !valid { input,valid=contracts.owner_parse(params,"lifecycle_input");lifecycle=valid }
     if !valid do return bridge_local_response_error(request_id,"malformed","invalid owner-local lease input")
-    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
-    pub:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+    account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
+    pub:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     key_id,key_ok:=vault.device_id_from_sign_pub(pub,context.temp_allocator)
     if !key_ok do return bridge_local_response_error(request_id,"invalid_scope","owner identity unavailable")
     sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
@@ -73,7 +73,7 @@ bridge_owner_agent :: proc(request_id,params:string,rec:Bridge_Local_Agent_Token
     for f in ([10]string{"chain_id","task_id","lease_id","configuration_revision","expected_revision","operation_id","method","request_expires_ms","protocol_version","capability_digest"}) {
         if f=="capability_digest" {command[f]=json.String(contracts.owner_payload_digest(cap))} else {command[f]=input[f]}
     }
-    command["account_id"]=json.String(account);command["owner_bridge_id"]=json.String(bridge_config.daemon_id)
+    command["account_id"]=json.String(account);command["owner_bridge_id"]=json.String(bridge_cfg().daemon_id)
     command["instance_id"]=json.String(child.instance);command["launch_epoch"]=json.String(child.epoch)
     command["run_count"]=json.String(fmt.tprintf("%d",child.run_count));command["token_generation"]=json.String(child.token_generation)
     command["key_id"]=json.String(key_id);command["signature"]=json.String(strings.repeat("0",128,context.temp_allocator))
@@ -87,7 +87,7 @@ bridge_owner_agent :: proc(request_id,params:string,rec:Bridge_Local_Agent_Token
     signature,signed:=bridge_owner_sign(nil,kind,command)
     if !signed do return bridge_local_response_error(request_id,"storage_error","attestation signing failed")
     command["signature"]=json.String(signature)
-    key:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,key_id,pub,"bridge",true,false}
+    key:=contracts.Owner_Verified_Key{account,bridge_cfg().daemon_id,key_id,pub,"bridge",true,false}
     result:owner.Result
     if lifecycle {
         proof:=bridge_owner_source_proof(&bridge_owner_store,contracts.owner_string(command,"chain_id"),contracts.owner_string(command,"task_id"))
@@ -109,8 +109,8 @@ bridge_owner_agent :: proc(request_id,params:string,rec:Bridge_Local_Agent_Token
 // requests or the Hub connection is down.
 bridge_owner_maintenance_once :: proc() {
     context.allocator=context.temp_allocator
-    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
-    pub:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+    account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
+    pub:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     key_id,ok:=vault.device_id_from_sign_pub(pub,context.temp_allocator)
     if !ok || account=="" do return
     sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
@@ -131,4 +131,4 @@ bridge_owner_maintenance_worker :: proc() {
         time.sleep(30*time.Second)
     }
 }
-bridge_owner_maintenance_start :: proc() { thread.run(bridge_owner_maintenance_worker) }
+bridge_owner_maintenance_start :: proc() { bridge_thread_run(bridge_owner_maintenance_worker) }

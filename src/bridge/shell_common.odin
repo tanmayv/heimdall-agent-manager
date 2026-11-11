@@ -154,7 +154,7 @@ bridge_shell_run_wait_response :: proc(request_id, session_id: string, timeout_m
 // bridge_expand_home, which aliases its input when there is no "~" to expand) so
 // callers get one unconditional delete instead of a guarded one.
 bridge_shell_data_dir :: proc() -> string {
-	raw_dir := strings.trim_space(bridge_config.data_dir)
+	raw_dir := strings.trim_space(bridge_cfg().data_dir)
 	if raw_dir == "" do raw_dir = "~/.local/share/heimdall"
 	expanded := bridge_expand_home(raw_dir)
 	if raw_data(expanded) != raw_data(raw_dir) do return expanded

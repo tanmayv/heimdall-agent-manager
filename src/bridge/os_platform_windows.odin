@@ -350,7 +350,7 @@ bridge_os_reexec :: proc(argv: []string) -> bool {
 
 // bridge_os_default_data_dir is %LOCALAPPDATA%\heimdall (per user, not roamed).
 bridge_os_default_data_dir :: proc() -> string {
-	if local := os.get_env("LOCALAPPDATA", context.temp_allocator); local != "" {
+	if local := bridge_env_get("LOCALAPPDATA", context.temp_allocator); local != "" {
 		return strings.concatenate({local, "/heimdall"})
 	}
 	return bridge_expand_home("~/.local/share/heimdall")

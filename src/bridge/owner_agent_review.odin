@@ -50,8 +50,10 @@ Owner_Review_Effects :: struct {
     launch:proc(body,agent:string,rec:Bridge_Local_Agent_Token_Record) -> (string,string),
     bind:proc(chain,instance,agent,coordinator:string) -> (string,string),
 }
+@(thread_local)
 bridge_owner_review_effects:Owner_Review_Effects
 // Tests run the dispatch on the calling thread.
+@(thread_local)
 bridge_owner_review_sync_effects:bool
 
 // Under the child locks: plan a review lease for every reviewer the task's
@@ -85,7 +87,7 @@ bridge_owner_review_plan :: proc(ctx:^Owner_Agent_Ctx,chain,task:string) -> json
                 append(&out,json.Object{"agent_id"=json.String(target.agent_id),"action"=json.String("remote"),"bridge_id"=json.String(policy.bridge_id)})
                 continue
             }
-            body:=map[string]string{"agent_id"=target.agent_id,"chain_id"=chain,"bridge_id"=bridge_config.daemon_id}
+            body:=map[string]string{"agent_id"=target.agent_id,"chain_id"=chain,"bridge_id"=bridge_cfg().daemon_id}
             if policy,has,policy_ok:=owner.agent_fleet_policy(ctx.store,chain,target.agent_id);policy_ok && has {
                 if policy.provider!="" do body["provider"]=policy.provider
                 if policy.model!="" do body["model"]=policy.model
@@ -126,7 +128,7 @@ bridge_owner_review_dispatch :: proc(d:Owner_Review_Dispatch) {
         bridge_owner_review_execute(owned)
         return
     }
-    thread.run_with_poly_data(owned,proc(d:^Owner_Review_Dispatch) {
+    bridge_thread_run_with_poly_data(owned,proc(d:^Owner_Review_Dispatch) {
         bridge_owner_review_execute(d)
         free_all(context.temp_allocator)
     })

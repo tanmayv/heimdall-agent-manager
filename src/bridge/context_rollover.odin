@@ -101,7 +101,9 @@ Bridge_Rollover_Effects :: struct {
 
 bridge_rollover_mutex: sync.Mutex
 bridge_rollover_states: [dynamic]Bridge_Rollover_State
+@(thread_local)
 bridge_rollover_effects: Bridge_Rollover_Effects
+@(thread_local)
 bridge_rollover_sync_effects: bool
 bridge_rollover_worker_started: bool
 
@@ -487,7 +489,7 @@ bridge_rollover_tick :: proc(now: i64) {
 bridge_rollover_worker_ensure_started :: proc() {
 	if bridge_rollover_sync_effects do return
 	if _, swapped := sync.atomic_compare_exchange_strong(&bridge_rollover_worker_started, false, true); swapped {
-		thread.run(proc() {
+		bridge_thread_run(proc() {
 			for {
 				time.sleep(BRIDGE_ROLLOVER_TICK_MS * time.Millisecond)
 				bridge_rollover_tick(bridge_runtime_now_ms())
@@ -517,7 +519,7 @@ bridge_rollover_run :: proc(actions: [dynamic]Bridge_Rollover_Action) {
 		bridge_rollover_execute(actions)
 		return
 	}
-	thread.run_with_poly_data(actions, proc(actions: [dynamic]Bridge_Rollover_Action) {
+	bridge_thread_run_with_poly_data(actions, proc(actions: [dynamic]Bridge_Rollover_Action) {
 		bridge_rollover_execute(actions)
 		free_all(context.temp_allocator)
 	})

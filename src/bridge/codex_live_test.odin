@@ -140,7 +140,7 @@ codex_live_connection :: proc(data: rawptr) {
 
 @(test)
 test_codex_live_bridge_listener_when_explicitly_configured :: proc(t: ^testing.T) {
-	port_raw := os.get_env("HEIMDALL_CODEX_LIVE_PORT", context.temp_allocator)
+	port_raw := bridge_env_get("HEIMDALL_CODEX_LIVE_PORT", context.temp_allocator)
 	if port_raw == "" do return
 	port, ok := strconv.parse_int(port_raw)
 	testing.expect(t, ok && port > 1024 && port < 65536)
@@ -162,7 +162,7 @@ test_codex_live_bridge_listener_when_explicitly_configured :: proc(t: ^testing.T
 		if stop { net.close(socket); break }
 		p := new(net.TCP_Socket)
 		p^ = socket
-		th := thread.create_and_start_with_data(p, codex_live_connection)
+		th := bridge_thread_start_with_data(p, codex_live_connection)
 		append(&workers, th)
 	}
 	for th in workers { thread.join(th); thread.destroy(th) }

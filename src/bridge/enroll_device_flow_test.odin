@@ -379,9 +379,9 @@ hello_json_carries_the_real_hostname :: proc(t: ^testing.T) {
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	sync.mutex_lock(&keystore_test_mutex)
 	defer sync.mutex_unlock(&keystore_test_mutex)
-	saved_cfg := bridge_config
-	defer bridge_config = saved_cfg
-	bridge_config.daemon_id = "brg_1234567890abcdef"
+	saved_cfg := bridge_cfg()^
+	defer bridge_cfg()^ = saved_cfg
+	bridge_cfg().daemon_id = "brg_1234567890abcdef"
 	hello := bridge_hub_hello_json()
 	defer delete(hello)
 	testing.expect(t, strings.contains(hello, "\"hostname\":\""), "the hello must carry a hostname field")
@@ -604,7 +604,7 @@ test_bridge_write_enrolled_config_file :: proc(t: ^testing.T) {
 bridge_config_expands_default_data_dir_tilde :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
-	home := os.get_env_alloc("HOME", context.allocator)
+	home := bridge_env_get_alloc("HOME", context.allocator)
 	if strings.trim_space(home) == "" do return
 
 	cfg := bridge_config_from_args([]string{"ham-bridge"})
@@ -617,7 +617,7 @@ bridge_config_expands_default_data_dir_tilde :: proc(t: ^testing.T) {
 bridge_config_expands_data_dir_override_tilde :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
-	home := os.get_env_alloc("HOME", context.allocator)
+	home := bridge_env_get_alloc("HOME", context.allocator)
 	if strings.trim_space(home) == "" do return
 
 	cfg := bridge_config_from_args([]string{"ham-bridge", "--data-dir", "~/custom-heimdall-dir"})

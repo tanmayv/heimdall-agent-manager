@@ -101,7 +101,7 @@ bridge_update_command :: proc(args: []string) -> bool {
 		if !bridge_auto_update_enabled(bridgesvc.pjoin(l.state_dir, bridgesvc.CONFIG_FILE)) do return false
 	}
 	argv := bridgesvc.update_setup_argv(exe, hub, profile, has_flag(args, "--json-progress"))
-	own, _ := os.lookup_env("HEIMDALL_BRIDGE_SERVICE_NAME", context.temp_allocator)
+	own, _ := bridge_env_lookup("HEIMDALL_BRIDGE_SERVICE_NAME", context.temp_allocator)
 	if !automatic && (has_flag(args, "--detach") || strings.trim_suffix(own, ".service") == name) {
 		if !bridge_os_spawn_new_session(argv) {
 			fmt.eprintln("ham-bridge update: cannot start the detached update")

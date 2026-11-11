@@ -498,9 +498,9 @@ bridge_local_handle_agent_local_op :: proc(request_id, op, params: string, rec: 
 			if !first do strings.write_byte(&b, ',')
 			first = false
 			strings.write_string(&b, "{\"origin\":\"self\",\"daemon_id\":\"")
-			bridge_local_write_json_string(&b, string(bridge_config.daemon_id))
+			bridge_local_write_json_string(&b, string(bridge_cfg().daemon_id))
 			strings.write_string(&b, "\",\"local_endpoint_port\":")
-			bridge_agent_write_int(&b, int(bridge_config.local_endpoint_port))
+			bridge_agent_write_int(&b, int(bridge_cfg().local_endpoint_port))
 			strings.write_string(&b, "}")
 		}
 

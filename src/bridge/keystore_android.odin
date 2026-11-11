@@ -94,8 +94,8 @@ keystore_android_selected :: proc() -> bool {
 	when ODIN_TEST {
 		return keystore_android_test_force
 	} else {
-		termux_version, _ := os.lookup_env("TERMUX_VERSION", context.temp_allocator)
-		prefix, _ := os.lookup_env("PREFIX", context.temp_allocator)
+		termux_version, _ := bridge_env_lookup("TERMUX_VERSION", context.temp_allocator)
+		prefix, _ := bridge_env_lookup("PREFIX", context.temp_allocator)
 		return keystore_android_env_says_termux(termux_version, prefix)
 	}
 }

@@ -25,7 +25,7 @@ bridge_binary_input_retains_native_bytes_off_reader_and_refuses_barrier :: proc(
     saved_revision:=bridge_dispatch_observation_revision
     saved_failed:=bridge_legacy_ingress_failed
     saved_generation:=bridge_dispatch_generation
-    saved_daemon:=bridge_config.daemon_id
+    saved_daemon:=bridge_cfg().daemon_id
     bridge_dispatch_claims=make([dynamic]Bridge_Dispatch_Claim,runtime.default_allocator())
     bridge_dispatch_shell=make([dynamic]Bridge_Dispatch_Job,runtime.default_allocator())
     bridge_dispatch_active_keys=nil
@@ -34,7 +34,7 @@ bridge_binary_input_retains_native_bytes_off_reader_and_refuses_barrier :: proc(
     bridge_dispatch_mcp_large_bytes=0;bridge_dispatch_mcp_large_outbox_bytes=0
     bridge_dispatch_owned_bytes=0;bridge_dispatch_queued_cost=0
     bridge_dispatch_generation=7
-    bridge_config.daemon_id="paired"
+    bridge_cfg().daemon_id="paired"
     sync.mutex_unlock(&bridge_dispatch_mu)
     defer {
         sync.mutex_lock(&bridge_dispatch_mu)
@@ -55,7 +55,7 @@ bridge_binary_input_retains_native_bytes_off_reader_and_refuses_barrier :: proc(
         bridge_dispatch_claims=saved_claims;bridge_dispatch_workers=saved_workers;bridge_dispatch_active_keys=saved_keys
         bridge_dispatch_metrics=saved_metrics;bridge_dispatch_owned_bytes=saved_owned;bridge_dispatch_queued_cost=saved_cost
         bridge_dispatch_observation_revision=saved_revision;bridge_legacy_ingress_failed=saved_failed
-        bridge_dispatch_generation=saved_generation;bridge_config.daemon_id=saved_daemon
+        bridge_dispatch_generation=saved_generation;bridge_cfg().daemon_id=saved_daemon
         sync.mutex_unlock(&bridge_dispatch_mu)
     }
     original:=contracts.pty_wire_encode_session_frame(contracts.PTY_WIRE_KIND_INPUT,contracts.PTY_WIRE_FLAG_ENCRYPTED,"exact_target",[]byte{0,255,3,0,128},context.temp_allocator)

@@ -19,7 +19,7 @@ Executor_Exchange_Wire :: struct {
 // cannot later be replaced by an older still-valid directory snapshot.
 bridge_executor_directory :: proc(s:^executor.Store,input:vault.Directory_Verification_Input,kr:^vault.Vault_Keyring)->(vault.Verified_Directory,bool) {
     if input.owner!=s.account do return {},false
-    floor,status:=keystore_read_epoch_floor(bridge_config.daemon_id)
+    floor,status:=keystore_read_epoch_floor(bridge_cfg().daemon_id)
     if status!=.Found || !floor.root.set do return {},false
     seq,head,pinned:=executor.enrollment_pin(s)
     if !pinned do return {},false
@@ -63,9 +63,9 @@ bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string,activati
         if conn!=nil do _=bridge_hub_send(conn,result)
     }
     now:=time.to_unix_nanoseconds(time.now())/1000000
-    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
+    account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
     expires:=contracts.executor_number(relay,"expires_ms")
-    if wire.account_id!=account || get(relay,"bridge_id")!=bridge_config.daemon_id || expires<=now || expires-now>contracts.EXECUTOR_TRANSPORT_TTL_MS {return}
+    if wire.account_id!=account || get(relay,"bridge_id")!=bridge_cfg().daemon_id || expires<=now || expires-now>contracts.EXECUTOR_TRANSPORT_TTL_MS {return}
     kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
     if !unlocked {reply.code="vault_locked";return}
     plain,opened:=bridge_open_current_epoch_token(get(relay,"envelope"),&kr,context.temp_allocator)
@@ -87,12 +87,12 @@ bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string,activati
     method:=get(scope,"method")
     if notification!=(method=="notification") do return
     if !parsed || !scoped || !g_ok || (method!="prepare" && method!="action" && method!="notification") || get(scope,"direction")!="request" ||
-       get(scope,"account_id")!=account || get(scope,"executor_bridge_id")!=bridge_config.daemon_id ||
+       get(scope,"account_id")!=account || get(scope,"executor_bridge_id")!=bridge_cfg().daemon_id ||
        get(scope,"chain_id")!=get(relay,"chain_id") || get(scope,"request_id")!=get(relay,"request_id") ||
        get(genesis,"chain_id")!=get(scope,"chain_id") || get(genesis,"account_id")!=account ||
        get(genesis,"owner_bridge_id")!=get(scope,"owner_bridge_id") ||
        contracts.executor_number(scope,"request_expires_ms")>expires {return}
-    public:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+    public:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     self_id,self_ok:=vault.device_id_from_sign_pub(public,context.temp_allocator)
     if !self_ok do return
     sync.mutex_lock(&bridge_executor_mutex);defer sync.mutex_unlock(&bridge_executor_mutex)
@@ -120,7 +120,7 @@ bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string,activati
        !(method=="action" && get(p,"method")=="query") &&
        !(activation && method=="action" && get(p,"method")=="activate") {reply.code="stale_incarnation";return}
     if notification {
-        self:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,self_id,public,"bridge",true,false}
+        self:=contracts.Owner_Verified_Key{account,bridge_cfg().daemon_id,self_id,public,"bridge",true,false}
         result:=bridge_executor_notification_dispatch(s,request_raw,get(exchange,"message"),contracts.executor_number(exchange,"claim_attempt"),
             owner_key,self,&kr,generation,callback_ctx,fence_exchange,launch_io)
         reply.code=result.code
@@ -143,7 +143,7 @@ bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string,activati
         // the separate General_IO command must consume a live owner nonce.
         result=executor.action(s,request_raw,owner_key,time.to_unix_nanoseconds(time.now())/1000000)
         if activation && (result.code=="owner_fence_not_current" || has_bootstrap && result.code=="ok" && !executor.bootstrap_retained(s,get(p,"reservation_id"))) {
-            self:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,self_id,public,"bridge",true,false}
+            self:=contracts.Owner_Verified_Key{account,bridge_cfg().daemon_id,self_id,public,"bridge",true,false}
             pending,ready:=executor.fence_challenge(s,request_raw,get(exchange,"intent_id"),contracts.executor_number(exchange,"claim_attempt"),
                 owner_key,self,time.to_unix_nanoseconds(time.now())/1000000,{nil,bridge_executor_sign})
             if !ready {reply.code="owner_fence_not_current";return}
@@ -167,12 +167,12 @@ bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string,activati
         accepted:=executor.accept_bootstrap(s,get(exchange,"bootstrap"),get(exchange,"body"),request_raw,owner_key,
             time.to_unix_nanoseconds(time.now())/1000000,current)
         if accepted.code!="ok" {reply.code=accepted.code;return}
-        self:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,self_id,public,"bridge",true,false}
+        self:=contracts.Owner_Verified_Key{account,bridge_cfg().daemon_id,self_id,public,"bridge",true,false}
         launched,reason:=dispatch(s,request_raw,exchange,owner_key,self,&kr,generation,callback_ctx,fence_exchange,launch_io)
         if !launched {reply.code=reason;return}
     }
     if activation && get(p,"method")=="heartbeat" && result.code=="ok" {
-        self:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,self_id,public,"bridge",true,false}
+        self:=contracts.Owner_Verified_Key{account,bridge_cfg().daemon_id,self_id,public,"bridge",true,false}
         delivered,reason:=dispatch(s,request_raw,exchange,owner_key,self,&kr,generation,callback_ctx,fence_exchange,launch_io)
         if !delivered {reply.code=reason;return}
     }

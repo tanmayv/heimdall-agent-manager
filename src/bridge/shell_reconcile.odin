@@ -135,7 +135,7 @@ bridge_shell_orphan_reconcile_now :: proc() {
 
 	credential_snapshot_135 := bridge_credential_snapshot()
 	defer delete(credential_snapshot_135)
-	if strings.trim_space(bridge_config.daemon_url) == "" || strings.trim_space(credential_snapshot_135) == "" {
+	if strings.trim_space(bridge_cfg().daemon_url) == "" || strings.trim_space(credential_snapshot_135) == "" {
 		return
 	}
 
@@ -151,7 +151,7 @@ bridge_shell_orphan_reconcile_now :: proc() {
 	headers := [?]httpc.Header{httpc.bearer(credential_snapshot_148)}
 
 	resp, http_err := bridge_http_request_retry({
-		method = .GET, url = bridge_hub_url(), path = {"api", "v1", "bridges", bridge_config.daemon_id, "shells"},
+		method = .GET, url = bridge_hub_url(), path = {"api", "v1", "bridges", bridge_cfg().daemon_id, "shells"},
 		query = {{"status", "running"}}, headers = headers[:],
 	})
 	defer httpc.response_destroy(&resp)
@@ -170,7 +170,7 @@ bridge_shell_orphan_reconcile_now :: proc() {
 		delete(orphans)
 	}
 
-	raw_dir := strings.trim_space(bridge_config.data_dir)
+	raw_dir := strings.trim_space(bridge_cfg().data_dir)
 	if raw_dir == "" do raw_dir = "~/.local/share/heimdall"
 	data_dir := bridge_expand_home(raw_dir)
 	defer if raw_data(data_dir) != raw_data(raw_dir) do delete(data_dir)

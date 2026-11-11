@@ -139,7 +139,7 @@ bridge_permission_request_reply_roundtrip_via_handler :: proc(t: ^testing.T) {
 	c.rec = rec
 	c.shared = shared
 
-	worker_thread := thread.create_and_start_with_data(rawptr(c), proc(data: rawptr) {
+	worker_thread := bridge_thread_start_with_data(rawptr(c), proc(data: rawptr) {
 		cc := (^Ctx)(data)
 		params := "{\"request_id\":\"rq_integ_roundtrip\",\"tool\":\"bash\",\"risk\":\"risky\",\"input\":{\"cmd\":\"rm -rf x\"},\"timeout_ms\":5000}"
 		resp := bridge_local_handle_agent_method("id-req", "agent.permission.request", params, cc.rec)

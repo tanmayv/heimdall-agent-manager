@@ -30,7 +30,7 @@ test_owner_local_lifecycle_real_git_paths :: proc(t:^testing.T) {
     head,head_ok:=bridge_owner_git(work,[]string{"rev-parse","HEAD"});testing.expect(t,head_ok)
     c["configuration_revision"]=json.String("1");c["author_agent_id"]=json.String("author")
     c["reviewer_agent_id"]=json.String("reviewer");c["reviewer_instance_id"]=json.String("review_instance");c["directory_id"]=json.String("directory")
-    path:=fmt.tprintf("%s/.cache/heimdall-tests/owner-merge-recovery-%d.sqlite",os.get_env("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    path:=fmt.tprintf("%s/.cache/heimdall-tests/owner-merge-recovery-%d.sqlite",bridge_env_get("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
     store:owner.Store
     if !testing.expect(t,owner.open(&store,path,"account","bridge","bridge_key")) do return
     defer {

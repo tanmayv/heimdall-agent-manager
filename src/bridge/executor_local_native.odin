@@ -44,7 +44,7 @@ bridge_executor_local_files :: proc(_:rawptr,m:Executor_Local_Material)->([dynam
     descriptor.provider=m.provider
     if descriptor.agent_id=="" do return nil,false
     credential:=bridge_credential_snapshot();defer delete(credential)
-    manifest,result:=bridge_bootstrap_conditional_manifest(bridge_config.daemon_url,credential,m.provider,descriptor,&bootstrap_global_cache)
+    manifest,result:=bridge_bootstrap_conditional_manifest(bridge_cfg().daemon_url,credential,m.provider,descriptor,&bootstrap_global_cache)
     if !result.ok do return nil,false
     defer delete(manifest)
     files,built:=bridge_bootstrap_build_file_set(manifest,descriptor,m.endpoint,m.token,m.provider,&bootstrap_global_cache)
@@ -293,8 +293,8 @@ bridge_executor_local_directory_digest :: proc(path:string)->string {
 bridge_executor_local_stage :: proc(command:string,purpose:string,io:Executor_Local_IO={nil,bridge_executor_local_files,""},origin:Executor_Legacy_Origin={},observation_action:executor.Legacy_Action={},observation_entry_index:i64= -1,observation_entry_digest:string="")->(bool,string,Bridge_Error) {
     context.allocator=context.temp_allocator
     generation:=bridge_task_chain_search_generation()
-    account:=bridge_enrolled_owner_user_id(bridge_config.daemon_id)
-    public:=bridge_identity_public_key_hex(bridge_config.daemon_id)
+    account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
+    public:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     self,identified:=vault.device_id_from_sign_pub(public,context.temp_allocator)
     if !identified || account=="" do return false,"paired execution device required",bridge_error(.agent_launch_failed,.denied)
     kr,unlocked:=bridge_read_vault_keyring();vault.keyring_wipe(&kr)
@@ -373,7 +373,7 @@ bridge_executor_local_stage_draft :: proc(s:^executor.Store,command,purpose,sour
     epoch:=extract_json_string(command,"launch_epoch","");defer delete(epoch)
     if epoch=="" do epoch=fmt.tprintf("local_%s",source)
     run_dir:=bridge_runtime_default_run_dir(d.instance_id);defer delete(run_dir)
-    config:=bridge_local_endpoint_config_default(bridge_config.local_endpoint_run_dir,bridge_config.local_endpoint_port)
+    config:=bridge_local_endpoint_config_default(bridge_cfg().local_endpoint_run_dir,bridge_cfg().local_endpoint_port)
     endpoint:=bridge_local_endpoint_env_value(config,ODIN_OS!=.Windows);defer delete(endpoint)
     env:=bridge_prespawn_env(run_dir,endpoint,token,d.instance_id)
     defer {for item in env do delete(item);delete(env)}

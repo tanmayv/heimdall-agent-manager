@@ -13,7 +13,7 @@ import owner "odin_test:lib/owner_local"
 @(test)
 test_owner_caller_view_and_reopen_refusal_message :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
-    path:=fmt.tprintf("%s/.cache/heimdall-tests/owner-t1-view-%d.sqlite",os.get_env("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    path:=fmt.tprintf("%s/.cache/heimdall-tests/owner-t1-view-%d.sqlite",bridge_env_get("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
     store:owner.Store
     if !testing.expect(t,owner.open(&store,path,"account","bridge","bridge_key")) do return
     defer {

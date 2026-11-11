@@ -88,18 +88,18 @@ test_owner_review_dispatch_reaches_every_reviewer_end_to_end :: proc(t:^testing.
     priv:ecdsa.Private_Key;defer ecdsa.private_key_clear(&priv)
     r.key=chain_create_test_key(t,&priv,"bridge","bridge_key")
     signer:=owner.Signer{&priv,chain_create_test_sign}
-    old_daemon:=bridge_config.daemon_id;bridge_config.daemon_id="bridge"
+    old_daemon:=bridge_cfg().daemon_id;bridge_cfg().daemon_id="bridge"
     bridge_owner_test_signer=signer;bridge_owner_live_probe=review_test_probe
     bridge_owner_review_effects=Owner_Review_Effects{nudge=review_test_nudge,start=review_test_start};bridge_owner_review_sync_effects=true
     review_test_live=make([dynamic]owner.Child,context.temp_allocator)
     review_test_nudged=make([dynamic]string,context.temp_allocator)
     review_test_started=make([dynamic]string,context.temp_allocator)
     defer {
-        bridge_config.daemon_id=old_daemon;bridge_owner_test_signer={};bridge_owner_live_probe=nil
+        bridge_cfg().daemon_id=old_daemon;bridge_owner_test_signer={};bridge_owner_live_probe=nil
         bridge_owner_review_effects={};bridge_owner_review_sync_effects=false
         review_test_live=nil;review_test_nudged=nil;review_test_started=nil
     }
-    r.root=fmt.tprintf("%s/.cache/heimdall-tests/owner-review-dispatch-%d",os.get_env("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    r.root=fmt.tprintf("%s/.cache/heimdall-tests/owner-review-dispatch-%d",bridge_env_get("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
     testing.expect(t,bridge_make_directory_all(r.root)==nil)
     defer _=os.remove_all(r.root)
     if !testing.expect(t,owner.open(&r.store,fmt.tprintf("%s/runtime.sqlite",r.root),"account","bridge","bridge_key")) do return

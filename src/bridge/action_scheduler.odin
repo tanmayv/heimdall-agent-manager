@@ -514,9 +514,9 @@ bridge_action_scheduler_start :: proc() {
 	bridge_action_scheduler_init()
 	credential_snapshot_509 := bridge_credential_snapshot()
 	defer delete(credential_snapshot_509)
-	if strings.trim_space(credential_snapshot_509) == "" || strings.trim_space(bridge_config.daemon_url) == "" do return
+	if strings.trim_space(credential_snapshot_509) == "" || strings.trim_space(bridge_cfg().daemon_url) == "" do return
 	bridge_action_sched_state.running = true
-	thread.run(bridge_action_scheduler_worker)
+	bridge_thread_run(bridge_action_scheduler_worker)
 }
 
 bridge_action_scheduler_worker :: proc() {
@@ -655,7 +655,7 @@ bridge_action_scheduler_connection_changed :: proc() {
 }
 
 bridge_action_scheduler_sync_key :: proc() -> string {
-    return fmt.aprintf("sync:%s:%s", bridge_config.daemon_url, bridge_config.daemon_id)
+    return fmt.aprintf("sync:%s:%s", bridge_cfg().daemon_url, bridge_cfg().daemon_id)
 }
 
 bridge_action_scheduler_sync :: proc(fetch: Action_Scheduler_Fetch = bridge_hub_http_send, now_override: i64 = 0) -> bool {
@@ -818,7 +818,7 @@ bridge_action_scheduler_update_from_execute_response :: proc(action_id, next_run
 bridge_action_scheduler_execute :: proc(action_id: string, next_target_run_at: string, instance_id: string = "", last_spawned_instance_id: string = "") -> (bool, int, string) {
     credential := bridge_credential_snapshot()
     defer delete(credential)
-	if strings.trim_space(credential) == "" || strings.trim_space(bridge_config.daemon_url) == "" {
+	if strings.trim_space(credential) == "" || strings.trim_space(bridge_cfg().daemon_url) == "" {
 		return false, 0, ""
 	}
 	// last_spawned_instance_id is sent only for fresh_per_run fires so the hub
@@ -903,7 +903,7 @@ bridge_action_scheduler_resolve_or_launch_instance :: proc(due: Action_Queue_Ite
     credential := bridge_credential_snapshot()
     defer delete(credential)
 	if due.target_agent_id == "" do return "", false
-	if strings.trim_space(credential) == "" || strings.trim_space(bridge_config.daemon_url) == "" {
+	if strings.trim_space(credential) == "" || strings.trim_space(bridge_cfg().daemon_url) == "" {
 		return "", false
 	}
 

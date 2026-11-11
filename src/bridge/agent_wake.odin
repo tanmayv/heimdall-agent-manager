@@ -311,7 +311,7 @@ bridge_task_wake_record_result :: proc(instance_id: string, generation: u64, ok:
 bridge_wake_fetch_enriched_launch_json :: proc(instance_id, command_id: string, deadline_ns: i64 = 0) -> (string, Bridge_Error, bool) {
 	credential_snapshot_298 := bridge_credential_snapshot()
 	defer delete(credential_snapshot_298)
-	if strings.trim_space(bridge_config.daemon_url) == "" || strings.trim_space(credential_snapshot_298) == "" do return "", bridge_error(.hub_connect_failed, .config), false
+	if strings.trim_space(bridge_cfg().daemon_url) == "" || strings.trim_space(credential_snapshot_298) == "" do return "", bridge_error(.hub_connect_failed, .config), false
 	credential_snapshot_301 := bridge_credential_snapshot()
 	defer delete(credential_snapshot_301)
 	headers := [?]httpc.Header{httpc.bearer(credential_snapshot_301)}

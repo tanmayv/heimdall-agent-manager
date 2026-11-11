@@ -1,5 +1,6 @@
 package config
 
+import "base:runtime"
 import "core:fmt"
 import "core:os"
 import "core:strconv"
@@ -8,8 +9,22 @@ import contracts "odin_test:contracts"
 
 CONFIG_PATH_FLAG :: "--config"
 
+// env_lookup_override lets a caller substitute environment reads for the calling
+// thread only (tests: Odin runs every test as a thread of one process, so they must
+// not mutate the process environment). Nil reads the process environment.
+@(thread_local)
+env_lookup_override: proc(key: string, allocator: runtime.Allocator) -> (string, bool)
+
+env_get :: proc(key: string, allocator: runtime.Allocator) -> string {
+	if env_lookup_override != nil {
+		v, _ := env_lookup_override(key, allocator)
+		return v
+	}
+	return os.get_env_alloc(key, allocator)
+}
+
 default_config_path :: proc() -> string {
-	heimdall_home := os.get_env_alloc("HEIMDALL_HOME", context.allocator)
+	heimdall_home := env_get("HEIMDALL_HOME", context.allocator)
 	if heimdall_home != "" {
 		when ODIN_OS == .Windows {
 			return strings.concatenate({heimdall_home, "\\config.toml"})
@@ -18,19 +33,19 @@ default_config_path :: proc() -> string {
 		}
 	}
 	when ODIN_OS == .Windows {
-		appdata := os.get_env_alloc("APPDATA", context.allocator)
+		appdata := env_get("APPDATA", context.allocator)
 		if appdata != "" do return strings.concatenate({appdata, "\\heimdall\\config.toml"})
 		return "heimdall\\config.toml"
 	} else when ODIN_OS == .Darwin {
-		xdg := os.get_env_alloc("XDG_CONFIG_HOME", context.allocator)
+		xdg := env_get("XDG_CONFIG_HOME", context.allocator)
 		if xdg != "" do return strings.concatenate({xdg, "/heimdall/config.toml"})
-		home := os.get_env_alloc("HOME", context.allocator)
+		home := env_get("HOME", context.allocator)
 		if home != "" do return strings.concatenate({home, "/.config/heimdall/config.toml"})
 		return "config.toml"
 	} else {
-		xdg := os.get_env_alloc("XDG_CONFIG_HOME", context.allocator)
+		xdg := env_get("XDG_CONFIG_HOME", context.allocator)
 		if xdg != "" do return strings.concatenate({xdg, "/heimdall/config.toml"})
-		home := os.get_env_alloc("HOME", context.allocator)
+		home := env_get("HOME", context.allocator)
 		if home != "" do return strings.concatenate({home, "/.config/heimdall/config.toml"})
 		return "config.toml"
 	}
@@ -201,11 +216,11 @@ load :: proc(path: string) -> (Load_Result, bool) {
 // home_dir is the user's home directory: $HOME, or on Windows (where HOME is
 // usually unset) %USERPROFILE%. "" when neither is known. Caller owns the result.
 home_dir :: proc(allocator := context.allocator) -> string {
-	home := os.get_env_alloc("HOME", allocator)
+	home := env_get("HOME", allocator)
 	when ODIN_OS == .Windows {
 		if home == "" {
 			delete(home, allocator)
-			home = os.get_env_alloc("USERPROFILE", allocator)
+			home = env_get("USERPROFILE", allocator)
 		}
 	}
 	return home
@@ -214,7 +229,7 @@ home_dir :: proc(allocator := context.allocator) -> string {
 expand_home :: proc(path: string) -> string {
 	// Only the "~" case hands `home` itself back; every other path owns a fresh
 	// string, so the lookup is freed here instead of leaking on each call.
-	home := os.get_env_alloc("HEIMDALL_HOME", context.allocator)
+	home := env_get("HEIMDALL_HOME", context.allocator)
 	if home == "" {
 		delete(home)
 		home = home_dir()
