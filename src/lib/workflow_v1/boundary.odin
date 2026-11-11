@@ -50,8 +50,8 @@ output_shape :: proc(v:json.Value)->bool {
     return true
 }
 brief_shape :: proc(o:json.Object)->bool {
-    if !keys_allowed(o,"goal|acceptance|inputs|assignee|reviewers|budget|output|on_output|requires_user_approval|approver|gate") do return false
-    for key in ([3]string{"goal","assignee","approver"}) { if !string_member(o,key) do return false }
+    if !keys_allowed(o,"goal|acceptance|inputs|assignee|reviewers|budget|output|on_output|requires_user_approval|approver|gate|run_bridge_id") do return false
+    for key in ([4]string{"goal","assignee","approver","run_bridge_id"}) { if !string_member(o,key) do return false }
     for key in ([2]string{"acceptance","reviewers"}) { if a,present:=o[key];present && !array_strings(a) do return false }
     if refs,present:=o["inputs"];present && !array_strings(refs) do return false
     if value,present:=o["budget"];present {

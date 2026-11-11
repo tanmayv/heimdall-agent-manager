@@ -131,6 +131,12 @@ bridge_owner_agent_route :: proc(request_id,method,params:string,rec:Bridge_Loca
     if verb:=bridge_owner_instance_verb(method);verb!="" do return bridge_owner_instance_gate(request_id,verb,params,rec)
     failed_agent,failure:string
     ensured:Owner_Fleet_Ensured
+    if method=="agent.task.create" || method=="agent.task.update" {
+        // A run Bridge other than this one is verified before anything runs.
+        if bridge:=strings.trim_space(bridge_owner_pstr(bridge_owner_params(params),"bridge_id"));bridge!="" && bridge!=bridge_cfg().daemon_id {
+            if code,message:=bridge_owner_run_bridge_check(bridge);code!="ok" do return bridge_local_response_error(request_id,code,fmt.tprintf("%s; task unchanged",message)),true
+        }
+    }
     if method=="agent.task.create" || method=="agent.task.update" || method=="agent.task.split" {
         refused:string
         refused,failed_agent,failure,ensured=bridge_owner_task_fleet_ensure(request_id,method,params,rec,method=="agent.task.update")
@@ -856,6 +862,10 @@ Owner_Task_Plan :: struct {
     // --reason, recorded with the requirements revision for the audit.
     has_approval,approval:bool,
     reason:string,
+    // --bridge <id>: the task's run Bridge, kept in the brief as
+    // run_bridge_id; "" (or the owner Bridge) runs it here (the default).
+    has_bridge:bool,
+    bridge:string,
 }
 bridge_owner_task_plan :: proc(ctx:^Owner_Agent_Ctx,p:json.Object,updating:bool) -> (Owner_Task_Plan,string) {
     plan:Owner_Task_Plan
@@ -871,11 +881,13 @@ bridge_owner_task_plan :: proc(ctx:^Owner_Agent_Ctx,p:json.Object,updating:bool)
         plan.has_approval=true
         plan.approval=bool(v)
     }
-    if bridge:=bridge_owner_pstr(p,"bridge_id");bridge!="" && bridge!=bridge_cfg().daemon_id {
-        return {},bridge_owner_fail(ctx,"unsupported_on_owner_chain","--bridge other than the owner Bridge is not supported on an owner-held chain")
-    }
-    if _,present:=p["bridge_id"];present && bridge_owner_pstr(p,"bridge_id")=="" && updating {
-        return {},bridge_owner_fail(ctx,"unsupported_on_owner_chain","clearing --bridge is not supported on an owner-held chain")
+    if value,present:=p["bridge_id"];present && value!=nil {
+        plan.has_bridge=true
+        plan.bridge=strings.trim_space(bridge_owner_pstr(p,"bridge_id"))
+        if plan.bridge==bridge_cfg().daemon_id do plan.bridge=""
+        if plan.bridge!="" && !contracts.owner_field_valid(plan.bridge,"id") do return {},bridge_owner_fail(ctx,"bad_request","--bridge must be a Bridge id")
+        // A creation pinned to the owner Bridge is the default: nothing to record.
+        if !updating && plan.bridge=="" do plan.has_bridge=false
     }
     if priority:=bridge_owner_pstr(p,"priority");priority!="" {
         if !contracts.owner_field_valid(priority,"priority") do return {},bridge_owner_fail(ctx,"bad_request","--priority must be p0, p1 or p2")
@@ -1092,9 +1104,23 @@ bridge_owner_apply_plan :: proc(ctx:^Owner_Agent_Ctx,chain,task:string,plan:Owne
 bridge_owner_plan_children :: proc(ctx:^Owner_Agent_Ctx,chain:string,st:owner.Agent_Task_State,plan:^Owner_Task_Plan) -> (owner.Child,owner.Child,string) {
     assignee,reviewer:owner.Child
     code,message:string
-    if plan.has_assignee {
+    // The run Bridge of the task: this verb's --bridge, else the brief's.
+    run_bridge,pinned:=plan.bridge,plan.has_bridge
+    if !pinned do run_bridge,pinned=bridge_owner_brief_run_bridge(st.brief)
+    // Moving a configured task to another run Bridge re-places its worker.
+    if plan.has_bridge && !plan.has_assignee && st.configured {
+        if author:=contracts.owner_string(st.config,"author_agent_id");author!="" { plan.has_assignee=true;plan.assignee=author }
+    }
+    if plan.has_assignee && pinned && run_bridge!="" {
+        // Pinned to another Bridge: always placed there, even when a member
+        // of the agent runs here.
+        place,remote_code,remote_message:=bridge_owner_remote_target(ctx.store,chain,plan.assignee,run_bridge,true)
+        if remote_code!="ok" do return {},{},bridge_owner_fail(ctx,remote_code,remote_message)
+        ctx.remote=place
+        assignee=owner.Child{agent_id=plan.assignee}
+    } else if plan.has_assignee {
         assignee,code,message=bridge_owner_resolve_agent(ctx,chain,plan.assignee,"--assignee")
-        if code!="ok" {
+        if code!="ok" && !pinned {
             // No live child here: an agent whose fleet policy names another
             // account Bridge is placed there after the locks (#9/#10).
             place,remote_code,remote_message:=bridge_owner_remote_target(ctx.store,chain,plan.assignee)
@@ -1102,6 +1128,8 @@ bridge_owner_plan_children :: proc(ctx:^Owner_Agent_Ctx,chain:string,st:owner.Ag
             if remote_code!="ok" do return {},{},bridge_owner_fail(ctx,remote_code,remote_message)
             ctx.remote=place
             assignee=owner.Child{agent_id=plan.assignee}
+        } else if code!="ok" {
+            return {},{},bridge_owner_fail(ctx,code,message)
         }
     }
     reviewer_agent:=plan.reviewer
@@ -1159,6 +1187,8 @@ bridge_owner_task_create :: proc(ctx:^Owner_Agent_Ctx,p:json.Object) -> string {
     if pre_code!="ok" do return bridge_owner_fail(ctx,pre_code,fmt.tprintf("no task created: %s",pre_message))
     // The owner gate reads the flag from the brief, so a gated task needs one.
     if plan.approval && bridge_owner_brief_text(ctx,p)=="" do return bridge_owner_fail(ctx,"bad_request","--require-user-approval on an owner-held chain needs a brief (--goal and --acceptance); no task created")
+    // The run Bridge lives in the brief.
+    if plan.has_bridge && bridge_owner_brief_text(ctx,p)=="" do return bridge_owner_fail(ctx,"bad_request","--bridge on an owner-held chain needs a brief (--goal and --acceptance); no task created")
     // Several reviewers live in the brief.
     if len(plan.reviewers)>1 && bridge_owner_brief_text(ctx,p)=="" do return bridge_owner_fail(ctx,"bad_request","several --reviewer on an owner-held chain need a brief (--goal and --acceptance); no task created")
     title_cipher,ok:=bridge_owner_cipher(ctx,title)
@@ -1177,6 +1207,7 @@ bridge_owner_task_create :: proc(ctx:^Owner_Agent_Ctx,p:json.Object) -> string {
     if brief:=bridge_owner_brief_text(ctx,p);brief!="" {
         if plan.approval do brief=bridge_owner_brief_with_approval(brief)
         if plan.has_reviewer do brief=bridge_owner_brief_with_reviewers(brief,plan.reviewers[:])
+        if plan.has_bridge do brief=bridge_owner_brief_with_run_bridge(brief,plan.bridge)
         if code,message:=bridge_owner_requirements(ctx,chain,task,brief,"",true,plan.reason);code!="ok" do return bridge_owner_fail(ctx,code,fmt.tprintf("task %s created; requirements refused%s",task,message))
     }
     if code,message:=bridge_owner_apply_plan(ctx,chain,task,plan,assignee,pre);code!="ok" do return bridge_owner_fail(ctx,code,fmt.tprintf("task %s created; %s",task,message))
@@ -1184,7 +1215,30 @@ bridge_owner_task_create :: proc(ctx:^Owner_Agent_Ctx,p:json.Object) -> string {
     out["authority"]=json.Object{"kind"=json.String("owner"),"bridge_id"=json.String(bridge_cfg().daemon_id)}
     if plan.has_assignee do out["assignee_instance_id"]=json.String(assignee.instance)
     if reviewer.instance!="" do out["reviewer_instance_id"]=json.String(reviewer.instance)
+    out["run_bridge_id"]=json.String(plan.bridge if plan.bridge!="" else bridge_cfg().daemon_id)
     return bridge_local_response_data(ctx.request_id,bridge_owner_json(out))
+}
+
+// The brief with its run Bridge ("" = the owner Bridge, the default).
+bridge_owner_brief_with_run_bridge :: proc(brief,bridge:string) -> string {
+    v,ok:=contracts.owner_content_document(brief)
+    o,obj:=v.(json.Object)
+    if !ok || !obj do return brief
+    o["run_bridge_id"]=json.String(bridge)
+    return bridge_owner_json(o)
+}
+
+// The task's run Bridge from its brief; pinned=false when it names none.
+bridge_owner_brief_run_bridge :: proc(brief:string) -> (bridge:string,pinned:bool) {
+    if brief=="" do return "",false
+    v,ok:=contracts.owner_content_document(brief)
+    o,obj:=v.(json.Object)
+    if !ok || !obj do return "",false
+    value,has:=o["run_bridge_id"].(json.String)
+    if !has do return "",false
+    bridge=string(value)
+    if bridge==bridge_cfg().daemon_id do bridge=""
+    return bridge,true
 }
 
 // The brief with its reviewers set to the --reviewer agents (every one of
@@ -1293,6 +1347,10 @@ bridge_owner_task_update :: proc(ctx:^Owner_Agent_Ctx,p:json.Object) -> string {
         // current brief); a task without a brief keeps only its configured one.
         if brief=="" && st.brief=="" && len(plan.reviewers)>1 do return bridge_owner_fail(ctx,"bad_request","several --reviewer on an owner-held chain need a brief (--goal and --acceptance); task unchanged")
         if brief!="" || st.brief!="" do brief=bridge_owner_brief_with_reviewers(brief if brief!="" else "{}",plan.reviewers[:])
+    }
+    if plan.has_bridge {
+        if brief=="" && st.brief=="" do return bridge_owner_fail(ctx,"bad_request","--bridge on an owner-held chain needs a brief (--goal and --acceptance); task unchanged")
+        brief=bridge_owner_brief_with_run_bridge(brief if brief!="" else "{}",plan.bridge)
     }
     if plan.reason!="" && brief=="" do return bridge_owner_fail(ctx,"bad_request","--reason applies to a requirements edit (brief flags or --no-require-user-approval); task unchanged")
     if title=="" && description=="" && brief=="" && plan.priority=="" && !plan.has_deps && !plan.has_assignee && !plan.has_reviewer && !plan.has_approval && !ctx.remote.active {

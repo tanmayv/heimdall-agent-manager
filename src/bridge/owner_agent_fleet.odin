@@ -261,6 +261,10 @@ bridge_owner_fleet :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -> 
     case note!="":
     case policy.bridge_id!="" && policy.bridge_id!=bridge_cfg().daemon_id: note=fmt.tprintf("placement on %s recorded; nothing launched here: a task assigned to %s is reserved on %s (owner_remote_place.odin)",policy.bridge_id,agent,policy.bridge_id)
     case len(active)==0: note="the row is paused; nothing launched"
+    // ensure for a task whose run Bridge is another Bridge: its assignee is
+    // reserved there (owner_remote_place.odin), never launched here.
+    case bridge_owner_pstr(p,"run_bridge_id")!="" && bridge_owner_pstr(p,"run_bridge_id")!=bridge_cfg().daemon_id:
+        note=fmt.tprintf("the task runs on Bridge %s; nothing launched here",bridge_owner_pstr(p,"run_bridge_id"))
     }
     if note!="" {
         reply["note"]=json.String(note)
@@ -388,12 +392,16 @@ bridge_owner_task_fleet_ensure :: proc(request_id,method,params:string,rec:Bridg
     agents,code,message:=bridge_owner_task_fleet_agents(method,p,caller_agent)
     if code!="" do return bridge_local_response_error(request_id,code,fmt.tprintf("%s; no agent launched",message)),"","",ensured
     chain:=bridge_owner_pstr(p,"chain_id")
+    // A task pinned to another Bridge (--bridge): its assignee is placed there.
+    run_bridge:=strings.trim_space(bridge_owner_pstr(p,"bridge_id")) if method!="agent.task.split" else ""
+    assignee:=strings.trim_space(bridge_owner_pstr(p,"assignee"))
     ensured=Owner_Fleet_Ensured{chain=chain,added=make([dynamic]string),launched=make([dynamic]string)}
     for agent in agents {
         // The task route refuses ids that are not agent ids with its own message.
         if !contracts.owner_field_valid(agent,"id") do continue
         body:=map[string]string{"agent_id"=agent,"ensure"="1"}
         if chain!="" do body["chain_id"]=chain
+        if run_bridge!="" && agent==assignee do body["run_bridge_id"]=run_bridge
         response,handled,l:=set(request_id,bridge_owner_json(body),rec)
         // Not an owner chain, or not the coordinator: the task route decides.
         // A new row whose launch is pending has no reply yet ("").

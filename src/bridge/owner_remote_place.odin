@@ -43,20 +43,23 @@ Owner_Remote_Place :: struct {
 // per-Bridge override for the executor Bridge; both must be concrete because
 // the consent binds them (the executor picks only profile, slot and directory).
 // code "" means not remote (resolve a local child as before).
-bridge_owner_remote_target :: proc(s:^owner.Store,chain,agent:string) -> (place:Owner_Remote_Place,code,message:string) {
+// Placement order: the task's run Bridge (pinned: "" or this Bridge runs it
+// here), else the fleet row's Bridge, else this (the owner) Bridge.
+bridge_owner_remote_target :: proc(s:^owner.Store,chain,agent:string,run_bridge:="",pinned:=false) -> (place:Owner_Remote_Place,code,message:string) {
     policy,found,ok:=owner.agent_fleet_policy(s,chain,agent)
     if !ok do return {},"storage_error","owner store could not be read"
-    if !found || policy.bridge_id=="" || policy.bridge_id==s.owner do return {},"",""
+    executor:=run_bridge if pinned else policy.bridge_id
+    if executor=="" || executor==s.owner do return {},"",""
     provider,model:=policy.provider,policy.model
-    if models,m_ok:=contracts.owner_fleet_models(policy.bridge_models_json);m_ok {
-        if override,has:=models[policy.bridge_id];has {provider=override.provider;model=override.model}
+    if models,m_ok:=contracts.owner_fleet_models(policy.bridge_models_json);found && m_ok {
+        if override,has:=models[executor];has {provider=override.provider;model=override.model}
     }
     if provider=="" || model=="" {
-        return {},"invalid_scope",fmt.tprintf("agent %s is placed on Bridge %s but its fleet policy names no provider and model; set them with `ham-ctl task-chain fleet set --agent %s --provider <p> --model <m>`",agent,policy.bridge_id,agent)
+        return {},"invalid_scope",fmt.tprintf("agent %s runs on Bridge %s but its fleet policy names no provider and model for it; set them with `ham-ctl task-chain fleet set --agent %s --provider <p> --model <m>` (or a --bridge-models entry for %s)",agent,executor,agent,executor)
     }
     repository:=""
     if template,code:=owner.agent_assignment_template(s,chain);code=="ok" && template.merge_policy=="git" do repository=template.repository
-    return Owner_Remote_Place{true,chain,"",agent,policy.bridge_id,provider,model,repository,{}},"ok",""
+    return Owner_Remote_Place{true,chain,"",agent,executor,provider,model,repository,{}},"ok",""
 }
 
 // The owner-side facts a consent and its reply are checked against, read
@@ -213,6 +216,33 @@ bridge_owner_remote_place_reply :: proc(request_id,response:string,place:Owner_R
     data["assignee_bridge_id"]=json.String(place.executor_bridge)
     data["assignee_instance_id"]=json.String(instance)
     return bridge_local_response_data(request_id,bridge_owner_json(data))
+}
+
+// A task's run Bridge (--bridge) must be an approved, unrevoked Bridge key of
+// this account in the verified account directory, the same check a remote
+// placement makes. Runs before the task route, with no lock held, so a
+// refused Bridge leaves nothing saved. Tests replace it.
+@(thread_local)
+bridge_owner_run_bridge_check_hook:proc(bridge:string) -> (string,string)
+bridge_owner_run_bridge_check :: proc(bridge:string) -> (code,message:string) {
+    if bridge_owner_run_bridge_check_hook!=nil do return bridge_owner_run_bridge_check_hook(bridge)
+    context.allocator=context.temp_allocator
+    refused:=fmt.tprintf("--bridge %s is not a paired, unrevoked Bridge of this account",bridge)
+    dir,executor_key,fetched:=bridge_executor_directory_bridge_key(bridge_task_chain_search_generation(),bridge)
+    if !fetched do return "invalid_scope",refused
+    account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
+    key_id,_:=vault.device_id_from_sign_pub(bridge_identity_public_key_hex(bridge_cfg().daemon_id),context.temp_allocator)
+    sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
+    if !bridge_owner_open(account,key_id) do return "storage_error","owner store unavailable"
+    kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
+    if !unlocked do return "vault_locked","owner Bridge vault is locked"
+    _,version,head,trusted:=bridge_owner_fence_directory(&bridge_owner_store,dir,&kr)
+    if !trusted do return "directory_unverified","the account directory could not be verified at the owner pin"
+    floor,status:=keystore_read_epoch_floor(bridge_cfg().daemon_id)
+    if status!=.Found do return "directory_unverified","no paired root"
+    _,_,_,approved:=owner.verify_executor_directory(bridge_owner_json(dir),account,bridge,executor_key,floor.root,version,head,&kr)
+    if !approved do return "invalid_scope",refused
+    return "ok",""
 }
 
 bridge_owner_response_ok :: proc(response:string) -> bool {

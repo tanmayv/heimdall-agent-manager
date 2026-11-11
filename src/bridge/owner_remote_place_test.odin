@@ -118,3 +118,98 @@ test_executor_directory_bridge_key_parse :: proc(t:^testing.T) {
     _,_,legacy:=bridge_executor_directory_parse(old,"bridge_b")
     testing.expect(t,!legacy,"an older Hub without bridge_keys gives no key")
 }
+
+// Per-task run Bridge (task_18e6b7c86af8423e): a task runs on the owner
+// Bridge by default; --bridge <B> pins it (kept in the brief as
+// run_bridge_id) and its assignee is placed on B with the fleet row's
+// per-Bridge provider/model, even when a member of the agent runs here;
+// --bridge "" (or the owner Bridge) returns it to the default; a pin needs a
+// brief; moving a configured task re-places its worker; an unknown Bridge is
+// refused before anything runs.
+@(test)
+test_owner_task_run_bridge_default_override_and_placement :: proc(t:^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex);defer sync.mutex_unlock(&bridge_test_config_mutex)
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    r:=new(Review_Test,context.temp_allocator)
+    priv:ecdsa.Private_Key;defer ecdsa.private_key_clear(&priv)
+    r.key=chain_create_test_key(t,&priv,"bridge","bridge_key")
+    signer:=owner.Signer{&priv,chain_create_test_sign}
+    old_daemon:=bridge_cfg().daemon_id;bridge_cfg().daemon_id="bridge"
+    bridge_owner_test_signer=signer;bridge_owner_live_probe=review_test_probe
+    review_test_live=make([dynamic]owner.Child,context.temp_allocator)
+    defer {bridge_cfg().daemon_id=old_daemon;bridge_owner_test_signer={};bridge_owner_live_probe=nil;review_test_live=nil;bridge_owner_run_bridge_check_hook=nil}
+    r.root=fmt.tprintf("%s/.cache/heimdall-tests/owner-run-bridge-%d",bridge_env_get("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    testing.expect(t,bridge_make_directory_all(r.root)==nil)
+    defer _=os.remove_all(r.root)
+    if !testing.expect(t,owner.open(&r.store,fmt.tprintf("%s/runtime.sqlite",r.root),"account","bridge","bridge_key")) do return
+    defer owner.close(&r.store)
+    vid,_:=vault.vault_id_from_root_sign_pub(r.key.public_key)
+    secret:[32]byte;secret[0]=9
+    r.kr,_=vault.keyring_from_single_key("account",vid,1,secret[:]);defer vault.keyring_wipe(&r.kr)
+    chain:="chain_run_bridge"
+    now:=time.to_unix_nanoseconds(time.now())/1000000
+    tc,_:=vault.seal_string("run bridge chain",&r.kr,context.temp_allocator)
+    dc,_:=vault.seal_string("",&r.kr,context.temp_allocator)
+    g,c,p,built:=bridge_owner_chain_create_documents("account","bridge","bridge_key",chain,"op_run_bridge",tc,dc,now,signer)
+    testing.expect(t,built)
+    if !testing.expect_value(t,owner.execute(&r.store,c,p,g,r.key,r.key,0,"",now,&r.kr,signer,requested_by="inst_c").code,"ok") do return
+    coord:=review_test_child("inst_c","agt_c")
+    if !testing.expect_value(t,owner.bind_created_coordinator(&r.store,chain,coord,"inst_c",now).code,"ok") do return
+    worker,reviewer:=review_test_child("inst_w","agt_w"),review_test_child("inst_a","agt_a")
+    append(&review_test_live,coord,worker,reviewer)
+    for m in ([2]owner.Child{worker,reviewer}) {
+        ctx:=review_test_ctx(r,coord)
+        testing.expect_value(t,bridge_owner_fleet_member(&ctx,chain,m.instance,m.agent_id,"worker",true,m).code,"ok")
+    }
+    // agt_w: claude here, codex on bridge_b (fleet set --bridge-models).
+    models:=`{\"bridge_b\":{\"provider_profile\":\"\",\"provider\":\"codex\",\"model\":\"gpt-5.5\"}}`
+    row,_:=review_test_exec(r,coord,"agent.task_chain.fleet_set",fmt.tprintf(`{{"chain_id":"%s","agent_id":"agt_w","provider":"claude","model":"claude-sonnet-5-5","bridge_models_json":"%s"}}`,chain,models))
+    testing.expectf(t,bool(row["ok"].(json.Boolean)),"fleet row with per-Bridge models: %v",row)
+    run_bridge :: proc(r:^Review_Test,chain,task:string) -> (string,bool) {
+        st,_,_:=owner.agent_task_state(&r.store,chain,task)
+        return bridge_owner_brief_run_bridge(st.brief)
+    }
+    brief:=`"brief":{"goal":"Ship it","acceptance":["Tests pass"]}`
+
+    // Default: the owner Bridge; the local member is assigned.
+    out,ctx:=review_test_exec(r,coord,"agent.task.create",fmt.tprintf(`{{"chain_id":"%s","title":"here",%s,"assignee":"agt_w","reviewers":["agt_a"]}}`,chain,brief))
+    here:=contracts.owner_string(review_test_data(out),"task_id")
+    if !testing.expectf(t,here!="","default create: %v",out) do return
+    testing.expect_value(t,contracts.owner_string(review_test_data(out),"run_bridge_id"),"bridge")
+    testing.expect(t,!ctx.remote.active,"runs here")
+    _,pinned:=run_bridge(r,chain,here)
+    testing.expect(t,!pinned,"no pin recorded for the default")
+    // --bridge naming the owner Bridge is the default too.
+    out,ctx=review_test_exec(r,coord,"agent.task.create",fmt.tprintf(`{{"chain_id":"%s","title":"here2",%s,"assignee":"agt_w","reviewers":["agt_a"],"bridge_id":"bridge"}}`,chain,brief))
+    testing.expectf(t,contracts.owner_string(review_test_data(out),"run_bridge_id")=="bridge" && !ctx.remote.active,"--bridge <owner> runs here: %v",out)
+
+    // Override: pinned to bridge_b, placed there with codex although agt_w runs here.
+    out,ctx=review_test_exec(r,coord,"agent.task.create",fmt.tprintf(`{{"chain_id":"%s","title":"there",%s,"assignee":"agt_w","reviewers":["agt_a"],"bridge_id":"bridge_b"}}`,chain,brief))
+    there:=contracts.owner_string(review_test_data(out),"task_id")
+    if !testing.expectf(t,there!="","pinned create: %v",out) do return
+    testing.expect_value(t,contracts.owner_string(review_test_data(out),"run_bridge_id"),"bridge_b")
+    testing.expectf(t,ctx.remote.active && ctx.remote.executor_bridge=="bridge_b" && ctx.remote.agent=="agt_w","placed on bridge_b: %v",ctx.remote)
+    testing.expectf(t,ctx.remote.provider=="codex" && ctx.remote.model=="gpt-5.5","per-Bridge model honored: %s/%s",ctx.remote.provider,ctx.remote.model)
+    pin,has_pin:=run_bridge(r,chain,there)
+    testing.expectf(t,has_pin && pin=="bridge_b","the pin is in the brief: %q %v",pin,has_pin)
+
+    // A pin needs a brief.
+    refused,_:=review_test_exec(r,coord,"agent.task.create",fmt.tprintf(`{{"chain_id":"%s","title":"bare","assignee":"agt_w","bridge_id":"bridge_b"}}`,chain))
+    testing.expectf(t,strings.contains(fmt.tprint(refused),"needs a brief"),"pin without a brief refused: %v",refused)
+
+    // Clearing the pin returns the task to the owner Bridge.
+    cleared,_:=review_test_exec(r,coord,"agent.task.update",fmt.tprintf(`{{"chain_id":"%s","task_id":"%s","bridge_id":""}}`,chain,there))
+    testing.expectf(t,bool(cleared["ok"].(json.Boolean)),"clear: %v",cleared)
+    pin,has_pin=run_bridge(r,chain,there)
+    testing.expectf(t,has_pin && pin=="","cleared to the owner Bridge: %q",pin)
+
+    // Moving the configured local task to bridge_b re-places its worker there.
+    moved,mctx:=review_test_exec(r,coord,"agent.task.update",fmt.tprintf(`{{"chain_id":"%s","task_id":"%s","bridge_id":"bridge_b"}}`,chain,here))
+    testing.expectf(t,bool(moved["ok"].(json.Boolean)),"move: %v",moved)
+    testing.expectf(t,mctx.remote.active && mctx.remote.task==here && mctx.remote.agent=="agt_w" && mctx.remote.executor_bridge=="bridge_b","the worker is re-placed: %v",mctx.remote)
+
+    // An unknown / other-account / revoked Bridge is refused by the check
+    // that runs before the task route (here: no Hub directory names it).
+    code,message:=bridge_owner_run_bridge_check("bridge_unknown")
+    testing.expectf(t,code!="ok","unverifiable Bridge refused: %s %s",code,message)
+}
