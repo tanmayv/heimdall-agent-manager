@@ -1,3 +1,4 @@
+#+feature dynamic-literals
 package main
 
 import "core:fmt"
@@ -72,6 +73,18 @@ test_executor_auto_issuance_resolves_without_operator_mapping :: proc(t:^testing
     catalog_only:=executor.encode(struct{provider,model,provider_profile,directory_id,policy_revision,slot_id:string}{"claude","claude-sonnet-5-5",auto,auto,"1",auto})
     placed:=bridge_executor_resolve_auto_issuance(s,consent,catalog_only,self)
     testing.expect(t,placed.resolved,"an active catalog model the Bridge has not observed is placed")
+    // No directory on the chain: it runs in this executor's default (per-chain
+    // scratch) path, and the remote child's TASK.md names it as the Workdir.
+    testing.expect(t,strings.has_prefix(placed.directory_path,fmt.tprintf("%s/scratch/",executor_root)),"placed in the per-chain scratch dir")
+    testing.expect_value(t,placed.directory_path,resources.directory_path)
+    testing.expect_value(t,bridge_executor_scratch_workdir(TEST_VAULT_USER_ID,"chain_auto"),placed.directory_path)
+    testing.expect_value(t,bridge_executor_scratch_workdir(TEST_VAULT_USER_ID,"chain_never_placed"),"")
+    {
+        cmd:=json.Object{"chain_id"=json.String("chain_auto"),"task_id"=json.String("task_remote"),"lease_id"=json.String("lease_remote"),"instance_id"=json.String("inst_remote"),"workdir"=json.String(placed.directory_path),"branch"=json.String("")}
+        body:=executor.encode(struct{requirements_revision,acknowledged,brief,chain_summary,context_provenance:string}{"1","0",`{"goal":"g","acceptance":["a"]}`,"s",`{"source_digest":"d"}`})
+        md:=bridge_owner_render_context(cmd,body)
+        testing.expectf(t,strings.contains(md,fmt.tprintf("Workdir: `%s` (this chain has no project directory",placed.directory_path)),"remote TASK.md names the scratch Workdir: %s",md)
+    }
     for bad in ([2]string{"claude-old","claude-nope"}) {
         refused:=executor.encode(struct{provider,model,provider_profile,directory_id,policy_revision,slot_id:string}{"claude",bad,auto,auto,"1",auto})
         testing.expectf(t,!bridge_executor_resolve_auto_issuance(s,consent,refused,self).resolved,"%s is refused",bad)

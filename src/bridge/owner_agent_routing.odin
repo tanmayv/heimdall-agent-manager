@@ -435,7 +435,9 @@ bridge_owner_deliver :: proc(ctx:^Owner_Agent_Ctx,st:owner.Agent_Lease_State,sta
     out.placement=bridge_owner_placement(st.config,st.configured)
     // A chain with no project directory still runs (as on origin/main): the
     // agent works in its run directory and the lease says so (no merge-back).
-    if out.placement.workdir=="" && ctx.run_dir!="" do out.placement={ctx.run_dir,ctx.run_dir,""}
+    // Only for a configured lease whose chain merges nothing (merge_policy
+    // none): an unconfigured git lease must not report the run dir.
+    if out.placement.workdir=="" && ctx.run_dir!="" && st.configured && contracts.owner_string(st.config,"merge_policy")!="git" do out.placement={ctx.run_dir,ctx.run_dir,""}
     next:=Owner_Agent_Next{status,out,Owner_Agent_Task_Ref{st.task_id,st.chain_id},bridge_owner_authority()}
     if !st.configured {
         ctx.pending=Owner_Pending_Delivery{active=false,next=next}

@@ -159,6 +159,17 @@ bridge_executor_auto_directory :: proc(account,chain_id,project_hint:string)->(c
     return c,fmt.tprintf("scratch_%s",chain),true
 }
 
+// The scratch directory this executor placed a no-directory chain's work in
+// ("" when the chain was not placed in scratch, e.g. it runs in a checkout).
+bridge_executor_scratch_workdir :: proc(account,chain_id:string)->string {
+    root,rooted:=bridge_executor_root(account)
+    if !rooted || chain_id=="" do return ""
+    path:=fmt.tprintf("%s/scratch/%s",root,contracts.owner_payload_digest(chain_id)[:24])
+    if !os.is_dir(path) do return ""
+    canonical,within:=bridge_executor_canonical_directory(path)
+    return canonical if within else ""
+}
+
 // The key that may consent to an issuance on this executor, from the verified
 // paired directory (approved, unrevoked, this account):
 //   - a browser device of the account (principal_id is its key id), or

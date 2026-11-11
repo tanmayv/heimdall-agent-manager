@@ -123,6 +123,14 @@ bridge_executor_agent :: proc(request_id,input,secret:string,
         if !within do return fail(request_id,"context_delivery_failed")
         defer delete(dir)
         command["instance_id"]=json.String(instance)
+        // A no-directory chain placed here runs in this executor's per-chain
+        // scratch directory: TASK.md names it as the Workdir (no branch, no
+        // merge-back), as the owner Bridge does for its local agents.
+        if contracts.owner_string(command,"workdir")=="" {
+            if scratch:=bridge_executor_scratch_workdir(bridge_executor_store.account,contracts.owner_string(command,"chain_id"));scratch!="" {
+                command["workdir"]=json.String(scratch);command["branch"]=json.String("")
+            }
+        }
         if !bridge_owner_materialize_context(dir,command,result.body) do return fail(request_id,"context_delivery_failed")
     }
     return bridge_local_response_data(request_id,body),true
