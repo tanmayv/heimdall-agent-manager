@@ -234,3 +234,84 @@ test_owner_fleet_launch_model_honors_bridge_models :: proc(t:^testing.T) {
     provider,model,profile=bridge_owner_fleet_launch_model(policy,"bridge_a")
     testing.expectf(t,provider=="claude" && model=="claude-sonnet-5-5" && profile=="","row default elsewhere: %s %s %s",provider,model,profile)
 }
+
+// Acceptance 4: a primary --reviewer placed on another account Bridge (fleet
+// policy) is set by agent id with no local process: the task is configured
+// with no instance-bound reviewer and the agent is a brief reviewer, which the
+// gate requires and the relay trusts by agent id (relayed_reviewer_authorized;
+// the relayed approve is covered in owner_local execution_child_test).
+// Replacing a configured local reviewer reconfigures the task; no brief, or an
+// agent neither running here nor placed elsewhere, is refused.
+@(test)
+test_owner_primary_reviewer_on_another_bridge :: proc(t:^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex);defer sync.mutex_unlock(&bridge_test_config_mutex)
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    r:=new(Review_Test,context.temp_allocator)
+    priv:ecdsa.Private_Key;defer ecdsa.private_key_clear(&priv)
+    r.key=chain_create_test_key(t,&priv,"bridge","bridge_key")
+    signer:=owner.Signer{&priv,chain_create_test_sign}
+    old_daemon:=bridge_cfg().daemon_id;bridge_cfg().daemon_id="bridge"
+    bridge_owner_test_signer=signer;bridge_owner_live_probe=review_test_probe
+    review_test_live=make([dynamic]owner.Child,context.temp_allocator)
+    defer {bridge_cfg().daemon_id=old_daemon;bridge_owner_test_signer={};bridge_owner_live_probe=nil;review_test_live=nil}
+    r.root=fmt.tprintf("%s/.cache/heimdall-tests/owner-remote-primary-%d",bridge_env_get("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    testing.expect(t,bridge_make_directory_all(r.root)==nil)
+    defer _=os.remove_all(r.root)
+    if !testing.expect(t,owner.open(&r.store,fmt.tprintf("%s/runtime.sqlite",r.root),"account","bridge","bridge_key")) do return
+    defer owner.close(&r.store)
+    vid,_:=vault.vault_id_from_root_sign_pub(r.key.public_key)
+    secret:[32]byte;secret[0]=9
+    r.kr,_=vault.keyring_from_single_key("account",vid,1,secret[:]);defer vault.keyring_wipe(&r.kr)
+    chain:="chain_remote_primary"
+    now:=time.to_unix_nanoseconds(time.now())/1000000
+    tc,_:=vault.seal_string("remote primary chain",&r.kr,context.temp_allocator)
+    dc,_:=vault.seal_string("",&r.kr,context.temp_allocator)
+    g,c,p,built:=bridge_owner_chain_create_documents("account","bridge","bridge_key",chain,"op_remote_primary",tc,dc,now,signer)
+    testing.expect(t,built)
+    if !testing.expect_value(t,owner.execute(&r.store,c,p,g,r.key,r.key,0,"",now,&r.kr,signer,requested_by="inst_c").code,"ok") do return
+    coord:=review_test_child("inst_c","agt_c")
+    if !testing.expect_value(t,owner.bind_created_coordinator(&r.store,chain,coord,"inst_c",now).code,"ok") do return
+    worker,reviewer:=review_test_child("inst_w","agt_w"),review_test_child("inst_a","agt_a")
+    append(&review_test_live,coord,worker,reviewer)
+    for m in ([2]owner.Child{worker,reviewer}) {
+        ctx:=review_test_ctx(r,coord)
+        testing.expect_value(t,bridge_owner_fleet_member(&ctx,chain,m.instance,m.agent_id,"worker",true,m).code,"ok")
+    }
+    // agt_r runs on bridge_b only (no process here).
+    row,_:=review_test_exec(r,coord,"agent.task_chain.fleet_set",fmt.tprintf(`{{"chain_id":"%s","agent_id":"agt_r","bridge_id":"bridge_b","provider":"claude","model":"claude-sonnet-5-5"}}`,chain))
+    testing.expectf(t,bool(row["ok"].(json.Boolean)),"remote reviewer policy: %v",row)
+    configured_reviewer :: proc(r:^Review_Test,chain,task:string) -> (author,reviewer:string,reviewers:[]string) {
+        config,_,_:=owner.lifecycle_config(&r.store,chain,task)
+        return contracts.owner_string(config,"author_agent_id"),contracts.owner_string(config,"reviewer_agent_id"),owner.task_reviewers(&r.store,chain,task,config)
+    }
+    brief:=`"brief":{"goal":"Ship it","acceptance":["Tests pass"]}`
+
+    // Primary reviewer on bridge_b: configured with no instance-bound reviewer, required by the gate.
+    out,ctx:=review_test_exec(r,coord,"agent.task.create",fmt.tprintf(`{{"chain_id":"%s","title":"remote review",%s,"assignee":"agt_w","reviewers":["agt_r"]}}`,chain,brief))
+    task:=contracts.owner_string(review_test_data(out),"task_id")
+    if !testing.expectf(t,task!="","create with a remote primary reviewer: %v",out) do return
+    testing.expect(t,!ctx.remote.active,"the worker runs here")
+    author,primary,reviewers:=configured_reviewer(r,chain,task)
+    testing.expectf(t,author=="agt_w" && primary=="" && len(reviewers)==1 && reviewers[0]=="agt_r","author agt_w, no bound reviewer, gate requires agt_r: %s %q %v",author,primary,reviewers)
+
+    // Replacing a configured local reviewer with the remote one reconfigures the task.
+    out,_=review_test_exec(r,coord,"agent.task.create",fmt.tprintf(`{{"chain_id":"%s","title":"local review",%s,"assignee":"agt_w","reviewers":["agt_a"]}}`,chain,brief))
+    local:=contracts.owner_string(review_test_data(out),"task_id")
+    if !testing.expectf(t,local!="","create with a local reviewer: %v",out) do return
+    _,primary,_=configured_reviewer(r,chain,local)
+    testing.expect_value(t,primary,"agt_a")
+    moved,_:=review_test_exec(r,coord,"agent.task.update",fmt.tprintf(`{{"chain_id":"%s","task_id":"%s","reviewers":["agt_r"]}}`,chain,local))
+    testing.expectf(t,bool(moved["ok"].(json.Boolean)),"re-target to the remote reviewer: %v",moved)
+    author,primary,reviewers=configured_reviewer(r,chain,local)
+    testing.expectf(t,author=="agt_w" && primary=="" && len(reviewers)==1 && reviewers[0]=="agt_r","reconfigured: %s %q %v",author,primary,reviewers)
+
+    // No brief: refused, nothing created.
+    bare,_:=review_test_exec(r,coord,"agent.task.create",fmt.tprintf(`{{"chain_id":"%s","title":"bare","assignee":"agt_w","reviewers":["agt_r"]}}`,chain))
+    testing.expectf(t,strings.contains(fmt.tprint(bare),"needs a brief"),"remote primary reviewer without a brief refused: %v",bare)
+    // An agent neither running here nor placed on another Bridge: refused.
+    unknown,_:=review_test_exec(r,coord,"agent.task.create",fmt.tprintf(`{{"chain_id":"%s","title":"unknown",%s,"assignee":"agt_w","reviewers":["agt_x"]}}`,chain,brief))
+    testing.expectf(t,strings.contains(fmt.tprint(unknown),"not a running"),"unplaced reviewer refused: %v",unknown)
+    // The coordinator never reviews, even when placed elsewhere.
+    self,_:=review_test_exec(r,coord,"agent.task.create",fmt.tprintf(`{{"chain_id":"%s","title":"self",%s,"assignee":"agt_w","reviewers":["agt_c"]}}`,chain,brief))
+    testing.expectf(t,!bool(self["ok"].(json.Boolean)),"coordinator as reviewer refused: %v",self)
+}

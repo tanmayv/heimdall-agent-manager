@@ -866,6 +866,10 @@ Owner_Task_Plan :: struct {
     // run_bridge_id; "" (or the owner Bridge) runs it here (the default).
     has_bridge:bool,
     bridge:string,
+    // The first --reviewer runs on another account Bridge (its fleet policy
+    // names it): no instance-bound configured reviewer; it is a brief
+    // reviewer, trusted by agent id over the relay (relayed_reviewer_authorized).
+    remote_primary:bool,
 }
 bridge_owner_task_plan :: proc(ctx:^Owner_Agent_Ctx,p:json.Object,updating:bool) -> (Owner_Task_Plan,string) {
     plan:Owner_Task_Plan
@@ -1111,6 +1115,15 @@ bridge_owner_plan_children :: proc(ctx:^Owner_Agent_Ctx,chain:string,st:owner.Ag
     if plan.has_bridge && !plan.has_assignee && st.configured {
         if author:=contracts.owner_string(st.config,"author_agent_id");author!="" { plan.has_assignee=true;plan.assignee=author }
     }
+    // A primary reviewer on another Bridge replacing a configured reviewer
+    // re-pairs the task's author with it (no instance-bound reviewer).
+    if plan.has_reviewer && !plan.has_assignee && st.configured && contracts.owner_string(st.config,"reviewer_agent_id")!="" {
+        if _,local,_:=bridge_owner_resolve_agent(ctx,chain,plan.reviewer,"--reviewer");local!="ok" {
+            remote,_:=bridge_owner_remote_reviewer(ctx.store,chain,plan.reviewer)
+            author:=contracts.owner_string(st.config,"author_agent_id")
+            if remote && author!="" { plan.has_assignee=true;plan.assignee=author }
+        }
+    }
     if plan.has_assignee && pinned && run_bridge!="" {
         // Pinned to another Bridge: always placed there, even when a member
         // of the agent runs here.
@@ -1136,8 +1149,18 @@ bridge_owner_plan_children :: proc(ctx:^Owner_Agent_Ctx,chain:string,st:owner.Ag
     if !plan.has_reviewer && plan.has_assignee && st.configured do reviewer_agent=contracts.owner_string(st.config,"reviewer_agent_id")
     if reviewer_agent!="" {
         reviewer,code,message=bridge_owner_resolve_agent(ctx,chain,reviewer_agent,"--reviewer")
+        if code!="ok" && plan.has_reviewer {
+            // A primary reviewer placed on another account Bridge reviews
+            // over the agent relay by agent id, like a further --reviewer.
+            remote,read:=bridge_owner_remote_reviewer(ctx.store,chain,reviewer_agent)
+            if !read do return {},{},bridge_owner_fail(ctx,"storage_error","owner store could not be read")
+            if remote {
+                if reviewer_agent==ctx.child.agent_id do return {},{},bridge_owner_fail(ctx,"invalid_scope","the coordinator never reviews a task of its own chain; name another --reviewer")
+                reviewer,code,plan.remote_primary={},"ok",true
+            }
+        }
         if code!="ok" do return {},{},bridge_owner_fail(ctx,code,message)
-        if plan.has_assignee && reviewer.agent_id==assignee.agent_id do return {},{},bridge_owner_fail(ctx,"invalid_scope","the reviewer must be a different agent than the assignee")
+        if plan.has_assignee && reviewer_agent==assignee.agent_id do return {},{},bridge_owner_fail(ctx,"invalid_scope","the reviewer must be a different agent than the assignee")
     }
     // Every further --reviewer must be a running member of this chain too
     // (`ham-ctl task-chain fleet set --agent <id>` launches and binds one), or
@@ -1162,6 +1185,7 @@ bridge_owner_plan_children :: proc(ctx:^Owner_Agent_Ctx,chain:string,st:owner.Ag
     // remote child as author (bridge_owner_remote_configure).
     if ctx.remote.active {
         ctx.remote.reviewer=reviewer
+        ctx.remote.remote_reviewer=plan.remote_primary
         plan.has_assignee=false
         return {},{},""
     }
@@ -1191,6 +1215,7 @@ bridge_owner_task_create :: proc(ctx:^Owner_Agent_Ctx,p:json.Object) -> string {
     if plan.has_bridge && bridge_owner_brief_text(ctx,p)=="" do return bridge_owner_fail(ctx,"bad_request","--bridge on an owner-held chain needs a brief (--goal and --acceptance); no task created")
     // Several reviewers live in the brief.
     if len(plan.reviewers)>1 && bridge_owner_brief_text(ctx,p)=="" do return bridge_owner_fail(ctx,"bad_request","several --reviewer on an owner-held chain need a brief (--goal and --acceptance); no task created")
+    if plan.remote_primary && bridge_owner_brief_text(ctx,p)=="" do return bridge_owner_fail(ctx,"bad_request",BRIDGE_OWNER_REMOTE_REVIEWER_BRIEF+"; no task created")
     title_cipher,ok:=bridge_owner_cipher(ctx,title)
     body_cipher,body_ok:=bridge_owner_cipher(ctx,bridge_owner_pstr(p,"description"))
     if !ok || !body_ok do return bridge_owner_fail(ctx,"vault_locked","cannot seal task content")
@@ -1246,6 +1271,8 @@ bridge_owner_task_run_bridge :: proc(brief:string) -> string {
     bridge,_:=bridge_owner_brief_run_bridge(brief)
     return bridge if bridge!="" else bridge_cfg().daemon_id
 }
+
+BRIDGE_OWNER_REMOTE_REVIEWER_BRIEF :: "a --reviewer on another Bridge is a brief reviewer on an owner-held chain and needs a brief (--goal and --acceptance)"
 
 // The brief with its reviewers set to the --reviewer agents (every one of
 // them must approve; the owner gate reads them from the brief).
@@ -1352,6 +1379,7 @@ bridge_owner_task_update :: proc(ctx:^Owner_Agent_Ctx,p:json.Object) -> string {
         // Re-targeting reviewers is a requirements edit (merged over the
         // current brief); a task without a brief keeps only its configured one.
         if brief=="" && st.brief=="" && len(plan.reviewers)>1 do return bridge_owner_fail(ctx,"bad_request","several --reviewer on an owner-held chain need a brief (--goal and --acceptance); task unchanged")
+        if brief=="" && st.brief=="" && plan.remote_primary do return bridge_owner_fail(ctx,"bad_request",BRIDGE_OWNER_REMOTE_REVIEWER_BRIEF+"; task unchanged")
         if brief!="" || st.brief!="" do brief=bridge_owner_brief_with_reviewers(brief if brief!="" else "{}",plan.reviewers[:])
     }
     if plan.has_bridge {

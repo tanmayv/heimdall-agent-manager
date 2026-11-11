@@ -36,6 +36,9 @@ Owner_Remote_Place :: struct {
     // The task's reviewer (a live member here), paired with the reserved
     // remote author by lifecycle.configure after fleet.reserve.
     reviewer:owner.Child,
+    // The primary reviewer runs on another Bridge: the author is configured
+    // with no instance-bound reviewer; the reviewer is a brief reviewer.
+    remote_reviewer:bool,
 }
 
 // Whether the agent is placed on another Bridge: its fleet policy names a
@@ -59,7 +62,7 @@ bridge_owner_remote_target :: proc(s:^owner.Store,chain,agent:string,run_bridge:
     }
     repository:=""
     if template,code:=owner.agent_assignment_template(s,chain);code=="ok" && template.merge_policy=="git" do repository=template.repository
-    return Owner_Remote_Place{true,chain,"",agent,executor,provider,model,repository,{}},"ok",""
+    return Owner_Remote_Place{true,chain,"",agent,executor,provider,model,repository,{},false},"ok",""
 }
 
 // The owner-side facts a consent and its reply are checked against, read
@@ -155,14 +158,15 @@ bridge_owner_remote_reserve_locked :: proc(ctx:^Owner_Agent_Ctx,place:Owner_Remo
 // configuration is merge_policy none: the owner never inspects a worktree it
 // does not have.
 bridge_owner_remote_configure :: proc(ctx:^Owner_Agent_Ctx,place:Owner_Remote_Place) -> (string,string) {
-    if place.reviewer.instance=="" do return "ok",""
+    if place.reviewer.instance=="" && !place.remote_reviewer do return "ok",""
     st,ok:=bridge_owner_reload(ctx,place.chain,place.task)
     if !ok do return "storage_error","owner store could not be read"
     rows,read:=owner.query(ctx.store.db,"SELECT instance_id,launch_epoch,run_count,token_generation,enabled FROM local_fleet WHERE chain_id=? AND task_id=?",place.chain,place.task)
     if !read || len(rows)!=1 || rows[0][4]!="1" do return "storage_error","the remote reservation is not recorded"
     run_count,_:=strconv.parse_i64(rows[0][2])
     author:=owner.Child{instance=rows[0][0],epoch=rows[0][1],token_generation=rows[0][3],run_count=run_count,agent_id=place.agent}
-    reviewer,live:=bridge_owner_live_child(place.reviewer.instance)
+    reviewer,live:=owner.Child{},true
+    if place.reviewer.instance!="" do reviewer,live=bridge_owner_live_child(place.reviewer.instance)
     if !live || reviewer.agent_id!=place.reviewer.agent_id do return "invalid_scope",fmt.tprintf("reviewer %s is no longer running; the worker is placed on %s but not paired (retry with `ham-ctl task update %s --reviewer %s`)",place.reviewer.agent_id,place.executor_bridge,place.task,place.reviewer.agent_id)
     revision,_:=strconv.parse_i64(st.config_max_revision)
     config:=map[string]string{"configuration_revision"=fmt.tprintf("%d",revision+1),"author_agent_id"=author.agent_id,
