@@ -14,6 +14,8 @@ export interface TicketDetailsPlacement {
   model: string;
   /** Bridge-pin choices; the first is the fleet default (''). */
   bridgeOptions?: { value: string; text: string }[];
+  /** Per-agent provider/model overrides of this task ("provider[/model]", '' = fleet default). */
+  agentModels?: { agent: string; label: string; value: string }[];
 }
 
 export interface TicketDetailsActions {
@@ -22,6 +24,34 @@ export interface TicketDetailsActions {
   setPriority?: (priority: string) => Promise<string>;
   /** Absent: the bridge is shown, not offered. */
   pinBridge?: (bridgeId: string) => Promise<unknown>;
+  /** Absent: the per-agent models are shown, not offered. value '' clears. */
+  setAgentModel?: (agentId: string, value: string) => Promise<unknown>;
+}
+
+/** One agent's model override: committed on Enter or blur. */
+function AgentModelField({ agent, label, value, disabled, onSave }: { agent: string; label: string; value: string; disabled: boolean; onSave?: (agent: string, value: string) => Promise<unknown> }) {
+  const [draft, setDraft] = useState(value);
+  const commit = () => { if (onSave && draft.trim() !== value) void onSave(agent, draft.trim()); };
+  return (
+    <div className="flex min-w-0 items-center gap-2" data-debug-id="ticket-view-agent-model">
+      <span className="w-24 shrink-0 truncate font-mono text-caption" title={agent}>{label}</span>
+      {onSave ? (
+        <input
+          className="min-w-0 flex-1 rounded border border-border bg-transparent px-1.5 py-0.5 font-mono text-caption"
+          value={draft}
+          placeholder="fleet default"
+          disabled={disabled}
+          aria-label={`Provider/model for ${label}`}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => { if (e.key === 'Enter') commit(); }}
+          data-debug-id="ticket-view-agent-model-input"
+        />
+      ) : (
+        <span className="truncate font-mono text-caption">{value || 'fleet default'}</span>
+      )}
+    </div>
+  );
 }
 
 /* Details ------------------------------------------------------------ */
@@ -120,6 +150,15 @@ export function TicketDetailsCard({
               <Select size="sm" value={String(task.bridge_id || '')} onChange={(v) => void actions.pinBridge!(v)} options={placement.bridgeOptions} disabled={actions.busy} aria-label="Bridge pin" data-debug-id="ticket-view-bridge-select" />
             ),
             'ticket-view-detail-bridge',
+          )}
+          {placement.agentModels && placement.agentModels.length > 0 && row(
+            'Models',
+            <div className="flex min-w-0 flex-col gap-1">
+              {placement.agentModels.map((m) => (
+                <AgentModelField key={`${m.agent}:${m.value}`} agent={m.agent} label={m.label} value={m.value} disabled={actions.busy} onSave={locked ? undefined : actions.setAgentModel} />
+              ))}
+            </div>,
+            'ticket-view-detail-models',
           )}
           {row('Attempt', `${attempt.no}${attempt.exhausted ? ' · budget spent' : ''}${lease?.hardLeftMs != null ? ` · hard limit in ${formatDuration(lease.hardLeftMs)}` : ''}`, 'ticket-view-detail-attempt')}
           {links.replaces && row('Replaces', <button type="button" data-debug-id="ticket-view-replaces-link" className="text-accent hover:underline" onClick={() => onOpenTicket(links.replaces!)}>{keyFor(keys, links.replaces)}</button>, 'ticket-view-detail-replaces')}

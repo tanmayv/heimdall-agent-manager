@@ -20,7 +20,7 @@ import { buildTaskNames } from '../tasks/taskNames';
 import { ticketKeys } from '../tasks/ticketModel';
 import type { TicketDecisionActions } from '../tasks/TicketDecisionBlock';
 import {
-  ownerCommentItems, ownerDependencyChanges, ownerHandoffItems, ownerPrerequisites, ownerRequirementHistoryEntries, ownerRequirementsDoc, ownerReviewItems, ownerRunBridgeDoc, ownerRunBridgeOptions,
+  ownerCommentItems, ownerDependencyChanges, ownerHandoffItems, ownerPrerequisites, ownerRequirementHistoryEntries, ownerRequirementsDoc, ownerReviewItems, ownerRunBridgeDoc, ownerRunBridgeOptions, ownerAgentModelDoc, ownerAgentModels,
   ownerTicketEvents, ownerTaskWire, ownerTaskWires,
 } from '../tasks/ownerTaskAdapter';
 import { TicketView, type TicketEditFocus, type TicketViewActions } from '../tasks/TicketView';
@@ -700,6 +700,13 @@ export function OwnerChainView({
         if (ok && reqHistory?.taskId === t.taskId) void showRequirementHistory(t.taskId);
         return ok;
       },
+      // Per-agent provider/model override (brief agent_models): beats the fleet for this task.
+      setAgentModel: async (agentId: string, value: string) => {
+        if (!req) { setError('Add requirements first: the model overrides are part of them.'); return false; }
+        const ok = await mutate('requirements.edit', { taskId: t.taskId, body: ownerAgentModelDoc(req.raw ?? '', agentId, value), requirementsRevision: String(reqRevision + 1) }, 'Model override updated.');
+        if (ok && reqHistory?.taskId === t.taskId) void showRequirementHistory(t.taskId);
+        return ok;
+      },
     };
   };
 
@@ -795,6 +802,15 @@ export function OwnerChainView({
   const ticketWire = useMemo(() => (wire && deps ? { ...wire, depends_on: ownerPrerequisites(wire.task_id, deps.items) } : wire), [wire, deps]);
   const ticketTickets = useMemo(() => (ticketWire ? linkedWires.map((w) => (w.task_id === ticketWire.task_id ? ticketWire : w)) : linkedWires), [linkedWires, ticketWire]);
   const agentChoices = useMemo(() => Object.entries(agentNames).map(([agentId, name]) => ({ agentId, name })), [agentNames]);
+  // The task's agents (assignee, reviewers, and any agent with an override) with their override.
+  const ticketAgentModels = (raw: string, w: TaskWire) => {
+    const overrides = ownerAgentModels(raw);
+    const listed: unknown = w.brief?.reviewers ?? w.reviewers;
+    const briefReviewers: string[] = Array.isArray(listed) ? listed.filter((x): x is string => typeof x === 'string') : [];
+    const assignee = typeof w.assignee === 'string' ? w.assignee : '';
+    const ids: string[] = [assignee, ...briefReviewers, ...Object.keys(overrides)].filter((id, i, all) => id !== '' && all.indexOf(id) === i);
+    return ids.map((agent) => ({ agent, label: agentNames[agent] || agent, value: overrides[agent] ?? '' }));
+  };
   const commentAuthor = (principal: string) => (/^inst_/.test(principal) && names.instance(principal)) || principalLabel(sessionRef.current, principal);
   const attemptCount = task ? Math.max(task.runtime.attemptNo, Number(task.runtime.submission?.attempt ?? 0)) : 0;
   const ticketView = task && ticketWire && task.taskId === selected ? (
@@ -812,6 +828,7 @@ export function OwnerChainView({
         bridge: runBridgeOptions.find((o) => o.value === (ticketWire.bridge_id || bridge))?.text || ticketWire.bridge_id || chain.bridgeName || bridge,
         model: '',
         bridgeOptions: runBridgeOptions.some((o) => o.value === ticketWire.bridge_id) ? runBridgeOptions : [...runBridgeOptions, { value: ticketWire.bridge_id, text: ticketWire.bridge_id }],
+        agentModels: ticketAgentModels(task.runtime.requirements?.raw ?? '', ticketWire),
       }}
       readOnly={!editable}
       editFields={OWNER_TICKET_EDIT_FIELDS}

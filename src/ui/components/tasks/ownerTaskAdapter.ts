@@ -199,6 +199,42 @@ export function ownerRunBridgeDoc(raw: string, bridgeId: string, ownerBridgeId: 
 }
 
 /**
+ * The task's per-agent provider/model overrides (brief agent_models) as
+ * "provider[/model]" per agent id; an agent without one is absent.
+ */
+export function ownerAgentModels(raw: string): Record<string, string> {
+  const models = rawBrief(raw).agent_models;
+  const out: Record<string, string> = {};
+  if (!models || typeof models !== 'object' || Array.isArray(models)) return out;
+  for (const [agent, entry] of Object.entries(models as Record<string, unknown>)) {
+    const e = (entry ?? {}) as { provider?: unknown; model?: unknown };
+    const provider = typeof e.provider === 'string' ? e.provider : '';
+    const model = typeof e.model === 'string' ? e.model : '';
+    if (provider) out[agent] = model ? `${provider}/${model}` : provider;
+  }
+  return out;
+}
+
+/**
+ * The next requirements document with `agentId`'s override set to
+ * "provider[/model]"; '' clears it. Other agents' overrides are kept. The
+ * owner Bridge launches that agent for this task with it (beats the fleet).
+ */
+export function ownerAgentModelDoc(raw: string, agentId: string, value: string): string {
+  const brief: Record<string, unknown> = { ...rawBrief(raw) };
+  delete brief.requirements_reason;
+  const current = brief.agent_models && typeof brief.agent_models === 'object' && !Array.isArray(brief.agent_models) ? { ...(brief.agent_models as Record<string, unknown>) } : {};
+  const v = value.trim();
+  const slash = v.indexOf('/');
+  const provider = slash >= 0 ? v.slice(0, slash).trim() : v;
+  const model = slash >= 0 ? v.slice(slash + 1).trim() : '';
+  if (provider) current[agentId] = { provider, model }; else delete current[agentId];
+  brief.agent_models = current;
+  brief.requirements_reason = provider ? `Model for ${agentId} set to ${model ? `${provider}/${model}` : provider}.` : `Model override for ${agentId} cleared.`;
+  return JSON.stringify(brief);
+}
+
+/**
  * Owner requirement history (newest first, readOwnerRequirementHistory) as
  * origin/main's revision entries: each change's "before" is the next older
  * change (empty for the first one, or when it could not be decrypted). A

@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseOwnerRuntime, type OwnerReview } from '../src/ui/api/ownerChains.ts';
-import { ownerRequirementsDoc, ownerRunBridgeDoc, ownerRunBridgeOptions, ownerTaskWire, ownerTaskWires } from '../src/ui/components/tasks/ownerTaskAdapter.ts';
+import { ownerAgentModelDoc, ownerAgentModels, ownerRequirementsDoc, ownerRunBridgeDoc, ownerRunBridgeOptions, ownerTaskWire, ownerTaskWires } from '../src/ui/components/tasks/ownerTaskAdapter.ts';
 import { taskHold } from '../src/ui/components/tasks/taskV2Types.ts';
 import { leaseClock } from '../src/ui/components/tasks/ticketModel.ts';
 
@@ -207,4 +207,17 @@ test('readOwnerTaskActivity keeps only that ticket\'s events, newest first, with
     assert.deepEqual(r.events.map((e) => e.seq), ['4', '1']);
     assert.equal(r.truncated, false);
   } finally { clearKeyringSession(); }
+});
+
+test('per-agent model override: set, keep others, clear (brief agent_models)', () => {
+  const set = ownerAgentModelDoc(brief, 'agt_w', 'codex/gpt-5.5');
+  const doc = JSON.parse(set);
+  assert.deepEqual(doc.agent_models, { agt_w: { provider: 'codex', model: 'gpt-5.5' } });
+  assert.equal(doc.goal, 'Ship it');
+  assert.match(doc.requirements_reason, /agt_w/);
+  const both = ownerAgentModelDoc(set, 'agt_rev', 'claude');
+  assert.deepEqual(ownerAgentModels(both), { agt_w: 'codex/gpt-5.5', agt_rev: 'claude' });
+  const cleared = ownerAgentModelDoc(both, 'agt_w', '');
+  assert.deepEqual(ownerAgentModels(cleared), { agt_rev: 'claude' });
+  assert.deepEqual(ownerAgentModels(brief), {});
 });
