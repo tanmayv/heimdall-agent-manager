@@ -59,3 +59,49 @@ coordinator_notice_candidates_list_a_review_awaiting_the_user_until_approved :: 
     items,_=coordinator_notice_candidates(&f.store)
     testing.expect_value(t,len(items),0)
 }
+
+@(test)
+coordinator_notice_review_waits_for_the_agent_reviewer_before_asking_the_user :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f);user_gate_seed(t,f)
+    coord:=agent_coordinator_child();agent_seat_coordinator(t,f,coord)
+    cap:=lifecycle_ready(t,f)
+    if cap=="" do return
+    testing.expect_value(t,lifecycle_call(f,lease_child(),"lease.submit","submit",`{"requirements_revision":"1","head":"","summary":"Checks pass"}`,cap).code,"ok")
+    testing.expect_value(t,user_gate_state(f),"in_review")
+    // The agent reviewer is still owed: the user is not the gate yet.
+    items,ok:=coordinator_notice_candidates(&f.store)
+    testing.expect(t,ok && len(items)==0,"no review_requested_from_user while an agent review is owed")
+    p:=lifecycle_verdict()
+    opened:=lifecycle_call(f,lifecycle_reviewer(),"review.open","open",p,"",agent_task_revision(f,"task"))
+    if !testing.expect_value(t,opened.code,"ok") do return
+    testing.expect_value(t,lifecycle_call(f,lifecycle_reviewer(),"review.post","post",p,result_cap(opened),agent_task_revision(f,"task")).code,"ok")
+    items,ok=coordinator_notice_candidates(&f.store)
+    if !testing.expect(t,ok && len(items)==1) do return
+    testing.expect_value(t,items[0].trigger,"review_requested_from_user")
+    testing.expect_value(t,items[0].coordinator,coord.instance)
+    testing.expect_value(t,invoke(f,command(f,"review.post","human","task",p,agent_task_revision(f,"task")),p).code,"ok")
+    items,_=coordinator_notice_candidates(&f.store)
+    testing.expect_value(t,len(items),0)
+}
+
+@(test)
+coordinator_notice_hold_waits_for_the_checkpointing_holder_and_carries_its_hold_time :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
+    coord:=agent_coordinator_child();agent_seat_coordinator(t,f,coord)
+    _=lifecycle_ready(t,f)
+    payload:=encode(doc(map[string]string{"body_cipher"=cipher(f,"hold reason")}))
+    testing.expect_value(t,invoke(f,command(f,"task.hold","hold","task",payload,agent_task_revision(f,"task")),payload).code,"ok")
+    // The live holder was asked to checkpoint: not stale while it does.
+    items,ok:=coordinator_notice_candidates(&f.store)
+    testing.expect(t,ok && len(items)==0,"no hold_stale while a live holder checkpoints")
+    // Its handoff or expiry retires the lease; the hold then counts from its receipt.
+    _,retired:=query(f.store.db,"UPDATE local_leases SET retired_seq=(SELECT max(commit_seq)+1 FROM command_receipts) WHERE chain_id='chain' AND task_id='task' AND retired_seq IS NULL")
+    testing.expect(t,retired)
+    receipt,_:=query(f.store.db,"SELECT created_ms FROM command_receipts WHERE chain_id='chain' AND task_id='task' AND method='task.hold'")
+    items,ok=coordinator_notice_candidates(&f.store)
+    if !testing.expect(t,ok && len(items)==1 && len(receipt)==1) do return
+    testing.expect_value(t,items[0].trigger,"hold_stale")
+    testing.expect_value(t,items[0].since_ms,number(receipt[0][0]))
+}

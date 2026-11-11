@@ -15,12 +15,14 @@ package main
 //     re-alert every BRIDGE_OWNER_NOTICE_BLOCKED_REALERT_MS (main 24 h);
 //   - agent_not_running, review_requested_from_user: once per block reason /
 //     review attempt;
-//   - hold_stale: only once the hold is BRIDGE_OWNER_NOTICE_HOLD_STALE_MS old,
-//     then at most once per that interval (main HOLD_STALE_SECONDS, 30 min).
+//   - hold_stale: only once the hold is BRIDGE_OWNER_NOTICE_HOLD_STALE_MS old
+//     (from its task.hold receipt) and no live holder is checkpointing, then at
+//     most once per that interval (main HOLD_STALE_SECONDS, 30 min).
 // A notice counts as sent only once a LIVE coordinator received it; an
-// undelivered one is retried after BRIDGE_OWNER_NOTICE_RETRY_MS. A condition
-// that clears is forgotten, so blocking again notifies again. The state is in
-// memory: after a Bridge restart each outstanding condition is notified once.
+// undelivered one (first send or repeat) is retried after
+// BRIDGE_OWNER_NOTICE_RETRY_MS. A condition that clears is forgotten, so
+// blocking again notifies again. The state is in memory: after a Bridge
+// restart each outstanding condition is notified once more.
 //
 // Lock order: candidates are read under bridge_owner_mutex only; title
 // decryption and delivery run with it released.
@@ -101,8 +103,11 @@ bridge_owner_notices_due :: proc(st: ^Owner_Notice_State, candidates: []owner.Co
             seen={first_seen_ms=now_ms}
             st.seen[strings.clone(key,heap)]=seen
         }
-        if seen.last_sent_ms==0 && seen.last_try_ms!=0 && now_ms-seen.last_try_ms<BRIDGE_OWNER_NOTICE_RETRY_MS do continue
+        // The last attempt was not delivered (first send, re-alert or repeat
+        // reminder alike): retry only after BRIDGE_OWNER_NOTICE_RETRY_MS.
+        if seen.last_try_ms>seen.last_sent_ms && now_ms-seen.last_try_ms<BRIDGE_OWNER_NOTICE_RETRY_MS do continue
         due,realert:=false,false
+        held_ms:=i64(0)
         switch c.trigger {
         case "blocked_on human":
             due=seen.last_sent_ms==0 || now_ms-seen.last_sent_ms>=BRIDGE_OWNER_NOTICE_BLOCKED_REALERT_MS
@@ -110,13 +115,15 @@ bridge_owner_notices_due :: proc(st: ^Owner_Notice_State, candidates: []owner.Co
         case "agent_not_running","review_requested_from_user":
             due=seen.last_sent_ms==0
         case "hold_stale":
-            due=now_ms-seen.first_seen_ms>=BRIDGE_OWNER_NOTICE_HOLD_STALE_MS &&
+            since:=c.since_ms if c.since_ms>0 else seen.first_seen_ms
+            held_ms=now_ms-since
+            due=held_ms>=BRIDGE_OWNER_NOTICE_HOLD_STALE_MS &&
                 (seen.last_sent_ms==0 || now_ms-seen.last_sent_ms>=BRIDGE_OWNER_NOTICE_HOLD_STALE_MS)
         }
         if !due do continue
         seen.last_try_ms=now_ms
         st.seen[key]=seen
-        append(&out,Owner_Notice{key=strings.clone(key),candidate=c,realert=realert,held_ms=now_ms-seen.first_seen_ms})
+        append(&out,Owner_Notice{key=strings.clone(key),candidate=c,realert=realert,held_ms=held_ms})
     }
     gone:=make([dynamic]string,context.temp_allocator)
     for key in st.seen do if !present[key] do append(&gone,key)

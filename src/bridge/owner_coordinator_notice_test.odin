@@ -121,3 +121,31 @@ test_owner_coordinator_notice_hold_stale_after_the_interval_and_at_most_once_per
     got=notice_pass(&st,held,start+2*BRIDGE_OWNER_NOTICE_HOLD_STALE_MS)
     if testing.expect_value(t,len(got),1) do testing.expect(t,strings.contains(got[0].line,"held for 60 min"),got[0].line)
 }
+
+@(test)
+test_owner_coordinator_notice_repeats_use_the_hold_time_and_throttle_failed_retries :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    saved:=bridge_owner_notice_deliver_effect
+    defer bridge_owner_notice_deliver_effect=saved
+    bridge_owner_notice_deliver_effect=notice_capture
+    notice_live=true
+    notice_deliveries=make([dynamic]Notice_Delivery,context.temp_allocator)
+    st:Owner_Notice_State
+    defer notice_state_destroy(&st)
+    // A hold recorded 45 min before this Bridge first sees it is stale at once.
+    now:=i64(100*60_000)
+    held:=[]owner.Coordinator_Notice_Candidate{{chain_id="chain",task_id="task_h",coordinator="inst_coord",trigger="hold_stale",title="Held",reason="r",attempt="1",since_ms=now-45*60_000}}
+    got:=notice_pass(&st,held,now)
+    if testing.expect_value(t,len(got),1) do testing.expect(t,strings.contains(got[0].line,"held for 45 min"),got[0].line)
+    // A blocked_on human re-alert that is not delivered is retried only after
+    // BRIDGE_OWNER_NOTICE_RETRY_MS, not on every poll.
+    blocked:=[]owner.Coordinator_Notice_Candidate{{chain_id="chain",task_id="task_b",coordinator="inst_coord",trigger="blocked_on human",title="B",attempt="1"}}
+    testing.expect_value(t,len(notice_pass(&st,blocked,1_000)),1)
+    realert:=1_000+BRIDGE_OWNER_NOTICE_BLOCKED_REALERT_MS
+    notice_live=false
+    testing.expect_value(t,len(notice_pass(&st,blocked,realert)),0)
+    testing.expect_value(t,len(bridge_owner_notices_due(&st,blocked,realert+5_000)),0)
+    notice_live=true
+    got=notice_pass(&st,blocked,realert+BRIDGE_OWNER_NOTICE_RETRY_MS)
+    if testing.expect_value(t,len(got),1) do testing.expect(t,strings.contains(got[0].line,"still waiting"),got[0].line)
+}
