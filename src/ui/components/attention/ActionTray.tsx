@@ -62,7 +62,7 @@ export function useSendTrayMode(scheduler: ActionScheduler = attentionScheduler)
     scheduler.settle(key);
     try {
       if (kind === 'answer') await acceptCard(item.card_id, false, { note: text, expected_block: item.details.block_id || undefined });
-      else await rejectCard(item.card_id, false, { summary: text });
+      else await rejectCard(item.card_id, false, { summary: text, expected_attempt: item.details.attempt_no });
     } catch (err) {
       scheduler.unsettle(key);
       throw err;
@@ -192,7 +192,7 @@ export function ActionTray({
         item={item}
         mobile={mobile}
         onAnswer={() => { setPanel(null); onStartMode('answer', item); }}
-        onApprove={() => schedule(item, 'Approved', (k) => acceptCard(item.card_id, k))}
+        onApprove={() => schedule(item, 'Approved', (k) => acceptCard(item.card_id, k, { expected_attempt: item.details.attempt_no }))}
         onRequestChanges={() => { setPanel(null); onStartMode('changes', item); }}
         onSnooze={() => setPanel({ kind: 'snooze', cardId: item.card_id })}
         onOpen={() => openTask(item)}

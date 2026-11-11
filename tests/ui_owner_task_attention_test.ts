@@ -83,6 +83,13 @@ test('Approve / Request changes post the user review on the current submission',
     assert.equal(posts[1].payload.verdict, 'request_changes');
     assert.equal(posts[1].payload.summary, 'Add a test');
     await assert.rejects(ownerTaskVerdict(ref, 'request_changes', ' ', { session: async () => env.session, send }));
+    // The deck item showed attempt 2: a verdict for it goes through.
+    await ownerTaskVerdict(ref, 'approve', '', { session: async () => env.session, send }, 2);
+    assert.equal(calls.filter((c) => c.method === 'review.post').length, 3);
+    // The worker resubmitted after the item showed attempt 1: refused, nothing posted.
+    await assert.rejects(ownerTaskVerdict(ref, 'approve', '', { session: async () => env.session, send }, 1), /resubmitted/);
+    await assert.rejects(ownerTaskVerdict(ref, 'request_changes', 'Fix it', { session: async () => env.session, send }, 1), /resubmitted/);
+    assert.equal(calls.filter((c) => c.method === 'review.post').length, 3);
   } finally { clearKeyringSession(); }
 });
 

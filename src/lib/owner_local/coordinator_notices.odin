@@ -52,16 +52,10 @@ coordinator_notice_candidates :: proc(s:^Store) -> ([]Coordinator_Notice_Candida
       WHERE l.state='in_review' AND COALESCE(c.mode,'ready')='ready' ORDER BY l.chain_id,l.task_id LIMIT ?`,"200")
     if !read do return nil,false
     for r in reviews {
-        required,approved,gate_ok:=complete_user_gate(s,r[0],r[1],r[2])
+        // The user must be the remaining gate (user_review_pending), as on main.
+        pending,gate_ok:=user_review_pending(s,r[0],r[1],r[2])
         if !gate_ok do return nil,false
-        if !required || approved do continue
-        // As on main (gate.odin: notified when the agent review gate PASSES),
-        // the user must be the remaining gate: no agent review still owed.
-        if config,_,configured:=lifecycle_config(s,r[0],r[1]);configured {
-            owed,owed_ok:=review_owed(s,r[0],r[1],r[2],config)
-            if !owed_ok do return nil,false
-            if len(owed)>0 do continue
-        }
+        if !pending do continue
         append(&out,Coordinator_Notice_Candidate{r[0],r[1],coordinator_of(s,&coordinators,r[0]),"review_requested_from_user",r[3],"",r[2],0})
     }
     return out[:],true

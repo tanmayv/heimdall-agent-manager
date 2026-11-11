@@ -29,21 +29,24 @@ const enc = encodeURIComponent;
  * (task.review) or, with `{note}`, Answer (task.answer) — checked server-side
  * against the card's guard, so a stale card never acts on a newer attempt.
  */
-export const acceptCard = (cardId: string, keepalive: boolean, body: { note?: string; expected_block?: string; replacement_agent_id?: string } = {}) => {
-  // An owner-chain task acts on its owner Bridge, not on a Hub card.
+export const acceptCard = (cardId: string, keepalive: boolean, body: { note?: string; expected_block?: string; replacement_agent_id?: string; expected_attempt?: number } = {}) => {
+  // An owner-chain task acts on its owner Bridge, not on a Hub card; its
+  // verdict is tied to the attempt the item showed (expected_attempt).
+  const { expected_attempt, ...hubBody } = body;
   const owner = ownerTaskCardRef(cardId);
-  if (owner) return body.note !== undefined ? ownerTaskAnswer(owner, body.note) : ownerTaskVerdict(owner, 'approve', '');
-  return send(`/cards/${enc(cardId)}/accept`, 'POST', body, keepalive);
+  if (owner) return body.note !== undefined ? ownerTaskAnswer(owner, body.note) : ownerTaskVerdict(owner, 'approve', '', undefined, expected_attempt);
+  return send(`/cards/${enc(cardId)}/accept`, 'POST', hubBody, keepalive);
 };
 
 /**
  * Rejects the card's source: a memory proposal is rejected; a task review card
  * becomes Request changes with `{summary}` (a gate re-plans with it).
  */
-export const rejectCard = (cardId: string, keepalive: boolean, body: { summary?: string; findings?: unknown[] } = {}) => {
+export const rejectCard = (cardId: string, keepalive: boolean, body: { summary?: string; findings?: unknown[]; expected_attempt?: number } = {}) => {
+  const { expected_attempt, ...hubBody } = body;
   const owner = ownerTaskCardRef(cardId);
-  if (owner) return ownerTaskVerdict(owner, 'request_changes', body.summary ?? '');
-  return send(`/cards/${enc(cardId)}/reject`, 'POST', body, keepalive);
+  if (owner) return ownerTaskVerdict(owner, 'request_changes', body.summary ?? '', undefined, expected_attempt);
+  return send(`/cards/${enc(cardId)}/reject`, 'POST', hubBody, keepalive);
 };
 
 export const snoozeCard = (cardId: string, until: string, keepalive: boolean) => {

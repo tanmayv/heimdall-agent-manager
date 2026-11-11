@@ -336,7 +336,7 @@ export function AttentionDeck({
     scheduler.settle(hideKey(item));
     setSlide('right');
     try {
-      await rejectCard(item.card_id, false, { summary: body });
+      await rejectCard(item.card_id, false, { summary: body, expected_attempt: item.details.attempt_no });
     } catch (err) {
       scheduler.unsettle(hideKey(item));
       throw err;
@@ -405,7 +405,7 @@ export function AttentionDeck({
     { key: 's', label: 'Snooze', icon: 'clock', debug: 'snooze', run: () => { setComposer(null); setPopover(popover === 'snooze' ? null : 'snooze'); } },
     { key: 'o', label: 'Open', icon: 'arrow-right', debug: 'open', run: () => openSource(current) },
   ] : current.kind === 'task' ? [
-    { key: 'a', label: 'Approve', icon: 'check', tone: 'success', debug: 'approve', run: () => schedule(current, 'Approved', (k) => acceptCard(current.card_id, k)) },
+    { key: 'a', label: 'Approve', icon: 'check', tone: 'success', debug: 'approve', run: () => schedule(current, 'Approved', (k) => acceptCard(current.card_id, k, { expected_attempt: current.details.attempt_no })) },
     { key: 'c', label: 'Request changes', icon: 'pencil', debug: 'request-changes', run: () => { setPopover(null); setComposer(composer === 'comment' ? null : 'comment'); } },
     { key: 's', label: 'Snooze', icon: 'clock', debug: 'snooze', run: () => { setComposer(null); setPopover(popover === 'snooze' ? null : 'snooze'); } },
     { key: 'o', label: 'Open', icon: 'arrow-right', debug: 'open', run: () => openSource(current) },

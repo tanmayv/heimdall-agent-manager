@@ -45,8 +45,13 @@ export async function ownerTaskStartAgent(ref: OwnerTaskRef, deps: OwnerTaskDeps
   await ownerCall(s, bridgeId, 'task.resolve', { chainId, taskId, expectedRevision: task.revision }, deps.send);
 }
 
-/** The user's review verdict on the task's current submission. */
-export async function ownerTaskVerdict(ref: OwnerTaskRef, verdict: 'approve' | 'request_changes', text: string, deps: OwnerTaskDeps = DEFAULT_DEPS): Promise<void> {
+/**
+ * The user's review verdict on the task's current submission. With
+ * `expectedAttempt` (the attempt the deck item showed) a newer submission is
+ * refused, as main's card guard refuses a stale card: the user never approves
+ * an attempt they did not see.
+ */
+export async function ownerTaskVerdict(ref: OwnerTaskRef, verdict: 'approve' | 'request_changes', text: string, deps: OwnerTaskDeps = DEFAULT_DEPS, expectedAttempt?: number): Promise<void> {
   // The owner review payload needs a summary (Approve carries none of its own).
   const body = text.trim() || (verdict === 'approve' ? 'Approved.' : '');
   if (!body) throw new Error('Say what should change');
@@ -55,6 +60,9 @@ export async function ownerTaskVerdict(ref: OwnerTaskRef, verdict: 'approve' | '
   const rt = await readOwnerRuntime(s, bridgeId, chainId, taskId, deps.send);
   const sub = rt.submission;
   if (!sub) throw new Error('This task has no submission to review');
+  if (expectedAttempt !== undefined && expectedAttempt > 0 && sub.attempt !== String(expectedAttempt)) {
+    throw new Error(`This task was resubmitted (attempt ${sub.attempt}); open it to review the new submission`);
+  }
   const task = await readOwnerTask(s, bridgeId, chainId, taskId, deps.send);
   await ownerCall(s, bridgeId, 'review.post', {
     chainId, taskId, expectedRevision: task.revision, verdict, body,

@@ -47,3 +47,27 @@ user_attention_lists_a_review_awaiting_the_user_until_approved :: proc(t:^testin
     items,_=user_attention_list(&f.store)
     testing.expect_value(t,len(items),0)
 }
+
+@(test)
+user_attention_lists_a_review_only_once_the_agent_reviewer_approved :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f);user_gate_seed(t,f)
+    cap:=lifecycle_ready(t,f)
+    if cap=="" do return
+    testing.expect_value(t,lifecycle_call(f,lease_child(),"lease.submit","submit",`{"requirements_revision":"1","head":"","summary":"Checks pass"}`,cap).code,"ok")
+    testing.expect_value(t,user_gate_state(f),"in_review")
+    // The agent reviewer is still owed: the user is not the gate yet.
+    items,ok:=user_attention_list(&f.store)
+    testing.expect(t,ok && len(items)==0,"no review item while an agent review is owed")
+    p:=lifecycle_verdict()
+    opened:=lifecycle_call(f,lifecycle_reviewer(),"review.open","open",p,"",agent_task_revision(f,"task"))
+    if !testing.expect_value(t,opened.code,"ok") do return
+    testing.expect_value(t,lifecycle_call(f,lifecycle_reviewer(),"review.post","post",p,result_cap(opened),agent_task_revision(f,"task")).code,"ok")
+    items,ok=user_attention_list(&f.store)
+    if !testing.expect(t,ok && len(items)==1) do return
+    testing.expect_value(t,items[0].attention,"review")
+    testing.expect_value(t,items[0].attempt,"1")
+    testing.expect_value(t,invoke(f,command(f,"review.post","human","task",p,agent_task_revision(f,"task")),p).code,"ok")
+    items,_=user_attention_list(&f.store)
+    testing.expect_value(t,len(items),0)
+}
