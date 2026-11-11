@@ -158,6 +158,12 @@ bridge_owner_agent_route :: proc(request_id,method,params:string,rec:Bridge_Loca
     // Owed review leases are woken (or their reviewers started/launched) with
     // no lock held.
     bridge_owner_review_dispatch(reviews)
+    // This verb places its assignee now (below); the matcher retries a
+    // failed placement only after its back-off.
+    if remote.active && bridge_owner_response_ok(response) {
+        _=bridge_owner_match_due(bridge_owner_match_place_key(remote.chain,remote.task,remote.agent),time.to_unix_nanoseconds(time.now())/1000000,true)
+        bridge_owner_place_pending_set(remote.chain,remote.task,remote.agent)
+    }
     // M1 matcher: wake or restart the workers of the chain's ready tasks.
     if bridge_owner_match_method(method) && bridge_owner_response_ok(response) {
         // A worker's own handoff continues in a fresh context on its

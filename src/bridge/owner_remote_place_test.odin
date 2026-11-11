@@ -315,3 +315,118 @@ test_owner_primary_reviewer_on_another_bridge :: proc(t:^testing.T) {
     self,_:=review_test_exec(r,coord,"agent.task.create",fmt.tprintf(`{{"chain_id":"%s","title":"self",%s,"assignee":"agt_w","reviewers":["agt_c"]}}`,chain,brief))
     testing.expectf(t,!bool(self["ok"].(json.Boolean)),"coordinator as reviewer refused: %v",self)
 }
+
+// Gap 4: a task assigned to an agent placed on another Bridge whose placement
+// did not land (no fleet row here) is placed again by the matcher, as the
+// coordinator, never handed to a local member; event runs do not repeat it
+// within the back-off and the periodic run retries it after.
+@(thread_local) matcher_place_calls:[dynamic]string
+matcher_place_test_effect :: proc(chain,task,agent:string,rec:Bridge_Local_Agent_Token_Record) -> string {
+    append(&matcher_place_calls,fmt.aprintf("%s|%s|%s",task,agent,rec.agent_instance_id,allocator=context.temp_allocator))
+    return "Bridge bridge_b did not answer the placement request"
+}
+
+@(test)
+test_owner_matcher_retries_remote_placement :: proc(t:^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex);defer sync.mutex_unlock(&bridge_test_config_mutex)
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    r:=new(Review_Test,context.temp_allocator)
+    priv:ecdsa.Private_Key;defer ecdsa.private_key_clear(&priv)
+    r.key=chain_create_test_key(t,&priv,"bridge","bridge_key")
+    signer:=owner.Signer{&priv,chain_create_test_sign}
+    old_daemon:=bridge_cfg().daemon_id;bridge_cfg().daemon_id="bridge"
+    bridge_owner_test_signer=signer;bridge_owner_live_probe=review_test_probe
+    bridge_owner_review_effects=Owner_Review_Effects{nudge=review_test_nudge,start=review_test_start,place=matcher_place_test_effect};bridge_owner_review_sync_effects=true
+    review_test_live=make([dynamic]owner.Child,context.temp_allocator)
+    review_test_nudged=make([dynamic]string,context.temp_allocator)
+    review_test_started=make([dynamic]string,context.temp_allocator)
+    matcher_place_calls=make([dynamic]string,context.temp_allocator)
+    defer {
+        bridge_cfg().daemon_id=old_daemon;bridge_owner_test_signer={};bridge_owner_live_probe=nil
+        bridge_owner_review_effects={};bridge_owner_review_sync_effects=false
+        review_test_live=nil;review_test_nudged=nil;review_test_started=nil;matcher_place_calls=nil
+    }
+    r.root=fmt.tprintf("%s/.cache/heimdall-tests/owner-match-place-%d",bridge_env_get("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    testing.expect(t,bridge_make_directory_all(r.root)==nil)
+    defer _=os.remove_all(r.root)
+    if !testing.expect(t,owner.open(&r.store,fmt.tprintf("%s/runtime.sqlite",r.root),"account","bridge","bridge_key")) do return
+    defer owner.close(&r.store)
+    vid,_:=vault.vault_id_from_root_sign_pub(r.key.public_key)
+    secret:[32]byte;secret[0]=11
+    r.kr,_=vault.keyring_from_single_key("account",vid,1,secret[:]);defer vault.keyring_wipe(&r.kr)
+
+    // The coordinator's Hub credential (unique id: token records are process-global).
+    coord_instance:=fmt.tprintf("inst_mp_%d",time.to_unix_nanoseconds(time.now()))
+    {
+        sync.mutex_lock(&bridge_local_token_mutex);defer sync.mutex_unlock(&bridge_local_token_mutex)
+        append(&bridge_local_token_records,Bridge_Local_Agent_Token_Record{token_hash="hash_mp",agent_instance_id=strings.clone(coord_instance,context.allocator),instance_token="token_mp",run_count=1,role=.Agent})
+    }
+    defer {
+        sync.mutex_lock(&bridge_local_token_mutex);defer sync.mutex_unlock(&bridge_local_token_mutex)
+        for i:=len(bridge_local_token_records)-1;i>=0;i-=1 do if bridge_local_token_records[i].agent_instance_id==coord_instance { ordered_remove(&bridge_local_token_records,i);break }
+    }
+    chain:=fmt.tprintf("chain_match_place_%d",time.to_unix_nanoseconds(time.now()))
+    now:=time.to_unix_nanoseconds(time.now())/1000000
+    tc,_:=vault.seal_string("placement chain",&r.kr,context.temp_allocator)
+    dc,_:=vault.seal_string("",&r.kr,context.temp_allocator)
+    g,c,p,built:=bridge_owner_chain_create_documents("account","bridge","bridge_key",chain,"op_match_place",tc,dc,now,signer)
+    testing.expect(t,built)
+    if !testing.expect_value(t,owner.execute(&r.store,c,p,g,r.key,r.key,0,"",now,&r.kr,signer,requested_by=coord_instance).code,"ok") do return
+    coord:=review_test_child(coord_instance,"agt_c")
+    if !testing.expect_value(t,owner.bind_created_coordinator(&r.store,chain,coord,coord_instance,now).code,"ok") do return
+    worker,reviewer:=review_test_child("inst_pw","agt_w"),review_test_child("inst_pa","agt_a")
+    append(&review_test_live,coord,worker,reviewer)
+    for m in ([2]owner.Child{worker,reviewer}) {
+        ctx:=review_test_ctx(r,coord)
+        testing.expect_value(t,bridge_owner_fleet_member(&ctx,chain,m.instance,m.agent_id,"worker",true,m).code,"ok")
+    }
+    models:=`{\"bridge_b\":{\"provider_profile\":\"\",\"provider\":\"codex\",\"model\":\"gpt-5.5\"}}`
+    row,_:=review_test_exec(r,coord,"agent.task_chain.fleet_set",fmt.tprintf(`{{"chain_id":"%s","agent_id":"agt_w","provider":"claude","model":"claude-sonnet-5-5","bridge_models_json":"%s"}}`,chain,models))
+    testing.expectf(t,bool(row["ok"].(json.Boolean)),"fleet row: %v",row)
+    brief:=`"brief":{"goal":"Ship it","acceptance":["Tests pass"]}`
+    // Pinned to bridge_b: the route's placement never ran here (no fleet row).
+    out,ctx:=review_test_exec(r,coord,"agent.task.create",fmt.tprintf(`{{"chain_id":"%s","title":"there",%s,"assignee":"agt_w","reviewers":["agt_a"],"bridge_id":"bridge_b"}}`,chain,brief))
+    there:=contracts.owner_string(review_test_data(out),"task_id")
+    if !testing.expectf(t,there!="" && ctx.remote.active,"pinned create: %v",out) do return
+
+    plan :: proc(r:^Review_Test,chain:string,force:bool,now:i64) -> []Owner_Review_Wake {
+        wakes:=make([dynamic]Owner_Review_Wake,context.temp_allocator)
+        ctx:=review_test_ctx(r,{});ctx.now=now
+        for d in bridge_owner_match_plan(&ctx,chain,force) {
+            for w in d.wakes do append(&wakes,w)
+            bridge_owner_review_dispatch(d)
+        }
+        return wakes[:]
+    }
+    // First run: placed again as the coordinator; the local member is not assigned.
+    wakes:=plan(r,chain,true,now)
+    testing.expectf(t,len(wakes)==1 && wakes[0].action==.Place && wakes[0].task==there && wakes[0].agent=="agt_w","one placement: %v",wakes)
+    testing.expectf(t,len(matcher_place_calls)==1 && matcher_place_calls[0]==fmt.tprintf("%s|agt_w|%s",there,coord_instance),"placed with the coordinator's credential: %v",matcher_place_calls)
+    st,_,_:=owner.agent_task_state(&r.store,chain,there)
+    testing.expectf(t,st.fleet_instance=="","not handed to the local member: %q",st.fleet_instance)
+    // A forced (event) run within the back-off does not place it again.
+    wakes=plan(r,chain,true,now+1000)
+    testing.expectf(t,len(wakes)==0,"no repeat within the back-off: %v",wakes)
+    // The periodic run after the back-off retries the failed placement.
+    wakes=plan(r,chain,false,now+BRIDGE_OWNER_MATCH_RETRY_MS+1)
+    testing.expectf(t,len(wakes)==1 && wakes[0].action==.Place,"retried after the back-off: %v",wakes)
+    testing.expect_value(t,len(matcher_place_calls),2)
+
+    // The agent the route asked for (pending) is the one placed. Simulated
+    // clock throughout: each plan passes its own now, nothing sleeps.
+    bridge_owner_place_pending_set(chain,there,"agt_w");defer bridge_owner_place_pending_set(chain,there,"")
+    agent,remote:=bridge_owner_match_remote_assignee(&r.store,chain,there)
+    testing.expectf(t,agent=="agt_w" && remote,"pending placement: %q %v",agent,remote)
+    wakes=plan(r,chain,false,now+2*BRIDGE_OWNER_MATCH_RETRY_MS+2)
+    testing.expectf(t,len(wakes)==1 && wakes[0].action==.Place && wakes[0].agent=="agt_w","pending agent placed: %v",wakes)
+
+    // Cleared pin: agt_w runs here (its fleet row names no Bridge), so the
+    // matcher never places it remotely; the local member gets the task.
+    cleared,_:=review_test_exec(r,coord,"agent.task.update",fmt.tprintf(`{{"chain_id":"%s","task_id":"%s","bridge_id":""}}`,chain,there))
+    testing.expectf(t,bool(cleared["ok"].(json.Boolean)),"clear: %v",cleared)
+    agent,remote=bridge_owner_match_remote_assignee(&r.store,chain,there)
+    testing.expectf(t,agent=="agt_w" && !remote,"local after the pin is cleared: %q %v",agent,remote)
+    places:=len(matcher_place_calls)
+    for w in plan(r,chain,false,now+3*BRIDGE_OWNER_MATCH_RETRY_MS+3) do testing.expectf(t,w.action!=.Place,"no remote placement once local: %v",w)
+    testing.expect_value(t,len(matcher_place_calls),places)
+}

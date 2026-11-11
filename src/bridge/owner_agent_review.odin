@@ -27,7 +27,7 @@ import "core:time"
 import contracts "odin_test:contracts"
 import owner "odin_test:lib/owner_local"
 
-Owner_Review_Action :: enum { Nudge, Start, Launch, Restart }
+Owner_Review_Action :: enum { Nudge, Start, Launch, Restart, Place }
 Owner_Review_Wake :: struct {
     action:Owner_Review_Action,
     chain,task,lease,agent,instance:string,
@@ -59,6 +59,9 @@ Owner_Review_Effects :: struct {
     bind:proc(chain,instance,agent,coordinator:string) -> (string,string),
     block:proc(task,agent,failure:string) -> bool,
     rematch:proc(chain:string),
+    // Place: the task's assignee is placed on its remote run Bridge again
+    // (owner_agent_matcher.odin); "" on success, else why it failed.
+    place:proc(chain,task,agent:string,rec:Bridge_Local_Agent_Token_Record) -> string,
 }
 @(thread_local)
 bridge_owner_review_effects:Owner_Review_Effects
@@ -107,7 +110,7 @@ bridge_owner_review_plan :: proc(ctx:^Owner_Agent_Ctx,chain,task:string) -> json
             wake.body=bridge_owner_json(body)
         }
         append(&ctx.reviews.wakes,wake)
-        action:=[Owner_Review_Action]string{.Nudge="woken",.Start="starting",.Launch="launching",.Restart="restarting"}
+        action:=[Owner_Review_Action]string{.Nudge="woken",.Start="starting",.Launch="launching",.Restart="restarting",.Place="placing"}
         entry:=json.Object{"agent_id"=json.String(target.agent_id),"action"=json.String(action[wake.action])}
         if wake.instance!="" do entry["instance_id"]=json.String(wake.instance)
         append(&out,entry)
@@ -162,6 +165,7 @@ bridge_owner_review_execute :: proc(d:^Owner_Review_Dispatch) {
     bind:=e.bind if e.bind!=nil else bridge_owner_review_bind
     block:=e.block if e.block!=nil else bridge_owner_block_not_running
     rematch:=e.rematch if e.rematch!=nil else bridge_owner_match_rerun
+    place:=e.place if e.place!=nil else bridge_owner_match_place
     rematched:=make(map[string]bool,context.temp_allocator)
     for w in d.wakes {
         instance:=w.instance
@@ -188,6 +192,11 @@ bridge_owner_review_execute :: proc(d:^Owner_Review_Dispatch) {
             }
             if code,message:=bind(w.chain,launched,w.agent,d.coordinator);code!="ok" { fmt.eprintln("bridge owner dispatch: binding",launched,"failed:",code,message);continue }
             instance=launched
+        case .Place:
+            // The executor Bridge brings the agent up; the periodic matcher
+            // retries a failed placement after its back-off.
+            if failed:=place(w.chain,w.task,w.agent,d.rec);failed!="" do fmt.eprintln("bridge owner dispatch: placing",w.agent,"for",w.task,"failed:",failed)
+            continue
         }
         if w.rematch {
             if !rematched[w.chain] { rematched[w.chain]=true;rematch(w.chain) }

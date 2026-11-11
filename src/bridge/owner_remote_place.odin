@@ -205,6 +205,7 @@ bridge_owner_remote_place :: proc(request_id:string,place:Owner_Remote_Place,rec
     if !valid do return "invalid_content","the executor's configuration is invalid",""
     code,message=bridge_owner_remote_reserve(request_id,place,pin,reservation,reserved,rec)
     if code!="ok" do return code,message,""
+    bridge_owner_place_pending_set(place.chain,place.task,"") // landed: the matcher no longer retries it
     return "ok","",reserved
 }
 
@@ -212,7 +213,7 @@ bridge_owner_remote_place :: proc(request_id:string,place:Owner_Remote_Place,rec
 bridge_owner_remote_place_reply :: proc(request_id,response:string,place:Owner_Remote_Place,rec:Bridge_Local_Agent_Token_Record) -> string {
     code,message,instance:=bridge_owner_remote_place(request_id,place,rec)
     if code!="ok" {
-        return bridge_local_response_error(request_id,code,fmt.tprintf("task %s saved; placing agent %s on Bridge %s failed: %s (retry with `ham-ctl task update %s --assignee %s`)",place.task,place.agent,place.executor_bridge,message,place.task,place.agent))
+        return bridge_local_response_error(request_id,code,fmt.tprintf("task %s saved; placing agent %s on Bridge %s failed: %s (this Bridge retries it every few minutes; or retry now with `ham-ctl task update %s --assignee %s`)",place.task,place.agent,place.executor_bridge,message,place.task,place.agent))
     }
     envelope:=bridge_owner_result_object(response)
     data,_:=envelope["data"].(json.Object)
