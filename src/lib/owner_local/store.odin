@@ -26,6 +26,10 @@ Store :: struct {
     // SQLite error seen before its rollback); see storage_diagnostic.
     last_failure:[256]u8,
     last_failure_len:int,
+    // The account Bridge relaying the current agent call (cross-Bridge
+    // reviewers, owner_remote_agent.odin). Set by the owner Bridge for one
+    // admitted relay under the store lock, empty otherwise.
+    relayed_from:string,
 }
 SCHEMA :: #load("schema.sql")
 MAX_RECORDS :: 100000

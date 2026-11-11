@@ -203,4 +203,26 @@ owner_execution_coordinator_placed_remote_worker_leases_submits_and_owes_review 
     testing.expectf(t,ok && found && task=="task","the paired reviewer owes the review (found=%v task=%s)",found,task)
     _,_,coord_owes,_:=review_pending(&f.store,coord)
     testing.expect(t,!coord_owes,"the coordinator never reviews its own chain")
+    // The reviewer runs on Bridge B too and reviews over the agent relay
+    // (owner_remote_agent.odin): the owner admitted B's key and trusts the
+    // relayed reviewer by agent id (user decision 2026-11-11). Its launch on B
+    // is not the paired child here, so without the relay it is refused.
+    remote_reviewer:=Child{"b_review_instance","b_review_epoch",strings.repeat("e",64,context.temp_allocator),1,reviewer.agent_id}
+    verdict:=lifecycle_verdict()
+    rev=agent_task_revision(f,"task")
+    testing.expect_value(t,lifecycle_call(f,remote_reviewer,"review.open","b_open_local",verdict,"",rev,{},1400).code,"invalid_scope")
+    f.store.relayed_from="bridge_b"
+    defer f.store.relayed_from=""
+    // Relayed: the author, the coordinator, a stranger and every non-review
+    // verb stay refused.
+    for impostor in ([3]Child{{"b_author","b_epoch",strings.repeat("e",64,context.temp_allocator),1,"author"},
+        {"b_coord","b_epoch",strings.repeat("e",64,context.temp_allocator),1,coord.agent_id},agent_stranger()}) {
+        testing.expect_value(t,lifecycle_call(f,impostor,"review.open","b_open_impostor",verdict,"",rev,{},1400).code,"invalid_scope")
+    }
+    testing.expect_value(t,lifecycle_call(f,remote_reviewer,"requirements.ack","b_ack",`{"requirements_revision":"1"}`,cap,rev,{},1400).code,"invalid_scope")
+    opened:=lifecycle_call(f,remote_reviewer,"review.open","b_open",verdict,"",rev,{},1400)
+    if !testing.expect_value(t,opened.code,"ok") do return
+    testing.expect_value(t,lifecycle_call(f,remote_reviewer,"review.post","b_post",verdict,result_cap(opened),rev,{},1400).code,"ok")
+    reviews,_:=query(f.store.db,"SELECT verdict FROM local_reviews WHERE chain_id='chain' AND task_id='task' AND reviewer_agent_id=? AND principal_kind='agent'",reviewer.agent_id)
+    testing.expectf(t,len(reviews)==1 && reviews[0][0]=="approve","the relayed reviewer's verdict is recorded: %v",reviews)
 }

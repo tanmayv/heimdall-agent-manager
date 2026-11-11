@@ -79,6 +79,12 @@ bridge_owner_review_plan :: proc(ctx:^Owner_Agent_Ctx,chain,task:string) -> json
             wake.action=.Start;wake.instance=target.instances[len(target.instances)-1]
         }
         if wake.action==.Launch {
+            // A reviewer placed on another account Bridge is never launched
+            // here; it reviews there and posts over the agent relay.
+            if policy,has,policy_ok:=owner.agent_fleet_policy(ctx.store,chain,target.agent_id);policy_ok && has && policy.bridge_id!="" && policy.bridge_id!=ctx.store.owner {
+                append(&out,json.Object{"agent_id"=json.String(target.agent_id),"action"=json.String("remote"),"bridge_id"=json.String(policy.bridge_id)})
+                continue
+            }
             body:=map[string]string{"agent_id"=target.agent_id,"chain_id"=chain,"bridge_id"=bridge_config.daemon_id}
             if policy,has,policy_ok:=owner.agent_fleet_policy(ctx.store,chain,target.agent_id);policy_ok && has {
                 if policy.provider!="" do body["provider"]=policy.provider

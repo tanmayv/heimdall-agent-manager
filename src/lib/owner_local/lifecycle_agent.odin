@@ -34,6 +34,8 @@ execute_lifecycle :: proc(s:^Store,raw,payload,cap_raw:string,child:Child,key:co
     config,binding,configured:=lifecycle_config(s,chain,task)
     if !configured do return fail("invalid_scope")
     reviewer:=method=="review.open" || method=="review.post" || method=="review.checkpoint"
+    // A relayed child (another account Bridge) only reviews.
+    if s.relayed_from!="" && method!="review.open" && method!="review.post" do return fail("invalid_scope")
     if reviewer {
         // The configured reviewer's bound child or a child of an agent the
         // brief names as a reviewer; each holds its own review session.

@@ -8,7 +8,8 @@ package main
 // request itself: the signing key is an approved Bridge key of this account in
 // the current directory, the request is fresh and names this account and this
 // Bridge, and the verb is account-wide (show a chain or task, read or post task
-// comments). The verb then runs exactly like a local agent's, signed by this
+// comments) or a review post by one of the task's reviewers (the store trusts
+// a relayed reviewer by agent id, relayed_reviewer_authorized). The verb then runs exactly like a local agent's, signed by this
 // Bridge's owner key in agent mode, so agent_authorize re-checks it.
 //
 // Lock order is the owner one: bridge_owner_mutex -> bridge_startup_io_mutex
@@ -72,8 +73,14 @@ bridge_owner_remote_agent :: proc(wire:Owner_Remote_Agent_Command) -> (string,st
     owned,read:=bridge_owner_targets(&bridge_owner_store,r.method,p,"")
     if !read do return "storage_error",""
     if !owned do return "not_found",""
+    // A relayed review is the reviewer's own verdict, never the user's.
+    if r.method=="agent.review.post" && bridge_owner_pstr(p,"on_behalf_of")!="" do return "invalid_scope",""
     key:=contracts.Owner_Verified_Key{account,bridge_config.daemon_id,owner_id,owner_pub,"bridge",true,false}
     ctx:=Owner_Agent_Ctx{request_id=r.request_id,store=&bridge_owner_store,child=child,key=key,kr=&kr,now=now}
+    // The store trusts the relayed reviewer by agent id for this call only
+    // (relayed_reviewer_authorized); every other verb keeps its checks.
+    bridge_owner_store.relayed_from=r.from_bridge_id
+    defer bridge_owner_store.relayed_from=""
     response:=bridge_owner_agent_exec(&ctx,r.method,p)
     bridge_owner_publish()
     sealed,ok:=vault.seal(transmute([]byte)response,&kr,context.temp_allocator)

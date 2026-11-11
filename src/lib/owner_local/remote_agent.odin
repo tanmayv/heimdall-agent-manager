@@ -18,10 +18,13 @@ import vault "odin_test:lib/vault"
 //   - the request names this account and this owner Bridge, is fresh (at most
 //     60s ahead) and carries a valid child;
 //   - the method is one any agent of the account may use on any owner chain
-//     (agent_account_verb): show a chain or task, read or post task comments.
+//     (agent_account_verb): show a chain or task, read or post task comments;
+//     or review post, which the store grants only to a reviewer of the task
+//     (relayed_reviewer_authorized, user decision 2026-11-11: a request from
+//     a trusted same-account Bridge is trusted by the reviewer's agent id).
 // The child is B's attestation, never a member here, so agent_authorize grants
-// it only those account-wide verbs. Assignment and placement on another Bridge
-// are not admitted here.
+// it only those account-wide verbs and reviews it is named for. Assignment and
+// placement on another Bridge are not admitted here.
 REMOTE_AGENT_DOMAIN :: "heimdall-owner-local/remote_agent/v1\n"
 REMOTE_AGENT_TTL_MS :: 60000
 
@@ -36,6 +39,9 @@ Remote_Agent_Request :: struct {
 remote_agent_method :: proc(method:string) -> bool {
     switch method {
     case "agent.task.show","agent.task.comments","agent.task.comment","agent.task_chain.show": return true
+    // A reviewer on the relaying Bridge casts its review here; the store
+    // checks it is a reviewer of the task (relayed_reviewer_authorized).
+    case "agent.review.post": return true
     }
     return false
 }

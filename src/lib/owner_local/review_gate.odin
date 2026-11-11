@@ -54,8 +54,21 @@ brief_reviewer_authorized :: proc(s:^Store,chain,task:string,child:Child) -> boo
 task_reviewer_authorized :: proc(s:^Store,chain,task:string,child:Child) -> bool {
     config,binding,configured:=lifecycle_config(s,chain,task)
     if !configured || child.agent_id==field(config,"author_agent_id") do return false
+    if s.relayed_from!="" do return relayed_reviewer_authorized(s,chain,task,child,config)
     if encode(child)==binding[2] && child.agent_id==field(config,"reviewer_agent_id") do return true
     return brief_reviewer_authorized(s,chain,task,child)
+}
+
+// A reviewer running on another Bridge of this account (user decision
+// 2026-11-11): the owner Bridge admitted the relay (same-account, approved,
+// unrevoked Bridge key; owner.remote_agent_admit) and the relaying Bridge
+// proved its own live child, so the agent is trusted by its durable id. It
+// must be one of the task's reviewers, never its author nor a coordinator of
+// the chain. No exact process binding is required here.
+relayed_reviewer_authorized :: proc(s:^Store,chain,task:string,child:Child,config:json.Object) -> bool {
+    if child.epoch=="" || child.agent_id==field(config,"author_agent_id") || !slice.contains(task_reviewers(s,chain,task,config),child.agent_id) do return false
+    coordinators,ok:=chain_coordinator_agents(s,chain)
+    return ok && !slice.contains(coordinators,child.agent_id)
 }
 
 // The reviewers whose approval of this attempt is still owed (in order).

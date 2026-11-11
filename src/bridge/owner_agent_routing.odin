@@ -882,6 +882,14 @@ bridge_owner_caller_view :: proc(s:^owner.Store,chain:string,child:owner.Child) 
 // The exact live child of a durable agent id among this chain's current
 // enabled members and fleet workers on this Bridge. Caller holds the child
 // locks (bridge_owner_child_locked).
+// An agent whose fleet policy in this chain places it on another Bridge of
+// the account (`ham-ctl task-chain fleet set --agent <id> --bridge <B>`).
+bridge_owner_remote_reviewer :: proc(s:^owner.Store,chain,agent:string) -> (remote,ok:bool) {
+    policy,found,read:=owner.agent_fleet_policy(s,chain,agent)
+    if !read do return false,false
+    return found && policy.bridge_id!="" && policy.bridge_id!=s.owner,true
+}
+
 bridge_owner_resolve_agent :: proc(ctx:^Owner_Agent_Ctx,chain,agent_id,flag:string) -> (owner.Child,string,string) {
     participants,ok:=owner.agent_chain_participants(ctx.store,chain)
     if !ok do return {},"storage_error","owner store could not be read"
@@ -1057,13 +1065,21 @@ bridge_owner_plan_children :: proc(ctx:^Owner_Agent_Ctx,chain:string,st:owner.Ag
     }
     if plan.has_assignee && reviewer_agent=="" do return {},{},bridge_owner_fail(ctx,"reviewer_required","an owner task needs an independent --reviewer with its --assignee")
     // Every further --reviewer must be a running member of this chain too
-    // (`ham-ctl task-chain fleet set --agent <id>` launches and binds one).
+    // (`ham-ctl task-chain fleet set --agent <id>` launches and binds one), or
+    // an agent placed on another account Bridge (fleet set --bridge).
     author:=assignee.agent_id if plan.has_assignee else (contracts.owner_string(st.config,"author_agent_id") if st.configured else "")
     for id in plan.reviewers {
         if id==ctx.child.agent_id do return {},{},bridge_owner_fail(ctx,"invalid_scope","the coordinator never reviews a task of its own chain; name another --reviewer")
         if author!="" && id==author do return {},{},bridge_owner_fail(ctx,"invalid_scope","a reviewer must be a different agent than the assignee")
         if id==reviewer_agent do continue
-        if _,code,message:=bridge_owner_resolve_agent(ctx,chain,id,"--reviewer");code!="ok" do return {},{},bridge_owner_fail(ctx,code,message)
+        if _,code,message:=bridge_owner_resolve_agent(ctx,chain,id,"--reviewer");code!="ok" {
+            // A reviewer placed on another account Bridge (its fleet policy
+            // names that Bridge) reviews over the agent relay; the store
+            // trusts it by agent id (relayed_reviewer_authorized).
+            remote,read:=bridge_owner_remote_reviewer(ctx.store,chain,id)
+            if !read do return {},{},bridge_owner_fail(ctx,"storage_error","owner store could not be read")
+            if !remote do return {},{},bridge_owner_fail(ctx,code,message)
+        }
     }
     // A remote assignee is reserved by fleet.reserve after the locks, not by
     // fleet.edit; its reviewers are recorded in the brief. The worker/reviewer
