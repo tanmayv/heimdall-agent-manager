@@ -27,11 +27,11 @@ import "core:time"
 import contracts "odin_test:contracts"
 import owner "odin_test:lib/owner_local"
 
-Owner_Review_Action :: enum { Nudge, Start, Launch, Restart, Place }
+Owner_Review_Action :: enum { Nudge, Start, Launch, Restart, Place, Remote }
 Owner_Review_Wake :: struct {
     action:Owner_Review_Action,
     chain,task,lease,agent,instance:string,
-    body:string, // Launch: the Hub agent-instances body (fleet row model/provider)
+    body:string, // Launch/Remote: the Hub agent-instances body (fleet row model/provider)
     // A worker the matcher brings to a ready task (owner_agent_matcher.odin):
     // woken with the work line; a failed start blocks the task agent_not_running.
     worker:bool,
@@ -62,6 +62,9 @@ Owner_Review_Effects :: struct {
     // Place: the task's assignee is placed on its remote run Bridge again
     // (owner_agent_matcher.odin); "" on success, else why it failed.
     place:proc(chain,task,agent:string,rec:Bridge_Local_Agent_Token_Record) -> string,
+    // Remote: the reviewer is launched on its run Bridge through the Hub; it
+    // is not waited for or bound here. "" on success, else why it failed.
+    remote:proc(body,agent:string,rec:Bridge_Local_Agent_Token_Record) -> string,
 }
 @(thread_local)
 bridge_owner_review_effects:Owner_Review_Effects
@@ -84,7 +87,27 @@ bridge_owner_review_plan :: proc(ctx:^Owner_Agent_Ctx,chain,task:string) -> json
     if ctx.reviews.coordinator!="" && ctx.reviews.coordinator!=ctx.rec.agent_instance_id {
         if rec,has:=bridge_owner_review_token_locked(ctx.reviews.coordinator);has do ctx.reviews.rec=rec
     }
+    run_bridge,pinned:=bridge_owner_match_run_bridge(ctx.store,chain,task)
     for target in targets {
+        // A reviewer whose task runs on another account Bridge (the task's
+        // pin, else its fleet row's Bridge) is launched there through the Hub
+        // and reviews over the agent relay; it is never started here.
+        if place,code,_:=bridge_owner_remote_target(ctx.store,chain,target.agent_id,run_bridge,pinned);code!="" {
+            entry:=json.Object{"agent_id"=json.String(target.agent_id),"action"=json.String("remote")}
+            if code=="ok" {
+                entry["bridge_id"]=json.String(place.executor_bridge)
+                // Once per attempt within the matcher back-off: a recheck of
+                // the same attempt does not launch a second reviewer.
+                key:=fmt.tprintf("%s|%s|%s|%s|review",chain,task,st.attempt,target.agent_id)
+                if bridge_owner_match_due(key,ctx.now,false) {
+                    body:=bridge_owner_json(map[string]string{"agent_id"=target.agent_id,"chain_id"=chain,"bridge_id"=place.executor_bridge,"provider"=place.provider,"model"=place.model})
+                    append(&ctx.reviews.wakes,Owner_Review_Wake{action=.Remote,chain=chain,task=task,lease=lease,agent=target.agent_id,body=body})
+                    entry["action"]=json.String("launching_remote")
+                }
+            }
+            append(&out,entry)
+            continue
+        }
         wake:=Owner_Review_Wake{action=.Launch,chain=chain,task=task,lease=lease,agent=target.agent_id}
         for instance in target.instances {
             if child,live:=bridge_owner_live_child(instance);live && child.agent_id==target.agent_id { wake.action=.Nudge;wake.instance=instance;break }
@@ -94,12 +117,6 @@ bridge_owner_review_plan :: proc(ctx:^Owner_Agent_Ctx,chain,task:string) -> json
             wake.action=.Start;wake.instance=target.instances[len(target.instances)-1]
         }
         if wake.action==.Launch {
-            // A reviewer placed on another account Bridge is never launched
-            // here; it reviews there and posts over the agent relay.
-            if policy,has,policy_ok:=owner.agent_fleet_policy(ctx.store,chain,target.agent_id);policy_ok && has && policy.bridge_id!="" && policy.bridge_id!=ctx.store.owner {
-                append(&out,json.Object{"agent_id"=json.String(target.agent_id),"action"=json.String("remote"),"bridge_id"=json.String(policy.bridge_id)})
-                continue
-            }
             body:=map[string]string{"agent_id"=target.agent_id,"chain_id"=chain,"bridge_id"=bridge_cfg().daemon_id}
             if policy,has,policy_ok:=owner.agent_fleet_policy(ctx.store,chain,target.agent_id);policy_ok && has {
                 provider,model,profile:=bridge_owner_fleet_launch_model(policy,bridge_cfg().daemon_id)
@@ -110,7 +127,7 @@ bridge_owner_review_plan :: proc(ctx:^Owner_Agent_Ctx,chain,task:string) -> json
             wake.body=bridge_owner_json(body)
         }
         append(&ctx.reviews.wakes,wake)
-        action:=[Owner_Review_Action]string{.Nudge="woken",.Start="starting",.Launch="launching",.Restart="restarting",.Place="placing"}
+        action:=[Owner_Review_Action]string{.Nudge="woken",.Start="starting",.Launch="launching",.Restart="restarting",.Place="placing",.Remote="launching_remote"}
         entry:=json.Object{"agent_id"=json.String(target.agent_id),"action"=json.String(action[wake.action])}
         if wake.instance!="" do entry["instance_id"]=json.String(wake.instance)
         append(&out,entry)
@@ -166,6 +183,7 @@ bridge_owner_review_execute :: proc(d:^Owner_Review_Dispatch) {
     block:=e.block if e.block!=nil else bridge_owner_block_not_running
     rematch:=e.rematch if e.rematch!=nil else bridge_owner_match_rerun
     place:=e.place if e.place!=nil else bridge_owner_match_place
+    remote:=e.remote if e.remote!=nil else bridge_owner_review_remote_launch
     rematched:=make(map[string]bool,context.temp_allocator)
     for w in d.wakes {
         instance:=w.instance
@@ -196,6 +214,11 @@ bridge_owner_review_execute :: proc(d:^Owner_Review_Dispatch) {
             // The executor Bridge brings the agent up; the periodic matcher
             // retries a failed placement after its back-off.
             if failed:=place(w.chain,w.task,w.agent,d.rec);failed!="" do fmt.eprintln("bridge owner dispatch: placing",w.agent,"for",w.task,"failed:",failed)
+            continue
+        case .Remote:
+            // The reviewer's bare `lease next` on its Bridge relays here
+            // (owner_remote_agent.odin) and gets the review and its TASK.md.
+            if failed:=remote(w.body,w.agent,d.rec);failed!="" do fmt.eprintln("bridge owner dispatch: launching reviewer",w.agent,"for",w.task,"on another Bridge failed:",failed)
             continue
         }
         if w.rematch {
@@ -319,4 +342,15 @@ bridge_owner_render_review_context :: proc(st:owner.Agent_Task_State,lease:Owner
     if lease.placement.workdir!="" do workdir=fmt.tprintf("- Workdir: `%s` (branch `%s`, submitted head `%s`). Inspect it; do not commit.\n",lease.placement.workdir,lease.placement.branch,st.head)
     return fmt.tprintf("# Owner-local review of task %s\n\nRole: reviewer\n\n- Chain: %s\n- Lease: %s (review)\n- Attempt: %s\n- Instance: %s\n- Requirements revision: %s\n%s\n## Submitted requirements (complete)\n```json\n%s\n```\n\n## Worker's summary\n%s\n\nThis chain is held by its owner Bridge. Judge the attempt against the brief and the worker's reported checks, then post exactly one verdict:\n`ham-ctl review post --task %s --verdict approve` or `ham-ctl review post --task %s --verdict request_changes --summary <what must change>`. Every reviewer the task names must approve; any request_changes returns it to its worker.\n",
         st.task_id,st.chain_id,lease.lease_id,st.attempt,instance,st.requirements_revision,workdir,get(result,"brief"),get(result,"summary"),st.task_id,st.task_id)
+}
+
+// Hub POST /api/v1/agent-instances for a reviewer on another account Bridge
+// (body names that bridge_id and the chain) with the coordinator's credential.
+// The instance starts there, so nothing is waited for or bound here.
+bridge_owner_review_remote_launch :: proc(body,agent:string,rec:Bridge_Local_Agent_Token_Record) -> string {
+    launched:=bridge_local_relay_raw(.POST,route_path("api","v1","agent-instances"),nil,body,rec)
+    if launched.ok && launched.status>=200 && launched.status<300 do return ""
+    detail:=launched.body
+    if len(detail)>300 do detail=detail[:300]
+    return fmt.tprintf("launching %s failed (HTTP %d): %s",agent,launched.status,detail)
 }

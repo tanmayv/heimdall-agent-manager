@@ -256,6 +256,17 @@ test_owner_fleet_launch_model_honors_bridge_models :: proc(t:^testing.T) {
 // the relayed approve is covered in owner_local execution_child_test).
 // Replacing a configured local reviewer reconfigures the task; no brief, or an
 // agent neither running here nor placed elsewhere, is refused.
+@(thread_local) remote_test_launches:[dynamic]string
+remote_test_review_launch :: proc(body,agent:string,rec:Bridge_Local_Agent_Token_Record) -> string {
+    append(&remote_test_launches,fmt.tprintf("remote:%s",agent));return ""
+}
+remote_test_review_local_launch :: proc(body,agent:string,rec:Bridge_Local_Agent_Token_Record) -> (string,string) {
+    append(&remote_test_launches,fmt.tprintf("local:%s",agent));return "","test: no local launch"
+}
+remote_test_review_start :: proc(instance,agent:string,rec:Bridge_Local_Agent_Token_Record) -> string {
+    append(&remote_test_launches,fmt.tprintf("start:%s",agent));return "test: no start"
+}
+
 @(test)
 test_owner_primary_reviewer_on_another_bridge :: proc(t:^testing.T) {
     sync.mutex_lock(&bridge_test_config_mutex);defer sync.mutex_unlock(&bridge_test_config_mutex)
@@ -315,8 +326,28 @@ test_owner_primary_reviewer_on_another_bridge :: proc(t:^testing.T) {
         raw,refused:=bridge_owner_remote_agent_exec(&ctx,"agent.lease.next",bridge_owner_params(params),"bridge_b")
         return bridge_owner_result_object(raw),refused
     }
-    submitted,_:=review_test_submit(t,r,worker)
+    submitted,sctx:=review_test_submit(t,r,worker)
     testing.expectf(t,bool(submitted["ok"].(json.Boolean)),"worker submits: %v",submitted)
+    // The review is owed to agt_r on bridge_b: it is launched there through
+    // the Hub (fleet row model), never started or launched here.
+    if testing.expectf(t,len(sctx.reviews.wakes)==1,"one review wake: %v",sctx.reviews.wakes) {
+        w:=sctx.reviews.wakes[0]
+        testing.expect_value(t,w.action,Owner_Review_Action.Remote)
+        body:=bridge_owner_params(w.body)
+        testing.expectf(t,w.agent=="agt_r" && contracts.owner_string(body,"bridge_id")=="bridge_b" && contracts.owner_string(body,"chain_id")==chain &&
+            contracts.owner_string(body,"provider")=="claude" && contracts.owner_string(body,"model")=="claude-sonnet-5-5","remote launch body: %s",w.body)
+        remote_test_launches=make([dynamic]string,context.temp_allocator)
+        bridge_owner_review_effects=Owner_Review_Effects{remote=remote_test_review_launch,launch=remote_test_review_local_launch,start=remote_test_review_start}
+        bridge_owner_review_sync_effects=true
+        defer {bridge_owner_review_effects={};bridge_owner_review_sync_effects=false;remote_test_launches=nil}
+        bridge_owner_review_dispatch(sctx.reviews)
+        testing.expectf(t,len(remote_test_launches)==1 && remote_test_launches[0]=="remote:agt_r","only the Hub launch on bridge_b: %v",remote_test_launches)
+        // A recheck of the same attempt within the back-off launches nothing new.
+        again:=review_test_ctx(r,coord)
+        plan:=bridge_owner_review_plan(&again,chain,task)
+        testing.expectf(t,len(again.reviews.wakes)==0 && len(plan)==1 && contracts.owner_string(plan[0].(json.Object),"action")=="remote" &&
+            contracts.owner_string(plan[0].(json.Object),"bridge_id")=="bridge_b","re-plan reports remote, no second launch: %v",plan)
+    }
     remote_reviewer:=review_test_child("inst_rb","agt_r") // lives on bridge_b, not here
     chain_params:=fmt.tprintf(`{{"chain_id":"%s"}}`,chain)
     granted,refused:=relay_next(r,remote_reviewer,chain_params)

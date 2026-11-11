@@ -503,7 +503,7 @@ bridge_executor_local_launch_native :: proc(s:^executor.Store,draft:executor.Loc
             if descriptor.project_path!="" {project,_=bridge_executor_project_directory(descriptor.project_path)}
             bridge_runtime_record_launch(Bridge_Runtime_Launch{agent_id=strings.clone(descriptor.agent_id,runtime.default_allocator()),agent_instance_id=strings.clone(launch.instance,runtime.default_allocator()),
                 run_dir=strings.clone(m.run_dir,runtime.default_allocator()),project_path=strings.clone(project,runtime.default_allocator()),agent_token=strings.clone(m.token,runtime.default_allocator()),
-                pane_id=strings.clone(pane,runtime.default_allocator()),provider_sym=contracts.bridge_log_provider_sym(m.provider),launched_at_ns=time.tick_now()._nsec})
+                pane_id=strings.clone(pane,runtime.default_allocator()),chain_id=strings.clone(descriptor.chain_id,runtime.default_allocator()),provider_sym=contracts.bridge_log_provider_sym(m.provider),launched_at_ns=time.tick_now()._nsec})
             bridge_task_wake_note_launched(launch.instance)
         }
         bridge_pty_host_events_ensure()

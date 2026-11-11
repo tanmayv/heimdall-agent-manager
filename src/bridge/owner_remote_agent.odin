@@ -125,6 +125,17 @@ bridge_owner_remote_agent_send :: proc(request_id,method,params:string,rec:Bridg
     if !owner.remote_agent_method(method) do return "",false
     p:=bridge_owner_params(params)
     chain,task:=bridge_owner_pstr(p,"chain_id"),bridge_owner_pstr(p,"task_id")
+    if chain=="" && task=="" && method=="agent.lease.next" {
+        // A reviewer launched here for another Bridge's chain (owner review
+        // dispatch) runs a bare `lease next`: its launch names the chain. Only
+        // a granted review is taken; anything else keeps the old route, so a
+        // bare `lease next` of any other agent behaves as before.
+        inferred,with_chain:=bridge_owner_remote_lease_next_chain(p,rec.agent_instance_id)
+        if inferred=="" do return "",false
+        response,sent:=bridge_owner_remote_agent_send(request_id,method,with_chain,rec)
+        if !sent || !bridge_owner_remote_review_granted(response) do return "",false
+        return response,true
+    }
     if chain=="" && task=="" do return "",false
     account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
     if account=="" do return "",false
@@ -169,6 +180,23 @@ bridge_owner_remote_agent_send :: proc(request_id,method,params:string,rec:Bridg
     if opened!=.Ok do return bridge_local_response_error(request_id,"stale_epoch","the relayed reply could not be opened"),true
     if method=="agent.lease.next" do return bridge_owner_remote_review_context_write(request_id,strings.clone(plain,context.temp_allocator),rec.agent_instance_id),true
     return strings.clone(plain,context.temp_allocator),true
+}
+
+// The chain a bare `lease next` relays to: the caller's launch record names
+// it. Returns the chain ("" when the launch names none) and params with it.
+bridge_owner_remote_lease_next_chain :: proc(p:json.Object,instance:string) -> (string,string) {
+    launch,has:=bridge_runtime_get_launch(instance)
+    if !has || launch.chain_id=="" do return "",""
+    out:=make(json.Object,context.temp_allocator)
+    for k,v in p do out[k]=v
+    out["chain_id"]=json.String(launch.chain_id)
+    return strings.clone(launch.chain_id,context.temp_allocator),bridge_owner_json(out)
+}
+
+bridge_owner_remote_review_granted :: proc(response:string) -> bool {
+    envelope:=bridge_owner_result_object(response)
+    data,_:=envelope["data"].(json.Object)
+    return data!=nil && contracts.owner_string(data,"status")=="granted"
 }
 
 // A relayed review lease (gap 5): the owner's review context becomes the
