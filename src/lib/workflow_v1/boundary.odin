@@ -50,8 +50,17 @@ output_shape :: proc(v:json.Value)->bool {
     return true
 }
 brief_shape :: proc(o:json.Object)->bool {
-    if !keys_allowed(o,"goal|acceptance|inputs|assignee|reviewers|budget|output|on_output|requires_user_approval|approver|gate|run_bridge_id") do return false
+    if !keys_allowed(o,"goal|acceptance|inputs|assignee|reviewers|budget|output|on_output|requires_user_approval|approver|gate|run_bridge_id|agent_models") do return false
     for key in ([4]string{"goal","assignee","approver","run_bridge_id"}) { if !string_member(o,key) do return false }
+    // agent_models: {agent_id: {provider, model}} (owner-chain per-agent override).
+    if value,present:=o["agent_models"];present {
+        models,is_obj:=value.(json.Object)
+        if !is_obj do return false
+        for _,entry in models {
+            selection,ok:=entry.(json.Object)
+            if !ok || !keys_allowed(selection,"provider|model") || !string_member(selection,"provider") || !string_member(selection,"model") do return false
+        }
+    }
     for key in ([2]string{"acceptance","reviewers"}) { if a,present:=o[key];present && !array_strings(a) do return false }
     if refs,present:=o["inputs"];present && !array_strings(refs) do return false
     if value,present:=o["budget"];present {
