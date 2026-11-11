@@ -552,6 +552,40 @@ lease_next :: proc(s:^Store,child:Child,key:contracts.Owner_Verified_Key,now:i64
     return Result{code="ok",body=encode(pick)},pick
 }
 
+// M1 matcher, unassigned work (origin/main grant_work): the ready, published,
+// unleased tasks of a chain ("" = every chain) that no worker is assigned to
+// (no enabled local_fleet row) and whose lifecycle, if any, is ready. The
+// owner Bridge picks a fleet agent for each and assigns it as the coordinator
+// would (task update --assignee). Read-only.
+Unassigned_Task :: struct { chain_id,task_id:string }
+unassigned_tasks :: proc(s:^Store,chain:string) -> ([]Unassigned_Task,bool) {
+    tx:Transaction
+    if !transaction_begin(s,&tx) do return nil,false
+    defer transaction_rollback(&tx)
+    rows,ok:=query(s.db,`SELECT t.chain_id,t.task_id FROM tasks t WHERE (?1='' OR t.chain_id=?1)
+        AND NOT EXISTS(SELECT 1 FROM local_fleet f WHERE f.chain_id=t.chain_id AND f.task_id=t.task_id AND f.enabled=1)
+        AND NOT EXISTS(SELECT 1 FROM local_leases l WHERE l.chain_id=t.chain_id AND l.task_id=t.task_id AND l.retired_seq IS NULL)
+        AND NOT EXISTS(SELECT 1 FROM lifecycle_state x WHERE x.chain_id=t.chain_id AND x.task_id=t.task_id AND x.state!='ready')
+      ORDER BY COALESCE((SELECT priority FROM local_task_priority_versions p WHERE p.chain_id=t.chain_id AND p.task_id=t.task_id ORDER BY accepted_seq DESC LIMIT 1),'p2'),t.chain_id,t.task_id LIMIT 200`,chain)
+    if !ok do return nil,false
+    out:=make([dynamic]Unassigned_Task,context.temp_allocator)
+    for r in rows {
+        c,task:=r[0],r[1]
+        if migration_quarantined(s,c) || migration_archived_task(s,c,task) do continue
+        if !work_chain_active(s,c) || !work_task_published(s,c,task) do continue
+        if !control_active(s,c,task) || !control_ready(s,c,task) do continue
+        if !workflow_task_current(s,c,task) || !dependency_ready(s,c,task) || !language_claim_ready(s,c,task) do continue
+        append(&out,Unassigned_Task{c,task})
+    }
+    return out[:],true
+}
+
+// Whether an instance holds a live lease (a worker is busy). Read-only.
+instance_leased :: proc(s:^Store,instance:string) -> (leased:bool,ok:bool) {
+    rows,read:=query(s.db,"SELECT 1 FROM local_leases WHERE instance_id=? AND retired_seq IS NULL LIMIT 1",instance)
+    return read && len(rows)>0,read
+}
+
 // ---- read-side helpers for the owner Bridge (locked) ---------------------
 
 Agent_Lease_State :: struct {

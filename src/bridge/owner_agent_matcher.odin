@@ -29,6 +29,7 @@ import "core:fmt"
 import "core:strings"
 import "core:sync"
 import "core:time"
+import contracts "odin_test:contracts"
 import owner "odin_test:lib/owner_local"
 import vault "odin_test:lib/vault"
 
@@ -53,23 +54,101 @@ bridge_owner_match_due :: proc(key:string,now:i64,force:bool) -> bool {
     return true
 }
 
-// Under the owner, startup and token locks: one dispatch per chain with a
-// worker to wake or start. chain "" plans every chain.
-bridge_owner_match_plan :: proc(s:^owner.Store,chain:string,force:bool,now:i64) -> [dynamic]Owner_Review_Dispatch {
+// The dispatch of a chain in out, created with the coordinator's Hub
+// credential (starts and launches use it) on first use.
+bridge_owner_match_dispatch :: proc(s:^owner.Store,out:^[dynamic]Owner_Review_Dispatch,chain:string) -> ^Owner_Review_Dispatch {
+    for &existing in out do if len(existing.wakes)>0 && existing.wakes[0].chain==chain do return &existing
+    append(out,Owner_Review_Dispatch{wakes=make([dynamic]Owner_Review_Wake,context.temp_allocator)})
+    d:=&out[len(out)-1]
+    d.coordinator=owner.chain_coordinator_instance(s,chain)
+    if d.coordinator!="" {
+        if rec,has:=bridge_owner_review_token_locked(d.coordinator);has do d.rec=rec
+    }
+    return d
+}
+
+// Unassigned work (origin/main grant_work + pick_instance): each ready task
+// with no worker gets a fleet agent of its chain, never the coordinator's,
+// from an active row placed on this Bridge: a live, lease-free member is
+// assigned at once (task update --assignee, signed for the chain's bound
+// coordinator); else a stopped member is started, else (the agent has no
+// member yet) a member is launched into the chain, and the matcher runs again
+// once it is live. Caller holds the owner, startup and token locks; ctx
+// carries the store, owner key, keyring and clock.
+bridge_owner_match_assign :: proc(ctx:^Owner_Agent_Ctx,out:^[dynamic]Owner_Review_Dispatch,chain:string,force:bool) {
+    tasks,ok:=owner.unassigned_tasks(ctx.store,chain)
+    if !ok do return
+    busy:=make(map[string]bool,context.temp_allocator) // instances assigned in this run
+    pending:=make(map[string]bool,context.temp_allocator) // agents started/launched in this run
+    for task in tasks {
+        coordinator,bound:=owner.chain_coordinator_child(ctx.store,task.chain_id)
+        if !bound do continue
+        policies,members,read:=owner.agent_fleet_view(ctx.store,task.chain_id)
+        if !read do continue
+        assigned:=false
+        stopped,missing:owner.Agent_Fleet_Member
+        launch_policy:contracts.Owner_Fleet_Policy
+        for policy in policies {
+            if policy.agent_id==coordinator.agent_id || len(bridge_owner_fleet_active_roles(policy))==0 do continue
+            if policy.bridge_id!="" && policy.bridge_id!=ctx.store.owner do continue
+            has_member:=false
+            for m in members {
+                if m.agent_id!=policy.agent_id || m.enabled!="1" || m.role=="coordinator" do continue
+                has_member=true
+                child,live:=bridge_owner_live_child(m.instance_id)
+                if !live || child.agent_id!=m.agent_id {
+                    if stopped.instance_id=="" do stopped=m
+                    continue
+                }
+                if busy[m.instance_id] do continue
+                if leased,lease_ok:=owner.instance_leased(ctx.store,m.instance_id);!lease_ok || leased do continue
+                cctx:=Owner_Agent_Ctx{request_id=bridge_owner_fresh_id("req"),store=ctx.store,child=coordinator,key=ctx.key,kr=ctx.kr,now=ctx.now}
+                params:=bridge_owner_params(fmt.tprintf(`{{"chain_id":"%s","task_id":"%s","assignee":"%s"}}`,task.chain_id,task.task_id,m.agent_id))
+                if result:=bridge_owner_result_object(bridge_owner_agent_exec(&cctx,"agent.task.update",params));!bridge_owner_reclaim_ok(result) {
+                    fmt.eprintfln("owner matcher: assigning %s to %s refused: %v",task.task_id,m.agent_id,result["error"])
+                    continue
+                }
+                busy[m.instance_id]=true;assigned=true
+                break
+            }
+            if assigned do break
+            if !has_member && missing.agent_id=="" { missing=owner.Agent_Fleet_Member{agent_id=policy.agent_id};launch_policy=policy }
+        }
+        if assigned do continue
+        wake:Owner_Review_Wake
+        switch {
+        case stopped.instance_id!="":
+            wake=Owner_Review_Wake{action=.Start,chain=task.chain_id,task=task.task_id,agent=stopped.agent_id,instance=stopped.instance_id,worker=true,rematch=true}
+        case missing.agent_id!="":
+            body:=map[string]string{"agent_id"=missing.agent_id,"chain_id"=task.chain_id,"bridge_id"=bridge_cfg().daemon_id}
+            if launch_policy.provider!="" do body["provider"]=launch_policy.provider
+            if launch_policy.model!="" do body["model"]=launch_policy.model
+            if launch_policy.provider_profile!="" do body["provider_profile"]=launch_policy.provider_profile
+            wake=Owner_Review_Wake{action=.Launch,chain=task.chain_id,task=task.task_id,agent=missing.agent_id,body=bridge_owner_json(body),worker=true,rematch=true}
+        case:
+            continue // every fleet worker is busy (capacity reached)
+        }
+        if pending[wake.agent] do continue
+        d:=bridge_owner_match_dispatch(ctx.store,out,task.chain_id)
+        if d.rec.instance_token=="" do continue
+        action:="start" if wake.action==.Start else "launch"
+        if !bridge_owner_match_due(fmt.tprintf("%s|%s|%s",task.chain_id,wake.agent,action),ctx.now,force) do continue
+        pending[wake.agent]=true
+        append(&d.wakes,wake)
+    }
+}
+
+// Under the owner, startup and token locks: assign unassigned work, then one
+// dispatch per chain with a worker to wake, start or launch. chain "" plans
+// every chain.
+bridge_owner_match_plan :: proc(ctx:^Owner_Agent_Ctx,chain:string,force:bool) -> [dynamic]Owner_Review_Dispatch {
     out:=make([dynamic]Owner_Review_Dispatch,context.temp_allocator)
+    s,now:=ctx.store,ctx.now
+    if ctx.kr!=nil do bridge_owner_match_assign(ctx,&out,chain,force)
     targets,ok:=owner.work_targets(s,chain)
     if !ok do return out
     for target in targets {
-        d:^Owner_Review_Dispatch
-        for &existing in out do if len(existing.wakes)>0 && existing.wakes[0].chain==target.chain_id do d=&existing
-        if d==nil {
-            append(&out,Owner_Review_Dispatch{wakes=make([dynamic]Owner_Review_Wake,context.temp_allocator)})
-            d=&out[len(out)-1]
-            d.coordinator=owner.chain_coordinator_instance(s,target.chain_id)
-            if d.coordinator!="" {
-                if rec,has:=bridge_owner_review_token_locked(d.coordinator);has do d.rec=rec
-            }
-        }
+        d:=bridge_owner_match_dispatch(s,&out,target.chain_id)
         wake:=Owner_Review_Wake{action=.Start,chain=target.chain_id,task=target.task_id,agent=target.agent_id,instance=target.instance_id,worker=true}
         if child,live:=bridge_owner_live_child(target.instance_id);live && child.agent_id==target.agent_id do wake.action=.Nudge
         // Starting needs a Hub credential: the coordinator's (it may be
@@ -94,7 +173,13 @@ bridge_owner_match_run :: proc(chain:string,force:bool) {
         if !bridge_owner_open(account,key_id) do return
         sync.mutex_lock(&bridge_startup_io_mutex);defer sync.mutex_unlock(&bridge_startup_io_mutex)
         sync.mutex_lock(&bridge_local_token_mutex);defer sync.mutex_unlock(&bridge_local_token_mutex)
-        plans=bridge_owner_match_plan(&bridge_owner_store,chain,force,time.to_unix_nanoseconds(time.now())/1000000)
+        kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
+        pub:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
+        ctx:=Owner_Agent_Ctx{request_id=bridge_owner_fresh_id("match"),store=&bridge_owner_store,
+            key=contracts.Owner_Verified_Key{account,bridge_cfg().daemon_id,key_id,pub,"bridge",true,false},
+            kr=&kr if unlocked else nil,now=time.to_unix_nanoseconds(time.now())/1000000}
+        plans=bridge_owner_match_plan(&ctx,chain,force)
+        if len(plans)>0 do bridge_owner_publish()
     }
     for d in plans do bridge_owner_review_dispatch(d)
 }
@@ -114,3 +199,7 @@ bridge_owner_match_method :: proc(method:string) -> bool {
 bridge_owner_work_line :: proc(task:string) -> string {
     return fmt.aprintf("[taskv2] Task %s is ready for you: run `ham-ctl lease next`, then read TASK.md and follow it.",task)
 }
+
+// The executor's rematch: the matcher again for a chain whose fleet agent was
+// just started or launched (default Owner_Review_Effects.rematch).
+bridge_owner_match_rerun :: proc(chain:string) { bridge_owner_match_run(chain,true) }

@@ -14,6 +14,22 @@ import owner "odin_test:lib/owner_local"
 import vault "odin_test:lib/vault"
 
 matcher_test_store:^owner.Store
+matcher_test_r:^Review_Test
+matcher_test_coord:owner.Child
+matcher_test_launch :: proc(body,agent:string,rec:Bridge_Local_Agent_Token_Record) -> (string,string) {
+    instance:=fmt.tprintf("inst_launched_%s",agent)
+    append(&review_test_started,fmt.tprintf("launch %s %s",agent,rec.agent_instance_id))
+    append(&review_test_live,review_test_child(instance,agent))
+    return instance,""
+}
+matcher_test_bind :: proc(chain,instance,agent,coordinator:string) -> (string,string) {
+    ctx:=review_test_ctx(matcher_test_r,matcher_test_coord)
+    return bridge_owner_fleet_member(&ctx,chain,instance,agent,"worker",true,review_test_child(instance,agent)).code,""
+}
+matcher_test_rematch :: proc(chain:string) {
+    ctx:=review_test_ctx(matcher_test_r,{})
+    for d in bridge_owner_match_plan(&ctx,chain,true) do bridge_owner_review_dispatch(d)
+}
 matcher_test_blocked:[dynamic]string
 
 matcher_test_start_fails :: proc(instance,agent:string,rec:Bridge_Local_Agent_Token_Record) -> string {
@@ -99,7 +115,8 @@ test_owner_matcher_wakes_restarts_or_blocks_the_assigned_worker :: proc(t:^testi
     }
     plan :: proc(r:^Review_Test,chain:string,force:bool) -> []Owner_Review_Wake {
         wakes:=make([dynamic]Owner_Review_Wake,context.temp_allocator)
-        for d in bridge_owner_match_plan(&r.store,chain,force,time.to_unix_nanoseconds(time.now())/1000000) {
+        ctx:=review_test_ctx(r,{})
+        for d in bridge_owner_match_plan(&ctx,chain,force) {
             for w in d.wakes do append(&wakes,w)
             bridge_owner_review_dispatch(d)
         }
@@ -146,4 +163,43 @@ test_owner_matcher_wakes_restarts_or_blocks_the_assigned_worker :: proc(t:^testi
     rows,_:=owner.query(r.store.db,"SELECT mode,waiting_on FROM local_controls WHERE chain_id=? AND task_id=?",chain,second)
     testing.expectf(t,len(rows)==1 && rows[0][0]=="blocked" && rows[0][1]=="agent_not_running","blocked waiting on agent_not_running: %v",rows)
     testing.expect_value(t,len(plan(r,chain,true)),0)
+
+    // Unassigned work (grant_work): with a fleet row for agt_o, a ready task
+    // nobody is assigned to goes to agt_o's live, lease-free member, which is
+    // woken; agt_w (no fleet row) and the coordinator are never picked.
+    row,_:=review_test_exec(r,coord,"agent.task_chain.fleet_set",fmt.tprintf(`{{"chain_id":"%s","agent_id":"agt_o"}}`,chain))
+    testing.expectf(t,contracts.owner_string(review_test_data(row),"agent_id")=="agt_o","fleet row for agt_o: %v",row)
+    out,_:=review_test_exec(r,coord,"agent.task.create",fmt.tprintf(`{{"chain_id":"%s","title":"open","brief":{{"goal":"Open work","acceptance":["Done"]}}}}`,chain))
+    open:=contracts.owner_string(review_test_data(out),"task_id")
+    if !testing.expectf(t,open!="","unassigned task created: %v",out) do return
+    clear(&review_test_nudged)
+    wakes=plan(r,chain,true)
+    if !testing.expectf(t,len(wakes)==1 && wakes[0].action==.Nudge && wakes[0].task==open && wakes[0].instance==other.instance,"the open task is assigned to agt_o and woken: %v",wakes) do return
+    st,_,_:=owner.agent_task_state(&r.store,chain,open)
+    testing.expectf(t,st.fleet_instance==other.instance && st.fleet_enabled=="1","assigned to agt_o's member: %v",st.fleet_instance)
+    granted,_=review_test_exec(r,other,"agent.lease.next","{}")
+    lease,_=review_test_data(granted)["lease"].(json.Object)
+    testing.expectf(t,contracts.owner_string(lease,"task_id")==open,"agt_o leases it: %v",granted)
+    // Busy (capacity reached): a further open task waits; nothing launched.
+    out,_=review_test_exec(r,coord,"agent.task.create",fmt.tprintf(`{{"chain_id":"%s","title":"queued","brief":{{"goal":"Queued","acceptance":["Done"]}}}}`,chain))
+    testing.expect(t,contracts.owner_string(review_test_data(out),"task_id")!="")
+    testing.expect_value(t,len(plan(r,chain,true)),0)
+
+    // JIT: a fleet row whose agent has no member yet: the queued task launches
+    // it into the chain (coordinator's credential), binds it, and the matcher
+    // runs again, assigns the task to it and wakes it.
+    matcher_test_r=r;matcher_test_coord=coord
+    bridge_owner_review_effects.launch=matcher_test_launch
+    bridge_owner_review_effects.bind=matcher_test_bind
+    bridge_owner_review_effects.rematch=matcher_test_rematch
+    // fleet set's own launch runs in the route (not here): the row exists, no member.
+    _,_=review_test_exec(r,coord,"agent.task_chain.fleet_set",fmt.tprintf(`{{"chain_id":"%s","agent_id":"agt_n"}}`,chain))
+    _,has_row,_:=owner.agent_fleet_policy(&r.store,chain,"agt_n")
+    testing.expect(t,has_row,"fleet row for agt_n")
+    clear(&review_test_nudged);clear(&review_test_started)
+    wakes=plan(r,chain,true)
+    testing.expectf(t,len(wakes)==1 && wakes[0].action==.Launch && wakes[0].agent=="agt_n" && wakes[0].rematch,"agt_n is launched: %v",wakes)
+    testing.expectf(t,len(review_test_started)==1 && strings.contains(review_test_started[0],coord_instance),"launched with the coordinator's credential: %v",review_test_started)
+    testing.expectf(t,len(review_test_nudged)==1 && strings.contains(review_test_nudged[0],"inst_launched_agt_n"),"the launched member is assigned and woken: %v",review_test_nudged)
+    matcher_test_r=nil
 }
