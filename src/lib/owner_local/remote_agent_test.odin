@@ -32,12 +32,12 @@ remote_agent_request_checks_account_owner_freshness_verb_and_signature :: proc(t
     testing.expect_value(t,code,"ok")
     testing.expect(t,r.from_bridge_id=="brg_b" && child.instance=="inst_remote" && child.agent_id=="agt_remote")
     testing.expect_value(t,remote_agent_signed(ok_req,remote_sign(&b.priv,ok_req),key),"ok")
-    for method in ([5]string{"agent.task.show","agent.task.comments","agent.task.comment","agent.task_chain.show","agent.review.post"}) {
+    for method in ([6]string{"agent.task.show","agent.task.comments","agent.task.comment","agent.task_chain.show","agent.review.post","agent.lease.next"}) {
         _,_,code=remote_agent_parse("account","bridge",remote_request(method,1500),1000)
         testing.expect_value(t,code,"ok")
     }
-    // Writes, assignment and placement are not relayable.
-    for method in ([5]string{"agent.task.create","agent.task.update","agent.lease.next","agent.task_chain.set_summary","agent.lease.submit"}) {
+    // Writes, assignment, placement and work-lease verbs are not relayable.
+    for method in ([6]string{"agent.task.create","agent.task.update","agent.lease.heartbeat","agent.task_chain.set_summary","agent.lease.submit","agent.lease.switch"}) {
         _,_,code=remote_agent_parse("account","bridge",remote_request(method,1500),1000)
         testing.expectf(t,code=="invalid_scope","%s: %s",method,code)
     }

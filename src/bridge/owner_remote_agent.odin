@@ -70,22 +70,50 @@ bridge_owner_remote_agent :: proc(wire:Owner_Remote_Agent_Command) -> (string,st
     p:=bridge_owner_params(r.params)
     // A remote agent names its target: it has no chain context here.
     if bridge_owner_pstr(p,"chain_id")=="" && bridge_owner_pstr(p,"task_id")=="" do return "malformed",""
-    owned,read:=bridge_owner_targets(&bridge_owner_store,r.method,p,"")
-    if !read do return "storage_error",""
-    if !owned do return "not_found",""
-    // A relayed review is the reviewer's own verdict, never the user's.
-    if r.method=="agent.review.post" && bridge_owner_pstr(p,"on_behalf_of")!="" do return "invalid_scope",""
     key:=contracts.Owner_Verified_Key{account,bridge_cfg().daemon_id,owner_id,owner_pub,"bridge",true,false}
     ctx:=Owner_Agent_Ctx{request_id=r.request_id,store=&bridge_owner_store,child=child,key=key,kr=&kr,now=now}
-    // The store trusts the relayed reviewer by agent id for this call only
-    // (relayed_reviewer_authorized); every other verb keeps its checks.
-    bridge_owner_store.relayed_from=r.from_bridge_id
-    defer bridge_owner_store.relayed_from=""
-    response:=bridge_owner_agent_exec(&ctx,r.method,p)
+    response,refused:=bridge_owner_remote_agent_exec(&ctx,r.method,p,r.from_bridge_id)
+    if refused!="" do return refused,""
     bridge_owner_publish()
     sealed,ok:=vault.seal(transmute([]byte)response,&kr,context.temp_allocator)
     if !ok do return "storage_error",""
     return "ok",sealed
+}
+
+// An admitted relayed verb, under the owner mutex. Returns the local-response
+// JSON, or a refusal code for the relay envelope.
+bridge_owner_remote_agent_exec :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object,from_bridge:string) -> (response,refused:string) {
+    if method=="agent.lease.next" {
+        // Review-lease discovery (gap 5): the relaying Bridge names the chain;
+        // the reply is a review lease this reviewer owes, or none. A work
+        // lease is never handed out over the relay (owner.lease_next is not
+        // called), and peek is not served.
+        chain:=bridge_owner_pstr(p,"chain_id")
+        if chain=="" do return "","malformed"
+        _,found,read:=owner.agent_chain_revision(ctx.store,chain)
+        if !read do return "","storage_error"
+        if !found do return "","not_found"
+    } else {
+        owned,read:=bridge_owner_targets(ctx.store,method,p,"")
+        if !read do return "","storage_error"
+        if !owned do return "","not_found"
+    }
+    // A relayed review is the reviewer's own verdict, never the user's.
+    if method=="agent.review.post" && bridge_owner_pstr(p,"on_behalf_of")!="" do return "","invalid_scope"
+    // The store trusts the relayed reviewer by agent id for this call only
+    // (relayed_reviewer_authorized); every other verb keeps its checks.
+    ctx.store.relayed_from=from_bridge
+    defer ctx.store.relayed_from=""
+    if method!="agent.lease.next" do return bridge_owner_agent_exec(ctx,method,p),""
+    response=bridge_owner_review_next(ctx)
+    // The relaying Bridge writes the reviewer's TASK.md from this text
+    // (bridge_owner_remote_review_context_write); there is no run_dir here.
+    if ctx.review_context.text=="" do return response,""
+    envelope:=bridge_owner_result_object(response)
+    data,_:=envelope["data"].(json.Object)
+    if data==nil do return response,""
+    data["review_context"]=json.String(ctx.review_context.text)
+    return bridge_local_response_data(ctx.request_id,bridge_owner_json(data)),""
 }
 
 // Sender side: an agent of THIS Bridge names a chain or task this Bridge does
@@ -139,7 +167,27 @@ bridge_owner_remote_agent_send :: proc(request_id,method,params:string,rec:Bridg
     if envelope.data.code!="ok" do return bridge_local_response_error(request_id,envelope.data.code,fmt.tprintf("the owner Bridge %s refused the relayed request (%s)",owner_bridge,envelope.data.code)),true
     plain,opened:=vault.open(envelope.data.envelope,&kr,context.temp_allocator)
     if opened!=.Ok do return bridge_local_response_error(request_id,"stale_epoch","the relayed reply could not be opened"),true
+    if method=="agent.lease.next" do return bridge_owner_remote_review_context_write(request_id,strings.clone(plain,context.temp_allocator),rec.agent_instance_id),true
     return strings.clone(plain,context.temp_allocator),true
+}
+
+// A relayed review lease (gap 5): the owner's review context becomes the
+// reviewer's TASK.md in its run directory on this Bridge, as the owner writes
+// it for a local reviewer; the text is dropped from the agent's reply.
+// Without a run directory the reply is returned unchanged.
+bridge_owner_remote_review_context_write :: proc(request_id,response,instance:string) -> string {
+    envelope:=bridge_owner_result_object(response)
+    data,_:=envelope["data"].(json.Object)
+    if data==nil do return response
+    text,has:=data["review_context"].(json.String)
+    if !has || text=="" do return response
+    delete_key(&data,"review_context")
+    run_dir:=""
+    if launch,launched:=bridge_runtime_get_launch(instance);launched do run_dir=strings.clone(launch.run_dir,context.temp_allocator)
+    if run_dir=="" || !bridge_owner_review_context_write(Owner_Review_Context{run_dir,string(text)}) {
+        data["review_context_written"]=json.Boolean(false)
+    }
+    return bridge_local_response_data(request_id,bridge_owner_json(data))
 }
 
 // The account's owner Bridge for a chain or task, from the Hub registry listing.

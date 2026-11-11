@@ -21,7 +21,10 @@ import vault "odin_test:lib/vault"
 //     (agent_account_verb): show a chain or task, read or post task comments;
 //     or review post, which the store grants only to a reviewer of the task
 //     (relayed_reviewer_authorized, user decision 2026-11-11: a request from
-//     a trusted same-account Bridge is trusted by the reviewer's agent id).
+//     a trusted same-account Bridge is trusted by the reviewer's agent id);
+//     or lease next, which the owner Bridge answers with a review lease the
+//     relayed reviewer owes only, never a work lease (gap 5, user 14:42Z:
+//     relay review-lease discovery).
 // The child is B's attestation, never a member here, so agent_authorize grants
 // it only those account-wide verbs and reviews it is named for. Assignment and
 // placement on another Bridge are not admitted here.
@@ -42,6 +45,9 @@ remote_agent_method :: proc(method:string) -> bool {
     // A reviewer on the relaying Bridge casts its review here; the store
     // checks it is a reviewer of the task (relayed_reviewer_authorized).
     case "agent.review.post": return true
+    // A reviewer on the relaying Bridge discovers its owed review; the owner
+    // Bridge serves review leases only (bridge_owner_remote_agent).
+    case "agent.lease.next": return true
     }
     return false
 }

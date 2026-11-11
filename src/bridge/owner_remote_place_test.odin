@@ -308,6 +308,32 @@ test_owner_primary_reviewer_on_another_bridge :: proc(t:^testing.T) {
     author,primary,reviewers:=configured_reviewer(r,chain,task)
     testing.expectf(t,author=="agt_w" && primary=="" && len(reviewers)==1 && reviewers[0]=="agt_r","author agt_w, no bound reviewer, gate requires agt_r: %s %q %v",author,primary,reviewers)
 
+    // Gap 5 relay review-lease discovery: once submitted, the reviewer on
+    // bridge_b learns its review over the relay (review lease + TASK.md text).
+    relay_next :: proc(r:^Review_Test,child:owner.Child,params:string) -> (json.Object,string) {
+        ctx:=review_test_ctx(r,child)
+        raw,refused:=bridge_owner_remote_agent_exec(&ctx,"agent.lease.next",bridge_owner_params(params),"bridge_b")
+        return bridge_owner_result_object(raw),refused
+    }
+    submitted,_:=review_test_submit(t,r,worker)
+    testing.expectf(t,bool(submitted["ok"].(json.Boolean)),"worker submits: %v",submitted)
+    remote_reviewer:=review_test_child("inst_rb","agt_r") // lives on bridge_b, not here
+    chain_params:=fmt.tprintf(`{{"chain_id":"%s"}}`,chain)
+    granted,refused:=relay_next(r,remote_reviewer,chain_params)
+    testing.expect(t,r.store.relayed_from=="","the relay marker is cleared after the call")
+    lease,_:=review_test_data(granted)["lease"].(json.Object)
+    testing.expectf(t,refused=="" && contracts.owner_string(review_test_data(granted),"status")=="granted" &&
+        contracts.owner_string(lease,"role")=="reviewer" && contracts.owner_string(lease,"task_id")==task,"relayed reviewer gets its review lease: %v",granted)
+    testing.expectf(t,strings.contains(contracts.owner_string(review_test_data(granted),"review_context"),"Owner-local review of task"),"the reply carries the review TASK.md text: %v",granted)
+    _,refused=relay_next(r,remote_reviewer,`{}`)
+    testing.expect_value(t,refused,"malformed")
+    _,refused=relay_next(r,remote_reviewer,`{"chain_id":"chain_unknown"}`)
+    testing.expect_value(t,refused,"not_found")
+    stranger,_:=relay_next(r,review_test_child("inst_sb","agt_s"),chain_params)
+    testing.expectf(t,contracts.owner_string(review_test_data(stranger),"status")=="none","a relayed non-reviewer owes nothing: %v",stranger)
+    relayed_author,_:=relay_next(r,review_test_child("inst_wb","agt_w"),chain_params)
+    testing.expectf(t,contracts.owner_string(review_test_data(relayed_author),"status")=="none","the relayed author owes no review: %v",relayed_author)
+
     // Replacing a configured local reviewer with the remote one reconfigures the task.
     out,_=review_test_exec(r,coord,"agent.task.create",fmt.tprintf(`{{"chain_id":"%s","title":"local review",%s,"assignee":"agt_w","reviewers":["agt_a"]}}`,chain,brief))
     local:=contracts.owner_string(review_test_data(out),"task_id")
@@ -328,6 +354,11 @@ test_owner_primary_reviewer_on_another_bridge :: proc(t:^testing.T) {
     // The coordinator never reviews, even when placed elsewhere.
     self,_:=review_test_exec(r,coord,"agent.task.create",fmt.tprintf(`{{"chain_id":"%s","title":"self",%s,"assignee":"agt_w","reviewers":["agt_c"]}}`,chain,brief))
     testing.expectf(t,!bool(self["ok"].(json.Boolean)),"coordinator as reviewer refused: %v",self)
+    // A relayed lease next never hands out work: agt_w has a ready task here.
+    testing.expect_value(t,review_test_state(r,local),"ready")
+    work,_:=relay_next(r,review_test_child("inst_wb","agt_w"),chain_params)
+    testing.expectf(t,contracts.owner_string(review_test_data(work),"status")=="none","no work lease over the relay: %v",work)
+    testing.expect_value(t,review_test_state(r,local),"ready")
 }
 
 // Gap 4: a task assigned to an agent placed on another Bridge whose placement
