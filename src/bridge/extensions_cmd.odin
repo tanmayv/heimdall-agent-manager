@@ -151,15 +151,41 @@ bridge_extensions_publish_shared :: proc(ext_root, data_dir: string) -> (shared:
 // bridge_extensions_prune_shared removes shared releases older than the one
 // at keep (an extensions dir from bridge_extensions_newest_shared). Call it only
 // once every provider is registered from keep.
-bridge_extensions_prune_shared :: proc(keep: string) {
+bridge_extensions_prune_shared :: proc(keep: string, referenced: []string = nil) {
 	release_dir := bridgesvc.pdir(keep)
 	root, keep_version := bridgesvc.pdir(release_dir), bridgesvc.pbase(release_dir)
 	infos, err := os.read_directory_by_path(root, -1, context.temp_allocator)
 	if err != nil do return
+	refs := referenced if referenced != nil else bridge_extensions_shared_references()
 	for info in infos {
 		if strings.has_suffix(info.name, ".new") || !os.is_dir(bridgesvc.pjoin(root, info.name, "extensions")) do continue
-		if bridge_provider_extension_version_compare(info.name, keep_version) < 0 do _ = os.remove_all(bridgesvc.pjoin(root, info.name))
+		if bridge_provider_extension_version_compare(info.name, keep_version) >= 0 do continue
+		// A release a provider registration still points at (another profile's,
+		// or one this sync could not repoint) is never removed.
+		if bridge_extensions_release_referenced(info.name, refs) {
+			fmt.eprintfln("bridge extensions: keeping shared release %s: still referenced by a provider registration", info.name)
+			continue
+		}
+		_ = os.remove_all(bridgesvc.pjoin(root, info.name))
 	}
+}
+
+// The provider registration files that may name a shared release: Claude's
+// user-scope marketplaces and Codex's config (their raw text).
+bridge_extensions_shared_references :: proc() -> []string {
+	out := make([dynamic]string, context.temp_allocator)
+	home := os.get_env("HOME", context.temp_allocator)
+	if home == "" do return out[:]
+	for rel in ([2]string{".claude/plugins/known_marketplaces.json", ".codex/config.toml"}) {
+		if data, err := os.read_entire_file(bridgesvc.pjoin(home, rel), context.temp_allocator); err == nil do append(&out, string(data))
+	}
+	return out[:]
+}
+
+bridge_extensions_release_referenced :: proc(version: string, refs: []string) -> bool {
+	needle := strings.concatenate({"/", BRIDGE_SHARED_EXTENSIONS_DIR, "/", version, "/"}, context.temp_allocator)
+	for r in refs do if strings.contains(r, needle) do return true
+	return false
 }
 
 // bridge_extensions_use_data_dir points the provider catalog (and the lazily

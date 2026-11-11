@@ -62,6 +62,10 @@ Status :: struct {
 	reenroll_hint:   string `json:"reenroll_hint,omitempty"`,
 	// The running bridge's credential renewal state (from runtime-status.json).
 	auth:            Auth_Status `json:"auth"`,
+	// Health of this profile's own Claude plugin (<data dir>/extensions/claude-code),
+	// which launches load with --plugin-dir: "ok", or why it is not loadable
+	// (then launches keep the start-success instruction). Filled by ham-bridge.
+	claude_extension: string `json:"claude_extension,omitempty"`,
 }
 
 // NEEDS_REENROLL_FILE marks a profile whose credential the hub refused (revoked

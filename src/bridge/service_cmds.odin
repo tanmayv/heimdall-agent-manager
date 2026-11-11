@@ -239,6 +239,7 @@ bridge_service_command :: proc(args: []string) -> bool {
 
 bridge_status_print :: proc(host: bridgesvc.Host, name: string, as_json: bool) -> bool {
 	s := bridge_service_status(host, name)
+	s.claude_extension = bridge_claude_extension_health(bridgesvc.layout_for(host, name).data_dir)
 	if as_json {
 		fmt.println(bridgesvc.status_json(s, context.temp_allocator))
 		return true
@@ -249,6 +250,7 @@ bridge_status_print :: proc(host: bridgesvc.Host, name: string, as_json: bool) -
 	fmt.printfln("installed  %v  running %v  enrolled %v  connected %v", s.installed, s.running, s.enrolled, s.connected)
 	fmt.printfln("vault      %s  version %s  bridge %s", s.vault, s.version if s.version != "" else "-", s.bridge_id if s.bridge_id != "" else "-")
 	fmt.printfln("ports      bridge %d  endpoint %d", s.bridge_port, s.endpoint_port)
+	fmt.printfln("claude ext %s", s.claude_extension)
 	fmt.printfln("state      %s", s.state)
 	if s.auth.phase != "" {
 		line := fmt.tprintf("auth       %s", s.auth.phase)
