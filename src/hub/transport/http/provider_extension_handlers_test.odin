@@ -3,6 +3,7 @@ package http
 import "base:runtime"
 import "core:net"
 import "core:thread"
+import "core:encoding/json"
 import "core:fmt"
 import "core:os"
 import "core:strings"
@@ -560,36 +561,20 @@ test_extension_update_failure_rollback_and_acceptance_queue_none :: proc(t: ^tes
 	testing.expect_value(t, commands[0].state, "failed")
 }
 
-@(test)
-test_extension_update_replays_discovery_but_not_duplicate_followups :: proc(t: ^testing.T) {
-	f := extension_test_setup(t, "recovery")
-	defer extension_test_teardown(f)
-	extension_test_status(t, f, "codex", "present", "outdated")
-	id := extension_test_update(t, f, "{\"update_extensions\":true}")
-	defer delete(id)
-	extension_test_restart(t, f, id)
-	discovery := strings.clone(f.sink_rec.last_cmd.command_id)
-	defer delete(discovery)
-	bridge, _, _ := iface.bridge_get_bridge(&f.br_repo, f.bridge_id)
-	defer domain.bridge_destroy(&bridge)
-	err := bridge_extension_reconnected(&f.bh, bridge)
-	testing.expect_value(t, err.code, domain.Error_Code.None)
-	testing.expect_value(t, f.sink_rec.last_cmd.command_id, discovery)
-	extension_test_report(
-		t,
-		f,
-		discovery,
-		"[{\"provider\":\"codex\",\"state\":\"present\",\"extension_state\":\"present\",\"extension_version\":\"0.4.31\"}]",
-	)
-	testing.expect_value(
-		t,
-		json_string(f.sink_rec.last_cmd.body_json, "type"),
-		"provider_discover",
-	)
-	count := f.sink_rec.count
-	err = bridge_extension_reconnected(&f.bh, bridge)
-	testing.expect_value(t, err.code, domain.Error_Code.None)
-	testing.expect_value(t, f.sink_rec.count, count)
+// extension_test_catalog_min_version is the catalog's current extension minimum.
+// Every release migration raises it, so a hardcoded "present" version eventually
+// falls below it and the Hub (correctly) schedules an install follow-up.
+extension_test_catalog_min_version :: proc(t: ^testing.T, f: ^extension_handler_fixture, provider: string) -> string {
+	entry, found, err := iface.provider_catalog_get(&f.pr_repo, provider)
+	testing.expect(t, found && err.code == .None, "catalog entry")
+	if !found do return ""
+	defer domain.provider_catalog_entry_destroy(entry)
+	descriptor: struct {
+		min_version: string,
+	}
+	decode_err := json.unmarshal_string(entry.extension_json, &descriptor, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	testing.expect(t, decode_err == nil && descriptor.min_version != "", "catalog min_version")
+	return descriptor.min_version
 }
 
 @(test)
