@@ -513,6 +513,8 @@ bridge_owner_agent_exec :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object
             return bridge_local_response_data(ctx.request_id,bridge_owner_json(Owner_Agent_Next{"current",lease,Owner_Agent_Task_Ref{st.task_id,st.chain_id},bridge_owner_authority()}))
         }
         _=owner.expire_leases(s,ctx.now)
+        // A restarted agent reclaims the tasks of its earlier launch.
+        _=bridge_owner_reclaim_restarted(ctx)
         r,pick:=owner.lease_next(s,ctx.child,ctx.key,ctx.now,bridge_owner_signer(),bridge_owner_fresh_id("lease"),bridge_owner_fresh_id("op"))
         if r.code!="ok" do return bridge_owner_fail(ctx,r.code,"owner lease next refused")
         // No work: a review this child owes (owner_agent_review.odin).
@@ -899,9 +901,6 @@ bridge_owner_caller_view :: proc(s:^owner.Store,chain:string,child:owner.Child) 
         "coordinator"=json.Boolean(coordinator),"worker_fleet_row"=json.Boolean(worker_row)}
 }
 
-// The exact live child of a durable agent id among this chain's current
-// enabled members and fleet workers on this Bridge. Caller holds the child
-// locks (bridge_owner_child_locked).
 // An agent whose fleet policy in this chain places it on another Bridge of
 // the account (`ham-ctl task-chain fleet set --agent <id> --bridge <B>`).
 bridge_owner_remote_reviewer :: proc(s:^owner.Store,chain,agent:string) -> (remote,ok:bool) {
@@ -910,6 +909,9 @@ bridge_owner_remote_reviewer :: proc(s:^owner.Store,chain,agent:string) -> (remo
     return found && policy.bridge_id!="" && policy.bridge_id!=s.owner,true
 }
 
+// The exact live child of a durable agent id among this chain's current
+// enabled members and fleet workers on this Bridge. Caller holds the child
+// locks (bridge_owner_child_locked).
 bridge_owner_resolve_agent :: proc(ctx:^Owner_Agent_Ctx,chain,agent_id,flag:string) -> (owner.Child,string,string) {
     participants,ok:=owner.agent_chain_participants(ctx.store,chain)
     if !ok do return {},"storage_error","owner store could not be read"

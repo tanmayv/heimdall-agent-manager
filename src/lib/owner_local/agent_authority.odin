@@ -100,6 +100,42 @@ chain_coordinator_instance :: proc(s:^Store,chain:string) -> string {
     return rows[0][0] if ok && len(rows)>0 else ""
 }
 
+// The chain's bound coordinator as last recorded at chain.member.set. Its
+// authority is the instance and agent id (agent_coordinator), not one launch,
+// so the owner Bridge may sign a reassignment for it when it is not running.
+chain_coordinator_child :: proc(s:^Store,chain:string) -> (Child,bool) {
+    rows,ok:=query(s.db,"SELECT child_json FROM local_chain_member_versions m WHERE chain_id=? AND enabled=1 AND role='coordinator' AND accepted_seq=(SELECT max(accepted_seq) FROM local_chain_member_versions x WHERE x.chain_id=m.chain_id AND x.instance_id=m.instance_id) ORDER BY accepted_seq DESC LIMIT 1",chain)
+    if !ok || len(rows)!=1 do return {},false
+    child:Child
+    if json.unmarshal_string(rows[0][0],&child,allocator=context.temp_allocator)!=nil || !agent_coordinator(s,chain,child) do return {},false
+    return child,true
+}
+
+// Tasks still bound to an earlier launch of this child's instance (a restart
+// gives a new epoch, run count and token) whose configured author is this
+// agent and whose instance is still an enabled member of the chain. origin/main
+// claims by agent id and chain membership, so such a task belongs to the new
+// launch; the owner Bridge rebinds it before lease next. leased is true when
+// the earlier launch still holds a live lease (it can never heartbeat again).
+Restarted_Binding :: struct { chain_id,task_id:string, leased:bool }
+agent_restarted_bindings :: proc(s:^Store,child:Child) -> ([]Restarted_Binding,bool) {
+    tx:Transaction
+    if !transaction_begin(s,&tx) do return nil,false
+    defer transaction_rollback(&tx)
+    rows,ok:=query(s.db,`SELECT chain_id,task_id,EXISTS(SELECT 1 FROM local_leases l WHERE l.chain_id=f.chain_id AND l.task_id=f.task_id AND l.instance_id=f.instance_id AND l.retired_seq IS NULL)
+      FROM local_fleet f WHERE instance_id=? AND enabled=1 AND NOT (launch_epoch=? AND run_count=? AND token_generation=?)
+      AND NOT EXISTS(SELECT 1 FROM lifecycle_state x WHERE x.chain_id=f.chain_id AND x.task_id=f.task_id AND x.state!='ready') ORDER BY chain_id,task_id LIMIT 100`,
+      child.instance,child.epoch,fmt.tprintf("%d",child.run_count),child.token_generation)
+    if !ok do return nil,false
+    out:=make([dynamic]Restarted_Binding,context.temp_allocator)
+    for r in rows {
+        if !member_authorized(s,r[0],child) || !control_active(s,r[0],r[1]) do continue
+        if config,_,configured:=lifecycle_config(s,r[0],r[1]);configured && field(config,"author_agent_id")!=child.agent_id do continue
+        append(&out,Restarted_Binding{r[0],r[1],r[2]=="1"})
+    }
+    return out[:],true
+}
+
 // chain_summary_current: the chain's latest curated summary text and its
 // accepted_seq; ("","0") when none.
 // Read-only (T1: `task-chain summary get` on owner chains).
@@ -265,9 +301,12 @@ agent_command_admit :: proc(s:^Store,c:json.Object,payload:string,key:contracts.
     case "lifecycle.configure":
         // REQ-CC-13: the coordinator never names itself the reviewer.
         if field(p,"reviewer_instance_id")==agent.instance || field(p,"reviewer_agent_id")==agent.agent_id do return "invalid_scope"
-        participant,ok:=agent_chain_participant(s,chain,field(p,"reviewer_instance_id"))
-        if !ok do return "storage_error"
-        if !participant do return "invalid_scope"
+        // No reviewer is valid (origin/main parity); a named one is enrolled here.
+        if field(p,"reviewer_instance_id")!="" || field(p,"reviewer_agent_id")!="" {
+            participant,ok:=agent_chain_participant(s,chain,field(p,"reviewer_instance_id"))
+            if !ok do return "storage_error"
+            if !participant do return "invalid_scope"
+        }
         if field(p,"merge_policy")=="git" {
             rows,read:=query(s.db,"SELECT enabled,body FROM local_chain_directory_versions WHERE chain_id=? AND directory_id=? ORDER BY accepted_seq DESC LIMIT 1",chain,field(p,"directory_id"))
             if !read do return "storage_error"
