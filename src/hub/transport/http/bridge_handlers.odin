@@ -1576,6 +1576,7 @@ bridge_ws_disconnect :: proc(
 	// Blockers live in memory only; the bridge resends them when it reconnects.
 	if still_current {
 		agent_service.clear_bridge_blockers(h.agents, bridge_id)
+		agent_service.clear_bridge_owner_attention(h.agents, bridge_id)
 		agent_service.tool_live_clear_bridge(h.agents, bridge_id)
 	}
 	duration_ms := i64(-1)
@@ -2289,6 +2290,10 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 
 	case "agent_blockers":
 		if h.agents != nil do _ = agent_service.apply_bridge_blockers_leased(h.agents, bridge_id, text)
+	// Owner-chain tasks needing the user: the owner Bridge's full snapshot,
+	// scoped to the authenticated bridge_id and its registry-routed chains.
+	case "owner_attention":
+		if h.agents != nil do _ = agent_service.apply_bridge_owner_attention(h.agents, bridge_id, text)
 	case "shell_inventory":
 		if h.shell_sessions != nil {
 			_ = shell_session_svc.shell_session_apply_inventory(h.shell_sessions, bridge_id, text)

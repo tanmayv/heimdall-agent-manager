@@ -98,6 +98,7 @@ App_Graph :: struct {
 	content: content_service.Content_Service,
 	search: search_service.Search_Service,
 	push: push_service.Push_Service,
+	owner_attention_origin: string, // public app origin for owner-attention pushes
 	auth: auth_service.Auth_Service,
 	device_auth_store: device_auth_service.Grant_Store,
 	device_auth: device_auth_service.Device_Auth_Service,
@@ -168,6 +169,18 @@ service_message_created :: proc(ctx: rawptr, m: domain.Chat_Message) {
 	c, found, _ := iface.content_get_conversation(&graph.repos.content, m.conversation_id)
 	if !found do return
 	http.publish_chat_message_created(&graph.event_bus, c, m)
+}
+
+// owner_attention_push sends the Web Push for owner-chain tasks that newly
+// need the user (agent owner_attention.odin). Generic text: no task content.
+owner_attention_push :: proc(ctx: rawptr, owner_user_id: string, fresh_count: int, chain_id: string) {
+	graph := (^App_Graph)(ctx)
+	if graph == nil do return
+	content := push_service.build_owner_attention_notification(fresh_count, chain_id)
+	defer push_service.free_notification_content(content)
+	payload := push_service.build_push_payload_json(content, graph.owner_attention_origin)
+	defer delete(payload)
+	push_service.send_to_user_async(&graph.push, domain.User_ID(owner_user_id), payload)
 }
 
 build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
@@ -527,6 +540,10 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	events.init_attention_debouncer(&graph.attention_events, &graph.event_bus)
 	// Agent blockers change the 'Needs you' deck too (kind agent_blocker).
 	graph.agents.blockers.attention = &graph.attention_events
+	// Owner-chain tasks that newly need the user push like origin/main's task cards.
+	graph.owner_attention_origin = config.public_app_origin
+	graph.agents.owner_attention_hook = owner_attention_push
+	graph.agents.owner_attention_hook_ctx = rawptr(graph)
 	graph.cards.card_changed = card_service.Card_Changed_Hook{ctx = rawptr(&graph.attention_events), changed = attention_card_changed}
 	graph.cards.message_created = content_service.Message_Created_Hook{ctx = rawptr(graph), created = service_message_created}
 	graph.experiment_handlers = http.Experiment_Rest_Handlers{auth = &graph.auth, repo = &graph.experiment_repo, clock = &graph.clock}

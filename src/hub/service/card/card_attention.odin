@@ -112,12 +112,17 @@ list_attention :: proc(s: ^Card_Service, auth: contracts.Auth_Context, since: st
 	if count_err.code != .None do return {}, count_err
 	blockers := agent_service.list_owner_blockers(s.agents, string(owner))
 	counts.agent_blocker = len(blockers)
+	owner_tasks := agent_service.list_owner_attention(s.agents, string(owner))
+	counts.task += len(owner_tasks)
 	result := Attention_Result{since = range_label, counts = counts}
 	if !with_items do return result, domain.Domain_Error{}
 
 	items := make([dynamic]Attention_Item)
 	if kind == "" || kind == ATTENTION_KIND_AGENT_BLOCKER {
 		for blk in blockers do append(&items, attention_blocker_item(blk))
+	}
+	if kind == "" || kind == domain.CARD_KIND_TASK {
+		for it in owner_tasks do append(&items, attention_owner_task_item(it, now_t))
 	}
 	for k in ([]string{domain.CARD_KIND_MESSAGE, domain.CARD_KIND_TASK, domain.CARD_KIND_MEMORY}) {
 		if kind != "" && kind != k do continue
@@ -197,6 +202,43 @@ attention_blocker_item :: proc(blk: agent_service.Owner_Blocker) -> Attention_It
 		reason = ATTENTION_REASON_PERMISSION if is_permission else ATTENTION_REASON_TERMINAL_PROMPT,
 		// The agent is stalled until someone answers: always top of the deck.
 		urgency = ATTENTION_URGENCY_ERROR,
+	}
+}
+
+// attention_owner_task_item shapes one owner-chain task that needs the user
+// (agent_service owner_attention, in memory) as a task item: card_id
+// otask:<chain_id>:<task_id>, provider owner_task, details {attention, badge,
+// state, attempt_no}, action_refs {chain_id, task_id}. The Hub has no task
+// content: title is '' and the client names it from the owner Bridge. Its
+// actions go through the owner relay, so there are no card operations.
+attention_owner_task_item :: proc(it: agent_service.Owner_Attention_Item, now: time.Time) -> Attention_Item {
+	d := strings.builder_make(context.temp_allocator)
+	strings.write_string(&d, `{"attention":"`); contracts.write_json_string(&d, it.attention)
+	strings.write_string(&d, `","badge":"`); contracts.write_json_string(&d, it.badge)
+	strings.write_string(&d, `","state":"`); contracts.write_json_string(&d, it.state)
+	strings.write_string(&d, `","attempt_no":`); strings.write_string(&d, it.attempt)
+	strings.write_string(&d, `,"owner_chain":true}`)
+	r := strings.builder_make(context.temp_allocator)
+	strings.write_string(&r, `{"chain_id":"`); contracts.write_json_string(&r, it.chain_id)
+	strings.write_string(&r, `","task_id":"`); contracts.write_json_string(&r, it.task_id)
+	strings.write_string(&r, `"}`)
+	age: time.Duration
+	if since_t, ok := platform.parse_rfc3339_utc(it.since); ok do age = time.diff(since_t, now)
+	reason := ATTENTION_REASON_AWAITING_REVIEW if it.attention == "review" else ATTENTION_REASON_QUESTION
+	if it.badge == "agent_not_running" do reason = "agent_not_running"
+	return Attention_Item{
+		card = domain.Card{
+			card_id = domain.Card_ID(strings.concatenate({"otask:", it.chain_id, ":", it.task_id}, context.temp_allocator)),
+			kind = domain.CARD_KIND_TASK,
+			provider = agent_service.OWNER_ATTENTION_KIND,
+			status = "pending",
+			attention_since = it.since,
+			operations_json = "[]",
+			details_json = strings.to_string(d),
+			action_refs_json = strings.to_string(r),
+		},
+		reason = reason,
+		urgency = ATTENTION_URGENCY_ERROR if age > ATTENTION_TASK_ERROR_AFTER else ATTENTION_URGENCY_WARN,
 	}
 }
 

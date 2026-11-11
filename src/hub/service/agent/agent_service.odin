@@ -44,6 +44,12 @@ Agent_Service :: struct {
 	// blockers: in-memory agent blockers fed by bridge snapshots (agent_blockers.odin).
 	blockers: Agent_Blocker_Store,
 	tool_live: Tool_Live_Store,
+	// owner_attention: in-memory owner-chain attention fed by owner Bridge
+	// snapshots (owner_attention.odin); owner_attention_hook (optional) runs
+	// when items newly need the user (push notifications).
+	owner_attention: Owner_Attention_Store,
+	owner_attention_hook: proc(ctx: rawptr, owner_user_id: string, fresh_count: int, chain_id: string),
+	owner_attention_hook_ctx: rawptr,
 }
 
 // Resource_Event_Hooks are invoked only after the write they describe returned

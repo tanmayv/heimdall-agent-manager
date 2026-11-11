@@ -737,6 +737,8 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 	bridge_diagnostics_connect(&diagnostics_cadence, last_heartbeat)
 	// The hub keeps agent blockers in memory only: resend every snapshot on connect.
 	bridge_blockers_mark_all_dirty()
+	// Owner-chain attention is in Hub memory too: resend it on connect.
+	bridge_owner_attention_reset()
 	bridge_tool_live_drain(conn, true)
 	last_iteration := time.now()
 	for conn.connected && !sync.atomic_load(&bridge_hub_traffic_stopped) {
@@ -808,6 +810,7 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 		_ = bridge_ext_token_enqueue_due(bridge_runtime_now_ms())
 		bridge_runtime_drain_status_pushes(conn)
 		bridge_blockers_drain_outgoing(conn)
+		bridge_owner_attention_drain(conn)
 		bridge_credential_reauth_drain(conn)
 		now := time.to_unix_nanoseconds(time.now())
 		if bridge_hub_heartbeat_due(&last_heartbeat, now, sync.atomic_load(&bridge_hub_heartbeat_interval_ns)) {
@@ -816,6 +819,7 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 			delete(hb)
 			// Reconcile: the next drain resends every instance's full snapshot.
 			bridge_blockers_mark_all_dirty()
+			bridge_owner_attention_reset()
 			hub_command_reassembly_sweep(&reassemblies, now)
 			// Keep the token-free local status (ham-bridge status --json) fresh, vault included.
 			if !bridge_hub_is_enroll_only_runtime() do bridge_local_status_write(true)
