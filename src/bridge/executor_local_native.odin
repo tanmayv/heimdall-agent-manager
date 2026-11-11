@@ -405,12 +405,20 @@ bridge_executor_local_stage_draft :: proc(s:^executor.Store,command,purpose,sour
 // Release what a newer generation must not inherit: an undispatched admission
 // has no child and is cancelled; a dispatched one is observed exactly so a
 // child that is already gone stops holding the instance.
-bridge_executor_local_drain_instance :: proc(s:^executor.Store,instance,keep:string,socket:string) {
+// replace (a new launch generation of the instance, e.g. a UI restart): an
+// older launch whose process is still alive is stopped and released first, so
+// the new admission never loops on instance_not_drained (task_18e70f303f8384fe).
+bridge_executor_local_drain_instance :: proc(s:^executor.Store,instance,keep:string,socket:string,replace:=false) {
     launches,read:=executor.local_instance_launches(s,instance)
     if !read do return
     for launch in launches {
         if launch.id==keep do continue
         if launch.state=="admitted" {_=executor.cancel_local_admission(s,launch.id);continue}
+        if replace && launch.state!="released" {
+            fmt.eprintln("bridge executor: replacing live launch",launch.id,"of",instance,"(new launch generation)")
+            _=executor.stop_local_launch(s,launch)
+            _=bridge_pty_host_executor_close(socket,launch.instance,launch.launch_key)
+        }
         _,_=bridge_executor_local_observe(s,launch,socket)
     }
 }
@@ -461,7 +469,9 @@ bridge_executor_local_launch_native :: proc(s:^executor.Store,draft:executor.Loc
     current,loaded:=executor.local_draft_native(s,draft.id)
     if !loaded do return "storage_error"
     if current.launch_id=="" {
-        bridge_executor_local_drain_instance(s,m.request.instance,"",socket)
+        // A new draft for this instance (not a retry of the same command, which
+        // keeps its launch_id) replaces any older live launch.
+        bridge_executor_local_drain_instance(s,m.request.instance,"",socket,replace=true)
         admitted:=executor.authorize_native_local(s,current.id,bridge_executor_physical_clock(nil),resources)
         // Staged by an earlier journal incarnation (Bridge restart) and never
         // admitted: its configuration can never match again. Closed, not stuck.

@@ -461,6 +461,14 @@ startup_any_agent_call_is_readiness_and_recovers_a_timed_out_launch :: proc(t: ^
 		snap, _ := bridge_runtime_instance_snapshot(id)
 		return snap.runtime_status
 	}
+	// 0. task_18e70f303f8384fe: no start-success but the process is alive at the
+	// deadline: kept running (never orphaned as failed), shown as running.
+	alive := startup_test_launch("startup_timeout_alive", "startup_timeout_alive")
+	sync.mutex_lock(&bridge_runtime_mutex)
+	for &inst in bridge_runtime_instances do if inst.agent_instance_id == alive.agent_instance_id { inst.runtime_status = "starting"; inst.start_deadline_unix_ms = 1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS; inst.last_seen_unix_ms = 1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS }
+	sync.mutex_unlock(&bridge_runtime_mutex)
+	expire(1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS + 1)
+	testing.expect_value(t, status(alive.agent_instance_id), "running")
 	// 1. Implicit readiness before the deadline: never failed.
 	rec := startup_test_launch("startup_implicit_early", "startup_implicit_early")
 	bridge_startup_implicit_ready(rec)
@@ -470,7 +478,7 @@ startup_any_agent_call_is_readiness_and_recovers_a_timed_out_launch :: proc(t: ^
 	// 2. Failed by the timeout, still running its launch: the next call recovers it.
 	late := startup_test_launch("startup_implicit_late", "startup_implicit_late")
 	sync.mutex_lock(&bridge_runtime_mutex)
-	for &inst in bridge_runtime_instances do if inst.agent_instance_id == late.agent_instance_id { inst.runtime_status = "starting"; inst.start_deadline_unix_ms = 1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS; inst.last_seen_unix_ms = 1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS }
+	for &inst in bridge_runtime_instances do if inst.agent_instance_id == late.agent_instance_id { inst.runtime_status = "starting"; inst.start_deadline_unix_ms = 1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS; inst.last_seen_unix_ms = 1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS; inst.pty_process_alive = false }
 	sync.mutex_unlock(&bridge_runtime_mutex)
 	expire(1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS + 1)
 	if !testing.expect_value(t, status(late.agent_instance_id), "failed") do return
@@ -479,7 +487,7 @@ startup_any_agent_call_is_readiness_and_recovers_a_timed_out_launch :: proc(t: ^
 	// 3. A stale token for the same launch does not recover it.
 	stale := startup_test_launch("startup_implicit_stale", "startup_implicit_stale")
 	sync.mutex_lock(&bridge_runtime_mutex)
-	for &inst in bridge_runtime_instances do if inst.agent_instance_id == stale.agent_instance_id { inst.runtime_status = "starting"; inst.start_deadline_unix_ms = 1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS; inst.last_seen_unix_ms = 1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS }
+	for &inst in bridge_runtime_instances do if inst.agent_instance_id == stale.agent_instance_id { inst.runtime_status = "starting"; inst.start_deadline_unix_ms = 1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS; inst.last_seen_unix_ms = 1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS; inst.pty_process_alive = false }
 	sync.mutex_unlock(&bridge_runtime_mutex)
 	expire(1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS + 1)
 	wrong := stale
@@ -490,7 +498,7 @@ startup_any_agent_call_is_readiness_and_recovers_a_timed_out_launch :: proc(t: ^
 	// 4. The launch's process is gone: stays failed.
 	gone := startup_test_launch("startup_implicit_exited", "startup_implicit_exited")
 	sync.mutex_lock(&bridge_runtime_mutex)
-	for &inst in bridge_runtime_instances do if inst.agent_instance_id == gone.agent_instance_id { inst.runtime_status = "starting"; inst.start_deadline_unix_ms = 1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS; inst.last_seen_unix_ms = 1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS }
+	for &inst in bridge_runtime_instances do if inst.agent_instance_id == gone.agent_instance_id { inst.runtime_status = "starting"; inst.start_deadline_unix_ms = 1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS; inst.last_seen_unix_ms = 1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS; inst.pty_process_alive = false }
 	sync.mutex_unlock(&bridge_runtime_mutex)
 	expire(1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS + 1)
 	bridge_startup_implicit_ready(gone)

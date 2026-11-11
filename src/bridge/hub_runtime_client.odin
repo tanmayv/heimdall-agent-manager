@@ -3683,6 +3683,20 @@ bridge_runtime_expire_stale_locked :: proc(now: i64) {
 			inst.start_deadline_unix_ms = 0
 			continue
 		}
+		if inst.runtime_status == "starting" && !inst.start_success_seen && inst.start_deadline_unix_ms > 0 && now >= inst.start_deadline_unix_ms && inst.pty_process_alive && inst.stopped_intent_unix_ms == 0 {
+			// The process is alive but never reported start-success (a busy agent
+			// lost the typed reminder): never orphan it as failed while it runs.
+			// It shows running; its first authenticated call confirms readiness
+			// (bridge_startup_implicit_ready) - task_18e70f303f8384fe.
+			inst.state_seq = bridge_runtime_next_state_seq(inst.state_seq, now)
+			inst.runtime_status = "running"
+			inst.activity_status = "idle"
+			inst.activity_source = "bridge"
+			inst.activity_updated_unix_ms = now
+			inst.start_deadline_unix_ms = 0
+			fmt.eprintln("bridge startup:", inst.agent_instance_id, "no start-success within the timeout; process alive, kept running")
+			continue
+		}
 		if inst.runtime_status == "starting" && !inst.start_success_seen && inst.start_deadline_unix_ms > 0 && now >= inst.start_deadline_unix_ms {
 			inst.state_seq = bridge_runtime_next_state_seq(inst.state_seq, now)
 			inst.runtime_status = "failed"

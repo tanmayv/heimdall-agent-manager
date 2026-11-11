@@ -281,22 +281,15 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="")
     busy_params:=executor.encode(struct{kind,document:string}{"policy",signed_busy})
     busy_reply:=bridge_executor_operator_handle("busy-policy","executor.operator.install",busy_params)
     testing.expect(t,!strings.contains(busy_reply,"resources_not_drained"),busy_reply)
-    // A newer generation for the same live instance waits for the exact child.
+    // task_18e70f303f8384fe: a newer generation for the same live instance (a
+    // restart) stops and releases the old child, then starts at once; it never
+    // loops on instance_not_drained.
     third_command,_:=strings.replace_all(command_json,`"run_count":1`,`"run_count":4`,context.temp_allocator)
-    blocked,blocked_detail,_:=bridge_executor_local_stage(third_command,"provider_test",{&probe,bridge_executor_local_test_files,socket})
-    testing.expect(t,!blocked && blocked_detail=="instance_not_drained",blocked_detail)
-    same_pid,same_known=bridge_pty_host_executor_query(socket,launch.instance,launch.launch_key)
-    testing.expect(t,same_known && same_pid==pid)
-    // Exact stop/absence releases it.
-    testing.expect(t,executor.stop_local_launch(&bridge_executor_store,launch))
-    _,reconciled:=bridge_executor_local_reconcile_batch(&bridge_executor_store,socket,"")
-    testing.expect(t,reconciled)
-    rows,_=executor.query(bridge_executor_store.db,"SELECT state FROM executor_local_launches WHERE launch_id=?",launch.id);testing.expect_value(t,rows[0][0],"released")
-    stopped,stopped_known:=bridge_pty_host_executor_query(socket,launch.instance,launch.launch_key)
-    testing.expect(t,stopped_known && stopped==0)
-    // The same newer generation retried after instance_not_drained now starts.
     unblocked,unblocked_detail,_:=bridge_executor_local_stage(third_command,"provider_test",{&probe,bridge_executor_local_test_files,socket})
     testing.expect(t,unblocked,unblocked_detail)
+    rows,_=executor.query(bridge_executor_store.db,"SELECT state FROM executor_local_launches WHERE launch_id=?",launch.id);testing.expect_value(t,rows[0][0],"released")
+    stopped,stopped_known:=bridge_pty_host_executor_query(socket,launch.instance,launch.launch_key)
+    testing.expect(t,stopped_known && stopped==0,"the old live child was stopped")
     third_draft,third_found:=executor.local_draft_source(&bridge_executor_store,bridge_executor_local_source(third_command,"provider_test"))
     if testing.expect(t,third_found && third_draft.launch_id!="") {
         third_launch,_:=executor.local_launch(&bridge_executor_store,third_draft.launch_id)
@@ -464,7 +457,7 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="")
     // Exact stop and reconciliation release the manual child.
     manual_live,_:=executor.local_launch(&bridge_executor_store,manual_launch.id)
     testing.expect(t,executor.stop_local_launch(&bridge_executor_store,manual_live))
-    _,reconciled=bridge_executor_local_reconcile_batch(&bridge_executor_store,socket,"")
+    _,reconciled:=bridge_executor_local_reconcile_batch(&bridge_executor_store,socket,"")
     testing.expect(t,reconciled)
     rows,_=executor.query(bridge_executor_store.db,"SELECT state FROM executor_local_launches WHERE launch_id=?",manual_launch.id)
     testing.expect_value(t,rows[0][0],"released")
