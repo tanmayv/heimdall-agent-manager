@@ -146,6 +146,10 @@ bridge_owner_agent_route :: proc(request_id,method,params:string,rec:Bridge_Loca
     // Owed review leases are woken (or their reviewers started/launched) with
     // no lock held.
     bridge_owner_review_dispatch(reviews)
+    // M1 matcher: wake or restart the workers of the chain's ready tasks.
+    if bridge_owner_match_method(method) && bridge_owner_response_ok(response) {
+        bridge_owner_match_run(bridge_owner_pstr(bridge_owner_params(params),"chain_id"),true)
+    }
     if remote.active && bridge_owner_response_ok(response) do return bridge_owner_remote_place_reply(request_id,response,remote,rec),true
     if !launch.active do return response,handled
     return bridge_owner_fleet_launch(request_id,launch,rec),true

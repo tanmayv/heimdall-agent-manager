@@ -447,6 +447,18 @@ Lease_Pick :: struct {
 // Everything the claim path would refuse, checked before choosing a task, so
 // one blocked task never hides the next ready one. execute_lease re-checks.
 agent_claimable :: proc(s:^Store,chain,task:string,child:Child) -> bool {
+    if !task_dispatchable(s,chain,task) do return false
+    if config,binding,configured:=lifecycle_config(s,chain,task);configured {
+        if child.agent_id!=field(config,"author_agent_id") || encode(child)!=binding[1] do return false
+    }
+    return true
+}
+
+// Everything a claim needs that does not depend on the claiming child: a
+// local (not reserved) assignment, a published task of an active chain, ready
+// controls, dependencies and lifecycle, and no live lease. Shared by
+// agent_claimable and the owner Bridge matcher (work_targets).
+task_dispatchable :: proc(s:^Store,chain,task:string) -> bool {
     assignment,read:=query(s.db,"SELECT configuration_command FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task)
     if !read || len(assignment)!=1 do return false
     assigned,valid:=contracts.owner_parse(assignment[0][0],"command")
@@ -459,12 +471,39 @@ agent_claimable :: proc(s:^Store,chain,task:string,child:Child) -> bool {
     if !lifecycle_path_current(s,chain,task) do return false
     live,ok:=query(s.db,"SELECT 1 FROM local_leases WHERE task_id=? AND retired_seq IS NULL",task)
     if !ok || len(live)>0 do return false
-    if config,binding,configured:=lifecycle_config(s,chain,task);configured {
-        if child.agent_id!=field(config,"author_agent_id") || encode(child)!=binding[1] do return false
+    if _,_,configured:=lifecycle_config(s,chain,task);configured {
         states,state_ok:=query(s.db,"SELECT state FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)
         if !state_ok || len(states)!=1 || states[0][0]!="ready" do return false
     }
     return true
+}
+
+// M1 matcher (origin/main taskv2 matcher.odin pick_instance): every ready,
+// unleased task of a chain ("" = every chain) assigned to a worker member
+// instance on this Bridge, with that member's durable agent id. The owner
+// Bridge wakes the instance when it is live and restarts it when it stopped;
+// a restarted launch reclaims the task by agent id (agent_restarted_bindings).
+// Coordinators are never candidates (solo tasks are pulled by the coordinator
+// itself). Read-only.
+Work_Target :: struct { chain_id,task_id,instance_id,agent_id:string }
+work_targets :: proc(s:^Store,chain:string) -> ([]Work_Target,bool) {
+    tx:Transaction
+    if !transaction_begin(s,&tx) do return nil,false
+    defer transaction_rollback(&tx)
+    rows,ok:=query(s.db,`SELECT f.chain_id,f.task_id,f.instance_id,m.agent_id,m.role,m.enabled FROM local_fleet f
+      LEFT JOIN local_chain_member_versions m ON m.chain_id=f.chain_id AND m.instance_id=f.instance_id
+        AND m.accepted_seq=(SELECT max(accepted_seq) FROM local_chain_member_versions x WHERE x.chain_id=m.chain_id AND x.instance_id=m.instance_id)
+      WHERE f.enabled=1 AND (?1='' OR f.chain_id=?1)
+        AND NOT EXISTS(SELECT 1 FROM local_leases l WHERE l.chain_id=f.chain_id AND l.task_id=f.task_id AND l.retired_seq IS NULL)
+      ORDER BY f.chain_id,f.task_id LIMIT 500`,chain)
+    if !ok do return nil,false
+    out:=make([dynamic]Work_Target,context.temp_allocator)
+    for r in rows {
+        if r[3]=="" || r[4]=="coordinator" || r[5]!="1" do continue
+        if !task_dispatchable(s,r[0],r[1]) do continue
+        append(&out,Work_Target{r[0],r[1],r[2],r[3]})
+    }
+    return out[:],true
 }
 
 // Returns the caller's live lease (status current), or claims the first

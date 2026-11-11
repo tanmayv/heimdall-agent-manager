@@ -113,9 +113,15 @@ bridge_owner_maintenance_once :: proc() {
     pub:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     key_id,ok:=vault.device_id_from_sign_pub(pub,context.temp_allocator)
     if !ok || account=="" do return
-    sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
-    if !bridge_owner_open(account,key_id) do return
-    _=bridge_owner_maintenance_batch(&bridge_owner_store,&bridge_owner_completions,time.to_unix_nanoseconds(time.now())/1000000,nil,bridge_owner_publish_registry)
+    {
+        sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
+        if !bridge_owner_open(account,key_id) do return
+        _=bridge_owner_maintenance_batch(&bridge_owner_store,&bridge_owner_completions,time.to_unix_nanoseconds(time.now())/1000000,nil,bridge_owner_publish_registry)
+    }
+    // M1 matcher after lease expiry; the first pass after Bridge start is
+    // forced (origin/main boot recovery), later passes back off per task.
+    booted:=sync.atomic_exchange(&bridge_owner_match_booted,true)
+    bridge_owner_match_run("",!booted)
 }
 bridge_owner_maintenance_batch :: proc(s:^owner.Store,q:^owner.Intent_Completions,now:i64,ctx:rawptr,
     send:proc(rawptr,^owner.Store,owner.Intent_Claim)->(bool,string,i64)) -> bool {

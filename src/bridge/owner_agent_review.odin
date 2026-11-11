@@ -32,6 +32,9 @@ Owner_Review_Wake :: struct {
     action:Owner_Review_Action,
     chain,task,lease,agent,instance:string,
     body:string, // Launch: the Hub agent-instances body (fleet row model/provider)
+    // A worker the matcher brings to a ready task (owner_agent_matcher.odin):
+    // woken with the work line; a failed start blocks the task agent_not_running.
+    worker:bool,
 }
 // The wakes one verb owes, with the Hub credential a start/launch uses (the
 // chain coordinator's, else the caller's) and the coordinator that binds a
@@ -49,6 +52,7 @@ Owner_Review_Effects :: struct {
     start:proc(instance,agent:string,rec:Bridge_Local_Agent_Token_Record) -> string,
     launch:proc(body,agent:string,rec:Bridge_Local_Agent_Token_Record) -> (string,string),
     bind:proc(chain,instance,agent,coordinator:string) -> (string,string),
+    block:proc(task,agent,failure:string) -> bool,
 }
 @(thread_local)
 bridge_owner_review_effects:Owner_Review_Effects
@@ -122,7 +126,7 @@ bridge_owner_review_dispatch :: proc(d:Owner_Review_Dispatch) {
     owned^=Owner_Review_Dispatch{make([dynamic]Owner_Review_Wake,0,len(d.wakes)),d.rec,strings.clone(d.coordinator)}
     owned.rec.agent_instance_id=strings.clone(d.rec.agent_instance_id);owned.rec.instance_token=strings.clone(d.rec.instance_token);owned.rec.token_hash=strings.clone(d.rec.token_hash)
     for w in d.wakes {
-        append(&owned.wakes,Owner_Review_Wake{w.action,strings.clone(w.chain),strings.clone(w.task),strings.clone(w.lease),strings.clone(w.agent),strings.clone(w.instance),strings.clone(w.body)})
+        append(&owned.wakes,Owner_Review_Wake{w.action,strings.clone(w.chain),strings.clone(w.task),strings.clone(w.lease),strings.clone(w.agent),strings.clone(w.instance),strings.clone(w.body),w.worker})
     }
     if bridge_owner_review_sync_effects {
         bridge_owner_review_execute(owned)
@@ -148,20 +152,25 @@ bridge_owner_review_execute :: proc(d:^Owner_Review_Dispatch) {
     start:=e.start if e.start!=nil else bridge_owner_review_start
     launch:=e.launch if e.launch!=nil else bridge_owner_launch_into_chain
     bind:=e.bind if e.bind!=nil else bridge_owner_review_bind
+    block:=e.block if e.block!=nil else bridge_owner_block_not_running
     for w in d.wakes {
         instance:=w.instance
         switch w.action {
         case .Nudge:
         case .Start:
-            if failed:=start(instance,w.agent,d.rec);failed!="" { fmt.eprintln("bridge owner review: starting reviewer",w.agent,"failed:",failed);continue }
+            if failed:=start(instance,w.agent,d.rec);failed!="" {
+                fmt.eprintln("bridge owner dispatch: starting",w.agent,instance,"failed:",failed)
+                if w.worker do _=block(w.task,w.agent,failed)
+                continue
+            }
         case .Launch:
             launched,failed:=launch(w.body,w.agent,d.rec)
             if failed!="" { fmt.eprintln("bridge owner review: launching reviewer",w.agent,"failed:",failed);continue }
             if code,message:=bind(w.chain,launched,w.agent,d.coordinator);code!="ok" { fmt.eprintln("bridge owner review: binding reviewer",launched,"failed:",code,message);continue }
             instance=launched
         }
-        line:=bridge_wake_nudge_line(w.lease,w.task,"reviewer");defer delete(line)
-        if !nudge(instance,line) do fmt.eprintln("bridge owner review: waking reviewer",instance,"failed")
+        line:=bridge_owner_work_line(w.task) if w.worker else bridge_wake_nudge_line(w.lease,w.task,"reviewer");defer delete(line)
+        if !nudge(instance,line) do fmt.eprintln("bridge owner dispatch: waking",instance,"failed")
     }
 }
 
