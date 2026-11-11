@@ -438,3 +438,68 @@ startup_parked_relay_is_rearmed_not_reported :: proc(t: ^testing.T) {
     bridge_runtime_mark_stop_intent(rec.agent_instance_id)
     testing.expect(t, !bridge_startup_relay_rearm(rec, 0, 0), "a stopped launch is not re-armed")
 }
+
+// task_18e70e699c82f77b (REQ-E2E-1): a coordinator that never ran
+// start-success was failed by the start-success reaper and then refused every
+// owner verb ('current launched child required'). Any authenticated agent call
+// now counts as readiness, and a launch failed ONLY by that timeout is recovered
+// by its own current token while the pty-host still runs that exact launch.
+// An exited launch, a stale token and other failures stay failed.
+@(test)
+startup_any_agent_call_is_readiness_and_recovers_a_timed_out_launch :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	live_launch :: proc(instance, launch_key: string) -> bool { return instance != "startup_implicit_exited" }
+	bridge_startup_live_launch_hook = live_launch
+	defer bridge_startup_live_launch_hook = nil
+	expire :: proc(now: i64) {
+		sync.mutex_lock(&bridge_runtime_mutex)
+		bridge_runtime_expire_stale_locked(now)
+		sync.mutex_unlock(&bridge_runtime_mutex)
+	}
+	status :: proc(id: string) -> string {
+		snap, _ := bridge_runtime_instance_snapshot(id)
+		return snap.runtime_status
+	}
+	// 1. Implicit readiness before the deadline: never failed.
+	rec := startup_test_launch("startup_implicit_early", "startup_implicit_early")
+	bridge_startup_implicit_ready(rec)
+	testing.expect_value(t, status(rec.agent_instance_id), "running")
+	expire(1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS + 1)
+	testing.expect_value(t, status(rec.agent_instance_id), "running")
+	// 2. Failed by the timeout, still running its launch: the next call recovers it.
+	late := startup_test_launch("startup_implicit_late", "startup_implicit_late")
+	sync.mutex_lock(&bridge_runtime_mutex)
+	for &inst in bridge_runtime_instances do if inst.agent_instance_id == late.agent_instance_id { inst.runtime_status = "starting"; inst.start_deadline_unix_ms = 1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS; inst.last_seen_unix_ms = 1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS }
+	sync.mutex_unlock(&bridge_runtime_mutex)
+	expire(1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS + 1)
+	if !testing.expect_value(t, status(late.agent_instance_id), "failed") do return
+	bridge_startup_implicit_ready(late)
+	testing.expect_value(t, status(late.agent_instance_id), "running")
+	// 3. A stale token for the same launch does not recover it.
+	stale := startup_test_launch("startup_implicit_stale", "startup_implicit_stale")
+	sync.mutex_lock(&bridge_runtime_mutex)
+	for &inst in bridge_runtime_instances do if inst.agent_instance_id == stale.agent_instance_id { inst.runtime_status = "starting"; inst.start_deadline_unix_ms = 1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS; inst.last_seen_unix_ms = 1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS }
+	sync.mutex_unlock(&bridge_runtime_mutex)
+	expire(1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS + 1)
+	wrong := stale
+	wrong.token_hash = "another_token"
+	accepted, _ := bridge_startup_accept(wrong, 1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS + 2)
+	testing.expect(t, !accepted, "a token that is not this launch's is refused")
+	testing.expect_value(t, status(stale.agent_instance_id), "failed")
+	// 4. The launch's process is gone: stays failed.
+	gone := startup_test_launch("startup_implicit_exited", "startup_implicit_exited")
+	sync.mutex_lock(&bridge_runtime_mutex)
+	for &inst in bridge_runtime_instances do if inst.agent_instance_id == gone.agent_instance_id { inst.runtime_status = "starting"; inst.start_deadline_unix_ms = 1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS; inst.last_seen_unix_ms = 1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS }
+	sync.mutex_unlock(&bridge_runtime_mutex)
+	expire(1000 + BRIDGE_START_SUCCESS_TIMEOUT_MS + 1)
+	bridge_startup_implicit_ready(gone)
+	testing.expect_value(t, status(gone.agent_instance_id), "failed")
+	// 5. Another failure (not the start-success timeout) is never revived.
+	other := startup_test_launch("startup_implicit_other", "startup_implicit_other")
+	sync.mutex_lock(&bridge_runtime_mutex)
+	for &inst in bridge_runtime_instances do if inst.agent_instance_id == other.agent_instance_id { inst.runtime_status = "failed"; inst.has_last_error = true; inst.last_error = bridge_error(.agent_launch_failed, .other) }
+	sync.mutex_unlock(&bridge_runtime_mutex)
+	bridge_startup_implicit_ready(other)
+	testing.expect_value(t, status(other.agent_instance_id), "failed")
+}

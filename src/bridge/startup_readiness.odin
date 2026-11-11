@@ -162,11 +162,24 @@ bridge_startup_accept :: proc(rec: Bridge_Local_Agent_Token_Record, now: i64) ->
 	sync.mutex_lock(&bridge_startup_io_mutex)
 	defer sync.mutex_unlock(&bridge_startup_io_mutex)
 	if !bridge_startup_rec_current(rec) do return false, false
+	// A launch the start-success reaper failed only because no readiness signal
+	// arrived in time (the agent was busy, the typed reminder was lost) is
+	// recovered by its own current token, if the pty-host still runs this exact
+	// launch: the agent is evidently alive. Queried before the runtime lock.
+	recovered := false
+	if snap, found := bridge_runtime_instance_snapshot(rec.agent_instance_id); found && bridge_startup_timed_out(snap) &&
+	   snap.startup.launch_key != "" && snap.startup.rec.token_hash == rec.token_hash {
+		recovered = bridge_startup_live_launch(rec.agent_instance_id, snap.startup.launch_key)
+	}
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
 	if bridge_runtime_stop_intent_active_locked(rec.agent_instance_id, now) do return false, false
 	inst, exists := bridge_runtime_instance_snapshot_locked(rec.agent_instance_id)
 	if exists && inst.stopped_intent_unix_ms != 0 do return false, false
+	if exists && inst.runtime_status == "failed" && recovered && bridge_startup_timed_out(inst) {
+		bridge_runtime_set_status_locked(rec.agent_instance_id, "running", "idle", now, true)
+		inst.runtime_status = "running"
+	}
 	if exists && (inst.runtime_status == "stopped" || inst.runtime_status == "stopping" || inst.runtime_status == "failed") do return false, false
 	// After a bridge restart, persisted current tokens may precede rediscovery.
 	// Adopt them only if no managed launch/tombstone has replaced them.
@@ -181,6 +194,36 @@ bridge_startup_accept :: proc(rec: Bridge_Local_Agent_Token_Record, now: i64) ->
 		return true, true
 	}
 	return false, false
+}
+
+// Failed by the start-success reaper (hub_runtime_client.odin
+// bridge_runtime_expire_stale_locked), not by an exit or a launch error.
+bridge_startup_timed_out :: proc(inst: Bridge_Runtime_Instance) -> bool {
+	return inst.runtime_status == "failed" && inst.has_last_error && inst.last_error.code == .agent_launch_failed && inst.last_error.reason == .timeout
+}
+
+// Whether the pty-host still runs this exact launch (test seam: bridge_startup_live_launch_hook).
+@(thread_local)
+bridge_startup_live_launch_hook: proc(instance, launch_key: string) -> bool
+bridge_startup_live_launch :: proc(instance, launch_key: string) -> bool {
+	if bridge_startup_live_launch_hook != nil do return bridge_startup_live_launch_hook(instance, launch_key)
+	socket := pty_host_socket_path()
+	defer delete(socket)
+	pid, queried := bridge_pty_host_startup_launch(socket, instance, launch_key)
+	return queried && pid != 0
+}
+
+// Any authenticated agent request is a readiness signal (start_success is an
+// indicator: a valid current token means the agent is up). Coordinators that
+// never ran `ham-ctl start-success` within the timeout kept failing every owner
+// verb with 'current launched child required' (REQ-E2E-1, task_18e70e699c82f77b).
+// Idempotent; scope and roles are unchanged.
+bridge_startup_implicit_ready :: proc(rec: Bridge_Local_Agent_Token_Record) {
+	if rec.role != .Agent do return
+	accepted, newly_ready := bridge_startup_accept(rec, bridge_runtime_now_ms())
+	if !accepted || !newly_ready do return
+	bridge_rollover_on_start_success(rec.agent_instance_id)
+	bridge_startup_worker_ensure_started()
 }
 
 // Rotation changes the local credential, not the launch identity or readiness.

@@ -570,6 +570,8 @@ bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec
 		if response, handled := bridge_rollover_intercept_chat_send(request_id, params, rec); handled do return response
 	}
 
+	// An agent calling the Bridge with its current token is up (startup_readiness.odin).
+	bridge_startup_implicit_ready(rec)
 	// R4a: verbs on a chain this Bridge owns are served by the owner store
 	// (owner_agent_routing.odin); everything else goes to the Hub route table.
 	if response, handled := bridge_owner_agent_route(request_id, method, params, rec); handled do return response
