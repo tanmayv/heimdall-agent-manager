@@ -954,6 +954,14 @@ bridge_owner_remote_reviewer :: proc(s:^owner.Store,chain,agent:string) -> (remo
     return found && policy.bridge_id!="" && policy.bridge_id!=s.owner,true
 }
 
+// A reviewer that reviews from another Bridge: placed there by its fleet row,
+// or (remote_pin) any fleet agent of a task that runs on another Bridge.
+bridge_owner_plan_remote_reviewer :: proc(s:^owner.Store,chain,agent:string,remote_pin:bool) -> (remote,ok:bool) {
+    if !remote_pin do return bridge_owner_remote_reviewer(s,chain,agent)
+    _,found,read:=owner.agent_fleet_policy(s,chain,agent)
+    return found,read
+}
+
 // The exact live child of a durable agent id among this chain's current
 // enabled members and fleet workers on this Bridge. Caller holds the child
 // locks (bridge_owner_child_locked).
@@ -1117,6 +1125,9 @@ bridge_owner_plan_children :: proc(ctx:^Owner_Agent_Ctx,chain:string,st:owner.Ag
     // The run Bridge of the task: this verb's --bridge, else the brief's.
     run_bridge,pinned:=plan.bridge,plan.has_bridge
     if !pinned do run_bridge,pinned=bridge_owner_brief_run_bridge(st.brief)
+    // Run on another Bridge: every reviewer is launched there for its review
+    // (owner_agent_review.odin), so none is bound to an instance here.
+    remote_pin:=pinned && run_bridge!="" && run_bridge!=ctx.store.owner
     // Moving a configured task to another run Bridge re-places its worker.
     if plan.has_bridge && !plan.has_assignee && st.configured {
         if author:=contracts.owner_string(st.config,"author_agent_id");author!="" { plan.has_assignee=true;plan.assignee=author }
@@ -1124,8 +1135,8 @@ bridge_owner_plan_children :: proc(ctx:^Owner_Agent_Ctx,chain:string,st:owner.Ag
     // A primary reviewer on another Bridge replacing a configured reviewer
     // re-pairs the task's author with it (no instance-bound reviewer).
     if plan.has_reviewer && !plan.has_assignee && st.configured && contracts.owner_string(st.config,"reviewer_agent_id")!="" {
-        if _,local,_:=bridge_owner_resolve_agent(ctx,chain,plan.reviewer,"--reviewer");local!="ok" {
-            remote,_:=bridge_owner_remote_reviewer(ctx.store,chain,plan.reviewer)
+        if _,local,_:=bridge_owner_resolve_agent(ctx,chain,plan.reviewer,"--reviewer");local!="ok" || remote_pin {
+            remote,_:=bridge_owner_plan_remote_reviewer(ctx.store,chain,plan.reviewer,remote_pin)
             author:=contracts.owner_string(st.config,"author_agent_id")
             if remote && author!="" { plan.has_assignee=true;plan.assignee=author }
         }
@@ -1154,11 +1165,22 @@ bridge_owner_plan_children :: proc(ctx:^Owner_Agent_Ctx,chain:string,st:owner.Ag
     reviewer_agent:=plan.reviewer
     if !plan.has_reviewer && plan.has_assignee && st.configured do reviewer_agent=contracts.owner_string(st.config,"reviewer_agent_id")
     if reviewer_agent!="" {
-        reviewer,code,message=bridge_owner_resolve_agent(ctx,chain,reviewer_agent,"--reviewer")
-        if code!="ok" && plan.has_reviewer {
-            // A primary reviewer placed on another account Bridge reviews
-            // over the agent relay by agent id, like a further --reviewer.
-            remote,read:=bridge_owner_remote_reviewer(ctx.store,chain,reviewer_agent)
+        if remote_pin {
+            // Known here (a member) or by its fleet row: reviews from the run Bridge.
+            if _,local,_:=bridge_owner_resolve_agent(ctx,chain,reviewer_agent,"--reviewer");local=="ok" {
+                if reviewer_agent==ctx.child.agent_id do return {},{},bridge_owner_fail(ctx,"invalid_scope","the coordinator never reviews a task of its own chain; name another --reviewer")
+                code,plan.remote_primary="ok",true
+            } else {
+                code,message="invalid_scope",fmt.tprintf("--reviewer %s has no fleet row in this chain; `ham-ctl task-chain fleet set --agent %s` adds one",reviewer_agent,reviewer_agent)
+            }
+        } else {
+            reviewer,code,message=bridge_owner_resolve_agent(ctx,chain,reviewer_agent,"--reviewer")
+        }
+        if code!="ok" && (plan.has_reviewer || remote_pin) {
+            // A primary reviewer placed on another account Bridge (or of a
+            // task that runs there) reviews over the agent relay by agent id,
+            // like a further --reviewer.
+            remote,read:=bridge_owner_plan_remote_reviewer(ctx.store,chain,reviewer_agent,remote_pin)
             if !read do return {},{},bridge_owner_fail(ctx,"storage_error","owner store could not be read")
             if remote {
                 if reviewer_agent==ctx.child.agent_id do return {},{},bridge_owner_fail(ctx,"invalid_scope","the coordinator never reviews a task of its own chain; name another --reviewer")
@@ -1178,9 +1200,10 @@ bridge_owner_plan_children :: proc(ctx:^Owner_Agent_Ctx,chain:string,st:owner.Ag
         if id==reviewer_agent do continue
         if _,code,message:=bridge_owner_resolve_agent(ctx,chain,id,"--reviewer");code!="ok" {
             // A reviewer placed on another account Bridge (its fleet policy
-            // names that Bridge) reviews over the agent relay; the store
-            // trusts it by agent id (relayed_reviewer_authorized).
-            remote,read:=bridge_owner_remote_reviewer(ctx.store,chain,id)
+            // names that Bridge, or the task runs there) reviews over the
+            // agent relay; the store trusts it by agent id
+            // (relayed_reviewer_authorized).
+            remote,read:=bridge_owner_plan_remote_reviewer(ctx.store,chain,id,remote_pin)
             if !read do return {},{},bridge_owner_fail(ctx,"storage_error","owner store could not be read")
             if !remote do return {},{},bridge_owner_fail(ctx,code,message)
         }

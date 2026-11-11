@@ -262,9 +262,10 @@ bridge_owner_fleet :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -> 
     case policy.bridge_id!="" && policy.bridge_id!=bridge_cfg().daemon_id: note=fmt.tprintf("placement on %s recorded; nothing launched here: a task assigned to %s is reserved on %s (owner_remote_place.odin)",policy.bridge_id,agent,policy.bridge_id)
     case len(active)==0: note="the row is paused; nothing launched"
     // ensure for a task whose run Bridge is another Bridge: its assignee is
-    // reserved there (owner_remote_place.odin), never launched here.
-    case bridge_owner_pstr(p,"run_bridge_id")!="" && bridge_owner_pstr(p,"run_bridge_id")!=bridge_cfg().daemon_id:
-        note=fmt.tprintf("the task runs on Bridge %s; nothing launched here",bridge_owner_pstr(p,"run_bridge_id"))
+    // reserved there (owner_remote_place.odin) and its reviewers are launched
+    // there for review (owner_agent_review.odin), never launched here.
+    case bridge_owner_fleet_ensure_run_bridge(ctx,chain,p)!="":
+        note=fmt.tprintf("the task runs on Bridge %s; nothing launched here",bridge_owner_fleet_ensure_run_bridge(ctx,chain,p))
     }
     if note!="" {
         reply["note"]=json.String(note)
@@ -291,6 +292,17 @@ bridge_owner_fleet :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -> 
     if project:=bridge_owner_pstr(p,"project_id");project!="" do body["project_id"]=project
     ctx.launch=Owner_Fleet_Launch{true,chain,agent,role,bridge_owner_json(body),reply}
     return ""
+}
+
+// The other Bridge an ensured task runs on ("" = this Bridge): the verb's
+// --bridge (run_bridge_id; "" clears the pin), else the task's pin.
+bridge_owner_fleet_ensure_run_bridge :: proc(ctx:^Owner_Agent_Ctx,chain:string,p:json.Object) -> string {
+    run_bridge:=bridge_owner_pstr(p,"run_bridge_id")
+    if _,named:=p["run_bridge_id"];!named {
+        if task:=bridge_owner_pstr(p,"task_id");task!="" do run_bridge,_=bridge_owner_match_run_bridge(ctx.store,chain,task)
+    }
+    if run_bridge==bridge_cfg().daemon_id do return ""
+    return run_bridge
 }
 
 // The provider, model and profile a fleet row launches with on bridge: its
@@ -399,16 +411,20 @@ bridge_owner_task_fleet_ensure :: proc(request_id,method,params:string,rec:Bridg
     agents,code,message:=bridge_owner_task_fleet_agents(method,p,caller_agent)
     if code!="" do return bridge_local_response_error(request_id,code,fmt.tprintf("%s; no agent launched",message)),"","",ensured
     chain:=bridge_owner_pstr(p,"chain_id")
-    // A task pinned to another Bridge (--bridge): its assignee is placed there.
-    run_bridge:=strings.trim_space(bridge_owner_pstr(p,"bridge_id")) if method!="agent.task.split" else ""
-    assignee:=strings.trim_space(bridge_owner_pstr(p,"assignee"))
+    // A task pinned to another Bridge (this --bridge, else the task's pin read
+    // by the fleet route): its assignee and reviewers start there, not here.
+    _,named_bridge:=p["bridge_id"]
+    run_bridge:=strings.trim_space(bridge_owner_pstr(p,"bridge_id"))
+    task_id:=bridge_owner_pstr(p,"task_id")
+    if method=="agent.task.split" {named_bridge=false;task_id=""}
     ensured=Owner_Fleet_Ensured{chain=chain,added=make([dynamic]string),launched=make([dynamic]string)}
     for agent in agents {
         // The task route refuses ids that are not agent ids with its own message.
         if !contracts.owner_field_valid(agent,"id") do continue
         body:=map[string]string{"agent_id"=agent,"ensure"="1"}
         if chain!="" do body["chain_id"]=chain
-        if run_bridge!="" && agent==assignee do body["run_bridge_id"]=run_bridge
+        if named_bridge do body["run_bridge_id"]=run_bridge
+        else if task_id!="" do body["task_id"]=task_id
         response,handled,l:=set(request_id,bridge_owner_json(body),rec)
         // Not an owner chain, or not the coordinator: the task route decides.
         // A new row whose launch is pending has no reply yet ("").

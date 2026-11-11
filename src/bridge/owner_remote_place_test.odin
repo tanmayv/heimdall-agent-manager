@@ -235,6 +235,30 @@ test_owner_task_run_bridge_default_override_and_placement :: proc(t:^testing.T) 
     // that runs before the task route (here: no Hub directory names it).
     code,message:=bridge_owner_run_bridge_check("bridge_unknown")
     testing.expectf(t,code!="ok","unverifiable Bridge refused: %s %s",code,message)
+
+    // Review finding 1: nothing of a task that runs on bridge_b is launched or
+    // bound here. A pinned create's reviewer is not bound to its local instance.
+    config,_,_:=owner.lifecycle_config(&r.store,chain,there)
+    testing.expectf(t,contracts.owner_string(config,"reviewer_agent_id")=="","no local configured reviewer on a pinned task: %v",config)
+    ensure_test_r=r;ensure_test_coord=coord
+    ensure_test_launched=make([dynamic]string,context.temp_allocator)
+    bridge_owner_fleet_ensure_effects=Owner_Fleet_Ensure_Effects{set=ensure_test_set,launch=ensure_test_launch_ok,pause=ensure_test_pause,stop=ensure_test_stop}
+    defer {bridge_owner_fleet_ensure_effects={};ensure_test_launched=nil;ensure_test_r=nil}
+    rec:=Bridge_Local_Agent_Token_Record{agent_instance_id="inst_c",role=.Agent}
+    // A pinned create: neither the assignee nor the new reviewers launch here.
+    refused_ensure,_,_,_:=bridge_owner_task_fleet_ensure("req_pin_create","agent.task.create",fmt.tprintf(`{{"chain_id":"%s","title":"x","assignee":"agt_w","reviewers":["agt_n1","agt_n2"],"bridge_id":"bridge_b"}}`,chain),rec)
+    testing.expectf(t,refused_ensure=="" && len(ensure_test_launched)==0,"pinned create launches nothing here: %q %v",refused_ensure,ensure_test_launched)
+    _,has_row,_:=owner.agent_fleet_policy(&r.store,chain,"agt_n1")
+    testing.expect(t,has_row,"the reviewer still gets its fleet row")
+    // An update of the pinned task (here, moved to bridge_b above) with no --bridge.
+    refused_ensure,_,_,_=bridge_owner_task_fleet_ensure("req_pin_update","agent.task.update",fmt.tprintf(`{{"chain_id":"%s","task_id":"%s","assignee":"agt_n3","reviewers":["agt_n4"]}}`,chain,here),rec)
+    testing.expectf(t,refused_ensure=="" && len(ensure_test_launched)==0,"pinned update without --bridge launches nothing here: %q %v",refused_ensure,ensure_test_launched)
+    // Control: a task that runs here launches its new agents here; --bridge
+    // naming this Bridge (or clearing the pin) is local too.
+    refused_ensure,_,_,_=bridge_owner_task_fleet_ensure("req_local_update","agent.task.update",fmt.tprintf(`{{"chain_id":"%s","task_id":"%s","reviewers":["agt_n5"]}}`,chain,there),rec)
+    testing.expectf(t,refused_ensure=="" && len(ensure_test_launched)==1 && ensure_test_launched[0]=="agt_n5","a task that runs here launches here: %q %v",refused_ensure,ensure_test_launched)
+    refused_ensure,_,_,_=bridge_owner_task_fleet_ensure("req_clear_update","agent.task.update",fmt.tprintf(`{{"chain_id":"%s","task_id":"%s","bridge_id":"","reviewers":["agt_n6"]}}`,chain,here),rec)
+    testing.expectf(t,refused_ensure=="" && len(ensure_test_launched)==2 && ensure_test_launched[1]=="agt_n6","clearing the pin launches here: %q %v",refused_ensure,ensure_test_launched)
 }
 
 // Gap 6: every local launch (fleet set, matcher JIT, reviewer dispatch) uses
