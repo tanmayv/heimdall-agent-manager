@@ -9,6 +9,7 @@ package main
 // task_18e70e44460dc1d5). The start-success instruction is stripped from the
 // prompt only when this plugin verifies (bridge_claude_own_plugin_ok).
 
+import "core:fmt"
 import "core:os"
 import "core:strings"
 import bridgesvc "odin_test:lib/bridgesvc"
@@ -51,4 +52,27 @@ bridge_claude_extension_health :: proc(data_dir: string) -> string {
 	ok, why := bridge_claude_own_plugin_ok(dir)
 	if ok do return strings.concatenate({"ok (", dir, ")"}, context.temp_allocator)
 	return strings.concatenate({"not loadable: ", why, " (", dir, ")"}, context.temp_allocator)
+}
+
+// THE extension decision of a launch, for every spawn path (the spawn argv in
+// pty_host_runtime.odin and the runtime startup state of local native and
+// executor-activation launches use the same answer): expected (the
+// start-success sentence is stripped and the extension's SessionStart hook is
+// relied on), Claude's own plugin args, and why a Claude plugin is not used.
+bridge_launch_extension_decision :: proc(provider:string,profile:Bridge_Provider_Profile,profile_id:string) -> (expected:bool,own_args:[]string,why:string) {
+	if bridge_extension_canonical_provider(provider) == "claude" {
+		own_args = bridge_claude_own_launch_args()
+		_, why = bridge_claude_own_plugin_ok(bridge_claude_own_plugin_dir())
+		return len(own_args) > 0, own_args, why
+	}
+	return bridge_provider_launch_extension_expected(profile, profile_id), nil, ""
+}
+
+// One diagnostic line per real launch (path: local_native | activation).
+@(thread_local)
+bridge_startup_log_hook: proc(line: string)
+bridge_startup_log_launch :: proc(instance,provider,path:string,expected:bool,why:string) {
+	line := fmt.tprintf("bridge startup: %s path=%s provider=%s extension_expected=%v%s start_success_in_prompt=%v", instance, path, provider, expected, "" if why == "" else fmt.tprintf(" own_plugin_unavailable=%q", why), !expected)
+	if bridge_startup_log_hook != nil { bridge_startup_log_hook(line); return }
+	fmt.eprintln(line)
 }

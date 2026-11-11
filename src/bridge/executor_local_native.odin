@@ -99,7 +99,10 @@ bridge_executor_local_startup :: proc(ctx:rawptr)->bool {
     bridge_startup_worker_ensure_started()
     catalog,present:=bridge_provider_catalog_profile(m.provider)
     if !present do return false
-    bridge_startup_set_expectation(m.request.instance,m.token,bridge_provider_launch_extension_expected(catalog,m.profile))
+    // Same decision as the spawn's prompt (provider_extension_claude_own.odin).
+    expected,_,why:=bridge_launch_extension_decision(m.provider,catalog,m.profile)
+    bridge_startup_set_expectation(m.request.instance,m.token,expected)
+    bridge_startup_log_launch(m.request.instance,m.provider,"local_native",expected,why)
     bridge_pty_host_track_instance_provider(m.request.instance,m.provider)
     bridge_prespawn_clean_slate(m.run_dir)
     if !bridge_executor_prepare_run_dir(m.run_dir) do return false

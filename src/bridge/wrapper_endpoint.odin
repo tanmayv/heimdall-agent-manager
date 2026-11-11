@@ -484,6 +484,9 @@ bridge_local_handle_wrapper_method :: proc(request_id, method, params: string, r
 
 bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec: Bridge_Local_Agent_Token_Record) -> string {
 	bridge_runtime_touch_liveness(rec.agent_instance_id)
+	// Every authenticated agent call is a readiness signal (startup_readiness.odin);
+	// first, before any early return, and a no-op fast path once ready.
+	bridge_startup_implicit_ready(rec)
 	if method == "agent.activity.report" {
 		activity := bridge_local_extract_json_string(params, "status", "unknown")
 		source := bridge_local_extract_json_string(params, "source", "agent_extension")
@@ -570,8 +573,6 @@ bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec
 		if response, handled := bridge_rollover_intercept_chat_send(request_id, params, rec); handled do return response
 	}
 
-	// An agent calling the Bridge with its current token is up (startup_readiness.odin).
-	bridge_startup_implicit_ready(rec)
 	// R4a: verbs on a chain this Bridge owns are served by the owner store
 	// (owner_agent_routing.odin); everything else goes to the Hub route table.
 	if response, handled := bridge_owner_agent_route(request_id, method, params, rec); handled do return response

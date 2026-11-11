@@ -169,7 +169,10 @@ bridge_startup_accept :: proc(rec: Bridge_Local_Agent_Token_Record, now: i64) ->
 	recovered := false
 	if snap, found := bridge_runtime_instance_snapshot(rec.agent_instance_id); found && bridge_startup_timed_out(snap) &&
 	   snap.startup.launch_key != "" && snap.startup.rec.token_hash == rec.token_hash {
-		recovered = bridge_startup_live_launch(rec.agent_instance_id, snap.startup.launch_key)
+		// snap is a shallow copy: clone the key before the pty-host query (startup
+		// writers also hold bridge_startup_io_mutex, which this caller holds).
+		key := strings.clone(snap.startup.launch_key, context.temp_allocator)
+		recovered = bridge_startup_live_launch(rec.agent_instance_id, key)
 	}
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
@@ -220,6 +223,20 @@ bridge_startup_live_launch :: proc(instance, launch_key: string) -> bool {
 // Idempotent; scope and roles are unchanged.
 bridge_startup_implicit_ready :: proc(rec: Bridge_Local_Agent_Token_Record) {
 	if rec.role != .Agent do return
+	// Fast path under the runtime lock only: an instance already ready (or
+	// pending its relay) never takes bridge_startup_io_mutex, which launch
+	// staging holds across file and daemon I/O.
+	{
+		sync.mutex_lock(&bridge_runtime_mutex)
+		ready := false
+		for inst in bridge_runtime_instances {
+			if inst.agent_instance_id != rec.agent_instance_id do continue
+			ready = inst.startup.rec.token_hash == rec.token_hash && (inst.start_success_seen || inst.startup.ready_pending || inst.startup.ready_delivered) && bridge_runtime_status_active(inst.runtime_status)
+			break
+		}
+		sync.mutex_unlock(&bridge_runtime_mutex)
+		if ready do return
+	}
 	accepted, newly_ready := bridge_startup_accept(rec, bridge_runtime_now_ms())
 	if !accepted || !newly_ready do return
 	bridge_rollover_on_start_success(rec.agent_instance_id)
@@ -528,4 +545,24 @@ bridge_startup_job_current :: proc(id: string, generation: u64) -> bool {
     rec := bridge_startup_clone_rec(inst.startup.rec, context.temp_allocator)
     sync.mutex_unlock(&bridge_runtime_mutex)
     return current && bridge_startup_rec_current(rec)
+}
+
+// Executor activation (remote placement) launch: the same startup record,
+// expectation (bridge_launch_extension_decision), fallback arming and
+// diagnostic as a local native launch. Without a local token record it stays
+// for rediscovery to adopt (logged).
+bridge_startup_record_activation :: proc(instance, token, provider, profile_id: string, now: i64) {
+	rec, current := bridge_agent_token_verify(token)
+	if !current {
+		bridge_startup_log_launch(instance, provider, "activation_unarmed", false, "no local token record yet: armed on rediscovery")
+		return
+	}
+	catalog, _ := bridge_provider_catalog_profile(provider)
+	expected, _, why := bridge_launch_extension_decision(provider, catalog, profile_id)
+	sync.mutex_lock(&bridge_runtime_mutex)
+	bridge_startup_begin_locked(rec, now)
+	sync.mutex_unlock(&bridge_runtime_mutex)
+	bridge_startup_set_expectation(instance, token, expected)
+	bridge_startup_arm(instance, token, now)
+	bridge_startup_log_launch(instance, provider, "activation", expected, why)
 }

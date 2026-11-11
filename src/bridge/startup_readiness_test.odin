@@ -524,3 +524,55 @@ startup_any_agent_call_is_readiness_and_recovers_a_timed_out_launch :: proc(t: ^
 	bridge_startup_implicit_ready(other)
 	testing.expect_value(t, status(other.agent_instance_id), "failed")
 }
+
+@(thread_local) startup_test_log_lines: [dynamic]string
+startup_test_log :: proc(line: string) { append(&startup_test_log_lines, strings.clone(line, context.temp_allocator)) }
+
+// task_18e70e44460dc1d5 (C/E): with an extension expected and no hook, the
+// start-success fallback is armed and becomes due for a local coordinator, a
+// local JIT worker/reviewer and an executor-activation (remote placement)
+// launch; activation records its startup state and logs one diagnostic line.
+@(test)
+startup_fallback_armed_for_coordinator_jit_and_activation_launches :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	startup_test_log_lines = make([dynamic]string, context.temp_allocator)
+	bridge_startup_log_hook = startup_test_log
+	defer { bridge_startup_log_hook = nil; startup_test_log_lines = nil }
+	due :: proc(id: string, now: i64) -> bool {
+		snap, _ := bridge_runtime_instance_snapshot(id)
+		return bridge_startup_fallback_due(snap, now)
+	}
+	// (a) local coordinator and (b) local JIT worker/reviewer: the native path
+	// (startup_test_launch = begin + expectation; then the launch's arm).
+	for id in ([3]string{"startup_c_coordinator", "startup_c_jit_worker", "startup_c_jit_reviewer"}) {
+		rec := startup_test_launch(id, id, 1000, expected = true)
+		bridge_startup_arm(id, rec.instance_token, 1000)
+		testing.expectf(t, !due(id, 1000 + BRIDGE_START_SUCCESS_PROMPT_AFTER_MS - 1), "%s: not due before the prompt delay", id)
+		testing.expectf(t, due(id, 1000 + BRIDGE_START_SUCCESS_PROMPT_AFTER_MS), "%s: fallback due with no hook", id)
+		startup_test_tick(id, 1000 + BRIDGE_START_SUCCESS_PROMPT_AFTER_MS)
+		snap, _ := bridge_runtime_instance_snapshot(id)
+		testing.expectf(t, snap.startup.fallback_delivered, "%s: fallback injected", id)
+	}
+	// (c) executor activation: its own startup record, expectation and arm.
+	issued := bridge_agent_token_issue("startup_c_activation", "", .Agent, 1)
+	defer _ = bridge_agent_token_invalidate_instance("startup_c_activation")
+	sync.mutex_lock(&bridge_runtime_mutex)
+	for &inst in bridge_runtime_instances do if inst.agent_instance_id == "startup_c_activation" do inst.pty_process_alive = true
+	sync.mutex_unlock(&bridge_runtime_mutex)
+	bridge_startup_record_activation("startup_c_activation", issued.plaintext_token, "codex", "codex", 5000)
+	snap, found := bridge_runtime_instance_snapshot("startup_c_activation")
+	if !testing.expect(t, found && snap.startup.armed_at_ms == 5000, "activation launch is armed") do return
+	sync.mutex_lock(&bridge_runtime_mutex)
+	for &inst in bridge_runtime_instances do if inst.agent_instance_id == "startup_c_activation" do inst.pty_process_alive = true
+	sync.mutex_unlock(&bridge_runtime_mutex)
+	testing.expect(t, due("startup_c_activation", 5000 + BRIDGE_START_SUCCESS_PROMPT_AFTER_MS), "activation: fallback due with no hook")
+	logged := false
+	for line in startup_test_log_lines do if strings.contains(line, "startup_c_activation path=activation provider=codex") do logged = true
+	testing.expectf(t, logged, "one diagnostic line for the activation launch: %v", startup_test_log_lines)
+	// Unknown token: not armed here, logged as left for rediscovery.
+	bridge_startup_record_activation("startup_c_unknown", "no_such_token", "claude", "claude", 6000)
+	unarmed := false
+	for line in startup_test_log_lines do if strings.contains(line, "startup_c_unknown path=activation_unarmed") do unarmed = true
+	testing.expect(t, unarmed)
+}

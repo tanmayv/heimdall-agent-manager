@@ -87,6 +87,10 @@ bridge_executor_prepare_spawn :: proc(s:^executor.Store,intent:executor.Intent,n
     if !current || remaining<1000 do return {},false
     request,built:=bridge_pty_host_build_spawn(intent.instance,result.run_dir,provider,model,material.token_secret,result.env,"",u64(remaining/1000),"",&profile)
     if !built do return {},false
+    // Executor activation (remote placement) gets the same startup record,
+    // expectation and fallback arming as a local native launch, instead of
+    // relying on later rediscovery.
+    bridge_startup_record_activation(intent.instance,material.token_secret,provider,profile.profile_id,bridge_runtime_now_ms())
     // The signed mapping selects the working directory, never a remote argv or
     // path assertion. Agent instructions live in the local run directory.
     // Keep cwd at run_dir; TASK.md carries the authoritative task workdir.

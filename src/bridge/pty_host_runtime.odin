@@ -393,21 +393,14 @@ bridge_pty_host_build_spawn :: proc(instance_id, run_dir, provider, model, agent
 	// instruction is stripped only when that plugin verifies
 	// (provider_extension_claude_own.odin), whatever the shared user-scope
 	// marketplace reports.
-	if bridge_extension_canonical_provider(provider) == "claude" {
-		own := bridge_claude_own_launch_args()
-		if len(own) > 0 {
-			args := make([dynamic]string, 0, len(profile.extra_args)+len(own), context.temp_allocator)
-			append(&args, ..profile.extra_args)
-			append(&args, ..own)
-			profile.extra_args = args[:]
-		}
-		profile.extension_expected = len(own) > 0
-		_, why := bridge_claude_own_plugin_ok(bridge_claude_own_plugin_dir())
-		if !inert do fmt.eprintfln("bridge startup: %s provider=claude own_plugin=%v%s start_success_in_prompt=%v", instance_id, len(own) > 0, "" if why == "" else fmt.tprintf(" (%s)", why), !profile.extension_expected)
-	} else {
-		profile.extension_expected = bridge_provider_launch_extension_expected(profile,pp.profile_id if pp != nil else "")
-		if !inert do fmt.eprintfln("bridge startup: %s provider=%s extension_expected=%v start_success_in_prompt=%v", instance_id, provider, profile.extension_expected, !profile.extension_expected)
+	expected, own, _ := bridge_launch_extension_decision(provider, profile, pp.profile_id if pp != nil else "")
+	if len(own) > 0 {
+		args := make([dynamic]string, 0, len(profile.extra_args)+len(own), context.temp_allocator)
+		append(&args, ..profile.extra_args)
+		append(&args, ..own)
+		profile.extra_args = args[:]
 	}
+	profile.extension_expected = expected
 	if !inert do bridge_startup_set_expectation(instance_id, agent_token, profile.extension_expected)
 	return bridge_pty_host_build_spawn_for_profile(instance_id, run_dir, profile, model, agent_token, full_env, display_name, timeout_seconds, permission_mode, inert)
 }
