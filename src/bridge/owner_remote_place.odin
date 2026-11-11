@@ -43,8 +43,9 @@ Owner_Remote_Place :: struct {
 
 // Whether the agent is placed on another Bridge: its fleet policy names a
 // Bridge other than this one. provider/model come from the policy, or its
-// per-Bridge override for the executor Bridge; both must be concrete because
-// the consent binds them (the executor picks only profile, slot and directory).
+// per-Bridge override for the executor Bridge, else the provider catalog's
+// default; both must be concrete because the consent binds them (the executor
+// picks only profile, slot and directory).
 // code "" means not remote (resolve a local child as before).
 // Placement order: the task's run Bridge (pinned: "" or this Bridge runs it
 // here), else the fleet row's Bridge, else this (the owner) Bridge.
@@ -58,7 +59,14 @@ bridge_owner_remote_target :: proc(s:^owner.Store,chain,agent:string,run_bridge:
         if override,has:=models[executor];has {provider=override.provider;model=override.model}
     }
     if provider=="" || model=="" {
-        return {},"invalid_scope",fmt.tprintf("agent %s runs on Bridge %s but its fleet policy names no provider and model for it; set them with `ham-ctl task-chain fleet set --agent %s --provider <p> --model <m>` (or a --bridge-models entry for %s)",agent,executor,agent,executor)
+        // Gap 4: like origin/main resolve_launch_model, the catalog fills
+        // what the row leaves empty (an explicit provider is kept). The
+        // executor still refuses a model it does not support.
+        picked_provider,picked_model,picked:=bridge_provider_catalog_default(provider,model)
+        if !picked {
+            return {},"invalid_scope",fmt.tprintf("agent %s runs on Bridge %s but neither its fleet policy nor the provider catalog names a provider and model for it; set them with `ham-ctl task-chain fleet set --agent %s --provider <p> --model <m>` (or a --bridge-models entry for %s)",agent,executor,agent,executor)
+        }
+        provider,model=picked_provider,picked_model
     }
     repository:=""
     if template,code:=owner.agent_assignment_template(s,chain);code=="ok" && template.merge_policy=="git" do repository=template.repository

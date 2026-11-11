@@ -349,3 +349,34 @@ bridge_provider_catalog_handle_frame :: proc(conn: ^ws.Connection, frame_type, t
 	}
 	return true
 }
+
+// The launch provider/model for a selection that leaves either empty, from
+// the catalog like origin/main resolve_launch_model: the first active
+// provider (the named one when given) and its first active model (the named
+// one when given), in catalog order. An explicit pair is kept as is.
+bridge_provider_catalog_pick :: proc(providers: []Bridge_Catalog_Provider, provider, model: string) -> (string, string, bool) {
+	if provider != "" && model != "" do return provider, model, true
+	for entry in providers {
+		if entry.state != "active" || (provider != "" && entry.provider != provider) do continue
+		for candidate in entry.models {
+			if candidate.state != "active" || (model != "" && candidate.model_id != model) do continue
+			return strings.clone(entry.provider, context.temp_allocator), strings.clone(candidate.model_id, context.temp_allocator), true
+		}
+	}
+	return "", "", false
+}
+
+// Test seam: replaces the catalog snapshot that bridge_provider_catalog_default reads.
+@(thread_local)
+bridge_provider_catalog_default_hook: []Bridge_Catalog_Provider
+
+// bridge_provider_catalog_pick over this Bridge's catalog snapshot (the Hub's
+// account catalog). Strings are temp-allocated.
+bridge_provider_catalog_default :: proc(provider, model: string) -> (string, string, bool) {
+	if bridge_provider_catalog_default_hook != nil do return bridge_provider_catalog_pick(bridge_provider_catalog_default_hook, provider, model)
+	bridge_provider_catalog_init()
+	sync.rw_mutex_shared_lock(&bridge_provider_catalog_mutex)
+	defer sync.rw_mutex_shared_unlock(&bridge_provider_catalog_mutex)
+	if bridge_provider_catalog_snapshot == nil do return "", "", false
+	return bridge_provider_catalog_pick(bridge_provider_catalog_snapshot.providers, provider, model)
+}

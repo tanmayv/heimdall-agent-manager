@@ -89,9 +89,23 @@ test_owner_remote_assignee_is_placed_on_its_fleet_bridge :: proc(t:^testing.T) {
     testing.expectf(t,bool(updated["ok"].(json.Boolean)),"update with a remote assignee: %v",updated)
     testing.expect(t,uctx.remote.active && uctx.remote.task==task,"update places the same task")
 
-    // No provider/model for the remote Bridge: refused before any task exists.
+    // No provider/model for the remote Bridge and none in the catalog:
+    // refused before any task exists.
+    retired:=[]Bridge_Catalog_Provider{{provider="codex",state="retired",models=[]Bridge_Catalog_Model{{model_id="gpt-5.5",state="active"}}}}
+    bridge_provider_catalog_default_hook=retired;defer bridge_provider_catalog_default_hook=nil
     refused,rctx:=review_test_exec(r,coord,"agent.task.create",fmt.tprintf(`{{"chain_id":"%s","title":"bare",%s,"assignee":"agt_n","reviewers":["agt_a"]}}`,chain,brief))
-    testing.expectf(t,!rctx.remote.active && strings.contains(fmt.tprint(refused),"names no provider and model"),"remote placement needs provider and model: %v",refused)
+    testing.expectf(t,!rctx.remote.active && strings.contains(fmt.tprint(refused),"nor the provider catalog names a provider and model"),"remote placement needs provider and model: %v",refused)
+    // Gap 4: the catalog fills them like origin/main resolve_launch_model
+    // (first active provider, its first active model).
+    catalog:=[]Bridge_Catalog_Provider{
+        {provider="claude",state="retired",models=[]Bridge_Catalog_Model{{model_id="claude-old",state="active"}}},
+        {provider="codex",state="active",models=[]Bridge_Catalog_Model{{model_id="gpt-old",state="retired"},{model_id="gpt-5.5",state="active"}}},
+    }
+    bridge_provider_catalog_default_hook=catalog
+    filled,fctx:=review_test_exec(r,coord,"agent.task.create",fmt.tprintf(`{{"chain_id":"%s","title":"catalog",%s,"assignee":"agt_n","reviewers":["agt_a"]}}`,chain,brief))
+    testing.expectf(t,bool(filled["ok"].(json.Boolean)) && fctx.remote.active,"catalog default placed: %v",filled)
+    testing.expectf(t,fctx.remote.provider=="codex" && fctx.remote.model=="gpt-5.5","catalog default model: %s/%s",fctx.remote.provider,fctx.remote.model)
+    bridge_provider_catalog_default_hook=nil
     // A policy on this Bridge still needs a live child here.
     local,lctx:=review_test_exec(r,coord,"agent.task.create",fmt.tprintf(`{{"chain_id":"%s","title":"local",%s,"assignee":"agt_l","reviewers":["agt_a"]}}`,chain,brief))
     testing.expectf(t,!lctx.remote.active && strings.contains(fmt.tprint(local),"not a running"),"a local agent without a live child is refused: %v",local)
@@ -341,7 +355,11 @@ test_owner_matcher_retries_remote_placement :: proc(t:^testing.T) {
     review_test_nudged=make([dynamic]string,context.temp_allocator)
     review_test_started=make([dynamic]string,context.temp_allocator)
     matcher_place_calls=make([dynamic]string,context.temp_allocator)
+    // No catalog default: only agt_w (its row names a model for bridge_b) can
+    // run there, whatever catalog this process holds.
+    bridge_provider_catalog_default_hook=[]Bridge_Catalog_Provider{{provider="none",state="retired"}}
     defer {
+        bridge_provider_catalog_default_hook=nil
         bridge_cfg().daemon_id=old_daemon;bridge_owner_test_signer={};bridge_owner_live_probe=nil
         bridge_owner_review_effects={};bridge_owner_review_sync_effects=false
         review_test_live=nil;review_test_nudged=nil;review_test_started=nil;matcher_place_calls=nil
@@ -429,4 +447,22 @@ test_owner_matcher_retries_remote_placement :: proc(t:^testing.T) {
     places:=len(matcher_place_calls)
     for w in plan(r,chain,false,now+3*BRIDGE_OWNER_MATCH_RETRY_MS+3) do testing.expectf(t,w.action!=.Place,"no remote placement once local: %v",w)
     testing.expect_value(t,len(matcher_place_calls),places)
+}
+
+@(test)
+test_provider_catalog_pick_fills_only_what_is_empty :: proc(t:^testing.T) {
+    catalog:=[]Bridge_Catalog_Provider{
+        {provider="claude",state="active",models=[]Bridge_Catalog_Model{{model_id="claude-sonnet-5-5",state="active"},{model_id="claude-opus-5-5",state="active"}}},
+        {provider="codex",state="active",models=[]Bridge_Catalog_Model{{model_id="gpt-5.5",state="active"}}},
+    }
+    p,m,ok:=bridge_provider_catalog_pick(catalog,"","")
+    testing.expectf(t,ok && p=="claude" && m=="claude-sonnet-5-5","catalog order: %s/%s %v",p,m,ok)
+    p,m,ok=bridge_provider_catalog_pick(catalog,"codex","")
+    testing.expectf(t,ok && p=="codex" && m=="gpt-5.5","an explicit provider is kept: %s/%s",p,m)
+    p,m,ok=bridge_provider_catalog_pick(catalog,"","claude-opus-5-5")
+    testing.expectf(t,ok && p=="claude" && m=="claude-opus-5-5","an explicit model is kept: %s/%s",p,m)
+    p,m,ok=bridge_provider_catalog_pick(catalog,"gemini","")
+    testing.expectf(t,!ok,"an unknown provider is not replaced: %s/%s",p,m)
+    p,m,ok=bridge_provider_catalog_pick(nil,"claude","x")
+    testing.expectf(t,ok && p=="claude" && m=="x","an explicit pair needs no catalog: %s/%s",p,m)
 }
