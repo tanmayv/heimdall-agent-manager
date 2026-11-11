@@ -533,6 +533,34 @@ test_owner_matcher_retries_remote_placement :: proc(t:^testing.T) {
     places:=len(matcher_place_calls)
     for w in plan(r,chain,false,now+3*BRIDGE_OWNER_MATCH_RETRY_MS+3) do testing.expectf(t,w.action!=.Place,"no remote placement once local: %v",w)
     testing.expect_value(t,len(matcher_place_calls),places)
+
+    // Review finding 2: a configured task assigned here and pinned to bridge_b
+    // afterwards by a requirements edit (the ticket UI pin; no --bridge, so
+    // the route re-places nothing) gets its worker placed on bridge_b by the
+    // matcher; the local worker is not woken.
+    // The store clock is past the plans above: these verbs run at that time.
+    later :: proc(r:^Review_Test,coord:owner.Child,now:i64,method,params:string) -> (json.Object,Owner_Agent_Ctx) {
+        ctx:=review_test_ctx(r,coord);ctx.now=now
+        return bridge_owner_result_object(bridge_owner_agent_exec(&ctx,method,bridge_owner_params(params))),ctx
+    }
+    out,_=later(r,coord,now+5*BRIDGE_OWNER_MATCH_RETRY_MS,"agent.task.create",fmt.tprintf(`{{"chain_id":"%s","title":"repinned",%s,"assignee":"agt_w","reviewers":["agt_a"]}}`,chain,brief))
+    repinned:=contracts.owner_string(review_test_data(out),"task_id")
+    if !testing.expectf(t,repinned!="","local create: %v",out) do return
+    edited,ectx:=later(r,coord,now+5*BRIDGE_OWNER_MATCH_RETRY_MS,"agent.task.update",fmt.tprintf(`{{"chain_id":"%s","task_id":"%s","brief":{{"goal":"Ship it","acceptance":["Tests pass"],"run_bridge_id":"bridge_b"}}}}`,chain,repinned))
+    testing.expectf(t,bool(edited["ok"].(json.Boolean)) && !ectx.remote.active,"pin by a requirements edit, nothing re-placed: %v",edited)
+    rst,_,_:=owner.agent_task_state(&r.store,chain,repinned)
+    pin,has_pin:=bridge_owner_brief_run_bridge(rst.brief)
+    if !testing.expectf(t,has_pin && pin=="bridge_b" && rst.fleet_instance=="inst_pw","pinned, still bound here: %q %v %q",pin,has_pin,rst.fleet_instance) do return
+    clear(&review_test_nudged);clear(&review_test_started);clear(&matcher_place_calls)
+    wakes=plan(r,chain,true,now+5*BRIDGE_OWNER_MATCH_RETRY_MS+1)
+    placed:=false
+    for w in wakes {
+        if w.task==repinned && w.action==.Place && w.agent=="agt_w" do placed=true
+        testing.expectf(t,!(w.task==repinned && (w.action==.Nudge || w.action==.Start)),"the local worker is not woken: %v",w)
+    }
+    testing.expectf(t,placed,"the worker of the re-pinned task is placed on bridge_b: %v",wakes)
+    for line in review_test_nudged do testing.expectf(t,!strings.contains(line,repinned),"the re-pinned task is not nudged here: %s",line)
+    for line in review_test_started do testing.expectf(t,!strings.contains(line,repinned),"the re-pinned task is not started here: %s",line)
 }
 
 @(test)

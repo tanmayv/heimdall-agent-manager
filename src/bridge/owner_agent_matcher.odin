@@ -207,6 +207,14 @@ bridge_owner_match_plan :: proc(ctx:^Owner_Agent_Ctx,chain:string,force:bool,fre
     if !ok do return out
     restarting:=false // fresh is restarted once, whatever it is assigned
     for target in targets {
+        // Pinned to another Bridge after it was assigned here (the ticket UI
+        // pin is a requirements edit): its worker is placed on the run Bridge
+        // (`task update --assignee`, which reserves it there) and the local
+        // instance is not woken.
+        if run_bridge,pinned:=bridge_owner_match_run_bridge(s,target.chain_id,target.task_id);pinned && run_bridge!="" && run_bridge!=s.owner {
+            bridge_owner_match_queue_place(ctx,&out,target.chain_id,target.task_id,target.agent_id)
+            continue
+        }
         d:=bridge_owner_match_dispatch(s,&out,target.chain_id)
         wake:=Owner_Review_Wake{action=.Start,chain=target.chain_id,task=target.task_id,agent=target.agent_id,instance=target.instance_id,worker=true}
         if child,live:=bridge_owner_live_child(target.instance_id);live && child.agent_id==target.agent_id {
