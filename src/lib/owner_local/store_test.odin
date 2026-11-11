@@ -1,6 +1,7 @@
 #+feature dynamic-literals
 package owner_local
 
+import "base:runtime"
 import "core:crypto/ecdsa"
 import "core:encoding/json"
 import "core:fmt"
@@ -21,6 +22,29 @@ test_sign :: proc(ctx:rawptr,kind:string,o:json.Object)->(string,bool) {
     return vault.hex_encode_lower(sig.sig[:],context.temp_allocator),true
 }
 fixture_sequence:i64
+
+// Migrating a new store is most of a fixture's cost, so each process migrates one
+// template once and every fixture starts from a copy of its bytes. The copy has the
+// schema but no runtime_database row: open() claims it, so every store still gets
+// its own database_id and incarnation. Migration tests open their own paths.
+fixture_template_mutex:sync.Mutex
+fixture_template_bytes:[]byte
+fixture_template :: proc(home:string)->([]byte,bool) {
+    sync.mutex_lock(&fixture_template_mutex)
+    defer sync.mutex_unlock(&fixture_template_mutex)
+    if fixture_template_bytes!=nil do return fixture_template_bytes,true
+    path:=fmt.tprintf("%s/.cache/heimdall-tests/owner-unit-template-%d-%d.sqlite",home,os.get_pid(),time.to_unix_nanoseconds(time.now()))
+    defer for suffix in ([3]string{"","-wal","-shm"}) do _=os.remove(fmt.tprintf("%s%s",path,suffix))
+    db:DB
+    if sqlite3_open(strings.clone_to_cstring(path,context.temp_allocator),&db)!=0 { _=sqlite3_close(db); return nil,false }
+    migrated:=migrate(db) && exec(db,"PRAGMA wal_checkpoint(TRUNCATE)")
+    _=sqlite3_close(db)
+    if !migrated do return nil,false
+    data,err:=os.read_entire_file(path,runtime.heap_allocator()) // outlives this test: each test thread frees its own allocator
+    if err!=nil || len(data)==0 do return nil,false
+    fixture_template_bytes=data
+    return data,true
+}
 fixture :: proc(t:^testing.T)->^Fixture {
     f:=new(Fixture)
     testing.expect(t,vault.p256_private_key_generate(&f.creator_priv))
@@ -36,7 +60,9 @@ fixture :: proc(t:^testing.T)->^Fixture {
     f.kr,_=vault.keyring_from_single_key("account",id,1,key[:])
     home:=os.get_env("HOME",context.temp_allocator)
     f.path=fmt.aprintf("%s/.cache/heimdall-tests/owner-unit-%d-%d.sqlite",home,time.to_unix_nanoseconds(time.now()),sync.atomic_add(&fixture_sequence,1))
-    if !testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key")) do testing.fail_now(t,"open")
+    template,template_ok:=fixture_template(home)
+    if !testing.expect(t,template_ok && os.write_entire_file(f.path,template)==nil) do testing.fail_now(t,"copy template")
+    if !testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key")) do testing.fail_now(t,string(f.store.last_failure[:f.store.last_failure_len]))
     g:=doc(map[string]string{"protocol_version"="1","account_id"="account","chain_id"="chain","creation_op"="create","owner_bridge_id"="bridge","owner_key_id"="bridge_key","creator_id"="device","creator_key_id"="device","schema_version"="1","creator_signature"=strings.repeat("0",128,context.temp_allocator),"owner_signature"=strings.repeat("0",128,context.temp_allocator)})
     sig,_:=test_sign(&f.creator_priv,"genesis",g);g["creator_signature"]=json.String(sig)
     sig,_=test_sign(&f.owner_priv,"genesis",g);g["owner_signature"]=json.String(sig)
