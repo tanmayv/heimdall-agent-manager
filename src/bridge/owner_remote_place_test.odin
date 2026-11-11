@@ -193,6 +193,15 @@ test_owner_task_run_bridge_default_override_and_placement :: proc(t:^testing.T) 
     pin,has_pin:=run_bridge(r,chain,there)
     testing.expectf(t,has_pin && pin=="bridge_b","the pin is in the brief: %q %v",pin,has_pin)
 
+    // task show reports the run Bridge: the pin, else the owner Bridge.
+    shown_bridge :: proc(r:^Review_Test,coord:owner.Child,chain,task:string) -> string {
+        shown,_:=review_test_exec(r,coord,"agent.task.show",fmt.tprintf(`{{"chain_id":"%s","task_id":"%s"}}`,chain,task))
+        task_obj,_:=review_test_data(shown)["task"].(json.Object)
+        return contracts.owner_string(task_obj,"run_bridge_id")
+    }
+    testing.expect_value(t,shown_bridge(r,coord,chain,there),"bridge_b")
+    testing.expect_value(t,shown_bridge(r,coord,chain,here),"bridge")
+
     // A pin needs a brief.
     refused,_:=review_test_exec(r,coord,"agent.task.create",fmt.tprintf(`{{"chain_id":"%s","title":"bare","assignee":"agt_w","bridge_id":"bridge_b"}}`,chain))
     testing.expectf(t,strings.contains(fmt.tprint(refused),"needs a brief"),"pin without a brief refused: %v",refused)

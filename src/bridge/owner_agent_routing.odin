@@ -571,12 +571,12 @@ bridge_owner_agent_exec :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object
         if r.code!="ok" do return bridge_owner_fail(ctx,r.code,"owner task read refused")
         read:=bridge_owner_result_object(r.body)
         Task_Show :: struct {
-            task:struct{task_id,chain_id,title,body,priority,state,attempt,requirements_revision,revision:string},
+            task:struct{task_id,chain_id,title,body,priority,state,attempt,requirements_revision,revision,run_bridge_id:string},
             comments:json.Value,
             authority:Owner_Agent_Authority,
         }
         out:Task_Show
-        out.task={st.task_id,st.chain_id,contracts.owner_string(read,"title"),contracts.owner_string(read,"body"),contracts.owner_string(read,"priority"),st.state,st.attempt,st.requirements_revision,st.task_revision}
+        out.task={st.task_id,st.chain_id,contracts.owner_string(read,"title"),contracts.owner_string(read,"body"),contracts.owner_string(read,"priority"),st.state,st.attempt,st.requirements_revision,st.task_revision,bridge_owner_task_run_bridge(st.brief)}
         out.comments=read["items"]
         out.authority=bridge_owner_authority()
         return bridge_local_response_data(ctx.request_id,bridge_owner_json(out))
@@ -1239,6 +1239,12 @@ bridge_owner_brief_run_bridge :: proc(brief:string) -> (bridge:string,pinned:boo
     bridge=string(value)
     if bridge==bridge_cfg().daemon_id do bridge=""
     return bridge,true
+}
+
+// The Bridge a task runs on: its brief's pin, else the owner Bridge (never "").
+bridge_owner_task_run_bridge :: proc(brief:string) -> string {
+    bridge,_:=bridge_owner_brief_run_bridge(brief)
+    return bridge if bridge!="" else bridge_cfg().daemon_id
 }
 
 // The brief with its reviewers set to the --reviewer agents (every one of
