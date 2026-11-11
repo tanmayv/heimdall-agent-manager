@@ -111,6 +111,16 @@ test_attention_merges_owner_chain_tasks_needing_the_user :: proc(t: ^testing.T) 
 	testing.expect(t, agent_service.clear_bridge_owner_attention(&agents, "brg_owner"))
 	r3, _ := list_attention(&h.svc, ph_auth(), "all", "", true)
 	testing.expect_value(t, len(r3.items), 0)
+	// Reconnect with the same item: it is back in the deck, but the user was
+	// already notified, so no second push.
+	testing.expect(t, agent_service.apply_bridge_owner_attention(&agents, "brg_owner", `{"items":[{"chain_id":"chain_owned","task_id":"T-2","attention":"review","badge":"review","state":"in_review","attempt":"2"}]}`))
+	r4, _ := list_attention(&h.svc, ph_auth(), "all", "", true)
+	testing.expect_value(t, len(r4.items), 1)
+	testing.expect_value(t, len(ot_pushes), 2)
+	// T-1 was resolved earlier; blocked again later, it notifies again.
+	testing.expect(t, agent_service.apply_bridge_owner_attention(&agents, "brg_owner", `{"items":[{"chain_id":"chain_owned","task_id":"T-1","attention":"blocked","badge":"question","state":"ready","attempt":"1"}]}`))
+	testing.expect_value(t, len(ot_pushes), 3)
+	agent_service.clear_bridge_owner_attention(&agents, "brg_owner")
 	agent_service.clear_bridge_owner_attention(&agents, "brg_foreign")
 
 	// Never stored: the attention tables hold no owner-task card.

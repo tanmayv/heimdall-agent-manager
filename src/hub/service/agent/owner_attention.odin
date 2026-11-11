@@ -39,6 +39,17 @@ Owner_Attention_Entry :: struct {
 Owner_Attention_Store :: struct {
 	mutex:   sync.Mutex,
 	entries: map[string]Owner_Attention_Entry, // bridge_id -> its latest snapshot
+	// Items the user was already pushed for (owner_attention_notify_key). It
+	// outlives a Bridge disconnect, so a reconnect snapshot never re-notifies;
+	// an item leaves it once a snapshot of its Bridge no longer lists it.
+	notified: map[string]bool,
+}
+
+// owner_attention_notify_key names one item for push dedup: a new attention,
+// badge or attempt on the same task notifies again.
+@(private = "file")
+owner_attention_notify_key :: proc(bridge_id: string, it: Owner_Attention_Item, allocator := context.temp_allocator) -> string {
+	return strings.concatenate({bridge_id, "\x1f", it.chain_id, "\x1f", it.task_id, "\x1f", it.attention, "\x1f", it.badge, "\x1f", it.attempt}, allocator)
 }
 
 @(private = "file")
@@ -132,6 +143,8 @@ apply_bridge_owner_attention :: proc(service: ^Agent_Service, bridge_id, text: s
 	sync.mutex_lock(&service.owner_attention.mutex)
 	store := &service.owner_attention
 	if store.entries == nil do store.entries = make(map[string]Owner_Attention_Entry, 8, owner_attention_allocator())
+	if store.notified == nil do store.notified = make(map[string]bool, 16, owner_attention_allocator())
+	current := make(map[string]bool, len(fresh), context.temp_allocator)
 	old, had := store.entries[bridge_id]
 	changed := (len(old.items) if had else 0) != len(fresh)
 	fresh_count, fresh_chain := 0, ""
@@ -149,10 +162,13 @@ apply_bridge_owner_attention :: proc(service: ^Agent_Service, bridge_id, text: s
 				break
 			}
 		}
-		if !matched {
-			changed = true
+		if !matched do changed = true
+		key := owner_attention_notify_key(bridge_id, it)
+		current[key] = true
+		if !store.notified[key] {
 			if fresh_count == 0 do fresh_chain = strings.clone(it.chain_id, context.temp_allocator)
 			fresh_count += 1
+			store.notified[strings.clone(key, owner_attention_allocator())] = true
 		}
 		a := owner_attention_allocator()
 		append(&next, Owner_Attention_Item{
@@ -167,6 +183,14 @@ apply_bridge_owner_attention :: proc(service: ^Agent_Service, bridge_id, text: s
 		owner_attention_entry_destroy(&old)
 		delete(key, owner_attention_allocator())
 	}
+	// Forget this Bridge's resolved items, so they notify again if they recur.
+	prefix := strings.concatenate({bridge_id, "\x1f"}, context.temp_allocator)
+	stale := make([dynamic]string, context.temp_allocator)
+	for k in store.notified do if strings.has_prefix(k, prefix) && !current[k] do append(&stale, k)
+	for k in stale {
+		key, _ := delete_key(&store.notified, k)
+		delete(key, owner_attention_allocator())
+	}
 	if len(next) > 0 {
 		store.entries[strings.clone(bridge_id, owner_attention_allocator())] = Owner_Attention_Entry{
 			owner_user_id = strings.clone(owner, owner_attention_allocator()),
@@ -177,7 +201,8 @@ apply_bridge_owner_attention :: proc(service: ^Agent_Service, bridge_id, text: s
 	}
 	sync.mutex_unlock(&service.owner_attention.mutex)
 	if changed do owner_attention_changed(service, owner)
-	// Notify only for items that newly need the user, never for a resolution.
+	// Notify only for items that newly need the user (never pushed before), never
+	// for a resolution or a reconnect.
 	if fresh_count > 0 && service.owner_attention_hook != nil do service.owner_attention_hook(service.owner_attention_hook_ctx, owner, fresh_count, fresh_chain)
 	return true
 }
@@ -187,7 +212,8 @@ owner_attention_changed :: proc(service: ^Agent_Service, owner: string) {
 	if service.blockers.attention != nil do events.attention_debouncer_note(service.blockers.attention, owner, OWNER_ATTENTION_EVENT_KIND)
 }
 
-// clear_bridge_owner_attention drops a Bridge's snapshot (it went offline).
+// clear_bridge_owner_attention drops a Bridge's snapshot (it went offline). Its
+// notified keys stay: the reconnect snapshot does not push again.
 clear_bridge_owner_attention :: proc(service: ^Agent_Service, bridge_id: string) -> bool {
 	if service == nil || bridge_id == "" do return false
 	sync.mutex_lock(&service.owner_attention.mutex)
