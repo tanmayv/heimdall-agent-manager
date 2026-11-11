@@ -263,3 +263,20 @@ test_task_create_and_update_bridge_pinning_params :: proc(t: ^testing.T) {
 	out_update_no_bridge := unseal_out(ctl_agentmode_task_update_params("task_123", with_kr(update_args_no_bridge)))
 	testing.expect(t, !strings.contains(out_update_no_bridge, `"bridge_id"`), "update params must omit bridge_id when --bridge absent")
 }
+
+@(test)
+test_task_agent_model_override_params :: proc(t: ^testing.T) {
+	create := unseal_out(ctl_agentmode_task_create_params(with_kr([]string{
+		"--title", "Codex task",
+		"--agent-model", "agt_w=codex/gpt-5.5",
+		"--agent-model", "agt_r=claude",
+	})))
+	testing.expectf(t, strings.contains(create, `"agent_models":{`) && strings.contains(create, `"agt_w":"codex/gpt-5.5"`) && strings.contains(create, `"agt_r":"claude"`), "create sends each override: %s", create)
+	none := unseal_out(ctl_agentmode_task_create_params(with_kr([]string{"--title", "Plain"})))
+	testing.expect(t, !strings.contains(none, `"agent_models"`), "no override flags: no field")
+	update := unseal_out(ctl_agentmode_task_update_params("task_1", with_kr([]string{
+		"--agent-model", "agt_w=codex",
+		"--clear-agent-model", "agt_r",
+	})))
+	testing.expectf(t, strings.contains(update, `"agt_w":"codex"`) && strings.contains(update, `"agt_r":""`), "update sets and clears per agent: %s", update)
+}

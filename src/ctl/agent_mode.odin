@@ -533,6 +533,24 @@ ctl_v2_reviewers :: proc(args: []string) -> []string {
 	return ids
 }
 
+// ctl_task_agent_models_field builds the owner-chain `"agent_models":{agent:"provider[/model]"}`
+// field from every `--agent-model <agent_id>=<provider>[/<model>]` (repeatable)
+// and `--clear-agent-model <agent_id>` (an empty value clears that agent's
+// override). ok=false when neither flag is given.
+ctl_task_agent_models_field :: proc(args: []string) -> (string, bool) {
+	sets := ctl_multi_values(args, "--agent-model")
+	clears := ctl_multi_values(args, "--clear-agent-model")
+	if len(sets) == 0 && len(clears) == 0 do return "", false
+	fields := make([dynamic]string, context.temp_allocator)
+	for v in sets {
+		eq := strings.index_byte(v, '=')
+		if eq <= 0 do continue
+		append(&fields, json_kv(strings.trim_space(v[:eq]), strings.trim_space(v[eq+1:])))
+	}
+	for agent in clears do append(&fields, json_kv(strings.trim_space(agent), ""))
+	return strings.concatenate({`"agent_models":`, json_object_from_slice(fields[:])}, context.temp_allocator), true
+}
+
 // ctl_task_actor_id_is_instance reports whether a --assignee/--reviewer value is a
 // live instance id (inst_…), which Task System v2 no longer accepts as a task actor.
 ctl_task_actor_id_is_instance :: proc(id: string) -> bool {
@@ -1346,6 +1364,7 @@ ctl_agentmode_task_create_params :: proc(args: []string) -> string {
 	if has_flag(args, "--require-user-approval") do append(&fields, `"requires_user_approval":true`)
 	if deps, present := ctl_task_depends_on_flag(args, "--depends-on"); present && deps != "" do append(&fields, ctl_v2_json_string_array("depends_on", deps))
 	if b := option_value(args, "--bridge", ""); b != "" do append(&fields, json_kv("bridge_id", b))
+	if models, ok := ctl_task_agent_models_field(args); ok do append(&fields, models)
 	// Task System v2 brief: --goal/--acceptance/--input over an
 	// optional --brief-file base (taskv2_cmds.odin).
 	if brief, ok := ctl_task_brief_field(args); ok do append(&fields, brief)
@@ -1390,6 +1409,7 @@ ctl_agentmode_task_update_params :: proc(tid: string, args: []string) -> string 
 	if has_flag(args, "--no-require-user-approval") do append(&fields, `"requires_user_approval":false`)
 	if deps, present := ctl_task_depends_on_flag(args, "--depends-on"); present do append(&fields, ctl_v2_json_string_array("depends_on", deps))
 	if has_flag(args, "--bridge") do append(&fields, json_kv("bridge_id", option_value(args, "--bridge", "")))
+	if models, ok := ctl_task_agent_models_field(args); ok do append(&fields, models)
 	// brief fields are sent only when given; the hub merges them into the stored brief.
     if brief,replace,ok:=ctl_task_brief_value(args);ok {
         sealed:=ctl_requirement_brief_sealed(brief,args)
@@ -1989,6 +2009,9 @@ print_help_task :: proc() {
 	fmt.println("      --require-user-approval so must the user. Reviewers must be chain members")
 	fmt.println("      (`task-chain fleet set --agent <id>`); on a Bridge-owned chain the first is the")
 	fmt.println("      independent reviewer configured with --assignee.")
+	fmt.println("      --agent-model <agent-id>=<provider>[/<model>] (repeatable, owner chains, needs a brief):")
+	fmt.println("      that agent's provider/model on THIS task. It beats the fleet row's --bridge-models and")
+	fmt.println("      provider/model; an omitted model is the provider's catalog default.")
 	fmt.println("      Flags override its fields. Other keys are rejected (unknown_brief_fields). --verify,")
 	fmt.println("      --auto-submit and --require-independent-verify were removed: ignored with a warning.")
 	fmt.println("  update <task-id>                        Edit an existing task (coordinator only).")
@@ -2001,7 +2024,9 @@ print_help_task :: proc() {
 	fmt.println("      key, and keys you leave out are kept. --replace-brief replaces the whole brief.")
 	fmt.println("      Reviewers are durable agent ids (agt_…); an inst_… id is refused.")
 	fmt.println("      --reviewer/--depends-on REPLACE the whole list (pass \"\" to clear); --bridge \"\" clears")
-	fmt.println("      the pin. Live goal/acceptance edits require --expected-requirements-revision <n>")
+	fmt.println("      the pin. --agent-model <agent-id>=<provider>[/<model>] sets and --clear-agent-model")
+	fmt.println("      <agent-id> clears one agent's override (others are kept).")
+	fmt.println("      Live goal/acceptance edits require --expected-requirements-revision <n>")
 	fmt.println("      and --reason <text>. Read the revision with task show; conflicts require a fresh read.")
 	fmt.println("  publish <task-id> [--chain <id>]        Publish one draft task (coordinator only). A 422")
 	fmt.println("                                          brief_incomplete lists the missing fields per task.")
