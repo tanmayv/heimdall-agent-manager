@@ -31,6 +31,7 @@ matcher_test_rematch :: proc(chain:string) {
     for d in bridge_owner_match_plan(&ctx,chain,true) do bridge_owner_review_dispatch(d)
 }
 matcher_test_blocked:[dynamic]string
+matcher_test_restarted:[dynamic]string
 
 matcher_test_start_fails :: proc(instance,agent:string,rec:Bridge_Local_Agent_Token_Record) -> string {
     append(&review_test_started,fmt.tprintf("%s %s %s",instance,agent,rec.agent_instance_id))
@@ -202,4 +203,63 @@ test_owner_matcher_wakes_restarts_or_blocks_the_assigned_worker :: proc(t:^testi
     testing.expectf(t,len(review_test_started)==1 && strings.contains(review_test_started[0],coord_instance),"launched with the coordinator's credential: %v",review_test_started)
     testing.expectf(t,len(review_test_nudged)==1 && strings.contains(review_test_nudged[0],"inst_launched_agt_n"),"the launched member is assigned and woken: %v",review_test_nudged)
     matcher_test_r=nil
+
+    // A live worker holding a lease is not nudged for its next assigned task
+    // (pick_instance: lease-free instances only).
+    next_o:=create(t,r,coord,chain,"next_o","agt_o")
+    if next_o=="" do return
+    clear(&review_test_nudged)
+    for w in plan(r,chain,true) do testing.expectf(t,w.instance!=other.instance,"leased agt_o is not woken: %v",w)
+
+    // Handoff (origin/main stop_holder): agt_o hands off its own lease; its
+    // instance is restarted once for a fresh context, never nudged as the same
+    // live child, although both of its tasks are ready.
+    matcher_test_restarted=make([dynamic]string,context.temp_allocator)
+    bridge_owner_review_effects.restart=proc(instance,agent:string,rec:Bridge_Local_Agent_Token_Record) -> string {
+        append(&matcher_test_restarted,fmt.tprintf("%s %s %s",instance,agent,rec.agent_instance_id))
+        return ""
+    }
+    next,_:=review_test_exec(r,other,"agent.lease.next","{}")
+    held,_:=review_test_data(next)["lease"].(json.Object)
+    revision:=contracts.owner_string(held,"requirements_revision")
+    _,_=review_test_exec(r,other,"agent.lease.heartbeat",fmt.tprintf(`{{"acknowledge_requirements_revision":"%s"}}`,revision))
+    handed,_:=review_test_exec(r,other,"agent.lease.handoff",`{"summary":"half done","next_steps":"finish it"}`)
+    if !testing.expectf(t,contracts.owner_string(review_test_data(handed),"task_id")!="" || review_test_state(r,open)=="ready","handoff accepted: %v",handed) do return
+    clear(&review_test_nudged)
+    ctx:=review_test_ctx(r,{})
+    fresh_wakes:=make([dynamic]Owner_Review_Wake,context.temp_allocator)
+    for d in bridge_owner_match_plan(&ctx,chain,true,other.instance) {
+        for w in d.wakes do if w.instance==other.instance do append(&fresh_wakes,w)
+        bridge_owner_review_dispatch(d)
+    }
+    testing.expectf(t,len(fresh_wakes)==1 && fresh_wakes[0].action==.Restart,"agt_o is restarted once, not nudged: %v",fresh_wakes)
+    testing.expectf(t,len(matcher_test_restarted)==1 && strings.contains(matcher_test_restarted[0],other.instance) && strings.contains(matcher_test_restarted[0],coord_instance),"restarted with the coordinator's credential: %v",matcher_test_restarted)
+    woken:=0
+    for line in review_test_nudged do if strings.has_prefix(line,other.instance) do woken+=1
+    testing.expectf(t,woken==1,"the fresh run is told to lease: %v",review_test_nudged)
+    // A coordinator handing off is never restarted (solo keeps its context).
+    clear(&matcher_test_restarted)
+    for d in bridge_owner_match_plan(&ctx,chain,true,coord.instance) do bridge_owner_review_dispatch(d)
+    testing.expectf(t,len(matcher_test_restarted)==0,"the coordinator is not restarted: %v",matcher_test_restarted)
+    matcher_test_restarted=nil
+}
+
+// The matcher's back-off map drops entries once they no longer gate a run
+// and never exceeds its cap.
+@(test)
+test_owner_matcher_seen_map_is_pruned_and_capped :: proc(t:^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex);defer sync.mutex_unlock(&bridge_test_config_mutex)
+    now:=i64(1_000_000_000)
+    testing.expect(t,bridge_owner_match_due("prune|a|nudge",now,false))
+    testing.expect(t,!bridge_owner_match_due("prune|a|nudge",now+1,false),"backs off")
+    later:=now+BRIDGE_OWNER_MATCH_RETRY_MS
+    testing.expect(t,bridge_owner_match_due("prune|b|nudge",later,false))
+    {
+        sync.mutex_lock(&bridge_owner_match_seen_mutex);defer sync.mutex_unlock(&bridge_owner_match_seen_mutex)
+        _,kept:=bridge_owner_match_seen["prune|a|nudge"]
+        testing.expect(t,!kept,"an expired key is pruned")
+    }
+    for i in 0..<BRIDGE_OWNER_MATCH_SEEN_CAP+10 do _=bridge_owner_match_due(fmt.tprintf("cap|%d",i),later,false)
+    sync.mutex_lock(&bridge_owner_match_seen_mutex);defer sync.mutex_unlock(&bridge_owner_match_seen_mutex)
+    testing.expectf(t,len(bridge_owner_match_seen)<=BRIDGE_OWNER_MATCH_SEEN_CAP,"capped: %d",len(bridge_owner_match_seen))
 }

@@ -35,22 +35,40 @@ import vault "odin_test:lib/vault"
 
 BRIDGE_OWNER_MATCH_RETRY_MS :: 5*60*1000
 
+BRIDGE_OWNER_MATCH_SEEN_CAP :: 4096
+
 // task|instance|action -> last planned (ms), so periodic runs back off.
+// Entries older than BRIDGE_OWNER_MATCH_RETRY_MS no longer gate anything and
+// are pruned; the map never holds more than BRIDGE_OWNER_MATCH_SEEN_CAP keys.
 bridge_owner_match_seen:map[string]i64
 bridge_owner_match_seen_mutex:sync.Mutex
 bridge_owner_match_booted:bool
 
+// Drops expired keys, then (still over the cap) every key. Caller holds
+// bridge_owner_match_seen_mutex.
+bridge_owner_match_seen_prune_locked :: proc(now:i64) {
+    expired:=make([dynamic]string,context.temp_allocator)
+    for key,last in bridge_owner_match_seen do if now-last>=BRIDGE_OWNER_MATCH_RETRY_MS do append(&expired,key)
+    for key in expired {
+        stored,_:=delete_key(&bridge_owner_match_seen,key)
+        delete(stored,runtime.heap_allocator())
+    }
+    if len(bridge_owner_match_seen)<BRIDGE_OWNER_MATCH_SEEN_CAP do return
+    for key in bridge_owner_match_seen do delete(key,runtime.heap_allocator())
+    clear(&bridge_owner_match_seen)
+}
+
 // Whether a periodic (unforced) run may act on key now; records the attempt.
 bridge_owner_match_due :: proc(key:string,now:i64,force:bool) -> bool {
     sync.mutex_lock(&bridge_owner_match_seen_mutex);defer sync.mutex_unlock(&bridge_owner_match_seen_mutex)
-    context.allocator=runtime.heap_allocator()
-    if bridge_owner_match_seen==nil do bridge_owner_match_seen=make(map[string]i64)
+    if bridge_owner_match_seen==nil do bridge_owner_match_seen=make(map[string]i64,runtime.heap_allocator())
     if last,seen:=bridge_owner_match_seen[key];seen {
         if !force && now-last<BRIDGE_OWNER_MATCH_RETRY_MS do return false
         bridge_owner_match_seen[key]=now
         return true
     }
-    bridge_owner_match_seen[strings.clone(key)]=now
+    bridge_owner_match_seen_prune_locked(now)
+    bridge_owner_match_seen[strings.clone(key,runtime.heap_allocator())]=now
     return true
 }
 
@@ -140,17 +158,33 @@ bridge_owner_match_assign :: proc(ctx:^Owner_Agent_Ctx,out:^[dynamic]Owner_Revie
 
 // Under the owner, startup and token locks: assign unassigned work, then one
 // dispatch per chain with a worker to wake, start or launch. chain "" plans
-// every chain.
-bridge_owner_match_plan :: proc(ctx:^Owner_Agent_Ctx,chain:string,force:bool) -> [dynamic]Owner_Review_Dispatch {
+// every chain. fresh is a worker instance that just handed off its own task:
+// it is restarted for a fresh context, never nudged (a chain coordinator is
+// never restarted: it keeps its conversation).
+bridge_owner_match_plan :: proc(ctx:^Owner_Agent_Ctx,chain:string,force:bool,fresh:string="") -> [dynamic]Owner_Review_Dispatch {
     out:=make([dynamic]Owner_Review_Dispatch,context.temp_allocator)
     s,now:=ctx.store,ctx.now
     if ctx.kr!=nil do bridge_owner_match_assign(ctx,&out,chain,force)
     targets,ok:=owner.work_targets(s,chain)
     if !ok do return out
+    restarting:=false // fresh is restarted once, whatever it is assigned
     for target in targets {
         d:=bridge_owner_match_dispatch(s,&out,target.chain_id)
         wake:=Owner_Review_Wake{action=.Start,chain=target.chain_id,task=target.task_id,agent=target.agent_id,instance=target.instance_id,worker=true}
-        if child,live:=bridge_owner_live_child(target.instance_id);live && child.agent_id==target.agent_id do wake.action=.Nudge
+        if child,live:=bridge_owner_live_child(target.instance_id);live && child.agent_id==target.agent_id {
+            if fresh!="" && target.instance_id==fresh && fresh!=d.coordinator {
+                if restarting || d.rec.instance_token=="" do continue
+                restarting=true
+                wake.action=.Restart
+                append(&d.wakes,wake)
+                continue
+            }
+            // A live worker busy on another lease is not interrupted
+            // (pick_instance uses lease-free instances); it pulls this task
+            // with `lease next` once it is done.
+            if leased,lease_ok:=owner.instance_leased(s,target.instance_id);!lease_ok || leased do continue
+            wake.action=.Nudge
+        }
         // Starting needs a Hub credential: the coordinator's (it may be
         // stopped too; the next run after it is back retries).
         if wake.action==.Start && d.rec.instance_token=="" do continue
@@ -162,7 +196,7 @@ bridge_owner_match_plan :: proc(ctx:^Owner_Agent_Ctx,chain:string,force:bool) ->
 }
 
 // Takes the owner, startup and token locks; dispatches with none held.
-bridge_owner_match_run :: proc(chain:string,force:bool) {
+bridge_owner_match_run :: proc(chain:string,force:bool,fresh:string="") {
     context.allocator=context.temp_allocator
     account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
     key_id,key_ok:=vault.device_id_from_sign_pub(bridge_identity_public_key_hex(bridge_cfg().daemon_id),context.temp_allocator)
@@ -178,7 +212,7 @@ bridge_owner_match_run :: proc(chain:string,force:bool) {
         ctx:=Owner_Agent_Ctx{request_id=bridge_owner_fresh_id("match"),store=&bridge_owner_store,
             key=contracts.Owner_Verified_Key{account,bridge_cfg().daemon_id,key_id,pub,"bridge",true,false},
             kr=&kr if unlocked else nil,now=time.to_unix_nanoseconds(time.now())/1000000}
-        plans=bridge_owner_match_plan(&ctx,chain,force)
+        plans=bridge_owner_match_plan(&ctx,chain,force,fresh)
         if len(plans)>0 do bridge_owner_publish()
     }
     for d in plans do bridge_owner_review_dispatch(d)

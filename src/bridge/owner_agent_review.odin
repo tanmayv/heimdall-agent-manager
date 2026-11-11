@@ -27,7 +27,7 @@ import "core:time"
 import contracts "odin_test:contracts"
 import owner "odin_test:lib/owner_local"
 
-Owner_Review_Action :: enum { Nudge, Start, Launch }
+Owner_Review_Action :: enum { Nudge, Start, Launch, Restart }
 Owner_Review_Wake :: struct {
     action:Owner_Review_Action,
     chain,task,lease,agent,instance:string,
@@ -53,6 +53,8 @@ Owner_Review_Context :: struct { run_dir,text:string }
 Owner_Review_Effects :: struct {
     nudge:proc(instance,line:string) -> bool,
     start:proc(instance,agent:string,rec:Bridge_Local_Agent_Token_Record) -> string,
+    // A fresh context for a live worker (its own handoff): restart, wait live.
+    restart:proc(instance,agent:string,rec:Bridge_Local_Agent_Token_Record) -> string,
     launch:proc(body,agent:string,rec:Bridge_Local_Agent_Token_Record) -> (string,string),
     bind:proc(chain,instance,agent,coordinator:string) -> (string,string),
     block:proc(task,agent,failure:string) -> bool,
@@ -104,7 +106,7 @@ bridge_owner_review_plan :: proc(ctx:^Owner_Agent_Ctx,chain,task:string) -> json
             wake.body=bridge_owner_json(body)
         }
         append(&ctx.reviews.wakes,wake)
-        action:=[Owner_Review_Action]string{.Nudge="woken",.Start="starting",.Launch="launching"}
+        action:=[Owner_Review_Action]string{.Nudge="woken",.Start="starting",.Launch="launching",.Restart="restarting"}
         entry:=json.Object{"agent_id"=json.String(target.agent_id),"action"=json.String(action[wake.action])}
         if wake.instance!="" do entry["instance_id"]=json.String(wake.instance)
         append(&out,entry)
@@ -154,6 +156,7 @@ bridge_owner_review_execute :: proc(d:^Owner_Review_Dispatch) {
     e:=bridge_owner_review_effects
     nudge:=e.nudge if e.nudge!=nil else bridge_owner_review_nudge
     start:=e.start if e.start!=nil else bridge_owner_review_start
+    restart:=e.restart if e.restart!=nil else bridge_owner_review_restart
     launch:=e.launch if e.launch!=nil else bridge_owner_launch_into_chain
     bind:=e.bind if e.bind!=nil else bridge_owner_review_bind
     block:=e.block if e.block!=nil else bridge_owner_block_not_running
@@ -166,6 +169,12 @@ bridge_owner_review_execute :: proc(d:^Owner_Review_Dispatch) {
         case .Start:
             if failed:=start(instance,w.agent,d.rec);failed!="" {
                 fmt.eprintln("bridge owner dispatch: starting",w.agent,instance,"failed:",failed)
+                if w.worker do _=block(w.task,w.agent,failed)
+                continue
+            }
+        case .Restart:
+            if failed:=restart(instance,w.agent,d.rec);failed!="" {
+                fmt.eprintln("bridge owner dispatch: restarting",w.agent,instance,"failed:",failed)
                 if w.worker do _=block(w.task,w.agent,failed)
                 continue
             }
@@ -210,9 +219,32 @@ bridge_owner_review_start :: proc(instance,agent:string,rec:Bridge_Local_Agent_T
     return bridge_owner_wait_live(instance,agent)
 }
 
+// Restarts a live worker through the Hub so its next task starts with a fresh
+// context (origin/main release_in_uow stop_holder on the agent's own
+// handoff), then waits for the new run. The handoff reply reaches the caller
+// first: the restart waits BRIDGE_OWNER_RESTART_GRACE_MS.
+BRIDGE_OWNER_RESTART_GRACE_MS :: 2000
+bridge_owner_review_restart :: proc(instance,agent:string,rec:Bridge_Local_Agent_Token_Record) -> string {
+    context.allocator=context.temp_allocator
+    time.sleep(BRIDGE_OWNER_RESTART_GRACE_MS*time.Millisecond)
+    sync.mutex_lock(&bridge_startup_io_mutex)
+    sync.mutex_lock(&bridge_local_token_mutex)
+    old,_:=bridge_owner_child_locked(instance,"")
+    sync.mutex_unlock(&bridge_local_token_mutex)
+    sync.mutex_unlock(&bridge_startup_io_mutex)
+    restarted:=bridge_local_relay_raw(.POST,route_path("api","v1","agent-instances",instance,"restart"),nil,"{}",rec)
+    if !restarted.ok || restarted.status<200 || restarted.status>=300 {
+        detail:=restarted.body
+        if len(detail)>300 do detail=detail[:300]
+        return fmt.tprintf("restarting %s failed (HTTP %d): %s",instance,restarted.status,detail)
+    }
+    return bridge_owner_wait_live(instance,agent,old.run_count)
+}
+
 // Polls (no lock held between polls) until the instance is a live child of
-// the agent here, up to BRIDGE_CHAIN_CREATE_LAUNCH_WAIT_MS.
-bridge_owner_wait_live :: proc(instance,agent:string) -> string {
+// the agent here with a run after after_run, up to
+// BRIDGE_CHAIN_CREATE_LAUNCH_WAIT_MS.
+bridge_owner_wait_live :: proc(instance,agent:string,after_run:i64=0) -> string {
     started:=time.tick_now()
     for {
         sync.mutex_lock(&bridge_startup_io_mutex)
@@ -220,7 +252,7 @@ bridge_owner_wait_live :: proc(instance,agent:string) -> string {
         child,current:=bridge_owner_child_locked(instance,"")
         sync.mutex_unlock(&bridge_local_token_mutex)
         sync.mutex_unlock(&bridge_startup_io_mutex)
-        if current && (agent=="" || child.agent_id==agent) do return ""
+        if current && child.run_count>after_run && (agent=="" || child.agent_id==agent) do return ""
         if time.duration_milliseconds(time.tick_since(started))>=BRIDGE_CHAIN_CREATE_LAUNCH_WAIT_MS do return fmt.tprintf("%s did not start on this Bridge within %ds",instance,BRIDGE_CHAIN_CREATE_LAUNCH_WAIT_MS/1000)
         time.sleep(2*time.Second)
     }
