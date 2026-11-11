@@ -93,7 +93,7 @@ grants_v7_upgrade_bounds_legacy_authority_and_rolls_back_collision_and_commit_fa
     testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     rows,_=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT expires_ms FROM local_grants),(SELECT count(*) FROM local_grant_policy),(SELECT body FROM tasks),(SELECT count(*) FROM command_receipts) FROM runtime_database")
-    testing.expect(t,rows[0][0]=="37" && rows[0][1]=="37" && number(rows[0][2])==1000+LEGACY_GRANT_TTL_MS && rows[0][3]=="0" && rows[0][4]=="private body" && rows[0][5]=="2")
+    testing.expect(t,rows[0][0]=="38" && rows[0][1]=="38" && number(rows[0][2])==1000+LEGACY_GRANT_TTL_MS && rows[0][3]=="0" && rows[0][4]=="private body" && rows[0][5]=="2")
 }
 @(test)
 paired_devices_share_account_access_and_unpaired_revoked_or_foreign_are_refused :: proc(t:^testing.T) {

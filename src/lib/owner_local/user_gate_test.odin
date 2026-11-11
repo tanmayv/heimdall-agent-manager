@@ -209,7 +209,7 @@ user_gate_migration_backfills_principal_kind_without_regating :: proc(t:^testing
     rows,_:=query(f.store.db,"SELECT reviewer_agent_id,principal_kind FROM local_reviews ORDER BY reviewer_agent_id")
     testing.expect_value(t,encode(rows),encode([3][2]string{{"coord_instance","agent"},{"device","device"},{"reviewer","agent"}}))
     version,_:=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
-    testing.expect_value(t,encode(version),encode([1][2]string{{"37","37"}}))
+    testing.expect_value(t,encode(version),encode([1][2]string{{"38","38"}}))
     // An attempt already past the gate is not re-gated.
     testing.expect_value(t,user_gate_state(f),"done")
     // Review evidence stays immutable after the backfill.

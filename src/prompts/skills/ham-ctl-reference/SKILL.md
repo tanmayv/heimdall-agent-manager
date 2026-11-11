@@ -45,9 +45,12 @@ Groups: `bridge`, `agents`, `task-chain`, `task`, `workflow`, `lease`, `review`,
 Every chain is Bridge-owned: its tasks, leases, reviews, fleet, workflow runs and summary live in the owner
 Bridge's local store, and these verbs are routed to that owner. Chains are renamed, archived and given
 directories in the Heimdall app; they are created there or with `task-chain create`. Verbs that only
-reached the removed Hub engine (`list`, `set-title`, `set-description`, `set-status`, `archive`, `unarchive`,
+reached the removed Hub engine (`list`, `set-description`, `set-status`, `archive`, `unarchive`,
 `pin`, `unpin`, `directory`, `decide`, `graph`, `depend`, `remove-dependency`, `scope`) answer
 `{"ok":false,"code":"hub_chains_removed"}`.
+
+- `task-chain set-title <title> [--chain <id>]` — coordinator only: give your chain a short, human-meaningful
+  title (a New conversation's chain starts as `<agent-name> #<n>` and you are reminded until you set one).
 
 - `task-chain create --title <t> [--description <d>] [--coordinator-agent <agt_id>]` — your Bridge creates and
   owns a new chain and binds its one coordinator: you (default), or the named agent, which your Bridge launches

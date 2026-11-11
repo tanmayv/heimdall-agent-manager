@@ -236,7 +236,7 @@ migration_037_maps_review_roles_to_reviewer_agents :: proc(t:^testing.T) {
     if !testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key")) do return
     check :: proc(t:^testing.T,f:^Fixture) {
         rows,_:=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
-        testing.expect_value(t,encode(rows),encode([1][2]string{{"37","37"}}))
+        testing.expect_value(t,encode(rows),encode([1][2]string{{"38","38"}}))
         brief,_:=query(f.store.db,"SELECT json_type(brief_json,'$.review_roles'),json_extract(brief_json,'$.reviewers'),json_extract(brief_json,'$.requires_user_approval') FROM task_requirements WHERE task_id='task' AND revision=2")
         testing.expect_value(t,encode(brief),encode([1][3]string{{"",`["reviewer","auditor","perf_agent"]`,"1"}}))
         untouched,_:=query(f.store.db,"SELECT brief_json FROM task_requirements WHERE task_id='task' AND revision=1")

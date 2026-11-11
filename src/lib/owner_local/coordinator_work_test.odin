@@ -507,7 +507,7 @@ cw_migration_v36_is_rerunnable :: proc(t:^testing.T) {
     testing.expect(t,exec(db,"UPDATE schema_migrations SET version=35"))
     testing.expect_value(t,sqlite3_close(db),0)
     if !testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key")) do return
-    testing.expect_value(t,cc_scalar(f,"SELECT schema_version||':'||(SELECT version FROM schema_migrations) FROM runtime_database"),"37:37")
+    testing.expect_value(t,cc_scalar(f,"SELECT schema_version||':'||(SELECT version FROM schema_migrations) FROM runtime_database"),"38:38")
     enabled,_:=force_done_enabled(&f.store,"chain")
     testing.expect(t,!enabled,"the policy survives the re-run")
 }

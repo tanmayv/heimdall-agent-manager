@@ -136,13 +136,17 @@ create_chat_handler :: proc(ctx:rawptr, req:Request)->Response{
 			if h.prepare_owner_chain==nil do return respond_error(domain.domain_error(.Not_Implemented,"owner chain creation is not configured"),req.request_id)
 			// The chain and the run share one default '<agent-name> #<n>' title,
 			// never the first message (as on origin/main).
+			// A default title is marked so the owner Bridge nudges the
+			// coordinator to set a real one (title_source "default").
+			title_source:=""
 			if strings.trim_space(json_string(req.body,"chain_title"))=="" {
+				title_source="default"
 				// A missing or foreign agent is reported by create_instance below
 				// (which also discards the prepared chain); the chain is then
 				// briefly titled "Coordinator".
 				if minted,minted_ok,_:=agent_service.mint_default_title(h.agents,auth,input.agent_id); minted_ok do default_title=minted
 			}
-			chain,prepare_err:=h.prepare_owner_chain(h.prepare_ctx,input.bridge_id,input.agent_id,owner_chain_new_id(),owner_chain_title(json_string(req.body,"chain_title"),default_title),json_string(req.body,"chain_description"))
+			chain,prepare_err:=h.prepare_owner_chain(h.prepare_ctx,input.bridge_id,input.agent_id,owner_chain_new_id(),owner_chain_title(json_string(req.body,"chain_title"),default_title),json_string(req.body,"chain_description"),title_source)
 			if chain=="" do return respond_error(prepare_err,req.request_id)
 			input.chain_id=chain
 			prepared=true

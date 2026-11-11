@@ -351,7 +351,12 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         // No per-chain grant is issued: every paired device of the account
         // reaches every chain (account-level trust in execute above).
     case "chain.edit":
+        previous,read:=query(s.db,"SELECT title FROM task_chains WHERE chain_id=?",chain)
+        if !read || len(previous)!=1 do return fail("storage_error")
         _,wrote=query(s.db,"UPDATE task_chains SET title=?,description=?,revision=revision+1 WHERE chain_id=?",title,description,chain)
+        // A new title ends the set-title nudge (title_nudge.odin): the
+        // coordinator's task-chain set-title is 'agent', a device rename 'user'.
+        if wrote && previous[0][0]!=title do wrote=chain_title_source_set(s,chain,"agent" if agent_mode else "user")
     case "task.edit", "task.delete":
         protected,checked:=query(s.db,"SELECT 1 FROM local_leases WHERE chain_id=? AND task_id=? UNION ALL SELECT 1 FROM lifecycle_configs WHERE chain_id=? AND task_id=? UNION ALL SELECT 1 FROM local_assignment_history WHERE chain_id=? AND task_id=? UNION ALL SELECT 1 FROM local_handoffs WHERE chain_id=? AND task_id=? LIMIT 1",chain,task,chain,task,chain,task,chain,task)
         if !checked do return fail("storage_error")

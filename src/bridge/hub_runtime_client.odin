@@ -1215,6 +1215,9 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
         ok:=bridge_rollover_queue_notice(instance_id,sender)
         if !ok do ok,_=bridge_legacy_agent_delivery({kind=.Message,instance=instance_id,sender=sender})
 		if !ok do fmt.println("bridge notification pending/no-agent-subscription", instance_id, command_id)
+		// A message to an agent of an owner chain is chain activity: it may
+		// owe the coordinator a set-title nudge (owner_title_nudge.odin).
+		bridge_owner_title_activity(instance_id)
 		if command_id != "" {
 			res := bridge_command_result_json(command_id, "succeeded" if ok else "accepted", "")
 			defer delete(res)

@@ -182,7 +182,7 @@ bridge_owner_chain_create_execute_locked :: proc(in_: Owner_Create_Inputs, chain
 // sees them in plain text) or, for agent and test callers, plain text.
 // chain_id is the Hub-chosen id (so a prepare whose reply was lost can still be
 // discarded); empty picks a fresh one. An existing chain id is refused.
-bridge_owner_chain_prepare :: proc(agent, title, description: string, chain_id: string = "") -> (string, string, string) {
+bridge_owner_chain_prepare :: proc(agent, title, description: string, chain_id: string = "", title_source: string = "") -> (string, string, string) {
     context.allocator=context.temp_allocator
     if !contracts.owner_field_valid(agent,"id") do return "","bad_request","owner_chain_prepare: invalid agent_id"
     if chain_id!="" && (!strings.has_prefix(chain_id,"chain_") || !contracts.owner_field_valid(chain_id,"id")) do return "","bad_request","owner_chain_prepare: invalid chain_id"
@@ -197,18 +197,22 @@ bridge_owner_chain_prepare :: proc(agent, title, description: string, chain_id: 
     sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
     if !bridge_owner_open(in_.account,in_.key.key_id) do return "","storage_error","owner store unavailable"
     if created:=bridge_owner_chain_create_execute_locked(in_,chain,op,bridge_config.daemon_id,&kr);created!="ok" do return "",created,"the owner store rejected the new chain"
+    // The run's default '<agent-name> #<n>' title: its coordinator is nudged
+    // to set a real one (owner title_nudge.odin). Best effort: a failure only
+    // means no nudge.
+    if title_source=="default" && !owner.chain_title_source_set(&bridge_owner_store,chain,"default") do fmt.eprintln("owner_chain_prepare: title state not recorded for",chain)
     bridge_owner_pending_set(chain,agent)
     bridge_owner_coordinator_refresh_locked(chain)
     bridge_owner_publish()
     return chain,"ok",""
 }
 
-// Hub runtime command `owner_chain_prepare {command_id, agent_id, chain_id, title, description}`.
+// Hub runtime command `owner_chain_prepare {command_id, agent_id, chain_id, title, description, title_source}`.
 bridge_owner_chain_prepare_handle :: proc(conn: ^ws.Connection, text: string) {
     context.allocator=context.temp_allocator
-    wire:struct{type,command_id,agent_id,chain_id,title,description:string}
+    wire:struct{type,command_id,agent_id,chain_id,title,description,title_source:string}
     if json.unmarshal_string(text,&wire,.JSON,context.temp_allocator)!=nil do return
-    chain,code,message:=bridge_owner_chain_prepare(wire.agent_id,wire.title,wire.description,wire.chain_id)
+    chain,code,message:=bridge_owner_chain_prepare(wire.agent_id,wire.title,wire.description,wire.chain_id,wire.title_source)
     result:=bridge_owner_json(struct{type,command_id,code,message,chain_id:string}{"command_result",wire.command_id,code,message,chain})
     bridge_runtime_cache_command(wire.command_id,result)
     if conn!=nil do _=bridge_hub_send(conn,result)

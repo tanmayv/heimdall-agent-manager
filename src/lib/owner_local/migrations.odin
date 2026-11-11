@@ -4,7 +4,8 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:slice"
 
-SCHEMA_VERSION :: 37
+SCHEMA_VERSION :: 38
+MIGRATION_038 :: #load("migration_038.sql")
 MIGRATION_037 :: #load("migration_037.sql")
 MIGRATION_036 :: #load("migration_036.sql")
 MIGRATION_035 :: #load("migration_035.sql")
@@ -227,6 +228,10 @@ migrate :: proc(db:DB) -> bool {
         if !exec(db,string(MIGRATION_037)) do return false
         if !migration_037_review_roles(db) do return false
         if !exec(db,"UPDATE schema_migrations SET version=37 WHERE singleton=1") do return false
+    }
+    if version<=37 {
+        if !exec(db,string(MIGRATION_038)) do return false
+        if !exec(db,"UPDATE schema_migrations SET version=38 WHERE singleton=1") do return false
     }
     if !exec(db,"COMMIT") do return false
     committed=true

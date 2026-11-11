@@ -17,7 +17,7 @@ import api_http "odin_test:hub/transport/http"
 // route), the instance launches into it, the reply is 201 and names the chain
 // (NewConversationPage and CreateChainModal open chain:<id> from it), one
 // conversation is saved and nothing is discarded.
-Owner_Create_Chat_Probe :: struct { prepares, discards: int, chain, agent, title: string }
+Owner_Create_Chat_Probe :: struct { prepares, discards: int, chain, agent, title, title_source: string }
 @(private = "file") owner_create_chat_probe: Owner_Create_Chat_Probe
 
 @(test)
@@ -49,10 +49,10 @@ test_create_chat_owner_chain_success_replies_with_the_chain :: proc(t: ^testing.
 
 	// The Bridge stand-in: accepts the Hub-chosen id; the registry then routes it.
 	owner_create_chat_probe = {}
-	graph.content_handlers.prepare_owner_chain = proc(ctx: rawptr, bridge_id, agent_id, chain_id, title, description: string) -> (string, domain.Domain_Error) {
+	graph.content_handlers.prepare_owner_chain = proc(ctx: rawptr, bridge_id, agent_id, chain_id, title, description, title_source: string) -> (string, domain.Domain_Error) {
 		p := &owner_create_chat_probe
 		sync.atomic_add(&p.prepares, 1)
-		p.chain, p.agent, p.title = strings.clone(chain_id), strings.clone(agent_id), strings.clone(title)
+		p.chain, p.agent, p.title, p.title_source = strings.clone(chain_id), strings.clone(agent_id), strings.clone(title), strings.clone(title_source)
 		return chain_id, {}
 	}
 	graph.content_handlers.discard_owner_chain = proc(ctx: rawptr, bridge_id, chain_id: string) -> bool {
@@ -74,7 +74,10 @@ test_create_chat_owner_chain_success_replies_with_the_chain :: proc(t: ^testing.
 	testing.expect_value(t, owner_create_chat_probe.discards, 0)
 	testing.expect(t, strings.has_prefix(owner_create_chat_probe.chain, "chain_") && len(owner_create_chat_probe.chain) == len("chain_") + 32, "the Hub chooses a chain_<32 hex> id")
 	testing.expect_value(t, owner_create_chat_probe.agent, agent_id)
-	testing.expect_value(t, owner_create_chat_probe.title, "Plan the release")
+	// The run's default '<agent-name> #<n>' title, never the first message,
+	// marked default so the owner Bridge nudges the coordinator for a title.
+	testing.expect_value(t, owner_create_chat_probe.title, "Planner #1")
+	testing.expect_value(t, owner_create_chat_probe.title_source, "default")
 	testing.expect_value(t, occ_field(res.body, "chain_id"), owner_create_chat_probe.chain)
 	testing.expect(t, occ_field(res.body, "agent_instance_id") != "", "the reply names the launched instance")
 	testing.expect_value(t, occ_chat_count(&graph, alice[:]), before + 1)

@@ -35,7 +35,8 @@ bridge_owner_routable :: proc(method:string) -> bool {
     switch method {
     case "agent.lease.next","agent.lease.heartbeat","agent.lease.submit","agent.lease.handoff","agent.lease.switch","agent.lease.block",
          "agent.review.post","agent.task.show","agent.task.comments","agent.task.comment","agent.task.create","agent.task.update","agent.task.depend",
-         "agent.task_chain.show","agent.task_chain.set_summary","agent.chain.summary","agent.task_chain.propose","agent.chain.propose","agent.task_chain.publish":
+         "agent.task_chain.show","agent.task_chain.set_summary","agent.chain.summary","agent.task_chain.propose","agent.chain.propose","agent.task_chain.publish",
+         "agent.task_chain.set_title":
         return true
     }
     // Coordinator controls (owner_agent_controls.odin) and fleet management
@@ -602,6 +603,25 @@ bridge_owner_agent_exec :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object
         r:=bridge_owner_run_command(ctx,"chain.summary.set",chain,"",bridge_owner_chain_rev(ctx,chain),bridge_owner_json(map[string]string{"body_cipher"=summary}))
         if r.code!="ok" do return bridge_owner_fail(ctx,r.code,"owner summary refused")
         return bridge_local_response_data(ctx.request_id,r.body)
+    case "agent.task_chain.set_title":
+        // The coordinator names its chain (owner chain.edit, admitted for the
+        // bound coordinator only). The description is kept; the store marks
+        // the title 'agent', which ends the set-title nudge (title_nudge.odin),
+        // and republishes the registry so every listing shows it.
+        chain:=bridge_owner_pstr(p,"chain_id")
+        if chain=="" do chain=owner.agent_home_chain(s,ctx.child)
+        title:=strings.trim_space(bridge_owner_pstr(p,"title"))
+        if title=="" do return bridge_owner_fail(ctx,"bad_request","task-chain set-title requires <title>")
+        current,read:=owner.query(s.db,"SELECT description FROM task_chains WHERE chain_id=?",chain)
+        if !read do return bridge_owner_fail(ctx,"storage_error","owner chain could not be read")
+        if len(current)!=1 do return bridge_owner_fail(ctx,"not_found","chain not found on owner")
+        title_cipher,t_ok:=bridge_owner_cipher(ctx,title)
+        description_cipher,d_ok:=vault.seal_string(current[0][0],ctx.kr,context.temp_allocator)
+        if !t_ok || !d_ok do return bridge_owner_fail(ctx,"vault_locked","cannot seal the chain title")
+        r:=bridge_owner_run_command(ctx,"chain.edit",chain,"",bridge_owner_chain_rev(ctx,chain),bridge_owner_json(map[string]string{"title_cipher"=title_cipher,"description_cipher"=description_cipher}))
+        if r.code=="invalid_scope" do return bridge_owner_fail(ctx,r.code,"task-chain set-title: only the chain's coordinator sets its title")
+        if r.code!="ok" do return bridge_owner_fail(ctx,r.code,"owner chain title refused")
+        return bridge_local_response_data(ctx.request_id,bridge_owner_json(map[string]string{"chain_id"=chain,"title"=title,"title_source"="agent"}))
     case "agent.task_chain.propose","agent.chain.propose","agent.task_chain.publish":
         chain:=bridge_owner_pstr(p,"chain_id")
         if chain=="" do chain=owner.agent_home_chain(s,ctx.child)

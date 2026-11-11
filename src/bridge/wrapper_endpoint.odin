@@ -586,6 +586,8 @@ bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec
 		relay := bridge_local_relay_agent_envelope(route.path, method, eff_params, rec)
 		if !relay.ok do return bridge_local_response_error(request_id, "retryable_unavailable", "Hub relay failed")
 		if relay.status < 200 || relay.status >= 300 do return bridge_local_response_error(request_id, "hub_error", relay.body)
+		// An agent's sent message is chain activity (owner_title_nudge.odin).
+		if method == "agent.chat.send" do bridge_owner_title_activity(rec.agent_instance_id)
 		if strings.trim_space(relay.body) == "" do return bridge_local_response_data(request_id, "{}")
 		return bridge_local_response_data(request_id, relay.body)
 	}

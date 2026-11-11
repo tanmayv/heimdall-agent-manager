@@ -239,7 +239,16 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 	case "fleet", "fleets":
 		// Fleet of a Bridge-owned chain, managed by its coordinator (owner_agent_fleet.odin).
 		ctl_v2_task_chain_fleet(endpoint, token, tokens[1:], args)
-	case "", "list", "set-title", "set-description", "set-status", "status", "archive", "unarchive",
+	case "set-title":
+		// Coordinator only: names a Bridge-owned chain (owner chain.edit) and
+		// ends the set-title nudge. Served by the chain's owner Bridge.
+		title := strings.trim_space(option_value(args, "--title", pos(tokens, 1)))
+		if title == "" { fmt.eprintln("task-chain set-title: <title> is required"); os.exit(2) }
+		fields := make([dynamic]string)
+		append(&fields, json_kv("title", title))
+		if cid := strings.trim_space(option_value(args, "--chain", "")); cid != "" do append(&fields, json_kv("chain_id", cid))
+		ctl_agent_call(endpoint, token, "agent.task_chain.set_title", json_object_from_slice(fields[:]))
+	case "", "list", "set-description", "set-status", "status", "archive", "unarchive",
 	     "pin", "unpin", "directory", "directories", "decide", "proposal",
 	     "graph", "depend", "remove-dependency", "scope":
 		// Hub task chains are removed: these verbs only ever reached the Hub.
@@ -1833,7 +1842,7 @@ print_help_task_chain :: proc() {
 	fmt.println("")
 	fmt.println("Chains are Bridge-owned (the Hub task-chain engine is removed). Chains are created in the")
 	fmt.println("Heimdall app or with `task-chain create` (owned by your Bridge); legacy Hub chains are imported")
-	fmt.println("from Settings → Bridge (Import all). Verbs that only reached the Hub (list, set-title,")
+	fmt.println("from Settings → Bridge (Import all). Verbs that only reached the Hub (list,")
 	fmt.println("set-description, set-status, archive, pin, directory, decide, graph, depend,")
 	fmt.println("remove-dependency, scope) answer hub_chains_removed.")
 	fmt.println("")
@@ -1844,6 +1853,8 @@ print_help_task_chain :: proc() {
 	fmt.println("                                      in the new chain and bound instead. Prints chain_id and")
 	fmt.println("                                      coordinator_instance_id. The user opens it in the app.")
 	fmt.println("  show [<chain-id>]                   Show a chain (defaults to your current chain).")
+	fmt.println("  set-title <title> [--chain <id>]    Coordinator only: give your chain a short, human-meaningful")
+	fmt.println("                                      title. Ends the set-title reminder.")
 	fmt.println("  summary get|show [<chain-id>|--chain <id>]       Print the chain summary (read-only; never writes),")
 	fmt.println("                                                   read from the owner store. vault_locked when the")
 	fmt.println("                                                   owner Bridge cannot decrypt it.")

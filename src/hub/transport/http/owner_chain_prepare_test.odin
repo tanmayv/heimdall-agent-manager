@@ -28,7 +28,7 @@ test_owner_chain_prepare_result_and_title :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(owner_chain_title(strings.repeat("é", 100, context.temp_allocator), "")), 160)
 }
 
-Owner_Prepare_Probe :: struct { calls, discards: int, bridge, agent, title, description, chain, discarded: string, fail: domain.Domain_Error }
+Owner_Prepare_Probe :: struct { calls, discards: int, bridge, agent, title, description, title_source, chain, discarded: string, fail: domain.Domain_Error }
 
 @(private = "file")
 owner_prepare_probe_discard :: proc(ctx: rawptr, bridge_id, chain_id: string) -> bool {
@@ -46,10 +46,11 @@ test_create_chat_owner_chain_refusal_saves_nothing :: proc(t: ^testing.T) {
 	@(static) probe: Owner_Prepare_Probe
 	probe = {fail = domain.domain_error(.Vault_Locked, "the Bridge could not create the task chain: the owner Bridge vault is locked")}
 	f.handlers.prepare_ctx = &probe
-	f.handlers.prepare_owner_chain = proc(ctx: rawptr, bridge_id, agent_id, chain_id, title, description: string) -> (string, domain.Domain_Error) {
+	f.handlers.prepare_owner_chain = proc(ctx: rawptr, bridge_id, agent_id, chain_id, title, description, title_source: string) -> (string, domain.Domain_Error) {
 		p := (^Owner_Prepare_Probe)(ctx)
 		sync.atomic_add(&p.calls, 1)
 		p.bridge, p.agent, p.title, p.description = strings.clone(bridge_id, context.temp_allocator), strings.clone(agent_id, context.temp_allocator), strings.clone(title, context.temp_allocator), strings.clone(description, context.temp_allocator)
+		p.title_source = strings.clone(title_source, context.temp_allocator)
 		return p.chain, p.fail
 	}
 	f.handlers.discard_owner_chain = owner_prepare_probe_discard
@@ -71,6 +72,8 @@ test_create_chat_owner_chain_refusal_saves_nothing :: proc(t: ^testing.T) {
 	// "Coordinator" when the agent cannot be named (this fixture has no agent row).
 	testing.expect(t, probe.title != "Plan the release", "the chain is not titled from the message")
 	testing.expect_value(t, probe.title, "Coordinator")
+	// Marked default, so the owner Bridge nudges the coordinator for a title.
+	testing.expect_value(t, probe.title_source, "default")
 	testing.expect_value(t, probe.description, "d")
 	testing.expect_value(t, probe.discards, 0) // nothing was created, nothing to roll back
 	testing.expect_value(t, list_chat_conversations_count(t, &f), before)
@@ -87,7 +90,7 @@ test_create_chat_owner_chain_launch_failure_discards_the_chain :: proc(t: ^testi
 	@(static) probe: Owner_Prepare_Probe
 	probe = {chain = "chain_rollback"}
 	f.handlers.prepare_ctx = &probe
-	f.handlers.prepare_owner_chain = proc(ctx: rawptr, bridge_id, agent_id, chain_id, title, description: string) -> (string, domain.Domain_Error) {
+	f.handlers.prepare_owner_chain = proc(ctx: rawptr, bridge_id, agent_id, chain_id, title, description, title_source: string) -> (string, domain.Domain_Error) {
 		p := (^Owner_Prepare_Probe)(ctx)
 		sync.atomic_add(&p.calls, 1)
 		return p.chain, p.fail

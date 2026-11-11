@@ -29,7 +29,7 @@ OWNER_CHAIN_TITLE_MAX :: 80
 
 // (chain_id, error). ctx is Content_Handlers.prepare_ctx; chain_id is the
 // Hub-chosen id (owner_chain_new_id).
-Owner_Chain_Prepare_Proc :: proc(ctx: rawptr, bridge_id, agent_id, chain_id, title, description: string) -> (string, domain.Domain_Error)
+Owner_Chain_Prepare_Proc :: proc(ctx: rawptr, bridge_id, agent_id, chain_id, title, description, title_source: string) -> (string, domain.Domain_Error)
 
 // A fresh chain id, in the Bridge's own chain_<32 hex> shape.
 owner_chain_new_id :: proc() -> string {
@@ -42,7 +42,7 @@ owner_chain_new_id :: proc() -> string {
 }
 
 // The default: the owner_chain_prepare runtime command on the launch Bridge.
-owner_chain_prepare_via_runtime :: proc(ctx: rawptr, bridge_id, agent_id, chain_id, title, description: string) -> (string, domain.Domain_Error) {
+owner_chain_prepare_via_runtime :: proc(ctx: rawptr, bridge_id, agent_id, chain_id, title, description, title_source: string) -> (string, domain.Domain_Error) {
 	registry := cast(^project_service.Bridge_Runtime_Registry)ctx
 	if registry == nil do return "", domain.domain_error(.Internal_Error, "bridge runtime is not configured")
 	id := fmt.tprintf("cmd_owner_prepare_%d", time.to_unix_nanoseconds(time.now()))
@@ -52,6 +52,9 @@ owner_chain_prepare_via_runtime :: proc(ctx: rawptr, bridge_id, agent_id, chain_
 	strings.write_string(&b, `","chain_id":"`); write_handler_json_string(&b, chain_id)
 	strings.write_string(&b, `","title":"`); write_handler_json_string(&b, title)
 	strings.write_string(&b, `","description":"`); write_handler_json_string(&b, description)
+	// 'default' marks the run's '<agent-name> #<n>' title: the owner Bridge
+	// then nudges the coordinator to set a real one (owner title_nudge.odin).
+	strings.write_string(&b, `","title_source":"`); write_handler_json_string(&b, title_source)
 	strings.write_string(&b, `"}`)
 	reply, received, err := bridge_runtime.send_runtime_command_wait(registry, project_service.Runtime_Command{bridge_id = bridge_id, command_id = id, body_json = strings.to_string(b)}, OWNER_CHAIN_PREPARE_WAIT_MS)
 	if !received {
