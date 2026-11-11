@@ -496,23 +496,6 @@ cw_coordinator_never_reviews_or_completes_its_own_work :: proc(t:^testing.T) {
 }
 
 @(test)
-cw_migration_v36_is_rerunnable :: proc(t:^testing.T) {
-    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
-    f:=fixture(t);defer destroy(f);seed(t,f)
-    off:=`{"policy":"coordinator_force_done","value":"0"}`
-    testing.expect_value(t,invoke(f,command(f,"chain.policy.set","off","",off,agent_chain_rev(f)),off).code,"ok")
-    close(&f.store)
-    db:DB
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    testing.expect(t,exec(db,"UPDATE schema_migrations SET version=35"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    if !testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key")) do return
-    testing.expect_value(t,cc_scalar(f,"SELECT schema_version||':'||(SELECT version FROM schema_migrations) FROM runtime_database"),"38:38")
-    enabled,_:=force_done_enabled(&f.store,"chain")
-    testing.expect(t,!enabled,"the policy survives the re-run")
-}
-
-@(test)
 cw_reads_expose_the_policy_and_split_links :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
     f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)

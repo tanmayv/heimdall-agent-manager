@@ -115,31 +115,6 @@ search_lifecycle_sources_are_current_and_protected_from_content_delete :: proc(t
     testing.expect_value(t,invoke(f,command(f,"task.delete","protected","task",p,"5"),p).code,"operation_conflict")
 }
 
-@(test)
-search_v4_upgrade_collision_is_atomic_and_preserves_live_history :: proc(t:^testing.T) {
-    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
-    f:=fixture(t);defer destroy(f);seed(t,f)
-    close(&f.store)
-    db:DB
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    testing.expect(t,exec(db,"PRAGMA foreign_keys=OFF;"+SEARCH_TEST_DROP))
-    text:=string(MIGRATION_004)
-    prefix:=text[:strings.index(text,"CREATE TABLE lifecycle_configs")]
-    testing.expect(t,exec(db,prefix))
-    testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=4; CREATE VIEW search_docs AS SELECT 1;"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    rows,ok:=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT body FROM tasks),(SELECT count(*) FROM command_receipts) FROM runtime_database")
-    testing.expect(t,ok && rows[0][0]=="4" && rows[0][1]=="4" && rows[0][2]=="private body" && rows[0][3]=="2")
-    testing.expect(t,exec(db,"DROP VIEW search_docs"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,len(search_hits(search_for(f,"private"))),1)
-    rows,ok=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
-    testing.expect(t,ok && rows[0][0]=="38" && rows[0][1]=="38")
-}
-
 history_submit :: proc(t:^testing.T,f:^Fixture,lease,revision,summary:string) {
     child:=lease_child()
     claimed:=lease_invoke(f,lease_request(f,child,"lease.claim",fmt.tprintf("claim_%s",lease),lease,"",revision),"",child)
@@ -214,33 +189,6 @@ search_all_retained_attempts_rebuild_restart_exact_read_and_denial :: proc(t:^te
     denied=search_for(f,"historicalfirstneedle")
     testing.expect(t,denied.code=="invalid_scope" && denied.body=="")
 }
-@(test)
-search_v5_upgrade_backfills_retained_attempts_and_rolls_back_failure :: proc(t:^testing.T) {
-    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
-    f:=fixture(t);defer destroy(f);history_seed(t,f)
-    close(&f.store)
-    db:DB
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    testing.expect(t,exec(db,V9_TEST_DROP+"DROP TABLE IF EXISTS local_chain_context;"+"DROP TABLE IF EXISTS local_grant_audit; DROP TABLE IF EXISTS local_grant_policy;"+"DROP INDEX IF EXISTS local_review_holder; DROP TRIGGER search_local_handoffs_insert; DROP TABLE local_checkpoints; DROP TABLE local_work_attempts; DROP TABLE local_assignment_history; DROP TABLE intent_invalidations; DROP TABLE control_notices; DROP TABLE local_handoffs; DROP TABLE local_controls;"))
-    text:=string(MIGRATION_005)
-    prefix:=text[:strings.index(text,"CREATE TABLE task_deletions")]
-    testing.expect(t,exec(db,prefix))
-    testing.expect(t,exec(db,"DROP TRIGGER search_local_submissions_insert; DROP TRIGGER search_local_submissions_update; DROP TRIGGER search_local_submissions_delete; DELETE FROM search_docs WHERE kind='output';"))
-    legacy:=text[strings.index(text,"CREATE TRIGGER search_local_submissions_insert"):strings.index(text,"DROP TRIGGER receipt_scope")]
-    testing.expect(t,exec(db,legacy))
-    testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=5; CREATE TRIGGER fail_history_upgrade BEFORE INSERT ON search_docs WHEN new.kind='output' BEGIN SELECT RAISE(ABORT,'full'); END;"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    rows,ok:=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT count(*) FROM local_submissions),(SELECT count(*) FROM search_docs WHERE kind='output') FROM runtime_database")
-    testing.expect(t,ok && rows[0][0]=="5" && rows[0][1]=="5" && rows[0][2]=="2" && rows[0][3]=="1","failed upgrade preserves V5 canonical rows and old index")
-    testing.expect(t,exec(db,"DROP TRIGGER fail_history_upgrade"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
-    history_expect(t,f)
-    testing.expect(t,search_rebuild(&f.store));history_expect(t,f)
-}
-
 // R4b: an archived workflow stage task (migration_archived_tasks) is found by
 // its run and stage identity and labelled archival. The import indexes it in
 // its own transaction; the startup rebuild reproduces exactly the same rows.
@@ -296,18 +244,4 @@ search_indexes_archived_stage_tasks_at_import_and_rebuild :: proc(t:^testing.T) 
     close(&f.store)
     testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     expect_archived(t,f,"deployprobe","archived_after_restart")
-    // A V32 store (unguarded task triggers, a live doc for the stage) upgrades
-    // to V33 without the live doc and with the guarded triggers.
-    testing.expect(t,exec(f.store.db,`DROP TRIGGER search_tasks_update;
-      CREATE TRIGGER search_tasks_update AFTER UPDATE ON tasks BEGIN INSERT INTO search_docs(chain_id,task_id,kind,object_id,revision,title,body) VALUES(new.chain_id,new.task_id,'task',new.task_id,new.revision,new.title,new.body) ON CONFLICT(chain_id,kind,object_id) DO UPDATE SET revision=excluded.revision,title=excluded.title,body=excluded.body; END;
-      UPDATE tasks SET revision=revision+1 WHERE task_id='t_stage';
-      UPDATE schema_migrations SET version=32;`))
-    testing.expect_value(t,docs(f),encode([1][3]string{{"1","5","1"}}))
-    close(&f.store)
-    testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,docs(f),live_docs)
-    version,_:=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
-    testing.expect_value(t,encode(version),encode([1][2]string{{"38","38"}}))
-    testing.expect(t,exec(f.store.db,"UPDATE tasks SET revision=revision+1 WHERE task_id='t_stage'"))
-    testing.expect_value(t,docs(f),live_docs)
 }

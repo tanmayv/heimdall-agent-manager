@@ -1,6 +1,0 @@
-DROP TRIGGER IF EXISTS workflow_task_definition_immutable; DROP TRIGGER IF EXISTS workflow_task_no_delete;
-DROP TABLE IF EXISTS local_workflow_events; DROP TABLE IF EXISTS local_workflow_tasks; DROP TABLE IF EXISTS local_workflow_executions; DROP TABLE IF EXISTS local_workflow_runs; DROP TABLE IF EXISTS local_workflow_definitions; DROP TABLE IF EXISTS local_dependencies; DROP TABLE IF EXISTS local_role_reviews; DROP TABLE IF EXISTS local_role_pairs; DROP TABLE IF EXISTS local_role_configs; DROP TABLE IF EXISTS source_receipt_pins; DROP TABLE IF EXISTS source_consumptions; DROP TABLE IF EXISTS source_episodes; DROP INDEX IF EXISTS local_review_holder;
-ALTER TABLE local_review_sessions RENAME TO local_review_sessions_v8_fixture;
-CREATE TABLE local_review_sessions(chain_id TEXT NOT NULL,task_id TEXT NOT NULL,attempt INTEGER NOT NULL,child TEXT NOT NULL,capability_json TEXT NOT NULL,expires_ms INTEGER NOT NULL,PRIMARY KEY(chain_id,task_id,attempt));
-INSERT INTO local_review_sessions SELECT * FROM local_review_sessions_v8_fixture;
-DROP TABLE local_review_sessions_v8_fixture;

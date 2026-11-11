@@ -350,30 +350,6 @@ owner_execution_fresh_fence_rejects_changed_claim_expiry_and_retired_grant :: pr
 }
 
 @(test)
-owner_execution_v25_upgrade_preserves_identity_and_rolls_back_collision :: proc(t:^testing.T) {
-    context.allocator=context.temp_allocator
-    f:=fixture(t);defer destroy(f);seed(t,f)
-    before,ok:=query(f.store.db,"SELECT database_id,commit_seq,incarnation FROM runtime_database")
-    if !testing.expect(t,ok && len(before)==1) do return
-    close(&f.store)
-    db:DB;testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    // Reconstruct the exact historical runtime contract, retaining aggregate
-    // tables and committed task/receipt rows. The new table must not survive.
-    parts:=strings.split(string(MIGRATION_025),"-- Identities survive body GC.",context.temp_allocator)
-    testing.expect(t,exec(db,strings.concatenate({"PRAGMA foreign_keys=OFF; DROP TABLE IF EXISTS owner_execution_bootstraps; DROP TABLE IF EXISTS owner_execution_queries; DROP TABLE owner_execution_journal;",parts[0],"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=25; CREATE VIEW owner_execution_journal AS SELECT 1;"},context.temp_allocator)))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    rows,read:=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations),database_id,commit_seq FROM runtime_database")
-    testing.expect(t,read);testing.expect_value(t,encode(rows),encode([1][4]string{{"25","25",before[0][0],before[0][1]}}))
-    testing.expect(t,exec(db,"DROP VIEW owner_execution_journal"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
-    rows,read=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations),database_id,commit_seq FROM runtime_database")
-    testing.expect(t,read);testing.expect_value(t,encode(rows),encode([1][4]string{{"38","38",before[0][0],before[0][1]}}))
-}
-
-@(test)
 owner_execution_preparation_expiry_retires_without_lease_or_attempt :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
     x:=execution_test_fixture(t);defer execution_test_destroy(x);f:=x.owner

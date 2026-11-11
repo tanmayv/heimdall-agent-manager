@@ -4,7 +4,6 @@ package owner_local
 import "core:encoding/json"
 import "core:fmt"
 import "core:testing"
-import "core:strings"
 import contracts "odin_test:contracts"
 
 FLEET_POLICY_FIXTURE :: #load("../../contracts/fixtures/owner-fleet-policy.json")
@@ -110,44 +109,4 @@ fleet_policy_pagination_is_revision_bound_and_read_grants_are_enforced :: proc(t
     testing.expect_value(t,fleet_policy_test_read(f).code,"ok")
     f.creator.revoked=true // the device itself is revoked (account-level trust; no per-chain grant)
     testing.expect_value(t,fleet_policy_test_read(f).code,"invalid_scope")
-}
-
-@(test)
-fleet_policy_edits_preserve_live_child_authority_and_v16_migration_rollback :: proc(t:^testing.T) {
-    context.allocator=context.temp_allocator
-    f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
-    cap:=lifecycle_ready(t,f);if cap=="" do return
-    keep:="SELECT (SELECT json_group_array(json_array(lease_id,capability_json,retired_seq)) FROM local_leases),(SELECT json_group_array(json_array(seq,evidence_json)) FROM local_events),(SELECT json_group_array(json_array(principal_id,operation_id,result_json)) FROM command_receipts),(SELECT commit_seq FROM runtime_database)"
-    before,_:=query(f.store.db,keep)
-    close(&f.store)
-    db:DB
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    prefix:=string(MIGRATION_016);prefix=prefix[:strings.index(prefix,"CREATE TABLE native_budget_baselines")]
-    testing.expect(t,exec(db,V23_TEST_DROP))
-    testing.expect(t,exec(db,"DROP TABLE IF EXISTS local_metadata_retirements; DROP TABLE IF EXISTS local_brief_inputs; DROP TABLE IF EXISTS local_coordinator_revocations; DROP TABLE IF EXISTS local_config_revocations; DROP TABLE IF EXISTS local_chain_directory_versions; DROP TABLE IF EXISTS local_chain_member_versions; DROP TABLE IF EXISTS local_member_chains; DROP TABLE IF EXISTS local_chain_defaults_versions; DROP TABLE IF EXISTS local_chain_summary_versions; DROP TRIGGER IF EXISTS native_history_origin; DROP TABLE IF EXISTS local_fleet_policy_sources; DROP TABLE IF EXISTS native_fleet_policies; DROP TABLE IF EXISTS native_fleet_snapshots; DROP TABLE IF EXISTS local_task_priority_versions; DROP TABLE IF EXISTS native_fact_chain; DROP TABLE IF EXISTS native_fact_task; DROP TABLE IF EXISTS native_fact_comment; DROP TABLE IF EXISTS native_fact_summary; DROP TABLE IF EXISTS native_fact_snapshots; DROP TABLE IF EXISTS native_metadata_members; DROP TABLE IF EXISTS native_metadata_directories; DROP TABLE IF EXISTS native_metadata_snapshots; DROP TABLE IF EXISTS native_metadata_origins; DROP VIEW local_fleet_policy_current; DROP TABLE local_fleet_policy_models; DROP TABLE local_fleet_policy_roles; DROP TABLE local_fleet_policy_versions"))
-    testing.expect(t,exec(db,prefix))
-    testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=16; CREATE VIEW local_fleet_policy_versions AS SELECT 1"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    rows,_:=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
-    testing.expect(t,rows[0][0]=="16" && rows[0][1]=="16")
-    after,_:=query(db,keep);testing.expect_value(t,encode(after),encode(before))
-    testing.expect(t,exec(db,"DROP VIEW local_fleet_policy_versions; CREATE TABLE fleet_migrate_parent(id INTEGER PRIMARY KEY); CREATE TABLE fleet_migrate_ref(id INTEGER REFERENCES fleet_migrate_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER fleet_migrate_fail AFTER UPDATE ON schema_migrations WHEN NEW.version=17 BEGIN INSERT INTO fleet_migrate_ref VALUES(1); END"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    rows,_=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT count(*) FROM sqlite_master WHERE name='local_fleet_policy_versions') FROM runtime_database")
-    testing.expect(t,rows[0][0]=="16" && rows[0][1]=="16" && rows[0][2]=="0")
-    after,_=query(db,keep);testing.expect_value(t,encode(after),encode(before))
-    testing.expect(t,exec(db,"DROP TRIGGER fleet_migrate_fail"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
-    after,_=query(f.store.db,keep);testing.expect_value(t,encode(after),encode(before))
-    chain,_:=query(f.store.db,"SELECT revision FROM task_chains")
-    lease_before,_:=query(f.store.db,"SELECT * FROM local_leases")
-    testing.expect_value(t,fleet_policy_test_call(f,string(FLEET_POLICY_FIXTURE),"live_policy",chain[0][0]).code,"ok")
-    lease_after,_:=query(f.store.db,"SELECT * FROM local_leases")
-    testing.expect_value(t,encode(lease_after),encode(lease_before))
-    testing.expect_value(t,lifecycle_call(f,lease_child(),"requirements.present","policy_keeps_child","{\"requirements_revision\":\"1\"}",cap).code,"ok")
 }

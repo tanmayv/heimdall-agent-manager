@@ -74,6 +74,7 @@ docs/                   architecture, guides, designs, audits (indexed in docs/R
 | Task leases, reviews, gate, merge-back, workflows | `src/lib/owner_local/`, `src/bridge/owner_*.odin` |
 | Legacy Hub chain import | `src/hub/repository/sqlite/owner_migration*.odin`, `src/lib/owner_local/migration_import.odin`, `src/bridge/owner_migration.odin` |
 | A table, query or migration | `src/hub/repository/sqlite/` (+ `repository/iface/`, `domain/`) |
+| An owner-local (Bridge chain store) table | `src/lib/owner_local/schema.sql` is the flat baseline (V38). Until a release users run owner chains on ships, edit it in place and bump `SCHEMA_VERSION` with `runtime_database.schema_version`; after that, add numbered `migration_NNN.sql` steps from the baseline in `migrations.odin`. Stores older than the baseline are refused |
 | A hub-to-bridge command | `src/bridge/hub_runtime_client.odin` (`bridge_hub_handle_command`), `hub_command_dispatch.odin` |
 | Agent bootstrap files | `src/bridge/bootstrap_*.odin`, `src/hub/service/agent/`, `src/prompts/` |
 | Agent launch, PTY, terminal I/O | `src/bridge/pty_host_runtime.odin`, `tools/pty_host/src/` |

@@ -61,8 +61,8 @@ Integration entrypoints (all paths relative to the repository):
 
 | API | Contract |
 | --- | --- |
-| `src/lib/owner_local/store.odin:41` `open` | Hold the profile writer lock, check identity before migration, apply version 3 atomically, advance incarnation and recover abandoned claims. Caller provides a private directory and closes only after request/delivery workers drain. |
-| `src/lib/owner_local/migrations.odin:8` `migrate` | Transactional V1 upgrade; existing canonical rows, receipt results and signed publication bytes survive. Unsupported future versions or orphaned intent provenance reject startup. |
+| `src/lib/owner_local/store.odin:41` `open` | Hold the profile writer lock, check identity before migration, create the flat schema on a new database (other versions refused), advance incarnation and recover abandoned claims. Caller provides a private directory and closes only after request/delivery workers drain. |
+| `src/lib/owner_local/migrations.odin` `migrate` | Flat schema: a new database gets `schema.sql` at `SCHEMA_VERSION` in one transaction. A pre-release store at any other version rejects startup and must be recreated. Until a release users run owner chains on ships, change the schema in place and bump `SCHEMA_VERSION` with `runtime_database.schema_version`; after that, add numbered migration steps from this baseline. |
 | `src/lib/owner_local/directory.odin:26` `verify_directory`, `:10` `observe_directory` | Verify paired root/enrollment/keyring and persist the monotonic security pin before execution. |
 | `src/lib/owner_local/store.odin:100` `execute` | Current read authorization under the UoW, exact receipt/tombstone digest lookup, then live miss admission. Returns success only after commit. |
 | `src/lib/owner_local/transaction.odin:14` `transaction_begin`, `:31` `transaction_savepoint`, `:41` `transaction_commit`, `:53` `transaction_rollback` | Thread-bound, explicit nested UoW. A same-thread nested begin fails; use a savepoint. SQL/cryptography only inside the transaction. Failed rollback quarantines uncertain connection state until reopen. |

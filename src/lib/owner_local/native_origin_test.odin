@@ -70,31 +70,3 @@ native_origin_reconciles_legacy_history_without_rewriting_source :: proc(t:^test
     rows,ok=query(f.store.db,"PRAGMA foreign_key_check")
     testing.expect(t,ok && len(rows)==0)
 }
-
-@(test)
-native_origin_v19_migration_rejects_conflicting_legacy_owner_atomically :: proc(t:^testing.T) {
-    context.allocator=context.temp_allocator
-    f:=fixture(t);defer destroy(f);seed(t,f)
-    testing.expect_value(t,native_import_call(f,native_history_fixture(),"original_history","1").code,"ok")
-    keep:="SELECT record_json,accepted_seq FROM native_history_records ORDER BY record_kind,record_key"
-    before,_:=query(f.store.db,keep)
-    close(&f.store)
-    db:DB
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    testing.expect(t,exec(db,V23_TEST_DROP))
-    testing.expect(t,exec(db,"DROP TABLE IF EXISTS local_metadata_retirements; DROP TABLE IF EXISTS local_brief_inputs; DROP TABLE IF EXISTS local_coordinator_revocations; DROP TABLE IF EXISTS local_config_revocations; DROP TABLE IF EXISTS local_chain_directory_versions; DROP TABLE IF EXISTS local_chain_member_versions; DROP TABLE IF EXISTS local_member_chains; DROP TABLE local_chain_defaults_versions; DROP TABLE local_chain_summary_versions; DROP TRIGGER native_history_origin; DROP TABLE local_fleet_policy_sources; DROP TABLE native_fleet_policies; DROP TABLE native_fleet_snapshots; DROP TABLE local_task_priority_versions"))
-    prefix:=string(MIGRATION_019);prefix=prefix[:strings.index(prefix,"CREATE TABLE native_fact_snapshots")]
-    testing.expect(t,exec(db,prefix))
-    // Older code allowed a history owner different from the metadata origin.
-    testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=19; DROP TRIGGER native_metadata_origins_no_update; UPDATE native_metadata_origins SET owner_user_id='conflicting_owner'; CREATE TRIGGER native_metadata_origins_no_update BEFORE UPDATE ON native_metadata_origins BEGIN SELECT RAISE(ABORT,'immutable native metadata'); END"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    rows,_:=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT count(*) FROM sqlite_master WHERE name='local_task_priority_versions') FROM runtime_database")
-    testing.expect_value(t,encode(rows),encode([1][3]string{{"19","19","0"}}))
-    after,_:=query(db,keep);testing.expect_value(t,encode(after),encode(before))
-    testing.expect(t,exec(db,"DROP TRIGGER native_metadata_origins_no_update; UPDATE native_metadata_origins SET owner_user_id='original_user'; CREATE TRIGGER native_metadata_origins_no_update BEFORE UPDATE ON native_metadata_origins BEGIN SELECT RAISE(ABORT,'immutable native metadata'); END"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
-    after,_=query(f.store.db,keep);testing.expect_value(t,encode(after),encode(before))
-}

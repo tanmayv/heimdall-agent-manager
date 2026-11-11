@@ -162,49 +162,6 @@ event_history_tracks_child_and_expiry_with_observed_identity :: proc(t:^testing.
     testing.expect(t,strings.contains(rows[0][3],"lease_id"))
 }
 
-@(test)
-event_v12_upgrade_collision_and_commit_rollback_preserve_live_runtime :: proc(t:^testing.T) {
-    context.allocator=context.temp_allocator
-    f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
-    cap:=lifecycle_ready(t,f)
-    keep:="SELECT (SELECT json_group_array(json_array(principal_id,operation_id,input_digest,result_json)) FROM command_receipts),(SELECT json_group_array(json_array(chain_id,task_id,revision,brief_json,cipher)) FROM task_requirements),(SELECT capability_json FROM local_leases WHERE retired_seq IS NULL LIMIT 1)"
-    before,_:=query(f.store.db,keep)
-    close(&f.store)
-    db:DB
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    prefix:=string(MIGRATION_012);prefix=prefix[:strings.index(prefix,"CREATE TABLE local_workflow_output_triggers_v12")]
-    testing.expect(t,exec(db,V23_TEST_DROP))
-    testing.expect(t,exec(db,"DROP TABLE IF EXISTS local_metadata_retirements; DROP TABLE IF EXISTS local_brief_inputs; DROP TABLE IF EXISTS local_coordinator_revocations; DROP TABLE IF EXISTS local_config_revocations; DROP TABLE IF EXISTS local_chain_directory_versions; DROP TABLE IF EXISTS local_chain_member_versions; DROP TABLE IF EXISTS local_member_chains; DROP TABLE IF EXISTS local_chain_defaults_versions; DROP TABLE IF EXISTS local_chain_summary_versions; DROP TRIGGER IF EXISTS native_history_origin; DROP TABLE IF EXISTS local_fleet_policy_sources; DROP TABLE IF EXISTS native_fleet_policies; DROP TABLE IF EXISTS native_fleet_snapshots; DROP TABLE IF EXISTS local_task_priority_versions; DROP TABLE IF EXISTS native_fact_chain; DROP TABLE IF EXISTS native_fact_task; DROP TABLE IF EXISTS native_fact_comment; DROP TABLE IF EXISTS native_fact_summary; DROP TABLE IF EXISTS native_fact_snapshots; DROP TABLE IF EXISTS native_metadata_members; DROP TABLE IF EXISTS native_metadata_directories; DROP TABLE IF EXISTS native_metadata_snapshots; DROP TABLE IF EXISTS native_metadata_origins; DROP VIEW IF EXISTS local_fleet_policy_current; DROP TABLE IF EXISTS local_fleet_policy_models; DROP TABLE IF EXISTS local_fleet_policy_roles; DROP TABLE IF EXISTS local_fleet_policy_versions; DROP TABLE IF EXISTS native_budget_overlap; DROP TABLE IF EXISTS budget_control_owners; DROP TABLE IF EXISTS local_dependency_retirements; DROP TABLE IF EXISTS local_budget_evidence; DROP TABLE IF EXISTS native_budget_baselines; DROP TRIGGER IF EXISTS deferred_prepared_merge_no_invalidation; DROP TABLE IF EXISTS deferred_workflow_dispositions; DROP TABLE IF EXISTS deferred_workflow_retirements; DROP TABLE IF EXISTS native_history_records; DROP TABLE IF EXISTS local_task_retirements; DROP TABLE local_events;"))
-    testing.expect(t,exec(db,prefix))
-    testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=12; CREATE VIEW local_events AS SELECT 1;"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    rows,_:=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
-    testing.expect(t,rows[0][0]=="12" && rows[0][1]=="12")
-    testing.expect(t,exec(db,`DROP VIEW local_events; CREATE TABLE event_parent(id INTEGER PRIMARY KEY);
-      CREATE TABLE event_ref(id INTEGER REFERENCES event_parent(id) DEFERRABLE INITIALLY DEFERRED);
-      CREATE TRIGGER event_commit_fail AFTER UPDATE ON schema_migrations WHEN NEW.version=13 BEGIN INSERT INTO event_ref VALUES(1); END;`))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    rows,_=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT count(*) FROM sqlite_master WHERE name='local_events') FROM runtime_database")
-    testing.expect(t,rows[0][0]=="12" && rows[0][1]=="12" && rows[0][2]=="0")
-    after,_:=query(db,keep)
-    for value,i in before[0] do testing.expect_value(t,after[0][i],value)
-    testing.expect(t,exec(db,"DROP TRIGGER event_commit_fail"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
-    after,_=query(f.store.db,keep)
-    for value,i in before[0] do testing.expect_value(t,after[0][i],value)
-    rows,_=query(f.store.db,"SELECT count(*) FROM local_events WHERE completeness='legacy_tag' AND ts_ms IS NULL AND actor_kind='unknown' AND evidence_json=''")
-    changes,_:=query(f.store.db,"SELECT count(*) FROM local_changes")
-    testing.expect_value(t,rows[0][0],changes[0][0])
-    testing.expect_value(t,lifecycle_call(f,lease_child(),"requirements.present","event_after_upgrade",`{"requirements_revision":"1"}`,cap).code,"ok")
-    rows,_=query(f.store.db,"PRAGMA foreign_key_check")
-    testing.expect_value(t,len(rows),0)
-}
-
 
 @(test)
 event_history_survives_canonical_task_deletion :: proc(t:^testing.T) {

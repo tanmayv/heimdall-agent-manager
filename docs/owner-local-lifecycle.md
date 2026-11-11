@@ -217,6 +217,6 @@ need separate validation. No native provider interrupt behavior is established.
 | ACK/submit/reviewer capability and replay | `src/lib/owner_local/lifecycle_agent.odin:12` |
 | Git path/ref/source validation and CAS | `src/bridge/owner_local_lifecycle.odin:19` |
 | Durable effect settlement | `src/lib/owner_local/outbox.odin:65` |
-| Immutable schema additions | `src/lib/owner_local/migration_004.sql:50` |
+| Immutable schema additions | `src/lib/owner_local/schema.sql` |
 
 See [Bridge-owned chain context](owner-local-context.md) for bounded summaries, exact requirements delivery, full-source paging, and the legacy overflow fix.

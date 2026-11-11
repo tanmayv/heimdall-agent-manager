@@ -58,23 +58,3 @@ owner_bootstrap_storage_fault_rolls_back_content_and_does_not_regrant :: proc(t:
     after,_:=query(f.store.db,"SELECT commit_seq,(SELECT count(*) FROM local_leases),(SELECT count(*) FROM local_work_attempts) FROM runtime_database")
     testing.expect_value(t,encode(after),encode(before))
 }
-@(test)
-owner_bootstrap_v26_upgrade_collision_rolls_back_original_activation :: proc(t:^testing.T) {
-    context.allocator=context.temp_allocator
-    x,claim:=execution_bootstrap_fixture(t);defer execution_test_destroy(x);f:=x.owner
-    before,_:=query(f.store.db,"SELECT database_id,commit_seq,(SELECT activation_json FROM owner_execution_journal) FROM runtime_database")
-    close(&f.store)
-    db:DB;testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    sql:=string(MIGRATION_026)
-    prefix:=sql[:strings.index(sql,"CREATE TABLE owner_execution_journal")]
-    testing.expect(t,exec(db,strings.concatenate({"PRAGMA foreign_keys=OFF; DROP TABLE owner_execution_bootstraps;",prefix,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=26; CREATE VIEW owner_execution_bootstraps AS SELECT 1;"},context.temp_allocator)))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    rows,_:=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations),database_id,commit_seq,(SELECT activation_json FROM owner_execution_journal) FROM runtime_database")
-    testing.expect(t,rows[0][0]=="26" && rows[0][1]=="26" && rows[0][2]==before[0][0] && rows[0][3]==before[0][1] && rows[0][4]==before[0][2])
-    testing.expect(t,exec(db,"DROP VIEW owner_execution_bootstraps"));testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
-    rows,_=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations),database_id,commit_seq,(SELECT activation_json FROM owner_execution_journal) FROM runtime_database")
-    testing.expect(t,rows[0][0]=="38" && rows[0][1]=="38" && rows[0][2]==before[0][0] && rows[0][3]==before[0][1] && rows[0][4]==before[0][2])
-}

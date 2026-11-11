@@ -62,40 +62,6 @@ grant_methods_are_removed_and_chain_create_issues_no_grant :: proc(t:^testing.T)
 }
 
 @(test)
-grants_v7_upgrade_bounds_legacy_authority_and_rolls_back_collision_and_commit_failure :: proc(t:^testing.T) {
-    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
-    f:=fixture(t);defer destroy(f);seed(t,f)
-    // A legacy store's grant row, as chain.create wrote it before grants were removed.
-    testing.expect(t,exec(f.store.db,fmt.tprintf("INSERT INTO local_grants VALUES('chain','%s','%s',1,'%d',1,1,0)",f.creator.principal_id,f.creator.key_id,1000+LEGACY_GRANT_TTL_MS)))
-    close(&f.store)
-    db:DB
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    testing.expect(t,exec(db,V9_TEST_DROP+"DROP TABLE IF EXISTS local_chain_context;"+"DROP TABLE local_grant_audit; DROP TABLE local_grant_policy;"))
-    prefix:=string(MIGRATION_007)
-    prefix=prefix[:strings.index(prefix,"CREATE TABLE local_controls")]
-    testing.expect(t,exec(db,prefix))
-    testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=7; CREATE INDEX local_review_holder ON local_review_sessions(json_extract(child,'$.instance')); UPDATE local_grants SET revision=revision+1,expires_ms=9223372036854775807; CREATE VIEW local_grant_policy AS SELECT 1;"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    rows,_:=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT expires_ms FROM local_grants) FROM runtime_database")
-    testing.expect(t,rows[0][0]=="7" && rows[0][1]=="7" && rows[0][2]=="9223372036854775807")
-    testing.expect(t,exec(db,"DROP VIEW local_grant_policy"))
-    testing.expect(t,exec(db,`CREATE TABLE grant_upgrade_parent(id INTEGER PRIMARY KEY);
-      CREATE TABLE grant_upgrade_ref(id INTEGER REFERENCES grant_upgrade_parent(id) DEFERRABLE INITIALLY DEFERRED);
-      CREATE TRIGGER grant_upgrade_failure AFTER UPDATE ON schema_migrations WHEN NEW.version=8 BEGIN INSERT INTO grant_upgrade_ref VALUES(1); END;`))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    rows,_=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT expires_ms FROM local_grants),(SELECT count(*) FROM sqlite_master WHERE name='local_grant_policy') FROM runtime_database")
-    testing.expect(t,rows[0][0]=="7" && rows[0][1]=="7" && rows[0][2]=="9223372036854775807" && rows[0][3]=="0")
-    testing.expect(t,exec(db,"DROP TRIGGER grant_upgrade_failure"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
-    rows,_=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT expires_ms FROM local_grants),(SELECT count(*) FROM local_grant_policy),(SELECT body FROM tasks),(SELECT count(*) FROM command_receipts) FROM runtime_database")
-    testing.expect(t,rows[0][0]=="38" && rows[0][1]=="38" && number(rows[0][2])==1000+LEGACY_GRANT_TTL_MS && rows[0][3]=="0" && rows[0][4]=="private body" && rows[0][5]=="2")
-}
-@(test)
 paired_devices_share_account_access_and_unpaired_revoked_or_foreign_are_refused :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
     f:=fixture(t);defer destroy(f);seed(t,f)

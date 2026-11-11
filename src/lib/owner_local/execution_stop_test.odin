@@ -1,8 +1,6 @@
 #+feature dynamic-literals
 package owner_local
 import "core:encoding/json"
-import "core:fmt"
-import "core:strings"
 import "core:testing"
 import contracts "odin_test:contracts"
 import executor "odin_test:lib/executor_local"
@@ -162,24 +160,4 @@ owner_remote_stop_recovers_legacy_wrong_device_settlement_idempotently :: proc(t
     testing.expect(t,execution_stop_recover(&f.store))
     checked,ok:=query(f.store.db,"SELECT (SELECT count(*) FROM runtime_intents WHERE kind LIKE 'executor.stop:%'),(SELECT count(*) FROM intent_invalidations WHERE intent_id=?),(SELECT result_json FROM runtime_intents WHERE intent_id=?)",old_id,old_id)
     testing.expect(t,ok && checked[0][0]=="1" && checked[0][1]=="1" && checked[0][2]=="child_absent","old evidence retained; exact executor stop remains pending")
-}
-
-@(test)
-owner_remote_stop_v27_upgrade_collision_preserves_pending_intent :: proc(t:^testing.T) {
-    context.allocator=context.temp_allocator
-    x,_:=execution_bootstrap_fixture(t);defer execution_test_destroy(x);f:=x.owner
-    before,_:=query(f.store.db,"SELECT database_id,commit_seq,(SELECT activation_json FROM owner_execution_journal) FROM runtime_database")
-    close(&f.store)
-    db:DB;testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    sql:=string(MIGRATION_027);prefix:=sql[:strings.index(sql,"CREATE TABLE owner_execution_bootstraps")]
-    testing.expect(t,exec(db,strings.concatenate({"DROP TABLE owner_execution_stop_steps;",prefix,"UPDATE schema_migrations SET version=27; CREATE VIEW owner_execution_stop_steps AS SELECT 1;"},context.temp_allocator)))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    rows,_:=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations),database_id,commit_seq,(SELECT activation_json FROM owner_execution_journal) FROM runtime_database")
-    testing.expect(t,rows[0][0]=="27" && rows[0][1]=="27" && rows[0][2]==before[0][0] && rows[0][3]==before[0][1] && rows[0][4]==before[0][2])
-    testing.expect(t,exec(db,"DROP VIEW owner_execution_stop_steps"));testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
-    rows,_=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations),database_id FROM runtime_database")
-    testing.expect(t,rows[0][0]=="38" && rows[0][1]=="38" && rows[0][2]==before[0][0])
 }

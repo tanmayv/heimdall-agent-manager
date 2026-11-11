@@ -1,7 +1,6 @@
 #+feature dynamic-literals
 package owner_local
 import "core:encoding/json"
-import "core:fmt"
 import "core:strings"
 import "core:testing"
 import contracts "odin_test:contracts"
@@ -128,39 +127,6 @@ controls_review_checkpoint_has_no_verdict_and_invalidates_session :: proc(t:^tes
     testing.expect_value(t,lifecycle_call(f,lifecycle_reviewer(),"review.post","late",verdict,result_cap(opened),"6").code,"invalid_scope")
 }
 
-@(test)
-controls_v6_upgrade_collision_and_commit_rollback_preserve_live_fences :: proc(t:^testing.T) {
-    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
-    f:=fixture(t);defer destroy(f);lifecycle_seed(t,f);cap:=lifecycle_ready(t,f)
-    close(&f.store)
-    db:DB
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    testing.expect(t,exec(db,V9_TEST_DROP+"DROP TABLE IF EXISTS local_chain_context;"+"DROP TABLE IF EXISTS local_grant_audit; DROP TABLE IF EXISTS local_grant_policy;"+"DROP INDEX IF EXISTS local_review_holder; DROP TRIGGER search_local_handoffs_insert; DROP TABLE local_checkpoints; DROP TABLE local_work_attempts; DROP TABLE local_assignment_history; DROP TABLE intent_invalidations; DROP TABLE control_notices; DROP TABLE local_handoffs; DROP TABLE local_controls;"))
-    prefix:=string(MIGRATION_006)
-    prefix=prefix[:strings.index(prefix,"DROP TRIGGER search_local_submissions_insert;")]
-    testing.expect(t,exec(db,prefix))
-    testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=6; CREATE VIEW local_controls AS SELECT 1;"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    rows,_:=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT count(*) FROM local_leases WHERE retired_seq IS NULL) FROM runtime_database")
-    testing.expect(t,rows[0][0]=="6" && rows[0][1]=="6" && rows[0][2]=="1")
-    testing.expect(t,exec(db,"DROP VIEW local_controls"))
-    testing.expect(t,exec(db,`CREATE TABLE upgrade_fk(id INTEGER PRIMARY KEY);
-      CREATE TABLE upgrade_ref(id INTEGER REFERENCES upgrade_fk(id) DEFERRABLE INITIALLY DEFERRED);
-      CREATE TRIGGER upgrade_failure AFTER UPDATE ON schema_migrations WHEN NEW.version=7 BEGIN INSERT INTO upgrade_ref VALUES(1); END;`))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    rows,_=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT count(*) FROM sqlite_master WHERE name='local_controls') FROM runtime_database")
-    testing.expect(t,rows[0][0]=="6" && rows[0][1]=="6" && rows[0][2]=="0")
-    testing.expect(t,exec(db,"DROP TRIGGER upgrade_failure"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
-    rows,_=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT count(*) FROM local_assignment_history),(SELECT count(*) FROM local_leases WHERE retired_seq IS NULL) FROM runtime_database")
-    testing.expect(t,rows[0][0]=="38" && rows[0][1]=="38" && rows[0][2]=="1" && rows[0][3]=="1")
-    testing.expect_value(t,lifecycle_call(f,lease_child(),"requirements.present","after_upgrade",`{"requirements_revision":"1"}`,cap).code,"ok")
-}
 @(test)
 controls_merge_retry_preserves_exact_fence_and_reopen_invalidates_old_results :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}

@@ -2,7 +2,6 @@
 package owner_local
 import "core:encoding/json"
 import "core:testing"
-import "core:strings"
 import "core:fmt"
 import contracts "odin_test:contracts"
 
@@ -117,43 +116,6 @@ native_metadata_pages_bind_source_kind_and_current_read_authority :: proc(t:^tes
     testing.expect_value(t,native_metadata_test_read(f,"member").code,"invalid_scope")
 }
 
-@(test)
-native_metadata_v17_migration_collision_commit_rollback_and_live_capability :: proc(t:^testing.T) {
-    context.allocator=context.temp_allocator
-    f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
-    cap:=lifecycle_ready(t,f);if cap=="" do return
-    keep:="SELECT (SELECT json_group_array(json_array(lease_id,capability_json,retired_seq)) FROM local_leases),(SELECT json_group_array(json_array(seq,evidence_json)) FROM local_events),(SELECT json_group_array(json_array(principal_id,operation_id,result_json)) FROM command_receipts),(SELECT commit_seq FROM runtime_database)"
-    before,_:=query(f.store.db,keep)
-    close(&f.store)
-    db:DB
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    prefix:=string(MIGRATION_017);prefix=prefix[:strings.index(prefix,"CREATE TABLE local_fleet_policy_versions")]
-    testing.expect(t,exec(db,V23_TEST_DROP))
-    testing.expect(t,exec(db,"DROP TABLE IF EXISTS local_metadata_retirements; DROP TABLE IF EXISTS local_brief_inputs; DROP TABLE IF EXISTS local_coordinator_revocations; DROP TABLE IF EXISTS local_config_revocations; DROP TABLE IF EXISTS local_chain_directory_versions; DROP TABLE IF EXISTS local_chain_member_versions; DROP TABLE IF EXISTS local_member_chains; DROP TABLE IF EXISTS local_chain_defaults_versions; DROP TABLE IF EXISTS local_chain_summary_versions; DROP TRIGGER IF EXISTS native_history_origin; DROP TABLE IF EXISTS local_fleet_policy_sources; DROP TABLE IF EXISTS native_fleet_policies; DROP TABLE IF EXISTS native_fleet_snapshots; DROP TABLE IF EXISTS local_task_priority_versions; DROP TABLE IF EXISTS native_fact_chain; DROP TABLE IF EXISTS native_fact_task; DROP TABLE IF EXISTS native_fact_comment; DROP TABLE IF EXISTS native_fact_summary; DROP TABLE IF EXISTS native_fact_snapshots; DROP TABLE native_metadata_members; DROP TABLE native_metadata_directories; DROP TABLE native_metadata_snapshots; DROP TABLE native_metadata_origins"))
-    testing.expect(t,exec(db,prefix))
-    testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=17; CREATE VIEW native_metadata_origins AS SELECT 1"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    rows,_:=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
-    testing.expect(t,rows[0][0]=="17" && rows[0][1]=="17")
-    after,_:=query(db,keep);testing.expect_value(t,encode(after),encode(before))
-    testing.expect(t,exec(db,"DROP VIEW native_metadata_origins; CREATE TABLE metadata_migrate_parent(id INTEGER PRIMARY KEY); CREATE TABLE metadata_migrate_ref(id INTEGER REFERENCES metadata_migrate_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER metadata_migrate_fail AFTER UPDATE ON schema_migrations WHEN NEW.version=18 BEGIN INSERT INTO metadata_migrate_ref VALUES(1); END"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    rows,_=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT count(*) FROM sqlite_master WHERE name='native_metadata_origins') FROM runtime_database")
-    testing.expect(t,rows[0][0]=="17" && rows[0][1]=="17" && rows[0][2]=="0")
-    after,_=query(db,keep);testing.expect_value(t,encode(after),encode(before))
-    testing.expect(t,exec(db,"DROP TRIGGER metadata_migrate_fail"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    if !testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key")) do return
-    after,_=query(f.store.db,keep);testing.expect_value(t,encode(after),encode(before))
-    chain,_:=query(f.store.db,"SELECT revision FROM task_chains")
-    testing.expect_value(t,native_metadata_test_call(f,string(NATIVE_MEMBERS),"live_snapshot",chain[0][0]).code,"ok")
-    testing.expect_value(t,lifecycle_call(f,lease_child(),"requirements.present","metadata_keeps_child",`{"requirements_revision":"1"}`,cap).code,"ok")
-}
-
 
 NATIVE_FACT_FIXTURES :: [4]string{
     string(#load("../../contracts/fixtures/owner-native-metadata-chain.json")),
@@ -243,42 +205,4 @@ native_facts_import_statement_commit_rollback_replay_and_scope :: proc(t:^testin
         testing.expect_value(t,native_metadata_test_read(f,bundle.kind).code,"invalid_scope")
         destroy(f)
     }
-}
-
-@(test)
-native_facts_v18_migration_preserves_history_and_capability_on_failure :: proc(t:^testing.T) {
-    context.allocator=context.temp_allocator
-    f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
-    cap:=lifecycle_ready(t,f);if cap=="" do return
-    chain,_:=query(f.store.db,"SELECT revision FROM task_chains")
-    testing.expect_value(t,native_metadata_test_call(f,string(NATIVE_MEMBERS),"before_v19",chain[0][0]).code,"ok")
-    keep:="SELECT (SELECT json_group_array(json_array(lease_id,capability_json,retired_seq)) FROM local_leases),(SELECT json_group_array(json_array(seq,evidence_json)) FROM local_events),(SELECT json_group_array(json_array(principal_id,operation_id,result_json)) FROM command_receipts),(SELECT commit_seq FROM runtime_database),(SELECT json_group_array(json_array(chain_id,source_revision,agent_instance_id,role)) FROM native_metadata_members)"
-    before,_:=query(f.store.db,keep)
-    close(&f.store)
-    db:DB
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    testing.expect(t,exec(db,V23_TEST_DROP))
-    testing.expect(t,exec(db,"DROP TABLE IF EXISTS local_metadata_retirements; DROP TABLE IF EXISTS local_brief_inputs; DROP TABLE IF EXISTS local_coordinator_revocations; DROP TABLE IF EXISTS local_config_revocations; DROP TABLE IF EXISTS local_chain_directory_versions; DROP TABLE IF EXISTS local_chain_member_versions; DROP TABLE IF EXISTS local_member_chains; DROP TABLE IF EXISTS local_chain_defaults_versions; DROP TABLE IF EXISTS local_chain_summary_versions; DROP TRIGGER IF EXISTS native_history_origin; DROP TABLE IF EXISTS local_fleet_policy_sources; DROP TABLE IF EXISTS native_fleet_policies; DROP TABLE IF EXISTS native_fleet_snapshots; DROP TABLE IF EXISTS local_task_priority_versions; DROP TABLE native_fact_chain; DROP TABLE native_fact_task; DROP TABLE native_fact_comment; DROP TABLE native_fact_summary; DROP TABLE native_fact_snapshots"))
-    prefix:=string(MIGRATION_018);prefix=prefix[:strings.index(prefix,"CREATE TABLE native_metadata_origins")]
-    testing.expect(t,exec(db,prefix))
-    testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=18; CREATE VIEW native_fact_snapshots AS SELECT 1"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    rows,_:=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
-    testing.expect(t,rows[0][0]=="18" && rows[0][1]=="18")
-    after,_:=query(db,keep);testing.expect_value(t,encode(after),encode(before))
-    testing.expect(t,exec(db,"DROP VIEW native_fact_snapshots; CREATE TABLE fact_migrate_parent(id INTEGER PRIMARY KEY); CREATE TABLE fact_migrate_ref(id INTEGER REFERENCES fact_migrate_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER fact_migrate_fail AFTER UPDATE ON schema_migrations WHEN NEW.version=19 BEGIN INSERT INTO fact_migrate_ref VALUES(1); END"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    rows,_=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT count(*) FROM sqlite_master WHERE name='native_fact_snapshots') FROM runtime_database")
-    testing.expect(t,rows[0][0]=="18" && rows[0][1]=="18" && rows[0][2]=="0")
-    after,_=query(db,keep);testing.expect_value(t,encode(after),encode(before))
-    testing.expect(t,exec(db,"DROP TRIGGER fact_migrate_fail"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    if !testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key")) do return
-    after,_=query(f.store.db,keep);testing.expect_value(t,encode(after),encode(before))
-    testing.expect_value(t,native_metadata_test_read(f,"member").code,"ok")
-    testing.expect_value(t,lifecycle_call(f,lease_child(),"requirements.present","v19_keeps_child",`{"requirements_revision":"1"}`,cap).code,"ok")
 }

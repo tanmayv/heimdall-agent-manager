@@ -205,38 +205,6 @@ aggregate_new_record_rollback_owner_account_chain_cursor_and_read_revocation :: 
     testing.expect_value(t,native_metadata_test_read(f,"review","rich_source_7").code,"invalid_scope")
     testing.expect_value(t,metadata_replay(f,"rich_review").code,"invalid_scope")
 }
-@(test)
-aggregate_v23_upgrade_collision_commit_rollback_and_live_capability_recovery :: proc(t:^testing.T) {
-    context.allocator=context.temp_allocator
-    f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
-    cap:=lifecycle_ready(t,f);if cap=="" do return
-    before,_:=query(f.store.db,"SELECT lease_id,capability_json,expires_ms,hard_ms,retired_seq FROM local_leases")
-    close(&f.store);db:DB
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    testing.expect(t,exec(db,string(#load("migration_025_test_drop.sql"))+"DROP TABLE IF EXISTS owner_execution_bootstraps; DROP TABLE IF EXISTS owner_execution_queries; DROP TABLE owner_execution_journal; DROP TABLE native_record_values; DROP TABLE native_record_snapshots"))
-    prefix:=string(MIGRATION_023);prefix=prefix[:strings.index(prefix,"CREATE TABLE local_work_chains")]
-    testing.expect(t,exec(db,prefix))
-    testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=23; CREATE VIEW native_record_snapshots AS SELECT 1"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    rows,_:=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
-    testing.expect_value(t,encode(rows),encode([1][2]string{{"23","23"}}))
-    testing.expect(t,exec(db,"DROP VIEW native_record_snapshots; CREATE TABLE aggregate_upgrade_parent(id INTEGER PRIMARY KEY); CREATE TABLE aggregate_upgrade_ref(id INTEGER REFERENCES aggregate_upgrade_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER aggregate_upgrade_fail AFTER UPDATE ON schema_migrations WHEN NEW.version=24 BEGIN INSERT INTO aggregate_upgrade_ref VALUES(1); END"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    rows,_=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT count(*) FROM sqlite_master WHERE name='native_record_snapshots') FROM runtime_database")
-    testing.expect_value(t,encode(rows),encode([1][3]string{{"23","23","0"}}))
-    testing.expect(t,exec(db,"DROP TRIGGER aggregate_upgrade_fail"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
-    after,_:=query(f.store.db,"SELECT lease_id,capability_json,expires_ms,hard_ms,retired_seq FROM local_leases")
-    testing.expect_value(t,encode(after),encode(before))
-    testing.expect_value(t,lifecycle_call(f,lease_child(),"requirements.present","aggregate_upgraded",`{"requirements_revision":"1"}`,cap).code,"ok")
-    rows,_=query(f.store.db,"PRAGMA foreign_key_check");testing.expect_value(t,len(rows),0)
-}
-
 // Signed inventories must expose operational runs/sources, never activate the
 // similarly named immutable source snapshots imported above.
 @(test)

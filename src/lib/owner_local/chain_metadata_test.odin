@@ -82,46 +82,6 @@ summary_statement_and_commit_rollback_preserve_context_and_receipts :: proc(t:^t
     testing.expect_value(t,rows[0][0],"0")
 }
 
-@(test)
-summary_v20_upgrade_collision_commit_rollback_preserves_live_authority :: proc(t:^testing.T) {
-    context.allocator=context.temp_allocator
-    f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
-    cap:=lifecycle_ready(t,f)
-    if cap=="" do return
-    before,_:=query(f.store.db,"SELECT lease_id,capability_json,expires_ms,hard_ms,retired_seq FROM local_leases")
-    close(&f.store)
-    db:DB
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    prefix:=string(MIGRATION_020)
-    prefix=prefix[:strings.index(prefix,"CREATE TABLE local_task_priority_versions")]
-    testing.expect(t,exec(db,V23_TEST_DROP))
-    testing.expect(t,exec(db,"DROP TABLE IF EXISTS local_metadata_retirements; DROP TABLE IF EXISTS local_brief_inputs; DROP TABLE IF EXISTS local_coordinator_revocations; DROP TABLE IF EXISTS local_config_revocations; DROP TABLE IF EXISTS local_chain_directory_versions; DROP TABLE IF EXISTS local_chain_member_versions; DROP TABLE IF EXISTS local_member_chains; DROP TABLE local_chain_defaults_versions; DROP TABLE local_chain_summary_versions"))
-    testing.expect(t,exec(db,prefix))
-    testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=20; CREATE VIEW local_chain_summary_versions AS SELECT 1"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    rows,_:=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
-    testing.expect_value(t,encode(rows),encode([1][2]string{{"20","20"}}))
-    testing.expect(t,exec(db,"DROP VIEW local_chain_summary_versions; CREATE TABLE summary_upgrade_parent(id INTEGER PRIMARY KEY); CREATE TABLE summary_upgrade_ref(id INTEGER REFERENCES summary_upgrade_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER summary_upgrade_fail AFTER UPDATE ON schema_migrations WHEN NEW.version=21 BEGIN INSERT INTO summary_upgrade_ref VALUES(1); END"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    rows,_=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT count(*) FROM sqlite_master WHERE name='local_chain_summary_versions') FROM runtime_database")
-    testing.expect_value(t,encode(rows),encode([1][3]string{{"20","20","0"}}))
-    testing.expect(t,exec(db,"DROP TRIGGER summary_upgrade_fail"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
-    after,_:=query(f.store.db,"SELECT lease_id,capability_json,expires_ms,hard_ms,retired_seq FROM local_leases")
-    testing.expect_value(t,encode(after),encode(before))
-    testing.expect_value(t,summary_call(f,"new curated notes","live_summary",summary_revision(f)).code,"ok")
-    after,_=query(f.store.db,"SELECT lease_id,capability_json,expires_ms,hard_ms,retired_seq FROM local_leases")
-    testing.expect_value(t,encode(after),encode(before))
-    testing.expect_value(t,lifecycle_call(f,lease_child(),"requirements.present","summary_present",`{"requirements_revision":"1"}`,cap).code,"ok")
-    rows,_=query(f.store.db,"PRAGMA foreign_key_check")
-    testing.expect_value(t,len(rows),0)
-}
-
 defaults_call :: proc(f:^Fixture,body,op,revision:string) -> Result {
     p:=encode(doc(map[string]string{"body_cipher"=cipher(f,body)}))
     return invoke(f,command(f,"chain.defaults.set",op,"",p,revision),p)

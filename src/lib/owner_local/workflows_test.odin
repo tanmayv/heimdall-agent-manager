@@ -103,49 +103,6 @@ workflow_definition_and_same_chain_dependency_cycles_reject :: proc(t:^testing.T
 }
 
 @(test)
-workflow_v8_upgrade_collision_and_commit_failure_preserve_live_capability :: proc(t:^testing.T) {
-    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
-    f:=fixture(t);defer destroy(f);lifecycle_seed(t,f);cap:=lifecycle_ready(t,f)
-    preserved_sql:=`SELECT (SELECT json_group_array(json_array(chain_id,principal_id,key_id,revision,expires_ms,can_read,can_mutate,revoked)) FROM local_grants),
-      (SELECT json_group_array(json_array(chain_id,revision,recovery_enabled)) FROM local_grant_policy),
-      (SELECT json_group_array(json_array(seq,command_json,payload_json)) FROM local_grant_audit),
-      (SELECT json_group_array(json_array(principal_id,operation_id,input_digest,result_json)) FROM command_receipts)`
-    before,checked:=query(f.store.db,preserved_sql)
-    testing.expect(t,checked && len(before)==1)
-    close(&f.store)
-    db:DB
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    testing.expect(t,exec(db,V9_TEST_DROP))
-    prefix:=string(MIGRATION_008);prefix=prefix[:strings.index(prefix,"-- Existing profiles")]
-    testing.expect(t,exec(db,prefix))
-    testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=8; CREATE INDEX local_review_holder ON local_review_sessions(json_extract(child,'$.instance')); CREATE VIEW local_workflow_runs AS SELECT 1;"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    rows,_:=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT count(*) FROM local_leases WHERE retired_seq IS NULL),(SELECT count(*) FROM sqlite_master WHERE name='local_workflow_definitions') FROM runtime_database")
-    testing.expect(t,rows[0][0]=="8" && rows[0][1]=="8" && rows[0][2]=="1" && rows[0][3]=="0")
-    testing.expect(t,exec(db,`DROP VIEW local_workflow_runs;
-      CREATE TABLE v9_failure(id INTEGER PRIMARY KEY);
-      CREATE TABLE v9_failure_ref(id INTEGER REFERENCES v9_failure(id) DEFERRABLE INITIALLY DEFERRED);
-      CREATE TRIGGER v9_commit_failure AFTER UPDATE ON schema_migrations WHEN NEW.version=9 BEGIN INSERT INTO v9_failure_ref VALUES(1); END;`))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    rows,_=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT count(*) FROM sqlite_master WHERE name='source_episodes') FROM runtime_database")
-    testing.expect(t,rows[0][0]=="8" && rows[0][1]=="8" && rows[0][2]=="0")
-    testing.expect(t,exec(db,"DROP TRIGGER v9_commit_failure"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
-    after,preserved:=query(f.store.db,preserved_sql)
-    if testing.expect(t,preserved && len(after)==1) {
-        for value,i in before[0] do testing.expect_value(t,after[0][i],value)
-    }
-    testing.expect_value(t,lifecycle_call(f,lease_child(),"requirements.present","v9_present",`{"requirements_revision":"1"}`,cap).code,"ok")
-    rows,_=query(f.store.db,"PRAGMA foreign_key_check")
-    testing.expect_value(t,len(rows),0)
-}
-
-@(test)
 workflow_inventory_pages_history_and_invalidates_stale_cursor :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
     f:=fixture(t);defer destroy(f);seed(t,f)

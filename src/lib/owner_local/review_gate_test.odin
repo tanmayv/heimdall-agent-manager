@@ -205,66 +205,6 @@ lifecycle_config_test :: proc(f:^Fixture)->json.Object {
     return config
 }
 
-// V37 maps review roles to the agents that held them at migration time and
-// records each decision; re-running it changes nothing.
-@(test)
-migration_037_maps_review_roles_to_reviewer_agents :: proc(t:^testing.T) {
-    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
-    f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
-    // Attempt 1 is submitted: the role verdicts V37 carries bind a submission.
-    if !gate_submit(t,f) do return
-    close(&f.store)
-    db:DB
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    // V36 evidence: a brief naming roles, a review.roles configuration with a
-    // user gate, a fleet row serving "perf" (and the author serving "safety",
-    // never a reviewer of its own task), a workflow stage naming "perf".
-    testing.expectf(t,exec(db,`INSERT INTO task_requirements VALUES('chain','task',2,'{"goal":"Complete scoped work","acceptance":["Tests pass"],"review_roles":["safety","perf","ghost"],"reviewers":["reviewer"]}','','device','req2')`),"setup 0")
-    testing.expectf(t,exec(db,`INSERT INTO local_role_configs VALUES('chain','task',1,1,'[]')`),"setup 1")
-    testing.expectf(t,exec(db,`INSERT INTO local_role_pairs VALUES('chain','task',1,'safety','auditor','{}')`),"setup 2")
-    testing.expectf(t,exec(db,`INSERT INTO local_role_pairs VALUES('chain','task',1,'safety','author','{}')`),"setup 3")
-    testing.expectf(t,exec(db,`INSERT INTO local_fleet_policy_versions SELECT 'chain','perf_agent',seq,'',1,0,0,'','','','["perf"]','','','t','t' FROM local_events ORDER BY seq DESC LIMIT 1`),"setup 4")
-    testing.expectf(t,exec(db,`INSERT INTO local_fleet_policy_roles SELECT 'chain','perf_agent',seq,'perf',0 FROM local_events ORDER BY seq DESC LIMIT 1`),"setup 5")
-    testing.expectf(t,exec(db,`INSERT INTO local_workflow_definitions VALUES('chain','wf',1,'{"schema":"workflow.v1","title":"WF","stages":[{"key":"a","brief":{"goal":"A","acceptance":["a"]}},{"key":"b","brief":{"goal":"B","acceptance":["b"],"review_roles":["perf"]}}]}')`),"setup 6")
-    // Posted role verdicts on attempt 1: auditor approved as "safety" and
-    // requested changes as "perf"; perf_agent approved as "perf".
-    testing.expectf(t,exec(db,`INSERT INTO local_role_reviews VALUES('chain','task',1,1,'safety','auditor','audit_instance','rv1','approve','fine');
-      INSERT INTO local_role_reviews VALUES('chain','task',1,1,'perf','auditor','audit_instance','rv2','request_changes','slow');
-      INSERT INTO local_role_reviews VALUES('chain','task',1,1,'perf','perf_agent','perf_instance','rv3','approve','fast')`),"setup 7")
-    testing.expectf(t,exec(db,`UPDATE schema_migrations SET version=36`),"setup 8")
-    testing.expect_value(t,sqlite3_close(db),0)
-    if !testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key")) do return
-    check :: proc(t:^testing.T,f:^Fixture) {
-        rows,_:=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
-        testing.expect_value(t,encode(rows),encode([1][2]string{{"38","38"}}))
-        brief,_:=query(f.store.db,"SELECT json_type(brief_json,'$.review_roles'),json_extract(brief_json,'$.reviewers'),json_extract(brief_json,'$.requires_user_approval') FROM task_requirements WHERE task_id='task' AND revision=2")
-        testing.expect_value(t,encode(brief),encode([1][3]string{{"",`["reviewer","auditor","perf_agent"]`,"1"}}))
-        untouched,_:=query(f.store.db,"SELECT brief_json FROM task_requirements WHERE task_id='task' AND revision=1")
-        testing.expect_value(t,untouched[0][0],`{"goal":"Complete scoped work","acceptance":["Tests pass"]}`)
-        mapped,_:=query(f.store.db,"SELECT subject,subject_id,revision,role,agent_id,source FROM local_review_role_migrations ORDER BY subject,role,agent_id")
-        testing.expect_value(t,encode(mapped),encode([5][6]string{
-            {"requirements","task","2","","","role_config_user_approval"},
-            {"requirements","task","2","ghost","","user_approval"},
-            {"requirements","task","2","perf","perf_agent","fleet_role"},
-            {"requirements","task","2","safety","auditor","task_role_pairs"},
-            {"workflow_definition","wf","1","perf","perf_agent","fleet_role"}}))
-        // One review per agent; any request_changes among its roles wins.
-        reviews,_:=query(f.store.db,"SELECT reviewer_agent_id,verdict,principal_kind,attempt FROM local_reviews ORDER BY reviewer_agent_id")
-        testing.expect_value(t,encode(reviews),encode([2][4]string{{"auditor","request_changes","agent","1"},{"perf_agent","approve","agent","1"}}))
-        stage,_:=query(f.store.db,"SELECT json_type(definition_json,'$.stages[1].brief.review_roles'),json_extract(definition_json,'$.stages[1].brief.reviewers') FROM local_workflow_definitions WHERE workflow_id='wf'")
-        testing.expect_value(t,encode(stage),encode([1][2]string{{"",`["perf_agent"]`}}))
-        // The rewritten evidence stays immutable.
-        testing.expect(t,!exec(f.store.db,"UPDATE task_requirements SET brief_json='{}' WHERE task_id='task'"))
-        testing.expect(t,!exec(f.store.db,"UPDATE local_workflow_definitions SET definition_json='{}'"))
-    }
-    check(t,f)
-    // Idempotent: a re-run after a version downgrade changes nothing.
-    testing.expect(t,exec(f.store.db,"UPDATE schema_migrations SET version=36"))
-    close(&f.store)
-    if !testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key")) do return
-    check(t,f)
-}
-
 // A Hub-imported brief naming a role nobody holds requires the user instead.
 @(test)
 migration_037_import_brief_without_holders_requires_the_user :: proc(t:^testing.T) {

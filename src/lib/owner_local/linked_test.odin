@@ -230,40 +230,6 @@ linked_signed_inventory_and_restore_reject_substituted_scope_and_stale_keys :: p
 }
 
 @(test)
-linked_v24_upgrade_collision_commit_rollback_and_live_capability_preservation :: proc(t:^testing.T) {
-    context.allocator=context.temp_allocator
-    f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
-    cap:=lifecycle_ready(t,f);if cap=="" do return
-    keep:="SELECT (SELECT json_group_array(evidence_json) FROM local_events),(SELECT json_group_array(result_json) FROM command_receipts),(SELECT capability_json FROM local_leases WHERE retired_seq IS NULL LIMIT 1)"
-    before,_:=query(f.store.db,keep)
-    close(&f.store);db:DB
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_bootstraps; DROP TABLE IF EXISTS owner_execution_queries; DROP TABLE owner_execution_journal;"+string(#load("migration_025_test_drop.sql"))))
-    prefix:=string(MIGRATION_024);prefix=prefix[:strings.index(prefix,"CREATE TABLE native_record_snapshots")]
-    testing.expect(t,exec(db,prefix))
-    testing.expect(t,exec(db,"DROP TABLE IF EXISTS owner_execution_stop_steps; UPDATE schema_migrations SET version=24; CREATE VIEW linked_identities AS SELECT 1"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    rows,_:=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
-    testing.expect_value(t,encode(rows),encode([1][2]string{{"24","24"}}))
-    testing.expect(t,exec(db,"DROP VIEW linked_identities; CREATE TABLE linked_upgrade_parent(id INTEGER PRIMARY KEY); CREATE TABLE linked_upgrade_ref(id INTEGER REFERENCES linked_upgrade_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER linked_upgrade_fail AFTER UPDATE ON schema_migrations WHEN NEW.version=25 BEGIN INSERT INTO linked_upgrade_ref VALUES(1); END"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
-    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    rows,_=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT count(*) FROM sqlite_master WHERE name='linked_bodies') FROM runtime_database")
-    testing.expect_value(t,encode(rows),encode([1][3]string{{"24","24","0"}}))
-    after,_:=query(db,keep);testing.expect_value(t,encode(after),encode(before))
-    testing.expect(t,exec(db,"DROP TRIGGER linked_upgrade_fail"))
-    testing.expect_value(t,sqlite3_close(db),0)
-    testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
-    after,_=query(f.store.db,keep);testing.expect_value(t,encode(after),encode(before))
-    testing.expect_value(t,lifecycle_call(f,lease_child(),"requirements.present","after_linked_upgrade",`{"requirements_revision":"1"}`,cap).code,"ok")
-    testing.expect_value(t,linked_test_call(f,"linked.put","after_upgrade",linked_test_object(f,"message","upgraded_message","migrationword")).code,"ok")
-    rows,_=query(f.store.db,"PRAGMA substituted_key_check");testing.expect_value(t,len(rows),0)
-}
-
-@(test)
 linked_task_tombstone_suppresses_unknown_restored_message_and_delete_rolls_back :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
     f:=fixture(t);defer destroy(f);seed(t,f)

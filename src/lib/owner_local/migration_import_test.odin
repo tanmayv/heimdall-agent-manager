@@ -596,6 +596,32 @@ store_open_claims_schema_left_without_identity :: proc(t:^testing.T) {
     close(&s)
 }
 
+// The store is flat: a new database gets schema.sql at SCHEMA_VERSION and a
+// store at any other version (an older pre-release store) is refused, never
+// upgraded or rewritten.
+@(test)
+store_schema_is_flat_and_refuses_other_versions :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f)
+    version,_:=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
+    testing.expect_value(t,encode(version),encode([1][2]string{{fmt.tprintf("%d",SCHEMA_VERSION),fmt.tprintf("%d",SCHEMA_VERSION)}}))
+    for older in ([2]i64{SCHEMA_VERSION-1,SCHEMA_VERSION+1}) {
+        path:=fmt.tprintf("%s-v%d",f.path,older)
+        defer for suffix in ([4]string{"","-wal","-shm",".writer"}) do _=os.remove(fmt.tprintf("%s%s",path,suffix))
+        db:DB
+        if !testing.expect(t,sqlite3_open(strings.clone_to_cstring(path,context.temp_allocator),&db)==0) do return
+        testing.expect(t,migrate(db))
+        testing.expect(t,exec(db,fmt.tprintf("UPDATE schema_migrations SET version=%d",older)))
+        testing.expect(t,!migrate(db),"another schema version is refused")
+        rows,_:=query(db,"SELECT version FROM schema_migrations")
+        testing.expect_value(t,rows[0][0],fmt.tprintf("%d",older))
+        _=sqlite3_close(db)
+        s:Store
+        testing.expect(t,!open(&s,path,"account","bridge","bridge_key"))
+        close(&s)
+    }
+}
+
 // The Hub engine is removed, so the Hub import neutralizes busy work before
 // the freeze: a task it force-held (in progress, or released from a workflow
 // gate) arrives held; a task in review is carried over in review.
