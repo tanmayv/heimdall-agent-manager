@@ -129,10 +129,17 @@ Owner_Pending_Delivery :: struct {
 bridge_owner_agent_route :: proc(request_id,method,params:string,rec:Bridge_Local_Agent_Token_Record) -> (string,bool) {
     if rec.role!=.Agent do return "",false
     if verb:=bridge_owner_instance_verb(method);verb!="" do return bridge_owner_instance_gate(request_id,verb,params,rec)
+    failed_agent,failure:string
     if method=="agent.task.create" || method=="agent.task.update" {
-        if refused:=bridge_owner_task_fleet_ensure(request_id,params,rec);refused!="" do return refused,true
+        refused:string
+        refused,failed_agent,failure=bridge_owner_task_fleet_ensure(request_id,params,rec,method=="agent.task.update")
+        if refused!="" do return refused,true
     }
     response,handled,launch,reviews,remote:=bridge_owner_agent_route_locked(request_id,method,params,rec)
+    // The update applied; its agent could not be launched (M1 item 5).
+    if failed_agent!="" && handled && bridge_owner_response_ok(response) {
+        _=bridge_owner_block_not_running(bridge_owner_pstr(bridge_owner_params(params),"task_id"),failed_agent,failure)
+    }
     // Not ours: another Bridge of the account may own it (cross-Bridge read and
     // comment, owner_remote_agent.odin), else the Hub route as before.
     if !handled do return bridge_owner_remote_agent_send(request_id,method,params,rec)

@@ -229,3 +229,34 @@ expire_leases :: proc(s:^Store,now:i64) -> bool {
     if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return false
     return transaction_commit(&tx)
 }
+
+// Parks a ready, unleased task whose assignee is not running and could not be
+// launched (origin/main taskv2 agent_not_running). The Bridge records it as
+// its own transition, like lease.expired: the task leaves dispatch blocked on
+// "agent_not_running" with the reason, and an unblock (task.resolve) or a
+// later launch returns it. A held, cancelled, blocked or leased task is left
+// as it is (returns false, true).
+block_agent_not_running :: proc(s:^Store,chain,task,agent_id,reason:string,now:i64) -> (blocked:bool,ok:bool) {
+    tx:Transaction
+    if !transaction_begin(s,&tx) do return false,false
+    defer transaction_rollback(&tx)
+    state,read:=query(s.db,"SELECT commit_seq,recovery_state FROM runtime_database WHERE singleton=1")
+    if !read || len(state)!=1 || state[0][1]!="ready" do return false,false
+    controls,found:=query(s.db,"SELECT mode FROM local_controls WHERE chain_id=? AND task_id=?",chain,task)
+    if !found do return false,false
+    if len(controls)==1 && controls[0][0]!="ready" do return false,true
+    states,got:=query(s.db,"SELECT state FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)
+    if !got do return false,false
+    if len(states)==1 && states[0][0]!="ready" do return false,true
+    live,checked:=query(s.db,"SELECT 1 FROM local_leases WHERE chain_id=? AND task_id=? AND retired_seq IS NULL",chain,task)
+    if !checked do return false,false
+    if len(live)>0 do return false,true
+    seq:=number(state[0][0])+1
+    if !control_mode(s,chain,task,"blocked","ready",reason,"agent_not_running") do return false,false
+    if _,ok=query(s.db,"UPDATE tasks SET revision=revision+1 WHERE chain_id=? AND task_id=?",chain,task);!ok do return false,false
+    payload:=encode(doc(map[string]string{"kind"="agent_not_running","agent_id"=agent_id,"reason"=reason}))
+    if !event_record(&tx,seq,now,chain,task,"bridge",s.owner,"task.agent_not_running",agent_id,"","",payload,"") do return false,false
+    if _,ok=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),chain,"task.agent_not_running",task,"1",agent_id);!ok do return false,false
+    if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=? WHERE singleton=1",fmt.tprintf("%d",seq));!ok do return false,false
+    return true,transaction_commit(&tx)
+}

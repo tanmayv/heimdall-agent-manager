@@ -225,3 +225,35 @@ event_history_survives_canonical_task_deletion :: proc(t:^testing.T) {
     testing.expect_value(t,len(rows),0)
     testing.expect_value(t,history_call(f,"history.fetch",`{"seq":"4","offset":"0"}`).code,"ok")
 }
+
+@(test)
+event_agent_not_running_blocks_only_a_ready_unleased_task :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
+    tasks,ok:=query(f.store.db,"SELECT chain_id FROM tasks WHERE task_id='task'")
+    if !testing.expect(t,ok && len(tasks)==1) do return
+    chain:=tasks[0][0]
+    blocked,stored:=block_agent_not_running(&f.store,chain,"task","agt_gone","Agent agt_gone is not running: spawn failed",1000)
+    testing.expect(t,stored && blocked)
+    rows,read:=query(f.store.db,"SELECT mode,resume_state,reason,waiting_on FROM local_controls WHERE chain_id=? AND task_id='task'",chain)
+    if !testing.expect(t,read && len(rows)==1) do return
+    testing.expect_value(t,rows[0][0],"blocked")
+    testing.expect_value(t,rows[0][3],"agent_not_running")
+    testing.expect_value(t,rows[0][2],"Agent agt_gone is not running: spawn failed")
+    events,_:=query(f.store.db,"SELECT actor_kind,operation_id FROM local_events WHERE kind='task.agent_not_running'")
+    if !testing.expect(t,len(events)==1) do return
+    testing.expect_value(t,events[0][0],"bridge")
+    testing.expect_value(t,events[0][1],"agt_gone")
+    blocked,stored=block_agent_not_running(&f.store,chain,"task","agt_gone","again",1000)
+    testing.expect(t,stored && !blocked,"an already blocked task is not blocked twice")
+    // The coordinator's unblock returns it to dispatch.
+    rev,_:=query(f.store.db,"SELECT revision FROM tasks WHERE chain_id=? AND task_id='task'",chain)
+    testing.expect_value(t,control_call(f,"task.resolve","resolve_not_running",rev[0][0]).code,"ok")
+    rows,_=query(f.store.db,"SELECT mode FROM local_controls WHERE chain_id=? AND task_id='task'",chain)
+    testing.expect_value(t,rows[0][0],"ready")
+    rev,_=query(f.store.db,"SELECT revision FROM tasks WHERE chain_id=? AND task_id='task'",chain)
+    r:=lease_invoke(f,lease_request(f,lease_child(),"lease.claim","claim_after","lease_after","",rev[0][0]),"",lease_child())
+    if !testing.expect_value(t,r.code,"ok") do return
+    blocked,stored=block_agent_not_running(&f.store,chain,"task","agt_gone","held",1000)
+    testing.expect(t,stored && !blocked,"a leased task is left to its holder")
+}

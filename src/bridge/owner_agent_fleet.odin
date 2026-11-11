@@ -315,7 +315,10 @@ bridge_owner_fleet_launch :: proc(request_id:string,launch:Owner_Fleet_Launch,re
 // other-account and archived agents; their new row is paused so it never
 // dispatches. Returns "" to continue with the task route, else the refusal.
 // The caller holds no lock.
-bridge_owner_task_fleet_ensure :: proc(request_id,params:string,rec:Bridge_Local_Agent_Token_Record) -> string {
+// On task.update (block_failed) a launch failure does not refuse the update:
+// it returns the agent and the launch error, and the caller blocks the task
+// agent_not_running once the update applied (bridge_owner_block_not_running).
+bridge_owner_task_fleet_ensure :: proc(request_id,params:string,rec:Bridge_Local_Agent_Token_Record,block_failed:=false) -> (refused,failed_agent,failure:string) {
     context.allocator=context.temp_allocator
     p:=bridge_owner_params(params)
     agents:=make([dynamic]string)
@@ -335,15 +338,39 @@ bridge_owner_task_fleet_ensure :: proc(request_id,params:string,rec:Bridge_Local
         if chain!="" do body["chain_id"]=chain
         response,handled,launch,_,_:=bridge_owner_agent_route_locked(request_id,"agent.task_chain.fleet_set",bridge_owner_json(body),rec)
         // Not an owner chain, or not the coordinator: the task route decides.
-        if !handled || !bridge_owner_response_ok(response) do return ""
+        if !handled || !bridge_owner_response_ok(response) do return "","",""
         if !launch.active do continue
         launched:=bridge_owner_fleet_launch(request_id,launch,rec)
         if bridge_owner_response_ok(launched) do continue
         pause:=map[string]string{"agent_id"=agent,"chain_id"=launch.chain}
         _,_,_,_,_=bridge_owner_agent_route_locked(request_id,"agent.task_chain.fleet_pause",bridge_owner_json(pause),rec)
-        return launched
+        if !block_failed do return launched,"",""
+        message:=launched
+        if out,parsed:=json.parse_string(launched,.JSON,true,context.temp_allocator);parsed==nil {
+            if obj,is_obj:=out.(json.Object);is_obj {
+                if e,has:=obj["error"].(json.Object);has do message=contracts.owner_string(e,"message")
+            }
+        }
+        return "",agent,message
     }
-    return ""
+    return "","",""
+}
+
+// Blocks a ready, unleased owner task whose agent could not be launched
+// (origin/main taskv2 agent_not_running card). Takes the owner lock; the
+// caller holds none. Returns whether the task was blocked.
+bridge_owner_block_not_running :: proc(task,agent,failure:string) -> bool {
+    detail:=strings.trim_space(failure)
+    if detail=="" do detail="launch failed before startup confirmation"
+    reason:=fmt.tprintf("Agent %s on bridge %s is not running: %s",agent,bridge_cfg().daemon_id,detail)
+    account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
+    key_id,_:=vault.device_id_from_sign_pub(bridge_identity_public_key_hex(bridge_cfg().daemon_id),context.temp_allocator)
+    sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
+    if !bridge_owner_open(account,key_id) do return false
+    st,found,read:=owner.agent_task_state(&bridge_owner_store,"",task)
+    if !read || !found do return false
+    blocked,_:=owner.block_agent_not_running(&bridge_owner_store,st.chain_id,st.task_id,agent,reason,time.to_unix_nanoseconds(time.now())/1000000)
+    return blocked
 }
 
 // Binds a launched live instance as an enabled member of the chain, signed
