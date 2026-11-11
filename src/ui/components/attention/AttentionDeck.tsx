@@ -28,6 +28,7 @@ import {
 } from '../../api/endpoints';
 import { attentionScheduler, type ActionScheduler } from '../../services/attention/actionScheduler';
 import { acceptCard, markConversationRead, rejectCard, snoozeCard } from '../../services/attention/attentionActions';
+import { OWNER_TASK_PROVIDER } from '../../services/attention/ownerTaskActions';
 import { ATTENTION_RANGE_LABELS } from '../../services/attention/attentionPrefs';
 import { snoozePresets, toHubTimestamp } from '../../services/attention/snoozePresets';
 import { appendArtifactLinks } from '../../utils/artifactUpload';
@@ -390,7 +391,7 @@ export function AttentionDeck({
 
   type DockAction = { key: string; label: string; icon: IconName; tone?: 'success' | 'danger'; run: () => void; debug: string };
   // Snoozed cards keep their original actions: acting settles them in place.
-  const dock: DockAction[] = !current ? [] : current.kind === 'agent_blocker' ? (current.details.blocker_kind === 'terminal_prompt' ? [
+  const allDock: DockAction[] = !current ? [] : current.kind === 'agent_blocker' ? (current.details.blocker_kind === 'terminal_prompt' ? [
     { key: 'o', label: 'Open terminal', icon: 'arrow-right', debug: 'open-terminal', run: () => openSource(current) },
   ] : [
     { key: 'a', label: 'Allow', icon: 'check', tone: 'success', debug: 'allow', run: () => decideBlocker(current, 'allow') },
@@ -419,6 +420,8 @@ export function AttentionDeck({
     { key: 's', label: 'Snooze', icon: 'clock', debug: 'snooze', run: () => { setComposer(null); setPopover(popover === 'snooze' ? null : 'snooze'); } },
     { key: 'o', label: 'Open', icon: 'arrow-right', debug: 'open', run: () => openSource(current) },
   ];
+  // Owner-chain items are live Bridge state, not Hub cards: no snooze.
+  const dock = current?.provider === OWNER_TASK_PROVIDER ? allDock.filter((a) => a.debug !== 'snooze') : allDock;
 
   useEffect(() => {
     if (!open) return;

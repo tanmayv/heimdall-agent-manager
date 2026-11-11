@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import type { AttentionItem, AttentionTaskItem } from '../../api/endpoints/attention';
 import { acceptCard } from '../../services/attention/attentionActions';
+import { OWNER_TASK_PROVIDER, ownerTaskCardRef, ownerTaskStartAgent } from '../../services/attention/ownerTaskActions';
 import { VaultText } from '../vault';
 
 function startFailureText(message: string) {
@@ -8,7 +9,10 @@ function startFailureText(message: string) {
 }
 
 export function needsAgentStart(item: AttentionItem): boolean {
-  return item.kind === 'task' && item.operations.some((op) => op.op === 'agent.start');
+  if (item.kind !== 'task') return false;
+  // Owner-chain items carry no Hub operations: the owner Bridge's badge says it.
+  if (item.provider === OWNER_TASK_PROVIDER) return item.details.badge === 'agent_not_running';
+  return item.operations.some((op) => op.op === 'agent.start');
 }
 
 /** Immediate action: leave a failed card visible so the user can retry it. */
@@ -21,7 +25,9 @@ export function useStartAgent(invalidate: () => void) {
     pending.current.add(item.card_id);
     setStates((s) => ({ ...s, [item.card_id]: { busy: true, error: '' } }));
     try {
-      await acceptCard(item.card_id, false, { expected_block: item.details.block_id });
+      const owner = ownerTaskCardRef(item.card_id);
+      if (owner) await ownerTaskStartAgent(owner);
+      else await acceptCard(item.card_id, false, { expected_block: item.details.block_id });
       setStates((s) => ({ ...s, [item.card_id]: { busy: false, error: '' } }));
     } catch (err) {
       setStates((s) => ({ ...s, [item.card_id]: { busy: false, error: startFailureText(err instanceof Error ? err.message : 'Agent failed to start') } }));

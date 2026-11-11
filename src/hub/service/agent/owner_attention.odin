@@ -28,6 +28,7 @@ OWNER_ATTENTION_ID_MAX :: 128
 Owner_Attention_Item :: struct {
 	chain_id, task_id, attention, badge, state, attempt: string,
 	since: string, // when the Hub first saw this item in this attention (RFC 3339)
+	bridge_id: string, // the owner Bridge (list_owner_attention only): the UI acts through it
 }
 
 Owner_Attention_Entry :: struct {
@@ -49,7 +50,7 @@ owner_attention_allocator :: proc() -> runtime.Allocator {
 owner_attention_valid_id :: proc(id: string) -> bool {
 	if id == "" || len(id) > OWNER_ATTENTION_ID_MAX do return false
 	for ch in id {
-		ok := (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-' || ch == '.' || ch == ':'
+		ok := (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-' || ch == '.'
 		if !ok do return false
 	}
 	return true
@@ -210,10 +211,11 @@ list_owner_attention :: proc(service: ^Agent_Service, owner_user_id: string) -> 
 	out := make([dynamic]Owner_Attention_Item, context.temp_allocator)
 	a := context.temp_allocator
 	sync.mutex_lock(&service.owner_attention.mutex)
-	for _, e in service.owner_attention.entries {
+	for bridge_id, e in service.owner_attention.entries {
 		if e.owner_user_id != owner_user_id do continue
 		for it in e.items {
 			append(&out, Owner_Attention_Item{
+				bridge_id = strings.clone(bridge_id, a),
 				chain_id = strings.clone(it.chain_id, a), task_id = strings.clone(it.task_id, a),
 				attention = strings.clone(it.attention, a), badge = strings.clone(it.badge, a),
 				state = strings.clone(it.state, a), attempt = strings.clone(it.attempt, a),

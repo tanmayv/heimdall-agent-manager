@@ -113,7 +113,8 @@ export type AttentionBlockerDetails = {
   expires_at: string;
 };
 
-export type AttentionTaskRefs = { chain_id: string; task_id: string };
+/** bridge_id: the owner Bridge of an owner-chain item (provider owner_task). */
+export type AttentionTaskRefs = { chain_id: string; task_id: string; bridge_id?: string };
 /** chain_id is '' for an instance outside any chain. */
 export type AttentionBlockerRefs = { agent_instance_id: string; chain_id: string; blocker_id: string };
 export type AttentionMemoryRefs = { memory_id: string; agent_instance_id: string; chain_id: string };
@@ -162,7 +163,25 @@ export function normalizeAttentionItems(raw: any): AttentionItem[] {
     .filter((item: any) =>
       item && typeof item.card_id === 'string' && (item.kind === 'task' || item.kind === 'message' || item.kind === 'memory' || item.kind === 'agent_blocker') &&
       item.details && typeof item.details === 'object' && item.action_refs && typeof item.action_refs === 'object')
-    .map((item: any) => ({ ...item, snoozed: item.snoozed === true, snooze_until: typeof item.snooze_until === 'string' ? item.snooze_until : '' }));
+    .map((item: any) => ownerTaskCopy({ ...item, snoozed: item.snoozed === true, snooze_until: typeof item.snooze_until === 'string' ? item.snooze_until : '' }));
+}
+
+/**
+ * Owner-chain items (provider owner_task) come from the owner Bridge's
+ * in-memory flags: the Hub holds no title or reason, so name the ticket by id
+ * and say what it waits for. The ticket view (Open) shows the content.
+ */
+function ownerTaskCopy(item: any): any {
+  if (item.kind !== 'task' || item.provider !== 'owner_task') return item;
+  const d = item.details ?? {};
+  const rationale = d.badge === 'agent_not_running' ? 'Its agent is not running'
+    : d.attention === 'review' ? 'Waiting for your approval' : 'Waiting for your answer';
+  return {
+    ...item,
+    title: item.title || `Ticket ${String(item.action_refs?.task_id ?? '')}`,
+    rationale: item.rationale || rationale,
+    operations: Array.isArray(item.operations) ? item.operations : [],
+  };
 }
 
 function attentionQuery(path: string, range: AttentionRange, kind?: AttentionKind) {

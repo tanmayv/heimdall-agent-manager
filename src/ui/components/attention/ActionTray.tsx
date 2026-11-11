@@ -6,6 +6,7 @@ import { heimdallApi } from '../../api/heimdallApi';
 import { useGetAttentionQuery, type AttentionTaskItem } from '../../api/endpoints/attention';
 import { attentionScheduler, type ActionScheduler } from '../../services/attention/actionScheduler';
 import { acceptCard, rejectCard, snoozeCard } from '../../services/attention/attentionActions';
+import { OWNER_TASK_PROVIDER } from '../../services/attention/ownerTaskActions';
 import { snoozePresets, toHubTimestamp } from '../../services/attention/snoozePresets';
 import { buildRouteHash, navigateTo } from '../../utils/appLocation';
 import { ActionTaskCard } from './ActionTaskCard';
@@ -279,7 +280,8 @@ function ActionRow({
   onSnooze: () => void;
   onOpen: () => void;
 }) {
-  const more = <OverflowMenu onSnooze={onSnooze} onOpen={onOpen} />;
+  // Owner-chain items are live Bridge state, not Hub cards: no snooze.
+  const more = <OverflowMenu onSnooze={item.provider === OWNER_TASK_PROVIDER ? undefined : onSnooze} onOpen={onOpen} />;
   if (isBlockedItem(item)) {
     return (
       <div data-debug-id="action-tray-actions-blocked" className="flex items-center justify-end gap-1">
@@ -319,7 +321,7 @@ function ActionRow({
 }
 
 /** The actions that rarely matter: Snooze, Open. */
-function OverflowMenu({ onSnooze, onOpen }: { onSnooze: () => void; onOpen: () => void }) {
+function OverflowMenu({ onSnooze, onOpen }: { onSnooze?: () => void; onOpen: () => void }) {
   const [open, setOpen] = useState(false);
   return (
     <Menu
@@ -334,10 +336,12 @@ function OverflowMenu({ onSnooze, onOpen }: { onSnooze: () => void; onOpen: () =
         </button>
       }
     >
-      <Menu.Item data-debug-id="action-tray-snooze" onClick={() => { setOpen(false); onSnooze(); }}>
-        <Icon name="clock" size={16} />
-        <span>Snooze…</span>
-      </Menu.Item>
+      {onSnooze ? (
+        <Menu.Item data-debug-id="action-tray-snooze" onClick={() => { setOpen(false); onSnooze(); }}>
+          <Icon name="clock" size={16} />
+          <span>Snooze…</span>
+        </Menu.Item>
+      ) : null}
       <Menu.Item data-debug-id="action-tray-open" onClick={() => { setOpen(false); onOpen(); }}>
         <Icon name="arrow-right" size={16} />
         <span>Open ticket</span>

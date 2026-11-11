@@ -207,8 +207,8 @@ attention_blocker_item :: proc(blk: agent_service.Owner_Blocker) -> Attention_It
 
 // attention_owner_task_item shapes one owner-chain task that needs the user
 // (agent_service owner_attention, in memory) as a task item: card_id
-// otask:<chain_id>:<task_id>, provider owner_task, details {attention, badge,
-// state, attempt_no}, action_refs {chain_id, task_id}. The Hub has no task
+// otask:<bridge_id>:<chain_id>:<task_id>, provider owner_task, details {attention, badge,
+// state, attempt_no}, action_refs {chain_id, task_id, bridge_id}. The Hub has no task
 // content: title is '' and the client names it from the owner Bridge. Its
 // actions go through the owner relay, so there are no card operations.
 attention_owner_task_item :: proc(it: agent_service.Owner_Attention_Item, now: time.Time) -> Attention_Item {
@@ -221,6 +221,7 @@ attention_owner_task_item :: proc(it: agent_service.Owner_Attention_Item, now: t
 	r := strings.builder_make(context.temp_allocator)
 	strings.write_string(&r, `{"chain_id":"`); contracts.write_json_string(&r, it.chain_id)
 	strings.write_string(&r, `","task_id":"`); contracts.write_json_string(&r, it.task_id)
+	strings.write_string(&r, `","bridge_id":"`); contracts.write_json_string(&r, it.bridge_id)
 	strings.write_string(&r, `"}`)
 	age: time.Duration
 	if since_t, ok := platform.parse_rfc3339_utc(it.since); ok do age = time.diff(since_t, now)
@@ -228,7 +229,7 @@ attention_owner_task_item :: proc(it: agent_service.Owner_Attention_Item, now: t
 	if it.badge == "agent_not_running" do reason = "agent_not_running"
 	return Attention_Item{
 		card = domain.Card{
-			card_id = domain.Card_ID(strings.concatenate({"otask:", it.chain_id, ":", it.task_id}, context.temp_allocator)),
+			card_id = domain.Card_ID(strings.concatenate({"otask:", it.bridge_id, ":", it.chain_id, ":", it.task_id}, context.temp_allocator)),
 			kind = domain.CARD_KIND_TASK,
 			provider = agent_service.OWNER_ATTENTION_KIND,
 			status = "pending",
