@@ -49,7 +49,7 @@ Owner_Remote_Place :: struct {
 // code "" means not remote (resolve a local child as before).
 // Placement order: the task's run Bridge (pinned: "" or this Bridge runs it
 // here), else the fleet row's Bridge, else this (the owner) Bridge.
-bridge_owner_remote_target :: proc(s:^owner.Store,chain,agent:string,run_bridge:="",pinned:=false) -> (place:Owner_Remote_Place,code,message:string) {
+bridge_owner_remote_target :: proc(s:^owner.Store,chain,agent:string,run_bridge:="",pinned:=false,models:map[string]Owner_Agent_Model=nil) -> (place:Owner_Remote_Place,code,message:string) {
     policy,found,ok:=owner.agent_fleet_policy(s,chain,agent)
     if !ok do return {},"storage_error","owner store could not be read"
     executor:=run_bridge if pinned else policy.bridge_id
@@ -58,6 +58,8 @@ bridge_owner_remote_target :: proc(s:^owner.Store,chain,agent:string,run_bridge:
     if models,m_ok:=contracts.owner_fleet_models(policy.bridge_models_json);found && m_ok {
         if override,has:=models[executor];has {provider=override.provider;model=override.model}
     }
+    // The task's own override for this agent beats the fleet row (owner_task_models.odin).
+    if override,has:=models[agent];has {provider=override.provider;model=override.model}
     if provider=="" || model=="" {
         // Gap 4: like origin/main resolve_launch_model, the catalog fills
         // what the row leaves empty (an explicit provider is kept). The

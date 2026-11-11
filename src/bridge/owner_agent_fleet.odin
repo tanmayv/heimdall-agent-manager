@@ -284,11 +284,17 @@ bridge_owner_fleet :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object) -> 
         reply["instance_id"]=json.String(instance)
         return bridge_local_response_data(ctx.request_id,bridge_owner_json(reply))
     }
-    provider,model,profile:=bridge_owner_fleet_launch_model(policy,bridge_cfg().daemon_id)
     body:=map[string]string{"agent_id"=agent,"chain_id"=chain,"bridge_id"=bridge_cfg().daemon_id}
-    if provider!="" do body["provider"]=provider
-    if model!="" do body["model"]=model
-    if profile!="" do body["provider_profile"]=profile
+    // ensure for a task: its per-agent override (this verb's, else the
+    // task's) beats the row (owner_task_models.odin).
+    models:map[string]Owner_Agent_Model
+    if override:=bridge_owner_pstr(p,"override_provider");override!="" {
+        models=make(map[string]Owner_Agent_Model,context.temp_allocator)
+        models[agent]=Owner_Agent_Model{override,bridge_owner_pstr(p,"override_model")}
+    } else if task:=bridge_owner_pstr(p,"task_id");task!="" {
+        models=bridge_owner_task_models(ctx.store,chain,task)
+    }
+    bridge_owner_launch_body_model(&body,policy,bridge_cfg().daemon_id,agent,models)
     if project:=bridge_owner_pstr(p,"project_id");project!="" do body["project_id"]=project
     ctx.launch=Owner_Fleet_Launch{true,chain,agent,role,bridge_owner_json(body),reply}
     return ""
@@ -417,6 +423,7 @@ bridge_owner_task_fleet_ensure :: proc(request_id,method,params:string,rec:Bridg
     run_bridge:=strings.trim_space(bridge_owner_pstr(p,"bridge_id"))
     task_id:=bridge_owner_pstr(p,"task_id")
     if method=="agent.task.split" {named_bridge=false;task_id=""}
+    agent_models,_,_:=bridge_owner_agent_models_param(p)
     ensured=Owner_Fleet_Ensured{chain=chain,added=make([dynamic]string),launched=make([dynamic]string)}
     for agent in agents {
         // The task route refuses ids that are not agent ids with its own message.
@@ -425,6 +432,9 @@ bridge_owner_task_fleet_ensure :: proc(request_id,method,params:string,rec:Bridg
         if chain!="" do body["chain_id"]=chain
         if named_bridge do body["run_bridge_id"]=run_bridge
         else if task_id!="" do body["task_id"]=task_id
+        // This verb's --agent-model for the agent (an update without one
+        // reads the task's from task_id).
+        if m,has:=agent_models[agent];has && m.provider!="" {body["override_provider"]=m.provider;body["override_model"]=m.model;body["task_id"]=task_id}
         response,handled,l:=set(request_id,bridge_owner_json(body),rec)
         // Not an owner chain, or not the coordinator: the task route decides.
         // A new row whose launch is pending has no reply yet ("").

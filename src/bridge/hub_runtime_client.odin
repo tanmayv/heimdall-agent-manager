@@ -162,6 +162,10 @@ Bridge_Runtime_Launch :: struct {
 	// reviewer launched here for a chain another Bridge owns relays its
 	// `lease next` to that owner with it (owner_remote_agent.odin).
 	chain_id: string,
+	// provider/model this instance was launched with (owner matcher reuse:
+	// a warm instance serves a task only when they match its selection).
+	provider: string,
+	model: string,
 	// role is the action role from the wake_agent run[] entry that (re)started this
 	// instance ("worker"/"reviewer"). Empty means unknown (a launch predating this
 	// field, or a non-wake launch). Used only for the coordinator stop-exemption

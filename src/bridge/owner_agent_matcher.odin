@@ -118,15 +118,17 @@ bridge_owner_match_assign :: proc(ctx:^Owner_Agent_Ctx,out:^[dynamic]Owner_Revie
         stopped,missing:owner.Agent_Fleet_Member
         launch_policy:contracts.Owner_Fleet_Policy
         run_bridge,pinned:=bridge_owner_match_run_bridge(ctx.store,task.chain_id,task.task_id)
+        models:=bridge_owner_task_models(ctx.store,task.chain_id,task.task_id)
         remote_agent:string
         for policy in policies {
             if policy.agent_id==coordinator.agent_id || len(bridge_owner_fleet_active_roles(policy))==0 do continue
+            _,overridden:=models[policy.agent_id]
             // Runs on another Bridge (the task's pin, else the row's): the
             // first such agent is placed there (origin/main pick_instance on
             // the pinned Bridge); never a local member.
             if pinned || (policy.bridge_id!="" && policy.bridge_id!=ctx.store.owner) {
                 if remote_agent=="" && !pending[policy.agent_id] {
-                    if _,code,_:=bridge_owner_remote_target(ctx.store,task.chain_id,policy.agent_id,run_bridge,pinned);code=="ok" do remote_agent=policy.agent_id
+                    if _,code,_:=bridge_owner_remote_target(ctx.store,task.chain_id,policy.agent_id,run_bridge,pinned,models);code=="ok" do remote_agent=policy.agent_id
                 }
                 continue
             }
@@ -136,9 +138,13 @@ bridge_owner_match_assign :: proc(ctx:^Owner_Agent_Ctx,out:^[dynamic]Owner_Revie
                 has_member=true
                 child,live:=bridge_owner_live_child(m.instance_id)
                 if !live || child.agent_id!=m.agent_id {
-                    if stopped.instance_id=="" do stopped=m
+                    // A restart keeps its old selection: not for an overridden task.
+                    if stopped.instance_id=="" && !overridden do stopped=m
                     continue
                 }
+                // A warm instance with another provider/model than the task's
+                // override is not reused (a dedicated one is launched below).
+                if !bridge_owner_instance_serves(m.instance_id,m.agent_id,models) do continue
                 if busy[m.instance_id] do continue
                 if leased,lease_ok:=owner.instance_leased(ctx.store,m.instance_id);!lease_ok || leased do continue
                 cctx:=Owner_Agent_Ctx{request_id=bridge_owner_fresh_id("req"),store=ctx.store,child=coordinator,key=ctx.key,kr=ctx.kr,now=ctx.now}
@@ -151,7 +157,7 @@ bridge_owner_match_assign :: proc(ctx:^Owner_Agent_Ctx,out:^[dynamic]Owner_Revie
                 break
             }
             if assigned do break
-            if !has_member && missing.agent_id=="" { missing=owner.Agent_Fleet_Member{agent_id=policy.agent_id};launch_policy=policy }
+            if (!has_member || overridden) && missing.agent_id=="" { missing=owner.Agent_Fleet_Member{agent_id=policy.agent_id};launch_policy=policy }
         }
         if assigned do continue
         if pinned || (remote_agent!="" && stopped.instance_id=="" && missing.agent_id=="") {
@@ -166,10 +172,7 @@ bridge_owner_match_assign :: proc(ctx:^Owner_Agent_Ctx,out:^[dynamic]Owner_Revie
             wake=Owner_Review_Wake{action=.Start,chain=task.chain_id,task=task.task_id,agent=stopped.agent_id,instance=stopped.instance_id,worker=true,rematch=true}
         case missing.agent_id!="":
             body:=map[string]string{"agent_id"=missing.agent_id,"chain_id"=task.chain_id,"bridge_id"=bridge_cfg().daemon_id}
-            provider,model,profile:=bridge_owner_fleet_launch_model(launch_policy,bridge_cfg().daemon_id)
-            if provider!="" do body["provider"]=provider
-            if model!="" do body["model"]=model
-            if profile!="" do body["provider_profile"]=profile
+            bridge_owner_launch_body_model(&body,launch_policy,bridge_cfg().daemon_id,missing.agent_id,models)
             wake=Owner_Review_Wake{action=.Launch,chain=task.chain_id,task=task.task_id,agent=missing.agent_id,body=bridge_owner_json(body),worker=true,rematch=true}
         case:
             continue // every fleet worker is busy (capacity reached)
@@ -315,7 +318,7 @@ bridge_owner_match_remote_assignee :: proc(s:^owner.Store,chain,task:string) -> 
     agent=bridge_owner_place_pending_get(chain,task)
     if agent=="" do return "",false
     run_bridge,pinned:=bridge_owner_match_run_bridge(s,chain,task)
-    _,code,_:=bridge_owner_remote_target(s,chain,agent,run_bridge,pinned)
+    _,code,_:=bridge_owner_remote_target(s,chain,agent,run_bridge,pinned,bridge_owner_task_models(s,chain,task))
     return agent,code=="ok"
 }
 

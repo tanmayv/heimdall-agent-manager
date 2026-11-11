@@ -88,11 +88,12 @@ bridge_owner_review_plan :: proc(ctx:^Owner_Agent_Ctx,chain,task:string) -> json
         if rec,has:=bridge_owner_review_token_locked(ctx.reviews.coordinator);has do ctx.reviews.rec=rec
     }
     run_bridge,pinned:=bridge_owner_match_run_bridge(ctx.store,chain,task)
+    models:=bridge_owner_brief_agent_models(st.brief)
     for target in targets {
         // A reviewer whose task runs on another account Bridge (the task's
         // pin, else its fleet row's Bridge) is launched there through the Hub
         // and reviews over the agent relay; it is never started here.
-        if place,code,_:=bridge_owner_remote_target(ctx.store,chain,target.agent_id,run_bridge,pinned);code!="" {
+        if place,code,_:=bridge_owner_remote_target(ctx.store,chain,target.agent_id,run_bridge,pinned,models);code!="" {
             entry:=json.Object{"agent_id"=json.String(target.agent_id),"action"=json.String("remote")}
             if code=="ok" {
                 entry["bridge_id"]=json.String(place.executor_bridge)
@@ -109,21 +110,21 @@ bridge_owner_review_plan :: proc(ctx:^Owner_Agent_Ctx,chain,task:string) -> json
             continue
         }
         wake:=Owner_Review_Wake{action=.Launch,chain=chain,task=task,lease=lease,agent=target.agent_id}
+        // A task override for this reviewer: only a live instance launched with
+        // that selection reviews; otherwise a dedicated one is launched with it
+        // (a stopped member would restart with its old selection).
+        _,overridden:=models[target.agent_id]
         for instance in target.instances {
-            if child,live:=bridge_owner_live_child(instance);live && child.agent_id==target.agent_id { wake.action=.Nudge;wake.instance=instance;break }
+            if child,live:=bridge_owner_live_child(instance);live && child.agent_id==target.agent_id && bridge_owner_instance_serves(instance,target.agent_id,models) { wake.action=.Nudge;wake.instance=instance;break }
         }
-        if wake.action==.Launch && len(target.instances)>0 {
+        if wake.action==.Launch && len(target.instances)>0 && !overridden {
             // A stopped member keeps its membership across a restart.
             wake.action=.Start;wake.instance=target.instances[len(target.instances)-1]
         }
         if wake.action==.Launch {
             body:=map[string]string{"agent_id"=target.agent_id,"chain_id"=chain,"bridge_id"=bridge_cfg().daemon_id}
-            if policy,has,policy_ok:=owner.agent_fleet_policy(ctx.store,chain,target.agent_id);policy_ok && has {
-                provider,model,profile:=bridge_owner_fleet_launch_model(policy,bridge_cfg().daemon_id)
-                if provider!="" do body["provider"]=provider
-                if model!="" do body["model"]=model
-                if profile!="" do body["provider_profile"]=profile
-            }
+            policy,_,_:=owner.agent_fleet_policy(ctx.store,chain,target.agent_id)
+            bridge_owner_launch_body_model(&body,policy,bridge_cfg().daemon_id,target.agent_id,models)
             wake.body=bridge_owner_json(body)
         }
         append(&ctx.reviews.wakes,wake)
