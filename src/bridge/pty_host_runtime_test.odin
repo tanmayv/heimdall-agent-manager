@@ -1323,13 +1323,13 @@ bridge_br4_ensure_daemon_retires_a_live_prior_daemon_first :: proc(t: ^testing.T
 
 	saved_socket := pty_host_daemon().socket
 	saved_started := pty_host_daemon().started
-	saved_process := pty_host_daemon_process
-	saved_has := pty_host_daemon_has_process
+	saved_process := pty_host_daemon().process
+	saved_has := pty_host_daemon().has_process
 	defer {
 		pty_host_daemon().socket = saved_socket
 		pty_host_daemon().started = saved_started
-		pty_host_daemon_process = saved_process
-		pty_host_daemon_has_process = saved_has
+		pty_host_daemon().process = saved_process
+		pty_host_daemon().has_process = saved_has
 	}
 
 	sock := fmt.aprintf("/tmp/ham-br4-%d.sock", os.get_pid())
@@ -1354,8 +1354,8 @@ bridge_br4_ensure_daemon_retires_a_live_prior_daemon_first :: proc(t: ^testing.T
 	prior, err := os.process_start(os.Process_Desc{command = []string{"sleep", "600"}})
 	testing.expect(t, err == nil, "fake prior daemon started")
 	if err != nil do return
-	pty_host_daemon_process = prior
-	pty_host_daemon_has_process = true
+	pty_host_daemon().process = prior
+	pty_host_daemon().has_process = true
 
 	_, ok := bridge_pty_host_ensure_daemon()
 	testing.expect(t, !ok, "nothing answers on the socket, so no daemon is ready")
@@ -1370,11 +1370,11 @@ bridge_br4_ensure_daemon_retires_a_live_prior_daemon_first :: proc(t: ^testing.T
 		_, _ = os.process_wait(prior)
 	}
 
-	testing.expect(t, pty_host_daemon_has_process, "the replacement is tracked")
-	if pty_host_daemon_has_process {
-		testing.expect(t, pty_host_daemon_process.pid != prior.pid, "and it is a different process")
-		_ = os.process_kill(pty_host_daemon_process)
-		_, _ = os.process_wait(pty_host_daemon_process)
-		pty_host_daemon_has_process = false
+	testing.expect(t, pty_host_daemon().has_process, "the replacement is tracked")
+	if pty_host_daemon().has_process {
+		testing.expect(t, pty_host_daemon().process.pid != prior.pid, "and it is a different process")
+		_ = os.process_kill(pty_host_daemon().process)
+		_, _ = os.process_wait(pty_host_daemon().process)
+		pty_host_daemon().has_process = false
 	}
 }

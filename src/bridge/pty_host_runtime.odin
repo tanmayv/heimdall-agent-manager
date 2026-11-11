@@ -67,8 +67,11 @@ bridge_pty_host_truthy :: proc(v: string) -> bool {
 // builds keep one per test thread (inherited by its workers, bridge_thread_*), so
 // concurrent tests never share a daemon socket.
 Pty_Host_Daemon :: struct {
-	started: bool,
-	socket:  string,
+	started:     bool,
+	socket:      string,
+	// The daemon process this Bridge (or test) spawned, if any.
+	process:     os.Process,
+	has_process: bool,
 }
 @(private = "file")
 g_pty_host_daemon: Pty_Host_Daemon
@@ -95,9 +98,8 @@ pty_host_daemon_lock:    sync.Mutex
 // it is still alive when its socket stops answering, retired before a replacement is
 // started. Dropping the handle is how a wedged daemon (listener dead, process alive)
 // came to run alongside its replacement: two daemons, the old one still holding the
-// event connection and every run it had spawned. Guarded by pty_host_daemon_lock.
-pty_host_daemon_process:     os.Process
-pty_host_daemon_has_process: bool
+// event connection and every run it had spawned. Kept in pty_host_daemon().process /
+// .has_process, guarded by pty_host_daemon_lock.
 
 // How long a retiring daemon gets after SIGTERM before SIGKILL, and after SIGKILL
 // before we give up waiting on it.
@@ -282,7 +284,7 @@ bridge_pty_host_ensure_daemon :: proc() -> (string, bool) {
 	// REQ-BR-4: never start a second daemon while the one we started is still alive.
 	// Retiring it takes down every run it hosts, so first make sure it is really not
 	// answering rather than momentarily busy: a few more pings over ~1.5s.
-	if bridge_pty_host_daemon_process_running(&pty_host_daemon_process, &pty_host_daemon_has_process) {
+	if bridge_pty_host_daemon_process_running(&pty_host_daemon().process, &pty_host_daemon().has_process) {
 		for _ in 0..<3 {
 			time.sleep(500 * time.Millisecond)
 			if bridge_pty_host_ping(socket) {
@@ -292,7 +294,7 @@ bridge_pty_host_ensure_daemon :: proc() -> (string, bool) {
 			}
 		}
 	}
-	if !bridge_pty_host_retire_daemon_process(&pty_host_daemon_process, &pty_host_daemon_has_process) {
+	if !bridge_pty_host_retire_daemon_process(&pty_host_daemon().process, &pty_host_daemon().has_process) {
 		bridge_dependency_breaker_record(breaker_key, false)
 		return "", false
 	}
@@ -317,8 +319,8 @@ bridge_pty_host_ensure_daemon :: proc() -> (string, bool) {
 	}
 	// The daemon outlives this call, but the handle is KEPT (REQ-BR-4): it is how the
 	// next ensure_daemon reaps it once it exits, and retires it if it wedges.
-	pty_host_daemon_process = proc_handle
-	pty_host_daemon_has_process = true
+	pty_host_daemon().process = proc_handle
+	pty_host_daemon().has_process = true
 	sync.atomic_add(&pty_host_daemon_generation, 1)
 
 	// Poll until the daemon accepts + answers Ping.

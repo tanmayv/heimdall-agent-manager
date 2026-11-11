@@ -1886,7 +1886,7 @@ bridge_update_stop_pty_host :: proc(socket: string) -> (ok: bool, detail: string
 	}
 	// Reap it if this process started it, and make the next use start a new one.
 	sync.mutex_lock(&pty_host_daemon_lock)
-	_ = bridge_pty_host_daemon_process_running(&pty_host_daemon_process, &pty_host_daemon_has_process)
+	_ = bridge_pty_host_daemon_process_running(&pty_host_daemon().process, &pty_host_daemon().has_process)
 	pty_host_daemon().started = false
 	sync.mutex_unlock(&pty_host_daemon_lock)
 	return true, ""
