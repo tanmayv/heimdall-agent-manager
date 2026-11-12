@@ -43,6 +43,16 @@ test_executor_issuance_resolves_signed_directory_catalog_and_profile :: proc(t:^
         testing.expect(t,!bridge_executor_resolve_issuance(&store,executor.encode(selected)).resolved,pair[0])
         bridge_executor_test_set(selected,pair[0],old)
     }
+    // F4 (B), Mundus .14: the issued selection is re-resolved at prepare; an
+    // active account-catalog model this Bridge has not observed (claude
+    // reports aliases only) resolves as it did at issuance; a retired one does not.
+    bridge_provider_catalog_default_hook=[]Bridge_Catalog_Provider{{provider="claude",state="active",models=[]Bridge_Catalog_Model{{model_id="claude-sonnet-5-5",state="active"},{model_id="claude-old",state="retired"}}}}
+    bridge_executor_test_set(selected,"model","claude-sonnet-5-5")
+    testing.expect(t,bridge_executor_resolve_issuance(&store,executor.encode(selected)).resolved,"an active catalog model the Bridge has not observed resolves at prepare")
+    bridge_executor_test_set(selected,"model","claude-old")
+    testing.expect(t,!bridge_executor_resolve_issuance(&store,executor.encode(selected)).resolved,"a retired catalog model is still refused")
+    bridge_provider_catalog_default_hook=nil
+    bridge_executor_test_set(selected,"model","seed")
     // A previously signed path is not enough after its local target vanishes.
     testing.expect(t,os.remove(directory)==nil)
     testing.expect(t,!bridge_executor_resolve_issuance(&store,executor.encode(selected)).resolved)

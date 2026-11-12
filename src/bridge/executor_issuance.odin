@@ -55,6 +55,18 @@ bridge_executor_install_directory :: proc(s:^executor.Store,raw:string,key:contr
     if contracts.owner_string(o,"enabled")=="1" {verified,_=bridge_executor_canonical_directory(contracts.owner_string(o,"directory_path"))}
     return executor.install_directory(s,raw,key,now,verified)
 }
+// The account catalog decides, like a local launch: this Bridge's observed
+// model list may name aliases only (claude 2.1.295 reports 'sonnet',
+// 'claude-sonnet-5', not 'claude-sonnet-5-5'). Requiring an observed model
+// refused placement (REQ-E2E-1 .12, task_18e70e69aca835a7) and then every
+// prepare of the issued selection (.14, task_18e72ea85b7d4f43) with
+// invalid_resources. An inactive or unknown model is still refused, logged.
+bridge_executor_model_allowed :: proc(provider,model,what:string) -> bool {
+    if bridge_provider_catalog_has_model(provider,model) do return true
+    if _,_,active:=bridge_owner_agent_model_resolve(provider,model);active && model!="" do return true
+    fmt.eprintfln("bridge executor: %s refused: %s/%s is neither observed on this Bridge nor an active catalog model",what,provider,model)
+    return false
+}
 bridge_executor_resolve_issuance :: proc(s:^executor.Store,selection_raw:string)->executor.Issuance_Resources {
     selection,valid:=contracts.executor_parse(selection_raw,"issuance_selection")
     if !valid do return {}
@@ -64,7 +76,7 @@ bridge_executor_resolve_issuance :: proc(s:^executor.Store,selection_raw:string)
     canonical,within:=bridge_executor_canonical_directory(mapping.path)
     if !within || executor.directory_key(s.executor,canonical)!=mapping.key do return {}
     provider,model,profile:=get(selection,"provider"),get(selection,"model"),get(selection,"provider_profile")
-    if !bridge_provider_catalog_has_model(provider,model) do return {}
+    if !bridge_executor_model_allowed(provider,model,"issued selection") do return {}
     resolved,err:=profile_lookup(provider,profile)
     if err!=.None || !resolved.enabled || resolved.provider!=provider || resolved.profile_id!=profile do return {}
     return executor.Issuance_Resources{selection_digest=contracts.owner_payload_digest(selection_raw),directory_key=mapping.key,directory_path=canonical,resolved=true}
@@ -92,16 +104,7 @@ bridge_executor_resolve_auto_issuance :: proc(s:^executor.Store,consent:json.Obj
     if !valid || !contracts.executor_selection_auto(selection) || self.key_id!=s.operator_key do return {}
     get:=contracts.owner_string
     provider,model:=get(selection,"provider"),get(selection,"model")
-    // The account catalog decides, like a local launch: this Bridge's observed
-    // model list may name aliases only (claude 2.1.295 reports 'sonnet',
-    // 'claude-sonnet-5', not 'claude-sonnet-5-5'), which refused every placement
-    // with invalid_resources (REQ-E2E-1 dawnstar-b, task_18e70e69aca835a7).
-    if !bridge_provider_catalog_has_model(provider,model) {
-        if _,_,active:=bridge_owner_agent_model_resolve(provider,model);!active || model=="" {
-            fmt.eprintfln("bridge executor: placement refused: %s/%s is neither observed on this Bridge nor an active catalog model",provider,model)
-            return {}
-        }
-    }
+    if !bridge_executor_model_allowed(provider,model,"placement") do return {}
     profile,err:=profile_lookup(provider,provider,context.temp_allocator,false)
     if err!=.None || !profile.enabled || profile.provider!=provider || !contracts.owner_field_valid(profile.profile_id,"id") {
         fmt.eprintfln("bridge executor: placement refused: no enabled default %s profile on this Bridge",provider)
@@ -273,7 +276,11 @@ bridge_executor_issuance_handle :: proc(conn:^ws.Connection,text:string) {
     result:=executor.issue(s,verified,get(exchange,"selection"),device,self,time.to_unix_nanoseconds(time.now())/1000000,
         resources,executor.Signer{nil,bridge_executor_sign})
     reply.code=result.code
-    if result.code!="ok" do return
+    if result.code!="ok" {
+        bridge_executor_log_refusal("issuance",get(exchange,"request_id") if get(exchange,"request_id")!="" else get(scope,"request_id"),get(scope,"chain_id"),get(scope,"owner_bridge_id"),result.code,
+            "no model/profile/slot/directory resolves for the selection" if result.code=="invalid_resources" else "")
+        return
+    }
     response_scope:=scope
     response_scope["direction"]=json.String("response")
     sealed,sealed_ok:=channel.seal(result.body,&kr,response_scope,time.to_unix_nanoseconds(time.now())/1000000,context.temp_allocator)

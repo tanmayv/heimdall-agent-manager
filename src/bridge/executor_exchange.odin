@@ -1,5 +1,8 @@
 #+feature dynamic-literals
 package main
+import "base:runtime"
+import "core:fmt"
+import "core:strings"
 import "core:crypto"
 import "core:encoding/json"
 import "core:sync"
@@ -156,6 +159,10 @@ bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string,activati
     if method=="prepare" {
         resources:=bridge_executor_prepare_resources(s,p)
         result=executor.prepare(s,request_raw,owner_key,time.to_unix_nanoseconds(time.now())/1000000,resources)
+        if result.code!="ok" {
+            reason:="the issued selection no longer resolves here (model, profile or directory)" if result.code=="invalid_resources" && resources.directory_key=="" else ""
+            bridge_executor_log_refusal("prepare",get(p,"reservation_id"),get(p,"chain_id"),get(p,"owner_bridge_id"),result.code,reason)
+        }
     } else {
         // Replay/query/stop need no network callback. A fresh activate through
         // the separate General_IO command must consume a live owner nonce.
@@ -217,4 +224,18 @@ bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string,activati
     token,sealed:=channel.seal(receipt,&kr,response_scope,time.to_unix_nanoseconds(time.now())/1000000,context.temp_allocator)
     if !sealed {reply.code="expired";return}
     reply.envelope=token
+}
+
+// Executor-side refusals were silent (Mundus .13/.14: only the owner logged
+// the code it got back). One line per distinct operation and code, so the
+// owner's retries of the same refusal do not flood the journal.
+bridge_executor_last_refusal:string
+bridge_executor_refusal_mutex:sync.Mutex
+bridge_executor_log_refusal :: proc(kind,operation,chain,owner_bridge,code,reason:string) {
+    key:=fmt.tprintf("%s|%s|%s",kind,operation,code)
+    sync.mutex_lock(&bridge_executor_refusal_mutex);defer sync.mutex_unlock(&bridge_executor_refusal_mutex)
+    if key==bridge_executor_last_refusal do return
+    delete(bridge_executor_last_refusal,runtime.default_allocator())
+    bridge_executor_last_refusal=strings.clone(key,runtime.default_allocator())
+    fmt.eprintfln("bridge executor: %s refused for owner Bridge %s: %s%s%s (chain %s, %s)",kind,owner_bridge,code,": " if reason!="" else "",reason,chain,operation)
 }
