@@ -11,8 +11,9 @@ import { useAuthUser } from '../auth/AuthUserContext';
 import { chainStatusDot } from '../ui/patterns/commandPaletteLogic';
 import { VaultText } from '../vault/VaultText';
 import { refreshOwnerChains, resolveOwnerChainCoordinator, useOwnerChains } from '../../api/ownerChainsStore';
+import { useListSidebarConversationsQuery } from '../../api/endpoints/sidebar';
 import {
-  filterHomeChains, homeChainsFromOwners, homeChainsFromSearchHits,
+  filterHomeChains, homeChainsFromOwners, homeChainsFromSearchHits, orderChainsByActivity,
   HOME_RECENT_CHAIN_LIMIT, HOME_REMOTE_SEARCH_MIN_CHARS, type HomeChainItem,
 } from '../home/homeChainSearchLogic';
 
@@ -37,7 +38,13 @@ export interface SidebarTaskChainsProps {
  */
 export function SidebarTaskChains({ currentPath, onNavigate }: SidebarTaskChainsProps) {
   const owners = useOwnerChains();
-  const loaded = useMemo(() => homeChainsFromOwners(owners.chains), [owners.chains]);
+  // The rail's own conversation list (same query args, so no extra fetch): its
+  // live updates re-order the chains by their coordinator's last activity.
+  const conversations = useListSidebarConversationsQuery({ limit: 30 });
+  const loaded = useMemo(
+    () => orderChainsByActivity(homeChainsFromOwners(owners.chains), conversations.data ?? []),
+    [owners.chains, conversations.data],
+  );
   const titles = useSelector(selectSearchChains) as Record<string, { decryptedTitle?: string }>;
   const unlocked = useSelector(selectIsVaultUnlocked);
   const user = useAuthUser();

@@ -10,6 +10,7 @@ import {
   filterHomeChains,
   homeChainsFromOwners,
   homeChainsFromSearchHits,
+  orderChainsByActivity,
   type HomeChainItem,
 } from '../src/ui/components/home/homeChainSearchLogic.ts';
 
@@ -188,4 +189,28 @@ test('launching from a pane fills that pane instead of navigating', () => {
   assert.match(home, /<NewConversationPage embedded launchIntent=\{pane\.launchIntent\} onLaunched=\{pane\.onOpenAgent\}/);
   const ws = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/components/mainWorkspace/Workspace.tsx'), 'utf8');
   assert.match(ws, /onOpenAgent: \(agentInstanceId\) =>\s*dispatch\(assignMainPaneAgent\(\{ paneId, agentInstanceId \}\)\)/);
+});
+
+test('sidebar chains are ordered by their coordinator conversation activity, most recent first', () => {
+  // Registry order (title order) before any activity is known.
+  const items = [
+    chain('a', { title: 'Alpha', coordinatorAgentInstanceId: 'inst_a' }),
+    chain('b', { title: 'Beta', coordinatorAgentInstanceId: 'inst_b' }),
+    chain('c', { title: 'Gamma' }), // no coordinator yet
+    chain('d', { title: 'Delta', coordinatorAgentInstanceId: 'inst_d' }),
+  ];
+  assert.deepEqual(orderChainsByActivity(items, []).map((c) => c.chainId), ['a', 'b', 'c', 'd'], 'no activity keeps the given order');
+  const conversations = [
+    { agentInstanceId: 'inst_a', lastMessageUnixMs: 1000 },
+    { agentInstanceId: 'inst_b', lastMessageUnixMs: 3000 },
+    { agentInstanceId: 'inst_d', lastMessageUnixMs: 0, lastMessageAt: '1970-01-01T00:00:02.000Z' },
+  ];
+  assert.deepEqual(orderChainsByActivity(items, conversations).map((c) => c.chainId), ['b', 'd', 'a', 'c']);
+  // New activity on a chain (a new coordinator message) moves it to the top.
+  conversations[0] = { agentInstanceId: 'inst_a', lastMessageUnixMs: 5000 };
+  assert.deepEqual(orderChainsByActivity(items, conversations).map((c) => c.chainId), ['a', 'b', 'd', 'c']);
+  // Several conversations of one instance: the latest counts; input is not mutated.
+  const before = items.map((c) => c.chainId);
+  assert.deepEqual(orderChainsByActivity(items, [...conversations, { agentInstanceId: 'inst_d', lastMessageUnixMs: 9000 }]).map((c) => c.chainId), ['d', 'a', 'b', 'c']);
+  assert.deepEqual(items.map((c) => c.chainId), before);
 });

@@ -48,6 +48,34 @@ export function searchMatchLabel(hit: TaskChainSearchHit): string {
   return label;
 }
 
+/** A conversation's last activity as the sidebar rail orders it. */
+export interface ChainActivitySource { agentInstanceId: string; lastMessageUnixMs?: number; lastMessageAt?: string; updatedAt?: string }
+
+/**
+ * Chains ordered by last activity, most recent first, as origin/main orders
+ * its chain list (updated_at DESC). Owner registry rows carry no timestamp, so
+ * a chain's activity is its coordinator conversation's: every [taskv2] notice
+ * (submits, reviews, blocks, handoffs) lands there and the conversation list
+ * is kept fresh over the user WebSocket, so the order follows live activity
+ * with no polling. Chains with no known activity keep their previous (title)
+ * order after the active ones. Owner chains have no pinning (origin/main's
+ * pinned-first group has no owner-chain counterpart yet).
+ */
+export function orderChainsByActivity<T extends { chainId: string; coordinatorAgentInstanceId?: string }>(
+  chains: T[], conversations: ChainActivitySource[],
+): T[] {
+  const latest = new Map<string, number>();
+  for (const c of conversations) {
+    const at = Number(c.lastMessageUnixMs || Date.parse(c.lastMessageAt || c.updatedAt || '') || 0);
+    if (c.agentInstanceId && at > (latest.get(c.agentInstanceId) ?? 0)) latest.set(c.agentInstanceId, at);
+  }
+  const activity = (chain: T) => (chain.coordinatorAgentInstanceId ? latest.get(chain.coordinatorAgentInstanceId) ?? 0 : 0);
+  return chains
+    .map((chain, index) => ({ chain, index, at: activity(chain) }))
+    .sort((a, b) => b.at - a.at || a.index - b.index)
+    .map((entry) => entry.chain);
+}
+
 export const HOME_RECENT_CHAIN_LIMIT = 10;
 export const HOME_REMOTE_SEARCH_MIN_CHARS = 2;
 
