@@ -110,6 +110,17 @@ while [ $SECONDS -lt $deadline ]; do
         --prompt "I approved the plan. Go ahead." >>"$EVIDENCE/user-messages.jsonl" 2>>"$EVIDENCE/user-approvals.err"
     fi
     total=$(q "SELECT count(*) FROM ($WORK)")
+    # A coordinator may ask for plan approval in chat instead of a planning
+    # task: with no work task after ~2 minutes, the user approves in chat once.
+    if [ "${total:-0}" = 0 ] && [ ! -s "$EVIDENCE/user-messages.jsonl" ]; then
+      IDLE=$((${IDLE:-0}+1))
+      if [ "$IDLE" -ge 4 ]; then
+        log "no work task yet: scripted user approves the plan in chat"
+        node --import ./tests/helpers/vaultEndpointHarness.ts scripts/local-runtime/e2e-new-conversation.mjs \
+          --api "$API" --key "$HUB_DIR/approver/device.json" --user "$DEV_USER" --conversation "$CONVERSATION" \
+          --prompt "Approved, go ahead with the plan." >>"$EVIDENCE/user-messages.jsonl" 2>>"$EVIDENCE/user-approvals.err"
+      fi
+    fi
     reviewed=$(q "$AGENT_APPROVED")
     log "chain $CHAIN: work tasks ${total:-0}, agent-approved ${reviewed:-0}"
     [ "${total:-0}" -ge 2 ] && [ "${reviewed:-0}" -ge "${total:-0}" ] && break
