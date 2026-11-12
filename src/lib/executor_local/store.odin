@@ -11,7 +11,7 @@ import contracts "odin_test:contracts"
 
 // One ledger per execution device, shared by all owners and launch purposes.
 // No task tables or task mutation APIs exist in this package.
-Store :: struct {mutex:sync.Mutex, db,writer:DB, account,executor,operator_key:string, incarnation:i64, unusable,clock_uncertain:bool}
+Store :: struct {clock:proc()->i64, mutex:sync.Mutex, db,writer:DB, account,executor,operator_key:string, incarnation:i64, unusable,clock_uncertain:bool}
 MAX_RECORDS :: 100000
 Result :: struct {code,body:string,replay:bool}
 Resolved_Resources :: struct {directory_key,provider_profile,instance_id,configuration_revision:string}
@@ -104,7 +104,7 @@ clock :: proc(s:^Store,now:i64,require_ready:=true)->string {
     // clock (effective_now) and a large backward step is logged.
     if now<0 do return "expired"
     if require_ready && rows[0][1]!="ready" && rows[0][1]!="clock_uncertain" do return "recovery_required"
-    _=effective_now(s,now)
+    _=store_now(s,now)
     _,ok=query(s.db,"UPDATE executor_runtime SET clock_high_ms=max(clock_high_ms,CAST(? AS INTEGER)),recovery_state=CASE WHEN recovery_state='clock_uncertain' THEN 'ready' ELSE recovery_state END WHERE singleton=1",fmt.tprintf("%d",now))
     return "" if ok else "storage_error"
 }
@@ -136,7 +136,7 @@ install_policy :: proc(s:^Store,raw:string,key:contracts.Owner_Verified_Key,now:
     if !scope(s,o) || key.key_id!=s.operator_key || !contracts.executor_verify("policy",o,key) do return fail("invalid_scope")
     digest,_:=contracts.executor_digest("policy",o)
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
-    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
+    now:=store_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if !begin(s) do return fail("storage_error")
     defer rollback(s)
     prior,read:=query(s.db,"SELECT input_digest FROM executor_policies WHERE revision=?",field(o,"policy_revision"))
@@ -180,7 +180,7 @@ prepare :: proc(s:^Store,raw:string,key:contracts.Owner_Verified_Key,now:i64,res
     if !scope(s,o) || !contracts.executor_verify("prepare",o,key) do return fail("invalid_scope")
     digest,_:=contracts.executor_digest("prepare",o)
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
-    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
+    now:=store_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if !begin(s) do return fail("storage_error")
     defer rollback(s)
     if prior,found:=receipt(s,field(o,"owner_bridge_id"),field(o,"operation_id"),"prepare",digest);found do return prior
@@ -220,7 +220,11 @@ prepare :: proc(s:^Store,raw:string,key:contracts.Owner_Verified_Key,now:i64,res
 // C1: max(the caller's clock, the store's high-water clock). A caller more
 // than EXECUTOR_CLOCK_ALERT_MS behind is a real backward jump: logged.
 EXECUTOR_CLOCK_ALERT_MS :: i64(5000)
-effective_now :: proc(s:^Store,now:i64)->i64 {
+// store_now is the single clock read of the executor store (see the owner
+// store's store_now): the clock hook, else the caller's hint, never earlier
+// than the high-water clock. Guard test: clock_source_test.odin.
+store_now :: proc(s:^Store,hint:i64)->i64 {
+    now:=s.clock() if s.clock!=nil else hint
     rows,ok:=query(s.db,"SELECT clock_high_ms FROM executor_runtime WHERE singleton=1")
     if !ok || len(rows)!=1 do return now
     high:=number(rows[0][0])

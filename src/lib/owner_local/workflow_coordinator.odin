@@ -7,6 +7,7 @@ import "core:strings"
 import contracts "odin_test:contracts"
 
 coordinator_configure :: proc(s:^Store,c,p:json.Object,child:Child,now:i64,sign:Signer)->string {
+    now:=store_now(s,now) // C1: the store's single clock source
     if !member_authorized(s,field(c,"chain_id"),child) || child.instance!=field(p,"instance_id") || child.agent_id!=field(p,"agent_id") || child.epoch=="" || child.run_count<1 || !contracts.owner_field_valid(child.token_generation,"hash") do return "invalid_scope"
     chain:=field(c,"chain_id")
     rows,ok:=query(s.db,"SELECT COALESCE(max(revision),0) FROM local_workflow_coordinators WHERE chain_id=?",chain)
@@ -30,7 +31,7 @@ coordinator_configure :: proc(s:^Store,c,p:json.Object,child:Child,now:i64,sign:
 // agent and exact launch binding are current read authorization, checked before
 // historical receipts. Current task/generation/time fences follow receipts.
 execute_coordinator_gate :: proc(s:^Store,raw,payload,cap_raw:string,child:Child,key:contracts.Owner_Verified_Key,now:i64,sign:Signer)->Result {
-    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
+    now:=store_now(s,now) // C1: monotonic clamp, never refuse on the clock
     c,valid:=contracts.owner_parse(raw,"lifecycle_command")
     p,pvalid:=contracts.owner_parse(payload,"workflow_gate")
     cap,capvalid:=contracts.owner_parse(cap_raw,"coordinator_capability")

@@ -11,7 +11,7 @@ Source_Proof :: struct { head:string, valid:bool }
 // The owner-signed attestation includes the payload and exact observed child.
 // Historical replay precedes every mutation fence, but never current read auth.
 execute_lifecycle :: proc(s:^Store,raw,payload,cap_raw:string,child:Child,key:contracts.Owner_Verified_Key,now:i64,sign:Signer,source:Source_Proof={}) -> Result {
-    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
+    now:=store_now(s,now) // C1: monotonic clamp, never refuse on the clock
     context.allocator=context.temp_allocator
     gate,gate_valid:=contracts.owner_parse(raw,"lifecycle_command")
     if gate_valid && field(gate,"method")=="workflow.gate.post" do return execute_coordinator_gate(s,raw,payload,cap_raw,child,key,now,sign)

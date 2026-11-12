@@ -15,7 +15,7 @@ action :: proc(s:^Store,raw:string,key:contracts.Owner_Verified_Key,now:i64,curr
     if !scope(s,o) || !contracts.executor_verify("action",o,key) do return fail("invalid_scope")
     digest,_:=contracts.executor_digest("action",o)
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
-    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
+    now:=store_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if !begin(s) do return fail("storage_error")
     defer rollback(s)
     if prior,found:=receipt(s,field(o,"owner_bridge_id"),field(o,"operation_id"),"action",digest);found do return prior
@@ -102,7 +102,7 @@ stop_result :: proc(s:^Store,request:json.Object)->Result {
 take_intent :: proc(s:^Store,now:i64)->(Intent,bool) {
     context.allocator=context.temp_allocator
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
-    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
+    now:=store_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if !begin(s) do return {},false
     defer rollback(s)
     if code:=clock(s,now,false);code!="" do return {},false
@@ -131,7 +131,7 @@ take_intent :: proc(s:^Store,now:i64)->(Intent,bool) {
 // retain the charge until a trusted exact-child absence observation arrives.
 expire :: proc(s:^Store,now:i64)->bool {
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
-    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
+    now:=store_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if !begin(s) do return false
     defer rollback(s)
     if code:=clock(s,now,false);code!="" do return false
@@ -158,7 +158,7 @@ observe_child :: proc(s:^Store,id:string,observation:Child_Observation)->bool {
 }
 complete_recovery :: proc(s:^Store,now:i64)->bool {
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
-    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
+    now:=store_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if !begin(s) do return false
     defer rollback(s)
     if code:=clock(s,now,false);code!="" do return false
@@ -173,10 +173,11 @@ complete_recovery :: proc(s:^Store,now:i64)->bool {
 // Revalidate the exact durable claim without holding a transaction during I/O.
 intent_current :: proc(s:^Store,intent:Intent,now:i64)->(i64,bool) {
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
-    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
+    now:=store_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     return intent_current_locked(s,intent,now)
 }
 intent_current_locked :: proc(s:^Store,intent:Intent,now:i64)->(i64,bool) {
+    now:=store_now(s,now) // C1: the store's single clock source
     if s.db==nil || s.unusable || intent.incarnation!=s.incarnation || now<0 do return 0,false
     rows,ok:=query(s.db,`SELECT r.instance_id,r.launch_key,r.document,r.state,r.expires_ms,r.executor_incarnation,i.claim_incarnation,
       (SELECT clock_high_ms FROM executor_runtime),(SELECT recovery_state FROM executor_runtime)
@@ -194,7 +195,7 @@ intent_current_locked :: proc(s:^Store,intent:Intent,now:i64)->(i64,bool) {
 // same daemon key only. An old runtime cannot acquire fresh I/O permission.
 dispatch_started :: proc(s:^Store,intent:Intent,now:i64)->bool {
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
-    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
+    now:=store_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if intent.kind!="launch" do return false
     if _,current:=intent_current_locked(s,intent,now);!current do return false
     rows,ok:=query(s.db,"SELECT claim_incarnation FROM executor_intents WHERE reservation_id=? AND kind='launch'",intent.reservation)
@@ -203,7 +204,7 @@ dispatch_started :: proc(s:^Store,intent:Intent,now:i64)->bool {
 
 begin_dispatch :: proc(s:^Store,intent:Intent,now:i64)->bool {
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
-    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
+    now:=store_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if !begin(s) do return false
     defer rollback(s)
     if _,current:=intent_current_locked(s,intent,now);!current do return false
@@ -219,7 +220,7 @@ begin_dispatch :: proc(s:^Store,intent:Intent,now:i64)->bool {
 reservation_launch :: proc(s:^Store,id,prepare_digest:string,now:i64)->(intent:Intent,query_only:bool,valid:bool) {
     context.allocator=context.temp_allocator
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
-    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
+    now:=store_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if id=="" || prepare_digest=="" || !begin(s) do return {},false,false
     defer rollback(s)
     if code:=clock(s,now,false);code!="" do return {},false,false

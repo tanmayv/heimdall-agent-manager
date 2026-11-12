@@ -77,6 +77,7 @@ execution_stop_source :: proc(s:^Store,c:Intent_Claim)->(json.Object,string,i64,
 }
 
 execution_stop_request :: proc(s:^Store,c:Intent_Claim,key:contracts.Owner_Verified_Key,now:i64,sign:Signer)->Result {
+    now:=store_now(s,now) // C1: the store's single clock source
     if !execution_owner_key(s,key) || sign.sign==nil || now<0 || now>0x7fffffffffffffff-contracts.EXECUTOR_TRANSPORT_TTL_MS do return fail("invalid_scope")
     tx:Transaction
     if !transaction_begin(s,&tx) do return fail("storage_error")
@@ -133,6 +134,7 @@ execution_stop_request :: proc(s:^Store,c:Intent_Claim,key:contracts.Owner_Verif
 // Persist a correlated signed query/stop outcome before the worker advances.
 // Query refreshes only serving metadata. A stopping receipt is not absence.
 execution_stop_accept :: proc(s:^Store,c:Intent_Claim,request,raw:string,key:contracts.Owner_Verified_Key,now:i64)->Result {
+    now:=store_now(s,now) // C1: the store's single clock source
     tx:Transaction
     if !transaction_begin(s,&tx) do return fail("storage_error")
     defer transaction_rollback(&tx)

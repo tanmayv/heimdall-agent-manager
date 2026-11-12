@@ -127,6 +127,7 @@ work_publish :: proc(s:^Store,c:json.Object,seq:i64)->string {
     return "ok"
 }
 work_approve_tasks :: proc(s:^Store,c,p:json.Object,seq,now:i64,proposal_id:string="")->(json.Object,string) {
+    now:=store_now(s,now) // C1: the store's single clock source
     chain:=field(c,"chain_id")
     proposal:=proposal_id
     if proposal=="" do proposal=field(c,"operation_id")

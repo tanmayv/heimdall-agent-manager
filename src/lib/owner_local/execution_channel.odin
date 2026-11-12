@@ -11,6 +11,7 @@ import vault "odin_test:lib/vault"
 // authenticate it and the exact claimed intent before signing any fence reply.
 execution_fence_channel_reply :: proc(s:^Store,token:string,scope:json.Object,executor_key,owner_key:contracts.Owner_Verified_Key,
     directory_version:i64,directory_hash:string,now:i64,kr:^vault.Vault_Keyring,sign:Signer)->Result {
+    now:=store_now(s,now) // C1: the store's single clock source
     if field(scope,"method")!="fence_request" || field(scope,"direction")!="request" do return fail("invalid_scope")
     raw,authenticated:=channel.open_signed(token,kr,scope,executor_key,now,context.temp_allocator)
     if !authenticated do return fail("invalid_scope")

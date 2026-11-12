@@ -54,7 +54,7 @@ execution_change :: proc(tx:^Transaction,seq,now:i64,p:json.Object,kind,operatio
 // Persist before prepare I/O. Retrying uses exactly these signed bytes, including
 // reservation/operation IDs. No lease or activation intent exists at this stage.
 execution_prepare_start :: proc(s:^Store,prepare_raw,lease_raw:string,key:contracts.Owner_Verified_Key,now:i64)->Result {
-    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
+    now:=store_now(s,now) // C1: monotonic clamp, never refuse on the clock
     context.allocator=context.temp_allocator
     p,valid:=contracts.executor_parse(prepare_raw,"prepare")
     c,c_valid:=contracts.owner_parse(lease_raw,"lease_command")
@@ -109,6 +109,7 @@ execution_prepare_start :: proc(s:^Store,prepare_raw,lease_raw:string,key:contra
 // exact query proving the same reservation is still prepared before grant.
 execution_prepared_receipt :: proc(s:^Store,p:json.Object,receipt_raw,query_raw,query_receipt_raw:string,
     owner_key,executor_key:contracts.Owner_Verified_Key,now:i64)->bool {
+    now:=store_now(s,now) // C1: the store's single clock source
     r,valid:=contracts.executor_parse(receipt_raw,"receipt")
     if !valid || !contracts.executor_receipt_matches(r,p,"prepare",executor_key,now,false) do return false
     if query_raw=="" && contracts.executor_receipt_matches(r,p,"prepare",executor_key,now) do return true
@@ -132,7 +133,7 @@ execution_prepared_receipt :: proc(s:^Store,p:json.Object,receipt_raw,query_raw,
 // explicit path. The owner still executes all normal lease admission guards.
 execution_prepare_commit :: proc(s:^Store,reservation,receipt_raw:string,owner_key,executor_key:contracts.Owner_Verified_Key,
     now:i64,sign:Signer,query_raw:string="",query_receipt_raw:string="")->Result {
-    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
+    now:=store_now(s,now) // C1: monotonic clamp, never refuse on the clock
     context.allocator=context.temp_allocator
     if !execution_owner_key(s,owner_key) || !executor_key.enrolled || executor_key.revoked do return fail("invalid_scope")
     tx:Transaction
@@ -210,6 +211,7 @@ execution_preparations :: proc(s:^Store,after:string="",limit:int=20)->([]Execut
 // challenge, and sign/seal its response. It must not cache this result as a
 // launch permission. No SQLite lock is held across remote I/O.
 execution_activation_fence :: proc(s:^Store,claim:Intent_Claim,now:i64)->(current:bool,digest:string,owner_incarnation,commit_seq:i64) {
+    now:=store_now(s,now) // C1: the store's single clock source
     tx:Transaction
     if !transaction_begin(s,&tx) do return false,"",0,0
     defer transaction_rollback(&tx)
@@ -218,7 +220,7 @@ execution_activation_fence :: proc(s:^Store,claim:Intent_Claim,now:i64)->(curren
     return
 }
 execution_activation_fence_locked :: proc(s:^Store,claim:Intent_Claim,now:i64)->(current:bool,digest:string,owner_incarnation,commit_seq:i64) {
-    now:=effective_now(s,now) // C1: decide and stamp with max(caller clock, store clock)
+    now:=store_now(s,now) // C1: decide and stamp with max(caller clock, store clock)
     if !transaction_current(s.active) do return false,"",0,0
     if (claim.kind!="executor.activate" && claim.kind!="executor.heartbeat") || claim.incarnation!=s.incarnation || claim.digest!=contracts.owner_payload_digest(claim.payload) do return false,"",0,0
     rows,ok:=query(s.db, `SELECT j.prepare_json,j.lease_command,i.payload_json,i.commit_seq,l.expires_ms,l.hard_ms,l.deadline_version,
@@ -269,6 +271,7 @@ execution_activation_fence_locked :: proc(s:^Store,claim:Intent_Claim,now:i64)->
 // This read signs no negative answer and creates no task/resource authority.
 execution_fence_reply :: proc(s:^Store,request_raw:string,executor_key,owner_key:contracts.Owner_Verified_Key,
     directory_version:i64,directory_hash:string,now:i64,sign:Signer)->Result {
+    now:=store_now(s,now) // C1: the store's single clock source
     context.allocator=context.temp_allocator
     request,valid:=contracts.executor_parse(request_raw,"fence_request")
     if !valid do return fail("malformed")
@@ -326,7 +329,7 @@ Reservation_Release :: struct { chain,task,agent,instance:string }
 // is released in the same transaction (see execution_release_stale): its
 // reservation id is stable, so it would otherwise replay 'retired' forever.
 execution_expire_preparations :: proc(s:^Store,now:i64,released:^[dynamic]Reservation_Release=nil)->bool {
-    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
+    now:=store_now(s,now) // C1: monotonic clamp, never refuse on the clock
     tx:Transaction
     if !transaction_begin(s,&tx) do return false
     defer transaction_rollback(&tx)
@@ -452,7 +455,7 @@ execution_renewal_enqueue :: proc(tx:^Transaction,c:json.Object,seq,version,expi
 // touched (B answers child_present). Idempotent: an already ended lease or a
 // claim that is no longer this row's is a no-op ("ok", replay).
 execution_child_absent :: proc(s:^Store,claim:Intent_Claim,now:i64)->Result {
-    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
+    now:=store_now(s,now) // C1: monotonic clamp, never refuse on the clock
     tx:Transaction
     if !transaction_begin(s,&tx) do return fail("storage_error")
     defer transaction_rollback(&tx)

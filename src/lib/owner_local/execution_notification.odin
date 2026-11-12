@@ -28,7 +28,7 @@ execution_notification_intent :: proc(tx:^Transaction,c:json.Object,child_raw:st
 // Caller holds an owner transaction. This checks checkpoint authority only;
 // it never requests new work admission or retargets a replacement assignment.
 execution_notification_current_locked :: proc(s:^Store,c:Intent_Claim,now:i64)->(json.Object,i64,string) {
-    now:=effective_now(s,now) // C1: decide and stamp with max(caller clock, store clock)
+    now:=store_now(s,now) // C1: decide and stamp with max(caller clock, store clock)
     if !transaction_current(s.active) || c.kind!="executor.notification" || c.incarnation!=s.incarnation ||
        c.digest!=payload_hash(c.payload) {return nil,0,"no_current_target"}
     // The held-control join below bypasses control_active, so apply the same
@@ -70,6 +70,7 @@ execution_notification_current_locked :: proc(s:^Store,c:Intent_Claim,now:i64)->
 }
 
 execution_notification :: proc(s:^Store,c:Intent_Claim,key:contracts.Owner_Verified_Key,now:i64,sign:Signer)->Result {
+    now:=store_now(s,now) // C1: the store's single clock source
     if !execution_owner_key(s,key) || sign.sign==nil do return fail("invalid_scope")
     tx:Transaction
     if !transaction_begin(s,&tx) do return fail("storage_error")
@@ -98,6 +99,7 @@ execution_notification :: proc(s:^Store,c:Intent_Claim,key:contracts.Owner_Verif
 // mutex. It validates only the original held checkpoint and signs no grant.
 execution_notification_fence_reply :: proc(s:^Store,raw:string,executor_key,key:contracts.Owner_Verified_Key,
     directory_version:i64,directory_hash:string,now:i64,sign:Signer)->Result {
+    now:=store_now(s,now) // C1: the store's single clock source
     q,parsed:=contracts.executor_parse(raw,"notification_fence_request")
     n,valid:=contracts.executor_parse(field(q,"notification"),"notification")
     if !parsed || !valid || !execution_owner_key(s,key) || sign.sign==nil ||
@@ -152,6 +154,7 @@ execution_notification_fence_reply :: proc(s:^Store,raw:string,executor_key,key:
 }
 
 execution_notification_current :: proc(s:^Store,c:Intent_Claim,now:i64)->string {
+    now:=store_now(s,now) // C1: the store's single clock source
     tx:Transaction
     if !transaction_begin(s,&tx) do return "storage_error"
     defer transaction_rollback(&tx)

@@ -153,7 +153,7 @@ directory_config_authorized :: proc(s:^Store,chain:string,p:json.Object) -> bool
 // with chain.member.set (agent_member_admit: never the coordinator role, never
 // itself); grant.* stay human-only. Recorded and attributed like a member version.
 bind_created_coordinator :: proc(s:^Store,chain:string,child:Child,requested_by:string,now:i64) -> Result {
-    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
+    now:=store_now(s,now) // C1: monotonic clamp, never refuse on the clock
     context.allocator=context.temp_allocator
     if s.db==nil || now<0 || !agent_child_valid(child) || !contracts.owner_field_valid(requested_by,"id") do return fail("invalid_scope")
     tx:Transaction
@@ -201,7 +201,7 @@ bind_created_coordinator :: proc(s:^Store,chain:string,child:Child,requested_by:
 // the chain is retired (status completed: no work can start) and its registry
 // row is tombstoned (deleted=1), so the Hub listing drops it. A repeat is ok.
 discard_created_chain :: proc(s:^Store,chain,requested_by:string,now:i64,sign:Signer) -> Result {
-    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
+    now:=store_now(s,now) // C1: monotonic clamp, never refuse on the clock
     context.allocator=context.temp_allocator
     if s.db==nil || now<0 || sign.sign==nil || !contracts.owner_field_valid(requested_by,"id") do return fail("invalid_scope")
     tx:Transaction

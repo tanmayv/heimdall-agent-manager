@@ -60,7 +60,7 @@ bridge_owner_executor_batch :: proc(w:^Owner_Executor_Worker,s:^owner.Store,mute
     sync.mutex_lock(mutex)
     // C1: now was read before this lock; decisions use the store's
     // monotonic effective now (a write may have committed meanwhile).
-    now:=owner.effective_now(s,now)
+    now:=owner.store_now(s,now)
     if w.completions.count>0 && w.pending {
         // Keep the full dispatch snapshot until the interpreted result commits,
         // so route/fence changes during a persistence outage are rechecked too.

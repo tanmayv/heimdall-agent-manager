@@ -16,7 +16,7 @@ mark_clock_uncertain :: proc(tx:^Transaction) -> bool {
 // outbox work pins its full receipt, regardless of age. Bounded batches avoid
 // monopolizing the account writer. No automatic capacity reclamation exists.
 compact_receipts :: proc(s:^Store,now:i64,limit:=100) -> (int,bool) {
-    now:=effective_now(s,now) // C1: decide and stamp with max(caller clock, store clock)
+    now:=store_now(s,now) // C1: decide and stamp with max(caller clock, store clock)
     if now<RECEIPT_RETENTION_MS || limit<1 || limit>1000 do return 0,false
     tx:Transaction
     if !transaction_begin(s,&tx) do return 0,false
@@ -68,7 +68,13 @@ reconcile_clock :: proc(s:^Store,incarnation,generation,trusted_now:i64) -> bool
 // store clock is a real backward jump: it is logged as an alert, and the
 // decision still uses the high-water time.
 OWNER_CLOCK_ALERT_MS :: i64(5000)
-effective_now :: proc(s:^Store,now:i64) -> i64 {
+// store_now is the single clock read of the owner store: the installed clock
+// hook (the Bridge's wall clock; a test's simulated clock), else the caller's
+// hint, never earlier than the store's high-water clock. Every public
+// time-taking proc derives its time from it at entry (guard test:
+// clock_source_test.odin).
+store_now :: proc(s:^Store,hint:i64) -> i64 {
+    now:=s.clock() if s.clock!=nil else hint
     rows,ok:=query(s.db,"SELECT clock_high_ms FROM runtime_database WHERE singleton=1")
     if !ok || len(rows)!=1 do return now
     high:=number(rows[0][0])

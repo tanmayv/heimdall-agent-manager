@@ -33,6 +33,8 @@ bridge_owner_open :: proc(account,key_id:string)->bool {
     // Use the real allocator for the process-lifetime owner identity strings.
     saved:=context.allocator;context.allocator=runtime.default_allocator()
     opened:=owner.open(&bridge_owner_store,fmt.tprintf("%s/runtime.sqlite",path),account,bridge_cfg().daemon_id,key_id)
+    // C1: the owner store's single clock source is this Bridge's wall clock.
+    if opened do bridge_owner_store.clock=bridge_store_wall_clock
     context.allocator=saved
     if opened do bridge_owner_coordinator_refresh_all_locked()
     return opened
@@ -221,3 +223,6 @@ bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
     // outcome. A failed publication stays in the outbox for a later request.
     bridge_owner_publish()
 }
+
+// C1: the one wall-clock read both local stores use (their store_now hook).
+bridge_store_wall_clock :: proc() -> i64 { return time.to_unix_nanoseconds(time.now())/1000000 }

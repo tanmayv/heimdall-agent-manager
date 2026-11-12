@@ -21,7 +21,7 @@ accept_bootstrap :: proc(s:^Store,raw,body,action_raw:string,key:contracts.Owner
        !owner_bound(s,a,"action",key) {return fail("invalid_scope")}
     digest,_:=contracts.executor_digest("bootstrap",b)
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
-    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
+    now:=store_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if !begin(s) do return fail("storage_error")
     defer rollback(s)
     old,read:=query(s.db,"SELECT input_digest,body FROM executor_bootstraps WHERE reservation_id=?",field(b,"reservation_id"))
@@ -60,7 +60,7 @@ accept_bootstrap :: proc(s:^Store,raw,body,action_raw:string,key:contracts.Owner
 // deadline is inferred from retained content. Dispatch still needs a fresh fence.
 launch_material :: proc(s:^Store,intent:Intent,now:i64)->(Launch_Material,bool) {
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
-    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
+    now:=store_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if intent.kind!="launch" do return {},false
     if _,current:=intent_current_locked(s,intent,now);!current do return {},false
     rows,ok:=query(s.db,`SELECT b.document,b.body,i.configuration,i.token_secret

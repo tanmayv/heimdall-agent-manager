@@ -319,6 +319,7 @@ agent_command_admit :: proc(s:^Store,c:json.Object,payload:string,key:contracts.
 }
 
 agent_grant :: proc(s:^Store,c:json.Object,now:i64) -> contracts.Owner_Read_Grant {
+    now:=store_now(s,now) // C1: the store's single clock source
     return contracts.Owner_Read_Grant{account_id=s.account,owner_bridge_id=s.owner,chain_id=field(c,"chain_id"),principal_id=field(c,"principal_id"),
         key_id=s.owner_key,method=field(c,"method"),revision=1,expires_ms=now+contracts.OWNER_REQUEST_TTL_MS+1,can_read=true,can_mutate=true}
 }
@@ -330,6 +331,7 @@ agent_grant :: proc(s:^Store,c:json.Object,now:i64) -> contracts.Owner_Read_Gran
 // executor Bridge key a fleet.reserve attestation is checked against, verified
 // by the caller in the current directory (same account, enrolled, not revoked).
 execute_agent :: proc(s:^Store,command_raw,payload:string,agent:Child,owner_key:contracts.Owner_Verified_Key,now:i64,kr:^vault.Vault_Keyring,sign:Signer,fleet_child:Child={},proof:Lifecycle_Proof={},observed_children:[]Child=nil,source:Source_Proof={},remote_key:contracts.Owner_Verified_Key={}) -> Result {
+    now:=store_now(s,now) // C1: the store's single clock source
     version,hash:=directory_pin(s)
     if version<0 do return fail("storage_error")
     return execute(s,command_raw,payload,"",owner_key,owner_key,version,hash,now,kr,sign,fleet_child,proof,observed_children,remote_key=remote_key,agent=agent,source=source)
@@ -510,6 +512,7 @@ work_targets :: proc(s:^Store,chain:string) -> ([]Work_Target,bool) {
 // eligible task bound to this exact child (priority p0 first, then chain and
 // task id), or status none. Selection and claim commit in one transaction.
 lease_next :: proc(s:^Store,child:Child,key:contracts.Owner_Verified_Key,now:i64,sign:Signer,lease_id,operation_id:string) -> (Result,Lease_Pick) {
+    now:=store_now(s,now) // C1: the store's single clock source
     context.allocator=context.temp_allocator
     if !agent_child_valid(child) || !contracts.owner_field_valid(lease_id,"id") || !contracts.owner_field_valid(operation_id,"id") do return fail("invalid_scope"),{}
     if sign.sign==nil || now<0 do return fail("storage_error"),{}

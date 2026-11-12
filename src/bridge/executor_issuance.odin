@@ -34,6 +34,8 @@ bridge_executor_open :: proc(account,key:string)->bool {
     }
     saved:=context.allocator;context.allocator=runtime.default_allocator()
     opened:=executor.open(&bridge_executor_store,fmt.tprintf("%s/runtime.sqlite",path),account,bridge_cfg().daemon_id,key)
+    // C1: the executor store's single clock source is this Bridge's wall clock.
+    if opened do bridge_executor_store.clock=bridge_store_wall_clock
     context.allocator=saved
     if opened do _=executor.complete_recovery(&bridge_executor_store,time.to_unix_nanoseconds(time.now())/1000000)
     return opened

@@ -11,6 +11,7 @@ import contracts "odin_test:contracts"
 // The exact first signed bootstrap is retained before network I/O.
 execution_bootstrap :: proc(s:^Store,claim:Intent_Claim,agents_md,memory_md,skills_json:string,
     owner_key:contracts.Owner_Verified_Key,now:i64,sign:Signer)->Result {
+    now:=store_now(s,now) // C1: the store's single clock source
     context.allocator=context.temp_allocator
     if !execution_owner_key(s,owner_key) || sign.sign==nil do return fail("invalid_scope")
     tx:Transaction

@@ -39,7 +39,7 @@ intent_enqueue :: proc(tx:^Transaction,input:Intent_Input) -> bool {
 // LIMIT so an offline executor cannot starve registry/control delivery.
 Intent_Consumer :: enum { All, Owner, Executor }
 intent_claim_due :: proc(s:^Store,now:i64,limit:=20,consumer:Intent_Consumer=.All) -> (claims:[dynamic]Intent_Claim,ok:bool) {
-    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
+    now:=store_now(s,now) // C1: monotonic clamp, never refuse on the clock
     if now<0 || limit<1 || limit>20 do return nil,false
     tx:Transaction
     if !transaction_begin(s,&tx) do return nil,false
@@ -71,7 +71,7 @@ intent_claim_due :: proc(s:^Store,now:i64,limit:=20,consumer:Intent_Consumer=.Al
 // Successful results are immutable. A failed/unknown external outcome retries
 // the same effect with a bounded delay; no payload may be replaced on retry.
 intent_result :: proc(s:^Store,claim:Intent_Claim,success:bool,result:string,now:i64) -> bool {
-    now:=effective_now(s,now) // C1: decide and stamp with max(caller clock, store clock)
+    now:=store_now(s,now) // C1: decide and stamp with max(caller clock, store clock)
     context.allocator=context.temp_allocator
     if now<0 || now>0x7fffffffffffffff-60000 || len(result)>8192 do return false
     tx:Transaction

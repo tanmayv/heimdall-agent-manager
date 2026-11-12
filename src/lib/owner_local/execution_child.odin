@@ -14,7 +14,7 @@ import vault "odin_test:lib/vault"
 // boundary: identity comes from the owner's original journal and assignment.
 execution_child :: proc(s:^Store,request_raw,input_raw:string,executor_key,owner_key:contracts.Owner_Verified_Key,
     now:i64)->(Child,bool) {
-    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
+    now:=store_now(s,now) // C1: monotonic clamp, never refuse on the clock
     r,parsed:=contracts.executor_parse(request_raw,"child_request")
     if !parsed || !execution_owner_key(s,owner_key) || !contracts.executor_verify("child_request",r,executor_key) ||
        field(r,"account_id")!=s.account || field(r,"owner_bridge_id")!=s.owner ||

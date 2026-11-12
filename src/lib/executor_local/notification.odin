@@ -24,6 +24,7 @@ notification_effect :: proc(n:json.Object)->string {
     return contracts.owner_payload_digest(encode(fields[:]))
 }
 notification_current_locked :: proc(s:^Store,n:json.Object,message:string,key:contracts.Owner_Verified_Key,now:i64)->string {
+    now:=store_now(s,now) // C1: the store's single clock source
     if !scope(s,n) || !contracts.executor_verify("notification",n,key) || num(n,"executor_incarnation")!=s.incarnation do return "invalid_scope"
     rows,ok:=query(s.db,`SELECT b.document,r.owner_incarnation,r.executor_incarnation,r.grant_generation,
         r.deadline_version,r.expires_ms,r.hard_ms,r.prepare_digest,r.launch_key,
@@ -45,13 +46,13 @@ notification_current_locked :: proc(s:^Store,n:json.Object,message:string,key:co
 }
 notification_current :: proc(s:^Store,n:json.Object,message:string,key:contracts.Owner_Verified_Key,now:i64)->bool {
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
-    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
+    now:=store_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     return s.db!=nil && !s.unusable && notification_current_locked(s,n,message,key,now)=="ok"
 }
 notification_stage :: proc(s:^Store,n:json.Object,message:string,key:contracts.Owner_Verified_Key,stage:string,now:i64)->Result {
     if stage!="ticket" && stage!="dispatch" && stage!="result" do return fail("invalid_stage")
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
-    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
+    now:=store_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if s.db==nil || s.unusable do return fail("storage_error")
     if code:=notification_current_locked(s,n,message,key,now);code!="ok" do return fail(code)
     prior,found:=receipt(s,field(n,"owner_bridge_id"),fmt.tprintf("notification_%s_%s",field(n,"intent_id"),stage),
@@ -76,7 +77,7 @@ notification_record :: proc(s:^Store,n:json.Object,message:string,key:contracts.
            notification_effect(original)!=notification_effect(n) {return fail("invalid_content")}
     }
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
-    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
+    now:=store_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if !begin(s) do return fail("storage_error")
     defer rollback(s)
     if code:=notification_current_locked(s,n,message,key,now);code!="ok" do return fail(code)
@@ -99,6 +100,7 @@ notification_record :: proc(s:^Store,n:json.Object,message:string,key:contracts.
 
 notification_challenge :: proc(s:^Store,raw,message:string,attempt:i64,owner_key,self:contracts.Owner_Verified_Key,
     now:i64,sign:Signer)->(Fence_Challenge,bool) {
+    now:=store_now(s,now) // C1: the store's single clock source
     started:=time.tick_now()
     n,valid:=contracts.executor_parse(raw,"notification")
     if !valid || attempt<=0 || sign.sign==nil || !notification_current(s,n,message,owner_key,now) do return {},false
@@ -119,6 +121,7 @@ notification_challenge :: proc(s:^Store,raw,message:string,attempt:i64,owner_key
     return Fence_Challenge{strings.clone(encode(q)),strings.clone(raw),false,started},true
 }
 notification_fence_accept :: proc(s:^Store,p:^Fence_Challenge,raw,message:string,owner_key,self:contracts.Owner_Verified_Key,now:i64)->Current_Owner_Fence {
+    now:=store_now(s,now) // C1: the store's single clock source
     if p==nil || p.consumed do return {}
     q,valid:=contracts.executor_parse(p.request,"notification_fence_request")
     n,parsed:=contracts.executor_parse(p.action,"notification")

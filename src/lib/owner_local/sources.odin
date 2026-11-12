@@ -9,6 +9,7 @@ import contracts "odin_test:contracts"
 // Actions name one episode, never "the latest origin". Producer resolution,
 // delivery, acknowledgement and retirement are independent durable evidence.
 source_command :: proc(s:^Store,c:json.Object,body:string,seq,now:i64) -> string {
+    now:=store_now(s,now) // C1: the store's single clock source
     method,chain:=field(c,"method"),field(c,"chain_id")
     kind:="source_action"
     if method=="source.observe" do kind="source_fact"

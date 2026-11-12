@@ -13,6 +13,7 @@ LEASE_HARD_MS :: i64(60*60*1000)
 // and atomic switch use the same destination snapshot; heartbeat retains the
 // originally signed hard deadline even when requirements change later.
 lease_deadlines :: proc(s:^Store,chain,task:string,now:i64) -> (i64,i64,bool) {
+    now:=store_now(s,now) // C1: the store's single clock source
     if now<0 || now>0x7fffffffffffffff-LEASE_HARD_MS do return 0,0,false
     expires,hard:=now+LEASE_TTL_MS,now+LEASE_HARD_MS
     if req,has_req:=lifecycle_requirements(s,chain,task);has_req {
@@ -69,7 +70,7 @@ lease_capability :: proc(s:^Store,c:json.Object,expires,hard:i64,sign:Signer,met
 // Current authenticated read scope is checked before receipts. Capabilities are
 // not bearer authority: every invocation needs the actual local child proof.
 execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owner_Verified_Key,now:i64,sign:Signer,parent:^Transaction=nil,reserved_hard:i64=0) -> Result {
-    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
+    now:=store_now(s,now) // C1: monotonic clamp, never refuse on the clock
     context.allocator=context.temp_allocator
     c,valid:=contracts.owner_parse(raw,"lease_command")
     if !valid do return fail("malformed")
@@ -206,7 +207,7 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
 // Periodic local maintenance, also before claim. Deadlines never extend across
 // process death. No task state or lease material is sent to the Hub.
 expire_leases :: proc(s:^Store,now:i64) -> bool {
-    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
+    now:=store_now(s,now) // C1: monotonic clamp, never refuse on the clock
     tx:Transaction
     if !transaction_begin(s,&tx) do return false
     defer transaction_rollback(&tx)
@@ -239,6 +240,7 @@ expire_leases :: proc(s:^Store,now:i64) -> bool {
 // later launch returns it. A held, cancelled, blocked or leased task is left
 // as it is (returns false, true).
 block_agent_not_running :: proc(s:^Store,chain,task,agent_id,reason:string,now:i64) -> (blocked:bool,ok:bool) {
+    now:=store_now(s,now) // C1: the store's single clock source
     tx:Transaction
     if !transaction_begin(s,&tx) do return false,false
     defer transaction_rollback(&tx)

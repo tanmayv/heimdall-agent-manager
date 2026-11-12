@@ -54,6 +54,7 @@ work_unconsumed :: proc(s:^Store,chain,kind,id:string)->bool {
     return ok && len(rows)==0
 }
 work_capture_inputs :: proc(s:^Store,chain,kind,id:string,seq,now:i64)->bool {
+    now:=store_now(s,now) // C1: the store's single clock source
     consumer,valid:=work_snapshot(s,chain,kind,id)
     if !valid || !consumer.started || consumer.terminal || consumer.generation<1 do return false
     edges,ok:=work_input_edges(s,chain,kind,id)
@@ -74,6 +75,7 @@ work_capture_inputs :: proc(s:^Store,chain,kind,id:string,seq,now:i64)->bool {
     return true
 }
 work_dependency_add :: proc(s:^Store,c,p:json.Object,seq,now:i64)->string {
+    now:=store_now(s,now) // C1: the store's single clock source
     chain:=field(c,"chain_id")
     dependent,prerequisite:=work_ref(p,"dependent"),work_ref(p,"prerequisite")
     dk,di,pk,pi:=field(dependent,"kind"),field(dependent,"id"),field(prerequisite,"kind"),field(prerequisite,"id")
@@ -90,6 +92,7 @@ work_dependency_add :: proc(s:^Store,c,p:json.Object,seq,now:i64)->string {
     return "ok"
 }
 work_scope :: proc(s:^Store,c,p:json.Object,seq,now:i64)->string {
+    now:=store_now(s,now) // C1: the store's single clock source
     item:=work_ref(p,"item");chain:=field(c,"chain_id")
     snapshot,valid:=work_snapshot(s,chain,field(item,"kind"),field(item,"id"))
     if !valid do return "invalid_scope"
@@ -98,6 +101,7 @@ work_scope :: proc(s:^Store,c,p:json.Object,seq,now:i64)->string {
     return "ok"
 }
 work_complete :: proc(s:^Store,c,p:json.Object,seq,now:i64,agent:=false)->string {
+    now:=store_now(s,now) // C1: the store's single clock source
     chain:=field(c,"chain_id")
     pending,_,read:=work_pending(s,chain)
     if !read do return "storage_error"

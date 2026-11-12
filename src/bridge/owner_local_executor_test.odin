@@ -230,8 +230,8 @@ test_owner_store_monotonic_clamp_never_refuses_and_heals_on_open :: proc(t:^test
 
     // A genuine 15 s backward jump: clamped to the store clock, no refusal.
     testing.expect(t,owner.exec(s.db,"UPDATE runtime_database SET clock_high_ms=20000 WHERE singleton=1"))
-    testing.expect_value(t,owner.effective_now(&s,5000),i64(20000))
-    testing.expect_value(t,owner.effective_now(&s,25000),i64(25000))
+    testing.expect_value(t,owner.store_now(&s,5000),i64(20000))
+    testing.expect_value(t,owner.store_now(&s,25000),i64(25000))
     _,claimed:=owner.intent_claim_due(&s,5000)
     testing.expect(t,claimed,"a backward clock is clamped, never refused")
     recovery,high=state(&s)

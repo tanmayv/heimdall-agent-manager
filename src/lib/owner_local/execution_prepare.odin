@@ -10,7 +10,7 @@ import contracts "odin_test:contracts"
 // exact assignment/task revision prevents a new reservation after an ambiguous
 // outcome or owner restart. A changed task still passes ordinary admission.
 execution_prepare_assignment :: proc(s:^Store,chain,task:string,key:contracts.Owner_Verified_Key,now:i64,sign:Signer)->Result {
-    now:=effective_now(s,now) // C1: decide and stamp with max(caller clock, store clock)
+    now:=store_now(s,now) // C1: decide and stamp with max(caller clock, store clock)
     if !execution_owner_key(s,key) || sign.sign==nil do return fail("invalid_scope")
     rows,ok:=query(s.db,`SELECT h.payload_json,t.revision FROM local_fleet f
       JOIN local_assignment_history h ON h.chain_id=f.chain_id AND h.task_id=f.task_id AND h.revision=f.configuration_revision
@@ -72,6 +72,7 @@ execution_prepare_assignment :: proc(s:^Store,chain,task:string,key:contracts.Ow
 // Before every external prepare/query, require the original owner incarnation,
 // current assignment, revision and readiness. This check grants no lease.
 execution_preparation_current :: proc(s:^Store,reservation:string,now:i64)->bool {
+    now:=store_now(s,now) // C1: the store's single clock source
     rows,ok:=query(s.db,"SELECT prepare_json,lease_command,state FROM owner_execution_journal WHERE reservation_id=?",reservation)
     if !ok || len(rows)!=1 || rows[0][2]!="preparing" do return false
     p,valid:=contracts.executor_parse(rows[0][0],"prepare");c,c_ok:=contracts.owner_parse(rows[0][1],"lease_command")
@@ -90,6 +91,7 @@ execution_preparation_current :: proc(s:^Store,reservation:string,now:i64)->bool
 // I/O. Never substitute a fresh reservation or extend the original deadline.
 execution_query_start :: proc(s:^Store,reservation,receipt_raw:string,owner_key,executor_key:contracts.Owner_Verified_Key,
     now:i64,sign:Signer)->Result {
+    now:=store_now(s,now) // C1: the store's single clock source
     if !execution_owner_key(s,owner_key) do return fail("invalid_scope")
     tx:Transaction
     if !transaction_begin(s,&tx) do return fail("storage_error")

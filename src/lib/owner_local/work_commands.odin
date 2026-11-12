@@ -37,6 +37,7 @@ work_validate_proposed_run :: proc(s:^Store,chain:string,p:json.Object,seq:i64)-
     return work_validate_run(s,chain,body,seq)
 }
 work_queue_run :: proc(s:^Store,c:json.Object,body:string,seq,now:i64)->string {
+    now:=store_now(s,now) // C1: the store's single clock source
     p,valid:=contracts.owner_parse(body,"workflow_run")
     if !valid {p,valid=contracts.owner_parse(body,"workflow_language_run")}
     if !valid do return "invalid_content"
@@ -46,6 +47,7 @@ work_queue_run :: proc(s:^Store,c:json.Object,body:string,seq,now:i64)->string {
     return "ok"
 }
 work_decide :: proc(s:^Store,c,p:json.Object,seq,now:i64)->string {
+    now:=store_now(s,now) // C1: the store's single clock source
     chain:=field(c,"chain_id")
     pending,id,read:=work_pending(s,chain)
     if !read do return "storage_error"
@@ -91,6 +93,7 @@ work_decide :: proc(s:^Store,c,p:json.Object,seq,now:i64)->string {
     return "ok"
 }
 work_command :: proc(s:^Store,c:json.Object,body:string,seq,now:i64,agent:=false)->string {
+    now:=store_now(s,now) // C1: the store's single clock source
     method,chain:=field(c,"method"),field(c,"chain_id")
     if !work_chain_active(s,chain) do return "operation_conflict"
     if method=="workflow.draft" do return work_queue_run(s,c,body,seq,now)

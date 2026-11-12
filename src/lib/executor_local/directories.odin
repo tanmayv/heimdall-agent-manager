@@ -38,7 +38,7 @@ install_directory :: proc(s:^Store,raw:string,key:contracts.Owner_Verified_Key,n
     if !scope(s,o) || key.key_id!=s.operator_key || !contracts.executor_verify("directory",o,key) do return fail("invalid_scope")
     digest,_:=contracts.executor_digest("directory",o)
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
-    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
+    now:=store_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if !begin(s) do return fail("storage_error")
     defer rollback(s)
     prior,read:=query(s.db,"SELECT input_digest FROM executor_directories WHERE directory_id=? AND revision=?",field(o,"directory_id"),field(o,"revision"))

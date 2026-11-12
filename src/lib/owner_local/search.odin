@@ -54,6 +54,7 @@ search_index_archived_task :: proc(s:^Store,chain,task:string)->bool {
 }
 
 search_result :: proc(s:^Store,c:json.Object,payload:string,now:i64,kr:^vault.Vault_Keyring)->Result {
+    now:=store_now(s,now) // C1: the store's single clock source
     p,valid:=contracts.owner_parse(payload,"search_payload")
     if !valid do return fail("malformed")
     text,opened:=vault.open(field(p,"query_cipher"),kr,context.temp_allocator)

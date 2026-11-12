@@ -17,6 +17,7 @@ fence_challenge_destroy :: proc(p:^Fence_Challenge) {
 }
 fence_challenge :: proc(s:^Store,action_raw,intent_id:string,attempt:i64,owner_key,executor_key:contracts.Owner_Verified_Key,
     now:i64,sign:Signer)->(Fence_Challenge,bool) {
+    now:=store_now(s,now) // C1: the store's single clock source
     started:=time.tick_now()
     a,valid:=contracts.executor_parse(action_raw,"action")
     if !valid || !scope(s,a) || !contracts.executor_verify("action",a,owner_key) || (field(a,"method")!="activate" && field(a,"method")!="heartbeat") ||
@@ -43,6 +44,7 @@ fence_challenge :: proc(s:^Store,action_raw,intent_id:string,attempt:i64,owner_k
 // Caller serializes access to the pending exchange and rechecks the exact
 // ledger intent before physical I/O. This returns no durable launch permission.
 fence_accept :: proc(s:^Store,p:^Fence_Challenge,reply_raw:string,owner_key,executor_key:contracts.Owner_Verified_Key,now:i64)->Current_Owner_Fence {
+    now:=store_now(s,now) // C1: the store's single clock source
     if p==nil || p.consumed || s.db==nil || s.unusable do return {}
     q,q_ok:=contracts.executor_parse(p.request,"fence_request")
     a,a_ok:=contracts.executor_parse(p.action,"action")

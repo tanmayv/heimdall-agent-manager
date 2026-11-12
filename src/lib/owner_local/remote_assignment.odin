@@ -76,6 +76,7 @@ remote_assignment_directory_current :: proc(s:^Store,c:json.Object)->bool {
 // The remote key was separately checked against the paired directory at the
 // exact pin already revalidated by execute under this same transaction.
 remote_assignment_child :: proc(s:^Store,command,p:json.Object,reservation:string,key:contracts.Owner_Verified_Key,now:i64,seq:i64)->(Child,string) {
+    now:=store_now(s,now) // C1: the store's single clock source
     document,parsed:=contracts.owner_parse(reservation,"remote_reservation")
     if !parsed do return {},"invalid_content"
     raw:=field(document,"configuration")

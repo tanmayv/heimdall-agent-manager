@@ -12,7 +12,7 @@ import vault "odin_test:lib/vault"
 // A query-only launch recovery must never create a new control credential.
 launch_control :: proc(s:^Store,intent:Intent,now:i64)->(string,bool) {
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
-    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
+    now:=store_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if intent.kind!="launch" || !begin(s) do return "",false
     defer rollback(s)
     if _,current:=intent_current_locked(s,intent,now);!current do return "",false
@@ -41,7 +41,7 @@ Renewal_Material :: struct {
 // serving incarnation. It cannot adopt a replacement, spawn or grant anything.
 renewal_material :: proc(s:^Store,raw:string,now:i64)->(Renewal_Material,bool) {
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
-    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
+    now:=store_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if !begin(s) do return {},false
     defer rollback(s)
     a,valid:=contracts.executor_parse(raw,"action")
@@ -71,7 +71,7 @@ renewal_confirm :: proc(s:^Store,m:Renewal_Material,now:i64)->bool {
     current,valid:=renewal_material(s,m.action,now)
     if !valid || current!=m do return false
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
-    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
+    now:=store_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if !begin(s) do return false
     defer rollback(s)
     if code:=clock(s,now);code!="" do return false

@@ -384,6 +384,7 @@ work_attempt_record :: proc(s:^Store,chain,task,lease:string) -> (string,bool) {
 // Compatibility only: pre-fix runtimes retired holds and saved one narrowly
 // scoped checkpoint. Never resurrect those leases or mint new such bindings.
 control_checkpoint_authorized :: proc(s:^Store,c:json.Object,child:Child,cap:string,now:i64) -> bool {
+    now:=store_now(s,now) // C1: the store's single clock source
     method:=field(c,"method")
     if method!="lease.handoff" && method!="review.checkpoint" do return false
     // A quarantined (unactivated migration import) chain grants no authority,

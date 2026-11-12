@@ -15,6 +15,9 @@ import vault "odin_test:lib/vault"
 // lock. Callers must use a private directory (0700), never a shared Hub database.
 Store :: struct {
     mutex: sync.Mutex,
+    // C1: the store's ONLY clock source (store_now). The Bridge installs wall
+    // time; tests may install a simulated clock. nil: the caller-supplied hint.
+    clock: proc() -> i64,
     db, writer: DB,
     account, owner, owner_key: string,
     incarnation, tx_serial:i64,
@@ -122,7 +125,7 @@ doc :: proc(values: map[string]string) -> json.Object {
 // The key is a verified current directory member, never a request assertion.
 execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:contracts.Owner_Verified_Key,
     directory_version:i64,directory_hash:string, now:i64, kr:^vault.Vault_Keyring, sign:Signer, fleet_child:Child={}, lifecycle_proof:Lifecycle_Proof={}, observed_children:[]Child=nil, remote_key:contracts.Owner_Verified_Key={}, agent:Child={}, source:Source_Proof={}, requested_by:string="") -> Result {
-    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
+    now:=store_now(s,now) // C1: monotonic clamp, never refuse on the clock
     context.allocator=context.temp_allocator
     c,parsed:=contracts.owner_parse(command_raw,"command")
     if !parsed do return fail("malformed")

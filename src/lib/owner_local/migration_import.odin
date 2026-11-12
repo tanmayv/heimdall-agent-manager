@@ -135,7 +135,7 @@ migration_rows :: proc(rows:Migration_Rows,kind:string)->[]json.Object {
 
 migration_import :: proc(s:^Store,input:Migration_Import_Input,device,owner_key:contracts.Owner_Verified_Key,
     directory_version:i64,directory_hash:string,now:i64,kr:^vault.Vault_Keyring,sign:Signer) -> Result {
-    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
+    now:=store_now(s,now) // C1: monotonic clamp, never refuse on the clock
     context.allocator=context.temp_allocator
     if s.db==nil || device.account_id!=s.account || owner_key.account_id!=s.account || owner_key.principal_id!=s.owner ||
        owner_key.key_id!=s.owner_key || owner_key.kind!="bridge" || !owner_key.enrolled || owner_key.revoked || sign.sign==nil { return fail("invalid_scope") }
@@ -259,6 +259,7 @@ migration_import :: proc(s:^Store,input:Migration_Import_Input,device,owner_key:
 // Live projection. Titles, descriptions and bodies are decrypted from the
 // legacy vault ciphertext; IDs and authors are the legacy ones.
 migration_project :: proc(s:^Store,chain,principal,key_id,migration:string,rows:Migration_Rows,seq,comment_base,now:i64,kr:^vault.Vault_Keyring,summary:^map[string]i64,forced_held:[]string={}) -> string {
+    now:=store_now(s,now) // C1: the store's single clock source
     stamp:=fmt.tprintf("%d",seq)
     c:=migration_rows(rows,"chain")[0]
     title,t_ok:=migration_plain(migration_text(c,"title"),kr)
@@ -463,6 +464,7 @@ migration_native_history :: proc(s:^Store,chain:string,rows:Migration_Rows,seq:i
 // owner-signed registry (chain and task titles) through the normal outbox.
 // Idempotent; an activated import replays.
 migration_activate :: proc(s:^Store,migration,manifest_digest:string,now:i64,kr:^vault.Vault_Keyring,sign:Signer) -> Result {
+    now:=store_now(s,now) // C1: the store's single clock source
     context.allocator=context.temp_allocator
     if s.db==nil || sign.sign==nil do return fail("invalid_scope")
     tx:Transaction
