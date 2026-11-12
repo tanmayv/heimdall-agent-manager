@@ -56,10 +56,14 @@ bridge_executor_canonical_directory :: proc(path:string)->(string,bool) {
 }
 // bridge_executor_private_directory: path is canonical (symlink-free) and
 // inside a directory this Bridge owns: its config dir (the executor's private
-// root and per-chain scratch) or its local endpoint run dir (agent run dirs).
+// root and per-chain scratch) or its agent run dirs (<endpoint run dir>/
+// instances). Only the instances subdir: an endpoint run dir may be a shared
+// parent such as /tmp, which must not admit arbitrary paths below it.
 bridge_executor_private_directory :: proc(path:string)->bool {
     config,_:=bridge_vault_bridge_dir(bridge_cfg().daemon_id,context.temp_allocator)
-    for root in ([2]string{config,bridge_cfg().local_endpoint_run_dir}) {
+    runs:=strings.trim_right(bridge_cfg().local_endpoint_run_dir,"/")
+    if runs=="" do runs=bridge_scratch_local_default(context.temp_allocator) // as bridge_runtime_default_run_dir
+    for root in ([2]string{config,fmt.tprintf("%s/instances",runs) if runs!="" else ""}) {
         trimmed:=strings.trim_right(root,"/")
         if trimmed=="" do continue
         real,tail:=bridge_fs_realpath_existing_prefix(trimmed)
