@@ -348,9 +348,13 @@ execution_expire_preparations :: proc(s:^Store,now:i64,released:^[dynamic]Reserv
 // Releases enabled fleet.reserve rows whose reserved instance never launched:
 // at least one retired preparation, none preparing or committed, and no grant
 // ever (Mundus .13: inst_a67a... stayed a running:false member and kept the
-// task placed on a dead reservation). The owner disables the member as
-// chain.member.set does, which retires the task's fleet row and lifecycle
-// configuration, so the matcher places the task again. Bounded per pass.
+// task placed on a dead reservation). The fleet row and the never-launched
+// member are disabled and the task revision advances, so the matcher places
+// the task again. The task's lifecycle configuration is NOT revoked (F4 C,
+// Mundus .14): a revoked latest config fails lifecycle_path_current, so the
+// re-place fleet.reserve was refused invalid_scope forever; the re-place
+// writes the next configuration for its new author itself. Nothing ran, so
+// there is no lease, review or checkpoint to retire. Bounded per pass.
 execution_release_stale :: proc(tx:^Transaction,seq:^i64,now:i64,released:^[dynamic]Reservation_Release)->bool {
     s:=tx.store
     rows,ok:=query(s.db,`SELECT f.chain_id,f.task_id,f.instance_id,m.agent_id,m.role FROM local_fleet f
@@ -371,9 +375,10 @@ execution_release_stale :: proc(tx:^Transaction,seq:^i64,now:i64,released:^[dyna
         if len(current)!=1 || current[0][0]!="1" do continue
         seq^+=1
         operation:=payload_hash(encode([3]string{chain,instance,"reservation.release"}))
-        c:=doc(map[string]string{"chain_id"=chain,"task_id"=task,"method"="chain.member.set","principal_id"=s.owner,"operation_id"=operation})
-        member:=doc(map[string]string{"instance_id"=instance,"agent_id"=agent,"role"=row[4],"enabled"="0"})
-        if code:=member_set(s,c,member,Child{},seq^);code!="ok" do return false
+        if _,written:=query(s.db,"UPDATE local_fleet SET enabled=0,configuration_revision=configuration_revision+1 WHERE chain_id=? AND task_id=? AND enabled=1",chain,task);!written do return false
+        if _,written:=query(s.db,`INSERT INTO local_chain_member_versions SELECT chain_id,instance_id,?,agent_id,role,0,child_json FROM local_chain_member_versions
+          WHERE chain_id=? AND instance_id=? ORDER BY accepted_seq DESC LIMIT 1`,fmt.tprintf("%d",seq^),chain,instance);!written do return false
+        if _,written:=query(s.db,"UPDATE tasks SET revision=revision+1 WHERE chain_id=? AND task_id=?",chain,task);!written do return false
         evidence:=doc(map[string]string{"chain_id"=chain,"task_id"=task,"instance_id"=instance,"agent_id"=agent})
         if !execution_change(tx,seq^,now,evidence,"execution.reservation_released",operation,"never_launched") do return false
         if released!=nil do append(released,Reservation_Release{chain,task,agent,instance})

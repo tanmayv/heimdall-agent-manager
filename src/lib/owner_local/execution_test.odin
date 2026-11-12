@@ -483,7 +483,7 @@ owner_execution_never_launched_reservation_is_released_once :: proc(t:^testing.T
       (SELECT enabled FROM local_chain_member_versions WHERE instance_id=? ORDER BY accepted_seq DESC LIMIT 1),
       (SELECT count(*) FROM local_events WHERE kind='execution.reservation_released'),
       (SELECT count(*) FROM local_metadata_retirements WHERE task_id=?)`,fleet[0][2],fleet[0][1])
-    testing.expect(t,read);testing.expect_value(t,encode(rows),encode([1][4]string{{"0","0","1","1"}}))
+    testing.expect(t,read);testing.expect_value(t,encode(rows),encode([1][4]string{{"0","0","1","0"}}))
     // Released once: a later pass changes nothing.
     before,_:=query(f.store.db,"SELECT commit_seq FROM runtime_database")
     testing.expect(t,execution_expire_preparations(&f.store,4000,&released))
@@ -521,4 +521,35 @@ owner_execution_remote_assignment_executor_follows_the_reservation :: proc(t:^te
     testing.expect(t,execution_expire_preparations(&f.store,3000))
     bridge,ok=remote_assignment_executor(&f.store,fleet[0][0],fleet[0][1])
     testing.expect(t,ok);testing.expect_value(t,bridge,"")
+}
+
+// F4 (C), Mundus .14: after a never-launched reservation is released, the
+// task's lifecycle configuration stays current, so the re-place fleet.reserve
+// of a new executor instance is accepted (it was refused invalid_scope forever
+// because the release revoked the config and lifecycle_path_current failed).
+@(test)
+owner_execution_released_reservation_is_placed_again :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    x:=execution_test_fixture(t);defer execution_test_destroy(x);f:=x.owner
+    // The configuration the first placement's lifecycle.configure wrote.
+    _,configured:=query(f.store.db,`INSERT INTO lifecycle_configs SELECT chain_id,task_id,1,'{}','{}','principal','op_config',
+      json_object('instance',instance_id),'' FROM local_fleet`)
+    if !testing.expect(t,configured) do return
+    testing.expect(t,lifecycle_path_current(&f.store,"chain","task"))
+    testing.expect_value(t,execution_prepare_start(&f.store,x.prepare,x.lease,f.owner,1000).code,"ok")
+    released:=make([dynamic]Reservation_Release)
+    testing.expect(t,execution_expire_preparations(&f.store,3000,&released))
+    if !testing.expect_value(t,len(released),1) do return
+    testing.expect(t,lifecycle_path_current(&f.store,"chain","task"),"the release keeps the task configuration current")
+    revoked,_:=query(f.store.db,"SELECT count(*) FROM local_config_revocations")
+    testing.expect_value(t,revoked[0][0],"0")
+    // Re-place: the executor issues a new instance at the next fleet revision.
+    fleet,_:=query(f.store.db,"SELECT configuration_revision FROM local_fleet")
+    c:=remote_test_config(x.host_key)
+    c["instance_id"]=json.String("instance2");c["configuration_revision"]=json.String(fmt.tprintf("%d",number(fleet[0][0])+1))
+    task,_:=query(f.store.db,"SELECT revision FROM tasks WHERE task_id='task'")
+    placed:=remote_test_call(f,remote_test_payload(f,x.host_key,c,"3000","4000"),"remote_replace",x.host_key,task[0][0],3001)
+    testing.expect_value(t,placed.code,"ok")
+    rows,_:=query(f.store.db,"SELECT instance_id,enabled FROM local_fleet")
+    testing.expect_value(t,encode(rows),encode([1][2]string{{"instance2","1"}}))
 }

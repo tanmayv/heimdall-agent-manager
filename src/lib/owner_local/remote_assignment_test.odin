@@ -24,12 +24,12 @@ remote_test_config :: proc(key:contracts.Owner_Verified_Key)->json.Object {
         "directory_key"=field(p,"directory_key"),"directory_path"="/repo"})
     return c
 }
-remote_test_payload :: proc(f:^Fixture,key:contracts.Owner_Verified_Key,c:json.Object)->string {
+remote_test_payload :: proc(f:^Fixture,key:contracts.Owner_Verified_Key,c:json.Object,issued:="1000",expires:="2000")->string {
     raw:=encode(c)
     a:=doc(map[string]string{"protocol_version"="1","account_id"=field(c,"account_id"),"executor_bridge_id"=field(c,"executor_bridge_id"),
         "owner_bridge_id"=field(c,"owner_bridge_id"),"chain_id"=field(c,"chain_id"),"task_id"=field(c,"task_id"),
         "instance_id"=field(c,"instance_id"),"configuration_revision"=field(c,"configuration_revision"),
-        "configuration_digest"=contracts.owner_payload_digest(raw),"issued_ms"="1000","request_expires_ms"="2000",
+        "configuration_digest"=contracts.owner_payload_digest(raw),"issued_ms"=issued,"request_expires_ms"=expires,
         "key_id"=key.key_id,"signature"=strings.repeat("0",128,context.temp_allocator)})
     attestation:=execution_test_signed(f,a,"enrollment",true)
     reservation:=encode(doc(map[string]string{"configuration"=raw,"attestation"=attestation}))
@@ -37,7 +37,7 @@ remote_test_payload :: proc(f:^Fixture,key:contracts.Owner_Verified_Key,c:json.O
         "enabled"="1","body_cipher"=cipher(f,reservation)}))
 }
 remote_test_call :: proc(f:^Fixture,payload,op:string,key:contracts.Owner_Verified_Key,revision:="1",now:i64=1000)->Result {
-    c:=command(f,"fleet.reserve",op,"task",payload,revision)
+    c:=command(f,"fleet.reserve",op,"task",payload,revision,max(now+1000,2000))
     return execute(&f.store,c,payload,"",f.creator,f.owner,1,"head",now,&f.kr,{&f.owner_priv,test_sign},{},{},nil,key)
 }
 remote_test_seed :: proc(t:^testing.T,f:^Fixture,key:contracts.Owner_Verified_Key) {
