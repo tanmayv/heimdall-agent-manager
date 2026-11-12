@@ -147,7 +147,9 @@ execution_prepare_commit :: proc(s:^Store,reservation,receipt_raw:string,owner_k
        !contracts.owner_verify_signature("lease_command",c,"signature",owner_key) {return fail("invalid_scope")}
     if field(p,"executor_bridge_id")!=s.owner && !remote_assignment_key_matches(s,p,executor_key) do return fail("invalid_scope")
     child,current:=execution_assignment(s,p,c,false)
-    if !current || encode(child)!=row[5] do return fail("invalid_scope")
+    // A retired reservation may also have been released (its fleet row is no
+    // longer current): it still answers 'retired' to its exact executor.
+    if (!current || encode(child)!=row[5]) && row[2]!="retired" do return fail("invalid_scope")
     // Require authenticated exact executor evidence before even replaying a
     // committed journal result. Revoked executor credentials cannot read it.
     r,r_ok:=contracts.executor_parse(receipt_raw,"receipt")
@@ -313,9 +315,16 @@ execution_fence_reply :: proc(s:^Store,request_raw:string,executor_key,owner_key
     return Result{code="ok",body=encode(reply),seq=seq}
 }
 
+// A remote reservation released because it never launched: the Bridge
+// places the task's agent again (owner_local_leases.odin).
+Reservation_Release :: struct { chain,task,agent,instance:string }
+
 // Expiring an uncommitted preparation spends no lease/attempt and grants no
 // remote refund. The executor expires its own prepared charge independently.
-execution_expire_preparations :: proc(s:^Store,now:i64)->bool {
+// A fleet.reserve whose instance never got a grant and has no preparation left
+// is released in the same transaction (see execution_release_stale): its
+// reservation id is stable, so it would otherwise replay 'retired' forever.
+execution_expire_preparations :: proc(s:^Store,now:i64,released:^[dynamic]Reservation_Release=nil)->bool {
     tx:Transaction
     if !transaction_begin(s,&tx) do return false
     defer transaction_rollback(&tx)
@@ -332,7 +341,44 @@ execution_expire_preparations :: proc(s:^Store,now:i64)->bool {
         if _,written:=query(s.db,"UPDATE owner_execution_journal SET state='retired',retired_seq=? WHERE reservation_id=? AND state='preparing'",fmt.tprintf("%d",seq),row[0]);!written do return false
         if !execution_change(&tx,seq,now,p,"execution.prepare_expired",row[0],"no_grant") do return false
     }
+    if !execution_release_stale(&tx,&seq,now,released) do return false
     return transaction_commit(&tx)
+}
+
+// Releases enabled fleet.reserve rows whose reserved instance never launched:
+// at least one retired preparation, none preparing or committed, and no grant
+// ever (Mundus .13: inst_a67a... stayed a running:false member and kept the
+// task placed on a dead reservation). The owner disables the member as
+// chain.member.set does, which retires the task's fleet row and lifecycle
+// configuration, so the matcher places the task again. Bounded per pass.
+execution_release_stale :: proc(tx:^Transaction,seq:^i64,now:i64,released:^[dynamic]Reservation_Release)->bool {
+    s:=tx.store
+    rows,ok:=query(s.db,`SELECT f.chain_id,f.task_id,f.instance_id,m.agent_id,m.role FROM local_fleet f
+      JOIN local_assignment_history h ON h.chain_id=f.chain_id AND h.task_id=f.task_id AND h.revision=f.configuration_revision
+      JOIN local_chain_member_versions m ON m.chain_id=f.chain_id AND m.instance_id=f.instance_id
+        AND m.accepted_seq=(SELECT max(accepted_seq) FROM local_chain_member_versions x WHERE x.chain_id=m.chain_id AND x.instance_id=m.instance_id)
+      WHERE f.enabled=1 AND m.enabled=1 AND json_extract(h.command_json,'$.method')='fleet.reserve'
+        AND EXISTS(SELECT 1 FROM owner_execution_journal j WHERE j.instance_id=f.instance_id AND j.state='retired')
+        AND NOT EXISTS(SELECT 1 FROM owner_execution_journal j WHERE j.instance_id=f.instance_id AND (j.state!='retired' OR j.grant_seq IS NOT NULL))
+        AND NOT EXISTS(SELECT 1 FROM local_leases l WHERE l.instance_id=f.instance_id)
+      ORDER BY f.chain_id,f.task_id LIMIT 20`)
+    if !ok do return false
+    for row in rows {
+        chain,task,instance,agent:=row[0],row[1],row[2],row[3]
+        // An earlier row of this pass may already have released the member.
+        current,read:=query(s.db,"SELECT enabled FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task)
+        if !read do return false
+        if len(current)!=1 || current[0][0]!="1" do continue
+        seq^+=1
+        operation:=payload_hash(encode([3]string{chain,instance,"reservation.release"}))
+        c:=doc(map[string]string{"chain_id"=chain,"task_id"=task,"method"="chain.member.set","principal_id"=s.owner,"operation_id"=operation})
+        member:=doc(map[string]string{"instance_id"=instance,"agent_id"=agent,"role"=row[4],"enabled"="0"})
+        if code:=member_set(s,c,member,Child{},seq^);code!="ok" do return false
+        evidence:=doc(map[string]string{"chain_id"=chain,"task_id"=task,"instance_id"=instance,"agent_id"=agent})
+        if !execution_change(tx,seq^,now,evidence,"execution.reservation_released",operation,"never_launched") do return false
+        if released!=nil do append(released,Reservation_Release{chain,task,agent,instance})
+    }
+    return true
 }
 
 // A renewal action is an immutable outbox journal entry, inserted in the same

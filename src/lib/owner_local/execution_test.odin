@@ -460,3 +460,47 @@ owner_execution_failed_renewal_outbox_rolls_back_lease_and_receipt :: proc(t:^te
     testing.expect(t,exec(f.store.db,"DROP TRIGGER fail_renewal"))
     testing.expect_value(t,execute_lease(&f.store,raw,cap,lease_child(),f.owner,1200,{&f.owner_priv,execution_test_sign}).code,"ok")
 }
+
+// Mundus .13: a remote reservation whose prepare expired before any grant
+// stayed an enabled fleet row and a running:false member forever (its
+// reservation id is stable, so it only replayed 'retired'). Expiry releases
+// it once, so the Bridge can place the task again; a granted one is kept.
+@(test)
+owner_execution_never_launched_reservation_is_released_once :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    x:=execution_test_fixture(t);defer execution_test_destroy(x);f:=x.owner
+    fleet,ok:=query(f.store.db,"SELECT chain_id,task_id,instance_id,enabled FROM local_fleet")
+    if !testing.expect(t,ok && len(fleet)==1 && fleet[0][3]=="1") do return
+    testing.expect_value(t,execution_prepare_start(&f.store,x.prepare,x.lease,f.owner,1000).code,"ok")
+    released:=make([dynamic]Reservation_Release)
+    testing.expect(t,execution_expire_preparations(&f.store,2999,&released))
+    testing.expect_value(t,len(released),0) // still preparing: nothing to release
+    testing.expect(t,execution_expire_preparations(&f.store,3000,&released))
+    if !testing.expect_value(t,len(released),1) do return
+    testing.expect_value(t,released[0].chain,fleet[0][0]);testing.expect_value(t,released[0].task,fleet[0][1])
+    testing.expect_value(t,released[0].instance,fleet[0][2]);testing.expect(t,released[0].agent!="")
+    rows,read:=query(f.store.db,`SELECT (SELECT enabled FROM local_fleet),
+      (SELECT enabled FROM local_chain_member_versions WHERE instance_id=? ORDER BY accepted_seq DESC LIMIT 1),
+      (SELECT count(*) FROM local_events WHERE kind='execution.reservation_released'),
+      (SELECT count(*) FROM local_metadata_retirements WHERE task_id=?)`,fleet[0][2],fleet[0][1])
+    testing.expect(t,read);testing.expect_value(t,encode(rows),encode([1][4]string{{"0","0","1","1"}}))
+    // Released once: a later pass changes nothing.
+    before,_:=query(f.store.db,"SELECT commit_seq FROM runtime_database")
+    testing.expect(t,execution_expire_preparations(&f.store,4000,&released))
+    after,_:=query(f.store.db,"SELECT commit_seq FROM runtime_database")
+    testing.expect_value(t,encode(after),encode(before));testing.expect_value(t,len(released),1)
+}
+
+@(test)
+owner_execution_launched_reservation_is_never_released :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    x:=execution_test_fixture(t);defer execution_test_destroy(x);f:=x.owner
+    testing.expect_value(t,execution_prepare_start(&f.store,x.prepare,x.lease,f.owner,1000).code,"ok")
+    x.receipt=execution_test_prepare(t,x)
+    if !testing.expect_value(t,execution_test_commit(x).code,"ok") do return
+    released:=make([dynamic]Reservation_Release)
+    testing.expect(t,execution_expire_preparations(&f.store,5000,&released))
+    testing.expect_value(t,len(released),0)
+    rows,read:=query(f.store.db,"SELECT enabled FROM local_fleet")
+    testing.expect(t,read && len(rows)==1);testing.expect_value(t,rows[0][0],"1")
+}

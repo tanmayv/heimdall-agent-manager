@@ -125,7 +125,14 @@ bridge_owner_maintenance_once :: proc() {
 }
 bridge_owner_maintenance_batch :: proc(s:^owner.Store,q:^owner.Intent_Completions,now:i64,ctx:rawptr,
     send:proc(rawptr,^owner.Store,owner.Intent_Claim)->(bool,string,i64)) -> bool {
-    if !owner.execution_expire_preparations(s,now) do return false
+    released:=make([dynamic]owner.Reservation_Release,context.temp_allocator)
+    if !owner.execution_expire_preparations(s,now,&released) do return false
+    // A remote reservation that never launched was released: say so, and let
+    // the matcher place the task's agent again (its back-off bounds retries).
+    for r in released {
+        fmt.eprintfln("bridge owner released remote reservation %s of agent %s for task %s (chain %s): it never launched; placing it again",r.instance,r.agent,r.task,r.chain)
+        bridge_owner_place_pending_set(r.chain,r.task,r.agent)
+    }
     if !owner.expire_leases(s,now) do return false
     return bridge_owner_publish_batch(s,q,now,ctx,send)
 }
