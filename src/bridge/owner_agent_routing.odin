@@ -696,7 +696,7 @@ bridge_owner_agent_exec :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object
             hint:=""
             switch r.code {
             case "invalid_scope": hint=": only the chain's coordinator proposes or publishes its work, and every brief reviewer must be an enabled chain member"
-            case "invalid_content": hint=": the proposal does not validate (tasks need a title; brief fields are goal/acceptance/description/priority/depends_on)"
+            case "invalid_content": hint=": the proposal does not validate (each task needs a title; assignee, reviewers and requires_user_approval go inside brief; see coordinator-task-management §2)"
             case "operation_conflict": hint=": another proposal waits for the user's decision, or the chain is not active"
             }
             return bridge_owner_fail(ctx,r.code,fmt.tprintf("%s refused (%s)%s",what,r.code,hint))
