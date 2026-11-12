@@ -15,6 +15,9 @@ package main
 // Hub's dispatch does. Coordinators are never candidates: a solo task is
 // pulled by the coordinator itself.
 //
+// Tasks in review get their owed reviewers the same way
+// (bridge_owner_match_reviews), so no review depends on one dispatch.
+//
 // It runs after every owner verb that changes a chain or task (create,
 // update, handoff, block, unblock, fleet changes), after lease expiry, and on
 // Bridge start (the first maintenance pass). Event runs are forced; the
@@ -251,7 +254,24 @@ bridge_owner_match_plan :: proc(ctx:^Owner_Agent_Ctx,chain:string,force:bool,fre
         if !bridge_owner_match_due(fmt.tprintf("%s|%s|%s",target.task_id,target.instance_id,action),now,force) do continue
         append(&d.wakes,wake)
     }
+    bridge_owner_match_reviews(ctx,&out,chain)
     return out
+}
+
+// Every task in review (local or remote submit, after a restart or a failed
+// reviewer start/launch) gets its owed reviewers woken, started, launched or
+// placed again, at most once per reviewer and attempt within the back-off
+// (bridge_owner_review_plan periodic). Never forced: the verb that put the
+// task in review dispatched it already.
+bridge_owner_match_reviews :: proc(ctx:^Owner_Agent_Ctx,out:^[dynamic]Owner_Review_Dispatch,chain:string) {
+    rows,read:=owner.query(ctx.store.db,"SELECT chain_id,task_id FROM lifecycle_state WHERE state='in_review' AND (?1='' OR chain_id=?1) ORDER BY chain_id,task_id LIMIT 500",chain)
+    if !read do return
+    for row in rows {
+        rctx:=ctx^
+        rctx.reviews={}
+        _=bridge_owner_review_plan(&rctx,row[0],row[1],periodic=true)
+        if len(rctx.reviews.wakes)>0 do append(out,rctx.reviews)
+    }
 }
 
 // Takes the owner, startup and token locks; dispatches with none held.

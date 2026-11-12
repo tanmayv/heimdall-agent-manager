@@ -74,7 +74,14 @@ bridge_owner_review_sync_effects:bool
 
 // Under the child locks: plan a review lease for every reviewer the task's
 // gate still owes. Returns what was planned (for the verb's reply).
-bridge_owner_review_plan :: proc(ctx:^Owner_Agent_Ctx,chain,task:string) -> json.Array {
+//
+// Each reviewer of an attempt has one matcher key (bridge_owner_review_key).
+// A verb (periodic=false) plans now and marks the key; the matcher's review
+// pass (periodic=true, owner_agent_matcher.odin) plans only a reviewer whose
+// key is due, so an owed review lost to a failed start/launch, a submit that
+// planned nothing (remote lifecycle submit) or a Bridge restart is dispatched
+// again after BRIDGE_OWNER_MATCH_RETRY_MS, never twice within it.
+bridge_owner_review_plan :: proc(ctx:^Owner_Agent_Ctx,chain,task:string,periodic:=false) -> json.Array {
     out:=make(json.Array,context.temp_allocator)
     targets,ok:=owner.review_targets(ctx.store,chain,task)
     st,found,read:=owner.agent_task_state(ctx.store,chain,task)
@@ -104,14 +111,17 @@ bridge_owner_review_plan :: proc(ctx:^Owner_Agent_Ctx,chain,task:string) -> json
                 entry["bridge_id"]=json.String(place.executor_bridge)
                 // Once per attempt within the matcher back-off: a recheck of
                 // the same attempt does not launch a second reviewer.
-                key:=fmt.tprintf("%s|%s|%s|%s|review",chain,task,st.attempt,target.agent_id)
-                if bridge_owner_match_due(key,ctx.now,false) {
+                if bridge_owner_match_due(bridge_owner_review_key(chain,task,st.attempt,target.agent_id),ctx.now,false) {
                     body:=bridge_owner_json(map[string]string{"agent_id"=target.agent_id,"chain_id"=chain,"bridge_id"=place.executor_bridge,"provider"=place.provider,"model"=place.model})
                     append(&ctx.reviews.wakes,Owner_Review_Wake{action=.Remote,chain=chain,task=task,lease=lease,agent=target.agent_id,body=body})
                     entry["action"]=json.String("launching_remote")
                 }
             }
             append(&out,entry)
+            continue
+        }
+        if !bridge_owner_match_due(bridge_owner_review_key(chain,task,st.attempt,target.agent_id),ctx.now,!periodic) {
+            append(&out,json.Object{"agent_id"=json.String(target.agent_id),"action"=json.String("owed")})
             continue
         }
         wake:=Owner_Review_Wake{action=.Launch,chain=chain,task=task,lease=lease,agent=target.agent_id}
@@ -121,6 +131,16 @@ bridge_owner_review_plan :: proc(ctx:^Owner_Agent_Ctx,chain,task:string) -> json
         _,overridden:=models[target.agent_id]
         for instance in target.instances {
             if child,live:=bridge_owner_live_child(instance);live && child.agent_id==target.agent_id && bridge_owner_instance_serves(ctx.store,chain,instance,target.agent_id,models) { wake.action=.Nudge;wake.instance=instance;break }
+        }
+        // A periodic pass leaves a live reviewer that already opened this
+        // attempt's review alone (its session is not expired).
+        if periodic && wake.action==.Nudge {
+            rows,read:=owner.query(ctx.store.db,"SELECT 1 FROM local_review_sessions WHERE chain_id=? AND task_id=? AND attempt=? AND json_extract(child,'$.instance')=? AND expires_ms>?",
+                chain,task,st.attempt,wake.instance,fmt.tprintf("%d",ctx.now))
+            if read && len(rows)>0 {
+                append(&out,json.Object{"agent_id"=json.String(target.agent_id),"action"=json.String("reviewing"),"instance_id"=json.String(wake.instance)})
+                continue
+            }
         }
         if wake.action==.Launch && len(target.instances)>0 && !overridden {
             // A stopped member keeps its membership across a restart.
@@ -148,6 +168,11 @@ bridge_owner_review_token_locked :: proc(instance:string) -> (Bridge_Local_Agent
         if r.agent_instance_id==instance && r.role==.Agent && r.invalidated_at_unix_ms==0 && r.instance_token!="" do return r,true
     }
     return {},false
+}
+
+// The matcher key of one reviewer owed on one attempt.
+bridge_owner_review_key :: proc(chain,task,attempt,agent:string) -> string {
+    return fmt.tprintf("%s|%s|%s|%s|review",chain,task,attempt,agent)
 }
 
 // No lock held: wake, start or launch every planned reviewer, on a worker

@@ -57,6 +57,10 @@ bridge_owner_remote_agent :: proc(wire:Owner_Remote_Agent_Command) -> (string,st
     owner_pub:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     owner_id,id_ok:=vault.device_id_from_sign_pub(owner_pub,context.temp_allocator)
     if !id_ok do return "malformed",""
+    // Like a local verb: owed reviews are dispatched and the matcher runs for
+    // the chain once the owner mutex is released (deferred before the lock).
+    followup:Owner_Executor_Child_Followup
+    defer bridge_owner_executor_child_followup(&followup)
     sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
     if !bridge_owner_open(account,owner_id) do return "storage_error",""
     floor,status:=keystore_read_epoch_floor(bridge_cfg().daemon_id)
@@ -75,9 +79,26 @@ bridge_owner_remote_agent :: proc(wire:Owner_Remote_Agent_Command) -> (string,st
     response,refused:=bridge_owner_remote_agent_exec(&ctx,r.method,p,r.from_bridge_id)
     if refused!="" do return refused,""
     bridge_owner_publish()
+    followup=bridge_owner_remote_agent_followup(&ctx,r.method,p,response)
     sealed,ok:=vault.seal(transmute([]byte)response,&kr,context.temp_allocator)
     if !ok do return "storage_error",""
     return "ok",sealed
+}
+
+// What a relayed verb owes after the owner mutex is released, as for a local
+// one: its planned reviews, and the matcher for its chain (a relayed
+// review.post or submit moves the task).
+bridge_owner_remote_agent_followup :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object,response:string) -> Owner_Executor_Child_Followup {
+    out:Owner_Executor_Child_Followup
+    if !bridge_owner_response_ok(response) do return out
+    out.reviews=ctx.reviews
+    if !bridge_owner_match_method(method) do return out
+    chain:=bridge_owner_pstr(p,"chain_id")
+    if chain=="" {
+        if st,found,read:=owner.agent_task_state(ctx.store,"",bridge_owner_pstr(p,"task_id"));read && found do chain=st.chain_id
+    }
+    out.match_chain=strings.clone(chain,context.temp_allocator)
+    return out
 }
 
 // An admitted relayed verb, under the owner mutex. Returns the local-response

@@ -44,6 +44,11 @@ bridge_owner_executor_child_apply :: proc(s:^owner.Store,input_raw:string,child:
     if lifecycle {
         proof:=bridge_owner_source_proof(s,contracts.owner_string(command,"chain_id"),contracts.owner_string(command,"task_id"))
         result=owner.execute_lifecycle(s,bridge_owner_json(command),payload,cap,child,key,now,{nil,bridge_owner_sign},proof)
+        // A remote lifecycle submit plans no review itself: the matcher's
+        // review pass for the chain does (bridge_owner_match_reviews).
+        if result.code=="ok" && followup!=nil && contracts.owner_string(input,"method")=="lease.submit" {
+            followup.match_chain=strings.clone(contracts.owner_string(input,"chain_id"),context.temp_allocator)
+        }
     } else {result=owner.execute_lease(s,bridge_owner_json(command),cap,child,key,now,{nil,bridge_owner_sign})}
     return bridge_owner_json(result)
 }
