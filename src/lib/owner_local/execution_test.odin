@@ -504,3 +504,21 @@ owner_execution_launched_reservation_is_never_released :: proc(t:^testing.T) {
     rows,read:=query(f.store.db,"SELECT enabled FROM local_fleet")
     testing.expect(t,read && len(rows)==1);testing.expect_value(t,rows[0][0],"1")
 }
+
+// F1 (c): review follows unpinned work reserved on another Bridge. The
+// executor Bridge is the current fleet.reserve's; none once it is released.
+@(test)
+owner_execution_remote_assignment_executor_follows_the_reservation :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    x:=execution_test_fixture(t);defer execution_test_destroy(x);f:=x.owner
+    fleet,_:=query(f.store.db,"SELECT chain_id,task_id FROM local_fleet")
+    if !testing.expect_value(t,len(fleet),1) do return
+    bridge,ok:=remote_assignment_executor(&f.store,fleet[0][0],fleet[0][1])
+    testing.expect(t,ok);testing.expect_value(t,bridge,"executor")
+    bridge,ok=remote_assignment_executor(&f.store,fleet[0][0],"task_unknown")
+    testing.expect(t,ok);testing.expect_value(t,bridge,"")
+    testing.expect_value(t,execution_prepare_start(&f.store,x.prepare,x.lease,f.owner,1000).code,"ok")
+    testing.expect(t,execution_expire_preparations(&f.store,3000))
+    bridge,ok=remote_assignment_executor(&f.store,fleet[0][0],fleet[0][1])
+    testing.expect(t,ok);testing.expect_value(t,bridge,"")
+}

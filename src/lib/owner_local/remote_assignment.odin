@@ -142,3 +142,18 @@ remote_assignment_configuration :: proc(snapshot:string)->(json.Object,bool) {
     c,valid:=contracts.owner_parse(field(reservation,"configuration"),"remote_configuration")
     return c,ok && parsed && valid
 }
+
+// The Bridge the task's current remote reservation runs on ("" when the task
+// is not reserved on another Bridge). A remote author's commits stay in that
+// Bridge's checkout, so the task's review runs there too.
+remote_assignment_executor :: proc(s:^Store,chain,task:string)->(bridge:string,ok:bool) {
+    rows,read:=query(s.db,`SELECT h.payload_json FROM local_fleet f
+      JOIN local_assignment_history h ON h.chain_id=f.chain_id AND h.task_id=f.task_id AND h.revision=f.configuration_revision
+      WHERE f.chain_id=? AND f.task_id=? AND f.enabled=1 AND json_extract(h.command_json,'$.method')='fleet.reserve'`,chain,task)
+    if !read do return "",false
+    if len(rows)!=1 do return "",true
+    c,valid:=remote_assignment_configuration(rows[0][0])
+    if !valid do return "",false
+    executor:=field(c,"executor_bridge_id")
+    return "" if executor==s.owner else executor,true
+}

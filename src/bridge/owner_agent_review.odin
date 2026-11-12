@@ -88,6 +88,11 @@ bridge_owner_review_plan :: proc(ctx:^Owner_Agent_Ctx,chain,task:string) -> json
         if rec,has:=bridge_owner_review_token_locked(ctx.reviews.coordinator);has do ctx.reviews.rec=rec
     }
     run_bridge,pinned:=bridge_owner_match_run_bridge(ctx.store,chain,task)
+    // Unpinned work reserved on another Bridge (its worker's fleet row there)
+    // is reviewed there too: the author's commits stay in that checkout.
+    if !pinned {
+        if executor,read:=owner.remote_assignment_executor(ctx.store,chain,task);read && executor!="" { run_bridge,pinned=executor,true }
+    }
     models:=bridge_owner_brief_agent_models(st.brief)
     for target in targets {
         // A reviewer whose task runs on another account Bridge (the task's
