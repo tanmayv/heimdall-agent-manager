@@ -263,14 +263,24 @@ bridge_owner_match_plan :: proc(ctx:^Owner_Agent_Ctx,chain:string,force:bool,fre
 // placed again, at most once per reviewer and attempt within the back-off
 // (bridge_owner_review_plan periodic). Never forced: the verb that put the
 // task in review dispatched it already.
+// Every pass reads the whole in_review set in keyset pages, so tasks whose
+// reviews stay open (active, held, awaiting the user) never hide later ones.
+bridge_owner_match_review_page:=500
 bridge_owner_match_reviews :: proc(ctx:^Owner_Agent_Ctx,out:^[dynamic]Owner_Review_Dispatch,chain:string) {
-    rows,read:=owner.query(ctx.store.db,"SELECT chain_id,task_id FROM lifecycle_state WHERE state='in_review' AND (?1='' OR chain_id=?1) ORDER BY chain_id,task_id LIMIT 500",chain)
-    if !read do return
-    for row in rows {
-        rctx:=ctx^
-        rctx.reviews={}
-        _=bridge_owner_review_plan(&rctx,row[0],row[1],periodic=true)
-        if len(rctx.reviews.wakes)>0 do append(out,rctx.reviews)
+    after_chain,after_task:="",""
+    for {
+        rows,read:=owner.query(ctx.store.db,`SELECT chain_id,task_id FROM lifecycle_state WHERE state='in_review' AND (?1='' OR chain_id=?1)
+            AND (chain_id>?2 OR (chain_id=?2 AND task_id>?3)) ORDER BY chain_id,task_id LIMIT CAST(?4 AS INTEGER)`,chain,after_chain,after_task,fmt.tprintf("%d",bridge_owner_match_review_page))
+        if !read || len(rows)==0 do return
+        for row in rows {
+            rctx:=ctx^
+            rctx.reviews={}
+            _=bridge_owner_review_plan(&rctx,row[0],row[1],periodic=true)
+            if len(rctx.reviews.wakes)>0 do append(out,rctx.reviews)
+        }
+        last:=rows[len(rows)-1]
+        after_chain,after_task=last[0],last[1]
+        if len(rows)<bridge_owner_match_review_page do return
     }
 }
 

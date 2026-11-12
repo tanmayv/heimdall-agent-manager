@@ -102,6 +102,19 @@ bridge_owner_review_plan :: proc(ctx:^Owner_Agent_Ctx,chain,task:string,periodic
     }
     models:=bridge_owner_brief_agent_models(st.brief)
     for target in targets {
+        // A periodic pass leaves a reviewer alone, local or on another
+        // Bridge (relayed review.open), while it holds an unexpired review
+        // session for this attempt: it is reviewing, so nothing is woken,
+        // started or launched again. Only a reviewer with no current session
+        // (a failed start/launch, or one that stopped) is retried.
+        if periodic {
+            rows,read:=owner.query(ctx.store.db,"SELECT 1 FROM local_review_sessions WHERE chain_id=? AND task_id=? AND attempt=? AND json_extract(child,'$.agent_id')=? AND expires_ms>?",
+                chain,task,st.attempt,target.agent_id,fmt.tprintf("%d",ctx.now))
+            if !read || len(rows)>0 {
+                append(&out,json.Object{"agent_id"=json.String(target.agent_id),"action"=json.String("reviewing")})
+                continue
+            }
+        }
         // A reviewer whose task runs on another account Bridge (the task's
         // pin, else its fleet row's Bridge) is launched there through the Hub
         // and reviews over the agent relay; it is never started here.
@@ -131,16 +144,6 @@ bridge_owner_review_plan :: proc(ctx:^Owner_Agent_Ctx,chain,task:string,periodic
         _,overridden:=models[target.agent_id]
         for instance in target.instances {
             if child,live:=bridge_owner_live_child(instance);live && child.agent_id==target.agent_id && bridge_owner_instance_serves(ctx.store,chain,instance,target.agent_id,models) { wake.action=.Nudge;wake.instance=instance;break }
-        }
-        // A periodic pass leaves a live reviewer that already opened this
-        // attempt's review alone (its session is not expired).
-        if periodic && wake.action==.Nudge {
-            rows,read:=owner.query(ctx.store.db,"SELECT 1 FROM local_review_sessions WHERE chain_id=? AND task_id=? AND attempt=? AND json_extract(child,'$.instance')=? AND expires_ms>?",
-                chain,task,st.attempt,wake.instance,fmt.tprintf("%d",ctx.now))
-            if read && len(rows)>0 {
-                append(&out,json.Object{"agent_id"=json.String(target.agent_id),"action"=json.String("reviewing"),"instance_id"=json.String(wake.instance)})
-                continue
-            }
         }
         if wake.action==.Launch && len(target.instances)>0 && !overridden {
             // A stopped member keeps its membership across a restart.
