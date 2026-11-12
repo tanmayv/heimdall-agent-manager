@@ -156,7 +156,7 @@ bridge_owner_remote_reserve_locked :: proc(ctx:^Owner_Agent_Ctx,place:Owner_Remo
     if !sealed do return "storage_error","reservation could not be sealed"
     payload:=bridge_owner_json(map[string]string{"instance_id"=instance,"configuration_revision"=pin.configuration_revision,"enabled"="1","body_cipher"=body})
     r:=bridge_owner_run_command(ctx,"fleet.reserve",place.chain,place.task,st.task_revision,payload,remote_key=pin.remote_key)
-    if r.code!="ok" do return r.code,"the owner store refused the remote reservation"
+    if r.code!="ok" do return r.code,fmt.tprintf("the owner store refused the remote reservation (%s)",r.code)
     return bridge_owner_remote_configure(ctx,place)
 }
 
