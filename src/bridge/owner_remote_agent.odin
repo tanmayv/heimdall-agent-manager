@@ -155,8 +155,23 @@ bridge_owner_remote_agent_send :: proc(request_id,method,params:string,rec:Bridg
         inferred,with_chain:=bridge_owner_remote_lease_next_chain(p,rec.agent_instance_id)
         if inferred=="" do return "",false
         response,sent:=bridge_owner_remote_agent_send(request_id,method,with_chain,rec)
-        if !sent || !bridge_owner_remote_review_granted(response) do return "",false
-        return response,true
+        if !sent {
+            // R1 FIX A: run8's remote reviewer only ever saw the Hub's 'none';
+            // say why the relay was not used.
+            fmt.eprintfln("bridge owner relay: %s lease next for chain %s not relayed (no other owner Bridge of the account found)",rec.agent_instance_id,inferred)
+            return "",false
+        }
+        if bridge_owner_remote_review_granted(response) do return response,true
+        // An owner refusal (or an unreachable owner) is this reviewer's
+        // answer: falling through to the Hub would turn it into a silent
+        // 'none'. An owner 'none' keeps the old route.
+        envelope:=bridge_owner_result_object(response)
+        if failure,refused:=envelope["error"].(json.Object);refused {
+            fmt.eprintfln("bridge owner relay: %s lease next for chain %s refused: %s",rec.agent_instance_id,inferred,contracts.owner_string(failure,"code"))
+            return response,true
+        }
+        fmt.eprintfln("bridge owner relay: %s lease next for chain %s: the owner has no review for this reviewer",rec.agent_instance_id,inferred)
+        return "",false
     }
     if chain=="" && task=="" do return "",false
     account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
