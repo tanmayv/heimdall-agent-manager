@@ -156,7 +156,9 @@ bridge_owner_executor_snapshot :: proc(_:rawptr,s:^owner.Store,c:owner.Intent_Cl
         return bridge_owner_json(Owner_Executor_Pin{key_id=contracts.owner_string(config,"executor_key_id"),generation=bridge_task_chain_search_generation(),
             notification=contracts.owner_string(bundle,"notification"),message=contracts.owner_string(bundle,"message")}),true
     }
-    content:=owner.execution_bootstrap(s,c,"# Bridge-owned runtime worker\nRead TASK.md. Work only on the existing assigned lease. Use the owner-local lease/lifecycle API described there; task authority stays on the owner Bridge.\n","","[]",key,now,{nil,bridge_owner_sign})
+    // The role instructions travel from here; the standard skills are
+    // written by the executor Bridge from its own build (32 KiB cap).
+    content:=owner.execution_bootstrap(s,c,bridge_owner_executor_agents_md(p,s.owner),"","[]",key,now,{nil,bridge_owner_sign})
     if content.code!="ok" do return "",false
     value,decoded:=contracts.owner_content_document(content.body);bundle,b_ok:=value.(json.Object)
     if !decoded || !b_ok do return "",false
@@ -334,4 +336,37 @@ bridge_owner_executor_loop :: proc() {
 }
 bridge_owner_executor_start :: proc() {
     if _,started:=sync.atomic_compare_exchange_strong(&bridge_owner_executor_started,false,true);started do bridge_thread_run(bridge_owner_executor_loop)
+}
+
+BRIDGE_OWNER_REMOTE_WORKER_MD :: #load("../templates/worker.md",string)
+BRIDGE_OWNER_REMOTE_REVIEWER_MD :: #load("../templates/reviewer.md",string)
+
+// G1: a remote (executor-launched) agent gets the same role instructions as a
+// local one, plus how its ham-ctl reaches the owner Bridge.
+bridge_owner_executor_agents_md :: proc(p:json.Object,owner_bridge:string)->string {
+    get:=contracts.owner_string
+    reviewer:=get(p,"purpose")=="review"
+    role:="reviewer" if reviewer else "worker"
+    template:=BRIDGE_OWNER_REMOTE_REVIEWER_MD if reviewer else BRIDGE_OWNER_REMOTE_WORKER_MD
+    return fmt.tprintf(`# Agent bootstrap
+
+Agent: %s (remote executor)
+Instance: %s
+Task: %s
+Lease: %s
+Chain: %s
+Owner Bridge: %s
+
+## Agent Identity & Instructions
+
+%s
+
+## Remote agent: how ham-ctl reaches the owner
+This agent runs on an executor Bridge; its task lives on the owner Bridge above.
+Use ./bin/ham-ctl as usual. These verbs are relayed to the owner and act on your own task and lease only:
+lease next|heartbeat|submit|handoff|block, task show|comments|comment, review post.
+A verb naming another task, chain or lease is refused (invalid_scope) with the reason.
+Acknowledge a requirements revision with: ./bin/ham-ctl lease heartbeat --acknowledge-requirements-revision <n>
+Load the worker-task-management skill for the task lifecycle.
+`,role,get(p,"instance_id"),get(p,"task_id"),get(p,"lease_id"),get(p,"chain_id"),owner_bridge,template)
 }

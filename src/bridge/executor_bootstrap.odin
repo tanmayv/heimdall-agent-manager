@@ -133,6 +133,18 @@ bridge_executor_materialize :: proc(dir,endpoint:string,m:executor.Launch_Materi
         if strings.has_prefix(path,"/") do return {},false
         append(&files,Bridge_Bootstrap_File{relative_path=strings.clone(path,context.temp_allocator),content=get(skill,"content")})
     }
+    for local in BRIDGE_EXECUTOR_SKILLS {
+        named:=false
+        for item in skills {
+            skill,_:=item.(json.Object)
+            if strings.to_lower(get(skill,"name"),context.temp_allocator)==local.name {named=true;break}
+        }
+        if named do continue
+        path:=bridge_bootstrap_skill_relative_path(provider,local.name)
+        if path=="" do return {},false
+        append(&files,Bridge_Bootstrap_File{relative_path=strings.clone(path,context.temp_allocator),content=local.content})
+        delete(path)
+    }
     // Reject a planted root symlink before the existing clean-slate helper.
     if bridge_make_directory_all(dir)!=nil || !bridge_os_prepare_private_dir(dir) do return {},false
     bridge_prespawn_clean_slate(dir)

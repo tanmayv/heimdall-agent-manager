@@ -54,6 +54,12 @@ test_executor_bootstrap_materializes_owner_content_without_hub_and_local_shim ::
     skill:=bridge_bootstrap_skill_relative_path("codex","worker");defer delete(skill)
     skills,skill_read:=os.read_entire_file(fmt.tprintf("%s/%s",dir,skill),context.temp_allocator)
     testing.expect(t,skill_read==nil && strings.contains(string(skills),"模型🚀"))
+    // G1: the standard skills a local agent gets, from this Bridge's build.
+    for local in BRIDGE_EXECUTOR_SKILLS {
+        path:=bridge_bootstrap_skill_relative_path("codex",local.name);defer delete(path)
+        written,local_read:=os.read_entire_file(fmt.tprintf("%s/%s",dir,path),context.temp_allocator)
+        testing.expectf(t,local_read==nil && string(written)==local.content,"standard skill %s written",local.name)
+    }
     shim,shim_read:=os.read_entire_file(fmt.tprintf("%s/bin/ham-ctl",dir),context.temp_allocator)
     testing.expect(t,shim_read==nil && strings.contains(string(shim),"executor-local-test-secret") && strings.contains(string(shim),"unix:/test-executor.sock"))
     marker,marker_read:=os.read_entire_file(fmt.tprintf("%s/heimdall-executor-bootstrap.json",dir),context.temp_allocator)
@@ -113,4 +119,22 @@ test_executor_bootstrap_notification_identity_ignores_local_token_store :: proc(
         }
     }
     testing.expect(t,epochs==1 && counts==1,"exactly one identity from the admitted remote bootstrap")
+}
+
+// G1: the owner sends the remote agent the normal role instructions (not a
+// stub), naming its own task and lease and how ham-ctl reaches the owner.
+@(test)
+test_executor_owner_agents_md_is_the_role_template :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    p:=make(json.Object,context.temp_allocator)
+    for v in ([5][2]string{{"purpose","work"},{"instance_id","inst_r"},{"task_id","task_r"},{"lease_id","lease_r"},{"chain_id","chain_r"}}) do p[v[0]]=json.String(v[1])
+    worker:=bridge_owner_executor_agents_md(p,"brg_owner")
+    testing.expect(t,strings.contains(worker,BRIDGE_OWNER_REMOTE_WORKER_MD) && strings.contains(worker,"Agent: worker") &&
+        strings.contains(worker,"task_r") && strings.contains(worker,"lease_r") && strings.contains(worker,"brg_owner") && strings.contains(worker,"worker-task-management"))
+    p["purpose"]=json.String("review")
+    reviewer:=bridge_owner_executor_agents_md(p,"brg_owner")
+    testing.expect(t,strings.contains(reviewer,BRIDGE_OWNER_REMOTE_REVIEWER_MD) && strings.contains(reviewer,"Agent: reviewer"))
+    // Role instructions plus the largest expected TASK.md stay under the
+    // owner's bootstrap document cap.
+    testing.expect(t,len(worker)<contracts.EXECUTOR_DOCUMENT_MAX/3 && len(reviewer)<contracts.EXECUTOR_DOCUMENT_MAX/3)
 }
