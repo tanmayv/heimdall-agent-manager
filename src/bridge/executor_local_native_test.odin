@@ -33,6 +33,8 @@ test_executor_local_native_discovered_profile_model_dispatch :: proc(t:^testing.
     bridge_executor_local_native_scenario(t,model_mode="discovered")
 }
 
+@(private="file") f6_notice_socket:string
+
 bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="") {
     context.allocator=context.temp_allocator
     st:=p1c_test_setup(t);defer p1c_test_teardown(st)
@@ -408,6 +410,42 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="")
     for entry in replay_after_binary.entries do if entry.used && entry.salt==binary_salt && entry.last==binary_counter do binary_counter_seen=true
     testing.expect(t,binary_seen && binary_counter_seen,"actual native worker opens the unchanged encrypted binary frame")
     testing.expect(t,len(bridge_dispatch_outputs)==0,"successful native binary input has no synthetic command result")
+    // F6: what reaches a live coordinator after an executor restart. This
+    // child was launched after the journal reopen above (a re-incarnated
+    // executor), its run dir is outside fs_root, and deliveries go through the
+    // real gate and daemon: user chat (Message) and an owner notice. A notice
+    // refused while the run dir is not a Bridge-owned run dir (the original
+    // 'coordinator not live' condition) stays queued and flushes on the next
+    // pass once the gate admits the child.
+    {
+        testing.expect(t,bridge_executor_store.incarnation>=2,"the child was launched by a re-incarnated executor")
+        project:=bridge_executor_local_descriptor(material.command).project_path
+        projects:=project if project!="" else fmt.tprintf("%s/projects",root)
+        testing.expect(t,bridge_make_directory_all(projects)==nil)
+        prior_fs_root:=bridge_fs_root
+        bridge_fs_root=projects
+        defer bridge_fs_root=prior_fs_root
+        chat,chat_refused:=bridge_legacy_agent_delivery({kind=.Message,instance=manual_launch.instance,sender="user"},&bridge_executor_store,socket)
+        testing.expect(t,chat && !chat_refused,"user chat reaches the live re-incarnated child whose run dir is outside fs_root")
+        f6_notice_socket=socket
+        saved_effect:=bridge_owner_notice_deliver_effect
+        bridge_owner_notice_deliver_effect=proc(instance,line:string)->bool {
+            delivered,_:=bridge_legacy_agent_delivery({kind=.Notice,instance=instance,text=line},&bridge_executor_store,f6_notice_socket)
+            return delivered
+        }
+        defer bridge_owner_notice_deliver_effect=saved_effect
+        notices:Owner_Notice_State
+        defer {for key in notices.seen do delete(key,runtime.heap_allocator());delete(notices.seen)}
+        candidates:=[]owner.Coordinator_Notice_Candidate{{chain_id="chain_f6",task_id="task_f6",coordinator=manual_launch.instance,trigger="review_requested_from_user",title="T",attempt="1"}}
+        prior_runs:=bridge_cfg().local_endpoint_run_dir
+        bridge_cfg().local_endpoint_run_dir=fmt.tprintf("%s/elsewhere",root)
+        first:=i64(1_000)
+        testing.expect_value(t,bridge_owner_notice_deliver_due(&notices,bridge_owner_notices_due(&notices,candidates,first),first),0)
+        bridge_cfg().local_endpoint_run_dir=prior_runs
+        later:=first+BRIDGE_OWNER_NOTICE_RETRY_MS
+        testing.expect_value(t,bridge_owner_notice_deliver_due(&notices,bridge_owner_notices_due(&notices,candidates,later),later),1)
+        testing.expect_value(t,len(bridge_owner_notices_due(&notices,candidates,later+10*BRIDGE_OWNER_NOTICE_RETRY_MS)),0)
+    }
     // Startup reminders are a separate physical producer. Match the exact
     // retained native material/run/child and refuse a current migration fence.
     sync.mutex_lock(&bridge_executor_mutex)
