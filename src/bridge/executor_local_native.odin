@@ -353,7 +353,7 @@ bridge_executor_local_stage_draft :: proc(s:^executor.Store,command,purpose,sour
         detail,err:=bridge_executor_local_failure("profile_unavailable")
         return {},detail,err
     }
-    if !profile_has_model(&pp,provider,model) {
+    if !profile_has_model(&pp,provider,model,"local native launch") {
         detail,err:=bridge_executor_local_failure("model_unavailable")
         return {},detail,err
     }

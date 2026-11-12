@@ -181,25 +181,11 @@ profile_prepare_runtime :: proc(p: ^Provider_Profile) -> Profile_Error {
 	return .None
 }
 
-profile_has_model :: proc(p: ^Provider_Profile, provider, model: string) -> bool {
-	if slice.contains(p.config.custom_models, model) do return true
-	observed := bridge_models_get(provider, profile_id = p.profile_id)
-	defer bridge_models_destroy(&observed)
-	if observed.has_snapshot {
-		for m in observed.models do if m.model_id == model do return true
-		return false
-	}
-	// A new custom profile may use catalog seeds, but must not borrow the
-	// default profile's account-specific discovered snapshot.
-	bridge_provider_catalog_init()
-	sync.rw_mutex_shared_lock(&bridge_provider_catalog_mutex)
-	defer sync.rw_mutex_shared_unlock(&bridge_provider_catalog_mutex)
-	if bridge_provider_catalog_snapshot == nil do return false
-	for entry in bridge_provider_catalog_snapshot.providers {
-		if entry.provider != provider || entry.state != "active" do continue
-		for m in entry.models do if m.model_id == model && m.state == "active" do return true
-	}
-	return false
+// The shared model-acceptance rule (bridge_model_accepted) for one profile:
+// its custom models and its own discovered snapshot (a custom profile never
+// borrows the default profile's account-specific snapshot), else the catalog.
+profile_has_model :: proc(p: ^Provider_Profile, provider, model: string, where_ := "") -> bool {
+	return bridge_model_accepted(provider, model, profile_id = p.profile_id, custom_models = p.config.custom_models[:], where_ = where_)
 }
 
 // Provider diagnostics can echo credentials. Only known secret values are

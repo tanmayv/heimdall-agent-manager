@@ -276,7 +276,12 @@ bridge_owner_executor_accept :: proc(_:rawptr,s:^owner.Store,c:owner.Intent_Clai
     reply:Owner_Executor_Command_Reply
     if !scoped || json.unmarshal_string(envelope.data.reply,&reply,.JSON,context.temp_allocator)!=nil ||
        reply.request_id!=contracts.owner_string(scope,"request_id") || reply.type!="command_result" {return true,false,"invalid_executor_reply"}
-    if reply.code!="ok" do return true,false,"executor_rejected"
+    if reply.code!="ok" {
+        // The executor Bridge's own refusal code (e.g. model_unavailable)
+        // is logged here; the intent records executor_rejected as before.
+        fmt.eprintfln("bridge owner executor: %s %s refused by executor %s: %s",c.kind,c.id,c.destination,reply.code)
+        return true,false,"executor_rejected"
+    }
     control,control_valid:=contracts.executor_parse(pin.control,"action")
     receipt,authenticated:=channel.open_signed(reply.envelope,&kr,scope,key,now,context.temp_allocator,
         query_discovery=owner.execution_stop_kind(c.kind) && control_valid && contracts.owner_string(control,"method")=="query")

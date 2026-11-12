@@ -70,8 +70,11 @@ bridge_executor_activate_dispatch :: proc(s:^executor.Store,action_raw:string,ex
         return delivered && reason=="child_present",reason
     }
     if io.prepare==nil || fence_exchange==nil do return false,"startup_unavailable"
+    bridge_model_last_refusal=""
     request,resource_pin,ready:=io.prepare(io.ctx,s,intent,now)
-    if !ready do return false,"spawn_prepare_failed"
+    // A refused model is named to the owner (it logs the code), not hidden
+    // in a generic prepare failure.
+    if !ready do return false,"model_unavailable" if bridge_model_last_refusal!="" else "spawn_prepare_failed"
     defer bridge_pty_host_spawn_request_delete(request)
     if resource_pin=="" do return false,"invalid_resources"
     pending,challenged:=executor.fence_challenge(s,action_raw,contracts.owner_string(exchange,"intent_id"),

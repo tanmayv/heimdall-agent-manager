@@ -282,26 +282,34 @@ bridge_provider_profile_from_catalog :: proc(provider: Bridge_Catalog_Provider) 
 	}
 }
 
-bridge_provider_catalog_has_model :: proc(provider_name, model_id: string) -> bool {
-	if strings.trim_space(provider_name) == "" || strings.trim_space(model_id) == "" do return false
-	observed := bridge_models_get(provider_name)
-	defer bridge_models_destroy(&observed)
-	if observed.has_snapshot {
-		if _, active := bridge_provider_catalog_profile(provider_name); !active do return false
-		for model in observed.models do if model.model_id==model_id do return true
+// REQ-EXEC-NEVER-BLOCK (G4): the one model-acceptance rule for every launch,
+// issuance and prepare path. A model is accepted when it is a custom model of
+// the profile, observed on this Bridge (the profile's discovered snapshot), or
+// an active model of an active provider in the account/static catalog. An
+// observed list never hides the catalog: claude reports aliases only
+// ('sonnet', 'claude-sonnet-5'), not 'claude-sonnet-5-5'. A refusal is logged
+// on this Bridge with its reason and kept for the caller to report
+// (bridge_model_last_refusal).
+@(thread_local) bridge_model_last_refusal:string
+bridge_model_accepted :: proc(provider, model: string, profile_id := "", custom_models: []string = nil, where_ := "") -> bool {
+	refuse :: proc(where_, reason: string) -> bool {
+		bridge_model_last_refusal = reason
+		fmt.eprintfln("bridge model refused%s%s: %s", " at " if where_ != "" else "", where_, reason)
 		return false
 	}
-	bridge_provider_catalog_init()
-	sync.rw_mutex_shared_lock(&bridge_provider_catalog_mutex)
-	defer sync.rw_mutex_shared_unlock(&bridge_provider_catalog_mutex)
-	if bridge_provider_catalog_snapshot == nil do return false
-	for provider in bridge_provider_catalog_snapshot.providers {
-		if provider.provider != provider_name || provider.state != "active" do continue
-		for model in provider.models {
-			if model.model_id == model_id && model.state == "active" do return true
-		}
+	if strings.trim_space(provider) == "" || strings.trim_space(model) == "" do return refuse(where_, "no provider or model selected")
+	for m in custom_models do if m == model do return true
+	observed := bridge_models_get(provider, profile_id = profile_id)
+	defer bridge_models_destroy(&observed)
+	if observed.has_snapshot {
+		for m in observed.models do if m.model_id == model do return true
 	}
-	return false
+	if _, _, active := bridge_owner_agent_model_resolve(provider, model); active do return true
+	return refuse(where_, fmt.tprintf("%s/%s is not a custom model, not observed on this Bridge and not an active catalog model", provider, model))
+}
+
+bridge_provider_catalog_has_model :: proc(provider_name, model_id: string) -> bool {
+	return bridge_model_accepted(provider_name, model_id)
 }
 
 bridge_provider_catalog_needs_sync :: proc(hub_etag: string) -> bool {

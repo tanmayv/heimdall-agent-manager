@@ -364,8 +364,8 @@ bridge_pty_host_ping :: proc(socket: string) -> bool {
 bridge_pty_host_build_spawn :: proc(instance_id, run_dir, provider, model, agent_token: string, env: []string, display_name := "", timeout_seconds: u64 = 0, permission_mode := "", pp: ^Provider_Profile = nil, inert := false) -> (Pty_Host_Spawn_Request, bool) {
 	if strings.trim_space(provider) == "" || strings.trim_space(model) == "" do return {}, false
 	if pp != nil {
-		if !profile_has_model(pp,provider,model) do return {},false
-	} else if !bridge_provider_catalog_has_model(provider,model) { return {},false }
+		if !profile_has_model(pp,provider,model,"spawn") do return {},false
+	} else if !bridge_model_accepted(provider,model,where_="spawn") { return {},false }
 	profile, profile_ok := bridge_provider_catalog_profile(provider)
 	if !profile_ok do return {}, false
 	resolved_path: string

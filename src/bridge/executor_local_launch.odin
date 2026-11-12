@@ -47,7 +47,7 @@ bridge_executor_resolve_local_reason :: proc(s:^executor.Store,configuration:str
     resolved,err:=profile_lookup(provider,profile,prepare_runtime=false)
     if err!=.None || !resolved.enabled do return {},"profile_unavailable"
     if resolved.provider!=provider || resolved.profile_id!=profile do return {},"resources_changed"
-    if !profile_has_model(&resolved,provider,model) do return {},"model_unavailable"
+    if !profile_has_model(&resolved,provider,model,"local launch") do return {},"model_unavailable"
     digest:=bridge_executor_local_spawn_digest(request)
     if digest!=get(c,"spawn_digest") do return {},"resources_changed"
     return executor.Local_Resources{contracts.owner_payload_digest(configuration),digest,path,true},"ok"

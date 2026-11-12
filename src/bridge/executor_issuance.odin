@@ -104,9 +104,7 @@ bridge_executor_install_directory :: proc(s:^executor.Store,raw:string,key:contr
 // prepare of the issued selection (.14, task_18e72ea85b7d4f43) with
 // invalid_resources. An inactive or unknown model is still refused, logged.
 bridge_executor_model_allowed :: proc(provider,model:string) -> bool {
-    if bridge_provider_catalog_has_model(provider,model) do return true
-    if _,_,active:=bridge_owner_agent_model_resolve(provider,model);active && model!="" do return true
-    return false
+    return bridge_model_accepted(provider,model,where_="executor issuance/prepare")
 }
 // Refusals name the failing component (model, profile, slot, directory) in
 // `why` and in the Bridge log.

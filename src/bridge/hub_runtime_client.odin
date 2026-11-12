@@ -2818,7 +2818,7 @@ bridge_runtime_agent_command :: proc(command_json, agent_token, agent_instance_i
 	provider, model := bridge_runtime_provider_model(command_json)
 	defer { delete(provider); delete(model) }
 	if strings.trim_space(provider) == "" || strings.trim_space(model) == "" do return ""
-	if !bridge_provider_catalog_has_model(provider, model) do return ""
+	if !bridge_model_accepted(provider, model, where_ = "hub launch (remote reviewer)") do return ""
 	if profile, ok := bridge_provider_catalog_profile(provider); ok {
 		path, path_ok := bridge_provider_resolve_path(provider)
 		if !path_ok do return ""

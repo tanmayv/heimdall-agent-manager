@@ -30,7 +30,7 @@ bridge_executor_launch_resource_pin :: proc(s:^executor.Store,intent:executor.In
     provider,model:=contracts.owner_string(c,"provider"),contracts.owner_string(c,"model")
     catalog,active:=bridge_provider_catalog_profile(provider)
     profile,err:=profile_lookup(provider,contracts.owner_string(c,"provider_profile"),prepare_runtime=false)
-    if !active || err!=.None || !profile.enabled || !profile_has_model(&profile,provider,model) do return "",false
+    if !active || err!=.None || !profile.enabled || !profile_has_model(&profile,provider,model,"remote launch pin") do return "",false
     binary,_:=bridge_provider_catalog_binary(provider,context.temp_allocator)
     bridge_provider_paths_init()
     path,state:="",""
