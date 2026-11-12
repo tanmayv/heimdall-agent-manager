@@ -380,6 +380,8 @@ test_owner_primary_reviewer_on_another_bridge :: proc(t:^testing.T) {
     testing.expectf(t,refused=="" && contracts.owner_string(review_test_data(granted),"status")=="granted" &&
         contracts.owner_string(lease,"role")=="reviewer" && contracts.owner_string(lease,"task_id")==task,"relayed reviewer gets its review lease: %v",granted)
     testing.expectf(t,strings.contains(contracts.owner_string(review_test_data(granted),"review_context"),"Owner-local review of task"),"the reply carries the review TASK.md text: %v",granted)
+    // F4 (A): this chain has no project directory, so the review names the scratch Workdir.
+    testing.expectf(t,strings.contains(contracts.owner_string(review_test_data(granted),"review_context"),"- Workdir: your run directory (this chain has no project directory"),"no-directory review names the scratch Workdir: %v",granted)
     _,refused=relay_next(r,remote_reviewer,`{}`)
     testing.expect_value(t,refused,"malformed")
     _,refused=relay_next(r,remote_reviewer,`{"chain_id":"chain_unknown"}`)

@@ -346,6 +346,9 @@ bridge_owner_render_review_context :: proc(st:owner.Agent_Task_State,lease:Owner
     get:=contracts.owner_string
     workdir:=""
     if lease.placement.workdir!="" do workdir=fmt.tprintf("- Workdir: `%s` (branch `%s`, submitted head `%s`). Inspect it; do not commit.\n",lease.placement.workdir,lease.placement.branch,st.head)
+    // A chain with no project directory runs in scratch Workdirs (F4 A): the
+    // author's is its own run directory, so the review says where to work.
+    else do workdir="- Workdir: your run directory (this chain has no project directory; nothing is merged back). Judge the attempt from its submit summary, handoff and task comments, and run any checks you need in your run directory.\n"
     return fmt.tprintf("# Owner-local review of task %s\n\nRole: reviewer\n\n- Chain: %s\n- Lease: %s (review)\n- Attempt: %s\n- Instance: %s\n- Requirements revision: %s\n%s\n## Submitted requirements (complete)\n```json\n%s\n```\n\n## Worker's summary\n%s\n\nThis chain is held by its owner Bridge. Judge the attempt against the brief and the worker's reported checks, then post exactly one verdict:\n`ham-ctl review post --task %s --verdict approve` or `ham-ctl review post --task %s --verdict request_changes --summary <what must change>`. Every reviewer the task names must approve; any request_changes returns it to its worker.\n",
         st.task_id,st.chain_id,lease.lease_id,st.attempt,instance,st.requirements_revision,workdir,get(result,"brief"),get(result,"summary"),st.task_id,st.task_id)
 }
