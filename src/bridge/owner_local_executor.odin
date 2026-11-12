@@ -279,6 +279,14 @@ bridge_owner_executor_accept :: proc(_:rawptr,s:^owner.Store,c:owner.Intent_Clai
     if reply.code!="ok" {
         result,line:=bridge_owner_executor_refusal(c.kind,c.id,c.destination,reply.code)
         fmt.eprintln(line)
+        // G3 (decision a): the executor proved the child gone while its lease
+        // is live: end the lease so the task is re-placed as a new generation.
+        if reply.code=="child_absent" && (c.kind=="executor.activate" || c.kind=="executor.heartbeat") {
+            ended:=owner.execution_child_absent(s,c,now)
+            if ended.code=="storage_error" do return false,false,ended.code
+            if ended.code=="ok" && !ended.replay do fmt.eprintfln("bridge owner executor: %s lease ended (child_absent); the task is re-placed",c.chain)
+            return true,false,"child_absent"
+        }
         return true,false,result
     }
     control,control_valid:=contracts.executor_parse(pin.control,"action")

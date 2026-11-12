@@ -441,3 +441,35 @@ execution_renewal_enqueue :: proc(tx:^Transaction,c:json.Object,seq,version,expi
     return intent_enqueue(tx,{field(c,"chain_id"),field(c,"instance_id"),field(c,"operation_id"),seq,
         "executor.heartbeat",field(p,"executor_bridge_id"),rows[0][0],encode(a)})
 }
+
+// G3 (coordinator decision a): the executor proved the launched child is
+// gone (child_absent) while its lease is live. The owner ends that lease
+// (reason child_absent) and retires its journal row in one transaction, so
+// the preparation loop re-places the task as a new generation: a new
+// reservation, lease, launch key, token and owner fence. A live child is never
+// touched (B answers child_present). Idempotent: an already ended lease or a
+// claim that is no longer this row's is a no-op ("ok", replay).
+execution_child_absent :: proc(s:^Store,claim:Intent_Claim,now:i64)->Result {
+    tx:Transaction
+    if !transaction_begin(s,&tx) do return fail("storage_error")
+    defer transaction_rollback(&tx)
+    if code:=execution_clock(&tx,now);code!="ok" do return fail(code)
+    rows,read:=query(s.db,`SELECT j.reservation_id,j.prepare_json,l.lease_id,l.chain_id,l.task_id FROM owner_execution_journal j
+      JOIN local_leases l ON l.lease_id=j.lease_id WHERE j.prepare_json=? AND j.state='committed' AND l.retired_seq IS NULL`,claim.fence)
+    if !read do return fail("storage_error")
+    if len(rows)!=1 do return Result{code="ok",replay=true}
+    row:=rows[0]
+    p,valid:=contracts.executor_parse(row[1],"prepare")
+    if !valid do return fail("invalid_scope")
+    runtime,ok:=query(s.db,"SELECT commit_seq FROM runtime_database WHERE singleton=1")
+    if !ok || len(runtime)!=1 do return fail("storage_error")
+    seq:=number(runtime[0][0])+1
+    if _,written:=query(s.db,"UPDATE local_leases SET retired_seq=? WHERE lease_id=? AND retired_seq IS NULL",fmt.tprintf("%d",seq),row[2]);!written do return fail("storage_error")
+    if !event_record(&tx,seq,now,row[3],row[4],"bridge",s.owner,"lease.expired",row[2],"","",encode(doc(map[string]string{"lease_id"=row[2],"reason"="child_absent"})),"") do return fail("storage_error")
+    if _,written:=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),row[3],"lease.expired",row[4],"1",row[2]);!written do return fail("storage_error")
+    seq+=1
+    if _,written:=query(s.db,"UPDATE owner_execution_journal SET state='retired',retired_seq=? WHERE reservation_id=? AND state='committed'",fmt.tprintf("%d",seq),row[0]);!written do return fail("storage_error")
+    if !execution_change(&tx,seq,now,p,"execution.lease_ended",row[0],"child_absent") do return fail("storage_error")
+    if !transaction_commit(&tx) do return fail("storage_error")
+    return Result{code="ok",body="child_absent",seq=seq}
+}

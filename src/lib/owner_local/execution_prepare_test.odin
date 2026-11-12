@@ -143,3 +143,62 @@ owner_preparation_row_retires_with_its_lease_and_task_is_prepared_again :: proc(
     count,_:=query(f.store.db,"SELECT count(*) FROM owner_execution_journal")
     testing.expect_value(t,count[0][0],"2")
 }
+
+// Commits the fixture's first remote preparation and returns its reservation
+// and prepare document.
+execution_prepare_test_commit :: proc(t:^testing.T,x:^Execution_Test,sign:Signer) -> (string,json.Object,bool) {
+    f:=x.owner
+    if !testing.expect_value(t,execution_prepare_assignment(&f.store,"chain","task",f.owner,1000,sign).code,"ok") do return "",nil,false
+    entries,_:=execution_preparations(&f.store);if !testing.expect_value(t,len(entries),1) do return "",nil,false
+    entry:=entries[0]
+    p,_:=contracts.executor_parse(entry.prepare,"prepare")
+    resources:=executor.Resolved_Resources{field(p,"directory_key"),field(p,"provider_profile"),field(p,"instance_id"),field(p,"configuration_revision")}
+    prepared:=executor.prepare(&x.host,entry.prepare,f.owner,1000,resources)
+    receipt,_:=executor.seal_receipt(&x.host,p,"prepare",prepared,{&f.creator_priv,execution_test_seal})
+    query_result:=execution_query_start(&f.store,entry.reservation,receipt,f.owner,x.host_key,1100,sign)
+    q,_:=contracts.executor_parse(query_result.body,"action")
+    qr,_:=executor.seal_receipt(&x.host,q,"action",executor.action(&x.host,query_result.body,f.owner,1200),{&f.creator_priv,execution_test_seal})
+    if !testing.expect_value(t,execution_prepare_commit(&f.store,entry.reservation,receipt,f.owner,x.host_key,1200,sign,query_result.body,qr).code,"ok") do return "",nil,false
+    return entry.reservation,p,true
+}
+
+// G3 (decision a, failed launch): the executor proves the launched child gone
+// (child_absent) while its lease is live. The owner ends the lease (reason
+// child_absent) and retires the row at once; a repeat is a no-op; the old
+// activation intent is no longer current, so it can neither block nor revive
+// the ended lease; the task is prepared again as a new generation.
+@(test)
+owner_preparation_child_absent_ends_lease_and_task_is_replaced :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    x:=execution_test_fixture(t);defer execution_test_destroy(x);f:=x.owner
+    sign:=Signer{&f.owner_priv,execution_test_sign}
+    reservation,p,committed:=execution_prepare_test_commit(t,x,sign)
+    if !committed do return
+    claims,claimed:=intent_claim_due(&f.store,1300)
+    activation:Intent_Claim
+    for c in claims do if c.kind=="executor.activate" do activation=c
+    if !testing.expect(t,claimed && activation.id!="","the activation intent exists") do return
+    current,_,_,_:=execution_activation_fence(&f.store,activation,1300)
+    testing.expect(t,current,"the activation is current while the lease is live")
+
+    ended:=execution_child_absent(&f.store,activation,1300)
+    testing.expectf(t,ended.code=="ok" && !ended.replay && ended.body=="child_absent","child_absent ends the lease: %v",ended)
+    leases,_:=query(f.store.db,"SELECT retired_seq IS NOT NULL FROM local_leases WHERE lease_id=?",field(p,"lease_id"))
+    testing.expect_value(t,encode(leases),encode([1][1]string{{"1"}}))
+    rows,_:=query(f.store.db,"SELECT state FROM owner_execution_journal WHERE reservation_id=?",reservation)
+    testing.expect_value(t,encode(rows),encode([1][1]string{{"retired"}}))
+    events,_:=query(f.store.db,"SELECT count(*) FROM local_events WHERE kind='lease.expired' AND evidence_json LIKE '%child_absent%'")
+    testing.expect_value(t,events[0][0],"1")
+    again:=execution_child_absent(&f.store,activation,1301)
+    testing.expect(t,again.code=="ok" && again.replay,"a repeated child_absent is a no-op")
+    stale,_,_,_:=execution_activation_fence(&f.store,activation,1301)
+    testing.expect(t,!stale,"the old activation intent cannot revive the ended lease")
+
+    replaced:=execution_prepare_assignment(&f.store,"chain","task",f.owner,1302,sign)
+    testing.expectf(t,replaced.code=="ok" && !replaced.replay,"the task is prepared again: %v",replaced)
+    fresh,_:=execution_preparations(&f.store)
+    if testing.expect_value(t,len(fresh),1) {
+        fp,_:=contracts.executor_parse(fresh[0].prepare,"prepare")
+        testing.expect(t,fresh[0].reservation!=reservation && field(fp,"lease_id")!=field(p,"lease_id"),"a new reservation and lease (new launch key and token on the executor)")
+    }
+}
