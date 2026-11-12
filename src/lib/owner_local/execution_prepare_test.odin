@@ -65,10 +65,11 @@ owner_preparation_restart_never_mints_replacement_or_admits_old_epoch :: proc(t:
     entries,_=execution_preparations(&f.store)
     testing.expect_value(t,len(entries),1)
     testing.expect_value(t,entries[0].prepare,entry.prepare)
-    testing.expect(t,execution_expire_preparations(&f.store,31000))
+    expiry:=i64(1000)+contracts.EXECUTOR_PREPARE_TTL_MS
+    testing.expect(t,execution_expire_preparations(&f.store,expiry))
     // The never-launched reservation was released with its expiry (F1 d):
     // the old assignment is no longer current, so nothing is minted for it.
-    retry=execution_prepare_assignment(&f.store,"chain","task",f.owner,31001,sign)
+    retry=execution_prepare_assignment(&f.store,"chain","task",f.owner,expiry+1,sign)
     testing.expect_value(t,retry.code,"invalid_scope")
     rows,_:=query(f.store.db,"SELECT (SELECT count(*) FROM owner_execution_journal),(SELECT count(*) FROM local_leases)")
     testing.expect_value(t,encode(rows),fmt.tprintf("[[%q,%q]]","1","0"))
@@ -89,4 +90,56 @@ owner_preparation_cancel_before_or_after_response_prevents_grant :: proc(t:^test
     testing.expect_value(t,execution_query_start(&f.store,entry.reservation,"{}",f.owner,x.host_key,1100,sign).code,"invalid_scope")
     rows,_:=query(f.store.db,"SELECT count(*) FROM local_leases")
     testing.expect_value(t,rows[0][0],"0")
+}
+
+// G3: a committed row lives as long as its lease. While the lease is live a
+// repeated prepare adopts the row (replay, never operation_conflict); once the
+// lease expires the next maintenance pass retires the row with
+// execution.lease_ended, and the next prepare is a new reservation and lease
+// for the same assignment, itself adopted on repeat.
+@(test)
+owner_preparation_row_retires_with_its_lease_and_task_is_prepared_again :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    x:=execution_test_fixture(t);defer execution_test_destroy(x);f:=x.owner
+    sign:=Signer{&f.owner_priv,execution_test_sign}
+    if !testing.expect_value(t,execution_prepare_assignment(&f.store,"chain","task",f.owner,1000,sign).code,"ok") do return
+    entries,_:=execution_preparations(&f.store);if !testing.expect_value(t,len(entries),1) do return
+    entry:=entries[0]
+    p,_:=contracts.executor_parse(entry.prepare,"prepare")
+    resources:=executor.Resolved_Resources{field(p,"directory_key"),field(p,"provider_profile"),field(p,"instance_id"),field(p,"configuration_revision")}
+    prepared:=executor.prepare(&x.host,entry.prepare,f.owner,1000,resources)
+    receipt,_:=executor.seal_receipt(&x.host,p,"prepare",prepared,{&f.creator_priv,execution_test_seal})
+    query_result:=execution_query_start(&f.store,entry.reservation,receipt,f.owner,x.host_key,1100,sign)
+    q,_:=contracts.executor_parse(query_result.body,"action")
+    qr,_:=executor.seal_receipt(&x.host,q,"action",executor.action(&x.host,query_result.body,f.owner,1200),{&f.creator_priv,execution_test_seal})
+    if !testing.expect_value(t,execution_prepare_commit(&f.store,entry.reservation,receipt,f.owner,x.host_key,1200,sign,query_result.body,qr).code,"ok") do return
+
+    // Live lease: a repeated prepare adopts the committed row.
+    adopted:=execution_prepare_assignment(&f.store,"chain","task",f.owner,1300,sign)
+    testing.expectf(t,adopted.code=="ok" && adopted.replay && adopted.body=="committed","live row adopted: %v",adopted)
+
+    // The lease expires; the next maintenance pass retires the row.
+    leases,_:=query(f.store.db,"SELECT expires_ms FROM local_leases")
+    if !testing.expect_value(t,len(leases),1) do return
+    ended:=number(leases[0][0])+1
+    testing.expect(t,expire_leases(&f.store,ended))
+    testing.expect(t,execution_expire_preparations(&f.store,ended))
+    rows,_:=query(f.store.db,"SELECT state FROM owner_execution_journal WHERE reservation_id=?",entry.reservation)
+    testing.expect_value(t,encode(rows),encode([1][1]string{{"retired"}}))
+    events,_:=query(f.store.db,"SELECT count(*) FROM local_events WHERE kind='execution.lease_ended'")
+    testing.expect_value(t,events[0][0],"1")
+
+    // The task is prepared again: a new reservation and lease, not a conflict.
+    again:=execution_prepare_assignment(&f.store,"chain","task",f.owner,ended+1,sign)
+    testing.expectf(t,again.code=="ok" && !again.replay,"re-prepared after the lease ended: %v",again)
+    fresh,_:=execution_preparations(&f.store)
+    if testing.expect_value(t,len(fresh),1) {
+        testing.expect(t,fresh[0].reservation!=entry.reservation,"a new reservation")
+        fp,_:=contracts.executor_parse(fresh[0].prepare,"prepare")
+        testing.expect(t,field(fp,"lease_id")!=field(p,"lease_id"),"a new lease")
+    }
+    repeat:=execution_prepare_assignment(&f.store,"chain","task",f.owner,ended+2,sign)
+    testing.expectf(t,repeat.code=="ok" && repeat.replay,"the new row is adopted on repeat: %v",repeat)
+    count,_:=query(f.store.db,"SELECT count(*) FROM owner_execution_journal")
+    testing.expect_value(t,count[0][0],"2")
 }

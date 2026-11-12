@@ -79,7 +79,10 @@ executor_child_request_exact_signed_binding :: proc(t:^testing.T) {
     }
     testing.expect(t,!executor_child_request_matches(r,b,strings.concatenate({input," "},context.temp_allocator),executor,owner,1300))
     testing.expect(t,!executor_child_request_matches(r,b,"{}",executor,owner,1300))
-    for now in ([3]i64{1199,1800,2000}) do testing.expect(t,!executor_child_request_matches(r,b,input,executor,owner,now))
+    // G3: an executor clock up to EXECUTOR_CLOCK_SKEW_MS ahead of the owner's
+    // is tolerated; further ahead, or past the request expiry, is refused.
+    testing.expect(t,executor_child_request_matches(r,b,input,executor,owner,1199),"issued slightly in the owner's future")
+    for now in ([3]i64{1200-EXECUTOR_CLOCK_SKEW_MS-1,1800,2000}) do testing.expect(t,!executor_child_request_matches(r,b,input,executor,owner,now))
     revoked:=executor;revoked.revoked=true
     testing.expect(t,!executor_child_request_matches(r,b,input,revoked,owner,1300))
     testing.expect(t,!executor_verify("child_request",r,owner))
