@@ -142,6 +142,9 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "chain", "summary")}
 	case "agent.task_chain.propose", "agent.chain.propose":
 		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "chain", "propose")}
+	case "agent.task_chain.decide":
+		// Served by the owner Bridge for its own chains (owner_agent_routing.odin).
+		return Bridge_Agent_Route{kind = .Bad_Request, message = "task-chain decide is served for Bridge-owned chains by their owner Bridge; this chain is not owned here"}
 	case "agent.task_chain.publish":
 		// REQ-CLI-1: draft chains never promote and their tasks cannot be nudged, so a
 		// coordinator agent must be able to publish the chain it built. The hub already
@@ -355,7 +358,7 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     "agent.task_chain.create", "agent.task_chain.list", "agent.task_chain.show", "agent.task_chain.set_title",
 	     "agent.task_chain.set_description", "agent.task_chain.set_status",
 	     "agent.task_chain.set_summary", "agent.chain.summary",
-	     "agent.task_chain.propose", "agent.chain.propose",
+	     "agent.task_chain.propose", "agent.chain.propose", "agent.task_chain.decide",
 	     "agent.task_chain.publish", "agent.task_chain.pin",
 	     "agent.task.list", "agent.task.show", "agent.task.comments", "agent.task.create",
 	     "agent.task.update", "agent.task.depend", "agent.task.comment", "agent.task.fetch",

@@ -46,7 +46,7 @@ Every chain is Bridge-owned: its tasks, leases, reviews, fleet, workflow runs an
 Bridge's local store, and these verbs are routed to that owner. Chains are renamed, archived and given
 directories in the Heimdall app; they are created there or with `task-chain create`. Verbs that only
 reached the removed Hub engine (`list`, `set-description`, `set-status`, `archive`, `unarchive`,
-`pin`, `unpin`, `directory`, `decide`, `graph`, `depend`, `remove-dependency`, `scope`) answer
+`pin`, `unpin`, `directory`, `graph`, `depend`, `remove-dependency`, `scope`) answer
 `{"ok":false,"code":"hub_chains_removed"}`.
 
 - `task-chain set-title <title> [--chain <id>]` — coordinator only: give your chain a short, human-meaningful
@@ -85,10 +85,16 @@ reached the removed Hub engine (`list`, `set-description`, `set-status`, `archiv
   (or `--body/--file/--stdin`) writes (`<= 60` lines; coordinator only; surfaced in every agent's `TASK.md`).
 - `task-chain propose --file <proposal.json> [--require-decision] [--chain <id>]` — create a proposal
   (`kind` defaults to `"task"`; `rationale`, `alternative`, `tasks` array) in a single transaction
-  (coordinator only). By default it auto-approves: briefs are validated and the tasks are created published. With
-  `--require-decision` the proposal stays pending until the user decides it in the Heimdall app. Task fields:
-  `id`, `task_id`, `title`, `description`, `priority`, `brief`, `goal`, `acceptance`, `role`, `depends_on` (any
-  other field is refused and named). Every `brief.reviewers` agent must be an enabled chain member.
+  (coordinator only). By default it auto-approves: briefs are validated and the tasks are created published. Use the
+  default once the user approved the plan in chat; never ask for an Approve click. With `--require-decision` the
+  proposal stays pending until it is decided (by the user in the app, or by you with `task-chain decide`). Task fields:
+  `id`, `task_id`, `title`, `description`, `priority`, `brief`, `goal`, `acceptance`, `role`, `depends_on`, and the
+  `task create` placement `bridge_id` (run Bridge pin) and `agent_models` (`{"<agent>":{"provider","model"}}`),
+  validated like `--bridge`/`--agent-model` and carried in the brief (any other field is refused and named). Every
+  `brief.reviewers` agent must be an enabled chain member.
+- `task-chain decide --decision approve|reject [--proposal <id>] [--note <text>] [--chain <id>]` — the chain's own
+  coordinator decides its pending proposal (owner chains), e.g. after the user approved the plan in chat; the note
+  records why. Others are refused (`invalid_scope`); with nothing pending it answers `not_found`.
 - `task-chain publish <chain-id>` — a Bridge-owned chain is published when it is created, so this answers
   `already_published` and changes nothing. It is refused with `operation_conflict` only while a
   `--require-decision` proposal waits for the user.

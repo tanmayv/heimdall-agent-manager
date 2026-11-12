@@ -36,7 +36,7 @@ agent_verb_role :: proc(verb:string) -> Agent_Role {
     switch verb {
     case "lease.next","lease.claim","lease.heartbeat","lease.submit","lease.handoff","lease.block","lease.switch","requirements.present","requirements.ack": return .Worker
     case "review.open","review.post","review.checkpoint": return .Reviewer
-    case "task.create","task.edit","task.comment","task.read","chain.read","chain.edit","chain.summary.set","chain.propose","chain.publish","requirements.edit","review.human",
+    case "task.create","task.edit","task.comment","task.read","chain.read","chain.edit","chain.summary.set","chain.propose","chain.decide","chain.publish","requirements.edit","review.human",
          "task.priority","dependency.edit","fleet.edit","lifecycle.configure",
          "chain.member.set","fleet.policy.set","fleet.policy.read","fleet.instance","fleet.reserve": return .Coordinator
     }
@@ -257,7 +257,7 @@ agent_authorize_locked :: proc(s:^Store,chain,task:string,child:Child,verb:strin
 // Methods an agent may submit through the ordinary signed command path.
 agent_command_method :: proc(method:string) -> bool {
     switch method {
-    case "task.create","task.edit","task.comment","task.read","chain.read","chain.edit","chain.summary.set","chain.propose","chain.publish","requirements.edit","review.post",
+    case "task.create","task.edit","task.comment","task.read","chain.read","chain.edit","chain.summary.set","chain.propose","chain.decide","chain.publish","requirements.edit","review.post",
          "task.priority","dependency.edit","fleet.edit","fleet.reserve","lifecycle.configure","chain.member.set","fleet.policy.set","fleet.policy.read": return true
     }
     return agent_coordinator_control(method)

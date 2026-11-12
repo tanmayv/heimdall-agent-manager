@@ -97,6 +97,32 @@ test_owner_coordinator_verbs_on_an_owner_chain :: proc(t:^testing.T) {
     testing.expectf(t,ok(out),"pending proposal: %v",out)
     out,_=review_test_exec(r,coord,"agent.task_chain.publish",fmt.tprintf(`{{"chain_id":"%s"}}`,chain))
     testing.expectf(t,code(out)=="operation_conflict" && strings.contains(message(out),"decision"),"publish waits for the decision: %v",out)
+    // S1: the user approved in chat; the coordinator decides its own pending
+    // proposal (a worker cannot), and its tasks publish.
+    out,_=review_test_exec(r,worker,"agent.task_chain.decide",fmt.tprintf(`{{"chain_id":"%s","decision":"approve"}}`,chain))
+    testing.expectf(t,!ok(out) && code(out)=="invalid_scope","a worker cannot decide: %v",out)
+    out,_=review_test_exec(r,coord,"agent.task_chain.decide",fmt.tprintf(`{{"chain_id":"%s","decision":"maybe"}}`,chain))
+    testing.expectf(t,code(out)=="bad_request","decision must be approve|reject: %v",out)
+    out,_=review_test_exec(r,coord,"agent.task_chain.decide",fmt.tprintf(`{{"chain_id":"%s","decision":"approve","note":"The user approved the plan in chat."}}`,chain))
+    testing.expectf(t,ok(out) && contracts.owner_string(review_test_data(out),"decision")=="approve","the coordinator approves its pending proposal: %v",out)
+    out,_=review_test_exec(r,coord,"agent.task_chain.publish",fmt.tprintf(`{{"chain_id":"%s"}}`,chain))
+    testing.expectf(t,ok(out),"nothing waits for a decision any more: %v",out)
+    out,_=review_test_exec(r,coord,"agent.task_chain.decide",fmt.tprintf(`{{"chain_id":"%s","decision":"approve"}}`,chain))
+    testing.expectf(t,code(out)=="not_found","no pending proposal: %v",out)
+    // S1: proposal tickets take task create's placement (run Bridge pin and
+    // per-agent model), carried into the published task's brief.
+    saved_hook:=bridge_provider_catalog_default_hook
+    bridge_provider_catalog_default_hook=[]Bridge_Catalog_Provider{{provider="claude",state="active",models=[]Bridge_Catalog_Model{{model_id="claude-sonnet-5-5",state="active"}}}}
+    defer bridge_provider_catalog_default_hook=saved_hook
+    out,_=review_test_exec(r,coord,"agent.task_chain.propose",fmt.tprintf(`{{"chain_id":"%s","tasks":[{{"id":"t_placed","title":"placed","bridge_id":"brg_remote","agent_models":{{"agt_w":{{"provider":"claude","model":"claude-sonnet-5-5"}}}},"brief":{{"goal":"g","acceptance":["a"],"assignee":"agt_w"}}}}]}}`,chain))
+    testing.expectf(t,ok(out),"a pinned proposal with an agent model publishes: %v",out)
+    placed,found,_:=owner.agent_task_state(&r.store,chain,"t_placed")
+    testing.expectf(t,found && bridge_owner_task_run_bridge(placed.brief)=="brg_remote","the published task is pinned to its run Bridge: %s",placed.brief)
+    if m,has:=bridge_owner_brief_agent_model(placed.brief,"agt_w");testing.expectf(t,has,"agent model carried: %s",placed.brief) {
+        testing.expect(t,m.provider=="claude" && m.model=="claude-sonnet-5-5")
+    }
+    out,_=review_test_exec(r,coord,"agent.task_chain.propose",fmt.tprintf(`{{"chain_id":"%s","tasks":[{{"title":"bad model","agent_models":{{"agt_w":{{"provider":"claude","model":"claude-retired"}}}},"brief":{{"goal":"g","acceptance":["a"]}}}}]}}`,chain))
+    testing.expectf(t,code(out)=="invalid_content" && strings.contains(message(out),"claude-retired"),"an unknown model is refused like task create: %v",out)
     // A worker cannot propose.
     out,_=review_test_exec(r,worker,"agent.task_chain.propose",fmt.tprintf(`{{"chain_id":"%s","tasks":[{{"title":"w"}}]}}`,chain))
     testing.expectf(t,code(out)=="invalid_scope" && strings.contains(message(out),"coordinator"),"worker refused with a reason: %v",out)

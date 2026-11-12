@@ -249,12 +249,23 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 		if cid := strings.trim_space(option_value(args, "--chain", "")); cid != "" do append(&fields, json_kv("chain_id", cid))
 		ctl_agent_call(endpoint, token, "agent.task_chain.set_title", json_object_from_slice(fields[:]))
 	case "", "list", "set-description", "set-status", "status", "archive", "unarchive",
-	     "pin", "unpin", "directory", "directories", "decide", "proposal",
+	     "pin", "unpin", "directory", "directories", "proposal",
 	     "graph", "depend", "remove-dependency", "scope":
 		// Hub task chains are removed: these verbs only ever reached the Hub.
 		// Bridge-owned chains are created and listed in the UI (or through
 		// their owner Bridge); legacy chains are imported from Settings → Bridge.
 		ctl_hub_chains_removed_exit(fmt.tprintf("task-chain %s", verb))
+	case "decide":
+		// S1: the coordinator decides its own pending proposal once the user
+		// approved the plan in chat (owner chains).
+		decision := strings.trim_space(option_value(args, "--decision", ""))
+		if decision != "approve" && decision != "reject" { fmt.eprintln("task-chain decide: --decision approve|reject is required"); os.exit(2) }
+		fields := make([dynamic]string)
+		append(&fields, json_kv("decision", decision))
+		if pid := strings.trim_space(option_value(args, "--proposal", "")); pid != "" do append(&fields, json_kv("proposal_id", pid))
+		if note := strings.trim_space(option_value(args, "--note", "")); note != "" do append(&fields, json_kv("note", note))
+		if cid := strings.trim_space(option_value(args, "--chain", "")); cid != "" do append(&fields, json_kv("chain_id", cid))
+		ctl_agent_call(endpoint, token, "agent.task_chain.decide", json_object_from_slice(fields[:]))
 	case "show":
 		cid := option_value(args, "--chain", pos(tokens, 1))
 		if cid != "" { ctl_agent_call_and_decrypt(endpoint, token, "agent.task_chain.show", json_object(json_kv("chain_id", cid)), args) }
@@ -1870,7 +1881,7 @@ print_help_task_chain :: proc() {
 	fmt.println("Chains are Bridge-owned (the Hub task-chain engine is removed). Chains are created in the")
 	fmt.println("Heimdall app or with `task-chain create` (owned by your Bridge); legacy Hub chains are imported")
 	fmt.println("from Settings → Bridge (Import all). Verbs that only reached the Hub (list,")
-	fmt.println("set-description, set-status, archive, pin, directory, decide, graph, depend,")
+	fmt.println("set-description, set-status, archive, pin, directory, graph, depend,")
 	fmt.println("remove-dependency, scope) answer hub_chains_removed.")
 	fmt.println("")
 	fmt.println("VERBS")
@@ -1888,7 +1899,13 @@ print_help_task_chain :: proc() {
 	fmt.println("  summary set <text>|--file <path>|--stdin [--chain <id>]  Set/override the chain summary (<=60 lines,")
 	fmt.println("                                                   coordinator only). Only `set` (or --body/--file/--stdin) writes.")
 	fmt.println("  propose --file <proposal.json> [--require-decision] [--chain <id>]")
-	fmt.println("                                      Propose tickets. Auto-approves and publishes by default.")
+	fmt.println("                                      Propose tickets. Auto-approves and publishes by default; use")
+	fmt.println("                                      the default once the user approved in chat (never ask for an")
+	fmt.println("                                      Approve click). Tickets take bridge_id and agent_models like")
+	fmt.println("                                      task create --bridge/--agent-model.")
+	fmt.println("  decide --decision approve|reject [--proposal <id>] [--note <text>] [--chain <id>]")
+	fmt.println("                                      Coordinator: decide your chain's pending proposal (e.g. after")
+	fmt.println("                                      the user approved it in chat).")
 	fmt.println("  publish <chain-id>                  Publish a DRAFT chain (coordinator only).")
 	fmt.println("  complete <chain-id> --expected-work-revision <N> --summary <text>")
 	fmt.println("                                      Complete the chain (coordinator only; every ticket done).")

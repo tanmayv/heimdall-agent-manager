@@ -35,7 +35,7 @@ bridge_owner_routable :: proc(method:string) -> bool {
     switch method {
     case "agent.lease.next","agent.lease.heartbeat","agent.lease.submit","agent.lease.handoff","agent.lease.switch","agent.lease.block",
          "agent.review.post","agent.task.show","agent.task.comments","agent.task.comment","agent.task.create","agent.task.update","agent.task.depend",
-         "agent.task_chain.show","agent.task_chain.set_summary","agent.chain.summary","agent.task_chain.propose","agent.chain.propose","agent.task_chain.publish",
+         "agent.task_chain.show","agent.task_chain.set_summary","agent.chain.summary","agent.task_chain.propose","agent.chain.propose","agent.task_chain.publish","agent.task_chain.decide",
          "agent.task_chain.set_title","agent.task.list","agent.task.publish":
         return true
     }
@@ -131,6 +131,9 @@ bridge_owner_agent_route :: proc(request_id,method,params:string,rec:Bridge_Loca
     if verb:=bridge_owner_instance_verb(method);verb!="" do return bridge_owner_instance_gate(request_id,verb,params,rec)
     failed_agent,failure:string
     ensured:Owner_Fleet_Ensured
+    if method=="agent.task_chain.propose" || method=="agent.chain.propose" {
+        if code,message:=bridge_owner_proposal_bridges_check(params);code!="ok" do return bridge_local_response_error(request_id,code,message),true
+    }
     if method=="agent.task.create" || method=="agent.task.update" {
         // A run Bridge other than this one is verified before anything runs.
         if bridge:=strings.trim_space(bridge_owner_pstr(bridge_owner_params(params),"bridge_id"));bridge!="" && bridge!=bridge_cfg().daemon_id {
@@ -702,6 +705,32 @@ bridge_owner_agent_exec :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object
             return bridge_owner_fail(ctx,r.code,fmt.tprintf("%s refused (%s)%s",what,r.code,hint))
         }
         return bridge_local_response_data(ctx.request_id,r.body)
+    case "agent.task_chain.decide":
+        // S1 (user 10:45Z): the user's approval in chat is enough. The chain's
+        // own coordinator decides its pending proposal (owner chain.decide,
+        // signed for it); the note records the user's chat approval.
+        chain:=bridge_owner_pstr(p,"chain_id")
+        if chain=="" do chain=owner.agent_home_chain(s,ctx.child)
+        decision:=bridge_owner_pstr(p,"decision")
+        if decision!="approve" && decision!="reject" do return bridge_owner_fail(ctx,"bad_request","task-chain decide needs --decision approve|reject")
+        pending,id,read:=owner.work_pending(s,chain)
+        if !read do return bridge_owner_fail(ctx,"storage_error","owner store could not be read; retry")
+        if pending==nil do return bridge_owner_fail(ctx,"not_found","no proposal on this chain waits for a decision")
+        if named:=bridge_owner_pstr(p,"proposal_id");named!="" && named!=id do return bridge_owner_fail(ctx,"stale_revision",fmt.tprintf("the pending proposal is %s, not %s",id,named))
+        note:=bridge_owner_pstr(p,"note")
+        if note=="" do note="Approved in chat by the user." if decision=="approve" else "Rejected in chat by the user."
+        doc:=bridge_owner_json(map[string]string{"proposal_id"=id,"decision"=decision,"note"=note})
+        cipher,sealed:=bridge_owner_cipher(ctx,doc)
+        if !sealed do return bridge_owner_fail(ctx,"vault_locked","cannot seal the decision")
+        r:=bridge_owner_run_command(ctx,"chain.decide",chain,"",bridge_owner_chain_rev(ctx,chain),bridge_owner_json(map[string]string{"body_cipher"=cipher}))
+        if r.code!="ok" {
+            hint:=""
+            if r.code=="invalid_scope" do hint=": only the chain's own coordinator decides its proposals"
+            return bridge_owner_fail(ctx,r.code,fmt.tprintf("task-chain decide refused (%s)%s",r.code,hint))
+        }
+        out:=bridge_owner_result_object(r.body)
+        out["proposal_id"]=json.String(id);out["decision"]=json.String(decision);out["chain_id"]=json.String(chain)
+        return bridge_local_response_data(ctx.request_id,bridge_owner_json(out))
     case "agent.task.list":
         // The chain's tasks (owner chain.read, one page), as task-chain show lists them.
         chain:=bridge_owner_pstr(p,"chain_id")
@@ -1639,18 +1668,59 @@ bridge_owner_proposal_plan :: proc(p:json.Object) -> (plan:json.Object,message:s
     }
     if _,has:=plan["kind"];!has do plan["kind"]=json.String("task")
     if _,has:=plan["auto_approve"];!has do plan["auto_approve"]=json.Boolean(true)
-    allowed:="id|task_id|title|description|priority|brief|goal|acceptance|role|depends_on"
+    // S1: a ticket takes the same per-task placement as `task create`: a run
+    // Bridge pin (bridge_id, alias bridge) and per-agent model overrides
+    // (agent_models), validated identically and carried in its brief
+    // (run_bridge_id, agent_models), so the published task is placed there.
+    allowed:="id|task_id|title|description|priority|brief|goal|acceptance|role|depends_on|bridge_id|bridge|agent_models"
     if tasks,array:=plan["tasks"].(json.Array);array {
-        for item in tasks {
+        for item,i in tasks {
             spec,_:=item.(json.Object)
             for key in spec {
                 if !strings.contains(fmt.tprintf("|%s|",allowed),fmt.tprintf("|%s|",key)) {
                     return nil,fmt.tprintf("task-chain propose: task field %q is not supported on an owner chain (allowed: %s); assign with `task update --assignee` after approval",key,strings.replace_all(allowed,"|",", ",context.temp_allocator))
                 }
             }
+            brief,has_brief:=spec["brief"].(json.Object)
+            if !has_brief do brief=make(json.Object,context.temp_allocator)
+            placed:=false
+            for name in ([2]string{"bridge_id","bridge"}) {
+                if _,present:=spec[name];!present do continue
+                bridge:=strings.trim_space(bridge_owner_pstr(spec,name))
+                if bridge==bridge_cfg().daemon_id do bridge=""
+                if bridge!="" && !contracts.owner_field_valid(bridge,"id") do return nil,fmt.tprintf("task-chain propose: task %d %s must be a Bridge id",i+1,name)
+                if bridge!="" do brief["run_bridge_id"]=json.String(bridge)
+                delete_key(&spec,name);placed=true
+            }
+            if _,present:=spec["agent_models"];present {
+                changes,_,message:=bridge_owner_agent_models_param(spec)
+                if message!="" do return nil,fmt.tprintf("task-chain propose: task %d: %s",i+1,message)
+                models:=make(json.Object,context.temp_allocator)
+                for agent,m in changes do if m.provider!="" do models[agent]=json.Object{"provider"=json.String(m.provider),"model"=json.String(m.model)}
+                if len(models)>0 do brief["agent_models"]=models
+                delete_key(&spec,"agent_models");placed=true
+            }
+            if placed || has_brief do spec["brief"]=brief
+            tasks[i]=spec
         }
     }
     return plan,""
+}
+
+// S1: the run Bridges a proposal pins, checked like `task create --bridge`
+// (a paired, unrevoked Bridge of this account) before any lock is taken.
+bridge_owner_proposal_bridges_check :: proc(params:string) -> (code,message:string) {
+    p:=bridge_owner_params(params)
+    tasks,_:=p["tasks"].(json.Array)
+    for item in tasks {
+        spec,_:=item.(json.Object)
+        for name in ([2]string{"bridge_id","bridge"}) {
+            bridge:=strings.trim_space(bridge_owner_pstr(spec,name))
+            if bridge=="" || bridge==bridge_cfg().daemon_id do continue
+            if c,m:=bridge_owner_run_bridge_check(bridge);c!="ok" do return c,fmt.tprintf("%s; nothing proposed",m)
+        }
+    }
+    return "ok",""
 }
 
 // The first brief reviewer of a proposal that is not an enabled member of the
