@@ -6,6 +6,8 @@
 # observes claude aliases only, so it exercises both .14 gaps.
 #
 #   scripts/e2e-req-e2e-1.sh [--timeout SECONDS] [--keep] [--bin-dirs HUB_BIN:BRIDGE_BIN]
+#   (HUB_BIN needs ham-hub and ham-dev-proxy; BRIDGE_BIN ham-bridge, ham-ctl, ham-pty-host.
+#    E2E_TZ_HUB / E2E_TZ_A / E2E_TZ_B set each process's time zone.)
 #
 # Everything lives under $E2E_ROOT (default: a fresh temp dir) with its own
 # HEIMDALL_LOCAL_STATE_ROOT and ports (hub 18181/18180/18190, A 49527/49528,
@@ -46,10 +48,16 @@ trap cleanup EXIT
 
 cd "$CHECKOUT"
 log "state root $HEIMDALL_LOCAL_STATE_ROOT; HEAD $(git rev-parse --short HEAD)"
-bash scripts/local-hub.sh start --name "$HUB" --hub-port 18181 --proxy-port 18180 --oidc-port 18190 --no-ui --no-plan-limits "${HUB_BUILD[@]}" >"$EVIDENCE/hub-start.log" 2>&1 || { log "FAIL hub start"; exit 1; }
-for spec in "$A 49527 49528" "$B 49537 49538"; do
+# Bridges in different time zones must work together (user 10:11Z): the Hub
+# and Bridge A run in E2E_TZ_HUB/E2E_TZ_A, Bridge B in E2E_TZ_B (inherited by
+# each Bridge and its agents). Recorded in the evidence.
+TZ_HUB=${E2E_TZ_HUB:-America/Los_Angeles}; TZ_A=${E2E_TZ_A:-America/Los_Angeles}; TZ_B=${E2E_TZ_B:-Asia/Kolkata}
+printf 'hub %s\n%s %s\n%s %s\n' "$TZ_HUB" "$A" "$TZ_A" "$B" "$TZ_B" >"$EVIDENCE/timezones.txt"
+log "time zones: hub $TZ_HUB, $A $TZ_A, $B $TZ_B"
+TZ="$TZ_HUB" bash scripts/local-hub.sh start --name "$HUB" --hub-port 18181 --proxy-port 18180 --oidc-port 18190 --no-ui --no-plan-limits "${HUB_BUILD[@]}" >"$EVIDENCE/hub-start.log" 2>&1 || { log "FAIL hub start"; exit 1; }
+for spec in "$A 49527 49528 $TZ_A" "$B 49537 49538 $TZ_B"; do
   set -- $spec
-  bash scripts/local-bridge.sh start --name "$1" --hub "$HUB" --port "$2" --local-endpoint-port "$3" --auto-enroll --providers claude "${BRIDGE_BUILD[@]}" \
+  TZ="$4" bash scripts/local-bridge.sh start --name "$1" --hub "$HUB" --port "$2" --local-endpoint-port "$3" --auto-enroll --providers claude "${BRIDGE_BUILD[@]}" \
     >"$EVIDENCE/$1-start.log" 2>&1 || { log "FAIL bridge $1 start"; exit 1; }
 done
 
