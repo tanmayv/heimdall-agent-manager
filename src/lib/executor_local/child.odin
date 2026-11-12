@@ -16,6 +16,17 @@ child_bootstrap :: proc(s:^Store,instance,secret:string,now:i64)->(string,bool) 
     now:=store_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     return child_bootstrap_locked(s,instance,secret,now)
 }
+// The executor-issued credential of instance's active reservation, confirmed
+// or not yet. Startup bookkeeping only (arming, readiness timers): it grants
+// no task authority, which still needs child_bootstrap's exact confirmed child.
+child_issued_secret :: proc(s:^Store,instance:string,allocator:=context.temp_allocator)->(string,bool) {
+    sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
+    if s.db==nil || s.unusable || instance=="" do return "",false
+    rows,ok:=query(s.db,`SELECT i.token_secret FROM executor_issuances i JOIN executor_reservations r ON r.instance_id=i.instance_id
+      WHERE i.instance_id=? AND r.state='active'`,instance)
+    if !ok || len(rows)!=1 || rows[0][0]=="" do return "",false
+    return strings.clone(rows[0][0],allocator),true
+}
 child_token :: proc(s:^Store,secret:string,now:i64)->(instance,bootstrap:string,valid:bool) {
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
     now:=store_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex

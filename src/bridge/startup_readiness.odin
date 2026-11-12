@@ -1,6 +1,7 @@
 package main
 
 import "base:runtime"
+import "core:crypto"
 import "core:fmt"
 import "core:strings"
 import "core:sync"
@@ -9,6 +10,7 @@ import "core:time"
 import "core:encoding/json"
 import httpc "odin_test:lib/httpc"
 import contracts "odin_test:contracts"
+import executor "odin_test:lib/executor_local"
 import agent_runtime "odin_test:lib/agent_runtime"
 
 // All state belongs to one token issuance/launch, not to an extension session
@@ -74,7 +76,32 @@ bridge_startup_rec_current :: proc(rec: Bridge_Local_Agent_Token_Record) -> bool
 		if r.token_hash == rec.token_hash && r.agent_instance_id == rec.agent_instance_id &&
 		   r.instance_token == rec.instance_token && r.run_count == rec.run_count && r.invalidated_at_unix_ms == 0 { return true }
 	}
-	return false
+	return rec.instance_token == "" && bridge_startup_executor_current(rec.agent_instance_id, rec.token_hash)
+}
+
+// An executor-launched (remote placement) child has no local token record:
+// its credential is the executor issuance of its active reservation, and it
+// holds no Hub credential (instance_token ""). Lock order: the executor
+// store's own mutex is a leaf, so any caller may hold startup/token locks.
+bridge_startup_executor_current :: proc(instance, token_hash: string) -> bool {
+	if instance == "" || token_hash == "" do return false
+	secret, issued := executor.child_issued_secret(&bridge_executor_store, instance)
+	if !issued do return false
+	defer crypto.zero_explicit(raw_data(secret), len(secret))
+	hash := bridge_local_hash_token(secret)
+	defer delete(hash)
+	return hash == token_hash
+}
+
+// The startup record of an executor activation: verified against the executor
+// issuance, not the local token store.
+bridge_startup_executor_rec :: proc(instance, token: string) -> (Bridge_Local_Agent_Token_Record, bool) {
+	hash := bridge_local_hash_token(strings.trim_space(token))
+	if !bridge_startup_executor_current(instance, hash) {
+		delete(hash)
+		return {}, false
+	}
+	return Bridge_Local_Agent_Token_Record{token_hash = hash, agent_instance_id = strings.clone(instance), role = .Agent}, true
 }
 
 bridge_startup_clone_rec :: proc(rec: Bridge_Local_Agent_Token_Record, allocator := context.allocator) -> Bridge_Local_Agent_Token_Record {
@@ -552,9 +579,16 @@ bridge_startup_job_current :: proc(id: string, generation: u64) -> bool {
 // diagnostic as a local native launch. Without a local token record it stays
 // for rediscovery to adopt (logged).
 bridge_startup_record_activation :: proc(instance, token, provider, profile_id: string, now: i64) {
-	rec, current := bridge_agent_token_verify(token)
+	// An executor child's credential is its executor issuance, never a local
+	// token record (child.odin); a local record is accepted for older paths.
+	rec, current := bridge_startup_executor_rec(instance, token)
+	if current {
+		defer { delete(rec.token_hash); delete(rec.agent_instance_id) }
+	} else {
+		rec, current = bridge_agent_token_verify(token)
+	}
 	if !current {
-		bridge_startup_log_launch(instance, provider, "activation_unarmed", false, "no local token record yet: armed on rediscovery")
+		bridge_startup_log_launch(instance, provider, "activation_unarmed", false, "no executor issuance or local token record: armed on rediscovery")
 		return
 	}
 	catalog, _ := bridge_provider_catalog_profile(provider)
@@ -565,4 +599,29 @@ bridge_startup_record_activation :: proc(instance, token, provider, profile_id: 
 	bridge_startup_set_expectation(instance, token, expected)
 	bridge_startup_arm(instance, token, now)
 	bridge_startup_log_launch(instance, provider, "activation", expected, why)
+}
+
+// An executor child's attested start_success (bridge_executor_child_ready)
+// is its readiness: delivered to the owner, never relayed to the Hub (the
+// child holds no Hub credential). Clears the start-success deadline and the
+// fallback prompt of that exact activation.
+bridge_startup_executor_ready :: proc(instance, token: string, now: i64) -> bool {
+	hash := bridge_local_hash_token(strings.trim_space(token))
+	defer delete(hash)
+	sync.mutex_lock(&bridge_startup_io_mutex)
+	defer sync.mutex_unlock(&bridge_startup_io_mutex)
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	if bridge_runtime_stop_intent_active_locked(instance, now) do return false
+	for &current in bridge_runtime_instances {
+		if current.agent_instance_id != instance || current.startup.launch_key != hash do continue
+		if current.stopped_intent_unix_ms != 0 || current.runtime_status == "stopped" || current.runtime_status == "stopping" do return false
+		current.start_success_seen = true
+		current.start_deadline_unix_ms = 0
+		current.startup.ready_pending = false
+		current.startup.ready_delivered = true
+		bridge_runtime_set_status_locked(instance, "running", "idle", now, true)
+		return true
+	}
+	return false
 }

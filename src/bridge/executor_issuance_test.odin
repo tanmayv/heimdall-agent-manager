@@ -617,6 +617,20 @@ bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,wire:Executor_Exc
     _,launch_code:=bridge_executor_test_exchange(t,wire,a,"action",owner_private,kr,self_key,"physical_activation",
         &fence_probe,material.bootstrap,material.body,launch_io,true)
     if !testing.expect_value(t,launch_code,"ok") do return
+    // FIX C: the activation's startup record is verified against the executor
+    // issuance (no local token record) and armed, not left activation_unarmed;
+    // the child's attested start_success then clears its start deadline.
+    {
+        snap,found:=bridge_runtime_instance_snapshot(intent.instance)
+        hash:=bridge_local_hash_token(material.token_secret);defer delete(hash)
+        testing.expect(t,found && snap.startup.armed_at_ms>0 && snap.startup.launch_key==hash,"executor activation is armed")
+        _,local:=bridge_agent_token_verify(material.token_secret)
+        testing.expect(t,!local && bridge_startup_rec_current(snap.startup.rec),"verified via executor_issuances, not a local token record")
+        testing.expect(t,bridge_startup_executor_ready(intent.instance,material.token_secret,now),"executor readiness recorded")
+        ready,_:=bridge_runtime_instance_snapshot(intent.instance)
+        testing.expect(t,ready.start_success_seen && ready.start_deadline_unix_ms==0 && !ready.startup.ready_pending,"no start-success timeout and no Hub relay")
+        testing.expect(t,!bridge_startup_executor_ready(intent.instance,"not_the_secret",now),"another credential is not this activation")
+    }
     delivered:=true;reason:="child_present"
     testing.expect(t,fence_probe.calls==1 && fence_probe.unlocked && fence_probe.startup_unlocked &&
         fence_probe.prepared_before_callback && prepare_probe.calls==1,"nonce follows file I/O and releases executor/startup gates")
@@ -897,6 +911,8 @@ bridge_executor_test_physical_prepare :: proc(ctx:rawptr,s:^executor.Store,inten
     argv:=make([]string,1);argv[0]=strings.clone("sh")
     request:=Pty_Host_Spawn_Request{instance=strings.clone(intent.instance),argv=argv,cwd=strings.clone(p.dir),has_cwd=true,env=env,
         rows=24,cols=80,has_timeout_seconds=true,timeout_seconds=30}
+    // As bridge_executor_prepare_spawn: the activation's startup record.
+    bridge_startup_record_activation(intent.instance,material.token_secret,"claude","claude",bridge_runtime_now_ms())
     b,parsed:=contracts.executor_parse(material.bootstrap,"bootstrap")
     if !parsed || !bridge_executor_bind_notification_spawn(&request,b,material.token_secret) {
         bridge_pty_host_spawn_request_delete(request)

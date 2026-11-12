@@ -120,6 +120,7 @@ bridge_executor_agent :: proc(request_id,input,secret:string,
     if attested.code!="ok" do return fail(request_id,attested.code)
     if method=="agent.start_success" || method=="agent.extension.event" {
         if generation!=bridge_task_chain_search_generation() do return fail(request_id,"vault_locked")
+        if method=="agent.start_success" do _=bridge_startup_executor_ready(instance,secret,bridge_runtime_now_ms())
         return bridge_local_response_data(request_id,attested.body),true
     }
     outcome:=transport.exchange(transport.ctx,attested.body,input,generation)
