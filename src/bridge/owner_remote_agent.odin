@@ -145,8 +145,11 @@ bridge_owner_remote_agent_exec :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json
     ctx.store.relayed_from=from_bridge
     defer ctx.store.relayed_from=""
     if method!="agent.lease.next" do return bridge_owner_agent_exec(ctx,method,p),""
-    // Only a review of the chain the relaying Bridge named.
-    response=bridge_owner_review_next(ctx,bridge_owner_pstr(p,"chain_id"))
+    // Only a review of the chain the relaying Bridge named, and one the
+    // reviewer's launch selection serves (the relaying Bridge sets it from its
+    // launch record: bridge_owner_remote_lease_next_selection).
+    selection:=Owner_Remote_Reviewer_Selection{from_bridge,bridge_owner_pstr(p,"instance_provider"),bridge_owner_pstr(p,"instance_model")}
+    response=bridge_owner_review_next(ctx,bridge_owner_pstr(p,"chain_id"),selection)
     // The relaying Bridge writes the reviewer's TASK.md from this text
     // (bridge_owner_remote_review_context_write); there is no run_dir here.
     if ctx.review_context.text=="" do return response,""
@@ -204,6 +207,7 @@ bridge_owner_remote_agent_send :: proc(request_id,method,params:string,rec:Bridg
         return "",false
     }
     if chain=="" && task=="" do return "",false
+    params:=bridge_owner_remote_lease_next_selection(params,rec.agent_instance_id) if method=="agent.lease.next" else params
     account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
     if account=="" do return "",false
     pub:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
@@ -273,6 +277,21 @@ bridge_owner_remote_lease_next_chain :: proc(p:json.Object,instance:string) -> (
     for k,v in p do out[k]=v
     out["chain_id"]=json.String(launch.chain_id)
     return strings.clone(launch.chain_id,context.temp_allocator),bridge_owner_json(out)
+}
+
+// A relayed `lease next` carries the provider/model this Bridge launched the
+// caller with (its launch record), so the owner grants it only a review of
+// that selection (bridge_owner_remote_reviewer_serves). Whatever the agent put
+// in those fields is replaced; an unknown selection is sent as none.
+bridge_owner_remote_lease_next_selection :: proc(params,instance:string) -> string {
+    p:=bridge_owner_params(params)
+    out:=make(json.Object,context.temp_allocator)
+    for k,v in p do if k!="instance_provider" && k!="instance_model" do out[k]=v
+    if launch,has:=bridge_runtime_get_launch(instance);has && launch.provider!="" {
+        out["instance_provider"]=json.String(launch.provider)
+        out["instance_model"]=json.String(launch.model)
+    }
+    return bridge_owner_json(out)
 }
 
 bridge_owner_remote_review_granted :: proc(response:string) -> bool {

@@ -334,11 +334,24 @@ bridge_owner_review_bind :: proc(chain,instance,agent,coordinator:string) -> (st
 }
 
 // `lease next` with no work: the review this child owes, opened (its review
-// session) and delivered as a reviewer TASK.md.
-bridge_owner_review_next :: proc(ctx:^Owner_Agent_Ctx,only_chain:="") -> string {
+// session) and delivered as a reviewer TASK.md. A relayed reviewer (remote
+// set) is granted only a review whose selection it was launched with
+// (bridge_owner_remote_reviewer_serves).
+bridge_owner_review_next :: proc(ctx:^Owner_Agent_Ctx,only_chain:="",remote:Owner_Remote_Reviewer_Selection={}) -> string {
     none:=bridge_local_response_data(ctx.request_id,bridge_owner_json(Owner_Agent_Next{status="none",authority=bridge_owner_authority()}))
-    chain,task,found,read:=owner.review_pending(ctx.store,ctx.child,only_chain)
+    pending,read:=owner.review_pending_all(ctx.store,ctx.child,only_chain)
     if !read do return bridge_owner_fail(ctx,"storage_error","owner store could not be read; retry")
+    chain,task:string
+    found:=false
+    for candidate in pending {
+        if remote.bridge!="" {
+            serves,ok:=bridge_owner_remote_reviewer_serves(ctx.store,candidate.chain,candidate.task,ctx.child.agent_id,remote)
+            if !ok do return bridge_owner_fail(ctx,"storage_error","owner store could not be read; retry")
+            if !serves do continue
+        }
+        chain,task,found=candidate.chain,candidate.task,true
+        break
+    }
     if !found do return none
     st,known,ok:=owner.agent_task_state(ctx.store,chain,task)
     if !ok do return bridge_owner_fail(ctx,"storage_error","owner store could not be read; retry")
@@ -349,6 +362,31 @@ bridge_owner_review_next :: proc(ctx:^Owner_Agent_Ctx,only_chain:="") -> string 
         placement=bridge_owner_placement(st.config,st.configured),role="reviewer",attempt=st.attempt}
     ctx.review_context=Owner_Review_Context{ctx.run_dir,bridge_owner_render_review_context(st,out,ctx.child.instance,opened.body)}
     return bridge_local_response_data(ctx.request_id,bridge_owner_json(Owner_Agent_Next{status="granted",lease=out,task=Owner_Agent_Task_Ref{task,chain},authority=bridge_owner_authority(),read_next=BRIDGE_OWNER_REVIEW_CONTEXT_HINT}))
+}
+
+// A relayed reviewer: the Bridge it runs on and the provider/model that Bridge
+// launched it with (its launch record, set by the relaying Bridge, never by
+// the agent; "" when that Bridge does not know them).
+Owner_Remote_Reviewer_Selection :: struct { bridge,provider,model:string }
+
+// Whether a relayed reviewer may take a task's review: the selection it was
+// launched with is the one a reviewer of that task is launched with on its
+// Bridge (bridge_owner_remote_target with the task's agent_models, as the
+// review dispatch launches it). Several instances of one agent may serve a
+// chain with different selections (bridge_owner_review_remote_launch), so one
+// launched for a model-A task never takes a model-B task's review, and the
+// reverse. An instance whose selection its Bridge does not know is not
+// second-guessed (bridge_owner_instance_matches).
+bridge_owner_remote_reviewer_serves :: proc(s:^owner.Store,chain,task,agent:string,remote:Owner_Remote_Reviewer_Selection) -> (serves,ok:bool) {
+    if remote.provider=="" do return true,true
+    st,found,read:=owner.agent_task_state(s,chain,task)
+    if !read do return false,false
+    if !found do return false,true
+    place,code,_:=bridge_owner_remote_target(s,chain,agent,remote.bridge,true,bridge_owner_brief_agent_models(st.brief))
+    if code=="storage_error" do return false,false
+    // No selection for it there (unplaceable): nothing to compare against.
+    if code!="ok" do return true,true
+    return place.provider==remote.provider && place.model==remote.model,true
 }
 
 // review.open for the submitted attempt (a fresh session capability).

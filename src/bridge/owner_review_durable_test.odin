@@ -301,3 +301,99 @@ test_owner_remote_reviewer_retry_respects_session_and_pages :: proc(t:^testing.T
     // And not again within the next back-off window.
     testing.expect_value(t,len(review_durable_plan(r,chain,later+1000)),0)
 }
+
+// R1 review round 2: with one remote reviewer instance per selection
+// (bridge_owner_review_remote_launch), review discovery is bound to the
+// selection too. Task 1 is reviewed with the fleet row's model, task 2 with
+// its agent_models override; a relayed `lease next` from each instance (its
+// Bridge sends the launch record's provider/model) is granted only the review
+// of its own selection, in either order, and asking again never crosses over.
+@(test)
+test_owner_remote_review_discovery_matches_instance_selection :: proc(t:^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex);defer sync.mutex_unlock(&bridge_test_config_mutex)
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    r:=new(Review_Test,context.temp_allocator)
+    priv:ecdsa.Private_Key;defer ecdsa.private_key_clear(&priv)
+    r.key=chain_create_test_key(t,&priv,"bridge","bridge_key")
+    signer:=owner.Signer{&priv,chain_create_test_sign}
+    old_daemon:=bridge_cfg().daemon_id;bridge_cfg().daemon_id="bridge"
+    bridge_owner_test_signer=signer;bridge_owner_live_probe=review_test_probe
+    review_test_live=make([dynamic]owner.Child,context.temp_allocator)
+    remote_test_launches=make([dynamic]string,context.temp_allocator)
+    bridge_owner_review_effects=Owner_Review_Effects{remote=remote_test_review_launch,launch=remote_test_review_local_launch,start=remote_test_review_start}
+    bridge_owner_review_sync_effects=true
+    bridge_provider_catalog_default_hook=[]Bridge_Catalog_Provider{
+        {provider="claude",state="active",models=[]Bridge_Catalog_Model{{model_id="claude-sonnet-5-5",state="active"},{model_id="claude-opus-5-5",state="active"}}},
+    }
+    defer {
+        bridge_cfg().daemon_id=old_daemon;bridge_owner_test_signer={};bridge_owner_live_probe=nil;review_test_live=nil
+        bridge_owner_review_effects={};bridge_owner_review_sync_effects=false;remote_test_launches=nil
+        bridge_provider_catalog_default_hook=nil
+    }
+    r.root=fmt.tprintf("%s/.cache/heimdall-tests/owner-remote-review-selection-%d",bridge_env_get("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    testing.expect(t,bridge_make_directory_all(r.root)==nil)
+    defer _=os.remove_all(r.root)
+    if !testing.expect(t,owner.open(&r.store,fmt.tprintf("%s/runtime.sqlite",r.root),"account","bridge","bridge_key")) do return
+    defer owner.close(&r.store)
+    vid,_:=vault.vault_id_from_root_sign_pub(r.key.public_key)
+    secret:[32]byte;secret[0]=9
+    r.kr,_=vault.keyring_from_single_key("account",vid,1,secret[:]);defer vault.keyring_wipe(&r.kr)
+    chain:=fmt.tprintf("chain_remote_selection_%d",time.to_unix_nanoseconds(time.now()))
+    now:=time.to_unix_nanoseconds(time.now())/1000000
+    tc,_:=vault.seal_string("remote selection",&r.kr,context.temp_allocator)
+    dc,_:=vault.seal_string("",&r.kr,context.temp_allocator)
+    g,c,p,built:=bridge_owner_chain_create_documents("account","bridge","bridge_key",chain,"op_remote_selection",tc,dc,now,signer)
+    testing.expect(t,built)
+    if !testing.expect_value(t,owner.execute(&r.store,c,p,g,r.key,r.key,0,"",now,&r.kr,signer,requested_by="inst_c").code,"ok") do return
+    coord:=review_test_child("inst_c","agt_c")
+    if !testing.expect_value(t,owner.bind_created_coordinator(&r.store,chain,coord,"inst_c",now).code,"ok") do return
+    worker:=review_test_child("inst_w","agt_w")
+    append(&review_test_live,coord,worker)
+    {
+        ctx:=review_test_ctx(r,coord)
+        testing.expect_value(t,bridge_owner_fleet_member(&ctx,chain,worker.instance,worker.agent_id,"worker",true,worker).code,"ok")
+    }
+    row,_:=review_test_exec(r,coord,"agent.task_chain.fleet_set",fmt.tprintf(`{{"chain_id":"%s","agent_id":"agt_r","bridge_id":"bridge_b","provider":"claude","model":"claude-sonnet-5-5"}}`,chain))
+    if !testing.expectf(t,review_test_ok(row),"remote reviewer policy: %v",row) do return
+    tasks:[2]string
+    for models,i in ([2]string{"",`,"agent_models":{"agt_r":"claude/claude-opus-5-5"}`}) {
+        out,_:=review_test_exec(r,coord,"agent.task.create",fmt.tprintf(`{{"chain_id":"%s","title":"task %d","brief":{{"goal":"Ship %d","acceptance":["Tests pass"]}},"assignee":"agt_w","reviewers":["agt_r"]%s}}`,chain,i,i,models))
+        tasks[i]=contracts.owner_string(review_test_data(out),"task_id")
+        if !testing.expectf(t,tasks[i]!="","task create: %v",out) do return
+        submitted,sctx:=review_test_submit(t,r,worker)
+        testing.expectf(t,review_test_ok(submitted),"submit: %v",submitted)
+        bridge_owner_review_dispatch(sctx.reviews)
+    }
+    rows,_:=owner.query(r.store.db,"SELECT task_id FROM lifecycle_state WHERE state='in_review' AND chain_id=? ORDER BY task_id",chain)
+    if !testing.expect_value(t,len(rows),2) do return
+    relay_next :: proc(r:^Review_Test,child:owner.Child,chain,provider,model:string) -> (task,status,refused:string) {
+        ctx:=review_test_ctx(r,child)
+        params:=fmt.tprintf(`{{"chain_id":"%s","instance_provider":"%s","instance_model":"%s"}}`,chain,provider,model)
+        raw,no:=bridge_owner_remote_agent_exec(&ctx,"agent.lease.next",bridge_owner_params(params),"bridge_b")
+        data:=review_test_data(bridge_owner_result_object(raw))
+        lease,_:=data["lease"].(json.Object)
+        return contracts.owner_string(lease,"task_id"),contracts.owner_string(data,"status"),no
+    }
+    Reviewer :: struct{child:owner.Child,model,task,other:string}
+    sonnet:=Reviewer{review_test_child("inst_r_sonnet","agt_r"),"claude-sonnet-5-5",tasks[0],tasks[1]}
+    opus:=Reviewer{review_test_child("inst_r_opus","agt_r"),"claude-opus-5-5",tasks[1],tasks[0]}
+    // Task ids are random: the reviewer whose task is second in scan order
+    // asks first, so an unfiltered grant would hand it the other task.
+    order:=[2]Reviewer{opus,sonnet} if rows[0][0]==tasks[0] else [2]Reviewer{sonnet,opus}
+    for reviewer in order {
+        // Asking again (an older instance) never crosses over either.
+        for _ in 0..<2 {
+            task,status,refused:=relay_next(r,reviewer.child,chain,"claude",reviewer.model)
+            testing.expectf(t,refused=="" && task!=reviewer.other,"%s never gets the other selection's task: %s %s %s",reviewer.model,refused,status,task)
+            testing.expectf(t,task==reviewer.task || status=="none","%s gets only its own task: %s %s",reviewer.model,status,task)
+        }
+    }
+    // The first ask of each is a grant of its own task.
+    for reviewer in order {
+        opened,_:=owner.query(r.store.db,"SELECT 1 FROM local_review_sessions WHERE chain_id=? AND task_id=? AND json_extract(child,'$.instance')=?",chain,reviewer.task,reviewer.child.instance)
+        testing.expectf(t,len(opened)>0,"%s opened a review of its own task",reviewer.model)
+    }
+    // An instance of neither selection gets nothing.
+    task,status,refused:=relay_next(r,review_test_child("inst_r_other","agt_r"),chain,"codex","gpt-5.5")
+    testing.expectf(t,refused=="" && status=="none" && task=="","a reviewer of another selection gets no review: %s %s %s",refused,status,task)
+}

@@ -153,21 +153,34 @@ review_targets :: proc(s:^Store,chain,task:string) -> ([]Review_Target,bool) {
 // (not held) whose gate still owes the child's agent a verdict and that the
 // child may review (task_reviewer_authorized). Read-only.
 review_pending :: proc(s:^Store,child:Child,only_chain:="") -> (chain,task:string,found,ok:bool) {
+    pending,read:=review_pending_all(s,child,only_chain)
+    if !read do return "","",false,false
+    if len(pending)==0 do return "","",false,true
+    return pending[0].chain,pending[0].task,true,true
+}
+
+Review_Pending :: struct { chain,task:string }
+
+// Every review review_pending could hand this child, in its order (a relayed
+// `lease next` picks the first one the calling instance's selection serves).
+// Read-only; temp-allocated.
+review_pending_all :: proc(s:^Store,child:Child,only_chain:="") -> (out:[]Review_Pending,ok:bool) {
     tx:Transaction
-    if !transaction_begin(s,&tx) do return "","",false,false
+    if !transaction_begin(s,&tx) do return nil,false
     defer transaction_rollback(&tx)
     // only_chain scopes the search to one chain (a relayed `lease next` names it).
     rows,read:=query(s.db,"SELECT chain_id,task_id,attempt FROM lifecycle_state WHERE state='in_review' AND (?1='' OR chain_id=?1) ORDER BY chain_id,task_id LIMIT 500",only_chain)
-    if !read do return "","",false,false
+    if !read do return nil,false
+    pending:=make([dynamic]Review_Pending,context.temp_allocator)
     for row in rows {
         if !control_ready(s,row[0],row[1]) || !task_reviewer_authorized(s,row[0],row[1],child) do continue
         config,_,configured:=lifecycle_config(s,row[0],row[1])
         if !configured do continue
         owed,owed_ok:=review_owed(s,row[0],row[1],row[2],config)
-        if !owed_ok do return "","",false,false
-        if slice.contains(owed,child.agent_id) do return row[0],row[1],true,true
+        if !owed_ok do return nil,false
+        if slice.contains(owed,child.agent_id) do append(&pending,Review_Pending{row[0],row[1]})
     }
-    return "","",false,true
+    return pending[:],true
 }
 
 // brief_cleared: the brief's user gate was just cleared on this submitted

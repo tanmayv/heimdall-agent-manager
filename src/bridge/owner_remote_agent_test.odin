@@ -285,6 +285,24 @@ test_owner_remote_reviewer_concurrent_dispatch_launches_once :: proc(t:^testing.
     testing.expect_value(t,bridge_owner_remote_reviewer_get("chain_c|agt_rev|brg_b|p|m"),"inst_once")
 }
 
+// R1 review round 2, the relaying Bridge: a relayed `lease next` carries the
+// provider/model this Bridge launched the caller with, replacing whatever the
+// agent sent; an unknown selection is sent as none.
+@(test)
+test_owner_remote_lease_next_carries_the_launch_selection :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    instance:=fmt.tprintf("inst_selection_%d",time.to_unix_nanoseconds(time.now()))
+    defer bridge_runtime_remove_launch(instance)
+    forged:=`{"chain_id":"chain_x","instance_provider":"codex","instance_model":"gpt-5.5"}`
+    p:=bridge_owner_params(bridge_owner_remote_lease_next_selection(forged,instance))
+    testing.expect(t,bridge_owner_pstr(p,"chain_id")=="chain_x","other params are kept")
+    testing.expect(t,!("instance_provider" in p) && !("instance_model" in p),"no launch record: the agent's claim is dropped")
+    bridge_runtime_record_launch(Bridge_Runtime_Launch{agent_instance_id=instance,chain_id="chain_x",provider="claude",model="claude-opus-5-5"})
+    p=bridge_owner_params(bridge_owner_remote_lease_next_selection(forged,instance))
+    testing.expect_value(t,bridge_owner_pstr(p,"instance_provider"),"claude")
+    testing.expect_value(t,bridge_owner_pstr(p,"instance_model"),"claude-opus-5-5")
+}
+
 // R1 FIX A (REQ-E2E-1 run11): the agent-relay body is one JSON object the Hub
 // reads as {chain_id,task_id,request,signature}, never a JSON string literal
 // of it (the Hub answered every relay 400 "invalid agent relay").
