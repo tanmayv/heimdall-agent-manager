@@ -149,14 +149,15 @@ check "a task's worker placed on B ($BRG_B) by fleet.reserve" "$([ "$(q "SELECT 
 check "both work tasks agent-reviewed (approve)" "$([ "$(q "$AGENT_APPROVED")" = 2 ] && echo 1)" "$(q "$AGENT_APPROVED") agent-approved"
 bad=$(cat "$EVIDENCE/$A-bridge.log" "$EVIDENCE/$B-bridge.log" 2>/dev/null | grep -cE 'invalid_resources|invalid_scope')
 check "no invalid_resources/invalid_scope in either Bridge log" "$([ "$bad" = 0 ] && echo 1)" "$bad lines"
-attach=$(grep -ciE 'project attach|--project|attach.*(project|directory)' "$EVIDENCE/coordinator-transcript.jsonl" 2>/dev/null)
-check "coordinator attached no project/directory" "$([ "${attach:-0}" = 0 ] && echo 1)" "${attach:-0} matches"
-errs=$(grep -cE '"ok":false' "$EVIDENCE/coordinator-transcript.jsonl" 2>/dev/null)
-check "no coordinator ham-ctl errors" "$([ "${errs:-0}" = 0 ] && echo 1)" "${errs:-0} error replies"
+TX=scripts/local-runtime/e2e-transcript.py
+python3 "$TX" --attach <"$EVIDENCE/coordinator-transcript.jsonl" >"$EVIDENCE/coordinator-attach.txt" 2>/dev/null
+check "coordinator attached no project/directory" "$([ ! -s "$EVIDENCE/coordinator-attach.txt" ] && echo 1)" "$(head -2 "$EVIDENCE/coordinator-attach.txt" | tr '\n' ';')"
+python3 "$TX" --errors <"$EVIDENCE/coordinator-transcript.jsonl" >"$EVIDENCE/coordinator-errors.txt" 2>/dev/null
+check "no coordinator ham-ctl errors" "$([ ! -s "$EVIDENCE/coordinator-errors.txt" ] && echo 1)" "$(wc -l <"$EVIDENCE/coordinator-errors.txt") error replies: $(grep -oE '"code":"[a-z_]+"' "$EVIDENCE/coordinator-errors.txt" | sort | uniq -c | tr -s ' \n' ' ')"
 # Every Bridge delivery to the coordinator (owner notices such as the user's
 # verdict, chat messages) must reach it: a live coordinator never stays pending.
 undelivered=$(grep -hE "pending \(coordinator not live\).*$COORD_INST|pending/no-agent-subscription $COORD_INST" "$EVIDENCE/$A-bridge.log" 2>/dev/null | sort | uniq -c | sort -rn)
 check "Bridge A delivered notices and user messages to the live coordinator" "$([ -z "$undelivered" ] && echo 1)" "$(printf '%s' "$undelivered" | head -3 | tr '\n' ';')"
-python3 scripts/local-runtime/e2e-transcript.py <"$EVIDENCE/coordinator-transcript.jsonl" >"$EVIDENCE/coordinator-transcript.txt" 2>/dev/null
+python3 "$TX" <"$EVIDENCE/coordinator-transcript.jsonl" >"$EVIDENCE/coordinator-transcript.txt" 2>/dev/null
 log "evidence: $EVIDENCE ($FAILS failed)"
 exit $([ "$FAILS" = 0 ] && echo 0 || echo 1)
