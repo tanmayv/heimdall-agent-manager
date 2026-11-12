@@ -37,7 +37,9 @@ bridge_owner_preparation_once :: proc(s:^owner.Store) {
         }
         for row in candidates {
             result:=owner.execution_prepare_assignment(s,row[0],row[1],own,now,{nil,bridge_owner_sign})
-            bridge_owner_prepare_log(row[0],row[1],result.code)
+            // R1 run17: a task that owes no work (in_review, held, done) is
+            // skipped by design (FIX B1), not a refusal worth logging.
+            bridge_owner_prepare_log(row[0],row[1],"ok" if owner.execution_prepare_skipped(s,row[0],row[1],result.code) else result.code)
             delete(bridge_owner_prepare_chain,runtime.default_allocator());delete(bridge_owner_prepare_task,runtime.default_allocator())
             bridge_owner_prepare_chain=strings.clone(row[0],runtime.default_allocator());bridge_owner_prepare_task=strings.clone(row[1],runtime.default_allocator())
             if result.code=="ok" && !result.replay do break

@@ -180,7 +180,10 @@ b_issued=$([ -n "$bdb" ] && sqlite3 -readonly "file:$bdb?mode=ro" "SELECT instan
 b_launched=0; for i in $b_issued; do grep -q "bridge startup: $i " "$EVIDENCE/$B-bridge.log" 2>/dev/null && b_launched=$((b_launched+1)); done
 { echo "== B executor issuances (instance, chain, task, configuration)"; [ -n "$bdb" ] && sqlite3 -readonly "file:$bdb?mode=ro" "SELECT instance_id,chain_id,task_id,json_extract(result_json,'\$.configuration') FROM executor_issuances"; } >>"$EVIDENCE/owner-store.txt" 2>&1
 check "task 2 agents issued and launched on B ($BRG_B) with claude-sonnet-5-5" "$([ "$b_launched" -ge 1 ] && echo 1)" "$(echo $b_issued | wc -w) issued, $b_launched launched"
-check "task 2 worker+reviewer both ran on B with claude-sonnet-5-5" "$([ "$b_launched" -ge 2 ] && echo 1)" "$b_launched launched"
+# R1 FIX A: B's reviewer is launched through the Hub (local_native) and
+# relays its owner verbs, so it is in the hub's instance list, not an issuance.
+b_hub=$(ran "$BRG_B" claude-sonnet-5-5)
+check "task 2 worker+reviewer both ran on B with claude-sonnet-5-5" "$([ $((b_launched+${b_hub:-0})) -ge 2 ] && echo 1)" "$b_launched executor launched, ${b_hub:-0} hub-launched"
 check "a task's worker placed on B ($BRG_B) by fleet.reserve" "$([ "$(q "SELECT count(*) FROM local_fleet WHERE chain_id='$CHAIN' AND json_extract(configuration_command,'\$.method')='fleet.reserve' AND enabled=1")" -ge 1 ] && echo 1)"
 check "both work tasks agent-reviewed (approve)" "$([ "$(q "$AGENT_APPROVED")" = 2 ] && echo 1)" "$(q "$AGENT_APPROVED") agent-approved"
 bad=$(cat "$EVIDENCE/$A-bridge.log" "$EVIDENCE/$B-bridge.log" 2>/dev/null | grep -cE 'invalid_resources|invalid_scope')

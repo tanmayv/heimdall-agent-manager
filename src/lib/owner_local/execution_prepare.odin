@@ -73,6 +73,12 @@ execution_prepare_assignment :: proc(s:^Store,chain,task:string,key:contracts.Ow
     return execution_prepare_start(s,encode(p),encode(lease),key,now)
 }
 
+// Whether a refused execution_prepare_assignment only skipped a task that owes
+// no work (FIX B1), which the preparation loop does not report as a refusal.
+execution_prepare_skipped :: proc(s:^Store,chain,task,code:string)->bool {
+    return code=="invalid_scope" && !execution_work_claimable(s,chain,task)
+}
+
 // Whether the task can take a new work lease: lifecycle ready (or not yet
 // started) and dispatch controls ready (not held, blocked or cancelled).
 execution_work_claimable :: proc(s:^Store,chain,task:string)->bool {

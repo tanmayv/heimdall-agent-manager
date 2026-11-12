@@ -170,6 +170,7 @@ owner_preparation_skips_non_claimable_task_after_retire :: proc(t:^testing.T) {
         set_state(t,f,state)
         refused:=execution_prepare_assignment(&f.store,"chain","task",f.owner,ended+1+i64(i),sign)
         testing.expectf(t,refused.code=="invalid_scope","no work prepare for a %s task: %v",state,refused)
+        testing.expectf(t,execution_prepare_skipped(&f.store,"chain","task",refused.code),"a %s task is skipped, not reported as refused",state)
     }
     set_state(t,f,"ready")
     _,held:=query(f.store.db,"INSERT INTO local_controls(chain_id,task_id,mode,resume_state,reason,waiting_on) VALUES('chain','task','held','ready','test hold','') ON CONFLICT(chain_id,task_id) DO UPDATE SET mode='held'")
@@ -178,6 +179,7 @@ owner_preparation_skips_non_claimable_task_after_retire :: proc(t:^testing.T) {
         testing.expectf(t,refused.code=="invalid_scope","no work prepare for a held task: %v",refused)
         _,_=query(f.store.db,"UPDATE local_controls SET mode='ready' WHERE chain_id='chain' AND task_id='task'")
     }
+    testing.expect(t,!execution_prepare_skipped(&f.store,"chain","task","invalid_scope"),"a refusal of a claimable task is still reported")
     count,_:=query(f.store.db,"SELECT count(*) FROM owner_execution_journal")
     testing.expect_value(t,count[0][0],"1")
     again:=execution_prepare_assignment(&f.store,"chain","task",f.owner,ended+4,sign)
