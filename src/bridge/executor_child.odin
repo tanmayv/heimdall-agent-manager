@@ -123,6 +123,9 @@ bridge_executor_agent :: proc(request_id,input,secret:string,
         if method=="agent.start_success" do _=bridge_startup_executor_ready(instance,secret,bridge_runtime_now_ms())
         return bridge_local_response_data(request_id,attested.body),true
     }
+    // An attested verb is the child's readiness signal too (no start-success
+    // timeout for a child that works without running start-success).
+    _=bridge_startup_executor_ready(instance,secret,bridge_runtime_now_ms(),implicit=true)
     outcome:=transport.exchange(transport.ctx,attested.body,input,generation)
     if outcome.envelope=="" do return fail(request_id,"owner_unavailable")
     sync.mutex_lock(&bridge_executor_mutex);defer sync.mutex_unlock(&bridge_executor_mutex)

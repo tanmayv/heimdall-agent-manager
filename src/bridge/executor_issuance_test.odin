@@ -626,6 +626,11 @@ bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,wire:Executor_Exc
         testing.expect(t,found && snap.startup.armed_at_ms>0 && snap.startup.launch_key==hash,"executor activation is armed")
         _,local:=bridge_agent_token_verify(material.token_secret)
         testing.expect(t,!local && bridge_startup_rec_current(snap.startup.rec),"verified via executor_issuances, not a local token record")
+        // R1 run16: any attested verb of the child (implicit) is its readiness.
+        testing.expect(t,bridge_startup_executor_ready(intent.instance,material.token_secret,now,implicit=true),"an attested verb records readiness")
+        implicit_ready,_:=bridge_runtime_instance_snapshot(intent.instance)
+        testing.expect(t,implicit_ready.start_success_seen && implicit_ready.start_deadline_unix_ms==0 && !implicit_ready.startup.ready_pending,"no start-success timeout without start-success")
+        testing.expect(t,!bridge_startup_executor_ready(intent.instance,"not_the_secret",now,implicit=true),"another credential's verb is not this activation's readiness")
         testing.expect(t,bridge_startup_executor_ready(intent.instance,material.token_secret,now),"executor readiness recorded")
         ready,_:=bridge_runtime_instance_snapshot(intent.instance)
         testing.expect(t,ready.start_success_seen && ready.start_deadline_unix_ms==0 && !ready.startup.ready_pending,"no start-success timeout and no Hub relay")

@@ -604,8 +604,13 @@ bridge_startup_record_activation :: proc(instance, token, provider, profile_id: 
 // An executor child's attested start_success (bridge_executor_child_ready)
 // is its readiness: delivered to the owner, never relayed to the Hub (the
 // child holds no Hub credential). Clears the start-success deadline and the
-// fallback prompt of that exact activation.
-bridge_startup_executor_ready :: proc(instance, token: string, now: i64) -> bool {
+// fallback prompt of that exact activation. implicit: any other attested verb
+// of the child, which (as bridge_startup_implicit_ready for a local agent) is
+// a readiness signal; it never touches an instance already ready. R1 run16:
+// an activation-launched worker whose prompt omits start-success (extension
+// expected) worked and submitted, yet was logged 'no start-success within the
+// timeout'.
+bridge_startup_executor_ready :: proc(instance, token: string, now: i64, implicit := false) -> bool {
 	hash := bridge_local_hash_token(strings.trim_space(token))
 	defer delete(hash)
 	sync.mutex_lock(&bridge_startup_io_mutex)
@@ -616,6 +621,7 @@ bridge_startup_executor_ready :: proc(instance, token: string, now: i64) -> bool
 	for &current in bridge_runtime_instances {
 		if current.agent_instance_id != instance || current.startup.launch_key != hash do continue
 		if current.stopped_intent_unix_ms != 0 || current.runtime_status == "stopped" || current.runtime_status == "stopping" do return false
+		if implicit && (current.start_success_seen || current.startup.ready_delivered) do return true
 		current.start_success_seen = true
 		current.start_deadline_unix_ms = 0
 		current.startup.ready_pending = false
