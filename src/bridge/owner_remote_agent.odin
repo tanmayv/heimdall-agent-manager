@@ -173,6 +173,7 @@ bridge_owner_remote_agent_send :: proc(request_id,method,params:string,rec:Bridg
         if inferred=="" do return "",false
         response,sent:=bridge_owner_remote_agent_send(request_id,method,with_chain,rec)
         if sent && bridge_owner_remote_status(response)=="renewed" do return response,true
+        if sent do delete(response)
         return "",false
     }
     if chain=="" && task=="" && method=="agent.lease.next" {
@@ -199,6 +200,7 @@ bridge_owner_remote_agent_send :: proc(request_id,method,params:string,rec:Bridg
             return response,true
         }
         fmt.eprintfln("bridge owner relay: %s lease next for chain %s: the owner has no review for this reviewer",rec.agent_instance_id,inferred)
+        delete(response)
         return "",false
     }
     if chain=="" && task=="" do return "",false
@@ -248,8 +250,11 @@ bridge_owner_remote_agent_send :: proc(request_id,method,params:string,rec:Bridg
     if envelope.data.code!="ok" do return bridge_local_response_error(request_id,envelope.data.code,fmt.tprintf("the owner Bridge %s refused the relayed request (%s)",owner_bridge,envelope.data.code)),true
     plain,opened:=vault.open(envelope.data.envelope,&kr,context.temp_allocator)
     if opened!=.Ok do return bridge_local_response_error(request_id,"stale_epoch","the relayed reply could not be opened"),true
-    if method=="agent.lease.next" do return bridge_owner_remote_review_context_write(request_id,strings.clone(plain,context.temp_allocator),rec.agent_instance_id),true
-    return strings.clone(plain,context.temp_allocator),true
+    // The caller (the local endpoint) frees the reply with the heap
+    // allocator. run14: a temp-allocated reply aborted B (free(): invalid
+    // pointer) on the first relay that succeeded.
+    if method=="agent.lease.next" do return bridge_owner_remote_review_context_write(request_id,plain,rec.agent_instance_id),true
+    return strings.clone(plain),true
 }
 
 // The agent-relay request body: one JSON object. run11: it was marshalled as
@@ -285,13 +290,14 @@ bridge_owner_remote_status :: proc(response:string) -> string {
 // A relayed review lease (gap 5): the owner's review context becomes the
 // reviewer's TASK.md in its run directory on this Bridge, as the owner writes
 // it for a local reviewer; the text is dropped from the agent's reply.
-// Without a run directory the reply is returned unchanged.
+// Without a run directory the reply is returned unchanged. The result is
+// always heap-allocated (the caller deletes it).
 bridge_owner_remote_review_context_write :: proc(request_id,response,instance:string) -> string {
     envelope:=bridge_owner_result_object(response)
     data,_:=envelope["data"].(json.Object)
-    if data==nil do return response
+    if data==nil do return strings.clone(response)
     text,has:=data["review_context"].(json.String)
-    if !has || text=="" do return response
+    if !has || text=="" do return strings.clone(response)
     delete_key(&data,"review_context")
     run_dir:=""
     if launch,launched:=bridge_runtime_get_launch(instance);launched do run_dir=strings.clone(launch.run_dir,context.temp_allocator)

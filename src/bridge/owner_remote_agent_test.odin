@@ -2,6 +2,7 @@ package main
 
 import "core:encoding/json"
 import "core:fmt"
+import "core:strings"
 import "core:testing"
 import "core:time"
 import httpc "odin_test:lib/httpc"
@@ -60,6 +61,21 @@ test_owner_remote_review_context_write_strips_the_text :: proc(t:^testing.T) {
     testing.expect(t,!bool(written),"no run directory: not written")
     none:=bridge_local_response_data("req_2",`{"status":"none"}`)
     testing.expect_value(t,bridge_owner_remote_review_context_write("req_2",none,"inst_x"),none)
+}
+
+// run14: B aborted (free(): invalid pointer) because a relayed reply opened
+// into the temp allocator was returned to the local endpoint, which deletes
+// it with the heap allocator. Both paths now return a heap string.
+@(test)
+test_owner_remote_review_context_write_returns_a_heap_reply :: proc(t:^testing.T) {
+    for body in ([]string{`{"status":"none"}`,`{"status":"granted","review_context":"# Owner-local review"}`}) {
+        heap_reply:=bridge_local_response_data("req_1",body)
+        plain:=strings.clone(heap_reply,context.temp_allocator)
+        delete(heap_reply)
+        out:=bridge_owner_remote_review_context_write("req_1",plain,"inst_not_launched")
+        testing.expect(t,raw_data(out)!=raw_data(plain),"the reply is a new heap string, not the temp-allocated input")
+        delete(out)
+    }
 }
 
 // Gap 5 on the reviewer's Bridge: a bare `lease next` takes the chain from
