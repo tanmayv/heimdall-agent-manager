@@ -54,6 +54,7 @@ export const executorSchemas = {
   exchange: [['scope','document'],['envelope','required_cipher']],
   child_exchange: [['scope','document'],['envelope','required_cipher'],['input','document']],
   child_result_bundle: [['receipt','document'],['body','document']],
+  agent_verb: [['protocol_version','version'],['chain_id','id'],['task_id','id'],['lease_id','id'],['configuration_revision','positive'],['method','executor_agent_verb'],['params','document']],
   child_result: [['protocol_version','version'],['account_id','id'],['owner_bridge_id','id'],['executor_bridge_id','id'],['chain_id','id'],['reservation_id','id'],['owner_incarnation','positive'],['executor_incarnation','positive'],['prepare_digest','hash'],['request_digest','hash'],['input_digest','hash'],['result_digest','hash'],['issued_ms','positive'],['request_expires_ms','positive'],['key_id','id'],['signature','signature']],
   activation_bootstrap_exchange: [['scope','document'],['envelope','required_cipher'],['intent_id','hash'],['claim_attempt','positive'],['bootstrap','document'],['body','document']],
   activation_exchange: [['scope','document'],['envelope','required_cipher'],['intent_id','hash'],['claim_attempt','positive']],
@@ -472,6 +473,7 @@ function fieldValid(s: string, kind: string): boolean {
     case 'executor_purpose': return ['work','review','manual','warm'].includes(s);
     case 'executor_draft_method': return ['prepare','inspect','authorize','cancel'].includes(s);
     case 'executor_local_purpose': return ['manual','warm','provider_test'].includes(s);
+    case 'executor_agent_verb': return ['agent.lease.next','agent.lease.heartbeat','agent.lease.submit','agent.lease.handoff','agent.lease.block','agent.task.show','agent.task.comments','agent.task.comment','agent.review.post'].includes(s);
     case 'executor_method': return ['activate','heartbeat','stop','query'].includes(s);
     default: return false;
   }

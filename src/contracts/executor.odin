@@ -139,6 +139,7 @@ executor_schema :: proc(kind:string)->[]Owner_Field {
     case "child_exchange":return executor_child_exchange_fields[:]
     case "child_result":return executor_child_result_fields[:]
     case "child_result_bundle":return executor_child_result_bundle_fields[:]
+    case "agent_verb":return executor_agent_verb_fields[:]
     case "exchange":return executor_exchange_fields[:]
     case "activation_bootstrap_exchange":return executor_activation_bootstrap_exchange_fields[:]
     case "activation_exchange":return executor_activation_exchange_fields[:]
@@ -186,6 +187,8 @@ executor_valid :: proc(o:json.Object,kind:string)->bool {
             if s!="0" && s!="1" do return false
         case "executor_purpose":
             if s!="work" && s!="review" && s!="manual" && s!="warm" do return false
+        case "executor_agent_verb":
+            if !executor_agent_verb(s) do return false
         case "executor_method":
             if s!="activate" && s!="heartbeat" && s!="stop" && s!="query" do return false
         case:
@@ -251,7 +254,7 @@ executor_valid :: proc(o:json.Object,kind:string)->bool {
 executor_parse :: proc(raw,kind:string)->(json.Object,bool) {
     if len(raw)>EXECUTOR_DOCUMENT_MAX do return nil,false
     v:json.Value;ok:bool
-    if kind=="notification_exchange" || kind=="local_bundle" || kind=="local_configuration" || kind=="child_exchange" || kind=="child_result_bundle" || kind=="activation_bootstrap_exchange" || kind=="bootstrap_content" || kind=="issuance_selection" || kind=="issuance_exchange" || kind=="issuance_bundle" {v,ok=owner_content_document(raw)} else {v,ok=owner_request_document(raw)}
+    if kind=="notification_exchange" || kind=="local_bundle" || kind=="local_configuration" || kind=="child_exchange" || kind=="child_result_bundle" || kind=="agent_verb" || kind=="activation_bootstrap_exchange" || kind=="bootstrap_content" || kind=="issuance_selection" || kind=="issuance_exchange" || kind=="issuance_bundle" {v,ok=owner_content_document(raw)} else {v,ok=owner_request_document(raw)}
     o,obj:=v.(json.Object)
     if !ok || !obj || !executor_valid(o,kind) do return nil,false
     return o,true

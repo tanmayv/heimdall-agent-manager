@@ -62,6 +62,7 @@ attest_child_request :: proc(s:^Store,instance,secret,input_raw:string,observati
     context.allocator=context.temp_allocator
     input,valid:=contracts.owner_parse(input_raw,"lease_input")
     if !valid {input,valid=contracts.owner_parse(input_raw,"lifecycle_input")}
+    if !valid {input,valid=contracts.executor_parse(input_raw,"agent_verb")}
     if !valid do return fail("malformed")
     if sign.sign==nil || now<=0 || now>0x7fffffffffffffff-contracts.EXECUTOR_FENCE_TTL_MS do return fail("invalid_scope")
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)

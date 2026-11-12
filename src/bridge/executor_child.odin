@@ -1,5 +1,7 @@
 package main
 
+import "core:fmt"
+import "core:strings"
 import "core:sync"
 import "core:time"
 import "core:crypto"
@@ -54,7 +56,9 @@ bridge_executor_child_fetch :: proc(_:rawptr,generation:i64)->(vault.Directory_V
 bridge_executor_child_send :: proc(_:rawptr,request,input:string,generation:i64)->Executor_Fence_Outcome {return bridge_executor_child_exchange(request,input,generation)}
 bridge_executor_agent :: proc(request_id,input,secret:string,
     transport:Executor_Child_Transport={nil,bridge_executor_child_fetch,bridge_executor_child_send},socket_path:string="",method:string="agent.owner_local.lease")->(string,bool) {
-    if method!="agent.owner_local.lease" && method!="agent.start_success" && method!="agent.extension.event" do return "",false
+    verb:=contracts.executor_agent_verb(method)
+    input:=input
+    if method!="agent.owner_local.lease" && method!="agent.start_success" && method!="agent.extension.event" && !verb do return "",false
     generation:=bridge_task_chain_search_generation()
     account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
     public:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
@@ -67,7 +71,7 @@ bridge_executor_agent :: proc(request_id,input,secret:string,
     if opened {instance,raw,authenticated=executor.child_token(&bridge_executor_store,secret,time.to_unix_nanoseconds(time.now())/1000000)}
     sync.mutex_unlock(&bridge_executor_mutex)
     if !authenticated do return "",false
-    fail:=proc(id,code:string)->(string,bool) {return bridge_local_response_error(id,code,"executor request rejected"),true}
+    fail:=proc(id,code:string)->(string,bool) {return bridge_local_response_error(id,code,bridge_executor_refusal_reason(code)),true}
     if method=="agent.start_success" {
         value,parsed:=contracts.owner_content_document(input)
         params,is_object:=value.(json.Object)
@@ -75,11 +79,25 @@ bridge_executor_agent :: proc(request_id,input,secret:string,
     }
     kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
     if !unlocked do return fail(request_id,"vault_locked")
-    if transport.directory==nil || method=="agent.owner_local.lease" && transport.exchange==nil do return fail(request_id,"owner_unavailable")
+    if transport.directory==nil || (method=="agent.owner_local.lease" || verb) && transport.exchange==nil do return fail(request_id,"owner_unavailable")
     directory,fetched:=transport.directory(transport.ctx,generation)
     if !fetched do return fail(request_id,"directory_unavailable")
     b,parsed:=contracts.executor_parse(raw,"bootstrap")
     if !parsed do return fail(request_id,"invalid_scope")
+    // An ordinary agent verb travels as the child's own chain/task/lease
+    // input; the owner keeps it on that task and answers with the full
+    // local response.
+    if verb {
+        params:=strings.trim_space(input)
+        if params=="" do params="{}"
+        doc:=make(json.Object,context.temp_allocator)
+        for name in ([4]string{"chain_id","task_id","lease_id","configuration_revision"}) do doc[name]=b[name]
+        doc["protocol_version"]=json.String("1");doc["method"]=json.String(method);doc["params"]=json.String(params)
+        encoded,encoded_ok:=json.marshal(doc,allocator=context.temp_allocator)
+        if encoded_ok!=nil do return fail(request_id,"malformed")
+        input=string(encoded)
+        if _,valid:=contracts.executor_parse(input,"agent_verb");!valid do return fail(request_id,"request_too_large")
+    }
     sync.mutex_lock(&bridge_executor_mutex)
     source,host,trusted:=bridge_executor_child_keys(&bridge_executor_store,b,directory,&kr)
     attested:=executor.Result{code="invalid_scope"}
@@ -117,6 +135,7 @@ bridge_executor_agent :: proc(request_id,input,secret:string,
     result:owner.Result
     if json.unmarshal_string(body,&result,.JSON,context.temp_allocator)!=nil do return fail(request_id,"invalid_owner_result")
     if result.code!="ok" do return fail(request_id,result.code)
+    if verb do return bridge_executor_verb_response(request_id,result.body),true
     command,valid:=contracts.owner_parse(input,"lifecycle_input")
     if valid && contracts.owner_string(command,"method")=="requirements.present" && !result.replay {
         dir,within:=bridge_fs_run_dir_root(instance)
@@ -185,4 +204,39 @@ bridge_executor_child_notification_session :: proc(s:^executor.Store,instance,se
         accepted+=1
     }
     return {code="ok",body=bridge_owner_json(struct{accepted,rejected:int}{accepted,0})}
+}
+
+// The owner's answer to an agent verb is a complete local response; only the
+// request id is this caller's.
+bridge_executor_verb_response :: proc(request_id,owner_response:string)->string {
+    value,err:=json.parse_string(owner_response,.JSON,true,context.temp_allocator)
+    o,is_object:=value.(json.Object)
+    if err!=.None || !is_object do return bridge_local_response_error(request_id,"invalid_owner_result",bridge_executor_refusal_reason("invalid_owner_result"))
+    if ok,_:=o["ok"].(json.Boolean);ok {
+        data,_:=json.marshal(o["data"],allocator=context.temp_allocator)
+        return bridge_local_response_data(request_id,string(data))
+    }
+    e,_:=o["error"].(json.Object)
+    code,_:=e["code"].(json.String);message,_:=e["message"].(json.String)
+    if code=="" do code="owner_refused"
+    if message=="" do message=json.String(bridge_executor_refusal_reason(string(code)))
+    return bridge_local_response_error(request_id,string(code),string(message))
+}
+
+// A refusal on the remote child path names why, so the agent can act on it
+// instead of seeing a bare code.
+bridge_executor_refusal_reason :: proc(code:string)->string {
+    switch code {
+    case "owner_unavailable": return "the owner Bridge did not answer through the Hub (offline, or the Hub relay failed); retry shortly"
+    case "directory_unavailable": return "the account's paired-device directory could not be fetched from the Hub; retry shortly"
+    case "vault_locked": return "this Bridge's vault is locked; unlock it to reach the owner Bridge"
+    case "invalid_scope": return "this child or its lease is no longer current for the owner (stopped, relaunched or released), or the request names another task"
+    case "child_not_current": return "this agent process is not the launch the owner placed (pty-host does not know it)"
+    case "invalid_owner_result": return "the owner Bridge's answer could not be verified"
+    case "malformed": return "the request is not a valid agent request"
+    case "request_too_large": return "the request parameters exceed the executor document limit (32 KiB)"
+    case "context_delivery_failed": return "the owner accepted the request but TASK.md could not be written here; run lease next again"
+    case "expired": return "the request expired before the owner answered; retry"
+    }
+    return fmt.tprintf("the owner Bridge refused the request (%s)",code)
 }

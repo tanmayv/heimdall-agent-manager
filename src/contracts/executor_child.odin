@@ -53,6 +53,22 @@ executor_child_request_fields := [?]Owner_Field{
     {"issued_ms","positive"},{"request_expires_ms","positive"},{"key_id","id"},{"signature","signature"},
 }
 
+// A remote child's ordinary agent verb (ham-ctl lease/task/review). Like a
+// lease input it names the child's own chain/task/lease/revision, which the
+// child request binds to its bootstrap; the owner runs the verb as that child.
+executor_agent_verb_fields := [?]Owner_Field{
+    {"protocol_version","version"},{"chain_id","id"},{"task_id","id"},{"lease_id","id"},
+    {"configuration_revision","positive"},{"method","executor_agent_verb"},{"params","document"},
+}
+EXECUTOR_AGENT_VERBS := [?]string{
+    "agent.lease.next","agent.lease.heartbeat","agent.lease.submit","agent.lease.handoff","agent.lease.block",
+    "agent.task.show","agent.task.comments","agent.task.comment","agent.review.post",
+}
+executor_agent_verb :: proc(method:string)->bool {
+    for verb in EXECUTOR_AGENT_VERBS do if verb==method do return true
+    return false
+}
+
 executor_child_exchange_fields := [?]Owner_Field{
     {"scope","document"},{"envelope","required_cipher"},{"input","document"},
 }
@@ -119,6 +135,7 @@ executor_child_request_matches :: proc(r,b:json.Object,input_raw:string,executor
     }
     input,valid:=owner_parse(input_raw,"lease_input")
     if !valid {input,valid=owner_parse(input_raw,"lifecycle_input")}
+    if !valid {input,valid=executor_parse(input_raw,"agent_verb")}
     if !valid || owner_string(r,"input_digest")!=owner_payload_digest(input_raw) do return false
     for name in ([4]string{"chain_id","task_id","lease_id","configuration_revision"}) {
         if owner_string(input,name)!=owner_string(r,name) do return false

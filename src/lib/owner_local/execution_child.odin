@@ -20,6 +20,7 @@ execution_child :: proc(s:^Store,request_raw,input_raw:string,executor_key,owner
        contracts.executor_number(r,"owner_incarnation")!=s.incarnation {return {},false}
     input,valid:=contracts.owner_parse(input_raw,"lease_input")
     if !valid {input,valid=contracts.owner_parse(input_raw,"lifecycle_input")}
+    if !valid {input,valid=contracts.executor_parse(input_raw,"agent_verb")}
     // Initial remote grants exist only through preparation/commit. A live
     // child may use its existing grant, never initiate a replacement claim.
     if !valid || field(input,"method")=="lease.claim" do return {},false

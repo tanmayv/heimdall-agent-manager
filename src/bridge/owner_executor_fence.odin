@@ -49,6 +49,10 @@ bridge_owner_executor_fence_handle :: proc(conn:^ws.Connection,text:string,child
     if !valid do return
     get:=contracts.owner_string
     reply:=struct{type,command_id,request_id,code,envelope:string}{"command_result",wire.command_id,get(relay,"request_id"),"invalid_scope",""}
+    // A remote child's agent verb may owe review wakes and a matcher run;
+    // they run after the reply is sent and every owner lock is released.
+    followup:Owner_Executor_Child_Followup
+    defer bridge_owner_executor_child_followup(&followup)
     defer {
         if generation!=bridge_task_chain_search_generation() {reply.code="vault_locked";reply.envelope=""}
         result:=bridge_owner_json(reply)
@@ -113,7 +117,7 @@ bridge_owner_executor_fence_handle :: proc(conn:^ws.Connection,text:string,child
         defer crypto.zero_explicit(raw_data(authenticated),len(authenticated))
         exact,current:=owner.execution_child(s,authenticated,get(exchange,"input"),key,owner_key,time.to_unix_nanoseconds(time.now())/1000000)
         if !current do return
-        body:=bridge_owner_executor_child_apply(s,get(exchange,"input"),exact,owner_key)
+        body:=bridge_owner_executor_child_apply(s,get(exchange,"input"),exact,owner_key,&kr,&followup)
         token,sealed:=owner.execution_child_result(request,body,scope,owner_key,time.to_unix_nanoseconds(time.now())/1000000,&kr,{nil,bridge_owner_sign})
         if !sealed {reply.code="expired";return}
         reply.code="ok";reply.envelope=token

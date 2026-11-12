@@ -11,6 +11,7 @@ import "core:thread"
 import "core:encoding/json"
 import httpc "odin_test:lib/httpc"
 import jsonx "odin_test:lib/jsonx"
+import contracts "odin_test:contracts"
 
 Bridge_Local_Endpoint_Config :: struct {
 	// Primary v1 transport is unix:${run_dir}/bridge.sock. The current portable
@@ -298,7 +299,9 @@ bridge_local_endpoint_handle_jsonl_line :: proc(line: string,
 	if bridge_local_spoofable_params(params) do return bridge_local_response_error(request_id, "forbidden", "local callers cannot spoof owner, sender, instance, or Hub credentials")
 	rec, ok := bridge_agent_token_verify(token)
 	if !ok {
-        if method=="agent.owner_local.lease" || method=="agent.start_success" || method=="agent.extension.event" {
+        // A remote (executor-launched) child has no token here: its own
+        // lease/task verbs go to the owner Bridge through the child path.
+        if method=="agent.owner_local.lease" || method=="agent.start_success" || method=="agent.extension.event" || contracts.executor_agent_verb(method) {
             if response,handled:=bridge_executor_agent(request_id,params,token,executor_transport,executor_socket,method);handled do return response
         }
         return bridge_local_response_error(request_id, "unauthenticated", "local agent token is invalid or rotated")
