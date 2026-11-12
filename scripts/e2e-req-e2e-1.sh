@@ -155,7 +155,15 @@ check "two work tasks created" "$([ "$(q "SELECT count(*) FROM ($WORK)")" = 2 ] 
 hq() { sqlite3 -readonly -separator ' | ' "file:$HUB_DIR/hub.db?mode=ro" "$1" 2>/dev/null; }
 ran() { hq "SELECT count(DISTINCT agent_id) FROM agent_instances WHERE bridge_id='$1' AND model='$2' AND agent_id<>'$COORD' AND run_count>0"; }
 check "task 1 worker+reviewer ran on A ($BRG_A) with claude-opus-5-5" "$([ "$(ran "$BRG_A" claude-opus-5-5)" -ge 2 ] && echo 1)" "$(ran "$BRG_A" claude-opus-5-5) agents"
-check "task 2 worker+reviewer ran on B ($BRG_B) with claude-sonnet-5-5" "$([ "$(ran "$BRG_B" claude-sonnet-5-5)" -ge 2 ] && echo 1)" "$(ran "$BRG_B" claude-sonnet-5-5) agents"
+# B's task agents are remote executor launches (not in the hub's instance
+# list): B's executor store records each issuance with its configuration, and
+# B's log records each launch ('bridge startup: <instance>').
+bdb=$(find "$HEIMDALL_LOCAL_STATE_ROOT/bridges/$B" -path '*executor-local-*/runtime.sqlite' -not -path '*backup*' 2>/dev/null | head -1)
+b_issued=$([ -n "$bdb" ] && sqlite3 -readonly "file:$bdb?mode=ro" "SELECT instance_id FROM executor_issuances WHERE json_extract(json_extract(result_json,'\$.configuration'),'\$.model')='claude-sonnet-5-5'" 2>/dev/null)
+b_launched=0; for i in $b_issued; do grep -q "bridge startup: $i " "$EVIDENCE/$B-bridge.log" 2>/dev/null && b_launched=$((b_launched+1)); done
+{ echo "== B executor issuances (instance, chain, task, configuration)"; [ -n "$bdb" ] && sqlite3 -readonly "file:$bdb?mode=ro" "SELECT instance_id,chain_id,task_id,json_extract(result_json,'\$.configuration') FROM executor_issuances"; } >>"$EVIDENCE/owner-store.txt" 2>&1
+check "task 2 agents issued and launched on B ($BRG_B) with claude-sonnet-5-5" "$([ "$b_launched" -ge 1 ] && echo 1)" "$(echo $b_issued | wc -w) issued, $b_launched launched"
+check "task 2 worker+reviewer both ran on B with claude-sonnet-5-5" "$([ "$b_launched" -ge 2 ] && echo 1)" "$b_launched launched"
 check "a task's worker placed on B ($BRG_B) by fleet.reserve" "$([ "$(q "SELECT count(*) FROM local_fleet WHERE chain_id='$CHAIN' AND json_extract(configuration_command,'\$.method')='fleet.reserve' AND enabled=1")" -ge 1 ] && echo 1)"
 check "both work tasks agent-reviewed (approve)" "$([ "$(q "$AGENT_APPROVED")" = 2 ] && echo 1)" "$(q "$AGENT_APPROVED") agent-approved"
 bad=$(cat "$EVIDENCE/$A-bridge.log" "$EVIDENCE/$B-bridge.log" 2>/dev/null | grep -cE 'invalid_resources|invalid_scope')

@@ -55,23 +55,28 @@ bridge_executor_canonical_directory :: proc(path:string)->(string,bool) {
     return strings.clone(path,context.temp_allocator),true
 }
 // bridge_executor_private_directory: path is canonical (symlink-free) and
-// inside a directory this Bridge owns: its config dir (the executor's private
-// root and per-chain scratch) or its agent run dirs (<endpoint run dir>/
-// instances). Only the instances subdir: an endpoint run dir may be a shared
-// parent such as /tmp, which must not admit arbitrary paths below it.
+// inside one of the two Bridge-owned work areas: the executor's per-chain
+// scratch (<executor root>/scratch) or the agent run dirs (<endpoint run
+// dir>/instances). Never the config dir, the vault material or the executor
+// store itself, and never a whole endpoint run dir (it may be a shared parent
+// such as /tmp): fs_root still guards everything else.
 bridge_executor_private_directory :: proc(path:string)->bool {
-    config,_:=bridge_vault_bridge_dir(bridge_cfg().daemon_id,context.temp_allocator)
+    scratch:=""
+    // Callers hold bridge_executor_mutex (or are the executor itself).
+    account:=bridge_executor_store.account if bridge_executor_store.account!="" else bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
+    if account!="" {
+        if root,rooted:=bridge_executor_root(account);rooted do scratch=fmt.tprintf("%s/scratch",root)
+    }
     runs:=strings.trim_right(bridge_cfg().local_endpoint_run_dir,"/")
     if runs=="" do runs=bridge_scratch_local_default(context.temp_allocator) // as bridge_runtime_default_run_dir
-    for root in ([2]string{config,fmt.tprintf("%s/instances",runs) if runs!="" else ""}) {
-        trimmed:=strings.trim_right(root,"/")
-        if trimmed=="" do continue
-        real,tail:=bridge_fs_realpath_existing_prefix(trimmed)
+    for root in ([2]string{scratch,fmt.tprintf("%s/instances",runs) if runs!="" else ""}) {
+        if root=="" do continue
+        real,tail:=bridge_fs_realpath_existing_prefix(root)
         defer {delete(real);delete(tail)}
         if real=="" || tail!="" do continue
         canonical,within:=bridge_fs_resolve_within(path,real)
         defer delete(canonical)
-        if within && canonical==path do return true
+        if within && canonical==path && canonical!=real do return true
     }
     return false
 }
@@ -179,10 +184,13 @@ bridge_executor_resolve_auto_issuance :: proc(s:^executor.Store,consent:json.Obj
             "1",s.account,s.executor,fmt.tprintf("%d",revision+1),fmt.tprintf("%d",capacity),slots,s.operator_key,strings.repeat("0",128,context.temp_allocator)})
         signed,code:=bridge_executor_operator_sign_record("policy",record)
         if code!="ok" do return bridge_executor_refuse(why,"slot: signing the auto-slot policy failed (%s)",code)
-        if installed:=executor.install_policy(s,signed,self,bridge_executor_physical_clock(nil));installed.code!="ok" {
+        installed:=executor.install_policy(s,signed,self,bridge_executor_physical_clock(nil))
+        // A concurrent issuance may have installed the same slot first
+        // (stale_revision here): use it when it is now there.
+        revision,slot,found=executor.auto_slot(s,profile.profile_id)
+        if installed.code!="ok" && !found {
             return bridge_executor_refuse(why,"slot: no enabled slot for profile %s and installing the auto slot failed (%s)",profile.profile_id,installed.code)
         }
-        revision,slot,found=executor.auto_slot(s,profile.profile_id)
         if !found do return bridge_executor_refuse(why,"slot: no enabled slot for profile %s after installing the auto slot",profile.profile_id)
     }
     canonical,directory_id,placed:=bridge_executor_auto_directory(s.account,get(consent,"chain_id"),project_hint)

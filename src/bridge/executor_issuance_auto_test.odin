@@ -195,7 +195,35 @@ test_executor_auto_issuance_never_blocks_on_unobserved_model_root_or_slot :: pro
     why=""
     testing.expect(t,!bridge_executor_resolve_auto_issuance(s,consent,requested,stranger,"",&why).resolved)
     testing.expectf(t,strings.has_prefix(why,"selection: only this executor's own key"),"selection refusal: %s",why)
-    // A directory outside both fs_root and the Bridge's own dirs stays refused.
+    // A directory outside both fs_root and the Bridge's own dirs stays refused,
+    // and so do the Bridge's config dir and executor store dir (only the
+    // per-chain scratch below <executor root>/scratch is exempt).
     _,outside:=bridge_executor_canonical_directory(st.dir)
     testing.expect(t,!outside,"a path outside fs_root and the Bridge's own dirs is refused")
+    config_dir,_:=bridge_vault_bridge_dir(bridge_cfg().daemon_id,context.temp_allocator)
+    for private_dir in ([3]string{strings.trim_right(config_dir,"/"),executor_root,fmt.tprintf("%s/scratch",executor_root)}) {
+        canonical_private:=bridge_fs_canonicalize_existing(private_dir);defer delete(canonical_private)
+        _,admitted:=bridge_executor_canonical_directory(canonical_private)
+        testing.expectf(t,!admitted,"%s stays refused outside fs_root",canonical_private)
+    }
+    // slot: a full operator policy (EXECUTOR_CAPACITY_MAX slots for other
+    // profiles, so the auto slot no longer fits) is refused and named.
+    full:=make([dynamic]Bridge_Executor_Slot)
+    for i in 0..<contracts.EXECUTOR_CAPACITY_MAX do append(&full,Bridge_Executor_Slot{fmt.tprintf("other_%d",i),"other_profile","1"})
+    current,_,_:=executor.auto_slot(s,"other_profile")
+    full_policy:=executor.encode(struct{protocol_version,account_id,executor_bridge_id,policy_revision,device_capacity,slots_json,key_id,signature:string}{
+        "1",s.account,s.executor,fmt.tprintf("%d",current+1),fmt.tprintf("%d",contracts.EXECUTOR_CAPACITY_MAX),executor.encode(full[:]),s.operator_key,strings.repeat("0",128)})
+    full_signed,full_code:=bridge_executor_operator_sign_record("policy",full_policy)
+    if testing.expect_value(t,full_code,"ok") {
+        testing.expect_value(t,executor.install_policy(s,full_signed,self,bridge_executor_physical_clock(nil)).code,"ok")
+        why=""
+        testing.expect(t,!bridge_executor_resolve_auto_issuance(s,consent,requested,self,"",&why).resolved)
+        testing.expectf(t,strings.has_prefix(why,"slot: the executor policy is full"),"slot refusal: %s",why)
+    }
+    // prepare: a reservation with no issued configuration names the issuance.
+    reservation:=make(json.Object)
+    for name in ([4]string{"reservation_id","instance_id","chain_id","task_id"}) do reservation[name]=json.String("unknown")
+    why=""
+    testing.expect(t,bridge_executor_prepare_resources(s,reservation,&why).directory_key=="")
+    testing.expectf(t,strings.has_prefix(why,"issuance: "),"prepare refusal: %s",why)
 }
