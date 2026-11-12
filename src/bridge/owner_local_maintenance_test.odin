@@ -42,5 +42,9 @@ test_owner_local_periodic_batch_expires_and_publishes_after_commit :: proc(t:^te
     testing.expect(t,bridge_owner_maintenance_batch(&s,&q,100,&probe,owner_maintenance_test_send))
     rows,ok=owner.query(s.db,"SELECT commit_seq FROM runtime_database")
     testing.expect(t,ok && rows[0][0]=="2" && probe.calls==1,"repeated tick creates no expiry or delivery duplicate")
-    testing.expect(t,!bridge_owner_maintenance_batch(&s,&q,99,&probe,owner_maintenance_test_send))
+    // C1: a stale tick is clamped to the store clock: it succeeds and still
+    // creates no expiry or delivery duplicate.
+    testing.expect(t,bridge_owner_maintenance_batch(&s,&q,99,&probe,owner_maintenance_test_send))
+    rows,ok=owner.query(s.db,"SELECT commit_seq,recovery_state FROM runtime_database")
+    testing.expect(t,ok && rows[0][0]=="2" && rows[0][1]=="ready" && probe.calls==1)
 }

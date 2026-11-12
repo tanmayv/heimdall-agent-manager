@@ -237,9 +237,11 @@ bridge_executor_expiry_during_owner_check_and_clock_regression_fail_before_io ::
     testing.expect(t,read && rows[0][0]=="stopping" && rows[0][1]=="5000")
     now=1200
     sent,reason=bridge_executor_dispatch(&s,intent,1200,"/not/contacted",req,&proof,bridge_executor_test_owner,&now,bridge_executor_test_clock)
-    testing.expect(t,!sent && reason=="clock_or_storage_error")
-    rows,read=executor.query(s.db,"SELECT recovery_state FROM executor_runtime")
-    testing.expect(t,read && rows[0][0]=="clock_uncertain")
+    // C1: the clock regression is clamped (never a quarantine); the stopped
+    // reservation is still not dispatched.
+    testing.expectf(t,!sent && reason!="clock_or_storage_error","stopped reservation not dispatched, not a clock refusal: %s",reason)
+    rows,read=executor.query(s.db,"SELECT recovery_state,clock_high_ms FROM executor_runtime")
+    testing.expect(t,read && rows[0][0]!="clock_uncertain" && rows[0][1]=="5000","no quarantine; the store clock never moves back")
 }
 
 @(test)
