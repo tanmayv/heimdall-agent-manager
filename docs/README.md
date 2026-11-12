@@ -2,6 +2,9 @@
 
 Curated index of everything under `docs/`. Start with `../AGENTS.md` for the contributor guide, then use this page to find deeper material.
 
+For local development, see [editor-setup.md](editor-setup.md) for native toolchains,
+OLS collections, package test commands, and Neovim debugging.
+
 Groups:
 
 1. [Current reference](#current-reference): how things work today.
