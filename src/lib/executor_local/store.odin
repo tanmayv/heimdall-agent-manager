@@ -91,19 +91,21 @@ begin :: proc(s:^Store)->bool {return s.db!=nil && !s.unusable && exec(s.db,"BEG
 rollback :: proc(s:^Store) {
     _=exec(s.db,"ROLLBACK")
     if sqlite3_get_autocommit(s.db)==0 do s.unusable=true
-    if s.clock_uncertain {
-        if !exec(s.db,"UPDATE executor_runtime SET recovery_state='clock_uncertain'") do s.unusable=true
-        s.clock_uncertain=false
-    }
+    // C1: the clock never latches the store (monotonic clamp, never refuse).
+    s.clock_uncertain=false
 }
 commit :: proc(s:^Store)->bool {if exec(s.db,"COMMIT") do return true;rollback(s);return false}
 scope :: proc(s:^Store,o:json.Object)->bool {return field(o,"account_id")==s.account && field(o,"executor_bridge_id")==s.executor}
 clock :: proc(s:^Store,now:i64,require_ready:=true)->string {
     rows,ok:=query(s.db,"SELECT clock_high_ms,recovery_state FROM executor_runtime WHERE singleton=1")
     if !ok || len(rows)!=1 do return "storage_error"
-    if now<0 || now<number(rows[0][0]) {s.clock_uncertain=true;return "clock_uncertain"}
-    if require_ready && rows[0][1]!="ready" do return "recovery_required"
-    _,ok=query(s.db,"UPDATE executor_runtime SET clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",now))
+    // C1 (user 10:10Z): monotonic clamp, never refuse. A caller clock behind
+    // the store's high-water mark is not a refusal; decisions use the store
+    // clock (effective_now) and a large backward step is logged.
+    if now<0 do return "expired"
+    if require_ready && rows[0][1]!="ready" && rows[0][1]!="clock_uncertain" do return "recovery_required"
+    _=effective_now(s,now)
+    _,ok=query(s.db,"UPDATE executor_runtime SET clock_high_ms=max(clock_high_ms,CAST(? AS INTEGER)),recovery_state=CASE WHEN recovery_state='clock_uncertain' THEN 'ready' ELSE recovery_state END WHERE singleton=1",fmt.tprintf("%d",now))
     return "" if ok else "storage_error"
 }
 request_live :: proc(o:json.Object,now:i64)->bool {
@@ -211,4 +213,16 @@ prepare :: proc(s:^Store,raw:string,key:contracts.Owner_Verified_Key,now:i64,res
     body,ok:=result_body(s,field(o,"reservation_id"))
     if !ok || !save_receipt(s,o,"prepare",digest,body) || !commit(s) do return fail("storage_error")
     return Result{code="ok",body=body}
+}
+
+// C1: max(the caller's clock, the store's high-water clock). A caller more
+// than EXECUTOR_CLOCK_ALERT_MS behind is a real backward jump: logged.
+EXECUTOR_CLOCK_ALERT_MS :: i64(5000)
+effective_now :: proc(s:^Store,now:i64)->i64 {
+    rows,ok:=query(s.db,"SELECT clock_high_ms FROM executor_runtime WHERE singleton=1")
+    if !ok || len(rows)!=1 do return now
+    high:=number(rows[0][0])
+    if now>=high do return now
+    if high-now>EXECUTOR_CLOCK_ALERT_MS do fmt.eprintfln("executor store clock alert: local clock is %d ms behind the store clock; using the store clock",high-now)
+    return high
 }

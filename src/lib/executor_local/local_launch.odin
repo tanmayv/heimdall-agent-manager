@@ -100,8 +100,7 @@ local_dispatch_current :: proc(s:^Store,launch:Local_Launch,now:i64)->bool {
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
     if s.db==nil || s.unusable || launch.incarnation!=s.incarnation do return false
     rows,ok:=query(s.db,`SELECT consent FROM executor_local_launches WHERE launch_id=? AND instance_id=? AND launch_key=? AND configuration=?
-      AND executor_incarnation=? AND state='dispatching' AND (SELECT recovery_state FROM executor_runtime)='ready'
-      AND (SELECT clock_high_ms FROM executor_runtime)<=CAST(? AS INTEGER)`,launch.id,launch.instance,launch.launch_key,launch.configuration,fmt.tprintf("%d",s.incarnation),fmt.tprintf("%d",now))
+      AND executor_incarnation=? AND state='dispatching' AND (SELECT recovery_state FROM executor_runtime) IN('ready','clock_uncertain')`,launch.id,launch.instance,launch.launch_key,launch.configuration,fmt.tprintf("%d",s.incarnation))
     return ok && len(rows)==1 && local_native_consent(rows[0][0])
 }
 

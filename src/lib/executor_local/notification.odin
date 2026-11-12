@@ -37,7 +37,8 @@ notification_current_locked :: proc(s:^Store,n:json.Object,message:string,key:co
     if !ok do return "storage_error"
     if len(rows)!=1 do return "no_current_target"
     row:=rows[0];b,parsed:=contracts.executor_parse(row[0],"bootstrap")
-    if !parsed || !contracts.executor_notification_matches(n,b,message,key,now) || now<number(row[9]) || row[10]!="ready" do return "no_current_target"
+    // C1: monotonic clamp; the clock never makes a target unavailable.
+    if !parsed || !contracts.executor_notification_matches(n,b,message,key,max(now,number(row[9]))) || (row[10]!="ready" && row[10]!="clock_uncertain") do return "no_current_target"
     names:=[8]string{"owner_incarnation","executor_incarnation","grant_generation","deadline_version","expires_ms","hard_ms","prepare_digest","launch_key"}
     for name,i in names do if field(n,name)!=row[i+1] do return "no_current_target"
     return "ok"

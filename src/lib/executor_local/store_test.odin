@@ -239,10 +239,10 @@ executor_clock_regression_persists_quarantine_and_policy_requires_exact_host :: 
     context.allocator=context.temp_allocator
     f:=fixture(t);defer destroy(f);policy(t,f)
     p:=document("prepare")
-    testing.expect_value(t,reserve(f,p,&f.owner1,999).code,"clock_uncertain")
-    rows,_:=query(f.store.db,"SELECT recovery_state FROM executor_runtime");testing.expect_value(t,rows[0][0],"clock_uncertain")
-    testing.expect_value(t,reserve(f,p,&f.owner1,1000).code,"recovery_required")
-    testing.expect(t,complete_recovery(&f.store,1000))
+    // C1: a clock regression is clamped to the store clock, never a refusal
+    // or a quarantine; the store stays ready.
+    testing.expect_value(t,reserve(f,p,&f.owner1,999).code,"ok")
+    rows,_:=query(f.store.db,"SELECT recovery_state,clock_high_ms>=1000 FROM executor_runtime");testing.expect(t,rows[0][0]=="ready" && rows[0][1]=="1")
     testing.expect_value(t,reserve(f,p,&f.owner1,1000).code,"ok")
     bad:=document("policy");set(bad,"policy_revision","2")
     testing.expect_value(t,install_policy(&f.store,signed(bad,"policy",&f.owner1),f.owner1.public,1100).code,"invalid_scope")

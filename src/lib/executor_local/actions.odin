@@ -180,9 +180,9 @@ intent_current_locked :: proc(s:^Store,intent:Intent,now:i64)->(i64,bool) {
     if !ok || len(rows)!=1 do return 0,false
     row:=rows[0]
     if row[0]!=intent.instance || row[1]!=intent.launch_key || row[2]!=intent.document ||
-       (number(row[6])!=0 && number(row[6])!=s.incarnation) || now<number(row[7]) { return 0,false }
+       (number(row[6])!=0 && number(row[6])!=s.incarnation) { return 0,false }
     if intent.kind=="stop" do return 0,row[3]=="stopping"
-    remaining:=number(row[4])-now
+    remaining:=number(row[4])-max(now,number(row[7])) // C1: monotonic clamp
     return remaining,intent.kind=="launch" && row[3]=="active" && remaining>0 && row[8]=="ready" && number(row[5])==s.incarnation
 }
 // Exactly one claimant may cross into first dispatch. Retried calls query the

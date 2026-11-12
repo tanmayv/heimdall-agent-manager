@@ -58,7 +58,7 @@ executor_local_native_admission_needs_no_policy_slot_or_directory :: proc(t:^tes
     testing.expect(t,replay.code=="ok" && body_field(replay,"launch_id")==launch.id)
     testing.expect(t,local_begin_dispatch(&f.store,launch,1100,r))
     testing.expect(t,local_dispatch_current(&f.store,launch,1100))
-    testing.expect(t,!local_dispatch_current(&f.store,launch,1099))
+    testing.expect(t,local_dispatch_current(&f.store,launch,1099),"C1: clamped, not refused")
     testing.expect(t,!local_begin_dispatch(&f.store,launch,1100,r))
     testing.expect(t,!cancel_local_admission(&f.store,launch.id))
     // Native launches are not charged against the policy-governed resources:
@@ -177,13 +177,13 @@ executor_local_final_dispatch_checks_recovery_and_clock :: proc(t:^testing.T) {
     f:=fixture(t);defer destroy(f)
     d,_,r:=local_inputs(t,f)
     launch:=local_snapshot(t,f,local_admit(f,d,r))
-    testing.expect(t,!local_begin_dispatch(&f.store,launch,999,r))
     testing.expect(t,complete_recovery(&f.store,1000))
     bad:=r;bad.spawn_digest=strings.repeat("d",64,context.temp_allocator)
     testing.expect(t,!local_begin_dispatch(&f.store,launch,1100,bad))
     testing.expect(t,local_begin_dispatch(&f.store,launch,1100,r))
     testing.expect(t,local_dispatch_current(&f.store,launch,1100))
-    testing.expect(t,!local_dispatch_current(&f.store,launch,1099))
+    // C1: a clock behind the store's is clamped, never a refusal.
+    testing.expect(t,local_dispatch_current(&f.store,launch,1099))
     // A stale-incarnation draft is never admitted after a restart.
     c:=document("local_configuration");set(c,"instance_id","stale_instance")
     stale,code:=stage_local_draft(&f.store,contracts.owner_payload_digest("stale"),encode(c),"{}")

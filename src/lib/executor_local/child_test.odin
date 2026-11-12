@@ -32,7 +32,8 @@ executor_child_auth_requires_exact_issued_secret_confirmed_live_generation_and_d
     }
     _,authenticated=child_bootstrap(&f.store,"other_instance",material.token_secret,1300);testing.expect(t,!authenticated)
     _,authenticated=child_bootstrap(&f.store,intent.instance,material.token_secret,5000);testing.expect(t,!authenticated,"deadline is enforced without maintenance")
-    _,authenticated=child_bootstrap(&f.store,intent.instance,material.token_secret,1299);testing.expect(t,!authenticated,"clock regression fails closed")
+    // C1: a clock behind the store's is clamped to it, never a refusal.
+    _,authenticated=child_bootstrap(&f.store,intent.instance,material.token_secret,1299);testing.expect(t,authenticated,"a clock regression is clamped, not refused")
     close(&f.store);testing.expect(t,open(&f.store,f.path,"account","executor","operator"))
     _,authenticated=child_bootstrap(&f.store,intent.instance,material.token_secret,1400);testing.expect(t,!authenticated,"restart never silently authenticates an old child generation")
 }

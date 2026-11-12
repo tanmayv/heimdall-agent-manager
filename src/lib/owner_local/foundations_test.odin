@@ -279,23 +279,31 @@ tombstones_expired_misses_and_read_revocation :: proc(t:^testing.T) {
     testing.expectf(t,rows[0][0]=="0" && rows[0][1]=="3" && rows[0][2]=="1","counts %v",rows)
 }
 
+// C1 (user 10:10Z): monotonic clamp, never refuse. A command at a clock
+// behind the store's high-water mark runs at the store clock: it is neither
+// refused nor latched, its event time never goes backwards, and the store
+// stays ready. The trusted reconciliation API keeps its generation CAS.
 @(test)
-backward_clock_latches_until_generation_checked_reconciliation :: proc(t:^testing.T) {
+backward_clock_is_clamped_never_latched :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
     f:=fixture(t);defer destroy(f);seed(t,f)
     p:=encode(doc(map[string]string{"body_cipher"=cipher(f,"timed mutation")}))
     c:=command(f,"task.comment","clock","task",p,"1")
-    testing.expect_value(t,invoke(f,c,p,999).code,"clock_uncertain")
-    testing.expect(t,invoke(f,c,p,1001).code=="clock_uncertain","catching up alone cannot clear uncertainty")
-    testing.expect(t,!reconcile_clock(&f.store,f.store.incarnation,1,999))
-    testing.expect(t,!reconcile_clock(&f.store,f.store.incarnation,2,1001))
-    testing.expect(t,reconcile_clock(&f.store,f.store.incarnation,1,1001))
-    testing.expect(t,!reconcile_clock(&f.store,f.store.incarnation,1,1001),"generation CAS")
-    first:=invoke(f,c,p,1001)
+    before,_:=query(f.store.db,"SELECT clock_high_ms FROM runtime_database")
+    high:=number(before[0][0])
+    first:=invoke(f,c,p,high-1)
     testing.expect_value(t,first.code,"ok")
+    state,_:=query(f.store.db,"SELECT recovery_state,clock_high_ms>=? FROM runtime_database",fmt.tprintf("%d",high))
+    testing.expect_value(t,encode(state),encode([1][2]string{{"ready","1"}}))
+    events,_:=query(f.store.db,"SELECT kind,ts_ms>=? FROM local_events ORDER BY seq DESC LIMIT 1",fmt.tprintf("%d",high))
+    testing.expectf(t,len(events)==1 && events[0][1]=="1","the event is stamped at the store clock, never earlier: %v",events)
     // Replay is independent of the mutation clock and never creates effects.
-    replay:=invoke(f,c,p,999)
+    replay:=invoke(f,c,p,high-500)
     testing.expect(t,replay.code=="ok" && replay.replay && replay.body==first.body)
+    rows,_:=query(f.store.db,"SELECT clock_generation,clock_high_ms FROM runtime_database")
+    generation,current:=number(rows[0][0]),number(rows[0][1])
+    testing.expect(t,!reconcile_clock(&f.store,f.store.incarnation,generation+1,current+1),"generation CAS")
+    testing.expect(t,reconcile_clock(&f.store,f.store.incarnation,generation,current+1))
 }
 
 @(test)

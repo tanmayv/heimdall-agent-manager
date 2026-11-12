@@ -35,8 +35,8 @@ child_bootstrap_locked :: proc(s:^Store,instance,secret:string,now:i64)->(string
     if !ok || len(rows)!=1 do return "",false
     row:=rows[0]
     if crypto.compare_constant_time(transmute([]byte)secret,transmute([]byte)row[1])!=1 ||
-       now>=number(row[2]) || now>=number(row[3]) || number(row[5])!=s.incarnation ||
-       number(row[6])!=s.incarnation || now<number(row[9]) || row[10]!="ready" {return "",false}
+       max(now,number(row[9]))>=number(row[2]) || max(now,number(row[9]))>=number(row[3]) || number(row[5])!=s.incarnation ||
+       number(row[6])!=s.incarnation || (row[10]!="ready" && row[10]!="clock_uncertain") {return "",false} // C1: monotonic clamp
     b,valid:=contracts.executor_parse(row[0],"bootstrap")
     if !valid || !scope(s,b) || field(b,"instance_id")!=instance || field(b,"launch_key")!=row[7] ||
        field(b,"token_generation")!=contracts.owner_payload_digest(secret) ||
