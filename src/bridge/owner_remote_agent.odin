@@ -236,10 +236,13 @@ bridge_owner_remote_agent_send :: proc(request_id,method,params:string,rec:Bridg
     if !sealed_ok do return bridge_local_response_error(request_id,"storage_error","could not seal the relayed request"),true
     token:=bridge_credential_snapshot();defer delete(token)
     headers:=[?]httpc.Header{httpc.bearer(token)}
-    body:=bridge_owner_json(struct{chain_id,task_id,request,signature:string}{chain,task,sealed,signature})
-    response,err:=bridge_hub_http_send({method=.POST,url=bridge_hub_url(),path={"api","v1","owner-local","agent-relay"},headers=headers[:],body=httpc.json_body(body)})
+    response,err:=bridge_hub_http_send({method=.POST,url=bridge_hub_url(),path={"api","v1","owner-local","agent-relay"},headers=headers[:],body=bridge_owner_remote_relay_body(chain,task,sealed,signature)})
     defer httpc.response_destroy(&response)
-    if err!=.None || response.status!=200 do return bridge_local_response_error(request_id,"owner_unavailable",fmt.tprintf("the owner Bridge %s could not be reached (%d)",owner_bridge,response.status)),true
+    if err!=.None || response.status!=200 {
+        detail:=string(response.body)
+        if len(detail)>200 do detail=detail[:200]
+        return bridge_local_response_error(request_id,"owner_unavailable",fmt.tprintf("the owner Bridge %s could not be reached (%d) %s",owner_bridge,response.status,detail)),true
+    }
     envelope:struct{data:struct{code,envelope:string}}
     if json.unmarshal(response.body,&envelope,.JSON,context.temp_allocator)!=nil do return bridge_local_response_error(request_id,"owner_unavailable","malformed relay reply"),true
     if envelope.data.code!="ok" do return bridge_local_response_error(request_id,envelope.data.code,fmt.tprintf("the owner Bridge %s refused the relayed request (%s)",owner_bridge,envelope.data.code)),true
@@ -247,6 +250,13 @@ bridge_owner_remote_agent_send :: proc(request_id,method,params:string,rec:Bridg
     if opened!=.Ok do return bridge_local_response_error(request_id,"stale_epoch","the relayed reply could not be opened"),true
     if method=="agent.lease.next" do return bridge_owner_remote_review_context_write(request_id,strings.clone(plain,context.temp_allocator),rec.agent_instance_id),true
     return strings.clone(plain,context.temp_allocator),true
+}
+
+// The agent-relay request body: one JSON object. run11: it was marshalled as
+// an already-encoded string (a JSON string literal), so the Hub refused every
+// relay with 400 "invalid agent relay".
+bridge_owner_remote_relay_body :: proc(chain,task,sealed,signature:string) -> httpc.Body {
+    return httpc.json_body(struct{chain_id,task_id,request,signature:string}{chain,task,sealed,signature})
 }
 
 // The chain a bare `lease next` relays to: the caller's launch record names

@@ -4,6 +4,7 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:testing"
 import "core:time"
+import httpc "odin_test:lib/httpc"
 
 // Cross-Bridge relay, sender side (task_18e6b219bcee55fa #7): the owner Bridge
 // comes from the account registry rows the Hub returns for this Bridge's
@@ -152,4 +153,18 @@ test_owner_remote_reviewer_instance_is_reused :: proc(t:^testing.T) {
     remote_reviewer_start_status=503
     testing.expect(t,bridge_owner_review_remote_launch(body,"agt_rev",line,rec)!="","a 5xx start is a dispatch failure")
     testing.expect_value(t,bridge_owner_remote_reviewer_get("chain_r|agt_rev|brg_b"),"inst_rev2")
+}
+
+// R1 FIX A (REQ-E2E-1 run11): the agent-relay body is one JSON object the Hub
+// reads as {chain_id,task_id,request,signature}, never a JSON string literal
+// of it (the Hub answered every relay 400 "invalid agent relay").
+@(test)
+test_owner_remote_relay_body_is_a_json_object :: proc(t:^testing.T) {
+    body,is_json:=bridge_owner_remote_relay_body("chain_r","","sealed_text","sig_hex").(httpc.Json_Body)
+    if !testing.expect(t,is_json && !body.failed) do return
+    parsed:struct{chain_id,task_id,request,signature:string}
+    testing.expect(t,json.unmarshal(body.encoded,&parsed,.JSON,context.temp_allocator)==nil,"the Hub's body struct parses it")
+    testing.expect_value(t,parsed.chain_id,"chain_r")
+    testing.expect_value(t,parsed.request,"sealed_text")
+    testing.expect_value(t,parsed.signature,"sig_hex")
 }
