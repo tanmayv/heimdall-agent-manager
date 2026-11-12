@@ -106,8 +106,16 @@ while [ $SECONDS -lt $deadline ]; do
   [ -z "$CHAIN" ] && CHAIN=$(q "SELECT chain_id FROM local_chain_member_versions WHERE instance_id='$COORD_INST' AND role='coordinator' LIMIT 1")
   if [ -n "$CHAIN" ]; then
     # The scripted user: approve what waits for the user (UI Approve path).
+    # A chain proposal still pending after the chat approval would need a UI
+    # click: the scripted user approves it (signed chain.decide) as a
+    # fallback, and the run records it (S1: chat approval is enough).
+    PROPOSAL=""
+    if [ -s "$EVIDENCE/user-messages.jsonl" ]; then
+      PROPOSAL=$(q "SELECT json_extract(defaults_json,'\$.proposal.proposal_id') FROM local_chain_defaults_versions WHERE chain_id='$CHAIN' AND json_extract(defaults_json,'\$.proposal.status')='pending' ORDER BY accepted_seq DESC LIMIT 1")
+      [ -n "$PROPOSAL" ] && { echo "$PROPOSAL" >>"$EVIDENCE/ui-clicks.txt"; log "pending proposal $PROPOSAL after chat approval: scripted user approves it (UI-click fallback)"; }
+    fi
     node --import ./tests/helpers/vaultEndpointHarness.ts scripts/local-runtime/e2e-owner-user.mjs \
-      --api "$API" --key "$HUB_DIR/approver/device.json" --user "$DEV_USER" --bridge "$BRG_A" --chain "$CHAIN" \
+      --api "$API" --key "$HUB_DIR/approver/device.json" --user "$DEV_USER" --bridge "$BRG_A" --chain "$CHAIN" ${PROPOSAL:+--proposal "$PROPOSAL"} \
       >"$EVIDENCE/user-approvals.last" 2>>"$EVIDENCE/user-approvals.err" || log "scripted user pass failed (see user-approvals.err)"
     if [ -s "$EVIDENCE/user-approvals.last" ]; then
       cat "$EVIDENCE/user-approvals.last" >>"$EVIDENCE/user-approvals.jsonl"
@@ -187,5 +195,8 @@ check "no coordinator ham-ctl errors" "$([ ! -s "$EVIDENCE/coordinator-errors.tx
 undelivered=$(grep -hE "pending \(coordinator not live\).*$COORD_INST|pending/no-agent-subscription $COORD_INST" "$EVIDENCE/$A-bridge.log" 2>/dev/null | sort | uniq -c | sort -rn)
 check "Bridge A delivered notices and user messages to the live coordinator" "$([ -z "$undelivered" ] && echo 1)" "$(printf '%s' "$undelivered" | head -3 | tr '\n' ';')"
 python3 "$TX" <"$EVIDENCE/coordinator-transcript.jsonl" >"$EVIDENCE/coordinator-transcript.txt" 2>/dev/null
+# S1 (user 10:45Z): chat approval is enough; the coordinator auto-approves its
+# own proposal, so the user is never asked to click Approve in the UI.
+check "no UI approval click was needed (chat approval was enough)" "$([ ! -s "$EVIDENCE/ui-clicks.txt" ] && echo 1)" "pending proposals approved by the scripted user: $(sort -u "$EVIDENCE/ui-clicks.txt" 2>/dev/null | tr '\n' ' ')"
 log "evidence: $EVIDENCE ($FAILS failed)"
 exit $([ "$FAILS" = 0 ] && echo 0 || echo 1)

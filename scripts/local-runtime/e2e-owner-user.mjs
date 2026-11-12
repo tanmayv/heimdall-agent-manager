@@ -8,19 +8,22 @@
 //
 //   node --import ./tests/helpers/vaultEndpointHarness.ts scripts/local-runtime/e2e-owner-user.mjs \
 //     --api <hub-url> --key <approver/device.json> --bridge <owner brg_…> --chain <chain_…> \
-//     [--user <dev-user>] [--body <approval text>]
+//     [--user <dev-user>] [--body <approval text>] [--proposal <proposal id>]
 //
-// Prints one JSON line per approved task: {task_id, attempt}.
+// Prints one JSON line per approved task: {task_id, attempt}. With --proposal it
+// also approves that pending chain proposal (signed chain.decide, the user's
+// device decision): a harness fallback when a coordinator's plan waits on a
+// UI click; the harness records each use (S1 expects none).
 import { hubLogin, sessionHeaders } from '../../tests/e2e/hubOidc.mjs';
 import { openSeedApprover } from './approver.mjs';
 import { importKeyring } from '../../src/ui/utils/vaultKeyring.ts';
 import { ownerCall, readOwnerChain, readOwnerRuntime, readOwnerTask } from '../../src/ui/api/ownerChains.ts';
 
 function args(argv) {
-  const out = { user: '', body: 'Approved, go ahead.' };
+  const out = { user: '', body: 'Approved, go ahead.', proposal: '' };
   for (let i = 0; i < argv.length; i += 2) {
     const k = argv[i].replace(/^--/, '');
-    if (!['api', 'key', 'bridge', 'chain', 'user', 'body'].includes(k) || argv[i + 1] === undefined) throw new Error(`bad argument ${argv[i]}`);
+    if (!['api', 'key', 'bridge', 'chain', 'user', 'body', 'proposal'].includes(k) || argv[i + 1] === undefined) throw new Error(`bad argument ${argv[i]}`);
     out[k] = argv[i + 1];
   }
   for (const k of ['api', 'key', 'bridge', 'chain']) if (!out[k]) throw new Error(`--${k} is required`);
@@ -61,4 +64,11 @@ for (const t of chain.tasks) {
     attempt: sub.attempt, head: sub.head, requirementsRevision: sub.requirementsRevision,
   }, send);
   console.log(JSON.stringify({ task_id: t.task_id, title: t.title, attempt: sub.attempt }));
+}
+if (a.proposal) {
+  await ownerCall(session, a.bridge, 'chain.decide', {
+    chainId: a.chain, expectedRevision: chain.revision,
+    body: JSON.stringify({ proposal_id: a.proposal, decision: 'approve', note: 'Approved by the scripted user (harness fallback for a pending proposal).' }),
+  }, send);
+  console.log(JSON.stringify({ proposal_id: a.proposal, decision: 'approve' }));
 }
