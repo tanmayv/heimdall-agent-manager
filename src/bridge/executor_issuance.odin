@@ -10,6 +10,7 @@ import vault "odin_test:lib/vault"
 import ws "odin_test:lib/ws"
 import "core:fmt"
 import "core:os"
+import "core:strconv"
 import "core:strings"
 import "core:sync"
 import contracts "odin_test:contracts"
@@ -43,8 +44,40 @@ bridge_executor_sign :: proc(_:rawptr,kind:string,o:json.Object)->(string,bool) 
 }
 bridge_executor_canonical_directory :: proc(path:string)->(string,bool) {
     canonical,within:=bridge_fs_resolve_within(path);defer delete(canonical)
-    if !within || canonical!=path || !bridge_validate_project_path_local(canonical,"","").ok do return "",false
-    return strings.clone(canonical,context.temp_allocator),true
+    if !within || canonical!=path {
+        // The Bridge's own directories are not user paths: fs_root (the UI's
+        // filesystem sandbox) may exclude them (fs_root=/srv/projects, an
+        // isolated HOME), which refused every no-directory placement on
+        // scratch with a silent invalid_resources (REQ-EXEC-NEVER-BLOCK, F5).
+        if !bridge_executor_private_directory(path) do return "",false
+    }
+    if !bridge_validate_project_path_local(path,"","").ok do return "",false
+    return strings.clone(path,context.temp_allocator),true
+}
+// bridge_executor_private_directory: path is canonical (symlink-free) and
+// inside a directory this Bridge owns: its config dir (the executor's private
+// root and per-chain scratch) or its local endpoint run dir (agent run dirs).
+bridge_executor_private_directory :: proc(path:string)->bool {
+    config,_:=bridge_vault_bridge_dir(bridge_cfg().daemon_id,context.temp_allocator)
+    for root in ([2]string{config,bridge_cfg().local_endpoint_run_dir}) {
+        trimmed:=strings.trim_right(root,"/")
+        if trimmed=="" do continue
+        real,tail:=bridge_fs_realpath_existing_prefix(trimmed)
+        defer {delete(real);delete(tail)}
+        if real=="" || tail!="" do continue
+        canonical,within:=bridge_fs_resolve_within(path,real)
+        defer delete(canonical)
+        if within && canonical==path do return true
+    }
+    return false
+}
+// bridge_executor_refuse records why a resolver refused (the component that
+// failed) for the caller's log line, and returns the unresolved resources.
+bridge_executor_refuse :: proc(why:^string,format:string,args:..any)->executor.Issuance_Resources {
+    reason:=fmt.tprintf(format,..args)
+    if why!=nil do why^=reason
+    fmt.eprintfln("bridge executor: %s",reason)
+    return {}
 }
 // Provisioning receives a host-operator-signed record, never a remote request to
 // sign a path. This helper cannot manufacture the required host signature.
@@ -61,24 +94,28 @@ bridge_executor_install_directory :: proc(s:^executor.Store,raw:string,key:contr
 // refused placement (REQ-E2E-1 .12, task_18e70e69aca835a7) and then every
 // prepare of the issued selection (.14, task_18e72ea85b7d4f43) with
 // invalid_resources. An inactive or unknown model is still refused, logged.
-bridge_executor_model_allowed :: proc(provider,model,what:string) -> bool {
+bridge_executor_model_allowed :: proc(provider,model:string) -> bool {
     if bridge_provider_catalog_has_model(provider,model) do return true
     if _,_,active:=bridge_owner_agent_model_resolve(provider,model);active && model!="" do return true
-    fmt.eprintfln("bridge executor: %s refused: %s/%s is neither observed on this Bridge nor an active catalog model",what,provider,model)
     return false
 }
-bridge_executor_resolve_issuance :: proc(s:^executor.Store,selection_raw:string)->executor.Issuance_Resources {
+// Refusals name the failing component (model, profile, slot, directory) in
+// `why` and in the Bridge log.
+bridge_executor_resolve_issuance :: proc(s:^executor.Store,selection_raw:string,why:^string=nil)->executor.Issuance_Resources {
     selection,valid:=contracts.executor_parse(selection_raw,"issuance_selection")
-    if !valid do return {}
+    if !valid do return bridge_executor_refuse(why,"selection: malformed issuance selection")
     get:=contracts.owner_string
     mapping,found:=executor.directory_mapping(s,get(selection,"directory_id"))
-    if !found do return {}
+    if !found do return bridge_executor_refuse(why,"directory: %s is not mapped on this Bridge",get(selection,"directory_id"))
     canonical,within:=bridge_executor_canonical_directory(mapping.path)
-    if !within || executor.directory_key(s.executor,canonical)!=mapping.key do return {}
+    if !within do return bridge_executor_refuse(why,"directory: %s (%s) is missing or not a usable directory",get(selection,"directory_id"),mapping.path)
+    if executor.directory_key(s.executor,canonical)!=mapping.key do return bridge_executor_refuse(why,"directory: %s no longer matches its mapped key",get(selection,"directory_id"))
     provider,model,profile:=get(selection,"provider"),get(selection,"model"),get(selection,"provider_profile")
-    if !bridge_executor_model_allowed(provider,model,"issued selection") do return {}
+    if !bridge_executor_model_allowed(provider,model) do return bridge_executor_refuse(why,"model: %s/%s is neither observed on this Bridge nor an active catalog model",provider,model)
     resolved,err:=profile_lookup(provider,profile)
-    if err!=.None || !resolved.enabled || resolved.provider!=provider || resolved.profile_id!=profile do return {}
+    if err!=.None || !resolved.enabled || resolved.provider!=provider || resolved.profile_id!=profile {
+        return bridge_executor_refuse(why,"profile: %s/%s is not an enabled profile on this Bridge",provider,profile)
+    }
     return executor.Issuance_Resources{selection_digest=contracts.owner_payload_digest(selection_raw),directory_key=mapping.key,directory_path=canonical,resolved=true}
 }
 
@@ -98,45 +135,71 @@ bridge_executor_resolve_issuance :: proc(s:^executor.Store,selection_raw:string)
 //     operator key. A bad or missing hint falls back to scratch, never a
 //     refusal. Nothing in the signed request names a path.
 // The chosen selectors go back in the signed remote_configuration.
-BRIDGE_EXECUTOR_AUTO_CAPACITY :: "4"
-bridge_executor_resolve_auto_issuance :: proc(s:^executor.Store,consent:json.Object,selection_raw:string,self:contracts.Owner_Verified_Key,project_hint:="")->executor.Issuance_Resources {
+BRIDGE_EXECUTOR_AUTO_CAPACITY :: 4
+Bridge_Executor_Slot :: struct{slot_id,provider_profile,enabled:string}
+bridge_executor_resolve_auto_issuance :: proc(s:^executor.Store,consent:json.Object,selection_raw:string,self:contracts.Owner_Verified_Key,project_hint:="",why:^string=nil)->executor.Issuance_Resources {
     selection,valid:=contracts.executor_parse(selection_raw,"issuance_selection")
-    if !valid || !contracts.executor_selection_auto(selection) || self.key_id!=s.operator_key do return {}
+    if !valid || !contracts.executor_selection_auto(selection) do return bridge_executor_refuse(why,"selection: not an auto selection")
+    if self.key_id!=s.operator_key do return bridge_executor_refuse(why,"selection: only this executor's own key provisions")
     get:=contracts.owner_string
     provider,model:=get(selection,"provider"),get(selection,"model")
-    if !bridge_executor_model_allowed(provider,model,"placement") do return {}
+    if !bridge_executor_model_allowed(provider,model) do return bridge_executor_refuse(why,"model: %s/%s is neither observed on this Bridge nor an active catalog model",provider,model)
     profile,err:=profile_lookup(provider,provider,context.temp_allocator,false)
     if err!=.None || !profile.enabled || profile.provider!=provider || !contracts.owner_field_valid(profile.profile_id,"id") {
-        fmt.eprintfln("bridge executor: placement refused: no enabled default %s profile on this Bridge",provider)
-        return {}
+        return bridge_executor_refuse(why,"profile: no enabled default %s profile on this Bridge",provider)
     }
     revision,slot,found:=executor.auto_slot(s,profile.profile_id)
     if !found {
-        if revision!=0 do return {}
-        slots:=executor.encode([1]struct{slot_id,provider_profile,enabled:string}{{fmt.tprintf("auto_%s",profile.profile_id),profile.profile_id,"1"}})
+        // No policy yet: this executor installs one with an auto slot for the
+        // profile. An operator policy is extended with that slot (the operator
+        // key is this executor's own), never replaced.
+        slot_rows:=make([dynamic]Bridge_Executor_Slot,context.temp_allocator)
+        capacity:=BRIDGE_EXECUTOR_AUTO_CAPACITY
+        if revision!=0 {
+            sync.mutex_lock(&s.mutex)
+            rows,read:=executor.query(s.db,"SELECT slot_id,provider_profile,enabled FROM executor_slots WHERE enabled=1 ORDER BY slot_id")
+            cap_rows,cap_read:=executor.query(s.db,"SELECT device_capacity FROM executor_runtime WHERE singleton=1")
+            sync.mutex_unlock(&s.mutex)
+            if !read || !cap_read || len(cap_rows)!=1 do return bridge_executor_refuse(why,"slot: the executor policy could not be read")
+            for r in rows do append(&slot_rows,Bridge_Executor_Slot{r[0],r[1],r[2]})
+            if n,parsed:=strconv.parse_int(cap_rows[0][0]);parsed && n>0 do capacity=n
+        }
+        append(&slot_rows,Bridge_Executor_Slot{fmt.tprintf("auto_%s",profile.profile_id),profile.profile_id,"1"})
+        // The policy must hold its slots: capacity grows with the auto slot.
+        if needed:=len(slot_rows);needed>capacity {
+            if needed>contracts.EXECUTOR_CAPACITY_MAX do return bridge_executor_refuse(why,"slot: the executor policy is full (%d slots)",needed-1)
+            capacity=needed
+        }
+        slots:=executor.encode(slot_rows[:])
         record:=executor.encode(struct{protocol_version,account_id,executor_bridge_id,policy_revision,device_capacity,slots_json,key_id,signature:string}{
-            "1",s.account,s.executor,"1",BRIDGE_EXECUTOR_AUTO_CAPACITY,slots,s.operator_key,strings.repeat("0",128,context.temp_allocator)})
+            "1",s.account,s.executor,fmt.tprintf("%d",revision+1),fmt.tprintf("%d",capacity),slots,s.operator_key,strings.repeat("0",128,context.temp_allocator)})
         signed,code:=bridge_executor_operator_sign_record("policy",record)
-        if code!="ok" || executor.install_policy(s,signed,self,bridge_executor_physical_clock(nil)).code!="ok" do return {}
+        if code!="ok" do return bridge_executor_refuse(why,"slot: signing the auto-slot policy failed (%s)",code)
+        if installed:=executor.install_policy(s,signed,self,bridge_executor_physical_clock(nil));installed.code!="ok" {
+            return bridge_executor_refuse(why,"slot: no enabled slot for profile %s and installing the auto slot failed (%s)",profile.profile_id,installed.code)
+        }
         revision,slot,found=executor.auto_slot(s,profile.profile_id)
-        if !found do return {}
+        if !found do return bridge_executor_refuse(why,"slot: no enabled slot for profile %s after installing the auto slot",profile.profile_id)
     }
     canonical,directory_id,placed:=bridge_executor_auto_directory(s.account,get(consent,"chain_id"),project_hint)
-    if !placed do return {}
+    if !placed do return bridge_executor_refuse(why,"directory: the chain's scratch directory could not be created under this executor's root")
     key:=executor.directory_key(s.executor,canonical)
     mapping,mapped:=executor.directory_mapping(s,directory_id)
     if !mapped || mapping.path!=canonical || mapping.key!=key {
         latest,latest_ok:=executor.directory_latest_revision(s,directory_id)
-        if !latest_ok do return {}
+        if !latest_ok do return bridge_executor_refuse(why,"directory: reading the mapping of %s failed",directory_id)
         next:=latest+1
         record:=executor.encode(struct{protocol_version,account_id,executor_bridge_id,directory_id,revision,directory_path,enabled,key_id,signature:string}{
             "1",s.account,s.executor,directory_id,fmt.tprintf("%d",next),canonical,"1",s.operator_key,strings.repeat("0",128,context.temp_allocator)})
         signed,code:=bridge_executor_operator_sign_record("directory",record)
-        if code!="ok" || executor.install_directory(s,signed,self,bridge_executor_physical_clock(nil),canonical).code!="ok" do return {}
+        if code!="ok" do return bridge_executor_refuse(why,"directory: signing the mapping of %s failed (%s)",directory_id,code)
+        if installed:=executor.install_directory(s,signed,self,bridge_executor_physical_clock(nil),canonical);installed.code!="ok" {
+            return bridge_executor_refuse(why,"directory: mapping %s to %s failed (%s)",directory_id,canonical,installed.code)
+        }
     }
     chosen:=executor.encode(struct{provider,model,provider_profile,directory_id,policy_revision,slot_id:string}{
         provider,model,profile.profile_id,directory_id,fmt.tprintf("%d",revision),slot})
-    if _,chosen_ok:=contracts.executor_parse(chosen,"issuance_selection");!chosen_ok do return {}
+    if _,chosen_ok:=contracts.executor_parse(chosen,"issuance_selection");!chosen_ok do return bridge_executor_refuse(why,"selection: the chosen selection is malformed")
     return executor.Issuance_Resources{selection_digest=contracts.owner_payload_digest(selection_raw),directory_key=key,
         directory_path=canonical,selection=chosen,resolved=true}
 }
@@ -265,11 +328,12 @@ bridge_executor_issuance_handle :: proc(conn:^ws.Connection,text:string) {
     // auto selection asks this executor to choose); the signed configuration
     // names it and every later launch fence binds it.
     resources:executor.Issuance_Resources
+    why:=""
     if device.kind=="bridge" {
-        resources=bridge_executor_resolve_auto_issuance(s,consent,get(exchange,"selection"),self,wire.project_path)
+        resources=bridge_executor_resolve_auto_issuance(s,consent,get(exchange,"selection"),self,wire.project_path,&why)
     } else {
         if contracts.executor_number(scope,"executor_incarnation")!=s.incarnation {reply.code="stale_incarnation";return}
-        resources=bridge_executor_resolve_issuance(s,get(exchange,"selection"))
+        resources=bridge_executor_resolve_issuance(s,get(exchange,"selection"),&why)
     }
     // No transaction spans resolver filesystem/profile I/O. issue rechecks the
     // signed mapping/policy under its own transaction before generating facts.
@@ -278,7 +342,7 @@ bridge_executor_issuance_handle :: proc(conn:^ws.Connection,text:string) {
     reply.code=result.code
     if result.code!="ok" {
         bridge_executor_log_refusal("issuance",get(exchange,"request_id") if get(exchange,"request_id")!="" else get(scope,"request_id"),get(scope,"chain_id"),get(scope,"owner_bridge_id"),result.code,
-            "no model/profile/slot/directory resolves for the selection" if result.code=="invalid_resources" else "")
+            why if why!="" else ("the selection's resources changed while it was issued" if result.code=="invalid_resources" else ""))
         return
     }
     response_scope:=scope

@@ -35,16 +35,26 @@ bridge_executor_directory :: proc(s:^executor.Store,input:vault.Directory_Verifi
     if !vault.directory_verify_keyring(&dir,kr) do return {},false
     return dir,true
 }
-bridge_executor_prepare_resources :: proc(s:^executor.Store,p:json.Object)->executor.Resolved_Resources {
+bridge_executor_prepare_resources :: proc(s:^executor.Store,p:json.Object,why:^string=nil)->executor.Resolved_Resources {
     resources,issued:=executor.issued_prepare_resources(s,p)
-    if !issued do return {}
+    if !issued {
+        if why!=nil do why^="issuance: no issued configuration matches this reservation"
+        return {}
+    }
     raw,found:=executor.issued_configuration(s,contracts.owner_string(p,"instance_id"))
     c,parsed:=contracts.owner_parse(raw,"remote_configuration")
-    if !found || !parsed do return {}
+    if !found || !parsed {
+        if why!=nil do why^="issuance: the issued configuration is missing or malformed"
+        return {}
+    }
     selection:=make(json.Object,context.temp_allocator)
     for f in contracts.executor_schema("issuance_selection") do selection[f.name]=c[f.name]
-    resolved:=bridge_executor_resolve_issuance(s,executor.encode(selection))
-    if !resolved.resolved || resolved.directory_key!=resources.directory_key do return {}
+    resolved:=bridge_executor_resolve_issuance(s,executor.encode(selection),why)
+    if !resolved.resolved do return {}
+    if resolved.directory_key!=resources.directory_key {
+        if why!=nil do why^="directory: the issued directory key no longer matches its mapping"
+        return {}
+    }
     return resources
 }
 // The genesis creator as bind_owner verifies it. A browser device creates a
@@ -157,10 +167,11 @@ bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string,activati
     result:executor.Result
     current:executor.Current_Owner_Fence
     if method=="prepare" {
-        resources:=bridge_executor_prepare_resources(s,p)
+        why:=""
+        resources:=bridge_executor_prepare_resources(s,p,&why)
         result=executor.prepare(s,request_raw,owner_key,time.to_unix_nanoseconds(time.now())/1000000,resources)
         if result.code!="ok" {
-            reason:="the issued selection no longer resolves here (model, profile or directory)" if result.code=="invalid_resources" && resources.directory_key=="" else ""
+            reason:=why if result.code=="invalid_resources" else ""
             bridge_executor_log_refusal("prepare",get(p,"reservation_id"),get(p,"chain_id"),get(p,"owner_bridge_id"),result.code,reason)
         }
     } else {

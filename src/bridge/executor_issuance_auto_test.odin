@@ -114,3 +114,88 @@ test_executor_auto_issuance_resolves_without_operator_mapping :: proc(t:^testing
     stranger:=self;stranger.key_id="other_key"
     testing.expect(t,!bridge_executor_resolve_auto_issuance(s,consent,requested,stranger).resolved,"only this executor's own key provisions")
 }
+
+// F5 (REQ-EXEC-NEVER-BLOCK, local REQ-E2E-1 B): Bridge B observed no models
+// at all and its file root ($HOME before HOME was isolated) did not contain
+// its executor root, so the scratch directory failed the fs_root check and
+// every placement was a silent invalid_resources. The Bridge's own scratch is
+// not a user path: it resolves whatever fs_root is. An operator policy
+// without a slot for the profile gains the auto slot (a new revision that
+// keeps its slots), and each refusal names its component.
+@(test)
+test_executor_auto_issuance_never_blocks_on_unobserved_model_root_or_slot :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    st:=p1c_test_setup(t);defer p1c_test_teardown(st)
+    sync.mutex_lock(&keystore_test_mutex);defer sync.mutex_unlock(&keystore_test_mutex)
+    id,_:=keystore_test_bridge_ids()
+    prior_id:=keystore_test_set_daemon_id(id);defer {bridge_cfg().daemon_id=prior_id}
+    keystore_lock_and_purge(id);_=keystore_delete_identity_key(id);bridge_unseal_forget_identity()
+    unseal_nonce_cache_clear(&g_unseal_nonce_cache);bridge_unseal_init()
+    if !testing.expect(t,test_provision_identity(id)) do return
+    defer {keystore_lock_and_purge(id);_=keystore_delete_identity_key(id);bridge_unseal_forget_identity()}
+    kr:=test_keyring_from_hex(TEST_VAULT_KEY_HEX);defer vault.keyring_wipe(&kr)
+    now:=time.to_unix_nanoseconds(time.now())/1000000
+    payload:=test_create_unseal_v2_payload(id,&kr,now,"issuance_never_block_pair")
+    unsealed,_:=bridge_unseal_decrypt_and_verify(payload,id,now)
+    if !testing.expect(t,unsealed) do return
+    public:=bridge_identity_public_key_hex(id);key_id,_:=vault.device_id_from_sign_pub(public,context.temp_allocator)
+    self:=contracts.Owner_Verified_Key{TEST_VAULT_USER_ID,id,key_id,public,"bridge",true,false}
+    if !testing.expect(t,bridge_executor_open(TEST_VAULT_USER_ID,key_id)) do return
+    executor_root,_:=bridge_executor_root(TEST_VAULT_USER_ID)
+    defer {executor.close(&bridge_executor_store);_=os.remove_all(executor_root)}
+    // The file root is a projects dir that does not contain the executor root.
+    projects:=fmt.tprintf("%s/projects",st.dir)
+    if !testing.expect(t,os.make_directory(projects)==nil) do return
+    prior_root:=bridge_fs_root;root:=bridge_fs_canonicalize_existing(projects);defer delete(root)
+    bridge_fs_root=root;defer {bridge_fs_root=prior_root}
+    s:=&bridge_executor_store
+    // An operator policy (revision 1) whose only slot serves another profile.
+    operator:=executor.encode(struct{protocol_version,account_id,executor_bridge_id,policy_revision,device_capacity,slots_json,key_id,signature:string}{
+        "1",s.account,s.executor,"1","2",executor.encode([1]Bridge_Executor_Slot{{"operator_slot","other_profile","1"}}),s.operator_key,strings.repeat("0",128)})
+    signed,code:=bridge_executor_operator_sign_record("policy",operator)
+    if !testing.expect_value(t,code,"ok") do return
+    if !testing.expect_value(t,executor.install_policy(s,signed,self,bridge_executor_physical_clock(nil)).code,"ok") do return
+    // Nothing observed: the active catalog model is the only source.
+    bridge_provider_catalog_default_hook=[]Bridge_Catalog_Provider{{provider="claude",state="active",models=[]Bridge_Catalog_Model{{model_id="claude-sonnet-5-5",state="active"}}}}
+    defer bridge_provider_catalog_default_hook=nil
+    testing.expect(t,!bridge_provider_catalog_has_model("claude","claude-sonnet-5-5"),"the Bridge observed no claude-sonnet-5-5")
+    auto:=contracts.EXECUTOR_AUTO_SELECTOR
+    requested:=executor.encode(struct{provider,model,provider_profile,directory_id,policy_revision,slot_id:string}{"claude","claude-sonnet-5-5",auto,auto,"1",auto})
+    consent:=make(json.Object);consent["chain_id"]=json.String("chain_no_directory")
+    why:=""
+    placed:=bridge_executor_resolve_auto_issuance(s,consent,requested,self,"",&why)
+    if !testing.expectf(t,placed.resolved,"placed with no observed model, no directory and scratch outside fs_root (refused: %s)",why) do return
+    testing.expect(t,strings.has_prefix(placed.directory_path,fmt.tprintf("%s/scratch/",executor_root)),"runs in the per-chain scratch dir")
+    chosen,_:=contracts.executor_parse(placed.selection,"issuance_selection")
+    get:=contracts.owner_string
+    testing.expect_value(t,get(chosen,"slot_id"),"auto_claude")
+    testing.expect_value(t,get(chosen,"policy_revision"),"2")
+    kept,_,_:=executor.auto_slot(s,"other_profile")
+    testing.expect_value(t,kept,i64(2))
+    _,operator_slot,operator_kept:=executor.auto_slot(s,"other_profile")
+    testing.expect(t,operator_kept && operator_slot=="operator_slot","the operator's slot is kept")
+    // The issued selection re-resolves at prepare (scratch outside fs_root).
+    prepared:=bridge_executor_resolve_issuance(s,placed.selection,&why)
+    testing.expectf(t,prepared.resolved && prepared.directory_path==placed.directory_path,"prepare re-resolves the scratch selection (refused: %s)",why)
+    testing.expect_value(t,bridge_executor_scratch_workdir(TEST_VAULT_USER_ID,"chain_no_directory"),placed.directory_path)
+    // Refusals name the failing component.
+    unknown:=executor.encode(struct{provider,model,provider_profile,directory_id,policy_revision,slot_id:string}{"claude","not-in-catalog",auto,auto,"1",auto})
+    why=""
+    testing.expect(t,!bridge_executor_resolve_auto_issuance(s,consent,unknown,self,"",&why).resolved)
+    testing.expectf(t,strings.has_prefix(why,"model: claude/not-in-catalog"),"model refusal: %s",why)
+    unmapped:=executor.encode(struct{provider,model,provider_profile,directory_id,policy_revision,slot_id:string}{"claude","claude-sonnet-5-5","claude","dir_unmapped","2","auto_claude"})
+    why=""
+    testing.expect(t,!bridge_executor_resolve_issuance(s,unmapped,&why).resolved)
+    testing.expectf(t,strings.has_prefix(why,"directory: dir_unmapped is not mapped"),"directory refusal: %s",why)
+    bad_profile:=executor.encode(struct{provider,model,provider_profile,directory_id,policy_revision,slot_id:string}{"claude","claude-sonnet-5-5","unknown-profile",get(chosen,"directory_id"),"2","auto_claude"})
+    why=""
+    testing.expect(t,!bridge_executor_resolve_issuance(s,bad_profile,&why).resolved)
+    testing.expectf(t,strings.has_prefix(why,"profile: claude/unknown-profile"),"explicit profile refusal: %s",why)
+    stranger:=self;stranger.key_id="other_key"
+    why=""
+    testing.expect(t,!bridge_executor_resolve_auto_issuance(s,consent,requested,stranger,"",&why).resolved)
+    testing.expectf(t,strings.has_prefix(why,"selection: only this executor's own key"),"selection refusal: %s",why)
+    // A directory outside both fs_root and the Bridge's own dirs stays refused.
+    _,outside:=bridge_executor_canonical_directory(st.dir)
+    testing.expect(t,!outside,"a path outside fs_root and the Bridge's own dirs is refused")
+}
