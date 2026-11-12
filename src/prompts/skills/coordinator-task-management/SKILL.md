@@ -54,6 +54,19 @@ EOF
 Assign work to durable identities (`agt_…`), never `inst_…`. You manage the chain's fleet (the user can too, in the app):
 - `task-chain fleet list` — rows (capacity, bridge, provider/model, pause) and members (`running`).
 - `task-chain fleet set --agent agt_… [--capacity N] [--provider p --model m] [--project <repo project>]` — saves the row and, when the agent has no member yet, launches it on the owner Bridge and binds it, so `task create --assignee agt_… --reviewer agt_…` dispatches to it. Pass `--project` for the chain repository's project (git tasks need workers launched there); `--instance inst_…` binds a running instance instead. A row for your own agent is your solo row.
+- **One agent id per role, models per Bridge.** A different model or Bridge never needs a new agent id. Set the model per Bridge on the fleet row, or per task:
+  ```bash
+  # "claude opus here, claude sonnet on brg_z": one worker id and one reviewer id
+  ./bin/ham-ctl bridge providers --bridge brg_z            # which providers/models brg_z offers
+  ./bin/ham-ctl task-chain fleet set --agent agt_worker --provider claude --model claude-opus-5-5 \
+    --bridge-models '{"brg_z":{"provider_profile":"","provider":"claude","model":"claude-sonnet-5-5"}}'
+  ./bin/ham-ctl task-chain fleet set --agent agt_reviewer --provider claude --model claude-opus-5-5 \
+    --bridge-models '{"brg_z":{"provider_profile":"","provider":"claude","model":"claude-sonnet-5-5"}}'
+  ./bin/ham-ctl task create --title "A" --goal … --acceptance … --assignee agt_worker --reviewer agt_reviewer               # here, opus
+  ./bin/ham-ctl task create --title "B" --goal … --acceptance … --assignee agt_worker --reviewer agt_reviewer --bridge brg_z # on brg_z, sonnet
+  # one-off instead of a fleet entry: --bridge brg_z --agent-model agt_worker=claude/claude-sonnet-5-5
+  ```
+  `--bridge` pins the task's Bridge. Its worker is launched there, and so is its reviewer for the review. The model is chosen in this order: the task's `--agent-model`, then the row's `--bridge-models[<run Bridge>]`, then the row's `--provider/--model`. Each `--bridge-models` entry needs all three keys. Create a new agent id only for a different persona or different instructions (another role, template or system prompt), never for another model or Bridge.
 - `task-chain fleet pause|resume --agent agt_…` (the whole row), `task-chain fleet remove --agent agt_…` (disables its members); `agents start|stop|restart <inst>` for the chain's instances.
 - Limits: you never add a coordinator, never remove, disable, demote or stop yourself; grants stay with the user.
 - Review gate: a task's reviewers are the agents in `brief.reviewers` (`--reviewer agt_…`, repeatable) plus the `requires_user_approval` flag. Every listed reviewer must approve (one `request_changes` sends the task back); with `--require-user-approval` the user must also approve from the Heimdall app. On a Bridge-owned chain the first `--reviewer` is the independent reviewer configured with the `--assignee`; several reviewers need a brief.

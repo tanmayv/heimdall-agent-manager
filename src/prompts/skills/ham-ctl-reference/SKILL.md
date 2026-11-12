@@ -66,7 +66,13 @@ reached the removed Hub engine (`list`, `set-description`, `set-status`, `archiv
   flags you pass change) and, if the agent has no member in the chain, launches one instance on the owner Bridge
   into the chain and binds it as a `worker` member — tasks `--assignee agt_…` then dispatch to it, and it may be
   named a reviewer (`--reviewer agt_…`). `--instance` binds a running instance instead; `--project` launches in the chain repository's project (needed
-  for git tasks); another `--bridge` is recorded but not launched; your own agent's row is your solo row.
+  for git tasks); a row whose `--bridge` names another Bridge is placed there when a task is assigned; your own agent's row is your solo row.
+  `--bridge-models '{"<bridge_id>":{"provider_profile":"","provider":"<p>","model":"<m>"}}'` gives the same agent
+  id a different provider/model on each Bridge (all three keys are required in every entry). Example: opus here and sonnet on
+  `brg_z` with ONE id: `fleet set --agent agt_w --provider claude --model claude-opus-5-5 --bridge-models
+  '{"brg_z":{"provider_profile":"","provider":"claude","model":"claude-sonnet-5-5"}}'`, then `task create … --assignee
+  agt_w --bridge brg_z` runs on `brg_z` with sonnet. Create a new agent id only for another persona or other
+  instructions, never for another model or Bridge.
   `pause|resume --agent <agt>` pause or resume the whole row; `remove --agent <agt>` disables its members
   and pauses the row. You never add a coordinator, nor remove, disable or demote yourself.
 
