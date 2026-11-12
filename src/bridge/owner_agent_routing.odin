@@ -777,6 +777,15 @@ bridge_owner_lease_verb :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object
     case "agent.lease.heartbeat":
         acknowledged:=""
         if ack:=bridge_owner_pstr(p,"acknowledge_requirements_revision");ack!="" {
+            // R1 run15: an executor-launched child reads its requirements from
+            // the TASK.md its executor wrote, not from `lease next`, so nothing
+            // had presented them and its ack (then its submit) was refused
+            // stale_revision. Acking the current revision presents it first
+            // (idempotent: present only inserts a missing row).
+            if ack==st.requirements_revision {
+                present:=bridge_owner_run_input(ctx,"requirements.present",st.chain_id,st.task_id,st.lease_id,st.configuration_revision,st.task_revision,st.capability,fmt.tprintf(`{{"requirements_revision":"%s"}}`,ack))
+                if present.code!="ok" do return bridge_owner_fail(ctx,present.code,"requirements could not be presented; read TASK.md for the current revision")
+            }
             r:=bridge_owner_run_input(ctx,"requirements.ack",st.chain_id,st.task_id,st.lease_id,st.configuration_revision,st.task_revision,st.capability,fmt.tprintf(`{{"requirements_revision":"%s"}}`,ack))
             if r.code!="ok" do return bridge_owner_fail(ctx,r.code,"requirements acknowledgement refused; read TASK.md for the current revision")
             acknowledged=ack

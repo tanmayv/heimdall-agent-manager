@@ -87,9 +87,16 @@ test_owner_executor_child_verbs_scoped_to_own_task :: proc(t:^testing.T) {
     configuration:=st.configuration_revision if st.configuration_revision!="" else "1"
     f:Owner_Executor_Child_Followup
 
+    // R1 run15: an executor-launched child reads its requirements from the
+    // TASK.md its executor wrote and acks before any `lease next`, so no
+    // presented row exists yet; the ack must still be taken.
+    _,cleared:=owner.query(r.store.db,"DELETE FROM requirement_ack WHERE lease_id=?",lease_id)
+    if !testing.expect(t,cleared,"the presented row is cleared") do return
     hb,code:=verb(r,worker,chain,own,lease_id,configuration,"agent.lease.heartbeat",fmt.tprintf(`{{"acknowledge_requirements_revision":"%s"}}`,revision),&f)
     testing.expect_value(t,code,"ok")
     testing.expectf(t,contracts.owner_string(review_test_data(hb),"acknowledged_requirements_revision")==revision,"remote heartbeat acknowledges: %v",hb)
+    acked,_:=owner.query(r.store.db,"SELECT acknowledged FROM requirement_ack WHERE lease_id=? AND revision=?",lease_id,revision)
+    testing.expectf(t,len(acked)==1 && acked[0][0]=="1","the ack is recorded, so submit can pass: %v",acked)
 
     commented,_:=verb(r,worker,chain,own,lease_id,configuration,"agent.task.comment",`{"body":"remote progress"}`,&f)
     testing.expectf(t,review_test_ok(commented),"remote comment on its own task: %v",commented)
