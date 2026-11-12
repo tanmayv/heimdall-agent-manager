@@ -7,11 +7,19 @@ import contracts "odin_test:contracts"
 // Explicit future-dispatch policy. It never changes running child accounting.
 // The execution device must separately admit its static slot/directory ledger.
 remote_assignment_policy :: proc(s:^Store,c:json.Object)->bool {
-    chain,task,agent:=field(c,"chain_id"),field(c,"task_id"),field(c,"agent_id")
+    chain,task,agent,executor:=field(c,"chain_id"),field(c,"task_id"),field(c,"agent_id"),field(c,"executor_bridge_id")
     rows,ok:=query(s.db,"SELECT * FROM local_fleet_policy_current WHERE chain_id=? AND agent_id=?",chain,agent)
     if !ok || len(rows)!=1 do return false
     policy:=fleet_policy_document(rows[0])
-    if policy.bridge_id!="" && policy.bridge_id!=field(c,"executor_bridge_id") do return false
+    models,m_ok:=contracts.owner_fleet_models(policy.bridge_models_json)
+    if !m_ok do return false
+    override,per_bridge:=models[executor]
+    // The task's own signed edits (brief run_bridge_id / agent_models) place
+    // the agent on the executor for THIS task, as the routing layer does
+    // (bridge_owner_remote_target): the same agent id may be live here and
+    // reserved there; members stay keyed by instance (agent id, Bridge).
+    task_bridge,task_provider,task_model:=remote_task_overrides(s,chain,task,agent)
+    if policy.bridge_id!="" && policy.bridge_id!=executor && !per_bridge && task_bridge!=executor do return false
     roles,valid:=contracts.owner_fleet_roles(policy.roles_json,false)
     worker:=false
     for role in roles do if role=="worker" do worker=true
@@ -19,19 +27,40 @@ remote_assignment_policy :: proc(s:^Store,c:json.Object)->bool {
     for role in paused do if role=="*" || role=="worker" do worker=false
     if !valid || !p_ok || !worker do return false
     provider,model,profile:=policy.provider,policy.model,policy.provider_profile
-    models,m_ok:=contracts.owner_fleet_models(policy.bridge_models_json)
-    if !m_ok do return false
-    if override,found:=models[field(c,"executor_bridge_id")];found {
+    if per_bridge {
         provider=override.provider;model=override.model;profile=override.provider_profile
     }
+    // The task's per-agent model beats the fleet row (owner_task_models.odin).
+    if task_provider!="" {provider=task_provider;model=task_model;profile=""}
     // Empty native policy fields leave resolution to the executor catalog;
     // the device command still authorizes every concrete selected value.
     if (provider!="" && provider!=field(c,"provider")) || (model!="" && model!=field(c,"model")) ||
        (profile!="" && profile!=field(c,"provider_profile")) {return false}
-    counts,read:=query(s.db,`SELECT count(*) FROM local_fleet f JOIN local_assignment_history h
+    // Capacity is per (agent, executor Bridge): the agent's local work and its
+    // reservations on other Bridges do not use this Bridge's capacity.
+    counted,read:=query(s.db,`SELECT h.payload_json FROM local_fleet f JOIN local_assignment_history h
       ON h.chain_id=f.chain_id AND h.task_id=f.task_id AND h.revision=f.configuration_revision
-      WHERE f.chain_id=? AND f.task_id!=? AND f.enabled=1 AND json_extract(h.child_json,'$.agent_id')=?`,chain,task,agent)
-    return read && len(counts)==1 && number(counts[0][0])<policy.capacity
+      WHERE f.chain_id=? AND f.task_id!=? AND f.enabled=1 AND json_extract(h.command_json,'$.method')='fleet.reserve'
+      AND json_extract(h.child_json,'$.agent_id')=?`,chain,task,agent)
+    if !read do return false
+    used:=i64(0)
+    for row in counted {
+        if other,parsed:=remote_assignment_configuration(row[0]);parsed && field(other,"executor_bridge_id")==executor do used+=1
+    }
+    return used<policy.capacity
+}
+
+// The task brief's run Bridge pin and this agent's per-task model, if any.
+remote_task_overrides :: proc(s:^Store,chain,task,agent:string)->(bridge,provider,model:string) {
+    req,has:=lifecycle_requirements(s,chain,task)
+    if !has do return
+    v,ok:=contracts.owner_content_document(req[1]);o,obj:=v.(json.Object)
+    if !ok || !obj do return
+    if pin,is_str:=o["run_bridge_id"].(json.String);is_str do bridge=string(pin)
+    if models,is_obj:=o["agent_models"].(json.Object);is_obj {
+        if entry,found:=models[agent].(json.Object);found {provider=field(entry,"provider");model=field(entry,"model")}
+    }
+    return
 }
 
 remote_assignment_directory_current :: proc(s:^Store,c:json.Object)->bool {

@@ -262,3 +262,55 @@ remote_assignment_coordinator_reserves_and_others_are_refused :: proc(t:^testing
     owed,owed_ok:=query(f.store.db,"SELECT json_extract(config_json,'$.reviewer_instance_id'),json_extract(config_json,'$.merge_policy') FROM lifecycle_configs WHERE chain_id='chain' AND task_id='task'")
     testing.expectf(t,owed_ok && len(owed)==1 && owed[0][0]==reviewer.instance && owed[0][1]=="none","the remote task owes its review to the local reviewer: %v",owed)
 }
+
+// json.Object is a map: variants must not alias the original.
+remote_test_copy :: proc(o:json.Object)->json.Object {
+    out:=make(json.Object,context.temp_allocator)
+    for k,v in o do out[k]=v
+    return out
+}
+
+// REQ-E2E-1 (Mundus .13): an agent whose fleet row runs it on the owner Bridge
+// (live locally) must still reserve on another Bridge for one task, via the
+// task's own run Bridge pin + per-task model, or a fleet --bridge-models entry.
+// Capacity is per (agent, executor Bridge).
+@(test)
+remote_assignment_same_agent_on_two_bridges_by_task_pin_or_bridge_models :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=fixture(t);defer destroy(f);seed(t,f)
+    policy:=contracts.Owner_Fleet_Policy{task_chain_id="chain",agent_id="author",capacity=1,
+        provider_profile="default",provider="claude",model="opus",bridge_id="bridge",roles_json=`["worker"]`}
+    chain,_:=query(f.store.db,"SELECT revision FROM task_chains WHERE chain_id='chain'")
+    testing.expect_value(t,fleet_policy_test_call(f,encode(policy),"local_policy",chain[0][0]).code,"ok")
+    key:=f.creator;key.kind="bridge";key.principal_id="executor";key.key_id="operator"
+    config:=remote_test_config(key)
+    config["provider"]=json.String("claude");config["model"]=json.String("sonnet")
+    // No task pin, no per-Bridge model: the fleet row keeps it on the owner Bridge.
+    testing.expect(t,!remote_assignment_policy(&f.store,config),"unpinned agent stays on its fleet Bridge")
+    // The task's pin + per-task model place it on the executor for this task only.
+    revision,_:=query(f.store.db,"SELECT COALESCE(max(revision),0)+1 FROM task_requirements WHERE chain_id='chain' AND task_id='task'")
+    brief:=`{"goal":"g","acceptance":["a"],"run_bridge_id":"executor","agent_models":{"author":{"provider":"claude","model":"sonnet"}}}`
+    testing.expect(t,exec(f.store.db,fmt.tprintf("INSERT INTO task_requirements VALUES('chain','task',%s,'%s','','p','op_pin')",revision[0][0],brief)))
+    testing.expect(t,remote_assignment_policy(&f.store,config),"task pin + per-task model")
+    wrong:=remote_test_copy(config);wrong["model"]=json.String("haiku")
+    testing.expect(t,!remote_assignment_policy(&f.store,wrong),"the per-task model still binds the reserved model")
+    other:=remote_test_copy(config);other["executor_bridge_id"]=json.String("elsewhere")
+    testing.expect(t,!remote_assignment_policy(&f.store,other),"the pin names one Bridge only")
+    // Without the task pin, a fleet --bridge-models entry for the executor also places it.
+    revision,_=query(f.store.db,"SELECT COALESCE(max(revision),0)+1 FROM task_requirements WHERE chain_id='chain' AND task_id='task'")
+    testing.expect(t,exec(f.store.db,fmt.tprintf("INSERT INTO task_requirements VALUES('chain','task',%s,'%s','','p','op_unpin')",revision[0][0],`{"goal":"g","acceptance":["a"]}`)))
+    testing.expect(t,!remote_assignment_policy(&f.store,config))
+    policy.bridge_models_json=`{"executor":{"provider":"claude","model":"sonnet","provider_profile":"default"}}`
+    chain,_=query(f.store.db,"SELECT revision FROM task_chains WHERE chain_id='chain'")
+    testing.expect_value(t,fleet_policy_test_call(f,encode(policy),"bridge_models",chain[0][0]).code,"ok")
+    testing.expect(t,remote_assignment_policy(&f.store,config),"fleet --bridge-models entry for the executor")
+    // Capacity 1 on the executor: a reservation of this agent there for another task uses it up.
+    testing.expect_value(t,remote_test_call(f,remote_test_payload(f,key,config),"remote_one",key).code,"ok")
+    second:=remote_test_copy(config);second["task_id"]=json.String("second")
+    testing.expect(t,!remote_assignment_policy(&f.store,second),"per-(agent, Bridge) capacity")
+    third:=remote_test_copy(second);third["executor_bridge_id"]=json.String("third")
+    policy.bridge_models_json=`{"executor":{"provider":"claude","model":"sonnet","provider_profile":"default"},"third":{"provider":"claude","model":"sonnet","provider_profile":"default"}}`
+    chain,_=query(f.store.db,"SELECT revision FROM task_chains WHERE chain_id='chain'")
+    testing.expect_value(t,fleet_policy_test_call(f,encode(policy),"bridge_models_3",chain[0][0]).code,"ok")
+    testing.expect(t,remote_assignment_policy(&f.store,third),"another Bridge has its own capacity")
+}
