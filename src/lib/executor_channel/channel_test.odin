@@ -140,8 +140,14 @@ channel_rejects_scope_swaps_rotation_expiry_and_content_reflection :: proc(t:^te
         _,ok:=open(v.token,&kr,changed,1200)
         testing.expect(t,!ok,pair[0])
     }
-    for now in ([3]i64{999,2000,10000}) {
-        _,ok:=open(v.token,&kr,v.scope,now);testing.expect(t,!ok)
+    // G3: the scope is stamped by the other Bridge; its times are checked
+    // with the clock-skew tolerance, so only times beyond it are refused.
+    issued,expires:=contracts.executor_number(v.scope,"issued_ms"),contracts.executor_number(v.scope,"request_expires_ms")
+    for now in ([2]i64{issued-1,expires}) {
+        _,ok:=open(v.token,&kr,v.scope,now);testing.expectf(t,ok,"within the tolerance at %d",now)
+    }
+    for now in ([2]i64{issued-contracts.EXECUTOR_CLOCK_SKEW_MS-1,expires+contracts.EXECUTOR_CLOCK_SKEW_MS}) {
+        _,ok:=open(v.token,&kr,v.scope,now);testing.expectf(t,!ok,"beyond the tolerance at %d",now)
     }
     _,retained:=vault.keyring_key_for_epoch(&kr,1);testing.expect(t,retained)
     _,opened:=open(v.old_token,&kr,v.scope,1200);testing.expect(t,!opened)

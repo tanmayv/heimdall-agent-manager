@@ -84,8 +84,11 @@ executor_child_result_fields := [?]Owner_Field{
     {"issued_ms","positive"},{"request_expires_ms","positive"},{"key_id","id"},{"signature","signature"},
 }
 
+// peer: the caller is the executor, whose clock is not the owner's that
+// stamped b and a, so their times are checked with the skew tolerance. The
+// owner validating its own bootstrap (peer=false) compares exactly.
 executor_bootstrap_matches :: proc(b,p,a:json.Object,configuration_raw,body_raw,launch_key:string,
-    owner_key:Owner_Verified_Key,now:i64)->bool {
+    owner_key:Owner_Verified_Key,now:i64,peer:=false)->bool {
     c,configured:=owner_parse(configuration_raw,"remote_configuration")
     _,content_valid:=executor_parse(body_raw,"bootstrap_content")
     if !configured || !content_valid || !executor_verify("bootstrap",b,owner_key) || !executor_verify("prepare",p,owner_key) ||
@@ -114,8 +117,10 @@ executor_bootstrap_matches :: proc(b,p,a:json.Object,configuration_raw,body_raw,
     return owner_string(b,"prepare_digest")==pd && owner_string(a,"prepare_digest")==pd &&
         owner_string(b,"action_digest")==ad && owner_string(b,"configuration_digest")==owner_payload_digest(configuration_raw) &&
         owner_string(b,"body_digest")==owner_payload_digest(body_raw) &&
-        now>=executor_number(b,"issued_ms") && now<executor_number(b,"request_expires_ms") &&
-        now<executor_number(a,"request_expires_ms") && now<executor_number(a,"expires_ms")
+        (peer ? executor_peer_issued(executor_number(b,"issued_ms"),now) && executor_peer_unexpired(executor_number(b,"request_expires_ms"),now) &&
+            executor_peer_unexpired(executor_number(a,"request_expires_ms"),now) && executor_peer_unexpired(executor_number(a,"expires_ms"),now) :
+         now>=executor_number(b,"issued_ms") && now<executor_number(b,"request_expires_ms") &&
+            now<executor_number(a,"request_expires_ms") && now<executor_number(a,"expires_ms"))
 }
 
 // The caller supplies the currently accepted bootstrap, not one selected by the
@@ -145,7 +150,11 @@ executor_child_request_matches :: proc(r,b:json.Object,input_raw:string,executor
         executor_peer_unexpired(executor_number(r,"request_expires_ms"),now)
 }
 
-executor_child_result_matches :: proc(result,request:json.Object,body:string,owner_key:Owner_Verified_Key,now:i64)->bool {
+// owner_side: the owner checking the result it just sealed, on its own clock:
+// its own issued_ms is exact, the executor-stamped request expiry is a peer
+// time (skew tolerance). The executor receiving it (owner_side=false) checks
+// the owner's issued_ms as a peer time and its own request expiry exactly.
+executor_child_result_matches :: proc(result,request:json.Object,body:string,owner_key:Owner_Verified_Key,now:i64,owner_side:=false)->bool {
     if !executor_verify("child_result",result,owner_key) || !executor_valid(request,"child_request") do return false
     for name in ([10]string{"protocol_version","account_id","owner_bridge_id","executor_bridge_id","chain_id","reservation_id",
         "owner_incarnation","executor_incarnation","prepare_digest","input_digest"}) {
@@ -153,10 +162,9 @@ executor_child_result_matches :: proc(result,request:json.Object,body:string,own
     }
     digest,_:=executor_digest("child_request",request)
     return owner_string(result,"request_digest")==digest && owner_string(result,"result_digest")==owner_payload_digest(body) &&
-        // The result is stamped by the owner's clock; its expiry is this
-        // executor's own request expiry, compared exactly.
-        executor_peer_issued(executor_number(result,"issued_ms"),now) && executor_peer_issued(executor_number(request,"issued_ms"),executor_number(result,"issued_ms")) &&
-        now<executor_number(result,"request_expires_ms") &&
+        executor_peer_issued(executor_number(request,"issued_ms"),executor_number(result,"issued_ms")) &&
+        (owner_side ? now>=executor_number(result,"issued_ms") && executor_peer_unexpired(executor_number(result,"request_expires_ms"),now) :
+         executor_peer_issued(executor_number(result,"issued_ms"),now) && now<executor_number(result,"request_expires_ms")) &&
         executor_number(result,"request_expires_ms")<=executor_number(request,"request_expires_ms")
 }
 

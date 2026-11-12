@@ -7,6 +7,7 @@ import "core:strings"
 import "core:testing"
 import contracts "odin_test:contracts"
 import executor "odin_test:lib/executor_local"
+import channel "odin_test:lib/executor_channel"
 
 execution_child_test_request :: proc(x:^Execution_Test,b:json.Object,input:string,now:i64)->string {
     r:=make(json.Object,context.temp_allocator)
@@ -334,4 +335,55 @@ owner_execution_remote_rework_retires_row_and_task_is_placed_again :: proc(t:^te
     testing.expectf(t,again.code=="ok" && !again.replay,"the reworked task is placed again: %v",again)
     rows,_:=query(f.store.db,"SELECT count(*),count(DISTINCT lease_id) FROM owner_execution_journal WHERE chain_id='chain' AND task_id='task'")
     testing.expect_value(t,encode(rows),encode([1][2]string{{"2","2"}}))
+}
+
+// G3 review round 2: the full request -> execution_child -> sealed
+// execution_child_result -> executor receipt exchange across two clocks. The
+// executor stamps the request (and the channel scope) on its clock; the owner
+// admits it and seals its result on its own clock; the executor opens and
+// matches the receipt on its clock. Offsets of +/-10 s work; beyond the
+// tolerance the owner refuses to seal an expired request.
+@(test)
+owner_execution_child_exchange_tolerates_clock_offsets :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    x,claim:=execution_bootstrap_fixture(t);defer execution_test_destroy(x);f:=x.owner
+    snapshot:=execution_bootstrap(&f.store,claim,"Worker","","[]",f.owner,1200,{&f.owner_priv,execution_test_sign})
+    if !testing.expect_value(t,snapshot.code,"ok") do return
+    bundle,_:=contracts.owner_content_document(snapshot.body);o,_:=bundle.(json.Object)
+    b,_:=contracts.executor_parse(field(o,"bootstrap"),"bootstrap")
+    caps,_:=query(f.store.db,"SELECT capability_json FROM local_leases WHERE lease_id='lease'")
+    input:=encode(contracts.Owner_Lease_Input{"1","chain","task","lease","1","3","remote_hb","lease.heartbeat","2000",caps[0][0]})
+    exchange :: proc(t:^testing.T,x:^Execution_Test,b:json.Object,input:string,owner_now,executor_now:i64) -> (sealed,matched:bool) {
+        f:=x.owner
+        raw:=execution_child_test_request(x,b,input,executor_now)
+        request,_:=contracts.executor_parse(raw,"child_request")
+        if _,valid:=execution_child(&f.store,raw,input,x.host_key,f.owner,owner_now);!valid do return false,false
+        scope:=make(json.Object,context.temp_allocator)
+        for name in ([8]string{"protocol_version","account_id","owner_bridge_id","executor_bridge_id","chain_id","reservation_id","owner_incarnation","executor_incarnation"}) do scope[name]=request[name]
+        digest,_:=contracts.executor_digest("child_request",request)
+        scope["request_id"]=json.String("child_skew");scope["method"]=json.String("child_request");scope["direction"]=json.String("request")
+        scope["input_digest"]=json.String(digest);scope["fence_digest"]=request["prepare_digest"]
+        scope["issued_ms"]=request["issued_ms"];scope["request_expires_ms"]=request["request_expires_ms"]
+        token,ok:=execution_child_result(request,"owner body",scope,f.owner,owner_now,&f.kr,{&f.owner_priv,execution_test_sign})
+        if !ok do return false,false
+        scope["direction"]=json.String("response")
+        plain,opened:=channel.open(token,&f.kr,scope,executor_now+50)
+        if !opened do return true,false
+        value,_:=contracts.owner_content_document(plain);rb,_:=value.(json.Object)
+        receipt,_:=contracts.executor_parse(field(rb,"receipt"),"child_result")
+        return true,contracts.executor_child_result_matches(receipt,request,field(rb,"body"),f.owner,executor_now+50)
+    }
+    base_sealed,base_matched:=exchange(t,x,b,input,1300,1300)
+    testing.expect(t,base_sealed && base_matched,"same clock")
+    // Executor 10 s behind the owner, then 10 s ahead.
+    for offset in ([2]i64{-10_000,10_000}) {
+        owner_now:=i64(20_000)+(offset<0 ? 0 : 1_000)
+        sealed,matched:=exchange(t,x,b,input,owner_now,owner_now+offset)
+        testing.expectf(t,sealed && matched,"executor offset %d ms: the owner seals and the executor accepts (sealed=%v matched=%v)",offset,sealed,matched)
+    }
+    // Executor more than the tolerance behind: its request has expired by
+    // the owner's clock even with the tolerance, so the owner seals nothing.
+    late:=i64(40_000)
+    sealed,_:=exchange(t,x,b,input,late,late-contracts.EXECUTOR_CLOCK_SKEW_MS-1_000)
+    testing.expect(t,!sealed,"beyond the tolerance the owner refuses the expired request")
 }

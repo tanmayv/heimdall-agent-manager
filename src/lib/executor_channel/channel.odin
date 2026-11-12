@@ -15,7 +15,10 @@ DOMAIN :: "heimdall-executor/channel/v1"
 scope_live :: proc(scope:json.Object,kr:^vault.Vault_Keyring,now:i64)->bool {
     return kr!=nil && contracts.executor_valid(scope,"transport_scope") &&
         contracts.owner_string(scope,"account_id")==vault.keyring_user_id(kr) &&
-        now>=contracts.executor_number(scope,"issued_ms") && now<contracts.executor_number(scope,"request_expires_ms")
+        // The scope is stamped by whichever Bridge sent the request; a reply
+        // reuses it on the other host, so both ends tolerate clock skew.
+        contracts.executor_peer_issued(contracts.executor_number(scope,"issued_ms"),now) &&
+        contracts.executor_peer_unexpired(contracts.executor_number(scope,"request_expires_ms"),now)
 }
 aad :: proc(scope:json.Object,id:vault.Vault_Id,epoch:u32)->(string,bool) {
     canonical,ok:=contracts.executor_canonical("transport_scope",scope)

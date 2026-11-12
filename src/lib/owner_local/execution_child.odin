@@ -68,7 +68,7 @@ execution_child_result :: proc(request:json.Object,body:string,scope:json.Object
     signature,signed:=sign.sign(sign.ctx,"executor.child_result",r)
     if !signed do return "",false
     r["signature"]=json.String(signature)
-    if !contracts.executor_child_result_matches(r,request,body,owner_key,now) do return "",false
+    if !contracts.executor_child_result_matches(r,request,body,owner_key,now,owner_side=true) do return "",false
     bundle:=encode(struct{receipt,body:string}{encode(r),body})
     if _,valid:=contracts.executor_parse(bundle,"child_result_bundle");!valid do return "",false
     response:=make(json.Object,context.temp_allocator)

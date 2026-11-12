@@ -37,7 +37,7 @@ accept_bootstrap :: proc(s:^Store,raw,body,action_raw:string,key:contracts.Owner
     if len(rows)!=1 do return fail("invalid_scope")
     row:=rows[0]
     p,prepared:=contracts.executor_parse(row[0],"prepare")
-    if !prepared || !contracts.executor_bootstrap_matches(b,p,a,row[6],body,row[1],key,now) ||
+    if !prepared || !contracts.executor_bootstrap_matches(b,p,a,row[6],body,row[1],key,now,peer=true) ||
        contracts.owner_payload_digest(row[7])!=field(p,"token_generation") {return fail("invalid_scope")}
     if row[2]!="active" || number(row[3])!=s.incarnation || row[4]!=field(b,"deadline_version") ||
        row[5]!=field(b,"expires_ms") {return fail("stale_intent")}

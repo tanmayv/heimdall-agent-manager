@@ -505,7 +505,8 @@ export function executorParse(raw: string, kind: ExecutorKind): ExecutorDocument
     const start = BigInt(o.issued_ms), end = BigInt(o.request_expires_ms);
     if (end <= start || end-start > EXECUTOR_FENCE_TTL_MS || end > BigInt(o.expires_ms) || BigInt(o.expires_ms) > BigInt(o.hard_ms)) throw new SyntaxError('Executor child bounds');
   }
-  if ((kind === 'child_result' || kind === 'notification_result') && (BigInt(o.request_expires_ms) <= BigInt(o.issued_ms) || BigInt(o.request_expires_ms)-BigInt(o.issued_ms) > EXECUTOR_FENCE_TTL_MS)) throw new SyntaxError('Executor child result bounds');
+  // Mixed-clock document (replier's issued_ms, requester's request_expires_ms): bounded with the skew tolerance.
+  if ((kind === 'child_result' || kind === 'notification_result') && (BigInt(o.request_expires_ms)+EXECUTOR_CLOCK_SKEW_MS <= BigInt(o.issued_ms) || BigInt(o.request_expires_ms)-BigInt(o.issued_ms) > EXECUTOR_FENCE_TTL_MS+EXECUTOR_CLOCK_SKEW_MS)) throw new SyntaxError('Executor child result bounds');
   if (kind === 'directory' && o.directory_path === '') throw new SyntaxError('Executor directory path');
   if (kind === 'policy') {
     const capacity = BigInt(o.device_capacity);

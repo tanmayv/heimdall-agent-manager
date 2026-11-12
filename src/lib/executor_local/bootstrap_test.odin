@@ -1,12 +1,15 @@
 #+feature dynamic-literals
 package executor_local
 import "core:encoding/json"
+import "core:fmt"
 import "core:strings"
 import "core:testing"
 import contracts "odin_test:contracts"
 
 Bootstrap_Fixture :: struct {p,a,b:json.Object,raw,body,action,configuration:string}
-bootstrap_fixture :: proc(t:^testing.T,f:^Fixture)->Bootstrap_Fixture {
+// long: a lease window long enough to stamp the bootstrap tens of seconds
+// apart from the executor's clock (the shared fixture's lease ends at 5 s).
+bootstrap_fixture :: proc(t:^testing.T,f:^Fixture,long:=false)->Bootstrap_Fixture {
     policy(t,f)
     consent,selection,res:=issuance_inputs(f)
     issued:=issue_fixture(f,consent,selection,res)
@@ -18,10 +21,12 @@ bootstrap_fixture :: proc(t:^testing.T,f:^Fixture)->Bootstrap_Fixture {
     for name in ([15]string{"protocol_version","account_id","owner_bridge_id","executor_bridge_id","chain_id","task_id","instance_id",
         "launch_epoch","run_count","token_generation","configuration_revision","executor_incarnation","policy_revision","slot_id","provider_profile"}) {set(p,name,field(c,name))}
     set(p,"directory_key",field(c,"directory_key"))
+    if long do set(p,"hard_ms","200000")
     resources,ok:=issued_prepare_resources(&f.store,p);testing.expect(t,ok)
     raw_p:=signed(p,"prepare",&f.owner1)
     testing.expect_value(t,prepare(&f.store,raw_p,f.owner1.public,1200,resources).code,"ok")
     a:=activate_document(p)
+    if long {set(a,"expires_ms","100000");set(a,"hard_ms","200000")}
     raw_a:=signed(a,"action",&f.owner1)
     testing.expect_value(t,action(&f.store,raw_a,f.owner1.public,1250,proof(a)).code,"ok")
     testing.expect_value(t,bind_owner(&f.store,genesis_sign(genesis_document(),&f.owner2,&f.owner1),f.owner2.public,f.owner1.public,1250).code,"ok")
@@ -119,4 +124,34 @@ executor_bootstrap_v3_upgrade_collision_rolls_back_without_reissuing_credentials
     rows,_=query(f.store.db,"SELECT schema_version,incarnation,(SELECT state FROM executor_reservations),(SELECT configuration FROM executor_issuances) FROM executor_runtime")
     testing.expect(t,rows[0][0]=="16" && rows[0][1]=="2" && rows[0][2]=="active" && rows[0][3]==creds[0][1])
     testing.expect_value(t,accept_bootstrap(&f.store,x.raw,x.body,x.action,f.owner1.public,1300,proof(x.a)).code,"stale_intent")
+}
+
+// G3 review round 2: bootstrap admission by the executor (accept_bootstrap,
+// on the executor's clock) of a bootstrap the owner stamped on its clock.
+// Owner 10 s ahead (issued in the executor's future) and owner behind (its
+// request expiry already past by the executor's clock) are admitted; an owner
+// ahead by more than the tolerance is refused. Each case is a fresh fixture.
+@(test)
+executor_bootstrap_admission_tolerates_owner_clock_offsets :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    skew:=i64(contracts.EXECUTOR_CLOCK_SKEW_MS)
+    // issued/expires are the owner's stamps; now is the executor's clock.
+    Case :: struct {issued,expires,now:i64,code,name:string}
+    cases:=[]Case{
+        {1300+10_000,1300+10_600,1300,"ok","owner 10 s ahead"},
+        {1300+skew+1,1300+skew+600,1300,"invalid_scope","owner ahead beyond the tolerance"},
+        {1250,1900,1900+10_000,"ok","owner 10 s behind (its expiry past by the executor's clock)"},
+        {1250,1900,1900+skew,"invalid_scope","owner behind beyond the tolerance"},
+    }
+    for c in cases {
+        f:=fixture(t)
+        x:=bootstrap_fixture(t,f,long=true)
+        b:=x.b
+        set(b,"issued_ms",fmt.tprintf("%d",c.issued));set(b,"request_expires_ms",fmt.tprintf("%d",c.expires))
+        raw:=signed(b,"bootstrap",&f.owner1)
+        _,taken:=take_intent(&f.store,1300);testing.expect(t,taken)
+        got:=accept_bootstrap(&f.store,raw,x.body,x.action,f.owner1.public,c.now,proof(x.a)).code
+        testing.expectf(t,got==c.code,"%s: %s (want %s)",c.name,got,c.code)
+        destroy(f)
+    }
 }

@@ -219,8 +219,11 @@ executor_valid :: proc(o:json.Object,kind:string)->bool {
     }
     if kind=="bootstrap_content" && !executor_bootstrap_content_valid(o) do return false
     if kind=="child_result" || kind=="notification_result" {
+        // G3: a mixed-clock document. issued_ms is the replier's clock;
+        // request_expires_ms is copied from the request, stamped by the other
+        // host. Their span is bounded with the clock-skew tolerance.
         start,end:=executor_number(o,"issued_ms"),executor_number(o,"request_expires_ms")
-        if end<=start || end-start>EXECUTOR_FENCE_TTL_MS do return false
+        if end+EXECUTOR_CLOCK_SKEW_MS<=start || end-start>EXECUTOR_FENCE_TTL_MS+EXECUTOR_CLOCK_SKEW_MS do return false
     }
     if kind=="bootstrap" || kind=="child_request" || kind=="notification" {
         start,end:=executor_number(o,"issued_ms"),executor_number(o,"request_expires_ms")
