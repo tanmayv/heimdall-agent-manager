@@ -304,12 +304,26 @@ bridge_model_accepted :: proc(provider, model: string, profile_id := "", custom_
 	if observed.has_snapshot {
 		for m in observed.models do if m.model_id == model do return true
 	}
+	if bridge_provider_catalog_active_model(provider, model) do return true
 	if _, _, active := bridge_owner_agent_model_resolve(provider, model); active do return true
 	return refuse(where_, fmt.tprintf("%s/%s is not a custom model, not observed on this Bridge and not an active catalog model", provider, model))
 }
 
 bridge_provider_catalog_has_model :: proc(provider_name, model_id: string) -> bool {
 	return bridge_model_accepted(provider_name, model_id)
+}
+
+// An active model of an active provider in this Bridge's catalog snapshot.
+bridge_provider_catalog_active_model :: proc(provider_name, model_id: string) -> bool {
+	bridge_provider_catalog_init()
+	sync.rw_mutex_shared_lock(&bridge_provider_catalog_mutex)
+	defer sync.rw_mutex_shared_unlock(&bridge_provider_catalog_mutex)
+	if bridge_provider_catalog_snapshot == nil do return false
+	for provider in bridge_provider_catalog_snapshot.providers {
+		if provider.provider != provider_name || provider.state != "active" do continue
+		for model in provider.models do if model.model_id == model_id && model.state == "active" do return true
+	}
+	return false
 }
 
 bridge_provider_catalog_needs_sync :: proc(hub_etag: string) -> bool {

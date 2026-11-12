@@ -35,7 +35,9 @@ test_bridge_effective_models_and_launch_argv :: proc(t: ^testing.T) {
 	append(&bridge_models_cache,bridge_models_clone({provider="codex",has_snapshot=true,models=[]Bridge_Discovered_Model{{model_id="new-launch-id",label="New"}},models_state="authentication_required"}))
 	sync.mutex_unlock(&bridge_models_mu)
 	testing.expect(t,bridge_provider_catalog_has_model("codex","new-launch-id"),"last-good models survive failed attempts")
-	testing.expect(t,!bridge_provider_catalog_has_model("codex","seed"),"snapshot replaces seed membership")
+	// G4 (REQ-EXEC-NEVER-BLOCK): an observed list adds models; it never hides
+	// an active catalog model.
+	testing.expect(t,bridge_provider_catalog_has_model("codex","seed"),"the snapshot does not hide an active catalog model")
 	profile:=bridge_agent_runtime_profile(bridge_provider_profile_from_catalog(snap.providers[0]))
 	argv:=agent_runtime.build_agent_command(profile,"new-launch-id","","tok","inst",agent_runtime.PERMISSION_MODE_ASK)
 	defer delete(argv)
@@ -45,5 +47,6 @@ test_bridge_effective_models_and_launch_argv :: proc(t: ^testing.T) {
 	for m in bridge_models_cache[0].models {delete(m.model_id);delete(m.label);delete(m.resolved_model)}
 	delete(bridge_models_cache[0].models);bridge_models_cache[0].models=nil
 	sync.mutex_unlock(&bridge_models_mu)
-	testing.expect(t,!bridge_provider_catalog_has_model("codex","seed"),"successful empty list does not fall back")
+	testing.expect(t,bridge_provider_catalog_has_model("codex","seed"),"an empty observed list still accepts the active catalog model")
+	testing.expect(t,!bridge_provider_catalog_has_model("codex","new-launch-id"),"an emptied observed list no longer accepts its former model")
 }

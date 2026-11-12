@@ -158,7 +158,9 @@ test_executor_auto_issuance_never_blocks_on_unobserved_model_root_or_slot :: pro
     // Nothing observed: the active catalog model is the only source.
     bridge_provider_catalog_default_hook=[]Bridge_Catalog_Provider{{provider="claude",state="active",models=[]Bridge_Catalog_Model{{model_id="claude-sonnet-5-5",state="active"}}}}
     defer bridge_provider_catalog_default_hook=nil
-    testing.expect(t,!bridge_provider_catalog_has_model("claude","claude-sonnet-5-5"),"the Bridge observed no claude-sonnet-5-5")
+    // G4: the one acceptance rule takes the active catalog model although
+    // the Bridge observed no claude-sonnet-5-5.
+    testing.expect(t,bridge_provider_catalog_has_model("claude","claude-sonnet-5-5"),"an active catalog model is accepted without being observed")
     auto:=contracts.EXECUTOR_AUTO_SELECTOR
     requested:=executor.encode(struct{provider,model,provider_profile,directory_id,policy_revision,slot_id:string}{"claude","claude-sonnet-5-5",auto,auto,"1",auto})
     consent:=make(json.Object);consent["chain_id"]=json.String("chain_no_directory")
