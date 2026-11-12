@@ -1,6 +1,7 @@
 #+feature dynamic-literals
 package main
 
+import "base:runtime"
 import "core:fmt"
 import "core:os"
 import "core:strings"
@@ -113,6 +114,19 @@ test_executor_auto_issuance_resolves_without_operator_mapping :: proc(t:^testing
     testing.expect(t,!bridge_executor_resolve_auto_issuance(s,consent,unknown,self).resolved,"an unknown model is refused")
     stranger:=self;stranger.key_id="other_key"
     testing.expect(t,!bridge_executor_resolve_auto_issuance(s,consent,requested,stranger).resolved,"only this executor's own key provisions")
+    // G4 round 1: auto issuance applies the launch rule to the default
+    // profile it selects: a custom model of that profile, and a model only
+    // its own snapshot observed, resolve although neither is in the catalog.
+    default_profile:=Provider_Profile{provider="claude",profile_id="claude",enabled=true}
+    default_profile.config.custom_models=[]string{"claude-default-private"}
+    testing.expect_value(t,profile_upsert(&default_profile,nil,now),Profile_Error.None)
+    sync.mutex_lock(&bridge_models_mu)
+    append(&bridge_models_cache,bridge_models_clone(Bridge_Provider_Models{provider="claude",has_snapshot=true,models=[]Bridge_Discovered_Model{{model_id="sonnet"}}},runtime.default_allocator()))
+    sync.mutex_unlock(&bridge_models_mu)
+    for model in ([2]string{"claude-default-private","sonnet"}) {
+        own:=executor.encode(struct{provider,model,provider_profile,directory_id,policy_revision,slot_id:string}{"claude",model,auto,auto,"1",auto})
+        testing.expectf(t,bridge_executor_resolve_auto_issuance(s,consent,own,self).resolved,"auto issuance accepts %s (default profile custom/observed)",model)
+    }
 }
 
 // F5 (REQ-EXEC-NEVER-BLOCK, local REQ-E2E-1 B): Bridge B observed no models

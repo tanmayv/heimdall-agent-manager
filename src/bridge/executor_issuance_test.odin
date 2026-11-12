@@ -573,6 +573,26 @@ bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,wire:Executor_Exc
     mapping,_:=executor.directory_mapping(&bridge_executor_store,contracts.owner_string(config,"directory_id"))
     original_profile,profile_error:=profile_lookup("claude","claude",prepare_runtime=false)
     if !testing.expect(t,profile_error==.None) do return
+    // G4: the configured model is no longer an active catalog model and was
+    // never observed: the real launch pin refuses it, and the activation
+    // answers model_unavailable (not spawn_prepare_failed), before any spawn.
+    {
+        sync.rw_mutex_lock(&bridge_launch_configuration_mutex)
+        bridge_provider_catalog_snapshot.providers[0].models[0].state="retired"
+        sync.rw_mutex_unlock(&bridge_launch_configuration_mutex)
+        refused_probe:=Executor_Test_Prepare{dir,0}
+        refused_io:=Executor_Launch_IO{&refused_probe,bridge_executor_test_physical_prepare,socket}
+        _,model_code:=bridge_executor_test_exchange(t,wire,a,"action",owner_private,kr,self_key,"physical_model_refused",
+            &fence_probe,material.bootstrap,material.body,refused_io,true)
+        testing.expect_value(t,model_code,"model_unavailable")
+        testing.expect(t,refused_probe.calls==1 && fence_probe.calls==0,"refused at the launch pin, before the owner fence")
+        testing.expect(t,strings.contains(bridge_model_last_refusal,"is not a custom model"),"the refusal reason is recorded on this Bridge")
+        refused_pid,refused_known:=bridge_pty_host_executor_query(socket,intent.instance,intent.launch_key)
+        testing.expect(t,refused_known && refused_pid==0,"nothing was spawned for the refused model")
+        sync.rw_mutex_lock(&bridge_launch_configuration_mutex)
+        bridge_provider_catalog_snapshot.providers[0].models[0].state="active"
+        sync.rw_mutex_unlock(&bridge_launch_configuration_mutex)
+    }
     for mutation in ([4]string{"catalog","profile","missing","replacement"}) {
         fence_probe.calls=0;fence_probe.resource_mutation=mutation;fence_probe.resource_path=mapping.path
         _,rejected:=bridge_executor_test_exchange(t,wire,a,"action",owner_private,kr,self_key,

@@ -103,8 +103,11 @@ bridge_executor_install_directory :: proc(s:^executor.Store,raw:string,key:contr
 // refused placement (REQ-E2E-1 .12, task_18e70e69aca835a7) and then every
 // prepare of the issued selection (.14, task_18e72ea85b7d4f43) with
 // invalid_resources. An inactive or unknown model is still refused, logged.
-bridge_executor_model_allowed :: proc(provider,model:string) -> bool {
-    return bridge_model_accepted(provider,model,where_="executor issuance/prepare")
+// G4 round 1: issuance and prepare apply the launch rule to the SELECTED
+// profile (its own snapshot and custom models), so they accept exactly what
+// the launch of that profile accepts.
+bridge_executor_model_allowed :: proc(p:^Provider_Profile,provider,model:string) -> bool {
+    return profile_has_model(p,provider,model,"executor issuance/prepare")
 }
 // Refusals name the failing component (model, profile, slot, directory) in
 // `why` and in the Bridge log.
@@ -118,11 +121,11 @@ bridge_executor_resolve_issuance :: proc(s:^executor.Store,selection_raw:string,
     if !within do return bridge_executor_refuse(why,"directory: %s (%s) is missing or not a usable directory",get(selection,"directory_id"),mapping.path)
     if executor.directory_key(s.executor,canonical)!=mapping.key do return bridge_executor_refuse(why,"directory: %s no longer matches its mapped key",get(selection,"directory_id"))
     provider,model,profile:=get(selection,"provider"),get(selection,"model"),get(selection,"provider_profile")
-    if !bridge_executor_model_allowed(provider,model) do return bridge_executor_refuse(why,"model: %s/%s is neither observed on this Bridge nor an active catalog model",provider,model)
     resolved,err:=profile_lookup(provider,profile)
     if err!=.None || !resolved.enabled || resolved.provider!=provider || resolved.profile_id!=profile {
         return bridge_executor_refuse(why,"profile: %s/%s is not an enabled profile on this Bridge",provider,profile)
     }
+    if !bridge_executor_model_allowed(&resolved,provider,model) do return bridge_executor_refuse(why,"model: %s/%s is not a custom model of profile %s, not observed by it and not an active catalog model",provider,model,profile)
     return executor.Issuance_Resources{selection_digest=contracts.owner_payload_digest(selection_raw),directory_key=mapping.key,directory_path=canonical,resolved=true}
 }
 
@@ -150,11 +153,11 @@ bridge_executor_resolve_auto_issuance :: proc(s:^executor.Store,consent:json.Obj
     if self.key_id!=s.operator_key do return bridge_executor_refuse(why,"selection: only this executor's own key provisions")
     get:=contracts.owner_string
     provider,model:=get(selection,"provider"),get(selection,"model")
-    if !bridge_executor_model_allowed(provider,model) do return bridge_executor_refuse(why,"model: %s/%s is neither observed on this Bridge nor an active catalog model",provider,model)
     profile,err:=profile_lookup(provider,provider,context.temp_allocator,false)
     if err!=.None || !profile.enabled || profile.provider!=provider || !contracts.owner_field_valid(profile.profile_id,"id") {
         return bridge_executor_refuse(why,"profile: no enabled default %s profile on this Bridge",provider)
     }
+    if !bridge_executor_model_allowed(&profile,provider,model) do return bridge_executor_refuse(why,"model: %s/%s is not a custom model of profile %s, not observed by it and not an active catalog model",provider,model,profile.profile_id)
     revision,slot,found:=executor.auto_slot(s,profile.profile_id)
     if !found {
         // No policy yet: this executor installs one with an auto slot for the

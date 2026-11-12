@@ -277,10 +277,9 @@ bridge_owner_executor_accept :: proc(_:rawptr,s:^owner.Store,c:owner.Intent_Clai
     if !scoped || json.unmarshal_string(envelope.data.reply,&reply,.JSON,context.temp_allocator)!=nil ||
        reply.request_id!=contracts.owner_string(scope,"request_id") || reply.type!="command_result" {return true,false,"invalid_executor_reply"}
     if reply.code!="ok" {
-        // The executor Bridge's own refusal code (e.g. model_unavailable)
-        // is logged here; the intent records executor_rejected as before.
-        fmt.eprintfln("bridge owner executor: %s %s refused by executor %s: %s",c.kind,c.id,c.destination,reply.code)
-        return true,false,"executor_rejected"
+        result,line:=bridge_owner_executor_refusal(c.kind,c.id,c.destination,reply.code)
+        fmt.eprintln(line)
+        return true,false,result
     }
     control,control_valid:=contracts.executor_parse(pin.control,"action")
     receipt,authenticated:=channel.open_signed(reply.envelope,&kr,scope,key,now,context.temp_allocator,
@@ -376,4 +375,10 @@ use ./bin/ham-ctl task comment, which notifies the coordinator.
 Acknowledge a requirements revision with: ./bin/ham-ctl lease heartbeat --acknowledge-requirements-revision <n>
 Load the worker-task-management skill for the task lifecycle.
 `,role,get(p,"instance_id"),get(p,"task_id"),get(p,"lease_id"),get(p,"chain_id"),owner_bridge,template)
+}
+
+// The executor Bridge's own refusal code (e.g. model_unavailable) is logged
+// on the owner; the intent records executor_rejected as before.
+bridge_owner_executor_refusal :: proc(kind,id,destination,code:string)->(result,line:string) {
+    return "executor_rejected",fmt.tprintf("bridge owner executor: %s %s refused by executor %s: %s",kind,id,destination,code)
 }
