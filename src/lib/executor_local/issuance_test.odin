@@ -62,8 +62,12 @@ executor_issuance_denies_forgery_unresolved_resources_and_rolls_back_failed_comm
     f:=fixture(t);defer destroy(f);policy(t,f)
     consent,selection,resources:=issuance_inputs(f)
     testing.expect_value(t,issue_fixture(f,consent,selection,{}).code,"invalid_resources")
-    testing.expect_value(t,issue_fixture(f,consent,selection,resources,999).code,"expired")
-    testing.expect_value(t,issue_fixture(f,consent,selection,resources,2000).code,"expired")
+    // G3: the consent is stamped by another host's clock; it is refused only
+    // beyond EXECUTOR_CLOCK_SKEW_MS on either side.
+    c,_:=contracts.executor_parse(consent,"issuance_consent")
+    issued,expires:=contracts.executor_number(c,"issued_ms"),contracts.executor_number(c,"request_expires_ms")
+    testing.expect_value(t,issue_fixture(f,consent,selection,resources,issued-contracts.EXECUTOR_CLOCK_SKEW_MS-1).code,"expired")
+    testing.expect_value(t,issue_fixture(f,consent,selection,resources,expires+contracts.EXECUTOR_CLOCK_SKEW_MS).code,"expired")
     forged:=f.owner2.public;forged.kind="bridge"
     testing.expect_value(t,issue(&f.store,consent,selection,forged,f.operator.public,1100,resources,Signer{&f.operator,sign_receipt}).code,"invalid_scope")
     revoked:=f.owner2.public;revoked.revoked=true

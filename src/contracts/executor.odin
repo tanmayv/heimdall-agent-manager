@@ -17,6 +17,18 @@ EXECUTOR_PREPARE_TTL_MS :: 90000
 // this far ahead of its own clock (issued in its future, or an expiry
 // further out than the TTL). Spans inside one signed document stay exact.
 EXECUTOR_CLOCK_SKEW_MS :: 30000
+
+// Receiver-side checks of a timestamp a PEER stamped with its own clock,
+// tolerating EXECUTOR_CLOCK_SKEW_MS of drift in either direction. A value the
+// receiver stamped itself, or a span inside one signed document, is compared
+// exactly instead.
+// Issued no further than the tolerance in the receiver's future.
+executor_peer_issued :: proc(issued,now:i64)->bool {return now+EXECUTOR_CLOCK_SKEW_MS>=issued}
+// Not yet expired, allowing the peer's clock to run behind the receiver's.
+executor_peer_unexpired :: proc(expires,now:i64)->bool {return expires+EXECUTOR_CLOCK_SKEW_MS>now}
+// A relay window: unexpired as above, and no further out than ttl plus the
+// tolerance (the peer's clock may run ahead).
+executor_peer_window :: proc(expires,now,ttl:i64)->bool {return executor_peer_unexpired(expires,now) && expires-now<=ttl+EXECUTOR_CLOCK_SKEW_MS}
 // A fence response is evidence for one outstanding random challenge only.
 // Transport callers must consume the challenge and recheck local intent state.
 EXECUTOR_FENCE_TTL_MS :: 5000

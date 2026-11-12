@@ -55,7 +55,7 @@ issue :: proc(s:^Store,consent_raw,selection_raw:string,device_key,executor_key:
         if rows[0][0]!=digest do return fail("operation_conflict")
         return Result{"ok",rows[0][1],true}
     }
-    if now<num(consent,"issued_ms") || !request_live(consent,now) do return fail("expired")
+    if !contracts.executor_peer_issued(num(consent,"issued_ms"),now) || !request_live(consent,now) do return fail("expired")
     if code:=clock(s,now);code!="" do return fail(code)
     if !resources.resolved || resources.selection_digest!=selection_digest ||
        !contracts.owner_field_valid(resources.directory_key,"hash") || resources.directory_path=="" ||

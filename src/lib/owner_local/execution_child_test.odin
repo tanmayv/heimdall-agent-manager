@@ -79,7 +79,9 @@ owner_execution_child_rejects_substitution_revocation_regrant_and_restart :: pro
     changed,_:=contracts.owner_parse(input,"lease_input");changed["method"]=json.String("lease.claim")
     regrant:=encode(changed)
     _,valid=execution_child(&f.store,execution_child_test_request(x,b,regrant,1300),regrant,x.host_key,f.owner,1300);testing.expect(t,!valid)
-    _,valid=execution_child(&f.store,request,input,x.host_key,f.owner,1800);testing.expect(t,!valid)
+    // G3: refused only once the executor-stamped request expiry is past by
+    // more than the clock-skew tolerance.
+    _,valid=execution_child(&f.store,request,input,x.host_key,f.owner,1800+contracts.EXECUTOR_CLOCK_SKEW_MS);testing.expect(t,!valid)
     close(&f.store);testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     _,valid=execution_child(&f.store,request,input,x.host_key,f.owner,1400);testing.expect(t,!valid,"old owner incarnation is not fresh remote authority")
 }

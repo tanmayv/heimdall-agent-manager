@@ -140,8 +140,9 @@ executor_child_request_matches :: proc(r,b:json.Object,input_raw:string,executor
     for name in ([4]string{"chain_id","task_id","lease_id","configuration_revision"}) {
         if owner_string(input,name)!=owner_string(r,name) do return false
     }
-    return now+EXECUTOR_CLOCK_SKEW_MS>=executor_number(r,"issued_ms") && executor_number(r,"issued_ms")>=executor_number(b,"issued_ms") &&
-        now<executor_number(r,"request_expires_ms")
+    // r is stamped by the executor's clock, b by the owner's (this receiver).
+    return executor_peer_issued(executor_number(r,"issued_ms"),now) && executor_peer_issued(executor_number(b,"issued_ms"),executor_number(r,"issued_ms")) &&
+        executor_peer_unexpired(executor_number(r,"request_expires_ms"),now)
 }
 
 executor_child_result_matches :: proc(result,request:json.Object,body:string,owner_key:Owner_Verified_Key,now:i64)->bool {
@@ -152,7 +153,9 @@ executor_child_result_matches :: proc(result,request:json.Object,body:string,own
     }
     digest,_:=executor_digest("child_request",request)
     return owner_string(result,"request_digest")==digest && owner_string(result,"result_digest")==owner_payload_digest(body) &&
-        now>=executor_number(result,"issued_ms") && executor_number(result,"issued_ms")>=executor_number(request,"issued_ms") &&
+        // The result is stamped by the owner's clock; its expiry is this
+        // executor's own request expiry, compared exactly.
+        executor_peer_issued(executor_number(result,"issued_ms"),now) && executor_peer_issued(executor_number(request,"issued_ms"),executor_number(result,"issued_ms")) &&
         now<executor_number(result,"request_expires_ms") &&
         executor_number(result,"request_expires_ms")<=executor_number(request,"request_expires_ms")
 }

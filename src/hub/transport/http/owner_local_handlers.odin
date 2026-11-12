@@ -396,7 +396,7 @@ executor_reverse_relay :: proc(ctx:rawptr,req:Request,child:bool)->Response {
     get:=contracts.owner_string
     expires:=contracts.executor_number(relay,"expires_ms")
     now:=time.to_unix_nanoseconds(time.now())/1000000
-    if expires<=now || expires-now>contracts.EXECUTOR_FENCE_TTL_MS+contracts.EXECUTOR_CLOCK_SKEW_MS do return respond_error(domain.domain_error(.Validation_Failed,"fence relay expired"),req.request_id)
+    if !contracts.executor_peer_window(expires,now,contracts.EXECUTOR_FENCE_TTL_MS) do return respond_error(domain.domain_error(.Validation_Failed,"fence relay expired"),req.request_id)
     rows,read:=owner_registry_rows(h,auth.user_id,get(relay,"chain_id"),"","",1)
     if read.code!=.None do return respond_error(read,req.request_id)
     target:=get(relay,"bridge_id")
@@ -432,7 +432,7 @@ executor_relay :: proc(ctx:rawptr,req:Request,activation:bool)->Response {
     get:=contracts.owner_string
     expires:=contracts.executor_number(relay,"expires_ms")
     now:=time.to_unix_nanoseconds(time.now())/1000000
-    if expires<=now || expires-now>contracts.EXECUTOR_TRANSPORT_TTL_MS do return respond_error(domain.domain_error(.Validation_Failed,"relay expired"),req.request_id)
+    if !contracts.executor_peer_window(expires,now,contracts.EXECUTOR_TRANSPORT_TTL_MS) do return respond_error(domain.domain_error(.Validation_Failed,"relay expired"),req.request_id)
     rows,read:=owner_registry_rows(h,auth.user_id,get(relay,"chain_id"),"","",1)
     if read.code!=.None do return respond_error(read,req.request_id)
     if len(rows)!=1 || rows[0].owner_bridge_id!=auth.bridge_id do return respond_error(domain.domain_error(.Forbidden,"immutable owner Bridge required"),req.request_id)

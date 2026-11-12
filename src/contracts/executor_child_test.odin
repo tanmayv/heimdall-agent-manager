@@ -32,7 +32,11 @@ executor_child_result_exact_owner_signature_and_expired_input_relay :: proc(t:^t
     }
     testing.expect(t,!executor_child_result_matches(result,request,strings.concatenate({body," "},context.temp_allocator),key,1400))
     testing.expect(t,!executor_child_result_matches(result,request,body,executor_child_key(f,"executor_key"),1400))
-    for now in ([2]i64{1299,1800}) do testing.expect(t,!executor_child_result_matches(result,request,body,key,now))
+    // G3 skew (the executor receives a result the owner stamped, issued 1300):
+    // the owner's clock may run up to EXECUTOR_CLOCK_SKEW_MS ahead; the expiry
+    // is this executor's own request expiry (1800), compared exactly.
+    for now in ([3]i64{1300-EXECUTOR_CLOCK_SKEW_MS,1299,1799}) do testing.expectf(t,executor_child_result_matches(result,request,body,key,now),"result accepted at executor clock %d",now)
+    for now in ([2]i64{1300-EXECUTOR_CLOCK_SKEW_MS-1,1800}) do testing.expectf(t,!executor_child_result_matches(result,request,body,key,now),"result refused at executor clock %d",now)
     b,_:=executor_parse(owner_string(f,"bootstrap"),"bootstrap")
     old_input,_:=executor_parse(owner_string(f,"expired_child"),"child_request")
     testing.expect(t,executor_child_request_matches(old_input,b,owner_string(f,"expired_input"),executor_child_key(f,"executor_key"),key,1300))
@@ -79,10 +83,12 @@ executor_child_request_exact_signed_binding :: proc(t:^testing.T) {
     }
     testing.expect(t,!executor_child_request_matches(r,b,strings.concatenate({input," "},context.temp_allocator),executor,owner,1300))
     testing.expect(t,!executor_child_request_matches(r,b,"{}",executor,owner,1300))
-    // G3: an executor clock up to EXECUTOR_CLOCK_SKEW_MS ahead of the owner's
-    // is tolerated; further ahead, or past the request expiry, is refused.
-    testing.expect(t,executor_child_request_matches(r,b,input,executor,owner,1199),"issued slightly in the owner's future")
-    for now in ([3]i64{1200-EXECUTOR_CLOCK_SKEW_MS-1,1800,2000}) do testing.expect(t,!executor_child_request_matches(r,b,input,executor,owner,now))
+    // G3 skew (the owner receives a request the executor stamped: issued
+    // 1200, expires 1800). Executor clock ahead: issued up to the tolerance in
+    // the owner's future. Executor clock behind: its expiry is honoured up to
+    // the tolerance past it. Beyond either bound it is refused.
+    for now in ([3]i64{1200-EXECUTOR_CLOCK_SKEW_MS,1199,1800+EXECUTOR_CLOCK_SKEW_MS-1}) do testing.expectf(t,executor_child_request_matches(r,b,input,executor,owner,now),"request accepted at owner clock %d",now)
+    for now in ([2]i64{1200-EXECUTOR_CLOCK_SKEW_MS-1,1800+EXECUTOR_CLOCK_SKEW_MS}) do testing.expectf(t,!executor_child_request_matches(r,b,input,executor,owner,now),"request refused at owner clock %d",now)
     revoked:=executor;revoked.revoked=true
     testing.expect(t,!executor_child_request_matches(r,b,input,revoked,owner,1300))
     testing.expect(t,!executor_verify("child_request",r,owner))

@@ -103,7 +103,7 @@ execution_notification_fence_reply :: proc(s:^Store,raw:string,executor_key,key:
        !contracts.executor_verify("notification_fence_request",q,executor_key) ||
        !contracts.executor_verify("notification",n,key) || field(q,"account_id")!=s.account ||
        field(q,"owner_bridge_id")!=s.owner || contracts.executor_number(q,"owner_incarnation")!=s.incarnation ||
-       now<contracts.executor_number(q,"issued_ms") || now>=contracts.executor_number(q,"request_expires_ms") ||
+       !contracts.executor_peer_issued(contracts.executor_number(q,"issued_ms"),now) || !contracts.executor_peer_unexpired(contracts.executor_number(q,"request_expires_ms"),now) ||
        now<contracts.executor_number(n,"issued_ms") || now>=contracts.executor_number(n,"request_expires_ms") {return fail("invalid_scope")}
     nd,_:=contracts.executor_digest("notification",n)
     if field(q,"action_digest")!=nd || field(q,"intent_id")!=field(n,"intent_id") do return fail("invalid_scope")

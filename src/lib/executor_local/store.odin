@@ -108,7 +108,7 @@ clock :: proc(s:^Store,now:i64,require_ready:=true)->string {
 }
 request_live :: proc(o:json.Object,now:i64)->bool {
     expires:=num(o,"request_expires_ms")
-    return expires>now && expires-now<=contracts.OWNER_REQUEST_TTL_MS+contracts.EXECUTOR_CLOCK_SKEW_MS
+    return contracts.executor_peer_window(expires,now,contracts.OWNER_REQUEST_TTL_MS)
 }
 receipt :: proc(s:^Store,owner,op,kind,digest:string)->(Result,bool) {
     rows,ok:=query(s.db,"SELECT kind,input_digest,result_json FROM executor_receipts WHERE owner_bridge_id=? AND operation_id=?",owner,op)

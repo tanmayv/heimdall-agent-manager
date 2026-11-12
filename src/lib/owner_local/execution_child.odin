@@ -58,7 +58,7 @@ execution_child :: proc(s:^Store,request_raw,input_raw:string,executor_key,owner
 
 execution_child_result :: proc(request:json.Object,body:string,scope:json.Object,owner_key:contracts.Owner_Verified_Key,
     now:i64,kr:^vault.Vault_Keyring,sign:Signer)->(string,bool) {
-    if sign.sign==nil || now>=contracts.executor_number(request,"request_expires_ms") do return "",false
+    if sign.sign==nil || !contracts.executor_peer_unexpired(contracts.executor_number(request,"request_expires_ms"),now) do return "",false
     r:=make(json.Object,context.temp_allocator)
     for entry in contracts.executor_schema("child_result") do r[entry.name]=request[entry.name]
     digest,_:=contracts.executor_digest("child_request",request)

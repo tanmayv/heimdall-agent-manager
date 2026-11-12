@@ -274,7 +274,7 @@ execution_fence_reply :: proc(s:^Store,request_raw:string,executor_key,owner_key
     if !execution_owner_key(s,owner_key) || !contracts.executor_verify("fence_request",request,executor_key) ||
        field(request,"account_id")!=s.account || field(request,"owner_bridge_id")!=s.owner ||
        field(request,"owner_incarnation")!=fmt.tprintf("%d",s.incarnation) {return fail("invalid_scope")}
-    if now+contracts.EXECUTOR_CLOCK_SKEW_MS<contracts.executor_number(request,"issued_ms") || now>=contracts.executor_number(request,"request_expires_ms") do return fail("expired")
+    if !contracts.executor_peer_issued(contracts.executor_number(request,"issued_ms"),now) || !contracts.executor_peer_unexpired(contracts.executor_number(request,"request_expires_ms"),now) do return fail("expired")
     tx:Transaction
     if !transaction_begin(s,&tx) do return fail("storage_error")
     defer transaction_rollback(&tx)
