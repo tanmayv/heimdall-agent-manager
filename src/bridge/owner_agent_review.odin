@@ -387,14 +387,25 @@ bridge_owner_render_review_context :: proc(st:owner.Agent_Task_State,lease:Owner
 }
 
 // A reviewer on another account Bridge, through the Hub with the coordinator's
-// credential. One instance serves each (chain, agent, run Bridge): the first
-// dispatch launches it (POST /api/v1/agent-instances, body names that
-// bridge_id and the chain), and later ones reuse it (R1 FIX A, run8 launched
-// three). A stopped one is started (its bootstrap runs `lease next`); a live
-// one gets the review-lease line as an agent message, which wakes it. An
-// instance the Hub no longer knows is forgotten and a new one launched.
-// Nothing is waited for or bound here: the instance runs there.
+// credential. One instance serves each (chain, agent, run Bridge, provider,
+// model): the first dispatch launches it (POST /api/v1/agent-instances, body
+// names that bridge_id, the chain and the selection), and later ones reuse it
+// (R1 FIX A, run8 launched three). A task whose agent_models override asks for
+// another provider/model gets its own instance launched with that selection,
+// never the one launched with the first selection (as instance_serves does for
+// local reviewers). A stopped one is started (its bootstrap runs `lease
+// next`); a live one gets the review-lease line as an agent message, which
+// wakes it. An instance the Hub no longer knows is forgotten and a new one
+// launched. Nothing is waited for or bound here: the instance runs there.
+//
+// Dispatches run on their own threads and the matcher back-off is per task, so
+// two tasks can dispatch the same reviewer at once: each key's acquisition
+// (lookup, start/launch, remember) holds that key's lock, so the second waits
+// and then reuses the instance the first launched; a failed launch remembers
+// nothing, so the next dispatch retries it.
 bridge_owner_remote_reviewers:map[string]string
+// One heap lock per key, never freed (bounded by the keys ever acquired).
+bridge_owner_remote_reviewer_locks:map[string]^sync.Mutex
 bridge_owner_remote_reviewers_mutex:sync.Mutex
 // Tests substitute the Hub calls (all POSTs; an agent verb goes in its
 // envelope).
@@ -404,7 +415,9 @@ bridge_owner_review_remote_launch :: proc(body,agent,line:string,rec:Bridge_Loca
     context.allocator=context.temp_allocator
     send:=bridge_owner_remote_reviewer_http if bridge_owner_remote_reviewer_http!=nil else bridge_owner_remote_reviewer_http_default
     p:=bridge_owner_params(body)
-    key:=fmt.tprintf("%s|%s|%s",bridge_owner_pstr(p,"chain_id"),agent,bridge_owner_pstr(p,"bridge_id"))
+    key:=bridge_owner_remote_reviewer_key(bridge_owner_pstr(p,"chain_id"),agent,bridge_owner_pstr(p,"bridge_id"),bridge_owner_pstr(p,"provider"),bridge_owner_pstr(p,"model"))
+    lock:=bridge_owner_remote_reviewer_lock(key)
+    sync.mutex_lock(lock);defer sync.mutex_unlock(lock)
     known:=bridge_owner_remote_reviewer_get(key)
     if known!="" {
         started:=send(route_path("api","v1","agent-instances",known,"start"),"","",rec)
@@ -436,6 +449,21 @@ bridge_owner_review_remote_launch :: proc(body,agent,line:string,rec:Bridge_Loca
 bridge_owner_remote_reviewer_http_default :: proc(path:[]string,body,envelope_method:string,rec:Bridge_Local_Agent_Token_Record) -> Bridge_Local_Relay_Result {
     if envelope_method!="" do return bridge_local_relay_agent_envelope(path,envelope_method,body,rec)
     return bridge_local_relay_raw(.POST,path,nil,body,rec)
+}
+
+// The cache key of one remote reviewer instance: its selection is part of it.
+bridge_owner_remote_reviewer_key :: proc(chain,agent,bridge,provider,model:string) -> string {
+    return fmt.tprintf("%s|%s|%s|%s|%s",chain,agent,bridge,provider,model)
+}
+
+// The acquisition lock of a key (created on first use).
+bridge_owner_remote_reviewer_lock :: proc(key:string) -> ^sync.Mutex {
+    sync.mutex_lock(&bridge_owner_remote_reviewers_mutex);defer sync.mutex_unlock(&bridge_owner_remote_reviewers_mutex)
+    if bridge_owner_remote_reviewer_locks==nil do bridge_owner_remote_reviewer_locks=make(map[string]^sync.Mutex,runtime.heap_allocator())
+    if lock,has:=bridge_owner_remote_reviewer_locks[key];has do return lock
+    lock:=new(sync.Mutex,runtime.heap_allocator())
+    bridge_owner_remote_reviewer_locks[strings.clone(key,runtime.heap_allocator())]=lock
+    return lock
 }
 
 bridge_owner_remote_reviewer_get :: proc(key:string) -> string {

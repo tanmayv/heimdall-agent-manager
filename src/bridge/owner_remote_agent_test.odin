@@ -3,7 +3,9 @@ package main
 import "core:encoding/json"
 import "core:fmt"
 import "core:strings"
+import "core:sync"
 import "core:testing"
+import "core:thread"
 import "core:time"
 import httpc "odin_test:lib/httpc"
 
@@ -109,9 +111,12 @@ Remote_Reviewer_Call :: struct{path,body,envelope_method:string}
 remote_reviewer_calls:[dynamic]Remote_Reviewer_Call
 remote_reviewer_start_status:int
 remote_reviewer_next_instance:string
+// These tests share the process-global Hub hook and the reviewer cache.
+remote_reviewer_test_mutex:sync.Mutex
 
 @(test)
 test_owner_remote_reviewer_instance_is_reused :: proc(t:^testing.T) {
+    sync.mutex_lock(&remote_reviewer_test_mutex);defer sync.mutex_unlock(&remote_reviewer_test_mutex)
     remote_reviewer_calls=make([dynamic]Remote_Reviewer_Call,context.temp_allocator)
     bridge_owner_remote_reviewer_http=proc(path:[]string,body,envelope_method:string,rec:Bridge_Local_Agent_Token_Record) -> Bridge_Local_Relay_Result {
         joined:=""
@@ -126,7 +131,7 @@ test_owner_remote_reviewer_instance_is_reused :: proc(t:^testing.T) {
         return {status=200,ok=true,body=`{}`}
     }
     defer bridge_owner_remote_reviewer_http=nil
-    defer bridge_owner_remote_reviewer_set("chain_r|agt_rev|brg_b","")
+    defer bridge_owner_remote_reviewer_set("chain_r|agt_rev|brg_b|p|m","")
     rec:=Bridge_Local_Agent_Token_Record{agent_instance_id="inst_coord"}
     body:=`{"agent_id":"agt_rev","bridge_id":"brg_b","chain_id":"chain_r","model":"m","provider":"p"}`
     line:="[taskv2] New review lease l on task t"
@@ -156,7 +161,7 @@ test_owner_remote_reviewer_instance_is_reused :: proc(t:^testing.T) {
     remote_reviewer_next_instance="inst_other"
     testing.expect_value(t,bridge_owner_review_remote_launch(`{"agent_id":"agt_rev","bridge_id":"brg_b","chain_id":"chain_s"}`,"agt_rev",line,rec),"")
     testing.expect_value(t,remote_reviewer_calls[4].path,"/api/v1/agent-instances")
-    bridge_owner_remote_reviewer_set("chain_s|agt_rev|brg_b","")
+    bridge_owner_remote_reviewer_set("chain_s|agt_rev|brg_b||","")
 
     // The Hub no longer knows it: a new one is launched and remembered.
     remote_reviewer_start_status=404
@@ -164,12 +169,120 @@ test_owner_remote_reviewer_instance_is_reused :: proc(t:^testing.T) {
     testing.expect_value(t,bridge_owner_review_remote_launch(body,"agt_rev",line,rec),"")
     testing.expect_value(t,len(remote_reviewer_calls),7)
     testing.expect_value(t,remote_reviewer_calls[6].path,"/api/v1/agent-instances")
-    testing.expect_value(t,bridge_owner_remote_reviewer_get("chain_r|agt_rev|brg_b"),"inst_rev2")
+    testing.expect_value(t,bridge_owner_remote_reviewer_get("chain_r|agt_rev|brg_b|p|m"),"inst_rev2")
 
     // A Hub failure on start is reported and the instance kept.
     remote_reviewer_start_status=503
     testing.expect(t,bridge_owner_review_remote_launch(body,"agt_rev",line,rec)!="","a 5xx start is a dispatch failure")
-    testing.expect_value(t,bridge_owner_remote_reviewer_get("chain_r|agt_rev|brg_b"),"inst_rev2")
+    testing.expect_value(t,bridge_owner_remote_reviewer_get("chain_r|agt_rev|brg_b|p|m"),"inst_rev2")
+}
+
+// R1 review finding: a task whose agent_models override selects another
+// provider/model is not reviewed by the instance launched with the first
+// selection; it gets its own, and each selection keeps reusing its instance.
+@(test)
+test_owner_remote_reviewer_reuse_matches_selection :: proc(t:^testing.T) {
+    sync.mutex_lock(&remote_reviewer_test_mutex);defer sync.mutex_unlock(&remote_reviewer_test_mutex)
+    remote_reviewer_calls=make([dynamic]Remote_Reviewer_Call,context.temp_allocator)
+    bridge_owner_remote_reviewer_http=proc(path:[]string,body,envelope_method:string,rec:Bridge_Local_Agent_Token_Record) -> Bridge_Local_Relay_Result {
+        joined:=""
+        for part in path do joined=fmt.tprintf("%s/%s",joined,part)
+        append(&remote_reviewer_calls,Remote_Reviewer_Call{joined,body,envelope_method})
+        if joined=="/api/v1/agent-instances" {
+            p:=bridge_owner_params(body)
+            return {status=201,ok=true,body=fmt.tprintf(`{{"data":{{"agent_instance_id":"inst_%s"}}}}`,bridge_owner_pstr(p,"model"))}
+        }
+        return {status=202,ok=true,body=`{}`}
+    }
+    defer bridge_owner_remote_reviewer_http=nil
+    defer bridge_owner_remote_reviewer_set("chain_m|agt_rev|brg_b|p|m1","")
+    defer bridge_owner_remote_reviewer_set("chain_m|agt_rev|brg_b|p|m2","")
+    defer bridge_owner_remote_reviewer_set("chain_m|agt_rev|brg_b|q|m2","")
+    rec:=Bridge_Local_Agent_Token_Record{agent_instance_id="inst_coord"}
+    line:="[taskv2] New review lease l on task t"
+    body:=proc(provider,model:string) -> string {
+        return fmt.tprintf(`{{"agent_id":"agt_rev","bridge_id":"brg_b","chain_id":"chain_m","model":"%s","provider":"%s"}}`,model,provider)
+    }
+
+    // Task 1 (model m1) launches its reviewer.
+    testing.expect_value(t,bridge_owner_review_remote_launch(body("p","m1"),"agt_rev",line,rec),"")
+    // Task 2 overrides the model: a reviewer launched with m2, not a start of inst_m1.
+    testing.expect_value(t,bridge_owner_review_remote_launch(body("p","m2"),"agt_rev",line,rec),"")
+    testing.expect_value(t,len(remote_reviewer_calls),2)
+    testing.expect_value(t,remote_reviewer_calls[1].path,"/api/v1/agent-instances")
+    testing.expect_value(t,bridge_owner_pstr(bridge_owner_params(remote_reviewer_calls[1].body),"model"),"m2")
+    // A provider change is a different selection too.
+    testing.expect_value(t,bridge_owner_review_remote_launch(body("q","m2"),"agt_rev",line,rec),"")
+    testing.expect_value(t,len(remote_reviewer_calls),3)
+    testing.expect_value(t,remote_reviewer_calls[2].path,"/api/v1/agent-instances")
+    // Each selection keeps reusing its own instance.
+    testing.expect_value(t,bridge_owner_review_remote_launch(body("p","m1"),"agt_rev",line,rec),"")
+    testing.expect_value(t,remote_reviewer_calls[3].path,"/api/v1/agent-instances/inst_m1/start")
+    testing.expect_value(t,bridge_owner_review_remote_launch(body("p","m2"),"agt_rev",line,rec),"")
+    testing.expect_value(t,remote_reviewer_calls[4].path,"/api/v1/agent-instances/inst_m2/start")
+    testing.expect_value(t,len(remote_reviewer_calls),5)
+}
+
+// R1 review finding: two tasks of one chain dispatch the same remote reviewer
+// at once (asynchronous dispatch, per-task back-off). The second waits for
+// the first's launch and reuses it: one launch, then a wake of that instance.
+remote_reviewer_launches:int
+remote_reviewer_wakes:int
+remote_reviewer_first_entered:sync.Sema
+remote_reviewer_second_entered:sync.Sema
+remote_reviewer_release:sync.Sema
+
+@(test)
+test_owner_remote_reviewer_concurrent_dispatch_launches_once :: proc(t:^testing.T) {
+    sync.mutex_lock(&remote_reviewer_test_mutex);defer sync.mutex_unlock(&remote_reviewer_test_mutex)
+    remote_reviewer_launches=0;remote_reviewer_wakes=0
+    remote_reviewer_first_entered={};remote_reviewer_second_entered={};remote_reviewer_release={}
+    bridge_owner_remote_reviewer_http=proc(path:[]string,body,envelope_method:string,rec:Bridge_Local_Agent_Token_Record) -> Bridge_Local_Relay_Result {
+        joined:=""
+        for part in path do joined=fmt.tprintf("%s/%s",joined,part)
+        switch {
+        case joined=="/api/v1/agent-instances":
+            if sync.atomic_add(&remote_reviewer_launches,1)==0 {
+                // The first launch stalls in the Hub call until released.
+                sync.sema_post(&remote_reviewer_first_entered)
+                sync.sema_wait(&remote_reviewer_release)
+            } else {
+                sync.sema_post(&remote_reviewer_second_entered)
+            }
+            return {status=201,ok=true,body=`{"data":{"agent_instance_id":"inst_once"}}`}
+        case len(joined)>6 && joined[len(joined)-6:]=="/start":
+            // The first one is live by now.
+            return {status=409,ok=true,body=`{}`}
+        case joined=="/api/v1/agent-actions/chat/send-to-agent":
+            sync.atomic_add(&remote_reviewer_wakes,1)
+        }
+        return {status=200,ok=true,body=`{}`}
+    }
+    defer bridge_owner_remote_reviewer_http=nil
+    defer bridge_owner_remote_reviewer_set("chain_c|agt_rev|brg_b|p|m","")
+
+    Dispatch :: struct{task:string,ok:bool}
+    run :: proc(d:^Dispatch) {
+        rec:=Bridge_Local_Agent_Token_Record{agent_instance_id="inst_coord"}
+        line:=fmt.tprintf("[taskv2] New review lease l on task %s",d.task)
+        d.ok=bridge_owner_review_remote_launch(`{"agent_id":"agt_rev","bridge_id":"brg_b","chain_id":"chain_c","model":"m","provider":"p"}`,"agt_rev",line,rec)==""
+        free_all(context.temp_allocator)
+    }
+    first:=Dispatch{task="task_1"};second:=Dispatch{task="task_2"}
+    t1:=thread.create_and_start_with_poly_data(&first,run)
+    testing.expect(t,sync.sema_wait_with_timeout(&remote_reviewer_first_entered,5*time.Second),"the first dispatch is launching")
+    t2:=thread.create_and_start_with_poly_data(&second,run)
+    // Unfixed, the second dispatch also sees no reviewer and launches at once;
+    // fixed, it waits on the key's acquisition and never gets here.
+    second_launched:=sync.sema_wait_with_timeout(&remote_reviewer_second_entered,300*time.Millisecond)
+    sync.sema_post(&remote_reviewer_release)
+    thread.join(t1);thread.join(t2)
+    thread.destroy(t1);thread.destroy(t2)
+    testing.expect(t,!second_launched,"the second dispatch did not launch while the first was launching")
+    testing.expect(t,first.ok && second.ok,"both dispatches succeed")
+    testing.expect_value(t,sync.atomic_load(&remote_reviewer_launches),1)
+    testing.expect_value(t,sync.atomic_load(&remote_reviewer_wakes),1)
+    testing.expect_value(t,bridge_owner_remote_reviewer_get("chain_c|agt_rev|brg_b|p|m"),"inst_once")
 }
 
 // R1 FIX A (REQ-E2E-1 run11): the agent-relay body is one JSON object the Hub
