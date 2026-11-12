@@ -274,7 +274,7 @@ execution_fence_reply :: proc(s:^Store,request_raw:string,executor_key,owner_key
     if !execution_owner_key(s,owner_key) || !contracts.executor_verify("fence_request",request,executor_key) ||
        field(request,"account_id")!=s.account || field(request,"owner_bridge_id")!=s.owner ||
        field(request,"owner_incarnation")!=fmt.tprintf("%d",s.incarnation) {return fail("invalid_scope")}
-    if now<contracts.executor_number(request,"issued_ms") || now>=contracts.executor_number(request,"request_expires_ms") do return fail("expired")
+    if now+contracts.EXECUTOR_CLOCK_SKEW_MS<contracts.executor_number(request,"issued_ms") || now>=contracts.executor_number(request,"request_expires_ms") do return fail("expired")
     tx:Transaction
     if !transaction_begin(s,&tx) do return fail("storage_error")
     defer transaction_rollback(&tx)
@@ -341,8 +341,31 @@ execution_expire_preparations :: proc(s:^Store,now:i64,released:^[dynamic]Reserv
         if _,written:=query(s.db,"UPDATE owner_execution_journal SET state='retired',retired_seq=? WHERE reservation_id=? AND state='preparing'",fmt.tprintf("%d",seq),row[0]);!written do return false
         if !execution_change(&tx,seq,now,p,"execution.prepare_expired",row[0],"no_grant") do return false
     }
+    if !execution_retire_ended(&tx,&seq,now) do return false
     if !execution_release_stale(&tx,&seq,now,released) do return false
     return transaction_commit(&tx)
+}
+
+// G3: a committed journal row lives exactly as long as its lease. Once the
+// lease has ended (expiry, submit, rework, release, a launch that never
+// came up) the row is retired, so the task can be prepared again for a new
+// lease (a new reservation, execution_prepare_assignment) instead of every
+// later prepare answering operation_conflict forever. The executor's charge
+// lapses on its own deadline: no renewal follows an ended lease. Bounded per
+// pass; runs in each maintenance pass.
+execution_retire_ended :: proc(tx:^Transaction,seq:^i64,now:i64)->bool {
+    s:=tx.store
+    rows,ok:=query(s.db,`SELECT j.reservation_id,j.prepare_json FROM owner_execution_journal j JOIN local_leases l ON l.lease_id=j.lease_id
+      WHERE j.state='committed' AND l.retired_seq IS NOT NULL ORDER BY j.reservation_id LIMIT 100`)
+    if !ok do return false
+    for row in rows {
+        p,valid:=contracts.executor_parse(row[1],"prepare")
+        if !valid do return false
+        seq^+=1
+        if _,written:=query(s.db,"UPDATE owner_execution_journal SET state='retired',retired_seq=? WHERE reservation_id=? AND state='committed'",fmt.tprintf("%d",seq^),row[0]);!written do return false
+        if !execution_change(tx,seq^,now,p,"execution.lease_ended",row[0],"retired") do return false
+    }
+    return true
 }
 
 // Releases enabled fleet.reserve rows whose reserved instance never launched:

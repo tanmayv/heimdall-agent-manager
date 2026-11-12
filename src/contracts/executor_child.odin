@@ -140,7 +140,7 @@ executor_child_request_matches :: proc(r,b:json.Object,input_raw:string,executor
     for name in ([4]string{"chain_id","task_id","lease_id","configuration_revision"}) {
         if owner_string(input,name)!=owner_string(r,name) do return false
     }
-    return now>=executor_number(r,"issued_ms") && executor_number(r,"issued_ms")>=executor_number(b,"issued_ms") &&
+    return now+EXECUTOR_CLOCK_SKEW_MS>=executor_number(r,"issued_ms") && executor_number(r,"issued_ms")>=executor_number(b,"issued_ms") &&
         now<executor_number(r,"request_expires_ms")
 }
 

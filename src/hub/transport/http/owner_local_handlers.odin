@@ -396,7 +396,7 @@ executor_reverse_relay :: proc(ctx:rawptr,req:Request,child:bool)->Response {
     get:=contracts.owner_string
     expires:=contracts.executor_number(relay,"expires_ms")
     now:=time.to_unix_nanoseconds(time.now())/1000000
-    if expires<=now || expires-now>contracts.EXECUTOR_FENCE_TTL_MS do return respond_error(domain.domain_error(.Validation_Failed,"fence relay expired"),req.request_id)
+    if expires<=now || expires-now>contracts.EXECUTOR_FENCE_TTL_MS+contracts.EXECUTOR_CLOCK_SKEW_MS do return respond_error(domain.domain_error(.Validation_Failed,"fence relay expired"),req.request_id)
     rows,read:=owner_registry_rows(h,auth.user_id,get(relay,"chain_id"),"","",1)
     if read.code!=.None do return respond_error(read,req.request_id)
     target:=get(relay,"bridge_id")

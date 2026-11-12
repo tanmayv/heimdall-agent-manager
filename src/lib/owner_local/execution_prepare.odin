@@ -19,7 +19,23 @@ execution_prepare_assignment :: proc(s:^Store,chain,task:string,key:contracts.Ow
     if len(rows)!=1 do return fail("invalid_scope")
     c,valid:=remote_assignment_configuration(rows[0][0])
     if !valid || field(c,"executor_bridge_id")==s.owner do return fail("invalid_scope")
+    // G3: one reservation (and lease) per generation. A live row of this
+    // assignment is adopted (a repeated call replays it, never conflicts);
+    // once the task's earlier rows retired with their leases, the next
+    // generation is a new reservation. Generation 0 keeps the original id.
+    live,live_read:=query(s.db,"SELECT prepare_seq,state FROM owner_execution_journal WHERE chain_id=? AND task_id=? AND instance_id=? AND state!='retired'",chain,task,field(c,"instance_id"))
+    if !live_read do return fail("storage_error")
+    if len(live)==1 do return Result{code="ok",body=live[0][1],seq=number(live[0][0]),replay=true}
+    retired,retired_read:=query(s.db,"SELECT count(*) FROM owner_execution_journal WHERE chain_id=? AND task_id=? AND state='retired'",chain,task)
+    if !retired_read || len(retired)!=1 do return fail("storage_error")
     reservation:=payload_hash(encode([7]string{s.account,s.owner,chain,task,field(c,"instance_id"),field(c,"configuration_revision"),rows[0][1]}))
+    if generation:=retired[0][0];generation!="0" {
+        // Only a reservation id that already retired moves on: the first
+        // prepare after a retire is the next generation of the same lease slot.
+        saved_retired,saved_read:=query(s.db,"SELECT 1 FROM owner_execution_journal WHERE reservation_id=?",reservation)
+        if !saved_read do return fail("storage_error")
+        if len(saved_retired)>0 do reservation=payload_hash(encode([8]string{s.account,s.owner,chain,task,field(c,"instance_id"),field(c,"configuration_revision"),rows[0][1],generation}))
+    }
     saved,read:=query(s.db,"SELECT prepare_seq,state FROM owner_execution_journal WHERE reservation_id=?",reservation)
     if !read do return fail("storage_error")
     if len(saved)==1 do return Result{code="ok",body=saved[0][1],seq=number(saved[0][0]),replay=true}

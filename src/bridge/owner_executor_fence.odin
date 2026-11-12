@@ -62,7 +62,7 @@ bridge_owner_executor_fence_handle :: proc(conn:^ws.Connection,text:string,child
     now:=time.to_unix_nanoseconds(time.now())/1000000
     expires:=contracts.executor_number(relay,"expires_ms")
     account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
-    if wire.account_id!=account || get(relay,"bridge_id")!=bridge_cfg().daemon_id || expires<=now || expires-now>contracts.EXECUTOR_FENCE_TTL_MS do return
+    if wire.account_id!=account || get(relay,"bridge_id")!=bridge_cfg().daemon_id || expires<=now || expires-now>contracts.EXECUTOR_FENCE_TTL_MS+contracts.EXECUTOR_CLOCK_SKEW_MS do return
     kr,unlocked:=bridge_read_vault_keyring();defer vault.keyring_wipe(&kr)
     if !unlocked {reply.code="vault_locked";return}
     plain,opened:=bridge_open_current_epoch_token(get(relay,"envelope"),&kr,context.temp_allocator)

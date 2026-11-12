@@ -10,7 +10,13 @@ import vault "odin_test:lib/vault"
 // All directory/key inputs must already be resolved by the execution Bridge.
 EXECUTOR_DOCUMENT_MAX :: 32768
 EXECUTOR_CAPACITY_MAX :: 128
-EXECUTOR_PREPARE_TTL_MS :: 30000
+// G3: prepare -> commit -> activate -> spawn crosses the Hub twice and
+// starts a provider process; 30 s was too tight. 90 s bounds the window.
+EXECUTOR_PREPARE_TTL_MS :: 90000
+// G3: two Bridges' clocks drift. A receiver accepts a peer's timestamps up to
+// this far ahead of its own clock (issued in its future, or an expiry
+// further out than the TTL). Spans inside one signed document stay exact.
+EXECUTOR_CLOCK_SKEW_MS :: 30000
 // A fence response is evidence for one outstanding random challenge only.
 // Transport callers must consume the challenge and recheck local intent state.
 EXECUTOR_FENCE_TTL_MS :: 5000

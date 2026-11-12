@@ -108,7 +108,7 @@ clock :: proc(s:^Store,now:i64,require_ready:=true)->string {
 }
 request_live :: proc(o:json.Object,now:i64)->bool {
     expires:=num(o,"request_expires_ms")
-    return expires>now && expires-now<=contracts.OWNER_REQUEST_TTL_MS
+    return expires>now && expires-now<=contracts.OWNER_REQUEST_TTL_MS+contracts.EXECUTOR_CLOCK_SKEW_MS
 }
 receipt :: proc(s:^Store,owner,op,kind,digest:string)->(Result,bool) {
     rows,ok:=query(s.db,"SELECT kind,input_digest,result_json FROM executor_receipts WHERE owner_bridge_id=? AND operation_id=?",owner,op)
@@ -182,7 +182,7 @@ prepare :: proc(s:^Store,raw:string,key:contracts.Owner_Verified_Key,now:i64,res
     if prior,found:=receipt(s,field(o,"owner_bridge_id"),field(o,"operation_id"),"prepare",digest);found do return prior
     if resources.directory_key!=field(o,"directory_key") || resources.provider_profile!=field(o,"provider_profile") ||
        resources.instance_id!=field(o,"instance_id") || resources.configuration_revision!=field(o,"configuration_revision") { return fail("invalid_resources") }
-    if !request_live(o,now) || num(o,"prepare_until_ms")<=now || num(o,"prepare_until_ms")-now>contracts.EXECUTOR_PREPARE_TTL_MS do return fail("expired")
+    if !request_live(o,now) || num(o,"prepare_until_ms")<=now || num(o,"prepare_until_ms")-now>contracts.EXECUTOR_PREPARE_TTL_MS+contracts.EXECUTOR_CLOCK_SKEW_MS do return fail("expired")
     if code:=clock(s,now);code!="" do return fail(code)
     if num(o,"executor_incarnation")!=s.incarnation do return fail("stale_incarnation")
     if !owner_watermark(s,field(o,"owner_bridge_id"),num(o,"owner_incarnation")) do return fail("stale_owner")

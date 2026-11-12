@@ -36,6 +36,7 @@ bridge_owner_preparation_once :: proc(s:^owner.Store) {
         }
         for row in candidates {
             result:=owner.execution_prepare_assignment(s,row[0],row[1],own,now,{nil,bridge_owner_sign})
+            bridge_owner_prepare_log(row[0],row[1],result.code)
             delete(bridge_owner_prepare_chain,runtime.default_allocator());delete(bridge_owner_prepare_task,runtime.default_allocator())
             bridge_owner_prepare_chain=strings.clone(row[0],runtime.default_allocator());bridge_owner_prepare_task=strings.clone(row[1],runtime.default_allocator())
             if result.code=="ok" && !result.replay do break
@@ -158,4 +159,32 @@ bridge_owner_preparation_accept :: proc(_:rawptr,s:^owner.Store,c:owner.Intent_C
         result=owner.execution_prepare_commit(s,c.id,rows[0][0],own,key,now,{nil,bridge_owner_sign},rows[0][1],raw)
     }
     return result.code!="storage_error" && result.code!="invalid_scope",result.code=="ok",result.code
+}
+
+// G3: a refused preparation is never silent. Each task's refusal code is
+// logged once when it first appears or changes (the loop runs every second).
+bridge_owner_prepare_seen:map[string]string
+bridge_owner_prepare_log :: proc(chain,task,code:string) {
+    key:=fmt.tprintf("%s|%s",chain,task)
+    if bridge_owner_prepare_seen==nil do bridge_owner_prepare_seen=make(map[string]string,runtime.default_allocator())
+    last,seen:=bridge_owner_prepare_seen[key]
+    if code=="ok" {
+        if seen {
+            stored_key,stored_value:=delete_key(&bridge_owner_prepare_seen,key)
+            delete(stored_key,runtime.default_allocator());delete(stored_value,runtime.default_allocator())
+        }
+        return
+    }
+    if seen && last==code do return
+    fmt.eprintfln("bridge owner preparation: %s %s refused: %s",chain,task,code)
+    if seen {
+        delete(bridge_owner_prepare_seen[key],runtime.default_allocator())
+        bridge_owner_prepare_seen[key]=strings.clone(code,runtime.default_allocator())
+        return
+    }
+    if len(bridge_owner_prepare_seen)>=1024 {
+        for k,v in bridge_owner_prepare_seen {delete(k,runtime.default_allocator());delete(v,runtime.default_allocator())}
+        clear(&bridge_owner_prepare_seen)
+    }
+    bridge_owner_prepare_seen[strings.clone(key,runtime.default_allocator())]=strings.clone(code,runtime.default_allocator())
 }
