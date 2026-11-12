@@ -11,7 +11,7 @@ import { useAuthUser } from '../auth/AuthUserContext';
 import { chainStatusDot } from '../ui/patterns/commandPaletteLogic';
 import { VaultText } from '../vault/VaultText';
 import { refreshOwnerChains, resolveOwnerChainCoordinator, useOwnerChains } from '../../api/ownerChainsStore';
-import { useListSidebarConversationsQuery } from '../../api/endpoints/sidebar';
+import { useListConversationActivityQuery } from '../../api/endpoints/sidebar';
 import {
   filterHomeChains, homeChainsFromOwners, homeChainsFromSearchHits, orderChainsByActivity,
   HOME_RECENT_CHAIN_LIMIT, HOME_REMOTE_SEARCH_MIN_CHARS, type HomeChainItem,
@@ -38,13 +38,17 @@ export interface SidebarTaskChainsProps {
  */
 export function SidebarTaskChains({ currentPath, onNavigate }: SidebarTaskChainsProps) {
   const owners = useOwnerChains();
-  // The rail's own conversation list (same query args, so no extra fetch): its
-  // live updates re-order the chains by their coordinator's last activity.
-  const conversations = useListSidebarConversationsQuery({ limit: 30 });
-  const loaded = useMemo(
-    () => orderChainsByActivity(homeChainsFromOwners(owners.chains), conversations.data ?? []),
-    [owners.chains, conversations.data],
+  // Every bound coordinator's conversation (one Hub call for all of them),
+  // refreshed by the user-WS chat events: the chains re-order live by their
+  // coordinator's last activity. `chains` (unordered) is what remote search
+  // resolves hits against, so an activity re-order never restarts a search.
+  const chains = useMemo(() => homeChainsFromOwners(owners.chains), [owners.chains]);
+  const coordinatorIds = useMemo(
+    () => [...new Set(chains.map((c) => c.coordinatorAgentInstanceId || '').filter(Boolean))].sort(),
+    [chains],
   );
+  const activity = useListConversationActivityQuery({ agentInstanceIds: coordinatorIds }, { skip: coordinatorIds.length === 0 });
+  const loaded = useMemo(() => orderChainsByActivity(chains, activity.data ?? []), [chains, activity.data]);
   const titles = useSelector(selectSearchChains) as Record<string, { decryptedTitle?: string }>;
   const unlocked = useSelector(selectIsVaultUnlocked);
   const user = useAuthUser();
@@ -66,7 +70,7 @@ export function SidebarTaskChains({ currentPath, onNavigate }: SidebarTaskChains
       searchTaskChainsEncrypted(trimmed, user.user_id!, { limit: HOME_RECENT_CHAIN_LIMIT })
         .then(response => {
           if (!cancelled) setRemote({
-            key: searchKey, rows: homeChainsFromSearchHits(response.hits, loaded),
+            key: searchKey, rows: homeChainsFromSearchHits(response.hits, chains),
             state: response.stale ? 'stale' : 'idle',
           });
         })
@@ -75,7 +79,7 @@ export function SidebarTaskChains({ currentPath, onNavigate }: SidebarTaskChains
         });
     }, 150);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [searchKey, trimmed, unlocked, user?.user_id, loaded]);
+  }, [searchKey, trimmed, unlocked, user?.user_id, chains]);
   const activeRemote = unlocked && remote?.key === searchKey ? remote : null;
   const rows = trimmed ? activeRemote?.rows ?? filterHomeChains(loaded, trimmed, titles, Infinity) : loaded;
   const open = async (event: React.MouseEvent<HTMLAnchorElement>, chain: HomeChainItem) => {

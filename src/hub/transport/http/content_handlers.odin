@@ -94,6 +94,26 @@ list_chats_handler :: proc(ctx:rawptr, req:Request)->Response{
 	// durable list fetch (conversations have no runtime column; liveness lives on
 	// the instance), so pagination still advances by the underlying rows.
 	active_only:=query_bool(req.query,"active",false) || query_value(req.query,"status")=="active"
+	// ?agent_instance_ids=a,b,... (at most 200): exactly the conversations bound
+	// to those instances (one indexed lookup each, unknown ids skipped), in the
+	// given order. The sidebar orders Bridge-owned chains by their coordinator's
+	// last activity; the newest-N list leaves most coordinators out on a busy
+	// account, so their chains fell back to title order.
+	if ids:=query_value(req.query,"agent_instance_ids");ids!="" {
+		b:=strings.builder_make(); strings.write_byte(&b,'[')
+		emitted:=0
+		for id,i in strings.split(ids,",",context.temp_allocator) {
+			if i>=200 do break
+			trimmed:=strings.trim_space(id)
+			if trimmed=="" do continue
+			c,found,_:=content_service.get_conversation_by_instance(h.content,auth,trimmed)
+			if !found do continue
+			if emitted>0 do strings.write_byte(&b,',')
+			write_chat_json_with_runtime(&b,c,h,auth); emitted+=1
+		}
+		strings.write_byte(&b,']')
+		return respond_list(strings.to_string(b),contracts.API_Page{limit=emitted,next_cursor="",has_more=false},req.request_id,auth_ctx_server_time(req))
+	}
 	rows,err:=content_service.list_conversations(h.content,auth,limit,cursor); if err.code!=.None do return respond_error(err,req.request_id)
 	b:=strings.builder_make(); strings.write_byte(&b,'[')
 	next:=""; emitted:=0

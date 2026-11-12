@@ -214,3 +214,32 @@ test('sidebar chains are ordered by their coordinator conversation activity, mos
   assert.deepEqual(orderChainsByActivity(items, [...conversations, { agentInstanceId: 'inst_d', lastMessageUnixMs: 9000 }]).map((c) => c.chainId), ['d', 'a', 'b', 'c']);
   assert.deepEqual(items.map((c) => c.chainId), before);
 });
+
+test('a chain without known coordinator activity is never ordered ahead of or between dated chains', () => {
+  const items = [
+    chain('a', { title: 'Alpha', coordinatorAgentInstanceId: 'inst_gone' }), // coordinator has no conversation
+    chain('b', { title: 'Beta', coordinatorAgentInstanceId: 'inst_b' }),
+    chain('c', { title: 'Charlie' }), // no coordinator bound
+    chain('d', { title: 'Delta', coordinatorAgentInstanceId: 'inst_d' }),
+  ];
+  const ordered = orderChainsByActivity(items, [
+    { agentInstanceId: 'inst_b', lastMessageUnixMs: 2000 },
+    { agentInstanceId: 'inst_d', lastMessageUnixMs: 1000 },
+  ]).map((c) => c.chainId);
+  assert.deepEqual(ordered, ['b', 'd', 'a', 'c']);
+});
+
+test('sidebar reads every bound coordinator activity, and an activity re-order never restarts remote search', () => {
+  const source = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/components/shell/SidebarTaskChains.tsx'), 'utf8');
+  // All bound coordinators in one Hub call (not the rail's newest-30 window).
+  assert.match(source, /useListConversationActivityQuery\(\{ agentInstanceIds: coordinatorIds \}/);
+  assert.doesNotMatch(source, /useListSidebarConversationsQuery/);
+  // The remote-search effect resolves hits against the unordered chains and
+  // does not depend on the activity-ordered list.
+  assert.match(source, /homeChainsFromSearchHits\(response\.hits, chains\)/);
+  assert.match(source, /\}, \[searchKey, trimmed, unlocked, user\?\.user_id, chains\]\);/);
+  const endpoint = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/api/endpoints/sidebar.ts'), 'utf8');
+  assert.match(endpoint, /\/chats\?agent_instance_ids=/);
+  // Refreshed by the same user-WS invalidation as the sidebar list (no polling).
+  assert.match(endpoint, /listConversationActivity:[\s\S]*?providesTags[\s\S]*?'SidebarConversations' as const, id: 'ALL'/);
+});

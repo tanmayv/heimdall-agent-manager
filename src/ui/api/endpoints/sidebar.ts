@@ -228,6 +228,27 @@ export const sidebarApi = heimdallApi.injectEndpoints({
         ...(result?.conversations || []).map((c) => ({ type: 'SidebarConversations' as const, id: c.conversationId })),
       ],
     }),
+    // The conversations of these agent instances only (Hub
+    // /chats?agent_instance_ids=, at most 200): the sidebar orders chains by
+    // their coordinator's last activity. Only ids and timestamps are used, so
+    // nothing is decrypted. Tagged like the sidebar list, so the user-WS chat
+    // events that refresh it refresh this too (no polling).
+    listConversationActivity: build.query<SidebarConversation[], { agentInstanceIds: string[] }>({
+      queryFn: async ({ agentInstanceIds }) => {
+        try {
+          const ids = [...new Set(agentInstanceIds.filter(Boolean))].sort().slice(0, 200);
+          if (ids.length === 0) return { data: [] };
+          const rows = await fetchCookieList(`/chats?agent_instance_ids=${ids.map(encodeURIComponent).join(',')}`, ['conversations', 'chats']);
+          return { data: rows.map(normalizeSidebarConversation).filter((c) => c.agentInstanceId) };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error || 'Request failed') } as any };
+        }
+      },
+      providesTags: (result) => [
+        { type: 'SidebarConversations' as const, id: 'ALL' },
+        ...(result || []).map((c) => ({ type: 'SidebarConversations' as const, id: c.conversationId })),
+      ],
+    }),
     listSidebarProjects: build.query<SidebarProject[], { limit?: number } | void>({
       queryFn: async (arg, api) => {
         try {
@@ -252,6 +273,7 @@ export const sidebarApi = heimdallApi.injectEndpoints({
 
 export const {
   useListSidebarConversationsQuery,
+  useListConversationActivityQuery,
   useListConversationInboxQuery,
   useLazyListConversationInboxQuery,
   useListSidebarProjectsQuery,
