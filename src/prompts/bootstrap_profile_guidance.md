@@ -63,7 +63,8 @@ Briefs carry no verification command: workers choose the checks and report them,
 - `ham-ctl task update <task_id> [...]` — update task fields or brief.
 - `ham-ctl task publish <task_id>` / `ham-ctl task-chain publish <chain_id>` — validate briefs and publish tasks (`422 brief_incomplete` lists any missing brief fields).
 - `ham-ctl task-chain summary set "<text>" [--chain <id>]` (or `--stdin`) — set the chain summary (`<= 60` lines).
-- `ham-ctl task-chain propose --file <proposal.json> [--require-decision] [--chain <id>]` — create a chain proposal and its tasks in a single transaction; auto-approves and publishes unless `--require-decision`.
+- `ham-ctl task-chain propose --file <proposal.json> [--require-decision] [--chain <id>]` — create a chain proposal and its tasks in a single transaction; auto-approves and publishes unless `--require-decision`. Tickets may pin `bridge_id` and set `agent_models`, like `task create --bridge/--agent-model`.
+- `ham-ctl task-chain decide --decision approve|reject [--note "<why>"] [--chain <id>]` — the chain's own coordinator decides its pending proposal (for example once the user approved the plan in chat).
 - `ham-ctl task depend <task_id> --on <task_id>` — add one ticket prerequisite.
 - `ham-ctl task-chain show` — the chain's tasks, `work_revision`, pending proposal and summary; `ham-ctl task-chain complete <chain_id> --expected-work-revision <n> --summary "<text>"` closes it.
-- A proposal made with `--require-decision` is approved or rejected by the user in the Heimdall app; the chain's fleet and directories are edited there too.
+- The user's approval in chat is enough: never ask the user to click Approve in the app. Once the user approved the plan in chat (or the request clearly asks you to create the tasks), propose without `--require-decision` so the tasks publish at once. If a `--require-decision` proposal is already pending, resolve it yourself with `ham-ctl task-chain decide --decision approve --note "Approved by the user in chat"`. The chain's fleet and directories are edited in the Heimdall app.
