@@ -147,7 +147,8 @@ find "$HEIMDALL_LOCAL_STATE_ROOT/bridges/$A/home/.claude/projects" -path "*${COO
 # Assertions.
 FAILS=0
 check() { if [ "$2" = 1 ]; then log "PASS $1"; else log "FAIL $1${3:+: $3}"; FAILS=$((FAILS+1)); fi; }
-agents=$(q "SELECT count(DISTINCT agent_id) FROM local_fleet_policy_versions WHERE chain_id='$CHAIN'")
+# Task-agent fleet rows only: a coordinator may also give itself a fleet row.
+agents=$(q "SELECT count(DISTINCT agent_id) FROM local_fleet_policy_versions WHERE chain_id='$CHAIN' AND agent_id<>'$COORD'")
 check "one agent id per role with per-Bridge models (2 fleet agents, each with a $BRG_B bridge_models entry)" \
   "$([ "${agents:-0}" = 2 ] && [ "$(q "SELECT count(DISTINCT agent_id) FROM local_fleet_policy_versions WHERE chain_id='$CHAIN' AND bridge_models_json LIKE '%$BRG_B%'")" = 2 ] && echo 1)" "fleet agents ${agents:-0}"
 check "two work tasks created" "$([ "$(q "SELECT count(*) FROM ($WORK)")" = 2 ] && echo 1)" "$(q "SELECT count(*) FROM ($WORK)") work tasks"
