@@ -95,21 +95,27 @@ list_chats_handler :: proc(ctx:rawptr, req:Request)->Response{
 	// the instance), so pagination still advances by the underlying rows.
 	active_only:=query_bool(req.query,"active",false) || query_value(req.query,"status")=="active"
 	// ?agent_instance_ids=a,b,... (at most 200): exactly the conversations bound
-	// to those instances (one indexed lookup each, unknown ids skipped), in the
-	// given order. The sidebar orders Bridge-owned chains by their coordinator's
-	// last activity; the newest-N list leaves most coordinators out on a busy
-	// account, so their chains fell back to title order.
-	if ids:=query_value(req.query,"agent_instance_ids");ids!="" {
+	// to those instances, whatever their age (one bounded repository query;
+	// unknown ids skipped), in the given order. The sidebar orders Bridge-owned
+	// chains by their coordinator's last activity; the newest-N list left most
+	// coordinators out on a busy account, so their chains fell back to title order.
+	if raw_ids:=query_value(req.query,"agent_instance_ids");raw_ids!="" {
+		ids:=make([dynamic]string,context.temp_allocator)
+		for id in strings.split(raw_ids,",",context.temp_allocator) {
+			trimmed:=strings.trim_space(id)
+			if trimmed!="" && len(ids)<200 do append(&ids,trimmed)
+		}
+		found,list_err:=content_service.list_conversations_by_instances(h.content,auth,ids[:])
+		if list_err.code!=.None do return respond_error(list_err,req.request_id)
 		b:=strings.builder_make(); strings.write_byte(&b,'[')
 		emitted:=0
-		for id,i in strings.split(ids,",",context.temp_allocator) {
-			if i>=200 do break
-			trimmed:=strings.trim_space(id)
-			if trimmed=="" do continue
-			c,found,_:=content_service.get_conversation_by_instance(h.content,auth,trimmed)
-			if !found do continue
-			if emitted>0 do strings.write_byte(&b,',')
-			write_chat_json_with_runtime(&b,c,h,auth); emitted+=1
+		for id in ids {
+			for c in found {
+				if c.agent_instance_id!=id do continue
+				if emitted>0 do strings.write_byte(&b,',')
+				write_chat_json_with_runtime(&b,c,h,auth); emitted+=1
+				break
+			}
 		}
 		strings.write_byte(&b,']')
 		return respond_list(strings.to_string(b),contracts.API_Page{limit=emitted,next_cursor="",has_more=false},req.request_id,auth_ctx_server_time(req))

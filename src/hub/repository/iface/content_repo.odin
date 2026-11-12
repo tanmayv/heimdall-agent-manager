@@ -8,6 +8,7 @@ Content_List_Memories_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID) -
 Content_Save_Conversation_Proc :: proc(ctx: rawptr, c: domain.Chat_Conversation) -> (domain.Chat_Conversation, bool, domain.Domain_Error)
 Content_Get_Conversation_Proc :: proc(ctx: rawptr, conversation_id: string) -> (domain.Chat_Conversation, bool, domain.Domain_Error)
 Content_List_Conversations_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID, limit: int, cursor: string) -> ([]domain.Chat_Conversation, domain.Domain_Error)
+Content_List_Conversations_By_Instances_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID, instance_ids: []string) -> ([]domain.Chat_Conversation, domain.Domain_Error)
 Content_Save_Message_Proc :: proc(ctx: rawptr, m: domain.Chat_Message) -> (domain.Chat_Message, bool, domain.Domain_Error)
 Content_Get_Message_Proc :: proc(ctx: rawptr, message_id: string) -> (domain.Chat_Message, bool, domain.Domain_Error)
 Content_Update_Message_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID, conversation_id, message_id, body, message_status, metadata_json: string) -> (domain.Chat_Message, bool, domain.Domain_Error)
@@ -42,6 +43,7 @@ Content_Repository :: struct {
 	save_conversation: Content_Save_Conversation_Proc,
 	get_conversation: Content_Get_Conversation_Proc,
 	list_conversations: Content_List_Conversations_Proc,
+	list_conversations_by_instances: Content_List_Conversations_By_Instances_Proc,
 	list_conversation_project_links: Content_List_Conversation_Project_Links_Proc,
 	save_message: Content_Save_Message_Proc,
 	get_message: Content_Get_Message_Proc,
@@ -112,4 +114,15 @@ content_list_conversation_project_links :: proc(r: ^Content_Repository, owner: d
 content_latest_user_visible_message :: proc(r: ^Content_Repository, cid: string, owner: domain.User_ID) -> (domain.Chat_Message, bool, domain.Domain_Error) {
 	if r == nil || r.latest_user_visible_message == nil do return {}, false, domain.domain_error(.Internal_Error, "latest visible message repository is not configured")
 	return r.latest_user_visible_message(r.ctx, cid, owner)
+}
+
+// The owner's conversations bound to these instances (at most 200 ids). The
+// fallback (alternate/test repositories) matches one bounded list page.
+content_list_conversations_by_instances :: proc(r: ^Content_Repository, owner: domain.User_ID, instance_ids: []string) -> ([]domain.Chat_Conversation, domain.Domain_Error) {
+	if r != nil && r.list_conversations_by_instances != nil do return r.list_conversations_by_instances(r.ctx, owner, instance_ids)
+	rows, err := content_list_conversations(r, owner, 200, "")
+	if err.code != .None do return nil, err
+	out := make([dynamic]domain.Chat_Conversation)
+	for c in rows do for id in instance_ids do if c.agent_instance_id == id { append(&out, c); break }
+	return out[:], {}
 }
