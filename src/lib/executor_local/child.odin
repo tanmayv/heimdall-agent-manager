@@ -13,10 +13,12 @@ import contracts "odin_test:contracts"
 // additionally query the daemon and verify current paired keys before relay.
 child_bootstrap :: proc(s:^Store,instance,secret:string,now:i64)->(string,bool) {
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
+    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     return child_bootstrap_locked(s,instance,secret,now)
 }
 child_token :: proc(s:^Store,secret:string,now:i64)->(instance,bootstrap:string,valid:bool) {
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
+    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if s.db==nil || s.unusable || secret=="" do return "","",false
     rows,ok:=query(s.db,"SELECT instance_id FROM executor_issuances WHERE token_secret=?",secret)
     if !ok || len(rows)!=1 do return "","",false
@@ -66,6 +68,7 @@ attest_child_request :: proc(s:^Store,instance,secret,input_raw:string,observati
     if !valid do return fail("malformed")
     if sign.sign==nil || now<=0 || now>0x7fffffffffffffff-contracts.EXECUTOR_FENCE_TTL_MS do return fail("invalid_scope")
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
+    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     raw,authenticated:=child_bootstrap_locked(s,instance,secret,now)
     if !authenticated do return fail("invalid_scope")
     b,_:=contracts.executor_parse(raw,"bootstrap")

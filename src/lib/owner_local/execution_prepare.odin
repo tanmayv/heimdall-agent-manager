@@ -10,6 +10,7 @@ import contracts "odin_test:contracts"
 // exact assignment/task revision prevents a new reservation after an ambiguous
 // outcome or owner restart. A changed task still passes ordinary admission.
 execution_prepare_assignment :: proc(s:^Store,chain,task:string,key:contracts.Owner_Verified_Key,now:i64,sign:Signer)->Result {
+    now:=effective_now(s,now) // C1: decide and stamp with max(caller clock, store clock)
     if !execution_owner_key(s,key) || sign.sign==nil do return fail("invalid_scope")
     rows,ok:=query(s.db,`SELECT h.payload_json,t.revision FROM local_fleet f
       JOIN local_assignment_history h ON h.chain_id=f.chain_id AND h.task_id=f.task_id AND h.revision=f.configuration_revision

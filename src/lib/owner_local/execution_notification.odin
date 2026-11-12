@@ -28,6 +28,7 @@ execution_notification_intent :: proc(tx:^Transaction,c:json.Object,child_raw:st
 // Caller holds an owner transaction. This checks checkpoint authority only;
 // it never requests new work admission or retargets a replacement assignment.
 execution_notification_current_locked :: proc(s:^Store,c:Intent_Claim,now:i64)->(json.Object,i64,string) {
+    now:=effective_now(s,now) // C1: decide and stamp with max(caller clock, store clock)
     if !transaction_current(s.active) || c.kind!="executor.notification" || c.incarnation!=s.incarnation ||
        c.digest!=payload_hash(c.payload) {return nil,0,"no_current_target"}
     // The held-control join below bypasses control_active, so apply the same

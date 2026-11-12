@@ -10,6 +10,7 @@ child_ready :: proc(s:^Store,instance,secret:string,observation:Child_Observatio
     owner_key,executor_key:contracts.Owner_Verified_Key,now:i64)->Result {
     context.allocator=context.temp_allocator
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
+    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if !begin(s) do return fail("storage_error")
     defer rollback(s)
     raw,authenticated:=child_bootstrap_locked(s,instance,secret,now)

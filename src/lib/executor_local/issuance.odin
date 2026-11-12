@@ -46,6 +46,7 @@ issue :: proc(s:^Store,consent_raw,selection_raw:string,device_key,executor_key:
     selection_digest:=contracts.owner_payload_digest(selection_raw)
     if field(consent,"selection_digest")!=selection_digest do return fail("digest_mismatch")
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
+    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if !begin(s) do return fail("storage_error")
     defer rollback(s)
     rows,read:=query(s.db,"SELECT input_digest,result_json FROM executor_issuances WHERE principal_id=? AND operation_id=?",

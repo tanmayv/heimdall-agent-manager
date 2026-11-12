@@ -17,6 +17,7 @@ bind_owner :: proc(s:^Store,raw:string,creator,owner:contracts.Owner_Verified_Ke
        !contracts.owner_verify_signature("genesis",g,"owner_signature",owner) {return fail("invalid_scope")}
     digest,_:=contracts.owner_digest("genesis",g)
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
+    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if !begin(s) do return fail("storage_error")
     defer rollback(s)
     rows,ok:=query(s.db,"SELECT owner_bridge_id,owner_key_id,genesis_digest FROM executor_chain_owners WHERE chain_id=?",field(g,"chain_id"))

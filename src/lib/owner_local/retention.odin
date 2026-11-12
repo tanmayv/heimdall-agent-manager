@@ -16,6 +16,7 @@ mark_clock_uncertain :: proc(tx:^Transaction) -> bool {
 // outbox work pins its full receipt, regardless of age. Bounded batches avoid
 // monopolizing the account writer. No automatic capacity reclamation exists.
 compact_receipts :: proc(s:^Store,now:i64,limit:=100) -> (int,bool) {
+    now:=effective_now(s,now) // C1: decide and stamp with max(caller clock, store clock)
     if now<RECEIPT_RETENTION_MS || limit<1 || limit>1000 do return 0,false
     tx:Transaction
     if !transaction_begin(s,&tx) do return 0,false

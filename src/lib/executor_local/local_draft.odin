@@ -61,6 +61,7 @@ authorize_native_local :: proc(s:^Store,draft_id:string,now:i64,resources:Local_
     context.allocator=context.temp_allocator
     started:=time.tick_now()
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
+    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if !begin(s) do return fail("storage_error")
     defer rollback(s)
     d,found:=local_draft_tx(s,draft_id)

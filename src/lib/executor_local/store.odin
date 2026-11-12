@@ -136,6 +136,7 @@ install_policy :: proc(s:^Store,raw:string,key:contracts.Owner_Verified_Key,now:
     if !scope(s,o) || key.key_id!=s.operator_key || !contracts.executor_verify("policy",o,key) do return fail("invalid_scope")
     digest,_:=contracts.executor_digest("policy",o)
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
+    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if !begin(s) do return fail("storage_error")
     defer rollback(s)
     prior,read:=query(s.db,"SELECT input_digest FROM executor_policies WHERE revision=?",field(o,"policy_revision"))
@@ -179,6 +180,7 @@ prepare :: proc(s:^Store,raw:string,key:contracts.Owner_Verified_Key,now:i64,res
     if !scope(s,o) || !contracts.executor_verify("prepare",o,key) do return fail("invalid_scope")
     digest,_:=contracts.executor_digest("prepare",o)
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
+    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if !begin(s) do return fail("storage_error")
     defer rollback(s)
     if prior,found:=receipt(s,field(o,"owner_bridge_id"),field(o,"operation_id"),"prepare",digest);found do return prior

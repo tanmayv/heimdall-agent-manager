@@ -32,6 +32,7 @@ local_launch :: proc(s:^Store,id:string)->(Local_Launch,bool) {
 // dispatched. A pre-upgrade device-consent admission is never dispatched.
 local_begin_dispatch :: proc(s:^Store,launch:Local_Launch,now:i64,resources:Local_Resources)->bool {
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
+    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if launch.incarnation!=s.incarnation || !begin(s) do return false
     defer rollback(s)
     if code:=clock(s,now);code!="" do return false
@@ -98,6 +99,7 @@ local_observation_current :: proc(s:^Store,launch:Local_Launch)->(stop,current:b
 // fence or clock regression. This cannot restore a consumed dispatch.
 local_dispatch_current :: proc(s:^Store,launch:Local_Launch,now:i64)->bool {
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
+    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if s.db==nil || s.unusable || launch.incarnation!=s.incarnation do return false
     rows,ok:=query(s.db,`SELECT consent FROM executor_local_launches WHERE launch_id=? AND instance_id=? AND launch_key=? AND configuration=?
       AND executor_incarnation=? AND state='dispatching' AND (SELECT recovery_state FROM executor_runtime) IN('ready','clock_uncertain')`,launch.id,launch.instance,launch.launch_key,launch.configuration,fmt.tprintf("%d",s.incarnation))

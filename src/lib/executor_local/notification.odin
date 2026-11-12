@@ -45,11 +45,13 @@ notification_current_locked :: proc(s:^Store,n:json.Object,message:string,key:co
 }
 notification_current :: proc(s:^Store,n:json.Object,message:string,key:contracts.Owner_Verified_Key,now:i64)->bool {
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
+    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     return s.db!=nil && !s.unusable && notification_current_locked(s,n,message,key,now)=="ok"
 }
 notification_stage :: proc(s:^Store,n:json.Object,message:string,key:contracts.Owner_Verified_Key,stage:string,now:i64)->Result {
     if stage!="ticket" && stage!="dispatch" && stage!="result" do return fail("invalid_stage")
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
+    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if s.db==nil || s.unusable do return fail("storage_error")
     if code:=notification_current_locked(s,n,message,key,now);code!="ok" do return fail(code)
     prior,found:=receipt(s,field(n,"owner_bridge_id"),fmt.tprintf("notification_%s_%s",field(n,"intent_id"),stage),
@@ -74,6 +76,7 @@ notification_record :: proc(s:^Store,n:json.Object,message:string,key:contracts.
            notification_effect(original)!=notification_effect(n) {return fail("invalid_content")}
     }
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
+    now:=effective_now(s,now) // C1: decide with max(caller clock, store clock), under the store mutex
     if !begin(s) do return fail("storage_error")
     defer rollback(s)
     if code:=notification_current_locked(s,n,message,key,now);code!="ok" do return fail(code)

@@ -343,7 +343,8 @@ owner_execution_fresh_fence_rejects_changed_claim_expiry_and_retired_grant :: pr
     current,_,_,_=execution_activation_fence(&f.store,changed,1200);testing.expect(t,!current)
     changed=claim;changed.fence="{}"
     current,_,_,_=execution_activation_fence(&f.store,changed,1200);testing.expect(t,!current)
-    current,_,_,_=execution_activation_fence(&f.store,claim,999);testing.expect(t,!current)
+    // C1: a caller clock behind the store's is clamped to it, not refused.
+    current,_,_,_=execution_activation_fence(&f.store,claim,999);testing.expect(t,current)
     current,_,_,_=execution_activation_fence(&f.store,claim,3000);testing.expect(t,!current)
     testing.expect(t,expire_leases(&f.store,901101))
     current,_,_,_=execution_activation_fence(&f.store,claim,901101);testing.expect(t,!current)

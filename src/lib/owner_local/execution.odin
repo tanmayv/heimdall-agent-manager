@@ -218,6 +218,7 @@ execution_activation_fence :: proc(s:^Store,claim:Intent_Claim,now:i64)->(curren
     return
 }
 execution_activation_fence_locked :: proc(s:^Store,claim:Intent_Claim,now:i64)->(current:bool,digest:string,owner_incarnation,commit_seq:i64) {
+    now:=effective_now(s,now) // C1: decide and stamp with max(caller clock, store clock)
     if !transaction_current(s.active) do return false,"",0,0
     if (claim.kind!="executor.activate" && claim.kind!="executor.heartbeat") || claim.incarnation!=s.incarnation || claim.digest!=contracts.owner_payload_digest(claim.payload) do return false,"",0,0
     rows,ok:=query(s.db, `SELECT j.prepare_json,j.lease_command,i.payload_json,i.commit_seq,l.expires_ms,l.hard_ms,l.deadline_version,
