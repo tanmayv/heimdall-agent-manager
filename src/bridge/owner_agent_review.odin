@@ -348,7 +348,7 @@ bridge_owner_review_next :: proc(ctx:^Owner_Agent_Ctx,only_chain:="") -> string 
     out:=Owner_Agent_Lease{lease_id=lease,task_id=task,chain_id=chain,requirements_revision=st.requirements_revision,acknowledged="1",
         placement=bridge_owner_placement(st.config,st.configured),role="reviewer",attempt=st.attempt}
     ctx.review_context=Owner_Review_Context{ctx.run_dir,bridge_owner_render_review_context(st,out,ctx.child.instance,opened.body)}
-    return bridge_local_response_data(ctx.request_id,bridge_owner_json(Owner_Agent_Next{"granted",out,Owner_Agent_Task_Ref{task,chain},bridge_owner_authority()}))
+    return bridge_local_response_data(ctx.request_id,bridge_owner_json(Owner_Agent_Next{status="granted",lease=out,task=Owner_Agent_Task_Ref{task,chain},authority=bridge_owner_authority(),read_next=BRIDGE_OWNER_REVIEW_CONTEXT_HINT}))
 }
 
 // review.open for the submitted attempt (a fresh session capability).
@@ -359,6 +359,10 @@ bridge_owner_review_open :: proc(ctx:^Owner_Agent_Ctx,st:owner.Agent_Task_State,
     opened:=bridge_owner_run_input(ctx,"review.open",st.chain_id,st.task_id,submitted[0][0],st.configuration_revision,st.task_revision,"",payload)
     return opened,submitted[0][0],opened.code
 }
+
+// The granted review's pointer to its TASK.md, which is written after the
+// reply is built (here, or on the relaying Bridge for a remote reviewer).
+BRIDGE_OWNER_REVIEW_CONTEXT_HINT :: "Read TASK.md in your run directory now (it was just rewritten for this review): it holds the brief, the worker's summary and checks, and the exact review post command."
 
 bridge_owner_review_context_write :: proc(c:Owner_Review_Context) -> bool {
     clean:=strings.trim_right(strings.trim_space(c.run_dir),"/")

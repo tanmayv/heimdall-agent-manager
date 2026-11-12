@@ -303,6 +303,8 @@ bridge_owner_remote_review_context_write :: proc(request_id,response,instance:st
     if launch,launched:=bridge_runtime_get_launch(instance);launched do run_dir=strings.clone(launch.run_dir,context.temp_allocator)
     if run_dir=="" || !bridge_owner_review_context_write(Owner_Review_Context{run_dir,string(text)}) {
         data["review_context_written"]=json.Boolean(false)
+        // No TASK.md to point at: task show carries the brief instead.
+        data["context"]=json.String("The review TASK.md could not be written on this Bridge: run lease next again, or judge the attempt against the brief in task show.")
     }
     return bridge_local_response_data(request_id,bridge_owner_json(data))
 }

@@ -166,6 +166,13 @@ test_owner_review_dispatch_reaches_every_reviewer_end_to_end :: proc(t:^testing.
         lease,_:=d["lease"].(json.Object)
         testing.expectf(t,contracts.owner_string(d,"status")=="granted" && contracts.owner_string(lease,"role")=="reviewer" && contracts.owner_string(lease,"task_id")==task && contracts.owner_string(lease,"attempt")=="1","%s gets its review lease: %v",reviewer.agent_id,next)
         testing.expectf(t,strings.contains(nctx.review_context.text,"Role: reviewer") && strings.contains(nctx.review_context.text,"Ship gated"),"reviewer TASK.md: %s",nctx.review_context.text)
+        // R1 run16: the grant points the reviewer at its freshly written
+        // TASK.md, and task show carries the brief it is judged against.
+        testing.expectf(t,strings.contains(contracts.owner_string(d,"context"),"TASK.md"),"the grant says to read TASK.md: %v",next)
+        shown,_:=review_test_exec(r,reviewer,"agent.task.show",fmt.tprintf(`{{"chain_id":"%s","task_id":"%s"}}`,chain,task))
+        shown_task,_:=review_test_data(shown)["task"].(json.Object)
+        brief,_:=shown_task["brief"].(json.Object)
+        testing.expectf(t,strings.contains(contracts.owner_string(brief,"goal"),"Ship gated"),"task show carries the brief: %v",shown)
     }
     idle,_:=review_test_exec(r,coord,"agent.lease.next","{}")
     testing.expect_value(t,contracts.owner_string(review_test_data(idle),"status"),"none")

@@ -59,6 +59,7 @@ test_owner_remote_review_context_write_strips_the_text :: proc(t:^testing.T) {
     testing.expect(t,!has,"the text is not passed to the agent")
     written,_:=data["review_context_written"].(json.Boolean)
     testing.expect(t,!bool(written),"no run directory: not written")
+    testing.expectf(t,strings.contains(string(data["context"].(json.String) or_else ""),"could not be written"),"the reply does not point at an unwritten TASK.md: %v",data)
     none:=bridge_local_response_data("req_2",`{"status":"none"}`)
     testing.expect_value(t,bridge_owner_remote_review_context_write("req_2",none,"inst_x"),none)
 }

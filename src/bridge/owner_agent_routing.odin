@@ -352,6 +352,9 @@ Owner_Agent_Next :: struct {
     lease:Maybe(Owner_Agent_Lease) `json:"lease,omitempty"`,
     task:Maybe(Owner_Agent_Task_Ref) `json:"task,omitempty"`,
     authority:Owner_Agent_Authority,
+    // What to read next (a granted review: its TASK.md). R1 run16: a remote
+    // reviewer read TASK.md before lease next wrote it and never re-read it.
+    read_next:string `json:"context,omitempty"`,
 }
 bridge_owner_authority :: proc() -> Owner_Agent_Authority { return {"owner",bridge_cfg().daemon_id} }
 
@@ -441,7 +444,7 @@ bridge_owner_deliver :: proc(ctx:^Owner_Agent_Ctx,st:owner.Agent_Lease_State,sta
     // Only for a configured lease whose chain merges nothing (merge_policy
     // none): an unconfigured git lease must not report the run dir.
     if out.placement.workdir=="" && ctx.run_dir!="" && st.configured && contracts.owner_string(st.config,"merge_policy")!="git" do out.placement={ctx.run_dir,ctx.run_dir,""}
-    next:=Owner_Agent_Next{status,out,Owner_Agent_Task_Ref{st.task_id,st.chain_id},bridge_owner_authority()}
+    next:=Owner_Agent_Next{status=status,lease=out,task=Owner_Agent_Task_Ref{st.task_id,st.chain_id},authority=bridge_owner_authority()}
     if !st.configured {
         ctx.pending=Owner_Pending_Delivery{active=false,next=next}
         return "ok",""
@@ -553,7 +556,7 @@ bridge_owner_agent_exec :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object
             st,has:=owner.agent_lease_state(s,ctx.child)
             if !has do return bridge_local_response_data(ctx.request_id,bridge_owner_json(Owner_Agent_Next{status="none",authority=bridge_owner_authority()}))
             lease:=Owner_Agent_Lease{lease_id=st.lease_id,task_id=st.task_id,chain_id=st.chain_id,requirements_revision=st.requirements_revision,placement=bridge_owner_placement(st.config,st.configured)}
-            return bridge_local_response_data(ctx.request_id,bridge_owner_json(Owner_Agent_Next{"current",lease,Owner_Agent_Task_Ref{st.task_id,st.chain_id},bridge_owner_authority()}))
+            return bridge_local_response_data(ctx.request_id,bridge_owner_json(Owner_Agent_Next{status="current",lease=lease,task=Owner_Agent_Task_Ref{st.task_id,st.chain_id},authority=bridge_owner_authority()}))
         }
         _=owner.expire_leases(s,ctx.now)
         // A restarted agent reclaims the tasks of its earlier launch.
@@ -585,12 +588,15 @@ bridge_owner_agent_exec :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object
         if r.code!="ok" do return bridge_owner_fail(ctx,r.code,"owner task read refused")
         read:=bridge_owner_result_object(r.body)
         Task_Show :: struct {
-            task:struct{task_id,chain_id,title,body,priority,state,attempt,requirements_revision,revision,run_bridge_id:string,agent_models:map[string]Owner_Agent_Model},
+            task:struct{task_id,chain_id,title,body,priority,state,attempt,requirements_revision,revision,run_bridge_id:string,agent_models:map[string]Owner_Agent_Model,brief:json.Value},
             comments:json.Value,
             authority:Owner_Agent_Authority,
         }
         out:Task_Show
-        out.task={st.task_id,st.chain_id,contracts.owner_string(read,"title"),contracts.owner_string(read,"body"),contracts.owner_string(read,"priority"),st.state,st.attempt,st.requirements_revision,st.task_revision,bridge_owner_task_run_bridge(st.brief),bridge_owner_brief_agent_models(st.brief)}
+        out.task={st.task_id,st.chain_id,contracts.owner_string(read,"title"),contracts.owner_string(read,"body"),contracts.owner_string(read,"priority"),st.state,st.attempt,st.requirements_revision,st.task_revision,bridge_owner_task_run_bridge(st.brief),bridge_owner_brief_agent_models(st.brief),nil}
+        // The goal and acceptance (R1 run16: a reviewer's task show had an
+        // empty body and no brief, so it had nothing to judge against).
+        if brief,parsed:=contracts.owner_content_document(st.brief);parsed do out.task.brief=brief
         out.comments=read["items"]
         out.authority=bridge_owner_authority()
         return bridge_local_response_data(ctx.request_id,bridge_owner_json(out))
