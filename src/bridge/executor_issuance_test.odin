@@ -654,7 +654,7 @@ bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,wire:Executor_Exc
     if !testing.expect_value(t,attested.code,"ok") do return
     child_request,valid:=contracts.executor_parse(attested.body,"child_request")
     testing.expect(t,valid && contracts.executor_child_request_matches(child_request,bootstrap,input,self,owner_key,time.to_unix_nanoseconds(time.now())/1000000))
-    probe:=Executor_Child_Test_Transport{t,directory,kr,owner_private,owner_key,0,0}
+    probe:=Executor_Child_Test_Transport{t,directory,kr,owner_private,owner_key,0,0,"",""}
     transport:=Executor_Child_Transport{&probe,bridge_executor_test_child_directory,bridge_executor_test_child_exchange}
     native_event:=`{"schema":"ham.ext.v1","provider":"codex","ext_version":"0.1.0","event":"session","ts":"2026-11-07T00:00:00Z","session_id":"native_session","transcript_path":"/not-a-native-session.jsonl","payload":{"phase":"start","source":"startup"}}`
     native_params_value,_:=contracts.owner_content_document(native_event)
@@ -690,6 +690,33 @@ bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,wire:Executor_Exc
     local,handled:=bridge_executor_agent("child_local",input,material.token_secret,transport,socket)
     testing.expectf(t,handled && strings.contains(local,`"code":"ok"`) && probe.exchanges==1,"mounted child endpoint: handled=%v exchanges=%d response=%s",handled,probe.exchanges,local)
     testing.expect(t,!strings.contains(local,material.token_secret),"child credential stays local")
+    // G1: an ordinary agent verb from the remote child (no B token record)
+    // reaches the owner as its own chain/task/lease, and the owner's full
+    // response (data, or code plus reason) comes back under the caller's id.
+    {
+        probe.verb_response=bridge_local_response_data("",`{"lease_id":"owner_answer"}`)
+        hb_params:=make(json.Object,context.temp_allocator);hb_params["note"]=json.String("remote progress")
+        hb_line:=executor.encode(struct{v:int,id,token,method:string,params:json.Object}{1,"remote_hb",material.token_secret,"agent.lease.heartbeat",hb_params})
+        before:=probe.exchanges
+        hb:=bridge_local_endpoint_handle_jsonl_line(hb_line,transport,socket)
+        testing.expectf(t,strings.contains(hb,`"id":"remote_hb"`) && strings.contains(hb,`"ok":true`) && strings.contains(hb,"owner_answer") &&
+            probe.exchanges==before+1,"remote heartbeat relayed to the owner: %s",hb)
+        sent,valid:=contracts.executor_parse(probe.verb_input,"agent_verb")
+        testing.expectf(t,valid && contracts.owner_string(sent,"method")=="agent.lease.heartbeat" &&
+            contracts.owner_string(sent,"task_id")==contracts.owner_string(bootstrap,"task_id") &&
+            contracts.owner_string(sent,"lease_id")==contracts.owner_string(bootstrap,"lease_id") &&
+            strings.contains(contracts.owner_string(sent,"params"),"remote progress"),"verb names the child's own lease: %s",probe.verb_input)
+        probe.verb_response=bridge_local_response_error("","invalid_scope","remote agents may act only on their own task")
+        cross_params:=make(json.Object,context.temp_allocator);cross_params["task_id"]=json.String("task_other");cross_params["body"]=json.String("x")
+        cross_line:=executor.encode(struct{v:int,id,token,method:string,params:json.Object}{1,"remote_cross",material.token_secret,"agent.task.comment",cross_params})
+        cross:=bridge_local_endpoint_handle_jsonl_line(cross_line,transport,socket)
+        testing.expectf(t,strings.contains(cross,`"id":"remote_cross"`) && strings.contains(cross,"invalid_scope") && strings.contains(cross,"own task"),
+            "owner refusal reaches the agent with its reason: %s",cross)
+        other_line:=executor.encode(struct{v:int,id,token,method:string,params:json.Object}{1,"remote_create",material.token_secret,"agent.task.create",make(json.Object,context.temp_allocator)})
+        before=probe.exchanges
+        created:=bridge_local_endpoint_handle_jsonl_line(other_line,transport,socket)
+        testing.expectf(t,strings.contains(created,"unauthenticated") && probe.exchanges==before,"coordinator verbs are not relayed for a remote child: %s",created)
+    }
     for mode in 1..=2 {
         probe.mode=mode
         local,handled=bridge_executor_agent("child_local_bad",input,material.token_secret,transport,socket)
@@ -778,6 +805,8 @@ bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,wire:Executor_Exc
 Executor_Child_Test_Transport :: struct {
     t:^testing.T,directory:vault.Directory_Verification_Input,kr:^vault.Vault_Keyring,
     private:^ecdsa.Private_Key,key:contracts.Owner_Verified_Key,mode,exchanges:int,
+    // The last agent_verb input the owner received, and its canned answer.
+    verb_input,verb_response:string,
 }
 bridge_executor_test_child_directory :: proc(ctx:rawptr,_:i64)->(vault.Directory_Verification_Input,bool) {
     p:=(^Executor_Child_Test_Transport)(ctx)
@@ -806,6 +835,10 @@ bridge_executor_test_child_exchange :: proc(ctx:rawptr,raw,input:string,_:i64)->
     scope["input_digest"]=json.String(digest);scope["fence_digest"]=request["prepare_digest"]
     scope["issued_ms"]=request["issued_ms"];scope["request_expires_ms"]=request["request_expires_ms"]
     body:=bridge_owner_json(owner.Result{code="ok",body="native owner result"})
+    if _,is_verb:=contracts.executor_parse(input,"agent_verb");is_verb {
+        p.verb_input=strings.clone(input,context.temp_allocator)
+        body=bridge_owner_json(owner.Result{code="ok",body=p.verb_response})
+    }
     token,sealed:=owner.execution_child_result(request,body,scope,p.key,time.to_unix_nanoseconds(time.now())/1000000,p.kr,{p.private,bridge_executor_test_child_sign})
     testing.expect(p.t,sealed)
     scope["direction"]=json.String("response")

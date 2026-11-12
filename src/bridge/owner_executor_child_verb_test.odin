@@ -1,0 +1,121 @@
+#+feature dynamic-literals
+package main
+
+import "core:crypto/ecdsa"
+import "core:encoding/json"
+import "core:fmt"
+import "core:os"
+import "core:strings"
+import "core:sync"
+import "core:testing"
+import "core:time"
+import contracts "odin_test:contracts"
+import owner "odin_test:lib/owner_local"
+import vault "odin_test:lib/vault"
+
+// G1: a remote (executor-launched) child's ordinary agent verbs, as the owner
+// Bridge receives them after execution_child proved the exact child. The
+// worker heartbeats, comments and submits on its own task; a verb naming
+// another task is refused with a reason and changes nothing.
+@(test)
+test_owner_executor_child_verbs_scoped_to_own_task :: proc(t:^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex);defer sync.mutex_unlock(&bridge_test_config_mutex)
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    r:=new(Review_Test,context.temp_allocator)
+    priv:ecdsa.Private_Key;defer ecdsa.private_key_clear(&priv)
+    r.key=chain_create_test_key(t,&priv,"bridge","bridge_key")
+    signer:=owner.Signer{&priv,chain_create_test_sign}
+    old_daemon:=bridge_cfg().daemon_id;bridge_cfg().daemon_id="bridge"
+    bridge_owner_test_signer=signer;bridge_owner_live_probe=review_test_probe
+    bridge_owner_review_effects=Owner_Review_Effects{nudge=review_test_nudge,start=review_test_start};bridge_owner_review_sync_effects=true
+    review_test_live=make([dynamic]owner.Child,context.temp_allocator)
+    review_test_nudged=make([dynamic]string,context.temp_allocator)
+    review_test_started=make([dynamic]string,context.temp_allocator)
+    defer {
+        bridge_cfg().daemon_id=old_daemon;bridge_owner_test_signer={};bridge_owner_live_probe=nil
+        bridge_owner_review_effects={};bridge_owner_review_sync_effects=false
+        review_test_live=nil;review_test_nudged=nil;review_test_started=nil
+    }
+    r.root=fmt.tprintf("%s/.cache/heimdall-tests/owner-child-verbs-%d",bridge_env_get("HOME",context.temp_allocator),time.to_unix_nanoseconds(time.now()))
+    testing.expect(t,bridge_make_directory_all(r.root)==nil)
+    defer _=os.remove_all(r.root)
+    if !testing.expect(t,owner.open(&r.store,fmt.tprintf("%s/runtime.sqlite",r.root),"account","bridge","bridge_key")) do return
+    defer owner.close(&r.store)
+    vid,_:=vault.vault_id_from_root_sign_pub(r.key.public_key)
+    secret:[32]byte;secret[0]=7
+    r.kr,_=vault.keyring_from_single_key("account",vid,1,secret[:]);defer vault.keyring_wipe(&r.kr)
+
+    chain:="chain_remote_verbs"
+    now:=time.to_unix_nanoseconds(time.now())/1000000
+    tc,_:=vault.seal_string("remote verbs",&r.kr,context.temp_allocator)
+    dc,_:=vault.seal_string("",&r.kr,context.temp_allocator)
+    g,c,p,built:=bridge_owner_chain_create_documents("account","bridge","bridge_key",chain,"op_remote_verbs",tc,dc,now,signer)
+    testing.expect(t,built)
+    if !testing.expect_value(t,owner.execute(&r.store,c,p,g,r.key,r.key,0,"",now,&r.kr,signer,requested_by="inst_c").code,"ok") do return
+    coord:=review_test_child("inst_c","agt_c")
+    if !testing.expect_value(t,owner.bind_created_coordinator(&r.store,chain,coord,"inst_c",now).code,"ok") do return
+    worker:=review_test_child("inst_remote","agt_w")
+    append(&review_test_live,coord,worker)
+    {
+        ctx:=review_test_ctx(r,coord)
+        testing.expect_value(t,bridge_owner_fleet_member(&ctx,chain,worker.instance,worker.agent_id,"worker",true,worker).code,"ok")
+    }
+    tasks:[2]string
+    for title,i in ([2]string{"own","other"}) {
+        out,_:=review_test_exec(r,coord,"agent.task.create",fmt.tprintf(`{{"chain_id":"%s","title":"%s","brief":{{"goal":"Ship %s","acceptance":["Tests pass"]}},"assignee":"agt_w"}}`,chain,title,title))
+        tasks[i]=contracts.owner_string(review_test_data(out),"task_id")
+        if !testing.expectf(t,tasks[i]!="","task create: %v",out) do return
+    }
+    // The owner's placement grants the child its lease (the remote child
+    // never claims one through this path).
+    next,_:=review_test_exec(r,worker,"agent.lease.next","{}")
+    lease,_:=review_test_data(next)["lease"].(json.Object)
+    own,lease_id,revision:=contracts.owner_string(lease,"task_id"),contracts.owner_string(lease,"lease_id"),contracts.owner_string(lease,"requirements_revision")
+    if !testing.expectf(t,own!="" && lease_id!="","worker holds a lease: %v",next) do return
+    other:=tasks[1] if own==tasks[0] else tasks[0]
+    st,_,_:=owner.agent_task_state(&r.store,chain,own)
+
+    verb :: proc(r:^Review_Test,child:owner.Child,chain,task,lease,configuration,method,params:string,f:^Owner_Executor_Child_Followup) -> (json.Object,string) {
+        doc:=map[string]string{"protocol_version"="1","chain_id"=chain,"task_id"=task,"lease_id"=lease,"configuration_revision"=configuration,"method"=method,"params"=params}
+        raw:=bridge_owner_json(doc)
+        input,valid:=contracts.executor_parse(raw,"agent_verb")
+        if !valid do return nil,"invalid agent_verb input"
+        result:owner.Result
+        if json.unmarshal_string(bridge_owner_executor_child_verb(&r.store,input,child,r.key,&r.kr,f),&result,.JSON,context.temp_allocator)!=nil do return nil,"bad result"
+        return bridge_owner_result_object(result.body),result.code
+    }
+    configuration:=st.configuration_revision if st.configuration_revision!="" else "1"
+    f:Owner_Executor_Child_Followup
+
+    hb,code:=verb(r,worker,chain,own,lease_id,configuration,"agent.lease.heartbeat",fmt.tprintf(`{{"acknowledge_requirements_revision":"%s"}}`,revision),&f)
+    testing.expect_value(t,code,"ok")
+    testing.expectf(t,contracts.owner_string(review_test_data(hb),"acknowledged_requirements_revision")==revision,"remote heartbeat acknowledges: %v",hb)
+
+    commented,_:=verb(r,worker,chain,own,lease_id,configuration,"agent.task.comment",`{"body":"remote progress"}`,&f)
+    testing.expectf(t,review_test_ok(commented),"remote comment on its own task: %v",commented)
+    shown,_:=verb(r,worker,chain,own,lease_id,configuration,"agent.task.comments","{}",&f)
+    testing.expectf(t,strings.contains(bridge_owner_json(shown),"remote progress"),"the comment is on the own task: %v",shown)
+
+    // Cross-task: refused with a reason, nothing written on the other task.
+    crossed,_:=verb(r,worker,chain,own,lease_id,configuration,"agent.task.comment",fmt.tprintf(`{{"task_id":"%s","body":"sneaky"}}`,other),&f)
+    e,_:=crossed["error"].(json.Object)
+    testing.expectf(t,contracts.owner_string(e,"code")=="invalid_scope" && strings.contains(contracts.owner_string(e,"message"),"own task") &&
+        strings.contains(contracts.owner_string(e,"message"),other),"cross-task comment refused with a reason: %v",crossed)
+    other_read,_:=review_test_exec(r,coord,"agent.task.comments",fmt.tprintf(`{{"task_id":"%s"}}`,other))
+    testing.expectf(t,!strings.contains(bridge_owner_json(other_read),"sneaky"),"nothing reached the other task: %v",other_read)
+    crossed_chain,_:=verb(r,worker,chain,own,lease_id,configuration,"agent.task.show",`{"chain_id":"chain_elsewhere"}`,&f)
+    testing.expectf(t,strings.contains(bridge_owner_json(crossed_chain),"invalid_scope"),"cross-chain read refused: %v",crossed_chain)
+    crossed_lease,_:=verb(r,worker,chain,own,lease_id,configuration,"agent.lease.heartbeat",`{"lease_id":"lease_someone_else"}`,&f)
+    testing.expectf(t,strings.contains(bridge_owner_json(crossed_lease),"own lease"),"another lease refused: %v",crossed_lease)
+
+    submitted,_:=verb(r,worker,chain,own,lease_id,configuration,"agent.lease.submit",`{"summary":"remote tests pass"}`,&f)
+    testing.expectf(t,review_test_ok(submitted),"remote submit: %v",submitted)
+    testing.expect_value(t,review_test_state(r,own),"done")
+    testing.expect_value(t,review_test_state(r,other),"ready")
+    testing.expect_value(t,f.match_chain,chain)
+}
+
+review_test_ok :: proc(o:json.Object) -> bool {
+    ok,_:=o["ok"].(json.Boolean)
+    return bool(ok)
+}
