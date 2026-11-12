@@ -548,7 +548,7 @@ owner_execution_released_reservation_is_placed_again :: proc(t:^testing.T) {
     c:=remote_test_config(x.host_key)
     c["instance_id"]=json.String("instance2");c["configuration_revision"]=json.String(fmt.tprintf("%d",number(fleet[0][0])+1))
     task,_:=query(f.store.db,"SELECT revision FROM tasks WHERE task_id='task'")
-    placed:=remote_test_call(f,remote_test_payload(f,x.host_key,c,"3000","4000"),"remote_replace",x.host_key,task[0][0],3001)
+    placed:=remote_test_call(f,remote_test_payload(f,x.host_key,c,"3000","4000"),"remote_replace",x.host_key,task[0][0],3001,4000)
     testing.expect_value(t,placed.code,"ok")
     rows,_:=query(f.store.db,"SELECT instance_id,enabled FROM local_fleet")
     testing.expect_value(t,encode(rows),encode([1][2]string{{"instance2","1"}}))

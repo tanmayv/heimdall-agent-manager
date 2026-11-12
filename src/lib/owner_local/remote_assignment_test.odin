@@ -36,8 +36,8 @@ remote_test_payload :: proc(f:^Fixture,key:contracts.Owner_Verified_Key,c:json.O
     return encode(doc(map[string]string{"instance_id"=field(c,"instance_id"),"configuration_revision"=field(c,"configuration_revision"),
         "enabled"="1","body_cipher"=cipher(f,reservation)}))
 }
-remote_test_call :: proc(f:^Fixture,payload,op:string,key:contracts.Owner_Verified_Key,revision:="1",now:i64=1000)->Result {
-    c:=command(f,"fleet.reserve",op,"task",payload,revision,max(now+1000,2000))
+remote_test_call :: proc(f:^Fixture,payload,op:string,key:contracts.Owner_Verified_Key,revision:="1",now:i64=1000,expires:i64=2000)->Result {
+    c:=command(f,"fleet.reserve",op,"task",payload,revision,expires)
     return execute(&f.store,c,payload,"",f.creator,f.owner,1,"head",now,&f.kr,{&f.owner_priv,test_sign},{},{},nil,key)
 }
 remote_test_seed :: proc(t:^testing.T,f:^Fixture,key:contracts.Owner_Verified_Key) {
