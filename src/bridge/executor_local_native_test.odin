@@ -416,6 +416,23 @@ bridge_executor_local_native_scenario :: proc(t:^testing.T,model_mode:string="")
     testing.expect(t,startup_exists)
     sync.mutex_lock(&bridge_legacy_physical_mutex)
     testing.expect(t,bridge_legacy_startup_input_allowed_locked(&bridge_executor_store,startup_current,socket),"native startup producer matches current exact child and resources")
+    // F6 (local REQ-E2E-1): the run dir is the Bridge's own (its endpoint run
+    // dir), which fs_root need not contain (fs_root=/home/<user>, state under
+    // /tmp). Owner notices and user chat to the live coordinator were refused
+    // ('coordinator not live', 'no-agent-subscription') until the Bridge's own
+    // dirs were exempt from the sandbox (3cd47a61).
+    {
+        // fs_root keeps the launch's project dir (re-checked at resolve) but
+        // not the run dir.
+        project:=bridge_executor_local_descriptor(material.command).project_path
+        projects:=project if project!="" else fmt.tprintf("%s/projects",root)
+        testing.expect(t,bridge_make_directory_all(projects)==nil)
+        testing.expect(t,!strings.has_prefix(material.run_dir,fmt.tprintf("%s/",projects)),"the run dir is outside the narrowed fs_root")
+        prior_fs_root:=bridge_fs_root
+        bridge_fs_root=projects
+        testing.expectf(t,bridge_legacy_startup_input_allowed_locked(&bridge_executor_store,startup_current,socket),"a live child whose run dir is outside fs_root still receives deliveries (run_dir %s, fs_root %s)",material.run_dir,projects)
+        bridge_fs_root=prior_fs_root
+    }
     startup_changed:=startup_current
     startup_changed.startup.pty_pid+=1
     testing.expect(t,!bridge_legacy_startup_input_allowed_locked(&bridge_executor_store,startup_changed,socket),"replacement PID cannot inherit a startup write")
