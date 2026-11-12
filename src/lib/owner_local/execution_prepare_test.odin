@@ -145,6 +145,45 @@ owner_preparation_row_retires_with_its_lease_and_task_is_prepared_again :: proc(
     testing.expect_value(t,count[0][0],"2")
 }
 
+// R1 FIX B: after the work lease retires, a task that is not claimable
+// (submitted for review, held, done) gets no new work generation; once it is
+// ready again (rework) the next generation is prepared.
+@(test)
+owner_preparation_skips_non_claimable_task_after_retire :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    x:=execution_test_fixture(t);defer execution_test_destroy(x);f:=x.owner
+    sign:=Signer{&f.owner_priv,execution_test_sign}
+    reservation,_,committed:=execution_prepare_test_commit(t,x,sign)
+    if !committed do return
+    leases,_:=query(f.store.db,"SELECT expires_ms FROM local_leases")
+    if !testing.expect_value(t,len(leases),1) do return
+    ended:=number(leases[0][0])+1
+    testing.expect(t,expire_leases(&f.store,ended))
+    testing.expect(t,execution_expire_preparations(&f.store,ended))
+    rows,_:=query(f.store.db,"SELECT state FROM owner_execution_journal WHERE reservation_id=?",reservation)
+    testing.expect_value(t,encode(rows),encode([1][1]string{{"retired"}}))
+    set_state:=proc(t:^testing.T,f:^Fixture,state:string) {
+        _,ok:=query(f.store.db,"INSERT INTO lifecycle_state(chain_id,task_id,state) VALUES('chain','task',?) ON CONFLICT(chain_id,task_id) DO UPDATE SET state=excluded.state",state)
+        testing.expect(t,ok)
+    }
+    for state,i in ([2]string{"in_review","done"}) {
+        set_state(t,f,state)
+        refused:=execution_prepare_assignment(&f.store,"chain","task",f.owner,ended+1+i64(i),sign)
+        testing.expectf(t,refused.code=="invalid_scope","no work prepare for a %s task: %v",state,refused)
+    }
+    set_state(t,f,"ready")
+    _,held:=query(f.store.db,"INSERT INTO local_controls(chain_id,task_id,mode,resume_state,reason,waiting_on) VALUES('chain','task','held','ready','test hold','') ON CONFLICT(chain_id,task_id) DO UPDATE SET mode='held'")
+    if testing.expect(t,held) {
+        refused:=execution_prepare_assignment(&f.store,"chain","task",f.owner,ended+3,sign)
+        testing.expectf(t,refused.code=="invalid_scope","no work prepare for a held task: %v",refused)
+        _,_=query(f.store.db,"UPDATE local_controls SET mode='ready' WHERE chain_id='chain' AND task_id='task'")
+    }
+    count,_:=query(f.store.db,"SELECT count(*) FROM owner_execution_journal")
+    testing.expect_value(t,count[0][0],"1")
+    again:=execution_prepare_assignment(&f.store,"chain","task",f.owner,ended+4,sign)
+    testing.expectf(t,again.code=="ok" && !again.replay,"rework: the ready task is prepared again: %v",again)
+}
+
 // Commits the fixture's first remote preparation and returns its reservation
 // and prepare document.
 execution_prepare_test_commit :: proc(t:^testing.T,x:^Execution_Test,sign:Signer) -> (string,json.Object,bool) {

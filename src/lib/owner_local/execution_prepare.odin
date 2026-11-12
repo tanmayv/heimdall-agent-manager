@@ -27,6 +27,10 @@ execution_prepare_assignment :: proc(s:^Store,chain,task:string,key:contracts.Ow
     live,live_read:=query(s.db,"SELECT prepare_seq,state FROM owner_execution_journal WHERE chain_id=? AND task_id=? AND instance_id=? AND state!='retired'",chain,task,field(c,"instance_id"))
     if !live_read do return fail("storage_error")
     if len(live)==1 do return Result{code="ok",body=live[0][1],seq=number(live[0][0]),replay=true}
+    // R1 FIX B: a new work generation only for a claimable task. A submitted
+    // (in_review), held or done task owes no work; preparing one anyway made
+    // the executor refuse each generation with resource_conflict.
+    if !execution_work_claimable(s,chain,task) do return fail("invalid_scope")
     retired,retired_read:=query(s.db,"SELECT count(*) FROM owner_execution_journal WHERE chain_id=? AND task_id=? AND state='retired'",chain,task)
     if !retired_read || len(retired)!=1 do return fail("storage_error")
     reservation:=payload_hash(encode([7]string{s.account,s.owner,chain,task,field(c,"instance_id"),field(c,"configuration_revision"),rows[0][1]}))
@@ -67,6 +71,14 @@ execution_prepare_assignment :: proc(s:^Store,chain,task:string,key:contracts.Ow
     if !signed do return fail("storage_error")
     p["signature"]=json.String(signature)
     return execution_prepare_start(s,encode(p),encode(lease),key,now)
+}
+
+// Whether the task can take a new work lease: lifecycle ready (or not yet
+// started) and dispatch controls ready (not held, blocked or cancelled).
+execution_work_claimable :: proc(s:^Store,chain,task:string)->bool {
+    rows,ok:=query(s.db,"SELECT state FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)
+    if !ok || len(rows)>0 && rows[0][0]!="ready" do return false
+    return control_ready(s,chain,task)
 }
 
 // Before every external prepare/query, require the original owner incarnation,
