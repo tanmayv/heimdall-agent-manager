@@ -144,13 +144,13 @@ grant_attempt_in_uow :: proc(svc: ^Service, u: ^Uow, req: Grant_Request) -> (dom
 	if req.kind == domain.LEASE_KIND_WORK && pre.last_release != .Handoff do attempt_no += 1
 	lease.attempt_no = attempt_no
 
-	if req.delivery!=domain.LEASE_DELIVERY_INLINE && (domain.profile_effective_id(inst.provider,inst.provider_profile)!=lease.provider_profile || inst.provider!=provider || inst.model!=model) {
-		updated:=inst
-		updated.provider=provider;updated.provider_profile=lease.provider_profile;updated.model=model
-		stored,changed,e:=iface.agent_save_instance(svc.agents,updated)
-		if !changed do return {},false,e
-		inst=stored
-	}
+ if req.delivery!=domain.LEASE_DELIVERY_INLINE && (domain.profile_effective_id(inst.provider,inst.provider_profile)!=lease.provider_profile || inst.provider!=provider || inst.model!=model) {
+  updated:=inst
+  updated.provider=provider;updated.provider_profile=lease.provider_profile;updated.model=model
+  stored,changed,e:=iface.agent_save_instance(svc.agents,updated)
+  if !changed do return {},false,e
+  inst=stored
+ }
 	saved, ok, err := iface.taskchain_save_lease(svc.repo, lease)
 	if !ok do return {}, false, err
 	p := json_begin()
@@ -743,17 +743,17 @@ boot :: proc(svc: ^Service) {
 			if task, tok, _ := iface.taskchain_get_task(svc.repo, l.task_id); tok do effect_wake_lease(svc, &u, l, task)
 		}
 	}
-				chains, cerr := iface.taskchain_list_published_active_chains(svc.repo)
-				all_ok := cerr.code == .None
-				if all_ok {
-								for chain in chains {
-												if ok, err := after_chain_change(svc, &u, chain.chain_id, chain.owner_user_id, .Boot); !ok {
-																fmt.eprintfln("[taskv2] mixed-work recovery failed for %s: %s", chain.chain_id, err.message)
-																all_ok = false
-																break
-												}
-								}
-				}
+    chains, cerr := iface.taskchain_list_published_active_chains(svc.repo)
+    all_ok := cerr.code == .None
+    if all_ok {
+        for chain in chains {
+            if ok, err := after_chain_change(svc, &u, chain.chain_id, chain.owner_user_id, .Boot); !ok {
+                fmt.eprintfln("[taskv2] mixed-work recovery failed for %s: %s", chain.chain_id, err.message)
+                all_ok = false
+                break
+            }
+        }
+    }
 	_, _ = end_uow(svc, &u, all_ok)
 }
 
