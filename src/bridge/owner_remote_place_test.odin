@@ -281,7 +281,7 @@ test_owner_fleet_launch_model_honors_bridge_models :: proc(t:^testing.T) {
 // Replacing a configured local reviewer reconfigures the task; no brief, or an
 // agent neither running here nor placed elsewhere, is refused.
 @(thread_local) remote_test_launches:[dynamic]string
-remote_test_review_launch :: proc(body,agent:string,rec:Bridge_Local_Agent_Token_Record) -> string {
+remote_test_review_launch :: proc(body,agent,line:string,rec:Bridge_Local_Agent_Token_Record) -> string {
     append(&remote_test_launches,fmt.tprintf("remote:%s",agent));return ""
 }
 remote_test_review_local_launch :: proc(body,agent:string,rec:Bridge_Local_Agent_Token_Record) -> (string,string) {

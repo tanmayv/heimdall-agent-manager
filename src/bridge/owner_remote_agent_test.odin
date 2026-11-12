@@ -82,3 +82,74 @@ test_owner_remote_bare_lease_next_uses_the_launch_chain :: proc(t:^testing.T) {
     testing.expect(t,!bridge_owner_remote_review_granted(bridge_local_response_data("r",`{"status":"none"}`)))
     testing.expect(t,!bridge_owner_remote_review_granted(bridge_local_response_error("r","not_found","x")))
 }
+
+// R1 FIX A: one remote reviewer instance per (chain, agent, run Bridge). The
+// first dispatch launches it; later ones start it when stopped, wake a live one
+// with the review-lease line, and launch anew only when the Hub no longer
+// knows it (run8 launched three).
+Remote_Reviewer_Call :: struct{path,body,envelope_method:string}
+remote_reviewer_calls:[dynamic]Remote_Reviewer_Call
+remote_reviewer_start_status:int
+remote_reviewer_next_instance:string
+
+@(test)
+test_owner_remote_reviewer_instance_is_reused :: proc(t:^testing.T) {
+    remote_reviewer_calls=make([dynamic]Remote_Reviewer_Call,context.temp_allocator)
+    bridge_owner_remote_reviewer_http=proc(path:[]string,body,envelope_method:string,rec:Bridge_Local_Agent_Token_Record) -> Bridge_Local_Relay_Result {
+        joined:=""
+        for part in path do joined=fmt.tprintf("%s/%s",joined,part)
+        append(&remote_reviewer_calls,Remote_Reviewer_Call{joined,body,envelope_method})
+        switch {
+        case joined=="/api/v1/agent-instances":
+            return {status=201,ok=true,body=fmt.tprintf(`{{"data":{{"agent_instance_id":"%s"}}}}`,remote_reviewer_next_instance)}
+        case len(joined)>6 && joined[len(joined)-6:]=="/start":
+            return {status=remote_reviewer_start_status,ok=true,body=`{}`}
+        }
+        return {status=200,ok=true,body=`{}`}
+    }
+    defer bridge_owner_remote_reviewer_http=nil
+    defer bridge_owner_remote_reviewer_set("chain_r|agt_rev|brg_b","")
+    rec:=Bridge_Local_Agent_Token_Record{agent_instance_id="inst_coord"}
+    body:=`{"agent_id":"agt_rev","bridge_id":"brg_b","chain_id":"chain_r","model":"m","provider":"p"}`
+    line:="[taskv2] New review lease l on task t"
+
+    remote_reviewer_next_instance="inst_rev1"
+    testing.expect_value(t,bridge_owner_review_remote_launch(body,"agt_rev",line,rec),"")
+    testing.expect_value(t,len(remote_reviewer_calls),1)
+    testing.expect_value(t,remote_reviewer_calls[0].path,"/api/v1/agent-instances")
+
+    // A stopped reviewer is started, not launched again.
+    remote_reviewer_start_status=202
+    testing.expect_value(t,bridge_owner_review_remote_launch(body,"agt_rev",line,rec),"")
+    testing.expect_value(t,len(remote_reviewer_calls),2)
+    testing.expect_value(t,remote_reviewer_calls[1].path,"/api/v1/agent-instances/inst_rev1/start")
+
+    // A live one gets the review-lease line as an agent message.
+    remote_reviewer_start_status=409
+    testing.expect_value(t,bridge_owner_review_remote_launch(body,"agt_rev",line,rec),"")
+    testing.expect_value(t,len(remote_reviewer_calls),4)
+    testing.expect_value(t,remote_reviewer_calls[3].path,"/api/v1/agent-actions/chat/send-to-agent")
+    testing.expect_value(t,remote_reviewer_calls[3].envelope_method,"agent.chat.send")
+    sent,_:=json.parse_string(remote_reviewer_calls[3].body,allocator=context.temp_allocator)
+    testing.expect_value(t,bridge_owner_pstr(sent.(json.Object),"to_instance"),"inst_rev1")
+    testing.expect_value(t,bridge_owner_pstr(sent.(json.Object),"body"),line)
+
+    // Another chain's reviewer is its own instance.
+    remote_reviewer_next_instance="inst_other"
+    testing.expect_value(t,bridge_owner_review_remote_launch(`{"agent_id":"agt_rev","bridge_id":"brg_b","chain_id":"chain_s"}`,"agt_rev",line,rec),"")
+    testing.expect_value(t,remote_reviewer_calls[4].path,"/api/v1/agent-instances")
+    bridge_owner_remote_reviewer_set("chain_s|agt_rev|brg_b","")
+
+    // The Hub no longer knows it: a new one is launched and remembered.
+    remote_reviewer_start_status=404
+    remote_reviewer_next_instance="inst_rev2"
+    testing.expect_value(t,bridge_owner_review_remote_launch(body,"agt_rev",line,rec),"")
+    testing.expect_value(t,len(remote_reviewer_calls),7)
+    testing.expect_value(t,remote_reviewer_calls[6].path,"/api/v1/agent-instances")
+    testing.expect_value(t,bridge_owner_remote_reviewer_get("chain_r|agt_rev|brg_b"),"inst_rev2")
+
+    // A Hub failure on start is reported and the instance kept.
+    remote_reviewer_start_status=503
+    testing.expect(t,bridge_owner_review_remote_launch(body,"agt_rev",line,rec)!="","a 5xx start is a dispatch failure")
+    testing.expect_value(t,bridge_owner_remote_reviewer_get("chain_r|agt_rev|brg_b"),"inst_rev2")
+}

@@ -64,7 +64,7 @@ Owner_Review_Effects :: struct {
     place:proc(chain,task,agent:string,rec:Bridge_Local_Agent_Token_Record) -> string,
     // Remote: the reviewer is launched on its run Bridge through the Hub; it
     // is not waited for or bound here. "" on success, else why it failed.
-    remote:proc(body,agent:string,rec:Bridge_Local_Agent_Token_Record) -> string,
+    remote:proc(body,agent,line:string,rec:Bridge_Local_Agent_Token_Record) -> string,
 }
 @(thread_local)
 bridge_owner_review_effects:Owner_Review_Effects
@@ -252,7 +252,8 @@ bridge_owner_review_execute :: proc(d:^Owner_Review_Dispatch) {
         case .Remote:
             // The reviewer's bare `lease next` on its Bridge relays here
             // (owner_remote_agent.odin) and gets the review and its TASK.md.
-            if failed:=remote(w.body,w.agent,d.rec);failed!="" do fmt.eprintln("bridge owner dispatch: launching reviewer",w.agent,"for",w.task,"on another Bridge failed:",failed)
+            line:=bridge_wake_nudge_line(w.lease,w.task,"reviewer");defer delete(line)
+            if failed:=remote(w.body,w.agent,line,d.rec);failed!="" do fmt.eprintln("bridge owner dispatch: launching reviewer",w.agent,"for",w.task,"on another Bridge failed:",failed)
             continue
         }
         if w.rematch {
@@ -381,13 +382,68 @@ bridge_owner_render_review_context :: proc(st:owner.Agent_Task_State,lease:Owner
         st.task_id,st.chain_id,lease.lease_id,st.attempt,instance,st.requirements_revision,workdir,get(result,"brief"),get(result,"summary"),st.task_id,st.task_id)
 }
 
-// Hub POST /api/v1/agent-instances for a reviewer on another account Bridge
-// (body names that bridge_id and the chain) with the coordinator's credential.
-// The instance starts there, so nothing is waited for or bound here.
-bridge_owner_review_remote_launch :: proc(body,agent:string,rec:Bridge_Local_Agent_Token_Record) -> string {
-    launched:=bridge_local_relay_raw(.POST,route_path("api","v1","agent-instances"),nil,body,rec)
-    if launched.ok && launched.status>=200 && launched.status<300 do return ""
-    detail:=launched.body
-    if len(detail)>300 do detail=detail[:300]
-    return fmt.tprintf("launching %s failed (HTTP %d): %s",agent,launched.status,detail)
+// A reviewer on another account Bridge, through the Hub with the coordinator's
+// credential. One instance serves each (chain, agent, run Bridge): the first
+// dispatch launches it (POST /api/v1/agent-instances, body names that
+// bridge_id and the chain), and later ones reuse it (R1 FIX A, run8 launched
+// three). A stopped one is started (its bootstrap runs `lease next`); a live
+// one gets the review-lease line as an agent message, which wakes it. An
+// instance the Hub no longer knows is forgotten and a new one launched.
+// Nothing is waited for or bound here: the instance runs there.
+bridge_owner_remote_reviewers:map[string]string
+bridge_owner_remote_reviewers_mutex:sync.Mutex
+// Tests substitute the Hub calls (all POSTs; an agent verb goes in its
+// envelope).
+bridge_owner_remote_reviewer_http:proc(path:[]string,body,envelope_method:string,rec:Bridge_Local_Agent_Token_Record) -> Bridge_Local_Relay_Result
+
+bridge_owner_review_remote_launch :: proc(body,agent,line:string,rec:Bridge_Local_Agent_Token_Record) -> string {
+    context.allocator=context.temp_allocator
+    send:=bridge_owner_remote_reviewer_http if bridge_owner_remote_reviewer_http!=nil else bridge_owner_remote_reviewer_http_default
+    p:=bridge_owner_params(body)
+    key:=fmt.tprintf("%s|%s|%s",bridge_owner_pstr(p,"chain_id"),agent,bridge_owner_pstr(p,"bridge_id"))
+    known:=bridge_owner_remote_reviewer_get(key)
+    if known!="" {
+        started:=send(route_path("api","v1","agent-instances",known,"start"),"","",rec)
+        if started.ok && started.status>=200 && started.status<300 do return ""
+        if started.ok && started.status==409 {
+            // Already running: wake it with the review-lease line.
+            message:=bridge_owner_json(struct{to,body:string}{known,line})
+            sent:=send(route_path("api","v1","agent-actions","chat","send-to-agent"),bridge_agent_rewrite_params("agent.chat.send",message),"agent.chat.send",rec)
+            if sent.ok && sent.status>=200 && sent.status<300 do return ""
+            return fmt.tprintf("waking reviewer %s failed (HTTP %d)",known,sent.status)
+        }
+        if !started.ok || started.status>=500 do return fmt.tprintf("starting reviewer %s failed (HTTP %d)",known,started.status)
+        // The Hub refused it (gone, or no longer this agent's): launch anew.
+        bridge_owner_remote_reviewer_set(key,"")
+    }
+    launched:=send(route_path("api","v1","agent-instances"),body,"",rec)
+    if !launched.ok || launched.status<200 || launched.status>=300 {
+        detail:=launched.body
+        if len(detail)>300 do detail=detail[:300]
+        return fmt.tprintf("launching %s failed (HTTP %d): %s",agent,launched.status,detail)
+    }
+    created:struct{data:struct{agent_instance_id:string}}
+    if json.unmarshal_string(launched.body,&created,.JSON,context.temp_allocator)==nil && created.data.agent_instance_id!="" {
+        bridge_owner_remote_reviewer_set(key,created.data.agent_instance_id)
+    }
+    return ""
+}
+
+bridge_owner_remote_reviewer_http_default :: proc(path:[]string,body,envelope_method:string,rec:Bridge_Local_Agent_Token_Record) -> Bridge_Local_Relay_Result {
+    if envelope_method!="" do return bridge_local_relay_agent_envelope(path,envelope_method,body,rec)
+    return bridge_local_relay_raw(.POST,path,nil,body,rec)
+}
+
+bridge_owner_remote_reviewer_get :: proc(key:string) -> string {
+    sync.mutex_lock(&bridge_owner_remote_reviewers_mutex);defer sync.mutex_unlock(&bridge_owner_remote_reviewers_mutex)
+    return strings.clone(bridge_owner_remote_reviewers[key] or_else "",context.temp_allocator)
+}
+
+// instance=="" forgets the key.
+bridge_owner_remote_reviewer_set :: proc(key,instance:string) {
+    sync.mutex_lock(&bridge_owner_remote_reviewers_mutex);defer sync.mutex_unlock(&bridge_owner_remote_reviewers_mutex)
+    if bridge_owner_remote_reviewers==nil do bridge_owner_remote_reviewers=make(map[string]string,runtime.heap_allocator())
+    if old_key,old:=delete_key(&bridge_owner_remote_reviewers,key);old_key!="" { delete(old_key,runtime.heap_allocator());delete(old,runtime.heap_allocator()) }
+    if instance=="" do return
+    bridge_owner_remote_reviewers[strings.clone(key,runtime.heap_allocator())]=strings.clone(instance,runtime.heap_allocator())
 }
