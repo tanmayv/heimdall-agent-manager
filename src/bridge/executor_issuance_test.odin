@@ -712,6 +712,14 @@ bridge_executor_test_bootstrap_real_child :: proc(t:^testing.T,wire:Executor_Exc
         cross:=bridge_local_endpoint_handle_jsonl_line(cross_line,transport,socket)
         testing.expectf(t,strings.contains(cross,`"id":"remote_cross"`) && strings.contains(cross,"invalid_scope") && strings.contains(cross,"own task"),
             "owner refusal reaches the agent with its reason: %s",cross)
+        chat_params:=make(json.Object,context.temp_allocator);chat_params["to"]=json.String("user");chat_params["body"]=json.String("hi")
+        chat_line:=executor.encode(struct{v:int,id,token,method:string,params:json.Object}{1,"remote_chat",material.token_secret,"agent.chat.send",chat_params})
+        before=probe.exchanges
+        chat:=bridge_local_endpoint_handle_jsonl_line(chat_line,transport,socket)
+        testing.expectf(t,strings.contains(chat,`"id":"remote_chat"`) && strings.contains(chat,"remote_chat_unavailable") &&
+            strings.contains(chat,"task comment") && probe.exchanges==before,"remote chat send refused with a typed reason: %s",chat)
+        wrong_chat:=executor.encode(struct{v:int,id,token,method:string,params:json.Object}{1,"wrong_chat","wrong_secret","agent.chat.send",chat_params})
+        testing.expect(t,strings.contains(bridge_local_endpoint_handle_jsonl_line(wrong_chat,transport,socket),"unauthenticated"),"an unknown token still gets unauthenticated")
         other_line:=executor.encode(struct{v:int,id,token,method:string,params:json.Object}{1,"remote_create",material.token_secret,"agent.task.create",make(json.Object,context.temp_allocator)})
         before=probe.exchanges
         created:=bridge_local_endpoint_handle_jsonl_line(other_line,transport,socket)

@@ -58,7 +58,8 @@ bridge_executor_agent :: proc(request_id,input,secret:string,
     transport:Executor_Child_Transport={nil,bridge_executor_child_fetch,bridge_executor_child_send},socket_path:string="",method:string="agent.owner_local.lease")->(string,bool) {
     verb:=contracts.executor_agent_verb(method)
     input:=input
-    if method!="agent.owner_local.lease" && method!="agent.start_success" && method!="agent.extension.event" && !verb do return "",false
+    chat:=method=="agent.chat.send"
+    if method!="agent.owner_local.lease" && method!="agent.start_success" && method!="agent.extension.event" && !verb && !chat do return "",false
     generation:=bridge_task_chain_search_generation()
     account:=bridge_enrolled_owner_user_id(bridge_cfg().daemon_id)
     public:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
@@ -72,6 +73,8 @@ bridge_executor_agent :: proc(request_id,input,secret:string,
     sync.mutex_unlock(&bridge_executor_mutex)
     if !authenticated do return "",false
     fail:=proc(id,code:string)->(string,bool) {return bridge_local_response_error(id,code,bridge_executor_refusal_reason(code)),true}
+    // A remote child has no Hub agent identity to send chat as.
+    if chat do return fail(request_id,"remote_chat_unavailable")
     if method=="agent.start_success" {
         value,parsed:=contracts.owner_content_document(input)
         params,is_object:=value.(json.Object)
@@ -237,6 +240,7 @@ bridge_executor_refusal_reason :: proc(code:string)->string {
     case "request_too_large": return "the request parameters exceed the executor document limit (32 KiB)"
     case "context_delivery_failed": return "the owner accepted the request but TASK.md could not be written here; run lease next again"
     case "expired": return "the request expired before the owner answered; retry"
+    case "remote_chat_unavailable": return "chat is not available to agents running on a remote Bridge; use `task comment`, which notifies the coordinator"
     }
     return fmt.tprintf("the owner Bridge refused the request (%s)",code)
 }

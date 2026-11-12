@@ -366,6 +366,8 @@ This agent runs on an executor Bridge; its task lives on the owner Bridge above.
 Use ./bin/ham-ctl as usual. These verbs are relayed to the owner and act on your own task and lease only:
 lease next|heartbeat|submit|handoff|block, task show|comments|comment, review post.
 A verb naming another task, chain or lease is refused (invalid_scope) with the reason.
+Chat is not available to agents running on a remote Bridge (chat send is refused with remote_chat_unavailable);
+use ./bin/ham-ctl task comment, which notifies the coordinator.
 Acknowledge a requirements revision with: ./bin/ham-ctl lease heartbeat --acknowledge-requirements-revision <n>
 Load the worker-task-management skill for the task lifecycle.
 `,role,get(p,"instance_id"),get(p,"task_id"),get(p,"lease_id"),get(p,"chain_id"),owner_bridge,template)

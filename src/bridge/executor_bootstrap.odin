@@ -140,8 +140,9 @@ bridge_executor_materialize :: proc(dir,endpoint:string,m:executor.Launch_Materi
             if strings.to_lower(get(skill,"name"),context.temp_allocator)==local.name {named=true;break}
         }
         if named do continue
+        // A provider with no skill directory gets none, as for a local launch.
         path:=bridge_bootstrap_skill_relative_path(provider,local.name)
-        if path=="" do return {},false
+        if path=="" do continue
         append(&files,Bridge_Bootstrap_File{relative_path=strings.clone(path,context.temp_allocator),content=local.content})
         delete(path)
     }

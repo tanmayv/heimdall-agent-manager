@@ -301,7 +301,7 @@ bridge_local_endpoint_handle_jsonl_line :: proc(line: string,
 	if !ok {
         // A remote (executor-launched) child has no token here: its own
         // lease/task verbs go to the owner Bridge through the child path.
-        if method=="agent.owner_local.lease" || method=="agent.start_success" || method=="agent.extension.event" || contracts.executor_agent_verb(method) {
+        if method=="agent.owner_local.lease" || method=="agent.start_success" || method=="agent.extension.event" || contracts.executor_agent_verb(method) || method=="agent.chat.send" {
             if response,handled:=bridge_executor_agent(request_id,params,token,executor_transport,executor_socket,method);handled do return response
         }
         return bridge_local_response_error(request_id, "unauthenticated", "local agent token is invalid or rotated")

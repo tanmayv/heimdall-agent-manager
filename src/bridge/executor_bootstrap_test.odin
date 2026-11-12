@@ -130,10 +130,11 @@ test_executor_owner_agents_md_is_the_role_template :: proc(t:^testing.T) {
     for v in ([5][2]string{{"purpose","work"},{"instance_id","inst_r"},{"task_id","task_r"},{"lease_id","lease_r"},{"chain_id","chain_r"}}) do p[v[0]]=json.String(v[1])
     worker:=bridge_owner_executor_agents_md(p,"brg_owner")
     testing.expect(t,strings.contains(worker,BRIDGE_OWNER_REMOTE_WORKER_MD) && strings.contains(worker,"Agent: worker") &&
-        strings.contains(worker,"task_r") && strings.contains(worker,"lease_r") && strings.contains(worker,"brg_owner") && strings.contains(worker,"worker-task-management"))
+        strings.contains(worker,"task_r") && strings.contains(worker,"lease_r") && strings.contains(worker,"brg_owner") && strings.contains(worker,"worker-task-management") &&
+        strings.contains(worker,"Chat is not available to agents running on a remote Bridge") && strings.contains(worker,"task comment"))
     p["purpose"]=json.String("review")
     reviewer:=bridge_owner_executor_agents_md(p,"brg_owner")
-    testing.expect(t,strings.contains(reviewer,BRIDGE_OWNER_REMOTE_REVIEWER_MD) && strings.contains(reviewer,"Agent: reviewer"))
+    testing.expect(t,strings.contains(reviewer,BRIDGE_OWNER_REMOTE_REVIEWER_MD) && strings.contains(reviewer,"Agent: reviewer") && strings.contains(reviewer,"remote_chat_unavailable"))
     // Role instructions plus the largest expected TASK.md stay under the
     // owner's bootstrap document cap.
     testing.expect(t,len(worker)<contracts.EXECUTOR_DOCUMENT_MAX/3 && len(reviewer)<contracts.EXECUTOR_DOCUMENT_MAX/3)
