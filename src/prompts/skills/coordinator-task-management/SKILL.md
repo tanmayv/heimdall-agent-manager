@@ -57,7 +57,7 @@ Assign work to durable identities (`agt_…`), never `inst_…`. You manage the 
 - **One agent id per role, models per Bridge.** A different model or Bridge never needs a new agent id. Set the model per Bridge on the fleet row, or per task:
   ```bash
   # "claude opus here, claude sonnet on brg_z": one worker id and one reviewer id
-  ./bin/ham-ctl bridge providers --bridge brg_z            # which providers/models brg_z offers
+  ./bin/ham-ctl bridge providers --bridge brg_z            # which providers/models brg_z offers (your account's Bridges, read-only)
   ./bin/ham-ctl task-chain fleet set --agent agt_worker --provider claude --model claude-opus-5-5 \
     --bridge-models '{"brg_z":{"provider_profile":"","provider":"claude","model":"claude-sonnet-5-5"}}'
   ./bin/ham-ctl task-chain fleet set --agent agt_reviewer --provider claude --model claude-opus-5-5 \

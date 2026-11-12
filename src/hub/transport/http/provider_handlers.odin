@@ -251,17 +251,29 @@ provider_owned_bridge :: proc(
 }
 
 // GET /api/v1/bridges/:bridge_id/provider-status -- Hub DB only.
+//
+// F7: read-only, so it also accepts a Bridge-relayed agent instance token
+// (require_auth_any, as list_bridges does for H5): a coordinator reads the
+// providers and models of its own account's Bridges to choose per-Bridge
+// models. get_bridge keeps it to the caller's account; a bare Bridge token is
+// still refused, and no other provider endpoint (discover, profiles,
+// extensions) accepts agents.
 bridge_provider_status_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Provider_Handlers)(ctx)
-	bridge, ok, response := provider_owned_bridge(h, req, path_part(req.path, 4))
-	if !ok do return response
+	auth_ctx, auth_ok, auth_resp := require_auth_any(h.auth, req)
+	if !auth_ok do return auth_resp
+	return bridge_provider_status_for(h, auth_ctx, path_part(req.path, 4), req.request_id, auth_ctx_server_time(req))
+}
+
+bridge_provider_status_for :: proc(h: ^Provider_Handlers, auth_ctx: contracts.Auth_Context, bridge_id, request_id, server_time: string) -> Response {
+	if auth_ctx.kind != .Session && auth_ctx.kind != .Instance_Token && auth_ctx.kind != .OIDC {
+		return respond_error(domain.domain_error(.Forbidden, "provider status is readable by the account's user or its agents"), request_id)
+	}
+	bridge, bridge_ok, bridge_err := bridge_service.get_bridge(h.bridges, auth_ctx, bridge_id)
+	if !bridge_ok do return respond_error(bridge_err, request_id)
 	defer domain.bridge_destroy(&bridge)
-	return bridge_provider_status_response(
-		h,
-		bridge.bridge_id,
-		req.request_id,
-		auth_ctx_server_time(req),
-	)
+	if bridge.status == .Revoked do return respond_error(domain.domain_error(.Gone, "bridge is archived"), request_id)
+	return bridge_provider_status_response(h, bridge.bridge_id, request_id, server_time)
 }
 
 provider_discover_command_json :: proc(request_id: string, providers: []string,profile_id: string = "") -> string {

@@ -27,7 +27,7 @@ Groups: `bridge`, `agents`, `task-chain`, `task`, `workflow`, `lease`, `review`,
 ## bridge — discover bridges and their providers
 - `bridge list [--scope hub|configured|all]` — bridges you can target. Default `all` =
   Hub-registered + locally-configured peers + this host (self).
-- `bridge providers [--bridge <id>]` — the provider matrix (providers, models, profiles and their status) of one Bridge (the Hub's `provider-status`), or every Bridge with its providers. Use it to choose `--bridge-models` / `--agent-model` values per Bridge.
+- `bridge providers --bridge <id>` — the provider matrix (providers, their models and model state, profiles and their status) of one Bridge of your account (the Hub's read-only `provider-status`; any agent of the account may read it, other accounts' Bridges are refused). Without `--bridge` it lists your account's Bridges; run it again with each `bridge_id` for its models. Use it to choose `--bridge-models` / `--agent-model` values per Bridge.
 
 ## agents — durable identities, templates, and runtime instances
 - `agents list` — your durable agent identities.

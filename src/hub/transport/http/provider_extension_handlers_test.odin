@@ -1059,3 +1059,24 @@ test_profiles_extension_actions_and_update_reports_cannot_cross_accounts :: proc
  commands,_:=iface.provider_extension_command_list(&f.pr_repo,f.bridge_id)
  for c in commands do testing.expect(t,c.parent_id!="profile-update" || domain.profile_effective_id(c.provider,c.profile_id)=="claude","default report must not queue custom-profile followups")
 }
+
+// F7: a coordinator (or worker) agent of the account reads its Bridges'
+// provider status through the Bridge relay (Instance_Token, as list_bridges);
+// another account's agent and a bare Bridge token are refused; the agent
+// route widens nothing else (discover still needs the user).
+@(test)
+test_provider_status_readable_by_same_account_agents_only :: proc(t: ^testing.T) {
+	context.allocator=context.temp_allocator
+	f := extension_test_setup(t,"status_agents")
+	defer extension_test_teardown(f)
+	extension_test_status(t,f,"codex","present","present",false)
+	agent := contracts.Auth_Context{kind=.Instance_Token,user_id=f.owner_user_id,agent_instance_id="inst_coord"}
+	own := bridge_provider_status_for(&f.ph,agent,f.bridge_id,"req_own","")
+	testing.expectf(t,own.status==200 && strings.contains(own.body,`"bridge_id":"`) && strings.contains(own.body,`"provider":"codex"`),"same-account agent reads provider status: %d %s",own.status,own.body)
+	stranger := contracts.Auth_Context{kind=.Instance_Token,user_id="someone_else",agent_instance_id="inst_other"}
+	other := bridge_provider_status_for(&f.ph,stranger,f.bridge_id,"req_other","")
+	testing.expectf(t,other.status!=200,"another account's agent is refused: %d",other.status)
+	bridge := contracts.Auth_Context{kind=.Bridge_Token,user_id=f.owner_user_id}
+	bare := bridge_provider_status_for(&f.ph,bridge,f.bridge_id,"req_bridge","")
+	testing.expectf(t,bare.status==403,"a bare Bridge token is refused: %d",bare.status)
+}
