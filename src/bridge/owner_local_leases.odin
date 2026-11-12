@@ -116,11 +116,6 @@ bridge_owner_maintenance_once :: proc() {
     {
         sync.mutex_lock(&bridge_owner_mutex);defer sync.mutex_unlock(&bridge_owner_mutex)
         if !bridge_owner_open(account,key_id) do return
-        // C1: a clock_uncertain store recovers once the local clock is past
-        // its high-water mark again; logged.
-        if recovered,_:=owner.clock_recover(&bridge_owner_store,time.to_unix_nanoseconds(time.now())/1000000);recovered {
-            fmt.eprintln("bridge owner store: recovered from clock_uncertain (local clock is past the store clock again)")
-        }
         _=bridge_owner_maintenance_batch(&bridge_owner_store,&bridge_owner_completions,time.to_unix_nanoseconds(time.now())/1000000,nil,bridge_owner_publish_registry)
     }
     // M1 matcher after lease expiry; the first pass after Bridge start is

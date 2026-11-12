@@ -135,6 +135,7 @@ migration_rows :: proc(rows:Migration_Rows,kind:string)->[]json.Object {
 
 migration_import :: proc(s:^Store,input:Migration_Import_Input,device,owner_key:contracts.Owner_Verified_Key,
     directory_version:i64,directory_hash:string,now:i64,kr:^vault.Vault_Keyring,sign:Signer) -> Result {
+    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
     context.allocator=context.temp_allocator
     if s.db==nil || device.account_id!=s.account || owner_key.account_id!=s.account || owner_key.principal_id!=s.owner ||
        owner_key.key_id!=s.owner_key || owner_key.kind!="bridge" || !owner_key.enrolled || owner_key.revoked || sign.sign==nil { return fail("invalid_scope") }
@@ -250,7 +251,7 @@ migration_import :: proc(s:^Store,input:Migration_Import_Input,device,owner_key:
         principal,migration,chain,MIGRATION_IMPORT_METHOD,manifest_digest,field(selection,"key_id"),field(selection,"request_expires_ms"),receipt_raw,stamp,fmt.tprintf("%d",now));!ok do return fail("storage_error")
     if _,ok=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,'',1,?)",stamp,chain,MIGRATION_IMPORT_METHOD,migration);!ok do return fail("storage_error")
     if !event_record(&tx,seq,now,chain,"","device",principal,MIGRATION_IMPORT_METHOD,migration,input.selection_raw,manifest_digest,encode(summary),receipt_raw) do return fail("storage_error")
-    if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=?,directory_version=?,directory_hash=? WHERE singleton=1",stamp,fmt.tprintf("%d",now),fmt.tprintf("%d",directory_version),directory_hash);!ok do return fail("storage_error")
+    if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=max(clock_high_ms,CAST(? AS INTEGER)),directory_version=?,directory_hash=? WHERE singleton=1",stamp,fmt.tprintf("%d",now),fmt.tprintf("%d",directory_version),directory_hash);!ok do return fail("storage_error")
     if !transaction_commit(&tx) do return fail("storage_error")
     return Result{code="ok",body=receipt_raw,seq=seq}
 }

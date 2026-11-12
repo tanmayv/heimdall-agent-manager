@@ -83,7 +83,9 @@ open :: proc(s: ^Store, path, account, owner, owner_key: string) -> bool {
     }
     // A prior claim may have performed I/O before the process died. Retry its
     // exact identity/payload; consumers deduplicate, never invent a new effect.
-    if !exec(s.db, "UPDATE runtime_database SET incarnation=incarnation+1; UPDATE runtime_intents SET state='pending',claim_incarnation=0 WHERE state='claimed'; COMMIT") { storage_failure_note(s,"open: incarnation"); close(s); return false }
+    // C1: the clock never bricks a store; one marked clock_uncertain by an
+    // older build opens healthy (its high-water clock still bounds decisions).
+    if !exec(s.db, "UPDATE runtime_database SET incarnation=incarnation+1; UPDATE runtime_database SET recovery_state='ready' WHERE singleton=1 AND recovery_state='clock_uncertain'; UPDATE runtime_intents SET state='pending',claim_incarnation=0 WHERE state='claimed'; COMMIT") { storage_failure_note(s,"open: incarnation"); close(s); return false }
     state,state_ok:=query(s.db,"SELECT incarnation FROM runtime_database WHERE singleton=1")
     if !state_ok || len(state)!=1 { storage_failure_note(s,"open: read incarnation"); close(s);return false }
     s.incarnation=number(state[0][0])
@@ -120,6 +122,7 @@ doc :: proc(values: map[string]string) -> json.Object {
 // The key is a verified current directory member, never a request assertion.
 execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:contracts.Owner_Verified_Key,
     directory_version:i64,directory_hash:string, now:i64, kr:^vault.Vault_Keyring, sign:Signer, fleet_child:Child={}, lifecycle_proof:Lifecycle_Proof={}, observed_children:[]Child=nil, remote_key:contracts.Owner_Verified_Key={}, agent:Child={}, source:Source_Proof={}, requested_by:string="") -> Result {
+    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
     context.allocator=context.temp_allocator
     c,parsed:=contracts.owner_parse(command_raw,"command")
     if !parsed do return fail("malformed")
@@ -524,7 +527,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         if !intent_enqueue(&tx,Intent_Input{chain=chain,principal=principal,operation=op,seq=seq,kind="registry",fence="{}",payload=encode(registry)}) do return fail("storage_error")
     }
     if method=="chain.member.set" && !registry_members_intent(&tx,chain,principal,op,seq) do return fail("storage_error")
-    if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=?,directory_version=?,directory_hash=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now),fmt.tprintf("%d",directory_version),directory_hash);!ok do return fail("storage_error")
+    if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=max(clock_high_ms,CAST(? AS INTEGER)),directory_version=?,directory_hash=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now),fmt.tprintf("%d",directory_version),directory_hash);!ok do return fail("storage_error")
     if !transaction_commit(&tx) do return fail("storage_error")
     return Result{code="ok",body=result,seq=seq}
 }

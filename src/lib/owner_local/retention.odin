@@ -6,10 +6,10 @@ RECEIPT_RETENTION_MS :: i64(30*24*60*60*1000)
 
 // Clock uncertainty is a durable safety observation, not a task mutation. No
 // canonical change, receipt or intent is created; only reconciliation clears it.
+// C1: the store is never marked clock_uncertain any more (effective_now
+// clamps every decision instead). Kept so older call sites stay inert.
 mark_clock_uncertain :: proc(tx:^Transaction) -> bool {
-    if !transaction_current(tx) || tx.parent!=nil do return false
-    if _,ok:=query(tx.store.db,"UPDATE runtime_database SET recovery_state='clock_uncertain' WHERE singleton=1 AND recovery_state='ready'");!ok do return false
-    return transaction_commit(tx)
+    return true
 }
 
 // Compaction retains deduplication identity permanently. Active or unknown
@@ -41,7 +41,7 @@ compact_receipts :: proc(s:^Store,now:i64,limit:=100) -> (int,bool) {
         if _,ok=query(s.db,"DELETE FROM lease_receipt_pins WHERE principal_id=? AND operation_id=?",row[0],row[1]);!ok do return 0,false
         if _,ok=query(s.db,"DELETE FROM command_receipts WHERE principal_id=? AND operation_id=?",row[0],row[1]);!ok do return 0,false
     }
-    if _,ok=query(s.db,"UPDATE runtime_database SET clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",now));!ok do return 0,false
+    if _,ok=query(s.db,"UPDATE runtime_database SET clock_high_ms=max(clock_high_ms,CAST(? AS INTEGER)) WHERE singleton=1",fmt.tprintf("%d",now));!ok do return 0,false
     if !transaction_commit(&tx) do return 0,false
     return len(rows),true
 }
@@ -53,35 +53,25 @@ reconcile_clock :: proc(s:^Store,incarnation,generation,trusted_now:i64) -> bool
     tx:Transaction
     if !transaction_begin(s,&tx) do return false
     defer transaction_rollback(&tx)
-    rows,ok:=query(s.db,`UPDATE runtime_database SET clock_generation=clock_generation+1,clock_high_ms=?,recovery_state='ready'
+    rows,ok:=query(s.db,`UPDATE runtime_database SET clock_generation=clock_generation+1,clock_high_ms=max(clock_high_ms,CAST(? AS INTEGER)),recovery_state='ready'
      WHERE singleton=1 AND incarnation=? AND clock_generation=? AND clock_high_ms<=? AND recovery_state!='recovery_required'
      RETURNING clock_generation`,fmt.tprintf("%d",trusted_now),fmt.tprintf("%d",incarnation),fmt.tprintf("%d",generation),fmt.tprintf("%d",trusted_now))
     if !ok || len(rows)!=1 do return false
     return transaction_commit(&tx)
 }
 
-// C1: a background caller's now can trail the store clock by however long it
-// waited for the owner mutex while another write committed. A lag of at most
-// OWNER_CLOCK_STALE_MS is that caller's own staleness, not a clock jump: it is
-// raised to the store clock instead of marking the store clock_uncertain. A
-// larger backward step is still a genuine jump and is refused as before.
-OWNER_CLOCK_STALE_MS :: i64(5000)
-clock_floor :: proc(s:^Store,now:i64) -> i64 {
+// C1 (user 10:10Z): monotonic clamp, never refuse. Every owner-store decision
+// uses effective now = max(the caller's clock, clock_high_ms), so time never
+// runs backwards for a decision and the store never refuses a write because
+// of the clock. A caller clock more than OWNER_CLOCK_ALERT_MS behind the
+// store clock is a real backward jump: it is logged as an alert, and the
+// decision still uses the high-water time.
+OWNER_CLOCK_ALERT_MS :: i64(5000)
+effective_now :: proc(s:^Store,now:i64) -> i64 {
     rows,ok:=query(s.db,"SELECT clock_high_ms FROM runtime_database WHERE singleton=1")
     if !ok || len(rows)!=1 do return now
     high:=number(rows[0][0])
-    if now<high && high-now<=OWNER_CLOCK_STALE_MS do return high
-    return now
-}
-
-// C1: a store marked clock_uncertain is not bricked. Once the trusted local
-// clock is at or past clock_high_ms again, it advances the clock generation
-// and returns to ready (reconcile_clock). A genuine backward jump keeps the
-// store refusing writes until wall time catches up. recovered=true when this
-// call cleared the mark.
-clock_recover :: proc(s:^Store,now:i64) -> (recovered:bool,ok:bool) {
-    rows,read:=query(s.db,"SELECT clock_generation,clock_high_ms,recovery_state FROM runtime_database WHERE singleton=1")
-    if !read || len(rows)!=1 do return false,false
-    if rows[0][2]!="clock_uncertain" || now<number(rows[0][1]) do return false,true
-    return reconcile_clock(s,s.incarnation,number(rows[0][0]),now),true
+    if now>=high do return now
+    if high-now>OWNER_CLOCK_ALERT_MS do fmt.eprintfln("owner store clock alert: local clock is %d ms behind the store clock; using the store clock",high-now)
+    return high
 }

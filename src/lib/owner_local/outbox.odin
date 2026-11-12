@@ -39,6 +39,7 @@ intent_enqueue :: proc(tx:^Transaction,input:Intent_Input) -> bool {
 // LIMIT so an offline executor cannot starve registry/control delivery.
 Intent_Consumer :: enum { All, Owner, Executor }
 intent_claim_due :: proc(s:^Store,now:i64,limit:=20,consumer:Intent_Consumer=.All) -> (claims:[dynamic]Intent_Claim,ok:bool) {
+    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
     if now<0 || limit<1 || limit>20 do return nil,false
     tx:Transaction
     if !transaction_begin(s,&tx) do return nil,false
@@ -61,7 +62,7 @@ intent_claim_due :: proc(s:^Store,now:i64,limit:=20,consumer:Intent_Consumer=.Al
         append(&claims,Intent_Claim{row[0],row[1],row[2],row[3],row[4],row[5],row[6],s.incarnation,attempt})
     }
     if len(claims)>0 {
-        if _,updated:=query(s.db,"UPDATE runtime_database SET clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",now));!updated do return nil,false
+        if _,updated:=query(s.db,"UPDATE runtime_database SET clock_high_ms=max(clock_high_ms,CAST(? AS INTEGER)) WHERE singleton=1",fmt.tprintf("%d",now));!updated do return nil,false
     }
     if !transaction_commit(&tx) do return nil,false
     return claims,true
@@ -101,7 +102,7 @@ intent_result :: proc(s:^Store,claim:Intent_Claim,success:bool,result:string,now
         if !workflow_refresh(s) do return false
         if !event_record(&tx,seq,now,rows[0][2],"","bridge",s.owner,"source.delivered",claim.id,"",rows[0][3],"",result) do return false
         if _,ok:=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),rows[0][2],"source.delivered",claim.id,"1",claim.id);!ok do return false
-        if _,ok:=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",max(now,number(runtime[0][1]))));!ok do return false
+        if _,ok:=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=max(clock_high_ms,CAST(? AS INTEGER)) WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",max(now,number(runtime[0][1]))));!ok do return false
     }
     if rows[0][1]=="merge" {
         v,valid:=contracts.owner_request_document(rows[0][3])
@@ -123,7 +124,7 @@ intent_result :: proc(s:^Store,claim:Intent_Claim,success:bool,result:string,now
         if success do kind="merge.merged"
         if success && !workflow_settle_deferred(s,claim.id,seq,result) do return false
         if _,ok:=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),rows[0][2],kind,field(f,"task_id"),task_rows[0][0],claim.id);!ok do return false
-        if _,ok:=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",max(now,number(runtime[0][1]))));!ok do return false
+        if _,ok:=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=max(clock_high_ms,CAST(? AS INTEGER)) WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",max(now,number(runtime[0][1]))));!ok do return false
         if !workflow_refresh(s) do return false
         if !event_record(&tx,seq,now,rows[0][2],field(f,"task_id"),"bridge",s.owner,kind,claim.id,"",rows[0][3],"",result) do return false
         command:=doc(map[string]string{"chain_id"=rows[0][2],"task_id"=field(f,"task_id"),"method"="merge.result"})

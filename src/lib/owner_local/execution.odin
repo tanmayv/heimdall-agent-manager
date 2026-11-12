@@ -16,10 +16,8 @@ execution_clock :: proc(tx:^Transaction,now:i64)->string {
     s:=tx.store
     rows,ok:=query(s.db,"SELECT clock_high_ms,recovery_state FROM runtime_database")
     if !ok || len(rows)!=1 do return "storage_error"
-    if now<0 || now<number(rows[0][0]) {
-        if !mark_clock_uncertain(tx) do return "storage_error"
-        return "clock_uncertain"
-    }
+    // C1: callers pass effective_now, which is never behind clock_high_ms.
+    if now<0 do return "expired"
     if now>0x7fffffffffffffff-LEASE_HARD_MS do return "expired"
     return "ok" if rows[0][1]=="ready" else "clock_uncertain"
 }
@@ -50,12 +48,13 @@ execution_change :: proc(tx:^Transaction,seq,now:i64,p:json.Object,kind,operatio
     s:=tx.store;chain,task:=field(p,"chain_id"),field(p,"task_id")
     if !event_record(tx,seq,now,chain,task,"bridge",s.owner,kind,operation,"","",encode(p),result) do return false
     if _,ok:=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),chain,kind,task,"1",operation);!ok do return false
-    _,ok:=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now))
+    _,ok:=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=max(clock_high_ms,CAST(? AS INTEGER)) WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now))
     return ok
 }
 // Persist before prepare I/O. Retrying uses exactly these signed bytes, including
 // reservation/operation IDs. No lease or activation intent exists at this stage.
 execution_prepare_start :: proc(s:^Store,prepare_raw,lease_raw:string,key:contracts.Owner_Verified_Key,now:i64)->Result {
+    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
     context.allocator=context.temp_allocator
     p,valid:=contracts.executor_parse(prepare_raw,"prepare")
     c,c_valid:=contracts.owner_parse(lease_raw,"lease_command")
@@ -133,6 +132,7 @@ execution_prepared_receipt :: proc(s:^Store,p:json.Object,receipt_raw,query_raw,
 // explicit path. The owner still executes all normal lease admission guards.
 execution_prepare_commit :: proc(s:^Store,reservation,receipt_raw:string,owner_key,executor_key:contracts.Owner_Verified_Key,
     now:i64,sign:Signer,query_raw:string="",query_receipt_raw:string="")->Result {
+    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
     context.allocator=context.temp_allocator
     if !execution_owner_key(s,owner_key) || !executor_key.enrolled || executor_key.revoked do return fail("invalid_scope")
     tx:Transaction
@@ -325,6 +325,7 @@ Reservation_Release :: struct { chain,task,agent,instance:string }
 // is released in the same transaction (see execution_release_stale): its
 // reservation id is stable, so it would otherwise replay 'retired' forever.
 execution_expire_preparations :: proc(s:^Store,now:i64,released:^[dynamic]Reservation_Release=nil)->bool {
+    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
     tx:Transaction
     if !transaction_begin(s,&tx) do return false
     defer transaction_rollback(&tx)
@@ -450,6 +451,7 @@ execution_renewal_enqueue :: proc(tx:^Transaction,c:json.Object,seq,version,expi
 // touched (B answers child_present). Idempotent: an already ended lease or a
 // claim that is no longer this row's is a no-op ("ok", replay).
 execution_child_absent :: proc(s:^Store,claim:Intent_Claim,now:i64)->Result {
+    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
     tx:Transaction
     if !transaction_begin(s,&tx) do return fail("storage_error")
     defer transaction_rollback(&tx)

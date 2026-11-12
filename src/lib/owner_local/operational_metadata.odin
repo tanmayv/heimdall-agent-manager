@@ -153,6 +153,7 @@ directory_config_authorized :: proc(s:^Store,chain:string,p:json.Object) -> bool
 // with chain.member.set (agent_member_admit: never the coordinator role, never
 // itself); grant.* stay human-only. Recorded and attributed like a member version.
 bind_created_coordinator :: proc(s:^Store,chain:string,child:Child,requested_by:string,now:i64) -> Result {
+    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
     context.allocator=context.temp_allocator
     if s.db==nil || now<0 || !agent_child_valid(child) || !contracts.owner_field_valid(requested_by,"id") do return fail("invalid_scope")
     tx:Transaction
@@ -188,7 +189,7 @@ bind_created_coordinator :: proc(s:^Store,chain:string,child:Child,requested_by:
     if _,ok=query(s.db,"INSERT INTO command_receipts(principal_id,operation_id,chain_id,task_id,method,input_digest,digest_key_id,request_expires_ms,result_json,commit_seq,created_ms) VALUES(?,?,?,'',?,?,?,0,?,?,?)",
         requested_by,op,chain,"chain.member.set",contracts.owner_payload_digest(payload),s.owner_key,result,fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
     if !registry_members_intent(&tx,chain,requested_by,op,seq) do return fail("storage_error")
-    if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
+    if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=max(clock_high_ms,CAST(? AS INTEGER)) WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
     if !transaction_commit(&tx) do return fail("storage_error")
     return Result{code="ok",body=result,seq=seq}
 }
@@ -200,6 +201,7 @@ bind_created_coordinator :: proc(s:^Store,chain:string,child:Child,requested_by:
 // the chain is retired (status completed: no work can start) and its registry
 // row is tombstoned (deleted=1), so the Hub listing drops it. A repeat is ok.
 discard_created_chain :: proc(s:^Store,chain,requested_by:string,now:i64,sign:Signer) -> Result {
+    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
     context.allocator=context.temp_allocator
     if s.db==nil || now<0 || sign.sign==nil || !contracts.owner_field_valid(requested_by,"id") do return fail("invalid_scope")
     tx:Transaction
@@ -236,7 +238,7 @@ discard_created_chain :: proc(s:^Store,chain,requested_by:string,now:i64,sign:Si
     if !signed do return fail("storage_error")
     registry["signature"]=json.String(signature)
     if !intent_enqueue(&tx,Intent_Input{chain=chain,principal=requested_by,operation=op,seq=seq,kind="registry",fence="{}",payload=encode(registry)}) do return fail("storage_error")
-    if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
+    if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=max(clock_high_ms,CAST(? AS INTEGER)) WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
     if !transaction_commit(&tx) do return fail("storage_error")
     return Result{code="ok",body=result,seq=seq}
 }

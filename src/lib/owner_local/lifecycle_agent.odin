@@ -11,6 +11,7 @@ Source_Proof :: struct { head:string, valid:bool }
 // The owner-signed attestation includes the payload and exact observed child.
 // Historical replay precedes every mutation fence, but never current read auth.
 execute_lifecycle :: proc(s:^Store,raw,payload,cap_raw:string,child:Child,key:contracts.Owner_Verified_Key,now:i64,sign:Signer,source:Source_Proof={}) -> Result {
+    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
     context.allocator=context.temp_allocator
     gate,gate_valid:=contracts.owner_parse(raw,"lifecycle_command")
     if gate_valid && field(gate,"method")=="workflow.gate.post" do return execute_coordinator_gate(s,raw,payload,cap_raw,child,key,now,sign)
@@ -203,7 +204,7 @@ execute_lifecycle :: proc(s:^Store,raw,payload,cap_raw:string,child:Child,key:co
     }
     if !event_record(&tx,seq,now,chain,task,"agent",child.instance,method,op,raw,payload,encode(child),result) do return fail("storage_error")
     if _,ok=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),chain,method,task,req[0],op);!ok do return fail("storage_error")
-    if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
+    if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=max(clock_high_ms,CAST(? AS INTEGER)) WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
     if !transaction_commit(&tx) do return fail("storage_error")
     return Result{code="ok",body=result,seq=seq}
 }

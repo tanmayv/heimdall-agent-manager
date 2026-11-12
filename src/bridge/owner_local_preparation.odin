@@ -58,7 +58,7 @@ bridge_owner_preparation_batch :: proc(w:^Owner_Executor_Worker,s:^owner.Store,m
     if !sync.mutex_try_lock(&w.mutex) do return false
     defer sync.mutex_unlock(&w.mutex)
     sync.mutex_lock(mutex)
-    now:=owner.clock_floor(s,now) // C1: read before the lock
+    now:=owner.effective_now(s,now) // C1: read before the lock; monotonic clamp
     if !w.pending {
         c,pin,ok:=snapshot(ctx,s,now)
         if !ok {sync.mutex_unlock(mutex);return false}

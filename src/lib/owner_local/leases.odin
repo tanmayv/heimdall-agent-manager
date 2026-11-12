@@ -69,6 +69,7 @@ lease_capability :: proc(s:^Store,c:json.Object,expires,hard:i64,sign:Signer,met
 // Current authenticated read scope is checked before receipts. Capabilities are
 // not bearer authority: every invocation needs the actual local child proof.
 execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owner_Verified_Key,now:i64,sign:Signer,parent:^Transaction=nil,reserved_hard:i64=0) -> Result {
+    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
     context.allocator=context.temp_allocator
     c,valid:=contracts.owner_parse(raw,"lease_command")
     if !valid do return fail("malformed")
@@ -197,7 +198,7 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
     if method=="lease.heartbeat" && !execution_renewal_enqueue(&tx,c,seq,version,expires,hard,now,key,sign) do return fail("storage_error")
     if !event_record(&tx,seq,now,chain,task,"agent",instance,method,op,raw,"",encode(child),result) do return fail("storage_error")
     if _,ok=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),chain,method,task,tasks[0][0],op);!ok do return fail("storage_error")
-    if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
+    if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=max(clock_high_ms,CAST(? AS INTEGER)) WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
     if !transaction_commit(&tx) do return fail("storage_error")
     return Result{code="ok",body=result,seq=seq}
 }
@@ -205,6 +206,7 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
 // Periodic local maintenance, also before claim. Deadlines never extend across
 // process death. No task state or lease material is sent to the Hub.
 expire_leases :: proc(s:^Store,now:i64) -> bool {
+    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
     tx:Transaction
     if !transaction_begin(s,&tx) do return false
     defer transaction_rollback(&tx)
@@ -226,7 +228,7 @@ expire_leases :: proc(s:^Store,now:i64) -> bool {
         if !event_record(&tx,seq,now,row[1],row[2],"bridge",s.owner,"lease.expired",row[0],"","",encode(doc(map[string]string{"lease_id"=row[0],"reason"=reason})),"") do return false
         if _,ok=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),row[1],"lease.expired",row[2],"1",row[0]);!ok do return false
     }
-    if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return false
+    if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=max(clock_high_ms,CAST(? AS INTEGER)) WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return false
     return transaction_commit(&tx)
 }
 

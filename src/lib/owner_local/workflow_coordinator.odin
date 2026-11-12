@@ -30,6 +30,7 @@ coordinator_configure :: proc(s:^Store,c,p:json.Object,child:Child,now:i64,sign:
 // agent and exact launch binding are current read authorization, checked before
 // historical receipts. Current task/generation/time fences follow receipts.
 execute_coordinator_gate :: proc(s:^Store,raw,payload,cap_raw:string,child:Child,key:contracts.Owner_Verified_Key,now:i64,sign:Signer)->Result {
+    now:=effective_now(s,now) // C1: monotonic clamp, never refuse on the clock
     c,valid:=contracts.owner_parse(raw,"lifecycle_command")
     p,pvalid:=contracts.owner_parse(payload,"workflow_gate")
     cap,capvalid:=contracts.owner_parse(cap_raw,"coordinator_capability")
@@ -89,7 +90,7 @@ execute_coordinator_gate :: proc(s:^Store,raw,payload,cap_raw:string,child:Child
     if !control_intents(&tx,command,seq) || !workflow_refresh(s) do return fail("storage_error")
     if !event_record(&tx,seq,now,chain,task,"agent",child.instance,"workflow.gate.post",op,raw,payload,encode(child),result) do return fail("storage_error")
     if _,ok=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),chain,"workflow.gate.post",task,field(c,"configuration_revision"),op);!ok do return fail("storage_error")
-    if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
+    if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=max(clock_high_ms,CAST(? AS INTEGER)) WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
     if !transaction_commit(&tx) do return fail("storage_error")
     return Result{code="ok",body=result,seq=seq}
 }

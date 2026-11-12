@@ -202,14 +202,13 @@ test_owner_executor_worker_rechecks_route_after_result_persistence_failure :: pr
     }
 }
 
-// C1 (REQ-E2E-1 run5): a background batch read its now before the owner
-// mutex, a write committed meanwhile (store clock ahead), and the batch's
-// stale now bricked the store as clock_uncertain. A lag within
-// OWNER_CLOCK_STALE_MS is clamped and the store stays ready; a genuine
-// backward jump still marks it; and a marked store recovers once the local
-// clock is past its high-water mark again.
+// C1 (REQ-E2E-1 run5, user 10:10Z: monotonic clamp, never refuse): a
+// background batch read its now before the owner mutex while a write
+// committed (store clock ahead). The batch uses max(now, store clock) and the
+// store stays healthy; a large backward jump is clamped (and logged) with no
+// refusal; a store marked clock_uncertain by an older build opens healthy.
 @(test)
-test_owner_store_stale_now_is_clamped_and_uncertain_store_recovers :: proc(t:^testing.T) {
+test_owner_store_monotonic_clamp_never_refuses_and_heals_on_open :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
     s:owner.Store
     path:=owner_executor_probe_store(t,&s)
@@ -225,27 +224,25 @@ test_owner_store_stale_now_is_clamped_and_uncertain_store_recovers :: proc(t:^te
     defer bridge_owner_executor_destroy(&w)
     p:=Owner_Executor_Probe{store=&s,mutex=&mutex}
     testing.expect(t,owner_executor_probe_batch(&w,&p,4000))
-    recovery,_:=state(&s)
-    testing.expect_value(t,recovery,"ready")
+    recovery,high:=state(&s)
+    testing.expect(t,recovery=="ready" && high>=5000,"the stale-now batch leaves the store healthy and its clock monotonic")
     testing.expect(t,p.calls==1,"the stale-now batch still claims and delivers its intent")
 
-    // A genuine backward jump (beyond the tolerance) is still refused...
+    // A genuine 15 s backward jump: clamped to the store clock, no refusal.
     testing.expect(t,owner.exec(s.db,"UPDATE runtime_database SET clock_high_ms=20000 WHERE singleton=1"))
-    testing.expect(t,owner.clock_floor(&s,20000-owner.OWNER_CLOCK_STALE_MS)==20000,"within the tolerance: clamped")
-    testing.expect(t,owner.clock_floor(&s,20000-owner.OWNER_CLOCK_STALE_MS-1)==20000-owner.OWNER_CLOCK_STALE_MS-1,"beyond: unchanged")
-    claims,claimed:=owner.intent_claim_due(&s,10000)
-    testing.expect(t,!claimed && len(claims)==0)
-    recovery,_=state(&s)
-    testing.expect_value(t,recovery,"clock_uncertain")
-    // ...until the local clock is past the store clock again: recovered.
-    recovered,ok:=owner.clock_recover(&s,19999)
-    testing.expect(t,ok && !recovered,"not before the store clock")
-    recovered,ok=owner.clock_recover(&s,20000)
-    testing.expect(t,ok && recovered,"recovered at the store clock")
+    testing.expect_value(t,owner.effective_now(&s,5000),i64(20000))
+    testing.expect_value(t,owner.effective_now(&s,25000),i64(25000))
+    _,claimed:=owner.intent_claim_due(&s,5000)
+    testing.expect(t,claimed,"a backward clock is clamped, never refused")
+    recovery,high=state(&s)
+    testing.expect(t,recovery=="ready" && high==20000,"the store never marks itself uncertain or moves its clock back")
+
+    // A store marked clock_uncertain on disk (an older build) opens healthy.
+    testing.expect(t,owner.exec(s.db,"UPDATE runtime_database SET recovery_state='clock_uncertain' WHERE singleton=1"))
+    owner.close(&s)
+    if !testing.expect(t,owner.open(&s,path,"account","bridge","bridge_key")) do return
     recovery,_=state(&s)
     testing.expect_value(t,recovery,"ready")
-    again,_:=owner.clock_recover(&s,20001)
-    testing.expect(t,!again,"a ready store has nothing to recover")
     _,claimed=owner.intent_claim_due(&s,20001)
-    testing.expect(t,claimed,"writes work again after recovery")
+    testing.expect(t,claimed,"writes work after the heal")
 }
