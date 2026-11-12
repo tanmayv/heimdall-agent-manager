@@ -66,8 +66,10 @@ owner_preparation_restart_never_mints_replacement_or_admits_old_epoch :: proc(t:
     testing.expect_value(t,len(entries),1)
     testing.expect_value(t,entries[0].prepare,entry.prepare)
     testing.expect(t,execution_expire_preparations(&f.store,31000))
+    // The never-launched reservation was released with its expiry (F1 d):
+    // the old assignment is no longer current, so nothing is minted for it.
     retry=execution_prepare_assignment(&f.store,"chain","task",f.owner,31001,sign)
-    testing.expect(t,retry.code=="ok" && retry.replay && retry.body=="retired")
+    testing.expect_value(t,retry.code,"invalid_scope")
     rows,_:=query(f.store.db,"SELECT (SELECT count(*) FROM owner_execution_journal),(SELECT count(*) FROM local_leases)")
     testing.expect_value(t,encode(rows),fmt.tprintf("[[%q,%q]]","1","0"))
 }
