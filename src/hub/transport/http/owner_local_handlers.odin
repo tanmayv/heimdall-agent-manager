@@ -204,7 +204,7 @@ Owner_Listing :: struct {
 owner_local_list_handler :: proc(ctx:rawptr,req:Request)->Response {
     context.allocator=context.temp_allocator
     h:=(^Bridge_Handlers)(ctx)
-    auth,ok,resp:=require_auth(h.auth,req)
+    auth,ok,resp:=require_auth_or_bridge_token(h.auth,req)
     if !ok do return resp
     if !owner_local_caller_admitted(auth,false) do return respond_error(domain.domain_error(.Forbidden,"user authentication required"),req.request_id)
     chain:=query_value(req.query,"chain_id")

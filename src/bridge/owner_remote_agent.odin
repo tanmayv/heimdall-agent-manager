@@ -158,7 +158,7 @@ bridge_owner_remote_agent_send :: proc(request_id,method,params:string,rec:Bridg
         if !sent {
             // R1 FIX A: run8's remote reviewer only ever saw the Hub's 'none';
             // say why the relay was not used.
-            fmt.eprintfln("bridge owner relay: %s lease next for chain %s not relayed (no other owner Bridge of the account found)",rec.agent_instance_id,inferred)
+            fmt.eprintfln("bridge owner relay: %s lease next for chain %s not relayed (no other owner Bridge of the account found, or the registry was unreadable)",rec.agent_instance_id,inferred)
             return "",false
         }
         if bridge_owner_remote_review_granted(response) do return response,true
@@ -183,6 +183,8 @@ bridge_owner_remote_agent_send :: proc(request_id,method,params:string,rec:Bridg
     // the owner up in the account registry first. An unreadable registry or an
     // unknown id keeps the old route.
     owner_bridge,found,lookup_err:=bridge_owner_remote_lookup(chain,task)
+    // run9: a refused registry read looked like "no owner Bridge"; say so.
+    if lookup_err!="" do fmt.eprintfln("bridge owner relay: %s %s for chain %s task %s not relayed: %s",rec.agent_instance_id,method,chain,task,lookup_err)
     if lookup_err!="" || !found || owner_bridge==bridge_cfg().daemon_id do return "",false
     // Prove the exact live child, as a local owner verb does; no lock is held
     // across the Hub round trip.
