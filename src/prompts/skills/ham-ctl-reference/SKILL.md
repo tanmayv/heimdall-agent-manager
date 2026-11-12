@@ -27,7 +27,7 @@ Groups: `bridge`, `agents`, `task-chain`, `task`, `workflow`, `lease`, `review`,
 ## bridge — discover bridges and their providers
 - `bridge list [--scope hub|configured|all]` — bridges you can target. Default `all` =
   Hub-registered + locally-configured peers + this host (self).
-- `bridge providers [--bridge <id>]` — providers (and tiers) for one bridge, or all.
+- `bridge providers [--bridge <id>]` — the provider matrix (providers, models, profiles and their status) of one Bridge (the Hub's `provider-status`), or every Bridge with its providers. Use it to choose `--bridge-models` / `--agent-model` values per Bridge.
 
 ## agents — durable identities, templates, and runtime instances
 - `agents list` — your durable agent identities.
@@ -78,10 +78,14 @@ reached the removed Hub engine (`list`, `set-description`, `set-status`, `archiv
 - `task-chain summary set <text>|--file <path>|--stdin [--chain <id>]` — set the curated chain summary; only `set`
   (or `--body/--file/--stdin`) writes (`<= 60` lines; coordinator only; surfaced in every agent's `TASK.md`).
 - `task-chain propose --file <proposal.json> [--require-decision] [--chain <id>]` — create a proposal
-  (`kind: "task"`, `rationale`, `alternative`, `tasks` array) and its draft tasks in a single transaction
-  (coordinator only). By default it auto-approves: validates briefs and publishes immediately. With
-  `--require-decision` the proposal stays pending until the user decides it in the Heimdall app.
-- `task-chain publish <chain-id>` — validate all task briefs and publish the chain (`422 brief_incomplete` lists missing fields per task; a reviewer that is not an enabled chain member is refused).
+  (`kind` defaults to `"task"`; `rationale`, `alternative`, `tasks` array) in a single transaction
+  (coordinator only). By default it auto-approves: briefs are validated and the tasks are created published. With
+  `--require-decision` the proposal stays pending until the user decides it in the Heimdall app. Task fields:
+  `id`, `task_id`, `title`, `description`, `priority`, `brief`, `goal`, `acceptance`, `role`, `depends_on` (any
+  other field is refused and named). Every `brief.reviewers` agent must be an enabled chain member.
+- `task-chain publish <chain-id>` — a Bridge-owned chain is published when it is created, so this answers
+  `already_published` and changes nothing. It is refused with `operation_conflict` only while a
+  `--require-decision` proposal waits for the user.
 - `task-chain complete <chain-id> --expected-work-revision <n> --summary <text>` — explicitly accept the final
   result (coordinator only). Every ticket must be done or cancelled, with no live leases or pending proposal.
   Read a fresh `work_revision` from `task-chain show` first (a stale one is a conflict). Finishing a batch
@@ -99,15 +103,19 @@ Tickets are the work items in a chain. The CLI keeps the technical name `task`: 
 A positional `<task-id>` identifies the task and is enough on its own (task ids are
 globally unique — you rarely need `--chain`).
 
-- `task list [--chain <id>]` — your chain's tasks. Each carries a `comment_summary`
-  (count, last_comment_at, author, preview) — NOT full comment bodies.
+- `task list [--chain <id>]` — your chain's tasks (one page of up to 100, from the owner Bridge). Read a task's
+  comments with `task comments`.
 - `task show <task-id> [--chain <id>]` — a task + its `brief` + `comment_summary` + facets.
 - `task comments <task-id> [--last N]` — fetch comment BODIES; `--last N` = newest N (max 100).
 - `task create --title <t> [--description <d>] [--priority p0|p1|p2] [--assignee <agt_id>] [--reviewer <agt_id,agt_id,...>] [--depends-on <id,id>] [--bridge <bridge-id>] [--agent-model <agt_id>=<provider>[/<model>]]... [--chain <id>] [--goal <g>] [--acceptance <a>]... [--input <ref>]... [--output-schema <task_list.v1|findings.v1>] [--require-user-approval] [--brief-file <path.json>]` — create a task.
   `--assignee` and `--reviewer` take durable agent IDs (`agt_...`) only.
 - `task update <task-id> [--title <t>] [--description <d>] [--priority p0|p1|p2] [--assignee <agt_id>] [--reviewer <agt_id,agt_id,...>] [--depends-on <id,id>] [--bridge <bridge-id>] [--agent-model <agt_id>=<provider>[/<model>]]... [--clear-agent-model <agt_id>]... [--goal <g>] [--acceptance <a>]... [--input <ref>]... [--output-schema <task_list.v1|findings.v1>] [--require-user-approval | --no-require-user-approval] [--brief-file <path.json>]` — edit an existing task.
 - Per-task model override (owner chains, needs a brief): `--agent-model <agt_id>=<provider>[/<model>]` (repeatable) makes that agent run with that provider/model on THIS task, assignee or reviewer. Effective selection per agent: task override > fleet `--bridge-models[<run Bridge>]` > fleet row `--provider/--model` > catalog default (an omitted model is the provider's catalog default). Unknown or inactive providers/models are refused. `task update --clear-agent-model <agt_id>` clears one agent's override; others are kept. A warm instance launched with another provider/model is not reused for the task: a dedicated one is launched. `task show` returns `agent_models`.
-- `task publish <task-id>` — validate the task's brief and publish it. A brief needs a non-empty `goal` and at least one `acceptance` item; nothing else is required (`422 brief_incomplete` lists what is missing).
+- `task publish <task-id>` — `task create` already publishes on a Bridge-owned chain, so this answers
+  `already_published`. Only a task left in draft by an older path is published (its brief needs a non-empty
+  `goal` and at least one `acceptance` item).
+- `task update <task-id> --title <t> --description <d>` renames a task at any time, even an assigned or
+  started one. Brief flags change requirements, which a started worker must acknowledge.
 - `task unblock <task-id> --reason <text>` (or `--note`) — coordinator/owner clears a block and retries matching. Unavailable agents carry `blocked_on.kind=agent_not_running` and an agent/provider/model/bridge/error reason. Fix the cause first; the user can click **Start agent** on the task's attention card (failures keep the block and show the error inline for retry). Updating the affected fleet row in the app also clears its blocks. Infrastructure failures do not consume work attempt budget; a full fleet row is normal queueing. An escalation (`task escalate`) is cleared only by the user.
 - `task recheck <task-id>` — coordinator/owner: recompute what the owner Bridge would decide for the task now — the review gate against the CURRENT reviewers and user-approval flag; dependency readiness; a `bridge_offline` agent block whose bridge is back; dispatch against fleet capacity, pause and bridge state; and a done task's pending/failed merge-back (only when the task was already done and no merge job for it is still running; a task the re-check itself moves to done gets its one merge from that transition). Never approves (it only counts verdicts already posted), never touches a task with a live lease, never spends an attempt; a call that changes nothing records nothing. Prints `{task, changed, actions[], reasons[], message}`: `actions` say what changed (`state: in_review → done`, `dispatched: work lease …`, `merge-back re-queued …`), `reasons` say what still holds it (`waiting on review from agt_x (role reviewer)`, `agt_w: fleet full 2/2 on bridge …`, `agt_w: bridge … is offline`, `chain directory … already has a live work lease (vcs_kind "")`, `merge pending: the merge-back is in flight on bridge …`, `merge none: chain directory … has vcs_kind ""`). Use it instead of `task hold` + `task release` to unstick a task. Also the **Re-check** item in the task card menu.
 - `task hold <task-id> --reason <text>` — coordinator/owner only: stop dispatching the task until someone runs `task release`. No work or review lease is granted, the review gate freezes (verdicts are still recorded), and `task answer` is refused. A current lease is NOT revoked: its holder sees **Checkpoint Requested** in TASK.md and should `lease handoff`, after which the task parks in `backlog`. A hold never gives the user an Answer card: the user cannot answer a held task. A Review card the user already owes stays (their verdict is still recorded, and the gate resumes on release), and so does a nested agent-not-running **Start agent** action. Use it only to pause deliberately (re-routing to another identity or model, re-planning, waiting on an external event). Do NOT use it to postpone work (`lease switch`/`lease handoff`, `--depends-on`, `--priority`) or to ask the user (`lease block --waiting-on user`). Prints `{task, changed, checkpoint_requested, message}`; holding a held task is a no-op.

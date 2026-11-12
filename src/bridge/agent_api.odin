@@ -65,7 +65,9 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 	case "agent.bridge.providers":
 		bridge_id := bridge_local_extract_json_string(params, "bridge_id", "")
 		if strings.trim_space(bridge_id) != "" {
-			return Bridge_Agent_Route{kind = .Raw, http_method = .GET, path = route_path("api", "v1", "bridges", bridge_id, "providers")}
+			// The Hub serves one Bridge's provider matrix (status, models,
+			// profiles) at provider-status; there is no .../providers GET.
+			return Bridge_Agent_Route{kind = .Raw, http_method = .GET, path = route_path("api", "v1", "bridges", bridge_id, "provider-status")}
 		}
 		// no bridge_id => list bridges (each carries its provider matrix)
 		return Bridge_Agent_Route{kind = .Raw, http_method = .GET, path = route_path("api", "v1", "bridges")}

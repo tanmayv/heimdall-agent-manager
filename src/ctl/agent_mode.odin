@@ -405,7 +405,14 @@ ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
 		// Coordinator only. 422 brief_incomplete is rendered per task (taskv2_cmds.odin).
 		tid := pos(tokens, 1)
 		if tid == "" { print_agent_help([]string{"task"}); return }
-		ctl_v2_task_publish(endpoint, token, tid, args)
+		// Owner chains publish tasks at create; the owner Bridge answers an
+		// already published task with already_published (no Hub route).
+		fields := make([dynamic]string)
+		append(&fields, json_kv("task_id", tid))
+		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
+		response, ok := ctl_agent_local_call(endpoint, token, "agent.task.publish", json_object_from_slice(fields[:]))
+		if !ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
+		ctl_publish_print_and_exit(response)
 	case "unblock", "hold", "release", "recheck":
 		// Coordinator/owner (REQ-TV2-5): hold stops new dispatch and asks a
 		// current holder to checkpoint; release lets the task dispatch again;

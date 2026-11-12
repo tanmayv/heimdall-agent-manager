@@ -341,12 +341,6 @@ ctl_publish_print_and_exit :: proc(response: string) {
 	if strings.contains(response, `"ok":false`) do os.exit(1)
 }
 
-// ctl_v2_task_publish publishes ONE task (coordinator only). The hub route is
-// chain-scoped, so the chain is taken from --chain, else this agent's own chain
-// (context), else the task itself (task show).
-ctl_v2_task_publish :: proc(endpoint, token, tid: string, args: []string) {
-	ctl_v2_task_action(endpoint, token, tid, args, "publish", ctl_empty_object_body())
-}
 
 // ctl_v2_task_action POSTs `body` to a chain-scoped task action route.
 ctl_v2_task_action :: proc(endpoint, token, tid: string, args: []string, action: string, body: httpc.Body) {

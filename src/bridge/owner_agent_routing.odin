@@ -36,7 +36,7 @@ bridge_owner_routable :: proc(method:string) -> bool {
     case "agent.lease.next","agent.lease.heartbeat","agent.lease.submit","agent.lease.handoff","agent.lease.switch","agent.lease.block",
          "agent.review.post","agent.task.show","agent.task.comments","agent.task.comment","agent.task.create","agent.task.update","agent.task.depend",
          "agent.task_chain.show","agent.task_chain.set_summary","agent.chain.summary","agent.task_chain.propose","agent.chain.propose","agent.task_chain.publish",
-         "agent.task_chain.set_title":
+         "agent.task_chain.set_title","agent.task.list","agent.task.publish":
         return true
     }
     // Coordinator controls (owner_agent_controls.odin) and fleet management
@@ -669,17 +669,65 @@ bridge_owner_agent_exec :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object
         if chain=="" do chain=owner.agent_home_chain(s,ctx.child)
         method_name:="chain.publish"
         body:="{}"
-        if method!="agent.task_chain.publish" {
+        if method=="agent.task_chain.publish" {
+            // An owner chain is published when it is created and every task
+            // is published by `task create` (or an approved proposal), so a
+            // publish of a published chain is a no-op, as on origin/main.
+            state,pending,read:=bridge_owner_chain_publish_state(s,chain)
+            if !read do return bridge_owner_fail(ctx,"storage_error","owner store could not be read; retry")
+            if pending do return bridge_owner_fail(ctx,"operation_conflict","a proposal on this chain waits for the user's decision; publish after it is decided")
+            if state=="published" do return bridge_local_response_data(ctx.request_id,bridge_owner_json(map[string]string{"chain_id"=chain,"publish_state"="published","already_published"="1"}))
+        } else {
             method_name="chain.propose"
-            plan:=make(json.Object,context.temp_allocator)
-            for k,v in p do if k!="chain_id" do plan[k]=v
+            plan,message:=bridge_owner_proposal_plan(p)
+            if message!="" do return bridge_owner_fail(ctx,"invalid_content",message)
+            if missing,read:=bridge_owner_proposal_missing_reviewer(s,chain,plan);!read {
+                return bridge_owner_fail(ctx,"storage_error","owner store could not be read; retry")
+            } else if missing!="" {
+                return bridge_owner_fail(ctx,"invalid_scope",fmt.tprintf("task-chain propose: reviewer %s is not an enabled member of this chain; add it first (`task create --reviewer %s` launches it, or `task-chain fleet set --agent %s`), then propose",missing,missing,missing))
+            }
             body=bridge_owner_json(plan)
         }
         cipher,sealed:=bridge_owner_cipher(ctx,body)
         if !sealed do return bridge_owner_fail(ctx,"vault_locked","cannot seal the proposal")
         r:=bridge_owner_run_command(ctx,method_name,chain,"",bridge_owner_chain_rev(ctx,chain),bridge_owner_json(map[string]string{"body_cipher"=cipher}))
-        if r.code!="ok" do return bridge_owner_fail(ctx,r.code,"owner chain command refused")
+        if r.code!="ok" {
+            what:="task-chain publish" if method_name=="chain.publish" else "task-chain propose"
+            hint:=""
+            switch r.code {
+            case "invalid_scope": hint=": only the chain's coordinator proposes or publishes its work, and every brief reviewer must be an enabled chain member"
+            case "invalid_content": hint=": the proposal does not validate (tasks need a title; brief fields are goal/acceptance/description/priority/depends_on)"
+            case "operation_conflict": hint=": another proposal waits for the user's decision, or the chain is not active"
+            }
+            return bridge_owner_fail(ctx,r.code,fmt.tprintf("%s refused (%s)%s",what,r.code,hint))
+        }
         return bridge_local_response_data(ctx.request_id,r.body)
+    case "agent.task.list":
+        // The chain's tasks (owner chain.read, one page), as task-chain show lists them.
+        chain:=bridge_owner_pstr(p,"chain_id")
+        if chain=="" do chain=owner.agent_home_chain(s,ctx.child)
+        r:=bridge_owner_run_command(ctx,"chain.read",chain,"","0",`{"cursor":"","limit":"100"}`)
+        if r.code!="ok" do return bridge_owner_fail(ctx,r.code,"owner chain read refused")
+        read:=bridge_owner_result_object(r.body)
+        out:=json.Object{"chain_id"=json.String(chain),"tasks"=read["items"],"next_cursor"=read["next_cursor"]}
+        return bridge_local_response_data(ctx.request_id,bridge_owner_json(out))
+    case "agent.task.publish":
+        // `task create` publishes owner tasks; only a task drafted by an
+        // older path (local_task_publications 'draft') still needs this.
+        chain,task:=bridge_owner_pstr(p,"chain_id"),bridge_owner_pstr(p,"task_id")
+        st,found,read:=owner.agent_task_state(s,chain,task)
+        if !read do return bridge_owner_fail(ctx,"storage_error","owner store could not be read; retry")
+        if !found do return bridge_owner_fail(ctx,"not_found","no such task on this owner chain")
+        rows,ok:=owner.query(s.db,"SELECT publish_state FROM local_task_publications WHERE chain_id=? AND task_id=? ORDER BY accepted_seq DESC LIMIT 1",st.chain_id,st.task_id)
+        if !ok do return bridge_owner_fail(ctx,"storage_error","owner store could not be read; retry")
+        if len(rows)==0 || rows[0][0]!="draft" {
+            return bridge_local_response_data(ctx.request_id,bridge_owner_json(map[string]string{"chain_id"=st.chain_id,"task_id"=st.task_id,"publish_state"="published","already_published"="1"}))
+        }
+        cipher,sealed:=bridge_owner_cipher(ctx,"{}")
+        if !sealed do return bridge_owner_fail(ctx,"vault_locked","cannot seal the publish")
+        r:=bridge_owner_run_command(ctx,"task.publish",st.chain_id,st.task_id,st.task_revision,bridge_owner_json(map[string]string{"body_cipher"=cipher}))
+        if r.code!="ok" do return bridge_owner_fail(ctx,r.code,fmt.tprintf("task publish refused (%s)",r.code))
+        return bridge_local_response_data(ctx.request_id,bridge_owner_json(map[string]string{"chain_id"=st.chain_id,"task_id"=st.task_id,"publish_state"="published"}))
     }
     if bridge_owner_control_method(method)!="" do return bridge_owner_control(ctx,method,p)
     if bridge_owner_fleet_method(method) do return bridge_owner_fleet(ctx,method,p)
@@ -1566,4 +1614,61 @@ bridge_owner_launch_role_resolve :: proc(bound, instance_id, role, coordinator_i
 // keeps its role and learns the bound coordinator's id. Unbound: unchanged.
 bridge_owner_launch_role_from :: proc(s:^owner.Store, chain_id, instance_id, role, coordinator_id: string) -> (string, string) {
     return bridge_owner_launch_role_resolve(owner.chain_coordinator_instance(s,chain_id),instance_id,role,coordinator_id)
+}
+
+// The owner chain's publish state and whether a proposal waits for a decision.
+bridge_owner_chain_publish_state :: proc(s:^owner.Store,chain:string) -> (state:string,pending,ok:bool) {
+    rows,read:=owner.query(s.db,"SELECT publish_state FROM local_work_chains WHERE chain_id=?",chain)
+    if !read || len(rows)!=1 do return "",false,false
+    proposal,_,pending_read:=owner.work_pending(s,chain)
+    if !pending_read do return "",false,false
+    return rows[0][0],proposal!=nil,true
+}
+
+// ham-ctl's propose body as the owner chain.propose payload: no chain_id,
+// kind defaults to task, --require-decision is auto_approve=false.
+bridge_owner_proposal_plan :: proc(p:json.Object) -> (plan:json.Object,message:string) {
+    plan=make(json.Object,context.temp_allocator)
+    for k,v in p {
+        switch k {
+        case "chain_id":
+        case "require_decision":
+            if b,typed:=v.(json.Boolean);typed && bool(b) do plan["auto_approve"]=json.Boolean(false)
+        case: plan[k]=v
+        }
+    }
+    if _,has:=plan["kind"];!has do plan["kind"]=json.String("task")
+    if _,has:=plan["auto_approve"];!has do plan["auto_approve"]=json.Boolean(true)
+    allowed:="id|task_id|title|description|priority|brief|goal|acceptance|role|depends_on"
+    if tasks,array:=plan["tasks"].(json.Array);array {
+        for item in tasks {
+            spec,_:=item.(json.Object)
+            for key in spec {
+                if !strings.contains(fmt.tprintf("|%s|",allowed),fmt.tprintf("|%s|",key)) {
+                    return nil,fmt.tprintf("task-chain propose: task field %q is not supported on an owner chain (allowed: %s); assign with `task update --assignee` after approval",key,strings.replace_all(allowed,"|",", ",context.temp_allocator))
+                }
+            }
+        }
+    }
+    return plan,""
+}
+
+// The first brief reviewer of a proposal that is not an enabled member of the
+// chain ("" when all are): the store refuses such a proposal with a bare
+// invalid_scope (Mundus .13), so it is named here first.
+bridge_owner_proposal_missing_reviewer :: proc(s:^owner.Store,chain:string,plan:json.Object) -> (string,bool) {
+    tasks,_:=plan["tasks"].(json.Array)
+    for item in tasks {
+        spec,_:=item.(json.Object)
+        brief,_:=spec["brief"].(json.Object)
+        reviewers,_:=brief["reviewers"].(json.Array)
+        for value in reviewers {
+            agent,_:=value.(json.String)
+            rows,read:=owner.query(s.db,`SELECT 1 FROM local_chain_member_versions m WHERE m.chain_id=? AND m.agent_id=? AND m.enabled=1
+              AND m.accepted_seq=(SELECT max(accepted_seq) FROM local_chain_member_versions x WHERE x.chain_id=m.chain_id AND x.instance_id=m.instance_id) LIMIT 1`,chain,string(agent))
+            if !read do return "",false
+            if len(rows)==0 do return string(agent),true
+        }
+    }
+    return "",true
 }

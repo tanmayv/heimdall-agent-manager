@@ -360,7 +360,10 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     case "task.edit", "task.delete":
         protected,checked:=query(s.db,"SELECT 1 FROM local_leases WHERE chain_id=? AND task_id=? UNION ALL SELECT 1 FROM lifecycle_configs WHERE chain_id=? AND task_id=? UNION ALL SELECT 1 FROM local_assignment_history WHERE chain_id=? AND task_id=? UNION ALL SELECT 1 FROM local_handoffs WHERE chain_id=? AND task_id=? LIMIT 1",chain,task,chain,task,chain,task,chain,task)
         if !checked do return fail("storage_error")
-        if len(protected)>0 do return fail("operation_conflict")
+        // Title and body are not requirements (requirements.edit carries
+        // those, with revision acknowledgement), so a started task may be
+        // renamed as on origin/main; only its deletion is refused.
+        if len(protected)>0 && method=="task.delete" do return fail("operation_conflict")
         if method=="task.edit" {
             _,wrote=query(s.db,"UPDATE tasks SET title=?,body=?,revision=revision+1 WHERE chain_id=? AND task_id=?",title,body,chain,task)
         } else {
