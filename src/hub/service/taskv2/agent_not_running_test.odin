@@ -323,6 +323,7 @@ test_agent_not_running_long_backoff_retries_at_deadline :: proc(t: ^testing.T) {
 			// Explicit cancellation frees the occupied worker; the independent
 			// queued task must still obey its provider's retry deadline.
 			testing.expect_value(t, cancel_task(&fx.svc, get_task(fx, "task_occupied"), Actor{kind = ACTOR_USER, id = "u1"}, "free backoff fixture").code, domain.Error_Code.None)
+			confirm_pending_ownership_stop_for_test(t, fx, get_task(fx, "task_occupied"), "inst_w1")
 		}
 		task = get_task(fx, "task_long")
 		testing.expect(t, task.state == .Ready && task.blocked_on_json == "", fmt.tprintf("late failure queues task: %v %s", task.state, task.blocked_on_json))

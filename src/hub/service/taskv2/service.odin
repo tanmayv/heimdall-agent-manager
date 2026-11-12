@@ -139,6 +139,7 @@ trigger_label :: proc(t: Trigger) -> string {
 
 // Effects collects the side effects a UoW decided on; they run after COMMIT.
 Effects :: struct {
+ fenced_stops: [dynamic]Fenced_Stop,
 	// wake runs/stops keyed by bridge id (see wake.odin, M1).
 	runs:        map[string][dynamic]agent.Wake_Agent_Run_Entry,
 	stops:       map[string][dynamic]string,
@@ -301,6 +302,7 @@ Deferred_Effects :: struct {
 // Move a successfully released savepoint's effects into its parent. Payloads
 // and owned map keys transfer with the arrays; only source containers are freed.
 move_effects :: proc(dst, src: ^Effects) {
+ append(&dst.fenced_stops,..src.fenced_stops[:]);delete(src.fenced_stops)
 	for key, entries in src.runs {
 		current := dst.runs[key]
 		for entry in entries {
@@ -375,6 +377,7 @@ cancel_reservations :: proc(svc: ^Service, e: ^Effects) {
 
 @(private = "package")
 destroy_effects :: proc(e: ^Effects) {
+ delete(e.fenced_stops)
 	for _, entries in e.runs do delete(entries)
 	delete(e.runs)
 	for _, entries in e.stops do delete(entries)
@@ -436,6 +439,7 @@ agent_notice_command_json :: proc(command_id, instance_id, chain_id, origin, lin
 
 @(private = "file")
 flush_effects :: proc(svc: ^Service, e: ^Effects) {
+	flush_fenced_stops(svc,e)
 	flush_wakes(svc, e)
 	for n in e.notifications {
 		if svc.notify_observer != nil {
@@ -662,7 +666,7 @@ refold_task :: proc(svc: ^Service, u: ^Uow, task: domain.Task, tasks: []domain.T
 		metric_task_transition(task.state, saved.state)
 	}
 	// Merge applicability is fixed at Done, before any later directory change.
-	if saved.state == .Done && task.state != .Done {
+	if saved.state == .Done && task.state != .Done && !task_administratively_completed(svc, saved) {
 		if serr := record_merge_snapshot(svc, saved); serr.code != .None do return task, view, false, serr
 	}
 	// Column-backed alerts: ready_unclaimed (ready_since) and blocked-on-human
@@ -676,7 +680,7 @@ refold_task :: proc(svc: ^Service, u: ^Uow, task: domain.Task, tasks: []domain.T
 			effect_tasks_changed(u, saved.chain_id, saved.owner_user_id)
 		}
 		check_coordinator_attention_on_refold(svc, u, task, saved, view, all_tasks)
-		if saved.state == .Done && task.state != .Done do effect_merge_worktree(svc, u, saved, evs)
+		if saved.state == .Done && task.state != .Done && !task_administratively_completed(svc, saved) do effect_merge_worktree(svc, u, saved, evs)
 		if saved.state == .Ready && task.state != .Ready do nudge_idle_soloist(svc, u, saved)
 	}
 	return saved, view, true, domain.Domain_Error{}

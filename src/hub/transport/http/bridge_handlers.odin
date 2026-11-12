@@ -2516,6 +2516,12 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		if ext_err := bridge_extension_frame(h, bridge_id, type, text); ext_err.code != .None do fmt.eprintln("extension command result:", ext_err.message)
 		command_id := json_string(text, "command_id")
 		_ = bridge_runtime_service.runtime_command_result_for_connection(h.bridge_runtime_registry, bridge_id, connection_generation, command_id, text)
+		// Ownership cleanup requires the exact persisted stop command receipt.
+		// Generic runtime status frames do not identify the stopped process.
+		if type == "command_result" && h.task_engine != nil {
+			_, stop_err := taskv2.confirm_ownership_stop_result(h.task_engine, bridge_id, command_id, text)
+			if stop_err.code != .None do fmt.eprintln("ownership stop confirmation:", stop_err.message)
+		}
 		if type == "command_result" && h.agents != nil do agent_service.apply_reconfiguration_command_result(h.agents, bridge_id, command_id, text)
 		if type == "command_result" && h.agents != nil {
 			restored: domain.Agent_Instance

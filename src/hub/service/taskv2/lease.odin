@@ -27,6 +27,7 @@ Placement :: struct {
 }
 
 Grant_Request :: struct {
+	explicit_identity: bool,
 	chain:       domain.Task_Chain,
 	task:        domain.Task,
 	instance:    domain.Agent_Instance,
@@ -78,6 +79,7 @@ grant_attempt_in_uow :: proc(svc: ^Service, u: ^Uow, req: Grant_Request) -> (dom
 		}
 	}
 	inst := req.instance
+	if ownership_cleanup_pending(svc,task) || instance_ownership_stop_pending(svc,inst) do return {},false,domain.domain_error(.Conflict,"previous process stop is pending; reconcile its generation before granting work",)
 	if busy,err:=iface.agent_runtime_busy(svc.agents,inst.agent_instance_id);err.code!=.None {return {},false,err} else if busy {return {},false,domain.domain_error(.Conflict,"instance has a pending runtime action")}
 	// Resolve the actual wake selection once, so lease history, runtime facets
 	// and the bridge command agree even when reusing an older warm instance.
@@ -99,10 +101,10 @@ grant_attempt_in_uow :: proc(svc: ^Service, u: ^Uow, req: Grant_Request) -> (dom
 		if !ready do return {}, false, domain.domain_error(.Conflict, "work prerequisites have not succeeded", `{"code":"prerequisite_unsatisfied"}`)
 	}
 	if req.kind == domain.LEASE_KIND_REVIEW && task.state != .In_Review do return {}, false, domain.domain_error(.Conflict, "task is not in review")
-	if !instance_in_chain(svc, req.chain, inst) do return {}, false, domain.domain_error(.Conflict, "instance is not a member of the task's chain")
+	if !req.explicit_identity && !instance_in_chain(svc, req.chain, inst) do return {}, false, domain.domain_error(.Conflict, "instance is not a member of the task's chain")
 	// The coordinator works only in a solo chain, and only by pulling
 	// (`lease next`, inline): the hub never wakes, restarts or stops it.
-	if is_coordinator(svc, req.chain, inst.agent_instance_id) && !(req.delivery == domain.LEASE_DELIVERY_INLINE && chain_is_solo(svc, req.chain)) {
+	if !req.explicit_identity && is_coordinator(svc, req.chain, inst.agent_instance_id) && !(req.delivery == domain.LEASE_DELIVERY_INLINE && chain_is_solo(svc, req.chain)) {
 		return {}, false, domain.domain_error(.Conflict, "the chain coordinator is never granted a lease (outside solo mode)")
 	}
 	if prior, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, inst.agent_instance_id); held {
@@ -382,6 +384,9 @@ on_instance_terminal :: proc(svc: ^Service, instance_id: string) {
 	scratch: Scratch
 	context.allocator = scratch_begin(&scratch)
 	defer scratch_end(&scratch)
+	if inst,found,_:=iface.agent_get_instance(svc.agents,instance_id);found && instance_ownership_stop_pending(svc,inst) {
+		if stop_u,started,_:=begin_uow(svc);started {reconcile_ownership_stops_in_uow(svc,&stop_u,inst);_,_=end_uow(svc,&stop_u,true)}
+	}
 	if _, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, instance_id); !held do return
 	// Bridge ABSENCE is not instance death (review B2): an instance marked
 	// `unreachable` because its bridge disconnected keeps its claim. Bridge
@@ -548,6 +553,7 @@ on_bridge_hello :: proc(svc: ^Service, bridge_id: string, active_instance_ids: [
 	defer scratch_end(&scratch)
 	u, ok, _ := begin_uow(svc)
 	if !ok do return
+	if instances,ierr:=iface.agent_list_instances_by_bridge(svc.agents,bridge_id);ierr.code==.None {for inst in instances do reconcile_ownership_stops_in_uow(svc,&u,inst)}
 	leases, lerr := iface.taskchain_list_all_leases(svc.repo)
 	if lerr.code == .None {
 		for l in leases {
@@ -640,13 +646,13 @@ chain_closed :: proc(svc: ^Service, chain: domain.Task_Chain, actor: Actor, canc
 	rok := true
 	rerr := domain.Domain_Error{}
 	leases, lerr := iface.taskchain_list_leases_by_chain(svc.repo, chain.chain_id)
+	if lerr.code != .None { _, _ = end_uow(svc, &u, false); return lerr }
 	if lerr.code == .None {
 		for l in leases {
-			if expire_lease_in_uow(svc, &u, l, EXPIRE_CHAIN_CLOSED, actor) == .Failed {
-				rok = false
-				rerr = domain.domain_error(.Internal_Error, "failed to reclaim lease on chain close")
-				break
-			}
+			task, found, read_err := iface.taskchain_get_task(svc.repo, l.task_id)
+			if !found { rok = false; rerr = read_err; break }
+			rok, rerr = revoke_claim_in_uow(svc, &u, task, l, actor, EXPIRE_CHAIN_CLOSED)
+			if !rok do break
 		}
 	}
 	if rok && cancel_tasks {
@@ -690,16 +696,30 @@ chain_closed :: proc(svc: ^Service, chain: domain.Task_Chain, actor: Actor, canc
 cancel_task :: proc(svc: ^Service, task: domain.Task, actor: Actor, reason: string) -> domain.Domain_Error {
 	u, ok, err := begin_uow(svc)
 	if !ok do return err
+	fresh, found, read_err := iface.taskchain_get_task(svc.repo, task.task_id)
+	if !found { _, _ = end_uow(svc, &u, false); return read_err }
+	if fresh.owner_user_id != task.owner_user_id { _, _ = end_uow(svc, &u, false); return domain.domain_error(.Not_Found, "task not found") }
+	if _, allowed, auth_err := work_control_chain(svc, fresh.owner_user_id, actor, fresh.chain_id); !allowed { _, _ = end_uow(svc, &u, false); return auth_err }
+	if fresh.workflow_run_id != "" { _, _ = end_uow(svc, &u, false); return domain.domain_error(.Conflict, "cancel the owning workflow run", `{"code":"workflow_task_managed"}`) }
+	if fresh.state == .Done {
+		merge := task_merge_status(svc, fresh)
+		if merge.state == "none" || merge.state == "merged" { _, _ = end_uow(svc, &u, false); return domain.domain_error(.Conflict, "task already completed; reopen it explicitly") }
+	}
+	if fresh.state == .Cancelled { _, _ = end_uow(svc, &u, true); return {} }
+	if strings.trim_space(reason) == "" { _, _ = end_uow(svc, &u, false); return domain.domain_error(.Validation_Failed, "cancellation reason is required") }
 	rok := true
 	rerr := domain.Domain_Error{}
 	leases, lerr := iface.taskchain_list_leases_by_task(svc.repo, task.task_id)
-	if lerr.code == .None {
-		for l in leases do if expire_lease_in_uow(svc, &u, l, EXPIRE_CANCELLED, actor) == .Failed { rok = false }
+	if lerr.code != .None { _, _ = end_uow(svc, &u, false); return lerr }
+	for l in leases {
+		rok, rerr = revoke_claim_in_uow(svc, &u, fresh, l, actor, reason)
+		if !rok do break
 	}
 	if rok {
 		payload := json_begin()
 		json_str(&payload, "reason", reason if reason != "" else "cancelled")
-		_, _, rok, rerr = record_event(svc, &u, task, actor, EV_CANCELLED, json_end(&payload))
+		if latest, exists, _ := iface.taskchain_get_task(svc.repo, task.task_id); exists do fresh = latest
+		_, _, rok, rerr = record_event(svc, &u, fresh, actor, EV_CANCELLED, json_end(&payload))
 	}
 	if rok do rok, rerr = after_chain_change(svc, &u, task.chain_id, task.owner_user_id, .Task_Cancelled)
 	_, cerr := end_uow(svc, &u, rok)

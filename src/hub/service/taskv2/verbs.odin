@@ -38,6 +38,14 @@ lease_next :: proc(svc: ^Service, auth: contracts.Auth_Context, input: Lease_Nex
 	rok := true
 	rerr := domain.Domain_Error{}
 	if lease, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, inst.agent_instance_id); held {
+		if !input.peek {
+   if task,tfound,_:=iface.taskchain_get_task(svc.repo,lease.task_id);tfound && transfer_reservation_needs_activation(svc,task,lease) && !ownership_cleanup_pending(svc,task) {
+    claimed,accepted,claim_err:=lease_claim_in_uow(svc,&u,auth,Lease_Claim_Input{task_id=lease.task_id,vcs_base=input.vcs_base})
+    _,commit_err:=end_uow(svc,&u,accepted)
+    if !accepted do return {},false,claim_err
+    return Lease_Next_Result{status=claimed.status,lease=claimed.lease,task=claimed.task,pack_json=claimed.pack_json},commit_err.code==.None,commit_err
+   }
+  }
 		if lease.phase == domain.LEASE_PHASE_WAITING {
 			task, found, err := iface.taskchain_get_task(svc.repo, lease.task_id)
 			if !found { _, _ = end_uow(svc, &u, false); return {}, false, err }
@@ -142,7 +150,6 @@ instance_from_auth :: proc(svc: ^Service, auth: contracts.Auth_Context) -> (doma
 	return inst, true, domain.Domain_Error{}
 }
 
-@(private = "file")
 record_attempt_started :: proc(svc: ^Service, task: domain.Task, lease: domain.Task_Lease, vcs_base: string) {
 	if lease.kind != domain.LEASE_KIND_WORK do return
 	evs, err := iface.taskchain_list_events_by_task(svc.repo, task.task_id, task.owner_user_id)

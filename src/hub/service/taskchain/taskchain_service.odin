@@ -2187,7 +2187,6 @@ cancel_task_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Conte
 			return domain.Task{}, false, domain.domain_error(.Forbidden, "only the chain coordinator or the owner can cancel a task")
 		}
 	}
-	if domain.task_state_is_terminal(task.state) do return domain.Task{}, false, domain.domain_error(.Conflict, "task is already terminal")
 	if service.engine == nil do return domain.Task{}, false, domain.domain_error(.Internal_Error, "task engine is not configured")
 	if eng_err := taskv2.cancel_task(service.engine, task, engine_actor(auth), reason); eng_err.code != .None do return domain.Task{}, false, eng_err
 	if fresh, fresh_ok, _ := iface.taskchain_get_task(service.repo, task.task_id); fresh_ok do task = fresh

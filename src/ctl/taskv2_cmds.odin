@@ -30,6 +30,7 @@ import "core:slice"
 import "core:strconv"
 import "core:strings"
 import httpc "odin_test:lib/httpc"
+import contracts "odin_test:contracts"
 import jsonx "odin_test:lib/jsonx"
 
 ctl_requirements_revision_flag :: proc(args: []string, flag: string) -> int {
@@ -1326,4 +1327,26 @@ print_help_workflow :: proc() {
  fmt.println("  inputs fail before anything is created. An empty array completes the stage with zero tasks.")
  fmt.println("A retry creates a fresh execution. Consumed outputs block retry. Stage retry is unsupported.")
  fmt.println("Agent mode may omit --chain when creating/listing runs; run IDs are always explicit.")
+}
+
+ctl_v2_lease_claim_params :: proc(task_id: string, args: []string) -> string {
+    fields := make([dynamic]string)
+    append(&fields, json_kv("task_id", task_id))
+    for flag in ([?]string{"--instance", "--reason", "--request-id", "--vcs-base"}) {
+        key := "instance_id" if flag == "--instance" else "reason" if flag == "--reason" else "request_id" if flag == "--request-id" else "vcs_base"
+        if v := option_value(args, flag, ""); v != "" do append(&fields, json_kv(key, v))
+    }
+    if has_flag(args, "--expected-generation") do append(&fields, json_kv_raw("expected_generation", fmt.aprintf("%d", ctl_requirements_revision_flag(args, "--expected-generation"))))
+    append(&fields, ctl_agent_cwd_field())
+    return json_object_from_slice(fields[:])
+}
+
+ctl_v2_task_control_body :: proc(operation: string, args: []string) -> httpc.Body {
+    obligations := option_values_trimmed(args, "--obligation")
+    return httpc.json_body(contracts.Task_Control_Request{
+        operation = operation, reason = option_value(args, "--reason", ""),
+        request_id = option_value(args, "--request-id", ""),
+        expected_generation = i64(ctl_requirements_revision_flag(args, "--expected-generation")),
+        target_instance_id = option_value(args, "--instance", ""), obligations = obligations[:],
+    })
 }

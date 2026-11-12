@@ -292,6 +292,15 @@ test_nested_uow_effects_flush_after_outer_commit :: proc(t: ^testing.T) {
 	committed, _ := iface.unit_of_work_commit(&outer)
 	testing.expect(t, committed, "outer commit")
 	testing.expect(t, wake_log_has_stop(log, "inst_w1"), "stop[] flushed after the outer commit")
+	// Revocation requests a generation-fenced stop. Confirm the process exited
+	// before reusing the same instance for the rollback half of this test.
+	inst, _, _ := iface.agent_get_instance(&fx.agents, "inst_w1")
+	inst.runtime_status = "stopped"
+	_, _, _ = iface.agent_save_instance(&fx.agents, inst)
+	confirm_pending_ownership_stop_for_test(t, fx, get_task(fx, "task_1"), "inst_w1")
+	testing.expect(t, !ownership_cleanup_pending(&fx.svc, get_task(fx, "task_1")), "old process stop confirmed")
+	inst.runtime_status = "idle"
+	_, _, _ = iface.agent_save_instance(&fx.agents, inst)
 	// a rolled-back outer transaction drops the nested effects
 	wake_log_reset(log)
 	_ = publish_task(t, fx, chain, "task_2")

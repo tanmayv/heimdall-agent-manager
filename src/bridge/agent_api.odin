@@ -175,6 +175,12 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "tasks", "comment")}
 	// Task System v2: agent.task.status / set_current / vote / nudge / subscribe /
 	// unsubscribe were removed (hub answers 410 Gone). Lease verbs (M1):
+	case "agent.lease.transfer":
+        return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "lease", "transfer")}
+    case "agent.lease.recover":
+        return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "lease", "recover")}
+    case "agent.lease.claim":
+        return Bridge_Agent_Route{kind = .Local, local_op = "lease.claim", path = route_path("api", "v1", "agent-actions", "lease", "claim")}
 	case "agent.lease.next":
 		// .Local (M2): the bridge adds params.vcs_base (git HEAD of the agent's
 		// repo) and relays to lease/next (agent_taskv2_vcs.odin).
@@ -336,7 +342,7 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     "agent.task.list", "agent.task.show", "agent.task.comments", "agent.task.create",
 	     "agent.task.update", "agent.task.depend", "agent.task.comment", "agent.task.fetch",
 	     "agent.task.readiness",
-	     "agent.lease.next", "agent.lease.heartbeat", "agent.lease.submit", "agent.lease.handoff",
+	     "agent.lease.transfer", "agent.lease.recover", "agent.lease.claim", "agent.lease.next", "agent.lease.heartbeat", "agent.lease.submit", "agent.lease.handoff",
 	     "agent.lease.block", "agent.lease.switch", "agent.review.post",
 	     "agent.workflow.templates", "agent.workflow.define",
 	     "agent.workflow.run", "agent.workflow.status", "agent.workflow.output",
@@ -478,6 +484,7 @@ bridge_local_handle_agent_local_op :: proc(request_id, op, params: string, rec: 
 	if op == "search" do return bridge_agent_search_rpc(request_id, params, rec)
 	// Task System v2 lease verbs: enrich with git state, then relay to the hub
 	// path the route table names (agent_taskv2_vcs.odin).
+	if op == "lease.claim" do return bridge_agent_lease_local_rpc(request_id, "agent.lease.claim", route_path("api", "v1", "agent-actions", "lease", "claim"), params, rec)
 	if op == "lease.next" do return bridge_agent_lease_local_rpc(request_id, "agent.lease.next", route_path("api", "v1", "agent-actions", "lease", "next"), params, rec)
 	if op == "lease.submit" do return bridge_agent_lease_local_rpc(request_id, "agent.lease.submit", route_path("api", "v1", "agent-actions", "lease", "submit"), params, rec)
 	if op == "lease.handoff" do return bridge_agent_lease_local_rpc(request_id, "agent.lease.handoff", route_path("api", "v1", "agent-actions", "lease", "handoff"), params, rec)

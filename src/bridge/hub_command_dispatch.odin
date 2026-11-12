@@ -559,6 +559,12 @@ bridge_command_dispatch :: proc(conn: ^ws.Connection, text: string, generation: 
 
 	sync.mutex_lock(&bridge_dispatch_mu)
 	claim_index := bridge_command_dispatch_claim_index_locked(command_id)
+	if claim_index >= 0 && bridge_dispatch_claims[claim_index].state == .Completed && bridge_failed_fenced_stop_retry(command_type, text, bridge_dispatch_claims[claim_index].result_json) {
+		delete(bridge_dispatch_claims[claim_index].command_id, runtime.default_allocator())
+		delete(bridge_dispatch_claims[claim_index].result_json, runtime.default_allocator())
+		ordered_remove(&bridge_dispatch_claims, claim_index)
+		claim_index = -1
+	}
 	if claim_index >= 0 {
 		claim := bridge_dispatch_claims[claim_index]
 		cached := strings.clone(claim.result_json, runtime.default_allocator())

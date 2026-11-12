@@ -184,6 +184,9 @@ bridge_taskv2_repo_for_agent :: proc(params: string, rec: Bridge_Local_Agent_Tok
 // lease verb: next gets `vcs_base`, submit/handoff get `vcs`. Anything else, or
 // no repository, relays `params` unchanged (always an owned clone).
 bridge_taskv2_enrich_lease_params :: proc(method, params: string, rec: Bridge_Local_Agent_Token_Record) -> string {
+	// A coordinator assigning another instance cannot describe that instance's
+	// checkout using its own cwd or cached VCS base.
+	if method == "agent.lease.claim" && !bridge_taskv2_claim_is_local(params, rec.agent_instance_id) do return strings.clone(params)
 	repo, has_repo := bridge_taskv2_repo_for_agent(params, rec)
 	if !has_repo do return strings.clone(params)
 	defer delete(repo)
@@ -192,7 +195,7 @@ bridge_taskv2_enrich_lease_params :: proc(method, params: string, rec: Bridge_Lo
 	defer delete(head)
 
 	switch method {
-	case "agent.lease.next":
+	case "agent.lease.next", "agent.lease.claim":
 		peek, _ := jsonx.extract_bool_literal(params, "peek", true)
 		if !peek do bridge_taskv2_cache_vcs_base(rec.agent_instance_id, head)
 		quoted := bridge_local_json_escaped(head)
@@ -230,7 +233,7 @@ bridge_agent_lease_local_rpc :: proc(request_id, method: string, hub_path: []str
 	if !relay.ok do return bridge_local_response_error(request_id, "retryable_unavailable", "Hub relay failed")
 	if relay.status < 200 || relay.status >= 300 do return bridge_local_response_error(request_id, "hub_error", relay.body)
 	if strings.trim_space(relay.body) == "" do return bridge_local_response_data(request_id, "{}")
-	if method == "agent.lease.next" || method == "agent.lease.switch" {
+	if method == "agent.lease.next" || method == "agent.lease.switch" || (method == "agent.lease.claim" && bridge_taskv2_claim_is_local(params, rec.agent_instance_id)) {
 		peek, _ := jsonx.extract_bool_literal(params, "peek", true)
 		if !peek {
 			data_obj, has_data := jsonx.extract_raw_object(relay.body, "data", true, context.temp_allocator)
@@ -1128,4 +1131,12 @@ bridge_taskv2_handle_command :: proc(conn: ^ws.Connection, type, text: string) -
 	bridge_runtime_cache_command(command_id, out)
 	_ = bridge_hub_send(conn, out)
 	return true
+}
+
+
+// An assignment made on behalf of another instance must never replace the
+// authenticated caller's TASK.md.
+bridge_taskv2_claim_is_local :: proc(params, caller_instance_id: string) -> bool {
+    target := jsonx.extract_string(params, "instance_id", "", true, context.temp_allocator)
+    return target == "" || target == caller_instance_id
 }

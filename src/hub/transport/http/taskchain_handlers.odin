@@ -3181,3 +3181,47 @@ delete_chain_review_role_handler :: proc(ctx: rawptr, req: Request) -> Response 
 	publish_chain_changed(h, auth_ctx.user_id, string(chain_id), "updated")
 	return respond_success(`{"ok":true}`, req.request_id, auth_ctx_server_time(req), 200)
 }
+
+// Administrative operations retain task history and expose operational cleanup.
+task_control_handler :: proc(ctx: rawptr, req: Request) -> Response {
+    h := (^Taskchain_Handlers)(ctx)
+    auth, ok, auth_resp := require_auth_any(h.auth, req)
+    if !ok do return auth_resp
+    if h.task_engine == nil do return respond_error(domain.domain_error(.Internal_Error, "task engine is not configured"), req.request_id)
+    chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+    task_id := domain.Task_ID(path_part(req.path, 6))
+    if matched, mismatch := require_task_path_scope(h, auth, chain_id, task_id, req); !matched do return mismatch
+    task, found, err := taskchain_service.get_task(h.taskchains, auth, task_id)
+    if !found do return respond_error(err, req.request_id)
+    operation := json_string(req.body, "operation")
+    result: taskv2.Task_Control_Result
+    success: bool
+    if operation == "inspect" {
+        result, success, err = taskv2.task_control_inspect(h.task_engine, task, taskv2.actor_from_auth(auth))
+    } else {
+        obligations := jsonx.extract_string_array(req.body, "obligations", true, context.temp_allocator)
+        result, success, err = taskv2.task_control(h.task_engine, task, taskv2.actor_from_auth(auth), taskv2.Task_Control_Input{
+            operation = operation, reason = json_string(req.body, "reason"), request_id = json_string(req.body, "request_id"),
+            expected_generation = i64(jsonx.extract_int(req.body, "expected_generation", 0, true)),
+            target_instance_id = json_string(req.body, "target_instance_id"), obligations = obligations[:],
+        })
+    }
+    if !success do return respond_error(err, req.request_id)
+    wire := struct {
+        task: Simple_Task_Wire `json:"task"`,
+        changed: bool `json:"changed"`,
+        generation: i64 `json:"generation"`,
+        outcome: string `json:"outcome"`,
+        message: string `json:"message"`,
+        obligations: []string `json:"obligations"`,
+        cleanup_pending: bool `json:"cleanup_pending"`,
+        owners: json.Value `json:"owners"`,
+        cleanup: json.Value `json:"cleanup"`,
+        actions: json.Value `json:"actions"`,
+        wait_reason: string `json:"wait_reason"`,
+    }{task = make_simple_task_wire(result.task), changed = result.changed, generation = result.generation,
+      outcome = result.outcome, message = result.message, obligations = result.obligations, cleanup_pending = result.cleanup_pending,
+      owners = json_value_or_null(result.owners_json), cleanup = json_value_or_null(result.cleanup_json), actions = json_value_or_null(result.actions_json), wait_reason = result.wait_reason}
+    data, _ := json.marshal(wire, JSON_MARSHAL_OPT, allocator = context.temp_allocator)
+    return respond_success(string(data), req.request_id, auth_ctx_server_time(req))
+}

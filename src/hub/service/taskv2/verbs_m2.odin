@@ -568,12 +568,16 @@ user_review :: proc(svc: ^Service, auth: contracts.Auth_Context, task_id: domain
 // ---- human verbs: reopen / answer --------------------------------------------------------
 
 // task_reopen: done|cancelled → a new attempt (non-counting grant next).
-task_reopen :: proc(svc: ^Service, task: domain.Task, actor: Actor) -> (domain.Task, bool, domain.Domain_Error) {
+task_reopen :: proc(svc: ^Service, task_in: domain.Task, actor: Actor) -> (domain.Task, bool, domain.Domain_Error) {
+	task := task_in
 	if guard:=task_control_precondition(svc,task,actor,"reopen");guard.code!=.None do return {},false,guard
 	if task.workflow_run_id != "" do return {}, false, domain.domain_error(.Conflict, "retry the whole workflow run rather than reopening a generated task", `{"code":"workflow_task_managed"}`)
 	if !domain.task_state_is_terminal(task.state) do return {}, false, domain.domain_error(.Conflict, "only a done or cancelled task can be reopened")
 	u, uok, uerr := begin_uow(svc)
 	if !uok do return {}, false, uerr
+    task, uok, uerr = iface.taskchain_get_task(svc.repo, task_in.task_id)
+    if !uok { _, _ = end_uow(svc, &u, false); return {}, false, uerr }
+    if guard := task_control_precondition(svc, task, actor, "reopen"); guard.code != .None { _, _ = end_uow(svc, &u, false); return {}, false, guard }
     if _, allowed, err := work_control_chain(svc, task.owner_user_id, actor, task.chain_id); !allowed {
         _, _ = end_uow(svc, &u, false)
         return {}, false, err
@@ -599,12 +603,16 @@ task_reopen :: proc(svc: ^Service, task: domain.Task, actor: Actor) -> (domain.T
 }
 
 // task_answer: a human clears a blocked_on (block, budget, oscillation) badge.
-task_answer :: proc(svc: ^Service, task: domain.Task, actor: Actor, note: string) -> (domain.Task, bool, domain.Domain_Error) {
+task_answer :: proc(svc: ^Service, task_in: domain.Task, actor: Actor, note: string) -> (domain.Task, bool, domain.Domain_Error) {
+	task := task_in
 	if guard:=task_control_precondition(svc,task,actor,"answer");guard.code!=.None do return {},false,guard
 	if strings.trim_space(task.blocked_on_json) == "" do return {}, false, domain.domain_error(.Conflict, "task is not blocked")
 	if task_is_held(task) do return {}, false, domain.domain_error(.Conflict, "task is held; release it with `task release`")
 	u, uok, uerr := begin_uow(svc)
 	if !uok do return {}, false, uerr
+    task, uok, uerr = iface.taskchain_get_task(svc.repo, task_in.task_id)
+    if !uok { _, _ = end_uow(svc, &u, false); return {}, false, uerr }
+    if guard := task_control_precondition(svc, task, actor, "answer"); guard.code != .None { _, _ = end_uow(svc, &u, false); return {}, false, guard }
     if _, allowed, err := work_control_chain(svc, task.owner_user_id, actor, task.chain_id); !allowed {
         _, _ = end_uow(svc, &u, false)
         return {}, false, err
@@ -639,14 +647,18 @@ Hold_Result :: struct {
 // An unleased task parks in backlog as blocked_on {kind: hold}; a leased one
 // keeps its lease and the holder is asked for a checkpoint (lease handoff),
 // after which the handoff parks the task instead of re-dispatching it. Never
-// revokes a lease; the lease TTL still applies.
-task_hold :: proc(svc: ^Service, task: domain.Task, actor: Actor, reason: string) -> (Hold_Result, bool, domain.Domain_Error) {
+// revokes a claim; its holder remains responsible until explicit release.
+task_hold :: proc(svc: ^Service, task_in: domain.Task, actor: Actor, reason: string) -> (Hold_Result, bool, domain.Domain_Error) {
+	task := task_in
 	if strings.trim_space(reason) == "" do return {}, false, domain.domain_error(.Validation_Failed, "reason is required")
 	if guard:=task_control_precondition(svc,task,actor,"hold");guard.code!=.None do return {},false,guard
 	if domain.task_state_is_terminal(task.state) do return {}, false, domain.domain_error(.Conflict, "a done or cancelled task cannot be held")
 	if task.kind == .Gate do return {}, false, domain.domain_error(.Conflict, "gates cannot be held")
 	u, uok, uerr := begin_uow(svc)
 	if !uok do return {}, false, uerr
+	task, uok, uerr = iface.taskchain_get_task(svc.repo, task_in.task_id)
+	if !uok { _, _ = end_uow(svc, &u, false); return {}, false, uerr }
+	if guard := task_control_precondition(svc, task, actor, "hold"); guard.code != .None { _, _ = end_uow(svc, &u, false); return {}, false, guard }
 	if _, allowed, err := work_control_chain(svc, task.owner_user_id, actor, task.chain_id); !allowed {
 		_, _ = end_uow(svc, &u, false)
 		return {}, false, err
@@ -666,7 +678,7 @@ task_hold :: proc(svc: ^Service, task: domain.Task, actor: Actor, reason: string
 	if rok {
 		// Ask every live holder (work and review) to refresh TASK.md (its pack
 		// now carries the Checkpoint Requested section) and hand off at a safe
-		// point. Nothing is revoked; the lease TTL still applies.
+		// point. Nothing is revoked; the claim remains until explicit release.
 		leases, lerr := iface.taskchain_list_leases_by_task(svc.repo, task.task_id)
 		if lerr.code != .None { rok, rerr = false, lerr }
 		for lease in leases {
@@ -689,10 +701,14 @@ task_hold :: proc(svc: ^Service, task: domain.Task, actor: Actor, reason: string
 
 // task_release clears a hold; the task becomes dispatchable again (unless
 // something else still blocks it). Releasing an unheld task is a no-op.
-task_release :: proc(svc: ^Service, task: domain.Task, actor: Actor) -> (Hold_Result, bool, domain.Domain_Error) {
+task_release :: proc(svc: ^Service, task_in: domain.Task, actor: Actor) -> (Hold_Result, bool, domain.Domain_Error) {
+	task := task_in
 	if guard:=task_control_precondition(svc,task,actor,"release");guard.code!=.None do return {},false,guard
 	u, uok, uerr := begin_uow(svc)
 	if !uok do return {}, false, uerr
+	task, uok, uerr = iface.taskchain_get_task(svc.repo, task_in.task_id)
+	if !uok { _, _ = end_uow(svc, &u, false); return {}, false, uerr }
+	if guard := task_control_precondition(svc, task, actor, "release"); guard.code != .None { _, _ = end_uow(svc, &u, false); return {}, false, guard }
 	if _, allowed, err := work_control_chain(svc, task.owner_user_id, actor, task.chain_id); !allowed {
 		_, _ = end_uow(svc, &u, false)
 		return {}, false, err

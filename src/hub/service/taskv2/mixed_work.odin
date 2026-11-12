@@ -57,7 +57,7 @@ work_item_snapshot :: proc(svc: ^Service, chain_id: domain.Task_Chain_ID, owner:
 		json_str(&manifest, "output_ref", fmt.tprintf("facet:%s:%d:output", task.task_id, task.attempt_no))
 		merge := task_merge_status(svc, task)
 		return Work_Item_Snapshot{
-			generation = task.attempt_no, succeeded = task.state == .Done && (merge.state == "none" || merge.state == "merged"),
+			generation = task.attempt_no, succeeded = task.state == .Done && !task_administratively_completed(svc, task) && (merge.state == "none" || merge.state == "merged"),
 			started = task.attempt_no > 0 || (task.state != .Backlog && task.state != .Ready),
 			terminal = domain.task_state_is_terminal(task.state), manifest = json_end(&manifest),
 		}, true, domain.Domain_Error{}
@@ -188,6 +188,10 @@ task_dependencies_ready :: proc(svc: ^Service, task: domain.Task, all_tasks: []d
 		deps = loaded
 	}
 	if !deps_done_for(task.task_id, tasks, deps) do return false, domain.Domain_Error{}
+	for dep in deps {
+		if dep.task_id != task.task_id do continue
+		for pre in tasks do if pre.task_id == dep.depends_on_task_id && task_administratively_completed(svc, pre) do return false, domain.Domain_Error{}
+	}
 	if task.stage_key != "" || task.kind != .Task do return true, domain.Domain_Error{}
 	// refold_chain loaded the edges for its pass; `task` is a ticket of that
 	// chain, so only its own incoming edges need checking.
@@ -198,7 +202,7 @@ task_dependencies_ready :: proc(svc: ^Service, task: domain.Task, all_tasks: []d
 			// A ticket prerequisite is read from the pass's rows (kept current
 			// by refold_chain), exactly as work_item_snapshot judges it.
 			if pre, found := ticket_in(tasks, edge.prerequisite); found {
-				if pre.state != .Done do return false, domain.Domain_Error{}
+				if pre.state != .Done || task_administratively_completed(svc, pre) do return false, domain.Domain_Error{}
 				merge := task_merge_status(svc, pre)
 				if merge.state != "none" && merge.state != "merged" do return false, domain.Domain_Error{}
 				continue
@@ -354,6 +358,10 @@ work_chain_complete_in_uow :: proc(svc: ^Service, u: ^Uow, owner: domain.User_ID
 		}
 		if task.state != .Done || task.publish_state != .Published {
 			append(&blockers, completion_blocker_json(item, domain.task_state_string(task.state), merge.state, "not_done", ""))
+			continue
+		}
+		if task_administratively_completed(svc, task) {
+			append(&blockers, completion_blocker_json(item, "overridden", merge.state, "administrative_outcome_not_success", ""))
 			continue
 		}
 		if merge.state != "none" && merge.state != "merged" {

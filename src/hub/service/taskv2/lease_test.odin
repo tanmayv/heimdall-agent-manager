@@ -55,6 +55,7 @@ wake_log_has_run :: proc(log: ^Wake_Log, inst: string) -> bool {
 
 wake_log_has_stop :: proc(log: ^Wake_Log, inst: string) -> bool {
 	for c in log.cmds {
+		if jsonx.extract_string(c.body_json,"type","",true,context.temp_allocator)=="stop_agent" && jsonx.extract_string(c.body_json,"agent_instance_id","",true,context.temp_allocator)==inst do return true
 		if stop, ok := jsonx.extract_raw_array(c.body_json, "stop", false, context.temp_allocator); ok && strings.contains(stop, fmt.tprintf(`"%s"`, inst)) do return true
 	}
 	return false
@@ -729,7 +730,8 @@ test_cancel_leased_task_leaves_no_lease_and_stops_holder :: proc(t: ^testing.T) 
 	leases, _ := iface.taskchain_list_leases_by_task(&fx.repo, task.task_id)
 	testing.expect_value(t, len(leases), 0)
 	testing.expect_value(t, count_events(fx, "task_1", EV_LEASE_EXPIRED), 1)
-	testing.expect(t, strings.contains(last_event_payload(fx, "task_1", EV_LEASE_EXPIRED), `"reason":"cancelled"`), "reason cancelled")
+	testing.expect(t, strings.contains(last_event_payload(fx, "task_1", EV_LEASE_EXPIRED), `"reason":"replaced"`), "administrative revocation does not spend the failure budget")
+	testing.expect(t, strings.contains(last_event_payload(fx, "task_1", EV_LEASE_EXPIRED), `"administrative_reason":"scope cut"`), "revocation preserves the cancellation reason")
 	testing.expect_value(t, count_events(fx, "task_1", EV_LEASE_GRANTED), 1)
 	testing.expect(t, wake_log_has_stop(log, "inst_w1"), "holder stopped")
 	testing.expect(t, !wake_log_has_run(log, "inst_w1"), "holder NOT re-woken")

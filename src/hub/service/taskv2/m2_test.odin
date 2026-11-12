@@ -305,6 +305,12 @@ test_reopen_starts_new_noncounting_attempt :: proc(t: ^testing.T) {
 	testing.expect(t, !bad && berr.code == .Conflict, "only terminal tasks reopen")
 	_ = cancel_task(&fx.svc, get_task(fx, "task_1"), Actor{kind = ACTOR_USER, id = "u1"}, "oops")
 	testing.expect_value(t, get_task(fx, "task_1").state, domain.Task_State.Cancelled)
+	inst, _, _ := iface.agent_get_instance(&fx.agents, "inst_w1")
+	inst.runtime_status = "stopped"
+	_, _, _ = iface.agent_save_instance(&fx.agents, inst)
+	confirm_pending_ownership_stop_for_test(t, fx, get_task(fx, "task_1"), "inst_w1")
+	inst.runtime_status = "idle"
+	_, _, _ = iface.agent_save_instance(&fx.agents, inst)
 	fresh, rok, rerr := task_reopen(&fx.svc, get_task(fx, "task_1"), Actor{kind = ACTOR_USER, id = "u1"})
 	if !testing.expect(t, rok, fmt.tprintf("reopen: %s", rerr.message)) do return
 	testing.expect_value(t, fresh.state, domain.Task_State.In_Progress) // re-granted at once
