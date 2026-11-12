@@ -355,12 +355,14 @@ execution_expire_preparations :: proc(s:^Store,now:i64,released:^[dynamic]Reserv
 // lease has ended (expiry, submit, rework, release, a launch that never
 // came up) the row is retired, so the task can be prepared again for a new
 // lease (a new reservation, execution_prepare_assignment) instead of every
-// later prepare answering operation_conflict forever. The executor's charge
-// lapses on its own deadline: no renewal follows an ended lease. Bounded per
-// pass; runs in each maintenance pass.
+// later prepare answering operation_conflict forever. No renewal follows an
+// ended lease; a remote executor is also told to stop the exact reservation
+// (R1 FIX B2: otherwise its charge lives until its own deadline and a rework
+// prepare inside that window is refused resource_conflict). Bounded per pass;
+// runs in each maintenance pass.
 execution_retire_ended :: proc(tx:^Transaction,seq:^i64,now:i64)->bool {
     s:=tx.store
-    rows,ok:=query(s.db,`SELECT j.reservation_id,j.prepare_json FROM owner_execution_journal j JOIN local_leases l ON l.lease_id=j.lease_id
+    rows,ok:=query(s.db,`SELECT j.reservation_id,j.prepare_json,j.child_json FROM owner_execution_journal j JOIN local_leases l ON l.lease_id=j.lease_id
       WHERE j.state='committed' AND l.retired_seq IS NOT NULL ORDER BY j.reservation_id LIMIT 100`)
     if !ok do return false
     for row in rows {
@@ -369,6 +371,7 @@ execution_retire_ended :: proc(tx:^Transaction,seq:^i64,now:i64)->bool {
         seq^+=1
         if _,written:=query(s.db,"UPDATE owner_execution_journal SET state='retired',retired_seq=? WHERE reservation_id=? AND state='committed'",fmt.tprintf("%d",seq^),row[0]);!written do return false
         if !execution_change(tx,seq^,now,p,"execution.lease_ended",row[0],"retired") do return false
+        if !execution_stop_lease_ended(tx,p,row[1],row[2],seq^,now) do return false
     }
     return true
 }

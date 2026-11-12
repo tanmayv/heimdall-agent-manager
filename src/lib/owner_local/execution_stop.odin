@@ -22,6 +22,29 @@ execution_stop_intent :: proc(tx:^Transaction,c:json.Object,child_raw:string,seq
         encode(struct{task_id,method,child:string}{task,field(c,"method"),child_raw})})
 }
 
+// R1 FIX B2: a lease that ended without a stop command (submit, expiry,
+// rework) still holds the executor's reservation. Anchor an owner-principal
+// receipt for the retirement and enqueue the same exact stop target, unless a
+// stop for that reservation is already queued (cancel, handoff). Caller holds
+// the owner transaction that retires the journal row.
+EXECUTION_LEASE_ENDED_METHOD :: "execution.lease_ended"
+execution_stop_lease_ended :: proc(tx:^Transaction,p:json.Object,prepare_raw,child_raw:string,seq,now:i64)->bool {
+    s:=tx.store
+    executor_bridge:=field(p,"executor_bridge_id")
+    if executor_bridge==s.owner do return true
+    kind:=fmt.tprintf("executor.stop:%s",field(p,"reservation_id"))
+    queued,read:=query(s.db,"SELECT 1 FROM runtime_intents WHERE kind=? AND destination_bridge=?",kind,executor_bridge)
+    if !read do return false
+    if len(queued)>0 do return true
+    chain,task:=field(p,"chain_id"),field(p,"task_id")
+    op:=payload_hash(encode([3]string{field(p,"reservation_id"),prepare_raw,EXECUTION_LEASE_ENDED_METHOD}))
+    result:=encode(map[string]string{"chain_id"=chain,"task_id"=task,"reservation_id"=field(p,"reservation_id")})
+    if _,ok:=query(s.db,"INSERT INTO command_receipts(principal_id,operation_id,chain_id,task_id,method,input_digest,digest_key_id,request_expires_ms,result_json,commit_seq,created_ms) VALUES(?,?,?,?,?,?,?,0,?,?,?)",
+        s.owner,op,chain,task,EXECUTION_LEASE_ENDED_METHOD,payload_hash(prepare_raw),s.owner_key,result,fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return false
+    return intent_enqueue(tx,{chain,s.owner,op,seq,kind,executor_bridge,prepare_raw,
+        encode(struct{task_id,method,child:string}{task,EXECUTION_LEASE_ENDED_METHOD,child_raw})})
+}
+
 // Repair retained pre-fix generic stops, even if the wrong local observer
  // previously marked them settled. Preserve old evidence; append the exact
  // executor intent from its original committed cancellation and invalidate the
@@ -68,6 +91,21 @@ execution_stop_source :: proc(s:^Store,c:Intent_Claim)->(json.Object,string,i64,
         AND NOT EXISTS(SELECT 1 FROM intent_invalidations x WHERE x.intent_id=i.intent_id)`,
         c.id,c.kind,fmt.tprintf("%d",c.incarnation),fmt.tprintf("%d",c.attempt),c.payload,c.digest,c.fence,c.destination)
     if !read do return nil,"",0,"storage_error"
+    if len(rows)==0 {
+        // R1 FIX B2: the lease-ended source. Its receipt is the owner's own,
+        // and its journal row is retired by the same transaction.
+        rows,read=query(s.db,`SELECT j.prepare_json,j.receipt_json,i.commit_seq
+          FROM runtime_intents i JOIN command_receipts r ON r.principal_id=i.principal_id AND r.operation_id=i.operation_id
+            AND r.commit_seq=i.commit_seq AND r.chain_id=i.chain_id AND r.principal_id=? AND r.method=?
+          JOIN owner_execution_journal j ON j.prepare_json=i.exact_fence_json AND j.chain_id=i.chain_id AND j.task_id=r.task_id
+            AND j.state='retired' AND json_extract(i.payload_json,'$.child')=j.child_json
+          JOIN local_leases l ON l.lease_id=j.lease_id AND l.retired_seq IS NOT NULL
+          WHERE i.intent_id=? AND i.kind=? AND i.state='claimed' AND i.claim_incarnation=? AND i.attempts=?
+            AND i.payload_json=? AND i.payload_digest=? AND i.exact_fence_json=? AND i.destination_bridge=?
+            AND NOT EXISTS(SELECT 1 FROM intent_invalidations x WHERE x.intent_id=i.intent_id)`,
+            s.owner,EXECUTION_LEASE_ENDED_METHOD,c.id,c.kind,fmt.tprintf("%d",c.incarnation),fmt.tprintf("%d",c.attempt),c.payload,c.digest,c.fence,c.destination)
+        if !read do return nil,"",0,"storage_error"
+    }
     if len(rows)!=1 do return nil,"",0,"invalid_scope"
     p,parsed:=contracts.executor_parse(rows[0][0],"prepare")
     receipt,valid:=contracts.executor_parse(rows[0][1],"receipt")

@@ -161,3 +161,62 @@ owner_remote_stop_recovers_legacy_wrong_device_settlement_idempotently :: proc(t
     checked,ok:=query(f.store.db,"SELECT (SELECT count(*) FROM runtime_intents WHERE kind LIKE 'executor.stop:%'),(SELECT count(*) FROM intent_invalidations WHERE intent_id=?),(SELECT result_json FROM runtime_intents WHERE intent_id=?)",old_id,old_id)
     testing.expect(t,ok && checked[0][0]=="1" && checked[0][1]=="1" && checked[0][2]=="child_absent","old evidence retained; exact executor stop remains pending")
 }
+
+// R1 FIX B2: a lease that ends without a stop command (expiry here; submit and
+// rework retire the same way) is retired by maintenance AND stops the exact
+// executor reservation, so a rework prepare is not refused resource_conflict
+// by a charge that outlives the lease. One stop per reservation, ever.
+@(test)
+owner_lease_ended_retirement_stops_the_executor_reservation :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    x:=execution_stop_test_fixture(t);defer execution_test_destroy(x);f:=x.owner
+    sign:=Signer{&f.owner_priv,execution_test_sign}
+    live,_:=executor.query(x.host.db,"SELECT count(*) FROM executor_live_resources")
+    if !testing.expect_value(t,live[0][0],"1") do return
+    leases,_:=query(f.store.db,"SELECT expires_ms FROM local_leases WHERE lease_id='lease'")
+    if !testing.expect_value(t,len(leases),1) do return
+    ended:=number(leases[0][0])+1
+    testing.expect(t,expire_leases(&f.store,ended))
+    testing.expect(t,execution_expire_preparations(&f.store,ended))
+    testing.expect(t,execution_expire_preparations(&f.store,ended+1),"a second pass enqueues nothing new")
+    stops,_:=query(f.store.db,"SELECT count(*) FROM runtime_intents WHERE kind LIKE 'executor.stop:%'")
+    testing.expect_value(t,stops[0][0],"1")
+    claims,ok:=intent_claim_due(&f.store,ended+2,20,.Executor)
+    if !testing.expect(t,ok && len(claims)==1 && execution_stop_kind(claims[0].kind),"one executor stop claim") do return
+    c:=claims[0]
+    testing.expect_value(t,c.destination,"executor")
+    query_request:=execution_stop_request(&f.store,c,f.owner,ended+3,sign)
+    if !testing.expect_value(t,query_request.code,"ok") do return
+    q,_:=contracts.executor_parse(query_request.body,"action")
+    qr:=executor.action(&x.host,query_request.body,f.owner,ended+3)
+    receipt,signed:=executor.seal_receipt(&x.host,q,"action",qr,{&f.creator_priv,execution_test_seal})
+    testing.expect(t,signed)
+    testing.expect_value(t,execution_stop_accept(&f.store,c,query_request.body,receipt,x.host_key,ended+3).code,"accepted")
+    stopped:=execution_stop_request(&f.store,c,f.owner,ended+4,sign)
+    if !testing.expect_value(t,stopped.code,"ok") do return
+    stop,_:=contracts.executor_parse(stopped.body,"action")
+    testing.expect_value(t,field(stop,"method"),"stop")
+    accepted:=executor.action(&x.host,stopped.body,f.owner,ended+4)
+    testing.expect_value(t,accepted.code,"ok")
+    stop_receipt,sealed:=executor.seal_receipt(&x.host,stop,"action",accepted,{&f.creator_priv,execution_test_seal})
+    testing.expect(t,sealed)
+    testing.expect_value(t,execution_stop_accept(&f.store,c,stopped.body,stop_receipt,x.host_key,ended+4).code,"released")
+    live,_=executor.query(x.host.db,"SELECT count(*) FROM executor_live_resources")
+    testing.expect_value(t,live[0][0],"0")
+}
+
+// R1 FIX B2: a cancel already queued the exact stop; the later lease-ended
+// retirement must not queue a second one for the same reservation.
+@(test)
+owner_lease_ended_retirement_does_not_duplicate_a_cancel_stop :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    x:=execution_stop_test_fixture(t);defer execution_test_destroy(x);f:=x.owner
+    revisions,_:=query(f.store.db,"SELECT revision FROM tasks WHERE task_id='task'")
+    payload:=encode(doc(map[string]string{"body_cipher"=cipher(f,"Cancel before maintenance")}))
+    testing.expect_value(t,invoke(f,command(f,"task.cancel","stop_dup","task",payload,revisions[0][0]),payload,1300).code,"ok")
+    testing.expect(t,execution_expire_preparations(&f.store,1400))
+    retired,_:=query(f.store.db,"SELECT count(*) FROM owner_execution_journal WHERE state='retired'")
+    testing.expect_value(t,retired[0][0],"1")
+    stops,_:=query(f.store.db,"SELECT count(*) FROM runtime_intents WHERE kind LIKE 'executor.stop:%'")
+    testing.expect_value(t,stops[0][0],"1")
+}
