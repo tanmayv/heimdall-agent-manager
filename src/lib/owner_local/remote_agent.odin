@@ -1,6 +1,7 @@
 package owner_local
 
 import "core:encoding/json"
+import "core:fmt"
 import "core:strings"
 import contracts "odin_test:contracts"
 import vault "odin_test:lib/vault"
@@ -48,6 +49,9 @@ remote_agent_method :: proc(method:string) -> bool {
     // A reviewer on the relaying Bridge discovers its owed review; the owner
     // Bridge serves review leases only (bridge_owner_remote_agent).
     case "agent.lease.next": return true
+    // That reviewer's heartbeat renews its open review sessions in the chain
+    // (review_session_renew); a work lease is never renewed over the relay.
+    case "agent.lease.heartbeat": return true
     }
     return false
 }
@@ -92,4 +96,19 @@ remote_agent_signed :: proc(request_raw,signature_hex:string,key:contracts.Owner
     sig,sig_ok:=vault.signature_text_from_parts("ecdsa-p256-sha256",signature_hex,context.temp_allocator)
     if !sig_ok || !vault.verify("ecdsa-p256-sha256",key.public_key,remote_agent_message(request_raw),sig) do return "bad_signature"
     return "ok"
+}
+
+// A relayed reviewer's heartbeat (R1 FIX A): every unexpired review session
+// this exact child holds in the chain runs LEASE_TTL_MS from now. Returns the
+// renewed tasks; none means the reviewer holds no review here.
+review_session_renew :: proc(s:^Store,chain:string,child:Child,now:i64) -> (tasks:[]string,ok:bool) {
+    now:=store_now(s,now) // C1: the store's single clock source
+    held,read:=query(s.db,"SELECT task_id FROM local_review_sessions WHERE chain_id=? AND child=? AND expires_ms>? ORDER BY task_id",chain,encode(child),fmt.tprintf("%d",now))
+    if !read do return nil,false
+    out:=make([dynamic]string,context.temp_allocator)
+    for row in held {
+        if _,updated:=query(s.db,"UPDATE local_review_sessions SET expires_ms=? WHERE chain_id=? AND task_id=? AND child=? AND expires_ms>?",fmt.tprintf("%d",now+LEASE_TTL_MS),chain,row[0],encode(child),fmt.tprintf("%d",now));!updated do return nil,false
+        append(&out,row[0])
+    }
+    return out[:],true
 }

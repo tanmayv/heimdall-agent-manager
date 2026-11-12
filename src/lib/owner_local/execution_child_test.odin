@@ -225,6 +225,16 @@ owner_execution_coordinator_placed_remote_worker_leases_submits_and_owes_review 
     testing.expect_value(t,lifecycle_call(f,remote_reviewer,"requirements.ack","b_ack",`{"requirements_revision":"1"}`,cap,rev,{},1400).code,"invalid_scope")
     opened:=lifecycle_call(f,remote_reviewer,"review.open","b_open",verdict,"",rev,{},1400)
     if !testing.expect_value(t,opened.code,"ok") do return
+    // R1 FIX A: the relayed reviewer's heartbeat renews its open session
+    // (review_session_renew); another child renews nothing.
+    renewed,renew_ok:=review_session_renew(&f.store,"chain",remote_reviewer,1450)
+    testing.expect(t,renew_ok && len(renewed)==1 && renewed[0]=="task","the reviewer's session is renewed")
+    expiry,_:=query(f.store.db,"SELECT expires_ms FROM local_review_sessions WHERE chain_id='chain' AND task_id='task'")
+    testing.expect_value(t,encode(expiry),encode([1][1]string{{fmt.tprintf("%d",1450+LEASE_TTL_MS)}}))
+    none,none_ok:=review_session_renew(&f.store,"chain",agent_stranger(),1450)
+    testing.expect(t,none_ok && len(none)==0,"a child without a session renews nothing")
+    gone,gone_ok:=review_session_renew(&f.store,"chain",remote_reviewer,1450+LEASE_TTL_MS)
+    testing.expect(t,gone_ok && len(gone)==0,"an expired session is not revived")
     testing.expect_value(t,lifecycle_call(f,remote_reviewer,"review.post","b_post",verdict,result_cap(opened),rev,{},1400).code,"ok")
     reviews,_:=query(f.store.db,"SELECT verdict FROM local_reviews WHERE chain_id='chain' AND task_id='task' AND reviewer_agent_id=? AND principal_kind='agent'",reviewer.agent_id)
     testing.expectf(t,len(reviews)==1 && reviews[0][0]=="approve","the relayed reviewer's verdict is recorded: %v",reviews)
@@ -316,6 +326,16 @@ owner_execution_remote_rework_retires_row_and_task_is_placed_again :: proc(t:^te
     testing.expect_value(t,lifecycle_call(f,remote_reviewer,"requirements.ack","b_ack",`{"requirements_revision":"1"}`,cap,rev,{},1400).code,"invalid_scope")
     opened:=lifecycle_call(f,remote_reviewer,"review.open","b_open",verdict,"",rev,{},1400)
     if !testing.expect_value(t,opened.code,"ok") do return
+    // R1 FIX A: the relayed reviewer's heartbeat renews its open session
+    // (review_session_renew); another child renews nothing.
+    renewed,renew_ok:=review_session_renew(&f.store,"chain",remote_reviewer,1450)
+    testing.expect(t,renew_ok && len(renewed)==1 && renewed[0]=="task","the reviewer's session is renewed")
+    expiry,_:=query(f.store.db,"SELECT expires_ms FROM local_review_sessions WHERE chain_id='chain' AND task_id='task'")
+    testing.expect_value(t,encode(expiry),encode([1][1]string{{fmt.tprintf("%d",1450+LEASE_TTL_MS)}}))
+    none,none_ok:=review_session_renew(&f.store,"chain",agent_stranger(),1450)
+    testing.expect(t,none_ok && len(none)==0,"a child without a session renews nothing")
+    gone,gone_ok:=review_session_renew(&f.store,"chain",remote_reviewer,1450+LEASE_TTL_MS)
+    testing.expect(t,gone_ok && len(gone)==0,"an expired session is not revived")
     changes:=encode(doc(map[string]string{"requirements_revision"="1","attempt"="1","head"="","verdict"="request_changes","summary"="the zero case crashes"}))
     testing.expect_value(t,lifecycle_call(f,remote_reviewer,"review.post","b_post",changes,result_cap(opened),rev,{},1400).code,"ok")
     f.store.relayed_from=""

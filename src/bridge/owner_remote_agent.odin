@@ -104,6 +104,25 @@ bridge_owner_remote_agent_followup :: proc(ctx:^Owner_Agent_Ctx,method:string,p:
 // An admitted relayed verb, under the owner mutex. Returns the local-response
 // JSON, or a refusal code for the relay envelope.
 bridge_owner_remote_agent_exec :: proc(ctx:^Owner_Agent_Ctx,method:string,p:json.Object,from_bridge:string) -> (response,refused:string) {
+    if method=="agent.lease.heartbeat" {
+        // A relayed reviewer's heartbeat renews only its review sessions in
+        // the chain the relaying Bridge named; a work lease is never touched.
+        chain:=bridge_owner_pstr(p,"chain_id")
+        if chain=="" do return "","malformed"
+        _,found,read:=owner.agent_chain_revision(ctx.store,chain)
+        if !read do return "","storage_error"
+        if !found do return "","not_found"
+        tasks,renewed:=owner.review_session_renew(ctx.store,chain,ctx.child,ctx.now)
+        if !renewed do return "","storage_error"
+        if len(tasks)==0 do return bridge_local_response_error(ctx.request_id,"lease_lost","no open review lease here; run lease next"),""
+        out:=make(json.Object,context.temp_allocator)
+        out["chain_id"]=json.String(chain);out["status"]=json.String("renewed");out["kind"]=json.String("review")
+        out["expires_at_ms"]=json.Integer(ctx.now+owner.LEASE_TTL_MS)
+        ids:=make(json.Array,context.temp_allocator)
+        for task in tasks do append(&ids,json.String(task))
+        out["task_ids"]=ids
+        return bridge_local_response_data(ctx.request_id,bridge_owner_json(out)),""
+    }
     if method=="agent.lease.next" {
         // Review-lease discovery (gap 5): the relaying Bridge names the chain;
         // the reply is a review lease this reviewer owes, or none. A work
@@ -147,6 +166,15 @@ bridge_owner_remote_agent_send :: proc(request_id,method,params:string,rec:Bridg
     if !owner.remote_agent_method(method) do return "",false
     p:=bridge_owner_params(params)
     chain,task:=bridge_owner_pstr(p,"chain_id"),bridge_owner_pstr(p,"task_id")
+    if chain=="" && task=="" && method=="agent.lease.heartbeat" {
+        // R1 FIX A: a remote reviewer's bare heartbeat renews its review on
+        // the owner; anything but a renewal keeps the old route.
+        inferred,with_chain:=bridge_owner_remote_lease_next_chain(p,rec.agent_instance_id)
+        if inferred=="" do return "",false
+        response,sent:=bridge_owner_remote_agent_send(request_id,method,with_chain,rec)
+        if sent && bridge_owner_remote_status(response)=="renewed" do return response,true
+        return "",false
+    }
     if chain=="" && task=="" && method=="agent.lease.next" {
         // A reviewer launched here for another Bridge's chain (owner review
         // dispatch) runs a bare `lease next`: its launch names the chain. Only
@@ -233,9 +261,15 @@ bridge_owner_remote_lease_next_chain :: proc(p:json.Object,instance:string) -> (
 }
 
 bridge_owner_remote_review_granted :: proc(response:string) -> bool {
+    return bridge_owner_remote_status(response)=="granted"
+}
+
+// The status of a relayed reply's data ("" for an error or no data).
+bridge_owner_remote_status :: proc(response:string) -> string {
     envelope:=bridge_owner_result_object(response)
     data,_:=envelope["data"].(json.Object)
-    return data!=nil && contracts.owner_string(data,"status")=="granted"
+    if data==nil do return ""
+    return contracts.owner_string(data,"status")
 }
 
 // A relayed review lease (gap 5): the owner's review context becomes the
