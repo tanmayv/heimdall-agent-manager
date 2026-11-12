@@ -33,7 +33,11 @@ number :: proc(s:string)->i64 {n,_:=strconv.parse_i64(s);return n}
 num :: contracts.executor_number
 encode :: proc(v:$T)->string {b,e:=json.marshal(v,allocator=context.temp_allocator);if e!=nil do return "";return string(b)}
 fail :: proc(code:string)->Result {return {code=code}}
+// C3: the clock hook a store gets at open when its owner installed none (see
+// the owner store's default_clock). nil in production; tests advance it.
+default_clock:proc()->i64
 open :: proc(s:^Store,path,account,executor,operator_key:string)->bool {
+    if s.clock==nil do s.clock=default_clock
     if s.db!=nil || account=="" || executor=="" || operator_key=="" do return false
     if sqlite3_open(strings.clone_to_cstring(fmt.tprintf("%s.writer",path),context.temp_allocator),&s.writer)!=0 {close(s);return false}
     if !exec(s.writer,"CREATE TABLE IF NOT EXISTS writer_lock(id INTEGER); BEGIN EXCLUSIVE;") {close(s);return false}
@@ -224,10 +228,17 @@ EXECUTOR_CLOCK_ALERT_MS :: i64(5000)
 // store's store_now): the clock hook, else the caller's hint, never earlier
 // than the high-water clock. Guard test: clock_source_test.odin.
 store_now :: proc(s:^Store,hint:i64)->i64 {
-    now:=s.clock() if s.clock!=nil else hint
+    // C3: operation-scoped time. A hint already at or past the store's
+    // high-water clock is a time this operation derived at its entry: it is
+    // returned unchanged (the hook is NOT read again), so every nested call
+    // sees the same time and recomputed deadlines match. Only a missing or
+    // stale hint reads the clock hook (else falls back to the hint), clamped
+    // to the high-water clock.
     rows,ok:=query(s.db,"SELECT clock_high_ms FROM executor_runtime WHERE singleton=1")
-    if !ok || len(rows)!=1 do return now
+    if !ok || len(rows)!=1 do return s.clock() if s.clock!=nil && hint<=0 else hint
     high:=number(rows[0][0])
+    if hint>=high && hint>0 do return hint
+    now:=s.clock() if s.clock!=nil else hint
     if now>=high do return now
     if high-now>EXECUTOR_CLOCK_ALERT_MS do fmt.eprintfln("executor store clock alert: local clock is %d ms behind the store clock; using the store clock",high-now)
     return high

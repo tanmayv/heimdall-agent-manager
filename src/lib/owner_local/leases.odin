@@ -12,8 +12,10 @@ LEASE_HARD_MS :: i64(60*60*1000)
 // Native budget.hard_deadline is measured in seconds. Both ordinary claim
 // and atomic switch use the same destination snapshot; heartbeat retains the
 // originally signed hard deadline even when requirements change later.
+// C3: a pure helper: it computes from the caller's (already derived) time and
+// never reads the clock itself, so a signed deadline and its recomputation in
+// the same operation always agree.
 lease_deadlines :: proc(s:^Store,chain,task:string,now:i64) -> (i64,i64,bool) {
-    now:=store_now(s,now) // C1: the store's single clock source
     if now<0 || now>0x7fffffffffffffff-LEASE_HARD_MS do return 0,0,false
     expires,hard:=now+LEASE_TTL_MS,now+LEASE_HARD_MS
     if req,has_req:=lifecycle_requirements(s,chain,task);has_req {

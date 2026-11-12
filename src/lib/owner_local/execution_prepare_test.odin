@@ -2,6 +2,7 @@
 package owner_local
 import "core:encoding/json"
 import "core:fmt"
+import "core:sync"
 import "core:testing"
 import contracts "odin_test:contracts"
 import executor "odin_test:lib/executor_local"
@@ -200,5 +201,35 @@ owner_preparation_child_absent_ends_lease_and_task_is_replaced :: proc(t:^testin
     if testing.expect_value(t,len(fresh),1) {
         fp,_:=contracts.executor_parse(fresh[0].prepare,"prepare")
         testing.expect(t,fresh[0].reservation!=reservation && field(fp,"lease_id")!=field(p,"lease_id"),"a new reservation and lease (new launch key and token on the executor)")
+    }
+}
+
+// C3 (run7 regression): remote prepare_assignment -> prepare_start under a
+// clock hook that runs ahead of the caller and advances on every read. The
+// time derived at the operation's entry flows unchanged through the nested
+// prepare_start, so the signed hard_ms matches its recomputation; a current
+// hint never reads the hook, and a missing hint reads it exactly once.
+prepare_ahead_reads: i64
+prepare_ahead_clock :: proc() -> i64 {return 50_000+sync.atomic_add(&prepare_ahead_reads,1)}
+
+@(test)
+owner_preparation_operation_time_flows_through_nested_prepare_start :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    for missing_hint in ([2]bool{false,true}) {
+        x:=execution_test_fixture(t);defer execution_test_destroy(x);f:=x.owner
+        f.store.clock=prepare_ahead_clock
+        sign:=Signer{&f.owner_priv,execution_test_sign}
+        before:=sync.atomic_load(&prepare_ahead_reads)
+        hint:=i64(0) if missing_hint else 1000
+        start:=execution_prepare_assignment(&f.store,"chain","task",f.owner,hint,sign)
+        reads:=sync.atomic_load(&prepare_ahead_reads)-before
+        if !testing.expectf(t,start.code=="ok" && !start.replay,"prepare under an advancing hook (missing hint %v): %s",missing_hint,start.code) do continue
+        testing.expectf(t,reads==(1 if missing_hint else 0),"the hook is read once for a missing hint and never for a current one: %d reads",reads)
+        entries,ok:=execution_preparations(&f.store)
+        if !testing.expect(t,ok && len(entries)==1) do continue
+        p,_:=contracts.executor_parse(entries[0].prepare,"prepare")
+        derived:=50_000+before if missing_hint else 1000
+        testing.expect_value(t,contracts.executor_number(p,"hard_ms"),derived+LEASE_HARD_MS)
+        testing.expect_value(t,contracts.executor_number(p,"prepare_until_ms"),derived+contracts.EXECUTOR_PREPARE_TTL_MS)
     }
 }

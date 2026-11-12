@@ -12,7 +12,8 @@ import "core:testing"
 // exceptions.
 // reconcile_clock is the trusted local recovery API: it is handed a trusted
 // time explicitly (generation-checked), never a caller's decision time.
-CLOCK_SOURCE_ALLOWLIST :: [?]string{"store_now","reconcile_clock"}
+// lease_deadlines is a pure helper (C3): it uses the caller's derived time.
+CLOCK_SOURCE_ALLOWLIST :: [?]string{"store_now","reconcile_clock","lease_deadlines"}
 
 @(test)
 clock_source_single_store_now_guard :: proc(t:^testing.T) {

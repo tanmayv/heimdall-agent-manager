@@ -73,11 +73,18 @@ OWNER_CLOCK_ALERT_MS :: i64(5000)
 // hint, never earlier than the store's high-water clock. Every public
 // time-taking proc derives its time from it at entry (guard test:
 // clock_source_test.odin).
-store_now :: proc(s:^Store,hint:i64) -> i64 {
-    now:=s.clock() if s.clock!=nil else hint
+store_now :: proc(s:^Store,hint:i64)-> i64 {
+    // C3: operation-scoped time. A hint already at or past the store's
+    // high-water clock is a time this operation derived at its entry: it is
+    // returned unchanged (the hook is NOT read again), so every nested call
+    // sees the same time and recomputed deadlines match. Only a missing or
+    // stale hint reads the clock hook (else falls back to the hint), clamped
+    // to the high-water clock.
     rows,ok:=query(s.db,"SELECT clock_high_ms FROM runtime_database WHERE singleton=1")
-    if !ok || len(rows)!=1 do return now
+    if !ok || len(rows)!=1 do return s.clock() if s.clock!=nil && hint<=0 else hint
     high:=number(rows[0][0])
+    if hint>=high && hint>0 do return hint
+    now:=s.clock() if s.clock!=nil else hint
     if now>=high do return now
     if high-now>OWNER_CLOCK_ALERT_MS do fmt.eprintfln("owner store clock alert: local clock is %d ms behind the store clock; using the store clock",high-now)
     return high

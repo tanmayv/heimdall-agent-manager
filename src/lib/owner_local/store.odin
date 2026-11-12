@@ -52,7 +52,13 @@ Signer :: struct {
     sign: proc(ctx:rawptr,kind:string,object:json.Object)->(string,bool),
 }
 
+// C3: the clock hook a store gets at open when its owner installed none. nil
+// in production (the Bridge installs wall time after open); the package's
+// tests install an advancing clock here so every suite runs under one.
+default_clock: proc() -> i64
+
 open :: proc(s: ^Store, path, account, owner, owner_key: string) -> bool {
+    if s.clock == nil do s.clock = default_clock
     if s.db != nil || account == "" || owner == "" || owner_key == "" { storage_failure_note(s,"open: already open or empty identity",DB(nil)); return false }
     // SQLite holds an OS byte-range lock on a separate lifetime lock database.
     // A second process cannot serve this profile, including between transactions.
