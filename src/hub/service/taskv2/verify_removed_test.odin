@@ -66,13 +66,16 @@ test_d1_verify_waiting_task_gets_fresh_review_after_migration :: proc(t: ^testin
 	seed_fleet(fx, chain, "agt_w")
 	seed_fleet(fx, chain, "agt_r", roles = `["reviewer"]`)
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
+	seed_instance(fx, chain, "inst_r1", "agt_r", "br_1", "idle")
 	_ = publish_task(t, fx, chain, "task_d1", brief = `{"goal":"g","acceptance":["a"],"verify":"make test","require_independent_verify":true,"review_roles":["reviewer"]}`)
 	confirm_holder(fx, "inst_w1")
 	_, sok, serr := lease_submit(&fx.svc, inst_auth("inst_w1"), Submit_Input{summary = "done"})
 	if !testing.expect(t, sok, fmt.tprintf("submit d1: %s", serr.message)) do return
+	seed_fleet(fx, chain, "agt_w", capacity = 2)
+	seed_instance(fx, chain, "inst_w2", "agt_w", "br_1", "idle")
 	_ = publish_task(t, fx, chain, "task_solo_cmd", brief = `{"goal":"g","acceptance":["a"],"verify":"make test","require_independent_verify":true,"review_roles":[]}`)
-	confirm_holder(fx, "inst_w1")
-	_, s2ok, s2err := lease_submit(&fx.svc, inst_auth("inst_w1"), Submit_Input{summary = "done"})
+	confirm_holder(fx, "inst_w2")
+	_, s2ok, s2err := lease_submit(&fx.svc, inst_auth("inst_w2"), Submit_Input{summary = "done"})
 	if !testing.expect(t, s2ok, fmt.tprintf("submit solo: %s", s2err.message)) do return
 	// The pre-removal hub kept task_solo_cmd in review (its gate was the verify);
 	// pin that state the way the old fold left it.
@@ -102,7 +105,6 @@ test_d1_verify_waiting_task_gets_fresh_review_after_migration :: proc(t: ^testin
 	testing.expect_value(t, get_task(fx, "task_d1").brief_json, d1.brief_json)
 
 	// boot: one gate re-evaluation; nothing completes on the old approval
-	seed_instance(fx, chain, "inst_r1", "agt_r", "br_1", "idle")
 	boot(&fx.svc)
 	testing.expect_value(t, get_task(fx, "task_d1").state, domain.Task_State.In_Review)
 	testing.expect_value(t, get_task(fx, "task_solo_cmd").state, domain.Task_State.In_Review)

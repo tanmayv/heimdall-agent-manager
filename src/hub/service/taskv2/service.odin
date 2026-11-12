@@ -612,7 +612,12 @@ record_event :: proc(svc: ^Service, u: ^Uow, task: domain.Task, actor: Actor, ki
 	// that leave the projection as it was (an agent's approve that hands the
 	// gate to the user), so the card is re-projected per event, not per save.
 	effect_attention(u, task)
-	return refold_task(svc, u, task, tasks, deps)
+	fresh, view, ok, err := refold_task(svc, u, task, tasks, deps)
+	merge := task_merge_status(svc, fresh)
+	if ok && (fresh.state == .Cancelled || (fresh.state == .Done && (merge.state == "none" || merge.state == "merged"))) {
+		if !clear_task_claims_in_uow(svc, u, fresh) do return fresh, view, false, domain.domain_error(.Internal_Error, "failed to clear task claims")
+	}
+	return fresh, view, ok, err
 }
 
 // refold_task recomputes `task`'s view from its events and persists the

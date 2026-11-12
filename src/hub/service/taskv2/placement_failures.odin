@@ -155,7 +155,7 @@ collect_placement_failures :: proc(svc: ^Service, ctx: ^Match_Context, task: dom
 			rows += 1
 			if domain.fleet_role_paused(f, domain.FLEET_ROLE_WORKER) { queued = true; continue }
 			p, resolved := resolve_placement(ctx, task, f, true)
-			if placement_target_queued(svc, ctx, f, p) || (p.directory_id != "" && directory_has_work_lease_ctx(ctx, p.directory_id)) { queued = true; continue }
+			if (!fleet_owns_task(ctx, task, f.agent_id) && placement_target_queued(svc, ctx, f, p)) || (p.directory_id != "" && directory_has_work_lease_ctx(ctx, p.directory_id)) { queued = true; continue }
 			reason, message := placement_problem(svc, ctx, p, resolved, f.agent_id)
 			if reason == "" { queued = true; continue }
 			append_placement_failure(&out, ctx, task, f, p, "work", "worker", reason, message)

@@ -32,6 +32,7 @@ export interface TaskBlockedOnWire {
 }
 
 export interface TaskLeaseWire {
+  phase: "active" | "waiting";
   lease_id: string;
   kind: string;
   review_role: string;

@@ -260,6 +260,7 @@ Task_Review_Wire :: struct {
 }
 
 Task_Lease_Wire :: struct {
+	phase: string `json:"phase"`,
 	lease_id:           string `json:"lease_id"`,
 	kind:               string `json:"kind"`,
 	review_role:        string `json:"review_role"`,
@@ -497,7 +498,7 @@ make_task_lease_wires :: proc(h: ^Taskchain_Handlers, t: domain.Task) -> []Task_
 	if err.code != .None do return out[:]
 	for l in leases {
 		append(&out, Task_Lease_Wire{
-			lease_id = l.lease_id, kind = l.kind, review_role = l.review_role, holder_instance_id = l.holder_instance_id,
+			lease_id = l.lease_id, phase = l.phase, kind = l.kind, review_role = l.review_role, holder_instance_id = l.holder_instance_id,
 			attempt_no = l.attempt_no, bridge_id = l.bridge_id, granted_at = l.granted_at, confirmed_at = l.confirmed_at,
 			expires_at = l.expires_at, hard_deadline_at = l.hard_deadline_at, delivery = l.delivery,
 		})

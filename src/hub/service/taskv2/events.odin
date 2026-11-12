@@ -16,6 +16,7 @@ EV_PUBLISHED         :: "published"          // {brief?}
 EV_LEASE_GRANTED     :: "lease_granted"      // {lease_id, kind, instance_id, attempt_no, bridge_id, provider, model, delivery, review_role?}
 EV_SUBMITTED         :: "submitted"          // {lease_id, attempt_no, gate?}  (legacy rows may carry auto / verify / skip_verify_reason)
 EV_BLOCKED           :: "blocked"            // {lease_id?, kind?, attempt_no, dispatch_failed?, continuation?, infrastructure?, waiting_on:{kind, ref?, reason?, agent_id?, bridge_id?, provider?, model?}}
+EV_CLAIM_RELEASED    :: "claim_released" // Waiting ownership explicitly relinquished; no state transition.
 EV_HANDOFF           :: "handoff"            // {lease_id, attempt_no}
 EV_LEASE_EXPIRED     :: "lease_expired"      // {lease_id, kind, attempt_no, reason}
 EV_CHANGES_REQUESTED :: "changes_requested"  // {attempt_no, role, reviewer, reviewer_agent_id, reviewer_instance_id}

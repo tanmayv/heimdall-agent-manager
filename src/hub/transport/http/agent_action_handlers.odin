@@ -52,7 +52,7 @@ Lease_Next_Wire :: struct {
 
 make_lease_wire :: proc(l: domain.Task_Lease) -> Task_Lease_Wire {
 	return Task_Lease_Wire{
-		lease_id = l.lease_id, kind = l.kind, review_role = l.review_role, holder_instance_id = l.holder_instance_id,
+		lease_id = l.lease_id, phase = l.phase, kind = l.kind, review_role = l.review_role, holder_instance_id = l.holder_instance_id,
 		attempt_no = l.attempt_no, bridge_id = l.bridge_id, granted_at = l.granted_at, confirmed_at = l.confirmed_at,
 		expires_at = l.expires_at, hard_deadline_at = l.hard_deadline_at, delivery = l.delivery,
 	}

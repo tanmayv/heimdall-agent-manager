@@ -38,6 +38,23 @@ lease_next :: proc(svc: ^Service, auth: contracts.Auth_Context, input: Lease_Nex
 	rok := true
 	rerr := domain.Domain_Error{}
 	if lease, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, inst.agent_instance_id); held {
+		if lease.phase == domain.LEASE_PHASE_WAITING {
+			task, found, err := iface.taskchain_get_task(svc.repo, lease.task_id)
+			if !found { _, _ = end_uow(svc, &u, false); return {}, false, err }
+			if !input.peek && ((lease.kind == domain.LEASE_KIND_WORK && task.state == .Ready) || (lease.kind == domain.LEASE_KIND_REVIEW && task.state == .In_Review && task.attempt_no != lease.attempt_no)) {
+				if chain, found, _ := iface.taskchain_get_chain(svc.repo, task.chain_id); found {
+					if next, fresh, granted := grant_inline_for_instance(svc, &u, chain, inst, .Lease_Next); granted {
+						record_attempt_started(svc, fresh, next, input.vcs_base)
+						if err := requirements_present(svc, fresh, next); err.code != .None { _, _ = end_uow(svc, &u, false); return {}, false, err }
+						pack := build_pack_json(svc, chain, fresh, next, inst)
+						_, err := end_uow(svc, &u, true)
+						return Lease_Next_Result{status = "granted", lease = next, task = fresh, pack_json = pack}, err.code == .None, err
+					}
+				}
+			}
+			_, err = end_uow(svc, &u, true)
+			return Lease_Next_Result{status = "waiting", lease = lease, task = task}, err.code == .None, err
+		}
 		if lease.confirmed_at == "" do _ = confirm_in_uow(svc, &u, lease)
 		fresh, _, _ := iface.taskchain_get_lease(svc.repo, lease.lease_id)
 		task, tok, terr := iface.taskchain_get_task(svc.repo, fresh.task_id)

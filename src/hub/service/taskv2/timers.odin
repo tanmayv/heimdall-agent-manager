@@ -200,9 +200,7 @@ arm_lease_timers :: proc(svc: ^Service, lease: domain.Task_Lease) {
 			timers_arm(svc, .Requirements_Notice, string(lease.task_id), now_ms(svc.clock) + 1000, "")
 		}
 	}
-	timers_arm(svc, .Lease_TTL, lease.lease_id, to_ms(lease.expires_at), lease.expires_at)
-	timers_arm(svc, .Lease_Hard_Cap, lease.lease_id, to_ms(lease.hard_deadline_at), lease.hard_deadline_at)
-	if lease.confirmed_at == "" {
+	if lease.phase != domain.LEASE_PHASE_WAITING && lease.confirmed_at == "" {
 		timers_arm(svc, .Grant_Unconfirmed, lease.lease_id, to_ms(lease.granted_at) + GRANT_UNCONFIRMED_SECONDS * 1000, lease.granted_at)
 	}
 }
@@ -319,10 +317,10 @@ fire_timer :: proc(svc: ^Service, t: Timer, now_ms: i64, jump_detected: bool) {
 				if ok, _ := after_chain_change(svc, &u, task.chain_id, task.owner_user_id, .Task_Updated); !ok do r = .Failed
 			} else { r = .Failed }
 		}
-	case .Lease_TTL:        r = fire_lease_ttl(svc, &u, t, now_ms, jump_detected)
-	case .Lease_Hard_Cap:   r = fire_lease_hard_cap(svc, &u, t)
+	case .Lease_TTL:        r = .Noop
+	case .Lease_Hard_Cap:   r = .Noop
 	case .Grant_Unconfirmed: r = fire_grant_unconfirmed(svc, &u, t)
-	case .Idle_Grace:       r = fire_idle_grace(svc, &u, t)
+	case .Idle_Grace:       r = .Noop
 	case .Idle_TTL:         r = fire_idle_ttl(svc, &u, t)
 	case .Ready_Unclaimed:  r = fire_ready_unclaimed(svc, &u, t)
 	case .Blocked_Realert:  r = fire_blocked_realert(svc, &u, t)
@@ -350,33 +348,8 @@ expire_result_to_fire :: proc(r: Expire_Result) -> Fire_Result {
 
 @(private = "file")
 fire_lease_ttl :: proc(svc: ^Service, u: ^Uow, t: Timer, now_ms: i64, jump_detected: bool) -> Fire_Result {
-	lease, ok, _ := iface.taskchain_get_lease(svc.repo, t.key)
-	if !ok do return .Noop                                  // released meanwhile
-	if lease.expires_at != t.armed do return .Noop         // heartbeat moved it; the newer timer owns it
-	// Clock-jump rule (plan §2.4): ONLY when the timer thread detected a jump
-	// (hub suspended / clock stepped), a holder that is demonstrably alive
-	// (busy, seen in the last 2 min) gets ONE extension instead of a
-	// mass-expiry restart. Recorded on the lease row (extended_at), S5.
-	if jump_detected && lease.extended_at == "" {
-		if inst, iok, _ := iface.agent_get_instance(svc.agents, lease.holder_instance_id); iok {
-			if inst.activity_status == "busy" && now_ms - to_ms(inst.last_seen_at) <= CLOCK_JUMP_SEEN_WITHIN_SECONDS * 1000 {
-				now := platform.clock_now(svc.clock)
-				lease.expires_at = min_rfc3339(add_seconds(now, LEASE_TTL_SECONDS), lease.hard_deadline_at)
-				lease.last_beat_at = now
-				lease.extended_at = now
-				if _, sok, _ := iface.taskchain_save_lease(svc.repo, lease); !sok do return .Failed
-				if task, tok, _ := iface.taskchain_get_task(svc.repo, lease.task_id); tok {
-					p := json_begin()
-					json_str(&p, "lease_id", lease.lease_id)
-					json_str(&p, "reason", "hub_resume")
-					_, _, _ = append_event(svc.repo, svc.clock, task, hub_actor(), EV_LEASE_EXTENDED, json_end(&p))
-				}
-				timers_arm(svc, .Lease_TTL, lease.lease_id, to_ms(lease.expires_at), lease.expires_at)
-				return .Acted
-			}
-		}
-	}
-	return expire_then_match(svc, u, lease, EXPIRE_TTL)
+	// Compatibility for already queued timers: ownership never expires with time.
+	return .Noop
 }
 
 // expire_then_match: a timer-driven expiry followed by exactly one matcher run
@@ -391,17 +364,15 @@ expire_then_match :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease, reas
 
 @(private = "file")
 fire_lease_hard_cap :: proc(svc: ^Service, u: ^Uow, t: Timer) -> Fire_Result {
-	lease, ok, _ := iface.taskchain_get_lease(svc.repo, t.key)
-	if !ok do return .Noop
-	if lease.hard_deadline_at != t.armed do return .Noop
-	return expire_then_match(svc, u, lease, EXPIRE_HARD_CAP)
+	// Compatibility for already queued timers: ownership never expires with time.
+	return .Noop
 }
 
 @(private = "file")
 fire_grant_unconfirmed :: proc(svc: ^Service, u: ^Uow, t: Timer) -> Fire_Result {
 	lease, ok, _ := iface.taskchain_get_lease(svc.repo, t.key)
 	if !ok do return .Noop
-	if lease.confirmed_at != "" do return .Noop
+	if lease.phase == domain.LEASE_PHASE_WAITING || lease.confirmed_at != "" do return .Noop
 	if lease.granted_at != t.armed do return .Noop
 	task, tok, _ := iface.taskchain_get_task(svc.repo, lease.task_id)
 	if !tok do return .Noop
@@ -439,13 +410,8 @@ lease_resent :: proc(svc: ^Service, lease: domain.Task_Lease) -> bool {
 
 @(private = "file")
 fire_idle_grace :: proc(svc: ^Service, u: ^Uow, t: Timer) -> Fire_Result {
-	lease, ok, _ := iface.taskchain_get_lease_by_holder(svc.repo, t.key)
-	if !ok do return .Noop
-	if lease.last_beat_at != t.armed do return .Noop       // a heartbeat happened; idle grace restarted elsewhere
-	inst, iok, _ := iface.agent_get_instance(svc.agents, t.key)
-	if !iok do return .Noop
-	if inst.activity_status != "idle" do return .Noop      // busy again
-	return expire_then_match(svc, u, lease, EXPIRE_IDLE)
+	// Compatibility for already queued timers: ownership never expires with time.
+	return .Noop
 }
 
 @(private = "file")
@@ -511,7 +477,7 @@ fire_rematch :: proc(svc: ^Service, u: ^Uow, t: Timer) -> Fire_Result {
 	if !ok || domain.task_state_string(task.state) != t.armed do return .Noop
 	want := domain.LEASE_KIND_WORK if task.state == .Ready else domain.LEASE_KIND_REVIEW
 	if leases, lerr := iface.taskchain_list_leases_by_task(svc.repo, task.task_id); lerr.code == .None {
-		for l in leases do if l.kind == want do return .Noop
+		for l in leases do if l.phase != domain.LEASE_PHASE_WAITING && l.kind == want do return .Noop
 	}
 	chain, cok, _ := iface.taskchain_get_chain(svc.repo, task.chain_id)
 	if !cok || chain.status != .Active || chain.publish_state != .Published do return .Noop
@@ -531,7 +497,7 @@ check_review_stalled :: proc(svc: ^Service, u: ^Uow, task_in: domain.Task) {
 	task, ok, _ := iface.taskchain_get_task(svc.repo, task_in.task_id)
 	if !ok || task.state != .In_Review || task.kind == .Gate do return
 	if task_is_held(task) do return // waiting on its release, not stalled
-	if leases, lerr := iface.taskchain_list_leases_by_task(svc.repo, task.task_id); lerr.code != .None || len(leases) > 0 do return
+	if leases, lerr := iface.taskchain_list_leases_by_task(svc.repo, task.task_id); lerr.code != .None || active_claim_count(leases) > 0 do return
 	unmet, uerr := gate_unmet_components(svc, task)
 	if uerr.code != .None || len(unmet) == 0 do return
 	reviews, rerr := iface.taskchain_list_reviews_by_task(svc.repo, task.task_id, task.owner_user_id)

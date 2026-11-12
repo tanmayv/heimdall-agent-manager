@@ -29,7 +29,7 @@ work_lease_caller :: proc(svc: ^Service, auth: contracts.Auth_Context, lease_id:
 	inst, ok, err := instance_from_auth(svc, auth)
 	if !ok do return {}, false, err
 	lease, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, inst.agent_instance_id)
-	if !held || lease.kind != domain.LEASE_KIND_WORK do return {}, false, lease_lost_error()
+	if !held || lease.phase == domain.LEASE_PHASE_WAITING || lease.kind != domain.LEASE_KIND_WORK do return {}, false, lease_lost_error()
 	if strings.trim_space(lease_id) != "" && lease_id != lease.lease_id do return {}, false, lease_lost_error()
 	task, tok, terr := iface.taskchain_get_task(svc.repo, lease.task_id)
 	if !tok do return {}, false, terr
@@ -137,6 +137,25 @@ lease_handoff :: proc(svc: ^Service, auth: contracts.Auth_Context, input: Handof
 	if strings.trim_space(input.summary) == "" do return {}, false, domain.domain_error(.Validation_Failed, "summary is required")
 	u, uok, uerr := begin_uow(svc)
 	if !uok do return {}, false, uerr
+
+	// A waiting owner may explicitly relinquish the reservation without changing
+	// the submitted attempt or another reviewer's verdict.
+	inst, iok, ierr := instance_from_auth(svc, auth)
+	if !iok { _, _ = end_uow(svc, &u, false); return {}, false, ierr }
+	if claim, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, inst.agent_instance_id); held && claim.phase == domain.LEASE_PHASE_WAITING {
+		if input.lease_id != "" && input.lease_id != claim.lease_id { _, _ = end_uow(svc, &u, false); return {}, false, lease_lost_error() }
+		task, found, err := iface.taskchain_get_task(svc.repo, claim.task_id)
+		if !found { _, _ = end_uow(svc, &u, false); return {}, false, err }
+		if deleted, _ := iface.taskchain_delete_lease(svc.repo, claim.lease_id); !deleted { _, _ = end_uow(svc, &u, false); return {}, false, lease_lost_error() }
+		p := json_begin()
+		json_str(&p, "lease_id", claim.lease_id); json_str(&p, "kind", claim.kind)
+		json_str(&p, "summary", strings.trim_space(input.summary))
+		_, saved, event_err := append_event(svc.repo, svc.clock, task, Actor{kind = ACTOR_AGENT, id = inst.agent_instance_id}, EV_CLAIM_RELEASED, json_end(&p))
+		if saved { mark_instance_idle(svc, &u, inst.agent_instance_id, platform.clock_now(svc.clock)); effect_publish_task(&u, task, EV_CLAIM_RELEASED) }
+		_, cerr := end_uow(svc, &u, saved)
+		if !saved do return {}, false, event_err
+		return task, cerr.code == .None, cerr
+	}
 	if task, handled, rok, rerr := review_checkpoint_handoff(svc, &u, auth, input); handled {
 		_, cerr := end_uow(svc, &u, rok)
 		if !rok do return {}, false, rerr
@@ -415,7 +434,7 @@ review_post :: proc(svc: ^Service, auth: contracts.Auth_Context, input: Review_I
 			return review_result(svc, task.task_id, gate), true, domain.Domain_Error{}
 	}
 	lease, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, inst.agent_instance_id)
-	if !held || lease.kind != domain.LEASE_KIND_REVIEW || (strings.trim_space(input.task_id) != "" && input.task_id != string(lease.task_id)) {
+	if !held || lease.phase == domain.LEASE_PHASE_WAITING || lease.kind != domain.LEASE_KIND_REVIEW || (strings.trim_space(input.task_id) != "" && input.task_id != string(lease.task_id)) {
 		_, _ = end_uow(svc, &u, false)
 		return {}, false, lease_lost_error()
 	}
@@ -448,8 +467,8 @@ review_post :: proc(svc: ^Service, auth: contracts.Auth_Context, input: Review_I
 		}
 		if _, sok, serr := iface.taskchain_save_review(svc.repo, review); !sok { _, _ = end_uow(svc, &u, false); return {}, false, serr }
 	}
-	// release the review lease (not an attempt; no budget)
-	if deleted, _ := iface.taskchain_delete_lease(svc.repo, lease.lease_id); !deleted { _, _ = end_uow(svc, &u, false); return {}, false, lease_lost_error() }
+	// Finish active review work while retaining the reviewer reservation.
+	if !claim_wait_in_uow(svc, lease) { _, _ = end_uow(svc, &u, false); return {}, false, lease_lost_error() }
 	metric_lease_released(lease.kind)
 	actor := Actor{kind = ACTOR_AGENT, id = inst.agent_instance_id}
 	p := json_begin()
@@ -466,8 +485,7 @@ review_post :: proc(svc: ^Service, auth: contracts.Auth_Context, input: Review_I
 	if strings.trim_space(input.summary) != "" do json_str(&p, "summary", strings.trim_space(input.summary))
 	refolded, _, rok, rerr := record_event(svc, &u, task, actor, EV_REVIEW_POSTED, json_end(&p))
 	if !rok { _, _ = end_uow(svc, &u, false); return {}, false, rerr }
-	// Idle first so the matcher below may re-grant this same instance.
-	mark_instance_idle(svc, &u, inst.agent_instance_id, now)
+	// Retain the reviewer reservation until task completion or explicit release.
 	gate, gok, gerr := evaluate_gate_in_uow(svc, &u, chain, refolded, actor)
 	if gok && gate == .Rejected do gok, gerr = gate_replan_in_uow(svc, &u, chain, refolded, actor)
 	if gok do gok, gerr = after_chain_change(svc, &u, task.chain_id, task.owner_user_id, .Review_Posted)
@@ -556,14 +574,14 @@ task_reopen :: proc(svc: ^Service, task: domain.Task, actor: Actor) -> (domain.T
 	if !domain.task_state_is_terminal(task.state) do return {}, false, domain.domain_error(.Conflict, "only a done or cancelled task can be reopened")
 	u, uok, uerr := begin_uow(svc)
 	if !uok do return {}, false, uerr
-    if _, allowed, err := work_control_chain(svc, task.owner_user_id, actor, task.chain_id); !allowed {
-        _, _ = end_uow(svc, &u, false)
-        return {}, false, err
-    }
-    if err := workflow_require_current_task(svc, task); err.code != .None {
-        _, _ = end_uow(svc, &u, false)
-        return {}, false, err
-    }
+				if _, allowed, err := work_control_chain(svc, task.owner_user_id, actor, task.chain_id); !allowed {
+								_, _ = end_uow(svc, &u, false)
+								return {}, false, err
+				}
+				if err := workflow_require_current_task(svc, task); err.code != .None {
+								_, _ = end_uow(svc, &u, false)
+								return {}, false, err
+				}
 	if task.stage_key == "" && task.kind == .Task {
 		guard := work_require_unconsumed_in_uow(svc, task.chain_id, task.owner_user_id, domain.Work_Item_Ref{kind = domain.WORK_ITEM_TASK, id = string(task.task_id)})
 		if guard.code != .None {
@@ -587,14 +605,14 @@ task_answer :: proc(svc: ^Service, task: domain.Task, actor: Actor, note: string
 	if task_is_held(task) do return {}, false, domain.domain_error(.Conflict, "task is held; release it with `task release`")
 	u, uok, uerr := begin_uow(svc)
 	if !uok do return {}, false, uerr
-    if _, allowed, err := work_control_chain(svc, task.owner_user_id, actor, task.chain_id); !allowed {
-        _, _ = end_uow(svc, &u, false)
-        return {}, false, err
-    }
-    if err := workflow_require_current_task(svc, task); err.code != .None {
-        _, _ = end_uow(svc, &u, false)
-        return {}, false, err
-    }
+				if _, allowed, err := work_control_chain(svc, task.owner_user_id, actor, task.chain_id); !allowed {
+								_, _ = end_uow(svc, &u, false)
+								return {}, false, err
+				}
+				if err := workflow_require_current_task(svc, task); err.code != .None {
+								_, _ = end_uow(svc, &u, false)
+								return {}, false, err
+				}
 	p := json_begin()
 	if strings.trim_space(note) != "" do json_str(&p, "note", note)
 	_, _, rok, rerr := record_event(svc, &u, task, actor, EV_ANSWERED, json_end(&p))
@@ -929,11 +947,11 @@ approve_and_publish_chain_in_uow :: proc(svc: ^Service, u: ^Uow, chain_in: domai
 		for raw_dep in spec.depends_on {
 			dep_id := raw_dep
 			if mapped, ok := id_map[string(raw_dep)]; ok do dep_id = mapped
-            if _, dok, derr := work_dependency_add_in_uow(svc, u, chain.owner_user_id, actor, chain.chain_id,
-                domain.Work_Item_Ref{kind = domain.WORK_ITEM_TASK, id = string(created[idx].task_id)},
-                domain.Work_Item_Ref{kind = domain.WORK_ITEM_TASK, id = string(dep_id)}); !dok {
-                return {}, nil, false, derr
-            }
+												if _, dok, derr := work_dependency_add_in_uow(svc, u, chain.owner_user_id, actor, chain.chain_id,
+																domain.Work_Item_Ref{kind = domain.WORK_ITEM_TASK, id = string(created[idx].task_id)},
+																domain.Work_Item_Ref{kind = domain.WORK_ITEM_TASK, id = string(dep_id)}); !dok {
+																return {}, nil, false, derr
+												}
 
 			dp := json_begin()
 			json_str(&dp, "depends_on", string(dep_id))
@@ -993,19 +1011,19 @@ chain_propose :: proc(svc: ^Service, chain_id: domain.Task_Chain_ID, owner_user_
 		_, _ = end_uow(svc, &u, false)
 		return {}, false, domain.domain_error(.Conflict, "chain must be active")
 	}
- if input.kind != "" && input.kind != "task" && input.kind != "workflow_run" {
-  _, _ = end_uow(svc, &u, false)
-  return {}, false, domain.domain_error(.Validation_Failed, "proposal kind must be task or workflow_run; chain type cannot change")
- }
- if pending := strings.trim_space(chain_proposal_json(chain)); pending != "" && pending != "{}" && pending != "null" {
-  _, _ = end_uow(svc, &u, false)
-  return {}, false, domain.domain_error(.Conflict, "decide the pending proposal before proposing more work")
- }
- is_wf_proposal := input.kind == "workflow_run" || strings.trim_space(input.workflow_ref) != ""
- if is_wf_proposal && strings.trim_space(input.workflow_ref) == "" {
-  _, _ = end_uow(svc, &u, false)
-  return {}, false, domain.domain_error(.Validation_Failed, "workflow_run proposal requires workflow reference")
- }
+	if input.kind != "" && input.kind != "task" && input.kind != "workflow_run" {
+		_, _ = end_uow(svc, &u, false)
+		return {}, false, domain.domain_error(.Validation_Failed, "proposal kind must be task or workflow_run; chain type cannot change")
+	}
+	if pending := strings.trim_space(chain_proposal_json(chain)); pending != "" && pending != "{}" && pending != "null" {
+		_, _ = end_uow(svc, &u, false)
+		return {}, false, domain.domain_error(.Conflict, "decide the pending proposal before proposing more work")
+	}
+	is_wf_proposal := input.kind == "workflow_run" || strings.trim_space(input.workflow_ref) != ""
+	if is_wf_proposal && strings.trim_space(input.workflow_ref) == "" {
+		_, _ = end_uow(svc, &u, false)
+		return {}, false, domain.domain_error(.Validation_Failed, "workflow_run proposal requires workflow reference")
+	}
 	if is_wf_proposal && strings.trim_space(input.workflow_ref) != "" {
 		wf_ref := strings.trim_space(input.workflow_ref)
 		wf_inputs := strings.trim_space(input.workflow_inputs_json)
@@ -1109,9 +1127,9 @@ chain_proposal_decide :: proc(svc: ^Service, chain_id: domain.Task_Chain_ID, own
 		return {}, nil, false, domain.domain_error(.Conflict, "chain must be active")
 	}
 	if _, authorized, auth_err := work_control_chain(svc, owner_user_id, actor, chain_id); !authorized {
-        _, _ = end_uow(svc, &u, false)
-        return {}, nil, false, auth_err
-    }
+								_, _ = end_uow(svc, &u, false)
+								return {}, nil, false, auth_err
+				}
 	prop := strings.trim_space(chain_proposal_json(chain))
 	if prop == "" || prop == "null" || prop == "{}" {
 		_, _ = end_uow(svc, &u, false)

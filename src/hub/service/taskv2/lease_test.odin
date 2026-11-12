@@ -343,73 +343,61 @@ test_bridge_pin_and_offline_hold_until_hello :: proc(t: ^testing.T) {
 // ---- timers ---------------------------------------------------------------------------
 
 @(test)
-test_expiry_noop_when_heartbeat_moved_deadline :: proc(t: ^testing.T) {
+test_elapsed_time_and_api_activity_keep_assignment :: proc(t: ^testing.T) {
 	fx, log, ok := lease_fixture(t, "t_ttl")
 	defer lease_fixture_close(fx, log)
 	if !ok do return
-	chain := seed_live_chain(t, fx, "chain_ttl")
+	chain := seed_live_chain(t, fx, "chain_t_ttl")
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	_ = publish_task(t, fx, chain, "task_1")
 	confirm_holder(fx, "inst_w1")
 	lease, held := lease_of(fx, "inst_w1")
 	if !testing.expect(t, held, "leased") do return
-	first_expiry := to_ms(lease.expires_at)
-	// 10 min later the agent heartbeats (any instance-token call) → deadline moves
+
+	wake_log_reset(log)
 	fixture_advance(fx, 600)
 	touch_instance(&fx.svc, "inst_w1")
 	moved, _ := lease_of(fx, "inst_w1")
-	testing.expect(t, to_ms(moved.expires_at) > first_expiry, "heartbeat extended the TTL")
-	// the ORIGINAL timer fires at the original deadline: no-op
-	fixture_advance(fx, 300)
-	fired := fire_due(&fx.svc, now_ms(&fx.clock))
-	testing.expect(t, fired >= 1, "original ttl timer popped")
-	still, still_held := lease_of(fx, "inst_w1")
-	testing.expect(t, still_held && still.lease_id == lease.lease_id, "lease survives the stale timer")
+	testing.expect_value(t, moved.expires_at, "")
+	testing.expect_value(t, moved.last_beat_at, lease.last_beat_at)
+	fixture_advance(fx, LEASE_HARD_CAP_SECONDS * 2)
+	_ = fire_due(&fx.svc, now_ms(&fx.clock))
+	after, still := lease_of(fx, "inst_w1")
+	testing.expect(t, still && after.lease_id == lease.lease_id, "time and unrelated API activity preserve assignment")
 	testing.expect_value(t, get_task(fx, "task_1").state, domain.Task_State.In_Progress)
 	testing.expect_value(t, count_events(fx, "task_1", EV_LEASE_EXPIRED), 0)
-	// … and the re-armed timer expires it when it is really due
-	fixture_advance(fx, 700)
-	_ = fire_due(&fx.svc, now_ms(&fx.clock))
-	// (the idle worker is immediately re-granted a NEW lease: attempt 2)
-	after, after_held := lease_of(fx, "inst_w1")
-	testing.expect(t, !after_held || after.lease_id != lease.lease_id, "expired at the moved deadline")
-	testing.expect_value(t, count_events(fx, "task_1", EV_BLOCKED), 1)
-	testing.expect(t, strings.contains(get_task(fx, "task_1").blocked_on_json, "ttl"), "lost heartbeat reason")
-	testing.expect(t, wake_log_has_stop(log, "inst_w1") || wake_log_has_run(log, "inst_w1"), "holder stopped (or re-granted) after expiry")
-	assert_projection_matches_fold(t, fx, chain.chain_id, "u1", "ttl")
+	testing.expect_value(t, count_events(fx, "task_1", EV_BLOCKED), 0)
+	testing.expect_value(t, len(log.cmds), 0)
+	assert_projection_matches_fold(t, fx, chain.chain_id, "u1", "durable elapsed")
 }
 
 @(test)
-test_hard_cap_ignores_heartbeat :: proc(t: ^testing.T) {
+test_progress_notes_do_not_create_deadlines :: proc(t: ^testing.T) {
 	fx, log, ok := lease_fixture(t, "t_cap")
 	defer lease_fixture_close(fx, log)
 	if !ok do return
-	chain := seed_live_chain(t, fx, "chain_cap")
+	chain := seed_live_chain(t, fx, "chain_t_cap")
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	_ = publish_task(t, fx, chain, "task_1")
 	confirm_holder(fx, "inst_w1")
 	lease, held := lease_of(fx, "inst_w1")
 	if !testing.expect(t, held, "leased") do return
-	hard := to_ms(lease.hard_deadline_at)
-	testing.expect_value(t, hard - to_ms(lease.granted_at), i64(LEASE_HARD_CAP_SECONDS) * 1000)
-	// heartbeat every 5 minutes for 65 minutes; TTL never passes the cap
+
+	testing.expect_value(t, lease.expires_at, "")
+	testing.expect_value(t, lease.hard_deadline_at, "")
 	for i in 0..<13 {
 		fixture_advance(fx, 300)
-		_, hok, _ := lease_heartbeat(&fx.svc, contracts.Auth_Context{kind = .Instance_Token, user_id = "u1", agent_instance_id = "inst_w1"}, Lease_Heartbeat_Input{})
-		if now_ms(&fx.clock) < hard {
-			testing.expect(t, hok, fmt.tprintf("heartbeat %d ok", i))
-			l, _ := lease_of(fx, "inst_w1")
-			testing.expect(t, to_ms(l.expires_at) <= hard, "TTL clamped to the hard cap")
-		}
+		l, hok, _ := lease_heartbeat(&fx.svc, inst_auth("inst_w1"), Lease_Heartbeat_Input{note = "progress"})
+		testing.expect(t, hok && l.lease_id == lease.lease_id, fmt.tprintf("progress note %d preserves assignment", i))
+		testing.expect_value(t, l.expires_at, "")
+		testing.expect_value(t, l.hard_deadline_at, "")
 		_ = fire_due(&fx.svc, now_ms(&fx.clock))
 	}
-	after, after_held := lease_of(fx, "inst_w1")
-	testing.expect(t, !after_held || after.lease_id != lease.lease_id, "hard cap expired the lease despite heartbeats")
-	testing.expect(t, strings.contains(last_event_payload(fx, "task_1", EV_LEASE_EXPIRED), `"reason":"hard_cap"`), "reason hard_cap")
-	// expiry counts: attempt 2 on re-grant
-	testing.expect_value(t, get_task(fx, "task_1").attempt_no, 2) // re-granted to the (re-woken) same instance
+	testing.expect_value(t, count_events(fx, "task_1", EV_HEARTBEAT), 13)
+	testing.expect_value(t, count_events(fx, "task_1", EV_LEASE_EXPIRED), 0)
+	testing.expect_value(t, get_task(fx, "task_1").attempt_no, lease.attempt_no)
 }
 
 @(test)
@@ -438,8 +426,8 @@ test_grant_unconfirmed_resends_once_then_blocks_dispatch :: proc(t: ^testing.T) 
 	blocked := get_task(fx, "task_1")
 	testing.expect_value(t, blocked.state, domain.Task_State.Backlog)
 	testing.expect(t, strings.contains(blocked.blocked_on_json, `"kind":"agent_not_running"`) && strings.contains(blocked.blocked_on_json, "startup was not confirmed"), "unconfirmed delivery blocks with a reason")
-	_, held_after_timeout := lease_of(fx, "inst_w1")
-	testing.expect(t, !held_after_timeout, "no automatic retry after failed startup")
+	waiting, held_after_timeout := lease_of(fx, "inst_w1")
+	testing.expect(t, held_after_timeout && waiting.phase == "waiting", "failed startup retains ownership without automatic retry")
 	attempts, _ := iface.taskchain_list_attempts_by_task(&fx.repo, blocked.task_id, "u1")
 	testing.expect(t, len(attempts) == 1 && !attempts[0].counts_toward_budget, "unconfirmed startup is non-counting")
 	// Explicit retry grants again; start-success confirms it and stops the clock.
@@ -535,7 +523,7 @@ test_instance_terminal_blocks_until_explicit_retry :: proc(t: ^testing.T) {
 	on_instance_terminal(&fx.svc, "inst_w1")
 	_, held := lease_of(fx, "inst_w1")
 	parked := get_task(fx, "task_1")
-	testing.expect(t, !held && parked.state == .Backlog && is_agent_not_running_block(parked.blocked_on_json), "dead holder parks on user")
+	testing.expect(t, held && parked.state == .Backlog && is_agent_not_running_block(parked.blocked_on_json), "dead holder parks on user while retaining ownership")
 	testing.expect(t, !wake_log_has_run(log, "inst_w1") && !wake_log_has_stop(log, "inst_w1"), "dead process is not automatically restarted or stopped")
 	testing.expect_value(t, parked.attempt_no, 1)
 	on_instance_terminal(&fx.svc, "inst_w1")
@@ -631,16 +619,15 @@ test_bridge_hello_stops_orphan_without_lease :: proc(t: ^testing.T) {
 	bridge_disconnect(fx, "br_1")
 	l_after, still := lease_of(fx, "inst_w1")
 	testing.expect(t, still && l_after.lease_id == lease.lease_id, "disconnect alone keeps the lease")
-	// Away > TTL: the TTL fires → expired(ttl); the task is HELD (bridge offline), nobody re-granted.
-	fixture_advance(fx, LEASE_TTL_SECONDS + 1)
+	// An extended outage preserves the durable assignment.
+	fixture_advance(fx, LEASE_HARD_CAP_SECONDS * 2)
 	wake_log_reset(log)
 	_ = fire_due(&fx.svc, now_ms(&fx.clock))
-	testing.expect(t, strings.contains(get_task(fx, "task_1").blocked_on_json, "ttl"), "heartbeat loss while away")
-	testing.expect(t, strings.contains(get_task(fx, "task_1").blocked_on_json, `"cause":"bridge_offline"`), "outage loss is tagged for reconnect")
-	testing.expect_value(t, get_task(fx, "task_1").state, domain.Task_State.Backlog)
+	testing.expect_value(t, get_task(fx, "task_1").state, domain.Task_State.In_Progress)
+	testing.expect_value(t, count_events(fx, "task_1", EV_LEASE_EXPIRED), 0)
 	leases_mid, _ := iface.taskchain_list_leases_by_chain(&fx.repo, chain.chain_id)
-	testing.expect_value(t, len(leases_mid), 0)
-	testing.expect_value(t, len(log.cmds), 0) // nothing can be sent to an offline bridge
+	testing.expect(t, len(leases_mid) == 1 && leases_mid[0].lease_id == lease.lease_id, "outage retains original owner")
+	testing.expect_value(t, len(log.cmds), 0)
 	// Reconnect: both workers still report active (the orphan w1 kept running).
 	wake_log_reset(log)
 	bridge_reconnect(fx, "br_1", []string{"inst_coord", "inst_w1", "inst_w2"})
@@ -657,7 +644,7 @@ test_bridge_hello_stops_orphan_without_lease :: proc(t: ^testing.T) {
 	leases_end, _ := iface.taskchain_list_leases_by_chain(&fx.repo, chain.chain_id)
 	testing.expect_value(t, len(leases_end), 1)
 	other := "inst_w2" if holder == "inst_w1" else "inst_w1"
-	testing.expect(t, wake_log_has_run(log, holder), "new grant delivered on hello")
+	testing.expect(t, !wake_log_has_run(log, holder), "retained holder does not receive a duplicate grant")
 	testing.expect(t, wake_log_has_stop(log, other), "lease-less live worker stopped on hello")
 	testing.expect(t, !wake_log_has_stop(log, "inst_coord"), "coordinator never stopped")
 }
@@ -884,7 +871,8 @@ test_review_lease_granted_excluding_author_template :: proc(t: ^testing.T) {
 	testing.expect_value(t, inst_r.current_task_role, domain.Current_Task_Role.Review)
 	// review leases do not block the directory rule and are not counted as work
 	leases, _ := iface.taskchain_list_leases_by_task(&fx.repo, task.task_id)
-	testing.expect_value(t, len(leases), 1)
+	testing.expect_value(t, len(leases), 2)
+	for l in leases do if l.kind == domain.LEASE_KIND_WORK do testing.expect_value(t, l.phase, "waiting")
 	assert_projection_matches_fold(t, fx, chain.chain_id, "u1", "review")
 }
 
@@ -944,16 +932,16 @@ test_lease_heartbeat_lease_lost_409 :: proc(t: ^testing.T) {
 	if !testing.expect(t, held, "leased") do return
 	fixture_advance(fx, 60)
 	saved, ok2, _ := lease_heartbeat(&fx.svc, auth, Lease_Heartbeat_Input{lease_id = lease.lease_id, note = "halfway"})
-	testing.expect(t, ok2 && to_ms(saved.expires_at) > to_ms(lease.expires_at), "extended")
+	testing.expect(t, ok2 && saved.lease_id == lease.lease_id && saved.expires_at == "", "progress recorded without renewal")
 	testing.expect_value(t, count_events(fx, "task_1", EV_HEARTBEAT), 1)
 	_, bad, berr := lease_heartbeat(&fx.svc, auth, Lease_Heartbeat_Input{lease_id = "lease_other"})
 	testing.expect(t, !bad && berr.code == .Conflict, "wrong lease id → lease_lost")
-	// after expiry the orphan's heartbeat is 409
+	// Explicit completion clears authority; stale progress is rejected.
 	fixture_advance(fx, LEASE_HARD_CAP_SECONDS + 1)
 	_ = fire_due(&fx.svc, now_ms(&fx.clock))
-	// (it may have been re-granted a NEW lease; a heartbeat naming the old one is lost)
+	submit_via_release(t, fx, lease)
 	_, lost, lerr := lease_heartbeat(&fx.svc, auth, Lease_Heartbeat_Input{lease_id = lease.lease_id})
-	testing.expect(t, !lost && lerr.code == .Conflict, "expired lease → 409 lease_lost")
+	testing.expect(t, !lost && lerr.code == .Conflict, "completed lease → 409 lease_lost")
 }
 
 // ---- boot --------------------------------------------------------------------------------
@@ -979,14 +967,14 @@ test_boot_heals_leaseless_in_progress_and_rearms :: proc(t: ^testing.T) {
 	// boot's match_chain re-granted it to the idle worker and armed its timers
 	l2, held2 := lease_of(fx, "inst_w1")
 	testing.expect(t, held2 && l2.lease_id != lease.lease_id, "re-granted on boot")
-	testing.expect(t, timers_armed_count(&fx.svc) >= 3, "ttl + hard cap + unconfirmed armed from columns")
+	testing.expect(t, timers_armed_count(&fx.svc) >= 1, "startup confirmation armed from columns")
 	// second boot over a confirmed lease: no heal, timers rebuilt from columns
 	inst, _, _ := iface.agent_get_instance(&fx.agents, "inst_w1")
 	on_start_success(&fx.svc, inst)
 	fx.svc.timers = Timer_Service{}
 	boot(&fx.svc)
 	testing.expect_value(t, count_events(fx, "task_1", EV_LEASE_EXPIRED), 1)
-	testing.expect(t, timers_armed_count(&fx.svc) >= 2, "ttl + hard cap re-armed")
+	testing.expect(t, timers_armed_count(&fx.svc) == 0, "confirmed durable assignment needs no expiration timers")
 	l3, held3 := lease_of(fx, "inst_w1")
 	testing.expect(t, held3 && l3.lease_id == l2.lease_id, "live lease untouched by boot")
 }

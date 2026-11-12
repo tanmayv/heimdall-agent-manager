@@ -61,7 +61,12 @@ LEASE_DELIVERY_INLINE :: "inline"
 // holder_instance_id UNIQUE (an instance holds ≤ 1 lease), partial
 // UNIQUE(task_id) WHERE kind='work'. Rows are DELETED on release; history lives
 // in task_events / task_attempts.
+LEASE_PHASE_ACTIVE :: "active"
+LEASE_PHASE_WAITING :: "waiting"
+
 Task_Lease :: struct {
+	// Waiting claims reserve ownership without granting mutation authority.
+	phase: string,
 	provider_profile:string,
 	lease_id:           string,
 	task_id:            Task_ID,
@@ -79,7 +84,7 @@ Task_Lease :: struct {
 	// confirmed_at is "" until the holder's `start-success` (wake delivery) or the
 	// inline grant (lease.next); the grant_unconfirmed timer keys off it.
 	confirmed_at:       string,
-	// expires_at is re-armed by heartbeat, bounded by hard_deadline_at.
+	// Legacy wire/storage fields, always empty for durable claims.
 	expires_at:         string,
 	hard_deadline_at:   string,
 	last_beat_at:       string,

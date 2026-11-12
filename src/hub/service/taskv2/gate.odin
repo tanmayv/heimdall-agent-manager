@@ -67,7 +67,7 @@ evaluate_gate_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, t
 		if leases, lerr := iface.taskchain_list_leases_by_task(svc.repo, task.task_id); lerr.code == .None {
 			for l in leases {
 				if l.kind != domain.LEASE_KIND_REVIEW do continue
-				if expire_lease_in_uow(svc, u, l, EXPIRE_CHANGES_REQUESTED, actor) == .Failed do return .Waiting, false, domain.domain_error(.Internal_Error, "failed to drop a review lease")
+				if !claim_wait_in_uow(svc, l) do return .Waiting, false, domain.domain_error(.Internal_Error, "failed to drop a review lease")
 			}
 		}
 		if task.kind == .Gate {
