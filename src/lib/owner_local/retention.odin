@@ -59,3 +59,29 @@ reconcile_clock :: proc(s:^Store,incarnation,generation,trusted_now:i64) -> bool
     if !ok || len(rows)!=1 do return false
     return transaction_commit(&tx)
 }
+
+// C1: a background caller's now can trail the store clock by however long it
+// waited for the owner mutex while another write committed. A lag of at most
+// OWNER_CLOCK_STALE_MS is that caller's own staleness, not a clock jump: it is
+// raised to the store clock instead of marking the store clock_uncertain. A
+// larger backward step is still a genuine jump and is refused as before.
+OWNER_CLOCK_STALE_MS :: i64(5000)
+clock_floor :: proc(s:^Store,now:i64) -> i64 {
+    rows,ok:=query(s.db,"SELECT clock_high_ms FROM runtime_database WHERE singleton=1")
+    if !ok || len(rows)!=1 do return now
+    high:=number(rows[0][0])
+    if now<high && high-now<=OWNER_CLOCK_STALE_MS do return high
+    return now
+}
+
+// C1: a store marked clock_uncertain is not bricked. Once the trusted local
+// clock is at or past clock_high_ms again, it advances the clock generation
+// and returns to ready (reconcile_clock). A genuine backward jump keeps the
+// store refusing writes until wall time catches up. recovered=true when this
+// call cleared the mark.
+clock_recover :: proc(s:^Store,now:i64) -> (recovered:bool,ok:bool) {
+    rows,read:=query(s.db,"SELECT clock_generation,clock_high_ms,recovery_state FROM runtime_database WHERE singleton=1")
+    if !read || len(rows)!=1 do return false,false
+    if rows[0][2]!="clock_uncertain" || now<number(rows[0][1]) do return false,true
+    return reconcile_clock(s,s.incarnation,number(rows[0][0]),now),true
+}

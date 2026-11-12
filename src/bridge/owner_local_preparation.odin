@@ -17,10 +17,11 @@ bridge_owner_prepare_chain,bridge_owner_prepare_task:string
 // Called by the single executor worker. The owner mutex covers local decisions
 // only; the retained opaque response survives transient database failures.
 bridge_owner_preparation_once :: proc(s:^owner.Store) {
-    now:=time.to_unix_nanoseconds(time.now())/1000000
     public:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
     own:=contracts.Owner_Verified_Key{s.account,s.owner,s.owner_key,public,"bridge",true,false}
     sync.mutex_lock(&bridge_owner_mutex)
+    // C1: read the clock under the owner mutex, never before it.
+    now:=time.to_unix_nanoseconds(time.now())/1000000
     // Rotate a bounded scan, so inadmissible early assignments cannot starve
     // later chains. Exact initiation remains idempotent in the owner journal.
     busy,busy_ok:=owner.query(s.db,"SELECT 1 FROM owner_execution_journal WHERE state='preparing' AND prepare_until_ms>CAST(? AS INTEGER) LIMIT 1",fmt.tprintf("%d",now))
@@ -57,6 +58,7 @@ bridge_owner_preparation_batch :: proc(w:^Owner_Executor_Worker,s:^owner.Store,m
     if !sync.mutex_try_lock(&w.mutex) do return false
     defer sync.mutex_unlock(&w.mutex)
     sync.mutex_lock(mutex)
+    now:=owner.clock_floor(s,now) // C1: read before the lock
     if !w.pending {
         c,pin,ok:=snapshot(ctx,s,now)
         if !ok {sync.mutex_unlock(mutex);return false}
