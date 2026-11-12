@@ -44,6 +44,25 @@ bridge_executor_prepare_resources :: proc(s:^executor.Store,p:json.Object)->exec
     if !resolved.resolved || resolved.directory_key!=resources.directory_key do return {}
     return resources
 }
+// The genesis creator as bind_owner verifies it. A browser device creates a
+// chain under its device id (creator_id == creator_key_id). An agent-created
+// chain (owner_agent_chain_create.odin) names the owner Bridge itself:
+// creator_id is the Bridge principal (brg_...) and creator_key_id its key id,
+// so the directory entry is looked up by key id and the key is a "bridge" key.
+// owner_verify_genesis accepts a Bridge creator only when it IS the chain's
+// owner key, so no other Bridge gains anything here. Looking it up by
+// creator_id as a device refused every prepare for agent-created chains
+// (bind_owner invalid_scope, no executor_chain_owners row, Mundus .13).
+bridge_executor_genesis_creator :: proc(dir:^vault.Verified_Directory,genesis:json.Object,account:string)->contracts.Owner_Verified_Key {
+    get:=contracts.owner_string
+    principal,key_id:=get(genesis,"creator_id"),get(genesis,"creator_key_id")
+    if bridge_key,found:=dir.trusted[key_id];found && bridge_key.kind=="bridge" && principal!=key_id {
+        return contracts.Owner_Verified_Key{account,principal,key_id,bridge_key.sign_public_key,"bridge",true,false}
+    }
+    creator,creator_ok:=dir.trusted[principal]
+    return contracts.Owner_Verified_Key{account,principal,principal,creator.sign_public_key,"device",creator_ok && creator.kind=="browser",!creator_ok}
+}
+
 bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string,activation:bool=false,callback_ctx:rawptr=nil,
     fence_exchange:Executor_Fence_Exchange=bridge_executor_fence_exchange,
     dispatch:Executor_Activation_Dispatch=bridge_executor_activate_dispatch,
@@ -104,8 +123,7 @@ bridge_executor_exchange_handle :: proc(conn:^ws.Connection,text:string,activati
     peer,peer_ok:=dir.trusted[get(genesis,"owner_key_id")]
     if !own_ok || own.kind!="bridge" || own.sign_public_key!=public || !peer_ok || peer.kind!="bridge" do return
     owner_key:=contracts.Owner_Verified_Key{account,get(genesis,"owner_bridge_id"),peer.id,peer.sign_public_key,"bridge",true,false}
-    creator,creator_ok:=dir.trusted[get(genesis,"creator_id")]
-    creator_key:=contracts.Owner_Verified_Key{account,get(genesis,"creator_id"),get(genesis,"creator_id"),creator.sign_public_key,"device",creator_ok && creator.kind=="browser",!creator_ok}
+    creator_key:=bridge_executor_genesis_creator(&dir,genesis,account)
     request_raw,authenticated:=channel.open_signed(get(exchange,"envelope"),&kr,scope,owner_key,now,context.temp_allocator)
     if !authenticated do return
     defer crypto.zero_explicit(raw_data(request_raw),len(request_raw))

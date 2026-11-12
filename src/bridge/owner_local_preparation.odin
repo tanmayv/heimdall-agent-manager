@@ -82,10 +82,23 @@ bridge_owner_preparation_batch :: proc(w:^Owner_Executor_Worker,s:^owner.Store,m
     }
     sync.mutex_lock(mutex);defer sync.mutex_unlock(mutex)
     if !current(s,w.claim.id,max(now,w.completed)) do return false
-    ready,_,_:=accept(ctx,s,w.claim,w.snapshot,w.response,max(now,w.completed))
+    ready,success,code:=accept(ctx,s,w.claim,w.snapshot,w.response,max(now,w.completed))
     if !ready do return false
+    if !success do bridge_owner_preparation_log_refusal(w.claim,code)
     bridge_owner_executor_clear(w)
     return true
+}
+
+// A refused remote prepare/query used to be silent: the reservation expired
+// and was retried with no trace (Mundus .13). Log each distinct refusal once
+// per reservation so the next retry's identical outcome does not flood.
+bridge_owner_preparation_last_refusal:string
+bridge_owner_preparation_log_refusal :: proc(c:owner.Intent_Claim,code:string) {
+    key:=fmt.tprintf("%s|%s|%s",c.id,c.kind,code)
+    if key==bridge_owner_preparation_last_refusal do return
+    delete(bridge_owner_preparation_last_refusal,runtime.default_allocator())
+    bridge_owner_preparation_last_refusal=strings.clone(key,runtime.default_allocator())
+    fmt.eprintfln("bridge owner remote %s refused by Bridge %s: %s (chain %s, reservation %s)",c.kind,c.destination,code,c.chain,c.id)
 }
 
 bridge_owner_preparation_snapshot :: proc(_:rawptr,s:^owner.Store,now:i64)->(owner.Intent_Claim,string,bool) {
@@ -127,7 +140,9 @@ bridge_owner_preparation_accept :: proc(_:rawptr,s:^owner.Store,c:owner.Intent_C
     scope,scoped:=contracts.executor_parse(outcome.scope,"transport_scope")
     reply:Owner_Executor_Command_Reply
     if !scoped || json.unmarshal_string(envelope.data.reply,&reply,.JSON,context.temp_allocator)!=nil ||
-       reply.request_id!=contracts.owner_string(scope,"request_id") || reply.type!="command_result" || reply.code!="ok" {return true,false,"invalid_executor_reply"}
+       reply.request_id!=contracts.owner_string(scope,"request_id") || reply.type!="command_result" {return true,false,"invalid_executor_reply"}
+    // Keep the executor's own refusal code (e.g. invalid_scope, stale_incarnation) for the log.
+    if reply.code!="ok" do return true,false,fmt.tprintf("executor_refused:%s",reply.code)
     raw,authenticated:=channel.open_signed(reply.envelope,&kr,scope,key,now,context.temp_allocator)
     if !authenticated do return true,false,"invalid_executor_receipt"
     public:=bridge_identity_public_key_hex(bridge_cfg().daemon_id)
