@@ -138,7 +138,11 @@ bridge_executor_agent :: proc(request_id,input,secret:string,
     result:owner.Result
     if json.unmarshal_string(body,&result,.JSON,context.temp_allocator)!=nil do return fail(request_id,"invalid_owner_result")
     if result.code!="ok" do return fail(request_id,result.code)
-    if verb do return bridge_executor_verb_response(request_id,result.body),true
+    if verb {
+        delivered,reason:=bridge_executor_verb_deliver(instance,result.body)
+        if delivered=="" do return bridge_local_response_error(request_id,"context_delivery_failed",reason),true
+        return bridge_executor_verb_response(request_id,delivered),true
+    }
     command,valid:=contracts.owner_parse(input,"lifecycle_input")
     if valid && contracts.owner_string(command,"method")=="requirements.present" && !result.replay {
         dir,within:=bridge_fs_run_dir_root(instance)
@@ -243,4 +247,46 @@ bridge_executor_refusal_reason :: proc(code:string)->string {
     case "remote_chat_unavailable": return "chat is not available to agents running on a remote Bridge; use `task comment`, which notifies the coordinator"
     }
     return fmt.tprintf("the owner Bridge refused the request (%s)",code)
+}
+
+// G1: the owner's lease-next context, written here before success is
+// reported: a work lease's presented requirements as TASK.md (as the
+// requirements.present path above), or a reviewer's rendered review. Both are
+// stripped from what the agent sees. Returns the response to report, or ""
+// and why the delivery failed.
+bridge_executor_verb_deliver :: proc(instance,owner_response:string)->(string,string) {
+    value,err:=json.parse_string(owner_response,.JSON,true,context.temp_allocator)
+    o,is_object:=value.(json.Object)
+    if err!=.None || !is_object do return owner_response,""
+    data,has_data:=o["data"].(json.Object)
+    if !has_data do return owner_response,""
+    task_context,has_task:=data["task_context"].(json.Object)
+    review,has_review:=data["review_context"].(json.String)
+    if !has_task && !has_review do return owner_response,""
+    dir,within:=bridge_fs_run_dir_root(instance)
+    if !within do return "","the run directory of this agent is unavailable; TASK.md was not updated (run lease next again)"
+    defer delete(dir)
+    if has_task {
+        raw_command,_:=task_context["command"].(json.String)
+        body,_:=task_context["body"].(json.String)
+        cv,cerr:=json.parse_string(string(raw_command),.JSON,true,context.temp_allocator)
+        command,command_ok:=cv.(json.Object)
+        if cerr!=.None || !command_ok do return "","the owner's task context is malformed; TASK.md was not updated"
+        command["instance_id"]=json.String(instance)
+        // As the requirements.present path: a no-directory chain runs in this
+        // executor's per-chain scratch directory (no branch, no merge-back).
+        if contracts.owner_string(command,"workdir")=="" {
+            if scratch:=bridge_executor_scratch_workdir(bridge_executor_store.account,contracts.owner_string(command,"chain_id"));scratch!="" {
+                command["workdir"]=json.String(scratch);command["branch"]=json.String("")
+            }
+        }
+        if !bridge_owner_materialize_context(dir,command,string(body)) do return "","TASK.md could not be written with the current requirements (run lease next again)"
+        delete_key(&data,"task_context")
+    }
+    if has_review {
+        if !bridge_owner_review_context_write(Owner_Review_Context{dir,string(review)}) do return "","the review TASK.md could not be written (run lease next again)"
+        delete_key(&data,"review_context")
+    }
+    o["data"]=data
+    return bridge_owner_json(o),""
 }

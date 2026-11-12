@@ -93,6 +93,19 @@ bridge_owner_executor_child_verb :: proc(s:^owner.Store,verb:json.Object,child:o
     ctx:=Owner_Agent_Ctx{store=s,child=child,key=key,kr=kr,now=time.to_unix_nanoseconds(time.now())/1000000,rec=rec}
     response:=bridge_owner_agent_exec(&ctx,method,p)
     if response=="" && ctx.pending.active do response=bridge_local_response_data("",bridge_owner_json(ctx.pending.next))
+    // A lease next's context travels with the reply and the executor Bridge
+    // writes TASK.md from it (bridge_executor_verb_deliver): the presented
+    // requirements of a work lease, or a reviewer's rendered review.
+    if bridge_owner_response_ok(response) && (ctx.pending.active || ctx.review_context.text!="") {
+        envelope:=bridge_owner_result_object(response)
+        if data,is_object:=envelope["data"].(json.Object);is_object {
+            if ctx.pending.active {
+                data["task_context"]=json.Object{"command"=json.String(bridge_owner_json(ctx.pending.command)),"body"=json.String(ctx.pending.present_body)}
+            }
+            if ctx.review_context.text!="" do data["review_context"]=json.String(ctx.review_context.text)
+            response=bridge_local_response_data("",bridge_owner_json(data))
+        }
+    }
     bridge_owner_publish()
     if followup!=nil && bridge_owner_response_ok(response) {
         followup.reviews=ctx.reviews
