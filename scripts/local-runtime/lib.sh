@@ -86,7 +86,9 @@ lr_check_ports() {
 # only if it is alive AND its start time still matches, so a recycled pid is never
 # signalled. Processes run in their own session (setsid), so pid == process group.
 
-lr_proc_start() { ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//'; }
+# Start time in UTC: a process started under another TZ (REQ-E2E-1 runs Bridges
+# in different time zones) must still be recognized as ours when it is stopped.
+lr_proc_start() { TZ=UTC ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//'; }
 
 lr_owned_pid() { # <dir> <svc> -> prints pid when the recorded process is ours
   local rec="$1/run/$2.pid" pid start
