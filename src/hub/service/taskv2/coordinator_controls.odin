@@ -158,6 +158,7 @@ task_control :: proc(svc:^Service, task_in:domain.Task, actor:Actor, input:Task_
 }
 
 task_control_in_uow :: proc(svc:^Service,u:^Uow,task_in:domain.Task,actor:Actor,input:Task_Control_Input)->(Task_Control_Result,bool,domain.Domain_Error) {
+ if input.expected_generation<0 do return {},false,domain.domain_error(.Validation_Failed,"expected_generation cannot be negative")
  task,found,err:=iface.taskchain_get_task(svc.repo,task_in.task_id)
  if !found do return {},false,err
  if task.owner_user_id!=task_in.owner_user_id do return {},false,domain.domain_error(.Not_Found,"task not found")
@@ -176,8 +177,13 @@ task_control_in_uow :: proc(svc:^Service,u:^Uow,task_in:domain.Task,actor:Actor,
   result.changed=false; result.message="request already applied"
   return result,rok,rerr
  }
- if input.expected_generation!=generation do return {},false,domain.domain_error(.Conflict,"task generation changed; inspect current state before retrying")
+ if input.expected_generation>0 && input.expected_generation!=generation do return {},false,domain.domain_error(.Conflict,"task generation changed")
  if task.workflow_run_id!="" do return {},false,domain.domain_error(.Conflict,"task is workflow-managed; use whole-run retry/cancel controls",`{"code":"workflow_task_managed"}`)
+ if input.operation=="cancel" && task.state==.Cancelled {
+  result,rok,rerr:=task_control_inspect(svc,task,actor)
+  result.changed=false;result.message="task already cancelled"
+  return result,rok,rerr
+ }
  before:=domain.task_state_string(task.state)
  ok:=true
  op_err:=domain.Domain_Error{}
