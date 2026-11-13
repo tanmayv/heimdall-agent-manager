@@ -134,7 +134,9 @@ requirements_reconcile_in_uow :: proc(svc: ^Service, u: ^Uow, task_in: domain.Ta
 	leases, lerr := iface.taskchain_list_leases_by_task(svc.repo, task.task_id)
 	if lerr.code != .None do return false, lerr
 	stale_review := task.state == .In_Review && requirements_submission(events, task.attempt_no).revision != state.revision
-	if stale_review && len(leases) == 0 {
+	active := 0
+	for lease in leases do if lease.phase != domain.LEASE_PHASE_WAITING do active += 1
+	if stale_review && active == 0 {
 		p := json_begin()
 		json_int(&p, "revision", state.revision)
 		json_int(&p, "attempt_no", i64(task.attempt_no))
@@ -143,6 +145,7 @@ requirements_reconcile_in_uow :: proc(svc: ^Service, u: ^Uow, task_in: domain.Ta
 	}
 	pending := false
 	for lease in leases {
+		if lease.phase == domain.LEASE_PHASE_WAITING do continue
 		// A reviewer must checkpoint even if it acknowledged the new brief;
 		// that does not turn the old submission into compliant work.
 		if !stale_review && requirements_lease_revision(events, lease.lease_id, EV_REQUIREMENTS_ACKNOWLEDGED) == state.revision do continue

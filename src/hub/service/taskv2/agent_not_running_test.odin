@@ -56,8 +56,8 @@ test_agent_not_running_offline_start_failure_retry_and_dead_holder :: proc(t: ^t
 	on_instance_terminal(&fx.svc, "inst_w1")
 	task = get_task(fx, "task_anr")
 	testing.expect(t, task.state == .Backlog && is_agent_not_running_block(task.blocked_on_json), "confirmed dead holder blocks")
-	_, held = lease_of(fx, "inst_w1")
-	testing.expect(t, !held, "dead lease released")
+	waiting, retained := lease_of(fx, "inst_w1")
+	testing.expect(t, retained && waiting.lease_id == lease.lease_id && waiting.phase == "waiting", "dead holder retains waiting ownership")
 	attempts, _ = iface.taskchain_list_attempts_by_task(&fx.repo, lease.task_id, "u1")
 	for a in attempts do testing.expect(t, !a.counts_toward_budget, "infrastructure never spends budget")
 	assert_projection_matches_fold(t, fx, chain.chain_id, "u1", "anr")
@@ -84,7 +84,9 @@ test_agent_not_running_capacity_is_queueing_and_failed_ready_is_blocked :: proc(
 	_, _, _ = iface.agent_save_instance(&fx.agents, inst)
 	on_instance_terminal(&fx.svc, "inst_w1")
 	queued = get_task(fx, "task_queued")
-	testing.expect(t, queued.state == .Backlog && strings.contains(queued.blocked_on_json, "provider authentication failed"), "failed free instance blocks ready task")
+	testing.expect(t, queued.state == .Ready && queued.blocked_on_json == "", "retained owner keeps other tasks queued")
+	occupied := get_task(fx, "task_occupied")
+	testing.expect(t, occupied.state == .Backlog && strings.contains(occupied.blocked_on_json, "provider authentication failed"), "failed owner blocks its own task")
 	attempts, _ := iface.taskchain_list_attempts_by_task(&fx.repo, queued.task_id, "u1")
 	testing.expect_value(t, len(attempts), 0)
 	testing.expect_value(t, fleet_changed(&fx.svc, chain, "agt_w").code, domain.Error_Code.None)
@@ -318,7 +320,10 @@ test_agent_not_running_long_backoff_retries_at_deadline :: proc(t: ^testing.T) {
 		if attempt == 1 {
 			task = publish_task(t, fx, chain, "task_long")
 		} else {
-			on_instance_terminal(&fx.svc, "inst_w1")
+			// Explicit cancellation frees the occupied worker; the independent
+			// queued task must still obey its provider's retry deadline.
+			testing.expect_value(t, cancel_task(&fx.svc, get_task(fx, "task_occupied"), Actor{kind = ACTOR_USER, id = "u1"}, "free backoff fixture").code, domain.Error_Code.None)
+			confirm_pending_ownership_stop_for_test(t, fx, get_task(fx, "task_occupied"), "inst_w1")
 		}
 		task = get_task(fx, "task_long")
 		testing.expect(t, task.state == .Ready && task.blocked_on_json == "", fmt.tprintf("late failure queues task: %v %s", task.state, task.blocked_on_json))

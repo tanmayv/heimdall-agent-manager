@@ -69,6 +69,6 @@ test_instance_hooks_leave_nothing_on_the_caller_heap :: proc(t: ^testing.T) {
 	expect_no_residue(t, "on_instance_terminal", proc(fx: ^Fixture, _: rawptr) {
 		on_instance_terminal(&fx.svc, "inst_w1")
 	}, fx, nil)
-	_, held1 = lease_of(fx, "inst_w1")
-	testing.expect(t, !held1, "the hooks still did their work: the dead holder's lease ended")
+	waiting, retained := lease_of(fx, "inst_w1")
+	testing.expect(t, retained && waiting.phase == "waiting", "hooks preserve dead holder ownership while ending active authority")
 }

@@ -19,7 +19,7 @@ Lease_Next_Input :: struct {
 }
 
 Lease_Next_Result :: struct {
-	// status ∈ {granted, current, none}
+	// status ∈ {granted, current, waiting, none}
 	status:    string,
 	lease:     domain.Task_Lease,
 	task:      domain.Task,
@@ -38,6 +38,37 @@ lease_next :: proc(svc: ^Service, auth: contracts.Auth_Context, input: Lease_Nex
 	rok := true
 	rerr := domain.Domain_Error{}
 	if lease, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, inst.agent_instance_id); held {
+		if !input.peek {
+   if task,tfound,_:=iface.taskchain_get_task(svc.repo,lease.task_id);tfound && transfer_reservation_needs_activation(svc,task,lease) && !ownership_cleanup_pending(svc,task) {
+    claimed,accepted,claim_err:=lease_claim_in_uow(svc,&u,auth,Lease_Claim_Input{task_id=lease.task_id,vcs_base=input.vcs_base})
+    _,commit_err:=end_uow(svc,&u,accepted)
+    if !accepted do return {},false,claim_err
+    return Lease_Next_Result{status=claimed.status,lease=claimed.lease,task=claimed.task,pack_json=claimed.pack_json},commit_err.code==.None,commit_err
+   }
+  }
+		if lease.phase == domain.LEASE_PHASE_WAITING {
+			task, found, err := iface.taskchain_get_task(svc.repo, lease.task_id)
+			if !found { _, _ = end_uow(svc, &u, false); return {}, false, err }
+			if !input.peek && ((lease.kind == domain.LEASE_KIND_WORK && task.state == .Ready) || (lease.kind == domain.LEASE_KIND_REVIEW && task.state == .In_Review && task.attempt_no != lease.attempt_no)) {
+				if chain, found, _ := iface.taskchain_get_chain(svc.repo, task.chain_id); found {
+					if next, fresh, granted := grant_inline_for_instance(svc, &u, chain, inst, .Lease_Next); granted {
+						record_attempt_started(svc, fresh, next, input.vcs_base)
+						if err := requirements_present(svc, fresh, next); err.code != .None { _, _ = end_uow(svc, &u, false); return {}, false, err }
+						pack := build_pack_json(svc, chain, fresh, next, inst)
+						_, err := end_uow(svc, &u, true)
+						return Lease_Next_Result{status = "granted", lease = next, task = fresh, pack_json = pack}, err.code == .None, err
+					}
+				}
+			}
+			// Refresh TASK.md even while waiting; an old active pack must not
+			// tell the retained holder to execute or submit again.
+			pack := ""
+			if chain, found, _ := iface.taskchain_get_chain(svc.repo, task.chain_id); found {
+				pack = build_pack_json(svc, chain, task, lease, inst)
+			}
+			_, err = end_uow(svc, &u, true)
+			return Lease_Next_Result{status = "waiting", lease = lease, task = task, pack_json = pack}, err.code == .None, err
+		}
 		if lease.confirmed_at == "" do _ = confirm_in_uow(svc, &u, lease)
 		fresh, _, _ := iface.taskchain_get_lease(svc.repo, lease.lease_id)
 		task, tok, terr := iface.taskchain_get_task(svc.repo, fresh.task_id)
@@ -125,7 +156,6 @@ instance_from_auth :: proc(svc: ^Service, auth: contracts.Auth_Context) -> (doma
 	return inst, true, domain.Domain_Error{}
 }
 
-@(private = "file")
 record_attempt_started :: proc(svc: ^Service, task: domain.Task, lease: domain.Task_Lease, vcs_base: string) {
 	if lease.kind != domain.LEASE_KIND_WORK do return
 	evs, err := iface.taskchain_list_events_by_task(svc.repo, task.task_id, task.owner_user_id)

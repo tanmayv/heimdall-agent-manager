@@ -87,7 +87,7 @@ task_recheck_in_uow :: proc(svc: ^Service, u: ^Uow, task_in: domain.Task, actor:
 		append(&reasons, "task is a draft; publish it first")
 	case task.state == .Cancelled:
 		append(&reasons, "task is cancelled")
-	case len(before_leases) > 0:
+	case active_claim_count(before_leases) > 0:
 		// Leave a leased task to its holder: no gate, no matcher, no merge.
 		for l in before_leases {
 			append(&reasons, fmt.tprintf("%s lease %s is live (holder %s, attempt #%d); re-check leaves it to the holder", l.kind, l.lease_id, l.holder_instance_id, l.attempt_no))
@@ -323,4 +323,10 @@ recheck_merge_reasons :: proc(svc: ^Service, task: domain.Task, out: ^[dynamic]s
 			append(out, fmt.tprintf("merge none: chain directory %s has vcs_kind %q (not git), so the branch is never merged", d.directory_id, d.vcs_kind))
 		}
 	}
+}
+
+active_claim_count :: proc(claims: []domain.Task_Lease) -> int {
+	count := 0
+	for claim in claims do if claim.phase != domain.LEASE_PHASE_WAITING do count += 1
+	return count
 }

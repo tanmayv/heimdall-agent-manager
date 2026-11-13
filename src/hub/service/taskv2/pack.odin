@@ -67,8 +67,7 @@ build_pack_json :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.Ta
 	json_int(&o, "max_attempts", i64(max_attempts))
 	json_int(&o, "review_round", i64(view.review_rounds))
 	json_int(&o, "review_rounds", i64(view.review_rounds))
-	json_str(&o, "expires_at", lease.expires_at)
-	json_str(&o, "hard_deadline_at", lease.hard_deadline_at)
+	json_str(&o, "phase", lease.phase)
 	json_raw(&o, "placement", placement_json)
 
 	l := json_begin()
@@ -83,8 +82,7 @@ build_pack_json :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.Ta
 	json_int(&l, "review_round", i64(view.review_rounds))
 	json_int(&l, "review_rounds", i64(view.review_rounds))
 	json_str(&l, "granted_at", lease.granted_at)
-	json_str(&l, "expires_at", lease.expires_at)
-	json_str(&l, "hard_deadline_at", lease.hard_deadline_at)
+	json_str(&l, "phase", lease.phase)
 	json_str(&l, "delivery", lease.delivery)
 	json_raw(&l, "placement", placement_json)
 	json_raw(&o, "lease", json_end(&l))
@@ -177,9 +175,8 @@ build_pack_json :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.Ta
 	}
 
 	proto := json_begin()
-	json_int(&proto, "heartbeat_ttl_seconds", LEASE_TTL_SECONDS)
-	json_int(&proto, "hard_cap_seconds", LEASE_HARD_CAP_SECONDS)
-	json_raw(&proto, "verbs", `["lease next","lease heartbeat","lease submit","lease handoff","lease block","review post","task fetch","task comment"]`)
+	json_bool(&proto, "non_expiring", true)
+	json_raw(&proto, "verbs", `["lease next","lease heartbeat","lease submit","lease handoff","lease block","lease <task-id>","lease transfer","review post","task fetch","task comment"]`)
 	json_raw(&proto, "rules", protocol_rules_json())
 	json_raw(&o, "protocol", json_end(&proto))
 	return cap_pack_json_field_safe(json_end(&o), string(task.task_id))
@@ -282,7 +279,19 @@ replace_top_level_member_raw :: proc(obj_json, target_key, new_raw_val: string) 
 
 @(private = "file")
 protocol_rules_json :: proc() -> string {
-	return `["1. Read TASK.md first; it is your authoritative lease context pack. When it names a Workdir, cd there and do ALL work and commits in it (your own branch); the hub merges it when the task is done.","2. Confirm or inspect your lease with: ham-ctl lease next","3. Send a heartbeat every <15m during long work: ham-ctl lease heartbeat --note \"<progress>\"","4. Choose and run checks appropriate to the change; report the commands and their outcomes in your submit summary","5. Submit completed work on a clean working tree: ham-ctl lease submit --summary \"<what exists now>\" --decision \"<choice and why>\" --dead-end \"<what did not work>\" (repeat --decision/--dead-end per item)","6. Hand off unfinished work for a fresh context window: ham-ctl lease handoff --summary \"<summary>\" --next-steps \"<steps>\" [--decision ...] [--dead-end ...]","7. Block when waiting on a human or external dependency: ham-ctl lease block --waiting-on user --reason \"<question>\"","8. Reviewers post verdicts with: ham-ctl review post --verdict approve|request_changes [--findings-file <json>]","9. Fetch omitted or referenced context on demand: ham-ctl task fetch <task_id> <ref>","10. On 409 lease_lost, stop immediately; the hub will re-wake you with a fresh pack if needed.","11. Share what you learned: every decision others might re-open and every dead end goes in --decision/--dead-end, not only in the summary text; tasks that wait for yours and later attempts receive them."]`
+	return `[
+"1. Read TASK.md first; it is your authoritative task claim context. When it names a Workdir, cd there and do ALL work and commits in it (your own branch); the hub merges it when the task is done.",
+"2. Inspect your current claim with ham-ctl lease next. Claims are durable and do not expire; active permits work, waiting retains your task and role while review or dependencies are pending.",
+"3. Use ham-ctl lease heartbeat --note \"<progress>\" to report meaningful progress or explicitly acknowledge a requirements revision. It does not renew ownership; no periodic heartbeat is required.",
+"4. Choose and run checks appropriate to the change; report the commands and their outcomes in your submit summary",
+"5. Submit completed work on a clean working tree: ham-ctl lease submit --summary \"<what exists now>\" --decision \"<choice and why>\" --dead-end \"<what did not work>\" (repeat --decision/--dead-end per item). Submission retains a waiting claim while review is pending. Stay with this task; do not pull unrelated work while waiting.",
+"6. Hand off unfinished work for a fresh context window: ham-ctl lease handoff --summary \"<summary>\" --next-steps \"<steps>\" [--decision ...] [--dead-end ...]",
+"7. Block when waiting on a human or external dependency: ham-ctl lease block --waiting-on user --reason \"<question>\". Your waiting claim retains the task and role; resume when the dependency is resolved.",
+"8. Reviewers post verdicts with: ham-ctl review post --verdict approve|request_changes [--findings-file <json>]",
+"9. Fetch omitted or referenced context on demand: ham-ctl task fetch <task_id> <ref>",
+"10. On 409 lease_lost, stop immediately: ownership changed explicitly. A coordinator can assign ready work with lease <task-id> --instance <id>, move ownership with lease transfer, or cancel obsolete work with task cancel. Replacement work waits for the previous running holder to stop.",
+"11. Share what you learned: every decision others might re-open and every dead end goes in --decision/--dead-end, not only in the summary text; tasks that wait for yours and later attempts receive them."
+]`
 }
 
 // resolve_brief_inputs_json resolves each ref in `brief.inputs` into a JSON array:

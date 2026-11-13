@@ -23,22 +23,27 @@ package main
 // Guards: in `requested` the request is retried once after
 // BRIDGE_ROLLOVER_REQUEST_TIMEOUT_MS, then the user and the chain coordinator are
 // alerted and the instance returns to normal (never a forced restart). A
-// persisted handoff that sees no idle within the same timeout is alerted once and
-// keeps waiting for idle. Between a request and the restarted agent's
-// start-success, idle activity is reported as active (so the hub's idle grace
-// cannot expire the lease) and user message notices are queued.
+// persisted handoff that sees no idle within the same timeout keeps waiting for
+// safe idle, but releases notification withholding and alerts. Persistence and
+// restart-readiness stalls also release notifications without forcing a restart.
+// Notification holding also has an absolute ten-minute bound from the request,
+// so repeated persistence attempts cannot extend it. Idle activity remains
+// protected until the rollover completes; task ownership
+// is never inferred from a timeout. Failed wake deliveries are retried.
 //
 // Decisions run under bridge_rollover_mutex and return a list of actions; the
 // actions (PTY typing, hub calls) run after the lock is released, on a worker
 // thread unless bridge_rollover_sync_effects is set (tests).
 
 import "base:runtime"
+import "core:encoding/hex"
 import "core:fmt"
 import "core:strings"
 import "core:sync"
 import "core:thread"
 import "core:time"
 import agent_runtime "odin_test:lib/agent_runtime"
+import os_random "odin_test:lib/os_random"
 
 BRIDGE_ROLLOVER_REQUEST_TIMEOUT_MS :: 5 * 60_000
 BRIDGE_ROLLOVER_COOLDOWN_MS :: 10 * 60_000
@@ -60,12 +65,14 @@ Bridge_Rollover_State :: struct {
 	agent_instance_id: string,
 	coordinator_id:    string,
 	phase:             Bridge_Rollover_Phase,
-	seq:               int, // rollover number for this instance; part of the request id
+	cycle_id:          string, // heap-owned CSPRNG identity, stable across retries
+	notice_deadline_ms: i64, // absolute bound, unaffected by persistence retries
+	notices_released:  bool, // stalled rollover no longer withholds message wakes
 	attempts:          int, // requests typed in the current rollover (max 2)
 	context_pct:       i64, // context_pct that triggered pending
 	phase_at_ms:       i64, // when the current phase (or the latest retry) began
 	restart_requested: bool,
-	stall_alerted:     bool, // restarting: idle timeout already alerted
+	stall_alerted:     bool, // restarting: current idle/readiness timeout already alerted
 	cooldown_until_ms: i64,
 	queued_notices:    [dynamic]string, // senders of user notices held during the rollover
 	// Source of the latest idle withheld during the rollover ("" = none, or the
@@ -87,6 +94,7 @@ Bridge_Rollover_Action :: struct {
 	instance_id: string,
 	text:        string, // request text, alert text or notice sender
 	coordinator: string, // Alert only
+	cycle_id:    string, // fences delayed requests/restarts and their callbacks
 }
 
 // Side effects, replaceable by tests. Nil members use the real implementation.
@@ -121,8 +129,14 @@ bridge_rollover_request_text :: proc(instance_id: string, context_pct, window: i
 	)
 }
 
-bridge_rollover_request_id :: proc(instance_id: string, seq: int, allocator := context.allocator) -> string {
-	return fmt.aprintf("rollover_%s_%d", instance_id, seq, allocator = allocator)
+// A cycle identity must survive retries but never repeat after a state reset.
+// Keep well below the Hub's 128-byte request_id limit, independent of instance ID.
+bridge_rollover_new_cycle_id :: proc(source := os_random.DEFAULT_SOURCE, allocator := context.allocator) -> (string, bool) {
+	nonce: [16]u8
+	if !os_random.fill(nonce[:], source) do return "", false
+	encoded := hex.encode(nonce[:], allocator)
+	defer delete(encoded, allocator)
+	return strings.concatenate({"rollover_", string(encoded)}, allocator), true
 }
 
 bridge_rollover_request_timeout_alert_text :: proc(instance_id: string, context_pct: i64, allocator := context.allocator) -> string {
@@ -136,7 +150,7 @@ bridge_rollover_request_timeout_alert_text :: proc(instance_id: string, context_
 bridge_rollover_restart_stall_alert_text :: proc(instance_id: string, allocator := context.allocator) -> string {
 	return fmt.aprintf(
 		"Context rollover for agent `%s`: its previous_context handoff is saved, but it has not gone idle for %d min, so it has not been restarted yet. " +
-		"It will be restarted at its next idle point.",
+		"Message notifications have resumed. It will be restarted at its next idle point.",
 		instance_id, BRIDGE_ROLLOVER_REQUEST_TIMEOUT_MS / 60_000, allocator = allocator,
 	)
 }
@@ -168,6 +182,7 @@ bridge_rollover_heap :: proc() -> runtime.Allocator {
 
 @(private = "file")
 bridge_rollover_set_phase_locked :: proc(s: ^Bridge_Rollover_State, phase: Bridge_Rollover_Phase, now: i64) {
+	if s.phase != phase do fmt.println("bridge context rollover transition", s.agent_instance_id, s.cycle_id, s.phase, "->", phase)
 	s.phase = phase
 	s.phase_at_ms = now
 }
@@ -181,11 +196,17 @@ bridge_rollover_finish_locked :: proc(s: ^Bridge_Rollover_State, now: i64, actio
 	s.restart_requested = false
 	s.stall_alerted = false
 	s.cooldown_until_ms = now + BRIDGE_ROLLOVER_COOLDOWN_MS
+	bridge_rollover_release_notices_locked(s, actions)
 	if s.withheld_idle_source != "" {
-		append(actions, Bridge_Rollover_Action{kind = .Report_Idle, instance_id = strings.clone(s.agent_instance_id), text = strings.clone(s.withheld_idle_source)})
+		append(actions, Bridge_Rollover_Action{kind = .Report_Idle, instance_id = strings.clone(s.agent_instance_id), text = strings.clone(s.withheld_idle_source), cycle_id = strings.clone(s.cycle_id)})
 		delete(s.withheld_idle_source, bridge_rollover_heap())
 		s.withheld_idle_source = ""
 	}
+}
+
+@(private = "file")
+bridge_rollover_release_notices_locked :: proc(s: ^Bridge_Rollover_State, actions: ^[dynamic]Bridge_Rollover_Action) {
+	s.notices_released = true
 	for sender in s.queued_notices {
 		append(actions, Bridge_Rollover_Action{kind = .Deliver_Notice, instance_id = strings.clone(s.agent_instance_id), text = strings.clone(sender)})
 		delete(sender, bridge_rollover_heap())
@@ -198,6 +219,7 @@ bridge_rollover_request_action_locked :: proc(s: ^Bridge_Rollover_State, window:
 	return Bridge_Rollover_Action{
 		kind = .Deliver_Request, instance_id = strings.clone(s.agent_instance_id),
 		text = bridge_rollover_request_text(s.agent_instance_id, s.context_pct, window, s.attempts),
+		cycle_id = strings.clone(s.cycle_id),
 	}
 }
 
@@ -232,15 +254,25 @@ bridge_rollover_decide_event :: proc(instance_id: string, context_pct: i64, idle
 	if !idle do return actions
 	#partial switch s.phase {
 	case .Pending:
-		s.seq += 1
+		cycle_id, ok := bridge_rollover_new_cycle_id()
+		if !ok {
+			append(&actions, bridge_rollover_alert_action_locked(s, strings.clone("Context rollover could not obtain secure randomness; no restart was requested. Retry after the cooldown.")))
+			bridge_rollover_finish_locked(s, now, &actions)
+			return actions
+		}
+		delete(s.cycle_id)
+		s.cycle_id = cycle_id
+		s.notices_released = false
+		s.notice_deadline_ms = now + 2 * BRIDGE_ROLLOVER_REQUEST_TIMEOUT_MS
 		s.attempts = 1
 		bridge_rollover_set_phase_locked(s, .Requested, now)
 		append(&actions, bridge_rollover_request_action_locked(s, window))
 	case .Restarting:
 		if !s.restart_requested {
 			s.restart_requested = true
+			s.stall_alerted = false
 			s.phase_at_ms = now
-			append(&actions, Bridge_Rollover_Action{kind = .Restart, instance_id = strings.clone(s.agent_instance_id)})
+			append(&actions, Bridge_Rollover_Action{kind = .Restart, instance_id = strings.clone(s.agent_instance_id), cycle_id = strings.clone(s.cycle_id)})
 		}
 	}
 	return actions
@@ -253,6 +285,11 @@ bridge_rollover_decide_tick :: proc(now: i64, window_for: proc(instance_id: stri
 	sync.mutex_lock(&bridge_rollover_mutex)
 	defer sync.mutex_unlock(&bridge_rollover_mutex)
 	for &s in bridge_rollover_states {
+		if !s.notices_released && bridge_rollover_phase_in_progress(s.phase) && now >= s.notice_deadline_ms {
+			bridge_rollover_release_notices_locked(&s, &actions)
+		} else if s.notices_released {
+			bridge_rollover_release_notices_locked(&s, &actions)
+		}
 		if now - s.phase_at_ms < BRIDGE_ROLLOVER_REQUEST_TIMEOUT_MS do continue
 		#partial switch s.phase {
 		case .Requested:
@@ -265,10 +302,17 @@ bridge_rollover_decide_tick :: proc(now: i64, window_for: proc(instance_id: stri
 				append(&actions, bridge_rollover_alert_action_locked(&s, bridge_rollover_request_timeout_alert_text(s.agent_instance_id, s.context_pct)))
 				bridge_rollover_finish_locked(&s, now, &actions)
 			}
+		case .Persisting:
+			bridge_rollover_release_notices_locked(&s, &actions)
+			append(&actions, bridge_rollover_alert_action_locked(&s, strings.clone("Context rollover handoff persistence timed out. No restart was requested; message notifications have resumed. Read chat to recover the latest stored handoff before retrying.")))
+			bridge_rollover_finish_locked(&s, now, &actions)
 		case .Restarting:
-			if !s.restart_requested && !s.stall_alerted {
+			if !s.stall_alerted {
 				s.stall_alerted = true
-				append(&actions, bridge_rollover_alert_action_locked(&s, bridge_rollover_restart_stall_alert_text(s.agent_instance_id)))
+				bridge_rollover_release_notices_locked(&s, &actions)
+				text := bridge_rollover_restart_stall_alert_text(s.agent_instance_id) if !s.restart_requested else
+					strings.clone("Context rollover restart has not reported readiness within 5 minutes. Message notifications have resumed; check the instance in Heimdall. No additional restart will be forced.")
+				append(&actions, bridge_rollover_alert_action_locked(&s, text))
 			}
 		}
 	}
@@ -277,43 +321,46 @@ bridge_rollover_decide_tick :: proc(now: i64, window_for: proc(instance_id: stri
 
 // bridge_rollover_begin_persist claims a self-addressed chat send. ok=false when
 // the instance is not waiting for its handoff (the send is relayed as usual).
+// A resend after a lost CLI reply reuses the stored identity without moving a
+// pending restart back to persistence or scheduling another restart.
 bridge_rollover_begin_persist :: proc(instance_id: string, now: i64) -> (request_id: string, attempt: int, context_pct: i64, ok: bool) {
 	context.allocator = bridge_rollover_heap()
 	sync.mutex_lock(&bridge_rollover_mutex)
 	defer sync.mutex_unlock(&bridge_rollover_mutex)
 	s := bridge_rollover_state_locked(instance_id, create = false)
-	if s == nil || s.phase != .Requested do return
-	bridge_rollover_set_phase_locked(s, .Persisting, now)
-	return bridge_rollover_request_id(instance_id, s.seq), s.attempts, s.context_pct, true
+	if s == nil || (s.phase != .Requested && s.phase != .Restarting) do return
+	if s.phase == .Requested do bridge_rollover_set_phase_locked(s, .Persisting, now)
+	return strings.clone(s.cycle_id), s.attempts, s.context_pct, true
 }
 
 // bridge_rollover_end_persist records the hub's answer: acked -> restarting
 // (restart at the next idle); otherwise back to requested so the agent may retry
-// (the request timer keeps running from the original request).
-bridge_rollover_end_persist :: proc(instance_id: string, acked: bool, now: i64) {
+// (the request timer counts from this persistence attempt; notification holding
+// has an independent absolute deadline that retries cannot extend).
+bridge_rollover_end_persist :: proc(instance_id, cycle_id: string, acked: bool, now: i64) {
 	sync.mutex_lock(&bridge_rollover_mutex)
 	defer sync.mutex_unlock(&bridge_rollover_mutex)
 	s := bridge_rollover_state_locked(instance_id, create = false)
-	if s == nil || s.phase != .Persisting do return
+	if s == nil || s.phase != .Persisting || s.cycle_id != cycle_id do return
 	if acked {
 		bridge_rollover_set_phase_locked(s, .Restarting, now)
 		s.restart_requested = false
 		s.stall_alerted = false
 	} else {
-		s.phase = .Requested // keep phase_at_ms: the timeout still counts from the request
+		s.phase = .Requested // retain persistence start time for the next request timeout
 	}
 }
 
 // bridge_rollover_decide_restart_result: a refused restart returns the instance
 // to normal (the handoff stays stored) and alerts.
-bridge_rollover_decide_restart_result :: proc(instance_id: string, ok: bool, now: i64) -> [dynamic]Bridge_Rollover_Action {
+bridge_rollover_decide_restart_result :: proc(instance_id, cycle_id: string, ok: bool, now: i64) -> [dynamic]Bridge_Rollover_Action {
 	context.allocator = bridge_rollover_heap()
 	actions := make([dynamic]Bridge_Rollover_Action)
 	if ok do return actions
 	sync.mutex_lock(&bridge_rollover_mutex)
 	defer sync.mutex_unlock(&bridge_rollover_mutex)
 	s := bridge_rollover_state_locked(instance_id, create = false)
-	if s == nil || s.phase != .Restarting do return actions
+	if s == nil || s.phase != .Restarting || s.cycle_id != cycle_id do return actions
 	append(&actions, bridge_rollover_alert_action_locked(s, bridge_rollover_restart_failed_alert_text(instance_id)))
 	bridge_rollover_finish_locked(s, now, &actions)
 	return actions
@@ -363,17 +410,16 @@ bridge_rollover_filter_activity :: proc(instance_id, activity: string, source :=
 }
 
 // bridge_rollover_queue_notice holds a user message notice during a rollover.
-// Returns false when no rollover is in progress (deliver it now).
+// Returns false when withholding has ended or the queue is full (deliver now).
 bridge_rollover_queue_notice :: proc(instance_id, sender: string) -> bool {
 	sync.mutex_lock(&bridge_rollover_mutex)
 	defer sync.mutex_unlock(&bridge_rollover_mutex)
 	s := bridge_rollover_state_locked(instance_id, create = false)
-	if s == nil || !bridge_rollover_phase_in_progress(s.phase) do return false
+	if s == nil || !bridge_rollover_phase_in_progress(s.phase) || s.notices_released do return false
 	// Repeated notices carry no extra information; keep at most one per sender.
 	for q in s.queued_notices do if q == sender do return true
-	if len(s.queued_notices) < BRIDGE_ROLLOVER_MAX_QUEUED_NOTICES {
-		append(&s.queued_notices, strings.clone(sender, bridge_rollover_heap()))
-	}
+	if len(s.queued_notices) >= BRIDGE_ROLLOVER_MAX_QUEUED_NOTICES do return false
+	append(&s.queued_notices, strings.clone(sender, bridge_rollover_heap()))
 	return true
 }
 
@@ -400,7 +446,7 @@ bridge_rollover_forget :: proc(instance_id: string) {
 	for s, i in bridge_rollover_states {
 		if s.agent_instance_id != instance_id do continue
 		heap := bridge_rollover_heap()
-		delete(s.agent_instance_id, heap); delete(s.coordinator_id, heap); delete(s.withheld_idle_source, heap)
+		delete(s.cycle_id, heap); delete(s.agent_instance_id, heap); delete(s.coordinator_id, heap); delete(s.withheld_idle_source, heap)
 		for q in s.queued_notices do delete(q, heap)
 		delete(s.queued_notices)
 		unordered_remove(&bridge_rollover_states, i)
@@ -444,14 +490,14 @@ bridge_rollover_intercept_chat_send :: proc(request_id, params: string, rec: Bri
 	defer delete(pctx_request_id)
 	body := bridge_local_extract_json_string(params, "body", "", context.temp_allocator)
 	if strings.trim_space(body) == "" {
-		bridge_rollover_end_persist(rec.agent_instance_id, false, now)
+		bridge_rollover_end_persist(rec.agent_instance_id, pctx_request_id, false, now)
 		return bridge_local_response_error(request_id, "bad_request", "previous_context handoff body is empty; resend it with --body"), true
 	}
 	metadata := fmt.tprintf(`{{"kind":"context_rollover","context_pct":%d,"attempt":%d}}`, max(context_pct, 0), attempt)
 	persist := bridge_rollover_effects.persist if bridge_rollover_effects.persist != nil else bridge_rollover_persist_default
 	relay := persist(rec, pctx_request_id, body, metadata)
 	acked := relay.ok && relay.status >= 200 && relay.status < 300 && strings.contains(relay.body, `"accepted":true`)
-	bridge_rollover_end_persist(rec.agent_instance_id, acked, bridge_runtime_now_ms())
+	bridge_rollover_end_persist(rec.agent_instance_id, pctx_request_id, acked, bridge_runtime_now_ms())
 	if !acked {
 		if !relay.ok do return bridge_local_response_error(request_id, "retryable_unavailable", "previous_context was not saved (hub unreachable); send it again"), true
 		return bridge_local_response_error(request_id, "hub_error", relay.body), true
@@ -491,7 +537,7 @@ bridge_rollover_worker_ensure_started :: proc() {
 bridge_rollover_actions_destroy :: proc(actions: [dynamic]Bridge_Rollover_Action) {
 	context.allocator = bridge_rollover_heap()
 	for a in actions {
-		delete(a.instance_id); delete(a.text); delete(a.coordinator)
+		delete(a.instance_id); delete(a.text); delete(a.coordinator); delete(a.cycle_id)
 	}
 	delete(actions)
 }
@@ -518,6 +564,16 @@ bridge_rollover_execute :: proc(actions: [dynamic]Bridge_Rollover_Action) {
 	context.allocator = bridge_rollover_heap()
 	defer bridge_rollover_actions_destroy(actions)
 	for a in actions {
+		if a.kind == .Deliver_Request || a.kind == .Restart || a.kind == .Report_Idle {
+			sync.mutex_lock(&bridge_rollover_mutex)
+			s := bridge_rollover_state_locked(a.instance_id, create = false)
+			current := s != nil && s.cycle_id == a.cycle_id &&
+				((a.kind == .Deliver_Request && s.phase == .Requested) ||
+				 (a.kind == .Restart && s.phase == .Restarting && s.restart_requested) ||
+				 (a.kind == .Report_Idle && s.phase == .Normal))
+			sync.mutex_unlock(&bridge_rollover_mutex)
+			if !current do continue
+		}
 		switch a.kind {
 		case .Deliver_Request:
 			deliver := bridge_rollover_effects.deliver_line if bridge_rollover_effects.deliver_line != nil else bridge_rollover_deliver_line_default
@@ -526,14 +582,25 @@ bridge_rollover_execute :: proc(actions: [dynamic]Bridge_Rollover_Action) {
 			restart := bridge_rollover_effects.restart if bridge_rollover_effects.restart != nil else bridge_rollover_restart_default
 			ok := restart(a.instance_id)
 			if !ok do fmt.println("bridge context rollover: hub restart refused", a.instance_id)
-			follow := bridge_rollover_decide_restart_result(a.instance_id, ok, bridge_runtime_now_ms())
+			follow := bridge_rollover_decide_restart_result(a.instance_id, a.cycle_id, ok, bridge_runtime_now_ms())
 			bridge_rollover_execute(follow)
 		case .Alert:
 			alert := bridge_rollover_effects.alert if bridge_rollover_effects.alert != nil else bridge_rollover_alert_default
 			alert(a.instance_id, a.coordinator, a.text)
 		case .Deliver_Notice:
 			deliver := bridge_rollover_effects.deliver_notice if bridge_rollover_effects.deliver_notice != nil else bridge_rollover_deliver_notice_default
-			_ = deliver(a.instance_id, a.text)
+			if !deliver(a.instance_id, a.text) {
+				// The PTY may be between generations. Retain a wake for readiness
+				// or the next tick instead of acknowledging it into oblivion.
+				sync.mutex_lock(&bridge_rollover_mutex)
+				s := bridge_rollover_state_locked(a.instance_id, create = false)
+				if s != nil {
+					found := false
+					for sender in s.queued_notices do if sender == a.text do found = true
+					if !found do append(&s.queued_notices, strings.clone(a.text))
+				}
+				sync.mutex_unlock(&bridge_rollover_mutex)
+			}
 		case .Report_Idle:
 			report := bridge_rollover_effects.report_idle if bridge_rollover_effects.report_idle != nil else bridge_rollover_report_idle_default
 			report(a.instance_id, a.text)

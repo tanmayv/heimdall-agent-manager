@@ -260,6 +260,7 @@ Task_Review_Wire :: struct {
 }
 
 Task_Lease_Wire :: struct {
+	phase: string `json:"phase"`,
 	lease_id:           string `json:"lease_id"`,
 	kind:               string `json:"kind"`,
 	review_role:        string `json:"review_role"`,
@@ -497,7 +498,7 @@ make_task_lease_wires :: proc(h: ^Taskchain_Handlers, t: domain.Task) -> []Task_
 	if err.code != .None do return out[:]
 	for l in leases {
 		append(&out, Task_Lease_Wire{
-			lease_id = l.lease_id, kind = l.kind, review_role = l.review_role, holder_instance_id = l.holder_instance_id,
+			lease_id = l.lease_id, phase = l.phase, kind = l.kind, review_role = l.review_role, holder_instance_id = l.holder_instance_id,
 			attempt_no = l.attempt_no, bridge_id = l.bridge_id, granted_at = l.granted_at, confirmed_at = l.confirmed_at,
 			expires_at = l.expires_at, hard_deadline_at = l.hard_deadline_at, delivery = l.delivery,
 		})
@@ -3179,4 +3180,31 @@ delete_chain_review_role_handler :: proc(ctx: rawptr, req: Request) -> Response 
 	}
 	publish_chain_changed(h, auth_ctx.user_id, string(chain_id), "updated")
 	return respond_success(`{"ok":true}`, req.request_id, auth_ctx_server_time(req), 200)
+}
+
+// Cancellation retains task history and exposes operational cleanup.
+task_cancel_handler :: proc(ctx: rawptr, req: Request) -> Response {
+    h := (^Taskchain_Handlers)(ctx)
+    auth, ok, auth_resp := require_auth_any(h.auth, req)
+    if !ok do return auth_resp
+    if h.task_engine == nil do return respond_error(domain.domain_error(.Internal_Error, "task engine is not configured"), req.request_id)
+    chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+    task_id := domain.Task_ID(path_part(req.path, 6))
+    if matched, mismatch := require_task_path_scope(h, auth, chain_id, task_id, req); !matched do return mismatch
+    task, found, err := taskchain_service.get_task(h.taskchains, auth, task_id)
+    if !found do return respond_error(err, req.request_id)
+    result, success, cancel_err := taskv2.task_cancel(h.task_engine, task, taskv2.actor_from_auth(auth), taskv2.Task_Cancel_Input{
+        reason = json_string(req.body, "reason"), request_id = json_string(req.body, "request_id"),
+        expected_generation = i64(jsonx.extract_int(req.body, "expected_generation", 0, true)),
+    })
+    if !success do return respond_error(cancel_err, req.request_id)
+    wire := struct {
+        task: Simple_Task_Wire `json:"task"`,
+        changed: bool `json:"changed"`,
+        message: string `json:"message"`,
+        cleanup_pending: bool `json:"cleanup_pending"`,
+    }{task = make_simple_task_wire(result.task), changed = result.changed,
+      message = result.message, cleanup_pending = result.cleanup_pending}
+    data, _ := json.marshal(wire, JSON_MARSHAL_OPT, allocator = context.temp_allocator)
+    return respond_success(string(data), req.request_id, auth_ctx_server_time(req))
 }

@@ -312,7 +312,8 @@ startup_watchdog_still_expires_after_fallback :: proc(t: ^testing.T) {
 
 @(test)
 startup_duplicate_signals_cannot_reset_exhausted_launch :: proc(t: ^testing.T) {
-    sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
     rec := startup_test_launch("startup_finite", "startup_finite")
     accepted, _ := bridge_startup_accept(rec, 1001)
     testing.expect(t, accepted)
@@ -344,7 +345,8 @@ startup_stop_before_response :: proc(rec: Bridge_Local_Agent_Token_Record, timeo
 }
 @(test)
 startup_typed_terminal_rejection_does_not_retry_and_late_stop_does_not_complete :: proc(t: ^testing.T) {
-    sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
     context.allocator = runtime.heap_allocator()
     for class in ([]contracts.Bridge_Error_Class{.fatal, .recoverable}) {
         rec := startup_test_launch("typed-startup", "typed-startup")

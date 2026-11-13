@@ -6,7 +6,7 @@ import { taskBridgeOptions } from '../../utils/taskBridgePin';
 import { actionErrorMessage, type TaskActionsApi } from './useTaskActions';
 import { describeEffectivePlacement, taskEffectivePlacement } from './fleetSelection';
 import type { TaskNames } from './taskNames';
-import { attemptInfo, formatAgo, formatDuration, keyFor, leaseClock, replacementLinks } from './ticketModel';
+import { attemptInfo, formatAgo, keyFor, replacementLinks } from './ticketModel';
 
 /* Details ------------------------------------------------------------ */
 
@@ -51,7 +51,6 @@ export function TicketDetailsCard({
     }
   };
   const attempt = attemptInfo(task);
-  const lease = leaseClock(task, now);
   const placement = describeEffectivePlacement(taskEffectivePlacement(task, fleets), names.bridge);
   const unpinned = describeEffectivePlacement(taskEffectivePlacement({ ...task, bridge_id: '' }, fleets), names.bridge);
   const bridgeOptions = [
@@ -113,7 +112,7 @@ export function TicketDetailsCard({
             ),
             'ticket-view-detail-bridge',
           )}
-          {row('Attempt', `${attempt.no}${attempt.exhausted ? ' · budget spent' : ''}${lease?.hardLeftMs != null ? ` · hard limit in ${formatDuration(lease.hardLeftMs)}` : ''}`, 'ticket-view-detail-attempt')}
+          {row('Attempt', `${attempt.no}${attempt.exhausted ? ' · budget spent' : ''}`, 'ticket-view-detail-attempt')}
           {links.replaces && row('Replaces', <button type="button" data-debug-id="ticket-view-replaces-link" className="text-accent hover:underline" onClick={() => onOpenTicket(links.replaces!)}>{keyFor(keys, links.replaces)}</button>, 'ticket-view-detail-replaces')}
           {links.replacedBy && row('Replaced by', <button type="button" data-debug-id="ticket-view-replaced-by-link" className="text-accent hover:underline" onClick={() => onOpenTicket(links.replacedBy!)}>{keyFor(keys, links.replacedBy)}</button>, 'ticket-view-detail-replaced-by')}
           {row(

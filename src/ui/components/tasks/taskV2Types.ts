@@ -103,16 +103,13 @@ export function getTaskBadges(task: TaskWire, _chainFleets?: any[], nowMs: numbe
     badges.push({ kind: 'gate', label: 'gate', tone: 'accent', title: 'Human gate stage' });
   }
 
-  if (state === 'in_progress' && lease) {
-    const expiresMs = lease.expires_at ? new Date(lease.expires_at).getTime() : (nowMs + 15 * 60000);
-    const leftMins = Math.max(0, Math.round((expiresMs - nowMs) / 60000));
+  if (lease && state !== 'done' && state !== 'cancelled') {
     const holder = (lease.holder_instance_id && names.instance(lease.holder_instance_id)) || GENERIC_AGENT_LABEL;
-    const tone = leftMins <= 3 ? 'danger' : leftMins <= 5 ? 'warn' : 'accent';
     badges.push({
       kind: 'lease',
-      label: `${holder} · ${leftMins}m left`,
-      tone,
-      title: `Lease expires in ${leftMins} minutes (held by ${holder})`,
+      label: `${holder} · ${ownershipPhase(lease)}`,
+      tone: ownershipPhase(lease) === 'waiting' ? 'neutral' : 'accent',
+      title: `Worker ownership: ${ownershipWaitReason(task, lease) || 'active'}`,
     });
     if (lease.bridge_id || task.bridge_id) {
       badges.push({
@@ -208,19 +205,15 @@ export function getTaskStatusLines(task: TaskWire, _chainFleets?: any[], nowMs: 
 
   if (state === 'in_progress') {
     if (lease) {
-      const expiresMs = lease.expires_at ? new Date(lease.expires_at).getTime() : (nowMs + 15 * 60000);
-      const hardMs = lease.hard_deadline_at ? new Date(lease.hard_deadline_at).getTime() : (nowMs + 60 * 60000);
-      const leftMins = Math.max(0, Math.round((expiresMs - nowMs) / 60000));
-      const hardMins = Math.max(0, Math.round((hardMs - nowMs) / 60000));
       const holder = (lease.holder_instance_id && names.instance(lease.holder_instance_id)) || 'An agent';
       return [
-        `${holder} ${inProgressSentenceRest(leftMins)}`,
-        `attempt ${task.attempt_no || 1} of 5 · hard limit in ${hardMins}m`,
+        `${holder} ${inProgressSentenceRest(ownershipPhase(lease), ownershipWaitReason(task, lease))}`,
+        `attempt ${task.attempt_no || 1} of ${task.brief?.budget?.max_attempts || 5}`,
       ];
     }
     return [
       `Worker assigned · attempt ${task.attempt_no || 1}/5`,
-      'Agent process is executing the brief',
+      'Waiting for ownership details',
     ];
   }
 
@@ -237,7 +230,7 @@ export function getTaskStatusLines(task: TaskWire, _chainFleets?: any[], nowMs: 
     // An agent holding a review lease is named; the role-only text stays for
     // when no review lease exists yet.
     const reviewing = reviewLeaseHolders(task, nowMs)
-      .map((h) => `${(h.instanceId && names.instance(h.instanceId)) || 'An agent'} ${reviewingSentenceRest(h.role, h.leftMins)}`)
+      .map((h) => `${(h.instanceId && names.instance(h.instanceId)) || 'An agent'} ${reviewingSentenceRest(h.role, h.phase, h.waitReason)}`)
       .join('; ');
     if (reviewing) {
       return [
@@ -250,7 +243,7 @@ export function getTaskStatusLines(task: TaskWire, _chainFleets?: any[], nowMs: 
         roles.length > 0
           ? `Waiting on ${rolesStr} and you`
           : 'Waiting on your approval',
-        `Attempt ${task.attempt_no || 1} submitted · author stopped, fresh context on changes`,
+        `Attempt ${task.attempt_no || 1} submitted${lease ? ' · worker ownership retained while waiting' : ''}`,
       ];
     }
     return [
@@ -307,7 +300,8 @@ export interface TaskReviewHolder {
   instanceId: string;
   // The review role the lease is for ('' when the hub sent none).
   role: string;
-  expiresAt: string;
+  phase: 'active' | 'waiting';
+  waitReason: string;
 }
 
 export interface TaskPeople {
@@ -326,6 +320,8 @@ export interface TaskPeople {
   reviewersByRole: { role: string; agents: string[] }[];
   // holder: instance currently holding the work lease ('' when none).
   holder: string;
+  holderPhase: 'active' | 'waiting' | '';
+  holderWaitReason: string;
   // reviewHolders: instances holding a review lease right now, one per lease.
   reviewHolders: TaskReviewHolder[];
   userApproval: boolean;
@@ -378,10 +374,13 @@ export function getTaskPeople(task: TaskWire, chainFleets: any[] = []): TaskPeop
     reviewers: Array.from(new Set(reviewers)),
     reviewersByRole,
     holder: String(work?.holder_instance_id || ''),
+    holderPhase: work ? ownershipPhase(work) : '',
+    holderWaitReason: work ? ownershipWaitReason(task, work) : '',
     reviewHolders: reviewLeases(task).map((l) => ({
       instanceId: String(l.holder_instance_id),
       role: String(l.review_role || ''),
-      expiresAt: String(l.expires_at || ''),
+      phase: ownershipPhase(l),
+      waitReason: ownershipWaitReason(task, l),
     })),
     userApproval: Boolean(task.requires_user_approval),
   };
@@ -431,26 +430,43 @@ export function uiToneForPriority(priority: string | undefined): 'danger' | 'war
   return p === 'p0' || p === 'urgent' ? 'danger' : p === 'p1' || p === 'high' ? 'warning' : 'neutral';
 }
 
-/** "is working, 12m left": the in-progress sentence after the holder's name. */
-export function inProgressSentenceRest(leftMins: number): string {
-  return `is working, ${leftMins}m left`;
+/** Missing phase supports records from before durable ownership was introduced. */
+export function ownershipPhase(lease: Pick<TaskLeaseWire, 'phase'>): 'active' | 'waiting' {
+  return lease.phase === 'waiting' ? 'waiting' : 'active';
+}
+
+/** Waiting is a durable responsibility; time passing never releases it. */
+export function ownershipWaitReason(task: TaskWire, lease: TaskLeaseWire): string {
+  if (ownershipPhase(lease) !== 'waiting') return '';
+  if (task.blocked_on?.reason) return String(task.blocked_on.reason);
+  if (normalizeTaskState(task.state) === 'in_review') {
+    if (lease.kind !== 'review') return 'waiting for review';
+    // The Hub returns reviews for the current attempt only.
+    if ((task.reviews || []).some((r) => r.reviewer_instance_id === lease.holder_instance_id)) return 'review submitted';
+  }
+  return 'waiting to continue';
+}
+
+export function inProgressSentenceRest(phase: 'active' | 'waiting', waitReason = ''): string {
+  return phase === 'waiting' ? `is waiting · ${waitReason || 'ownership retained'}` : 'is working';
 }
 
 /**
- * The work-lease holder of an in-progress task and its minutes left, so a view
+ * The work claim holder of an in-progress task and its phase, so a view
  * can render the holder with <HolderName> when names.instance() cannot name it.
  */
-export function workLeaseHolder(task: TaskWire, nowMs: number = Date.now()): { instanceId: string; leftMins: number } | null {
+export function workLeaseHolder(task: TaskWire, _nowMs: number = Date.now()): { instanceId: string; phase: 'active' | 'waiting'; waitReason: string } | null {
   if (normalizeTaskState(task.state) !== 'in_progress') return null;
   const lease: any = workLease(task);
   if (!lease?.holder_instance_id) return null;
-  const expiresMs = lease.expires_at ? new Date(lease.expires_at).getTime() : nowMs + 15 * 60000;
-  return { instanceId: String(lease.holder_instance_id), leftMins: Math.max(0, Math.round((expiresMs - nowMs) / 60000)) };
+  return { instanceId: String(lease.holder_instance_id), phase: ownershipPhase(lease), waitReason: ownershipWaitReason(task, lease) };
 }
 
-/** "is reviewing (security), 4m left": the in-review sentence after the holder's name. */
-export function reviewingSentenceRest(role: string, leftMins: number): string {
-  return `is reviewing${role ? ` (${role})` : ''}, ${leftMins}m left`;
+/** The review sentence after the holder's name, including waiting state. */
+export function reviewingSentenceRest(role: string, phase: 'active' | 'waiting', waitReason = ''): string {
+  return phase === 'waiting'
+    ? `is waiting${role ? ` (${role})` : ''} · ${waitReason || 'ownership retained'}`
+    : `is reviewing${role ? ` (${role})` : ''}`;
 }
 
 /** The task's review leases that name a holder, in wire order. */
@@ -459,14 +475,12 @@ export function reviewLeases(task: TaskWire): TaskLeaseWire[] {
 }
 
 /**
- * The review-lease holders of an in-review task with their role and minutes
- * left, so a view can render each with <HolderName>. [] outside in_review.
+ * The review claim holders of an in-review task with their role and phase, so a view can render each with <HolderName>. [] outside in_review.
  */
-export function reviewLeaseHolders(task: TaskWire, nowMs: number = Date.now()): { instanceId: string; role: string; leftMins: number }[] {
+export function reviewLeaseHolders(task: TaskWire, _nowMs: number = Date.now()): { instanceId: string; role: string; phase: 'active' | 'waiting'; waitReason: string }[] {
   if (normalizeTaskState(task.state) !== 'in_review') return [];
   return reviewLeases(task).map((l) => {
-    const expiresMs = l.expires_at ? new Date(l.expires_at).getTime() : nowMs + 15 * 60000;
-    return { instanceId: String(l.holder_instance_id), role: String(l.review_role || ''), leftMins: Math.max(0, Math.round((expiresMs - nowMs) / 60000)) };
+    return { instanceId: String(l.holder_instance_id), role: String(l.review_role || ''), phase: ownershipPhase(l), waitReason: ownershipWaitReason(task, l) };
   });
 }
 

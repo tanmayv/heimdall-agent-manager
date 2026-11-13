@@ -59,7 +59,7 @@ test_submit_needs_no_command_evidence :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_submit_after_expiry_409 :: proc(t: ^testing.T) {
+test_submit_after_elapsed_time_succeeds :: proc(t: ^testing.T) {
 	fx, log, ok := lease_fixture(t, "m2_exp409")
 	defer lease_fixture_close(fx, log)
 	if !ok do return
@@ -71,10 +71,10 @@ test_submit_after_expiry_409 :: proc(t: ^testing.T) {
 	lease, _ := lease_of(fx, "inst_w1")
 	fixture_advance(fx, LEASE_TTL_SECONDS + 1)
 	_ = fire_due(&fx.svc, now_ms(&fx.clock))
-	// the old process submits with its old lease id
+	// Its original assignment still authorizes submission.
 	_, sok, serr := lease_submit(&fx.svc, inst_auth("inst_w1"), Submit_Input{lease_id = lease.lease_id, summary = "late", vcs_json = `{"head":"abc","dirty":false}`})
-	testing.expect(t, !sok && serr.code == .Conflict && strings.contains(serr.message, "lease_lost"), "submit after expiry → 409 lease_lost")
-	testing.expect_value(t, count_events(fx, "task_1", EV_SUBMITTED), 0)
+	testing.expect(t, sok && serr.code == .None, "elapsed time cannot revoke submit authority")
+	testing.expect_value(t, count_events(fx, "task_1", EV_SUBMITTED), 1)
 }
 
 @(test)
@@ -108,7 +108,7 @@ test_review_gate_strict_and_request_changes_user_approval :: proc(t: ^testing.T)
 	if !testing.expect(t, g1ok, fmt.tprintf("review r1: %s", g1err.message)) do return
 	testing.expect_value(t, g1.gate, Gate_Result.Waiting)
 	testing.expect_value(t, get_task(fx, "task_1").state, domain.Task_State.In_Review)
-	// r2 requests changes → task ready (attempt 2 next), remaining review leases dropped
+	// r2 requests changes → task ready (attempt 2 next), reviewers retain waiting claims.
 	g2, g2ok, _ := review_post(&fx.svc, inst_auth("inst_r2"), Review_Input{verdict = "request_changes", findings_json = `[{"path":"a.odin","line":3,"severity":"major","text":"off by one"}]`})
 	testing.expect(t, g2ok && g2.gate == .Changes_Requested, "request_changes")
 	testing.expect_value(t, count_events(fx, "task_1", EV_CHANGES_REQUESTED), 1)
@@ -116,7 +116,7 @@ test_review_gate_strict_and_request_changes_user_approval :: proc(t: ^testing.T)
 	l2, h2 := lease_of(fx, "inst_w1")
 	testing.expect(t, h2 && l2.lease_id != l1.lease_id && l2.attempt_no == 2, "re-granted as attempt 2")
 	leases, _ := iface.taskchain_list_leases_by_task(&fx.repo, task.task_id)
-	for l in leases do testing.expect(t, l.kind != domain.LEASE_KIND_REVIEW, "no review lease lingers after request_changes")
+	for l in leases do if l.kind == domain.LEASE_KIND_REVIEW do testing.expect_value(t, l.phase, "waiting")
 	// attempt 2: prior reviews do not count — both must approve again, plus the user
 	confirm_holder(fx, "inst_w1")
 	_, s2ok, _ := lease_submit(&fx.svc, inst_auth("inst_w1"), Submit_Input{summary = "v2", vcs_json = `{"head":"h2","dirty":false}`})
@@ -164,8 +164,8 @@ test_oscillation_guard_parks_after_three_rounds :: proc(t: ^testing.T) {
 	parked := get_task(fx, "task_1")
 	testing.expect_value(t, parked.state, domain.Task_State.Backlog)
 	testing.expect(t, strings.contains(parked.blocked_on_json, "oscillation"), "oscillation guard → blocked_on human")
-	_, held := lease_of(fx, "inst_w1")
-	testing.expect(t, !held, "no grant while parked")
+	waiting, held := lease_of(fx, "inst_w1")
+	testing.expect(t, held && waiting.phase == "waiting", "parked rework retains ownership without active authority")
 	// the human answers → ready again → granted, and oscillation counter resets (M2-m2)
 	_, aok, _ := task_answer(&fx.svc, parked, Actor{kind = ACTOR_USER, id = "u1"}, "merged the two views")
 	testing.expect(t, aok, "answer")
@@ -246,8 +246,8 @@ test_handoff_keeps_attempt_and_block_parks :: proc(t: ^testing.T) {
 	row := get_task(fx, "task_1")
 	testing.expect_value(t, row.state, domain.Task_State.Backlog)
 	testing.expect(t, strings.contains(row.blocked_on_json, "INC-42") && strings.contains(row.blocked_on_json, "since_ms"), "waiting_on badge with since")
-	_, still := lease_of(fx, holder)
-	testing.expect(t, !still, "block releases the lease")
+	waiting, still := lease_of(fx, holder)
+	testing.expect(t, still && waiting.phase == domain.LEASE_PHASE_WAITING, "block retains waiting ownership")
 	// bad waiting_on → 422 (and nothing changes)
 	_, wbad, werr := lease_block(&fx.svc, inst_auth(holder), Block_Input{waiting_on_json = `{"reason":"no kind"}`})
 	testing.expect(t, !wbad && werr.code == .Validation_Failed, "waiting_on.kind required")
@@ -305,6 +305,12 @@ test_reopen_starts_new_noncounting_attempt :: proc(t: ^testing.T) {
 	testing.expect(t, !bad && berr.code == .Conflict, "only terminal tasks reopen")
 	_ = cancel_task(&fx.svc, get_task(fx, "task_1"), Actor{kind = ACTOR_USER, id = "u1"}, "oops")
 	testing.expect_value(t, get_task(fx, "task_1").state, domain.Task_State.Cancelled)
+	inst, _, _ := iface.agent_get_instance(&fx.agents, "inst_w1")
+	inst.runtime_status = "stopped"
+	_, _, _ = iface.agent_save_instance(&fx.agents, inst)
+	confirm_pending_ownership_stop_for_test(t, fx, get_task(fx, "task_1"), "inst_w1")
+	inst.runtime_status = "idle"
+	_, _, _ = iface.agent_save_instance(&fx.agents, inst)
 	fresh, rok, rerr := task_reopen(&fx.svc, get_task(fx, "task_1"), Actor{kind = ACTOR_USER, id = "u1"})
 	if !testing.expect(t, rok, fmt.tprintf("reopen: %s", rerr.message)) do return
 	testing.expect_value(t, fresh.state, domain.Task_State.In_Progress) // re-granted at once

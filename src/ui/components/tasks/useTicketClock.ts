@@ -7,7 +7,7 @@ import { useEffect, useState } from 'react';
 export const TICKET_CLOCK_MS = 30_000;
 
 /**
- * A local clock for countdowns and "12m ago" labels (ticket board spec, Live
+ * A local clock for elapsed time and "12m ago" labels (ticket board spec, Live
  * updates rules): live values are derived from timestamps on this tick, never
  * by refetching. One timer per subscriber; it stops while the page is hidden.
  */

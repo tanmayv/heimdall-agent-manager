@@ -197,7 +197,7 @@ workflow_stop_tasks :: proc(svc: ^Service, u: ^Uow, wf: Workflow_Context, actor:
 		leases, lerr := iface.taskchain_list_leases_by_task(svc.repo, task.task_id)
 		if lerr.code != .None do return lerr
 		for lease in leases {
-			if expire_lease_in_uow(svc, u, lease, EXPIRE_CHAIN_CLOSED, actor) == .Failed do return domain.domain_error(.Internal_Error, "failed to reclaim workflow lease")
+			if ok, err := revoke_claim_in_uow(svc, u, task, lease, actor, reason); !ok do return err
 		}
 		fresh, _, _ := iface.taskchain_get_task(svc.repo, task.task_id)
 		payload := json_begin(); json_str(&payload, "reason", reason)

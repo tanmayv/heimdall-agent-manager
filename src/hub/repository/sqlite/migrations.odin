@@ -637,6 +637,7 @@ MIGRATION_194_EXTENSION_VERSION_SYNC :: #load("migrations/194_extension_version_
 
 MIGRATION_195_EXTENSION_VERSION_SYNC :: #load("migrations/195_extension_version_sync_0_5_45.sql", string)
 
+MIGRATION_203_DURABLE_TASK_CLAIMS :: #load("migrations/203_durable_task_claims.sql", string)
 MIGRATION_196_EXTENSION_VERSION_SYNC :: #load("migrations/196_extension_version_sync_0_5_46.sql", string)
 
 MIGRATION_197_AGENT_TOKEN_TOTALS :: #load("migrations/197_agent_token_totals.sql", string)
@@ -650,7 +651,11 @@ MIGRATION_201_EXTENSION_VERSION_SYNC :: #load("migrations/201_extension_version_
 
 MIGRATION_202_EXTENSION_VERSION_SYNC :: #load("migrations/202_extension_version_sync_0_5_50.sql", string)
 
-migration_order :: [206]string {
+MIGRATION_204_EXTENSION_VERSION_SYNC :: #load("migrations/204_extension_version_sync_0_5_51_durable_1.sql", string)
+
+MIGRATION_205_EXTENSION_VERSION_SYNC :: #load("migrations/205_extension_version_sync_0_5_51.sql", string)
+
+migration_order :: [209]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
 	"003_device_tokens.sql",
@@ -857,6 +862,9 @@ migration_order :: [206]string {
 	"200_extension_version_sync_0_5_48.sql",
 	"201_extension_version_sync_0_5_49.sql",
 	"202_extension_version_sync_0_5_50.sql",
+	"203_durable_task_claims.sql",
+	"204_extension_version_sync_0_5_51_durable_1.sql",
+	"205_extension_version_sync_0_5_51.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -900,6 +908,16 @@ run_migrations :: proc(
          continue
         }
 		if migration_applied(conn, name) do continue
+        // 203 may have committed before its ledger write (or an older build may
+        // have applied only the ALTER). Re-run its idempotent data conversion.
+        if name == "203_durable_task_claims.sql" && table_column_exists(conn, "task_leases", "phase") {
+            remaining, _ := strings.replace_all(MIGRATION_203_DURABLE_TASK_CLAIMS,
+                "ALTER TABLE task_leases ADD COLUMN phase TEXT NOT NULL DEFAULT 'active' CHECK (phase IN ('active', 'waiting'));", "", context.temp_allocator)
+            if !exec(conn, remaining) do return false, domain.domain_error(.Internal_Error, "durable claim conversion recovery failed")
+            mark_migration_applied(conn, name)
+            continue
+        }
+
 		if name == "003_device_tokens.sql" &&
 		   table_column_exists(conn, "user_api_tokens", "created_from") &&
 		   table_column_exists(conn, "user_api_tokens", "device_label") {
@@ -1346,6 +1364,9 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 			return string(data)
 		}
 	}
+	if name == "205_extension_version_sync_0_5_51.sql" do return strings.clone(MIGRATION_205_EXTENSION_VERSION_SYNC)
+	if name == "204_extension_version_sync_0_5_51_durable_1.sql" do return strings.clone(MIGRATION_204_EXTENSION_VERSION_SYNC)
+	if name == "203_durable_task_claims.sql" do return strings.clone(MIGRATION_203_DURABLE_TASK_CLAIMS)
 	if name == "202_extension_version_sync_0_5_50.sql" do return strings.clone(MIGRATION_202_EXTENSION_VERSION_SYNC)
 	if name == "201_extension_version_sync_0_5_49.sql" do return strings.clone(MIGRATION_201_EXTENSION_VERSION_SYNC)
 	if name == "200_extension_version_sync_0_5_48.sql" do return strings.clone(MIGRATION_200_EXTENSION_VERSION_SYNC)

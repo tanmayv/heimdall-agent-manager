@@ -51,7 +51,7 @@ match_chain_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, tri
 stage_live_work_lease_count :: proc(ctx: ^Match_Context, run_id: domain.Workflow_Run_ID, execution_no: int, stage_key: string) -> int {
 	count := 0
 	for l in ctx.leases {
-		if l.kind != domain.LEASE_KIND_WORK do continue
+		if l.phase == domain.LEASE_PHASE_WAITING || l.kind != domain.LEASE_KIND_WORK do continue
 		for t in ctx.tasks {
 			if t.task_id == l.task_id && t.workflow_run_id == run_id && t.workflow_execution_no == execution_no && t.stage_key == stage_key {
 				count += 1
@@ -145,7 +145,7 @@ destroy_match_context :: proc(ctx: ^Match_Context) {
 @(private = "package")
 task_has_live_lease :: proc(ctx: ^Match_Context, task_id: domain.Task_ID, kind: string, review_role := "") -> bool {
 	for l in ctx.leases {
-		if l.task_id != task_id || l.kind != kind do continue
+		if l.phase == domain.LEASE_PHASE_WAITING || l.task_id != task_id || l.kind != kind do continue
 		if kind == domain.LEASE_KIND_REVIEW && review_role != "" && l.review_role != review_role do continue
 		return true
 	}
@@ -179,6 +179,11 @@ resolve_placement :: proc(ctx: ^Match_Context, task: domain.Task, fleet: domain.
 @(private = "file")
 grant_work :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Task, trigger: Trigger) {
 	assignee := brief_assignee(task.brief_json)
+	// Existing canonical ownership wins over new placement selection until release.
+	for claim in ctx.leases {
+		if claim.task_id != task.task_id || claim.kind != domain.LEASE_KIND_WORK do continue
+		if owner, found, _ := iface.agent_get_instance(svc.agents, claim.holder_instance_id); found { assignee = owner.agent_id }
+	}
 	evs, _ := task_fold_events(svc, task)
 	view := fold_task(evs, fold_input_for_task(task, true))
 	prefer := ""
@@ -207,7 +212,7 @@ grant_work :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Tas
 		if domain.fleet_role_paused(fleet, domain.FLEET_ROLE_WORKER) { queued = true; continue }
 		placement, pok := resolve_placement(ctx, task, fleet, true)
 		if placement.directory_id != "" && directory_has_work_lease_ctx(ctx, placement.directory_id) { queued = true; continue }
-		if fleet_row_full(ctx, fleet, placement) { queued = true; continue }
+		if !fleet_owns_task(ctx, task, fleet.agent_id) && fleet_row_full(ctx, fleet, placement) { queued = true; continue }
 		if reason, _ := placement_problem(svc, ctx, placement, pok, fleet.agent_id); reason != "" do continue
 		inst, found, why := pick_instance(svc, u, ctx, task, fleet, placement, domain.FLEET_ROLE_WORKER, prefer)
 		if !found {
@@ -255,7 +260,7 @@ grant_reviews :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.
 		if len(owed) == 0 do continue
 		if review_lease_live_for(ctx, svc, task.task_id, agent_id, "") do continue
 		placement, pok := resolve_placement(ctx, task, fleet, false)
-		if fleet_row_full(ctx, fleet, placement) do continue
+		if !fleet_owns_task(ctx, task, fleet.agent_id) && fleet_row_full(ctx, fleet, placement) do continue
 		if reason, _ := placement_problem(svc, ctx, placement, pok, fleet.agent_id); reason != "" do continue
 		inst, found, why := pick_instance(svc, u, ctx, task, fleet, placement, domain.FLEET_ROLE_REVIEWER, "")
 		if !found {
@@ -290,7 +295,7 @@ grant_reviews :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.
 @(private = "package")
 review_lease_live_for :: proc(ctx: ^Match_Context, svc: ^Service, task_id: domain.Task_ID, agent_id, role: string) -> bool {
 	for l in ctx.leases {
-		if l.task_id != task_id || l.kind != domain.LEASE_KIND_REVIEW do continue
+		if l.phase == domain.LEASE_PHASE_WAITING || l.task_id != task_id || l.kind != domain.LEASE_KIND_REVIEW do continue
 		if role != "" {
 			covers := false
 			for r in split_review_roles(l.review_role) do if r == role { covers = true; break }
@@ -321,6 +326,21 @@ instance_failure_reason :: proc(inst: domain.Agent_Instance) -> string {
 // Coordinators are never candidates.
 @(private = "file")
 pick_instance :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Task, fleet: domain.Task_Chain_Fleet, placement: Placement, role: string, prefer: string) -> (domain.Agent_Instance, bool, string) {
+	if ctx.has_coordinator && fleet.agent_id == ctx.coordinator.agent_id do return {}, false, ""
+	// A waiting claim is a reservation for this exact instance, including rework.
+	for claim in ctx.leases {
+		if claim.task_id != task.task_id || claim.phase != domain.LEASE_PHASE_WAITING do continue
+		for inst in ctx.instances {
+			if inst.agent_instance_id != claim.holder_instance_id || inst.agent_id != fleet.agent_id do continue
+			if (role == domain.FLEET_ROLE_WORKER) != (claim.kind == domain.LEASE_KIND_WORK) do continue
+			if inst.bridge_id != placement.bridge_id do return {}, false, "assigned instance is on another bridge"
+			if disposition := agent.failed_instance_disposition(inst, ctx.now_ms); disposition == .Dead || disposition == .Hold do return {}, false, instance_failure_reason(inst)
+			if inst.stopped_by == agent.STOPPED_BY_USER do return {}, false, "assigned instance was stopped by the user"
+			if busy, err := iface.agent_runtime_busy(svc.agents, inst.agent_instance_id); busy || err.code != .None do return {}, false, "assigned instance has a pending runtime action"
+			return inst, true, ""
+		}
+	}
+
 	// The coordinator's own fleet row (solo mode) is pull-only: its agent
 	// takes work through `lease next`, never by a wake grant, and a JIT copy of
 	// it is never spawned (REQ-SOLO-2).
@@ -606,7 +626,7 @@ directory_has_work_lease_ctx :: proc(ctx: ^Match_Context, directory_id: string) 
 		}
 	}
 	for l in ctx.leases {
-		if l.kind != domain.LEASE_KIND_WORK do continue
+		if l.phase == domain.LEASE_PHASE_WAITING || l.kind != domain.LEASE_KIND_WORK do continue
 		if resolve_directory_for_bridge(ctx.dirs, l.bridge_id) == directory_id do return true
 	}
 	return false
@@ -738,4 +758,12 @@ dispatch_blockers :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.
 		}
 	}
 	return out[:]
+}
+
+fleet_owns_task :: proc(ctx: ^Match_Context, task: domain.Task, agent_id: string) -> bool {
+	for claim in ctx.leases {
+		if claim.task_id != task.task_id do continue
+		for inst in ctx.instances do if inst.agent_instance_id == claim.holder_instance_id && inst.agent_id == agent_id do return true
+	}
+	return false
 }

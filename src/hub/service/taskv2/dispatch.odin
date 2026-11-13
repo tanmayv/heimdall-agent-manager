@@ -22,6 +22,7 @@ agent_not_running_in_uow :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Leas
 	current, held, err := iface.taskchain_get_lease(svc.repo, lease.lease_id)
 	if !held do return .Gone if err.code == .None || err.code == .Not_Found else .Failed
 	if err.code != .None do return .Failed
+	if current.phase == domain.LEASE_PHASE_WAITING do return .Gone
 	if unconfirmed_only && (current.confirmed_at != "" || current.delivery != domain.LEASE_DELIVERY_WAKE) do return .Gone
 	// A failed wake of a handoff continuation did not create a new attempt.
 	// Keep the earlier worker's budget charge and resume that same attempt.

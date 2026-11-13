@@ -30,7 +30,10 @@ import "core:slice"
 import "core:strconv"
 import "core:strings"
 import httpc "odin_test:lib/httpc"
+import contracts "odin_test:contracts"
 import jsonx "odin_test:lib/jsonx"
+import os_random "odin_test:lib/os_random"
+import vault "odin_test:lib/vault"
 
 ctl_requirements_revision_flag :: proc(args: []string, flag: string) -> int {
     if !has_flag(args,flag) do return 0
@@ -1326,4 +1329,33 @@ print_help_workflow :: proc() {
  fmt.println("  inputs fail before anything is created. An empty array completes the stage with zero tasks.")
  fmt.println("A retry creates a fresh execution. Consumed outputs block retry. Stage retry is unsupported.")
  fmt.println("Agent mode may omit --chain when creating/listing runs; run IDs are always explicit.")
+}
+
+ctl_v2_lease_claim_params :: proc(task_id: string, args: []string) -> string {
+    fields := make([dynamic]string)
+    append(&fields, json_kv("task_id", task_id))
+    append(&fields, json_kv("reason", option_value(args, "--reason", "Explicit task ownership requested via CLI")))
+    append(&fields, json_kv("request_id", ctl_task_request_id(args)))
+    for flag in ([?]string{"--instance", "--vcs-base"}) {
+        key := "instance_id" if flag == "--instance" else "vcs_base"
+        if v := option_value(args, flag, ""); v != "" do append(&fields, json_kv(key, v))
+    }
+    if has_flag(args, "--expected-generation") do append(&fields, json_kv_raw("expected_generation", fmt.aprintf("%d", ctl_requirements_revision_flag(args, "--expected-generation"))))
+    append(&fields, ctl_agent_cwd_field())
+    return json_object_from_slice(fields[:])
+}
+
+ctl_task_request_id :: proc(args: []string) -> string {
+    if id := strings.trim_space(option_value(args, "--request-id", "")); id != "" do return id
+    bytes: [16]byte
+    if !os_random.fill(bytes[:]) do ctl_print_error_exit("system randomness unavailable; cannot generate request ID")
+    return strings.concatenate({"req_", vault.hex_encode_lower(bytes[:], context.temp_allocator)}, context.temp_allocator)
+}
+
+ctl_v2_task_cancel_body :: proc(args: []string) -> httpc.Body {
+    return httpc.json_body(contracts.Task_Cancel_Request{
+        reason = option_value(args, "--reason", "Task cancellation requested via CLI"),
+        request_id = ctl_task_request_id(args),
+        expected_generation = i64(ctl_requirements_revision_flag(args, "--expected-generation")),
+    })
 }

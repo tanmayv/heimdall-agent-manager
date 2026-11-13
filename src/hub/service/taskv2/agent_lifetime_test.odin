@@ -168,10 +168,14 @@ test_t8_block_keeps_process_and_handoff_relaunches :: proc(t: ^testing.T) {
 	_ = fire_due(&fx.svc, now_ms(&fx.clock))
 	testing.expect(t, !wake_log_has_stop(log, "inst_w1"), "idle TTL spares an instance whose task is blocked")
 
-	// A second task: handoff stops; the same-UoW re-grant relaunches.
+	// Relinquish the blocked reservation explicitly before taking another task.
+	_, released, release_err := lease_handoff(&fx.svc, inst_auth("inst_w1"), Handoff_Input{summary = "release blocked responsibility"})
+	if !testing.expect(t, released, release_err.message) do return
+	testing.expect(t, !wake_log_has_stop(log, "inst_w1"), "waiting handoff releases responsibility without interrupting process")
+	// A second task: active handoff stops; the same-UoW re-grant relaunches.
 	_ = publish_task(t, fx, chain, "task_2", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
 	l2, held := lease_of(fx, "inst_w1")
-	if !testing.expect(t, held, "second task granted") do return
+	if !testing.expect(t, held && string(l2.task_id) == "task_2", "second task granted after explicit release") do return
 	confirm_holder(fx, "inst_w1")
 	before := run_count_of(fx, "inst_w1")
 	wake_log_reset(log)
@@ -186,10 +190,10 @@ test_t8_block_keeps_process_and_handoff_relaunches :: proc(t: ^testing.T) {
 	}
 }
 
-// Idle-grace expiry releases the lease without stopping the agent, and does
-// not refuse its next `lease next`.
+// The legacy idle-grace deadline neither releases a durable claim nor stops
+// its process.
 @(test)
-test_t8_idle_grace_expiry_keeps_process :: proc(t: ^testing.T) {
+test_t8_idle_grace_keeps_claim_and_process :: proc(t: ^testing.T) {
 	fx, log, ok := lease_fixture(t, "t8_idle")
 	defer lease_fixture_close(fx, log)
 	if !ok do return
@@ -203,12 +207,11 @@ test_t8_idle_grace_expiry_keeps_process :: proc(t: ^testing.T) {
 	wake_log_reset(log)
 	fixture_advance(fx, IDLE_GRACE_SECONDS + 1)
 	_ = fire_due(&fx.svc, now_ms(&fx.clock))
-	testing.expect(t, strings.contains(last_event_payload(fx, "task_1", EV_LEASE_EXPIRED), `"reason":"idle"`), "idle grace expired the lease")
-	testing.expect(t, !wake_log_has_stop(log, "inst_w1"), "idle-grace expiry does not stop the agent")
-	testing.expect(t, !recently_expired(&fx.svc, "inst_w1", now_ms(&fx.clock)), "the live agent may pull again")
-	if again, held := lease_of(fx, "inst_w1"); held && again.lease_id != lease.lease_id {
-		expect_nudged(t, log, "inst_w1", run_count_of(fx, "inst_w1"), "re-grant after idle expiry")
-	}
+	testing.expect_value(t, count_events(fx, "task_1", EV_LEASE_EXPIRED), 0)
+	again, held := lease_of(fx, "inst_w1")
+	testing.expect(t, held, "idle grace retains the durable claim")
+	testing.expect_value(t, again.lease_id, lease.lease_id)
+	testing.expect(t, !wake_log_has_stop(log, "inst_w1"), "idle grace does not stop the agent")
 }
 
 // Bridge reconnect and the idle TTL do not stop a lease-free fleet worker that
@@ -320,39 +323,35 @@ test_t8_changes_requested_expiry_keeps_other_reviewer :: proc(t: ^testing.T) {
 	wake_log_reset(log)
 	_, rok, rerr := review_post(&fx.svc, inst_auth("inst_r1"), {verdict = "request_changes", findings_json = `[{"path":"a.odin","line":1,"severity":"major","text":"fix"}]`})
 	if !testing.expectf(t, rok, "request_changes: %s", rerr.message) do return
-	if b_now, still := lease_of(fx, "inst_r2"); still {
-		testing.expect(t, b_now.lease_id != b_lease.lease_id, "B's review lease was dropped")
-	}
-	testing.expect(t, strings.contains(last_event_payload(fx, "task_1", EV_LEASE_EXPIRED), `"reason":"changes_requested"`), "B expired with reason changes_requested")
-	testing.expect(t, !wake_log_has_stop(log, "inst_r2"), "changes_requested expiry does not stop B")
+	b_now, still, _ := iface.taskchain_get_lease(&fx.repo, b_lease.lease_id)
+	testing.expect(t, still && b_now.phase == domain.LEASE_PHASE_WAITING, "B retains a waiting review claim")
+	testing.expect_value(t, count_events(fx, "task_1", EV_LEASE_EXPIRED), 0)
+	testing.expect(t, !wake_log_has_stop(log, "inst_r2"), "review rework does not stop B")
 	testing.expect(t, !wake_log_has_stop(log, "inst_r1"), "review post does not stop A")
 	testing.expect_value(t, run_count_of(fx, "inst_r2"), b_gen)
 	testing.expect(t, !recently_expired(&fx.svc, "inst_r2", now_ms(&fx.clock)), "B may pull again at once")
 
-	// Any other expiry reason still stops the holder.
-	for reason in ([]string{EXPIRE_TTL, EXPIRE_HARD_CAP, EXPIRE_INSTANCE_LOST, EXPIRE_UNCONFIRMED, EXPIRE_REPLACED, EXPIRE_DEP_ADDED, EXPIRE_CHAIN_CLOSED, EXPIRE_CANCELLED, EXPIRE_USER_STOPPED}) {
+	// Explicit invalidation reasons still stop the holder.
+	for reason in ([]string{EXPIRE_INSTANCE_LOST, EXPIRE_UNCONFIRMED, EXPIRE_REPLACED, EXPIRE_DEP_ADDED, EXPIRE_CHAIN_CLOSED, EXPIRE_CANCELLED, EXPIRE_USER_STOPPED}) {
 		testing.expectf(t, expiry_stops_holder(reason), "%s expiry stops the holder", reason)
 	}
+	testing.expect(t, !expiry_stops_holder(EXPIRE_TTL), "legacy TTL keeps the holder")
+	testing.expect(t, !expiry_stops_holder(EXPIRE_HARD_CAP), "legacy hard cap keeps the holder")
 	testing.expect(t, !expiry_stops_holder(EXPIRE_IDLE), "idle expiry keeps the holder")
 	testing.expect(t, !expiry_stops_holder(EXPIRE_CHANGES_REQUESTED), "changes_requested expiry keeps the holder")
-	// Behaviourally: the reworking worker's lease hits the hard cap → stopped.
-	if _, w_held := lease_of(fx, "inst_w1"); !testing.expect(t, w_held, "worker re-granted for rework") do return
+	// Rework retains its claim and process beyond the legacy hard cap.
+	w_claim, w_held := lease_of(fx, "inst_w1")
+	if !testing.expect(t, w_held, "worker re-granted for rework") do return
 	confirm_holder(fx, "inst_w1")
 	w_gen := run_count_of(fx, "inst_w1")
+	expired_before := count_events(fx, "task_1", EV_LEASE_EXPIRED)
 	wake_log_reset(log)
-	for _ in 0..<((LEASE_HARD_CAP_SECONDS / 300) + 1) {
-		fixture_advance(fx, 300)
-		touch_instance(&fx.svc, "inst_w1")
-		_ = fire_due(&fx.svc, now_ms(&fx.clock))
-		if count_events(fx, "task_1", EV_LEASE_EXPIRED) >= 2 do break
-	}
-	testing.expect(t, strings.contains(last_event_payload(fx, "task_1", EV_LEASE_EXPIRED), `"reason":"hard_cap"`), "worker lease hit the hard cap")
-	// The stop and the same-UoW re-grant fold into a relaunch (new generation,
-	// full bootstrap); either way the old process is ended, never nudged.
-	if entry := wake_log_run_entry(log, "inst_w1"); entry != "" {
-		testing.expectf(t, !strings.contains(entry, `"deliver":"nudge"`), "hard-cap re-grant relaunches, not nudges (%s)", entry)
-		testing.expect_value(t, run_count_of(fx, "inst_w1"), w_gen + 1)
-	} else {
-		testing.expect(t, wake_log_has_stop(log, "inst_w1"), "hard-cap expiry stops the holder")
-	}
+	fixture_advance(fx, LEASE_HARD_CAP_SECONDS + 1)
+	_ = fire_due(&fx.svc, now_ms(&fx.clock))
+	again, held := lease_of(fx, "inst_w1")
+	testing.expect(t, held, "rework claim survives the legacy hard cap")
+	testing.expect_value(t, again.lease_id, w_claim.lease_id)
+	testing.expect_value(t, count_events(fx, "task_1", EV_LEASE_EXPIRED), expired_before)
+	testing.expect_value(t, run_count_of(fx, "inst_w1"), w_gen)
+	testing.expect(t, !wake_log_has_stop(log, "inst_w1"), "legacy hard cap does not stop the holder")
 }

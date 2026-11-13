@@ -1132,21 +1132,29 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		fmt.println("bridge hub runtime command stop_agent")
 		command_id := extract_json_string(text, "command_id", "")
 		defer delete(command_id)
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return }
+		if cached, ok := bridge_runtime_cached_command(command_id); ok && !bridge_failed_fenced_stop_retry(type, text, cached) { _ = bridge_hub_send(conn, cached); return }
 		accepted := bridge_command_result_json(command_id, "accepted", "")
 		defer delete(accepted)
 		bridge_runtime_cache_command(command_id, accepted)
 		_ = bridge_hub_send(conn, accepted)
 		instance_id := extract_json_string(text, "agent_instance_id", "")
 		defer delete(instance_id)
-		ok, restored := bridge_runtime_stop_or_restore(instance_id, extract_json_bool(text, "force", false))
+		expected_run := extract_json_int(text, "expected_run_count", -1)
+		ok, restored, stale := bridge_runtime_stop_generation(instance_id, extract_json_bool(text, "force", false), expected_run)
 		defer delete(restored)
+		if stale {
+			final := bridge_command_failed_json(command_id, bridge_cause_wire_error("stale_generation", "stop targets a different process generation"), "")
+			defer delete(final)
+			bridge_runtime_cache_command(command_id, final)
+			_ = bridge_hub_send(conn, final)
+			return
+		}
 		// The run's final token usage rides on the status report below (T3r).
 		if ok do _ = bridge_ext_token_capture_final(instance_id, bridge_agent_instance_run_count(instance_id))
 		st_json := bridge_instance_status_json(instance_id)
 		defer delete(st_json)
 		_ = bridge_hub_send(conn, st_json)
-		final := bridge_command_result_json(command_id, "succeeded", "stopped") if ok else bridge_command_failed_json(command_id, bridge_cause_wire_error("stop_failed", "the agent did not stop"), restored)
+		final := bridge_stop_confirmed_json(command_id, instance_id, expected_run) if ok else bridge_command_failed_json(command_id, bridge_cause_wire_error("stop_failed", "the agent did not stop"), restored)
 		defer delete(final)
 		bridge_runtime_cache_command(command_id, final)
 		_ = bridge_hub_send(conn, final)
@@ -1166,7 +1174,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		defer delete(sender_id)
 		sender := sender_dn if sender_dn != "" else sender_id
 		// T6: during a context rollover the notice (which presses ESC) would
-		// interrupt the handoff; it is queued and delivered after the restart.
+		// interrupt the handoff; queue it until readiness or bounded stall recovery.
 		ok := bridge_rollover_queue_notice(instance_id, sender) || bridge_pty_host_deliver_to_agent(instance_id, "message", sender, "", "")
 		if !ok do fmt.println("bridge notification pending/no-agent-subscription", instance_id, command_id)
 		if command_id != "" {
@@ -2609,6 +2617,8 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 	defer bridge_auto_update_launch_leave()
 	instance_id := extract_json_string(command_json, "agent_instance_id", "")
 	if strings.trim_space(instance_id) == "" do return false, "missing agent_instance_id", bridge_error(.agent_launch_failed, .unsupported)
+	lifecycle := bridge_agent_lifecycle_enter(instance_id)
+	defer bridge_agent_lifecycle_leave(lifecycle)
 	defer if !ok do bridge_runtime_record_failure(instance_id, err)
 	launch_epoch := extract_json_string(command_json, "launch_epoch", "")
 	run_count, _ := bridge_provider_json_extract_int(command_json, "run_count")
@@ -2725,6 +2735,8 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 
 bridge_runtime_launch_provider_test :: proc(command_id, command_json: string) -> (ok: bool, detail: string, err: Bridge_Error) {
 	instance_id := extract_json_string(command_json, "agent_instance_id", "")
+	lifecycle := bridge_agent_lifecycle_enter(instance_id)
+	defer bridge_agent_lifecycle_leave(lifecycle)
 	defer delete(instance_id)
 	provider, model := bridge_runtime_provider_model(command_json)
 	defer { delete(provider); delete(model) }
@@ -2835,6 +2847,12 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 // Stop the PTY child before invalidating credentials and declaring it stopped.
 // A failed close leaves stop intent active and must never acknowledge success.
 bridge_runtime_stop_agent :: proc(instance_id: string, force: bool = false) -> bool {
+	lifecycle := bridge_agent_lifecycle_enter(instance_id)
+	defer bridge_agent_lifecycle_leave(lifecycle)
+	return bridge_runtime_stop_agent_unlocked(instance_id, force)
+}
+
+bridge_runtime_stop_agent_unlocked :: proc(instance_id: string, force: bool = false) -> bool {
 	if strings.trim_space(instance_id) == "" do return false
 	// Record the operator's intent to stop, so a late/duplicate wrapper signal that
 	// races the ~1s self-reap window cannot resurrect the instance back to
@@ -3057,7 +3075,13 @@ bridge_runtime_record_failure :: proc(instance_id: string, err: Bridge_Error) {
 // alive, and the liveness reconciler settles it from there. restored is that status
 // ("" on success; caller owns it); the failed command_result carries it for the hub.
 // stop is a seam for tests.
-bridge_runtime_stop_or_restore :: proc(instance_id: string, force: bool, stop := bridge_runtime_stop_agent) -> (ok: bool, restored: string) {
+bridge_runtime_stop_or_restore :: proc(instance_id: string, force: bool, stop := bridge_runtime_stop_agent_unlocked) -> (ok: bool, restored: string) {
+	lifecycle := bridge_agent_lifecycle_enter(instance_id)
+	defer bridge_agent_lifecycle_leave(lifecycle)
+	return bridge_runtime_stop_or_restore_unlocked(instance_id, force, stop)
+}
+
+bridge_runtime_stop_or_restore_unlocked :: proc(instance_id: string, force: bool, stop := bridge_runtime_stop_agent_unlocked) -> (ok: bool, restored: string) {
 	prior_runtime, prior_activity, had_prior := bridge_runtime_status_snapshot(instance_id)
 	defer { delete(prior_runtime); delete(prior_activity) }
 	if stop(instance_id, force) do return true, ""
@@ -4114,6 +4138,23 @@ bridge_get_agent_pane_result_json :: proc(command_id: string, ok: bool, unchange
 // failures go through bridge_command_failed_json so they always carry a typed error.
 Bridge_Command_Runtime_Status :: struct {
 	runtime_status: string,
+	agent_instance_id: Maybe(string) `json:"agent_instance_id,omitempty"`,
+	expected_run_count: Maybe(int) `json:"expected_run_count,omitempty"`,
+}
+
+// Successful stop commands carry the requested generation (-1 for legacy stops).
+// Ownership consumers require a nonnegative generation. Generic runtime status
+// observations are not evidence that an ownership holder died.
+bridge_stop_confirmed_json :: proc(command_id, instance_id: string, expected_run_count: int) -> string {
+	res := bridge_command_result_wire(command_id, "succeeded", "stopped")
+	res.ok = true
+	res.payload.result = Bridge_Command_Runtime_Status{
+		runtime_status = "stopped",
+		agent_instance_id = instance_id,
+		expected_run_count = expected_run_count,
+	}
+	out, _ := vault.wire_encode(res)
+	return out
 }
 
 // Bridge_Command_Result_Wire is a command_result frame: ok:true with payload.status,

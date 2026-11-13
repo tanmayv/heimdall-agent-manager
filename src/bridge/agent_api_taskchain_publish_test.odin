@@ -116,3 +116,21 @@ bridge_lease_params_inject :: proc(t: ^testing.T) {
 	defer delete(obj)
 	testing.expect_value(t, obj, `{"kind":"git","head":"h1","dirty":true,"files":[{"path":"a","status":"modified","add":1,"del":2}]}`)
 }
+
+@(test)
+test_explicit_claim_route :: proc(t: ^testing.T) {
+    route := bridge_agent_route("agent.lease.claim", `{"task_id":"task_1","instance_id":"inst_target"}`)
+    testing.expect(t, route.kind == .Local)
+    testing.expect_value(t, bridge_agent_route_target(route), "/api/v1/agent-actions/lease/claim")
+}
+
+@(test)
+test_explicit_claim_target_context_isolation :: proc(t: ^testing.T) {
+    testing.expect(t, bridge_taskv2_claim_is_local(`{"task_id":"task_1"}`, "inst_caller"))
+    testing.expect(t, bridge_taskv2_claim_is_local(`{"instance_id":"inst_caller"}`, "inst_caller"))
+    testing.expect(t, !bridge_taskv2_claim_is_local(`{"instance_id":"inst_target"}`, "inst_caller"))
+    params := `{"instance_id":"inst_target","cwd":"."}`
+    enriched := bridge_taskv2_enrich_lease_params("agent.lease.claim", params, Bridge_Local_Agent_Token_Record{agent_instance_id = "inst_caller"})
+    defer delete(enriched)
+    testing.expect_value(t, enriched, params)
+}

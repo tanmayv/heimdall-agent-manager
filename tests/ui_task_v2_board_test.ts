@@ -18,6 +18,7 @@ import {
   TASK_STATE_COLORS,
   holdSummary,
   taskHold,
+  ownershipWaitReason,
 } from '../src/ui/components/tasks/taskV2Types.ts';
 import type { TaskStateV2 } from '../src/ui/components/tasks/taskV2Types.ts';
 import type { TaskWire } from '../src/ui/api/taskWire.ts';
@@ -86,62 +87,30 @@ test('TASK_STATES_ORDER and color definitions preserve 5 states + cancelled', ()
   }
 });
 
-test('getTaskBadges derives TTL countdown and tone for in-progress lease', () => {
+test('ownership badges ignore legacy deadlines and preserve waiting responsibility', () => {
   const nowMs = 1700000000000;
+  const lease = { lease_id: 'l-1', kind: 'work', holder_instance_id: 'inst_worker',
+    phase: 'active', expires_at: new Date(nowMs - 60000).toISOString() } as any;
+  const task = makeTask({ state: 'in_progress', leases: [lease] });
+  for (const time of [nowMs, nowMs + 86400000]) {
+    const badge = getTaskBadges(task, [], time).find((b) => b.kind === 'lease');
+    assert.equal(badge?.label, 'Agent · active');
+    assert.equal(badge?.tone, 'accent');
+  }
+  const waiting = makeTask({ state: 'in_review', leases: [{ ...lease, phase: 'waiting' }] });
+  const badge = getTaskBadges(waiting, [], nowMs).find((b) => b.kind === 'lease');
+  assert.equal(badge?.label, 'Agent · waiting');
+  assert.equal(badge?.title, 'Worker ownership: waiting for review');
+  assert.equal(badge?.tone, 'neutral');
+});
 
-  // 12 mins left -> accent
-  const task12m = makeTask({
-    state: 'in_progress',
-    leases: [
-      {
-        lease_id: 'l-1',
-        holder_instance_id: 'inst_agt_worker',
-        bridge_id: 'br-local',
-        expires_at: new Date(nowMs + 12 * 60000).toISOString(),
-        hard_deadline_at: new Date(nowMs + 55 * 60000).toISOString(),
-        confirmed_at: new Date(nowMs - 3 * 60000).toISOString(),
-        kind: 'work',
-      },
-    ],
-  });
-  const badges12m = getTaskBadges(task12m, [], nowMs);
-  const ttlBadge12m = badges12m.find((b) => b.label.endsWith('m left'));
-  assert.ok(ttlBadge12m, 'Should have TTL badge');
-  // No names resolver: the holder is a generic label, never the raw instance id.
-  assert.equal(ttlBadge12m.label, 'Agent · 12m left');
-  assert.equal(ttlBadge12m.tone, 'accent');
-
-  // 4 mins left -> warn
-  const task4m = makeTask({
-    state: 'in_progress',
-    leases: [
-      {
-        lease_id: 'l-2',
-        holder_instance_id: 'inst_agt_worker',
-        expires_at: new Date(nowMs + 4 * 60000).toISOString(),
-        kind: 'work',
-      },
-    ],
-  });
-  const badges4m = getTaskBadges(task4m, [], nowMs);
-  const ttlBadge4m = badges4m.find((b) => b.label.endsWith('m left'));
-  assert.equal(ttlBadge4m?.tone, 'warn');
-
-  // 2 mins left -> danger
-  const task2m = makeTask({
-    state: 'in_progress',
-    leases: [
-      {
-        lease_id: 'l-3',
-        holder_instance_id: 'inst_agt_worker',
-        expires_at: new Date(nowMs + 2 * 60000).toISOString(),
-        kind: 'work',
-      },
-    ],
-  });
-  const badges2m = getTaskBadges(task2m, [], nowMs);
-  const ttlBadge2m = badges2m.find((b) => b.label.endsWith('m left'));
-  assert.equal(ttlBadge2m?.tone, 'danger');
+test('waiting ownership explains blocks and submitted reviews without inventing released ownership', () => {
+  const lease = { kind: 'review', holder_instance_id: 'inst_review', phase: 'waiting' } as any;
+  const task = makeTask({ state: 'in_review', reviews: [{ reviewer_instance_id: 'inst_review' }] as any });
+  assert.equal(ownershipWaitReason(task, lease), 'review submitted');
+  assert.equal(ownershipWaitReason({ ...task, blocked_on: { kind: 'human', reason: 'Choose a target' } }, lease), 'Choose a target');
+  assert.equal(ownershipWaitReason(task, { ...lease, phase: 'active' }), '');
+  assert.ok(getTaskStatusLines({ ...task, requires_user_approval: true, leases: [] }).every((line) => !line.includes('ownership retained')));
 });
 
 test('getTaskBadges derives bridge pin, attempt count, review roles, blocked on you, and no verified badge', async () => {
@@ -222,8 +191,8 @@ test('getTaskStatusLines generates human-readable status sentences for each stat
   });
   const [line1, line2] = getTaskStatusLines(taskInProg, [], nowMs);
   // Without a names resolver the holder is "An agent", never the raw instance id.
-  assert.equal(line1, 'An agent is working, 10m left');
-  assert.equal(line2, 'attempt 2 of 5 · hard limit in 45m');
+  assert.equal(line1, 'An agent is working');
+  assert.equal(line2, 'attempt 2 of 5');
   assert.ok(!line1.includes('worker-agent'));
 
   // In review gate
@@ -485,8 +454,8 @@ test('getTaskPeople lists review-lease holders with their role, including non-me
   const people = getTaskPeople(task, fleets);
   assert.equal(people.holder, 'inst_worker');
   assert.deepEqual(people.reviewHolders, [
-    { instanceId: 'inst_rev1', role: 'reviewer', expiresAt: '2026-10-17T05:07:00Z' },
-    { instanceId: 'inst_jit77', role: 'security', expiresAt: '2026-10-17T05:09:00Z' },
+    { instanceId: 'inst_rev1', role: 'reviewer', phase: 'active', waitReason: '' },
+    { instanceId: 'inst_jit77', role: 'security', phase: 'active', waitReason: '' },
   ]);
   // Reviewer candidates stay the fleet's role holders.
   assert.deepEqual(people.reviewers, ['agt_rev', 'agt_sec']);
@@ -552,7 +521,7 @@ test('task card: the in-review sentence names the reviewing agent, role-only tex
     brief,
     leases: [{ kind: 'review', review_role: 'security', holder_instance_id: 'inst_jit77', expires_at: new Date(Date.now() + 6 * 60000 + 1000).toISOString() }] as any,
   }));
-  assert.match(reviewing, /Reviewer #3 is reviewing \(security\), 6m left · Attempt 1 submitted · review in progress/);
+  assert.match(reviewing, /Reviewer #3 is reviewing \(security\) · Attempt 1 submitted · review in progress/);
   assert.doesNotMatch(reviewing, /inst_|Waiting on reviewer roles/);
   assert.match(status(makeTask({ state: 'in_review', brief })), /Waiting on reviewer roles: security/);
   store.dispatch(agentsApi.util.resetApiState());

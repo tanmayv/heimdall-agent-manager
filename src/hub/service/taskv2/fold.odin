@@ -239,6 +239,7 @@ fold_task :: proc(events: []domain.Task_Event, input: Fold_Input) -> Task_View {
 			v.done = true
 		case EV_CANCELLED:
 			v.cancelled = true
+			v.done = false
 			v.has_work_lease = false
 			v.in_review = false
 		case EV_HELD:

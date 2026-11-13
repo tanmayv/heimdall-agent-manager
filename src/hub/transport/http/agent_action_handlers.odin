@@ -52,7 +52,7 @@ Lease_Next_Wire :: struct {
 
 make_lease_wire :: proc(l: domain.Task_Lease) -> Task_Lease_Wire {
 	return Task_Lease_Wire{
-		lease_id = l.lease_id, kind = l.kind, review_role = l.review_role, holder_instance_id = l.holder_instance_id,
+		lease_id = l.lease_id, phase = l.phase, kind = l.kind, review_role = l.review_role, holder_instance_id = l.holder_instance_id,
 		attempt_no = l.attempt_no, bridge_id = l.bridge_id, granted_at = l.granted_at, confirmed_at = l.confirmed_at,
 		expires_at = l.expires_at, hard_deadline_at = l.hard_deadline_at, delivery = l.delivery,
 	}
@@ -1653,3 +1653,38 @@ agent_action_workflow_define_handler :: proc(ctx: rawptr, req: Request) -> Respo
 @(private = "file")
 d_created_or_empty :: proc(s: string) -> string { return s }
 
+
+// Explicit claims preserve authenticated actor identity separately from target.
+agent_action_lease_claim_handler :: proc(ctx: rawptr, req: Request) -> Response {
+    h := (^Agent_Action_Handlers)(ctx)
+    auth, _, ok, resp := require_instance_action_auth(h, req)
+    if !ok do return resp
+    if h.task_engine == nil do return respond_error(domain.domain_error(.Internal_Error, "task engine is not configured"), req.request_id)
+    params := verbatim_params(req.body)
+    input := taskv2.Lease_Claim_Input{
+        task_id = domain.Task_ID(json_string(params, "task_id")), instance_id = json_string(params, "instance_id"),
+        reason = json_string(params, "reason"), request_id = json_string(params, "request_id"),
+        expected_generation = i64(jsonx.extract_int(params, "expected_generation", 0, true)), vcs_base = json_string(params, "vcs_base"),
+    }
+    res: taskv2.Lease_Claim_Result
+    claimed: bool
+    err: domain.Domain_Error
+    if path_part(req.path, 5) == "transfer" {
+        res, claimed, err = taskv2.lease_transfer(h.task_engine, auth, input)
+    } else {
+        res, claimed, err = taskv2.lease_claim(h.task_engine, auth, input)
+    }
+    if !claimed do return respond_error(err, req.request_id)
+    wire := struct {
+        status: string `json:"status"`,
+        lease: Task_Lease_Wire `json:"lease"`,
+        task: Simple_Task_Wire `json:"task"`,
+        pack: json.Value `json:"pack"`,
+        target_instance_id: string `json:"target_instance_id"`,
+        agent_id: string `json:"agent_id"`,
+        role: string `json:"role"`,
+        delivery: string `json:"delivery"`,
+    }{status = res.status, lease = make_lease_wire(res.lease), task = make_simple_task_wire(res.task), pack = json_value_or_null(res.pack_json), target_instance_id = res.target_instance_id, agent_id = res.agent_id, role = res.role, delivery = res.delivery}
+    data, _ := json.marshal(wire, JSON_MARSHAL_OPT, allocator = context.temp_allocator)
+    return respond_success(string(data), req.request_id, auth_ctx_server_time(req), 200)
+}

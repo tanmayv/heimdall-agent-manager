@@ -114,3 +114,20 @@ test('previous_context is never clubbed into start dividers or treated as a tool
   const tool = msg('tool', 'tool_activity', '3 tools');
   assert.deepEqual(grouping.groupTranscriptMessages([tool, pctx, tool]).map((m: any) => m.messageId), ['pctx']);
 });
+
+test('separate rollover cycles retain distinct handoff rows and bodies', async () => {
+  const older = msg('pctx-old', 'previous_context', 'Old handoff');
+  const latest = msg('pctx-new', 'previous_context', 'Latest handoff', { createdUnixMs: 2000 });
+  const rows = grouping.groupTranscriptMessages([older, latest]);
+  assert.deepEqual(rows.map((row: any) => row.messageId), ['pctx-old', 'pctx-new']);
+  const React = await import('react');
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const html = renderToStaticMarkup(React.createElement(React.Fragment, null,
+    ...rows.map((row: any) => React.createElement(block.PreviousContextBlock, {
+      key: row.messageId, messageId: row.messageId, children: row.body,
+    }))));
+  assert.match(html, /conversation-previous-context-pctx-old/);
+  assert.match(html, /conversation-previous-context-pctx-new/);
+  assert.match(html, /Old handoff/);
+  assert.match(html, /Latest handoff/);
+});

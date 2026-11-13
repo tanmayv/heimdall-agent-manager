@@ -1,6 +1,8 @@
 package main
 
 import "core:strings"
+import "core:fmt"
+import "core:mem"
 import "core:sync"
 import "core:testing"
 import agent_runtime "odin_test:lib/agent_runtime"
@@ -117,7 +119,9 @@ test_rollover_full_cycle_transitions :: proc(t: ^testing.T) {
 	testing.expect(t, handled, "self-send intercepted")
 	testing.expect(t, strings.contains(resp, `"message_type":"previous_context"`), resp)
 	testing.expect_value(t, len(roll_rec.persists), 1)
-	testing.expect(t, strings.has_prefix(roll_rec.persists[0], strings.concatenate({id, "|rollover_", id, "_1|## Handoff\ngoal: X|"}, context.temp_allocator)), roll_rec.persists[0])
+	first_id := strings.split(roll_rec.persists[0], "|", context.temp_allocator)[1]
+	testing.expect(t, strings.has_prefix(first_id, "rollover_") && len(first_id) <= 128)
+	testing.expect(t, strings.contains(roll_rec.persists[0], "|## Handoff\ngoal: X|"))
 	testing.expect(t, strings.contains(roll_rec.persists[0], `"kind":"context_rollover","context_pct":83,"attempt":1`), roll_rec.persists[0])
 	testing.expect_value(t, bridge_rollover_phase_of(id), Bridge_Rollover_Phase.Restarting)
 	testing.expect_value(t, len(roll_rec.restarts), 0) // never mid-turn
@@ -142,7 +146,7 @@ test_rollover_full_cycle_transitions :: proc(t: ^testing.T) {
 	roll_event(id, 90, true, now + 5 + BRIDGE_ROLLOVER_COOLDOWN_MS)
 	_, _ = roll_self_send(id, "second")
 	testing.expect_value(t, len(roll_rec.persists), 2)
-	testing.expect(t, strings.contains(roll_rec.persists[1], strings.concatenate({"|rollover_", id, "_2|"}, context.temp_allocator)), roll_rec.persists[1])
+	testing.expect(t, strings.split(roll_rec.persists[1], "|", context.temp_allocator)[1] != first_id)
 }
 
 @(test)
@@ -518,4 +522,210 @@ test_rollover_pane_diff_idle_withheld_then_rereported :: proc(t: ^testing.T) {
 	testing.expect_value(t, bridge_rollover_phase_of(id), Bridge_Rollover_Phase.Normal)
 	testing.expect_value(t, len(roll_rec.idles), 1)
 	testing.expect(t, strings.has_suffix(roll_rec.idles[0], "|pane_diff"), roll_rec.idles[0])
+}
+
+@(test)
+test_rollover_cycle_identity_survives_retry_not_state_reset :: proc(t: ^testing.T) {
+	roll_begin()
+	id := "inst_test_roll_reset"
+	defer roll_end(id)
+	roll_event(id, 90, true, 1)
+	first, _, _, ok := bridge_rollover_begin_persist(id, 2)
+	defer delete(first, bridge_rollover_heap())
+	testing.expect(t, ok)
+	bridge_rollover_end_persist(id, first, false, 3)
+	retry, _, _, _ := bridge_rollover_begin_persist(id, 4)
+	defer delete(retry, bridge_rollover_heap())
+	testing.expect_value(t, retry, first)
+	bridge_rollover_forget(id)
+	roll_event(id, 90, true, 5)
+	second, _, _, _ := bridge_rollover_begin_persist(id, 6)
+	defer delete(second, bridge_rollover_heap())
+	testing.expect(t, first != second, "Bridge state reset cannot reuse a stored message ID")
+	// An old successful persistence must not advance the new cycle.
+	bridge_rollover_end_persist(id, first, true, 7)
+	testing.expect_value(t, bridge_rollover_phase_of(id), Bridge_Rollover_Phase.Persisting)
+	bridge_rollover_end_persist(id, second, true, 8)
+	testing.expect_value(t, bridge_rollover_phase_of(id), Bridge_Rollover_Phase.Restarting)
+}
+
+@(test)
+test_rollover_random_failure_is_closed :: proc(t: ^testing.T) {
+	id, ok := bridge_rollover_new_cycle_id(source = "/no/such/heimdall-entropy-source")
+	testing.expect(t, !ok)
+	testing.expect_value(t, id, "")
+}
+
+@(test)
+test_rollover_persist_timeout_releases_wakes_and_fences_late_ack :: proc(t: ^testing.T) {
+	roll_begin()
+	id := "inst_test_roll_persist_timeout"
+	defer roll_end(id)
+	roll_event(id, 90, true, 1)
+	first, _, _, _ := bridge_rollover_begin_persist(id, 2)
+	defer delete(first, bridge_rollover_heap())
+	testing.expect(t, bridge_rollover_queue_notice(id, "User"))
+	roll_tick(2 + BRIDGE_ROLLOVER_REQUEST_TIMEOUT_MS)
+	testing.expect_value(t, bridge_rollover_phase_of(id), Bridge_Rollover_Phase.Normal)
+	testing.expect_value(t, len(roll_rec.notices), 1)
+	testing.expect(t, !bridge_rollover_queue_notice(id, "User"))
+	bridge_rollover_end_persist(id, first, true, 3 + BRIDGE_ROLLOVER_REQUEST_TIMEOUT_MS)
+	testing.expect_value(t, bridge_rollover_phase_of(id), Bridge_Rollover_Phase.Normal)
+	testing.expect_value(t, len(roll_rec.restarts), 0)
+	roll_tick(4 + BRIDGE_ROLLOVER_REQUEST_TIMEOUT_MS)
+	testing.expect(t, len(roll_rec.notices) == 1, "drain exactly once")
+}
+
+@(test)
+test_rollover_wait_idle_timeout_resumes_notification_delivery :: proc(t: ^testing.T) {
+	roll_begin()
+	id := "inst_test_roll_idle_timeout"
+	defer roll_end(id)
+	now := bridge_runtime_now_ms()
+	roll_event(id, 90, true, now)
+	_, _ = roll_self_send(id, "handoff")
+	testing.expect(t, bridge_rollover_queue_notice(id, "User"))
+	roll_tick(now + BRIDGE_ROLLOVER_REQUEST_TIMEOUT_MS + 10)
+	testing.expect_value(t, len(roll_rec.notices), 1)
+	testing.expect(t, len(roll_rec.restarts) == 0, "silence never forces restart")
+	testing.expect(t, !bridge_rollover_queue_notice(id, "User"))
+	roll_event(id, 90, true, now + BRIDGE_ROLLOVER_REQUEST_TIMEOUT_MS + 11)
+	testing.expect(t, len(roll_rec.restarts) == 1, "trusted idle still completes pending restart")
+	actions, completed := bridge_rollover_decide_start_success(id, now + BRIDGE_ROLLOVER_REQUEST_TIMEOUT_MS + 12)
+	bridge_rollover_run(actions)
+	testing.expect(t, completed)
+	testing.expect_value(t, len(roll_rec.notices), 1)
+}
+
+@(test)
+test_rollover_readiness_timeout_retries_failed_wake :: proc(t: ^testing.T) {
+	roll_begin()
+	id := "inst_test_roll_readiness_timeout"
+	defer roll_end(id)
+	now := bridge_runtime_now_ms()
+	roll_event(id, 90, true, now)
+	_, _ = roll_self_send(id, "handoff")
+	roll_event(id, 90, true, now + 1)
+	testing.expect(t, bridge_rollover_queue_notice(id, "User"))
+	bridge_rollover_effects.deliver_notice = proc(id, sender: string) -> bool {return false}
+	roll_tick(now + BRIDGE_ROLLOVER_REQUEST_TIMEOUT_MS + 2)
+	testing.expect_value(t, len(roll_rec.alerts), 1)
+	testing.expect(t, !bridge_rollover_queue_notice(id, "User"))
+	bridge_rollover_effects.deliver_notice = proc(id, sender: string) -> bool {
+		append(&roll_rec.notices, strings.clone(sender, context.temp_allocator))
+		return true
+	}
+	roll_tick(now + BRIDGE_ROLLOVER_REQUEST_TIMEOUT_MS + 3)
+	roll_tick(now + BRIDGE_ROLLOVER_REQUEST_TIMEOUT_MS + 4)
+	testing.expect(t, len(roll_rec.notices) == 1, "retry failed delivery once PTY is available")
+	testing.expect(t, len(roll_rec.restarts) == 1, "no speculative second restart")
+	actions, completed := bridge_rollover_decide_start_success(id, now + BRIDGE_ROLLOVER_REQUEST_TIMEOUT_MS + 5)
+	bridge_rollover_run(actions)
+	testing.expect(t, completed, "late readiness still completes its cycle")
+}
+
+@(test)
+test_rollover_delayed_actions_and_restart_results_are_fenced :: proc(t: ^testing.T) {
+	roll_begin()
+	id := "inst_test_roll_late_actions"
+	defer roll_end(id)
+	requests := bridge_rollover_decide_event(id, 90, true, 80, 200_000, 1)
+	first, _, _, _ := bridge_rollover_begin_persist(id, 2)
+	defer delete(first, bridge_rollover_heap())
+	bridge_rollover_end_persist(id, first, true, 3)
+	restarts := bridge_rollover_decide_event(id, 90, true, 80, 200_000, 4)
+	bridge_rollover_forget(id)
+	roll_event(id, 90, true, 5)
+	second, _, _, _ := bridge_rollover_begin_persist(id, 6)
+	defer delete(second, bridge_rollover_heap())
+	bridge_rollover_end_persist(id, second, true, 7)
+	bridge_rollover_run(requests)
+	bridge_rollover_run(restarts)
+	testing.expect_value(t, len(roll_rec.requests), 1)
+	testing.expect_value(t, len(roll_rec.restarts), 0)
+	bridge_rollover_run(bridge_rollover_decide_restart_result(id, first, false, 8))
+	testing.expect_value(t, bridge_rollover_phase_of(id), Bridge_Rollover_Phase.Restarting)
+	testing.expect_value(t, len(roll_rec.alerts), 0)
+}
+
+@(test)
+test_rollover_notice_queue_overflow_is_not_acknowledged :: proc(t: ^testing.T) {
+	roll_begin()
+	id := "inst_test_roll_notice_capacity"
+	defer roll_end(id)
+	roll_event(id, 90, true, 1)
+	for i in 0..<BRIDGE_ROLLOVER_MAX_QUEUED_NOTICES {
+		testing.expect(t, bridge_rollover_queue_notice(id, fmt.tprintf("sender_%d", i)))
+	}
+	testing.expect(t, !bridge_rollover_queue_notice(id, "overflow"), "caller must deliver instead of dropping wake")
+}
+
+@(test)
+test_rollover_persist_retries_cannot_extend_notification_deadline :: proc(t: ^testing.T) {
+	roll_begin()
+	id := "inst_test_roll_retry_deadline"
+	defer roll_end(id)
+	now := i64(10)
+	roll_event(id, 90, true, now)
+	testing.expect(t, bridge_rollover_queue_notice(id, "User"))
+	for i in 1..=3 {
+		at := now + i64(i) * BRIDGE_ROLLOVER_REQUEST_TIMEOUT_MS / 2
+		cycle, _, _, _ := bridge_rollover_begin_persist(id, at)
+		bridge_rollover_end_persist(id, cycle, false, at + 1)
+		delete(cycle, bridge_rollover_heap())
+		roll_tick(at + 1)
+	}
+	testing.expect_value(t, len(roll_rec.notices), 0)
+	roll_tick(now + 2 * BRIDGE_ROLLOVER_REQUEST_TIMEOUT_MS)
+	testing.expect_value(t, len(roll_rec.notices), 1)
+	testing.expect(t, !bridge_rollover_queue_notice(id, "User"))
+}
+
+@(test)
+test_rollover_saved_handoff_resend_preserves_pending_restart :: proc(t: ^testing.T) {
+	roll_begin()
+	id := "inst_test_roll_lost_reply"
+	defer roll_end(id)
+	now := bridge_runtime_now_ms()
+	roll_event(id, 90, true, now)
+	_, handled := roll_self_send(id, "handoff")
+	testing.expect(t, handled)
+	_, handled = roll_self_send(id, "handoff")
+	testing.expect(t, handled, "lost reply retry remains a previous_context write")
+	testing.expect_value(t, len(roll_rec.persists), 2)
+	testing.expect_value(t, strings.split(roll_rec.persists[0], "|", context.temp_allocator)[1],
+		strings.split(roll_rec.persists[1], "|", context.temp_allocator)[1])
+	testing.expect_value(t, bridge_rollover_phase_of(id), Bridge_Rollover_Phase.Restarting)
+	roll_event(id, 90, true, now + 1)
+	_, handled = roll_self_send(id, "handoff")
+	testing.expect(t, handled)
+	testing.expect_value(t, bridge_rollover_launch_prompt_line(id), BRIDGE_ROLLOVER_RESTART_PROMPT_LINE)
+	roll_event(id, 90, true, now + 2)
+	testing.expect_value(t, len(roll_rec.restarts), 1)
+}
+
+@(test)
+test_rollover_cycle_and_action_ownership_outlive_request_allocator :: proc(t: ^testing.T) {
+	roll_begin()
+	id := "inst_test_roll_request_lifetime"
+	defer roll_end(id)
+	backing: [4096]u8
+	arena: mem.Arena
+	mem.arena_init(&arena, backing[:])
+	old_allocator := context.allocator
+	context.allocator = mem.arena_allocator(&arena)
+	request_id := strings.clone(id)
+	actions := bridge_rollover_decide_event(request_id, 90, true, 80, 200_000, 1)
+	context.allocator = old_allocator
+	// Invalidate every byte of request-owned storage before executing its action.
+	for &b in backing do b = 0
+	bridge_rollover_run(actions)
+	testing.expect_value(t, len(roll_rec.requests), 1)
+	testing.expect(t, strings.has_prefix(roll_rec.requests[0], id))
+	cycle, _, _, ok := bridge_rollover_begin_persist(id, 2)
+	defer delete(cycle, bridge_rollover_heap())
+	testing.expect(t, ok)
+	testing.expect(t, strings.has_prefix(cycle, "rollover_"))
+	bridge_rollover_end_persist(id, cycle, true, 3)
+	testing.expect_value(t, bridge_rollover_phase_of(id), Bridge_Rollover_Phase.Restarting)
 }

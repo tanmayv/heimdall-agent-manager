@@ -126,7 +126,7 @@ odin test src/hub/transport/http -collection:odin_test=src -out:$HOME/.cache/hei
 | `agent_instance_id` (`inst_...`) | One managed instance: agent + Bridge + provider/model + run dir + conversation. Survives process exit; not a PID. |
 | `conversation_id` | Durable conversation binding used to read and route chat. |
 | `bridge_id` | Enrolled execution device and its authenticated Hub connection. |
-| `task_id` / `lease_id` | Durable work item / temporary authority to work on or review its current attempt. |
+| `task_id` / `lease_id` | Durable work item / non-expiring claim on its work or review responsibility. |
 
 Records: [src/hub/domain](src/hub/domain), auth contracts: [src/contracts/auth.odin](src/contracts/auth.odin).
 
@@ -184,13 +184,14 @@ Workdir, never in the bootstrap directory.
 state is a fold of events, never set by hand.
 - Create tasks with a non-empty goal and acceptance items; publish drafts. Assign work to durable
   `agt_...` identities. Workers choose and report their own checks; briefs carry no verify command.
-- A work lease makes a ready task `in_progress`; one instance holds at most one lease and a task has at
-  most one work lease. `lease next` returns the current lease or claims eligible work.
+- An active work claim makes a ready task `in_progress`; one instance holds at most one claim and a task has at
+  most one work claim. `lease next` returns active/waiting ownership or claims eligible work. Waiting claims
+  retain responsibility through review/blocking; elapsed time never revokes them.
 - On wake read `TASK.md` and do all edits and commits in the Workdir it names (git chains use
-  per-task worktrees). Post a plan and milestone comments; `lease heartbeat` at least every 15 min;
+  per-task worktrees). Post a plan and milestone comments; `lease heartbeat` optionally records progress or acknowledges requirements;
   `lease_lost` ends your authority.
-- `lease submit` releases for review, `lease handoff` returns unfinished work, `lease block` records
-  an external dependency. There is no manual status transition.
+- `lease submit` retains waiting ownership for review, `lease handoff` explicitly releases ownership, and
+  `lease block` records an external dependency while retaining a waiting claim. There is no manual status transition.
 - Reviews: `review post --verdict approve|request_changes`. The gate
   ([gate.odin](src/hub/service/taskv2/gate.odin)) checks required reviewers, fleet review roles and user
   approval; authors never review their own work; a request for changes wins. `changes_requested`

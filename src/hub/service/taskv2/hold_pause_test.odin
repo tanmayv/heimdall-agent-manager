@@ -264,10 +264,10 @@ test_fleet_pause_review_role_mapping :: proc(t: ^testing.T) {
 	_, pok, _ := review_post(&fx.svc, inst_auth("inst_r1"), Review_Input{verdict = "approve"})
 	testing.expect(t, pok, "security approved")
 	// The owed named review stays undispatched: wake and inline pull.
-	_, rheld = lease_of(fx, "inst_r1")
-	testing.expect(t, !rheld, "paused named review gets no wake grant")
+	waiting, retained := lease_of(fx, "inst_r1")
+	testing.expect(t, retained && waiting.phase == "waiting", "paused named review retains ownership without an active grant")
 	res, nok, _ := lease_next(&fx.svc, inst_auth("inst_r1"), Lease_Next_Input{})
-	testing.expect(t, nok && res.status == "none", fmt.tprintf("paused named review gets no inline grant: %s", res.status))
+	testing.expect(t, nok && res.status == "waiting", fmt.tprintf("paused named review gets no inline grant: %s", res.status))
 	testing.expect_value(t, get_task(fx, "task_1").state, domain.Task_State.In_Review)
 	// Resume: the named review is dispatched.
 	set_r(fx, chain, "", now)

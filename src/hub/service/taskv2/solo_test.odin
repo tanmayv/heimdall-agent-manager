@@ -8,8 +8,8 @@ import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
 
 // Solo mode (REQ-SOLO-*): the chain coordinator is also its worker and the user
-// reviews. The coordinator pulls inline, is never woken or stopped, its expiries
-// and switches never count, and it can never approve its own work.
+// reviews. The coordinator pulls inline, is never woken or stopped, retains its
+// assignment across elapsed time, and can never approve its own work.
 
 // solo_chain: seed_live_chain plus a worker fleet row for the coordinator's own
 // agent (agt_c), which is what makes the chain solo (REQ-SOLO-1).
@@ -63,8 +63,8 @@ test_solo_coordinator_pulls_inline_and_is_never_woken_or_stopped :: proc(t: ^tes
 	testing.expect_value(t, sub.outcome, "in_review")
 	testing.expect_value(t, get_task(fx, "task_1").state, domain.Task_State.In_Review)
 	testing.expect(t, !wake_log_has_stop(log, "inst_coord"), "submit never stops the soloist (REQ-SOLO-2a)")
-	_, still := lease_of(fx, "inst_coord")
-	testing.expect(t, !still, "submitted work releases the lease")
+	waiting, still := lease_of(fx, "inst_coord")
+	testing.expect(t, still && waiting.lease_id == res.lease.lease_id && waiting.phase == "waiting", "submitted work retains the soloist's waiting assignment")
 	// an explicit value in the brief wins; only an absent key takes the solo default
 	testing.expect(t, !brief_user_approval(&fx.svc, chain, `{"goal":"g","requires_user_approval":false}`), "explicit false wins over the solo default")
 	testing.expect(t, brief_user_approval(&fx.svc, chain, `{"goal":"g","requires_user_approval":true}`), "explicit true kept")
@@ -128,43 +128,26 @@ test_solo_lease_switch_hands_off_and_grants_atomically :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_solo_expiry_is_noncounting_and_repull_is_immediate :: proc(t: ^testing.T) {
-	fx, log, ok := lease_fixture(t, "solo_expire")
+test_solo_elapsed_time_retains_same_attempt :: proc(t: ^testing.T) {
+	fx, log, ok := lease_fixture(t, "solo_elapsed")
 	defer lease_fixture_close(fx, log)
 	if !ok do return
-	chain := solo_chain(t, fx, "chain_solo_expire")
+	chain := solo_chain(t, fx, "chain_solo_elapsed")
 	_ = publish_task(t, fx, chain, "task_1")
 	auth := inst_auth("inst_coord")
 	res, nok, _ := lease_next(&fx.svc, auth, Lease_Next_Input{})
 	if !testing.expect(t, nok && res.status == "granted", "pulled") do return
-	// busy chatting with the user: no heartbeat past the TTL
 	wake_log_reset(log)
-	fixture_advance(fx, 3600)
-	// Runtime evidence is fresh even though the lease heartbeat was missed.
-	coord, _, _ := iface.agent_get_instance(&fx.agents, "inst_coord")
-	coord.last_seen_at = platform.clock_now(&fx.clock)
-	_, _, _ = iface.agent_save_instance(&fx.agents, coord)
-	_ = fire_due(&fx.svc, now_ms(&fx.clock))
-	testing.expect_value(t, count_events(fx, "task_1", EV_LEASE_EXPIRED), 1)
-	testing.expect(t, strings.contains(last_event_payload(fx, "task_1", EV_LEASE_EXPIRED), `"counting":false`), "coordinator expiry is non-counting")
-	testing.expect(t, !wake_log_has_stop(log, "inst_coord"), "expiry never stops the soloist")
-	testing.expect_value(t, get_task(fx, "task_1").state, domain.Task_State.Ready)
-	// no recent-expiry lockout: the soloist re-pulls at once (a new attempt that
-	// does not count toward the budget)
-	again, aok, aerr := lease_next(&fx.svc, auth, Lease_Next_Input{})
-	if !testing.expect(t, aok, fmt.tprintf("re-pull: %s", aerr.message)) do return
-	testing.expect_value(t, again.status, "granted")
-	testing.expect_value(t, again.lease.attempt_no, res.lease.attempt_no + 1)
-	// many idle expiries never exhaust the budget
-	for _ in 0 ..< 6 {
-		fixture_advance(fx, 3600)
-		coord.last_seen_at = platform.clock_now(&fx.clock)
-		_, _, _ = iface.agent_save_instance(&fx.agents, coord)
+	for _ in 0..<6 {
+		fixture_advance(fx, LEASE_HARD_CAP_SECONDS * 2)
 		_ = fire_due(&fx.svc, now_ms(&fx.clock))
-		_, _, _ = lease_next(&fx.svc, auth, Lease_Next_Input{})
+		again, aok, _ := lease_next(&fx.svc, auth, Lease_Next_Input{})
+		testing.expect(t, aok && again.status == "current" && again.lease.lease_id == res.lease.lease_id, "soloist retains same assignment")
+		testing.expect_value(t, again.lease.attempt_no, res.lease.attempt_no)
 	}
-	final := get_task(fx, "task_1")
-	testing.expect(t, final.state == .Ready || final.state == .In_Progress, fmt.tprintf("non-counting expiries never park the task (state %v)", final.state))
+	testing.expect_value(t, get_task(fx, "task_1").state, domain.Task_State.In_Progress)
+	testing.expect_value(t, count_events(fx, "task_1", EV_LEASE_EXPIRED), 0)
+	testing.expect_value(t, len(log.cmds), 0)
 }
 
 @(test)

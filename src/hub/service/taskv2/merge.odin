@@ -28,6 +28,8 @@ MERGE_COMMAND_TYPE :: "taskv2_merge_worktree"
 MERGE_TIMEOUT_MS :: 60_000
 
 Merge_Effect :: struct {
+	attempt_no: int,
+	completion_event_id: i64,
 	owner:     string,
 	task_id:   string,
 	bridge_id: string,
@@ -58,6 +60,8 @@ effect_merge_worktree :: proc(svc: ^Service, u: ^Uow, task: domain.Task, evs: []
 		workdir, branch := task_worktree(d, task.task_id)
 		if workdir == "" do return
 		append(&u.effects.merges, Merge_Effect{
+			attempt_no = task.attempt_no,
+			completion_event_id = merge_completion_event_id(evs),
 			owner     = strings.clone(string(task.owner_user_id)),
 			task_id   = strings.clone(string(task.task_id)),
 			bridge_id = strings.clone(bridge_id),
@@ -101,6 +105,8 @@ flush_merges :: proc(svc: ^Service, e: ^Effects) {
 		job := new(Merge_Job)
 		job.svc = svc
 		job.merge = Merge_Effect{
+			attempt_no = m.attempt_no,
+			completion_event_id = m.completion_event_id,
 			owner     = strings.clone(m.owner),
 			task_id   = strings.clone(m.task_id),
 			bridge_id = strings.clone(m.bridge_id),
@@ -196,11 +202,12 @@ parse_merge_reply :: proc(reply: string) -> (outcome: Merge_Outcome, detail: str
 	return .Failed, detail
 }
 
-@(private = "file")
 run_merge :: proc(svc: ^Service, m: Merge_Effect) {
     initial, found, _ := iface.taskchain_get_task(svc.repo, domain.Task_ID(m.task_id))
-    if !found || !workflow_merge_allowed(svc, initial) do return
-	command_id := fmt.tprintf("cmd_merge_%s_%d", initial.task_id, initial.attempt_no)
+    if !found || initial.state != .Done || initial.attempt_no != m.attempt_no || !workflow_merge_allowed(svc, initial) do return
+	initial_events, initial_err := iface.taskchain_list_events_by_task(svc.repo, initial.task_id, initial.owner_user_id)
+	if initial_err.code != .None || merge_completion_event_id(initial_events) != m.completion_event_id do return
+	command_id := fmt.tprintf("cmd_merge_%s_%d_%d", initial.task_id, initial.attempt_no, m.completion_event_id)
 	reply, ok, err := project.bridge_command_send_runtime_wait(svc.bridge_command_sink, project.Runtime_Command{
 		bridge_id  = m.bridge_id,
 		command_id = command_id,
@@ -212,9 +219,7 @@ run_merge :: proc(svc: ^Service, m: Merge_Effect) {
 	detail := err.message
 	if ok do outcome, detail = parse_merge_reply(reply)
 
-	task, tok, _ := iface.taskchain_get_task(svc.repo, domain.Task_ID(m.task_id))
-	if !tok do return
-    if !workflow_merge_allowed(svc, task) do return
+
 	p := json_begin()
 	json_str(&p, "branch", m.branch)
 	json_str(&p, "workdir", m.workdir)
@@ -235,6 +240,19 @@ run_merge :: proc(svc: ^Service, m: Merge_Effect) {
 
 	u, uok, _ := begin_uow(svc)
 	if !uok do return
+	task, tok, _ := iface.taskchain_get_task(svc.repo, domain.Task_ID(m.task_id))
+	if !tok { _, _ = end_uow(svc, &u, false); return }
+	evs, eerr := iface.taskchain_list_events_by_task(svc.repo, task.task_id, task.owner_user_id)
+	current := eerr.code == .None && task.state == .Done && task.attempt_no == m.attempt_no && merge_completion_event_id(evs) == m.completion_event_id && workflow_merge_allowed(svc, task)
+	if !current {
+		// The effect really ran, but its old completion no longer owns lifecycle authority.
+		json_str(&p, "outcome", kind)
+		json_int(&p, "attempt_no", i64(m.attempt_no))
+		json_int(&p, "completion_event_id", m.completion_event_id)
+		_, _, recorded, _ := record_event(svc, &u, task, hub_actor(), "late_merge_outcome", json_end(&p))
+		_, _ = end_uow(svc, &u, recorded)
+		return
+	}
 	saved, _, rok, _ := record_event(svc, &u, task, hub_actor(), kind, json_end(&p))
 	if rok && outcome != .Merged {
 		line := fmt.tprintf("[taskv2] merge %s: task %s (%s) branch %s did not merge into %s: %s",
@@ -454,4 +472,12 @@ workflow_merge_allowed :: proc(svc: ^Service, task: domain.Task) -> bool {
  if task.workflow_run_id == "" do return true
  wf, ok, _ := workflow_context(svc, task.workflow_run_id, task.owner_user_id)
  return ok && wf.run.current_execution_no == task.workflow_execution_no && wf.execution.state != "cancelled"
+}
+
+// Identifies the completed result, independently of later comments or audit records.
+merge_completion_event_id :: proc(evs: []domain.Task_Event) -> i64 {
+	for i := len(evs)-1; i >= 0; i -= 1 {
+		if evs[i].kind == EV_APPROVED || evs[i].kind == EV_SUBMITTED do return evs[i].event_id
+	}
+	return 0
 }

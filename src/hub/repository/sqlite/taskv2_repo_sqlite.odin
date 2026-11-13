@@ -20,7 +20,7 @@ ATTEMPT_COLS :: "task_id, attempt_no, chain_id, owner_user_id, started_at, ended
 @(private = "file")
 FACET_COLS :: "task_id, attempt_no, chain_id, owner_user_id, kind, v, body_json, writer, written_at"
 @(private = "file")
-LEASE_COLS :: "lease_id, task_id, chain_id, owner_user_id, attempt_no, holder_instance_id, kind, review_role, bridge_id, provider, model, granted_at, confirmed_at, expires_at, hard_deadline_at, last_beat_at, delivery, extended_at, provider_profile"
+LEASE_COLS :: "lease_id, task_id, chain_id, owner_user_id, attempt_no, holder_instance_id, kind, review_role, bridge_id, provider, model, granted_at, confirmed_at, expires_at, hard_deadline_at, last_beat_at, delivery, extended_at, provider_profile, phase"
 @(private = "file")
 REVIEW_COLS :: "task_id, chain_id, owner_user_id, attempt_no, role, reviewer_kind, reviewer_agent_id, reviewer_instance_id, verdict, findings_json, created_at"
 
@@ -99,6 +99,22 @@ task_event_append_sqlite :: proc(ctx: rawptr, event: domain.Task_Event) -> (doma
 	saved := event
 	saved.event_id = sqlite3_column_int64(stmt, 0)
 	return saved, true, domain.Domain_Error{}
+}
+
+// Existing idx_task_events_task(task_id,event_id) serves a reverse seek. Read
+// one scalar, not event payloads; owner filtering remains mandatory.
+task_event_latest_id_sqlite :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> (i64, domain.Domain_Error) {
+ impl := (^Taskchain_Repo_SQLite)(ctx)
+ stmt, err := prepare(impl, "SELECT event_id FROM task_events WHERE task_id = ? AND owner_user_id = ? ORDER BY event_id DESC LIMIT 1;", "latest task event id")
+ if err.code != .None do return 0, err
+ defer sqlite3_finalize(stmt)
+ bind_text(stmt, 1, string(task_id))
+ bind_text(stmt, 2, string(owner_user_id))
+ switch sqlite3_step(stmt) {
+ case SQLITE_ROW: return sqlite3_column_int64(stmt, 0), {}
+ case SQLITE_DONE: return 0, {}
+ case: return 0, domain.domain_error(.Internal_Error, "failed to read latest task event id")
+ }
 }
 
 task_event_list_by_task_sqlite :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Event, domain.Domain_Error) {
@@ -209,7 +225,7 @@ task_attempt_facet_list_by_task_sqlite :: proc(ctx: rawptr, task_id: domain.Task
 @(private = "file")
 lease_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Task_Lease {
 	return domain.Task_Lease{
-		lease_id = column_text(stmt, 0),
+		lease_id = column_text(stmt, 0), phase = column_text(stmt, 19),
 		task_id = domain.Task_ID(column_text(stmt, 1)),
 		chain_id = domain.Task_Chain_ID(column_text(stmt, 2)),
 		owner_user_id = domain.User_ID(column_text(stmt, 3)),
@@ -234,9 +250,11 @@ lease_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Task_Lease {
 // (holder_instance_id; task_id WHERE kind='work') are the engine's backstop
 // against a double grant: a violation surfaces as Conflict, never as a silent
 // overwrite of another holder's lease.
-task_lease_save_sqlite :: proc(ctx: rawptr, lease: domain.Task_Lease) -> (domain.Task_Lease, bool, domain.Domain_Error) {
+task_lease_save_sqlite :: proc(ctx: rawptr, input: domain.Task_Lease) -> (domain.Task_Lease, bool, domain.Domain_Error) {
+	lease := input
+	if lease.phase == "" do lease.phase = domain.LEASE_PHASE_ACTIVE
 	impl := (^Taskchain_Repo_SQLite)(ctx)
-	stmt, err := prepare(impl, "INSERT INTO task_leases (" + LEASE_COLS + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(lease_id) DO UPDATE SET confirmed_at=excluded.confirmed_at, extended_at=excluded.extended_at, expires_at=excluded.expires_at, hard_deadline_at=excluded.hard_deadline_at, last_beat_at=excluded.last_beat_at, delivery=excluded.delivery, bridge_id=excluded.bridge_id, provider_profile=excluded.provider_profile, provider=excluded.provider, model=excluded.model;", "task lease save")
+	stmt, err := prepare(impl, "INSERT INTO task_leases (" + LEASE_COLS + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(lease_id) DO UPDATE SET phase=excluded.phase, confirmed_at=excluded.confirmed_at, extended_at=excluded.extended_at, expires_at=excluded.expires_at, hard_deadline_at=excluded.hard_deadline_at, last_beat_at=excluded.last_beat_at, delivery=excluded.delivery, bridge_id=excluded.bridge_id, provider_profile=excluded.provider_profile, provider=excluded.provider, model=excluded.model;", "task lease save")
 	if err.code != .None do return domain.Task_Lease{}, false, err
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, lease.lease_id); bind_text(stmt, 2, string(lease.task_id)); bind_text(stmt, 3, string(lease.chain_id)); bind_text(stmt, 4, string(lease.owner_user_id))
@@ -245,6 +263,7 @@ task_lease_save_sqlite :: proc(ctx: rawptr, lease: domain.Task_Lease) -> (domain
 	bind_text(stmt, 12, lease.granted_at); bind_text(stmt, 13, lease.confirmed_at); bind_text(stmt, 14, lease.expires_at); bind_text(stmt, 15, lease.hard_deadline_at); bind_text(stmt, 16, lease.last_beat_at)
 	bind_text(stmt, 17, lease.delivery if lease.delivery != "" else domain.LEASE_DELIVERY_WAKE)
 	bind_text(stmt, 18, lease.extended_at);bind_text(stmt,19,domain.profile_effective_id(lease.provider,lease.provider_profile))
+	bind_text(stmt,20,lease.phase if lease.phase != "" else "active")
 	if sqlite3_step(stmt) != SQLITE_DONE do return domain.Task_Lease{}, false, domain.domain_error(.Conflict, "lease conflicts with an existing lease (holder or task already leased)")
 	return lease, true, domain.Domain_Error{}
 }

@@ -139,6 +139,7 @@ trigger_label :: proc(t: Trigger) -> string {
 
 // Effects collects the side effects a UoW decided on; they run after COMMIT.
 Effects :: struct {
+ fenced_stops: [dynamic]Fenced_Stop,
 	// wake runs/stops keyed by bridge id (see wake.odin, M1).
 	runs:        map[string][dynamic]agent.Wake_Agent_Run_Entry,
 	stops:       map[string][dynamic]string,
@@ -301,6 +302,7 @@ Deferred_Effects :: struct {
 // Move a successfully released savepoint's effects into its parent. Payloads
 // and owned map keys transfer with the arrays; only source containers are freed.
 move_effects :: proc(dst, src: ^Effects) {
+ append(&dst.fenced_stops,..src.fenced_stops[:]);delete(src.fenced_stops)
 	for key, entries in src.runs {
 		current := dst.runs[key]
 		for entry in entries {
@@ -375,6 +377,7 @@ cancel_reservations :: proc(svc: ^Service, e: ^Effects) {
 
 @(private = "package")
 destroy_effects :: proc(e: ^Effects) {
+ delete(e.fenced_stops)
 	for _, entries in e.runs do delete(entries)
 	delete(e.runs)
 	for _, entries in e.stops do delete(entries)
@@ -436,6 +439,7 @@ agent_notice_command_json :: proc(command_id, instance_id, chain_id, origin, lin
 
 @(private = "file")
 flush_effects :: proc(svc: ^Service, e: ^Effects) {
+	flush_fenced_stops(svc,e)
 	flush_wakes(svc, e)
 	for n in e.notifications {
 		if svc.notify_observer != nil {
@@ -612,7 +616,12 @@ record_event :: proc(svc: ^Service, u: ^Uow, task: domain.Task, actor: Actor, ki
 	// that leave the projection as it was (an agent's approve that hands the
 	// gate to the user), so the card is re-projected per event, not per save.
 	effect_attention(u, task)
-	return refold_task(svc, u, task, tasks, deps)
+	fresh, view, ok, err := refold_task(svc, u, task, tasks, deps)
+	merge := task_merge_status(svc, fresh)
+	if ok && (fresh.state == .Cancelled || (fresh.state == .Done && (merge.state == "none" || merge.state == "merged"))) {
+		if !clear_task_claims_in_uow(svc, u, fresh) do return fresh, view, false, domain.domain_error(.Internal_Error, "failed to clear task claims")
+	}
+	return fresh, view, ok, err
 }
 
 // refold_task recomputes `task`'s view from its events and persists the

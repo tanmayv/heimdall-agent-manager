@@ -116,6 +116,10 @@ export function describeTaskEvent(ev: TaskEventWire, names: TaskNames): Describe
   const known = (text: string): DescribedEvent => ({ text, known: true });
 
   switch (kind) {
+    case 'durable_claim_conversion_pending':
+      return known('Legacy ownership is awaiting restoration');
+    case 'durable_claim_conversion_checked':
+      return known(p.repair_required ? 'Legacy ownership needs coordinator repair' : 'Legacy ownership restored');
     case 'migrated':
       return known(`Carried over from the previous task system${s(p.state) ? ` as ${s(p.state).replace(/_/g, ' ')}` : ''}`);
     case 'created':
@@ -172,6 +176,8 @@ export function describeTaskEvent(ev: TaskEventWire, names: TaskNames): Describe
       return known(`${who} answered the blocker`);
     case 'handoff':
       return known(`${who} handed the work off${attempt(p)}`);
+    case 'claim_released':
+      return known(`${who} released waiting ownership${s(p.reason) ? `: ${s(p.reason)}` : ''}${attempt(p)}`);
     case 'lease_expired': {
       const reason = EXPIRE_REASON_TEXT[s(p.reason)] || (s(p.reason) ? s(p.reason).replace(/_/g, ' ') : 'it expired');
       const what = s(p.kind) === 'review' ? 'Review' : 'Work';
