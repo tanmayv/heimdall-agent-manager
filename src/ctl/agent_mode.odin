@@ -480,14 +480,12 @@ ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
 		tid := pos(tokens, 1)
 		if tid == "" { print_agent_help([]string{"task"}); return }
 		ctl_v2_task_hold(endpoint, token, tid, args, release = verb == "release")
-    case "control":
+    case "control", "inspect", "reopen", "release-owner", "rereview", "force-complete", "resume":
+        ctl_print_error_exit("unsupported task command; use task cancel <task-id> or lease transfer <task-id> --instance <id>")
+    case "cancel":
         tid := pos(tokens, 1)
         if tid == "" { print_agent_help([]string{"task"}); return }
-        ctl_v2_task_action(endpoint, token, tid, args, "control", ctl_v2_task_control_body(option_value(args, "--operation", ""), args))
-    case "inspect", "cancel", "reopen", "release-owner", "rereview", "force-complete", "resume":
-        tid := pos(tokens, 1)
-        if tid == "" { print_agent_help([]string{"task"}); return }
-        ctl_v2_task_action(endpoint, token, tid, args, "control", ctl_v2_task_control_body(verb, args))
+        ctl_v2_task_action(endpoint, token, tid, args, "cancel", ctl_v2_task_cancel_body(args))
 	case "recheck":
 		// Coordinator/owner: recompute gate, readiness, dispatch and merge-back.
 		tid := pos(tokens, 1)
@@ -1884,7 +1882,7 @@ print_help_overview :: proc() {
 	fmt.println("  issue       Issues, bugs, and blockers (list, show, create, update, comment, vote, unvote)")
 	fmt.println("  projects    Manage projects (list, show, create, update)")
 	fmt.println("  vault       Report the vault key source: env override and bridge status (status)")
-	fmt.println("  lease       Durable task claims: <task-id>, next, transfer, recover, submit, handoff, block")
+	fmt.println("  lease       Durable task claims: <task-id>, next, transfer, submit, handoff, block")
 	fmt.println("  verify      Removed (stub for one release): prints {\"ok\":true,\"verify\":\"removed\"} and exits 0")
 	fmt.println("  review      Post a review verdict on the task you were woken to review (post)")
 	fmt.println("  context     One-shot snapshot of this instance (chain, task, unread)")
@@ -2051,10 +2049,7 @@ print_help_task :: proc() {
 	fmt.println("globally unique, so you never need --chain (the Hub derives the chain for you).")
 	fmt.println("")
 	fmt.println("VERBS")
-    fmt.println("  inspect <task-id>                   Ownership, runtime, generation and allowed controls.")
-    fmt.println("  cancel|reopen|resume|release-owner|rereview|force-complete <task-id>")
-    fmt.println("      --reason <text> --request-id <id> --expected-generation <n> [--obligation <text>]")
-    fmt.println("  control <task-id> --operation <op>  Explicit administrative operation (same concurrency flags).")
+    fmt.println("  cancel <task-id> [--reason <text>] [--request-id <id>] [--expected-generation <n>]")
 
 	fmt.println("  list                                    List your chain's tasks; each carries a comment_summary")
 	fmt.println("                                          (count, last_comment_at, author, preview) — not bodies.")
@@ -2259,7 +2254,9 @@ print_help_cards :: proc() {
 ctl_v2_lease :: proc(endpoint, token: string, tokens, args: []string) {
 	action := pos(tokens, 0)
 	switch action {
-	case "transfer", "recover":
+	case "recover":
+        ctl_print_error_exit("unknown lease command: recover; use lease transfer <task-id> --instance <id>")
+	case "transfer":
         tid := pos(tokens, 1)
         if tid == "" { print_help_lease(); return }
         ctl_agent_call_task(endpoint, token, strings.concatenate({"agent.lease.", action}, context.temp_allocator), ctl_v2_lease_claim_params(tid, args), args)
@@ -2293,9 +2290,9 @@ print_help_lease :: proc() {
 	fmt.println("")
 	fmt.println("VERBS")
     fmt.println("  <task-id> [--instance <id>] Claim a specific task; role follows its current state.")
-    fmt.println("  transfer|recover <task-id> --instance <id> --reason <text> --request-id <id> --expected-generation <n>")
+    fmt.println("  transfer <task-id> --instance <id> [--reason <text>] [--request-id <id>] [--expected-generation <n>]")
     fmt.println("                             Coordinator targets must match the durable assignee/reviewer identity.")
-	fmt.println("                             recover is a transfer alias; task release-owner clears ownership.")
+	fmt.println("                             Request IDs and audit reasons are generated when omitted; no inspection is needed.")
 	fmt.println("  next                       Return the lease you hold (status=current) or claim the next task")
 	fmt.println("                             for you (status=granted); status=none when nothing is available.")
 	fmt.println("                             status=waiting retains task/role through review or a block; only active permits work.")

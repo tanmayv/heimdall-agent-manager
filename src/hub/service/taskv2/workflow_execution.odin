@@ -395,7 +395,6 @@ trigger_on_output_workflows_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain
 	run_count := len(runs)
 	for task in tasks {
 		if task.state != .Done do continue
-		if task_administratively_completed(svc, task) do continue
 		if task.workflow_run_id != "" {
 			run, ok, err := iface.taskchain_get_workflow_run(svc.repo, task.workflow_run_id, task.owner_user_id)
 			if !ok do return false, err

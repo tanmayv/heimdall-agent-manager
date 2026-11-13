@@ -93,9 +93,7 @@ test_legacy_claim_conversion_restores_free_owner_and_preserves_history :: proc(t
   testing.expect_value(t,scalar_text(fx,"SELECT json_group_array(json_object('kind',kind,'body',body_json,'writer',writer,'written',written_at)) FROM task_attempt_facets WHERE task_id='task_conversion';"),facets_before)
   testing.expect_value(t,scalar_text(fx,"SELECT json_group_array(json_object('attempt',attempt_no,'role',role,'verdict',verdict,'created',created_at)) FROM task_reviews WHERE task_id='task_conversion';"),reviews_before)
   if !restored {
-   inspection,inspected,ierr:=task_control_inspect(&fx.svc,get_task(fx,"task_conversion"),actor_from_auth(user_auth()))
-   testing.expect(t,inspected,ierr.message)
-   testing.expect(t,strings.contains(inspection.wait_reason,"ownership_repair"),"unsafe legacy conversion exposes ownership repair diagnostic")
+   testing.expect(t,strings.contains(scalar_text(fx,"SELECT payload_json FROM task_events WHERE task_id='task_conversion' AND kind='durable_claim_conversion_checked';"),"repair_required"),"conversion diagnostic retained in task events")
   }
   if mode=="free" {
    // An explicit release after conversion must survive every later boot.

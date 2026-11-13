@@ -10,19 +10,6 @@ import taskv2 "odin_test:hub/service/taskv2"
 import jsonx "odin_test:lib/jsonx"
 
 @(test)
-test_task_control_inspect_wire_generation :: proc(t: ^testing.T) {
-    f := wire_setup(t, "control_inspect")
-    defer wire_teardown(f)
-    engine := taskv2.new_service(&f.tc_repo, &f.ag_repo, &f.br_repo, &f.clock, &f.ids)
-    f.th.task_engine = &engine
-    task := domain.Task{task_id = "task_control_wire", chain_id = f.chain_id, owner_user_id = f.owner, title = "Inspect", kind = .Task, state = .Backlog}
-    _, _, _ = iface.taskchain_save_task(&f.tc_repo, task)
-    response := task_control_handler(&f.th, wire_cookie_request(f, "POST", fmt.tprintf("/api/v1/task-chains/%s/tasks/task_control_wire/control", f.chain_id), `{"operation":"inspect"}`))
-    testing.expectf(t, response.status == 200, "%s", response.body)
-    testing.expect(t, strings.contains(response.body, `"generation":`) && strings.contains(response.body, `"cleanup_pending":`))
-}
-
-@(test)
 test_explicit_claim_wire_rejects_missing_task :: proc(t: ^testing.T) {
     f := wire_setup(t, "claim_missing")
     defer wire_teardown(f)
@@ -44,7 +31,7 @@ claim_wire_seed_task :: proc(f: ^wire_fixture, id, assignee: string) -> domain.T
 }
 
 @(test)
-test_task_control_http_noncoordinator_and_cross_owner_cannot_cancel :: proc(t: ^testing.T) {
+test_task_cancel_http_noncoordinator_and_cross_owner_cannot_cancel :: proc(t: ^testing.T) {
     f := wire_setup(t, "control_denied")
     defer wire_teardown(f)
     engine := taskv2.new_service(&f.tc_repo, &f.ag_repo, &f.br_repo, &f.clock, &f.ids)
@@ -52,17 +39,17 @@ test_task_control_http_noncoordinator_and_cross_owner_cannot_cancel :: proc(t: ^
     task := claim_wire_seed_task(f, "task_cancel_denied", "agt_wire_tb2")
     _, _, _ = iface.taskchain_save_member(&f.tc_repo, domain.Task_Chain_Member{chain_id=f.chain_id,
         owner_user_id=f.owner,agent_instance_id=f.instance_id,agent_id="agt_wire_tb2",role="worker"})
-    path := fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/control", f.chain_id, task.task_id)
-    body := `{"operation":"cancel","reason":"unauthorized","request_id":"denied","expected_generation":1}`
+    path := fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/cancel", f.chain_id, task.task_id)
+    body := `{"reason":"unauthorized","request_id":"denied","expected_generation":1}`
     request := wire_cookie_request(f, "POST", path, body)
     request.headers = f.agent_headers[:]
-    denied := task_control_handler(&f.th, request)
+    denied := task_cancel_handler(&f.th, request)
     testing.expectf(t, denied.status == 403, "worker denial: %s", denied.body)
     fresh, _, _ := iface.taskchain_get_task(&f.tc_repo, task.task_id)
     testing.expect_value(t, fresh.state, domain.Task_State.Ready)
     other_headers := http_test_login(t, &f.auth_svc, "claims_foreign_owner")
     request.headers = other_headers
-    foreign_result := task_control_handler(&f.th, request)
+    foreign_result := task_cancel_handler(&f.th, request)
     testing.expectf(t, foreign_result.status == 404, "cross-owner task hidden: %s", foreign_result.body)
     fresh, _, _ = iface.taskchain_get_task(&f.tc_repo, task.task_id)
     testing.expect_value(t, fresh.state, domain.Task_State.Ready)
@@ -110,40 +97,24 @@ test_explicit_claim_http_coordinator_actor_and_beneficiary_separate :: proc(t: ^
     testing.expect(t, actor_recorded, "audit preserves authenticated coordinator actor")
 }
 
+
 @(test)
-test_task_control_http_override_policy_requires_human_owner :: proc(t: ^testing.T) {
-    f := wire_setup(t, "override_policy")
+test_task_cancel_http_without_generation_is_idempotent :: proc(t: ^testing.T) {
+    f := wire_setup(t, "cancel_retry")
     defer wire_teardown(f)
     engine := taskv2.new_service(&f.tc_repo, &f.ag_repo, &f.br_repo, &f.clock, &f.ids)
     f.th.task_engine = &engine
-    task := claim_wire_seed_task(f, "task_policy", "agt_wire_tb2")
-    events, _ := iface.taskchain_list_events_by_task(&f.tc_repo, task.task_id, f.owner)
-    generation: i64
-    for event in events do generation=max(generation,event.event_id)
-    path := fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/control", f.chain_id, task.task_id)
-    body := fmt.tprintf(`{{"operation":"allow-coordinator-override","reason":"owner policy","request_id":"policy-on","expected_generation":%d}}`, generation)
-    request := wire_cookie_request(f,"POST",path,body)
-    request.headers=f.agent_headers[:]
-    denied:=task_control_handler(&f.th,request)
-    testing.expectf(t,denied.status==403,"coordinator cannot enable own privilege: %s",denied.body)
-    allowed:=task_control_handler(&f.th,wire_cookie_request(f,"POST",path,body))
-    if !testing.expectf(t,allowed.status==200,"owner sets narrow policy: %s",allowed.body) do return
-    chain,_,_:=iface.taskchain_get_chain(&f.tc_repo,f.chain_id)
-    enabled,_:=jsonx.extract_bool_literal(chain.defaults_json,"allow_coordinator_override",true)
-    testing.expect(t,enabled,"policy durably enabled")
-    events,_=iface.taskchain_list_events_by_task(&f.tc_repo,task.task_id,f.owner)
-    audited:=false
-    for event in events do if event.kind==taskv2.EV_CONTROL_APPLIED {
-        audited=event.actor_id==string(f.owner) && strings.contains(event.payload_json,"policy-on")
-    }
-    testing.expect(t,audited,"human policy grant preserves owner attribution and request identity")
-    generation=0
-    for event in events do generation=max(generation,event.event_id)
-    disable_body:=fmt.tprintf(`{{"operation":"deny-coordinator-override","reason":"revoke policy","request_id":"policy-off","expected_generation":%d}}`,generation)
-    disabled:=task_control_handler(&f.th,wire_cookie_request(f,"POST",path,disable_body))
-    testing.expectf(t,disabled.status==200,"owner can revoke policy: %s",disabled.body)
-    chain,_,_=iface.taskchain_get_chain(&f.tc_repo,f.chain_id)
-    enabled,_=jsonx.extract_bool_literal(chain.defaults_json,"allow_coordinator_override",true)
-    testing.expect(t,!enabled,"policy durably revoked")
-
+    task := claim_wire_seed_task(f, "task_cancel_retry", "agt_wire_tb2")
+    path := fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/cancel", f.chain_id, task.task_id)
+    body := `{"reason":"user cancelled","request_id":"cancel-retry"}`
+    first := task_cancel_handler(&f.th, wire_cookie_request(f, "POST", path, body))
+    if !testing.expectf(t, first.status == 200, "cancel without generation: %s", first.body) do return
+    testing.expect(t, strings.contains(first.body, `"changed":true`))
+    fresh, _, _ := iface.taskchain_get_task(&f.tc_repo, task.task_id)
+    testing.expect_value(t, fresh.state, domain.Task_State.Cancelled)
+    events_before, _ := iface.taskchain_list_events_by_task(&f.tc_repo, task.task_id, f.owner)
+    again := task_cancel_handler(&f.th, wire_cookie_request(f, "POST", path, body))
+    testing.expectf(t, again.status == 200, "cancel retry: %s", again.body)
+    events_after, _ := iface.taskchain_list_events_by_task(&f.tc_repo, task.task_id, f.owner)
+    testing.expect_value(t, len(events_after), len(events_before))
 }

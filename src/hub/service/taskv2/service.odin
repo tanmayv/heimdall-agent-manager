@@ -666,7 +666,7 @@ refold_task :: proc(svc: ^Service, u: ^Uow, task: domain.Task, tasks: []domain.T
 		metric_task_transition(task.state, saved.state)
 	}
 	// Merge applicability is fixed at Done, before any later directory change.
-	if saved.state == .Done && task.state != .Done && !task_administratively_completed(svc, saved) {
+	if saved.state == .Done && task.state != .Done {
 		if serr := record_merge_snapshot(svc, saved); serr.code != .None do return task, view, false, serr
 	}
 	// Column-backed alerts: ready_unclaimed (ready_since) and blocked-on-human
@@ -680,7 +680,7 @@ refold_task :: proc(svc: ^Service, u: ^Uow, task: domain.Task, tasks: []domain.T
 			effect_tasks_changed(u, saved.chain_id, saved.owner_user_id)
 		}
 		check_coordinator_attention_on_refold(svc, u, task, saved, view, all_tasks)
-		if saved.state == .Done && task.state != .Done && !task_administratively_completed(svc, saved) do effect_merge_worktree(svc, u, saved, evs)
+		if saved.state == .Done && task.state != .Done do effect_merge_worktree(svc, u, saved, evs)
 		if saved.state == .Ready && task.state != .Ready do nudge_idle_soloist(svc, u, saved)
 	}
 	return saved, view, true, domain.Domain_Error{}

@@ -199,43 +199,35 @@ For a significant change to objective, deliverable or approach that invalidates 
 
 Do not overwrite the original into an unrelated assignment or treat the scope change as approval of unfinished work.
 
-## Durable claims and coordinator controls
+## Durable claims, cancellation and transfer
 
-The CLI retains the name `lease` for compatibility. Claims do not expire and
-need no periodic heartbeat. An active claim permits execution; a waiting claim
-retains task, role and owner through review, blocking or runtime recovery.
-Submission and review verdicts retain waiting responsibility until completion
-or explicit release. Refresh `lease next` to read the phase; do not pull unrelated
-work while waiting.
+Claims do not expire or require renewal. Active ownership permits execution;
+waiting ownership retains task, role and owner through review and blocking.
+Submission and verdicts retain responsibility until completion or explicit release.
 
-- `ham-ctl lease <task-id>` claims an exact task using the caller's durable identity;
-  the Hub derives work/review role from task state.
-- `ham-ctl lease <task-id> --instance <instance-id>` lets the coordinator assign a
-  named eligible instance. Its durable identity must match the assignee/reviewer.
-  Context goes to the target; the caller's `TASK.md` is preserved. An explicit
-  named claim uses durable identity and current eligibility, independently of fleet
-  placement; it does not change the task assignee or reviewer identity.
-- `ham-ctl task inspect <task-id>` returns owners, wait reason, process observations,
-  cleanup state, allowed actions/refusals and task event generation.
-- `ham-ctl lease transfer <task-id> --instance <id> --reason <text> --request-id <unique-id> --expected-generation <n>`
-  moves ownership to an instance with the same durable agent identity.
-  `lease recover` is an alias with the same required target and concurrency/reason
-  flags. Use `task release-owner` to clear ownership without assigning a replacement.
-- A running previous holder is fenced first. `stop_pending` prevents replacement
-  execution until a matching persisted stop receipt confirms that process exited.
-  Disconnection is not exit proof; process run_count is distinct from task generation.
-- `ham-ctl task control <task-id> --operation <operation> --reason <text> --request-id <unique-id> --expected-generation <n>`
-  supports cancel, reopen, hold, resume, unblock, release-owner, rereview,
-  force-complete and recheck. Read generation from inspection before mutating.
-  Reuse the same request ID only for retries with identical arguments; inspect again
-  after a generation conflict. `release-owner` also holds the task to prevent
-  automatic reclamation; `resume` clears that hold after cleanup.
-  Named aliases include `task cancel/reopen/resume/release-owner/rereview/force-complete`.
-  `task release` still means clearing a hold.
-- Administrative completion requires explicit unmet `--obligation <text>` entries.
-  It never fabricates review approval, test results, merge success or prerequisite
-  success. Only the authenticated human owner can enable coordinator override policy;
-  coordinators cannot grant themselves that authority.
-- `lease next` remains the legacy current/eligible-task entry point. `lease heartbeat`
-  only reports progress or acknowledges an exact requirements revision. Legacy
-  lease IDs and storage fields remain compatibility details, not time-based authority.
+```bash
+ham-ctl lease <task-id>
+ham-ctl lease <task-id> --instance <instance-id>
+ham-ctl lease transfer <task-id> --instance <instance-id>
+ham-ctl task cancel <task-id>
+```
+
+- A plain claim requests work for the calling instance. Its durable agent ID must
+  match the assignee or an eligible reviewer; the server derives the role from
+  current task state. Repeating a claim returns existing responsibility.
+- A coordinator can name an eligible instance, including itself when its own
+  durable identity matches. Context goes to that instance; assigning another
+  instance does not overwrite the coordinator's task context.
+- Claims do not silently replace another holder. Use explicit transfer. The old
+  writer is fenced immediately; replacement execution waits for the exact process
+  stop receipt. Offline cleanup remains `stop_pending`.
+- Cancellation preserves history and revokes work/review ownership. It can finish
+  while process cleanup is pending; late callbacks cannot revive the task.
+- No prior inspection or manual generation/request ID is needed. The CLI supplies
+  request identity and a default audit reason. Use `--reason` to explain intent;
+  optional explicit request IDs and generation checks serve advanced callers.
+- Existing `task hold`, `task release`, `task unblock` and `task recheck` retain
+  their established meanings. `task release` clears a hold.
+- `lease next` refreshes current responsibility. Stay with a waiting task rather
+  than pulling unrelated work. `lease heartbeat` only reports progress or
+  acknowledges requirements; it does not renew ownership.

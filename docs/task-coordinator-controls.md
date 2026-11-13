@@ -1,67 +1,58 @@
-# Explicit task claims and coordinator controls
+# Durable task claims, cancellation and transfer
 
-Agents claim an exact task with `ham-ctl lease <task-id>`. The Hub infers the role
-from current task state and resolves the authenticated durable agent identity.
-A coordinator assigns a named eligible instance with
-`ham-ctl lease <task-id> --instance <instance-id>`; target context is delivered
-to that instance, preserving the coordinator’s own task context.
+Non-expiring ownership keeps a worker or reviewer responsible through submission,
+review and external waits. The new commands claim a task, cancel it, or transfer
+ownership to a named eligible instance.
 
-Inspect administrative state with `ham-ctl task inspect <task-id>`.
-The result includes the task event generation, owners and process observations,
-wait reason, cleanup state, and allowed actions with refusal reasons.
+## Agent commands
 
-Administrative mutations use an explicit operation, reason, unique request ID,
-and the generation returned by inspection:
+Claims do not expire or require renewal. Active ownership permits execution;
+waiting ownership retains task, role and owner through review and blocking.
+Submission and verdicts retain responsibility until completion or explicit release.
 
 ```bash
-ham-ctl task control task_123 --operation cancel --reason "Work superseded" --request-id cancel-123 --expected-generation 42
-ham-ctl task reopen task_123 --reason "New work authorized" --request-id reopen-123 --expected-generation 43
+ham-ctl lease <task-id>
+ham-ctl lease <task-id> --instance <instance-id>
+ham-ctl lease transfer <task-id> --instance <instance-id>
+ham-ctl task cancel <task-id>
 ```
 
-Supported operations are `cancel`, `reopen`, `hold`, `resume`, `unblock`,
-`release-owner`, `rereview`, `force-complete`, and `recheck`. Named CLI
-aliases exist for inspect/cancel/reopen/resume/release-owner/rereview/force-complete.
-`task release` retains its existing meaning: clear a hold.
+- A plain claim requests work for the calling instance. Its durable agent ID must
+  match the assignee or an eligible reviewer; the server derives the role from
+  current task state. Repeating a claim returns existing responsibility.
+- A coordinator can name an eligible instance, including itself when its own
+  durable identity matches. Context goes to that instance; assigning another
+  instance does not overwrite the coordinator's task context.
+- Claims do not silently replace another holder. Use explicit transfer. The old
+  writer is fenced immediately; replacement execution waits for the exact process
+  stop receipt. Offline cleanup remains `stop_pending`.
+- Cancellation preserves history and revokes work/review ownership. It can finish
+  while process cleanup is pending; late callbacks cannot revive the task.
+- No prior inspection or manual generation/request ID is needed. The CLI supplies
+  request identity and a default audit reason. Use `--reason` to explain intent;
+  optional explicit request IDs and generation checks serve advanced callers.
+- Existing `task hold`, `task release`, `task unblock` and `task recheck` retain
+  their established meanings. `task release` clears a hold.
+- `lease next` refreshes current responsibility. Stay with a waiting task rather
+  than pulling unrelated work. `lease heartbeat` only reports progress or
+  acknowledges requirements; it does not renew ownership.
 
-`force-complete` records an administrative outcome and requires explicit
-`--obligation <text>` entries for unmet obligations. It never creates a human
-approval, successful test or successful merge. Policy and dependency safeguards
-remain enforced by the service. Coordinator overrides require the chain policy
-`allow_coordinator_override`; an authenticated human owner explicitly configures it through the narrow
-policy controls below. An authenticated human owner may also invoke the
-explicit override directly.
 
-```bash
-ham-ctl hub tasks control task_123 --chain chain_123 --operation allow-coordinator-override --reason "Authorize coordinator waivers" --request-id policy-123 --expected-generation 42
-# Revoke the policy using --operation deny-coordinator-override.
-```
+## Safety and storage
 
-Policy controls require owner authentication and preserve actor, reason, request
-identity and expected task generation; coordinator instance tokens cannot enable
-their own override authority.
+The Hub checks authorization, current state and durable identity inside its
+transaction. A transfer reserves the named replacement, fences the former writer,
+and confirms that exact process stopped before enabling execution. A repeated
+request cannot create duplicate active owners. A stopped status projection alone
+is not a stop receipt.
 
-Transfer and recovery use
-`ham-ctl lease transfer <task-id> --instance <target> --reason <text> --request-id <id> --expected-generation <task-generation>`
-(or `lease recover`). The expected generation is the task event generation returned by inspection.
-Process `run_count` is reported separately for runtime observations.
-A running previous holder is fenced first; `stop_pending` means replacement
-execution still awaits confirmed process exit. Disconnection is not proof of exit.
-Confirmation must match the persisted stop command, Bridge, instance and process
-generation. Generic stopped status reports cannot clear it; reconnect retries
-the same fenced command.
+The schema adds one active/waiting phase column to existing claims. It adds no
+tables or generation counters. Optional explicit concurrency checks reuse the
+latest existing task event ID through an indexed scalar lookup.
 
-| Capability | Existing CLI surface |
-| --- | --- |
-| Definition, assignee, reviewers, dependencies, review policy | `task create/update/depend` |
-| Dispatch placement/capacity/roles and pause/resume | `task-chain fleet set/pause/resume` |
-| Block answer and repair reconciliation | `task unblock/recheck` |
-| Process stop, resume, restart | `agents stop/start/restart <instance-id>` |
-| Workflow lifecycle | `workflow retry/cancel` for the whole run |
-| Chain lifecycle | `task-chain complete/archive/unarchive`; reopen with `task-chain status active --chain <id>`; cancel with `task-chain status cancelled --chain <id>` |
+## Scope
 
-The operator CLI uses `ham-ctl hub task-chains reopen/archive/unarchive`;
-chain cancellation uses `ham-ctl hub task-chains update --chain <id> --status cancelled`.
-
-The operator-authenticated task controls use `ham-ctl hub tasks` and a
-`--chain <id>` argument for administrative controls. Claims use the agent
-authenticated interface so caller and beneficiary cannot be confused.
+The new inspection/generic-control API, administrative completion, coordinator
+override policy, re-review and release-owner commands have been removed from this
+change. Preexisting task and workflow operations remain available. Ordinary
+cancellation and transfer do not approve submissions or bypass review gates.

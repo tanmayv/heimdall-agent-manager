@@ -396,3 +396,15 @@ test_explicit_claim_generation_and_request_identity :: proc(t: ^testing.T) {
     testing.expect(t, strings.contains(params, `"expected_generation":42`))
     testing.expect(t, strings.contains(params, `"request_id":"transfer-42"`))
 }
+
+@(test)
+test_minimal_claim_generates_audit_identity_without_generation :: proc(t: ^testing.T) {
+    first := ctl_v2_lease_claim_params("task_requested", nil)
+    second := ctl_v2_lease_claim_params("task_requested", nil)
+    defer delete(first)
+    defer delete(second)
+    testing.expect(t, strings.contains(first, `"request_id":"req_`))
+    testing.expect(t, strings.contains(first, `"reason":"Explicit task ownership requested via CLI"`))
+    testing.expect(t, !strings.contains(first, "expected_generation"))
+    testing.expect(t, first != second)
+}

@@ -521,7 +521,7 @@ bridge_taskv2_build_task_md :: proc(d: ^Bridge_Task_Md_Doc, alloc := context.tem
 			strings.write_byte(&b, '\n')
 		}
 	} else {
-		strings.write_string(&b, "1. Inspect your durable claim with `ham-ctl lease next`. Active permits work; waiting retains this task and your role. After submit or block, stay with this task while waiting; do not pull unrelated work.\n2. Choose and run checks appropriate to the change; report the commands and their outcomes in `ham-ctl lease submit --summary \"...\"` when done.\n3. `ham-ctl lease heartbeat` reports progress and acknowledges requirements revisions; no periodic renewal is required. The coordinator can use `lease <task-id> --instance <id>`, `lease transfer`, and `lease recover` to change ownership explicitly.\n")
+		strings.write_string(&b, "1. Inspect your durable claim with `ham-ctl lease next`. Active permits work; waiting retains this task and your role. After submit or block, stay with this task while waiting; do not pull unrelated work.\n2. Choose and run checks appropriate to the change; report the commands and their outcomes in `ham-ctl lease submit --summary \"...\"` when done.\n3. `ham-ctl lease heartbeat` reports progress and acknowledges requirements revisions; no periodic renewal is required. The coordinator can use `lease <task-id> --instance <id>` and `lease transfer` to change ownership explicitly.\n")
 	}
 	return strings.to_string(b)
 }
@@ -661,7 +661,7 @@ bridge_taskv2_render_task_md :: proc(pack_json: string, max_bytes: int = BRIDGE_
 	if answer_section != "" do gate_feedback = strings.concatenate({answer_section, gate_feedback}, context.temp_allocator)
 	// Solo mode: say how this chain works, ahead of the other notices.
 	if solo, sok := jsonx.extract_bool_literal(chain_obj, "solo", true); sok && solo {
-		gate_feedback = strings.concatenate({"\n## Solo Mode\nYou are this chain's coordinator AND its worker; the user reviews every task. Inspect or pull work with `ham-ctl lease next`, submit with `ham-ctl lease submit`, switch with `ham-ctl lease switch <task> --summary …`. After submit, retain your task and role while waiting for review; do not automatically pull unrelated work. Use explicit coordinator controls (`lease <task-id> --instance <id>`, `lease transfer`, `lease recover`) when ownership must change. Never set task status by hand; never review your own work.\n", gate_feedback}, context.temp_allocator)
+		gate_feedback = strings.concatenate({"\n## Solo Mode\nYou are this chain's coordinator AND its worker; the user reviews every task. Inspect or pull work with `ham-ctl lease next`, submit with `ham-ctl lease submit`, switch with `ham-ctl lease switch <task> --summary …`. After submit, retain your task and role while waiting for review; do not automatically pull unrelated work. Use explicit coordinator controls (`lease <task-id> --instance <id>`, `lease transfer`) when ownership must change. Never set task status by hand; never review your own work.\n", gate_feedback}, context.temp_allocator)
 	}
 
 	raw_title := jsonx.extract_string(task_obj, "title", "", true, context.temp_allocator)

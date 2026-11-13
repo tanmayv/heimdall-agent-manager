@@ -176,7 +176,7 @@ build_pack_json :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.Ta
 
 	proto := json_begin()
 	json_bool(&proto, "non_expiring", true)
-	json_raw(&proto, "verbs", `["lease next","lease heartbeat","lease submit","lease handoff","lease block","lease <task-id>","lease transfer","lease recover","review post","task fetch","task comment"]`)
+	json_raw(&proto, "verbs", `["lease next","lease heartbeat","lease submit","lease handoff","lease block","lease <task-id>","lease transfer","review post","task fetch","task comment"]`)
 	json_raw(&proto, "rules", protocol_rules_json())
 	json_raw(&o, "protocol", json_end(&proto))
 	return cap_pack_json_field_safe(json_end(&o), string(task.task_id))
@@ -289,7 +289,7 @@ protocol_rules_json :: proc() -> string {
 "7. Block when waiting on a human or external dependency: ham-ctl lease block --waiting-on user --reason \"<question>\". Your waiting claim retains the task and role; resume when the dependency is resolved.",
 "8. Reviewers post verdicts with: ham-ctl review post --verdict approve|request_changes [--findings-file <json>]",
 "9. Fetch omitted or referenced context on demand: ham-ctl task fetch <task_id> <ref>",
-"10. On 409 lease_lost, stop immediately: ownership changed explicitly. A coordinator can assign ready work with lease <task-id> --instance <id>, move ownership with lease transfer (lease recover is an alias), or clear ownership with task release-owner. Replacement work waits for the previous running holder to stop.",
+"10. On 409 lease_lost, stop immediately: ownership changed explicitly. A coordinator can assign ready work with lease <task-id> --instance <id>, move ownership with lease transfer, or cancel obsolete work with task cancel. Replacement work waits for the previous running holder to stop.",
 "11. Share what you learned: every decision others might re-open and every dead end goes in --decision/--dead-end, not only in the summary text; tasks that wait for yours and later attempts receive them."
 ]`
 }

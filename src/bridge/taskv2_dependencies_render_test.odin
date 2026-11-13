@@ -8,7 +8,7 @@ test_bridge_taskv2_render_durable_waiting_claim :: proc(t: ^testing.T) {
 	pack := `{"task_id":"task_wait","expires_at":"LEGACY_EXPIRY","hard_deadline_at":"LEGACY_DEADLINE","lease":{"lease_id":"claim_wait","kind":"review","review_role":"security","phase":"waiting"},"task":{"title":"Waiting task"},"protocol":{"rules":[]}}`
 	md := bridge_taskv2_render_task_md(pack, 32_000)
 	defer delete(md)
-	for guidance in ([]string{"security", "**Claim**: `claim_wait` (waiting", "Durable; does not expire", "You retain this task and your role", "do not pull unrelated work", "acknowledges requirements revisions", "lease <task-id>", "lease transfer", "lease recover"}) {
+	for guidance in ([]string{"security", "**Claim**: `claim_wait` (waiting", "Durable; does not expire", "You retain this task and your role", "do not pull unrelated work", "acknowledges requirements revisions", "lease <task-id>", "lease transfer"}) {
 		testing.expectf(t, strings.contains(md, guidance), "waiting claim guidance is present: %s", guidance)
 	}
 	for obsolete in ([]string{"Deadlines", "LEGACY_EXPIRY", "LEGACY_DEADLINE"}) {

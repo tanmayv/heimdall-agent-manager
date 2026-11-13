@@ -44,29 +44,42 @@ def main():
     binary = sys.argv[1]
     count = 0
     common = ["--reason", "integration check", "--request-id", "request-7", "--expected-generation", "7"]
-    for operation in ["inspect", "cancel", "reopen", "hold", "resume", "unblock",
-                      "release-owner", "rereview", "force-complete", "recheck"]:
-        args = ["task", "control", "task_test", "--operation", operation, "--chain", "chain_test", *common]
-        if operation == "force-complete":
-            args += ["--obligation", "review pending"]
-        request, result = call(binary, args)
+    for flags in [common, []]:
+        request, result = call(binary, ["task", "cancel", "task_test", "--chain", "chain_test", *flags])
         assert result.returncode == 0, result.stdout + result.stderr
         assert request["method"] == "agent.rest.request", request
         params = request["params"]
-        assert params["http_method"] == "POST" and params["path"].endswith("/task-chains/chain_test/tasks/task_test/control"), params
+        assert params["http_method"] == "POST" and params["path"].endswith("/task-chains/chain_test/tasks/task_test/cancel"), params
         body = json.loads(params["body"])
-        assert body["operation"] == operation and body["expected_generation"] == 7, body
-        assert body["reason"] == "integration check" and body["request_id"] == "request-7", body
-        if operation == "force-complete":
-            assert body["obligations"] == ["review pending"], body
+        assert body["reason"] and body["request_id"], body
+        assert body.get("expected_generation", 0) == (7 if flags else 0), body
+        if flags:
+            assert body["request_id"] == "request-7" and body["reason"] == "integration check", body
         count += 1
-    for verb in ["claim", "transfer", "recover"]:
-        args = ["lease", "task_test"] if verb == "claim" else ["lease", verb, "task_test"]
-        request, result = call(binary, [*args, "--instance", "inst_target", *common])
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert request["method"] == "agent.lease." + verb, request
-        assert request["params"]["instance_id"] == "inst_target", request
-        assert request["params"]["task_id"] == "task_test", request
+    generated = set()
+    for verb in ["claim", "transfer"]:
+        for flags in [common, []]:
+            args = ["lease", "task_test"] if verb == "claim" else ["lease", "transfer", "task_test", "--instance", "inst_target"]
+            request, result = call(binary, [*args, *flags])
+            assert result.returncode == 0, result.stdout + result.stderr
+            assert request["method"] == "agent.lease." + verb, request
+            params = request["params"]
+            assert params["task_id"] == "task_test" and params["reason"] and params["request_id"], request
+            assert params.get("expected_generation", 0) == (7 if flags else 0), request
+            if verb == "transfer":
+                assert params["instance_id"] == "inst_target", request
+            if not flags:
+                generated.add(params["request_id"])
+            count += 1
+    assert len(generated) == 2
+    env = {key: value for key, value in os.environ.items() if not key.startswith(("HEIMDALL_", "HAM_"))}
+    env.update(HEIMDALL_AGENT_TOKEN="isolated-test-token", HEIMDALL_BRIDGE_ENDPOINT="unix:/nonexistent-controls-test.sock")
+    removed = [["task", verb, "task_test"] for verb in ["control", "inspect", "reopen", "release-owner", "rereview", "force-complete", "resume"]]
+    removed.append(["lease", "recover", "task_test", "--instance", "inst_target"])
+    for args in removed:
+        result = subprocess.run([binary, *args], env=env, text=True, capture_output=True, timeout=5)
+        assert result.returncode != 0, result
+        assert "unsupported task command" in result.stdout or "unknown lease command" in result.stdout, result
         count += 1
     request, result = call(binary, ["lease", "task_test"],
         {"v": 1, "id": "ham-ctl-agent", "ok": False, "error": {"code": "conflict", "message": "use explicit transfer"}})

@@ -177,8 +177,6 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 	// unsubscribe were removed (hub answers 410 Gone). Lease verbs (M1):
 	case "agent.lease.transfer":
         return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "lease", "transfer")}
-    case "agent.lease.recover":
-        return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "lease", "recover")}
     case "agent.lease.claim":
         return Bridge_Agent_Route{kind = .Local, local_op = "lease.claim", path = route_path("api", "v1", "agent-actions", "lease", "claim")}
 	case "agent.lease.next":
@@ -347,7 +345,7 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     "agent.task.list", "agent.task.show", "agent.task.comments", "agent.task.create",
 	     "agent.task.update", "agent.task.depend", "agent.task.comment", "agent.task.fetch",
 	     "agent.task.readiness",
-	     "agent.lease.transfer", "agent.lease.recover", "agent.lease.claim", "agent.lease.next", "agent.lease.heartbeat", "agent.lease.submit", "agent.lease.handoff",
+	     "agent.lease.transfer", "agent.lease.claim", "agent.lease.next", "agent.lease.heartbeat", "agent.lease.submit", "agent.lease.handoff",
 	     "agent.lease.block", "agent.lease.switch", "agent.review.post",
 	     "agent.workflow.templates", "agent.workflow.define",
 	     "agent.workflow.run", "agent.workflow.status", "agent.workflow.output",

@@ -9,11 +9,8 @@ Task_Claim_Request :: struct {
     expected_generation: i64 `json:"expected_generation,omitempty"`,
     vcs_base: string `json:"vcs_base,omitempty"`,
 }
-Task_Control_Request :: struct {
-    operation: string `json:"operation"`,
+Task_Cancel_Request :: struct {
     reason: string `json:"reason"`,
     request_id: string `json:"request_id"`,
-    expected_generation: i64 `json:"expected_generation"`,
-    target_instance_id: string `json:"target_instance_id,omitempty"`,
-    obligations: []string `json:"obligations"`,
+    expected_generation: i64 `json:"expected_generation,omitempty"`,
 }

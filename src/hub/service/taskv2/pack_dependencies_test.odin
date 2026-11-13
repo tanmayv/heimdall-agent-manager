@@ -24,7 +24,8 @@ test_pack_durable_claim_protocol :: proc(t: ^testing.T) {
 		for legacy in ([]string{"expires_at", "hard_deadline_at", "heartbeat_ttl_seconds", "hard_cap_seconds", "LEGACY_EXPIRY", "LEGACY_DEADLINE", "every <15m"}) {
 			testing.expectf(t, !strings.contains(pack, legacy), "obsolete claim timing is absent: %s", legacy)
 		}
-		for guidance in ([]string{"waiting retains your task and role", "do not pull unrelated work", "acknowledge a requirements revision", "lease <task-id>", "lease transfer", "lease recover"}) {
+		testing.expect(t,!strings.contains(pack,"lease recover") && !strings.contains(pack,"task release-owner"),"removed repair commands are absent")
+		for guidance in ([]string{"waiting retains your task and role", "do not pull unrelated work", "acknowledge a requirements revision", "lease <task-id>", "lease transfer", "task cancel"}) {
 			testing.expectf(t, strings.contains(pack, guidance), "durable ownership guidance is present: %s", guidance)
 		}
 	}

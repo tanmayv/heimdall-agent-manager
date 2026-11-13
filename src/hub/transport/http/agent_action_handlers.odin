@@ -1669,7 +1669,7 @@ agent_action_lease_claim_handler :: proc(ctx: rawptr, req: Request) -> Response 
     res: taskv2.Lease_Claim_Result
     claimed: bool
     err: domain.Domain_Error
-    if path_part(req.path, 5) == "transfer" || path_part(req.path, 5) == "recover" {
+    if path_part(req.path, 5) == "transfer" {
         res, claimed, err = taskv2.lease_transfer(h.task_engine, auth, input)
     } else {
         res, claimed, err = taskv2.lease_claim(h.task_engine, auth, input)

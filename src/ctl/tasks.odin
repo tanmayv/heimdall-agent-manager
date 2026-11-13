@@ -274,9 +274,7 @@ print_tasks_help :: proc(action: string) {
 	fmt.println("  unblock <task-id> --chain <id> [--note <reason>]  (retry a dispatch block after fixing placement)")
 	fmt.println("  hold <task-id> --chain <id> --reason <text>  (no new lease until released; a current holder is asked to checkpoint)")
 	fmt.println("  release <task-id> --chain <id>  (clear a hold)")
-	fmt.println("  inspect <task-id> --chain <id>  (ownership generation and cleanup state)")
-    fmt.println("  control <task-id> --chain <id> --operation <op> --reason <text> --request-id <id> --expected-generation <n>")
-    fmt.println("    operations: cancel, reopen, hold, resume, unblock, release-owner, rereview, force-complete, recheck; owner policy: allow-coordinator-override, deny-coordinator-override")
+    fmt.println("  cancel <task-id> --chain <id> [--reason <text>] [--request-id <id>] [--expected-generation <n>]")
 	fmt.println("  recheck <task-id> --chain <id>  (recompute gate, readiness, dispatch and merge-back; lists what changed and why the rest holds)")
 	fmt.println("  create --chain <id> --title <title> [--assignee <agt_id>] [--reviewer <agt_id>]... [--require-user-approval]")
 	fmt.println("  update <task-id> [--assignee <agt_id>] [--reviewer <agt_id>]... [--require-user-approval | --no-require-user-approval]")
@@ -713,11 +711,6 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 		ctl_tasks_request_and_decrypt(transport, {method = .GET, path = ctl_api("task-chains", chain_id, "tasks", task_id)}, args)
 		return
 	}
-    if action == "inspect" || action == "reopen" || action == "release-owner" || action == "rereview" || action == "force-complete" || action == "resume" || action == "control" {
-        operation := option_value(args, "--operation", "") if action == "control" else action
-        ctl_tasks_request_and_decrypt(transport, {method = .POST, path = ctl_api("task-chains", chain_id, "tasks", task_id, "control"), body = ctl_v2_task_control_body(operation, args)}, args)
-        return
-    }
 	if action == "hold" || action == "release" {
 		body := ctl_empty_object_body()
 		if action == "hold" {
@@ -803,7 +796,7 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 	}
 
 	if action == "cancel" {
-		ctl_tasks_request(transport, {method = .POST, path = ctl_api("task-chains", chain_id, "tasks", task_id, "control"), body = ctl_v2_task_control_body("cancel", args)})
+		ctl_tasks_request(transport, {method = .POST, path = ctl_api("task-chains", chain_id, "tasks", task_id, "cancel"), body = ctl_v2_task_cancel_body(args)})
 		return
 	}
 
