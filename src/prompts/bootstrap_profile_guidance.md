@@ -60,12 +60,12 @@ Supported `<ref>` formats for `ham-ctl task fetch <task_id> <ref>`:
 - `<path>@<rev>` or `<path>` — fetch a file at `<rev>` or at the task's latest `vcs.head`.
 
 ## 5. `ham-ctl` Tickets Cheatsheet
-- `ham-ctl lease next` — inspect current lease (`status: "current"`) or claim next ready task (`status: "granted"`); updates `<run_dir>/TASK.md`.
-- `ham-ctl lease heartbeat [--note "<text>"]` — extend lease TTL and optionally record a progress note.
-- `ham-ctl lease submit --summary "<text>" [--decision <t>]... [--dead-end <t>]... [--next-steps <t>] [--output-file <json>] [--artifacts-file <json>]` — submit the current attempt for review (or direct completion if no review gates apply). `--handoff-file <json>` replaces the inline handoff flags.
+- `ham-ctl lease next` — inspect current claim (`status: "current"` when active, `"waiting"` when waiting) or claim next ready task (`status: "granted"`); updates `<run_dir>/TASK.md`.
+- `ham-ctl lease heartbeat [--note "<text>"]` — record optional progress metadata; ownership never expires.
+- `ham-ctl lease submit --summary "<text>" [--decision <t>]... [--dead-end <t>]... [--next-steps <t>] [--output-file <json>] [--artifacts-file <json>]` — submit the current attempt for review, retaining a waiting claim (or complete directly if no review gates apply). `--handoff-file <json>` replaces the inline handoff flags.
 - `ham-ctl lease handoff --summary "<text>" [--next-steps <t>] [--decision <t>]... [--dead-end <t>]...` — release the lease back to `ready` with a handoff for the next holder.
 - `ham-ctl lease switch <task_id> --summary "<text>"` — solo mode: hand off the current task and take another ready one.
-- `ham-ctl lease block --waiting-on user|task|<system> --reason "<text>" [--ref <id>] [--summary "<text>"]` — block the task on a user decision or an external dependency.
+- `ham-ctl lease block --waiting-on user|task|<system> --reason "<text>" [--ref <id>] [--summary "<text>"]` — block the task on a user decision or an external dependency, retaining a waiting claim.
 - `ham-ctl review post [<task_id>] --verdict approve|request_changes [--summary "<reason>"] [--findings-file <json>] [--on-behalf-of user]` — post a review verdict and optional structured findings (`[{"path":"...","line":1,"severity":"blocker","text":"..."}]`).
 - `ham-ctl task fetch <task_id> <ref>` — fetch an event, facet, or file-at-commit reference on demand.
 - `ham-ctl task create --title "<title>" --goal "<goal>" --acceptance "<item>" [--assignee <agt_id>] [--reviewer <agt_id>] [--review-role <role>] [--require-user-approval] [--depends-on <id,id>] [--brief-file <json>]` — create a v2 task.
@@ -75,3 +75,5 @@ Supported `<ref>` formats for `ham-ctl task fetch <task_id> <ref>`:
 - `ham-ctl task-chain propose --file <proposal.json> [--auto-approve] [--chain <id>]` — create a chain proposal and its draft tasks in a single transaction.
 - `ham-ctl task-chain decide <chain_id> --decision approve|reject [--reason "<text>"]` — approve or reject a pending chain proposal.
 - `ham-ctl task-chain fleet set <chain_id> --agent <agt_id> --capacity <N> [--min-warm <M>] [--idle-ttl <sec>] [--roles worker,reviewer] [--bridge <brg_id>] [--provider <p>] [--model <m>] [--bridge-models <json> | --bridge-models-file <path>]` — configure fleet capacity and placement.
+
+Claims are non-expiring. Active permits work; waiting retains task/role through review, blocking or recovery. After submit or block, stay with that task until completion or explicit release. Claim an exact task with `ham-ctl lease <task-id>`; coordinators can assign a named eligible instance with `--instance <id>`. Inspect ownership with `task inspect <task-id>`; use generation-checked transfer/recover controls for reassignment to the same durable identity, or `task release-owner` to clear ownership and hold the task until an explicit resume.

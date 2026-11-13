@@ -257,7 +257,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
           <span className="text-primary">
             {holderLease ? (
               <>
-                <HolderName instanceId={holderLease.instanceId} names={names} /> {inProgressSentenceRest(holderLease.leftMins)}
+                <HolderName instanceId={holderLease.instanceId} names={names} /> {inProgressSentenceRest(holderLease.phase, holderLease.waitReason)}
               </>
             ) : reviewing.length ? (
               // Same as getTaskStatusLines' in-review sentence, but each holder
@@ -266,7 +266,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                 {reviewing.map((h, i) => (
                   <React.Fragment key={`${h.instanceId}-${h.role}-${i}`}>
                     {i > 0 ? '; ' : ''}
-                    <HolderName instanceId={h.instanceId} names={names} /> {reviewingSentenceRest(h.role, h.leftMins)}
+                    <HolderName instanceId={h.instanceId} names={names} /> {reviewingSentenceRest(h.role, h.phase, h.waitReason)}
                   </React.Fragment>
                 ))}
                 {task.requires_user_approval ? '; then you' : ''}

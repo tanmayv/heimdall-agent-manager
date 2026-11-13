@@ -7,6 +7,29 @@ import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
 
+@(test)
+test_pack_durable_claim_protocol :: proc(t: ^testing.T) {
+	fx, ok := fixture_open(t, "pack_durable_claim")
+	defer fixture_close(fx)
+	if !ok do return
+	chain := seed_chain(t, fx, "chain_durable", true)
+	task := seed_task(t, fx, chain, "task_durable")
+	for phase in ([]string{domain.LEASE_PHASE_ACTIVE, domain.LEASE_PHASE_WAITING}) {
+		pack := build_pack_json(&fx.svc, chain, task, domain.Task_Lease{
+			lease_id = "lease_durable", task_id = task.task_id, phase = phase,
+			expires_at = "LEGACY_EXPIRY", hard_deadline_at = "LEGACY_DEADLINE",
+		}, domain.Agent_Instance{agent_instance_id = "inst_durable"})
+		testing.expect(t, strings.contains(pack, fmt.tprintf(`"phase":"%s"`, phase)))
+		testing.expect(t, strings.contains(pack, `"non_expiring":true`))
+		for legacy in ([]string{"expires_at", "hard_deadline_at", "heartbeat_ttl_seconds", "hard_cap_seconds", "LEGACY_EXPIRY", "LEGACY_DEADLINE", "every <15m"}) {
+			testing.expectf(t, !strings.contains(pack, legacy), "obsolete claim timing is absent: %s", legacy)
+		}
+		for guidance in ([]string{"waiting retains your task and role", "do not pull unrelated work", "acknowledge a requirements revision", "lease <task-id>", "lease transfer", "lease recover"}) {
+			testing.expectf(t, strings.contains(pack, guidance), "durable ownership guidance is present: %s", guidance)
+		}
+	}
+}
+
 @(private = "file")
 dep_facet :: proc(fx: ^Fixture, task: domain.Task, attempt: int, kind, body: string) {
 	_, _ = iface.taskchain_save_facet(&fx.repo, domain.Task_Attempt_Facet{

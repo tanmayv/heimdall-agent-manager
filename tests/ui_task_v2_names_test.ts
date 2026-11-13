@@ -337,7 +337,7 @@ test('badges and status lines name the holder, bridge and dependencies', () => {
     leases: [{ kind: 'work', holder_instance_id: 'inst_member02', bridge_id: 'brg_dawn01', expires_at: '2026-10-17T05:12:00Z' }],
   } as unknown as TaskWire;
   const labels = getTaskBadges(running, [], now, names).map((b) => b.label);
-  assert.ok(labels.includes('Backend Dev · 12m left'), labels.join(' | '));
+  assert.ok(labels.includes('Backend Dev · active'), labels.join(' | '));
   assert.ok(labels.includes('dawnstar'), labels.join(' | '));
   for (const l of labels) assert.ok(!RAW_ID.test(l), l);
 
@@ -358,10 +358,10 @@ test('the in-progress sentence names the holder and never prints an instance id'
       leases: [{ kind: 'work', holder_instance_id: holder, expires_at: '2026-10-17T05:12:00Z', hard_deadline_at: '2026-10-17T05:40:00Z' }],
     }) as unknown as TaskWire;
   const [named, detail] = getTaskStatusLines(running('inst_member02'), [], now, names);
-  assert.equal(named, 'Backend Dev is working, 12m left');
-  assert.equal(detail, 'attempt 2 of 5 · hard limit in 40m');
+  assert.equal(named, 'Backend Dev is working');
+  assert.equal(detail, 'attempt 2 of 5');
   const [unknown] = getTaskStatusLines(running('inst_fleet99'), [], now, names);
-  assert.equal(unknown, 'An agent is working, 12m left');
+  assert.equal(unknown, 'An agent is working');
   for (const line of [named, detail, unknown]) assert.ok(!RAW_ID.test(line), line);
 });
 
@@ -377,7 +377,7 @@ test('badges carry a kind, and "Blocked on you" only for a human blocker', () =>
   for (const b of [...onYou, ...onTask]) assert.ok(b.kind, `badge without kind: ${b.label}`);
 });
 
-test('holder and time left come from the work lease even when a review lease is listed first', () => {
+test('holder and phase come from the work lease even when a review lease is listed first', () => {
   const now = Date.parse('2026-10-17T05:00:00Z');
   const t = {
     task_id: 'task_mix',
@@ -390,8 +390,8 @@ test('holder and time left come from the work lease even when a review lease is 
       { kind: 'work', holder_instance_id: 'inst_member02', expires_at: '2026-10-17T05:20:00Z', hard_deadline_at: '2026-10-17T05:50:00Z' },
     ],
   } as unknown as TaskWire;
-  assert.equal(getTaskStatusLines(t, [], now, names)[0], 'Backend Dev is working, 20m left');
-  assert.ok(getTaskBadges(t, [], now, names).some((b) => b.kind === 'lease' && b.label === 'Backend Dev · 20m left'));
+  assert.equal(getTaskStatusLines(t, [], now, names)[0], 'Backend Dev is working');
+  assert.ok(getTaskBadges(t, [], now, names).some((b) => b.kind === 'lease' && b.label === 'Backend Dev · active'));
 });
 
 test('the in-review sentence names each review-lease holder; role-only text without a review lease', () => {
@@ -412,11 +412,11 @@ test('the in-review sentence names each review-lease holder; role-only text with
     { kind: 'review', review_role: 'security', holder_instance_id: 'inst_fleet99', expires_at: '2026-10-17T05:03:00Z' },
   ]);
   const [line, detail] = getTaskStatusLines(two, [], now, names);
-  assert.equal(line, 'Backend Dev is reviewing (reviewer), 7m left; An agent is reviewing (security), 3m left');
+  assert.equal(line, 'Backend Dev is reviewing (reviewer); An agent is reviewing (security)');
   assert.equal(detail, 'Attempt 2 submitted · review in progress');
   assert.ok(!RAW_ID.test(line), line);
   const withYou = getTaskStatusLines(inReview([{ kind: 'review', review_role: '', holder_instance_id: 'inst_coord01', expires_at: '2026-10-17T05:10:00Z' }], { requires_user_approval: true }), [], now, names);
-  assert.equal(withYou[0], 'soloist #20 is reviewing, 10m left; then you');
+  assert.equal(withYou[0], 'soloist #20 is reviewing; then you');
   // No review lease (or only a work lease left over): role-only text.
   assert.equal(getTaskStatusLines(inReview([]), [], now, names)[0], 'Waiting on reviewer roles: reviewer, security');
   assert.equal(getTaskStatusLines(inReview([{ kind: 'work', holder_instance_id: 'inst_member02' }]), [], now, names)[0], 'Waiting on reviewer roles: reviewer, security');

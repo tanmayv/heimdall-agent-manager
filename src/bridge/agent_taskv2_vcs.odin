@@ -361,7 +361,7 @@ BRIDGE_TASK_MD_DESCRIPTION_MIN_HEAD :: 2_000
 // Everything bridge_taskv2_render_task_md has extracted (and decrypted) from a
 // pack. The size cap flips the drop_* / truncation fields and renders again.
 Bridge_Task_Md_Doc :: struct {
-	task_id, title, role_label, lease_id, expires_at, hard_deadline_at:           string,
+	task_id, title, role_label, lease_id, phase:                                  string,
 	bridge_id, directory_id, provider, model, why, workdir, branch:               string,
 	merge_conflict, gate_feedback:                                                string,
 	attempt_no, max_attempts, review_rounds:                                      int,
@@ -401,9 +401,9 @@ bridge_taskv2_utf8_head :: proc(s: string, n: int) -> string {
 bridge_taskv2_build_task_md :: proc(d: ^Bridge_Task_Md_Doc, alloc := context.temp_allocator) -> string {
 	b := strings.builder_make(alloc)
 	fmt.sbprintf(&b, "# Task %s: %s (%s, attempt #%d)\n\n", d.task_id, d.title, d.role_label, d.attempt_no)
-	fmt.sbprintf(&b, "- **Lease**: `%s` (attempt %d/%d, review_rounds: %d)\n", d.lease_id, d.attempt_no, d.max_attempts, d.review_rounds)
-	if d.expires_at != "" || d.hard_deadline_at != "" {
-		fmt.sbprintf(&b, "- **Deadlines**: expires `%s`, hard_deadline `%s`\n", d.expires_at, d.hard_deadline_at)
+	fmt.sbprintf(&b, "- **Claim**: `%s` (%s, attempt %d/%d, review_rounds: %d). Durable; does not expire.\n", d.lease_id, d.phase, d.attempt_no, d.max_attempts, d.review_rounds)
+	if d.phase == "waiting" {
+		strings.write_string(&b, "- **Waiting**: You retain this task and your role while review or dependencies are pending. Wait for this task to resume or for explicit coordinator direction; do not pull unrelated work.\n")
 	}
 	if d.bridge_id != "" || d.directory_id != "" || d.provider != "" || d.model != "" {
 		fmt.sbprintf(&b, "- **Placement**: bridge=`%s` directory=`%s` provider=`%s` model=`%s`\n", d.bridge_id, d.directory_id, d.provider, d.model)
@@ -521,7 +521,7 @@ bridge_taskv2_build_task_md :: proc(d: ^Bridge_Task_Md_Doc, alloc := context.tem
 			strings.write_byte(&b, '\n')
 		}
 	} else {
-		strings.write_string(&b, "1. Confirm lease with `ham-ctl lease next`.\n2. Choose and run checks appropriate to the change; report the commands and their outcomes in `ham-ctl lease submit --summary \"...\"` when done.\n")
+		strings.write_string(&b, "1. Inspect your durable claim with `ham-ctl lease next`. Active permits work; waiting retains this task and your role. After submit or block, stay with this task while waiting; do not pull unrelated work.\n2. Choose and run checks appropriate to the change; report the commands and their outcomes in `ham-ctl lease submit --summary \"...\"` when done.\n3. `ham-ctl lease heartbeat` reports progress and acknowledges requirements revisions; no periodic renewal is required. The coordinator can use `lease <task-id> --instance <id>`, `lease transfer`, and `lease recover` to change ownership explicitly.\n")
 	}
 	return strings.to_string(b)
 }
@@ -559,8 +559,7 @@ bridge_taskv2_render_task_md :: proc(pack_json: string, max_bytes: int = BRIDGE_
 	attempt_no := jsonx.extract_int(pack_json, "attempt_no", jsonx.extract_int(lease_obj, "attempt_no", 1, true), true)
 	max_attempts := jsonx.extract_int(pack_json, "max_attempts", jsonx.extract_int(lease_obj, "max_attempts", 3, true), true)
 	review_rounds := jsonx.extract_int(pack_json, "review_rounds", jsonx.extract_int(lease_obj, "review_rounds", 0, true), true)
-	expires_at := jsonx.extract_string(pack_json, "expires_at", jsonx.extract_string(lease_obj, "expires_at", "", true, context.temp_allocator), true, context.temp_allocator)
-	hard_deadline_at := jsonx.extract_string(pack_json, "hard_deadline_at", jsonx.extract_string(lease_obj, "hard_deadline_at", "", true, context.temp_allocator), true, context.temp_allocator)
+	phase := jsonx.extract_string(pack_json, "phase", jsonx.extract_string(lease_obj, "phase", "active", true, context.temp_allocator), true, context.temp_allocator)
 	why := jsonx.extract_string(pack_json, "why", "first_grant", true, context.temp_allocator)
 
 	bridge_id := jsonx.extract_string(placement_obj, "bridge_id", "", true, context.temp_allocator)
@@ -662,7 +661,7 @@ bridge_taskv2_render_task_md :: proc(pack_json: string, max_bytes: int = BRIDGE_
 	if answer_section != "" do gate_feedback = strings.concatenate({answer_section, gate_feedback}, context.temp_allocator)
 	// Solo mode: say how this chain works, ahead of the other notices.
 	if solo, sok := jsonx.extract_bool_literal(chain_obj, "solo", true); sok && solo {
-		gate_feedback = strings.concatenate({"\n## Solo Mode\nYou are this chain's coordinator AND its worker; the user reviews every task. Pull work with `ham-ctl lease next`, submit with `ham-ctl lease submit`, switch with `ham-ctl lease switch <task> --summary …`. Never set task status by hand; never review your own work.\n", gate_feedback}, context.temp_allocator)
+		gate_feedback = strings.concatenate({"\n## Solo Mode\nYou are this chain's coordinator AND its worker; the user reviews every task. Inspect or pull work with `ham-ctl lease next`, submit with `ham-ctl lease submit`, switch with `ham-ctl lease switch <task> --summary …`. After submit, retain your task and role while waiting for review; do not automatically pull unrelated work. Use explicit coordinator controls (`lease <task-id> --instance <id>`, `lease transfer`, `lease recover`) when ownership must change. Never set task status by hand; never review your own work.\n", gate_feedback}, context.temp_allocator)
 	}
 
 	raw_title := jsonx.extract_string(task_obj, "title", "", true, context.temp_allocator)
@@ -790,7 +789,7 @@ bridge_taskv2_render_task_md :: proc(pack_json: string, max_bytes: int = BRIDGE_
 
 	doc := Bridge_Task_Md_Doc{
 		task_id = task_id, title = title, role_label = role_label, lease_id = lease_id,
-		expires_at = expires_at, hard_deadline_at = hard_deadline_at,
+		phase = phase,
 		bridge_id = bridge_id, directory_id = directory_id, provider = provider, model = model,
 		why = why, workdir = workdir, branch = branch, merge_conflict = merge_conflict, gate_feedback = gate_feedback,
 		attempt_no = attempt_no, max_attempts = max_attempts, review_rounds = review_rounds,

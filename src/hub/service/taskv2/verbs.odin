@@ -19,7 +19,7 @@ Lease_Next_Input :: struct {
 }
 
 Lease_Next_Result :: struct {
-	// status ∈ {granted, current, none}
+	// status ∈ {granted, current, waiting, none}
 	status:    string,
 	lease:     domain.Task_Lease,
 	task:      domain.Task,
@@ -60,8 +60,14 @@ lease_next :: proc(svc: ^Service, auth: contracts.Auth_Context, input: Lease_Nex
 					}
 				}
 			}
+			// Refresh TASK.md even while waiting; an old active pack must not
+			// tell the retained holder to execute or submit again.
+			pack := ""
+			if chain, found, _ := iface.taskchain_get_chain(svc.repo, task.chain_id); found {
+				pack = build_pack_json(svc, chain, task, lease, inst)
+			}
 			_, err = end_uow(svc, &u, true)
-			return Lease_Next_Result{status = "waiting", lease = lease, task = task}, err.code == .None, err
+			return Lease_Next_Result{status = "waiting", lease = lease, task = task, pack_json = pack}, err.code == .None, err
 		}
 		if lease.confirmed_at == "" do _ = confirm_in_uow(svc, &u, lease)
 		fresh, _, _ := iface.taskchain_get_lease(svc.repo, lease.lease_id)
