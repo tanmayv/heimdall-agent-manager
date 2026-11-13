@@ -18,7 +18,7 @@ export interface MainPaneFrameProps {
   onClose: (paneId: string) => void;
   /** Plays the close animation (the pane is removed right after). */
   isClosing?: boolean;
-  /** SH-3: draw the tmux-style active border (several panes visible and this one has focus). */
+  /** SH-3: draw the selected-pane accent line (several panes visible and this one has focus). */
   isActive?: boolean;
   /** Picker header: hidden-sidebar control (top-left pane). */
   headerLeading?: React.ReactNode;
@@ -107,6 +107,7 @@ export function MainPaneFrame({
     <section
       data-debug-id={`main-pane-frame-${paneId}`}
       data-main-pane-focused={isFocused ? 'true' : 'false'}
+      data-pane-selected={isActive ? 'true' : 'false'}
       onMouseDownCapture={() => {
         if (!isFocused) onFocus(paneId);
       }}
@@ -155,7 +156,6 @@ export function MainPaneFrame({
           </span>
         </header>
       ) : null}
-      {isActive ? <div aria-hidden="true" data-debug-id={`main-pane-active-border-${paneId}`} className="ui-pane-active-border" /> : null}
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">{children}</div>
     </section>
   );

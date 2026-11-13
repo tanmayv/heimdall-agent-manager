@@ -363,7 +363,13 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		fmt.eprintfln("hub: startup bridge plan reconciliation incomplete: %s", plan_err.message)
 	}
 	graph.bridges.catalog = &graph.bridge_update_catalog
-	graph.bridge_update_catalog.release_get = bridge_service.bridge_catalog_http_get
+	// HEIMDALL_UPDATE_CATALOG_OFFLINE=1 leaves release_get nil: an offline,
+	// manifest-only catalog (HEIMDALL_UPDATE_MANIFEST_PATH), so an isolated hub
+	// (the 3-OS lifecycle e2e) offers the build under test instead of whatever
+	// release GitHub has promoted.
+	if os.get_env("HEIMDALL_UPDATE_CATALOG_OFFLINE", context.temp_allocator) != "1" {
+		graph.bridge_update_catalog.release_get = bridge_service.bridge_catalog_http_get
+	}
 	graph.agents = agent_service.new_agent_service_with_runtime(&graph.repos.agents, &graph.repos.bridges, &graph.repos.projects, &graph.repos.content, &graph.repos.taskchains, bridge_command_sink, &graph.bridge_runtime_registry, &graph.clock, &graph.ids)
 	graph.agents.event_bus = &graph.event_bus
 	graph.agents.entitlements = billing_service.entitlement_lookup(&graph.billing)
@@ -787,6 +793,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/agents/*", rawptr(&graph.agent_handlers), http.agent_detail_handler)
 	http.router_add(&graph.router, "PATCH", "/api/v1/agents/*", rawptr(&graph.agent_handlers), http.update_agent_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agents/*/archive", rawptr(&graph.agent_handlers), http.archive_agent_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agents/*/unarchive", rawptr(&graph.agent_handlers), http.unarchive_agent_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agents/*/bridge-support", rawptr(&graph.agent_handlers), http.list_agent_support_handler)
 	http.router_add(&graph.router, "PUT", "/api/v1/agents/*/bridge-support", rawptr(&graph.agent_handlers), http.put_agent_support_handler)
 	http.router_add(&graph.router, "PATCH", "/api/v1/agents/*/bridge-support/*", rawptr(&graph.agent_handlers), http.patch_agent_support_handler)
@@ -796,6 +803,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/projects/*", rawptr(&graph.project_handlers), http.project_detail_handler)
 	http.router_add(&graph.router, "PATCH", "/api/v1/projects/*", rawptr(&graph.project_handlers), http.update_project_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/projects/*/archive", rawptr(&graph.project_handlers), http.archive_project_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/projects/*/unarchive", rawptr(&graph.project_handlers), http.unarchive_project_handler)
 	http.router_add(&graph.router, "PUT", "/api/v1/projects/*/bridge-paths/*", rawptr(&graph.project_handlers), http.put_project_bridge_path_handler)
 	http.router_add(&graph.router, "DELETE", "/api/v1/projects/*/bridge-paths/*", rawptr(&graph.project_handlers), http.delete_project_bridge_path_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/projects/*/bridge-paths/*/validate", rawptr(&graph.project_handlers), http.validate_project_bridge_path_handler)
@@ -832,6 +840,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/search/relay", rawptr(&graph.bridge_handlers), http.task_chain_search_relay_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*", rawptr(&graph.taskchain_handlers), http.task_chain_detail_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/summary", rawptr(&graph.taskchain_handlers), http.get_task_chain_summary_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/token-usage", rawptr(&graph.taskchain_handlers), http.task_chain_token_usage_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/conversation", rawptr(&graph.taskchain_handlers), http.get_task_chain_conversation_handler)
 	http.router_add(&graph.router, "PUT", "/api/v1/task-chains/*/summary", rawptr(&graph.taskchain_handlers), http.put_task_chain_summary_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/propose", rawptr(&graph.taskchain_handlers), http.propose_task_chain_handler)
@@ -921,6 +930,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/comments", rawptr(&graph.taskchain_handlers), http.create_task_comment_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/send-to-user", rawptr(&graph.agent_action_handlers), http.agent_action_chat_send_to_user_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/send-to-agent", rawptr(&graph.agent_action_handlers), http.agent_action_chat_send_to_agent_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/previous-context", rawptr(&graph.agent_action_handlers), http.agent_action_chat_previous_context_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/fetch", rawptr(&graph.agent_action_handlers), http.agent_action_chat_fetch_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/read", rawptr(&graph.agent_action_handlers), http.agent_action_chat_read_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/conversation/set-title", rawptr(&graph.agent_action_handlers), http.agent_action_conversation_set_title_handler)
@@ -1005,6 +1015,9 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/bridge/update-catalog", rawptr(&graph.bridge_handlers), http.bridge_auto_update_catalog_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/auto-update", rawptr(&graph.bridge_handlers), http.bridge_auto_update_config_handler)
 	http.router_add(&graph.router, "PUT", "/api/v1/bridges/*/auto-update", rawptr(&graph.bridge_handlers), http.bridge_auto_update_config_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/context-windows", rawptr(&graph.bridge_handlers), http.bridge_context_windows_handler)
+	http.router_add(&graph.router, "PUT", "/api/v1/bridges/*/context-windows", rawptr(&graph.bridge_handlers), http.bridge_context_windows_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/bridges/*/context-windows", rawptr(&graph.bridge_handlers), http.bridge_context_windows_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/uninstall", rawptr(&graph.bridge_handlers), http.bridge_uninstall_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/unseal", rawptr(&graph.bridge_handlers), http.bridge_unseal_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/public-key", rawptr(&graph.bridge_handlers), http.bridge_public_key_handler)

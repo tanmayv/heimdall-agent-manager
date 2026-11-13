@@ -269,11 +269,13 @@ main :: proc() {
 	// would read `", httpc.lib...` between two string literals as a path.)
 	https_version, https_tls, https_ca := httpc.libcurl_version(), httpc.libcurl_tls_version(), httpc.trust_summary()
 	fmt.println("bridge https client: libcurl", https_version, https_tls, "CA:", https_ca)
-	bridge_hub_runtime_start()
-	// REQ-IMPL-4 / design §7.5: renew the access token at 80% of its lifetime with
-	// jitter, rather than waiting for a 401 — by which time in-flight work has
-	// already failed. No-ops for a non-expiring legacy credential.
+	// REQ-IMPL-4 / design §7.5 + bridge auth recovery (D5): activate the credential
+	// owner, finish a pending rotated pair, and start the renewal worker BEFORE the
+	// Hub runtime dials, so the first dial after a restart (or a wake) never presents
+	// a credential whose replacement is already on disk or due. Renewal stays a no-op
+	// for a non-expiring legacy credential.
 	bridge_credential_refresh_start(bridge_config.credential_file)
+	bridge_hub_runtime_start()
 	bridge_task_chain_search_start()
 	bridge_action_scheduler_start()
 	bridge_auto_update_start()
@@ -682,6 +684,7 @@ handle_bridge_client :: proc(client: net.TCP_Socket) {
 	defer net.close(client)
 	request, ok := read_http_request(client)
 	if !ok do return
+	defer delete(request)
 	method, route := request_method_route(request)
 	if method == "OPTIONS" {
 		write_response(client, 200, "OK", `{}`)
@@ -739,7 +742,8 @@ handle_bridge_client :: proc(client: net.TCP_Socket) {
 // loopback. That is the correct posture — an unenrolled bridge has no owner, so
 // there is no one whose authority it could be acting on.
 bridge_loopback_authorized :: proc(request: string) -> bool {
-	credential_snapshot_633 := bridge_credential_snapshot()
+	// A local check, not a Hub request: never waits for renewal.
+	credential_snapshot_633, _ := bridge_credential_peek()
 	defer delete(credential_snapshot_633)
 	configured := strings.trim_space(credential_snapshot_633)
 	if configured == "" do return false
@@ -828,26 +832,42 @@ bridge_ws_chunk_count :: proc(total_bytes, chunk_bytes: int) -> int {
 	return ws.chunk_count(total_bytes, effective_chunk_bytes)
 }
 
+// BRIDGE_LOOPBACK_MAX_REQUEST_BYTES caps a buffered loopback request; its routes carry
+// small JSON bodies, so anything larger is refused rather than buffered without bound.
+BRIDGE_LOOPBACK_MAX_REQUEST_BYTES :: 16 * 1024 * 1024
+
+// read_http_request returns a heap-owned request the caller must delete. Reads grow one
+// buffer amortized (this used to concatenate a fresh copy per 4 KiB read and leak every
+// previous one), and the head is parsed for Content-Length once instead of per read.
+// A peer that closes early still gets what arrived, as before.
 read_http_request :: proc(client: net.TCP_Socket) -> (string, bool) {
 	buf: [4096]byte
-	n, recv_err := net.recv_tcp(client, buf[:])
-	if recv_err != nil || n <= 0 do return "", false
-	request := strings.clone(string(buf[:n]))
-	for !http_request_complete(request) {
-		m, err := net.recv_tcp(client, buf[:])
-		if err != nil || m <= 0 do break
-		request = strings.concatenate({request, string(buf[:m])})
+	data := make([dynamic]byte, 0, len(buf))
+	head_end, content_length := -1, 0
+	for {
+		n, recv_err := net.recv_tcp(client, buf[:])
+		if recv_err != nil || n <= 0 {
+			if len(data) == 0 {
+				delete(data)
+				return "", false
+			}
+			break
+		}
+		if len(data) + n > BRIDGE_LOOPBACK_MAX_REQUEST_BYTES {
+			delete(data)
+			return "", false
+		}
+		scan_from := max(len(data) - 3, 0)
+		append(&data, ..buf[:n])
+		if head_end < 0 {
+			idx := strings.index(string(data[scan_from:]), "\r\n\r\n")
+			if idx < 0 do continue
+			head_end = scan_from + idx
+			content_length = request_content_length(string(data[:head_end + 4]))
+		}
+		if len(data) - (head_end + 4) >= content_length do break
 	}
-	return request, true
-}
-
-http_request_complete :: proc(request: string) -> bool {
-	head_end := strings.index(request, "\r\n\r\n")
-	if head_end < 0 do return false
-	content_length := request_content_length(request)
-	if content_length <= 0 do return true
-	body_len := len(request) - (head_end + 4)
-	return body_len >= content_length
+	return string(data[:]), true
 }
 
 request_body :: proc(request: string) -> string {

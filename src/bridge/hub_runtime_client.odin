@@ -338,7 +338,7 @@ bridge_hub_take_replaced_backoff :: proc() -> (backoff_s: int, replaced: bool) {
 }
 
 bridge_hub_runtime_worker :: proc() {
-	credential_snapshot_337 := bridge_credential_snapshot()
+	credential_snapshot_337, _ := bridge_credential_peek()
 	defer delete(credential_snapshot_337)
 	if strings.trim_space(bridge_config.daemon_url) == "" || strings.trim_space(credential_snapshot_337) == "" {
 		fmt.println("bridge hub runtime disabled: missing daemon_url or bridge_token (has the bridge enrolled? check the bridge_token/--bridge-token-file)")
@@ -371,7 +371,18 @@ bridge_hub_runtime_worker :: proc() {
 			fmt.println("bridge hub runtime disabled: daemon_url must be an http:// or https:// base URL")
 			return
 		}
-		credential := bridge_credential_snapshot()
+		// D2: expiry-aware acquisition before EVERY dial. An access token that expired
+		// while the machine slept (or is inside the skew margin, or of unknown age) is
+		// renewed first, so the dial after wake does not present a dead credential.
+		credential, dial_generation, credential_ok := bridge_credential_acquire()
+		if !credential_ok {
+			// Parked or re-enrollment required: no dial (credential_state.odin).
+			delete(credential)
+			bridge_credential_status_changed()
+			time.sleep(time.Duration(BRIDGE_CREDENTIAL_REEVAL_MAX_MS) * time.Millisecond)
+			continue
+		}
+		sync.atomic_store(&bridge_hub_dial_generation, dial_generation)
         conn, ok := ws.connect_with_bearer(ws_url, credential)
         delete(credential)
 		conn.send_disabled = &bridge_hub_traffic_stopped
@@ -402,6 +413,7 @@ bridge_hub_runtime_worker :: proc() {
 		plan_disabled := false
 		hub_error := ""
 		hub_catalog_etag := ""
+		auth_rejected := false
 		for time.to_unix_nanoseconds(time.now()) < ready_deadline {
 			if text, got := ws.poll_text(&conn); got {
 				msg_type := extract_json_string(text, "type", "")
@@ -414,8 +426,11 @@ bridge_hub_runtime_worker :: proc() {
 					}
 					hub_catalog_etag = extract_json_string(text, "catalog_etag", "")
 					bridge_hub_apply_ready_settings(text)
-					// This connection was opened with the current credential.
-					sync.atomic_store(&bridge_credential_reauth_pending, false)
+					// D4 reauth fencing: this session is authenticated with the generation
+					// captured BEFORE the dial, not "the current credential". A renewal that
+					// published meanwhile is still sent in-band by the drain.
+					sync.atomic_store(&bridge_hub_session_generation, dial_generation)
+					sync.atomic_store(&bridge_hub_reauth_sent_generation, 0)
 					ready = true
 					delete(msg_type)
 					delete(text)
@@ -426,6 +441,7 @@ bridge_hub_runtime_worker :: proc() {
 					hub_error = bridge_hub_error_log_message(text)
 					code := extract_json_string(text, "code", "")
 					plan_disabled = code == "plan_limit_reached"
+					auth_rejected = bridge_hub_is_auth_rejection_frame(code, text)
 					delete(code)
 					// REQ-EA-4: an atomic enrollment whose credential the hub now refuses
 					// was rolled back (cancel or deadline), whether or not the
@@ -509,8 +525,26 @@ bridge_hub_runtime_worker :: proc() {
 			time.sleep(60 * time.Second)
 			continue
 		}
+		// D3/D7: a typed rejection asked for (at most) one renewal of this generation.
+		// When a newer generation is published, dial again at once (250 ms spacing)
+		// instead of backing off with the dead credential.
+		if auth_rejected && bridge_credential_wait_newer(dial_generation, BRIDGE_CREDENTIAL_ACQUIRE_WAIT_MS) {
+			reconnect_failures = 0
+			time.sleep(250 * time.Millisecond)
+			continue
+		}
 		bridge_hub_reconnect_sleep(&reconnect_failures)
 	}
+}
+
+// bridge_hub_is_auth_rejection_frame: a bridge_error that rejected the access token
+// itself (expired, or unknown to the Hub) rather than the bridge's enrollment.
+bridge_hub_is_auth_rejection_frame :: proc(code, text: string) -> bool {
+	if code == "bridge_token_expired" || code == "bridge_token_invalid" do return true
+	if code != "bridge_credential_revoked" do return false
+	msg := extract_json_string(text, "message", "")
+	defer delete(msg)
+	return msg == BRIDGE_HUB_ACCESS_INVALID_MESSAGE
 }
 
 // bridge_hub_runtime_up: true while a hub runtime session is established
@@ -757,6 +791,8 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 		// Flush any status transitions applied on background threads (e.g. a
 		// pty-host ChildExited) so "stopped"/"unreachable" reaches the hub now,
 		// not on the next heartbeat.
+		// Token snapshots held back by the 10 s interval go out once it passes.
+		_ = bridge_ext_token_enqueue_due(bridge_runtime_now_ms())
 		bridge_runtime_drain_status_pushes(conn)
 		bridge_blockers_drain_outgoing(conn)
 		bridge_credential_reauth_drain(conn)
@@ -825,7 +861,6 @@ bridge_should_debounce_nudge :: proc(instance_id, task_id: string) -> bool {
 // closes the session with bridge_token_expired and the reconnect loop dials again
 // with the current (refreshed) credential.
 bridge_hub_credential_reauth_supported: bool
-bridge_credential_reauth_pending: bool
 
 BRIDGE_REAUTH_FRAME :: struct {
 	type:         string,
@@ -833,12 +868,18 @@ BRIDGE_REAUTH_FRAME :: struct {
 }
 
 bridge_credential_reauth_drain :: proc(conn: ^ws.Connection) {
-	if !sync.atomic_load(&bridge_credential_reauth_pending) do return
-	sync.atomic_store(&bridge_credential_reauth_pending, false)
+	// D4: renew while a newer generation is wanted than the session holds, once per
+	// generation (a refused renewal is not resent; the Hub ends the session at the
+	// old credential's expiry and the reconnect dials with the newest one).
+	wanted := sync.atomic_load(&bridge_credential_reauth_wanted_generation)
+	if wanted <= sync.atomic_load(&bridge_hub_session_generation) do return
+	if sync.atomic_load(&bridge_hub_reauth_sent_generation) >= wanted do return
+	if sync.atomic_load(&bridge_hub_traffic_stopped) do return
 	if !sync.atomic_load(&bridge_hub_credential_reauth_supported) do return
-	credential := bridge_credential_snapshot()
+	credential, generation := bridge_credential_peek()
 	defer delete(credential)
 	if strings.trim_space(credential) == "" do return
+	sync.atomic_store(&bridge_hub_reauth_sent_generation, generation)
 	data, err := json.marshal(BRIDGE_REAUTH_FRAME{type = "bridge_reauth", access_token = credential}, allocator = context.temp_allocator)
 	if err != nil do return
 	_ = ws.send_text(conn, string(data))
@@ -849,6 +890,7 @@ bridge_credential_reauth_drain :: proc(conn: ^ws.Connection) {
 bridge_hub_session_frame :: proc(type, text: string) -> bool {
 	if type == "bridge_reauth_result" {
 		if extract_json_bool(text, "ok", false) {
+			sync.atomic_store(&bridge_hub_session_generation, sync.atomic_load(&bridge_hub_reauth_sent_generation))
 			fmt.printfln("bridge hub session renewed with the refreshed credential (valid for %ds)", extract_json_int(text, "expires_in", 0))
 		} else {
 			code := extract_json_string(text, "code", "")
@@ -870,15 +912,40 @@ bridge_hub_session_frame :: proc(type, text: string) -> bool {
 		defer delete(code)
 		msg := extract_json_string(text, "message", "")
 		defer delete(msg)
+		// The generation this frame refers to: the live session's, or (before
+		// bridge_ready) the one this dial presented.
+		attempted := sync.atomic_load(&bridge_hub_session_generation) if sync.atomic_load(&bridge_hub_runtime_up) else sync.atomic_load(&bridge_hub_dial_generation)
 		switch code {
 		case "bridge_token_expired":
-			fmt.eprintfln("bridge hub ended the session: the access token expired (%s); reconnecting with the current credential", msg)
+			action := bridge_credential_note_rejection(attempted, .Access_Expired)
+			fmt.eprintfln("bridge hub ended the session: the access token expired (%s); renewal=%v; reconnecting with the current credential", msg, action)
+		case "bridge_token_invalid":
+			// H2: the Hub does not recognise this access token. One renewal decides:
+			// only a typed invalid_grant from the refresh endpoint is final.
+			action := bridge_credential_note_rejection(attempted, .Access_Invalid)
+			if action == .Not_Renewable {
+				bridge_hub_park_unrenewable_invalid(msg)
+				break
+			}
+			fmt.eprintfln("bridge hub refused the access token (%s); renewal=%v; reconnecting", msg, action)
 		case "bridge_sunset_pending":
 			// The hub may restore this machine if replacement enrollment rolls
 			// back. Keep credential files and the profile intact across restarts.
 			bridge_hub_stop_traffic(false)
 			fmt.eprintfln("bridge retirement is pending enrollment (%s); Hub traffic paused; retain credentials and explicitly resume after rollback", msg)
 		case "bridge_credential_revoked":
+			if msg == BRIDGE_HUB_ACCESS_INVALID_MESSAGE {
+				// Older Hubs map an UNKNOWN access token (including, before H0, a Hub
+				// database error read as unknown) to revoked. That is not proof the
+				// enrollment is gone: renew once and let the refresh endpoint decide.
+				action := bridge_credential_note_rejection(attempted, .Access_Invalid)
+				if action == .Not_Renewable {
+					bridge_hub_park_unrenewable_invalid(msg)
+					break
+				}
+				fmt.eprintfln("bridge hub refused the access token as unknown (%s); renewal=%v; not parking", msg, action)
+				break
+			}
 			bridge_hub_stop_traffic(true)
 			fmt.eprintfln("bridge hub ended the session: this bridge's credential is revoked (%s); re-enrollment is required", msg)
 			// Stay parked. The runtime owner joins stream writers before closing
@@ -889,6 +956,15 @@ bridge_hub_session_frame :: proc(type, text: string) -> bool {
 		return true
 	}
 	return false
+}
+
+// bridge_hub_park_unrenewable_invalid: an unknown access token that this process
+// cannot renew (explicit --bridge-token, no refresh file, renewal stopped) has no
+// recovery but re-enrollment. Park and mark it, as before H2, instead of redialling
+// the dead credential forever.
+bridge_hub_park_unrenewable_invalid :: proc(msg: string) {
+	bridge_hub_stop_traffic(true)
+	fmt.eprintfln("bridge hub refused the access token (%s) and this bridge cannot renew it; re-enrollment is required", msg)
 }
 
 bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
@@ -969,6 +1045,10 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 	}
 	if type == "task_chain_search" {
 		bridge_task_chain_search_handle_command(conn, text)
+		return
+	}
+	if type == "context_window_op" {
+		bridge_hub_handle_context_window_op(conn, text)
 		return
 	}
 	if type == "mcp_transform" {bridge_mcp_transform(conn,text);return}
@@ -1069,6 +1149,8 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 			_ = bridge_hub_send(conn, final)
 			return
 		}
+		// The run's final token usage rides on the status report below (T3r).
+		if ok do _ = bridge_ext_token_capture_final(instance_id, bridge_agent_instance_run_count(instance_id))
 		st_json := bridge_instance_status_json(instance_id)
 		defer delete(st_json)
 		_ = bridge_hub_send(conn, st_json)
@@ -1091,7 +1173,9 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		sender_id := extract_json_string(text, "sender_agent_instance_id", sender_user)
 		defer delete(sender_id)
 		sender := sender_dn if sender_dn != "" else sender_id
-		ok := bridge_pty_host_deliver_to_agent(instance_id, "message", sender, "", "")
+		// T6: during a context rollover the notice (which presses ESC) would
+		// interrupt the handoff; it is queued and delivered after the restart.
+		ok := bridge_rollover_queue_notice(instance_id, sender) || bridge_pty_host_deliver_to_agent(instance_id, "message", sender, "", "")
 		if !ok do fmt.println("bridge notification pending/no-agent-subscription", instance_id, command_id)
 		if command_id != "" {
 			res := bridge_command_result_json(command_id, "succeeded" if ok else "accepted", "")
@@ -1586,6 +1670,16 @@ bridge_update_download :: proc(download_url, dest_path: string, download: Bridge
 	return false, fmt.tprintf("tarball download failed: HTTP %d", status)
 }
 
+// bridge_exe_in_bin_dir reports whether the running executable lives in bin_dir.
+// The executable path comes back already resolved through links (/proc/self/exe,
+// realpath), while bin_dir is built from $HOME / %LOCALAPPDATA%, which may reach the
+// same directory through a link (Fedora Atomic /home -> /var/home, macOS
+// /var -> /private/var, a Windows junction), so both sides go through path_key.
+bridge_exe_in_bin_dir :: proc(exe, bin_dir: string) -> bool {
+	if exe == "" || bin_dir == "" do return false
+	return bridgesvc.path_key(bridgesvc.pdir(exe)) == bridgesvc.path_key(bin_dir)
+}
+
 // bridge_update_via_ham_bridge decides whether this bridge can apply a hub update:
 // every update runs the staged binary's `ham-bridge update` (setup's transaction:
 // bin.bak, service re-render, extensions, health incl. the hub connection,
@@ -1597,11 +1691,7 @@ bridge_update_via_ham_bridge :: proc(target_version: string) -> (service: string
 	host := bridge_service_host()
 	name, registered := bridge_enroll_service_for(host, os.args)
 	exe, _ := os.get_executable_path(context.temp_allocator)
-	norm :: proc(p: string) -> string {
-		out, _ := strings.replace_all(strings.trim_right(p, "/\\"), "\\", "/", context.temp_allocator)
-		return out
-	}
-	if !registered || !strings.has_prefix(name, bridgesvc.SERVICE_PREFIX) || exe == "" || norm(bridgesvc.pdir(exe)) != norm(bridgesvc.layout_for(host, name).bin_dir) {
+	if !registered || !strings.has_prefix(name, bridgesvc.SERVICE_PREFIX) || !bridge_exe_in_bin_dir(exe, bridgesvc.layout_for(host, name).bin_dir) {
 		return "", fmt.tprintf("this bridge is not a ham-bridge profile install, so it cannot apply updates; reinstall it once with %s", BRIDGE_REINSTALL_HINT)
 	}
 	if bridge_provider_extension_version_compare(target_version, contracts.APP_VERSION) < 0 {
@@ -2274,7 +2364,9 @@ bridge_hub_handle_pane_capture_command :: proc(conn: ^ws.Connection, text: strin
 //   {"type":"wake_agent","chain_id":"..","payload":{"run":[{"agent_instance_id":"..",
 //    "task_id":"..","role":".."}],"stop":["..",..]}}
 // run[] names the non-coordinator agents that SHOULD be running for the chain right
-// now — started fresh (full bootstrap) when we hold no launch record, or restarted
+// now — nudged to run `lease next` when the entry says deliver="nudge" and the
+// child of that generation is confirmed live (T8), started fresh (full bootstrap)
+// when we hold no launch record, or restarted
 // (process re-fork from the saved spec, reusing run_dir + token) when a record
 // exists but the process is not registered with the daemon; an already-running agent
 // is left alone. stop[] names the instances whose task is no longer actionable and
@@ -2335,6 +2427,17 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
 			pack_json, _ := bridge_provider_json_extract_object(entry, "pack")
 			defer delete(pack_json)
 
+			// T8: a lease for an instance that is already running is delivered as
+			// a nudge (keep the process; refresh TASK.md; "run lease next"). When
+			// the child is not confirmed live, fall through to the launch paths.
+			deliver := extract_json_string(entry, "deliver", "")
+			defer delete(deliver)
+			if deliver == "nudge" && bridge_wake_nudge_live_child(instance_id, task_id, role, lease_id, run_count, pack_json) {
+				bridge_runtime_set_launch_role(instance_id, role)
+				fmt.println("bridge wake_agent: nudged live instance", instance_id, "to run lease next")
+				continue
+			}
+
 			if _, has := bridge_runtime_get_launch(instance_id); has {
 				// A launch record exists, but restart via the pty-host's remembered
 				// spec would reuse the ORIGINAL run_dir contents — including a stale
@@ -2385,12 +2488,62 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
 			if strings.trim_space(id) == "" do continue
 			if coordinator_ids[id] do continue
 			if launch, has := bridge_runtime_get_launch(id); has && launch.role == "coordinator" do continue
-			bridge_runtime_stop_agent(id)
+			if bridge_runtime_stop_agent(id) do _ = bridge_ext_token_capture_final(id, bridge_agent_instance_run_count(id))
 			fmt.println("bridge wake_agent: stopped instance", id)
 		}
 	}
 
 	if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded", ""))
+}
+
+// bridge_wake_nudge_live_child delivers a wake run[] entry to a child that is
+// already running (T8: an agent is not re-bootstrapped per attempt or review
+// round). It requires a launch record, no stop intent, and a live child of
+// exactly this generation (`run_count`, confirmed with the PTY host). Then it
+// rewrites <run_dir>/TASK.md from the pack and types one line telling the agent
+// to run `ham-ctl lease next`. Returns false — the caller then launches — when
+// any precondition fails. A failed keystroke delivery still returns true: the
+// child is live, so a launch would no-op; the hub re-sends an unconfirmed
+// wake once and then parks the task (grant_unconfirmed).
+bridge_wake_nudge_live_child :: proc(instance_id, task_id, role, lease_id: string, run_count: int, pack_json: string) -> bool {
+	if run_count <= 0 || strings.trim_space(instance_id) == "" do return false
+	launch, has := bridge_runtime_get_launch(instance_id)
+	if !has do return false
+	sync.mutex_lock(&bridge_runtime_mutex)
+	stopped := bridge_runtime_stop_intent_active_locked(instance_id, bridge_runtime_now_ms())
+	sync.mutex_unlock(&bridge_runtime_mutex)
+	if stopped do return false
+	socket, daemon_ok := bridge_pty_host_ensure_daemon()
+	if !daemon_ok do return false
+	confirmed, _ := bridge_startup_confirm_spawned(socket, instance_id, run_count)
+	if !confirmed do return false
+	if strings.has_prefix(strings.trim_space(pack_json), "{") {
+		bridge_taskv2_ensure_pack_worktree(pack_json)
+		run_dir := launch.run_dir
+		default_dir := ""
+		if strings.trim_space(run_dir) == "" {
+			default_dir = bridge_runtime_default_run_dir(instance_id)
+			run_dir = default_dir
+		}
+		defer if default_dir != "" do delete(default_dir)
+		if !bridge_taskv2_materialize_task_md(run_dir, pack_json) {
+			fmt.eprintln("bridge wake_agent: could not refresh TASK.md for nudged instance", instance_id, "(lease next rewrites it)")
+		}
+	}
+	line := bridge_wake_nudge_line(lease_id, task_id, role)
+	defer delete(line)
+	if !bridge_pty_host_deliver_line(socket, instance_id, line) {
+		fmt.eprintln("bridge wake_agent: nudge delivery failed for live instance", instance_id)
+	}
+	bridge_task_wake_note_launched(instance_id)
+	return true
+}
+
+// bridge_wake_nudge_line is the one line typed into a live agent that was
+// granted a lease. Pure; caller owns the result.
+bridge_wake_nudge_line :: proc(lease_id, task_id, role: string) -> string {
+	what := "review" if role == "reviewer" else "work"
+	return fmt.aprintf("[taskv2] New %s lease %s on task %s: run `ham-ctl lease next`, then read TASK.md and follow it.", what, lease_id, task_id)
 }
 
 // bridge_wake_report_failed_status sends a woken instance's failed status, with its
@@ -2524,6 +2677,10 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 	}
 	// A genuine (re)launch supersedes any prior stop intent for this instance id.
 	bridge_runtime_clear_stop_intent(instance_id)
+	// A hub restart arrives as a launch with a newer run_count (no stop_agent):
+	// freeze the previous run's token usage as its final and start the new run
+	// from zero (T3r). The local token record still carries the old generation.
+	_ = bridge_ext_token_capture_final(instance_id, bridge_agent_instance_run_count(instance_id), reset_live = true, now = bridge_runtime_now_ms())
 	// Agents always run in their own managed run dir (never the project path).
 	// The project path/description is provided to the agent via AGENTS.md instead,
 	// so the agent decides when/how to work against the project checkout.
@@ -2571,6 +2728,8 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 	defer delete(permission_mode)
 	provider_profile := extract_json_string(command_json, "provider_profile", "")
 	defer delete(provider_profile)
+	// T6: the chain coordinator is alerted when a context rollover stalls.
+	bridge_rollover_note_launch(instance_id, descriptor.coordinator_id)
 	return bridge_runtime_launch_agent_pty_host(command_id, instance_id, run_dir, endpoint, provider, model, agent_issue.plaintext_token, descriptor.display_name, 0, descriptor.project_path, permission_mode, provider_profile)
 }
 
@@ -2614,6 +2773,9 @@ bridge_runtime_launch_provider_test :: proc(command_id, command_json: string) ->
 // registered) the agent under the daemon PTY. Retry/backoff on spawn preserves
 // AC-5 launch resilience.
 bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, endpoint, provider, model, agent_token, display_name: string, timeout_seconds: u64, project_path: string = "", permission_mode: string = "", provider_profile: string = "") -> (ok: bool, detail: string, err: Bridge_Error) {
+	// T2b: the context window is resolved per launch from provider + model
+	// (override > shipped config > default); never detected from the provider.
+	bridge_ext_note_launch(instance_id, provider, model, provider_profile)
 	// REQ-PROF-4: an unknown or disabled profile fails the launch; it never falls
 	// back to the default profile, which could run under the wrong account.
 	pp, pp_err := profile_lookup(provider, provider_profile)
@@ -2967,7 +3129,12 @@ bridge_runtime_note_agent_activity :: proc(instance_id, activity_status, activit
 	if source == "" do source = "agent_extension"
 	// Screen detection drives the terminal_prompt blocker fallback (REQ-EXT-BLK-5).
 	if source == "pane_diff" do bridge_blockers_note_pane_activity(instance_id, activity_status)
-	bridge_runtime_note_activity_signal(instance_id, bridge_runtime_normalize_activity_status(activity_status), source)
+	// T6: idle is withheld (reported active) while a context rollover is in
+	// progress, so the hub's idle grace cannot expire the lease mid-handoff.
+	// Advance the rollover first so an idle that starts one is already withheld.
+	bridge_rollover_on_activity(instance_id, activity_status, source, bridge_runtime_now_ms())
+	activity := bridge_rollover_filter_activity(instance_id, bridge_runtime_normalize_activity_status(activity_status), source)
+	bridge_runtime_note_activity_signal(instance_id, activity, source)
 }
 
 bridge_runtime_note_activity_signal :: proc(instance_id, activity_status, activity_source: string) {
@@ -3301,6 +3468,10 @@ bridge_instance_status_json :: proc(instance_id: string) -> string {
 	bridge_runtime_write_json_string(&b, inst.activity_source)
 	strings.write_string(&b, "\"")
 	bridge_runtime_write_instance_error(&b, inst)
+	// Optional small snapshot (extension_token_usage.odin); hubs that predate it
+	// ignore the unknown members. Every caller sends the frame it builds, so a
+	// pending token change piggybacks here instead of costing its own frame.
+	bridge_ext_token_usage_field(&b, inst.agent_instance_id, bridge_agent_instance_run_count(inst.agent_instance_id), bridge_runtime_now_ms())
 	strings.write_string(&b, "}")
 	return strings.to_string(b)
 }
@@ -4236,6 +4407,7 @@ Bridge_Hello_Wire :: struct {
 	capabilities:             []string,
 	features:                 []string,
 	active_instance_ids:      []string,
+	credential_refresh_on_invalid: bool,
 }
 
 // BRIDGE_RUNTIME_FEATURES is the single source for the features bridge_hello and the
@@ -4258,6 +4430,9 @@ bridge_hub_hello_json :: proc() -> string {
 		public_key = bridge_get_public_key_hex(),
 		capabilities = []string{},
 		features = BRIDGE_RUNTIME_FEATURES[:],
+		// H2: answer an unknown-token refusal with bridge_token_invalid (one renewal)
+		// instead of bridge_credential_revoked (permanent park).
+		credential_refresh_on_invalid = true,
 	}
 	unseal := bridge_unseal_hello_fields(bridge_config.daemon_id)
 	hello.identity_state = unseal.identity_state
@@ -5966,7 +6141,7 @@ bridge_hub_runtime_start :: proc() {
 	// forever. Must follow init (it appends to the queue init makes) and precede the
 	// worker that drains it.
 	bridge_shell_exited_outbox_restore()
-	credential_snapshot_5593 := bridge_credential_snapshot()
+	credential_snapshot_5593, _ := bridge_credential_peek()
 	defer delete(credential_snapshot_5593)
 	if strings.trim_space(credential_snapshot_5593) != "" && strings.trim_space(bridge_config.daemon_url) != "" {
 		thread.run(bridge_hub_runtime_worker)

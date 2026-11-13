@@ -89,6 +89,10 @@ docs/                   architecture, guides, designs, audits (indexed in docs/R
 Use `nix develop` for the toolchain (Odin, ols, the pinned libcurl, openssl, socat, tmux). Odin code
 uses one import collection, `odin_test`, rooted at `src/`.
 
+Editor configuration and native development commands are documented in
+[docs/editor-setup.md](docs/editor-setup.md). `scripts/dev-odin.sh check|test|run|build-debug <package>`
+supplies the collection and curl pin automatically, with unique binary output under `$HOME`.
+
 ```bash
 nix build .#ham-hub          # also .#ham-bridge .#ham-ctl .#ham-pty-host .#ham-dev-proxy .#ham-test-agent
 nix run .#hub                # hub wrapper (injects migrations dir); also .#bridge .#pty-host .#ctl

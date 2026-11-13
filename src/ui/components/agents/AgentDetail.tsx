@@ -26,8 +26,6 @@ import {
   EmptyState,
   Icon,
   IconButton,
-  Menu,
-  MenuItem,
   Panel,
   ResourceDetailHeader,
   ResourceSectionCard,
@@ -42,6 +40,7 @@ import {
   agentErrorText,
   normalizeAgent,
   useArchiveAgentIdentityMutation,
+  useUnarchiveAgentIdentityMutation,
   useFetchAgentIdentityQuery,
   useListAgentInstancesQuery,
   useFetchAgentInstanceQuery,
@@ -56,6 +55,8 @@ import PaginatedMemoriesSection from '../shared/PaginatedMemoriesSection';
 import { buildRouteHash } from '../../utils/appLocation';
 import { agentFailureSummary } from '../../utils/agentStatus';
 import { AgentFailureNotice } from './AgentFailureNotice';
+import { ContextMeter, TokenTotalsSummary } from '../extension/TokenUsage';
+import { normalizeTokenTotals, normalizeTokenUsage } from '../extension/tokenUsageModel';
 import {
   VERB_LABEL,
   absoluteTime,
@@ -97,6 +98,7 @@ export function usePaneIsWide(ref: React.RefObject<HTMLElement | null>): boolean
 export function useAgentDetail(agentId: string, onAfterVerb?: (verb: AgentVerb) => void) {
   const query = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId });
   const [archiveAgent] = useArchiveAgentIdentityMutation();
+  const [unarchiveAgent] = useUnarchiveAgentIdentityMutation();
   const [busy, setBusy] = React.useState<AgentVerb | ''>('');
   const [actionError, setActionError] = React.useState('');
 
@@ -114,7 +116,7 @@ export function useAgentDetail(agentId: string, onAfterVerb?: (verb: AgentVerb) 
       setBusy(verb);
       setActionError('');
       try {
-        await archiveAgent({ agentId }).unwrap();
+        await (verb === 'unarchive' ? unarchiveAgent : archiveAgent)({ agentId }).unwrap();
         onAfterVerb?.(verb);
       } catch (err) {
         setActionError(agentErrorText(err, `Couldn't ${VERB_LABEL[verb].toLowerCase()} this agent.`));
@@ -122,7 +124,7 @@ export function useAgentDetail(agentId: string, onAfterVerb?: (verb: AgentVerb) 
         setBusy('');
       }
     },
-    [archiveAgent, onAfterVerb, agentId],
+    [archiveAgent, unarchiveAgent, onAfterVerb, agentId],
   );
 
   return { query, record, busy, actionError, runVerb };
@@ -164,7 +166,8 @@ export function AgentDetailActions({
   onVerb: (verb: AgentVerb) => void;
 }) {
   const verbs = verbsForState(agentState(record));
-  const menuVerbs = verbs.filter((verb) => verb !== 'edit');
+  // Archive / Unarchive are direct buttons beside Edit; there is no `…` menu.
+  const directVerbs = verbs.filter((verb) => verb !== 'edit');
 
   return (
     <>
@@ -178,32 +181,17 @@ export function AgentDetailActions({
           />
         </span>
       ) : null}
-      {menuVerbs.length ? (
-        <Menu
-          label="Agent actions"
-          align="end"
-          trigger={
-            <ActionButton
-              icon="more-horizontal"
-              label="More"
-              iconOnly
-              aria-label="Agent actions"
-              data-debug-id="agent-view-menu"
-            />
-          }
-        >
-          {menuVerbs.map((verb) => (
-            <MenuItem
-              key={verb}
-              danger={verb === 'archive'}
-              data-debug-id={`agent-view-${verb}`}
-              onClick={() => onVerb(verb)}
-            >
-              {VERB_LABEL[verb]}
-            </MenuItem>
-          ))}
-        </Menu>
-      ) : null}
+      {directVerbs.map((verb) => (
+        <ActionButton
+          key={verb}
+          label={VERB_LABEL[verb]}
+          variant={verb === 'archive' ? 'danger' : 'secondary'}
+          loading={busy === verb}
+          disabled={Boolean(busy)}
+          data-debug-id={`agent-view-${verb}`}
+          onClick={() => onVerb(verb)}
+        />
+      ))}
     </>
   );
 }
@@ -715,6 +703,18 @@ export function LiveInstanceDetailPane({
             {!provider && !model ? <Text role="body" tone="muted">—</Text> : null}
           </div>
         </DetailRow>
+
+        {normalizeTokenUsage(inst?.token_usage) ? (
+          <DetailRow label="Context">
+            <ContextMeter instance={inst} />
+          </DetailRow>
+        ) : null}
+
+        {normalizeTokenTotals(inst?.token_totals) ? (
+          <DetailRow label="Lifetime Tokens">
+            <TokenTotalsSummary instance={inst} />
+          </DetailRow>
+        ) : null}
 
         <DetailRow label="Current Task">
           {currentTaskId ? (

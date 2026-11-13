@@ -209,7 +209,7 @@ test_durable_ownership_migration_preserves_existing_claims :: proc(t: ^testing.T
 	conn, opened, open_err := sqlite.open(":memory:")
 	if !testing.expect(t, opened, open_err.message) do return
 	defer sqlite.close(&conn)
-	before_ok, before_err := sqlite.run_migrations(&conn, stop_before = "197_durable_task_claims.sql")
+	before_ok, before_err := sqlite.run_migrations(&conn, stop_before = "203_durable_task_claims.sql")
 	if !testing.expect(t, before_ok, before_err.message) do return
 	// Use the pre-migration SQL shape, so this also catches a migration that
 	// accidentally requires a column that was never present in deployed databases.

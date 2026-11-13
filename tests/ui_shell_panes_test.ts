@@ -135,14 +135,40 @@ test('SH-2: every header segment follows the active-pane cue (theme tokens)', ()
   assert.match(css, /\[data-pane-active='false'\] \[data-pane-crumb\]:not\(:hover\) \{\s*color: var\(--color-text-muted\);/);
 });
 
-test('SH-3: tmux-style active border on the focused pane or the focused aux dock', () => {
+test('SH-3: the selected pane (or focused aux dock) shows a thin accent line at its top edge', () => {
   const ws = read('src/ui/components/mainWorkspace/Workspace.tsx');
   assert.match(ws, /const showActiveBorder = !isMobile && \(mainPaneCount > 1 \|\| auxShown\)/);
   assert.match(ws, /isActive=\{showActiveBorder && isFocused && !auxFocused\}/);
   assert.match(ws, /isActive=\{showActiveBorder && auxFocused\}\s+onActivate=\{\(\) => setAuxFocused\(true\)\}/);
   assert.match(ws, /data-debug-id="workspace-main"\s+onMouseDownCapture=\{\(\) => setAuxFocused\(false\)\}/);
-  assert.match(read('src/ui/components/mainWorkspace/MainPaneFrame.tsx'), /\{isActive \? <div aria-hidden="true" data-debug-id=\{`main-pane-active-border-\$\{paneId\}`\} className="ui-pane-active-border" \/> : null\}/);
-  assert.match(read('src/ui/components/auxiliary/AuxDock.tsx'), /isActive && !isMobile \? <div aria-hidden="true" data-debug-id="aux-active-border" className="ui-pane-active-border" \/>/);
+  const frame = read('src/ui/components/mainWorkspace/MainPaneFrame.tsx');
+  const dock = read('src/ui/components/auxiliary/AuxDock.tsx');
+  assert.match(frame, /data-pane-selected=\{isActive \? 'true' : 'false'\}/);
+  assert.match(dock, /data-pane-selected=\{isActive && !isMobile \? 'true' : 'false'\}/);
+  // Both frames are positioned, so the line anchors to the pane's own top edge.
+  assert.match(frame, /className=\{`relative flex h-full w-full/);
+  assert.match(dock, /'relative flex min-w-0 flex-1 flex-col bg-canvas'/);
+  // No layout shift: focus only flips an attribute; nothing is mounted or unmounted for it.
+  assert.doesNotMatch(frame, /\{isActive \? </);
+  assert.doesNotMatch(dock, /\{isActive && !isMobile \? </);
   const css = read('src/ui/styles.css');
-  assert.match(css, /\.ui-pane-active-border \{[^}]*border-color: var\(--color-accent\);[^}]*border-width: 0 1px 1px 1px;/);
+  assert.doesNotMatch(css, /ui-pane-active-border/);
+  // The header is not tinted or underlined any more (the line is the only cue).
+  assert.doesNotMatch(css, /data-pane-header/);
+  for (const file of ['src/ui/components/workbench/AgentChatPane.tsx', 'src/ui/components/mainWorkspace/ShellMainPane.tsx', 'src/ui/components/auxiliary/AuxTabStrip.tsx', 'src/ui/components/mainWorkspace/MainPaneFrame.tsx']) {
+    assert.doesNotMatch(read(file), /data-pane-header/, file);
+  }
+  const rule = css.match(/\[data-pane-selected='true'\]::before \{([^}]*)\}/);
+  assert.ok(rule, 'selected-pane line rule');
+  const decl = Object.fromEntries(rule![1].split(';').map((d) => d.split(':').map((x) => x.trim())).filter((d) => d[0]));
+  // Out of flow (absolute) and click-through: it cannot change any height or take input.
+  assert.equal(decl.position, 'absolute');
+  assert.equal(decl['pointer-events'], 'none');
+  // Mock art_18e6ead45be6d34c: ~3px, top edge, inset 16px to the content padding, theme accent.
+  assert.equal(decl.top, '0');
+  assert.equal(decl.height, '3px');
+  assert.equal(decl.left, '16px');
+  assert.equal(decl.right, '16px');
+  assert.equal(decl['background-color'], 'var(--color-accent)');
+  assert.ok(!('border-radius' in decl), 'square ends');
 });

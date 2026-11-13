@@ -114,6 +114,17 @@ archive_agent_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
+unarchive_agent_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	if !ok do return auth_resp
+	agent, restored, err := agent_service.unarchive_agent(h.agents, auth_ctx, path_part(req.path, 4))
+	if !restored do return respond_error(err, req.request_id)
+	publish_agent_changed(h.event_bus, string(agent.owner_user_id), agent.agent_id, "unarchived")
+	b := strings.builder_make(); write_agent_json(&b, h.agents, agent)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
+}
+
 list_agent_support_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
@@ -449,7 +460,21 @@ write_agent_instance_json :: proc(b: ^strings.Builder, inst: domain.Agent_Instan
 	strings.write_string(b, "\",\"effective_permission_mode\":\""); write_handler_json_string(b, domain.agent_instance_effective_permission_mode(inst))
 	strings.write_byte(b, 34)
 	write_last_error_json(b, inst.last_error_json)
+	write_agent_instance_token_json(b, inst)
 	strings.write_string(b, "}")
+}
+
+// write_agent_instance_token_json appends the latest token snapshot
+// (`,"token_usage":{…}`, canonical JSON stored by the hub) and the lifetime
+// totals (`,"token_totals":{…}`); each is omitted when there is no data (T3r).
+write_agent_instance_token_json :: proc(b: ^strings.Builder, inst: domain.Agent_Instance) {
+	if inst.token_usage_json != "" {
+		strings.write_string(b, ",\"token_usage\":"); strings.write_string(b, inst.token_usage_json)
+		if inst.token_usage_updated_at != "" { strings.write_string(b, ",\"token_usage_updated_at\":\""); write_handler_json_string(b, inst.token_usage_updated_at); strings.write_byte(b, 34) }
+	}
+	if totals := domain.agent_token_totals_json(inst, context.temp_allocator); totals != "" {
+		strings.write_string(b, ",\"token_totals\":"); strings.write_string(b, totals)
+	}
 }
 
 i32_to_string_http :: proc(v: int) -> string {

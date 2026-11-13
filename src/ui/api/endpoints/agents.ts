@@ -6,6 +6,45 @@ import { heimdallApi, withSessionQuery } from '../heimdallApi';
 import { readBridgeRows } from './bridgeSupport';
 import { openPaneReplyOutput } from '../../components/shells/ptyWire';
 
+/**
+ * Token usage on the agent instance JSON (T3r), each omitted when unknown.
+ * token_usage is the latest bridge snapshot; token_totals sums every finished
+ * run's final usage, added once per run at each hub stop/restart.
+ */
+export interface AgentInstanceTokenUsage {
+  tool_calls: number;
+  est_tokens_total: number;
+  context_tokens?: number;
+  context_window?: number;
+  /** Thresholds from the bridge's shipped config; absent on older bridges. */
+  warn_pct?: number;
+  rollover_pct?: number;
+  window_source?: 'override' | 'reported' | 'config' | 'default';
+  reported_window?: number;
+  window_mismatch?: boolean;
+  context_pct?: number;
+  output_tokens_total?: number;
+  compactions: number;
+  run_count?: number;
+  /** Provider emits usage.context_tokens; absent when the bridge did not report it. */
+  usage_supported?: boolean;
+  updated_at_ms: number;
+}
+
+export interface AgentInstanceTokenTotals {
+  total_context_tokens: number;
+  total_est_tool_tokens: number;
+  total_output_tokens: number;
+  runs_counted: number;
+  last_run_counted: number;
+}
+
+export interface AgentInstanceTokenFields {
+  token_usage?: AgentInstanceTokenUsage;
+  token_usage_updated_at?: string;
+  token_totals?: AgentInstanceTokenTotals;
+}
+
 export interface GetAgentPaneArgs {
   agentInstanceId: string;
   sinceHash?: string;
@@ -410,6 +449,18 @@ export const agentsApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: [{ type: 'Agents' as const, id: 'LIST' }],
     }),
+    // Returns an archived agent to Active (`POST /agents/{id}/unarchive`).
+    unarchiveAgentIdentity: build.mutation<any, { agentId: string }>({
+      queryFn: async ({ agentId }) => {
+        try {
+          const data = await cookieMutation(`/agents/${encodeURIComponent(agentId)}/unarchive`, 'POST');
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: [{ type: 'Agents' as const, id: 'LIST' }],
+    }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     listAgentInstances: build.query<any, { agentId?: string; projectId?: string; limit?: number; cursor?: string } | void>({
       queryFn: async (arg) => {
@@ -775,6 +826,7 @@ export const {
   useListAgentsQuery,
   useCreateAgentMutation,
   useArchiveAgentIdentityMutation,
+  useUnarchiveAgentIdentityMutation,
   useListAgentInstancesQuery,
   useFetchAgentInstanceQuery,
   useLaunchAgentInstanceMutation,

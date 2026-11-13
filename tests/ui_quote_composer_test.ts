@@ -151,6 +151,19 @@ test('a message that cannot decrypt never offers Quote', async () => {
     assert.equal(dom.window.document.body.textContent?.includes('unreadable secret'), false);
   });
 });
+test('a live reply that fails to decrypt is not hidden by the reveal and settles', async () => {
+  await fixture(async ({ dom, render }) => {
+    const { keyringFromHex } = await import('./helpers/vaultTestKeyring.ts');
+    const body = await encryptVaultText('unreadable secret', await keyringFromHex('99'.repeat(32)));
+    let settled = 0;
+    await render(React.createElement(ThreadMessageBody, { body, reveal: { enabled: true, onSettled: () => { settled += 1; } } }));
+    await act(async () => { await new Promise(r => setTimeout(r, 30)); });
+    assert.equal(settled, 1, 'the reply settles, so its chrome shows');
+    assert.equal(dom.window.document.querySelectorAll('[data-sr="h"]').length, 0, 'nothing stays transparent');
+    assert.ok((dom.window.document.querySelector('.markdown')?.textContent || '').length > 0, 'the body renders');
+    assert.equal(dom.window.document.body.textContent?.includes('unreadable secret'), false);
+  });
+});
 test('whole chat pane routes worker Quote into coordinator draft, retains it on failed send and clears only after successful retry', async () => {
   await fixture(async ({ dom, store, key, render, select, q, wait }) => {
     const posts: any[] = [];
@@ -253,5 +266,111 @@ test('whole chat pane routes worker Quote into coordinator draft, retains it on 
     assert.match(await decryptVaultText(posts[2].body.body, key), /^Quoted context/, 'quote-only normal Send works');
     assert.equal((q('conversation-composer-input') as HTMLTextAreaElement).value, 'Newer draft from another pane');
     assert.deepEqual(store.getState().composerContext.byTarget['chain:c'].map((q: QuoteContext) => q.id), ['newer'], 'success consumes only submitted chips');
+  });
+});
+
+test('a send that fails after the pane unmounts puts the cleared draft back in storage for its route', async () => {
+  await fixture(async ({ dom, render, q, wait }) => {
+    let postRelease: (() => void) | undefined;
+    let posts = 0;
+    globalThis.fetch = (async (input: any, init: any = {}) => {
+      const url = new URL(String(input), 'http://localhost'); const path = url.pathname; const method = init.method || 'GET';
+      const reply = (ok: boolean, data: any) => ({ ok, status: ok ? 200 : 503, headers: { get: () => 'application/json' },
+        text: async () => JSON.stringify(ok ? { data } : data), json: async () => (ok ? { data } : data) }) as any;
+      if (method === 'POST' && /\/messages$/.test(path)) {
+        posts++;
+        await new Promise<void>(r => postRelease = r);
+        return reply(false, { error: { message: 'temporary failure' } });
+      }
+      let data: any = {};
+      if (path.includes('/chats/by-instance/')) data = { conversation_id: 'workerchat', agent_instance_id: 'worker', agent_id: 'worker-identity', chain_id: 'c', runtime_status: 'running' };
+      else if (path.endsWith('/messages')) data = [];
+      else if (/\/agent-instances\/[^/]+$/.test(path)) data = { agent_instance_id: 'worker', agent_id: 'identity', provider: 'claude', model: 'opus', bridge_id: 'b', runtime_status: 'running' };
+      else if (path.endsWith('/reconfigurations')) data = { operations: [] };
+      else if (path.endsWith('/provider-status')) data = { providers: [{ provider: 'claude', enabled: true, state: 'present', catalog_state: 'active', models: [{ model_id: 'opus', state: 'active' }] }] };
+      else if (path.endsWith('/bridges')) data = [{ bridge_id: 'b', status: 'online', runtime_connected: true, reconfiguration_supported: true }];
+      else if (path.endsWith('/agents/live') || path.endsWith('/tasks')) data = [];
+      else if (path.endsWith('/attention')) data = { items: [] };
+      return reply(true, data);
+    }) as any;
+    dom.window.localStorage.setItem('heimdall:composer:draft:worker', 'Do not lose me');
+    let hide!: () => void;
+    function View() {
+      const [shown, setShown] = React.useState(true);
+      hide = () => setShown(false);
+      return shown ? React.createElement(AgentChatPane, { agentInstanceId: 'worker', paneId: 'test-pane', isMobile: false }) : null;
+    }
+    await render(React.createElement(View));
+    await wait(() => (q('conversation-composer-input') as HTMLTextAreaElement)?.value === 'Do not lose me');
+    await wait(() => !(q('conversation-composer-send-btn') as HTMLButtonElement)?.disabled);
+    await act(async () => q('conversation-composer-send-btn').click());
+    await wait(() => posts === 1 && Boolean(postRelease));
+    assert.equal((q('conversation-composer-input') as HTMLTextAreaElement).value, '', 'input clears at send (REQ-PIN-1)');
+    assert.equal(dom.window.localStorage.getItem('heimdall:composer:draft:worker'), null);
+    await act(async () => hide());
+    await act(async () => { postRelease!(); await new Promise(r => setTimeout(r, 30)); });
+    assert.equal(dom.window.localStorage.getItem('heimdall:composer:draft:worker'), 'Do not lose me', 'failed send restores the draft');
+  });
+});
+
+test('REQ-ENC-2: a vault body never paints ciphertext while it decrypts or after it fails', async () => {
+  await fixture(async ({ dom, key, render }) => {
+    const { keyringFromHex } = await import('./helpers/vaultTestKeyring.ts');
+    const seen: string[] = [];
+    const observer = new dom.window.MutationObserver(() => seen.push(dom.window.document.body.textContent || ''));
+    observer.observe(dom.window.document.body, { subtree: true, childList: true, characterData: true });
+    const readable = await encryptVaultText('readable secret', key);
+    const unreadable = await encryptVaultText('unreadable secret', await keyringFromHex('99'.repeat(32)));
+    await render(React.createElement('div', {}, React.createElement(ThreadMessageBody, { body: readable }),
+      React.createElement(ThreadMessageBody, { body: unreadable })));
+    seen.push(dom.window.document.body.textContent || '');
+    await act(async () => { await new Promise(r => setTimeout(r, 30)); });
+    observer.disconnect();
+    assert.ok(dom.window.document.body.textContent?.includes('readable secret'));
+    assert.equal(seen.some(text => text.includes('vault:v2:')), false, 'no frame shows vault:v2:');
+  });
+});
+
+test('REQ-ENC-1: a send whose ack echoes the armored body keeps the typed text across ack and refetch', async () => {
+  await fixture(async ({ dom, q, render, wait }) => {
+    let stored: any = null;
+    let postRelease: (() => void) | undefined;
+    globalThis.fetch = (async (input: any, init: any = {}) => {
+      const url = new URL(String(input), 'http://localhost'); const path = url.pathname; const method = init.method || 'GET';
+      const reply = (data: any) => ({ ok: true, status: 200, headers: { get: () => 'application/json' },
+        text: async () => JSON.stringify({ data }), json: async () => ({ data }) }) as any;
+      if (method === 'POST' && /\/messages$/.test(path)) {
+        await new Promise<void>(r => postRelease = r);
+        // The hub echoes the stored row, i.e. the ciphertext the client POSTed.
+        stored = { message_id: 'srv1', conversation_id: 'workerchat', direction: 'user_to_agent', body: JSON.parse(init.body).body, created_unix_ms: Date.now() };
+        return reply(stored);
+      }
+      let data: any = {};
+      if (path.includes('/chats/by-instance/')) data = { conversation_id: 'workerchat', agent_instance_id: 'worker', agent_id: 'worker-identity', chain_id: 'c', runtime_status: 'running' };
+      else if (path.endsWith('/messages')) data = stored ? [stored] : [];
+      else if (/\/agent-instances\/[^/]+$/.test(path)) data = { agent_instance_id: 'worker', agent_id: 'identity', provider: 'claude', model: 'opus', bridge_id: 'b', runtime_status: 'running' };
+      else if (path.endsWith('/reconfigurations')) data = { operations: [] };
+      else if (path.endsWith('/provider-status')) data = { providers: [{ provider: 'claude', enabled: true, state: 'present', catalog_state: 'active', models: [{ model_id: 'opus', state: 'active' }] }] };
+      else if (path.endsWith('/bridges')) data = [{ bridge_id: 'b', status: 'online', runtime_connected: true, reconfiguration_supported: true }];
+      else if (path.endsWith('/agents/live') || path.endsWith('/tasks')) data = [];
+      else if (path.endsWith('/attention')) data = { items: [] };
+      return reply(data);
+    }) as any;
+    dom.window.localStorage.setItem('heimdall:composer:draft:worker', 'Typed secret hello');
+    await render(React.createElement(AgentChatPane, { agentInstanceId: 'worker', paneId: 'test-pane', isMobile: false }));
+    await wait(() => (q('conversation-composer-input') as HTMLTextAreaElement)?.value === 'Typed secret hello');
+    await wait(() => !(q('conversation-composer-send-btn') as HTMLButtonElement)?.disabled);
+    const seen: string[] = [];
+    const observer = new dom.window.MutationObserver(() => seen.push(dom.window.document.body.textContent || ''));
+    observer.observe(dom.window.document.body, { subtree: true, childList: true, characterData: true });
+    await act(async () => q('conversation-composer-send-btn').click());
+    await wait(() => Boolean(postRelease));
+    await act(async () => postRelease!());
+    await wait(() => Boolean(stored));
+    await act(async () => { await new Promise(r => setTimeout(r, 120)); });
+    observer.disconnect();
+    assert.ok(dom.window.document.body.textContent?.includes('Typed secret hello'), 'the bubble shows the typed text');
+    assert.equal(seen.some(text => text.includes('vault:v2:')), false, 'no frame of the sent bubble shows vault:v2:');
+    assert.equal(seen.some(text => text.includes('[🔒 Encrypted]')), false, 'nor the mask: the ack keeps the typed text');
   });
 });

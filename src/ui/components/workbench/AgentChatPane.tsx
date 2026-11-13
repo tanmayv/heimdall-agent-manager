@@ -72,6 +72,7 @@ import {
   containsVaultArmored,
   decryptVaultText,
   decryptEmbeddedVaultTokens,
+  maskVaultArmored,
 } from '../../utils/vaultContent';
 import {
   artifactKindForFile,
@@ -85,6 +86,7 @@ import { ArtifactAttachmentPreview } from '../ArtifactAttachmentPreview';
 import Icon from '../Icon';
 import Markdown from '../Markdown';
 import type { MarkdownTextSelection } from '../MarkdownBody';
+import { PREVIOUS_CONTEXT_MESSAGE_TYPE, PreviousContextBlock } from '../chat/PreviousContextBlock';
 import QuoteSelectionPopover from '../chat/QuoteSelectionPopover';
 import ComposerContextChips from '../chat/ComposerContextChips';
 import { addComposerQuote, removeComposerQuote, consumeComposerQuotes, selectComposerQuotes } from '../../store/composerContextSlice';
@@ -103,6 +105,7 @@ import LiveToolActivity from '../extension/LiveToolActivity';
 import AgentActivityBubbles from '../chat/AgentActivityBubbles';
 import AtMentionPopup, { type MentionEntity } from '../chat/AtMentionPopup';
 import ChatMessageList from '../chat/ChatMessageList';
+import { useSettleWithoutReveal, type StreamRevealOptions } from '../chat/streamReveal';
 import InstanceReconfigurationProgress from '../chat/InstanceReconfigurationProgress';
 import { MessageComposerInput, MessageComposerActions, MessageComposerMorphShell, MessageComposerStatus, useComposerDockInset, useComposerExpanded } from '../chat/MessageComposer';
 import RuntimeConfigurationOptions from '../chat/RuntimeConfigurationOptions';
@@ -266,6 +269,9 @@ function bridgeId(bridge: any): string {
 function msgId(m: Message, i: number): string {
   return String(m.message_id || m.messageId || m.id || `idx-${i}`);
 }
+function messageIdOf(m: Message): string {
+  return String(m.message_id || m.messageId || m.id || '');
+}
 function msgDir(m: Message): string {
   return String(m.direction || '');
 }
@@ -312,6 +318,12 @@ function localMessageId(): string {
   return `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+// REQ-PIN-1: only a row this pane just appended optimistically pins to the top; a poll
+// that delivers the server copy of a message must not replay the send animation.
+function isOptimisticSend(message: { messageId: string }): boolean {
+  return message.messageId.startsWith('local_');
+}
+
 function optimisticUserMessage(conversationId: string, body: string): Message {
   return {
     message_id: localMessageId(),
@@ -354,6 +366,15 @@ function sentMessageFromResult(result: any): Message | null {
   const body = String(candidate.body || '');
   if (!id && !body) return null;
   return { ...candidate, sending: false } as Message;
+}
+
+// REQ-ENC-1: the send ack echoes the stored row, whose body is vault ciphertext while the
+// vault is unlocked. The user's own bubble keeps the text they typed instead, so it never
+// shows `vault:v2:` until the decrypted refetch lands.
+function ownSentBody(ackBody: unknown, sendBody: string): string {
+  const body = typeof ackBody === 'string' ? ackBody : '';
+  if (!body || isVaultArmored(body) || containsVaultArmored(body)) return sendBody;
+  return body;
 }
 
 function failedLocalMessage(message: Message, error: string): Message {
@@ -423,12 +444,17 @@ function PaneCaptureOutput({ body: rawBody, messageId }: { body: string; message
   );
 }
 
-export function ThreadMessageBody({ body, onQuote, quoteDisabledReason = '' }: {
+export function ThreadMessageBody({ body, onQuote, quoteDisabledReason = '', reveal }: {
   body: string; onQuote?: (selectedText: string) => Promise<void>; quoteDisabledReason?: string;
+  /** Live-reply reveal from ChatMessageList (chat/streamReveal.ts). */
+  reveal?: StreamRevealOptions;
 }) {
   const [selection, setSelection] = useState<MarkdownTextSelection | null>(null);
   const dismiss = useCallback(() => setSelection(null), []);
   const [decryptedFor, setDecryptedFor] = useState('');
+  // The body whose decrypt failed while unlocked. It renders as-is, without the reveal's
+  // hold, so a failure never leaves the body hidden.
+  const [failedFor, setFailedFor] = useState('');
 
   const isArmored = isVaultArmored(body);
   const containsArmored = containsVaultArmored(body);
@@ -457,7 +483,7 @@ export function ThreadMessageBody({ body, onQuote, quoteDisabledReason = '' }: {
         if (mounted) { setDecrypted(res); setDecryptedFor(body); }
       })
       .catch(() => {
-        if (mounted) { setDecrypted(null); setDecryptedFor(''); }
+        if (mounted) { setDecrypted(null); setDecryptedFor(''); setFailedFor(body); }
       });
     return () => {
       mounted = false;
@@ -466,16 +492,29 @@ export function ThreadMessageBody({ body, onQuote, quoteDisabledReason = '' }: {
 
   useEffect(() => { setSelection(null); }, [body, activeKey, vaultUnlocked]);
   const quoteReady = Boolean(onQuote && vaultUnlocked && activeKey && (!hasVault || (decryptedFor === body && decrypted !== null && !containsVaultArmored(decrypted))));
-  if (isArmored && (!activeKey || !vaultUnlocked)) {
+  const locked = hasVault && (!activeKey || !vaultUnlocked);
+  const decryptFailed = hasVault && !locked && failedFor === body;
+  // A locked or undecryptable body drops the reveal, so settle the live reply right away.
+  useSettleWithoutReveal(locked || decryptFailed ? reveal : undefined);
+  if (isArmored && locked) {
     return <VaultText value={body} as="div" />;
   }
-  if (containsArmored && (!activeKey || !vaultUnlocked)) {
+  if (containsArmored && locked) {
     const sanitized = replaceVaultTokens(body, '[🔒 Encrypted]');
     return <Markdown source={sanitized} compact copyAll={false} />;
   }
+  // REQ-ENC-2: never paint `vault:v2:`. While a vault body decrypts, keep this row's
+  // previous plaintext (e.g. the optimistic send's text) or show the mask; a failed open
+  // shows the mask.
+  const ready = decrypted !== null && decryptedFor === body;
+  const plain = (text: string | null) => text !== null && !isVaultArmored(text) && !containsVaultArmored(text);
+  const source = !hasVault ? body
+    : plain(decrypted) && (ready || !decryptFailed) ? decrypted! : maskVaultArmored(body);
   return <>
-    <Markdown source={decrypted !== null && decryptedFor === body ? decrypted : body} compact copyAll={false}
-      onTextSelectionChange={quoteReady ? setSelection : undefined} />
+    <Markdown source={source} compact copyAll={false}
+      onTextSelectionChange={quoteReady ? setSelection : undefined}
+      // Hold the reveal until a vault body has decrypted, so ciphertext never shows.
+      reveal={reveal && !decryptFailed ? { ...reveal, hold: reveal.hold || (hasVault && !ready) } : undefined} />
     {quoteReady && selection ? <QuoteSelectionPopover selection={selection} onDismiss={dismiss}
       disabledReason={quoteDisabledReason} onQuote={() => onQuote!(selection.selectedText)} /> : null}
   </>;
@@ -629,7 +668,9 @@ function deliveryStatusFor(message: ChatMessage): ChatDeliveryStatus {
   return { glyph: '✓', label: 'Sent', tone: 'text-faint' };
 }
 
-function normalizeConversationMessages(rows: Message[], agentLabel: string): ChatMessage[] {
+// `keyFor` maps a server id to the React key of the optimistic row it replaced
+// (REQ-PIN-2), so the sent bubble keeps one key across the send ack.
+function normalizeConversationMessages(rows: Message[], agentLabel: string, keyFor: (id: string) => string | undefined = () => undefined): ChatMessage[] {
   const seen = new Set<string>();
   // Newest-page data supersedes carried older rows with the same durable ID,
   // including answered state and freshness. Display sorting happens afterwards.
@@ -638,7 +679,6 @@ function normalizeConversationMessages(rows: Message[], agentLabel: string): Cha
     .map((message, index) => {
       const id = msgId(message, index);
       const direction = msgDir(message);
-      const isUser = direction === 'user_to_agent';
       const createdUnixMs = messageCreatedUnixMs(message);
       const sender = String(
         message.sender_agent_instance_id || message.senderAgentInstanceId || '',
@@ -646,6 +686,9 @@ function normalizeConversationMessages(rows: Message[], agentLabel: string): Cha
       const messageType = String(
         (message as any).message_type || (message as any).messageType || 'text',
       );
+      // previous_context is stored inbound (user_to_agent) so the restarted
+      // agent reads it, but the agent wrote it: never show it as a user bubble.
+      const isUser = direction === 'user_to_agent' && messageType !== PREVIOUS_CONTEXT_MESSAGE_TYPE;
       const authorLabel = isUser
         ? 'you'
         : messageType === 'system'
@@ -655,7 +698,7 @@ function normalizeConversationMessages(rows: Message[], agentLabel: string): Cha
       return {
         order: index,
         chatMessage: {
-          key: id || `${direction}-${createdUnixMs}-${index}`,
+          key: keyFor(id) ?? (id || `${direction}-${createdUnixMs}-${index}`),
           messageId: id,
           body: String(message.body || ''),
           isUser,
@@ -1337,14 +1380,53 @@ export function AgentChatPane({
     return ordered;
   }, [caps, provider, providerProfile, providerOptions, instanceProvider, instanceModel, instance?.provider_profile]);
 
-  const chatMessages = useMemo(
-    () =>
-      normalizeConversationMessages(
-        [...olderMessages, ...baseMessages, ...localMessages],
-        agentId || agentInstanceId,
-      ),
-    [olderMessages, baseMessages, localMessages, agentId, agentInstanceId],
-  );
+  // REQ-PIN-3: rows that slide out of a refetched newest page are carried here, during
+  // render, so the list never sees a temporarily shrunken array (an effect would commit
+  // one frame without them, which unpinned a send in a conversation of 30+ messages). A
+  // refetch that no longer joins the older pages re-anchors (effect below).
+  const olderCarryRef = useRef({ conversationId, base: [] as Message[], slid: [] as Message[], dropped: null as Message[] | null });
+  const carry = olderCarryRef.current;
+  if (carry.conversationId !== conversationId) Object.assign(carry, { conversationId, base: [], slid: [], dropped: null });
+  if (carry.base !== baseMessages) {
+    const carried = [...carry.slid, ...olderMessages];
+    const { older, reanchor } = reconcileOlderPages(carry.base, baseMessages, carried, messageIdOf);
+    carry.base = baseMessages;
+    if (reanchor) Object.assign(carry, { slid: [], dropped: olderMessages });
+    else if (older !== carried) carry.slid = [...older.slice(0, older.length - carried.length), ...carry.slid];
+  }
+  const effectiveOlder = carry.dropped === olderMessages ? carry.slid : carry.slid.length ? [...carry.slid, ...olderMessages] : olderMessages;
+  const carriedCount = carry.slid.length;
+  const olderReanchored = carry.dropped !== null && carry.dropped === olderMessages && olderMessages.length > 0;
+
+  // REQ-PIN-2: server id -> key of the optimistic row it replaced, and for each pending
+  // send the ids already in the transcript when it was sent.
+  const sentKeysRef = useRef(new Map<string, string>());
+  const pendingSendsRef = useRef(new Map<string, Set<string>>());
+  const chatMessages = useMemo(() => {
+    const keys = sentKeysRef.current;
+    // REQ-PIN-3: the WS echo of a send can land before its POST resolves. Its server row
+    // takes over the pending row's key and the pending row is hidden, so the list never
+    // holds both (no second bubble, no double pin, no scroll-back).
+    const hidden = new Set<string>();
+    for (const local of localMessages) {
+      const localId = msgId(local, 0);
+      const before = pendingSendsRef.current.get(localId);
+      if (!before) continue;
+      const echo = baseMessages.find((row) => {
+        const id = messageIdOf(row);
+        return id && msgDir(row) === 'user_to_agent' && !before.has(id) && (keys.get(id) ?? localId) === localId
+          && String(row.body || '') === String(local.body || '');
+      });
+      if (!echo) continue;
+      keys.set(messageIdOf(echo), localId);
+      hidden.add(localId);
+    }
+    return normalizeConversationMessages(
+      [...effectiveOlder, ...baseMessages, ...(hidden.size ? localMessages.filter((message) => !hidden.has(msgId(message, 0))) : localMessages)],
+      agentId || agentInstanceId,
+      (id) => keys.get(id),
+    );
+  }, [effectiveOlder, baseMessages, localMessages, agentId, agentInstanceId]);
 
   const activeVaultKey = useSelector(selectActiveVaultKey);
   const hasLockedVaultMessages = useMemo(
@@ -1474,6 +1556,8 @@ export function AgentChatPane({
     setOlderHasMore(false);
     setLocalMessages([]);
     setAttachments([]);
+    sentKeysRef.current.clear();
+    pendingSendsRef.current.clear();
   }, [conversationId]);
   useEffect(() => {
     if (baseMessages.length === 0 || localMessages.length === 0) return;
@@ -1485,29 +1569,20 @@ export function AgentChatPane({
       }),
     );
   }, [baseMessages, localMessages.length]);
+  // With carried rows the cursor stays where the older end was (the page they slid from).
   useEffect(() => {
-    if (olderMessages.length > 0) return;
+    if (olderMessages.length > 0 || carriedCount > 0) return;
     setOlderCursor(String(messagesQuery.data?.nextCursor || ''));
     setOlderHasMore(Boolean(messagesQuery.data?.hasMore));
-  }, [messagesQuery.data?.nextCursor, messagesQuery.data?.hasMore, olderMessages.length]);
-  // The refetched newest page (after new messages, a reconnect or a show) may have
-  // dropped rows the loaded older pages do not hold: carry them, or re-anchor when the
-  // pages no longer join (reconcileOlderPages).
-  const previousBaseRef = useRef<Message[]>([]);
+  }, [messagesQuery.data?.nextCursor, messagesQuery.data?.hasMore, olderMessages.length, carriedCount]);
+  // The render-time carry above found that the older pages no longer join: drop them and
+  // page back from the new newest page.
   useEffect(() => {
-    const previous = previousBaseRef.current;
-    previousBaseRef.current = baseMessages;
-    if (previous === baseMessages) return;
-    const idOf = (message: Message) => String(message.message_id || message.messageId || message.id || '');
-    const { older, reanchor } = reconcileOlderPages(previous, baseMessages, olderMessages, idOf);
-    if (reanchor) {
-      setOlderMessages([]);
-      setOlderCursor(String(messagesQuery.data?.nextCursor || ''));
-      setOlderHasMore(Boolean(messagesQuery.data?.hasMore));
-    } else if (older !== olderMessages) {
-      setOlderMessages(older);
-    }
-  }, [baseMessages]);
+    if (!olderReanchored) return;
+    setOlderMessages([]);
+    setOlderCursor(String(messagesQuery.data?.nextCursor || ''));
+    setOlderHasMore(Boolean(messagesQuery.data?.hasMore));
+  }, [olderReanchored]);
   // Read receipts for older pages held in state (RTK pages are patched in wsInvalidation).
   useEffect(() => {
     if (!conversationId) return undefined;
@@ -1778,6 +1853,17 @@ export function AgentChatPane({
     }
   }
 
+  // REQ-PIN-2/3: remember what the transcript held at send time (to spot the WS echo),
+  // and on the ack map the server id to the optimistic row's key.
+  function trackPendingSend(localId: string) {
+    pendingSendsRef.current.set(localId, new Set([...effectiveOlder, ...baseMessages].map(messageIdOf).filter(Boolean)));
+  }
+  function settlePendingSend(localId: string, sent: Message | null) {
+    pendingSendsRef.current.delete(localId);
+    const id = sent ? messageIdOf(sent) : '';
+    if (id) sentKeysRef.current.set(id, localId);
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (desktopUpdateFrozen()) return;
@@ -1804,7 +1890,13 @@ export function AgentChatPane({
     (local as any).artifact_ids_json = JSON.stringify(attachmentIds);
     setError('');
     if (submittedQuotes.length) (local as any).hasQuoteContext = true;
+    trackPendingSend(localId);
     setLocalMessages((current) => [...current, local]);
+    // REQ-PIN-1: release the message at t=0. The input clears now (a failed send puts
+    // the draft back) and, on phones, blurring dismisses the keyboard; the composer then
+    // collapses with its morph while the bubble travels.
+    updateDraft('');
+    if (isMobile) textareaRef.current?.blur();
     try {
       const result = await sendMessage({
         conversationId,
@@ -1818,17 +1910,19 @@ export function AgentChatPane({
         if (readComposerDraft(submittedRoute) === submittedDraft) writeComposerDraft(submittedRoute, '');
         return;
       }
+      // The input was cleared at send; adopt a newer draft another pane stored meanwhile.
       const latestDraft = readComposerDraft(submittedRoute);
-      updateDraft(latestDraft === submittedDraft ? '' : latestDraft);
+      if (latestDraft !== submittedDraft && latestDraft !== updateDraftRef.current) updateDraft(latestDraft);
       setAttachments([]);
       const sent = sentMessageFromResult(result);
+      settlePendingSend(localId, sent);
       setLocalMessages((current) =>
         current.map((message) => {
           if (msgId(message, 0) !== localId) return message;
           return sent
             ? {
                 ...sent,
-                body: String(sent.body || sendBody),
+                body: ownSentBody(sent.body, sendBody),
                 direction: sent.direction || 'user_to_agent',
                 artifact_ids_json:
                   (sent as any).artifact_ids_json || JSON.stringify(attachmentIds),
@@ -1837,8 +1931,20 @@ export function AgentChatPane({
         }),
       );
     } catch (err: any) {
-      if (!mountedRef.current || routeGeneration.current !== submittedGeneration || currentTargetRef.current !== submittedTarget || (submittedQuotes.length && ((reduxStore.getState() as any).composerContext?.epoch !== submittedEpoch || selectActiveVaultKey() !== submittedKey))) return;
+      settlePendingSend(localId, null);
+      // The input was cleared at send, so every failure path puts the draft back.
+      if (!mountedRef.current || routeGeneration.current !== submittedGeneration || currentTargetRef.current !== submittedTarget) {
+        // The pane moved on: restore the draft to storage for the submitted route
+        // unless a newer one was typed there meanwhile.
+        if (!readComposerDraft(submittedRoute)) writeComposerDraft(submittedRoute, submittedDraft);
+        return;
+      }
+      if (submittedQuotes.length && ((reduxStore.getState() as any).composerContext?.epoch !== submittedEpoch || selectActiveVaultKey() !== submittedKey)) {
+        if (!updateDraftRef.current) updateDraft(submittedDraft);
+        return;
+      }
       setError(errMsg(err, 'Send failed. Your draft is retained.'));
+      if (!updateDraftRef.current) updateDraft(submittedDraft);
       setLocalMessages(current => current.filter(item => msgId(item, 0) !== localId));
     } finally {
       sendingRef.current = false;
@@ -1853,6 +1959,7 @@ export function AgentChatPane({
     const local = optimisticUserMessage(conversationId, sendBody);
     const localId = msgId(local, 0);
     setError('');
+    trackPendingSend(localId);
     setLocalMessages((current) => [...current, local]);
     try {
       const result = await sendMessage({
@@ -1861,13 +1968,14 @@ export function AgentChatPane({
         artifactIds: [],
       }).unwrap();
       const sent = sentMessageFromResult(result);
+      settlePendingSend(localId, sent);
       setLocalMessages((current) =>
         current.map((message) => {
           if (msgId(message, 0) !== localId) return message;
           return sent
             ? {
                 ...sent,
-                body: String(sent.body || sendBody),
+                body: ownSentBody(sent.body, sendBody),
                 direction: sent.direction || 'user_to_agent',
                 artifact_ids_json: '[]',
               }
@@ -1875,6 +1983,7 @@ export function AgentChatPane({
         }),
       );
     } catch (err: any) {
+      settlePendingSend(localId, null);
       const message = errMsg(err, 'Send failed');
       setLocalMessages((current) =>
         current.map((item) =>
@@ -1932,7 +2041,7 @@ export function AgentChatPane({
     refetchIfStarted(messagesQuery);
   }
 
-  function renderConversationMessageBody(message: ChatMessage) {
+  function renderConversationMessageBody(message: ChatMessage, reveal?: StreamRevealOptions) {
     if (message.messageType === 'pane_capture') {
       const metadata = message.metadata || {};
       const status = message.messageStatus || 'complete';
@@ -2058,6 +2167,13 @@ export function AgentChatPane({
         </div>
       );
     }
+    if (message.messageType === PREVIOUS_CONTEXT_MESSAGE_TYPE) {
+      return (
+        <PreviousContextBlock messageId={message.messageId} metadata={message.metadata}>
+          <ThreadMessageBody body={message.body} />
+        </PreviousContextBlock>
+      );
+    }
     if (message.messageType === 'system') {
       return (
         <div
@@ -2115,7 +2231,7 @@ export function AgentChatPane({
     }
     return (
       <div className="flex flex-col gap-1">
-        <ThreadMessageBody body={message.body}
+        <ThreadMessageBody body={message.body} reveal={reveal}
           onQuote={!message.isUser && (!message.messageType || message.messageType === 'text') ? async selectedText => {
             const epoch = (reduxStore.getState() as any).composerContext?.epoch;
             const generation = routeGeneration.current;
@@ -3406,7 +3522,9 @@ export function AgentChatPane({
           getDeliveryStatus={deliveryStatusFor}
           agentActivity={<AgentActivityBubbles key={agentInstanceId} instanceId={agentInstanceId} isWorking={isWorking} />}
           bottomInset={composerDockHeight}
-          renderMessageBody={({ message }) => renderConversationMessageBody(message)}
+          pinOnSend={isOptimisticSend}
+          pinOriginRef={textareaRef}
+          renderMessageBody={({ message, reveal }) => renderConversationMessageBody(message, reveal)}
           wrapperClassName="relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden overflow-x-hidden"
           scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-canvas px-1 py-3 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
           emptyState={

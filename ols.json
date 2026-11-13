@@ -1,0 +1,11 @@
+{
+  "$schema": "https://raw.githubusercontent.com/DanielGavin/ols/master/misc/ols.schema.json",
+  "collections": [{ "name": "odin_test", "path": "src" }],
+  "enable_diagnostics": true,
+  "enable_parser_errors": true,
+  "enable_compiler_semantics": true,
+  "enable_checker_on_change": true,
+  "checker_on_change_delay": 500,
+  "enable_checker_only_saved": true,
+  "enable_semantic_tokens": true
+}
