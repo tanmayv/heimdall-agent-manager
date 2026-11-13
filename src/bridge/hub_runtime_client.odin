@@ -1174,7 +1174,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		defer delete(sender_id)
 		sender := sender_dn if sender_dn != "" else sender_id
 		// T6: during a context rollover the notice (which presses ESC) would
-		// interrupt the handoff; it is queued and delivered after the restart.
+		// interrupt the handoff; queue it until readiness or bounded stall recovery.
 		ok := bridge_rollover_queue_notice(instance_id, sender) || bridge_pty_host_deliver_to_agent(instance_id, "message", sender, "", "")
 		if !ok do fmt.println("bridge notification pending/no-agent-subscription", instance_id, command_id)
 		if command_id != "" {

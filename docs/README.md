@@ -25,6 +25,7 @@ Groups:
 - [socket-lifetime.md](socket-lifetime.md): socket lifetime rules, extracted from AGENTS.md.
 - [dev-preview.md](dev-preview.md): running a local dev preview, extracted from AGENTS.md.
 - [runtime-registry.md](runtime-registry.md): how the hub keeps connection-scoped runtime state (connection generations, mutexes, instance lifecycle) bounded.
+- [context-rollover-recovery.md](context-rollover-recovery.md): unique handoff identities, safe-idle restart and bounded notification recovery.
 - [reference/heimdall_memory_system_and_bootstrap.md](reference/heimdall_memory_system_and_bootstrap.md): the federated memory system and agent run-dir bootstrap across hub, bridge and `ham-ctl`.
 - [reference/db-telemetry.md](reference/db-telemetry.md): hub DB latency and lock-contention telemetry (phase 1): configuration, metrics and call-site attribution.
 - [reference/task-placement-failures.md](reference/task-placement-failures.md): native placement-failure snapshots stored in `task_attempt_facets` (REQ-PLACE-1).
