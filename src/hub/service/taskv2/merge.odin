@@ -42,7 +42,6 @@ Merge_Effect :: struct {
 // No-op unless its work ran on a bridge whose chain directory gets worktrees.
 effect_merge_worktree :: proc(svc: ^Service, u: ^Uow, task: domain.Task, evs: []domain.Task_Event, only_bridge := "") {
 	if u == nil || !PER_LEASE_WORKTREES_ENABLED do return
-	if task_administratively_completed(svc, task) do return
 	if merge_queued(u, task.task_id) do return
 	if !workflow_merge_allowed(svc, task) do return
 	bridge_id := ""
@@ -205,7 +204,7 @@ parse_merge_reply :: proc(reply: string) -> (outcome: Merge_Outcome, detail: str
 
 run_merge :: proc(svc: ^Service, m: Merge_Effect) {
     initial, found, _ := iface.taskchain_get_task(svc.repo, domain.Task_ID(m.task_id))
-    if !found || task_administratively_completed(svc, initial) || initial.state != .Done || initial.attempt_no != m.attempt_no || !workflow_merge_allowed(svc, initial) do return
+    if !found || initial.state != .Done || initial.attempt_no != m.attempt_no || !workflow_merge_allowed(svc, initial) do return
 	initial_events, initial_err := iface.taskchain_list_events_by_task(svc.repo, initial.task_id, initial.owner_user_id)
 	if initial_err.code != .None || merge_completion_event_id(initial_events) != m.completion_event_id do return
 	command_id := fmt.tprintf("cmd_merge_%s_%d_%d", initial.task_id, initial.attempt_no, m.completion_event_id)
@@ -244,7 +243,7 @@ run_merge :: proc(svc: ^Service, m: Merge_Effect) {
 	task, tok, _ := iface.taskchain_get_task(svc.repo, domain.Task_ID(m.task_id))
 	if !tok { _, _ = end_uow(svc, &u, false); return }
 	evs, eerr := iface.taskchain_list_events_by_task(svc.repo, task.task_id, task.owner_user_id)
-	current := eerr.code == .None && !task_administratively_completed(svc, task) && task.state == .Done && task.attempt_no == m.attempt_no && merge_completion_event_id(evs) == m.completion_event_id && workflow_merge_allowed(svc, task)
+	current := eerr.code == .None && task.state == .Done && task.attempt_no == m.attempt_no && merge_completion_event_id(evs) == m.completion_event_id && workflow_merge_allowed(svc, task)
 	if !current {
 		// The effect really ran, but its old completion no longer owns lifecycle authority.
 		json_str(&p, "outcome", kind)

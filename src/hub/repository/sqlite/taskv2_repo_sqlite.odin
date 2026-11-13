@@ -101,6 +101,22 @@ task_event_append_sqlite :: proc(ctx: rawptr, event: domain.Task_Event) -> (doma
 	return saved, true, domain.Domain_Error{}
 }
 
+// Existing idx_task_events_task(task_id,event_id) serves a reverse seek. Read
+// one scalar, not event payloads; owner filtering remains mandatory.
+task_event_latest_id_sqlite :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> (i64, domain.Domain_Error) {
+ impl := (^Taskchain_Repo_SQLite)(ctx)
+ stmt, err := prepare(impl, "SELECT event_id FROM task_events WHERE task_id = ? AND owner_user_id = ? ORDER BY event_id DESC LIMIT 1;", "latest task event id")
+ if err.code != .None do return 0, err
+ defer sqlite3_finalize(stmt)
+ bind_text(stmt, 1, string(task_id))
+ bind_text(stmt, 2, string(owner_user_id))
+ switch sqlite3_step(stmt) {
+ case SQLITE_ROW: return sqlite3_column_int64(stmt, 0), {}
+ case SQLITE_DONE: return 0, {}
+ case: return 0, domain.domain_error(.Internal_Error, "failed to read latest task event id")
+ }
+}
+
 task_event_list_by_task_sqlite :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Event, domain.Domain_Error) {
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt, err := prepare(impl, "SELECT " + EVENT_COLS + " FROM task_events WHERE task_id = ? AND owner_user_id = ? ORDER BY event_id ASC;", "task event list")

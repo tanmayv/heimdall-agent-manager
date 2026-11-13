@@ -255,7 +255,8 @@ grant_attempt_in_uow :: proc(svc: ^Service, u: ^Uow, req: Grant_Request, stoppin
 release_in_uow :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease, actor: Actor, event_kind: string, payload_json: string, outcome: string, stop_holder := false) -> (domain.Task, bool, domain.Domain_Error) {
 	task, tok, terr := iface.taskchain_get_task(svc.repo, lease.task_id)
 	if !tok do return {}, false, terr
-	if event_kind == EV_SUBMITTED || outcome == "dispatch_failed" {
+	// Submission and blocking pause execution while preserving responsibility.
+	if event_kind == EV_SUBMITTED || event_kind == EV_BLOCKED || outcome == "dispatch_failed" {
 		waiting := lease; waiting.phase = domain.LEASE_PHASE_WAITING
 		if _, saved, err := iface.taskchain_save_lease(svc.repo, waiting); !saved do return {}, false, err
 		refolded, _, ok, err := record_event(svc, u, task, actor, event_kind, payload_json)
@@ -860,6 +861,11 @@ boot :: proc(svc: ^Service) {
 			metric_lease_expired(EXPIRE_HUB_RESTART)
 		}
 	}
+    if converted, conversion_err := convert_legacy_review_claims_in_uow(svc, &u); !converted {
+        fmt.eprintfln("[taskv2] legacy claim conversion failed: %s", conversion_err.message)
+        _, _ = end_uow(svc, &u, false)
+        return
+    }
 	boot_regate(svc, &u)
 	leases, lerr := iface.taskchain_list_all_leases(svc.repo)
 	if lerr.code == .None {

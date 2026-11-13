@@ -32,6 +32,12 @@ lease_claim :: proc(svc:^Service, auth:contracts.Auth_Context, input:Lease_Claim
 lease_claim_in_uow :: proc(svc:^Service,u:^Uow,auth:contracts.Auth_Context,input:Lease_Claim_Input)->(Lease_Claim_Result,bool,domain.Domain_Error) {
  task,found,err:=iface.taskchain_get_task(svc.repo,input.task_id)
  if !found || string(task.owner_user_id)!=auth.user_id do return {},false,domain.domain_error(.Not_Found,"task not found")
+ if input.expected_generation<0 do return {},false,domain.domain_error(.Validation_Failed,"expected_generation cannot be negative")
+ if input.expected_generation>0 {
+  generation:=task_control_generation(svc,task)
+  if generation<0 do return {},false,domain.domain_error(.Internal_Error,"cannot read task generation")
+  if input.expected_generation!=generation do return {},false,domain.domain_error(.Conflict,"task generation changed")
+ }
  chain,cfound,cerr:=iface.taskchain_get_chain(svc.repo,task.chain_id)
  if !cfound do return {},false,cerr
  target:=input.instance_id
@@ -116,6 +122,7 @@ lease_transfer_in_uow :: proc(svc:^Service,u:^Uow,auth:contracts.Auth_Context,in
  if !found || string(task.owner_user_id)!=auth.user_id do return {},false,domain.domain_error(.Not_Found,"task not found")
  actor:=actor_from_auth(auth)
  if _,allowed,aerr:=work_control_chain(svc,task.owner_user_id,actor,task.chain_id);!allowed do return {},false,aerr
+ if input.expected_generation<0 do return {},false,domain.domain_error(.Validation_Failed,"expected_generation cannot be negative")
  if input.reason=="" || input.request_id=="" || input.instance_id=="" do return {},false,domain.domain_error(.Validation_Failed,"transfer requires target instance, reason and request_id")
  if domain.task_state_is_terminal(task.state) do return {},false,domain.domain_error(.Conflict,"terminal task cannot be transferred; reopen explicitly")
  if task_is_held(task) do return {},false,domain.domain_error(.Conflict,"task is held; release the hold before transfer")
@@ -141,11 +148,18 @@ lease_transfer_in_uow :: proc(svc:^Service,u:^Uow,auth:contracts.Auth_Context,in
   // idempotent while still bound to this task, never a fresh transfer.
   if bound.lease_id!=reservation && bound.phase==domain.LEASE_PHASE_WAITING do return {},false,domain.domain_error(.Conflict,"transfer reservation has been superseded")
   if ownership_cleanup_pending(svc,task) do return Lease_Claim_Result{status="stop_pending",task=task,lease=bound,target_instance_id=input.instance_id,agent_id=target.agent_id,role=bound.kind,delivery="stop_pending"},true,{}
-  return lease_claim_in_uow(svc,u,auth,input)
+  return lease_claim_in_uow(svc,u,auth,Lease_Claim_Input{task_id=input.task_id,instance_id=input.instance_id,reason=input.reason,request_id=input.request_id,vcs_base=input.vcs_base})
  }
- if input.expected_generation!=task_control_generation(svc,task) do return {},false,domain.domain_error(.Conflict,"task generation changed; inspect before transfer")
+ if input.expected_generation>0 {
+  generation:=task_control_generation(svc,task)
+  if generation<0 do return {},false,domain.domain_error(.Internal_Error,"cannot read task generation")
+  if input.expected_generation!=generation do return {},false,domain.domain_error(.Conflict,"task generation changed")
+ }
  if bound,held,_:=iface.taskchain_get_lease_by_holder(svc.repo,input.instance_id);held {
-  if bound.task_id==task.task_id do return lease_claim_in_uow(svc,u,auth,input)
+  if bound.task_id==task.task_id {
+   if ownership_cleanup_pending(svc,task) do return Lease_Claim_Result{status="stop_pending",task=task,lease=bound,target_instance_id=input.instance_id,agent_id=target.agent_id,role=bound.kind,delivery="stop_pending"},true,{}
+   return lease_claim_in_uow(svc,u,auth,Lease_Claim_Input{task_id=input.task_id,instance_id=input.instance_id,reason=input.reason,request_id=input.request_id,vcs_base=input.vcs_base})
+  }
   return {},false,domain.domain_error(.Conflict,"target already owns another task; use explicit switch")
  }
  if ownership_cleanup_pending(svc,task) || instance_ownership_stop_pending(svc,target) do return {},false,domain.domain_error(.Conflict,"a previous process stop remains pending")
@@ -158,7 +172,7 @@ lease_transfer_in_uow :: proc(svc:^Service,u:^Uow,auth:contracts.Auth_Context,in
  }
  if old_claim.lease_id=="" {
   // Normal state-derived identity checks still apply to initial assignment.
-  return lease_claim_in_uow(svc,u,auth,input)
+  return lease_claim_in_uow(svc,u,auth,Lease_Claim_Input{task_id=input.task_id,instance_id=input.instance_id,reason=input.reason,request_id=input.request_id,vcs_base=input.vcs_base})
  }
  // Existing waiting participants retain their role, without acquiring review
  // authority. Active work/review must still be actionable in its current phase.
@@ -182,7 +196,7 @@ lease_transfer_in_uow :: proc(svc:^Service,u:^Uow,auth:contracts.Auth_Context,in
  if _,_,written,werr:=record_event(svc,u,task,actor,EV_OWNERSHIP_TRANSFER_REQUESTED,json_end(&p));!written do return {},false,werr
  fresh,_,_:=iface.taskchain_get_task(svc.repo,task.task_id)
  if ownership_cleanup_pending(svc,fresh) do return Lease_Claim_Result{status="stop_pending",task=fresh,lease=reserved,target_instance_id=input.instance_id,agent_id=target.agent_id,role=reserved.kind,delivery="stop_pending"},true,{}
- return lease_claim_in_uow(svc,u,auth,input)
+ return lease_claim_in_uow(svc,u,auth,Lease_Claim_Input{task_id=input.task_id,instance_id=input.instance_id,reason=input.reason,request_id=input.request_id,vcs_base=input.vcs_base})
 }
 
 

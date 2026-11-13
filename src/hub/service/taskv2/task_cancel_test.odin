@@ -37,34 +37,10 @@ test_coordinator_repairs_never_fabricate_user_approval :: proc(t: ^testing.T) {
     testing.expect_value(t,count_events(fx,"task_1",EV_SUBMITTED),1)
 }
 
-controls_input :: proc(t:^testing.T,fx:^Fixture,id,operation,request:string)->Task_Control_Input {
-    state,ok,err:=task_control_inspect(&fx.svc,get_task(fx,id),actor_from_auth(user_auth()))
-    testing.expect(t,ok,err.message)
-    return {operation=operation,reason="regression exercise",request_id=request,expected_generation=state.generation}
+cancel_input :: proc(t:^testing.T,fx:^Fixture,id,request:string)->Task_Cancel_Input {
+    return {reason="regression exercise",request_id=request,expected_generation=task_control_generation(&fx.svc,get_task(fx,id))}
 }
 
-@(test)
-test_coordinator_override_policy_requires_literal_true :: proc(t:^testing.T) {
-    fx,log,ok:=lease_fixture(t,"controls_literal_policy")
-    defer lease_fixture_close(fx,log)
-    if !ok do return
-    chain:=seed_live_chain(t,fx,"chain_literal_policy")
-    _=seed_task(t,fx,chain,"task_1",`{"goal":"g","acceptance":["a"],"review_roles":[]}`)
-    actor:=actor_from_auth(inst_auth("inst_coord"))
-    for defaults in ([]string{`{}`,`{"allow_coordinator_override":false}`,`{"allow_coordinator_override":"true"}`,`{"nested":{"allow_coordinator_override":true}}`}) {
-        chain.defaults_json=defaults
-        _,_,_=iface.taskchain_save_chain(&fx.repo,chain)
-        input:=controls_input(t,fx,"task_1","force-complete","invalid-policy")
-        input.obligations=[]string{"missing worker evidence"}
-        before:=count_all_events(fx,"task_1")
-        _,applied,err:=task_control(&fx.svc,get_task(fx,"task_1"),actor,input)
-        testing.expect(t,!applied && err.code==.Forbidden,"only explicit top-level boolean true authorizes override")
-        testing.expect_value(t,count_all_events(fx,"task_1"),before)
-        inspected,iok,ierr:=task_control_inspect(&fx.svc,get_task(fx,"task_1"),actor)
-        testing.expect(t,iok,ierr.message)
-        testing.expect(t,strings.contains(inspected.actions_json,`"operation":"force-complete","allowed":false`),"inspection agrees with denied override")
-    }
-}
 
 @(test)
 test_coordinator_cancel_fences_worker_and_is_idempotent :: proc(t:^testing.T) {
@@ -79,19 +55,19 @@ test_coordinator_cancel_fences_worker_and_is_idempotent :: proc(t:^testing.T) {
     lease,held:=lease_of(fx,"inst_w1")
     if !testing.expect(t,held,"worker assigned") do return
     actor:=actor_from_auth(inst_auth("inst_coord"))
-    input:=controls_input(t,fx,"task_1","cancel","cancel-once")
-    result,cancelled,err:=task_control(&fx.svc,get_task(fx,"task_1"),actor,input)
+    input:=cancel_input(t,fx,"task_1","cancel-once")
+    result,cancelled,err:=task_cancel(&fx.svc,get_task(fx,"task_1"),actor,input)
     if !testing.expect(t,cancelled,err.message) do return
     testing.expect_value(t,result.task.state,domain.Task_State.Cancelled)
     _,still:=lease_of(fx,"inst_w1")
     testing.expect(t,!still,"cancellation revokes current assignment")
     events:=count_all_events(fx,"task_1")
-    again,repeated,rerr:=task_control(&fx.svc,get_task(fx,"task_1"),actor,input)
+    again,repeated,rerr:=task_cancel(&fx.svc,get_task(fx,"task_1"),actor,input)
     testing.expect(t,repeated,rerr.message)
     testing.expect_value(t,again.task.state,domain.Task_State.Cancelled)
     testing.expect_value(t,count_all_events(fx,"task_1"),events)
     input.reason="different mutation with reused request"
-    _,accepted,cerr:=task_control(&fx.svc,get_task(fx,"task_1"),actor,input)
+    _,accepted,cerr:=task_cancel(&fx.svc,get_task(fx,"task_1"),actor,input)
     testing.expect(t,!accepted && cerr.code==.Conflict,"request identity cannot be reused for different content")
     _,late,lerr:=lease_submit(&fx.svc,inst_auth("inst_w1"),Submit_Input{lease_id=lease.lease_id,summary="late",vcs_json=`{"head":"late","dirty":false}`})
     testing.expect(t,!late && lerr.code==.Conflict,"late worker cannot submit after cancellation")
@@ -109,45 +85,20 @@ test_coordinator_revision_conflict_and_completed_cancel_preserve_history :: proc
     seed_instance(fx,chain,"inst_w1","agt_w","br_1","idle")
     _=publish_task(t,fx,chain,"task_1",brief=`{"goal":"g","acceptance":["a"],"review_roles":[]}`)
     confirm_holder(fx,"inst_w1")
-    stale:=controls_input(t,fx,"task_1","cancel","stale-cancel")
+    stale:=cancel_input(t,fx,"task_1","stale-cancel")
     _,submitted,serr:=lease_submit(&fx.svc,inst_auth("inst_w1"),Submit_Input{summary="completed",vcs_json=`{"head":"h1","dirty":false}`})
     if !testing.expect(t,submitted,serr.message) do return
     actor:=actor_from_auth(user_auth())
-    _,accepted,err:=task_control(&fx.svc,get_task(fx,"task_1"),actor,stale)
+    _,accepted,err:=task_cancel(&fx.svc,get_task(fx,"task_1"),actor,stale)
     testing.expect(t,!accepted && err.code==.Conflict,"stale revision rejected inside transaction")
-    fresh:=controls_input(t,fx,"task_1","cancel","completed-cancel")
+    fresh:=cancel_input(t,fx,"task_1","completed-cancel")
     events:=count_all_events(fx,"task_1")
-    _,_,_=task_control(&fx.svc,get_task(fx,"task_1"),actor,fresh)
+    _,_,_=task_cancel(&fx.svc,get_task(fx,"task_1"),actor,fresh)
     testing.expect_value(t,get_task(fx,"task_1").state,domain.Task_State.Done)
     testing.expect_value(t,count_all_events(fx,"task_1"),events)
     testing.expect_value(t,count_events(fx,"task_1",EV_SUBMITTED),1)
 }
 
-@(test)
-test_coordinator_override_does_not_synthesize_verified_success :: proc(t:^testing.T) {
-    fx,log,ok:=lease_fixture(t,"controls_override")
-    defer lease_fixture_close(fx,log)
-    if !ok do return
-    chain:=seed_live_chain(t,fx,"chain_override_control")
-    _=seed_task(t,fx,chain,"task_1",`{"goal":"g","acceptance":["a"],"review_roles":[],"on_output":{"start_workflow":"missing-followup"}}`)
-    input:=controls_input(t,fx,"task_1","force-complete","force-once")
-    input.obligations=[]string{"worker submission absent","user approval absent"}
-    _,unauthorized,uerr:=task_control(&fx.svc,get_task(fx,"task_1"),actor_from_auth(inst_auth("inst_coord")),input)
-    testing.expect(t,!unauthorized && uerr.code==.Forbidden,"coordinator override requires explicit chain policy")
-    result,forced,err:=task_control(&fx.svc,get_task(fx,"task_1"),actor_from_auth(user_auth()),input)
-    if !testing.expect(t,forced,err.message) do return
-    testing.expect_value(t,result.task.state,domain.Task_State.Done)
-    testing.expect_value(t,count_reviews(fx,"task_1"),0)
-    testing.expect_value(t,count_events(fx,"task_1",EV_SUBMITTED),0)
-    testing.expect_value(t,count_events(fx,"task_1",EV_APPROVED),0)
-    testing.expect_value(t,count_events(fx,"task_1",EV_MERGED),0)
-    testing.expect_value(t,count_events(fx,"task_1","workflow_trigger_failed"),0)
-    runs,runs_err:=iface.taskchain_list_workflow_runs(&fx.repo,chain.chain_id,"u1")
-    testing.expect(t,runs_err.code==.None && len(runs)==0,"administrative completion does not trigger follow-up workflow execution")
-    snapshot,snapok,serr:=work_item_snapshot(&fx.svc,chain.chain_id,"u1",{kind=domain.WORK_ITEM_TASK,id="task_1"})
-    testing.expect(t,snapok,serr.message)
-    testing.expect(t,snapshot.terminal && !snapshot.succeeded,"administrative outcome cannot satisfy a prerequisite")
-}
 
 // A real bridge round trip returns after an explicit reopen. Its actual effect
 // remains audit evidence while the new attempt keeps lifecycle authority.
@@ -155,8 +106,13 @@ Controls_Merge_Race :: struct { fx:^Fixture, t:^testing.T, operation:string }
 controls_merge_reopen_reply :: proc(raw:rawptr,command:project.Runtime_Command,timeout_ms:int)->(string,bool,domain.Domain_Error) {
     race:=(^Controls_Merge_Race)(raw)
     operation:=race.operation if race.operation!="" else "reopen"
-    input:=controls_input(race.t,race.fx,"task_1",operation,"control-during-merge")
-    _,ok,err:=task_control(&race.fx.svc,get_task(race.fx,"task_1"),actor_from_auth(user_auth()),input)
+    ok:=false
+    err:=domain.Domain_Error{}
+    if operation=="cancel" {
+     _,ok,err=task_cancel(&race.fx.svc,get_task(race.fx,"task_1"),actor_from_auth(user_auth()),cancel_input(race.t,race.fx,"task_1","cancel-during-merge"))
+    } else {
+     _,ok,err=task_reopen(&race.fx.svc,get_task(race.fx,"task_1"),actor_from_auth(user_auth()))
+    }
     testing.expect(race.t,ok,err.message)
     return strings.clone(`{"ok":false,"conflict":true,"files":["a.odin"]}`),true,{}
 }
@@ -202,8 +158,8 @@ test_coordinator_cancel_review_revokes_all_participants_without_erasing_evidence
     if !testing.expect(t,submitted,err.message) do return
     review,assigned:=lease_of(fx,"inst_r1")
     if !testing.expect(t,assigned,"reviewer assigned") do return
-    input:=controls_input(t,fx,"task_1","cancel","cancel-review")
-    _,cancelled,cerr:=task_control(&fx.svc,get_task(fx,"task_1"),actor_from_auth(inst_auth("inst_coord")),input)
+    input:=cancel_input(t,fx,"task_1","cancel-review")
+    _,cancelled,cerr:=task_cancel(&fx.svc,get_task(fx,"task_1"),actor_from_auth(inst_auth("inst_coord")),input)
     if !testing.expect(t,cancelled,cerr.message) do return
     for id in ([]string{"inst_w1","inst_r1"}) {
         _,bound:=lease_of(fx,id)
@@ -255,62 +211,37 @@ test_coordinator_cancel_completing_task_wins_over_inflight_merge :: proc(t:^test
     assert_projection_matches_fold(t,fx,chain.chain_id,"u1","cancel completing task")
 }
 
-@(test)
-test_coordinator_rereview_requires_new_submission_before_approval :: proc(t:^testing.T) {
-    fx,log,ok:=lease_fixture(t,"controls_rereview")
-    defer lease_fixture_close(fx,log)
-    if !ok do return
-    chain:=seed_live_chain(t,fx,"chain_rereview_control")
-    seed_fleet(fx,chain,"agt_w")
-    seed_instance(fx,chain,"inst_w1","agt_w","br_1","idle")
-    _=publish_task(t,fx,chain,"task_1",brief=`{"goal":"g","acceptance":["a"],"review_roles":[]}`)
-    row:=get_task(fx,"task_1"); row.requires_user_approval=true
-    _,_,_=iface.taskchain_save_task(&fx.repo,row)
-    confirm_holder(fx,"inst_w1")
-    _,submitted,err:=lease_submit(&fx.svc,inst_auth("inst_w1"),Submit_Input{summary="first result",vcs_json=`{"head":"h1","dirty":false}`})
-    if !testing.expect(t,submitted,err.message) do return
-    input:=controls_input(t,fx,"task_1","rereview","rereview-once")
-    _,changed,cerr:=task_control(&fx.svc,get_task(fx,"task_1"),actor_from_auth(inst_auth("inst_coord")),input)
-    if !testing.expect(t,changed,cerr.message) do return
-    testing.expect_value(t,get_task(fx,"task_1").attempt_no,2)
-    _,old,old_err:=user_review(&fx.svc,user_auth(),"task_1",Review_Input{verdict="approve"})
-    testing.expect(t,!old && old_err.code==.Conflict,"prior result cannot be approved during rework")
-    testing.expect_value(t,count_reviews(fx,"task_1"),0)
-    confirm_holder(fx,"inst_w1")
-    _,resubmitted,rerr:=lease_submit(&fx.svc,inst_auth("inst_w1"),Submit_Input{summary="new result",vcs_json=`{"head":"h2","dirty":false}`})
-    if !testing.expect(t,resubmitted,rerr.message) do return
-    _,approved,aerr:=user_review(&fx.svc,user_auth(),"task_1",Review_Input{verdict="approve"})
-    testing.expect(t,approved,aerr.message)
-    testing.expect_value(t,get_task(fx,"task_1").state,domain.Task_State.Done)
-}
+
 
 @(test)
-test_coordinator_policy_override_and_owner_inspection :: proc(t:^testing.T) {
-    fx,log,ok:=lease_fixture(t,"controls_inspection")
-    defer lease_fixture_close(fx,log)
-    if !ok do return
-    chain:=seed_live_chain(t,fx,"chain_inspect_control")
-    chain.defaults_json=`{"allow_coordinator_override":true}`
-    _,_,_=iface.taskchain_save_chain(&fx.repo,chain)
-    seed_fleet(fx,chain,"agt_w")
-    seed_instance(fx,chain,"inst_w1","agt_w","br_1","idle")
-    _=publish_task(t,fx,chain,"task_1",brief=`{"goal":"g","acceptance":["a"],"review_roles":[]}`)
-    confirm_holder(fx,"inst_w1")
-    actor:=actor_from_auth(inst_auth("inst_coord"))
-    inspected,iok,ierr:=task_control_inspect(&fx.svc,get_task(fx,"task_1"),actor)
-    if !testing.expect(t,iok,ierr.message) do return
-    testing.expect(t,strings.contains(inspected.owners_json,`"instance_id":"inst_w1"`),"owner instance visible")
-    testing.expect(t,strings.contains(inspected.owners_json,`"agent_id":"agt_w"`) && strings.contains(inspected.owners_json,`"runtime_status"`),"durable identity and runtime visible")
-    testing.expect(t,strings.contains(inspected.actions_json,"only a done or cancelled task can be reopened"),"refused reopen explains lifecycle prerequisite")
-    input:=controls_input(t,fx,"task_1","force-complete","policy-override")
-    input.obligations=[]string{"accept administrative outcome"}
-    result,forced,ferr:=task_control(&fx.svc,get_task(fx,"task_1"),actor,input)
-    if !testing.expect(t,forced,ferr.message) do return
-    testing.expect_value(t,result.outcome,"overridden")
-    testing.expect(t,len(result.obligations)>1,"actual unmet obligations supplement supplied reason")
-    testing.expect_value(t,count_reviews(fx,"task_1"),0)
-    events,_:=iface.taskchain_list_events_by_task(&fx.repo,"task_1","u1")
-    attributed:=false
-    for event in events do if event.kind==EV_ADMIN_COMPLETED {attributed=event.actor_id=="inst_coord" && event.actor_kind!=ACTOR_USER}
-    testing.expect(t,attributed,"override remains coordinator evidence")
+test_simple_cancel_without_generation_quiet_retry_and_authorization :: proc(t:^testing.T) {
+ fx,log,ok:=lease_fixture(t,"simple_cancel")
+ defer lease_fixture_close(fx,log)
+ if !ok do return
+ chain:=seed_live_chain(t,fx,"chain_simple_cancel")
+ seed_instance(fx,chain,"inst_worker","agt_w","br_1","running")
+ task:=publish_task(t,fx,chain,"task_simple_cancel",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+ actor:=actor_from_auth(inst_auth("inst_coord"))
+ input:=Task_Cancel_Input{reason="cancel obsolete work",request_id="simple-cancel"}
+ _,denied,derr:=task_cancel(&fx.svc,task,actor_from_auth(inst_auth("inst_worker")),input)
+ testing.expect(t,!denied && derr.code==.Forbidden,"worker cannot cancel through coordinator API")
+ negative:=input;negative.expected_generation=-1
+ _,invalid,ierr:=task_cancel(&fx.svc,task,actor,negative)
+ testing.expect(t,!invalid && ierr.code==.Validation_Failed,"negative optional generation rejected")
+ result,cancelled,cerr:=task_cancel(&fx.svc,task,actor,input)
+ if !testing.expect(t,cancelled && result.changed,cerr.message) do return
+ before:=count_all_events(fx,string(task.task_id))
+ input.request_id="fresh-cancel-retry"
+ again,repeated,rerr:=task_cancel(&fx.svc,task,actor,input)
+ testing.expect(t,repeated && !again.changed,rerr.message)
+ testing.expect_value(t,count_all_events(fx,string(task.task_id)),before)
+ input.request_id="stale-cancel";input.expected_generation=1
+ _,stale,serr:=task_cancel(&fx.svc,task,actor,input)
+ testing.expect(t,!stale && serr.code==.Conflict,"fresh stale explicit generation still conflicts")
+ events,_:=iface.taskchain_list_events_by_task(&fx.repo,task.task_id,task.owner_user_id)
+ attributed:=false
+ for event in events do if event.kind==EV_TASK_CANCEL_REQUESTED {
+  attributed=event.actor_id=="inst_coord" && strings.contains(event.payload_json,"cancel obsolete work")
+ }
+ testing.expect(t,attributed,"cancellation retains actor and reason")
 }

@@ -13,6 +13,7 @@ Task_List_By_State_Proc :: proc(ctx: rawptr, state: domain.Task_State) -> ([]dom
 Take_Boot_Regate_Proc :: proc(ctx: rawptr) -> (bool, domain.Domain_Error)
 
 Task_Event_Append_Proc :: proc(ctx: rawptr, event: domain.Task_Event) -> (domain.Task_Event, bool, domain.Domain_Error)
+Task_Event_Latest_ID_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> (i64, domain.Domain_Error)
 Task_Event_List_By_Task_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Event, domain.Domain_Error)
 // Task_Event_List_By_Chain_Proc lists the chain's FOLD events (every kind but
 // `comment`), ascending event_id: the one batched read after_chain_change
@@ -64,6 +65,12 @@ taskchain_take_boot_regate :: proc(repo: ^Taskchain_Repository) -> (bool, domain
 taskchain_append_event :: proc(repo: ^Taskchain_Repository, event: domain.Task_Event) -> (domain.Task_Event, bool, domain.Domain_Error) {
 	if repo == nil || repo.append_event == nil do return domain.Task_Event{}, false, domain.domain_error(.Internal_Error, NOT_CONFIGURED)
 	return repo.append_event(repo.ctx, event)
+}
+
+// Scalar generation lookup; a missing adapter is an error, never an empty history.
+taskchain_latest_event_id :: proc(repo: ^Taskchain_Repository, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> (i64, domain.Domain_Error) {
+ if repo == nil || repo.latest_event_id == nil do return 0, domain.domain_error(.Internal_Error, NOT_CONFIGURED)
+ return repo.latest_event_id(repo.ctx, task_id, owner_user_id)
 }
 
 taskchain_list_events_by_task :: proc(repo: ^Taskchain_Repository, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Event, domain.Domain_Error) {

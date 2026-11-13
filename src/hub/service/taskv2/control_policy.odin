@@ -13,6 +13,7 @@ task_control_precondition :: proc(svc:^Service,task:domain.Task,actor:Actor,acti
 		if task.kind==.Gate do return domain.domain_error(.Conflict,"gates cannot be held")
 	case "release":
 	case "answer":
+		if domain.task_state_is_terminal(task.state) do return domain.domain_error(.Conflict,"a done or cancelled task cannot be answered; reopen it explicitly")
 		if strings.trim_space(task.blocked_on_json)=="" do return domain.domain_error(.Conflict,"task is not blocked")
 		if task_is_held(task) do return domain.domain_error(.Conflict,"task is held; release it with `task release`")
 	case "reopen":

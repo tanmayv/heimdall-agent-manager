@@ -182,17 +182,17 @@ globally unique — you rarely need `--chain`).
 - `task unblock <task-id> [--note <reason>]` — coordinator/owner clears a block and retries matching. Unavailable agents carry `blocked_on.kind=agent_not_running` (legacy `dispatch` is supported) and an agent/provider/model/bridge/error reason. Fix the cause first. The user can click **Start agent** (`agent.start {task_id}`) on the attention card or chat tray; failures keep the block, update its reason and show the error inline for retry. Updating the affected fleet row also clears its blocks. Infrastructure failures do not consume work attempt budget; a full fleet row is normal queueing. A solo coordinator remains pull-only: an explicit user Start launches it before clearing the block, then it pulls the ready task.
 - `task recheck <task-id>` — coordinator/owner: recompute what the Hub would decide for the task now — the review gate against the CURRENT reviewers, review roles and user-approval flag; dependency readiness; a `bridge_offline` agent block whose bridge is back; dispatch against fleet capacity, roles, pause and bridge state; and a done task's pending/failed merge-back (only when the task was already done and no merge job for it is still running; a task the re-check itself moves to done gets its one merge from that transition). Never approves (it only counts verdicts already posted), never touches a task with a live lease, never spends an attempt; a call that changes nothing records nothing. Prints `{task, changed, actions[], reasons[], message}`: `actions` say what changed (`state: in_review → done`, `dispatched: work lease …`, `merge-back re-queued …`), `reasons` say what still holds it (`waiting on review from agt_x (role reviewer)`, `agt_w: fleet full 2/2 on bridge …`, `agt_w: bridge … is offline`, `chain directory … already has a live work lease (vcs_kind "")`, `merge pending: the merge-back is in flight on bridge …`, `merge none: chain directory … has vcs_kind ""`). Use it instead of `task hold` + `task release` to unstick a task. Also `POST /api/v1/tasks/{id}/recheck` and the **Re-check** item in the task card menu.
 - `task hold <task-id> --reason <text>` — coordinator/owner only: stop dispatching the task until someone runs `task release`. No work or review lease is granted, the review gate freezes (verdicts are still recorded), and `task answer` is refused. A current lease is NOT revoked: its holder sees **Checkpoint Requested** in TASK.md and should `lease handoff`, after which the task parks in `backlog`. A hold never gives the user an Answer card: the user cannot answer a held task. A Review card the user already owes stays (their verdict is still recorded, and the gate resumes on release), and so does a nested agent-not-running **Start agent** action. Use it only to pause deliberately (re-routing to another identity or model, re-planning, waiting on an external event). Do NOT use it to postpone work (`lease switch`/`lease handoff`, `--depends-on`, `--priority`) or to ask the user (`lease block --waiting-on user`). Prints `{task, changed, checkpoint_requested, message}`; holding a held task is a no-op.
-- `task release <task-id>` — coordinator/owner: clear a hold. The task can be dispatched again, and an `in_review` task has its gate re-evaluated. Release itself never changes the attempt number. A task that was handed off at a checkpoint continues as the same attempt, and review leases keep the current attempt. A fresh work grant still counts as usual: the first lease of a task that was never leased, or a new lease after one expired while held, starts a new attempt. Releasing an unheld task is a no-op.
+- `task release <task-id>` — coordinator/owner: clear a hold. The task can be dispatched again, and an `in_review` task has its gate re-evaluated. Release itself never changes the attempt number. A task that was handed off at a checkpoint continues as the same attempt, and review leases keep the current attempt. A fresh work grant still counts as usual: the first lease of a task that was never leased, or a new claim after ownership was explicitly released, starts a new attempt. Releasing an unheld task is a no-op.
 - `task comment <task-id> --body <t>` (or `--stdin`) `[--notify <id,id>]` — add a comment.
 - `task depend <task-id> --on <task-id>|task:<task-id>|workflow_run:<run-id> [--chain <id>]` — add one prerequisite to a ticket. A `workflow_run:` prerequisite becomes a chain-level graph edge on the whole run (the ticket stays ineligible until that run succeeds). Other typed refs (stage keys, `workflow:` names, issues) are rejected with guidance; use `task-chain depend` for run-on-ticket or run-on-run edges. `--depends-on` on `task create`/`task update` takes ticket ids only (`task:<id>` accepted) and `update --depends-on` replaces the whole list.
 - `task fetch <task-id> <ref>` — fetch one event (`#<event_id>`), output (`output:<task_id>`), facet (`facet:<task_id>:<attempt_no>:<kind>`), or file-at-commit (`dir:<dir_id>:<rev>:<path>`, `<path>@<rev>`, or `<path>`) referenced by `TASK.md`.
-- `lease next` — inspect the lease you hold (status `current`) or claim the next ready task inline (status `granted`), updating `<run_dir>/TASK.md`; returns `none` when idle.
-- `lease heartbeat [--note <text>]` — extend the lease TTL and optionally record a progress note. On `409 lease_lost`, stop immediately without touching the working tree.
-- `lease submit --summary <s> [handoff flags] [--output-file <json>] [--artifacts-file <json>] [--artifacts <json>] [--lease <id>]` — finish the attempt (task → `in_review`, or `done` with no review gates). Nothing is executed or gated on a command: report the checks you chose, their exact commands and outcomes in `--summary`. Validates `output` against the brief's output contract (`task_list.v1`, `findings.v1`).
+- `lease next` — inspect the claim you hold (status `current` when active, `waiting` when waiting) or claim the next ready task inline (status `granted`), updating `<run_dir>/TASK.md`; returns `none` when idle.
+- `lease heartbeat [--note <text>]` — record optional progress metadata; ownership never expires. On `409 lease_lost`, stop immediately without touching the working tree.
+- `lease submit --summary <s> [handoff flags] [--output-file <json>] [--artifacts-file <json>] [--artifacts <json>] [--lease <id>]` — finish the attempt (task → `in_review`, retaining a waiting claim, or `done` with no review gates). Nothing is executed or gated on a command: report the checks you chose, their exact commands and outcomes in `--summary`. Validates `output` against the brief's output contract (`task_list.v1`, `findings.v1`).
 - `lease handoff --summary <s> [handoff flags] [--lease <id>]` — stop without finishing; the task returns to `ready` and the next holder gets your handoff.
 - `lease switch <task_id> --summary <s> [handoff flags]` — solo mode: hand off the current task (attempt not counted) and take `<task_id>` (must be `ready`) in one step.
 - **Handoff flags** (submit, handoff, switch): `--decision <text>` and `--dead-end <text>` (repeat per item), `--next-steps <text>`; or `--handoff-file <json>` (`{"decisions":[…],"dead_ends":[…],"next_steps":"…"}`) instead, not both. Decisions and dead ends reach every task that waits for this one and the next attempt; dead ends also go into the chain summary for all tasks.
-- `lease block --waiting-on <kind> --reason <text> [--ref <id>] [--summary <s>]` — park the task in `backlog` on a blocker. `<kind>` is free text: `user` (the user must answer; the answer appears in `TASK.md`), `task`, or an external system.
+- `lease block --waiting-on <kind> --reason <text> [--ref <id>] [--summary <s>]` — park the task in `backlog` on a blocker, retaining a waiting claim. `<kind>` is free text: `user` (the user must answer; the answer appears in `TASK.md`), `task`, or an external system.
 - `review post [<task-id>] --verdict approve|request_changes [--summary <reason>] [--findings-file <json>] [--task <id>] [--on-behalf-of user]` — record a review verdict. Findings: `[{"path","line","severity","text"}]`. `request_changes` needs `--summary` or findings. Response: `gate: waiting|approved|changes_requested`. The verdict is your judgment and needs no command evidence; `--summary` is optional on approve. Coordinators pass `--on-behalf-of user` to record the user's verdict on tasks that require user approval (or gates whose approver is `user`); refused in solo mode for your own work.
 
 ### Task states
@@ -678,3 +678,36 @@ caller's own agent. "Global" scope = omit the scope flags. Repeatable or comma-s
 - MCP: `tasks.get` returns an opaque `revision`; pass it as `expected_revision` to `tasks.update`, with `reason` and `request_id`. This is distinct from the CLI's numeric `requirements_revision`. Replay identical arguments/request ID after an ambiguous response; reread on conflict. MCP cannot acknowledge another agent's lease or approve reviews.
 
 For significant changes to the objective/deliverable/approach, see the coordinator skill: record the decision on the original task and create a self-contained linked replacement, preserving the audit trail and required approvals.
+
+## Durable claims, cancellation and transfer
+
+Claims do not expire or require renewal. Active ownership permits execution;
+waiting ownership retains task, role and owner through review and blocking.
+Submission and verdicts retain responsibility until completion or explicit release.
+
+```bash
+ham-ctl lease <task-id>
+ham-ctl lease <task-id> --instance <instance-id>
+ham-ctl lease transfer <task-id> --instance <instance-id>
+ham-ctl task cancel <task-id>
+```
+
+- A plain claim requests work for the calling instance. Its durable agent ID must
+  match the assignee or an eligible reviewer; the server derives the role from
+  current task state. Repeating a claim returns existing responsibility.
+- A coordinator can name an eligible instance, including itself when its own
+  durable identity matches. Context goes to that instance; assigning another
+  instance does not overwrite the coordinator's task context.
+- Claims do not silently replace another holder. Use explicit transfer. The old
+  writer is fenced immediately; replacement execution waits for the exact process
+  stop receipt. Offline cleanup remains `stop_pending`.
+- Cancellation preserves history and revokes work/review ownership. It can finish
+  while process cleanup is pending; late callbacks cannot revive the task.
+- No prior inspection or manual generation/request ID is needed. The CLI supplies
+  request identity and a default audit reason. Use `--reason` to explain intent;
+  optional explicit request IDs and generation checks serve advanced callers.
+- Existing `task hold`, `task release`, `task unblock` and `task recheck` retain
+  their established meanings. `task release` clears a hold.
+- `lease next` refreshes current responsibility. Stay with a waiting task rather
+  than pulling unrelated work. `lease heartbeat` only reports progress or
+  acknowledges requirements; it does not renew ownership.

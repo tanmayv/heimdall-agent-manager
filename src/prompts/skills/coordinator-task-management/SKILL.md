@@ -7,7 +7,7 @@ description: How a task-chain COORDINATOR runs a chain of tickets with ham-ctl �
 
 You plan, triage, publish and steer. Leased **workers** and **reviewers** do the work, unless the chain runs in **Solo mode** (§8), where you are also the worker and the user reviews.
 
-The Hub owns task state: leases make tasks `in_progress`, submits make them `in_review`, passing reviews make them `done`. There is no status verb for tasks. Commands use `./bin/ham-ctl`; exact flags are in `ham-ctl-reference` or `ham-ctl <group> --help`.
+The Hub owns task state: active work claims make tasks `in_progress`, submits make them `in_review`, passing reviews make them `done`. There is no status verb for tasks. Commands use `./bin/ham-ctl`; exact flags are in `ham-ctl-reference` or `ham-ctl <group> --help`.
 
 ## 1. Choose the next work item, not a chain type
 Every task chain is `mixed_work`. You remain coordinator of the same chain, team,
@@ -124,7 +124,7 @@ Routine events stay quiet. You get one line, `[taskv2] <trigger>: …`, only whe
 | `oscillation` | review rounds keep bouncing: read the open findings (`task show`) and the handoff, make `acceptance` unambiguous |
 | `hold_stale` | a task you (or the user) held has had no live lease for a while. If the hold's reason is resolved, `task release <id>`; otherwise leave it held. Repeats once per interval until released |
 | `ready_unclaimed` | no eligible worker: check `task-chain fleet list` and `bridge list`, fix capacity, roles or bridge |
-| `agent_not_running` | A ready task cannot obtain a running agent, or a leased holder exited/lost its heartbeat. `task show <id>` shows `blocked_on.kind=agent_not_running` (legacy `dispatch` is equivalent), with agent/provider/model/bridge/error. The user can choose **Start agent** in the attention deck or chat tray; a failed start stays blocked and shows its error inline for retry. Fix the cause, then use the card or `task unblock <id> [--note <reason>]`; editing the affected fleet row also clears the block. No work attempt budget is spent. Full fleet rows remain queued without blocking |
+| `agent_not_running` | A ready task cannot obtain a running agent, or a claim holder exited or its runtime became unavailable. `task show <id>` shows `blocked_on.kind=agent_not_running` (legacy `dispatch` is equivalent), with agent/provider/model/bridge/error. The user can choose **Start agent** in the attention deck or chat tray; a failed start stays blocked and shows its error inline for retry. Fix the cause, then use the card or `task unblock <id> [--note <reason>]`; editing the affected fleet row also clears the block. No work attempt budget is spent. Full fleet rows remain queued without blocking |
 | stuck `ready` / `in_review` / merge | A task looks stuck: `ready_unclaimed` with free fleet capacity, `in_review` although every owed review is in (e.g. after `--no-require-user-approval`), or a done task whose merge is `pending`/`failed`/`none`. Run `task recheck <id>`: it re-runs the gate, readiness, dispatch and merge-back without approving or touching a live lease, and its `reasons` name what still holds (waiting reviewer, `fleet full n/m`, bridge offline, directory without git). Prefer it to `task hold` + `task release`, which also asks a lease holder to checkpoint (see §5 "Pausing vs deferring") |
 | `review_requested_from_user` | summarise the evidence and point the user to the existing task review UI; if they explicitly decide in chat, record their verdict (§6). No task approval action card is required |
 | `merge_conflict` / `merge_failed` | a done task's branch did not merge; the task returns to its worker with a Merge Conflict section. For `merge_failed` (merge never ran, e.g. bridge offline) check the bridge |
@@ -169,7 +169,8 @@ Rules: never hold a task just to postpone it, and never hold when the user's inp
 
 ## 8. Solo mode
 The chain is solo when you are the Soloist or hold a worker fleet row yourself. Then:
-- You pull work with `lease next` (nothing is pushed), work it per `worker-task-management`, and `lease submit`. Lapsed leases are not counted as attempts.
+- You pull work with `lease next` (nothing is pushed), work it per `worker-task-management`, and `lease submit`. Claims never lapse with time; runtime loss retains ownership while recovery is pending.
+- Submit and block retain waiting ownership; refresh `lease next` and stay with the task until completion or explicit release.
 - New tasks default to `requires_user_approval`; the user reviews from their attention deck. To opt a task out: `task update <id> --no-require-user-approval`.
 - You never review your own work (`403 solo_self_review`).
 - `[taskv2] solo: task … is ready for you` means pull it with `lease next`.
@@ -197,3 +198,36 @@ For a significant change to objective, deliverable or approach that invalidates 
 3. Checkpoint active work before redirecting it. In solo mode, `lease switch <replacement-id> --summary "..."` preserves progress. Explicitly rewire future dependencies and keep terminal/workflow lifecycle restrictions. A reference link preserves provenance; a dependency should exist only when the new task actually requires successful completion of the old one.
 
 Do not overwrite the original into an unrelated assignment or treat the scope change as approval of unfinished work.
+
+## Durable claims, cancellation and transfer
+
+Claims do not expire or require renewal. Active ownership permits execution;
+waiting ownership retains task, role and owner through review and blocking.
+Submission and verdicts retain responsibility until completion or explicit release.
+
+```bash
+ham-ctl lease <task-id>
+ham-ctl lease <task-id> --instance <instance-id>
+ham-ctl lease transfer <task-id> --instance <instance-id>
+ham-ctl task cancel <task-id>
+```
+
+- A plain claim requests work for the calling instance. Its durable agent ID must
+  match the assignee or an eligible reviewer; the server derives the role from
+  current task state. Repeating a claim returns existing responsibility.
+- A coordinator can name an eligible instance, including itself when its own
+  durable identity matches. Context goes to that instance; assigning another
+  instance does not overwrite the coordinator's task context.
+- Claims do not silently replace another holder. Use explicit transfer. The old
+  writer is fenced immediately; replacement execution waits for the exact process
+  stop receipt. Offline cleanup remains `stop_pending`.
+- Cancellation preserves history and revokes work/review ownership. It can finish
+  while process cleanup is pending; late callbacks cannot revive the task.
+- No prior inspection or manual generation/request ID is needed. The CLI supplies
+  request identity and a default audit reason. Use `--reason` to explain intent;
+  optional explicit request IDs and generation checks serve advanced callers.
+- Existing `task hold`, `task release`, `task unblock` and `task recheck` retain
+  their established meanings. `task release` clears a hold.
+- `lease next` refreshes current responsibility. Stay with a waiting task rather
+  than pulling unrelated work. `lease heartbeat` only reports progress or
+  acknowledges requirements; it does not renew ownership.

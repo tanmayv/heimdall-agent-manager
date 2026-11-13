@@ -191,3 +191,53 @@ test_explicit_transfer_waiting_reviewer_does_not_repeat_verdict :: proc(t:^testi
  _,again,again_err:=review_post(&fx.svc,inst_auth("inst_review_new"),Review_Input{verdict="approve"})
  testing.expect(t,!again && again_err.code==.Conflict,"replacement cannot post a second verdict through waiting ownership")
 }
+
+@(test)
+test_simple_transfer_without_generation_self_target_and_quiet_retries :: proc(t:^testing.T) {
+ fx,log,ok:=lease_fixture(t,"simple_transfer")
+ defer lease_fixture_close(fx,log)
+ if !ok do return
+ chain:=seed_live_chain(t,fx,"chain_simple_transfer")
+ seed_instance(fx,chain,"inst_old","agt_w","br_1","running")
+ seed_instance(fx,chain,"inst_new","agt_w","br_1","running")
+ seed_instance(fx,chain,"inst_competitor","agt_w","br_1","running")
+ task:=publish_task(t,fx,chain,"task_simple_transfer",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+ auth:=inst_auth("inst_coord")
+ // Coordinator self target is eligible only when its durable identity matches.
+ wrong:=Lease_Claim_Input{task_id=task.task_id,instance_id="inst_coord",reason="assign self",request_id="wrong-self"}
+ _,denied,derr:=lease_transfer(&fx.svc,auth,wrong)
+ testing.expect(t,!denied && derr.code==.Forbidden,"self target cannot bypass assignee")
+ initial:=Lease_Claim_Input{task_id=task.task_id,instance_id="inst_old",reason="assign named worker",request_id="initial"}
+ _,claimed,cerr:=lease_transfer(&fx.svc,auth,initial)
+ if !testing.expect(t,claimed,cerr.message) do return
+ initial.request_id="repeat-initial"
+ before:=count_all_events(fx,string(task.task_id))
+ _,again,aerr:=lease_transfer(&fx.svc,auth,initial)
+ testing.expect(t,again,aerr.message)
+ testing.expect_value(t,count_all_events(fx,string(task.task_id)),before)
+ input:=Lease_Claim_Input{task_id=task.task_id,instance_id="inst_new",reason="move responsibility",request_id="move"}
+ pending,moved,merr:=lease_transfer(&fx.svc,auth,input)
+ if !testing.expect(t,moved && pending.status=="stop_pending",merr.message) do return
+ before=count_all_events(fx,string(task.task_id))
+ input.request_id="fresh-retry"
+ retry,retried,rerr:=lease_transfer(&fx.svc,auth,input)
+ testing.expect(t,retried && retry.status=="stop_pending",rerr.message)
+ testing.expect_value(t,count_all_events(fx,string(task.task_id)),before)
+ competing:=input;competing.instance_id="inst_competitor";competing.request_id="competitor"
+ _,competed,coerr:=lease_transfer(&fx.svc,auth,competing)
+ testing.expect(t,!competed && coerr.code==.Conflict,"pending competing transfer is rejected")
+ confirm_pending_ownership_stop_for_test(t,fx,task,"inst_old")
+ before=count_all_events(fx,string(task.task_id))
+ input.request_id="after-stop"
+ _,resumed,serr:=lease_transfer(&fx.svc,auth,input)
+ testing.expect(t,resumed,serr.message)
+ testing.expect_value(t,count_all_events(fx,string(task.task_id)),before)
+ input.request_id="stale";input.expected_generation=1
+ _,stale,sterr:=lease_transfer(&fx.svc,auth,input)
+ testing.expect(t,!stale && sterr.code==.Conflict,"same target with stale explicit generation rejected")
+ // A matching coordinator may claim itself without fleet membership.
+ self_task:=publish_task(t,fx,chain,"task_simple_self",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_c","review_roles":[]}`)
+ self_input:=Lease_Claim_Input{task_id=self_task.task_id,instance_id="inst_coord",reason="work myself",request_id="self"}
+ self,self_ok,self_err:=lease_transfer(&fx.svc,auth,self_input)
+ testing.expect(t,self_ok && self.target_instance_id=="inst_coord" && self.pack_json!="",self_err.message)
+}

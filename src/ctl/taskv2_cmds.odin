@@ -32,6 +32,8 @@ import "core:strings"
 import httpc "odin_test:lib/httpc"
 import contracts "odin_test:contracts"
 import jsonx "odin_test:lib/jsonx"
+import os_random "odin_test:lib/os_random"
+import vault "odin_test:lib/vault"
 
 ctl_requirements_revision_flag :: proc(args: []string, flag: string) -> int {
     if !has_flag(args,flag) do return 0
@@ -1332,8 +1334,10 @@ print_help_workflow :: proc() {
 ctl_v2_lease_claim_params :: proc(task_id: string, args: []string) -> string {
     fields := make([dynamic]string)
     append(&fields, json_kv("task_id", task_id))
-    for flag in ([?]string{"--instance", "--reason", "--request-id", "--vcs-base"}) {
-        key := "instance_id" if flag == "--instance" else "reason" if flag == "--reason" else "request_id" if flag == "--request-id" else "vcs_base"
+    append(&fields, json_kv("reason", option_value(args, "--reason", "Explicit task ownership requested via CLI")))
+    append(&fields, json_kv("request_id", ctl_task_request_id(args)))
+    for flag in ([?]string{"--instance", "--vcs-base"}) {
+        key := "instance_id" if flag == "--instance" else "vcs_base"
         if v := option_value(args, flag, ""); v != "" do append(&fields, json_kv(key, v))
     }
     if has_flag(args, "--expected-generation") do append(&fields, json_kv_raw("expected_generation", fmt.aprintf("%d", ctl_requirements_revision_flag(args, "--expected-generation"))))
@@ -1341,12 +1345,17 @@ ctl_v2_lease_claim_params :: proc(task_id: string, args: []string) -> string {
     return json_object_from_slice(fields[:])
 }
 
-ctl_v2_task_control_body :: proc(operation: string, args: []string) -> httpc.Body {
-    obligations := option_values_trimmed(args, "--obligation")
-    return httpc.json_body(contracts.Task_Control_Request{
-        operation = operation, reason = option_value(args, "--reason", ""),
-        request_id = option_value(args, "--request-id", ""),
+ctl_task_request_id :: proc(args: []string) -> string {
+    if id := strings.trim_space(option_value(args, "--request-id", "")); id != "" do return id
+    bytes: [16]byte
+    if !os_random.fill(bytes[:]) do ctl_print_error_exit("system randomness unavailable; cannot generate request ID")
+    return strings.concatenate({"req_", vault.hex_encode_lower(bytes[:], context.temp_allocator)}, context.temp_allocator)
+}
+
+ctl_v2_task_cancel_body :: proc(args: []string) -> httpc.Body {
+    return httpc.json_body(contracts.Task_Cancel_Request{
+        reason = option_value(args, "--reason", "Task cancellation requested via CLI"),
+        request_id = ctl_task_request_id(args),
         expected_generation = i64(ctl_requirements_revision_flag(args, "--expected-generation")),
-        target_instance_id = option_value(args, "--instance", ""), obligations = obligations[:],
     })
 }

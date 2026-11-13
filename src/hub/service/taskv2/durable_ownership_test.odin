@@ -62,6 +62,7 @@ test_durable_ownership_review_rework_fencing_and_completion :: proc(t: ^testing.
 	testing.expect_value(t, unrelated.state, domain.Task_State.Ready)
 	next, next_ok, next_err := lease_next(&fx.svc, inst_auth("inst_w1"), Lease_Next_Input{})
 	testing.expect(t, next_ok && next.status == "waiting" && next.lease.task_id == task.task_id, fmt.tprintf("waiting worker cannot claim unrelated work: %s", next_err.message))
+	testing.expect(t, strings.contains(next.pack_json, `"phase":"waiting"`), "waiting inspection refreshes task context with retained ownership")
 	_, parked, park_err := task_hold(&fx.svc, unrelated, actor_from_auth(user_auth()), "keep cleanup observable")
 	if !testing.expect(t, parked, fmt.tprintf("park unrelated task: %s", park_err.message)) do return
 	_, duplicate, _ := lease_submit(&fx.svc, inst_auth("inst_w1"), Submit_Input{lease_id = first.lease_id, summary = "duplicate"})

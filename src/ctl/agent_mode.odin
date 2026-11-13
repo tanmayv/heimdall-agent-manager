@@ -480,14 +480,12 @@ ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
 		tid := pos(tokens, 1)
 		if tid == "" { print_agent_help([]string{"task"}); return }
 		ctl_v2_task_hold(endpoint, token, tid, args, release = verb == "release")
-    case "control":
+    case "control", "inspect", "reopen", "release-owner", "rereview", "force-complete", "resume":
+        ctl_print_error_exit("unsupported task command; use task cancel <task-id> or lease transfer <task-id> --instance <id>")
+    case "cancel":
         tid := pos(tokens, 1)
         if tid == "" { print_agent_help([]string{"task"}); return }
-        ctl_v2_task_action(endpoint, token, tid, args, "control", ctl_v2_task_control_body(option_value(args, "--operation", ""), args))
-    case "inspect", "cancel", "reopen", "release-owner", "rereview", "force-complete", "resume":
-        tid := pos(tokens, 1)
-        if tid == "" { print_agent_help([]string{"task"}); return }
-        ctl_v2_task_action(endpoint, token, tid, args, "control", ctl_v2_task_control_body(verb, args))
+        ctl_v2_task_action(endpoint, token, tid, args, "cancel", ctl_v2_task_cancel_body(args))
 	case "recheck":
 		// Coordinator/owner: recompute gate, readiness, dispatch and merge-back.
 		tid := pos(tokens, 1)
@@ -1884,7 +1882,7 @@ print_help_overview :: proc() {
 	fmt.println("  issue       Issues, bugs, and blockers (list, show, create, update, comment, vote, unvote)")
 	fmt.println("  projects    Manage projects (list, show, create, update)")
 	fmt.println("  vault       Report the vault key source: env override and bridge status (status)")
-	fmt.println("  lease       Task System v2 leases: next, heartbeat, submit, handoff, block")
+	fmt.println("  lease       Durable task claims: <task-id>, next, transfer, submit, handoff, block")
 	fmt.println("  verify      Removed (stub for one release): prints {\"ok\":true,\"verify\":\"removed\"} and exits 0")
 	fmt.println("  review      Post a review verdict on the task you were woken to review (post)")
 	fmt.println("  context     One-shot snapshot of this instance (chain, task, unread)")
@@ -2051,10 +2049,7 @@ print_help_task :: proc() {
 	fmt.println("globally unique, so you never need --chain (the Hub derives the chain for you).")
 	fmt.println("")
 	fmt.println("VERBS")
-    fmt.println("  inspect <task-id>                   Ownership, runtime, generation and allowed controls.")
-    fmt.println("  cancel|reopen|resume|release-owner|rereview|force-complete <task-id>")
-    fmt.println("      --reason <text> --request-id <id> --expected-generation <n> [--obligation <text>]")
-    fmt.println("  control <task-id> --operation <op>  Explicit administrative operation (same concurrency flags).")
+    fmt.println("  cancel <task-id> [--reason <text>] [--request-id <id>] [--expected-generation <n>]")
 
 	fmt.println("  list                                    List your chain's tasks; each carries a comment_summary")
 	fmt.println("                                          (count, last_comment_at, author, preview) — not bodies.")
@@ -2254,12 +2249,14 @@ print_help_cards :: proc() {
 // ---- lease (Task System v2) ------------------------------------------------
 // The lease IS your task: `lease next` returns the lease you hold (with its
 // context pack) or claims the next task for you inline; `lease heartbeat`
-// extends the TTL (every ham-ctl call already heartbeats implicitly). submit /
-// handoff / block end the attempt (taskv2_cmds.odin).
+// records progress without renewing ownership. submit /
+// block retain waiting ownership; handoff releases it (taskv2_cmds.odin).
 ctl_v2_lease :: proc(endpoint, token: string, tokens, args: []string) {
 	action := pos(tokens, 0)
 	switch action {
-	case "transfer", "recover":
+	case "recover":
+        ctl_print_error_exit("unknown lease command: recover; use lease transfer <task-id> --instance <id>")
+	case "transfer":
         tid := pos(tokens, 1)
         if tid == "" { print_help_lease(); return }
         ctl_agent_call_task(endpoint, token, strings.concatenate({"agent.lease.", action}, context.temp_allocator), ctl_v2_lease_claim_params(tid, args), args)
@@ -2289,15 +2286,16 @@ ctl_v2_lease :: proc(endpoint, token: string, tokens, args: []string) {
 }
 
 print_help_lease :: proc() {
-	fmt.println("ham-ctl lease — your task lease (Task System v2)")
+	fmt.println("ham-ctl lease — your non-expiring task claim (Task System v2)")
 	fmt.println("")
 	fmt.println("VERBS")
     fmt.println("  <task-id> [--instance <id>] Claim a specific task; role follows its current state.")
-    fmt.println("  transfer|recover <task-id> --instance <id> --reason <text> --request-id <id> --expected-generation <n>")
-    fmt.println("                             --instance assigns an eligible target as coordinator.")
+    fmt.println("  transfer <task-id> --instance <id> [--reason <text>] [--request-id <id>] [--expected-generation <n>]")
+    fmt.println("                             Coordinator targets must match the durable assignee/reviewer identity.")
+	fmt.println("                             Request IDs and audit reasons are generated when omitted; no inspection is needed.")
 	fmt.println("  next                       Return the lease you hold (status=current) or claim the next task")
 	fmt.println("                             for you (status=granted); status=none when nothing is available.")
-	fmt.println("                             The response carries task ownership and the context pack.")
+	fmt.println("                             status=waiting retains task/role through review or a block; only active permits work.")
 	fmt.println("  heartbeat [--note <text>]  Compatibility progress/requirements acknowledgement; no renewal needed.")
 	fmt.println("      After reading refreshed TASK.md: --lease <id> --acknowledge-requirements-revision <n>.")
 	fmt.println("  submit --summary <s> [handoff flags] [--output-file <json>] [--artifacts-file <json>]")
@@ -2316,7 +2314,7 @@ print_help_lease :: proc() {
 	fmt.println("                             counted) and take <task_id> (must be ready) in one step; on 409")
 	fmt.println("                             nothing changed and you still hold the current task.")
 	fmt.println("  block --waiting-on <kind> --reason <text> [--ref <id>] [--summary <s>]")
-	fmt.println("                             Park the task on something external (kind: user|task|…).")
+	fmt.println("                             Park the task on something external (kind: user|task|…); ownership waits.")
 	fmt.println("")
 	fmt.println("  Handoff flags: --decision <text> and --dead-end <text> (repeat for each item) and --next-steps <s>,")
 	fmt.println("  or --handoff-file <json> instead. Decisions and dead ends reach every task that waits for this one")
