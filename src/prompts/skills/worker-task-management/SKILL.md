@@ -5,7 +5,7 @@ description: How a WORKER or REVIEWER agent works a ticket lease with ham-ctl �
 
 # Worker & reviewer task management (Tickets)
 
-The Hub hands you work as a **lease** on one task. You never set task status: holding a work lease *is* `in_progress`; `lease submit` moves the task to `in_review` (or `done` when nobody reviews it). Work only on the leased task; route scope questions to the coordinator (task comment, or `ham-ctl chat send --to <coordinator-instance-id>`).
+The Hub gives you a **durable claim** on one task, using the compatibility command name `lease`. Claims have no expiry or hard deadline. An active work claim permits execution; a waiting claim retains the task and role but does not permit work. You never set task status: active work *is* `in_progress`; `lease submit` moves the task to `in_review` (or `done` when nobody reviews it). Work only on the leased task; route scope questions to the coordinator (task comment, or `ham-ctl chat send --to <coordinator-instance-id>`).
 
 All commands use `./bin/ham-ctl`. Exact flags: the `ham-ctl-reference` skill or `ham-ctl <group> --help`.
 
@@ -15,7 +15,7 @@ All commands use `./bin/ham-ctl`. Exact flags: the `ham-ctl-reference` skill or 
 | Woken, or unsure what you hold | read `TASK.md`, then `lease next` |
 | Idle and want work (solo mode, or after finishing) | `lease next` |
 | Need context `TASK.md` omitted or points to | `task fetch <task-id> <ref>` |
-| Long stretch without ham-ctl calls | `lease heartbeat --note "<progress>"` (at least every 15 min) |
+| Optional progress update | `lease heartbeat --note "<progress>"` (optional progress; no renewal required) |
 | Made a choice others might re-open, or hit a dead end | note it now; pass it at submit/handoff as `--decision` / `--dead-end` |
 | Work done | run the checks the change calls for (see §4), commit everything in the Workdir |
 | Checks pass on a clean tree | `lease submit --summary "<what exists now; checks run; outcomes>" [--decision …] [--dead-end …]` |
@@ -42,7 +42,7 @@ The Bridge writes `<run_dir>/TASK.md` before your turn. It is your authoritative
 
 | Section | What it tells you |
 |---|---|
-| Header | `lease_id`, attempt `n/max`, `review_rounds`, deadlines, placement (bridge, directory, provider, model) and the **Workdir** + branch |
+| Header | `lease_id`, attempt `n/max`, `review_rounds`, ownership phase, placement (bridge, directory, provider, model) and the **Workdir** + branch |
 | Solo Mode | you are the chain's coordinator *and* worker (see §8) |
 | Your Block Was Answered | the question you blocked on and the user's answer |
 | Rejected At The Gate | why a workflow gate rejected your previous output |
@@ -53,10 +53,11 @@ The Bridge writes `<run_dir>/TASK.md` before your turn. It is your authoritative
 | Resolved Inputs | the refs your brief lists in `inputs`, resolved |
 | Where You Are / Previous Attempt | VCS state; the last attempt's outcome, handoff and heartbeat note |
 | Open Findings | review findings you must address |
-| Why You Were Chosen | the wake reason: `first_grant`, `review`, `changes_requested`, `handoff`, `answered`, `reopened`, `expired…`, `retry_after_expiry`, `released`, `user_stopped` |
+| Why You Were Chosen | the wake reason: `first_grant`, `review`, `changes_requested`, `handoff`, `answered`, `reopened`, `released`, `user_stopped` |
 | Protocol Rules | the 11-rule card; follow it |
 
-`ham-ctl lease next` returns your lease (`status: current`), grants a ready task (`granted`, rewrites `TASK.md`) or `none`. Its JSON also carries what each review role must check (`lease.review_roles[].description`).
+`ham-ctl lease next` returns your lease (`status: current` when active, `waiting` when waiting), grants a ready task
+(`granted`, rewrites `TASK.md`) or returns `none`. Its JSON also carries what each review role must check (`lease.review_roles[].description`).
 
 ## 2. Work in the Workdir
 In a git directory every task gets its own checkout: `<dir>/.heimdall/worktrees/<task_id>` on branch `heimdall/<task_id>`. **`cd` to the Workdir and do all edits and commits there.** `lease submit` runs there automatically. When the task is `done` the Hub merges your branch into the directory's branch. Work from tasks you depend on is already merged into your starting point.
@@ -64,7 +65,7 @@ In a git directory every task gets its own checkout: `<dir>/.heimdall/worktrees/
 If you are woken with a **Merge Conflict** section: in the Workdir, merge the directory's current branch into yours, resolve, commit, re-run the checks the merge affects, submit.
 
 ## 3. Heartbeat and `409 lease_lost`
-Every `ham-ctl` call heartbeats implicitly. During long stretches without CLI calls, leave a note (it survives into the next attempt if this one dies):
+Claims do not expire. Heartbeats are optional progress notes or explicit requirements acknowledgements; they never renew ownership. At a meaningful milestone, you may leave a note:
 ```bash
 ./bin/ham-ctl lease heartbeat --note "fold transitions done; running unit tests"
 ```
@@ -108,7 +109,7 @@ The tasks after yours see only their `TASK.md`. What you write here is what they
 ```
 - Inline flags or `--handoff-file handoff.json` (`{"decisions":[…],"dead_ends":[…],"next_steps":"…"}`), not both.
 - `artifacts.json`: `{"items":[{"kind":"file","path":"…","label":"…"},{"kind":"url","url":"…"},{"kind":"preview_port","port":5173}]}`.
-- A block parks the task in `backlog`; the answer arrives in `TASK.md` ("Your Block Was Answered"). `--waiting-on` is free text: `user` for the user, `task` for another task, anything else for external systems.
+- A block parks the task in `backlog` and retains a waiting claim; the answer arrives in `TASK.md` ("Your Block Was Answered"). `--waiting-on` is free text: `user` for the user, `task` for another task, anything else for external systems.
 
 ## 6. Fetch omitted or referenced context
 `TASK.md` is capped (~8k tokens). When it overflows, resolved inputs go first, then dependency outputs, then the previous handoff summary, then the description; each is replaced by a fetch pointer. The brief, dead ends and open findings are never dropped.
@@ -139,7 +140,7 @@ When `TASK.md` says `reviewer` (a review lease):
    Findings use `path`, `line`, `severity`, `text`. `request_changes` needs `--summary` or findings. The response says `gate: waiting|approved|changes_requested`. When every required review passes, the task is `done`, its branch is merged and its dependents become ready.
 
 ## 8. Solo mode
-When `TASK.md` has a **Solo Mode** section you are the coordinator and the worker; the user reviews. Pull work with `lease next` (nothing is pushed to you), submit, and pull the next task right away. To take an urgent task mid-way: `ham-ctl lease switch <task_id> --summary "<where you left the current one>"` (the current task returns to `ready`; the attempt is not counted). You never review your own work; the Hub refuses it.
+When `TASK.md` has a **Solo Mode** section you are the coordinator and the worker; the user reviews. Pull work with `lease next` (nothing is pushed to you), submit, and retain this task while its claim is waiting. Once the task finishes or ownership is explicitly released, pull another task. To take an urgent task mid-way: `ham-ctl lease switch <task_id> --summary "<where you left the current one>"` (the current task returns to `ready`; the attempt is not counted). You never review your own work; the Hub refuses it.
 
 ### Unavailable fleet instances
 
@@ -158,3 +159,44 @@ Only the holder may acknowledge its lease; an ordinary heartbeat or comment is n
 For review, inspect the submitted requirements revision, attempt and commit. If a change requires a checkpoint, hand off the review rather than approving stale work. After worker rework, assess the new submission; do not reuse an obsolete verdict.
 
 If the change substantially replaces the objective, deliverable or approach, ask the coordinator to record the decision on the original and create a linked replacement. Preserve completed work and checkpoint/handoff context; do not silently repurpose your task.
+
+## Durable claims and coordinator controls
+
+The CLI retains the name `lease` for compatibility. Claims do not expire and
+need no periodic heartbeat. An active claim permits execution; a waiting claim
+retains task, role and owner through review, blocking or runtime recovery.
+Submission and review verdicts retain waiting responsibility until completion
+or explicit release. Refresh `lease next` to read the phase; do not pull unrelated
+work while waiting.
+
+- `ham-ctl lease <task-id>` claims an exact task using the caller's durable identity;
+  the Hub derives work/review role from task state.
+- `ham-ctl lease <task-id> --instance <instance-id>` lets the coordinator assign a
+  named eligible instance. Its durable identity must match the assignee/reviewer.
+  Context goes to the target; the caller's `TASK.md` is preserved. An explicit
+  named claim uses durable identity and current eligibility, independently of fleet
+  placement; it does not change the task assignee or reviewer identity.
+- `ham-ctl task inspect <task-id>` returns owners, wait reason, process observations,
+  cleanup state, allowed actions/refusals and task event generation.
+- `ham-ctl lease transfer <task-id> --instance <id> --reason <text> --request-id <unique-id> --expected-generation <n>`
+  moves ownership to an instance with the same durable agent identity.
+  `lease recover` is an alias with the same required target and concurrency/reason
+  flags. Use `task release-owner` to clear ownership without assigning a replacement.
+- A running previous holder is fenced first. `stop_pending` prevents replacement
+  execution until a matching persisted stop receipt confirms that process exited.
+  Disconnection is not exit proof; process run_count is distinct from task generation.
+- `ham-ctl task control <task-id> --operation <operation> --reason <text> --request-id <unique-id> --expected-generation <n>`
+  supports cancel, reopen, hold, resume, unblock, release-owner, rereview,
+  force-complete and recheck. Read generation from inspection before mutating.
+  Reuse the same request ID only for retries with identical arguments; inspect again
+  after a generation conflict. `release-owner` also holds the task to prevent
+  automatic reclamation; `resume` clears that hold after cleanup.
+  Named aliases include `task cancel/reopen/resume/release-owner/rereview/force-complete`.
+  `task release` still means clearing a hold.
+- Administrative completion requires explicit unmet `--obligation <text>` entries.
+  It never fabricates review approval, test results, merge success or prerequisite
+  success. Only the authenticated human owner can enable coordinator override policy;
+  coordinators cannot grant themselves that authority.
+- `lease next` remains the legacy current/eligible-task entry point. `lease heartbeat`
+  only reports progress or acknowledges an exact requirements revision. Legacy
+  lease IDs and storage fields remain compatibility details, not time-based authority.

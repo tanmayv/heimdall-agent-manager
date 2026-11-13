@@ -7,7 +7,7 @@ description: How a task-chain COORDINATOR runs a chain of tickets with ham-ctl �
 
 You plan, triage, publish and steer. Leased **workers** and **reviewers** do the work, unless the chain runs in **Solo mode** (§8), where you are also the worker and the user reviews.
 
-The Hub owns task state: leases make tasks `in_progress`, submits make them `in_review`, passing reviews make them `done`. There is no status verb for tasks. Commands use `./bin/ham-ctl`; exact flags are in `ham-ctl-reference` or `ham-ctl <group> --help`.
+The Hub owns task state: active work claims make tasks `in_progress`, submits make them `in_review`, passing reviews make them `done`. There is no status verb for tasks. Commands use `./bin/ham-ctl`; exact flags are in `ham-ctl-reference` or `ham-ctl <group> --help`.
 
 ## 1. Choose the next work item, not a chain type
 Every task chain is `mixed_work`. You remain coordinator of the same chain, team,
@@ -124,7 +124,7 @@ Routine events stay quiet. You get one line, `[taskv2] <trigger>: …`, only whe
 | `oscillation` | review rounds keep bouncing: read the open findings (`task show`) and the handoff, make `acceptance` unambiguous |
 | `hold_stale` | a task you (or the user) held has had no live lease for a while. If the hold's reason is resolved, `task release <id>`; otherwise leave it held. Repeats once per interval until released |
 | `ready_unclaimed` | no eligible worker: check `task-chain fleet list` and `bridge list`, fix capacity, roles or bridge |
-| `agent_not_running` | A ready task cannot obtain a running agent, or a leased holder exited/lost its heartbeat. `task show <id>` shows `blocked_on.kind=agent_not_running` (legacy `dispatch` is equivalent), with agent/provider/model/bridge/error. The user can choose **Start agent** in the attention deck or chat tray; a failed start stays blocked and shows its error inline for retry. Fix the cause, then use the card or `task unblock <id> [--note <reason>]`; editing the affected fleet row also clears the block. No work attempt budget is spent. Full fleet rows remain queued without blocking |
+| `agent_not_running` | A ready task cannot obtain a running agent, or a claim holder exited or its runtime became unavailable. `task show <id>` shows `blocked_on.kind=agent_not_running` (legacy `dispatch` is equivalent), with agent/provider/model/bridge/error. The user can choose **Start agent** in the attention deck or chat tray; a failed start stays blocked and shows its error inline for retry. Fix the cause, then use the card or `task unblock <id> [--note <reason>]`; editing the affected fleet row also clears the block. No work attempt budget is spent. Full fleet rows remain queued without blocking |
 | stuck `ready` / `in_review` / merge | A task looks stuck: `ready_unclaimed` with free fleet capacity, `in_review` although every owed review is in (e.g. after `--no-require-user-approval`), or a done task whose merge is `pending`/`failed`/`none`. Run `task recheck <id>`: it re-runs the gate, readiness, dispatch and merge-back without approving or touching a live lease, and its `reasons` name what still holds (waiting reviewer, `fleet full n/m`, bridge offline, directory without git). Prefer it to `task hold` + `task release`, which also asks a lease holder to checkpoint (see §5 "Pausing vs deferring") |
 | `review_requested_from_user` | summarise the evidence and point the user to the existing task review UI; if they explicitly decide in chat, record their verdict (§6). No task approval action card is required |
 | `merge_conflict` / `merge_failed` | a done task's branch did not merge; the task returns to its worker with a Merge Conflict section. For `merge_failed` (merge never ran, e.g. bridge offline) check the bridge |
@@ -169,7 +169,8 @@ Rules: never hold a task just to postpone it, and never hold when the user's inp
 
 ## 8. Solo mode
 The chain is solo when you are the Soloist or hold a worker fleet row yourself. Then:
-- You pull work with `lease next` (nothing is pushed), work it per `worker-task-management`, and `lease submit`. Lapsed leases are not counted as attempts.
+- You pull work with `lease next` (nothing is pushed), work it per `worker-task-management`, and `lease submit`. Claims never lapse with time; runtime loss retains ownership while recovery is pending.
+- Submit and block retain waiting ownership; refresh `lease next` and stay with the task until completion or explicit release.
 - New tasks default to `requires_user_approval`; the user reviews from their attention deck. To opt a task out: `task update <id> --no-require-user-approval`.
 - You never review your own work (`403 solo_self_review`).
 - `[taskv2] solo: task … is ready for you` means pull it with `lease next`.
@@ -197,3 +198,44 @@ For a significant change to objective, deliverable or approach that invalidates 
 3. Checkpoint active work before redirecting it. In solo mode, `lease switch <replacement-id> --summary "..."` preserves progress. Explicitly rewire future dependencies and keep terminal/workflow lifecycle restrictions. A reference link preserves provenance; a dependency should exist only when the new task actually requires successful completion of the old one.
 
 Do not overwrite the original into an unrelated assignment or treat the scope change as approval of unfinished work.
+
+## Durable claims and coordinator controls
+
+The CLI retains the name `lease` for compatibility. Claims do not expire and
+need no periodic heartbeat. An active claim permits execution; a waiting claim
+retains task, role and owner through review, blocking or runtime recovery.
+Submission and review verdicts retain waiting responsibility until completion
+or explicit release. Refresh `lease next` to read the phase; do not pull unrelated
+work while waiting.
+
+- `ham-ctl lease <task-id>` claims an exact task using the caller's durable identity;
+  the Hub derives work/review role from task state.
+- `ham-ctl lease <task-id> --instance <instance-id>` lets the coordinator assign a
+  named eligible instance. Its durable identity must match the assignee/reviewer.
+  Context goes to the target; the caller's `TASK.md` is preserved. An explicit
+  named claim uses durable identity and current eligibility, independently of fleet
+  placement; it does not change the task assignee or reviewer identity.
+- `ham-ctl task inspect <task-id>` returns owners, wait reason, process observations,
+  cleanup state, allowed actions/refusals and task event generation.
+- `ham-ctl lease transfer <task-id> --instance <id> --reason <text> --request-id <unique-id> --expected-generation <n>`
+  moves ownership to an instance with the same durable agent identity.
+  `lease recover` is an alias with the same required target and concurrency/reason
+  flags. Use `task release-owner` to clear ownership without assigning a replacement.
+- A running previous holder is fenced first. `stop_pending` prevents replacement
+  execution until a matching persisted stop receipt confirms that process exited.
+  Disconnection is not exit proof; process run_count is distinct from task generation.
+- `ham-ctl task control <task-id> --operation <operation> --reason <text> --request-id <unique-id> --expected-generation <n>`
+  supports cancel, reopen, hold, resume, unblock, release-owner, rereview,
+  force-complete and recheck. Read generation from inspection before mutating.
+  Reuse the same request ID only for retries with identical arguments; inspect again
+  after a generation conflict. `release-owner` also holds the task to prevent
+  automatic reclamation; `resume` clears that hold after cleanup.
+  Named aliases include `task cancel/reopen/resume/release-owner/rereview/force-complete`.
+  `task release` still means clearing a hold.
+- Administrative completion requires explicit unmet `--obligation <text>` entries.
+  It never fabricates review approval, test results, merge success or prerequisite
+  success. Only the authenticated human owner can enable coordinator override policy;
+  coordinators cannot grant themselves that authority.
+- `lease next` remains the legacy current/eligible-task entry point. `lease heartbeat`
+  only reports progress or acknowledges an exact requirements revision. Legacy
+  lease IDs and storage fields remain compatibility details, not time-based authority.

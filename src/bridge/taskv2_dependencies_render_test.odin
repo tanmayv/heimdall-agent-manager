@@ -3,6 +3,23 @@ package main
 import "core:strings"
 import "core:testing"
 
+@(test)
+test_bridge_taskv2_render_durable_waiting_claim :: proc(t: ^testing.T) {
+	pack := `{"task_id":"task_wait","expires_at":"LEGACY_EXPIRY","hard_deadline_at":"LEGACY_DEADLINE","lease":{"lease_id":"claim_wait","kind":"review","review_role":"security","phase":"waiting"},"task":{"title":"Waiting task"},"protocol":{"rules":[]}}`
+	md := bridge_taskv2_render_task_md(pack, 32_000)
+	defer delete(md)
+	for guidance in ([]string{"security", "**Claim**: `claim_wait` (waiting", "Durable; does not expire", "You retain this task and your role", "do not pull unrelated work", "acknowledges requirements revisions", "lease <task-id>", "lease transfer", "lease recover"}) {
+		testing.expectf(t, strings.contains(md, guidance), "waiting claim guidance is present: %s", guidance)
+	}
+	for obsolete in ([]string{"Deadlines", "LEGACY_EXPIRY", "LEGACY_DEADLINE"}) {
+		testing.expectf(t, !strings.contains(md, obsolete), "legacy timing does not render: %s", obsolete)
+	}
+	active := bridge_taskv2_render_task_md(`{"task_id":"task_active","lease":{"lease_id":"claim_active","phase":"active"}}`, 32_000)
+	defer delete(active)
+	testing.expect(t, strings.contains(active, "**Claim**: `claim_active` (active"))
+	testing.expect(t, !strings.contains(active, "- **Waiting**:"))
+}
+
 @(private = "file")
 DEP_PACK :: `{"version":1,"lease_id":"lease_1","task_id":"task_b","attempt_no":1,"max_attempts":5,` +
 	`"lease":{"lease_id":"lease_1","kind":"work"},` +

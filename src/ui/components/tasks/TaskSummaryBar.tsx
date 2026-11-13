@@ -1,7 +1,7 @@
 import React from 'react';
 import { Button, IconButton, Menu, StatusDot, Text } from '@ui';
 import { TaskWire } from '../../api/taskWire';
-import { TASK_STATES_ORDER, TASK_STATE_LABELS, TASK_STATE_TONE, TaskStateV2, normalizeTaskState, workLease } from './taskV2Types';
+import { TASK_STATES_ORDER, TASK_STATE_LABELS, TASK_STATE_TONE, TaskStateV2, normalizeTaskState } from './taskV2Types';
 import { taskNeedsYou } from './taskActions';
 
 export interface TaskSummaryBarProps {
@@ -95,7 +95,6 @@ export const WorkflowInputsSummary: React.FC<{ name: string; inputs?: unknown }>
 };
 
 const UNCLAIMED_AFTER_MINS = 10;
-const EXPIRING_WITHIN_MINS = 3;
 
 /**
  * The quiet header above a chain's tasks: progress, counts, and one line that
@@ -122,18 +121,13 @@ export const TaskSummaryBar: React.FC<TaskSummaryBarProps> = ({
 
   const nowMs = Date.now();
   const needsYou = tasks.filter(taskNeedsYou).length;
-  const expiring = tasks.filter((t) => {
-    const lease: any = workLease(t);
-    if (normalizeTaskState(t.state) !== 'in_progress' || !lease?.expires_at) return false;
-    return (new Date(lease.expires_at).getTime() - nowMs) / 60000 <= EXPIRING_WITHIN_MINS;
-  }).length;
   const unclaimed = tasks.filter(
     (t) =>
       normalizeTaskState(t.state) === 'ready' &&
       t.ready_since &&
       (nowMs - new Date(t.ready_since).getTime()) / 60000 >= UNCLAIMED_AFTER_MINS,
   ).length;
-  const activeLeases = tasks.reduce((n, t) => n + (t.leases?.length || 0), 0);
+  const activeLeases = tasks.reduce((n, t) => n + (t.leases || []).filter((lease) => lease.phase !== 'waiting').length, 0);
   const workers = chainFleets.filter((f) => (f.roles || []).includes('worker') || !f.roles?.length).length;
   const reviewers = chainFleets.filter((f) => (f.roles || []).some((r: string) => r !== 'worker')).length;
 
@@ -188,7 +182,6 @@ export const TaskSummaryBar: React.FC<TaskSummaryBarProps> = ({
     );
 
   const warnings = [
-    expiring > 0 && { tone: 'warning' as const, text: `${expiring} lease${expiring === 1 ? '' : 's'} about to expire` },
     unclaimed > 0 && { tone: 'warning' as const, text: `${unclaimed} ready for ${UNCLAIMED_AFTER_MINS}+ min with no free worker` },
     failedStage && { tone: 'danger' as const, text: `Stage ${failedStage.key.replace(/_/g, ' ')} failed, later stages are on hold` },
     runComplete && { tone: 'success' as const, text: 'Run complete' },
@@ -257,7 +250,7 @@ export const TaskSummaryBar: React.FC<TaskSummaryBarProps> = ({
               </span>
             ))}
             <span className="text-faint tabular-nums">
-              {workers} worker{workers === 1 ? '' : 's'} · {reviewers} reviewer{reviewers === 1 ? '' : 's'} · {activeLeases} running
+              {workers} worker{workers === 1 ? '' : 's'} · {reviewers} reviewer{reviewers === 1 ? '' : 's'} · {activeLeases} active claims
             </span>
           </div>
           <span className="tabular-nums text-primary">{progressLabel}</span>

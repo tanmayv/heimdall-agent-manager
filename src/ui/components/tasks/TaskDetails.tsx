@@ -268,10 +268,10 @@ export const TaskDetails: React.FC<TaskDetailsProps> = ({
   const vote = (id: string) => <ReviewerVote key={id} id={id} names={names} verdict={voteFor(votes, id, names)} />;
   // The instance holding a review lease right now, like the Assignee row's
   // "now <holder>". A role the brief does not list still shows on its own.
-  const reviewing = (h: { instanceId: string; role: string }, i: number) => (
+  const reviewing = (h: { instanceId: string; role: string; phase: string; waitReason: string }, i: number) => (
     <span key={`reviewing-${h.instanceId}-${h.role}-${i}`} data-debug-id={`task-detail-reviewing-${h.instanceId}`} className="text-muted">
       now <HolderName instanceId={h.instanceId} names={names} />
-      {h.role ? ` (${h.role})` : ''}
+      {h.role ? ` (${h.role})` : ''} · {h.phase}{h.waitReason ? ` · ${h.waitReason}` : ''}
     </span>
   );
   const briefRoles = new Set(people.reviewersByRole.map(({ role }) => role));
@@ -443,7 +443,7 @@ export const TaskDetails: React.FC<TaskDetailsProps> = ({
             {people.holder && (
               <span className="text-muted">
                 {' '}
-                · now <HolderName instanceId={people.holder} names={names} />
+                · now <HolderName instanceId={people.holder} names={names} /> · {people.holderPhase}{people.holderWaitReason ? ` · ${people.holderWaitReason}` : ''}
               </span>
             )}
           </dd>
@@ -460,6 +460,7 @@ export const TaskDetails: React.FC<TaskDetailsProps> = ({
               options={bridgeOptions}
               disabled={actions.busy || state === 'done' || state === 'cancelled'}
               aria-label="Bridge pin"
+              data-debug-id="task-detail-bridge-pin"
             />
           </dd>
         </dl>
