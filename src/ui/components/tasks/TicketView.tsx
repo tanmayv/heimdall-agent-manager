@@ -20,7 +20,7 @@ import { TicketActivity, type ActivityTab } from './TicketActivity';
 import { VaultLockedBanner } from './TicketBoard';
 import { useChainTickets } from './useChainTickets';
 import { useTicketClock, usePrefersReducedMotion } from './useTicketClock';
-import { attemptInfo, boardOrder, isFinishedTask, isRework, keyFor, leaseClock, parseRequirementsHistory, ticketAsk, ticketPosition, ticketStateMenu, ticketTabTitle } from './ticketModel';
+import { attemptInfo, boardOrder, isFinishedTask, isRework, keyFor, workClaim, parseRequirementsHistory, ticketAsk, ticketPosition, ticketStateMenu, ticketTabTitle } from './ticketModel';
 import { TicketDecisionBlock } from './TicketDecisionBlock';
 import { TicketAgentsCard } from './TicketAgentsCard';
 import { TicketRequirementsCard } from './TicketRequirementsCard';
@@ -219,7 +219,7 @@ export const TicketView: React.FC<TicketViewProps> = ({ chainId, taskId, isMobil
   const state = normalizeTaskState(task.state);
   const finished = isFinishedTask(task);
   const attempt = attemptInfo(task);
-  const lease = leaseClock(task, now);
+  const lease = workClaim(task);
   const hold = taskHold(task);
   const ask = ticketAsk(task);
   const rework = isRework(task);

@@ -8,7 +8,7 @@ export interface TicketFleetTableProps {
   now: number;
   isMobile?: boolean;
   onManageFleet?: () => void;
-  /** A working / reviewing slot opens the ticket it is on. */
+  /** A working, reviewing or waiting slot opens the ticket it owns. */
   onOpenTicket: (taskId: string) => void;
   /** Coordinator, idle and blocked slots open the agent's conversation in Main. */
   onOpenAgent: (instanceId: string, name: string) => void;
@@ -124,11 +124,11 @@ function SlotRow({
   onOpenTicket: (taskId: string) => void;
   onOpenAgent: (instanceId: string, name: string) => void;
 }) {
-  const working = (slot.state === 'working' || slot.state === 'reviewing') && slot.taskId;
-  const inert = slot.state === 'not_running' || (!working && !slot.instanceId);
+  const ownsTicket = (slot.state === 'working' || slot.state === 'reviewing' || slot.state === 'waiting') && slot.taskId;
+  const inert = slot.state === 'not_running' || (!ownsTicket && !slot.instanceId);
   const since = slot.sinceMs === null ? '' : slot.state === 'blocked' ? ` · stopped ${formatAgo(slot.sinceMs, now)}` : ` · ${formatDuration(now - slot.sinceMs)}`;
   const onClick = () => {
-    if (working && slot.taskId) onOpenTicket(slot.taskId);
+    if (ownsTicket && slot.taskId) onOpenTicket(slot.taskId);
     else if (!inert && slot.instanceId) onOpenAgent(slot.instanceId, slot.name);
   };
   const pill = <StatusPill tone={FLEET_STATE_TONE[slot.state]}>{FLEET_STATE_LABELS[slot.state]}</StatusPill>;
@@ -137,7 +137,7 @@ function SlotRow({
       type="button"
       data-debug-id={`ticket-board-fleet-row-${slot.id}`}
       aria-disabled={inert || undefined}
-      title={slot.state === 'not_running' ? 'Hub starts it when needed' : working ? 'Open the ticket it is working on' : `Open ${slot.name}'s conversation`}
+      title={slot.state === 'not_running' ? 'Hub starts it when needed' : ownsTicket ? 'Open its ticket' : `Open ${slot.name}'s conversation`}
       onClick={onClick}
       className={[
         'flex min-h-11 w-full min-w-0 items-center gap-3 px-3 py-2 text-left focus-visible:outline-none focus-visible:shadow-focus',

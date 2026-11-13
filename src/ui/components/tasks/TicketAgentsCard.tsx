@@ -1,11 +1,11 @@
 import React from 'react';
 import { StatusPill } from '@ui';
 import type { TaskWire } from '../../api/taskWire';
-import { getTaskPeople, normalizeTaskState, reviewLeaseHolders } from './taskV2Types';
+import { getTaskPeople, normalizeTaskState, reviewLeaseHolders, reviewingSentenceRest } from './taskV2Types';
 import { isSupersededReview } from './taskActions';
 import { TicketAgentAvatar } from './TicketAgentAvatar';
 import type { TaskNames } from './taskNames';
-import { FLEET_STATE_LABELS, FLEET_STATE_TONE, formatDuration, leaseClock, type FleetMachine, type FleetSlot, type FleetSlotState } from './ticketModel';
+import { FLEET_STATE_LABELS, FLEET_STATE_TONE, workClaim, type FleetMachine, type FleetSlot, type FleetSlotState } from './ticketModel';
 import { TicketCard } from './TicketCard';
 
 /* Agents (REQ-T3) ---------------------------------------------------- */
@@ -30,15 +30,15 @@ export function TicketAgentsCard({
   const slotForAgent = (agentId: string) => slots.find((s) => s.agentId === agentId && s.instanceId) || slots.find((s) => s.agentId === agentId) || null;
   const offlineSlots = new Set(machines.filter((m) => !m.online).flatMap((m) => m.slots));
   const offline = (slot: FleetSlot | null | undefined) => (slot && offlineSlots.has(slot) ? ' · machine offline' : '');
-  const lease = leaseClock(task, now);
+  const lease = workClaim(task);
   const rows: { id: string; name: string; sub: string; state: FleetSlotState; instanceId: string }[] = [];
 
   if (lease) {
     rows.push({
       id: `holder-${lease.holderInstanceId}`,
       name: names.instance(lease.holderInstanceId) || names.agent(people.assignee) || 'Worker',
-      sub: `Assignee · has the lease · ${formatDuration(lease.leftMs)} left${offline(slots.find((s) => s.instanceId === lease.holderInstanceId))}`,
-      state: 'working',
+      sub: `Assignee · ${lease.phase === 'waiting' ? `waiting · ${lease.waitReason}` : 'working'}${offline(slots.find((s) => s.instanceId === lease.holderInstanceId))}`,
+      state: lease.phase === 'waiting' ? 'waiting' : 'working',
       instanceId: lease.holderInstanceId,
     });
   } else {
@@ -63,13 +63,13 @@ export function TicketAgentsCard({
       id: `reviewer-${agentId}`,
       name: names.agent(agentId),
       sub: (holder
-        ? `Reviewer · reviewing, ${holder.leftMins}m left`
+        ? `Reviewer · ${reviewingSentenceRest(holder.role, holder.phase, holder.waitReason)}`
         : verdict
           ? `Reviewer · ${verdict === 'approve' ? 'approved' : 'requested changes'}`
           : state === 'in_review'
             ? 'Reviewer · up to review'
             : 'Reviewer · next, after handoff') + offline(slot),
-      state: holder ? 'working' : slot ? (slot.state === 'working' || slot.state === 'reviewing' ? 'working' : slot.state) : 'not_running',
+      state: holder ? (holder.phase === 'waiting' ? 'waiting' : 'working') : slot ? (slot.state === 'working' || slot.state === 'reviewing' ? 'working' : slot.state) : 'not_running',
       instanceId: holder?.instanceId || slot?.instanceId || '',
     });
   }

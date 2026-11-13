@@ -902,6 +902,16 @@ run_migrations :: proc(
          continue
         }
 		if migration_applied(conn, name) do continue
+        // 203 may have committed before its ledger write (or an older build may
+        // have applied only the ALTER). Re-run its idempotent data conversion.
+        if name == "203_durable_task_claims.sql" && table_column_exists(conn, "task_leases", "phase") {
+            remaining, _ := strings.replace_all(MIGRATION_203_DURABLE_TASK_CLAIMS,
+                "ALTER TABLE task_leases ADD COLUMN phase TEXT NOT NULL DEFAULT 'active' CHECK (phase IN ('active', 'waiting'));", "", context.temp_allocator)
+            if !exec(conn, remaining) do return false, domain.domain_error(.Internal_Error, "durable claim conversion recovery failed")
+            mark_migration_applied(conn, name)
+            continue
+        }
+
 		if name == "003_device_tokens.sql" &&
 		   table_column_exists(conn, "user_api_tokens", "created_from") &&
 		   table_column_exists(conn, "user_api_tokens", "device_label") {

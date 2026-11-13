@@ -116,6 +116,10 @@ export function describeTaskEvent(ev: TaskEventWire, names: TaskNames): Describe
   const known = (text: string): DescribedEvent => ({ text, known: true });
 
   switch (kind) {
+    case 'durable_claim_conversion_pending':
+      return known('Legacy ownership is awaiting restoration');
+    case 'durable_claim_conversion_checked':
+      return known(p.repair_required ? 'Legacy ownership needs coordinator repair' : 'Legacy ownership restored');
     case 'migrated':
       return known(`Carried over from the previous task system${s(p.state) ? ` as ${s(p.state).replace(/_/g, ' ')}` : ''}`);
     case 'created':

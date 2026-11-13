@@ -92,7 +92,7 @@ export function VaultLockedBanner({ debugId, editing = false }: { debugId: strin
  * The Tickets board in the aux pane (ticket board spec, REQ-B1..B7): a summary
  * header that leads with what needs you, the progress bar and filter, the fleet
  * table, then the ticket groups. Every value comes from cached queries patched by
- * WebSocket events; the only timer is the local clock for countdowns.
+ * WebSocket events; the only timer is the local clock for elapsed-time labels.
  */
 export const TicketBoard: React.FC<TicketBoardProps> = ({
   chainId,

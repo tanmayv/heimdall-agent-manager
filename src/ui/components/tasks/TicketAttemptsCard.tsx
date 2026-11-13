@@ -3,11 +3,11 @@ import { StatusPill, Text } from '@ui';
 import type { TaskWire } from '../../api/taskWire';
 import { normalizeTaskState } from './taskV2Types';
 import type { TaskNames } from './taskNames';
-import { attemptInfo, isFinishedTask, isRework, leaseClock } from './ticketModel';
+import { attemptInfo, isFinishedTask, isRework, workClaim } from './ticketModel';
 
 /* Attempts (gap G3: only the latest submission's revision is known) --- */
 
-export function TicketAttemptsCard({ task, names, lease }: { task: TaskWire; names: TaskNames; lease: ReturnType<typeof leaseClock> }) {
+export function TicketAttemptsCard({ task, names, lease }: { task: TaskWire; names: TaskNames; lease: ReturnType<typeof workClaim> }) {
   const attempt = attemptInfo(task);
   const state = normalizeTaskState(task.state);
   const submitted = Number(task.requirements?.submitted_revision) || 0;
@@ -24,7 +24,8 @@ export function TicketAttemptsCard({ task, names, lease }: { task: TaskWire; nam
           if (current) {
             if (state === 'in_progress') {
               text = `${(lease && names.instance(lease.holderInstanceId)) || 'The worker'} · ${rework ? `reworking for rev ${task.requirements?.revision}` : 'working'}`;
-              pill = { tone: 'info', label: 'Working' };
+              if (lease?.phase === 'waiting') text = `${names.instance(lease.holderInstanceId) || 'The worker'} · waiting · ${lease.waitReason}`;
+              pill = lease?.phase === 'waiting' ? { tone: 'pending', label: 'Waiting' } : { tone: 'info', label: 'Working' };
             } else if (state === 'in_review') {
               text = submitted ? `Submitted for rev ${submitted}` : 'Submitted';
               pill = rework ? { tone: 'warning', label: 'Out of date' } : { tone: 'pending', label: 'In review' };

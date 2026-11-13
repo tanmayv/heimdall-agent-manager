@@ -28,10 +28,8 @@ Task_Control_Result :: struct {
 }
 
 task_control_generation :: proc(svc: ^Service, task: domain.Task) -> i64 {
- events, err := iface.taskchain_list_events_by_task(svc.repo, task.task_id, task.owner_user_id)
+ generation, err := iface.taskchain_latest_event_id(svc.repo, task.task_id, task.owner_user_id)
  if err.code != .None do return -1
- generation: i64
- for e in events do generation = max(generation, e.event_id)
  return generation
 }
 
@@ -68,6 +66,25 @@ task_control_inspect :: proc(svc: ^Service, task_in: domain.Task, actor: Actor) 
   append(&owners,json_end(&owner))
  }
  result.owners_json=fmt.tprintf("[%s]",strings.join(owners[:],",",context.temp_allocator))
+ // A legacy review may have no safe repair owner. Expose the cutover
+ // diagnostic without replacing a real blocker or reviving old ownership.
+ has_work_owner:=false
+ for lease in leases do if lease.kind==domain.LEASE_KIND_WORK do has_work_owner=true
+ if task.state==.In_Review && !has_work_owner && (result.wait_reason=="" || result.wait_reason=="{}" || result.wait_reason=="null") {
+  events,eerr:=iface.taskchain_list_events_by_task(svc.repo,task.task_id,task.owner_user_id)
+  if eerr.code!=.None do return {},false,eerr
+  for event in events {
+   if event.kind!=EV_CLAIM_CONVERSION_CHECKED do continue
+   if repair,ok:=jsonx.extract_bool_literal(event.payload_json,"repair_required",true);ok && repair {
+    detail:=json_begin()
+    json_str(&detail,"kind","ownership_repair")
+    json_str(&detail,"reason",jsonx.extract_string(event.payload_json,"reason","legacy review owner requires repair",true,context.temp_allocator))
+    json_str(&detail,"next_action","Assign an eligible owner explicitly when rework is actionable; do not steal another task's holder.")
+    result.wait_reason=json_end(&detail)
+   }
+  }
+ }
+
  cleanup:=make([dynamic]string,context.temp_allocator)
  for stop in ownership_pending_stops(svc,task) {
   pending:=json_begin();json_str(&pending,"instance_id",stop.instance_id);json_str(&pending,"bridge_id",stop.bridge_id)

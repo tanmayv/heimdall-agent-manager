@@ -90,6 +90,16 @@ test('describeTaskEvent has a sentence for every event kind in events.odin', () 
   assert.equal(describeTaskEvent({ kind: 'brand_new_kind' }, names).known, false);
 });
 
+test('legacy claim conversion events explain restoration and repair without raw diagnostics', () => {
+  for (const [kind, payload, text] of [
+    ['durable_claim_conversion_pending', {}, 'Legacy ownership is awaiting restoration'],
+    ['durable_claim_conversion_checked', { repair_required: false }, 'Legacy ownership restored'],
+    ['durable_claim_conversion_checked', { repair_required: true, reason: 'holder_missing_internal' }, 'Legacy ownership needs coordinator repair'],
+  ] as const) {
+    assert.deepEqual(describeTaskEvent({ kind, payload }, names), { known: true, text });
+  }
+});
+
 test('describeTaskEvent explains every lease-expiry reason in events.odin', () => {
   const reasons = odinConstants('EXPIRE_');
   assert.ok(reasons.length >= 11, `parsed ${reasons.length} EXPIRE_* reasons`);

@@ -21,7 +21,7 @@ import {
   formatAgo,
   groupTickets,
   inlineChange,
-  leaseClock,
+  workClaim,
   needsYouContext,
   needsYouHeadline,
   parseRequirementsHistory,
@@ -209,16 +209,15 @@ test('state button: Approve is never offered during a rework or while an action 
   assert.deepEqual(ticketStateMenu(makeTask({ task_id: 'd', state: 'done' }), false), ['reopen']);
 });
 
-test('live values come from timestamps: lease time left and "ago" labels need no refetch', () => {
-  const clock = leaseClock(working, NOW)!;
-  assert.equal(clock.holderInstanceId, 'inst_w5');
-  assert.equal(Math.round(clock.leftMs / MIN), 14);
-  assert.equal(clock.fraction.toFixed(3), (14 / 15).toFixed(3), 'granted 1 min ago, 14 of 15 min left');
-  assert.equal(Math.round((clock.hardLeftMs || 0) / MIN), 59);
-  assert.equal(leaseClock(working, NOW + 7 * MIN)!.fraction < 1, true, 'the bar drains as the clock ticks');
-  assert.equal(leaseClock(next, NOW), null);
-  const unstamped = makeTask({ task_id: 'u', state: 'in_progress', leases: [{ ...working.leases![0], expires_at: '', granted_at: iso(5 * MIN), confirmed_at: '' }] });
-  assert.equal(Math.round(leaseClock(unstamped, NOW)!.leftMs / MIN), 10, 'no expiry yet: the default 15 min lease from its grant');
+test('work responsibility survives legacy deadlines and waiting while elapsed labels still tick', () => {
+  const claim = workClaim(working)!;
+  assert.equal(claim.holderInstanceId, 'inst_w5');
+  assert.equal(claim.phase, 'active');
+  assert.equal(workClaim(next), null);
+  const waiting = makeTask({ ...working, state: 'in_review', leases: [{ ...working.leases![0], phase: 'waiting', expires_at: iso(60 * MIN), hard_deadline_at: iso(60 * MIN) }] });
+  assert.equal(workClaim(waiting)!.phase, 'waiting');
+  assert.equal(workClaim(waiting)!.waitReason, 'waiting for review');
+  assert.equal('leftMs' in claim, false);
   assert.equal(formatAgo(iso(12 * MIN), NOW), '12m ago');
   assert.equal(formatAgo(iso(10_000), NOW), 'just now');
 });
@@ -598,5 +597,75 @@ test('REQ-Q1: every button, input, select and textarea in the new views has a da
     // `=>` inside an onClick is not the end of the tag.
     const tags = src.match(/<(button|input|select|textarea)\b(?:=>|[^>])*>/gs) || [];
     for (const tag of tags) assert.match(tag, /data-debug-id=/, `${rel}: ${tag.slice(0, 80)}`);
+  }
+});
+
+test('ticket agents retain waiting worker and reviewer responsibility without countdowns', async () => {
+  const { TicketAgentsCard } = await import('../src/ui/components/tasks/TicketAgentsCard.tsx');
+  const task = makeTask({ ...working, state: 'in_review', leases: [
+    { ...working.leases![0], phase: 'waiting', expires_at: iso(60 * MIN) },
+    { ...working.leases![0], lease_id: 'review', kind: 'review', holder_instance_id: 'inst_rev', review_role: 'security', phase: 'waiting' },
+  ] });
+  const names = buildTaskNames({ tasks: [task], identities: [
+    { agent_id: 'agt_rev', name: 'Security reviewer' },
+  ], instances: [{ agent_id: 'agt_rev', agent_instance_id: 'inst_rev' }] });
+  const html = await renderWith((React) => React.createElement(TicketAgentsCard, {
+    task, names, machines: [], people: { assignee: '', workers: [], reviewers: ['agt_rev'], userApproval: false },
+    now: NOW, onOpenAgent: () => {},
+  }));
+  assert.match(html, /Assignee · waiting · waiting for review/);
+  assert.match(html, /Reviewer · is waiting \(security\) · waiting to continue/);
+  assert.doesNotMatch(html, /[0-9]+m left|hard limit|has the lease/);
+});
+
+test('fleet waiting claim remains tied to its task without active work animation', () => {
+  const task = makeTask({ ...working, leases: [{ ...working.leases![0], phase: 'waiting' }] });
+  const machines = buildFleetMachines({
+    tasks: [task], members: [{ agent_instance_id: 'inst_w5', agent_id: 'agt_worker', runtime_status: 'live' }],
+    fleets: [{ agent_id: 'agt_worker', capacity: 1, roles: ['worker'], bridge_id: 'brg_mac' }],
+    bridges: [{ bridge_id: 'brg_mac', status: 'online' }], coordinatorInstanceId: '',
+    keys: ticketKeys([task]), agentName: () => 'Worker',
+  });
+  const slot = machines.flatMap((m) => m.slots).find((s) => s.instanceId === 'inst_w5')!;
+  assert.equal(slot.state, 'waiting');
+  assert.equal(fleetSummary(machines), '1 waiting');
+  assert.equal(slot.taskId, task.task_id);
+  assert.match(slot.detail, /Waiting · waiting to continue/);
+  assert.notEqual(slot.sinceMs, null, 'grant-based elapsed time remains available');
+});
+
+test('waiting fleet row opens its owned ticket rather than the agent conversation', async () => {
+  const { JSDOM } = await import('jsdom');
+  const React = await import('react');
+  const { createRoot } = await import('react-dom/client');
+  const { TicketFleetTable } = await import('../src/ui/components/tasks/TicketFleetTable.tsx');
+  const dom = new JSDOM('<div id="root"></div>');
+  const previous = { window: globalThis.window, document: globalThis.document, act: (globalThis as any).IS_REACT_ACT_ENVIRONMENT };
+  Object.assign(globalThis, { window: dom.window, document: dom.window.document, IS_REACT_ACT_ENVIRONMENT: true });
+  const root = createRoot(dom.window.document.getElementById('root')!);
+  const openedTickets: string[] = [];
+  const openedAgents: string[] = [];
+  const task = makeTask({ ...working, leases: [{ ...working.leases![0], phase: 'waiting' }] });
+  const machines = buildFleetMachines({
+    tasks: [task], members: [{ agent_instance_id: 'inst_w5', agent_id: 'agt_worker', runtime_status: 'live' }],
+    fleets: [{ agent_id: 'agt_worker', capacity: 1, roles: ['worker'], bridge_id: 'brg_mac' }],
+    bridges: [{ bridge_id: 'brg_mac', status: 'online' }], coordinatorInstanceId: '',
+    keys: ticketKeys([task]), agentName: () => 'Worker',
+  });
+  try {
+    await React.act(async () => root.render(React.createElement(TicketFleetTable, {
+      machines, now: NOW, onOpenTicket: (id) => openedTickets.push(id), onOpenAgent: (id) => openedAgents.push(id),
+    })));
+    const row = dom.window.document.querySelector<HTMLButtonElement>('[data-debug-id="ticket-board-fleet-row-inst_w5"]')!;
+    assert.equal(row.title, 'Open its ticket');
+    assert.match(row.textContent || '', /Waiting/);
+    assert.equal(row.querySelector('[class*="animate-pulse"]'), null);
+    await React.act(async () => row.click());
+    assert.deepEqual(openedTickets, [task.task_id]);
+    assert.deepEqual(openedAgents, []);
+  } finally {
+    await React.act(async () => root.unmount());
+    Object.assign(globalThis, { window: previous.window, document: previous.document, IS_REACT_ACT_ENVIRONMENT: previous.act });
+    dom.window.close();
   }
 });

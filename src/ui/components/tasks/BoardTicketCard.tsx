@@ -2,7 +2,7 @@ import React from 'react';
 import { useDispatch } from 'react-redux';
 import { Badge, Button, Icon, IconButton, Menu, StatusPill, Text } from '@ui';
 import type { TaskWire } from '../../api/taskWire';
-import { TASK_STATE_LABELS, TASK_STATE_TONE, holdSummary, normalizeTaskState, reviewLeaseHolders, taskHold } from './taskV2Types';
+import { TASK_STATE_LABELS, TASK_STATE_TONE, holdSummary, normalizeTaskState, reviewLeaseHolders, reviewingSentenceRest, inProgressSentenceRest, taskHold } from './taskV2Types';
 import { TASK_ACTION_LABELS, editLock, getTaskActions, recheckToast, type TaskActionId } from './taskActions';
 import { showToast } from '../../store/toastSlice';
 import { useTaskActions } from './useTaskActions';
@@ -16,10 +16,9 @@ import {
   ASK_LABELS,
   attemptInfo,
   formatAgo,
-  formatDuration,
   isRework,
   keyFor,
-  leaseClock,
+  workClaim,
   needsYouContext,
   requirementChangeLine,
   ticketAsk,
@@ -48,7 +47,7 @@ export interface BoardTicketCardProps {
 
 /**
  * One open ticket on the board (REQ-B4, B5, B7): key, title, state pill, who is
- * on it, lease time left and the attempt once. State is a pill with a word,
+ * on it, ownership phase and the attempt once. State is a pill with a word,
  * never a coloured rail, outline or glow. The whole card opens the ticket tab;
  * its controls do their own thing.
  */
@@ -69,7 +68,7 @@ export const BoardTicketCard = React.memo(function BoardTicketCard({
   const state = normalizeTaskState(task.state);
   const ask = ticketAsk(task);
   const hold = taskHold(task);
-  const lease = leaseClock(task, now);
+  const lease = workClaim(task);
   const attempt = attemptInfo(task);
   // The accessible name never carries vault ciphertext.
   const { text: title } = useDecryptedText(task.title);
@@ -201,24 +200,18 @@ export const BoardTicketCard = React.memo(function BoardTicketCard({
           <Text as="p" role="body-sm" tone={ask === 'agent_down' ? 'danger' : 'muted'} data-debug-id={`task-card-status-${id}`}>
             {needsYouContext(task, names)}
           </Text>
-        ) : lease ? (
+        ) : lease && state !== 'in_review' ? (
           <div data-debug-id={`task-card-status-${id}`} className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <span className="inline-flex min-w-0 items-center gap-2">
-              <TicketAgentAvatar name={holderName || 'Agent'} state="working" />
-              <span className="truncate text-primary">{holderName || 'An agent'} is working</span>
-            </span>
-            <span className="inline-flex items-center gap-2 text-muted">
-              <span aria-hidden="true" className="h-1 w-12 overflow-hidden rounded-pill bg-neutral-soft">
-                <span className="block h-full rounded-pill bg-info" style={{ width: `${Math.round(lease.fraction * 100)}%` }} />
-              </span>
-              <span className="tabular-nums">{formatDuration(lease.leftMs)} left</span>
+              <TicketAgentAvatar name={holderName || 'Agent'} state={lease.phase === 'waiting' ? 'waiting' : 'working'} />
+              <span className="truncate text-primary">{holderName || 'An agent'} {inProgressSentenceRest(lease.phase, lease.waitReason)}</span>
             </span>
             {attempt.exhausted ? <Badge tone="warning">{attempt.label} · budget spent</Badge> : <span className="text-muted">{attempt.label}</span>}
           </div>
         ) : state === 'in_review' ? (
           <Text as="p" role="body-sm" tone="muted" data-debug-id={`task-card-status-${id}`}>
             {reviewing.length
-              ? reviewing.map((h) => `${names.instance(h.instanceId) || 'A reviewer'} is reviewing, ${h.leftMins}m left`).join(' · ')
+              ? reviewing.map((h) => `${names.instance(h.instanceId) || 'A reviewer'} ${reviewingSentenceRest(h.role, h.phase, h.waitReason)}`).join(' · ')
               : 'Waiting for a reviewer'}
             {attempt.no > 1 || attempt.exhausted ? ` · ${attempt.label}` : ''}
           </Text>

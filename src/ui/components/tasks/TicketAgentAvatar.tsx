@@ -12,6 +12,7 @@ const STATE_CLASS: Record<FleetSlotState, string> = {
   working: 'ring-2 ring-info/60 motion-safe:animate-pulse',
   reviewing: 'ring-2 ring-info/60 motion-safe:animate-pulse',
   coordinating: 'ring-2 ring-accent/60 motion-safe:animate-pulse',
+  waiting: 'ring-1 ring-neutral/50',
   idle: 'ring-1 ring-success/50',
   blocked: 'ring-2 ring-danger/70',
   not_running: 'opacity-60 grayscale',

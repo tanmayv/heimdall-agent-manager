@@ -1,5 +1,5 @@
 import type { TaskWire } from '../../api/taskWire';
-import { normalizeTaskState, reviewLeases, taskHold, workLease } from './taskV2Types';
+import { normalizeTaskState, ownershipPhase, ownershipWaitReason, reviewLeases, taskHold, workLease } from './taskV2Types';
 import { awaitingYourReview, blockedOnYou, getTaskActions, isDraft, taskNeedsYou, type TaskActionId } from './taskActions';
 import { isAgentRunning } from '../../utils/agentStatus';
 import { containsVaultArmored } from '../../utils/vaultCrypto';
@@ -10,9 +10,6 @@ import { containsVaultArmored } from '../../utils/vaultCrypto';
  * here from the cached chain, fleet, live-agent and bridge data, so the views
  * update from WebSocket cache patches alone (REQ-L1).
  */
-
-/** A work lease's length when the hub has not stamped its expiry yet. */
-const DEFAULT_LEASE_MS = 15 * 60000;
 
 /** Attempts a ticket gets when its brief sets no budget (the hub's default). */
 export const DEFAULT_MAX_ATTEMPTS = 5;
@@ -358,33 +355,22 @@ export function attemptInfo(task: Pick<TaskWire, 'attempt_no' | 'brief' | 'block
   return { no, max, exhausted: b?.kind === 'human' && b?.reason === 'budget_exhausted', label: `Attempt ${no}` };
 }
 
-export interface LeaseClock {
+export interface WorkClaim {
   holderInstanceId: string;
   bridgeId: string;
-  leftMs: number;
-  /** 0..1 of the lease still left (the bar's fill). */
-  fraction: number;
-  hardLeftMs: number | null;
+  phase: 'active' | 'waiting';
+  waitReason: string;
 }
 
-/** The work lease's countdown from its timestamps; never refetched to tick (REQ-L1 rules). */
-export function leaseClock(task: TaskWire, nowMs: number): LeaseClock | null {
-  if (normalizeTaskState(task.state) !== 'in_progress') return null;
+/** Durable work responsibility, including while awaiting review or input. */
+export function workClaim(task: TaskWire): WorkClaim | null {
   const lease = workLease(task);
   if (!lease?.holder_instance_id) return null;
-  const granted = timestampMs(lease.confirmed_at) || timestampMs(lease.granted_at);
-  // No expiry yet: the default 15 minute lease from its grant, as workLeaseHolder assumes.
-  const stated = timestampMs(lease.expires_at);
-  const expires = Number.isNaN(stated) ? (Number.isNaN(granted) ? nowMs : granted) + DEFAULT_LEASE_MS : stated;
-  const leftMs = Math.max(0, expires - nowMs);
-  const span = !Number.isNaN(granted) && expires > granted ? expires - granted : DEFAULT_LEASE_MS;
-  const hard = timestampMs(lease.hard_deadline_at);
   return {
     holderInstanceId: String(lease.holder_instance_id),
     bridgeId: String(lease.bridge_id || ''),
-    leftMs,
-    fraction: Math.max(0, Math.min(1, leftMs / span)),
-    hardLeftMs: Number.isNaN(hard) ? null : Math.max(0, hard - nowMs),
+    phase: ownershipPhase(lease),
+    waitReason: ownershipWaitReason(task, lease),
   };
 }
 
@@ -637,9 +623,10 @@ export function replacementLinks(text: string): { replacedBy: string | null; rep
  * Fleet table (REQ-B3)
  * ------------------------------------------------------------------ */
 
-export type FleetSlotState = 'working' | 'reviewing' | 'idle' | 'blocked' | 'not_running' | 'coordinating';
+export type FleetSlotState = 'working' | 'reviewing' | 'waiting' | 'idle' | 'blocked' | 'not_running' | 'coordinating';
 
 export const FLEET_STATE_LABELS: Record<FleetSlotState, string> = {
+  waiting: 'Waiting',
   working: 'Working',
   reviewing: 'Working',
   idle: 'Idle',
@@ -649,6 +636,7 @@ export const FLEET_STATE_LABELS: Record<FleetSlotState, string> = {
 };
 
 export const FLEET_STATE_TONE: Record<FleetSlotState, 'info' | 'success' | 'danger' | 'neutral'> = {
+  waiting: 'neutral',
   working: 'info',
   reviewing: 'info',
   idle: 'success',
@@ -759,19 +747,19 @@ export function buildFleetMachines(input: FleetInputs): FleetMachine[] {
   }
 
   // What each instance is doing, from the leases on open tickets.
-  const workOf = new Map<string, { taskId: string; bridgeId: string; sinceMs: number | null; reviewing: boolean }>();
+  const workOf = new Map<string, { taskId: string; bridgeId: string; sinceMs: number | null; reviewing: boolean; waitReason: string }>();
   for (const t of tasks) {
     if (isFinishedTask(t)) continue;
     const w = workLease(t);
     if (w?.holder_instance_id) {
       const since = timestampMs(w.confirmed_at) || timestampMs(w.granted_at);
-      workOf.set(String(w.holder_instance_id), { taskId: t.task_id, bridgeId: str(w.bridge_id), sinceMs: Number.isNaN(since) ? null : since, reviewing: false });
+      workOf.set(String(w.holder_instance_id), { taskId: t.task_id, bridgeId: str(w.bridge_id), sinceMs: Number.isNaN(since) ? null : since, reviewing: false, waitReason: ownershipPhase(w) === 'waiting' ? ownershipWaitReason(t, w) : '' });
     }
     for (const r of reviewLeases(t)) {
       const id = String(r.holder_instance_id);
       if (workOf.has(id)) continue;
       const since = timestampMs(r.confirmed_at) || timestampMs(r.granted_at);
-      workOf.set(id, { taskId: t.task_id, bridgeId: str(r.bridge_id), sinceMs: Number.isNaN(since) ? null : since, reviewing: true });
+      workOf.set(id, { taskId: t.task_id, bridgeId: str(r.bridge_id), sinceMs: Number.isNaN(since) ? null : since, reviewing: true, waitReason: ownershipPhase(r) === 'waiting' ? ownershipWaitReason(t, r) : '' });
     }
   }
   const titleOf = new Map(tasks.map((t) => [t.task_id, t.title] as const));
@@ -798,9 +786,9 @@ export function buildFleetMachines(input: FleetInputs): FleetMachine[] {
       state = 'blocked';
       detail = blockedReasons[instanceId] || 'Stopped with an error';
     } else if (work) {
-      state = work.reviewing ? 'reviewing' : 'working';
+      state = work.waitReason ? 'waiting' : work.reviewing ? 'reviewing' : 'working';
       const key = keyFor(keys, work.taskId);
-      detail = `${work.reviewing ? 'Reviewing ' : ''}${key} ${titleOf.get(work.taskId) || ''}`.trim();
+      detail = `${work.waitReason ? `Waiting · ${work.waitReason} · ` : work.reviewing ? 'Reviewing ' : ''}${key} ${titleOf.get(work.taskId) || ''}`.trim();
     } else if (!isLiveRuntime(runtime) && runtime) {
       state = 'not_running';
       detail = 'Hub starts it when needed';
@@ -891,7 +879,7 @@ export function buildFleetMachines(input: FleetInputs): FleetMachine[] {
     }
     machine.slots.push(machine.online ? rest : { ...rest, state: 'not_running', detail: 'Machine offline' });
   }
-  const STATE_RANK: Record<FleetSlotState, number> = { coordinating: 0, working: 1, reviewing: 2, blocked: 3, idle: 4, not_running: 5 };
+  const STATE_RANK: Record<FleetSlotState, number> = { coordinating: 0, working: 1, reviewing: 2, waiting: 3, blocked: 3, idle: 4, not_running: 5 };
   for (const m of byBridge.values()) m.slots.sort((a, b) => STATE_RANK[a.state] - STATE_RANK[b.state] || a.name.localeCompare(b.name));
   // Online machines first (most slots first), then offline ones.
   return Array.from(byBridge.values()).sort((a, b) => Number(b.online) - Number(a.online) || b.slots.length - a.slots.length || a.label.localeCompare(b.label));
@@ -909,15 +897,17 @@ export function fleetSummary(machines: readonly FleetMachine[]): string {
   let idle = 0;
   let off = 0;
   let blocked = 0;
+  let waiting = 0;
   for (const m of machines) {
     for (const s of m.slots) {
       if (s.state === 'working' || s.state === 'reviewing') working += 1;
       else if (s.state === 'idle') idle += 1;
       else if (s.state === 'blocked') blocked += 1;
+      else if (s.state === 'waiting') waiting += 1;
       else if (s.state === 'not_running') off += 1;
     }
   }
-  return [working ? `${working} working` : '', idle ? `${idle} idle` : '', blocked ? `${blocked} blocked` : '', off ? `${off} off` : ''].filter(Boolean).join(' · ');
+  return [working ? `${working} working` : '', waiting ? `${waiting} waiting` : '', idle ? `${idle} idle` : '', blocked ? `${blocked} blocked` : '', off ? `${off} off` : ''].filter(Boolean).join(' · ');
 }
 
 /* ------------------------------------------------------------------ *

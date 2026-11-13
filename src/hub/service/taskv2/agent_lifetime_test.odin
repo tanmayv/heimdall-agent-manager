@@ -168,10 +168,14 @@ test_t8_block_keeps_process_and_handoff_relaunches :: proc(t: ^testing.T) {
 	_ = fire_due(&fx.svc, now_ms(&fx.clock))
 	testing.expect(t, !wake_log_has_stop(log, "inst_w1"), "idle TTL spares an instance whose task is blocked")
 
-	// A second task: handoff stops; the same-UoW re-grant relaunches.
+	// Relinquish the blocked reservation explicitly before taking another task.
+	_, released, release_err := lease_handoff(&fx.svc, inst_auth("inst_w1"), Handoff_Input{summary = "release blocked responsibility"})
+	if !testing.expect(t, released, release_err.message) do return
+	testing.expect(t, !wake_log_has_stop(log, "inst_w1"), "waiting handoff releases responsibility without interrupting process")
+	// A second task: active handoff stops; the same-UoW re-grant relaunches.
 	_ = publish_task(t, fx, chain, "task_2", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
 	l2, held := lease_of(fx, "inst_w1")
-	if !testing.expect(t, held, "second task granted") do return
+	if !testing.expect(t, held && string(l2.task_id) == "task_2", "second task granted after explicit release") do return
 	confirm_holder(fx, "inst_w1")
 	before := run_count_of(fx, "inst_w1")
 	wake_log_reset(log)
