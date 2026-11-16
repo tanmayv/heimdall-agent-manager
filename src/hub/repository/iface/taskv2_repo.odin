@@ -19,6 +19,11 @@ Task_Event_List_By_Task_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, owner
 // `comment`), ascending event_id: the one batched read after_chain_change
 // refolds from. Comment history stays on list_events_by_task.
 Task_Event_List_By_Chain_Proc :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Event, domain.Domain_Error)
+// Task_Event_List_Ownership_Stops_Proc lists the owner's ownership_stop_requested/
+// ownership_stop_confirmed events (ascending event_id) for tasks of the owner's
+// chains: the one read bridge hello and stop confirmation fold pending fences from,
+// instead of every event of every task once per instance.
+Task_Event_List_Ownership_Stops_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID) -> ([]domain.Task_Event, domain.Domain_Error)
 
 Task_Attempt_Save_Proc :: proc(ctx: rawptr, attempt: domain.Task_Attempt) -> (domain.Task_Attempt, bool, domain.Domain_Error)
 Task_Attempt_List_By_Task_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Attempt, domain.Domain_Error)
@@ -81,6 +86,11 @@ taskchain_list_events_by_task :: proc(repo: ^Taskchain_Repository, task_id: doma
 taskchain_list_fold_events_by_chain :: proc(repo: ^Taskchain_Repository, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Event, domain.Domain_Error) {
 	if repo == nil || repo.list_fold_events_by_chain == nil do return nil, domain.domain_error(.Internal_Error, NOT_CONFIGURED)
 	return repo.list_fold_events_by_chain(repo.ctx, chain_id, owner_user_id)
+}
+
+taskchain_list_ownership_stop_events :: proc(repo: ^Taskchain_Repository, owner_user_id: domain.User_ID) -> ([]domain.Task_Event, domain.Domain_Error) {
+	if repo == nil || repo.list_ownership_stop_events == nil do return nil, domain.domain_error(.Internal_Error, NOT_CONFIGURED)
+	return repo.list_ownership_stop_events(repo.ctx, owner_user_id)
 }
 
 taskchain_save_attempt :: proc(repo: ^Taskchain_Repository, attempt: domain.Task_Attempt) -> (domain.Task_Attempt, bool, domain.Domain_Error) {

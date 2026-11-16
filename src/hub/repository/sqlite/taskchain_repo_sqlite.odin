@@ -55,6 +55,7 @@ new_taskchain_repository :: proc(impl: ^Taskchain_Repo_SQLite, conn: ^Conn) -> i
 		list_events_by_task = task_event_list_by_task_sqlite,
 		latest_event_id = task_event_latest_id_sqlite,
 		list_fold_events_by_chain = task_fold_event_list_by_chain_sqlite,
+		list_ownership_stop_events = task_ownership_stop_event_list_sqlite,
 		save_attempt = task_attempt_save_sqlite,
 		list_attempts_by_task = task_attempt_list_by_task_sqlite,
 		save_facet = task_attempt_facet_save_sqlite,

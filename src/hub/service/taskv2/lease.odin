@@ -657,7 +657,8 @@ on_bridge_hello :: proc(svc: ^Service, bridge_id: string, active_instance_ids: [
 	defer scratch_end(&scratch)
 	u, ok, _ := begin_uow(svc)
 	if !ok do return
-	if instances,ierr:=iface.agent_list_instances_by_bridge(svc.agents,bridge_id);ierr.code==.None {for inst in instances do reconcile_ownership_stops_in_uow(svc,&u,inst)}
+	// One kind-filtered read per owner, not every task's full history per instance.
+	if instances,ierr:=iface.agent_list_instances_by_bridge(svc.agents,bridge_id);ierr.code==.None {reconcile_ownership_stops_for_instances_in_uow(svc,&u,instances)}
 	leases, lerr := iface.taskchain_list_all_leases(svc.repo)
 	if lerr.code == .None {
 		for l in leases {

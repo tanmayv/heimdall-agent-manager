@@ -51,6 +51,15 @@ ownership_pending_stops :: proc(svc:^Service,task:domain.Task)->[]Fenced_Stop {
  events,err:=iface.taskchain_list_events_by_task(svc.repo,task.task_id,task.owner_user_id)
  if err.code!=.None {failed:=make([]Fenced_Stop,1,context.temp_allocator);failed[0].instance_id="unknown";return failed}
  pending:=make([dynamic]Fenced_Stop,context.temp_allocator)
+ fold_pending_stops(svc,events,&pending)
+ return pending[:]
+}
+ownership_cleanup_pending :: proc(svc:^Service,task:domain.Task)->bool {return len(ownership_pending_stops(svc,task))>0}
+
+// fold_pending_stops applies ONE task's events (ascending; other kinds are skipped)
+// to `pending`: a request adds its generation, a matching confirmation removes it.
+@(private="file")
+fold_pending_stops :: proc(svc:^Service,events:[]domain.Task_Event,pending:^[dynamic]Fenced_Stop) {
  for ev in events {
   if ev.kind!=EV_OWNERSHIP_STOP_REQUESTED && ev.kind!=EV_OWNERSHIP_STOP_CONFIRMED do continue
   id:=jsonx.extract_string(ev.payload_json,"instance_id","",true,context.temp_allocator)
@@ -59,39 +68,70 @@ ownership_pending_stops :: proc(svc:^Service,task:domain.Task)->[]Fenced_Stop {
    bridge:=jsonx.extract_string(ev.payload_json,"bridge_id","",true,context.temp_allocator)
    if bridge=="" {if inst,found,_:=iface.agent_get_instance(svc.agents,id);found do bridge=inst.bridge_id}
    command:=jsonx.extract_string(ev.payload_json,"command_id","",true,context.temp_allocator)
-   append(&pending,Fenced_Stop{bridge,id,run,command})
+   append(pending,Fenced_Stop{bridge,id,run,command})
   } else {
    command:=jsonx.extract_string(ev.payload_json,"command_id","",true,context.temp_allocator)
-   for i:=len(pending)-1;i>=0;i-=1 {if pending[i].instance_id==id && pending[i].run_count==run && pending[i].command_id==command do ordered_remove(&pending,i)}
+   for i:=len(pending)-1;i>=0;i-=1 {if pending[i].instance_id==id && pending[i].run_count==run && pending[i].command_id==command do ordered_remove(pending,i)}
   }
  }
- return pending[:]
 }
-ownership_cleanup_pending :: proc(svc:^Service,task:domain.Task)->bool {return len(ownership_pending_stops(svc,task))>0}
+
+Owner_Pending_Stop :: struct {task_id:domain.Task_ID,stop:Fenced_Stop}
+
+// owner_pending_stops: every still-pending fence across the owner's tasks, folded per
+// task from ONE kind-filtered read. Walking chains -> tasks -> every event of every task
+// (comments and payloads included) once per instance made a bridge hello with ~180
+// instances allocate ~1.5 GB while holding the write transaction. ok=false: the read
+// failed, so callers must treat the fence as unknown (fail closed).
+owner_pending_stops :: proc(svc:^Service,owner:domain.User_ID)->(stops:[]Owner_Pending_Stop,ok:bool) {
+ events,err:=iface.taskchain_list_ownership_stop_events(svc.repo,owner)
+ if err.code!=.None do return nil,false
+ defer delete(events)
+ by_task:=make(map[domain.Task_ID][dynamic]domain.Task_Event,allocator=context.temp_allocator)
+ order:=make([dynamic]domain.Task_ID,context.temp_allocator)
+ for ev in events {
+  if ev.task_id not_in by_task {by_task[ev.task_id]=make([dynamic]domain.Task_Event,context.temp_allocator);append(&order,ev.task_id)}
+  append(&by_task[ev.task_id],ev)
+ }
+ out:=make([dynamic]Owner_Pending_Stop,context.temp_allocator)
+ for task_id in order {
+  pending:=make([dynamic]Fenced_Stop,context.temp_allocator)
+  fold_pending_stops(svc,by_task[task_id][:],&pending)
+  for stop in pending do append(&out,Owner_Pending_Stop{task_id,stop})
+ }
+ return out[:],true
+}
 
 instance_ownership_stop_pending :: proc(svc:^Service,inst:domain.Agent_Instance)->bool {
- chains,err:=iface.taskchain_list_chains_by_owner(svc.repo,inst.owner_user_id)
- if err.code!=.None do return true
- for chain in chains {
-  tasks,terr:=iface.taskchain_list_tasks_by_chain(svc.repo,chain.chain_id,inst.owner_user_id)
-  if terr.code!=.None do return true
-  for task in tasks {for stop in ownership_pending_stops(svc,task) do if stop.instance_id==inst.agent_instance_id || stop.instance_id=="unknown" do return true}
- }
+ stops,ok:=owner_pending_stops(svc,inst.owner_user_id)
+ if !ok do return true
+ for p in stops do if p.stop.instance_id==inst.agent_instance_id do return true
  return false
 }
 
 reconcile_ownership_stops_in_uow :: proc(svc:^Service,u:^Uow,inst:domain.Agent_Instance) {
- chains,err:=iface.taskchain_list_chains_by_owner(svc.repo,inst.owner_user_id)
- if err.code!=.None do return
- for chain in chains {
-  tasks,terr:=iface.taskchain_list_tasks_by_chain(svc.repo,chain.chain_id,inst.owner_user_id)
-  if terr.code!=.None do continue
-  for task in tasks {
-   for stop in ownership_pending_stops(svc,task) {
-    if stop.instance_id!=inst.agent_instance_id do continue
+ reconcile_ownership_stops_for_instances_in_uow(svc,u,[]domain.Agent_Instance{inst})
+}
+
+// reconcile_ownership_stops_for_instances_in_uow re-queues the pending fences of
+// `instances` (one bridge hello), reading each owner's stop events once.
+reconcile_ownership_stops_for_instances_in_uow :: proc(svc:^Service,u:^Uow,instances:[]domain.Agent_Instance) {
+ owners:=make([dynamic]domain.User_ID,context.temp_allocator)
+ for inst in instances {
+  seen:=false
+  for o in owners do if o==inst.owner_user_id {seen=true;break}
+  if !seen do append(&owners,inst.owner_user_id)
+ }
+ for owner in owners {
+  stops,ok:=owner_pending_stops(svc,owner)
+  if !ok do continue
+  for inst in instances {
+   if inst.owner_user_id!=owner do continue
+   for p in stops {
+    if p.stop.instance_id!=inst.agent_instance_id do continue
     // Reconnect/status events only retry the original fence. They never prove
     // termination, and must never silently retarget it to a newer generation.
-    queue_fenced_stop_generation(u,stop)
+    queue_fenced_stop_generation(u,p.stop)
    }
   }
  }
@@ -116,32 +156,38 @@ confirm_ownership_stop_result :: proc(svc:^Service,bridge_id,command_id,result_j
  if inst.bridge_id!=bridge_id do return false,domain.domain_error(.Forbidden,"ownership stop bridge mismatch")
  u,ok,uerr:=begin_uow(svc)
  if !ok do return false,uerr
- chains,cerr:=iface.taskchain_list_chains_by_owner(svc.repo,inst.owner_user_id)
- if cerr.code!=.None {_,_=end_uow(svc,&u,false);return false,cerr}
+ pending,stops_ok:=owner_pending_stops(svc,inst.owner_user_id)
+ if !stops_ok {_,_=end_uow(svc,&u,false);return false,domain.domain_error(.Internal_Error,"failed to read ownership stop events")}
+ // Only tasks holding this exact generation's fence can be confirmed.
+ task_ids:=make([dynamic]domain.Task_ID,context.temp_allocator)
+ for p in pending {
+  if p.stop.bridge_id!=bridge_id || p.stop.command_id!=command_id || p.stop.instance_id!=instance_id || p.stop.run_count!=run_count do continue
+  seen:=false
+  for id in task_ids do if id==p.task_id {seen=true;break}
+  if !seen do append(&task_ids,p.task_id)
+ }
  matched:=false
- for chain in chains {
-  tasks,terr:=iface.taskchain_list_tasks_by_chain(svc.repo,chain.chain_id,chain.owner_user_id)
-  if terr.code!=.None {_,_=end_uow(svc,&u,false);return false,terr}
-  for task in tasks {
-   task_matched:=false
-   for stop in ownership_pending_stops(svc,task) {
-    if stop.bridge_id!=bridge_id || stop.command_id!=command_id || stop.instance_id!=instance_id || stop.run_count!=run_count do continue
-    matched=true
-    task_matched=true
-    p:=json_begin();json_str(&p,"instance_id",stop.instance_id);json_int(&p,"run_count",i64(stop.run_count));json_str(&p,"command_id",command_id)
-    if _,_,written,werr:=record_event(svc,&u,task,hub_actor(),EV_OWNERSHIP_STOP_CONFIRMED,json_end(&p));!written {_,_=end_uow(svc,&u,false);return false,werr}
-   }
-   if task_matched && !ownership_cleanup_pending(svc,task) {
-    claims,lerr:=iface.taskchain_list_leases_by_task(svc.repo,task.task_id)
-    if lerr.code!=.None {_,_=end_uow(svc,&u,false);return false,lerr}
-    for claim in claims {
-     if !transfer_reservation_needs_activation(svc,task,claim) do continue
-     // The durable transfer already authorized this beneficiary. Confirmation
-     // delivers it immediately; ordinary identity/phase checks still apply.
-     // A failed activation rolls back its own savepoint, preserving only
-     // the confirmed stop; the coordinator can retry after repair.
-     _,_,_=lease_claim(svc,contracts.Auth_Context{kind=.Internal_User,user_id=string(task.owner_user_id)},Lease_Claim_Input{task_id=task.task_id,instance_id=claim.holder_instance_id})
-    }
+ for task_id in task_ids {
+  task,tfound,terr:=iface.taskchain_get_task(svc.repo,task_id)
+  if !tfound {_,_=end_uow(svc,&u,false);return false,terr}
+  task_matched:=false
+  for stop in ownership_pending_stops(svc,task) {
+   if stop.bridge_id!=bridge_id || stop.command_id!=command_id || stop.instance_id!=instance_id || stop.run_count!=run_count do continue
+   matched=true
+   task_matched=true
+   p:=json_begin();json_str(&p,"instance_id",stop.instance_id);json_int(&p,"run_count",i64(stop.run_count));json_str(&p,"command_id",command_id)
+   if _,_,written,werr:=record_event(svc,&u,task,hub_actor(),EV_OWNERSHIP_STOP_CONFIRMED,json_end(&p));!written {_,_=end_uow(svc,&u,false);return false,werr}
+  }
+  if task_matched && !ownership_cleanup_pending(svc,task) {
+   claims,lerr:=iface.taskchain_list_leases_by_task(svc.repo,task.task_id)
+   if lerr.code!=.None {_,_=end_uow(svc,&u,false);return false,lerr}
+   for claim in claims {
+    if !transfer_reservation_needs_activation(svc,task,claim) do continue
+    // The durable transfer already authorized this beneficiary. Confirmation
+    // delivers it immediately; ordinary identity/phase checks still apply.
+    // A failed activation rolls back its own savepoint, preserving only
+    // the confirmed stop; the coordinator can retry after repair.
+    _,_,_=lease_claim(svc,contracts.Auth_Context{kind=.Internal_User,user_id=string(task.owner_user_id)},Lease_Claim_Input{task_id=task.task_id,instance_id=claim.holder_instance_id})
    }
   }
  }

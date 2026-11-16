@@ -141,6 +141,20 @@ task_fold_event_list_by_chain_sqlite :: proc(ctx: rawptr, chain_id: domain.Task_
 	return out[:], domain.Domain_Error{}
 }
 
+// Only the two ownership-stop kinds, for tasks of the owner's chains (the same scope
+// as walking list_chains_by_owner -> list_tasks_by_chain -> list_events_by_task).
+// The rows are few; the kind filter keeps payload history out of memory.
+task_ownership_stop_event_list_sqlite :: proc(ctx: rawptr, owner_user_id: domain.User_ID) -> ([]domain.Task_Event, domain.Domain_Error) {
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	stmt, err := prepare(impl, "SELECT e.event_id, e.task_id, e.chain_id, e.owner_user_id, e.ts_ms, e.actor_kind, e.actor_id, e.kind, e.payload_json FROM task_events e JOIN tasks t ON t.task_id = e.task_id AND t.owner_user_id = e.owner_user_id JOIN task_chains c ON c.chain_id = t.chain_id AND c.owner_user_id = t.owner_user_id WHERE e.owner_user_id = ? AND e.kind IN ('ownership_stop_requested', 'ownership_stop_confirmed') ORDER BY e.event_id ASC;", "ownership stop event list")
+	if err.code != .None do return nil, err
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, string(owner_user_id))
+	out := make([dynamic]domain.Task_Event)
+	for sqlite3_step(stmt) == SQLITE_ROW do append(&out, event_from_stmt(stmt))
+	return out[:], domain.Domain_Error{}
+}
+
 // ---- attempts --------------------------------------------------------------
 
 @(private = "file")
