@@ -715,6 +715,15 @@ bridge_renewal_attempt :: proc(env: ^Bridge_Renewal_Env, now_ms: i64) -> (Bridge
 	if !reserved {
 		if bridge_operation_terminal(budget) {
 			if bridge_refresh_terminal_is_retriable(budget) do return bridge_renewal_pause(env, budget)
+			// The journal key (refresh:<hub>:<bridge_id>) survives a re-enrollment that
+			// reuses the bridge id, so a receipt earned by the REJECTED credential would
+			// stop renewal of the fresh one until its first expiry cut the bridge off.
+			// A receipt finished before the current credential was issued is about a
+			// credential that no longer exists: start this one with a fresh budget.
+			if bridge_refresh_receipt_predates_credential(budget) && bridge_retry_operator_resume_sync(env.key, refresh = true) {
+				fmt.eprintfln("bridge credential recovery: discarded a terminal refresh receipt (state=%v code=%v) older than the current credential", budget.state, budget.code)
+				return bridge_renewal_hold(env, 1)
+			}
 			// A journal receipt alone is never a Hub refusal: stop renewing (visible),
 			// never wipe the pair from local state.
 			fmt.eprintfln("bridge credential recovery stopped: state=%v attempts=%d code=%v class=%v", budget.state, budget.attempts, budget.code, budget.class)
@@ -782,6 +791,16 @@ bridge_renewal_attempt :: proc(env: ^Bridge_Renewal_Env, now_ms: i64) -> (Bridge
 		return .Renewal_Stopped, 0
 	}
 	return bridge_renewal_hold(env, max(1, finished.next_ms - now_ms))
+}
+
+// bridge_refresh_receipt_predates_credential: the receipt's last attempt finished
+// before the current credential was issued (known issue time only). A terminal
+// receipt earned by THIS credential is never older than it, so that stop stands.
+bridge_refresh_receipt_predates_credential :: proc(b: Bridge_Operation_Budget) -> bool {
+	sync.mutex_lock(&g_bridge_credential_mu)
+	defer sync.mutex_unlock(&g_bridge_credential_mu)
+	s := &g_bridge_cred
+	return s.known && s.issued_wall_ms > 0 && b.last_wall_ms > 0 && b.last_wall_ms < s.issued_wall_ms
 }
 
 // bridge_renewal_pause: a spent retriable budget rests 60/120/300 s (+-20%) and
