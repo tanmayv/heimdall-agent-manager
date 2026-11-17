@@ -52,7 +52,12 @@ class LaunchComposerFrame extends React.Component<LaunchComposerProps & { formRe
     this.node.style.overflow = '';
     if (prefersReducedMotion() || typeof this.node.animate !== 'function') return;
     const styles = window.getComputedStyle(this.node);
-    const duration = (token: string, fallback: number) => Number.parseFloat(styles.getPropertyValue(token)) || fallback;
+    const duration = (token: string, fallback: number) => {
+      // Production CSS minification may rewrite 300ms as .3s; WAAPI takes ms.
+      const value = styles.getPropertyValue(token).trim();
+      const match = /^(\d*\.?\d+)(ms|s)$/.exec(value);
+      return match ? Number(match[1]) * (match[2] === 's' ? 1000 : 1) : fallback;
+    };
     this.node.style.overflow = 'hidden';
     const resize = this.node.animate(
       [{ height: height + 'px' }, { height: this.node.getBoundingClientRect().height + 'px' }],

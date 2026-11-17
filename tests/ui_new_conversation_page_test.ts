@@ -340,6 +340,23 @@ test('mode resize releases menu clipping on finish and cancel, ignoring stale an
   });
 });
 
+test('mode animation uses milliseconds with both source and minified CSS time tokens', async () => {
+  await withPage({}, async ctx => {
+    await ctx.render();
+    await until(ctx, () => issuesText(ctx.doc) === '', 'hydration');
+    const composer = q(ctx.doc, 'new-convo-composer-shell')!;
+    for (const [slow, base, mode] of [['300ms', '200ms', 'shell'], ['.3s', '.2s', 'agent']] as const) {
+      composer.style.setProperty('--duration-slow', slow);
+      composer.style.setProperty('--duration-base', base);
+      const before = ctx.animations.length;
+      await pickMode(ctx, mode);
+      const animations = ctx.animations.slice(before);
+      assert.equal(animations.find(a => 'height' in a.keyframes[0])!.options.duration, 300, slow);
+      assert.equal(animations.find(a => 'opacity' in a.keyframes[0])!.options.duration, 200, base);
+    }
+  });
+});
+
 test('missing project offers guidance instead of loading a skipped shell query forever', async () => {
   await withPage({ projects: [], prefs: { project_id: '' } }, async ctx => {
     await ctx.render({ launchIntent: 'shell' });
