@@ -49,13 +49,24 @@ class LaunchComposerFrame extends React.Component<LaunchComposerProps & { formRe
     if (height === null || !this.node) return;
     this.resize?.cancel();
     this.fade?.cancel();
+    this.node.style.overflow = '';
     if (prefersReducedMotion() || typeof this.node.animate !== 'function') return;
     const styles = window.getComputedStyle(this.node);
     const duration = (token: string, fallback: number) => Number.parseFloat(styles.getPropertyValue(token)) || fallback;
-    this.resize = this.node.animate(
+    this.node.style.overflow = 'hidden';
+    const resize = this.node.animate(
       [{ height: height + 'px' }, { height: this.node.getBoundingClientRect().height + 'px' }],
       { duration: duration('--duration-slow', 300), easing: styles.getPropertyValue('--ease-standard').trim() || 'cubic-bezier(0.2, 0.8, 0.2, 1)' },
     );
+    this.resize = resize;
+    const releaseClip = () => {
+      // A cancelled animation may dispatch after a new mode swap has started.
+      if (this.resize !== resize) return;
+      if (this.node) this.node.style.overflow = '';
+      this.resize = null;
+    };
+    resize.onfinish = releaseClip;
+    resize.oncancel = releaseClip;
     const body = this.node.querySelector<HTMLElement>('[data-composer-body]');
     this.fade = body?.animate(
       [{ opacity: 0, transform: 'translateY(var(--space-1-5, 6px))' }, { opacity: 1, transform: 'translateY(0)' }],
@@ -74,7 +85,7 @@ class LaunchComposerFrame extends React.Component<LaunchComposerProps & { formRe
       data-mode={mode}
       aria-disabled={disabled || undefined}
       className={cx(
-        'relative overflow-hidden rounded-[var(--radius-xl)] border border-strong bg-subtle',
+        'relative rounded-[var(--radius-xl)] border border-strong bg-subtle',
         mode === 'agent' && 'px-4 pb-3 pt-4',
         'transition-[border-color,box-shadow] duration-fast ease-standard motion-reduce:transition-none',
         'focus-within:border-accent focus-within:shadow-[0_0_0_1px_var(--color-accent)]',

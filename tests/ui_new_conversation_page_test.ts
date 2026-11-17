@@ -39,7 +39,7 @@ type Ctx = {
   doc: Document;
   win: any;
   calls: Call[];
-  animations: Array<{ keyframes: any; options: any; cancelled?: boolean }>;
+  animations: Array<{ keyframes: any; options: any; cancelled?: boolean; animation?: any }>;
   launched: string[];
   act: (fn: () => Promise<void> | void) => Promise<void>;
   render: (props?: Record<string, unknown>) => Promise<void>;
@@ -47,7 +47,7 @@ type Ctx = {
 };
 
 async function withPage(
-  setup: { bridges?: any[]; prefs?: Record<string, unknown>; reducedMotion?: boolean; storage?: Record<string, string>; failPreferenceWrites?: boolean; width?: number; sessions?: any[]; failShellList?: boolean; shellListDelay?: number; failShellStart?: boolean },
+  setup: { bridges?: any[]; projects?: any[]; prefs?: Record<string, unknown>; reducedMotion?: boolean; storage?: Record<string, string>; failPreferenceWrites?: boolean; width?: number; sessions?: any[]; failShellList?: boolean; shellListDelay?: number; failShellStart?: boolean },
   run: (ctx: Ctx) => Promise<void>,
 ) {
   const { JSDOM } = await import('jsdom');
@@ -61,9 +61,10 @@ async function withPage(
   win.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
   const animations: Ctx['animations'] = [];
   win.HTMLElement.prototype.animate = function animate(keyframes: any, options: any) {
-    const record = { keyframes, options, cancelled: false };
+    const record: Ctx['animations'][number] = { keyframes, options, cancelled: false };
     animations.push(record);
-    return { finished: Promise.resolve(), cancel() { record.cancelled = true; } };
+    record.animation = { finished: Promise.resolve(), cancel() { record.cancelled = true; } };
+    return record.animation;
   };
   win.HTMLElement.prototype.getBoundingClientRect = function () {
     const height = this.dataset.debugId === 'new-convo-composer-shell' ? (this.dataset.mode === 'shell' ? 560 : 180) : 0;
@@ -116,7 +117,7 @@ async function withPage(
       const created = { project_id: 'p_new', name: body.name, description: body.description, default_path: body.default_path, vcs_kind: body.vcs_kind, state: 'active' };
       createdProjects.push(created); data = created;
     }
-    else if (path.endsWith('/projects')) data = { projects: [...PROJECTS, ...createdProjects] };
+    else if (path.endsWith('/projects')) data = { projects: [...(setup.projects ?? PROJECTS), ...createdProjects] };
     else if (/\/bridges\/[^/]+\/fs$/.test(path)) data = { ok: true, path: new URL(url, 'http://localhost').searchParams.get('path') || '/srv', root: '/srv', parent: '', entries: [{ name: '.git', is_dir: true, hidden: true }], truncated: false };
     else if (/\/bridges\/[^/]+\/fs\/file$/.test(path)) data = { ok: false, path: '', viewable: false, error: { code: 'not_found', cause: 'path_not_found', message: 'Path does not exist' } };
     else if (path.endsWith('/bridges')) data = { bridges };
@@ -312,6 +313,42 @@ test('the remembered mode is restored on mount; a launch intent wins without rew
   });
 });
 
+test('mode resize releases menu clipping on finish and cancel, ignoring stale animation callbacks', async () => {
+  await withPage({}, async ctx => {
+    await ctx.render();
+    await until(ctx, () => issuesText(ctx.doc) === '', 'hydration');
+    const composer = q(ctx.doc, 'new-convo-composer-shell')!;
+    assert.equal(composer.style.overflow, '');
+    await pickMode(ctx, 'shell');
+    const first = ctx.animations.find(a => 'height' in a.keyframes[0])!;
+    assert.equal(composer.style.overflow, 'hidden');
+    await pickMode(ctx, 'agent');
+    first.animation.oncancel();
+    assert.equal(composer.style.overflow, 'hidden', 'stale cancellation cannot unclip the current resize');
+    const reverse = ctx.animations.filter(a => 'height' in a.keyframes[0]).at(-1)!;
+    reverse.animation.onfinish();
+    assert.equal(composer.style.overflow, '');
+    assert.ok(!composer.classList.contains('overflow-hidden'));
+    await click(ctx, q(ctx.doc, 'new-convo-agent-picker'));
+    assert.ok(q(ctx.doc, 'new-convo-agent-menu-list'));
+    await click(ctx, q(ctx.doc, 'new-convo-agent-picker'));
+    await click(ctx, q(ctx.doc, 'new-convo-runtime-picker'));
+    assert.ok(q(ctx.doc, 'new-convo-runtime-menu-columns'));
+    await pickMode(ctx, 'shell');
+    ctx.animations.filter(a => 'height' in a.keyframes[0]).at(-1)!.animation.oncancel();
+    assert.equal(composer.style.overflow, '', 'external cancellation also restores overflow');
+  });
+});
+
+test('missing project offers guidance instead of loading a skipped shell query forever', async () => {
+  await withPage({ projects: [], prefs: { project_id: '' } }, async ctx => {
+    await ctx.render({ launchIntent: 'shell' });
+    await until(ctx, () => Boolean(q(ctx.doc, 'new-shell-project-unavailable')), 'project unavailable guidance');
+    assert.match(q(ctx.doc, 'new-shell-project-unavailable')!.textContent!, /Choose a project/);
+    assert.doesNotMatch(q(ctx.doc, 'new-convo-shell-picker')!.textContent!, /Loading shells/);
+  });
+});
+
 test('reduced motion: the mode swap applies no animation class', async () => {
   await withPage({ reducedMotion: true }, async (ctx) => {
     await ctx.render();
@@ -320,6 +357,7 @@ test('reduced motion: the mode swap applies no animation class', async () => {
     assert.equal(body.dataset.composerBody, 'shell');
     assert.ok(!body.className.includes('animate-'), 'no animate-* class under reduced motion');
     assert.equal(ctx.animations.length, 0, 'no resize/fade animation under reduced motion');
+    assert.equal(q(ctx.doc, 'new-convo-composer-shell')!.style.overflow, '');
   });
 });
 

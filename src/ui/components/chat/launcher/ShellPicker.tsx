@@ -94,7 +94,7 @@ export function ShellPicker({ projects, bridges, projectId, disabled, bridgesLoa
           <Text as="h2" role="title" id="new-shell-running-heading" className="m-0">Already running</Text>
           {!shells.isLoading && !shells.isError ? <Badge>{sessions.length}</Badge> : null}
         </div>
-        {shells.isLoading || !projectId ? <div role="status" className="flex items-center gap-2 px-4 pb-4"><Spinner size="sm" /><Text role="body-sm" tone="muted">Loading shells…</Text></div> : shells.isError ? (
+        {!projectId ? <EmptyState data-debug-id="new-shell-project-unavailable" className="mx-4 mb-4" icon="folder" title="Choose a project to see running shells" description="Select an active project above." /> : shells.isLoading ? <div role="status" className="flex items-center gap-2 px-4 pb-4"><Spinner size="sm" /><Text role="body-sm" tone="muted">Loading shells…</Text></div> : shells.isError ? (
           <div data-debug-id="new-shell-list-error" className="px-4 pb-4"><Alert tone="danger">Could not load running shells. <Button variant="ghost" size="sm" data-debug-id="new-shell-retry-list" onClick={() => void shells.refetch()}>Try again</Button></Alert></div>
         ) : !sessions.length ? <EmptyState data-debug-id="new-shell-empty" className="mx-4 mb-4" icon="terminal" title="No shells running in this project" description="Choose a bridge above to start one." /> : (
           <ul className="m-0 list-none p-0" aria-label="Running shells in this project">
