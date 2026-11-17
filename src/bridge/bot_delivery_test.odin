@@ -14,6 +14,7 @@ Bridge_Bot_Test :: struct {
 	w: ^Bridge_Bot_Worker,
 	now: i64,
 	status: string,
+	activity: string,
 	relaunched: bool,
 	new_record_ms, ready_ms, rollover_until_ms: i64,
 	refuse_provider, unrunnable: string,
@@ -71,7 +72,7 @@ bridge_bot_test_report :: proc(report: string) -> bool {
 	sync.mutex_unlock(&s.report_mutex)
 	return true
 }
-bridge_bot_test_activity :: proc(instance: string) -> string { return "idle" }
+bridge_bot_test_activity :: proc(instance: string) -> string { if bridge_bot_test.activity != "" do return bridge_bot_test.activity; return "idle" }
 bridge_bot_test_busy :: proc() -> (traffic_stopped, update_reserved, vault_unlocked: bool) {
 	s := bridge_bot_test
 	sync.atomic_store(&s.entered, true)
@@ -465,4 +466,145 @@ test_bot_raw_activity_and_report_queue_are_bounded_and_cleaned :: proc(t: ^testi
 	testing.expect_value(t, len(w.pending_reports), 128)
 	bridge_bot_drain(nil, 1)
 	testing.expect_value(t, len(w.pending_reports), 0)
+}
+
+// Watch fixtures drive the same clock/activity seams used by the worker loop.
+bridge_bot_test_watch :: proc(s: ^Bridge_Bot_Test) -> ^Bridge_Bot_Worker {
+ w := bridge_bot_test_worker(s)
+ w.phase = .Notified
+ w.notified_ms = s.now
+ w.frame.timers = {launch_ready_ms = 2000, read_ms = 60_000, read_extend_ms = 60_000, read_max_extends = 4, idle_no_reply_ms = 120_000, reply_cap_ms = 1_800_000, progress_interval_ms = 30_000}
+ return w
+}
+bridge_bot_test_step :: proc(w: ^Bridge_Bot_Worker) -> (string, bool) {
+ return bridge_bot_watch_step(w, bridge_bot_activity_proc(w.frame.agent_instance_id), bridge_bot_test.status, bridge_bot_now_proc())
+}
+
+@(test)
+test_watch_acted_requires_read_then_reply :: proc(t: ^testing.T) {
+ s: Bridge_Bot_Test; bridge_bot_test_begin(&s); defer bridge_bot_test_end(&s)
+ w := bridge_bot_test_watch(&s)
+ w.reply_seen_ms = s.now
+ _, done := bridge_bot_test_step(w); testing.expect(t, !done)
+ w.read_seen_ms = s.now + 1
+ _, done = bridge_bot_test_step(w); testing.expect(t, !done)
+ w.reply_seen_ms = w.read_seen_ms
+ result: string
+ result, done = bridge_bot_test_step(w)
+ testing.expect(t, done && result == "acted")
+ for status in ([]string{"failed", "stopped", "unreachable"}) {
+  w.reply_seen_ms = 0; s.status = status
+  result, done = bridge_bot_test_step(w); testing.expect(t, done && result == "crashed")
+ }
+}
+
+@(test)
+test_watch_read_extends_while_active :: proc(t: ^testing.T) {
+ s: Bridge_Bot_Test; bridge_bot_test_begin(&s); defer bridge_bot_test_end(&s)
+ w := bridge_bot_test_watch(&s); s.activity = "active"
+ for i in 1..=4 {
+  s.now = w.notified_ms + i64(i)*60_000
+  _, done := bridge_bot_test_step(w); testing.expect(t, !done && w.read_extends == i)
+ }
+ s.now += 60_000
+ result, done := bridge_bot_test_step(w); testing.expect(t, done && result == "not_read")
+}
+
+@(test)
+test_watch_not_read :: proc(t: ^testing.T) {
+ s: Bridge_Bot_Test; bridge_bot_test_begin(&s); defer bridge_bot_test_end(&s)
+ w := bridge_bot_test_watch(&s)
+ s.now += 59_999
+ _, done := bridge_bot_test_step(w); testing.expect(t, !done)
+ s.now += 1
+ result, terminal := bridge_bot_test_step(w); testing.expect(t, terminal && result == "not_read")
+}
+
+@(test)
+test_watch_idle_no_reply_after_read :: proc(t: ^testing.T) {
+ s: Bridge_Bot_Test; bridge_bot_test_begin(&s); defer bridge_bot_test_end(&s)
+ w := bridge_bot_test_watch(&s); w.read_seen_ms = s.now
+ _, done := bridge_bot_test_step(w); testing.expect(t, !done && w.phase == .Read)
+ s.now += 119_999
+ _, done = bridge_bot_test_step(w); testing.expect(t, !done)
+ s.now += 1
+ result, terminal := bridge_bot_test_step(w); testing.expect(t, terminal && result == "idle_no_reply")
+}
+
+@(test)
+test_watch_active_holds_reply_timer :: proc(t: ^testing.T) {
+ s: Bridge_Bot_Test; bridge_bot_test_begin(&s); defer bridge_bot_test_end(&s)
+ w := bridge_bot_test_watch(&s); w.read_seen_ms = s.now
+ _, _ = bridge_bot_test_step(w)
+ s.now += 119_999; s.activity = "active"
+ _, done := bridge_bot_test_step(w); testing.expect(t, !done && w.idle_since_ms == 0 && w.phase == .Replying)
+ s.now += 120_001
+ _, done = bridge_bot_test_step(w); testing.expect(t, !done)
+ s.activity = "unknown"
+ _, done = bridge_bot_test_step(w); testing.expect(t, !done && w.idle_since_ms == s.now)
+}
+
+@(test)
+test_watch_reply_cap :: proc(t: ^testing.T) {
+ s: Bridge_Bot_Test; bridge_bot_test_begin(&s); defer bridge_bot_test_end(&s)
+ w := bridge_bot_test_watch(&s); w.read_seen_ms = s.now; s.activity = "active"
+ s.now += 1_799_999
+ _, done := bridge_bot_test_step(w); testing.expect(t, !done)
+ s.now += 1
+ result, terminal := bridge_bot_test_step(w); testing.expect(t, terminal && result == "reply_timeout")
+}
+
+bridge_bot_test_silent_notice :: proc(instance: string) -> bool {
+ s := bridge_bot_test
+ if s.activity == "waiting_user" do s.w.read_seen_ms = s.now
+ return true
+}
+@(test)
+test_watch_failure_records_backoff :: proc(t: ^testing.T) {
+ s: Bridge_Bot_Test; bridge_bot_test_begin(&s); defer bridge_bot_test_end(&s)
+ w := bridge_bot_test_watch(&s)
+ bridge_bot_notice_proc = bridge_bot_test_silent_notice
+ bridge_bot_run(w)
+ testing.expect(t, len(w.outcomes) == 2)
+ for outcome in w.outcomes do testing.expect(t, outcome.outcome == "not_read")
+ for c in w.frame.candidates do testing.expect(t, bridge_bot_candidate_backoff_active(c, s.now))
+ for key in bridge_bot_backoff do delete(key, runtime.heap_allocator())
+ clear(&bridge_bot_backoff)
+ for outcome in w.outcomes { delete(outcome.provider, runtime.heap_allocator()); delete(outcome.model, runtime.heap_allocator()); delete(outcome.outcome, runtime.heap_allocator()); delete(outcome.detail, runtime.heap_allocator()) }
+ clear(&w.outcomes)
+ s.activity = "waiting_user"
+ waiting_started := s.now
+ bridge_bot_run(w)
+ testing.expect(t, s.now - waiting_started == 2 * w.frame.timers.idle_no_reply_ms)
+ for outcome in w.outcomes do testing.expect(t, outcome.outcome == "idle_no_reply" && outcome.detail == "waiting_user")
+ for c in w.frame.candidates do testing.expect(t, bridge_bot_candidate_backoff_active(c, s.now))
+}
+
+@(test)
+test_relay_observation_counts_non_empty_read_only :: proc(t: ^testing.T) {
+ s: Bridge_Bot_Test; bridge_bot_test_begin(&s); defer bridge_bot_test_end(&s)
+ w := bridge_bot_test_watch(&s)
+ sync.mutex_lock(&bridge_bot_workers_mutex)
+ if bridge_bot_workers == nil do bridge_bot_workers = make(map[string]^Bridge_Bot_Worker, runtime.heap_allocator())
+ bridge_bot_workers[w.frame.attempt_id] = w
+ sync.mutex_unlock(&bridge_bot_workers_mutex)
+ defer {
+  sync.mutex_lock(&bridge_bot_workers_mutex)
+  delete_key(&bridge_bot_workers, w.frame.attempt_id)
+  sync.mutex_unlock(&bridge_bot_workers_mutex)
+ }
+ for body in ([]string{`{"data":{"messages":[]}}`, `{}`, `invalid`, `[]`, `{"data":[]}`, `{"data":{"messages":true}}`}) {
+  bridge_bot_note_read(w.frame.agent_instance_id, body, s.now)
+  testing.expect(t, w.read_seen_ms == 0)
+ }
+ bridge_bot_note_read("absent", `{"data":{"messages":[{}]}}`, s.now)
+ testing.expect(t, w.read_seen_ms == 0)
+ bridge_bot_note_read(w.frame.agent_instance_id, `{"data":{"messages":[{}]}}`, s.now)
+ testing.expect(t, w.read_seen_ms == s.now)
+ bridge_bot_note_reply(w.frame.agent_instance_id, s.now)
+ testing.expect(t, w.reply_seen_ms == s.now)
+ w.cancel = true
+ bridge_bot_note_read(w.frame.agent_instance_id, `{"data":{"messages":[{}]}}`, s.now+1)
+ bridge_bot_note_reply(w.frame.agent_instance_id, s.now+1)
+ testing.expect(t, w.read_seen_ms == s.now && w.reply_seen_ms == s.now)
 }
