@@ -16,16 +16,14 @@ import { artifactKindForFile, artifactLinkFromResponse, artifactMimeForFile, art
 import { composerBridgeIsOnline } from '../../utils/composerBridgeOptions';
 import { getActiveVaultKey } from '../../utils/vaultContent';
 import { MAX_UPLOAD_BYTES, UPLOAD_TOO_LARGE_ERROR } from '../ArtifactUpload';
-import UpgradePrompt from '../billing/UpgradePrompt';
 import ModelCatalogRefresh from '../providers/ModelCatalogRefresh';
 import { useIsMobile } from '../shell/responsive';
-import { resolveProjectBridgeShellCwd } from '../shells/interactiveShellLaunch';
-import { useShellLaunch } from '../shells/useShellLaunch';
 import { resolveProjectExplorerAccess } from './projectVcsExperiment';
 import type { RuntimeSelection } from './RuntimeConfigurationOptions';
 import { AgentMenu, type NewFavoriteAgent } from './launcher/AgentMenu';
 import { bridgeDisplayName } from './launcher/BridgeMenu';
-import { ConversationComposerBody, LaunchComposer, ShellComposerBody } from './launcher/LaunchComposer';
+import { ConversationComposerBody, LaunchComposer } from './launcher/LaunchComposer';
+import { ShellPicker } from './launcher/ShellPicker';
 import { LaunchHeadline, shouldShowBridgeClause, type LaunchHeadlineMenu } from './launcher/LaunchHeadline';
 import { NewProjectModal } from './launcher/NewProjectModal';
 import { NoBridgeBanner, NoBridgeOnline, noBridgeOnline, noBridgeRows } from './launcher/NoBridgeOnline';
@@ -145,7 +143,7 @@ export default function NewConversationPage({ embedded = false, footer, onLaunch
   const launchAnimation = useRef<Animation | null>(null);
   useEffect(() => () => launchAnimation.current?.cancel(), []);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const openShellRef = useRef<HTMLButtonElement>(null);
+  const [shellBusy, setShellBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const submitRef = useRef(false);
   const writeTail = useRef<Promise<unknown>>(Promise.resolve());
@@ -174,7 +172,7 @@ export default function NewConversationPage({ embedded = false, footer, onLaunch
   const zeroOnline = Boolean(bridgesQuery.data) && noBridgeOnline(bridges);
   useEffect(() => {
     if (screen === 'pending') {
-      if (bridgesQuery.data) setScreen(initialNoBridgeScreen(bridges, embedded));
+      if (bridgesQuery.data) setScreen(initialNoBridgeScreen(bridges, embedded || paneMode === 'shell'));
       else if (bridgesQuery.isError) setScreen('launcher');
       return;
     }
@@ -184,7 +182,7 @@ export default function NewConversationPage({ embedded = false, footer, onLaunch
     const reduced = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     const timer = window.setTimeout(() => { setLeavingNoBridge(false); setSwapInLauncher(true); recoveredFromFull.current = true; setScreen('launcher'); }, reduced ? 0 : NO_BRIDGE_EXIT_MS);
     return () => window.clearTimeout(timer);
-  }, [screen, bridgesQuery.data, bridgesQuery.isError, zeroOnline, embedded]);
+  }, [screen, bridgesQuery.data, bridgesQuery.isError, zeroOnline, embedded, paneMode]);
   const showBanner = screen === 'launcher' && zeroOnline;
   const favoriteIds = [...(preferences.data?.favorite_agent_ids || [])].sort((a, b) => { const rank = (id: string) => { const slug = agents.find(agent => agent.agent_id === id)?.slug; return slug === 'soloist' ? 0 : slug === 'coordinator' ? 1 : 2; }; return rank(a) - rank(b); });
   const pinnedIds = preferences.data?.pinned_agent_ids || [];
@@ -273,14 +271,6 @@ export default function NewConversationPage({ embedded = false, footer, onLaunch
     else window.location.hash = buildRouteHash(`/conversations/${encodeURIComponent(id)}`, '');
   }
 
-  // Shell mode (SH-1): the launch logic lives in useShellLaunch; the bridge is the
-  // headline's bridge token whenever that bridge is online.
-  const shell = useShellLaunch({ projects, bridges, projectId, initialBridgeId: runtime.bridgeId, onStarted: openLaunched, enabled: paneMode === 'shell' });
-  const { bridgeId: shellBridgeId, setBridgeId: setShellBridgeId, onlineBridges: shellOnlineBridges } = shell;
-  useEffect(() => {
-    if (runtime.bridgeId && runtime.bridgeId !== shellBridgeId && shellOnlineBridges.some(b => b.bridge_id === runtime.bridgeId)) setShellBridgeId(runtime.bridgeId);
-  }, [runtime.bridgeId, shellBridgeId, shellOnlineBridges, setShellBridgeId]);
-  const shellInProjectFolder = Boolean(shell.project && !isDefaultConversationProject(shell.project) && resolveProjectBridgeShellCwd(shell.project, shell.bridgeId));
 
   const issues: string[] = [];
   if (!hydrated) issues.push('Loading your favorite agents and launch selections…');
@@ -295,30 +285,20 @@ export default function NewConversationPage({ embedded = false, footer, onLaunch
   if (support.data?.entries?.some((row: any) => String(row.bridgeId || row.bridge_id) === runtime.bridgeId && row.enabled === false)) issues.push('This agent is disabled on the selected bridge. Choose another bridge.');
   if (!vaultUnlocked || !getActiveVaultKey()) issues.push("This device's vault keys are not installed yet.");
 
-  // Shell mode has its own, shorter list (no agent/provider); the plan limit shows
-  // the upgrade prompt instead of a line.
   const shellIssues: string[] = [];
   if (!hydrated) shellIssues.push('Loading your launch selections…');
-  if (shell.blocked === 'vault') shellIssues.push("This device's vault keys are not installed yet. Shell commands are encrypted.");
-  if (shell.blocked === 'bridge') shellIssues.push(bridgeIssueText('shell', bridgeClauseShown));
+  if (hydrated && (!selectedProject || selectedProject.state !== 'active')) shellIssues.push('Selected project is unavailable or archived. Choose an active project above.');
 
   const uploading = attachments.some(a => a.status === 'uploading');
   const failedUpload = attachments.some(a => a.status === 'error');
   const sending = launchState.isLoading || transitioning;
   const disabled = sending || issues.length > 0;
   const sendDisabled = disabled || pendingWrites > 0 || Boolean(preferenceError) || support.isLoading || uploading || failedUpload || (!draft.trim() && attachments.length === 0);
-  const openShellDisabled = shellIssues.length > 0 || Boolean(shell.blocked) || !shell.bridgeId || shell.busy;
   useEffect(() => {
     if (launchIntent !== 'agent' || paneMode !== 'agent' || !hydrated || disabled) return;
     const frame = requestAnimationFrame(() => inputRef.current?.focus());
     return () => cancelAnimationFrame(frame);
   }, [disabled, hydrated, launchIntent, paneMode]);
-  // An explicit shell shortcut focuses "Open shell" once it can be pressed.
-  useEffect(() => {
-    if (launchIntent !== 'shell' || paneMode !== 'shell' || openShellDisabled) return;
-    const frame = requestAnimationFrame(() => openShellRef.current?.focus());
-    return () => cancelAnimationFrame(frame);
-  }, [launchIntent, paneMode, openShellDisabled]);
 
   async function upload(file: File, localId: string = crypto.randomUUID()) {
     const name = artifactUploadName(file, 'conversation-attachment');
@@ -350,10 +330,6 @@ export default function NewConversationPage({ embedded = false, footer, onLaunch
       openLaunched(id);
     } catch (e) { launchAnimation.current?.cancel(); launchAnimation.current = null; setTransitioning(false); setError(message(e)); submitRef.current = false; }
   }
-  function openShell() {
-    if (openShellDisabled) return;
-    void shell.start();
-  }
   /** AgentMenu reselects the first remaining favorite itself; `false` leaves the selection alone. */
   async function changeFavorite(id: string, favorite: boolean): Promise<boolean> {
     setManagementError('');
@@ -381,7 +357,7 @@ export default function NewConversationPage({ embedded = false, footer, onLaunch
   const statusLines = (paneMode === 'agent'
     ? (sending ? [`Creating conversation and starting on ${selectedBridge?.label || 'selected bridge'}…`] : issues)
     : shellIssues).filter(line => !bannerCovers(line));
-  const alertText = paneMode === 'agent' ? error || preferenceError : shell.errorMessage || preferenceError;
+  const alertText = paneMode === 'agent' ? error || preferenceError : preferenceError;
 
   const attachmentRows = attachments.length ? <ul data-debug-id="new-convo-attachments" className="m-0 flex list-none flex-col gap-2 p-0">{attachments.map(a => (
     <li key={a.localId} className="flex flex-wrap items-center gap-2 rounded-[var(--radius-md)] border border-strong px-3 py-1">
@@ -414,12 +390,12 @@ export default function NewConversationPage({ embedded = false, footer, onLaunch
         runtime={runtime}
         onRuntimeChange={chooseRuntime}
         branch={branch}
-        disabled={sending || !hydrated}
+        disabled={sending || shellBusy || !hydrated}
         onMenuOpenChange={setHeadlineMenu}
       />
       {showBanner ? <NoBridgeBanner bridges={bridges} onCheckAgain={() => void bridgesQuery.refetch()} checking={bridgesQuery.isFetching} /> : null}
-      <div ref={composerRef} data-debug-id="new-convo-launch-dock" data-docked={menuOpen ? undefined : ''} className={`relative w-full max-md:mt-auto ${menuOpen ? '' : LAUNCH_DOCK_MOBILE} ${transitioning ? 'z-20' : ''}`}>
-        <LaunchComposer mode={paneMode} disabled={showBanner} onSubmit={paneMode === 'agent' ? submit : (event) => { event.preventDefault(); openShell(); }}>
+      <div ref={composerRef} data-debug-id="new-convo-launch-dock" data-docked={menuOpen || paneMode === 'shell' ? undefined : ''} className={`relative w-full ${paneMode === 'agent' ? 'max-md:mt-auto' : ''} ${menuOpen || paneMode === 'shell' ? '' : LAUNCH_DOCK_MOBILE} ${transitioning ? 'z-20' : ''}`}>
+        <LaunchComposer mode={paneMode} disabled={showBanner && paneMode === 'agent'} onSubmit={paneMode === 'agent' ? submit : undefined}>
           {paneMode === 'agent' ? (
             <ConversationComposerBody
               mobile={mobile}
@@ -460,24 +436,23 @@ export default function NewConversationPage({ embedded = false, footer, onLaunch
               sendDisabled={sendDisabled}
             />
           ) : (
-            <ShellComposerBody
-              mobile={mobile}
-              command={shell.command}
-              onCommandChange={shell.setCommand}
-              inputDisabled={shell.busy}
-              inProjectFolder={shellInProjectFolder}
-              bridgeName={bridgeDisplayName(shell.bridge, '')}
-              onOpen={openShell}
-              openDisabled={openShellDisabled}
-              busy={shell.busy}
-              openRef={openShellRef}
+            <ShellPicker
+              projects={projects}
+              bridges={bridges}
+              projectId={projectId}
+              disabled={shellIssues.length > 0}
+              bridgesLoading={bridgesQuery.isLoading}
+              bridgesError={bridgesQuery.isError}
+              onRetryBridges={() => void bridgesQuery.refetch()}
+              autoFocus={launchIntent === 'shell'}
+              onBusyChange={setShellBusy}
+              onOpenShell={openLaunched}
             />
           )}
         </LaunchComposer>
         <input ref={fileRef} data-debug-id="new-convo-upload-input" type="file" multiple className="hidden" onChange={e => { if (!disabled) Array.from(e.target.files || []).forEach(f => void upload(f)); e.target.value = ''; }} />
       </div>
       <div data-debug-id="new-convo-launch-status" className={`-mt-3 flex flex-col gap-2 ${transitioning ? 'pointer-events-none opacity-0' : ''}`}>
-        {paneMode === 'shell' && shell.upgradeDetails ? <UpgradePrompt details={shell.upgradeDetails} debugId="shell-launch-upgrade" subtle /> : null}
         <div role="status" data-debug-id="new-convo-launch-issues" className="flex flex-col gap-1 empty:hidden">
           {statusLines.map(line => <Text key={line} role="body-sm" tone="muted" className="m-0">{line}</Text>)}
         </div>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSelector } from 'react-redux';
 import { useEntitlements } from '../../hooks/useEntitlements';
 import { useCreateShellMutation } from '../../api/endpoints/shells';
@@ -67,6 +67,9 @@ export interface ShellLaunch {
   upgradeDetails: PlanLimitDetails | null;
   canStart: boolean;
   start: () => Promise<void>;
+  /** Launch on the clicked bridge without changing the legacy form selection. */
+  startOnBridge: (bridgeId: string) => Promise<void>;
+  startingBridgeId: string;
 }
 
 /**
@@ -105,18 +108,48 @@ export function useShellLaunch({ projects, bridges, projectId, initialBridgeId, 
   const [command, setCommand] = useState('');
 
   const [createShell, createState] = useCreateShellMutation();
+  const [startingBridgeId, setStartingBridgeId] = useState('');
+  const [validationError, setValidationError] = useState('');
+  // Close the same-tick double-click window before React disables rows.
+  const inFlight = useRef(false);
+  const latest = useRef({ projects, bridges, projectId, shellsEnabled, vaultUnlocked });
+  latest.current = { projects, bridges, projectId, shellsEnabled, vaultUnlocked };
   const blocked = shellLaunchBlock({ shellsEnabled, vaultUnlocked, bridge });
+  const run = async (request: Parameters<typeof buildInteractiveShellRequest>[0]) => {
+    if (inFlight.current) return;
+    const current = latest.current;
+    const target = current.bridges.find((row) => row.bridge_id === request.bridgeId);
+    const reason = shellLaunchBlock({ ...current, bridge: target });
+    if (reason) {
+      setValidationError(reason === 'bridge' ? 'This bridge is no longer connected. Choose another bridge.' : reason === 'vault' ? 'Unlock your vault to start a shell.' : 'Your plan does not include shells.');
+      return;
+    }
+    inFlight.current = true;
+    setStartingBridgeId(request.bridgeId);
+    setValidationError('');
+    try {
+      const session = await createShell(buildInteractiveShellRequest(request)).unwrap();
+      onStarted(session.session_id);
+    } catch { /* surfaced through createState.error */ }
+    finally { inFlight.current = false; setStartingBridgeId(''); }
+  };
   const start = async () => {
     if (blocked || !bridgeId) return;
-    try {
-      const session = await createShell(buildInteractiveShellRequest({
-        bridgeId,
-        cwd: cwd.trim() || undefined,
-        cmd: command.trim() || undefined,
-        projectId: projectId || undefined,
-      })).unwrap();
-      onStarted(session.session_id);
-    } catch { /* surfaced through `error` */ }
+    await run({ bridgeId, cwd: cwd.trim() || undefined, cmd: command.trim() || undefined, projectId: projectId || undefined });
+  };
+  const startOnBridge = async (targetBridgeId: string) => {
+    const current = latest.current;
+    const targetProject = current.projects.find((row) => row.project_id === current.projectId);
+    if (!targetProject || targetProject.state !== 'active') {
+      setValidationError('Choose an active project above before starting a shell.');
+      return;
+    }
+    // An omitted cwd starts in THIS bridge's home, never a cached cwd from another bridge.
+    await run({
+      bridgeId: targetBridgeId,
+      cwd: resolveProjectBridgeShellCwd(targetProject, targetBridgeId),
+      projectId: current.projectId,
+    });
   };
 
   const planLimited = isPlanLimitError(createState.error);
@@ -135,12 +168,14 @@ export function useShellLaunch({ projects, bridges, projectId, initialBridgeId, 
     setCommand,
     shellsEnabled,
     blocked,
-    busy: createState.isLoading,
+    busy: Boolean(startingBridgeId) || createState.isLoading,
     error: createState.error,
-    errorMessage: createState.error ? describeApiError(createState.error) || 'Could not start the shell.' : '',
+    errorMessage: validationError || (createState.error ? describeApiError(createState.error) || 'Could not start the shell.' : ''),
     upgradeDetails: planLimited ? planLimitDetails(createState.error) : !shellsEnabled ? { limit: 'shells_enabled' } : null,
     canStart: !blocked && Boolean(bridgeId) && !createState.isLoading,
     start,
+    startOnBridge,
+    startingBridgeId,
   };
 }
 

@@ -1,26 +1,14 @@
 /**
- * LaunchComposer — the new-conversation page's shared composer (spec §3.4).
- * ------------------------------------------------------------------
- * One container for both modes, so the border stays put while the body swaps:
+ * One surface for the conversation composer and the bridge/session picker.
+ * Mode changes capture the old visual height before DOM mutation, then resize
+ * the surface and fade the incoming body with the shared motion tokens.
+ * Initial mount and reduced motion do not animate. Interrupted transitions
+ * start from the current visual height and cancel the previous animations.
  *
- *   - `LaunchComposer`: the container. `bg-400` (`bg-subtle`) fill, `border-strong`
- *     border, `radius-xl`, padding 16/16/12. On focus-within the border turns
- *     accent with a 1px accent glow (motion #12, fast/standard). When `mode`
- *     changes after mount, the new body plays `composerSwap` (motion #11); never on
- *     first render and never under reduced motion.
- *   - `ConversationComposerBody`: textarea "Message the agent" and the footer bar:
- *     attach `IconButton` + agent chip on the left; `Kbd` "Ctrl Enter" (desktop),
- *     the provider chip and the accent send button (`arrow-up`) on the right.
- *   - `ShellComposerBody`: a `$` prompt in accent, a mono command field, and the
- *     footer bar: the `zsh` shell chip, "Opens in the {project|home} folder on
- *     {bridge}" and the primary "Open shell" button.
- *
- * Presentational: the page owns the state, the launch calls and the menus (it
- * passes the `AgentMenu` / `RuntimeMenu` chips in as nodes). Further shell
- * controls (a working directory, attaching to a running shell) can be added as
- * extra rows in `ShellComposerBody` without touching the container.
+ * ConversationComposerBody keeps the existing agent/provider toolbar.
+ * ShellComposerBody remains available for legacy command-entry callers.
  */
-import React, { forwardRef, useState, type ClipboardEvent, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
+import React, { forwardRef, type ClipboardEvent, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { Badge, Button, Icon, IconButton, Kbd, Text } from '@ui';
 import { MessageComposerInput } from '../MessageComposer';
 import type { LauncherMode } from './ModeMenu';
@@ -47,40 +35,58 @@ export interface LaunchComposerProps {
   debugId?: string;
 }
 
-/** The container. The forwarded ref is the element the launch transition moves. */
-export const LaunchComposer = forwardRef<HTMLFormElement, LaunchComposerProps>(function LaunchComposer(
-  { mode, disabled = false, onSubmit, children, debugId = 'new-convo-composer-shell' },
-  ref,
-) {
-  // composerSwap (#11) only after a real mode change, derived while rendering
-  // (an effect would render the new body once without the class first).
-  const [swap, setSwap] = useState({ mode, count: 0 });
-  if (swap.mode !== mode) setSwap({ mode, count: swap.count + 1 });
-  const animate = swap.count > 0 && !prefersReducedMotion();
-  return (
-    <form
-      ref={ref}
+/** Capture the old visual height before React replaces the mode's body. */
+class LaunchComposerFrame extends React.Component<LaunchComposerProps & { formRef: React.ForwardedRef<HTMLFormElement> }, {}, number | null> {
+  private node: HTMLFormElement | null = null;
+  private resize: Animation | null = null;
+  private fade: Animation | null = null;
+
+  getSnapshotBeforeUpdate(previous: Readonly<LaunchComposerProps>): number | null {
+    return previous.mode !== this.props.mode && this.node ? this.node.getBoundingClientRect().height : null;
+  }
+
+  componentDidUpdate(_previous: Readonly<LaunchComposerProps>, _state: {}, height: number | null) {
+    if (height === null || !this.node) return;
+    this.resize?.cancel();
+    this.fade?.cancel();
+    if (prefersReducedMotion() || typeof this.node.animate !== 'function') return;
+    const styles = window.getComputedStyle(this.node);
+    const duration = (token: string, fallback: number) => Number.parseFloat(styles.getPropertyValue(token)) || fallback;
+    this.resize = this.node.animate(
+      [{ height: height + 'px' }, { height: this.node.getBoundingClientRect().height + 'px' }],
+      { duration: duration('--duration-slow', 300), easing: styles.getPropertyValue('--ease-standard').trim() || 'cubic-bezier(0.2, 0.8, 0.2, 1)' },
+    );
+    const body = this.node.querySelector<HTMLElement>('[data-composer-body]');
+    this.fade = body?.animate(
+      [{ opacity: 0, transform: 'translateY(var(--space-1-5, 6px))' }, { opacity: 1, transform: 'translateY(0)' }],
+      { duration: duration('--duration-base', 200), easing: styles.getPropertyValue('--ease-standard').trim() || 'cubic-bezier(0.2, 0.8, 0.2, 1)' },
+    ) ?? null;
+  }
+
+  componentWillUnmount() { this.resize?.cancel(); this.fade?.cancel(); }
+
+  render() {
+    const { mode, disabled = false, onSubmit, children, debugId = 'new-convo-composer-shell', formRef } = this.props;
+    return <form
+      ref={(node) => { this.node = node; if (typeof formRef === 'function') formRef(node); else if (formRef) formRef.current = node; }}
       onSubmit={onSubmit ?? ((event) => event.preventDefault())}
       data-debug-id={debugId}
       data-mode={mode}
       aria-disabled={disabled || undefined}
       className={cx(
-        'relative rounded-[var(--radius-xl)] border border-strong bg-subtle px-4 pb-3 pt-4',
+        'relative overflow-hidden rounded-[var(--radius-xl)] border border-strong bg-subtle',
+        mode === 'agent' && 'px-4 pb-3 pt-4',
         'transition-[border-color,box-shadow] duration-fast ease-standard motion-reduce:transition-none',
         'focus-within:border-accent focus-within:shadow-[0_0_0_1px_var(--color-accent)]',
         disabled && 'pointer-events-none opacity-[.45]',
       )}
     >
-      <div
-        key={mode}
-        data-composer-body={mode}
-        className={cx('flex flex-col gap-3', animate && 'animate-composer-swap')}
-      >
-        {children}
-      </div>
-    </form>
-  );
-});
+      <div key={mode} data-composer-body={mode} className={cx('flex flex-col', mode === 'agent' && 'gap-3')}>{children}</div>
+    </form>;
+  }
+}
+
+export const LaunchComposer = forwardRef<HTMLFormElement, LaunchComposerProps>((props, ref) => <LaunchComposerFrame {...props} formRef={ref} />);
 
 export interface ConversationComposerBodyProps {
   mobile: boolean;
