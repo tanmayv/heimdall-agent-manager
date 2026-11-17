@@ -17,8 +17,11 @@ import {
   checkedProviderCount,
   defaultProviderSelection,
   enableButtonLabel,
+  discoveryRetryNotice,
+  isCatalogNotReadyError,
   isRetriableDiscoveryError,
   modelCountLabel,
+  PROVIDER_CATALOG_NOT_READY_CAUSE,
   notFoundSummary,
   providerEnableChanges,
   reconnectSecondsLeft,
@@ -142,13 +145,23 @@ test('the reconnect wait times out after ~90 s, but readiness wins on the same t
   assert.equal(reconnectSecondsLeft(t0, t0 + 200_000), 0);
 });
 
-test('discovery retries only on bridge_offline', () => {
+test('discovery retries only on bridge_offline and a bridge still receiving its catalog', () => {
   assert.equal(isRetriableDiscoveryError({ code: 'bridge_offline', status: 409 }), true);
   assert.equal(isRetriableDiscoveryError({ status: 409 }), true, 'a 409 without a code is the offline answer');
   assert.equal(isRetriableDiscoveryError({ code: 'conflict', status: 409 }), false);
   assert.equal(isRetriableDiscoveryError({ code: 'provider_discovery_timeout', status: 504 }), false);
   assert.equal(isRetriableDiscoveryError(new Error('network')), false);
   assert.equal(isRetriableDiscoveryError(null), false);
+  // The hub relays the bridge's typed refusal as 503 bridge_busy with its cause, which
+  // cookieFetch's ApiError exposes as `code` / `errorCause`.
+  assert.match(read('../src/ui/api/cookieFetch.ts'), /readonly errorCause\?: string;/);
+  const notReady = { status: 503, code: 'bridge_busy', errorClass: 'retriable', errorCause: PROVIDER_CATALOG_NOT_READY_CAUSE };
+  assert.equal(isRetriableDiscoveryError(notReady), true);
+  assert.equal(isCatalogNotReadyError(notReady), true);
+  assert.match(discoveryRetryNotice(notReady), /provider list/);
+  assert.match(discoveryRetryNotice({ code: 'bridge_offline', status: 409 }), /come online/);
+  // Any other busy answer is not this race and is not retried by the scan loop.
+  assert.equal(isRetriableDiscoveryError({ status: 503, code: 'bridge_busy', errorClass: 'retriable', errorCause: 'pty_host_unreachable' }), false);
 });
 
 test('defaults: checked iff present with at least one active model; absent providers get no entry', () => {
@@ -200,6 +213,20 @@ test('ProviderSetupSurface: no hardcoded Online pill; compact variant uses the s
   assert.match(source, /isRetriableDiscoveryError\(error\)/);
   assert.match(source, /enableButtonLabel\(checked\)/);
   assert.match(source, /Promise\.allSettled/, 'one failing PUT does not stop the others');
+  assert.match(source, /discoveryRetryNotice\(error\)/);
+});
+
+test('ProviderSetupSurface compact: scanning never traps the user and an empty scan can be repeated', () => {
+  const source = read('../src/ui/components/providers/ProviderSetupSurface.tsx');
+  const compact = source.slice(source.indexOf("variant === 'compact'"));
+  const scanning = compact.slice(compact.indexOf('provider-summary-scanning'), compact.indexOf(') : discoveryFailed ?'));
+  assert.match(scanning, /data-debug-id="provider-summary-skip-btn" onClick=\{onApply\}/, 'skip is offered while the scan retries');
+  assert.doesNotMatch(scanning, /provider-summary-skip-btn"[^>]*disabled/, 'skip is never disabled');
+  const failed = compact.slice(compact.indexOf(') : discoveryFailed ?'), compact.indexOf('provider-summary-list'));
+  assert.match(failed, /provider-setup-discover-btn/);
+  assert.match(failed, /provider-summary-skip-btn/);
+  const empty = compact.slice(compact.indexOf('present.length === 0'), compact.indexOf('present.map'));
+  assert.match(empty, /data-debug-id="provider-summary-rescan-btn"[^>]*onClick=\{\(\) => void rediscover\(false\)\}/);
 });
 
 test('no brg_mock_dawnstar fallback for the standalone provider route', () => {

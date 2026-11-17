@@ -23,7 +23,7 @@ bridge_cause_error_code :: proc(cause: string) -> contracts.Error_Code {
 		return .None
 	case "vault_locked":
 		return .Vault_Locked
-	case "bridge_busy", "search_not_ready", "host_unavailable", "response_backpressure", "pty_host_unreachable":
+	case "bridge_busy", "search_not_ready", "host_unavailable", "response_backpressure", "pty_host_unreachable", "provider_catalog_not_ready":
 		return .Bridge_Busy
 	case "deadline_exceeded", "capture_timeout":
 		return .Bridge_Timeout
