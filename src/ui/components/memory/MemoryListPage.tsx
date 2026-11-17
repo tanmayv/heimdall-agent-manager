@@ -1029,11 +1029,23 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
         selectedId ? (
           <MemoryDetailPane
             memoryId={selectedId}
-            onAfterVerb={() => {
+            onAfterVerb={(saved) => {
+              // Same as the row verbs: patch the row with the server's record, so its
+              // new status shows without a reload (useInfiniteList rows never see
+              // tag invalidation).
+              const record = saved && typeof saved === 'object' ? normalizeMemory(saved) : null;
+              if (record?.memoryId) list.patchItem(selectedId, record);
               const next = advanceFrom(selectedId);
               // Auto-advance to the next proposal; if this was the last one,
               // close the pane rather than leaving a stale record open.
               navigateTo(next ? memoryViewHref(next, urlState) : memoryListHref(urlState));
+            }}
+            onDeleted={(deletedId) => {
+              // Pick the neighbour before the row goes, then drop it in place.
+              const next = advanceFrom(deletedId);
+              list.removeItem(deletedId);
+              pushToast({ tone: 'success', title: 'Memory deleted' });
+              navigateTo(next && next !== deletedId ? memoryViewHref(next, urlState) : memoryListHref(urlState));
             }}
           />
         ) : null
@@ -1049,8 +1061,16 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
  * renders, with its own heading instead of the page's `<h1>` (the page already has
  * one, and a second would break the single-h1 contract `PageShell` enforces).
  */
-function MemoryDetailPane({ memoryId, onAfterVerb }: { memoryId: string; onAfterVerb: () => void }) {
-  const { query, record, busy, actionError, runVerb } = useMemoryDetail(memoryId, () => onAfterVerb());
+function MemoryDetailPane({
+  memoryId,
+  onAfterVerb,
+  onDeleted,
+}: {
+  memoryId: string;
+  onAfterVerb: (saved: unknown) => void;
+  onDeleted: (memoryId: string) => void;
+}) {
+  const { query, record, busy, actionError, runVerb } = useMemoryDetail(memoryId, (_verb, saved) => onAfterVerb(saved));
   const paneRef = React.useRef<HTMLDivElement | null>(null);
   const wide = usePaneIsWide(paneRef);
 
@@ -1077,6 +1097,7 @@ function MemoryDetailPane({ memoryId, onAfterVerb }: { memoryId: string; onAfter
         record={record}
         busy={busy}
         onVerb={(verb) => void runVerb(verb)}
+        onDeleted={onDeleted}
       />
       <div className="flex-1 min-h-0 overflow-y-auto">
         <MemoryDetailBody record={record} actionError={actionError} wide={wide} />
