@@ -51,6 +51,7 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 	case "review":        ctl_v2_review(endpoint, token, rest, args); return
 	case "verify":        ctl_v2_verify(endpoint, token, rest, args); return
 	case "workflow", "workflows": ctl_v2_workflow(endpoint, token, rest, args); return
+	case "channel", "channels": ctl_v2_channel(endpoint, token, rest, args); return
 	case "chat", "chats", "conversation", "conversations": ctl_v2_chat(endpoint, token, rest, args); return
 	case "memory":        ctl_v2_memory(endpoint, token, rest, args); return
 	case "artifact", "artifacts": ctl_v2_artifact(endpoint, token, rest, args); return
@@ -1844,6 +1845,7 @@ print_agent_help :: proc(cmd: []string) {
 	case "review": print_help_review(); return
 	case "verify": print_help_verify(); return
 	case "workflow", "workflows": print_help_workflow(); return
+	case "channel", "channels": print_help_channel(); return
 	case "chat", "chats", "conversation", "conversations": print_help_chat(); return
 	case "artifact", "artifacts": print_help_artifact(); return
 	case "memory": print_help_memory(); return
@@ -1873,6 +1875,7 @@ print_help_overview :: proc() {
 	fmt.println("  task-chain  Your task chains")
 	fmt.println("  task        Tasks within a chain (one command per action)")
 	fmt.println("  workflow    Workflow chains: templates, define, run, status, output, retry, cancel")
+	fmt.println("  channel     Read and answer Telegram messages (bot only)")
 	fmt.println("  chat        Read your inbox / send to the user or another agent")
 	fmt.println("  memory      List, show, read, or propose memories")
 	fmt.println("  artifact    Create / read / download artifacts")

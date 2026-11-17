@@ -234,6 +234,14 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 	case "agent.workflow.cancel":
 		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "workflow", "cancel")}
 
+	// ---- channel ----------------------------------------------------------
+	case "agent.channel.read":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "channel", "read")}
+	case "agent.channel.send":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "channel", "send")}
+	case "agent.channel.history":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "channel", "history")}
+
 	// ---- chat -------------------------------------------------------------
 	case "agent.chat.send":
 		// to == "user" -> send-to-user; else to is an agent-instance-id.
@@ -353,6 +361,7 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     "agent.workflow.runs", "agent.workflow.history", "agent.work.graph", "agent.work.depend",
 	     "agent.work.remove_dependency", "agent.work.scope", "agent.work.complete",
 	     // chat + self/misc
+	     "agent.channel.read", "agent.channel.send", "agent.channel.history",
 	     "agent.chat.send", "agent.chat.read", "agent.chat.previous_context",
 	     "agent.context.get", "agent.conversation.set_title",
 	     "agent.memory.propose", "agent.memory.list", "agent.memory.show", "agent.memory.content",
