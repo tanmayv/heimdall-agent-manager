@@ -9,10 +9,13 @@ import platform "odin_test:hub/platform"
 import agent_service "odin_test:hub/service/agent"
 import provider_service "odin_test:hub/service/provider"
 import project_service "odin_test:hub/service/project"
+import events "odin_test:hub/service/events"
 import channel "odin_test:hub/service/channel"
 
 Bots_Service :: struct {
 	repo: ^iface.Bot_Repository,
+	uow_factory: ^iface.Unit_Of_Work_Factory,
+	event_bus: ^events.User_Event_Bus,
 	experiments: ^iface.Experiment_Repository,
 	agents: ^agent_service.Agent_Service,
 	providers: ^provider_service.Provider_Service,
@@ -93,7 +96,6 @@ bots_view_json :: proc(s: ^Bots_Service, owner: string) -> (string, domain.Domai
 			view.telegram.bot_username = identity.bot_username
 		}
 	}
-	defer {delete(identity.bot_user_id); delete(identity.bot_username); delete(identity_err.message)}
 	binding, bound, binding_err := iface.binding_get_active_by_owner(s.repo, owner, "telegram")
 	defer domain.channel_binding_destroy(&binding)
 	if binding_err.code != .None do return "", binding_err
@@ -150,21 +152,6 @@ bots_view_json :: proc(s: ^Bots_Service, owner: string) -> (string, domain.Domai
 	return string(data), {}
 }
 
-// Shared cleanup for DELETE. A5 owns the public disconnect operation; until it
-// lands this path performs the required binding revoke, purge and notification.
-bots_delete_binding :: proc(s: ^Bots_Service, owner: string, now: string) -> domain.Domain_Error {
-	binding, found, err := iface.binding_get_active_by_owner(s.repo, owner, "telegram")
-	defer domain.channel_binding_destroy(&binding)
-	if err.code != .None || !found do return err
-	if e := iface.binding_revoke(s.repo, binding.binding_id, now); e.code != .None do return e
-	if e := iface.messages_purge_binding(s.repo, binding.binding_id); e.code != .None do return e
-	if s.adapter != nil && s.adapter.send_text != nil {
-		id, send_err := s.adapter.send_text(s.adapter.ctx, binding.external_chat_id, "Disconnected from Ninjy. Your messages here are no longer delivered to your bot.")
-		delete(id); delete(send_err.message)
-	}
-	return {}
-}
-
 bots_delete :: proc(s: ^Bots_Service, auth: contracts.Auth_Context) -> domain.Domain_Error {
 	// stop/archive use the same request-scratch convention as create_agent.
 	context.allocator = context.temp_allocator
@@ -172,7 +159,7 @@ bots_delete :: proc(s: ^Bots_Service, auth: contracts.Auth_Context) -> domain.Do
 	if err.code != .None do return err
 	defer domain.bot_destroy(&bot)
 	now := platform.clock_now(s.clock)
-	if e := bots_delete_binding(s, auth.user_id, now); e.code != .None do return e
+	if e := bots_disconnect_for_reason(s, auth.user_id, true, "bot_deleted"); e.code != .None && e.code != .Not_Found do return e
 	sync.mutex_lock(&s.mutex)
 	delivery, open, delivery_err := iface.delivery_get_open(s.repo, bot.bot_id)
 	if delivery_err.code == .None && open {

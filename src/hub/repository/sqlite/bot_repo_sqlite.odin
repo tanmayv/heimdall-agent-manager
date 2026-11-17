@@ -29,6 +29,7 @@ new_bot_repository :: proc(impl: ^Bot_Repo_SQLite, conn: ^Conn) -> iface.Bot_Rep
 		binding_get_active_by_chat = binding_get_active_by_chat_sqlite,
 		binding_activate = binding_activate_sqlite,
 		binding_revoke = binding_revoke_sqlite,
+		pairing_consume = pairing_consume_sqlite,
 		pairing_insert = pairing_insert_sqlite,
 		pairing_get = pairing_get_sqlite,
 		pairing_delete_for_owner = pairing_delete_for_owner_sqlite,
@@ -1116,4 +1117,11 @@ messages_mark_read_sqlite :: proc(
 	if !exec(conn, "COMMIT;") do return bot_repo_error(conn)
 	committed = true
 	return {}
+}
+
+pairing_consume_sqlite :: proc(ctx: rawptr, code_hash, consumed_at: string) -> (bool, domain.Domain_Error) {
+	count, err := bot_repo_write(bot_repo_conn(ctx),
+	"UPDATE channel_pairings SET consumed_at = ? WHERE code_hash = ? AND consumed_at = '' AND expires_at > ?;",
+	{consumed_at, code_hash, consumed_at})
+	return count == 1, err
 }

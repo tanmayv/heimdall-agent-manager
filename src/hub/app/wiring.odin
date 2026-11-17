@@ -104,6 +104,7 @@ App_Graph :: struct {
 	telegram: channel.Telegram_Adapter,
 	channel_adapter: channel.Channel_Adapter,
 	bot_handlers: http.Bot_Handlers,
+	bot_agent_handlers: http.Bot_Agent_Handlers,
 	bot_command_sink: project_service.Bridge_Command_Sink,
 	projects: project_service.Project_Service,
 	content: content_service.Content_Service,
@@ -623,7 +624,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.lsp_server_config_handlers = http.Lsp_Server_Config_Rest_Handlers{auth = &graph.auth, repo = &graph.lsp_server_config_repo, clock = &graph.clock, ids = &graph.ids}
 	graph.providers = provider_service.new_provider_service(&graph.provider_repo)
 	graph.bot_command_sink = bridge_command_sink
-	graph.bots = bots_service.Bots_Service{repo = &graph.bot_repo, experiments = &graph.experiment_repo, agents = &graph.agents, providers = &graph.providers, bridges = &graph.repos.bridges, registry = &graph.bridge_runtime_registry, command_sink = &graph.bot_command_sink, adapter = nil, clock = &graph.clock, ids = &graph.ids, timers = config.bot_timers}
+	graph.bots = bots_service.Bots_Service{repo = &graph.bot_repo, uow_factory = &graph.uow_factory, event_bus = &graph.event_bus, experiments = &graph.experiment_repo, agents = &graph.agents, providers = &graph.providers, bridges = &graph.repos.bridges, registry = &graph.bridge_runtime_registry, command_sink = &graph.bot_command_sink, adapter = nil, clock = &graph.clock, ids = &graph.ids, timers = config.bot_timers}
 	if config.telegram_bot_token != "" {
 		graph.telegram = channel.Telegram_Adapter{token = config.telegram_bot_token, api_base = config.telegram_api_base}
 		graph.channel_adapter = channel.telegram_adapter(&graph.telegram)
@@ -633,6 +634,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.experiment_handlers.on_changed = bots_service.bots_on_experiment_changed
 	graph.experiment_handlers.on_changed_ctx = &graph.bots_runtime
 	graph.bots.boot_unix_ms, _ = platform.rfc3339_to_unix_ms(platform.clock_now(&graph.clock))
+	graph.bot_agent_handlers = http.Bot_Agent_Handlers{agent_actions = &graph.agent_action_handlers, bots = &graph.bots, experiments = &graph.experiment_repo}
 	graph.bot_handlers = http.Bot_Handlers{auth = &graph.auth, bots = &graph.bots, experiments = &graph.experiment_repo}
 	graph.bridges.provider_repo = graph.providers.repo
 	graph.provider_handlers = http.Provider_Handlers{auth = &graph.auth, providers = &graph.providers, bridges = &graph.bridges, bridge_runtime_registry = &graph.bridge_runtime_registry, clock = &graph.clock, ids = &graph.ids, agents = &graph.agents, event_bus = &graph.event_bus}
@@ -822,6 +824,12 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "PUT", "/api/v1/bots/me/placement", rawptr(&graph.bot_handlers), http.bot_placement_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bots/me/placement/options", rawptr(&graph.bot_handlers), http.bot_placement_options_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bots/me/deliveries", rawptr(&graph.bot_handlers), http.bot_deliveries_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/bots/me/channels/telegram/pairing", rawptr(&graph.bot_handlers), http.bot_pairing_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/bots/me/channels/telegram", rawptr(&graph.bot_handlers), http.bot_disconnect_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/bots/me/channels/telegram/messages", rawptr(&graph.bot_handlers), http.bot_messages_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/read", rawptr(&graph.bot_agent_handlers), http.bot_agent_channel_read_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/send", rawptr(&graph.bot_agent_handlers), http.bot_agent_channel_send_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/history", rawptr(&graph.bot_agent_handlers), http.bot_agent_channel_history_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agents/*", rawptr(&graph.agent_handlers), http.agent_detail_handler)
 	http.router_add(&graph.router, "PATCH", "/api/v1/agents/*", rawptr(&graph.agent_handlers), http.update_agent_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agents/*/archive", rawptr(&graph.agent_handlers), http.archive_agent_handler)

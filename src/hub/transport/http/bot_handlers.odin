@@ -167,3 +167,49 @@ bot_deliveries_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	strings.write_string(&b, "]}")
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
+
+bot_pairing_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bot_Handlers)(ctx)
+	auth, ok, refusal := bot_require_auth(h, req)
+	if !ok do return refusal
+	link, err := bots.bots_pairing_create(h.bots, auth.user_id)
+	defer {delete(link.pairing_url); delete(link.expires_at)}
+	if err.code != .None do return respond_error(err, req.request_id)
+	return respond_success_typed(link, req.request_id, auth_ctx_server_time(req), 201)
+}
+
+bot_disconnect_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bot_Handlers)(ctx)
+	auth, ok, refusal := bot_require_auth(h, req)
+	if !ok do return refusal
+	bot, err := bots.bots_get(h.bots, auth.user_id)
+	defer domain.bot_destroy(&bot)
+	if err.code != .None do return respond_error(err, req.request_id)
+	if e := bots.bots_disconnect(h.bots, auth.user_id, true); e.code != .None do return respond_error(e, req.request_id)
+	return respond_success("{\"disconnected\":true}", req.request_id, auth_ctx_server_time(req))
+}
+
+bot_messages_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bot_Handlers)(ctx)
+	auth, ok, refusal := bot_require_auth(h, req)
+	if !ok do return refusal
+	bot, err := bots.bots_get(h.bots, auth.user_id)
+	defer domain.bot_destroy(&bot)
+	if err.code != .None do return respond_error(err, req.request_id)
+	limit := 50
+	if raw := query_value(req.query, "limit"); has_query_key(req.query, "limit") {
+		n, valid := strconv.parse_int(raw)
+		if !valid || n < 1 || n > 200 do return respond_error(domain.domain_error(.Validation_Failed, "limit must be 1..200"), req.request_id)
+		limit = n
+	}
+	messages, list_err := iface.messages_history(h.bots.repo, bot.bot_id, limit)
+	defer {for &m in messages do domain.channel_message_destroy(&m); delete(messages)}
+	if list_err.code != .None do return respond_error(list_err, req.request_id)
+	wire := make([]struct {
+		message_id, direction, body: string,
+		body_purged: bool,
+		send_state, created_at, read_at, replied_at: string,
+	}, len(messages), context.temp_allocator)
+	for m, i in messages do wire[i] = {m.message_id, domain.channel_direction_text(m.direction), m.body, m.body_purged, domain.channel_send_state_text(m.send_state), m.created_at, m.read_at, m.replied_at}
+	return respond_success_typed(struct {messages: type_of(wire)}{wire}, req.request_id, auth_ctx_server_time(req))
+}

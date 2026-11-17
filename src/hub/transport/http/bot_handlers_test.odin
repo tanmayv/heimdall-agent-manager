@@ -20,6 +20,8 @@ Bot_HTTP_Fixture :: struct {
 	provider_impl: sqlite.Provider_Repo_SQLite,
 	content_impl: sqlite.Content_Repo_SQLite,
 	bot_repo: iface.Bot_Repository,
+	uow_impl: sqlite.SQLite_Unit_Of_Work_Factory,
+	uow: iface.Unit_Of_Work_Factory,
 	experiments: iface.Experiment_Repository,
 	provider_repo: iface.Provider_Repository,
 	content_repo: iface.Content_Repository,
@@ -43,11 +45,12 @@ bot_http_fixture :: proc(t: ^testing.T, enabled := true) -> ^Bot_HTTP_Fixture {
 	f := new(Bot_HTTP_Fixture)
 	f.wire = wire_setup(t, "bots")
 	f.bot_repo = sqlite.new_bot_repository(&f.bot_impl, &f.wire.conn)
+	f.uow = sqlite.new_unit_of_work_factory(&f.uow_impl, &f.wire.conn, nil)
 	f.experiments = sqlite.new_experiment_repository(&f.experiment_impl, &f.wire.conn)
 	f.provider_repo = sqlite.new_provider_repository(&f.provider_impl, &f.wire.conn)
 	f.content_repo = sqlite.new_content_repository(&f.content_impl, &f.wire.conn)
 	f.providers.repo = &f.provider_repo
-	f.service = {repo = &f.bot_repo, experiments = &f.experiments, agents = &f.wire.ag_svc, bridges = &f.wire.br_repo, providers = &f.providers, clock = &f.wire.clock, ids = &f.wire.ids, timers = bots.default_bot_timer_config()}
+	f.service = {repo = &f.bot_repo, uow_factory = &f.uow, experiments = &f.experiments, agents = &f.wire.ag_svc, bridges = &f.wire.br_repo, providers = &f.providers, clock = &f.wire.clock, ids = &f.wire.ids, timers = bots.default_bot_timer_config()}
 	f.handlers = {auth = &f.wire.auth_svc, bots = &f.service, experiments = &f.experiments}
 	_, err := iface.experiment_set(&f.experiments, {owner_user_id = string(f.wire.owner), key = "bots", enabled = enabled, updated_at = "now"})
 	testing.expect_value(t, err.code, domain.Error_Code.None)
@@ -70,6 +73,7 @@ test_bots_routes_refuse_when_experiment_off :: proc(t: ^testing.T) {
 	for tc in ([]struct {method, path: string, handler: Handler_Proc}{
 		{"GET", "/api/v1/bots/me", bot_me_handler}, {"POST", "/api/v1/bots/me", bot_me_handler}, {"DELETE", "/api/v1/bots/me", bot_me_handler},
 		{"GET", "/api/v1/bots/me/placement", bot_placement_handler}, {"PUT", "/api/v1/bots/me/placement", bot_placement_handler},
+		{"POST", "/api/v1/bots/me/channels/telegram/pairing", bot_pairing_handler}, {"DELETE", "/api/v1/bots/me/channels/telegram", bot_disconnect_handler}, {"GET", "/api/v1/bots/me/channels/telegram/messages", bot_messages_handler},
 		{"GET", "/api/v1/bots/me/placement/options", bot_placement_options_handler}, {"GET", "/api/v1/bots/me/deliveries", bot_deliveries_handler},
 	}) {
 		resp := tc.handler(&f.handlers, bot_http_request(f, tc.method, tc.path, "{}"))

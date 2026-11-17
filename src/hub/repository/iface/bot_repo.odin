@@ -74,6 +74,7 @@ Bot_Repository :: struct {
 		err: domain.Domain_Error,
 	), // one tx: consume pairing, revoke owner's previous binding, insert
 	binding_revoke:                       proc(ctx: rawptr, binding_id, revoked_at: string) -> domain.Domain_Error,
+	pairing_consume: proc(ctx: rawptr, code_hash, consumed_at: string) -> (bool, domain.Domain_Error),
 	pairing_insert:                       proc(ctx: rawptr, p: domain.Channel_Pairing) -> domain.Domain_Error,
 	pairing_get:                          proc(
 		ctx: rawptr,
@@ -528,4 +529,9 @@ attempt_list_open_on_bridge :: proc(
 ) {
 	if repo == nil || repo.attempt_list_open_on_bridge == nil do return {}, domain.domain_error(.Internal_Error, "bot repository is not configured")
 	return repo.attempt_list_open_on_bridge(repo.ctx, bridge_id)
+}
+
+pairing_consume :: proc(repo: ^Bot_Repository, code_hash, consumed_at: string) -> (bool, domain.Domain_Error) {
+	if repo == nil || repo.pairing_consume == nil do return false, domain.domain_error(.Internal_Error, "bot repository is not configured")
+	return repo.pairing_consume(repo.ctx, code_hash, consumed_at)
 }

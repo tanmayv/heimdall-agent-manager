@@ -11,7 +11,7 @@ import project_service "odin_test:hub/service/project"
 
 bots_detail_error :: proc(code: domain.Error_Code, detail: string) -> domain.Domain_Error {
 	e := domain.domain_error(code, detail)
-	e.details_json = fmt.tprintf(`{"code":"%s"}`, detail)
+	e.details_json = fmt.tprintf(`{{"code":"%s"}}`, detail)
 	return e
 }
 

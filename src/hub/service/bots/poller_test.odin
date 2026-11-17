@@ -96,6 +96,9 @@ test_runtime_reconcile_starts_and_stops :: proc(t: ^testing.T) {
 }
 
 Poller_Test_Repo :: struct {mutex: sync.Mutex, calls: int, cursor: string, rows_seen: int}
+poller_test_no_binding :: proc(ctx: rawptr, provider, chat: string) -> (domain.Channel_Binding, bool, domain.Domain_Error) {return {}, false, {}}
+poller_test_notice :: proc(ctx: rawptr, chat, text: string) -> (string, channel.Channel_Error) {return "", {}}
+
 poller_test_cursor :: proc(ctx: rawptr, provider: string) -> (string, bool, domain.Domain_Error) {
 	r := (^Poller_Test_Repo)(ctx)
 	sync.mutex_lock(&r.mutex); defer sync.mutex_unlock(&r.mutex)
@@ -140,7 +143,8 @@ test_poller_does_not_advance_offset_before_commit :: proc(t: ^testing.T) {
 	exp := Runtime_Test_Experiments{enabled = 1}
 	exps := iface.Experiment_Repository{ctx = &exp, count_enabled = runtime_test_count}
 	repo_state := Poller_Test_Repo{cursor = "1"}
-	repo := iface.Bot_Repository{ctx = &repo_state, cursor_get = poller_test_cursor, inbound_store_batch = poller_test_store}
+	adapter.send_text = poller_test_notice
+	repo := iface.Bot_Repository{binding_get_active_by_chat = poller_test_no_binding, ctx = &repo_state, cursor_get = poller_test_cursor, inbound_store_batch = poller_test_store}
 	service := Bots_Service{repo = &repo, experiments = &exps, adapter = &adapter}
 	rt := Bots_Runtime{service = &service, telegram_bot_token = "TEST:FAKE"}
 	defer bots_runtime_stop(&rt)

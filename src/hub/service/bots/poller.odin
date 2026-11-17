@@ -7,7 +7,7 @@ import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
 import channel "odin_test:hub/service/channel"
 
-// A5 replaces the empty row mapping and adds post-commit side effects. The
+// Map inbound rows and run side effects only after the cursor commits. The
 // repository cursor stays authoritative: never poll next before storing it.
 bots_poller_thread :: proc(rt: ^Bots_Runtime) {
 	backoff: time.Duration = time.Second
@@ -47,9 +47,10 @@ bots_poller_iteration :: proc(rt: ^Bots_Runtime, backoff: ^time.Duration) -> (ti
 		return wait, false
 	}
 	backoff^ = time.Second
-	for update in batch do fmt.eprintf("bots: telegram update kind=%v\n", update.kind)
-	// A4 deliberately commits only the cursor, with no inbound rows.
-	inserted, store_err := iface.inbound_store_batch(s.repo, "telegram", {}, next, platform.clock_now(s.clock))
+	now := platform.clock_now(s.clock)
+	rows, map_err := bots_inbound_rows(s, batch, now)
+	if map_err.code != .None do return 5 * time.Second, false
+	inserted, store_err := iface.inbound_store_batch(s.repo, "telegram", rows, next, now)
 	defer {
 		for id in inserted do delete(id)
 		delete(inserted)
@@ -57,6 +58,18 @@ bots_poller_iteration :: proc(rt: ^Bots_Runtime, backoff: ^time.Duration) -> (ti
 	if store_err.code != .None {
 		fmt.eprintln("bots: telegram batch commit failed")
 		return 5 * time.Second, false
+	}
+	for update in batch {
+		if e := bots_inbound_side_effect(s, update, now); e.code != .None do fmt.eprintf("bots: inbound side effect code=%v\n", e.code)
+	}
+	seen := make(map[string]bool, context.temp_allocator)
+	for row in rows {
+		new_row := false
+		for id in inserted do if id == row.message_id do new_row = true
+		if !new_row || seen[row.bot_id] do continue
+		seen[row.bot_id] = true
+		ms, _ := platform.rfc3339_to_unix_ms(now)
+		if e := delivery_on_inbound(s, row.bot_id, ms); e.code != .None do fmt.eprintf("bots: inbound delivery code=%v\n", e.code)
 	}
 	return 0, false
 }
