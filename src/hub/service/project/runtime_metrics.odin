@@ -194,6 +194,7 @@ fleet_metrics_add_tombstone_hook :: proc(hook: proc(bridge_id: string)) {
 // bridge_frame_kind buckets a frame/command `type` into a fixed family.
 bridge_frame_kind :: proc(frame_type: string) -> string {
 	switch {
+	case frame_type == "bot_deliver": return "bot"
 	case frame_type == "bridge_heartbeat":                 return "heartbeat"
 	case frame_type == "bridge_diagnostics":               return "diagnostics"
 	case frame_type == "agent_instance_status":            return "agent_status"
