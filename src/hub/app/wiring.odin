@@ -10,7 +10,8 @@ import iface "odin_test:hub/repository/iface"
 import sqlite "odin_test:hub/repository/sqlite"
 import auth_service "odin_test:hub/service/auth"
 import mcp_service "odin_test:hub/service/mcp"
-import bots "odin_test:hub/service/bots"
+import bots_service "odin_test:hub/service/bots"
+import channel "odin_test:hub/service/channel"
 import agent_service "odin_test:hub/service/agent"
 import bridge_service "odin_test:hub/service/bridge"
 import bridge_log_service "odin_test:hub/service/bridge_log"
@@ -98,7 +99,10 @@ App_Graph :: struct {
 	bridge_update_catalog: bridge_service.Bridge_Update_Catalog,
 	bridges: bridge_service.Bridge_Service,
 	agents: agent_service.Agent_Service,
-	bots: bots.Bots_Service,
+	bots: bots_service.Bots_Service,
+	bots_runtime: bots_service.Bots_Runtime,
+	telegram: channel.Telegram_Adapter,
+	channel_adapter: channel.Channel_Adapter,
 	bot_handlers: http.Bot_Handlers,
 	bot_command_sink: project_service.Bridge_Command_Sink,
 	projects: project_service.Project_Service,
@@ -619,7 +623,15 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.lsp_server_config_handlers = http.Lsp_Server_Config_Rest_Handlers{auth = &graph.auth, repo = &graph.lsp_server_config_repo, clock = &graph.clock, ids = &graph.ids}
 	graph.providers = provider_service.new_provider_service(&graph.provider_repo)
 	graph.bot_command_sink = bridge_command_sink
-	graph.bots = bots.Bots_Service{repo = &graph.bot_repo, experiments = &graph.experiment_repo, agents = &graph.agents, providers = &graph.providers, bridges = &graph.repos.bridges, registry = &graph.bridge_runtime_registry, command_sink = &graph.bot_command_sink, adapter = nil, clock = &graph.clock, ids = &graph.ids, timers = config.bot_timers}
+	graph.bots = bots_service.Bots_Service{repo = &graph.bot_repo, experiments = &graph.experiment_repo, agents = &graph.agents, providers = &graph.providers, bridges = &graph.repos.bridges, registry = &graph.bridge_runtime_registry, command_sink = &graph.bot_command_sink, adapter = nil, clock = &graph.clock, ids = &graph.ids, timers = config.bot_timers}
+	if config.telegram_bot_token != "" {
+		graph.telegram = channel.Telegram_Adapter{token = config.telegram_bot_token, api_base = config.telegram_api_base}
+		graph.channel_adapter = channel.telegram_adapter(&graph.telegram)
+		graph.bots.adapter = &graph.channel_adapter
+	}
+	graph.bots_runtime = bots_service.Bots_Runtime{service = &graph.bots, telegram_bot_token = config.telegram_bot_token}
+	graph.experiment_handlers.on_changed = bots_service.bots_on_experiment_changed
+	graph.experiment_handlers.on_changed_ctx = &graph.bots_runtime
 	graph.bots.boot_unix_ms, _ = platform.rfc3339_to_unix_ms(platform.clock_now(&graph.clock))
 	graph.bot_handlers = http.Bot_Handlers{auth = &graph.auth, bots = &graph.bots, experiments = &graph.experiment_repo}
 	graph.bridges.provider_repo = graph.providers.repo
@@ -645,6 +657,8 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 }
 
 shutdown_graph :: proc(graph: ^App_Graph) {
+	bots_service.bots_runtime_stop(&graph.bots_runtime)
+	channel.telegram_destroy(&graph.telegram)
 	bridge_service.bridge_update_catalog_destroy(&graph.bridge_update_catalog)
 	db_collectors_detach()
 	// Join the bridge_log writer (final drain) while the DB is still open.

@@ -6,6 +6,7 @@ import metrics "odin_test:lib/metrics"
 import http "odin_test:hub/transport/http"
 import bridge_service "odin_test:hub/service/bridge"
 import taskv2 "odin_test:hub/service/taskv2"
+import bots "odin_test:hub/service/bots"
 
 run :: proc(config: Hub_Config) -> (bool, string) {
 	graph: App_Graph
@@ -30,6 +31,8 @@ run :: proc(config: Hub_Config) -> (bool, string) {
 	// thread (1 s probe of the in-memory heap; the columns stay the truth).
 	taskv2.boot(&graph.task_engine)
 	_ = taskv2.start_timer_thread(&graph.task_engine)
+	bots.bots_runtime_reconcile(&graph.bots_runtime)
+	defer bots.bots_runtime_stop(&graph.bots_runtime)
 	// Private Prometheus endpoint, off unless --metrics-addr is set.
 	start_metrics_listener(metrics.global(), config.metrics_addr)
 	if config.ui_origin == "" do fmt.eprintln("ham-hub WARNING: --ui-origin is empty; CSRF protection is disabled")
