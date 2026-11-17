@@ -5,6 +5,7 @@ import "core:os"
 import "core:strconv"
 import "core:strings"
 import app "odin_test:hub/app"
+import bots "odin_test:hub/service/bots"
 import crashlog "odin_test:lib/crashlog"
 import platform "odin_test:hub/platform"
 import user_service "odin_test:hub/service/user"
@@ -150,6 +151,7 @@ parse_args :: proc(config: ^app.Hub_Config) {
 	// env first (below) and flags second (in the loop) keeps precedence uniform
 	// across all VAPID fields, including vapid_subject which carries a default.
 	apply_vapid_env(config)
+	apply_telegram_env(config)
 	apply_paddle_env(config)
 
 	// public_app_origin resolves default -> env -> flag, same shape as the above.
@@ -187,7 +189,11 @@ parse_args :: proc(config: ^app.Hub_Config) {
 	}
 	for i := 1; i < len(os.args); i += 1 {
 		arg := os.args[i]
-		if arg == "--listen" && i + 1 < len(os.args) {
+		if arg == "--telegram-bot-token-file" && i + 1 < len(os.args) {
+			config.telegram_bot_token = read_key_file(os.args[i + 1]); i += 1
+		} else if arg == "--telegram-api-base" && i + 1 < len(os.args) {
+			config.telegram_api_base = strings.clone(os.args[i + 1]); i += 1
+		} else if arg == "--listen" && i + 1 < len(os.args) {
 			host, port, ok := split_host_port(os.args[i + 1])
 			if ok {
 				config.bind_host = host
@@ -395,17 +401,16 @@ apply_vapid_env :: proc(config: ^app.Hub_Config) {
 	if v := os.get_env_alloc("HEIMDALL_VAPID_SUBJECT", context.allocator); v != "" do config.vapid_subject = v
 }
 
-// read_key_file loads a VAPID private key from a file, trimming trailing
-// whitespace/newlines. Returns "" (push stays disabled) if the file is missing
-// or unreadable, warning to stderr so a misconfigured key path is visible to
-// ops (e.g. the NixOS deploy that provides the key via file). The contents are
-// secret and are never logged.
+// read_key_file loads a secret key from a file, trimming trailing
+// whitespace/newlines. Returns "" if missing or unreadable. The generic warning
+// never includes the path or contents; both may contain secret text.
 read_key_file :: proc(path: string) -> string {
 	data, err := os.read_entire_file(path, context.allocator)
 	if err != nil {
-		fmt.eprintln("ham-hub: WARNING could not read VAPID private key file:", path, "- web push send will be disabled")
+		fmt.eprintln("ham-hub: WARNING could not read secret key file")
 		return ""
 	}
+	defer delete(data)
 	return strings.clone(strings.trim_space(string(data)))
 }
 
@@ -439,5 +444,21 @@ apply_paddle_env :: proc(config: ^app.Hub_Config) {
 	if v := os.get_env_alloc("HEIMDALL_PADDLE_PAST_DUE_GRACE_SECONDS", context.allocator); v != "" {
 		parsed, ok := strconv.parse_int(v)
 		config.paddle_past_due_grace_seconds = int(parsed) if ok && parsed >= 0 else -1
+	}
+}
+
+// apply_telegram_env seeds	configuration before flags; secrets are never logged.
+apply_telegram_env :: proc(config: ^app.Hub_Config) {
+	if token := os.get_env_alloc("HEIMDALL_TELEGRAM_BOT_TOKEN", context.allocator); token != "" {
+		config.telegram_bot_token = token
+	} else if path := os.get_env_alloc("HEIMDALL_TELEGRAM_BOT_TOKEN_FILE", context.allocator); path != "" {
+		config.telegram_bot_token = read_key_file(path)
+	}
+	if base := os.get_env_alloc("HEIMDALL_TELEGRAM_API_BASE", context.allocator); base != "" do config.telegram_api_base = base
+	if raw := os.get_env_alloc("HEIMDALL_BOT_TIMERS_JSON", context.allocator); raw != "" {
+		if !bots.apply_bot_timers_json(&config.bot_timers, raw) {
+			fmt.eprintln("HEIMDALL_BOT_TIMERS_JSON must be an object with known timer keys and integer values")
+			os.exit(2)
+		}
 	}
 }

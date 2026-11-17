@@ -77,6 +77,7 @@ App_Graph :: struct {
 	sqlite_issues: sqlite.Issue_Repo_SQLite,
 	sqlite_shell_sessions: sqlite.Shell_Session_Repo_SQLite,
 	sqlite_experiments: sqlite.Experiment_Repo_SQLite,
+	sqlite_bots: sqlite.Bot_Repo_SQLite,
 	sqlite_lsp_server_configs: sqlite.Lsp_Server_Config_Repo_SQLite,
 	sqlite_providers: sqlite.Provider_Repo_SQLite,
 	sqlite_vault_directory: sqlite.Vault_Directory_Repo_SQLite,
@@ -122,6 +123,7 @@ App_Graph :: struct {
 	cards: card_service.Card_Service,
 	shell_session_repo: iface.Shell_Session_Repository,
 	experiment_repo: iface.Experiment_Repository,
+	bot_repo: iface.Bot_Repository,
 	lsp_server_config_repo: iface.Lsp_Server_Config_Repository,
 	provider_repo: iface.Provider_Repository,
 	shell_session_service: shell_session_svc.Shell_Session_Service,
@@ -321,6 +323,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.repos.issues = sqlite.new_issue_repository(&graph.sqlite_issues, &graph.db)
 	graph.shell_session_repo = sqlite.new_shell_session_repository(&graph.sqlite_shell_sessions, &graph.db)
 	graph.experiment_repo = sqlite.new_experiment_repository(&graph.sqlite_experiments, &graph.db)
+	graph.bot_repo = sqlite.new_bot_repository(&graph.sqlite_bots, &graph.db)
 	graph.lsp_server_config_repo = sqlite.new_lsp_server_config_repository(&graph.sqlite_lsp_server_configs, &graph.db)
 	graph.bridge_log_repo = sqlite.new_bridge_log_repository(&graph.sqlite_bridge_logs, &graph.db)
 	graph.bridge_logs = bridge_log_service.new_service(&graph.bridge_log_repo)

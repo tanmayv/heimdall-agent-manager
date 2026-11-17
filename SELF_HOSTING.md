@@ -1418,3 +1418,20 @@ cannot restart.
 ## Provider accounts and local isolation
 
 See [Provider profiles and isolated local homes](docs/provider-profiles.md) for per-bridge account configuration, redacted secret editing, storage/trust boundaries, and the end-to-end isolation smoke.
+
+### Telegram bot configuration
+
+Bots remain off until a user enables the `bots` experiment. Configure the shared
+Telegram bot with `HEIMDALL_TELEGRAM_BOT_TOKEN`, or set
+`HEIMDALL_TELEGRAM_BOT_TOKEN_FILE` to a file containing the token. The inline
+environment token wins over the environment file. The flag
+`--telegram-bot-token-file <path>` overrides both; file contents are trimmed.
+Token values are secret and must not be logged.
+
+`HEIMDALL_TELEGRAM_API_BASE` overrides the default `https://api.telegram.org`;
+`--telegram-api-base <url>` overrides that environment setting.
+
+`HEIMDALL_BOT_TIMERS_JSON` is **for tests only**. It accepts a JSON object of
+`Bot_Timer_Config` field names from the bots slice 1 specification, section 14.1.
+Durations are in milliseconds; count fields are integer counts. Absent fields
+keep their defaults. Unknown keys and noninteger values are refused at startup.

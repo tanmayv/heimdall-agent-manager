@@ -1,12 +1,16 @@
 package app
 
 import "core:strings"
+import bots "odin_test:hub/service/bots"
 import "core:strconv"
 import "core:net"
 import vault "odin_test:lib/vault"
 import auth_service "odin_test:hub/service/auth"
 
 Hub_Config :: struct {
+	telegram_bot_token: string, // secret; never logged
+	telegram_api_base: string,
+	bot_timers: bots.Bot_Timer_Config,
 	// U0 synthetic OAuth probe only. Off by default; never grants vault access.
 	mcp_oauth_spike: bool,
 	// U1 delegated OAuth: explicit opt-in with stable deployment envelope keys.
@@ -139,6 +143,8 @@ default_config :: proc() -> Hub_Config {
 	cidrs := make([]string, 1)
 	cidrs[0] = "127.0.0.1/32"
 	return Hub_Config{
+		telegram_api_base = "https://api.telegram.org",
+		bot_timers = bots.default_bot_timer_config(),
 		paddle_environment = "sandbox",
 		paddle_past_due_grace_seconds = 3 * 86400,
 		bind_host = "127.0.0.1",

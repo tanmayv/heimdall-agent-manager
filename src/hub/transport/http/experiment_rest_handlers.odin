@@ -13,6 +13,8 @@ Experiment_Rest_Handlers :: struct {
 	auth:  ^auth_service.Auth_Service,
 	repo:  ^iface.Experiment_Repository,
 	clock: ^platform.Clock,
+	on_changed: proc(ctx: rawptr, owner_user_id, key: string, enabled: bool),
+	on_changed_ctx: rawptr,
 }
 
 write_experiment_json :: proc(b: ^strings.Builder, exp: domain.Experiment) {
@@ -112,6 +114,7 @@ experiment_set_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 	_, set_err := iface.experiment_set(h.repo, exp)
 	if set_err.code != .None do return respond_error(set_err, req.request_id)
+	if h.on_changed != nil do h.on_changed(h.on_changed_ctx, auth_ctx.user_id, key, enabled)
 
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"ok\":true,\"experiment\":")
