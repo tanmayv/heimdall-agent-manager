@@ -276,9 +276,12 @@ bridge_bot_run :: proc(w: ^Bridge_Bot_Worker) {
 			free_all(context.temp_allocator)
 			current, _ := bridge_bot_snapshot_proc(w.frame.agent_instance_id)
 			old_phase := w.phase
-			result, done := bridge_bot_watch_step(w, bridge_bot_activity_proc(w.frame.agent_instance_id), current.runtime_status, bridge_bot_now_proc())
+			act := bridge_bot_activity_proc(w.frame.agent_instance_id)
+			result, done := bridge_bot_watch_step(w, act, current.runtime_status, bridge_bot_now_proc())
 			if done {
-				bridge_bot_outcome(w, c, result, "")
+				detail := ""
+				if result == "idle_no_reply" && act == "waiting_user" do detail = "waiting_user"
+				bridge_bot_outcome(w, c, result, detail)
 				if result == "acted" { w.phase = .Done; bridge_bot_report(w, "acted"); return }
 				break
 			}
@@ -416,8 +419,18 @@ bridge_bot_shutdown :: proc() {
 	for w in retired do bridge_bot_worker_destroy(w)
 }
 
-// A3 replaces these three bodies with the section 13.5/13.7 rules.
+// Relay observations are accepted only for live delivery workers.
 bridge_bot_note_read :: proc(instance_id, relay_body: string, now_ms: i64) {
+	temp := runtime.default_temp_allocator_temp_begin()
+	defer runtime.default_temp_allocator_temp_end(temp)
+	root, err := json.parse(relay_body, allocator = context.temp_allocator)
+	if err != nil do return
+	obj, object_ok := root.(json.Object)
+	if !object_ok do return
+	data, data_ok := obj["data"].(json.Object)
+	if !data_ok do return
+	messages, messages_ok := data["messages"].(json.Array)
+	if !messages_ok || len(messages) == 0 do return
 	sync.mutex_lock(&bridge_bot_workers_mutex)
 	defer sync.mutex_unlock(&bridge_bot_workers_mutex)
 	for _, w in bridge_bot_workers do if w.frame.agent_instance_id == instance_id && !sync.atomic_load(&w.cancel) && !sync.atomic_load(&w.finished) do sync.atomic_store(&w.read_seen_ms, now_ms)
@@ -428,7 +441,30 @@ bridge_bot_note_reply :: proc(instance_id: string, now_ms: i64) {
 	for _, w in bridge_bot_workers do if w.frame.agent_instance_id == instance_id && !sync.atomic_load(&w.cancel) && !sync.atomic_load(&w.finished) do sync.atomic_store(&w.reply_seen_ms, now_ms)
 }
 bridge_bot_watch_step :: proc(w: ^Bridge_Bot_Worker, act, status: string, now_ms: i64) -> (result: string, done: bool) {
-	if sync.atomic_load(&w.reply_seen_ms) > 0 do return "acted", true
+	read := sync.atomic_load(&w.read_seen_ms)
+	reply := sync.atomic_load(&w.reply_seen_ms)
+	if read > 0 && reply > 0 && reply >= read do return "acted", true
+	if status == "failed" || status == "stopped" || status == "unreachable" do return "crashed", true
+	timers := w.frame.timers
+	if w.phase == .Notified {
+		if read > 0 {
+			w.phase = .Read
+			w.idle_since_ms = 0
+		} else if now_ms - w.notified_ms >= timers.read_ms + i64(w.read_extends) * timers.read_extend_ms {
+			if act == "active" && w.read_extends < timers.read_max_extends do w.read_extends += 1
+			else do return "not_read", true
+		}
+	}
+	if w.phase == .Read || w.phase == .Replying {
+		if act == "active" {
+			w.idle_since_ms = 0
+			w.phase = .Replying
+		} else if w.idle_since_ms == 0 {
+			w.idle_since_ms = now_ms
+		}
+		if w.idle_since_ms > 0 && now_ms - w.idle_since_ms >= timers.idle_no_reply_ms do return "idle_no_reply", true
+		if now_ms - read >= timers.reply_cap_ms do return "reply_timeout", true
+	}
 	return "", false
 }
 

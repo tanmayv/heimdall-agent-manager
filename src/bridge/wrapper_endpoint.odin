@@ -567,6 +567,8 @@ bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec
 		relay := bridge_local_relay_agent_envelope(route.path, method, eff_params, rec)
 		if !relay.ok do return bridge_local_response_error(request_id, "retryable_unavailable", "Hub relay failed")
 		if relay.status < 200 || relay.status >= 300 do return bridge_local_response_error(request_id, "hub_error", relay.body)
+		if method == "agent.channel.read" do bridge_bot_note_read(rec.agent_instance_id, relay.body, bridge_runtime_now_ms())
+		if method == "agent.channel.send" do bridge_bot_note_reply(rec.agent_instance_id, bridge_runtime_now_ms())
 		if strings.trim_space(relay.body) == "" do return bridge_local_response_data(request_id, "{}")
 		return bridge_local_response_data(request_id, relay.body)
 	}
