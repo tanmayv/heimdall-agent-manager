@@ -174,3 +174,49 @@ When adding any new interactive element to the UI:
 1. Choose an ID following the naming convention above.
 2. Add `data-debug-id="your-id"` to the element.
 3. Add the ID to the relevant row in the per-component registry table above.
+
+## Settings > Bots (bots experiment)
+
+The category is available only with the `bots` experiment enabled. Runtime details
+and delivery history live in the collapsed Advanced disclosure. Placement rules
+are in a separate collapsed disclosure.
+
+| Debug ID | Element |
+| --- | --- |
+| `settings-bots-advanced-deliveries` | advanced deliveries |
+| `settings-bots-advanced-details` | advanced details |
+| `settings-bots-advanced-terminal-btn` | advanced terminal btn |
+| `settings-bots-advanced-toggle` | advanced toggle |
+| `settings-bots-create-btn` | create btn |
+| `settings-bots-delete-btn` | delete btn |
+| `settings-bots-delete-cancel-btn` | delete cancel btn |
+| `settings-bots-delete-confirm-btn` | delete confirm btn |
+| `settings-bots-delete-dialog` | delete dialog |
+| `settings-bots-delete-dialog-close-btn` | delete dialog close btn |
+| `settings-bots-empty` | empty |
+| `settings-bots-panel` | panel |
+| `settings-bots-placement-add-btn` | placement add btn |
+| `settings-bots-placement-bridge-{index}` | placement bridge {index} |
+| `settings-bots-placement-error` | placement error |
+| `settings-bots-placement-model-{index}` | placement model {index} |
+| `settings-bots-placement-provider-{index}` | placement provider {index} |
+| `settings-bots-placement-remove-{index}` | placement remove {index} |
+| `settings-bots-placement-row-{index}` | placement row {index} |
+| `settings-bots-placement-save-btn` | placement save btn |
+| `settings-bots-placement-tier-{index}` | placement tier {index} |
+| `settings-bots-placement-toggle` | placement toggle |
+| `settings-bots-status` | status |
+| `settings-bots-status-detail` | status detail |
+| `settings-bots-telegram-card` | telegram card |
+| `settings-bots-telegram-connect-btn` | telegram connect btn |
+| `settings-bots-telegram-copy-btn` | telegram copy btn |
+| `settings-bots-telegram-disconnect-btn` | telegram disconnect btn |
+| `settings-bots-telegram-disconnect-cancel-btn` | telegram disconnect cancel btn |
+| `settings-bots-telegram-disconnect-confirm-btn` | telegram disconnect confirm btn |
+| `settings-bots-telegram-disconnect-dialog` | telegram disconnect dialog |
+| `settings-bots-telegram-disconnect-dialog-close-btn` | telegram disconnect dialog close btn |
+| `settings-bots-telegram-link` | telegram link |
+| `settings-bots-telegram-notice` | telegram notice |
+| `settings-bots-telegram-open-link` | telegram open link |
+| `settings-bots-telegram-paired` | telegram paired |
+| `settings-bots-telegram-unconfigured` | telegram unconfigured |

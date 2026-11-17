@@ -3,6 +3,7 @@ import type { ExperimentFlag } from '../../api/endpoints/settings';
 // Experiment keys mirror src/hub/domain/experiment.odin.
 export const PROJECT_VCS_EXPERIMENT_KEY = 'project_vcs';
 export const ACTIONS_EXPERIMENT_KEY = 'actions';
+export const BOTS_EXPERIMENT_KEY = 'bots';
 
 export type ExperimentFlagState = 'loading' | 'disabled' | 'enabled';
 
@@ -56,4 +57,5 @@ export const EXPERIMENTAL_FLAGS: ReadonlyArray<{ key: string; label: string; des
     label: 'Actions',
     description: 'Scheduled and on-demand Actions. While off, Actions are hidden and scheduled runs are paused; saved Actions are kept.',
   },
+  { key: BOTS_EXPERIMENT_KEY, label: 'Bots', description: 'A personal bot you can talk to from Telegram. It runs on your machines; Ninjy picks the machine and model.' },
 ];
