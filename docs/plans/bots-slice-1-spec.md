@@ -77,7 +77,7 @@ Section 22 maps each requirement to the spec sections and tickets that cover it.
 - If the instance is in an active runtime status, it relaunches at once with the new provider through `relaunch_instance_locked` (`agent_service.odin:1096`). The hub sends `launch_agent` to this bridge.
 - Otherwise it only saves the row (`agent_service.odin:1098`). The bridge then launches it locally (section 13.4). The launch descriptor the bridge fetches carries the provider and model from the row (`src/hub/service/agent/agent_service.odin:2208`, `bootstrap_manifest_json_for_bridge`).
 
-The switch response says which of the two happened (`relaunched`).
+The switch response says which of the two happened (`relaunched`). After a relaunch the bridge waits for the new launch record before it types the notice (13.4, `NEW_RUNTIME_READY`). When the running instance is already on an eligible candidate, the bridge keeps it and does not call switch (13.4, provider stickiness).
 
 **Why.**
 
@@ -228,8 +228,43 @@ Telegram Bot API  <──long poll / sendMessage──  hub: Channel_Adapter (te
 
 ### 4.2 Server-side gate helpers
 
-- **Request handlers** MUST call `require_experiment_enabled(repo, owner_user_id, domain.BOTS_EXPERIMENT_KEY, req.request_id)` (`src/hub/transport/http/experiment_rest_handlers.odin:181`).
-- **Non-HTTP code** MUST call `experiment_gate_error(repo, owner_user_id, domain.BOTS_EXPERIMENT_KEY)` (`experiment_rest_handlers.odin:158`). This covers the supervisor, the poller, frame handlers and the bridge-token route.
+- **Request handlers** (everything in `src/hub/transport/http`) MUST call `require_experiment_enabled(repo, owner_user_id, domain.BOTS_EXPERIMENT_KEY, req.request_id)` (`src/hub/transport/http/experiment_rest_handlers.odin:181`). This covers the user routes (15), the agent routes (16.1) and the switch route (12.6).
+- **Code in `src/hub/service/bots`** (supervisor, poller, inbound rules, frame hooks `bots_on_*`) MUST NOT import `src/hub/transport/http`. `transport/http` imports `service/bots` for its handlers, and the reverse import would be a package cycle. This code MUST call the bots-service gate helper instead. A1a adds it in `src/hub/service/bots/gate.odin`:
+
+```odin
+package bots
+
+import domain "odin_test:hub/domain"
+import iface "odin_test:hub/repository/iface"
+
+// bots_gate_error returns {} when the bots experiment is on for owner_user_id,
+// otherwise the refusal. Same semantics as experiment_gate_error
+// (experiment_rest_handlers.odin:158): empty owner → refusal; repository error →
+// .Internal_Error (fail closed); only this owner's rows are read.
+bots_gate_error :: proc(repo: ^iface.Experiment_Repository, owner_user_id: string) -> domain.Domain_Error {
+	if owner_user_id == "" do return domain.experimental_feature_disabled_error(domain.BOTS_EXPERIMENT_KEY)
+	exps, err := iface.experiment_list_by_owner(repo, owner_user_id)
+	defer {
+		for exp in exps {
+			delete(exp.owner_user_id)
+			delete(exp.key)
+			delete(exp.updated_at)
+		}
+		delete(exps)
+	}
+	if err.code != .None do return domain.domain_error(.Internal_Error, "could not read experiment settings")
+	if domain.experiment_enabled_in(exps[:], domain.BOTS_EXPERIMENT_KEY) do return domain.Domain_Error{}
+	return domain.experimental_feature_disabled_error(domain.BOTS_EXPERIMENT_KEY)
+}
+
+// bots_gate_on is bots_gate_error == {} as a bool, for loops that skip an owner.
+bots_gate_on :: proc(repo: ^iface.Experiment_Repository, owner_user_id: string) -> bool {
+	return bots_gate_error(repo, owner_user_id).code == .None
+}
+```
+
+- The helper uses only `iface.experiment_list_by_owner` (`src/hub/repository/iface/experiment_repo.odin:19`) and `domain.experiment_enabled_in` (`src/hub/domain/experiment.odin:38`), both of which `service` packages may import.
+- `experiment_gate_error` stays where it is and MUST NOT be called from `src/hub/service/bots`.
 - **Response when off:** HTTP 403, `error.code = "forbidden"`, `error.details = {"code":"experimental_feature_disabled","feature":"bots"}`. This comes from `experimental_feature_disabled_error` (`experiment.odin:56`).
 
 Add one repository proc to `Experiment_Repository` (`src/hub/repository/iface/experiment_repo.odin:8`):
@@ -269,7 +304,7 @@ Two hub threads exist for bots: the **poller** (section 9.3) and the **superviso
 - **When it runs:**
   - once in `app.run` after `taskv2.start_timer_thread` (`src/hub/app/app.odin:31-32`);
   - after every successful `PUT /api/v1/me/experiments/bots`. Add an optional field `on_changed: proc(ctx: rawptr, owner_user_id, key: string, enabled: bool)` and `on_changed_ctx: rawptr` to `Experiment_Rest_Handlers` (`experiment_rest_handlers.odin:12`), and call it at the end of `experiment_set_handler` (`experiment_rest_handlers.odin:71`). The wiring sets it to a bots proc. That proc calls `bots_runtime_reconcile` and, when `enabled == false`, `bots_on_experiment_disabled(owner)` (the row in section 4.3).
-- **Thread pattern.** Start/stop MUST copy `bridge_catalog_refresher_start` and `_stop` (`src/hub/service/bridge/bridge_promoted_release.odin:287-328`): a stop flag, a mutex and a condition variable, `cond_wait_with_timeout`, then join and destroy. The poller passes `cancel = &stop_flag` to `httpc.send` so a stop aborts the long poll.
+- **Thread pattern.** Start/stop MUST copy `bridge_catalog_refresher_start` and `_stop` (`src/hub/service/bridge/bridge_promoted_release.odin:288-326`): a stop flag, a mutex and a condition variable, `cond_wait_with_timeout`, then join and destroy. The poller passes `cancel = &stop_flag` to `httpc.send` so a stop aborts the long poll.
 
 ## 5. Data model and migration
 
@@ -637,6 +672,8 @@ Bot_Deliver_Wire :: struct {
 	attempt_id:         string `json:"attempt_id"`,
 	through_message_id: string `json:"through_message_id"`,
 	pending_count:      int    `json:"pending_count"`,
+	current_provider:   string `json:"current_provider"`, // instance's provider in the hub record when the frame is built (11.4)
+	current_model:      string `json:"current_model"`,    // instance's model in the hub record when the frame is built (11.4)
 	candidates:         []Bot_Candidate_Wire `json:"candidates"`,
 	skip:               []Bot_Skip_Wire `json:"skip"`,
 	timers:             Bot_Timers_Wire `json:"timers"`,
@@ -816,6 +853,8 @@ Bots_Service :: struct {
 	timers:        Bot_Timer_Config,
 	mutex:         sync.Mutex,               // serializes delivery/attempt transitions
 	boot_unix_ms:  i64,
+	hello_queue:   [dynamic]string,          // bridge ids from bots_on_bridge_hello; drained by the supervisor (11.6 step 3)
+	last_waiting_recheck_ms: i64,            // supervisor clock for 11.1 row 10
 }
 ```
 
@@ -857,7 +896,7 @@ loop until stop:
   inserted, store_err := repo.inbound_store_batch("telegram", rows, next, now)   // one tx: rows + cursor
   if store_err: sleep 5 s, continue          // cursor not advanced → same batch is re-polled
   for each Inbound in batch: run its side effect per 9.4 (pairing, replies, notices)
-  for each bot with a newly inserted row: delivery_on_inbound(bot_id)          // section 11.3
+  for each bot with a newly inserted row: delivery_on_inbound(s, bot_id, now) // 11.1 row 1; signature in 11.9
   free_all(context.temp_allocator)
 ```
 
@@ -1014,25 +1053,51 @@ bots_select_bridge(s, bot, delivery, round) -> (bridge_id: string, found: bool)
 
 ### 11.1 Delivery state machine
 
-| From | Event | To | Action |
-|---|---|---|---|
-| — | first pending inbound message with no open delivery | `pending` | `round=1`, `through_message_id` = newest pending message |
-| `pending` | supervisor tick, bridge selected | `dispatched` | create an attempt (11.4) |
-| `pending` | supervisor tick, no bridge, round has 0 attempts | `waiting` | `waiting_reason='no_bridge'`; send `COPY_NO_MACHINE` once (`waiting_notice_at` empty → set) |
-| `pending` | supervisor tick, no bridge, round has ≥1 attempt | `waiting` | `waiting_reason='all_tried'`; send `COPY_NO_MACHINE` once |
-| `dispatched` | attempt → `acted` | `acted` | `finished_at=now`, `finish_reason='acted'`; then 11.3 rule R3 |
-| `dispatched` | attempt → `exhausted`, `busy`, `disconnected` or `deadline` | `pending` | next tick tries another bridge in the same round |
-| `dispatched` | hub observes the reply (11.3 R2) | `acted` | the open attempt → `acted` (`report_json` untouched) |
-| `waiting` | eligible bridge hello, or `bot_busy_retry_ms` passed since the last `busy` attempt, or placement changed | `pending` | if the current round has ≥1 attempt: `round += 1`; if `round > bot_max_rounds`, go to `abandoned` instead |
-| `waiting` | new inbound message | `waiting` | `through_message_id` = newest pending message; no new notice |
-| any open | new inbound message while `pending` or `dispatched` | same | `through_message_id` unchanged; the message waits for R3 |
-| any open | `round > bot_max_rounds` | `abandoned` | `finish_reason='max_rounds'`; send `COPY_GAVE_UP` |
-| any open | binding revoked | `abandoned` | `finish_reason='binding_revoked'`; no notice |
-| any open | bot deleted | `abandoned` | `finish_reason='bot_deleted'`; no notice |
-| any open | experiment turned off | `abandoned` | `finish_reason='experiment_disabled'`; no notice |
+**Definitions used in this table**, evaluated on a supervisor tick for a delivery `d` of bot `b` in round `r = d.round`:
+
+- `E` = the bridges that are eligible for `b` (10.2) at this tick.
+- `U` = `E` minus every bridge that has an attempt in `(d, r)`.
+- `A` = the attempts of `(d, r)`; "the round has attempts" means `len(A) > 0`.
+- **Round end** = `len(A) > 0`, every attempt in `A` is terminal (11.2), and `U` is empty.
+
+| # | From | Event | To | Action |
+|---|---|---|---|---|
+| 1 | — | `delivery_on_inbound(b)` is called (a new inbound row was committed, 9.3) and `b` has no open delivery | `pending` | `round=1`, `through_message_id` = newest pending message. This is the only way, besides R3 (11.3), that a delivery is created. Abandoning a delivery never creates a new one |
+| 2 | `pending` | tick, `U` non-empty | `dispatched` | select from `U` (10.4); create an attempt (11.4) |
+| 3 | `pending` | tick, `E` empty | `waiting` | `waiting_reason='no_bridge'`; send `COPY_NO_MACHINE` if `waiting_notice_at` is empty, then set it |
+| 4 | `pending` | tick, round end, some attempt in `A` is `busy` | `waiting` | `waiting_reason='busy'`; no notice |
+| 5 | `pending` | tick, round end, no attempt in `A` is `busy` | `abandoned` | `finish_reason='all_tried'`; send `COPY_GAVE_UP` |
+| 6 | `dispatched` | attempt → `acted` | `acted` | `finished_at=now`, `finish_reason='acted'`; then 11.3 rule R3 |
+| 7 | `dispatched` | attempt → `exhausted`, `busy`, `deadline`, or `disconnected` other than by 11.5.1 | `pending` | the next tick applies rows 2–5 in the same round |
+| 8 | `dispatched` | attempt → `disconnected` by 11.5.1 (stranded relocation) | `waiting` | `waiting_reason='relocation_stranded'`; send `COPY_NO_MACHINE` if `waiting_notice_at` is empty, then set it |
+| 9 | `dispatched` | hub observes the reply (11.3 R2) | `acted` | the open attempt → `acted` (`report_json` untouched) |
+| 10 | `waiting` (`no_bridge`) | waiting re-check (below) finds `E` non-empty | `pending` | wake-up rule (below) |
+| 11 | `waiting` (`busy`) | `now - finished_at` of the newest `busy` attempt in `A` ≥ `bot_busy_retry_ms` | `pending` | wake-up rule |
+| 12 | `waiting` (`relocation_stranded`) | hello from the bridge that holds the instance (`inst.bridge_id`) | `pending` | wake-up rule |
+| 13 | `waiting` (any reason) | placement changed (`PUT …/placement` succeeded) | `pending` | wake-up rule |
+| 14 | `waiting` | new inbound message | `waiting` | `through_message_id` = newest pending message; no new notice |
+| 15 | `pending` or `dispatched` | new inbound message | same | `through_message_id` unchanged; the message waits for R3 |
+| 16 | any open | binding revoked | `abandoned` | `finish_reason='binding_revoked'`; no notice |
+| 17 | any open | bot deleted | `abandoned` | `finish_reason='bot_deleted'`; no notice |
+| 18 | any open | experiment turned off | `abandoned` | `finish_reason='experiment_disabled'`; no notice |
+
+**Wake-up rule** (rows 10–13). Clear `waiting_reason`. If the round has attempts, set `round += 1`. If `round > bot_max_rounds` after that, go to `abandoned` instead, with `finish_reason='max_rounds'`, and send `COPY_GAVE_UP`. `waiting_notice_at` is not cleared, so one delivery sends `COPY_NO_MACHINE` at most once.
+
+**Waiting re-check** (row 10). The supervisor runs it for every `waiting` delivery with `waiting_reason='no_bridge'`:
+
+- on the first tick after `bots_on_bridge_hello` for a bridge owned by the delivery's owner (11.7 sets the request flag; the check itself runs on the tick);
+- for all such deliveries at once, every `bot_waiting_recheck_ms` (30 000 ms) measured on the supervisor's in-memory `last_waiting_recheck_ms`. This covers a bridge whose provider inventory arrives after its hello.
+
+The re-check computes `E` with the full 10.2 rules. Eligibility is checked on the tick, never in the hello hook.
+
+**`waiting_reason` values:** `no_bridge`, `busy`, `relocation_stranded`. No other value is written.
+
+**`finish_reason` values:** `acted`, `all_tried`, `max_rounds`, `binding_revoked`, `bot_deleted`, `experiment_disabled`.
+
+**Why row 5 abandons.** A round end with no `busy` attempt means every eligible bridge was tried in this round and none could act. Waiting would never end while those bridges stay online (nothing would change). Abandoning sends `COPY_GAVE_UP`. The user's messages stay pending (`replied_at=''`), so the user's next message runs row 1, and its new delivery's `channel read` returns the earlier messages too.
 
 - **Terminal states:** `acted`, `abandoned`.
-- **Placement change.** A placement change counts as a `waiting → pending` trigger because it can make new bridges eligible.
+- **Placement change.** Row 13 applies because a placement change can make new bridges eligible, and row 5 does not apply until that new round ends.
 
 ### 11.2 Attempt state machine
 
@@ -1090,7 +1155,7 @@ else:
 
 **Sending the frame:**
 
-1. Store `candidates_json`.
+1. Store `candidates_json`. Read the instance row fresh and set `current_provider` and `current_model` in the frame from its `provider` and `model`. A re-sent frame (12.7) is rebuilt with the values read at re-send time.
 2. Set `sent_at = now`.
 3. Call `bridge_command_send_runtime` with the `bot_deliver` JSON (12.3).
 4. If the send returns `Bridge_Offline`, the attempt goes straight to `disconnected`.
@@ -1124,7 +1189,7 @@ else:
 When the bot's instance has an operation that blocks input (`instance_reconfiguration_blocks_input`, `src/hub/domain/instance_reconfiguration.odin:70`), the supervisor resolves it:
 
 - **Bridge live.** If the bridge that currently holds the instance (`inst.bridge_id`) is live, call `stop_instance(agents, Internal_User(owner), instance_id, {reason: "bot_recovery", force: true})`. This goes through `force_stop_instance_reconfiguration_locked` (`instance_reconfiguration.odin:487-506`); once the bridge confirms the stop, the operation becomes `failed` with `recovery_stopped`, which no longer blocks input (`domain/instance_reconfiguration.odin:70-72`). The attempt stays `relocating` until then.
-- **Bridge not live.** Force stop needs the live bridge (`instance_reconfiguration.odin:494`). The attempt goes to `disconnected` and the delivery goes to `waiting` with `waiting_reason='relocation_stranded'` (notice per 11.1). It returns to `pending` on that bridge's hello, and the next tick force-stops as above. This is a known limit; see section 23, Q1.
+- **Bridge not live.** Force stop needs the live bridge (`instance_reconfiguration.odin:494`). The attempt goes to `disconnected` and the delivery goes to `waiting` with `waiting_reason='relocation_stranded'` (11.1 row 8). It returns to `pending` on the hello of `inst.bridge_id` (11.1 row 12, wake-up rule), and the next dispatch finds the blocking operation again and force-stops as above. This is a known limit; see section 23, Q1.
 
 ### 11.6 Supervisor
 
@@ -1134,9 +1199,11 @@ Each tick runs, in order:
 
 1. **Attempt timers.** For each open attempt: the timers in 11.2 and the relocation watch in 11.5.
 2. **Pending deliveries.** For each `pending` delivery: select and dispatch (11.4), or move to `waiting` (11.1).
-3. **Busy retry.** For each `waiting` delivery whose latest attempt is `busy` and finished more than `bot_busy_retry_ms` ago: back to `pending` (11.1).
-4. **Idle stop.** Runs every 60 s. For each bot that has an instance and no open delivery, whose instance `runtime_status` is active (`runtime_expected_active`, `agent_service.odin:1727`), and whose newest delivery `finished_at` (or `bots.updated_at` when there is none) is older than `bot_idle_stop_ms`: call `stop_instance(agents, Internal_User(owner), id, {reason: "bot_idle"})`.
-5. **Retention.** Runs every 3600 s: `messages_purge_older_than(now - bot_channel_retention_ms)`.
+3. **Hello queue.** Drain `Bots_Service.hello_queue` (11.7). For each bridge id in it: run the waiting re-check (11.1 row 10) for `no_bridge` deliveries of that bridge's owner, and apply 11.1 row 12 to `relocation_stranded` deliveries whose instance's `bridge_id` is that bridge.
+4. **Busy retry.** For each `waiting` delivery with `waiting_reason='busy'`: apply 11.1 row 11.
+5. **Periodic re-check.** When `now - last_waiting_recheck_ms >= bot_waiting_recheck_ms`: run the waiting re-check for every `no_bridge` delivery, then set `last_waiting_recheck_ms = now`.
+6. **Idle stop.** Runs every 60 s. For each bot that has an instance and no open delivery, whose instance `runtime_status` is active (`runtime_expected_active`, `agent_service.odin:1727`), and whose newest delivery `finished_at` (or `bots.updated_at` when there is none) is older than `bot_idle_stop_ms`: call `stop_instance(agents, Internal_User(owner), id, {reason: "bot_idle"})`.
+7. **Retention.** Runs every 3600 s: `messages_purge_older_than(now - bot_channel_retention_ms)`.
 
 Every transition MUST:
 
@@ -1147,7 +1214,7 @@ Every transition MUST:
 
 - **`bots_on_bridge_hello(s, bridge_id)`.** Called in `bridge_ws_upgrade_handler` right after `taskv2.on_bridge_hello` (`src/hub/transport/http/bridge_handlers.odin:1885`). It:
   1. clears `disconnected_at` on open attempts on this bridge that are within grace, and re-sends their frame (12.3, same `command_id`);
-  2. moves to `pending` every `waiting` delivery whose owner owns this bridge (11.1).
+  2. appends `bridge_id` to `Bots_Service.hello_queue` (`[dynamic]string`, guarded by `Bots_Service.mutex`). It changes no delivery. The supervisor's next tick applies 11.1 rows 10 and 12 from the queue (11.6 step 3), so eligibility (10.2) is checked in exactly one place: the tick.
 - **`bots_on_bridge_disconnect(s, bridge_id)`.** Called from `bridge_disconnect_persist` (`bridge_handlers.odin:1928`) after the instances are marked unreachable. It sets `disconnected_at = now` on open attempts on this bridge.
 - **Both hooks:**
   - MUST return at once when no user has the experiment on (`experiment_count_enabled == 0`);
@@ -1159,14 +1226,65 @@ Every transition MUST:
 
 **`bots_on_report`:**
 
-1. Parse into `contracts.Bot_Delivery_Report_Wire`. On parse failure, reply `protocol_error`, as the default arm does.
+1. Parse into `contracts.Bot_Delivery_Report_Wire`. On parse failure, return `parse_failed = true`; the arm replies with a `protocol_error` frame, as the default arm does (11.9).
 2. Load the attempt. If it is missing, or `attempt.bridge_id != bridge_id`, ack and ignore.
 3. If `seq <= attempt.report_seq`, ack and ignore (duplicate).
 4. Store `report_json` and `report_seq`; set `last_report_at = now`.
 5. Apply 11.2 transitions for `state`. A report for a terminal attempt is acked and ignored.
-6. Write `{"type":"bot_delivery_report_ack","attempt_id":…,"seq":…}` on the same connection.
+6. Return `{"type":"bot_delivery_report_ack","attempt_id":…,"seq":…}`. The `case "bot_delivery_report":` arm writes it on the same connection (11.9).
 
 **Command results.** `command_result` frames for `cmd_bot_*` ids already reach `runtime_command_result_for_connection` (`bridge_handlers.odin:2537`). Add one call there, `bots_on_command_result(s, bridge_id, command_id, status, error_code)`, for ids with prefix `cmd_bot_`.
+
+### 11.9 Hub proc signatures
+
+Every proc below is in package `bots` (`src/hub/service/bots/`). "Owner" is the ticket that writes the final body. Where another ticket needs the proc earlier, it adds the stub named in the last column, and the owner replaces the body without changing the signature.
+
+```odin
+// inbound.odin. Implements 11.1 row 1 exactly: in one transaction, if the bot has no
+// open delivery, insert a `pending` delivery (round 1, through_message_id = newest
+// pending inbound message). Otherwise apply row 14 (waiting) or row 15 (pending,
+// dispatched). Never dispatches; the supervisor does. Called after inbound_store_batch commits.
+delivery_on_inbound :: proc(s: ^Bots_Service, bot_id: string, now_ms: i64) -> domain.Domain_Error
+
+// disable.odin. Implements the "Hub delivery engine" row of 4.3: every open delivery of
+// the owner → `abandoned` (finish_reason 'experiment_disabled', no notice), its open
+// attempt → `cancelled`; then, when the owner's bot has a running instance,
+// stop_instance(agents, Internal_User(owner), id, {reason: "bot_experiment_disabled"}).
+bots_on_experiment_disabled :: proc(s: ^Bots_Service, owner_user_id: string)
+
+// runtime.odin. The on_changed hook installed on Experiment_Rest_Handlers (4.4).
+// ctx is the ^Bots_Runtime. Ignores keys other than "bots". Calls bots_runtime_reconcile,
+// then bots_on_experiment_disabled(owner) when !enabled.
+bots_on_experiment_changed :: proc(ctx: rawptr, owner_user_id, key: string, enabled: bool)
+
+// delivery.odin. Applies the 11.2 `command_result` rows to the attempt whose id is
+// command_id without the "cmd_bot_" prefix. status is the payload status
+// ("accepted", "succeeded", "failed"); error_code is the wire error code or "".
+// Ignores unknown attempts, attempts on another bridge and terminal attempts.
+bots_on_command_result :: proc(s: ^Bots_Service, bridge_id, command_id, status, error_code: string)
+
+// delivery.odin. Implements 11.8 steps 1–5. Returns the ack JSON of 12.5 for the caller to
+// write back on the same connection. When parse_failed is true, reply_json is "" and the
+// caller in bridge_handlers.odin builds the refusal itself (service/bots MUST NOT import
+// transport/http, 4.2): bridge_protocol_error_frame("bot_delivery_report",
+// contracts.wire_error(.Validation_Failed, "invalid_bot_delivery_report",
+// "bot_delivery_report could not be parsed")) (bridge_handlers.odin:2747).
+// The caller writes the frame with write_ws_text_frame_locked (as at bridge_handlers.odin:2737) and deletes it.
+bots_on_report :: proc(s: ^Bots_Service, bridge_id, frame_json: string) -> (reply_json: string, parse_failed: bool)
+
+// delivery.odin. 11.7. Never blocks on Telegram I/O; never changes a delivery.
+bots_on_bridge_hello :: proc(s: ^Bots_Service, bridge_id: string)
+bots_on_bridge_disconnect :: proc(s: ^Bots_Service, bridge_id: string)
+```
+
+| Proc | Owner | Earlier stub |
+|---|---|---|
+| `delivery_on_inbound` | A5 | — (A5 writes the final body; A2a does not change it) |
+| `bots_on_experiment_disabled` | A2a | A4 adds `disable.odin` with a body that only logs `bots: experiment disabled owner=<id>` |
+| `bots_on_experiment_changed` | A4 | — |
+| `bots_on_command_result`, `bots_on_report`, `bots_on_bridge_hello`, `bots_on_bridge_disconnect` | A2a | — |
+
+**How `bridge_handlers.odin` reaches the service.** Add the field `bots: ^bots.Bots_Service` to `Bridge_Handlers` (`src/hub/transport/http/bridge_handlers.odin:39`), set in `wiring.odin` by A2a. Every call site MUST skip the call when `h.bots == nil`, so hub tests that build `Bridge_Handlers` without bots keep passing.
 
 ## 12. Hub–bridge protocol
 
@@ -1201,6 +1319,8 @@ case "bot_deliver":
   "attempt_id": "bda_01J9Z0T3",
   "through_message_id": "chm_18e8f0b0ffff0001",
   "pending_count": 2,
+  "current_provider": "codex",
+  "current_model": "gpt-6.1",
   "candidates": [
     {"provider": "claude", "provider_profile": "claude", "model": "opus", "tier": "preferred"},
     {"provider": "codex", "provider_profile": "codex", "model": "gpt-6.1", "tier": "allowed"}
@@ -1250,7 +1370,7 @@ case "bot_deliver":
 | `working` | progress; sent every `progress_interval_ms` and on every phase change |
 | `acted` | the bot replied after reading |
 | `exhausted` | every candidate failed; `reason = "all_candidates_failed"` |
-| `busy` | the bridge cannot start any candidate now for a transient local reason; `reason` ∈ `capacity`, `draining`, `vault_locked` |
+| `busy` | the bridge cannot start any candidate now for a transient local reason; `reason` is `draining` or `vault_locked` (13.4 busy check) |
 
 - `seq` starts at 1 and increases by one per report for the attempt.
 - **Retries.** Terminal reports (`acted`, `exhausted`, `busy`) are held in memory and re-sent every 5 s until acked. They are also re-sent after reconnect. `working` reports are not retried.
@@ -1261,7 +1381,7 @@ case "bot_deliver":
 {"type":"bot_delivery_report_ack","attempt_id":"bda_01J9Z0T3","seq":4}
 ```
 
-The bridge handles it in `bridge_hub_handle_command` as an unqueued type. It needs a `bridge_command_spec` case with `queued = false, requires_id = false` and drops the held report for `(attempt_id, seq ≤ acked)`.
+The bridge handles it in `bridge_hub_handle_command` as an unqueued type. It needs a `bridge_command_spec` case with `queued = false, requires_id = false` and calls `bridge_bot_handle_report_ack(command_json)` (13.9), which drops the held report for `(attempt_id, seq ≤ acked)`.
 
 ### 12.6 Switch route (bridge → hub, HTTP)
 
@@ -1349,27 +1469,64 @@ Bridge_Bot_Worker :: struct {
 
 ### 13.4 Candidate loop
 
+**Order of candidates (provider stickiness).** The worker builds `order` once, before the loop:
+
+1. `snap, found := bridge_runtime_instance_snapshot(instance)` (`src/bridge/hub_runtime_client.odin:3390`).
+2. The **sticky candidate** is the entry `c` of `frame.candidates` with `c.provider == frame.current_provider` and `c.model == frame.current_model`, when all of these hold:
+   - `found` and `bridge_runtime_status_active(snap.runtime_status)` (`hub_runtime_client.odin:3780`);
+   - `c` is not in `frame.skip`;
+   - `bridge_bot_candidate_backoff_active(c)` is false (13.8).
+3. With a sticky candidate, `order = [sticky] + (frame.candidates without sticky, in frame order)`. Without one, `order = frame.candidates`.
+
+The sticky candidate MUST NOT call the switch route and MUST NOT launch: the hub record already names it. The worker only waits for `READY` (which holds at once for a `running` or `idle` instance) and then delivers the notice. Every other candidate calls switch. A bot that is stopped (idle stop, crash) has no sticky candidate, so the next message uses the ranked order and the preferred candidate returns.
+
+**Busy check.** Before the loop, the worker reports `busy` and ends (no candidate is tried, no outcome is recorded) when the first matching row applies:
+
+| # | Check (existing bridge proc) | Busy when | `reason` |
+|---|---|---|---|
+| 1 | `sync.atomic_load(&bridge_hub_traffic_stopped)` (`src/bridge/hub_quiescence.odin:12`) | `true` | `draining` |
+| 2 | `bridge_auto_update_launch_enter()` (`src/bridge/auto_update.odin:87`); on `true` the worker calls `bridge_auto_update_launch_leave()` (`auto_update.odin:95`) at once | `false` (an update reservation is active) | `draining` |
+| 3 | `bridge_vault_status()` (`src/bridge/hub_runtime_client.odin:69`) | `!= .Unlocked` | `vault_locked` |
+
+- There is no `capacity` reason. The bridge has no local limit on agent instances: the only bridge slot limit, `bridge_process_slot_has_capacity` (`src/bridge/process_deadline.odin:19`), counts shell processes, not agents. Plan limits on instances are checked on the hub (10.2 rule 3). The `busy` reason set is therefore exactly `draining` and `vault_locked`.
+- A launch that `bridge_runtime_launch_agent` refuses because an update started after the check (`hub_runtime_client.odin:2616`, error with `retry_after_ms = 30_000`) is recorded as `launch_failed` with class `retriable` (13.8). It is not converted to `busy`.
+
+**Loop:**
+
 ```text
 report(working, Launching)
-for i, cand in frame.candidates:
+for cand in order:
     if cancel: exit silently
     if cand in frame.skip: outcomes += {cand, "skipped", skip.reason}; continue
     if !bridge_provider_runnable(cand.provider, cand.model): outcomes += {cand, "not_runnable", ""}; continue   // agent_wake.odin:146
-    if bridge_bot_candidate_backoff_active(cand): outcomes += {cand, "backoff", ""}; continue                     // 13.8
-    // 1. make the hub record say this candidate (always called; rule 6 of 12.6 makes it a no-op when unchanged)
+    if cand != sticky and bridge_bot_candidate_backoff_active(cand): outcomes += {cand, "backoff", ""}; continue  // 13.8
+    if cand == sticky:
+        // already running on this candidate: no switch, no launch
+        wait until READY or blocked or failed or launch_ready_ms elapsed   // passes at once when it is running/idle
+        goto outcome
+    // 1. make the hub record say this candidate
+    pre, pre_found := bridge_runtime_get_launch(instance)        // hub_runtime_client.odin:2998
+    pre_command_id := pre.command_id if pre_found else ""
     resp := POST /api/v1/bridge/bot-attempts/{attempt_id}/switch {cand}
-    if resp 409/404/403: outcomes += {cand, "switch_refused", details.code}; continue
-    relaunched := resp.relaunched
-    snap := bridge_runtime_instance_snapshot(instance)
+    if resp.status != 200: outcomes += {cand, "switch_refused", detail}; continue
+        // detail = "transport" when status is 0; else error.details.code; else "http_<status>"
     // 2. make it run
-    if !bridge_runtime_status_active(snap.status) and !relaunched:
-        ok, detail, err := launch via descriptor: bridge_wake_fetch_enriched_launch_json + bridge_runtime_launch_agent   // agent_wake.odin:299, hub_runtime_client.odin:2615
-        if !ok: outcomes += {cand, "launch_failed", err class}; bridge_bot_candidate_record_failure(cand, err); continue
+    if resp.relaunched:
+        // The hub sent launch_agent for the new provider. The old process is still
+        // running/idle until that command lands, so the snapshot status alone does not
+        // prove the new runtime is ready. Wait for the new launch record first.
+        wait until NEW_RUNTIME_READY or blocked or failed or launch_ready_ms elapsed
+    else:
+        snap := bridge_runtime_instance_snapshot(instance)
+        if !bridge_runtime_status_active(snap.runtime_status):
+            ok, detail, err := launch via descriptor: bridge_wake_fetch_enriched_launch_json + bridge_runtime_launch_agent   // agent_wake.odin:299, hub_runtime_client.odin:2615
+            if !ok: outcomes += {cand, "launch_failed", err class}; record_failure(cand, err); continue
+        wait until READY or blocked or failed or launch_ready_ms elapsed
+  outcome:
     phase = Waiting_Ready; report(working)
-    wait until snapshot status ∈ {running, idle} (ready), or blocked, or failed, or launch_ready_ms elapsed:
-        blocked → outcomes += {cand, "startup_blocked", "login" if reason is login else "prompt"}; record_failure; continue
-        failed  → outcomes += {cand, "launch_failed", typed error class}; record_failure; continue
-        timeout → outcomes += {cand, "launch_timeout", ""}; record_failure; continue
+    on blocked → outcomes += {cand, "startup_blocked", "login" if reason is login else "prompt"}; record_failure; continue
+    on failed  → outcomes += {cand, "launch_failed", typed error class}; record_failure; continue
+    on timeout → outcomes += {cand, "launch_timeout", ""}; record_failure; continue
     // 3. deliver the notice
     bridge_pty_host_deliver_to_agent(instance, "task_nudge", "telegram", "", "", human_message = BOT_NOTICE)   // pty_host_runtime.odin:759
     phase = Notified; notified_ms = now; report(working)
@@ -1380,10 +1537,15 @@ for i, cand in frame.candidates:
 report(exhausted, Done, reason = "all_candidates_failed")
 ```
 
-- **Busy.** The worker reports `busy` instead of trying candidates when, before step 2 of the first candidate:
-  - the runtime capacity check refuses (`capacity`);
-  - the bridge is in an auto-update quiet window or draining (`draining`; `src/bridge/hub_quiescence.odin`);
-  - the vault is locked (`vault_locked`).
+Every external call in the loop goes through its 13.10 seam (`bridge_bot_switch_proc`, `bridge_bot_launch_proc`, `bridge_bot_snapshot_proc`, `bridge_bot_launch_record_proc`, `bridge_bot_notice_proc`, `bridge_bot_report_proc`); the names above show which production proc each seam defaults to.
+
+**Readiness predicates** (evaluated every 250 ms on fresh `bridge_runtime_instance_snapshot` and `bridge_runtime_get_launch` results):
+
+- `READY`: `snap.runtime_status ∈ {"running", "idle"}` and `snap.start_success_seen`.
+- `NEW_RUNTIME_READY`: `launch, ok := bridge_runtime_get_launch(instance)` gives `ok` and `launch.command_id != pre_command_id`, **and** `READY`. Why this is sound, from the bridge source: `bridge_runtime_launch_agent` sets the status to `starting` (`hub_runtime_client.odin:2693`), which clears `start_success_seen` (`:3283-3284`). Only after the new process is spawned does it call `bridge_runtime_record_launch` with the hub command's `command_id` (`:2835`), which replaces the instance's launch record (`:3012`). So once the launch record's `command_id` has changed, a later `READY` describes the new process. Each hub `launch_agent` command has its own `command_id` (`requires_id`, 12.2), so the id always differs from `pre_command_id`.
+- `blocked`: `snap.runtime_status == "blocked"`. While waiting for `NEW_RUNTIME_READY`, a `blocked` status counts only after the launch record's `command_id` has changed.
+- `failed`: `snap.runtime_status == "failed"`; the error class is `snap.last_error` when `snap.has_last_error`, else `retriable`.
+
 - **Notice text.** `BOT_NOTICE` is verbatim (U+2014 dash, same style as `bridge_pty_host_message_notice`, `pty_host_runtime.odin:661-665`):
 
 ```text
@@ -1395,7 +1557,7 @@ New Telegram message for you — run './bin/ham-ctl channel read' to view and '.
 
 ### 13.5 Watch phase (not-acted detection)
 
-The worker evaluates every 1000 ms. Let `act` be the local activity status of the instance before flattening: `active`, `idle`, `waiting_user` or `unknown`. It comes from the bridge's per-instance activity state, the same source `bridge_runtime_note_agent_activity` uses before `bridge_runtime_normalize_activity_status` (`hub_runtime_client.odin:3127`, `:3356`).
+The worker evaluates every 1000 ms. Let `act` be the local activity status of the instance before flattening: `active`, `idle`, `waiting_user` or `unknown`. It is `bridge_bot_activity_proc(instance)`, which reads the raw value recorded at the start of `bridge_runtime_note_agent_activity` before `bridge_runtime_normalize_activity_status` flattens it (13.10, `hub_runtime_client.odin:3127`, `:3356`).
 
 | Phase | Condition | Result |
 |---|---|---|
@@ -1423,11 +1585,21 @@ The `outcome` field values are fixed:
 **Where.** In `bridge_local_handle_agent` (`src/bridge/wrapper_endpoint.odin`), inside the `.Envelope` branch after a 2xx relay (`wrapper_endpoint.odin:563-571`). Add:
 
 ```odin
-if method == "agent.channel.read" do bridge_bot_note_read(rec.agent_instance_id, time_now_ms())
-if method == "agent.channel.send" do bridge_bot_note_reply(rec.agent_instance_id, time_now_ms())
+if method == "agent.channel.read" do bridge_bot_note_read(rec.agent_instance_id, relay.body, bridge_runtime_now_ms())
+if method == "agent.channel.send" do bridge_bot_note_reply(rec.agent_instance_id, bridge_runtime_now_ms())
 ```
 
-**Behaviour.** Both procs look up the live worker for that instance and set `read_seen_ms` or `reply_seen_ms`. `bridge_bot_note_read` counts a read only if the hub response has `data.messages` with at least one element. An empty read does not count.
+The two lines go after the `relay.status` check and before the `return` statements of the `.Envelope` branch, so they run only for a 2xx relay. `bridge_runtime_now_ms` is `hub_runtime_client.odin:3052`.
+
+**Behaviour.** Both procs look up the live worker for that instance (by `frame.agent_instance_id`) and set `read_seen_ms` or `reply_seen_ms`. With no live worker they do nothing.
+
+**Locating the messages in `relay.body`.** `relay.body` is the hub's HTTP response body. The hub builds it with `respond_success` (`src/hub/transport/http/respond.odin:22`), whose envelope is `{"data":<data>,"meta":{…}}` (`contracts.api_success_json`, `src/contracts/envelope.odin:50-56`). For `channel/read`, `<data>` is the 16.1 object, so the body is:
+
+```json
+{"data":{"messages":[{"message_id":"chm_…","body":"…","created_at":"…","sender":"@alice"}],"pending_total":1},"meta":{"request_id":"…","server_time":"…"}}
+```
+
+`bridge_bot_note_read` parses `relay.body` with `json.parse` (`core:encoding/json`) into the temp allocator and counts a read only when `root.(json.Object)["data"].(json.Object)["messages"].(json.Array)` exists and has at least one element. A parse failure, a missing key, a wrong type or an empty array is not a read. It never logs the body (it holds Telegram text).
 
 ### 13.8 Local candidate backoff
 
@@ -1445,6 +1617,87 @@ if method == "agent.channel.send" do bridge_bot_note_reply(rec.agent_instance_id
 - **Reset.** An `acted` result clears the candidate's entry.
 - **Why not the wake gate.** The bridge's wake gate (`agent_wake.odin:111`) is per instance, not per candidate. The bot worker MUST NOT call `bridge_task_wake_if_needed`. It calls the descriptor fetch and launch directly, as shown in 13.4.
 
+### 13.9 Bridge proc signatures
+
+All in package `main`, file `src/bridge/bot_delivery.odin`.
+
+```odin
+// 13.1. Returns the command_result JSON.
+bridge_bot_handle_deliver :: proc(command_json: string) -> string
+
+// 12.5. Drops held terminal reports of attempt_id with seq <= acked_seq.
+bridge_bot_handle_report_ack :: proc(command_json: string)
+
+// 13.7. relay_body is the hub response body of agent.channel.read (2xx only).
+bridge_bot_note_read  :: proc(instance_id, relay_body: string, now_ms: i64)
+bridge_bot_note_reply :: proc(instance_id: string, now_ms: i64)
+
+// 13.8. Key is cand.provider + "/" + cand.model.
+bridge_bot_candidate_backoff_active :: proc(cand: contracts.Bot_Candidate_Wire, now_ms: i64) -> bool
+// outcome is a 13.6 code. err/has_err carry the launch error for launch_failed
+// (its class picks the 13.8 row); other outcomes pass has_err = false.
+bridge_bot_candidate_record_failure :: proc(cand: contracts.Bot_Candidate_Wire, outcome: string, err: Bridge_Error, has_err: bool, now_ms: i64)
+bridge_bot_candidate_clear          :: proc(cand: contracts.Bot_Candidate_Wire)
+
+// 13.4 busy check. Returns ("", false) when not busy.
+bridge_bot_busy_reason :: proc() -> (reason: string, busy: bool)
+
+// 13.5. One evaluation step of the watch table; pure, for tests.
+// act is the unflattened activity status; status is snap.runtime_status.
+bridge_bot_watch_step :: proc(w: ^Bridge_Bot_Worker, act, status: string, now_ms: i64) -> (result: string, done: bool)
+```
+
+| Proc | Owner |
+|---|---|
+| `bridge_bot_handle_deliver`, `bridge_bot_handle_report_ack`, `bridge_bot_candidate_backoff_active`, `bridge_bot_candidate_record_failure`, `bridge_bot_candidate_clear`, `bridge_bot_busy_reason` | A2b |
+| `bridge_bot_note_read`, `bridge_bot_note_reply`, `bridge_bot_watch_step` | A3. A2b adds `bridge_bot_note_read` and `bridge_bot_note_reply` with these signatures and bodies that set the worker fields without the `data.messages` check, and a `bridge_bot_watch_step` that returns `acted` as soon as `reply_seen_ms > 0`. A3 replaces the three bodies |
+
+### 13.10 Test seams
+
+The worker reaches every outside dependency through a package-level proc variable in `src/bridge/bot_delivery.odin`. Production code MUST call only the variable. Tests assign a double and restore the default with `defer`. This lets A2b and A3 unit-test the worker with no hub and no provider process.
+
+```odin
+// POST /api/v1/bridge/bot-attempts/{attempt_id}/switch (12.6). The default builds an
+// httpc.Request with httpc.bearer(bridge_credential_snapshot()), url = bridge_hub_url(),
+// path = {"api","v1","bridge","bot-attempts",attempt_id,"switch"}, method .POST, and sends it
+// with bridge_http_request_retry, as bridge_wake_fetch_enriched_launch_json does
+// (agent_wake.odin:299-325). status is the HTTP status, 0 on transport failure;
+// error_code is error.details.code, "" when absent. 13.4 maps both to the outcome detail.
+bridge_bot_switch_proc: proc(attempt_id: string, cand: contracts.Bot_Candidate_Wire) -> (status: int, relaunched: bool, error_code: string) = bridge_bot_switch_http
+
+// Descriptor fetch + launch (13.4 step 2): bridge_wake_fetch_enriched_launch_json then
+// bridge_runtime_launch_agent with command_id "botl_" + attempt_id + "_" + candidate index.
+bridge_bot_launch_proc: proc(instance_id, command_id: string) -> (ok: bool, detail: string, err: Bridge_Error) = bridge_bot_launch_via_descriptor
+
+bridge_bot_snapshot_proc:      proc(instance_id: string) -> (Bridge_Runtime_Instance, bool) = bridge_runtime_instance_snapshot  // hub_runtime_client.odin:3390
+bridge_bot_launch_record_proc: proc(instance_id: string) -> (Bridge_Runtime_Launch, bool)   = bridge_runtime_get_launch         // hub_runtime_client.odin:2998
+
+// Types BOT_NOTICE (13.4 step 3), queuing it during a rollover. Returns false when the
+// instance has no live PTY; the loop then records outcome crashed.
+bridge_bot_notice_proc: proc(instance_id: string) -> bool = bridge_bot_deliver_notice
+
+// Writes one bot_delivery_report frame on the current hub connection. Returns false when
+// there is no connection; terminal reports stay held (12.4) either way.
+bridge_bot_report_proc: proc(report_json: string) -> bool = bridge_bot_send_report
+
+// Unflattened activity status of the instance (13.5): "active", "idle", "waiting_user"
+// or "unknown", read from bridge_bot_raw_activity (below).
+bridge_bot_activity_proc: proc(instance_id: string) -> string = bridge_bot_local_activity
+
+// Inputs of the busy check (13.4). The default reads the three procs named there.
+bridge_bot_busy_inputs_proc: proc() -> (traffic_stopped, update_reserved, vault_unlocked: bool) = bridge_bot_busy_inputs
+
+bridge_bot_now_proc: proc() -> i64 = bridge_runtime_now_ms  // hub_runtime_client.odin:3052
+```
+
+**Raw activity (checked in the source).** The snapshot's `activity_status` cannot be used: `bridge_runtime_note_agent_activity` normalizes before storing (`hub_runtime_client.odin:3136`, and again at `:3143`), and normalization maps `waiting_user`, `waiting` and `waiting_approval` to `idle` (`:3356-3366`). A2b therefore adds:
+
+- `bridge_bot_raw_activity: map[string]string` and `bridge_bot_raw_activity_mutex: sync.Mutex` in `bot_delivery.odin`;
+- `bridge_bot_note_raw_activity :: proc(instance_id, activity_status: string)`, which stores the classified value: `active`, `working`, `busy` → `active`; `waiting_user`, `waiting`, `waiting_approval` → `waiting_user`; `idle`, `inactive` → `idle`; anything else → `unknown` (comparison on `strings.to_lower(strings.trim_space(…))`, as `:3357` does);
+- one call, `bridge_bot_note_raw_activity(instance_id, activity_status)`, as the first statement of `bridge_runtime_note_agent_activity` (`hub_runtime_client.odin:3127`). That one line is the only change to that proc.
+
+`bridge_bot_local_activity` returns the stored value, or `unknown` when there is none. The worker removes the instance's entry when it ends.
+
 ## 14. Timers and limits
 
 ### 14.1 Defaults
@@ -1457,6 +1710,7 @@ if method == "agent.channel.send" do bridge_bot_note_reply(rec.agent_instance_id
 | `bot_disconnect_grace_ms` | 30 000 | hub |
 | `bot_relocation_wait_ms` | 240 000 | hub (longer than the 180 s relocation timeout, `instance_reconfiguration.odin:354`) |
 | `bot_busy_retry_ms` | 120 000 | hub |
+| `bot_waiting_recheck_ms` | 30 000 | hub (11.1 row 10) |
 | `bot_max_rounds` | 3 | hub |
 | `bot_idle_stop_ms` | 1 800 000 | hub |
 | `bot_supervisor_tick_ms` | 1 000 | hub |
@@ -1477,7 +1731,10 @@ if method == "agent.channel.send" do bridge_bot_note_reply(rec.agent_instance_id
 |---|---|
 | bridges per message | each eligible bridge at most once per round; at most `bot_max_rounds` rounds |
 | candidates per message on one bridge | each candidate at most once per attempt; at most `bot_max_local_candidates` |
-| worst case | 3 rounds × eligible bridges × 3 candidates, after which the delivery is `abandoned` with `COPY_GAVE_UP` |
+| one round | every eligible bridge once. When the round ends with no `busy` attempt, the delivery is `abandoned` with `finish_reason='all_tried'` and `COPY_GAVE_UP` (11.1 row 5) |
+| more rounds | a new round starts only through the wake-up rule (11.1 rows 10–13): a bridge came back, a busy retry, a stranded relocation's bridge came back, or a placement change |
+| worst case | `bot_max_rounds` (3) rounds × eligible bridges × 3 candidates, after which the delivery is `abandoned` with `finish_reason='max_rounds'` and `COPY_GAVE_UP` |
+| after abandon | the user's messages stay pending; the next inbound message opens a new delivery (11.1 row 1) at round 1 |
 
 ## 15. User HTTP API
 
@@ -1536,7 +1793,7 @@ if method == "agent.channel.send" do bridge_bot_note_reply(rec.agent_instance_id
 | `sleeping` | otherwise, when an instance exists |
 | `new` | no instance yet |
 
-`status_detail` is `waiting_reason` when the status is `waiting_for_machine`, else `""`.
+`status_detail` is `waiting_reason` (`no_bridge`, `busy` or `relocation_stranded`) when the status is `waiting_for_machine`. When there is no open delivery and the newest delivery is `abandoned` with `finish_reason` `all_tried` or `max_rounds`, and no inbound message arrived after it, `status_detail` is `gave_up` and `status` is computed from the instance as usual. Otherwise `status_detail` is `""`.
 
 ### 15.2 Routes
 
@@ -1707,6 +1964,7 @@ Register every id in `docs/ui-debug-ids.md`.
 | empty state | "You don't have a bot yet. Your bot runs on your machines and answers you on Telegram." | `settings-bots-empty` |
 | create button | "Create my bot" | `settings-bots-create-btn` |
 | status line | `ready` "Ready", `working` "Answering…", `starting` "Starting…", `sleeping` "Asleep — wakes on your next message", `waiting_for_machine` "Waiting for a machine — your messages are saved", `new` "Not started yet" | `settings-bots-status` |
+| status detail (shown under the status line only when `status_detail` is not `""`) | `no_bridge` "None of your machines is online.", `busy` "Your machine is busy; trying again in a few minutes.", `relocation_stranded` "Waiting for the machine your bot last ran on to come back online.", `gave_up` "Your bot could not answer your last message. Send another message to try again." | `settings-bots-status-detail` |
 | Telegram card, not configured | "Telegram is not set up on this Ninjy hub. Ask your hub operator to add a Telegram bot token." | `settings-bots-telegram-unconfigured` |
 | Telegram card, unpaired | "Connect a Telegram chat to talk to your bot." | `settings-bots-telegram-card` |
 | encryption notice (always shown on the card) | "Telegram chats are not end-to-end encrypted. Telegram and your Ninjy hub can read these messages. Anyone who can send messages from your Telegram account can instruct your bot, which runs commands on your machines." | `settings-bots-telegram-notice` |
@@ -1768,24 +2026,25 @@ Odin tests run per package: `odin test <pkg> -collection:odin_test=src -out:$HOM
 | A1a | `src/hub/domain/bot_test.odin` | `test_bot_enum_text_roundtrip`, `test_bot_attempt_state_open` |
 | A1a | `src/hub/repository/sqlite/bot_repo_sqlite_test.odin` | `test_migration_209_applies_and_is_idempotent`, `test_bot_one_per_owner`, `test_binding_unique_active_chat_and_owner`, `test_inbound_store_batch_dedupes_update_key_and_advances_cursor_atomically`, `test_inbound_store_batch_rollback_keeps_cursor`, `test_delivery_one_open_per_bot`, `test_attempt_cas_rejects_stale_state`, `test_messages_mark_replied_only_read_rows`, `test_purge_older_than` |
 | A1a | `src/hub/transport/http/experiment_rest_handlers_test.odin` (existing or new) | `test_experiment_count_enabled`, `test_experiment_set_calls_on_changed` |
+| A1a | `src/hub/service/bots/gate_test.odin` | `test_bots_gate_error_off_on_empty_owner_and_repo_failure` (four cases: never set, set false, set true, empty owner; plus a failing repository → `.Internal_Error`), `test_bots_package_does_not_import_transport` (reads every `.odin` file in `src/hub/service/bots` and fails on the string `hub/transport`) |
 | A1b | `src/hub/service/bots/placement_test.odin` | `test_placement_validation_errors` (one case per details code), `test_expand_candidates_empty_policy_allows_all`, `test_expand_candidates_ranks_preferred_first`, `test_expand_candidates_star_model_takes_first_active`, `test_expand_candidates_truncates_to_three`, `test_select_bridge_sticky_first`, `test_select_bridge_skips_tried_and_unsupported` |
 | A1b | `src/hub/transport/http/bot_handlers_test.odin` | `test_bots_routes_refuse_when_experiment_off`, `test_create_bot_once`, `test_put_placement_revision_conflict`, `test_delete_bot_cleans_up` |
 | A4 | `src/hub/service/channel/telegram_test.odin` | `test_telegram_maps_updates` (each row of 8.1), `test_telegram_error_mapping`, `test_telegram_token_never_in_error_message` |
 | A4 | `src/hub/service/bots/poller_test.odin` | `test_poller_does_not_advance_offset_before_commit`, `test_poller_not_started_when_experiment_off_for_all`, `test_poller_not_started_without_token`, `test_runtime_reconcile_starts_and_stops` |
 | A5 | `src/hub/service/bots/pairing_test.odin` | one test per row of 9.6, plus `test_inbound_rules_table` (each row of 9.4), `test_disconnect_purges_and_abandons` |
 | A5 | `src/hub/transport/http/bot_agent_handlers_test.odin` | `test_channel_read_marks_read_and_repeats_unreplied`, `test_channel_send_only_paired_chat`, `test_channel_send_marks_replied_and_acts_delivery`, `test_channel_routes_not_a_bot`, `test_channel_send_splits_4000_bytes_utf8` |
-| A2a | `src/hub/service/bots/delivery_test.odin` | one test per row of 11.1 and 11.2, plus `test_resend_on_hello_same_command_id`, `test_disconnect_grace`, `test_hub_restart_measures_silence_from_boot`, `test_relocation_ready_sends_frame`, `test_relocation_recovery_force_stops`, `test_relocation_stranded_waits_for_hello`, `test_idle_stop_uses_bot_idle_reason`, `test_report_seq_dedupe`, `test_switch_route_rules` (each row of 12.6) |
-| A2b | `src/bridge/bot_delivery_test.odin` | `test_bot_deliver_spec_and_ordering_key`, `test_handle_deliver_idempotent_by_attempt`, `test_new_attempt_cancels_old_worker`, `test_candidate_loop_skips_skip_list_and_not_runnable`, `test_switch_refused_moves_on`, `test_terminal_report_resent_until_ack`, `test_feature_advertised` |
-| A3 | `src/bridge/bot_delivery_test.odin` | `test_watch_acted_requires_read_then_reply`, `test_watch_read_extends_while_active`, `test_watch_not_read`, `test_watch_idle_no_reply_after_read`, `test_watch_active_holds_reply_timer`, `test_watch_reply_cap`, `test_backoff_table`, `test_relay_observation_counts_non_empty_read_only`, `test_busy_reasons` |
+| A2a | `src/hub/service/bots/delivery_test.odin` | one test per row of 11.1 and 11.2, plus `test_resend_on_hello_same_command_id`, `test_disconnect_grace`, `test_hub_restart_measures_silence_from_boot`, `test_relocation_ready_sends_frame`, `test_relocation_recovery_force_stops`, `test_relocation_stranded_waits_for_hello`, `test_idle_stop_uses_bot_idle_reason`, `test_report_seq_dedupe`, `test_switch_route_rules` (each row of 12.6), `test_single_bridge_all_exhausted_abandons_with_gave_up` (one online bridge, attempt `exhausted` → delivery `abandoned`/`all_tried`, `COPY_GAVE_UP` sent once, no `COPY_NO_MACHINE`), `test_new_message_after_abandon_opens_round_one_delivery`, `test_round_end_with_busy_waits_then_retries_next_round`, `test_no_bridge_recheck_on_hello_and_periodic` (hello of a not-yet-eligible bridge leaves the delivery `waiting`; it moves on the periodic re-check once providers are reported), `test_wakeup_past_max_rounds_abandons`, `test_hello_hook_changes_no_delivery` |
+| A2b | `src/bridge/bot_delivery_test.odin` | `test_bot_deliver_spec_and_ordering_key`, `test_handle_deliver_idempotent_by_attempt`, `test_new_attempt_cancels_old_worker`, `test_candidate_loop_skips_skip_list_and_not_runnable`, `test_switch_refused_moves_on`, `test_terminal_report_resent_until_ack`, `test_feature_advertised`, `test_sticky_candidate_delivers_without_switch` (instance active on candidate 2, candidate 1 healthy → no switch call, notice delivered, outcome list has only candidate 2), `test_sticky_ignored_when_stopped_skipped_or_backed_off` (three cases; each uses ranked order and calls switch for candidate 1), `test_relaunch_waits_for_new_launch_record` (switch returns `relaunched:true`; the old runtime stays `running` with the old launch `command_id`; no notice is typed until the launch record shows a new `command_id` and `start_success_seen`), `test_relaunch_blocked_counts_only_after_new_record`, `test_busy_reasons` (traffic stopped → `draining`; update reservation → `draining`; vault locked → `vault_locked`; none → not busy), `test_backoff_table` |
+| A3 | `src/bridge/bot_delivery_test.odin` | `test_watch_acted_requires_read_then_reply`, `test_watch_read_extends_while_active`, `test_watch_not_read`, `test_watch_idle_no_reply_after_read`, `test_watch_active_holds_reply_timer`, `test_watch_reply_cap`, `test_watch_failure_records_backoff` (`not_read` and `idle_no_reply` call `bridge_bot_candidate_record_failure`), `test_relay_observation_counts_non_empty_read_only` (bodies: non-empty `data.messages` → read; `[]`, missing `data`, invalid JSON → not read) |
 | A6 | `src/ctl/channel_cmds_test.odin` | `test_channel_send_does_not_seal`, `test_channel_verbs_build_params`, `test_channel_help_text` |
 | A7 | `src/hub/domain/builtin_templates_test.odin` (existing or new) | `test_bot_template_loaded_and_hidden_from_list` |
 | A8 | `tests/ui_bots_test.ts` | `resolveBotStatusLabel`, `filterBotConversations`, placement form validation mirrors 10.1, settings category hidden when experiment off |
 
 ### 20.2 Integration tests (hub + real bridge process, no Telegram)
 
-**Owner:** A2b. **File:** `tests/bridge_bot_delivery_integration_test.odin`.
+**Owner:** A2c. **File:** `tests/bridge_bot_delivery_integration_test.odin`. It runs only after A2a, A3 and A6 are merged, because it uses the real hub delivery engine, the real watch phase and the real `ham-ctl channel` verbs. No fake hub is built.
 
-- Starts a hub test graph and one real `ham-bridge` whose provider command is the scripted bot agent `tools/mock_agent/bot-agent.sh` (added by A2b; described in 20.4).
+- Starts a hub test graph and one real `ham-bridge` whose provider command is the scripted bot agent `tools/mock_agent/bot-agent.sh` (added by A2c; described in 20.4).
 - Injects a `channel_messages` row directly.
 - Asserts the sequence: attempt `sent` → `accepted`; the agent runs `channel read` and `channel send`; delivery `acted`.
 - Children are cleaned up with `bridge_shell_test_kill_pid` (`src/bridge/shell_common.odin`).
@@ -1833,6 +2092,8 @@ A POSIX sh script, launched as the provider command. It needs `HAM_CTL`, which d
 3. ignores every other line;
 4. exits 0 on SIGTERM.
 
+**Mode.** `BOT_AGENT_MODE` selects the behaviour. Unset or `reply` is the behaviour above. `silent` runs `channel read` for each notice and never runs `channel send`. No other value is accepted: the script prints `bot-agent: unknown BOT_AGENT_MODE` to stderr and exits 2.
+
 ## 21. Tickets
 
 **Rules for every ticket:**
@@ -1854,6 +2115,7 @@ A POSIX sh script, launched as the provider command. It needs `HAM_CTL`, which d
 - `src/hub/transport/http/experiment_rest_handlers.odin` (only the `on_changed` field and its call)
 - `src/hub/app/config_bind.odin`, `src/hub/main.odin`, `src/hub/app/wiring.odin` (repo construction only)
 - `src/contracts/bot_wire.odin`, `src/hub/service/bots/config.odin`
+- `src/hub/service/bots/gate.odin`, `src/hub/service/bots/gate_test.odin` (4.2)
 
 **Acceptance:**
 
@@ -1864,7 +2126,7 @@ A POSIX sh script, launched as the provider command. It needs `HAM_CTL`, which d
 
 **Depends on:** none.
 
-**Do not touch:** UI, bridge, ctl; any service logic (only types, storage, config).
+**Do not touch:** UI, bridge, ctl; any service logic (only types, storage, config and the gate helper in 4.2).
 
 ### A1b — Hub bot service core: bot CRUD, placement, user API
 
@@ -1893,12 +2155,14 @@ A POSIX sh script, launched as the provider command. It needs `HAM_CTL`, which d
 
 ### A4 — Telegram adapter, fake Telegram server, poller and runtime start/stop
 
-**Implements:** sections 4.4, 8, 9.3 (loop only; inbound rules belong to A5, so A4 stores nothing and logs each update kind), 9.5 (`channel_send` proc).
+**Implements:** sections 4.4, 8, 9.3 (loop only), 9.5 (`channel_send` proc), and the `bots_on_experiment_changed` hook plus the `disable.odin` stub (11.9).
+
+**Inbound rows in A4.** The 9.4 rules belong to A5. In A4 the poller maps every update to no row: it calls `repo.inbound_store_batch("telegram", rows = {}, next, now)` with an empty row list, which commits the cursor only, and logs each update's kind. This is what `test_poller_does_not_advance_offset_before_commit` exercises (with a repository double whose `inbound_store_batch` fails, the next `getUpdates` MUST carry the old offset). A5 replaces only the row mapping and the side effects; the cursor commit stays as A4 wrote it.
 
 **Files:**
 
 - `src/hub/service/channel/adapter.odin`, `src/hub/service/channel/telegram.odin` (+ `_test`)
-- `src/hub/service/bots/runtime.odin`, `src/hub/service/bots/poller.odin` (+ `_test`), `src/hub/service/bots/channel_send.odin`
+- `src/hub/service/bots/runtime.odin`, `src/hub/service/bots/poller.odin` (+ `_test`), `src/hub/service/bots/channel_send.odin`, `src/hub/service/bots/disable.odin` (stub, 11.9)
 - `src/hub/app/app.odin` (one reconcile call), `src/hub/app/wiring.odin` (adapter construction, `on_changed` hook)
 - `tools/fake_telegram/server.mjs`, `tools/fake_telegram/README.md`
 
@@ -1928,7 +2192,7 @@ A POSIX sh script, launched as the provider command. It needs `HAM_CTL`, which d
 
 - [ ] A5 tests pass.
 - [ ] Pairing works end to end against the fake server in a test (inject `/start`, binding active, `COPY_PAIRED` sent).
-- [ ] An inbound text creates a `pending` delivery row through `delivery_on_inbound`. In A5 this is a stub that only inserts the delivery; A2a adds the dispatch.
+- [ ] An inbound text creates a `pending` delivery row through `delivery_on_inbound`, with its final body (11.9). Nothing dispatches it until A2a adds the supervisor.
 
 **Depends on:** A1b, A4.
 
@@ -1961,42 +2225,57 @@ A POSIX sh script, launched as the provider command. It needs `HAM_CTL`, which d
 
 ### A2b — Bridge: `bot_deliver` handler, worker, candidate loop, switch call, reports, capability
 
-**Implements:** sections 12.1 (bridge), 12.2, 12.3–12.5 (bridge side), 13.1–13.4, 13.6, 13.8.
+**Implements:** sections 12.1 (bridge), 12.2, 12.3–12.5 (bridge side), 13.1–13.4, 13.6, 13.8, 13.9 (its procs and the A3 stubs), 13.10.
 
 **Files:**
 
 - `src/bridge/bot_delivery.odin` (+ `_test`)
 - `src/bridge/hub_command_dispatch.odin` (spec and ordering key)
-- `src/bridge/hub_runtime_client.odin` (feature list, two `if type ==` branches)
+- `src/bridge/hub_runtime_client.odin` (feature list, two `if type ==` branches, one `bridge_bot_note_raw_activity` call in `bridge_runtime_note_agent_activity`, 13.10)
 - `src/hub/service/project/runtime_metrics.odin` (label only)
-- `tests/bridge_bot_delivery_integration_test.odin`
-- `tools/mock_agent/bot-agent.sh` (20.4)
 
 **Acceptance:**
 
 - [ ] A2b unit tests pass.
-- [ ] The 20.2 integration test passes with a real bridge process and `ham-test-agent`. The watch phase is stubbed to "acted on reply"; A3 replaces it.
+- [ ] Every test seam in 13.10 has its production default, and the unit tests above use only the seams (no hub, no real provider process).
+- [ ] The A3-owned procs exist as the stubs named in 13.9.
 - [ ] `odin test src/bridge` passes.
 
-**Depends on:** A1a (contracts). It is tested against A2a's hub. Until A2a merges, the integration test uses a minimal fake hub frame driver inside the test.
+**Depends on:** A1a (contracts). It has no integration test of its own; the hub-plus-bridge run belongs to A2c.
 
 **Do not touch:** hub service code, UI, ctl, `src/bridge/agent_wake.odin` (called, not changed), `src/bridge/action_scheduler.odin`.
 
 ### A3 — Bridge: not-acted detection and relay observation
 
-**Implements:** sections 2 D3, 13.5, 13.7, 13.8 (failure recording from watch results).
+**Implements:** sections 2 D3, 13.5, 13.7, 13.8 (failure recording from watch results), 13.9 (final bodies of `bridge_bot_note_read`, `bridge_bot_note_reply`, `bridge_bot_watch_step`).
 
 **Files:** `src/bridge/bot_delivery.odin` (watch phase), `src/bridge/wrapper_endpoint.odin` (two observation lines), `src/bridge/bot_delivery_test.odin`.
 
 **Acceptance:**
 
-- [ ] A3 tests pass using an injectable clock and activity source.
-- [ ] The integration test from A2b passes with the real watch phase.
+- [ ] A3 tests pass using `bridge_bot_now_proc` and `bridge_bot_activity_proc` (13.10) as the clock and activity source.
+- [ ] `odin test src/bridge` passes.
 - [ ] A test proves a `waiting_user` agent fails with `idle_no_reply` (detail `waiting_user`) after `idle_no_reply_ms`.
 
 **Depends on:** A2b.
 
 **Do not touch:** `pty_host_activity.odin` classification, `bridge_runtime_normalize_activity_status`, hub code.
+
+### A2c — Integration test: real hub, real bridge, scripted bot agent
+
+**Implements:** sections 20.2 and 20.4.
+
+**Files:** `tests/bridge_bot_delivery_integration_test.odin`, `tools/mock_agent/bot-agent.sh`, `tools/mock_agent/README.md` (one paragraph naming the script).
+
+**Acceptance:**
+
+- [ ] The 20.2 test passes: attempt `sent` → `accepted`; the agent runs `channel read` and `channel send`; the delivery reaches `acted` through R2 (11.3); the bridge's terminal report is acked.
+- [ ] A second case scripts the agent to read and never reply (`BOT_AGENT_MODE=silent`, 20.4) and asserts outcome `idle_no_reply`. The test builds the hub's `Bot_Timer_Config` with `read_ms` 5000 and `idle_no_reply_ms` 3000 and every other field at its 14.1 default.
+- [ ] Every child process is cleaned up (`bridge_shell_test_kill_pid`); a second run in the same shell passes.
+
+**Depends on:** A2a, A3, A6.
+
+**Do not touch:** product code. A defect found here is reported to the coordinator with the failing assertion, and fixed in the owning ticket's area as a separate commit named in the handoff.
 
 ### A6 — `ham-ctl channel` verbs and bridge routing
 
@@ -2057,27 +2336,43 @@ A POSIX sh script, launched as the provider command. It needs `HAM_CTL`, which d
 
 **Implements:** section 20.3.
 
-**Files:** `tests/e2e/bots_slice1_e2e.mjs`, `tests/e2e/fixtures/bots_failing_provider.sh`. It reuses `tools/mock_agent/bot-agent.sh` from A2b.
+**Files:** `tests/e2e/bots_slice1_e2e.mjs`, `tests/e2e/fixtures/bots_failing_provider.sh`. It reuses `tools/mock_agent/bot-agent.sh` from A2c.
 
 **Acceptance:**
 
 - [ ] Every step of 20.3 passes on an isolated hub with two bridges and the fake Telegram server. The run log is attached to the handoff.
 - [ ] The live hub and bridges are untouched.
 
-**Depends on:** A2a, A3, A6, A7, A8.
+**Depends on:** A2c, A7, A8.
 
 **Do not touch:** product code, except fixes that are filed back to the owning ticket's area as separate commits named in the handoff.
 
 ### Ticket graph
 
 ```text
-A1a ─┬─ A1b ─┬──────────── A5 ──┬── A2a ──┐
-     │       │                  ├── A6 ── A7
-     ├─ A4 ──┘                  └── A8 ────┤
-     └─ A2b ── A3 ────────────────────────┴── A9
+A1a ─┬─ A1b ─┬─────── A5 ──┬── A2a ───────┐
+     │       │             ├── A6 ──┬─────┼── A2c ──┐
+     ├─ A4 ──┘             │        └── A7 ─────────┤
+     │                     └── A8 ──────────────────┤
+     └─ A2b ── A3 ────────────────────────┘          └── A9
 ```
 
-A1b, A4 and A2b can run in parallel after A1a. A8 can start after A1b, against the documented shapes.
+| Ticket | Depends on |
+|---|---|
+| A1a | — |
+| A1b | A1a |
+| A4 | A1a |
+| A2b | A1a |
+| A5 | A1b, A4 |
+| A3 | A2b |
+| A2a | A1b, A5 |
+| A6 | A5 |
+| A7 | A1b, A6 |
+| A8 | A1b, A5 |
+| A2c | A2a, A3, A6 |
+| A9 | A2c, A7, A8 |
+
+The table is normative; the drawing is a picture of it. A1b, A4 and A2b can run in parallel after A1a. A8 can start after A1b, against the documented shapes.
 
 ## 22. Traceability
 
@@ -2086,16 +2381,16 @@ A1b, A4 and A2b can run in parallel after A1a. A8 can start after A1b, against t
 | REQ-S1-1 | 2 D4, 15.2 `POST /bots/me`, 17.4 | A1b, A8 |
 | REQ-S1-2 | 10.1–10.3, 15.2 placement, 17.4 | A1b, A8 |
 | REQ-S1-3 | 2 D4, 2 D6, 17.3 (terminal pane) | A1b, A2a, A8, A9 |
-| REQ-S1-4 | 2 D1, 10.4, 11.4, 13.4 | A2a, A2b |
+| REQ-S1-4 | 2 D1, 10.4, 11.4, 13.4 (provider stickiness, relaunch readiness) | A2a, A2b, A2c |
 | REQ-S1-5 | 11.5, 2 D5 (Telegram thread stored per binding, not per instance) | A2a, A9 |
-| REQ-S1-6 | 2 D3, 11.1, 11.2, 13.4–13.8, 14.2 | A2a, A2b, A3 |
-| REQ-S1-7 | 11.1 (`waiting`, `COPY_NO_MACHINE`, hello trigger), 11.7 | A2a, A9 |
+| REQ-S1-6 | 2 D3, 11.1, 11.2, 13.4–13.10, 14.2, 20.2 | A2a, A2b, A3, A2c |
+| REQ-S1-7 | 11.1 (rows 3, 10–13, wake-up rule, waiting re-check), 11.6, 11.7 | A2a, A9 |
 | REQ-S1-8 | 9.6, 9.7, 15.2, 17.4 | A5, A8 |
 | REQ-S1-9 | 5.1 (`channel_messages_update_key`), 9.3, 16.2 | A1a, A4, A5 |
 | REQ-S1-10 | 9.5, 16.1, 18 | A5, A6 |
 | REQ-S1-11 | 17.1 | A7, A9 |
 | REQ-S1-12 | 8 | A4 |
-| REQ-S1-13 | 4 | A1a, A1b, A4, A5, A2a, A8, A9 |
+| REQ-S1-13 | 4 (4.2 `bots_gate_error`) | A1a, A1b, A4, A5, A2a, A8, A9 |
 | REQ-S1-14 | 17.3, 17.4 | A8 |
 | REQ-S1-15 | 5.1 (`bot_deliveries`, `bot_delivery_attempts`), 11.2, 11.7, 12.7 | A1a, A2a |
 | REQ-S1-16 | 10.2, 12.1 | A2a, A2b |
@@ -2128,6 +2423,12 @@ A1b, A4 and A2b can run in parallel after A1a. A8 can start after A1b, against t
 | Packages and files | `src/hub/service/bots/`, `src/hub/service/channel/`, `src/bridge/bot_delivery.odin`, `src/ctl/channel_cmds.odin`, `src/contracts/bot_wire.odin`, `tools/fake_telegram/server.mjs`, `tests/e2e/bots_slice1_e2e.mjs` |
 | UI | settings category `bots`, `BotsPanel.tsx`, `src/ui/api/endpoints/bots.ts`, tag `'Bot'`, WS event `bot_changed` |
 | Copy constants | `COPY_*` in `src/hub/service/bots/copy.odin`, `BOT_NOTICE` in `src/bridge/bot_delivery.odin` |
+| Hub procs and fields | `bots_gate_error`, `bots_gate_on` (`src/hub/service/bots/gate.odin`); the 11.9 procs; `Bots_Service.hello_queue`, `Bots_Service.last_waiting_recheck_ms`; `Bridge_Handlers.bots` |
+| Bridge procs and seams | the 13.9 procs; the 13.10 `bridge_bot_*_proc` variables; `bridge_bot_raw_activity`, `bridge_bot_note_raw_activity` |
+| Frame fields | `bot_deliver.current_provider`, `bot_deliver.current_model` |
+| Timer | `bot_waiting_recheck_ms` |
+| Enumerated values | `waiting_reason`: `no_bridge`, `busy`, `relocation_stranded`; `finish_reason`: `acted`, `all_tried`, `max_rounds`, `binding_revoked`, `bot_deleted`, `experiment_disabled`; `status_detail` adds `gave_up`; busy `reason`: `draining`, `vault_locked` |
+| Test tooling | `BOT_AGENT_MODE` (`reply`, `silent`) for `tools/mock_agent/bot-agent.sh`; ticket `A2c` |
 
 ## 25. Evidence index
 
@@ -2148,7 +2449,7 @@ Each row names a file, a line, and a symbol that occurs within three lines of it
 | src/hub/app/wiring.odin | 323 | experiment_repo |
 | src/hub/app/wiring.odin | 1036 | /api/v1/bridge/actions/*/execute |
 | src/hub/app/app.odin | 31 | start_timer_thread |
-| src/hub/service/bridge/bridge_promoted_release.odin | 287 | bridge_catalog_refresher_start |
+| src/hub/service/bridge/bridge_promoted_release.odin | 288 | bridge_catalog_refresher_start |
 | src/hub/app/config_bind.odin | 9 | Hub_Config |
 | src/hub/main.odin | 152 | apply_vapid_env |
 | src/hub/main.odin | 390 | read_key_file |
@@ -2240,3 +2541,23 @@ Each row names a file, a line, and a symbol that occurs within three lines of it
 | src/ui/components/settings/experimentFlags.ts | 16 | resolveExperimentFlag |
 | src/ui/components/settings/SettingsModal.tsx | 85 | getVisibleSettingsCategories |
 | src/ui/components/workbench/AgentChatPane.tsx | 673 | normalizeConversationMessages |
+| src/hub/domain/experiment.odin | 38 | experiment_enabled_in |
+| src/hub/repository/iface/experiment_repo.odin | 19 | experiment_list_by_owner |
+| src/contracts/envelope.odin | 50 | api_success_json |
+| src/hub/transport/http/bridge_handlers.odin | 39 | Bridge_Handlers |
+| src/hub/transport/http/bridge_handlers.odin | 2747 | bridge_protocol_error_frame |
+| src/bridge/hub_runtime_client.odin | 69 | bridge_vault_status |
+| src/bridge/hub_runtime_client.odin | 117 | Bridge_Runtime_Instance |
+| src/bridge/hub_runtime_client.odin | 2616 | bridge_auto_update_launch_enter |
+| src/bridge/hub_runtime_client.odin | 2693 | bridge_runtime_set_status |
+| src/bridge/hub_runtime_client.odin | 2835 | bridge_runtime_record_launch |
+| src/bridge/hub_runtime_client.odin | 2998 | bridge_runtime_get_launch |
+| src/bridge/hub_runtime_client.odin | 3012 | bridge_runtime_launches |
+| src/bridge/hub_runtime_client.odin | 3052 | bridge_runtime_now_ms |
+| src/bridge/hub_runtime_client.odin | 3136 | bridge_runtime_normalize_activity_status |
+| src/bridge/hub_runtime_client.odin | 3284 | start_success_seen |
+| src/bridge/hub_runtime_client.odin | 3780 | bridge_runtime_status_active |
+| src/bridge/hub_quiescence.odin | 12 | bridge_hub_traffic_stopped |
+| src/bridge/auto_update.odin | 87 | bridge_auto_update_launch_enter |
+| src/bridge/auto_update.odin | 95 | bridge_auto_update_launch_leave |
+| src/bridge/process_deadline.odin | 19 | bridge_process_slot_has_capacity |
