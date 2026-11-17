@@ -137,15 +137,35 @@ export function startReconnectWait(options: ReconnectWaitOptions): () => void {
   };
 }
 
+/** Cause a bridge reports while its first provider catalog sync is still in flight. */
+export const PROVIDER_CATALOG_NOT_READY_CAUSE = 'provider_catalog_not_ready';
+
 /**
- * Discovery answers 409 bridge_offline until the bridge's runtime socket is live,
- * which is expected right after an enrollment: that is worth retrying, nothing else is.
+ * Two answers are expected right after an enrollment and worth retrying; nothing
+ * else is:
+ *  - 409 bridge_offline until the bridge's runtime socket is live;
+ *  - 503 bridge_busy / provider_catalog_not_ready while the new bridge is still
+ *    receiving its provider catalog (it refuses rather than report every CLI absent).
  */
 export function isRetriableDiscoveryError(err: unknown): boolean {
-  const e = err as { code?: unknown; status?: unknown } | null;
+  const e = err as { code?: unknown; status?: unknown; errorCause?: unknown } | null;
   if (!e || typeof e !== 'object') return false;
+  if (isCatalogNotReadyError(e)) return true;
   if (e.code !== undefined && e.code !== null && e.code !== '') return e.code === 'bridge_offline';
   return e.status === 409;
+}
+
+/** True for the bridge's "provider catalog not received yet" refusal. */
+export function isCatalogNotReadyError(err: unknown): boolean {
+  const e = err as { code?: unknown; errorCause?: unknown } | null;
+  return Boolean(e && typeof e === 'object' && e.code === 'bridge_busy' && e.errorCause === PROVIDER_CATALOG_NOT_READY_CAUSE);
+}
+
+/** Status line while the enrollment scan waits on a retriable answer. */
+export function discoveryRetryNotice(err: unknown): string {
+  return isCatalogNotReadyError(err)
+    ? 'The bridge is still receiving its provider list. Scanning again shortly…'
+    : 'Waiting for the bridge to come online before scanning…';
 }
 
 export function activeModelCount(provider: ProviderSummaryInput): number {

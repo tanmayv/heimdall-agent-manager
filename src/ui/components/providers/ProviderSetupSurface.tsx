@@ -18,6 +18,7 @@ import {
   checkedProviderCount,
   defaultProviderSelection,
   enableButtonLabel,
+  discoveryRetryNotice,
   isRetriableDiscoveryError,
   modelCountLabel,
   notFoundSummary,
@@ -143,7 +144,7 @@ export function ProviderSetupSurface({ bridgeId, mode, variant = 'full', onApply
         } catch (error: any) {
           if (!current()) return;
           if (isRetriableDiscoveryError(error) && Date.now() + DISCOVERY_RETRY_MS < deadline) {
-            setNotice('Waiting for the bridge to come online before scanning…');
+            setNotice(discoveryRetryNotice(error));
             await sleep(DISCOVERY_RETRY_MS);
             if (!current()) return;
             continue;
@@ -272,20 +273,34 @@ export function ProviderSetupSurface({ bridgeId, mode, variant = 'full', onApply
         ) : null}
 
         {scanning ? (
-          <div data-debug-id="provider-summary-scanning" className="mt-3 flex items-center gap-2 text-sm text-muted">
-            <Spinner size="sm" /> Scanning for installed provider CLIs…
-          </div>
+          <>
+            <div data-debug-id="provider-summary-scanning" className="mt-3 flex items-center gap-2 text-sm text-muted">
+              <Spinner size="sm" /> Scanning for installed provider CLIs…
+            </div>
+            {/* Enrollment already succeeded; scanning is best effort and must never trap the user. */}
+            {onApply ? (
+              <div className="mt-4 flex justify-end">
+                <Button variant="ghost" data-debug-id="provider-summary-skip-btn" onClick={onApply}>Skip for now</Button>
+              </div>
+            ) : null}
+          </>
         ) : discoveryFailed ? (
-          <div className="mt-3">
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
             <Button variant="secondary" data-debug-id="provider-setup-discover-btn" onClick={() => void rediscover(false)} leading={<Icon name="refresh" size={16} />}>
               Scan again
             </Button>
+            {onApply ? <Button variant="ghost" data-debug-id="provider-summary-skip-btn" onClick={onApply}>Skip for now</Button> : null}
           </div>
         ) : (
           <>
             <ul data-debug-id="provider-summary-list" className="mt-3 divide-y divide-subtle rounded-xl border border-subtle">
               {present.length === 0 ? (
-                <li className="px-3 py-2 text-sm text-muted">No supported provider CLI was found on this bridge.</li>
+                <li className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-sm text-muted">
+                  <span>No supported provider CLI was found on this bridge.</span>
+                  <Button size="sm" variant="secondary" data-debug-id="provider-summary-rescan-btn" disabled={busy !== ''} onClick={() => void rediscover(false)} leading={<Icon name="refresh" size={16} />}>
+                    Scan again
+                  </Button>
+                </li>
               ) : present.map((provider) => (
                 <li key={provider.provider} data-debug-id={`provider-summary-row-${provider.provider}`} className="px-3 py-2">
                   <label className="flex cursor-pointer items-center gap-3">
