@@ -400,7 +400,7 @@ get_template :: proc(s:^Content_Service, auth:contracts.Auth_Context,id:string)-
 update_template :: proc(s:^Content_Service, auth:contracts.Auth_Context,id:string,input:Template_Input)->(domain.Template,bool,domain.Domain_Error){
 	owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return {},false,err;
 	switch id {
-	case domain.TEMPLATE_EMPTY_ID, domain.TEMPLATE_COORDINATOR_ID, domain.TEMPLATE_WORKER_ID, domain.TEMPLATE_REVIEWER_ID, domain.TEMPLATE_SOLOIST_ID, domain.TEMPLATE_CURATOR_ID:
+	case domain.TEMPLATE_BOT_ID, domain.TEMPLATE_EMPTY_ID, domain.TEMPLATE_COORDINATOR_ID, domain.TEMPLATE_WORKER_ID, domain.TEMPLATE_REVIEWER_ID, domain.TEMPLATE_SOLOIST_ID, domain.TEMPLATE_CURATOR_ID:
 		return {}, false, domain.domain_error(.Validation_Failed, "built-in templates cannot be edited")
 	}
 	t,ok2,err2:=iface.content_get_template(s.content,id); if !ok2 do return {},false,err2;
@@ -425,7 +425,7 @@ update_template :: proc(s:^Content_Service, auth:contracts.Auth_Context,id:strin
 delete_template :: proc(s:^Content_Service, auth:contracts.Auth_Context,id:string)->(bool,domain.Domain_Error){
 	owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return false,err;
 	switch id {
-	case domain.TEMPLATE_EMPTY_ID, domain.TEMPLATE_COORDINATOR_ID, domain.TEMPLATE_WORKER_ID, domain.TEMPLATE_REVIEWER_ID, domain.TEMPLATE_SOLOIST_ID, domain.TEMPLATE_CURATOR_ID:
+	case domain.TEMPLATE_BOT_ID, domain.TEMPLATE_EMPTY_ID, domain.TEMPLATE_COORDINATOR_ID, domain.TEMPLATE_WORKER_ID, domain.TEMPLATE_REVIEWER_ID, domain.TEMPLATE_SOLOIST_ID, domain.TEMPLATE_CURATOR_ID:
 		return false, domain.domain_error(.Validation_Failed, "built-in templates cannot be deleted")
 	}
 	t,ok2,err2:=iface.content_get_template(s.content,id); if !ok2 do return false,err2;
@@ -439,7 +439,13 @@ list_templates :: proc(s:^Content_Service, auth:contracts.Auth_Context)->([]doma
 	if list_err.code != .None do return nil, list_err
 	defer delete(rows)
 	out := make([dynamic]domain.Template)
-	append(&out, ..rows)
+	for row in rows {
+		if row.template_id == domain.TEMPLATE_BOT_ID {
+			delete(row.template_id); delete(string(row.owner_user_id)); delete(row.name); delete(row.description); delete(row.persona); delete(row.instructions); delete(row.created_at); delete(row.updated_at)
+			continue
+		}
+		append(&out, row)
+	}
 
 	has_empty := false
 	has_coordinator := false
@@ -478,7 +484,7 @@ project_owned :: proc(s:^Content_Service, owner:domain.User_ID, project_id:domai
 template_available :: proc(s:^Content_Service, owner:domain.User_ID, template_id:string)->bool{
 	if s.content==nil || template_id=="" do return false;
 	switch template_id {
-	case domain.TEMPLATE_EMPTY_ID, domain.TEMPLATE_COORDINATOR_ID, domain.TEMPLATE_WORKER_ID, domain.TEMPLATE_REVIEWER_ID, domain.TEMPLATE_SOLOIST_ID, domain.TEMPLATE_CURATOR_ID:
+	case domain.TEMPLATE_BOT_ID, domain.TEMPLATE_EMPTY_ID, domain.TEMPLATE_COORDINATOR_ID, domain.TEMPLATE_WORKER_ID, domain.TEMPLATE_REVIEWER_ID, domain.TEMPLATE_SOLOIST_ID, domain.TEMPLATE_CURATOR_ID:
 		return true
 	}
 	t,ok,_:=iface.content_get_template(s.content,template_id);

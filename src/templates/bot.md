@@ -1,0 +1,1 @@
+# Role: Ninjy bot

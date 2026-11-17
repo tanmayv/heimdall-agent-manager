@@ -10,6 +10,7 @@ import iface "odin_test:hub/repository/iface"
 import sqlite "odin_test:hub/repository/sqlite"
 import auth_service "odin_test:hub/service/auth"
 import mcp_service "odin_test:hub/service/mcp"
+import bots "odin_test:hub/service/bots"
 import agent_service "odin_test:hub/service/agent"
 import bridge_service "odin_test:hub/service/bridge"
 import bridge_log_service "odin_test:hub/service/bridge_log"
@@ -97,6 +98,9 @@ App_Graph :: struct {
 	bridge_update_catalog: bridge_service.Bridge_Update_Catalog,
 	bridges: bridge_service.Bridge_Service,
 	agents: agent_service.Agent_Service,
+	bots: bots.Bots_Service,
+	bot_handlers: http.Bot_Handlers,
+	bot_command_sink: project_service.Bridge_Command_Sink,
 	projects: project_service.Project_Service,
 	content: content_service.Content_Service,
 	taskchains: taskchain_service.Taskchain_Service,
@@ -614,6 +618,10 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.experiment_handlers = http.Experiment_Rest_Handlers{auth = &graph.auth, repo = &graph.experiment_repo, clock = &graph.clock}
 	graph.lsp_server_config_handlers = http.Lsp_Server_Config_Rest_Handlers{auth = &graph.auth, repo = &graph.lsp_server_config_repo, clock = &graph.clock, ids = &graph.ids}
 	graph.providers = provider_service.new_provider_service(&graph.provider_repo)
+	graph.bot_command_sink = bridge_command_sink
+	graph.bots = bots.Bots_Service{repo = &graph.bot_repo, experiments = &graph.experiment_repo, agents = &graph.agents, providers = &graph.providers, bridges = &graph.repos.bridges, registry = &graph.bridge_runtime_registry, command_sink = &graph.bot_command_sink, adapter = nil, clock = &graph.clock, ids = &graph.ids, timers = config.bot_timers}
+	graph.bots.boot_unix_ms, _ = platform.rfc3339_to_unix_ms(platform.clock_now(&graph.clock))
+	graph.bot_handlers = http.Bot_Handlers{auth = &graph.auth, bots = &graph.bots, experiments = &graph.experiment_repo}
 	graph.bridges.provider_repo = graph.providers.repo
 	graph.provider_handlers = http.Provider_Handlers{auth = &graph.auth, providers = &graph.providers, bridges = &graph.bridges, bridge_runtime_registry = &graph.bridge_runtime_registry, clock = &graph.clock, ids = &graph.ids, agents = &graph.agents, event_bus = &graph.event_bus}
 	graph.agent_action_handlers.providers = &graph.providers
@@ -793,6 +801,13 @@ register_routes :: proc(graph: ^App_Graph) {
 	// Registered BEFORE the /agents/* wildcard so the literal "live" tree endpoint
 	// (project -> live-chains -> agents) is not swallowed by agent_detail_handler.
 	http.router_add(&graph.router, "GET", "/api/v1/agents/live", rawptr(&graph.taskchain_handlers), http.agents_live_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/bots/me", rawptr(&graph.bot_handlers), http.bot_me_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/bots/me", rawptr(&graph.bot_handlers), http.bot_me_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/bots/me", rawptr(&graph.bot_handlers), http.bot_me_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/bots/me/placement", rawptr(&graph.bot_handlers), http.bot_placement_handler)
+	http.router_add(&graph.router, "PUT", "/api/v1/bots/me/placement", rawptr(&graph.bot_handlers), http.bot_placement_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/bots/me/placement/options", rawptr(&graph.bot_handlers), http.bot_placement_options_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/bots/me/deliveries", rawptr(&graph.bot_handlers), http.bot_deliveries_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agents/*", rawptr(&graph.agent_handlers), http.agent_detail_handler)
 	http.router_add(&graph.router, "PATCH", "/api/v1/agents/*", rawptr(&graph.agent_handlers), http.update_agent_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agents/*/archive", rawptr(&graph.agent_handlers), http.archive_agent_handler)
