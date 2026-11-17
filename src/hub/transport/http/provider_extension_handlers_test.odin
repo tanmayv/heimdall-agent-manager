@@ -1074,3 +1074,65 @@ test_profiles_extension_actions_and_update_reports_cannot_cross_accounts :: proc
  commands,_:=iface.provider_extension_command_list(&f.pr_repo,f.bridge_id)
  for c in commands do testing.expect(t,c.parent_id!="profile-update" || domain.profile_effective_id(c.provider,c.profile_id)=="claude","default report must not queue custom-profile followups")
 }
+
+@(private="file")
+provider_discover_not_ready_worker :: proc(th:^thread.Thread) {
+	context.allocator=context.temp_allocator
+	job:=(^Model_API_Job)(th.data)
+	req:=extension_test_request(job.fixture,fmt.tprintf("/api/v1/bridges/%s/providers/discover",job.fixture.bridge_id),`{"stage":"providers"}`)
+	response:=bridge_provider_discover_handler(rawptr(&job.fixture.ph),req)
+	job.status=response.status
+	job.body=strings.clone(response.body,runtime.default_allocator())
+	free_all(context.temp_allocator)
+}
+
+// A bridge that has not received its provider catalog yet refuses discovery with a
+// typed retriable failure instead of an empty report. The API must surface it as a
+// retriable error the setup wizard retries, and must not record any provider absent.
+@(test)
+test_provider_discover_catalog_not_ready_is_retriable_and_records_nothing :: proc(t:^testing.T) {
+	context.allocator=context.temp_allocator
+	f:=extension_test_setup(t,"discover_not_ready")
+	defer extension_test_teardown(f)
+	extension_test_status(t,f,"codex","present","present",true)
+	listener,listen_err:=net.listen_tcp(net.Endpoint{address=net.IP4_Loopback,port=0})
+	if !testing.expect(t,listen_err==nil) do return
+	defer net.close(listener)
+	endpoint,_:=net.bound_endpoint(listener)
+	client,dial_err:=net.dial_tcp(net.Endpoint{address=net.IP4_Loopback,port=endpoint.port})
+	if !testing.expect(t,dial_err==nil) do return
+	defer net.close(client)
+	hub,_,accept_err:=net.accept_tcp(listener)
+	if !testing.expect(t,accept_err==nil) do return
+	defer net.close(hub)
+	generation:=project_service.bridge_runtime_registry_generation(&f.registry,f.bridge_id)
+	project_service.bridge_runtime_registry_set_command_socket(&f.registry,f.bridge_id,hub,generation)
+	defer project_service.bridge_runtime_registry_mark_offline(&f.registry,f.bridge_id,generation)
+	job:=Model_API_Job{fixture=f}
+	worker:=thread.create(provider_discover_not_ready_worker)
+	worker.data=rawptr(&job)
+	thread.start(worker)
+	reader:=bridge_ws_reader_make(client)
+	frame,received,_:=bridge_ws_read_frame(&reader,5*time.Second)
+	bridge_ws_reader_destroy(&reader)
+	if testing.expect(t,received,"discovery sends a runtime request") {
+		testing.expect_value(t,json_string(frame,"type"),"provider_discover")
+		request_id:=json_string(frame,"request_id")
+		// Exactly what the bridge sends (bridge_provider_discover_not_ready_frames).
+		werr:=contracts.wire_error(.Bridge_Busy,"provider_catalog_not_ready","the bridge has not received its provider catalog yet; retry shortly",2000)
+		reply:=strings.concatenate({`{"type":"command_result","protocol_version":1,"command_id":"`,request_id,`","ok":false,"error":`,contracts.wire_error_json(werr,context.temp_allocator),`,"payload":{"status":"failed"}}`})
+		testing.expect(t,bridge_runtime_service.runtime_command_result_for_connection(&f.registry,f.bridge_id,generation,request_id,reply))
+	} else {
+		project_service.bridge_runtime_registry_mark_offline(&f.registry,f.bridge_id,generation)
+	}
+	thread.join(worker);thread.destroy(worker)
+	defer delete(job.body,runtime.default_allocator())
+	testing.expect_value(t,job.status,503)
+	testing.expect(t,strings.contains(job.body,`"code":"bridge_busy"`),job.body)
+	testing.expect(t,strings.contains(job.body,`"class":"retriable"`),job.body)
+	testing.expect(t,strings.contains(job.body,`"cause":"provider_catalog_not_ready"`),job.body)
+	// The refusal applied nothing: the earlier detection is still on record.
+	views,_:=provider_service.list_bridge_providers(&f.pr_svc,f.bridge_id)
+	defer provider_service.bridge_provider_views_destroy(views)
+	for view in views do if view.catalog.provider=="codex" do testing.expect_value(t,view.detection_state,"present")
+}

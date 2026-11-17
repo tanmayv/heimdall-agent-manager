@@ -270,10 +270,17 @@ bridge_provider_discovery_group_destroy :: proc(group: ^Bridge_Provider_Discover
 // Time kept back from the extension probe for each provider still to be probed.
 BRIDGE_PROVIDER_VERSION_PROBE_RESERVE :: 1 * time.Second
 
+// Upper bound for one discovery scan, so it answers inside the Hub's 10s wait.
+BRIDGE_PROVIDER_DISCOVERY_BUDGET :: 8 * time.Second
+// Kept back from the Hub's deadline so the report is sent before the Hub gives up.
+BRIDGE_PROVIDER_DISCOVERY_REPLY_MARGIN :: 500 * time.Millisecond
+
 bridge_provider_discover_execute :: proc(filter: []string) -> [dynamic]Bridge_Provider_Path {
 	return bridge_provider_discover_execute_profile(filter,"")
 }
-bridge_provider_discover_execute_profile :: proc(filter: []string, profile_id: string) -> [dynamic]Bridge_Provider_Path {
+// deadline, when set, caps the whole scan (the caller's remaining Hub budget);
+// the scan never runs longer than BRIDGE_PROVIDER_DISCOVERY_BUDGET either way.
+bridge_provider_discover_execute_profile :: proc(filter: []string, profile_id: string, deadline: time.Time = {}) -> [dynamic]Bridge_Provider_Path {
 	bridge_provider_paths_init()
 	if bridge_provider_discovery_test_delay > 0 do time.sleep(bridge_provider_discovery_test_delay)
 	targets := bridge_provider_probe_targets(filter)
@@ -282,7 +289,8 @@ bridge_provider_discover_execute_profile :: proc(filter: []string, profile_id: s
 		delete(targets)
 	}
 	results := make([dynamic]Bridge_Provider_Path)
-	discovery_deadline := time.time_add(time.now(), 8 * time.Second)
+	discovery_deadline := time.time_add(time.now(), BRIDGE_PROVIDER_DISCOVERY_BUDGET)
+	if deadline != {} && time.diff(deadline, discovery_deadline) > 0 do discovery_deadline = deadline
 	for target, i in targets {
 		remaining := time.diff(time.now(), discovery_deadline)
 		probe_timeout := min(2 * time.Second, remaining)
@@ -324,7 +332,7 @@ bridge_provider_discover_execute_profile :: proc(filter: []string, profile_id: s
 	return results
 }
 
-bridge_provider_discover :: proc(filter: []string, profile_id: string = "") -> [dynamic]Bridge_Provider_Path {
+bridge_provider_discover :: proc(filter: []string, profile_id: string = "", deadline: time.Time = {}) -> [dynamic]Bridge_Provider_Path {
 	filter := filter
 	if profile_id != "" && len(filter) == 0 {
 		provider := profile_provider_name(profile_id)
@@ -350,7 +358,7 @@ bridge_provider_discover :: proc(filter: []string, profile_id: string = "") -> [
 			if bridge_provider_discovery_test_key != "" && group.key == bridge_provider_discovery_test_key do bridge_provider_discovery_test_key_scans += 1
 			sync.mutex_unlock(&bridge_provider_discovery_mutex)
 
-			results := bridge_provider_discover_execute_profile(filter,profile_id)
+			results := bridge_provider_discover_execute_profile(filter,profile_id,deadline)
 			sync.mutex_lock(&bridge_provider_discovery_mutex)
 			group.results = bridge_provider_discovery_results_clone(results[:], alloc)
 			group.done = true
@@ -415,7 +423,15 @@ bridge_provider_handle_discover_frame :: proc(conn: ^ws.Connection, frame_type, 
 		delete(filter)
 	}
 	profile_id := extract_json_string(text,"profile_id",""); defer delete(profile_id)
-	results := bridge_provider_discover(filter,profile_id)
+	wait_until, probe_deadline := bridge_provider_discover_deadlines(time.now(), bridge_command_worker_deadline_ns(conn))
+	// Never report from an empty catalog: that reads as "no CLI installed" and the
+	// Hub would record every provider absent (a fresh profile hits this while its
+	// first catalog sync is still in flight).
+	if !bridge_provider_catalog_wait_ready(wait_until) {
+		bridge_provider_discover_refuse_not_ready(conn, request_id)
+		return true
+	}
+	results := bridge_provider_discover(filter,profile_id,probe_deadline)
 	defer {
 		for &result in results do bridge_provider_path_destroy(&result)
 		delete(results)
@@ -424,6 +440,44 @@ bridge_provider_handle_discover_frame :: proc(conn: ^ws.Connection, frame_type, 
 	defer delete(report)
 	_ = bridge_hub_send(conn, report)
 	return true
+}
+
+// bridge_provider_discover_deadlines splits the Hub's budget for one discovery
+// request (hub_deadline_ns is 0 when the caller has none): how long to wait for
+// the catalog, and the deadline for the probes that follow.
+bridge_provider_discover_deadlines :: proc(now: time.Time, hub_deadline_ns: i64) -> (wait_until: time.Time, probe_deadline: time.Time) {
+	wait_until = time.time_add(now, BRIDGE_PROVIDER_CATALOG_READY_WAIT)
+	if hub_deadline_ns <= 0 do return
+	probe_deadline = time.time_add(time.Time{_nsec = hub_deadline_ns}, -BRIDGE_PROVIDER_DISCOVERY_REPLY_MARGIN)
+	// Leave at least one second of probing after the wait; with less than that left
+	// the wait shrinks rather than the probes.
+	latest_wait := time.time_add(probe_deadline, -time.Second)
+	if time.diff(latest_wait, wait_until) > 0 do wait_until = latest_wait
+	return
+}
+
+// bridge_provider_discover_refuse_not_ready answers a discovery that found no
+// catalog with a retriable typed failure (bridge_busy / provider_catalog_not_ready)
+// and asks the Hub for the catalog again, rate-limited, in case the first request
+// or its reply was lost. The catalog request goes first so the command result is
+// this command's last frame.
+bridge_provider_discover_refuse_not_ready :: proc(conn: ^ws.Connection, request_id: string) {
+	fmt.println("bridge provider discovery deferred: provider catalog not received yet")
+	catalog_request, failed := bridge_provider_discover_not_ready_frames(request_id, time.now())
+	defer delete(catalog_request)
+	defer delete(failed)
+	if catalog_request != "" && bridge_hub_send(conn, catalog_request) do fmt.println("bridge provider catalog requested (recovery)")
+	_ = bridge_hub_send(conn, failed)
+}
+
+// bridge_provider_discover_not_ready_frames builds the frames for a not-ready
+// refusal: the recovery catalog request ("" when one was sent too recently) and
+// the failed command_result. The caller owns both.
+bridge_provider_discover_not_ready_frames :: proc(request_id: string, now: time.Time) -> (catalog_request: string, failed: string) {
+	if bridge_provider_catalog_recovery_due(now) do catalog_request = bridge_provider_catalog_request_json()
+	err := bridge_cause_wire_error(BRIDGE_PROVIDER_CATALOG_NOT_READY_CAUSE, "the bridge has not received its provider catalog yet; retry shortly", BRIDGE_PROVIDER_CATALOG_RETRY_AFTER_MS)
+	failed = bridge_command_failed_json(request_id, err)
+	return
 }
 
 bridge_provider_resolve_path :: proc(provider: string) -> (string, bool) {

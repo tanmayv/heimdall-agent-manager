@@ -7,6 +7,7 @@ import "core:os"
 import "core:strings"
 import "core:sync"
 import "core:thread"
+import "core:time"
 import cfg_lib "odin_test:lib/config"
 import ws "odin_test:lib/ws"
 
@@ -123,6 +124,66 @@ bridge_provider_catalog_publish :: proc(snapshot: ^Bridge_Provider_Catalog_Snaps
 	// replace-vs-reader use-after-free class documented in AGENTS.md.
 	bridge_provider_catalog_snapshot = snapshot
 	sync.rw_mutex_unlock(&bridge_provider_catalog_mutex)
+	// Wake discovery requests parked in bridge_provider_catalog_wait_ready. The
+	// broadcast is taken under the ready mutex (never while holding the catalog
+	// lock), so a waiter that just saw an empty catalog cannot miss it.
+	sync.mutex_lock(&bridge_provider_catalog_ready_mutex)
+	sync.cond_broadcast(&bridge_provider_catalog_ready_cond)
+	sync.mutex_unlock(&bridge_provider_catalog_ready_mutex)
+}
+
+// ---- catalog readiness for provider discovery ------------------------------
+//
+// A freshly installed bridge has no cached catalog: it asks the Hub for one only
+// after its runtime is ready, so for a short window the Hub can route a
+// provider_discover to a bridge that has nothing to probe. Answering that with an
+// empty report records every CLI as absent. Discovery therefore waits a bounded
+// time for the catalog, and otherwise refuses with a retriable typed error and
+// re-requests the catalog in case the first request or its reply was lost.
+
+bridge_provider_catalog_ready_mutex: sync.Mutex
+bridge_provider_catalog_ready_cond: sync.Cond
+
+// Longest a discovery request parks waiting for the catalog. Kept short so the
+// probes that follow still finish inside the Hub's 10s wait.
+BRIDGE_PROVIDER_CATALOG_READY_WAIT :: 2 * time.Second
+// Minimum spacing between recovery catalog requests sent from discovery.
+BRIDGE_PROVIDER_CATALOG_RECOVERY_INTERVAL :: 5 * time.Second
+BRIDGE_PROVIDER_CATALOG_NOT_READY_CAUSE :: "provider_catalog_not_ready"
+// Hint for callers that retry a not-ready refusal.
+BRIDGE_PROVIDER_CATALOG_RETRY_AFTER_MS :: 2000
+
+bridge_provider_catalog_recovery_mutex: sync.Mutex
+bridge_provider_catalog_recovery_last: time.Time
+
+// bridge_provider_catalog_wait_ready reports whether a catalog is loaded, waiting
+// until `deadline` at most. A zero deadline only checks.
+bridge_provider_catalog_wait_ready :: proc(deadline: time.Time) -> bool {
+	for {
+		if bridge_provider_catalog_provider_count() > 0 do return true
+		remaining := time.diff(time.now(), deadline)
+		if deadline == {} || remaining <= 0 do return false
+		sync.mutex_lock(&bridge_provider_catalog_ready_mutex)
+		// Re-check under the ready mutex: publish broadcasts under it, so the
+		// catalog either is visible here or its broadcast is still to come.
+		if bridge_provider_catalog_provider_count() > 0 {
+			sync.mutex_unlock(&bridge_provider_catalog_ready_mutex)
+			return true
+		}
+		_ = sync.cond_wait_with_timeout(&bridge_provider_catalog_ready_cond, &bridge_provider_catalog_ready_mutex, remaining)
+		sync.mutex_unlock(&bridge_provider_catalog_ready_mutex)
+	}
+}
+
+// bridge_provider_catalog_recovery_due rate-limits recovery catalog requests; it
+// claims the slot when it returns true.
+bridge_provider_catalog_recovery_due :: proc(now: time.Time) -> bool {
+	sync.mutex_lock(&bridge_provider_catalog_recovery_mutex)
+	defer sync.mutex_unlock(&bridge_provider_catalog_recovery_mutex)
+	last := bridge_provider_catalog_recovery_last
+	if last != {} && time.diff(last, now) < BRIDGE_PROVIDER_CATALOG_RECOVERY_INTERVAL do return false
+	bridge_provider_catalog_recovery_last = now
+	return true
 }
 
 bridge_provider_catalog_save :: proc(etag, catalog_json: string) -> bool {
@@ -159,7 +220,11 @@ bridge_provider_catalog_save :: proc(etag, catalog_json: string) -> bool {
 bridge_provider_catalog_apply :: proc(etag, catalog_json: string) -> bool {
 	snapshot, ok := bridge_provider_catalog_build_snapshot(etag, catalog_json)
 	if !ok do return false
-	if !bridge_provider_catalog_save(etag, catalog_json) do return false
+	// The Hub is the source of truth and the file is only a restart cache: a failed
+	// cache write must not leave this process without a catalog, or provider
+	// discovery would refuse until the next restart. bridge_provider_catalog_save
+	// already logged why it failed.
+	if !bridge_provider_catalog_save(etag, catalog_json) do fmt.println("bridge provider catalog: applied in memory only; the restart cache was not updated")
 	bridge_provider_catalog_publish_and_probe(snapshot)
 	return true
 }
@@ -336,7 +401,7 @@ bridge_provider_catalog_handle_frame :: proc(conn: ^ws.Connection, frame_type, t
 	if !bridge_provider_catalog_apply(etag, catalog_json) {
 		// bridge_provider_catalog_save prints its own reason when the cache write
 		// is what failed; a silent false here means the body itself was bad.
-		fmt.println("bridge provider catalog rejected: malformed body, sha256 mismatch, or cache not persisted (see above)")
+		fmt.println("bridge provider catalog rejected: malformed body or sha256 mismatch")
 	} else {
 		// A new catalog can turn a custom profile id into a slug clash.
 		bridge_send_provider_profiles_report(conn)
