@@ -36,10 +36,10 @@ rtv_markers :: proc(conn: ^Conn) -> string {
 	return rtv_text(conn, "SELECT count(*) FROM taskv2_boot_regate;")
 }
 
-rtv_open_migrated :: proc(t: ^testing.T, tag: string) -> (Conn, string, bool) {
+rtv_open_migrated :: proc(t: ^testing.T, tag: string, stop_before: string = "") -> (Conn, string, bool) {
 	conn, path, ok := tmpl_open_file_prod(t, tag)
 	if !ok do return conn, path, false
-	mig_ok, err := run_migrations(&conn)
+	mig_ok, err := run_migrations(&conn, stop_before=stop_before)
 	if !testing.expect(t, mig_ok, err.message) {
 		close(&conn)
 		return Conn{}, path, false
@@ -131,7 +131,9 @@ test_remove_task_verify_upgrade_from_release_0_4_43 :: proc(t: ^testing.T) {
 test_remove_task_verify_upgrade_after_legacy_128_removal :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	for consumed in ([]bool{true, false}) {
-		conn, path, ok := rtv_open_migrated(t, consumed ? "rtv_legacy_booted" : "rtv_legacy_unbooted")
+		// Start before the transport schema: replaying old extension syncs on an
+		// already-upgraded catalog would leave their historical body hash behind.
+		conn, path, ok := rtv_open_migrated(t, consumed ? "rtv_legacy_booted" : "rtv_legacy_unbooted", stop_before="211_provider_transport.sql")
 		defer tmpl_remove_db(path)
 		if !ok do return
 		defer close(&conn)

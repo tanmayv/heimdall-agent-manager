@@ -1,6 +1,7 @@
 package http
 
 import "base:runtime"
+import "core:encoding/json"
 import "core:net"
 import "core:thread"
 import "core:fmt"
@@ -64,6 +65,8 @@ extension_handler_fixture :: struct {
 	pr_impl:       sqlite.Provider_Repo_SQLite,
 	pr_repo:       iface.Provider_Repository,
 	pr_svc:        provider_service.Provider_Service,
+	transport_uow_impl: sqlite.SQLite_Unit_Of_Work_Factory,
+	transport_uow: iface.Unit_Of_Work_Factory,
 	ph:            Provider_Handlers,
 	catalog:       bridge_service.Bridge_Update_Catalog,
 	br_impl:       sqlite.Bridge_Repo_SQLite,
@@ -174,6 +177,9 @@ extension_test_setup :: proc(
 
 	f.pr_repo = sqlite.new_provider_repository(&f.pr_impl, &f.conn)
 	f.pr_svc = provider_service.new_provider_service(&f.pr_repo)
+	f.transport_uow=sqlite.new_unit_of_work_factory(&f.transport_uow_impl,&f.conn,nil)
+	f.pr_svc.uow_factory=&f.transport_uow
+	f.pr_svc.bridges=&f.br_repo
 	f.br_svc.provider_repo = &f.pr_repo
 	f.bh.providers = &f.pr_svc
 	f.ph = {
@@ -579,7 +585,7 @@ test_extension_update_replays_discovery_but_not_duplicate_followups :: proc(t: ^
 		t,
 		f,
 		discovery,
-		"[{\"provider\":\"codex\",\"state\":\"present\",\"extension_state\":\"present\",\"extension_version\":\"0.4.31\"}]",
+		strings.concatenate({`[{"provider":"codex","state":"present","extension_state":"present","extension_version":"`, contracts.APP_VERSION, `"}]`}, context.temp_allocator),
 	)
 	testing.expect_value(
 		t,
@@ -673,6 +679,9 @@ test_extension_update_disk_reopen_retains_consent_and_followup_identity :: proc(
 	// Repositories keep a pointer to f.conn, so this is a real database close/open,
 	// with a fresh service projection using the recovered durable journal.
 	f.pr_svc = provider_service.new_provider_service(&f.pr_repo)
+	f.transport_uow=sqlite.new_unit_of_work_factory(&f.transport_uow_impl,&f.conn,nil)
+	f.pr_svc.uow_factory=&f.transport_uow
+	f.pr_svc.bridges=&f.br_repo
 	f.bh.providers = &f.pr_svc
 	commands := extension_test_commands(t, f)
 	testing.expect_value(t, len(commands), 1)
@@ -1135,4 +1144,117 @@ test_provider_discover_catalog_not_ready_is_retriable_and_records_nothing :: pro
 	views,_:=provider_service.list_bridge_providers(&f.pr_svc,f.bridge_id)
 	defer provider_service.bridge_provider_views_destroy(views)
 	for view in views do if view.catalog.provider=="codex" do testing.expect_value(t,view.detection_state,"present")
+}
+
+@(test)
+test_provider_transport_http_presence_validation_and_atomic_updates :: proc(t:^testing.T) {
+ context.allocator=context.temp_allocator
+ defer free_all(context.temp_allocator)
+ f:=extension_test_setup(t,"transport")
+ defer extension_test_teardown(f)
+ extension_test_status(t,f,"claude","present","present")
+ path:=fmt.tprintf("/api/v1/bridges/%s/providers/claude",f.bridge_id)
+ // A legacy bridge cannot receive an ACP launch, even if its adapter says ready.
+ ready:=`{"installed":true,"state":"ready","version":"0.108.0","node_version":"v22.0.0","error":null,"checked_at":"2026-11-18T00:00:00Z"}`
+ _,_ = iface.bridge_provider_status_upsert(&f.pr_repo,{bridge_id=f.bridge_id,provider="claude",state="present",acp_adapter_json=ready})
+ request:=extension_test_request(f,path,`{"transport":"acp","enabled":false}`);request.method="PUT"
+ response:=bridge_provider_enable_handler(&f.ph,request)
+ testing.expect(t,response.status==409,response.body)
+ testing.expect(t,strings.contains(response.body,"acp_unavailable"))
+ settings,_:=iface.bridge_provider_setting_list(&f.pr_repo,f.bridge_id)
+ if len(settings)>0 do testing.expect(t,settings[0].enabled,"rejected combined update must preserve enabled")
+ domain.bridge_provider_settings_destroy(settings)
+ bridge,_,_:=iface.bridge_get_bridge(&f.br_repo,f.bridge_id)
+ bridge.capabilities_json=strings.clone(`{"features":["acp_runtime_v1"]}`)
+ _,_,_=iface.bridge_save_bridge(&f.br_repo,bridge)
+ response=bridge_provider_enable_handler(&f.ph,request)
+ testing.expect(t,response.status==200,response.body)
+ testing.expect(t,strings.contains(response.body,`"transport":"acp"`))
+ testing.expect(t,strings.contains(response.body,`"effective_transport":"acp"`))
+ // Custom profiles repeat the provider-wide selection and canonical adapter.
+ profile_err:=provider_service.apply_profiles_report(&f.pr_svc,f.bridge_id,[]domain.Bridge_Provider_Profile{{profile_id="work",provider="claude",enabled=true,state="ok"}})
+ testing.expect_value(t,profile_err.code,domain.Error_Code.None)
+ views,view_err:=provider_service.list_bridge_providers(&f.pr_svc,f.bridge_id)
+ testing.expect_value(t,view_err.code,domain.Error_Code.None)
+ custom_found:=false
+ for view in views {
+  if view.profile_id!="work" do continue
+  custom_found=true
+  testing.expect_value(t,view.transport,"acp")
+  testing.expect_value(t,view.effective_transport,"acp")
+  testing.expect_value(t,view.acp_adapter_json,ready)
+ }
+ testing.expect(t,custom_found)
+ provider_service.bridge_provider_views_destroy(views)
+ // Enable-only updates omit transport and retain it.
+ request.body=`{"enabled":true}`
+ response=bridge_provider_enable_handler(&f.ph,request)
+ testing.expect(t,response.status==200,response.body)
+ transport,_:=iface.get_provider_transport(&f.pr_repo,f.bridge_id,"claude")
+ testing.expect_value(t,transport,"acp");delete(transport)
+ // All profile rows inherit the canonical override; profile mutation is refused,
+ // including null, before making any enabled change.
+ for body in ([]string{`{"profile_id":"work","transport":"pty"}`,`{"profile_id":"work","transport":null,"enabled":false}`,`{"profile_id":"work","transport":123}`}) {
+  request.body=body;response=bridge_provider_enable_handler(&f.ph,request)
+  testing.expect(t,response.status==422,response.body)
+  testing.expect(t,strings.contains(response.body,"transport_is_provider_wide"))
+ }
+ for body in ([]string{`{"transport":1}`,`{"transport":false}`,`{"transport":{}}`,`{"transport":"unknown"}`,`{"transport":""}`}) {
+  request.body=body;response=bridge_provider_enable_handler(&f.ph,request)
+  testing.expect(t,response.status==422,response.body)
+  testing.expect(t,strings.contains(response.body,"invalid_transport"))
+ }
+ request.body=`{"enabled":null}`
+ response=bridge_provider_enable_handler(&f.ph,request)
+ testing.expect_value(t,response.status,400)
+ request.body=`{}`
+ response=bridge_provider_enable_handler(&f.ph,request)
+ testing.expect_value(t,response.status,400)
+ // Clearing and PTY saves work even when readiness/capability disappears.
+ bridge.capabilities_json="{}"
+ _,_,_=iface.bridge_save_bridge(&f.br_repo,bridge)
+ request.body=`{"transport":null}`
+ response=bridge_provider_enable_handler(&f.ph,request)
+ testing.expect(t,response.status==200,response.body)
+ testing.expect(t,strings.contains(response.body,`"transport":null`))
+ testing.expect(t,strings.contains(response.body,`"effective_transport":"pty"`))
+ bridge.status=.Offline
+ _,_,_=iface.bridge_save_bridge(&f.br_repo,bridge)
+ request.body=`{"transport":"acp"}`
+ response=bridge_provider_enable_handler(&f.ph,request)
+ testing.expect(t,response.status==200,response.body)
+ // Same owned endpoint still hides a foreign bridge.
+ testing.expect(t,sqlite.exec(&f.conn,"INSERT INTO bridges(bridge_id,owner_user_id,created_at,updated_at) VALUES('brg_transport_foreign','other','','');"))
+ request.path="/api/v1/bridges/brg_transport_foreign/providers/claude"
+ response=bridge_provider_enable_handler(&f.ph,request)
+ testing.expect_value(t,response.status,404)
+}
+
+@(test)
+test_provider_transport_http_discovery_accepts_structured_adapter :: proc(t:^testing.T) {
+ context.allocator=context.temp_allocator
+ defer free_all(context.temp_allocator)
+ raw:=`{"providers":[{"provider":"claude","state":"present","acp_adapter":{"installed":true,"state":"ready","version":"0.108.0","checked_at":"2026-11-18T00:00:00Z"}}]}`
+ report:Provider_Discovery_Report_Wire
+ err:=json.unmarshal_string(raw,&report,json.DEFAULT_SPECIFICATION,context.temp_allocator)
+ testing.expect(t,err==nil)
+ if len(report.providers)>0 {
+  adapter:=provider_acp_adapter_wire_json(report.providers[0].acp_adapter)
+  testing.expect(t,strings.contains(adapter,`"state":"ready"`))
+ }
+ f:=extension_test_setup(t,"transport_report")
+ defer extension_test_teardown(f)
+ created,create_err:=iface.provider_extension_command_create(&f.pr_repo,{command_id="cmd_ext_transport_report",bridge_id=f.bridge_id,kind="discovery",state="dispatched"})
+ if !testing.expect(t,created,create_err.message) do return
+ extension_test_report(t,f,"cmd_ext_transport_report",`[{"provider":"claude","state":"present","acp_adapter":{"installed":true,"state":"ready","version":"0.108.0","checked_at":"2026-11-18T00:00:00Z"}}]`)
+ statuses,status_err:=iface.bridge_provider_status_list(&f.pr_repo,f.bridge_id)
+ testing.expect_value(t,status_err.code,domain.Error_Code.None)
+ stored:=false
+ for status in statuses {
+  if status.provider!="claude" do continue
+  stored=true
+  testing.expect(t,strings.contains(status.acp_adapter_json,`"state":"ready"`))
+ }
+ testing.expect(t,stored,"tracked discovery also persists the adapter status")
+ domain.bridge_provider_statuses_destroy(statuses)
 }

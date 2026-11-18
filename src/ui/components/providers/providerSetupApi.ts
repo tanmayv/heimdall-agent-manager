@@ -2,12 +2,22 @@ import { normalizeModelCatalog, type ModelCatalogMetadata } from './modelCatalog
 import { cookieJsonFetch, cookieMutation } from '../../api/cookieFetch';
 import { normalizeProviderExtension, type ProviderExtensionStatus } from '../extension/extensionBadgeModel';
 
+export type RuntimeTransport = 'pty' | 'acp';
+export interface AcpAdapterStatus {
+  installed: boolean; version: string | null; node_version: string | null;
+  state: 'not_checked' | 'missing_node' | 'missing' | 'installing' | 'ready' | 'outdated' | 'error';
+  error: string | null; checked_at: string | null;
+}
+
 export type DiscoveryState = 'idle' | 'running' | 'complete' | 'failed';
 export type DetectionState = 'absent' | 'present';
 export type ProviderTestRunState = 'starting' | 'detecting' | 'awaiting_validation' | 'stopping' | 'stopped' | 'failed' | 'cancelled' | 'expired';
 
 export interface ProviderModelStatus { model_id: string; label: string; state: 'active' | 'deprecated'; resolved_model?: string }
 export interface BridgeProviderStatus extends ModelCatalogMetadata {
+  transports?: RuntimeTransport[]; default_transport?: RuntimeTransport;
+  transport?: RuntimeTransport | null; effective_transport?: RuntimeTransport;
+  acp_adapter?: AcpAdapterStatus | null;
   profile_id?: string; label_enc?: string; accent?: string; profile_state?: string;
   provider: 'claude' | 'codex' | 'copilot' | 'antigravity' | 'pi';
   display_name: string; icon_url: string; catalog_state: 'active' | 'deprecated';
@@ -35,6 +45,11 @@ function normalizeStatus(raw: any): BridgeProviderStatus {
     state: raw?.state === 'present' ? 'present' : 'absent', binary_path: String(raw?.binary_path || ''),
     version_text: String(raw?.version_text || ''), checked_at: raw?.checked_at ? String(raw.checked_at) : null,
     enabled: Boolean(raw?.enabled),
+    transports: Array.isArray(raw?.transports) ? raw.transports.filter((v: unknown) => v === 'pty' || v === 'acp') : ['pty'],
+    default_transport: raw?.default_transport === 'acp' ? 'acp' : 'pty',
+    transport: raw?.transport === 'acp' || raw?.transport === 'pty' ? raw.transport : null,
+    effective_transport: raw?.effective_transport === 'acp' ? 'acp' : 'pty',
+    acp_adapter: raw?.acp_adapter && typeof raw.acp_adapter === 'object' ? raw.acp_adapter : null,
     ...normalizeModelCatalog(raw),
     extension: normalizeProviderExtension(raw?.extension),
     models: Array.isArray(raw?.models) ? raw.models.map((model: any) => ({

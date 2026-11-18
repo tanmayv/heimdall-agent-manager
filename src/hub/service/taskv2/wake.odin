@@ -6,6 +6,7 @@ import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
 import agent "odin_test:hub/service/agent"
 import project "odin_test:hub/service/project"
+import provider_service "odin_test:hub/service/provider"
 
 // Wake delivery (plan §2.5 / §4). A UoW never talks to a bridge: it queues
 // run[]/stop[] entries on the Effects list and flush_wakes sends ONE wake_agent
@@ -45,7 +46,14 @@ effect_wake_lease :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease, task
 	if lease.kind == domain.LEASE_KIND_REVIEW do role = "reviewer"
 	provider, model := lease_launch_model(svc, Placement{bridge_id = bridge_id, provider = lease.provider, provider_profile=lease.provider_profile, model = lease.model}, inst)
 	append(&u.effects.owned_strings, provider, model)
+	etag:=""
+	if svc.agent_service!=nil && svc.agent_service.providers!=nil {
+		ps:=provider_service.Provider_Service{repo=svc.agent_service.providers}
+		etag,_=provider_service.catalog_etag(&ps)
+		append(&u.effects.owned_strings,etag)
+	}
 	entry := agent.Wake_Agent_Run_Entry{
+		effective_transport=inst.runtime_transport,catalog_etag=etag,launch_epoch=inst.launch_epoch,
 		run_count = inst.run_count,
 		agent_instance_id = inst.agent_instance_id,
 		task_id           = string(task.task_id),
@@ -144,6 +152,20 @@ flush_wakes :: proc(svc: ^Service, e: ^Effects) {
 		if bridge_id == "" do continue
 		runs := e.runs[key]
 		stops := e.stops[key]
+		// A reconnect can withdraw ACP support after the grant committed. Gate
+		// redelivery against the frozen instance, without resolving settings again.
+		ready_runs := make([dynamic]agent.Wake_Agent_Run_Entry, context.temp_allocator)
+		for run in runs {
+			if run.effective_transport == "acp" {
+				inst, found, read_err := iface.agent_get_instance(svc.agents, run.agent_instance_id)
+				if !found { on_dispatch_failed(svc, run.lease_id, read_err.message); continue }
+				validation_err := agent.validate_frozen_runtime_transport(svc.agent_service, inst)
+				domain.agent_instance_destroy(&inst)
+				if validation_err.code != .None { on_dispatch_failed(svc, run.lease_id, validation_err.message); continue }
+			}
+			append(&ready_runs, run)
+		}
+		runs = ready_runs
 		if len(runs) == 0 && len(stops) == 0 do continue
 		cmd_id := platform.generate_id(svc.ids, "cmd_")
 		body := agent.wake_agent_command_json(cmd_id, chain_id, runs[:], stops[:])

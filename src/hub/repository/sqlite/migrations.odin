@@ -665,7 +665,9 @@ MIGRATION_209_EXTENSION_VERSION_SYNC :: #load("migrations/209_extension_version_
 
 MIGRATION_210_EXTENSION_VERSION_SYNC :: #load("migrations/210_extension_version_sync_0_5_56.sql", string)
 
-migration_order :: [214]string {
+MIGRATION_211_PROVIDER_TRANSPORT :: #load("migrations/211_provider_transport.sql", string)
+
+migration_order :: [?]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
 	"003_device_tokens.sql",
@@ -880,6 +882,7 @@ migration_order :: [214]string {
 	"208_extension_version_sync_0_5_54.sql",
 	"209_extension_version_sync_0_5_55.sql",
 	"210_extension_version_sync_0_5_56.sql",
+	"211_provider_transport.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -900,6 +903,11 @@ run_migrations :: proc(
 	}
 	for name in migration_order {
 		if stop_before != "" && name == stop_before do return true, domain.Domain_Error{}
+        // 211 is transactional; repair only a committed schema/ledger gap.
+        if name=="211_provider_transport.sql" && table_column_exists(conn,"agent_instances","runtime_transport") && sqlite_object_exists(conn,"acp_assistant_turns") && sqlite_object_exists(conn,"provider_transport_update") {
+         mark_migration_applied(conn,name)
+         continue
+        }
 		if name == "016_memory_workflow_skill_memory.sql" {
 			if !upgrade_memory_target_scope_schema(conn) do return false, domain.domain_error(.Internal_Error, "memory target scope schema upgrade failed")
 		}
@@ -1329,7 +1337,7 @@ run_migrations :: proc(
 			)
 		}
 		if !exec(conn, sql) {
-			if name=="169_provider_profiles.sql" do _=exec(conn,"ROLLBACK;")
+			if name=="169_provider_profiles.sql" || name=="211_provider_transport.sql" do _=exec(conn,"ROLLBACK;")
 			delete(sql)
 			return false, domain.domain_error(
 				.Internal_Error,
@@ -1379,6 +1387,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 			return string(data)
 		}
 	}
+	if name == "211_provider_transport.sql" do return strings.clone(MIGRATION_211_PROVIDER_TRANSPORT)
 	if name == "210_extension_version_sync_0_5_56.sql" do return strings.clone(MIGRATION_210_EXTENSION_VERSION_SYNC)
 	if name == "209_extension_version_sync_0_5_55.sql" do return strings.clone(MIGRATION_209_EXTENSION_VERSION_SYNC)
 	if name == "208_extension_version_sync_0_5_54.sql" do return strings.clone(MIGRATION_208_EXTENSION_VERSION_SYNC)

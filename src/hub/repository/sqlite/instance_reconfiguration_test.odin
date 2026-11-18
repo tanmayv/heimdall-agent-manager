@@ -99,6 +99,7 @@ test_reconfiguration_commit_requires_stop_and_changes_scope_atomically :: proc(t
 	repo := reconfiguration_test_setup(t, &conn, &impl)
 	defer close(&conn)
 	op := reconfiguration_test_op()
+	op.destination.runtime_transport = "acp"
 	initial, ok, err := iface.instance_reconfiguration_begin(&repo, op)
 	if !testing.expect(t, ok, err.message) do return
 	domain.instance_reconfiguration_destroy(&initial)
@@ -122,6 +123,7 @@ test_reconfiguration_commit_requires_stop_and_changes_scope_atomically :: proc(t
 	testing.expect_value(t, string(inst.project_id), "project_new")
 	testing.expect_value(t, inst.project_path, "/new")
 	testing.expect_value(t, inst.launch_epoch, "epoch_move")
+	testing.expect_value(t, inst.runtime_transport, "acp")
 	testing.expect_value(t, inst.configuration_revision, 1)
 	testing.expect_value(t, inst.last_applied_seq, 0)
 	testing.expect_value(t, inst.run_count, 1)

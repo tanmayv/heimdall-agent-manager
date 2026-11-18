@@ -136,3 +136,7 @@ BRIDGE_WS_HUB_RUNTIME_CHUNK_PAYLOAD_BYTES_SOCAT :: 45000
 // merely more frames on an ordered connection.
 BRIDGE_WS_HUB_TO_BRIDGE_CHUNK_PAYLOAD_BYTES :: 6000
 BRIDGE_WS_LARGE_PAYLOAD_TARGET_BYTES :: 10 * 1024 * 1024
+
+// Advertise only after detecting compatible daemon piped hosting. Old Bridges
+// cannot safely ignore explicit ACP launch payloads.
+BRIDGE_FEATURE_ACP_RUNTIME :: "acp_runtime_v1"

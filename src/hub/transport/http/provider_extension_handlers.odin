@@ -399,6 +399,7 @@ extension_apply_report :: proc(
 			extension_state      = item.extension_state,
 			extension_version    = item.extension_version,
 			extension_checked_at = item.extension_checked_at,
+			acp_adapter_json = provider_acp_adapter_wire_json(item.acp_adapter),
 		}
 	}
 	if apply_err := provider_service.apply_discovery_report(h.providers, command.bridge_id, statuses); apply_err.code != .None do return apply_err

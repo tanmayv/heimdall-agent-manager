@@ -139,6 +139,71 @@ offline_reconfiguration_input :: proc(key: string) -> Reconfigure_Operation_Inpu
 }
 
 @(test)
+test_transport_reconfiguration_and_provider_test_gate_and_freeze :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	defer free_all(context.temp_allocator)
+	h: Offline_Reconfiguration_Harness
+	if !offline_reconfiguration_open(t, &h, "transport_reconfiguration") { offline_reconfiguration_close(&h); return }
+	defer offline_reconfiguration_close(&h)
+	entry, found, err := iface.provider_catalog_get(&h.providers, "claude")
+	if !testing.expect(t, found, err.message) do return
+	defer domain.provider_catalog_entry_destroy(entry)
+	model := ""
+	for item in entry.models do if item.state == "active" { model = item.model_id; break }
+	if !testing.expect(t, model != "") do return
+	_, err = iface.bridge_provider_status_upsert(&h.providers, {bridge_id=OFFLINE_RECONFIG_DESTINATION, provider="claude", state="present", acp_adapter_json=`{"installed":true,"state":"ready","version":"0.108.0","checked_at":"2026-11-18T00:00:00Z"}`})
+	testing.expect_value(t, err.code, domain.Error_Code.None)
+	testing.expect_value(t, iface.set_provider_transport(&h.providers, OFFLINE_RECONFIG_DESTINATION, "claude", "acp", "now").code, domain.Error_Code.None)
+	auth := contracts.Auth_Context{kind=.Session, user_id=OFFLINE_RECONFIG_OWNER}
+	input := offline_reconfiguration_input("acp-move")
+	input.provider = "claude"; input.model = model
+	_, accepted, move_err := begin_instance_reconfiguration(&h.service, auth, OFFLINE_RECONFIG_INSTANCE, input)
+	testing.expect(t, !accepted)
+	testing.expect_value(t, move_err.code, domain.Error_Code.ACP_Unavailable)
+	test_err: domain.Domain_Error
+	_, accepted, test_err = create_provider_test_instance(&h.service, auth, OFFLINE_RECONFIG_DESTINATION, "claude", model)
+	testing.expect(t, !accepted)
+	testing.expect_value(t, test_err.code, domain.Error_Code.ACP_Unavailable)
+	testing.expect_value(t, len(h.sink.commands), 0)
+	bridge, _, _ := iface.bridge_get_bridge(&h.bridges, OFFLINE_RECONFIG_DESTINATION)
+	bridge.capabilities_json = `{"features":["instance_reconfiguration_v1","acp_runtime_v1"]}`
+	_, _, _ = iface.bridge_save_bridge(&h.bridges, bridge)
+	op: domain.Instance_Reconfiguration
+	op, accepted, move_err = begin_instance_reconfiguration(&h.service, auth, OFFLINE_RECONFIG_INSTANCE, input)
+	if !testing.expect(t, accepted, move_err.message) do return
+	defer domain.instance_reconfiguration_destroy(&op)
+	testing.expect_value(t, op.destination.runtime_transport, "acp")
+	current: domain.Agent_Instance
+	current, found, _ = iface.agent_get_instance(&h.agents, OFFLINE_RECONFIG_INSTANCE)
+	if !testing.expect(t, found) do return
+	defer domain.agent_instance_destroy(&current)
+	testing.expect_value(t, current.runtime_transport, "acp")
+	testing.expect_value(t, len(h.sink.commands), 1)
+	test_instance: domain.Agent_Instance
+	test_instance, accepted, test_err = create_provider_test_instance(&h.service, auth, OFFLINE_RECONFIG_DESTINATION, "claude", model)
+	if !testing.expect(t, accepted, test_err.message) do return
+	testing.expect_value(t, test_instance.runtime_transport, "acp")
+	testing.expect(t, test_instance.launch_epoch != "")
+	// A setting change affects the next launch, never this launch's redelivery.
+	testing.expect_value(t, iface.set_provider_transport(&h.providers, OFFLINE_RECONFIG_DESTINATION, "claude", "pty", "later").code, domain.Error_Code.None)
+	testing.expect_value(t, validate_frozen_runtime_transport(&h.service, current).code, domain.Error_Code.None)
+	testing.expect(t, strings.contains(launch_command_json_full(&h.service, "retry", current), `"effective_transport":"acp"`))
+	testing.expect_value(t, launch_provider_test_instance(&h.service, test_instance).code, domain.Error_Code.None)
+	testing.expect(t, strings.contains(h.sink.commands[len(h.sink.commands)-1].body_json, `"effective_transport":"acp"`))
+	testing.expect(t, strings.contains(h.sink.commands[len(h.sink.commands)-1].body_json, `"launch_epoch":"launch_`))
+	bridge.capabilities_json = `{"features":["instance_reconfiguration_v1"]}`
+	_, _, _ = iface.bridge_save_bridge(&h.bridges, bridge)
+	count := len(h.sink.commands)
+	sent, resend_err := send_frozen_instance_launch(&h.service, "downgraded-retry", current)
+	testing.expect(t, !sent)
+	testing.expect_value(t, resend_err.code, domain.Error_Code.ACP_Unavailable)
+	testing.expect_value(t, len(h.sink.commands), count)
+	if freeze_err := freeze_runtime_transport(&h.service, &current); testing.expect_value(t, freeze_err.code, domain.Error_Code.None) {
+		testing.expect_value(t, current.runtime_transport, "pty")
+	}
+}
+
+@(test)
 test_reconfiguration_moves_from_offline_source_and_launches_destination :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	defer free_all(context.temp_allocator)

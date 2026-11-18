@@ -31,6 +31,7 @@ Provider_Handlers :: struct {
 }
 
 Provider_Discovery_Item_Wire :: struct {
+	acp_adapter: json.Value `json:"acp_adapter"`,
 	profile_id: string `json:"profile_id"`,
 	provider:     string `json:"provider"`,
 	binary_path:  string `json:"binary_path"`,
@@ -144,6 +145,7 @@ write_bridge_provider_view_json :: proc(
 	strings.write_string(b, "\",\"models_binary_path\":\""); write_handler_json_string(b,view.models_binary_path)
 	strings.write_string(b, "\",\"models_version_text\":\""); write_handler_json_string(b,view.models_version_text)
 	strings.write_string(b, "\",\"models_has_snapshot\":"); strings.write_string(b,"true" if view.models_has_snapshot else "false")
+	write_bridge_provider_transport_json(b, view)
 	write_bridge_provider_extension_json(b, view)
 	strings.write_string(b, ",\"models\":[")
 	for model, i in view.catalog.models {
@@ -368,6 +370,7 @@ bridge_provider_discover_handler :: proc(ctx: rawptr, req: Request) -> Response 
 			extension_state      = item.extension_state,
 			extension_version    = item.extension_version,
 			extension_checked_at = item.extension_checked_at,
+			acp_adapter_json = provider_acp_adapter_wire_json(item.acp_adapter),
 		}
 	}
 	if apply_err := provider_service.apply_discovery_report(h.providers, bridge.bridge_id, statuses); apply_err.code != .None do return respond_error(apply_err, req.request_id)
@@ -387,30 +390,25 @@ bridge_provider_enable_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	bridge, ok, response := provider_owned_bridge(h, req, path_part(req.path, 4))
 	if !ok do return response
 	defer domain.bridge_destroy(&bridge)
-	enabled, enabled_ok := json_bool_literal(req.body, "enabled")
-	if !enabled_ok do return respond_error(domain.domain_error(.Validation_Failed, "enabled must be a JSON boolean"), req.request_id)
-	provider := path_part(req.path, 6)
-	profile_id:=json_string(req.body,"profile_id");defer delete(profile_id)
-	setting, saved, save_err := provider_service.set_bridge_provider_enabled(
-		h.providers,
-		bridge.bridge_id,
-		provider,
-		platform.clock_now(h.clock),
-		enabled,
-		profile_id,
-	)
-	if !saved do return respond_error(save_err, req.request_id)
-	publish_bridge_provider_status_changed(h.event_bus, string(bridge.owner_user_id), bridge.bridge_id, setting.provider)
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"bridge_id\":\""); write_handler_json_string(&b, setting.bridge_id)
-	strings.write_string(&b, "\",\"provider\":\""); write_handler_json_string(&b, setting.provider)
-	strings.write_string(&b,"\",\"profile_id\":\"");write_handler_json_string(&b,domain.profile_effective_id(setting.provider,setting.profile_id))
-	strings.write_string(
-		&b,
-		"\",\"enabled\":",
-	); strings.write_string(&b, "true" if setting.enabled else "false")
-	strings.write_string(&b, "}")
-	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
+	provider := path_part(req.path,6)
+	input, parse_err := parse_provider_settings_update(req.body,provider)
+	if parse_err.code!=.None do return respond_error(parse_err,req.request_id)
+	if err:=provider_service.update_bridge_provider_settings(h.providers,bridge,provider,platform.clock_now(h.clock),input);err.code!=.None do return respond_error(err,req.request_id)
+	publish_bridge_provider_status_changed(h.event_bus,string(bridge.owner_user_id),bridge.bridge_id,provider)
+	views,err:=provider_service.list_bridge_providers(h.providers,bridge.bridge_id)
+	if err.code!=.None do return respond_error(err,req.request_id)
+	defer provider_service.bridge_provider_views_destroy(views)
+	for view in views {
+		if view.catalog.provider!=provider || view.profile_id!=domain.profile_effective_id(provider,input.profile_id) do continue
+		b:=strings.builder_make()
+		strings.write_string(&b,"{\"bridge_id\":\"");write_handler_json_string(&b,bridge.bridge_id)
+		strings.write_string(&b,"\",")
+		row:=strings.builder_make();write_bridge_provider_view_json(&row,view)
+		row_json:=strings.to_string(row);defer delete(row_json)
+		strings.write_string(&b,row_json[1:])
+		return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req))
+	}
+	return respond_error(domain.domain_error(.Internal_Error,"saved provider view is missing"),req.request_id)
 }
 
 write_provider_test_json :: proc(b: ^strings.Builder, run: provider_service.Provider_Test_Run) {
@@ -618,4 +616,54 @@ provider_test_cancel_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	)
 	defer provider_service.provider_test_run_destroy(&cancelled)
 	return provider_test_response(cancelled, req)
+}
+
+parse_provider_settings_update :: proc(body, provider: string) -> (provider_service.Provider_Settings_Update, domain.Domain_Error) {
+ value,err:=json.parse(body)
+ if err!=nil do return {},domain.domain_error(.Validation_Failed,"settings must be a JSON object")
+ defer json.destroy_value(value)
+ obj,ok:=value.(json.Object)
+ if !ok do return {},domain.domain_error(.Validation_Failed,"settings must be a JSON object")
+ input:provider_service.Provider_Settings_Update
+ if item,present:=obj["profile_id"];present {
+  profile,valid:=item.(json.String)
+  if !valid do return {},domain.domain_error(.Validation_Failed,"profile_id must be a string")
+  input.profile_id=strings.clone(string(profile),context.temp_allocator)
+ }
+ if _,present:=obj["transport"];present && domain.profile_effective_id(provider,input.profile_id)!=provider {
+  return {},domain.domain_error(.Transport_Is_Provider_Wide,"transport is configured per provider, not per profile")
+ }
+ if item,present:=obj["enabled"];present {
+  enabled,valid:=item.(json.Boolean)
+  if !valid do return {},domain.domain_error(.Validation_Failed,"enabled must be a JSON boolean")
+  input.has_enabled=true;input.enabled=bool(enabled)
+ }
+ if item,present:=obj["transport"];present {
+  input.has_transport=true
+  #partial switch v in item {
+  case json.Null:
+  case json.String:
+   input.transport=strings.clone(string(v),context.temp_allocator)
+   if !contracts.runtime_transport_valid(input.transport) do return {},domain.domain_error(.Invalid_Transport,"transport must be pty, acp or null")
+  case: return {},domain.domain_error(.Invalid_Transport,"transport must be pty, acp or null")
+  }
+ }
+ if !input.has_enabled && !input.has_transport do return {},domain.domain_error(.Validation_Failed,"enabled or transport is required")
+ return input,{}
+}
+
+write_bridge_provider_transport_json :: proc(b: ^strings.Builder, view: provider_service.Bridge_Provider_View) {
+ strings.write_string(b,",\"transport\":")
+ if view.transport=="" {strings.write_string(b,"null")} else {strings.write_byte(b,'"');write_handler_json_string(b,view.transport);strings.write_byte(b,'"')}
+ strings.write_string(b,",\"effective_transport\":\"");write_handler_json_string(b,contracts.runtime_transport_or_pty(view.effective_transport))
+ strings.write_string(b,"\",\"transports\":");strings.write_string(b,view.catalog.transports_json if view.catalog.transports_json!="" else "[\"pty\"]")
+ strings.write_string(b,",\"default_transport\":\"");write_handler_json_string(b,contracts.runtime_transport_or_pty(view.catalog.default_transport))
+ strings.write_string(b,"\",\"acp_adapter\":");strings.write_string(b,view.acp_adapter_json if view.catalog.acp_recipe_json!="" && view.acp_adapter_json!="" else "null")
+}
+
+provider_acp_adapter_wire_json :: proc(value: json.Value) -> string {
+ if _,ok:=value.(json.Object);!ok do return ""
+ encoded,err:=json.marshal(value,allocator=context.temp_allocator)
+ if err!=nil do return ""
+ return string(encoded)
 }

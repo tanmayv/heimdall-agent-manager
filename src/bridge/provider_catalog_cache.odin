@@ -9,6 +9,7 @@ import "core:sync"
 import "core:thread"
 import "core:time"
 import cfg_lib "odin_test:lib/config"
+import contracts "odin_test:contracts"
 import ws "odin_test:lib/ws"
 
 Bridge_Catalog_Model :: struct {
@@ -17,7 +18,12 @@ Bridge_Catalog_Model :: struct {
 	state:    string `json:"state"`,
 }
 
+Bridge_ACP_Recipe :: contracts.ACP_Recipe
+
 Bridge_Catalog_Provider :: struct {
+	transports: []string `json:"transports"`,
+	default_transport: string `json:"default_transport"`,
+	acp_recipe: Bridge_ACP_Recipe `json:"acp_recipe"`,
 	provider:           string `json:"provider"`,
 	display_name:       string `json:"display_name"`,
 	icon_url:           string `json:"icon_url"`,
@@ -80,6 +86,7 @@ bridge_provider_catalog_name_supported :: proc(name: string) -> bool {
 bridge_provider_catalog_valid :: proc(catalog: Bridge_Provider_Catalog_Wire) -> bool {
 	if len(catalog.providers) == 0 do return false
 	for provider, i in catalog.providers {
+		if !bridge_catalog_transport_valid(provider) do return false
 		if !bridge_provider_catalog_name_supported(provider.provider) do return false
 		if strings.trim_space(provider.display_name) == "" || strings.trim_space(provider.binary) == "" do return false
 		if provider.state != "active" && provider.state != "deprecated" do return false
@@ -100,9 +107,21 @@ bridge_provider_catalog_valid :: proc(catalog: Bridge_Provider_Catalog_Wire) -> 
 
 bridge_provider_catalog_build_snapshot :: proc(etag, catalog_json: string) -> (^Bridge_Provider_Catalog_Snapshot, bool) {
 	if !strings.has_prefix(etag, "sha256:") || !bootstrap_cache_verify_hash(catalog_json, etag) do return nil, false
+	if !bridge_catalog_transport_shape_valid(catalog_json) do return nil,false
 	wire: Bridge_Provider_Catalog_Wire
-	if err := json.unmarshal_string(catalog_json, &wire, json.DEFAULT_SPECIFICATION, runtime.default_allocator()); err != nil do return nil, false
+	if err := json.unmarshal_string(catalog_json, &wire, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil do return nil, false
 	if !bridge_provider_catalog_valid(wire) do return nil, false
+	// Validate in scratch memory, then copy every nested array/map into the
+	// immutable process-lifetime snapshot. Rejected updates retain no allocations.
+	wire = {}
+	if err:=json.unmarshal_string(catalog_json,&wire,json.DEFAULT_SPECIFICATION,runtime.default_allocator());err!=nil do return nil,false
+	for &provider in wire.providers {
+		if len(provider.transports)==0 {
+			provider.transports=make([]string,1,runtime.default_allocator())
+			provider.transports[0]=strings.clone("pty",runtime.default_allocator())
+			provider.default_transport=strings.clone("pty",runtime.default_allocator())
+		}
+	}
 	// This runs on the Hub WebSocket reader thread. Never replace that thread's
 	// context allocator: values allocated before this call have deferred frees
 	// that must continue using the allocator which created them. The immutable
@@ -407,4 +426,47 @@ bridge_provider_catalog_handle_frame :: proc(conn: ^ws.Connection, frame_type, t
 		bridge_send_provider_profiles_report(conn)
 	}
 	return true
+}
+
+bridge_catalog_transport_valid :: proc(provider: Bridge_Catalog_Provider) -> bool {
+ if len(provider.transports)==0 do return provider.default_transport=="" && provider.acp_recipe.command==""
+ if len(provider.transports)>2 || !contracts.runtime_transport_valid(provider.default_transport) do return false
+ found:=false
+ has_acp:=false
+ for name,i in provider.transports {
+  if !contracts.runtime_transport_valid(name) do return false
+  for previous in provider.transports[:i] do if previous==name do return false
+  if name==provider.default_transport do found=true
+  if name=="acp" do has_acp=true
+ }
+ if !found do return false
+ if has_acp {
+  encoded,err:=json.marshal(provider.acp_recipe,allocator=context.temp_allocator)
+  if err!=nil || !contracts.acp_recipe_valid(string(encoded)) do return false
+ }
+ return true
+}
+
+bridge_catalog_transport_shape_valid :: proc(raw:string)->bool {
+ value,err:=json.parse(raw, parse_integers=true)
+ if err!=nil do return false
+ defer json.destroy_value(value)
+ obj,ok:=value.(json.Object)
+ if !ok do return false
+ providers,valid:=obj["providers"].(json.Array)
+ if !valid do return false
+ for provider in providers {
+  row,rok:=provider.(json.Object)
+  if !rok do return false
+  if item,present:=row["transports"];present {
+   list,lok:=item.(json.Array)
+   if !lok || len(list)<1 || len(list)>2 do return false
+   for transport in list {
+    if name,ok:=transport.(json.String); ok && name=="acp" {
+     if !contracts.acp_recipe_value_valid(row["acp_recipe"]) do return false
+    }
+   }
+  }
+ }
+ return true
 }

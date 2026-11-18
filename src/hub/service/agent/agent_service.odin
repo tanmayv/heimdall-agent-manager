@@ -361,6 +361,8 @@ prepare_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, bridge.bridge_id) do return domain.Agent_Instance{}, 0, false, domain.domain_error(.Bridge_Offline, "bridge is offline")
 	resolved, resolved_ok, resolved_err := resolve_provider_model(service, auth, agent.agent_id, bridge.bridge_id, Run_Request{provider = input.provider, model = input.model,provider_profile=input.provider_profile})
 	if !resolved_ok do return domain.Agent_Instance{}, 0, false, resolved_err
+	transport, transport_err := resolve_launch_transport(service,bridge.bridge_id,resolved.provider)
+	if transport_err.code!=.None do return {},0,false,transport_err
 	// Mint one per-agent global counter for this run and derive the default title
 	// "<agent-name> #<n>". The same default title is used for the (new) chain and
 	// the conversation so a run is identifiable before the agent/user renames it.
@@ -381,7 +383,7 @@ prepare_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 	conversation_id := platform.generate_id(service.ids, "chat_")
 	display_name := strings.trim_space(input.display_name)
 	if display_name == "" do display_name = default_title
-	instance := domain.Agent_Instance{agent_instance_id = instance_id, owner_user_id = owner, agent_id = agent.agent_id, bridge_id = bridge.bridge_id, display_name = display_name, provider = resolved.provider, provider_profile=domain.profile_effective_id(resolved.provider,input.provider_profile), model = resolved.model, project_id = input.project_id, project_path = project_path, chain_id = chain_id, conversation_id = conversation_id, runtime_status = "launching", startup_status = "starting", activity_status = "unknown", last_applied_seq = 0, run_count = 1, created_at = now, updated_at = now, started_at = now, last_seen_at = now}
+	instance := domain.Agent_Instance{runtime_transport=transport,launch_epoch=runtime_launch_epoch(service,transport),agent_instance_id = instance_id, owner_user_id = owner, agent_id = agent.agent_id, bridge_id = bridge.bridge_id, display_name = display_name, provider = resolved.provider, provider_profile=domain.profile_effective_id(resolved.provider,input.provider_profile), model = resolved.model, project_id = input.project_id, project_path = project_path, chain_id = chain_id, conversation_id = conversation_id, runtime_status = "launching", startup_status = "starting", activity_status = "unknown", last_applied_seq = 0, run_count = 1, created_at = now, updated_at = now, started_at = now, last_seen_at = now}
 	admitted: bool
 	quota_err: domain.Domain_Error
 	generation, admitted, quota_err = reserve_runtime_launch(service, instance)
@@ -413,7 +415,14 @@ prepare_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 // send_instance_launch pushes the launch_agent command for a prepared instance.
 send_instance_launch :: proc(service: ^Agent_Service, saved: domain.Agent_Instance) -> (bool, domain.Domain_Error) {
 	command_id := strings.concatenate({platform.generate_id(service.ids, "cmd_launch_"), "_", saved.agent_instance_id})
-	command := project_service.Runtime_Command{bridge_id = saved.bridge_id, command_id = command_id, body_json = launch_command_json_full(service, command_id, saved)}
+	return send_frozen_instance_launch(service, command_id, saved)
+}
+
+// Recheck capability on command redelivery too: a reconnect may be an older
+// Bridge, but settings must never replace the persisted launch snapshot.
+send_frozen_instance_launch :: proc(service: ^Agent_Service, command_id: string, inst: domain.Agent_Instance) -> (bool, domain.Domain_Error) {
+	if err:=validate_frozen_runtime_transport(service,inst);err.code!=.None do return false,err
+	command := project_service.Runtime_Command{bridge_id = inst.bridge_id, command_id = command_id, body_json = launch_command_json_full(service, command_id, inst)}
 	return project_service.bridge_command_send_runtime(service.bridge_command_sink, command)
 }
 
@@ -430,7 +439,9 @@ create_provider_test_instance :: proc(service: ^Agent_Service, auth: contracts.A
 	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, bridge_id) do return {}, false, domain.domain_error(.Bridge_Offline, "bridge is not connected")
 	now := platform.clock_now(service.clock)
 	instance_id := platform.generate_id(service.ids, "provider-test-")
-	inst := domain.Agent_Instance{agent_instance_id=instance_id,owner_user_id=owner,bridge_id=bridge_id,display_name="Provider test",provider=provider,provider_profile=domain.profile_effective_id(provider,provider_profile),model=model,kind="provider_test",runtime_status="launching",startup_status="starting",activity_status="unknown",run_count=1,created_at=now,updated_at=now,started_at=now,last_seen_at=now}
+	transport,transport_err:=resolve_launch_transport(service,bridge_id,provider)
+	if transport_err.code!=.None do return {},false,transport_err
+	inst := domain.Agent_Instance{runtime_transport=transport,launch_epoch=runtime_launch_epoch(service,transport),agent_instance_id=instance_id,owner_user_id=owner,bridge_id=bridge_id,display_name="Provider test",provider=provider,provider_profile=domain.profile_effective_id(provider,provider_profile),model=model,kind="provider_test",runtime_status="launching",startup_status="starting",activity_status="unknown",run_count=1,created_at=now,updated_at=now,started_at=now,last_seen_at=now}
 	saved, saved_ok, save_err := iface.agent_save_instance(service.agents, inst)
 	if !saved_ok do return {}, false, save_err
 	return saved, true, {}
@@ -438,6 +449,7 @@ create_provider_test_instance :: proc(service: ^Agent_Service, auth: contracts.A
 
 launch_provider_test_instance :: proc(service: ^Agent_Service, saved: domain.Agent_Instance) -> domain.Domain_Error {
 	if saved.kind != "provider_test" do return domain.domain_error(.Validation_Failed, "instance is not a provider test")
+	if err:=validate_frozen_runtime_transport(service,saved);err.code!=.None do return err
 	generation, admitted, quota_err := reserve_runtime_launch(service, saved)
 	if !admitted do return quota_err
 	launch_sent := false
@@ -448,6 +460,8 @@ launch_provider_test_instance :: proc(service: ^Agent_Service, saved: domain.Age
 	strings.write_string(&b, "\",\"agent_instance_id\":\""); write_service_json_string(&b, saved.agent_instance_id)
 	strings.write_string(&b, "\",\"provider\":\""); write_service_json_string(&b, saved.provider)
 	strings.write_string(&b, "\",\"provider_profile\":\""); write_service_json_string(&b, domain.profile_effective_id(saved.provider,saved.provider_profile))
+	write_launch_transport_json(&b,service,saved)
+	strings.write_string(&b, "\",\"launch_epoch\":\""); write_service_json_string(&b, saved.launch_epoch)
 	strings.write_string(&b, "\",\"model\":\""); write_service_json_string(&b, saved.model)
 	strings.write_string(&b, "\",\"run_count\":"); strings.write_string(&b, fmt.tprintf("%d", saved.run_count))
 	strings.write_string(&b, "}")
@@ -1127,6 +1141,8 @@ relaunch_instance_locked :: proc(service: ^Agent_Service, auth: contracts.Auth_C
 	next.runtime_status = "launching"
 	next.startup_status = "starting"
 	next.activity_status = "unknown"
+	if err:=freeze_runtime_transport(service,&next);err.code!=.None do return {},false,err
+	next.launch_epoch=runtime_launch_epoch(service,next.runtime_transport,next.launch_epoch)
 	next.run_count += 1
 	next.started_at = now
 	next.stopped_at = ""
@@ -1136,11 +1152,12 @@ relaunch_instance_locked :: proc(service: ^Agent_Service, auth: contracts.Auth_C
 	if !admitted do return {}, false, quota_err
 	launch_sent := false
 	defer if !launch_sent do project_service.bridge_runtime_instance_cancel_reservation(service.bridge_runtime_registry, next.bridge_id, generation, next.agent_instance_id)
+	saved,saved_ok,save_err:=iface.agent_save_instance(service.agents,next)
+	if !saved_ok do return {},false,save_err
 	command_id := strings.concatenate({platform.generate_id(service.ids, "cmd_launch_"), "_", next.agent_instance_id})
-	command := project_service.Runtime_Command{bridge_id = next.bridge_id, command_id = command_id, body_json = launch_command_json_full(service, command_id, next)}
-	if sent, send_err := project_service.bridge_command_send_runtime(service.bridge_command_sink, command); !sent do return domain.Agent_Instance{}, false, send_err
+	if sent, send_err := send_frozen_instance_launch(service, command_id, saved); !sent do return domain.Agent_Instance{}, false, send_err
 	launch_sent = true
-	return iface.agent_save_instance(service.agents, next)
+	return saved,true,{}
 }
 
 // error_json is the report's wire error object (REQ-ERR-PROTO-A), recorded as the
@@ -1785,6 +1802,7 @@ launch_command_json_full :: proc(service: ^Agent_Service, command_id: string, in
 	strings.write_string(&b, "\",\"conversation_id\":\""); write_service_json_string(&b, inst.conversation_id)
 	strings.write_string(&b, "\",\"provider\":\""); write_service_json_string(&b, inst.provider)
 	strings.write_string(&b, "\",\"provider_profile\":\""); write_service_json_string(&b, domain.profile_effective_id(inst.provider,inst.provider_profile))
+	write_launch_transport_json(&b,service,inst)
 	strings.write_string(&b, "\",\"model\":\""); write_service_json_string(&b, inst.model)
 	strings.write_string(&b, "\",\"launch_epoch\":\""); write_service_json_string(&b, inst.launch_epoch)
 	strings.write_string(&b, "\",\"run_count\":"); strings.write_string(&b, fmt.tprintf("%d", inst.run_count))
@@ -1812,6 +1830,7 @@ stop_command_json :: proc(command_id, instance_id, reason: string, force: bool =
 // the agent instance, the task it is focused on, and its action role ("worker" or
 // "reviewer"). Coordinators are never emitted (the reconcile pass excludes them).
 Wake_Agent_Run_Entry :: struct {
+	effective_transport, catalog_etag, launch_epoch: string,
 	provider_profile:string,
 	run_count:         int,
 	agent_instance_id: string,
@@ -1872,6 +1891,9 @@ wake_agent_command_json :: proc(command_id, chain_id: string, run: []Wake_Agent_
 		if entry.provider != "" {
 			strings.write_string(&b, ",\"provider\":\""); write_service_json_string(&b, entry.provider); strings.write_string(&b, "\"")
 		}
+		strings.write_string(&b,",\"effective_transport\":\"");write_service_json_string(&b,contracts.runtime_transport_or_pty(entry.effective_transport));strings.write_byte(&b,'"')
+		strings.write_string(&b,",\"catalog_etag\":\"");write_service_json_string(&b,entry.catalog_etag);strings.write_byte(&b,'"')
+		strings.write_string(&b,",\"launch_epoch\":\"");write_service_json_string(&b,entry.launch_epoch);strings.write_byte(&b,'"')
 		if entry.provider_profile!="" {
 			strings.write_string(&b,",\"provider_profile\":\"");write_service_json_string(&b,entry.provider_profile);strings.write_byte(&b,'"')
 		}
@@ -2296,7 +2318,9 @@ bootstrap_manifest_json_for_bridge :: proc(service: ^Agent_Service, owner: domai
 	// with provider_missing (REQ-ERR-6).
 	strings.write_string(&b, "\",\"provider\":\""); write_service_json_string(&b, inst.provider)
 	strings.write_string(&b, "\",\"provider_profile\":\""); write_service_json_string(&b, domain.profile_effective_id(inst.provider,inst.provider_profile))
+	write_launch_transport_json(&b,service,inst)
 	strings.write_string(&b, "\",\"model\":\""); write_service_json_string(&b, inst.model)
+	strings.write_string(&b, "\",\"launch_epoch\":\""); write_service_json_string(&b, inst.launch_epoch)
 	strings.write_string(&b, "\",\"permission_mode\":\""); write_service_json_string(&b, domain.effective_permission_mode(inst.permission_mode, agent.permission_mode))
 	token := instance_assertion_token(inst); defer delete(token)
 	strings.write_string(&b, "\",\"instance_token\":\""); write_service_json_string(&b, token)
@@ -2648,4 +2672,51 @@ require_launch_bridge_enabled :: proc(service: ^Agent_Service, bridge: domain.Br
 	count, count_err := iface.bridge_count_active_by_owner(service.bridges, bridge.owner_user_id)
 	if count_err.code != .None do return count_err
 	return domain.entitlement_limit_error(service.entitlements, string(bridge.owner_user_id), "max_bridges", entitlements.max_bridges, count)
+}
+
+resolve_launch_transport :: proc(service: ^Agent_Service, bridge_id, provider: string) -> (string,domain.Domain_Error) {
+ svc:=provider_service.Provider_Service{repo=service.providers,bridges=service.bridges}
+ return provider_service.resolve_runtime_transport(&svc,bridge_id,provider)
+}
+
+// Only new launches call this helper. Re-delivery serializers use the snapshot.
+freeze_runtime_transport :: proc(service: ^Agent_Service, inst: ^domain.Agent_Instance) -> domain.Domain_Error {
+ transport,err:=resolve_launch_transport(service,inst.bridge_id,inst.provider)
+ if err.code!=.None do return err
+ inst.runtime_transport=transport
+ return {}
+}
+
+// Ordinary PTY launches retain their legacy epoch behavior. Only an ACP launch
+// (whose resolution already required acp_runtime_v1) gets a new explicit epoch.
+runtime_launch_epoch :: proc(service: ^Agent_Service, transport: string, legacy_epoch: string = "") -> string {
+ if transport == "acp" do return platform.generate_id(service.ids, "launch_")
+ return legacy_epoch
+}
+
+write_launch_transport_json :: proc(b: ^strings.Builder, service: ^Agent_Service, inst: domain.Agent_Instance) {
+ strings.write_string(b,"\",\"effective_transport\":\"");write_service_json_string(b,contracts.runtime_transport_or_pty(inst.runtime_transport))
+ etag:=""
+ if service!=nil && service.providers!=nil {
+  svc:=provider_service.Provider_Service{repo=service.providers}
+  etag,_=provider_service.catalog_etag(&svc)
+ }
+ defer delete(etag)
+ strings.write_string(b,"\",\"catalog_etag\":\"");write_service_json_string(b,etag)
+}
+
+validate_frozen_runtime_transport :: proc(service: ^Agent_Service, inst:domain.Agent_Instance)->domain.Domain_Error {
+ transport:=contracts.runtime_transport_or_pty(inst.runtime_transport)
+ if transport=="pty" do return {}
+ if transport!="acp" do return domain.domain_error(.Invalid_Transport,"unsupported runtime transport")
+ if service==nil do return domain.domain_error(.ACP_Unavailable,"ACP launch service is unavailable")
+ entry,found,err:=iface.provider_catalog_get(service.providers,inst.provider)
+ if err.code!=.None do return err
+ if !found do return domain.domain_error(.ACP_Unavailable,"ACP provider is unavailable")
+ defer domain.provider_catalog_entry_destroy(entry)
+ value,validation_err:=provider_service.provider_transport_from_entry(entry,transport)
+ delete(value)
+ if validation_err.code!=.None do return validation_err
+ svc:=provider_service.Provider_Service{repo=service.providers,bridges=service.bridges}
+ return provider_service.require_acp_ready(&svc,inst.bridge_id,entry)
 }
