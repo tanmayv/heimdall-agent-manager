@@ -96,6 +96,12 @@ t5_fixture_work :: proc(data:rawptr,c:^ACP_RPC_Client,arg:string) -> bool {
     case "restore-live": f.r.d.replay_only=false
     case "config-ready":
         acp_runtime_replace(&f.r.d.config_json,T4_CONFIG);f.r.d.ready=true
+    case "many-chunks":
+        for _ in 0..<10000 {
+            before:=cap(f.r.chat.text_buffer)
+            acp_chat_chunk(f.r,"é**\n")
+            if cap(f.r.chat.text_buffer)!=before do t5_buffer_growths+=1
+        }
     case: return false
     }
     return acp_rpc_checkpoint(c)

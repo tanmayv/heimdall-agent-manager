@@ -1,5 +1,7 @@
 package main
 
+import "base:runtime"
+import "core:crypto"
 import "core:encoding/json"
 import "core:fmt"
 import "core:strings"
@@ -10,6 +12,87 @@ ACP_Tool_State :: struct {
     id, name, kind, title, input, output, status, content: string,
     started, ended: bool,
     diffs: [dynamic]string,
+}
+
+ACP_TOOLS_ACTIVE_MAX :: 512
+ACP_TOOLS_RECENT_MAX :: 128
+ACP_TOOLS_JOURNAL_MAX :: 2*1024*1024
+ACP_Tool_Cache :: struct {
+    entries:map[string]^ACP_Tool_State,
+    recent:[dynamic]string,
+    loaded,dirty:bool,
+    bytes,active:int,
+}
+
+acp_tool_delete :: proc(tool:^ACP_Tool_State) {
+    context.allocator=runtime.heap_allocator()
+    for text in ([]string{tool.id,tool.name,tool.kind,tool.title,tool.input,tool.output,tool.status,tool.content}) {
+        if text!="" do crypto.zero_explicit(raw_data(text),len(text))
+        delete(text)
+    }
+    for digest in tool.diffs do delete(digest)
+    delete(tool.diffs)
+}
+
+// A conservative JSON-size budget avoids serializing the map per update.
+acp_tool_bytes :: proc(tool:^ACP_Tool_State) -> int {
+    size:=512
+    for text in ([]string{tool.id,tool.name,tool.kind,tool.title,tool.input,tool.output,tool.status,tool.content}) do size+=6*len(text)
+    for digest in tool.diffs do size+=6*len(digest)+4
+    return size
+}
+
+acp_tools_trim :: proc(cache:^ACP_Tool_Cache) {
+    for len(cache.recent)>0 && (len(cache.recent)>ACP_TOOLS_RECENT_MAX || cache.bytes>ACP_TOOLS_JOURNAL_MAX) {
+        id:=cache.recent[0];ordered_remove(&cache.recent,0)
+        tool:=cache.entries[id];delete_key(&cache.entries,id)
+        cache.bytes-=acp_tool_bytes(tool);acp_tool_delete(tool);free(tool)
+    }
+}
+
+acp_tools_destroy :: proc(r:^ACP_Runtime) {
+    context.allocator=runtime.heap_allocator()
+    for _,tool in r.tools.entries { acp_tool_delete(tool);free(tool) }
+    delete(r.tools.entries);delete(r.tools.recent);r.tools={}
+}
+
+acp_tools_prepare :: proc(r:^ACP_Runtime,raw:string) -> bool {
+    context.allocator=runtime.heap_allocator()
+    if r.tools.loaded do return true
+    tools:[dynamic]ACP_Tool_State
+    // Register cleanup before decoding: malformed JSON can partially allocate.
+    defer { for &tool in tools do acp_tool_delete(&tool);delete(tools) }
+    if raw!="" && (len(raw)>ACP_TOOLS_JOURNAL_MAX || !acp_rpc_json(raw) || json.unmarshal_string(raw,&tools)!=nil) do return false
+    r.tools.entries=make(map[string]^ACP_Tool_State)
+    valid:=false
+    defer if !valid do acp_tools_destroy(r)
+    for &tool in tools {
+        if tool.id=="" || len(tool.id)>1024 || len(tool.diffs)>64 || r.tools.entries[tool.id]!=nil do return false
+        for text in ([]string{tool.name,tool.kind,tool.title,tool.status}) do if len(text)>4096 do return false
+        for text in ([]string{tool.input,tool.output,tool.content}) do if len(text)>64*1024 do return false
+        for digest in tool.diffs do if len(digest)>64 do return false
+        if !tool.ended { r.tools.active+=1;if r.tools.active>ACP_TOOLS_ACTIVE_MAX do return false }
+        saved:=new(ACP_Tool_State);saved^=tool;tool={}
+        r.tools.entries[saved.id]=saved;r.tools.bytes+=acp_tool_bytes(saved)
+        if saved.ended do append(&r.tools.recent,saved.id)
+        acp_tools_trim(&r.tools)
+    }
+    if r.tools.bytes>ACP_TOOLS_JOURNAL_MAX do return false
+    r.tools.loaded=true;r.tools.dirty=true;valid=true
+    return true
+}
+
+acp_tools_checkpoint :: proc(r:^ACP_Runtime,state:^ACP_State) -> bool {
+    if !acp_tools_prepare(r,state.tool_map_json) do return false
+    if !r.tools.dirty do return true
+    rows:=make([dynamic]ACP_Tool_State,allocator=context.temp_allocator)
+    // Keep recent completion order on disk for eviction after recovery.
+    for _,tool in r.tools.entries do if !tool.ended do append(&rows,tool^)
+    for id in r.tools.recent do append(&rows,r.tools.entries[id]^)
+    raw:=acp_event_json(rows)
+    if len(raw)>ACP_TOOLS_JOURNAL_MAX do return false
+    acp_runtime_replace(&state.tool_map_json,raw);r.tools.dirty=false
+    return true
 }
 
 acp_events_ingest := bridge_ext_ingest
@@ -130,23 +213,15 @@ acp_events_config :: proc(r:^ACP_Runtime,update:json.Object) {
 acp_events_tool :: proc(r: ^ACP_Runtime,update: json.Object) {
     id:=acp_event_string(update,"toolCallId")
     if id=="" || len(id)>1024 do return
-    tools: [dynamic]ACP_Tool_State
-    if r.client.state.tool_map_json!="" && json.unmarshal_string(r.client.state.tool_map_json,&tools)!=nil do return
-    defer {
-        for tool in tools {
-            delete(tool.id);delete(tool.name);delete(tool.kind);delete(tool.title);delete(tool.input);delete(tool.output);delete(tool.status);delete(tool.content)
-            for hash in tool.diffs do delete(hash)
-            delete(tool.diffs)
-        }
-        delete(tools)
+    context.allocator=runtime.heap_allocator()
+    if !acp_tools_prepare(r,r.client.state.tool_map_json) { acp_runtime_error(r,"acp_protocol_error");return }
+    tool:=r.tools.entries[id]
+    if tool==nil {
+        if r.tools.active>=ACP_TOOLS_ACTIVE_MAX { acp_runtime_error(r,"acp_protocol_error");return }
+        tool=new(ACP_Tool_State);tool.id=strings.clone(id)
+        r.tools.entries[tool.id]=tool;r.tools.active+=1;r.tools.bytes+=acp_tool_bytes(tool)
     }
-    index:=-1
-    for tool,i in tools do if tool.id==id do index=i
-    if index<0 {
-        if len(tools)>=512 { acp_runtime_error(r,"acp_protocol_error"); return }
-        append(&tools,ACP_Tool_State{id=strings.clone(id)}); index=len(tools)-1
-    }
-    tool:=&tools[index]
+    before:=acp_tool_bytes(tool);was_ended:=tool.ended;r.tools.dirty=true
     // Absent fields leave the previous partial update intact.
     for key in ([]string{"name","kind","title","status"}) {
         if value,present:=update[key];present {
@@ -204,10 +279,16 @@ acp_events_tool :: proc(r: ^ACP_Runtime,update: json.Object) {
             acp_events_diff(r,diff)
         }
     }
-    if tool.ended { acp_runtime_replace(&tool.input,"");acp_runtime_replace(&tool.output,"");acp_runtime_replace(&tool.content,"") }
-    saved:=acp_event_json(tools)
-    if len(saved)>2*1024*1024 { acp_runtime_error(r,"acp_protocol_error");return }
-    acp_runtime_replace(&r.client.state.tool_map_json,saved)
+    if tool.ended {
+        for field in ([]^string{&tool.name,&tool.kind,&tool.title,&tool.input,&tool.output,&tool.status,&tool.content}) {
+            if field^!="" do crypto.zero_explicit(raw_data(field^),len(field^))
+            acp_runtime_replace(field,"")
+        }
+        if !was_ended { r.tools.active-=1;append(&r.tools.recent,tool.id) }
+    }
+    r.tools.bytes+=acp_tool_bytes(tool)-before
+    acp_tools_trim(&r.tools)
+    if r.tools.bytes>ACP_TOOLS_JOURNAL_MAX do acp_runtime_error(r,"acp_protocol_error")
 }
 
 acp_events_diff :: proc(r:^ACP_Runtime,diff:json.Object) {

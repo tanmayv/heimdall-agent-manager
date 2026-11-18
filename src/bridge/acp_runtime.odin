@@ -31,6 +31,7 @@ acp_runtime_events := ACP_Runtime_Events{acp_events_notification, acp_events_pro
 ACP_Runtime :: struct {
     client: ^ACP_RPC_Client,
     chat: ^ACP_Chat,
+    tools:ACP_Tool_Cache,
     instance, epoch, generation, run_dir, state_path, provider, profile, etag, model, mode, session: string,
     initialized, load_session, recovering: bool,
     quiescing, reconnect_queued: bool,
@@ -65,6 +66,7 @@ acp_runtime_replace :: proc(target: ^string, value: string) {
 
 acp_runtime_checkpoint :: proc(data: rawptr, state: ^ACP_State) -> bool {
     r := cast(^ACP_Runtime)data
+    if !acp_tools_checkpoint(r,state) do return false
     acp_runtime_replace(&state.bridge, bridge_config.daemon_id)
     acp_runtime_replace(&state.provider, r.provider); acp_runtime_replace(&state.profile, r.profile)
     acp_runtime_replace(&state.run_dir, r.run_dir); acp_runtime_replace(&state.catalog_etag, r.etag)
@@ -410,6 +412,7 @@ acp_runtime_destroy :: proc(r: ^ACP_Runtime) {
     // close rejects pending calls; they must not mutate the owner
     acp_rpc_close(r.client)
     acp_chat_destroy(r)
+    acp_tools_destroy(r)
     delete(r.instance); delete(r.epoch); delete(r.generation); delete(r.run_dir); delete(r.state_path)
     delete(r.provider); delete(r.profile); delete(r.etag); delete(r.model); delete(r.mode); delete(r.session)
     delete(r.saved_tools); delete(r.saved_outbox)
@@ -440,6 +443,7 @@ acp_runtime_new :: proc(instance, epoch, run_dir, provider, profile, etag, model
 }
 
 acp_runtime_connect :: proc(r: ^ACP_Runtime, socket: string, after_seq: u64, checkpoint: string = "") -> bool {
+    if !acp_tools_prepare(r,r.saved_tools) { acp_runtime_error(r,"acp_protocol_error");return false }
     if !acp_chat_prepare(r) do return false
     io, ok := acp_pipe_io_open(socket, r.instance, r.generation, r.epoch, r.state_path, after_seq)
     if !ok do return false

@@ -94,6 +94,7 @@ acp_chat_recover_journal :: proc(path:string) -> bool {
     r:=ACP_Runtime{instance=saved.instance,epoch=saved.launch_epoch,saved_outbox=strings.clone(saved.chat_outbox_json)}
     defer {acp_chat_destroy(&r);delete(r.saved_outbox)}
     if !acp_chat_prepare(&r) do return false
+    if r.chat.d.publication_failed do return false
     if r.chat.d.status=="pending" {
         acp_runtime_replace(&r.chat.d.status,"failed")
         acp_runtime_replace(&r.chat.d.stop_reason,"acp_turn_interrupted")
@@ -117,12 +118,20 @@ acp_chat_recover_journal :: proc(path:string) -> bool {
     for len(r.chat.d.outbox)>0 {
         entry:=r.chat.d.outbox[0]
         reply:=acp_chat_relay(route_path("api","v1","agent-actions","chat","assistant-message"),"agent.chat.assistant_message",acp_event_json(entry),rec,5000)
-        success:=reply.ok && (reply.status==200 || reply.status==201)
+        outcome:=acp_chat_publication_result(reply)
+        success:=outcome==.Saved
         // A terminal row from an uncertain earlier completion already satisfies
         // finalization. It must never be changed back to failed/pending.
-        terminal_conflict:=reply.status==409 && strings.contains(reply.body,"assistant terminal status is immutable")
+        terminal_conflict:=outcome==.Terminal
         delete(reply.body)
-        if !success && !terminal_conflict do return true
+        if !success && !terminal_conflict {
+            if outcome==.Rejected {
+                r.chat.d.publication_failed=true
+                acp_runtime_replace(&saved.chat_outbox_json,acp_event_json(r.chat.d))
+                acp_state_write(path,&saved)
+            }
+            return true
+        }
         acp_chat_entry_delete(entry);ordered_remove(&r.chat.d.outbox,0)
         acp_runtime_replace(&saved.chat_outbox_json,acp_event_json(r.chat.d))
         if !acp_state_write(path,&saved) do return true

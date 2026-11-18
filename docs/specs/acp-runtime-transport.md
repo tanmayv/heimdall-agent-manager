@@ -358,6 +358,8 @@ Map `session/update.params.update.sessionUpdate` only for the driver's sessionId
 | config_option_update/current_mode_update | none | merge configuration snapshot, validate required launch settings |
 | unknown updates | none | bounded diagnostic; compatible future notifications are ignored |
 
+The driver owns the tool map in memory and serializes dirty state at checkpoint. Keep open tools separately from compact completion receipts: retain at most 128 recent completed IDs/diff hashes, evicting older receipts first under the 2 MiB journal budget. The 512-tool resource cap applies to concurrently open tools, never the lifetime count. Pipe sequence fencing covers already acknowledged history. Corrupt restored tool state is an explicit `acp_protocol_error`.
+
 Example normalized event, matching the [existing parser](../../src/contracts/extension.odin):
 
 ```json
@@ -432,6 +434,8 @@ Insert chat row then turn index atomically; update both atomically. Valid status
 Return 201 for first insertion, 200 thereafter, data containing the ordinary message plus revision. First nonempty chunk creates direction=agent_to_user, message_type=text, pending; empty turns produce no blank row. `end_turn` or other normal stopReason completes the row with metadata `{acp:{turn_id,launch_epoch,revision,stop_reason}}`; cancellation preserves partial text and completes with stop_reason=cancelled. Protocol/child/transport errors fail it with a safe reason. A turn that exceeds the 1 MiB cap is cancelled and its partial row marked failed with `assistant_message_too_large`, never silently truncated into a successful reply.
 
 ### 9.3 Chunk updates and events
+
+Append assistant text to a geometrically growing byte buffer; wipe old allocations on resize and wipe the retained capacity on reset/destroy. Publication treats an immutable-terminal 409 as already satisfied, including when a newer revision coalesced during the request. Network failures, 408, 429 and 5xx retain the same retry payload; other 4xx persist `acp_chat_publish_rejected` and stop publication retries, preserving the rejected outbox for diagnosis.
 
 Accumulate agent_message_chunk text without altering Markdown. Flush full snapshots at most every 100ms or on 8 KiB new text, whichever first; final status flushes immediately. This is MVP streaming. Persist current full body/revision/outbox before PipeAck. Coalesce unsent pending snapshots, retry latest with the same ID/revision/hash on uncertain HTTP completion. Per-instance outbox is bounded at 4 MiB; pause PipeAck/reader when Hub is unavailable instead of dropping text. Hub outage therefore backs up into the bounded daemon queue. No network operation occurs while runtime global locks are held.
 

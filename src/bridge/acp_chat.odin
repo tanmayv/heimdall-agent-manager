@@ -19,6 +19,7 @@ ACP_Chat_Durable :: struct {
     revision: i64,
     flushed_bytes: int,
     session_announced: bool,
+    remote_terminal,publication_failed:bool,
     outbox: [dynamic]contracts.ACP_Assistant_Message_Input,
 }
 ACP_Chat :: struct {
@@ -26,6 +27,8 @@ ACP_Chat :: struct {
     worker: ^thread.Thread,
     stop, fetch: bool,
     d: ACP_Chat_Durable,
+    text_buffer:[dynamic]byte,
+    text_buffer_ready:bool,
     last_flush: i64,
     // This exchange is owned by worker -> dispatcher -> worker in acp_rpc_call.
     publication: string,
@@ -105,18 +108,39 @@ acp_chat_bytes :: proc(chat:^ACP_Chat) -> int {
     return total
 }
 
+acp_chat_reset_text :: proc(chat:^ACP_Chat) {
+    if cap(chat.text_buffer)>0 do crypto.zero_explicit(raw_data(chat.text_buffer),cap(chat.text_buffer))
+    clear(&chat.text_buffer);chat.d.text=""
+}
+
+// Grow geometrically, wiping the old allocation before releasing it. The
+// durable text field borrows this buffer; checkpointing alone serializes it.
+acp_chat_append_text :: proc(chat:^ACP_Chat,text:string) {
+    context.allocator=runtime.heap_allocator()
+    needed:=len(chat.text_buffer)+len(text)
+    if cap(chat.text_buffer)<needed {
+        size:=min(contracts.ACP_ASSISTANT_MAX_BYTES,max(needed,max(256,2*cap(chat.text_buffer))))
+        next:=make([dynamic]byte,0,size)
+        append(&next,..chat.text_buffer[:])
+        if cap(chat.text_buffer)>0 do crypto.zero_explicit(raw_data(chat.text_buffer),cap(chat.text_buffer))
+        delete(chat.text_buffer);chat.text_buffer=next
+    }
+    append(&chat.text_buffer,..transmute([]byte)text)
+    chat.d.text=string(chat.text_buffer[:])
+}
+
 acp_chat_prompt_started :: proc(r:^ACP_Runtime,input_id:string) {
     if r.chat==nil || r.d.replay_only do return
     d:=&r.chat.d
     acp_runtime_replace(&d.turn_id,fmt.tprintf("ham:%s:%d",r.epoch,r.client.state.next_rpc_id))
     acp_runtime_replace(&d.message_id,fmt.tprintf("msg_%016x",time.to_unix_nanoseconds(time.now())))
-    if d.text!="" do crypto.zero_explicit(raw_data(d.text),len(d.text))
-    acp_runtime_replace(&d.text,""); acp_runtime_replace(&d.flushed_status,""); acp_runtime_replace(&d.status,"pending"); acp_runtime_replace(&d.stop_reason,"")
+    acp_chat_reset_text(r.chat);d.remote_terminal=false
+    acp_runtime_replace(&d.flushed_status,""); acp_runtime_replace(&d.status,"pending"); acp_runtime_replace(&d.stop_reason,"")
     d.revision=0;d.flushed_bytes=0;r.chat.last_flush=0
 }
 
 acp_chat_chunk :: proc(r:^ACP_Runtime,text:string) {
-    if r.chat==nil || r.d.replay_only || r.chat.d.status!="pending" || text=="" do return
+    if r.chat==nil || r.d.replay_only || r.chat.d.status!="pending" || r.chat.d.remote_terminal || r.chat.d.publication_failed || text=="" do return
     d:=&r.chat.d
     if len(d.text)+len(text)>contracts.ACP_ASSISTANT_MAX_BYTES {
         // Keep the last valid partial snapshot; an oversized turn never succeeds.
@@ -126,8 +150,7 @@ acp_chat_chunk :: proc(r:^ACP_Runtime,text:string) {
         acp_rpc_notify(r.client,"session/cancel",raw)
         return
     }
-    combined:=strings.concatenate({d.text,text}); defer delete(combined)
-    acp_runtime_replace(&d.text,combined)
+    acp_chat_append_text(r.chat,text)
     acp_chat_flush(r,false)
 }
 
@@ -146,7 +169,7 @@ acp_chat_prompt_finished :: proc(r:^ACP_Runtime,input_id,result,error:string) {
 acp_chat_flush :: proc(r:^ACP_Runtime,final:bool) -> bool {
     chat:=r.chat; if chat==nil do return true
     d:=&chat.d
-    if d.text=="" || d.turn_id=="" do return true
+    if d.text=="" || d.turn_id=="" || d.remote_terminal || d.publication_failed do return true
     now:=bridge_runtime_now_ms()
     if !final && (len(d.text)==d.flushed_bytes || (now-chat.last_flush<100 && len(d.text)-d.flushed_bytes<8192)) do return true
     // Once a terminal snapshot exists, periodic ticks must not create revisions.
@@ -183,6 +206,10 @@ acp_chat_prepare :: proc(r:^ACP_Runtime) -> bool {
     for entry in d.outbox {
         if entry.launch_epoch!=r.epoch || entry.revision<1 || entry.message_id=="" || entry.turn_id=="" || len(entry.turn_id)>256 || (entry.message_status!="pending" && entry.message_status!="complete" && entry.message_status!="failed") { acp_chat_destroy(r);return false }
     }
+    owned:=d.text;d.text="";chat.text_buffer_ready=true
+    acp_chat_append_text(chat,owned)
+    if owned!="" do crypto.zero_explicit(raw_data(owned),len(owned))
+    delete(owned)
     sync.atomic_store(&chat.fetch,true)
     return true
 }
@@ -193,8 +220,8 @@ acp_chat_destroy :: proc(r:^ACP_Runtime) {
     acp_chat_stop(r)
     d:=&chat.d
     delete(d.turn_id);delete(d.message_id);delete(d.status);delete(d.stop_reason);delete(d.flushed_status)
-    if d.text!="" do crypto.zero_explicit(raw_data(d.text),len(d.text))
-    delete(d.text)
+    if chat.text_buffer_ready { acp_chat_reset_text(chat);delete(chat.text_buffer) }
+    else { if d.text!="" do crypto.zero_explicit(raw_data(d.text),len(d.text));delete(d.text) }
     for entry in d.outbox do acp_chat_entry_delete(entry)
     if chat.vault_blocked do bridge_permission_remove(r.instance,chat.blocker_id)
     delete(chat.blocker_id);delete(d.outbox);delete(chat.publication);free(chat);r.chat=nil
@@ -212,6 +239,27 @@ acp_chat_call :: proc(chat:^ACP_Chat,argument:string) -> bool {
     acp_rpc_call(chat.r.client,&cmd);return cmd.ok
 }
 
+ACP_Chat_Publication_Result :: enum { Retry, Saved, Terminal, Rejected }
+acp_chat_publication_result :: proc(reply:Bridge_Local_Relay_Result) -> ACP_Chat_Publication_Result {
+    if reply.ok && (reply.status==200 || reply.status==201) do return .Saved
+    if reply.status==409 && strings.contains(reply.body,"assistant terminal status is immutable") do return .Terminal
+    if reply.status>=400 && reply.status<500 && reply.status!=408 && reply.status!=429 do return .Rejected
+    return .Retry
+}
+
+acp_chat_publish :: proc(chat:^ACP_Chat) -> ACP_Chat_Publication_Result {
+    reply:=acp_chat_relay(route_path("api","v1","agent-actions","chat","assistant-message"),"agent.chat.assistant_message",chat.publication,chat.r.rec,5000)
+    defer delete(reply.body)
+    result:=acp_chat_publication_result(reply)
+    switch result {
+    case .Saved: acp_chat_call(chat,strings.concatenate({"chat_saved:",chat.publication},context.temp_allocator))
+    case .Terminal: acp_chat_call(chat,strings.concatenate({"chat_terminal:",chat.publication},context.temp_allocator))
+    case .Rejected: acp_chat_call(chat,"chat_rejected")
+    case .Retry:
+    }
+    return result
+}
+
 acp_chat_worker :: proc(data:rawptr) {
     context.allocator=runtime.heap_allocator()
     arena:vm.Arena;_=vm.arena_init_growing(&arena);defer vm.arena_destroy(&arena)
@@ -223,14 +271,11 @@ acp_chat_worker :: proc(data:rawptr) {
         if !acp_chat_vault_ready() { time.sleep(100*time.Millisecond);continue }
         if !acp_chat_call(chat,"chat_tick") { time.sleep(100*time.Millisecond);continue }
         if chat.publication!="" && bridge_runtime_now_ms()>=chat.retry_after {
-            reply:=acp_chat_relay(route_path("api","v1","agent-actions","chat","assistant-message"),"agent.chat.assistant_message",chat.publication,chat.r.rec,5000)
-            if reply.ok && (reply.status==200 || reply.status==201) {
-                acp_chat_call(chat,strings.concatenate({"chat_saved:",chat.publication},context.temp_allocator))
+            if acp_chat_publish(chat)!=.Retry {
                 chat.retry_after=0
             } else {
                 chat.retry_after=bridge_runtime_now_ms()+1000
             }
-            delete(reply.body)
         }
         now:=bridge_runtime_now_ms()
         if sync.atomic_exchange(&chat.fetch,false) || now-last_fetch>=10000 {
@@ -260,21 +305,29 @@ acp_chat_work :: proc(r:^ACP_Runtime,argument:string) -> bool {
         return acp_rpc_checkpoint(r.client)
     }
     if argument=="chat_tick" {
-        if r.quiescing do return false
+        if r.quiescing || chat.d.publication_failed do return false
         if !acp_chat_flush(r,false) do return false
         acp_runtime_replace(&chat.publication,"")
         if len(chat.d.outbox)>0 do acp_runtime_replace(&chat.publication,acp_event_json(chat.d.outbox[0]))
         acp_runtime_drain(r)
         return true
     }
-    if strings.has_prefix(argument,"chat_saved:") {
-        obj:=acp_event_object(argument[len("chat_saved:"):])
+    if argument=="chat_rejected" {
+        chat.d.publication_failed=true
+        acp_runtime_error(r,"acp_chat_publish_rejected")
+        return acp_rpc_checkpoint(r.client)
+    }
+    terminal:=strings.has_prefix(argument,"chat_terminal:")
+    if terminal || strings.has_prefix(argument,"chat_saved:") {
+        prefix:="chat_terminal:" if terminal else "chat_saved:"
+        obj:=acp_event_object(argument[len(prefix):])
         id:=acp_event_string(obj,"message_id")
         rev,_:=obj["revision"].(json.Float)
         for entry,i in chat.d.outbox {
-            if entry.message_id!=id || entry.revision!=i64(rev) do continue
+            if entry.message_id!=id || (!terminal && entry.revision!=i64(rev)) do continue
             acp_chat_entry_delete(entry);ordered_remove(&chat.d.outbox,i);break
         }
+        if terminal && chat.d.message_id==id do chat.d.remote_terminal=true
         return acp_rpc_checkpoint(r.client)
     }
     return false
