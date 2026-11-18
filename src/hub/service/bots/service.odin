@@ -30,6 +30,8 @@ Bots_Service :: struct {
 	boot_unix_ms: i64,
 	hello_queue: [dynamic]string,
 	last_waiting_recheck_ms: i64,
+	last_idle_check_ms, last_retention_ms: i64,
+	notices: [dynamic]Bot_Notice,
 }
 
 bots_get :: proc(s: ^Bots_Service, owner: string) -> (domain.Bot, domain.Domain_Error) {
@@ -229,9 +231,7 @@ bots_put_placement :: proc(s: ^Bots_Service, owner: string, expected_revision: i
 	defer domain.bot_delivery_destroy(&d)
 	if delivery_err.code != .None do return 0, delivery_err
 	if open && d.state == .Waiting {
-		updated := d
-		updated.state, updated.waiting_reason, updated.updated_at = .Pending, "", now
-		_, delivery_err = iface.delivery_update(s.repo, updated, .Waiting)
+		_ = bots_wake_locked(s, d, now)
 	}
 	return revision, delivery_err
 }

@@ -630,10 +630,11 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		graph.channel_adapter = channel.telegram_adapter(&graph.telegram)
 		graph.bots.adapter = &graph.channel_adapter
 	}
-	graph.bots_runtime = bots_service.Bots_Runtime{service = &graph.bots, telegram_bot_token = config.telegram_bot_token}
+	graph.bots_runtime = bots_service.Bots_Runtime{service = &graph.bots, telegram_bot_token = config.telegram_bot_token, supervisor_tick = bots_service.bots_supervisor_tick}
 	graph.experiment_handlers.on_changed = bots_service.bots_on_experiment_changed
 	graph.experiment_handlers.on_changed_ctx = &graph.bots_runtime
 	graph.bots.boot_unix_ms, _ = platform.rfc3339_to_unix_ms(platform.clock_now(&graph.clock))
+	graph.bridge_handlers.bots = &graph.bots
 	graph.bot_agent_handlers = http.Bot_Agent_Handlers{agent_actions = &graph.agent_action_handlers, bots = &graph.bots, experiments = &graph.experiment_repo}
 	graph.bot_handlers = http.Bot_Handlers{auth = &graph.auth, bots = &graph.bots, experiments = &graph.experiment_repo}
 	graph.bridges.provider_repo = graph.providers.repo
@@ -660,6 +661,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 
 shutdown_graph :: proc(graph: ^App_Graph) {
 	bots_service.bots_runtime_stop(&graph.bots_runtime)
+	bots_service.bots_service_destroy(&graph.bots)
 	channel.telegram_destroy(&graph.telegram)
 	bridge_service.bridge_update_catalog_destroy(&graph.bridge_update_catalog)
 	db_collectors_detach()
@@ -1074,6 +1076,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/actions/*/run", rawptr(&graph.action_handlers), http.run_action_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridge/actions", rawptr(&graph.action_handlers), http.bridge_list_actions_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridge/actions/*/execute", rawptr(&graph.action_handlers), http.bridge_execute_action_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/bridge/bot-attempts/*/switch", rawptr(&graph.bridge_handlers), http.bot_bridge_switch_handler)
 
 	// Scheduled Prompts backward compatibility
 	http.router_add(&graph.router, "GET", "/api/v1/scheduled-prompts", rawptr(&graph.action_handlers), http.list_scheduled_prompts_handler)

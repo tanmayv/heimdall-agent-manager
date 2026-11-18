@@ -16,6 +16,7 @@ new_bot_repository :: proc(impl: ^Bot_Repo_SQLite, conn: ^Conn) -> iface.Bot_Rep
 	impl.conn = conn
 	return iface.Bot_Repository {
 		ctx = rawptr(impl),
+		bot_list = bot_list_sqlite,
 		bot_insert = bot_insert_sqlite,
 		bot_get_by_owner = bot_get_by_owner_sqlite,
 		bot_get = bot_get_sqlite,
@@ -1124,4 +1125,8 @@ pairing_consume_sqlite :: proc(ctx: rawptr, code_hash, consumed_at: string) -> (
 	"UPDATE channel_pairings SET consumed_at = ? WHERE code_hash = ? AND consumed_at = '' AND expires_at > ?;",
 	{consumed_at, code_hash, consumed_at})
 	return count == 1, err
+}
+
+bot_list_sqlite :: proc(ctx: rawptr) -> ([]domain.Bot, domain.Domain_Error) {
+	return bot_repo_list_bot(bot_repo_conn(ctx), `SELECT bot_id, owner_user_id, agent_id, agent_instance_id, display_name, placement_revision, created_at, updated_at FROM bots ORDER BY bot_id;`, nil)
 }
