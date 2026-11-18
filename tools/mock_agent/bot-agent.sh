@@ -4,7 +4,7 @@ set -eu
 
 HAM_CTL=${HAM_CTL:-./bin/ham-ctl}
 case ${BOT_AGENT_MODE:-reply} in
-    reply|silent|ctl) ;;
+    reply|silent|ctl|media) ;;
     *) printf '%s\n' 'bot-agent: unknown BOT_AGENT_MODE' >&2; exit 2 ;;
 esac
 pending_kind=
@@ -20,7 +20,15 @@ while IFS= read -r line; do
             # Split fields onto lines so the first entry wins in a compact envelope.
             body=$(printf '%s\n' "$messages" | sed 's/"body"[[:space:]]*:/\
 &/g' | sed -n 's/^"body"[[:space:]]*:[[:space:]]*"\(\([^"\\]*\\.\)*[^"\\]*\)".*/\1/p' | sed -n '1p' | sed 's/\\"/"/g; s/\\\//\//g; s/\\\\/\\/g')
-            if [ "${BOT_AGENT_MODE:-reply}" = ctl ]; then
+            if [ "${BOT_AGENT_MODE:-reply}" = media ]; then
+                artifact=$(printf '%s\n' "$messages" | python3 -c 'import sys,re; s=sys.stdin.read(); m=re.search(r"\"artifact_id\":\"(art_[^\"]+)\"",s); print(m[1] if m else "")')
+                if [ -n "$artifact" ]; then
+                    kind=$(printf '%s\n' "$messages" | python3 -c 'import re,sys; print(re.search(r"\"kind\":\"([^\"]+)\"",sys.stdin.read())[1])')
+                    "$HAM_CTL" channel send --artifact "$artifact" --text "got $kind"
+                    continue
+                fi
+            fi
+            if [ "${BOT_AGENT_MODE:-reply}" = ctl ] || [ "${BOT_AGENT_MODE:-reply}" = media ]; then
                 if [ -n "$pending_kind" ]; then
                     answer=$(printf '%s' "$body" | tr '[:upper:]' '[:lower:]')
                     kind=$pending_kind
