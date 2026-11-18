@@ -35,6 +35,14 @@ test_bot_template_confirms_new_chains_and_each_command :: proc(t: ^testing.T) {
 		"exit status and at most the last 20 lines of output",
 		"Never send output that looks like a secret",
 		"Do not run a shell command without its own confirmation",
+		"decide whether it is simple or complex work",
+		"do not create a chain for it.",
+		"never run a series of commands to do it.",
+		"Look for a matching chain with `./bin/ham-ctl task-chain list`",
+		"If none fits, start a new chain as in \"Start a new chain\".",
+		"Commands can run on any of the user's machines.",
+		"Find the machine with `./bin/ham-ctl bridge list`",
+		"it must have `status` `online`",
 	}) {
 		testing.expect(t, strings.contains(bot.instructions, sentence), sentence)
 	}
