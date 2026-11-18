@@ -36,6 +36,7 @@ ctl_channel_rewrite_attachments :: proc(
 	root, root_ok := value.(json.Object)
 	if !root_ok do return response, false
 	data, _ := root["data"].(json.Object)
+	if nested, wrapped := data["data"].(json.Object); wrapped do data = nested
 	messages, _ := data["messages"].(json.Array)
 	for message in messages {
 		row, ok := message.(json.Object)
@@ -136,6 +137,7 @@ ctl_channel_resolve_attachment_scratch :: proc(
 	if fetch_err != nil do return out
 	fetch_root, _ := fetch_value.(json.Object)
 	fetched, _ := fetch_root["data"].(json.Object)
+	if nested, wrapped := fetched["data"].(json.Object); wrapped do fetched = nested
 	state_value, _ := fetched["outcome"].(json.String)
 	state := string(state_value)
 	switch state {

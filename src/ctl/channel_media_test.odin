@@ -82,7 +82,9 @@ test_channel_rewrite_attachments_outputs :: proc(t: ^testing.T) {
 			attachments: []Ctl_Channel_Attachment_In,
 		}{{tc.direction, "unchanged", attachments}}
 		input.data.messages = rows
-		encoded, _ := json.marshal(input, allocator = context.temp_allocator)
+		// The local Bridge wraps the Hub envelope in its own data field.
+		envelope := struct {v: int, id: string, ok: bool, data: type_of(input)}{1, "ham-ctl-agent", true, input}
+		encoded, _ := json.marshal(envelope, allocator = context.temp_allocator)
 		rewritten, ok := ctl_channel_rewrite_attachments(string(encoded), ctl_channel_test_resolve, &c)
 		testing.expect(t, ok)
 		output: struct {
@@ -94,11 +96,13 @@ test_channel_rewrite_attachments_outputs :: proc(t: ^testing.T) {
 				},
 			},
 		}
+		wrapped: struct {data: type_of(output)}
 		testing.expect_value(
 			t,
-			json.unmarshal(transmute([]byte)rewritten, &output, allocator = context.temp_allocator),
+			json.unmarshal(transmute([]byte)rewritten, &wrapped, allocator = context.temp_allocator),
 			nil,
 		)
+		output = wrapped.data
 		testing.expect_value(t, len(output.data.messages), 1)
 		if len(output.data.messages) != 1 do continue
 		testing.expect_value(t, output.data.messages[0].body, "unchanged")
@@ -155,7 +159,7 @@ test_ctl_media_mime_from_name :: proc(t: ^testing.T) {
 test_channel_media_fetch_seals_and_records :: proc(t: ^testing.T) {
 	kr := tkr("1111111111111111111111111111111111111111111111111111111111111111")
 	replies := []string {
-		"{\"ok\":true,\"data\":{\"outcome\":\"fetched\",\"mime\":\"image/png\",\"size\":3,\"content_base64\":\"AP+A\"}}\n",
+		"{\"v\":1,\"ok\":true,\"data\":{\"data\":{\"outcome\":\"fetched\",\"mime\":\"image/png\",\"size\":3,\"content_base64\":\"AP+A\"}}}\n",
 		"{\"ok\":true,\"data\":{\"artifact_id\":\"created\"}}\n",
 		"{\"ok\":true,\"data\":{\"artifact_id\":\"winner\"}}\n",
 	}
