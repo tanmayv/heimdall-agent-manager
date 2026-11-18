@@ -30,6 +30,8 @@ send_test_result :: proc(ctx: rawptr, id: string, state: domain.Channel_Send_Sta
 	for &msg in s.messages {
 		if msg.message_id == id {
 			msg.send_state = state
+			delete(msg.external_message_id)
+			delete(msg.send_error)
 			msg.external_message_id = strings.clone(external)
 			msg.send_error = strings.clone(err)
 			return {}
@@ -81,7 +83,7 @@ test_channel_send_records_all_chunks_before_failure :: proc(t: ^testing.T) {
 	ids := platform.ID_Generator{ctx = &state, generate = send_test_id}
 	a := channel.Channel_Adapter{ctx = &state, send_text = send_test_text}
 	s := Bots_Service{repo = &repo, ids = &ids, adapter = &a}
-	result, err := channel_send(&s,{provider="telegram",binding_id="chb_test",bot_id="bot_test",owner_user_id="alice",external_chat_id="111"},strings.repeat("x",4500,context.temp_allocator),true)
+	result, _, err := channel_send(&s,{provider="telegram",binding_id="chb_test",bot_id="bot_test",owner_user_id="alice",external_chat_id="111"},strings.repeat("x",4500,context.temp_allocator),true)
 	defer send_test_free(&state,result)
 	testing.expect(t, len(result)==2 && state.calls==1 && state.recorded_before_send)
 	testing.expect(t, err.code == .Provider_Unavailable && err.message == "channel send failed")
@@ -99,23 +101,23 @@ test_channel_send_retry_limits_and_success :: proc(t: ^testing.T) {
 	ids := platform.ID_Generator{ctx=&state,generate=send_test_id}
 	a := channel.Channel_Adapter{ctx=&state,send_text=send_test_text}
 	s := Bots_Service{repo=&repo,ids=&ids,adapter=&a}
-	result, err := channel_send(&s,{provider="telegram"},"hi",true)
+	result, _, err := channel_send(&s,{provider="telegram"},"hi",true)
 	defer send_test_free(&state,result)
 	testing.expect(t, err.code == .None && state.calls==3 && state.recorded_before_send)
 	testing.expect(t, len(state.messages)==1 && state.messages[0].send_state==.Sent && state.messages[0].external_message_id=="3")
 	// Rate limit beyond the total budget is refused without sleeping or retrying.
 	limited := Send_Test_State{sequence={{kind=.Rate_Limited,retry_after_ms=20_001}}}
 	a.ctx = &limited
-	notice, rate_err := channel_send(&s,{provider="telegram"},"notice",false)
+	notice, _, rate_err := channel_send(&s,{provider="telegram"},"notice",false)
 	defer send_test_free(&limited,notice)
 	testing.expect(t,rate_err.code==.Provider_Unavailable && limited.calls==1 && len(limited.messages)==0)
 	exhausted := Send_Test_State{sequence={{kind=.Transient},{kind=.Transient},{kind=.Transient}}}
 	a.ctx = &exhausted
-	failed, transient_err := channel_send(&s,{provider="telegram"},"notice",false)
+	failed, _, transient_err := channel_send(&s,{provider="telegram"},"notice",false)
 	defer send_test_free(&exhausted,failed)
 	testing.expect(t,transient_err.code==.Provider_Unavailable && exhausted.calls==3)
 	unavailable := Bots_Service{}
-	no_ids, config_err := channel_send(&unavailable,{},"hi",true)
+	no_ids, _, config_err := channel_send(&unavailable,{},"hi",true)
 	defer delete(no_ids)
 	testing.expect(t,config_err.code==.Provider_Unavailable && config_err.details_json==`{"code":"channel_not_configured"}`)
 }

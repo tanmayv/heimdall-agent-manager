@@ -226,7 +226,9 @@ test_delivery_row_09 :: proc(t: ^testing.T) {
 	f := delivery_fixture(t); defer delivery_destroy(f)
 	delivery_seed(t, f)
 	testing.expect_value(t, iface.messages_mark_read(&f.pair.repo, "bot_a", {"chm_a"}, delivery_clock(f)).code, domain.Error_Code.None)
-	testing.expect_value(t, bots_channel_replied(&f.pair.service, "bot_a").code, domain.Error_Code.None)
+	binding, _, _ := iface.binding_get_active_by_owner(&f.pair.repo, "alice", "telegram")
+	defer domain.channel_binding_destroy(&binding)
+	testing.expect_value(t, bots_channel_replied(&f.pair.service, "bot_a", binding.binding_id).code, domain.Error_Code.None)
 	delivery_expect(t, f, .Acted, "acted"); delivery_attempt_expect(t, f, .Acted)
 }
 @(test)

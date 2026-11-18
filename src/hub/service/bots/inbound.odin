@@ -89,13 +89,13 @@ bots_delivery_on_inbound_locked :: proc(s: ^Bots_Service, bot_id: string, now_ms
 }
 
 // R2 and R3 are committed together after all outbound chunks were sent.
-bots_channel_replied :: proc(s: ^Bots_Service, bot_id: string) -> domain.Domain_Error {
+bots_channel_replied :: proc(s: ^Bots_Service, bot_id, binding_id: string) -> domain.Domain_Error {
 	sync.mutex_lock(&s.mutex); defer sync.mutex_unlock(&s.mutex)
 	uow, ok, err := iface.unit_of_work_begin(s.uow_factory)
 	if !ok do return err
 	defer if uow.ctx != nil do iface.unit_of_work_rollback(&uow)
 	now := platform.clock_now(s.clock)
-	if _, e := iface.messages_mark_replied(s.repo, bot_id, now); e.code != .None do return e
+	if _, e := iface.messages_mark_replied_binding(s.repo, bot_id, binding_id, now); e.code != .None do return e
 	d, found, get_err := iface.delivery_get_open(s.repo, bot_id)
 	defer domain.bot_delivery_destroy(&d)
 	if get_err.code != .None do return get_err

@@ -1878,7 +1878,7 @@ print_help_overview :: proc() {
 	fmt.println("  task-chain  Your task chains")
 	fmt.println("  task        Tasks within a chain (one command per action)")
 	fmt.println("  workflow    Workflow chains: templates, define, run, status, output, retry, cancel")
-	fmt.println("  channel     Read and answer Telegram messages (bot only)")
+	fmt.println("  channel     Read and answer Telegram and WhatsApp messages (bot only)")
 	fmt.println("  chat        Read your inbox / send to the user or another agent")
 	fmt.println("  memory      List, show, read, or propose memories")
 	fmt.println("  artifact    Create / read / download artifacts")

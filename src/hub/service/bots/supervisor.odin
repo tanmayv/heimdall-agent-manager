@@ -307,6 +307,8 @@ bots_supervisor_tick :: proc(s: ^Bots_Service) {
 	if run_retention {
 		cutoff := platform.format_rfc3339_utc(time.Time{_nsec = (ms - s.timers.bot_channel_retention_ms) * 1_000_000})
 		_, _ = iface.messages_purge_older_than(s.repo, cutoff)
+		processed_cutoff := platform.format_rfc3339_utc(time.Time{_nsec = (ms - 7*24*60*60*1000) * 1_000_000})
+		_, _ = iface.push_events_purge_processed(s.repo, processed_cutoff)
 	}
 }
 

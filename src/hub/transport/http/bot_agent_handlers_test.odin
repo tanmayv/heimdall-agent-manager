@@ -16,6 +16,7 @@ Bot_Channel_Fixture :: struct {
 	uow: iface.Unit_Of_Work_Factory,
 	h: Bot_Agent_Handlers,
 	adapter: channel.Channel_Adapter,
+	whatsapp: channel.Channel_Adapter,
 	sent_chat: string,
 	sent: [dynamic]string,
 	fail_send: bool,
@@ -250,5 +251,103 @@ test_bot_pairing_disconnect_and_messages_routes :: proc(t: ^testing.T) {
 	for handler in ([]Handler_Proc{bot_pairing_handler,bot_disconnect_handler,bot_messages_handler}) {
 		r := handler(&paired.f.handlers,req)
 		testing.expect(t, r.status == 404 && strings.contains(r.body,"bot_not_found"))
+	}
+}
+
+bot_channel_whatsapp :: proc(t: ^testing.T, c: ^Bot_Channel_Fixture, last := "2026-11-17T12:00:00Z") {
+	bot, found, err := iface.bot_get_by_owner(&c.f.bot_repo, string(c.f.wire.owner))
+	defer domain.bot_destroy(&bot)
+	testing.expect(t, found && err.code == .None)
+	c.whatsapp = {ctx = c, provider = "whatsapp", send_text = bot_channel_test_send, reply_window_ms = 86_400_000}
+	c.f.service.whatsapp = &c.whatsapp
+	testing.expect_value(t, iface.pairing_insert(&c.f.bot_repo, {code_hash = "wa_hash", owner_user_id = bot.owner_user_id, bot_id = bot.bot_id, provider = "whatsapp", expires_at = "9999"}).code, domain.Error_Code.None)
+	prev, _, e := iface.binding_activate(&c.f.bot_repo, {binding_id = "chb_wa", owner_user_id = bot.owner_user_id, bot_id = bot.bot_id, provider = "whatsapp", external_chat_id = "333", external_user_id = "444", external_display = "Alice WA", state = .Active, last_inbound_at = last}, "wa_hash", "2026-11-17T12:00:00Z")
+	domain.channel_binding_destroy(&prev)
+	testing.expect_value(t, e.code, domain.Error_Code.None)
+}
+bot_channel_wa_inbound :: proc(t: ^testing.T, c: ^Bot_Channel_Fixture) {
+	bot, _, _ := iface.bot_get_by_owner(&c.f.bot_repo, string(c.f.wire.owner)); defer domain.bot_destroy(&bot)
+	ids, err := iface.inbound_store_batch(&c.f.bot_repo, "whatsapp", {{
+		message_id = "chm_wa", binding_id = "chb_wa", owner_user_id = bot.owner_user_id, bot_id = bot.bot_id,
+		direction = .Inbound, provider_update_key = "wa:1", body = "hello wa", created_at = "2026-11-17T11:00:00Z",
+	}}, "", "2026-11-17T12:00:00Z")
+	defer {for id in ids do delete(id); delete(ids)}
+	testing.expect_value(t, err.code, domain.Error_Code.None)
+}
+@(test)
+test_channel_read_returns_channel_field :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := bot_channel_fixture(t); defer bot_channel_destroy(c)
+	bot_channel_whatsapp(t, c)
+	bot_channel_wa_inbound(t, c)
+	bot_channel_inbound(t, c, "chm_tg")
+	r := bot_channel_read(c)
+	wire: struct {data: struct {messages: []Bot_Channel_Read_Message, pending_total: int}}
+	testing.expect_value(t, r.status, 200)
+	testing.expect_value(t, json.unmarshal(transmute([]u8)r.body, &wire, allocator = context.temp_allocator), nil)
+	testing.expect(t, len(wire.data.messages) == 1 && wire.data.messages[0].channel == "whatsapp" && wire.data.messages[0].sender == "Alice WA" && wire.data.pending_total == 2)
+}
+@(test)
+test_channel_send_reply_goes_to_origin :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := bot_channel_fixture(t); defer bot_channel_destroy(c)
+	bot_channel_whatsapp(t, c)
+	bot_channel_wa_inbound(t, c)
+	bot_channel_inbound(t, c, "chm_tg")
+	testing.expect_value(t, bot_channel_read(c).status, 200)
+	r := bot_channel_send(c)
+	wire: struct {data: struct {channel: string, held: bool}}
+	testing.expect_value(t, r.status, 200)
+	testing.expect_value(t, json.unmarshal(transmute([]u8)r.body, &wire, allocator = context.temp_allocator), nil)
+	testing.expect(t, wire.data.channel == "whatsapp" && !wire.data.held && c.sent_chat == "333")
+	r = bot_channel_read(c)
+	read: struct {data: struct {messages: []Bot_Channel_Read_Message}}
+	_ = json.unmarshal(transmute([]u8)r.body, &read, allocator = context.temp_allocator)
+	testing.expect(t, r.status == 200 && len(read.data.messages) == 1 && read.data.messages[0].channel == "telegram")
+	testing.expect_value(t, bot_channel_send(c).status, 200)
+	testing.expect_value(t, c.sent_chat, "111")
+}
+@(test)
+test_channel_send_held_response :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := bot_channel_fixture(t, paired = false); defer bot_channel_destroy(c)
+	bot_channel_whatsapp(t, c, "2000-01-01T00:00:00Z")
+	bot_channel_wa_inbound(t, c)
+	testing.expect_value(t, bot_channel_read(c).status, 200)
+	r := bot_channel_send(c)
+	wire: struct {data: struct {message_ids: []string, chunks: int, channel: string, held: bool}}
+	testing.expect_value(t, r.status, 200)
+	testing.expect_value(t, json.unmarshal(transmute([]u8)r.body, &wire, allocator = context.temp_allocator), nil)
+	testing.expect(t, wire.data.held && wire.data.channel == "whatsapp" && wire.data.chunks == 1 && len(wire.data.message_ids) == 1 && len(c.sent) == 0)
+	bot, _, _ := iface.bot_get_by_owner(&c.f.bot_repo, string(c.f.wire.owner))
+	pending, _ := iface.messages_pending(&c.f.bot_repo, bot.bot_id, -1)
+	testing.expect_value(t, len(pending), 0)
+	held, _ := iface.messages_held(&c.f.bot_repo, "chb_wa")
+	testing.expect(t, len(held) == 1 && held[0].body == "answer")
+}
+@(test)
+test_channel_history_channel_field :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := bot_channel_fixture(t); defer bot_channel_destroy(c)
+	bot_channel_whatsapp(t, c)
+	bot_channel_wa_inbound(t, c)
+	bot_channel_inbound(t, c, "chm_tg")
+	r := bot_agent_channel_history_handler(&c.h, bot_channel_req(c, "history", "{}"))
+	wire: struct {data: struct {messages: []Bot_Channel_History_Message}}
+	testing.expect_value(t, r.status, 200)
+	_ = json.unmarshal(transmute([]u8)r.body, &wire, allocator = context.temp_allocator)
+	testing.expect(t, len(wire.data.messages) == 2 && wire.data.messages[0].channel == "telegram" && wire.data.messages[1].channel == "whatsapp")
+	_ = iface.binding_revoke(&c.f.bot_repo, "chb_wa", "now")
+	r = bot_agent_channel_history_handler(&c.h, bot_channel_req(c, "history", "{}"))
+	_ = json.unmarshal(transmute([]u8)r.body, &wire, allocator = context.temp_allocator)
+	testing.expect(t, r.status == 200 && len(wire.data.messages) == 1 && wire.data.messages[0].channel == "telegram")
+}
+@(test)
+test_channel_routes_not_paired_without_bindings :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := bot_channel_fixture(t, paired = false); defer bot_channel_destroy(c)
+	for handler in ([]Handler_Proc{bot_agent_channel_read_handler, bot_agent_channel_send_handler, bot_agent_channel_history_handler}) {
+		r := handler(&c.h, bot_channel_req(c, "read", "{}"))
+		testing.expect(t, r.status == 409 && strings.contains(r.body, "channel_not_paired"))
 	}
 }

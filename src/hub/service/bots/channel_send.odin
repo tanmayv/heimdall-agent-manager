@@ -2,6 +2,7 @@ package bots
 
 import "core:encoding/json"
 import "core:fmt"
+import "core:log"
 import "core:strings"
 import "core:time"
 import "core:unicode/utf8"
@@ -32,21 +33,25 @@ channel_text_chunks :: proc(text: string, allocator := context.allocator) -> []s
 }
 
 // message_ids and each id belong to the caller, including on an error.
-channel_send :: proc(s: ^Bots_Service, binding: domain.Channel_Binding, text: string, record: bool) -> (message_ids: []string, err: domain.Domain_Error) {
+channel_send :: proc(s: ^Bots_Service, binding: domain.Channel_Binding, text: string, record: bool) -> (message_ids: []string, held: bool, err: domain.Domain_Error) {
 	a := bots_adapter(s, binding.provider)
-	if a == nil do return nil, domain.domain_error(.Provider_Unavailable, fmt.tprintf("%s is not configured on this hub", binding.provider), `{"code":"channel_not_configured"}`)
-	if !utf8.valid_string(text) do return nil, domain.domain_error(.Validation_Failed, "text is invalid", `{"code":"text_invalid"}`)
+	if a == nil do return nil, false, domain.domain_error(.Provider_Unavailable, fmt.tprintf("%s is not configured on this hub", binding.provider), `{"code":"channel_not_configured"}`)
+	if !utf8.valid_string(text) do return nil, false, domain.domain_error(.Validation_Failed, "text is invalid", `{"code":"text_invalid"}`)
 	chunks := channel_text_chunks(text)
 	defer delete(chunks)
-	if len(chunks) == 0 do return nil, {}
+	if len(chunks) == 0 do return nil, false, {}
+	closed := bots_window_closed(a, binding, bots_now_ms(s))
+	if !record && closed do return nil, false, bots_send_error(.Window_Closed)
 	ids := make([dynamic]string)
+	state: domain.Channel_Send_State = .Pending
+	if closed do state = .Held
 	if record {
 		for chunk in chunks {
 			id := strings.clone(platform.generate_id(s.ids, "chm_"))
 			insert_err := iface.message_insert_outbound(s.repo, {
 				message_id = id, binding_id = binding.binding_id,
 				owner_user_id = binding.owner_user_id, bot_id = binding.bot_id,
-				direction = .Outbound, body = chunk, send_state = .Pending,
+				direction = .Outbound, body = chunk, send_state = state,
 				created_at = platform.clock_now(s.clock),
 			})
 			if insert_err.code != .None {
@@ -55,37 +60,19 @@ channel_send :: proc(s: ^Bots_Service, binding: domain.Channel_Binding, text: st
 					_ = iface.message_set_send_result(s.repo, previous, .Failed, "", "not_sent")
 				}
 				shrink(&ids)
-				return ids[:], insert_err
+				return ids[:], false, insert_err
 			}
 			append(&ids, id)
 		}
 	}
+	if record && closed {
+		log.info(fmt.tprintf("bots: reply held binding=%s chunks=%d", binding.binding_id, len(ids)))
+		bots_reengage(s, binding.binding_id)
+		shrink(&ids)
+		return ids[:], true, {}
+	}
 	for chunk, index in chunks {
-		result: channel.Channel_Error
-		external_id := ""
-		rate_wait: i64
-		for attempt in 0..<3 {
-			external_id, result = a.send_text(a.ctx, binding.external_chat_id, chunk)
-			if result.kind == .None do break
-			delete(external_id)
-			external_id = ""
-			if attempt == 2 do break
-			retry := true
-			#partial switch result.kind {
-			case .Transient:
-				time.sleep(time.Duration(attempt + 1) * time.Second)
-			case .Rate_Limited:
-				wait := max(result.retry_after_ms, 0)
-				if wait > 20_000 - rate_wait {
-					retry = false
-				} else {
-					rate_wait += wait
-					time.sleep(time.Duration(wait) * time.Millisecond)
-				}
-			case: retry = false
-			}
-			if !retry do break
-		}
+		external_id, result := bots_send_chunk(s, a, binding.external_chat_id, chunk)
 		if result.kind == .None {
 			if record {
 				err = iface.message_set_send_result(s.repo, ids[index], .Sent, external_id, "")
@@ -94,6 +81,15 @@ channel_send :: proc(s: ^Bots_Service, binding: domain.Channel_Binding, text: st
 			if err.code == .None do continue
 		} else {
 			delete(external_id)
+			if record && result.kind == .Window_Closed {
+				for id in ids[index:] {
+					if e := iface.message_set_send_result(s.repo, id, .Held, "", ""); e.code != .None {shrink(&ids); return ids[:], false, e}
+				}
+				log.info(fmt.tprintf("bots: reply held binding=%s chunks=%d", binding.binding_id, len(ids)-index))
+				bots_reengage(s, binding.binding_id)
+				shrink(&ids)
+				return ids[:], true, {}
+			}
 			if record {
 				_ = iface.message_set_send_result(s.repo, ids[index], .Failed, "", fmt.tprintf("%v", result.kind))
 			}
@@ -106,8 +102,37 @@ channel_send :: proc(s: ^Bots_Service, binding: domain.Channel_Binding, text: st
 			}
 		}
 		shrink(&ids)
-		return ids[:], err
+		return ids[:], false, err
 	}
 	shrink(&ids)
-	return ids[:], {}
+	return ids[:], false, {}
+}
+
+// The caller owns external_message_id. Retry limits are shared by fresh and held sends.
+bots_send_chunk :: proc(s: ^Bots_Service, a: ^channel.Channel_Adapter, chat_id, text: string) -> (external_message_id: string, err: channel.Channel_Error) {
+	result: channel.Channel_Error
+	external_id := ""
+	rate_wait: i64
+	for attempt in 0..<3 {
+		external_id, result = a.send_text(a.ctx, chat_id, text)
+		if result.kind == .None do break
+		delete(external_id)
+		external_id = ""
+		if attempt == 2 do break
+		retry := true
+		#partial switch result.kind {
+		case .Transient: time.sleep(time.Duration(attempt + 1) * time.Second)
+		case .Rate_Limited:
+			wait := max(result.retry_after_ms, 0)
+			if wait > 20_000 - rate_wait {retry = false} else {rate_wait += wait; time.sleep(time.Duration(wait) * time.Millisecond)}
+		case: retry = false
+		}
+		if !retry do break
+	}
+	return external_id, result
+}
+
+bots_send_error :: proc(kind: channel.Channel_Error_Kind) -> domain.Domain_Error {
+	details, _ := json.marshal(struct {code, kind: string}{"channel_send_failed", fmt.tprintf("%v", kind)}, allocator = context.temp_allocator)
+	return domain.domain_error(.Provider_Unavailable, "channel send failed", string(details))
 }

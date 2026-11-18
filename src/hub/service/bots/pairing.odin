@@ -57,14 +57,15 @@ bots_publish_changed :: proc(s: ^Bots_Service, owner, bot_id: string) {
 
 bots_notice :: proc(s: ^Bots_Service, provider, chat_id, text: string) {
 	a := bots_adapter(s, provider)
-	binding := domain.Channel_Binding{provider = provider, external_chat_id = chat_id}
+	binding := domain.Channel_Binding{provider = provider, external_chat_id = chat_id, last_inbound_at = platform.clock_now(s.clock)}
 	if a != nil && a.reply_window_ms > 0 {
 		active, found, err := iface.binding_get_active_by_chat(s.repo, provider, chat_id)
 		defer domain.channel_binding_destroy(&active)
 		if err.code != .None do return
 		if found && bots_window_closed(a, active, bots_stamp_ms(platform.clock_now(s.clock))) do return
+		if found do binding.last_inbound_at = strings.clone(active.last_inbound_at, context.temp_allocator)
 	}
-	ids, _ := channel_send(s, binding, text, false)
+	ids, _, _ := channel_send(s, binding, text, false)
 	for id in ids do delete(id)
 	delete(ids)
 }

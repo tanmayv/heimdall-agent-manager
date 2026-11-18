@@ -12,6 +12,10 @@ Feedback_Test_State :: struct {
 	t: ^testing.T,
 	conn: ^sqlite.Conn,
 	reactions: int,
+	marks: int,
+	expected_mark: string,
+	mark_error: channel.Channel_Error_Kind,
+	mark_delay: time.Duration,
 	fail_react: bool,
 	failure_kind: channel.Channel_Error_Kind,
 	delay: time.Duration,
@@ -157,4 +161,61 @@ test_read_reaction_batch_has_time_budget :: proc(t: ^testing.T) {
 	testing.expect(t, elapsed >= BOT_READ_REACTION_BUDGET && elapsed < 5500 * time.Millisecond)
 	testing.expect_value(t, feedback_test_read(t, f, 50), 6)
 	testing.expect(t, state.reactions <= 4)
+}
+
+feedback_test_mark :: proc(ctx: rawptr, chat, message_id: string) -> channel.Channel_Error {
+	state := (^Feedback_Test_State)(ctx)
+	feedback_assert_committed(state)
+	testing.expect_value(state.t, chat, "111")
+	testing.expect_value(state.t, state.reactions, 0)
+	state.marks += 1
+	testing.expect_value(state.t, message_id, state.expected_mark)
+	if state.mark_delay > 0 do time.sleep(state.mark_delay)
+	return {kind = state.mark_error}
+}
+@(test)
+test_mark_read_newest_then_react :: proc(t: ^testing.T) {
+	f := delivery_fixture(t); defer delivery_destroy(f)
+	state := Feedback_Test_State{t = t, conn = &f.pair.conn, expected_mark = "302"}
+	f.pair.adapter.ctx = &state
+	f.pair.adapter.mark_read, f.pair.adapter.react = feedback_test_mark, feedback_test_react
+	feedback_test_insert(t, f, "chm_a", "301")
+	feedback_test_insert(t, f, "chm_b", "302")
+	feedback_test_insert(t, f, "chm_c", "303", "already_read")
+	testing.expect_value(t, feedback_test_read(t, f, 50), 3)
+	// Only newly read rows receive feedback; repeat reads are silent.
+	testing.expect(t, state.marks == 1 && state.reactions == 2)
+	testing.expect_value(t, feedback_test_read(t, f, 50), 3)
+	testing.expect(t, state.marks == 1 && state.reactions == 2)
+}
+@(test)
+test_mark_read_transient_skips_reactions :: proc(t: ^testing.T) {
+	for kind in ([]channel.Channel_Error_Kind{.Transient, .Aborted, .Rate_Limited, .Invalid_Request}) {
+		f := delivery_fixture(t)
+		state := Feedback_Test_State{t = t, conn = &f.pair.conn, mark_error = kind, expected_mark = "302"}
+		f.pair.adapter.ctx = &state
+		f.pair.adapter.mark_read, f.pair.adapter.react = feedback_test_mark, feedback_test_react
+		feedback_test_insert(t, f, "chm_a", "301")
+		feedback_test_insert(t, f, "chm_b", "302")
+		testing.expect_value(t, feedback_test_read(t, f, 50), 2)
+		testing.expect(t, state.marks == 1 && state.reactions == (2 if kind == .Invalid_Request else 0))
+		delivery_destroy(f)
+	}
+}
+@(test)
+test_feedback_budget_shared :: proc(t: ^testing.T) {
+	f := delivery_fixture(t); defer delivery_destroy(f)
+	state := Feedback_Test_State{t = t, conn = &f.pair.conn, mark_delay = time.Second, delay = time.Second, expected_mark = "306"}
+	f.pair.adapter.ctx = &state
+	f.pair.adapter.mark_read, f.pair.adapter.react = feedback_test_mark, feedback_test_react
+	for i in 1..=6 do feedback_test_insert(t, f, fmt.tprintf("chm_%d", i), fmt.tprintf("%d", 300+i))
+	started := time.tick_now()
+	testing.expect_value(t, feedback_test_read(t, f, 50), 6)
+	elapsed := time.tick_since(started)
+	testing.expect(t, state.marks == 1 && state.reactions > 0 && state.reactions <= 3)
+	testing.expect(t, elapsed >= BOT_READ_REACTION_BUDGET && elapsed < 5500*time.Millisecond)
+}
+@(test)
+test_telegram_feedback_unchanged :: proc(t: ^testing.T) {
+	test_read_reacts_once_per_newly_read_message(t)
 }
