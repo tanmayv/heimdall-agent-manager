@@ -662,10 +662,11 @@ MIGRATION_207_EXTENSION_VERSION_SYNC :: #load("migrations/207_extension_version_
 MIGRATION_208_EXTENSION_VERSION_SYNC :: #load("migrations/208_extension_version_sync_0_5_54.sql", string)
 
 MIGRATION_210_AGENT_WRITES :: #load("migrations/210_agent_writes.sql", string)
+MIGRATION_211_BOTS_WHATSAPP :: #load("migrations/211_bots_whatsapp.sql", string)
 
 MIGRATION_209_BOTS :: #load("migrations/209_bots.sql", string)
 
-migration_order :: [214]string {
+migration_order :: [215]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
 	"003_device_tokens.sql",
@@ -880,6 +881,7 @@ migration_order :: [214]string {
 	"208_extension_version_sync_0_5_54.sql",
 	"209_bots.sql",
 	"210_agent_writes.sql",
+	"211_bots_whatsapp.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -922,6 +924,11 @@ run_migrations :: proc(
          mark_migration_applied(conn,name)
          continue
         }
+		// 211 commits atomically; repair a crash before its ledger insert.
+		if name == "211_bots_whatsapp.sql" && sqlite_object_exists(conn, "channel_push_events_pending") {
+			mark_migration_applied(conn, name)
+			continue
+		}
 		if migration_applied(conn, name) do continue
         // 203 may have committed before its ledger write (or an older build may
         // have applied only the ALTER). Re-run its idempotent data conversion.
@@ -1329,7 +1336,7 @@ run_migrations :: proc(
 			)
 		}
 		if !exec(conn, sql) {
-			if name=="169_provider_profiles.sql" do _=exec(conn,"ROLLBACK;")
+			if name == "169_provider_profiles.sql" || name == "211_bots_whatsapp.sql" do _ = exec(conn, "ROLLBACK;")
 			delete(sql)
 			return false, domain.domain_error(
 				.Internal_Error,
@@ -1379,6 +1386,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 			return string(data)
 		}
 	}
+	if name == "211_bots_whatsapp.sql" do return strings.clone(MIGRATION_211_BOTS_WHATSAPP)
 	if name == "210_agent_writes.sql" do return strings.clone(MIGRATION_210_AGENT_WRITES)
 	if name == "209_bots.sql" do return strings.clone(MIGRATION_209_BOTS)
 	if name == "208_extension_version_sync_0_5_54.sql" do return strings.clone(MIGRATION_208_EXTENSION_VERSION_SYNC)

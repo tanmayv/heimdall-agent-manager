@@ -8,9 +8,15 @@ import vault "odin_test:lib/vault"
 import auth_service "odin_test:hub/service/auth"
 
 Hub_Config :: struct {
-	telegram_bot_token: string, // secret; never logged
-	telegram_api_base: string,
-	bot_timers: bots.Bot_Timer_Config,
+	telegram_bot_token:                     string, // secret; never logged
+	telegram_api_base:                      string,
+	whatsapp_access_token:                  string, // secret; never logged
+	whatsapp_app_secret:                    string, // secret; never logged
+	whatsapp_verify_token:                  string, // secret; never logged
+	whatsapp_phone_number_id:               string,
+	whatsapp_business_account_id:           string,
+	whatsapp_api_base:                      string,
+	bot_timers:                             bots.Bot_Timer_Config,
 	// U0 synthetic OAuth probe only. Off by default; never grants vault access.
 	mcp_oauth_spike: bool,
 	// U1 delegated OAuth: explicit opt-in with stable deployment envelope keys.
@@ -144,6 +150,7 @@ default_config :: proc() -> Hub_Config {
 	cidrs[0] = "127.0.0.1/32"
 	return Hub_Config{
 		telegram_api_base = "https://api.telegram.org",
+		whatsapp_api_base = "https://graph.facebook.com",
 		bot_timers = bots.default_bot_timer_config(),
 		paddle_environment = "sandbox",
 		paddle_past_due_grace_seconds = 3 * 86400,
@@ -429,4 +436,40 @@ parse_bool_setting :: proc(value: string) -> (bool, bool) {
 
 loopback_http_url :: proc(url: string) -> bool {
 	return auth_service.loopback_http_url(url)
+}
+
+// configured is true only when all five WhatsApp credentials are usable.
+// Problems contain names only; never include configured values.
+app_whatsapp_config_state :: proc(config: Hub_Config) -> (configured: bool, problem: string) {
+	values := [5]string {
+		config.whatsapp_access_token,
+		config.whatsapp_app_secret,
+		config.whatsapp_verify_token,
+		config.whatsapp_phone_number_id,
+		config.whatsapp_business_account_id,
+	}
+	names := [5]string {
+		"HEIMDALL_WHATSAPP_ACCESS_TOKEN",
+		"HEIMDALL_WHATSAPP_APP_SECRET",
+		"HEIMDALL_WHATSAPP_VERIFY_TOKEN",
+		"HEIMDALL_WHATSAPP_PHONE_NUMBER_ID",
+		"HEIMDALL_WHATSAPP_BUSINESS_ACCOUNT_ID",
+	}
+	missing: [5]string
+	count := 0
+	for value, i in values {
+		if value == "" {missing[count] = names[i]; count += 1}
+	}
+	if count == 5 do return false, ""
+	if count > 0 {
+		joined := strings.join(missing[:count], ",", context.temp_allocator)
+		return false, strings.concatenate({"bots: whatsapp disabled: missing ", joined})
+	}
+	for id in ([2]string{config.whatsapp_phone_number_id, config.whatsapp_business_account_id}) {
+		for b in transmute([]u8)id {
+			if b < '0' || b > '9' do return false, "bots: whatsapp disabled: phone number id and business account id must be digits"
+		}
+	}
+	if len(config.whatsapp_verify_token) < 16 do return false, "bots: whatsapp disabled: verify token must be at least 16 characters"
+	return true, ""
 }

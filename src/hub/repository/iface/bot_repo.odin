@@ -3,7 +3,82 @@ package iface
 import domain "odin_test:hub/domain"
 
 Bot_Repository :: struct {
-	bot_list: proc(ctx: rawptr) -> ([]domain.Bot, domain.Domain_Error),
+	binding_get:                          proc(
+		ctx: rawptr,
+		binding_id: string,
+	) -> (
+		domain.Channel_Binding,
+		bool,
+		domain.Domain_Error,
+	),
+	binding_get_active_by_user:           proc(
+		ctx: rawptr,
+		provider, external_user_id: string,
+	) -> (
+		domain.Channel_Binding,
+		bool,
+		domain.Domain_Error,
+	),
+	bindings_active_for_owner:            proc(
+		ctx: rawptr,
+		owner_user_id: string,
+	) -> (
+		[]domain.Channel_Binding,
+		domain.Domain_Error,
+	),
+	binding_set_reengage:                 proc(
+		ctx: rawptr,
+		binding_id, reengage_sent_at, reengage_error: string,
+	) -> domain.Domain_Error,
+	push_events_insert:                   proc(
+		ctx: rawptr,
+		events: []domain.Channel_Push_Event,
+	) -> (
+		inserted: int,
+		err: domain.Domain_Error,
+	),
+	push_events_pending:                  proc(
+		ctx: rawptr,
+		provider: string,
+		limit: int,
+	) -> (
+		[]domain.Channel_Push_Event,
+		domain.Domain_Error,
+	),
+	push_batch_commit:                    proc(
+		ctx: rawptr,
+		rows: []domain.Channel_Message,
+		touches: []domain.Channel_Inbound_Touch,
+		processed_seqs: []i64,
+		processed_at: string,
+	) -> (
+		inserted: []string,
+		err: domain.Domain_Error,
+	),
+	push_events_purge_processed:          proc(ctx: rawptr, received_before: string) -> (int, domain.Domain_Error),
+	messages_mark_replied_binding:        proc(
+		ctx: rawptr,
+		bot_id, binding_id, replied_at: string,
+	) -> (
+		count: int,
+		err: domain.Domain_Error,
+	),
+	messages_held:                        proc(
+		ctx: rawptr,
+		binding_id: string,
+	) -> (
+		[]domain.Channel_Message,
+		domain.Domain_Error,
+	),
+	message_get_outbound_by_external:     proc(
+		ctx: rawptr,
+		binding_id, external_message_id: string,
+	) -> (
+		domain.Channel_Message,
+		bool,
+		domain.Domain_Error,
+	),
+	bot_list:                             proc(ctx: rawptr) -> ([]domain.Bot, domain.Domain_Error),
 	ctx:                                  rawptr,
 	// bots
 	bot_insert:                           proc(ctx: rawptr, bot: domain.Bot) -> domain.Domain_Error, // Conflict on UNIQUE(owner)
@@ -540,4 +615,110 @@ pairing_consume :: proc(repo: ^Bot_Repository, code_hash, consumed_at: string) -
 bot_list :: proc(repo: ^Bot_Repository) -> ([]domain.Bot, domain.Domain_Error) {
 	if repo == nil || repo.bot_list == nil do return nil, domain.domain_error(.Internal_Error, "bot repository is not configured")
 	return repo.bot_list(repo.ctx)
+}
+
+binding_get :: proc(repo: ^Bot_Repository, binding_id: string) -> (domain.Channel_Binding, bool, domain.Domain_Error) {
+	if repo == nil || repo.binding_get == nil do return {}, false, domain.domain_error(.Internal_Error, "bot repository is not configured")
+	return repo.binding_get(repo.ctx, binding_id)
+}
+
+binding_get_active_by_user :: proc(
+	repo: ^Bot_Repository,
+	provider, external_user_id: string,
+) -> (
+	domain.Channel_Binding,
+	bool,
+	domain.Domain_Error,
+) {
+	if repo == nil || repo.binding_get_active_by_user == nil do return {}, false, domain.domain_error(.Internal_Error, "bot repository is not configured")
+	return repo.binding_get_active_by_user(repo.ctx, provider, external_user_id)
+}
+
+bindings_active_for_owner :: proc(
+	repo: ^Bot_Repository,
+	owner_user_id: string,
+) -> (
+	[]domain.Channel_Binding,
+	domain.Domain_Error,
+) {
+	if repo == nil || repo.bindings_active_for_owner == nil do return nil, domain.domain_error(.Internal_Error, "bot repository is not configured")
+	return repo.bindings_active_for_owner(repo.ctx, owner_user_id)
+}
+
+binding_set_reengage :: proc(
+	repo: ^Bot_Repository,
+	binding_id, reengage_sent_at, reengage_error: string,
+) -> domain.Domain_Error {
+	if repo == nil || repo.binding_set_reengage == nil do return domain.domain_error(.Internal_Error, "bot repository is not configured")
+	return repo.binding_set_reengage(repo.ctx, binding_id, reengage_sent_at, reengage_error)
+}
+
+push_events_insert :: proc(
+	repo: ^Bot_Repository,
+	events: []domain.Channel_Push_Event,
+) -> (
+	inserted: int,
+	err: domain.Domain_Error,
+) {
+	if repo == nil || repo.push_events_insert == nil do return 0, domain.domain_error(.Internal_Error, "bot repository is not configured")
+	return repo.push_events_insert(repo.ctx, events)
+}
+
+push_events_pending :: proc(
+	repo: ^Bot_Repository,
+	provider: string,
+	limit: int,
+) -> (
+	[]domain.Channel_Push_Event,
+	domain.Domain_Error,
+) {
+	if repo == nil || repo.push_events_pending == nil do return nil, domain.domain_error(.Internal_Error, "bot repository is not configured")
+	return repo.push_events_pending(repo.ctx, provider, limit)
+}
+
+push_batch_commit :: proc(
+	repo: ^Bot_Repository,
+	rows: []domain.Channel_Message,
+	touches: []domain.Channel_Inbound_Touch,
+	processed_seqs: []i64,
+	processed_at: string,
+) -> (
+	inserted: []string,
+	err: domain.Domain_Error,
+) {
+	if repo == nil || repo.push_batch_commit == nil do return nil, domain.domain_error(.Internal_Error, "bot repository is not configured")
+	return repo.push_batch_commit(repo.ctx, rows, touches, processed_seqs, processed_at)
+}
+
+push_events_purge_processed :: proc(repo: ^Bot_Repository, received_before: string) -> (int, domain.Domain_Error) {
+	if repo == nil || repo.push_events_purge_processed == nil do return 0, domain.domain_error(.Internal_Error, "bot repository is not configured")
+	return repo.push_events_purge_processed(repo.ctx, received_before)
+}
+
+messages_mark_replied_binding :: proc(
+	repo: ^Bot_Repository,
+	bot_id, binding_id, replied_at: string,
+) -> (
+	count: int,
+	err: domain.Domain_Error,
+) {
+	if repo == nil || repo.messages_mark_replied_binding == nil do return 0, domain.domain_error(.Internal_Error, "bot repository is not configured")
+	return repo.messages_mark_replied_binding(repo.ctx, bot_id, binding_id, replied_at)
+}
+
+messages_held :: proc(repo: ^Bot_Repository, binding_id: string) -> ([]domain.Channel_Message, domain.Domain_Error) {
+	if repo == nil || repo.messages_held == nil do return nil, domain.domain_error(.Internal_Error, "bot repository is not configured")
+	return repo.messages_held(repo.ctx, binding_id)
+}
+
+message_get_outbound_by_external :: proc(
+	repo: ^Bot_Repository,
+	binding_id, external_message_id: string,
+) -> (
+	domain.Channel_Message,
+	bool,
+	domain.Domain_Error,
+) {
+	if repo == nil || repo.message_get_outbound_by_external == nil do return {}, false, domain.domain_error(.Internal_Error, "bot repository is not configured")
+	return repo.message_get_outbound_by_external(repo.ctx, binding_id, external_message_id)
 }

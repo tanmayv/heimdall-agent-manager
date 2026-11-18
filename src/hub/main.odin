@@ -152,6 +152,7 @@ parse_args :: proc(config: ^app.Hub_Config) {
 	// across all VAPID fields, including vapid_subject which carries a default.
 	apply_vapid_env(config)
 	apply_telegram_env(config)
+	apply_whatsapp_env(config)
 	apply_paddle_env(config)
 
 	// public_app_origin resolves default -> env -> flag, same shape as the above.
@@ -193,6 +194,18 @@ parse_args :: proc(config: ^app.Hub_Config) {
 			config.telegram_bot_token = read_key_file(os.args[i + 1]); i += 1
 		} else if arg == "--telegram-api-base" && i + 1 < len(os.args) {
 			config.telegram_api_base = strings.clone(os.args[i + 1]); i += 1
+		} else if arg == "--whatsapp-access-token-file" && i + 1 < len(os.args) {
+			config.whatsapp_access_token = read_key_file(os.args[i + 1]); i += 1
+		} else if arg == "--whatsapp-app-secret-file" && i + 1 < len(os.args) {
+			config.whatsapp_app_secret = read_key_file(os.args[i + 1]); i += 1
+		} else if arg == "--whatsapp-verify-token-file" && i + 1 < len(os.args) {
+			config.whatsapp_verify_token = read_key_file(os.args[i + 1]); i += 1
+		} else if arg == "--whatsapp-phone-number-id" && i + 1 < len(os.args) {
+			config.whatsapp_phone_number_id = strings.clone(os.args[i + 1]); i += 1
+		} else if arg == "--whatsapp-business-account-id" && i + 1 < len(os.args) {
+			config.whatsapp_business_account_id = strings.clone(os.args[i + 1]); i += 1
+		} else if arg == "--whatsapp-api-base" && i + 1 < len(os.args) {
+			config.whatsapp_api_base = strings.clone(os.args[i + 1]); i += 1
 		} else if arg == "--listen" && i + 1 < len(os.args) {
 			host, port, ok := split_host_port(os.args[i + 1])
 			if ok {
@@ -461,4 +474,35 @@ apply_telegram_env :: proc(config: ^app.Hub_Config) {
 			os.exit(2)
 		}
 	}
+}
+
+// Environment is resolved before flags; credential values are never logged.
+apply_whatsapp_env :: proc(config: ^app.Hub_Config) {
+	if value := os.get_env_alloc("HEIMDALL_WHATSAPP_ACCESS_TOKEN", context.temp_allocator); value != "" {
+		config.whatsapp_access_token = strings.clone(value)
+	} else if path := os.get_env_alloc("HEIMDALL_WHATSAPP_ACCESS_TOKEN_FILE", context.temp_allocator); path != "" {
+		config.whatsapp_access_token = read_key_file(path)
+	}
+	if value := os.get_env_alloc("HEIMDALL_WHATSAPP_APP_SECRET", context.temp_allocator); value != "" {
+		config.whatsapp_app_secret = strings.clone(value)
+	} else if path := os.get_env_alloc("HEIMDALL_WHATSAPP_APP_SECRET_FILE", context.temp_allocator); path != "" {
+		config.whatsapp_app_secret = read_key_file(path)
+	}
+	if value := os.get_env_alloc("HEIMDALL_WHATSAPP_VERIFY_TOKEN", context.temp_allocator); value != "" {
+		config.whatsapp_verify_token = strings.clone(value)
+	} else if path := os.get_env_alloc("HEIMDALL_WHATSAPP_VERIFY_TOKEN_FILE", context.temp_allocator); path != "" {
+		config.whatsapp_verify_token = read_key_file(path)
+	}
+	if value := os.get_env_alloc("HEIMDALL_WHATSAPP_PHONE_NUMBER_ID", context.temp_allocator); value != "" {
+		config.whatsapp_phone_number_id = strings.clone(value)
+	} else if path := os.get_env_alloc("HEIMDALL_WHATSAPP_PHONE_NUMBER_ID_FILE", context.temp_allocator); path != "" {
+		config.whatsapp_phone_number_id = read_key_file(path)
+	}
+	if value := os.get_env_alloc("HEIMDALL_WHATSAPP_BUSINESS_ACCOUNT_ID", context.temp_allocator); value != "" {
+		config.whatsapp_business_account_id = strings.clone(value)
+	} else if path := os.get_env_alloc("HEIMDALL_WHATSAPP_BUSINESS_ACCOUNT_ID_FILE", context.temp_allocator);
+	   path != "" {
+		config.whatsapp_business_account_id = read_key_file(path)
+	}
+	if base := os.get_env_alloc("HEIMDALL_WHATSAPP_API_BASE", context.temp_allocator); base != "" do config.whatsapp_api_base = strings.clone(base)
 }

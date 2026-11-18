@@ -77,3 +77,77 @@ test_preview_legacy_path_defaults_closed_and_notice :: proc(t: ^testing.T) {
 	testing.expect(t, strings.has_prefix(preview_legacy_path_notice("https://preview.example", true), "WARNING:"))
 	testing.expect(t, strings.contains(preview_legacy_path_notice("https://preview.example", false), "closed"))
 }
+
+@(test)
+test_whatsapp_config_state :: proc(t: ^testing.T) {
+	valid := Hub_Config {
+		whatsapp_access_token        = "fixture-token",
+		whatsapp_app_secret          = "fixture-secret",
+		whatsapp_verify_token        = "0123456789abcdef",
+		whatsapp_phone_number_id     = "123",
+		whatsapp_business_account_id = "456",
+	}
+	configured, problem := app_whatsapp_config_state({})
+	testing.expect(t, !configured)
+	testing.expect_value(t, problem, "")
+	configured, problem = app_whatsapp_config_state(valid)
+	testing.expect(t, configured)
+	testing.expect_value(t, problem, "")
+	for i in 0 ..< 5 {
+		config := valid
+		expected := ""
+		switch i {
+		case 0:
+			config.whatsapp_access_token = ""; expected = "HEIMDALL_WHATSAPP_ACCESS_TOKEN"
+		case 1:
+			config.whatsapp_app_secret = ""; expected = "HEIMDALL_WHATSAPP_APP_SECRET"
+		case 2:
+			config.whatsapp_verify_token = ""; expected = "HEIMDALL_WHATSAPP_VERIFY_TOKEN"
+		case 3:
+			config.whatsapp_phone_number_id = ""; expected = "HEIMDALL_WHATSAPP_PHONE_NUMBER_ID"
+		case 4:
+			config.whatsapp_business_account_id = ""; expected = "HEIMDALL_WHATSAPP_BUSINESS_ACCOUNT_ID"
+		}
+		configured, problem = app_whatsapp_config_state(config)
+		testing.expect(t, !configured)
+		testing.expect_value(
+			t,
+			problem,
+			strings.concatenate({"bots: whatsapp disabled: missing ", expected}, context.temp_allocator),
+		)
+		delete(problem)
+	}
+	config := Hub_Config {
+		whatsapp_access_token = "fixture-token",
+	}
+	configured, problem = app_whatsapp_config_state(config)
+	testing.expect(t, !configured)
+	testing.expect_value(
+		t,
+		problem,
+		"bots: whatsapp disabled: missing HEIMDALL_WHATSAPP_APP_SECRET,HEIMDALL_WHATSAPP_VERIFY_TOKEN,HEIMDALL_WHATSAPP_PHONE_NUMBER_ID,HEIMDALL_WHATSAPP_BUSINESS_ACCOUNT_ID",
+	)
+	delete(problem)
+	for bad in ([]string{"+123", "12a", "１２３", "123 "}) {
+		config = valid; config.whatsapp_phone_number_id = bad
+		configured, problem = app_whatsapp_config_state(config)
+		testing.expect(t, !configured)
+		testing.expect_value(
+			t,
+			problem,
+			"bots: whatsapp disabled: phone number id and business account id must be digits",
+		)
+		config = valid; config.whatsapp_business_account_id = bad
+		configured, problem = app_whatsapp_config_state(config)
+		testing.expect(t, !configured)
+		testing.expect_value(
+			t,
+			problem,
+			"bots: whatsapp disabled: phone number id and business account id must be digits",
+		)
+	}
+	config = valid; config.whatsapp_verify_token = "0123456789abcde"
+	configured, problem = app_whatsapp_config_state(config)
+	testing.expect(t, !configured)
+	testing.expect_value(t, problem, "bots: whatsapp disabled: verify token must be at least 16 characters")
+}

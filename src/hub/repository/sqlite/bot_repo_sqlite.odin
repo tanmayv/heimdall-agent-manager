@@ -15,6 +15,17 @@ Bot_Repo_SQLite :: struct {
 new_bot_repository :: proc(impl: ^Bot_Repo_SQLite, conn: ^Conn) -> iface.Bot_Repository {
 	impl.conn = conn
 	return iface.Bot_Repository {
+		binding_get = binding_get_sqlite,
+		binding_get_active_by_user = binding_get_active_by_user_sqlite,
+		bindings_active_for_owner = bindings_active_for_owner_sqlite,
+		binding_set_reengage = binding_set_reengage_sqlite,
+		push_events_insert = push_events_insert_sqlite,
+		push_events_pending = push_events_pending_sqlite,
+		push_batch_commit = push_batch_commit_sqlite,
+		push_events_purge_processed = push_events_purge_processed_sqlite,
+		messages_mark_replied_binding = messages_mark_replied_binding_sqlite,
+		messages_held = messages_held_sqlite,
+		message_get_outbound_by_external = message_get_outbound_by_external_sqlite,
 		ctx = rawptr(impl),
 		bot_list = bot_list_sqlite,
 		bot_insert = bot_insert_sqlite,
@@ -176,6 +187,9 @@ bot_repo_scan_channel_binding :: proc(stmt: sqlite3_stmt) -> domain.Channel_Bind
 	value.state, _ = domain.channel_binding_state_from_text(column_text_unowned(stmt, 7))
 	value.created_at = column_text(stmt, 8)
 	value.revoked_at = column_text(stmt, 9)
+	value.last_inbound_at = column_text(stmt, 10)
+	value.reengage_sent_at = column_text(stmt, 11)
+	value.reengage_error = column_text(stmt, 12)
 	return value
 }
 
@@ -475,7 +489,7 @@ binding_get_active_by_owner_sqlite :: proc(
 	conn := bot_repo_conn(ctx)
 	rows, err := bot_repo_list_channel_binding(
 		conn,
-		`SELECT binding_id, owner_user_id, bot_id, provider, external_chat_id, external_user_id, external_display, state, created_at, revoked_at FROM channel_bindings WHERE owner_user_id = ? AND provider = ? AND state = 'active' ;`,
+		`SELECT binding_id, owner_user_id, bot_id, provider, external_chat_id, external_user_id, external_display, state, created_at, revoked_at, last_inbound_at, reengage_sent_at, reengage_error FROM channel_bindings WHERE owner_user_id = ? AND provider = ? AND state = 'active' ;`,
 		{owner_user_id, provider},
 	)
 	if err.code != .None do return {}, false, err
@@ -496,7 +510,7 @@ binding_get_active_by_chat_sqlite :: proc(
 	conn := bot_repo_conn(ctx)
 	rows, err := bot_repo_list_channel_binding(
 		conn,
-		`SELECT binding_id, owner_user_id, bot_id, provider, external_chat_id, external_user_id, external_display, state, created_at, revoked_at FROM channel_bindings WHERE provider = ? AND external_chat_id = ? AND state = 'active' ;`,
+		`SELECT binding_id, owner_user_id, bot_id, provider, external_chat_id, external_user_id, external_display, state, created_at, revoked_at, last_inbound_at, reengage_sent_at, reengage_error FROM channel_bindings WHERE provider = ? AND external_chat_id = ? AND state = 'active' ;`,
 		{provider, external_chat_id},
 	)
 	if err.code != .None do return {}, false, err
@@ -650,16 +664,29 @@ messages_purge_binding_sqlite :: proc(ctx: rawptr, binding_id: string) -> domain
 		{binding_id},
 	)
 	_ = changes
-	return err
+	if err.code != .None do return err
+	_, held_err := bot_repo_write(
+		conn,
+		"UPDATE channel_messages SET send_state = 'failed', send_error = 'held_expired' WHERE binding_id = ? AND send_state = 'held' AND body_purged = 1;",
+		{binding_id},
+	)
+	return held_err
 }
 
 messages_purge_older_than_sqlite :: proc(ctx: rawptr, cutoff: string) -> (int, domain.Domain_Error) {
 	conn := bot_repo_conn(ctx)
-	return bot_repo_write(
+	count, err := bot_repo_write(
 		conn,
-		`UPDATE channel_messages SET body = '', body_purged = 1 WHERE created_at < ? AND body_purged = 0;`,
+		"UPDATE channel_messages SET body = '', body_purged = 1 WHERE created_at < ? AND body_purged = 0;",
 		{cutoff},
 	)
+	if err.code != .None do return 0, err
+	_, held_err := bot_repo_write(
+		conn,
+		"UPDATE channel_messages SET send_state = 'failed', send_error = 'held_expired' WHERE send_state = 'held' AND body_purged = 1;",
+		nil,
+	)
+	return count, held_err
 }
 
 delivery_get_open_sqlite :: proc(ctx: rawptr, bot_id: string) -> (domain.Bot_Delivery, bool, domain.Domain_Error) {
@@ -1009,7 +1036,7 @@ binding_activate_sqlite :: proc(
 	}
 	_, insert_err := bot_repo_write(
 		conn,
-		"INSERT INTO channel_bindings (binding_id, owner_user_id, bot_id, provider, external_chat_id, external_user_id, external_display, state, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+		"INSERT INTO channel_bindings (binding_id, owner_user_id, bot_id, provider, external_chat_id, external_user_id, external_display, state, created_at, revoked_at, last_inbound_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
 		{
 			binding.binding_id,
 			binding.owner_user_id,
@@ -1021,6 +1048,7 @@ binding_activate_sqlite :: proc(
 			domain.channel_binding_state_text(binding.state),
 			binding.created_at,
 			binding.revoked_at,
+			binding.last_inbound_at,
 		},
 	)
 	if insert_err.code != .None do return {}, false, insert_err
@@ -1129,4 +1157,260 @@ pairing_consume_sqlite :: proc(ctx: rawptr, code_hash, consumed_at: string) -> (
 
 bot_list_sqlite :: proc(ctx: rawptr) -> ([]domain.Bot, domain.Domain_Error) {
 	return bot_repo_list_bot(bot_repo_conn(ctx), `SELECT bot_id, owner_user_id, agent_id, agent_instance_id, display_name, placement_revision, created_at, updated_at FROM bots ORDER BY bot_id;`, nil)
+}
+
+binding_get_sqlite :: proc(ctx: rawptr, binding_id: string) -> (domain.Channel_Binding, bool, domain.Domain_Error) {
+	rows, err := bot_repo_list_channel_binding(
+		bot_repo_conn(ctx),
+		`SELECT binding_id, owner_user_id, bot_id, provider, external_chat_id, external_user_id, external_display, state, created_at, revoked_at, last_inbound_at, reengage_sent_at, reengage_error FROM channel_bindings WHERE binding_id = ?;`,
+		{binding_id},
+	)
+	defer delete(rows)
+	if err.code != .None || len(rows) == 0 do return {}, false, err
+	return rows[0], true, {}
+}
+
+binding_get_active_by_user_sqlite :: proc(
+	ctx: rawptr,
+	provider, external_user_id: string,
+) -> (
+	domain.Channel_Binding,
+	bool,
+	domain.Domain_Error,
+) {
+	rows, err := bot_repo_list_channel_binding(
+		bot_repo_conn(ctx),
+		`SELECT binding_id, owner_user_id, bot_id, provider, external_chat_id, external_user_id, external_display, state, created_at, revoked_at, last_inbound_at, reengage_sent_at, reengage_error FROM channel_bindings WHERE provider = ? AND external_user_id = ? AND state = 'active' ORDER BY created_at DESC LIMIT 1;`,
+		{provider, external_user_id},
+	)
+	defer delete(rows)
+	if err.code != .None || len(rows) == 0 do return {}, false, err
+	return rows[0], true, {}
+}
+
+bindings_active_for_owner_sqlite :: proc(
+	ctx: rawptr,
+	owner_user_id: string,
+) -> (
+	[]domain.Channel_Binding,
+	domain.Domain_Error,
+) {
+	return bot_repo_list_channel_binding(
+		bot_repo_conn(ctx),
+		`SELECT binding_id, owner_user_id, bot_id, provider, external_chat_id, external_user_id, external_display, state, created_at, revoked_at, last_inbound_at, reengage_sent_at, reengage_error FROM channel_bindings WHERE owner_user_id = ? AND state = 'active' ORDER BY provider ASC;`,
+		{owner_user_id},
+	)
+}
+
+binding_set_reengage_sqlite :: proc(
+	ctx: rawptr,
+	binding_id, reengage_sent_at, reengage_error: string,
+) -> domain.Domain_Error {
+	_, err := bot_repo_write(
+		bot_repo_conn(ctx),
+		"UPDATE channel_bindings SET reengage_sent_at = ?, reengage_error = ? WHERE binding_id = ? AND state = 'active';",
+		{reengage_sent_at, reengage_error, binding_id},
+	)
+	return err
+}
+
+push_events_insert_sqlite :: proc(
+	ctx: rawptr,
+	events: []domain.Channel_Push_Event,
+) -> (
+	inserted: int,
+	err: domain.Domain_Error,
+) {
+	conn := bot_repo_conn(ctx)
+	if conn == nil || conn.db == nil do return 0, bot_repo_error(conn)
+	mutex := sqlite3_db_mutex(conn.db)
+	sqlite3_mutex_enter(mutex)
+	defer sqlite3_mutex_leave(mutex)
+	if !exec(conn, "BEGIN IMMEDIATE;") do return 0, bot_repo_error(conn)
+	committed := false
+	defer if !committed do exec(conn, "ROLLBACK;")
+	count := 0
+	for e in events {
+		changes, write_err := bot_repo_write(
+			conn,
+			`INSERT OR IGNORE INTO channel_push_events (provider, event_key, kind, external_chat_id, external_user_id, external_message_id, sender_display, body, provider_code, provider_time, received_at, processed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+			{
+				e.provider,
+				e.event_key,
+				domain.channel_push_kind_text(e.kind),
+				e.external_chat_id,
+				e.external_user_id,
+				e.external_message_id,
+				e.sender_display,
+				e.body,
+				fmt.tprintf("%d", e.provider_code),
+				e.provider_time,
+				e.received_at,
+				e.processed_at,
+			},
+		)
+		if write_err.code != .None do return 0, write_err
+		count += changes
+	}
+	if !exec(conn, "COMMIT;") do return 0, bot_repo_error(conn)
+	committed = true
+	return count, {}
+}
+
+push_events_pending_sqlite :: proc(
+	ctx: rawptr,
+	provider: string,
+	limit: int,
+) -> (
+	[]domain.Channel_Push_Event,
+	domain.Domain_Error,
+) {
+	conn := bot_repo_conn(ctx)
+	stmt, err := bot_repo_prepare(
+		conn,
+		`SELECT seq, provider, event_key, kind, external_chat_id, external_user_id, external_message_id, sender_display, body, provider_code, provider_time, received_at, processed_at FROM channel_push_events WHERE provider = ? AND processed_at = '' ORDER BY seq LIMIT ?;`,
+		{provider, fmt.tprintf("%d", limit)},
+	)
+	if err.code != .None do return nil, err
+	defer sqlite3_finalize(stmt)
+	rows := make([dynamic]domain.Channel_Push_Event)
+	keep := false
+	defer if !keep {
+		for &row in rows do domain.channel_push_event_destroy(&row)
+		delete(rows)
+	}
+	for {
+		rc := sqlite3_step(stmt)
+		if rc == SQLITE_DONE do break
+		if rc != SQLITE_ROW do return nil, bot_repo_error(conn)
+		row: domain.Channel_Push_Event
+		row.seq = sqlite3_column_int64(stmt, 0)
+		row.provider = column_text(stmt, 1)
+		row.event_key = column_text(stmt, 2)
+		row.kind, _ = domain.channel_push_kind_from_text(column_text_unowned(stmt, 3))
+		row.external_chat_id = column_text(stmt, 4)
+		row.external_user_id = column_text(stmt, 5)
+		row.external_message_id = column_text(stmt, 6)
+		row.sender_display = column_text(stmt, 7)
+		row.body = column_text(stmt, 8)
+		row.provider_code = int(sqlite3_column_int64(stmt, 9))
+		row.provider_time = column_text(stmt, 10)
+		row.received_at = column_text(stmt, 11)
+		row.processed_at = column_text(stmt, 12)
+		append(&rows, row)
+	}
+	keep = true
+	return rows[:], {}
+}
+
+push_batch_commit_sqlite :: proc(
+	ctx: rawptr,
+	rows: []domain.Channel_Message,
+	touches: []domain.Channel_Inbound_Touch,
+	processed_seqs: []i64,
+	processed_at: string,
+) -> (
+	inserted: []string,
+	err: domain.Domain_Error,
+) {
+	conn := bot_repo_conn(ctx)
+	if conn == nil || conn.db == nil do return nil, bot_repo_error(conn)
+	mutex := sqlite3_db_mutex(conn.db)
+	sqlite3_mutex_enter(mutex)
+	defer sqlite3_mutex_leave(mutex)
+	if !exec(conn, "BEGIN IMMEDIATE;") do return nil, bot_repo_error(conn)
+	committed := false
+	defer if !committed do exec(conn, "ROLLBACK;")
+	ids := make([dynamic]string)
+	keep := false
+	defer if !keep {
+		for id in ids do delete(id)
+		delete(ids)
+	}
+	for row in rows {
+		changes, write_err := bot_repo_write(
+			conn,
+			`INSERT OR IGNORE INTO channel_messages (message_id, binding_id, owner_user_id, bot_id, direction, provider_update_key, external_message_id, body, body_purged, send_state, send_error, created_at, read_at, replied_at) VALUES (?, ?, ?, ?, 'inbound', ?, ?, ?, 0, '', '', ?, '', '');`,
+			{
+				row.message_id,
+				row.binding_id,
+				row.owner_user_id,
+				row.bot_id,
+				row.provider_update_key,
+				row.external_message_id,
+				row.body,
+				row.created_at,
+			},
+		)
+		if write_err.code != .None do return nil, write_err
+		if changes == 1 do append(&ids, strings.clone(row.message_id))
+	}
+	for touch in touches {
+		_, write_err := bot_repo_write(
+			conn,
+			`UPDATE channel_bindings SET last_inbound_at = CASE WHEN last_inbound_at < ? THEN ? ELSE last_inbound_at END, reengage_sent_at = '', reengage_error = '' WHERE binding_id = ? AND state = 'active';`,
+			{touch.at, touch.at, touch.binding_id},
+		)
+		if write_err.code != .None do return nil, write_err
+	}
+	for seq in processed_seqs {
+		_, write_err := bot_repo_write(
+			conn,
+			"UPDATE channel_push_events SET processed_at = ?, body = '' WHERE seq = ? AND processed_at = '';",
+			{processed_at, fmt.tprintf("%d", seq)},
+		)
+		if write_err.code != .None do return nil, write_err
+	}
+	if !exec(conn, "COMMIT;") do return nil, bot_repo_error(conn)
+	committed = true
+	keep = true
+	return ids[:], {}
+}
+
+push_events_purge_processed_sqlite :: proc(ctx: rawptr, received_before: string) -> (int, domain.Domain_Error) {
+	return bot_repo_write(
+		bot_repo_conn(ctx),
+		"DELETE FROM channel_push_events WHERE processed_at <> '' AND received_at < ?;",
+		{received_before},
+	)
+}
+
+messages_mark_replied_binding_sqlite :: proc(
+	ctx: rawptr,
+	bot_id, binding_id, replied_at: string,
+) -> (
+	count: int,
+	err: domain.Domain_Error,
+) {
+	return bot_repo_write(
+		bot_repo_conn(ctx),
+		`UPDATE channel_messages SET replied_at = ? WHERE bot_id = ? AND binding_id = ? AND direction = 'inbound' AND read_at <> '' AND replied_at = '';`,
+		{replied_at, bot_id, binding_id},
+	)
+}
+
+messages_held_sqlite :: proc(ctx: rawptr, binding_id: string) -> ([]domain.Channel_Message, domain.Domain_Error) {
+	return bot_repo_list_channel_message(
+		bot_repo_conn(ctx),
+		`SELECT message_id, binding_id, owner_user_id, bot_id, direction, provider_update_key, external_message_id, body, body_purged, send_state, send_error, created_at, read_at, replied_at FROM channel_messages WHERE binding_id = ? AND send_state = 'held' AND body_purged = 0 ORDER BY created_at, message_id;`,
+		{binding_id},
+	)
+}
+
+message_get_outbound_by_external_sqlite :: proc(
+	ctx: rawptr,
+	binding_id, external_message_id: string,
+) -> (
+	domain.Channel_Message,
+	bool,
+	domain.Domain_Error,
+) {
+	rows, err := bot_repo_list_channel_message(
+		bot_repo_conn(ctx),
+		`SELECT message_id, binding_id, owner_user_id, bot_id, direction, provider_update_key, external_message_id, body, body_purged, send_state, send_error, created_at, read_at, replied_at FROM channel_messages WHERE binding_id = ? AND external_message_id = ? AND direction = 'outbound' LIMIT 1;`,
+		{binding_id, external_message_id},
+	)
+	defer delete(rows)
+	if err.code != .None || len(rows) == 0 do return {}, false, err
+	return rows[0], true, {}
 }

@@ -97,6 +97,7 @@ inbound_destroy_batch :: proc(batch: []Inbound, allocator := context.allocator) 
 		delete(row.external_message_id, allocator)
 		delete(row.external_user_id, allocator); delete(row.sender_display, allocator)
 		delete(row.text, allocator)
+		delete(row.provider_time, allocator)
 	}
 	delete(batch, allocator)
 }
