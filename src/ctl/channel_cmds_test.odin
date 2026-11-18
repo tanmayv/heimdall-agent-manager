@@ -10,7 +10,9 @@ test_channel_send_does_not_seal :: proc(t: ^testing.T) {
 	text := "Hello \"owner\"\nhttps://example.com/ 🦊"
 	params, err := ctl_channel_params("send", []string{"--text", text})
 	testing.expect_value(t, err, "")
-	value: struct {text: string}
+	value: struct {
+		text: string,
+	}
 	testing.expect_value(t, json.unmarshal(transmute([]byte)params, &value, allocator = context.temp_allocator), nil)
 	testing.expect_value(t, value.text, text)
 	testing.expect(t, !strings.contains(params, "vault:v"))
@@ -54,14 +56,37 @@ test_channel_verbs_build_params :: proc(t: ^testing.T) {
 
 @(test)
 test_channel_help_text :: proc(t: ^testing.T) {
-	for line in ([]string{
-		"ham-ctl channel read [--limit N]        Read your owner's unanswered messages from one channel (marks them read).",
-		"ham-ctl channel send --text <text>      Answer on the channel of the messages you read.",
-		"ham-ctl channel send --text-file <path> Same, text read from a UTF-8 file.",
-		"ham-ctl channel history [--limit N]     Recent messages on all channels in both directions, newest first.",
-		"Only a bot instance may use these verbs. Telegram and WhatsApp messages can be read by the provider and your Ninjy hub.",
-
-	}) {
+	for line in ([]string {
+			"ham-ctl channel read [--limit N]        Read your owner's unanswered messages from one channel (marks them read).",
+			"ham-ctl channel send --text <text>      Answer on the channel of the messages you read.",
+			"ham-ctl channel send --text-file <path> Same, text read from a UTF-8 file.",
+			"ham-ctl channel history [--limit N]     Recent messages on all channels in both directions, newest first.",
+			"Only a bot instance may use these verbs. Telegram and WhatsApp messages and files can be read by the provider and your Ninjy hub.",
+		}) {
 		testing.expect(t, strings.contains(CHANNEL_HELP, line))
 	}
+}
+
+@(test)
+test_channel_send_artifact_flag_rules :: proc(t: ^testing.T) {
+	params, err := ctl_channel_params("send", []string{"--artifact", "art"})
+	testing.expect_value(t, err, "")
+	testing.expect_value(t, params, `{"text":""}`)
+	params, err = ctl_channel_params("send", []string{"--artifact", "art", "--text", "caption"})
+	testing.expect_value(t, err, "")
+	testing.expect_value(t, params, `{"text":"caption"}`)
+	_, err = ctl_channel_params("send", []string{"--artifact", ""})
+	testing.expect_value(t, err, "--artifact requires an artifact id")
+	_, err = ctl_channel_params("send", []string{"--artifact"})
+	testing.expect_value(t, err, "--artifact requires an artifact id")
+	_, err = ctl_channel_params("send", []string{"--artifact", "art", "--text", "x", "--text-file", "x"})
+	testing.expect_value(t, err, "use either --text or --text-file")
+	_, err = ctl_channel_params("send", nil)
+	testing.expect_value(t, err, "channel send requires --text or --text-file")
+	testing.expect(t, strings.contains(CHANNEL_HELP, "Files they sent are saved as artifacts"))
+	testing.expect(
+		t,
+		strings.contains(CHANNEL_HELP, "ham-ctl channel send --artifact <id> [--text <caption> | --text-file <path>]"),
+	)
+	testing.expect(t, strings.contains(CHANNEL_HELP, "Send an artifact as a photo, document or voice note"))
 }
