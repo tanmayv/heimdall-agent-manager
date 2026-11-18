@@ -8,13 +8,16 @@ import "core:thread"
 import "core:time"
 import iface "odin_test:hub/repository/iface"
 
+Bots_Worker :: enum { Poller, Supervisor, Intake }
+
 Bots_Runtime :: struct {
 	service: ^Bots_Service,
 	telegram_bot_token: string, // borrowed process configuration; never logged
 	lifecycle_mutex: sync.Mutex,
 	wait_mutex: sync.Mutex,
 	wait_cond: sync.Cond,
-	poller, supervisor: ^thread.Thread,
+	poller, supervisor, intake: ^thread.Thread,
+	intake_running, intake_stop, intake_signal: bool,
 	poller_running, supervisor_running: bool,
 	poller_stop, supervisor_stop: bool,
 	// A2a installs its delivery tick from wiring; A4 owns only the loop.
@@ -31,9 +34,10 @@ bots_runtime_reconcile :: proc(rt: ^Bots_Runtime) {
 		n = 0 // fail closed, including during an existing runtime
 	}
 	if n == 0 {
-		was_running := rt.poller != nil || rt.supervisor != nil
-		bots_runtime_stop_locked(rt, true)
-		bots_runtime_stop_locked(rt, false)
+		was_running := rt.poller != nil || rt.supervisor != nil || rt.intake != nil
+		bots_runtime_stop_locked(rt, .Poller)
+		bots_runtime_stop_locked(rt, .Supervisor)
+		bots_runtime_stop_locked(rt, .Intake)
 		if was_running do fmt.println("bots: runtime stopped")
 		return
 	}
@@ -57,28 +61,52 @@ bots_runtime_reconcile :: proc(rt: ^Bots_Runtime) {
 			rt.poller_running = rt.poller != nil
 		}
 	} else {
-		bots_runtime_stop_locked(rt, true)
+		bots_runtime_stop_locked(rt, .Poller)
+	}
+	if rt.service.whatsapp != nil {
+		if rt.intake == nil {
+			sync.atomic_store(&rt.intake_stop, false)
+			// thread-spawn: experiment and WhatsApp gated; joined and destroyed on stop
+			rt.intake = thread.create_and_start_with_data(rt, bots_intake_entry, init_context = worker_context)
+			rt.intake_running = rt.intake != nil
+			if rt.intake_running do fmt.println("bots: whatsapp intake started")
+		}
+	} else {
+		bots_runtime_stop_locked(rt, .Intake)
 	}
 }
 
-bots_runtime_stop_locked :: proc(rt: ^Bots_Runtime, poller: bool) {
-	worker := rt.poller if poller else rt.supervisor
-	if worker == nil do return
+bots_runtime_stop_locked :: proc(rt: ^Bots_Runtime, worker: Bots_Worker) {
+	t: ^thread.Thread
+	stop: ^bool
+	switch worker {
+	case .Poller: t = rt.poller; stop = &rt.poller_stop
+	case .Supervisor: t = rt.supervisor; stop = &rt.supervisor_stop
+	case .Intake: t = rt.intake; stop = &rt.intake_stop
+	}
+	if t == nil do return
 	sync.mutex_lock(&rt.wait_mutex)
-	if poller { sync.atomic_store(&rt.poller_stop, true) } else { sync.atomic_store(&rt.supervisor_stop, true) }
+	sync.atomic_store(stop, true)
 	sync.cond_broadcast(&rt.wait_cond)
 	sync.mutex_unlock(&rt.wait_mutex)
-	thread.join(worker)
-	thread.destroy(worker)
-	if poller { rt.poller = nil; rt.poller_running = false } else { rt.supervisor = nil; rt.supervisor_running = false }
+	thread.join(t)
+	thread.destroy(t)
+	switch worker {
+	case .Poller: rt.poller = nil; rt.poller_running = false
+	case .Supervisor: rt.supervisor = nil; rt.supervisor_running = false
+	case .Intake:
+		rt.intake = nil; rt.intake_running = false
+		fmt.println("bots: whatsapp intake stopped")
+	}
 }
 
 bots_runtime_stop :: proc(rt: ^Bots_Runtime) {
 	if rt == nil do return
 	sync.mutex_lock(&rt.lifecycle_mutex)
 	defer sync.mutex_unlock(&rt.lifecycle_mutex)
-	bots_runtime_stop_locked(rt, true)
-	bots_runtime_stop_locked(rt, false)
+	bots_runtime_stop_locked(rt, .Poller)
+	bots_runtime_stop_locked(rt, .Supervisor)
+	bots_runtime_stop_locked(rt, .Intake)
 }
 
 // True means stopping. Spurious wake-ups preserve the remaining wait budget.
@@ -124,4 +152,25 @@ bots_on_experiment_changed :: proc(ctx: rawptr, owner_user_id, key: string, enab
 	rt := (^Bots_Runtime)(ctx)
 	bots_runtime_reconcile(rt)
 	if !enabled && rt.service != nil do bots_on_experiment_disabled(rt.service, owner_user_id)
+}
+
+bots_runtime_signal_intake :: proc(rt: ^Bots_Runtime) {
+	if rt == nil do return
+	sync.mutex_lock(&rt.wait_mutex)
+	rt.intake_signal = true
+	sync.cond_broadcast(&rt.wait_cond)
+	sync.mutex_unlock(&rt.wait_mutex)
+}
+
+bots_intake_wait :: proc(rt: ^Bots_Runtime, delay: time.Duration) -> (stop: bool) {
+	started := time.tick_now()
+	sync.mutex_lock(&rt.wait_mutex)
+	defer sync.mutex_unlock(&rt.wait_mutex)
+	for !sync.atomic_load(&rt.intake_stop) && !rt.intake_signal {
+		left := delay - time.tick_since(started)
+		if left <= 0 do break
+		_ = sync.cond_wait_with_timeout(&rt.wait_cond, &rt.wait_mutex, left)
+	}
+	rt.intake_signal = false
+	return sync.atomic_load(&rt.intake_stop)
 }
