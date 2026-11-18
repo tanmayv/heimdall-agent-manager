@@ -2,6 +2,7 @@ package httpc
 
 import "core:bytes"
 import "core:fmt"
+import "core:mem"
 import "core:net"
 import "core:os"
 import "core:strings"
@@ -889,4 +890,41 @@ test_multipart_body_sends_to_test_server :: proc(t: ^testing.T) {
 	request := test_server_request(s, 0)
 	testing.expect(t, strings.contains(request, "Content-Type: multipart/form-data; boundary=wire\r\n"))
 	testing.expect(t, strings.has_suffix(request, string(body.(Raw_Body).bytes)))
+}
+
+// A persistent body must not retain a second file-sized copy in temporary memory.
+@(test)
+test_multipart_body_large_value_allocates_once :: proc(t: ^testing.T) {
+	value := make([]byte, 1024 * 1024)
+	defer delete(value)
+	for &b, i in value do b = byte(i % 251)
+	output_track, temp_track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&output_track, context.allocator)
+	defer mem.tracking_allocator_destroy(&output_track)
+	mem.tracking_allocator_init(&temp_track, context.allocator)
+	defer mem.tracking_allocator_destroy(&temp_track)
+	output_allocator := mem.tracking_allocator(&output_track)
+	context.temp_allocator = mem.tracking_allocator(&temp_track)
+	prefix := "--large\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.bin\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+	suffix := "\r\n--large--\r\n"
+	{
+		body := multipart_body_with_boundary({{name = "file", filename = "a.bin", value = value}}, "large", output_allocator)
+		raw := body.(Raw_Body)
+		defer delete(raw.bytes, output_allocator)
+		defer delete(raw.content_type, output_allocator)
+		testing.expect_value(t, len(raw.bytes), len(prefix) + len(value) + len(suffix))
+		testing.expect_value(t, string(raw.bytes[:len(prefix)]), prefix)
+		testing.expect(t, bytes.equal(raw.bytes[len(prefix):len(prefix)+len(value)], value))
+		testing.expect_value(t, string(raw.bytes[len(prefix)+len(value):]), suffix)
+		testing.expect_value(t, output_track.total_allocation_count, i64(2))
+		testing.expect_value(t, temp_track.total_allocation_count, i64(0))
+		testing.expect_value(t, output_track.current_memory_allocated, i64(len(raw.bytes) + len(raw.content_type)))
+	}
+	testing.expect_value(t, output_track.current_memory_allocated, i64(0))
+	testing.expect_value(t, len(output_track.allocation_map), 0)
+	// Invalid input is rejected before either output allocation.
+	before := output_track.total_allocation_count
+	invalid := multipart_body_with_boundary({{filename = "file", content_type = "text/plain\r\nInjected: true", value = value}}, "large", output_allocator)
+	testing.expect_value(t, invalid.(Raw_Body).content_type, "")
+	testing.expect_value(t, output_track.total_allocation_count, before)
 }
