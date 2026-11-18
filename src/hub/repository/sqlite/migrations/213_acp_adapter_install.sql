@@ -21,4 +21,8 @@ DROP TABLE provider_extension_commands;
 ALTER TABLE provider_extension_commands_acp RENAME TO provider_extension_commands;
 CREATE INDEX provider_extension_commands_bridge ON provider_extension_commands(bridge_id);
 CREATE UNIQUE INDEX provider_extension_commands_followup ON provider_extension_commands(parent_id,kind,provider,profile_id) WHERE parent_id<>'';
+-- Release 212 used the pre-transport catalog serializer. Repair its audit hash
+-- forward without rewriting an already released migration or catalog rows.
+DELETE FROM provider_catalog_meta;
+INSERT INTO provider_catalog_meta(catalog_etag) VALUES ('sha256:71e4c8abf86892ff03596f3e3ebe29f5461477e67ee7ef5691774fd9a86e62a5');
 COMMIT;

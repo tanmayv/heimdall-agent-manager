@@ -666,7 +666,8 @@ MIGRATION_209_EXTENSION_VERSION_SYNC :: #load("migrations/209_extension_version_
 MIGRATION_210_EXTENSION_VERSION_SYNC :: #load("migrations/210_extension_version_sync_0_5_56.sql", string)
 
 MIGRATION_211_PROVIDER_TRANSPORT :: #load("migrations/211_provider_transport.sql", string)
-MIGRATION_212_ACP_ADAPTER_INSTALL :: #load("migrations/212_acp_adapter_install.sql", string)
+MIGRATION_212_EXTENSION_VERSION_SYNC :: #load("migrations/212_extension_version_sync_0_5_57.sql", string)
+MIGRATION_213_ACP_ADAPTER_INSTALL :: #load("migrations/213_acp_adapter_install.sql", string)
 
 migration_order :: [?]string {
 	"001_foundation.sql",
@@ -884,7 +885,8 @@ migration_order :: [?]string {
 	"209_extension_version_sync_0_5_55.sql",
 	"210_extension_version_sync_0_5_56.sql",
 	"211_provider_transport.sql",
-	"212_acp_adapter_install.sql",
+	"212_extension_version_sync_0_5_57.sql",
+	"213_acp_adapter_install.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1339,7 +1341,7 @@ run_migrations :: proc(
 			)
 		}
 		if !exec(conn, sql) {
-			if name=="169_provider_profiles.sql" || name=="211_provider_transport.sql" || name=="212_acp_adapter_install.sql" do _=exec(conn,"ROLLBACK;")
+			if name=="169_provider_profiles.sql" || name=="211_provider_transport.sql" || name=="213_acp_adapter_install.sql" do _=exec(conn,"ROLLBACK;")
 			delete(sql)
 			return false, domain.domain_error(
 				.Internal_Error,
@@ -1389,8 +1391,9 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 			return string(data)
 		}
 	}
+	if name == "212_extension_version_sync_0_5_57.sql" do return strings.clone(MIGRATION_212_EXTENSION_VERSION_SYNC)
 	if name == "211_provider_transport.sql" do return strings.clone(MIGRATION_211_PROVIDER_TRANSPORT)
-	if name == "212_acp_adapter_install.sql" do return strings.clone(MIGRATION_212_ACP_ADAPTER_INSTALL)
+	if name == "213_acp_adapter_install.sql" do return strings.clone(MIGRATION_213_ACP_ADAPTER_INSTALL)
 	if name == "210_extension_version_sync_0_5_56.sql" do return strings.clone(MIGRATION_210_EXTENSION_VERSION_SYNC)
 	if name == "209_extension_version_sync_0_5_55.sql" do return strings.clone(MIGRATION_209_EXTENSION_VERSION_SYNC)
 	if name == "208_extension_version_sync_0_5_54.sql" do return strings.clone(MIGRATION_208_EXTENSION_VERSION_SYNC)

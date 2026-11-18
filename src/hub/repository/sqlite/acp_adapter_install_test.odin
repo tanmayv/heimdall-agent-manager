@@ -9,7 +9,7 @@ t4_acp_install_migration_preserves_commands_and_profile_indexes :: proc(t: ^test
     conn, opened, _ := open(":memory:")
     if !testing.expect(t, opened) do return
     defer close(&conn)
-    migrated, err := run_migrations(&conn, stop_before = "212_acp_adapter_install.sql")
+    migrated, err := run_migrations(&conn, stop_before = "213_acp_adapter_install.sql")
     if !testing.expect(t, migrated, err.message) do return
     testing.expect(t, exec(&conn, "INSERT INTO bridges(bridge_id,owner_user_id,created_at,updated_at) VALUES('t4','owner','','');"))
     impl: Provider_Repo_SQLite
