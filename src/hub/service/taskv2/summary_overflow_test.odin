@@ -333,3 +333,41 @@ test_summary_legacy_curated_notes_are_stored_once :: proc(t: ^testing.T) {
 	testing.expect(t, row.overflow_active && strings.contains(row.body, "Legacy curated line"), "legacy note survives overflow rebuilds")
 	testing.expect_value(t, row.version, 5)
 }
+
+// Review finding (round 2): `summary set` with a body round-tripped from
+// `summary get` stores only the note lines; the mechanical title, section
+// headers, task and dead-end bullets and the omission marker are dropped, so
+// a render never duplicates them. Covers both the fitting and the overflow case.
+@(test)
+test_summary_set_round_trip_stores_only_notes :: proc(t: ^testing.T) {
+	for dead_ends in ([]int{3, 70}) {
+		of, ok := overflow_fixture(t, fmt.tprintf("ovf_round_trip_%d", dead_ends))
+		if !ok {
+			overflow_fixture_close(of)
+			return
+		}
+		add_dead_ends(t, of, dead_ends)
+		_, a_ok, a_err := chain_summary_set(&of.fx.svc, inst_auth("inst_coord"), of.chain.chain_id, "Note A")
+		testing.expectf(t, a_ok, "set Note A: %s", a_err.message)
+		rendered := stored_summary(t, of).body
+		testing.expect(t, strings.contains(rendered, "## Dead Ends"), "rendered body carries mechanical sections")
+		if dead_ends > 60 do testing.expect(t, strings.contains(rendered, DEAD_ENDS_OMITTED_SUFFIX), "overflow body carries the omission marker")
+
+		edited := strings.concatenate({rendered, "\nNote B"}, context.temp_allocator)
+		row, b_ok, b_err := chain_summary_set(&of.fx.svc, inst_auth("inst_coord"), of.chain.chain_id, edited)
+		testing.expectf(t, b_ok, "set round-tripped body: %s", b_err.message)
+		testing.expect_value(t, row.curated_body, "Note A\nNote B")
+		rebuild(t, &of.fx.svc, of.chain)
+		after := stored_summary(t, of)
+		testing.expect_value(t, after.curated_body, "Note A\nNote B")
+		testing.expectf(t, strings.count(after.body, "# Chain ") == 1, "exactly one title (%d dead ends): %s", dead_ends, after.body)
+		testing.expectf(t, strings.count(after.body, "## Dead Ends") == 1, "exactly one Dead Ends header (%d dead ends)", dead_ends)
+		testing.expect(t, strings.count(after.body, "## Active & Pending") <= 1, "at most one Active & Pending header")
+		testing.expectf(t, strings.count(after.body, "dead end 1.0") == 1, "dead-end bullet rendered once (%d dead ends)", dead_ends)
+		testing.expect(t, strings.count(after.body, DEAD_ENDS_OMITTED_SUFFIX) == (1 if dead_ends > 60 else 0), "omission marker never duplicated")
+		testing.expect(t, strings.contains(after.body, "Note A\nNote B"), "notes render together under the title")
+		testing.expect(t, after.line_count <= CHAIN_SUMMARY_MAX_LINES, "bounded")
+		testing.expect_value(t, overflow_events(of), 1 if dead_ends > 60 else 0)
+		overflow_fixture_close(of)
+	}
+}

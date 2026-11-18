@@ -56,7 +56,8 @@ Groups: `bridge`, `agents`, `task-chain`, `task`, `workflow`, `lease`, `review`,
   agent's `TASK.md`. The 60-line render shows the title, your first 20 non-blank note lines (always),
   then dead ends, further note lines when room is left, then tasks. Mechanical sections are rebuilt from
   task history, so set cannot remove dead ends; ones that do not fit stay in each task's handoff facet
-  (`task fetch <task-id> facet:<task-id>:<attempt>:handoff`).
+  (`task fetch <task-id> facet:<task-id>:<attempt>:handoff`). Mechanical lines in the set text (title, section
+  headers, task and dead-end bullets, the omission pointer) are dropped, so edit from `curated`.
 - `task-chain propose --file <proposal.json> [--auto-approve] [--chain <id>]` — create a chain
   proposal (`kind: "task"|"workflow_run"`, `rationale`, `alternative`, `tasks` array or `workflow` + `inputs`) and its draft
   tasks in a single transaction (coordinator only). With `--auto-approve`, validates briefs and

@@ -764,10 +764,6 @@ chain_summary_set :: proc(svc: ^Service, auth: contracts.Auth_Context, chain_id_
 	}
 
 	body := strings.trim_right_space(body_in)
-	lines := strings.split_lines(body, context.temp_allocator) if body != "" else nil
-	if len(lines) > CHAIN_SUMMARY_MAX_LINES {
-		return {}, false, domain.domain_error(.Validation_Failed, fmt.tprintf("chain summary must be at most %d lines (got %d)", CHAIN_SUMMARY_MAX_LINES, len(lines)))
-	}
 	u, uok, uerr := begin_uow(svc)
 	if !uok do return {}, false, uerr
 	chain, cok, _ := iface.taskchain_get_chain(svc.repo, chain_id)
@@ -775,9 +771,19 @@ chain_summary_set :: proc(svc: ^Service, auth: contracts.Auth_Context, chain_id_
 		_, _ = end_uow(svc, &u, false)
 		return {}, false, domain.domain_error(.Not_Found, "task chain not found")
 	}
-	// Store the notes and re-render at once, so agents never see a body without
-	// its mechanical sections; the overflow latch is shared with rebuilds.
-	saved, sok, serr := render_chain_summary_in_uow(svc, &u, chain, body)
+	// Store only the notes: a body round-tripped from `summary get` (or an
+	// edited rendered summary) carries the mechanical title, headers, task and
+	// dead-end bullets and omission marker, which are dropped exactly as for a
+	// legacy row. Then re-render at once, sharing the overflow latch with rebuilds.
+	// The line cap applies to the notes that are stored, not to the mechanical
+	// lines a round-tripped body brings along.
+	note_lines := extract_coordinator_summary_lines(svc, chain, body)
+	if len(note_lines) > CHAIN_SUMMARY_MAX_LINES {
+		_, _ = end_uow(svc, &u, false)
+		return {}, false, domain.domain_error(.Validation_Failed, fmt.tprintf("chain summary must be at most %d lines (got %d)", CHAIN_SUMMARY_MAX_LINES, len(note_lines)))
+	}
+	curated := strings.join(note_lines, "\n", context.temp_allocator)
+	saved, sok, serr := render_chain_summary_in_uow(svc, &u, chain, curated)
 	_, cerr := end_uow(svc, &u, sok)
 	if !sok do return {}, false, serr
 	if cerr.code != .None do return {}, false, cerr

@@ -105,7 +105,7 @@ Agents see only their `TASK.md`. Use the channels the Hub carries forward:
 | Extra context for one task | `brief.inputs` | that task |
 | Lessons that outlive the chain (build quirks, project rules) | `ham-ctl memory propose` (project scope) | future chains |
 
-The Hub renders the chain summary from your curated notes plus mechanical sections (done tasks with their commit, open tasks, every dead end). `summary set` replaces only your curated notes. The Hub stores them separately and re-renders at once and on every task event, so your notes are never dropped, and you cannot delete or compact dead ends. Read what agents currently see with `task-chain summary get [<chain-id>]`. It is read-only and also reports `curated` (your full stored notes), `curated_line_count`, `line_count`, `max_lines` and `overflow_active`.
+The Hub renders the chain summary from your curated notes plus mechanical sections (done tasks with their commit, open tasks, every dead end). `summary set` replaces only your curated notes. The Hub stores them separately and re-renders at once and on every task event, so your notes are never dropped, and you cannot delete or compact dead ends. Read what agents currently see with `task-chain summary get [<chain-id>]`. It is read-only and also reports `curated` (your full stored notes), `curated_line_count`, `line_count`, `max_lines` and `overflow_active`. To edit your notes, start from `curated`. If you paste the rendered `summary` instead, its mechanical lines (title, section headers, task and dead-end bullets, the omission pointer) are dropped on `set`.
 
 The rendered summary is capped at 60 lines, filled in this order:
 1. The title line.
