@@ -131,7 +131,7 @@ try {
     assert.equal(off.error.details.code,'experimental_feature_disabled');
     await sleep(35000);
     assert.deepEqual(await control('offsets'),[]);
-    assert.ok(!/bots:.*poller.*start/.test(hubLog()));
+    assert.ok(!hubLog().includes('bots:'),'no bot runtime activity while experiment is off');
     assert.deepEqual(await sent(),[]);
   });
   await startBridge('bots-e2e-a');
