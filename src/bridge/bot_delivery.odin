@@ -179,7 +179,8 @@ bridge_bot_report :: proc(w: ^Bridge_Bot_Worker, state: string, reason: string =
 		w.last_sent_ms = bridge_bot_now_proc()
 		sync.mutex_unlock(&bridge_bot_workers_mutex)
 	}
-	_ = bridge_bot_report_proc(string(bytes))
+	sent := bridge_bot_report_proc(string(bytes))
+	if sent && state != "working" do fmt.printf("bots: terminal report %s\n", string(bytes))
 	w.last_progress_ms = bridge_bot_now_proc()
 }
 bridge_bot_progress :: proc(w: ^Bridge_Bot_Worker) {
