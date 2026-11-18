@@ -1,8 +1,17 @@
 import http from 'node:http';
+import {createHash} from 'node:crypto';
 import {pathToFileURL} from 'node:url';
 
 export function createFakeTelegram({token='TEST:FAKE', botUsername='ninjy_test_bot'}={}) {
-  let nextUpdate=1, nextMessage=1, updates=[];
+  let nextUpdate=1, nextMessage=1, nextFile=1, updates=[];
+  const files=new Map();
+  const storeFile=(bytes,declareSize)=>{
+    const n=nextFile++, file_id='FAKEFILE'+n;
+    const file={file_id,file_unique_id:'UNIQUE'+n,file_size:declareSize??bytes.length,file_path:'files/'+n,bytes};
+    files.set(file_id,file);
+    return file;
+  };
+  const wireFile=({bytes,expired,...file})=>file;
   const sent=[], reactions=[], offsets=[], failures=new Map(), polls=new Set();
   const reply=(res,status,value)=>{
     if (!res.destroyed && !res.writableEnded) {
@@ -13,12 +22,16 @@ export function createFakeTelegram({token='TEST:FAKE', botUsername='ninjy_test_b
   const server=http.createServer(async(req,res)=>{
     try {
       const url=new URL(req.url,'http://localhost');
-      let raw='';
+      const chunks=[];
+      let size=0;
       for await (const chunk of req) {
-        raw+=chunk;
-        if (raw.length>4*1024*1024) {reply(res,413,{ok:false});return;}
+        chunks.push(chunk); size+=chunk.length;
+        if (size>60_000_000) {reply(res,413,{ok:false});return;}
       }
-      const body=raw ? JSON.parse(raw) : {};
+      const raw=Buffer.concat(chunks);
+      const multipart=req.headers['content-type']?.startsWith('multipart/form-data');
+      const form=multipart ? await new Response(raw,{headers:{'content-type':req.headers['content-type']}}).formData() : null;
+      const body=!multipart && raw.length ? JSON.parse(raw.toString('utf8')) : {};
       if (url.pathname==='/_control/inject' && req.method==='POST') {
         const explicit=body.update_id ?? body.raw_update?.update_id;
         if (explicit !== undefined && (!Number.isSafeInteger(explicit) || explicit < 0)) {
@@ -29,7 +42,24 @@ export function createFakeTelegram({token='TEST:FAKE', botUsername='ninjy_test_b
         const message={message_id:body.message_id??update_id,chat:{id:body.chat_id,type:body.chat_type??'private'},
           from:{id:body.from_id,username:body.username,first_name:body.first_name??'Test'}};
         if (Object.hasOwn(body,'text')) message.text=body.text;
-        else message.photo=[];
+        else if (!body.media) message.photo=[];
+        if (body.media) {
+          const media=body.media, type=media.type;
+          const bytes=Buffer.from(media.bytes_base64??'','base64');
+          const file=storeFile(bytes,media.declare_size);
+          const common={file_id:file.file_id,file_unique_id:file.file_unique_id,file_size:file.file_size};
+          if (type==='photo') {
+            const photo=(f,width,height)=>({file_id:f.file_id,file_unique_id:f.file_unique_id,file_size:f.file_size,width,height});
+            message.photo=[photo(storeFile(Buffer.from('small')),90,90),photo(file,1280,960),photo(storeFile(Buffer.from('medium')),320,240)];
+          } else if (['document','voice','audio','video','video_note','animation'].includes(type)) {
+            const item={...common};
+            if (type!=='video_note' && media.mime_type!==undefined) item.mime_type=media.mime_type;
+            if (!['voice','video_note'].includes(type) && media.file_name!==undefined) item.file_name=media.file_name;
+            message[type]=item;
+            if (type==='animation') message.document={...item};
+          } else if (['sticker','location','contact','poll'].includes(type)) message[type]={};
+          if (media.caption!==undefined) message.caption=media.caption;
+        }
         updates.push(body.raw_update ? {...body.raw_update,update_id} : {update_id,message});
         reply(res,200,{update_id});
         for (const poll of [...polls]) poll(false);
@@ -53,6 +83,18 @@ export function createFakeTelegram({token='TEST:FAKE', botUsername='ninjy_test_b
         reply(res,200,{ok:true});return;
       }
       const pathname=decodeURIComponent(url.pathname);
+      if (pathname==='/_control/file-expire' && req.method==='POST') {
+        const file=files.get(body.file_id);
+        if (file) file.expired=true;
+        reply(res,200,{ok:true});return;
+      }
+      const filePrefix='/file/bot'+token+'/';
+      if (pathname.startsWith(filePrefix) && req.method==='GET') {
+        const file=[...files.values()].find(f=>f.file_path===pathname.slice(filePrefix.length));
+        if (!file || file.expired) {reply(res,404,{ok:false});return;}
+        res.writeHead(200,{'content-type':'application/octet-stream'});
+        res.end(file.bytes);return;
+      }
       const prefix='/bot'+token+'/';
       if (!pathname.startsWith(prefix)) {
         reply(res,401,{ok:false,error_code:401,description:'Unauthorized'});return;
@@ -72,6 +114,28 @@ export function createFakeTelegram({token='TEST:FAKE', botUsername='ninjy_test_b
         }
         reactions.push({chat_id:body.chat_id,message_id:body.message_id,reaction:body.reaction});
         reply(res,200,{ok:true,result:true});return;
+      }
+      if (method==='getFile') {
+        const id=req.method==='GET' ? url.searchParams.get('file_id') : body.file_id;
+        const file=files.get(id);
+        if (!file || file.expired) {
+          reply(res,400,{ok:false,error_code:400,description:'Bad Request: invalid file_id'});return;
+        }
+        reply(res,200,{ok:true,result:wireFile(file)});return;
+      }
+      const mediaField={sendPhoto:'photo',sendDocument:'document',sendVoice:'voice',sendAudio:'audio'}[method];
+      if (mediaField && req.method==='POST') {
+        const chat=form?.get('chat_id'), file=form?.get(mediaField);
+        if (typeof chat!=='string' || !/^-?\d+$/.test(chat) || !Number.isSafeInteger(Number(chat)) ||
+            !file || typeof file==='string' || typeof file.arrayBuffer!=='function') {
+          reply(res,400,{ok:false,error_code:400,description:'Bad Request'});return;
+        }
+        const bytes=Buffer.from(await file.arrayBuffer());
+        const message={message_id:nextMessage++,method,chat_id:Number(chat),
+          ...(form.has('caption') ? {caption:form.get('caption')} : {}),
+          filename:file.name,mime:file.type,size:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')};
+        sent.push(message);
+        reply(res,200,{ok:true,result:{...message,chat:{id:Number(chat)}}});return;
       }
       if (method==='getMe') {reply(res,200,{ok:true,result:{id:123456,username:botUsername}});return;}
       if (method==='sendMessage' && req.method==='POST') {

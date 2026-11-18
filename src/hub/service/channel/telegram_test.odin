@@ -203,3 +203,225 @@ test_telegram_reaction_timeout_is_bounded :: proc(t: ^testing.T) {
 	testing.expect(t, err.kind == .Transient, "slow reaction fails best effort")
 	testing.expectf(t, elapsed >= 750*time.Millisecond && elapsed < 2*time.Second, "reaction timeout: %v", elapsed)
 }
+
+telegram_test_inject_media :: proc(t: ^testing.T, f: ^Telegram_Test_Fixture, media_type: string, declared: i64 = 3) {
+	telegram_test_control(t, f, "inject", struct {
+		chat_id, from_id: i64,
+		media: struct {type, bytes_base64, mime_type, file_name, caption: string, declare_size: i64},
+	}{111, 222, {media_type, "AP+A", "Application/PDF; charset=binary", "invoice.pdf", "caption 🌏", declared}})
+}
+
+@(test)
+test_telegram_poll_media_kinds :: proc(t: ^testing.T) {
+	f: Telegram_Test_Fixture
+	defer telegram_test_stop(&f)
+	if !telegram_test_start(t, &f) do return
+	for kind in ([]string{"photo", "document", "animation", "voice", "audio", "video", "video_note", "sticker", "location", "contact", "poll"}) do telegram_test_inject_media(t, &f, kind)
+	// Optional MIME defaults; empty IDs; field presence and text take precedence.
+	base, _ := httpc.parse_url(f.base)
+	for raw in ([]string{
+		`{"chat_id":111,"from_id":222,"media":{"type":"voice","bytes_base64":"AP+A"}}`,
+		`{"chat_id":111,"from_id":222,"media":{"type":"video","bytes_base64":"AP+A"}}`,
+		`{"chat_id":111,"from_id":222}`,
+		`{"raw_update":{"message":{"chat":{"id":111,"type":"private"},"document":{"file_id":""},"voice":{"file_id":"ignored"}}}}`,
+		`{"chat_id":111,"from_id":222,"chat_type":"group","media":{"type":"document","bytes_base64":"AP+A"}}`,
+		`{"chat_id":111,"from_id":222,"text":"hello","media":{"type":"document","bytes_base64":"AP+A"}}`,
+		`{"raw_update":{"message":{"chat":{"id":111,"type":"private"},"photo":[{"file_id":"first","width":2,"height":3},{"file_id":"later","width":3,"height":2}]}}}`,
+	}) {
+		resp, err := httpc.send({method = .POST, url = base, path = {"_control", "inject"}, body = httpc.raw_body("application/json", transmute([]byte)raw)})
+		testing.expect(t, err == .None && resp.status == 200)
+		httpc.response_destroy(&resp)
+	}
+	a := telegram_adapter(&f.telegram)
+	batch, next, err := a.poll(a.ctx, "", nil)
+	defer inbound_destroy_batch(batch); defer delete(next)
+	if !testing.expect(t, err.kind == .None && len(batch) == 18) do return
+	kinds := []Media_Kind{.Image, .Document, .Document, .Voice, .Audio, .Document, .Document}
+	for kind, i in kinds {
+		row := batch[i]
+		testing.expect(t, row.kind == .Media && row.media.kind == kind && row.text == "caption 🌏")
+		testing.expect(t, row.media.size == 3 && row.media.file_ref != "")
+		if i == 0 {
+			testing.expect(t, row.media.file_ref == "FAKEFILE1" && row.media.mime == "image/jpeg")
+		} else if i == 6 {
+			testing.expect(t, row.media.mime == "video/mp4" && row.media.name == "")
+		} else {
+			testing.expect(t, row.media.mime == "application/pdf")
+			if i != 3 do testing.expect(t, row.media.name == "invoice.pdf")
+		}
+	}
+	for i in 7..<11 do testing.expect(t, batch[i].kind == .Unsupported)
+	testing.expect(t, batch[11].media.mime == "audio/ogg")
+	testing.expect(t, batch[12].media.mime == "video/mp4")
+	for i in 13..<16 do testing.expect(t, batch[i].kind == .Unsupported && batch[i].media.file_ref == "")
+	testing.expect(t, batch[16].kind == .Text && batch[16].text == "hello" && batch[16].media.file_ref == "")
+	testing.expect(t, batch[17].media.file_ref == "later", "equal photo area selects later entry")
+}
+
+@(test)
+test_telegram_media_fetch_ok :: proc(t: ^testing.T) {
+	f: Telegram_Test_Fixture
+	defer telegram_test_stop(&f)
+	if !telegram_test_start(t, &f) do return
+	telegram_test_inject_media(t, &f, "document")
+	a := telegram_adapter(&f.telegram)
+	got, err := a.media_fetch(a.ctx, "FAKEFILE1", 3)
+	defer delete(got.bytes); defer delete(got.mime)
+	testing.expect(t, err.kind == .None && len(got.bytes) == 3 && got.mime == "")
+	if len(got.bytes) == 3 do testing.expect(t, got.bytes[0] == 0 && got.bytes[1] == 255 && got.bytes[2] == 128)
+}
+
+@(test)
+test_telegram_media_fetch_declared_too_large_skips_download :: proc(t: ^testing.T) {
+	f: Telegram_Test_Fixture
+	defer telegram_test_stop(&f)
+	if !telegram_test_start(t, &f) do return
+	// No bytes exceed the limit; only metadata does. A download would succeed.
+	telegram_test_inject_media(t, &f, "document", 4_294_967_296)
+	batch, next, poll_err := telegram_poll(&f.telegram, "", nil)
+	defer inbound_destroy_batch(batch); defer delete(next)
+	if testing.expect(t, poll_err.kind == .None && len(batch) == 1) {
+		testing.expect(t, batch[0].media.size == 4_294_967_296, "inbound sizes retain 64 bits")
+	}
+	got, err := telegram_media_fetch(&f.telegram, "FAKEFILE1", 3)
+	defer delete(got.bytes); defer delete(got.mime)
+	testing.expect(t, err.kind == .Media_Too_Large && len(got.bytes) == 0)
+}
+
+@(test)
+test_telegram_media_fetch_body_over_limit :: proc(t: ^testing.T) {
+	f: Telegram_Test_Fixture
+	defer telegram_test_stop(&f)
+	if !telegram_test_start(t, &f) do return
+	telegram_test_inject_media(t, &f, "document", 0)
+	for limit in ([]i64{0, 1, 2}) {
+		got, err := telegram_media_fetch(&f.telegram, "FAKEFILE1", limit)
+		delete(got.bytes); delete(got.mime)
+		testing.expect(t, err.kind == .Media_Too_Large)
+	}
+}
+
+@(test)
+test_telegram_media_fetch_expired_is_unavailable :: proc(t: ^testing.T) {
+	f: Telegram_Test_Fixture
+	defer telegram_test_stop(&f)
+	if !telegram_test_start(t, &f) do return
+	telegram_test_inject_media(t, &f, "document")
+	telegram_test_control(t, &f, "file-expire", struct {file_id: string}{"FAKEFILE1"})
+	for ref in ([]string{"FAKEFILE1", "missing"}) {
+		got, err := telegram_media_fetch(&f.telegram, ref, 100)
+		delete(got.bytes); delete(got.mime)
+		testing.expect(t, err.kind == .Media_Unavailable)
+	}
+}
+
+@(test)
+test_telegram_send_media_methods :: proc(t: ^testing.T) {
+	f: Telegram_Test_Fixture
+	defer telegram_test_stop(&f)
+	if !telegram_test_start(t, &f) do return
+	a := telegram_adapter(&f.telegram)
+	bytes := []byte{0, 255, 128}
+	for kind, i in ([]Media_Kind{.Image, .Document, .Voice, .Audio}) {
+		caption := "caption 🌏" if i%2 == 0 else ""
+		id, err := a.send_media(a.ctx, "111", {kind, "file.bin", "application/octet-stream", bytes, caption}, 1000)
+		testing.expect(t, err.kind == .None && id == fmt.tprintf("%d", i+1))
+		delete(id)
+	}
+	base, _ := httpc.parse_url(f.base)
+	resp, err := httpc.send({url = base, path = {"_control", "sent"}})
+	defer httpc.response_destroy(&resp)
+	data: struct {messages: []struct {method, filename, mime, caption, sha256: string, size: int, chat_id: i64}}
+	testing.expect(t, err == .None && json.unmarshal(resp.body, &data, allocator = context.temp_allocator) == nil)
+	if !testing.expect(t, len(data.messages) == 4) do return
+	methods := []string{"sendPhoto", "sendDocument", "sendVoice", "sendAudio"}
+	for row, i in data.messages {
+		testing.expect(t, row.method == methods[i] && row.filename == "file.bin" && row.mime == "application/octet-stream" && row.size == 3 && row.chat_id == 111)
+		testing.expect(t, row.sha256 == "f742b965f156c10374bc23aea96e3a8aff8facd6fc079defeaa30219ad86f211")
+		testing.expect(t, row.caption == ("caption 🌏" if i%2 == 0 else ""))
+	}
+	value, _ := json.parse(string(resp.body), allocator = context.temp_allocator)
+	obj, _ := value.(json.Object)
+	messages, _ := obj["messages"].(json.Array)
+	for message, i in messages {
+		row, _ := message.(json.Object)
+		_, has_caption := row["caption"]
+		testing.expect(t, has_caption == (i%2 == 0))
+	}
+	id, invalid := a.send_media(a.ctx, "bad", {.Document, "f", "application/pdf", bytes, ""}, 1000)
+	delete(id)
+	testing.expect(t, invalid.kind == .Invalid_Request)
+}
+
+@(test)
+test_telegram_send_media_400_is_invalid_request :: proc(t: ^testing.T) {
+	f: Telegram_Test_Fixture
+	defer telegram_test_stop(&f)
+	if !telegram_test_start(t, &f) do return
+	telegram_test_control(t, &f, "fail", struct {method: string, status: int}{"sendDocument", 400})
+	id, err := telegram_send_media(&f.telegram, "111", {.Document, "f.pdf", "application/pdf", []byte{1}, ""}, 1000)
+	defer delete(id)
+	testing.expect(t, err.kind == .Invalid_Request)
+}
+
+telegram_test_media_timeout :: proc(t: ^testing.T, media: bool) {
+	f: Telegram_Test_Fixture
+	defer telegram_test_stop(&f)
+	if !telegram_test_start(t, &f) do return
+	method := "sendDocument" if media else "sendMessage"
+	telegram_test_control(t, &f, "fail", struct {method: string, status, delay_ms: int}{method, 500, 2000})
+	started := time.tick_now()
+	id: string
+	err: Channel_Error
+	if media {
+		id, err = telegram_send_media(&f.telegram, "111", {.Document, "f.pdf", "application/pdf", []byte{1}, ""}, 500)
+	} else {
+		id, err = telegram_send_text_within(&f.telegram, "111", "hello", 500)
+	}
+	defer delete(id)
+	elapsed := time.tick_since(started)
+	testing.expectf(t, err.kind == .Transient && elapsed >= 350*time.Millisecond && elapsed < 1500*time.Millisecond, "%v %v", err, elapsed)
+}
+
+@(test)
+test_telegram_send_media_respects_timeout :: proc(t: ^testing.T) { telegram_test_media_timeout(t, true) }
+
+@(test)
+test_telegram_send_text_within_respects_timeout :: proc(t: ^testing.T) { telegram_test_media_timeout(t, false) }
+
+@(test)
+test_telegram_media_capabilities_values :: proc(t: ^testing.T) {
+	a := telegram_adapter(nil)
+	testing.expect(t, a.media.fetch_max_bytes == 20_000_000 && a.media.caption_max_runes == 1024 && len(a.media.send_rules) == 4)
+	kinds := []Media_Kind{.Image, .Voice, .Audio, .Document}
+	for rule, i in a.media.send_rules {
+		testing.expect(t, rule.kind == kinds[i] && rule.caption && rule.max_bytes == (10_000_000 if i == 0 else 50_000_000))
+	}
+	testing.expect(t, a.media.send_rules[0].mimes[0] == "image/jpeg" && a.media.send_rules[0].mimes[1] == "image/png")
+	testing.expect(t, a.media.send_rules[1].mimes[0] == "audio/ogg")
+	testing.expect(t, a.media.send_rules[2].mimes[0] == "audio/mpeg" && a.media.send_rules[2].mimes[1] == "audio/mp4")
+	testing.expect(t, len(a.media.send_rules[3].mimes) == 0)
+}
+
+@(test)
+test_telegram_media_errors_hide_token :: proc(t: ^testing.T) {
+	f: Telegram_Test_Fixture
+	defer telegram_test_stop(&f)
+	if !telegram_test_start(t, &f) do return
+	for status in ([]int{400, 401, 403, 404, 429, 500}) {
+		for method in ([]string{"getFile", "sendDocument"}) {
+			telegram_test_control(t, &f, "fail", struct {method: string, status: int, description: string}{method, status, "TEST:FAKE secret URL"})
+			err: Channel_Error
+			if method == "getFile" {
+				got: Fetched_Media
+				got, err = telegram_media_fetch(&f.telegram, "secret file ref", 100)
+				delete(got.bytes); delete(got.mime)
+			} else {
+				id: string
+				id, err = telegram_send_media(&f.telegram, "111", {.Document, "f", "application/pdf", []byte{1}, ""}, 1000)
+				delete(id)
+			}
+			testing.expect(t, err.kind != .None && !strings.contains(err.message, "TEST:FAKE") && !strings.contains(err.message, "secret"))
+		}
+	}
+}
