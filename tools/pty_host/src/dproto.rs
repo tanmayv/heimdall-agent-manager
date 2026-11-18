@@ -54,13 +54,30 @@
 
 use std::io::{self, Read, Write};
 
-use crate::proto::{read_frame, NamedKey, ScreenSnapshot};
+use crate::proto::{NamedKey, ScreenSnapshot};
 
 /// Everything the daemon needs to (re-)spawn an agent. The daemon stores this so
 /// `Restart` re-spawns the exact same command without the caller re-plumbing it.
 // serde_json::Value is PartialEq but not Eq (f64 NaN), so Eq is not derived here.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SpawnMode { #[default] Pty, Pipe }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PipeInfo {
+    pub instance: String,
+    pub generation: String,
+    pub pid: i32,
+    pub alive: bool,
+    pub exit_code: Option<i32>,
+    pub meta: Option<serde_json::Value>,
+}
+
+pub const MAX_CTL_FRAME: usize = 4 * 1024 * 1024;
+pub const MAX_PIPE_DATA: usize = 64 * 1024;
+
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct SpawnRequest {
+    pub mode: SpawnMode,
     /// Agent-instance id (the registry key). Required + unique.
     pub instance: String,
     /// Program + args to exec. `argv[0]` is the program.
@@ -296,6 +313,13 @@ pub struct SignalRequest {
 // SpawnRequest contains serde_json::Value (not Eq), so Eq is not derived.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CtlMsg {
+    Capabilities,
+    SpawnPipe(SpawnRequest),
+    ListPipes,
+    AttachPipe { instance: String, generation: String, after_seq: u64 },
+    PipeInput { instance: String, generation: String, delivery_id: String, data: Vec<u8> },
+    PipeAck { instance: String, generation: String, through_seq: u64 },
+    PipeDetach { instance: String, generation: String },
     // control plane
     Spawn(SpawnRequest),
     Close { instance: String },
@@ -331,6 +355,12 @@ pub enum CtlMsg {
 /// daemon -> client.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CtlReply {
+    Capabilities { piped_spawn_v1: bool },
+    PipeList(Vec<PipeInfo>),
+    PipeReady { instance: String, generation: String, first_seq: u64, last_seq: u64 },
+    PipeOutput { instance: String, generation: String, seq: u64, stream: u8, data: Vec<u8> },
+    PipeInputDone { instance: String, generation: String, delivery_id: String },
+    PipeGap { instance: String, generation: String, first_seq: u64 },
     StartupInputDone { instance: String, pid: i32, launch_key: String },
     /// pid=0 means no live child was spawned with the requested key.
     StartupLaunch { instance: String, pid: i32, launch_key: String },
@@ -423,6 +453,30 @@ pub const T_STREAM_READY: u8 = 0xAE;
 pub const T_STREAM_CLOSED: u8 = 0xAF;
 pub const T_ALREADY_EXITED: u8 = 0xB0;
 const T_STARTUP_INPUT_DONE: u8 = 0xB1;
+
+fn put_bytes(p: &mut Vec<u8>, data: &[u8]) {
+    p.extend_from_slice(&(data.len() as u32).to_be_bytes()); p.extend_from_slice(data);
+}
+fn get_u32(rest: &[u8], off: &mut usize) -> io::Result<u32> { Ok(get_i32(rest, off)? as u32) }
+fn get_bytes(rest: &[u8], off: &mut usize) -> io::Result<Vec<u8>> {
+    let n = get_u32(rest, off)? as usize;
+    if n > MAX_PIPE_DATA || n > rest.len().saturating_sub(*off) { return Err(bad("invalid pipe data length")); }
+    let data = rest[*off..*off+n].to_vec(); *off += n; Ok(data)
+}
+fn get_bool(rest: &[u8], off: &mut usize) -> io::Result<bool> {
+    let b = *rest.get(*off).ok_or_else(|| bad("missing boolean"))?; *off += 1;
+    match b { 0 => Ok(false), 1 => Ok(true), _ => Err(bad("invalid boolean")) }
+}
+
+/// Read daemon frames with a stricter allocation bound than the terminal protocol.
+fn read_frame<R: Read>(r: &mut R) -> io::Result<Option<Vec<u8>>> {
+    let mut prefix = [0; 4];
+    match r.read(&mut prefix[..1]) { Ok(0) => return Ok(None), Ok(_) => (), Err(e) => return Err(e) }
+    r.read_exact(&mut prefix[1..])?;
+    let n = u32::from_be_bytes(prefix) as usize;
+    if n > MAX_CTL_FRAME { return Err(bad("oversized control frame")); }
+    let mut p = vec![0; n]; r.read_exact(&mut p)?; Ok(Some(p))
+}
 
 // ---- primitive codecs ---------------------------------------------------
 
@@ -562,7 +616,9 @@ fn get_screen(rest: &[u8], off: &mut usize) -> io::Result<ScreenSnapshot> {
 impl CtlMsg {
     pub fn shell_id(&self) -> Option<&str> {
         match self {
-            CtlMsg::Spawn(req) => Some(&req.instance),
+            CtlMsg::Spawn(req) | CtlMsg::SpawnPipe(req) => Some(&req.instance),
+            CtlMsg::AttachPipe { instance, .. } | CtlMsg::PipeInput { instance, .. } |
+            CtlMsg::PipeAck { instance, .. } | CtlMsg::PipeDetach { instance, .. } => Some(instance),
             CtlMsg::Close { instance } => Some(instance),
             CtlMsg::Restart { instance } => Some(instance),
             CtlMsg::Attach { instance } => Some(instance),
@@ -585,8 +641,23 @@ impl CtlMsg {
     pub fn encode(&self) -> Vec<u8> {
         let mut p = Vec::new();
         match self {
-            CtlMsg::Spawn(req) => {
-                p.push(T_SPAWN);
+            CtlMsg::Capabilities => p.push(0x40),
+            CtlMsg::ListPipes => p.push(0x42),
+            CtlMsg::AttachPipe { instance, generation, after_seq } => {
+                p.push(0x43); put_str(&mut p, instance); put_str(&mut p, generation); put_u64(&mut p, *after_seq);
+            }
+            CtlMsg::PipeInput { instance, generation, delivery_id, data } => {
+                p.push(0x44); put_str(&mut p, instance); put_str(&mut p, generation); put_str(&mut p, delivery_id);
+                put_bytes(&mut p, data);
+            }
+            CtlMsg::PipeAck { instance, generation, through_seq } => {
+                p.push(0x45); put_str(&mut p, instance); put_str(&mut p, generation); put_u64(&mut p, *through_seq);
+            }
+            CtlMsg::PipeDetach { instance, generation } => {
+                p.push(0x46); put_str(&mut p, instance); put_str(&mut p, generation);
+            }
+            CtlMsg::Spawn(req) | CtlMsg::SpawnPipe(req) => {
+                p.push(if matches!(self, CtlMsg::SpawnPipe(_)) { 0x41 } else { T_SPAWN });
                 put_str(&mut p, &req.instance);
                 put_u16(&mut p, req.argv.len() as u16);
                 for a in &req.argv {
@@ -675,8 +746,8 @@ impl CtlMsg {
         let tag = *p.first().ok_or_else(|| bad("empty payload"))?;
         let rest = &p[1..];
         let mut off = 0usize;
-        Ok(match tag {
-            T_SPAWN => {
+        let result = match tag {
+            T_SPAWN | 0x41 => {
                 let instance = get_str(rest, &mut off)?;
                 let n = get_u16(rest, &mut off)? as usize;
                 let mut argv = Vec::with_capacity(n);
@@ -699,10 +770,13 @@ impl CtlMsg {
                 let kind = if off < rest.len() { get_opt_str(rest, &mut off)? } else { None };
                 let label = if off < rest.len() { get_opt_str(rest, &mut off)? } else { None };
                 let meta_str = if off < rest.len() { get_opt_str(rest, &mut off)? } else { None };
-                let meta = meta_str.and_then(|s| serde_json::from_str(&s).ok());
+                let meta = if tag == 0x41 {
+                    meta_str.map(|s| serde_json::from_str(&s).map_err(|_| bad("invalid pipe metadata"))).transpose()?
+                } else { meta_str.and_then(|s| serde_json::from_str(&s).ok()) };
                 let tee_path = if off < rest.len() { get_opt_str(rest, &mut off)? } else { None };
                 let timeout_seconds = get_opt_u64(rest, &mut off)?;
-                CtlMsg::Spawn(SpawnRequest {
+                let req = SpawnRequest {
+                    mode: if tag == 0x41 { SpawnMode::Pipe } else { SpawnMode::Pty },
                     instance,
                     argv,
                     cwd,
@@ -716,7 +790,8 @@ impl CtlMsg {
                     meta,
                     tee_path,
                     timeout_seconds,
-                })
+                };
+                if tag == 0x41 { CtlMsg::SpawnPipe(req) } else { CtlMsg::Spawn(req) }
             }
             T_CLOSE => CtlMsg::Close {
                 instance: get_str(rest, &mut off)?,
@@ -773,8 +848,16 @@ impl CtlMsg {
                 let signal = *rest.get(off).ok_or_else(|| bad("signal byte missing"))?;
                 CtlMsg::Signal(SignalRequest { shell_id, signal })
             }
+            0x40 => CtlMsg::Capabilities,
+            0x42 => CtlMsg::ListPipes,
+            0x43 => CtlMsg::AttachPipe { instance: get_str(rest, &mut off)?, generation: get_str(rest, &mut off)?, after_seq: get_u64(rest, &mut off)? },
+            0x44 => CtlMsg::PipeInput { instance: get_str(rest, &mut off)?, generation: get_str(rest, &mut off)?, delivery_id: get_str(rest, &mut off)?, data: get_bytes(rest, &mut off)? },
+            0x45 => CtlMsg::PipeAck { instance: get_str(rest, &mut off)?, generation: get_str(rest, &mut off)?, through_seq: get_u64(rest, &mut off)? },
+            0x46 => CtlMsg::PipeDetach { instance: get_str(rest, &mut off)?, generation: get_str(rest, &mut off)? },
             _ => return Err(bad("unknown ctl tag")),
-        })
+        };
+        if (0x40..=0x46).contains(&tag) && off != rest.len() { return Err(bad("trailing pipe request data")); }
+        Ok(result)
     }
 }
 
@@ -783,6 +866,8 @@ impl CtlMsg {
 impl CtlReply {
     pub fn shell_id(&self) -> Option<&str> {
         match self {
+            CtlReply::PipeReady { instance, .. } | CtlReply::PipeOutput { instance, .. } |
+            CtlReply::PipeInputDone { instance, .. } | CtlReply::PipeGap { instance, .. } => Some(instance),
             CtlReply::Spawned { instance, .. } => Some(instance),
             CtlReply::Closed { instance } => Some(instance),
             CtlReply::Restarted { instance, .. } => Some(instance),
@@ -809,6 +894,28 @@ impl CtlReply {
     pub fn encode(&self) -> Vec<u8> {
         let mut p = Vec::new();
         match self {
+            CtlReply::Capabilities { piped_spawn_v1 } => { p.push(0xC0); p.push(*piped_spawn_v1 as u8); }
+            CtlReply::PipeList(rows) => {
+                p.push(0xC1); p.extend_from_slice(&(rows.len() as u32).to_be_bytes());
+                for row in rows {
+                    put_str(&mut p, &row.instance); put_str(&mut p, &row.generation);
+                    put_i32(&mut p, row.pid); p.push(row.alive as u8);
+                    match row.exit_code { Some(code) => { p.push(1); put_i32(&mut p, code); }, None => p.push(0) }
+                    put_opt_str(&mut p, &row.meta.as_ref().map(|v| v.to_string()));
+                }
+            }
+            CtlReply::PipeReady { instance, generation, first_seq, last_seq } => {
+                p.push(0xC2); put_str(&mut p, instance); put_str(&mut p, generation); put_u64(&mut p, *first_seq); put_u64(&mut p, *last_seq);
+            }
+            CtlReply::PipeOutput { instance, generation, seq, stream, data } => {
+                p.push(0xC3); put_str(&mut p, instance); put_str(&mut p, generation); put_u64(&mut p, *seq); p.push(*stream); put_bytes(&mut p, data);
+            }
+            CtlReply::PipeInputDone { instance, generation, delivery_id } => {
+                p.push(0xC4); put_str(&mut p, instance); put_str(&mut p, generation); put_str(&mut p, delivery_id);
+            }
+            CtlReply::PipeGap { instance, generation, first_seq } => {
+                p.push(0xC5); put_str(&mut p, instance); put_str(&mut p, generation); put_u64(&mut p, *first_seq);
+            }
             CtlReply::StartupInputDone { instance, pid, launch_key } => {
                 p.push(T_STARTUP_INPUT_DONE);
                 put_str(&mut p, instance);
@@ -935,7 +1042,7 @@ impl CtlReply {
         let tag = *p.first().ok_or_else(|| bad("empty payload"))?;
         let rest = &p[1..];
         let mut off = 0usize;
-        Ok(match tag {
+        let result = match tag {
             T_SPAWNED => {
                 let instance = get_str(rest, &mut off)?;
                 CtlReply::Spawned {
@@ -1083,8 +1190,36 @@ impl CtlReply {
                 pid: get_i32(rest, &mut off)?,
                 launch_key: get_str(rest, &mut off)?,
             },
+            0xC0 => CtlReply::Capabilities { piped_spawn_v1: get_bool(rest, &mut off)? },
+            0xC1 => {
+                let n = get_u32(rest, &mut off)? as usize;
+                if n > rest.len() / 15 { return Err(bad("pipe list count too large")); }
+                let mut rows = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let instance = get_str(rest, &mut off)?;
+                    let generation = get_str(rest, &mut off)?;
+                    let pid = get_i32(rest, &mut off)?;
+                    let alive = get_bool(rest, &mut off)?;
+                    let exit_code = if get_bool(rest, &mut off)? { Some(get_i32(rest, &mut off)?) } else { None };
+                    let meta = get_opt_str(rest, &mut off)?.map(|v| serde_json::from_str(&v).map_err(|_| bad("invalid pipe metadata"))).transpose()?;
+                    rows.push(PipeInfo { instance, generation, pid, alive, exit_code, meta });
+                }
+                CtlReply::PipeList(rows)
+            }
+            0xC2 => CtlReply::PipeReady { instance: get_str(rest, &mut off)?, generation: get_str(rest, &mut off)?, first_seq: get_u64(rest, &mut off)?, last_seq: get_u64(rest, &mut off)? },
+            0xC3 => {
+                let instance = get_str(rest, &mut off)?; let generation = get_str(rest, &mut off)?;
+                let seq = get_u64(rest, &mut off)?;
+                let stream = *rest.get(off).ok_or_else(|| bad("stream missing"))?; off += 1;
+                if !matches!(stream, 1 | 2) || (stream == 2 && seq != 0) || (stream == 1 && seq == 0) { return Err(bad("invalid pipe stream/sequence")); }
+                CtlReply::PipeOutput { instance, generation, seq, stream, data: get_bytes(rest, &mut off)? }
+            }
+            0xC4 => CtlReply::PipeInputDone { instance: get_str(rest, &mut off)?, generation: get_str(rest, &mut off)?, delivery_id: get_str(rest, &mut off)? },
+            0xC5 => CtlReply::PipeGap { instance: get_str(rest, &mut off)?, generation: get_str(rest, &mut off)?, first_seq: get_u64(rest, &mut off)? },
             _ => return Err(bad("unknown reply tag")),
-        })
+        };
+        if (0xC0..=0xC5).contains(&tag) && off != rest.len() { return Err(bad("trailing pipe reply data")); }
+        Ok(result)
     }
 }
 
@@ -1172,8 +1307,63 @@ mod tests {
     }
 
     #[test]
+    fn pipe_variants_roundtrip_and_reject_truncation_or_trailing_data() {
+        let requests = vec![
+            CtlMsg::Capabilities, CtlMsg::ListPipes,
+            CtlMsg::SpawnPipe(SpawnRequest { mode: SpawnMode::Pipe, instance: "i".into(), argv: vec!["cat".into()], ..Default::default() }),
+            CtlMsg::AttachPipe { instance: "i".into(), generation: "g".into(), after_seq: 9 },
+            CtlMsg::PipeInput { instance: "i".into(), generation: "g".into(), delivery_id: "d".into(), data: vec![0, 255, 10] },
+            CtlMsg::PipeAck { instance: "i".into(), generation: "g".into(), through_seq: 10 },
+            CtlMsg::PipeDetach { instance: "i".into(), generation: "g".into() },
+        ];
+        for req in requests {
+            let bytes = req.encode();
+            round_msg(req);
+            for n in 0..bytes.len()-4 { assert!(CtlMsg::decode_payload(&bytes[4..4+n]).is_err(), "truncated request {n}"); }
+            let mut extra = bytes[4..].to_vec(); extra.push(0);
+            assert!(CtlMsg::decode_payload(&extra).is_err());
+        }
+        let replies = vec![
+            CtlReply::Capabilities { piped_spawn_v1: true },
+            CtlReply::PipeList(vec![PipeInfo { instance: "i".into(), generation: "g".into(), pid: 42, alive: false, exit_code: Some(-9), meta: Some(serde_json::json!({"provider":"claude"})) }]),
+            CtlReply::PipeReady { instance: "i".into(), generation: "g".into(), first_seq: 1, last_seq: 10 },
+            CtlReply::PipeOutput { instance: "i".into(), generation: "g".into(), seq: 1, stream: 1, data: vec![0,255,10] },
+            CtlReply::PipeOutput { instance: "i".into(), generation: "g".into(), seq: 0, stream: 2, data: b"diag".to_vec() },
+            CtlReply::PipeInputDone { instance: "i".into(), generation: "g".into(), delivery_id: "d".into() },
+            CtlReply::PipeGap { instance: "i".into(), generation: "g".into(), first_seq: 2 },
+        ];
+        for reply in replies {
+            let bytes = reply.encode(); round_reply(reply);
+            for n in 0..bytes.len()-4 { assert!(CtlReply::decode_payload(&bytes[4..4+n]).is_err(), "truncated reply {n}"); }
+            let mut extra = bytes[4..].to_vec(); extra.push(0);
+            assert!(CtlReply::decode_payload(&extra).is_err());
+        }
+        // Golden vectors shared with the Odin tests.
+        assert_eq!(CtlMsg::AttachPipe { instance: "i".into(), generation: "g".into(), after_seq: 9 }.encode(),
+            vec![0,0,0,19,0x43,0,0,0,1,b'i',0,0,0,1,b'g',0,0,0,0,0,0,0,9]);
+        assert_eq!(CtlReply::Capabilities { piped_spawn_v1: true }.encode(), vec![0,0,0,2,0xC0,1]);
+    }
+
+    #[test]
+    fn pipe_codecs_bound_allocations_and_validate_discriminants() {
+        let oversized = ((MAX_CTL_FRAME + 1) as u32).to_be_bytes();
+        assert!(read_ctl_msg(&mut Cursor::new(oversized)).is_err());
+        assert!(read_ctl_reply(&mut Cursor::new(oversized)).is_err());
+        let input = CtlMsg::PipeInput { instance: "i".into(), generation: "g".into(), delivery_id: "d".into(), data: vec![0; MAX_PIPE_DATA + 1] };
+        assert!(read_ctl_msg(&mut Cursor::new(input.encode())).is_err());
+        for stream in [0, 3, 255] {
+            let reply = CtlReply::PipeOutput { instance: "i".into(), generation: "g".into(), seq: 1, stream, data: vec![] };
+            assert!(read_ctl_reply(&mut Cursor::new(reply.encode())).is_err());
+        }
+        assert!(CtlReply::decode_payload(&[0xC0,2]).is_err());
+        assert!(CtlMsg::decode_payload(&[0x47]).is_err());
+        assert!(CtlReply::decode_payload(&[0xC1,255,255,255,255]).is_err());
+    }
+
+    #[test]
     fn spawn_request_roundtrips_full() {
         round_msg(CtlMsg::Spawn(SpawnRequest {
+            mode: SpawnMode::Pty,
             instance: "inst_abc".into(),
             argv: vec!["/bin/zsh".into(), "-l".into()],
             cwd: Some("/work/dir".into()),
@@ -1196,6 +1386,7 @@ mod tests {
     #[test]
     fn spawn_request_roundtrips_minimal() {
         round_msg(CtlMsg::Spawn(SpawnRequest {
+            mode: SpawnMode::Pty,
             instance: "i".into(),
             argv: vec!["true".into()],
             cwd: None,
@@ -1215,6 +1406,7 @@ mod tests {
     #[test]
     fn spawn_request_with_all_optional_fields_absent_roundtrips() {
         let request = CtlMsg::Spawn(SpawnRequest {
+            mode: SpawnMode::Pty,
             instance: "old".into(),
             argv: vec!["sh".into()],
             cwd: None,

@@ -6,7 +6,7 @@ import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 
 @(test)
-test_migration_210_applies_fresh_and_upgrade :: proc(t: ^testing.T) {
+test_migration_214_applies_fresh_and_upgrade :: proc(t: ^testing.T) {
 	fresh, opened, _ := open(":memory:")
 	if !testing.expect(t, opened) do return
 	defer close(&fresh)
@@ -18,10 +18,10 @@ test_migration_210_applies_fresh_and_upgrade :: proc(t: ^testing.T) {
 	base, base_open, _ := open(":memory:")
 	if !testing.expect(t, base_open) do return
 	defer close(&base)
-	ok, err = run_migrations(&base, stop_before = "210_agent_writes.sql")
+	ok, err = run_migrations(&base, stop_before = "214_agent_writes.sql")
 	if !testing.expect(t, ok) || !bot_test_expect_ok(t, err) do return
-	testing.expect(t, migration_applied(&base, "209_bots.sql"))
-	testing.expect(t, !migration_applied(&base, "210_agent_writes.sql"))
+	testing.expect(t, migration_applied(&base, "213_bots.sql"))
+	testing.expect(t, !migration_applied(&base, "214_agent_writes.sql"))
 	copy, copy_open, _ := open(":memory:")
 	if !testing.expect(t, copy_open) do return
 	defer close(&copy)
@@ -34,8 +34,8 @@ test_migration_210_applies_fresh_and_upgrade :: proc(t: ^testing.T) {
 		testing.expect(t, ok)
 		bot_test_expect_ok(t, err)
 	}
-	testing.expect(t, migration_applied(&copy, "210_agent_writes.sql"))
-	testing.expect(t, !migration_applied(&base, "210_agent_writes.sql"))
+	testing.expect(t, migration_applied(&copy, "214_agent_writes.sql"))
+	testing.expect(t, !migration_applied(&base, "214_agent_writes.sql"))
 
 	for name in ([]string{"agent_writes_owner_seq", "agent_writes_owner_resource"}) {
 		stmt, err := bot_repo_prepare(

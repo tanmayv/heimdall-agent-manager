@@ -56,6 +56,8 @@ placement_statuses :: proc(ctx: rawptr, bridge: string) -> ([dynamic]domain.Brid
 	for id in placement_provider_ids(ctx) do append(&out, domain.Bridge_Provider_Status{provider = strings.clone(id), state = strings.clone("present")})
 	return out, {}
 }
+// Production settings default to PTY when no transport override is stored.
+placement_transport :: proc(ctx: rawptr, bridge, provider: string) -> (string, domain.Domain_Error) {return "", {}}
 placement_settings :: proc(ctx: rawptr, bridge: string) -> ([dynamic]domain.Bridge_Provider_Setting, domain.Domain_Error) {return nil, {}}
 placement_models :: proc(ctx: rawptr, bridge: string) -> ([dynamic]domain.Bridge_Provider_Models, domain.Domain_Error) {
 	out := make([dynamic]domain.Bridge_Provider_Models)
@@ -72,7 +74,7 @@ placement_attempts :: proc(ctx: rawptr, delivery: string) -> ([]domain.Bot_Deliv
 placement_instance :: proc(ctx: rawptr, id: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {return domain.Agent_Instance{bridge_id = strings.clone((^Placement_Fixture)(ctx).sticky)}, true, {}}
 placement_fixture :: proc() -> ^Placement_Fixture {
 	f := new(Placement_Fixture)
-	f.provider_repo = {ctx = f, list = placement_catalog_list, get = placement_catalog_get, list_status = placement_statuses, list_settings = placement_settings, list_models = placement_models}
+	f.provider_repo = {ctx = f, list = placement_catalog_list, get = placement_catalog_get, list_status = placement_statuses, list_settings = placement_settings, list_models = placement_models, get_provider_transport = placement_transport}
 	f.providers.repo = &f.provider_repo
 	f.bridge_repo = {ctx = f, get_bridge = placement_bridge_get, list_by_owner = placement_bridge_list}
 	f.agent_repo = {ctx = f, get_instance = placement_instance}

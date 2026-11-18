@@ -661,15 +661,20 @@ MIGRATION_207_EXTENSION_VERSION_SYNC :: #load("migrations/207_extension_version_
 
 MIGRATION_208_EXTENSION_VERSION_SYNC :: #load("migrations/208_extension_version_sync_0_5_54.sql", string)
 
-MIGRATION_210_AGENT_WRITES :: #load("migrations/210_agent_writes.sql", string)
-MIGRATION_211_BOTS_WHATSAPP :: #load("migrations/211_bots_whatsapp.sql", string)
-MIGRATION_212_BOTS_MEDIA :: #load("migrations/212_bots_media.sql", string)
-
-MIGRATION_209_BOTS :: #load("migrations/209_bots.sql", string)
-
 MIGRATION_209_EXTENSION_VERSION_SYNC :: #load("migrations/209_extension_version_sync_0_5_55.sql", string)
 
-migration_order :: [217]string {
+MIGRATION_210_EXTENSION_VERSION_SYNC :: #load("migrations/210_extension_version_sync_0_5_56.sql", string)
+
+MIGRATION_211_PROVIDER_TRANSPORT :: #load("migrations/211_provider_transport.sql", string)
+
+MIGRATION_212_EXTENSION_VERSION_SYNC :: #load("migrations/212_extension_version_sync_0_5_57.sql", string)
+
+MIGRATION_213_BOTS :: #load("migrations/213_bots.sql", string)
+MIGRATION_214_AGENT_WRITES :: #load("migrations/214_agent_writes.sql", string)
+MIGRATION_215_BOTS_WHATSAPP :: #load("migrations/215_bots_whatsapp.sql", string)
+MIGRATION_216_BOTS_MEDIA :: #load("migrations/216_bots_media.sql", string)
+
+migration_order :: [?]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
 	"003_device_tokens.sql",
@@ -883,10 +888,13 @@ migration_order :: [217]string {
 	"207_extension_version_sync_0_5_53.sql",
 	"208_extension_version_sync_0_5_54.sql",
 	"209_extension_version_sync_0_5_55.sql",
-	"209_bots.sql",
-	"210_agent_writes.sql",
-	"211_bots_whatsapp.sql",
-	"212_bots_media.sql",
+	"210_extension_version_sync_0_5_56.sql",
+	"211_provider_transport.sql",
+	"212_extension_version_sync_0_5_57.sql",
+	"213_bots.sql",
+	"214_agent_writes.sql",
+	"215_bots_whatsapp.sql",
+	"216_bots_media.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -907,6 +915,11 @@ run_migrations :: proc(
 	}
 	for name in migration_order {
 		if stop_before != "" && name == stop_before do return true, domain.Domain_Error{}
+        // 211 is transactional; repair only a committed schema/ledger gap.
+        if name=="211_provider_transport.sql" && table_column_exists(conn,"agent_instances","runtime_transport") && sqlite_object_exists(conn,"acp_assistant_turns") && sqlite_object_exists(conn,"provider_transport_update") {
+         mark_migration_applied(conn,name)
+         continue
+        }
 		if name == "016_memory_workflow_skill_memory.sql" {
 			if !upgrade_memory_target_scope_schema(conn) do return false, domain.domain_error(.Internal_Error, "memory target scope schema upgrade failed")
 		}
@@ -929,17 +942,17 @@ run_migrations :: proc(
          mark_migration_applied(conn,name)
          continue
         }
-		// 211 commits atomically; repair a crash before its ledger insert.
-		if name == "211_bots_whatsapp.sql" && sqlite_object_exists(conn, "channel_push_events_pending") {
-			mark_migration_applied(conn, name)
-			continue
-		}
-		// 212 commits atomically; its last index lets startup repair a crash before its ledger insert.
-		if name == "212_bots_media.sql" && sqlite_object_exists(conn, "channel_attachments_bot") {
-			mark_migration_applied(conn, name)
-			continue
-		}
 		if migration_applied(conn, name) do continue
+		// 215 commits atomically; repair a crash before its ledger insert.
+		if name == "215_bots_whatsapp.sql" && sqlite_object_exists(conn, "channel_push_events_pending") {
+			mark_migration_applied(conn, name)
+			continue
+		}
+		// 216 commits atomically; its last index lets startup repair a crash before its ledger insert.
+		if name == "216_bots_media.sql" && sqlite_object_exists(conn, "channel_attachments_bot") {
+			mark_migration_applied(conn, name)
+			continue
+		}
         // 203 may have committed before its ledger write (or an older build may
         // have applied only the ALTER). Re-run its idempotent data conversion.
         if name == "203_durable_task_claims.sql" && table_column_exists(conn, "task_leases", "phase") {
@@ -1346,7 +1359,7 @@ run_migrations :: proc(
 			)
 		}
 		if !exec(conn, sql) {
-			if name == "169_provider_profiles.sql" || name == "211_bots_whatsapp.sql" || name == "212_bots_media.sql" do _ = exec(conn, "ROLLBACK;")
+			if name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" do _ = exec(conn, "ROLLBACK;")
 			delete(sql)
 			return false, domain.domain_error(
 				.Internal_Error,
@@ -1396,10 +1409,13 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 			return string(data)
 		}
 	}
-	if name == "212_bots_media.sql" do return strings.clone(MIGRATION_212_BOTS_MEDIA)
-	if name == "211_bots_whatsapp.sql" do return strings.clone(MIGRATION_211_BOTS_WHATSAPP)
-	if name == "210_agent_writes.sql" do return strings.clone(MIGRATION_210_AGENT_WRITES)
-	if name == "209_bots.sql" do return strings.clone(MIGRATION_209_BOTS)
+	if name == "212_extension_version_sync_0_5_57.sql" do return strings.clone(MIGRATION_212_EXTENSION_VERSION_SYNC)
+	if name == "211_provider_transport.sql" do return strings.clone(MIGRATION_211_PROVIDER_TRANSPORT)
+	if name == "210_extension_version_sync_0_5_56.sql" do return strings.clone(MIGRATION_210_EXTENSION_VERSION_SYNC)
+	if name == "216_bots_media.sql" do return strings.clone(MIGRATION_216_BOTS_MEDIA)
+	if name == "215_bots_whatsapp.sql" do return strings.clone(MIGRATION_215_BOTS_WHATSAPP)
+	if name == "214_agent_writes.sql" do return strings.clone(MIGRATION_214_AGENT_WRITES)
+	if name == "213_bots.sql" do return strings.clone(MIGRATION_213_BOTS)
 	if name == "209_extension_version_sync_0_5_55.sql" do return strings.clone(MIGRATION_209_EXTENSION_VERSION_SYNC)
 	if name == "208_extension_version_sync_0_5_54.sql" do return strings.clone(MIGRATION_208_EXTENSION_VERSION_SYNC)
 	if name == "207_extension_version_sync_0_5_53.sql" do return strings.clone(MIGRATION_207_EXTENSION_VERSION_SYNC)
@@ -1625,6 +1641,12 @@ migration_applied :: proc(conn: ^Conn, version: string) -> bool {
 	if sqlite3_prepare_v2(conn.db, cstring(raw_data(query)), c.int(-1), &stmt, nil) != SQLITE_OK do return false
 	defer sqlite3_finalize(stmt)
 	if sqlite3_step(stmt) == SQLITE_ROW do return true
+	// Bots shipped on staging before main claimed 210–212. Keep the original
+	// ledger identities and skip their renumbered equivalents without replaying SQL.
+	if version == "213_bots.sql" do return migration_applied(conn, "209_bots.sql")
+	if version == "214_agent_writes.sql" do return migration_applied(conn, "210_agent_writes.sql")
+	if version == "215_bots_whatsapp.sql" do return migration_applied(conn, "211_bots_whatsapp.sql")
+	if version == "216_bots_media.sql" do return migration_applied(conn, "212_bots_media.sql")
 	if version == "046_task_chain_fleets.sql" {
 		return migration_applied(conn, "044_task_chain_fleets.sql")
 	}

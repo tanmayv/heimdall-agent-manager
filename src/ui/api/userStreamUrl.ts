@@ -1,4 +1,5 @@
 import { apiAbsoluteUrl } from './apiBase';
+import { getExpectedUserId } from '../utils/expectedUser';
 
 // Browsers and the packaged Electron app (which loads the Hub UI origin) both
 // authenticate stream upgrades with the Hub session cookie.
@@ -9,5 +10,8 @@ export async function authenticatedStreamUrl(path: string, _signal?: AbortSignal
   // to own the origin the preview is framed in.
   const url = new URL(apiAbsoluteUrl(path));
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  // Browsers cannot set headers on an upgrade: REQ-SWFIX-STALE-1 carries the expected user in the query.
+  const expected = getExpectedUserId();
+  if (expected && path === '/api/v1/user-ws') url.searchParams.set('expected_user', expected);
   return url.toString();
 }

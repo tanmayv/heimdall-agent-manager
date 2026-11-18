@@ -28,8 +28,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{anyhow, Context, Result};
 
 use crate::detect::{screen_hash, DetectAction, Detector, StartupDetectionConfig, StartupOutcome};
-use crate::dproto::{self, AgentInfo, CtlMsg, CtlReply, HostHeartbeatAgent, SignalRequest, SpawnRequest};
-use crate::host::{PtyHost, SpawnConfig};
+use crate::dproto::{self, AgentInfo, CtlMsg, CtlReply, HostHeartbeatAgent, SignalRequest, SpawnRequest, SpawnMode, PipeInfo};
+use crate::host::{Host, PtyHost, SpawnConfig};
 use crate::ipc::{UnixListener, UnixStream};
 use crate::proto::ScreenSnapshot;
 
@@ -181,6 +181,9 @@ fn prune_tombstones(agents: &mut HashMap<String, Agent>, max: usize, ttl: Durati
         .iter()
         .filter_map(|(id, a)| match a.exited_at.load(Ordering::SeqCst) {
             0 => None,
+            at if a.spec.mode == SpawnMode::Pipe => {
+                if at < now_millis().saturating_sub(600_000) { Some((0, id.clone())) } else { None }
+            }
             at => Some((at, id.clone())),
         })
         .collect();
@@ -196,7 +199,7 @@ fn prune_tombstones(agents: &mut HashMap<String, Agent>, max: usize, ttl: Durati
 /// One registered agent: its PTY host + the spec we remember for restart.
 struct Agent {
     spec: SpawnRequest,
-    host: Arc<Mutex<PtyHost>>,
+    host: Arc<Mutex<Host>>,
     alive: Arc<AtomicBool>,
     pid: i32,
     started_at: u64,
@@ -255,6 +258,7 @@ impl Agent {
     /// Stop the child (SIGTERM -> grace -> SIGKILL) and join background threads.
     fn shutdown(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        self.host.lock().unwrap().stop_io();
         if self.alive.load(Ordering::SeqCst) {
             self.host.lock().unwrap().terminate();
             let dead = self
@@ -291,14 +295,14 @@ impl Agent {
 // shut down that client; its next attach obtains a complete current screen.
 const REPLY_QUEUE_BYTES: usize = 1024 * 1024;
 const REPLY_QUEUE_FRAMES: usize = 256;
-struct ReplyBudget { bytes: usize, frames: usize, failed: bool }
+struct ReplyBudget { bytes: usize, frames: usize, failed: bool, pipe: bool }
 #[derive(Clone)]
-struct ReplySink {
+pub(crate) struct ReplySink {
     tx: std::sync::mpsc::Sender<QueuedReply>,
     budget: Arc<Mutex<ReplyBudget>>,
     socket: Option<Arc<UnixStream>>,
 }
-struct QueuedReply { bytes: Vec<u8>, budget: Arc<Mutex<ReplyBudget>> }
+pub(crate) struct QueuedReply { pub(crate) bytes: Vec<u8>, budget: Arc<Mutex<ReplyBudget>> }
 impl Drop for QueuedReply {
     fn drop(&mut self) {
         let mut b = self.budget.lock().unwrap();
@@ -306,12 +310,52 @@ impl Drop for QueuedReply {
         b.frames -= 1;
     }
 }
-fn reply_channel(socket: Option<UnixStream>) -> (ReplySink, Receiver<QueuedReply>) {
+pub(crate) fn reply_channel(socket: Option<UnixStream>) -> (ReplySink, Receiver<QueuedReply>) {
     let (tx, rx) = std::sync::mpsc::channel();
-    (ReplySink { tx, budget: Arc::new(Mutex::new(ReplyBudget { bytes: 0, frames: 0, failed: false })), socket: socket.map(Arc::new) }, rx)
+    (ReplySink { tx, budget: Arc::new(Mutex::new(ReplyBudget { bytes: 0, frames: 0, failed: false, pipe: false })), socket: socket.map(Arc::new) }, rx)
 }
 impl ReplySink {
-    fn send(&self, reply: CtlReply) -> Result<(), ()> {
+    #[cfg(test)]
+    pub(crate) fn queue_state(&self) -> (usize, bool) {
+        let b = self.budget.lock().unwrap(); (b.bytes, b.failed)
+    }
+    pub(crate) fn mark_pipe(&self) { self.budget.lock().unwrap().pipe = true; }
+    pub(crate) fn fence(&self) {
+        self.budget.lock().unwrap().failed = true;
+        if let Some(socket) = &self.socket { let _ = socket.shutdown(std::net::Shutdown::Both); }
+    }
+    // Full is flow control for pipe transports, not grounds to close a socket.
+    pub(crate) fn try_send_pipe(&self, reply: CtlReply) -> Result<bool, ()> {
+        let bytes = reply.encode();
+        let mut b = self.budget.lock().unwrap();
+        if b.failed { return Err(()); }
+        if bytes.len() > REPLY_QUEUE_BYTES.saturating_sub(b.bytes) || b.frames >= REPLY_QUEUE_FRAMES { return Ok(false); }
+        b.bytes += bytes.len(); b.frames += 1; drop(b);
+        self.tx.send(QueuedReply { bytes, budget: self.budget.clone() }).map_err(|_| ())?;
+        Ok(true)
+    }
+
+    /// Synchronous replies on a dedicated pipe connection also use flow
+    /// control. Called only by the control reader, with no registry/host locks.
+    /// In particular, an input-overflow error must not fence a slow reader or
+    /// disappear just because stdout has filled the subscriber queue.
+    fn send_control(&self, reply: CtlReply) -> Result<(), ()> {
+        if !self.budget.lock().unwrap().pipe {
+            return self.send(reply);
+        }
+        if reply.encode().len() > REPLY_QUEUE_BYTES {
+            return Err(());
+        }
+        loop {
+            match self.try_send_pipe(reply.clone()) {
+                Ok(true) => return Ok(()),
+                Err(()) => return Err(()),
+                Ok(false) => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+    }
+
+    pub(crate) fn send(&self, reply: CtlReply) -> Result<(), ()> {
         let bytes = reply.encode();
         let mut b = self.budget.lock().unwrap();
         if b.failed { return Err(()); }
@@ -348,6 +392,7 @@ type Watchers = Arc<Mutex<HashMap<u64, ReplySink>>>;
 #[derive(Clone)]
 pub struct Daemon {
     agents: Registry,
+    spawn_serial: Arc<Mutex<()>>,
     /// Clients that have Attached and are receiving instance-scoped Output.
     subs: Subscribers,
     /// All connected clients' sinks (HOST-5): a sink here is NOT subscribed to
@@ -370,10 +415,31 @@ impl Daemon {
     pub fn new() -> Self {
         Daemon {
             agents: Arc::new(Mutex::new(HashMap::new())),
+            spawn_serial: Arc::new(Mutex::new(())),
             subs: Arc::new(Mutex::new(HashMap::new())),
             sinks: Arc::new(Mutex::new(HashMap::new())),
             watchers: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+
+    fn require_pty(&self, instance: &str) -> Result<()> {
+        if self.agents.lock().unwrap().get(instance).is_some_and(|a| a.spec.mode == SpawnMode::Pipe) { return Err(anyhow!("pipe_requires_protocol")); }
+        Ok(())
+    }
+    pub fn list_pipes(&self) -> Vec<PipeInfo> {
+        self.agents.lock().unwrap().values().filter_map(|a| {
+            let host = a.host.lock().unwrap();
+            let Host::Pipe(h) = &*host else { return None };
+            Some(PipeInfo { instance: a.spec.instance.clone(), generation: h.generation().into(), pid: a.pid,
+                alive: a.alive.load(Ordering::SeqCst), exit_code: h.exit_code(), meta: a.spec.meta.clone() })
+        }).collect()
+    }
+    fn pipe_host(&self, instance: &str) -> Result<Arc<Mutex<Host>>> {
+        let agents = self.agents.lock().unwrap();
+        let a = agents.get(instance).ok_or_else(|| anyhow!("no such pipe instance"))?;
+        if a.spec.mode != SpawnMode::Pipe { return Err(anyhow!("pipe_requires_protocol")); }
+        Ok(a.host.clone())
     }
 
     /// Number of currently-registered agents.
@@ -384,6 +450,7 @@ impl Daemon {
     /// Register + launch a new agent. Errors if `instance` is empty, `argv` is
     /// empty, or the instance id is already registered.
     pub fn spawn(&self, spec: SpawnRequest) -> Result<i32> {
+        let _spawn = self.spawn_serial.lock().unwrap();
         if spec.instance.is_empty() {
             return Err(anyhow!("spawn: empty instance id"));
         }
@@ -431,12 +498,17 @@ impl Daemon {
             cwd: spec.cwd.clone(),
             extra_env: spec.env.clone(),
         };
-        let mut host = PtyHost::spawn(config)
-            .with_context(|| format!("spawn agent {}", spec.instance))?;
+        let last_activity = Arc::new(AtomicU64::new(now_secs()));
+        let (host, output_rx) = match spec.mode {
+            SpawnMode::Pty => {
+                let mut h = PtyHost::spawn(config).with_context(|| format!("spawn agent {}", spec.instance))?;
+                let rx = h.take_output_rx();
+                (Host::Pty(h), rx)
+            }
+            SpawnMode::Pipe => (Host::Pipe(crate::pipe_host::PipeHost::spawn(&spec, last_activity.clone())?), None),
+        };
         let pid = host.pid();
         let alive = host.alive_flag();
-        let output_rx = host.take_output_rx().expect("fresh host has output rx");
-        let last_activity = Arc::new(AtomicU64::new(now_secs()));
         let stop = Arc::new(AtomicBool::new(false));
         let host = Arc::new(Mutex::new(host));
 
@@ -452,17 +524,17 @@ impl Daemon {
         // Pump thread: fan raw output out to subscribers of this instance and
         // stamp last-activity. Ends when the PTY closes (child exit) — the
         // reader thread drops the sender so `recv` returns Err.
-        let pump = {
+        let pump = if let Some(output_rx) = output_rx {
             let subs = Arc::clone(&self.subs);
             let last_activity = Arc::clone(&last_activity);
             let instance = instance.clone();
             let tee_path = spec.tee_path.clone();
-            std::thread::Builder::new()
+            Some(std::thread::Builder::new()
                 .spawn(move || {
                     pump_output(output_rx, subs, instance, last_activity, tee_path);
                 })
-                .map_err(|e| abort("pump", e))?
-        };
+                .map_err(|e| abort("pump", e))?)
+        } else { None };
 
         // Exit watcher: when the child dies, broadcast ChildExited to every event
         // WATCHER (connections that sent WatchEvents), not all sinks: ChildExited
@@ -542,7 +614,7 @@ impl Daemon {
         // to the child, and broadcasts StartupReady/StartupBlocked + a
         // ScreenChanged dirty signal on content change. It stops on
         // stop/child-exit and is re-plumbed on restart (build_agent runs again).
-        let detector = {
+        let detector = if spec.mode == SpawnMode::Pipe { None } else {
             let cfg = StartupDetectionConfig::from_json(spec.detect.as_deref().unwrap_or(""));
             // Always run the loop (even when disabled/absent) so we still emit
             // the ScreenChanged activity signal; the Detector short-circuits
@@ -570,7 +642,7 @@ impl Daemon {
             last_activity,
             exited_at,
             stop,
-            pump: Some(pump),
+            pump,
             exit_watch: Some(exit_watch),
             detector,
             startup_input: StartupInputState::default(),
@@ -601,6 +673,7 @@ impl Daemon {
     /// is torn down first; background threads are re-plumbed automatically.
     /// Returns the new child pid.
     pub fn restart(&self, instance: &str) -> Result<i32> {
+        let _spawn = self.spawn_serial.lock().unwrap();
         // Take the existing agent out, remember its spec, tear it down.
         let mut old = self
             .agents
@@ -690,7 +763,10 @@ impl Daemon {
         }
         #[cfg(unix)]
         {
-            let _ = host;
+            if let Host::Pipe(pipe) = &*host.lock().unwrap() {
+                pipe.signal(signum)?;
+                return Ok(match pipe.exit_code() { Some(code) => SignalOutcome::AlreadyExited(code), None => SignalOutcome::Delivered });
+            }
             let ret = unsafe { libc::killpg(pid as libc::pid_t, signum as libc::c_int) };
             if ret == 0 {
                 return Ok(SignalOutcome::Delivered);
@@ -795,7 +871,7 @@ impl Daemon {
     pub fn capture(&self, shell_id: &str) -> Option<ScreenSnapshot> {
         let agents = self.agents.lock().unwrap();
         let a = agents.get(shell_id)?;
-        let cap = a.host.lock().unwrap().capture();
+        let cap = a.host.lock().unwrap().capture()?;
         Some(ScreenSnapshot {
             rows: cap.rows as u16,
             cols: cap.cols as u16,
@@ -871,6 +947,10 @@ impl Daemon {
                 Vec::new()
             }
         };
+        let pipes: Vec<_> = self.agents.lock().unwrap().values().filter(|a| a.spec.mode == SpawnMode::Pipe).map(|a| a.host.clone()).collect();
+        for h in pipes {
+            if let Host::Pipe(p) = &*h.lock().unwrap() { let _ = p.detach(id, p.generation()); }
+        }
         self.sinks.lock().unwrap().remove(&id);
         self.watchers.lock().unwrap().remove(&id);
 
@@ -884,6 +964,7 @@ impl Daemon {
     /// renders live state immediately. Does not affect the child. Errors if the
     /// shell/instance does not exist.
     pub fn attach(&self, id: u64, shell_id: &str) -> Result<ScreenSnapshot> {
+        self.require_pty(shell_id)?;
         let snap = self
             .capture(shell_id)
             .ok_or_else(|| anyhow!("attach: no such instance {shell_id}"))?;
@@ -1044,7 +1125,7 @@ fn broadcast_instance_subs(subs: &Subscribers, instance: &str, reply: &CtlReply)
 /// child exits or the agent is stopped.
 fn run_detector(
     cfg: StartupDetectionConfig,
-    host: Arc<Mutex<PtyHost>>,
+    host: Arc<Mutex<Host>>,
     watchers: Watchers,
     instance: String,
     alive: Arc<AtomicBool>,
@@ -1067,7 +1148,7 @@ fn run_detector(
 
         // Render the current screen to a single text blob for matching/hashing.
         let text = {
-            let cap = host.lock().unwrap().capture();
+            let Some(cap) = host.lock().unwrap().capture() else { return };
             cap.lines.join("\n")
         };
 
@@ -1369,6 +1450,8 @@ fn handle_client(id: u64, stream: UnixStream, daemon: Daemon, shutdown: Arc<Atom
     let writer = std::thread::Builder::new().spawn(move || {
         let _ = write_stream.set_write_timeout(Some(Duration::from_secs(5)));
         while let Ok(frame) = rx.recv() {
+            let pipe = frame.budget.lock().unwrap().pipe;
+            let _ = write_stream.set_write_timeout(if pipe { None } else { Some(Duration::from_secs(5)) });
             if std::io::Write::write_all(&mut write_stream, &frame.bytes).is_err() {
                 let _ = write_stream.shutdown(std::net::Shutdown::Both);
                 daemon_writer.unsubscribe(id);
@@ -1404,14 +1487,52 @@ fn handle_client(id: u64, stream: UnixStream, daemon: Daemon, shutdown: Arc<Atom
 
 fn handle_ctl(daemon: &Daemon, id: u64, msg: CtlMsg, tx: &ReplySink) {
     match msg {
-        CtlMsg::Spawn(req) => {
+        CtlMsg::Capabilities => { let _ = tx.send_control(CtlReply::Capabilities { piped_spawn_v1: true }); }
+        CtlMsg::ListPipes => { let _ = tx.send_control(CtlReply::PipeList(daemon.list_pipes())); }
+        CtlMsg::AttachPipe { instance, generation, after_seq } => {
+            let result = daemon.pipe_host(&instance).and_then(|host| {
+                let h = host.lock().unwrap();
+                let Host::Pipe(p) = &*h else { unreachable!() };
+                p.attach(id, &generation, after_seq, tx.clone())
+            });
+            match result {
+                Ok(Some(reply)) => { let _ = tx.send_control(reply); }
+                Ok(None) => (),
+                Err(e) => { let _ = tx.send_control(CtlReply::Error { instance, message: format!("{e:#}") }); }
+            }
+        }
+        CtlMsg::PipeInput { instance, generation, delivery_id, data } => {
+            let result = daemon.pipe_host(&instance).and_then(|host| {
+                let h = host.lock().unwrap();
+                let Host::Pipe(p) = &*h else { unreachable!() };
+                p.input(id, &generation, delivery_id, data)
+            });
+            if let Err(e) = result { let _ = tx.send_control(CtlReply::Error { instance, message: format!("{e:#}") }); }
+        }
+        CtlMsg::PipeAck { instance, generation, through_seq } => {
+            let result = daemon.pipe_host(&instance).and_then(|host| {
+                let h = host.lock().unwrap();
+                let Host::Pipe(p) = &*h else { unreachable!() };
+                p.ack(id, &generation, through_seq)
+            });
+            if let Err(e) = result { let _ = tx.send_control(CtlReply::Error { instance, message: format!("{e:#}") }); }
+        }
+        CtlMsg::PipeDetach { instance, generation } => {
+            let result = daemon.pipe_host(&instance).and_then(|host| {
+                let h = host.lock().unwrap();
+                let Host::Pipe(p) = &*h else { unreachable!() };
+                p.detach(id, &generation)
+            });
+            if let Err(e) = result { let _ = tx.send_control(CtlReply::Error { instance, message: format!("{e:#}") }); }
+        }
+        CtlMsg::Spawn(req) | CtlMsg::SpawnPipe(req) => {
             let instance = req.instance.clone();
             match daemon.spawn(req) {
                 Ok(pid) => {
-                    let _ = tx.send(CtlReply::Spawned { instance, pid });
+                    let _ = tx.send_control(CtlReply::Spawned { instance, pid });
                 }
                 Err(e) => {
-                    let _ = tx.send(CtlReply::Error {
+                    let _ = tx.send_control(CtlReply::Error {
                         instance,
                         message: format!("{e:#}"),
                     });
@@ -1420,10 +1541,10 @@ fn handle_ctl(daemon: &Daemon, id: u64, msg: CtlMsg, tx: &ReplySink) {
         }
         CtlMsg::Close { instance } => match daemon.close(&instance) {
             Ok(()) => {
-                let _ = tx.send(CtlReply::Closed { instance });
+                let _ = tx.send_control(CtlReply::Closed { instance });
             }
             Err(e) => {
-                let _ = tx.send(CtlReply::Error {
+                let _ = tx.send_control(CtlReply::Error {
                     instance,
                     message: format!("{e:#}"),
                 });
@@ -1431,21 +1552,21 @@ fn handle_ctl(daemon: &Daemon, id: u64, msg: CtlMsg, tx: &ReplySink) {
         },
         CtlMsg::Restart { instance } => match daemon.restart(&instance) {
             Ok(pid) => {
-                let _ = tx.send(CtlReply::Restarted { instance, pid });
+                let _ = tx.send_control(CtlReply::Restarted { instance, pid });
             }
             Err(e) => {
-                let _ = tx.send(CtlReply::Error {
+                let _ = tx.send_control(CtlReply::Error {
                     instance,
                     message: format!("{e:#}"),
                 });
             }
         },
         CtlMsg::List => {
-            let _ = tx.send(CtlReply::AgentList(daemon.list()));
+            let _ = tx.send_control(CtlReply::AgentList(daemon.list()));
         }
         CtlMsg::Attach { instance } => {
             if let Err(e) = daemon.attach(id, &instance) {
-                let _ = tx.send(CtlReply::Error {
+                let _ = tx.send_control(CtlReply::Error {
                     instance,
                     message: format!("{e:#}"),
                 });
@@ -1453,7 +1574,7 @@ fn handle_ctl(daemon: &Daemon, id: u64, msg: CtlMsg, tx: &ReplySink) {
         }
         CtlMsg::Input { instance, data } => {
             if let Err(e) = daemon.write_input(&instance, &data) {
-                let _ = tx.send(CtlReply::Error {
+                let _ = tx.send_control(CtlReply::Error {
                     instance,
                     message: format!("{e:#}"),
                 });
@@ -1461,18 +1582,18 @@ fn handle_ctl(daemon: &Daemon, id: u64, msg: CtlMsg, tx: &ReplySink) {
         }
         CtlMsg::StartupLaunch { instance, launch_key } => {
             let pid = daemon.startup_launch_pid(&instance, &launch_key);
-            let _ = tx.send(CtlReply::StartupLaunch { instance, pid, launch_key });
+            let _ = tx.send_control(CtlReply::StartupLaunch { instance, pid, launch_key });
         }
         CtlMsg::StartupInput { instance, pid, launch_key, data } => {
             let reply = match daemon.write_startup_input(&instance, pid, &launch_key, &data) {
                 Ok(()) => CtlReply::StartupInputDone { instance, pid, launch_key },
                 Err(e) => CtlReply::Error { instance, message: format!("{e:#}") },
             };
-            let _ = tx.send(reply);
+            let _ = tx.send_control(reply);
         }
         CtlMsg::Key { instance, key } => {
             if let Err(e) = daemon.write_input(&instance, key.to_bytes()) {
-                let _ = tx.send(CtlReply::Error {
+                let _ = tx.send_control(CtlReply::Error {
                     instance,
                     message: format!("{e:#}"),
                 });
@@ -1480,46 +1601,46 @@ fn handle_ctl(daemon: &Daemon, id: u64, msg: CtlMsg, tx: &ReplySink) {
         }
         CtlMsg::Resize { instance, rows, cols } => {
             if let Err(e) = daemon.resize(&instance, rows, cols) {
-                let _ = tx.send(CtlReply::Error {
+                let _ = tx.send_control(CtlReply::Error {
                     instance,
                     message: format!("{e:#}"),
                 });
             }
         }
-        CtlMsg::Capture { instance } => match daemon.capture(&instance) {
-            Some(screen) => {
-                let _ = tx.send(CtlReply::Screen { instance, screen });
+        CtlMsg::Capture { instance } => match daemon.require_pty(&instance).and_then(|_| daemon.capture(&instance).ok_or_else(|| anyhow!("no such instance"))) {
+            Ok(screen) => {
+                let _ = tx.send_control(CtlReply::Screen { instance, screen });
             }
-            None => {
-                let _ = tx.send(CtlReply::Error {
+            Err(e) => {
+                let _ = tx.send_control(CtlReply::Error {
                     instance,
-                    message: "capture: no such instance".into(),
+                    message: format!("{e:#}"),
                 });
             }
         },
         CtlMsg::Detach { instance } => daemon.detach(id, &instance),
         CtlMsg::WatchEvents => daemon.watch_events(id),
         CtlMsg::Ping => {
-            let _ = tx.send(CtlReply::Pong);
+            let _ = tx.send_control(CtlReply::Pong);
         }
         CtlMsg::Shutdown => {
             // Ack first so the client learns the daemon accepted the request,
             // then flip the stop flag. The `serve` loop observes it and tears
             // down every agent via `server.shutdown()`; the accept loop and
             // this client's socket close right after.
-            let _ = tx.send(CtlReply::ShuttingDown);
+            let _ = tx.send_control(CtlReply::ShuttingDown);
             STOP_REQUESTED.store(true, Ordering::SeqCst);
         }
         CtlMsg::Signal(SignalRequest { shell_id, signal }) => {
             match daemon.signal(&shell_id, signal) {
                 Ok(SignalOutcome::Delivered) => {
-                    let _ = tx.send(CtlReply::Closed { instance: shell_id });
+                    let _ = tx.send_control(CtlReply::Closed { instance: shell_id });
                 }
                 Ok(SignalOutcome::AlreadyExited(code)) => {
-                    let _ = tx.send(CtlReply::AlreadyExited { instance: shell_id, code });
+                    let _ = tx.send_control(CtlReply::AlreadyExited { instance: shell_id, code });
                 }
                 Err(e) => {
-                    let _ = tx.send(CtlReply::Error {
+                    let _ = tx.send_control(CtlReply::Error {
                         instance: shell_id,
                         message: format!("{e:#}"),
                     });
@@ -1639,6 +1760,7 @@ mod tests {
 
     fn sh_spec(instance: &str, sh: &str) -> SpawnRequest {
         SpawnRequest {
+            mode: Default::default(),
             instance: instance.into(),
             argv: vec![sh.into()],
             cwd: None,
@@ -1653,6 +1775,200 @@ mod tests {
             tee_path: None,
             timeout_seconds: None,
         }
+    }
+
+    #[test]
+    fn pipe_control_reply_waits_for_capacity_without_fencing() {
+        let (sink, rx) = reply_channel(None);
+        sink.mark_pipe();
+        for _ in 0..REPLY_QUEUE_FRAMES {
+            assert_eq!(sink.try_send_pipe(CtlReply::Pong), Ok(true));
+        }
+        let send = sink.clone();
+        let writer = std::thread::spawn(move || send.send_control(CtlReply::Error {
+            instance: "pipe".into(), message: "pipe_input_queue_full_retryable".into(),
+        }));
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(!writer.is_finished(), "control response must wait for queue capacity");
+        assert!(!sink.queue_state().1, "flow control must not fence the connection");
+        drop(rx.recv().unwrap());
+        assert_eq!(writer.join().unwrap(), Ok(()));
+        for _ in 1..REPLY_QUEUE_FRAMES { drop(rx.recv().unwrap()); }
+        let frame = rx.recv().unwrap();
+        assert!(matches!(dproto::read_ctl_reply(&mut std::io::Cursor::new(&frame.bytes)).unwrap(),
+            Some(CtlReply::Error { message, .. }) if message.contains("retryable")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pipe_socket_replay_stdio_receipts_and_generation_fencing() {
+        let sh = shell().expect("shell");
+        let sock = tmp_socket("pipes");
+        let mut server = DaemonServer::start(&sock).unwrap();
+        let d = server.daemon();
+        let mut control = UnixStream::connect(&sock).unwrap();
+        dproto::write_ctl_msg(&mut control, &CtlMsg::Capabilities).unwrap();
+        assert_eq!(ctl_reply_strict(&mut control, Duration::from_secs(3)), CtlReply::Capabilities { piped_spawn_v1: true });
+        let mut spec = sh_spec("pipe", &sh);
+        spec.mode = SpawnMode::Pipe;
+        spec.argv.extend(["-c".into(), "if test -t 0 || test -t 1 || test -t 2; then echo tty; else echo pipes; fi; echo diagnostic >&2; while IFS= read -r line; do printf 'got:%s\\n' \"$line\"; done".into()]);
+        spec.env.push(("HEIMDALL_STARTUP_KEY".into(), "launch-pipe".into()));
+        dproto::write_ctl_msg(&mut control, &CtlMsg::SpawnPipe(spec)).unwrap();
+        assert!(matches!(ctl_reply_strict(&mut control, Duration::from_secs(3)), CtlReply::Spawned { .. }));
+        dproto::write_ctl_msg(&mut control, &CtlMsg::ListPipes).unwrap();
+        let CtlReply::PipeList(rows) = ctl_reply_strict(&mut control, Duration::from_secs(3)) else { panic!("list") };
+        let generation = rows[0].generation.clone();
+        assert_eq!(d.startup_launch_pid("pipe", "launch-pipe"), rows[0].pid);
+        assert_eq!((d.list()[0].rows, d.list()[0].cols), (0,0));
+        for req in [
+            CtlMsg::Attach { instance: "pipe".into() },
+            CtlMsg::Input { instance: "pipe".into(), data: vec![1] },
+            CtlMsg::Key { instance: "pipe".into(), key: crate::proto::NamedKey::Enter },
+            CtlMsg::Resize { instance: "pipe".into(), rows: 20, cols: 80 },
+            CtlMsg::Capture { instance: "pipe".into() },
+        ] {
+            dproto::write_ctl_msg(&mut control, &req).unwrap();
+            let CtlReply::Error { message, .. } = ctl_reply_strict(&mut control, Duration::from_secs(3)) else { panic!("legacy pipe operation") };
+            assert!(message.contains("pipe_requires_protocol"), "{message}");
+        }
+        let mut stream = UnixStream::connect(&sock).unwrap();
+        let attach = CtlMsg::AttachPipe { instance: "pipe".into(), generation: generation.clone(), after_seq: 0 };
+        dproto::write_ctl_msg(&mut stream, &attach).unwrap();
+        assert!(matches!(ctl_reply_strict(&mut stream, Duration::from_secs(3)), CtlReply::PipeReady { .. }));
+        let mut stdout = Vec::new(); let mut stderr = Vec::new(); let mut last = 0;
+        while stdout.len() < 6 || stderr.len() < 11 {
+            match ctl_reply_strict(&mut stream, Duration::from_secs(3)) {
+                CtlReply::PipeOutput { seq, stream: 1, data, .. } => { assert!(seq > last); last = seq; stdout.extend(data); }
+                CtlReply::PipeOutput { seq: 0, stream: 2, data, .. } => stderr.extend(data),
+                reply => panic!("unexpected {reply:?}"),
+            }
+        }
+        assert_eq!(stdout, b"pipes\n"); assert_eq!(stderr, b"diagnostic\n");
+        drop(stream); // Child and stdin survive the bridge connection.
+        assert!(d.is_alive("pipe"));
+        let mut stream = UnixStream::connect(&sock).unwrap();
+        dproto::write_ctl_msg(&mut stream, &attach).unwrap();
+        assert!(matches!(ctl_reply_strict(&mut stream, Duration::from_secs(3)), CtlReply::PipeReady { .. }));
+        let CtlReply::PipeOutput { data, seq, .. } = ctl_reply_strict(&mut stream, Duration::from_secs(3)) else { panic!("replay") };
+        assert_eq!(data, stdout); assert_eq!(seq, last);
+        let input = CtlMsg::PipeInput { instance: "pipe".into(), generation: generation.clone(), delivery_id: "d1".into(), data: b"one\n".to_vec() };
+        dproto::write_ctl_msg(&mut stream, &input).unwrap();
+        let mut got = Vec::new();
+        while got.len() < 8 {
+            match ctl_reply_strict(&mut stream, Duration::from_secs(3)) {
+                CtlReply::PipeOutput { seq, stream: 1, data, .. } => { assert!(seq > last); last = seq; got.extend(data); }
+                CtlReply::PipeInputDone { .. } => (),
+                CtlReply::PipeOutput { stream: 2, seq: 0, data, .. } => assert_eq!(data, b"diagnostic\n"),
+                r => panic!("{r:?}"),
+            }
+        }
+        assert_eq!(got, b"got:one\n");
+        // A receipt belongs to the generation, not the bridge connection.
+        // Recover after the child received stdin but before a durable receipt.
+        drop(stream);
+        let mut stream = UnixStream::connect(&sock).unwrap();
+        dproto::write_ctl_msg(&mut stream, &CtlMsg::AttachPipe {
+            instance: "pipe".into(), generation: generation.clone(), after_seq: last,
+        }).unwrap();
+        assert!(matches!(ctl_reply_strict(&mut stream, Duration::from_secs(3)), CtlReply::PipeReady { .. }));
+        dproto::write_ctl_msg(&mut stream, &input).unwrap();
+        assert!(await_reply(&mut stream, |r| matches!(r, CtlReply::PipeInputDone { delivery_id, .. } if delivery_id == "d1"), Duration::from_secs(3)).is_some());
+        dproto::write_ctl_msg(&mut stream, &CtlMsg::PipeInput { instance: "pipe".into(), generation: generation.clone(), delivery_id: "d2".into(), data: b"two\n".to_vec() }).unwrap();
+        let mut second = Vec::new();
+        while second.len() < 8 {
+            if let CtlReply::PipeOutput { seq, stream: 1, data, .. } = ctl_reply_strict(&mut stream, Duration::from_secs(3)) {
+                assert!(seq > last); last = seq; second.extend(data);
+            }
+        }
+        assert_eq!(second, b"got:two\n", "duplicate delivery must not write stdin twice");
+        // Mismatched reuse is rejected before writing any bytes.
+        dproto::write_ctl_msg(&mut stream, &CtlMsg::PipeInput { instance: "pipe".into(), generation: generation.clone(), delivery_id: "d1".into(), data: b"different\n".to_vec() }).unwrap();
+        assert!(await_reply(&mut stream, |r| matches!(r, CtlReply::Error { message, .. } if message.contains("mismatch")), Duration::from_secs(3)).is_some());
+        dproto::write_ctl_msg(&mut stream, &CtlMsg::PipeAck { instance: "pipe".into(), generation: generation.clone(), through_seq: last }).unwrap();
+        // A subsequent ping establishes that the ack was processed.
+        dproto::write_ctl_msg(&mut stream, &CtlMsg::Ping).unwrap();
+        assert!(await_reply(&mut stream, |r| matches!(r, CtlReply::Pong), Duration::from_secs(3)).is_some());
+        let mut gap = UnixStream::connect(&sock).unwrap();
+        dproto::write_ctl_msg(&mut gap, &attach).unwrap();
+        assert!(matches!(ctl_reply_strict(&mut gap, Duration::from_secs(3)), CtlReply::PipeGap { first_seq, .. } if first_seq == last + 1));
+        d.restart("pipe").unwrap();
+        assert_ne!(d.list_pipes()[0].generation, generation);
+        dproto::write_ctl_msg(&mut gap, &attach).unwrap();
+        assert!(matches!(ctl_reply_strict(&mut gap, Duration::from_secs(3)), CtlReply::Error { .. }));
+        server.shutdown();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pipe_timeout_preserves_exit_tail_and_ten_minute_tombstone() {
+        let sh = shell().expect("shell");
+        let d = Daemon::new();
+        let mut spec = sh_spec("pipe-timeout", &sh);
+        spec.mode = SpawnMode::Pipe;
+        spec.argv.extend(["-c".into(), "printf '%s\\n' \"$PIPE_TEST_VALUE\"; pwd; exec sleep 60".into()]);
+        let cwd = std::env::temp_dir();
+        spec.cwd = Some(cwd.to_string_lossy().into());
+        spec.env.push(("PIPE_TEST_VALUE".into(), "pipe-env".into()));
+        spec.timeout_seconds = Some(1);
+        spec.detect = Some("{\"enabled\":true}".into()); // Never start a detector in pipe mode.
+        spec.meta = Some(serde_json::json!({"runtime_transport":"acp","provider":"claude"}));
+        d.spawn(spec).unwrap();
+        assert!(d.agents.lock().unwrap()["pipe-timeout"].detector.is_none());
+        assert!(wait_for(|| d.agents.lock().unwrap()["pipe-timeout"].exited_at.load(Ordering::SeqCst) != 0, Duration::from_secs(5)));
+        let info = d.list_pipes().pop().unwrap();
+        assert!(!info.alive);
+        assert_ne!(info.exit_code, Some(0));
+        assert_eq!(info.meta.as_ref().unwrap()["runtime_transport"], "acp");
+        let (sink, rx) = reply_channel(None);
+        let host = d.pipe_host("pipe-timeout").unwrap();
+        {
+            let h = host.lock().unwrap();
+            let Host::Pipe(p) = &*h else { unreachable!() };
+            assert!(p.attach(123, &info.generation, 0, sink).unwrap().is_none());
+        }
+        let expected = format!("pipe-env\n{}\n", cwd.canonicalize().unwrap().display()).into_bytes();
+        let mut output = Vec::new();
+        while output.len() < expected.len() {
+            let frame = rx.recv_timeout(Duration::from_secs(3)).unwrap();
+            if let Some(CtlReply::PipeOutput { stream: 1, data, .. }) =
+                dproto::read_ctl_reply(&mut std::io::Cursor::new(&frame.bytes)).unwrap() {
+                output.extend(data);
+            }
+        }
+        assert_eq!(output, expected);
+        {
+            let mut agents = d.agents.lock().unwrap();
+            agents["pipe-timeout"].exited_at.store(now_millis() - 599_000, Ordering::SeqCst);
+            prune_tombstones(&mut agents, 0, TOMBSTONE_TTL);
+            assert!(agents.contains_key("pipe-timeout"), "count pruning cannot discard retained pipe output");
+            agents["pipe-timeout"].exited_at.store(now_millis() - 601_000, Ordering::SeqCst);
+            prune_tombstones(&mut agents, TOMBSTONE_MAX, TOMBSTONE_TTL);
+            assert!(!agents.contains_key("pipe-timeout"));
+        }
+        drop(host);
+        d.shutdown();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pipe_flood_preserves_heartbeat_and_close_while_reader_backpressured() {
+        let sh = shell().expect("shell");
+        let sock = tmp_socket("pipe_flood");
+        let mut server = DaemonServer::start(&sock).unwrap(); let d = server.daemon();
+        let mut spec = sh_spec("flood", &sh); spec.mode = SpawnMode::Pipe;
+        spec.argv.extend(["-c".into(), "while :; do printf '%4096s' x; done".into()]);
+        d.spawn(spec).unwrap();
+        // Fill the 16 MiB replay log while no reader is attached.
+        std::thread::sleep(Duration::from_millis(700));
+        let mut events = UnixStream::connect(&sock).unwrap();
+        dproto::write_ctl_msg(&mut events, &CtlMsg::WatchEvents).unwrap();
+        dproto::write_ctl_msg(&mut events, &CtlMsg::Ping).unwrap();
+        assert_eq!(ctl_reply_strict(&mut events, Duration::from_secs(3)), CtlReply::Pong);
+        d.broadcast_heartbeat();
+        assert!(matches!(await_reply(&mut events, |r| matches!(r, CtlReply::HostHeartbeat { .. }), Duration::from_secs(3)), Some(CtlReply::HostHeartbeat { agents, .. }) if agents[0].alive));
+        let start = Instant::now(); d.close("flood").unwrap();
+        assert!(start.elapsed() < Duration::from_secs(3));
+        server.shutdown();
     }
 
     #[test]
@@ -1902,6 +2218,7 @@ mod tests {
         };
         let d = Daemon::new();
         d.spawn(SpawnRequest {
+            mode: Default::default(),
             instance: "envp".into(),
             argv: vec![sh, "-c".into(), "echo MARK:$MARKER_ENV; sleep 2".into()],
             cwd: None,
@@ -1935,6 +2252,7 @@ mod tests {
         // reviewer flagged. This asserts BOTH that restart reuses the exact
         // spec (same argv/cwd/env) AND that extra_env survives the restart.
         let spec = SpawnRequest {
+            mode: Default::default(),
             instance: "r".into(),
             argv: vec![
                 sh.clone(),
@@ -1988,6 +2306,7 @@ mod tests {
         let tru = resolve("true").or_else(|| resolve("/usr/bin/true"));
         if let Some(tru) = tru {
             d.spawn(SpawnRequest {
+                mode: Default::default(),
                 instance: "dead".into(),
                 argv: vec![tru],
                 cwd: None,
@@ -2134,6 +2453,7 @@ mod tests {
             dproto::write_ctl_msg(
                 &mut c,
                 &CtlMsg::Spawn(SpawnRequest {
+                    mode: Default::default(),
                     instance: inst.into(),
                     argv: vec![sh.clone()],
                     cwd: None,
@@ -2226,6 +2546,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(150));
         let mut c = UnixStream::connect(&sock).unwrap();
         let spec = CtlMsg::Spawn(SpawnRequest {
+            mode: Default::default(),
             instance: "x".into(),
             argv: vec![sh.clone()],
             cwd: None,
@@ -2381,6 +2702,7 @@ mod tests {
         // Output constantly). Runs a tight echo loop like the task's repro.
         let d = server.daemon();
         d.spawn(SpawnRequest {
+            mode: Default::default(),
             instance: "busy".into(),
             argv: vec![
                 sh.clone(),
@@ -2484,6 +2806,7 @@ mod tests {
         dproto::write_ctl_msg(
             &mut c,
             &CtlMsg::Spawn(SpawnRequest {
+                mode: Default::default(),
                 instance: "b".into(),
                 argv: vec![
                     sh.clone(),
@@ -2551,6 +2874,7 @@ mod tests {
         dproto::write_ctl_msg(
             &mut c,
             &CtlMsg::Spawn(SpawnRequest {
+                mode: Default::default(),
                 instance: "ae".into(),
                 argv: vec![
                     sh.clone(),
@@ -2610,6 +2934,7 @@ mod tests {
         dproto::write_ctl_msg(
             &mut c,
             &CtlMsg::Spawn(SpawnRequest {
+                mode: Default::default(),
                 instance: "r".into(),
                 argv: vec![sh.clone()],
                 cwd: None,
@@ -2655,6 +2980,7 @@ mod tests {
         dproto::write_ctl_msg(
             &mut c,
             &CtlMsg::Spawn(SpawnRequest {
+                mode: Default::default(),
                 instance: "ch".into(),
                 argv: vec![sh.clone()],
                 cwd: None,
@@ -2719,6 +3045,7 @@ mod tests {
         };
         let d = Daemon::new();
         d.spawn(SpawnRequest {
+            mode: Default::default(),
             instance: "crt_default".into(),
             argv: vec![sh],
             cwd: None,
@@ -2751,6 +3078,7 @@ mod tests {
         };
         let d = Daemon::new();
         d.spawn(SpawnRequest {
+            mode: Default::default(),
             instance: "inst1".into(),
             argv: vec![sh],
             cwd: None,
@@ -2799,6 +3127,7 @@ mod tests {
         };
         let d = Daemon::new();
         d.spawn(SpawnRequest {
+            mode: Default::default(),
             instance: "inst_unsub".into(),
             argv: vec![sh],
             cwd: None,
@@ -2847,6 +3176,7 @@ mod tests {
         let d = Daemon::new();
         // Unattached agent starts at 80x25
         d.spawn(SpawnRequest {
+            mode: Default::default(),
             instance: "inst_crt_detach".into(),
             argv: vec![sh],
             cwd: None,
@@ -2892,6 +3222,7 @@ mod tests {
 
         let pid = d
             .spawn(SpawnRequest {
+                mode: Default::default(),
                 instance: "sh_test_1".into(),
                 argv: vec![sh, "-c".into(), "while :; do sleep 1; done".into()],
                 cwd: None,
@@ -2960,6 +3291,7 @@ mod tests {
 
         let d = server.daemon();
         d.spawn(SpawnRequest {
+            mode: Default::default(),
             instance: "fifo_inst".into(),
             argv: vec![
                 sh.clone(),
@@ -3051,6 +3383,7 @@ mod tests {
 
         let d = server.daemon();
         d.spawn(SpawnRequest {
+            mode: Default::default(),
             instance: "lifecycle_exit".into(),
             argv: vec![sh.clone(), "-c".into(), "sleep 0.15; echo lifecycle_ok; exit 0".into()],
             cwd: None,
@@ -3088,6 +3421,7 @@ mod tests {
 
         // 4. Test explicit close teardown sends StreamClosed with None
         d.spawn(SpawnRequest {
+            mode: Default::default(),
             instance: "lifecycle_teardown".into(),
             argv: vec![sh.clone(), "-c".into(), "sleep 60".into()],
             cwd: None,
@@ -3135,6 +3469,7 @@ mod tests {
 
         let d = server.daemon();
         d.spawn(SpawnRequest {
+            mode: Default::default(),
             instance: "inst_pipe".into(),
             argv: vec![
                 sh.clone(),
@@ -3207,6 +3542,7 @@ mod tests {
         dproto::write_ctl_msg(
             &mut conn_events,
             &CtlMsg::Spawn(SpawnRequest {
+                mode: Default::default(),
                 instance: "inv_ae".into(),
                 argv: vec![
                     sh.clone(),
@@ -3291,6 +3627,7 @@ mod tests {
         dproto::write_ctl_msg(
             &mut conn_events,
             &CtlMsg::Spawn(SpawnRequest {
+                mode: Default::default(),
                 instance: "inv_block".into(),
                 argv: vec![
                     sh.clone(),

@@ -10,6 +10,7 @@ Provider_Model :: struct {
 }
 
 Provider_Catalog_Entry :: struct {
+	transports_json, default_transport, acp_recipe_json: string,
 	provider:           string,
 	display_name:       string,
 	icon_url:           string,
@@ -42,6 +43,7 @@ Provider_Icon :: struct {
 }
 
 Bridge_Provider_Status :: struct {
+	acp_adapter_json: string,
 	profile_id: string,
 	bridge_id: string,
 	provider: string,
@@ -57,6 +59,7 @@ Bridge_Provider_Status :: struct {
 }
 
 Bridge_Provider_Setting :: struct {
+	transport: string,
 	profile_id: string,
 	bridge_id: string,
 	provider: string,
@@ -73,6 +76,7 @@ provider_model_destroy :: proc(model: Provider_Model) {
 }
 
 provider_catalog_entry_destroy :: proc(entry: Provider_Catalog_Entry) {
+	delete(entry.transports_json); delete(entry.default_transport); delete(entry.acp_recipe_json)
 	delete(entry.provider)
 	delete(entry.display_name)
 	delete(entry.icon_url)
@@ -106,6 +110,7 @@ provider_icon_destroy :: proc(icon: Provider_Icon) {
 }
 
 bridge_provider_status_destroy :: proc(value: Bridge_Provider_Status) {
+	delete(value.acp_adapter_json)
 	delete(value.profile_id); delete(value.bridge_id); delete(value.provider); delete(value.binary_path)
 	delete(value.version_text); delete(value.state); delete(value.checked_at)
 	delete(value.extension_state); delete(value.extension_version); delete(value.extension_checked_at)
@@ -117,6 +122,7 @@ bridge_provider_statuses_destroy :: proc(values: [dynamic]Bridge_Provider_Status
 }
 
 bridge_provider_setting_destroy :: proc(value: Bridge_Provider_Setting) {
+	delete(value.transport)
 	delete(value.profile_id); delete(value.bridge_id); delete(value.provider); delete(value.updated_at)
 }
 

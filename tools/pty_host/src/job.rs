@@ -17,7 +17,7 @@ use windows_sys::Win32::System::JobObjects::{
 const KILLED_EXIT_CODE: u32 = 1;
 
 #[derive(Debug)]
-struct Job(HANDLE);
+pub(crate) struct Job(HANDLE);
 
 // A job handle is a plain kernel handle, usable from any thread.
 unsafe impl Send for Job {}
@@ -25,7 +25,7 @@ unsafe impl Sync for Job {}
 
 impl Job {
     /// Create a kill-on-close job and put `process` in it.
-    fn assign(process: HANDLE) -> std::io::Result<Job> {
+    pub(crate) fn assign(process: HANDLE) -> std::io::Result<Job> {
         unsafe {
             let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
             if handle.is_null() {
@@ -48,7 +48,7 @@ impl Job {
         }
     }
 
-    fn terminate(&self) -> std::io::Result<()> {
+    pub(crate) fn terminate(&self) -> std::io::Result<()> {
         if unsafe { TerminateJobObject(self.0, KILLED_EXIT_CODE) } == 0 {
             return Err(std::io::Error::last_os_error());
         }

@@ -45,9 +45,12 @@ export async function openDeviceWrap(identity: DeviceIdentity, wrap: unknown, ch
  * Verify, unwrap and install this device's keyring. On any failure nothing is
  * installed (and a previously installed session is left as it was).
  */
-export async function installKeyringFromWrap(identity: DeviceIdentity, wrap: unknown, chain: VerifiedChain): Promise<VaultKeyring> {
+export async function installKeyringFromWrap(identity: DeviceIdentity, wrap: unknown, chain: VerifiedChain, expectedGeneration?: number): Promise<VaultKeyring> {
   if (identity.userId !== chain.userId) throw new Error('device identity belongs to another user');
-  const openingGeneration = generation;
+  // REQ-SWFIX-VAULT-1: the caller's generation (captured when its refresh began) fences
+  // a refresh that slept across a purge; without one, fence from this call onwards.
+  if (expectedGeneration !== undefined && generation !== expectedGeneration) throw new Error('Vault keyring session changed before opening wrap');
+  const openingGeneration = expectedGeneration ?? generation;
   const parsed = await openDeviceWrap(identity, wrap, chain);
   let bytes: Uint8Array | null = null;
   let searchRaw: Uint8Array | null = null;
@@ -79,6 +82,11 @@ export function clearKeyringSession(): void {
   session = null;
   for (const listener of sessionListeners) listener();
   setActiveVaultKey(null);
+}
+
+/** The keyring session generation; bumped by every install and purge. */
+export function keyringGeneration(): number {
+  return generation;
 }
 
 export function getKeyringSession(): Readonly<SessionState> | null {

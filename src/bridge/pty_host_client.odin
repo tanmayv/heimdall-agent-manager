@@ -60,7 +60,30 @@ PTY_HOST_T_STARTUP_INPUT_DONE :: 0xB1
 PTY_HOST_T_STARTUP_LAUNCH :: 0x3B
 PTY_HOST_T_STARTUP_LAUNCH_REPLY :: 0xB2
 
-PTY_HOST_MAX_FRAME_BYTES :: 64 * 1024 * 1024
+PTY_HOST_T_CAPABILITIES :: 0x40
+PTY_HOST_T_SPAWN_PIPE :: 0x41
+PTY_HOST_T_LIST_PIPES :: 0x42
+PTY_HOST_T_ATTACH_PIPE :: 0x43
+PTY_HOST_T_PIPE_INPUT :: 0x44
+PTY_HOST_T_PIPE_ACK :: 0x45
+PTY_HOST_T_PIPE_DETACH :: 0x46
+PTY_HOST_T_CAPABILITIES_REPLY :: 0xC0
+PTY_HOST_T_PIPE_LIST :: 0xC1
+PTY_HOST_T_PIPE_READY :: 0xC2
+PTY_HOST_T_PIPE_OUTPUT :: 0xC3
+PTY_HOST_T_PIPE_INPUT_DONE :: 0xC4
+PTY_HOST_T_PIPE_GAP :: 0xC5
+PTY_HOST_MAX_PIPE_DATA :: 64 * 1024
+PTY_HOST_MAX_FRAME_BYTES :: 4 * 1024 * 1024
+Pty_Host_Spawn_Mode :: enum u8 { Pty, Pipe }
+Pty_Host_Pipe_Info :: struct {
+    instance, generation: string,
+    pid: i32,
+    alive, has_exit_code: bool,
+    exit_code: i32,
+    meta_json: string,
+    has_meta: bool,
+}
 
 // ---- named keys (must match proto.rs NamedKey discriminants) ------------
 
@@ -90,6 +113,9 @@ Pty_Host_Key :: enum u8 {
 // the bridge re-plumbing it. env entries are (key,value) pairs; detect is the
 // opaque startup-detection JSON (stored verbatim by HOST-1, parsed in HOST-2).
 Pty_Host_Spawn_Request :: struct {
+    mode: Pty_Host_Spawn_Mode,
+    label, meta_json: string,
+    has_label, has_meta: bool,
 	instance:         string,
 	argv:             []string,
 	cwd:              string, // "" => None on the wire
@@ -153,6 +179,7 @@ Pty_Host_Reply_Kind :: enum {
 	Already_Exited,
 	Startup_Input_Done,
 	Startup_Launch,
+    Capabilities, Pipe_List, Pipe_Ready, Pipe_Output, Pipe_Input_Done, Pipe_Gap,
 }
 
 // One agent's liveness entry inside a Host_Heartbeat reply.
@@ -162,6 +189,11 @@ Pty_Host_Heartbeat_Agent :: struct {
 }
 
 Pty_Host_Reply :: struct {
+    piped_spawn_v1: bool,
+    generation, delivery_id: string,
+    first_seq, last_seq, seq: u64,
+    stream: u8,
+    pipes: []Pty_Host_Pipe_Info,
 	kind:             Pty_Host_Reply_Kind,
 	instance:         string,
 	pid:              i32,
@@ -270,6 +302,7 @@ pty_host_get_str :: proc(b: []byte, off: ^int) -> (string, bool) {
 // pty_host_frame prepends the u32 BE length prefix to a payload, returning a new
 // owned buffer.
 pty_host_frame :: proc(payload: []byte) -> []byte {
+    if len(payload) > PTY_HOST_MAX_FRAME_BYTES do return nil
 	out := make([dynamic]byte, 0, 4 + len(payload))
 	pty_host_put_u32(&out, u32(len(payload)))
 	append(&out, ..payload)
@@ -280,9 +313,11 @@ pty_host_frame :: proc(payload: []byte) -> []byte {
 
 // pty_host_encode_spawn builds a framed Spawn control message. Caller owns result.
 pty_host_encode_spawn :: proc(req: Pty_Host_Spawn_Request) -> []byte {
+    if req.mode != .Pty && req.mode != .Pipe do return nil
+    if len(req.argv) > 65535 || len(req.env) > 65535 do return nil
 	p := make([dynamic]byte)
 	defer delete(p)
-	append(&p, PTY_HOST_T_SPAWN)
+	append(&p, PTY_HOST_T_SPAWN_PIPE if req.mode == .Pipe else PTY_HOST_T_SPAWN)
 	pty_host_put_str(&p, req.instance)
 	pty_host_put_u16(&p, u16(len(req.argv)))
 	for a in req.argv do pty_host_put_str(&p, a)
@@ -299,8 +334,8 @@ pty_host_encode_spawn :: proc(req: Pty_Host_Spawn_Request) -> []byte {
 	// T4/T2 backward-compat fields (dproto.rs order: kind, label, meta, tee_path).
 	// Rust decoder guards each with `if off < rest.len()` so old bridges are fine.
 	pty_host_put_opt_str(&p, req.has_kind, req.kind)
-	pty_host_put_opt_str(&p, false, "") // label (None — display_name carries the label)
-	pty_host_put_opt_str(&p, false, "") // meta  (None — not used by shell sessions)
+	pty_host_put_opt_str(&p, req.has_label, req.label)
+	pty_host_put_opt_str(&p, req.has_meta, req.meta_json)
 	pty_host_put_opt_str(&p, req.has_tee_path, req.tee_path)
 	if req.has_timeout_seconds {
 		append(&p, 1)
@@ -380,7 +415,8 @@ pty_host_encode_resize :: proc(instance: string, rows, cols: u16) -> []byte {
 // pty_host_decode_reply decodes one reply payload (tag byte + rest). On success
 // the returned Pty_Host_Reply owns its heap fields (free with pty_host_reply_delete).
 pty_host_decode_reply :: proc(payload: []byte) -> (Pty_Host_Reply, bool) {
-	if len(payload) == 0 do return {}, false
+	if len(payload) == 0 || len(payload) > PTY_HOST_MAX_FRAME_BYTES do return {}, false
+    if payload[0] >= PTY_HOST_T_CAPABILITIES_REPLY && payload[0] <= PTY_HOST_T_PIPE_GAP do return pty_host_decode_pipe_reply(payload)
 	tag := payload[0]
 	rest := payload[1:]
 	off := 0
@@ -549,6 +585,9 @@ pty_host_free_agents :: proc(agents: []Pty_Host_Agent_Info) {
 
 // pty_host_reply_delete frees an owned reply's heap fields.
 pty_host_reply_delete :: proc(r: Pty_Host_Reply) {
+    delete(r.generation); delete(r.delivery_id)
+    for row in r.pipes { delete(row.instance); delete(row.generation); delete(row.meta_json) }
+    delete(r.pipes)
 	delete(r.startup_key)
 	if r.instance != "" do delete(r.instance)
 	if r.message != "" do delete(r.message)
@@ -658,7 +697,7 @@ PTY_HOST_REQUEST_MAX_SKIP :: 256
 // connection; a control client must skip them and keep reading for its reply.
 pty_host_reply_is_async :: proc(kind: Pty_Host_Reply_Kind) -> bool {
 	#partial switch kind {
-	case .Output, .Child_Exited, .Screen_Changed, .Startup_Ready, .Startup_Blocked, .Host_Heartbeat:
+	case .Output, .Pipe_Output, .Child_Exited, .Screen_Changed, .Startup_Ready, .Startup_Blocked, .Host_Heartbeat:
 		return true
 	}
 	return false

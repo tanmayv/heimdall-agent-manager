@@ -11,6 +11,8 @@ new_provider_repository :: proc(impl: ^Provider_Repo_SQLite, conn: ^Conn) -> ifa
 	impl.conn = conn
 	return iface.Provider_Repository{
 		ctx = rawptr(impl),
+		get_provider_transport = get_provider_transport_sqlite,
+		set_provider_transport = set_provider_transport_sqlite,
 		list_profiles = bridge_provider_profiles_list_sqlite,
 		reconcile_profiles = bridge_provider_profiles_reconcile_sqlite,
 		profile_references = bridge_provider_profile_references_sqlite,
@@ -34,12 +36,13 @@ bridge_provider_status_upsert_sqlite :: proc(ctx: rawptr, value: domain.Bridge_P
 	impl := (^Provider_Repo_SQLite)(ctx)
 	if !provider_repo_ready(impl) do return false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
 	stmt: sqlite3_stmt = nil
-	query := "INSERT INTO bridge_provider_status (bridge_id, provider, binary_path, version_text, state, checked_at, extension_state, extension_version, extension_checked_at, profile_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(bridge_id, profile_id) DO UPDATE SET binary_path=excluded.binary_path, version_text=excluded.version_text, state=excluded.state, checked_at=excluded.checked_at, extension_state=excluded.extension_state, extension_version=excluded.extension_version, extension_checked_at=excluded.extension_checked_at;"
+	query := "INSERT INTO bridge_provider_status (bridge_id, provider, binary_path, version_text, state, checked_at, extension_state, extension_version, extension_checked_at, profile_id, acp_adapter) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(bridge_id, profile_id) DO UPDATE SET binary_path=excluded.binary_path, version_text=excluded.version_text, state=excluded.state, checked_at=excluded.checked_at, extension_state=excluded.extension_state, extension_version=excluded.extension_version, extension_checked_at=excluded.extension_checked_at, acp_adapter=CASE WHEN excluded.profile_id=excluded.provider AND excluded.acp_adapter IS NOT NULL AND COALESCE(json_extract(excluded.acp_adapter, '$.checked_at'), '') >= COALESCE(json_extract(bridge_provider_status.acp_adapter, '$.checked_at'), '') THEN excluded.acp_adapter ELSE bridge_provider_status.acp_adapter END;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return false, domain.domain_error(.Internal_Error, "failed to prepare provider status upsert")
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, value.bridge_id); bind_text(stmt, 2, value.provider); bind_text(stmt, 3, value.binary_path)
 	bind_text(stmt, 4, value.version_text); bind_text(stmt, 5, value.state); bind_text(stmt, 6, value.checked_at)
 	bind_text(stmt, 7, value.extension_state); bind_text(stmt, 8, value.extension_version); bind_text(stmt, 9, value.extension_checked_at); bind_text(stmt,10,domain.profile_effective_id(value.provider,value.profile_id))
+	if value.acp_adapter_json != "" && domain.profile_effective_id(value.provider,value.profile_id)==value.provider { bind_text(stmt,11,value.acp_adapter_json) } else { sqlite3_bind_null(stmt,11) }
 	if sqlite3_step(stmt) != SQLITE_DONE do return false, domain.domain_error(.Internal_Error, "failed to upsert provider status")
 	return true, {}
 }
@@ -48,11 +51,11 @@ bridge_provider_status_list_sqlite :: proc(ctx: rawptr, bridge_id: string) -> ([
 	impl := (^Provider_Repo_SQLite)(ctx)
 	if !provider_repo_ready(impl) do return nil, domain.domain_error(.Internal_Error, "sqlite repository is not open")
 	stmt: sqlite3_stmt = nil
-	query := "SELECT bridge_id, provider, binary_path, version_text, state, checked_at, extension_state, extension_version, extension_checked_at, profile_id FROM bridge_provider_status WHERE bridge_id=? ORDER BY provider;"
+	query := "SELECT bridge_id, provider, binary_path, version_text, state, checked_at, extension_state, extension_version, extension_checked_at, profile_id, COALESCE(acp_adapter, '') FROM bridge_provider_status WHERE bridge_id=? ORDER BY provider;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare provider status list")
 	defer sqlite3_finalize(stmt); bind_text(stmt, 1, bridge_id)
 	items := make([dynamic]domain.Bridge_Provider_Status)
-	for sqlite3_step(stmt) == SQLITE_ROW do append(&items, domain.Bridge_Provider_Status{bridge_id=column_text(stmt,0),provider=column_text(stmt,1),binary_path=column_text(stmt,2),version_text=column_text(stmt,3),state=column_text(stmt,4),checked_at=column_text(stmt,5),extension_state=column_text(stmt,6),extension_version=column_text(stmt,7),extension_checked_at=column_text(stmt,8),profile_id=column_text(stmt,9)})
+	for sqlite3_step(stmt) == SQLITE_ROW do append(&items, domain.Bridge_Provider_Status{bridge_id=column_text(stmt,0),provider=column_text(stmt,1),binary_path=column_text(stmt,2),version_text=column_text(stmt,3),state=column_text(stmt,4),checked_at=column_text(stmt,5),extension_state=column_text(stmt,6),extension_version=column_text(stmt,7),extension_checked_at=column_text(stmt,8),profile_id=column_text(stmt,9),acp_adapter_json=column_text(stmt,10)})
 	return items, {}
 }
 
@@ -71,11 +74,11 @@ bridge_provider_setting_list_sqlite :: proc(ctx: rawptr, bridge_id: string) -> (
 	impl := (^Provider_Repo_SQLite)(ctx)
 	if !provider_repo_ready(impl) do return nil, domain.domain_error(.Internal_Error, "sqlite repository is not open")
 	stmt: sqlite3_stmt = nil
-	query := "SELECT bridge_id, provider, enabled, updated_at, profile_id FROM bridge_provider_settings WHERE bridge_id=? ORDER BY provider;"
+	query := "SELECT bridge_id, provider, enabled, updated_at, profile_id, COALESCE(transport, '') FROM bridge_provider_settings WHERE bridge_id=? ORDER BY provider;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare provider setting list")
 	defer sqlite3_finalize(stmt); bind_text(stmt,1,bridge_id)
 	items := make([dynamic]domain.Bridge_Provider_Setting)
-	for sqlite3_step(stmt) == SQLITE_ROW do append(&items, domain.Bridge_Provider_Setting{bridge_id=column_text(stmt,0),provider=column_text(stmt,1),enabled=column_text_unowned(stmt,2)=="1",updated_at=column_text(stmt,3),profile_id=column_text(stmt,4)})
+	for sqlite3_step(stmt) == SQLITE_ROW do append(&items, domain.Bridge_Provider_Setting{bridge_id=column_text(stmt,0),provider=column_text(stmt,1),enabled=column_text_unowned(stmt,2)=="1",updated_at=column_text(stmt,3),profile_id=column_text(stmt,4),transport=column_text(stmt,5)})
 	return items, {}
 }
 
@@ -129,6 +132,9 @@ provider_entry_from_stmt :: proc(impl: ^Provider_Repo_SQLite, stmt: sqlite3_stmt
 		rank = provider_rank_from_stmt(stmt, 15),
 		extension_json = column_text(stmt, 16),
 		ask_args_json = column_text(stmt, 17),
+		transports_json = column_text(stmt, 18),
+		default_transport = column_text(stmt, 19),
+		acp_recipe_json = column_text(stmt, 20),
 	}
 	models, err := provider_models_for_sqlite(impl, entry.provider)
 	if err.code != .None {
@@ -139,7 +145,7 @@ provider_entry_from_stmt :: proc(impl: ^Provider_Repo_SQLite, stmt: sqlite3_stmt
 	return entry, {}
 }
 
-PROVIDER_SELECT :: "SELECT provider, display_name, icon_url, binary, base_args, yolo_args, model_flag, prompt_args, prompt_delivery, starter_prompt, bootstrap_file, skill_dir, startup_detection, activity_detection, state, rank, COALESCE(extension, ''), ask_args FROM provider_catalog"
+PROVIDER_SELECT :: "SELECT provider, display_name, icon_url, binary, base_args, yolo_args, model_flag, prompt_args, prompt_delivery, starter_prompt, bootstrap_file, skill_dir, startup_detection, activity_detection, state, rank, COALESCE(extension, ''), ask_args, transports, default_transport, COALESCE(acp_recipe, '') FROM provider_catalog"
 
 provider_catalog_list_sqlite :: proc(ctx: rawptr) -> ([dynamic]domain.Provider_Catalog_Entry, domain.Domain_Error) {
 	impl := (^Provider_Repo_SQLite)(ctx)
@@ -237,4 +243,33 @@ bridge_provider_models_list_sqlite :: proc(ctx: rawptr, bridge_id: string) -> ([
 		})
 	}
 	return out, {}
+}
+
+get_provider_transport_sqlite :: proc(ctx: rawptr, bridge_id, provider: string) -> (string, domain.Domain_Error) {
+ impl := (^Provider_Repo_SQLite)(ctx)
+ if !provider_repo_ready(impl) do return "", domain.domain_error(.Internal_Error, "sqlite repository is not open")
+ stmt: sqlite3_stmt
+ query := "SELECT COALESCE(transport, '') FROM bridge_provider_settings WHERE bridge_id=? AND provider=? AND profile_id=provider;"
+ if sqlite3_prepare_v2(impl.conn.db,cstring(raw_data(query)),-1,&stmt,nil)!=SQLITE_OK do return "",domain.domain_error(.Internal_Error,"failed provider transport lookup")
+ defer sqlite3_finalize(stmt)
+ bind_text(stmt,1,bridge_id);bind_text(stmt,2,provider)
+ rc:=sqlite3_step(stmt)
+ if rc==SQLITE_DONE do return "",{}
+ if rc!=SQLITE_ROW do return "",domain.domain_error(.Internal_Error,"failed provider transport read")
+ return column_text(stmt,0),{}
+}
+
+set_provider_transport_sqlite :: proc(ctx: rawptr, bridge_id, provider, transport, now: string) -> domain.Domain_Error {
+ impl := (^Provider_Repo_SQLite)(ctx)
+ if !provider_repo_ready(impl) do return domain.domain_error(.Internal_Error, "sqlite repository is not open")
+ // Materialize the canonical row using the same implicit enabled value as the
+ // provider view. An existing explicit enabled value is never overwritten.
+ stmt: sqlite3_stmt
+ query := "INSERT INTO bridge_provider_settings(bridge_id,provider,profile_id,enabled,updated_at,transport) SELECT ?1,?2,?2,CASE WHEN EXISTS(SELECT 1 FROM bridge_provider_status WHERE bridge_id=?1 AND provider=?2 AND profile_id=?2 AND state='present') AND COALESCE((SELECT enabled FROM bridge_provider_profiles WHERE bridge_id=?1 AND profile_id=?2),1)=1 AND COALESCE((SELECT state FROM bridge_provider_profiles WHERE bridge_id=?1 AND profile_id=?2),'ok')!='missing' THEN 1 ELSE 0 END,?3,?4 ON CONFLICT(bridge_id,profile_id) DO UPDATE SET transport=excluded.transport,updated_at=excluded.updated_at;"
+ if sqlite3_prepare_v2(impl.conn.db,cstring(raw_data(query)),-1,&stmt,nil)!=SQLITE_OK do return domain.domain_error(.Internal_Error,"failed provider transport prepare")
+ defer sqlite3_finalize(stmt)
+ bind_text(stmt,1,bridge_id);bind_text(stmt,2,provider);bind_text(stmt,3,now)
+ if transport=="" {sqlite3_bind_null(stmt,4)} else {bind_text(stmt,4,transport)}
+ if sqlite3_step(stmt)!=SQLITE_DONE do return domain.domain_error(.Invalid_Transport,"provider transport could not be saved")
+ return {}
 }

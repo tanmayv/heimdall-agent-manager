@@ -466,6 +466,7 @@ write_agent_instance_json :: proc(b: ^strings.Builder, inst: domain.Agent_Instan
 	strings.write_string(b, "\",\"display_name\":\""); write_handler_json_string(b, inst.display_name)
 	strings.write_string(b, "\",\"provider\":\""); write_handler_json_string(b, inst.provider)
 	strings.write_string(b, "\",\"provider_profile\":\""); write_handler_json_string(b, domain.profile_effective_id(inst.provider,inst.provider_profile))
+	strings.write_string(b,"\",\"runtime_transport\":\"");write_handler_json_string(b,contracts.runtime_transport_or_pty(inst.runtime_transport))
 	strings.write_string(b, "\",\"model\":\""); write_handler_json_string(b, inst.model)
 	strings.write_string(b, "\",\"project_id\":\""); write_handler_json_string(b, string(inst.project_id))
 	strings.write_string(b, "\",\"project_path\":\""); write_handler_json_string(b, inst.project_path)

@@ -24,7 +24,7 @@ use crate::vt::{Capture, VtEngine};
 
 /// Environment we hand to the child. We start from a filtered copy of our own
 /// env and force interactive-terminal defaults (REQ PTYH-1).
-fn build_child_env() -> HashMap<String, String> {
+pub(crate) fn build_child_env() -> HashMap<String, String> {
     // Variables that would confuse an interactive child or leak host tooling.
     const DROP: &[&str] = &[
         "TERM",         // we set our own
@@ -44,6 +44,33 @@ fn build_child_env() -> HashMap<String, String> {
     // Signal to well-behaved programs that they're on a color-capable terminal.
     env.entry("COLORTERM".into()).or_insert_with(|| "truecolor".into());
     env
+}
+
+/// One daemon registry and lifecycle for terminal and stdio children.
+pub enum Host {
+    Pty(PtyHost),
+    Pipe(crate::pipe_host::PipeHost),
+}
+
+impl Host {
+    pub fn pid(&self) -> i32 { match self { Self::Pty(h) => h.pid(), Self::Pipe(h) => h.pid() } }
+    pub fn alive_flag(&self) -> Arc<AtomicBool> { match self { Self::Pty(h) => h.alive_flag(), Self::Pipe(h) => h.alive_flag() } }
+    pub fn exit_code(&self) -> Option<i32> { match self { Self::Pty(h) => h.exit_code(), Self::Pipe(h) => h.exit_code() } }
+    pub fn size(&self) -> (u16, u16) { match self { Self::Pty(h) => h.size(), Self::Pipe(_) => (0, 0) } }
+    pub fn capture(&self) -> Option<Capture> { match self { Self::Pty(h) => Some(h.capture()), Self::Pipe(_) => None } }
+    pub fn write_input(&self, bytes: &[u8]) -> Result<()> { match self { Self::Pty(h) => h.write_input(bytes), Self::Pipe(_) => anyhow::bail!("pipe_requires_protocol") } }
+    pub fn write_startup_input(&self, bytes: &[u8], written: &mut usize) -> Result<()> { match self { Self::Pty(h) => h.write_startup_input(bytes, written), Self::Pipe(_) => anyhow::bail!("pipe_requires_protocol") } }
+    pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> { match self { Self::Pty(h) => h.resize(rows, cols), Self::Pipe(_) => anyhow::bail!("pipe_requires_protocol") } }
+    pub fn terminate(&self) { match self { Self::Pty(h) => h.terminate(), Self::Pipe(h) => h.terminate() } }
+    pub fn kill(&self) { match self { Self::Pty(h) => h.kill(), Self::Pipe(h) => h.kill() } }
+    pub fn wait_timeout(&self, timeout: std::time::Duration) -> Option<i32> { match self { Self::Pty(h) => h.wait_timeout(timeout), Self::Pipe(h) => h.wait_timeout(timeout) } }
+    pub fn reader_done(&self) -> bool { match self { Self::Pty(h) => h.reader_done(), Self::Pipe(_) => true } }
+    pub fn release_pty(&mut self) { if let Self::Pty(h) = self { h.release_pty(); } }
+    #[cfg(test)]
+    pub fn pty_released(&self) -> bool { match self { Self::Pty(h) => h.pty_released(), Self::Pipe(_) => true } }
+    #[cfg(windows)]
+    pub fn signal(&self, signal: u8) -> Result<()> { match self { Self::Pty(h) => h.signal(signal), Self::Pipe(h) => h.signal(signal) } }
+    pub fn stop_io(&self) { if let Self::Pipe(h) = self { h.stop_io(); } }
 }
 
 /// Configuration for spawning a child under the host.

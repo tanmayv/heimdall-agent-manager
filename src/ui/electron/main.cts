@@ -98,6 +98,8 @@ app.on('second-instance', () => {
 // Treat as dev only when the Vite dev server URL is explicitly provided.
 const isDev = desktopConfig.isDev;
 
+// Keep in sync with ADD_ACCOUNT_INTENT_KEY in utils/clientPersistence.ts.
+const ADD_ACCOUNT_INTENT_STORAGE_KEY = 'heimdall:add-account-intent-at';
 let authWindow: any = null;
 let mainWindow: any = null;
 // Identity provider origin from GET /api/v1/auth/config, used to route sign-out.
@@ -134,7 +136,15 @@ function openOidcWindow(url: string, owner: any) {
       loginWindow.close();
       if (authWindow === loginWindow) authWindow = null;
       if (main && !main.isDestroyed()) {
-        void main.loadURL(returnUrl);
+        // REQ-SWFIX-ELECTRON-1: a URL that differs only by hash is a same-document
+        // navigation, which would keep the previous account's UI, sockets and caches.
+        // Force a full document reload so the new account boots from scratch.
+        const withoutHash = (value: string) => value.split('#')[0];
+        let sameDocument = false;
+        try { sameDocument = withoutHash(main.webContents?.getURL?.() ?? '') === withoutHash(returnUrl); } catch { /* treat as different */ }
+        void Promise.resolve(main.loadURL(returnUrl)).catch(() => undefined).then(() => {
+          if (sameDocument && !main.isDestroyed()) main.webContents?.reload?.();
+        });
         main.show();
         main.focus();
       }
@@ -154,7 +164,13 @@ function openOidcWindow(url: string, owner: any) {
   loginWindow.webContents.on('will-redirect', guardOidcNavigation);
   loginWindow.webContents.on('did-navigate', finishIfReturned);
   // Redirect events occur before the final response commits; never finish there.
-  loginWindow.on('closed', () => { if (authWindow === loginWindow) authWindow = null; });
+  loginWindow.on('closed', () => {
+    if (authWindow === loginWindow) authWindow = null;
+    // REQ-SWFIX-ELECTRON-1: closed without returning to the Hub UI = add-account cancelled.
+    if (finishing) return;
+    const main = owner && !owner.isDestroyed() ? owner : null;
+    if (main) void Promise.resolve(main.webContents?.executeJavaScript?.(`try { sessionStorage.removeItem(${JSON.stringify(ADD_ACCOUNT_INTENT_STORAGE_KEY)}); } catch (e) {}`)).catch(() => undefined);
+  });
   void loginWindow.loadURL(url);
 }
 

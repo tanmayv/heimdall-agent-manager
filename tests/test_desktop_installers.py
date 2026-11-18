@@ -215,6 +215,9 @@ class MacAndLinuxInstallerTests(unittest.TestCase):
 
     def test_electron_targets(self):
         config = read('electron-builder.yml')
+        self.assertNotIn('  - dist/**\n', config)
+        self.assertIn('  - electron-dist/**\n', config)
+        self.assertIn('  - package.json\n', config)
         self.assertIn('    - dmg\n    - zip\n', config)
         self.assertIn('linux:\n', config)
         self.assertIn('    - AppImage\n    - deb\n', config)

@@ -4,9 +4,11 @@ directories:
   output: desktop-dist
   buildResources: build
 files:
-  - dist/**
   - electron-dist/**
   - package.json
+  # Electron loads the hosted UI; keep frontend packages out of the desktop app.
+  # Leave electron-updater and its runtime dependencies available to the builder.
+  - '!node_modules/{@monaco-editor,@reduxjs,@shikijs,@xterm,cytoscape*,d3*,dagre*,katex,khroma,langium,mermaid,monaco-editor,monaco-vim,posthog-js,react,react-dom,react-redux,shiki}/**'
 extraResources:
   - from: release-assets/bridge
     to: bridge

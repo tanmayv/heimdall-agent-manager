@@ -12,6 +12,8 @@ Bridge_Provider_Setting_Upsert_Proc :: proc(ctx: rawptr, setting: domain.Bridge_
 Bridge_Provider_Setting_List_Proc :: proc(ctx: rawptr, bridge_id: string) -> ([dynamic]domain.Bridge_Provider_Setting, domain.Domain_Error)
 
 Provider_Repository :: struct {
+	get_provider_transport: proc(ctx: rawptr, bridge_id, provider: string) -> (string, domain.Domain_Error),
+	set_provider_transport: proc(ctx: rawptr, bridge_id, provider, transport, now: string) -> domain.Domain_Error,
 	list_profiles: proc(ctx: rawptr, bridge_id: string) -> ([dynamic]domain.Bridge_Provider_Profile, domain.Domain_Error),
 	reconcile_profiles: proc(ctx: rawptr, bridge_id: string, profiles: []domain.Bridge_Provider_Profile) -> domain.Domain_Error,
 	profile_references: proc(ctx: rawptr, bridge_id, profile_id: string) -> (string, domain.Domain_Error),
@@ -127,4 +129,14 @@ bridge_provider_models_list :: proc(repo: ^Provider_Repository, bridge_id: strin
 bridge_provider_models_upsert :: proc(repo: ^Provider_Repository, value: domain.Bridge_Provider_Models) -> domain.Domain_Error {
 	if repo == nil || repo.upsert_models == nil do return domain.domain_error(.Internal_Error, "model repository is not configured")
 	return repo.upsert_models(repo.ctx, value)
+}
+
+// Empty transport means SQL NULL (inherit catalog default).
+get_provider_transport :: proc(repo: ^Provider_Repository, bridge_id, provider: string) -> (string, domain.Domain_Error) {
+ if repo == nil || repo.get_provider_transport == nil do return "", domain.domain_error(.Internal_Error, "provider transport repository is not configured")
+ return repo.get_provider_transport(repo.ctx, bridge_id, provider)
+}
+set_provider_transport :: proc(repo: ^Provider_Repository, bridge_id, provider, transport, now: string) -> domain.Domain_Error {
+ if repo == nil || repo.set_provider_transport == nil do return domain.domain_error(.Internal_Error, "provider transport repository is not configured")
+ return repo.set_provider_transport(repo.ctx, bridge_id, provider, transport, now)
 }

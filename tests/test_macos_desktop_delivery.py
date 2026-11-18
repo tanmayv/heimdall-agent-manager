@@ -3,6 +3,7 @@
 from pathlib import Path
 import os
 import subprocess
+import sys
 import tempfile
 
 
@@ -13,27 +14,16 @@ def read(name: str) -> str:
     return (ROOT / name).read_text()
 
 
-def test_local_bundle_installer_contract_and_dry_run():
-    source = read("scripts/install.sh")
-    assert "--bundle and --checksum-file must be provided together" in source
-    assert "Packaged bundle SHA-256 verification failed" in source
-    assert "HAM_TLS_BACKEND=s_client requires openssl." not in source
-    assert 'env+=("HAM_TLS_BACKEND=s_client")' not in source
-    assert source.index('if [ -n "$local_bundle" ]') < source.index('download "$base/SHA256SUMS"')
-
-    with tempfile.TemporaryDirectory() as td:
-        bundle = Path(td) / "heimdall-local-darwin-amd64.tar.gz"
-        sums = Path(td) / "SHA256SUMS"
-        bundle.write_bytes(b"fixture")
-        sums.write_text("0" * 64 + f"  {bundle.name}\n")
-        result = subprocess.run(
-            ["bash", str(ROOT / "scripts/install.sh"), "--hub", "https://hub.example.com", "--version", "v1.2.3",
-             "--bundle", str(bundle), "--checksum-file", str(sums), "--non-interactive", "--dry-run"],
-            cwd=ROOT, text=True, capture_output=True,
-        )
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert "Verify and install packaged bundle" in result.stdout
-        assert "Download heimdall-local" not in result.stdout
+def test_local_bundle_installer_contract():
+    # The thin bootstrap now verifies a real archive and delegates to ham-bridge.
+    # Reuse its hermetic fixture: the staged desktop bundle runs interactive setup,
+    # preserves the Hub argument and never downloads or installs real components.
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "tests/test_installer_clean.py"),
+         "BootstrapTests.test_desktop_installer_bundle_runs_interactive_setup"],
+        cwd=ROOT, text=True, capture_output=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_curl_and_dmg_share_signed_archive():
@@ -61,11 +51,14 @@ def test_dmg_configuration_embeds_bridge_and_enables_hardened_runtime():
     config = read("electron-builder.yml")
     package = read("package.json")
     notarize_hook = read("scripts/release/notarize-electron.cjs")
+    assert "  - dist/**\n" not in config
+    assert "  - electron-dist/**\n" in config
+    assert "  - package.json\n" in config
     assert "from: release-assets/bridge" in config
     assert "hardenedRuntime: true" in config
     assert "notarize: false" in config
     assert "afterSign: scripts/release/notarize-electron.cjs" in config
-    assert '"dist:mac": "npm run build && electron-builder --mac dmg"' in package
+    assert '"dist:mac": "npm run build:electron && electron-builder --mac dmg"' in package
     assert "await import('@electron/notarize')" in notarize_hook
     assert "Failed to staple your application" in notarize_hook
     assert "staple-with-retry.sh" in notarize_hook
@@ -286,7 +279,7 @@ def test_publish_create_is_idempotent_after_partial_create():
 
 if __name__ == "__main__":
     tests = [
-        test_local_bundle_installer_contract_and_dry_run,
+        test_local_bundle_installer_contract,
         test_curl_and_dmg_share_signed_archive,
         test_dmg_configuration_embeds_bridge_and_enables_hardened_runtime,
         test_stapler_retry_is_bounded_and_recovers_from_transient_error_68,

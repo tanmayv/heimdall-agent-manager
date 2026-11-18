@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const source = fs.readFileSync(new URL('../scripts/release/desktop-update-policy.cjs', import.meta.url), 'utf8');
@@ -57,5 +58,76 @@ test('builder and release workflows parse and preserve signing/promotion validat
   for (const name of ['release-local-binaries.yml', 'promote-release.yml']) {
     const text = fs.readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), 'utf8');
     assert.ok(load(text).jobs); assert.match(text, /validate-desktop-updates\.py/);
+  }
+});
+
+test('REQ-DESKTOP-BUILD-1: package only the Electron shell and exclude browser dependencies without removing updater runtime', () => {
+  const { load } = require('js-yaml');
+  const { FileMatcher, getNodeModuleFileMatcher } = require('app-builder-lib/out/fileMatcher.js');
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const builder = load(fs.readFileSync(path.join(root, 'electron-builder.yml'), 'utf8'));
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
+  const stat = { isDirectory: () => false };
+  const shell = new FileMatcher(root, root, (value: string) => value, builder.files).createFilter();
+  for (const file of ['electron-dist/main.cjs', 'electron-dist/preload.cjs', 'electron-dist/icon.png', 'package.json']) {
+    assert.equal(shell(path.join(root, file), stat), true, file);
+  }
+  for (const file of ['dist/index.html', 'dist/assets/main.js', 'dist/heimdall-local-linux-amd64.tar.gz']) {
+    assert.equal(shell(path.join(root, file), stat), false, file);
+  }
+
+  // Use electron-builder's own module matcher: node_modules is collected separately
+  // from app files, and only negative file patterns apply to that collection.
+  const modules = getNodeModuleFileMatcher(root, root, (value: string) => value, {}, {
+    config: builder, debugLogger: { isEnabled: false },
+  }).createFilter();
+  const included = (file: string) => modules(path.join(root, file), stat);
+  const browserPackages = [
+    ...Object.keys(manifest.dependencies).filter(name => name !== 'electron-updater'),
+    '@shikijs/core', 'cytoscape', 'cytoscape-cose-bilkent', 'd3', 'd3-array',
+    'dagre-d3-es', 'katex', 'khroma', 'langium',
+  ];
+  for (const name of browserPackages) {
+    assert.equal(included('node_modules/' + name + '/package.json'), false, name);
+    assert.equal(included('node_modules/' + name + '/dist/index.js'), false, name);
+  }
+
+  // Follow the locked dependency graph, including nested version overrides,
+  // so an exclusion cannot silently break electron-updater at runtime.
+  const seen = new Set<string>();
+  function checkRuntime(location: string) {
+    if (seen.has(location)) return;
+    seen.add(location);
+    assert.equal(included(location + '/package.json'), true, location);
+    assert.equal(included(location + '/out/index.js'), true, location);
+    for (const name of Object.keys(lock.packages[location].dependencies ?? {})) {
+      let parent = location;
+      while (!lock.packages[path.posix.join(parent, 'node_modules', name)]) {
+        assert.notEqual(parent, '.', 'missing locked runtime dependency: ' + name);
+        parent = path.posix.dirname(parent);
+      }
+      checkRuntime(path.posix.join(parent, 'node_modules', name));
+    }
+  }
+  checkRuntime('node_modules/electron-updater');
+  assert.ok(seen.size > 1, 'must check the updater transitive dependencies');
+});
+
+test('REQ-DESKTOP-BUILD-1: desktop scripts and release jobs compile Electron while preserving the Nix web build', () => {
+  const { load } = require('js-yaml');
+  const manifest = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(manifest.scripts.build, 'npm run typecheck && vite build && npm run build:electron');
+  for (const [target, args] of Object.entries({ mac: '--mac dmg', win: '--win nsis --x64', linux: '--linux AppImage deb' })) {
+    assert.equal(manifest.scripts['dist:' + target], 'npm run build:electron && electron-builder ' + args);
+  }
+  const workflow = load(fs.readFileSync(new URL('../.github/workflows/release-local-binaries.yml', import.meta.url), 'utf8'));
+  const desktopSteps = Object.values(workflow.jobs).flatMap((job: any) => job.steps ?? [])
+    .filter((step: any) => /npx electron-builder --/.test(step.run ?? ''));
+  assert.equal(desktopSteps.length, 3, 'cover macOS, Linux and Windows desktop release steps');
+  for (const step of desktopSteps as any[]) {
+    assert.match(step.run, /^\s*npm run build:electron\s*$/m, step.name);
+    assert.doesNotMatch(step.run, /^\s*npm run build\s*$/m, step.name);
+    assert.ok(step.run.indexOf('npm run build:electron') < step.run.indexOf('npx electron-builder'), step.name);
   }
 });

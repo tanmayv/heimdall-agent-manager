@@ -487,7 +487,7 @@ jobs:
             "${{ matrix.target }}" \
             "dist/heimdall-local-${{ matrix.target }}.tar.gz" \
             "${{ needs.prepare.outputs.version }}"
-          npm run build
+          npm run build:electron
           case "${{ matrix.target }}" in
             darwin-arm64) arch=--arm64 ;;
             darwin-amd64) arch=--x64 ;;
@@ -558,7 +558,7 @@ jobs:
             "${{ matrix.target }}" \
             "dist/heimdall-local-${{ matrix.target }}.tar.gz" \
             "${{ needs.prepare.outputs.version }}"
-          npm run build
+          npm run build:electron
           case "${{ matrix.target }}" in
             linux-amd64) arch=--x64 ;;
             linux-arm64)
@@ -692,8 +692,7 @@ jobs:
           & "$work/bin/ham-bridge.exe" --version; if ($LASTEXITCODE) { throw 'packaged ham-bridge --version failed' }
           & "$work/bin/ham-bridge.exe" --help | Out-Null; if ($LASTEXITCODE) { throw 'packaged ham-bridge --help failed' }
 
-      # Upload before the desktop build: `npm run build` runs `vite build`, which
-      # empties dist/ (as on macOS, where the tarball is uploaded first).
+      # Keep the standalone Bridge archive separate from the desktop installer.
       - name: Upload target artifact
         uses: actions/upload-artifact@v4
         with:
@@ -726,8 +725,8 @@ jobs:
           if ($LASTEXITCODE) { throw 'desktop provider extension installation failed' }
           npm ci
           if ($LASTEXITCODE) { throw "npm ci failed with exit code $LASTEXITCODE" }
-          npm run build
-          if ($LASTEXITCODE) { throw "npm run build failed with exit code $LASTEXITCODE" }
+          npm run build:electron
+          if ($LASTEXITCODE) { throw "npm run build:electron failed with exit code $LASTEXITCODE" }
           $signing = @()
           if ($env:HEIMDALL_WINDOWS_PUBLISHER_NAME) {
             if (-not $env:CSC_LINK -or -not $env:CSC_KEY_PASSWORD) { throw 'Windows signed updates require WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD' }

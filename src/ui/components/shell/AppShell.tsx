@@ -97,6 +97,7 @@ import { filterActionsNavEntries } from '../actions/actionsExperiment';
 import { useActionsAccess } from '../actions/useActionsAccess';
 import type { LauncherIntent } from '../../store/workspaceLayoutSlice';
 import { buildConversationHash, parseConversationIdsFromRoute } from '../../utils/conversationUrl';
+import { ACCOUNT_MISMATCH_EVENT, EXPECTED_USER_HEADER, getExpectedUserId, isAccountMismatchResponse, isAccountNeutralPath } from '../../utils/expectedUser';
 import { chainConversationRoute, chainIdFromTargetId, chainTargetId } from '../../utils/paneTarget';
 
 // Pages off the boot path (home, conversations and the workspace stay eager) load
@@ -447,13 +448,37 @@ function isApiV1Path(input: RequestInfo | URL, prefix: string): boolean {
   }
 }
 
+/** Stamp API calls with the account this context believes it is (REQ-SWFIX-STALE-1). */
+function withExpectedUser(input: RequestInfo | URL, init?: RequestInit): [RequestInfo | URL, RequestInit | undefined] {
+  const expected = getExpectedUserId();
+  if (!expected || !isApiV1Url(input)) return [input, init];
+  const value = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+  let pathname = '';
+  try {
+    const url = new URL(value, window.location.href);
+    // A custom header on a cross-origin request would force a CORS preflight.
+    if (url.origin !== window.location.origin) return [input, init];
+    pathname = url.pathname;
+  } catch { return [input, init]; }
+  if (isAccountNeutralPath(pathname)) return [input, init];
+  const headers = new Headers(init?.headers ?? (typeof Request !== 'undefined' && input instanceof Request ? input.headers : undefined));
+  if (!headers.has(EXPECTED_USER_HEADER)) headers.set(EXPECTED_USER_HEADER, expected);
+  return [input, { ...init, headers }];
+}
+
 function installApiAuthObserver() {
   if (typeof window === 'undefined' || !(window as any).fetch || (window as any).__heimdallApiAuthObserverInstalled) return;
   const originalFetch = window.fetch.bind(window);
   (window as any).__heimdallApiAuthObserverInstalled = true;
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-    const response = await originalFetch(input, init);
+    const response = await originalFetch(...withExpectedUser(input, init));
     if (isApiV1Url(input)) {
+      // REQ-SWFIX-STALE-1: this context acts as a user the shared session no longer
+      // belongs to. Resync like a 401 and let the user WebSocket drop its old account.
+      if (await isAccountMismatchResponse(response)) {
+        window.dispatchEvent(new CustomEvent(ACCOUNT_MISMATCH_EVENT));
+        window.dispatchEvent(new CustomEvent('heimdall:api-unauthenticated'));
+      }
       // Vault/device endpoints answer 401/403 for device-level reasons (bad or
       // replayed signature, pending or revoked device); those are handled by the
       // device vault flow and must not flip the whole session to login/denied.
@@ -1874,7 +1899,8 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
     </button>
   );
   const brandLink = (
-    <a href={shellHash('/home')} data-debug-id="shell-brand" className="min-w-0 rounded-lg px-1.5 py-1 hover:bg-neutral-soft">
+    <a href={shellHash('/home')} data-debug-id="shell-brand" className="flex min-w-0 items-center gap-2 rounded-lg px-1.5 py-1 hover:bg-neutral-soft">
+      <img src="icon.png" alt="" className="h-5 w-5 shrink-0 rounded-[5px]" />
       <span className="block truncate text-sm font-black tracking-tight text-primary">Ninjy</span>
     </a>
   );

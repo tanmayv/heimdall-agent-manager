@@ -46,7 +46,7 @@ bot_test_delivery :: proc(id := "bdl_a") -> domain.Bot_Delivery {
 }
 
 @(test)
-test_migration_209_applies_and_is_idempotent :: proc(t: ^testing.T) {
+test_migration_213_applies_and_is_idempotent :: proc(t: ^testing.T) {
 	fresh, opened, _ := open(":memory:")
 	if !testing.expect(t, opened) do return
 	defer close(&fresh)
@@ -58,10 +58,10 @@ test_migration_209_applies_and_is_idempotent :: proc(t: ^testing.T) {
 	base, base_open, _ := open(":memory:")
 	if !testing.expect(t, base_open) do return
 	defer close(&base)
-	ok, err = run_migrations(&base, stop_before = "209_bots.sql")
+	ok, err = run_migrations(&base, stop_before = "213_bots.sql")
 	if !testing.expect(t, ok) || !bot_test_expect_ok(t, err) do return
 	testing.expect(t, migration_applied(&base, "208_extension_version_sync_0_5_54.sql"))
-	testing.expect(t, !migration_applied(&base, "209_bots.sql"))
+	testing.expect(t, !migration_applied(&base, "213_bots.sql"))
 	copy, copy_open, _ := open(":memory:")
 	if !testing.expect(t, copy_open) do return
 	defer close(&copy)
@@ -74,8 +74,8 @@ test_migration_209_applies_and_is_idempotent :: proc(t: ^testing.T) {
 		testing.expect(t, ok)
 		bot_test_expect_ok(t, err)
 	}
-	testing.expect(t, migration_applied(&copy, "209_bots.sql"))
-	testing.expect(t, !migration_applied(&base, "209_bots.sql"))
+	testing.expect(t, migration_applied(&copy, "213_bots.sql"))
+	testing.expect(t, !migration_applied(&base, "213_bots.sql"))
 	testing.expect(
 		t,
 		exec(
@@ -506,11 +506,11 @@ w1_destroy_ids :: proc(ids: []string) {
 }
 
 @(test)
-test_migration_211_carries_existing_rows :: proc(t: ^testing.T) {
+test_migration_215_carries_existing_rows :: proc(t: ^testing.T) {
 	base, opened, _ := open(":memory:")
 	if !testing.expect(t, opened) do return
 	defer close(&base)
-	ok, err := run_migrations(&base, stop_before = "211_bots_whatsapp.sql")
+	ok, err := run_migrations(&base, stop_before = "215_bots_whatsapp.sql")
 	if !testing.expect(t, ok) || !bot_test_expect_ok(t, err) do return
 	// A1: inspect every schema object mentioning channel_; none may be a dependent
 	// trigger/view, and no other table may carry a foreign key to these tables.
@@ -575,13 +575,13 @@ test_migration_211_carries_existing_rows :: proc(t: ^testing.T) {
 		testing.expect_value(t, sqlite3_step(b), SQLITE_ROW)
 		for col in 0 ..< 14 do testing.expect_value(t, column_text_unowned(b, col), column_text_unowned(a, col))
 	}
-	testing.expect(t, !migration_applied(&base, "211_bots_whatsapp.sql"))
+	testing.expect(t, !migration_applied(&base, "215_bots_whatsapp.sql"))
 	ok, err = run_migrations(&copy)
 	testing.expect(t, ok); bot_test_expect_ok(t, err)
 }
 
 @(test)
-test_migration_211_allows_whatsapp_and_held :: proc(t: ^testing.T) {
+test_migration_215_allows_whatsapp_and_held :: proc(t: ^testing.T) {
 	conn, ok := tmpl_clone_migrated(t); if !ok do return
 	defer close(&conn)
 	w1_binding(t, &conn)
@@ -598,14 +598,14 @@ test_migration_211_allows_whatsapp_and_held :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_migration_211_skip_guard_marks_applied :: proc(t: ^testing.T) {
+test_migration_215_skip_guard_marks_applied :: proc(t: ^testing.T) {
 	conn, ok := tmpl_clone_migrated(t); if !ok do return
 	defer close(&conn)
 	w1_binding(t, &conn)
-	testing.expect(t, exec(&conn, "DELETE FROM schema_migrations WHERE version='211_bots_whatsapp.sql';"))
+	testing.expect(t, exec(&conn, "DELETE FROM schema_migrations WHERE version='215_bots_whatsapp.sql';"))
 	applied, err := run_migrations(&conn)
 	testing.expect(t, applied); bot_test_expect_ok(t, err)
-	testing.expect(t, migration_applied(&conn, "211_bots_whatsapp.sql"))
+	testing.expect(t, migration_applied(&conn, "215_bots_whatsapp.sql"))
 	w1_expect_scalar(t, &conn, "SELECT count(*) FROM channel_bindings;", "1")
 }
 
@@ -924,11 +924,11 @@ d1_insert_inbound :: proc(t: ^testing.T, repo: ^iface.Bot_Repository, msg: domai
 }
 
 @(test)
-test_migration_212_carries_push_events :: proc(t: ^testing.T) {
+test_migration_216_carries_push_events :: proc(t: ^testing.T) {
 	conn, opened, _ := open(":memory:")
 	if !testing.expect(t, opened) do return
 	defer close(&conn)
-	ok, err := run_migrations(&conn, stop_before = "212_bots_media.sql")
+	ok, err := run_migrations(&conn, stop_before = "216_bots_media.sql")
 	if !testing.expect(t, ok) || !bot_test_expect_ok(t, err) do return
 	// A1: no dependent views/triggers or foreign keys reference the rebuilt table.
 	w1_expect_scalar(t, &conn, "SELECT count(*) FROM sqlite_master WHERE type IN ('trigger','view') AND sql LIKE '%channel_push_events%';", "0")
@@ -956,7 +956,7 @@ test_migration_212_carries_push_events :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_migration_212_allows_media_kind :: proc(t: ^testing.T) {
+test_migration_216_allows_media_kind :: proc(t: ^testing.T) {
 	conn, ok := tmpl_clone_migrated(t); if !ok do return
 	defer close(&conn)
 	testing.expect(t, exec(&conn, "INSERT INTO channel_push_events (provider,event_key,kind,external_chat_id,received_at,media_kind) VALUES ('whatsapp','media','media','chat','now','image');"))
@@ -965,15 +965,15 @@ test_migration_212_allows_media_kind :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_migration_212_skip_guard_marks_applied :: proc(t: ^testing.T) {
+test_migration_216_skip_guard_marks_applied :: proc(t: ^testing.T) {
 	conn, ok := tmpl_clone_migrated(t); if !ok do return
 	defer close(&conn)
 	impl: Bot_Repo_SQLite; repo := new_bot_repository(&impl, &conn)
 	d1_insert_inbound(t, &repo, d1_message())
-	testing.expect(t, exec(&conn, "DELETE FROM schema_migrations WHERE version='212_bots_media.sql';"))
+	testing.expect(t, exec(&conn, "DELETE FROM schema_migrations WHERE version='216_bots_media.sql';"))
 	applied, err := run_migrations(&conn)
 	testing.expect(t, applied); bot_test_expect_ok(t, err)
-	testing.expect(t, migration_applied(&conn, "212_bots_media.sql"))
+	testing.expect(t, migration_applied(&conn, "216_bots_media.sql"))
 	w1_expect_scalar(t, &conn, "SELECT count(*) FROM channel_attachments;", "1")
 }
 
