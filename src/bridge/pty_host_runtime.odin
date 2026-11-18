@@ -514,13 +514,10 @@ bridge_pty_host_backoff :: proc(attempt: int) {
 // one-line notice into the pane via tmux.send_text(pane, msg, enter=true) (type
 // the text, then press Enter). In the wrapper-free model the bridge does the same
 // thing directly against the daemon: host.input(instance, text) followed by
-// host.key(instance, Enter). bridge_pty_host_deliver_line is that primitive; the
+// two host.key(instance, Enter) calls. bridge_pty_host_deliver_line is that primitive; the
 // hub-push handlers translate each notification into a single notice line exactly
 // as the wrapper did, then call it.
 
-// bridge_pty_host_deliver_line types text into the instance then presses Enter,
-// mirroring tmux.send_text(pane, text, enter=true). Returns false if either the
-// input or the key send fails.
 bridge_pty_host_paste_wrap :: proc(text: string) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "\x1b[200~")
@@ -533,6 +530,10 @@ bridge_pty_host_paste_wrap :: proc(text: string) -> string {
 	return strings.to_string(b)
 }
 
+PTY_HOST_NOTICE_SECOND_ENTER_PAUSE :: 150 * time.Millisecond
+
+// Types the notice then presses Enter twice, allowing TUIs that treat the first
+// Enter as a newline to submit it. Returns false if input or either key send fails.
 bridge_pty_host_deliver_line :: proc(socket, instance, text: string) -> bool {
 	decrypted := bridge_decrypt_embedded_vault_tokens(text)
 	defer delete(decrypted)
@@ -551,6 +552,8 @@ bridge_pty_host_deliver_line :: proc(socket, instance, text: string) -> bool {
 	time.sleep(300 * time.Millisecond)
 	key := pty_host_encode_key(instance, .Enter)
 	defer delete(key)
+	if !bridge_pty_host_send_oneway(socket, key) do return false
+	time.sleep(PTY_HOST_NOTICE_SECOND_ENTER_PAUSE)
 	return bridge_pty_host_send_oneway(socket, key)
 }
 
