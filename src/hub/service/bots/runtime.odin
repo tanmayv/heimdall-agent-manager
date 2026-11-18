@@ -31,8 +31,10 @@ bots_runtime_reconcile :: proc(rt: ^Bots_Runtime) {
 		n = 0 // fail closed, including during an existing runtime
 	}
 	if n == 0 {
+		was_running := rt.poller != nil || rt.supervisor != nil
 		bots_runtime_stop_locked(rt, true)
 		bots_runtime_stop_locked(rt, false)
+		if was_running do fmt.println("bots: runtime stopped")
 		return
 	}
 	// Request callbacks can run with an arena allocator. Thread records and all
