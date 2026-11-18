@@ -122,12 +122,12 @@ test_bot_template_loaded_and_hidden_from_list :: proc(t: ^testing.T) {
 		"./bin/ham-ctl channel send --text",
 		"./bin/ham-ctl channel history --limit 20",
 		"./bin/ham-ctl task-chain list",
-		"./bin/ham-ctl task-chain show <id>",
-		"./bin/ham-ctl task list --chain <id>",
-		"./bin/ham-ctl task show <id>",
-		"Do not change tasks, chains, reviews, memories or files.",
-		"Do not approve or request changes on reviews.",
-		"Telegram is not end-to-end encrypted",
+		"./bin/ham-ctl task-chain show <chain_id>",
+		"./bin/ham-ctl task list --chain <chain_id>",
+		"./bin/ham-ctl task show <task_id>",
+		"Do not change files, run commands other than `shell serve`, or start servers the user did not ask for.",
+		"Do not approve, reject or request changes on reviews, and do not approve or reject memory proposals.",
+		"Chat apps are not end-to-end encrypted",
 	}) {
 		testing.expect(t, strings.contains(tmpl.instructions, required), required)
 	}
