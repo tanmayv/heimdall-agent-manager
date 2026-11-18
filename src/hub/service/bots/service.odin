@@ -29,6 +29,7 @@ Bots_Service :: struct {
 	ids: ^platform.ID_Generator,
 	timers: Bot_Timer_Config,
 	mutex: sync.Mutex,
+	reengage_mutex: sync.Mutex,
 	boot_unix_ms: i64,
 	hello_queue: [dynamic]string,
 	last_waiting_recheck_ms: i64,

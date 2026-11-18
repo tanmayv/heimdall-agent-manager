@@ -47,3 +47,23 @@ bots_notice_binding :: proc(s: ^Bots_Service, owner, bot_id, through_message_id:
 	}
 	return bots_reply_binding(s, owner, bot_id)
 }
+
+// Return the oldest pending active channel, or the first active channel.
+bots_read_binding :: proc(s: ^Bots_Service, owner, bot_id: string) -> (domain.Channel_Binding, bool, domain.Domain_Error) {
+	active, err := iface.bindings_active_for_owner(s.repo, owner)
+	defer {for &b in active do domain.channel_binding_destroy(&b); delete(active)}
+	if err.code != .None || len(active) == 0 do return {}, false, err
+	pending, e := iface.messages_pending(s.repo, bot_id, -1)
+	defer {for &m in pending do domain.channel_message_destroy(&m); delete(pending)}
+	if e.code != .None do return {}, false, e
+	selected := 0
+	matched := false
+	for m in pending {
+		if m.direction != .Inbound || m.body_purged do continue
+		for b, i in active do if b.binding_id == m.binding_id {selected, matched = i, true; break}
+		if matched do break
+	}
+	result := active[selected]
+	active[selected] = {}
+	return result, true, {}
+}

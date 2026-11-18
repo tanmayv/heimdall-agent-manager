@@ -5,11 +5,11 @@ import "core:fmt"
 import "core:os"
 import "core:strconv"
 
-CHANNEL_HELP :: `ham-ctl channel read [--limit N]        Read your owner's unanswered Telegram messages (marks them read).
-ham-ctl channel send --text <text>      Send plaintext to your owner's paired Telegram chat.
+CHANNEL_HELP :: `ham-ctl channel read [--limit N]        Read your owner's unanswered messages from one channel (marks them read).
+ham-ctl channel send --text <text>      Answer on the channel of the messages you read.
 ham-ctl channel send --text-file <path> Same, text read from a UTF-8 file.
-ham-ctl channel history [--limit N]     Recent Telegram messages in both directions, newest first.
-Only a bot instance may use these verbs. Telegram messages are not end-to-end encrypted.`
+ham-ctl channel history [--limit N]     Recent messages on all channels in both directions, newest first.
+Only a bot instance may use these verbs. Telegram and WhatsApp messages can be read by the provider and your Ninjy hub.`
 
 print_help_channel :: proc() {
 	fmt.println(CHANNEL_HELP)

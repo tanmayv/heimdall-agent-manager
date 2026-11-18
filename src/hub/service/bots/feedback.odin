@@ -35,12 +35,12 @@ bots_channel_read :: proc(s: ^Bots_Service, bot_id: string, binding: domain.Chan
 		}
 		ids := make([dynamic]string, context.temp_allocator)
 		for m in messages {
+			if !m.body_purged && m.direction == .Inbound do total += 1
 			if m.body_purged || m.binding_id != binding.binding_id || m.direction != .Inbound {
 				discard := m
 				domain.channel_message_destroy(&discard)
 				continue
 			}
-			total += 1
 			if len(selected) >= limit {
 				discard := m
 				domain.channel_message_destroy(&discard)
@@ -53,11 +53,19 @@ bots_channel_read :: proc(s: ^Bots_Service, bot_id: string, binding: domain.Chan
 		if e := iface.messages_mark_read(s.repo, bot_id, ids[:], platform.clock_now(s.clock)); e.code != .None do return nil, 0, e
 	}
 	if len(newly_read) > 0 && bots_gate_on(s.experiments, binding.owner_user_id) {
-		if s.adapter != nil && s.adapter.react != nil {
+		a := bots_adapter(s, binding.provider)
 			started := time.tick_now()
+		skip_reactions := false
+		if a != nil && a.mark_read != nil {
+			if err := a.mark_read(a.ctx, binding.external_chat_id, newly_read[len(newly_read)-1].external_message_id); err.kind != .None {
+				log.warn(fmt.tprintf("bots: mark read failed kind=%v", err.kind))
+				skip_reactions = err.kind == .Transient || err.kind == .Aborted || err.kind == .Rate_Limited
+			}
+		}
+		if !skip_reactions && a != nil && a.react != nil {
 			for m in newly_read {
 				if time.tick_since(started) >= BOT_READ_REACTION_BUDGET do break
-				if err := s.adapter.react(s.adapter.ctx, binding.external_chat_id, m.external_message_id, BOT_READ_REACTION); err.kind != .None {
+				if err := a.react(a.ctx, binding.external_chat_id, m.external_message_id, BOT_READ_REACTION); err.kind != .None {
 					log.warn(fmt.tprintf("bots: react failed kind=%v", err.kind))
 					// A provider outage must not multiply latency by the read limit.
 					if err.kind == .Transient || err.kind == .Aborted || err.kind == .Rate_Limited do break
