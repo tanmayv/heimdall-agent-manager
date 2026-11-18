@@ -2412,8 +2412,11 @@ ctl_memory_write_request :: proc(verb, id: string, args: []string) -> (Ctl_Reque
 ctl_agents_identity_request :: proc(verb, id: string, args: []string) -> (Ctl_Request, bool, string) {
 	context.allocator = context.temp_allocator
 	usage := "usage: ham-ctl agents identity update <agent-id> [--name <name>] [--slug <slug>] [--template <template-id>] [--instructions <text> | --instructions-file <path>] [--permission-mode <yolo|ask>]"
+	if verb == "show" {
+		if id == "" do return {}, false, "usage: ham-ctl agents identity show <agent-id>"
+		return {method = .GET, path = ctl_api("agents", id)}, true, ""
+	}
 	if id == "" do return {}, false, usage
-	if verb == "show" do return {method = .GET, path = ctl_api("agents", id)}, true, ""
 	if has_flag(args, "--instructions") && has_flag(args, "--instructions-file") {
 		return {}, false, "use --instructions or --instructions-file, not both"
 	}

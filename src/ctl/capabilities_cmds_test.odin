@@ -121,6 +121,9 @@ test_ctl_agents_identity_update_body_and_validation :: proc(t: ^testing.T) {
 	}
 	show, valid, _ := ctl_agents_identity_request("show", "agt_1", nil)
 	testing.expect(t, valid && show.method == .GET)
+	_, missing_valid, missing_message := ctl_agents_identity_request("show", "", nil)
+	testing.expect(t, !missing_valid)
+	testing.expect_value(t, missing_message, "usage: ham-ctl agents identity show <agent-id>")
 	tokens := command_tokens([]string{"ham-ctl", "agents", "identity", "update", "agt_1", "--instructions-file", "/file"})
 	defer delete(tokens)
 	testing.expect_value(t, len(tokens), 4)
@@ -129,12 +132,22 @@ test_ctl_agents_identity_update_body_and_validation :: proc(t: ^testing.T) {
 
 @(test)
 test_ctl_capability_response_requires_top_level_success :: proc(t: ^testing.T) {
-	testing.expect(t, ctl_capability_response_ok(`{"ok":true,"data":{}}`))
+	hub_success := `{"data":{"id":"proj_1"},"meta":{"request_id":"test"}}`
+	testing.expect(t, ctl_capability_success(.User, 200, hub_success))
+	testing.expect(t, ctl_capability_success(.User, 201, hub_success))
+	testing.expect(t, ctl_capability_success(.User, 204, ""))
+	testing.expect(t, !ctl_capability_success(.Agent, 200, hub_success))
+	for status in ([]int{0, 199, 300, 400, 403, 500}) {
+		testing.expect(t, !ctl_capability_success(.User, status, `{"error":{"message":"refused"}}`))
+		// A success-looking body must not override HTTP failure.
+		testing.expect(t, !ctl_capability_success(.User, status, `{"ok":true}`))
+	}
+	testing.expect(t, ctl_capability_success(.Agent, 0, `{"ok":true,"data":{}}`))
 	for response in ([]string{
 		`{"ok":false,"error":{"code":"hub_error","message":"refused","ok":true}}`,
 		`{"error":{"code":"hub_error"}}`, `{"ok":"true"}`, `[]`, `invalid`,
 	}) {
-		testing.expect(t, !ctl_capability_response_ok(response), response)
+		testing.expect(t, !ctl_capability_success(.Agent, 0, response), response)
 	}
 }
 

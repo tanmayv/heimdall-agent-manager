@@ -10,14 +10,13 @@ ctl_projects_request_and_decrypt :: proc(transport: Ctl_Transport, req: Ctl_Requ
 	context.allocator = context.temp_allocator
 	resp_str: string
 	ok: bool
+	status: int
 	if transport.kind == .User && transport.user_base_url != "" && transport.user_token != "" {
-		status: int
 		resp_str, status, ok = ctl_hub_fetch(transport.hub, req)
-		ok = ok && status >= 200 && status < 300
 	} else {
 		resp_str, ok = ctl_tasks_request_local(transport, req)
 	}
-	if !ok || !ctl_capability_response_ok(resp_str) {
+	if !ok || !ctl_capability_success(transport.kind, status, resp_str) {
 		if resp_str != "" {
 			fmt.println(resp_str)
 		}
@@ -160,8 +159,10 @@ ctl_projects_archive_request :: proc(id, action: string) -> Ctl_Request {
 	return {method = .POST, path = ctl_api("projects", id, action), body = ctl_empty_object_body()}
 }
 
-// Inspect only the envelope's status; nested JSON in an error message is data.
-ctl_capability_response_ok :: proc(response: string) -> bool {
+// Hub HTTP responses use status codes and {data, meta}; bridge RPCs use {ok}.
+// Inspect only the bridge envelope's status; nested error JSON is data.
+ctl_capability_success :: proc(kind: Ctl_Transport_Kind, status: int, response: string) -> bool {
+	if kind == .User do return status >= 200 && status < 300
 	value, parsed := ctl_parse_json_document(response)
 	if !parsed do return false
 	obj, object_ok := value.(json.Object)
