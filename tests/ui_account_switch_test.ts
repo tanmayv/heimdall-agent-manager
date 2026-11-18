@@ -496,3 +496,31 @@ for (const status of ['unauthenticated', 'forbidden'] as const) {
     } finally { await h.cleanup(); }
   });
 }
+
+test('REQ-SWFIX-IDENT-1: a same-user focus refresh keeps the auth object and does not reboot the vault', async () => {
+  const h = await harness();
+  try {
+    const user = h.session.auth.user;
+    assert.ok(user);
+    const boots = () => h.trace.filter((t) => t.startsWith('boot ')).length;
+    const bootsBefore = boots();
+    const identitiesBefore = h.trace.filter((t) => t.startsWith('identity ')).length;
+    await act(async () => { window.dispatchEvent(new h.dom.window.Event('focus')); await new Promise((r) => setTimeout(r, 20)); });
+    assert.ok(h.trace.filter((t) => t.startsWith('identity ')).length > identitiesBefore, 'the refresh ran');
+    assert.equal(h.session.auth.user, user, 'same object reference');
+    assert.equal(boots(), bootsBefore, 'no vault reboot');
+  } finally { await h.cleanup(); }
+});
+
+test('REQ-SWFIX-IDENT-1: a switch clicked during a background refresh is not dropped', async () => {
+  const h = await harness();
+  try {
+    let pending!: Promise<void>;
+    await act(async () => {
+      window.dispatchEvent(new h.dom.window.Event('focus'));
+      pending = h.session.switchAccount('usr_b');
+    });
+    await act(async () => { await pending; });
+    assert.equal(h.requests.filter((r) => r.url.endsWith('/auth/switch')).length, 1);
+  } finally { await h.cleanup(); }
+});

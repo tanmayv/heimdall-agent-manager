@@ -315,6 +315,9 @@ export async function bootDeviceVault(userId: string, dispatch: Dispatch): Promi
 export function stopDeviceVault(dispatch?: Dispatch): void {
   stopPolling();
   vaultGeneration += 1;
+  // A suspended run is already fenced by stale(); do not make the next user's boot wait behind it.
+  refreshing = null;
+  followUp = null;
   if (hintTimer) clearTimeout(hintTimer);
   hintTimer = null;
   hintRunning = false;
@@ -347,8 +350,9 @@ export function refreshDeviceVault(reason = 'refresh'): Promise<void> {
     }
     return followUp;
   }
-  refreshing = runRefresh(reason).finally(() => { refreshing = null; });
-  return refreshing;
+  const run: Promise<void> = runRefresh(reason).finally(() => { if (refreshing === run) refreshing = null; });
+  refreshing = run;
+  return run;
 }
 
 async function runRefresh(_reason: string): Promise<void> {

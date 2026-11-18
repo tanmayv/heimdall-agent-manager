@@ -75,7 +75,7 @@ export function writeUserLastRoute(userId: string, routeHash: string): void {
  * like belong to one account and answer 403/404 for another, so a switch lands on the
  * target's own saved route or on `#/home`, never on the previous account's hash.
  */
-export function resolveSwitchedUserRoute(nextUserId: string, _currentHash: string): string {
+export function resolveSwitchedUserRoute(nextUserId: string, currentHash: string): string {
   const saved = readUserLastRoute(nextUserId);
   if (saved && !isDeviceEnrollRoute(saved)) return saved;
   return isAccountNeutralRoute(currentHash) ? currentHash : '#/home';
