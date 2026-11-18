@@ -4,6 +4,7 @@ import "base:runtime"
 import "core:crypto/legacy/sha1"
 import base64 "core:encoding/base64"
 import "core:fmt"
+import "core:encoding/json"
 import "core:net"
 import "core:strings"
 import "core:sync"
@@ -59,8 +60,22 @@ User_WS_Ticket_Reply :: struct {
 	ticket:     string,
 	expires_in: int,
 }
+Auth_User_Reply :: struct {
+	user_id, name, display_name, email: string,
+}
+Auth_Sessions_Reply :: struct {
+	active_user_id: string,
+	accounts: []auth_service.Auth_Account_Entry,
+}
+Auth_Switch_Reply :: struct {
+	active_user_id: string,
+	user: Auth_User_Reply,
+	accounts: []auth_service.Auth_Account_Entry,
+}
 Auth_Logout_Reply :: struct {
-	logout_url: string,
+	logout_url, active_user_id: string,
+	switched_user: json.Value,
+	accounts: []auth_service.Auth_Account_Entry,
 }
 
 auth_config_handler :: proc(ctx: rawptr, req: Request) -> Response {

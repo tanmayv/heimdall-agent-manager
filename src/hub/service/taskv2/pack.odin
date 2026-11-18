@@ -13,6 +13,10 @@ import jsonx "odin_test:lib/jsonx"
 // decryption (never inside a field) and writes <run_dir>/TASK.md.
 PACK_VERSION :: 1
 CHAIN_SUMMARY_MAX_LINES :: 60
+// Curated notes always keep up to this many rendered lines, however many dead
+// ends compete for the cap; longer notes render further lines only when room
+// is left, and are stored in full either way (Chain_Summary.curated_body).
+CHAIN_SUMMARY_CURATED_RESERVED_LINES :: 20
 
 build_pack_json :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.Task, lease: domain.Task_Lease, inst: domain.Agent_Instance) -> string {
 	evs, _ := iface.taskchain_list_events_by_task(svc.repo, task.task_id, task.owner_user_id)
@@ -109,7 +113,7 @@ build_pack_json :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.Ta
 		summary = s.body
 	}
 	if summary == "" {
-		summary, _ = build_mechanical_chain_summary(svc, chain)
+		summary, _, _ = build_mechanical_chain_summary(svc, chain)
 	}
 	json_str(&c, "summary", summary)
 	// Solo mode: the coordinator works its own chain (REQ-SOLO-1).
@@ -479,11 +483,17 @@ pack_why :: proc(view: Task_View, lease: domain.Task_Lease, prev_outcome: string
 
 // build_mechanical_chain_summary builds the <=60-line mechanical summary from
 // completed tasks (with vcs.head and 1-line handoff summaries), active/ready/blocked
-// tasks, and dead_ends preserved across all attempts, while preserving any
-// coordinator-curated summary lines (`coordinator_lines`). Returns (summary_body, overflowed).
-build_mechanical_chain_summary :: proc(svc: ^Service, chain: domain.Task_Chain, coordinator_lines: []string = nil) -> (string, bool) {
+// tasks, and dead_ends collected from every attempt's handoff facet, while
+// preserving any coordinator-curated summary lines (`coordinator_lines`).
+// Returns (summary_body, overflowed, dead_end_count). Budget order: the title,
+// then up to CHAIN_SUMMARY_CURATED_RESERVED_LINES curated lines, then dead ends,
+// then any further curated lines, then tasks. When the dead ends do not fit
+// their budget, the first ones are rendered, the last slot names how many were
+// not shown, and overflowed=true. The handoff facets keep every dead end
+// either way (`task fetch`).
+build_mechanical_chain_summary :: proc(svc: ^Service, chain: domain.Task_Chain, coordinator_lines: []string = nil) -> (string, bool, int) {
 	tasks, terr := iface.taskchain_list_tasks_by_chain(svc.repo, chain.chain_id, chain.owner_user_id)
-	if terr.code != .None do return "", false
+	if terr.code != .None do return "", false, 0
 
 	done_lines := make([dynamic]string, context.temp_allocator)
 	open_lines := make([dynamic]string, context.temp_allocator)
@@ -546,20 +556,21 @@ build_mechanical_chain_summary :: proc(svc: ^Service, chain: domain.Task_Chain, 
 		}
 	}
 
-	// Dead ends are NEVER dropped when trimming to 60 lines. If dead_ends alone
-	// exceed 60 lines, overflow=true so the caller emits EV_SUMMARY_OVERFLOW.
-	overflow := false
-	if len(dead_end_lines) + 2 > CHAIN_SUMMARY_MAX_LINES {
-		overflow = true
-	}
+	// Dead ends are never trimmed in favour of tasks or of curated lines beyond
+	// the guaranteed share. If they (plus their section header) exceed what is
+	// left after the title and that share, overflow=true so the caller can open
+	// a summary_overflow episode.
+	curated_guaranteed := min(len(coordinator_lines), CHAIN_SUMMARY_CURATED_RESERVED_LINES)
+	dead_end_capacity := CHAIN_SUMMARY_MAX_LINES - 1 - curated_guaranteed
+	overflow := len(dead_end_lines) > 0 && len(dead_end_lines) + 1 > dead_end_capacity
 
 	out := make([dynamic]string, context.temp_allocator)
 	append(&out, fmt.tprintf("# Chain %s: %s", chain.chain_id, first_line_trimmed(chain.title)))
 
-	// Reserve budget for dead_ends section first
+	// Reserve budget for the dead_ends section after the guaranteed curated share
 	reserved_for_dead_ends := 0
 	if len(dead_end_lines) > 0 {
-		reserved_for_dead_ends = min(len(dead_end_lines) + 1, CHAIN_SUMMARY_MAX_LINES - 1)
+		reserved_for_dead_ends = min(len(dead_end_lines) + 1, dead_end_capacity)
 	}
 	if len(coordinator_lines) > 0 {
 		max_coord := CHAIN_SUMMARY_MAX_LINES - len(out) - reserved_for_dead_ends
@@ -595,16 +606,24 @@ build_mechanical_chain_summary :: proc(svc: ^Service, chain: domain.Task_Chain, 
 	}
 	if len(dead_end_lines) > 0 && len(out) < CHAIN_SUMMARY_MAX_LINES {
 		append(&out, "## Dead Ends")
-		for line in dead_end_lines {
-			if len(out) >= CHAIN_SUMMARY_MAX_LINES {
+		for line, i in dead_end_lines {
+			if len(out) >= CHAIN_SUMMARY_MAX_LINES - 1 && i < len(dead_end_lines) - 1 {
+				// Keep the rendered summary bounded; the last slot points at the
+				// retained history instead of silently dropping the rest.
 				overflow = true
+				append(&out, fmt.tprintf("%s%d %s", DEAD_ENDS_OMITTED_PREFIX, len(dead_end_lines) - i, DEAD_ENDS_OMITTED_SUFFIX))
 				break
 			}
 			append(&out, line)
 		}
 	}
-	return strings.join(out[:], "\n", context.temp_allocator), overflow
+	return strings.join(out[:], "\n", context.temp_allocator), overflow, len(dead_end_lines)
 }
+
+// The marker line a capped Dead Ends section ends with. It is mechanical, so
+// extract_coordinator_summary_lines must never keep it as a curated line.
+DEAD_ENDS_OMITTED_PREFIX :: "- [+"
+DEAD_ENDS_OMITTED_SUFFIX :: "more dead ends not shown; every dead end stays in its task's handoff facet: `ham-ctl task fetch <task-id> facet:<task-id>:<attempt>:handoff`]"
 
 @(private = "file")
 extract_coordinator_summary_lines :: proc(svc: ^Service, chain: domain.Task_Chain, prev_body: string) -> []string {
@@ -618,6 +637,7 @@ extract_coordinator_summary_lines :: proc(svc: ^Service, chain: domain.Task_Chai
 		if trimmed == "" do continue
 		if strings.has_prefix(trimmed, mech_header_prefix) do continue
 		if trimmed == "## Active & Pending" || trimmed == "## Completed" || trimmed == "## Dead Ends" do continue
+		if strings.has_prefix(trimmed, DEAD_ENDS_OMITTED_PREFIX) && strings.has_suffix(trimmed, DEAD_ENDS_OMITTED_SUFFIX) do continue
 		is_mech_bullet := false
 		if strings.has_prefix(trimmed, "- [") {
 			for t in tasks {
@@ -634,38 +654,92 @@ extract_coordinator_summary_lines :: proc(svc: ^Service, chain: domain.Task_Chai
 	return coord[:]
 }
 
+// rebuild_chain_summary_in_uow refreshes the mechanical summary inside the
+// caller's unit of work, keeping the stored curated notes.
 rebuild_chain_summary_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain) {
 	if svc == nil || svc.repo == nil do return
+	curated := ""
+	if prev, pok, _ := iface.taskchain_get_chain_summary(svc.repo, chain.chain_id, chain.owner_user_id); pok {
+		if prev.curated_stored {
+			curated = prev.curated_body
+		} else {
+			// Legacy row: its notes only live in the rendered body; store them once.
+			curated = strings.join(extract_coordinator_summary_lines(svc, chain, prev.body), "\n", context.temp_allocator)
+		}
+	}
+	_, _, _ = render_chain_summary_in_uow(svc, u, chain, curated)
+}
+
+// render_chain_summary_in_uow renders the bounded summary from the chain's
+// history plus `curated`, and saves both inside the caller's unit of work.
+// summary_overflow is an EPISODE, latched durably in
+// chain_summaries.overflow_active: the event and coordinator notice fire only on
+// the transition into overflow (not on every render while it lasts); a render
+// that fits again closes the episode so a later overflow notifies once more.
+// The notice is an after-commit effect, so a rolled-back render sends nothing.
+// summary set and every rebuild go through here, so they share the latch.
+@(private = "file")
+render_chain_summary_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, curated: string) -> (domain.Chain_Summary, bool, domain.Domain_Error) {
 	prev_ver := 0
-	var_coord_lines: []string = nil
+	was_overflowing := false
 	if prev, pok, _ := iface.taskchain_get_chain_summary(svc.repo, chain.chain_id, chain.owner_user_id); pok {
 		prev_ver = prev.version
-		var_coord_lines = extract_coordinator_summary_lines(svc, chain, prev.body)
+		was_overflowing = prev.overflow_active
+	} else {
+		was_overflowing = chain_has_overflow_event(svc, chain)
 	}
-	body, overflow := build_mechanical_chain_summary(svc, chain, var_coord_lines)
+	curated_lines := make([dynamic]string, context.temp_allocator)
+	for line in strings.split_lines(curated, context.temp_allocator) {
+		if strings.trim_space(line) != "" do append(&curated_lines, line)
+	}
+	body, overflow, dead_ends := build_mechanical_chain_summary(svc, chain, curated_lines[:])
 	lines := strings.split_lines(body, context.temp_allocator) if body != "" else nil
-	now := platform.clock_now(svc.clock)
-	_, _, _ = iface.taskchain_save_chain_summary(svc.repo, domain.Chain_Summary{
-		chain_id      = chain.chain_id,
-		owner_user_id = chain.owner_user_id,
-		body          = body,
-		line_count    = len(lines),
-		version       = prev_ver + 1,
-		updated_at    = now,
+	saved_row, saved, serr := iface.taskchain_save_chain_summary(svc.repo, domain.Chain_Summary{
+		chain_id        = chain.chain_id,
+		owner_user_id   = chain.owner_user_id,
+		body            = body,
+		line_count      = len(lines),
+		version         = prev_ver + 1,
+		updated_at      = platform.clock_now(svc.clock),
+		overflow_active = overflow,
+		curated_body    = curated,
+		curated_stored  = true,
 	})
+	if !saved do return {}, false, serr
 	if u != nil {
 		effect_publish_chain(u, chain.chain_id, chain.owner_user_id, "summary_updated")
 	}
-	if overflow {
-		if tasks, terr := iface.taskchain_list_tasks_by_chain(svc.repo, chain.chain_id, chain.owner_user_id); terr.code == .None && len(tasks) > 0 {
-			p := json_begin()
-			json_int(&p, "max_lines", CHAIN_SUMMARY_MAX_LINES)
-			_, _, _ = append_event(svc.repo, svc.clock, tasks[len(tasks)-1], hub_actor(), EV_SUMMARY_OVERFLOW, json_end(&p))
-		}
-		if u != nil {
-			effect_notify_coordinator(svc, u, chain.chain_id, chain.owner_user_id, "summary_overflow", fmt.tprintf("[taskv2] summary_overflow: chain %s dead_ends exceed %d lines; run `ham-ctl task-chain summary set` to compact", chain.chain_id, CHAIN_SUMMARY_MAX_LINES))
-		}
+	// Only a durably recorded transition is announced, so the next render can
+	// always tell a repeat from a new episode.
+	if !overflow || was_overflowing do return saved_row, true, domain.Domain_Error{}
+	if tasks, terr := iface.taskchain_list_tasks_by_chain(svc.repo, chain.chain_id, chain.owner_user_id); terr.code == .None && len(tasks) > 0 {
+		p := json_begin()
+		json_int(&p, "max_lines", CHAIN_SUMMARY_MAX_LINES)
+		json_int(&p, "dead_ends", i64(dead_ends))
+		_, _, _ = append_event(svc.repo, svc.clock, tasks[len(tasks)-1], hub_actor(), EV_SUMMARY_OVERFLOW, json_end(&p))
 	}
+	if u != nil {
+		effect_notify_coordinator(svc, u, chain.chain_id, chain.owner_user_id, "summary_overflow", summary_overflow_notice(chain.chain_id, dead_ends))
+	}
+	return saved_row, true, domain.Domain_Error{}
+}
+
+// summary_overflow_notice is the one-line coordinator notice. Dead ends are
+// retained history, so it explains the cap and where the full history lives
+// rather than asking for a compaction that `summary set` cannot perform.
+summary_overflow_notice :: proc(chain_id: domain.Task_Chain_ID, dead_ends: int) -> string {
+	return fmt.tprintf("[taskv2] summary_overflow: chain %s has %d dead ends, more than the %d-line rendered summary can show; agents see your curated notes (up to %d lines are always kept visible) and the first dead ends plus a pointer, and every dead end stays in its task's handoff facet. Nothing to compact: summary set replaces only your stored curated notes (shorter notes leave room for more dead ends). Inspect with `ham-ctl task-chain summary get`; read full history with `ham-ctl task fetch <task-id> facet:<task-id>:<attempt>:handoff`. Sent once per overflow episode.", chain_id, dead_ends, CHAIN_SUMMARY_MAX_LINES, CHAIN_SUMMARY_CURATED_RESERVED_LINES)
+}
+
+// chain_has_overflow_event seeds the episode latch when no summary row exists
+// yet (a reconstructed or legacy chain): a recorded summary_overflow means the
+// chain already announced its current episode.
+@(private = "file")
+chain_has_overflow_event :: proc(svc: ^Service, chain: domain.Task_Chain) -> bool {
+	evs, err := iface.taskchain_list_fold_events_by_chain(svc.repo, chain.chain_id, chain.owner_user_id)
+	if err.code != .None do return false
+	for ev in evs do if ev.kind == EV_SUMMARY_OVERFLOW do return true
+	return false
 }
 
 // chain_summary_set allows the coordinator or chain owner to set the chain
@@ -690,10 +764,6 @@ chain_summary_set :: proc(svc: ^Service, auth: contracts.Auth_Context, chain_id_
 	}
 
 	body := strings.trim_right_space(body_in)
-	lines := strings.split_lines(body, context.temp_allocator) if body != "" else nil
-	if len(lines) > CHAIN_SUMMARY_MAX_LINES {
-		return {}, false, domain.domain_error(.Validation_Failed, fmt.tprintf("chain summary must be at most %d lines (got %d)", CHAIN_SUMMARY_MAX_LINES, len(lines)))
-	}
 	u, uok, uerr := begin_uow(svc)
 	if !uok do return {}, false, uerr
 	chain, cok, _ := iface.taskchain_get_chain(svc.repo, chain_id)
@@ -701,20 +771,19 @@ chain_summary_set :: proc(svc: ^Service, auth: contracts.Auth_Context, chain_id_
 		_, _ = end_uow(svc, &u, false)
 		return {}, false, domain.domain_error(.Not_Found, "task chain not found")
 	}
-	prev_ver := 0
-	if prev, pok, _ := iface.taskchain_get_chain_summary(svc.repo, chain.chain_id, chain.owner_user_id); pok {
-		prev_ver = prev.version
+	// Store only the notes: a body round-tripped from `summary get` (or an
+	// edited rendered summary) carries the mechanical title, headers, task and
+	// dead-end bullets and omission marker, which are dropped exactly as for a
+	// legacy row. Then re-render at once, sharing the overflow latch with rebuilds.
+	// The line cap applies to the notes that are stored, not to the mechanical
+	// lines a round-tripped body brings along.
+	note_lines := extract_coordinator_summary_lines(svc, chain, body)
+	if len(note_lines) > CHAIN_SUMMARY_MAX_LINES {
+		_, _ = end_uow(svc, &u, false)
+		return {}, false, domain.domain_error(.Validation_Failed, fmt.tprintf("chain summary must be at most %d lines (got %d)", CHAIN_SUMMARY_MAX_LINES, len(note_lines)))
 	}
-	now := platform.clock_now(svc.clock)
-	saved, sok, serr := iface.taskchain_save_chain_summary(svc.repo, domain.Chain_Summary{
-		chain_id      = chain.chain_id,
-		owner_user_id = chain.owner_user_id,
-		body          = body,
-		line_count    = len(lines),
-		version       = prev_ver + 1,
-		updated_at    = now,
-	})
-	if sok do effect_publish_chain(&u, chain.chain_id, chain.owner_user_id, "summary_updated")
+	curated := strings.join(note_lines, "\n", context.temp_allocator)
+	saved, sok, serr := render_chain_summary_in_uow(svc, &u, chain, curated)
 	_, cerr := end_uow(svc, &u, sok)
 	if !sok do return {}, false, serr
 	if cerr.code != .None do return {}, false, cerr

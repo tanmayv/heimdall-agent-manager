@@ -11,6 +11,7 @@
 // root it chains to) is genuine: this device pins the root only after verifying the
 // approver's pair_mac. The code never leaves this device and is wiped once paired.
 
+import { consumeAddAccountIntent } from '../utils/clientPersistence';
 import * as vaultApi from '../api/endpoints/vaultDevices';
 import { ApiError } from '../api/cookieFetch';
 import {
@@ -634,6 +635,10 @@ export async function restartPairing(): Promise<void> {
  * current one: show the warning instead of any automatic genesis / confirmation.
  */
 async function refuseUnacknowledgedAccount(c: Ctx): Promise<boolean> {
+  if (consumeAddAccountIntent()) {
+    await acknowledgeOtherAccount(d().kv, c.userId);
+    return false;
+  }
   const others = await otherPinnedAccounts(d().kv, c.userId);
   if (others.length === 0) return false;
   stopPolling();

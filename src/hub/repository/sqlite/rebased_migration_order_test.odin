@@ -2,7 +2,7 @@
 // Migrations 104 (chat FTS update guard) and 105 (full-scan indexes) were renumbered
 // to follow main's 103_plan_enforcement.sql. These tests pin that order: a database
 // stopped at main's latest migration upgrades through both, a fresh database applies
-// every migration, and no number after 102 is shared. Extension migrations follow
+// every migration, with one explicitly allowed shared prefix after 102. Extension migrations follow
 // the deployed main identities 104/105 without renumbering either.
 package sqlite
 
@@ -95,7 +95,7 @@ test_rebased_fresh_database_applies_every_migration :: proc(t: ^testing.T) {
 }
 
 // Older numbers (043, 044, 048, 072) were shared before this rule; anything after
-// 102 must be unique and in ascending order, including the extension additions.
+// 102 must be unique and in ascending order, except the named staging pair below.
 @(test)
 test_rebased_migration_numbers_after_102_are_unique :: proc(t: ^testing.T) {
 	order := migration_order
@@ -113,11 +113,18 @@ test_rebased_migration_numbers_after_102_are_unique :: proc(t: ^testing.T) {
 		"114_extension_version_sync.sql", "115_provider_extension_commands.sql"}
 	for name, i in expected do testing.expect_value(t, tail[i], name)
 	prev := 0
-	for name in order {
+	for name, i in order {
 		if name == "native_001_oidc_identities.sql" do continue
 		n, n_ok := strconv.parse_int(name[:3])
 		if !testing.expectf(t, n_ok, "%s has a numeric prefix", name) do continue
-		if n > 102 do testing.expectf(t, n > prev, "%s must be numbered after %d", name, prev)
+		// Bots was already applied on staging before main released 0.5.55.
+		// Final renumbering with a ledger alias is decided when feat/bots merges to main.
+		allowed_pairs := [1][2]string{{"209_extension_version_sync_0_5_55.sql", "209_bots.sql"}}
+		allowed := false
+		for pair in allowed_pairs {
+			if i > 0 && order[i-1] == pair[0] && name == pair[1] do allowed = true
+		}
+		if n > 102 do testing.expectf(t, n > prev || allowed, "%s must be numbered after %d", name, prev)
 		prev = max(prev, n)
 	}
 }
@@ -149,4 +156,45 @@ test_extension_upgrade_from_deployed_main_keeps_migration_identities :: proc(t: 
 	testing.expect(t, table_column_exists(&conn, "provider_catalog", "ask_args"), "ask arguments exist")
 	mig_ok, _ = run_migrations(&conn)
 	testing.expect(t, mig_ok, "extension upgrade is idempotent")
+}
+
+// Both deployed histories must converge without renaming any ledger identity.
+rmo_bots_upgrade :: proc(t: ^testing.T, staging: bool) {
+	context.allocator = context.temp_allocator
+	conn, path, ok := tmpl_open_file_prod(t, "rmo_bots_upgrade")
+	defer tmpl_remove_db(path)
+	if !ok do return
+	defer close(&conn)
+	main_sync :: "209_extension_version_sync_0_5_55.sql"
+	mig_ok, _ := run_migrations(&conn, stop_before = main_sync)
+	if !testing.expect(t, mig_ok, "migrate shared history") do return
+	first := main_sync
+	if staging do first = "209_bots.sql"
+	sql := migration_sql(first, "")
+	defer delete(sql)
+	if !testing.expect(t, exec(&conn, sql), "apply deployed branch migration") do return
+	if !testing.expect(t, exec(&conn, strings.concatenate({"INSERT INTO schema_migrations(version) VALUES ('", first, "');"}, context.temp_allocator)), "record deployed identity") do return
+	testing.expect_value(t, migration_applied(&conn, "209_bots.sql"), staging)
+	testing.expect_value(t, migration_applied(&conn, main_sync), !staging)
+	testing.expect(t, !migration_applied(&conn, "210_agent_writes.sql") && !migration_applied(&conn, "211_bots_whatsapp.sql"), "later bots migrations absent")
+	mig_ok, _ = run_migrations(&conn)
+	if !testing.expect(t, mig_ok, "upgrade deployed history") do return
+	for name in ([4]string{main_sync, "209_bots.sql", "210_agent_writes.sql", "211_bots_whatsapp.sql"}) {
+		testing.expectf(t, migration_applied(&conn, name), "%s applied", name)
+	}
+	for name in ([9]string{"bots", "bot_placement_candidates", "channel_bindings", "channel_pairings", "channel_cursors", "channel_messages", "bot_deliveries", "bot_delivery_attempts", "channel_push_events"}) {
+		testing.expectf(t, sqlite_object_exists(&conn, name), "%s present", name)
+	}
+	mig_ok, _ = run_migrations(&conn)
+	testing.expect(t, mig_ok, "repeat upgrade is idempotent")
+}
+
+@(test)
+test_bots_upgrade_from_staging_209 :: proc(t: ^testing.T) {
+	rmo_bots_upgrade(t, true)
+}
+
+@(test)
+test_bots_upgrade_from_production_209 :: proc(t: ^testing.T) {
+	rmo_bots_upgrade(t, false)
 }

@@ -39,7 +39,7 @@ type Ctx = {
   doc: Document;
   win: any;
   calls: Call[];
-  animations: Array<{ keyframes: any; options: any }>;
+  animations: Array<{ keyframes: any; options: any; cancelled?: boolean; animation?: any }>;
   launched: string[];
   act: (fn: () => Promise<void> | void) => Promise<void>;
   render: (props?: Record<string, unknown>) => Promise<void>;
@@ -47,7 +47,7 @@ type Ctx = {
 };
 
 async function withPage(
-  setup: { bridges?: any[]; prefs?: Record<string, unknown>; reducedMotion?: boolean; storage?: Record<string, string>; failPreferenceWrites?: boolean; width?: number },
+  setup: { bridges?: any[]; projects?: any[]; prefs?: Record<string, unknown>; reducedMotion?: boolean; storage?: Record<string, string>; failPreferenceWrites?: boolean; width?: number; sessions?: any[]; failShellList?: boolean; shellListDelay?: number; failShellStart?: boolean },
   run: (ctx: Ctx) => Promise<void>,
 ) {
   const { JSDOM } = await import('jsdom');
@@ -61,8 +61,14 @@ async function withPage(
   win.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
   const animations: Ctx['animations'] = [];
   win.HTMLElement.prototype.animate = function animate(keyframes: any, options: any) {
-    animations.push({ keyframes, options });
-    return { finished: Promise.resolve(), cancel() {} };
+    const record: Ctx['animations'][number] = { keyframes, options, cancelled: false };
+    animations.push(record);
+    record.animation = { finished: Promise.resolve(), cancel() { record.cancelled = true; } };
+    return record.animation;
+  };
+  win.HTMLElement.prototype.getBoundingClientRect = function () {
+    const height = this.dataset.debugId === 'new-convo-composer-shell' ? (this.dataset.mode === 'shell' ? 560 : 180) : 0;
+    return { x: 0, y: 0, top: 0, left: 0, right: 760, bottom: height, width: 760, height, toJSON() {} };
   };
   for (const [k, v] of Object.entries(setup.storage || {})) win.localStorage.setItem(k, v);
 
@@ -95,6 +101,14 @@ async function withPage(
       const failure = JSON.stringify({ error: { code: 'unavailable', message: 'Preferences are unavailable.' } });
       return { ok: false, status: 503, headers: { get: () => 'application/json' }, text: async () => failure, json: async () => JSON.parse(failure) } as any;
     }
+    if (setup.failShellStart && path.endsWith('/shells') && method === 'POST') {
+      const failure = JSON.stringify({ error: { code: 'unavailable', message: 'Bridge could not start the shell.' } });
+      return { ok: false, status: 503, headers: { get: () => 'application/json' }, text: async () => failure, json: async () => JSON.parse(failure) } as any;
+    }
+    if (path.endsWith('/shells') && method === 'GET') {
+      if (setup.shellListDelay) await new Promise(resolve => setTimeout(resolve, setup.shellListDelay));
+      if (setup.failShellList) { const failure = JSON.stringify({ error: { code: 'unavailable', message: 'Shells unavailable' } }); return { ok: false, status: 503, headers: { get: () => 'application/json' }, text: async () => failure, json: async () => JSON.parse(failure) } as any; }
+    }
     let data: any = {};
     if (path.endsWith('/me/conversation-launch')) data = prefs;
     else if (path.endsWith('/agents') && method === 'GET') data = AGENTS;
@@ -103,7 +117,7 @@ async function withPage(
       const created = { project_id: 'p_new', name: body.name, description: body.description, default_path: body.default_path, vcs_kind: body.vcs_kind, state: 'active' };
       createdProjects.push(created); data = created;
     }
-    else if (path.endsWith('/projects')) data = { projects: [...PROJECTS, ...createdProjects] };
+    else if (path.endsWith('/projects')) data = { projects: [...(setup.projects ?? PROJECTS), ...createdProjects] };
     else if (/\/bridges\/[^/]+\/fs$/.test(path)) data = { ok: true, path: new URL(url, 'http://localhost').searchParams.get('path') || '/srv', root: '/srv', parent: '', entries: [{ name: '.git', is_dir: true, hidden: true }], truncated: false };
     else if (/\/bridges\/[^/]+\/fs\/file$/.test(path)) data = { ok: false, path: '', viewable: false, error: { code: 'not_found', cause: 'path_not_found', message: 'Path does not exist' } };
     else if (path.endsWith('/bridges')) data = { bridges };
@@ -113,6 +127,7 @@ async function withPage(
     else if (path.endsWith('/me/experiments')) data = { flags: {} };
     else if (path.endsWith('/chats') && method === 'POST') data = { agent_instance_id: 'inst_new' };
     else if (path.includes('/agent-instances/')) data = { agent_instance_id: 'inst_new' };
+    else if (path.endsWith('/shells') && method === 'GET') data = { sessions: setup.sessions || [] };
     else if (path.endsWith('/shells') && method === 'POST') data = { session: { session_id: body.session_id, kind: 'shell', status: 'running' } };
     else if (path.includes('/public-key')) data = { unseal_boot_id: BOOT_ID };
     const text = JSON.stringify({ data });
@@ -250,64 +265,104 @@ test('launching a conversation makes the same API calls, keeps the 420ms launch 
   });
 });
 
-test('mode switch swaps the composer body with composerSwap, persists heimdall:new-pane-mode, and opens a shell', async () => {
-  await withPage({}, async (ctx) => {
+test('mode switch resizes/fades the retained surface, keeps the draft and launches the clicked bridge', async () => {
+  await withPage({ bridges: [RIVER, DAWN] }, async (ctx) => {
     await ctx.render();
     await until(ctx, () => issuesText(ctx.doc) === '', 'hydration');
+    await type(ctx, q(ctx.doc, 'new-convo-composer-input'), 'Keep my draft');
     const composer = q(ctx.doc, 'new-convo-composer-shell')!;
-    const body = () => composer.querySelector('[data-composer-body]') as HTMLElement;
-    assert.equal(body().dataset.composerBody, 'agent');
-    assert.ok(!body().className.includes('animate-composer-swap'), 'no swap animation on first render');
-
+    assert.equal(ctx.animations.length, 0, 'no transition on mount');
     await pickMode(ctx, 'shell');
     assert.equal(ctx.win.localStorage.getItem('heimdall:new-pane-mode'), 'shell');
-    assert.ok(q(ctx.doc, 'new-convo-composer-shell') === composer, 'the container (and its border) stays mounted');
-    assert.equal(body().dataset.composerBody, 'shell');
-    assert.ok(body().className.includes('animate-composer-swap'), 'the new body plays composerSwap');
+    assert.ok(q(ctx.doc, 'new-convo-composer-shell') === composer, 'one surface stays mounted');
     assert.equal(q(ctx.doc, 'new-convo-composer-input'), null);
-    const command = q(ctx.doc, 'new-shell-command') as HTMLTextAreaElement;
-    assert.equal(command.placeholder, 'Run a command, or leave empty for an interactive shell');
-    assert.ok(command.className.includes('font-mono'));
-    assert.equal(squash(q(ctx.doc, 'new-shell-kind')?.textContent), 'zsh');
-    const prompt = q(ctx.doc, 'new-shell-prompt')!;
-    const promptClasses = prompt.className.split(/\s+/);
-    assert.ok(promptClasses.includes('text-accent'), 'the $ prompt is accent');
-    assert.ok(!promptClasses.includes('text-primary'), 'the $ prompt carries no competing primary tone');
-    assert.equal(squash(q(ctx.doc, 'new-shell-hint')?.textContent), 'Opens in the project folder on riverwood');
-    assert.equal(squash(q(ctx.doc, 'new-convo-mode-token')?.textContent), 'shell');
-
-    await type(ctx, command, 'npm test');
-    const open = q(ctx.doc, 'new-shell-open') as HTMLButtonElement;
-    await until(ctx, () => !open.disabled, 'Open shell enabled');
-    await click(ctx, open);
+    assert.ok(q(ctx.doc, 'new-convo-shell-picker'));
+    for (const id of ['new-shell-command', 'new-shell-open', 'new-convo-shell-search-input', 'new-convo-shell-project-select']) assert.equal(q(ctx.doc, id), null);
+    const resize = ctx.animations.find(a => a.options.duration === 300 && 'height' in a.keyframes[0])!;
+    assert.deepEqual(resize.keyframes, [{ height: '180px' }, { height: '560px' }]);
+    assert.ok(ctx.animations.some(a => a.options.duration === 200 && a.keyframes[0].opacity === 0), 'body fades in');
+    await click(ctx, q(ctx.doc, 'new-shell-bridge-b_dawn'));
     await until(ctx, () => ctx.launched.length > 0, 'shell onLaunched');
-    const shellPosts = ctx.calls.filter((c) => c.method === 'POST' && new URL(c.url, 'http://localhost').pathname.endsWith('/shells'));
-    assert.equal(shellPosts.length, 1);
-    assert.equal(shellPosts[0].body.kind, 'shell');
-    assert.equal(shellPosts[0].body.project_id, 'p_ham');
+    const posts = ctx.calls.filter(c => c.method === 'POST' && new URL(c.url, 'http://localhost').pathname.endsWith('/shells'));
+    assert.equal(posts.length, 1);
+    assert.ok(posts[0].url.includes('/bridges/b_dawn/shells'), 'clicked bridge wins over remembered riverwood');
+    assert.equal(posts[0].body.project_id, 'p_ham');
     const { decryptVaultText } = await import('../src/ui/utils/vaultCrypto.ts');
-    const spec = JSON.parse(await decryptVaultText(String(shellPosts[0].body.enc_spec)));
-    assert.equal(spec.cmd, 'npm test');
-    assert.equal(spec.cwd, '/srv/ham');
-    assert.deepEqual(ctx.launched, [shellPosts[0].body.session_id]);
-    assert.equal(ctx.calls.filter((c) => c.url.includes('/chats') && c.method === 'POST').length, 0, 'no conversation launched');
-
+    const spec = JSON.parse(await decryptVaultText(String(posts[0].body.enc_spec)));
+    assert.equal(spec.bridge_id, 'b_dawn');
+    assert.equal(spec.cmd, '', 'interactive shell');
+    assert.equal(spec.cwd, '', 'unmapped bridge starts at its home, not riverwood project path');
+    assert.deepEqual(ctx.launched, [posts[0].body.session_id]);
     await pickMode(ctx, 'agent');
-    assert.equal(ctx.win.localStorage.getItem('heimdall:new-pane-mode'), 'agent');
-    assert.equal(body().dataset.composerBody, 'agent');
+    assert.equal((q(ctx.doc, 'new-convo-composer-input') as HTMLTextAreaElement).value, 'Keep my draft');
+    assert.ok(ctx.animations.some(a => a.keyframes[0].height === '560px' && a.keyframes[1].height === '180px'), 'reverse resize');
+    assert.ok(resize.cancelled, 'interrupted animation is cancelled on reverse');
   });
 });
 
 test('the remembered mode is restored on mount; a launch intent wins without rewriting it', async () => {
   await withPage({ storage: { 'heimdall:new-pane-mode': 'shell' } }, async (ctx) => {
     await ctx.render();
-    assert.ok(q(ctx.doc, 'new-shell-command'), 'starts in shell mode');
+    assert.ok(q(ctx.doc, 'new-convo-shell-picker'), 'starts in shell mode');
     assert.equal(squash(q(ctx.doc, 'new-convo-mode-token')?.textContent).replace(/\s/g, ''), 'shell');
   });
   await withPage({ storage: { 'heimdall:new-pane-mode': 'shell' } }, async (ctx) => {
     await ctx.render({ launchIntent: 'agent' });
     assert.ok(q(ctx.doc, 'new-convo-composer-input'), 'the intent selects conversation mode');
     assert.equal(ctx.win.localStorage.getItem('heimdall:new-pane-mode'), 'shell', 'the saved preference is untouched');
+  });
+});
+
+test('mode resize releases menu clipping on finish and cancel, ignoring stale animation callbacks', async () => {
+  await withPage({}, async ctx => {
+    await ctx.render();
+    await until(ctx, () => issuesText(ctx.doc) === '', 'hydration');
+    const composer = q(ctx.doc, 'new-convo-composer-shell')!;
+    assert.equal(composer.style.overflow, '');
+    await pickMode(ctx, 'shell');
+    const first = ctx.animations.find(a => 'height' in a.keyframes[0])!;
+    assert.equal(composer.style.overflow, 'hidden');
+    await pickMode(ctx, 'agent');
+    first.animation.oncancel();
+    assert.equal(composer.style.overflow, 'hidden', 'stale cancellation cannot unclip the current resize');
+    const reverse = ctx.animations.filter(a => 'height' in a.keyframes[0]).at(-1)!;
+    reverse.animation.onfinish();
+    assert.equal(composer.style.overflow, '');
+    assert.ok(!composer.classList.contains('overflow-hidden'));
+    await click(ctx, q(ctx.doc, 'new-convo-agent-picker'));
+    assert.ok(q(ctx.doc, 'new-convo-agent-menu-list'));
+    await click(ctx, q(ctx.doc, 'new-convo-agent-picker'));
+    await click(ctx, q(ctx.doc, 'new-convo-runtime-picker'));
+    assert.ok(q(ctx.doc, 'new-convo-runtime-menu-columns'));
+    await pickMode(ctx, 'shell');
+    ctx.animations.filter(a => 'height' in a.keyframes[0]).at(-1)!.animation.oncancel();
+    assert.equal(composer.style.overflow, '', 'external cancellation also restores overflow');
+  });
+});
+
+test('mode animation uses milliseconds with both source and minified CSS time tokens', async () => {
+  await withPage({}, async ctx => {
+    await ctx.render();
+    await until(ctx, () => issuesText(ctx.doc) === '', 'hydration');
+    const composer = q(ctx.doc, 'new-convo-composer-shell')!;
+    for (const [slow, base, mode] of [['300ms', '200ms', 'shell'], ['.3s', '.2s', 'agent']] as const) {
+      composer.style.setProperty('--duration-slow', slow);
+      composer.style.setProperty('--duration-base', base);
+      const before = ctx.animations.length;
+      await pickMode(ctx, mode);
+      const animations = ctx.animations.slice(before);
+      assert.equal(animations.find(a => 'height' in a.keyframes[0])!.options.duration, 300, slow);
+      assert.equal(animations.find(a => 'opacity' in a.keyframes[0])!.options.duration, 200, base);
+    }
+  });
+});
+
+test('missing project offers guidance instead of loading a skipped shell query forever', async () => {
+  await withPage({ projects: [], prefs: { project_id: '' } }, async ctx => {
+    await ctx.render({ launchIntent: 'shell' });
+    await until(ctx, () => Boolean(q(ctx.doc, 'new-shell-project-unavailable')), 'project unavailable guidance');
+    assert.match(q(ctx.doc, 'new-shell-project-unavailable')!.textContent!, /Choose a project/);
+    assert.doesNotMatch(q(ctx.doc, 'new-convo-shell-picker')!.textContent!, /Loading shells/);
   });
 });
 
@@ -318,6 +373,8 @@ test('reduced motion: the mode swap applies no animation class', async () => {
     const body = q(ctx.doc, 'new-convo-composer-shell')!.querySelector('[data-composer-body]') as HTMLElement;
     assert.equal(body.dataset.composerBody, 'shell');
     assert.ok(!body.className.includes('animate-'), 'no animate-* class under reduced motion');
+    assert.equal(ctx.animations.length, 0, 'no resize/fade animation under reduced motion');
+    assert.equal(q(ctx.doc, 'new-convo-composer-shell')!.style.overflow, '');
   });
 });
 
@@ -345,7 +402,7 @@ test('issues render as a quiet status line with rewritten copy, and send stays d
 
     await pickMode(ctx, 'shell');
     assert.ok(q(ctx.doc, 'no-bridge-banner'), 'banner in shell mode too');
-    assert.ok((q(ctx.doc, 'new-shell-open') as HTMLButtonElement).disabled, 'Open shell disabled while issues exist');
+    assert.equal(ctx.doc.querySelector('[data-debug-id^="new-shell-bridge-"]'), null, 'offline bridges cannot launch');
   });
   // Two bridges with one online, the chosen one offline: point at the headline token.
   await withPage({ bridges: [RIVER_OFF, DAWN] }, async (ctx) => {
@@ -361,11 +418,11 @@ test('issues render as a quiet status line with rewritten copy, and send stays d
 test('a failed preference save shows its error and Retry in shell mode too', async () => {
   await withPage({ failPreferenceWrites: true, storage: { 'heimdall:new-pane-mode': 'shell' } }, async (ctx) => {
     await ctx.render();
-    await until(ctx, () => Boolean(q(ctx.doc, 'new-shell-command')) && Boolean(q(ctx.doc, 'new-convo-project-token')), 'shell mode');
+    await until(ctx, () => Boolean(q(ctx.doc, 'new-convo-shell-picker')) && Boolean(q(ctx.doc, 'new-convo-project-token')), 'shell mode');
     await click(ctx, q(ctx.doc, 'new-convo-project-token'));
     await click(ctx, q(ctx.doc, 'new-convo-project-option-none'));
     await until(ctx, () => Boolean(q(ctx.doc, 'new-convo-launch-error')), 'preference error alert');
-    assert.ok(q(ctx.doc, 'new-shell-command'), 'still in shell mode');
+    assert.ok(q(ctx.doc, 'new-convo-shell-picker'), 'still in shell mode');
     assert.ok(q(ctx.doc, 'new-convo-retry-preferences-btn'), 'Retry saving selections is offered in shell mode');
     const patches = () => ctx.calls.filter((c) => c.method === 'PATCH' && c.url.includes('/me/conversation-launch'));
     const before = patches().length;
@@ -502,5 +559,81 @@ test('New project: opened from the project menu, browses the chosen bridge, crea
     assert.equal(post.body.default_path, '/srv/newthing');
     assert.equal(post.body.vcs_kind, 'git');
     await until(ctx, () => /newthing/.test(squash(q(ctx.doc, 'new-convo-project-token')?.textContent)), 'new project selected');
+  });
+});
+
+test('project-scoped running interactive shells reopen without creating a session; unknown states remain honest', async () => {
+  const base = { bridge_id: 'b_river', project_id: 'p_ham', kind: 'shell', status: 'running', label: 'Working shell', cwd: '/srv/ham', started_at: new Date().toISOString(), status_unknown: false };
+  await withPage({ sessions: [
+    { ...base, session_id: 'sh_live' },
+    { ...base, session_id: 'sh_other', project_id: 'p_conv' },
+    { ...base, session_id: 'sh_run', kind: 'run' },
+    { ...base, session_id: 'sh_exited', status: 'exited' },
+    { ...base, session_id: 'sh_unknown', status_unknown: true },
+  ] }, async ctx => {
+    await ctx.render({ launchIntent: 'shell' });
+    await until(ctx, () => Boolean(q(ctx.doc, 'new-shell-session-sh_live')), 'running shells');
+    assert.equal(ctx.doc.querySelectorAll('[data-debug-id^="new-shell-session-"]').length, 2);
+    assert.match(q(ctx.doc, 'new-shell-session-sh_unknown')!.textContent!, /Status unknown/);
+    const listCalls = ctx.calls.filter(c => c.method === 'GET' && c.url.includes('/shells?'));
+    assert.ok(listCalls.some(c => c.url.includes('project_id=p_ham')));
+    await click(ctx, q(ctx.doc, 'new-shell-session-sh_live'));
+    assert.deepEqual(ctx.launched, ['sh_live']);
+    assert.equal(ctx.calls.filter(c => c.method === 'POST' && c.url.includes('/shells')).length, 0);
+  });
+});
+
+test('no running shells keeps direct bridge launch choices visible without a search field', async () => {
+  await withPage({}, async ctx => {
+    await ctx.render({ launchIntent: 'shell' });
+    await until(ctx, () => Boolean(q(ctx.doc, 'new-shell-empty')), 'empty list');
+    assert.ok(q(ctx.doc, 'new-shell-bridge-b_river'));
+    assert.equal(ctx.doc.querySelector('[data-debug-id="new-convo-shell-picker"] input'), null);
+    assert.ok(ctx.doc.activeElement === q(ctx.doc, 'new-shell-bridge-b_river'), 'shortcut focuses first bridge');
+  });
+});
+
+test('shell list loading and errors do not hide bridge launch choices or pretend to be an empty list', async () => {
+  await withPage({ shellListDelay: 250 }, async ctx => {
+    await ctx.render({ launchIntent: 'shell' });
+    assert.ok(q(ctx.doc, 'new-shell-bridge-b_river'));
+    assert.equal(q(ctx.doc, 'new-shell-empty'), null, 'loading is not empty');
+    await until(ctx, () => Boolean(q(ctx.doc, 'new-shell-empty')), 'settled empty list');
+  });
+  await withPage({ failShellList: true }, async ctx => {
+    await ctx.render({ launchIntent: 'shell' });
+    await until(ctx, () => Boolean(q(ctx.doc, 'new-shell-list-error')), 'list error');
+    assert.ok(q(ctx.doc, 'new-shell-bridge-b_river'));
+    assert.equal(q(ctx.doc, 'new-shell-empty'), null);
+    const before = ctx.calls.filter(c => c.method === 'GET' && c.url.includes('/shells?')).length;
+    await click(ctx, q(ctx.doc, 'new-shell-retry-list'));
+    assert.ok(ctx.calls.filter(c => c.method === 'GET' && c.url.includes('/shells?')).length > before);
+  });
+});
+
+test('failed bridge launch surfaces an error and re-enables rows for an explicit retry', async () => {
+  const setup = { failShellStart: true };
+  await withPage(setup, async ctx => {
+    await ctx.render({ launchIntent: 'shell' });
+    await until(ctx, () => Boolean(q(ctx.doc, 'new-shell-bridge-b_river')), 'bridge row');
+    await click(ctx, q(ctx.doc, 'new-shell-bridge-b_river'));
+    await until(ctx, () => Boolean(q(ctx.doc, 'new-shell-start-error')), 'launch error');
+    assert.equal(ctx.launched.length, 0);
+    assert.equal((q(ctx.doc, 'new-shell-bridge-b_river') as HTMLButtonElement).disabled, false);
+    setup.failShellStart = false;
+    await click(ctx, q(ctx.doc, 'new-shell-bridge-b_river'));
+    await until(ctx, () => ctx.launched.length === 1, 'retry starts shell');
+  });
+});
+
+test('shell cold start without connected bridges still permits reopening a session with unknown status', async () => {
+  await withPage({ bridges: [RIVER_OFF], sessions: [{ session_id: 'sh_offline', project_id: 'p_ham', bridge_id: 'b_river', kind: 'shell', status: 'running', label: 'Reconnect', cwd: '/srv/ham' }] }, async ctx => {
+    await ctx.render({ launchIntent: 'shell' });
+    await until(ctx, () => Boolean(q(ctx.doc, 'new-shell-session-sh_offline')), 'offline shell row');
+    assert.equal(q(ctx.doc, 'no-bridge-online'), null);
+    assert.equal(ctx.doc.querySelector('[data-debug-id^="new-shell-bridge-"]'), null);
+    assert.match(q(ctx.doc, 'new-shell-session-sh_offline')!.textContent!, /Status unknown/);
+    await click(ctx, q(ctx.doc, 'new-shell-session-sh_offline'));
+    assert.deepEqual(ctx.launched, ['sh_offline']);
   });
 });

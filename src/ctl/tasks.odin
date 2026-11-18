@@ -185,7 +185,9 @@ resolve_task_id :: proc(transport: Ctl_Transport, args: []string) -> string {
 
 print_task_chains_help :: proc(action: string) {
 	_ = action
-	fmt.println("usage: ham-ctl task-chains <list|coordinated|create|show|update|members|fleet|token-usage|directory|add-agent|publish|graph|depend|remove-dependency|scope|complete|reopen|archive|unarchive|pin|unpin>")
+	fmt.println("usage: ham-ctl task-chains <list|coordinated|create|show|update|members|summary|fleet|token-usage|directory|add-agent|publish|graph|depend|remove-dependency|scope|complete|reopen|archive|unarchive|pin|unpin>")
+	fmt.println("  summary get [<chain-id>]                read the stored chain summary and its metadata (read-only)")
+	fmt.println("  summary set <text> | --stdin --chain ID replace the curated summary notes (<=60 lines)")
 	fmt.println("  coordinated [--agent-id <instance_id>]  list chains an agent coordinates (default: your own instance)")
 	fmt.println("  fleet <list|set>                        manage chain fleet capacities")
 	fmt.println("  token-usage [<chain-id>]                per-agent + chain total token usage (JSON)")
@@ -316,6 +318,21 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 	}
 
 	if action == "summary" || action == "set-summary" {
+		switch ctl_v2_task_chain_summary_op(cmd[idx + 1:], args) {
+		case .Invalid:
+			fmt.println(`{"ok":false,"message":"task-chains summary get is read-only: use get --chain <id>, or set <text> (or --stdin) --chain <id> to write"}`)
+			os.exit(1)
+		case .Get:
+			cid := ctl_v2_task_chain_summary_get_chain(cmd[idx + 1:], args)
+			if cid == "" do cid = resolve_chain_id(transport, args)
+			if cid == "" {
+				fmt.println(`{"ok":false,"message":"task-chains summary get requires <chain-id> or --chain <id>"}`)
+				os.exit(1)
+			}
+			ctl_task_chain_request_and_decrypt(transport, {method = .GET, path = ctl_api("task-chains", cid, "summary")}, args)
+			return
+		case .Set:
+		}
 		stdin_text := ""
 		if has_flag(args, "--stdin") {
 			if data, err := os.read_entire_file("/dev/stdin", context.allocator); err == nil {

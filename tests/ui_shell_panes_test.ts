@@ -81,8 +81,8 @@ test('wiring: Workspace renders ShellMainPane for shell ids; picker has Agent|Sh
   const picker = read('src/ui/components/chat/NewConversationPage.tsx');
   // The mode is the headline's mode token; shell mode is the shared composer's shell body.
   assert.match(picker, /<LaunchHeadline\s+mode=\{paneMode\}\s+onModeChange=\{setPaneMode\}/);
-  assert.match(picker, /<ShellComposerBody/);
-  assert.match(picker, /useShellLaunch\(\{/);
+  assert.match(picker, /<ShellPicker/);
+  assert.match(read('src/ui/components/chat/launcher/ShellPicker.tsx'), /useShellLaunch\(\{/);
   const panel = read('src/ui/components/chat/ShellLaunchPanel.tsx');
   assert.match(panel, /<BridgeDirectoryPicker/);
   // Launch logic (bridge, cwd default, start) lives in the shared hook.
@@ -112,9 +112,9 @@ test('resource chooser and explicit launcher-intent wiring is reusable', () => {
   assert.match(shells, /event\.key === 'Enter'/);
   const launcher = read('src/ui/components/chat/NewConversationPage.tsx');
   assert.match(launcher, /launchIntent\?: LauncherIntent/);
-  // An explicit shell shortcut focuses "Open shell" once it can be pressed.
-  assert.match(launcher, /if \(launchIntent !== 'shell' \|\| paneMode !== 'shell' \|\| openShellDisabled\) return;/);
-  assert.match(launcher, /openShellRef\.current\?\.focus\(\)/);
+  // An explicit shell shortcut focuses the first actionable bridge row.
+  assert.match(launcher, /autoFocus=\{launchIntent === 'shell'\}/);
+  assert.match(read('src/ui/components/chat/launcher/ShellPicker.tsx'), /firstBridge\.current\?\.focus\(\)/);
   const workspace = read('src/ui/components/mainWorkspace/Workspace.tsx');
   assert.match(workspace, /launchIntent: value\.launchIntent/);
 });

@@ -623,7 +623,54 @@ Ctl_Chain_Summary_Body :: struct {
 	summary:  string `json:"summary"`,
 }
 
+// Ctl_Chain_Summary_Op: what a `task-chain summary ...` invocation asks for.
+// Reads never carry text, so `summary get` can never be written as notes.
+Ctl_Chain_Summary_Op :: enum {
+	Invalid, // a read verb combined with write input: refuse rather than guess
+	Get,
+	Set,
+}
+
+// ctl_v2_task_chain_summary_has_write_input reports any write-only input flag.
+ctl_v2_task_chain_summary_has_write_input :: proc(args: []string) -> bool {
+	return has_flag(args, "--summary") || has_flag(args, "--body") || has_flag(args, "--file") || has_flag(args, "--stdin")
+}
+
+// ctl_v2_task_chain_summary_op classifies the subcommand. `get`/`show` and a
+// bare `summary` read; `set <text>`, a bare positional text and the write flags
+// keep their documented write meaning.
+ctl_v2_task_chain_summary_op :: proc(tokens, args: []string) -> Ctl_Chain_Summary_Op {
+	sub := pos(tokens, 0)
+	writes := ctl_v2_task_chain_summary_has_write_input(args)
+	switch sub {
+	case "get", "show":
+		// One optional positional: the chain id (`get [<chain-id>]`).
+		if writes || len(tokens) > 2 do return .Invalid
+		return .Get
+	case "":
+		return .Set if writes else .Get
+	}
+	return .Set
+}
+
+// Ctl_Chain_Summary_Get_Params: agent.task_chain.get_summary params. An empty
+// chain_id reads the caller's current chain.
+Ctl_Chain_Summary_Get_Params :: struct {
+	chain_id: string `json:"chain_id,omitempty"`,
+}
+
+// ctl_v2_task_chain_summary_get_chain: --chain/--chain-id, else `get <chain-id>`,
+// else "" (the current chain).
+ctl_v2_task_chain_summary_get_chain :: proc(tokens, args: []string) -> string {
+	return option_value(args, "--chain", option_value(args, "--chain-id", pos(tokens, 1)))
+}
+
+ctl_v2_task_chain_summary_get_params :: proc(tokens, args: []string) -> string {
+	return ctl_json_text(Ctl_Chain_Summary_Get_Params{chain_id = ctl_v2_task_chain_summary_get_chain(tokens, args)})
+}
+
 ctl_v2_task_chain_summary_body :: proc(tokens, args: []string, stdin_text := "", file_text := "") -> (Ctl_Chain_Summary_Body, bool) {
+	if ctl_v2_task_chain_summary_op(tokens, args) != .Set do return {}, false
 	sub := pos(tokens, 0)
 	summary := strings.trim_space(option_value(args, "--summary", option_value(args, "--body", "")))
 	if file_text != "" && summary == "" {
@@ -651,6 +698,15 @@ ctl_v2_task_chain_summary_params :: proc(tokens, args: []string, stdin_text := "
 }
 
 ctl_v2_task_chain_summary :: proc(endpoint, token: string, tokens, args: []string) {
+	switch ctl_v2_task_chain_summary_op(tokens, args) {
+	case .Invalid:
+		fmt.println(`{"ok":false,"message":"task-chain summary get is read-only: use get [--chain <id>], or set <text> | --body <text> | --file <path> | --stdin to write"}`)
+		os.exit(1)
+	case .Get:
+		ctl_agent_call_and_decrypt(endpoint, token, "agent.task_chain.get_summary", ctl_v2_task_chain_summary_get_params(tokens, args), args)
+		return
+	case .Set:
+	}
 	stdin_text := ""
 	file_text := ""
 	if path := option_value(args, "--file", ""); path != "" {
@@ -666,7 +722,7 @@ ctl_v2_task_chain_summary :: proc(endpoint, token: string, tokens, args: []strin
 	}
 	params, ok := ctl_v2_task_chain_summary_params(tokens, args, stdin_text, file_text)
 	if !ok {
-		fmt.println(`{"ok":false,"message":"task-chain summary requires set <text>, --body <text>, --file <path>, or --stdin [--chain <id>]"}`)
+		fmt.println(`{"ok":false,"message":"task-chain summary requires get, or set <text> | --body <text> | --file <path> | --stdin [--chain <id>]"}`)
 		os.exit(1)
 	}
 	ctl_agent_call_task(endpoint, token, "agent.task_chain.set_summary", params, args)

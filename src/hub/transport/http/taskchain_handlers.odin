@@ -2846,7 +2846,7 @@ json_array_of_strings :: proc(body: string, key: string, allocator := context.al
 	return res
 }
 
-// GET /api/v1/task-chains/{cid}/summary
+// GET /api/v1/task-chains/{cid}/summary (read-only, owner-scoped)
 get_task_chain_summary_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
@@ -2854,26 +2854,41 @@ get_task_chain_summary_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
 	chain, got, err := taskchain_service.get_chain_for_read(h.taskchains, auth_ctx, chain_id)
 	if !got do return respond_error(err, req.request_id)
-	summary_text := ""
-	line_count := 0
-	version := 0
-	updated_at := chain.updated_at
-	if h.taskchains != nil && h.taskchains.repo != nil {
-		if row, sok, _ := iface.taskchain_get_chain_summary(h.taskchains.repo, chain.chain_id, chain.owner_user_id); sok {
-			summary_text = row.body
-			line_count = row.line_count
-			version = row.version
-			updated_at = row.updated_at
-		}
+	return respond_success(chain_summary_read_json(h.taskchains, chain), req.request_id, auth_ctx_server_time(req))
+}
+
+// chain_summary_read_json renders a chain's stored summary for an ALREADY
+// authorized reader; a chain without a summary row reads as empty (version 0).
+chain_summary_read_json :: proc(svc: ^taskchain_service.Taskchain_Service, chain: domain.Task_Chain) -> string {
+	row := domain.Chain_Summary{chain_id = chain.chain_id, owner_user_id = chain.owner_user_id, updated_at = chain.updated_at}
+	if svc != nil && svc.repo != nil {
+		if stored, sok, _ := iface.taskchain_get_chain_summary(svc.repo, chain.chain_id, chain.owner_user_id); sok do row = stored
 	}
+	return chain_summary_json(row)
+}
+
+// chain_summary_json is the shared summary response of every summary read and
+// write route: the stored (bounded) body plus its metadata. overflow_active
+// reports an open overflow episode: more dead ends are retained in the task
+// handoff facets than the max_lines rendered summary can show. curated is the
+// coordinator's stored notes in full, even lines the rendered body had no room
+// for ("" for a legacy row not yet rebuilt).
+chain_summary_json :: proc(row: domain.Chain_Summary) -> string {
 	o := taskv2.json_begin()
-	taskv2.json_str(&o, "chain_id", string(chain.chain_id))
-	taskv2.json_str(&o, "summary", summary_text)
-	taskv2.json_str(&o, "body", summary_text)
-	taskv2.json_int(&o, "line_count", i64(line_count))
-	taskv2.json_int(&o, "version", i64(version))
-	taskv2.json_str(&o, "updated_at", updated_at)
-	return respond_success(taskv2.json_end(&o), req.request_id, auth_ctx_server_time(req))
+	taskv2.json_str(&o, "chain_id", string(row.chain_id))
+	taskv2.json_str(&o, "summary", row.body)
+	taskv2.json_str(&o, "body", row.body)
+	taskv2.json_int(&o, "line_count", i64(row.line_count))
+	taskv2.json_int(&o, "max_lines", i64(taskv2.CHAIN_SUMMARY_MAX_LINES))
+	taskv2.json_bool(&o, "overflow_active", row.overflow_active)
+	taskv2.json_str(&o, "curated", row.curated_body)
+	curated_lines := 0
+	for line in strings.split_lines(row.curated_body, context.temp_allocator) do if strings.trim_space(line) != "" do curated_lines += 1
+	taskv2.json_int(&o, "curated_line_count", i64(curated_lines))
+	taskv2.json_int(&o, "curated_reserved_lines", i64(taskv2.CHAIN_SUMMARY_CURATED_RESERVED_LINES))
+	taskv2.json_int(&o, "version", i64(row.version))
+	taskv2.json_str(&o, "updated_at", row.updated_at)
+	return taskv2.json_end(&o)
 }
 
 // Task_Chain_Conversation_Wire is the body of GET /task-chains/{cid}/conversation.
@@ -2941,14 +2956,7 @@ put_task_chain_summary_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	row, sok, err := taskv2.chain_summary_set(h.task_engine, auth_ctx, chain_id, body_str)
 	if !sok do return respond_error(err, req.request_id)
 	publish_chain_changed(h, string(row.owner_user_id), string(row.chain_id), "updated")
-	o := taskv2.json_begin()
-	taskv2.json_str(&o, "chain_id", string(row.chain_id))
-	taskv2.json_str(&o, "summary", row.body)
-	taskv2.json_str(&o, "body", row.body)
-	taskv2.json_int(&o, "line_count", i64(row.line_count))
-	taskv2.json_int(&o, "version", i64(row.version))
-	taskv2.json_str(&o, "updated_at", row.updated_at)
-	return respond_success(taskv2.json_end(&o), req.request_id, auth_ctx_server_time(req))
+	return respond_success(chain_summary_json(row), req.request_id, auth_ctx_server_time(req))
 }
 
 // POST /api/v1/task-chains/{cid}/propose  {tasks?:[...], kind?, rationale?, alternative?, auto_approve?, summary?}

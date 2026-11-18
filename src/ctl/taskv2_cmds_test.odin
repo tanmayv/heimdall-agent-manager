@@ -408,3 +408,59 @@ test_minimal_claim_generates_audit_identity_without_generation :: proc(t: ^testi
     testing.expect(t, !strings.contains(first, "expected_generation"))
     testing.expect(t, first != second)
 }
+
+// REQ-OVF-3: `summary get` is a read, never a write of the literal "get";
+// every documented set form keeps its write meaning.
+@(test)
+test_task_chain_summary_get_is_read_only :: proc(t: ^testing.T) {
+	Case :: struct {
+		tokens: []string,
+		args:   []string,
+		op:     Ctl_Chain_Summary_Op,
+	}
+	cases := []Case{
+		{[]string{"get"}, []string{"ham-ctl", "task-chain", "summary", "get"}, .Get},
+		{[]string{"show"}, []string{"ham-ctl", "task-chain", "summary", "show"}, .Get},
+		{[]string{}, []string{"ham-ctl", "task-chain", "summary"}, .Get},
+		{[]string{"get", "chain_x"}, []string{"ham-ctl", "task-chain", "summary", "get", "chain_x"}, .Get},
+		{[]string{"get"}, []string{"ham-ctl", "task-chain", "summary", "get", "--chain", "chain_x"}, .Get},
+		// A read verb combined with write input is refused, never guessed.
+		{[]string{"get"}, []string{"ham-ctl", "task-chain", "summary", "get", "--body", "x"}, .Invalid},
+		{[]string{"get"}, []string{"ham-ctl", "task-chain", "summary", "get", "--stdin"}, .Invalid},
+		{[]string{"get", "a", "b"}, []string{"ham-ctl", "task-chain", "summary", "get", "a", "b"}, .Invalid},
+		// Documented write forms.
+		{[]string{"set", "text"}, []string{"ham-ctl", "task-chain", "summary", "set", "text"}, .Set},
+		{[]string{"set", "get"}, []string{"ham-ctl", "task-chain", "summary", "set", "get"}, .Set},
+		{[]string{"Some notes"}, []string{"ham-ctl", "task-chain", "summary", "Some notes"}, .Set},
+		{[]string{}, []string{"ham-ctl", "task-chain", "summary", "--body", "b"}, .Set},
+		{[]string{}, []string{"ham-ctl", "task-chain", "summary", "--stdin"}, .Set},
+	}
+	for c in cases {
+		testing.expectf(t, ctl_v2_task_chain_summary_op(c.tokens, c.args) == c.op, "%v -> %v", c.args, c.op)
+	}
+
+	// The write body parser never turns a read into text.
+	for verb in ([]string{"get", "show"}) {
+		_, wrote := ctl_v2_task_chain_summary_params([]string{verb}, []string{"ham-ctl", "task-chain", "summary", verb}, "")
+		testing.expectf(t, !wrote, "summary %s must not produce write params", verb)
+	}
+	_, bare_wrote := ctl_v2_task_chain_summary_params([]string{}, []string{"ham-ctl", "task-chain", "summary"}, "")
+	testing.expect(t, !bare_wrote, "bare summary must not produce write params")
+
+	// `set get` still writes the literal text when the user says so.
+	lit, lit_ok := ctl_v2_task_chain_summary_params([]string{"set", "get"}, []string{"ham-ctl", "task-chain", "summary", "set", "get"}, "")
+	defer delete(lit)
+	testing.expect(t, lit_ok, "set get writes")
+	testing.expect_value(t, lit, `{"summary":"get"}`)
+
+	// Get params: current chain by default, explicit chain by flag or positional.
+	cur := ctl_v2_task_chain_summary_get_params([]string{"get"}, []string{"ham-ctl", "task-chain", "summary", "get"})
+	defer delete(cur)
+	testing.expect_value(t, cur, `{}`)
+	by_flag := ctl_v2_task_chain_summary_get_params([]string{"get"}, []string{"ham-ctl", "task-chain", "summary", "get", "--chain", "chain_x"})
+	defer delete(by_flag)
+	testing.expect_value(t, by_flag, `{"chain_id":"chain_x"}`)
+	by_pos := ctl_v2_task_chain_summary_get_params([]string{"get", "chain_y"}, []string{"ham-ctl", "task-chain", "summary", "get", "chain_y"})
+	defer delete(by_pos)
+	testing.expect_value(t, by_pos, `{"chain_id":"chain_y"}`)
+}

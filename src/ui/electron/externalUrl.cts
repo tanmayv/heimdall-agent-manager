@@ -76,9 +76,23 @@ function isAuthStartUrl(value: unknown, uiOrigin: string): boolean {
   }
 }
 
+// REQ-ACCT-ELECTRON-1: intercept explicit add-account login before the main
+// document leaves the active account. The popup shares the default session.
+function isAddAccountAuthUrl(value: unknown, uiOrigin: string): boolean {
+  try {
+    const url = new URL(String(value || ''));
+    return url.origin === originOf(uiOrigin)
+      && url.pathname.startsWith('/api/v1/auth/login')
+      && (url.searchParams.get('add_account') === '1' || url.searchParams.get('prompt') === 'login');
+  } catch (_err) {
+    return false;
+  }
+}
+
 function classifyNavigation(value: unknown, context: NavigationContext): NavigationRoute {
   let url: URL;
   try { url = new URL(String(value || '')); } catch (_err) { return 'block'; }
+  if (isAddAccountAuthUrl(url.href, context.uiOrigin)) return 'auth';
   if (url.origin === originOf(context.uiOrigin)) return 'allow';
   const idpOrigin = originOf(context.idpOrigin);
   if (url.protocol === 'https:' && (context.inAuthRedirect || (idpOrigin && url.origin === idpOrigin))) return 'auth';
@@ -122,4 +136,4 @@ function trustedIpcSender(frameUrl: unknown, isMainFrame: boolean, trustedOrigin
   }
 }
 
-module.exports = { trustedIpcSender, allowedExternalUrl, desktopPairingOrigins, allowedPairingUrl, classifyNavigation, idpOriginFromAuthConfig, isAuthStartUrl, oidcWindowNavigationAllowed };
+module.exports = { trustedIpcSender, allowedExternalUrl, desktopPairingOrigins, allowedPairingUrl, classifyNavigation, idpOriginFromAuthConfig, isAuthStartUrl, isAddAccountAuthUrl, oidcWindowNavigationAllowed };

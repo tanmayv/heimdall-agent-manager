@@ -666,7 +666,9 @@ MIGRATION_211_BOTS_WHATSAPP :: #load("migrations/211_bots_whatsapp.sql", string)
 
 MIGRATION_209_BOTS :: #load("migrations/209_bots.sql", string)
 
-migration_order :: [215]string {
+MIGRATION_209_EXTENSION_VERSION_SYNC :: #load("migrations/209_extension_version_sync_0_5_55.sql", string)
+
+migration_order :: [216]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
 	"003_device_tokens.sql",
@@ -879,6 +881,7 @@ migration_order :: [215]string {
 	"206_extension_version_sync_0_5_52.sql",
 	"207_extension_version_sync_0_5_53.sql",
 	"208_extension_version_sync_0_5_54.sql",
+	"209_extension_version_sync_0_5_55.sql",
 	"209_bots.sql",
 	"210_agent_writes.sql",
 	"211_bots_whatsapp.sql",
@@ -1389,6 +1392,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "211_bots_whatsapp.sql" do return strings.clone(MIGRATION_211_BOTS_WHATSAPP)
 	if name == "210_agent_writes.sql" do return strings.clone(MIGRATION_210_AGENT_WRITES)
 	if name == "209_bots.sql" do return strings.clone(MIGRATION_209_BOTS)
+	if name == "209_extension_version_sync_0_5_55.sql" do return strings.clone(MIGRATION_209_EXTENSION_VERSION_SYNC)
 	if name == "208_extension_version_sync_0_5_54.sql" do return strings.clone(MIGRATION_208_EXTENSION_VERSION_SYNC)
 	if name == "207_extension_version_sync_0_5_53.sql" do return strings.clone(MIGRATION_207_EXTENSION_VERSION_SYNC)
 	if name == "206_extension_version_sync_0_5_52.sql" do return strings.clone(MIGRATION_206_EXTENSION_VERSION_SYNC)
@@ -2106,6 +2110,16 @@ upgrade_task_v2_schema :: proc(conn: ^Conn) -> bool {
 	// records the one-shot clock-jump extension on the lease row (S5).
 	if !table_column_exists(conn, "agent_instances", "idle_since") && !exec(conn, "ALTER TABLE agent_instances ADD COLUMN idle_since TEXT NOT NULL DEFAULT '';") do return false
 	if !table_column_exists(conn, "task_leases", "extended_at") && !exec(conn, "ALTER TABLE task_leases ADD COLUMN extended_at TEXT NOT NULL DEFAULT '';") do return false
+	// Durable summary_overflow episode latch. A chain that already reported an
+	// overflow starts inside its episode, so the upgrade does not re-notify it.
+	if !table_column_exists(conn, "chain_summaries", "overflow_active") {
+		if !exec(conn, "ALTER TABLE chain_summaries ADD COLUMN overflow_active INTEGER NOT NULL DEFAULT 0;") do return false
+		if !exec(conn, "UPDATE chain_summaries SET overflow_active = 1 WHERE EXISTS (SELECT 1 FROM task_events e WHERE e.chain_id = chain_summaries.chain_id AND e.owner_user_id = chain_summaries.owner_user_id AND e.kind = 'summary_overflow');") do return false
+	}
+	// Curated notes stored apart from the rendered body; legacy rows stay
+	// curated_stored = 0 until their next rebuild extracts the notes once.
+	if !table_column_exists(conn, "chain_summaries", "curated_body") && !exec(conn, "ALTER TABLE chain_summaries ADD COLUMN curated_body TEXT NOT NULL DEFAULT '';") do return false
+	if !table_column_exists(conn, "chain_summaries", "curated_stored") && !exec(conn, "ALTER TABLE chain_summaries ADD COLUMN curated_stored INTEGER NOT NULL DEFAULT 0;") do return false
 	// Legacy drops (tolerant; see the proc comment).
 	drop_legacy_column(conn, "tasks", "status")
 	drop_legacy_column(conn, "tasks", "assignee_ref_json")

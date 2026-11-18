@@ -10,6 +10,9 @@ const configSource = fs.readFileSync(new URL('../src/ui/electron/desktopConfig.c
 const module = { exports: {} as any };
 vm.runInNewContext(transformSync(configSource, { loader: 'ts', format: 'cjs' }).code, { module, exports: module.exports, URL });
 const { resolveDesktopConfig, desktopAuthReturnUrl } = module.exports;
+const policyModule = { exports: {} as any };
+vm.runInNewContext(transformSync(fs.readFileSync(new URL('../src/ui/electron/externalUrl.cts', import.meta.url), 'utf8'), { loader: 'ts', format: 'cjs' }).code, { module: policyModule, exports: policyModule.exports, URL });
+const { classifyNavigation, isAddAccountAuthUrl, isAuthStartUrl } = policyModule.exports;
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
 const legacy = 'https://heimdall.brolabs.ai';
 const canonical = 'https://web.ninjy.ai';
@@ -106,12 +109,68 @@ function popupHarness(platform = 'win32') {
   vm.createContext(context);
   vm.runInContext(transformSync(source, { loader: 'ts' }).code, context);
   return {
-    open: () => context.openOidcWindow(canonical + '/api/v1/auth/login', owner),
+    open: (url = canonical + '/api/v1/auth/login') => context.openOidcWindow(url, owner),
     windows, loads, deferred, owner, focused: () => focused, shown: () => shown,
     flush: () => { while (deferred.length) deferred.shift()!(); },
     destroyOwner: () => { ownerDestroyed = true; },
   };
 }
+
+test('REQ-ACCT-ELECTRON-1 Case 15: add-account routes to auth while ordinary UI and login remain allowed', () => {
+  const context = { uiOrigin: canonical, idpOrigin: '', inAuthRedirect: false };
+  for (const query of ['add_account=1&return_to=%2F%23%2Fhome', 'prompt=login']) {
+    const url = canonical + '/api/v1/auth/login?' + query;
+    assert.equal(isAddAccountAuthUrl(url, canonical), true);
+    assert.equal(classifyNavigation(url, context), 'auth');
+  }
+  for (const path of ['/', '/#/home', '/api/v1/auth/login', '/api/v1/auth/login?add_account=0', '/api/v1/auth/login?prompt=none', '/api/v1/auth/logout?add_account=1', '/api/v1/me?prompt=login']) {
+    assert.equal(isAddAccountAuthUrl(canonical + path, canonical), false);
+    assert.equal(classifyNavigation(canonical + path, context), 'allow');
+  }
+  for (const url of ['invalid', canonical + '.evil.test/api/v1/auth/login?add_account=1', 'https://unrelated.test/api/v1/auth/login?prompt=login']) assert.equal(isAddAccountAuthUrl(url, canonical), false);
+  assert.equal(classifyNavigation('https://unrelated.test/api/v1/auth/login?add_account=1', context), 'external');
+  const local = 'http://127.0.0.1:5181';
+  assert.equal(classifyNavigation(local + '/api/v1/auth/login?add_account=1', { ...context, uiOrigin: local }), 'auth');
+});
+
+test('REQ-ACCT-ELECTRON-1 Case 15: actual will-navigate guard opens popup, retains main until committed callback return', () => {
+  const h = popupHarness();
+  const handlers = new Map<string, (...args: any[]) => void>();
+  const win = { ...h.owner, webContents: {
+    on: (name: string, callback: (...args: any[]) => void) => handlers.set(name, callback),
+    setWindowOpenHandler: () => {},
+  } };
+  const context: any = {
+    win, configuredUiOrigin: () => canonical, idpOrigin: '', isAuthStartUrl, classifyNavigation,
+    openOidcWindow: (url: string, owner: unknown) => { assert.equal(owner, win); h.open(url); },
+    refreshIdpOrigin: async () => {}, allowedExternalUrl: () => '', shell: { openExternal: () => assert.fail('auth must stay in app') },
+  };
+  const start = mainSource.indexOf('    let inAuthRedirect = false;');
+  const end = mainSource.indexOf('\n  }\n\n  // Hosted or Vite UI', start);
+  assert.ok(start > 0 && end > start);
+  vm.runInNewContext(transformSync(mainSource.slice(start, end), { loader: 'ts' }).code, context);
+  let prevented = 0;
+  const navigate = handlers.get('will-navigate')!;
+  for (const query of ['add_account=1&return_to=%2F%23%2Fhome', 'prompt=login']) {
+    const url = canonical + '/api/v1/auth/login?' + query;
+    navigate({ preventDefault: () => { prevented += 1; } }, url);
+    const popup = h.windows.at(-1)!;
+    assert.equal(popup.initialUrl, url);
+    assert.deepEqual(h.loads, [], 'active main document stays mounted');
+    popup.close(); // Cancellation retains the main account and permits retry.
+  }
+  assert.equal(prevented, 2);
+  for (const url of [canonical + '/api/v1/auth/login', canonical + '/#/home']) navigate({ preventDefault: () => assert.fail('ordinary navigation allowed') }, url);
+  const addUrl = canonical + '/api/v1/auth/login?add_account=1';
+  navigate({ preventDefault: () => { prevented += 1; } }, addUrl);
+  const popup = h.windows.at(-1)!;
+  popup.emit('did-navigate', canonical + '/api/v1/auth/callback?code=redacted');
+  h.flush(); assert.deepEqual(h.loads, []);
+  const returned = canonical + '/#/home';
+  popup.emit('did-navigate', returned);
+  assert.deepEqual(h.loads, []);
+  h.flush(); assert.deepEqual(h.loads, [returned]); assert.equal(popup.closes, 1);
+});
 
 test('actual popup function completes only after committed return, defers close, preserves route and runs once', () => {
   const h = popupHarness(); h.open();

@@ -122,6 +122,7 @@ Proposals and implementation plans. Check each document's `Status:` line: some a
 - [mcp-chain-coordinator-messages-plan.md](mcp-chain-coordinator-messages-plan.md): proposal for an MCP `chains.message` tool that sends text to a chain's coordinator.
 - [plans/minimal-bridge-heartbeat-plan.md](plans/minimal-bridge-heartbeat-plan.md): plan for a minimal bridge heartbeat (REQ-HBP-1 to 4); plan only.
 - [plans/mixed-work-task-chains.md](plans/mixed-work-task-chains.md): one task chain containing both tickets and workflow runs.
+- [plans/multi-account-switcher.md](plans/multi-account-switcher.md): multi-account session ring, account switcher UI, active-account-only WebSocket lifecycle, and Electron OIDC popup handoff.
 - [plans/oidc-only-auth.md](plans/oidc-only-auth.md): plan to make OIDC the only hub authentication method; current behavior is in [auth-oidc.md](auth-oidc.md).
 - [plans/passwordless-vault.md](plans/passwordless-vault.md): passwordless vault with per-device keys and one approval flow.
 - [plans/passwordless-vault-handoff.md](plans/passwordless-vault-handoff.md): handoff state for the passwordless vault implementation.

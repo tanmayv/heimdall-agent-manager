@@ -236,6 +236,8 @@ function createWindow() {
       const route = classifyNavigation(url, { uiOrigin: configuredUiOrigin(), idpOrigin, inAuthRedirect });
       if (route === 'allow') return;
       event.preventDefault();
+      // Explicit add-account URLs are classified before allowing same-origin
+      // navigation, keeping the active account mounted while the popup is open.
       if (route === 'auth') openOidcWindow(url, win);
       else if (route === 'external') void shell.openExternal(allowedExternalUrl(url));
     };

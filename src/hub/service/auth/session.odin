@@ -24,6 +24,8 @@ import vault "odin_test:lib/vault"
 // the browser; the browser holds only an opaque, server-side session id.
 
 SESSION_COOKIE :: "__Host-heimdall_session"
+SESSIONS_RING_COOKIE :: "__Host-heimdall_sessions"
+MAX_BROWSER_ACCOUNTS :: 5
 LOGIN_COOKIE :: "__Host-heimdall_login"
 LOGIN_STATE_TTL_MS :: 10 * 60_000
 // last_seen / idle expiry is written at most this often per session.
@@ -32,8 +34,7 @@ DEFAULT_SESSION_TTL_HOURS :: 7 * 24
 DEFAULT_SESSION_IDLE_HOURS :: 24
 // Upper bound on a single return_to path.
 RETURN_TO_MAX_BYTES :: 2048
-// Unauthenticated GET /api/v1/auth/login creates a row; bound it per client IP
-// and globally so it cannot be used to fill the database.
+// Bound unauthenticated login starts per client IP and globally.
 LOGIN_STARTS_PER_IP_PER_WINDOW :: 20
 LOGIN_RATE_WINDOW_MS :: 60_000
 // Consumed login states remembered (by hash, until their expiry) so a sealed
@@ -403,11 +404,9 @@ hex_nibble :: proc(c: byte) -> (byte, bool) {
 	return 0, false
 }
 
-// web_login_begin creates a single-use login state (state, nonce, PKCE verifier)
-// and returns the provider authorization URL plus the state (for the login cookie).
 // web_login_begin starts a sign-in: it returns the provider authorization URL
 // and the sealed login cookie value (no server-side row is created).
-web_login_begin :: proc(service: ^Auth_Service, return_to: string, client_ip := "") -> (redirect_url: string, login_cookie: string, ok: bool, err: domain.Domain_Error) {
+web_login_begin :: proc(service: ^Auth_Service, return_to: string, client_ip := "", prompt_login := false) -> (redirect_url: string, login_cookie: string, ok: bool, err: domain.Domain_Error) {
 	if !web_login_enabled(service) do return "", "", false, domain.domain_error(.Not_Found, "browser login is not configured")
 	target, target_ok := safe_return_to(return_to)
 	if !target_ok do return "", "", false, domain.domain_error(.Validation_Failed, "return_to must be a same-origin relative path")
@@ -422,16 +421,19 @@ web_login_begin :: proc(service: ^Auth_Service, return_to: string, client_ip := 
 	if !sealed_ok do return "", "", false, domain.domain_error(.Internal_Error, "could not seal the login state")
 	authorize, auth_err := httpc.parse_url(service.web.authorize_url)
 	if auth_err != .None do return "", "", false, domain.domain_error(.Internal_Error, "browser login authorize_url is not a valid URL")
-	url, url_err := httpc.build_url(authorize, nil, {
-		{"response_type", "code"},
-		{"client_id", service.web.client_id},
-		{"redirect_uri", service.web.redirect_uri},
-		{"scope", "openid profile email"},
-		{"state", state_value},
-		{"nonce", nonce},
-		{"code_challenge", pkce_challenge_s256(verifier)},
-		{"code_challenge_method", "S256"},
-	}, context.temp_allocator)
+	query := make([dynamic]httpc.Query_Param, context.temp_allocator)
+	append(&query,
+		httpc.Query_Param{"response_type", "code"},
+		httpc.Query_Param{"client_id", service.web.client_id},
+		httpc.Query_Param{"redirect_uri", service.web.redirect_uri},
+		httpc.Query_Param{"scope", "openid profile email"},
+		httpc.Query_Param{"state", state_value},
+		httpc.Query_Param{"nonce", nonce},
+		httpc.Query_Param{"code_challenge", pkce_challenge_s256(verifier)},
+		httpc.Query_Param{"code_challenge_method", "S256"},
+	)
+	if prompt_login do append(&query, httpc.Query_Param{"prompt", "login"})
+	url, url_err := httpc.build_url(authorize, nil, query[:], context.temp_allocator)
 	if url_err != .None do return "", "", false, domain.domain_error(.Internal_Error, "could not build the authorization URL")
 	return url, sealed, true, {}
 }
@@ -583,7 +585,7 @@ session_lookup_live :: proc(service: ^Auth_Service, session_hash: string, now: i
 }
 
 // resolve_session_auth authenticates the __Host-heimdall_session cookie.
-resolve_session_auth :: proc(service: ^Auth_Service, raw_session: string) -> (contracts.Auth_Context, bool, domain.Domain_Error) {
+resolve_session_auth :: proc(service: ^Auth_Service, raw_session: string, touch := true) -> (contracts.Auth_Context, bool, domain.Domain_Error) {
 	if !web_login_enabled(service) do return {}, false, session_unauthenticated()
 	if len(raw_session) < 32 || len(raw_session) > 128 do return {}, false, session_unauthenticated()
 	now, now_ok := now_unix_ms(service)
@@ -593,7 +595,7 @@ resolve_session_auth :: proc(service: ^Auth_Service, raw_session: string) -> (co
 	if !live do return {}, false, session_unauthenticated()
 	user, found, user_err := user_service.get_user(service.users, domain.User_ID(row.user_id))
 	if !found || user_err.code != .None || user.status != .Active do return {}, false, session_unauthenticated()
-	if now - row.last_seen_at_ms >= SESSION_TOUCH_INTERVAL_MS {
+	if touch && now - row.last_seen_at_ms >= SESSION_TOUCH_INTERVAL_MS {
 		idle := service.web.session_idle_ms
 		if idle <= 0 do idle = DEFAULT_SESSION_IDLE_HOURS * 3_600_000
 		repo := service.sessions
@@ -610,20 +612,13 @@ resolve_session_auth :: proc(service: ^Auth_Service, raw_session: string) -> (co
 	}, true, {}
 }
 
-// web_logout deletes the request's session (if any) and returns where the
-// browser should go next: the provider end-session URL (with id_token_hint and
-// post_logout_redirect_uri) when configured, else the legacy logout URL or "/".
+// web_logout retains the single-session service API for callers outside HTTP.
 web_logout :: proc(service: ^Auth_Service, headers: []contracts.HTTP_Header) -> string {
-	id_token := ""
-	if web_login_enabled(service) {
-		if raw, present := cookie_value(headers, SESSION_COOKIE); present {
-			repo := service.sessions
-			hash := sha256_hex(raw)
-			row, found, _ := repo.delete_session(repo.ctx, hash)
-			if found do id_token = row.id_token
-			preview_end_for_parent(service, hash)
-		}
-	}
+	url, _, _, _, _ := web_logout_ring(service, headers, "", false)
+	return url
+}
+
+session_logout_url :: proc(service: ^Auth_Service, id_token: string) -> string {
 	if service != nil && service.web.end_session_url != "" {
 		sep := "&" if strings.contains(service.web.end_session_url, "?") else "?"
 		b := strings.builder_make(context.temp_allocator)
@@ -660,4 +655,147 @@ purge_expired_auth_rows :: proc(service: ^Auth_Service) -> (int, domain.Domain_E
 	if !ok do return 0, domain.domain_error(.Internal_Error, "clock unavailable")
 	repo := service.sessions
 	return repo.purge_expired(repo.ctx, now)
+}
+
+// Auth_Account_Entry is safe for JSON: opaque session tokens stay in cookies.
+Auth_Account_Entry :: struct {
+	user_id, name, display_name, email: string,
+	active: bool,
+	expires_at_ms: i64,
+}
+
+sessions_ring_cookie_header :: proc(raw_sessions: []string, max_age_seconds: i64) -> string {
+	if len(raw_sessions) == 0 do return expired_cookie_header(SESSIONS_RING_COOKIE)
+	return fmt.tprintf("%s=%s; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=%d", SESSIONS_RING_COOKIE, strings.join(raw_sessions, ".", context.temp_allocator), max_age_seconds)
+}
+
+session_token_syntax_valid :: proc(raw: string) -> bool {
+	if len(raw) < 32 || len(raw) > 128 do return false
+	for c in raw {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') do return false
+	}
+	return true
+}
+
+parse_sessions_ring :: proc(headers: []contracts.HTTP_Header) -> [dynamic]string {
+	out := make([dynamic]string, context.temp_allocator)
+	active, _ := cookie_value(headers, SESSION_COOKIE)
+	ring, _ := cookie_value(headers, SESSIONS_RING_COOKIE)
+	candidates := make([dynamic]string, context.temp_allocator)
+	append(&candidates, active)
+	for raw in strings.split(ring, ".", context.temp_allocator) do append(&candidates, raw)
+	for raw in candidates {
+		if !session_token_syntax_valid(raw) do continue
+		duplicate := false
+		for prior in out do if prior == raw { duplicate = true; break }
+		if !duplicate do append(&out, raw)
+	}
+	return out
+}
+
+// Listing must not extend idle expiry or revoke rows another tab may still use.
+resolve_session_ring :: proc(service: ^Auth_Service, headers: []contracts.HTTP_Header) -> (active_raw: string, raw_ring: [dynamic]string, accounts: [dynamic]Auth_Account_Entry, changed: bool) {
+	raw_ring = make([dynamic]string, context.temp_allocator)
+	accounts = make([dynamic]Auth_Account_Entry, context.temp_allocator)
+	for raw in parse_sessions_ring(headers) {
+		ctx, live, _ := resolve_session_auth(service, raw, touch = false)
+		if !live do continue
+		duplicate := false
+		for entry in accounts do if entry.user_id == ctx.user_id { duplicate = true; break }
+		if duplicate || len(accounts) >= MAX_BROWSER_ACCOUNTS do continue
+		append(&raw_ring, raw)
+		append(&accounts, Auth_Account_Entry{
+			user_id = ctx.user_id, name = ctx.name, display_name = ctx.display_name, email = ctx.email,
+			active = len(accounts) == 0, expires_at_ms = ctx.expires_ms,
+		})
+	}
+	if len(raw_ring) > 0 do active_raw = raw_ring[0]
+	old_active, active_present := cookie_value(headers, SESSION_COOKIE)
+	old_ring, ring_present := cookie_value(headers, SESSIONS_RING_COOKIE)
+	changed = old_active != active_raw || old_ring != strings.join(raw_ring[:], ".", context.temp_allocator) || (len(raw_ring) > 0 && (!active_present || !ring_present))
+	return
+}
+
+// Revoke only on explicit mutation paths and end derived preview sessions.
+revoke_browser_session :: proc(service: ^Auth_Service, raw: string) -> (iface.User_Session, domain.Domain_Error) {
+	if service == nil || service.sessions == nil do return {}, {}
+	repo := service.sessions
+	hash := sha256_hex(raw)
+	row, _, err := repo.delete_session(repo.ctx, hash)
+	if err.code == .None do preview_end_for_parent(service, hash)
+	return row, err
+}
+
+merge_session_into_ring :: proc(service: ^Auth_Service, headers: []contracts.HTTP_Header, new_raw_session: string) -> (ring: [dynamic]string, err: domain.Domain_Error) {
+	ring = make([dynamic]string, context.temp_allocator)
+	new_ctx, live, auth_err := resolve_session_auth(service, new_raw_session, touch = false)
+	if !live do return ring, auth_err
+	append(&ring, new_raw_session)
+	users := make(map[string]bool, context.temp_allocator)
+	users[new_ctx.user_id] = true
+	for raw in parse_sessions_ring(headers) {
+		if raw == new_raw_session do continue
+		ctx, ok, _ := resolve_session_auth(service, raw, touch = false)
+		if !ok do continue
+		if users[ctx.user_id] || len(ring) >= MAX_BROWSER_ACCOUNTS {
+			_, err = revoke_browser_session(service, raw)
+			if err.code != .None do return
+			continue
+		}
+		users[ctx.user_id] = true
+		append(&ring, raw)
+	}
+	return
+}
+
+web_switch_account :: proc(service: ^Auth_Service, headers: []contracts.HTTP_Header, target_user_id: string) -> (ring: [dynamic]string, accounts: [dynamic]Auth_Account_Entry, err: domain.Domain_Error) {
+	if strings.trim_space(target_user_id) == "" do return nil, nil, domain.domain_error(.Validation_Failed, "user_id is required")
+	_, ring, accounts, _ = resolve_session_ring(service, headers)
+	index := -1
+	for entry, i in accounts do if entry.user_id == target_user_id { index = i; break }
+	if index < 0 do return nil, nil, domain.domain_error(.Not_Found, "account session not found or expired")
+	raw, account := ring[index], accounts[index]
+	for i := index; i > 0; i -= 1 { ring[i], accounts[i] = ring[i - 1], accounts[i - 1] }
+	ring[0], accounts[0] = raw, account
+	for &entry, i in accounts do entry.active = i == 0
+	now, now_ok := now_unix_ms(service)
+	if !now_ok do return nil, nil, domain.domain_error(.Internal_Error, "clock unavailable")
+	idle := service.web.session_idle_ms
+	if idle <= 0 do idle = DEFAULT_SESSION_IDLE_HOURS * 3_600_000
+	err = service.sessions.touch_session(service.sessions.ctx, sha256_hex(raw), now, now + idle)
+	return
+}
+
+web_logout_ring :: proc(service: ^Auth_Service, headers: []contracts.HTTP_Header, target_user_id: string, logout_all: bool) -> (logout_url: string, ring: [dynamic]string, accounts: [dynamic]Auth_Account_Entry, switched: bool, err: domain.Domain_Error) {
+	_, old_ring, old_accounts, _ := resolve_session_ring(service, headers)
+	ring = make([dynamic]string, context.temp_allocator)
+	accounts = make([dynamic]Auth_Account_Entry, context.temp_allocator)
+	old_active := ""
+	if len(old_accounts) > 0 do old_active = old_accounts[0].user_id
+	target := target_user_id
+	if target == "" do target = old_active
+	for entry, i in old_accounts {
+		if !logout_all && entry.user_id != target {
+			append(&ring, old_ring[i])
+			append(&accounts, entry)
+		}
+	}
+	// Revoke all candidate tokens for the selected user, including duplicates
+	// pruned from the read-only view; never revoke another browser/device.
+	id_token := ""
+	for raw in parse_sessions_ring(headers) {
+		remove := logout_all || len(ring) == 0
+		if !remove && service != nil && service.sessions != nil {
+			row, found, get_err := service.sessions.get_session(service.sessions.ctx, sha256_hex(raw))
+			if get_err.code != .None do return "", nil, nil, false, get_err
+			remove = found && row.user_id == target
+		}
+		if !remove do continue
+		row, delete_err := revoke_browser_session(service, raw)
+		if delete_err.code != .None do return "", nil, nil, false, delete_err
+		if id_token == "" || row.user_id == target do id_token = row.id_token
+	}
+	if len(accounts) == 0 do return session_logout_url(service, id_token), ring, accounts, false, {}
+	for &entry, i in accounts do entry.active = i == 0
+	return "", ring, accounts, accounts[0].user_id != old_active, {}
 }
