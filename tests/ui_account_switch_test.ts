@@ -21,8 +21,93 @@ import deviceVaultReducer from '../src/ui/store/deviceVaultSlice.ts';
 import toastReducer from '../src/ui/store/toastSlice.ts';
 import type { AuthState } from '../src/ui/components/auth/AuthUserContext.ts';
 
+const { AuthAccountsProvider } = await import('../src/ui/components/auth/AuthUserContext.tsx');
+const { default: AccountSwitcher } = await import('../src/ui/components/shell/AccountSwitcher.tsx');
+const { default: AccountPanel } = await import('../src/ui/components/settings/AccountPanel.tsx');
+
 const account = (id: string, active = false) => ({
   user_id: id, name: id, display_name: id, email: `${id}@example.test`, active, expires_at_ms: 9999999999999,
+});
+
+test('REQ-ACCT-UI-2 Case 14: sidebar and settings render account controls and dispatch each action', async () => {
+  const dom = new JSDOM('<div id="root"></div><button id="outside">Outside</button>', { url: 'https://ui.test/' });
+  const saved = new Map<string, PropertyDescriptor | undefined>();
+  for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, IS_REACT_ACT_ENVIRONMENT: true })) {
+    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+  }
+  const root = createRoot(dom.window.document.getElementById('root')!);
+  const calls: unknown[] = [];
+  const store = await makeVaultStore();
+  const user = account('usr_a', true);
+  const actions = {
+    switchAccount: async (id: string) => { calls.push(['switch', id]); },
+    signOutAccount: async (opts?: unknown) => { calls.push(['logout', opts]); },
+    addAccount: () => { calls.push(['add']); },
+  };
+  const render = async (accounts = [user, account('usr_b')], planLabel = 'Pro') => {
+    await act(async () => root.render(React.createElement(Provider, { store },
+      React.createElement(AuthAccountsProvider, { value: { ...actions, accounts } },
+        React.createElement(AccountSwitcher, {
+          user, avatar: React.createElement('span', { 'data-debug-id': 'shell-user-ws-owner', 'data-ws-status': 'open' }),
+          isMobile: false, planLabel, openAccountSettings: () => { calls.push(['settings']); },
+        }),
+        React.createElement(AccountPanel, { user }),
+      ),
+    )));
+  };
+  const find = (id: string) => dom.window.document.querySelector<HTMLElement>(`[data-debug-id="${id}"]`);
+  const click = async (id: string) => { assert.ok(find(id), id); await act(async () => find(id)!.click()); };
+  const open = async () => { await click('account-switcher-toggle'); assert.ok(find('account-switcher-menu')); };
+  try {
+    await render();
+    for (const id of ['shell-global-ownership-points', 'shell-user-ws-owner', 'shell-open-account', 'shell-current-user-owner', 'auth-logout-link', 'shell-subscription-tier', 'account-panel-sessions', 'account-panel-switch-usr_b', 'account-panel-logout-usr_a', 'account-panel-logout-usr_b', 'account-panel-add-account', 'account-panel-logout-all']) assert.ok(find(id), id);
+    assert.match(find('account-panel-sessions')!.textContent!, /Active/);
+    assert.equal(find('account-panel-switch-usr_a'), null);
+    assert.match(find('account-switcher-toggle')!.textContent!, /2/);
+    assert.equal(find('account-switcher-toggle')!.getAttribute('aria-expanded'), 'false');
+    await open();
+    assert.equal(find('account-switcher-toggle')!.getAttribute('aria-expanded'), 'true');
+    assert.equal((find('account-switcher-item-usr_a') as HTMLButtonElement).disabled, true);
+    for (const id of ['account-switcher-item-usr_b', 'account-switcher-logout-usr_a', 'account-switcher-logout-usr_b', 'account-switcher-add-account', 'account-switcher-logout-all']) assert.ok(find(id), id);
+    await click('account-switcher-item-usr_a'); assert.deepEqual(calls, []);
+    await click('account-switcher-item-usr_b'); assert.equal(find('account-switcher-menu'), null);
+    await open(); await click('account-switcher-logout-usr_b');
+    await open(); await click('account-switcher-logout-usr_a');
+    await open(); await click('account-switcher-add-account');
+    await open(); await click('account-switcher-logout-all');
+    await click('shell-open-account'); await click('shell-subscription-tier'); await click('auth-logout-link');
+    await click('account-panel-switch-usr_b');
+    await click('account-panel-logout-usr_b'); await click('account-panel-logout-usr_a');
+    await click('account-panel-add-account'); await click('account-panel-logout-all');
+    assert.deepEqual(calls, [
+      ['switch', 'usr_b'], ['logout', { userId: 'usr_b' }], ['logout', { userId: 'usr_a' }], ['add'], ['logout', { all: true }],
+      ['settings'], ['settings'], ['logout', undefined], ['switch', 'usr_b'], ['logout', { userId: 'usr_b' }], ['logout', { userId: 'usr_a' }], ['add'], ['logout', { all: true }],
+    ]);
+    await open();
+    await act(async () => { dom.window.document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    assert.equal(find('account-switcher-menu'), null);
+    assert.equal(dom.window.document.activeElement, find('account-switcher-toggle'));
+    await open();
+    await act(async () => { dom.window.document.getElementById('outside')!.dispatchEvent(new dom.window.Event('pointerdown', { bubbles: true })); });
+    assert.equal(find('account-switcher-menu'), null);
+    await render([user], ''); await open();
+    assert.equal(find('account-switcher-logout-all'), null); assert.equal(find('account-panel-logout-all'), null);
+    assert.equal(find('shell-subscription-tier'), null);
+    assert.doesNotMatch(find('account-switcher-toggle')!.textContent!, /1/);
+    assert.ok(find('account-switcher-add-account')); assert.ok(find('account-panel-add-account'));
+    // The production shell owns the outer footer and live WS indicator; the
+    // switcher keeps them in place rather than creating another connection.
+    const shell = fs.readFileSync(new URL('../src/ui/components/shell/AppShell.tsx', import.meta.url), 'utf8');
+    assert.match(shell, /data-debug-id="shell-sidebar-account"[^>]*>\s*<AccountSwitcher user=\{user\} avatar=\{userAvatar\}/);
+    assert.match(shell, /const userAvatar =[\s\S]*data-debug-id="shell-user-ws-owner" data-ws-status=\{wsStatus\}/);
+  } finally {
+    await act(async () => root.unmount());
+    for (const [key, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete (globalThis as any)[key];
+    }
+    dom.window.close();
+  }
 });
 
 function deferred<T>() {

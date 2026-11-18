@@ -1,3 +1,4 @@
+import AccountSwitcher from './AccountSwitcher';
 import { SidebarTaskChains } from './SidebarTaskChains';
 import {
   LOGIN_PATH,
@@ -27,7 +28,7 @@ import {
   mergePaletteActions,
 } from '@ui';
 import { useIsMobile, useViewport } from './responsive';
-import { AuthAccountsProvider, AuthUserProvider, useAuthAccounts, type AuthUserIdentity, type AuthState } from '../auth/AuthUserContext';
+import { AuthAccountsProvider, AuthUserProvider, type AuthUserIdentity, type AuthState } from '../auth/AuthUserContext';
 import { useAuthSessionState } from '../auth/useAuthSessionState';
 import { isAgentWorking } from './agentWorking';
 import { heimdallApi } from '../../api/heimdallApi';
@@ -1283,7 +1284,6 @@ function RouteOutlet({
 }
 
 function AuthenticatedShell({ user }: { user: AuthUser }) {
-  const { signOutAccount } = useAuthAccounts();
   const [sidebarScrollRoot, setSidebarScrollRoot] = useState<HTMLDivElement | null>(null);
   const [sidebarChains, setSidebarChains] = useState<ChainListItem[]>([]);
   const [palettePreviewGroups, setPalettePreviewGroups] = useState<ChainProjectGroup[]>([]);
@@ -2018,22 +2018,7 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
         </div>
 
         <div data-debug-id="shell-sidebar-account" className={`shrink-0 border-t border-subtle p-3`}>
-          <div data-debug-id="shell-global-ownership-points" className={`flex items-center gap-2 rounded-xl px-2 py-1.5`}>
-            {userAvatar}
-            {(
-              <button type="button" data-debug-id="shell-open-account" aria-label="Open account settings" onClick={openAccountSettings} className="min-w-0 flex-1 rounded-lg text-left focus-visible:outline-none focus-visible:shadow-focus hover:bg-neutral-soft">
-                <div data-debug-id="shell-current-user-owner" className={`truncate font-semibold text-primary ${isMobile ? 'text-[14px]' : 'text-[12px]'}`}>{displayName}</div>
-                <div className={`truncate text-muted ${isMobile ? 'text-[12px]' : 'text-[10.5px]'}`}>{user.email || user.user_id || ''}</div>
-              </button>
-            )}
-            <button type="button" data-debug-id="auth-logout-link" onClick={() => { void signOutAccount(); }} title="Sign out" aria-label="Sign out" className={`grid shrink-0 place-items-center text-muted hover:bg-neutral-soft hover:text-primary ${isMobile ? 'h-11 w-11 rounded-full' : 'rounded-lg p-1.5'}`}><Icon name="close" size={isMobile ? 18 : 14} /></button>
-          </div>
-          {planLabel ? (
-            <button type="button" data-debug-id="shell-subscription-tier" aria-label={`Subscription: ${planLabel}. Open account settings`} onClick={openAccountSettings} className="mt-1 flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-[11px] text-muted hover:bg-neutral-soft hover:text-primary focus-visible:outline-none focus-visible:shadow-focus">
-              <Icon name="sparkle" size={12} className="shrink-0 text-accent" />
-              <span className="truncate">Plan · <span className="font-semibold text-primary">{planLabel}</span></span>
-            </button>
-          ) : null}
+          <AccountSwitcher user={user} avatar={userAvatar} isMobile={isMobile} planLabel={planLabel} openAccountSettings={openAccountSettings} />
         </div>
         </div>
       </aside>

@@ -7,8 +7,10 @@ import { accountBillingApi, useCreateAccountCheckoutMutation, useCreateAccountPo
 import { apiErrorText } from '../../api/cookieFetch';
 import { redirectToCheckout, validatePortalUrl } from '../../services/paddleCheckout';
 import { desktopCapabilities } from '../../bridge/desktopBridge';
+import { useAuthAccounts } from '../auth/AuthUserContext';
 
 export default function AccountPanel({ user }: { user: SettingsUser | null }) {
+  const { accounts, switchAccount, addAccount, signOutAccount } = useAuthAccounts();
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const activeUser = useRef(user?.user_id);
@@ -67,6 +69,26 @@ export default function AccountPanel({ user }: { user: SettingsUser | null }) {
 
   return (
     <div data-debug-id="account-panel" className="space-y-6 text-left">
+      <section data-debug-id="account-panel-sessions" className="rounded-xl border border-subtle bg-surface p-5">
+        <h3 className="text-sm font-semibold text-primary">Signed-in accounts</h3>
+        <div className="mt-3 space-y-3">
+          {accounts.map(account => <div key={account.user_id} className="flex flex-wrap items-center justify-between gap-2">
+            <div className="min-w-0">
+              <p className="break-words text-sm font-semibold text-primary">{account.display_name || account.name || account.user_id} {account.active && <Badge>Active</Badge>}</p>
+              <p className="break-words text-xs text-muted">{account.email || account.user_id}</p>
+            </div>
+            <div className="flex gap-2">
+              {!account.active && <Button data-debug-id={`account-panel-switch-${account.user_id}`} variant="secondary" onClick={() => void switchAccount(account.user_id)}>Switch</Button>}
+              <Button data-debug-id={`account-panel-logout-${account.user_id}`} variant="ghost" onClick={() => void signOutAccount({ userId: account.user_id })}>Sign out</Button>
+            </div>
+          </div>)}
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <Button data-debug-id="account-panel-add-account" variant="secondary" onClick={addAccount}>Add another account</Button>
+          {accounts.length > 1 && <Button data-debug-id="account-panel-logout-all" variant="ghost" onClick={() => void signOutAccount({ all: true })}>Sign out all accounts</Button>}
+        </div>
+      </section>
+
       <section className="rounded-xl border border-subtle bg-surface p-5">
         <div className="flex items-center gap-3">
           <div aria-hidden="true" className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-neutral-soft text-lg font-semibold text-muted">
