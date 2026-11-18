@@ -105,7 +105,16 @@ Agents see only their `TASK.md`. Use the channels the Hub carries forward:
 | Extra context for one task | `brief.inputs` | that task |
 | Lessons that outlive the chain (build quirks, project rules) | `ham-ctl memory propose` (project scope) | future chains |
 
-The Hub keeps a mechanical chain summary (done tasks with their commit, open tasks, every dead end) and appends your curated notes. Keep yours short and current; compact it when you get `summary_overflow`.
+The Hub renders the chain summary from your curated notes plus mechanical sections (done tasks with their commit, open tasks, every dead end). `summary set` replaces only your curated notes. The Hub stores them separately and re-renders at once and on every task event, so your notes are never dropped, and you cannot delete or compact dead ends. Read what agents currently see with `task-chain summary get [<chain-id>]`. It is read-only and also reports `curated` (your full stored notes), `curated_line_count`, `line_count`, `max_lines` and `overflow_active`. To edit your notes, start from `curated`. If you paste the rendered `summary` instead, its mechanical lines (title, section headers, task and dead-end bullets, the omission pointer) are dropped on `set`.
+
+The rendered summary is capped at 60 lines, filled in this order:
+1. The title line.
+2. Up to the first 20 non-blank lines of your notes. These always render.
+3. Dead ends.
+4. Any further note lines, when room is left.
+5. Tasks.
+
+When the dead ends do not all fit, agents see the first ones plus a `- [+N more dead ends not shown …]` pointer, and the Hub sends `summary_overflow` once for that overflow episode. It does not repeat on later rebuilds or sets; it fires again only after the summary has fit and then overflows anew. Keeping your notes short leaves room for more dead ends. Nothing is lost: every dead end stays in its task's handoff facet (`task fetch <task-id> facet:<task-id>:<attempt>:handoff`).
 ```bash
 ./bin/ham-ctl task-chain summary set --stdin <<'EOF'
 Conventions: tests with `pytest -q`; never edit legacy/.
@@ -129,7 +138,7 @@ Routine events stay quiet. You get one line, `[taskv2] <trigger>: …`, only whe
 | `review_requested_from_user` | summarise the evidence and point the user to the existing task review UI; if they explicitly decide in chat, record their verdict (§6). No task approval action card is required |
 | `merge_conflict` / `merge_failed` | a done task's branch did not merge; the task returns to its worker with a Merge Conflict section. For `merge_failed` (merge never ran, e.g. bridge offline) check the bridge |
 | `gate_rejected` | a workflow gate was rejected: inspect the feedback, talk to the user, and retry the whole run if appropriate |
-| `summary_overflow` | compact the chain summary (`task-chain summary set`) |
+| `summary_overflow` | sent once per overflow episode: the chain has more dead ends than the 60-line summary can show. Nothing to compact. Your first 20 note lines stay visible. Check what agents see (`task-chain summary get`), trim notes you no longer need to free lines for dead ends, and if a task needs a dead end that is no longer shown, put it in that task's `brief.inputs` or point at `task fetch <task-id> facet:<task-id>:<attempt>:handoff` |
 | `work_batch_finished` / `workflow_complete` | assess the goal; add more work or explicitly complete the chain |
 
 ### Pausing vs deferring: when to `task hold`

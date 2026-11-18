@@ -207,7 +207,7 @@ export function describeTaskEvent(ev: TaskEventWire, names: TaskNames): Describe
     case 'dependency_stalled':
       return known(`A prerequisite could not finish merging${s(p.detail) ? `: ${s(p.detail)}` : ''}`);
     case 'summary_overflow':
-      return known('Older events were summarised');
+      return known('More dead ends than the chain summary can show; every one stays in its task handoff');
     case 'started_workflow':
       return known('Started a workflow run');
     case 'orphaned_work':

@@ -16,7 +16,7 @@ Every non-trivial unit of work is tracked in a Heimdall task and dispatched via 
 - **Coordinator** (`coordinator_agent_instance_id`):
   - The **only** free-form user channel for the chain (`chat send --to user`).
   - Triages incoming work (`ticket` vs `workflow`) and proposes the chain DAG with `ham-ctl task-chain propose --file <proposal.json> [--auto-approve]`.
-  - Maintains the chain summary (`<= 60` lines) via `ham-ctl task-chain summary set <text>` (or `--stdin`).
+  - Maintains the curated chain summary notes (`<= 60` lines) via `ham-ctl task-chain summary set <text>` (or `--stdin`) and reads the stored summary with `ham-ctl task-chain summary get` (read-only). Notes are stored in full and their first 20 non-blank lines always render. `summary_overflow` arrives once per overflow episode: more dead ends than the capped summary shows; they remain in task handoff facets (`ham-ctl task fetch <task-id> facet:<task-id>:<attempt>:handoff`) and cannot be compacted.
   - Reacts to one-line `[taskv2] <trigger>:` notifications (`proposal_decided`, `blocked_on human`, `dispatch_failed`, `budget_exhausted`, `oscillation`, `ready_unclaimed`, `review_requested_from_user`, `merge_conflict`, `merge_failed`, `gate_rejected`, `summary_overflow`, `chain_complete`; `solo` in solo mode).
   - Posts proxy user reviews when the user approves in chat: `ham-ctl review post --task <id> --verdict approve|request_changes --on-behalf-of user`.
 - **Worker** (assignee):
@@ -71,7 +71,8 @@ Supported `<ref>` formats for `ham-ctl task fetch <task_id> <ref>`:
 - `ham-ctl task create --title "<title>" --goal "<goal>" --acceptance "<item>" [--assignee <agt_id>] [--reviewer <agt_id>] [--review-role <role>] [--require-user-approval] [--depends-on <id,id>] [--brief-file <json>]` — create a v2 task.
 - `ham-ctl task update <task_id> [...]` — update task fields or brief.
 - `ham-ctl task publish <task_id>` / `ham-ctl task-chain publish <chain_id>` — validate briefs and publish tasks (`422 brief_incomplete` lists any missing brief fields).
-- `ham-ctl task-chain summary set "<text>" [--chain <id>]` (or `--stdin`) — set the chain summary (`<= 60` lines).
+- `ham-ctl task-chain summary get [<chain-id>]` — read the rendered chain summary and its `line_count`, `max_lines`, `overflow_active`, `version`, `curated`, `curated_line_count` (read-only; defaults to your chain).
+- `ham-ctl task-chain summary set "<text>" [--chain <id>]` (or `--stdin`) — replace the stored curated notes (`<= 60` lines; the first 20 non-blank lines always render, the rest when room is left); dead ends come from task handoffs and cannot be removed here.
 - `ham-ctl task-chain propose --file <proposal.json> [--auto-approve] [--chain <id>]` — create a chain proposal and its draft tasks in a single transaction.
 - `ham-ctl task-chain decide <chain_id> --decision approve|reject [--reason "<text>"]` — approve or reject a pending chain proposal.
 - `ham-ctl task-chain fleet set <chain_id> --agent <agt_id> --capacity <N> [--min-warm <M>] [--idle-ttl <sec>] [--roles worker,reviewer] [--bridge <brg_id>] [--provider <p>] [--model <m>] [--bridge-models <json> | --bridge-models-file <path>]` — configure fleet capacity and placement.

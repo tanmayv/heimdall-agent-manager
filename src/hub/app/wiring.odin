@@ -940,6 +940,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/show", rawptr(&graph.agent_action_handlers), http.agent_action_chain_show_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/summary", rawptr(&graph.agent_action_handlers), http.agent_action_chain_summary_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/summary/set", rawptr(&graph.agent_action_handlers), http.agent_action_chain_summary_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/summary/get", rawptr(&graph.agent_action_handlers), http.agent_action_chain_summary_get_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/propose", rawptr(&graph.agent_action_handlers), http.agent_action_chain_propose_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/workflow/templates", rawptr(&graph.agent_action_handlers), http.agent_action_workflow_templates_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/workflow/list", rawptr(&graph.agent_action_handlers), http.agent_action_workflow_list_handler)
