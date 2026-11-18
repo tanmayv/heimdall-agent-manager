@@ -6,6 +6,7 @@ import "core:strings"
 import internal_b64 "core:encoding/base64"
 
 import contracts "odin_test:contracts"
+import iface "odin_test:hub/repository/iface"
 import domain "odin_test:hub/domain"
 import auth_service "odin_test:hub/service/auth"
 import agent_service "odin_test:hub/service/agent"
@@ -13,7 +14,7 @@ import content_service "odin_test:hub/service/content"
 import events "odin_test:hub/service/events"
 import jsonx "odin_test:lib/jsonx"
 
-Content_Handlers :: struct { auth: ^auth_service.Auth_Service, agents: ^agent_service.Agent_Service, content: ^content_service.Content_Service, event_bus: ^events.User_Event_Bus }
+Content_Handlers :: struct { auth: ^auth_service.Auth_Service, agents: ^agent_service.Agent_Service, content: ^content_service.Content_Service, event_bus: ^events.User_Event_Bus, agent_writes: ^iface.Agent_Write_Repository }
 
 list_memories_handler :: proc(ctx:rawptr, req:Request)->Response{
 	h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp
@@ -43,35 +44,89 @@ list_memories_handler :: proc(ctx:rawptr, req:Request)->Response{
 	has_more:=len(rows)>=limit
 	return respond_list(strings.to_string(b),contracts.API_Page{limit=limit,next_cursor=next_cursor if has_more else "",has_more=has_more},req.request_id,auth_ctx_server_time(req))
 }
-create_memory_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; m,saved,err:=content_service.create_memory(h.content,auth,memory_input(req.body)); if !saved do return respond_error(err,req.request_id); b:=strings.builder_make(); write_memory_json(&b,m,false); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req),201) }
-memory_detail_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; m,got,err:=content_service.get_memory(h.content,auth,path_part(req.path,4)); if !got do return respond_error(err,req.request_id); b:=strings.builder_make(); write_memory_json(&b,m,false); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req)) }
-patch_memory_handler :: proc(ctx:rawptr, req:Request)->Response{
-	h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp
-	id:=path_part(req.path,4)
-	input,_:=memory_update_input(req.body)
-	m,updated,err:=content_service.update_memory(h.content,auth,id,input)
-	if !updated do return respond_error(err,req.request_id)
-	b:=strings.builder_make(); write_memory_json(&b,m,false)
-	return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req))
-}
-memory_action_handler :: proc(ctx:rawptr, req:Request)->Response{
-	h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp
-	id:=path_part(req.path,4)
-	action:=path_part(req.path,5)
-	m:domain.Memory; good:=false; err:domain.Domain_Error
-	if action=="approve" {
-		input,has_edits:=memory_update_input(req.body)
-		m,good,err=content_service.approve_memory(h.content,auth,id,input,has_edits)
-	} else if action=="reject" {
-		m,good,err=content_service.reject_memory(h.content,auth,id)
-	} else if action=="archive" {
-		m,good,err=content_service.archive_memory(h.content,auth,id)
-	} else {
-		return respond_error(domain.domain_error(.Not_Found,"route not found"),req.request_id)
+create_memory_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Content_Handlers)(ctx)
+	auth, ok, resp := require_auth_any(h.auth, req)
+	if !ok do return resp
+	input := memory_input(req.body)
+	if auth.kind == .Instance_Token {
+		if input.status != "" && input.status != "pending" && input.status != "active" {
+			return respond_error(
+				domain.domain_error(
+					.Validation_Failed,
+					"status must be \"pending\" or \"active\"",
+					`{"code":"memory_status_invalid"}`,
+				),
+				req.request_id,
+			)
+		}
+		input.proposed_by_instance_id = auth.agent_instance_id
 	}
-	if !good do return respond_error(err,req.request_id)
-	b:=strings.builder_make(); write_memory_json(&b,m,false)
-	return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req))
+	m, saved, err := content_service.create_memory(h.content, auth, input)
+	if !saved do return respond_error(err, req.request_id)
+	record_agent_write(
+		h.agent_writes,
+		auth,
+		domain.AGENT_WRITE_KIND_MEMORY,
+		m.memory_id,
+		domain.AGENT_WRITE_ACTION_CREATE,
+		agent_write_body_fields(req.body, AGENT_WRITE_MEMORY_FIELDS),
+	)
+	b := strings.builder_make()
+	write_memory_json(&b, m, false)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
+}
+
+memory_detail_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; m,got,err:=content_service.get_memory(h.content,auth,path_part(req.path,4)); if !got do return respond_error(err,req.request_id); b:=strings.builder_make(); write_memory_json(&b,m,false); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req)) }
+patch_memory_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Content_Handlers)(ctx)
+	auth, ok, resp := require_auth_any(h.auth, req)
+	if !ok do return resp
+	id := path_part(req.path, 4)
+	input, _ := memory_update_input(req.body)
+	m, updated, err := content_service.update_memory(h.content, auth, id, input)
+	if !updated do return respond_error(err, req.request_id)
+	record_agent_write(
+		h.agent_writes,
+		auth,
+		domain.AGENT_WRITE_KIND_MEMORY,
+		m.memory_id,
+		domain.AGENT_WRITE_ACTION_UPDATE,
+		agent_write_memory_update_fields(input),
+	)
+	b := strings.builder_make()
+	write_memory_json(&b, m, false)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
+}
+
+memory_action_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Content_Handlers)(ctx); auth, ok, resp := require_auth_any(h.auth, req); if !ok do return resp
+	id := path_part(req.path, 4)
+	action := path_part(req.path, 5)
+
+	if auth.kind == .Instance_Token {
+		if action == "approve" || action == "reject" do return respond_error(domain.domain_error(.Forbidden, "only the user can approve or reject memory proposals", `{"code":"user_only"}`), req.request_id)
+		if action == "archive" {
+			current, found, get_err := content_service.get_memory(h.content, auth, id)
+			if !found do return respond_error(get_err, req.request_id)
+			if current.status != "active" do return respond_error(domain.domain_error(.Conflict, "only active memories can be archived by an agent", `{"code":"memory_not_active"}`), req.request_id)
+		}
+	}
+	m: domain.Memory; good := false; err: domain.Domain_Error
+	if action == "approve" {
+		input, has_edits := memory_update_input(req.body)
+		m, good, err = content_service.approve_memory(h.content, auth, id, input, has_edits)
+	} else if action == "reject" {
+		m, good, err = content_service.reject_memory(h.content, auth, id)
+	} else if action == "archive" {
+		m, good, err = content_service.archive_memory(h.content, auth, id)
+	} else {
+		return respond_error(domain.domain_error(.Not_Found, "route not found"), req.request_id)
+	}
+	if !good do return respond_error(err, req.request_id)
+	if action == "archive" do record_agent_write(h.agent_writes, auth, domain.AGENT_WRITE_KIND_MEMORY, m.memory_id, domain.AGENT_WRITE_ACTION_ARCHIVE, nil)
+	b := strings.builder_make(); write_memory_json(&b, m, false)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
 list_chats_handler :: proc(ctx:rawptr, req:Request)->Response{
