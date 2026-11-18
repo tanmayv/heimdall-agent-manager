@@ -2,7 +2,7 @@
 
 This specification adds ACP (Agent Client Protocol) beside PTY execution. The Hub selects a transport per provider per bridge; `ham-pty-host` owns either the existing PTY child or a new child with pipes. The Bridge drives ACP v1, translates events into existing Heimdall surfaces, and streams natural assistant text into durable chat. Coordination remains `./bin/ham-ctl`. Claude keeps `pty` as its catalog default until the real-device acceptance passes.
 
-Status: implementation specification, 2026-11-18. Approved inputs: [plan](artifact://art_18e9124cfc75a9c2), [comparison](artifact://art_18e8badae3e44864), and subsequent chain decisions. Those decisions supersede the plan's deferrals of piped hosting, streaming, adapter status, and login fallback. This document specifies proposed changes; it does not assert they already exist. Existing-source references were read at `df5dbd486ba381ba6e56c454d3537ee565b2cdd5`; paths and line numbers below are relative to that repository revision.
+Status: implementation specification, 2026-11-18. Approved inputs: [plan](artifact://art_18e9124cfc75a9c2), [comparison](artifact://art_18e8badae3e44864), and subsequent chain decisions. Those decisions supersede the plan's deferrals of piped hosting, streaming, adapter status, and login fallback. This document specifies proposed changes; it does not assert they already exist. Existing-source references were read at `7ccd2d909c34e2c6c0d985adeba40d2a4e06442f`; paths and line numbers below are relative to that repository revision.
 
 ## 1. Scope and requirements
 
@@ -49,11 +49,11 @@ No MCP implementation, ACP `terminal/*` proxy, second provider adapter, or repla
 | CLI seals chat before forwarding; Hub stores supplied body; Bridge already has vault open/seal helpers | `src/ctl/agent_mode.odin:1534`; `src/hub/service/content/content_service.odin:252`; `src/bridge/vault_decrypt.odin:40`; `src/bridge/vault_decrypt.odin:59` |
 | UI handles fetch-required chat events through message invalidation | `src/ui/api/wsInvalidation.ts:637` |
 | Provider API mirrors and terminal pane require new fields/branch | `src/ui/components/providers/providerSetupApi.ts:10`; `src/ui/components/chat/AgentPaneComposerPanel.tsx:49` |
-| Last embedded migration is 209 | `src/hub/repository/sqlite/migrations.odin:664` |
+| Last embedded migration is 210 | `src/hub/repository/sqlite/migrations.odin:666` |
 
 ## 3. Storage, catalog and Odin contracts
 
-### 3.1 Migration 210_provider_transport.sql
+### 3.1 Migration 211_provider_transport.sql
 
 Use this SQL, registered in the embedded constant, ordered filename list and load dispatch in `migrations.odin`. The canonical settings row has `profile_id=provider`. Only that row may hold transport. Adding a custom profile must not create another transport choice. Preserve per-profile `enabled` and all existing keys.
 
@@ -109,7 +109,7 @@ UPDATE provider_catalog SET
 WHERE provider='claude';
 ```
 
-The SQL enforces storage shape/membership; service and Bridge validators enforce the complete recipe: command exactly the installed package bin, args string array, env string map, protocol_version exactly integer 1, known package, exact semver (no ranges/tags), nonempty version. Never execute an arbitrary command received from a provider status report. The catalog owns recipes. Invalid JSON, unsupported default, duplicate transports and an ACP provider without a recipe must fail migration/repository tests. No default flip is part of 210; a follow-up migration after §12 passes sets Claude's default to `acp`.
+The SQL enforces storage shape/membership; service and Bridge validators enforce the complete recipe: command exactly the installed package bin, args string array, env string map, protocol_version exactly integer 1, known package, exact semver (no ranges/tags), nonempty version. Never execute an arbitrary command received from a provider status report. The catalog owns recipes. Invalid JSON, unsupported default, duplicate transports and an ACP provider without a recipe must fail migration/repository tests. No default flip is part of 211; a follow-up migration after §12 passes sets Claude's default to `acp`.
 
 `runtime_transport` is a launch snapshot, not a user override. Add it to Agent_Instance repository read/write/cloning/destruction, instance JSON, launch preparation, reconfiguration and wake serialization. Existing rows become `pty`. Live settings changes do not relabel a running instance. Recompute the snapshot only for a new launch epoch, including explicit restart/move. Preserve it for command retries in that epoch.
 
@@ -341,7 +341,7 @@ Session loading and history replay are defined by [session setup](https://agentc
 
 ## 8. Telemetry and permissions
 
-Map `session/update.params.update.sessionUpdate` only for the driver's sessionId. Deduplicate using pipe sequence and a per-session tool map keyed by toolCallId. Partial tool_call_update merges into stored state; it is not a replacement with empty fields. All normalized events include schema=ham.ext.v1, provider=claude, ext_version=acp-0.108.0, ts, session_id and bound instance identity. Call `bridge_ext_ingest` with the locally verified token record, not an identity claimed by the adapter.
+Map `session/update.params.update.sessionUpdate` only for the driver's sessionId. Deduplicate using pipe sequence and a per-session tool map keyed by toolCallId. Partial tool_call_update merges into stored state; it is not a replacement with empty fields. All normalized events include schema=ham.ext.v1, provider=claude, ext_version=acp-0.108.0, ts, session_id and bound instance identity. Call `bridge_ext_ingest(rec, params, now)` with the locally verified token record, the normalized event JSON, and the dispatcher's monotonic `now`, so ingest timing matches the PTY path; never use an identity or timestamp claimed by the adapter.
 
 | ACP update/action | Ext_Event_Kind and payload | Handling |
 | --- | --- | --- |
@@ -409,7 +409,7 @@ Add `POST /api/v1/agent-actions/chat/assistant-message` through the existing ins
 {"method":"agent.chat.assistant_message","agent_instance_id":"inst-example","params":{"launch_epoch":"epoch-example","turn_id":"ham:epoch:4","message_id":"msg_bridge_generated_id","revision":1,"body":"vault:v2:<sealed-snapshot>","message_status":"pending","stop_reason":null}}
 ```
 
-The armor above is illustrative. Before HTTP, the Bridge seals each full text snapshot using `bridge_read_vault_keyring` and `bridge_encrypt_vault_text`; the Hub stores opaque ciphertext. Reuse the saved ciphertext on a retry so payload hashes are stable despite randomized vault nonces. Header auth is the existing Bridge bearer plus `X-Heimdall-Instance-Token` (`src/bridge/agent_api.odin:18`); do not send the local agent token to the Hub. The bridge generates one stable standard-format `msg_...` ID per turn before first flush. Server validates its format but derives conversation/owner/sender from authenticated instance; never accepts those from params. The durable idempotency key is `(instance_id,launch_epoch,turn_id)` and binds that message_id. Persist it in new `acp_assistant_turns` (part of migration 210):
+The armor above is illustrative. Before HTTP, the Bridge seals each full text snapshot using `bridge_read_vault_keyring` and `bridge_encrypt_vault_text`; the Hub stores opaque ciphertext. Reuse the saved ciphertext on a retry so payload hashes are stable despite randomized vault nonces. Header auth is the existing Bridge bearer plus `X-Heimdall-Instance-Token` (`src/bridge/agent_api.odin:18`); do not send the local agent token to the Hub. The bridge generates one stable standard-format `msg_...` ID per turn before first flush. Server validates its format but derives conversation/owner/sender from authenticated instance; never accepts those from params. The durable idempotency key is `(instance_id,launch_epoch,turn_id)` and binds that message_id. Persist it in new `acp_assistant_turns` (part of migration 211):
 
 ```sql
 CREATE TABLE acp_assistant_turns (
@@ -502,7 +502,7 @@ Tests live beside changed Odin packages and existing UI/Rust test conventions. U
 
 | Component | Required tests |
 | --- | --- |
-| SQL/domain/repository | Apply 210 to full pre-210 DB; preserve profiles/enablement; defaults; canonical-only transport CHECK; recipe/cross-field validation; nullable round trips; ETag changes; runtime snapshot persistence; assistant-turn index uniqueness/transaction rollback |
+| SQL/domain/repository | Apply 211 to full pre-211 DB; preserve profiles/enablement; defaults; canonical-only transport CHECK; recipe/cross-field validation; nullable round trips; ETag changes; runtime snapshot persistence; assistant-turn index uniqueness/transaction rollback |
 | Hub API/services | Owned/foreign bridge and instance; omitted/null/invalid fields; combined atomic update; custom-profile transport 422; absent canonical row preserves implicit enabled; capability skew; every launch/wake/reconfigure path; old launch epoch rejection; no running-instance relabel |
 | Rust protocol/daemon | Old PTY golden vectors unchanged; every new variant round trip/malformed lengths; pipe child has isatty=false; stdout/stderr separated; stdin receipts; partial writer failure; generation fence; AttachPipe replay split mid-JSON; queue saturation no drop; heartbeat responsive; process-group cleanup; Bridge disconnect child survives |
 | RPC client | Fake daemon/agent splits UTF-8/lines; interleaved replies; numeric/string ID isolation; unknown methods/errors; duplicate inbound requests; setup deadlines; no absolute prompt timeout; cancel still accepts final updates; close joins threads; allocator lifetime after request scratch arena destroyed |
@@ -547,7 +547,7 @@ Seven cohesive tasks; no implementation is delegated by this specification itsel
 
 | Task | Files to touch | Depends on | Acceptance |
 | --- | --- | --- | --- |
-| T1 Hub contracts/storage/selection | `src/hub/repository/sqlite/migrations/210_provider_transport.sql`, `migrations.odin`, `provider_repo_sqlite.odin`, `agent_repo_sqlite.odin`; `src/hub/repository/iface/provider_repo.odin`; `src/hub/domain/provider.odin`, `agent.odin`; `src/hub/service/provider/provider_service.odin`; `src/hub/service/agent/agent_service.odin`, reconfiguration serializers; `src/hub/transport/http/provider_handlers.odin`, `bridge_handlers.odin`, instance serializers; contract mirrors/tests | — | Exact migration, canonical override semantics, launch snapshot/capability gate on all launch paths, owner validation and ETag tests pass; include assistant-turn index for T5 |
+| T1 Hub contracts/storage/selection | `src/hub/repository/sqlite/migrations/211_provider_transport.sql`, `migrations.odin`, `provider_repo_sqlite.odin`, `agent_repo_sqlite.odin`; `src/hub/repository/iface/provider_repo.odin`; `src/hub/domain/provider.odin`, `agent.odin`; `src/hub/service/provider/provider_service.odin`; `src/hub/service/agent/agent_service.odin`, reconfiguration serializers; `src/hub/transport/http/provider_handlers.odin`, `bridge_handlers.odin`, instance serializers; contract mirrors/tests | — | Exact migration, canonical override semantics, launch snapshot/capability gate on all launch paths, owner validation and ETag tests pass; include assistant-turn index for T5 |
 | T2 Daemon pipe mode and Odin codecs | `tools/pty_host/src/dproto.rs`, `daemon.rs`, `host.rs`, new `pipe_host.rs`, module registration; `src/bridge/pty_host_client.odin`, tests | — | New tags/capabilities/pipe lifecycle, generation fencing, receipt and lossless bounded replay tests; heartbeat independent; legacy vectors/tests unchanged |
 | T3 RPC client and durable state | new `src/bridge/acp_jsonrpc.odin`, `acp_state.odin` and adjacent tests; pipe I/O adapter | T2 | Incremental framing, id maps/restore, inbound dispatch, bounded queues, atomic checkpoint/partial-line persistence, timeout/teardown tests |
 | T4 ACP lifecycle, adapter and bootstrap | new `src/bridge/acp_runtime.odin`, `acp_adapter.odin`; `hub_runtime_client.odin`, `agent_reconcile.odin`, `startup_readiness.odin`, `provider_catalog_cache.odin`, provider profile/discovery modules, `bootstrap_service.odin`, bootstrap prompt templates | T1,T2,T3 | Pinned install/status, launch/model/mode, all operation dispatch, live reattach and child-loss load, bootstrap parity, tests; hooks omitted for ACP |
