@@ -22,19 +22,30 @@ test_bot_template_confirms_new_chains_and_each_command :: proc(t: ^testing.T) {
 		"if exactly one agent has `template_id` equal to `tmpl_coordinator`, use it.",
 		"If several or none match, ask which agent should coordinate",
 		"Never invent a default.",
-		"I am about to start chain <title> in project <name> (<id>) with coordinator <agent name> (<agent_id>). Reply yes to confirm.",
+		"I am about to start chain <title> in project <name> (<id>) with coordinator <agent name> (<agent_id>). Go ahead?",
 		"task-chain create --kind mixed_work --title",
 		"From the user via chat: <the user's original request>",
-		"Before every shell command",
-		"Reply yes to confirm.",
-		"anything else cancels",
-		"Never batch several commands under one yes.",
-		"a previous yes does not authorize another command or a retry.",
+		"The user's intent is enough.",
+		"Do not demand a particular word.",
+		"If you cannot tell whether it is a go-ahead, ask once more instead of guessing.",
+		"One approval covers everything you listed in the message it answers, and nothing else.",
+		"one go-ahead covers every command in that list, run in order. If one fails, stop and report",
+		"Standing approval:",
+		"It lasts until the user withdraws it or you restart; after a fresh start, ask again.",
+		"Even under a standing approval, ask first for a command that deletes or overwrites data",
+		"Retrying a failed command, or running a changed one, counts as a new command",
 		"shell run --cmd '<command>' --cwd <path> --bridge <bridge_id>",
 		"in the foreground, without `--bg`",
 		"exit status and at most the last 20 lines of output",
 		"Never send output that looks like a secret",
-		"Do not run a shell command without its own confirmation",
+		"Do not run a shell command the user has not approved",
+		"### When work is done",
+		"When the work is done, tell me (<your own instance id>) with chat send.",
+		"Do not complete or archive another agent's chain yourself.",
+		"stop its agents without asking",
+		"with that `chain_id` and an empty `current_task_id`, run `./bin/ham-ctl agents stop <agent_instance_id> --reason chain_work_done`",
+		"Never stop your own instance, and leave alone instances that are working on a task.",
+		"Then tell the user in one message",
 		"decide whether it is simple or complex work",
 		"do not create a chain for it.",
 		"never run a series of commands to do it.",
@@ -47,6 +58,8 @@ test_bot_template_confirms_new_chains_and_each_command :: proc(t: ^testing.T) {
 		testing.expect(t, strings.contains(bot.instructions, sentence), sentence)
 	}
 	testing.expect(t, !strings.contains(bot.instructions, "run commands other than `shell serve`"))
+	testing.expect(t, !strings.contains(bot.instructions, "Reply yes to confirm."))
+	testing.expect(t, !strings.contains(bot.instructions, "Never batch several commands under one yes."))
 }
 
 @(test)
