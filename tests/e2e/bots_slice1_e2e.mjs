@@ -183,6 +183,15 @@ try {
     assert.equal(instance.provider_profile,'bots-good');
     log('ASSUMPTION: hub launched the custom binary profile as an ordinary provider');
   });
+  await step('3q','busy message gets queued then read reaction',async()=>{
+    await inject('queued reaction hold',undefined,10002);
+    await poll(async()=> (await control('reactions?chat_id=111')).reactions.some(r=>r.message_id===10002),'hold message read');
+    await inject('queued after hold',undefined,10003);
+    await poll(async()=> (await control('reactions?chat_id=111')).reactions.some(r=>r.message_id===10003&&r.reaction[0]?.emoji==='⏳'),'queued reaction');
+    await expectSent('echo: queued after hold');
+    const emojis=(await control('reactions?chat_id=111')).reactions.filter(r=>r.message_id===10003).map(r=>r.reaction[0]?.emoji);
+    assert.deepEqual(emojis,['⏳','👀']);
+  });
   await step(4,'status question reads seeded sample chain',async()=>{
     const {encryptVaultText}=await import('../../src/ui/utils/vaultCrypto.ts');
     await request('/task-chains','POST',{title:await encryptVaultText('Sample: A9 status fixture'),description:await encryptVaultText('Isolated E2E sample chain')},201);

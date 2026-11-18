@@ -123,12 +123,17 @@ bots_push_intake_iteration :: proc(rt: ^Bots_Runtime) -> (more: bool, delay: tim
 	}
 	seen := make(map[string]bool, context.temp_allocator)
 	for row in rows {
-		fresh := false
-		for id in inserted do if id == row.message_id do fresh = true
-		if !fresh || seen[row.bot_id] do continue
+		new_row := false
+		for id in inserted do if id == row.message_id do new_row = true
+		if !new_row || seen[row.bot_id] do continue
 		seen[row.bot_id] = true
+		fresh := make([dynamic]domain.Channel_Message, context.temp_allocator)
+		for candidate in rows {
+			if candidate.bot_id != row.bot_id do continue
+			for id in inserted do if id == candidate.message_id {append(&fresh, candidate); break}
+		}
 		ms, _ := platform.rfc3339_to_unix_ms(now)
-		if e := delivery_on_inbound(s, row.bot_id, ms); e.code != .None do fmt.eprintf("bots: inbound delivery code=%v\n", e.code)
+		if e := delivery_on_inbound(s, row.bot_id, ms, fresh[:]); e.code != .None do fmt.eprintf("bots: inbound delivery code=%v\n", e.code)
 	}
 	return len(events) == BOT_PUSH_INTAKE_BATCH, 0
 }

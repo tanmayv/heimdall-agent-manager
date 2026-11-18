@@ -8,6 +8,7 @@ import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
 
+BOT_QUEUED_REACTION :: "⏳"
 BOT_READ_REACTION :: "👀"
 // Stop admitting calls after four seconds. Telegram bounds each admitted call
 // to one second, keeping feedback below the bridge relay's 20-second stall.
@@ -54,7 +55,7 @@ bots_channel_read :: proc(s: ^Bots_Service, bot_id: string, binding: domain.Chan
 	}
 	if len(newly_read) > 0 && bots_gate_on(s.experiments, binding.owner_user_id) {
 		a := bots_adapter(s, binding.provider)
-			started := time.tick_now()
+		started := time.tick_now()
 		skip_reactions := false
 		if a != nil && a.mark_read != nil {
 			if err := a.mark_read(a.ctx, binding.external_chat_id, newly_read[len(newly_read)-1].external_message_id); err.kind != .None {
@@ -75,4 +76,22 @@ bots_channel_read :: proc(s: ^Bots_Service, bot_id: string, binding: domain.Chan
 	}
 	keep = true
 	return selected[:], total, {}
+}
+
+// Fresh rows are borrowed from the committed intake batch. No provider I/O runs
+// under the service mutex or the delivery transaction, and retries are silent.
+bots_queued_feedback :: proc(s: ^Bots_Service, fresh: []domain.Channel_Message) {
+	started := time.tick_now()
+	for m in fresh {
+		if time.tick_since(started) >= BOT_READ_REACTION_BUDGET do break
+		binding, found, err := iface.binding_get(s.repo, m.binding_id)
+		defer domain.channel_binding_destroy(&binding)
+		if err.code != .None || !found || binding.state != .Active || !bots_gate_on(s.experiments, binding.owner_user_id) do continue
+		a := bots_adapter(s, binding.provider)
+		if a == nil || a.react == nil do continue
+		if e := a.react(a.ctx, binding.external_chat_id, m.external_message_id, BOT_QUEUED_REACTION); e.kind != .None {
+			log.warn(fmt.tprintf("bots: queued reaction failed kind=%v", e.kind))
+			if e.kind == .Transient || e.kind == .Aborted || e.kind == .Rate_Limited do break
+		}
+	}
 }

@@ -83,6 +83,11 @@ print(find(json.load(sys.stdin)))')
                 continue
             fi
             case $body in
+                'queued reaction hold')
+                    # Keep one delivery open while E2E injects the next message.
+                    sleep 10
+                    "$HAM_CTL" channel send --text "echo: $body"
+                    ;;
                 'status?')
                     chains=$("$HAM_CTL" task-chain list)
                     title=$(printf '%s\n' "$chains" | sed 's/"title"[[:space:]]*:/\

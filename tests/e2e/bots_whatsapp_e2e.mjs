@@ -197,6 +197,15 @@ try {
     await poll(async()=> (await waSent()).some(m=>m.reaction==='👀'&&m.reaction_message_id===hi.id),'read reaction');
     assert.deepEqual((await waControl('versions')).versions,['v27.0']);
   });
+  await step('5q','busy WhatsApp message gets queued then read reaction',async()=>{
+    const hold=await waInject('queued reaction hold');
+    await poll(async()=> (await waSent()).some(m=>m.reaction==='👀'&&m.reaction_message_id===hold.id),'hold message read');
+    const queued=await waInject('queued after hold');
+    await poll(async()=> (await waSent()).some(m=>m.reaction==='⏳'&&m.reaction_message_id===queued.id),'queued reaction');
+    await waText('echo: queued after hold');
+    const emojis=(await waSent()).filter(m=>m.reaction_message_id===queued.id).map(m=>m.reaction);
+    assert.deepEqual(emojis,['⏳','👀']);
+  });
   await step(6,'replayed webhook creates one message and one echo',async()=>{
     assert.equal((await waControl('replay',{id:hi.id})).status,200);
     // Intake can idle for five seconds; check both persistence and echo count

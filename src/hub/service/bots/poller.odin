@@ -3,6 +3,7 @@ package bots
 import "core:fmt"
 import "core:sync"
 import "core:time"
+import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
 import channel "odin_test:hub/service/channel"
@@ -68,8 +69,13 @@ bots_poller_iteration :: proc(rt: ^Bots_Runtime, backoff: ^time.Duration) -> (ti
 		for id in inserted do if id == row.message_id do new_row = true
 		if !new_row || seen[row.bot_id] do continue
 		seen[row.bot_id] = true
+		fresh := make([dynamic]domain.Channel_Message, context.temp_allocator)
+		for candidate in rows {
+			if candidate.bot_id != row.bot_id do continue
+			for id in inserted do if id == candidate.message_id {append(&fresh, candidate); break}
+		}
 		ms, _ := platform.rfc3339_to_unix_ms(now)
-		if e := delivery_on_inbound(s, row.bot_id, ms); e.code != .None do fmt.eprintf("bots: inbound delivery code=%v\n", e.code)
+		if e := delivery_on_inbound(s, row.bot_id, ms, fresh[:]); e.code != .None do fmt.eprintf("bots: inbound delivery code=%v\n", e.code)
 	}
 	return 0, false
 }

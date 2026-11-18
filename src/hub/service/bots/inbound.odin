@@ -67,14 +67,20 @@ bots_inbound_side_effect :: proc(s: ^Bots_Service, a: ^channel.Channel_Adapter, 
 	return {}
 }
 
-delivery_on_inbound :: proc(s: ^Bots_Service, bot_id: string, now_ms: i64) -> domain.Domain_Error {
-	sync.mutex_lock(&s.mutex); defer sync.mutex_unlock(&s.mutex)
-	return bots_delivery_on_inbound_locked(s, bot_id, now_ms)
+delivery_on_inbound :: proc(s: ^Bots_Service, bot_id: string, now_ms: i64, fresh: []domain.Channel_Message = nil) -> domain.Domain_Error {
+	queued := false
+	err: domain.Domain_Error
+	{
+		sync.mutex_lock(&s.mutex); defer sync.mutex_unlock(&s.mutex)
+		err = bots_delivery_on_inbound_locked(s, bot_id, now_ms, &queued)
+	}
+	if err.code == .None && queued do bots_queued_feedback(s, fresh)
+	return err
 }
 
 // Caller holds the service lock. This proc only changes durable delivery rows;
 // it never selects a bridge or sends a command.
-bots_delivery_on_inbound_locked :: proc(s: ^Bots_Service, bot_id: string, now_ms: i64) -> domain.Domain_Error {
+bots_delivery_on_inbound_locked :: proc(s: ^Bots_Service, bot_id: string, now_ms: i64, queued: ^bool = nil) -> domain.Domain_Error {
 	uow, ok, err := iface.unit_of_work_begin(s.uow_factory)
 	if !ok do return err
 	defer if uow.ctx != nil do iface.unit_of_work_rollback(&uow)
@@ -103,6 +109,7 @@ bots_delivery_on_inbound_locked :: proc(s: ^Bots_Service, bot_id: string, now_ms
 		if _, e := iface.delivery_update(s.repo, updated, .Waiting); e.code != .None do return e
 	}
 	_, commit_err := bots_uow_commit(&uow)
+	if queued != nil do queued^ = commit_err.code == .None && found && (d.state == .Dispatched || d.state == .Waiting)
 	return commit_err
 }
 
