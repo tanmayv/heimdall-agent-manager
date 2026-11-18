@@ -276,7 +276,11 @@ try {
     // and serves index.html. Check the unchanged returned path on its API upstream.
     // Real deployment preview origins require the separate staging check.
     const checkedPreview=new URL(previewPath,api).href;
-    const response=await nativeFetch(checkedPreview,{headers,signal:AbortSignal.timeout(30000)});
+    const response=await poll(async()=>{
+      const response=await nativeFetch(checkedPreview,{headers,signal:AbortSignal.timeout(30000)});
+      if(response.status===502) {await response.text();return false;}
+      return response;
+    },'local preview socket ready',15000);
     assert.equal(response.status,200);
     const listing=await response.text();assert.match(listing,/Directory listing/);
     const killed=await command('shell kill '+session);
@@ -306,6 +310,81 @@ try {
     assert.match(await remoteResponse.text(),/Directory listing/);
     await command('shell kill '+remoteSession);
     return {reply,preview,checkedPreview,status:response.status,listing,killed,terminal,remote,remoteStatus:remoteResponse.status};
+  });
+  await step('9a','new chain requires its own yes and forwards the request',async()=>{
+    const reply=await command('projects create --name confirmed-chain-project --default-path /tmp');
+    const project=findField(reply.result,'project_id');
+    const args='--kind mixed_work --title confirmed-chat-chain --project '+project+' --coordinator '+coordAgent.agent_id+
+      ' --bridge '+bridgeId('bots-cap-e2e-a')+' --provider pi --model '+botModel;
+    const count=async()=> (await sql('SELECT count(*) AS n FROM task_chains'))[0].n;
+    const before=await count();
+    async function prompt() {
+      const offset=(await sent()).length;
+      await inject('confirm chain '+args);
+      await poll(async()=> (await sent()).slice(offset).find(m=>m.text==='Confirm chain '+args+'. Reply yes to confirm.'),'chain prompt');
+    }
+    await prompt();
+    assert.equal(await count(),before,'no creation before yes');
+    let offset=(await sent()).length;
+    await inject('y');
+    await poll(async()=> (await sent()).slice(offset).find(m=>m.text==='Cancelled.'),'chain cancellation');
+    assert.equal(await count(),before,'y cancels chain creation');
+    await prompt();
+    offset=(await sent()).length;
+    await inject('YES');
+    const created=await poll(async()=>{
+      for(const m of (await sent()).slice(offset)) {
+        try {const result=JSON.parse(m.text);const id=findField(result,'chain_id');if(id)return {id,result};} catch {}
+      }
+    },'confirmed chain');
+    assert.equal(await count(),before+1);
+    const chain=await request('/task-chains/'+created.id);
+    assert.equal(await decryptVaultText(chain.title),'confirmed-chat-chain');
+    assert.ok(chain.coordinator_agent_instance_id);
+    const forwarded=await poll(async()=>{
+      const rows=await sql("SELECT body FROM chat_messages WHERE conversation_id=(SELECT conversation_id FROM agent_instances WHERE agent_instance_id=?) AND sender_agent_instance_id=? AND direction='agent_to_agent'",
+        [chain.coordinator_agent_instance_id,botInstance]);
+      for(const row of rows) {
+        if((await decryptVaultText(row.body))==='From the user via chat: confirm chain '+args)return true;
+      }
+    },'original request forwarded');
+    return {created,chain,forwarded};
+  });
+  await step('9b','each foreground command requires a fresh yes',async()=>{
+    const args="--cmd 'printf confirmed-command' --cwd /tmp --bridge "+bridgeId('bots-cap-e2e-a');
+    const count=async()=> (await sql("SELECT count(*) AS n FROM shell_sessions WHERE kind='run'"))[0].n;
+    const before=await count();
+    async function prompt() {
+      const offset=(await sent()).length;
+      await inject('confirm command '+args);
+      await poll(async()=> (await sent()).slice(offset).find(m=>m.text==='Confirm command '+args+'. Reply yes to confirm.'),'command confirmation');
+    }
+    await prompt();
+    assert.equal(await count(),before,'no command before yes');
+    let offset=(await sent()).length;
+    await inject('confirm');
+    await poll(async()=> (await sent()).slice(offset).find(m=>m.text==='Cancelled.'),'command cancellation');
+    assert.equal(await count(),before,'confirm is not yes');
+    await prompt();
+    offset=(await sent()).length;
+    await inject('yes');
+    const result=await poll(async()=>{
+      for(const m of (await sent()).slice(offset)) {
+        try {const value=JSON.parse(m.text);if(findField(value,'session_id'))return value;} catch {}
+      }
+    },'foreground command result');
+    assert.equal(result.ok,true);
+    const rows=await sql("SELECT status,exit_code FROM shell_sessions WHERE session_id=?",[findField(result,'session_id')]);
+    assert.equal(rows[0].exit_code,0);
+    assert.ok(['completed','exited'].includes(rows[0].status));
+    assert.match(JSON.stringify(result),/confirmed-command/);
+    assert.equal(await count(),before+1);
+    await prompt();
+    offset=(await sent()).length;
+    await inject('no');
+    await poll(async()=> (await sent()).slice(offset).find(m=>m.text==='Cancelled.'),'fresh cancellation');
+    assert.equal(await count(),before+1,'previous yes does not authorize another command');
+    return {result,rows};
   });
   await step(10,'second owner cannot update project or wake coordinator',async()=>{
     // The mock provider supports login_hint; prove these sessions have different owners.
@@ -357,7 +436,7 @@ try {
     assert.equal((await request('/agent-instances/'+coordinator.agent_instance_id)).runtime_status,'stopped');
     return {ownerA:ownerA.user_id,ownerB:ownerB.user_id,patch,message,project:before,instance:await request('/agent-instances/'+coordinator.agent_instance_id)};
   });
-  log('PASS: all 10 spec 14.3 steps');
+  log('PASS: all 12 capabilities steps');
 } catch(error) {
   log('FAIL: '+(error.stack||error));process.exitCode=1;
 } finally {
