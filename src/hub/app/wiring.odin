@@ -686,6 +686,8 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/auth/config", rawptr(&graph.user_handlers), http.auth_config_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/auth/login", rawptr(&graph.user_handlers), http.auth_login_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/auth/callback", rawptr(&graph.user_handlers), http.auth_callback_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/auth/sessions", rawptr(&graph.user_handlers), http.auth_sessions_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/auth/switch", rawptr(&graph.user_handlers), http.auth_switch_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/auth/logout", rawptr(&graph.user_handlers), http.auth_logout_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me", rawptr(&graph.user_handlers), http.me_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me/logout-url", rawptr(&graph.user_handlers), http.logout_url_handler)
