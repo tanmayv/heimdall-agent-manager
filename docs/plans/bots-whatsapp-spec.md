@@ -37,7 +37,7 @@ The hub operator configures one Meta app, one WhatsApp business phone number and
 - Media, voice, documents, locations, buttons, lists, interactive messages, typing indicators, group chats.
 - Proactive messages other than the one re-engagement template in section 12.
 - Webhook mTLS or IP allow-listing (section 25, Q3).
-- Any bridge change. The bridge's notice text stays `"New Telegram message for you — …"` (`src/bridge/bot_delivery.odin:14`); the bot template explains that it also covers WhatsApp (section 11.6). Section 25, Q1.
+- Any bridge change. The bridge's notice text stays `"New Telegram message for you — …"` (`src/bridge/bot_delivery.odin:14`); capabilities spec 9.1's template already reads any "New … message for you" line as a user message (section 11.6). Section 25, Q1.
 - Any change to Telegram behaviour, wire format or copy (section 7.2 lists the mechanical Telegram edits that keep behaviour identical).
 - Changes to the delivery engine (`delivery.odin`, `placement.odin`), the bridge protocol, `bot_deliver`, or the agent placement rules.
 
@@ -182,7 +182,7 @@ A binding is looked up by `(provider, external_chat_id)` first and, when not fou
 
 ### D7. No bridge change
 
-The bridge already relays `agent.channel.*` (`src/bridge/agent_api.odin:238`, `:364`) and observes reads by a non-empty `data.messages` (`src/bridge/bot_delivery.odin:447`). The new response fields (`channel`, `held`) are additive. The bridge's notice text stays Telegram-worded; the bot template explains it (section 11.6). No bridge release is needed, so staging needs no bridge binary swap.
+The bridge already relays `agent.channel.*` (`src/bridge/agent_api.odin:238`, `:364`) and observes reads by a non-empty `data.messages` (`src/bridge/bot_delivery.odin:447`). The new response fields (`channel`, `held`) are additive. The bridge's notice text stays Telegram-worded; capabilities spec 9.1's template (owned by C4) already reads any "New … message for you" line as a user message (section 11.6). No bridge release is needed, so staging needs no bridge binary swap.
 
 ## 4. Architecture and message lifecycle
 
@@ -208,31 +208,31 @@ Meta Cloud API ──POST /api/v1/channels/whatsapp/webhook──▶ hub transpo
 4. The bot runs `ham-ctl channel read`. The read returns the WhatsApp message with `"channel":"whatsapp"`. The hub marks the newest newly-read message read in WhatsApp and reacts 👀 to each newly-read message (section 13).
 5. The bot runs `ham-ctl channel send --text "…"`. The reply-routing rule picks the WhatsApp binding. The window is open; the adapter sends the text. The hub marks the WhatsApp messages replied and the delivery acted.
 
-## 5. Migration `210_bots_whatsapp.sql`
+## 5. Migration `211_bots_whatsapp.sql`
 
 ### 5.1 File and registration
 
-- **File:** `src/hub/repository/sqlite/migrations/210_bots_whatsapp.sql`. The highest migration at the base commit is `209_bots.sql`. If `210_*` exists when W1 starts, W1 MUST use the next free number and change this spec's references in the same commit.
+- **File:** `src/hub/repository/sqlite/migrations/211_bots_whatsapp.sql`. `210` belongs to capabilities ticket C1 (`210_agent_writes.sql`, `task_18e90a78be270790`, capabilities spec 8.2), which W1 depends on. If `211_*` exists when W1 starts, W1 MUST use the next free number and change this spec's references in the same commit.
 - **Registration** in `src/hub/repository/sqlite/migrations.odin`:
-  1. Add `MIGRATION_210_BOTS_WHATSAPP :: #load("migrations/210_bots_whatsapp.sql", string)` after `MIGRATION_209_BOTS` (`migrations.odin:664`).
-  2. Append `"210_bots_whatsapp.sql"` to `migration_order` after `"209_bots.sql"` (`:879`) and raise the array length from 213 to 214 (`:666`).
-  3. Add `if name == "210_bots_whatsapp.sql" do return strings.clone(MIGRATION_210_BOTS_WHATSAPP)` above the `209` line in `migration_sql` (`:1379`).
+  1. Add `MIGRATION_211_BOTS_WHATSAPP :: #load("migrations/211_bots_whatsapp.sql", string)` after the `210` constant C1 adds (next to `MIGRATION_209_BOTS`, `migrations.odin:664` at the base commit).
+  2. Append `"211_bots_whatsapp.sql"` to `migration_order` as its last entry, after C1's `"210_agent_writes.sql"` (the list ends at `"209_bots.sql"`, `:879`, at the base commit), and raise the array length by one (`:666`).
+  3. Add `if name == "211_bots_whatsapp.sql" do return strings.clone(MIGRATION_211_BOTS_WHATSAPP)` as the first line of the name fallbacks in `migration_sql` (above the `210` line C1 adds; the `209` line is `:1379` at the base commit).
   4. Add a skip-guard next to the `169` guard (`:918-921`), keyed on the **last** object the file creates:
      ```odin
-     // 210 commits atomically; its last index lets startup repair a crash between commit and ledger insert.
-     if name == "210_bots_whatsapp.sql" && sqlite_object_exists(conn, "channel_push_events_pending") {
+     // 211 commits atomically; its last index lets startup repair a crash between commit and ledger insert.
+     if name == "211_bots_whatsapp.sql" && sqlite_object_exists(conn, "channel_push_events_pending") {
          mark_migration_applied(conn, name)
          continue
      }
      ```
-  5. On `exec` failure roll back like 169 (`:1328-1329`): change that line to `if name=="169_provider_profiles.sql" || name=="210_bots_whatsapp.sql" do _=exec(conn,"ROLLBACK;")`.
+  5. On `exec` failure roll back like 169 (`:1328-1329`): change that line to `if name=="169_provider_profiles.sql" || name=="211_bots_whatsapp.sql" do _=exec(conn,"ROLLBACK;")`.
 
 ### 5.2 SQL (verbatim)
 
 The file runs in one transaction, so it is fully applied or absent. Rebuilding is needed because SQLite cannot change a `CHECK` constraint in place. No table references these three tables by foreign key and no trigger or view names them (`209_bots.sql` is the only migration that mentions them; it creates no trigger), so `DROP TABLE` and `RENAME` touch nothing else.
 
 ```sql
--- 210_bots_whatsapp.sql: WhatsApp channel for bots (experiment "bots").
+-- 211_bots_whatsapp.sql: WhatsApp channel for bots (experiment "bots").
 -- Rebuilds channel_bindings, channel_pairings and channel_messages to widen their
 -- CHECK constraints, carrying every existing row unchanged, and adds the push queue.
 BEGIN IMMEDIATE;
@@ -333,7 +333,7 @@ COMMIT;
 ```
 
 - **Existing rows:** every Telegram binding, pairing and message keeps all its values. New binding columns are `''`. Staging's live Telegram pairing survives (plan risk "schema change").
-- **Rollback.** A hub rollback to a build without 210 keeps working: the old build reads the same column names it knows (`bot_repo_sqlite.odin:478`, `:499` select named columns), and the old CHECKs are gone, so nothing it writes is refused. A rollback does not undo 210, the same as 209 (chain summary "Deploy pitfalls").
+- **Rollback.** A hub rollback to a build without 211 keeps working: the old build reads the same column names it knows (`bot_repo_sqlite.odin:478`, `:499` select named columns), and the old CHECKs are gone, so nothing it writes is refused. A rollback does not undo 211, the same as 209 (chain summary "Deploy pitfalls").
 
 ## 6. Domain and repository changes (W1)
 
@@ -461,7 +461,7 @@ Identity :: struct {
 	bot_username: string,  // Telegram: username without "@"; WhatsApp: display number digits
 }
 
-Push_Verdict :: enum { Accepted, Bad_Signature, Bad_Payload }
+Push_Verdict :: enum { Accepted, Bad_Signature, Bad_Payload, Foreign_Account }
 
 Channel_Adapter :: struct {
 	ctx:      rawptr,
@@ -479,7 +479,9 @@ Channel_Adapter :: struct {
 	// True when mode is "subscribe" and verify_token equals the configured token (constant time).
 	push_challenge: proc(ctx: rawptr, mode, verify_token: string) -> bool,
 	// Verifies the signature over raw_body, then parses. Batch fields belong to allocator
-	// (release with inbound_destroy_batch). Bad_Signature/Bad_Payload return an empty batch.
+	// (release with inbound_destroy_batch). Bad_Signature/Bad_Payload/Foreign_Account return an empty batch.
+	// Foreign_Account: verified and well-formed, but every skipped entry/change was skipped for a
+	// business account or phone number id mismatch and nothing else produced an event (8.4).
 	push_parse: proc(ctx: rawptr, signature_header, raw_body: string, allocator := context.allocator) -> (batch: []Inbound, verdict: Push_Verdict),
 	// Optional read receipt; nil means unsupported.
 	mark_read: proc(ctx: rawptr, external_chat_id, external_message_id: string) -> Channel_Error,
@@ -609,6 +611,8 @@ Fields for every message event:
 
 **`value.errors[]`** (system errors without messages or statuses) produce no event and are not logged by the hub; Meta shows them in its dashboard.
 
+**Verdict.** `Accepted` when the batch is non-empty, or when it is empty and no entry or change was skipped for an id mismatch. `Foreign_Account` when the batch is empty and at least one `entry` was skipped because `entry.id != business_account_id`, or at least one `change` because `metadata.phone_number_id != phone_number_id`. A payload that mixes a foreign entry with events of the configured account is `Accepted` with those events. The verdict carries no ids.
+
 ### 8.5 Error mapping
 
 Applied in this order to a response:
@@ -735,8 +739,12 @@ Webhook_Rate_Limiter :: struct {
 	window_start_s: i64,                // fixed 60-second windows on the monotonic clock
 	posts, gets:    int,
 	bad_by_ip:      map[string]int,     // keys heap-owned; cleared and freed when a window starts
+	logged:         bit_set[Webhook_Log_Once],  // cleared when a window starts
 }
 Webhook_Request_Kind :: enum { Get, Post }
+Webhook_Log_Once :: enum { Rate_Limited, Foreign_Account }
+// True the first time per window for `which` (then the caller prints its line); false afterwards.
+webhook_rate_log_once :: proc(l: ^Webhook_Rate_Limiter, which: Webhook_Log_Once, now_s: i64) -> bool
 // True when the request may proceed. A Post is refused while bad_by_ip[ip] >= WHATSAPP_WEBHOOK_BAD_SIGNATURE_PER_IP.
 webhook_rate_admit :: proc(l: ^Webhook_Rate_Limiter, kind: Webhook_Request_Kind, ip: string, now_s: i64) -> bool
 webhook_rate_note_bad_signature :: proc(l: ^Webhook_Rate_Limiter, ip: string, now_s: i64)
@@ -769,13 +777,14 @@ webhook_rate_destroy :: proc(l: ^Webhook_Rate_Limiter)
 | 3 | `len(req.body) > WHATSAPP_WEBHOOK_MAX_BODY_BYTES` | 400 `validation_failed`, details `{"code":"webhook_body_too_large"}` |
 | 4 | `bots_push_receive` → `.Bad_Signature` | call `webhook_rate_note_bad_signature`; 401 `unauthenticated`, details `{"code":"webhook_signature_invalid"}` |
 | 5 | → `.Bad_Payload` | 200 `{"received":true}` (a retry cannot fix it); log line in section 19 |
+| 5a | → `.Foreign_Account` | 200 `{"received":true}`; print `bots: whatsapp webhook ignored reason=foreign_account` when `webhook_rate_log_once(.Foreign_Account)` is true |
 | 6 | → `.Store_Failed` | 503 `provider_unavailable`, details `{"code":"webhook_store_failed"}` (Meta retries, F3) |
 | 7 | → `.Not_Configured` | 404 `not_found` |
 | 8 | → `.Stored` | `bots_runtime_signal_intake(h.runtime)`; 200 `{"received":true}` |
 
 - Error responses use `respond_error` with `bots.bots_detail_error` for details (as `bot_agent_handlers.odin:27`), so the body shape is the hub's standard error envelope.
 - The signature header is read with `header_value(req.headers, "X-Hub-Signature-256")`, which matches names case-insensitively (`src/hub/transport/http/server.odin:239-244`).
-- Rows 2 and 4 of POST, and every `.Bad_Payload`, print the matching section 19 line.
+- Row 2 prints `bots: whatsapp webhook rejected reason=rate_limited` only when `webhook_rate_log_once(.Rate_Limited)` is true; row 4 and row 5 print their section 19 line each time; row 5a as stated.
 - The `200` body is JSON (`respond_success`), which Meta ignores.
 
 ### 9.5 Push receive (service)
@@ -783,7 +792,7 @@ webhook_rate_destroy :: proc(l: ^Webhook_Rate_Limiter)
 **File:** `src/hub/service/bots/push.odin` (W5).
 
 ```odin
-Push_Receive_Result :: enum { Stored, Bad_Signature, Bad_Payload, Store_Failed, Not_Configured }
+Push_Receive_Result :: enum { Stored, Bad_Signature, Bad_Payload, Foreign_Account, Store_Failed, Not_Configured }
 
 // True when the provider's adapter supports push intake and at least one user has the bots experiment on.
 // A repository error reads as false (fail closed).
@@ -795,9 +804,9 @@ bots_push_receive :: proc(s: ^Bots_Service, provider, signature, body: string) -
 `bots_push_receive`:
 
 1. `a := bots_adapter(s, provider)`; `a == nil || a.push_parse == nil` → `.Not_Configured`.
-2. `batch, verdict := a.push_parse(a.ctx, signature, body, context.temp_allocator)`. `.Bad_Signature` and `.Bad_Payload` return as is.
+2. `batch, verdict := a.push_parse(a.ctx, signature, body, context.temp_allocator)`. `.Bad_Signature`, `.Bad_Payload` and `.Foreign_Account` return as the result of the same name, with no database write.
 3. Map each `Inbound` to a `domain.Channel_Push_Event`: `provider`, `event_key = update_key`, `kind` (same member name), `external_*`, `sender_display`, `body = text`, `provider_code`, `provider_time`, `received_at = now`.
-4. Empty batch (statuses other than `failed`, reactions, foreign entries) → `.Stored` with `events = 0` and no database write.
+4. Empty `Accepted` batch (statuses other than `failed`, reactions, system messages) → `.Stored` with `events = 0` and no database write.
 5. `inserted, err := iface.push_events_insert(s.repo, events)`; error → `.Store_Failed`.
 6. Log `bots: whatsapp webhook stored events=<n> new=<m>` and return `.Stored`.
 
@@ -1035,27 +1044,40 @@ The agent help line at `agent_mode.odin:1878` becomes `  channel     Read and an
 
 ### 11.6 Bot template (`src/templates/bot.md`)
 
-Lines 3, 6, 7, 9 and 18 change and two lines are added. The result of these lines is (verbatim):
+Capabilities ticket C4 (`task_18e90a78d844e62d`) replaces this file with the text in capabilities spec 9.1 (`docs/plans/bots-capabilities-spec.md`, merged at `90bd9f0b`). That text is already channel-neutral ("a chat app (Telegram or WhatsApp)", and it treats any "New … message for you" line as a user message). W4 depends on C4 and makes exactly these edits to the 9.1 text, in the "## How messages reach you" section. Every other line stays as C4 left it, including the encryption line ("Chat apps are not end-to-end encrypted: …"), which already covers WhatsApp.
+
+**Edit 1.** In the first bullet, replace
 
 ```markdown
-You are the user's personal Ninjy bot. The user talks to you from Telegram or WhatsApp.
+Run `./bin/ham-ctl channel read` to get every unanswered message.
+```
 
-## How messages reach you
-- A line "New Telegram message for you" means the user wrote to you on Telegram or WhatsApp. Run `./bin/ham-ctl channel read` to get the unanswered messages of one channel; each message has a `channel` field.
-- Answer with `./bin/ham-ctl channel send --text "<answer>"`. Your answer goes to the channel of the messages you read. Send one answer that covers all messages you read. Plain text only; links are fine.
-- If `pending_total` is larger than the number of messages you read, more messages are waiting: after answering, run `./bin/ham-ctl channel read` again and answer those too.
+with
+
+```markdown
+Run `./bin/ham-ctl channel read` to get the unanswered messages of one chat app at a time; each message has a `channel` field (`telegram` or `whatsapp`).
+```
+
+**Edit 2.** In the second bullet, replace
+
+```markdown
+Send one answer that covers all messages you read. Plain text only; links are fine.
+```
+
+with
+
+```markdown
+Send one answer that covers all messages you read; it goes to the chat app those messages came from. Plain text only; links are fine.
+```
+
+**Edit 3.** Insert these two bullets directly after the second bullet (before the "After a fresh start" bullet):
+
+```markdown
+- If `pending_total` is larger than the number of messages you read, messages from the other chat app are waiting: after answering, run `./bin/ham-ctl channel read` again and answer those too.
 - If the send result says `"held":true`, WhatsApp's 24-hour reply window had closed. Your answer is saved and reaches the user when they next write. Do not send it again.
-- After a fresh start, run `./bin/ham-ctl channel history --limit 20` once to see the recent conversation.
-- Never use `ham-ctl chat send` to answer channel messages.
 ```
 
-and line 18 becomes:
-
-```markdown
-- Telegram and WhatsApp messages can be read by the provider and the Ninjy hub: do not send secrets, tokens or file contents that look sensitive.
-```
-
-The capabilities track (`docs/plans/bots-capabilities-spec.md`, task `task_18e908df7921d5e8`) also edits this file, in the "What you can do" and "What you must not do" sections. W5 MUST NOT touch any other line. On a merge conflict, keep both changes.
+If C4's text differs from capabilities spec 9.1 in any of the three anchor sentences above (C4 may only fix flag spellings, capabilities spec 9.2), W4 applies the same edits to C4's sentences and names the difference in its handoff.
 
 ## 12. The 24-hour window (U2) (W4)
 
@@ -1433,7 +1455,7 @@ The recipient key is `to` without its leading `+`, or `recipient`. The window fo
 | Signature brute force or junk floods | Fixed-window limits: 1,200 POSTs/min overall, 20 bad signatures per IP per minute, then 429 for that IP (9.3). 4 MiB body cap (9.2). The hub's own 80 MiB request cap stays as an outer bound (`src/hub/transport/http/server.odin:19`) |
 | Endpoint discovery and handshake probing | 404 unless configured and the experiment is on for someone (D6). Handshake only with the exact verify token (constant time), at least 16 characters (14.2), 120 GETs/min overall. The challenge is echoed only when it matches `[0-9A-Za-z._-]{1,128}` and as `text/plain`, so it cannot carry markup |
 | Replayed or duplicated events (F3) | `event_key` unique in `channel_push_events` (dedupe before side effects) and `provider_update_key` unique in `channel_messages`. A replayed pairing message cannot pair twice: the code is single use and the event is dropped |
-| Events for another WhatsApp account or number on the same app | Skipped unless `entry.id` = configured business account id and `metadata.phone_number_id` = configured phone number id (8.4) |
+| Events for another WhatsApp account or number on the same app | Skipped unless `entry.id` = configured business account id and `metadata.phone_number_id` = configured phone number id (8.4); a payload dropped entirely for this reason logs `reason=foreign_account` once per window, so a misconfigured id is visible |
 | A stranger messages the business number | Only bound chats are stored; others get one fixed reply (`COPY_WA_NOT_CONNECTED`). Section 25, Q4 |
 | Wrong person in a bound chat | `external_user_id` must equal the binding's (inbound rule 7) |
 | Pairing code theft or guessing | Slice 1 rules: 128-bit code, SHA-256 at rest, single use, 10-minute TTL, earlier codes revoked (`pairing.odin:25-44`). The code travels inside WhatsApp, visible to Meta, which already sees every message |
@@ -1458,6 +1480,7 @@ bots: whatsapp intake stopped
 bots: whatsapp webhook rejected reason=bad_signature
 bots: whatsapp webhook rejected reason=rate_limited
 bots: whatsapp webhook ignored reason=bad_payload
+bots: whatsapp webhook ignored reason=foreign_account
 bots: whatsapp webhook stored events=<n> new=<m>
 bots: whatsapp intake commit failed
 bots: reply held binding=<chb_id> chunks=<n>
@@ -1467,7 +1490,7 @@ bots: held released binding=<chb_id> sent=<n> failed=<m> kept=<k>
 bots: mark read failed kind=<kind>
 ```
 
-`bots: whatsapp webhook rejected reason=rate_limited` is printed at most once per limiter window. No new metrics.
+`bots: whatsapp webhook rejected reason=rate_limited` and `bots: whatsapp webhook ignored reason=foreign_account` are each printed at most once per limiter window (`webhook_rate_log_once`, 9.3). The foreign-account line carries no ids; it means the configured business account id or phone number id does not match what Meta sends. No new metrics.
 
 ## 20. Experiment gating
 
@@ -1478,7 +1501,7 @@ bots: mark read failed kind=<kind>
 | Inbound handling, pairing, notices, held release, re-engagement, feedback | yes, per owner | slice 1 rules plus the gate checks in 12.4, 12.5 and 13 |
 | `/api/v1/bots/me/channels/whatsapp/*` | yes, per user | `bot_require_auth` + experiment check, like every bots route |
 | Settings > Bots WhatsApp card | yes | inside the Bots panel, which is hidden when the experiment is off |
-| Migration 210 | no | schema only; the new rows and columns are inert without the experiment |
+| Migration 211 | no | schema only; the new rows and columns are inert without the experiment |
 | Config keys and validation | no | inert; no thread or route without the experiment |
 | Adapter interface fields, Telegram edits | no | Telegram behaviour is identical (7.2) |
 | `src/templates/bot.md`, `ham-ctl channel` help | no | text read only by bot instances, which exist only when the experiment was on |
@@ -1493,20 +1516,20 @@ Odin tests run per package with a unique output: `odin test <pkg> -collection:od
 | Ticket | File | Tests |
 |---|---|---|
 | W1 | `src/hub/domain/bot_test.odin` | `test_channel_push_kind_text_roundtrip`, `test_channel_send_state_held_roundtrip` |
-| W1 | `src/hub/repository/sqlite/bot_repo_sqlite_test.odin` | `test_migration_210_carries_existing_rows` (run migrations with `stop_before = "210_bots_whatsapp.sql"`, insert one Telegram binding, pairing, inbound and outbound message, apply 210, assert every value and `''` new columns), `test_migration_210_allows_whatsapp_and_held`, `test_migration_210_skip_guard_marks_applied`, `test_push_events_insert_dedupes_event_key`, `test_push_batch_commit_is_atomic` (rows, touches and processed marks all or none), `test_push_batch_touch_keeps_latest_and_clears_reengage`, `test_binding_get_active_by_user`, `test_bindings_active_for_owner_orders_telegram_first`, `test_binding_set_reengage_only_active`, `test_messages_mark_replied_binding_is_scoped`, `test_messages_held_oldest_first_excludes_purged`, `test_purge_expires_held_rows`, `test_message_get_outbound_by_external`, `test_push_events_purge_processed_keeps_unprocessed` |
+| W1 | `src/hub/repository/sqlite/bot_repo_sqlite_test.odin` | `test_migration_211_carries_existing_rows` (run migrations with `stop_before = "211_bots_whatsapp.sql"`, insert one Telegram binding, pairing, inbound and outbound message, apply 210, assert every value and `''` new columns), `test_migration_211_allows_whatsapp_and_held`, `test_migration_211_skip_guard_marks_applied`, `test_push_events_insert_dedupes_event_key`, `test_push_batch_commit_is_atomic` (rows, touches and processed marks all or none), `test_push_batch_touch_keeps_latest_and_clears_reengage`, `test_binding_get_active_by_user`, `test_bindings_active_for_owner_orders_telegram_first`, `test_binding_set_reengage_only_active`, `test_messages_mark_replied_binding_is_scoped`, `test_messages_held_oldest_first_excludes_purged`, `test_purge_expires_held_rows`, `test_message_get_outbound_by_external`, `test_push_events_purge_processed_keeps_unprocessed` |
 | W1 | `src/hub/app/config_bind_test.odin` | `test_whatsapp_config_state` (one case per row of 14.2) |
 | W1 | `src/hub/whatsapp_env_test.odin` (package `main`) | `test_apply_whatsapp_env_inline_file_and_trim`, `test_whatsapp_flags_override_env` |
 | W2 | `src/hub/service/bots/pairing_test.odin` | `test_whatsapp_pairing_link_and_text`, `test_whatsapp_pairing_rules_use_whatsapp_copy` (each row of slice 1 spec 9.6), `test_pairing_sets_last_inbound_at`, `test_inbound_lookup_falls_back_to_user_id`, `test_disconnect_is_provider_scoped`, `test_delete_bot_disconnects_both_providers`, `test_notice_goes_to_origin_channel`, `test_telegram_inbound_rules_unchanged` (re-runs every slice 1 inbound row through the generalized procs) |
 | W2 | `src/hub/transport/http/bot_handlers_test.odin` | `test_whatsapp_pairing_route_not_configured`, `test_whatsapp_pairing_route_returns_text_and_phone`, `test_whatsapp_disconnect_route`, `test_bot_view_whatsapp_block`, `test_telegram_pairing_response_unchanged` |
-| W3 | `src/hub/service/channel/whatsapp_test.odin` (starts `tools/fake_whatsapp/server.mjs` like `telegram_test.odin:19-37`) | `test_whatsapp_push_parse_text_fixture` (8.6 verbatim), `test_whatsapp_signature_rules` (missing header, wrong prefix, short hex, uppercase hex accepted, wrong secret, body changed by one byte), `test_whatsapp_signature_over_raw_escaped_unicode`, `test_whatsapp_push_parse_kinds` (each row of 8.4, plus a failed status, a delivered status skipped, `value.errors` skipped), `test_whatsapp_skips_foreign_account_and_number`, `test_whatsapp_bsuid_only_message` (`omit_from`), `test_whatsapp_identity_and_pairing_url`, `test_whatsapp_send_text_and_address_forms` (`to` with `+`; `recipient` for a BSUID), `test_whatsapp_mark_read_and_react_bodies`, `test_whatsapp_reengage_template_body`, `test_whatsapp_error_mapping` (each row of 8.5), `test_whatsapp_failure_kind_matches_request_mapping`, `test_whatsapp_secrets_never_in_error_message`, `test_whatsapp_uses_pinned_graph_version` |
+| W3 | `src/hub/service/channel/whatsapp_test.odin` (starts `tools/fake_whatsapp/server.mjs` like `telegram_test.odin:19-37`) | `test_whatsapp_push_parse_text_fixture` (8.6 verbatim), `test_whatsapp_signature_rules` (missing header, wrong prefix, short hex, uppercase hex accepted, wrong secret, body changed by one byte), `test_whatsapp_signature_over_raw_escaped_unicode`, `test_whatsapp_push_parse_kinds` (each row of 8.4, plus a failed status, a delivered status skipped, `value.errors` skipped), `test_whatsapp_foreign_account_and_number_verdicts` (foreign entry only → `Foreign_Account`; foreign phone number only → `Foreign_Account`; foreign entry plus a configured-account message → `Accepted` with one event; a status-only payload → `Accepted`, empty), `test_whatsapp_bsuid_only_message` (`omit_from`), `test_whatsapp_identity_and_pairing_url`, `test_whatsapp_send_text_and_address_forms` (`to` with `+`; `recipient` for a BSUID), `test_whatsapp_mark_read_and_react_bodies`, `test_whatsapp_reengage_template_body`, `test_whatsapp_error_mapping` (each row of 8.5), `test_whatsapp_failure_kind_matches_request_mapping`, `test_whatsapp_secrets_never_in_error_message`, `test_whatsapp_uses_pinned_graph_version` |
 | W3 | `tools/fake_whatsapp/server_test.mjs` | the list in 17.2 |
 | W4 | `src/hub/service/bots/routing_test.odin` | `test_read_binding_rules` (each rule of 11.1), `test_reply_binding_rules` (each rule), `test_send_marks_replied_only_target_binding`, `test_other_channel_stays_pending_and_redelivers` (R3 opens a new delivery), `test_pending_total_counts_all_channels` |
 | W4 | `src/hub/service/bots/window_test.odin` | `test_window_closed_margin`, `test_send_holds_when_window_closed`, `test_send_holds_rest_on_window_closed_error`, `test_notice_not_held_when_window_closed`, `test_reengage_once_per_closed_window`, `test_reengage_template_unavailable_sets_error`, `test_reengage_other_error_sets_send_failed`, `test_release_held_in_order_and_stops_on_window_closed`, `test_delivery_failed_window_marks_held_and_reengages`, `test_delivery_failed_other_marks_failed`, `test_telegram_never_holds` |
 | W4 | `src/hub/service/bots/feedback_test.odin` | `test_mark_read_newest_then_react`, `test_mark_read_transient_skips_reactions`, `test_feedback_budget_shared`, `test_telegram_feedback_unchanged` |
 | W4 | `src/hub/transport/http/bot_agent_handlers_test.odin` | `test_channel_read_returns_channel_field`, `test_channel_send_reply_goes_to_origin`, `test_channel_send_held_response`, `test_channel_history_channel_field`, `test_channel_routes_not_paired_without_bindings` |
 | W4 | `src/ctl/channel_cmds_test.odin` | update `test_channel_help_text` (`channel_cmds_test.odin:56`) to the 11.5 text |
-| W4 | `src/hub/domain/builtin_templates_test.odin` | `test_bot_template_mentions_whatsapp_and_held` |
-| W5 | `src/hub/transport/http/bot_webhook_handlers_test.odin` | `test_webhook_404_when_not_configured_or_experiment_off`, `test_webhook_get_rules` (each GET row of 9.4), `test_webhook_post_rules` (each POST row), `test_webhook_bad_signature_ip_limit`, `test_webhook_global_rate_limit`, `test_webhook_store_failure_returns_503`, `test_webhook_stores_before_200` |
+| W4 | `src/hub/domain/builtin_templates_test.odin` | `test_bot_template_mentions_whatsapp_and_held` (the loaded `tmpl_bot` text contains the three replacement or inserted sentences of 11.6 verbatim, no longer contains "to get every unanswered message", and still contains capabilities spec 9.1's "## Confirm first" heading) |
+| W5 | `src/hub/transport/http/bot_webhook_handlers_test.odin` | `test_webhook_404_when_not_configured_or_experiment_off`, `test_webhook_get_rules` (each GET row of 9.4), `test_webhook_post_rules` (each POST row), `test_webhook_bad_signature_ip_limit`, `test_webhook_global_rate_limit`, `test_webhook_store_failure_returns_503`, `test_webhook_foreign_account_logged_once_per_window` (two foreign payloads in one window → both 200, one log line; a third after the window rolls over → a second line), `test_webhook_stores_before_200` |
 | W5 | `src/hub/service/bots/push_test.odin` | `test_push_receive_dedupes_redelivery`, `test_intake_processes_once_and_blanks_body`, `test_intake_commit_failure_retries_same_events`, `test_intake_release_before_side_effects`, `test_intake_touches_last_inbound_at`, `test_runtime_starts_intake_only_with_whatsapp_and_experiment`, `test_intake_signal_wakes_promptly`, `test_bots_package_does_not_import_transport` (existing test, `gate_test.odin`, must still pass) |
 | W6 | `tests/ui_bots_test.ts` | `whatsAppCardState` (four states), `whatsAppQrDataUrl` returns a `data:image/gif;base64,` URL, the 16.2 copy for each reminder value, Settings copy updates |
 
@@ -1550,17 +1573,25 @@ Odin tests run per package with a unique output: `odin test <pkg> -collection:od
 
 - Commit on the task branch with subjects in the repo style (`Hub: …`, `UI: …`, `ctl: …`, `tools: …`, `docs: …`). Never push.
 - Report the exact test commands and outcomes.
-- **Never edit** (any ticket): `src/bridge/**`, `src/hub/service/bots/delivery.odin`, `src/hub/service/bots/placement.odin`, `src/contracts/bot_wire.odin`, `src/lib/vault/**`, `src/hub/service/taskv2/**`, `src/prompts/skills/**`, migrations other than the new `210_bots_whatsapp.sql`, `tests/e2e/bots_slice1_e2e.mjs`.
+- **Never edit** (any ticket): `src/bridge/**`, `src/hub/service/bots/delivery.odin`, `src/hub/service/bots/placement.odin`, `src/contracts/bot_wire.odin`, `src/lib/vault/**`, `src/hub/service/taskv2/**`, `src/prompts/skills/**`, migrations other than the new `211_bots_whatsapp.sql` (C1 owns `210_agent_writes.sql`), `tests/e2e/bots_slice1_e2e.mjs`.
 - `src/hub/service/*` MUST NOT import `src/hub/transport/http` (`test_bots_package_does_not_import_transport` guards `bots`). Provider calls never run inside a SQLite write transaction or under `Bots_Service.mutex`.
+- **Line references and the capabilities track.** Every `path:line` in this spec is as of `d3c9ad2b`. W tickets start from `feat/bots` after capabilities tickets C1–C4 are merged (capabilities spec 13), so lines have moved: locate code by the symbol named next to each reference, never by line number alone. Files both tracks edit, where each W ticket MUST keep the capabilities changes intact:
+  - `src/hub/app/wiring.odin` (C1 adds the agent-writes repository, handler fields and a `/api/v1/me/*` route);
+  - `src/hub/repository/sqlite/migrations.odin` (C1 registers `210_agent_writes.sql`; W1 registers `211` after it);
+  - `src/ctl/agent_mode.odin` (C3 adds memory and agents verbs and help; W4 changes only the `channel` help line);
+  - `src/templates/bot.md` (C4 replaces it; W4 makes the three edits of 11.6);
+  - `src/ui/api/endpoints/bots.ts` (C7 adds `getAgentWrites`; W2 adds the WhatsApp types and two endpoints);
+  - `src/ui/components/settings/BotsPanel.tsx` (C7 renders `BotAgentWritesSection` after `BotAdvancedSection`; W6 renders the WhatsApp card right after the Telegram card; both lines stay);
+  - `package.json` (C7 adds a test file to the `test` script; W6 adds the `qrcode-generator` dependency).
 
 ### W1 — Hub foundation: migration, domain, repository, adapter types, config
 
 **Implements:** 5, 6, 7.1, 7.2 (only `inbound_destroy_batch`), 14.1, 14.2.
-**Files:** `src/hub/repository/sqlite/migrations/210_bots_whatsapp.sql`, `src/hub/repository/sqlite/migrations.odin`, `src/hub/domain/bot.odin`, `src/hub/domain/bot_test.odin`, `src/hub/repository/iface/bot_repo.odin`, `src/hub/repository/sqlite/bot_repo_sqlite.odin`, `src/hub/repository/sqlite/bot_repo_sqlite_test.odin`, `src/hub/service/channel/adapter.odin`, `src/hub/service/channel/telegram.odin` (only `inbound_destroy_batch`), `src/hub/app/config_bind.odin`, `src/hub/app/config_bind_test.odin`, `src/hub/main.odin`, `src/hub/whatsapp_env_test.odin`. Exception to the list below: any `switch` over `Channel_Send_State` or `Channel_Error_Kind`, in any file, that stops compiling gets the new cases and nothing else.
+**Files:** `src/hub/repository/sqlite/migrations/211_bots_whatsapp.sql`, `src/hub/repository/sqlite/migrations.odin`, `src/hub/domain/bot.odin`, `src/hub/domain/bot_test.odin`, `src/hub/repository/iface/bot_repo.odin`, `src/hub/repository/sqlite/bot_repo_sqlite.odin`, `src/hub/repository/sqlite/bot_repo_sqlite_test.odin`, `src/hub/service/channel/adapter.odin`, `src/hub/service/channel/telegram.odin` (only `inbound_destroy_batch`), `src/hub/app/config_bind.odin`, `src/hub/app/config_bind_test.odin`, `src/hub/main.odin`, `src/hub/whatsapp_env_test.odin`. Exception to the list below: any `switch` over `Channel_Send_State` or `Channel_Error_Kind`, in any file, that stops compiling gets the new cases and nothing else.
 **Do not touch:** `src/hub/service/bots/**`, `src/hub/transport/**`, `src/hub/app/wiring.odin`, `src/ui/**`, `tools/**`.
 **Tests:** W1 rows of 21.1.
 **Done when:** `odin build src/hub -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/w1-hub` succeeds; the domain, sqlite, app and main test packages pass; on a copy of a slice-1 database (made by the migration test) every row survives.
-**Depends on:** none.
+**Depends on:** C1 (`task_18e90a78be270790`, owner of migration 210).
 
 ### W2 — Provider-neutral bots service: inbound, pairing, disconnect, notices, user routes and view
 
@@ -1583,11 +1614,11 @@ Odin tests run per package with a unique output: `odin test <pkg> -collection:od
 ### W4 — Reply routing, 24-hour window, read feedback, agent routes, bot-facing text
 
 **Implements:** 11, 12, 13.
-**Files:** `src/hub/service/bots/{routing.odin, window.odin, channel_send.odin, feedback.odin, inbound.odin (only bots_channel_replied), service.odin (only the `reengage_mutex` field), supervisor.odin (only the retention call of 12.7)}` and their tests, `src/hub/transport/http/bot_agent_handlers.odin`, `src/hub/transport/http/bot_agent_handlers_test.odin`, `src/ctl/channel_cmds.odin`, `src/ctl/channel_cmds_test.odin`, `src/ctl/agent_mode.odin` (only line 1878), `src/templates/bot.md` (only the lines named in 11.6), `src/hub/domain/builtin_templates_test.odin`.
-**Do not touch:** `pairing.odin` rules, `poller.odin`, `runtime.odin`, `src/hub/service/channel/**`, `src/ui/**`, any other line of `bot.md`.
+**Files:** `src/hub/service/bots/{routing.odin, window.odin, channel_send.odin, feedback.odin, inbound.odin (only bots_channel_replied), service.odin (only the `reengage_mutex` field), supervisor.odin (only the retention call of 12.7)}` and their tests, `src/hub/transport/http/bot_agent_handlers.odin`, `src/hub/transport/http/bot_agent_handlers_test.odin`, `src/ctl/channel_cmds.odin`, `src/ctl/channel_cmds_test.odin`, `src/ctl/agent_mode.odin` (only line 1878), `src/templates/bot.md` (only the three edits of 11.6), `src/hub/domain/builtin_templates_test.odin`.
+**Do not touch:** `pairing.odin` rules, `poller.odin`, `runtime.odin`, `src/hub/service/channel/**`, `src/ui/**`, any other line of `bot.md` (C4 owns the file's text).
 **Tests:** W4 rows of 21.1.
 **Done when:** `odin test` for `src/hub/service/bots`, `src/hub/transport/http`, `src/ctl` and `src/hub/domain` pass; the bridge relay still sees reads (an existing bridge test is not needed: the `messages` key is unchanged).
-**Depends on:** W2.
+**Depends on:** W2, C4 (`task_18e90a78d844e62d`, owner of the template text).
 
 ### W5 — Webhook route, push receive, intake thread, runtime, wiring, `SELF_HOSTING.md`
 
@@ -1635,6 +1666,7 @@ Odin tests run per package with a unique output: `odin test <pkg> -collection:od
 3. Pin the hub to the `feat/bots` build containing W1–W6 with `offTag = true` (chain summary "Deploy pitfalls"). No bridge swap is needed (D7).
 4. Deploy; check the hub log for `bots: whatsapp configured phone_number_id=…` and, with the `bots` experiment on for the operator, `bots: whatsapp intake started`. A `bots: whatsapp disabled: …` line means a secret is missing or malformed (14.2).
 5. Check the reverse proxy forwards the path: `curl -s -o /dev/null -w '%{http_code}' 'https://hub.mundus.in/api/v1/channels/whatsapp/webhook?hub.mode=subscribe&hub.challenge=1&hub.verify_token=wrong'` prints `403`.
+6. After M9's first "hi": the hub log MUST NOT contain `bots: whatsapp webhook ignored reason=foreign_account`. If it does, the stored `mundus_whatsapp_business_account_id` or `mundus_whatsapp_phone_number_id` does not match the app (M1): correct the sops value, redeploy, repeat M9.
 
 **Meta dashboard steps for the operator** (the agent lists them in the handoff and waits for the user where marked):
 
@@ -1648,20 +1680,20 @@ Odin tests run per package with a unique output: `odin test <pkg> -collection:od
 | M6 | (user) With the hub deployed and the experiment on: WhatsApp > Configuration: Callback URL `https://hub.mundus.in/api/v1/channels/whatsapp/webhook`, Verify token = the stored verify token, **Verify and save**; then subscribe the `messages` webhook field |
 | M7 | Subscribe the app to the account (F24), from a shell with the token in a file, never echoed: `curl -s -X POST -H "Authorization: Bearer $(cat <token file>)" https://graph.facebook.com/v27.0/<WABA_ID>/subscribed_apps` → `{"success":true}` |
 | M8 | If inbound messages do not arrive while the app is in Development mode (F24), switch the app to Live (needs a privacy policy URL) |
-| M9 | (user) From a recipient phone: Settings > Bots > Connect WhatsApp, open the link or scan the QR, send the prefilled message, get `COPY_WA_PAIRED`; send "hi", see 👀, blue ticks and a reply; send "disconnect" and see `COPY_DISCONNECTED`; reconnect |
+| M9 | (user) From a recipient phone (then run nix step 6): Settings > Bots > Connect WhatsApp, open the link or scan the QR, send the prefilled message, get `COPY_WA_PAIRED`; send "hi", see 👀, blue ticks and a reply; send "disconnect" and see `COPY_DISCONNECTED`; reconnect |
 | M10 | When M4 is approved: send the template once to the operator's number with the curl body of 8.2 (template) to confirm `{"messages":[{"id":…}]}`; the 24-hour path itself is covered by W7 |
 
-**Done when:** M1–M9 pass on staging, with the hub log lines and the user's confirmation recorded in the handoff; M10 recorded when the template is approved (not blocking).
+**Done when:** M1–M9 and nix step 6 pass on staging, with the hub log lines and the user's confirmation recorded in the handoff; M10 recorded when the template is approved (not blocking).
 **Depends on:** W7.
 
 ### Ticket graph
 
 | Ticket | Depends on | Can run in parallel with |
 |---|---|---|
-| W1 | — | — |
+| W1 | C1 (all W tickets start after C1–C4 are merged) | — |
 | W2 | W1 | W3 |
 | W3 | W1 | W2, W4, W6 |
-| W4 | W2 | W3, W6 |
+| W4 | W2, C4 | W3, W6 |
 | W5 | W2, W3, W4 | W6 |
 | W6 | W2 | W3, W4, W5 |
 | W7 | W5, W6 | — |
@@ -1690,7 +1722,7 @@ Odin tests run per package with a unique output: `odin test <pkg> -collection:od
 
 | # | Assumption | Verified by | Fallback if false |
 |---|---|---|---|
-| A1 | `channel_bindings`, `channel_pairings` and `channel_messages` have no foreign keys, triggers or views pointing at them on staging (true in the repository: only `209_bots.sql` defines them) | W1 (`SELECT sql FROM sqlite_master WHERE sql LIKE '%channel_%'` on a migrated test database) | Drop and recreate the dependent object inside the 210 transaction |
+| A1 | `channel_bindings`, `channel_pairings` and `channel_messages` have no foreign keys, triggers or views pointing at them on staging (true in the repository: only `209_bots.sql` defines them) | W1 (`SELECT sql FROM sqlite_master WHERE sql LIKE '%channel_%'` on a migrated test database) | Drop and recreate the dependent object inside the 211 transaction |
 | A2 | Meta sends `X-Hub-Signature-256` on every POST, including status webhooks (F2 states it for POSTs generally) | W8 (staging pairing works) | none needed: unsigned POSTs are refused, which is the safe outcome; report to the coordinator |
 | A3 | `131047` can arrive synchronously or asynchronously (F15) | W7 covers both via the fake; W8 cannot force it | both paths are built; nothing to change |
 | A4 | The test number limits recipients to verified numbers (F23) | W8 M5 | none needed |
@@ -1707,7 +1739,7 @@ Verified during spec writing (no longer assumptions): `header_value` matches hea
 
 | # | Question | Default built |
 |---|---|---|
-| Q1 | The bridge notice says "New Telegram message for you" for WhatsApp messages too. Change it to "New message for you" in a later bridge release? | No bridge change now; the template explains it (11.6) |
+| Q1 | The bridge notice says "New Telegram message for you" for WhatsApp messages too. Change it to "New message for you" in a later bridge release? | No bridge change now; capabilities spec 9.1's template already treats any "New … message for you" line as a user message (11.6) |
 | Q2 | Graph API v27.0 is two weeks old. Pin v26.0 instead? | v27.0, matching Meta's current examples (F20) |
 | Q3 | Add Meta webhook mTLS (client certificate `client.webhooks.fbclientcerts.com`) at the reverse proxy? | No; HMAC plus rate limits (18) |
 | Q4 | Rate-limit `COPY_WA_NOT_CONNECTED` per chat for strangers writing to a future public number? | No throttle (the staging test number only reaches allow-listed numbers) |
