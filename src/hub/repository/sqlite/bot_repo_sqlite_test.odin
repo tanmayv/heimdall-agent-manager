@@ -1,6 +1,7 @@
 package sqlite
 
 import "core:testing"
+import "core:fmt"
 import "core:strings"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
@@ -897,4 +898,286 @@ test_push_events_purge_processed_keeps_unprocessed :: proc(t: ^testing.T) {
 	rows, read_err := iface.push_events_pending(&repo, "whatsapp", 10)
 	defer w1_destroy_events(rows); bot_test_expect_ok(t, read_err)
 	if testing.expect_value(t, len(rows), 1) do testing.expect_value(t, rows[0].event_key, "pending")
+}
+
+// D1 fixtures use borrowed input metadata; repository outputs own all strings.
+d1_message :: proc(id := "chm_media", update := "media:key", attachment_id := "cha_media") -> domain.Channel_Message {
+	msg := bot_test_message(id, update)
+	msg.attachment = {
+		attachment_id = attachment_id, kind = .Document, file_ref = "provider-ref",
+		name = "report.pdf", mime = "application/pdf", size_bytes = 1234, state = .Pending,
+		// The repository must replace identity and timestamps from the message.
+		message_id = "wrong", binding_id = "wrong", owner_user_id = "wrong",
+		bot_id = "wrong", direction = .Outbound, created_at = "wrong", updated_at = "wrong",
+	}
+	return msg
+}
+d1_destroy_attachments :: proc(rows: []domain.Channel_Attachment) {
+	for &row in rows do domain.channel_attachment_destroy(&row)
+	delete(rows)
+}
+d1_insert_inbound :: proc(t: ^testing.T, repo: ^iface.Bot_Repository, msg: domain.Channel_Message) {
+	ids, err := iface.inbound_store_batch(repo, "telegram", {msg}, "next", "now")
+	defer w1_destroy_ids(ids)
+	bot_test_expect_ok(t, err)
+	testing.expect_value(t, len(ids), 1)
+}
+
+@(test)
+test_migration_212_carries_push_events :: proc(t: ^testing.T) {
+	conn, opened, _ := open(":memory:")
+	if !testing.expect(t, opened) do return
+	defer close(&conn)
+	ok, err := run_migrations(&conn, stop_before = "212_bots_media.sql")
+	if !testing.expect(t, ok) || !bot_test_expect_ok(t, err) do return
+	// A1: no dependent views/triggers or foreign keys reference the rebuilt table.
+	w1_expect_scalar(t, &conn, "SELECT count(*) FROM sqlite_master WHERE type IN ('trigger','view') AND sql LIKE '%channel_push_events%';", "0")
+	stmt, scan_err := bot_repo_prepare(&conn, "SELECT name FROM sqlite_master WHERE type='table';", nil)
+	if !bot_test_expect_ok(t, scan_err) do return
+	for sqlite3_step(stmt) == SQLITE_ROW {
+		name := column_text_unowned(stmt, 0)
+		fk, fk_err := bot_repo_prepare(&conn, fmt.tprintf("PRAGMA foreign_key_list('%s');", name), nil)
+		if !bot_test_expect_ok(t, fk_err) do continue
+		for sqlite3_step(fk) == SQLITE_ROW do testing.expect(t, column_text_unowned(fk, 2) != "channel_push_events")
+		sqlite3_finalize(fk)
+	}
+	sqlite3_finalize(stmt)
+	testing.expect(t, exec(&conn, "INSERT INTO channel_push_events VALUES (7,'whatsapp','pending','text','chat-a','user-a','msg-a','Sender A','body-a',42,'time-a','received-a',''), (41,'whatsapp','processed','delivery_failed','chat-b','user-b','msg-b','Sender B','',131047,'time-b','received-b','processed-b');"))
+	// Keep a SQL copy containing all old columns to compare every value and seq.
+	testing.expect(t, exec(&conn, "CREATE TEMP TABLE d1_before AS SELECT * FROM channel_push_events;"))
+	ok, err = run_migrations(&conn)
+	testing.expect(t, ok); bot_test_expect_ok(t, err)
+	columns := "seq,provider,event_key,kind,external_chat_id,external_user_id,external_message_id,sender_display,body,provider_code,provider_time,received_at,processed_at"
+	w1_expect_scalar(t, &conn, fmt.tprintf("SELECT count(*) FROM (SELECT %s FROM channel_push_events EXCEPT SELECT * FROM d1_before);", columns), "0")
+	w1_expect_scalar(t, &conn, fmt.tprintf("SELECT count(*) FROM (SELECT * FROM d1_before EXCEPT SELECT %s FROM channel_push_events);", columns), "0")
+	w1_expect_scalar(t, &conn, "SELECT count(*) FROM channel_push_events WHERE media_kind='' AND media_ref='' AND media_name='' AND media_mime='' AND media_size=0;", "2")
+	testing.expect(t, exec(&conn, "INSERT INTO channel_push_events (provider,event_key,kind,external_chat_id,received_at) VALUES ('whatsapp','new','text','chat','now');"))
+	w1_expect_scalar(t, &conn, "SELECT count(*) FROM channel_push_events WHERE event_key='new' AND seq>41;", "1")
+}
+
+@(test)
+test_migration_212_allows_media_kind :: proc(t: ^testing.T) {
+	conn, ok := tmpl_clone_migrated(t); if !ok do return
+	defer close(&conn)
+	testing.expect(t, exec(&conn, "INSERT INTO channel_push_events (provider,event_key,kind,external_chat_id,received_at,media_kind) VALUES ('whatsapp','media','media','chat','now','image');"))
+	testing.expect(t, !exec(&conn, "UPDATE channel_push_events SET media_kind='video';"))
+	testing.expect(t, !exec(&conn, "UPDATE channel_push_events SET kind='other';"))
+}
+
+@(test)
+test_migration_212_skip_guard_marks_applied :: proc(t: ^testing.T) {
+	conn, ok := tmpl_clone_migrated(t); if !ok do return
+	defer close(&conn)
+	impl: Bot_Repo_SQLite; repo := new_bot_repository(&impl, &conn)
+	d1_insert_inbound(t, &repo, d1_message())
+	testing.expect(t, exec(&conn, "DELETE FROM schema_migrations WHERE version='212_bots_media.sql';"))
+	applied, err := run_migrations(&conn)
+	testing.expect(t, applied); bot_test_expect_ok(t, err)
+	testing.expect(t, migration_applied(&conn, "212_bots_media.sql"))
+	w1_expect_scalar(t, &conn, "SELECT count(*) FROM channel_attachments;", "1")
+}
+
+@(test)
+test_inbound_store_batch_writes_attachment_once :: proc(t: ^testing.T) {
+	conn, ok := tmpl_clone_migrated(t); if !ok do return
+	defer close(&conn)
+	impl: Bot_Repo_SQLite; repo := new_bot_repository(&impl, &conn)
+	d1_insert_inbound(t, &repo, d1_message())
+	ids, err := iface.inbound_store_batch(&repo, "telegram", {d1_message("duplicate", "media:key", "cha_duplicate")}, "again", "later")
+	defer w1_destroy_ids(ids)
+	bot_test_expect_ok(t, err); testing.expect_value(t, len(ids), 0)
+	a, found, read_err := iface.attachment_get(&repo, "cha_media")
+	defer domain.channel_attachment_destroy(&a)
+	bot_test_expect_ok(t, read_err); testing.expect(t, found)
+	testing.expect_value(t, a.message_id, "chm_media")
+	testing.expect_value(t, a.binding_id, "chb_a")
+	testing.expect_value(t, a.owner_user_id, "alice")
+	testing.expect_value(t, a.bot_id, "bot_a")
+	testing.expect_value(t, a.direction, domain.Channel_Direction.Inbound)
+	testing.expect_value(t, a.created_at, "2026-11-17T00:00:00Z")
+	testing.expect_value(t, a.updated_at, a.created_at)
+	testing.expect_value(t, a.file_ref, "provider-ref")
+	testing.expect_value(t, a.name, "report.pdf")
+	testing.expect_value(t, a.mime, "application/pdf")
+	testing.expect_value(t, a.size_bytes, i64(1234))
+	w1_expect_scalar(t, &conn, "SELECT count(*) FROM channel_attachments;", "1")
+	// Attachment failure rolls back both messages and the cursor.
+	bad := d1_message("bad", "new-key", "cha_media")
+	failed, failed_err := iface.inbound_store_batch(&repo, "telegram", {bad}, "bad-cursor", "later")
+	defer w1_destroy_ids(failed)
+	testing.expect(t, failed_err.code != .None)
+	w1_expect_scalar(t, &conn, "SELECT count(*) FROM channel_messages;", "1")
+	w1_expect_scalar(t, &conn, "SELECT cursor FROM channel_cursors;", "again")
+}
+
+@(test)
+test_push_batch_commit_writes_attachment_and_blanks_media_ref :: proc(t: ^testing.T) {
+	conn, ok := tmpl_clone_migrated(t); if !ok do return
+	defer close(&conn)
+	impl: Bot_Repo_SQLite; repo := new_bot_repository(&impl, &conn)
+	event := w1_event(); event.kind = .Media; event.media_kind = .Document
+	event.media_ref = "provider-ref"; event.media_name = "report.pdf"
+	event.media_mime = "application/pdf"; event.media_size = 1234
+	_, err := iface.push_events_insert(&repo, {event}); bot_test_expect_ok(t, err)
+	events, read_err := iface.push_events_pending(&repo, "whatsapp", 10)
+	defer w1_destroy_events(events); bot_test_expect_ok(t, read_err)
+	if !testing.expect_value(t, len(events), 1) do return
+	msg := d1_message()
+	msg.direction = .Outbound // push writes are always persisted as inbound.
+	// Failure in attachment insert must leave the push event pending.
+	testing.expect(t, exec(&conn, "CREATE TRIGGER d1_reject BEFORE INSERT ON channel_attachments BEGIN SELECT RAISE(ABORT,'reject'); END;"))
+	failed, failed_err := iface.push_batch_commit(&repo, {msg}, nil, {events[0].seq}, "processed")
+	w1_destroy_ids(failed); testing.expect(t, failed_err.code != .None)
+	w1_expect_scalar(t, &conn, "SELECT count(*) FROM channel_messages;", "0")
+	w1_expect_scalar(t, &conn, "SELECT media_ref FROM channel_push_events WHERE processed_at='';", "provider-ref")
+	testing.expect(t, exec(&conn, "DROP TRIGGER d1_reject;"))
+	ids, write_err := iface.push_batch_commit(&repo, {msg}, nil, {events[0].seq}, "processed")
+	defer w1_destroy_ids(ids); bot_test_expect_ok(t, write_err)
+	testing.expect_value(t, len(ids), 1)
+	duplicate, duplicate_err := iface.push_batch_commit(&repo, {msg}, nil, {events[0].seq}, "again")
+	defer w1_destroy_ids(duplicate); bot_test_expect_ok(t, duplicate_err)
+	testing.expect_value(t, len(duplicate), 0)
+	w1_expect_scalar(t, &conn, "SELECT count(*) FROM channel_attachments;", "1")
+	w1_expect_scalar(t, &conn, "SELECT direction FROM channel_attachments;", "inbound")
+	w1_expect_scalar(t, &conn, "SELECT count(*) FROM channel_push_events WHERE processed_at='processed' AND body='' AND media_ref='' AND media_name='' AND media_mime='application/pdf' AND media_size=1234;", "1")
+}
+
+@(test)
+test_message_insert_outbound_with_attachment_is_atomic :: proc(t: ^testing.T) {
+	conn, ok := tmpl_clone_migrated(t); if !ok do return
+	defer close(&conn)
+	impl: Bot_Repo_SQLite; repo := new_bot_repository(&impl, &conn)
+	msg := d1_message(); msg.direction = .Outbound; msg.attachment.state = .Native
+	bot_test_expect_ok(t, iface.message_insert_outbound(&repo, msg))
+	// Exercise nested savepoints; an attachment conflict cannot undo outer work.
+	testing.expect(t, exec(&conn, "BEGIN IMMEDIATE;"))
+	bad := d1_message("bad", "bad-key"); bad.direction = .Outbound
+	testing.expect(t, iface.message_insert_outbound(&repo, bad).code != .None)
+	w1_expect_scalar(t, &conn, "SELECT count(*) FROM channel_messages WHERE message_id='bad';", "0")
+	w1_expect_scalar(t, &conn, "SELECT direction FROM channel_attachments;", "outbound")
+	good := d1_message("nested", "nested-key", "cha_nested"); good.direction = .Outbound
+	bot_test_expect_ok(t, iface.message_insert_outbound(&repo, good))
+	testing.expect(t, exec(&conn, "ROLLBACK;"))
+	w1_expect_scalar(t, &conn, "SELECT count(*) FROM channel_messages;", "1")
+	w1_expect_scalar(t, &conn, "SELECT count(*) FROM channel_attachments;", "1")
+	bad.message_id = "bad-outside"; bad.provider_update_key = "bad-outside"
+	testing.expect(t, iface.message_insert_outbound(&repo, bad).code != .None)
+	w1_expect_scalar(t, &conn, "SELECT count(*) FROM channel_messages;", "1")
+}
+
+@(test)
+test_attachments_for_messages_chunks_over_500 :: proc(t: ^testing.T) {
+	// Empty input returns before even accessing a connection.
+	empty, empty_err := attachments_for_messages_sqlite(nil, nil)
+	defer d1_destroy_attachments(empty); bot_test_expect_ok(t, empty_err)
+	conn, ok := tmpl_clone_migrated(t); if !ok do return
+	defer close(&conn)
+	impl: Bot_Repo_SQLite; repo := new_bot_repository(&impl, &conn)
+	messages := make([]domain.Channel_Message, 1003, context.temp_allocator)
+	ids := make([]string, len(messages), context.temp_allocator)
+	for &msg, i in messages {
+		ids[i] = fmt.tprintf("chm_%d", i)
+		msg = d1_message(ids[i], fmt.tprintf("key_%d", i), fmt.tprintf("cha_%d", i))
+	}
+	inserted, err := iface.inbound_store_batch(&repo, "telegram", messages, "cursor", "now")
+	defer w1_destroy_ids(inserted); bot_test_expect_ok(t, err)
+	rows, read_err := iface.attachments_for_messages(&repo, ids)
+	defer d1_destroy_attachments(rows); bot_test_expect_ok(t, read_err)
+	testing.expect_value(t, len(rows), 1003)
+	seen := make(map[string]bool, context.temp_allocator)
+	for row in rows {
+		testing.expect(t, !seen[row.message_id])
+		seen[row.message_id] = true
+	}
+	for id in ids do testing.expect(t, seen[id])
+}
+
+@(test)
+test_attachment_store_artifact_first_writer_wins :: proc(t: ^testing.T) {
+	conn, ok := tmpl_clone_migrated(t); if !ok do return
+	defer close(&conn)
+	impl: Bot_Repo_SQLite; repo := new_bot_repository(&impl, &conn)
+	d1_insert_inbound(t, &repo, d1_message())
+	first, err := iface.attachment_store_artifact(&repo, "cha_media", "art_first", "first")
+	defer delete(first); bot_test_expect_ok(t, err)
+	second, second_err := iface.attachment_store_artifact(&repo, "cha_media", "art_second", "second")
+	defer delete(second); bot_test_expect_ok(t, second_err)
+	testing.expect_value(t, first, "art_first"); testing.expect_value(t, second, first)
+	a, found, read_err := iface.attachment_get(&repo, "cha_media")
+	defer domain.channel_attachment_destroy(&a); bot_test_expect_ok(t, read_err)
+	testing.expect(t, found); testing.expect_value(t, a.state, domain.Channel_Attachment_State.Stored)
+	testing.expect_value(t, a.updated_at, "first")
+	missing, missing_err := iface.attachment_store_artifact(&repo, "missing", "art", "now")
+	defer delete(missing); bot_test_expect_ok(t, missing_err); testing.expect_value(t, missing, "")
+	out := d1_message("out", "", "cha_out"); out.direction = .Outbound; out.attachment.state = .Native
+	bot_test_expect_ok(t, iface.message_insert_outbound(&repo, out))
+	ignored, ignored_err := iface.attachment_store_artifact(&repo, "cha_out", "art", "now")
+	defer delete(ignored); bot_test_expect_ok(t, ignored_err); testing.expect_value(t, ignored, "")
+	// The savepoint also composes with caller rollback.
+	d1_insert_inbound(t, &repo, d1_message("nested", "nested", "cha_nested"))
+	testing.expect(t, exec(&conn, "BEGIN IMMEDIATE;"))
+	nested, nested_err := iface.attachment_store_artifact(&repo, "cha_nested", "art_nested", "now")
+	defer delete(nested); bot_test_expect_ok(t, nested_err)
+	testing.expect(t, exec(&conn, "ROLLBACK;"))
+	w1_expect_scalar(t, &conn, "SELECT state || ':' || artifact_id FROM channel_attachments WHERE attachment_id='cha_nested';", "pending:")
+}
+
+@(test)
+test_attachment_set_state_compare_and_set :: proc(t: ^testing.T) {
+	conn, ok := tmpl_clone_migrated(t); if !ok do return
+	defer close(&conn)
+	impl: Bot_Repo_SQLite; repo := new_bot_repository(&impl, &conn)
+	d1_insert_inbound(t, &repo, d1_message())
+	changed, err := iface.attachment_set_state(&repo, "cha_media", .Pending, .Too_Large, "first")
+	bot_test_expect_ok(t, err); testing.expect(t, changed)
+	changed, err = iface.attachment_set_state(&repo, "cha_media", .Pending, .Unavailable, "second")
+	bot_test_expect_ok(t, err); testing.expect(t, !changed)
+	ignored, ignored_err := iface.attachment_store_artifact(&repo, "cha_media", "art", "second")
+	defer delete(ignored); bot_test_expect_ok(t, ignored_err); testing.expect_value(t, ignored, "")
+	w1_expect_scalar(t, &conn, "SELECT state || ':' || updated_at FROM channel_attachments;", "too_large:first")
+}
+
+@(test)
+test_purge_deletes_attachments_of_purged_messages :: proc(t: ^testing.T) {
+	conn, ok := tmpl_clone_migrated(t); if !ok do return
+	defer close(&conn)
+	impl: Bot_Repo_SQLite; repo := new_bot_repository(&impl, &conn)
+	a := d1_message("a", "a", "cha_a")
+	b := d1_message("b", "b", "cha_b"); b.binding_id = "other"
+	c := d1_message("c", "c", "cha_c"); c.binding_id = "other"; c.created_at = "2027"
+	ids, err := iface.inbound_store_batch(&repo, "telegram", {a,b,c}, "cursor", "now")
+	defer w1_destroy_ids(ids); bot_test_expect_ok(t, err)
+	bot_test_expect_ok(t, iface.messages_purge_binding(&repo, "chb_a"))
+	w1_expect_scalar(t, &conn, "SELECT count(*) FROM channel_attachments;", "2")
+	w1_expect_scalar(t, &conn, "SELECT count(*) FROM channel_messages WHERE message_id='a' AND body_purged=1 AND body='';", "1")
+	count, purge_err := iface.messages_purge_older_than(&repo, "2026-12")
+	bot_test_expect_ok(t, purge_err); testing.expect_value(t, count, 1)
+	w1_expect_scalar(t, &conn, "SELECT attachment_id FROM channel_attachments;", "cha_c")
+	w1_expect_scalar(t, &conn, "SELECT count(*) FROM channel_messages;", "3")
+}
+
+@(test)
+test_push_events_media_roundtrip :: proc(t: ^testing.T) {
+	conn, ok := tmpl_clone_migrated(t); if !ok do return
+	defer close(&conn)
+	impl: Bot_Repo_SQLite; repo := new_bot_repository(&impl, &conn)
+	for kind in domain.Channel_Media_Kind {
+		if kind == .None do continue
+		event := w1_event(fmt.tprintf("key_%d", int(kind)))
+		event.kind = .Media; event.media_kind = kind; event.media_ref = "ref"
+		event.media_name = "file"; event.media_mime = "application/octet-stream"; event.media_size = 9876543210
+		n, err := iface.push_events_insert(&repo, {event})
+		bot_test_expect_ok(t, err); testing.expect_value(t, n, 1)
+	}
+	rows, err := iface.push_events_pending(&repo, "whatsapp", 10)
+	defer w1_destroy_events(rows); bot_test_expect_ok(t, err)
+	if !testing.expect_value(t, len(rows), 4) do return
+	for row, i in rows {
+		testing.expect_value(t, row.kind, domain.Channel_Push_Kind.Media)
+		testing.expect_value(t, row.media_kind, domain.Channel_Media_Kind(i+1))
+		testing.expect_value(t, row.media_ref, "ref")
+		testing.expect_value(t, row.media_name, "file")
+		testing.expect_value(t, row.media_mime, "application/octet-stream")
+		testing.expect_value(t, row.media_size, i64(9876543210))
+	}
 }

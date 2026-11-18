@@ -829,3 +829,64 @@ stall_timeout_cuts_stalls_but_not_slow_progress :: proc(t: ^testing.T) {
 	defer response_destroy(&r2)
 	testing.expectf(t, e2 == .None && text(r2) == "abcde", "slow but steady reply: err=%v body=%q", e2, text(r2))
 }
+
+@(test)
+test_multipart_body_layout :: proc(t: ^testing.T) {
+	data := []byte{0, 255, 13, 10, 42}
+	body := multipart_body_with_boundary({
+		{name = "caption", value = transmute([]byte)string("hello")},
+		{name = "file", filename = "a.bin", value = data},
+		{name = "typed", filename = "b.pdf", content_type = "application/pdf", value = transmute([]byte)string("pdf")},
+	}, "fixed", context.allocator)
+	raw, ok := body.(Raw_Body)
+	if !testing.expect(t, ok) do return
+	defer delete(raw.bytes)
+	defer delete(raw.content_type)
+	testing.expect_value(t, raw.content_type, "multipart/form-data; boundary=fixed")
+	expected := "--fixed\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\nhello\r\n--fixed\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.bin\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+	suffix := "\r\n--fixed\r\nContent-Disposition: form-data; name=\"typed\"; filename=\"b.pdf\"\r\nContent-Type: application/pdf\r\n\r\npdf\r\n--fixed--\r\n"
+	testing.expect_value(t, string(raw.bytes), fmt.tprintf("%s%s%s", expected, string(data), suffix))
+	data[0] = 1
+	testing.expect_value(t, raw.bytes[len(expected)], byte(0))
+}
+
+@(test)
+test_multipart_body_escapes_names :: proc(t: ^testing.T) {
+	body := multipart_body_with_boundary({{name = "a\"\r\nb", filename = "x\"\r\ny", value = {1}}}, "safe")
+	raw := body.(Raw_Body)
+	testing.expect(t, strings.contains(string(raw.bytes), "name=\"a%22%0D%0Ab\"; filename=\"x%22%0D%0Ay\""))
+	invalid := multipart_body_with_boundary({{filename = "x", content_type = "text/plain\r\nInjected: x"}}, "safe")
+	testing.expect_value(t, invalid.(Raw_Body).content_type, "")
+}
+
+@(test)
+test_multipart_body_boundary_absent_from_values :: proc(t: ^testing.T) {
+	parts := []Multipart_Part{{name = "file", value = transmute([]byte)string("contains fixed boundary")}}
+	collision := multipart_body_with_boundary(parts, "fixed")
+	testing.expect_value(t, collision.(Raw_Body).content_type, "")
+	for _ in 0..<8 {
+		body := multipart_body(parts)
+		raw := body.(Raw_Body)
+		prefix := "multipart/form-data; boundary="
+		testing.expect(t, strings.has_prefix(raw.content_type, prefix))
+		boundary := raw.content_type[len(prefix):]
+		testing.expect_value(t, len(boundary), 41)
+		testing.expect(t, strings.has_prefix(boundary, "----ninjy"))
+		for b in transmute([]byte)boundary[9:] do testing.expect(t, (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f'))
+		testing.expect(t, !strings.contains(string(parts[0].value), boundary))
+	}
+}
+
+@(test)
+test_multipart_body_sends_to_test_server :: proc(t: ^testing.T) {
+	if !must_init(t) do return
+	s := test_server_start({{chunks = {test_reply(200, "OK", "", "ok")}}})
+	defer test_server_stop(s)
+	body := multipart_body_with_boundary({{name = "file", filename = "binary", value = {0, 255, 10}}}, "wire")
+	resp, err := send({method = .POST, url = test_server_url(s), body = body})
+	defer response_destroy(&resp)
+	testing.expect_value(t, err, Error.None)
+	request := test_server_request(s, 0)
+	testing.expect(t, strings.contains(request, "Content-Type: multipart/form-data; boundary=wire\r\n"))
+	testing.expect(t, strings.has_suffix(request, string(body.(Raw_Body).bytes)))
+}

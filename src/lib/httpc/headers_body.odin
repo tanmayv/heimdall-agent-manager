@@ -1,6 +1,7 @@
 package httpc
 
 import "core:c"
+import "core:crypto"
 import "core:encoding/base64"
 import "core:encoding/json"
 import "core:strings"
@@ -145,4 +146,91 @@ encode_form :: proc(fields: []Form_Field) -> (out: string, err: Error) {
 		strings.write_string(&b, escape_temp(f.value) or_return)
 	}
 	return strings.to_string(b), .None
+}
+
+// Multipart_Part values are borrowed for the duration of multipart_body. The
+// returned Raw_Body owns bytes and content_type in the requested allocator.
+Multipart_Part :: struct {
+	name: string,
+	filename: string,
+	content_type: string,
+	value: []byte,
+}
+
+// A random boundary is retried before encoding if any value contains it.
+multipart_body :: proc(parts: []Multipart_Part, allocator := context.temp_allocator) -> Body {
+	for _ in 0..<3 {
+		random: [16]byte
+		crypto.rand_bytes(random[:])
+		hex := "0123456789abcdef"
+		generated := strings.builder_make(context.temp_allocator)
+		strings.write_string(&generated, "----ninjy")
+		for b in random {
+			strings.write_byte(&generated, hex[b >> 4])
+			strings.write_byte(&generated, hex[b & 15])
+		}
+		candidate := strings.to_string(generated)
+		if multipart_boundary_absent(parts, candidate) do return multipart_body_with_boundary(parts, candidate, allocator)
+	}
+	return Raw_Body{}
+}
+
+@(private)
+multipart_boundary_absent :: proc(parts: []Multipart_Part, boundary: string) -> bool {
+	if boundary == "" do return false
+	for part in parts {
+		if strings.contains(string(part.value), boundary) do return false
+	}
+	return true
+}
+
+@(private)
+multipart_write_parameter :: proc(builder: ^strings.Builder, value: string) {
+	for b in transmute([]byte)value {
+		switch b {
+		case '"': strings.write_string(builder, "%22")
+		case '\r': strings.write_string(builder, "%0D")
+		case '\n': strings.write_string(builder, "%0A")
+		case: strings.write_byte(builder, b)
+		}
+	}
+}
+
+// Fixed-boundary seam. Refuse delimiter collisions and unsafe header text.
+// Invalid bodies use Raw_Body{} so send reports Invalid_Body.
+multipart_body_with_boundary :: proc(parts: []Multipart_Part, boundary: string, allocator := context.temp_allocator) -> Body {
+	if !multipart_boundary_absent(parts, boundary) do return Raw_Body{}
+	for b in transmute([]byte)boundary {
+		if !((b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '-') do return Raw_Body{}
+	}
+	builder := strings.builder_make(context.temp_allocator)
+	for part in parts {
+		strings.write_string(&builder, "--")
+		strings.write_string(&builder, boundary)
+		strings.write_string(&builder, "\r\nContent-Disposition: form-data; name=\"")
+		multipart_write_parameter(&builder, part.name)
+		strings.write_byte(&builder, '"')
+		if part.filename != "" {
+			strings.write_string(&builder, "; filename=\"")
+			multipart_write_parameter(&builder, part.filename)
+			strings.write_string(&builder, "\"\r\nContent-Type: ")
+			content_type := part.content_type
+			if content_type == "" do content_type = CONTENT_TYPE_OCTET_STREAM
+			for b in transmute([]byte)content_type {
+				if b < 0x20 || b == 0x7f do return Raw_Body{}
+			}
+			strings.write_string(&builder, content_type)
+		}
+		strings.write_string(&builder, "\r\n\r\n")
+		strings.write_string(&builder, string(part.value))
+		strings.write_string(&builder, "\r\n")
+	}
+	strings.write_string(&builder, "--")
+	strings.write_string(&builder, boundary)
+	strings.write_string(&builder, "--\r\n")
+	encoded := strings.to_string(builder)
+	bytes := make([]byte, len(encoded), allocator)
+	copy(bytes, transmute([]byte)encoded)
+	type_parts := [2]string{"multipart/form-data; boundary=", boundary}
+	return Raw_Body{content_type = strings.concatenate(type_parts[:], allocator), bytes = bytes}
 }

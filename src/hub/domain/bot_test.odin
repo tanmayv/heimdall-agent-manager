@@ -92,7 +92,7 @@ test_bot_attempt_state_open :: proc(t: ^testing.T) {
 
 @(test)
 test_channel_push_kind_text_roundtrip :: proc(t: ^testing.T) {
-	texts := [5]string{"text", "start", "disconnect", "unsupported", "delivery_failed"}
+	texts := [6]string{"text", "start", "disconnect", "unsupported", "delivery_failed", "media"}
 	for value in Channel_Push_Kind {
 		text := channel_push_kind_text(value)
 		testing.expect_value(t, text, texts[int(value)])
@@ -110,4 +110,32 @@ test_channel_send_state_held_roundtrip :: proc(t: ^testing.T) {
 	value, ok := channel_send_state_from_text("held")
 	testing.expect(t, ok)
 	testing.expect_value(t, value, Channel_Send_State.Held)
+}
+
+@(test)
+test_channel_media_kind_text_roundtrip :: proc(t: ^testing.T) {
+	texts := [?]string{"", "image", "document", "voice", "audio"}
+	for value in Channel_Media_Kind {
+		text := channel_media_kind_text(value)
+		testing.expect_value(t, text, texts[int(value)])
+		parsed, ok := channel_media_kind_from_text(text)
+		testing.expect(t, ok)
+		testing.expect_value(t, parsed, value)
+	}
+	_, ok := channel_media_kind_from_text("invalid")
+	testing.expect(t, !ok)
+}
+
+@(test)
+test_channel_attachment_state_text_roundtrip :: proc(t: ^testing.T) {
+	texts := [?]string{"pending", "stored", "too_large", "unavailable", "native", "link"}
+	for value in Channel_Attachment_State {
+		text := channel_attachment_state_text(value)
+		testing.expect_value(t, text, texts[int(value)])
+		parsed, ok := channel_attachment_state_from_text(text)
+		testing.expect(t, ok)
+		testing.expect_value(t, parsed, value)
+	}
+	_, ok := channel_attachment_state_from_text("invalid")
+	testing.expect(t, !ok)
 }

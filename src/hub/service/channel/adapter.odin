@@ -10,6 +10,8 @@ Channel_Error_Kind :: enum {
 	Aborted,
 	Window_Closed,
 	Template_Unavailable,
+	Media_Too_Large,
+	Media_Unavailable,
 }
 
 Channel_Error :: struct {
@@ -25,6 +27,7 @@ Inbound_Kind :: enum {
 	Disconnect,
 	Unsupported,
 	Delivery_Failed,
+	Media,
 }
 
 Inbound :: struct {
@@ -38,6 +41,7 @@ Inbound :: struct {
 	text:                string, // Text: message text; Start: the pairing payload ("" when none)
 	provider_time:       string, // RFC 3339 UTC of the provider event time; zero value when the provider gives none
 	provider_code:       int, // Delivery_Failed: provider error code; 0 otherwise
+	media:               Inbound_Media, // Media: text carries the caption.
 }
 
 Identity :: struct {
@@ -87,4 +91,55 @@ Channel_Adapter :: struct {
 	failure_kind:    proc(provider_code: int) -> Channel_Error_Kind,
 	// Free-form replies are accepted only this long after the user's last message; 0 = no window.
 	reply_window_ms: i64,
+	media:       Media_Capabilities,
+	// Optional; nil = no inbound media. Reads at most max_bytes; a larger file is .Media_Too_Large.
+	// Finishes within MEDIA_PROVIDER_BUDGET_MS. Never logs or returns the file reference or a URL.
+	media_fetch: proc(ctx: rawptr, file_ref: string, max_bytes: i64, allocator := context.allocator) -> (Fetched_Media, Channel_Error),
+	// Optional; nil = no native sends. One provider message (WhatsApp: upload, then message),
+	// finished within min(timeout_ms, MEDIA_PROVIDER_BUDGET_MS) in total, no internal retry.
+	send_media:  proc(ctx: rawptr, external_chat_id: string, media: Outbound_Media, timeout_ms: int) -> (external_message_id: string, err: Channel_Error),
+	// Optional; send_text with a caller timeout (the request deadline, 11.8): one attempt,
+	// finished within min(timeout_ms, the adapter's own send_text timeout). nil = use send_text.
+	send_text_within: proc(ctx: rawptr, external_chat_id, text: string, timeout_ms: int) -> (external_message_id: string, err: Channel_Error),
+}
+
+MEDIA_PROVIDER_BUDGET_MS :: 15_000
+
+// Same member order as domain.Channel_Media_Kind.
+Media_Kind :: enum { None, Image, Document, Voice, Audio }
+
+// What the provider declared for an inbound file. Strings belong to the batch allocator.
+Inbound_Media :: struct {
+	kind:     Media_Kind,
+	file_ref: string, // Telegram file_id; WhatsApp media id
+	name:     string, // provider file name; "" when none
+	mime:     string, // base MIME type (lowercase, no parameters); "" when none
+	size:     i64,    // bytes; 0 when the provider does not say
+}
+
+// One way the provider takes a file natively. Rules are tried in order.
+Media_Send_Rule :: struct {
+	kind:      Media_Kind,
+	mimes:     []string, // exact base MIME types; nil = any type
+	max_bytes: i64,
+	caption:   bool, // the provider shows a caption with this kind
+}
+
+Media_Capabilities :: struct {
+	fetch_max_bytes:   i64, // largest inbound file the provider lets us download; 0 = no inbound media
+	caption_max_runes: int,
+	send_rules:        []Media_Send_Rule, // empty = never native
+}
+
+Outbound_Media :: struct {
+	kind:    Media_Kind,
+	name:    string,
+	mime:    string, // base MIME type
+	bytes:   []byte,
+	caption: string, // "" = none; non-empty only when the rule has caption = true
+}
+
+Fetched_Media :: struct {
+	bytes: []byte, // belongs to the allocator passed to media_fetch
+	mime:  string, // provider-reported base MIME type, same allocator; "" when none
 }
