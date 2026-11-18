@@ -2870,7 +2870,9 @@ chain_summary_read_json :: proc(svc: ^taskchain_service.Taskchain_Service, chain
 // chain_summary_json is the shared summary response of every summary read and
 // write route: the stored (bounded) body plus its metadata. overflow_active
 // reports an open overflow episode: more dead ends are retained in the task
-// handoff facets than the max_lines rendered summary can show.
+// handoff facets than the max_lines rendered summary can show. curated is the
+// coordinator's stored notes in full, even lines the rendered body had no room
+// for ("" for a legacy row not yet rebuilt).
 chain_summary_json :: proc(row: domain.Chain_Summary) -> string {
 	o := taskv2.json_begin()
 	taskv2.json_str(&o, "chain_id", string(row.chain_id))
@@ -2879,6 +2881,11 @@ chain_summary_json :: proc(row: domain.Chain_Summary) -> string {
 	taskv2.json_int(&o, "line_count", i64(row.line_count))
 	taskv2.json_int(&o, "max_lines", i64(taskv2.CHAIN_SUMMARY_MAX_LINES))
 	taskv2.json_bool(&o, "overflow_active", row.overflow_active)
+	taskv2.json_str(&o, "curated", row.curated_body)
+	curated_lines := 0
+	for line in strings.split_lines(row.curated_body, context.temp_allocator) do if strings.trim_space(line) != "" do curated_lines += 1
+	taskv2.json_int(&o, "curated_line_count", i64(curated_lines))
+	taskv2.json_int(&o, "curated_reserved_lines", i64(taskv2.CHAIN_SUMMARY_CURATED_RESERVED_LINES))
 	taskv2.json_int(&o, "version", i64(row.version))
 	taskv2.json_str(&o, "updated_at", row.updated_at)
 	return taskv2.json_end(&o)

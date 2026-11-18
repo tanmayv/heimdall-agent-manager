@@ -149,16 +149,25 @@ test_summary_overflow_boundary_and_single_notice_per_episode :: proc(t: ^testing
 	testing.expect_value(t, overflow_events(of), 1)
 	testing.expect_value(t, len(of.cap.lines), 1)
 
-	// summary set during the episode keeps the latch; the next rebuild is silent
-	// and keeps the curated note without re-absorbing the mechanical marker.
-	_, set_ok, set_err := chain_summary_set(&of.fx.svc, inst_auth("inst_coord"), of.chain.chain_id, "Curated: keep it short")
+	// summary set during the episode keeps the latch and renders at once: the
+	// curated note is visible next to the mechanical sections and survives
+	// every later rebuild, without the mechanical marker being re-absorbed.
+	set_row, set_ok, set_err := chain_summary_set(&of.fx.svc, inst_auth("inst_coord"), of.chain.chain_id, "Curated: keep it short")
 	testing.expectf(t, set_ok, "summary set: %s", set_err.message)
-	testing.expect(t, stored_summary(t, of).overflow_active, "summary set preserves the open episode")
-	rebuild(t, &of.fx.svc, of.chain)
-	after_set := stored_summary(t, of)
-	testing.expect(t, after_set.overflow_active, "rebuild after set keeps the episode open")
-	testing.expect_value(t, strings.count(after_set.body, DEAD_ENDS_OMITTED_SUFFIX), 1)
-	testing.expect(t, after_set.line_count <= CHAIN_SUMMARY_MAX_LINES, "bounded after set")
+	testing.expect(t, set_row.overflow_active && stored_summary(t, of).overflow_active, "summary set preserves the open episode")
+	testing.expect(t, strings.contains(set_row.body, "Curated: keep it short") && strings.contains(set_row.body, "## Dead Ends"), "set renders curated + mechanical sections immediately")
+	testing.expect_value(t, set_row.curated_body, "Curated: keep it short")
+	testing.expect_value(t, overflow_events(of), 1)
+	testing.expect_value(t, len(of.cap.lines), 1)
+	for round in 0 ..< 2 {
+		rebuild(t, &of.fx.svc, of.chain)
+		after_set := stored_summary(t, of)
+		testing.expectf(t, after_set.overflow_active, "rebuild %d after set keeps the episode open", round)
+		testing.expectf(t, strings.contains(after_set.body, "Curated: keep it short"), "rebuild %d keeps the curated note rendered: %s", round, after_set.body)
+		testing.expect_value(t, after_set.curated_body, "Curated: keep it short")
+		testing.expect_value(t, strings.count(after_set.body, DEAD_ENDS_OMITTED_SUFFIX), 1)
+		testing.expect_value(t, after_set.line_count, CHAIN_SUMMARY_MAX_LINES)
+	}
 	testing.expect_value(t, overflow_events(of), 1)
 	testing.expect_value(t, len(of.cap.lines), 1)
 
@@ -169,6 +178,7 @@ test_summary_overflow_boundary_and_single_notice_per_episode :: proc(t: ^testing
 	rebuild(t, &restarted, of.chain)
 	testing.expect_value(t, overflow_events(of), 1)
 	testing.expect_value(t, len(of.cap.lines), 1)
+	testing.expect(t, strings.contains(stored_summary(t, of).body, "Curated: keep it short"), "curated note survives the restart rebuild")
 
 	// Reconstruction: with the summary row gone the latch is seeded from the
 	// recorded summary_overflow event, so the episode is not announced again.
@@ -210,7 +220,8 @@ test_summary_set_without_overflow_keeps_latch_closed :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(of.cap.lines), 0)
 }
 
-// The schema upgrade adds the latch column to an existing database and opens
+// The schema upgrade adds the latch and curated columns to an existing
+// database, idempotently, and opens
 // it for chains that already reported an overflow, so upgrading does not
 // re-notify them; other chains start closed.
 @(test)
@@ -228,4 +239,97 @@ test_summary_overflow_latch_upgrade_backfill :: proc(t: ^testing.T) {
 	testing.expect_value(t, scalar_int(fx, "SELECT overflow_active FROM chain_summaries WHERE chain_id = 'c_fit';"), 0)
 	over, _, _ := iface.taskchain_get_chain_summary(&fx.repo, "c_over", "u1")
 	testing.expect(t, over.overflow_active, "repository reads the backfilled latch")
+	testing.expect(t, !over.curated_stored && over.curated_body == "", "upgraded rows are legacy until their next rebuild stores the notes")
+	testing.expect_value(t, scalar_int(fx, "SELECT COUNT(*) FROM pragma_table_info('chain_summaries') WHERE name IN ('overflow_active', 'curated_body', 'curated_stored');"), 3)
+	// The upgrade is idempotent: running it again changes nothing.
+	again_ok, again_err := sqlite.run_migrations(&fx.conn)
+	testing.expectf(t, again_ok, "re-run upgrade: %s", again_err.message)
+	testing.expect_value(t, scalar_int(fx, "SELECT overflow_active FROM chain_summaries WHERE chain_id = 'c_over';"), 1)
+}
+
+// Review finding: curated notes keep a guaranteed share of the cap during
+// overflow, notes beyond it are stored in full (never silently dropped), and a
+// set that leaves no room for every dead end opens one episode.
+@(test)
+test_summary_curated_notes_budget_during_overflow :: proc(t: ^testing.T) {
+	of, ok := overflow_fixture(t, "ovf_curated")
+	defer overflow_fixture_close(of)
+	if !ok do return
+
+	// 13 curated lines (the reported chain's size) with 40 dead ends fit: 1 + 13 + 41 <= 60.
+	notes := make([dynamic]string, context.temp_allocator)
+	for i in 0 ..< 13 do append(&notes, fmt.tprintf("note %02d", i))
+	thirteen := strings.join(notes[:], "\n", context.temp_allocator)
+	add_dead_ends(t, of, 40)
+	_, set_ok, set_err := chain_summary_set(&of.fx.svc, inst_auth("inst_coord"), of.chain.chain_id, thirteen)
+	testing.expectf(t, set_ok, "summary set: %s", set_err.message)
+	rebuild(t, &of.fx.svc, of.chain)
+	fit := stored_summary(t, of)
+	testing.expect(t, !fit.overflow_active && strings.contains(fit.body, "note 12") && strings.contains(fit.body, "dead end 1.39"), "13 notes + 40 dead ends all render")
+	testing.expect_value(t, overflow_events(of), 0)
+
+	// Dead ends grow past the cap: all 13 notes stay rendered, one notice.
+	add_dead_ends(t, of, 30)
+	rebuild(t, &of.fx.svc, of.chain)
+	rebuild(t, &of.fx.svc, of.chain)
+	over := stored_summary(t, of)
+	testing.expect(t, over.overflow_active, "70 dead ends overflow")
+	testing.expect_value(t, over.line_count, CHAIN_SUMMARY_MAX_LINES)
+	for i in 0 ..< 13 do testing.expectf(t, strings.contains(over.body, fmt.tprintf("note %02d", i)), "note %02d rendered during overflow", i)
+	testing.expect(t, strings.contains(over.body, fmt.tprintf("%s%d %s", DEAD_ENDS_OMITTED_PREFIX, 70 - 44, DEAD_ENDS_OMITTED_SUFFIX)), "60 = title + 13 notes + header + 44 dead ends + marker")
+	testing.expect_value(t, overflow_events(of), 1)
+	testing.expect_value(t, len(of.cap.lines), 1)
+	if len(of.cap.lines) == 1 do testing.expect(t, strings.contains(of.cap.lines[0], "up to 20 lines"), "notice states the curated budget")
+
+	// Longer notes: the first 20 always render; the rest are stored in full and
+	// come back once dead ends shrink. Still the same episode: no new notice.
+	notes = make([dynamic]string, context.temp_allocator)
+	for i in 0 ..< 30 do append(&notes, fmt.tprintf("long %02d", i))
+	thirty := strings.join(notes[:], "\n", context.temp_allocator)
+	_, long_ok, long_err := chain_summary_set(&of.fx.svc, inst_auth("inst_coord"), of.chain.chain_id, thirty)
+	testing.expectf(t, long_ok, "summary set: %s", long_err.message)
+	rebuild(t, &of.fx.svc, of.chain)
+	long_row := stored_summary(t, of)
+	testing.expect(t, strings.contains(long_row.body, "long 19") && !strings.contains(long_row.body, "long 20"), "exactly the guaranteed 20 notes render while dead ends overflow")
+	testing.expect_value(t, long_row.curated_body, thirty)
+	testing.expect_value(t, long_row.line_count, CHAIN_SUMMARY_MAX_LINES)
+	testing.expect_value(t, overflow_events(of), 1)
+	testing.expect(t, exec_ok(t, of.fx, fmt.tprintf("DELETE FROM task_attempt_facets WHERE task_id = '%s';", of.task.task_id)), "simulate dead ends shrinking")
+	add_dead_ends(t, of, 5)
+	rebuild(t, &of.fx.svc, of.chain)
+	back := stored_summary(t, of)
+	testing.expect(t, !back.overflow_active && strings.contains(back.body, "long 29"), "stored notes beyond the guarantee render again once there is room")
+
+	// A set that crowds out dead ends opens a (single) new episode itself.
+	add_dead_ends(t, of, 30) // 35 dead ends; 30 notes reserve 20 -> capacity 39 lines for header + dead ends
+	rebuild(t, &of.fx.svc, of.chain)
+	testing.expect(t, !stored_summary(t, of).overflow_active, "35 dead ends fit next to 20 reserved notes")
+	add_dead_ends(t, of, 4) // 39 dead ends + header = 40 > 39
+	_, crowd_ok, _ := chain_summary_set(&of.fx.svc, inst_auth("inst_coord"), of.chain.chain_id, thirty)
+	testing.expect(t, crowd_ok && stored_summary(t, of).overflow_active, "set that leaves no room for every dead end opens an episode")
+	rebuild(t, &of.fx.svc, of.chain)
+	testing.expect_value(t, overflow_events(of), 2)
+	testing.expect_value(t, len(of.cap.lines), 2)
+}
+
+// A legacy row (curated notes only inside the rendered body) has its notes
+// extracted once and stored; they then survive overflow like any others.
+@(test)
+test_summary_legacy_curated_notes_are_stored_once :: proc(t: ^testing.T) {
+	of, ok := overflow_fixture(t, "ovf_legacy")
+	defer overflow_fixture_close(of)
+	if !ok do return
+	_, saved, _ := iface.taskchain_save_chain_summary(&of.fx.repo, domain.Chain_Summary{
+		chain_id = of.chain.chain_id, owner_user_id = of.chain.owner_user_id, version = 3, updated_at = "2026-11-18T00:00:00Z",
+		body = fmt.tprintf("# Chain %s: c\nLegacy curated line\n## Dead Ends", of.chain.chain_id),
+	})
+	testing.expect(t, saved, "legacy row saved")
+	add_dead_ends(t, of, 70)
+	rebuild(t, &of.fx.svc, of.chain)
+	rebuild(t, &of.fx.svc, of.chain)
+	row := stored_summary(t, of)
+	testing.expect(t, row.curated_stored, "legacy notes are now stored")
+	testing.expect_value(t, row.curated_body, "Legacy curated line")
+	testing.expect(t, row.overflow_active && strings.contains(row.body, "Legacy curated line"), "legacy note survives overflow rebuilds")
+	testing.expect_value(t, row.version, 5)
 }

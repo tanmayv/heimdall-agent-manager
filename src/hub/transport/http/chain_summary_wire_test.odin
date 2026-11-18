@@ -29,13 +29,14 @@ test_chain_summary_get_read_only_default_chain_and_owner_scope :: proc(t: ^testi
 	_, saved, _ := iface.taskchain_save_chain_summary(&f.tc_repo, domain.Chain_Summary{
 		chain_id = f.chain_id, owner_user_id = f.owner, body = "# Chain\nCurated", line_count = 2,
 		version = 7, updated_at = "2026-11-18T00:00:00Z", overflow_active = true,
+		curated_body = "Curated\n\nSecond", curated_stored = true,
 	})
 	testing.expect(t, saved, "summary fixture saved")
 
 	// Default chain: no chain_id -> the caller instance's chain, with metadata.
 	resp := agent_action_chain_summary_get_handler(&f.ah, summary_get_request(f, `{"params":{}}`))
 	testing.expect_value(t, resp.status, 200)
-	for want in ([]string{fmt.tprintf(`"chain_id":"%s"`, f.chain_id), `"summary":"# Chain\nCurated"`, `"line_count":2`, `"max_lines":60`, `"overflow_active":true`, `"version":7`, `"updated_at":"2026-11-18T00:00:00Z"`}) {
+	for want in ([]string{fmt.tprintf(`"chain_id":"%s"`, f.chain_id), `"summary":"# Chain\nCurated"`, `"line_count":2`, `"max_lines":60`, `"overflow_active":true`, `"version":7`, `"updated_at":"2026-11-18T00:00:00Z"`, `"curated":"Curated\n\nSecond"`, `"curated_line_count":2`, `"curated_reserved_lines":20`}) {
 		testing.expectf(t, strings.contains(resp.body, want), "get response carries %s: %s", want, resp.body)
 	}
 

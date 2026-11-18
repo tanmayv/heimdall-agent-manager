@@ -122,6 +122,12 @@ Chain_Summary :: struct {
 	// It latches one summary_overflow notice per continuous overflow episode
 	// and survives summary set, rebuild and restart (it is the durable latch).
 	overflow_active: bool,
+	// curated_body: the coordinator's notes exactly as last set, stored apart
+	// from the rendered body so a rebuild never loses lines it could not show.
+	// curated_stored=false marks a legacy row whose notes still live only in
+	// body (the next rebuild extracts and stores them once).
+	curated_body:   string,
+	curated_stored: bool,
 }
 
 Workflow_Definition :: struct {

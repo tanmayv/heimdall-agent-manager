@@ -2096,6 +2096,10 @@ upgrade_task_v2_schema :: proc(conn: ^Conn) -> bool {
 		if !exec(conn, "ALTER TABLE chain_summaries ADD COLUMN overflow_active INTEGER NOT NULL DEFAULT 0;") do return false
 		if !exec(conn, "UPDATE chain_summaries SET overflow_active = 1 WHERE EXISTS (SELECT 1 FROM task_events e WHERE e.chain_id = chain_summaries.chain_id AND e.owner_user_id = chain_summaries.owner_user_id AND e.kind = 'summary_overflow');") do return false
 	}
+	// Curated notes stored apart from the rendered body; legacy rows stay
+	// curated_stored = 0 until their next rebuild extracts the notes once.
+	if !table_column_exists(conn, "chain_summaries", "curated_body") && !exec(conn, "ALTER TABLE chain_summaries ADD COLUMN curated_body TEXT NOT NULL DEFAULT '';") do return false
+	if !table_column_exists(conn, "chain_summaries", "curated_stored") && !exec(conn, "ALTER TABLE chain_summaries ADD COLUMN curated_stored INTEGER NOT NULL DEFAULT 0;") do return false
 	// Legacy drops (tolerant; see the proc comment).
 	drop_legacy_column(conn, "tasks", "status")
 	drop_legacy_column(conn, "tasks", "assignee_ref_json")
