@@ -3,6 +3,7 @@ package domain
 BOT_ID_PREFIX :: "bot_"
 CHANNEL_BINDING_ID_PREFIX :: "chb_"
 CHANNEL_MESSAGE_ID_PREFIX :: "chm_"
+CHANNEL_ATTACHMENT_ID_PREFIX :: "cha_"
 BOT_DELIVERY_ID_PREFIX :: "bdl_"
 BOT_ATTEMPT_ID_PREFIX :: "bda_"
 CHANNEL_PROVIDER_TELEGRAM :: "telegram"
@@ -65,6 +66,7 @@ Channel_Message :: struct {
 	send_state:                                     Channel_Send_State,
 	send_error:                                     string,
 	created_at, read_at, replied_at:                string,
+	attachment: Channel_Attachment,
 }
 
 Bot_Delivery_State :: enum {
@@ -346,6 +348,7 @@ channel_message_destroy :: proc(value: ^Channel_Message) {
 	if len(value.created_at) > 0 do delete(value.created_at)
 	if len(value.read_at) > 0 do delete(value.read_at)
 	if len(value.replied_at) > 0 do delete(value.replied_at)
+	channel_attachment_destroy(&value.attachment)
 	value^ = {}
 }
 
@@ -387,6 +390,7 @@ Channel_Push_Kind :: enum {
 	Disconnect,
 	Unsupported,
 	Delivery_Failed,
+	Media,
 }
 Channel_Push_Event :: struct {
 	seq:                                                                           i64,
@@ -395,6 +399,9 @@ Channel_Push_Event :: struct {
 	external_chat_id, external_user_id, external_message_id, sender_display, body: string,
 	provider_code:                                                                 int,
 	provider_time, received_at, processed_at:                                      string,
+	media_kind: Channel_Media_Kind,
+	media_ref, media_name, media_mime: string,
+	media_size: i64,
 }
 
 // One binding touched by inbound; at is provider_time, or now when empty.
@@ -413,6 +420,8 @@ channel_push_kind_text :: proc(k: Channel_Push_Kind) -> string {
 		return "unsupported"
 	case .Delivery_Failed:
 		return "delivery_failed"
+	case .Media:
+		return "media"
 	}
 	return ""
 }
@@ -428,6 +437,8 @@ channel_push_kind_from_text :: proc(s: string) -> (Channel_Push_Kind, bool) {
 		return .Unsupported, true
 	case "delivery_failed":
 		return .Delivery_Failed, true
+	case "media":
+		return .Media, true
 	}
 	return {}, false
 }
@@ -443,5 +454,81 @@ channel_push_event_destroy :: proc(e: ^Channel_Push_Event) {
 	if len(e.provider_time) > 0 do delete(e.provider_time)
 	if len(e.received_at) > 0 do delete(e.received_at)
 	if len(e.processed_at) > 0 do delete(e.processed_at)
+	if len(e.media_ref) > 0 do delete(e.media_ref)
+	if len(e.media_name) > 0 do delete(e.media_name)
+	if len(e.media_mime) > 0 do delete(e.media_mime)
 	e^ = {}
+}
+
+Channel_Media_Kind :: enum { None, Image, Document, Voice, Audio }
+Channel_Attachment_State :: enum { Pending, Stored, Too_Large, Unavailable, Native, Link }
+
+channel_media_kind_text :: proc(value: Channel_Media_Kind) -> string {
+	switch value {
+	case .None: return ""
+	case .Image: return "image"
+	case .Document: return "document"
+	case .Voice: return "voice"
+	case .Audio: return "audio"
+	}
+	return ""
+}
+channel_media_kind_from_text :: proc(value: string) -> (Channel_Media_Kind, bool) {
+	switch value {
+	case "": return .None, true
+	case "image": return .Image, true
+	case "document": return .Document, true
+	case "voice": return .Voice, true
+	case "audio": return .Audio, true
+	}
+	return {}, false
+}
+
+channel_attachment_state_text :: proc(value: Channel_Attachment_State) -> string {
+	switch value {
+	case .Pending: return "pending"
+	case .Stored: return "stored"
+	case .Too_Large: return "too_large"
+	case .Unavailable: return "unavailable"
+	case .Native: return "native"
+	case .Link: return "link"
+	}
+	return ""
+}
+channel_attachment_state_from_text :: proc(value: string) -> (Channel_Attachment_State, bool) {
+	switch value {
+	case "pending": return .Pending, true
+	case "stored": return .Stored, true
+	case "too_large": return .Too_Large, true
+	case "unavailable": return .Unavailable, true
+	case "native": return .Native, true
+	case "link": return .Link, true
+	}
+	return {}, false
+}
+
+Channel_Attachment :: struct {
+	attachment_id, message_id, binding_id, owner_user_id, bot_id: string,
+	direction: Channel_Direction,
+	kind: Channel_Media_Kind,
+	file_ref, name, mime: string,
+	size_bytes: i64,
+	artifact_id: string,
+	state: Channel_Attachment_State,
+	created_at, updated_at: string,
+}
+channel_attachment_destroy :: proc(a: ^Channel_Attachment) {
+	if a == nil do return
+	if len(a.attachment_id) > 0 do delete(a.attachment_id)
+	if len(a.message_id) > 0 do delete(a.message_id)
+	if len(a.binding_id) > 0 do delete(a.binding_id)
+	if len(a.owner_user_id) > 0 do delete(a.owner_user_id)
+	if len(a.bot_id) > 0 do delete(a.bot_id)
+	if len(a.file_ref) > 0 do delete(a.file_ref)
+	if len(a.name) > 0 do delete(a.name)
+	if len(a.mime) > 0 do delete(a.mime)
+	if len(a.artifact_id) > 0 do delete(a.artifact_id)
+	if len(a.created_at) > 0 do delete(a.created_at)
+	if len(a.updated_at) > 0 do delete(a.updated_at)
+	a^ = {}
 }

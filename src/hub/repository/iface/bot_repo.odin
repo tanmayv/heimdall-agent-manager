@@ -3,6 +3,10 @@ package iface
 import domain "odin_test:hub/domain"
 
 Bot_Repository :: struct {
+	attachment_set_state: proc(ctx: rawptr, attachment_id: string, from, to: domain.Channel_Attachment_State, updated_at: string) -> (changed: bool, err: domain.Domain_Error),
+	attachment_store_artifact: proc(ctx: rawptr, attachment_id, artifact_id, updated_at: string) -> (artifact_id_now: string, err: domain.Domain_Error),
+	attachment_get: proc(ctx: rawptr, attachment_id: string) -> (domain.Channel_Attachment, bool, domain.Domain_Error),
+	attachments_for_messages: proc(ctx: rawptr, message_ids: []string) -> ([]domain.Channel_Attachment, domain.Domain_Error),
 	binding_get:                          proc(
 		ctx: rawptr,
 		binding_id: string,
@@ -721,4 +725,24 @@ message_get_outbound_by_external :: proc(
 ) {
 	if repo == nil || repo.message_get_outbound_by_external == nil do return {}, false, domain.domain_error(.Internal_Error, "bot repository is not configured")
 	return repo.message_get_outbound_by_external(repo.ctx, binding_id, external_message_id)
+}
+
+attachments_for_messages :: proc(repo: ^Bot_Repository, message_ids: []string) -> ([]domain.Channel_Attachment, domain.Domain_Error) {
+	if repo == nil || repo.attachments_for_messages == nil do return {}, domain.domain_error(.Internal_Error, "bot repository is not configured")
+	return repo.attachments_for_messages(repo.ctx, message_ids)
+}
+
+attachment_get :: proc(repo: ^Bot_Repository, attachment_id: string) -> (domain.Channel_Attachment, bool, domain.Domain_Error) {
+	if repo == nil || repo.attachment_get == nil do return {}, false, domain.domain_error(.Internal_Error, "bot repository is not configured")
+	return repo.attachment_get(repo.ctx, attachment_id)
+}
+
+attachment_store_artifact :: proc(repo: ^Bot_Repository, attachment_id, artifact_id, updated_at: string) -> (artifact_id_now: string, err: domain.Domain_Error) {
+	if repo == nil || repo.attachment_store_artifact == nil do return "", domain.domain_error(.Internal_Error, "bot repository is not configured")
+	return repo.attachment_store_artifact(repo.ctx, attachment_id, artifact_id, updated_at)
+}
+
+attachment_set_state :: proc(repo: ^Bot_Repository, attachment_id: string, from, to: domain.Channel_Attachment_State, updated_at: string) -> (changed: bool, err: domain.Domain_Error) {
+	if repo == nil || repo.attachment_set_state == nil do return false, domain.domain_error(.Internal_Error, "bot repository is not configured")
+	return repo.attachment_set_state(repo.ctx, attachment_id, from, to, updated_at)
 }

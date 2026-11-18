@@ -663,12 +663,13 @@ MIGRATION_208_EXTENSION_VERSION_SYNC :: #load("migrations/208_extension_version_
 
 MIGRATION_210_AGENT_WRITES :: #load("migrations/210_agent_writes.sql", string)
 MIGRATION_211_BOTS_WHATSAPP :: #load("migrations/211_bots_whatsapp.sql", string)
+MIGRATION_212_BOTS_MEDIA :: #load("migrations/212_bots_media.sql", string)
 
 MIGRATION_209_BOTS :: #load("migrations/209_bots.sql", string)
 
 MIGRATION_209_EXTENSION_VERSION_SYNC :: #load("migrations/209_extension_version_sync_0_5_55.sql", string)
 
-migration_order :: [216]string {
+migration_order :: [217]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
 	"003_device_tokens.sql",
@@ -885,6 +886,7 @@ migration_order :: [216]string {
 	"209_bots.sql",
 	"210_agent_writes.sql",
 	"211_bots_whatsapp.sql",
+	"212_bots_media.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -929,6 +931,11 @@ run_migrations :: proc(
         }
 		// 211 commits atomically; repair a crash before its ledger insert.
 		if name == "211_bots_whatsapp.sql" && sqlite_object_exists(conn, "channel_push_events_pending") {
+			mark_migration_applied(conn, name)
+			continue
+		}
+		// 212 commits atomically; its last index lets startup repair a crash before its ledger insert.
+		if name == "212_bots_media.sql" && sqlite_object_exists(conn, "channel_attachments_bot") {
 			mark_migration_applied(conn, name)
 			continue
 		}
@@ -1339,7 +1346,7 @@ run_migrations :: proc(
 			)
 		}
 		if !exec(conn, sql) {
-			if name == "169_provider_profiles.sql" || name == "211_bots_whatsapp.sql" do _ = exec(conn, "ROLLBACK;")
+			if name == "169_provider_profiles.sql" || name == "211_bots_whatsapp.sql" || name == "212_bots_media.sql" do _ = exec(conn, "ROLLBACK;")
 			delete(sql)
 			return false, domain.domain_error(
 				.Internal_Error,
@@ -1389,6 +1396,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 			return string(data)
 		}
 	}
+	if name == "212_bots_media.sql" do return strings.clone(MIGRATION_212_BOTS_MEDIA)
 	if name == "211_bots_whatsapp.sql" do return strings.clone(MIGRATION_211_BOTS_WHATSAPP)
 	if name == "210_agent_writes.sql" do return strings.clone(MIGRATION_210_AGENT_WRITES)
 	if name == "209_bots.sql" do return strings.clone(MIGRATION_209_BOTS)

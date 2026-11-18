@@ -15,6 +15,11 @@ Bot_Repo_SQLite :: struct {
 new_bot_repository :: proc(impl: ^Bot_Repo_SQLite, conn: ^Conn) -> iface.Bot_Repository {
 	impl.conn = conn
 	return iface.Bot_Repository {
+		attachments_for_messages = attachments_for_messages_sqlite,
+		attachment_get = attachment_get_sqlite,
+		attachment_store_artifact = attachment_store_artifact_sqlite,
+		attachment_set_state = attachment_set_state_sqlite,
+
 		binding_get = binding_get_sqlite,
 		binding_get_active_by_user = binding_get_active_by_user_sqlite,
 		bindings_active_for_owner = bindings_active_for_owner_sqlite,
@@ -567,6 +572,14 @@ pairing_delete_for_owner_sqlite :: proc(ctx: rawptr, owner_user_id: string, prov
 
 message_insert_outbound_sqlite :: proc(ctx: rawptr, msg: domain.Channel_Message) -> domain.Domain_Error {
 	conn := bot_repo_conn(ctx)
+	if conn == nil || conn.db == nil do return bot_repo_error(conn)
+	mutex := sqlite3_db_mutex(conn.db)
+	sqlite3_mutex_enter(mutex)
+	defer sqlite3_mutex_leave(mutex)
+	with_attachment := msg.attachment.kind != .None
+	released := false
+	if with_attachment && !exec(conn, "SAVEPOINT channel_message_insert;") do return bot_repo_error(conn)
+	defer if with_attachment && !released do exec(conn, "ROLLBACK TO channel_message_insert; RELEASE channel_message_insert;")
 	changes, err := bot_repo_write(
 		conn,
 		`INSERT INTO channel_messages (message_id, binding_id, owner_user_id, bot_id, direction, provider_update_key, external_message_id, body, body_purged, send_state, send_error, created_at, read_at, replied_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
@@ -588,7 +601,14 @@ message_insert_outbound_sqlite :: proc(ctx: rawptr, msg: domain.Channel_Message)
 		},
 	)
 	_ = changes
-	return err
+	if err.code != .None do return err
+	if with_attachment {
+		attachment_err := bot_repo_insert_attachment(conn, msg)
+		if attachment_err.code != .None do return attachment_err
+		if !exec(conn, "RELEASE channel_message_insert;") do return bot_repo_error(conn)
+		released = true
+	}
+	return {}
 }
 
 message_set_send_result_sqlite :: proc(
@@ -670,7 +690,9 @@ messages_purge_binding_sqlite :: proc(ctx: rawptr, binding_id: string) -> domain
 		"UPDATE channel_messages SET send_state = 'failed', send_error = 'held_expired' WHERE binding_id = ? AND send_state = 'held' AND body_purged = 1;",
 		{binding_id},
 	)
-	return held_err
+	if held_err.code != .None do return held_err
+	_, attachment_err := bot_repo_write(conn, "DELETE FROM channel_attachments WHERE message_id IN (SELECT message_id FROM channel_messages WHERE body_purged = 1);", nil)
+	return attachment_err
 }
 
 messages_purge_older_than_sqlite :: proc(ctx: rawptr, cutoff: string) -> (int, domain.Domain_Error) {
@@ -686,7 +708,9 @@ messages_purge_older_than_sqlite :: proc(ctx: rawptr, cutoff: string) -> (int, d
 		"UPDATE channel_messages SET send_state = 'failed', send_error = 'held_expired' WHERE send_state = 'held' AND body_purged = 1;",
 		nil,
 	)
-	return count, held_err
+	if held_err.code != .None do return count, held_err
+	_, attachment_err := bot_repo_write(conn, "DELETE FROM channel_attachments WHERE message_id IN (SELECT message_id FROM channel_messages WHERE body_purged = 1);", nil)
+	return count, attachment_err
 }
 
 delivery_get_open_sqlite :: proc(ctx: rawptr, bot_id: string) -> (domain.Bot_Delivery, bool, domain.Domain_Error) {
@@ -1106,7 +1130,13 @@ inbound_store_batch_sqlite :: proc(
 			},
 		)
 		if err.code != .None do return nil, err
-		if changes == 1 do append(&inserted_rows, strings.clone(row.message_id))
+		if changes == 1 {
+			if row.attachment.kind != .None {
+				attachment_err := bot_repo_insert_attachment(conn, row)
+				if attachment_err.code != .None do return nil, attachment_err
+			}
+			append(&inserted_rows, strings.clone(row.message_id))
+		}
 	}
 	_, cursor_err := bot_repo_write(
 		conn,
@@ -1233,7 +1263,7 @@ push_events_insert_sqlite :: proc(
 	for e in events {
 		changes, write_err := bot_repo_write(
 			conn,
-			`INSERT OR IGNORE INTO channel_push_events (provider, event_key, kind, external_chat_id, external_user_id, external_message_id, sender_display, body, provider_code, provider_time, received_at, processed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+			`INSERT OR IGNORE INTO channel_push_events (provider, event_key, kind, external_chat_id, external_user_id, external_message_id, sender_display, body, provider_code, provider_time, received_at, processed_at, media_kind, media_ref, media_name, media_mime, media_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
 			{
 				e.provider,
 				e.event_key,
@@ -1247,6 +1277,7 @@ push_events_insert_sqlite :: proc(
 				e.provider_time,
 				e.received_at,
 				e.processed_at,
+				domain.channel_media_kind_text(e.media_kind), e.media_ref, e.media_name, e.media_mime, fmt.tprintf("%d", e.media_size),
 			},
 		)
 		if write_err.code != .None do return 0, write_err
@@ -1268,7 +1299,7 @@ push_events_pending_sqlite :: proc(
 	conn := bot_repo_conn(ctx)
 	stmt, err := bot_repo_prepare(
 		conn,
-		`SELECT seq, provider, event_key, kind, external_chat_id, external_user_id, external_message_id, sender_display, body, provider_code, provider_time, received_at, processed_at FROM channel_push_events WHERE provider = ? AND processed_at = '' ORDER BY seq LIMIT ?;`,
+		`SELECT seq, provider, event_key, kind, external_chat_id, external_user_id, external_message_id, sender_display, body, provider_code, provider_time, received_at, processed_at, media_kind, media_ref, media_name, media_mime, media_size FROM channel_push_events WHERE provider = ? AND processed_at = '' ORDER BY seq LIMIT ?;`,
 		{provider, fmt.tprintf("%d", limit)},
 	)
 	if err.code != .None do return nil, err
@@ -1297,6 +1328,11 @@ push_events_pending_sqlite :: proc(
 		row.provider_time = column_text(stmt, 10)
 		row.received_at = column_text(stmt, 11)
 		row.processed_at = column_text(stmt, 12)
+		row.media_kind, _ = domain.channel_media_kind_from_text(column_text_unowned(stmt, 13))
+		row.media_ref = column_text(stmt, 14)
+		row.media_name = column_text(stmt, 15)
+		row.media_mime = column_text(stmt, 16)
+		row.media_size = sqlite3_column_int64(stmt, 17)
 		append(&rows, row)
 	}
 	keep = true
@@ -1343,7 +1379,16 @@ push_batch_commit_sqlite :: proc(
 			},
 		)
 		if write_err.code != .None do return nil, write_err
-		if changes == 1 do append(&ids, strings.clone(row.message_id))
+		if changes == 1 {
+			if row.attachment.kind != .None {
+				// This INSERT fixes the persisted message direction to inbound.
+				stored_row := row
+				stored_row.direction = .Inbound
+				attachment_err := bot_repo_insert_attachment(conn, stored_row)
+				if attachment_err.code != .None do return nil, attachment_err
+			}
+			append(&ids, strings.clone(row.message_id))
+		}
 	}
 	for touch in touches {
 		_, write_err := bot_repo_write(
@@ -1356,7 +1401,7 @@ push_batch_commit_sqlite :: proc(
 	for seq in processed_seqs {
 		_, write_err := bot_repo_write(
 			conn,
-			"UPDATE channel_push_events SET processed_at = ?, body = '' WHERE seq = ? AND processed_at = '';",
+			"UPDATE channel_push_events SET processed_at = ?, body = '', media_ref = '', media_name = '' WHERE seq = ? AND processed_at = '';",
 			{processed_at, fmt.tprintf("%d", seq)},
 		)
 		if write_err.code != .None do return nil, write_err
@@ -1413,4 +1458,116 @@ message_get_outbound_by_external_sqlite :: proc(
 	defer delete(rows)
 	if err.code != .None || len(rows) == 0 do return {}, false, err
 	return rows[0], true, {}
+}
+
+// Attachments are written only after the message INSERT changed one row. Identity
+// and timestamps come from that row, never from caller-supplied attachment metadata.
+bot_repo_insert_attachment :: proc(conn: ^Conn, row: domain.Channel_Message) -> domain.Domain_Error {
+	a := row.attachment
+	_, err := bot_repo_write(conn,
+		"INSERT INTO channel_attachments (attachment_id, message_id, binding_id, owner_user_id, bot_id, direction, kind, file_ref, name, mime, size_bytes, artifact_id, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+		{a.attachment_id, row.message_id, row.binding_id, row.owner_user_id, row.bot_id, domain.channel_direction_text(row.direction), domain.channel_media_kind_text(a.kind), a.file_ref, a.name, a.mime, fmt.tprintf("%d", a.size_bytes), a.artifact_id, domain.channel_attachment_state_text(a.state), row.created_at, row.created_at})
+	return err
+}
+
+BOT_ATTACHMENT_COLUMNS :: "attachment_id, message_id, binding_id, owner_user_id, bot_id, direction, kind, file_ref, name, mime, size_bytes, artifact_id, state, created_at, updated_at"
+
+bot_repo_scan_attachment :: proc(stmt: sqlite3_stmt) -> domain.Channel_Attachment {
+	a: domain.Channel_Attachment
+	a.attachment_id = column_text(stmt, 0)
+	a.message_id = column_text(stmt, 1)
+	a.binding_id = column_text(stmt, 2)
+	a.owner_user_id = column_text(stmt, 3)
+	a.bot_id = column_text(stmt, 4)
+	a.direction, _ = domain.channel_direction_from_text(column_text_unowned(stmt, 5))
+	a.kind, _ = domain.channel_media_kind_from_text(column_text_unowned(stmt, 6))
+	a.file_ref = column_text(stmt, 7)
+	a.name = column_text(stmt, 8)
+	a.mime = column_text(stmt, 9)
+	a.size_bytes = sqlite3_column_int64(stmt, 10)
+	a.artifact_id = column_text(stmt, 11)
+	a.state, _ = domain.channel_attachment_state_from_text(column_text_unowned(stmt, 12))
+	a.created_at = column_text(stmt, 13)
+	a.updated_at = column_text(stmt, 14)
+	return a
+}
+
+attachments_for_messages_sqlite :: proc(ctx: rawptr, message_ids: []string) -> ([]domain.Channel_Attachment, domain.Domain_Error) {
+	if len(message_ids) == 0 do return nil, {}
+	conn := bot_repo_conn(ctx)
+	rows := make([dynamic]domain.Channel_Attachment)
+	keep := false
+	defer if !keep {
+		for &row in rows do domain.channel_attachment_destroy(&row)
+		delete(rows)
+	}
+	for offset := 0; offset < len(message_ids); offset += 500 {
+		ids := message_ids[offset:min(offset+500, len(message_ids))]
+		query := strings.builder_make(context.temp_allocator)
+		strings.write_string(&query, "SELECT ")
+		strings.write_string(&query, BOT_ATTACHMENT_COLUMNS)
+		strings.write_string(&query, " FROM channel_attachments WHERE message_id IN (")
+		for _, i in ids {
+			if i > 0 do strings.write_byte(&query, ',')
+			strings.write_byte(&query, '?')
+		}
+		strings.write_string(&query, ");")
+		stmt, err := bot_repo_prepare(conn, strings.to_string(query), ids)
+		if err.code != .None do return nil, err
+		// A block scopes the finalize to this chunk.
+		{
+			defer sqlite3_finalize(stmt)
+			for {
+				rc := sqlite3_step(stmt)
+				if rc == SQLITE_DONE do break
+				if rc != SQLITE_ROW do return nil, bot_repo_error(conn)
+				append(&rows, bot_repo_scan_attachment(stmt))
+			}
+		}
+	}
+	keep = true
+	return rows[:], {}
+}
+
+attachment_get_sqlite :: proc(ctx: rawptr, attachment_id: string) -> (domain.Channel_Attachment, bool, domain.Domain_Error) {
+	conn := bot_repo_conn(ctx)
+	stmt, err := bot_repo_prepare(conn, fmt.tprintf("SELECT %s FROM channel_attachments WHERE attachment_id = ?;", BOT_ATTACHMENT_COLUMNS), {attachment_id})
+	if err.code != .None do return {}, false, err
+	defer sqlite3_finalize(stmt)
+	rc := sqlite3_step(stmt)
+	if rc == SQLITE_DONE do return {}, false, {}
+	if rc != SQLITE_ROW do return {}, false, bot_repo_error(conn)
+	return bot_repo_scan_attachment(stmt), true, {}
+}
+
+attachment_store_artifact_sqlite :: proc(ctx: rawptr, attachment_id, artifact_id, updated_at: string) -> (artifact_id_now: string, err: domain.Domain_Error) {
+	conn := bot_repo_conn(ctx)
+	if conn == nil || conn.db == nil do return "", bot_repo_error(conn)
+	mutex := sqlite3_db_mutex(conn.db)
+	sqlite3_mutex_enter(mutex)
+	defer sqlite3_mutex_leave(mutex)
+	if !exec(conn, "SAVEPOINT channel_attachment_store;") do return "", bot_repo_error(conn)
+	released := false
+	defer if !released do exec(conn, "ROLLBACK TO channel_attachment_store; RELEASE channel_attachment_store;")
+	_, write_err := bot_repo_write(conn, "UPDATE channel_attachments SET artifact_id = ?, state = 'stored', updated_at = ? WHERE attachment_id = ? AND direction = 'inbound' AND state = 'pending';", {artifact_id, updated_at, attachment_id})
+	if write_err.code != .None do return "", write_err
+	stmt, select_err := bot_repo_prepare(conn, "SELECT artifact_id FROM channel_attachments WHERE attachment_id = ?;", {attachment_id})
+	if select_err.code != .None do return "", select_err
+	defer sqlite3_finalize(stmt)
+	rc := sqlite3_step(stmt)
+	if rc != SQLITE_ROW && rc != SQLITE_DONE do return "", bot_repo_error(conn)
+	result := ""
+	if rc == SQLITE_ROW do result = column_text(stmt, 0)
+	if !exec(conn, "RELEASE channel_attachment_store;") {
+		delete(result)
+		return "", bot_repo_error(conn)
+	}
+	released = true
+	return result, {}
+}
+
+attachment_set_state_sqlite :: proc(ctx: rawptr, attachment_id: string, from, to: domain.Channel_Attachment_State, updated_at: string) -> (changed: bool, err: domain.Domain_Error) {
+	count, write_err := bot_repo_write(bot_repo_conn(ctx), "UPDATE channel_attachments SET state = ?, updated_at = ? WHERE attachment_id = ? AND state = ?;",
+		{domain.channel_attachment_state_text(to), updated_at, attachment_id, domain.channel_attachment_state_text(from)})
+	return count == 1, write_err
 }
