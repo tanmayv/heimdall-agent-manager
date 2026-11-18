@@ -145,6 +145,7 @@ acp_chat_chunk :: proc(r:^ACP_Runtime,text:string) {
     if len(d.text)+len(text)>contracts.ACP_ASSISTANT_MAX_BYTES {
         // Keep the last valid partial snapshot; an oversized turn never succeeds.
         acp_runtime_replace(&d.status,"failed"); acp_runtime_replace(&d.stop_reason,"assistant_message_too_large")
+        acp_tools_finish(r,"assistant_message_too_large")
         acp_chat_flush(r,true)
         raw:=acp_event_json(struct{sessionId:string}{r.session})
         acp_rpc_notify(r.client,"session/cancel",raw)

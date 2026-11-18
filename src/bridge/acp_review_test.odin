@@ -6,6 +6,116 @@ import "core:strings"
 import "core:sync"
 import "core:testing"
 
+t5_tool_event_count :: proc(event,id:string) -> int {
+    count:=0
+    event_field:=fmt.tprintf("\"event\":\"%s\"",event)
+    id_field:=fmt.tprintf("\"use_id\":\"%s\"",id)
+    for raw in t5_events {
+        if strings.contains(raw,event_field) && strings.contains(raw,id_field) do count+=1
+    }
+    return count
+}
+
+@(test)
+t5_acp_parallel_large_tools_degrade_payload_without_failing_turn :: proc(t:^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex);defer sync.mutex_unlock(&bridge_test_config_mutex)
+    prev:=acp_events_ingest;acp_events_ingest=t5_ingest;defer {acp_events_ingest=prev;t5_reset_events()}
+    c:ACP_RPC_Client;r:=ACP_Runtime{client=&c,session="parallel",provider="claude"}
+    defer {context.allocator=runtime.heap_allocator();acp_tools_destroy(&r);acp_state_delete(&c.state);delete(r.d.error)}
+    input:=strings.repeat("i",30000,context.temp_allocator)
+    content:=strings.repeat("c",50000,context.temp_allocator)
+    legacy:=make([dynamic]ACP_Tool_State,allocator=context.temp_allocator)
+    // Sixteen concurrent ~80 KB Writes exceed even the input-only estimate,
+    // exercising both degradation stages while keeping every tool open.
+    for i in 0..<16 {
+        update:=acp_event_object(fmt.tprintf("{{\"toolCallId\":\"write-%d\",\"name\":\"Write\",\"status\":\"pending\",\"rawInput\":{{\"content\":\"%s\"}},\"content\":[{{\"type\":\"text\",\"text\":\"%s\"}}]}}",i,input,content))
+        append(&legacy,ACP_Tool_State{id=fmt.tprintf("write-%d",i),name="Write",status="pending",started=true,input=acp_event_json(update["rawInput"]),content=acp_event_json(update["content"])})
+        acp_events_tool(&r,update);acp_events_tool(&r,update)
+        testing.expect_value(t,r.d.error,"")
+        testing.expect_value(t,r.tools.active,i+1)
+        testing.expect(t,r.tools.bytes<=ACP_TOOLS_JOURNAL_MAX)
+    }
+    dropped_input:=false
+    for _,tool in r.tools.entries {
+        if tool.input=="" && tool.payload_truncated do dropped_input=true
+        testing.expect(t,tool.name=="Write" && tool.started && !tool.ended)
+    }
+    testing.expect(t,dropped_input,"input is discarded only after output/content cannot satisfy the budget")
+    testing.expect(t,acp_tools_checkpoint(&r,&c.state))
+    restored:=ACP_Runtime{client=&c,session="parallel",provider="claude"};defer acp_tools_destroy(&restored)
+    // Recover a well-formed older journal that predates payload degradation.
+    testing.expect(t,acp_tools_prepare(&restored,acp_event_json(legacy)))
+    testing.expect_value(t,restored.tools.active,16)
+    testing.expect(t,restored.tools.bytes<=ACP_TOOLS_JOURNAL_MAX)
+    for i in 0..<16 {
+        id:=fmt.tprintf("write-%d",i)
+        update:=acp_event_object(fmt.tprintf("{{\"toolCallId\":\"%s\",\"status\":\"completed\"}}",id))
+        acp_events_tool(&restored,update);acp_events_tool(&restored,update)
+        testing.expect_value(t,t5_tool_event_count("tool.start",id),1)
+        testing.expect_value(t,t5_tool_event_count("tool.end",id),1)
+    }
+    testing.expect_value(t,restored.d.error,"")
+    testing.expect_value(t,restored.tools.active,0)
+    truncated_ends:=0
+    for raw in t5_events do if strings.contains(raw,`"telemetry_truncated":true`) do truncated_ends+=1
+    testing.expect(t,truncated_ends>0,"terminal telemetry identifies discarded payload detail")
+    testing.expect(t,acp_tools_checkpoint(&restored,&c.state))
+}
+
+@(test)
+t5_acp_unfinished_tools_close_on_turn_end_and_capacity_is_nonfatal :: proc(t:^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex);defer sync.mutex_unlock(&bridge_test_config_mutex)
+    prev:=acp_events_ingest;acp_events_ingest=t5_ingest;defer {acp_events_ingest=prev;t5_reset_events()}
+    c:ACP_RPC_Client;r:=ACP_Runtime{client=&c,session="cancel",provider="claude"}
+    defer {context.allocator=runtime.heap_allocator();acp_tools_destroy(&r);acp_state_delete(&c.state);delete(r.d.error)}
+    for turn in 0..<180 {
+        for i in 0..<4 {
+            acp_events_tool(&r,acp_event_object(fmt.tprintf("{{\"toolCallId\":\"turn-%d-%d\",\"name\":\"Bash\",\"status\":\"in_progress\"}}",turn,i)))
+        }
+        result:=`{"stopReason":"cancelled"}`;error:=""
+        if turn%3==1 { result="";error="acp_rpc_failed" }
+        if turn%3==2 do result=`{"stopReason":"end_turn"}`
+        acp_events_prompt_finished(&r,"input",result,error)
+        acp_events_prompt_finished(&r,"input",result,error)
+        testing.expect_value(t,r.tools.active,0)
+        for i in 0..<4 {
+            id:=fmt.tprintf("turn-%d-%d",turn,i)
+            acp_events_tool(&r,acp_event_object(fmt.tprintf("{{\"toolCallId\":\"%s\",\"status\":\"completed\"}}",id)))
+            testing.expect_value(t,t5_tool_event_count("tool.start",id),1)
+            testing.expect_value(t,t5_tool_event_count("tool.end",id),1)
+        }
+        testing.expect_value(t,r.d.error,"")
+        testing.expect(t,len(r.tools.entries)<=ACP_TOOLS_RECENT_MAX && acp_tools_checkpoint(&r,&c.state))
+    }
+    for reason in ([]string{"cancelled","acp_rpc_failed","end_turn"}) {
+        found:=false
+        for raw in t5_events do if strings.contains(raw,fmt.tprintf("\"stop_reason\":\"%s\"",reason)) && strings.contains(raw,`"outcome":"failure"`) do found=true
+        testing.expect(t,found,"orphan tool ends retain the cancellation, failure or completion reason")
+    }
+    // A partial record with no status emitted no start. Once its turn ends,
+    // a late terminal update must not invent an unmatched new start.
+    acp_events_tool(&r,acp_event_object(`{"toolCallId":"never-started","name":"Bash"}`))
+    acp_events_prompt_finished(&r,"input",`{"stopReason":"cancelled"}`,"")
+    acp_events_tool(&r,acp_event_object(`{"toolCallId":"never-started","status":"completed"}`))
+    testing.expect_value(t,t5_tool_event_count("tool.start","never-started"),0)
+    testing.expect_value(t,t5_tool_event_count("tool.end","never-started"),0)
+    testing.expect_value(t,r.tools.active,0)
+    t5_reset_events()
+    for i in 0..<520 {
+        acp_events_tool(&r,acp_event_object(fmt.tprintf("{{\"toolCallId\":\"capacity-%d\",\"name\":\"Bash\",\"status\":\"pending\"}}",i)))
+        testing.expect(t,r.tools.active<=ACP_TOOLS_ACTIVE_MAX && r.d.error=="")
+    }
+    acp_events_prompt_finished(&r,"input",`{"stopReason":"cancelled"}`,"")
+    testing.expect_value(t,r.tools.active,0)
+    for i in 0..<520 {
+        id:=fmt.tprintf("capacity-%d",i)
+        testing.expect_value(t,t5_tool_event_count("tool.start",id),1)
+        testing.expect_value(t,t5_tool_event_count("tool.end",id),1)
+    }
+    testing.expect(t,len(r.tools.entries)<=ACP_TOOLS_RECENT_MAX && acp_tools_checkpoint(&r,&c.state))
+    testing.expect_value(t,r.d.error,"")
+}
+
 @(test)
 t5_acp_tool_history_compacts_and_restores_after_a_thousand_calls :: proc(t:^testing.T) {
     sync.mutex_lock(&bridge_test_config_mutex);defer sync.mutex_unlock(&bridge_test_config_mutex)
