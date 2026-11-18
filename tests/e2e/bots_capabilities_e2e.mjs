@@ -69,7 +69,7 @@ Object.assign(env,{
 });
 const fake=createFakeTelegram({token:'TEST:FAKE',botUsername:'ninjy_test_bot'});
 const hubDir=path.join(state,'hubs/bots-cap-e2e');
-let headers, keyring, app;
+let headers, keyring, app, otherApp;
 const nativeFetch=globalThis.fetch;
 async function request(route,method='GET',body,expected=200) {
   const res=await nativeFetch(api+'/api/v1'+route,{method,headers:{...headers,'content-type':'application/json'},
@@ -270,12 +270,18 @@ try {
     const reply=await command("shell serve --cmd 'python3 -m http.server 18777' --cwd /tmp --port 18777 --label e2e");
     const preview=findField(reply.result,'preview_url'), session=findField(reply.result,'session_id');
     assert.ok(preview);assert.ok(session);
-    const response=await nativeFetch(preview,{headers,signal:AbortSignal.timeout(30000)});
+    const previewPath=new URL(preview).pathname;
+    assert.equal(previewPath,'/api/v1/preview/'+session+'/');
+    // Revision 2: the local Vite dev UI deliberately bypasses preview requests
+    // and serves index.html. Check the unchanged returned path on its API upstream.
+    // Real deployment preview origins require the separate staging check.
+    const checkedPreview=new URL(previewPath,api).href;
+    const response=await nativeFetch(checkedPreview,{headers,signal:AbortSignal.timeout(30000)});
     assert.equal(response.status,200);
     const listing=await response.text();assert.match(listing,/Directory listing/);
     const killed=await command('shell kill '+session);
     const terminal=await poll(async()=>{
-      const view=await request('/shells/'+session);
+      const {session:view}=await request('/shells/'+session);
       return ['exited','killed','completed','failed'].includes(view.status)&&view;
     },'shell terminal');
     // Verify section 9.2's marked same-owner cross-bridge server assumption.
@@ -283,15 +289,23 @@ try {
     await run('scripts/local-bridge.sh',['start','--name','bots-cap-e2e-preview','--hub','bots-cap-e2e',
       '--port',String(remotePort),'--local-endpoint-port',String(remoteEp),'--auto-enroll','--isolated-home',
       '--providers','git','--bin-dir',bin]);
+    const remoteHttp=await preferredPort(18778,18800);
     const remote=await command("shell serve --bridge "+bridgeId('bots-cap-e2e-preview')+
-      " --cmd 'python3 -m http.server 18777' --cwd /tmp --port 18777 --label e2e-remote");
+      " --cmd 'python3 -m http.server "+remoteHttp+"' --cwd /tmp --port "+remoteHttp+" --label e2e-remote");
     const remoteSession=findField(remote.result,'session_id');
-    assert.equal((await request('/shells/'+remoteSession)).bridge_id,bridgeId('bots-cap-e2e-preview'));
-    const remoteResponse=await nativeFetch(findField(remote.result,'preview_url'),{headers,signal:AbortSignal.timeout(30000)});
+    assert.equal((await request('/shells/'+remoteSession)).session.bridge_id,bridgeId('bots-cap-e2e-preview'));
+    const remotePath=new URL(findField(remote.result,'preview_url')).pathname;
+    assert.equal(remotePath,'/api/v1/preview/'+remoteSession+'/');
+    const remoteResponse=await poll(async()=>{
+      const response=await nativeFetch(new URL(remotePath,api),{headers,signal:AbortSignal.timeout(30000)});
+      // The RPC acknowledges process creation before Python has bound its socket.
+      if(response.status===502) {await response.text();return false;}
+      return response;
+    },'remote preview socket ready',15000);
     assert.equal(remoteResponse.status,200);
     assert.match(await remoteResponse.text(),/Directory listing/);
     await command('shell kill '+remoteSession);
-    return {reply,preview,status:response.status,listing,killed,terminal,remote,remoteStatus:remoteResponse.status};
+    return {reply,preview,checkedPreview,status:response.status,listing,killed,terminal,remote,remoteStatus:remoteResponse.status};
   });
   await step(10,'second owner cannot update project or wake coordinator',async()=>{
     // The mock provider supports login_hint; prove these sessions have different owners.
@@ -300,6 +314,8 @@ try {
     headers=sessionHeaders(await hubLogin(api,'paid'),process.env.HEIMDALL_LOCAL_UI_ORIGIN);
     const ownerB=await request('/me');
     assert.notEqual(ownerA.user_id,ownerB.user_id);
+    otherApp=await openSeedApprover({api,key:path.join(hubDir,'approver/users/paid/device.json'),user:'paid'});
+    setActiveVaultKey(await importKeyring(otherApp.keyringBytes));
     await run('scripts/local-bridge.sh',['start',...bridgeArgs('bots-cap-e2e-b'),'--user','paid']);
     await profile(bridgeId('bots-cap-e2e-b'),'pi','reply');
     await profile(bridgeId('bots-cap-e2e-b'),'bots-good','reply');
@@ -325,6 +341,7 @@ try {
       });
     }
     headers=savedHeaders;
+    setActiveVaultKey(keyring);
     const before=await request('/projects/'+projectId);
     const beforeMessages=await sql('SELECT count(*) AS n FROM chat_messages WHERE conversation_id=?',[coordinator.conversation_id]);
     const patch=await relay('PATCH','/api/v1/projects/'+projectId,{description:'forbidden'});
@@ -356,5 +373,6 @@ try {
   fake.closeAllConnections();
   if(fake.listening) await new Promise(r=>fake.close(r));
   if(app) app.keyringBytes.fill(0);
+  if(otherApp) otherApp.keyringBytes.fill(0);
   log('Evidence retained at '+root);
 }
