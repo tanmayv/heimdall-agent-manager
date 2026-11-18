@@ -10,6 +10,7 @@ import base64 "core:encoding/base64"
 import json "core:encoding/json"
 import "core:strings"
 import "core:time"
+import "core:unicode/utf8"
 import local_socket "odin_test:lib/local_socket"
 import vault "odin_test:lib/vault"
 import httpc "odin_test:lib/httpc"
@@ -149,6 +150,12 @@ ctl_v2_agents :: proc(endpoint, token: string, tokens, args: []string) {
 		ctl_agent_call(endpoint, token, "agent.agents.list", "{}")
 	case "identity":
 		sub := pos(tokens, 1)
+		if sub == "show" || sub == "update" {
+			req, valid, message := ctl_agents_identity_request(sub, pos(tokens, 2), args)
+			if !valid { fmt.println(ctl_error_json(message)); os.exit(2) }
+			ctl_capability_request(req, args)
+			return
+		}
 		if sub == "create" {
 			name := option_value(args, "--name", "")
 			if name == "" { print_agent_help([]string{"agents"}); return }
@@ -980,14 +987,20 @@ ctl_v2_memory :: proc(endpoint, token: string, tokens, args: []string) {
 		if memory_id == "" do memory_id = option_value(args, "--memory-id", option_value(args, "--memory", option_value(args, "--id", "")))
 		if memory_id == "" { print_agent_help([]string{"memory"}); return }
 		ctl_agent_memory_content(endpoint, token, memory_id, args)
-	case "propose", "create":
+	case "create", "update", "archive":
+		req, valid, message := ctl_memory_write_request(verb, pos(tokens, 1), args)
+		if !valid { fmt.println(ctl_error_json(message)); os.exit(2) }
+		ctl_capability_request(req, args)
+	case "propose":
 		mem_type := option_value(args, "--type", "")
 		title := option_value(args, "--title", "")
 		if mem_type == "" || title == "" {
 			fmt.println("usage: ham-ctl memory propose --type <type> --title <title> [--description <text>] [--body <text>] [--evidence <text>] [--agent-ids <id,...>] [--project-ids <id,...>] [--bridge-ids <id,...>] [--template-ids <id,...>]\n  Scope flags target LISTS (repeatable or comma-separated); an omitted dimension applies to all (agent defaults to the caller's own).")
 			return
 		}
-		ctl_agent_call(endpoint, token, "agent.memory.propose", ctl_agentmode_memory_propose_params(args))
+		params := ctl_agentmode_memory_propose_params(args)
+		defer delete(params)
+		ctl_agent_memory_call_and_decrypt(endpoint, token, "agent.memory.propose", params, args)
 	case:
 		print_agent_help([]string{"memory"})
 	}
@@ -1363,6 +1376,8 @@ ctl_agentmode_memory_list_params :: proc(args: []string) -> string {
 // bridge_ids/template_ids. Every dimension accepts repeated flags AND/OR
 // comma-separated values, plus singular and plural spellings.
 ctl_agentmode_memory_propose_params :: proc(args: []string) -> string {
+	allocator := context.allocator
+	context.allocator = context.temp_allocator
 	fields := make([dynamic]string)
 	mem_type := option_value(args, "--type", "")
 	title := option_value(args, "--title", "")
@@ -1370,19 +1385,7 @@ ctl_agentmode_memory_propose_params :: proc(args: []string) -> string {
 	body := option_value(args, "--body", "")
 	ev := option_value(args, "--evidence", "")
 
-	keyring := ctl_vault_keyring_for_write(args)
-	if !is_vault_armored(title) {
-		title = ctl_seal_or_exit(title, keyring)
-	}
-	if desc != "" && !is_vault_armored(desc) {
-		desc = ctl_seal_or_exit(desc, keyring)
-	}
-	if body != "" && !is_vault_armored(body) {
-		body = ctl_seal_or_exit(body, keyring)
-	}
-	if ev != "" && !is_vault_armored(ev) {
-		ev = ctl_seal_or_exit(ev, keyring)
-	}
+	title, desc, body, ev = ctl_memory_seal_fields(args, title, desc, body, ev)
 
 	append(&fields, json_kv("type", mem_type))
 	append(&fields, json_kv("title", title))
@@ -1399,7 +1402,7 @@ ctl_agentmode_memory_propose_params :: proc(args: []string) -> string {
 	template_ids := collect_multi_values(args, "--template-id", "--template-ids", "--template", "--templates"); defer delete(template_ids)
 	if len(template_ids) > 0 do append(&fields, json_string_array_field("template_ids", template_ids[:]))
 
-	return json_object_from_slice(fields[:])
+	return strings.clone(json_object_from_slice(fields[:]), allocator)
 }
 
 ctl_agentmode_task_chain_create_params :: proc(args: []string, positional_title: string = "") -> string {
@@ -1932,6 +1935,8 @@ print_help_agents :: proc() {
 	fmt.println("")
 	fmt.println("VERBS")
 	fmt.println("  list                                List durable agent identities.")
+	fmt.println("  identity show <agent-id>")
+	fmt.println("  identity update <agent-id> [--name <name>] [--slug <slug>] [--template <template-id>] [--instructions <text> | --instructions-file <path>] [--permission-mode <yolo|ask>]")
 	fmt.println("  identity create --name <n>          Create a durable agent.")
 	fmt.println("      [--template <id>] [--provider <p>] [--model <t>] [--slug <s>] [--instructions <t>]")
 	fmt.println("  template list                       List agent templates (personas).")
@@ -2192,8 +2197,12 @@ print_help_memory :: proc() {
 	fmt.println("      Print the raw memory body to stdout.")
 	fmt.println("  propose --type <t> --title <t> [--description <t>] [--body <t>] [--evidence <t>]")
 	fmt.println("      [--agent-ids <id,...>] [--project-ids <id,...>] [--bridge-ids <id,...>] [--template-ids <id,...>]")
+	fmt.println("  create --type <type> --title <title> --body <text> [--description <text>] [--evidence <text>] [scope flags]")
+	fmt.println("  update <memory-id> [--type <type>] [--title <title>] [--description <text>] [--body <text>] [--evidence <text>] [scope flags]")
+	fmt.println("  archive <memory-id>")
+	fmt.println("  propose asks the user to approve; create makes an active memory at once.")
 	fmt.println("  Scope flags target LISTS: repeatable (--agent-ids a --agent-ids b) or comma-separated (--agent-ids a,b).")
-	fmt.println("  An omitted dimension applies to all; agent defaults to the caller's own agent. Non-empty = must match one.")
+	fmt.println("  An omitted dimension applies to all; propose defaults agent to the caller's own agent. Non-empty = must match one.")
 	fmt.println("")
 	fmt.println("EXAMPLES")
 	fmt.println("  ham-ctl memory list")
@@ -2336,4 +2345,95 @@ print_help_lease :: proc() {
 	fmt.println("  ham-ctl lease handoff --summary \"half done\" --next-steps \"wire the CLI flag; add tests\"")
 	fmt.println("  ham-ctl lease switch task_123 --summary \"paused after the parser\" --next-steps \"finish the printer\"")
 	fmt.println("  ham-ctl lease block --waiting-on user --reason \"need the staging credentials\"")
+}
+
+// Request builders use the command scratch allocator: request body/path storage
+// lives through the synchronous transport call and is reclaimed with that arena.
+ctl_capability_request :: proc(req: Ctl_Request, args: []string) {
+	transport, ok := resolve_ctl_transport(args)
+	if !ok do os.exit(1)
+	ctl_projects_request_and_decrypt(transport, req, args)
+}
+
+// Keep proposal and direct-write encryption identical, including empty values.
+ctl_memory_seal_fields :: proc(args: []string, title, description, body, evidence: string) -> (string, string, string, string) {
+	context.allocator = context.temp_allocator
+	keyring := ctl_vault_keyring_for_write(args)
+	values := [4]string{title, description, body, evidence}
+	for &value, i in values {
+		if (i == 0 || value != "") && !is_vault_armored(value) {
+			value = ctl_seal_or_exit(value, keyring)
+		}
+	}
+	return values[0], values[1], values[2], values[3]
+}
+
+ctl_memory_write_request :: proc(verb, id: string, args: []string) -> (Ctl_Request, bool, string) {
+	context.allocator = context.temp_allocator
+	if verb == "archive" {
+		if id == "" do return {}, false, "usage: ham-ctl memory archive <memory-id>"
+		return {method = .POST, path = ctl_api("memories", id, "archive"), body = ctl_empty_object_body()}, true, ""
+	}
+	if verb == "create" {
+		for flag in ([]string{"--type", "--title", "--body"}) {
+			if option_value(args, flag, "") == "" do return {}, false, "usage: ham-ctl memory create --type <type> --title <title> --body <text> [--description <text>] [--evidence <text>] [scope flags]"
+		}
+	} else if id == "" {
+		return {}, false, "usage: ham-ctl memory update <memory-id> [fields] [scope flags]"
+	}
+	fields := make(json.Object)
+	title, desc, body, ev := ctl_memory_seal_fields(args,
+		option_value(args, "--title", ""), option_value(args, "--description", ""),
+		option_value(args, "--body", ""), option_value(args, "--evidence", ""))
+	names := [5]string{"type", "title", "description", "body", "evidence"}
+	values := [5]string{option_value(args, "--type", ""), title, desc, body, ev}
+	for name, i in names {
+		if has_flag(args, strings.concatenate({"--", name})) {
+			fields[name] = json.String(values[i])
+		}
+	}
+	for name in ([]string{"agent_ids", "project_ids", "bridge_ids", "template_ids"}) {
+		flag_name, _ := strings.replace_all(name, "_", "-")
+		flag := strings.concatenate({"--", flag_name})
+		if has_flag(args, flag) {
+			ids := collect_multi_values(args, flag)
+			items := make(json.Array, 0, len(ids))
+			for value in ids do append(&items, json.String(value))
+			fields[name] = items
+		}
+	}
+	if verb == "create" {
+		fields["status"] = json.String("active")
+		return {method = .POST, path = ctl_api("memories"), body = httpc.json_body(fields)}, true, ""
+	}
+	return {method = .PATCH, path = ctl_api("memories", id), body = httpc.json_body(fields)}, true, ""
+}
+
+ctl_agents_identity_request :: proc(verb, id: string, args: []string) -> (Ctl_Request, bool, string) {
+	context.allocator = context.temp_allocator
+	usage := "usage: ham-ctl agents identity update <agent-id> [--name <name>] [--slug <slug>] [--template <template-id>] [--instructions <text> | --instructions-file <path>] [--permission-mode <yolo|ask>]"
+	if id == "" do return {}, false, usage
+	if verb == "show" do return {method = .GET, path = ctl_api("agents", id)}, true, ""
+	if has_flag(args, "--instructions") && has_flag(args, "--instructions-file") {
+		return {}, false, "use --instructions or --instructions-file, not both"
+	}
+	if has_flag(args, "--permission-mode") {
+		mode := option_value(args, "--permission-mode", "")
+		if mode != "yolo" && mode != "ask" do return {}, false, "--permission-mode must be yolo or ask"
+	}
+	fields := make(json.Object)
+	flags := [6]string{"--name", "--slug", "--template", "--instructions", "--permission-mode", "--instructions-file"}
+	names := [6]string{"name", "slug", "template_id", "instructions", "permission_mode", "instructions"}
+	for flag, i in flags {
+		if !has_flag(args, flag) do continue
+		value := option_value(args, flag, "")
+		if flag == "--instructions-file" {
+			data, err := os.read_entire_file(value, context.temp_allocator)
+			if err != nil || !utf8.valid_string(string(data)) do return {}, false, "could not read --instructions-file"
+			value = string(data)
+		}
+		fields[names[i]] = json.String(value)
+	}
+	if len(fields) == 0 do return {}, false, usage
+	return {method = .PATCH, path = ctl_api("agents", id), body = httpc.json_body(fields)}, true, ""
 }

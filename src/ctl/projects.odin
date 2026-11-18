@@ -3,15 +3,25 @@ package main
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import json "core:encoding/json"
 import httpc "odin_test:lib/httpc"
 
 ctl_projects_request_and_decrypt :: proc(transport: Ctl_Transport, req: Ctl_Request, args: []string = nil) {
-	resp_str, ok := ctl_tasks_request_local(transport, req)
-	if !ok {
+	context.allocator = context.temp_allocator
+	resp_str: string
+	ok: bool
+	if transport.kind == .User && transport.user_base_url != "" && transport.user_token != "" {
+		status: int
+		resp_str, status, ok = ctl_hub_fetch(transport.hub, req)
+		ok = ok && status >= 200 && status < 300
+	} else {
+		resp_str, ok = ctl_tasks_request_local(transport, req)
+	}
+	if !ok || !ctl_capability_response_ok(resp_str) {
 		if resp_str != "" {
 			fmt.println(resp_str)
 		}
-		return
+		os.exit(1)
 	}
 
 	keyring, key_ok := ctl_read_vault_keyring(args, context.temp_allocator)
@@ -26,8 +36,10 @@ print_projects_help :: proc() {
 	fmt.println("USAGE:")
 	fmt.println("  ham-ctl projects [list]")
 	fmt.println("  ham-ctl projects show <project-id> | --project-id <id>")
-	fmt.println("  ham-ctl projects create --name <name> [--description <text>] [--slug <slug>] [--repo-url <url>] [--vcs-kind <git|jj|none>] [--default-path <path>]")
+	fmt.println("  ham-ctl projects create --name <name> [--description <text>] [--slug <slug>] [--repo-url <url>] [--vcs-kind <git|jj|none>] --default-path <path>")
 	fmt.println("  ham-ctl projects update <project-id> | --project-id <id> [--name <name>] [--description <text>] [--slug <slug>] [--repo-url <url>] [--vcs-kind <git|jj|none>] [--default-path <path>]")
+	fmt.println("  ham-ctl projects archive <project-id>")
+	fmt.println("  ham-ctl projects unarchive <project-id>")
 }
 
 ctl_projects_command :: proc(cmd: []string, args: []string) {
@@ -40,8 +52,12 @@ ctl_projects_command :: proc(cmd: []string, args: []string) {
 		return
 	}
 
+	if action == "create" && !ctl_projects_create_valid(args, option_value(args, "--name", pos(cmd, idx + 1))) {
+		fmt.println(ctl_error_json(CTL_PROJECT_CREATE_USAGE))
+		os.exit(2)
+	}
 	transport, ok := resolve_ctl_transport(args)
-	if !ok do return
+	if !ok do os.exit(1)
 
 	if action == "" || action == "list" {
 		ctl_projects_request_and_decrypt(transport, {method = .GET, path = ctl_api("projects")}, args)
@@ -61,10 +77,6 @@ ctl_projects_command :: proc(cmd: []string, args: []string) {
 
 	if action == "create" {
 		name := option_value(args, "--name", pos(cmd, idx + 1))
-		if name == "" {
-			fmt.println(`{"ok":false,"message":"usage: ham-ctl projects create --name <name> [--description <text>] [--slug <slug>] [--repo-url <url>] [--vcs-kind <git|jj|none>] [--default-path <path>]"}`)
-			return
-		}
 		desc := option_value(args, "--description", option_value(args, "--desc", ""))
 
 		keyring := ctl_vault_keyring_for_write(args)
@@ -108,7 +120,13 @@ ctl_projects_command :: proc(cmd: []string, args: []string) {
 		return
 	}
 
-	fmt.println("usage: ham-ctl projects <list|create|show|update>")
+	if action == "archive" || action == "unarchive" {
+		project_id := pos(cmd, idx + 1)
+		if project_id == "" { fmt.println(ctl_error_json("usage: ham-ctl projects archive|unarchive <project-id>")); os.exit(2) }
+		ctl_projects_request_and_decrypt(transport, ctl_projects_archive_request(project_id, action), args)
+		return
+	}
+	fmt.println("usage: ham-ctl projects <list|create|show|update|archive|unarchive>")
 }
 
 // Ctl_Project_Body: `projects create|update`; only the fields passed are sent
@@ -129,4 +147,25 @@ ctl_project_body :: proc(args: []string) -> Ctl_Project_Body {
 		vcs_kind     = option_value(args, "--vcs-kind", ""),
 		default_path = option_value(args, "--default-path", option_value(args, "--path", "")),
 	}
+}
+
+
+CTL_PROJECT_CREATE_USAGE :: "usage: ham-ctl projects create --name <name> --default-path <path> …"
+
+ctl_projects_create_valid :: proc(args: []string, name: string) -> bool {
+	return name != "" && option_value(args, "--default-path", option_value(args, "--path", "")) != ""
+}
+
+ctl_projects_archive_request :: proc(id, action: string) -> Ctl_Request {
+	return {method = .POST, path = ctl_api("projects", id, action), body = ctl_empty_object_body()}
+}
+
+// Inspect only the envelope's status; nested JSON in an error message is data.
+ctl_capability_response_ok :: proc(response: string) -> bool {
+	value, parsed := ctl_parse_json_document(response)
+	if !parsed do return false
+	obj, object_ok := value.(json.Object)
+	if !object_ok do return false
+	ok, boolean_ok := obj["ok"].(json.Boolean)
+	return boolean_ok && bool(ok)
 }
