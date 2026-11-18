@@ -26,6 +26,7 @@ pub mod debug_ui;
 pub mod detect;
 pub mod dproto;
 pub mod host;
+pub mod pipe_host;
 pub mod ipc;
 #[cfg(windows)]
 mod job;

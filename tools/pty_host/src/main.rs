@@ -314,6 +314,7 @@ fn ctl_spawn(
     argv: Vec<String>,
 ) -> Result<()> {
     let req = SpawnRequest {
+        mode: Default::default(),
         instance: instance.clone(),
         argv,
         cwd,
