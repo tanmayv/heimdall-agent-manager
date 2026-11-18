@@ -44,6 +44,8 @@ export function useAuthSessionState({ dispatch, bootstrapAuth, clearPriorUserCli
   const refreshing = useRef(false);
   // The global fetch observer also reports this hook's own /me probe; those answers are ours.
   const probing = useRef(false);
+  // An auth-failure event that arrived mid-probe. It is our own feedback only if the probe failed too.
+  const probeFailure = useRef(false);
   // A user click that arrived while another user action was settling; replayed by finish().
   const pendingAction = useRef<(() => void) | null>(null);
   const queuedRefresh = useRef(false);
@@ -131,8 +133,13 @@ export function useAuthSessionState({ dispatch, bootstrapAuth, clearPriorUserCli
       const previous = authRef.current;
       const previousId = userId(previous.user) || lastSeenUserRef.current;
       probing.current = true;
+      probeFailure.current = false;
       let next: AuthState;
       try { next = await bootstrapAuth(); } finally { probing.current = false; }
+      // A 401/403/account_mismatch seen mid-probe while the probe itself succeeded came from
+      // another request (our own failed /me would not have authenticated): probe again.
+      if (probeFailure.current && next.status === 'authenticated') queuedRefresh.current = true;
+      probeFailure.current = false;
       if (!valid()) return;
       // REQ-SWFIX-IDENT-1: same account still signed in. Keep the auth object (so the
       // AuthUserProvider tree does not re-render) and do not reboot the vault.
@@ -267,6 +274,9 @@ export function useAuthSessionState({ dispatch, bootstrapAuth, clearPriorUserCli
     saveRoute(previous);
     recordAddAccountIntent();
     window.location.assign(addAccountHref({ pathname: window.location.pathname, search: window.location.search, hash: '#/home' }));
+    // Electron opens the login in a popup and this document stays mounted; a cancelled
+    // popup cannot reach this hook, so never hold the action lock across its lifetime.
+    finish();
   }
 
   useEffect(() => {
@@ -278,7 +288,8 @@ export function useAuthSessionState({ dispatch, bootstrapAuth, clearPriorUserCli
     // in; once signed out the probe's own 401 must not re-queue forever.
     const onAuthFailure = (reason: string) => {
       if (!running.current) refresh(reason);
-      else if (!probing.current && authRef.current.status === 'authenticated') queuedRefresh.current = true;
+      else if (probing.current) probeFailure.current = true;
+      else if (authRef.current.status === 'authenticated') queuedRefresh.current = true;
     };
     const onUnauthenticated = () => onAuthFailure('unauthenticated');
     const onForbidden = () => onAuthFailure('forbidden');

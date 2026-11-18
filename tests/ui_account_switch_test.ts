@@ -185,8 +185,11 @@ async function harness() {
     dispatch({ type: 'heimdall/priorUserClientStateCleared' });
     dispatch(clearUserClientState({ userId: id }));
   };
+  let probeGate: Promise<void> | null = null;
   const bootstrapAuth = async (): Promise<AuthState> => {
     trace.push(`identity ${activeId}`);
+    const answered = activeId;
+    if (probeGate) { const gate = probeGate; probeGate = null; await gate; if (answered && !authFailure) return { status: 'authenticated', user: account(answered, true), error: '' }; }
     if (authFailure) {
       window.dispatchEvent(new dom.window.CustomEvent(`heimdall:api-${authFailure}`));
       return { status: authFailure, user: null, error: '' };
@@ -222,6 +225,7 @@ async function harness() {
     dom, trace, actions, requests, store,
     get session() { return latest; },
     failIdentity(status: 'unauthenticated' | 'forbidden') { authFailure = status; },
+    holdProbe() { const d = deferred<void>(); probeGate = d.promise; return d.resolve; },
     setActive(id: string) { activeId = id; persistence.writeLastSeenUserId(id); },
     setSwitchResponse(fn: () => Promise<Response>) { switchResponse = fn; },
     setLogoutResponse(fn: () => Promise<Response>) { logoutResponse = fn; },
@@ -522,5 +526,32 @@ test('REQ-SWFIX-IDENT-1: a switch clicked during a background refresh is not dro
     });
     await act(async () => { await pending; });
     assert.equal(h.requests.filter((r) => r.url.endsWith('/auth/switch')).length, 1);
+  } finally { await h.cleanup(); }
+});
+
+test('REQ-SWFIX-IDENT-1/ELECTRON-1: a cancelled add-account popup does not lock later switch clicks', async () => {
+  const h = await harness();
+  try {
+    await act(async () => { h.session.addAccount(); });
+    // main.cts clears the intent when the popup closes without returning.
+    window.sessionStorage.clear();
+    let pending!: Promise<void>;
+    await act(async () => { window.dispatchEvent(new h.dom.window.Event('focus')); pending = h.session.switchAccount('usr_b'); });
+    await act(async () => { await pending; });
+    assert.equal(h.requests.filter((r) => r.url.endsWith('/auth/switch')).length, 1, 'the switch click was honoured');
+  } finally { await h.cleanup(); }
+});
+
+test('REQ-SWFIX-IDENT-1/STALE-1: an external auth failure during the /me probe queues another probe', async () => {
+  const h = await harness();
+  try {
+    const release = h.holdProbe();
+    await act(async () => { window.dispatchEvent(new h.dom.window.Event('focus')); });
+    const before = h.trace.filter((t) => t.startsWith('identity ')).length;
+    await act(async () => { window.dispatchEvent(new h.dom.window.CustomEvent('heimdall:api-unauthenticated')); });
+    h.setActive('usr_b'); // another tab switched after /me answered for A
+    await act(async () => { release(); await new Promise((r) => setTimeout(r, 50)); });
+    assert.ok(h.trace.filter((t) => t.startsWith('identity ')).length - before >= 1, 'a follow-up probe ran');
+    assert.equal(h.session.auth.user?.user_id, 'usr_b');
   } finally { await h.cleanup(); }
 });

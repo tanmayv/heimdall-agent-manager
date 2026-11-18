@@ -5,6 +5,7 @@
 import './helpers/vaultEndpointHarness.ts';
 import { makeVaultStore, unlockVault, clearActiveKey, installFetchCapture } from './helpers/vaultEndpointHarness.ts';
 import { test } from 'node:test';
+import { FakeHub, hubApi } from './helpers/vaultDirectoryFixture.ts';
 import assert from 'node:assert/strict';
 
 const dv = await import('../src/ui/services/deviceVault.ts');
@@ -30,35 +31,82 @@ test('REQ-SWFIX-VAULT-1: a keyring install is refused after the session generati
   assert.equal(session.getKeyringSession(), null);
 });
 
-test('REQ-SWFIX-VAULT-1 (RC-1): a refresh for A suspended across stop+boot(B) never touches state', async () => {
-  const kv = ident.memoryDeviceStore();
+test('REQ-SWFIX-VAULT-1 (RC-1): a valid approved refresh for A suspended inside publishChain never installs A\'s keyring after the switch to B', async () => {
+  const hub = new FakeHub('usr_a');
+  const inner = ident.memoryDeviceStore();
+  const root = await ident.createDeviceIdentity(inner, 'usr_a');
+  await hub.genesis(root);
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
+  let armed = true;
+  let suspended!: () => void;
+  const reachedPublish = new Promise<void>((resolve) => { suspended = resolve; });
+  // publishChain's first await is recordObservedReset -> kv.delete(observed reset key).
+  const kv = {
+    get: (k: string) => inner.get(k),
+    put: (k: string, v: unknown) => inner.put(k, v),
+    delete: async (k: string) => {
+      if (armed && /observ/i.test(k)) { armed = false; suspended(); await gate; }
+      return inner.delete(k);
+    },
+  };
+  let dirCalls = 0;
+  const api = hubApi(hub, { fetchVaultDirectory: async () => { dirCalls += 1; if (dirCalls > 1) throw new TypeError('offline (test)'); return hub.dir(); } });
+  dv.configureDeviceVault({ kv: kv as any, bridges: null, pollIntervalMs: 1e9, api });
+  dv.stopDeviceVault();
+  const a = recorder();
+  const bootA = dv.bootDeviceVault('usr_a', a.dispatch);
+  await reachedPublish; // A's run is now suspended inside publishChain
+  dv.stopDeviceVault(a.dispatch); // enterSwitching
+  const b = recorder();
+  await dv.bootDeviceVault('usr_b', b.dispatch);
+  const aAfterStop = a.actions.length;
+  release();
+  await bootA;
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(a.actions.length, aAfterStop, 'A dispatched nothing after being stopped');
+  assert.equal(session.getKeyringSession(), null, 'A\'s keyring was never installed');
+  for (const rec of [a, b]) {
+    assert.ok(!rec.actions.some((x) => x.type === 'vault/keyringInstalled'));
+    assert.ok(!rec.actions.some((x) => x.payload?.status === 'ready'));
+  }
+  assert.ok(!b.actions.some((x) => x.type === 'deviceVault/deviceVaultDirectoryVerified'), 'A\'s directory never written into B');
+  dv.stopDeviceVault();
+});
+
+test('REQ-SWFIX-VAULT-1: a stopped refresh suspended in the other-account check dispatches nothing to the next user', async () => {
+  const kv0 = ident.memoryDeviceStore();
+  await ident.advancePins(kv0, 'usr_previous', { root_device_id: 'dev_root', root_sign_pub: '04' + 'a1'.repeat(64), head_seq: 3, head_hash: 'ab'.repeat(32), max_epoch: 1 });
+  let armed = false;
+  let suspended!: () => void;
+  const reached = new Promise<void>((resolve) => { suspended = resolve; });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const kv = {
+    get: async (k: string) => { if (armed) { armed = false; suspended(); await gate; } return kv0.get(k); },
+    put: (k: string, v: unknown) => kv0.put(k, v),
+    delete: (k: string) => kv0.delete(k),
+  };
   let calls = 0;
   dv.configureDeviceVault({
-    kv,
-    api: {
-      fetchVaultDirectory: async () => {
-        calls += 1;
-        if (calls === 1) { await gate; return { version: 1 }; } // A's run, suspended
-        throw new TypeError('offline (test)');
-      },
-    } as any,
+    kv: kv as any, pollIntervalMs: 1e9,
+    api: { fetchVaultDirectory: async () => { calls += 1; if (calls > 1) throw new TypeError('offline (test)'); armed = true; return null; } } as any,
   });
   dv.stopDeviceVault();
   const a = recorder();
   const bootA = dv.bootDeviceVault('usr_a', a.dispatch);
-  await new Promise((r) => setTimeout(r, 5));
-  dv.stopDeviceVault(a.dispatch); // enterSwitching
+  await reached;
+  dv.stopDeviceVault(a.dispatch);
   const b = recorder();
   await dv.bootDeviceVault('usr_b', b.dispatch);
-  const aBefore = a.actions.length;
+  const aAfterStop = a.actions.length;
+  const bAfterBoot = b.actions.length;
   release();
   await bootA;
-  assert.equal(a.actions.length, aBefore, 'A dispatched nothing after being stopped');
-  assert.equal(session.getKeyringSession(), null);
-  assert.ok(!a.actions.some((x) => x.type === 'vault/keyringInstalled'));
-  assert.ok(!a.actions.some((x) => x.payload?.status === 'ready'));
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(a.actions.length, aAfterStop);
+  assert.equal(b.actions.length, bAfterBoot);
+  assert.ok(![...a.actions, ...b.actions].some((x) => x.payload?.status === 'other-account'));
   dv.stopDeviceVault();
 });
 

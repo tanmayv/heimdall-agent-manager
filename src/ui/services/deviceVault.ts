@@ -366,13 +366,15 @@ async function runRefresh(_reason: string): Promise<void> {
   try {
     const kv = d().kv;
     if (!c.identity) c.identity = await loadDeviceIdentity(kv, c.userId);
+    if (stale()) return;
     let dir = await d().api.fetchVaultDirectory(deviceSignerContext() ?? undefined);
     if (stale()) return;
 
     if (!dir) {
       purgeKeys(dispatch);
       stopPolling();
-      if (await refuseUnacknowledgedAccount(c)) return;
+      if (await refuseUnacknowledgedAccount(c, stale)) return;
+      if (stale()) return;
       const pins = await loadPins(kv, c.userId);
       if (stale()) return;
       if (pins) {
@@ -386,14 +388,17 @@ async function runRefresh(_reason: string): Promise<void> {
             message: `This account's vault was reset as scheduled (due ${observed!.due_at}). The old keys are gone; encrypted history is unreadable.`,
           }));
         } else {
+          const startOverPhrase = await startOverPhraseFor(pins);
+          if (stale()) return;
           dispatch(deviceVaultFailed({
             code: 'vault_missing',
             message: 'Vault missing — the server may be misbehaving. This browser never saw a reset of this vault come due. Contact your admin before continuing.',
-            startOverPhrase: await startOverPhraseFor(pins),
+            startOverPhrase,
           }));
         }
         return;
       }
+      if (stale()) return;
       await runGenesis(c);
       return;
     }
@@ -485,7 +490,8 @@ async function runRefresh(_reason: string): Promise<void> {
     if (!pins) {
       // First sight of the account on this device (threat model: hub-injected root).
       // Never automatically when this browser already pinned ANOTHER account (M2).
-      if (await refuseUnacknowledgedAccount(c)) return;
+      if (await refuseUnacknowledgedAccount(c, stale)) return;
+      if (stale()) return;
       // Hub-blind pairing: the approver MACed this device's approval, the root and
       // the head with the code shown here. The approval's prev_hash chain covers the
       // whole log prefix (genesis included), so a valid pair_mac proves the root is
@@ -494,19 +500,21 @@ async function runRefresh(_reason: string): Promise<void> {
       if (stale()) return;
       if (!pending || Date.now() > pending.expiresAt + PAIR_GRACE_MS) {
         await kv.delete(`pending:${c.userId}`);
+        if (stale()) return;
         dispatch(deviceVaultFailed({ code: 'pairing_unverified', message: PAIRING_LOST_MESSAGE }));
         return;
       }
       const keys = await derivePairKeys(pending.code, pendingPairContext(c, pending));
       if (stale()) return;
-      if (!(await verifyPairApproveMac(keys, mine.approval_statement, chain.rootSignPub, self.pair_mac))) {
+      const macOk = await verifyPairApproveMac(keys, mine.approval_statement, chain.rootSignPub, self.pair_mac);
+      if (stale()) return;
+      if (!macOk) {
         dispatch(deviceVaultFailed({
           code: 'pairing_mismatch',
           message: 'This device was approved, but the approval does not carry proof from the device you typed the pairing code into. No keys were installed. The server may be misbehaving; retry, or pair again.',
         }));
         return;
       }
-      if (stale()) return;
       await advancePins(kv, c.userId, pinsFromChain(chain));
       await kv.delete(`pending:${c.userId}`);
       if (stale()) return;
@@ -586,9 +594,11 @@ async function runGenesis(c: Ctx): Promise<void> {
   const dispatch = c.dispatch;
   const kv = d().kv;
   const identity = c.identity ?? (c.identity = await createDeviceIdentity(kv, c.userId));
+  if (ctx !== c) return;
   dispatch(deviceVaultIdentityKnown({ userId: c.userId, deviceId: identity.deviceId, fingerprint: identity.fingerprint }));
   dispatch(deviceVaultStatusChanged({ status: 'genesis' }));
   const body = await buildGenesis(identity, d().label(identity));
+  if (ctx !== c) return;
   try {
     await d().api.postVaultGenesis(body);
   } catch (err) {
@@ -631,6 +641,7 @@ async function register(c: Ctx, dir: VaultDirectory): Promise<void> {
   const pending: PendingPairing = { code, pairSalt: generatePairSalt(), hubOrigin: d().api.pairingHubOrigin(), issuedAt, expiresAt: issuedAt + PAIR_CODE_TTL_MS };
   const keys = await derivePairKeys(code, pendingPairContext(c, pending));
   const body = await buildPairedRegistration(identity, d().label(identity), keys, issuedAt);
+  if (ctx !== c) return;
   const res = await d().api.postVaultRegister(body.statement, body.signature, body.pairLookup, body.pairKeyMac, pending.pairSalt, pending.hubOrigin);
   if (res.device_id !== identity.deviceId || res.fingerprint !== identity.fingerprint) {
     throw new Error('The hub registered a different device id or fingerprint than this device computed');
@@ -679,12 +690,14 @@ export async function restartPairing(): Promise<void> {
  * M2: this browser already pinned another account and the user has not accepted the
  * current one: show the warning instead of any automatic genesis / confirmation.
  */
-async function refuseUnacknowledgedAccount(c: Ctx): Promise<boolean> {
+async function refuseUnacknowledgedAccount(c: Ctx, stale: () => boolean = () => ctx !== c): Promise<boolean> {
+  if (stale()) return true; // a stopped refresh must not consume the intent meant for the next user
   if (consumeAddAccountIntent()) {
     await acknowledgeOtherAccount(d().kv, c.userId);
     return false;
   }
   const others = await otherPinnedAccounts(d().kv, c.userId);
+  if (stale()) return true;
   if (others.length === 0) return false;
   stopPolling();
   c.dispatch(deviceVaultStatusChanged({ status: 'other-account', otherAccounts: others }));
