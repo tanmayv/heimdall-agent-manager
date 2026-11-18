@@ -1,9 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { createHmac } from 'node:crypto';
+import { createHmac, createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { createFakeWhatsApp } from './server.mjs';
+
+const phone = '100000000000001', token = 'TEST-WA-TOKEN', from = '15551230001';
+const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 
 async function fixture(t) {
   const received = [];
@@ -33,7 +36,14 @@ async function fixture(t) {
   };
   const control = (name, body) => request('/_control/' + name, body);
   const graph = body => request('/v27.0/100000000000001/messages', { messaging_product: 'whatsapp', recipient_type: 'individual', ...body });
-  return { received, request, control, graph };
+  const send = data => graph({ to: '+' + from, ...data });
+  async function upload(bytes = Buffer.from([0, 255, 13, 10, 128]), name = 'binary.pdf', mime = 'application/pdf') {
+    const form = new FormData();
+    form.set('messaging_product', 'whatsapp'); form.set('file', new Blob([bytes], { type: mime }), name);
+    const response = await fetch(base + '/v27.0/' + phone + '/media', { method: 'POST', headers: { Authorization: 'Bearer ' + token }, body: form });
+    return { status: response.status, body: await response.json() };
+  }
+  return { base, received, request, control, graph, send, upload };
 }
 
 test('auth refusal, identity and graph versions', async t => {
@@ -145,4 +155,68 @@ test('challenge and fail queue counts and type isolation', async t => {
     assert.equal(failed.body.error.code, code);
   }
   assert.equal((await f.graph({ to: '+15551230001', type: 'text', text: { body: 'hi' } })).status, 200);
+});
+
+test('every media injection, authenticated metadata/download, declared size and expiration', async t => {
+  const f = await fixture(t), bytes = Buffer.from([0, 255, 128, 13, 10]);
+  for (const type of ['image', 'document', 'audio', 'video', 'sticker']) {
+    await f.control('inject', { type, media: { bytes_base64: bytes.toString('base64'), mime_type: 'audio/ogg; codecs=opus', filename: 'x.ogg', caption: 'caption', voice: true, declare_size: 999 } });
+    const object = JSON.parse(f.received.at(-1).body).entry[0].changes[0].value.messages[0][type];
+    assert.equal(object.sha256, digest(bytes)); assert.equal(object.voice, true);
+    const path = '/v27.0/' + object.id + '?phone_number_id=' + phone;
+    assert.equal((await f.request(path, undefined, false)).status, 401);
+    assert.equal((await f.request('/v27.0/' + object.id + '?phone_number_id=wrong')).body.error.code, 100);
+    const metadata = (await f.request(path)).body;
+    assert.equal(metadata.file_size, 999); assert.equal(metadata.id, object.id);
+    assert.equal((await fetch(metadata.url)).status, 401);
+    const response = await fetch(metadata.url, { headers: { Authorization: 'Bearer ' + token } });
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
+    await f.control('media-expire', { id: object.id });
+    assert.equal((await f.request(path)).body.error.code, 100);
+  }
+  await f.control('inject', { type: 'image' });
+  assert.deepEqual(JSON.parse(f.received.at(-1).body).entry[0].changes[0].value.messages[0].image, {});
+  await f.control('inject', { type: 'image', media: { expired: true } });
+  const id = JSON.parse(f.received.at(-1).body).entry[0].changes[0].value.messages[0].image.id;
+  assert.equal((await f.request('/v27.0/' + id + '?phone_number_id=' + phone)).body.error.code, 100);
+  assert.equal((await f.request('/v27.0/unknown?phone_number_id=' + phone)).body.error.code, 100);
+  assert.equal((await f.request('/_media/unknown')).status, 404);
+  assert.equal((await f.control('media-gets')).body.gets.length, 17);
+});
+
+test('binary multipart uploads, media recording, unknown upload and service windows', async t => {
+  const f = await fixture(t), bytes = Buffer.from([0, 255, 13, 10, 128]);
+  assert.equal((await f.request('/v27.0/' + phone + '/media', {})).body.error.code, 100);
+  const uploaded = await f.upload(bytes, 'a "quote".pdf'); assert.equal(uploaded.status, 200);
+  const id = uploaded.body.id;
+  const uploads = (await f.control('uploads')).body.uploads;
+  assert.equal(uploads[0].sha256, digest(bytes)); assert.equal(uploads[0].size, bytes.length);
+  for (const type of ['image', 'document', 'audio']) {
+    assert.equal((await f.send({ type, [type]: { id: 'unknown' } })).body.error.code, 131053);
+    assert.equal((await f.send({ type, [type]: { id } })).body.error.code, 131047);
+  }
+  await f.control('inject', {});
+  for (const type of ['image', 'document', 'audio']) {
+    assert.equal((await f.send({ type, [type]: { id, caption: 'cap', filename: 'file.pdf', voice: true } })).status, 200);
+  }
+  for (const sent of (await f.control('sent')).body.messages) {
+    assert.equal(sent.media_id, id); assert.equal(sent.sha256, digest(bytes)); assert.equal(sent.size, bytes.length);
+    assert.equal(sent.caption, 'cap'); assert.equal(sent.filename, 'file.pdf'); assert.equal(sent.voice, true);
+  }
+  await f.control('window', { to: from, open: false }); await f.control('window-mode', { mode: 'async' });
+  assert.equal((await f.send({ type: 'audio', audio: { id } })).status, 200);
+  await new Promise(r => setTimeout(r, 100));
+  assert.equal(JSON.parse(f.received.at(-1).body).entry[0].changes[0].value.statuses[0].errors[0].code, 131047);
+});
+
+test('upload failure and optional delay with and without failure status', async t => {
+  const f = await fixture(t);
+  assert.equal((await f.control('fail', { type: 'upload', count: 1, delay_ms: 10001 })).status, 400);
+  await f.control('fail', { type: 'upload', count: 1, http_status: 400, code: 131053, delay_ms: 20 });
+  assert.equal((await f.upload()).body.error.code, 131053);
+  await f.control('fail', { type: 'upload', count: 1, delay_ms: 40 });
+  const start = performance.now();
+  assert.equal((await f.upload()).status, 200);
+  assert.ok(performance.now() - start >= 35);
+  assert.equal((await f.control('uploads')).body.uploads.length, 1);
 });

@@ -20,7 +20,7 @@ Import `createFakeWhatsApp(options)` from `server.mjs` for an unstarted
 Graph requests accept any `/v<major>.<minor>/` prefix and require
 `Authorization: Bearer TEST-WA-TOKEN`. Identity is
 `GET /v27.0/100000000000001?fields=display_phone_number,verified_name`.
-Text, reaction, template and read requests use
+Text, media, reaction, template and read requests use
 `POST /v27.0/100000000000001/messages`. Address text/reaction/template
 requests with exactly one of `to: "+15551230001"` or `recipient: "US.alice"`.
 Read requests use `status: "read"` and `message_id`.
@@ -44,7 +44,7 @@ Control endpoints (JSON POST unless marked GET):
 Inject a fresh message before sending text: windows are open for 24 hours
 after its timestamp, unless sticky-closed. Injection updates both the phone
 and BSUID keys. Clearing a sticky close does not refresh the timestamp.
-A closed window refuses text synchronously with 131047, or accepts it and
+A closed window refuses text and media synchronously with 131047, or accepts it and
 posts a signed failed-status webhook after 50 ms in async mode.
 Templates and reactions can be recorded without an open window.
 A reachable `webhookUrl` is required for injection, replay, challenge and raw
@@ -57,3 +57,38 @@ node --test tools/fake_whatsapp/server_test.mjs
 Tests start their own loopback servers and close them on cleanup. Odin adapter
 tests spawn one child containing the fake and a local webhook sink, and kill/wait
 that child at fixture teardown. No Meta endpoint or live hub is involved.
+
+## Media fixtures
+
+Inject `image`, `document`, `audio`, `video`, or `sticker` with a `media`
+object containing `bytes_base64`, `mime_type`, and optional `filename`,
+`caption`, `voice`, `declare_size`, or `expired`. The signed webhook carries a
+fresh `FAKEMEDIA<n>` id and SHA-256 of the actual bytes. Omitting `media` keeps
+the original empty object fixture.
+
+`GET /v27.0/<media-id>?phone_number_id=100000000000001` returns metadata and
+a loopback `/_media/<id>` download URL. Both requests require the bearer token.
+Unknown/expired metadata and a wrong phone id return Graph code 100; unknown
+downloads return 404. `declare_size` overrides only metadata, for bounded-download
+tests. `POST /_control/media-expire {"id":"FAKEMEDIA1"}` expires a fixture.
+
+Upload binary multipart data to `POST /v27.0/100000000000001/media` with
+`messaging_product=whatsapp` and a `file` part. It returns a `FAKEUP<n>` id.
+Send it in an `image`, `document`, or `audio` object on the messages endpoint;
+unknown upload ids return 131053. These sends follow the text service-window
+rules, including signed asynchronous 131047 failures. Sent media records include
+`media_id`, `caption`, `filename`, `voice`, `mime`, `size`, and `sha256`.
+
+Additional controls:
+
+| Endpoint | Result |
+| --- | --- |
+| GET `/_control/media-gets` | `{gets:[{id,phone_number_id}]}` metadata query log. |
+| GET `/_control/downloads` | `{downloads:[{id,authorized:true}]}` authenticated download log. |
+| GET `/_control/uploads` | `{uploads:[{id,mime,filename,size,sha256}]}` upload log. |
+| `/_control/fail` | Also accepts `type:"upload"` and optional integer `delay_ms` (0–10,000). Without `http_status`, the request proceeds after the delay. |
+
+The adapter sends the bearer only to the configured API origin or HTTPS
+subdomains ending in `.fbsbx.com`, `.facebook.com`, or `.whatsapp.net`.
+It refuses other download URLs and follows no redirects. All tests use local
+fakes; the allow-list test checks CDN URL acceptance without connecting to Meta.

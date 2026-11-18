@@ -27,7 +27,37 @@ whatsapp_test_start :: proc(t: ^testing.T, f: ^WhatsApp_Test_Fixture, stub_respo
 	)
 	// A local sink lets the fake inject real signed webhooks while opening its
 	// service windows. Both servers are children of this one fixture process.
-	script := `import http from 'node:http'; import {writeFileSync} from 'node:fs'; import {createFakeWhatsApp} from './tools/fake_whatsapp/server.mjs'; let seen={}; const sink=http.createServer(async(q,s)=>{const chunks=[];for await(const c of q)chunks.push(c);if(q.method==='POST')seen={body:Buffer.concat(chunks).toString('utf8'),signature:q.headers['x-hub-signature-256']};s.setHeader('Content-Type','application/json');s.end(JSON.stringify(seen))}); sink.listen(0,'127.0.0.1',()=>{const sinkBase='http://127.0.0.1:'+sink.address().port;const f=process.argv[2]?http.createServer(async(q,s)=>{for await(const c of q){}s.writeHead(200,{'Content-Type':'application/json'});s.end(process.argv[2])}):createFakeWhatsApp({webhookUrl:sinkBase});f.listen(0,'127.0.0.1',()=>writeFileSync(process.argv[1],'http://127.0.0.1:'+f.address().port+'\n'+sinkBase))});`
+	script := `
+import http from 'node:http';
+import {writeFileSync} from 'node:fs';
+import {createFakeWhatsApp} from './tools/fake_whatsapp/server.mjs';
+let seen = {}, downloads = 0, redirects = 0;
+const sink = http.createServer(async(q,s) => {
+	const chunks = [];
+	for await(const c of q) chunks.push(c);
+	if(q.method === 'POST') seen = {body: Buffer.concat(chunks).toString('utf8'), signature: q.headers['x-hub-signature-256']};
+	s.setHeader('Content-Type', 'application/json'); s.end(JSON.stringify(seen));
+});
+sink.listen(0, '127.0.0.1', () => {
+	const sinkBase = 'http://127.0.0.1:' + sink.address().port;
+	const stub = process.argv[2] ? JSON.parse(process.argv[2]) : null;
+	const f = stub ? http.createServer(async(q,s) => {
+		for await(const c of q) {}
+		if (!stub._media_test) { s.setHeader('Content-Type', 'application/json'); return s.end(process.argv[2]); }
+		const base = 'http://127.0.0.1:' + f.address().port;
+		if(q.url === '/_control/stub-counts') { s.setHeader('Content-Type', 'application/json'); return s.end(JSON.stringify({downloads, redirects})); }
+		if(q.url === '/redirected') { redirects++; return s.end('leaked'); }
+		if(q.url === '/download') {
+			downloads++;
+			s.writeHead(stub.status ?? 200, {'Location': base + '/redirected'});
+			return s.end('file-bytes');
+		}
+		s.setHeader('Content-Type', 'application/json');
+		s.end(JSON.stringify({url: base + '/download', mime_type: 'application/pdf', file_size: 0}));
+	}) : createFakeWhatsApp({webhookUrl: sinkBase});
+	f.listen(0, '127.0.0.1', () => writeFileSync(process.argv[1], 'http://127.0.0.1:' + f.address().port + '\n' + sinkBase));
+});
+`
 	child, err := os.process_start({command = {"node", "--input-type=module", "-e", script, f.ready, stub_response}})
 	if !testing.expect(t, err == nil) do return false
 	f.child = child
@@ -553,23 +583,326 @@ test_whatsapp_uses_pinned_graph_version :: proc(t: ^testing.T) {
 WHATSAPP_TEST_TEXT_FIXTURE :: `{
   "object": "whatsapp_business_account",
   "entry": [{
-    "id": "200000000000002",
-    "changes": [{
-      "field": "messages",
-      "value": {
-        "messaging_product": "whatsapp",
-        "metadata": {"display_phone_number": "15550100001", "phone_number_id": "100000000000001"},
-        "contacts": [{"profile": {"name": "Alice"}, "wa_id": "15551230001", "user_id": "US.13491208655302741918"}],
-        "messages": [{
-          "from": "15551230001",
-          "from_user_id": "US.13491208655302741918",
-          "id": "wamid.HBgLMTY1MDM4Nzk0MzkVAgASGBQzQTRBNjU5OUFFRTAzODEwMTQ0RgA=",
-          "timestamp": "1763452800",
-          "type": "text",
-          "text": {"body": "hi"}
-        }]
-      }
-    }]
+	"id": "200000000000002",
+	"changes": [{
+	  "field": "messages",
+	  "value": {
+		"messaging_product": "whatsapp",
+		"metadata": {"display_phone_number": "15550100001", "phone_number_id": "100000000000001"},
+		"contacts": [{"profile": {"name": "Alice"}, "wa_id": "15551230001", "user_id": "US.13491208655302741918"}],
+		"messages": [{
+		  "from": "15551230001",
+		  "from_user_id": "US.13491208655302741918",
+		  "id": "wamid.HBgLMTY1MDM4Nzk0MzkVAgASGBQzQTRBNjU5OUFFRTAzODEwMTQ0RgA=",
+		  "timestamp": "1763452800",
+		  "type": "text",
+		  "text": {"body": "hi"}
+		}]
+	  }
+	}]
   }]
 }
 `
+
+whatsapp_test_inject_media :: proc(t: ^testing.T, f: ^WhatsApp_Test_Fixture, declared: i64 = 0, expired := false) -> string {
+	whatsapp_test_control(t, f, "inject", struct {
+		type: string,
+		media: struct { bytes_base64, mime_type: string, declare_size: i64, expired: bool },
+	}{"document", {"AP+ADQo=", "Application/PDF; test=value", declared, expired}})
+	base, _ := httpc.parse_url(f.webhook)
+	resp, err := httpc.send({url = base})
+	defer httpc.response_destroy(&resp)
+	captured: struct { body: string }
+	if !testing.expect(t, err == .None && json.unmarshal(resp.body, &captured, allocator = context.temp_allocator) == nil) do return ""
+	rows, verdict := whatsapp_test_parse(&f.whatsapp, captured.body)
+	defer inbound_destroy_batch(rows)
+	if !testing.expect(t, verdict == .Accepted && len(rows) == 1 && rows[0].kind == .Media) do return ""
+	return strings.clone(rows[0].media.file_ref)
+}
+
+@(test)
+test_whatsapp_push_parse_media_kinds :: proc(t: ^testing.T) {
+	w := whatsapp_test_config()
+	for row in ([]struct { typ: string, voice: bool, kind: Media_Kind, text, name: string } {
+		{"image", false, .Image, "caption", ""},
+		{"document", false, .Document, "caption", "file.pdf"},
+		{"audio", true, .Voice, "", ""},
+		{"audio", false, .Audio, "", ""},
+		{"video", false, .Document, "caption", ""},
+		{"sticker", false, .None, "", ""},
+	}) {
+		obj := make(json.Object, context.temp_allocator)
+		obj["id"] = "ref"; obj["mime_type"] = "AUDIO/OGG; codecs=opus"
+		obj["filename"] = "file.pdf"; obj["caption"] = "caption"; obj["voice"] = row.voice
+		obj["url"] = "https://foreign.invalid/ignored"
+		message := make(json.Object, context.temp_allocator)
+		message["from"] = "1"; message["id"] = "message"; message["type"] = row.typ; message[row.typ] = obj
+		raw, _ := json.marshal([]json.Object{message}, allocator = context.temp_allocator)
+		rows, verdict := whatsapp_test_parse(&w, whatsapp_test_envelope(string(raw)))
+		if testing.expect(t, verdict == .Accepted && len(rows) == 1) {
+			r := rows[0]
+			testing.expect(t, r.kind == (.Unsupported if row.kind == .None else .Media))
+			testing.expect(t, r.media.kind == row.kind && r.text == row.text && r.media.name == row.name && r.media.size == 0)
+			if row.kind != .None do testing.expect(t, r.media.file_ref == "ref" && r.media.mime == "audio/ogg")
+		}
+		inbound_destroy_batch(rows)
+		obj["id"] = ""
+		raw2, _ := json.marshal([]json.Object{message}, allocator = context.temp_allocator)
+		empty, _ := whatsapp_test_parse(&w, whatsapp_test_envelope(string(raw2)))
+		testing.expect(t, len(empty) == 1 && empty[0].kind == .Unsupported && empty[0].text == "")
+		inbound_destroy_batch(empty)
+	}
+}
+
+@(test)
+test_whatsapp_media_fetch_two_step :: proc(t: ^testing.T) {
+	f: WhatsApp_Test_Fixture
+	defer whatsapp_test_stop(&f)
+	if !whatsapp_test_start(t, &f) do return
+	ref := whatsapp_test_inject_media(t, &f); defer delete(ref)
+	data, err := whatsapp_media_fetch(&f.whatsapp, ref, 100)
+	defer delete(data.bytes); defer delete(data.mime)
+	testing.expect(t, err.kind == .None && data.mime == "application/pdf")
+	testing.expect(t, len(data.bytes) == 5 && data.bytes[0] == 0 && data.bytes[1] == 255 && data.bytes[2] == 128)
+	gets := whatsapp_array(whatsapp_test_get(t, &f, "media-gets")["gets"])
+	if testing.expect(t, len(gets) == 1) do testing.expect(t, whatsapp_string(whatsapp_object(gets[0])["phone_number_id"]) == f.whatsapp.phone_number_id)
+	downloads := whatsapp_array(whatsapp_test_get(t, &f, "downloads")["downloads"])
+	testing.expect(t, len(downloads) == 1) // fake refuses downloads without the bearer
+}
+
+@(test)
+test_whatsapp_media_fetch_refuses_foreign_url :: proc(t: ^testing.T) {
+	// Reject before any request to the foreign endpoint; all errors are fixed.
+	for value in ([]string{"https://foreign.invalid/file", "http://lookaside.fbsbx.com/file", "https://evilfbsbx.com/file",
+		"https://lookaside.fbsbx.com.evil.invalid/file", "https://fbsbx.com/file", "//lookaside.fbsbx.com/file",
+		"https://user@lookaside.fbsbx.com/file", "https://lookaside.fbsbx.com/file#fragment"}) {
+		f: WhatsApp_Test_Fixture
+		if whatsapp_test_start(t, &f, string(httpc.json_body(struct {url: string}{value}, allocator = context.temp_allocator).(httpc.Json_Body).encoded)) {
+			data, err := whatsapp_media_fetch(&f.whatsapp, "ref", 100)
+			delete(data.bytes); delete(data.mime)
+			testing.expect(t, err.kind == .Invalid_Request && err.message == "whatsapp media url refused")
+		}
+		whatsapp_test_stop(&f)
+	}
+	w := whatsapp_test_config()
+	for value in ([]string{"https://lookaside.fbsbx.com/a", "https://CDN.FACEBOOK.COM/a", "https://media.whatsapp.net/a",
+		"https://graph.facebook.com:443/a"}) {
+		url, err := httpc.parse_url(value)
+		testing.expect(t, err == .None && whatsapp_media_url_allowed(&w, url))
+	}
+	w.api_base = "http://127.0.0.1:18098"
+	for row in ([]struct {url: string, allowed: bool}{
+		{"http://127.0.0.1:18098/file", true}, {"http://127.0.0.1:18099/file", false},
+		{"https://127.0.0.1:18098/file", false}, {"http://127.0.0.2:18098/file", false},
+	}) {
+		url, _ := httpc.parse_url(row.url)
+		testing.expect(t, whatsapp_media_url_allowed(&w, url) == row.allowed)
+	}
+}
+
+@(test)
+test_whatsapp_media_fetch_declared_too_large_skips_download :: proc(t: ^testing.T) {
+	f: WhatsApp_Test_Fixture
+	defer whatsapp_test_stop(&f)
+	if !whatsapp_test_start(t, &f) do return
+	ref := whatsapp_test_inject_media(t, &f, 1000); defer delete(ref)
+	data, err := whatsapp_media_fetch(&f.whatsapp, ref, 10)
+	delete(data.bytes); delete(data.mime)
+	testing.expect(t, err.kind == .Media_Too_Large)
+	testing.expect(t, len(whatsapp_array(whatsapp_test_get(t, &f, "downloads")["downloads"])) == 0)
+}
+
+@(test)
+test_whatsapp_media_fetch_body_over_limit :: proc(t: ^testing.T) {
+	f: WhatsApp_Test_Fixture
+	defer whatsapp_test_stop(&f)
+	if !whatsapp_test_start(t, &f) do return
+	ref := whatsapp_test_inject_media(t, &f, 1); defer delete(ref)
+	for limit in ([]i64{0, 3, 4}) {
+		data, err := whatsapp_media_fetch(&f.whatsapp, ref, limit)
+		delete(data.bytes); delete(data.mime)
+		testing.expect(t, err.kind == .Media_Too_Large)
+	}
+}
+
+@(test)
+test_whatsapp_media_fetch_expired_is_unavailable :: proc(t: ^testing.T) {
+	f: WhatsApp_Test_Fixture
+	defer whatsapp_test_stop(&f)
+	if !whatsapp_test_start(t, &f) do return
+	ref := whatsapp_test_inject_media(t, &f, 0, true); defer delete(ref)
+	for id in ([]string{ref, "unknown"}) {
+		data, err := whatsapp_media_fetch(&f.whatsapp, id, 100)
+		delete(data.bytes); delete(data.mime)
+		testing.expect(t, err.kind == .Media_Unavailable)
+	}
+}
+
+@(test)
+test_whatsapp_send_media_upload_then_message :: proc(t: ^testing.T) {
+	f: WhatsApp_Test_Fixture
+	defer whatsapp_test_stop(&f)
+	if !whatsapp_test_start(t, &f) do return
+	whatsapp_test_control(t, &f, "inject", struct {from: string}{"15551230001"})
+	bytes := []byte{0, 255, 128, 13, 10}
+	for row in ([]struct {kind: Media_Kind, typ, mime, caption: string}{
+		{.Image, "image", "image/png", "caption"}, {.Document, "document", "application/pdf", "caption"},
+		{.Voice, "audio", "audio/ogg", "ignored"}, {.Audio, "audio", "audio/mpeg", "ignored"},
+		{.Image, "image", "image/jpeg", ""},
+	}) {
+		id, err := whatsapp_send_media(&f.whatsapp, "15551230001", {row.kind, "file.bin", row.mime, bytes, row.caption}, 15_000)
+		testing.expect(t, err.kind == .None && id != "")
+		delete(id)
+	}
+	sent := whatsapp_array(whatsapp_test_get(t, &f, "sent")["messages"])
+	uploads := whatsapp_array(whatsapp_test_get(t, &f, "uploads")["uploads"])
+	if !testing.expect(t, len(sent) == 5 && len(uploads) == 5) do return
+	for value, i in sent {
+		row := whatsapp_object(value)
+		upload := whatsapp_object(uploads[i])
+		testing.expect(t, whatsapp_string(row["media_id"]) == whatsapp_string(upload["id"]))
+		testing.expect(t, whatsapp_string(row["sha256"]) == whatsapp_string(upload["sha256"]))
+		testing.expect(t, whatsapp_string(upload["sha256"]) == "6171db06a1c89b1ff8ab77e479d5df976ccd88a7b63567b4b18f413649e12ff3")
+		testing.expect(t, whatsapp_string(row["type"]) == ("audio" if i == 2 || i == 3 else ("document" if i == 1 else "image")))
+		testing.expect(t, whatsapp_string(row["caption"]) == ("caption" if i < 2 else ""))
+		if i >= 2 { _, no_caption := row["caption"].(json.Null); testing.expect(t, no_caption) }
+		testing.expect(t, whatsapp_string(row["filename"]) == ("file.bin" if i == 1 else ""))
+		if i == 2 { voice, _ := row["voice"].(bool); testing.expect(t, voice) }
+		else { _, is_null := row["voice"].(json.Null); testing.expect(t, is_null) }
+	}
+}
+
+@(test)
+test_whatsapp_send_media_window_closed :: proc(t: ^testing.T) {
+	f: WhatsApp_Test_Fixture
+	defer whatsapp_test_stop(&f)
+	if !whatsapp_test_start(t, &f) do return
+	id, err := whatsapp_send_media(&f.whatsapp, "1", {.Image, "x.png", "image/png", {1}, ""}, 15_000)
+	delete(id)
+	testing.expect(t, err.kind == .Window_Closed && err.provider_code == 131047)
+}
+
+@(test)
+test_whatsapp_send_media_respects_timeout :: proc(t: ^testing.T) {
+	f: WhatsApp_Test_Fixture
+	defer whatsapp_test_stop(&f)
+	if !whatsapp_test_start(t, &f) do return
+	whatsapp_test_control(t, &f, "fail", struct {type: string, delay_ms, count: int}{"upload", 2000, 1})
+	start := time.tick_now()
+	id, err := whatsapp_send_media(&f.whatsapp, "1", {.Image, "x.png", "image/png", {1}, ""}, 500)
+	delete(id)
+	testing.expect(t, err.kind == .Transient && time.tick_since(start) < 1500 * time.Millisecond)
+	testing.expect(t, len(whatsapp_array(whatsapp_test_get(t, &f, "sent")["messages"])) == 0)
+}
+
+@(test)
+test_whatsapp_send_media_budget_left_after_upload :: proc(t: ^testing.T) {
+	f: WhatsApp_Test_Fixture
+	defer whatsapp_test_stop(&f)
+	if !whatsapp_test_start(t, &f) do return
+	// A delayed upload leaves no usable 1s message budget; never send afterward.
+	whatsapp_test_control(t, &f, "fail", struct {type: string, delay_ms, count: int}{"upload", 20, 1})
+	id, err := whatsapp_send_media(&f.whatsapp, "1", {.Image, "x.png", "image/png", {1}, ""}, 999)
+	delete(id)
+	testing.expect(t, err.kind == .Transient)
+	testing.expect(t, len(whatsapp_array(whatsapp_test_get(t, &f, "sent")["messages"])) == 0)
+}
+
+@(test)
+test_whatsapp_send_text_within_respects_timeout :: proc(t: ^testing.T) {
+	f: WhatsApp_Test_Fixture
+	defer whatsapp_test_stop(&f)
+	if !whatsapp_test_start(t, &f) do return
+	whatsapp_test_control(t, &f, "fail", struct {type: string, delay_ms, count: int}{"text", 2000, 1})
+	start := time.tick_now()
+	id, err := whatsapp_send_text_within(&f.whatsapp, "1", "text", 500)
+	delete(id)
+	testing.expect(t, err.kind == .Transient && time.tick_since(start) < 1500 * time.Millisecond)
+}
+
+@(test)
+test_whatsapp_send_media_unknown_upload_is_invalid_request :: proc(t: ^testing.T) {
+	f: WhatsApp_Test_Fixture
+	defer whatsapp_test_stop(&f)
+	if !whatsapp_test_start(t, &f) do return
+	scratch_body := whatsapp_address("1")
+	nested := make(json.Object, context.temp_allocator)
+	nested["id"] = "unknown"
+	scratch_body["type"] = "image"; scratch_body["image"] = nested
+	id, err := whatsapp_send_body(&f.whatsapp, scratch_body, 1000)
+	delete(id)
+	testing.expect(t, err.kind == .Invalid_Request && err.provider_code == 131053)
+}
+
+@(test)
+test_whatsapp_media_capabilities_values :: proc(t: ^testing.T) {
+	w := whatsapp_test_config()
+	a := whatsapp_adapter(&w)
+	testing.expect(t, a.media.fetch_max_bytes == 100_000_000 && a.media.caption_max_runes == 1024)
+	testing.expect(t, a.media_fetch != nil && a.send_media != nil && a.send_text_within != nil)
+	rules := a.media.send_rules
+	if !testing.expect(t, len(rules) == 4) do return
+	testing.expect(t, rules[0].kind == .Image && rules[0].max_bytes == 5_000_000 && rules[0].caption && len(rules[0].mimes) == 3)
+	testing.expect(t, rules[1].kind == .Voice && rules[1].max_bytes == 16_000_000 && !rules[1].caption && rules[1].mimes[0] == "audio/ogg")
+	testing.expect(t, rules[2].kind == .Audio && rules[2].max_bytes == 16_000_000 && !rules[2].caption && len(rules[2].mimes) == 4)
+	testing.expect(t, rules[3].kind == .Document && rules[3].max_bytes == 100_000_000 && rules[3].caption && len(rules[3].mimes) == 8)
+}
+
+
+@(test)
+test_whatsapp_media_fetch_never_follows_redirects :: proc(t: ^testing.T) {
+	f: WhatsApp_Test_Fixture
+	defer whatsapp_test_stop(&f)
+	if !whatsapp_test_start(t, &f, `{"_media_test":true,"status":302}`) do return
+	data, err := whatsapp_media_fetch(&f.whatsapp, "ref", 100)
+	delete(data.bytes); delete(data.mime)
+	testing.expect(t, err.kind == .Transient && err.message == "whatsapp media download failed")
+	counts := whatsapp_test_get(t, &f, "stub-counts")
+	downloads, _ := counts["downloads"].(json.Float)
+	redirects, _ := counts["redirects"].(json.Float)
+	testing.expect(t, downloads == 1 && redirects == 0)
+}
+
+@(test)
+test_whatsapp_media_fetch_download_errors :: proc(t: ^testing.T) {
+	for row in ([]struct {status: int, kind: Channel_Error_Kind}{
+		{404, .Media_Unavailable}, {401, .Transient}, {500, .Transient},
+	}) {
+		f: WhatsApp_Test_Fixture
+		encoded, _ := json.marshal(struct {_media_test: bool, status: int}{true, row.status}, allocator = context.temp_allocator)
+		if whatsapp_test_start(t, &f, string(encoded)) {
+			data, err := whatsapp_media_fetch(&f.whatsapp, "ref", 100)
+			delete(data.bytes); delete(data.mime)
+			testing.expect(t, err.kind == row.kind)
+		}
+		whatsapp_test_stop(&f)
+	}
+}
+
+@(test)
+test_whatsapp_media_errors_hide_secrets :: proc(t: ^testing.T) {
+	f: WhatsApp_Test_Fixture
+	defer whatsapp_test_stop(&f)
+	if !whatsapp_test_start(t, &f, `{"error":{"code":190,"message":"TEST-WA-TOKEN secret file bytes"}}`) do return
+	data, fetch_err := whatsapp_media_fetch(&f.whatsapp, "secret-ref", 100)
+	delete(data.bytes); delete(data.mime)
+	id, send_err := whatsapp_send_media(&f.whatsapp, "1", {.Image, "x.png", "image/png", {1}, ""}, 15000)
+	delete(id)
+	for err in ([]Channel_Error{fetch_err, send_err}) {
+		testing.expect(t, err.kind == .Unauthorized && err.message == "whatsapp request failed")
+	}
+}
+
+@(test)
+test_whatsapp_send_media_upload_failure_is_invalid_request :: proc(t: ^testing.T) {
+	f: WhatsApp_Test_Fixture
+	defer whatsapp_test_stop(&f)
+	if !whatsapp_test_start(t, &f) do return
+	for code in ([]int{100, 131053}) {
+		whatsapp_test_control(t, &f, "fail", struct {type: string, http_status, code, count: int}{"upload", 400, code, 1})
+		id, err := whatsapp_send_media(&f.whatsapp, "1", {.Image, "x.png", "image/png", {1}, ""}, 15000)
+		delete(id)
+		testing.expect(t, err.kind == .Invalid_Request && err.provider_code == code)
+	}
+	testing.expect(t, len(whatsapp_array(whatsapp_test_get(t, &f, "sent")["messages"])) == 0)
+}
