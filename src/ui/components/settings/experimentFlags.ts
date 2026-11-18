@@ -57,5 +57,5 @@ export const EXPERIMENTAL_FLAGS: ReadonlyArray<{ key: string; label: string; des
     label: 'Actions',
     description: 'Scheduled and on-demand Actions. While off, Actions are hidden and scheduled runs are paused; saved Actions are kept.',
   },
-  { key: BOTS_EXPERIMENT_KEY, label: 'Bots', description: 'A personal bot you can talk to from Telegram. It runs on your machines; Ninjy picks the machine and model.' },
+  { key: BOTS_EXPERIMENT_KEY, label: 'Bots', description: 'A personal bot you can talk to from Telegram or WhatsApp. It runs on your machines; Ninjy picks the machine and model.' },
 ];

@@ -82,7 +82,7 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = [
     title: 'Experimental Flags',
     description: 'Preview and enable experimental capabilities, developer tools, and cutting-edge workflows.',
   },
-  { id: 'bots', label: 'Bots', title: 'Bots', description: 'Your personal bot on Telegram.' },
+  { id: 'bots', label: 'Bots', title: 'Bots', description: 'Your personal bot on Telegram and WhatsApp.' },
 ];
 
 export function getVisibleSettingsCategories(lspEnabled: boolean, botsEnabled = false): SettingsCategory[] {

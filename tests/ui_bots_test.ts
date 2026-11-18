@@ -7,9 +7,9 @@ import { createRoot } from 'react-dom/client';
 import { Provider } from 'react-redux';
 import { configureStore } from '@reduxjs/toolkit';
 
-const { resolveBotStatusLabel, filterBotConversations, validateBotPlacement, BOT_STATUS_DETAILS } = await import('../src/ui/components/settings/botsView.ts');
+const { resolveBotStatusLabel, filterBotConversations, validateBotPlacement, BOT_STATUS_DETAILS, whatsAppCardState, whatsAppQrDataUrl } = await import('../src/ui/components/settings/botsView.ts');
 const { getVisibleSettingsCategories } = await import('../src/ui/components/settings/SettingsModal.tsx');
-const { resolveExperimentFlag, BOTS_EXPERIMENT_KEY } = await import('../src/ui/components/settings/experimentFlags.ts');
+const { resolveExperimentFlag, BOTS_EXPERIMENT_KEY, EXPERIMENTAL_FLAGS } = await import('../src/ui/components/settings/experimentFlags.ts');
 const { heimdallApi } = await import('../src/ui/api/heimdallApi.ts');
 const { botsApi } = await import('../src/ui/api/endpoints/bots.ts');
 const { default: BotsPanel } = await import('../src/ui/components/settings/BotsPanel.tsx');
@@ -22,6 +22,7 @@ const candidate = { bridge_id: '*', provider: '*', model: '*', tier: 'allowed' a
 function bot() {
   return { bot_id: 'bot_a', display_name: 'Ninjy bot', status: 'ready', status_detail: '',
     telegram: { configured: true, bot_username: 'ninjy_test', binding: null },
+    whatsapp: { configured: true, phone_display: '15550100001', binding: null, window_open: false, reengage_sent: false, reengage_error: '', held_replies: [] },
     placement_revision: 3,
     advanced: { agent_instance_id: 'inst_bot', bridge_id: 'brg_a', bridge_label: 'Laptop', provider: 'claude', model: 'opus', runtime_status: 'idle' } };
 }
@@ -56,11 +57,13 @@ test('placement form validation mirrors 10.1', () => {
 });
 
 test('settings category hidden when experiment off', () => {
+  assert.equal(EXPERIMENTAL_FLAGS.find((flag) => flag.key === BOTS_EXPERIMENT_KEY)?.description,
+    'A personal bot you can talk to from Telegram or WhatsApp. It runs on your machines; Ninjy picks the machine and model.');
   for (const flags of [undefined, [], [{ key: 'bots', enabled: false }], [{ key: 'bots', enabled: true }, { key: 'bots', enabled: true }]]) {
     assert.equal(getVisibleSettingsCategories(true, resolveExperimentFlag(flags, BOTS_EXPERIMENT_KEY) === 'enabled').some((c) => c.id === 'bots'), false);
   }
   assert.deepEqual(getVisibleSettingsCategories(false, true).find((c) => c.id === 'bots'),
-    { id: 'bots', label: 'Bots', title: 'Bots', description: 'Your personal bot on Telegram.' });
+    { id: 'bots', label: 'Bots', title: 'Bots', description: 'Your personal bot on Telegram and WhatsApp.' });
 });
 
 async function fixture(run: (h: any) => Promise<void>, enabled = true, initialBot: any = bot(), view = 'panel') {
@@ -100,6 +103,9 @@ async function fixture(run: (h: any) => Promise<void>, enabled = true, initialBo
       }
       return Response.json({ data: { placement_revision: revision, candidates: placementRows } });
     }
+    if (path.endsWith('/whatsapp/pairing')) return Response.json({ data: { pairing_url: 'https://wa.me/15550100001?text=CODE', pairing_text: 'CODE', phone_display: '15550100001', expires_at: '2026-11-18T00:10:00Z' } }, { status: 201 });
+    if (path.endsWith('/whatsapp') && method === 'DELETE') { current.whatsapp.binding = null; return Response.json({ data: { disconnected: true } }); }
+    if (path === '/me/agent-writes') return Response.json({ data: [], page: {} });
     if (path.endsWith('/pairing')) return Response.json({ data: { pairing_url: 'https://t.me/ninjy_test?start=abc', expires_at: '2026-11-18T00:10:00Z' } }, { status: 201 });
     if (path.endsWith('/telegram') && method === 'DELETE') { current.telegram.binding = null; return Response.json({ data: { disconnected: true } }); }
     if (path.endsWith('/deliveries')) return Response.json({ data: { deliveries: [{ delivery_id: 'bdl_a', state: 'acted', round: 1, finish_reason: 'acted', created_at: '2026-11-18', attempts: [] }] } });
@@ -132,7 +138,7 @@ test('panel off performs no bot requests; empty state creates without placement'
     assert.equal(requests.filter((r: any) => r.path.startsWith('/bots')).length, 0);
   }, false);
   await fixture(async ({ get, click, requests }: any) => {
-    assert.equal(get('settings-bots-empty').textContent, "You don't have a bot yet. Your bot runs on your machines and answers you on Telegram.");
+    assert.equal(get('settings-bots-empty').textContent, "You don't have a bot yet. Your bot runs on your machines and answers you on Telegram or WhatsApp.");
     await click('settings-bots-create-btn');
     assert.deepEqual(requests.find((r: any) => r.method === 'POST').body, {});
     assert.equal(get('settings-bots-status').textContent, 'Ready');
@@ -176,7 +182,7 @@ test('Telegram link, notice, disconnect confirmation and bot deletion', async ()
     await click('settings-bots-telegram-disconnect-confirm-btn');
     assert.ok(get('settings-bots-telegram-connect-btn'));
     await click('settings-bots-delete-btn');
-    assert.match(get('settings-bots-delete-confirm-btn').closest('[role="dialog"]').textContent, /Delete your bot\? Its Telegram connection and Telegram message history are removed\./);
+    assert.match(get('settings-bots-delete-confirm-btn').closest('[role="dialog"]').textContent, /Delete your bot\? Its Telegram and WhatsApp connections and message history are removed\./);
     await click('settings-bots-delete-confirm-btn');
     assert.ok(get('settings-bots-empty'));
   });
@@ -238,5 +244,75 @@ test('placement Save sends ordered rules and a successful revision; duplicate ro
     await click('settings-bots-placement-save-btn');
     assert.deepEqual(requests.find((r: any) => r.method === 'PUT').body, { expected_revision: 3, candidates: [candidate] });
     assert.equal(get('settings-bots-placement-error'), null);
+  });
+});
+
+test('whatsAppCardState covers all four states and whatsAppQrDataUrl produces a local GIF', () => {
+  const w: any = bot().whatsapp;
+  assert.equal(whatsAppCardState({ ...w, configured: false }), 'unconfigured');
+  assert.equal(whatsAppCardState(w), 'unpaired');
+  const paired = { ...w, binding: { display: '+15551234567' } };
+  assert.equal(whatsAppCardState(paired), 'paired');
+  assert.equal(whatsAppCardState({ ...paired, held_replies: [{ body: 'Reply' }] }), 'held');
+  assert.match(whatsAppQrDataUrl('https://wa.me/15550100001?text=CODE'), /^data:image\/gif;base64,/);
+});
+
+test('WhatsApp card renders four mocked states and all reminder values', async () => {
+  const binding = { state: 'active', display: '+15551234567', connected_at: '2026-11-18' };
+  for (const state of ['unconfigured', 'unpaired', 'paired', 'held']) {
+    const b: any = bot();
+    b.whatsapp.configured = state !== 'unconfigured';
+    b.whatsapp.binding = ['paired', 'held'].includes(state) ? binding : null;
+    b.whatsapp.held_replies = state === 'held' ? [{ message_id: 'wamid.1', body: '<script>literal</script>\nReply', created_at: '2026-11-18' }] : [];
+    await fixture(async ({ get }: any) => {
+      assert.ok(get('settings-bots-whatsapp-' + (state === 'held' ? 'held' : state)));
+      assert.ok(get('settings-bots-whatsapp-notice'));
+      assert.equal(Boolean(get('settings-bots-whatsapp-connect-btn')), state === 'unpaired');
+      assert.equal(Boolean(get('settings-bots-whatsapp-disconnect-btn')), ['paired', 'held'].includes(state));
+      if (state === 'held') {
+        assert.equal(get('settings-bots-whatsapp-held-item-0').textContent, '<script>literal</script>\nReply');
+        assert.equal(get('settings-bots-whatsapp-held-item-0').querySelector('script'), null);
+        assert.equal(get('settings-bots-whatsapp-reminder'), null);
+      }
+    }, true, b);
+  }
+  for (const [sent, error, expected] of [
+    [true, 'send_failed', 'Ninjy sent you a WhatsApp reminder.'],
+    [false, 'template_unavailable', 'Ninjy could not send you a WhatsApp reminder because its message template is not approved yet.'],
+    [false, 'send_failed', 'Ninjy could not send you a WhatsApp reminder.'],
+  ]) {
+    const b: any = bot();
+    Object.assign(b.whatsapp, { binding, held_replies: [{ message_id: '1', body: 'Reply' }], reengage_sent: sent, reengage_error: error });
+    await fixture(async ({ get }: any) => assert.equal(get('settings-bots-whatsapp-reminder').textContent, expected), true, b);
+  }
+});
+
+test('WhatsApp pairing link, QR, clipboard, disconnect cancellation and confirmation', async () => {
+  await fixture(async ({ get, click, setBot, store, settle, requests, dom }: any) => {
+    let copied = '';
+    Object.defineProperty(dom.window.navigator, 'clipboard', { value: { writeText: async (value: string) => { copied = value; } }, configurable: true });
+    await click('settings-bots-whatsapp-connect-btn');
+    const link = get('settings-bots-whatsapp-open-link');
+    assert.equal(link.href, 'https://wa.me/15550100001?text=CODE');
+    assert.equal(link.target, '_blank');
+    assert.match(get('settings-bots-whatsapp-qr').src, /^data:image\/gif;base64,/);
+    assert.equal(get('settings-bots-whatsapp-qr').alt, 'QR code to connect WhatsApp');
+    assert.equal(get('settings-bots-whatsapp-pairing-text').textContent, 'Message: CODE');
+    await click('settings-bots-whatsapp-copy-btn');
+    assert.equal(copied, link.href);
+    const paired: any = bot();
+    paired.whatsapp.binding = { state: 'active', display: '+15551234567', connected_at: '2026-11-18' };
+    setBot(paired);
+    await act(async () => handleUserWsEvent(store.dispatch, { type: 'bot_changed' })); await settle();
+    assert.equal(get('settings-bots-whatsapp-paired').textContent, 'Connected to +15551234567');
+    await click('settings-bots-whatsapp-disconnect-btn');
+    assert.match(get('settings-bots-whatsapp-disconnect-dialog').textContent, /Your bot will stop receiving messages from this WhatsApp account/);
+    await click('settings-bots-whatsapp-disconnect-cancel-btn');
+    assert.equal(requests.some((r: any) => r.method === 'DELETE'), false);
+    await click('settings-bots-whatsapp-disconnect-btn');
+    await click('settings-bots-whatsapp-disconnect-confirm-btn');
+    assert.ok(get('settings-bots-whatsapp-connect-btn'));
+    assert.equal(get('settings-bots-whatsapp-link'), null);
+    assert.equal(requests.filter((r: any) => r.path.endsWith('/whatsapp') && r.method === 'DELETE').length, 1);
   });
 });
