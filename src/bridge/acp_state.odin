@@ -30,6 +30,7 @@ ACP_State :: struct {
     next_delivery_id: u64,
     pending_outbound: [dynamic]ACP_RPC_Pending,
     pending_inbound: [dynamic]ACP_RPC_Inbound,
+    recent_inbound: [dynamic]ACP_RPC_Inbound,
     pending_writes: [dynamic]ACP_RPC_Write,
     queued_input_message_ids: [dynamic]string,
     completed_delivery_ids: [dynamic]string,
@@ -53,6 +54,9 @@ ACP_RPC_Inbound :: struct {
     params_json: string,
     deadline_unix_ms: i64,
     response_json: string,
+    // Receipt for the final chunk proves the serialized response reached stdin.
+    // Empty for unanswered requests and entries in the recent replay window.
+    response_delivery_id: string,
 }
 ACP_RPC_Write :: struct { delivery_id: string, bytes: string }
 
@@ -113,11 +117,17 @@ acp_state_delete :: proc(s: ^ACP_State) {
     delete(s.selected_model); delete(s.selected_mode); delete(s.partial_line_base64)
     delete(s.tool_map_json); delete(s.chat_outbox_json)
     for p in s.pending_outbound { delete(p.id); delete(p.method); delete(p.params_json); delete(p.delivery_id) }
-    for p in s.pending_inbound { delete(p.id_json); delete(p.method); delete(p.params_json); delete(p.response_json) }
+    for p in s.pending_inbound do acp_state_inbound_delete(p)
+    for p in s.recent_inbound do acp_state_inbound_delete(p)
     for w in s.pending_writes { delete(w.delivery_id); delete(w.bytes) }
     for id in s.queued_input_message_ids do delete(id)
     for id in s.completed_delivery_ids do delete(id)
-    delete(s.pending_outbound); delete(s.pending_inbound); delete(s.pending_writes)
+    delete(s.pending_outbound); delete(s.pending_inbound); delete(s.recent_inbound); delete(s.pending_writes)
     delete(s.queued_input_message_ids); delete(s.completed_delivery_ids)
     s^ = {}
+}
+
+acp_state_inbound_delete :: proc(p: ACP_RPC_Inbound) {
+    delete(p.id_json); delete(p.method); delete(p.params_json)
+    delete(p.response_json); delete(p.response_delivery_id)
 }

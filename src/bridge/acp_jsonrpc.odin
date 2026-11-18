@@ -15,6 +15,19 @@ import "core:unicode/utf8"
 
 ACP_RPC_MAX_LINE :: 4*1024*1024
 ACP_RPC_QUEUE_BYTES :: 1024*1024
+// Active requests and replay history have independent count and byte budgets,
+// covering whole-file replies as well as small permission results.
+// An evicted completed ID is no longer eligible for cached duplicate replay.
+ACP_RPC_MAX_PENDING_INBOUND :: 128
+ACP_RPC_PENDING_INBOUND_BYTES :: 8*1024*1024
+ACP_RPC_MAX_PENDING_OUTBOUND :: 128
+ACP_RPC_PENDING_OUTBOUND_BYTES :: 8*1024*1024
+ACP_RPC_RECENT_INBOUND_COUNT :: 64
+ACP_RPC_RECENT_INBOUND_BYTES :: 8*1024*1024
+ACP_RPC_COMPLETED_DELIVERY_COUNT :: 256
+ACP_RPC_UNKNOWN_ID_COUNT :: 256
+ACP_RPC_UNKNOWN_ID_BYTES :: 64*1024
+ACP_RPC_UNKNOWN_ID_OVERFLOW :: `"<additional unknown response IDs suppressed>"`
 ACP_RPC_ID :: distinct string
 ACP_RPC_Role :: enum { Other, Initialize, New, Load, Config, Prompt }
 ACP_RPC_Error :: struct { code: int, message: string, data_json: string }
@@ -34,6 +47,8 @@ ACP_RPC_Callbacks :: struct {
     // False prevents sends and PipeAck.
     checkpoint: proc(data: rawptr, state: ^ACP_State) -> bool,
     restore_completion: proc(data: rawptr, role: ACP_RPC_Role, id: ACP_RPC_ID) -> ACP_RPC_Completion,
+    // At most UNKNOWN_ID_COUNT distinct IDs/UNKNOWN_ID_BYTES of keys, then one
+    // UNKNOWN_ID_OVERFLOW marker.
     unknown_response: proc(data: rawptr, id_json: string),
 }
 ACP_RPC_Frame_Kind :: enum { Stdout, Receipt, Diagnostic, Fault }
@@ -80,8 +95,12 @@ ACP_RPC_Client :: struct {
     // callbacks or JSON/persistence/I/O work.
     outbound: map[string]int,
     inbound: map[string]int,
+    recent_inbound: map[string]int,
+    recent_inbound_bytes: int,
     completions: map[string]ACP_RPC_Completion,
     unknown_ids: map[string]bool,
+    unknown_ids_overflow: bool,
+    unknown_id_bytes: int,
     partial: [dynamic]byte,
     failed: bool,
     restored: bool,
@@ -115,6 +134,7 @@ acp_rpc_open :: proc(io: ACP_RPC_IO, callbacks: ACP_RPC_Callbacks) -> (^ACP_RPC_
                effective_transport = strings.clone("acp"), next_rpc_id = 1, next_delivery_id = 1}
     c.outbound = make(map[string]int)
     c.inbound = make(map[string]int)
+    c.recent_inbound = make(map[string]int)
     c.completions = make(map[string]ACP_RPC_Completion)
     c.unknown_ids = make(map[string]bool)
     c.writer = thread.create_and_start_with_data(c, acp_rpc_writer)
@@ -162,8 +182,10 @@ acp_rpc_close :: proc(c: ^ACP_RPC_Client) {
     for w in c.writes { delete(w.bytes); delete(w.delivery_id) }
     for key in c.unknown_ids do delete(key)
     for key in c.inbound do delete(key)
+    for key in c.recent_inbound do delete(key)
     delete(c.queue); delete(c.writes); delete(c.partial)
     delete(c.outbound); delete(c.inbound); delete(c.completions); delete(c.unknown_ids)
+    delete(c.recent_inbound)
     acp_state_delete(&c.state)
     delete(c.io.launch_epoch); delete(c.io.instance); delete(c.io.state_path)
     free(c)
@@ -391,6 +413,9 @@ acp_rpc_execute :: proc(c: ^ACP_RPC_Client, cmd: ^ACP_RPC_Command) {
         if !acp_rpc_params_ok(cmd.b) do return
         id: string
         if cmd.kind == .Request {
+            pending_bytes := len(cmd.a)+len(cmd.b)+2*len(c.state.launch_epoch)+128
+            for p in c.state.pending_outbound do pending_bytes += len(p.id)+len(p.method)+len(p.params_json)+len(p.delivery_id)
+            if len(c.state.pending_outbound) >= ACP_RPC_MAX_PENDING_OUTBOUND || pending_bytes > ACP_RPC_PENDING_OUTBOUND_BYTES do return
             id = strings.clone(fmt.tprintf("ham:%s:%d", c.state.launch_epoch, c.state.next_rpc_id))
             c.state.next_rpc_id += 1
         }
@@ -424,25 +449,85 @@ acp_rpc_execute :: proc(c: ^ACP_RPC_Client, cmd: ^ACP_RPC_Command) {
                 `,"data":`, cmd.err.data_json if cmd.err.data_json != "" else "null", "}"}, context.temp_allocator)
             line = acp_rpc_envelope(p.id_json, "", "", "error", error_json)
         }
+        pending_bytes := len(line)+len(c.state.launch_epoch)+64
+        for pending in c.state.pending_inbound do pending_bytes += acp_rpc_inbound_bytes(pending)
+        if pending_bytes > ACP_RPC_PENDING_INBOUND_BYTES do return
         start := len(c.state.pending_writes)
         _, ok := acp_rpc_stage(c, line); if !ok do return
         p.response_json = strings.clone(line)
+        p.response_delivery_id = strings.clone(c.state.pending_writes[len(c.state.pending_writes)-1].delivery_id)
         cmd.ok = acp_rpc_send_staged(c, start)
     case .Restore:
         cmd.ok = acp_rpc_restore_state(c, cmd.a)
     case .Frame:
         #partial switch cmd.frame.kind {
-        case .Fault: acp_rpc_fail(c, "acp_pipe_lost")
+        case .Fault:
+            reason := "acp_pipe_lost"
+            if cmd.frame.bytes == "acp_pipe_write_failed" do reason = cmd.frame.bytes
+            acp_rpc_fail(c, reason)
         case .Stdout: acp_rpc_consume(c, cmd.frame.bytes, cmd.frame.seq)
         case .Receipt:
             for w, i in c.state.pending_writes {
                 if w.delivery_id != cmd.frame.bytes do continue
                 append(&c.state.completed_delivery_ids, w.delivery_id)
+                if len(c.state.completed_delivery_ids) > ACP_RPC_COMPLETED_DELIVERY_COUNT {
+                    delete(c.state.completed_delivery_ids[0])
+                    ordered_remove(&c.state.completed_delivery_ids, 0)
+                }
                 delete(w.bytes); ordered_remove(&c.state.pending_writes, i)
+                acp_rpc_retire_inbound(c, cmd.frame.bytes)
                 if !acp_rpc_checkpoint(c) do acp_rpc_fail(c, "acp_state_write_failed")
                 break
             }
         }
+    }
+}
+
+acp_rpc_inbound_bytes :: proc(p: ACP_RPC_Inbound) -> int {
+    return len(p.id_json)+len(p.method)+len(p.params_json)+len(p.response_json)+len(p.response_delivery_id)
+}
+
+acp_rpc_reindex_inbound :: proc(index: ^map[string]int, entries: []ACP_RPC_Inbound) {
+    for key in index^ do delete(key)
+    clear(index)
+    for p, i in entries {
+        key, _ := acp_rpc_id(p.id_json)
+        index^[strings.clone(key)] = i
+    }
+}
+
+acp_rpc_duplicate_inbound :: proc(c: ^ACP_RPC_Client, p: ACP_RPC_Inbound, method, params: string) {
+    if p.method != method || p.params_json != params { acp_rpc_fail(c, "acp_protocol_error"); return }
+    if p.response_json == "" do return
+    start := len(c.state.pending_writes)
+    _, ok := acp_rpc_stage(c, p.response_json)
+    if !ok { acp_rpc_fail(c, "acp_pipe_write_failed"); return }
+    acp_rpc_send_staged(c, start)
+}
+
+// The final chunk receipt means the preceding serialized chunks reached stdin
+// too. Earlier receipt notifications may still be queued; their delivery IDs
+// remain in pending_writes until individually receipted and retain daemon dedup.
+acp_rpc_retire_inbound :: proc(c: ^ACP_RPC_Client, delivery_id: string) {
+    for pending, i in c.state.pending_inbound {
+        p := pending
+        if p.response_delivery_id != delivery_id do continue
+        ordered_remove(&c.state.pending_inbound, i)
+        acp_rpc_reindex_inbound(&c.inbound, c.state.pending_inbound[:])
+        delete(p.response_delivery_id); p.response_delivery_id = ""
+        p.deadline_unix_ms = 0
+        size := acp_rpc_inbound_bytes(p)
+        if size > ACP_RPC_RECENT_INBOUND_BYTES { acp_state_inbound_delete(p); return }
+        for len(c.state.recent_inbound) > 0 && (len(c.state.recent_inbound) >= ACP_RPC_RECENT_INBOUND_COUNT || c.recent_inbound_bytes+size > ACP_RPC_RECENT_INBOUND_BYTES) {
+            old := c.state.recent_inbound[0]
+            c.recent_inbound_bytes -= acp_rpc_inbound_bytes(old)
+            acp_state_inbound_delete(old)
+            ordered_remove(&c.state.recent_inbound, 0)
+        }
+        append(&c.state.recent_inbound, p)
+        c.recent_inbound_bytes += size
+        acp_rpc_reindex_inbound(&c.recent_inbound, c.state.recent_inbound[:])
+        return
     }
 }
 
@@ -549,15 +634,17 @@ acp_rpc_message :: proc(c: ^ACP_RPC_Client, line: string) {
         key, valid := acp_rpc_id(id_json)
         if !valid { acp_rpc_fail(c, "acp_protocol_error"); return }
         if i, exists := c.inbound[key]; exists {
-            p := c.state.pending_inbound[i]
-            if p.method != method || p.params_json != params { acp_rpc_fail(c, "acp_protocol_error"); return }
-            if p.response_json != "" {
-                start := len(c.state.pending_writes)
-                _, ok := acp_rpc_stage(c, p.response_json)
-                if !ok { acp_rpc_fail(c, "acp_pipe_write_failed"); return }
-                acp_rpc_send_staged(c, start)
-            }
+            acp_rpc_duplicate_inbound(c, c.state.pending_inbound[i], method, params)
             return
+        }
+        if i, exists := c.recent_inbound[key]; exists {
+            acp_rpc_duplicate_inbound(c, c.state.recent_inbound[i], method, params)
+            return
+        }
+        pending_bytes := len(id_json)+len(method)+len(params)
+        for p in c.state.pending_inbound do pending_bytes += acp_rpc_inbound_bytes(p)
+        if len(c.state.pending_inbound) >= ACP_RPC_MAX_PENDING_INBOUND || pending_bytes > ACP_RPC_PENDING_INBOUND_BYTES {
+            acp_rpc_fail(c, "acp_protocol_error"); return
         }
         deadline: i64
         if method == "session/request_permission" do deadline = acp_rpc_now(c)+300000
@@ -588,8 +675,14 @@ acp_rpc_message :: proc(c: ^ACP_RPC_Client, line: string) {
     idx, found := c.outbound[outgoing_id]
     if !string_id || !found {
         if !c.unknown_ids[id_json] {
-            c.unknown_ids[strings.clone(id_json)] = true
-            if c.callbacks.unknown_response != nil do c.callbacks.unknown_response(c.callbacks.data, strings.clone(id_json))
+            if len(c.unknown_ids) < ACP_RPC_UNKNOWN_ID_COUNT && c.unknown_id_bytes+len(id_json) <= ACP_RPC_UNKNOWN_ID_BYTES {
+                c.unknown_ids[strings.clone(id_json)] = true
+                c.unknown_id_bytes += len(id_json)
+                if c.callbacks.unknown_response != nil do c.callbacks.unknown_response(c.callbacks.data, strings.clone(id_json))
+            } else if !c.unknown_ids_overflow {
+                c.unknown_ids_overflow = true
+                if c.callbacks.unknown_response != nil do c.callbacks.unknown_response(c.callbacks.data, strings.clone(ACP_RPC_UNKNOWN_ID_OVERFLOW))
+            }
         }
         return
     }
@@ -652,22 +745,40 @@ acp_rpc_restore_state :: proc(c: ^ACP_RPC_Client, raw: string) -> bool {
     valid := false
     defer { if !valid do acp_state_delete(&state) }
     if state.instance != c.io.instance || state.launch_epoch != c.io.launch_epoch do return false
+    if len(state.pending_inbound) > ACP_RPC_MAX_PENDING_INBOUND || len(state.recent_inbound) > ACP_RPC_RECENT_INBOUND_COUNT do return false
+    if len(state.pending_outbound) > ACP_RPC_MAX_PENDING_OUTBOUND do return false
     // Validate the entire checkpoint before exposing any of it to callbacks.
     seen := make(map[string]bool, allocator = context.temp_allocator)
+    outbound_bytes := 0
     for p in state.pending_outbound {
         if p.id == "" || seen[p.id] || !strings.has_prefix(p.id, fmt.tprintf("ham:%s:", state.launch_epoch)) || !acp_rpc_params_ok(p.params_json) || p.role != acp_rpc_role(p.method) do return false
         counter, counter_ok := strconv.parse_u64(strings.trim_prefix(p.id, fmt.tprintf("ham:%s:", state.launch_epoch)))
         if !counter_ok || counter == 0 || counter >= state.next_rpc_id do return false
         if c.callbacks.restore_completion == nil do return false
         seen[p.id] = true
+        outbound_bytes += len(p.id)+len(p.method)+len(p.params_json)+len(p.delivery_id)
     }
+    if outbound_bytes > ACP_RPC_PENDING_OUTBOUND_BYTES do return false
     clear(&seen)
+    pending_bytes := 0
     for p in state.pending_inbound {
         key, id_ok := acp_rpc_id(p.id_json)
         if !id_ok || seen[key] || p.method == "" || !acp_rpc_json(p.params_json) do return false
         if p.response_json != "" && (!strings.has_suffix(p.response_json, "\n") || !acp_rpc_json(strings.trim_space(p.response_json))) do return false
+        if (p.response_json == "") != (p.response_delivery_id == "") do return false
+        pending_bytes += acp_rpc_inbound_bytes(p)
         seen[key] = true
     }
+    if pending_bytes > ACP_RPC_PENDING_INBOUND_BYTES do return false
+    recent_bytes := 0
+    for p in state.recent_inbound {
+        key, id_ok := acp_rpc_id(p.id_json)
+        if !id_ok || seen[key] || p.method == "" || !acp_rpc_json(p.params_json) || p.response_json == "" || p.response_delivery_id != "" do return false
+        if !strings.has_suffix(p.response_json, "\n") || !acp_rpc_json(strings.trim_space(p.response_json)) do return false
+        recent_bytes += acp_rpc_inbound_bytes(p)
+        seen[key] = true
+    }
+    if recent_bytes > ACP_RPC_RECENT_INBOUND_BYTES do return false
     clear(&seen)
     queued := 0
     for w in state.pending_writes {
@@ -679,6 +790,18 @@ acp_rpc_restore_state :: proc(c: ^ACP_RPC_Client, raw: string) -> bool {
         seen[w.delivery_id] = true; queued += len(w.bytes)
     }
     if queued > ACP_RPC_MAX_LINE do return false
+    for p in state.pending_inbound {
+        if p.response_delivery_id != "" && !seen[p.response_delivery_id] do return false
+    }
+    // These are diagnostic recent receipts, not the daemon's deduplication
+    // authority. Older journals may safely shed excess completed IDs on load.
+    if len(state.completed_delivery_ids) > ACP_RPC_COMPLETED_DELIVERY_COUNT {
+        drop := len(state.completed_delivery_ids)-ACP_RPC_COMPLETED_DELIVERY_COUNT
+        for id in state.completed_delivery_ids[:drop] do delete(id)
+        recent := make([dynamic]string, 0, ACP_RPC_COMPLETED_DELIVERY_COUNT)
+        append(&recent, ..state.completed_delivery_ids[drop:])
+        delete(state.completed_delivery_ids); state.completed_delivery_ids = recent
+    }
     for id in state.completed_delivery_ids {
         if id == "" || seen[id] do return false
         seen[id] = true
@@ -693,9 +816,9 @@ acp_rpc_restore_state :: proc(c: ^ACP_RPC_Client, raw: string) -> bool {
         completion := c.callbacks.restore_completion(c.callbacks.data, p.role, ACP_RPC_ID(strings.clone(p.id)))
         c.completions[p.id] = completion
     }
-    for p, i in state.pending_inbound {
-        key, _ := acp_rpc_id(p.id_json); c.inbound[strings.clone(key)] = i
-    }
+    acp_rpc_reindex_inbound(&c.inbound, state.pending_inbound[:])
+    acp_rpc_reindex_inbound(&c.recent_inbound, state.recent_inbound[:])
+    c.recent_inbound_bytes = recent_bytes
     // Restore is one transaction, including reconstituted blockers. An expired
     // setup call must fail before any old stdin bytes can be retried. Defer
     // reentrant replies until older chunks are queued in their original order.

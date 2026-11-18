@@ -25,6 +25,7 @@ ACP_Test :: struct {
     notification_params: [dynamic]string,
     restored_roles: [dynamic]ACP_RPC_Role,
     faults: int,
+    fault_reasons: [dynamic]string,
     unknown: int,
     checkpoints: int,
     order_errors: int,
@@ -32,6 +33,7 @@ ACP_Test :: struct {
     writer_thread: int,
     closed: bool,
     checkpoint_fail: bool,
+    write_fail: bool,
     reentrant: bool,
     handle_permission: bool,
     clock: i64,
@@ -55,6 +57,8 @@ acp_test_delete :: proc(f: ^ACP_Test) {
     for w in f.writes { delete(w.bytes); delete(w.delivery_id) }; delete(f.writes)
     for r in f.results do acp_rpc_result_delete(r)
     delete(f.results); delete(f.acks); delete(f.restored_roles)
+    for reason in f.fault_reasons do delete(reason)
+    delete(f.fault_reasons)
     for frame in f.frames do delete(frame.bytes)
     delete(f.frames)
     for id in f.inbound_ids do delete(id)
@@ -87,7 +91,7 @@ acp_test_write :: proc(data: rawptr, bytes, delivery_id: string) -> bool {
     if !ok || !found do f.order_errors += 1
     append(&f.writes, ACP_RPC_Write{strings.clone(delivery_id), strings.clone(bytes)})
     sync.cond_broadcast(&f.cond)
-    return !f.closed
+    return !f.closed && !f.write_fail
 }
 acp_test_ack :: proc(data: rawptr, seq: u64) -> bool {
     f := cast(^ACP_Test)data
@@ -115,6 +119,7 @@ acp_test_fault :: proc(data: rawptr, reason: string) {
     f := cast(^ACP_Test)data
     sync.mutex_lock(&f.mu); defer sync.mutex_unlock(&f.mu)
     f.faults += 1; sync.cond_broadcast(&f.cond)
+    append(&f.fault_reasons, strings.clone(reason))
 }
 acp_test_unknown :: proc(data: rawptr, id: string) {
     defer delete(id, runtime.heap_allocator())
