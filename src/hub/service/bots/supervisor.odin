@@ -13,7 +13,7 @@ import platform "odin_test:hub/platform"
 import agent_service "odin_test:hub/service/agent"
 import project_service "odin_test:hub/service/project"
 
-Bot_Notice :: struct {owner, text: string}
+Bot_Notice :: struct {owner, bot_id, through_message_id, text: string}
 
 // Caller holds mutex. Notices are queued in tick scratch, sent after unlocking.
 bots_wait_locked :: proc(s: ^Bots_Service, d: domain.Bot_Delivery, reason, now: string) {
@@ -41,7 +41,7 @@ bots_abandon_locked :: proc(s: ^Bots_Service, d: domain.Bot_Delivery, reason, no
 	changed, update_err := iface.delivery_update(s.repo, updated, d.state)
 	if !changed || update_err.code != .None do return false
 	committed, _ := bots_uow_commit(&uow)
-	if committed && reason == "all_tried" do bots_queue_gave_up_locked(s, d.owner_user_id)
+	if committed && reason == "all_tried" do bots_queue_gave_up_locked(s, d.owner_user_id, d.bot_id, d.through_message_id)
 	return committed
 }
 
@@ -58,7 +58,7 @@ bots_wake_locked :: proc(s: ^Bots_Service, d: domain.Bot_Delivery, now: string) 
 		// Leave the attempt count/round snapshot intact while applying terminal CAS.
 		updated.state, updated.finish_reason, updated.finished_at, updated.updated_at = .Abandoned, "max_rounds", now, now
 		changed, e := iface.delivery_update(s.repo, updated, .Waiting)
-		if changed && e.code == .None {bots_queue_gave_up_locked(s, d.owner_user_id); return true}
+		if changed && e.code == .None {bots_queue_gave_up_locked(s, d.owner_user_id, d.bot_id, d.through_message_id); return true}
 		return false
 	}
 	updated.state, updated.waiting_reason, updated.updated_at = .Pending, "", now
@@ -281,8 +281,8 @@ bots_supervisor_tick :: proc(s: ^Bots_Service) {
 	// Collect exactly-once waiting/give-up notices in the supervisor. Hooks and
 	// placement never perform Telegram I/O. Terminal notices are queued at CAS.
 	notices := make([dynamic]Bot_Notice)
-	for notice in s.notices do append(&notices, Bot_Notice{strings.clone(notice.owner), strings.clone(notice.text)})
-	for notice in s.notices {delete(notice.owner, runtime.heap_allocator()); delete(notice.text, runtime.heap_allocator())}
+	for notice in s.notices do append(&notices, Bot_Notice{strings.clone(notice.owner), strings.clone(notice.bot_id), strings.clone(notice.through_message_id), strings.clone(notice.text)})
+	for notice in s.notices {delete(notice.owner, runtime.heap_allocator()); delete(notice.bot_id, runtime.heap_allocator()); delete(notice.through_message_id, runtime.heap_allocator()); delete(notice.text, runtime.heap_allocator())}
 	clear(&s.notices)
 	waiting, _ := iface.delivery_list_open(s.repo)
 	for d in waiting {
@@ -290,7 +290,7 @@ bots_supervisor_tick :: proc(s: ^Bots_Service) {
 		updated := d
 		updated.waiting_notice_at, updated.updated_at = now, now
 		if changed, e := iface.delivery_update(s.repo, updated, .Waiting); changed && e.code == .None {
-			append(&notices, Bot_Notice{d.owner_user_id, COPY_NO_MACHINE})
+			append(&notices, Bot_Notice{d.owner_user_id, d.bot_id, d.through_message_id, COPY_NO_MACHINE})
 		}
 	}
 	run_idle := ms - s.last_idle_check_ms >= 60_000
@@ -300,8 +300,8 @@ bots_supervisor_tick :: proc(s: ^Bots_Service) {
 	sync.mutex_unlock(&s.mutex)
 	for notice in notices {
 		if !bots_gate_on(s.experiments, notice.owner) do continue
-		binding, found, _ := iface.binding_get_active_by_owner(s.repo, notice.owner, "telegram")
-		if found do bots_notice(s, binding.external_chat_id, notice.text)
+		binding, found, _ := bots_notice_binding(s, notice.owner, notice.bot_id, notice.through_message_id)
+		if found do bots_notice(s, binding.provider, binding.external_chat_id, notice.text)
 	}
 	if run_idle do bots_idle_stop(s, now, ms)
 	if run_retention {
@@ -310,9 +310,9 @@ bots_supervisor_tick :: proc(s: ^Bots_Service) {
 	}
 }
 
-bots_queue_gave_up_locked :: proc(s: ^Bots_Service, owner: string) {
+bots_queue_gave_up_locked :: proc(s: ^Bots_Service, owner, bot_id, through_message_id: string) {
 	if s.notices.allocator.procedure == nil do s.notices = make([dynamic]Bot_Notice, runtime.heap_allocator())
-	append(&s.notices, Bot_Notice{strings.clone(owner, runtime.heap_allocator()), strings.clone(COPY_GAVE_UP, runtime.heap_allocator())})
+	append(&s.notices, Bot_Notice{strings.clone(owner, runtime.heap_allocator()), strings.clone(bot_id, runtime.heap_allocator()), strings.clone(through_message_id, runtime.heap_allocator()), strings.clone(COPY_GAVE_UP, runtime.heap_allocator())})
 }
 
 bots_idle_stop :: proc(s: ^Bots_Service, now: string, ms: i64) {
@@ -339,7 +339,7 @@ bots_service_destroy :: proc(s: ^Bots_Service) {
 	for id in s.hello_queue do delete(id, runtime.heap_allocator())
 	delete(s.hello_queue)
 	s.hello_queue = nil
-	for notice in s.notices {delete(notice.owner, runtime.heap_allocator()); delete(notice.text, runtime.heap_allocator())}
+	for notice in s.notices {delete(notice.owner, runtime.heap_allocator()); delete(notice.bot_id, runtime.heap_allocator()); delete(notice.through_message_id, runtime.heap_allocator()); delete(notice.text, runtime.heap_allocator())}
 	delete(s.notices)
 	s.notices = nil
 }

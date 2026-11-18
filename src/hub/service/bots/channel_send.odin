@@ -33,7 +33,8 @@ channel_text_chunks :: proc(text: string, allocator := context.allocator) -> []s
 
 // message_ids and each id belong to the caller, including on an error.
 channel_send :: proc(s: ^Bots_Service, binding: domain.Channel_Binding, text: string, record: bool) -> (message_ids: []string, err: domain.Domain_Error) {
-	if s.adapter == nil do return nil, domain.domain_error(.Provider_Unavailable, "telegram is not configured on this hub", `{"code":"channel_not_configured"}`)
+	a := bots_adapter(s, binding.provider)
+	if a == nil do return nil, domain.domain_error(.Provider_Unavailable, fmt.tprintf("%s is not configured on this hub", binding.provider), `{"code":"channel_not_configured"}`)
 	if !utf8.valid_string(text) do return nil, domain.domain_error(.Validation_Failed, "text is invalid", `{"code":"text_invalid"}`)
 	chunks := channel_text_chunks(text)
 	defer delete(chunks)
@@ -64,7 +65,7 @@ channel_send :: proc(s: ^Bots_Service, binding: domain.Channel_Binding, text: st
 		external_id := ""
 		rate_wait: i64
 		for attempt in 0..<3 {
-			external_id, result = s.adapter.send_text(s.adapter.ctx, binding.external_chat_id, chunk)
+			external_id, result = a.send_text(a.ctx, binding.external_chat_id, chunk)
 			if result.kind == .None do break
 			delete(external_id)
 			external_id = ""

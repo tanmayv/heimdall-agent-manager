@@ -10,11 +10,11 @@ import channel "odin_test:hub/service/channel"
 
 // Rows use the caller's scratch arena, because binding snapshots are released
 // before the whole batch is committed. The update text itself stays borrowed.
-bots_inbound_rows :: proc(s: ^Bots_Service, batch: []channel.Inbound, now: string) -> ([]domain.Channel_Message, domain.Domain_Error) {
+bots_inbound_rows :: proc(s: ^Bots_Service, a: ^channel.Channel_Adapter, batch: []channel.Inbound, now: string) -> ([]domain.Channel_Message, domain.Domain_Error) {
 	rows := make([dynamic]domain.Channel_Message, context.temp_allocator)
 	for update in batch {
 		if !update.chat_is_private || update.kind != .Text do continue
-		binding, found, err := iface.binding_get_active_by_chat(s.repo, "telegram", update.external_chat_id)
+		binding, found, err := bots_find_binding(s, a.provider, update.external_chat_id, update.external_user_id)
 		defer domain.channel_binding_destroy(&binding)
 		if err.code != .None do return nil, err
 		if !found || !bots_gate_on(s.experiments, binding.owner_user_id) || update.external_user_id != binding.external_user_id do continue
@@ -36,16 +36,16 @@ bots_inbound_rows :: proc(s: ^Bots_Service, batch: []channel.Inbound, now: strin
 	return rows[:], {}
 }
 
-bots_inbound_side_effect :: proc(s: ^Bots_Service, update: channel.Inbound, now: string) -> domain.Domain_Error {
-	if !update.chat_is_private {bots_notice(s, update.external_chat_id, COPY_PRIVATE_ONLY); return {}}
-	if update.kind == .Start do return bots_pairing_start(s, update, now)
-	binding, found, err := iface.binding_get_active_by_chat(s.repo, "telegram", update.external_chat_id)
+bots_inbound_side_effect :: proc(s: ^Bots_Service, a: ^channel.Channel_Adapter, update: channel.Inbound, now: string) -> domain.Domain_Error {
+	if !update.chat_is_private {bots_notice(s, a.provider, update.external_chat_id, COPY_PRIVATE_ONLY); return {}}
+	if update.kind == .Start do return bots_pairing_start(s, a, update, now)
+	binding, found, err := bots_find_binding(s, a.provider, update.external_chat_id, update.external_user_id)
 	defer domain.channel_binding_destroy(&binding)
 	if err.code != .None do return err
-	if !found {bots_notice(s, update.external_chat_id, COPY_NOT_CONNECTED); return {}}
+	if !found {bots_notice(s, a.provider, update.external_chat_id, bots_channel_copy(a.provider).not_connected); return {}}
 	if !bots_gate_on(s.experiments, binding.owner_user_id) do return {}
-	if update.kind == .Disconnect do return bots_disconnect(s, binding.owner_user_id, true)
-	if update.kind == .Unsupported do bots_notice(s, update.external_chat_id, COPY_UNSUPPORTED)
+	if update.kind == .Disconnect do return bots_disconnect(s, binding.owner_user_id, a.provider, true)
+	if update.kind == .Unsupported do bots_notice(s, a.provider, update.external_chat_id, COPY_UNSUPPORTED)
 	return {}
 }
 

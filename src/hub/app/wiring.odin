@@ -835,6 +835,8 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/bots/me/deliveries", rawptr(&graph.bot_handlers), http.bot_deliveries_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bots/me/channels/telegram/pairing", rawptr(&graph.bot_handlers), http.bot_pairing_handler)
 	http.router_add(&graph.router, "DELETE", "/api/v1/bots/me/channels/telegram", rawptr(&graph.bot_handlers), http.bot_disconnect_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/bots/me/channels/whatsapp/pairing", rawptr(&graph.bot_handlers), http.bot_whatsapp_pairing_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/bots/me/channels/whatsapp", rawptr(&graph.bot_handlers), http.bot_whatsapp_disconnect_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bots/me/channels/telegram/messages", rawptr(&graph.bot_handlers), http.bot_messages_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/read", rawptr(&graph.bot_agent_handlers), http.bot_agent_channel_read_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/send", rawptr(&graph.bot_agent_handlers), http.bot_agent_channel_send_handler)

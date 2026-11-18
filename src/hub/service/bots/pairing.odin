@@ -2,6 +2,7 @@ package bots
 
 import "core:crypto/sha2"
 import "core:encoding/json"
+import "core:fmt"
 import "core:strings"
 import "core:sync"
 import "core:time"
@@ -20,14 +21,15 @@ bots_pairing_hash :: proc(code: string) -> string {
 	return platform.hex_encode(digest[:], context.temp_allocator)
 }
 
-Bot_Pairing_Link :: struct {pairing_url, expires_at: string}
-// Both returned strings are caller-owned.
-bots_pairing_create :: proc(s: ^Bots_Service, owner: string) -> (Bot_Pairing_Link, domain.Domain_Error) {
+Bot_Pairing_Link :: struct {pairing_url, pairing_text, expires_at: string}
+// All returned strings are caller-owned.
+bots_pairing_create :: proc(s: ^Bots_Service, owner, provider: string) -> (Bot_Pairing_Link, domain.Domain_Error) {
 	bot, err := bots_get(s, owner)
 	if err.code != .None do return {}, err
 	defer domain.bot_destroy(&bot)
-	if s.adapter == nil do return {}, domain.domain_error(.Provider_Unavailable, "telegram is not configured on this hub", "{\"code\":\"channel_not_configured\"}")
-	identity, channel_err := s.adapter.identity(s.adapter.ctx)
+	a := bots_adapter(s, provider)
+	if a == nil do return {}, domain.domain_error(.Provider_Unavailable, fmt.tprintf("%s is not configured on this hub", provider), "{\"code\":\"channel_not_configured\"}")
+	identity, channel_err := a.identity(a.ctx)
 	if channel_err.kind != .None do return {}, domain.domain_error(.Provider_Unavailable, "channel identity unavailable")
 	code, random_ok := platform.random_hex(16)
 	if !random_ok do return {}, domain.domain_error(.Internal_Error, "pairing randomness unavailable")
@@ -36,11 +38,15 @@ bots_pairing_create :: proc(s: ^Bots_Service, owner: string) -> (Bot_Pairing_Lin
 	ms, valid := platform.rfc3339_to_unix_ms(now)
 	if !valid do return {}, domain.domain_error(.Internal_Error, "pairing clock unavailable")
 	expires := platform.format_rfc3339_utc(time.Time{_nsec = (ms + s.timers.bot_pairing_ttl_ms) * 1_000_000})
-	sync.mutex_lock(&s.mutex)
-	defer sync.mutex_unlock(&s.mutex)
-	if e := iface.pairing_delete_for_owner(s.repo, owner, "telegram"); e.code != .None do return {}, e
-	if e := iface.pairing_insert(s.repo, {code_hash = bots_pairing_hash(code), owner_user_id = owner, bot_id = bot.bot_id, provider = "telegram", created_at = now, expires_at = expires}); e.code != .None do return {}, e
-	return {pairing_url = s.adapter.pairing_url(s.adapter.ctx, identity, code), expires_at = strings.clone(expires)}, {}
+	{
+		sync.mutex_lock(&s.mutex)
+		defer sync.mutex_unlock(&s.mutex)
+		if e := iface.pairing_delete_for_owner(s.repo, owner, provider); e.code != .None do return {}, e
+		if e := iface.pairing_insert(s.repo, {code_hash = bots_pairing_hash(code), owner_user_id = owner, bot_id = bot.bot_id, provider = provider, created_at = now, expires_at = expires}); e.code != .None do return {}, e
+	}
+	text := ""
+	if a.pairing_text != nil do text = a.pairing_text(a.ctx, code)
+	return {pairing_url = a.pairing_url(a.ctx, identity, code), pairing_text = text, expires_at = strings.clone(expires)}, {}
 }
 
 bots_publish_changed :: proc(s: ^Bots_Service, owner, bot_id: string) {
@@ -49,59 +55,69 @@ bots_publish_changed :: proc(s: ^Bots_Service, owner, bot_id: string) {
 	events.publish_owned(s.event_bus, owner, string(data))
 }
 
-bots_notice :: proc(s: ^Bots_Service, chat_id, text: string) {
-	ids, _ := channel_send(s, {external_chat_id = chat_id}, text, false)
+bots_notice :: proc(s: ^Bots_Service, provider, chat_id, text: string) {
+	a := bots_adapter(s, provider)
+	binding := domain.Channel_Binding{provider = provider, external_chat_id = chat_id}
+	if a != nil && a.reply_window_ms > 0 {
+		active, found, err := iface.binding_get_active_by_chat(s.repo, provider, chat_id)
+		defer domain.channel_binding_destroy(&active)
+		if err.code != .None do return
+		if found && bots_window_closed(a, active, bots_stamp_ms(platform.clock_now(s.clock))) do return
+	}
+	ids, _ := channel_send(s, binding, text, false)
 	for id in ids do delete(id)
 	delete(ids)
 }
 
-// Pairing state is serialized, but Telegram I/O happens after unlocking.
-bots_pairing_start :: proc(s: ^Bots_Service, update: channel.Inbound, now: string) -> domain.Domain_Error {
-	reply, previous_chat, owner, bot_id, err := bots_pairing_apply(s, update, now)
+// Pairing state is serialized; provider I/O happens after unlocking.
+bots_pairing_start :: proc(s: ^Bots_Service, a: ^channel.Channel_Adapter, update: channel.Inbound, now: string) -> domain.Domain_Error {
+	reply, previous_chat, owner, bot_id, err := bots_pairing_apply(s, a, update, now)
 	defer {delete(previous_chat); delete(owner); delete(bot_id)}
 	if err.code != .None do return err
-	if reply != "" do bots_notice(s, update.external_chat_id, reply)
-	if previous_chat != "" do bots_notice(s, previous_chat, COPY_REPLACED)
+	if reply != "" do bots_notice(s, a.provider, update.external_chat_id, reply)
+	if previous_chat != "" do bots_notice(s, a.provider, previous_chat, bots_channel_copy(a.provider).replaced)
 	if bot_id != "" do bots_publish_changed(s, owner, bot_id)
 	return {}
 }
 
-bots_pairing_apply :: proc(s: ^Bots_Service, update: channel.Inbound, now: string) -> (reply, previous_chat, owner, bot_id: string, err: domain.Domain_Error) {
+bots_pairing_apply :: proc(s: ^Bots_Service, a: ^channel.Channel_Adapter, update: channel.Inbound, now: string) -> (reply, previous_chat, owner, bot_id: string, err: domain.Domain_Error) {
 	sync.mutex_lock(&s.mutex); defer sync.mutex_unlock(&s.mutex)
-	binding, bound, binding_err := iface.binding_get_active_by_chat(s.repo, "telegram", update.external_chat_id)
+	copy := bots_channel_copy(a.provider)
+	binding, bound, binding_err := bots_find_binding(s, a.provider, update.external_chat_id, update.external_user_id)
 	defer domain.channel_binding_destroy(&binding)
 	if binding_err.code != .None do return "", "", "", "", binding_err
 	if update.text == "" {
-		return "" if bound else COPY_NOT_CONNECTED, "", "", "", {}
+		return "" if bound else copy.not_connected, "", "", "", {}
 	}
 	hash := bots_pairing_hash(update.text)
 	pairing, found, get_err := iface.pairing_get(s.repo, hash)
 	defer domain.channel_pairing_destroy(&pairing)
 	if get_err.code != .None do return "", "", "", "", get_err
-	if !found || pairing.consumed_at != "" || pairing.expires_at <= now do return COPY_PAIR_INVALID, "", "", "", {}
+	if !found || pairing.provider != a.provider || pairing.consumed_at != "" || pairing.expires_at <= now do return copy.pair_invalid, "", "", "", {}
 	if !bots_gate_on(s.experiments, pairing.owner_user_id) do return COPY_PAIR_NOT_ENABLED, "", "", "", {}
 	bot, bot_found, bot_err := iface.bot_get_by_owner(s.repo, pairing.owner_user_id)
 	defer domain.bot_destroy(&bot)
 	if bot_err.code != .None do return "", "", "", "", bot_err
 	if !bot_found do return COPY_PAIR_NO_BOT, "", "", "", {}
-	if bound && binding.owner_user_id != pairing.owner_user_id do return COPY_PAIR_CHAT_TAKEN, "", "", "", {}
+	if bound && binding.owner_user_id != pairing.owner_user_id do return copy.chat_taken, "", "", "", {}
 	if bound {
 		consumed, consume_err := iface.pairing_consume(s.repo, hash, now)
 		if consume_err.code != .None do return "", "", "", "", consume_err
-		return COPY_PAIRED if consumed else COPY_PAIR_INVALID, "", "", "", {}
+		return copy.paired if consumed else copy.pair_invalid, "", "", "", {}
 	}
 	previous, had_previous, activate_err := iface.binding_activate(s.repo, {
 		binding_id = platform.generate_id(s.ids, "chb_"), owner_user_id = pairing.owner_user_id, bot_id = bot.bot_id,
-		provider = "telegram", external_chat_id = update.external_chat_id, external_user_id = update.external_user_id,
+		provider = a.provider, external_chat_id = update.external_chat_id, external_user_id = update.external_user_id,
 		external_display = update.sender_display, state = .Active, created_at = now,
+		last_inbound_at = update.provider_time if update.provider_time != "" else now,
 	}, hash, now)
 	defer domain.channel_binding_destroy(&previous)
-	if activate_err.code == .Conflict do return COPY_PAIR_INVALID, "", "", "", {}
+	if activate_err.code == .Conflict do return copy.pair_invalid, "", "", "", {}
 	if activate_err.code != .None do return "", "", "", "", activate_err
 	if had_previous {
 		if e := bots_revoke_contents(s, previous, now); e.code != .None do return "", "", "", "", e
 	}
-	return COPY_PAIRED, strings.clone(previous.external_chat_id) if had_previous else "", strings.clone(pairing.owner_user_id), strings.clone(bot.bot_id), {}
+	return copy.paired, strings.clone(previous.external_chat_id) if had_previous && !bots_window_closed(a, previous, bots_stamp_ms(now)) else "", strings.clone(pairing.owner_user_id), strings.clone(bot.bot_id), {}
 }
 
 // Caller holds s.mutex. Disconnect supplies a transaction; binding_activate
@@ -126,28 +142,28 @@ bots_revoke_contents :: proc(s: ^Bots_Service, binding: domain.Channel_Binding, 
 	return err
 }
 
-bots_disconnect :: proc(s: ^Bots_Service, owner_user_id: string, notify: bool) -> domain.Domain_Error {
-	return bots_disconnect_for_reason(s, owner_user_id, notify, "binding_revoked")
+bots_disconnect :: proc(s: ^Bots_Service, owner_user_id, provider: string, notify: bool) -> domain.Domain_Error {
+	return bots_disconnect_for_reason(s, owner_user_id, provider, notify, "binding_revoked")
 }
 
 // DELETE shares disconnect cleanup while preserving its bot_deleted terminal reason.
-bots_disconnect_for_reason :: proc(s: ^Bots_Service, owner_user_id: string, notify: bool, finish_reason: string) -> domain.Domain_Error {
+bots_disconnect_for_reason :: proc(s: ^Bots_Service, owner_user_id, provider: string, notify: bool, finish_reason: string) -> domain.Domain_Error {
 	sync.mutex_lock(&s.mutex)
-	binding, found, err := bots_disconnect_locked(s, owner_user_id, finish_reason)
+	binding, found, err := bots_disconnect_locked(s, owner_user_id, provider, finish_reason)
 	sync.mutex_unlock(&s.mutex)
 	defer domain.channel_binding_destroy(&binding)
 	if err.code != .None do return err
 	if !found do return bots_detail_error(.Not_Found, "binding_not_found")
-	if notify do bots_notice(s, binding.external_chat_id, COPY_DISCONNECTED)
+	if notify && !bots_window_closed(bots_adapter(s, provider), binding, bots_stamp_ms(platform.clock_now(s.clock))) do bots_notice(s, provider, binding.external_chat_id, COPY_DISCONNECTED)
 	bots_publish_changed(s, owner_user_id, binding.bot_id)
 	return {}
 }
 
-bots_disconnect_locked :: proc(s: ^Bots_Service, owner, finish_reason: string) -> (domain.Channel_Binding, bool, domain.Domain_Error) {
+bots_disconnect_locked :: proc(s: ^Bots_Service, owner, provider, finish_reason: string) -> (domain.Channel_Binding, bool, domain.Domain_Error) {
 	uow, ok, err := iface.unit_of_work_begin(s.uow_factory)
 	if !ok do return {}, false, err
 	defer if uow.ctx != nil do iface.unit_of_work_rollback(&uow)
-	binding, found, get_err := iface.binding_get_active_by_owner(s.repo, owner, "telegram")
+	binding, found, get_err := iface.binding_get_active_by_owner(s.repo, owner, provider)
 	if get_err.code != .None || !found do return binding, found, get_err
 	now := platform.clock_now(s.clock)
 	if e := iface.binding_revoke(s.repo, binding.binding_id, now); e.code != .None do return binding, found, e
