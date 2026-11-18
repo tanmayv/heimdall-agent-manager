@@ -145,7 +145,7 @@ WHATSAPP_THROUGHPUT_RETRY_MS :: 5000
 
 A binding is looked up by `(provider, external_chat_id)` first and, when not found, by `(provider, external_user_id)` (new repository proc `binding_get_active_by_user`, section 6.3). Sends address the chat id: an all-digit chat id is sent as `"to":"+<digits>"`, any other chat id as `"recipient":"<chat id>"` (F7, F10).
 
-**Why.** F7: the phone number is the address Meta documents for every message type, and it stays present while the user and the bot talk (30-day rule). The BSUID is the stable identity, so it is the user key and the fallback lookup. The fallback lookup is provider-neutral and changes nothing for Telegram, where a private chat id equals the user id.
+**Why.** F7: the phone number is the address Meta documents for every message type, and it stays present while the user and the bot talk (30-day rule). The BSUID is the stable identity, so it is the user key and the fallback lookup. Only WhatsApp uses the user-ID fallback, selected by one provider-policy helper in the bots package. Telegram remains chat-id only, preserving unknown-chat and replacement behavior.
 
 ### D3. Reply routing by origin (U1)
 
@@ -897,7 +897,7 @@ bots_adapter :: proc(s: ^Bots_Service, provider: string) -> ^channel.Channel_Ada
 bots_find_binding :: proc(s: ^Bots_Service, provider, external_chat_id, external_user_id: string) -> (domain.Channel_Binding, bool, domain.Domain_Error)
 ```
 
-`bots_find_binding` skips the second lookup when `external_user_id == ""`.
+`bots_find_binding` performs the second lookup only when `external_user_id != ""` and the provider-policy helper enables it (WhatsApp only). Telegram never calls `binding_get_active_by_user`.
 
 ### 10.2 Signature changes
 

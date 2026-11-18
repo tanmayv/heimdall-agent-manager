@@ -2,6 +2,7 @@ package bots
 
 import "core:encoding/json"
 import "core:sync"
+import "core:strings"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
@@ -23,6 +24,7 @@ Bots_Service :: struct {
 	registry: ^project_service.Bridge_Runtime_Registry,
 	command_sink: ^project_service.Bridge_Command_Sink,
 	adapter: ^channel.Channel_Adapter,
+	whatsapp: ^channel.Channel_Adapter,
 	clock: ^platform.Clock,
 	ids: ^platform.ID_Generator,
 	timers: Bot_Timer_Config,
@@ -32,6 +34,26 @@ Bots_Service :: struct {
 	last_waiting_recheck_ms: i64,
 	last_idle_check_ms, last_retention_ms: i64,
 	notices: [dynamic]Bot_Notice,
+}
+
+bots_adapter :: proc(s: ^Bots_Service, provider: string) -> ^channel.Channel_Adapter {
+	switch provider {
+	case domain.CHANNEL_PROVIDER_TELEGRAM: return s.adapter
+	case domain.CHANNEL_PROVIDER_WHATSAPP: return s.whatsapp
+	}
+	return nil
+}
+
+bots_provider_uses_user_fallback :: proc(provider: string) -> bool {
+	return provider == domain.CHANNEL_PROVIDER_WHATSAPP
+}
+
+// Repository snapshots returned here belong to the caller.
+bots_find_binding :: proc(s: ^Bots_Service, provider, external_chat_id, external_user_id: string) -> (domain.Channel_Binding, bool, domain.Domain_Error) {
+	binding, found, err := iface.binding_get_active_by_chat(s.repo, provider, external_chat_id)
+	if found || err.code != .None || external_user_id == "" || !bots_provider_uses_user_fallback(provider) do return binding, found, err
+	domain.channel_binding_destroy(&binding)
+	return iface.binding_get_active_by_user(s.repo, provider, external_user_id)
 }
 
 bots_get :: proc(s: ^Bots_Service, owner: string) -> (domain.Bot, domain.Domain_Error) {
@@ -76,9 +98,19 @@ Bot_Telegram_View :: struct {
 	bot_username: string,
 	binding: json.Value,
 }
+Bot_Held_Reply_View :: struct {message_id, body, created_at: string}
+Bot_WhatsApp_View :: struct {
+	configured: bool,
+	phone_display: string,
+	binding: json.Value,
+	window_open, reengage_sent: bool,
+	reengage_error: string,
+	held_replies: []Bot_Held_Reply_View,
+}
 Bot_View :: struct {
 	bot_id, display_name, status, status_detail: string,
 	telegram: Bot_Telegram_View,
+	whatsapp: Bot_WhatsApp_View,
 	placement_revision: int,
 	advanced: Bot_Advanced_View,
 }
@@ -108,6 +140,31 @@ bots_view_json :: proc(s: ^Bots_Service, owner: string) -> (string, domain.Domai
 		obj["display"] = binding.external_display
 		obj["connected_at"] = binding.created_at
 		view.telegram.binding = obj
+	}
+	view.whatsapp.binding = json.Null(nil)
+	view.whatsapp.held_replies = make([]Bot_Held_Reply_View, 0, context.temp_allocator)
+	if s.whatsapp != nil {
+		view.whatsapp.configured = true
+		wa_identity, wa_err := s.whatsapp.identity(s.whatsapp.ctx)
+		if wa_err.kind == .None do view.whatsapp.phone_display = strings.concatenate({"+", wa_identity.bot_username}, context.temp_allocator)
+	}
+	wa_binding, wa_bound, wa_binding_err := iface.binding_get_active_by_owner(s.repo, owner, "whatsapp")
+	defer domain.channel_binding_destroy(&wa_binding)
+	if wa_binding_err.code != .None do return "", wa_binding_err
+	held: []domain.Channel_Message
+	defer {for &m in held do domain.channel_message_destroy(&m); delete(held)}
+	if wa_bound {
+		obj := make(json.Object, context.temp_allocator)
+		obj["state"], obj["display"], obj["connected_at"] = "active", wa_binding.external_display, wa_binding.created_at
+		view.whatsapp.binding = obj
+		view.whatsapp.window_open = !bots_window_closed(s.whatsapp, wa_binding, bots_stamp_ms(platform.clock_now(s.clock)))
+		view.whatsapp.reengage_sent = wa_binding.reengage_sent_at != ""
+		view.whatsapp.reengage_error = wa_binding.reengage_error
+		held_err: domain.Domain_Error
+		held, held_err = iface.messages_held(s.repo, wa_binding.binding_id)
+		if held_err.code != .None do return "", held_err
+		view.whatsapp.held_replies = make([]Bot_Held_Reply_View, min(20, len(held)), context.temp_allocator)
+		for m, i in held[:len(view.whatsapp.held_replies)] do view.whatsapp.held_replies[i] = {m.message_id, m.body, m.created_at}
 	}
 	inst: domain.Agent_Instance
 	defer domain.agent_instance_destroy(&inst)
@@ -161,7 +218,9 @@ bots_delete :: proc(s: ^Bots_Service, auth: contracts.Auth_Context) -> domain.Do
 	if err.code != .None do return err
 	defer domain.bot_destroy(&bot)
 	now := platform.clock_now(s.clock)
-	if e := bots_disconnect_for_reason(s, auth.user_id, true, "bot_deleted"); e.code != .None && e.code != .Not_Found do return e
+	for provider in ([]string{"telegram", "whatsapp"}) {
+		if e := bots_disconnect_for_reason(s, auth.user_id, provider, true, "bot_deleted"); e.code != .None && e.code != .Not_Found do return e
+	}
 	sync.mutex_lock(&s.mutex)
 	delivery, open, delivery_err := iface.delivery_get_open(s.repo, bot.bot_id)
 	if delivery_err.code == .None && open {
@@ -213,7 +272,9 @@ bots_delete :: proc(s: ^Bots_Service, auth: contracts.Auth_Context) -> domain.Do
 		seen[m.binding_id] = true
 		if e := iface.messages_purge_binding(s.repo, m.binding_id); e.code != .None do return e
 	}
-	if e := iface.pairing_delete_for_owner(s.repo, auth.user_id, "telegram"); e.code != .None do return e
+	for provider in ([]string{"telegram", "whatsapp"}) {
+		if e := iface.pairing_delete_for_owner(s.repo, auth.user_id, provider); e.code != .None do return e
+	}
 	return iface.bot_delete(s.repo, bot.bot_id)
 }
 

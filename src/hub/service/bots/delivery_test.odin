@@ -268,14 +268,14 @@ test_delivery_row_15 :: proc(t: ^testing.T) {
 test_delivery_row_16 :: proc(t: ^testing.T) {
 	f := delivery_fixture(t); defer delivery_destroy(f)
 	delivery_seed(t, f)
-	testing.expect_value(t, bots_disconnect(&f.pair.service, "alice", false).code, domain.Error_Code.None)
+	testing.expect_value(t, bots_disconnect(&f.pair.service, "alice", "telegram", false).code, domain.Error_Code.None)
 	delivery_expect(t, f, .Abandoned, "binding_revoked"); delivery_attempt_expect(t, f, .Cancelled)
 }
 @(test)
 test_delivery_row_17 :: proc(t: ^testing.T) {
 	f := delivery_fixture(t); defer delivery_destroy(f)
 	delivery_seed(t, f)
-	testing.expect_value(t, bots_disconnect_for_reason(&f.pair.service, "alice", false, "bot_deleted").code, domain.Error_Code.None)
+	testing.expect_value(t, bots_disconnect_for_reason(&f.pair.service, "alice", "telegram", false, "bot_deleted").code, domain.Error_Code.None)
 	delivery_expect(t, f, .Abandoned, "bot_deleted"); delivery_attempt_expect(t, f, .Cancelled)
 }
 @(test)

@@ -48,7 +48,7 @@ bots_poller_iteration :: proc(rt: ^Bots_Runtime, backoff: ^time.Duration) -> (ti
 	}
 	backoff^ = time.Second
 	now := platform.clock_now(s.clock)
-	rows, map_err := bots_inbound_rows(s, batch, now)
+	rows, map_err := bots_inbound_rows(s, s.adapter, batch, now)
 	if map_err.code != .None do return 5 * time.Second, false
 	inserted, store_err := iface.inbound_store_batch(s.repo, "telegram", rows, next, now)
 	defer {
@@ -60,7 +60,7 @@ bots_poller_iteration :: proc(rt: ^Bots_Runtime, backoff: ^time.Duration) -> (ti
 		return 5 * time.Second, false
 	}
 	for update in batch {
-		if e := bots_inbound_side_effect(s, update, now); e.code != .None do fmt.eprintf("bots: inbound side effect code=%v\n", e.code)
+		if e := bots_inbound_side_effect(s, s.adapter, update, now); e.code != .None do fmt.eprintf("bots: inbound side effect code=%v\n", e.code)
 	}
 	seen := make(map[string]bool, context.temp_allocator)
 	for row in rows {

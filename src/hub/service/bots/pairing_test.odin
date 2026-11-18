@@ -8,6 +8,7 @@ import "core:testing"
 import "core:time"
 import "core:unicode/utf8"
 import domain "odin_test:hub/domain"
+import agent_service "odin_test:hub/service/agent"
 import iface "odin_test:hub/repository/iface"
 import sqlite "odin_test:hub/repository/sqlite"
 import platform "odin_test:hub/platform"
@@ -79,7 +80,7 @@ pairing_test_update :: proc(payload := "valid", chat := "111") -> channel.Inboun
 	return {update_key = "telegram:1:1", external_chat_id = chat, external_user_id = "222", chat_is_private = true, sender_display = "@alice", kind = .Start, text = payload}
 }
 pairing_test_start :: proc(t: ^testing.T, f: ^Pairing_Fixture, payload := "valid", chat := "111") {
-	testing.expect_value(t, bots_pairing_start(&f.service, pairing_test_update(payload, chat), pairing_test_clock(nil)).code, domain.Error_Code.None)
+	testing.expect_value(t, bots_pairing_start(&f.service, &f.adapter, pairing_test_update(payload, chat), pairing_test_clock(nil)).code, domain.Error_Code.None)
 }
 pairing_test_bound :: proc(t: ^testing.T, f: ^Pairing_Fixture, chat := "111") {
 	pairing_test_code(t, f)
@@ -186,7 +187,7 @@ test_disconnect_purges_and_abandons :: proc(t: ^testing.T) {
 	d, found, _ := iface.delivery_get_open(&f.repo, "bot_a"); defer domain.bot_delivery_destroy(&d)
 	testing.expect(t, found && d.state == .Pending && d.through_message_id == "chm_1")
 	testing.expect_value(t, iface.attempt_insert(&f.repo, {attempt_id = "bda_1", delivery_id = d.delivery_id, round = 1, bridge_id = "brg_a", state = .Accepted}).code, domain.Error_Code.None)
-	testing.expect_value(t, bots_disconnect(&f.service, "alice", true).code, domain.Error_Code.None)
+	testing.expect_value(t, bots_disconnect(&f.service, "alice", "telegram", true).code, domain.Error_Code.None)
 	pairing_test_last(t, f, COPY_DISCONNECTED)
 	done, _, _ := iface.delivery_get(&f.repo, d.delivery_id); defer domain.bot_delivery_destroy(&done)
 	a, _, _ := iface.attempt_get(&f.repo, "bda_1"); defer domain.bot_delivery_attempt_destroy(&a)
@@ -194,7 +195,7 @@ test_disconnect_purges_and_abandons :: proc(t: ^testing.T) {
 	messages, _ := iface.messages_history(&f.repo, "bot_a", -1)
 	defer {for &m in messages do domain.channel_message_destroy(&m); delete(messages)}
 	testing.expect(t, len(messages) == 1 && messages[0].body == "" && messages[0].body_purged)
-	testing.expect_value(t, bots_disconnect(&f.service, "alice", true).code, domain.Error_Code.Not_Found)
+	testing.expect_value(t, bots_disconnect(&f.service, "alice", "telegram", true).code, domain.Error_Code.Not_Found)
 }
 @(test)
 test_inbound_rules_table :: proc(t: ^testing.T) {
@@ -217,10 +218,10 @@ test_inbound_rules_table :: proc(t: ^testing.T) {
 		case 8: expected_rows = 1
 		}
 		prior := len(f.sent)
-		rows, map_err := bots_inbound_rows(&f.service, batch, pairing_test_clock(nil))
+		rows, map_err := bots_inbound_rows(&f.service, &f.adapter, batch, pairing_test_clock(nil))
 		testing.expect_value(t, map_err.code, domain.Error_Code.None)
 		testing.expect_value(t, len(rows), expected_rows)
-		testing.expect_value(t, bots_inbound_side_effect(&f.service, u^, pairing_test_clock(nil)).code, domain.Error_Code.None)
+		testing.expect_value(t, bots_inbound_side_effect(&f.service, &f.adapter, u^, pairing_test_clock(nil)).code, domain.Error_Code.None)
 		testing.expect_value(t, len(f.sent)-prior, 1 if expected_notice != "" else 0)
 		if expected_notice != "" do pairing_test_last(t, f, expected_notice)
 		pairing_fixture_destroy(f)
@@ -233,7 +234,7 @@ test_inbound_truncation_and_delivery_transitions :: proc(t: ^testing.T) {
 	u := pairing_test_update()
 	u.kind = .Text
 	u.text = strings.repeat("🌏", 5000, context.temp_allocator)
-	rows, _ := bots_inbound_rows(&f.service, {u}, pairing_test_clock(nil))
+	rows, _ := bots_inbound_rows(&f.service, &f.adapter, {u}, pairing_test_clock(nil))
 	testing.expect(t, len(rows) == 1 && len(rows[0].body) == 16384 + len("\n[truncated]") && utf8.valid_string(rows[0].body))
 	ids, err := iface.inbound_store_batch(&f.repo, "telegram", rows, "2", pairing_test_clock(nil))
 	defer {for id in ids do delete(id); delete(ids)}
@@ -242,7 +243,7 @@ test_inbound_truncation_and_delivery_transitions :: proc(t: ^testing.T) {
 	d, _, _ := iface.delivery_get_open(&f.repo, "bot_a"); defer domain.bot_delivery_destroy(&d)
 	testing.expect(t, d.state == .Pending && d.round == 1 && d.through_message_id == rows[0].message_id)
 	u.update_key = "telegram:1:2"
-	rows2, _ := bots_inbound_rows(&f.service, {u}, pairing_test_clock(nil))
+	rows2, _ := bots_inbound_rows(&f.service, &f.adapter, {u}, pairing_test_clock(nil))
 	ids2, _ := iface.inbound_store_batch(&f.repo, "telegram", rows2, "3", pairing_test_clock(nil))
 	defer {for id in ids2 do delete(id); delete(ids2)}
 	_ = delivery_on_inbound(&f.service, "bot_a", 1794916800000)
@@ -276,7 +277,7 @@ test_pairing_fake_telegram_end_to_end :: proc(t: ^testing.T) {
 	telegram := channel.Telegram_Adapter{token = "TEST:FAKE", api_base = base_text}
 	defer channel.telegram_destroy(&telegram)
 	f.adapter = channel.telegram_adapter(&telegram)
-	link, link_err := bots_pairing_create(&f.service, "alice")
+	link, link_err := bots_pairing_create(&f.service, "alice", "telegram")
 	defer {delete(link.pairing_url); delete(link.expires_at)}
 	if !testing.expect_value(t, link_err.code, domain.Error_Code.None) do return
 	code := link.pairing_url[strings.index(link.pairing_url, "?start=")+7:]
@@ -320,14 +321,14 @@ test_pairing_fake_telegram_end_to_end :: proc(t: ^testing.T) {
 test_pairing_link_rotates_and_stores_hash_only :: proc(t: ^testing.T) {
 	f := pairing_fixture(t); defer pairing_fixture_destroy(f)
 	testing.expect_value(t, bots_pairing_hash("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
-	first, first_err := bots_pairing_create(&f.service, "alice")
+	first, first_err := bots_pairing_create(&f.service, "alice", "telegram")
 	defer {delete(first.pairing_url); delete(first.expires_at)}
 	testing.expect_value(t, first_err.code, domain.Error_Code.None)
 	code := first.pairing_url[strings.index(first.pairing_url,"?start=")+7:]
 	testing.expect_value(t, len(code), 32)
 	for c in code do testing.expect(t, (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))
 	testing.expect_value(t, first.expires_at, "2026-11-17T12:10:00Z")
-	second, second_err := bots_pairing_create(&f.service, "alice")
+	second, second_err := bots_pairing_create(&f.service, "alice", "telegram")
 	defer {delete(second.pairing_url); delete(second.expires_at)}
 	testing.expect_value(t, second_err.code, domain.Error_Code.None)
 	old, old_found, _ := iface.pairing_get(&f.repo,bots_pairing_hash(code)); defer domain.channel_pairing_destroy(&old)
@@ -344,9 +345,237 @@ test_disconnect_rolls_back_on_delivery_write_failure :: proc(t: ^testing.T) {
 	_ = delivery_on_inbound(&f.service,"bot_a",1794916800000)
 	testing.expect(t,sqlite.exec(&f.conn,"CREATE TRIGGER fail_disconnect BEFORE UPDATE ON bot_deliveries BEGIN SELECT RAISE(ABORT, 'test failure'); END;"))
 	prior := len(f.sent)
-	testing.expect(t,bots_disconnect(&f.service,"alice",true).code != .None)
+	testing.expect(t,bots_disconnect(&f.service,"alice", "telegram",true).code != .None)
 	binding, found, _ := iface.binding_get_active_by_chat(&f.repo,"telegram","111"); defer domain.channel_binding_destroy(&binding)
 	messages, _ := iface.messages_history(&f.repo,"bot_a",-1)
 	defer {for &m in messages do domain.channel_message_destroy(&m); delete(messages)}
 	testing.expect(t,found && len(messages)==1 && !messages[0].body_purged && messages[0].body=="hello" && len(f.sent)==prior)
+}
+
+// In-process WhatsApp adapter: no external provider or live runtime.
+wa_pairing_fixture :: proc(t: ^testing.T) -> ^Pairing_Fixture {
+	f := pairing_fixture(t)
+	f.adapter.provider = "whatsapp"
+	f.adapter.identity = wa_pairing_identity
+	f.adapter.pairing_url = wa_pairing_url
+	f.adapter.pairing_text = wa_pairing_text
+	f.adapter.reply_window_ms = 86_400_000
+	f.service.whatsapp, f.service.adapter = &f.adapter, nil
+	return f
+}
+wa_pairing_identity :: proc(ctx: rawptr) -> (channel.Identity, channel.Channel_Error) {
+	return {bot_user_id = "phone_fake", bot_username = "15550100001"}, {}
+}
+wa_pairing_text :: proc(ctx: rawptr, code: string, allocator := context.allocator) -> string {
+	return strings.concatenate({"Connect Ninjy ", code}, allocator)
+}
+wa_pairing_url :: proc(ctx: rawptr, identity: channel.Identity, code: string, allocator := context.allocator) -> string {
+	return strings.concatenate({"https://wa.me/", identity.bot_username, "?text=Connect%20Ninjy%20", code}, allocator)
+}
+wa_test_code :: proc(t: ^testing.T, f: ^Pairing_Fixture, code := "valid", owner := "alice", expiry := "2026-11-17T12:10:00Z", consumed := "") {
+	testing.expect_value(t, iface.pairing_insert(&f.repo, {code_hash = bots_pairing_hash(code), owner_user_id = owner, bot_id = "bot_a", provider = "whatsapp", created_at = pairing_test_clock(nil), expires_at = expiry, consumed_at = consumed}).code, domain.Error_Code.None)
+}
+wa_test_bind :: proc(t: ^testing.T, f: ^Pairing_Fixture, code := "valid", chat := "111", user := "222") {
+	wa_test_code(t, f, code)
+	u := pairing_test_update(code, chat)
+	u.external_user_id = user
+	testing.expect_value(t, bots_pairing_start(&f.service, &f.adapter, u, pairing_test_clock(nil)).code, domain.Error_Code.None)
+}
+@(test)
+test_whatsapp_pairing_link_and_text :: proc(t: ^testing.T) {
+	f := wa_pairing_fixture(t); defer pairing_fixture_destroy(f)
+	link, err := bots_pairing_create(&f.service, "alice", "whatsapp")
+	defer {delete(link.pairing_url); delete(link.pairing_text); delete(link.expires_at)}
+	if !testing.expect_value(t, err.code, domain.Error_Code.None) do return
+	code := link.pairing_text[len("Connect Ninjy "):]
+	testing.expect_value(t, len(code), 32)
+	testing.expect_value(t, link.pairing_url, strings.concatenate({"https://wa.me/15550100001?text=Connect%20Ninjy%20", code}, context.temp_allocator))
+	testing.expect_value(t, link.expires_at, "2026-11-17T12:10:00Z")
+	pairing, found, get_err := iface.pairing_get(&f.repo, bots_pairing_hash(code))
+	defer domain.channel_pairing_destroy(&pairing)
+	testing.expect(t, found && get_err.code == .None && pairing.provider == "whatsapp" && pairing.code_hash != code)
+}
+@(test)
+test_whatsapp_pairing_rules_use_whatsapp_copy :: proc(t: ^testing.T) {
+	// All seven pairing rules, plus consumed/expired and empty-bound variants.
+	for row in 1..=11 {
+		f := wa_pairing_fixture(t)
+		u := pairing_test_update()
+		expected := COPY_WA_PAIRED
+		wa_test_code(t, f)
+		switch row {
+		case 1: u.text = ""; expected = COPY_WA_NOT_CONNECTED
+		case 2: u.text = "missing"; expected = COPY_WA_PAIR_INVALID
+		case 3: wa_test_code(t, f, "used", consumed = pairing_test_clock(nil)); u.text = "used"; expected = COPY_WA_PAIR_INVALID
+		case 4: wa_test_code(t, f, "expired", expiry = pairing_test_clock(nil)); u.text = "expired"; expected = COPY_WA_PAIR_INVALID
+		case 5:
+			_, _ = iface.experiment_set(&f.experiments, {owner_user_id = "alice", key = "bots", enabled = false})
+			expected = COPY_PAIR_NOT_ENABLED
+		case 6: _ = iface.bot_delete(&f.repo, "bot_a"); expected = COPY_PAIR_NO_BOT
+		case 7:
+			testing.expect(t, sqlite.exec(&f.conn, "INSERT INTO channel_bindings(binding_id,owner_user_id,bot_id,provider,external_chat_id,external_user_id,state,created_at,last_inbound_at) VALUES('chb_bob','bob','bot_b','whatsapp','111','222','active','2026-11-17T12:00:00Z','2026-11-17T12:00:00Z');"))
+			expected = COPY_WA_CHAT_TAKEN
+		case 8: wa_test_bind(t, f, "first")
+		case 9: // first connection
+		case 10: wa_test_bind(t, f, "old", "333", "444"); expected = COPY_WA_REPLACED
+		case 11: wa_test_bind(t, f, "first"); u.text = ""; expected = ""
+		}
+		before := len(f.sent)
+		testing.expect_value(t, bots_pairing_start(&f.service, &f.adapter, u, pairing_test_clock(nil)).code, domain.Error_Code.None)
+		testing.expect_value(t, len(f.sent)-before, 0 if expected == "" else (2 if row == 10 else 1))
+		if expected != "" do pairing_test_last(t, f, expected)
+		if row == 7 {
+			code, _, _ := iface.pairing_get(&f.repo, bots_pairing_hash("valid"))
+			testing.expect_value(t, code.consumed_at, "")
+			domain.channel_pairing_destroy(&code)
+		}
+		if row == 8 || row == 9 || row == 10 {
+			b, found, _ := iface.binding_get_active_by_owner(&f.repo, "alice", "whatsapp")
+			testing.expect(t, found && b.external_chat_id == "111")
+			domain.channel_binding_destroy(&b)
+		}
+		pairing_fixture_destroy(f)
+	}
+}
+@(test)
+test_pairing_sets_last_inbound_at :: proc(t: ^testing.T) {
+	for provider_time in ([]string{"", "2026-11-17T11:59:00Z"}) {
+		f := wa_pairing_fixture(t)
+		wa_test_code(t, f)
+		u := pairing_test_update()
+		u.provider_time = provider_time
+		testing.expect_value(t, bots_pairing_start(&f.service, &f.adapter, u, pairing_test_clock(nil)).code, domain.Error_Code.None)
+		b, found, _ := iface.binding_get_active_by_owner(&f.repo, "alice", "whatsapp")
+		testing.expect(t, found)
+		testing.expect_value(t, b.last_inbound_at, provider_time if provider_time != "" else pairing_test_clock(nil))
+		testing.expect_value(t, b.external_display, "@alice")
+		domain.channel_binding_destroy(&b)
+		pairing_fixture_destroy(f)
+	}
+}
+@(test)
+test_inbound_lookup_falls_back_to_user_id :: proc(t: ^testing.T) {
+	f := wa_pairing_fixture(t); defer pairing_fixture_destroy(f)
+	wa_test_bind(t, f)
+	b, found, err := bots_find_binding(&f.service, "whatsapp", "new-chat", "222")
+	defer domain.channel_binding_destroy(&b)
+	testing.expect(t, found && err.code == .None && b.external_chat_id == "111")
+	none, missing, _ := bots_find_binding(&f.service, "whatsapp", "new-chat", "")
+	defer domain.channel_binding_destroy(&none)
+	testing.expect(t, !missing)
+	tg := pairing_fixture(t); defer pairing_fixture_destroy(tg)
+	pairing_test_bound(t, tg)
+	other, tg_found, tg_err := bots_find_binding(&tg.service, "telegram", "new-chat", "222")
+	defer domain.channel_binding_destroy(&other)
+	testing.expect(t, !tg_found && tg_err.code == .None)
+	u := pairing_test_update()
+	u.kind, u.external_chat_id = .Text, "new-chat"
+	rows, rows_err := bots_inbound_rows(&f.service, &f.adapter, {u}, pairing_test_clock(nil))
+	testing.expect(t, rows_err.code == .None && len(rows) == 1 && rows[0].binding_id == b.binding_id)
+}
+wa_test_second_channel :: proc(t: ^testing.T, f: ^Pairing_Fixture, a: ^channel.Channel_Adapter) {
+	a^ = f.adapter
+	a.provider = "whatsapp"
+	f.service.whatsapp = a
+	wa_test_code(t, f, "wa-second")
+	testing.expect_value(t, bots_pairing_start(&f.service, a, pairing_test_update("wa-second", "333"), pairing_test_clock(nil)).code, domain.Error_Code.None)
+}
+@(test)
+test_disconnect_is_provider_scoped :: proc(t: ^testing.T) {
+	f := pairing_fixture(t); defer pairing_fixture_destroy(f)
+	pairing_test_bound(t, f)
+	wa: channel.Channel_Adapter
+	wa_test_second_channel(t, f, &wa)
+	testing.expect_value(t, bots_disconnect(&f.service, "alice", "whatsapp", true).code, domain.Error_Code.None)
+	tg, tg_found, _ := iface.binding_get_active_by_owner(&f.repo, "alice", "telegram")
+	wab, wa_found, _ := iface.binding_get_active_by_owner(&f.repo, "alice", "whatsapp")
+	defer {domain.channel_binding_destroy(&tg); domain.channel_binding_destroy(&wab)}
+	testing.expect(t, tg_found && !wa_found)
+}
+wa_test_owned_send :: proc(ctx: rawptr, chat, text: string) -> (string, channel.Channel_Error) {
+	f := (^Pairing_Fixture)(ctx)
+	allocator := f.sent.allocator
+	append(&f.sent, Pairing_Test_Sent{strings.clone(chat, allocator), strings.clone(text, allocator)})
+	return strings.clone("sent"), {}
+}
+pairing_delete_agent_get :: proc(ctx: rawptr, id: string) -> (domain.Agent, bool, domain.Domain_Error) {
+	return {agent_id = "agt_a", owner_user_id = "alice"}, true, {}
+}
+pairing_delete_agent_save :: proc(ctx: rawptr, agent: domain.Agent) -> (domain.Agent, bool, domain.Domain_Error) {
+	assert(agent.state == .Archived)
+	return agent, true, {}
+}
+@(test)
+test_delete_bot_disconnects_both_providers :: proc(t: ^testing.T) {
+	f := pairing_fixture(t); defer pairing_fixture_destroy(f)
+	pairing_test_bound(t, f)
+	wa: channel.Channel_Adapter
+	wa_test_second_channel(t, f, &wa)
+	f.adapter.send_text, wa.send_text = wa_test_owned_send, wa_test_owned_send
+	agents := iface.Agent_Repository{get = pairing_delete_agent_get, save = pairing_delete_agent_save}
+	agent_svc := agent_service.Agent_Service{agents = &agents, clock = &f.clock}
+	f.service.agents = &agent_svc
+	wa_test_code(t, f, "pending-wa")
+	pairing_test_code(t, f, "pending-tg")
+	testing.expect_value(t, bots_delete(&f.service, {kind = .Internal_User, user_id = "alice"}).code, domain.Error_Code.None)
+	for provider in ([]string{"telegram", "whatsapp"}) {
+		b, found, _ := iface.binding_get_active_by_owner(&f.repo, "alice", provider)
+		domain.channel_binding_destroy(&b)
+		testing.expect(t, !found)
+	}
+	for code in ([]string{"pending-wa", "pending-tg"}) {
+		pairing, found, _ := iface.pairing_get(&f.repo, bots_pairing_hash(code))
+		domain.channel_pairing_destroy(&pairing)
+		testing.expect(t, !found)
+	}
+}
+@(test)
+test_notice_goes_to_origin_channel :: proc(t: ^testing.T) {
+	f := pairing_fixture(t); defer pairing_fixture_destroy(f)
+	pairing_test_bound(t, f)
+	wa: channel.Channel_Adapter
+	wa_test_second_channel(t, f, &wa)
+	wa.reply_window_ms = 86_400_000
+	wa.send_text, f.adapter.send_text = wa_test_owned_send, wa_test_owned_send
+	defer bots_service_destroy(&f.service)
+	b, _, _ := iface.binding_get_active_by_owner(&f.repo, "alice", "whatsapp")
+	defer domain.channel_binding_destroy(&b)
+	ids, insert_err := iface.inbound_store_batch(&f.repo, "whatsapp", {{message_id = "chm_wa_origin", binding_id = b.binding_id, owner_user_id = "alice", bot_id = "bot_a", direction = .Inbound, provider_update_key = "wa:origin", body = "hello", created_at = pairing_test_clock(nil)}}, "", pairing_test_clock(nil))
+	defer {for id in ids do delete(id); delete(ids)}
+	testing.expect_value(t, insert_err.code, domain.Error_Code.None)
+	target, found, err := bots_notice_binding(&f.service, "alice", "bot_a", "chm_wa_origin")
+	defer domain.channel_binding_destroy(&target)
+	testing.expect(t, found && err.code == .None && target.provider == "whatsapp")
+	testing.expect_value(t, iface.delivery_insert(&f.repo, {delivery_id = "bdl_wa_notice", owner_user_id = "alice", bot_id = "bot_a", through_message_id = "chm_wa_origin", state = .Waiting, round = 1, waiting_reason = "relocation_stranded", created_at = pairing_test_clock(nil), updated_at = pairing_test_clock(nil)}).code, domain.Error_Code.None)
+	before_tick := len(f.sent)
+	bots_supervisor_tick(&f.service)
+	testing.expect(t, len(f.sent) == before_tick + 1 && f.sent[len(f.sent)-1].chat == "333" && f.sent[len(f.sent)-1].text == COPY_NO_MACHINE)
+	bots_queue_gave_up_locked(&f.service, "alice", "bot_a", "chm_wa_origin")
+	before_tick = len(f.sent)
+	bots_supervisor_tick(&f.service)
+	testing.expect(t, len(f.sent) == before_tick + 1 && f.sent[len(f.sent)-1].chat == "333" && f.sent[len(f.sent)-1].text == COPY_GAVE_UP)
+	before := len(f.sent)
+	bots_notice(&f.service, target.provider, target.external_chat_id, COPY_NO_MACHINE)
+	testing.expect(t, len(f.sent) == before + 1 && f.sent[len(f.sent)-1].chat == "333")
+	testing.expect(t, sqlite.exec(&f.conn, "UPDATE channel_bindings SET last_inbound_at='2026-11-15T00:00:00Z' WHERE provider='whatsapp';"))
+	before = len(f.sent)
+	bots_notice(&f.service, target.provider, target.external_chat_id, COPY_GAVE_UP)
+	testing.expect_value(t, len(f.sent), before)
+}
+@(test)
+test_telegram_inbound_rules_unchanged :: proc(t: ^testing.T) {
+	test_inbound_rules_table(t)
+}
+
+@(test)
+test_closed_window_disconnect_notice_is_not_sent_or_held :: proc(t: ^testing.T) {
+	f := wa_pairing_fixture(t); defer pairing_fixture_destroy(f)
+	wa_test_bind(t, f)
+	testing.expect(t, sqlite.exec(&f.conn, "UPDATE channel_bindings SET last_inbound_at='2000-01-01T00:00:00Z';"))
+	before := len(f.sent)
+	testing.expect_value(t, bots_disconnect(&f.service, "alice", "whatsapp", true).code, domain.Error_Code.None)
+	testing.expect_value(t, len(f.sent), before)
+	messages, err := iface.messages_history(&f.repo, "bot_a", -1)
+	defer {for &m in messages do domain.channel_message_destroy(&m); delete(messages)}
+	testing.expect(t, err.code == .None && len(messages) == 0)
 }

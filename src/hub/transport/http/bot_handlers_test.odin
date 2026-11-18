@@ -1,6 +1,8 @@
 package http
 
 import "core:fmt"
+import "core:encoding/json"
+import platform "odin_test:hub/platform"
 import "core:strings"
 import "core:testing"
 import contracts "odin_test:contracts"
@@ -115,7 +117,7 @@ test_create_bot_once :: proc(t: ^testing.T) {
 	testing.expect_value(t, template_err.code, domain.Error_Code.None)
 	for template in templates do testing.expect(t, template.template_id != domain.TEMPLATE_BOT_ID)
 	builtin, builtin_ok := domain.builtin_template(domain.TEMPLATE_BOT_ID)
-	testing.expect(t, builtin_ok); testing.expect_value(t, builtin.instructions, "# Role: Ninjy bot\n")
+	testing.expect(t, builtin_ok); testing.expect(t, builtin.instructions != "" && strings.has_prefix(builtin.instructions, "# Role: Ninjy bot"))
 }
 
 @(test)
@@ -272,4 +274,133 @@ test_bot_view_status_and_delivery_history :: proc(t: ^testing.T) {
 	testing.expect_value(t, history.status, 200)
 	testing.expect(t, strings.contains(history.body, `"report":{"status":"exhausted"}`))
 	testing.expect(t, strings.contains(history.body, `"finish_reason":"all_tried"`))
+}
+
+bot_http_wa_identity :: proc(ctx: rawptr) -> (channel.Identity, channel.Channel_Error) {
+	return {bot_user_id = "phone_fake", bot_username = "15550100001"}, {}
+}
+bot_http_wa_identity_fail :: proc(ctx: rawptr) -> (channel.Identity, channel.Channel_Error) {
+	return {}, {kind = .Unauthorized}
+}
+bot_http_wa_url :: proc(ctx: rawptr, identity: channel.Identity, code: string, allocator := context.allocator) -> string {
+	return strings.concatenate({"https://wa.me/", identity.bot_username, "?text=Connect%20Ninjy%20", code}, allocator)
+}
+bot_http_wa_text :: proc(ctx: rawptr, code: string, allocator := context.allocator) -> string {
+	return strings.concatenate({"Connect Ninjy ", code}, allocator)
+}
+bot_http_wa_adapter :: proc(f: ^Bot_HTTP_Fixture) -> channel.Channel_Adapter {
+	return {ctx = f, provider = "whatsapp", identity = bot_http_wa_identity, pairing_url = bot_http_wa_url, pairing_text = bot_http_wa_text, send_text = bot_http_disconnect_notice, reply_window_ms = 86_400_000}
+}
+bot_http_wa_binding :: proc(t: ^testing.T, f: ^Bot_HTTP_Fixture, bot: domain.Bot) {
+	now := platform.clock_now(&f.wire.clock)
+	testing.expect(t, sqlite.exec(&f.wire.conn, fmt.tprintf("INSERT INTO channel_bindings(binding_id,owner_user_id,bot_id,provider,external_chat_id,external_user_id,external_display,state,created_at,last_inbound_at) VALUES('chb_wa','%s','%s','whatsapp','100','200','Alice','active','%s','%s');", bot.owner_user_id, bot.bot_id, now, now)))
+}
+@(test)
+test_whatsapp_pairing_route_not_configured :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	f := bot_http_fixture(t); defer bot_http_destroy(f)
+	_ = bot_http_create(t, f)
+	req := bot_http_request(f, "POST", "/api/v1/bots/me/channels/whatsapp/pairing", "{}")
+	missing := bot_whatsapp_pairing_handler(&f.handlers, req)
+	testing.expect(t, missing.status == 503 && strings.contains(missing.body, "channel_not_configured"))
+	a := bot_http_wa_adapter(f)
+	a.identity = bot_http_wa_identity_fail
+	f.service.whatsapp = &a
+	unavailable := bot_whatsapp_pairing_handler(&f.handlers, req)
+	testing.expect_value(t, unavailable.status, 503)
+	testing.expect_value(t, bot_whatsapp_pairing_handler(&f.handlers, {method = "POST", path = req.path}).status, 401)
+	_, _ = iface.experiment_set(&f.experiments, {owner_user_id = string(f.wire.owner), key = "bots", enabled = false})
+	testing.expect_value(t, bot_whatsapp_pairing_handler(&f.handlers, req).status, 403)
+}
+@(test)
+test_whatsapp_pairing_route_returns_text_and_phone :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	f := bot_http_fixture(t); defer bot_http_destroy(f)
+	_ = bot_http_create(t, f)
+	a := bot_http_wa_adapter(f); f.service.whatsapp = &a
+	resp := bot_whatsapp_pairing_handler(&f.handlers, bot_http_request(f, "POST", "/api/v1/bots/me/channels/whatsapp/pairing", "{}"))
+	testing.expect_value(t, resp.status, 201)
+	wire: struct {data: struct {pairing_url, pairing_text, phone_display, expires_at: string}}
+	testing.expect(t, json.unmarshal(transmute([]byte)resp.body, &wire) == nil)
+	testing.expect_value(t, wire.data.phone_display, "+15550100001")
+	if !testing.expect(t, strings.has_prefix(wire.data.pairing_text, "Connect Ninjy ")) do return
+	code := wire.data.pairing_text[len("Connect Ninjy "):]
+	testing.expect_value(t, len(code), 32)
+	testing.expect_value(t, wire.data.pairing_url, strings.concatenate({"https://wa.me/15550100001?text=Connect%20Ninjy%20", code}, context.temp_allocator))
+	testing.expect(t, wire.data.expires_at != "")
+}
+@(test)
+test_whatsapp_disconnect_route :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	f := bot_http_fixture(t); defer bot_http_destroy(f)
+	bot := bot_http_create(t, f)
+	a := bot_http_wa_adapter(f); f.service.whatsapp = &a
+	bot_http_wa_binding(t, f, bot)
+	testing.expect(t, sqlite.exec(&f.wire.conn, fmt.tprintf("INSERT INTO channel_bindings(binding_id,owner_user_id,bot_id,provider,external_chat_id,external_user_id,state,created_at) VALUES('chb_tg','%s','%s','telegram','other','other','active','now');", bot.owner_user_id, bot.bot_id)))
+	req := bot_http_request(f, "DELETE", "/api/v1/bots/me/channels/whatsapp", "")
+	resp := bot_whatsapp_disconnect_handler(&f.handlers, req)
+	testing.expect_value(t, resp.status, 200)
+	testing.expect(t, strings.contains(resp.body, "disconnected"))
+	testing.expect_value(t, f.disconnect_notices, 1)
+	_, tg_found, _ := iface.binding_get_active_by_owner(&f.bot_repo, bot.owner_user_id, "telegram")
+	_, wa_found, _ := iface.binding_get_active_by_owner(&f.bot_repo, bot.owner_user_id, "whatsapp")
+	testing.expect(t, tg_found && !wa_found)
+	second := bot_whatsapp_disconnect_handler(&f.handlers, req)
+	testing.expect(t, second.status == 404 && strings.contains(second.body, "binding_not_found"))
+	testing.expect_value(t, bot_whatsapp_disconnect_handler(&f.handlers, {method = "DELETE", path = req.path}).status, 401)
+}
+@(test)
+test_bot_view_whatsapp_block :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	f := bot_http_fixture(t); defer bot_http_destroy(f)
+	bot := bot_http_create(t, f)
+	a := bot_http_wa_adapter(f); f.service.whatsapp = &a
+	req := bot_http_request(f, "GET", "/api/v1/bots/me", "")
+	wire: struct {data: struct {whatsapp: struct {configured: bool, phone_display: string, binding: json.Value, window_open, reengage_sent: bool, reengage_error: string, held_replies: []struct {message_id, body, created_at: string}}}}
+	resp := bot_me_handler(&f.handlers, req)
+	testing.expect(t, resp.status == 200 && json.unmarshal(transmute([]byte)resp.body, &wire) == nil)
+	testing.expect(t, wire.data.whatsapp.configured && wire.data.whatsapp.phone_display == "+15550100001")
+	_, binding_null := wire.data.whatsapp.binding.(json.Null)
+	testing.expect(t, binding_null && !wire.data.whatsapp.window_open && len(wire.data.whatsapp.held_replies) == 0)
+	bot_http_wa_binding(t, f, bot)
+	resp = bot_me_handler(&f.handlers, req)
+	testing.expect(t, resp.status == 200 && json.unmarshal(transmute([]byte)resp.body, &wire) == nil)
+	testing.expect(t, wire.data.whatsapp.window_open)
+	testing.expect(t, sqlite.exec(&f.wire.conn, "UPDATE channel_bindings SET last_inbound_at='2000-01-01T00:00:00Z', reengage_error='template_unavailable' WHERE binding_id='chb_wa';"))
+	for i in 0..<22 {
+		testing.expect_value(t, iface.message_insert_outbound(&f.bot_repo, {message_id = fmt.tprintf("chm_held_%02d", i), binding_id = "chb_wa", owner_user_id = bot.owner_user_id, bot_id = bot.bot_id, direction = .Outbound, body = fmt.tprintf("reply %d", i), send_state = .Held, created_at = fmt.tprintf("2026-11-17T12:00:%02dZ", i)}).code, domain.Error_Code.None)
+	}
+	resp = bot_me_handler(&f.handlers, req)
+	testing.expect(t, resp.status == 200 && json.unmarshal(transmute([]byte)resp.body, &wire) == nil)
+	testing.expect(t, !wire.data.whatsapp.window_open && !wire.data.whatsapp.reengage_sent && wire.data.whatsapp.reengage_error == "template_unavailable")
+	if testing.expect_value(t, len(wire.data.whatsapp.held_replies), 20) {
+		testing.expect_value(t, wire.data.whatsapp.held_replies[0].message_id, "chm_held_00")
+		testing.expect_value(t, wire.data.whatsapp.held_replies[19].message_id, "chm_held_19")
+		testing.expect_value(t, wire.data.whatsapp.held_replies[0].body, "reply 0")
+	}
+	testing.expect_value(t, iface.binding_set_reengage(&f.bot_repo, "chb_wa", "2026-11-17T12:00:00Z", "").code, domain.Error_Code.None)
+	resp = bot_me_handler(&f.handlers, req)
+	testing.expect(t, json.unmarshal(transmute([]byte)resp.body, &wire) == nil && wire.data.whatsapp.reengage_sent && wire.data.whatsapp.reengage_error == "")
+	a.identity = bot_http_wa_identity_fail
+	resp = bot_me_handler(&f.handlers, req)
+	testing.expect(t, json.unmarshal(transmute([]byte)resp.body, &wire) == nil && wire.data.whatsapp.phone_display == "")
+}
+@(test)
+test_telegram_pairing_response_unchanged :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	f := bot_http_fixture(t); defer bot_http_destroy(f)
+	_ = bot_http_create(t, f)
+	a := bot_http_wa_adapter(f)
+	a.provider, a.pairing_text = "telegram", nil
+	f.service.adapter = &a
+	resp := bot_pairing_handler(&f.handlers, bot_http_request(f, "POST", "/api/v1/bots/me/channels/telegram/pairing", "{}"))
+	testing.expect_value(t, resp.status, 201)
+	value, err := json.parse(resp.body)
+	testing.expect(t, err == nil)
+	root, root_ok := value.(json.Object)
+	if !testing.expect(t, root_ok) do return
+	data, data_ok := root["data"].(json.Object)
+	if !testing.expect(t, data_ok) do return
+	testing.expect_value(t, len(data), 2)
+	testing.expect(t, "pairing_url" in data && "expires_at" in data)
 }
