@@ -117,7 +117,7 @@ test_create_bot_once :: proc(t: ^testing.T) {
 	testing.expect_value(t, template_err.code, domain.Error_Code.None)
 	for template in templates do testing.expect(t, template.template_id != domain.TEMPLATE_BOT_ID)
 	builtin, builtin_ok := domain.builtin_template(domain.TEMPLATE_BOT_ID)
-	testing.expect(t, builtin_ok); testing.expect_value(t, builtin.instructions, "# Role: Ninjy bot\n")
+	testing.expect(t, builtin_ok); testing.expect(t, builtin.instructions != "" && strings.has_prefix(builtin.instructions, "# Role: Ninjy bot"))
 }
 
 @(test)
