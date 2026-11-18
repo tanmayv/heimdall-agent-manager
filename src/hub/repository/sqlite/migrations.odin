@@ -667,6 +667,8 @@ MIGRATION_210_EXTENSION_VERSION_SYNC :: #load("migrations/210_extension_version_
 
 MIGRATION_211_PROVIDER_TRANSPORT :: #load("migrations/211_provider_transport.sql", string)
 
+MIGRATION_212_EXTENSION_VERSION_SYNC :: #load("migrations/212_extension_version_sync_0_5_57.sql", string)
+
 migration_order :: [?]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
@@ -883,6 +885,7 @@ migration_order :: [?]string {
 	"209_extension_version_sync_0_5_55.sql",
 	"210_extension_version_sync_0_5_56.sql",
 	"211_provider_transport.sql",
+	"212_extension_version_sync_0_5_57.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1387,6 +1390,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 			return string(data)
 		}
 	}
+	if name == "212_extension_version_sync_0_5_57.sql" do return strings.clone(MIGRATION_212_EXTENSION_VERSION_SYNC)
 	if name == "211_provider_transport.sql" do return strings.clone(MIGRATION_211_PROVIDER_TRANSPORT)
 	if name == "210_extension_version_sync_0_5_56.sql" do return strings.clone(MIGRATION_210_EXTENSION_VERSION_SYNC)
 	if name == "209_extension_version_sync_0_5_55.sql" do return strings.clone(MIGRATION_209_EXTENSION_VERSION_SYNC)
