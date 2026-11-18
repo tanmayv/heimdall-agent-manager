@@ -23,6 +23,8 @@ Provider_Test_Run :: struct {
 }
 
 Provider_Service :: struct {
+	uow_factory: ^iface.Unit_Of_Work_Factory,
+	bridges: ^iface.Bridge_Repository,
 	repo:       ^iface.Provider_Repository,
 	test_mutex: sync.Mutex,
 	extension_mutex: sync.Mutex,
@@ -35,6 +37,7 @@ Provider_Catalog_Result :: struct {
 }
 
 Bridge_Provider_View :: struct {
+	transport, effective_transport, acp_adapter_json: string,
 	profile_id: string,
 	profile_state: string,
 	label_enc: string,
@@ -55,6 +58,7 @@ Bridge_Provider_View :: struct {
 }
 
 bridge_provider_view_destroy :: proc(value: Bridge_Provider_View) {
+	delete(value.transport); delete(value.effective_transport); delete(value.acp_adapter_json)
 	delete(value.profile_id); delete(value.profile_state); delete(value.label_enc); delete(value.accent)
 	domain.provider_catalog_entry_destroy(value.catalog)
 	delete(value.models_source); delete(value.models_checked_at); delete(value.models_attempted_at); delete(value.models_state)
@@ -318,6 +322,9 @@ write_catalog_entry_json :: proc(b: ^strings.Builder, entry: domain.Provider_Cat
 	// extension is null for a provider without one; a Bridge reports it 'unsupported'.
 	strings.write_string(b, ",\"extension\":")
 	strings.write_string(b, entry.extension_json if entry.extension_json != "" else "null")
+	strings.write_string(b, ",\"transports\":"); strings.write_string(b, entry.transports_json if entry.transports_json!="" else "[\"pty\"]")
+	strings.write_string(b, ",\"default_transport\":\""); contracts.write_json_string(b, contracts.runtime_transport_or_pty(entry.default_transport))
+	strings.write_string(b, "\",\"acp_recipe\":"); strings.write_string(b, entry.acp_recipe_json if entry.acp_recipe_json!="" else "null")
 	strings.write_string(b, ",\"state\":\""); contracts.write_json_string(b, entry.state)
 	strings.write_string(b, "\",\"models\":[")
 	for model, i in entry.models {
@@ -398,6 +405,9 @@ list_bridge_providers :: proc(service: ^Provider_Service, bridge_id: string) -> 
   v.enabled=v.enabled && v.detection_state=="present"
   for setting in settings do if setting.provider==p.provider && domain.profile_effective_id(setting.provider,setting.profile_id)==p.profile_id {v.enabled=setting.enabled;break}
   v.enabled=v.enabled && p.enabled && p.state!="missing"
+  for setting in settings do if setting.provider==p.provider && domain.profile_effective_id(setting.provider,setting.profile_id)==p.provider {v.transport=strings.clone(setting.transport);break}
+  v.effective_transport=strings.clone(v.transport if v.transport!="" else contracts.runtime_transport_or_pty(entry.default_transport))
+  for status in statuses do if status.provider==p.provider && domain.profile_effective_id(status.provider,status.profile_id)==p.provider {v.acp_adapter_json=strings.clone(status.acp_adapter_json);break}
   observation,oerr:=effective_model_observation(service.repo,bridge_id,&v.catalog,p.profile_id)
   if oerr.code!=.None {bridge_provider_view_destroy(v);bridge_provider_views_destroy(views);return nil,oerr}
   v.models_source=strings.clone(observation.models_source if observation.has_snapshot else "static_fallback")

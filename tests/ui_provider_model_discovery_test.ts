@@ -27,6 +27,26 @@ test('catalog metadata preserves empty results, old-bridge fallback and last-goo
     { provider: 'codex', model: 'saved-unavailable' });
 });
 
+test('setup API preserves provider runtime fields and normalizes legacy rows', async () => {
+  const previous = globalThis.fetch;
+  const adapter = { installed: true, state: 'ready', version: '0.108.0', node_version: 'v22.0.0', error: null, checked_at: '2026-11-18T00:00:00Z' };
+  globalThis.fetch = async () => response({ providers: [provider([], {
+    transports: ['pty', 'acp'], default_transport: 'pty', transport: 'acp', effective_transport: 'acp', acp_adapter: adapter,
+  }), { ...provider(), provider: 'claude' }] });
+  try {
+    const result = await providerSetupApi.discover({ bridge: { bridge_id: 'a' }, discovery: {}, providers: [] } as any);
+    assert.deepEqual(result.providers[0].transports, ['pty', 'acp']);
+    assert.equal(result.providers[0].transport, 'acp');
+    assert.equal(result.providers[0].effective_transport, 'acp');
+    assert.deepEqual(result.providers[0].acp_adapter, adapter);
+    assert.deepEqual(result.providers[1].transports, ['pty']);
+    assert.equal(result.providers[1].default_transport, 'pty');
+    assert.equal(result.providers[1].effective_transport, 'pty');
+    assert.equal(result.providers[1].transport, null);
+    assert.equal(result.providers[1].acp_adapter, null);
+  } finally { globalThis.fetch = previous; }
+});
+
 test('setup detection and enable changes never fetch models; explicit refresh serializes two stages without retry', async () => {
   const previous = globalThis.fetch;
   const calls: any[] = [];

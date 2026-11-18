@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:strings"
 import "core:sync"
 import domain "odin_test:hub/domain"
+import agent "odin_test:hub/service/agent"
 import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
 import jsonx "odin_test:lib/jsonx"
@@ -221,6 +222,12 @@ grant_attempt_in_uow :: proc(svc: ^Service, u: ^Uow, req: Grant_Request, stoppin
 		current, found, read_err := iface.agent_get_instance(svc.agents, inst.agent_instance_id)
 		if !found do return {}, false, read_err
 		if !wake_reuses_live_child(current, model_changed || stopping) {
+			if svc.agent_service!=nil {
+				if e:=agent.freeze_runtime_transport(svc.agent_service,&current);e.code!=.None do return {},false,e
+			}
+			if current.runtime_transport == "acp" {
+				current.launch_epoch = platform.generate_id(svc.ids, "launch_")
+			}
 			current.run_count += 1
 			current.runtime_status = "launching"
 			current.startup_status = "starting"

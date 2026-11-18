@@ -6,6 +6,7 @@ import "core:sync"
 import contracts "odin_test:contracts"
 import dbt "odin_test:hub/platform/dbtelemetry"
 import domain "odin_test:hub/domain"
+import provider_service "odin_test:hub/service/provider"
 import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
 import project_service "odin_test:hub/service/project"
@@ -64,7 +65,7 @@ reconfiguration_bridge_supported :: proc(bridge: domain.Bridge) -> bool {
 }
 
 configuration_snapshot :: proc(service: ^Agent_Service, inst: domain.Agent_Instance) -> domain.Instance_Configuration {
-	config := domain.Instance_Configuration{bridge_id = inst.bridge_id, project_id = string(inst.project_id), project_path = inst.project_path, provider = inst.provider, provider_profile=inst.provider_profile, model = inst.model, permission_mode = domain.agent_instance_permission_mode_normalize(inst.permission_mode)}
+	config := domain.Instance_Configuration{runtime_transport=inst.runtime_transport,bridge_id = inst.bridge_id, project_id = string(inst.project_id), project_path = inst.project_path, provider = inst.provider, provider_profile=inst.provider_profile, model = inst.model, permission_mode = domain.agent_instance_permission_mode_normalize(inst.permission_mode)}
 	if bridge, found, _ := iface.bridge_get_bridge(service.bridges, inst.bridge_id); found {
 		config.bridge_label = bridge.label
 		if config.bridge_label == "" do config.bridge_label = bridge.machine_hostname
@@ -119,6 +120,7 @@ begin_instance_reconfiguration :: proc(service: ^Agent_Service, auth: contracts.
 	next.permission_mode = permission_mode
 	_, provider_ok, provider_err := validate_pinned_provider_model(service, auth, next, input.provider, input.model)
 	if !provider_ok do return {}, false, provider_err
+	if err:=freeze_runtime_transport(service,&next);err.code!=.None do return {},false,err
 	if input.project_id != "" {
 		project, project_ok, project_err := iface.project_get(service.projects, next.project_id)
 		if !project_ok do return {}, false, project_err
@@ -249,6 +251,7 @@ reconfiguration_launch_destination :: proc(service: ^Agent_Service, op: domain.I
 	next.provider_profile=domain.profile_effective_id(op.destination.provider,op.destination.provider_profile);next.provider = op.destination.provider; next.model = op.destination.model
 	// The commit trigger applies the destination override; launch with it now.
 	next.permission_mode = domain.agent_instance_permission_mode_normalize(op.destination.permission_mode)
+	next.runtime_transport=op.destination.runtime_transport
 	generation, admitted, _ := reserve_runtime_launch(service, next)
 	if !admitted {
 		failed, _, _ := reconfiguration_advance(service, op, .Recovery_Required, true, false, "destination_capacity", "Source is stopped; destination capacity is unavailable.")
@@ -262,8 +265,7 @@ reconfiguration_launch_destination :: proc(service: ^Agent_Service, op: domain.I
 	}
 	defer domain.instance_reconfiguration_destroy(&launching)
 	next.launch_epoch = op.launch_epoch
-	command := project_service.Runtime_Command{bridge_id = next.bridge_id, command_id = op.launch_command_id, body_json = launch_command_json_full(service, op.launch_command_id, next)}
-	if sent, _ := project_service.bridge_command_send_runtime(service.bridge_command_sink, command); !sent {
+	if sent, _ := send_frozen_instance_launch(service, op.launch_command_id, next); !sent {
 		failed, _, _ := reconfiguration_advance(service, launching, .Recovery_Required, true, true, "launch_unconfirmed", "Source is stopped; destination launch could not be confirmed.")
 		domain.instance_reconfiguration_destroy(&failed)
 	}
@@ -369,7 +371,7 @@ reconcile_instance_reconfigurations :: proc(service: ^Agent_Service, bridge_id: 
 					failed, _, _ := reconfiguration_advance(service, op, .Recovery_Required, true, true, "startup_failed", "Destination startup needs attention; conversation remains read-only."); domain.instance_reconfiguration_destroy(&failed)
 				}
 				if resend && bridge_id == op.destination.bridge_id && inst.launch_epoch == op.launch_epoch && (inst.runtime_status == "launching" || inst.runtime_status == "unreachable") {
-					_, _ = project_service.bridge_command_send_runtime(service.bridge_command_sink, project_service.Runtime_Command{bridge_id = bridge_id, command_id = op.launch_command_id, body_json = launch_command_json_full(service, op.launch_command_id, inst)})
+					_, _ = send_frozen_instance_launch(service, op.launch_command_id, inst)
 				}
 				domain.agent_instance_destroy(&inst)
 			}
@@ -438,7 +440,7 @@ retry_instance_reconfiguration :: proc(service: ^Agent_Service, auth: contracts.
 	next := op; next.launch_command_id = platform.generate_id(service.ids, "cmd_reconfig_launch_retry_")
 	launching, saved, save_err := reconfiguration_advance(service, next, .Launching, true, true)
 	if !saved do return {}, false, save_err
-	_, _ = project_service.bridge_command_send_runtime(service.bridge_command_sink, project_service.Runtime_Command{bridge_id = op.destination.bridge_id, command_id = launching.launch_command_id, body_json = launch_command_json_full(service, launching.launch_command_id, inst)})
+	_, _ = send_frozen_instance_launch(service, launching.launch_command_id, inst)
 	return launching, true, {}
 }
 
@@ -477,6 +479,14 @@ reconfiguration_validate_live_destination :: proc(service: ^Agent_Service, op: d
 		path, path_found, path_err := resolve_project_path_for_launch(service, domain.User_ID(op.owner_user_id), domain.Project_ID(op.destination.project_id), op.destination.bridge_id)
 		if !path_found do return false, path_err
 		if path != op.destination.project_path do return false, domain.domain_error(.Conflict, "destination project path changed after preflight; recovery needs the original validated path")
+	}
+	if op.destination.runtime_transport=="acp" {
+		ps:=provider_service.Provider_Service{repo=service.providers,bridges=service.bridges}
+		entry,found,err:=iface.provider_catalog_get(service.providers,op.destination.provider)
+		if err.code!=.None do return false,err
+		if !found do return false,domain.domain_error(.ACP_Unavailable,"ACP provider is unavailable")
+		defer domain.provider_catalog_entry_destroy(entry)
+		if e:=provider_service.require_acp_ready(&ps,op.destination.bridge_id,entry);e.code!=.None do return false,e
 	}
 	_, valid, validation_err := validate_provider_model_intersection(service, op.destination.bridge_id, op.destination.provider, op.destination.model,op.destination.provider_profile)
 	return valid, validation_err

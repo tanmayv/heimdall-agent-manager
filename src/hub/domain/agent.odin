@@ -85,6 +85,7 @@ Resolved_Provider_Model :: struct {
 }
 
 Agent_Instance :: struct {
+	runtime_transport: string, // owned persisted launch snapshot; empty legacy input means PTY
 	agent_instance_id: string,
 	owner_user_id: User_ID,
 	agent_id: string,
@@ -181,6 +182,7 @@ agent_state_string :: proc(state: Agent_State) -> string {
 
 agent_instance_destroy :: proc(inst: ^Agent_Instance) {
 	if inst == nil do return
+	if len(inst.runtime_transport)>0 do delete(inst.runtime_transport)
 	if len(inst.agent_instance_id) > 0 do delete(inst.agent_instance_id)
 	if len(string(inst.owner_user_id)) > 0 do delete(string(inst.owner_user_id))
 	if len(inst.agent_id) > 0 do delete(inst.agent_id)

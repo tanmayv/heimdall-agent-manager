@@ -5,6 +5,8 @@ import "core:strings"
 import "core:testing"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
+import sqlite "odin_test:hub/repository/sqlite"
+import agent "odin_test:hub/service/agent"
 
 @(test)
 startup_wake_grant_generation_is_transactional_and_retries_reuse_it :: proc(t: ^testing.T) {
@@ -24,6 +26,8 @@ startup_wake_grant_generation_is_transactional_and_retries_reuse_it :: proc(t: ^
 	if !testing.expect(t, held, "actual matcher grants wake lease") do return
 	current, _, _ := iface.agent_get_instance(&fx.agents, "inst_w1")
 	testing.expect_value(t, current.run_count, 8)
+	testing.expect_value(t, current.runtime_transport, "pty")
+	testing.expect_value(t, current.launch_epoch, "")
 	testing.expect_value(t, current.startup_status, "starting")
 	testing.expect(t, lease.confirmed_at == "", "replacement awaits its own ready hook")
 	if !testing.expect(t, len(log.cmds) > 0) do return
@@ -75,6 +79,36 @@ startup_wake_grant_generation_is_transactional_and_retries_reuse_it :: proc(t: ^
 	testing.expect_value(t, current.run_count, 9)
 	if !testing.expect(t, len(log.cmds) > 0, "third grant is delivered") do return
 	testing.expect(t, !strings.contains(log.cmds[len(log.cmds)-1].body_json, `"deliver"`), "a launch is not a nudge")
+}
+
+@(test)
+startup_wake_refuses_frozen_acp_after_capability_withdrawal :: proc(t: ^testing.T) {
+	fx, log, ok := lease_fixture(t, "transport_wake")
+	defer lease_fixture_close(fx, log)
+	if !ok do return
+	chain := seed_live_chain(t, fx, "chain_transport_wake")
+	seed_fleet(fx, chain, "agt_w", capacity=1)
+	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "stopped")
+	_ = publish_task(t, fx, chain, "task_transport_wake")
+	inst, found, _ := iface.agent_get_instance(&fx.agents, "inst_w1")
+	if !testing.expect(t, found) do return
+	// Simulate a pending ACP generation whose capable Bridge later reconnects
+	// with an older binary. The new hello no longer advertises acp_runtime_v1.
+	inst.run_count += 1
+	inst.runtime_transport = "acp"
+	inst.launch_epoch = "acp_epoch"
+	_, saved, err := iface.agent_save_instance(&fx.agents, inst)
+	if !testing.expect(t, saved, err.message) do return
+	provider_impl: sqlite.Provider_Repo_SQLite
+	providers := sqlite.new_provider_repository(&provider_impl, &fx.conn)
+	agents := agent.new_agent_service(&fx.agents, &fx.bridges, &fx.clock, &fx.ids)
+	agents.providers = &providers
+	fx.svc.agent_service = &agents
+	wake_log_reset(log)
+	on_bridge_hello(&fx.svc, "br_1", nil)
+	testing.expect(t, !wake_log_has_run(log, "inst_w1"), "an unsupported Bridge must never receive ACP even on retry")
+	lease, held := lease_of(fx, "inst_w1")
+	testing.expect(t, !held || lease.phase == domain.LEASE_PHASE_WAITING, "failed dispatch parks its pending claim")
 }
 
 @(test)

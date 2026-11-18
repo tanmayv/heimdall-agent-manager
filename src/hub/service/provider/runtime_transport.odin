@@ -1,0 +1,138 @@
+package provider
+
+import "core:encoding/json"
+import "core:strings"
+import contracts "odin_test:contracts"
+import domain "odin_test:hub/domain"
+import iface "odin_test:hub/repository/iface"
+
+Provider_Settings_Update :: struct {
+ has_enabled, enabled, has_transport: bool,
+ transport, profile_id: string, // empty transport clears the override
+}
+
+provider_transport_from_entry :: proc(entry: domain.Provider_Catalog_Entry, override: string) -> (string, domain.Domain_Error) {
+ transport := override
+ if transport=="" do transport=contracts.runtime_transport_or_pty(entry.default_transport)
+ if !contracts.provider_supports_transport(entry.transports_json,transport) do return "",domain.domain_error(.Invalid_Transport,"transport is not supported by this provider")
+ if transport=="acp" && !contracts.acp_recipe_valid(entry.acp_recipe_json) do return "",domain.domain_error(.ACP_Unavailable,"provider ACP recipe is invalid")
+ return strings.clone(transport),{}
+}
+
+// Settings status describes the current selection. A launch separately checks
+// live bridge capability and adapter readiness immediately before freezing it.
+resolve_runtime_transport :: proc(service: ^Provider_Service, bridge_id, provider: string) -> (string, domain.Domain_Error) {
+ entry,found,err:=iface.provider_catalog_get(service.repo,provider)
+ if err.code!=.None do return "",err
+ if !found || entry.state!="active" do return "",domain.domain_error(.Unprocessable_Entity,"provider is unknown or deprecated")
+ defer domain.provider_catalog_entry_destroy(entry)
+ override,read_err:=iface.get_provider_transport(service.repo,bridge_id,provider)
+ if read_err.code!=.None do return "",read_err
+ defer delete(override)
+ transport,terr:=provider_transport_from_entry(entry,override)
+ if terr.code!=.None do return "",terr
+ if transport=="acp" {
+  if ready_err:=require_acp_ready(service,bridge_id,entry);ready_err.code!=.None {delete(transport);return "",ready_err}
+ }
+ return transport,{}
+}
+
+require_acp_ready :: proc(service: ^Provider_Service, bridge_id: string, entry: domain.Provider_Catalog_Entry) -> domain.Domain_Error {
+ bridge,found,err:=iface.bridge_get_bridge(service.bridges,bridge_id)
+ if err.code!=.None do return err
+ if !found do return domain.domain_error(.Not_Found,"bridge not found")
+ defer domain.bridge_destroy(&bridge)
+ if !contracts.bridge_supports_acp_runtime(bridge.capabilities_json) do return acp_unavailable_error(entry.provider,"unsupported_bridge","bridge does not support acp_runtime_v1 and piped hosting")
+ statuses,serr:=iface.bridge_provider_status_list(service.repo,bridge_id)
+ if serr.code!=.None do return serr
+ defer domain.bridge_provider_statuses_destroy(statuses)
+ for status in statuses {
+  if status.provider!=entry.provider || domain.profile_effective_id(status.provider,status.profile_id)!=entry.provider do continue
+  if acp_adapter_ready(status.acp_adapter_json,entry.acp_recipe_json) do return {}
+  // T4 adds tracked install_acp_adapter / POST acp-adapter and converts
+  // installable states to acp_installing. T1 fails closed without changing settings.
+  return acp_unavailable_error(entry.provider,acp_adapter_state(status.acp_adapter_json),"ACP adapter is not ready")
+ }
+ return acp_unavailable_error(entry.provider,"not_checked","ACP adapter has not been checked")
+}
+
+acp_adapter_ready :: proc(raw, recipe: string) -> bool {
+ value,err:=json.parse(raw)
+ if err!=nil do return false
+ defer json.destroy_value(value)
+ obj,ok:=value.(json.Object)
+ if !ok do return false
+ state,sok:=obj["state"].(json.String)
+ installed,iok:=obj["installed"].(json.Boolean)
+ version,vok:=obj["version"].(json.String)
+ checked,cok:=obj["checked_at"].(json.String)
+ if !sok || !iok || !vok || !cok || state!="ready" || !bool(installed) || checked=="" do return false
+ r: contracts.ACP_Recipe
+ if json.unmarshal_string(recipe,&r,json.DEFAULT_SPECIFICATION,context.temp_allocator)!=nil do return false
+ return string(version)==r.adapter_version
+}
+
+update_bridge_provider_settings :: proc(service: ^Provider_Service, bridge: domain.Bridge, provider, now: string, input: Provider_Settings_Update) -> domain.Domain_Error {
+ if !input.has_enabled && !input.has_transport do return domain.domain_error(.Validation_Failed,"enabled or transport is required")
+ profile:=domain.profile_effective_id(provider,input.profile_id)
+ if input.has_transport && profile!=provider do return domain.domain_error(.Transport_Is_Provider_Wide,"transport is configured per provider, not per profile")
+ if input.has_transport && input.transport!="" && !contracts.runtime_transport_valid(input.transport) do return domain.domain_error(.Invalid_Transport,"transport must be pty, acp or null")
+ entry,found,err:=iface.provider_catalog_get(service.repo,provider)
+ if err.code!=.None do return err
+ if !found || entry.state!="active" do return domain.domain_error(.Unprocessable_Entity,"provider is unknown or deprecated")
+ defer domain.provider_catalog_entry_destroy(entry)
+ // Transport-only saves are provider-wide even if the canonical profile is
+ // disabled or missing. Enable updates keep their existing profile validation.
+ if input.has_enabled {
+  if e:=validate_profile(service.repo,bridge.bridge_id,provider,profile);e.code!=.None do return e
+ }
+ if input.has_transport && input.transport!="" {
+  selected,terr:=provider_transport_from_entry(entry,input.transport)
+  if terr.code!=.None do return terr
+  delete(selected)
+  // Offline saves are allowed. Clearing/reverting never needs readiness.
+  if input.transport=="acp" && bridge.status==.Online {
+   if e:=require_acp_ready(service,bridge.bridge_id,entry);e.code!=.None do return e
+  }
+ }
+ if !input.has_transport {
+  _,_,save_err:=set_bridge_provider_enabled(service,bridge.bridge_id,provider,now,input.enabled,profile)
+  return save_err
+ }
+ tx,started,txerr:=iface.unit_of_work_begin(service.uow_factory)
+ if !started do return txerr
+ committed:=false
+ defer if !committed do iface.unit_of_work_rollback(&tx)
+ // Provider repository shares the connection held by this unit of work.
+ if input.has_enabled {
+  _,saved,save_err:=set_bridge_provider_enabled(service,bridge.bridge_id,provider,now,input.enabled,profile)
+  if !saved do return save_err
+ }
+ if input.has_transport {
+  if save_err:=iface.set_provider_transport(service.repo,bridge.bridge_id,provider,input.transport,now);save_err.code!=.None do return save_err
+ }
+ committed=true // commit consumes this unit of work, including on failure
+ _,cerr:=iface.unit_of_work_commit(&tx)
+ return cerr
+}
+
+
+// Only bounded, nonsecret state is exposed in failure details, never a raw
+// adapter report/error or an environment supplied by the Bridge.
+acp_unavailable_error :: proc(provider,state,message:string)->domain.Domain_Error {
+ data,_:=json.marshal(struct{provider,state:string}{provider,state},allocator=context.temp_allocator)
+ return domain.domain_error(.ACP_Unavailable,message,string(data))
+}
+acp_adapter_state :: proc(raw:string)->string {
+ value,err:=json.parse(raw)
+ if err!=nil do return "not_checked"
+ defer json.destroy_value(value)
+ obj,ok:=value.(json.Object)
+ if !ok do return "not_checked"
+ state,valid:=obj["state"].(json.String)
+ if !valid do return "not_checked"
+ switch string(state) {
+ case "not_checked","missing_node","missing","installing","ready","outdated","error":return strings.clone(string(state),context.temp_allocator)
+ }
+ return "not_checked"
+}

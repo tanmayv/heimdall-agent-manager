@@ -611,6 +611,8 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.experiment_handlers = http.Experiment_Rest_Handlers{auth = &graph.auth, repo = &graph.experiment_repo, clock = &graph.clock}
 	graph.lsp_server_config_handlers = http.Lsp_Server_Config_Rest_Handlers{auth = &graph.auth, repo = &graph.lsp_server_config_repo, clock = &graph.clock, ids = &graph.ids}
 	graph.providers = provider_service.new_provider_service(&graph.provider_repo)
+	graph.providers.uow_factory = &graph.uow_factory
+	graph.providers.bridges = &graph.repos.bridges
 	graph.bridges.provider_repo = graph.providers.repo
 	graph.provider_handlers = http.Provider_Handlers{auth = &graph.auth, providers = &graph.providers, bridges = &graph.bridges, bridge_runtime_registry = &graph.bridge_runtime_registry, clock = &graph.clock, ids = &graph.ids, agents = &graph.agents, event_bus = &graph.event_bus}
 	graph.agent_action_handlers.providers = &graph.providers
