@@ -30,11 +30,16 @@ COORDINATOR_WAKE_TARGET_MIN_INTERVAL_MS :: 120_000
 COORDINATOR_WAKE_SENDER_MAX_PER_HOUR :: 20
 COORDINATOR_WAKE_SENDER_WINDOW_MS :: 3_600_000
 
+// Both maps have bounded storage even during an unbounded stream of new IDs.
+COORDINATOR_WAKE_GUARD_SWEEP_INTERVAL_MS :: 60_000
+COORDINATOR_WAKE_GUARD_MAX_ENTRIES :: 4096
+
 Coordinator_Wake_Sender_Window :: struct { window_start_ms: i64, count: int }
 Coordinator_Wake_Guard :: struct {
 	mutex: sync.Mutex,
 	last_target_ms: map[string]i64,
 	sender_windows: map[string]Coordinator_Wake_Sender_Window,
+	last_sweep_ms: i64,
 }
 coordinator_wake_guard: Coordinator_Wake_Guard
 
@@ -43,21 +48,70 @@ coordinator_wake_guard_try :: proc(sender_id, target_id: string, now_ms: i64) ->
 	defer sync.mutex_unlock(&coordinator_wake_guard.mutex)
 	// Request arenas must never own global maps or their keys.
 	context.allocator = runtime.heap_allocator()
-	g := &coordinator_wake_guard
-	if last, exists := g.last_target_ms[target_id]; exists && now_ms - last < COORDINATOR_WAKE_TARGET_MIN_INTERVAL_MS do return false
-	window, exists := g.sender_windows[sender_id]
-	if !exists || now_ms - window.window_start_ms >= COORDINATOR_WAKE_SENDER_WINDOW_MS do window = {now_ms, 0}
+	return coordinator_wake_guard_try_locked(&coordinator_wake_guard, sender_id, target_id, now_ms)
+}
+
+// The caller owns g exclusively (or holds its mutex) and supplies the allocator
+// that owns its maps and keys. Tests use a local guard with a tracking allocator.
+coordinator_wake_guard_try_locked :: proc(g: ^Coordinator_Wake_Guard, sender_id, target_id: string, now_ms: i64) -> bool {
+	if now_ms - g.last_sweep_ms >= COORDINATOR_WAKE_GUARD_SWEEP_INTERVAL_MS ||
+	   len(g.last_target_ms) >= COORDINATOR_WAKE_GUARD_MAX_ENTRIES ||
+	   len(g.sender_windows) >= COORDINATOR_WAKE_GUARD_MAX_ENTRIES {
+		coordinator_wake_guard_evict_expired(g, now_ms)
+		g.last_sweep_ms = now_ms
+	}
+	last, target_exists := g.last_target_ms[target_id]
+	if target_exists && now_ms - last < COORDINATOR_WAKE_TARGET_MIN_INTERVAL_MS do return false
+	window, sender_exists := g.sender_windows[sender_id]
+	if !sender_exists || now_ms - window.window_start_ms >= COORDINATOR_WAKE_SENDER_WINDOW_MS do window = {now_ms, 0}
 	if window.count >= COORDINATOR_WAKE_SENDER_MAX_PER_HOUR do return false
+	// Fail closed when every slot holds live rate-limit state. Never discard an
+	// unexpired entry to admit a new ID, which would let callers bypass limits.
+	if !target_exists && len(g.last_target_ms) >= COORDINATOR_WAKE_GUARD_MAX_ENTRIES do return false
+	if !sender_exists && len(g.sender_windows) >= COORDINATOR_WAKE_GUARD_MAX_ENTRIES do return false
 	if g.last_target_ms == nil do g.last_target_ms = make(map[string]i64)
 	if g.sender_windows == nil do g.sender_windows = make(map[string]Coordinator_Wake_Sender_Window)
 	target_key := target_id
-	if _, found := g.last_target_ms[target_id]; !found do target_key = strings.clone(target_id)
+	if !target_exists do target_key = strings.clone(target_id)
 	sender_key := sender_id
-	if !exists do sender_key = strings.clone(sender_id)
+	if !sender_exists do sender_key = strings.clone(sender_id)
 	g.last_target_ms[target_key] = now_ms
 	window.count += 1
 	g.sender_windows[sender_key] = window
 	return true
+}
+
+// Expired state is equivalent to an absent entry. Collect keys before removing
+// them: map deletion can move entries and invalidate an ongoing iteration.
+coordinator_wake_guard_evict_expired :: proc(g: ^Coordinator_Wake_Guard, now_ms: i64) {
+	expired := make([dynamic]string)
+	defer delete(expired)
+	for key, last in g.last_target_ms {
+		if now_ms - last >= COORDINATOR_WAKE_TARGET_MIN_INTERVAL_MS do append(&expired, key)
+	}
+	for key in expired {
+		delete_key(&g.last_target_ms, key)
+		delete(key)
+	}
+	clear(&expired)
+	for key, window in g.sender_windows {
+		if now_ms - window.window_start_ms >= COORDINATOR_WAKE_SENDER_WINDOW_MS do append(&expired, key)
+	}
+	for key in expired {
+		delete_key(&g.sender_windows, key)
+		delete(key)
+	}
+}
+
+// Exclusive access and the owning allocator are required, as for eviction.
+coordinator_wake_guard_destroy :: proc(g: ^Coordinator_Wake_Guard) {
+	for key in g.last_target_ms do delete(key)
+	for key in g.sender_windows do delete(key)
+	delete(g.last_target_ms)
+	delete(g.sender_windows)
+	g.last_target_ms = nil
+	g.sender_windows = nil
+	g.last_sweep_ms = 0
 }
 
 // Tests only; keep the mutex itself intact.
@@ -65,13 +119,7 @@ coordinator_wake_guard_reset :: proc() {
 	sync.mutex_lock(&coordinator_wake_guard.mutex)
 	defer sync.mutex_unlock(&coordinator_wake_guard.mutex)
 	context.allocator = runtime.heap_allocator()
-	g := &coordinator_wake_guard
-	for key in g.last_target_ms do delete(key)
-	for key in g.sender_windows do delete(key)
-	delete(g.last_target_ms)
-	delete(g.sender_windows)
-	g.last_target_ms = nil
-	g.sender_windows = nil
+	coordinator_wake_guard_destroy(&coordinator_wake_guard)
 }
 
 coordinator_wake_after_agent_message :: proc(h: ^Agent_Action_Handlers, auth: contracts.Auth_Context, sender: domain.Agent_Instance, target_instance_id, conversation_id: string, now_ms: i64) -> Coordinator_Wake_Outcome {

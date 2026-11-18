@@ -286,3 +286,51 @@ test_coordinator_wake_guard_owns_keys_beyond_request :: proc(t: ^testing.T) {
 	testing.expect(t, coordinator_wake_guard_try("scratch_sender", "scratch_target", 120_000))
 	testing.expect(t, coordinator_wake_guard_try("scratch_sender", "another_target", 120_000))
 }
+
+@(test)
+test_coordinator_wake_guard_evicts_expired_entries :: proc(t: ^testing.T) {
+	// Keep context.allocator as the runner's tracking allocator: every map,
+	// cloned key and eviction buffer must be freed before this test returns.
+	g: Coordinator_Wake_Guard
+	defer coordinator_wake_guard_destroy(&g)
+	for i in 0..<40 {
+		sender := fmt.tprintf("sender_%d", i)
+		target := fmt.tprintf("target_%d", i)
+		testing.expect(t, coordinator_wake_guard_try_locked(&g, sender, target, 0))
+	}
+	testing.expect_value(t, len(g.last_target_ms), 40)
+	testing.expect_value(t, len(g.sender_windows), 40)
+	testing.expect(t, !coordinator_wake_guard_try_locked(&g, "sender_0", "target_0", 119_999))
+	testing.expect(t, coordinator_wake_guard_try_locked(&g, "fresh_sender", "fresh_target", 120_000))
+	// A periodic sweep may lag by a minute; force the next scheduled sweep.
+	testing.expect(t, coordinator_wake_guard_try_locked(&g, "fresh_sender", "next_target", 180_000))
+	testing.expect_value(t, len(g.last_target_ms), 2)
+	testing.expect_value(t, len(g.sender_windows), 41)
+	testing.expect(t, coordinator_wake_guard_try_locked(&g, "after_expiry", "after_expiry", 3_780_000))
+	testing.expect_value(t, len(g.last_target_ms), 1)
+	testing.expect_value(t, len(g.sender_windows), 1)
+}
+
+@(test)
+test_coordinator_wake_guard_capacity_preserves_live_limits :: proc(t: ^testing.T) {
+	g: Coordinator_Wake_Guard
+	defer coordinator_wake_guard_destroy(&g)
+	for i in 0..<COORDINATOR_WAKE_GUARD_MAX_ENTRIES {
+		sender := fmt.tprintf("sender_%d", i)
+		target := fmt.tprintf("target_%d", i)
+		testing.expect(t, coordinator_wake_guard_try_locked(&g, sender, target, 0))
+	}
+	testing.expect(t, !coordinator_wake_guard_try_locked(&g, "new_sender", "new_target", 1))
+	testing.expect_value(t, len(g.last_target_ms), COORDINATOR_WAKE_GUARD_MAX_ENTRIES)
+	testing.expect_value(t, len(g.sender_windows), COORDINATOR_WAKE_GUARD_MAX_ENTRIES)
+	testing.expect(t, !coordinator_wake_guard_try_locked(&g, "sender_0", "target_0", 1))
+	// Target slots expire first. A new sender is still refused while every
+	// sender window is live, but an existing sender can use a new target.
+	testing.expect(t, !coordinator_wake_guard_try_locked(&g, "new_sender", "new_target", 120_000))
+	testing.expect_value(t, len(g.last_target_ms), 0)
+	testing.expect(t, coordinator_wake_guard_try_locked(&g, "sender_0", "new_target", 120_000))
+	testing.expect_value(t, g.sender_windows["sender_0"].count, 2)
+	testing.expect(t, coordinator_wake_guard_try_locked(&g, "new_sender", "new_target", 3_600_000))
+	testing.expect_value(t, len(g.last_target_ms), 1)
+	testing.expect_value(t, len(g.sender_windows), 1)
+}
