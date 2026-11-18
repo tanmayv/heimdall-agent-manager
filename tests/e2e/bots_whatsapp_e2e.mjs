@@ -171,11 +171,22 @@ try {
     assert.equal((await waControl('challenge',{verify_token:'wrong'})).status,403);
   });
   await step(3,'invalid signatures are rate limited',async()=>{
-    // The per-IP budget covers subsequent signed requests too; isolate this
-    // assertion from the next wall-clock minute before pairing.
-    if(Date.now()%60000>57000) await sleep(60100-Date.now()%60000);
-    for(let i=0;i<21;i++) assert.equal((await waControl('post',{body:'{}',signature:'sha256='+'0'.repeat(64)})).status,i<20?401:429);
-    await sleep(60100-Date.now()%60000);
+    // Fixed windows use the hub's monotonic clock, whose phase is unknown.
+    // Normally request 21 is throttled. If a window rolls over during the
+    // burst, continue within that new window (at most 20 more requests).
+    const started=performance.now();
+    let throttled=false;
+    for(let i=0;i<41;i++) {
+      const {status}=await waControl('post',{body:'{}',signature:'sha256='+'0'.repeat(64)});
+      if(i<20) assert.equal(status,401);
+      else if(status===429) { throttled=true; break; }
+      else assert.equal(status,401);
+    }
+    assert.ok(throttled,'bad-signature budget exhausted within two windows');
+    assert.ok(performance.now()-started<60000,'signature burst must fit in 60 seconds');
+    // A full interval crosses a boundary regardless of its phase and clears
+    // the per-IP budget before the signed pairing POST.
+    await sleep(60100);
   });
   await step(4,'pair WhatsApp using a single-use link',pairWA);
   let hi;
@@ -188,10 +199,11 @@ try {
   });
   await step(6,'replayed webhook creates one message and one echo',async()=>{
     assert.equal((await waControl('replay',{id:hi.id})).status,200);
+    // Intake can idle for five seconds; check both persistence and echo count
+    // only after a complete intake interval has elapsed.
+    await sleep(6000);
     const rows=await sql("SELECT provider_update_key FROM channel_messages WHERE binding_id IN (SELECT binding_id FROM channel_bindings WHERE provider='whatsapp') AND direction='inbound' AND provider_update_key LIKE ?",['%'+hi.id]);
     assert.equal(rows.length,1);
-    // Allow several worker iterations so an incorrectly queued duplicate is observable.
-    await sleep(3000);
     assert.equal((await waSent()).filter(m=>m.text==='echo: hi').length,1);
   });
   await step(7,'Telegram and WhatsApp replies stay on their origin channel',async()=>{
