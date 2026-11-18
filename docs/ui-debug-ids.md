@@ -220,3 +220,24 @@ are in a separate collapsed disclosure.
 | `settings-bots-telegram-open-link` | telegram open link |
 | `settings-bots-telegram-paired` | telegram paired |
 | `settings-bots-telegram-unconfigured` | telegram unconfigured |
+
+### WhatsApp bot card
+
+- `settings-bots-whatsapp-card` — WhatsApp card card.
+- `settings-bots-whatsapp-unconfigured` — WhatsApp card unconfigured.
+- `settings-bots-whatsapp-paired` — WhatsApp card paired.
+- `settings-bots-whatsapp-disconnect-btn` — WhatsApp card disconnect btn.
+- `settings-bots-whatsapp-disconnect-dialog` — WhatsApp card disconnect dialog.
+- `settings-bots-whatsapp-disconnect-cancel-btn` — WhatsApp card disconnect cancel btn.
+- `settings-bots-whatsapp-disconnect-confirm-btn` — WhatsApp card disconnect confirm btn.
+- `settings-bots-whatsapp-unpaired` — WhatsApp card unpaired.
+- `settings-bots-whatsapp-connect-btn` — WhatsApp card connect btn.
+- `settings-bots-whatsapp-link` — WhatsApp card link.
+- `settings-bots-whatsapp-open-link` — WhatsApp card open link.
+- `settings-bots-whatsapp-qr` — WhatsApp card qr.
+- `settings-bots-whatsapp-pairing-text` — WhatsApp card pairing text.
+- `settings-bots-whatsapp-copy-btn` — WhatsApp card copy btn.
+- `settings-bots-whatsapp-held` — WhatsApp card held.
+- `settings-bots-whatsapp-reminder` — WhatsApp card reminder.
+- `settings-bots-whatsapp-notice` — WhatsApp card notice.
+- `settings-bots-whatsapp-held-item-{index}` — WhatsApp card held item {index}.

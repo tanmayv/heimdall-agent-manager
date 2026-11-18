@@ -1,4 +1,5 @@
-import type { BotPlacementCandidate, BotPlacementOptions, BotStatus } from '../../api/endpoints/bots';
+import qrcode from 'qrcode-generator';
+import type { BotWhatsApp, BotPlacementCandidate, BotPlacementOptions, BotStatus } from '../../api/endpoints/bots';
 
 export const BOT_STATUS_LABELS: Record<BotStatus, string> = {
   ready: 'Ready', working: 'Answering…', starting: 'Starting…',
@@ -28,4 +29,16 @@ export function validateBotPlacement(rows: BotPlacementCandidate[], options: Bot
     triples.add(key);
   }
   return null;
+}
+
+export function whatsAppQrDataUrl(url: string): string {
+  const qr = qrcode(0, 'M');
+  qr.addData(url);
+  qr.make();
+  return qr.createDataURL(4, 8);
+}
+export function whatsAppCardState(w: BotWhatsApp): 'unconfigured' | 'unpaired' | 'paired' | 'held' {
+  if (!w.configured) return 'unconfigured';
+  if (w.binding === null) return 'unpaired';
+  return w.held_replies.length > 0 ? 'held' : 'paired';
 }
