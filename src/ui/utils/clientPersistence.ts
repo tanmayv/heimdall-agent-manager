@@ -65,15 +65,34 @@ export function readUserLastRoute(userId: string): string {
 }
 
 export function writeUserLastRoute(userId: string, routeHash: string): void {
-  if (typeof window === 'undefined' || !userId) return;
+  if (typeof window === 'undefined' || !userId || isDeviceEnrollRoute(routeHash)) return;
   try { window.localStorage.setItem(userScopedStorageKey('lastRoute', userId), routeHash); }
   catch { /* ignore */ }
 }
 
-export function resolveSwitchedUserRoute(nextUserId: string, currentHash: string): string {
-  return readUserLastRoute(nextUserId) || (
-    /^#\/(conversations|c|chains)(\/|[?]|$)/.test(currentHash) ? '#/home' : currentHash || '#/home'
-  );
+/**
+ * REQ-SWFIX-ROUTE-1: ids in `#/projects/<id>`, `#/agents/<id>`, `#/shells/<id>` and the
+ * like belong to one account and answer 403/404 for another, so a switch lands on the
+ * target's own saved route or on `#/home`, never on the previous account's hash.
+ */
+export function resolveSwitchedUserRoute(nextUserId: string, _currentHash: string): string {
+  const saved = readUserLastRoute(nextUserId);
+  if (saved && !isDeviceEnrollRoute(saved)) return saved;
+  return isAccountNeutralRoute(currentHash) ? currentHash : '#/home';
+}
+
+/** Settings tabs that hold no per-account ids (bridges, devices and the like do). */
+const NEUTRAL_SETTINGS_TABS = new Set(['', 'general', 'account', 'appearance', 'notifications', 'updates', 'experimental']);
+
+/** `#/home` and neutral settings tabs are safe to keep across a switch. */
+export function isAccountNeutralRoute(hash: string): boolean {
+  if (/^#\/home([/?]|$)/.test(hash)) return true;
+  const match = /^#\/settings(?:\/([^/?]*))?(?:[/?].*)?$/.exec(hash);
+  return Boolean(match) && NEUTRAL_SETTINGS_TABS.has(match![1] ?? '');
+}
+
+export function isDeviceEnrollRoute(routeHash: string): boolean {
+  return /^#\/device\/enroll(\/|[?]|$)/.test(routeHash);
 }
 
 export const ADD_ACCOUNT_INTENT_KEY = 'heimdall:add-account-intent-at';

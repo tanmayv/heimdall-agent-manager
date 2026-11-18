@@ -1,3 +1,4 @@
+import { ACCOUNT_MISMATCH_EVENT } from '../utils/expectedUser';
 import { apiAbsoluteUrl } from './apiBase';
 import { refreshMcpWorkerRegistration, setMcpWorkerEnabled } from '../services/mcpWorker';
 import { authenticatedStreamUrl } from './userStreamUrl';
@@ -279,6 +280,26 @@ export function startUserWsConnection(env: UserWsConnectionEnv): () => void {
     failures = 0;
     void connect();
   };
+  // REQ-SWFIX-STALE-1: the hub says this context's account is no longer the session's.
+  // Drop the old account's socket now; the auth gate remounts the shell (and a new
+  // connection loop) once it has resynced.
+  const onAccountMismatch = () => {
+    if (stopped) return;
+    parked = true;
+    if (reconnectTimer) window.clearTimeout(reconnectTimer);
+    reconnectTimer = undefined;
+    scheduler.cancel();
+    clearHeartbeat();
+    clearStableTimer();
+    const old = socket;
+    socket = null;
+    if (old) {
+      old.onclose = null; old.onerror = null; old.onmessage = null; old.onopen = null;
+      try { old.close(); } catch { /* ignore */ }
+    }
+    dispatch(userWsDisconnected());
+  };
+  window.addEventListener(ACCOUNT_MISMATCH_EVENT, onAccountMismatch);
   window.addEventListener('online', resume);
   window.addEventListener('focus', resume);
   document.addEventListener('visibilitychange', resume);
@@ -288,6 +309,7 @@ export function startUserWsConnection(env: UserWsConnectionEnv): () => void {
   return () => {
     stopped = true;
     scheduler.cancel();
+    window.removeEventListener(ACCOUNT_MISMATCH_EVENT, onAccountMismatch);
     window.removeEventListener('online', resume);
     window.removeEventListener('focus', resume);
     document.removeEventListener('visibilitychange', resume);

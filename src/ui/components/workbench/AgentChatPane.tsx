@@ -61,6 +61,8 @@ import {
 } from '../../api/endpoints/tasks';
 import { chainTargetId } from '../../utils/paneTarget';
 import { selectActiveVaultKey } from '../../store/vaultSlice';
+import { getExpectedUserId } from '../../utils/expectedUser';
+import { vaultSendBlock } from '../../utils/vaultSendGuard';
 import type { AuxContent } from '../../store/auxTabId';
 import { buildRouteHash } from '../../utils/appLocation';
 import { buildConversationHash } from '../../utils/conversationUrl';
@@ -837,6 +839,10 @@ export function AgentChatPane({
   const quoteFocusRevision = useSelector((state: any) => state.composerContext?.focusTarget === ownTargetId ? state.composerContext.focusRevision : 0);
   const quoteVaultKey = useSelector(selectActiveVaultKey);
   const quoteVaultUnlocked = useSelector((state: any) => Boolean(state.vault?.isUnlocked));
+  // REQ-SWFIX-SEND-1: blocked (draft kept) while this account's vault is not ready or a
+  // previous account's key is still installed.
+  const deviceVaultState = useSelector((state: any) => state.deviceVault);
+  const vaultSendBlocked = vaultSendBlock({ activeKey: quoteVaultKey, isUnlocked: quoteVaultUnlocked, currentUserId: getExpectedUserId(), deviceVault: deviceVaultState });
   const isMultiPane = !isSinglePane;
   const title = conversationDisplayTitle(
     conversation,
@@ -1689,7 +1695,7 @@ export function AgentChatPane({
   configurationInputBlockedRef.current = Boolean(configurationInputBlocked);
   // A borrowed composer (Answer / Request changes) talks to the hub, not the
   // agent runtime, so runtime state does not block it.
-  const sendDisabled = normalSendBusy || (trayModeItem
+  const sendDisabled = normalSendBusy || Boolean(vaultSendBlocked) || (trayModeItem
     ? hasUploadingAttachments || hasFailedAttachments || !trayDraft.trim()
     : configurationInputBlocked ||
       hasUploadingAttachments ||
@@ -2704,6 +2710,15 @@ export function AgentChatPane({
         }`}
       >
         <div className="mx-auto w-full max-w-4xl">
+          {vaultSendBlocked ? (
+            <div
+              data-debug-id="conversation-composer-vault-blocked"
+              role="status"
+              className="mb-2 rounded-xl border border-subtle bg-surface-raised px-3 py-2 text-xs text-secondary"
+            >
+              {vaultSendBlocked.message}
+            </div>
+          ) : null}
           {error ? (
             <div
               data-debug-id="conversation-composer-send-error"

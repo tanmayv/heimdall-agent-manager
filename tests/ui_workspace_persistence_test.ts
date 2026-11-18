@@ -72,6 +72,16 @@ test('REQ-ACCT-UI-1 Case 10: scoped logout preserves other accounts, drafts and 
       assert.equal(p.resolveSwitchedUserRoute('usr/new', route), '#/home');
     }
     assert.equal(p.resolveSwitchedUserRoute('usr/new', '#/settings/account'), '#/settings/account');
+    // REQ-SWFIX-ROUTE-1: ids of one account must not leak into another.
+    for (const route of ['#/projects/p1', '#/agents/a1', '#/shells/s1', '#/memory/m1', '#/issues/i1', '#/settings/bridges', '#/device/enroll']) {
+      assert.equal(p.resolveSwitchedUserRoute('usr/new', route), '#/home', route);
+    }
+    assert.equal(p.resolveSwitchedUserRoute('usr/new', '#/home'), '#/home');
+    // saveRoute never persists the enrollment gate route.
+    p.writeUserLastRoute('usr/new', '#/device/enroll');
+    assert.equal(p.readUserLastRoute('usr/new'), '');
+    p.writeUserLastRoute('usr/b', '#/device/enroll');
+    assert.equal(p.readUserLastRoute('usr/b'), '#/chains/b');
     assert.equal(p.resolveSwitchedUserRoute('usr/new', ''), '#/home');
   } finally {
     (globalThis as any).window = previous;

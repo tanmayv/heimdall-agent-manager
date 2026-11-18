@@ -52,6 +52,7 @@ Error_Code :: enum {
 	Transport_Is_Provider_Wide,
 	ACP_Unavailable,
 	ACP_Installing,
+	Account_Mismatch,
 }
 
 Error_Code_Info :: struct {
@@ -86,6 +87,7 @@ ERROR_CODE_TABLE :: [Error_Code]Error_Code_Info{
 	.Transport_Is_Provider_Wide = {"transport_is_provider_wide", .fatal, 422},
 	.ACP_Unavailable = {"acp_unavailable", .recoverable, 409},
 	.ACP_Installing = {"acp_installing", .recoverable, 409},
+	.Account_Mismatch     = {"account_mismatch",     .recoverable, 409}, // REQ-SWFIX-STALE-1
 	.Question_Invalid     = {"question_invalid",     .fatal,       400},
 	.Vault_Locked         = {"vault_locked",         .recoverable, 423}, // RFC 4918 Locked: retry after unseal
 }

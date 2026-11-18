@@ -35,7 +35,7 @@ import {
 } from '../utils/deviceIdentity';
 import { isVaultSupported } from '../utils/vaultCrypto';
 import { pinsFromChain, trustedBridgeById, verifyDirectory, type VaultDirectory, type VerifiedChain } from '../utils/vaultDirectoryVerify';
-import { clearKeyringSession, getKeyringSession, installKeyringFromWrap, withKeyringBytes } from '../utils/vaultKeyringSession';
+import { clearKeyringSession, getKeyringSession, installKeyringFromWrap, keyringGeneration, withKeyringBytes } from '../utils/vaultKeyringSession';
 import { buildBrowserApproval, buildGenesis, buildPairedRegistration, revokeWithRetry, rotateWithRetry, type RevokeOutcome, type RotateOutcome } from '../utils/vaultDeviceFlows';
 import { derivePairKeys, generatePairCode, generatePairSalt, isPairHubOrigin, isPairSalt, pairCodeSymbols, PAIR_CODE_TTL_MS, verifyPairApproveMac, type PairContext } from '../utils/vaultPairing';
 import { asApproverIdentity, buildRecoveryKey, openRecoveryKey, RecoveryKeyError } from '../utils/vaultRecovery';
@@ -91,6 +91,8 @@ interface Ctx {
 
 let deps: DeviceVaultDeps | null = null;
 let ctx: Ctx | null = null;
+/** Bumped by stopDeviceVault: background tasks started under an older value abort. */
+let vaultGeneration = 0;
 
 /** Tests inject a memory store and a fake API; production uses IndexedDB and HTTP. */
 export function configureDeviceVault(next: Partial<DeviceVaultDeps>): void {
@@ -168,6 +170,12 @@ function purgeKeys(dispatch: Dispatch): void {
   dispatch(keyringCleared());
 }
 
+/** REQ-SWFIX-VAULT-2: a keyring installed for another user never outlives that user's session. */
+function purgeForeignKeyring(c: Ctx): void {
+  const installed = getKeyringSession();
+  if (installed && installed.chain.userId !== c.userId) purgeKeys(c.dispatch);
+}
+
 function resetFrom(dir: VaultDirectory | null): DeviceVaultReset | null {
   const r = dir?.reset;
   if (!r || !r.due_at) return null;
@@ -183,28 +191,35 @@ function pendingFrom(chain: VerifiedChain): PendingDeviceSummary[] {
  * the pins (monotonic). Throws on any verification failure.
  */
 export async function fetchVerifiedChain(): Promise<{ chain: VerifiedChain; dir: VaultDirectory }> {
-  if (!ctx) throw new Error('Device vault not started');
+  const c = ctx;
+  if (!c) throw new Error('Device vault not started');
   const signed = deviceSignerContext() ?? undefined;
   const dir = await d().api.fetchVaultDirectory(signed);
+  if (ctx !== c) throw new Error('Device vault session ended');
   if (!dir) throw new Error('The vault directory is gone');
-  const pins = await loadPins(d().kv, ctx.userId);
-  const chain = await verifyDirectory(dir, ctx.userId, pins);
-  if (pins) await advancePins(d().kv, ctx.userId, pinsFromChain(chain));
-  await publishChain(chain, dir);
+  const pins = await loadPins(d().kv, c.userId);
+  const chain = await verifyDirectory(dir, c.userId, pins);
+  if (ctx !== c) throw new Error('Device vault session ended');
+  if (pins) await advancePins(d().kv, c.userId, pinsFromChain(chain));
+  await publishChain(c, chain, dir);
+  if (ctx !== c) throw new Error('Device vault session ended');
   return { chain, dir };
 }
 
-async function publishChain(chain: VerifiedChain, dir: VaultDirectory): Promise<void> {
-  if (!ctx) return;
+async function publishChain(c: Ctx, chain: VerifiedChain, dir: VaultDirectory): Promise<void> {
+  if (ctx !== c) return;
   // Remember the reset this VERIFIED directory announces (or that none is pending), so a
   // later "no directory" can be told apart from a reset this browser saw coming (M2).
   const reset = dir.reset?.due_at ? dir.reset : null;
-  await recordObservedReset(d().kv, ctx.userId, reset ? { requested_at: String(reset.requested_at ?? ''), due_at: String(reset.due_at), head_seq: chain.version } : null);
-  const freshness = await noteHeadFreshness(ctx.userId, chain);
-  if (!ctx) return;
-  ctx.staleHead = freshness.stale;
-  ctx.dispatch(deviceVaultDirectoryVerified({
-    accountFingerprint: await accountFingerprint(chain.rootSignPub),
+  await recordObservedReset(d().kv, c.userId, reset ? { requested_at: String(reset.requested_at ?? ''), due_at: String(reset.due_at), head_seq: chain.version } : null);
+  if (ctx !== c) return;
+  const freshness = await noteHeadFreshness(c.userId, chain);
+  if (ctx !== c) return;
+  c.staleHead = freshness.stale;
+  const fingerprint = await accountFingerprint(chain.rootSignPub);
+  if (ctx !== c) return;
+  c.dispatch(deviceVaultDirectoryVerified({
+    accountFingerprint: fingerprint,
     currentEpoch: chain.currentEpoch,
     directoryVersion: chain.version,
     headHash: chain.headHash.slice(0, 12),
@@ -214,7 +229,7 @@ async function publishChain(chain: VerifiedChain, dir: VaultDirectory): Promise<
   }));
   // Hub retirement hints for trusted bridges: an approved device with its keyring
   // installed signs their real revoke (rate-limited, see scheduleHintRevocation).
-  if (chain.retiredHints.length > 0 && getKeyringSession() && !ctx.staleHead) scheduleHintRevocation(chain);
+  if (chain.retiredHints.length > 0 && getKeyringSession() && !c.staleHead) scheduleHintRevocation(chain);
 }
 
 // ── M1 freshness guard ──────────────────────────────────────────────────────
@@ -279,9 +294,14 @@ export async function confirmDirectoryHeadCurrent(): Promise<void> {
 
 /** Start (or restart) the device vault for `userId`. Idempotent for the same user while running. */
 export async function bootDeviceVault(userId: string, dispatch: Dispatch): Promise<void> {
-  if (ctx && ctx.userId === userId && ctx.identity) return refreshDeviceVault('boot');
+  if (ctx && ctx.userId === userId) return refreshDeviceVault('boot'); // REQ-SWFIX-VAULT-4
   stopPolling();
-  if (ctx && ctx.userId !== userId) purgeKeys(dispatch);
+  if (ctx && ctx.userId !== userId) {
+    vaultGeneration += 1;
+    purgeKeys(dispatch);
+  } else if (!ctx && getKeyringSession() && getKeyringSession()!.chain.userId !== userId) {
+    purgeKeys(dispatch);
+  }
   ctx = { userId, dispatch, identity: null, revokedVerified: false, pollTimer: null, seq: 0, lastPendingIds: new Set(), staleHead: false };
   dispatch(deviceVaultStatusChanged({ status: 'initializing', userId }));
   if (!isVaultSupported() || (typeof indexedDB === 'undefined' && !deps?.kv)) {
@@ -294,6 +314,11 @@ export async function bootDeviceVault(userId: string, dispatch: Dispatch): Promi
 /** Stop and purge (sign-out / user switch). */
 export function stopDeviceVault(dispatch?: Dispatch): void {
   stopPolling();
+  vaultGeneration += 1;
+  if (hintTimer) clearTimeout(hintTimer);
+  hintTimer = null;
+  hintRunning = false;
+  autoUnsealRunning = null;
   if (dispatch) purgeKeys(dispatch); else clearKeyringSession();
   ctx = null;
 }
@@ -332,6 +357,8 @@ async function runRefresh(_reason: string): Promise<void> {
   const seq = ++c.seq;
   const dispatch = c.dispatch;
   const stale = () => ctx !== c || c.seq !== seq;
+  // REQ-SWFIX-VAULT-1: a keyring install is refused when the session was purged since this run began.
+  const keyringGen = keyringGeneration();
   try {
     const kv = d().kv;
     if (!c.identity) c.identity = await loadDeviceIdentity(kv, c.userId);
@@ -343,10 +370,12 @@ async function runRefresh(_reason: string): Promise<void> {
       stopPolling();
       if (await refuseUnacknowledgedAccount(c)) return;
       const pins = await loadPins(kv, c.userId);
+      if (stale()) return;
       if (pins) {
         // M2: a missing directory is a reset ONLY when this browser recorded a verified
         // reset whose due time has passed. Otherwise fail closed: the hub may be lying.
         const observed = await loadObservedReset(kv, c.userId);
+        if (stale()) return;
         if (observedResetElapsed(observed)) {
           dispatch(deviceVaultFailed({
             code: 'vault_reset',
@@ -366,6 +395,7 @@ async function runRefresh(_reason: string): Promise<void> {
     }
 
     if (!c.identity) c.identity = await createDeviceIdentity(kv, c.userId);
+    if (stale()) return;
     const identity = c.identity;
     dispatch(deviceVaultIdentityKnown({ userId: c.userId, deviceId: identity.deviceId, fingerprint: identity.fingerprint }));
 
@@ -413,8 +443,10 @@ async function runRefresh(_reason: string): Promise<void> {
       return;
     }
     if (self.status === 'pending') {
+      purgeForeignKeyring(c);
       const reset = resetFrom(dir);
       const pending = await loadPendingCode(c);
+      if (stale()) return;
       const live = pending && Date.now() < pending.expiresAt ? pending : null;
       dispatch(deviceVaultStatusChanged({ status: reset ? 'reset-scheduled' : 'pending-approval', reset, userCode: live?.code ?? '', codeExpiresAt: live ? new Date(live.expiresAt).toISOString() : '' }));
       startPolling();
@@ -426,7 +458,8 @@ async function runRefresh(_reason: string): Promise<void> {
     const pins = await loadPins(kv, c.userId);
     const chain = await verifyDirectory(dir, c.userId, pins);
     if (stale()) return;
-    await publishChain(chain, dir);
+    await publishChain(c, chain, dir);
+    if (stale()) return;
     const mine = chain.trusted.get(identity.deviceId);
     if (!mine) throw new Error('This device is not approved by a verified chain');
     stopPolling();
@@ -438,7 +471,9 @@ async function runRefresh(_reason: string): Promise<void> {
     if (!pins && chain.rootDeviceId === identity.deviceId && chain.rootSignPub === identity.signPub) {
       await kv.delete(`pending:${c.userId}`);
       await advancePins(kv, c.userId, pinsFromChain(chain));
-      const keyring = await installKeyringFromWrap(identity, self.wrap, chain);
+      if (stale()) return;
+      const keyring = await installKeyringFromWrap(identity, self.wrap, chain, keyringGen);
+      if (stale()) return;
       dispatch(keyringInstalled({ currentEpoch: keyring.currentEpoch }));
       dispatch(deviceVaultStatusChanged({ status: 'ready', currentEpoch: chain.currentEpoch, directoryVersion: chain.version }));
       return;
@@ -452,6 +487,7 @@ async function runRefresh(_reason: string): Promise<void> {
       // whole log prefix (genesis included), so a valid pair_mac proves the root is
       // the one the user's other device trusts. No pair_mac, no keys.
       const pending = await loadPendingCode(c);
+      if (stale()) return;
       if (!pending || Date.now() > pending.expiresAt + PAIR_GRACE_MS) {
         await kv.delete(`pending:${c.userId}`);
         dispatch(deviceVaultFailed({ code: 'pairing_unverified', message: PAIRING_LOST_MESSAGE }));
@@ -469,16 +505,20 @@ async function runRefresh(_reason: string): Promise<void> {
       if (stale()) return;
       await advancePins(kv, c.userId, pinsFromChain(chain));
       await kv.delete(`pending:${c.userId}`);
-      const keyring = await installKeyringFromWrap(identity, self.wrap, chain);
+      if (stale()) return;
+      const keyring = await installKeyringFromWrap(identity, self.wrap, chain, keyringGen);
+      if (stale()) return;
       dispatch(keyringInstalled({ currentEpoch: keyring.currentEpoch }));
       dispatch(deviceVaultStatusChanged({ status: 'ready', currentEpoch: chain.currentEpoch, directoryVersion: chain.version }));
       return;
     }
     await kv.delete(`pending:${c.userId}`);
     await advancePins(kv, c.userId, pinsFromChain(chain));
+    if (stale()) return;
     const session = getKeyringSession();
-    if (!session || session.keyring.currentEpoch !== chain.currentEpoch || session.identity.deviceId !== identity.deviceId) {
-      const keyring = await installKeyringFromWrap(identity, self.wrap, chain);
+    if (!session || session.keyring.userId !== c.userId || session.keyring.currentEpoch !== chain.currentEpoch || session.identity.deviceId !== identity.deviceId) {
+      const keyring = await installKeyringFromWrap(identity, self.wrap, chain, keyringGen);
+      if (stale()) return;
       dispatch(keyringInstalled({ currentEpoch: keyring.currentEpoch }));
     }
     dir = null;
@@ -487,6 +527,7 @@ async function runRefresh(_reason: string): Promise<void> {
     if (stale()) return;
     if (err instanceof TypeError || isStatus(err, 502, 503, 504)) {
       // Transport failure: keep any installed keys, report, retry by poll.
+      purgeForeignKeyring(c);
       if (!getKeyringSession()) dispatch(deviceVaultFailed({ code: 'hub_unreachable', message: `Cannot reach the hub: ${message(err)}` }));
       return;
     }
@@ -784,29 +825,37 @@ function takeLease(bridgeId: string): boolean {
 /** Deliver the keyring to approved bridges that report awaiting the key. Never throws. */
 export function autoUnsealLockedBridges(candidateIds: readonly string[]): Promise<void> {
   if (autoUnsealRunning || candidateIds.length === 0 || !getKeyringSession()) return autoUnsealRunning ?? Promise.resolve();
-  autoUnsealRunning = (async () => {
+  const c = ctx;
+  if (!c) return Promise.resolve();
+  const gen = vaultGeneration;
+  const ended = () => ctx !== c || vaultGeneration !== gen;
+  const run: Promise<void> = (async () => {
     try {
       const b = d().bridges;
       if (!b) return;
-      if (ctx?.staleHead) {
-        ctx.dispatch(bridgeKeyDeliveryReported(pausedDelivery(candidateIds)));
+      if (c.staleHead) {
+        c.dispatch(bridgeKeyDeliveryReported(pausedDelivery(candidateIds)));
         return;
       }
       await sleep(jitter(400, 3000));
+      if (ended()) return;
       const still = new Set(await b.listOnlineLockedBridgeIds());
+      if (ended()) return;
       const now = Date.now();
       const targets = candidateIds.filter((id) => still.has(id) && now - (lastAutoAttempt.get(id) ?? 0) >= AUTO_UNSEAL_COOLDOWN_MS && takeLease(id));
       if (targets.length === 0) return;
       for (const id of targets) lastAutoAttempt.set(id, now);
       const result = await unsealApprovedBridges(targets, { automatic: true });
-      ctx?.dispatch(bridgeKeyDeliveryReported(result));
+      if (ended()) return;
+      c.dispatch(bridgeKeyDeliveryReported(result));
     } catch (err) {
-      console.warn('[vault] automatic bridge key delivery failed:', err);
+      if (!ended()) console.warn('[vault] automatic bridge key delivery failed:', err);
     } finally {
-      autoUnsealRunning = null;
+      if (vaultGeneration === gen) autoUnsealRunning = null;
     }
   })();
-  return autoUnsealRunning;
+  autoUnsealRunning = run;
+  return run;
 }
 
 /** Manual fallback ("Send key"): no cooldown, result reported to the slice. */
@@ -886,17 +935,24 @@ function takeAutoRevokeSlot(userId: string, now = Date.now()): boolean {
 }
 let lastAutoRevokeAt = 0;
 
-function scheduleHintRevocation(chain: VerifiedChain): void {
+/** Test seam: whether a retired-hint revocation timer is armed. */
+export function hintRevocationTimerArmed(): boolean {
+  return hintTimer !== null;
+}
+
+export function scheduleHintRevocation(chain: VerifiedChain): void {
   if (hintTimer || hintRunning) return;
-  const me = ctx?.identity ? chain.trusted.get(ctx.identity.deviceId) : undefined;
-  if (!me || !kindPolicy(me.kind).canApprove) return;
+  const c = ctx;
+  const gen = vaultGeneration;
+  const me = c?.identity ? chain.trusted.get(c.identity.deviceId) : undefined;
+  if (!c || !me || !kindPolicy(me.kind).canApprove) return;
   hintTimer = setTimeout(() => {
     hintTimer = null;
-    if (hintRunning) return;
+    if (hintRunning || ctx !== c || vaultGeneration !== gen) return;
     hintRunning = true;
     revokeRetiredHint()
-      .catch((err) => console.warn('[vault] automatic revocation of a retired bridge identity failed:', err))
-      .finally(() => { hintRunning = false; });
+      .catch((err) => { if (ctx === c && vaultGeneration === gen) console.warn('[vault] automatic revocation of a retired bridge identity failed:', err); })
+      .finally(() => { if (vaultGeneration === gen) hintRunning = false; });
   }, jitter(1000, 5000));
 }
 

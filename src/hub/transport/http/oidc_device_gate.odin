@@ -13,6 +13,23 @@ request_signature_target :: proc(req: Request) -> string {
 	return req.path
 }
 
+EXPECTED_USER_HEADER :: "X-Heimdall-Expected-User"
+
+// expected_user_gate (REQ-SWFIX-STALE-1): a browser context that last synced as user A
+// sends A's id; once the shared session cookie belongs to B the request would otherwise
+// run as B and surface as confusing 403/404 answers. A mismatch answers 409
+// `account_mismatch` so the stale context resyncs. No header (CLI, MCP, bridges) or a
+// non-user principal is unchanged.
+expected_user_gate :: proc(ctx: contracts.Auth_Context, expected: string, request_id: string) -> (bool, Response) {
+	if expected == "" || ctx.user_id == "" do return true, {}
+	if ctx.kind != .OIDC && ctx.kind != .Session do return true, {}
+	if expected == ctx.user_id do return true, {}
+	return false, respond_error(
+		domain.domain_error(.Account_Mismatch, "The signed-in account changed. Reload to continue as the active account."),
+		request_id,
+	)
+}
+
 // This runs after bearer resolution in every user authentication middleware.
 // The allowlist is exact in both method and path; everything else fails closed.
 oidc_device_gate :: proc(
@@ -24,6 +41,9 @@ oidc_device_gate :: proc(
 	bool,
 	Response,
 ) {
+	if ok, resp := expected_user_gate(ctx, header_value(req.headers, EXPECTED_USER_HEADER), req.request_id); !ok {
+		return {}, false, resp
+	}
 	if ctx.kind != .OIDC do return ctx, true, {}
 	proof := signed_request(req)
 	supplied := vd.has_signature_headers(proof)

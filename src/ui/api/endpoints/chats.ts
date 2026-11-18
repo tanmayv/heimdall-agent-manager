@@ -1,3 +1,5 @@
+import { getExpectedUserId } from '../../utils/expectedUser';
+import { vaultSendBlockFromState } from '../../utils/vaultSendGuard';
 import { noteLocalMessageSent, conversationOptionsRevision, expireConversationOptions } from '../conversationMessageEvents';
 import * as daemonApi from '../daemonApi';
 import { apiUrl, cookieJsonFetch, cookieMutation, customQueryError, errorFromResponse } from '../cookieFetch';
@@ -216,6 +218,8 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
           const activeKey = getActiveVaultKey();
+          const blocked = vaultSendBlockFromState(state, activeKey, getExpectedUserId());
+          if (blocked) return { error: customQueryError(blocked) as any };
           let encBody = body;
           if (isUnlocked && activeKey && encBody && !isVaultArmored(encBody)) {
             encBody = await encryptVaultText(encBody, activeKey);
@@ -370,6 +374,8 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
           const activeKey = getActiveVaultKey();
+          const blocked = vaultSendBlockFromState(state, activeKey, getExpectedUserId());
+          if (blocked) return { error: customQueryError(blocked) as any };
           if (quoteTarget && (!isUnlocked || !activeKey || state.composerContext?.epoch !== quoteTarget.epoch)) throw new Error('Unlock Vault and add the quote again.');
           let encBody = body;
           if (isUnlocked && activeKey && encBody && !isVaultArmored(encBody)) {
@@ -403,6 +409,8 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
       queryFn: async ({ conversationId, sourceMessageId, submission }, api) => {
         try {
           const activeKey = getActiveVaultKey();
+          const blocked = vaultSendBlockFromState(api.getState(), activeKey, getExpectedUserId());
+          if (blocked) throw blocked;
           if (!(api.getState() as any)?.vault?.isUnlocked || !activeKey) throw new Error('Unlock Vault to send answers.');
           const payload = {
             ...submission,

@@ -129,7 +129,13 @@ user_ws_authenticate :: proc(handlers: ^User_Handlers, req: Request) -> (contrac
 		if !ok do return {}, false, respond_error(domain.domain_error(.Unauthenticated, "websocket ticket is invalid or expired"), req.request_id)
 		return principal, true, {}
 	}
-	return require_auth(handlers.auth, req)
+	principal, ok, resp := require_auth(handlers.auth, req)
+	if !ok do return principal, false, resp
+	// Browsers cannot set headers on a WebSocket upgrade: REQ-SWFIX-STALE-1 allows the query.
+	if gate_ok, gate_resp := expected_user_gate(principal, query_value(req.query, "expected_user"), req.request_id); !gate_ok {
+		return {}, false, gate_resp
+	}
+	return principal, true, {}
 }
 
 user_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Socket) {
