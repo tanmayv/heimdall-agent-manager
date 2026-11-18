@@ -103,6 +103,9 @@ App_Graph :: struct {
 	bots: bots_service.Bots_Service,
 	bots_runtime: bots_service.Bots_Runtime,
 	telegram: channel.Telegram_Adapter,
+	whatsapp: channel.WhatsApp_Adapter,
+	whatsapp_adapter: channel.Channel_Adapter,
+	bot_webhook_handlers: http.Bot_Webhook_Handlers,
 	channel_adapter: channel.Channel_Adapter,
 	bot_handlers: http.Bot_Handlers,
 	bot_agent_handlers: http.Bot_Agent_Handlers,
@@ -636,6 +639,17 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		graph.channel_adapter = channel.telegram_adapter(&graph.telegram)
 		graph.bots.adapter = &graph.channel_adapter
 	}
+	configured, problem := app_whatsapp_config_state(config)
+	if problem != "" do fmt.eprintln(problem)
+	if configured {
+		graph.whatsapp = channel.WhatsApp_Adapter{access_token = config.whatsapp_access_token, app_secret = config.whatsapp_app_secret,
+			verify_token = config.whatsapp_verify_token, phone_number_id = config.whatsapp_phone_number_id,
+			business_account_id = config.whatsapp_business_account_id, api_base = config.whatsapp_api_base}
+		graph.whatsapp_adapter = channel.whatsapp_adapter(&graph.whatsapp)
+		graph.bots.whatsapp = &graph.whatsapp_adapter
+		fmt.printf("bots: whatsapp configured phone_number_id=%s\n", config.whatsapp_phone_number_id)
+	}
+	graph.bot_webhook_handlers = http.Bot_Webhook_Handlers{bots = &graph.bots, runtime = &graph.bots_runtime, trusted_cidrs = config.forwarded_for_trusted_cidrs}
 	graph.bots_runtime = bots_service.Bots_Runtime{service = &graph.bots, telegram_bot_token = config.telegram_bot_token, supervisor_tick = bots_service.bots_supervisor_tick}
 	graph.experiment_handlers.on_changed = bots_service.bots_on_experiment_changed
 	graph.experiment_handlers.on_changed_ctx = &graph.bots_runtime
@@ -669,6 +683,8 @@ shutdown_graph :: proc(graph: ^App_Graph) {
 	bots_service.bots_runtime_stop(&graph.bots_runtime)
 	bots_service.bots_service_destroy(&graph.bots)
 	channel.telegram_destroy(&graph.telegram)
+	channel.whatsapp_destroy(&graph.whatsapp)
+	http.webhook_rate_destroy(&graph.bot_webhook_handlers.limiter)
 	bridge_service.bridge_update_catalog_destroy(&graph.bridge_update_catalog)
 	db_collectors_detach()
 	// Join the bridge_log writer (final drain) while the DB is still open.
@@ -838,6 +854,8 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/bots/me/channels/whatsapp/pairing", rawptr(&graph.bot_handlers), http.bot_whatsapp_pairing_handler)
 	http.router_add(&graph.router, "DELETE", "/api/v1/bots/me/channels/whatsapp", rawptr(&graph.bot_handlers), http.bot_whatsapp_disconnect_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bots/me/channels/telegram/messages", rawptr(&graph.bot_handlers), http.bot_messages_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/channels/whatsapp/webhook", rawptr(&graph.bot_webhook_handlers), http.whatsapp_webhook_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/channels/whatsapp/webhook", rawptr(&graph.bot_webhook_handlers), http.whatsapp_webhook_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/read", rawptr(&graph.bot_agent_handlers), http.bot_agent_channel_read_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/send", rawptr(&graph.bot_agent_handlers), http.bot_agent_channel_send_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/history", rawptr(&graph.bot_agent_handlers), http.bot_agent_channel_history_handler)
