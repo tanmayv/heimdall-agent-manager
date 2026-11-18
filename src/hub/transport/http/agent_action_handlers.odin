@@ -514,14 +514,24 @@ agent_action_chain_summary_handler :: proc(ctx: rawptr, req: Request) -> Respons
 	if !sok do return respond_error(err, req.request_id)
 	publish_agent_action(h, inst, "chain_summary", "updated chain summary")
 	publish_chain_event(h.event_bus, string(inst.owner_user_id), string(row.chain_id), "updated")
-	o := taskv2.json_begin()
-	taskv2.json_str(&o, "chain_id", string(row.chain_id))
-	taskv2.json_str(&o, "summary", row.body)
-	taskv2.json_str(&o, "body", row.body)
-	taskv2.json_int(&o, "line_count", i64(row.line_count))
-	taskv2.json_int(&o, "version", i64(row.version))
-	taskv2.json_str(&o, "updated_at", row.updated_at)
-	return respond_success(taskv2.json_end(&o), req.request_id, auth_ctx_server_time(req), 200)
+	return respond_success(chain_summary_json(row), req.request_id, auth_ctx_server_time(req), 200)
+}
+
+// POST /api/v1/agent-actions/chain/summary/get  params: {chain_id?}
+// READ-ONLY: never writes the summary, whatever else params carry. chain_id
+// defaults to the caller instance's own chain; like chain/show, the read is
+// owner-scoped (REQ-SEC-3), so another owner's chain is not found.
+agent_action_chain_summary_get_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	params := json_object_raw(req.body, "params")
+	chain_id := strings.trim_space(json_string(params, "chain_id"))
+	if chain_id == "" do chain_id = inst.chain_id
+	if strings.trim_space(chain_id) == "" do return respond_error(domain.domain_error(.Validation_Failed, "no chain for this instance; pass chain_id"), req.request_id)
+	chain, got, err := taskchain_service.get_chain_for_read(h.taskchains, auth, domain.Task_Chain_ID(chain_id))
+	if !got do return respond_error(err, req.request_id)
+	return respond_success(chain_summary_read_json(h.taskchains, chain), req.request_id, auth_ctx_server_time(req), 200)
 }
 
 // POST /api/v1/agent-actions/chain/propose  params: {chain_id?, tasks?:[...], kind?, rationale?, alternative?, auto_approve?, summary?}

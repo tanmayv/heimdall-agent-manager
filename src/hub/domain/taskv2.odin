@@ -118,6 +118,10 @@ Chain_Summary :: struct {
 	line_count:    int,
 	version:       int,
 	updated_at:    string,
+	// overflow_active: the retained dead ends no longer fit the rendered cap.
+	// It latches one summary_overflow notice per continuous overflow episode
+	// and survives summary set, rebuild and restart (it is the durable latch).
+	overflow_active: bool,
 }
 
 Workflow_Definition :: struct {

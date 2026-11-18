@@ -47,8 +47,14 @@ Groups: `bridge`, `agents`, `task-chain`, `task`, `workflow`, `lease`, `review`,
 - `task-chain set-title <title> [--chain <id>]` — rename a chain (coordinator only).
 - `task-chain set-description <text> [--chain <id>]` (or `--stdin`) — set the chain
   description (coordinator only; pass `""` to clear; `--chain` defaults to your chain).
-- `task-chain summary set <text> [--chain <id>]` (or `--stdin`) — set the curated chain summary
-  (`<= 60` lines; coordinator only; surfaced in every agent's `TASK.md` context pack).
+- `task-chain summary get [<chain-id>]` (or `--chain <id>`) — read-only: the stored chain summary
+  as agents see it, with `line_count`, `max_lines`, `overflow_active` and `version` (defaults to your
+  current chain; any chain of the same owner). Never writes, whatever else is passed.
+- `task-chain summary set <text> [--chain <id>]` (or `--body <text>`, `--file <path>`, `--stdin`) — replace
+  the curated chain summary notes (`<= 60` lines; coordinator only; surfaced in every agent's `TASK.md`
+  context pack). Mechanical sections (tasks, dead ends) are rebuilt from task history, so set cannot
+  remove dead ends; when they exceed the cap the rest stay in each task's handoff facet
+  (`task fetch <task-id> facet:<task-id>:<attempt>:handoff`).
 - `task-chain propose --file <proposal.json> [--auto-approve] [--chain <id>]` — create a chain
   proposal (`kind: "task"|"workflow_run"`, `rationale`, `alternative`, `tasks` array or `workflow` + `inputs`) and its draft
   tasks in a single transaction (coordinator only). With `--auto-approve`, validates briefs and

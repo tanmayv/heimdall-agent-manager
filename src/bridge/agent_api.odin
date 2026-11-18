@@ -134,6 +134,9 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "chain", "set-status")}
 	case "agent.task_chain.set_summary", "agent.chain.summary":
 		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "chain", "summary")}
+	case "agent.task_chain.get_summary":
+		// Read-only; chain_id is optional (the hub defaults to the caller's chain).
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "chain", "summary", "get")}
 	case "agent.task_chain.propose", "agent.chain.propose":
 		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "chain", "propose")}
 	case "agent.task_chain.publish":
@@ -339,7 +342,7 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     // task-chain + task
 	     "agent.task_chain.create", "agent.task_chain.list", "agent.task_chain.show", "agent.task_chain.set_title",
 	     "agent.task_chain.set_description", "agent.task_chain.set_status",
-	     "agent.task_chain.set_summary", "agent.chain.summary",
+	     "agent.task_chain.set_summary", "agent.chain.summary", "agent.task_chain.get_summary",
 	     "agent.task_chain.propose", "agent.chain.propose",
 	     "agent.task_chain.publish", "agent.task_chain.pin",
 	     "agent.task.list", "agent.task.show", "agent.task.comments", "agent.task.create",
