@@ -8,7 +8,7 @@ Support signing into multiple Heimdall accounts concurrently on the same browser
 
 1. **Multi-Account Session Ring (`__Host-heimdall_sessions`)**: Retain up to `MAX_BROWSER_ACCOUNTS = 5` concurrent server-side browser sessions in an HttpOnly cookie ring alongside the active `__Host-heimdall_session` cookie. Raw session tokens never reach JavaScript.
 2. **Active-Account-Only WebSocket Connection**: Only the currently selected (active) account holds a WebSocket connection (`/api/v1/user-ws` and on-demand PTY/tool/LSP streams) and an unlocked `VaultKeyring` in memory. Deselected accounts hold **no** WebSocket connections and **no** in-memory vault keys.
-3. **Non-Destructive Account Switching**: Switching accounts tears down the outgoing account's WebSockets, `mcpWorker`, in-memory `VaultKeyring`, and Redux/RTK Query state while preserving `localStorage` state across switches.
+3. **Non-Destructive Account Switching & Cross-Tab Sync**: Switching accounts unmounts the outgoing account's shell first (closing WebSockets, `mcpWorker`, and in-memory `VaultKeyring`) before mutating the active session cookie, resets Redux/RTK Query state while preserving `localStorage` state across switches, and synchronizes other open tabs via the `storage` event on `heimdall.lastSeenUserId`.
 4. **Account Switcher UI & Electron OIDC Handoff**: Provide an interactive Account Switcher in the sidebar footer (`shell-sidebar-account`) and Settings `AccountPanel`, and route Electron "Add account" flows (`/api/v1/auth/login?add_account=1`) directly into the preload-free `openOidcWindow` popup without disrupting `mainWindow`.
 
 ---
@@ -18,15 +18,15 @@ Support signing into multiple Heimdall accounts concurrently on the same browser
 - **`REQ-ACCT-RING-1` (Session Cookie Ring)**:
   - Keep `__Host-heimdall_session` (`SESSION_COOKIE`) as the active account's opaque 32-byte base64url session token so all existing REST, WebSocket, and preview endpoints remain unchanged.
   - Add `__Host-heimdall_sessions` (`SESSIONS_RING_COOKIE`, `Path=/; Secure; HttpOnly; SameSite=Lax`) storing up to `MAX_BROWSER_ACCOUNTS = 5` raw session tokens joined by `.` in MRU order (active token first).
-  - Deduplicate the ring by `user_id`: if a user signs in to an account that already has a session in the ring, delete the old session row from `user_sessions` (and call `preview_end_for_parent`) and replace it with the new token.
-  - If adding a new account exceeds `MAX_BROWSER_ACCOUNTS = 5`, evict the oldest deselected token from the ring and delete its row from `user_sessions` (and `preview_end_for_parent`).
+  - Deduplicate the ring by `user_id`: during callback merge (`GET /api/v1/auth/callback`), if the newly signed-in `user_id` already has a session in the ring, delete the old session row from `user_sessions` (and call `preview_end_for_parent`) and replace it with the new token.
+  - If adding a new account in callback merge exceeds `MAX_BROWSER_ACCOUNTS = 5`, evict the oldest deselected token from the ring and delete its row from `user_sessions` (and `preview_end_for_parent`).
   - Raw session tokens must never appear in any JSON response body.
 - **`REQ-ACCT-RING-2` (Add Account OIDC Prompt)**:
   - `GET /api/v1/auth/login` accepts optional query parameter `add_account=1` (or `prompt=login`).
   - When `add_account=1` or `prompt=login` is present, `web_login_begin` appends `{"prompt", "login"}` to the OIDC provider authorization URL query so the IdP prompts for credentials instead of reusing the current SSO session.
   - `GET /api/v1/auth/callback` merges the newly created session with any live sessions from the request's `__Host-heimdall_session` and `__Host-heimdall_sessions` cookies, sets `__Host-heimdall_session` to the new session, and sets `__Host-heimdall_sessions` to the merged MRU ring.
 - **`REQ-ACCT-RING-3` (List, Switch, and Logout Endpoints)**:
-  - `GET /api/v1/auth/sessions`: Validates all tokens in `__Host-heimdall_session` + `__Host-heimdall_sessions` against `user_sessions`, prunes expired/revoked/inactive-user tokens (emitting an updated `Set-Cookie: __Host-heimdall_sessions=...` when any token was pruned or when the ring cookie was absent for a valid `__Host-heimdall_session`), and returns `{ active_user_id, accounts: [{ user_id, name, display_name, email, active, expires_at_ms }] }`.
+  - `GET /api/v1/auth/sessions`: Read-only on `user_sessions` (never deletes rows from `user_sessions` on a `GET`, avoiding cross-tab races). Validates all tokens in `__Host-heimdall_session` + `__Host-heimdall_sessions` against `user_sessions`, prunes expired/revoked/duplicate/overflow tokens from its cookie view (emitting an updated `Set-Cookie: __Host-heimdall_sessions=...` when any token was pruned or when the ring cookie was absent for a valid `__Host-heimdall_session`), and returns `{ active_user_id, accounts: [{ user_id, name, display_name, email, active, expires_at_ms }] }`.
   - `POST /api/v1/auth/switch` (CSRF-checked via `csrf_decide`): Accepts `{"user_id": "usr_..."}`. Looks up the live session for `user_id` in `__Host-heimdall_session` + `__Host-heimdall_sessions`. Returns `400 validation_failed` if `user_id` is empty, or `404 not_found` if no live session for `user_id` exists in the ring. Otherwise touches `last_seen_at_ms`, promotes that token to `__Host-heimdall_session`, updates MRU order in `__Host-heimdall_sessions`, and returns `{ active_user_id, user, accounts }`.
   - `POST /api/v1/auth/logout` (CSRF-checked): Accepts optional JSON body `{"user_id"?: "usr_...", "all"?: bool}` (an empty or `{}` body defaults to signing out the active account):
     - If `all == true` or no other live accounts remain in the ring after removing the target session: deletes all target/ring sessions in `user_sessions`, calls `preview_end_for_parent` for each, expires both `__Host-heimdall_session` and `__Host-heimdall_sessions`, and returns `{ logout_url, active_user_id: "", switched_user: null, accounts: [] }`.
@@ -34,19 +34,14 @@ Support signing into multiple Heimdall accounts concurrently on the same browser
 - **`REQ-ACCT-WS-1` (Active-Account-Only WebSocket)**:
   - Only the active account opens `/api/v1/user-ws` (`useUserWebSocket`) and on-demand PTY/tool/LSP streams (`useShellStream`, `useAgentStream`, `useToolActivityStream`, `LspClient`).
   - Deselected accounts hold no WebSocket connection.
-  - On account switch, the outgoing account's `AuthenticatedShell` unmounts (or resets by `key={activeUserId}`), immediately closing its `/api/v1/user-ws` socket, calling `setMcpWorkerEnabled(false)`, and closing any open stream sockets before the newly selected account connects.
-- **`REQ-ACCT-UI-1` (Client Persistence & Vault Isolation on Switch)**:
+  - On account switch, `AuthGate` transitions to `status: 'switching'` **before** `POST /api/v1/auth/switch` executes, which unmounts the outgoing account's `AuthenticatedShell` first — immediately closing its `/api/v1/user-ws` socket, calling `setMcpWorkerEnabled(false)`, and closing any open stream sockets before the cookie changes or the newly selected account connects.
+- **`REQ-ACCT-UI-1` (Client Persistence, Vault Isolation, State Transitions & Cross-Tab Sync)**:
   - Switching accounts in `AuthGate` (`src/ui/components/shell/AppShell.tsx`) must **not** call `removeAppOwnedClientStorage()`.
-  - Instead, switching accounts:
-    1. Saves the outgoing user's current route hash via `writeUserLastRoute(previousUserId, currentRoute)`.
-    2. Calls `stopDeviceVault(dispatch)` to zero and purge the outgoing user's in-memory `VaultKeyring` and search key (`clearKeyringSession()`).
-    3. Resets in-memory RTK Query and Redux state (`dispatch(heimdallApi.util.resetApiState())`, `dispatch(priorUserClientStateCleared())`, `dispatch(clearUserClientState({ userId: nextUserId }))`).
-    4. Updates `writeLastSeenUserId(nextUserId)`, restores `readUserLastRoute(nextUserId)` (defaulting to `/home` if the current route is a user-specific `/conversations/...` or `/chains/...` route from the previous account), and calls `bootDeviceVault(nextUserId, dispatch)`.
   - Explicit sign-out of a single account calls `removeUserClientStorage(userId)` (deleting `heimdall.user.<encodeURIComponent(userId)>.*` keys). Signing out when no accounts remain (or `all: true`) calls `removeAppOwnedClientStorage()`.
-  - When a user initiates **"Add another account"** from the UI, record a short-lived local intent flag (`recordAddAccountIntent()`) so `deviceVault.ts` can automatically acknowledge `otherPinnedAccounts` (`acknowledgeOtherAccount`) for the newly added account without blocking on a false-positive TOFU swap warning.
+  - When a user initiates **"Add another account"** from the UI, record a short-lived local intent flag (`recordAddAccountIntent()`) so `deviceVault.ts` automatically acknowledges `otherPinnedAccounts` (`acknowledgeOtherAccount`) for the newly added account without blocking on a false-positive TOFU swap warning.
+  - **Cross-tab synchronization**: `AuthGate` listens for `window` `'storage'` events where `event.key === LAST_SEEN_USER_ID_KEY` (`heimdall.lastSeenUserId`). When another tab switches accounts (updating `heimdall.lastSeenUserId`), the background tab immediately runs `refreshIdentity('storage')`, which detects `nextUserId !== previousUserId` and executes the same non-destructive switch path (`stopDeviceVault`, `clearPriorUserClientState`, `bootDeviceVault(nextUserId)`, remounting `AuthenticatedShell` with `key={nextUserId}`).
 - **`REQ-ACCT-UI-2` (Account Switcher UI)**:
-  - Replace the static footer row in `src/ui/components/shell/AppShell.tsx` (`shell-sidebar-account`) with `AccountSwitcher` (`src/ui/components/shell/AccountSwitcher.tsx`), supporting both expanded and collapsed sidebar states and mobile drawer mode.
-  - Render all signed-in accounts in `AccountSwitcher` and in `src/ui/components/settings/AccountPanel.tsx` with interactive controls and required `data-debug-id` attributes.
+  - Render `AccountSwitcher` (`src/ui/components/shell/AccountSwitcher.tsx`) inside `shell-sidebar-account` in `src/ui/components/shell/AppShell.tsx` (preserving all existing sidebar debug IDs and adding the new `account-switcher-*` debug IDs) and render the signed-in accounts list in `src/ui/components/settings/AccountPanel.tsx`.
 - **`REQ-ACCT-ELECTRON-1` (Electron Add-Account Popup Handoff)**:
   - In `src/ui/electron/externalUrl.cts` and `src/ui/electron/main.cts`, classify a navigation to `/api/v1/auth/login` that carries `add_account=1` (or `prompt=login`) as `'auth'` on `will-navigate` so `mainWindow` calls `event.preventDefault()` and opens `openOidcWindow(url, win)` directly without navigating `mainWindow` away from the active account while the login popup is open.
 
@@ -70,8 +65,8 @@ MAX_BROWSER_ACCOUNTS :: 5
     - Otherwise joins `raw_sessions` with `"."` and formats:
       `__Host-heimdall_sessions=<joined>; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=<max_age_seconds>`.
   - `parse_sessions_ring(headers: []contracts.HTTP_Header) -> [dynamic]string`:
-    - Reads `SESSION_COOKIE` (if present and valid length) first, then splits `cookie_value(headers, SESSIONS_RING_COOKIE)` on `'.'`.
-    - Deduplicates raw token strings while preserving order, using `context.temp_allocator`.
+    - Reads `SESSION_COOKIE` (if present and valid length `32..=128`) first, then splits `cookie_value(headers, SESSIONS_RING_COOKIE)` on `'.'` and appends valid-length tokens.
+    - Deduplicates identical raw token strings while preserving parse order (`SESSION_COOKIE` first), using `context.temp_allocator`.
 
 #### Resolved Ring Entry (`src/hub/service/auth/session.odin`)
 ```odin
@@ -85,25 +80,27 @@ Auth_Account_Entry :: struct {
 }
 ```
 - `resolve_session_ring(service: ^Auth_Service, headers: []contracts.HTTP_Header) -> (active_raw: string, raw_ring: [dynamic]string, accounts: [dynamic]Auth_Account_Entry, changed: bool)`:
-  - Iterates candidate raw tokens from `SESSION_COOKIE` + `SESSIONS_RING_COOKIE`.
-  - Validates each via `resolve_session_auth(service, raw_token)`.
-  - If invalid/expired, marks `changed = true` and skips it.
-  - If valid, checks if `ctx.user_id` is already in `accounts`:
-    - If already present (duplicate session for same user), deletes the duplicate session row in `service.sessions`, calls `preview_end_for_parent`, marks `changed = true`, and keeps the earlier (more recent) one.
-    - If `len(accounts) == MAX_BROWSER_ACCOUNTS`, deletes the overflow session row in `service.sessions`, calls `preview_end_for_parent`, and marks `changed = true`.
-    - Otherwise appends to `raw_ring` and `accounts` (`active = (len(accounts) == 0)` when `SESSION_COOKIE` matched, or promotes the first live session if `SESSION_COOKIE` was missing/expired).
+  - **Read-only on `user_sessions`**: never calls `repo.delete_session`, so concurrent `GET /api/v1/auth/sessions` requests from multiple tabs are idempotent and race-free.
+  - Iterates candidate raw tokens from `parse_sessions_ring(headers)`.
+  - Validates each token via `resolve_session_auth(service, raw_token)`.
+  - If a token is invalid/expired, sets `changed = true` and skips it.
+  - If `ctx.user_id` is already present in `accounts` (duplicate token for the same user) or `len(accounts) >= MAX_BROWSER_ACCOUNTS`, sets `changed = true` and skips it in the returned view/cookie.
+  - Otherwise appends `raw_token` to `raw_ring` and appends `Auth_Account_Entry` to `accounts`.
+  - **Active-flag rule**: The first live token in parse order (`SESSION_COOKIE` first, or the first live token from `SESSIONS_RING_COOKIE` if `SESSION_COOKIE` was missing/expired) is the active account: `active = (len(accounts) == 0)` at insertion time (i.e. `accounts[0].active == true` and `accounts[i].active == false` for all `i > 0`), and `active_raw = raw_ring[0]`. If `SESSION_COOKIE` was missing/expired or `SESSIONS_RING_COOKIE` was missing/differed from `raw_ring`, `changed = true`.
 
 #### OIDC Login Prompt & Callback Merge
 - `web_login_begin(service: ^Auth_Service, return_to: string, client_ip := "", prompt_login := false) -> (redirect_url: string, login_cookie: string, ok: bool, err: domain.Domain_Error)`:
-  - In `auth_login_handler` (`src/hub/transport/http/auth_session_handlers.odin:34-45`), check `query_value(req.query, "add_account") == "1" || query_value(req.query, "prompt") == "login"`.
+  - In `auth_login_handler` (`src/hub/transport/http/auth_session_handlers.odin:34-45`), compute `prompt_login := query_value(req.query, "add_account") == "1" || query_value(req.query, "prompt") == "login"`.
   - When `prompt_login` is true, include `{"prompt", "login"}` in `httpc.build_url` query params for `service.web.authorize_url`.
-- `auth_callback_handler` (`src/hub/transport/http/auth_session_handlers.odin:48-74`):
-  - After `web_login_complete` returns `raw_session` and `return_to`:
-  - Call `merge_session_into_ring(handlers.auth, req.headers, raw_session)`, which:
-    - Resolves existing live tokens from `req.headers`.
-    - If any existing token in the ring belongs to the same `user_id` as `raw_session`, deletes that old session from `service.sessions` and `preview_end_for_parent`.
-    - Places `raw_session` at index 0, followed by up to `MAX_BROWSER_ACCOUNTS - 1` remaining live tokens (deleting any evicted 6th session from `service.sessions` and `preview_end_for_parent`).
-  - Emits `Set-Cookie` headers for `session_cookie_header(raw_session, ttl / 1000)`, `sessions_ring_cookie_header(ring, ttl / 1000)`, and `clear_login`.
+- `merge_session_into_ring(service: ^Auth_Service, headers: []contracts.HTTP_Header, new_raw_session: string) -> [dynamic]string`:
+  - Called by `auth_callback_handler` (`src/hub/transport/http/auth_session_handlers.odin:48-74`) after `web_login_complete` creates `new_raw_session`.
+  - Resolves `new_ctx` via `resolve_session_auth(service, new_raw_session)` and starts `ring` with `new_raw_session` at index 0.
+  - Iterates existing candidate tokens from `parse_sessions_ring(headers)`:
+    - If a candidate equals `new_raw_session`, skips it.
+    - Looks up the candidate via `resolve_session_auth(service, candidate)`. If invalid/expired, skips it.
+    - If `candidate_ctx.user_id == new_ctx.user_id` (same user re-authenticated) OR `len(ring) >= MAX_BROWSER_ACCOUNTS` (overflow beyond 5 accounts): deletes the old/evicted session row from `service.sessions` (`repo.delete_session(repo.ctx, sha256_hex(candidate))`) and calls `preview_end_for_parent(service, sha256_hex(candidate))`.
+    - Otherwise appends `candidate` to `ring`.
+  - `auth_callback_handler` emits `Set-Cookie` headers for `session_cookie_header(new_raw_session, ttl / 1000)`, `sessions_ring_cookie_header(ring[:], ttl / 1000)`, and `clear_login`.
 
 #### Wire Endpoints (`src/hub/transport/http/auth_session_handlers.odin` & `wiring.odin`)
 Register in `src/hub/app/wiring.odin`:
@@ -114,7 +111,7 @@ http.router_add(&graph.router, "POST", "/api/v1/auth/switch", rawptr(&graph.user
 
 1. **`GET /api/v1/auth/sessions` (`auth_sessions_handler`)**:
    - Calls `resolve_session_ring(handlers.auth, req.headers)`.
-   - Returns `200 OK` (even when `accounts` is empty so the UI can inspect the ring cleanly without a 401 console error, or when authenticated):
+   - Returns `200 OK`:
      ```json
      {
        "data": {
@@ -132,16 +129,16 @@ http.router_add(&graph.router, "POST", "/api/v1/auth/switch", rawptr(&graph.user
        }
      }
      ```
-   - If `changed` is true (e.g. an expired token was pruned or active session was promoted), attaches `Set-Cookie` for `SESSION_COOKIE` and `SESSIONS_RING_COOKIE`.
+   - If `changed` is true, attaches `Set-Cookie` for `SESSION_COOKIE` (or expired cookie if `active_raw == ""`) and `SESSIONS_RING_COOKIE` plus `Cache-Control: no-store`.
 
 2. **`POST /api/v1/auth/switch` (`auth_switch_handler`)**:
-   - Request body: `{"user_id": "usr_2"}` (parsed via `json.unmarshal_string` or `jsonx`).
+   - Request body: `{"user_id": "usr_2"}`.
    - If `user_id == ""` -> `400 validation_failed` (`"user_id is required"`).
    - Calls `web_switch_account(handlers.auth, req.headers, target_user_id)`:
-     - Resolves the ring from `req.headers`.
-     - If no live session in the ring matches `target_user_id` -> `404 not_found` (`"account session not found or expired"`).
-     - Moves `target_user_id`'s raw token to index 0 of the ring, touches its `last_seen_at_ms`, and marks its `Auth_Account_Entry.active = true` (others `false`).
-   - Emits `Set-Cookie` for `session_cookie_header(active_raw, ttl / 1000)` and `sessions_ring_cookie_header(ring, ttl / 1000)` plus `Cache-Control: no-store`.
+     - Resolves the ring via `resolve_session_ring(handlers.auth, req.headers)`.
+     - If no entry in `accounts` matches `target_user_id` -> `404 not_found` (`"account session not found or expired"`).
+     - Moves `target_user_id`'s raw token and `Auth_Account_Entry` to index 0, touches its `last_seen_at_ms` in `service.sessions`, and sets `accounts[0].active = true` (and `active = false` for `i > 0`).
+   - Emits `Set-Cookie` for `session_cookie_header(active_raw, ttl / 1000)` and `sessions_ring_cookie_header(raw_ring[:], ttl / 1000)` plus `Cache-Control: no-store`.
    - Response `200 OK`:
      ```json
      {
@@ -161,8 +158,8 @@ http.router_add(&graph.router, "POST", "/api/v1/auth/switch", rawptr(&graph.user
 3. **`POST /api/v1/auth/logout` (`auth_logout_handler`)**:
    - Optional JSON body: `{"user_id"?: "usr_...", "all"?: bool}`.
    - Calls `web_logout_ring(handlers.auth, req.headers, target_user_id, logout_all)`:
-     - When `logout_all == true` or only one account (the target/active one) is in the ring:
-       - Deletes every removed session from `service.sessions` and `preview_end_for_parent`.
+     - When `logout_all == true` or no other live accounts remain in the ring after removing the target session:
+       - Deletes every session in `parse_sessions_ring(headers)` from `service.sessions` and calls `preview_end_for_parent`.
        - Builds `logout_url` (with `id_token_hint` from the active/target session when `service.web.end_session_url != ""`, else `"/"`).
        - Expires both `SESSION_COOKIE` and `SESSIONS_RING_COOKIE`.
        - Returns:
@@ -176,14 +173,14 @@ http.router_add(&graph.router, "POST", "/api/v1/auth/switch", rawptr(&graph.user
            }
          }
          ```
-     - When signing out a single account (`target_user_id` or active account) and at least one other live session remains in the ring:
-       - Deletes only the target session from `service.sessions` and `preview_end_for_parent`.
-       - Keeps the remaining live sessions in `SESSIONS_RING_COOKIE`, with `ring[0]` set as `SESSION_COOKIE`.
-       - Returns `logout_url: ""` (so the browser stays in-app on the remaining account instead of redirecting to the IdP end-session page!) along with `active_user_id`, `switched_user`, and `accounts`.
+     - When signing out a single account (`target_user_id` or the active account when `target_user_id == ""`) and at least one other live session remains in the ring:
+       - Deletes only the target session from `service.sessions` and calls `preview_end_for_parent`.
+       - Keeps the remaining live sessions in `SESSIONS_RING_COOKIE`, with `raw_ring[0]` set as `SESSION_COOKIE` (`accounts[0].active = true`).
+       - Returns `logout_url: ""`, `active_user_id: accounts[0].user_id`, `switched_user` (set to `accounts[0]`'s user object when the active account changed, or `null` when a deselected account was removed), and `accounts`.
 
 ---
 
-### 3.2 Client Persistence, Vault & WebSocket Teardown (`src/ui/`)
+### 3.2 Client Persistence, Vault, WebSocket Teardown & UI State Transitions (`src/ui/`)
 
 #### `src/ui/auth/oidcSession.ts`
 Add pure, unit-tested helpers:
@@ -191,9 +188,9 @@ Add pure, unit-tested helpers:
 - `export function addAccountHref(location: LocationLike): string`:
   - Returns `${LOGIN_PATH}?add_account=1&return_to=${encodeURIComponent(currentReturnTo(location))}`.
 - `export async function fetchAuthSessions(fetchImpl: typeof fetch, url = '/api/v1/auth/sessions'): Promise<{ activeUserId: string; accounts: AuthSessionAccount[] }>`
-- `export async function postSwitchAccount(fetchImpl: typeof fetch, userId: string, url = '/api/v1/auth/switch'): Promise<{ activeUserId: string; user: AuthUserIdentity | null; accounts: AuthSessionAccount[] }>`
+- `export async function postSwitchAccount(fetchImpl: typeof fetch, userId: string, url = '/api/v1/auth/switch'): Promise<{ activeUserId: string; user: AuthUserIdentity; accounts: AuthSessionAccount[] }>`
 - `export async function postLogoutAccount(fetchImpl: typeof fetch, opts?: { userId?: string; all?: boolean }, url = LOGOUT_PATH): Promise<{ logoutUrl: string; activeUserId: string; switchedUser: AuthUserIdentity | null; accounts: AuthSessionAccount[] }>`
-  - Keep existing `postLogout(fetchImpl, url)` signature returning `Promise<string>` (`logout_url || '/'`) for backwards compatibility with `tests/ui_oidc_session_test.ts`.
+- Keep existing `postLogout(fetchImpl, url)` signature returning `Promise<string>` (`logout_url || '/'`) for backwards compatibility with `tests/ui_oidc_session_test.ts`.
 
 #### `src/ui/utils/clientPersistence.ts`
 - Add per-user storage cleanup and route/add-account intent helpers:
@@ -203,6 +200,8 @@ Add pure, unit-tested helpers:
     - Reads `userScopedStorageKey('lastRoute', userId)` from `localStorage`.
   - `export function writeUserLastRoute(userId: string, routeHash: string): void`:
     - Writes `userScopedStorageKey('lastRoute', userId)` to `localStorage`.
+  - `export function resolveSwitchedUserRoute(nextUserId: string, currentHash: string): string`:
+    - Returns `readUserLastRoute(nextUserId)` if non-empty; otherwise if `currentHash` points to an account-specific thread (`#/conversations/...`, `#/c/...`, `#/chains/...`), returns `'#/home'`; otherwise preserves `currentHash || '#/home'`.
   - `export const ADD_ACCOUNT_INTENT_KEY = 'heimdall:add-account-intent-at';`
   - `export const ADD_ACCOUNT_INTENT_TTL_MS = 10 * 60_000;`
   - `export function recordAddAccountIntent(now = Date.now()): void` and `export function consumeAddAccountIntent(now = Date.now()): boolean`.
@@ -211,50 +210,50 @@ Add pure, unit-tested helpers:
 - In `refuseUnacknowledgedAccount(c: Ctx)` (`src/ui/services/deviceVault.ts:636-642`):
   - If `consumeAddAccountIntent()` returns `true`, automatically call `await acknowledgeOtherAccount(d().kv, c.userId)` and return `false` so a user who explicitly clicked "Add another account" is not blocked on the `other-account` warning screen.
 
-#### `src/ui/components/shell/AppShell.tsx`
-- Update `clearPriorUserClientState(dispatch: any, nextUserId: string)`:
-  - Do **not** call `removeAppOwnedClientStorage()` on account switch.
-  - Call `stopDeviceVault(dispatch)`, `dispatch(heimdallApi.util.resetApiState())`, `dispatch(priorUserClientStateCleared())`, and `dispatch(clearUserClientState({ userId: nextUserId }))`.
-- In `AuthGate`:
-  - Track `accounts: AuthSessionAccount[]` alongside `auth: AuthState`.
-  - Fetch `/api/v1/auth/sessions` during `refreshIdentity` (after `/api/v1/me` succeeds) to populate `accounts`.
-  - Provide an `AuthAccountsContext` (or pass via `AuthUserContext` / props) exposing:
-    - `accounts: AuthSessionAccount[]`
-    - `switchAccount: (targetUserId: string) => Promise<void>`
-    - `addAccount: () => void`
-    - `signOutAccount: (opts?: { userId?: string; all?: boolean }) => Promise<void>`
-  - When `switchAccount(targetUserId)` runs:
-    1. Save current route hash for `currentUserId` via `writeUserLastRoute(currentUserId, window.location.hash)`.
-    2. Call `postSwitchAccount(fetch, targetUserId)`.
-    3. Call `clearPriorUserClientState(dispatch, targetUserId)` and `analytics.identify(targetUserId)`.
-    4. Write `writeLastSeenUserId(targetUserId)` and update `lastSeenUserRef.current = targetUserId`.
-    5. Navigate `window.location.hash` to `readUserLastRoute(targetUserId) || '#/home'`.
-    6. Call `void bootDeviceVault(targetUserId, dispatch)` and update `auth` + `accounts` state, which remounts `<AuthenticatedShell key={targetUserId} />` (tearing down the previous account's `/api/v1/user-ws` and opening the new account's `/api/v1/user-ws`).
-  - When `signOutAccount({ userId, all })` runs:
-    - If signing out a specific account while other accounts remain:
-      - Call `removeUserClientStorage(targetUserId)`.
-      - If `switchedUser` is returned (the active account was signed out), transition in-place to `switchedUser` using the same state reset + `bootDeviceVault` flow.
-      - If a deselected account was signed out, simply update `accounts` state in place.
-    - If no accounts remain (or `all: true`):
-      - Call `stopDeviceVault(dispatch)`, `removeAppOwnedClientStorage()`, `analytics.reset()`, and `window.location.assign(logoutUrl || '/')`.
+#### `AuthGate` State Machine & Switch Ordering (`src/ui/components/shell/AppShell.tsx`)
+Extend `AuthStatus`:
+```ts
+type AuthStatus = 'checking' | 'authenticated' | 'switching' | 'unauthenticated' | 'forbidden' | 'unavailable' | 'error';
+```
+When `auth.status === 'switching'`, `AuthGate` renders `<AuthStatusScreen debugId="auth-switching" title="Switching account…" body="Updating your active Ninjy session." />`. Because `<AuthenticatedShell>` is **not** rendered while `auth.status === 'switching'`, the outgoing account's `useUserWebSocket` (`/api/v1/user-ws`), `mcpWorker`, and any open `useShellStream` / `useAgentStream` / `useToolActivityStream` / `LspClient` sockets are torn down **before** `POST /api/v1/auth/switch` rewrites `__Host-heimdall_session`.
+
+| Transition | Trigger | Prior State | Ordered Actions | Next State |
+|---|---|---|---|---|
+| **Switch Account (Success)** | `switchAccount(B)` where `B !== A` | `authenticated(A)` | 1. `writeUserLastRoute(A, window.location.hash)`<br>2. `stopDeviceVault(dispatch)` (purges `A`'s keyring)<br>3. `setAuth({ status: 'switching', user: null, error: '' })` (unmounts `AuthenticatedShell(A)`, closing `A`'s `/api/v1/user-ws` & `mcpWorker`)<br>4. `res = await postSwitchAccount(fetch, B)`<br>5. `clearPriorUserClientState(dispatch, B)` (resets RTK Query & Redux state without calling `removeAppOwnedClientStorage()`)<br>6. `writeLastSeenUserId(B)`, `analytics.identify(B)`, `window.location.hash = resolveSwitchedUserRoute(B, window.location.hash)`<br>7. `void bootDeviceVault(B, dispatch)`, `setAccounts(res.accounts)` | `authenticated(B)` (mounts `<AuthenticatedShell key={B} />`, opening `B`'s `/api/v1/user-ws`) |
+| **Switch Account (Error Rollback)** | `postSwitchAccount(B)` rejects (`404` / network) | `switching` (from `A`) | 1. Refresh ring via `fetchAuthSessions(fetch).catch(() => null)`<br>2. Re-boot `void bootDeviceVault(A, dispatch)`<br>3. Restore `setAuth({ status: 'authenticated', user: userA, error: '' })` and dispatch error toast | `authenticated(A)` |
+| **Sign Out Deselected Account `B`** | `signOutAccount({ userId: B })` where `B !== A` | `authenticated(A)` | 1. `res = await postLogoutAccount(fetch, { userId: B })`<br>2. `removeUserClientStorage(B)`<br>3. `setAccounts(res.accounts)` (no unmount of `A`) | `authenticated(A)` |
+| **Sign Out Active Account `A` (Remaining Account `B`)** | `signOutAccount({ userId: A })` when `B` remains in ring | `authenticated(A)` | 1. `stopDeviceVault(dispatch)`<br>2. `setAuth({ status: 'switching', user: null, error: '' })` (unmounts `AuthenticatedShell(A)`, closing `A`'s WS)<br>3. `res = await postLogoutAccount(fetch, { userId: A })`<br>4. `removeUserClientStorage(A)`<br>5. `clearPriorUserClientState(dispatch, B)`, `writeLastSeenUserId(B)`, `analytics.identify(B)`, `window.location.hash = resolveSwitchedUserRoute(B, window.location.hash)`<br>6. `void bootDeviceVault(B, dispatch)`, `setAccounts(res.accounts)` | `authenticated(B)` |
+| **Sign Out Last Account or All Accounts** | `signOutAccount({ all: true })` or last account in ring | `authenticated(A)` | 1. `stopDeviceVault(dispatch)`<br>2. `setAuth({ status: 'switching', user: null, error: '' })` (closes `A`'s WS)<br>3. `res = await postLogoutAccount(fetch, opts)`<br>4. `removeAppOwnedClientStorage()`, `analytics.reset()`<br>5. `window.location.assign(res.logoutUrl || '/')` | Redirects to `res.logoutUrl` or `/` (`unauthenticated`) |
+| **Cross-Tab Storage Sync** | `window` `'storage'` event with `key === LAST_SEEN_USER_ID_KEY` and `newValue === B !== A` | `authenticated(A)` | 1. `refreshIdentity('storage')` runs<br>2. Sees `nextUserId === B !== previousUserId (A)`<br>3. Runs `stopDeviceVault(dispatch)`, `clearPriorUserClientState(dispatch, B)`, `analytics.identify(B)`, `window.location.hash = resolveSwitchedUserRoute(B, window.location.hash)`, `void bootDeviceVault(B, dispatch)` | `authenticated(B)` |
 
 ---
 
 ### 3.3 Account Switcher UI (`src/ui/components/shell/AccountSwitcher.tsx` & `src/ui/components/settings/AccountPanel.tsx`)
 
 #### Sidebar `AccountSwitcher.tsx`
-- Replaces the bottom account block inside `shell-sidebar-account` in `AppShell.tsx`.
-- **Debug IDs**:
-  - Trigger button: `data-debug-id="shell-open-account"` (or `data-debug-id="account-switcher-trigger"` while preserving `shell-open-account` inside the menu or on the trigger as appropriate — check existing tests!).
-  - Wait — let's preserve existing `data-debug-id`s in `shell-sidebar-account` (`shell-global-ownership-points`, `shell-user-ws-owner`, `shell-open-account`, `shell-current-user-owner`, `auth-logout-link`, `shell-subscription-tier`) so no existing sidebar test breaks, and add:
-    - `data-debug-id="account-switcher-toggle"` (button to open/close the account switcher popover)
-    - `data-debug-id="account-switcher-menu"` (popover container)
-    - `data-debug-id="account-switcher-item-<user_id>"` (row to switch to `<user_id>`)
+- Rendered inside `shell-sidebar-account` in `src/ui/components/shell/AppShell.tsx` (`lines 2112-2130`).
+- **Debug ID Contract**:
+  - **Preserve all existing debug IDs** in `shell-sidebar-account` (verified against `tests/ui_sidebar_layout_test.ts` and `tests/e2e/sidebar_chains_browser.mjs`):
+    - `data-debug-id="shell-sidebar-account"` (outer footer container)
+    - `data-debug-id="shell-global-ownership-points"` (primary account row)
+    - `data-debug-id="shell-user-ws-owner"` (user avatar / WS status indicator)
+    - `data-debug-id="shell-open-account"` (button opening Account Settings)
+    - `data-debug-id="shell-current-user-owner"` (active user's display name)
+    - `data-debug-id="auth-logout-link"` (button signing out the active account)
+    - `data-debug-id="shell-subscription-tier"` (subscription plan row when `planLabel` is non-empty)
+  - **Add new Account Switcher debug IDs**:
+    - `data-debug-id="account-switcher-toggle"` (button in `shell-global-ownership-points` that opens/closes the Account Switcher popover, showing a count badge when `accounts.length > 1`)
+    - `data-debug-id="account-switcher-menu"` (popover container listing signed-in accounts and actions)
+    - `data-debug-id="account-switcher-item-<user_id>"` (button/row for `<user_id>`; clicking a deselected account calls `switchAccount(user_id)`)
     - `data-debug-id="account-switcher-logout-<user_id>"` (button to sign out `<user_id>`)
-    - `data-debug-id="account-switcher-add-account"` (button to add another account)
-    - `data-debug-id="account-switcher-logout-all"` (button to sign out all accounts when `accounts.length > 1`)
-- **Settings `AccountPanel.tsx`**:
-  - Add a **Signed-in accounts** section (`data-debug-id="account-panel-sessions"`) listing all accounts in the session ring with **Active** badge on the current account, **Switch** button (`data-debug-id="account-panel-switch-<user_id>"`) and **Sign out** button (`data-debug-id="account-panel-logout-<user_id>"`) on deselected accounts, plus **Add another account** (`data-debug-id="account-panel-add-account"`) and **Sign out all accounts** (`data-debug-id="account-panel-logout-all"`).
+    - `data-debug-id="account-switcher-add-account"` (button calling `addAccount()`, which records `recordAddAccountIntent()` and navigates to `addAccountHref(window.location)`)
+    - `data-debug-id="account-switcher-logout-all"` (button calling `signOutAccount({ all: true })`, rendered when `accounts.length > 1`)
+
+#### Settings `AccountPanel.tsx`
+- Add a **Signed-in accounts** section (`data-debug-id="account-panel-sessions"`) listing all accounts in the session ring:
+  - Active account row with `Active` badge.
+  - Deselected account rows with **Switch** button (`data-debug-id="account-panel-switch-<user_id>"`) and **Sign out** button (`data-debug-id="account-panel-logout-<user_id>"`).
+  - **Add another account** button (`data-debug-id="account-panel-add-account"`) and, when `accounts.length > 1`, **Sign out all accounts** button (`data-debug-id="account-panel-logout-all"`).
 
 ---
 
@@ -265,24 +264,23 @@ Add pure, unit-tested helpers:
     - Returns `true` when `url.origin === originOf(uiOrigin)`, `url.pathname.startsWith('/api/v1/auth/login')`, and `url.searchParams.get('add_account') === '1' || url.searchParams.get('prompt') === 'login'`.
   - In `classifyNavigation(value: unknown, context: NavigationContext): NavigationRoute`:
     - Before returning `'allow'` for `url.origin === originOf(context.uiOrigin)`, if `isAddAccountAuthUrl(url.href, context.uiOrigin)` is `true`, return `'auth'`.
-  - Effect in `src/ui/electron/main.cts`:
-    - When the renderer in `mainWindow` navigates to `/api/v1/auth/login?add_account=1&return_to=...`, `will-navigate` classifies the route as `'auth'`, calls `event.preventDefault()`, and invokes `openOidcWindow(url, win)`.
-    - `mainWindow` remains on the current account (keeping its WebSocket alive unless/until the popup finishes login).
-    - `loginWindow` loads `/api/v1/auth/login?add_account=1...`, receives `__Host-heimdall_login` in the shared `session.defaultSession` cookie jar, redirects to the IdP with `prompt=login`, completes `/api/v1/auth/callback` (updating `__Host-heimdall_session` and `__Host-heimdall_sessions`), and commits navigation to `return_to` on `configuredUiOrigin()`, at which point `finishIfReturned` closes `loginWindow` and reloads `mainWindow` at `returnUrl`.
+- Effect in `src/ui/electron/main.cts`:
+  - When `mainWindow` navigates to `/api/v1/auth/login?add_account=1&return_to=...`, `will-navigate` classifies the navigation as `'auth'`, calls `event.preventDefault()`, and invokes `openOidcWindow(url, win)`.
+  - `mainWindow` stays on the current account (keeping its WebSocket alive while the popup is open).
+  - `loginWindow` loads `/api/v1/auth/login?add_account=1...`, receives `__Host-heimdall_login` in `session.defaultSession`, redirects to the IdP with `prompt=login`, completes `/api/v1/auth/callback` (updating `__Host-heimdall_session` and `__Host-heimdall_sessions`), and commits navigation to `return_to` on `configuredUiOrigin()`, at which point `finishIfReturned` closes `loginWindow` and reloads `mainWindow` at `returnUrl`.
 
 ---
 
-## 4. Verification Plan
+## 4. Verification Plan & Test Matrix
 
-1. **Hub Unit Tests (`src/hub/transport/http/oidc_session_test.odin`)**:
-   - Logging in with `add_account=1` includes `prompt=login` in the redirect Location header and merges the new session into `__Host-heimdall_sessions` while keeping the first account's session live.
-   - Re-logging into an already-present account replaces its old session in `user_sessions` without duplicating the user in `__Host-heimdall_sessions`.
-   - Adding a 6th account evicts the oldest deselected session and deletes it from `user_sessions`.
-   - `GET /api/v1/auth/sessions` returns all live accounts in MRU order and prunes expired/deleted sessions.
-   - `POST /api/v1/auth/switch` enforces CSRF, switches `__Host-heimdall_session` to the requested `user_id`, and rejects unknown/expired `user_id`s.
-   - `POST /api/v1/auth/logout` with a single `user_id` deletes only that session and promotes the next account in the ring without expiring the remaining sessions; `all: true` deletes all sessions in the ring and expires both cookies.
-2. **UI & Electron Unit Tests (`tests/ui_oidc_session_test.ts`, `tests/ui_desktop_oidc_handoff_test.ts`, `tests/ui_workspace_persistence_test.ts`)**:
-   - `addAccountHref`, `fetchAuthSessions`, `postSwitchAccount`, and `postLogoutAccount` unit tests.
-   - `removeUserClientStorage`, `readUserLastRoute`, `writeUserLastRoute`, and `recordAddAccountIntent` / `consumeAddAccountIntent` unit tests.
-   - `classifyNavigation` routes `/api/v1/auth/login?add_account=1&return_to=%2F%23%2Fhome` on `uiOrigin` to `'auth'` (opening `openOidcWindow`), while keeping normal `/api/v1/auth/login` and UI routes as `'allow'`.
-   - `npm run typecheck` and `npm test` pass.
+Every requirement has explicit automated test cases mapped by `REQ-*` ID and target test file:
+
+| Requirement | Test File | Test Cases |
+|---|---|---|
+| **`REQ-ACCT-RING-1`** | `src/hub/transport/http/oidc_session_test.odin` | 1. **Ring merge & MRU order**: Logging in as `usr_1` then `usr_2` sets `__Host-heimdall_session` to `usr_2` and `__Host-heimdall_sessions` to `<raw_2>.<raw_1>`; neither raw token appears in any JSON response body.<br>2. **Same-user deduplication**: Re-authenticating as `usr_1` deletes `usr_1`'s prior row in `user_sessions` (and ends its preview sessions) and keeps at most one entry for `usr_1` in `__Host-heimdall_sessions`.<br>3. **Cap eviction (`MAX_BROWSER_ACCOUNTS = 5`)**: Logging in a 6th distinct user evicts the oldest deselected user (5th index) from `__Host-heimdall_sessions` and deletes its row from `user_sessions`. |
+| **`REQ-ACCT-RING-2`** | `src/hub/transport/http/oidc_session_test.odin` | 4. **`add_account=1` -> `prompt=login`**: `GET /api/v1/auth/login?add_account=1&return_to=%2F%23%2Fhome` returns `302` whose `Location` query includes `prompt=login`, whereas plain `GET /api/v1/auth/login` omits `prompt`. |
+| **`REQ-ACCT-RING-3`** | `src/hub/transport/http/oidc_session_test.odin` | 5. **`GET /api/v1/auth/sessions` read-only view & pruning**: Returns all live accounts in MRU order with `accounts[0].active == true` (`SESSION_COOKIE` first), prunes expired/revoked tokens via `Set-Cookie`, and never deletes live rows in `user_sessions`.<br>6. **`POST /api/v1/auth/switch` & CSRF**: Rejects cross-origin requests (`403 csrf_rejected`), empty `user_id` (`400`), and unknown/expired `user_id` (`404`); on valid `user_id`, promotes its token to `__Host-heimdall_session`, updates MRU `__Host-heimdall_sessions`, touches `last_seen_at_ms`, and returns `{ active_user_id, user, accounts }`.<br>7. **`POST /api/v1/auth/logout` single vs. all**: Logging out a deselected `user_id` deletes only that session and keeps `__Host-heimdall_session` unchanged; logging out the active account when another account remains promotes the next live account to `__Host-heimdall_session` and returns `logout_url: ""`; logging out with `{"all": true}` (or the last remaining account) deletes all ring sessions in `user_sessions`, expires both cookies, and returns the IdP `logout_url`. |
+| **`REQ-ACCT-WS-1`** | `tests/ui_account_switch_test.ts` | 8. **Pre-POST WS & MCP teardown on switch**: Calling `switchAccount('usr_2')` transitions `AuthGate` to `'switching'` and unmounts `AuthenticatedShell('usr_1')` **before** `POST /api/v1/auth/switch` resolves — closing `usr_1`'s `/api/v1/user-ws` socket and calling `setMcpWorkerEnabled(false)` before `usr_2`'s `/api/v1/user-ws` socket is created. Deselected accounts never open a WebSocket. |
+| **`REQ-ACCT-UI-1`** | `tests/ui_oidc_session_test.ts`, `tests/ui_workspace_persistence_test.ts`, `tests/ui_account_switch_test.ts` | 9. **Session client helpers (`tests/ui_oidc_session_test.ts`)**: `addAccountHref`, `fetchAuthSessions`, `postSwitchAccount`, and `postLogoutAccount` format requests and parse envelopes accurately while `postLogout` remains backwards-compatible.<br>10. **Non-destructive switch & scoped cleanup (`tests/ui_workspace_persistence_test.ts`, `tests/ui_account_switch_test.ts`)**: Switching `usr_1 -> usr_2` preserves `localStorage` keys (aux panes, composer drafts, `heimdall.user.usr_1.*`), saves `usr_1`'s route hash, restores `usr_2`'s route hash (or falls back from `#/conversations/...` / `#/chains/...` to `#/home`), calls `stopDeviceVault` (`clearKeyringSession`), resets RTK Query/Redux state, and boots `deviceVault` for `usr_2`. Signing out `usr_1` calls `removeUserClientStorage('usr_1')` without wiping `usr_2`'s keys; signing out the last account calls `removeAppOwnedClientStorage()`.<br>11. **Rollback on switch failure (`tests/ui_account_switch_test.ts`)**: When `postSwitchAccount` rejects (`404` / network error), `AuthGate` rolls back from `'switching'` to `'authenticated'` for `usr_1` and re-boots `usr_1`'s device vault.<br>12. **Add-account vault intent (`tests/ui_account_switch_test.ts`)**: `recordAddAccountIntent()` causes `deviceVault` (`refuseUnacknowledgedAccount`) to call `acknowledgeOtherAccount` and proceed instead of stopping at `status: 'other-account'`.<br>13. **Cross-tab `storage` sync (`tests/ui_account_switch_test.ts`)**: Dispatching a `storage` event for `LAST_SEEN_USER_ID_KEY` (`usr_1 -> usr_2`) triggers `refreshIdentity('storage')`, tearing down `usr_1`'s WS/vault and mounting `usr_2` without wiping `localStorage`. |
+| **`REQ-ACCT-UI-2`** | `tests/ui_account_switch_test.ts` | 14. **`AccountSwitcher` & `AccountPanel` rendering and debug IDs**: Renders all preserved sidebar debug IDs (`shell-sidebar-account`, `shell-global-ownership-points`, `shell-user-ws-owner`, `shell-open-account`, `shell-current-user-owner`, `auth-logout-link`) plus `account-switcher-toggle`, `account-switcher-menu`, `account-switcher-item-<id>`, `account-switcher-logout-<id>`, `account-switcher-add-account`, `account-switcher-logout-all`, and the `account-panel-*` controls in `AccountPanel`. |
+| **`REQ-ACCT-ELECTRON-1`** | `tests/ui_desktop_oidc_handoff_test.ts` | 15. **Electron add-account popup classification**: `classifyNavigation` returns `'auth'` for `https://web.ninjy.ai/api/v1/auth/login?add_account=1&return_to=%2F%23%2Fhome` (and `prompt=login`) so `will-navigate` opens `openOidcWindow` without navigating `mainWindow`, while keeping plain `/api/v1/auth/login` and UI routes as `'allow'`. |
