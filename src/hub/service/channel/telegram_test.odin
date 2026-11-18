@@ -81,6 +81,7 @@ test_telegram_maps_updates :: proc(t: ^testing.T) {
 		testing.expect(t, row.kind == kinds[i])
 		testing.expect(t, row.update_key == fmt.tprintf("telegram:123456:%d",i+1))
 		testing.expect(t, row.external_user_id == "222")
+		testing.expect(t, row.external_message_id == fmt.tprintf("%d", i+1))
 	}
 	testing.expect(t, batch[0].text == "code" && batch[0].sender_display == "@alice")
 	testing.expect(t, batch[1].text == "" && batch[1].sender_display == "Alice")
@@ -162,4 +163,29 @@ test_telegram_token_never_in_error_message :: proc(t: ^testing.T) {
 	f.telegram.api_base = "http://127.0.0.1:1"
 	_, transport := a.identity(a.ctx)
 	testing.expect(t, transport.kind == .Transient && !strings.contains(transport.message,f.telegram.token))
+}
+
+@(test)
+test_telegram_feedback_payloads_and_errors :: proc(t: ^testing.T) {
+	f: Telegram_Test_Fixture
+	defer telegram_test_stop(&f)
+	if !telegram_test_start(t, &f) do return
+	a := telegram_adapter(&f.telegram)
+	testing.expect(t, a.react(a.ctx, "111", "42", "👀").kind == .None)
+	base, _ := httpc.parse_url(f.base)
+	reactions, reactions_err := httpc.send({url = base, path = {"_control", "reactions"}})
+	defer httpc.response_destroy(&reactions)
+	reaction_data: struct {reactions: []struct {chat_id, message_id: i64, reaction: []struct {type, emoji: string}}}
+	testing.expect(t, reactions_err == .None && json.unmarshal(reactions.body, &reaction_data, allocator = context.temp_allocator) == nil)
+	if testing.expect(t, len(reaction_data.reactions) == 1) {
+		row := reaction_data.reactions[0]
+		testing.expect(t, row.chat_id == 111 && row.message_id == 42)
+		if testing.expect(t, len(row.reaction) == 1) do testing.expect(t, row.reaction[0].type == "emoji" && row.reaction[0].emoji == "👀")
+	}
+	testing.expect(t, a.react(a.ctx, "bad", "42", "👀").kind == .Invalid_Request)
+	testing.expect(t, a.react(a.ctx, "111", "bad", "👀").kind == .Invalid_Request)
+	testing.expect(t, a.react(a.ctx, "111", "0", "👀").kind == .Invalid_Request)
+	telegram_test_control(t, &f, "fail", struct {method: string, status, count: int, description: string}{"setMessageReaction", 500, 1, "secret TEST:FAKE"})
+	err := a.react(a.ctx, "111", "42", "👀")
+	testing.expect(t, err.kind == .Transient && !strings.contains(err.message, f.telegram.token))
 }

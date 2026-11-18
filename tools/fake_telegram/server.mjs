@@ -3,7 +3,7 @@ import {pathToFileURL} from 'node:url';
 
 export function createFakeTelegram({token='TEST:FAKE', botUsername='ninjy_test_bot'}={}) {
   let nextUpdate=1, nextMessage=1, updates=[];
-  const sent=[], offsets=[], failures=new Map(), polls=new Set();
+  const sent=[], reactions=[], offsets=[], failures=new Map(), polls=new Set();
   const reply=(res,status,value)=>{
     if (!res.destroyed && !res.writableEnded) {
       res.writeHead(status, {'content-type':'application/json'});
@@ -26,7 +26,7 @@ export function createFakeTelegram({token='TEST:FAKE', botUsername='ninjy_test_b
         }
         const update_id=explicit ?? nextUpdate++;
         nextUpdate=Math.max(nextUpdate,update_id+1);
-        const message={chat:{id:body.chat_id,type:body.chat_type??'private'},
+        const message={message_id:body.message_id??update_id,chat:{id:body.chat_id,type:body.chat_type??'private'},
           from:{id:body.from_id,username:body.username,first_name:body.first_name??'Test'}};
         if (Object.hasOwn(body,'text')) message.text=body.text;
         else message.photo=[];
@@ -38,6 +38,10 @@ export function createFakeTelegram({token='TEST:FAKE', botUsername='ninjy_test_b
       if (url.pathname==='/_control/sent') {
         const chat=url.searchParams.get('chat_id');
         reply(res,200,{messages:sent.filter(m=>chat===null || String(m.chat_id)===chat)});return;
+      }
+      if (url.pathname==='/_control/reactions') {
+        const chat=url.searchParams.get('chat_id');
+        reply(res,200,{reactions:reactions.filter(row=>chat===null || String(row.chat_id)===chat)});return;
       }
       if (url.pathname==='/_control/offsets') {reply(res,200,offsets);return;}
       if (url.pathname==='/_control/fail' && req.method==='POST') {
@@ -53,6 +57,15 @@ export function createFakeTelegram({token='TEST:FAKE', botUsername='ninjy_test_b
         if (--fail.count===0) failures.delete(method);
         reply(res,fail.status,{ok:false,error_code:fail.status,
           description:fail.description??'injected failure',parameters:{retry_after:fail.retry_after??0}});return;
+      }
+      if (method==='setMessageReaction' && req.method==='POST') {
+        const validReaction=Number.isSafeInteger(body.message_id) && Array.isArray(body.reaction) &&
+          body.reaction.every(item=>item.type==='emoji' && typeof item.emoji==='string');
+        if (!Number.isSafeInteger(body.chat_id) || !validReaction) {
+          reply(res,400,{ok:false,error_code:400,description:'Bad Request'});return;
+        }
+        reactions.push({chat_id:body.chat_id,message_id:body.message_id,reaction:body.reaction});
+        reply(res,200,{ok:true,result:true});return;
       }
       if (method==='getMe') {reply(res,200,{ok:true,result:{id:123456,username:botUsername}});return;}
       if (method==='sendMessage' && req.method==='POST') {

@@ -17,7 +17,7 @@ Telegram_Adapter :: struct {
 }
 
 telegram_adapter :: proc(t: ^Telegram_Adapter) -> Channel_Adapter {
-	return {ctx = t, provider = "telegram", poll = telegram_poll, send_text = telegram_send_text, identity = telegram_identity, pairing_url = telegram_pairing_url}
+	return {ctx = t, provider = "telegram", poll = telegram_poll, send_text = telegram_send_text, react = telegram_react, identity = telegram_identity, pairing_url = telegram_pairing_url}
 }
 
 // Stop all adapter users before destroying the process-lifetime identity cache.
@@ -94,6 +94,7 @@ telegram_identity :: proc(ctx: rawptr) -> (Identity, Channel_Error) {
 inbound_destroy_batch :: proc(batch: []Inbound, allocator := context.allocator) {
 	for row in batch {
 		delete(row.update_key, allocator); delete(row.external_chat_id, allocator)
+		delete(row.external_message_id, allocator)
 		delete(row.external_user_id, allocator); delete(row.sender_display, allocator)
 		delete(row.text, allocator)
 	}
@@ -131,6 +132,7 @@ telegram_poll :: proc(ctx: rawptr, cursor: string, cancel: ^bool, allocator := c
 		chat, _ := m["chat"].(json.Object)
 		from, _ := m["from"].(json.Object)
 		chat_type, _ := chat["type"].(string)
+		message_id, _ := m["message_id"].(json.Integer)
 		chat_id, _ := chat["id"].(json.Integer)
 		user_id, _ := from["id"].(json.Integer)
 		username, _ := from["username"].(string)
@@ -153,6 +155,7 @@ telegram_poll :: proc(ctx: rawptr, cursor: string, cancel: ^bool, allocator := c
 		append(&rows, Inbound{
 			update_key = strings.clone(fmt.tprintf("telegram:%s:%d", id.bot_user_id, update_id), allocator),
 			external_chat_id = strings.clone(fmt.tprintf("%d", chat_id), allocator),
+			external_message_id = strings.clone(fmt.tprintf("%d", message_id), allocator),
 			external_user_id = strings.clone(fmt.tprintf("%d", user_id), allocator),
 			chat_is_private = private, sender_display = strings.clone(display, allocator),
 			kind = kind, text = strings.clone(text, allocator),
@@ -181,4 +184,23 @@ telegram_send_text :: proc(ctx: rawptr, external_chat_id: string, text: string) 
 
 telegram_pairing_url :: proc(ctx: rawptr, identity: Identity, code: string, allocator := context.allocator) -> string {
 	return fmt.aprintf("https://t.me/%s?start=%s", identity.bot_username, code, allocator = allocator)
+}
+
+// Feedback requests use the same bounded request path and safe errors as text.
+// JSON and request scratch are scoped to the call; no caller-owned data escapes.
+telegram_react :: proc(ctx: rawptr, external_chat_id, external_message_id, emoji: string) -> Channel_Error {
+	chat_id, valid_chat := strconv.parse_i64(external_chat_id)
+	message_id, valid_message := strconv.parse_i64(external_message_id)
+	if !valid_chat || !valid_message || message_id <= 0 || emoji == "" || !utf8.valid_string(emoji) do return {kind = .Invalid_Request, message = "invalid telegram reaction"}
+	scratch: virtual.Arena
+	if virtual.arena_init_growing(&scratch) != nil do return {kind = .Transient, message = "telegram allocation failed"}
+	defer virtual.arena_destroy(&scratch)
+	context.temp_allocator = virtual.arena_allocator(&scratch)
+	body := httpc.json_body(struct {
+		chat_id, message_id: i64,
+		reaction: [1]struct {type, emoji: string},
+	}{chat_id, message_id, {{"emoji", emoji}}}, allocator = context.temp_allocator)
+	resp, err := telegram_request((^Telegram_Adapter)(ctx), "setMessageReaction", .POST, nil, body, 15_000)
+	defer httpc.response_destroy(&resp)
+	return err
 }

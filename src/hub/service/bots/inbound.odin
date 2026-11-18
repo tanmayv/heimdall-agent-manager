@@ -29,7 +29,8 @@ bots_inbound_rows :: proc(s: ^Bots_Service, batch: []channel.Inbound, now: strin
 			binding_id = strings.clone(binding.binding_id, context.temp_allocator),
 			owner_user_id = strings.clone(binding.owner_user_id, context.temp_allocator),
 			bot_id = strings.clone(binding.bot_id, context.temp_allocator),
-			direction = .Inbound, body = body, provider_update_key = update.update_key, created_at = now,
+			direction = .Inbound, body = body, provider_update_key = update.update_key,
+			external_message_id = update.external_message_id, created_at = now,
 		})
 	}
 	return rows[:], {}

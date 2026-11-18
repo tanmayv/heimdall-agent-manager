@@ -4,7 +4,6 @@ import "core:encoding/json"
 import "core:unicode/utf8"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
-import platform "odin_test:hub/platform"
 import bots "odin_test:hub/service/bots"
 
 Bot_Channel_Read_Message :: struct {message_id, body, created_at, sender: string}
@@ -56,20 +55,11 @@ bot_agent_channel_read_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	defer domain.bot_destroy(&bot); defer domain.channel_binding_destroy(&binding)
 	limit, valid := bot_channel_limit(req, 50)
 	if !valid do return respond_error(domain.domain_error(.Validation_Failed, "limit must be 1..50"), req.request_id)
-	messages, err := iface.messages_pending(h.bots.repo, bot.bot_id, -1)
+	messages, total, err := bots.bots_channel_read(h.bots, bot.bot_id, binding, limit)
 	defer {for &m in messages do domain.channel_message_destroy(&m); delete(messages)}
 	if err.code != .None do return respond_error(err, req.request_id)
 	wire := make([dynamic]Bot_Channel_Read_Message, context.temp_allocator)
-	ids := make([dynamic]string, context.temp_allocator)
-	total := 0
-	for m in messages {
-		if m.body_purged || m.binding_id != binding.binding_id do continue
-		total += 1
-		if len(wire) >= limit do continue
-		append(&wire, Bot_Channel_Read_Message{m.message_id, m.body, m.created_at, binding.external_display})
-		append(&ids, m.message_id)
-	}
-	if e := iface.messages_mark_read(h.bots.repo, bot.bot_id, ids[:], platform.clock_now(h.bots.clock)); e.code != .None do return respond_error(e, req.request_id)
+	for m in messages do append(&wire, Bot_Channel_Read_Message{m.message_id, m.body, m.created_at, binding.external_display})
 	return respond_success_typed(struct {messages: []Bot_Channel_Read_Message, pending_total: int}{wire[:], total}, req.request_id, auth_ctx_server_time(req))
 }
 

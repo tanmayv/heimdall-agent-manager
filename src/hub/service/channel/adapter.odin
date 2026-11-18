@@ -14,6 +14,7 @@ Inbound_Kind :: enum { Text, Start, Disconnect, Unsupported }
 Inbound :: struct {
 	update_key:        string,  // globally unique per provider, used for dedupe
 	external_chat_id:  string,
+	external_message_id: string, // provider message id for read reactions
 	external_user_id:  string,
 	chat_is_private:   bool,
 	sender_display:    string,
@@ -32,6 +33,8 @@ Channel_Adapter :: struct {
 	// Blocks up to the provider's long-poll window. `cursor` is opaque; "" means start.
 	poll:     proc(ctx: rawptr, cursor: string, cancel: ^bool, allocator := context.allocator) -> (batch: []Inbound, next_cursor: string, err: Channel_Error),
 	send_text: proc(ctx: rawptr, external_chat_id: string, text: string) -> (external_message_id: string, err: Channel_Error),
+	// Optional read reaction; nil means the provider does not support it.
+	react: proc(ctx: rawptr, external_chat_id, external_message_id, emoji: string) -> Channel_Error,
 	identity: proc(ctx: rawptr) -> (Identity, Channel_Error),
 	pairing_url: proc(ctx: rawptr, identity: Identity, code: string, allocator := context.allocator) -> string,
 }

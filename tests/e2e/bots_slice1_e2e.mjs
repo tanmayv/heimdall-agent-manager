@@ -70,7 +70,7 @@ async function control(route,body) {
   assert.equal(res.status,200);
   return res.json();
 }
-const inject=(text,update_id)=>control('inject',{chat_id:111,from_id:222,username:'a9',text,...(update_id===undefined?{}:{update_id})});
+const inject=(text,update_id,message_id)=>control('inject',{chat_id:111,from_id:222,username:'a9',text,...(update_id===undefined?{}:{update_id}),...(message_id===undefined?{}:{message_id})});
 const sent=async()=> (await control('sent?chat_id=111')).messages;
 async function expectSent(text,timeout=90000) {
   return poll(async()=> (await sent()).find(m=>m.text===text),'Telegram text '+text,timeout);
@@ -171,8 +171,11 @@ try {
   });
   await step(3,'hi is acted and inbound is marked replied',async()=>{
     const previous=new Set((await deliveries()).map(d=>d.delivery_id));
-    await inject('hi');
+    const inboundMessageId=10001;
+    await inject('hi',undefined,inboundMessageId);
     await actedAfter(previous,'echo: hi');
+    const reactions=(await control('reactions?chat_id=111')).reactions.filter(r=>r.message_id===inboundMessageId);
+    assert.deepEqual(reactions,[{chat_id:111,message_id:inboundMessageId,reaction:[{type:'emoji',emoji:'👀'}]}]);
     assert.ok((await messages()).find(m=>m.direction==='inbound'&&m.body==='hi'&&m.replied_at));
     const view=await request('/bots/me');
     assert.equal(view.advanced.bridge_id,bridgeId('bots-e2e-a'));

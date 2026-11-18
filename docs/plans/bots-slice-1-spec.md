@@ -759,6 +759,10 @@ Channel_Adapter :: struct {
 2. `send_text` sends plaintext only: no markup and no buttons. `text` is at most 4000 bytes of valid UTF-8. The caller splits longer text first (section 9.5).
 3. `update_key` MUST be stable for the same provider event across re-polls.
 
+### 8.0 Read reactions
+
+The optional adapter proc `react(ctx, external_chat_id, external_message_id, emoji) -> Channel_Error` provides best-effort feedback behind the bots experiment; a nil proc is skipped. After the agent read route commits newly read inbound messages, the service reacts once per message with `BOT_READ_REACTION :: "👀"`. Provider failures never fail reads, and provider calls run outside database write transactions. Telegram implements this through `setMessageReaction`, preserving the existing timeout and token-handling rules.
+
 ### 8.1 Telegram adapter
 
 **File:** `src/hub/service/channel/telegram.odin`. It uses `httpc` only (`src/lib/httpc`, `send` at `send.odin:17`).
