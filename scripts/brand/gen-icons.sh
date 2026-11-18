@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Regenerates every Ninjy icon from the source logo (assets/brand/ninjy-atom.png,
-# a 1024x1024 atom on black). The atom sits on a dark #090909 rounded-square
-# backplate wherever the platform allows one. Outputs are committed; re-running
+# Regenerates every Ninjy icon from the 1024px RGBA glass rings app icon
+# (assets/brand/logos/ninjy-icon-light-gold.png). Preserve its rounded corners
+# except where the platform needs an opaque light plate. Outputs are committed; re-running
 # rewrites them byte-for-byte (PNG date/time chunks are excluded).
 #
 #   scripts/brand/gen-icons.sh             regenerate in place
@@ -20,11 +20,11 @@ sheet=""
 if [[ "${1:-}" == "--sheet" ]]; then sheet="${2:?--sheet needs a path}"; fi
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-src="$root/assets/brand/ninjy-atom.png"
+src="$root/assets/brand/logos/ninjy-icon-light-gold.png"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-PLATE='#090909'
+PLATE='#f7f6f2'
 # Status dot colours, one per bridgesvc.Tray_Level.
 declare -A DOT=([ok]='#22c55e' [warning]='#f59e0b' [error]='#ef4444')
 TRAY_SIZES=(16 22 24 32 44)
@@ -32,34 +32,17 @@ TRAY_SIZES=(16 22 24 32 44)
 # Deterministic PNG output: no timestamps, no ancillary text.
 png() { echo "-strip -define png:exclude-chunks=date,time,tEXt,zTXt,iTXt -define png:color-type=6 PNG32:$1"; }
 
-# The atom cropped to its bounding box and padded square on black.
-magick "$src" -fuzz 4% -trim +repage -background black -gravity center \
-  -extent '%[fx:max(w,h)]x%[fx:max(w,h)]' "$tmp/atom.png"
-
-# master OUT PLATE_INSET RADIUS ATOM [full]
-#   1024px master: a PLATE_INSET-inset rounded square (RADIUS, fraction of the
-#   plate) with the atom at ATOM (fraction of the plate). "full" fills the
-#   canvas with an opaque square plate instead (maskable / apple-touch).
-# The logo's black is lifted to the plate colour with Lighten, so no seam shows.
-master() {
-  local out="$1" inset="$2" radius="$3" atom="$4" mode="${5:-}"
-  local c=1024 p a r o
-  p=$(( c - 2 * inset ))
-  a=$(awk -v p="$p" -v f="$atom" 'BEGIN{printf "%d", p*f+0.5}')
-  r=$(awk -v p="$p" -v f="$radius" 'BEGIN{printf "%d", p*f+0.5}')
-  if [[ "$mode" == full ]]; then
-    magick -size ${c}x${c} "xc:$PLATE" -type TrueColorAlpha "$tmp/plate.png"
-  else
-    magick -size ${c}x${c} xc:none -fill "$PLATE" \
-      -draw "roundrectangle $inset,$inset $((c - inset - 1)),$((c - inset - 1)) $r,$r" -type TrueColorAlpha "$tmp/plate.png"
-  fi
-  # The grey plate alone would make ImageMagick write a grey image: keep sRGB.
-  magick "$tmp/plate.png" -colorspace sRGB \( "$tmp/atom.png" -resize ${a}x${a} \) -gravity center -compose Lighten -composite \
-    \( "$tmp/plate.png" -alpha extract \) -compose CopyOpacity -composite $(png "$out")
+# Opaque masters for platforms that apply their own mask. Keep the rings
+# inside the maskable icon's central 80% safe circle without cropping them.
+plate() {
+  local out="$1" icon_size="$2"
+  magick -size 1024x1024 "xc:$PLATE" \
+    \( "$src" -filter Lanczos -resize "${icon_size}x${icon_size}" \) \
+    -gravity center -compose Over -composite $(png "$out")
 }
 
 # dot IN OUT COLOUR: a status dot in the bottom-right corner, ringed in the
-# plate colour so it reads against the atom at 16px.
+# plate colour so it reads against the rings at 16px.
 dot() {
   local in="$1" out="$2" colour="$3" c=1024
   local d=$(( c * 46 / 100 )) ring=$(( c * 6 / 100 ))
@@ -79,12 +62,13 @@ ico() {
   magick "${parts[@]}" -strip "ICO:$out"
 }
 
-# Masters.
-master "$tmp/app.png"      0   0.225 0.72          # desktop / web "any": full-size rounded square
-master "$tmp/mac.png"      100 0.225 0.72          # macOS grid: 824 plate inside 1024
-master "$tmp/maskable.png" 0   0     0.64 full     # atom well inside the 80% safe circle
-master "$tmp/touch.png"    0   0     0.72 full     # iOS masks its own corners
-master "$tmp/small.png"    0   0.225 0.86          # favicon / tray: atom as large as it reads
+# Masters: keep the source artwork intact; macOS adds its standard 100px inset.
+magick "$src" $(png "$tmp/app.png")
+magick "$src" -filter Lanczos -resize 824x824 -gravity center -background none \
+  -extent 1024x1024 $(png "$tmp/mac.png")
+plate "$tmp/maskable.png" 800
+plate "$tmp/touch.png" 1024
+magick "$src" $(png "$tmp/small.png")
 
 mkdir -p "$root/src/ui/electron" "$root/build" "$root/public" "$root/landing-page" "$root/src/bridge/assets/tray"
 

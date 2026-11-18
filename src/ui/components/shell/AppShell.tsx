@@ -1867,7 +1867,8 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
     </button>
   );
   const brandLink = (
-    <a href={shellHash('/home')} data-debug-id="shell-brand" className="min-w-0 rounded-lg px-1.5 py-1 hover:bg-neutral-soft">
+    <a href={shellHash('/home')} data-debug-id="shell-brand" className="flex min-w-0 items-center gap-2 rounded-lg px-1.5 py-1 hover:bg-neutral-soft">
+      <img src="icon.png" alt="" className="h-5 w-5 shrink-0 rounded-[5px]" />
       <span className="block truncate text-sm font-black tracking-tight text-primary">Ninjy</span>
     </a>
   );
