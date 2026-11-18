@@ -6,6 +6,7 @@ CHANNEL_MESSAGE_ID_PREFIX :: "chm_"
 BOT_DELIVERY_ID_PREFIX :: "bdl_"
 BOT_ATTEMPT_ID_PREFIX :: "bda_"
 CHANNEL_PROVIDER_TELEGRAM :: "telegram"
+CHANNEL_PROVIDER_WHATSAPP :: "whatsapp"
 BOT_PLACEMENT_ANY :: "*"
 BOT_MAX_PLACEMENT_CANDIDATES :: 32
 
@@ -36,6 +37,7 @@ Channel_Binding :: struct {
 	external_chat_id, external_user_id, external_display: string,
 	state:                                                Channel_Binding_State,
 	created_at, revoked_at:                               string,
+	last_inbound_at, reengage_sent_at, reengage_error:    string,
 }
 
 Channel_Pairing :: struct {
@@ -52,6 +54,7 @@ Channel_Send_State :: enum {
 	Pending,
 	Sent,
 	Failed,
+	Held,
 }
 
 Channel_Message :: struct {
@@ -179,6 +182,8 @@ channel_send_state_text :: proc(value: Channel_Send_State) -> string {
 		return "sent"
 	case .Failed:
 		return "failed"
+	case .Held:
+		return "held"
 	}
 	return ""
 }
@@ -193,6 +198,8 @@ channel_send_state_from_text :: proc(value: string) -> (Channel_Send_State, bool
 		return .Sent, true
 	case "failed":
 		return .Failed, true
+	case "held":
+		return .Held, true
 	}
 	return {}, false
 }
@@ -308,6 +315,9 @@ channel_binding_destroy :: proc(value: ^Channel_Binding) {
 	if len(value.external_display) > 0 do delete(value.external_display)
 	if len(value.created_at) > 0 do delete(value.created_at)
 	if len(value.revoked_at) > 0 do delete(value.revoked_at)
+	if len(value.last_inbound_at) > 0 do delete(value.last_inbound_at)
+	if len(value.reengage_sent_at) > 0 do delete(value.reengage_sent_at)
+	if len(value.reengage_error) > 0 do delete(value.reengage_error)
 	value^ = {}
 }
 
@@ -369,4 +379,69 @@ bot_delivery_attempt_destroy :: proc(value: ^Bot_Delivery_Attempt) {
 	if len(value.created_at) > 0 do delete(value.created_at)
 	if len(value.finished_at) > 0 do delete(value.finished_at)
 	value^ = {}
+}
+
+Channel_Push_Kind :: enum {
+	Text,
+	Start,
+	Disconnect,
+	Unsupported,
+	Delivery_Failed,
+}
+Channel_Push_Event :: struct {
+	seq:                                                                           i64,
+	provider, event_key:                                                           string,
+	kind:                                                                          Channel_Push_Kind,
+	external_chat_id, external_user_id, external_message_id, sender_display, body: string,
+	provider_code:                                                                 int,
+	provider_time, received_at, processed_at:                                      string,
+}
+
+// One binding touched by inbound; at is provider_time, or now when empty.
+Channel_Inbound_Touch :: struct {
+	binding_id, at: string,
+}
+channel_push_kind_text :: proc(k: Channel_Push_Kind) -> string {
+	switch k {
+	case .Text:
+		return "text"
+	case .Start:
+		return "start"
+	case .Disconnect:
+		return "disconnect"
+	case .Unsupported:
+		return "unsupported"
+	case .Delivery_Failed:
+		return "delivery_failed"
+	}
+	return ""
+}
+channel_push_kind_from_text :: proc(s: string) -> (Channel_Push_Kind, bool) {
+	switch s {
+	case "text":
+		return .Text, true
+	case "start":
+		return .Start, true
+	case "disconnect":
+		return .Disconnect, true
+	case "unsupported":
+		return .Unsupported, true
+	case "delivery_failed":
+		return .Delivery_Failed, true
+	}
+	return {}, false
+}
+channel_push_event_destroy :: proc(e: ^Channel_Push_Event) {
+	if e == nil do return
+	if len(e.provider) > 0 do delete(e.provider)
+	if len(e.event_key) > 0 do delete(e.event_key)
+	if len(e.external_chat_id) > 0 do delete(e.external_chat_id)
+	if len(e.external_user_id) > 0 do delete(e.external_user_id)
+	if len(e.external_message_id) > 0 do delete(e.external_message_id)
+	if len(e.sender_display) > 0 do delete(e.sender_display)
+	if len(e.body) > 0 do delete(e.body)
+	if len(e.provider_time) > 0 do delete(e.provider_time)
+	if len(e.received_at) > 0 do delete(e.received_at)
+	if len(e.processed_at) > 0 do delete(e.processed_at)
+	e^ = {}
 }

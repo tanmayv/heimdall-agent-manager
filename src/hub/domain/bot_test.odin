@@ -89,3 +89,25 @@ test_bot_attempt_state_open :: proc(t: ^testing.T) {
 	for value in Bot_Attempt_State do testing.expect_value(t, bot_attempt_state_open(value), value == .Relocating || value == .Sent || value == .Accepted)
 	for value in Bot_Delivery_State do testing.expect_value(t, bot_delivery_state_open(value), value == .Pending || value == .Dispatched || value == .Waiting)
 }
+
+@(test)
+test_channel_push_kind_text_roundtrip :: proc(t: ^testing.T) {
+	texts := [5]string{"text", "start", "disconnect", "unsupported", "delivery_failed"}
+	for value in Channel_Push_Kind {
+		text := channel_push_kind_text(value)
+		testing.expect_value(t, text, texts[int(value)])
+		parsed, ok := channel_push_kind_from_text(text)
+		testing.expect(t, ok)
+		testing.expect_value(t, parsed, value)
+	}
+	_, ok := channel_push_kind_from_text("bogus")
+	testing.expect(t, !ok)
+}
+
+@(test)
+test_channel_send_state_held_roundtrip :: proc(t: ^testing.T) {
+	testing.expect_value(t, channel_send_state_text(.Held), "held")
+	value, ok := channel_send_state_from_text("held")
+	testing.expect(t, ok)
+	testing.expect_value(t, value, Channel_Send_State.Held)
+}
