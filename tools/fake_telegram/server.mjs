@@ -20,7 +20,12 @@ export function createFakeTelegram({token='TEST:FAKE', botUsername='ninjy_test_b
       }
       const body=raw ? JSON.parse(raw) : {};
       if (url.pathname==='/_control/inject' && req.method==='POST') {
-        const update_id=nextUpdate++;
+        const explicit=body.update_id ?? body.raw_update?.update_id;
+        if (explicit !== undefined && (!Number.isSafeInteger(explicit) || explicit < 0)) {
+          reply(res,400,{ok:false,error:'invalid_update_id'});return;
+        }
+        const update_id=explicit ?? nextUpdate++;
+        nextUpdate=Math.max(nextUpdate,update_id+1);
         const message={chat:{id:body.chat_id,type:body.chat_type??'private'},
           from:{id:body.from_id,username:body.username,first_name:body.first_name??'Test'}};
         if (Object.hasOwn(body,'text')) message.text=body.text;
