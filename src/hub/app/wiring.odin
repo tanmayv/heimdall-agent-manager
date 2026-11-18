@@ -633,7 +633,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.lsp_server_config_handlers = http.Lsp_Server_Config_Rest_Handlers{auth = &graph.auth, repo = &graph.lsp_server_config_repo, clock = &graph.clock, ids = &graph.ids}
 	graph.providers = provider_service.new_provider_service(&graph.provider_repo)
 	graph.bot_command_sink = bridge_command_sink
-	graph.bots = bots_service.Bots_Service{repo = &graph.bot_repo, uow_factory = &graph.uow_factory, event_bus = &graph.event_bus, experiments = &graph.experiment_repo, agents = &graph.agents, providers = &graph.providers, bridges = &graph.repos.bridges, registry = &graph.bridge_runtime_registry, command_sink = &graph.bot_command_sink, adapter = nil, clock = &graph.clock, ids = &graph.ids, timers = config.bot_timers}
+	graph.bots = bots_service.Bots_Service{ui_origin = config.ui_origin, repo = &graph.bot_repo, uow_factory = &graph.uow_factory, event_bus = &graph.event_bus, experiments = &graph.experiment_repo, agents = &graph.agents, providers = &graph.providers, bridges = &graph.repos.bridges, registry = &graph.bridge_runtime_registry, command_sink = &graph.bot_command_sink, adapter = nil, clock = &graph.clock, ids = &graph.ids, timers = config.bot_timers}
 	if config.telegram_bot_token != "" {
 		graph.telegram = channel.Telegram_Adapter{token = config.telegram_bot_token, api_base = config.telegram_api_base}
 		graph.channel_adapter = channel.telegram_adapter(&graph.telegram)
@@ -858,6 +858,9 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/bots/me/channels/telegram/messages", rawptr(&graph.bot_handlers), http.bot_messages_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/channels/whatsapp/webhook", rawptr(&graph.bot_webhook_handlers), http.whatsapp_webhook_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/channels/whatsapp/webhook", rawptr(&graph.bot_webhook_handlers), http.whatsapp_webhook_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/media/fetch", rawptr(&graph.bot_agent_handlers), http.bot_agent_media_fetch_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/media/stored", rawptr(&graph.bot_agent_handlers), http.bot_agent_media_stored_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/media/plan", rawptr(&graph.bot_agent_handlers), http.bot_agent_media_plan_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/read", rawptr(&graph.bot_agent_handlers), http.bot_agent_channel_read_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/send", rawptr(&graph.bot_agent_handlers), http.bot_agent_channel_send_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/history", rawptr(&graph.bot_agent_handlers), http.bot_agent_channel_history_handler)

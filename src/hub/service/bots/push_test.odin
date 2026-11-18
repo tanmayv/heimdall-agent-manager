@@ -142,3 +142,54 @@ test_intake_signal_wakes_promptly :: proc(t: ^testing.T) {
 	sync.atomic_store(&rt.intake_stop, true)
 	testing.expect(t, bots_intake_wait(&rt, 5*time.Second))
 }
+
+push_media_parse :: proc(ctx: rawptr, signature_header, raw_body: string, allocator := context.allocator) -> ([]channel.Inbound, channel.Push_Verdict) {
+	batch, verdict := push_test_parse(ctx, signature_header, raw_body, allocator)
+	batch[0].kind = .Media
+	batch[0].media = {.Document, "secret-media-ref", "invoice.pdf", "application/pdf", 3}
+	return batch, verdict
+}
+push_media_fetch :: proc(ctx: rawptr, ref: string, max_bytes: i64, allocator := context.allocator) -> (channel.Fetched_Media, channel.Channel_Error) {return {}, {kind = .Media_Unavailable}}
+@(test)
+test_push_receive_and_intake_carry_media :: proc(t: ^testing.T) {
+	f := wa_pairing_fixture(t); defer pairing_fixture_destroy(f)
+	wa_test_bind(t,f)
+	f.adapter.push_parse = push_media_parse
+	f.adapter.media_fetch = push_media_fetch
+	f.adapter.media.fetch_max_bytes = 10000
+	result, events, inserted := bots_push_receive(&f.service,"whatsapp","","")
+	testing.expect(t,result == .Stored && events == 1 && inserted == 1)
+	pending, e := iface.push_events_pending(&f.repo,"whatsapp",50)
+	defer {for &p in pending do domain.channel_push_event_destroy(&p); delete(pending)}
+	testing.expect(t,e.code == .None && len(pending)==1 && pending[0].media_ref=="secret-media-ref" && pending[0].media_size==3)
+	rt := Bots_Runtime{service=&f.service}
+	_, delay := bots_push_intake_iteration(&rt)
+	testing.expect_value(t,delay,time.Duration(0))
+	messages, me := iface.messages_history(&f.repo,"bot_a",-1)
+	defer {for &m in messages do domain.channel_message_destroy(&m); delete(messages)}
+	testing.expect(t,me.code == .None && len(messages)==1)
+	if len(messages)!=1 do return
+	attachments, ae := iface.attachments_for_messages(&f.repo,{messages[0].message_id})
+	defer {for &a in attachments do domain.channel_attachment_destroy(&a); delete(attachments)}
+	testing.expect(t,ae.code == .None && len(attachments)==1 && attachments[0].name=="invoice.pdf" && attachments[0].mime=="application/pdf" && attachments[0].file_ref=="secret-media-ref" && attachments[0].size_bytes==3)
+	stmt, se := sqlite.bot_repo_prepare(&f.conn,"SELECT media_ref,media_name FROM channel_push_events;",nil)
+	defer sqlite.sqlite3_finalize(stmt)
+	testing.expect(t,se.code == .None && sqlite.sqlite3_step(stmt)==sqlite.SQLITE_ROW && sqlite.column_text_unowned(stmt,0)=="" && sqlite.column_text_unowned(stmt,1)=="")
+}
+@(test)
+test_intake_media_touches_window_and_releases_held :: proc(t: ^testing.T) {
+	s: Window_Test_State; window_test_setup(t,&s); defer window_test_destroy(&s)
+	window_test_close(&s)
+	b := window_test_binding(&s); defer domain.channel_binding_destroy(&b)
+	ids, held, e := channel_send(&s.f.service,b,"held media link",true); defer window_test_ids_free(ids)
+	testing.expect(t,e.code == .None && held)
+	s.f.adapter.media_fetch = push_media_fetch
+	s.f.adapter.media.fetch_max_bytes = 10000
+	s.f.adapter.push_parse = push_media_parse
+	_,_,_ = bots_push_receive(&s.f.service,"whatsapp","","")
+	rt := Bots_Runtime{service=&s.f.service}
+	_, _ = bots_push_intake_iteration(&rt)
+	testing.expect(t,len(s.sent)==1 && s.sent[0]=="held media link")
+	updated := window_test_binding(&s); defer domain.channel_binding_destroy(&updated)
+	testing.expect_value(t,updated.last_inbound_at,"2026-11-17T12:00:01Z")
+}

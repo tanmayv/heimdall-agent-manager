@@ -13,11 +13,23 @@ import channel "odin_test:hub/service/channel"
 bots_inbound_rows :: proc(s: ^Bots_Service, a: ^channel.Channel_Adapter, batch: []channel.Inbound, now: string) -> ([]domain.Channel_Message, domain.Domain_Error) {
 	rows := make([dynamic]domain.Channel_Message, context.temp_allocator)
 	for update in batch {
-		if !update.chat_is_private || update.kind != .Text do continue
+		if !update.chat_is_private || (update.kind != .Text && update.kind != .Media) do continue
 		binding, found, err := bots_find_binding(s, a.provider, update.external_chat_id, update.external_user_id)
 		defer domain.channel_binding_destroy(&binding)
 		if err.code != .None do return nil, err
 		if !found || !bots_gate_on(s.experiments, binding.owner_user_id) || update.external_user_id != binding.external_user_id do continue
+		limit := bots_media_limit(a)
+		if update.kind == .Media && (limit == 0 || update.media.size > limit && update.text == "") do continue
+		attachment: domain.Channel_Attachment
+		if update.kind == .Media {
+			mime := bots_media_mime(update.media.kind, update.media.mime)
+			attachment = {
+				attachment_id = strings.clone(platform.generate_id(s.ids, "cha_"), context.temp_allocator),
+				kind = domain.Channel_Media_Kind(update.media.kind), file_ref = update.media.file_ref,
+				mime = mime, name = bots_media_name(update.media.kind, update.media.name, mime),
+				size_bytes = update.media.size, state = .Too_Large if update.media.size > limit else .Pending,
+			}
+		}
 		body := update.text
 		if len(body) > 16384 {
 			cut := 16384
@@ -29,7 +41,7 @@ bots_inbound_rows :: proc(s: ^Bots_Service, a: ^channel.Channel_Adapter, batch: 
 			binding_id = strings.clone(binding.binding_id, context.temp_allocator),
 			owner_user_id = strings.clone(binding.owner_user_id, context.temp_allocator),
 			bot_id = strings.clone(binding.bot_id, context.temp_allocator),
-			direction = .Inbound, body = body, provider_update_key = update.update_key,
+			direction = .Inbound, body = body, attachment = attachment, provider_update_key = update.update_key,
 			external_message_id = update.external_message_id, created_at = now,
 		})
 	}
@@ -46,6 +58,12 @@ bots_inbound_side_effect :: proc(s: ^Bots_Service, a: ^channel.Channel_Adapter, 
 	if !bots_gate_on(s.experiments, binding.owner_user_id) do return {}
 	if update.kind == .Disconnect do return bots_disconnect(s, binding.owner_user_id, a.provider, true)
 	if update.kind == .Unsupported do bots_notice(s, a.provider, update.external_chat_id, COPY_UNSUPPORTED)
+	if update.kind == .Media && update.external_user_id == binding.external_user_id {
+		limit := bots_media_limit(a)
+		if limit == 0 {bots_notice(s, a.provider, update.external_chat_id, COPY_UNSUPPORTED)} else if update.media.size > limit {
+			bots_notice(s, a.provider, update.external_chat_id, COPY_MEDIA_TOO_LARGE)
+		}
+	}
 	return {}
 }
 
