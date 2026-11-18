@@ -36,7 +36,10 @@ import jsonx "odin_test:lib/jsonx"
 import vault "odin_test:lib/vault"
 import metrics "odin_test:lib/metrics"
 
+import bots "odin_test:hub/service/bots"
+
 Bridge_Handlers :: struct {
+	bots: ^bots.Bots_Service,
 	entitlements: domain.Entitlement_Lookup,
 	auth: ^auth_service.Auth_Service,
 	bridges: ^bridge_service.Bridge_Service,
@@ -1883,6 +1886,7 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 	// reconcile above so instances the bridge no longer runs have already
 	// crossed on_instance_terminal.
 	taskv2.on_bridge_hello(h.task_engine, bridge.bridge_id, hello_active)
+	if h.bots != nil do bots.bots_on_bridge_hello(h.bots, bridge.bridge_id)
 	for s in hello_active do delete(s)
 	delete(hello_active)
 	// REQ-SHELL-3: deliver this bridge's OUTSTANDING KILL INTENTS. A kill accepted
@@ -1928,13 +1932,20 @@ BRIDGE_INSTANCE_STALE_MS :: 90_000
 bridge_disconnect_persist :: proc(h: ^Bridge_Handlers, connection: ^project_service.Bridge_Runtime_Connection) -> (domain.Bridge, bool, []domain.Agent_Instance, bool) {
 	if connection == nil do return {}, false, nil, false
 	project_service.connection_state_lock(connection)
-	defer project_service.connection_state_unlock(connection)
+	notify_bots := false
+	defer {
+		project_service.connection_state_unlock(connection)
+		// Bot transitions use their own mutex and SQLite; preserve the registry
+		// lock order by running the hook after releasing connection state.
+		if notify_bots && h.bots != nil do bots.bots_on_bridge_disconnect(h.bots, connection.bridge_id)
+	}
 	if sync.atomic_load(&connection.retired) do return {}, false, nil, false
 	bridge: domain.Bridge
 	changed := false
 	if h.bridges != nil { bridge, changed, _ = bridge_service.mark_bridge_offline(h.bridges, connection.bridge_id) }
 	cleared: []domain.Agent_Instance
 	if h.agents != nil { cleared = agent_service.mark_bridge_instances_unreachable(h.agents, connection.bridge_id) }
+	notify_bots = true
 	return bridge, changed, cleared, true
 }
 
@@ -2538,6 +2549,11 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		if ext_err := bridge_extension_frame(h, bridge_id, type, text); ext_err.code != .None do fmt.eprintln("extension command result:", ext_err.message)
 		command_id := json_string(text, "command_id")
 		_ = bridge_runtime_service.runtime_command_result_for_connection(h.bridge_runtime_registry, bridge_id, connection_generation, command_id, text)
+		if h.bots != nil && type == "command_result" && strings.has_prefix(command_id, "cmd_bot_") {
+			status := jsonx.extract_string(text, "status", top_level_only = false, allocator = context.temp_allocator)
+			error_code := jsonx.extract_string(text, "code", top_level_only = false, allocator = context.temp_allocator)
+			bots.bots_on_command_result(h.bots, bridge_id, command_id, status, error_code)
+		}
 		// Ownership cleanup requires the exact persisted stop command receipt.
 		// Generic runtime status frames do not identify the stopped process.
 		if type == "command_result" && h.task_engine != nil {
@@ -2729,6 +2745,15 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		if h.shell_sessions != nil do bridge_proxy_handle_data(h, bridge_id, text)
 	case "proxy_close":
 		if h.shell_sessions != nil do bridge_proxy_handle_close(h, bridge_id, text)
+	case "bot_delivery_report":
+		if h.bots != nil {
+			reply, parse_failed := bots.bots_on_report(h.bots, bridge_id, text)
+			if parse_failed {
+				reply = bridge_protocol_error_frame("bot_delivery_report", contracts.wire_error(.Validation_Failed, "invalid_bot_delivery_report", "bot_delivery_report could not be parsed"))
+			}
+			if reply != "" do _ = write_ws_text_frame_locked(h, bridge_id, client, reply)
+			delete(reply)
+		}
 	case:
 		// REQ-ERR-PROTO-A: a frame type the hub does not know is refused out loud
 		// rather than dropped, so protocol drift shows on both sides. Fatal: the

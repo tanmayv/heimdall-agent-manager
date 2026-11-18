@@ -3,6 +3,7 @@ package iface
 import domain "odin_test:hub/domain"
 
 Bot_Repository :: struct {
+	bot_list: proc(ctx: rawptr) -> ([]domain.Bot, domain.Domain_Error),
 	ctx:                                  rawptr,
 	// bots
 	bot_insert:                           proc(ctx: rawptr, bot: domain.Bot) -> domain.Domain_Error, // Conflict on UNIQUE(owner)
@@ -534,4 +535,9 @@ attempt_list_open_on_bridge :: proc(
 pairing_consume :: proc(repo: ^Bot_Repository, code_hash, consumed_at: string) -> (bool, domain.Domain_Error) {
 	if repo == nil || repo.pairing_consume == nil do return false, domain.domain_error(.Internal_Error, "bot repository is not configured")
 	return repo.pairing_consume(repo.ctx, code_hash, consumed_at)
+}
+
+bot_list :: proc(repo: ^Bot_Repository) -> ([]domain.Bot, domain.Domain_Error) {
+	if repo == nil || repo.bot_list == nil do return nil, domain.domain_error(.Internal_Error, "bot repository is not configured")
+	return repo.bot_list(repo.ctx)
 }
