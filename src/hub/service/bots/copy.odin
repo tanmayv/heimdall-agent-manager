@@ -9,7 +9,7 @@ COPY_PAIR_NOT_ENABLED :: "Bots are not enabled for this Ninjy account. Turn on B
 COPY_PAIR_NO_BOT :: "You have no Ninjy bot yet. Create one in Settings > Bots, then use the Connect link."
 COPY_NOT_CONNECTED :: "This chat is not connected to Ninjy. Open Settings > Bots in Ninjy to connect it."
 COPY_PRIVATE_ONLY :: "Ninjy bots work only in private chats."
-COPY_UNSUPPORTED :: "Only text messages are supported for now."
+COPY_UNSUPPORTED :: "Ninjy bots accept text, photos, documents, videos and voice notes. Stickers, locations, contacts and polls are not supported."
 COPY_REPLACED :: "This chat was disconnected from Ninjy because another chat was connected."
 COPY_DISCONNECTED :: "Disconnected from Ninjy. Your messages here are no longer delivered to your bot."
 COPY_NO_MACHINE :: "No machine is available right now. Your message is saved and will be answered when one is."
@@ -27,3 +27,8 @@ bots_channel_copy :: proc(provider: string) -> Bot_Channel_Copy {
 	if provider == domain.CHANNEL_PROVIDER_WHATSAPP do return {COPY_WA_PAIRED, COPY_WA_PAIR_INVALID, COPY_WA_CHAT_TAKEN, COPY_WA_NOT_CONNECTED, COPY_WA_REPLACED}
 	return {COPY_PAIRED, COPY_PAIR_INVALID, COPY_PAIR_CHAT_TAKEN, COPY_NOT_CONNECTED, COPY_REPLACED}
 }
+
+COPY_MEDIA_TOO_LARGE :: "This file is too large for your Ninjy bot. Send files up to 15 MB, or share a link instead."
+COPY_MEDIA_LINK_FORMAT :: "📎 %s: %s\nOpens after you sign in to Ninjy."
+COPY_MEDIA_LINK_NO_ORIGIN_FORMAT :: "📎 %s: open Ninjy, go to Library and find artifact %s."
+COPY_MEDIA_DEFAULT_LINK_NAME :: "File"

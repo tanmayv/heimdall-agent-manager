@@ -14,6 +14,8 @@ import events "odin_test:hub/service/events"
 import channel "odin_test:hub/service/channel"
 
 Bots_Service :: struct {
+	ui_origin: string,
+	media_send_budget_ms, media_min_call_ms: i64,
 	repo: ^iface.Bot_Repository,
 	uow_factory: ^iface.Unit_Of_Work_Factory,
 	event_bus: ^events.User_Event_Bus,

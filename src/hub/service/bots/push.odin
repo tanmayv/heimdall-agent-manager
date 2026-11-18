@@ -48,6 +48,8 @@ bots_push_receive :: proc(s: ^Bots_Service, provider, signature, body: string) -
 		rows[i] = {provider = provider, event_key = b.update_key, kind = domain.Channel_Push_Kind(b.kind),
 			external_chat_id = b.external_chat_id, external_user_id = b.external_user_id,
 			external_message_id = b.external_message_id, sender_display = b.sender_display,
+			media_kind = domain.Channel_Media_Kind(b.media.kind), media_ref = b.media.file_ref,
+			media_name = b.media.name, media_mime = b.media.mime, media_size = b.media.size,
 			body = b.text, provider_code = b.provider_code, provider_time = b.provider_time, received_at = now}
 	}
 	count, err := iface.push_events_insert(s.repo, rows)
@@ -90,7 +92,8 @@ bots_push_intake_iteration :: proc(rt: ^Bots_Runtime) -> (more: bool, delay: tim
 		batch[i] = {update_key = e.event_key, kind = channel.Inbound_Kind(e.kind), external_chat_id = e.external_chat_id,
 			external_user_id = e.external_user_id, external_message_id = e.external_message_id,
 			sender_display = e.sender_display, text = e.body, provider_code = e.provider_code,
-			provider_time = e.provider_time, chat_is_private = true}
+			provider_time = e.provider_time, chat_is_private = true,
+			media = {kind = channel.Media_Kind(e.media_kind), file_ref = e.media_ref, name = e.media_name, mime = e.media_mime, size = e.media_size}}
 		seqs[i] = e.seq
 		if e.kind == .Delivery_Failed do continue
 		append(&ordinary, batch[i])
@@ -100,7 +103,7 @@ bots_push_intake_iteration :: proc(rt: ^Bots_Runtime) -> (more: bool, delay: tim
 			// Binding snapshots are freed below; retain only scratch-owned ids.
 			id := strings.clone(binding.binding_id, context.temp_allocator)
 			append(&touches, domain.Channel_Inbound_Touch{id, e.provider_time if e.provider_time != "" else now})
-			if e.kind == .Text || e.kind == .Unsupported do release[id] = true
+			if e.kind == .Text || e.kind == .Unsupported || e.kind == .Media do release[id] = true
 		}
 		domain.channel_binding_destroy(&binding)
 	}

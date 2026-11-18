@@ -1,8 +1,11 @@
 package http
 
 import "core:encoding/json"
+import content_service "odin_test:hub/service/content"
 import "core:strings"
 import "core:testing"
+import "core:time"
+import "core:fmt"
 import "core:unicode/utf8"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
@@ -12,6 +15,7 @@ import channel "odin_test:hub/service/channel"
 
 Bot_Channel_Fixture :: struct {
 	f: ^Bot_HTTP_Fixture,
+	content: content_service.Content_Service,
 	uow_impl: sqlite.SQLite_Unit_Of_Work_Factory,
 	uow: iface.Unit_Of_Work_Factory,
 	h: Bot_Agent_Handlers,
@@ -20,6 +24,7 @@ Bot_Channel_Fixture :: struct {
 	sent_chat: string,
 	sent: [dynamic]string,
 	fail_send: bool,
+	media_fetch_error: channel.Channel_Error_Kind,
 }
 bot_channel_test_send :: proc(ctx: rawptr, chat, text: string) -> (string, channel.Channel_Error) {
 	c := (^Bot_Channel_Fixture)(ctx)
@@ -31,6 +36,8 @@ bot_channel_test_send :: proc(ctx: rawptr, chat, text: string) -> (string, chann
 bot_channel_fixture :: proc(t: ^testing.T, paired := true, is_bot := true) -> ^Bot_Channel_Fixture {
 	c := new(Bot_Channel_Fixture)
 	c.f = bot_http_fixture(t)
+	c.content = content_service.Content_Service{content = &c.f.content_repo}
+	c.f.wire.ah.content = &c.content
 	c.uow = sqlite.new_unit_of_work_factory(&c.uow_impl, &c.f.wire.conn, nil)
 	c.f.service.uow_factory = &c.uow
 	c.adapter = {ctx = c, provider = "telegram", send_text = bot_channel_test_send}
@@ -350,4 +357,216 @@ test_channel_routes_not_paired_without_bindings :: proc(t: ^testing.T) {
 		r := handler(&c.h, bot_channel_req(c, "read", "{}"))
 		testing.expect(t, r.status == 409 && strings.contains(r.body, "channel_not_paired"))
 	}
+}
+
+bot_media_http_fetch :: proc(ctx: rawptr, ref: string, max_bytes: i64, allocator := context.allocator) -> (channel.Fetched_Media, channel.Channel_Error) {
+		c := (^Bot_Channel_Fixture)(ctx)
+	if c.media_fetch_error != .None do return {}, {kind = c.media_fetch_error}
+	bytes := make([]byte,3,allocator); copy(bytes,transmute([]byte)string("abc"))
+	return {bytes,strings.clone("application/pdf",allocator)}, {}
+}
+bot_media_http_send :: proc(ctx: rawptr, chat: string, media: channel.Outbound_Media, timeout_ms: int) -> (string,channel.Channel_Error) {return strings.clone("native_id"),{}}
+bot_media_http_slow_send :: proc(ctx: rawptr, chat: string, media: channel.Outbound_Media, timeout_ms: int) -> (string,channel.Channel_Error) {
+	time.sleep(560*time.Millisecond)
+	return strings.clone("native_id"),{}
+}
+bot_media_http_setup :: proc(t: ^testing.T, c: ^Bot_Channel_Fixture) {
+	c.adapter.media_fetch = bot_media_http_fetch
+	c.adapter.send_media = bot_media_http_send
+	c.adapter.media = {fetch_max_bytes=10000,caption_max_runes=100,send_rules=make([]channel.Media_Send_Rule,1,context.temp_allocator)}
+	c.adapter.media.send_rules[0] = {kind=.Document,max_bytes=10000,caption=true}
+}
+bot_media_http_inbound :: proc(t: ^testing.T,c: ^Bot_Channel_Fixture) {
+	bot,_,_ := iface.bot_get_by_owner(&c.f.bot_repo,string(c.f.wire.owner)); defer domain.bot_destroy(&bot)
+	ids,e := iface.inbound_store_batch(&c.f.bot_repo,"telegram",{{
+		message_id="chm_media",binding_id="chb_a",owner_user_id=bot.owner_user_id,bot_id=bot.bot_id,direction=.Inbound,
+		body="caption",provider_update_key="media_update",created_at="2026-11-17T12:00:00Z",
+		attachment={attachment_id="cha_media",kind=.Document,file_ref="never-on-wire",name="invoice.pdf",mime="application/pdf",size_bytes=3,state=.Pending},
+	}},"3","2026-11-17T12:00:00Z")
+	defer {for id in ids do delete(id); delete(ids)}
+	testing.expect_value(t,e.code,domain.Error_Code.None)
+}
+bot_media_http_artifact :: proc(t: ^testing.T,c: ^Bot_Channel_Fixture,id,owner: string,deleted := "") {
+	a,ok,e := iface.content_save_artifact(&c.f.content_repo,{artifact_id=id,owner_user_id=domain.User_ID(owner),kind="file",name="file",content_type="text/plain",content="sealed",size_bytes=6,deleted_at=deleted,created_at="now",updated_at="now"})
+	defer domain.artifact_destroy(&a)
+	testing.expect(t,ok && e.code == .None)
+}
+bot_media_http_route :: proc(c: ^Bot_Channel_Fixture, handler: Handler_Proc, body: string) -> Response {
+	return handler(&c.h,bot_channel_req(c,"media",body))
+}
+@(test)
+test_channel_read_returns_attachments :: proc(t: ^testing.T) {
+	context.allocator=context.temp_allocator
+	c := bot_channel_fixture(t); defer bot_channel_destroy(c)
+	bot_media_http_inbound(t,c)
+	resp := bot_channel_read(c)
+	testing.expectf(t,resp.status==200,"%s",resp.body)
+	wire: struct{data:struct{messages:[]Bot_Channel_Read_Message}}
+	_ = json.unmarshal(transmute([]byte)resp.body,&wire,allocator=context.temp_allocator)
+	testing.expect(t,len(wire.data.messages)==1 && len(wire.data.messages[0].attachments)==1)
+	if len(wire.data.messages)==1 && len(wire.data.messages[0].attachments)==1 {
+		a := wire.data.messages[0].attachments[0]
+		testing.expect(t,a.attachment_id=="cha_media" && a.name=="invoice.pdf" && a.mime=="application/pdf" && a.size==3 && a.artifact_id=="" && a.state=="pending" && a.kind=="document")
+	}
+	testing.expect(t,!strings.contains(resp.body,"never-on-wire"))
+}
+@(test)
+test_channel_read_text_only_shape_unchanged :: proc(t: ^testing.T) {
+	context.allocator=context.temp_allocator
+	c := bot_channel_fixture(t); defer bot_channel_destroy(c); bot_channel_inbound(t,c,"text")
+	resp := bot_channel_read(c)
+	testing.expect(t,resp.status==200 && !strings.contains(resp.body,"attachments"))
+}
+@(test)
+test_channel_history_attachments_both_directions :: proc(t: ^testing.T) {
+	context.allocator=context.temp_allocator
+	c := bot_channel_fixture(t); defer bot_channel_destroy(c)
+	bot_media_http_inbound(t,c)
+	bot,_,_ := iface.bot_get_by_owner(&c.f.bot_repo,string(c.f.wire.owner))
+	e := iface.message_insert_outbound(&c.f.bot_repo,{message_id="chm_out",binding_id="chb_a",owner_user_id=bot.owner_user_id,bot_id=bot.bot_id,direction=.Outbound,body="link",
+		send_state=.Sent,created_at="2026-11-17T12:00:01Z",attachment={attachment_id="cha_out",kind=.Image,name="photo.png",mime="image/png",size_bytes=12,artifact_id="art_out",state=.Native}})
+	testing.expect_value(t,e.code,domain.Error_Code.None)
+	resp := bot_media_http_route(c,bot_agent_channel_history_handler,`{"params":{}}`)
+	wire: struct{data:struct{messages:[]Bot_Channel_History_Message}}
+	_ = json.unmarshal(transmute([]byte)resp.body,&wire,allocator=context.temp_allocator)
+	testing.expect(t,resp.status==200 && len(wire.data.messages)==2)
+	for m in wire.data.messages {
+		if !testing.expect_value(t,len(m.attachments),1) do continue
+		testing.expect_value(t,m.attachments[0].state,"native" if m.direction=="outbound" else "pending")
+	}
+}
+@(test)
+test_media_fetch_route_outcomes :: proc(t: ^testing.T) {
+	context.allocator=context.temp_allocator
+	c := bot_channel_fixture(t); defer bot_channel_destroy(c)
+	bot_media_http_setup(t,c); bot_media_http_inbound(t,c)
+	resp := bot_media_http_route(c,bot_agent_media_fetch_handler,`{"attachment_id":"cha_media"}`)
+	testing.expectf(t,resp.status==200 && strings.contains(resp.body,`"content_base64":"YWJj"`) && strings.contains(resp.body,`"size":3`),"%s",resp.body)
+	for state in ([]string{"too_large","unavailable","stored"}) {
+		testing.expect(t,sqlite.exec(&c.f.wire.conn,fmt.tprintf("UPDATE channel_attachments SET state='%s',artifact_id='art_file';",state)))
+		resp=bot_media_http_route(c,bot_agent_media_fetch_handler,`{"attachment_id":"cha_media"}`)
+		testing.expectf(t,resp.status==200 && strings.contains(resp.body,fmt.tprintf(`"outcome":"%s"`,state)) && !strings.contains(resp.body,"content_base64") && !strings.contains(resp.body,`"size"`),"%s",resp.body)
+	}
+	testing.expect(t,sqlite.exec(&c.f.wire.conn,"UPDATE channel_attachments SET state='pending',artifact_id='';"))
+	c.media_fetch_error = .Transient
+	resp=bot_media_http_route(c,bot_agent_media_fetch_handler,`{"attachment_id":"cha_media"}`)
+	testing.expect(t,resp.status==200 && strings.contains(resp.body,`"outcome":"failed"`) && strings.contains(resp.body,`"error":"Transient"`) && !strings.contains(resp.body,"content_base64"))
+	c.adapter.media_fetch = nil
+	resp=bot_media_http_route(c,bot_agent_media_fetch_handler,`{"attachment_id":"cha_media"}`)
+	testing.expect(t,resp.status==503 && strings.contains(resp.body,"channel_not_configured"))
+	for body in ([]string{`{}`,`{"attachment_id":1}`,"["}) {
+		resp=bot_media_http_route(c,bot_agent_media_fetch_handler,body)
+		testing.expect(t,resp.status==400 && strings.contains(resp.body,"attachment_id_invalid"))
+	}
+}
+@(test)
+test_media_fetch_route_requires_bot_and_owner :: proc(t: ^testing.T) {
+	context.allocator=context.temp_allocator
+	for handler in ([]Handler_Proc{bot_agent_media_fetch_handler,bot_agent_media_stored_handler,bot_agent_media_plan_handler}) {
+		c := bot_channel_fixture(t,is_bot=false)
+		resp:=bot_media_http_route(c,handler,`{}`)
+		testing.expect(t,resp.status==403 && strings.contains(resp.body,"not_a_bot"));bot_channel_destroy(c)
+		c=bot_channel_fixture(t,paired=false)
+		resp=bot_media_http_route(c,handler,`{}`)
+		testing.expect(t,resp.status==409 && strings.contains(resp.body,"channel_not_paired"));bot_channel_destroy(c)
+		c=bot_channel_fixture(t)
+		_,_=iface.experiment_set(&c.f.experiments,{owner_user_id=string(c.f.wire.owner),key="bots",enabled=false})
+		resp=bot_media_http_route(c,handler,`{}`)
+		testing.expect(t,resp.status==403 && strings.contains(resp.body,"experimental_feature_disabled"))
+		testing.expect_value(t,handler(&c.h,{method="POST",body="{}"}).status,401)
+		bot_channel_destroy(c)
+	}
+	c:=bot_channel_fixture(t);defer bot_channel_destroy(c);bot_media_http_inbound(t,c)
+	testing.expect(t,sqlite.exec(&c.f.wire.conn,"UPDATE channel_bindings SET owner_user_id='foreign';"))
+	resp:=bot_media_http_route(c,bot_agent_media_fetch_handler,`{"attachment_id":"cha_media"}`)
+	// The common auth gate can reject before attachment ownership validation.
+	testing.expect(t,resp.status==409 || resp.status==404)
+}
+@(test)
+test_media_stored_route_checks_artifact_owner :: proc(t: ^testing.T) {
+	context.allocator=context.temp_allocator
+	c:=bot_channel_fixture(t);defer bot_channel_destroy(c);bot_media_http_inbound(t,c)
+	bot_media_http_artifact(t,c,"art_own",string(c.f.wire.owner))
+	bot_media_http_artifact(t,c,"art_foreign","foreign")
+	bot_media_http_artifact(t,c,"art_deleted",string(c.f.wire.owner),"gone")
+	for id in ([]string{"art_foreign","art_deleted","art_missing"}) {
+		body:=strings.concatenate({`{"attachment_id":"cha_media","artifact_id":"`,id,`"}`},context.temp_allocator)
+		r:=bot_media_http_route(c,bot_agent_media_stored_handler,body)
+		testing.expectf(t,r.status==404 && strings.contains(r.body,"artifact_not_found"),"%s",r.body)
+	}
+	r:=bot_media_http_route(c,bot_agent_media_stored_handler,`{"attachment_id":"cha_media","artifact_id":"art_own"}`)
+	testing.expectf(t,r.status==200 && strings.contains(r.body,`"artifact_id":"art_own"`),"%s",r.body)
+}
+@(test)
+test_media_plan_route :: proc(t: ^testing.T) {
+	context.allocator=context.temp_allocator
+	c:=bot_channel_fixture(t);defer bot_channel_destroy(c);bot_media_http_setup(t,c)
+	r:=bot_media_http_route(c,bot_agent_media_plan_handler,`{"mime":"application/pdf","size":3}`)
+	testing.expectf(t,r.status==200 && strings.contains(r.body,`"mode":"native"`) && strings.contains(r.body,`"kind":"document"`),"%s",r.body)
+	c.adapter.send_media=nil
+	r=bot_media_http_route(c,bot_agent_media_plan_handler,`{"mime":"application/pdf","size":3}`)
+	testing.expect(t,r.status==200 && strings.contains(r.body,`"mode":"link"`) && strings.contains(r.body,"no_native_media"))
+	for body in ([]string{`{"mime":"image/png","size":0}`,`{"mime":"image/png","size":15728641}`,`{"mime":"image/png","size":1.5}`,`{"mime":"image/png","size":"3"}`,`{"mime":3,"size":3}`}) {
+		r=bot_media_http_route(c,bot_agent_media_plan_handler,body);testing.expect(t,r.status==400 && strings.contains(r.body,"media_invalid"))
+	}
+}
+@(test)
+test_channel_send_media_validation :: proc(t: ^testing.T) {
+	context.allocator=context.temp_allocator
+	c:=bot_channel_fixture(t);defer bot_channel_destroy(c)
+	for test in ([]struct{params,code:string}{
+		{`{"text":"a","media":{}}`,"media_invalid"},
+		{`{"artifact_id":1}`,"media_invalid"},
+		{`{"artifact_id":""}`,"media_invalid"},
+		{`{"artifact_id":"art/bad"}`,"media_invalid"},
+		{`{"artifact_id":"art_ok","text":1}`,"text_invalid"},
+		{strings.concatenate({`{"artifact_id":"art_ok","text":"`,strings.repeat("x",16385,context.temp_allocator),`"}`},context.temp_allocator),"text_invalid"},
+		{`{"artifact_id":"art_ok"}`,"media_invalid"},
+		{`{"artifact_id":"art_ok","media":[]}`,"media_invalid"},
+		{`{"artifact_id":"art_ok","media":{"name":1,"mime":"image/png","size":1}}`,"media_invalid"},
+		{`{"artifact_id":"art_ok","media":{"name":"a","mime":1,"size":1}}`,"media_invalid"},
+		{`{"artifact_id":"art_ok","media":{"name":"a","mime":"image/png","size":0}}`,"media_invalid"},
+		{`{"artifact_id":"art_ok","media":{"name":"a","mime":"image/png","size":15728641}}`,"media_invalid"},
+		{`{"artifact_id":"art_ok","media":{"name":"a","mime":"image/png","size":1.5}}`,"media_invalid"},
+		{`{"artifact_id":"art_ok","media":{"name":"a","mime":"image/png","size":1,"content_base64":1}}`,"media_invalid"},
+		{`{"artifact_id":"art_ok","media":{"name":"a","mime":"image/png","size":1,"content_base64":"!!!="}}`,"media_invalid"},
+		{`{"artifact_id":"art_ok","media":{"name":"a","mime":"image/png","size":1,"content_base64":"YWJj"}}`,"media_invalid"},
+	}) {
+		r:=bot_channel_send(c,strings.concatenate({`{"params":`,test.params,"}"},context.temp_allocator))
+		testing.expectf(t,r.status==400 && strings.contains(r.body,test.code),"%s => %s",test.params,r.body)
+	}
+	r:=bot_channel_send(c,`{"params":{"artifact_id":"art_missing","media":{"name":"a","mime":"image/png","size":3}}}`)
+	testing.expect(t,r.status==404 && strings.contains(r.body,"artifact_not_found"))
+	testing.expect_value(t,len(c.sent),0)
+}
+@(test)
+test_channel_send_media_response_sent_as :: proc(t: ^testing.T) {
+	context.allocator=context.temp_allocator
+	c:=bot_channel_fixture(t);defer bot_channel_destroy(c);bot_media_http_setup(t,c)
+	bot_media_http_artifact(t,c,"art_ok",string(c.f.wire.owner))
+	body:=`{"params":{"artifact_id":"art_ok","text":"caption","media":{"name":"a.pdf","mime":"application/pdf","size":3,"content_base64":"YWJj"}}}`
+	r:=bot_channel_send(c,body)
+	testing.expectf(t,r.status==200 && strings.contains(r.body,`"sent_as":"native"`) && !strings.contains(r.body,"unsent_chunks"),"%s",r.body)
+	c.adapter.send_media=bot_media_http_slow_send;c.adapter.media.send_rules[0].caption=false
+	c.f.service.media_send_budget_ms=600;c.f.service.media_min_call_ms=50
+	r=bot_channel_send(c,body)
+	testing.expectf(t,r.status==200 && strings.contains(r.body,`"sent_as":"native"`) && strings.contains(r.body,`"unsent_chunks":1`),"%s",r.body)
+	c.adapter.send_media=nil
+	r=bot_channel_send(c,`{"params":{"artifact_id":"art_ok","media":{"name":"a.pdf","mime":"application/pdf","size":3}}}`)
+	testing.expectf(t,r.status==200 && strings.contains(r.body,`"sent_as":"link"`),"%s",r.body)
+}
+@(test)
+test_channel_require_returns_auth :: proc(t: ^testing.T) {
+	context.allocator=context.temp_allocator
+	c:=bot_channel_fixture(t);defer bot_channel_destroy(c)
+	bot,auth,ok,_:=bot_channel_require(&c.h,bot_channel_req(c,"read","{}"))
+	defer domain.bot_destroy(&bot)
+	testing.expect(t,ok && auth.user_id==string(c.f.wire.owner))
+}
+@(test)
+test_channel_send_text_response_unchanged :: proc(t: ^testing.T) {
+	context.allocator=context.temp_allocator
+	c:=bot_channel_fixture(t);defer bot_channel_destroy(c)
+	r:=bot_channel_send(c)
+	testing.expect(t,r.status==200 && !strings.contains(r.body,"sent_as") && !strings.contains(r.body,"unsent_chunks"))
 }
