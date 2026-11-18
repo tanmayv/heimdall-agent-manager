@@ -11,7 +11,7 @@ import contracts "odin_test:contracts"
 import httpc "odin_test:lib/httpc"
 import ws "odin_test:lib/ws"
 
-BOT_NOTICE :: "New Telegram message for you — run './bin/ham-ctl channel read' to view and './bin/ham-ctl channel send --text \"<reply>\"' to answer."
+BOT_NOTICE :: "New chat message for you — run './bin/ham-ctl channel read' to view and './bin/ham-ctl channel send --text \"<reply>\"' to answer."
 Bridge_Bot_Phase :: enum { Launching, Waiting_Ready, Notified, Read, Replying, Done }
 Bridge_Bot_Worker :: struct {
 	frame: contracts.Bot_Deliver_Wire,
@@ -346,7 +346,7 @@ bridge_bot_deliver_notice :: proc(instance_id: string) -> bool {
 	if w == nil || w.frame.agent_instance_id != instance_id do return false
 	outcome, _, _, _ := bridge_bot_wait_ready(w, false, "")
 	if outcome != "" || sync.atomic_load(&w.cancel) do return false
-	return bridge_pty_host_deliver_to_agent(instance_id, "task_nudge", "telegram", "", "", human_message = BOT_NOTICE)
+	return bridge_pty_host_deliver_to_agent(instance_id, "task_nudge", "bot", "", "", human_message = BOT_NOTICE)
 }
 // Queue writes for the WS owner. Never retain a connection pointer in a worker.
 bridge_bot_send_report :: proc(report_json: string) -> bool {

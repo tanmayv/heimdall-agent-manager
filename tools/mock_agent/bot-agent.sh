@@ -12,7 +12,7 @@ trap 'exit 0' TERM
 while IFS= read -r line; do
     case $line in
         *'New message from'*) "$HAM_CTL" chat read ;;
-        *'New Telegram message for you'*)
+        *'New chat message for you'*)
             messages=$("$HAM_CTL" channel read)
             [ "${BOT_AGENT_MODE:-reply}" = silent ] && continue
             # Split fields onto lines so the first entry wins in a compact envelope.
