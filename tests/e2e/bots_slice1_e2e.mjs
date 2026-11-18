@@ -159,6 +159,7 @@ try {
     const created=await request('/bots/me','POST',{},201);
     assert.equal(created.status,'new');
     await placement([row('pi')]);
+    assert.deepEqual(await sent(),[]);
   });
   await step(2,'pair Telegram',async()=>{
     const pairing=await request('/bots/me/channels/telegram/pairing','POST',{},201);
@@ -229,10 +230,19 @@ try {
     },'bot stopped before preferred provider launch');
     const previous=new Set((await deliveries()).map(d=>d.delivery_id));
     await inject('retry provider');
-    await actedAfter(previous,'echo: retry provider',180000);
-    const delivery=await poll(async()=> (await deliveries()).find(d=>!previous.has(d.delivery_id)&&
-      d.attempts.some(a=>a.report?.outcomes?.length===2)),'terminal report with candidate outcomes');
-    const report=delivery.attempts.find(a=>a.report?.outcomes?.length===2).report;
+    const delivery=await actedAfter(previous,'echo: retry provider',180000);
+    // R2 closes the attempt inside channel send; the later terminal report is
+    // acknowledged without replacing its stored progress. Observe the real
+    // bridge's successfully sent terminal report through its diagnostic log.
+    const report=await poll(()=>{
+      const text=fs.readFileSync(path.join(bridgeDir('bots-e2e-b'),'logs/bridge.log'),'utf8');
+      return text.split('\n').filter(line=>line.startsWith('bots: terminal report '))
+        .map(line=>JSON.parse(line.slice('bots: terminal report '.length)))
+        .find(r=>r.delivery_id===delivery.delivery_id&&r.state==='acted');
+    },'sent terminal report with candidate outcomes');
+    assert.ok(delivery.attempts.some(a=>a.attempt_id===report.attempt_id));
+    fs.writeFileSync(path.join(root,'step-7-report.json'),JSON.stringify(report,null,2));
+    log('TERMINAL REPORT '+JSON.stringify(report));
     assert.deepEqual(report.outcomes.map(o=>o.outcome),['launch_failed','acted']);
     assert.deepEqual(report.outcomes.map(o=>o.provider),['claude','pi']);
   });
@@ -288,8 +298,10 @@ try {
     assert.deepEqual(rows,[{state:'abandoned',finish_reason:'experiment_disabled'}]);
     assert.ok(hubLog().includes('bots: runtime stopped'));
     const offsets=await control('offsets');
+    const sentAtDisable=await sent();
     await sleep(35000);
     assert.deepEqual(await control('offsets'),offsets);
+    assert.deepEqual(await sent(),sentAtDisable);
     await request('/bots/me','GET',undefined,403);
     await page.reload({waitUntil:'networkidle2'});
     await page.waitForSelector('[data-debug-id="settings-modal-container"]');
