@@ -42,17 +42,21 @@ def catalog_etag(db):
     fields = ("provider", "display_name", "icon_url", "binary", "base_args", "yolo_args",
               "ask_args", "model_flag", "prompt_args", "prompt_delivery", "starter_prompt",
               "bootstrap_file", "skill_dir", "startup_detection", "activity_detection",
-              "extension", "state")
+              "extension", "transports", "default_transport", "acp_recipe", "state")
     raw = {"base_args", "yolo_args", "ask_args", "prompt_args", "startup_detection",
-           "activity_detection", "extension"}
+           "activity_detection", "extension", "transports", "acp_recipe"}
     encode = lambda value: json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     entries = []
     for row in db.execute("SELECT * FROM provider_catalog ORDER BY rank ASC, provider ASC"):
         parts = []
         for field in fields:
             value = row[field]
-            if field == "extension":
+            if field in ("extension", "acp_recipe"):
                 value = value or "null"
+            elif field == "transports":
+                value = value or '["pty"]'
+            elif field == "default_transport":
+                value = value or "pty"
             elif field == "ask_args":
                 value = value or "[]"
             parts.append(encode(field) + ":" + (value if field in raw else encode(value)))

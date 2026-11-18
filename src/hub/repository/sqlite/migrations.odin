@@ -674,6 +674,8 @@ MIGRATION_214_AGENT_WRITES :: #load("migrations/214_agent_writes.sql", string)
 MIGRATION_215_BOTS_WHATSAPP :: #load("migrations/215_bots_whatsapp.sql", string)
 MIGRATION_216_BOTS_MEDIA :: #load("migrations/216_bots_media.sql", string)
 
+MIGRATION_217_EXTENSION_VERSION_SYNC :: #load("migrations/217_extension_version_sync_0_5_58.sql", string)
+
 migration_order :: [?]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
@@ -895,6 +897,7 @@ migration_order :: [?]string {
 	"214_agent_writes.sql",
 	"215_bots_whatsapp.sql",
 	"216_bots_media.sql",
+	"217_extension_version_sync_0_5_58.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1409,6 +1412,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 			return string(data)
 		}
 	}
+	if name == "217_extension_version_sync_0_5_58.sql" do return strings.clone(MIGRATION_217_EXTENSION_VERSION_SYNC)
 	if name == "212_extension_version_sync_0_5_57.sql" do return strings.clone(MIGRATION_212_EXTENSION_VERSION_SYNC)
 	if name == "211_provider_transport.sql" do return strings.clone(MIGRATION_211_PROVIDER_TRANSPORT)
 	if name == "210_extension_version_sync_0_5_56.sql" do return strings.clone(MIGRATION_210_EXTENSION_VERSION_SYNC)
