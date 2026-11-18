@@ -5,6 +5,8 @@ import "core:crypto/sha2"
 import "core:encoding/json"
 import "core:fmt"
 import "core:math/big"
+import "core:net"
+import "core:thread"
 import "core:strings"
 import "core:testing"
 import contracts "odin_test:contracts"
@@ -254,7 +256,7 @@ test_session_login_me_logout_roundtrip :: proc(t: ^testing.T) {
 	testing.expect_value(t, session_header(resp, "Location"), "/#/chains")
 	set_session := session_header(resp, "Set-Cookie", 0)
 	for attr in ([]string{"__Host-heimdall_session=", "Path=/", "Secure", "HttpOnly", "SameSite=Lax", "Max-Age=604800"}) do testing.expect(t, strings.contains(set_session, attr), attr)
-	testing.expect(t, strings.contains(session_header(resp, "Set-Cookie", 1), "__Host-heimdall_login=; "), "login cookie cleared")
+	testing.expect(t, strings.contains(session_header(resp, "Set-Cookie", 2), "__Host-heimdall_login=; "), "login cookie cleared")
 	testing.expect(t, strings.contains(f.last_form, "grant_type=authorization_code"))
 	testing.expect(t, strings.contains(f.last_form, "client_id=heimdall-web"))
 	testing.expect_value(t, f.last_basic, "") // public client: no secret configured
@@ -560,4 +562,317 @@ test_session_ws_ticket_dies_with_session :: proc(t: ^testing.T) {
 	_, after := user_ws_ticket_store_consume(&f.handlers.ws_tickets, "uwst_before_logout")
 	testing.expect(t, !after, "ticket minted before logout is refused")
 	user_ws_ticket_store_free(&f.handlers.ws_tickets)
+}
+
+Session_Ring_Jar :: struct { active, ring, raw: string }
+
+session_ring_jar :: proc(resp: Response) -> Session_Ring_Jar {
+	jar: Session_Ring_Jar
+	for h in resp.headers {
+		if !strings.equal_fold(h.name, "Set-Cookie") do continue
+		if strings.has_prefix(h.value, auth_service.SESSION_COOKIE + "=") {
+			jar.active = session_cookie_pair(h.value)
+			jar.raw = jar.active[len(auth_service.SESSION_COOKIE) + 1:]
+		}
+		if strings.has_prefix(h.value, auth_service.SESSIONS_RING_COOKIE + "=") do jar.ring = session_cookie_pair(h.value)
+	}
+	return jar
+}
+
+session_ring_login :: proc(t: ^testing.T, f: ^Session_Fixture, user_id: string, previous := Session_Ring_Jar{}) -> Session_Ring_Jar {
+	sub := "subject-1" if user_id == "alice" else strings.concatenate({"subject-", user_id}, context.temp_allocator)
+	_, exists, _ := f.user_repo.get_by_id(f.user_repo.ctx, domain.User_ID(user_id))
+	if !exists {
+		_, saved, err := iface.user_save(&f.user_repo, domain.User{user_id = domain.User_ID(user_id), name = user_id, status = .Active, created_at = f.now, updated_at = f.now})
+		testing.expect(t, saved && err.code == .None)
+		linked, _ := sqlite.user_link_external_sqlite(&f.conn, user_id, SESSION_TEST_ISSUER, sub, f.now)
+		testing.expect(t, linked)
+	}
+	f.mint_sub = sub
+	login := session_begin(t, f)
+	resp := session_callback(f, login.state, "the-code", login.login_cookie, previous.active, previous.ring)
+	testing.expect_value(t, session_header(resp, "Location"), "/#/chains")
+	jar := session_ring_jar(resp)
+	testing.expect(t, jar.raw != "")
+	return jar
+}
+
+session_ring_request :: proc(path, body: string, jar: Session_Ring_Jar) -> Request {
+	req := session_get(path, "", jar.active, jar.ring)
+	req.method, req.body = "POST", body
+	return req
+}
+
+session_ring_entries :: proc(t: ^testing.T, resp: Response, expected: []string) {
+	envelope: struct { data: Auth_Sessions_Reply }
+	testing.expect_value(t, resp.status, 200)
+	testing.expect(t, json.unmarshal_string(resp.body, &envelope, .JSON, context.temp_allocator) == nil, resp.body)
+	testing.expect_value(t, len(envelope.data.accounts), len(expected))
+	if len(expected) == 0 { testing.expect_value(t, envelope.data.active_user_id, ""); return }
+	testing.expect_value(t, envelope.data.active_user_id, expected[0])
+	for entry, i in envelope.data.accounts {
+		if i < len(expected) do testing.expect_value(t, entry.user_id, expected[i])
+		testing.expect_value(t, entry.active, i == 0)
+		testing.expect(t, entry.expires_at_ms > SESSION_TEST_BASE_S * 1000)
+	}
+}
+
+session_ring_expect_row :: proc(t: ^testing.T, f: ^Session_Fixture, raw: string, exists: bool) {
+	_, found, err := f.session_repo.get_session(f.session_repo.ctx, auth_service.sha256_hex(raw))
+	testing.expect(t, err.code == .None && found == exists)
+}
+
+session_ring_preview :: proc(t: ^testing.T, f: ^Session_Fixture, raw: string) -> []contracts.HTTP_Header {
+	principal, live, _ := auth_service.resolve_session_auth(&f.auth, raw)
+	testing.expect(t, live)
+	bind_id, bind_value, _ := auth_service.preview_bind_new(&f.auth)
+	ticket, err := auth_service.preview_ticket_mint(&f.auth, principal, "sh_ring", "/p/sh_ring/", auth_service.sha256_hex(bind_value), bind_id)
+	testing.expect(t, err.code == .None)
+	bind_headers := []contracts.HTTP_Header{{"Cookie", strings.concatenate({auth_service.preview_bind_cookie_name(bind_id), "=", bind_value}, context.temp_allocator)}}
+	preview, _, _, _, _, _, redeemed := auth_service.preview_ticket_redeem(&f.auth, ticket, bind_headers)
+	testing.expect(t, redeemed)
+	headers := make([]contracts.HTTP_Header, 1, context.temp_allocator)
+	headers[0] = {"Cookie", strings.concatenate({auth_service.PREVIEW_COOKIE, "=", preview}, context.temp_allocator)}
+	return headers
+}
+
+// REQ-ACCT-RING-1, Case 1: callback merge keeps the active account first.
+@(test)
+test_session_ring_merge_mru :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	f := session_fixture(t)
+	defer session_close(f)
+	alice := session_ring_login(t, f, "alice")
+	bob := session_ring_login(t, f, "bob", alice)
+	testing.expect_value(t, bob.ring, strings.concatenate({auth_service.SESSIONS_RING_COOKIE, "=", bob.raw, ".", alice.raw}, context.temp_allocator))
+	resp := auth_sessions_handler(&f.handlers, session_get("/api/v1/auth/sessions", "", bob.active, bob.ring))
+	session_ring_entries(t, resp, {"bob", "alice"})
+	testing.expect(t, !strings.contains(resp.body, alice.raw) && !strings.contains(resp.body, bob.raw))
+	testing.expect_value(t, session_header(resp, "Set-Cookie"), "")
+	testing.expect_value(t, session_header(resp, "Cache-Control"), "no-store")
+	testing.expect_value(t, _preview_filter_cookie_header(strings.concatenate({"app=1; ", bob.ring}, context.temp_allocator)), "app=1")
+}
+
+// REQ-ACCT-RING-1, Case 2: same-user reauthentication revokes old previews.
+@(test)
+test_session_ring_same_user_replacement :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	f := session_fixture(t)
+	defer session_close(f)
+	old := session_ring_login(t, f, "alice")
+	preview := session_ring_preview(t, f, old.raw)
+	fresh := session_ring_login(t, f, "alice", old)
+	testing.expect(t, fresh.raw != old.raw)
+	testing.expect_value(t, fresh.ring, strings.concatenate({auth_service.SESSIONS_RING_COOKIE, "=", fresh.raw}, context.temp_allocator))
+	session_ring_expect_row(t, f, old.raw, false)
+	session_ring_expect_row(t, f, fresh.raw, true)
+	_, preview_ok, _ := auth_service.resolve_preview_auth(&f.auth, preview)
+	testing.expect(t, !preview_ok && len(f.auth.preview.sessions) == 0)
+	auth_service.preview_auth_free(&f.auth.preview)
+}
+
+// REQ-ACCT-RING-1, Case 3: sixth login evicts the oldest deselected session.
+@(test)
+test_session_ring_cap_eviction :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	f := session_fixture(t)
+	defer session_close(f)
+	jar := session_ring_login(t, f, "alice")
+	old := jar.raw
+	preview := session_ring_preview(t, f, old)
+	for user in ([]string{"bob", "carol", "dave", "eve", "frank"}) do jar = session_ring_login(t, f, user, jar)
+	resp := auth_sessions_handler(&f.handlers, session_get("/api/v1/auth/sessions", "", jar.active, jar.ring))
+	session_ring_entries(t, resp, {"frank", "eve", "dave", "carol", "bob"})
+	session_ring_expect_row(t, f, old, false)
+	_, preview_ok, _ := auth_service.resolve_preview_auth(&f.auth, preview)
+	testing.expect(t, !preview_ok && len(f.auth.preview.sessions) == 0)
+	auth_service.preview_auth_free(&f.auth.preview)
+}
+
+// REQ-ACCT-RING-2, Case 4: either add-account spelling forces the IdP prompt.
+@(test)
+test_session_ring_login_prompt :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	f := session_fixture(t)
+	defer session_close(f)
+	for query in ([]string{"", "add_account=1", "prompt=login", "add_account=0", "prompt=none"}) {
+		resp := auth_login_handler(&f.handlers, session_get("/api/v1/auth/login", query))
+		location := session_header(resp, "Location")
+		testing.expect_value(t, resp.status, 302)
+		params := location[strings.index_byte(location, '?') + 1:]
+		want := "login" if query == "add_account=1" || query == "prompt=login" else ""
+		testing.expect_value(t, query_value(params, "prompt"), want)
+	}
+}
+
+// REQ-ACCT-RING-3, Case 5: read-only repair must not touch or delete DB rows.
+@(test)
+test_session_ring_list_read_only_repair :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	f := session_fixture(t)
+	defer session_close(f)
+	alice := session_ring_login(t, f, "alice")
+	bob := session_ring_login(t, f, "bob", alice)
+	// Missing ring migrates the legacy active cookie.
+	resp := auth_sessions_handler(&f.handlers, session_get("/api/v1/auth/sessions", "", alice.active))
+	session_ring_entries(t, resp, {"alice"})
+	testing.expect_value(t, session_ring_jar(resp).ring, alice.ring)
+	// Expire Alice without advancing Bob; preserve her row and recover Bob.
+	testing.expect(t, sqlite.exec(&f.conn, "UPDATE user_sessions SET idle_expires_at_ms=1 WHERE user_id='alice';"))
+	f.now = "2026-10-19T10:02:00Z"
+	revoked := strings.repeat("r", 43, context.temp_allocator)
+	ring := strings.concatenate({auth_service.SESSIONS_RING_COOKIE, "=", alice.raw, ".", revoked, ".", bob.raw, ".", bob.raw, ".bad"}, context.temp_allocator)
+	resp = auth_sessions_handler(&f.handlers, session_get("/api/v1/auth/sessions", "", alice.active, ring))
+	session_ring_entries(t, resp, {"bob"})
+	testing.expect_value(t, session_ring_jar(resp).active, bob.active)
+	testing.expect_value(t, session_ring_jar(resp).ring, strings.concatenate({auth_service.SESSIONS_RING_COOKIE, "=", bob.raw}, context.temp_allocator))
+	session_ring_expect_row(t, f, alice.raw, true)
+	row, found, _ := f.session_repo.get_session(f.session_repo.ctx, auth_service.sha256_hex(bob.raw))
+	testing.expect(t, found && row.last_seen_at_ms == SESSION_TEST_BASE_S * 1000)
+	// A ring alone recovers its first live account. The active cookie wins
+	// when it disagrees with ring order.
+	resp = auth_sessions_handler(&f.handlers, session_get("/api/v1/auth/sessions", "", bob.ring))
+	session_ring_entries(t, resp, {"bob"})
+	resp = auth_sessions_handler(&f.handlers, session_get("/api/v1/auth/sessions", "", strings.concatenate({auth_service.SESSION_COOKIE, "=", revoked}, context.temp_allocator)))
+	session_ring_entries(t, resp, {})
+	testing.expect(t, strings.contains(session_header(resp, "Set-Cookie", 0), "Max-Age=0") && strings.contains(session_header(resp, "Set-Cookie", 1), "Max-Age=0"))
+}
+
+// REQ-ACCT-RING-3, Case 6: validate switch input, touch only the target, and
+// promote the existing opaque token without exposing it in JSON.
+@(test)
+test_session_ring_switch :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	f := session_fixture(t)
+	defer session_close(f)
+	alice := session_ring_login(t, f, "alice")
+	bob := session_ring_login(t, f, "bob", alice)
+	for body in ([]string{"", "{}", `{"user_id":""}`, `{"user_id":false}`, `{"user_id":null}`, "null", "[]", `{"all":true}`, `{"user_id":"alice","unknown":true}`}) {
+		resp := auth_switch_handler(&f.handlers, session_ring_request("/api/v1/auth/switch", body, bob))
+		testing.expect_value(t, resp.status, 400)
+	}
+	resp := auth_switch_handler(&f.handlers, session_ring_request("/api/v1/auth/switch", `{"user_id":"unknown"}`, bob))
+	testing.expect_value(t, resp.status, 404)
+	f.now = "2026-10-19T10:02:00Z"
+	resp = auth_switch_handler(&f.handlers, session_ring_request("/api/v1/auth/switch", `{"user_id":"alice"}`, bob))
+	testing.expect_value(t, resp.status, 200)
+	jar := session_ring_jar(resp)
+	testing.expect_value(t, jar.active, alice.active)
+	testing.expect_value(t, jar.ring, strings.concatenate({auth_service.SESSIONS_RING_COOKIE, "=", alice.raw, ".", bob.raw}, context.temp_allocator))
+	envelope: struct { data: Auth_Switch_Reply }
+	testing.expect(t, json.unmarshal_string(resp.body, &envelope, .JSON, context.temp_allocator) == nil)
+	testing.expect_value(t, envelope.data.user.user_id, "alice")
+	testing.expect_value(t, envelope.data.active_user_id, "alice")
+	testing.expect(t, envelope.data.accounts[0].active && !envelope.data.accounts[1].active)
+	testing.expect(t, !strings.contains(resp.body, alice.raw) && !strings.contains(resp.body, bob.raw))
+	row, _, _ := f.session_repo.get_session(f.session_repo.ctx, auth_service.sha256_hex(alice.raw))
+	testing.expect_value(t, row.last_seen_at_ms, (SESSION_TEST_BASE_S + 120) * 1000)
+	row, _, _ = f.session_repo.get_session(f.session_repo.ctx, auth_service.sha256_hex(bob.raw))
+	testing.expect_value(t, row.last_seen_at_ms, SESSION_TEST_BASE_S * 1000)
+	testing.expect(t, sqlite.exec(&f.conn, "UPDATE user_sessions SET idle_expires_at_ms=1 WHERE user_id='bob';"))
+	resp = auth_switch_handler(&f.handlers, session_ring_request("/api/v1/auth/switch", `{"user_id":"bob"}`, jar))
+	testing.expect_value(t, resp.status, 404)
+	// Existing global CSRF policy applies to both cookie shapes.
+	for cookie in ([]string{bob.active, bob.ring}) {
+		allowed, _ := csrf_decide("POST", []contracts.HTTP_Header{{"Cookie", cookie}, {"Origin", "https://evil.example"}}, f.auth.web.ui_origin, false)
+		testing.expect(t, !allowed)
+		allowed, _ = csrf_decide("POST", []contracts.HTTP_Header{{"Cookie", cookie}, {"Origin", f.auth.web.ui_origin}}, f.auth.web.ui_origin, false)
+		testing.expect(t, allowed)
+	}
+}
+
+// REQ-ACCT-RING-3, Case 7: deselected logout preserves the active account;
+// active logout promotes the next account; last/all logout ends IdP login.
+@(test)
+test_session_ring_logout_single_and_all :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	f := session_fixture(t)
+	defer session_close(f)
+	alice := session_ring_login(t, f, "alice")
+	bob := session_ring_login(t, f, "bob", alice)
+	carol := session_ring_login(t, f, "carol", bob)
+	preview := session_ring_preview(t, f, bob.raw)
+	resp := auth_logout_handler(&f.handlers, session_ring_request("/api/v1/auth/logout", `{"user_id":"bob"}`, carol))
+	testing.expect_value(t, resp.status, 200)
+	jar := session_ring_jar(resp)
+	testing.expect_value(t, jar.active, carol.active)
+	testing.expect_value(t, jar.ring, strings.concatenate({auth_service.SESSIONS_RING_COOKIE, "=", carol.raw, ".", alice.raw}, context.temp_allocator))
+	testing.expect(t, strings.contains(resp.body, `"logout_url":""`) && strings.contains(resp.body, `"switched_user":null`), resp.body)
+	session_ring_expect_row(t, f, bob.raw, false)
+	session_ring_expect_row(t, f, carol.raw, true)
+	session_ring_expect_row(t, f, alice.raw, true)
+	_, preview_ok, _ := auth_service.resolve_preview_auth(&f.auth, preview)
+	testing.expect(t, !preview_ok)
+	auth_service.preview_auth_free(&f.auth.preview)
+	resp = auth_logout_handler(&f.handlers, session_ring_request("/api/v1/auth/logout", "", jar))
+	jar = session_ring_jar(resp)
+	testing.expect_value(t, jar.active, alice.active)
+	testing.expect(t, strings.contains(resp.body, `"logout_url":""`) && strings.contains(resp.body, `"switched_user":{`) && strings.contains(resp.body, `"user_id":"alice"`), resp.body)
+	session_ring_expect_row(t, f, carol.raw, false)
+	resp = auth_logout_handler(&f.handlers, session_ring_request("/api/v1/auth/logout", "{}", jar))
+	testing.expect(t, strings.contains(resp.body, "end-session/") && strings.contains(resp.body, `"active_user_id":""`) && strings.contains(resp.body, `"switched_user":null`) && strings.contains(resp.body, `"accounts":[]`), resp.body)
+	for i in 0 ..< 2 do testing.expect(t, strings.contains(session_header(resp, "Set-Cookie", i), "Max-Age=0"))
+	session_ring_expect_row(t, f, alice.raw, false)
+	// Explicit all revokes every live ring entry, including previews.
+	alice = session_ring_login(t, f, "alice")
+	bob = session_ring_login(t, f, "bob", alice)
+	resp = auth_logout_handler(&f.handlers, session_ring_request("/api/v1/auth/logout", `{"all":true}`, bob))
+	testing.expect_value(t, resp.status, 200)
+	session_ring_expect_row(t, f, alice.raw, false)
+	session_ring_expect_row(t, f, bob.raw, false)
+	for i in 0 ..< 2 do testing.expect(t, strings.contains(session_header(resp, "Set-Cookie", i), "Max-Age=0"))
+	testing.expect(t, !strings.contains(resp.body, alice.raw) && !strings.contains(resp.body, bob.raw))
+	for body in ([]string{"null", "[]", `{"all":"true"}`, `{"user_id":false}`, `{"unknown":true}`}) do testing.expect_value(t, auth_logout_handler(&f.handlers, session_ring_request("/api/v1/auth/logout", body, bob)).status, 400)
+}
+
+// Exercise the server boundary as well as csrf_decide: neither ring-only
+// cookies nor the legacy active cookie bypass CSRF on switch/logout routes.
+Session_Ring_Dispatch :: struct {
+	router: ^Router,
+	socket: net.TCP_Socket,
+	source: net.Endpoint,
+}
+
+session_ring_dispatch_thread :: proc(data: rawptr) {
+	state := (^Session_Ring_Dispatch)(data)
+	handle_client(state.socket, state.source, state.router, Server_Config{ui_origin = "https://hub.example.test"})
+}
+
+@(test)
+test_session_ring_mutations_csrf_http :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	router := new_router()
+	defer router_free(&router)
+	handlers: User_Handlers
+	router_add(&router, "POST", "/api/v1/auth/switch", &handlers, auth_switch_handler)
+	router_add(&router, "POST", "/api/v1/auth/logout", &handlers, auth_logout_handler)
+	for path in ([]string{"/api/v1/auth/switch", "/api/v1/auth/logout"}) {
+		for cookie_name in ([]string{auth_service.SESSION_COOKIE, auth_service.SESSIONS_RING_COOKIE}) {
+			listener, listen_err := net.listen_tcp({address = net.IP4_Loopback, port = 0})
+			if listen_err != nil do testing.fail_now(t, "could not listen")
+			endpoint, _ := net.bound_endpoint(listener)
+			client, dial_err := net.dial_tcp(endpoint)
+			if dial_err != nil do testing.fail_now(t, "could not dial")
+			server, source, accept_err := net.accept_tcp(listener)
+			if accept_err != nil do testing.fail_now(t, "could not accept")
+			state := Session_Ring_Dispatch{&router, server, source}
+			worker := thread.create_and_start_with_data(&state, session_ring_dispatch_thread)
+			request := fmt.tprintf("POST %s HTTP/1.1\r\nHost: hub.example.test\r\nOrigin: https://evil.example\r\nCookie: %s=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\nContent-Length: 2\r\n\r\n{}", path, cookie_name)
+			_, _ = net.send_tcp(client, transmute([]byte)request)
+			response := strings.builder_make(context.temp_allocator)
+			buffer: [4096]byte
+			for {
+				n, err := net.recv_tcp(client, buffer[:])
+				if n > 0 do strings.write_string(&response, string(buffer[:n]))
+				if err != nil || n == 0 do break
+			}
+			net.close(client)
+			thread.join(worker)
+			thread.destroy(worker)
+			net.close(listener)
+			raw := strings.to_string(response)
+			testing.expect(t, strings.has_prefix(raw, "HTTP/1.1 403"), raw)
+			testing.expect(t, strings.contains(raw, "\"code\":\"csrf_rejected\""), raw)
+		}
+	}
 }

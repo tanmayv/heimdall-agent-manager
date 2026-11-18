@@ -47,8 +47,17 @@ Groups: `bridge`, `agents`, `task-chain`, `task`, `workflow`, `lease`, `review`,
 - `task-chain set-title <title> [--chain <id>]` — rename a chain (coordinator only).
 - `task-chain set-description <text> [--chain <id>]` (or `--stdin`) — set the chain
   description (coordinator only; pass `""` to clear; `--chain` defaults to your chain).
-- `task-chain summary set <text> [--chain <id>]` (or `--stdin`) — set the curated chain summary
-  (`<= 60` lines; coordinator only; surfaced in every agent's `TASK.md` context pack).
+- `task-chain summary get [<chain-id>]` (or `--chain <id>`) — read-only: the rendered chain summary
+  as agents see it, with `line_count`, `max_lines`, `overflow_active`, `version`, `curated` (your full
+  stored notes) and `curated_line_count` (defaults to your current chain; any chain of the same owner).
+  Never writes, whatever else is passed.
+- `task-chain summary set <text> [--chain <id>]` (or `--body <text>`, `--file <path>`, `--stdin`) — replace
+  the stored curated notes (`<= 60` lines; coordinator only) and re-render the summary surfaced in every
+  agent's `TASK.md`. The 60-line render shows the title, your first 20 non-blank note lines (always),
+  then dead ends, further note lines when room is left, then tasks. Mechanical sections are rebuilt from
+  task history, so set cannot remove dead ends; ones that do not fit stay in each task's handoff facet
+  (`task fetch <task-id> facet:<task-id>:<attempt>:handoff`). Mechanical lines in the set text (title, section
+  headers, task and dead-end bullets, the omission pointer) are dropped, so edit from `curated`.
 - `task-chain propose --file <proposal.json> [--auto-approve] [--chain <id>]` — create a chain
   proposal (`kind: "task"|"workflow_run"`, `rationale`, `alternative`, `tasks` array or `workflow` + `inputs`) and its draft
   tasks in a single transaction (coordinator only). With `--auto-approve`, validates briefs and

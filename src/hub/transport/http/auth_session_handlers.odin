@@ -1,6 +1,7 @@
 package http
 
 import "core:fmt"
+import "core:encoding/json"
 import "core:strings"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
@@ -35,7 +36,8 @@ auth_login_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	handlers := (^User_Handlers)(ctx)
 	if !auth_service.web_login_enabled(handlers.auth) do return respond_error(domain.domain_error(.Not_Found, "browser login is not configured"), req.request_id)
 	client_ip := device_auth.resolve_client_ip(req.remote_addr, header_value(req.headers, "X-Forwarded-For"), handlers.forwarded_for_cidrs)
-	url, sealed, ok, err := auth_service.web_login_begin(handlers.auth, query_value(req.query, "return_to"), client_ip)
+	prompt_login := query_value(req.query, "add_account") == "1" || query_value(req.query, "prompt") == "login"
+	url, sealed, ok, err := auth_service.web_login_begin(handlers.auth, query_value(req.query, "return_to"), client_ip, prompt_login)
 	if !ok {
 		if err.code == .Validation_Failed || err.code == .Rate_Limited do return respond_error(err, req.request_id)
 		fmt.printfln("ham-hub oidc_login_rejected stage=begin")
@@ -70,21 +72,101 @@ auth_callback_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	}
 	ttl := handlers.auth.web.session_ttl_ms
 	if ttl <= 0 do ttl = auth_service.DEFAULT_SESSION_TTL_HOURS * 3_600_000
-	return redirect_response(return_to, auth_service.session_cookie_header(raw_session, ttl / 1000), clear_login)
+	ring, merge_err := auth_service.merge_session_into_ring(handlers.auth, req.headers, raw_session)
+	if merge_err.code != .None {
+		_, _ = auth_service.revoke_browser_session(handlers.auth, raw_session)
+		return redirect_response(AUTH_ERROR_REDIRECT, clear_login)
+	}
+	return redirect_response(return_to, auth_service.session_cookie_header(raw_session, ttl / 1000), auth_service.sessions_ring_cookie_header(ring[:], ttl / 1000), clear_login)
 }
 
-// POST /api/v1/auth/logout. Cross-site POSTs are refused by csrf_decide before
-// dispatch. Always succeeds: the cookie is expired whether or not it was valid.
+// All session replies are private and must never be cached, even if no cookie
+// repair was needed. Raw tokens are used only in these Set-Cookie headers.
+auth_ring_response :: proc(resp: Response, auth: ^auth_service.Auth_Service, ring: []string, set_cookies: bool) -> Response {
+	out := resp
+	headers := make([dynamic]contracts.HTTP_Header, context.temp_allocator)
+	append(&headers, ..resp.headers)
+	append(&headers, contracts.HTTP_Header{"Cache-Control", "no-store"})
+	if set_cookies {
+		ttl := i64(auth_service.DEFAULT_SESSION_TTL_HOURS * 3_600_000)
+		if auth != nil && auth.web.session_ttl_ms > 0 do ttl = auth.web.session_ttl_ms
+		active_cookie := auth_service.expired_cookie_header(auth_service.SESSION_COOKIE)
+		if len(ring) > 0 do active_cookie = auth_service.session_cookie_header(ring[0], ttl / 1000)
+		append(&headers, contracts.HTTP_Header{"Set-Cookie", active_cookie}, contracts.HTTP_Header{"Set-Cookie", auth_service.sessions_ring_cookie_header(ring, ttl / 1000)})
+	}
+	out.headers = headers[:]
+	return out
+}
+
+auth_account_user :: proc(account: auth_service.Auth_Account_Entry) -> Auth_User_Reply {
+	return {user_id = account.user_id, name = account.name, display_name = account.display_name, email = account.email}
+}
+
+// GET /api/v1/auth/sessions. Cookie repair is allowed; DB writes are not.
+auth_sessions_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	handlers := (^User_Handlers)(ctx)
+	_, ring, accounts, changed := auth_service.resolve_session_ring(handlers.auth, req.headers)
+	active_user_id := ""
+	if len(accounts) > 0 do active_user_id = accounts[0].user_id
+	resp := respond_success_typed(Auth_Sessions_Reply{active_user_id, accounts[:]}, req.request_id, auth_ctx_server_time(req))
+	return auth_ring_response(resp, handlers.auth, ring[:], changed)
+}
+
+// Decode only the documented fields and types, including on optional logout.
+auth_ring_input :: proc(body: string, allow_empty: bool) -> (user_id: string, all: bool, ok: bool) {
+	if strings.trim_space(body) == "" do return "", false, allow_empty
+	if len(body) > 4096 do return "", false, false
+	value, err := json.parse_string(body, .JSON, true, context.temp_allocator)
+	object, is_object := value.(json.Object)
+	if err != .None || !is_object do return "", false, false
+	for key, field in object {
+		switch key {
+		case "user_id":
+			text, valid := field.(json.String)
+			if !valid do return "", false, false
+			user_id = string(text)
+		case "all":
+			flag, valid := field.(json.Boolean)
+			if !allow_empty || !valid do return "", false, false
+			all = bool(flag)
+		case: return "", false, false
+		}
+	}
+	return user_id, all, true
+}
+
+// POST /api/v1/auth/switch. csrf_decide runs before route dispatch.
+auth_switch_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	handlers := (^User_Handlers)(ctx)
+	user_id, _, valid := auth_ring_input(req.body, false)
+	if !valid do return respond_error(domain.domain_error(.Validation_Failed, "expected a user_id string"), req.request_id)
+	ring, accounts, err := auth_service.web_switch_account(handlers.auth, req.headers, user_id)
+	if err.code != .None do return respond_error(err, req.request_id)
+	resp := respond_success_typed(Auth_Switch_Reply{accounts[0].user_id, auth_account_user(accounts[0]), accounts[:]}, req.request_id, auth_ctx_server_time(req))
+	return auth_ring_response(resp, handlers.auth, ring[:], true)
+}
+
+// POST /api/v1/auth/logout. Empty input signs out the active account.
 auth_logout_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	handlers := (^User_Handlers)(ctx)
-	logout_url := auth_service.web_logout(handlers.auth, req.headers)
-	resp := respond_success_typed(Auth_Logout_Reply{logout_url = logout_url}, req.request_id, auth_ctx_server_time(req))
-	headers := make([]contracts.HTTP_Header, len(resp.headers) + 2, context.temp_allocator)
-	copy(headers, resp.headers)
-	headers[len(resp.headers)] = {"Set-Cookie", auth_service.expired_cookie_header(auth_service.SESSION_COOKIE)}
-	headers[len(resp.headers) + 1] = {"Cache-Control", "no-store"}
-	resp.headers = headers
-	return resp
+	user_id, all, valid := auth_ring_input(req.body, true)
+	if !valid do return respond_error(domain.domain_error(.Validation_Failed, "expected optional user_id string and all boolean"), req.request_id)
+	url, ring, accounts, switched, err := auth_service.web_logout_ring(handlers.auth, req.headers, user_id, all)
+	if err.code != .None do return respond_error(err, req.request_id)
+	active_user_id := ""
+	switched_user: json.Value = json.Null(nil)
+	if len(accounts) > 0 {
+		active_user_id = accounts[0].user_id
+		if switched {
+			user := auth_account_user(accounts[0])
+			object := make(json.Object, context.temp_allocator)
+			object["user_id"], object["name"] = json.String(user.user_id), json.String(user.name)
+			object["display_name"], object["email"] = json.String(user.display_name), json.String(user.email)
+			switched_user = object
+		}
+	}
+	resp := respond_success_typed(Auth_Logout_Reply{url, active_user_id, switched_user, accounts[:]}, req.request_id, auth_ctx_server_time(req))
+	return auth_ring_response(resp, handlers.auth, ring[:], true)
 }
 
 // Stream_Auth_Guard re-validates a long-lived stream's principal: a Session is

@@ -107,3 +107,54 @@ test('logout only navigates to https: URLs or same-origin paths', async () => {
   const hostile = (async () => new Response(JSON.stringify({ data: { logout_url: 'javascript:alert(1)' } }), { status: 200 })) as unknown as typeof fetch;
   assert.equal(await postLogout(hostile), '/');
 });
+
+test('REQ-ACCT-UI-1 Case 9: account helpers use cookie requests and map session envelopes', async () => {
+  const { addAccountHref, fetchAuthSessions, postSwitchAccount, postLogoutAccount } = await import('../src/ui/auth/oidcSession.ts');
+  assert.equal(addAccountHref({ pathname: '/ui/', search: '?auth_error=failed&a=1', hash: '#/home' }),
+    '/api/v1/auth/login?add_account=1&return_to=%2Fui%2F%3Fa%3D1%23%2Fhome');
+  const user = { user_id: 'usr_b', name: 'bob', display_name: 'Bob', email: 'b@example.test' };
+  const accounts = [{ ...user, active: true, expires_at_ms: 123 }];
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  let data: any = { active_user_id: 'usr_b', accounts };
+  const fetcher = (async (url: any, init: any) => {
+    calls.push({ url, init });
+    return Response.json({ data });
+  }) as typeof fetch;
+  assert.deepEqual(await fetchAuthSessions(fetcher), { activeUserId: 'usr_b', accounts });
+  assert.equal(calls[0].url, '/api/v1/auth/sessions');
+  assert.equal(calls[0].init.method, 'GET');
+  assert.equal(calls[0].init.credentials, 'include');
+  assert.equal(calls[0].init.body, undefined);
+
+  data = { ...data, user };
+  assert.deepEqual(await postSwitchAccount(fetcher, 'usr_b', '/custom/switch'), { activeUserId: 'usr_b', user, accounts });
+  assert.equal(calls[1].url, '/custom/switch');
+  assert.equal(calls[1].init.method, 'POST');
+  assert.equal(calls[1].init.credentials, 'include');
+  assert.deepEqual(calls[1].init.headers, { 'Content-Type': 'application/json' });
+  assert.deepEqual(JSON.parse(String(calls[1].init.body)), { user_id: 'usr_b' });
+
+  data = { active_user_id: 'usr_b', accounts, switched_user: user, logout_url: '' };
+  assert.deepEqual(await postLogoutAccount(fetcher, { userId: 'usr_a' }), { activeUserId: 'usr_b', accounts, switchedUser: user, logoutUrl: '' });
+  assert.deepEqual(JSON.parse(String(calls[2].init.body)), { user_id: 'usr_a' });
+  data = { active_user_id: '', accounts: [], switched_user: null, logout_url: 'https://idp.test/end' };
+  assert.deepEqual(await postLogoutAccount(fetcher, { all: true }, '/custom/logout'), { activeUserId: '', accounts: [], switchedUser: null, logoutUrl: 'https://idp.test/end' });
+  assert.equal(calls[3].url, '/custom/logout');
+  assert.deepEqual(JSON.parse(String(calls[3].init.body)), { all: true });
+});
+
+test('REQ-ACCT-UI-1 Case 9: account mutations reject failures while legacy logout falls back', async () => {
+  const { fetchAuthSessions, postSwitchAccount, postLogoutAccount } = await import('../src/ui/auth/oidcSession.ts');
+  for (const status of [401, 403, 404, 500]) {
+    const fetcher = (async () => new Response('{}', { status })) as typeof fetch;
+    await assert.rejects(fetchAuthSessions(fetcher), new RegExp(String(status)));
+    await assert.rejects(postSwitchAccount(fetcher, 'missing'), new RegExp(String(status)));
+    await assert.rejects(postLogoutAccount(fetcher, { all: true }), new RegExp(String(status)));
+    assert.equal(await postLogout(fetcher), '/');
+  }
+  const offline = (async () => { throw new Error('offline'); }) as typeof fetch;
+  await assert.rejects(postSwitchAccount(offline, 'usr_b'), /offline/);
+  const malformed = (async () => new Response('not json')) as typeof fetch;
+  await assert.rejects(postLogoutAccount(malformed));
+  assert.equal(await postLogout(malformed), '/');
+});

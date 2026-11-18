@@ -214,3 +214,30 @@ test('useShellLaunch exposes command, busy and block state and seals a typed com
     assert.deepEqual(opened, [session_id]);
   });
 });
+
+test('explicit bridge launch binds clicked bridge/project/cwd, suppresses duplicates, and rejects a stale offline bridge', async () => {
+  const { useShellLaunch } = await import('../src/ui/components/shells/useShellLaunch.ts');
+  await withDom(async ({ render, posts, act }) => {
+    let launch: any;
+    const bridgeB = { bridge_id: 'bridge-b', ...ONLINE };
+    const projects = [{ ...PROJECTS[0], bridge_paths: [...PROJECTS[0].bridge_paths, { bridge_id: 'bridge-b', path: '/srv/b-project' }] }];
+    function Probe({ bridges }: { bridges: any[] }) {
+      launch = useShellLaunch({ projects, bridges, projectId: 'project-a', initialBridgeId: 'bridge-a', onStarted: () => {}, enabled: false });
+      return null;
+    }
+    await render(React.createElement(Probe, { bridges: [...BRIDGES, bridgeB] }));
+    assert.equal(launch.bridgeId, 'bridge-a');
+    await act(async () => { await Promise.all([launch.startOnBridge('bridge-b'), launch.startOnBridge('bridge-b')]); });
+    assert.equal(posts.length, 1, 'same-tick clicks issue one request');
+    const spec = await openSpec(posts[0]);
+    assert.equal(spec.bridge_id, 'bridge-b');
+    assert.equal(spec.cwd, '/srv/b-project');
+    assert.equal(spec.cmd, '');
+    assert.equal(posts[0].project_id, 'project-a');
+    const staleStart = launch.startOnBridge;
+    await render(React.createElement(Probe, { bridges: [...BRIDGES, { ...bridgeB, status: 'offline', runtime_connected: false }] }));
+    await act(async () => { await staleStart('bridge-b'); });
+    assert.equal(posts.length, 1, 'stale callbacks validate the current bridge snapshot');
+    assert.match(launch.errorMessage, /no longer connected/);
+  });
+});

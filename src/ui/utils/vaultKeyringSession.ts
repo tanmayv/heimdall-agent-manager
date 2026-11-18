@@ -47,6 +47,7 @@ export async function openDeviceWrap(identity: DeviceIdentity, wrap: unknown, ch
  */
 export async function installKeyringFromWrap(identity: DeviceIdentity, wrap: unknown, chain: VerifiedChain): Promise<VaultKeyring> {
   if (identity.userId !== chain.userId) throw new Error('device identity belongs to another user');
+  const openingGeneration = generation;
   const parsed = await openDeviceWrap(identity, wrap, chain);
   let bytes: Uint8Array | null = null;
   let searchRaw: Uint8Array | null = null;
@@ -56,6 +57,9 @@ export async function installKeyringFromWrap(identity: DeviceIdentity, wrap: unk
     searchRaw = Uint8Array.from(cur.key);
     const keyring = await importKeyring(bytes, chain.userId); // zeroes `bytes`
     const searchKey = await deriveTaskChainSearchKey(searchRaw, parsed.currentEpoch); // zeroes its copy
+    // A sign-out or account switch may purge the session while WebCrypto is
+    // awaiting. Never reinstall that outgoing account's keys after teardown.
+    if (generation !== openingGeneration) throw new Error('Vault keyring session changed while opening wrap');
     generation += 1;
     session = { identity, wrap: wrap as SignedKeyringWrap, chain, keyring };
     for (const listener of sessionListeners) listener();

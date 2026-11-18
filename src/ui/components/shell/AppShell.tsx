@@ -1,13 +1,13 @@
 import { useGetBotQuery } from '../../api/endpoints/bots';
 import { filterBotConversations } from '../settings/botsView';
 import { BOTS_EXPERIMENT_KEY, resolveExperimentFlag } from '../settings/experimentFlags';
+import AccountSwitcher from './AccountSwitcher';
 import { SidebarTaskChains } from './SidebarTaskChains';
 import {
   LOGIN_PATH,
   authErrorMessage,
   isTransientAuthStatus,
   loginHref,
-  postLogout,
   readAuthError,
   readLastLoginRedirect,
   recordLoginRedirect,
@@ -31,7 +31,8 @@ import {
   mergePaletteActions,
 } from '@ui';
 import { useIsMobile, useViewport } from './responsive';
-import { AuthUserProvider, type AuthUserIdentity } from '../auth/AuthUserContext';
+import { AuthAccountsProvider, AuthUserProvider, type AuthUserIdentity, type AuthState } from '../auth/AuthUserContext';
+import { useAuthSessionState } from '../auth/useAuthSessionState';
 import { isAgentWorking } from './agentWorking';
 import { heimdallApi } from '../../api/heimdallApi';
 import { withApiBase } from '../../api/apiBase';
@@ -60,17 +61,12 @@ import {
 import { useWindowChrome } from '../../hooks/useWindowChrome';
 import { buildRouteHash, getRoutePathname, getRouteSearch } from '../../utils/appLocation';
 import { setApprovalPageOpener } from '../../bridge/desktopBridgeSession';
-import {
-  readLastSeenUserId,
-  removeAppOwnedClientStorage,
-  writeLastSeenUserId,
-} from '../../utils/clientPersistence';
 import { Workspace } from '../mainWorkspace/Workspace';
 import { DeviceVaultGate } from '../devices/DeviceVaultScreens';
 import { desktopCapabilities } from '../../bridge/desktopBridge';
 import { setupSeen } from '../setup/setupWizardModel';
 import { VaultResetBanner } from '../devices/VaultResetBanner';
-import { bootDeviceVault, autoUnsealLockedBridges } from '../../services/deviceVault';
+import { autoUnsealLockedBridges } from '../../services/deviceVault';
 import { analytics } from '../../analytics/analytics';
 import { setTheme } from '../../store/themeSlice';
 import ProjectLaunchModal from '../projects/ProjectLaunchModal';
@@ -151,17 +147,6 @@ type ShellRoute = {
 };
 
 type AuthUser = AuthUserIdentity;
-
-// 'unavailable': the identity check answered 429/503 (Hub saturated or the OIDC
-// provider unreachable). Not a sign-out: the gate retries without redirecting.
-type AuthStatus = 'checking' | 'authenticated' | 'unauthenticated' | 'forbidden' | 'unavailable' | 'error';
-
-type AuthState = {
-  status: AuthStatus;
-  user: AuthUser | null;
-  error: string;
-};
-
 
 type ConversationSummary = {
   conversationId: string;
@@ -479,15 +464,6 @@ function installApiAuthObserver() {
     }
     return response;
   };
-}
-
-// Sign out: the Hub deletes the session and expires the cookie, then the browser
-// continues to the provider's end-session URL (or "/").
-async function signOut(): Promise<void> {
-  // REQ-PH-4: drop the analytics identity before leaving (no-op without a PostHog key).
-  analytics.reset();
-  const next = await postLogout(window.fetch.bind(window), apiUrl('/auth/logout'));
-  window.location.assign(next);
 }
 
 async function bootstrapAuth(): Promise<AuthState> {
@@ -951,86 +927,15 @@ function authUserId(user: AuthUser | null | undefined): string {
 
 function clearPriorUserClientState(dispatch: any, nextUserId: string) {
   dispatch(heimdallApi.util.resetApiState());
-  removeAppOwnedClientStorage();
   dispatch(priorUserClientStateCleared());
   dispatch(clearUserClientState({ userId: nextUserId }));
 }
 
 function AuthGate() {
   const dispatch = useDispatch<any>();
-  const [auth, setAuth] = useState<AuthState>({ status: 'checking', user: null, error: '' });
-  const authStatusRef = useRef<AuthStatus>('checking');
-  authStatusRef.current = auth.status;
-  const lastSeenUserRef = useRef(readLastSeenUserId());
-  // REQ-MAC-CHROME-1: sets <html data-window-chrome> before any gate renders.
+  useEffect(() => { installApiAuthObserver(); }, []);
+  const { auth, ...accountSession } = useAuthSessionState({ dispatch, bootstrapAuth, clearPriorUserClientState });
   useWindowChrome();
-
-  useEffect(() => {
-    let cancelled = false;
-    let refreshing = false;
-    installApiAuthObserver();
-
-    async function refreshIdentity(reason: string) {
-      if (refreshing) return;
-      refreshing = true;
-      try {
-        const next = await bootstrapAuth();
-        if (cancelled) return;
-        if (next.status === 'authenticated') {
-          const nextUserId = authUserId(next.user);
-          const previousUserId = lastSeenUserRef.current || readLastSeenUserId();
-          if (nextUserId && previousUserId && previousUserId !== nextUserId) {
-            clearPriorUserClientState(dispatch, nextUserId);
-            // A different user than the one last seen on this device (switch across page
-            // loads): drop the previous analytics identity too, so the two are never merged.
-            analytics.reset();
-          }
-          // REQ-PH-4: the Hub user id only. identify() resets first on an in-page account
-          // switch and sends `app_login` once per user.
-          if (nextUserId) analytics.identify(nextUserId);
-          if (nextUserId) {
-            writeLastSeenUserId(nextUserId);
-            lastSeenUserRef.current = nextUserId;
-          }
-          // Passwordless vault: boot this browser's device identity for the user.
-          if (nextUserId) void bootDeviceVault(nextUserId, dispatch);
-        }
-        setAuth(next);
-      } catch (err: any) {
-        if (!cancelled) setAuth({ status: 'error', user: null, error: String(err?.message || err || 'The app could not reach /api/v1/me.') });
-      } finally {
-        refreshing = false;
-        void reason;
-      }
-    }
-
-    const onUnauthenticated = () => setAuth((prev) => ({ ...prev, status: 'unauthenticated', user: null }));
-    const onForbidden = () => setAuth((prev) => ({ ...prev, status: 'forbidden', error: 'Access denied' }));
-    const onFocus = () => { void refreshIdentity('focus'); };
-    const onVisibility = () => { if (document.visibilityState === 'visible') void refreshIdentity('visibilitychange'); };
-    const onUserWsReconnect = () => { void refreshIdentity('user-ws-reconnect'); };
-
-    // While the provider is unavailable (429/503), keep re-checking quietly.
-    const retryTimer = window.setInterval(() => {
-      if (authStatusRef.current === 'unavailable') void refreshIdentity('unavailable-retry');
-    }, 5000);
-    void refreshIdentity('initial');
-    window.addEventListener('heimdall:api-unauthenticated', onUnauthenticated);
-    window.addEventListener('heimdall:api-forbidden', onForbidden);
-    window.addEventListener('focus', onFocus);
-    document.addEventListener('visibilitychange', onVisibility);
-    window.addEventListener('heimdall:user-ws-reconnected', onUserWsReconnect);
-    return () => {
-      cancelled = true;
-      refreshing = false;
-      window.clearInterval(retryTimer);
-      window.removeEventListener('heimdall:api-unauthenticated', onUnauthenticated);
-      window.removeEventListener('heimdall:api-forbidden', onForbidden);
-      window.removeEventListener('focus', onFocus);
-      document.removeEventListener('visibilitychange', onVisibility);
-      window.removeEventListener('heimdall:user-ws-reconnected', onUserWsReconnect);
-    };
-  }, [dispatch]);
 
   // REQ-MAC-CHROME-1: the auth, device-vault and standalone device screens have
   // no 48px chrome row, so a fixed strip under the traffic lights is their window
@@ -1039,17 +944,20 @@ function AuthGate() {
   const gateDragStrip = <div aria-hidden="true" data-debug-id="window-gate-drag-strip" className="window-gate-drag-strip" />;
   let screen: React.ReactNode;
   if (auth.status === 'checking') screen = <AuthStatusScreen debugId="auth-checking" title="Checking session…" body="Verifying your Ninjy session." />;
+  else if (auth.status === 'switching') screen = <AuthStatusScreen debugId="auth-switching" title="Switching account…" body="Updating your active Ninjy session." />;
   else if (auth.status === 'unavailable') screen = <AuthStatusScreen debugId="auth-unavailable" title="Sign-in provider unavailable" body="Ninjy could not reach its sign-in provider. Retrying…" />;
   else if (auth.status === 'unauthenticated') screen = <UnauthenticatedLanding />;
   else if (auth.status === 'forbidden') screen = <AccessDenied />;
   else if (auth.status === 'error') screen = <AuthStatusScreen debugId="auth-error" title="Unable to verify session" body={auth.error || 'The app could not reach /api/v1/me.'} />;
   else {
     screen = (
-      <AuthUserProvider value={auth.user}>
-        <DeviceVaultGate>
-          <AuthenticatedShell key={authUserId(auth.user) || 'authenticated'} user={auth.user || {}} />
-        </DeviceVaultGate>
-      </AuthUserProvider>
+      <AuthAccountsProvider value={accountSession}>
+        <AuthUserProvider value={auth.user}>
+          <DeviceVaultGate>
+            <AuthenticatedShell key={authUserId(auth.user) || 'authenticated'} user={auth.user || {}} />
+          </DeviceVaultGate>
+        </AuthUserProvider>
+      </AuthAccountsProvider>
     );
   }
   return <>{gateDragStrip}{screen}</>;
@@ -2117,22 +2025,7 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
         </div>
 
         <div data-debug-id="shell-sidebar-account" className={`shrink-0 border-t border-subtle p-3`}>
-          <div data-debug-id="shell-global-ownership-points" className={`flex items-center gap-2 rounded-xl px-2 py-1.5`}>
-            {userAvatar}
-            {(
-              <button type="button" data-debug-id="shell-open-account" aria-label="Open account settings" onClick={openAccountSettings} className="min-w-0 flex-1 rounded-lg text-left focus-visible:outline-none focus-visible:shadow-focus hover:bg-neutral-soft">
-                <div data-debug-id="shell-current-user-owner" className={`truncate font-semibold text-primary ${isMobile ? 'text-[14px]' : 'text-[12px]'}`}>{displayName}</div>
-                <div className={`truncate text-muted ${isMobile ? 'text-[12px]' : 'text-[10.5px]'}`}>{user.email || user.user_id || ''}</div>
-              </button>
-            )}
-            <button type="button" data-debug-id="auth-logout-link" onClick={() => { void signOut(); }} title="Sign out" aria-label="Sign out" className={`grid shrink-0 place-items-center text-muted hover:bg-neutral-soft hover:text-primary ${isMobile ? 'h-11 w-11 rounded-full' : 'rounded-lg p-1.5'}`}><Icon name="close" size={isMobile ? 18 : 14} /></button>
-          </div>
-          {planLabel ? (
-            <button type="button" data-debug-id="shell-subscription-tier" aria-label={`Subscription: ${planLabel}. Open account settings`} onClick={openAccountSettings} className="mt-1 flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-[11px] text-muted hover:bg-neutral-soft hover:text-primary focus-visible:outline-none focus-visible:shadow-focus">
-              <Icon name="sparkle" size={12} className="shrink-0 text-accent" />
-              <span className="truncate">Plan · <span className="font-semibold text-primary">{planLabel}</span></span>
-            </button>
-          ) : null}
+          <AccountSwitcher user={user} avatar={userAvatar} isMobile={isMobile} planLabel={planLabel} openAccountSettings={openAccountSettings} />
         </div>
         </div>
       </aside>
