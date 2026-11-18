@@ -79,6 +79,7 @@ App_Graph :: struct {
 	sqlite_issues: sqlite.Issue_Repo_SQLite,
 	sqlite_shell_sessions: sqlite.Shell_Session_Repo_SQLite,
 	sqlite_experiments: sqlite.Experiment_Repo_SQLite,
+	sqlite_agent_writes: sqlite.Agent_Write_Repo_SQLite,
 	sqlite_bots: sqlite.Bot_Repo_SQLite,
 	sqlite_lsp_server_configs: sqlite.Lsp_Server_Config_Repo_SQLite,
 	sqlite_providers: sqlite.Provider_Repo_SQLite,
@@ -120,6 +121,7 @@ App_Graph :: struct {
 	vault_directory_handlers: http.Vault_Directory_Handlers,
 	bridge_handlers: http.Bridge_Handlers,
 	agent_handlers: http.Agent_Handlers,
+	agent_write_handlers: http.Agent_Write_Handlers,
 	project_handlers: http.Project_Handlers,
 	content_handlers: http.Content_Handlers,
 	taskchain_handlers: http.Taskchain_Handlers,
@@ -132,6 +134,7 @@ App_Graph :: struct {
 	cards: card_service.Card_Service,
 	shell_session_repo: iface.Shell_Session_Repository,
 	experiment_repo: iface.Experiment_Repository,
+	agent_write_repo: iface.Agent_Write_Repository,
 	bot_repo: iface.Bot_Repository,
 	lsp_server_config_repo: iface.Lsp_Server_Config_Repository,
 	provider_repo: iface.Provider_Repository,
@@ -332,6 +335,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.repos.issues = sqlite.new_issue_repository(&graph.sqlite_issues, &graph.db)
 	graph.shell_session_repo = sqlite.new_shell_session_repository(&graph.sqlite_shell_sessions, &graph.db)
 	graph.experiment_repo = sqlite.new_experiment_repository(&graph.sqlite_experiments, &graph.db)
+	graph.agent_write_repo = sqlite.new_agent_write_repository(&graph.sqlite_agent_writes, &graph.db)
 	graph.bot_repo = sqlite.new_bot_repository(&graph.sqlite_bots, &graph.db)
 	graph.lsp_server_config_repo = sqlite.new_lsp_server_config_repository(&graph.sqlite_lsp_server_configs, &graph.db)
 	graph.bridge_log_repo = sqlite.new_bridge_log_repository(&graph.sqlite_bridge_logs, &graph.db)
@@ -559,6 +563,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.task_engine.vcs_show_file_ctx = rawptr(&graph.bridge_handlers)
 	bridge_log_service.start(&graph.bridge_logs)
 	graph.agent_handlers = http.Agent_Handlers{
+		agent_writes = &graph.agent_write_repo,
 		entitlements = billing_service.entitlement_lookup(&graph.billing),
 		launch_preferences = &graph.users,
 		auth           = &graph.auth,
@@ -568,8 +573,9 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		shell_sessions = &graph.shell_session_service,
 		experiments    = &graph.experiment_repo,
 	}
-	graph.project_handlers = http.Project_Handlers{auth = &graph.auth, projects = &graph.projects}
-	graph.content_handlers = http.Content_Handlers{auth = &graph.auth, agents = &graph.agents, content = &graph.content, event_bus = &graph.event_bus}
+	graph.agent_write_handlers = http.Agent_Write_Handlers{auth = &graph.auth, writes = &graph.agent_write_repo}
+	graph.project_handlers = http.Project_Handlers{agent_writes = &graph.agent_write_repo, auth = &graph.auth, projects = &graph.projects}
+	graph.content_handlers = http.Content_Handlers{agent_writes = &graph.agent_write_repo, auth = &graph.auth, agents = &graph.agents, content = &graph.content, event_bus = &graph.event_bus}
 	graph.taskchain_handlers = http.Taskchain_Handlers{auth = &graph.auth, taskchains = &graph.taskchains, agents = &graph.agents, content = &graph.content, projects = &graph.projects, event_bus = &graph.event_bus, task_engine = &graph.task_engine, shell_sessions = &graph.shell_session_service}
 	graph.search_handlers = http.Search_Handlers{auth = &graph.auth, search = &graph.search}
 	graph.skills_handlers = http.Skills_Handlers{auth = &graph.auth}
@@ -718,6 +724,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/auth/logout", rawptr(&graph.user_handlers), http.auth_logout_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me", rawptr(&graph.user_handlers), http.me_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me/logout-url", rawptr(&graph.user_handlers), http.logout_url_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/me/agent-writes", rawptr(&graph.agent_write_handlers), http.list_agent_writes_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me/experiments", rawptr(&graph.experiment_handlers), http.experiment_list_handler)
 	http.router_add(&graph.router, "PUT", "/api/v1/me/experiments/*", rawptr(&graph.experiment_handlers), http.experiment_set_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/providers", rawptr(&graph.provider_handlers), http.provider_catalog_list_handler)

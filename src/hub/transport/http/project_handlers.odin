@@ -2,11 +2,12 @@ package http
 
 import "core:strings"
 import contracts "odin_test:contracts"
+import iface "odin_test:hub/repository/iface"
 import domain "odin_test:hub/domain"
 import auth_service "odin_test:hub/service/auth"
 import project_service "odin_test:hub/service/project"
 
-Project_Handlers :: struct { auth: ^auth_service.Auth_Service, projects: ^project_service.Project_Service }
+Project_Handlers :: struct { auth: ^auth_service.Auth_Service, projects: ^project_service.Project_Service, agent_writes: ^iface.Agent_Write_Repository }
 
 list_projects_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	// Accept user tokens AND bridge-relayed instance tokens so a coordinator agent
@@ -26,34 +27,38 @@ list_projects_handler :: proc(ctx: rawptr, req: Request) -> Response {
 }
 
 create_project_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Project_Handlers)(ctx); auth_ctx, ok, auth_resp := require_auth(h.auth, req); if !ok do return auth_resp
+	h := (^Project_Handlers)(ctx); auth_ctx, ok, auth_resp := require_auth_any(h.auth, req); if !ok do return auth_resp
 	p, created, err := project_service.create(h.projects, auth_ctx, project_input(req.body)); if !created do return respond_error(err, req.request_id)
+	record_agent_write(h.agent_writes, auth_ctx, domain.AGENT_WRITE_KIND_PROJECT, string(p.project_id), "create", agent_write_body_fields(req.body, AGENT_WRITE_PROJECT_FIELDS, true))
 	b := strings.builder_make(); write_project_json(&b, p); return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
 }
 
 project_detail_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if strings.contains(suffix_after(req.path, "/api/v1/projects/"), "/") do return respond_error(domain.domain_error(.Not_Found, "route not found"), req.request_id)
-	h := (^Project_Handlers)(ctx); auth_ctx, ok, auth_resp := require_auth(h.auth, req); if !ok do return auth_resp
+	h := (^Project_Handlers)(ctx); auth_ctx, ok, auth_resp := require_auth_any(h.auth, req); if !ok do return auth_resp
 	p, got, err := project_service.get(h.projects, auth_ctx, domain.Project_ID(path_part(req.path, 4))); if !got do return respond_error(err, req.request_id)
 	paths, _ := project_service.list_bridge_paths(h.projects, auth_ctx, p.project_id)
 	b := strings.builder_make(); write_project_detail_json(&b, p, paths); return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
 update_project_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Project_Handlers)(ctx); auth_ctx, ok, auth_resp := require_auth(h.auth, req); if !ok do return auth_resp
+	h := (^Project_Handlers)(ctx); auth_ctx, ok, auth_resp := require_auth_any(h.auth, req); if !ok do return auth_resp
 	p, updated, err := project_service.update(h.projects, auth_ctx, domain.Project_ID(path_part(req.path, 4)), update_input(req.body)); if !updated do return respond_error(err, req.request_id)
+	record_agent_write(h.agent_writes, auth_ctx, domain.AGENT_WRITE_KIND_PROJECT, string(p.project_id), "update", agent_write_body_fields(req.body, AGENT_WRITE_PROJECT_FIELDS, true))
 	b := strings.builder_make(); write_project_json(&b, p); return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
 archive_project_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Project_Handlers)(ctx); auth_ctx, ok, auth_resp := require_auth(h.auth, req); if !ok do return auth_resp
+	h := (^Project_Handlers)(ctx); auth_ctx, ok, auth_resp := require_auth_any(h.auth, req); if !ok do return auth_resp
 	p, archived, err := project_service.archive_project(h.projects, auth_ctx, domain.Project_ID(path_part(req.path, 4))); if !archived do return respond_error(err, req.request_id)
+	record_agent_write(h.agent_writes, auth_ctx, domain.AGENT_WRITE_KIND_PROJECT, string(p.project_id), "archive", nil)
 	b := strings.builder_make(); write_project_json(&b, p); return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
 unarchive_project_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Project_Handlers)(ctx); auth_ctx, ok, auth_resp := require_auth(h.auth, req); if !ok do return auth_resp
+	h := (^Project_Handlers)(ctx); auth_ctx, ok, auth_resp := require_auth_any(h.auth, req); if !ok do return auth_resp
 	p, restored, err := project_service.unarchive_project(h.projects, auth_ctx, domain.Project_ID(path_part(req.path, 4))); if !restored do return respond_error(err, req.request_id)
+	record_agent_write(h.agent_writes, auth_ctx, domain.AGENT_WRITE_KIND_PROJECT, string(p.project_id), "unarchive", nil)
 	b := strings.builder_make(); write_project_json(&b, p); return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 

@@ -107,7 +107,7 @@ create_memory :: proc(s:^Content_Service, auth:contracts.Auth_Context, input:Mem
 	status:=input.status; if status=="" do status="pending";
 	typ:=input.type; if typ==.Unknown do typ=.Fact;
 	expires_at := input.expires_at;
-	if expires_at == "" {
+	if expires_at == "" && status == "pending" {
 		if t, t_ok := platform.parse_rfc3339_utc(now); t_ok {
 			expires_at = platform.format_rfc3339_utc(time.time_add(t, 24 * time.Hour))
 		} else {
