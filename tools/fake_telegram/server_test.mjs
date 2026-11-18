@@ -40,8 +40,12 @@ test('reactions are recorded, filtered, validated and failure-injected', async (
     assert.deepEqual(await get('/_control/reactions?chat_id=7'),{reactions:[reaction]});
     assert.deepEqual(await get('/_control/reactions?chat_id=8'),{reactions:[]});
     assert.equal((await post('/botTEST:FAKE/setMessageReaction',{...reaction,message_id:'99'}))[0],400);
-    await post('/_control/fail',{method:'setMessageReaction',status:500});
+    assert.equal((await post('/_control/fail',{method:'setMessageReaction',status:500,delay_ms:-1}))[0],400);
+    assert.equal((await post('/_control/fail',{method:'setMessageReaction',status:500,delay_ms:0.5}))[0],400);
+    await post('/_control/fail',{method:'setMessageReaction',status:500,delay_ms:100});
+    const started=performance.now();
     assert.equal((await post('/botTEST:FAKE/setMessageReaction',reaction))[0],500);
+    assert.ok(performance.now()-started>=80,'injected failure waits for delay_ms');
     assert.deepEqual(await get('/_control/reactions'),{reactions:[reaction]});
     await post('/_control/inject',{chat_id:7,text:'id mapping',message_id:123});
     const updates=await get('/botTEST:FAKE/getUpdates');

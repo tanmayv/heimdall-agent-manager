@@ -186,7 +186,10 @@ telegram_pairing_url :: proc(ctx: rawptr, identity: Identity, code: string, allo
 	return fmt.aprintf("https://t.me/%s?start=%s", identity.bot_username, code, allocator = allocator)
 }
 
-// Feedback requests use the same bounded request path and safe errors as text.
+// Read reactions must not stall the agent read route behind a slow provider.
+TELEGRAM_REACTION_TIMEOUT_MS :: 1000
+
+// Feedback requests use the same request path and safe errors as text.
 // JSON and request scratch are scoped to the call; no caller-owned data escapes.
 telegram_react :: proc(ctx: rawptr, external_chat_id, external_message_id, emoji: string) -> Channel_Error {
 	chat_id, valid_chat := strconv.parse_i64(external_chat_id)
@@ -200,7 +203,7 @@ telegram_react :: proc(ctx: rawptr, external_chat_id, external_message_id, emoji
 		chat_id, message_id: i64,
 		reaction: [1]struct {type, emoji: string},
 	}{chat_id, message_id, {{"emoji", emoji}}}, allocator = context.temp_allocator)
-	resp, err := telegram_request((^Telegram_Adapter)(ctx), "setMessageReaction", .POST, nil, body, 15_000)
+	resp, err := telegram_request((^Telegram_Adapter)(ctx), "setMessageReaction", .POST, nil, body, TELEGRAM_REACTION_TIMEOUT_MS)
 	defer httpc.response_destroy(&resp)
 	return err
 }

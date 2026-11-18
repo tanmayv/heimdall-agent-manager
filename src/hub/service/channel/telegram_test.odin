@@ -189,3 +189,17 @@ test_telegram_feedback_payloads_and_errors :: proc(t: ^testing.T) {
 	err := a.react(a.ctx, "111", "42", "👀")
 	testing.expect(t, err.kind == .Transient && !strings.contains(err.message, f.telegram.token))
 }
+
+@(test)
+test_telegram_reaction_timeout_is_bounded :: proc(t: ^testing.T) {
+	f: Telegram_Test_Fixture
+	defer telegram_test_stop(&f)
+	if !telegram_test_start(t, &f) do return
+	a := telegram_adapter(&f.telegram)
+	telegram_test_control(t, &f, "fail", struct {method: string, status, count, delay_ms: int}{"setMessageReaction", 500, 1, 2500})
+	started := time.tick_now()
+	err := a.react(a.ctx, "111", "42", "👀")
+	elapsed := time.tick_since(started)
+	testing.expect(t, err.kind == .Transient, "slow reaction fails best effort")
+	testing.expectf(t, elapsed >= 750*time.Millisecond && elapsed < 2*time.Second, "reaction timeout: %v", elapsed)
+}

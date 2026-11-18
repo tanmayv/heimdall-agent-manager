@@ -45,7 +45,12 @@ export function createFakeTelegram({token='TEST:FAKE', botUsername='ninjy_test_b
       }
       if (url.pathname==='/_control/offsets') {reply(res,200,offsets);return;}
       if (url.pathname==='/_control/fail' && req.method==='POST') {
-        failures.set(body.method,{...body,count:body.count??1});reply(res,200,{ok:true});return;
+        const delay=body.delay_ms??0;
+        if (!Number.isSafeInteger(delay) || delay<0) {
+          reply(res,400,{ok:false,error:'invalid_delay_ms'});return;
+        }
+        failures.set(body.method,{...body,count:body.count??1,delay_ms:Math.min(delay,10000)});
+        reply(res,200,{ok:true});return;
       }
       const pathname=decodeURIComponent(url.pathname);
       const prefix='/bot'+token+'/';
@@ -55,6 +60,7 @@ export function createFakeTelegram({token='TEST:FAKE', botUsername='ninjy_test_b
       const method=pathname.slice(prefix.length), fail=failures.get(method);
       if (fail?.count>0) {
         if (--fail.count===0) failures.delete(method);
+        if (fail.delay_ms) await new Promise(resolve=>setTimeout(resolve,fail.delay_ms));
         reply(res,fail.status,{ok:false,error_code:fail.status,
           description:fail.description??'injected failure',parameters:{retry_after:fail.retry_after??0}});return;
       }

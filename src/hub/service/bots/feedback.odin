@@ -3,11 +3,15 @@ package bots
 import "core:fmt"
 import "core:log"
 import "core:sync"
+import "core:time"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
 
 BOT_READ_REACTION :: "👀"
+// Stop admitting calls after four seconds. Telegram bounds each admitted call
+// to one second, keeping feedback below the bridge relay's 20-second stall.
+BOT_READ_REACTION_BUDGET :: 4 * time.Second
 
 // Serializing selection and mark_read makes the unread snapshot authoritative
 // across concurrent agent reads. The repository commits before feedback begins.
@@ -50,9 +54,13 @@ bots_channel_read :: proc(s: ^Bots_Service, bot_id: string, binding: domain.Chan
 	}
 	if len(newly_read) > 0 && bots_gate_on(s.experiments, binding.owner_user_id) {
 		if s.adapter != nil && s.adapter.react != nil {
+			started := time.tick_now()
 			for m in newly_read {
+				if time.tick_since(started) >= BOT_READ_REACTION_BUDGET do break
 				if err := s.adapter.react(s.adapter.ctx, binding.external_chat_id, m.external_message_id, BOT_READ_REACTION); err.kind != .None {
 					log.warn(fmt.tprintf("bots: react failed kind=%v", err.kind))
+					// A provider outage must not multiply latency by the read limit.
+					if err.kind == .Transient || err.kind == .Aborted || err.kind == .Rate_Limited do break
 				}
 			}
 		}

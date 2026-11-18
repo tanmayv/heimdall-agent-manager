@@ -761,7 +761,7 @@ Channel_Adapter :: struct {
 
 ### 8.0 Read reactions
 
-The optional adapter proc `react(ctx, external_chat_id, external_message_id, emoji) -> Channel_Error` provides best-effort feedback behind the bots experiment; a nil proc is skipped. After the agent read route commits newly read inbound messages, the service reacts once per message with `BOT_READ_REACTION :: "👀"`. Provider failures never fail reads, and provider calls run outside database write transactions. Telegram implements this through `setMessageReaction`, preserving the existing timeout and token-handling rules.
+The optional adapter proc `react(ctx, external_chat_id, external_message_id, emoji) -> Channel_Error` provides best-effort feedback behind the bots experiment; a nil proc is skipped. After the agent read route commits newly read inbound messages, the service reacts once per message with `BOT_READ_REACTION :: "👀"`. Provider failures never fail reads, and provider calls run outside database write transactions. Telegram implements this through `setMessageReaction`, using the existing HTTP client and token-handling rules. The read loop admits reaction calls for at most 4 seconds, and each Telegram reaction has a 1-second timeout, bounding feedback latency to about 5 seconds total. A transient, aborted, or rate-limited response stops the loop; remaining reactions are skipped as best effort.
 
 ### 8.1 Telegram adapter
 

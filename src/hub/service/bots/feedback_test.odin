@@ -1,6 +1,8 @@
 package bots
 
 import "core:testing"
+import "core:fmt"
+import "core:time"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import sqlite "odin_test:hub/repository/sqlite"
@@ -11,6 +13,8 @@ Feedback_Test_State :: struct {
 	conn: ^sqlite.Conn,
 	reactions: int,
 	fail_react: bool,
+	failure_kind: channel.Channel_Error_Kind,
+	delay: time.Duration,
 }
 
 feedback_assert_committed :: proc(state: ^Feedback_Test_State) {
@@ -26,8 +30,10 @@ feedback_test_react :: proc(ctx: rawptr, chat, message_id, emoji: string) -> cha
 	feedback_assert_committed(state)
 	testing.expect_value(state.t, chat, "111")
 	testing.expect_value(state.t, emoji, BOT_READ_REACTION)
-	testing.expect(state.t, message_id == "301" || message_id == "302" || message_id == "303")
+	testing.expect(state.t, message_id == "301" || message_id == "302" || message_id == "303" || message_id == "304" || message_id == "305" || message_id == "306")
 	state.reactions += 1
+	if state.delay > 0 do time.sleep(state.delay)
+	if state.failure_kind != .None do return {kind = state.failure_kind}
 	if state.fail_react do return {kind = .Transient}
 	return {}
 }
@@ -103,4 +109,52 @@ test_adapter_without_react_is_skipped :: proc(t: ^testing.T) {
 	testing.expect_value(t, state.reactions, 0)
 	feedback_test_insert(t, f, "chm_b", "302")
 	testing.expect_value(t, feedback_test_read(t, f, 50), 2)
+}
+
+@(test)
+test_read_reaction_transient_failure_stops_batch :: proc(t: ^testing.T) {
+	for kind in ([]channel.Channel_Error_Kind{.Transient, .Aborted, .Rate_Limited}) {
+		f := delivery_fixture(t)
+		state := Feedback_Test_State{t = t, conn = &f.pair.conn, failure_kind = kind, delay = 100 * time.Millisecond}
+		f.pair.adapter.ctx = &state
+		f.pair.adapter.react = feedback_test_react
+		feedback_test_insert(t, f, "chm_a", "301")
+		feedback_test_insert(t, f, "chm_b", "302")
+		feedback_test_insert(t, f, "chm_c", "303")
+		started := time.tick_now()
+		testing.expect_value(t, feedback_test_read(t, f, 50), 3)
+		elapsed := time.tick_since(started)
+		fmt.printf("reaction failure %v: calls=%d elapsed_ms=%.1f\n", kind, state.reactions, f64(elapsed)/f64(time.Millisecond))
+		testing.expect_value(t, state.reactions, 1)
+		testing.expect(t, elapsed < time.Second)
+		// All messages stay read, including the skipped feedback; retries do not
+		// attempt reactions again, and the route still returns every pending row.
+		testing.expect_value(t, feedback_test_read(t, f, 50), 3)
+		testing.expect_value(t, state.reactions, 1)
+		rows, e := iface.messages_history(&f.pair.repo, "bot_a", -1)
+		testing.expect_value(t, e.code, domain.Error_Code.None)
+		for &m in rows {
+			testing.expect_value(t, m.read_at, delivery_clock(f))
+			domain.channel_message_destroy(&m)
+		}
+		delete(rows)
+		delivery_destroy(f)
+	}
+}
+
+@(test)
+test_read_reaction_batch_has_time_budget :: proc(t: ^testing.T) {
+	f := delivery_fixture(t); defer delivery_destroy(f)
+	state := Feedback_Test_State{t = t, conn = &f.pair.conn, delay = time.Second}
+	f.pair.adapter.ctx = &state
+	f.pair.adapter.react = feedback_test_react
+	for i in 1..=6 do feedback_test_insert(t, f, fmt.tprintf("chm_%d", i), fmt.tprintf("%d", 300+i))
+	started := time.tick_now()
+	testing.expect_value(t, feedback_test_read(t, f, 50), 6)
+	elapsed := time.tick_since(started)
+	fmt.printf("reaction budget: calls=%d elapsed_ms=%.1f\n", state.reactions, f64(elapsed)/f64(time.Millisecond))
+	testing.expect(t, state.reactions > 0 && state.reactions <= 4)
+	testing.expect(t, elapsed >= BOT_READ_REACTION_BUDGET && elapsed < 5500 * time.Millisecond)
+	testing.expect_value(t, feedback_test_read(t, f, 50), 6)
+	testing.expect(t, state.reactions <= 4)
 }
