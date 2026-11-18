@@ -7,6 +7,7 @@ import "core:os"
 import "core:strings"
 import "core:sync"
 import "core:testing"
+import "core:time"
 
 T4_CONFIG :: `{"configOptions":[{"id":"actual-model","category":"model","type":"select","currentValue":"sonnet","options":[{"group":"Claude","options":[{"value":"sonnet","name":"Sonnet"}]}]},{"id":"actual-mode","category":"mode","type":"select","currentValue":"default","options":[{"value":"default","name":"Ask"},{"value":"bypassPermissions","name":"Bypass"}]}]}`
 
@@ -292,4 +293,43 @@ t4_acp_auth_blocks_and_missing_bootstrap_capability_never_readies :: proc(t: ^te
     snap, _ = bridge_runtime_instance_snapshot("inst_t4_bootstrap_missing")
     testing.expect(t, snap.runtime_status == "failed" && !snap.start_success_seen && snap.acp_error_code == "acp_bootstrap_unsupported")
     sync.mutex_lock(&next.f.mu); testing.expect_value(t, len(next.f.writes), 1); sync.mutex_unlock(&next.f.mu)
+    // A terminal result must persist failure even if no later RPC is sent.
+    sync.mutex_lock(&next.f.mu); saved := strings.clone(next.f.snapshot); sync.mutex_unlock(&next.f.mu)
+    defer delete(saved)
+    state, valid := acp_state_decode(saved); defer acp_state_delete(&state)
+    testing.expect(t, valid)
+    error_code := bridge_provider_json_extract_string(state.runtime_json, "error", ""); defer delete(error_code)
+    testing.expect_value(t, error_code, "acp_bootstrap_unsupported")
+}
+
+@(test)
+t4_acp_recovered_first_starter_requires_bootstrap_resource :: proc(t: ^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+    previous_records := bridge_local_token_records
+    bridge_local_token_records = make([dynamic]Bridge_Local_Agent_Token_Record, allocator = runtime.heap_allocator())
+    defer { delete(bridge_local_token_records); bridge_local_token_records = previous_records }
+    for embedded in ([]bool{true, false}) {
+        cwd := fmt.tprintf("%s/.cache/heimdall-tests/t4-first-starter-%d", os.get_env("HOME", context.temp_allocator), time.tick_now()._nsec)
+        bridge_make_directory_all(cwd); defer os.remove_all(cwd)
+        _ = os.write_entire_file(strings.concatenate({cwd, "/CLAUDE.md"}, context.temp_allocator), string("unique bootstrap marker"))
+        f: T4_Runtime_Test; t4_runtime_open(&f, "inst_t4_first_embedded" if embedded else "inst_t4_first_unsupported", cwd)
+        f.r.recovering = true; f.r.session = strings.clone("loaded-before-starter", runtime.heap_allocator())
+        testing.expect(t, t4_runtime_call(&f, "begin"))
+        init := `{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{"embeddedContext":true}}}` if embedded else `{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}`
+        t4_runtime_reply(t, &f, 0, init, 1)
+        t4_runtime_reply(t, &f, 1, T4_CONFIG, 2)
+        t4_runtime_reply(t, &f, 2, T4_CONFIG, 3)
+        t4_runtime_reply(t, &f, 3, T4_CONFIG, 4)
+        if embedded {
+            acp_test_wait(t, &f.f, .Writes, 5)
+            sync.mutex_lock(&f.f.mu)
+            testing.expect(t, len(f.f.writes) == 5)
+            if len(f.f.writes) == 5 do testing.expect(t, strings.contains(f.f.writes[4].bytes, `"type":"resource"`) && strings.contains(f.f.writes[4].bytes, "unique bootstrap marker") && strings.contains(f.f.writes[4].bytes, "EXACT starter text"))
+            sync.mutex_unlock(&f.f.mu)
+        } else {
+            testing.expect_value(t, f.r.d.error, "acp_bootstrap_unsupported")
+            sync.mutex_lock(&f.f.mu); testing.expect_value(t, len(f.f.writes), 4); sync.mutex_unlock(&f.f.mu)
+        }
+        f.r.d.stopped = true; acp_runtime_destroy(f.r); acp_test_delete(&f.f)
+    }
 }

@@ -23,6 +23,23 @@ ACP_Adapter_Status :: struct {
     version, node_version, state, error, checked_at: string,
 }
 
+ACP_Adapter_Lock_State :: enum { Acquired, Busy, Error }
+
+acp_adapter_cleanup_stages :: proc(root: string) -> bool {
+    dir, err := os.open(filepath.dir(root)); if err != nil do return false
+    defer os.close(dir)
+    entries, read_err := os.read_dir(dir, -1, context.temp_allocator); if read_err != nil do return false
+    prefix := strings.concatenate({filepath.base(root), ".stage-"}, context.temp_allocator)
+    // Caller owns the install lock: every older stage is now an orphan.
+    for entry in entries {
+        if entry.type == .Directory && strings.has_prefix(entry.name, prefix) {
+            path := strings.concatenate({filepath.dir(root), "/", entry.name}, context.temp_allocator)
+            if os.remove_all(path) != nil do return false
+        }
+    }
+    return true
+}
+
 acp_adapter_recipe :: proc(provider: string) -> (Bridge_Catalog_Provider, bool) {
     bridge_provider_catalog_init()
     sync.rw_mutex_shared_lock(&bridge_provider_catalog_mutex)
@@ -87,7 +104,13 @@ acp_adapter_status :: proc(provider: string) -> ACP_Adapter_Status {
     s.node_version = strings.clone(strings.trim_space(out), context.temp_allocator)
     root := acp_adapter_root(); defer delete(root)
     s.installed = acp_adapter_files_valid(root)
-    if os.exists(strings.concatenate({root, ".lock"}, context.temp_allocator)) { s.state = "installing"; return s }
+    lock_path := strings.concatenate({root, ".lock"}, context.temp_allocator)
+    if os.exists(lock_path) {
+        lock, state := acp_adapter_lock_acquire(lock_path)
+        if state == .Busy { s.state = "installing"; return s }
+        if state == .Error { s.state = "error"; s.error = "acp_adapter_lock_failed"; return s }
+        acp_adapter_lock_release(lock)
+    }
     if !s.installed {
         if os.is_dir(root) { s.state = "outdated"; s.error = "Pinned adapter files failed verification" }
         raw, err := os.read_entire_file(strings.concatenate({root, ".status.json"}), context.temp_allocator)
@@ -171,18 +194,19 @@ acp_adapter_install :: proc(provider, etag, version: string) -> (ok: bool, reaso
     root := acp_adapter_root(); defer delete(root)
     before := acp_adapter_status(provider)
     if before.state == "missing_node" do return false, "acp_adapter_missing_node"
-    if before.state == "ready" do return true, ""
     parent := filepath.dir(root)
     if bridge_make_directory_all(parent) != nil do return false, "acp_adapter_directory_failed"
     lock_path := strings.concatenate({root, ".lock"}); defer delete(lock_path)
-    lock, err := os.open(lock_path, {.Write, .Create, .Excl}, {.Read_User, .Write_User})
-    if err != nil do return false, "acp_adapter_install_in_progress"
-    defer { os.close(lock); os.remove(lock_path) }
+    lock, lock_state := acp_adapter_lock_acquire(lock_path)
+    if lock_state == .Busy do return false, "acp_adapter_install_in_progress"
+    if lock_state == .Error do return false, "acp_adapter_lock_failed"
+    defer acp_adapter_lock_release(lock)
     defer {
         raw, _ := json.marshal(struct{state, error, checked_at: string}{"ready" if ok else "error", reason, bridge_provider_probe_time()}, allocator = context.temp_allocator)
         bridge_retry_atomic_write(strings.concatenate({root, ".status.json"}, context.temp_allocator), raw)
     }
-    if s := acp_adapter_status(provider); s.state == "ready" do return true, ""
+    if !acp_adapter_cleanup_stages(root) do return false, "acp_adapter_directory_failed"
+    if before.state == "ready" do return true, ""
     stage := strings.concatenate({root, fmt.tprintf(".stage-%d", time.tick_now()._nsec)}); defer delete(stage)
     if bridge_make_directory_all(stage) != nil do return false, "acp_adapter_directory_failed"
     defer os.remove_all(stage)

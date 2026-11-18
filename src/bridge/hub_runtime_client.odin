@@ -240,6 +240,7 @@ bridge_runtime_local_endpoint_descriptor: string
 bridge_hub_runtime_init :: proc() {
 	bridge_command_dispatch_init()
 	bridge_runtime_mutex = sync.Mutex{}
+    for &inst in bridge_runtime_instances do bridge_runtime_replace_acp_error(&inst, "")
 	bridge_runtime_instances = make([dynamic]Bridge_Runtime_Instance)
 	bridge_runtime_results = make([dynamic]Bridge_Runtime_Command_Result, runtime.default_allocator())
 	bridge_runtime_launches = make([dynamic]Bridge_Runtime_Launch)
@@ -258,6 +259,7 @@ bridge_hub_runtime_init :: proc() {
 bridge_runtime_test_reset :: proc() {
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
+    for &inst in bridge_runtime_instances do bridge_runtime_replace_acp_error(&inst, "")
 	clear(&bridge_runtime_instances)
 	delete(bridge_runtime_launches)
 	bridge_runtime_launches = make([dynamic]Bridge_Runtime_Launch)
@@ -2810,9 +2812,9 @@ bridge_runtime_launch_provider_test :: proc(command_id, command_json: string) ->
 bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, endpoint, provider, model, agent_token, display_name: string, timeout_seconds: u64, project_path: string = "", permission_mode: string = "", provider_profile: string = "") -> (ok: bool, detail: string, err: Bridge_Error) {
     // A previous ACP child may already be dead while its driver still owns
     // routing. Join that owner before changing transport or spawning a PTY.
-    acp_runtime_detach(instance_id)
+    if bridge_runtime_is_acp(instance_id) do acp_runtime_detach(instance_id)
 	sync.mutex_lock(&bridge_runtime_mutex)
-	for &inst in bridge_runtime_instances do if inst.agent_instance_id == instance_id { inst.runtime_transport = "pty"; inst.acp_error_code = "" }
+	for &inst in bridge_runtime_instances do if inst.agent_instance_id == instance_id { inst.runtime_transport = "pty"; bridge_runtime_replace_acp_error(&inst, "") }
 	sync.mutex_unlock(&bridge_runtime_mutex)
 	// T2b: the context window is resolved per launch from provider + model
 	// (override > shipped config > default); never detected from the provider.
@@ -2900,7 +2902,7 @@ bridge_runtime_stop_agent_unlocked :: proc(instance_id: string, force: bool = fa
 	// running/starting (see bridge_runtime_note_activity_signal).
 	bridge_runtime_mark_stop_intent(instance_id)
 	bridge_runtime_set_status(instance_id, "stopping", "idle")
-	if acp_runtime_owned(instance_id) {
+	if bridge_runtime_is_acp(instance_id) {
 		acp_runtime_command(instance_id, "stop")
 		acp_runtime_detach(instance_id)
 	}
@@ -3436,7 +3438,21 @@ bridge_runtime_maybe_mark_start_prompt_locked :: proc(instance_id: string, now: 
 bridge_runtime_instance_snapshot :: proc(instance_id: string) -> (Bridge_Runtime_Instance, bool) {
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
-	return bridge_runtime_instance_snapshot_locked(instance_id)
+    snapshot, ok := bridge_runtime_instance_snapshot_locked(instance_id)
+    // Error replacement can free its old storage after this lock is released.
+    snapshot.acp_error_code = strings.clone(snapshot.acp_error_code, context.temp_allocator)
+    return snapshot, ok
+}
+
+// Caller holds bridge_runtime_mutex. This field is always heap-owned.
+bridge_runtime_replace_acp_error :: proc(inst: ^Bridge_Runtime_Instance, value: string) {
+    acp_runtime_replace(&inst.acp_error_code, value)
+}
+
+bridge_runtime_is_acp :: proc(instance: string) -> bool {
+    sync.mutex_lock(&bridge_runtime_mutex); defer sync.mutex_unlock(&bridge_runtime_mutex)
+    for inst in bridge_runtime_instances do if inst.agent_instance_id == instance do return inst.runtime_transport == "acp"
+    return false
 }
 
 // bridge_runtime_touch_liveness refreshes an ACTIVE instance's last_seen without

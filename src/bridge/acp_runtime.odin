@@ -40,7 +40,8 @@ ACP_Runtime :: struct {
 }
 
 // The ownership mutex quiesces external producers before closing a client.
-// Callbacks never take it. RPC/global runtime locks never cover daemon I/O.
+// Callbacks never take it. PTY routing reads the runtime transport flag instead
+// of taking this mutex, so ACP I/O cannot stall unrelated PTY deliveries.
 acp_runtime_mu: sync.Mutex
 acp_runtimes: map[string]^ACP_Runtime
 
@@ -52,7 +53,7 @@ acp_runtime_owned :: proc(instance: string) -> bool {
 acp_runtime_current :: proc(r: ^ACP_Runtime) -> bool {
     if r.quiescing || r.d.stopped || !bridge_startup_rec_current(r.rec) do return false
     snap, exists := bridge_runtime_instance_snapshot(r.instance)
-    return !exists || (snap.stopped_intent_unix_ms == 0 && snap.runtime_status != "stopping" && snap.runtime_status != "stopped")
+    return !exists || (snap.stopped_intent_unix_ms == 0 && snap.runtime_status != "stopping" && snap.runtime_status != "stopped" && snap.runtime_status != "failed")
 }
 
 acp_runtime_replace :: proc(target: ^string, value: string) {
@@ -86,30 +87,34 @@ acp_runtime_checkpoint :: proc(data: rawptr, state: ^ACP_State) -> bool {
 
 acp_runtime_close_child :: proc(r: ^ACP_Runtime) -> bool {
     if r.generation == "" do return true // no owned child before successful SpawnPipe
-    socket, ok := bridge_pty_host_ensure_daemon(); if !ok do return false
+    socket, ok := acp_runtime_io.ensure_daemon(); if !ok do return false
     frame := pty_host_encode_pipe_request({kind = .List}); defer delete(frame)
-    reply, received := pty_host_request_deadline(socket, frame, 2000)
+    reply, received := acp_runtime_io.request(socket, frame, 2000)
     defer pty_host_reply_delete(reply)
     if !received || reply.kind != .Pipe_List do return false
     for pipe in reply.pipes {
         if pipe.instance != r.instance do continue
         if pipe.generation != r.generation do return false
-        return bridge_pty_host_close(socket, r.instance)
+        return acp_runtime_io.close_child(socket, r.instance)
     }
     return true
 }
 
 acp_runtime_error :: proc(r: ^ACP_Runtime, reason: string, auth := false) {
     if r.d.stopped || r.d.error != "" do return
+    current := acp_runtime_current(r)
     acp_runtime_replace(&r.d.error, reason)
-    r.d.auth_required = auth
-    if !acp_runtime_current(r) do return
+    r.d.auth_required = auth; r.d.ready = false
+    // Persist before closing the child or publishing failure. Result callbacks
+    // can return without sending another RPC, so no later checkpoint is implied.
+    if r.client != nil do acp_rpc_checkpoint(r.client)
+    if !current do return
     if acp_runtime_events.prompt_finished != nil && r.d.current_input != "" {
         acp_runtime_events.prompt_finished(r, r.d.current_input, "", reason)
     }
     sync.mutex_lock(&bridge_runtime_mutex)
     for &inst in bridge_runtime_instances {
-        if inst.agent_instance_id == r.instance do inst.acp_error_code = strings.clone(reason, runtime.heap_allocator())
+        if inst.agent_instance_id == r.instance { bridge_runtime_replace_acp_error(&inst, reason); inst.acp_session_ready = false }
     }
     sync.mutex_unlock(&bridge_runtime_mutex)
     if auth {
@@ -189,6 +194,7 @@ acp_runtime_configure :: proc(r: ^ACP_Runtime, category, value, failure: string)
 }
 
 acp_runtime_ready :: proc(r: ^ACP_Runtime) {
+    if !r.d.starter_sent && !r.d.embedded_context { acp_runtime_error(r, "acp_bootstrap_unsupported"); return }
     r.d.ready = true
     acp_runtime_replace(&r.d.phase, "ready")
     if !acp_rpc_checkpoint(r.client) { acp_runtime_error(r, "acp_state_write_failed"); return }
@@ -200,7 +206,7 @@ acp_runtime_ready :: proc(r: ^ACP_Runtime) {
     bridge_runtime_mark_start_success(r.instance)
     if !r.d.starter_sent {
         r.d.starter_sent = true
-        acp_runtime_prompt(r, {"starter", r.d.starter}, bootstrap = !r.recovering)
+        acp_runtime_prompt(r, {"starter", r.d.starter}, bootstrap = true)
     } else {
         acp_runtime_drain(r)
     }
@@ -482,7 +488,7 @@ acp_runtime_launch :: proc(command, instance, epoch, etag, run_dir, endpoint, pr
     bridge_startup_set_expectation(instance, token, false)
     bridge_startup_arm(instance, token, bridge_runtime_now_ms())
     sync.mutex_lock(&bridge_runtime_mutex)
-    for &inst in bridge_runtime_instances do if inst.agent_instance_id == instance { inst.runtime_transport = "acp"; inst.acp_session_ready = false; inst.acp_error_code = "" }
+    for &inst in bridge_runtime_instances do if inst.agent_instance_id == instance { inst.runtime_transport = "acp"; inst.acp_session_ready = false; bridge_runtime_replace_acp_error(&inst, "") }
     sync.mutex_unlock(&bridge_runtime_mutex)
     reply, spawned := pty_host_spawn_pipe(socket, req)
     defer pty_host_reply_delete(reply)
