@@ -1,8 +1,10 @@
 package main
 
+import "base:runtime"
 import "core:encoding/base64"
 import "core:encoding/json"
 import "core:fmt"
+import "core:mem"
 import "core:os"
 import "core:strings"
 import httpc "odin_test:lib/httpc"
@@ -66,11 +68,37 @@ ctl_channel_rewrite_attachments :: proc(
 Ctl_Channel_Media_Context :: struct {
 	endpoint, token: string,
 	keyring:         ^vault.Vault_Keyring,
+	scratch_backing: mem.Allocator,
 }
 
-// Bound all legacy RPC-helper allocations to the command scratch allocator,
-// including their request builders and receive buffers. No file bytes persist.
+// Resolve one file in a separately owned arena. Only the small output fields
+// escape into the caller's allocator; all encoded/plaintext buffers die here.
 ctl_channel_resolve_attachment :: proc(ctx: rawptr, a: Ctl_Channel_Attachment_In) -> Ctl_Channel_Attachment_Out {
+	c := cast(^Ctl_Channel_Media_Context)ctx
+	output_allocator := context.temp_allocator
+	backing := c.scratch_backing
+	if backing.procedure == nil do backing = runtime.heap_allocator()
+	scratch: runtime.Arena
+	if runtime.arena_init(&scratch, 1024 * 1024, backing) != nil {
+		return {kind = a.kind, name = a.name, mime = a.mime, size = a.size, error = "fetch_failed"}
+	}
+	defer runtime.arena_destroy(&scratch)
+	context.temp_allocator = runtime.arena_allocator(&scratch)
+	context.allocator = context.temp_allocator
+	out := ctl_channel_resolve_attachment_scratch(ctx, a)
+	out.artifact_id = strings.clone(out.artifact_id, output_allocator)
+	out.kind = strings.clone(out.kind, output_allocator)
+	out.name = strings.clone(out.name, output_allocator)
+	out.mime = strings.clone(out.mime, output_allocator)
+	out.error = strings.clone(out.error, output_allocator)
+	out.sent_as = strings.clone(out.sent_as, output_allocator)
+	return out
+}
+
+ctl_channel_resolve_attachment_scratch :: proc(
+	ctx: rawptr,
+	a: Ctl_Channel_Attachment_In,
+) -> Ctl_Channel_Attachment_Out {
 	context.allocator = context.temp_allocator
 	c := cast(^Ctl_Channel_Media_Context)ctx
 	out := Ctl_Channel_Attachment_Out {
@@ -103,12 +131,17 @@ ctl_channel_resolve_attachment :: proc(ctx: rawptr, a: Ctl_Channel_Attachment_In
 					attachment_id: string,
 				}{a.attachment_id})},
 	)
-	defer delete(response)
 	if !reachable || !strings.contains(response, `"ok":true`) do return out
-	state := ctl_channel_string(response, "outcome", "")
+	fetch_value, fetch_err := json.parse(response, allocator = context.temp_allocator, parse_integers = true)
+	if fetch_err != nil do return out
+	fetch_root, _ := fetch_value.(json.Object)
+	fetched, _ := fetch_root["data"].(json.Object)
+	state_value, _ := fetched["outcome"].(json.String)
+	state := string(state_value)
 	switch state {
 	case "stored":
-		out.artifact_id = ctl_channel_string(response, "artifact_id", "")
+		id, _ := fetched["artifact_id"].(json.String)
+		out.artifact_id = string(id)
 		if out.artifact_id != "" do out.error = ""
 		return out
 	case "too_large", "unavailable":
@@ -118,10 +151,8 @@ ctl_channel_resolve_attachment :: proc(ctx: rawptr, a: Ctl_Channel_Attachment_In
 	case:
 		return out
 	}
-	bytes, decode_err := base64.decode(
-		ctl_channel_string(response, "content_base64", ""),
-		allocator = context.temp_allocator,
-	)
+	content_base64, _ := fetched["content_base64"].(json.String)
+	bytes, decode_err := base64.decode(string(content_base64), allocator = context.temp_allocator)
 	if decode_err != nil || len(bytes) == 0 do return out
 	sealed, seal_ok := ctl_vault_seal(string(bytes), c.keyring, context.temp_allocator)
 	name, name_ok := ctl_vault_seal(a.name, c.keyring, context.temp_allocator)
@@ -129,13 +160,11 @@ ctl_channel_resolve_attachment :: proc(ctx: rawptr, a: Ctl_Channel_Attachment_In
 		out.error = "vault_unavailable"
 		return out
 	}
-	mime := ctl_channel_string(response, "mime", a.mime)
-	fetched: struct {
-		data: struct {
-			size: i64,
-		},
-	}
-	if json.unmarshal(transmute([]byte)response, &fetched, allocator = context.temp_allocator) != nil do return out
+	mime_value, _ := fetched["mime"].(json.String)
+	mime := string(mime_value)
+	if mime == "" do mime = a.mime
+	size, size_ok := fetched["size"].(json.Integer)
+	if !size_ok do return out
 	kind := "file"
 	if a.kind == "image" do kind = "image"
 	encoded := base64.encode(transmute([]byte)sealed, allocator = context.temp_allocator)
@@ -143,7 +172,6 @@ ctl_channel_resolve_attachment :: proc(ctx: rawptr, a: Ctl_Channel_Attachment_In
 			name, kind, content_base64, content_type: string,
 		}{name, kind, encoded, mime}, allocator = context.temp_allocator)
 	created, create_ok := ctl_agent_local_call(c.endpoint, c.token, "agent.artifact.create", string(params))
-	defer delete(created)
 	if !create_ok || !strings.contains(created, `"ok":true`) do return out
 	artifact_id := ctl_channel_string(created, "artifact_id", "")
 	if artifact_id == "" do return out
@@ -154,12 +182,11 @@ ctl_channel_resolve_attachment :: proc(ctx: rawptr, a: Ctl_Channel_Attachment_In
 					attachment_id, artifact_id: string,
 				}{a.attachment_id, artifact_id})},
 	)
-	defer delete(stored)
 	if !stored_ok || !strings.contains(stored, `"ok":true`) do return out
 	out.artifact_id = ctl_channel_string(stored, "artifact_id", "")
 	if out.artifact_id == "" do return out
 	out.mime = mime
-	out.size = fetched.data.size
+	out.size = i64(size)
 	out.error = ""
 	return out
 }
@@ -167,7 +194,6 @@ ctl_channel_resolve_attachment :: proc(ctx: rawptr, a: Ctl_Channel_Attachment_In
 ctl_channel_read_media :: proc(endpoint, token, verb, params: string, args: []string) {
 	context.allocator = context.temp_allocator
 	response, ok := ctl_agent_local_call(endpoint, token, fmt.tprintf("agent.channel.%s", verb), params)
-	defer delete(response)
 	if !ok {
 		ctl_channel_media_error("local Bridge endpoint is not reachable")
 		return
@@ -203,13 +229,11 @@ ctl_channel_send_artifact :: proc(endpoint, token, artifact_id, caption: string,
 		}{artifact_id}, allocator = context.temp_allocator)
 	id_params := string(id_bytes)
 	meta, meta_ok := ctl_agent_local_call(endpoint, token, "agent.artifact.show", id_params)
-	defer delete(meta)
 	if !meta_ok do ctl_channel_media_error("local Bridge endpoint is not reachable")
 	artifact_require_ok(meta)
 	opened_meta := ctl_decrypt_json_string(meta, keyring, true, context.temp_allocator)
 	name := ctl_channel_string(opened_meta, "name", "")
 	response, content_ok := ctl_agent_local_call(endpoint, token, "agent.artifact.content", id_params)
-	defer delete(response)
 	if !content_ok do ctl_channel_media_error("local Bridge endpoint is not reachable")
 	artifact_require_ok(response)
 	content, result := ctl_vault_open(ctl_channel_string(response, "content", ""), keyring, context.temp_allocator)
@@ -227,7 +251,6 @@ ctl_channel_send_artifact :: proc(endpoint, token, artifact_id, caption: string,
 					size: int,
 				}{mime, len(content)})},
 	)
-	defer delete(plan)
 	if !plan_ok do ctl_channel_media_error("local Bridge endpoint is not reachable")
 	artifact_require_ok(plan)
 

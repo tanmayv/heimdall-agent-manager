@@ -2,8 +2,13 @@ package main
 
 import "core:encoding/base64"
 import "core:encoding/json"
+import "core:fmt"
+import "core:mem"
+import "core:net"
 import "core:strings"
 import "core:testing"
+import "core:thread"
+import "core:time"
 
 @(test)
 test_channel_rewrite_without_attachments_unchanged :: proc(t: ^testing.T) {
@@ -302,4 +307,113 @@ test_channel_media_fetch_failures :: proc(t: ^testing.T) {
 		testing.expect_value(t, fb.served, len(replies))
 		fake_bridge_stop(fb)
 	}
+}
+
+Ctl_Media_Large_Bridge :: struct {
+	listener: net.TCP_Socket,
+	fetched:  string,
+	served:   int,
+}
+ctl_media_large_bridge_thread :: proc(raw: rawptr) {
+	fb := cast(^Ctl_Media_Large_Bridge)raw
+	for i in 0 ..< 12 {
+		client, _, err := net.accept_tcp(fb.listener)
+		if err != nil do return
+		_ = net.set_option(client, .Receive_Timeout, 5 * time.Second)
+		buffer: [65536]byte
+		for {
+			n, recv_err := net.recv_tcp(client, buffer[:])
+			if recv_err != nil || n <= 0 do break
+			if strings.index_byte(string(buffer[:n]), '\n') >= 0 do break
+		}
+		response := "{\"ok\":true,\"data\":{\"artifact_id\":\"art_large\"}}\n"
+		if i % 3 == 0 do response = fb.fetched
+		sent := 0
+		for sent < len(response) {
+			n, send_err := net.send_tcp(client, transmute([]byte)response[sent:])
+			if send_err != nil || n <= 0 do break
+			sent += n
+		}
+		net.close(client)
+		fb.served += 1
+	}
+}
+
+@(test)
+test_channel_media_large_attachments_release_scratch :: proc(t: ^testing.T) {
+	// Four sequential 2 MiB files through the actual fetch/seal/create/stored
+	// path. Track the arena's heap blocks separately from escaped metadata.
+	size :: 2 * 1024 * 1024
+	bytes := make([]byte, size, context.temp_allocator)
+	for &b, i in bytes do b = byte(i % 251)
+	encoded := base64.encode(bytes, allocator = context.temp_allocator)
+	fetched, _ := json.marshal(struct {
+			ok:   bool,
+			data: struct {
+				outcome, mime:  string,
+				size:           int,
+				content_base64: string,
+			},
+		}{true, {"fetched", "application/pdf", size, encoded}}, allocator = context.temp_allocator)
+	listener, listen_err := net.listen_tcp(net.Endpoint{address = net.IP4_Loopback, port = 0})
+	if !testing.expect(t, listen_err == nil) do return
+	defer net.close(listener)
+	bound, bound_err := net.bound_endpoint(listener)
+	if !testing.expect(t, bound_err == nil) do return
+	fb := Ctl_Media_Large_Bridge {
+		listener = listener,
+		fetched  = strings.concatenate({string(fetched), "\n"}, context.temp_allocator),
+	}
+	handle := thread.create_and_start_with_data(&fb, ctl_media_large_bridge_thread)
+	defer thread.destroy(handle)
+	defer thread.join(handle)
+	endpoint := fmt.tprintf("tcp:127.0.0.1:%d", bound.port)
+	scratch_track, output_track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&scratch_track, context.allocator)
+	defer mem.tracking_allocator_destroy(&scratch_track)
+	mem.tracking_allocator_init(&output_track, context.allocator)
+	defer mem.tracking_allocator_destroy(&output_track)
+	output_allocator := mem.tracking_allocator(&output_track)
+	c := Ctl_Channel_Media_Context {
+		endpoint        = endpoint,
+		token           = "test",
+		keyring         = tkr("1111111111111111111111111111111111111111111111111111111111111111"),
+		scratch_backing = mem.tracking_allocator(&scratch_track),
+	}
+	first_peak: i64
+	for i in 0 ..< 4 {
+		out: Ctl_Channel_Attachment_Out
+		{
+			context.temp_allocator = output_allocator
+			out = ctl_channel_resolve_attachment(
+				&c,
+				{attachment_id = "cha_large", kind = "document", name = "large.pdf", state = "pending"},
+			)
+		}
+		testing.expect_value(t, out.error, "")
+		testing.expect_value(t, out.artifact_id, "art_large")
+		testing.expect_value(t, out.mime, "application/pdf")
+		testing.expect_value(t, out.size, i64(size))
+		testing.expect_value(t, scratch_track.current_memory_allocated, i64(0))
+		testing.expect_value(t, len(scratch_track.allocation_map), 0)
+		testing.expect(t, output_track.current_memory_allocated < 256)
+		if i == 0 do first_peak = scratch_track.peak_memory_allocated
+		testing.expect_value(t, scratch_track.peak_memory_allocated, first_peak)
+		fmt.printf(
+			"D5 large file %d: scratch retained=%d, peak=%d, output=%d bytes\n",
+			i + 1,
+			scratch_track.current_memory_allocated,
+			scratch_track.peak_memory_allocated,
+			output_track.current_memory_allocated,
+		)
+		delete(out.artifact_id, output_allocator)
+		delete(out.kind, output_allocator)
+		delete(out.name, output_allocator)
+		delete(out.mime, output_allocator)
+		delete(out.error, output_allocator)
+		delete(out.sent_as, output_allocator)
+		testing.expect_value(t, output_track.current_memory_allocated, i64(0))
+	}
+	testing.expect(t, first_peak > size)
+	testing.expect(t, first_peak < 96 * 1024 * 1024)
 }
