@@ -720,3 +720,29 @@ test_terminal_report_rolls_back_seq_on_storage_failure :: proc(t: ^testing.T) {
     defer domain.bot_delivery_attempt_destroy(&terminal)
     testing.expect_value(t, terminal.state, domain.Bot_Attempt_State.Acted)
 }
+
+@(test)
+test_switch_snapshot_candidate_keeps_alias_identity :: proc(t: ^testing.T) {
+	f := delivery_fixture(t); defer delivery_destroy(f)
+	f.placement.models = {{bridge_id = "b1", provider = "alpha", has_snapshot = true,
+	models_json = `[{"model_id":"opus","resolved_model":"claude-opus-5-5"}]`}}
+	_, policy_err := bots_put_placement(&f.pair.service, "alice", 0,
+	{{bridge_id = "*", provider = "alpha", model = "claude-opus-5-5", tier = .Allowed}})
+	testing.expect_value(t, policy_err.code, domain.Error_Code.None)
+	delivery_seed(t, f)
+	a := delivery_attempt_test(f); defer domain.bot_delivery_attempt_destroy(&a)
+	candidates: []contracts.Bot_Candidate_Wire
+	testing.expect(t, json.unmarshal_string(a.candidates_json, &candidates) == nil)
+	defer bots_candidates_destroy(candidates)
+	testing.expect_value(t, len(candidates), 1)
+	if len(candidates) != 1 do return
+	testing.expect_value(t, candidates[0].model, "opus")
+	changed, err := bots_switch(&f.pair.service, "b1", a.attempt_id, candidates[0])
+	testing.expect_value(t, err.code, domain.Error_Code.None)
+	testing.expect_value(t, changed.model, "opus")
+	repeated, repeat_err := bots_switch(&f.pair.service, "b1", a.attempt_id, candidates[0])
+	testing.expect_value(t, repeat_err.code, domain.Error_Code.None)
+	testing.expect(t, !repeated.relaunched)
+	testing.expect_value(t, repeated.model, "opus")
+	testing.expect_value(t, repeated.configuration_revision, changed.configuration_revision)
+}

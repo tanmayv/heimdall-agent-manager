@@ -39,10 +39,10 @@ bots_validate_placement :: proc(s: ^Bots_Service, owner: string, rows: []domain.
 }
 
 // The first matching policy row determines both permission and rank.
-bots_candidate_rank :: proc(policy: []domain.Bot_Placement_Candidate, bridge_id, provider, model: string) -> (tier: domain.Bot_Placement_Tier, position: int, wildcard: bool, allowed: bool) {
+bots_candidate_rank :: proc(policy: []domain.Bot_Placement_Candidate, bridge_id, provider, model: string, resolved_model: string = "") -> (tier: domain.Bot_Placement_Tier, position: int, wildcard: bool, allowed: bool) {
 	if len(policy) == 0 do return .Allowed, 0, false, true
 	for row in policy {
-		if (row.bridge_id == "*" || row.bridge_id == bridge_id) && (row.provider == "*" || row.provider == provider) && (row.model == "*" || row.model == model) do return row.tier, row.position, row.model == "*", true
+		if (row.bridge_id == "*" || row.bridge_id == bridge_id) && (row.provider == "*" || row.provider == provider) && (row.model == "*" || row.model == model || (resolved_model != "" && row.model == resolved_model)) do return row.tier, row.position, row.model == "*", true
 	}
 	return {}, 0, false, false
 }
@@ -60,7 +60,8 @@ bots_rank_before :: proc(a, b: Ranked_Bot_Candidate) -> bool {
 }
 
 // Returned entries own their strings; callers use bots_candidates_destroy.
-bots_expand_candidates :: proc(s: ^Bots_Service, bot: domain.Bot, policy: []domain.Bot_Placement_Candidate, bridge_id: string) -> []contracts.Bot_Candidate_Wire {
+// first_rank preserves policy rank across alias matching; bridge ties still use age/ID.
+bots_expand_candidates :: proc(s: ^Bots_Service, bot: domain.Bot, policy: []domain.Bot_Placement_Candidate, bridge_id: string, first_rank: ^Ranked_Bot_Candidate = nil) -> []contracts.Bot_Candidate_Wire {
 	views, err := provider_service.list_bridge_providers(s.providers, bridge_id)
 	defer provider_service.bridge_provider_views_destroy(views)
 	if err.code != .None do return nil
@@ -78,7 +79,7 @@ bots_expand_candidates :: proc(s: ^Bots_Service, bot: domain.Bot, policy: []doma
 		for model, mi in view.catalog.models {
 			if model.state != "active" do continue
 			if first_active < 0 do first_active = mi
-			tier, position, wildcard, allowed := bots_candidate_rank(policy, bridge_id, view.catalog.provider, model.model_id)
+			tier, position, wildcard, allowed := bots_candidate_rank(policy, bridge_id, view.catalog.provider, model.model_id, model.resolved_model)
 			if !allowed || (wildcard && mi != first_active) do continue
 			candidate := Ranked_Bot_Candidate{wire = {provider = view.catalog.provider, provider_profile = view.profile_id, model = model.model_id, tier = domain.bot_placement_tier_text(tier)}, tier = tier, position = position, provider_order = provider_order, model_order = mi}
 			append(&ranked, candidate)
@@ -93,6 +94,8 @@ bots_expand_candidates :: proc(s: ^Bots_Service, bot: domain.Bot, policy: []doma
 		duplicate := false
 		for existing in out do if existing.provider == candidate.wire.provider && existing.model == candidate.wire.model do duplicate = true
 		if duplicate do continue
+		// Keep the advertised alias on the wire: instance validation and storage use model_id.
+		if len(out) == 0 && first_rank != nil do first_rank^ = Ranked_Bot_Candidate{tier = candidate.tier, position = candidate.position}
 		append(&out, contracts.Bot_Candidate_Wire{provider = strings.clone(candidate.wire.provider), provider_profile = strings.clone(candidate.wire.provider_profile), model = strings.clone(candidate.wire.model), tier = strings.clone(candidate.wire.tier)})
 		if len(out) >= limit do break
 	}
@@ -133,12 +136,11 @@ bots_select_bridge :: proc(s: ^Bots_Service, bot: domain.Bot, delivery: domain.B
 		tried := false
 		for a in attempts do if a.round == round && a.bridge_id == b.bridge_id do tried = true
 		if tried do continue
-		candidates := bots_expand_candidates(s, bot, policy, b.bridge_id)
+		rank: Ranked_Bot_Candidate
+		candidates := bots_expand_candidates(s, bot, policy, b.bridge_id, &rank)
 		defer bots_candidates_destroy(candidates)
 		if len(candidates) == 0 do continue
 		if b.bridge_id == sticky do return strings.clone(b.bridge_id), true
-		tier, pos, _, _ := bots_candidate_rank(policy, b.bridge_id, candidates[0].provider, candidates[0].model)
-		rank := Ranked_Bot_Candidate{tier = tier, position = pos}
 		if best < 0 || bots_rank_before(rank, best_rank) || (rank.tier == best_rank.tier && rank.position == best_rank.position && (b.created_at < bridges[best].created_at || (b.created_at == bridges[best].created_at && b.bridge_id < bridges[best].bridge_id))) {
 			best, best_rank = i, rank
 		}

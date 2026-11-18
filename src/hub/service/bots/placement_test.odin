@@ -22,6 +22,8 @@ Placement_Fixture :: struct {
 	attempts: []domain.Bot_Delivery_Attempt,
 	sticky: string,
 	bridges: []domain.Bridge,
+	models: []domain.Bridge_Provider_Models,
+	provider_ids: []string,
 }
 placement_clone :: proc(value: $T) -> T {
 	data, _ := json.marshal(value, allocator = context.temp_allocator)
@@ -29,24 +31,37 @@ placement_clone :: proc(value: $T) -> T {
 	assert(json.unmarshal(data, &result) == nil)
 	return result
 }
+placement_provider_ids :: proc(ctx: rawptr) -> []string {
+	f := (^Placement_Fixture)(ctx)
+	if len(f.provider_ids) > 0 do return f.provider_ids
+	ids := make([]string, 2, context.temp_allocator)
+	ids[0], ids[1] = "alpha", "beta"
+	return ids
+}
 placement_catalog_get :: proc(ctx: rawptr, id: string) -> (domain.Provider_Catalog_Entry, bool, domain.Domain_Error) {
-	if id != "alpha" && id != "beta" do return {}, false, {}
+	known := false
+	for provider in placement_provider_ids(ctx) do if provider == id do known = true
+	if !known do return {}, false, {}
 	entry := domain.Provider_Catalog_Entry{provider = strings.clone(id), state = strings.clone("active"), models = make([dynamic]domain.Provider_Model)}
 	for model in ([]string{"old", "m1", "m2", "m3", "m4"}) do append(&entry.models, domain.Provider_Model{model_id = strings.clone(model), state = strings.clone("deprecated" if model == "old" else "active")})
 	return entry, true, {}
 }
 placement_catalog_list :: proc(ctx: rawptr) -> ([dynamic]domain.Provider_Catalog_Entry, domain.Domain_Error) {
 	out := make([dynamic]domain.Provider_Catalog_Entry)
-	for id in ([]string{"alpha", "beta"}) {entry, _, _ := placement_catalog_get(ctx, id); append(&out, entry)}
+	for id in placement_provider_ids(ctx) {entry, _, _ := placement_catalog_get(ctx, id); append(&out, entry)}
 	return out, {}
 }
 placement_statuses :: proc(ctx: rawptr, bridge: string) -> ([dynamic]domain.Bridge_Provider_Status, domain.Domain_Error) {
 	out := make([dynamic]domain.Bridge_Provider_Status)
-	for id in ([]string{"alpha", "beta"}) do append(&out, domain.Bridge_Provider_Status{provider = strings.clone(id), state = strings.clone("present")})
+	for id in placement_provider_ids(ctx) do append(&out, domain.Bridge_Provider_Status{provider = strings.clone(id), state = strings.clone("present")})
 	return out, {}
 }
 placement_settings :: proc(ctx: rawptr, bridge: string) -> ([dynamic]domain.Bridge_Provider_Setting, domain.Domain_Error) {return nil, {}}
-placement_models :: proc(ctx: rawptr, bridge: string) -> ([dynamic]domain.Bridge_Provider_Models, domain.Domain_Error) {return nil, {}}
+placement_models :: proc(ctx: rawptr, bridge: string) -> ([dynamic]domain.Bridge_Provider_Models, domain.Domain_Error) {
+	out := make([dynamic]domain.Bridge_Provider_Models)
+	for row in (^Placement_Fixture)(ctx).models do if row.bridge_id == bridge do append(&out, placement_clone(row))
+	return out, {}
+}
 placement_bridge_list :: proc(ctx: rawptr, owner: domain.User_ID) -> ([]domain.Bridge, domain.Domain_Error) {return placement_clone((^Placement_Fixture)(ctx).bridges), {}}
 placement_bridge_get :: proc(ctx: rawptr, id: string) -> (domain.Bridge, bool, domain.Domain_Error) {
 	for b in (^Placement_Fixture)(ctx).bridges do if b.bridge_id == id do return placement_clone(b), true, {}
@@ -57,7 +72,7 @@ placement_attempts :: proc(ctx: rawptr, delivery: string) -> ([]domain.Bot_Deliv
 placement_instance :: proc(ctx: rawptr, id: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {return domain.Agent_Instance{bridge_id = strings.clone((^Placement_Fixture)(ctx).sticky)}, true, {}}
 placement_fixture :: proc() -> ^Placement_Fixture {
 	f := new(Placement_Fixture)
-	f.provider_repo = {list = placement_catalog_list, get = placement_catalog_get, list_status = placement_statuses, list_settings = placement_settings, list_models = placement_models}
+	f.provider_repo = {ctx = f, list = placement_catalog_list, get = placement_catalog_get, list_status = placement_statuses, list_settings = placement_settings, list_models = placement_models}
 	f.providers.repo = &f.provider_repo
 	f.bridge_repo = {ctx = f, get_bridge = placement_bridge_get, list_by_owner = placement_bridge_list}
 	f.agent_repo = {ctx = f, get_instance = placement_instance}
@@ -148,4 +163,30 @@ test_select_bridge_skips_tried_and_unsupported :: proc(t: ^testing.T) {
 	f.bridges[1].plan_disabled_at = "now"
 	_, disabled := bots_select_bridge(&f.service, {owner_user_id = "alice"}, {}, 1)
 	testing.expect(t, !disabled)
+}
+
+// Snapshot aliases remain launchable wire IDs even when policy names the resolved model.
+@(test)
+test_placement_snapshot_alias_matches_resolved_model :: proc(t: ^testing.T) {
+	f := placement_fixture(); defer placement_fixture_destroy(f)
+	f.provider_ids = {"claude"}
+	placement_select_bridges(f)
+	f.models = {{bridge_id = "b2", provider = "claude", has_snapshot = true,
+	models_json = `[{"model_id":"opus","resolved_model":"claude-opus-5-5"},{"model_id":"sonnet","resolved_model":"other"}]`}}
+	f.policy = {{bridge_id = "*", provider = "claude", model = "claude-opus-5-5", tier = .Preferred}}
+	rows := bots_expand_candidates(&f.service, {}, f.policy, "b2"); defer bots_candidates_destroy(rows)
+	testing.expect_value(t, len(rows), 1)
+	if len(rows) == 1 {testing.expect_value(t, rows[0].model, "opus"); testing.expect_value(t, rows[0].tier, "preferred")}
+	selected, found := bots_select_bridge(&f.service, {owner_user_id = "alice"}, {}, 1); defer delete(selected)
+	testing.expect(t, found); testing.expect_value(t, selected, "b2")
+	// Catalog fallback still matches literal IDs and excludes unrelated models.
+	fallback := bots_expand_candidates(&f.service, {}, f.policy, "b1"); defer bots_candidates_destroy(fallback)
+	testing.expect_value(t, len(fallback), 0)
+	direct := bots_expand_candidates(&f.service, {}, {{bridge_id = "*", provider = "claude", model = "opus"}}, "b2"); defer bots_candidates_destroy(direct)
+	testing.expect_value(t, len(direct), 1)
+	// Ranking must retain the resolved-name policy position after expansion.
+	f.policy = {{bridge_id = "*", provider = "claude", model = "m1", tier = .Allowed},
+	{bridge_id = "*", provider = "claude", model = "claude-opus-5-5", tier = .Preferred, position = 1}}
+	preferred, preferred_found := bots_select_bridge(&f.service, {owner_user_id = "alice"}, {}, 1); defer delete(preferred)
+	testing.expect(t, preferred_found); testing.expect_value(t, preferred, "b2")
 }
