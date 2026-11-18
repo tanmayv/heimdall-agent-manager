@@ -181,7 +181,7 @@ export function isTerminalPromptItem(item: AttentionBlockerItem): boolean {
 
 /** "Needs your permission" (provider prompt) / "Waiting for input in the terminal". */
 export function blockerReason(item: AttentionBlockerItem): string {
-  return isTerminalPromptItem(item) ? 'Waiting for input in the terminal' : 'Needs your permission';
+  return isTerminalPromptItem(item) ? 'Waiting for input in the terminal' : item.details.blocker_kind === 'permission' ? 'Needs your permission' : 'Needs attention on the bridge host';
 }
 
 export function reasonLine(item: AttentionItem, now: number): string {

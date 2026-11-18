@@ -25,7 +25,7 @@ export function AgentPtyWorkbenchPane({
   agentInstanceId,
   isActiveTab = true,
 }: AgentPtyWorkbenchPaneProps) {
-  const { data: instanceData, refetch } = useFetchAgentInstanceQuery(
+  const { currentData: instanceData, refetch } = useFetchAgentInstanceQuery(
     { instanceId: agentInstanceId },
     // No steady poll: agent_instance resource events patch this cache (and a failure
     // refetches it for last_error), as in AgentChatPane; reconnect resync covers gaps.
@@ -85,6 +85,7 @@ export function AgentPtyWorkbenchPane({
       <Suspense fallback={null}>
         <AgentPaneComposerPanel
           agentInstanceId={agentInstanceId}
+          runtimeTransport={instance?.runtime_transport}
           isExpanded={true}
           isActiveTab={isActiveTab}
           runtimeStatus={rawStatus}

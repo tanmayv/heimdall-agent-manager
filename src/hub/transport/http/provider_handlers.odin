@@ -202,9 +202,15 @@ bridge_provider_status_response :: proc(
 	views, err := provider_service.list_bridge_providers(h.providers, bridge_id)
 	if err.code != .None do return respond_error(err, request_id)
 	defer provider_service.bridge_provider_views_destroy(views)
+	bridge, found, bridge_err := iface.bridge_get_bridge(h.bridges.repo, bridge_id)
+	if bridge_err.code != .None do return respond_error(bridge_err, request_id)
+	defer if found do domain.bridge_destroy(&bridge)
+	acp_supported := found && contracts.bridge_supports_acp_runtime(bridge.capabilities_json)
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"bridge_id\":\""); write_handler_json_string(&b, bridge_id)
-	strings.write_string(&b, "\",\"providers\":[")
+	strings.write_string(&b, "\",\"acp_runtime_supported\":")
+	strings.write_string(&b, "true" if acp_supported else "false")
+	strings.write_string(&b, ",\"providers\":[")
 	for view, i in views {if i > 0 do strings.write_byte(&b, ',')
 		write_bridge_provider_view_json(&b, view)}
 	strings.write_string(&b, "],\"extension_commands\":[")
@@ -214,10 +220,10 @@ bridge_provider_status_response :: proc(
 		defer domain.provider_extension_commands_destroy(commands)
 		count := 0
 		for command, i in commands {
-			if command.kind != "install" do continue
+			if command.kind != "install" && command.kind != "install_acp_adapter" do continue
 			latest := true
 			for j in i + 1 ..< len(commands) {
-				if commands[j].kind == "install" &&
+				if commands[j].kind == command.kind &&
 				   commands[j].provider == command.provider && domain.profile_effective_id(command.provider,commands[j].profile_id)==domain.profile_effective_id(command.provider,command.profile_id) {latest = false; break}
 			}
 			if !latest do continue

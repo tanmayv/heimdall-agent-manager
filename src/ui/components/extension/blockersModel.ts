@@ -14,7 +14,7 @@
 // from screen detection and can only be answered in the agent terminal.
 import { formatCountdown, parseTimeMs } from './permissionCardModel';
 
-export type BlockerKind = 'permission' | 'terminal_prompt';
+export type BlockerKind = 'permission' | 'terminal_prompt' | 'startup';
 export type BlockerDecision = 'allow' | 'deny';
 
 export interface AgentBlocker {
@@ -51,7 +51,7 @@ export function normalizeBlocker(raw: any): AgentBlocker | null {
   if (!raw || typeof raw !== 'object') return null;
   const blocker_id = str(raw.blocker_id);
   if (!blocker_id) return null;
-  const kind: BlockerKind = raw.kind === 'terminal_prompt' ? 'terminal_prompt' : raw.kind === 'permission' ? 'permission' : ('' as any);
+  const kind = ['terminal_prompt', 'permission', 'startup'].includes(raw.kind) ? raw.kind as BlockerKind : null;
   if (!kind) return null;
   return {
     blocker_id,
@@ -101,7 +101,7 @@ export function instanceCanDecide(runtimeStatus: string): boolean {
 
 export interface BlockerCardView {
   /** 'pending' while answerable here, 'expired' after the hook deadline, 'terminal' for a screen prompt. */
-  phase: 'pending' | 'expired' | 'terminal';
+  phase: 'pending' | 'expired' | 'terminal' | 'startup';
   secondsLeft: number;
   /** "4:59", '' when there is no deadline. */
   countdown: string;
@@ -110,6 +110,7 @@ export interface BlockerCardView {
 }
 
 export function blockerCardView(blocker: AgentBlocker, nowMs: number, runtimeStatus = 'running'): BlockerCardView {
+  if (blocker.kind === 'startup') return { phase: 'startup', secondsLeft: 0, countdown: '', canDecide: false, statusLabel: 'Needs attention on the bridge host' };
   if (blocker.kind === 'terminal_prompt') {
     return { phase: 'terminal', secondsLeft: 0, countdown: '', canDecide: false, statusLabel: 'Waiting for input in the terminal' };
   }

@@ -19,6 +19,7 @@ import { summarizePermissionInput } from '../extension/permissionCardModel';
 import type { BlockerDecision } from '../extension/blockersModel';
 import { formatAge, hideKey, isTerminalPromptItem } from './attentionModel';
 import { needLabel } from './actionTrayModel';
+import { AcpAuthInstructions } from '../chat/AcpAuthInstructions';
 
 /** How long a resolved blocker stays hidden before a still-listed one shows again. */
 export const BLOCKER_RESOLVE_CONFIRM_MS = 15_000;
@@ -48,6 +49,11 @@ export function openBlockerAgent(item: AttentionBlockerItem) {
 export function AgentBlockerBody({ item }: { item: AttentionBlockerItem }) {
   const d = item.details;
   const input = useMemo(() => summarizePermissionInput(d.tool_name, (d.input || {}) as Record<string, any>), [d.tool_name, d.input]);
+  if (d.blocker_kind !== 'permission' && d.blocker_kind !== 'terminal_prompt') {
+    return d.blocker_kind === 'startup' && d.input?.reason === 'acp_auth_required'
+      ? <AcpAuthInstructions />
+      : <p className="text-sm text-primary">{d.summary || 'This agent needs attention on the bridge host.'}</p>;
+  }
   if (isTerminalPromptItem(item)) {
     return (
       <p data-debug-id="attention-blocker-terminal" className="flex items-center gap-2 text-[14px] text-primary">
@@ -79,6 +85,9 @@ export function AgentBlockerActions({ item, compact = false, scheduler, onDone }
   const [busy, setBusy] = useState<BlockerDecision | null>(null);
   const [error, setError] = useState('');
   const id = item.action_refs.blocker_id;
+  if (item.details.blocker_kind !== 'permission' && item.details.blocker_kind !== 'terminal_prompt') {
+    return <Button variant="secondary" data-debug-id={`attention-blocker-open-${id}`} onClick={() => openBlockerAgent(item)}>Open agent</Button>;
+  }
   if (isTerminalPromptItem(item)) {
     return (
       <div className="flex flex-wrap items-center gap-2">

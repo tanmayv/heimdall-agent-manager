@@ -9,10 +9,16 @@ import { JSDOM } from 'jsdom';
 const boundaryModules: Record<string, string> = {
   '/hooks/useEntitlements.ts': 'export const useEntitlements = () => ({ terminal_input_enabled: true, terminal_streaming_enabled: true });',
   '/api/endpoints/agents.ts': `
-    export const useFetchAgentInstanceQuery = () => ({});
-    export const useSendAgentPaneInputMutation = () => [() => Promise.resolve()];
+    export const useFetchAgentInstanceQuery = () => {
+      const h = globalThis.__agentReconnectHarness;
+      const data = h.instanceLoaded ? {instance: {runtime_transport: h.transport, provider: 'claude', provider_profile: 'claude-work', bridge_id: 'brg-test'}} : undefined;
+      return {data, currentData: data};
+    };
+    export const useSendAgentPaneInputMutation = () => [(input) => { globalThis.__agentReconnectHarness.interrupts.push(input); return Promise.resolve({data: {}}); }, {isLoading: false}];
     export const useSendAgentPaneResizeMutation = () => [() => Promise.resolve()];
   `,
+  '/api/endpoints/bridgeSupport.ts': `export const useListBridgeProvidersQuery = () => ({currentData: {providers: [{provider: 'claude', effective_transport: 'pty', acp_adapter: {state: 'ready', version: '0.108.0', node_version: 'v22.0.0'}}]}});`,
+  '/api/endpoints/extension.ts': `export const useGetAgentBlockersQuery = () => ({currentData: {blockers: globalThis.__agentReconnectHarness.blockers}});`,
   '/api/endpoints/settings.ts': 'export const useFetchExperimentsQuery = () => ({data: {flags: [{key: "streaming_terminal_pane", enabled: true}]}});',
   '/hooks/useAgentPaneSubscription.ts': `
     export function useAgentPaneSubscription(options) {
@@ -82,11 +88,11 @@ class Socket {
   control(message: any) { this.onmessage?.({data: JSON.stringify(message)}); }
 }
 
-async function harness(panel = false) {
+async function harness(panel = false, initial = {}) {
   const dom = new JSDOM('<div id="root"></div>', {url: 'http://localhost/', pretendToBeVisual: true});
   const keys = ['window', 'document', 'WebSocket', 'ResizeObserver', 'requestAnimationFrame', 'IS_REACT_ACT_ENVIRONMENT', '__agentReconnectHarness'];
   const saved = keys.map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
-  const state = {terminals: [] as any[], pollingIds: [] as any[]};
+  const state = {terminals: [] as any[], pollingIds: [] as any[], interrupts: [] as any[], instanceLoaded: true, transport: 'pty', blockers: [] as any[], ...initial};
   Object.assign(globalThis, {
     window: dom.window, document: dom.window.document, WebSocket: Socket,
     ResizeObserver: class { observe() {} disconnect() {} },
@@ -160,6 +166,39 @@ async function harness(panel = false) {
     },
   };
 }
+
+test('ACP resolves its launch snapshot before mounting and never opens PTY hooks or xterm', async () => {
+  const h = await harness(true, {instanceLoaded: false, transport: 'acp', blockers: [{kind: 'startup', blocker_id: 'auth', input: {reason: 'acp_auth_required'}}]});
+  try {
+    assert.match(h.dom.window.document.body.textContent || '', /Loading runtime status/);
+    assert.equal(Socket.instances.length, 0);
+    assert.equal(h.state.terminals.length, 0);
+    assert.deepEqual(h.state.pollingIds, []);
+    h.state.instanceLoaded = true;
+    await h.render();
+    const text = h.dom.window.document.body.textContent || '';
+    assert.ok(h.dom.window.document.querySelector('[data-debug-id="agent-acp-runtime-placeholder-inst-test"]'));
+    assert.match(text, /Structured runtime — conversation and tools appear in chat/);
+    assert.match(text, /0\.108\.0.*v22\.0\.0/);
+    assert.match(text, /claude \/login.*bridge host.*claude-work.*Restart agent/);
+    assert.equal(h.dom.window.document.querySelector('[data-debug-id*="login-"]'), null, 'auth guidance adds no login/retry/cancel actions');
+    assert.equal((h.dom.window.document.querySelector('button') as HTMLButtonElement).disabled, true, 'auth blockers cannot interrupt an unavailable session');
+    assert.equal(Socket.instances.length, 0, 'provider setting is PTY but this ACP launch stays structured');
+    assert.equal(h.state.terminals.length, 0);
+    assert.deepEqual(h.state.pollingIds, [], 'legacy capture hook is never mounted either');
+    await h.render({runtimeStatus: 'starting', runCount: 2});
+    assert.equal(Socket.instances.length, 0, 'restarts do not invoke PTY reconnect hooks for ACP');
+    h.state.blockers = [];
+    await h.render({runtimeStatus: 'running'});
+    const button = h.dom.window.document.querySelector('[data-debug-id="agent-acp-interrupt-inst-test"]') as HTMLElement;
+    await h.step(() => button.click());
+    const pane = h.dom.window.document.querySelector('[data-debug-id="agent-acp-runtime-placeholder-inst-test"]')!;
+    await h.step(() => pane.dispatchEvent(new h.dom.window.KeyboardEvent('keydown', {key: 'Escape', bubbles: true})));
+    await h.step(() => pane.dispatchEvent(new h.dom.window.KeyboardEvent('keydown', {key: 'c', ctrlKey: true, bubbles: true})));
+    assert.deepEqual(h.state.interrupts, Array.from({length: 3}, () => ({agentInstanceId: 'inst-test', data: '\x03'})));
+    assert.equal(Socket.instances.length, 0, 'interrupt uses the existing driver request without a PTY stream');
+  } finally { await h.cleanup(); }
+});
 
 test('three backoff retries exhaust; manual retry recovers and earns another full cycle', async () => {
   const h = await harness();

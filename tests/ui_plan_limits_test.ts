@@ -146,7 +146,7 @@ test('the expanded agent PTY includes its view-only indicator and subtle upgrade
     await act(async () => { await h.store.dispatch(accountBillingApi.util.upsertQueryData('getAccountBilling', 'user-a', account() as any)); });
     const markup = renderToStaticMarkup(React.createElement(Provider, {
       store: h.store,
-      children: React.createElement(AgentPaneComposerPanel, { agentInstanceId: 'inst-a', isExpanded: true, runtimeStatus: 'running' }),
+      children: React.createElement(AgentPaneComposerPanel, { agentInstanceId: 'inst-a', runtimeTransport: 'pty', isExpanded: true, runtimeStatus: 'running' }),
     }));
     const staticDom = new JSDOM(markup);
     const html = staticDom.window.document;

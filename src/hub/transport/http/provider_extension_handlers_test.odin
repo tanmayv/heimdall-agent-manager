@@ -25,6 +25,44 @@ import user_service "odin_test:hub/service/user"
 import provider_service "odin_test:hub/service/provider"
 
 @(test)
+t6_provider_status_exposes_acp_capability_and_latest_install_by_kind :: proc(t: ^testing.T) {
+    context.allocator = context.temp_allocator
+    f := extension_test_setup(t, "t6_runtime_status")
+    defer extension_test_teardown(f)
+    req := extension_test_request(f, fmt.tprintf("/api/v1/bridges/%s/provider-status", f.bridge_id))
+    req.method = "GET"
+    before := bridge_provider_status_handler(&f.ph, req)
+    testing.expect_value(t, before.status, 200)
+    testing.expect(t, strings.contains(before.body, `"acp_runtime_supported":false`), before.body)
+    bridge, found, err := iface.bridge_get_bridge(&f.br_repo, f.bridge_id)
+    if !testing.expect(t, found && err.code == .None) do return
+    defer domain.bridge_destroy(&bridge)
+    delete(bridge.capabilities_json)
+    bridge.capabilities_json = strings.clone(`{"features":["acp_runtime_v1"]}`)
+    saved, saved_ok, save_err := iface.bridge_save_bridge(&f.br_repo, bridge)
+    defer if saved_ok do domain.bridge_destroy(&saved)
+    testing.expect(t, saved_ok && save_err.code == .None)
+    for item in ([]struct{id, kind, state: string}{
+        {"t6_acp_old", "install_acp_adapter", "failed"},
+        {"t6_extension", "install", "succeeded"},
+        {"t6_acp_new", "install_acp_adapter", "dispatched"},
+        {"t6_discovery", "discovery", "succeeded"},
+    }) {
+        created, create_err := iface.provider_extension_command_create(&f.pr_repo, {
+            command_id = item.id, bridge_id = f.bridge_id, provider = "claude", profile_id = "claude",
+            kind = item.kind, state = item.state,
+        })
+        testing.expect(t, created && create_err.code == .None)
+    }
+    after := bridge_provider_status_handler(&f.ph, req)
+    testing.expect_value(t, after.status, 200)
+    testing.expect(t, strings.contains(after.body, `"acp_runtime_supported":true`), after.body)
+    testing.expect(t, strings.contains(after.body, `"command_id":"t6_acp_new"`) && strings.contains(after.body, `"kind":"install_acp_adapter"`), after.body)
+    testing.expect(t, strings.contains(after.body, `"command_id":"t6_extension"`), after.body)
+    testing.expect(t, !strings.contains(after.body, `t6_acp_old`) && !strings.contains(after.body, `t6_discovery`), after.body)
+}
+
+@(test)
 t4_acp_install_endpoint_coalesces_and_tracks_completion :: proc(t: ^testing.T) {
     context.allocator = context.temp_allocator
     f := extension_test_setup(t, "acp_install")

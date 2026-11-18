@@ -1,5 +1,6 @@
 import { refreshBridgeProviderCatalog } from '../../components/providers/providerSetupApi';
 import { normalizeModelCatalog } from '../../components/providers/modelCatalogStatus';
+import { normalizeProviderRuntime, type ProviderRuntimeFields } from '../../components/providers/providerRuntime';
 import * as daemonApi from '../daemonApi';
 import { heimdallApi, heimdallApiDispatch, withSessionQuery } from '../heimdallApi';
 import { profileLabel } from '../../components/providers/providerProfiles';
@@ -107,7 +108,7 @@ export function normalizeBridgeEventsPage(raw: any): BridgeEventsPage {
   };
 }
 
-export type BridgeCapability = {
+export type BridgeCapability = Partial<ProviderRuntimeFields> & {
   provider: string;
   profile_id?: string; label?: string; accent?: string;
   models: string[];
@@ -125,7 +126,7 @@ export function normalizeBridgeCapabilities(raw: any): BridgeCapability[] {
   return source.map((entry: any) => {
     if (typeof entry === 'string') return { provider: entry, models: [] };
     const models = Array.isArray(entry?.models) ? entry.models.map((model: any) => String(model)).filter(Boolean) : [];
-    return { provider: String(entry?.provider || entry?.name || ''), models, ...(entry?.profile_id ? { profile_id: String(entry.profile_id), label: String(entry.label || entry.profile_id), accent: String(entry.accent || '') } : {}) };
+    return { provider: String(entry?.provider || entry?.name || ''), models, ...normalizeProviderRuntime(entry), ...(entry?.profile_id ? { profile_id: String(entry.profile_id), label: String(entry.label || entry.profile_id), accent: String(entry.accent || '') } : {}) };
   }).filter((entry: BridgeCapability) => Boolean(entry.provider));
 }
 
@@ -452,8 +453,10 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
               // (null when the provider ships no extension).
               extension: entry?.extension ?? null,
               ...normalizeModelCatalog(entry),
+              ...normalizeProviderRuntime(entry),
             })));
           return { data: { bridge_id: data?.bridge_id || bridgeId, providers,
+            acp_runtime_supported: data?.acp_runtime_supported === true,
             extension_commands: Array.isArray(data?.extension_commands) ? data.extension_commands : [] } };
         } catch (error: any) {
           return { error: customQueryError(error) as any };

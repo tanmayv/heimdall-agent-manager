@@ -21,6 +21,11 @@ import { usePaneVaultLock } from '../shells/usePaneVaultLock';
 import VaultLockedOverlay from '../shells/VaultLockedOverlay';
 import { useTheme } from '../../store/themeSlice';
 import { usePaneVisible } from '../workbench/paneVisibility';
+import { useListBridgeProvidersQuery } from '../../api/endpoints/bridgeSupport';
+import { useGetAgentBlockersQuery } from '../../api/endpoints/extension';
+import { acpAdapterSummary, type RuntimeTransport } from '../providers/providerRuntime';
+import { AcpAuthInstructions } from './AcpAuthInstructions';
+import { apiErrorText } from '../../api/cookieFetch';
 
 /**
  * Compute fitted font size for terminal container on narrow viewports (<500px).
@@ -41,6 +46,7 @@ export function computeFittedFontSize(containerWidth: number): number {
 }
 
 export interface AgentPaneComposerPanelProps {
+  runtimeTransport?: RuntimeTransport;
   agentInstanceId?: string | null;
   isExpanded: boolean;
   onClose?: () => void;
@@ -59,7 +65,49 @@ export interface AgentPaneComposerPanelProps {
   fillPane?: boolean;
 }
 
-export function AgentPaneComposerPanel({
+/** Resolve the launch snapshot before mounting any terminal hooks. */
+export function AgentPaneComposerPanel(props: AgentPaneComposerPanelProps) {
+  const query = useFetchAgentInstanceQuery({ instanceId: props.agentInstanceId || '' }, { skip: !props.agentInstanceId });
+  const instance = query.currentData?.instance;
+  const transport = props.runtimeTransport || instance?.runtime_transport;
+  // A caller without a snapshot must wait: defaulting here could attach to an ACP child.
+  if (props.agentInstanceId && !transport && !instance) return <div role="status">{query.isError ? 'Could not load runtime status.' : 'Loading runtime status…'}</div>;
+  if (transport === 'acp') return <StructuredAgentPane {...props} instance={instance} />;
+  return <PtyAgentPane {...props} />;
+}
+
+function StructuredAgentPane({ instance, agentInstanceId, isExpanded, runtimeStatus, className = '', fillPane }: AgentPaneComposerPanelProps & { instance?: any }) {
+  const { currentData: status } = useListBridgeProvidersQuery({ bridgeId: instance?.bridge_id || '' }, { skip: !instance?.bridge_id });
+  const { currentData: blockers } = useGetAgentBlockersQuery(agentInstanceId || '', { skip: !agentInstanceId });
+  const provider = status?.providers?.find((p: any) => p.provider === instance?.provider);
+  const startup = blockers?.blockers.filter((b) => b.kind === 'startup') || [];
+  const authRequired = startup.some((b) => b.input.reason === 'acp_auth_required') || instance?.last_error?.cause === 'acp_auth_required';
+  const [sendInput, inputRequest] = useSendAgentPaneInputMutation();
+  const [interruptError, setInterruptError] = useState('');
+  const canInterrupt = Boolean(agentInstanceId) && !authRequired && !inputRequest.isLoading && !['stopped', 'failed', 'exited'].includes(runtimeStatus || '');
+  async function interrupt() {
+    if (!canInterrupt || !agentInstanceId) return;
+    setInterruptError('');
+    const result = await sendInput({ agentInstanceId, data: '\x03' });
+    if (result?.error) setInterruptError(apiErrorText(result.error));
+  }
+  return <div data-debug-id={`agent-acp-runtime-placeholder-${agentInstanceId}`} aria-hidden={!isExpanded}
+    tabIndex={isExpanded ? 0 : -1} role="region" aria-label="Structured agent runtime"
+    onKeyDown={(e) => { if (e.key === 'Escape' || (e.ctrlKey && e.key.toLowerCase() === 'c')) { e.preventDefault(); void interrupt(); } }}
+    className={`${isExpanded ? 'flex' : 'hidden'} min-w-0 flex-col gap-3 overflow-auto bg-surface p-4 ${fillPane ? 'h-full flex-1' : 'rounded-xl'} ${className}`}>
+    <p className="text-sm font-medium text-primary">Structured runtime — conversation and tools appear in chat</p>
+    <p role="status" className="break-words text-xs text-muted">{acpAdapterSummary(provider?.acp_adapter || null)}</p>
+    {authRequired ? <AcpAuthInstructions profile={instance?.provider_profile || instance?.provider} /> : startup.map((b) => <p key={b.blocker_id} role="status" className="text-sm text-warning">{b.summary}</p>)}
+    <button type="button" data-debug-id={`agent-acp-interrupt-${agentInstanceId}`} disabled={!canInterrupt}
+      onClick={() => void interrupt()} title="Interrupt the current response (Esc or Ctrl+C while this pane is focused)"
+      className="self-start rounded-md border border-subtle px-3 py-2 text-sm text-primary disabled:opacity-50">Interrupt</button>
+    {interruptError ? <p role="alert" className="text-sm text-danger">{interruptError}</p> : null}
+    {instance?.bridge_id ? <a data-debug-id={`agent-acp-settings-${agentInstanceId}`} className="text-sm text-accent"
+      href={`#/settings/providers/${encodeURIComponent(instance.bridge_id)}`}>Provider runtime settings</a> : null}
+  </div>;
+}
+
+function PtyAgentPane({
   agentInstanceId,
   isExpanded,
   onClose,

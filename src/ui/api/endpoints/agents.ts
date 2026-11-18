@@ -5,6 +5,17 @@ import { announcePaneVaultLocked } from '../../utils/vaultLockedError';
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
 import { readBridgeRows } from './bridgeSupport';
 import { openPaneReplyOutput } from '../../components/shells/ptyWire';
+import type { RuntimeTransport } from '../../components/providers/providerRuntime';
+
+/** Runtime transport belongs to this launch, independently of provider settings. */
+export interface AgentInstance extends AgentInstanceTokenFields {
+  runtime_transport: RuntimeTransport;
+  launch_epoch?: string;
+  [field: string]: any;
+}
+export function normalizeAgentInstance(raw: any): AgentInstance {
+  return { ...raw, runtime_transport: raw?.runtime_transport === 'acp' ? 'acp' : 'pty' };
+}
 
 /**
  * Token usage on the agent instance JSON (T3r), each omitted when unknown.
@@ -488,12 +499,12 @@ export const agentsApi = heimdallApi.injectEndpoints({
       },
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    fetchAgentInstance: build.query<any, { instanceId: string }>({
+    fetchAgentInstance: build.query<{ instance: AgentInstance | null }, { instanceId: string }>({
       queryFn: async ({ instanceId }) => {
         if (!instanceId) return { data: { instance: null } };
         try {
           const data = await cookieJsonFetch(`/agent-instances/${encodeURIComponent(instanceId)}`);
-          return { data: { instance: data || null } };
+          return { data: { instance: data ? normalizeAgentInstance(data) : null } };
         } catch (error: any) {
           return { error: customQueryError(error) as any };
         }

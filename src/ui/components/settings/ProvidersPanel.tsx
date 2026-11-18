@@ -95,7 +95,7 @@ export function ProvidersPanel({ bridgeId: routeBridgeId = '', onHeadingChange }
           : query.isError ? 'Could not load bridge provider settings.'
           : bridge ? 'Provider profiles and runtime settings on this bridge.'
           : 'This bridge is no longer available. Choose another bridge.'
-        : 'Choose a bridge to manage its provider profiles and runtime settings.',
+        : 'Choose a bridge to manage its provider profiles and shared PTY or ACP runtime settings.',
       breadcrumb: bridgeId ? 'Settings / Providers' : '',
       focusKey: bridgeId ? bridgeId + '/list' : '',
     };

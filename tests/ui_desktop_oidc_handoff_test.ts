@@ -228,5 +228,5 @@ test('Windows main and login windows remove the separate menu row; Mac/Linux log
     const h = popupHarness(platform); h.open();
     assert.equal(h.windows[0].menuRemovals, platform === 'win32' ? 1 : 0);
   }
-  assert.match(mainSource, /mainWindow = win;\s+if \(process.platform === 'win32'\) win.removeMenu\(\)/);
+  assert.match(mainSource, /if \(process.platform === 'win32'\) win.setAutoHideMenuBar\(true\)/);
 });

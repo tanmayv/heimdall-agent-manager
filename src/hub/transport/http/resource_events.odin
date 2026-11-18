@@ -3,6 +3,7 @@ package http
 import "core:fmt"
 import "core:strings"
 
+import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import events "odin_test:hub/service/events"
 
@@ -83,7 +84,7 @@ publish_conversation_changed :: proc(bus: ^events.User_Event_Bus, c: domain.Chat
 //       summary {reconfiguration_id, phase, revision, error_code}
 //   resource_changed resource=agent_instance change=<caller's change>
 //       summary = instance_changed_summary_json (status fields + display_name,
-//       bridge_id, provider, model, configuration_revision, run_count,
+//       bridge_id, provider, model, runtime_transport, launch_epoch, configuration_revision, run_count,
 //       started_at, current_task_id, current_task_role, chain_id, updated_at,
 //       token_usage?, token_usage_updated_at?, token_totals?, token_changed?)
 reconfiguration_summary_json :: proc(op: domain.Instance_Reconfiguration) -> string {
@@ -114,6 +115,8 @@ instance_changed_summary_json :: proc(inst: domain.Agent_Instance, token_changed
 	strings.write_string(&b, "\",\"bridge_id\":\""); write_handler_json_string(&b, inst.bridge_id)
 	strings.write_string(&b, "\",\"provider\":\""); write_handler_json_string(&b, inst.provider)
 	strings.write_string(&b, "\",\"model\":\""); write_handler_json_string(&b, inst.model)
+	strings.write_string(&b, "\",\"runtime_transport\":\""); write_handler_json_string(&b, contracts.runtime_transport_or_pty(inst.runtime_transport))
+	strings.write_string(&b, "\",\"launch_epoch\":\""); write_handler_json_string(&b, inst.launch_epoch)
 	fmt.sbprintf(&b, "\",\"configuration_revision\":%d,\"run_count\":%d,\"started_at\":\"", inst.configuration_revision, inst.run_count)
 	write_handler_json_string(&b, inst.started_at)
 	strings.write_string(&b, "\",\"current_task_id\":\""); write_handler_json_string(&b, inst.current_task_id)

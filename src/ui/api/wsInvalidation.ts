@@ -845,7 +845,7 @@ function stated(payload: any, key: string): string | undefined {
 // on the cached row (project, agent, timestamps the summary lacks) is left as fetched.
 const INSTANCE_SUMMARY_FIELDS = [
   'runtime_status', 'startup_status', 'activity_status', 'display_name', 'bridge_id',
-  'provider', 'model', 'configuration_revision', 'run_count', 'started_at',
+  'provider', 'model', 'runtime_transport', 'launch_epoch', 'configuration_revision', 'run_count', 'started_at',
   'current_task_id', 'current_task_role', 'chain_id', 'updated_at',
 ] as const;
 
@@ -863,6 +863,9 @@ function patchInstanceCachesFromSummary(dispatch: any, instanceId: string, summa
     const instance = draft?.instance;
     if (!instance) return;
     if (!isNewerOrEqual(summary.updated_at, instance.updated_at)) { stale = true; return; }
+    // Older summary producers omit the launch snapshot. Refresh when a new run
+    // arrives rather than retaining the preceding run's transport indefinitely.
+    if (summary.runtime_transport === undefined && summary.run_count !== undefined && summary.run_count !== instance.run_count) errorStale = true;
     // The summary does not carry last_error, so it is never patched or cleared here. A
     // runtime transition into failure (or out of a state that holds an error) changes
     // it, and the failure notice needs the reason: refetch that one instance.

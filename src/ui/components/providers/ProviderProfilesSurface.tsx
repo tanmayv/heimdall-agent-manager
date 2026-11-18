@@ -6,7 +6,8 @@ import { heimdallApi } from '../../api/heimdallApi';
 import { apiErrorText, cookieMutation } from '../../api/cookieFetch';
 import { selectIsVaultUnlocked } from '../../store/vaultSlice';
 import { encryptVaultText } from '../../utils/vaultCrypto';
-import { providerSetupApi, type BridgeProviderStatus } from './providerSetupApi';
+import { providerSetupApi, type BridgeProviderStatus, type ProviderSetupResponse } from './providerSetupApi';
+import ProviderRuntimeControl from './ProviderRuntimeControl';
 import {
   configDirectoryMode,
   generateConfigDirectory,
@@ -397,6 +398,12 @@ export default function ProviderProfilesSurface({ bridge, onHeadingChange }: {
   const dispatch = useDispatch();
   const [profiles, setProfiles] = useState<ProfileMetadata[]>([]);
   const [statuses, setStatuses] = useState<BridgeProviderStatus[]>([]);
+  const [providerSetup, setProviderSetup] = useState<ProviderSetupResponse | null>(null);
+  const runtimeChanged = (result: ProviderSetupResponse) => {
+    setProviderSetup(result);
+    setStatuses(result.providers);
+    dispatch(heimdallApi.util.invalidateTags([{ type: 'BridgeProviders', id: bridgeId }]));
+  };
   const [labels, setLabels] = useState<Record<string, string>>({});
   const [selected, setSelected] = useState('');
   const [draft, setDraft] = useState<ProviderProfile | null>(null);
@@ -446,6 +453,7 @@ export default function ProviderProfilesSurface({ bridge, onHeadingChange }: {
         if (!cancelled) {
           setProfiles(rows);
           setStatuses(status.providers);
+          setProviderSetup(status);
           setLabels(Object.fromEntries(names));
           setLoaded(true);
         }
@@ -705,6 +713,18 @@ export default function ProviderProfilesSurface({ bridge, onHeadingChange }: {
         </p>
       ) : null}
       {!loaded ? <Spinner size="sm" /> : null}
+      {providerSetup ? <div className="min-w-0 space-y-3" data-debug-id="providers-runtime-settings">
+        {(editing && draft ? drivers.filter((driver) => driver === draft.provider) : editing ? [] : drivers).map((driver) => {
+          const status = statuses.find((s) => s.provider === driver && (s.profile_id || s.provider) === driver)
+            || statuses.find((s) => s.provider === driver);
+          return status ? <section key={driver} className="min-w-0 space-y-2">
+            <Text as="h2" role="heading">{status.display_name}</Text>
+            <ProviderRuntimeControl setup={providerSetup} status={status}
+              disabledReason={!editable ? 'Connect and unseal this bridge, and unlock this device, to change its runtime.' : busy ? 'Finish the profile operation first.' : ''}
+              onChange={runtimeChanged} />
+          </section> : null;
+        })}
+      </div> : null}
       <div className="min-w-0">
         {!editing ? <div className="space-y-4" data-debug-id="profiles-list">
           <div className="flex flex-wrap items-center justify-between gap-3">
