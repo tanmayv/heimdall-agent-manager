@@ -1,5 +1,5 @@
 import { heimdallApi } from '../heimdallApi';
-import { cookieJsonFetch, cookieMutation, customQueryError } from '../cookieFetch';
+import { cookieJsonFetch, cookieJsonFetchEnvelope, cookieMutation, customQueryError } from '../cookieFetch';
 
 export type BotStatus = 'ready' | 'working' | 'starting' | 'sleeping' | 'waiting_for_machine' | 'new';
 export interface BotView {
@@ -18,13 +18,24 @@ export interface TelegramPairing { pairing_url: string; expires_at: string }
 export interface BotMessage { message_id: string; direction: string; body: string; body_purged: boolean; send_state: string; created_at: string; read_at: string; replied_at: string }
 export interface BotDelivery { delivery_id: string; state: string; round: number; waiting_reason: string; finish_reason: string; created_at: string; finished_at: string; attempts: { attempt_id: string; bridge_id: string; state: string; report: Record<string, unknown> }[] }
 
-async function request<T>(path: string, method?: string, body?: unknown) {
-  try { return { data: await (method ? cookieMutation(path, method, body) : cookieJsonFetch(path)) as T }; }
+export interface AgentWrite { write_id: string; seq: number; actor_agent_instance_id: string; actor_agent_id: string; actor_display_name: string; resource_kind: 'project' | 'memory' | 'agent'; resource_id: string; action: 'create' | 'update' | 'archive' | 'unarchive'; fields: string[]; created_at: string }
+
+async function request<T>(path: string, method?: string, body?: unknown, envelope = false) {
+  try { return { data: await (method ? cookieMutation(path, method, body) : (envelope ? cookieJsonFetchEnvelope(path) : cookieJsonFetch(path))) as T }; }
   catch (error) { return { error: customQueryError(error) }; }
 }
 const root = '/bots/me';
 export const botsApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
+    getAgentWrites: build.query<{ items: AgentWrite[]; next_cursor: string }, string | void>({
+      async queryFn(cursor) {
+        const result = await request<{ data: AgentWrite[]; page?: { next_cursor?: string } }>(
+          '/me/agent-writes?limit=20' + (cursor ? '&cursor=' + encodeURIComponent(cursor) : ''), undefined, undefined, true);
+        if ('error' in result) return { error: result.error! };
+        return { data: { items: result.data.data, next_cursor: result.data.page?.next_cursor ?? '' } };
+      },
+      providesTags: ['Bot'],
+    }),
     getBot: build.query<BotView, void>({ queryFn: () => request(root), providesTags: ['Bot'] }),
     createBot: build.mutation<BotView, void>({ queryFn: () => request(root, 'POST', {}), invalidatesTags: ['Bot'] }),
     deleteBot: build.mutation<{ deleted: boolean }, void>({ queryFn: () => request(root, 'DELETE'), invalidatesTags: ['Bot'] }),
@@ -37,4 +48,4 @@ export const botsApi = heimdallApi.injectEndpoints({
     getBotDeliveries: build.query<{ deliveries: BotDelivery[] }, number | void>({ queryFn: (limit = 20) => request(root + '/deliveries?limit=' + limit), providesTags: ['Bot'] }),
   }),
 });
-export const { useGetBotQuery, useCreateBotMutation, useDeleteBotMutation, useGetBotPlacementQuery, usePutBotPlacementMutation, useGetBotPlacementOptionsQuery, useCreateTelegramPairingMutation, useDisconnectTelegramMutation, useGetBotMessagesQuery, useGetBotDeliveriesQuery } = botsApi;
+export const { useGetAgentWritesQuery, useGetBotQuery, useCreateBotMutation, useDeleteBotMutation, useGetBotPlacementQuery, usePutBotPlacementMutation, useGetBotPlacementOptionsQuery, useCreateTelegramPairingMutation, useDisconnectTelegramMutation, useGetBotMessagesQuery, useGetBotDeliveriesQuery } = botsApi;

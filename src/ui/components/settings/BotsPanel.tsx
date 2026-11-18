@@ -8,6 +8,7 @@ import { BOT_STATUS_DETAILS, resolveBotStatusLabel } from './botsView';
 import BotTelegramCard from './BotTelegramCard';
 import BotPlacementEditor from './BotPlacementEditor';
 import BotAdvancedSection from './BotAdvancedSection';
+import BotAgentWritesSection from './BotAgentWritesSection';
 
 export default function BotsPanel({ onOpenTerminal }: { onOpenTerminal?: () => void }) {
   const flags = useFetchExperimentsQuery();
@@ -50,6 +51,7 @@ export default function BotsPanel({ onOpenTerminal }: { onOpenTerminal?: () => v
           <BotTelegramCard key={bot.bot_id} telegram={bot.telegram} />
           <BotPlacementEditor key={bot.bot_id + '-placement'} />
           <BotAdvancedSection bot={bot} onOpenTerminal={onOpenTerminal} />
+          <BotAgentWritesSection key={bot.bot_id + '-writes'} />
           <Button variant="danger" type="button" data-debug-id="settings-bots-delete-btn" disabled={deleting.isLoading} onClick={() => setConfirm(true)}>Delete bot</Button>
           <Modal open={confirm} onOpenChange={(open) => { if (!pending.current) setConfirm(open); }} title="Delete your bot?" data-debug-id="settings-bots-delete-dialog"><Modal.Body><Text>Delete your bot? Its Telegram connection and Telegram message history are removed.</Text></Modal.Body><Modal.Footer>
             <Button variant="secondary" type="button" data-debug-id="settings-bots-delete-cancel-btn" disabled={deleting.isLoading} onClick={() => setConfirm(false)}>Cancel</Button>
