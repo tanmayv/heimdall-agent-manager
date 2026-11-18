@@ -23,7 +23,8 @@ Bridge_Bot_Test :: struct {
 	switches: [dynamic]string,
 	launches, notices: int,
 	exit_first_launch: bool,
-	exit_ms, missing_record_ms: i64,
+	exit_ms, missing_record_ms, alive_ms: i64,
+	process_alive: bool,
 	startup_generation, previous_generation: u64,
 	notice_at: i64,
 	launch_id: string,
@@ -42,12 +43,15 @@ bridge_bot_test_snapshot :: proc(instance: string) -> (Bridge_Runtime_Instance, 
 	status := s.status
 	ready := status == "running" || status == "idle"
 	if s.ready_ms > s.now && s.now >= s.new_record_ms { status = "starting"; ready = false }
-	alive := status != "stopped"
+	alive := s.process_alive
+	if s.alive_ms > 0 && s.now >= s.alive_ms do alive = true
 	if s.exit_ms > 0 && s.now >= s.exit_ms { status = "starting"; ready = false; alive = false }
 	generation := s.startup_generation
 	if s.new_record_ms > 0 && s.now < s.new_record_ms do generation = s.previous_generation
+	pid: i32
+	if generation > 0 do pid = 1
 	return {runtime_status = status, start_success_seen = ready, pty_process_alive = alive,
-		startup = {generation = generation, pty_pid = 1}}, true
+		startup = {generation = generation, pty_pid = pid}}, true
 }
 bridge_bot_test_record :: proc(instance: string) -> (Bridge_Runtime_Launch, bool) {
 	if bridge_bot_test.missing_record_ms > 0 && bridge_bot_test.now >= bridge_bot_test.missing_record_ms do return {}, false
@@ -63,9 +67,11 @@ bridge_bot_test_switch :: proc(attempt_id: string, c: contracts.Bot_Candidate_Wi
 bridge_bot_test_launch :: proc(instance, command_id: string) -> (ok: bool, detail: string, err: Bridge_Error) {
 	s := bridge_bot_test
 	s.launches += 1
-	s.launch_id = strings.clone(command_id)
-	s.status = "running"
-	if s.exit_first_launch && s.launches == 1 do s.status = "stopped"
+	delete(s.launch_id, runtime.heap_allocator())
+	s.launch_id = strings.clone(command_id, runtime.heap_allocator())
+	s.startup_generation += 1
+	s.status, s.process_alive = "running", true
+	if s.exit_first_launch && s.launches == 1 { s.status = "stopped"; s.process_alive = false }
 	return true, "", {}
 }
 bridge_bot_test_notice :: proc(instance: string) -> bool {
@@ -97,7 +103,7 @@ bridge_bot_test_rollover :: proc(instance: string) -> bool { return bridge_bot_t
 bridge_bot_test_begin :: proc(s: ^Bridge_Bot_Test) {
 	sync.mutex_lock(&bridge_bot_test_mutex)
 	bridge_bot_test = s
-	s.now, s.status = 1000, "running"
+	s.now, s.status, s.process_alive = 1000, "running", true
 	bridge_bot_switch_proc = bridge_bot_test_switch
 	bridge_bot_launch_proc = bridge_bot_test_launch
 	bridge_bot_snapshot_proc = bridge_bot_test_snapshot
@@ -624,10 +630,10 @@ test_bot_ready_child_exit_before_readiness :: proc(t: ^testing.T) {
 	for status in ([]string{"stopped", "starting"}) {
 		s: Bridge_Bot_Test; bridge_bot_test_begin(&s)
 		w := bridge_bot_test_worker(&s)
-		s.status = status
+		s.status, s.process_alive, s.startup_generation = status, false, 2
 		if status == "starting" do s.exit_ms = s.now
 		w.ready_deadline_ms = s.now + 2000
-		outcome, _, err, has_err := bridge_bot_wait_ready(w, false, "")
+		outcome, _, err, has_err := bridge_bot_wait_ready(w, false, "", 1)
 		testing.expect_value(t, outcome, "launch_failed")
 		testing.expect(t, has_err && err.class == .retriable)
 		testing.expect_value(t, s.now, 1000)
@@ -639,7 +645,7 @@ test_bot_ready_child_exit_before_readiness :: proc(t: ^testing.T) {
 test_bot_ready_early_exit_relaunch_waits_for_new_generation :: proc(t: ^testing.T) {
 	s: Bridge_Bot_Test; bridge_bot_test_begin(&s); defer bridge_bot_test_end(&s)
 	w := bridge_bot_test_worker(&s)
-	s.status = "stopped"
+	s.status, s.process_alive = "stopped", false
 	s.previous_generation, s.startup_generation = 1, 2
 	s.new_record_ms, s.exit_ms, s.missing_record_ms = 1500, 1500, 1500
 	w.ready_deadline_ms = 3000
@@ -662,4 +668,54 @@ test_bot_child_exit_advances_to_next_candidate :: proc(t: ^testing.T) {
 		testing.expect_value(t, w.outcomes[0].outcome, "launch_failed")
 		testing.expect_value(t, w.outcomes[1].outcome, "acted")
 	}
+}
+
+@(test)
+test_bot_starting_without_exit_evidence_waits_for_ready :: proc(t: ^testing.T) {
+	for sticky in ([]bool{false, true}) {
+		for mode in 0..<3 {
+			s: Bridge_Bot_Test; bridge_bot_test_begin(&s)
+			w := bridge_bot_test_worker(&s)
+			s.process_alive = false
+			s.ready_ms, s.alive_ms = 1750, 1750
+			if mode != 0 do s.startup_generation = 7
+			if mode != 1 do s.missing_record_ms = s.now
+			if sticky {
+				w.frame.current_provider = strings.clone("p2", runtime.heap_allocator())
+				w.frame.current_model = strings.clone("m2", runtime.heap_allocator())
+			}
+			bridge_bot_run(w)
+			testing.expect_value(t, s.now, 1750)
+			testing.expect_value(t, s.launches, 0)
+			testing.expect_value(t, len(s.switches), 0 if sticky else 1)
+			testing.expect_value(t, s.notices, 1)
+			testing.expect_value(t, len(w.outcomes), 1)
+			if len(w.outcomes) == 1 do testing.expect_value(t, w.outcomes[0].outcome, "acted")
+			testing.expect_value(t, len(bridge_bot_backoff), 0)
+			bridge_bot_test_end(&s)
+		}
+	}
+}
+
+@(test)
+test_bot_observed_launch_record_removal_is_exit :: proc(t: ^testing.T) {
+	s: Bridge_Bot_Test; bridge_bot_test_begin(&s); defer bridge_bot_test_end(&s)
+	w := bridge_bot_test_worker(&s)
+	s.status, s.process_alive, s.startup_generation = "starting", false, 7
+	s.missing_record_ms = 1250
+	w.ready_deadline_ms = 3000
+	outcome, _, _, _ := bridge_bot_wait_ready(w, false, "", 7)
+	testing.expect_value(t, outcome, "launch_failed")
+	testing.expect_value(t, s.now, 1250)
+}
+
+@(test)
+test_bot_observed_alive_child_exit_before_readiness :: proc(t: ^testing.T) {
+	s: Bridge_Bot_Test; bridge_bot_test_begin(&s); defer bridge_bot_test_end(&s)
+	w := bridge_bot_test_worker(&s)
+	s.ready_ms, s.exit_ms, s.missing_record_ms = 3000, 1250, 1000
+	w.ready_deadline_ms = 4000
+	outcome, _, _, _ := bridge_bot_wait_ready(w, false, "")
+	testing.expect_value(t, outcome, "launch_failed")
+	testing.expect_value(t, s.now, 1250)
 }
