@@ -230,8 +230,11 @@ bridge_bot_run :: proc(w: ^Bridge_Bot_Worker) {
 		w.phase = .Launching; bridge_bot_report(w, "working")
 		w.ready_deadline_ms = bridge_bot_now_proc() + w.frame.timers.launch_ready_ms
 		pre_id := ""
+		pre_generation: u64
 		relaunched := false
 		if i != sticky {
+			before, _ := bridge_bot_snapshot_proc(w.frame.agent_instance_id)
+			pre_generation = before.startup.generation
 			pre, pre_found := bridge_bot_launch_record_proc(w.frame.agent_instance_id)
 			if pre_found do pre_id = strings.clone(pre.command_id)
 			status, relaunch, error_code := bridge_bot_switch_proc(w.frame.attempt_id, c)
@@ -256,7 +259,7 @@ bridge_bot_run :: proc(w: ^Bridge_Bot_Worker) {
 			}
 		}
 		w.phase = .Waiting_Ready; bridge_bot_report(w, "working")
-		outcome, detail, ready_err, has_err := bridge_bot_wait_ready(w, relaunched, pre_id)
+		outcome, detail, ready_err, has_err := bridge_bot_wait_ready(w, relaunched, pre_id, pre_generation)
 		delete(pre_id)
 		if sync.atomic_load(&w.cancel) do return
 		if outcome != "" { bridge_bot_outcome(w, c, outcome, detail, ready_err, has_err); continue }
@@ -293,7 +296,8 @@ bridge_bot_run :: proc(w: ^Bridge_Bot_Worker) {
 	w.phase = .Done; bridge_bot_report(w, "exhausted", "all_candidates_failed")
 }
 // READY and rollover consume the same candidate launch budget.
-bridge_bot_wait_ready :: proc(w: ^Bridge_Bot_Worker, relaunched: bool, pre_id: string) -> (outcome, detail: string, err: Bridge_Error, has_err: bool) {
+bridge_bot_wait_ready :: proc(w: ^Bridge_Bot_Worker, relaunched: bool, pre_id: string, pre_generation: u64 = 0) -> (outcome, detail: string, err: Bridge_Error, has_err: bool) {
+	new_launch_seen := !relaunched
 	for !sync.atomic_load(&w.cancel) {
 		free_all(context.temp_allocator)
 		if bridge_bot_now_proc() >= w.ready_deadline_ms do return "launch_timeout", "", {}, false
@@ -303,6 +307,7 @@ bridge_bot_wait_ready :: proc(w: ^Bridge_Bot_Worker, relaunched: bool, pre_id: s
 			launch, ok := bridge_bot_launch_record_proc(w.frame.agent_instance_id)
 			launch_changed = ok && launch.command_id != pre_id
 		}
+		if launch_changed do new_launch_seen = true
 		if found && snap.runtime_status == "failed" {
 			launch_err := snap.last_error if snap.has_last_error else Bridge_Error{class = .retriable}
 			return "launch_failed", contracts.bridge_error_class_name(launch_err.class), launch_err, true
@@ -314,6 +319,16 @@ bridge_bot_wait_ready :: proc(w: ^Bridge_Bot_Worker, relaunched: bool, pre_id: s
 				return "startup_blocked", detail, {}, false
 			}
 			if !bridge_bot_rollover_proc(w.frame.agent_instance_id) && bridge_bot_ready(snap) do return "", "", {}, false
+		}
+		// ChildExited removes the launch record and clears liveness. A queued
+		// activity signal can leave status "starting", so status alone is insufficient.
+		// During relaunch, the old child may stop before its replacement exists:
+		// require the new record or a spawned, newer startup generation first.
+		new_startup := found && snap.startup.generation != 0 &&
+			snap.startup.generation != pre_generation && snap.startup.pty_pid > 0
+		if found && !snap.pty_process_alive && (new_launch_seen || new_startup) {
+			launch_err := Bridge_Error{class = .retriable}
+			return "launch_failed", contracts.bridge_error_class_name(launch_err.class), launch_err, true
 		}
 		if bridge_bot_now_proc() >= w.ready_deadline_ms do return "launch_timeout", "", {}, false
 		bridge_bot_progress(w)

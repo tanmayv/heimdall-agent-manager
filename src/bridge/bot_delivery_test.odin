@@ -22,6 +22,9 @@ Bridge_Bot_Test :: struct {
 	refuse_code: string,
 	switches: [dynamic]string,
 	launches, notices: int,
+	exit_first_launch: bool,
+	exit_ms, missing_record_ms: i64,
+	startup_generation, previous_generation: u64,
 	notice_at: i64,
 	launch_id: string,
 	reports: [dynamic]string,
@@ -39,9 +42,15 @@ bridge_bot_test_snapshot :: proc(instance: string) -> (Bridge_Runtime_Instance, 
 	status := s.status
 	ready := status == "running" || status == "idle"
 	if s.ready_ms > s.now && s.now >= s.new_record_ms { status = "starting"; ready = false }
-	return {runtime_status = status, start_success_seen = ready}, true
+	alive := status != "stopped"
+	if s.exit_ms > 0 && s.now >= s.exit_ms { status = "starting"; ready = false; alive = false }
+	generation := s.startup_generation
+	if s.new_record_ms > 0 && s.now < s.new_record_ms do generation = s.previous_generation
+	return {runtime_status = status, start_success_seen = ready, pty_process_alive = alive,
+		startup = {generation = generation, pty_pid = 1}}, true
 }
 bridge_bot_test_record :: proc(instance: string) -> (Bridge_Runtime_Launch, bool) {
+	if bridge_bot_test.missing_record_ms > 0 && bridge_bot_test.now >= bridge_bot_test.missing_record_ms do return {}, false
 	if bridge_bot_test.now >= bridge_bot_test.new_record_ms && bridge_bot_test.new_record_ms > 0 do return {command_id = "new"}, true
 	return {command_id = "old"}, true
 }
@@ -56,6 +65,7 @@ bridge_bot_test_launch :: proc(instance, command_id: string) -> (ok: bool, detai
 	s.launches += 1
 	s.launch_id = strings.clone(command_id)
 	s.status = "running"
+	if s.exit_first_launch && s.launches == 1 do s.status = "stopped"
 	return true, "", {}
 }
 bridge_bot_test_notice :: proc(instance: string) -> bool {
@@ -607,4 +617,49 @@ test_relay_observation_counts_non_empty_read_only :: proc(t: ^testing.T) {
  bridge_bot_note_read(w.frame.agent_instance_id, `{"data":{"messages":[{}]}}`, s.now+1)
  bridge_bot_note_reply(w.frame.agent_instance_id, s.now+1)
  testing.expect(t, w.read_seen_ms == s.now && w.reply_seen_ms == s.now)
+}
+
+@(test)
+test_bot_ready_child_exit_before_readiness :: proc(t: ^testing.T) {
+	for status in ([]string{"stopped", "starting"}) {
+		s: Bridge_Bot_Test; bridge_bot_test_begin(&s)
+		w := bridge_bot_test_worker(&s)
+		s.status = status
+		if status == "starting" do s.exit_ms = s.now
+		w.ready_deadline_ms = s.now + 2000
+		outcome, _, err, has_err := bridge_bot_wait_ready(w, false, "")
+		testing.expect_value(t, outcome, "launch_failed")
+		testing.expect(t, has_err && err.class == .retriable)
+		testing.expect_value(t, s.now, 1000)
+		bridge_bot_test_end(&s)
+	}
+}
+
+@(test)
+test_bot_ready_early_exit_relaunch_waits_for_new_generation :: proc(t: ^testing.T) {
+	s: Bridge_Bot_Test; bridge_bot_test_begin(&s); defer bridge_bot_test_end(&s)
+	w := bridge_bot_test_worker(&s)
+	s.status = "stopped"
+	s.previous_generation, s.startup_generation = 1, 2
+	s.new_record_ms, s.exit_ms, s.missing_record_ms = 1500, 1500, 1500
+	w.ready_deadline_ms = 3000
+	// The new child exits before any poll can observe its launch record.
+	outcome, _, _, _ := bridge_bot_wait_ready(w, true, "old", 1)
+	testing.expect_value(t, outcome, "launch_failed")
+	testing.expect_value(t, s.now, 1500)
+}
+
+@(test)
+test_bot_child_exit_advances_to_next_candidate :: proc(t: ^testing.T) {
+	s: Bridge_Bot_Test; bridge_bot_test_begin(&s); defer bridge_bot_test_end(&s)
+	w := bridge_bot_test_worker(&s)
+	s.status, s.exit_first_launch = "stopped", true
+	bridge_bot_run(w)
+	testing.expect_value(t, s.launches, 2)
+	testing.expect_value(t, s.notices, 1)
+	testing.expect_value(t, len(w.outcomes), 2)
+	if len(w.outcomes) == 2 {
+		testing.expect_value(t, w.outcomes[0].outcome, "launch_failed")
+		testing.expect_value(t, w.outcomes[1].outcome, "acted")
+	}
 }
