@@ -5,11 +5,14 @@ import "core:encoding/json"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
+import "core:crypto"
+import vault "odin_test:lib/vault"
 
 // This is the on-disk contract, not a runtime snapshot containing pointers or
 // credentials. The dispatcher is the only writer. JSON-valued runtime fields
 // are strings so subsequent runtime modules can evolve their own payloads.
 ACP_State :: struct {
+    seal_journal: bool,
     schema_version: int,
     instance: string,
     bridge: string,
@@ -89,6 +92,15 @@ acp_state_write :: proc(path: string, state: ^ACP_State) -> bool {
     raw, err := json.marshal(state^)
     if err != nil do return false
     defer delete(raw)
+    if state.seal_journal {
+        defer crypto.zero_explicit(raw_data(raw),len(raw))
+        kr,unlocked:=acp_chat_keyring();defer vault.keyring_wipe(&kr)
+        if !unlocked do return false
+        sealed,ok:=bridge_encrypt_vault_text(string(raw),&kr,context.temp_allocator)
+        if !ok do return false
+        header,_:=json.marshal(struct{schema_version:int,instance,launch_epoch:string,last_stdout_seq:u64,sealed_state:string}{2,state.instance,state.launch_epoch,state.last_stdout_seq,sealed},allocator=context.temp_allocator)
+        return bridge_retry_atomic_write(path,header)
+    }
     return bridge_retry_atomic_write(path, raw)
 }
 
@@ -99,8 +111,28 @@ acp_state_read :: proc(path: string) -> (ACP_State, bool) {
     return acp_state_decode(string(raw))
 }
 
+acp_state_waiting_for_vault :: proc(raw:string) -> bool {
+    header:struct{schema_version:int,sealed_state:string}
+    defer delete(header.sealed_state)
+    if json.unmarshal_string(raw,&header)!=nil || header.schema_version!=2 || header.sealed_state=="" do return false
+    return !acp_chat_vault_ready()
+}
+
 acp_state_decode :: proc(raw: string) -> (state: ACP_State, ok: bool) {
     defer { if !ok do acp_state_delete(&state) }
+    header:struct{schema_version:int,instance,launch_epoch:string,last_stdout_seq:u64,sealed_state:string}
+    if json.unmarshal_string(raw,&header)==nil {
+        defer { delete(header.instance);delete(header.launch_epoch);delete(header.sealed_state) }
+        if header.schema_version==2 {
+            kr,unlocked:=acp_chat_keyring();defer vault.keyring_wipe(&kr)
+            if !unlocked do return state,false
+            plain,opened:=bridge_decrypt_vault_token(header.sealed_state,&kr)
+            if !opened do return state,false
+            defer { crypto.zero_explicit(raw_data(plain),len(plain));delete(plain) }
+            state,ok=acp_state_decode(plain)
+            return state,ok && state.seal_journal && state.instance==header.instance && state.launch_epoch==header.launch_epoch && state.last_stdout_seq==header.last_stdout_seq
+        }
+    }
     if !acp_rpc_json(raw) || json.unmarshal(transmute([]byte)raw, &state, spec = .JSON) != nil do return state, false
     if state.schema_version != 1 || state.effective_transport != "acp" ||
        !acp_state_component_ok(state.instance) || !acp_state_component_ok(state.launch_epoch) ||

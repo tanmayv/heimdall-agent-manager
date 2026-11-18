@@ -250,6 +250,8 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		return Bridge_Agent_Route{kind = .Bad_Request, message = "chat send requires --to: `user` for the bound user, or an agent-instance-id"}
 	case "agent.chat.read":
 		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "chat", "read")}
+	case "agent.chat.assistant_message":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "chat", "assistant-message")}
 	case "agent.chat.previous_context":
 		// Context rollover handoff (T5): stored inbound + unread in the caller's
 		// own conversation, never notified. The bridge forwards an intercepted
@@ -356,7 +358,7 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     "agent.workflow.runs", "agent.workflow.history", "agent.work.graph", "agent.work.depend",
 	     "agent.work.remove_dependency", "agent.work.scope", "agent.work.complete",
 	     // chat + self/misc
-	     "agent.chat.send", "agent.chat.read", "agent.chat.previous_context",
+	     "agent.chat.send", "agent.chat.read", "agent.chat.assistant_message", "agent.chat.previous_context",
 	     "agent.context.get", "agent.conversation.set_title",
 	     "agent.memory.propose", "agent.memory.list", "agent.memory.show", "agent.memory.content",
 	     "agent.search",

@@ -803,6 +803,7 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 		// not on the next heartbeat.
 		// Token snapshots held back by the 10 s interval go out once it passes.
 		_ = bridge_ext_token_enqueue_due(bridge_runtime_now_ms())
+		acp_chat_recovery_tick(bridge_runtime_now_ms())
 		bridge_runtime_drain_status_pushes(conn)
 		bridge_blockers_drain_outgoing(conn)
 		bridge_credential_reauth_drain(conn)

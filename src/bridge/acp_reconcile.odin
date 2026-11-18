@@ -6,6 +6,7 @@ import "core:os"
 import "core:strings"
 import "core:sync"
 import "core:thread"
+import "core:time"
 import vm "core:mem/virtual"
 
 ACP_Hub_Intent :: struct { status, epoch, transport: string, run_count: int }
@@ -43,6 +44,18 @@ acp_runtime_recovery_worker :: proc(data: rawptr) {
     context.temp_allocator = vm.arena_allocator(&arena)
     job := cast(^ACP_Runtime_Recovery_Job)data
     defer { delete(job.instance); delete(job.epoch); delete(job.generation); free(job) }
+    // No ownership/lifecycle lock is held while waiting for an unlock. Stop or
+    // replacement can quiesce the owner and end this worker normally.
+    for {
+        sync.mutex_lock(&acp_runtime_mu)
+        owner:=acp_runtimes[job.instance]
+        waiting:=owner!=nil && owner.epoch==job.epoch && owner.generation==job.generation && !owner.quiescing && !owner.d.stopped
+        needs_vault:=waiting && owner.chat!=nil
+        sync.mutex_unlock(&acp_runtime_mu)
+        if !waiting do return
+        if !needs_vault || acp_chat_vault_ready() do break
+        time.sleep(100*time.Millisecond)
+    }
     lifecycle := bridge_agent_lifecycle_enter(job.instance); defer acp_runtime_leave_lifecycle(lifecycle)
     sync.mutex_lock(&acp_runtime_mu); defer sync.mutex_unlock(&acp_runtime_mu)
     previous := acp_runtimes[job.instance]
@@ -50,6 +63,11 @@ acp_runtime_recovery_worker :: proc(data: rawptr) {
     saved, valid := acp_state_read(previous.state_path)
     defer acp_state_delete(&saved)
     raw, err := os.read_entire_file(previous.state_path, context.allocator); defer delete(raw)
+    if err==nil && acp_state_waiting_for_vault(string(raw)) {
+        previous.reconnect_queued=false
+        acp_runtime_schedule_recovery(previous,job.force_load)
+        return
+    }
     rec := bridge_startup_clone_rec(previous.rec)
     defer { delete(rec.token_hash); delete(rec.agent_instance_id); delete(rec.instance_token) }
     previous.quiescing = true
@@ -172,7 +190,7 @@ acp_runtime_durable_valid :: proc(d: ^ACP_Runtime_Durable) -> bool {
     case "", "acp_auth_required", "acp_pipe_lost", "acp_pipe_write_failed", "acp_adapter_exited", "acp_rpc_timeout", "acp_rpc_failed", "acp_protocol_error", "acp_state_write_failed", "acp_bootstrap_unsupported", "acp_model_unavailable", "acp_permission_mode_unsupported":
     case: return false
     }
-    if len(d.config_json) > ACP_RPC_MAX_LINE || len(d.starter) > ACP_RPC_MAX_LINE || len(d.current_input) > 1024 || len(d.queue) > 128 || len(d.completed_inputs) > 256 || d.stream_retries < 0 || d.stream_retries > 4 do return false
+    if len(d.config_json) > ACP_RPC_MAX_LINE || len(d.plan_json)>64*1024 || len(d.starter) > ACP_RPC_MAX_LINE || len(d.current_input) > 1024 || len(d.queue) > 128 || len(d.completed_inputs) > 256 || d.stream_retries < 0 || d.stream_retries > 4 do return false
     for input in d.queue do if input.id == "" || len(input.id) > 1024 || len(input.text) > 256*1024 do return false
     for id in d.completed_inputs do if id == "" || len(id) > 1024 do return false
     return true
@@ -193,6 +211,7 @@ acp_runtime_from_state :: proc(s: ^ACP_State, rec: Bridge_Local_Agent_Token_Reco
     r.generation = strings.clone(s.pipe_generation); r.session = strings.clone(s.sessionId)
     r.next_rpc_id = s.next_rpc_id; r.next_delivery_id = s.next_delivery_id
     r.saved_tools = strings.clone(s.tool_map_json); r.saved_outbox = strings.clone(s.chat_outbox_json)
+    if s.chat_outbox_json != "" && !acp_chat_prepare(r) { acp_runtime_destroy(r);return nil,false }
     return r, true
 }
 
@@ -309,6 +328,13 @@ acp_runtime_reconcile :: proc(socket: string, pipes: []Pty_Host_Pipe_Info, inten
         delete(state_path_base)
         saved, readable := acp_state_read(state_path)
         raw, raw_err := os.read_entire_file(state_path, context.allocator)
+        // A locked vault is temporary backpressure, not proof that a live
+        // daemon child or its encrypted journal has been lost.
+        if raw_err == nil && acp_state_waiting_for_vault(string(raw)) {
+            acp_state_delete(&saved); delete(raw); delete(state_path)
+            delete(rec.token_hash); delete(rec.agent_instance_id); delete(rec.instance_token)
+            acp_runtime_leave_lifecycle(lifecycle); continue
+        }
         separator := strings.index(rec.instance_token, "~")
         epoch_matches := separator >= 0 && rec.instance_token[separator+1:] == intent.epoch
         valid := path_ok && readable && saved.instance == id && saved.launch_epoch == intent.epoch && rec.run_count == intent.run_count && epoch_matches

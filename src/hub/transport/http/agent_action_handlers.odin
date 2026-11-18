@@ -587,6 +587,7 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 	auth, inst, ok, resp := require_instance_action_auth(h, req)
 	if !ok do return resp
 	params := json_object_raw(req.body, "params")
+	if default_mark_read { if response, handled := agent_chat_ack_only(h, req, auth, inst, params); handled do return response }
 	limit := json_int(params, "limit", 50)
 	cursor := json_string(params, "cursor")
 	// Optional cross-agent read: a curator (same owner user) may read another
@@ -605,6 +606,7 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 	mark_read := default_mark_read ? (!strings.contains(params, "\"mark_read\":false") && !strings.contains(params, "\"mark_read\": false")) : (strings.contains(params, "\"mark_read\":true") || strings.contains(params, "\"mark_read\": true"))
 
 	filter := content_service.Agent_Inbox_Filter{
+		oldest_first=jsonx.extract_bool(params,"oldest_first",false),
 		agent_instance_id=effective_instance_id,
 		unread_only=unread_only, 
 		receiver_only=receiver_only, 

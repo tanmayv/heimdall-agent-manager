@@ -368,6 +368,8 @@ Do not fabricate usage/token counts from text; map only values actually reported
 
 ### Permission request routing
 
+**MVP implementation amendment (T5, requirements revision 2):** interactive permissions are deferred. Reply with `RequestPermissionOutcome` cancelled immediately on the instance dispatcher and emit one Activity naming the tool. Do not start a permission worker, call `bridge_ext_permission_run`, map option kinds, or show a permission prompt. The interactive design below is retained for a later task.
+
 The request contains `toolCall` (a ToolCallUpdate object), not merely a top-level toolCallId:
 
 ```json
@@ -396,6 +398,8 @@ Do not send bare allow_once as outcome, confuse kind with optionId, or translate
 ## 9. Direct input and streamed assistant chat
 
 ### 9.1 Input delivery
+
+**MVP implementation amendment (T5 coordinator decision):** ordinary messages and notices remain FIFO. The explicit pane interrupt uses the existing `session/cancel` path; after cancellation, drain the FIFO in order. A combined send-and-interrupt control and message priority flag are deferred post-MVP.
 
 User messages remain durable chat rows. On notify_agent_message, ACP driver fetches unseen input via `POST /api/v1/agent-actions/chat/read`, using the same instance authority as ham-ctl (`src/bridge/agent_api.odin:251`). The response remains sealed: open body and the encrypted structured labels/custom text locally with `bridge_vault_decrypt_field` and the scoped keyring; the Hub does not decrypt. Fetch with mark_read=false until the local input FIFO is durably checkpointed. Extend that action with an optional ack-only `params:{ack_message_ids:["msg_..."]}` branch (maximum 100 IDs): validate every ID belongs to this instance's incoming conversation before calling `mark_messages_read_by_ids_at`, return `{marked_count,read_at}`, and publish the existing read receipt event. No cross-instance target or list filters are accepted in ack-only mode. The existing handler currently marks the rows it fetches (`src/hub/transport/http/agent_action_handlers.odin:627`); refetching with mark_read=true could acknowledge a newly arrived, unqueued row and is not sufficient. Paginate until all unseen rows have been checkpointed and acknowledged. Convert actual message body into a prompt text block; do not send the old notice that tells the model to run chat read. Include sender, message_id and structured answer metadata in a labeled context text block so quick replies and grouped answers retain question/option IDs. Task nudges, lease wakes and background shell completion notices remain notices with fetch instructions for their technical context; deliver them as text prompts instead of terminal keystrokes. No output payload is inferred from a wake notice.
 

@@ -1,3 +1,4 @@
+import { acceptAssistantSnapshot } from '../api/acpChatStream';
 import { createAsyncThunk, createSlice } from '@reduxjs/toolkit';
 import * as daemonApi from '../api/daemonApi';
 import { storeKnownAgents } from '../api/agentCatalog';
@@ -132,6 +133,8 @@ function mapMessage(message: any) {
     deliveryError: message.delivery_error ?? message.deliveryError ?? '',
     interrupt: !!message.interrupt,
     artifactIds: extractMessageArtifactIds(message),
+    metadata: message.metadata ?? message.metadata_json,
+    messageStatus: message.messageStatus ?? message.message_status,
     sending: Boolean(message.sending),
     optimistic: Boolean(message.optimistic),
     error: Boolean(message.error),
@@ -139,6 +142,7 @@ function mapMessage(message: any) {
 }
 
 function mergeMessage(existing: any, incoming: any) {
+  if (!acceptAssistantSnapshot(existing, incoming)) return existing;
   const deliveredUnixMs = Math.max(Number(existing.deliveredUnixMs || 0), Number(incoming.deliveredUnixMs || 0));
   const readUnixMs = Math.max(Number(existing.readUnixMs || 0), Number(incoming.readUnixMs || 0));
   const deliveryFailedUnixMs = Math.max(Number(existing.deliveryFailedUnixMs || 0), Number(incoming.deliveryFailedUnixMs || 0));

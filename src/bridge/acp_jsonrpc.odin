@@ -50,6 +50,9 @@ ACP_RPC_Callbacks :: struct {
     // At most UNKNOWN_ID_COUNT distinct IDs/UNKNOWN_ID_BYTES of keys, then one
     // UNKNOWN_ID_OVERFLOW marker.
     unknown_response: proc(data: rawptr, id_json: string),
+    // Frame admission may pause on a locked vault or bounded durable outbox.
+    // Control commands remain dispatchable while the daemon queue backs up.
+    can_process: proc(data: rawptr) -> bool,
 }
 ACP_RPC_Frame_Kind :: enum { Stdout, Receipt, Diagnostic, Fault }
 ACP_RPC_Frame :: struct { kind: ACP_RPC_Frame_Kind, bytes: string, seq: u64 }
@@ -278,12 +281,27 @@ acp_rpc_dispatcher :: proc(data: rawptr) {
     sync.atomic_store(&c.dispatcher_id, sync.current_thread_id())
     arena: vm.Arena; _ = vm.arena_init_growing(&arena); defer vm.arena_destroy(&arena)
     context.temp_allocator = vm.arena_allocator(&arena)
+    paused_at:i64
     for {
         sync.mutex_lock(&c.mu)
-        if len(c.queue) == 0 do sync.cond_wait_with_timeout(&c.cond, &c.mu, 10*time.Millisecond)
+        if len(c.queue)==0 || paused_at!=0 do sync.cond_wait_with_timeout(&c.cond,&c.mu,10*time.Millisecond)
+        sync.mutex_unlock(&c.mu)
+        frames_ready := c.callbacks.can_process == nil || c.callbacks.can_process(c.callbacks.data)
+        if !frames_ready && paused_at==0 do paused_at=acp_rpc_now(c)
+        if frames_ready && paused_at!=0 {
+            paused:=max(i64(0),acp_rpc_now(c)-paused_at)
+            for &pending in c.state.pending_outbound do if pending.deadline_unix_ms!=0 do pending.deadline_unix_ms+=paused
+            for &pending in c.state.pending_inbound do if pending.deadline_unix_ms!=0 do pending.deadline_unix_ms+=paused
+            paused_at=0
+        }
+        sync.mutex_lock(&c.mu)
         cmd: ^ACP_RPC_Command
-        if len(c.queue) > 0 {
-            cmd = c.queue[0]; ordered_remove(&c.queue, 0)
+        index := -1
+        for candidate,i in c.queue {
+            if frames_ready || candidate.kind != .Frame { index=i;break }
+        }
+        if index >= 0 {
+            cmd = c.queue[index]; ordered_remove(&c.queue, index)
             if cmd.kind == .Frame do c.queued_bytes -= len(cmd.frame.bytes)
         }
         sync.cond_broadcast(&c.cond)
@@ -296,7 +314,7 @@ acp_rpc_dispatcher :: proc(data: rawptr) {
                 if closing do break
             }
         }
-        if !c.failed do acp_rpc_expire(c)
+        if !c.failed && frames_ready do acp_rpc_expire(c)
         mem.free_all(context.temp_allocator)
     }
 }

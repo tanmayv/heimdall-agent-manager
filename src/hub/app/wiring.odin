@@ -385,6 +385,8 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	// chain/task mutation in the taskchain service funnels into it; it calls back
 	// (on_tasks_changed) so the chain auto-completes when its last task is done.
 	graph.task_engine = taskv2.new_service(&graph.repos.taskchains, &graph.repos.agents, &graph.repos.bridges, &graph.clock, &graph.ids)
+	graph.content.uow_factory = &graph.uow_factory
+	graph.content.vault_directory = &graph.vault_directory_repo
 	graph.task_engine.uow_factory = &graph.uow_factory
 	graph.task_engine.agent_service = &graph.agents
 	graph.task_engine.bridge_command_sink = bridge_command_sink
@@ -751,6 +753,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/chats/by-instance/*", rawptr(&graph.content_handlers), http.get_chat_by_instance_handler)
 	http.router_add(&graph.router, "PATCH", "/api/v1/chats/*", rawptr(&graph.content_handlers), http.patch_chat_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/chats/*/messages", rawptr(&graph.content_handlers), http.list_chat_messages_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/chats/*/messages/*", rawptr(&graph.content_handlers), http.get_conversation_message_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/chats/*/messages", rawptr(&graph.content_handlers), http.send_chat_message_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/chats/*/messages/*/answers", rawptr(&graph.content_handlers), http.answer_chat_questions_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/chats/*/pane-capture", rawptr(&graph.content_handlers), http.pane_capture_handler)
@@ -938,6 +941,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/previous-context", rawptr(&graph.agent_action_handlers), http.agent_action_chat_previous_context_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/fetch", rawptr(&graph.agent_action_handlers), http.agent_action_chat_fetch_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/read", rawptr(&graph.agent_action_handlers), http.agent_action_chat_read_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/assistant-message", rawptr(&graph.agent_action_handlers), http.agent_action_chat_assistant_message_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/conversation/set-title", rawptr(&graph.agent_action_handlers), http.agent_action_conversation_set_title_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/set-title", rawptr(&graph.agent_action_handlers), http.agent_action_chain_set_title_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/set-description", rawptr(&graph.agent_action_handlers), http.agent_action_chain_set_description_handler)

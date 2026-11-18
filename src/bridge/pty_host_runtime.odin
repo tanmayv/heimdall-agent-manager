@@ -718,8 +718,7 @@ bridge_shell_run_notice :: proc(session_id, status, exit_code: string) -> string
 // short settle so the pane returns to its input box before we paste the notice.
 bridge_pty_host_deliver_message :: proc(socket, instance, sender: string) -> bool {
 	if bridge_runtime_is_acp(instance) {
-		msg := bridge_pty_host_message_notice(sender); defer delete(msg)
-		return acp_runtime_deliver(instance, msg)
+		return acp_chat_notify(instance)
 	}
 	esc := pty_host_encode_key(instance, .Esc)
 	defer delete(esc)

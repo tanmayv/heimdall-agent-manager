@@ -1,3 +1,4 @@
+import { createAssistantFetchQueue } from './acpChatStream';
 import { announceTaskChainCreated } from './taskChainCreationEvents';
 import { analytics } from '../analytics/analytics';
 import { heimdallApi, HEIMDALL_TAG_TYPES } from './heimdallApi';
@@ -475,6 +476,8 @@ export function resetQueuedInvalidations(): void {
   queuedTimer = null;
   queuedTags.clear();
   queuedDispatch = null;
+  for (const queue of assistantFetchQueues.values()) queue.clear();
+  assistantFetchQueues.clear();
 }
 
 // An API reset (user switch, vault lock/unlock: every resetApiState) ends the previous
@@ -595,6 +598,19 @@ function applyLegacyStatusPatch(dispatch: any, payload: any, agentId: string): v
   }
 }
 
+const assistantFetchQueues = new Map<object, ReturnType<typeof createAssistantFetchQueue>>();
+function queueAssistantFetch(dispatch: any, conversationId: string, messageId: string, revision: number) {
+  let queue = assistantFetchQueues.get(dispatch);
+  if (!queue) {
+    queue = createAssistantFetchQueue(async (conversationId, messageId) => {
+      const request = dispatch(chatEndpoints.endpoints.fetchConversationMessage.initiate({ conversationId, messageId }, { subscribe: false, forceRefetch: true }));
+      try { await request.unwrap(); } finally { request.unsubscribe(); }
+    });
+    assistantFetchQueues.set(dispatch, queue);
+  }
+  queue.enqueue(conversationId, messageId, revision);
+}
+
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function handleChatEvent(dispatch: any, payload: any, ctx: WsCtx) {
   dispatch(chatEventReceived(payload));
@@ -625,6 +641,15 @@ function handleChatEvent(dispatch: any, payload: any, ctx: WsCtx) {
   const direction = String(payload.direction || payload.message?.direction || '');
   const isStatusOnlyEvent = !message && (direction === 'read' || direction === 'delivered' || direction === 'delivery_failed' || payload.event === 'messages_read');
 
+  if (conversationId && !message && payload.fetch_required && payload.fetch_kind === 'chat_message' && Number(payload.revision) > 0) {
+    const messageId = String(payload.fetch_id || payload.message_id || '');
+    if (messageId) queueAssistantFetch(dispatch, conversationId, messageId, Number(payload.revision));
+    if (Number(payload.revision) === 1 || payload.message_status === 'complete' || payload.message_status === 'failed') {
+      expireConversationOptions(conversationId);
+      queueMessageInvalidation(dispatch, conversationId, []);
+    }
+    return;
+  }
   dispatch(wsRefreshRequested(`chat_event:${agentId || payload.message_id || 'unknown'}`));
   // Cookie shell (the only mounted consumer): caches are keyed by conversation id.
   // messages_read patches in place; a new message refetches only that conversation's

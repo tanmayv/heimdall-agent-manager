@@ -1,0 +1,228 @@
+package main
+
+import "core:encoding/json"
+import "core:fmt"
+import "core:strings"
+import "core:time"
+import contracts "odin_test:contracts"
+
+ACP_Tool_State :: struct {
+    id, name, kind, title, input, output, status, content: string,
+    started, ended: bool,
+    diffs: [dynamic]string,
+}
+
+acp_events_ingest := bridge_ext_ingest
+
+acp_event_string :: proc(obj: json.Object,key: string) -> string {
+    value,_ := obj[key].(json.String); return string(value)
+}
+acp_event_object :: proc(raw: string) -> json.Object {
+    value,err := json.parse(raw,allocator=context.temp_allocator)
+    if err != nil do return nil
+    obj,_ := value.(json.Object); return obj
+}
+acp_event_json :: proc(value: $T) -> string {
+    raw,_ := json.marshal(value,allocator=context.temp_allocator); return string(raw)
+}
+
+acp_events_emit :: proc(r: ^ACP_Runtime,event: string,payload: json.Object,tool: json.Object=nil) {
+    if r.d.replay_only do return
+    obj:=make(json.Object,allocator=context.temp_allocator)
+    obj["schema"]=json.String(contracts.EXT_SCHEMA_V1); obj["provider"]=json.String(r.provider)
+    obj["ext_version"]=json.String("acp-0.108.0"); obj["event"]=json.String(event)
+    obj["ts"]=json.String(action_scheduler_format_rfc3339_utc(time.to_unix_nanoseconds(time.now())/1_000_000))
+    obj["session_id"]=json.String(r.session); obj["payload"]=payload
+    if tool!=nil do obj["tool"]=tool
+    raw:=acp_event_json(obj)
+    if len(raw)>contracts.EXT_EVENT_MAX_BYTES do return
+    result:=acp_events_ingest(r.rec,raw,bridge_runtime_now_ms())
+    bridge_ext_ingest_result_destroy(&result)
+}
+
+acp_events_activity :: proc(r: ^ACP_Runtime,state,summary: string) {
+    payload:=make(json.Object,allocator=context.temp_allocator)
+    payload["state"]=json.String(state)
+    if summary!="" do payload["summary"]=json.String(summary)
+    acp_events_emit(r,"activity",payload)
+}
+
+acp_events_permission :: proc(r: ^ACP_Runtime,params: string) {
+    obj:=acp_event_object(params)
+    call,_:=obj["toolCall"].(json.Object)
+    name:=acp_event_string(call,"title")
+    if name=="" do name=acp_event_string(call,"kind")
+    if name=="" do name="tool"
+    if len(name)>256 do name=name[:256]
+    acp_events_activity(r,"active",fmt.tprintf("Permission cancelled for %s",name))
+}
+
+acp_events_prompt_started :: proc(r: ^ACP_Runtime,input_id: string) {
+    acp_events_activity(r,"active","")
+    acp_chat_prompt_started(r,input_id)
+}
+acp_events_prompt_finished :: proc(r: ^ACP_Runtime,input_id,result,error: string) {
+    acp_events_activity(r,"idle","")
+    acp_chat_prompt_finished(r,input_id,result,error)
+}
+
+acp_events_ready :: proc(r:^ACP_Runtime) {
+    if r.chat==nil || r.chat.d.session_announced || r.d.replay_only do return
+    payload:=make(json.Object,allocator=context.temp_allocator)
+    capabilities:=make(json.Array,allocator=context.temp_allocator)
+    for capability in ([]string{"tool.start","tool.end","file.edit","activity"}) do append(&capabilities,json.String(capability))
+    payload["capabilities"]=capabilities
+    acp_events_emit(r,"hello",payload)
+    session:=make(json.Object,allocator=context.temp_allocator)
+    session["phase"]=json.String("start");session["source"]=json.String("resume" if r.recovering else "startup")
+    acp_events_emit(r,"session",session)
+    r.chat.d.session_announced=true
+}
+
+acp_events_notification :: proc(r: ^ACP_Runtime,method,params: string) {
+    if method!="session/update" || r.d.replay_only do return
+    obj:=acp_event_object(params)
+    if acp_event_string(obj,"sessionId")!=r.session do return
+    update,_:=obj["update"].(json.Object)
+    switch acp_event_string(update,"sessionUpdate") {
+    case "agent_thought_chunk": acp_events_activity(r,"active","")
+    case "tool_call","tool_call_update": acp_events_tool(r,update)
+    case "agent_message_chunk":
+        content,_:=update["content"].(json.Object)
+        if acp_event_string(content,"type")=="text" do acp_chat_chunk(r,acp_event_string(content,"text"))
+    case "config_option_update","current_mode_update":
+        acp_events_config(r,update)
+    case "plan":
+        raw:=acp_event_json(update)
+        if len(raw)<=64*1024 do acp_runtime_replace(&r.d.plan_json,raw)
+    case "user_message_chunk":
+    case: // Compatible future updates are intentionally ignored.
+    }
+}
+
+acp_events_config :: proc(r:^ACP_Runtime,update:json.Object) {
+    config:=acp_event_object(r.d.config_json)
+    if config==nil do config=make(json.Object,allocator=context.temp_allocator)
+    if acp_event_string(update,"sessionUpdate")=="config_option_update" {
+        options,valid:=update["configOptions"].(json.Array)
+        if !valid { acp_runtime_error(r,"acp_protocol_error");return }
+        config["configOptions"]=options
+    } else {
+        mode:=acp_event_string(update,"currentModeId")
+        if mode=="" { acp_runtime_error(r,"acp_protocol_error");return }
+        config["currentModeId"]=json.String(mode)
+        if r.d.ready && mode!=r.mode { acp_runtime_error(r,"acp_permission_mode_unsupported");return }
+    }
+    raw:=acp_event_json(config)
+    if len(raw)>256*1024 { acp_runtime_error(r,"acp_protocol_error");return }
+    acp_runtime_replace(&r.d.config_json,raw)
+    // Setup responses own validation while set_config_option is in flight.
+    // Once ready, unsolicited changes cannot broaden the frozen launch policy.
+    if !r.d.ready do return
+    for category in ([]string{"model","mode"}) {
+        value:=r.model if category=="model" else r.mode
+        if value=="" do continue
+        id,selected:=acp_config_selection(raw,category,value,selected=true);delete(id)
+        if !selected { acp_runtime_error(r,"acp_model_unavailable" if category=="model" else "acp_permission_mode_unsupported");return }
+    }
+}
+
+acp_events_tool :: proc(r: ^ACP_Runtime,update: json.Object) {
+    id:=acp_event_string(update,"toolCallId")
+    if id=="" || len(id)>1024 do return
+    tools: [dynamic]ACP_Tool_State
+    if r.client.state.tool_map_json!="" && json.unmarshal_string(r.client.state.tool_map_json,&tools)!=nil do return
+    defer {
+        for tool in tools {
+            delete(tool.id);delete(tool.name);delete(tool.kind);delete(tool.title);delete(tool.input);delete(tool.output);delete(tool.status);delete(tool.content)
+            for hash in tool.diffs do delete(hash)
+            delete(tool.diffs)
+        }
+        delete(tools)
+    }
+    index:=-1
+    for tool,i in tools do if tool.id==id do index=i
+    if index<0 {
+        if len(tools)>=512 { acp_runtime_error(r,"acp_protocol_error"); return }
+        append(&tools,ACP_Tool_State{id=strings.clone(id)}); index=len(tools)-1
+    }
+    tool:=&tools[index]
+    // Absent fields leave the previous partial update intact.
+    for key in ([]string{"name","kind","title","status"}) {
+        if value,present:=update[key];present {
+            text,typed:=value.(json.String)
+            if !typed || len(text)>4096 do continue
+            switch key {
+            case "name": acp_runtime_replace(&tool.name,string(text))
+            case "kind": acp_runtime_replace(&tool.kind,string(text))
+            case "title": acp_runtime_replace(&tool.title,string(text))
+            case "status": acp_runtime_replace(&tool.status,string(text))
+            }
+        }
+    }
+    for key in ([]string{"rawInput","rawOutput","content"}) {
+        if value,present:=update[key];present {
+            raw:=acp_event_json(value)
+            if len(raw)>64*1024 do continue
+            switch key {
+            case "rawInput": if _,object:=value.(json.Object);object do acp_runtime_replace(&tool.input,raw)
+            case "rawOutput": acp_runtime_replace(&tool.output,raw)
+            case "content": acp_runtime_replace(&tool.content,raw)
+            }
+        }
+    }
+    native:=make(json.Object,allocator=context.temp_allocator)
+    name:=tool.name; if name=="" do name=tool.kind; if name=="" do name=tool.title
+    native["name"]=json.String(name);native["use_id"]=json.String(id)
+    input:=acp_event_object(tool.input)
+    if input==nil do input=make(json.Object,allocator=context.temp_allocator)
+    native["input"]=input
+    payload:=make(json.Object,allocator=context.temp_allocator)
+    terminal:=tool.status=="completed" || tool.status=="failed"
+    if !tool.started && (terminal || tool.status=="pending" || tool.status=="in_progress") {
+        tool.started=true; acp_events_emit(r,"tool.start",payload,native)
+    }
+    if terminal && !tool.ended {
+        tool.ended=true
+        payload["outcome"]=json.String("failure" if tool.status=="failed" else "success")
+        if tool.output!="" { value,_:=json.parse(tool.output,allocator=context.temp_allocator); payload["rawOutput"]=value }
+        if tool.content!="" { value,_:=json.parse(tool.content,allocator=context.temp_allocator); payload["content"]=value }
+        acp_events_emit(r,"tool.end",payload,native)
+    }
+    if content,present:=update["content"];present {
+        entries,_:=content.(json.Array)
+        for entry in entries {
+            diff,_:=entry.(json.Object)
+            if acp_event_string(diff,"type")!="diff" do continue
+            // JSON objects have no stable map order. Hash the fixed diff tuple,
+            // otherwise replay of identical content can emit another edit.
+            raw:=acp_event_json(struct{path,oldText,newText:string}{acp_event_string(diff,"path"),acp_event_string(diff,"oldText"),acp_event_string(diff,"newText")})
+            digest:=bridge_local_hash_token(raw); defer delete(digest)
+            duplicate:=false;for previous in tool.diffs do if previous==digest do duplicate=true
+            if duplicate || len(tool.diffs)>=64 do continue
+            append(&tool.diffs,strings.clone(digest))
+            acp_events_diff(r,diff)
+        }
+    }
+    if tool.ended { acp_runtime_replace(&tool.input,"");acp_runtime_replace(&tool.output,"");acp_runtime_replace(&tool.content,"") }
+    saved:=acp_event_json(tools)
+    if len(saved)>2*1024*1024 { acp_runtime_error(r,"acp_protocol_error");return }
+    acp_runtime_replace(&r.client.state.tool_map_json,saved)
+}
+
+acp_events_diff :: proc(r:^ACP_Runtime,diff:json.Object) {
+    path:=acp_event_string(diff,"path");if path=="" || len(path)>4096 do return
+    old:=acp_event_string(diff,"oldText"); next:=acp_event_string(diff,"newText")
+    b:=strings.builder_make(allocator=context.temp_allocator)
+    fmt.sbprintf(&b,"--- %s\n+++ %s\n@@ -1,%d +1,%d @@\n",path,path,strings.count(old,"\n")+1,strings.count(next,"\n")+1)
+    for text,i in ([]string{old,next}) {
+        for line in strings.split(text,"\n",context.temp_allocator) {
+            if len(strings.to_string(b))>contracts.EXT_DIFF_MAX_BYTES do break
+            strings.write_string(&b,"-" if i==0 else "+");strings.write_string(&b,line);strings.write_byte(&b,'\n')
+        }
+    }
+    cut,truncated:=contracts.ext_truncate_diff(strings.to_string(b));defer delete(cut)
+    payload:=make(json.Object,allocator=context.temp_allocator)
+    payload["path"]=json.String(path);payload["diff"]=json.String(cut);payload["diff_truncated"]=json.Boolean(truncated)
+    acp_events_emit(r,"file.edit",payload)
+}

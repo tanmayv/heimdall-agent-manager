@@ -10,7 +10,7 @@ import "core:time"
 
 ACP_Runtime_Input :: struct { id, text: string }
 ACP_Runtime_Durable :: struct {
-    phase, config_json, starter, current_input, error: string,
+    phase, config_json, plan_json, starter, current_input, error: string,
     starter_sent, ready, stopped, auth_required, replay_only, embedded_context: bool,
     queue: [dynamic]ACP_Runtime_Input,
     completed_inputs: [dynamic]string,
@@ -26,10 +26,11 @@ ACP_Runtime_Events :: struct {
     prompt_started: proc(r: ^ACP_Runtime, input_id: string),
     prompt_finished: proc(r: ^ACP_Runtime, input_id, result, error: string),
 }
-acp_runtime_events: ACP_Runtime_Events
+acp_runtime_events := ACP_Runtime_Events{acp_events_notification, acp_events_prompt_started, acp_events_prompt_finished}
 
 ACP_Runtime :: struct {
     client: ^ACP_RPC_Client,
+    chat: ^ACP_Chat,
     instance, epoch, generation, run_dir, state_path, provider, profile, etag, model, mode, session: string,
     initialized, load_session, recovering: bool,
     quiescing, reconnect_queued: bool,
@@ -79,6 +80,10 @@ acp_runtime_checkpoint :: proc(data: rawptr, state: ^ACP_State) -> bool {
         }
     }
     sync.mutex_unlock(&bridge_runtime_mutex)
+    if r.chat != nil {
+        state.seal_journal = true
+        acp_runtime_replace(&state.chat_outbox_json, acp_event_json(r.chat.d))
+    }
     raw, err := json.marshal(r.d)
     if err != nil do return false
     delete(state.runtime_json); state.runtime_json = string(raw)
@@ -165,9 +170,12 @@ acp_runtime_inbound :: proc(data: rawptr, id, method, params: string) -> bool {
     defer { delete(id); delete(method); delete(params) }
     r := cast(^ACP_Runtime)data
     if method != "session/request_permission" do return false
+    obj := acp_event_object(params)
+    if acp_event_string(obj, "sessionId") != r.session { acp_rpc_reply_error(r.client,id,{code=-32602,message="wrong ACP session"}); return true }
     // MVP policy: no interactive permission flow. In particular, never select
     // allow_always when an adapter unexpectedly asks despite bypass mode.
     acp_rpc_reply(r.client, id, `{"outcome":{"outcome":"cancelled"}}`)
+    acp_events_permission(r, params)
     return true
 }
 
@@ -196,6 +204,7 @@ acp_runtime_configure :: proc(r: ^ACP_Runtime, category, value, failure: string)
 acp_runtime_ready :: proc(r: ^ACP_Runtime) {
     if !r.d.starter_sent && !r.d.embedded_context { acp_runtime_error(r, "acp_bootstrap_unsupported"); return }
     r.d.ready = true
+    acp_events_ready(r)
     acp_runtime_replace(&r.d.phase, "ready")
     if !acp_rpc_checkpoint(r.client) { acp_runtime_error(r, "acp_state_write_failed"); return }
     if !acp_runtime_current(r) do return
@@ -229,13 +238,14 @@ acp_runtime_prompt :: proc(r: ^ACP_Runtime, input: ACP_Runtime_Input, bootstrap 
         append(&blocks, block)
     }
     raw, _ := json.marshal(struct{sessionId: string, prompt: []json.Value}{r.session, blocks[:]}, allocator = context.temp_allocator)
+    if acp_runtime_events.prompt_started != nil do acp_runtime_events.prompt_started(r, input.id)
     if acp_runtime_request(r, "session/prompt", string(raw)) {
         bridge_runtime_note_agent_activity(r.instance, "active", "acp")
-        if acp_runtime_events.prompt_started != nil do acp_runtime_events.prompt_started(r, input.id)
     }
 }
 
 acp_runtime_drain :: proc(r: ^ACP_Runtime) {
+    if r.chat != nil && (!acp_chat_vault_ready() || acp_chat_bytes(r.chat) > 1536*1024) do return
     if !r.d.ready || r.d.phase == "prompt" || r.d.error != "" || r.d.exit_pending || len(r.d.queue) == 0 do return
     input := r.d.queue[0]; ordered_remove(&r.d.queue, 0)
     defer { delete(input.id); delete(input.text) }
@@ -322,6 +332,7 @@ acp_runtime_restore_completion :: proc(data: rawptr, _: ACP_RPC_Role, id: ACP_RP
 
 acp_runtime_work :: proc(data: rawptr, c: ^ACP_RPC_Client, argument: string) -> bool {
     r := cast(^ACP_Runtime)data
+    if strings.has_prefix(argument,"chat_") do return acp_chat_work(r,argument)
     switch argument {
     case "begin":
         c.state.next_rpc_id = max(c.state.next_rpc_id, r.next_rpc_id)
@@ -346,6 +357,7 @@ acp_runtime_work :: proc(data: rawptr, c: ^ACP_RPC_Client, argument: string) -> 
         r.d.exit_pending = true
         return acp_pipe_io_child_exited(cast(^ACP_Pipe_IO)c.io.data)
     case "stop":
+        if r.d.current_input!="" && acp_runtime_events.prompt_finished!=nil do acp_runtime_events.prompt_finished(r,r.d.current_input,`{"stopReason":"cancelled"}`,"")
         r.d.stopped = true
         for p in c.state.pending_inbound {
             if p.response_json == "" && p.method == "session/request_permission" do acp_rpc_reply(c, p.id_json, `{"outcome":{"outcome":"cancelled"}}`)
@@ -366,8 +378,10 @@ acp_runtime_work :: proc(data: rawptr, c: ^ACP_RPC_Client, argument: string) -> 
     duplicate := input.id == r.d.current_input
     for entry in r.d.queue do if entry.id == input.id do duplicate = true
     for id in r.d.completed_inputs do if id == input.id do duplicate = true
+    for id in c.state.queued_input_message_ids do if id == input.id do duplicate = true
     if duplicate { delete(input.id); delete(input.text); return true }
     append(&r.d.queue, input)
+    if r.chat!=nil && strings.has_prefix(input.id,"msg_") do append(&c.state.queued_input_message_ids,strings.clone(input.id))
     if !acp_rpc_checkpoint(c) { acp_runtime_error(r, "acp_state_write_failed"); return false }
     acp_runtime_drain(r)
     return true
@@ -391,13 +405,16 @@ acp_runtime_deliver :: proc(instance, text: string, input_id := "") -> bool {
 
 acp_runtime_destroy :: proc(r: ^ACP_Runtime) {
     context.allocator = runtime.heap_allocator()
-    r.quiescing = true // close rejects pending calls; they must not mutate the owner
+    r.quiescing = true
+    acp_chat_stop(r)
+    // close rejects pending calls; they must not mutate the owner
     acp_rpc_close(r.client)
+    acp_chat_destroy(r)
     delete(r.instance); delete(r.epoch); delete(r.generation); delete(r.run_dir); delete(r.state_path)
     delete(r.provider); delete(r.profile); delete(r.etag); delete(r.model); delete(r.mode); delete(r.session)
     delete(r.saved_tools); delete(r.saved_outbox)
     delete(r.rec.token_hash); delete(r.rec.agent_instance_id); delete(r.rec.instance_token)
-    delete(r.d.phase); delete(r.d.config_json); delete(r.d.starter); delete(r.d.current_input); delete(r.d.error)
+    delete(r.d.phase); delete(r.d.config_json); delete(r.d.plan_json); delete(r.d.starter); delete(r.d.current_input); delete(r.d.error)
     for input in r.d.queue { delete(input.id); delete(input.text) }; delete(r.d.queue)
     for id in r.d.completed_inputs do delete(id); delete(r.d.completed_inputs)
     free(r)
@@ -423,14 +440,20 @@ acp_runtime_new :: proc(instance, epoch, run_dir, provider, profile, etag, model
 }
 
 acp_runtime_connect :: proc(r: ^ACP_Runtime, socket: string, after_seq: u64, checkpoint: string = "") -> bool {
+    if !acp_chat_prepare(r) do return false
     io, ok := acp_pipe_io_open(socket, r.instance, r.generation, r.epoch, r.state_path, after_seq)
     if !ok do return false
     r.client, ok = acp_rpc_open(io, {data = r, checkpoint = acp_runtime_checkpoint, notification = acp_runtime_notification,
-        inbound_request = acp_runtime_inbound, fault = acp_runtime_fault, restore_completion = acp_runtime_restore_completion})
+        inbound_request = acp_runtime_inbound, fault = acp_runtime_fault, restore_completion = acp_runtime_restore_completion, can_process = acp_chat_can_process})
     if !ok { io.close(io.data); io.destroy(io.data); return false }
-    if checkpoint != "" do return acp_rpc_restore(r.client, checkpoint)
+    if checkpoint != "" {
+        if !acp_rpc_restore(r.client, checkpoint) do return false
+        acp_chat_run(r)
+        return true
+    }
     cmd := ACP_RPC_Command{kind = .Runtime, a = "begin", runtime_work = acp_runtime_work, runtime_data = r}
     acp_rpc_call(r.client, &cmd)
+    if cmd.ok do acp_chat_run(r)
     return cmd.ok
 }
 

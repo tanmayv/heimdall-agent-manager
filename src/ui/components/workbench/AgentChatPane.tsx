@@ -1,3 +1,4 @@
+import { acceptAssistantSnapshot } from '../../api/acpChatStream';
 import React, {
   type ClipboardEvent,
   type FormEvent,
@@ -1601,6 +1602,19 @@ export function AgentChatPane({
     return () => window.removeEventListener(CONVERSATION_MESSAGES_READ_EVENT, onRead);
   }, [conversationId]);
 
+  useEffect(() => {
+    const onUpdate = (event: Event) => {
+      const update = (event as CustomEvent).detail;
+      if (update?.conversationId !== conversationId) return;
+      setOlderMessages((current) => current.map((row: any) => {
+        if (row.message_id !== update.message?.message_id || !acceptAssistantSnapshot(row, update.message)) return row;
+        return { ...row, ...update.message };
+      }));
+    };
+    window.addEventListener('heimdall:conversation-message-updated', onUpdate);
+    return () => window.removeEventListener('heimdall:conversation-message-updated', onUpdate);
+  }, [conversationId]);
+
   const instanceProfile = String(instance?.provider_profile || instanceProvider);
   const effectiveProfile = providerProfile || instanceProfile;
   const effectiveProvider = provider || instanceProvider;
@@ -2237,6 +2251,12 @@ export function AgentChatPane({
     }
     return (
       <div className="flex flex-col gap-1">
+        {message.metadata?.acp && message.messageStatus === 'pending' && (
+          <div role="status" data-debug-id={`conversation-assistant-pending-${message.messageId}`} className="mb-1 text-xs text-muted">Responding…</div>
+        )}
+        {message.metadata?.acp && message.messageStatus === 'failed' && (
+          <div role="status" data-debug-id={`conversation-assistant-failed-${message.messageId}`} className="mb-1 text-xs text-muted">Response interrupted.</div>
+        )}
         <ThreadMessageBody body={message.body} reveal={reveal}
           onQuote={!message.isUser && (!message.messageType || message.messageType === 'text') ? async selectedText => {
             const epoch = (reduxStore.getState() as any).composerContext?.epoch;
