@@ -1,3 +1,5 @@
+import type { AuthUserIdentity } from '../components/auth/AuthUserContext';
+
 /**
  * Browser sign-in helpers for the Hub's OIDC login (docs/plans/oidc-only-auth.md).
  *
@@ -133,27 +135,63 @@ export function recordLoginRedirect(storage: StorageLike | null | undefined, now
   try { storage?.setItem(LOGIN_REDIRECT_KEY, String(now)); } catch (_err) {}
 }
 
-/**
- * Signs out: POST /api/v1/auth/logout (same-origin, cookie) and return the URL
- * the browser should go to next (the provider's end-session URL, or "/").
- * Logout always "succeeds" from the UI's point of view: the Hub expires the
- * cookie even when the session was already gone.
- */
-export async function postLogout(fetchImpl: typeof fetch, url: string = LOGOUT_PATH): Promise<string> {
-  try {
-    const response = await fetchImpl(url, {
-      method: 'POST',
-      credentials: 'include',
+export type AuthSessionAccount = {
+  user_id: string;
+  name: string;
+  display_name: string;
+  email: string;
+  active: boolean;
+  expires_at_ms: number;
+};
+
+export type LogoutAccountOptions = { userId?: string; all?: boolean };
+
+export function addAccountHref(location: LocationLike): string {
+  return `${LOGIN_PATH}?add_account=1&return_to=${encodeURIComponent(currentReturnTo(location))}`;
+}
+
+async function sessionRequest(fetchImpl: typeof fetch, url: string, body?: object): Promise<any> {
+  const response = await fetchImpl(url, {
+    method: body === undefined ? 'GET' : 'POST',
+    credentials: 'include',
+    ...(body === undefined ? {} : {
       headers: { 'Content-Type': 'application/json' },
-      body: '{}',
-    });
-    if (response.ok) {
-      const body = await response.json().catch(() => ({}));
-      const url = String(body?.data?.logout_url || body?.logout_url || '').trim();
-      if (url) return safeLogoutTarget(url);
-    }
-  } catch (_err) {}
-  return '/';
+      body: JSON.stringify(body),
+    }),
+  });
+  if (!response.ok) throw new Error(`Account request failed (${response.status})`);
+  const envelope = await response.json();
+  return envelope?.data || envelope;
+}
+
+export async function fetchAuthSessions(fetchImpl: typeof fetch, url = '/api/v1/auth/sessions'): Promise<{ activeUserId: string; accounts: AuthSessionAccount[] }> {
+  const data = await sessionRequest(fetchImpl, url);
+  return { activeUserId: data.active_user_id || '', accounts: data.accounts || [] };
+}
+
+export async function postSwitchAccount(fetchImpl: typeof fetch, userId: string, url = '/api/v1/auth/switch'): Promise<{ activeUserId: string; user: AuthUserIdentity; accounts: AuthSessionAccount[] }> {
+  const data = await sessionRequest(fetchImpl, url, { user_id: userId });
+  if (!data.user?.user_id || data.active_user_id !== data.user.user_id) throw new Error('Invalid account switch response');
+  return { activeUserId: data.active_user_id, user: data.user, accounts: data.accounts || [] };
+}
+
+export async function postLogoutAccount(fetchImpl: typeof fetch, opts: LogoutAccountOptions = {}, url = LOGOUT_PATH): Promise<{ logoutUrl: string; activeUserId: string; switchedUser: AuthUserIdentity | null; accounts: AuthSessionAccount[] }> {
+  const data = await sessionRequest(fetchImpl, url, {
+    ...(opts.userId ? { user_id: opts.userId } : {}),
+    ...(opts.all === undefined ? {} : { all: opts.all }),
+  });
+  return {
+    logoutUrl: data.logout_url ? safeLogoutTarget(data.logout_url) : '',
+    activeUserId: data.active_user_id || '',
+    switchedUser: data.switched_user || null,
+    accounts: data.accounts || [],
+  };
+}
+
+/** Legacy callers always receive a safe navigation target, including on failure. */
+export async function postLogout(fetchImpl: typeof fetch, url: string = LOGOUT_PATH): Promise<string> {
+  try { return (await postLogoutAccount(fetchImpl, {}, url)).logoutUrl || '/'; }
+  catch { return '/'; }
 }
 
 /** 429/503 from the identity check mean "provider or Hub temporarily unavailable". */
