@@ -4,6 +4,7 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:strings"
 import "core:sync"
+import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import platform "odin_test:hub/platform"
 import iface "odin_test:hub/repository/iface"
@@ -77,6 +78,59 @@ extension_install_command_json :: proc(command: domain.Provider_Extension_Comman
 // An install or uninstall: both are explicit per-provider actions tracked the same way.
 extension_action_kind :: proc(kind: string) -> bool {return kind == "install" || kind == "uninstall"}
 
+// POST .../providers/:provider/acp-adapter. The catalog supplies the entire
+// recipe; callers cannot select a package, version, executable or arguments.
+bridge_provider_acp_adapter_handler :: proc(ctx: rawptr, req: Request) -> Response {
+    h := cast(^Provider_Handlers)ctx
+    bridge, ok, response := provider_owned_bridge(h, req, path_part(req.path, 4))
+    if !ok do return response
+    defer domain.bridge_destroy(&bridge)
+    value, parse_err := json.parse(req.body)
+    if parse_err != nil do return respond_error(domain.domain_error(.Validation_Failed, "action install is required"), req.request_id)
+    defer json.destroy_value(value)
+    obj, valid := value.(json.Object)
+    action, _ := obj["action"].(json.String)
+    if !valid || len(obj) != 1 || action != "install" do return respond_error(domain.domain_error(.Validation_Failed, "only action install is accepted"), req.request_id)
+    if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry, bridge.bridge_id) do return respond_error(domain.domain_error(.Bridge_Offline, "bridge is not connected"), req.request_id)
+    command_id, err := provider_acp_install_start(h, bridge.bridge_id, path_part(req.path, 6))
+    if err.code != .None do return respond_error(err, req.request_id)
+    defer delete(command_id)
+    raw, _ := json.marshal(struct{command_id, provider, state: string}{command_id, path_part(req.path, 6), "installing"})
+    defer delete(raw)
+    result := respond_success(string(raw), req.request_id, auth_ctx_server_time(req)); result.status = 202
+    return result
+}
+
+provider_acp_install_start :: proc(h: ^Provider_Handlers, bridge_id, provider: string) -> (string, domain.Domain_Error) {
+    entry, found, err := iface.provider_catalog_get(h.providers.repo, provider)
+    if err.code != .None do return "", err
+    if !found do return "", domain.domain_error(.Unprocessable_Entity, "provider does not support ACP")
+    defer domain.provider_catalog_entry_destroy(entry)
+    if entry.state != "active" || !contracts.provider_supports_transport(entry.transports_json, "acp") || !contracts.acp_recipe_valid(entry.acp_recipe_json) do return "", domain.domain_error(.Unprocessable_Entity, "provider does not support ACP")
+    recipe: contracts.ACP_Recipe
+    json.unmarshal_string(entry.acp_recipe_json, &recipe, allocator = context.temp_allocator)
+    sync.mutex_lock(&h.providers.extension_mutex); defer sync.mutex_unlock(&h.providers.extension_mutex)
+    commands, list_err := iface.provider_extension_command_list(h.providers.repo, bridge_id)
+    if list_err.code != .None do return "", list_err
+    defer domain.provider_extension_commands_destroy(commands)
+    for c in commands {
+        if c.kind == "install_acp_adapter" && c.provider == provider && c.target_version == recipe.adapter_version && !extension_command_terminal(c.state) do return strings.clone(c.command_id), {}
+    }
+    id := strings.clone(platform.generate_id(h.ids, "cmd_ext_"))
+    command := domain.Provider_Extension_Command{command_id = id, bridge_id = bridge_id, provider = provider, profile_id = provider, kind = "install_acp_adapter", state = "queued", target_version = recipe.adapter_version}
+    created, create_err := iface.provider_extension_command_create(h.providers.repo, command)
+    if !created { delete(id); return "", create_err }
+    sent, send_err := extension_command_dispatch(h, command)
+    if !sent {
+        command.state = "failed"; command.message = send_err.message
+        iface.provider_extension_command_save(h.providers.repo, command)
+        delete(id); return "", send_err
+    }
+    command.state = "dispatched"
+    if save_err := iface.provider_extension_command_save(h.providers.repo, command); save_err.code != .None { delete(id); return "", save_err }
+    return id, {}
+}
+
 // The caller holds extension_mutex; no synchronous command wait on the WS reader.
 extension_command_dispatch :: proc(
 	h: ^Provider_Handlers,
@@ -88,6 +142,18 @@ extension_command_dispatch :: proc(
 	payload := ""
 	if command.kind == "discovery" {
 		payload = provider_discover_command_json(command.command_id, nil,command.profile_id)
+	} else if command.kind == "install_acp_adapter" {
+		entry, found, err := iface.provider_catalog_get(h.providers.repo, command.provider)
+		if err.code != .None do return false, err
+		if !found do return false, domain.domain_error(.Not_Found, "provider not found")
+		defer domain.provider_catalog_entry_destroy(entry)
+		recipe: contracts.ACP_Recipe
+		if json.unmarshal_string(entry.acp_recipe_json, &recipe, allocator = context.temp_allocator) != nil do return false, domain.domain_error(.Unprocessable_Entity, "unsupported adapter")
+		etag, etag_err := provider_service.catalog_etag(h.providers)
+		if etag_err.code != .None do return false, etag_err
+		defer delete(etag)
+		raw, _ := json.marshal(struct{type, command_id, provider, catalog_etag, adapter_version: string}{"install_acp_adapter", command.command_id, command.provider, etag, recipe.adapter_version})
+		payload = string(raw)
 	} else {
 		payload = extension_install_command_json(command)
 	}
@@ -339,7 +405,7 @@ bridge_extension_frame :: proc(
 			extension_command_set_state(&command, state, message, command.progress)
 		} else if command.kind == "bridge_update" {
 			if state == "restarting" || state == "succeeded" do extension_command_set_state(&command, "restarting", message, 95)
-		} else if extension_action_kind(command.kind) &&
+		} else if (extension_action_kind(command.kind) || command.kind == "install_acp_adapter") &&
 		   frame_type == "command_result" &&
 		   state == "succeeded" {
 			// Bridge's terminal result follows manifest/version verification and discovery.
@@ -377,7 +443,7 @@ extension_apply_report :: proc(
 	command: ^domain.Provider_Extension_Command,
 	text: string,
 ) -> domain.Domain_Error {
-	if command.kind != "discovery" && !extension_action_kind(command.kind) do return {}
+	if command.kind != "discovery" && !extension_action_kind(command.kind) && command.kind != "install_acp_adapter" do return {}
 	if command.kind == "discovery" && extension_command_terminal(command.state) do return {}
 	if command.state == "waiting" do return {} // no report has been requested yet
 	report: Provider_Discovery_Report_Wire
@@ -413,7 +479,7 @@ extension_apply_report :: proc(
 			"",
 		)
 	}
-	if extension_action_kind(command.kind) do return {}
+	if extension_action_kind(command.kind) || command.kind == "install_acp_adapter" do return {}
 	views, view_err := provider_service.list_bridge_providers(h.providers, command.bridge_id)
 	if view_err.code != .None do return view_err
 	defer provider_service.bridge_provider_views_destroy(views)
@@ -422,6 +488,7 @@ extension_apply_report :: proc(
 	defer domain.provider_extension_commands_destroy(commands)
 	ph := extension_frame_handlers(h)
 	for view in views {
+        if view.effective_transport == "acp" do continue
         if !view.enabled || !extension_install_supported(view) do continue
         reported:=false
         for item in report.providers do if item.provider==view.catalog.provider && domain.profile_effective_id(item.provider,item.profile_id)==view.profile_id do reported=true

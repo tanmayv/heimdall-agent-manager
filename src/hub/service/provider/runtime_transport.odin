@@ -49,8 +49,9 @@ require_acp_ready :: proc(service: ^Provider_Service, bridge_id: string, entry: 
  for status in statuses {
   if status.provider!=entry.provider || domain.profile_effective_id(status.provider,status.profile_id)!=entry.provider do continue
   if acp_adapter_ready(status.acp_adapter_json,entry.acp_recipe_json) do return {}
-  // T4 adds tracked install_acp_adapter / POST acp-adapter and converts
-  // installable states to acp_installing. T1 fails closed without changing settings.
+  if acp_adapter_state(status.acp_adapter_json)=="installing" do return domain.domain_error(.ACP_Installing,"ACP adapter installation is in progress")
+  // The HTTP settings handler starts a tracked install for installable states
+  // while keeping the settings unchanged until adapter readiness is verified.
   return acp_unavailable_error(entry.provider,acp_adapter_state(status.acp_adapter_json),"ACP adapter is not ready")
  }
  return acp_unavailable_error(entry.provider,"not_checked","ACP adapter has not been checked")

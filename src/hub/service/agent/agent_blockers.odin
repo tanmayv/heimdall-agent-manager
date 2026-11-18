@@ -114,7 +114,7 @@ blocker_canonical_json :: proc(obj: json.Object, agent_instance_id: string) -> (
 	id := blocker_text(obj, "blocker_id")
 	kind := blocker_text(obj, "kind")
 	if !blocker_valid_id(id) do return {}, false
-	if kind != AGENT_BLOCKER_KIND_PERMISSION && kind != AGENT_BLOCKER_KIND_TERMINAL_PROMPT do return {}, false
+	if kind != AGENT_BLOCKER_KIND_PERMISSION && kind != AGENT_BLOCKER_KIND_TERMINAL_PROMPT && kind != "startup" do return {}, false
 	input := "{}"
 	if in_obj, is_obj := obj["input"].(json.Object); is_obj {
 		if bytes, merr := json.marshal(in_obj, allocator = context.temp_allocator); merr == nil {

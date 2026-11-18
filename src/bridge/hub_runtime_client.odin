@@ -115,6 +115,9 @@ BRIDGE_STATE_SEQ_FLOOR_OFFSET_MS :: 3_600_000
 BRIDGE_STOP_INTENT_TTL_MS :: 15_000
 
 Bridge_Runtime_Instance :: struct {
+	acp_error_code: string,
+	runtime_transport: string,
+	acp_session_ready: bool,
 	agent_instance_id: string,
 	state_seq: int,
 	runtime_status: string,
@@ -144,6 +147,8 @@ Bridge_Runtime_Command_Result :: struct {
 }
 
 Bridge_Runtime_Launch :: struct {
+	effective_transport, launch_epoch, acp_session_id, pipe_generation, adapter_version: string,
+	acp_load_session: bool,
 	agent_instance_id: string,
 	command_id: string,
 	run_dir: string,
@@ -400,6 +405,9 @@ bridge_hub_runtime_worker :: proc() {
 		// Nothing negotiated on a previous connection carries over: only this
 		// connection's bridge_ready can re-enable a heartbeat omission.
 		bridge_hub_reset_heartbeat_negotiation()
+		if socket, daemon_ok := bridge_pty_host_ensure_daemon(); daemon_ok {
+			sync.atomic_store(&bridge_acp_runtime_supported, pty_host_supports_pipes(socket))
+		}
 		hello := bridge_hub_hello_json()
 		if !ws.send_text(&conn, hello) {
 			log_failure(&last_failure, &attempts, "WS connected but sending hello failed (connection dropped immediately)", .hub_connect_failed, blog_sym(.stage, .hello), blog_sym(.reason, .write_error))
@@ -1039,6 +1047,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		bridge_hub_handle_extension_install_command(conn, text)
 		return
 	}
+	if type == "install_acp_adapter" { acp_adapter_handle_install(conn, text); return }
 	if type == "provider_profile_op" {
 		bridge_hub_handle_provider_profile_op(conn, text)
 		return
@@ -2634,6 +2643,15 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 	defer delete(launch_epoch)
 	instance_token := extract_json_string(command_json, "instance_token", "")
 	defer delete(instance_token)
+	requested_transport := extract_json_string(command_json, "effective_transport", "pty")
+	defer delete(requested_transport)
+	if requested_transport == "acp" {
+		if run_count > 0 && run_count < bridge_agent_instance_run_count(instance_id) do return false, "superseded startup generation", bridge_error(.agent_launch_failed, .denied)
+		if handled, retry_ok := acp_runtime_retry_launch(instance_id, launch_epoch, run_count); handled {
+			if retry_ok do return true, "", {}
+			return false, "acp_pipe_lost", bridge_error(.agent_launch_failed, .denied)
+		}
+	}
 	if instance_token == "" {
 		instance_token = bridge_agent_instance_last_assertion(instance_id)
 		if instance_token == "" do instance_token = strings.concatenate({"hit_", instance_id})
@@ -2739,6 +2757,14 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 	defer delete(provider_profile)
 	// T6: the chain coordinator is alerted when a context rollover stalls.
 	bridge_rollover_note_launch(instance_id, descriptor.coordinator_id)
+	transport := extract_json_string(command_json, "effective_transport", "pty")
+	defer delete(transport)
+	if transport == "acp" {
+		etag := extract_json_string(command_json, "catalog_etag", "")
+		defer delete(etag)
+		return acp_runtime_launch(command_id, instance_id, launch_epoch, etag, run_dir, endpoint, provider, model, agent_issue.plaintext_token, permission_mode, provider_profile)
+	}
+	if transport != "pty" do return false, "unsupported_runtime_transport", bridge_error(.agent_launch_failed, .unsupported)
 	return bridge_runtime_launch_agent_pty_host(command_id, instance_id, run_dir, endpoint, provider, model, agent_issue.plaintext_token, descriptor.display_name, 0, descriptor.project_path, permission_mode, provider_profile)
 }
 
@@ -2782,6 +2808,12 @@ bridge_runtime_launch_provider_test :: proc(command_id, command_json: string) ->
 // registered) the agent under the daemon PTY. Retry/backoff on spawn preserves
 // AC-5 launch resilience.
 bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, endpoint, provider, model, agent_token, display_name: string, timeout_seconds: u64, project_path: string = "", permission_mode: string = "", provider_profile: string = "") -> (ok: bool, detail: string, err: Bridge_Error) {
+    // A previous ACP child may already be dead while its driver still owns
+    // routing. Join that owner before changing transport or spawning a PTY.
+    acp_runtime_detach(instance_id)
+	sync.mutex_lock(&bridge_runtime_mutex)
+	for &inst in bridge_runtime_instances do if inst.agent_instance_id == instance_id { inst.runtime_transport = "pty"; inst.acp_error_code = "" }
+	sync.mutex_unlock(&bridge_runtime_mutex)
 	// T2b: the context window is resolved per launch from provider + model
 	// (override > shipped config > default); never detected from the provider.
 	bridge_ext_note_launch(instance_id, provider, model, provider_profile)
@@ -2868,6 +2900,10 @@ bridge_runtime_stop_agent_unlocked :: proc(instance_id: string, force: bool = fa
 	// running/starting (see bridge_runtime_note_activity_signal).
 	bridge_runtime_mark_stop_intent(instance_id)
 	bridge_runtime_set_status(instance_id, "stopping", "idle")
+	if acp_runtime_owned(instance_id) {
+		acp_runtime_command(instance_id, "stop")
+		acp_runtime_detach(instance_id)
+	}
 	// Wrapper-free: the bridge closes the instance on the ham-pty-host daemon
 	// directly (SIGTERM->SIGKILL + unregister). Token invalidation below is still
 	// done for defense-in-depth.
@@ -3339,6 +3375,7 @@ bridge_runtime_accept_activity_update :: proc(inst: ^Bridge_Runtime_Instance, so
 }
 
 bridge_runtime_activity_source_rank :: proc(source: string) -> int {
+	if source == "acp" do return 80
 	s := strings.to_lower(strings.trim_space(source))
 	defer delete(s)
 	// NOTE: the pi_extension==100 fast-path was REMOVED with the pi activity
@@ -3488,6 +3525,13 @@ bridge_instance_status_json :: proc(instance_id: string) -> string {
 // bridge_runtime_write_instance_error appends `,"error":{...}` for a failed instance
 // whose cause is known (REQ-ERR-PROTO-A).
 bridge_runtime_write_instance_error :: proc(b: ^strings.Builder, inst: Bridge_Runtime_Instance) {
+	if inst.acp_error_code != "" {
+		strings.write_string(b, ",\"acp_error_code\":")
+		strings.write_string(b, acp_rpc_quote(inst.acp_error_code))
+		strings.write_string(b, ",\"error\":")
+		contracts.write_wire_error(b, contracts.wire_error(.ACP_Unavailable, cause = inst.acp_error_code, message = inst.acp_error_code))
+		return
+	}
 	if inst.runtime_status != "failed" || !inst.has_last_error do return
 	strings.write_string(b, ",\"error\":")
 	contracts.write_wire_error(b, bridge_error_wire(inst.last_error))
@@ -4425,6 +4469,13 @@ Bridge_Hello_Wire :: struct {
 // heartbeat_metadata_omission tells the hub this Bridge understands the bridge_ready
 // flag of the same name (contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION).
 BRIDGE_RUNTIME_FEATURES := [?]string{"capture_agent_pane", "get_agent_pane", "instance_reconfiguration_v1", "tool_stream_demand_v2", "mcp_transform_v1", contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION}
+bridge_acp_runtime_supported: bool
+bridge_runtime_features :: proc() -> []string {
+	features := make([dynamic]string, allocator = context.temp_allocator)
+	append(&features, ..BRIDGE_RUNTIME_FEATURES[:])
+	if sync.atomic_load(&bridge_acp_runtime_supported) do append(&features, contracts.BRIDGE_FEATURE_ACP_RUNTIME)
+	return features[:]
+}
 
 bridge_hub_hello_json :: proc() -> string {
 	hello := Bridge_Hello_Wire{
@@ -4438,7 +4489,7 @@ bridge_hub_hello_json :: proc() -> string {
 		hostname = bridge_hello_hostname(),
 		public_key = bridge_get_public_key_hex(),
 		capabilities = []string{},
-		features = BRIDGE_RUNTIME_FEATURES[:],
+		features = bridge_runtime_features(),
 		// H2: answer an unknown-token refusal with bridge_token_invalid (one renewal)
 		// instead of bridge_credential_revoked (permanent park).
 		credential_refresh_on_invalid = true,
@@ -4465,7 +4516,7 @@ bridge_hub_hello_json :: proc() -> string {
 bridge_runtime_features_json :: proc(allocator := context.temp_allocator) -> string {
 	b := strings.builder_make(allocator)
 	strings.write_byte(&b, '[')
-	for feature, i in BRIDGE_RUNTIME_FEATURES {
+	for feature, i in bridge_runtime_features() {
 		if i > 0 do strings.write_byte(&b, ',')
 		strings.write_byte(&b, '"')
 		bridge_runtime_write_json_string(&b, feature)

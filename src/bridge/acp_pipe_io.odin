@@ -13,6 +13,11 @@ ACP_Pipe_IO :: struct {
     instance, generation: string,
     mu: sync.Mutex,
     stopped: bool,
+    last_acked: u64,
+    draining_exit: bool,
+    exit_ready: bool, // reader-owned
+    ready_count: int, // initial attachment plus optional final-watermark attachment
+    exit_target, last_read: u64, // reader-owned
 }
 
 acp_pipe_io_open :: proc(socket_path, instance, generation, epoch, state_path: string, after_seq: u64) -> (ACP_RPC_IO, bool) {
@@ -21,6 +26,7 @@ acp_pipe_io_open :: proc(socket_path, instance, generation, epoch, state_path: s
     if !ok do return {}, false
     a := new(ACP_Pipe_IO)
     a.fd = fd; a.instance = strings.clone(instance); a.generation = strings.clone(generation)
+    a.last_acked = after_seq; a.last_read = after_seq
     frame := pty_host_encode_pipe_request({kind = .Attach, instance = instance, generation = generation, seq = after_seq})
     defer delete(frame)
     if !pty_host_send_all(fd, frame) { acp_pipe_io_destroy(a); return {}, false }
@@ -44,11 +50,13 @@ acp_pipe_io_write :: proc(data: rawptr, bytes, delivery_id: string) -> bool {
 }
 acp_pipe_io_ack :: proc(data: rawptr, seq: u64) -> bool {
     a := cast(^ACP_Pipe_IO)data
+    sync.atomic_store(&a.last_acked, seq)
     return acp_pipe_io_send(a, {kind = .Ack, instance = a.instance, generation = a.generation, seq = seq})
 }
 acp_pipe_io_read :: proc(data: rawptr) -> (ACP_RPC_Frame, bool) {
     a := cast(^ACP_Pipe_IO)data
     for !sync.atomic_load(&a.stopped) {
+        if a.exit_ready && a.last_read >= a.exit_target do return {kind = .Fault, bytes = strings.clone("acp_adapter_exited")}, true
         raw, ok := pty_host_read_frame(a.fd)
         if !ok do return {}, false
         r, valid := pty_host_decode_reply(raw)
@@ -60,20 +68,35 @@ acp_pipe_io_read :: proc(data: rawptr) -> (ACP_RPC_Frame, bool) {
         #partial switch r.kind {
         case .Pipe_Ready:
             if !matching { pty_host_reply_delete(r); return {}, false }
+            a.ready_count += 1
+            // The initial Ready may still be queued when ChildExited arrives.
+            // Only the reply to our second Attach carries the final watermark.
+            if sync.atomic_load(&a.draining_exit) && a.ready_count >= 2 { a.exit_ready = true; a.exit_target = r.last_seq }
         case .Pipe_Output:
             if !matching { pty_host_reply_delete(r); return {}, false }
             frame.kind = .Stdout if r.stream == 1 else .Diagnostic
             frame.bytes = strings.clone(string(r.data)); frame.seq = r.seq; deliver = true
+            if r.stream == 1 do a.last_read = max(a.last_read, r.seq)
         case .Pipe_Input_Done:
             if !matching { pty_host_reply_delete(r); return {}, false }
             frame = {kind = .Receipt, bytes = strings.clone(r.delivery_id)}; deliver = true
-        case .Pipe_Gap, .Error: pty_host_reply_delete(r); return {}, false
+        case .Pipe_Gap:
+            pty_host_reply_delete(r); return {kind = .Fault, bytes = strings.clone("acp_pipe_gap")}, true
+        case .Error: pty_host_reply_delete(r); return {}, false
         case: pty_host_reply_delete(r); return {}, false
         }
         pty_host_reply_delete(r)
         if deliver do return frame, true
     }
     return {}, false
+}
+
+// ChildExited is sent after the daemon has drained its output reader. Reattach
+// the same owner at its ACK to get a final watermark; fail only after consuming
+// every retained stdout frame through that watermark.
+acp_pipe_io_child_exited :: proc(a: ^ACP_Pipe_IO) -> bool {
+    if sync.atomic_exchange(&a.draining_exit, true) do return true
+    return acp_pipe_io_send(a, {kind = .Attach, instance = a.instance, generation = a.generation, seq = sync.atomic_load(&a.last_acked)})
 }
 acp_pipe_io_close :: proc(data: rawptr) {
     a := cast(^ACP_Pipe_IO)data

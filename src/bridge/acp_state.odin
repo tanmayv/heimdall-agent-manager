@@ -38,6 +38,7 @@ ACP_State :: struct {
     partial_line_base64: string,
     tool_map_json: string,
     chat_outbox_json: string,
+    runtime_json: string,
 }
 
 ACP_RPC_Pending :: struct {
@@ -116,6 +117,7 @@ acp_state_delete :: proc(s: ^ACP_State) {
     delete(s.adapter_version); delete(s.pipe_generation); delete(s.sessionId)
     delete(s.selected_model); delete(s.selected_mode); delete(s.partial_line_base64)
     delete(s.tool_map_json); delete(s.chat_outbox_json)
+    delete(s.runtime_json)
     for p in s.pending_outbound { delete(p.id); delete(p.method); delete(p.params_json); delete(p.delivery_id) }
     for p in s.pending_inbound do acp_state_inbound_delete(p)
     for p in s.recent_inbound do acp_state_inbound_delete(p)

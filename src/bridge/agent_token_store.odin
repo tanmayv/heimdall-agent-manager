@@ -64,6 +64,7 @@ bridge_agent_token_issue :: proc(agent_instance_id, instance_token: string, role
 bridge_agent_token_verify :: proc(plaintext: string) -> (Bridge_Local_Agent_Token_Record, bool) {
 	if bridge_local_token_records == nil do bridge_agent_token_store_init()
 	hash := bridge_local_hash_token(strings.trim_space(plaintext))
+	defer delete(hash)
 	sync.mutex_lock(&bridge_local_token_mutex)
 	defer sync.mutex_unlock(&bridge_local_token_mutex)
 	for rec in bridge_local_token_records {

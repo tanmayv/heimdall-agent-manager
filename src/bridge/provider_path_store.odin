@@ -388,7 +388,7 @@ bridge_provider_discover :: proc(filter: []string, profile_id: string = "", dead
 	}
 }
 
-bridge_provider_discovery_report_json :: proc(request_id: string, results: []Bridge_Provider_Path) -> string {
+bridge_provider_discovery_report_json :: proc(request_id: string, results: []Bridge_Provider_Path, acp_state_override := "") -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"provider_discovery_report\",\"request_id\":\"")
 	bridge_runtime_write_json_string(&b, request_id)
@@ -407,7 +407,10 @@ bridge_provider_discovery_report_json :: proc(request_id: string, results: []Bri
 		strings.write_string(&b, "\",\"extension_version\":\""); bridge_runtime_write_json_string(&b, result.extension_version)
 		// The extension is measured in the same pass as the binary.
 		strings.write_string(&b, "\",\"extension_checked_at\":\""); bridge_runtime_write_json_string(&b, result.probed_at)
-		strings.write_string(&b, "\"}")
+		strings.write_string(&b, "\",\"acp_adapter\":")
+		adapter := acp_adapter_status_json(result.provider, acp_state_override)
+		strings.write_string(&b, adapter); delete(adapter)
+		strings.write_byte(&b, '}')
 	}
 	strings.write_string(&b, "]}")
 	return strings.to_string(b)

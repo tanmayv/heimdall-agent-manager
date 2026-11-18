@@ -51,7 +51,7 @@ test_runtime_transport_resolves_default_override_and_capability_gate :: proc(t:^
  for state in ([]string{"missing_node","missing","installing","outdated","error","not_checked"}) {
   store.adapter=strings.concatenate({`{"state":"`,state,`","installed":false,"checked_at":"2026-11-18T00:00:00Z"}`})
   transport,err=resolve_runtime_transport(&svc,"bridge","claude")
-  testing.expect_value(t,err.code,domain.Error_Code.ACP_Unavailable)
+  testing.expect_value(t,err.code,domain.Error_Code.ACP_Installing if state=="installing" else domain.Error_Code.ACP_Unavailable)
   delete(transport);delete(store.adapter)
  }
  store.override="pty";store.features="";store.adapter=""

@@ -23,6 +23,69 @@ import project_service "odin_test:hub/service/project"
 import user_service "odin_test:hub/service/user"
 
 import provider_service "odin_test:hub/service/provider"
+
+@(test)
+t4_acp_install_endpoint_coalesces_and_tracks_completion :: proc(t: ^testing.T) {
+    context.allocator = context.temp_allocator
+    f := extension_test_setup(t, "acp_install")
+    defer extension_test_teardown(f)
+    path := fmt.tprintf("/api/v1/bridges/%s/providers/claude/acp-adapter", f.bridge_id)
+    response := bridge_provider_acp_adapter_handler(rawptr(&f.ph), extension_test_request(f, path, `{"action":"install"}`))
+    if !testing.expectf(t, response.status == 202, "%d %s", response.status, response.body) do return
+    id := json_string(response.body, "command_id"); defer delete(id)
+    testing.expect_value(t, json_string(f.sink_rec.last_cmd.body_json, "type", context.temp_allocator), "install_acp_adapter")
+    testing.expect_value(t, json_string(f.sink_rec.last_cmd.body_json, "adapter_version", context.temp_allocator), "0.108.0")
+    testing.expect(t, strings.has_prefix(json_string(f.sink_rec.last_cmd.body_json, "catalog_etag", context.temp_allocator), "sha256:"))
+    second := bridge_provider_acp_adapter_handler(rawptr(&f.ph), extension_test_request(f, path, `{"action":"install"}`))
+    testing.expect_value(t, second.status, 202)
+    testing.expect_value(t, json_string(second.body, "command_id", context.temp_allocator), id)
+    testing.expect_value(t, f.sink_rec.count, 1)
+    extension_test_report(t, f, id, `[{"provider":"claude","state":"present","acp_adapter":{"installed":true,"state":"ready","version":"0.108.0","checked_at":"2026-11-18T00:00:00Z"}}]`)
+    result := strings.concatenate({`{"command_id":"`, id, `","status":"succeeded"}`}, context.temp_allocator)
+    testing.expect_value(t, bridge_extension_frame(&f.bh, f.bridge_id, "command_result", result).code, domain.Error_Code.None)
+    testing.expect_value(t, extension_test_state(t, f, id), "succeeded")
+}
+
+@(test)
+t4_acp_settings_starts_shared_install_without_saving_transport :: proc(t: ^testing.T) {
+    context.allocator = context.temp_allocator
+    f := extension_test_setup(t, "acp_settings_install"); defer extension_test_teardown(f)
+    bridge, _, _ := iface.bridge_get_bridge(&f.br_repo, f.bridge_id); defer domain.bridge_destroy(&bridge)
+    bridge.capabilities_json = strings.clone(`{"features":["acp_runtime_v1"]}`)
+    iface.bridge_save_bridge(&f.br_repo, bridge)
+    iface.bridge_provider_status_upsert(&f.pr_repo, {bridge_id = f.bridge_id, provider = "claude", state = "present", acp_adapter_json = `{"state":"missing","installed":false}`})
+    path := fmt.tprintf("/api/v1/bridges/%s/providers/claude", f.bridge_id)
+    response := bridge_provider_enable_handler(&f.ph, extension_test_request(f, path, `{"transport":"acp"}`))
+    testing.expect(t, response.status == 409 && strings.contains(response.body, "acp_installing"), response.body)
+    testing.expect_value(t, f.sink_rec.count, 1)
+    transport, err := iface.get_provider_transport(&f.pr_repo, f.bridge_id, "claude"); defer delete(transport)
+    testing.expect(t, err.code == .None && transport == "")
+    install_path := strings.concatenate({path, "/acp-adapter"})
+    retry := bridge_provider_acp_adapter_handler(&f.ph, extension_test_request(f, install_path, `{"action":"install"}`))
+    testing.expect_value(t, retry.status, 202)
+    testing.expect_value(t, f.sink_rec.count, 1)
+}
+
+@(test)
+t4_acp_install_endpoint_rejects_untrusted_recipe_and_offline :: proc(t: ^testing.T) {
+    context.allocator = context.temp_allocator
+    f := extension_test_setup(t, "acp_invalid")
+    defer extension_test_teardown(f)
+    path := fmt.tprintf("/api/v1/bridges/%s/providers/claude/acp-adapter", f.bridge_id)
+    for body in ([]string{`{}`, `{"action":"install","adapter_version":"latest"}`, `{"action":"login"}`, `[]`}) {
+        response := bridge_provider_acp_adapter_handler(rawptr(&f.ph), extension_test_request(f, path, body))
+        testing.expect_value(t, response.status, 400)
+    }
+    unsupported := fmt.tprintf("/api/v1/bridges/%s/providers/codex/acp-adapter", f.bridge_id)
+    testing.expect_value(t, bridge_provider_acp_adapter_handler(rawptr(&f.ph), extension_test_request(f, unsupported, `{"action":"install"}`)).status, 422)
+    req := extension_test_request(f, path, `{"action":"install"}`); req.headers = nil; req.remote_addr = "192.0.2.1:12"
+    testing.expect_value(t, bridge_provider_acp_adapter_handler(rawptr(&f.ph), req).status, 401)
+    bridge, _, _ := iface.bridge_get_bridge(&f.br_repo, f.bridge_id)
+    defer domain.bridge_destroy(&bridge)
+    bridge.status = .Offline; iface.bridge_save_bridge(&f.br_repo, bridge)
+    testing.expect_value(t, bridge_provider_acp_adapter_handler(rawptr(&f.ph), extension_test_request(f, path, `{"action":"install"}`)).status, 409)
+    testing.expect_value(t, f.sink_rec.count, 0)
+}
 @(private = "file")
 Extension_Sink_Recorder :: struct {
 	sent:     bool,

@@ -295,6 +295,8 @@ bridge_command_spec :: proc(command_type: string) -> (Bridge_Command_Spec, bool)
 		return Bridge_Command_Spec{class = .Model_Discovery, priority = .Background, key_kind = .Provider_Discovery, queued = true, requires_id = true, timeout_ms = 30_000, cost_units = 16, coalescible = true}, true
 	case "provider_extension_install":
 		return Bridge_Command_Spec{class = .Background, priority = .Interactive, key_kind = .Provider_Discovery, queued = true, requires_id = true, timeout_ms = 60_000, cost_units = 16}, true
+	case "install_acp_adapter":
+		return Bridge_Command_Spec{class = .Background, priority = .Interactive, key_kind = .Provider_Discovery, queued = true, requires_id = true, timeout_ms = 140_000, cost_units = 16}, true
 	case "shell_stream_attach":
 		return Bridge_Command_Spec{class = .Background, priority = .Background, key_kind = .Shell, queued = true, requires_id = true, timeout_ms = 10_000, cost_units = 4, retry_safe = true}, true
 	case "bridge_update":

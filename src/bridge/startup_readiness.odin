@@ -166,6 +166,7 @@ bridge_startup_accept :: proc(rec: Bridge_Local_Agent_Token_Record, now: i64) ->
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
 	if bridge_runtime_stop_intent_active_locked(rec.agent_instance_id, now) do return false, false
 	inst, exists := bridge_runtime_instance_snapshot_locked(rec.agent_instance_id)
+	if exists && inst.runtime_transport == "acp" && !inst.acp_session_ready do return false, false
 	if exists && inst.stopped_intent_unix_ms != 0 do return false, false
 	if exists && (inst.runtime_status == "stopped" || inst.runtime_status == "stopping" || inst.runtime_status == "failed") do return false, false
 	// After a bridge restart, persisted current tokens may precede rediscovery.
@@ -202,6 +203,7 @@ bridge_startup_rotate_token :: proc(old_rec: Bridge_Local_Agent_Token_Record, ne
 }
 
 bridge_startup_fallback_due :: proc(inst: Bridge_Runtime_Instance, now: i64) -> bool {
+	if inst.runtime_transport == "acp" do return false
 	s := inst.startup
 	return s.generation != 0 && s.armed_at_ms > 0 && !s.fallback_delivered &&
 	       !inst.start_success_seen && inst.runtime_status == "starting" &&

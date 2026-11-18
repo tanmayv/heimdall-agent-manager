@@ -13,6 +13,59 @@ import "core:thread"
 import "core:time"
 import local_socket "odin_test:lib/local_socket"
 
+ACP_Test_Exit_Daemon :: struct { listener: local_socket.Socket, output: bool, errors: int }
+acp_test_exit_daemon :: proc(data: rawptr) {
+    context.allocator = runtime.heap_allocator()
+    d := cast(^ACP_Test_Exit_Daemon)data
+    fd, ok := local_socket.accept(d.listener); if !ok { d.errors += 1; return }
+    defer local_socket.close(fd)
+    local_socket.set_recv_timeout(fd, 5*time.Second)
+    for n in 0..<2 {
+        raw, read := pty_host_read_frame(fd)
+        if !read { d.errors += 1; return }
+        req, valid := pty_host_decode_pipe_request(raw); delete(raw)
+        if !valid { d.errors += 1; return }
+        if req.kind != .Attach || req.instance != "inst_exit" || req.generation != "generation_exit" || req.seq != 5 do d.errors += 1
+        pty_host_pipe_request_delete(req)
+        last := u64(6) if n == 1 && d.output else u64(5)
+        if !acp_test_daemon_send(fd, {kind = .Pipe_Ready, instance = "inst_exit", generation = "generation_exit", last_seq = last}) do d.errors += 1
+        if n == 1 && d.output {
+            if !acp_test_daemon_send(fd, {kind = .Pipe_Output, instance = "inst_exit", generation = "generation_exit", seq = 6, stream = 1, data = transmute([]byte)string("final output\n")}) do d.errors += 1
+        }
+    }
+}
+
+@(test)
+t4_acp_pipe_exit_drains_final_watermark_after_restored_cursor :: proc(t: ^testing.T) {
+    context.allocator = runtime.heap_allocator()
+    cases := []bool{false, true}
+    for output in cases {
+        path := fmt.aprintf("/tmp/ham-acp-exit-%d.sock", time.tick_now()._nsec); defer delete(path); defer os.remove(path)
+        listener, listening := local_socket.listen(path, 1)
+        if !testing.expect(t, listening) do return
+        defer local_socket.close(listener)
+        d := ACP_Test_Exit_Daemon{listener = listener, output = output}
+        server := thread.create_and_start_with_data(&d, acp_test_exit_daemon)
+        io, opened := acp_pipe_io_open(path, "inst_exit", "generation_exit", "epoch_exit", "", 5)
+        if !testing.expect(t, opened) { local_socket.shutdown(listener, .Both); thread.join(server); thread.destroy(server); return }
+        a := cast(^ACP_Pipe_IO)io.data
+        local_socket.set_recv_timeout(a.fd, 5*time.Second)
+        // Deliberately leave initial Ready unread: it cannot be mistaken for
+        // the second attachment's final watermark when the child exits early.
+        testing.expect(t, acp_pipe_io_child_exited(a))
+        frame, read := io.read(io.data)
+        if output {
+            testing.expect(t, read && frame.kind == .Stdout && frame.seq == 6 && frame.bytes == "final output\n")
+            delete(frame.bytes); frame, read = io.read(io.data)
+        }
+        testing.expect(t, read && frame.kind == .Fault && frame.bytes == "acp_adapter_exited")
+        delete(frame.bytes)
+        io.close(io.data); io.destroy(io.data)
+        thread.join(server); thread.destroy(server)
+        testing.expect_value(t, d.errors, 0)
+    }
+}
+
 ACP_Test_Daemon :: struct {
     listener: local_socket.Socket,
     state_path: string,

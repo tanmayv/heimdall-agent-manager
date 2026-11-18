@@ -72,8 +72,10 @@ ACP_RPC_IO :: struct {
     feed: proc(c: ^ACP_RPC_Client, bytes: string, seq: u64) -> bool,
 }
 
-ACP_RPC_Command_Kind :: enum { Request, Notify, Reply, Reply_Error, Restore, Frame, Close }
+ACP_RPC_Command_Kind :: enum { Request, Notify, Reply, Reply_Error, Restore, Frame, Close, Runtime }
 ACP_RPC_Command :: struct {
+    runtime_work: proc(data: rawptr, client: ^ACP_RPC_Client, argument: string) -> bool,
+    runtime_data: rawptr,
     kind: ACP_RPC_Command_Kind,
     a, b: string,
     err: ACP_RPC_Error,
@@ -400,6 +402,12 @@ acp_rpc_send_staged :: proc(c: ^ACP_RPC_Client, from: int) -> bool {
 }
 
 acp_rpc_execute :: proc(c: ^ACP_RPC_Client, cmd: ^ACP_RPC_Command) {
+    // Driver mutations share the RPC dispatcher and checkpoint transaction.
+    // The owner may use this even after a fault to record stop intent safely.
+    if cmd.kind == .Runtime {
+        if cmd.runtime_work != nil do cmd.ok = cmd.runtime_work(cmd.runtime_data, c, cmd.a)
+        return
+    }
     if cmd.kind == .Close {
         sync.atomic_store(&c.closing, true)
         sync.mutex_lock(&c.mu); sync.cond_broadcast(&c.cond); sync.mutex_unlock(&c.mu)
@@ -463,7 +471,7 @@ acp_rpc_execute :: proc(c: ^ACP_RPC_Client, cmd: ^ACP_RPC_Command) {
         #partial switch cmd.frame.kind {
         case .Fault:
             reason := "acp_pipe_lost"
-            if cmd.frame.bytes == "acp_pipe_write_failed" do reason = cmd.frame.bytes
+            if cmd.frame.bytes == "acp_pipe_write_failed" || cmd.frame.bytes == "acp_adapter_exited" || cmd.frame.bytes == "acp_pipe_gap" do reason = cmd.frame.bytes
             acp_rpc_fail(c, reason)
         case .Stdout: acp_rpc_consume(c, cmd.frame.bytes, cmd.frame.seq)
         case .Receipt:

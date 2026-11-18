@@ -1,5 +1,6 @@
 package agent
 
+import "base:runtime"
 import "core:strings"
 import "core:testing"
 import contracts "odin_test:contracts"
@@ -62,6 +63,24 @@ BLK_SNAPSHOT_ONE :: `{"type":"agent_blockers","protocol_version":1,"agent_instan
 BLK_SNAPSHOT_TWO :: `{"type":"agent_blockers","agent_instance_id":"inst_me","revision":101,"blockers":[{"blocker_id":"blk_aaa","kind":"permission","tool_name":"Bash","input":{"command":"ls"}},{"blocker_id":"term_inst_me","kind":"terminal_prompt","summary":"Waiting for input in terminal"},{"blocker_id":"bad id","kind":"permission"},{"blocker_id":"blk_x","kind":"mystery"}]}`
 @(private = "file")
 BLK_SNAPSHOT_EMPTY :: `{"type":"agent_blockers","agent_instance_id":"inst_me","revision":102,"blockers":[]}`
+
+@(test)
+t4_acp_startup_blocker_survives_authenticated_snapshot :: proc(t: ^testing.T) {
+    store: Blk_Store; repo: iface.Agent_Repository; clock: platform.Clock; ids: platform.ID_Generator
+    svc := blk_service(&store, &repo, &clock, &ids)
+    defer {
+        delete(store.insts)
+        for event in svc.blockers.events do delete(event, runtime.heap_allocator())
+        delete(svc.blockers.events)
+    }
+    raw := `{"agent_instance_id":"inst_me","revision":100,"blockers":[{"blocker_id":"acpauth_epoch","kind":"startup","provider":"claude","summary":"Log in on the bridge and restart","input":{"reason":"acp_auth_required","actions":[]}}]}`
+    testing.expect(t, apply_bridge_blockers_snapshot(&svc, "brg_1", raw))
+    body, ok, err := list_instance_blockers(&svc, blk_user(), "inst_me")
+    defer delete(body)
+    testing.expect(t, ok, err.message)
+    testing.expect(t, strings.contains(body, `"kind":"startup"`) && strings.contains(body, `"reason":"acp_auth_required"`), body)
+    testing.expect_value(t, instance_blocker_count(&svc, "inst_me"), 1)
+}
 
 @(test)
 test_agent_blockers_snapshot_replaces_wholesale_and_publishes :: proc(t: ^testing.T) {

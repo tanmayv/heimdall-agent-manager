@@ -536,6 +536,7 @@ bridge_pty_host_paste_wrap :: proc(text: string) -> string {
 bridge_pty_host_deliver_line :: proc(socket, instance, text: string) -> bool {
 	decrypted := bridge_decrypt_embedded_vault_tokens(text)
 	defer delete(decrypted)
+	if acp_runtime_owned(instance) do return acp_runtime_deliver(instance, decrypted)
 	delivery_text := decrypted
 	wrapped := ""
 	if bridge_pty_host_instance_wants_bracketed_paste(instance) {
@@ -566,6 +567,10 @@ bridge_pty_host_send_oneway :: proc(socket: string, frame: []byte) -> bool {
 // bridge_pty_host_deliver_raw_input delivers raw input bytes directly to the agent's
 // PTY stdin via CtlMsg::Input to the ham-pty-host daemon socket.
 bridge_pty_host_deliver_raw_input_socket_bytes :: proc(socket, instance: string, data: []byte) -> bool {
+	if acp_runtime_owned(instance) {
+		if string(data) == "\x1b" || string(data) == "\x03" do return acp_runtime_command(instance, "interrupt")
+		return acp_runtime_deliver(instance, string(data))
+	}
 	if strings.trim_space(socket) == "" || strings.trim_space(instance) == "" do return false
 	frame := pty_host_encode_input(instance, data)
 	defer delete(frame)
@@ -712,6 +717,10 @@ bridge_shell_run_notice :: proc(session_id, status, exit_code: string) -> string
 // instead of finishing a long autonomous run first. The ESC is followed by a
 // short settle so the pane returns to its input box before we paste the notice.
 bridge_pty_host_deliver_message :: proc(socket, instance, sender: string) -> bool {
+	if acp_runtime_owned(instance) {
+		msg := bridge_pty_host_message_notice(sender); defer delete(msg)
+		return acp_runtime_deliver(instance, msg)
+	}
 	esc := pty_host_encode_key(instance, .Esc)
 	defer delete(esc)
 	if !bridge_pty_host_send_oneway(socket, esc) do return false
@@ -726,6 +735,11 @@ bridge_pty_host_deliver_message :: proc(socket, instance, sender: string) -> boo
 // otherwise we fall back to the legacy generated notice for backwards compat with
 // older hubs that don't populate human_message.
 bridge_pty_host_deliver_task_nudge :: proc(socket, instance, task_id, target_role: string, human_message: string = "", task_title: string = "", interrupt: bool = false) -> bool {
+	if acp_runtime_owned(instance) {
+		if interrupt && !acp_runtime_command(instance, "interrupt") do return false
+		msg := bridge_pty_host_task_nudge_line(task_id, target_role, human_message, task_title); defer delete(msg)
+		return acp_runtime_deliver(instance, msg)
+	}
 	if interrupt {
 		esc := pty_host_encode_key(instance, .Esc)
 		defer delete(esc)
@@ -877,6 +891,11 @@ bridge_pty_host_get_pane :: proc(instance_id: string, since_hash: string, line_l
 // launch closing an older child) is handled at launch time via
 // bridge_pty_host_reap_superseded, not here.
 bridge_pty_host_apply_child_exited :: proc(instance: string, code: i32) {
+	if acp_runtime_owned(instance) {
+		// The pipe driver drains its final stdout before failing the turn.
+		acp_runtime_command(instance, "exit")
+		return
+	}
 	if strings.trim_space(instance) == "" do return
 	fmt.println("bridge pty-host: child exited", instance, "code", code)
 	bridge_runtime_set_pty_process_alive(instance, false)
@@ -939,6 +958,7 @@ bridge_pty_host_apply_startup_blocked :: proc(instance, reason_code, safe_diagno
 // detector used) so it ranks above a plain liveness ping but below a native agent
 // extension. waiting_user is projected to idle by the hub.
 bridge_pty_host_apply_activity :: proc(instance: string, sample: Bridge_Activity_Sample) {
+	if snap, ok := bridge_runtime_instance_snapshot(instance); ok && snap.runtime_transport == "acp" do return
 	if strings.trim_space(instance) == "" do return
 	bridge_runtime_note_agent_activity(instance, bridge_activity_status_string(sample.status), "pane_diff")
 }
