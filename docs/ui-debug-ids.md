@@ -229,6 +229,7 @@ are in a separate collapsed disclosure.
 
 - `settings-bots-whatsapp-card` — WhatsApp card card.
 - `settings-bots-whatsapp-unconfigured` — WhatsApp card unconfigured.
+- `settings-bots-whatsapp-invite-only` — WhatsApp card when the account has no WhatsApp access (invite-only), shown instead of Connect.
 - `settings-bots-whatsapp-paired` — WhatsApp card paired.
 - `settings-bots-whatsapp-disconnect-btn` — WhatsApp card disconnect btn.
 - `settings-bots-whatsapp-disconnect-dialog` — WhatsApp card disconnect dialog.

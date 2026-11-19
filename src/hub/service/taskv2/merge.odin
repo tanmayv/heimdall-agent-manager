@@ -257,7 +257,7 @@ run_merge :: proc(svc: ^Service, m: Merge_Effect) {
 	if rok && outcome != .Merged {
 		line := fmt.tprintf("[taskv2] merge %s: task %s (%s) branch %s did not merge into %s: %s",
 			"conflict" if outcome == .Conflict else "failed", saved.task_id, saved.title, m.branch, m.repo, first_line_trimmed(detail))
-		effect_notify_coordinator(svc, &u, saved.chain_id, saved.owner_user_id, "merge_conflict" if outcome == .Conflict else "merge_failed", line)
+		effect_notify_task(svc, &u, saved, "merge_conflict" if outcome == .Conflict else "merge_failed", line)
 	}
 	if rok {
 		rok, _ = after_chain_change(svc, &u, saved.chain_id, saved.owner_user_id, .Task_Updated)

@@ -171,6 +171,11 @@ Effects :: struct {
 	instances: [dynamic]Instance_Effect,
 }
 
+// Coordinator_Notification is one [taskv2] notice. task_id + expected_state
+// name the task it is about and the state that made it relevant; flush_effects
+// re-reads the task after commit and drops the notice when the state moved
+// (notice_still_relevant). Chain-scoped notices (proposal_decided, workflow_*,
+// summary_overflow) carry an empty task_id and are not re-checked.
 Coordinator_Notification :: struct {
 	coordinator_instance_id: string,
 	bridge_id:               string,
@@ -178,6 +183,8 @@ Coordinator_Notification :: struct {
 	owner:                   string,
 	trigger:                 string,
 	line:                    string,
+	task_id:                 string,
+	expected_state:          string,
 }
 
 // effects_key returns the owned "<bridge>\x00<chain>" key for runs/stops,
@@ -232,6 +239,12 @@ Uow :: struct {
 	tx:      iface.Unit_Of_Work,
 	has_tx:  bool,
 	effects: Effects,
+	// actor_instance_id: the agent instance whose action this unit of work
+	// records (first agent/coordinator actor of record_event, or the instance
+	// reporting start-success). A notice is never sent to it: it caused the
+	// change and already knows (rule c). Borrowed from the caller; only read
+	// while the UoW is open.
+	actor_instance_id: string,
 }
 
 // begin_uow opens the engine's unit of work (process-wide exclusive). A service
@@ -394,6 +407,8 @@ destroy_effects :: proc(e: ^Effects) {
 		delete(n.owner)
 		delete(n.trigger)
 		delete(n.line)
+		delete(n.task_id)
+		delete(n.expected_state)
 	}
 	delete(e.notifications)
 	for m in e.merges do destroy_merge_effect(m)
@@ -415,7 +430,13 @@ destroy_effects :: proc(e: ^Effects) {
 // "\r" as raw pty input does not: Claude's TUI takes a multi-byte write as a
 // paste, so the "\r" became a newline and notices piled up unsent in the input
 // box (found in the live solo check). Heap-allocated; the caller deletes it.
-agent_notice_command_json :: proc(command_id, instance_id, chain_id, origin, line: string) -> string {
+//
+// notice_task_id / expected_state (N1): the task a [taskv2] notice is about and
+// the state it was sent for, so the bridge can drop a queued notice that went
+// stale before delivery. The top-level task_id stays empty on purpose: the
+// bridge's 1.5 s per-(instance, task) debounce would DROP a second, different
+// notice about the same task; the bridge decides how to coalesce (N2).
+agent_notice_command_json :: proc(command_id, instance_id, chain_id, origin, line: string, notice_task_id := "", expected_state := "") -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, `{"type":"notify_task_nudge","origin":"`)
 	contracts.write_json_string(&b, origin)
@@ -435,6 +456,10 @@ agent_notice_command_json :: proc(command_id, instance_id, chain_id, origin, lin
 	contracts.write_json_string(&b, line)
 	strings.write_string(&b, `","human_message":"`)
 	contracts.write_json_string(&b, line)
+	strings.write_string(&b, `","notice_task_id":"`)
+	contracts.write_json_string(&b, notice_task_id)
+	strings.write_string(&b, `","expected_state":"`)
+	contracts.write_json_string(&b, expected_state)
 	strings.write_string(&b, `"}`)
 	return strings.to_string(b)
 }
@@ -444,12 +469,16 @@ flush_effects :: proc(svc: ^Service, e: ^Effects) {
 	flush_fenced_stops(svc,e)
 	flush_wakes(svc, e)
 	for n in e.notifications {
+		if !notice_still_relevant(svc, n) {
+			metric_notice_dropped(n.trigger)
+			continue
+		}
 		if svc.notify_observer != nil {
 			svc.notify_observer(svc.notify_observer_ctx, n.coordinator_instance_id, n.trigger, n.line)
 		}
 		if n.bridge_id != "" && svc.bridge_command_sink.send_runtime_command != nil {
 			cmd_id := platform.generate_id(svc.ids, "cmd_notify_")
-			cmd_json := agent_notice_command_json(cmd_id, n.coordinator_instance_id, n.chain_id, n.trigger, n.line)
+			cmd_json := agent_notice_command_json(cmd_id, n.coordinator_instance_id, n.chain_id, n.trigger, n.line, n.task_id, n.expected_state)
 			defer delete(cmd_json)
 			_, _ = project.bridge_command_send_runtime(svc.bridge_command_sink, project.Runtime_Command{
 				bridge_id  = n.bridge_id,
@@ -458,7 +487,7 @@ flush_effects :: proc(svc: ^Service, e: ^Effects) {
 			})
 		}
 		if svc.event_bus != nil {
-			summary := fmt.tprintf("{{\"coordinator_instance_id\":\"%s\",\"chain_id\":\"%s\",\"trigger\":\"%s\"}}", n.coordinator_instance_id, n.chain_id, n.trigger)
+			summary := fmt.tprintf("{{\"coordinator_instance_id\":\"%s\",\"chain_id\":\"%s\",\"trigger\":\"%s\",\"task_id\":\"%s\",\"expected_state\":\"%s\"}}", n.coordinator_instance_id, n.chain_id, n.trigger, n.task_id, n.expected_state)
 			events.publish_resource_changed(svc.event_bus, n.owner, "coordinator_attention", n.coordinator_instance_id, n.trigger, summary)
 		}
 	}
@@ -515,18 +544,15 @@ effect_nudge_instance :: proc(u: ^Uow, instance_id, bridge_id, line: string) {
 // effect_notify_coordinator queues a 1-line coordinator attention notification
 // (plan §3c: proposal_decided, blocked_on human, budget_exhausted, oscillation,
 // dispatch_failed, ready_unclaimed, chain_complete, review_requested_from_user, summary_overflow).
-effect_notify_coordinator :: proc(svc: ^Service, u: ^Uow, chain_id: domain.Task_Chain_ID, owner: domain.User_ID, trigger, line: string) {
+// task_id/expected_state make it re-checkable at send time (effect_notify_task
+// fills them from a task); chain-scoped notices leave them empty. A notice
+// addressed to the instance whose action this UoW records is dropped (rule c).
+effect_notify_coordinator :: proc(svc: ^Service, u: ^Uow, chain_id: domain.Task_Chain_ID, owner: domain.User_ID, trigger, line: string, task_id := "", expected_state := "") {
 	if svc == nil || svc.repo == nil || u == nil || strings.trim_space(line) == "" do return
 	if !legacy_event_notice_enabled(svc, trigger) do return
-	chain, cok, _ := iface.taskchain_get_chain(svc.repo, chain_id)
-	if !cok do return
-	coord_id := strings.trim_space(chain.coordinator_agent_instance_id)
-	if coord_id == "" {
-		if members, merr := iface.taskchain_list_members_by_chain(svc.repo, chain_id, owner); merr.code == .None {
-			for m in members do if m.role == "coordinator" && m.agent_instance_id != "" { coord_id = m.agent_instance_id; break }
-		}
-	}
+	coord_id := chain_coordinator_instance_id(svc, chain_id, owner)
 	if coord_id == "" do return
+	if u.actor_instance_id != "" && coord_id == u.actor_instance_id do return
 	bridge_id := ""
 	if svc.agents != nil {
 		if inst, iok, _ := iface.agent_get_instance(svc.agents, coord_id); iok do bridge_id = inst.bridge_id
@@ -542,7 +568,62 @@ effect_notify_coordinator :: proc(svc: ^Service, u: ^Uow, chain_id: domain.Task_
 		owner                   = strings.clone(string(owner)),
 		trigger                 = strings.clone(trigger),
 		line                    = strings.clone(clean_line),
+		task_id                 = strings.clone(task_id),
+		expected_state          = strings.clone(expected_state),
 	})
+}
+
+// effect_notify_task queues a notice about `task`, expecting it to still be in
+// its current state when the notice is sent.
+effect_notify_task :: proc(svc: ^Service, u: ^Uow, task: domain.Task, trigger, line: string) {
+	effect_notify_coordinator(svc, u, task.chain_id, task.owner_user_id, trigger, line, string(task.task_id), domain.task_state_string(task.state))
+}
+
+// chain_coordinator_instance_id: the chain's coordinator column, else its
+// coordinator member row; "" when the chain has none.
+chain_coordinator_instance_id :: proc(svc: ^Service, chain_id: domain.Task_Chain_ID, owner: domain.User_ID) -> string {
+	chain, cok, _ := iface.taskchain_get_chain(svc.repo, chain_id)
+	if !cok do return ""
+	coord_id := strings.trim_space(chain.coordinator_agent_instance_id)
+	if coord_id == "" {
+		if members, merr := iface.taskchain_list_members_by_chain(svc.repo, chain_id, owner); merr.code == .None {
+			for m in members do if m.role == "coordinator" && m.agent_instance_id != "" { coord_id = m.agent_instance_id; break }
+		}
+	}
+	return coord_id
+}
+
+// notice_still_relevant (rule a) re-reads the task a notice is about AFTER
+// commit and keeps the notice only while the task is still in the state it was
+// queued for, plus per-trigger checks of what made it worth sending. A failed
+// read keeps the notice: losing a relevant notice is worse than one extra turn.
+// flush_effects also runs on persistent-heap threads (bridge WS reader, reaper,
+// after-commit hooks), so the rows read here live in a scratch arena.
+notice_still_relevant :: proc(svc: ^Service, n: Coordinator_Notification) -> bool {
+	if n.task_id == "" || svc == nil || svc.repo == nil do return true
+	scratch: Scratch
+	context.allocator = scratch_begin(&scratch)
+	defer scratch_end(&scratch)
+	task, found, err := iface.taskchain_get_task(svc.repo, domain.Task_ID(n.task_id))
+	if !found do return err.code != .None && err.code != .Not_Found
+	if n.expected_state != "" && domain.task_state_string(task.state) != n.expected_state do return false
+	switch n.trigger {
+	case "solo_task_ready":
+		// Still unclaimed after the matcher, and the soloist still free.
+		if leases, lerr := iface.taskchain_list_leases_by_task(svc.repo, task.task_id); lerr.code == .None {
+			for l in leases do if l.kind == domain.LEASE_KIND_WORK do return false
+		}
+		if _, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, n.coordinator_instance_id); held do return false
+	case "hold_stale":
+		if !task_is_held(task) do return false
+	case "agent_not_running", "blocked_on human", "budget_exhausted", "oscillation":
+		if strings.trim_space(task.blocked_on_json) == "" do return false
+	case "review_requested_from_user":
+		// A workflow gate may be the coordinator's to approve; its state check
+		// above suffices. A ticket must still be the user's turn.
+		if task.kind != .Gate && !awaits_user_review(svc, task) do return false
+	}
+	return true
 }
 
 first_line_trimmed :: proc(s: string) -> string {
@@ -600,6 +681,12 @@ effect_publish_workflow_stage :: proc(u: ^Uow, chain_id: domain.Task_Chain_ID, o
 	append(&u.effects.publishes, Publish_Effect{owner = string(owner), resource = "workflow_run", resource_id = owned_run, change = "stage_changed", chain_id = string(chain_id), stage_key = owned_stage})
 }
 
+// uow_note_actor remembers the first agent instance acting in this UoW (rule c).
+uow_note_actor :: proc(u: ^Uow, actor: Actor) {
+	if u == nil || u.actor_instance_id != "" || actor.id == "" do return
+	if actor.kind == ACTOR_AGENT || actor.kind == ACTOR_COORDINATOR do u.actor_instance_id = actor.id
+}
+
 effect_tasks_changed :: proc(u: ^Uow, chain_id: domain.Task_Chain_ID, owner: domain.User_ID) {
 	for c in u.effects.changed_chains do if c.chain_id == chain_id do return
 	append(&u.effects.changed_chains, Changed_Chain{chain_id = chain_id, owner = owner})
@@ -615,6 +702,7 @@ record_event :: proc(svc: ^Service, u: ^Uow, task: domain.Task, actor: Actor, ki
 	if _, ok, err := append_event(svc.repo, svc.clock, task, actor, kind, payload_json); !ok {
 		return task, Task_View{}, false, err
 	}
+	uow_note_actor(u, actor)
 	// Any event can change whether the task awaits the user — including ones
 	// that leave the projection as it was (an agent's approve that hands the
 	// gate to the user), so the card is re-projected per event, not per save.
@@ -685,7 +773,7 @@ refold_task :: proc(svc: ^Service, u: ^Uow, task: domain.Task, tasks: []domain.T
 		}
 		if cerr := check_coordinator_attention_on_refold(svc, u, task, saved, view, all_tasks); cerr.code != .None do return task, view, false, cerr
 		if saved.state == .Done && task.state != .Done do effect_merge_worktree(svc, u, saved, evs)
-		if saved.state == .Ready && task.state != .Ready do nudge_idle_soloist(svc, u, saved)
+		if saved.state == .Ready && task.state != .Ready do nudge_idle_soloist(svc, u, task, saved)
 	}
 	return saved, view, true, domain.Domain_Error{}
 }
@@ -694,14 +782,41 @@ refold_task :: proc(svc: ^Service, u: ^Uow, task: domain.Task, tasks: []domain.T
 // task of a solo chain becomes ready (published, unblocked, changes
 // requested, handed back) while the soloist holds no lease, it is told at once
 // to pull — instead of the 10-minute ready_unclaimed alert.
-nudge_idle_soloist :: proc(svc: ^Service, u: ^Uow, task: domain.Task) {
+//
+// Queued once per transition into Ready (refold_task calls it only on that
+// edge) and only when the task is the soloist's: no brief assignee, or the
+// coordinator's own agent. Whether it is still unclaimed — after
+// match_chain_in_uow has run and the transaction committed — is decided at
+// send time (notice_still_relevant, rule b). Not sent when the task just left
+// an agent_not_running block naming the soloist's own agent: that instance is
+// (re)starting and pulls on bootstrap (rule g).
+nudge_idle_soloist :: proc(svc: ^Service, u: ^Uow, before, task: domain.Task) {
 	if u == nil do return
 	chain, ok, _ := iface.taskchain_get_chain(svc.repo, task.chain_id)
 	if !ok || !chain_is_solo(svc, chain) do return
 	coord := chain.coordinator_agent_instance_id
 	if coord == "" do return
+	coord_agent := ""
+	if inst, iok, _ := iface.agent_get_instance(svc.agents, coord); iok do coord_agent = inst.agent_id
+	if assignee := brief_assignee(task.brief_json); assignee != "" && assignee != coord_agent do return
+	if coord_agent != "" && is_agent_not_running_block(before.blocked_on_json) && jsonx.extract_string(before.blocked_on_json, "agent_id", "", true, context.temp_allocator) == coord_agent do return
 	if _, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, coord); held do return
-	effect_notify_coordinator(svc, u, task.chain_id, task.owner_user_id, "solo_task_ready", fmt.tprintf("[taskv2] solo: task %s (%s) is ready for you — run `ham-ctl lease next`", task.task_id, task.title))
+	effect_notify_task(svc, u, task, "solo_task_ready", fmt.tprintf("[taskv2] solo: task %s (%s) is ready for you — run `ham-ctl lease next`", task.task_id, task.title))
+}
+
+// block_names_coordinator: an agent_not_running block about the chain's own
+// coordinator (same agent, same bridge when the block names one). That
+// instance is the one that cannot be reached, so it is not told (rule g); the
+// user's attention card carries the Start agent action.
+@(private = "file")
+block_names_coordinator :: proc(svc: ^Service, task: domain.Task) -> bool {
+	coord_id := chain_coordinator_instance_id(svc, task.chain_id, task.owner_user_id)
+	if coord_id == "" do return false
+	inst, iok, _ := iface.agent_get_instance(svc.agents, coord_id)
+	if !iok do return false
+	agent_id := jsonx.extract_string(task.blocked_on_json, "agent_id", "", true, context.temp_allocator)
+	bridge_id := jsonx.extract_string(task.blocked_on_json, "bridge_id", "", true, context.temp_allocator)
+	return agent_id != "" && agent_id == inst.agent_id && (bridge_id == "" || bridge_id == inst.bridge_id)
 }
 
 @(private = "file")
@@ -710,22 +825,24 @@ check_coordinator_attention_on_refold :: proc(svc: ^Service, u: ^Uow, before, af
 	// A hold nested under another block is not a change of that block.
 	if after.blocked_on_json != "" && blocked_on_without_hold(after.blocked_on_json) != blocked_on_without_hold(before.blocked_on_json) {
 		if is_agent_not_running_block(after.blocked_on_json) {
-			reason := jsonx.extract_string(after.blocked_on_json, "reason", "", true, context.temp_allocator)
-			effect_notify_coordinator(svc, u, after.chain_id, after.owner_user_id, "agent_not_running", fmt.tprintf("[taskv2] agent_not_running: task %s (%s): %s", after.task_id, after.title, reason))
+			if !block_names_coordinator(svc, after) {
+				reason := jsonx.extract_string(after.blocked_on_json, "reason", "", true, context.temp_allocator)
+				effect_notify_task(svc, u, after, "agent_not_running", fmt.tprintf("[taskv2] agent_not_running: task %s (%s): %s", after.task_id, after.title, reason))
+			}
 		} else if view.budget_exhausted || strings.contains(after.blocked_on_json, `"budget_exhausted"`) {
-			effect_notify_coordinator(svc, u, after.chain_id, after.owner_user_id, "budget_exhausted", fmt.tprintf("[taskv2] budget_exhausted: task %s (%s) exhausted attempt budget (#%d)", after.task_id, after.title, after.attempt_no))
+			effect_notify_task(svc, u, after, "budget_exhausted", fmt.tprintf("[taskv2] budget_exhausted: task %s (%s) exhausted attempt budget (#%d)", after.task_id, after.title, after.attempt_no))
 		} else if view.oscillating || strings.contains(after.blocked_on_json, `"oscillation"`) {
-			effect_notify_coordinator(svc, u, after.chain_id, after.owner_user_id, "oscillation", fmt.tprintf("[taskv2] oscillation: task %s (%s) parked after %d review rounds", after.task_id, after.title, view.review_rounds))
+			effect_notify_task(svc, u, after, "oscillation", fmt.tprintf("[taskv2] oscillation: task %s (%s) parked after %d review rounds", after.task_id, after.title, view.review_rounds))
 		} else if strings.contains(after.blocked_on_json, `"human"`) || strings.contains(after.blocked_on_json, `"user"`) {
 			// `lease block --waiting-on user` (what TASK.md teaches) and the older
 			// `human` both mean the task waits on the user, as the UI treats them.
-			effect_notify_coordinator(svc, u, after.chain_id, after.owner_user_id, "blocked_on human", fmt.tprintf("[taskv2] blocked_on human: task %s (%s) is waiting on human input", after.task_id, after.title))
+			effect_notify_task(svc, u, after, "blocked_on human", fmt.tprintf("[taskv2] blocked_on human: task %s (%s) is waiting on human input", after.task_id, after.title))
 		}
 	}
 	if after.state == .In_Review && before.state != .In_Review {
 		// Notify coordinator when user approval is required and all agent review roles are already satisfied (or empty).
 		if after.requires_user_approval && brief_review_roles_count(after.brief_json) == 0 {
-			effect_notify_coordinator(svc, u, after.chain_id, after.owner_user_id, "review_requested_from_user", fmt.tprintf("[taskv2] review_requested_from_user: task %s (%s) is in_review and awaits user approval", after.task_id, after.title))
+			notify_user_review_requested(svc, u, after, fmt.tprintf("[taskv2] review_requested_from_user: task %s (%s) is in_review and awaits user approval", after.task_id, after.title))
 		}
 	}
 	if domain.task_state_is_terminal(after.state) && !domain.task_state_is_terminal(before.state) && len(all_tasks) > 0 {
@@ -748,7 +865,7 @@ check_coordinator_attention_on_refold :: proc(svc: ^Service, u: ^Uow, before, af
 				}
 				if idle {
 					if cerr := catalog_work_finished(svc, chain, "work_batch_finished"); cerr.code != .None do return cerr
-					effect_notify_coordinator(svc, u, after.chain_id, after.owner_user_id, "work_batch_finished", "[taskv2] current batch finished; assess the goal, add work, or explicitly complete the chain")
+					effect_notify_task(svc, u, after, "work_batch_finished", "[taskv2] current batch finished; assess the goal, add work, or explicitly complete the chain")
 				}
 			}
 		}

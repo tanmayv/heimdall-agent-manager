@@ -596,6 +596,10 @@ on_start_success :: proc(svc: ^Service, inst: domain.Agent_Instance) {
 	defer scratch_end(&scratch)
 	u, ok, _ := begin_uow(svc)
 	if !ok do return
+	// The reporting instance is this UoW's actor: it just (re)started and
+	// pulls on bootstrap, so nothing this recovery queues is addressed to it
+	// (rules c and g: no "ready for you" right after agent_not_running).
+	u.actor_instance_id = inst.agent_instance_id
 	// The ready hook runs after the agent save. A concurrent grant can have
 	// replaced that child before this transaction acquired the lease lock.
 	current, found, _ := iface.agent_get_instance(svc.agents, inst.agent_instance_id)

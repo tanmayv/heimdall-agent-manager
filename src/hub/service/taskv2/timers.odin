@@ -42,8 +42,9 @@ Timer_Kind :: enum {
 	// Dependency_Stalled: a Done prerequisite whose merge never settled keeps
 	// its backlog dependents waiting; alert after a bounded delay (REQ-TV2-3b).
 	Dependency_Stalled, // key = prerequisite task_id, armed = "done"
-	// Hold_Stale: a held task with no live lease reminds the coordinator (never
-	// the user) once per hold_stale_seconds until it is released.
+	// Hold_Stale: a held task with no live lease reminds whoever placed the
+	// hold (the coordinator, or the user via a user event) with exponential
+	// back-off, at most HOLD_STALE_MAX_REMINDERS times per hold.
 	Hold_Stale,         // key = task_id,     armed = the hold's since_ms
 }
 
@@ -79,9 +80,13 @@ REVIEW_STALLED_REALERT_SECONDS :: 60 * 60
 // dependency_stalled: first alert this long after the prerequisite reached
 // Done, then re-alerted at this interval while the merge stays unresolved.
 DEPENDENCY_STALLED_SECONDS     :: 10 * 60
-// hold_stale: default reminder interval for a held, unleased task
-// (Service.hold_stale_seconds overrides it).
+// hold_stale: default FIRST reminder delay for a held, unleased task
+// (Service.hold_stale_seconds overrides it). Each later reminder waits
+// HOLD_STALE_BACKOFF times longer (30 min → 2 h → 8 h); after
+// HOLD_STALE_MAX_REMINDERS the hold is left to the attention UI.
 HOLD_STALE_SECONDS             :: 30 * 60
+HOLD_STALE_BACKOFF             :: 4
+HOLD_STALE_MAX_REMINDERS       :: 3
 
 // timers_arm schedules a fire at due_ms. Thread-safe; O(log n).
 timers_arm :: proc(svc: ^Service, kind: Timer_Kind, key: string, due_ms: i64, armed: string) {
@@ -239,6 +244,14 @@ hold_stale_ms :: proc(svc: ^Service) -> i64 {
 	secs := svc.hold_stale_seconds
 	if secs <= 0 do secs = HOLD_STALE_SECONDS
 	return i64(secs) * 1000
+}
+
+// hold_stale_delay_ms: the wait before reminder number `sent`+1, given `sent`
+// reminders already went out for this hold (exponential back-off).
+hold_stale_delay_ms :: proc(svc: ^Service, sent: int) -> i64 {
+	d := hold_stale_ms(svc)
+	for _ in 0..<sent do d *= HOLD_STALE_BACKOFF
+	return d
 }
 
 // rebuild_timers (boot): arm from the columns — every lease, every ready task,
@@ -439,6 +452,9 @@ fire_ready_unclaimed :: proc(svc: ^Service, u: ^Uow, t: Timer) -> Fire_Result {
 	task, ok, _ := iface.taskchain_get_task(svc.repo, domain.Task_ID(t.key))
 	if !ok do return .Noop
 	if task.state != .Ready || task.ready_since != t.armed do return .Noop
+	// Solo chains: nudge_idle_soloist (solo_task_ready) replaces this alert,
+	// and the soloist pulls; nothing is waiting on a free worker (rule f).
+	if chain, cok, _ := iface.taskchain_get_chain(svc.repo, task.chain_id); cok && chain_is_solo(svc, chain) do return .Noop
 	p := json_begin()
 	json_str(&p, "since", task.ready_since)
 	paused := paused_worker_agents(svc, task)
@@ -451,7 +467,7 @@ fire_ready_unclaimed :: proc(svc: ^Service, u: ^Uow, t: Timer) -> Fire_Result {
 	effect_publish_task(u, task, "ready_unclaimed")
 	line := fmt.tprintf("[taskv2] ready_unclaimed: task %s (%s) ready since %s", task.task_id, task.title, task.ready_since)
 	if reason != "" do line = fmt.tprintf("%s (%s; resume with task-chain fleet resume)", line, reason)
-	effect_notify_coordinator(svc, u, task.chain_id, task.owner_user_id, "ready_unclaimed", line)
+	effect_notify_task(svc, u, task, "ready_unclaimed", line)
 	return .Acted
 }
 
@@ -515,7 +531,7 @@ check_review_stalled :: proc(svc: ^Service, u: ^Uow, task_in: domain.Task) {
 	json_raw(&p, "unmet", gate_unmet_json(unmet))
 	if _, aok, _ := append_event(svc.repo, svc.clock, task, hub_actor(), EV_REVIEW_STALLED, json_end(&p)); !aok do return
 	effect_publish_task(u, task, "review_stalled")
-	effect_notify_coordinator(svc, u, task.chain_id, task.owner_user_id, "review_stalled", fmt.tprintf("[taskv2] review_stalled: task %s (%s) gate is waiting with no live lease and no review owed; unmet=%s. Recover with: ham-ctl review post %s --verdict approve|request_changes --on-behalf-of user, re-run the reviewer (task show %s), or adjust brief reviewers/review_roles", task.task_id, task.title, gate_unmet_json(unmet), task.task_id, task.task_id))
+	effect_notify_task(svc, u, task, "review_stalled", fmt.tprintf("[taskv2] review_stalled: task %s (%s) gate is waiting with no live lease and no review owed; unmet=%s. Recover with: ham-ctl review post %s --verdict approve|request_changes --on-behalf-of user, re-run the reviewer (task show %s), or adjust brief reviewers/review_roles", task.task_id, task.title, gate_unmet_json(unmet), task.task_id, task.task_id))
 	timers_arm(svc, .Rematch, string(task.task_id), now_ms(svc.clock) + REVIEW_STALLED_REALERT_SECONDS * 1000, domain.task_state_string(task.state))
 }
 
@@ -545,7 +561,7 @@ fire_dependency_stalled :: proc(svc: ^Service, u: ^Uow, t: Timer) -> Fire_Result
 		if merge.detail != "" do json_str(&p, "detail", merge.detail)
 		if _, aok, _ := append_event(svc.repo, svc.clock, dep, hub_actor(), EV_DEPENDENCY_STALLED, json_end(&p)); !aok do return .Failed
 		effect_publish_task(u, dep, "dependency_stalled")
-		effect_notify_coordinator(svc, u, dep.chain_id, dep.owner_user_id, "dependency_stalled", fmt.tprintf("[taskv2] dependency_stalled: task %s (%s) waits only on the merge of %s (merge %s). Inspect with: ham-ctl task readiness %s. Recover: resolve the merge conflict / bring the bridge online so the merge is retried, or remove the dependency.", dep.task_id, dep.title, prereq.task_id, merge.state, dep.task_id))
+		effect_notify_task(svc, u, dep, "dependency_stalled", fmt.tprintf("[taskv2] dependency_stalled: task %s (%s) waits only on the merge of %s (merge %s). Inspect with: ham-ctl task readiness %s. Recover: resolve the merge conflict / bring the bridge online so the merge is retried, or remove the dependency.", dep.task_id, dep.title, prereq.task_id, merge.state, dep.task_id))
 		stalled += 1
 	}
 	if stalled == 0 do return .Noop
@@ -580,17 +596,21 @@ fire_blocked_realert :: proc(svc: ^Service, u: ^Uow, t: Timer) -> Fire_Result {
 	json_raw(&p, "blocked_on", task.blocked_on_json)
 	if _, aok, _ := append_event(svc.repo, svc.clock, task, hub_actor(), EV_BLOCKED_REALERT, json_end(&p)); !aok do return .Failed
 	effect_publish_task(u, task, "blocked_realert")
-	effect_notify_coordinator(svc, u, task.chain_id, task.owner_user_id, "blocked_on human", fmt.tprintf("[taskv2] blocked_on human: task %s (%s) still waiting on human input", task.task_id, task.title))
+	effect_notify_task(svc, u, task, "blocked_on human", fmt.tprintf("[taskv2] blocked_on human: task %s (%s) still waiting on human input", task.task_id, task.title))
 	timers_arm(svc, .Blocked_Realert, string(task.task_id), now_ms(svc.clock) + BLOCKED_REALERT_SECONDS * 1000, task.blocked_on_json)
 	return .Acted
 }
 
 // fire_hold_stale: the task is still held by the same hold, no lease is live
-// (a live holder was asked to checkpoint; its handoff or expiry re-arms this),
-// and no reminder for this hold went out in the last interval. Several timers
-// may be armed for one hold (every blocked_on change re-arms); the event log
-// dedupes them, and a timer that fires too early re-arms for the next interval
-// so a rebuild between reminders never drops the hold. Released, cancelled and done tasks carry no hold: no-op.
+// (a live holder was asked to checkpoint; its handoff re-arms this), and the
+// back-off interval since the last reminder for this hold has passed. Several
+// timers may be armed for one hold (every blocked_on change re-arms); the event
+// log dedupes them, and a timer that fires too early re-arms for the next due
+// time so a rebuild between reminders never drops the hold. Reminders back off
+// exponentially (hold_stale_delay_ms) and stop after HOLD_STALE_MAX_REMINDERS.
+// A hold the user placed is the user's to release: the reminder goes to the
+// user (task/hold_stale user event + attention re-projection), never to an
+// agent. Released, cancelled and done tasks carry no hold: no-op.
 @(private = "file")
 fire_hold_stale :: proc(svc: ^Service, u: ^Uow, t: Timer, now: i64) -> Fire_Result {
 	task, ok, _ := iface.taskchain_get_task(svc.repo, domain.Task_ID(t.key))
@@ -600,27 +620,48 @@ fire_hold_stale :: proc(svc: ^Service, u: ^Uow, t: Timer, now: i64) -> Fire_Resu
 	since := i64(jsonx.extract_int(hold, "since_ms", 0, true))
 	if fmt.tprintf("%d", since) != t.armed do return .Noop // a newer hold owns it
 	if strings.contains(hold, `"checkpoint_requested":true`) do return .Noop
+	// A live (non-waiting) lease is still working toward its checkpoint; its
+	// handoff changes blocked_on and re-arms this timer.
+	leases, lerr := iface.taskchain_list_leases_by_task(svc.repo, task.task_id)
+	if lerr.code != .None do return .Failed
+	for l in leases do if l.phase != domain.LEASE_PHASE_WAITING do return .Noop
 	evs, eerr := iface.taskchain_list_events_by_task(svc.repo, task.task_id, task.owner_user_id)
 	if eerr.code != .None do return .Failed
 	last := since
+	sent := 0
 	for e in evs {
-		if e.kind == EV_HOLD_STALE && e.ts_ms >= since do last = max(last, e.ts_ms)
+		if e.kind == EV_HOLD_STALE && e.ts_ms >= since {
+			last = max(last, e.ts_ms)
+			sent += 1
+		}
 	}
-	if now < last + hold_stale_ms(svc) {
+	if sent >= HOLD_STALE_MAX_REMINDERS do return .Noop
+	due := last + hold_stale_delay_ms(svc, sent)
+	if now < due {
 		// Too soon after the last reminder (e.g. a boot rebuild armed this one
-		// for now): keep the hold covered by re-arming for the next interval.
-		timers_arm(svc, .Hold_Stale, string(task.task_id), last + hold_stale_ms(svc), t.armed)
+		// for now): keep the hold covered by re-arming for the next due time.
+		timers_arm(svc, .Hold_Stale, string(task.task_id), due, t.armed)
 		return .Noop
 	}
+	by_user := jsonx.extract_string(hold, "by", "", true, context.temp_allocator) == ACTOR_USER
 	age_min := (now - since) / 60000
 	p := json_begin()
 	json_int(&p, "since_ms", since)
 	json_int(&p, "age_minutes", age_min)
+	json_int(&p, "reminder", i64(sent + 1))
+	json_str(&p, "routed_to", "user" if by_user else "coordinator")
 	if _, aok, _ := append_event(svc.repo, svc.clock, task, hub_actor(), EV_HOLD_STALE, json_end(&p)); !aok do return .Failed
-	reason := jsonx.extract_string(hold, "reason", "", true, context.temp_allocator)
-	line := fmt.tprintf("[taskv2] hold_stale: task %s (%s) held for %d min (reason: %s); release it with `task release %s` once the reason is resolved", task.task_id, task.title, age_min, reason, task.task_id)
-	effect_notify_coordinator(svc, u, task.chain_id, task.owner_user_id, "hold_stale", line)
-	timers_arm(svc, .Hold_Stale, string(task.task_id), now + hold_stale_ms(svc), t.armed)
+	if by_user {
+		effect_publish_task(u, task, "hold_stale")
+		effect_attention(u, task)
+	} else {
+		reason := jsonx.extract_string(hold, "reason", "", true, context.temp_allocator)
+		line := fmt.tprintf("[taskv2] hold_stale: task %s (%s) held for %d min (reason: %s); release it with `task release %s` once the reason is resolved", task.task_id, task.title, age_min, reason, task.task_id)
+		effect_notify_task(svc, u, task, "hold_stale", line)
+	}
+	if sent + 1 < HOLD_STALE_MAX_REMINDERS {
+		timers_arm(svc, .Hold_Stale, string(task.task_id), now + hold_stale_delay_ms(svc, sent + 1), t.armed)
+	}
 	return .Acted
 }
 

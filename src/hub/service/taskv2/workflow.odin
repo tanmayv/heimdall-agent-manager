@@ -1098,7 +1098,7 @@ materialize_single_stage_in_uow :: proc(
 			before_gate.state = .Backlog
 			if cerr := catalog_task_projection(svc, before_gate, saved_t, nil); cerr.code != .None do return false, cerr
 			if cerr := catalog_review_request(svc, saved_t); cerr.code != .None do return false, cerr
-			effect_notify_coordinator(svc, u, chain.chain_id, chain.owner_user_id, "review_requested_from_user", fmt.tprintf("[taskv2] gate %s (%s) is awaiting approval in workflow run %s", saved_t.task_id, saved_t.title, chain.run.run_id))
+			notify_user_review_requested(svc, u, saved_t, fmt.tprintf("[taskv2] gate %s (%s) is awaiting approval in workflow run %s", saved_t.task_id, saved_t.title, chain.run.run_id))
 		}
 		if u != nil do effect_publish_task(u, saved_t, "created")
 	}

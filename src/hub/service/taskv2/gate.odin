@@ -111,7 +111,7 @@ evaluate_gate_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, t
 		for r in reviews do if r.attempt_no == task.attempt_no && r.verdict == "approve" && r.reviewer_kind == "user" { user_ok = true; break }
 		if !user_ok {
 			if err := catalog_review_request(svc, task); err.code != .None do return .Waiting, false, err
-			effect_notify_coordinator(svc, u, task.chain_id, task.owner_user_id, "review_requested_from_user", fmt.tprintf("[taskv2] review_requested_from_user: task %s (%s) passed review gate and awaits user approval", task.task_id, task.title))
+			notify_user_review_requested(svc, u, task, fmt.tprintf("[taskv2] review_requested_from_user: task %s (%s) passed review gate and awaits user approval", task.task_id, task.title))
 			metric_gate_evaluated(.Waiting)
 			return .Waiting, true, domain.Domain_Error{}
 		}
@@ -150,6 +150,30 @@ agent_review_satisfied :: proc(svc: ^Service, chain_id: domain.Task_Chain_ID, ow
 }
 
 // ---- attention deck: does this task await the USER? ---------------------------------
+
+// notify_user_review_requested (rule d): tell the coordinator once per gate
+// pass — once per (task, attempt) — that the task now waits on the user. The
+// gate is re-evaluated by every recheck, fleet change and reviewer edit; the
+// audit event user_review_requested makes repeats a no-op. In a solo chain
+// the coordinator is the author and the user's attention deck already shows
+// the review, so no agent is told (and nothing is recorded) — except a
+// workflow gate only the coordinator may approve, which no deck shows.
+notify_user_review_requested :: proc(svc: ^Service, u: ^Uow, task: domain.Task, line: string) {
+	if svc == nil || u == nil do return
+	chain, cok, _ := iface.taskchain_get_chain(svc.repo, task.chain_id)
+	if !cok do return
+	coordinator_only_gate := task.kind == .Gate && gate_approver_policy(task) == "coordinator"
+	if chain_is_solo(svc, chain) && !coordinator_only_gate do return
+	evs, eerr := iface.taskchain_list_events_by_task(svc.repo, task.task_id, task.owner_user_id)
+	if eerr.code != .None do return
+	for e in evs {
+		if e.kind == EV_USER_REVIEW_REQUESTED && jsonx.extract_int(e.payload_json, "attempt_no", -1, true) == task.attempt_no do return
+	}
+	p := json_begin()
+	json_int(&p, "attempt_no", i64(task.attempt_no))
+	if _, ok, _ := append_event(svc.repo, svc.clock, task, hub_actor(), EV_USER_REVIEW_REQUESTED, json_end(&p)); !ok do return
+	effect_notify_coordinator(svc, u, task.chain_id, task.owner_user_id, "review_requested_from_user", line, string(task.task_id), domain.task_state_string(domain.Task_State.In_Review))
+}
 
 User_Attention :: enum { None, Review, Blocked }
 

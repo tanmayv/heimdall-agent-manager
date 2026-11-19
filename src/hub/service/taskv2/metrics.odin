@@ -13,6 +13,7 @@ Task_Metrics :: struct {
 	timers_armed:          ^metrics.Series, // gauge
 	transitions_total:     ^metrics.Family, // counter {from,to}
 	gate_evaluations_total: ^metrics.Family, // counter {result}
+	notices_dropped_total:  ^metrics.Family, // counter {trigger}
 }
 
 task_metrics: Task_Metrics
@@ -28,6 +29,7 @@ init_task_metrics :: proc() {
 		task_metrics.timers_armed = metrics.with(metrics.new_gauge(reg, "heimdall_task_timers_armed", "Engine timers currently armed (heap size)."))
 		task_metrics.transitions_total = metrics.new_counter(reg, "heimdall_task_transitions_total", "Task state transitions.", {"from", "to"})
 		task_metrics.gate_evaluations_total = metrics.new_counter(reg, "heimdall_task_gate_evaluations_total", "Review gate evaluations by result.", {"result"})
+		task_metrics.notices_dropped_total = metrics.new_counter(reg, "heimdall_task_notices_dropped_total", "[taskv2] notices dropped at send time because the task left the state they were queued for.", {"trigger"})
 	})
 }
 
@@ -71,6 +73,20 @@ metric_gate_evaluated :: proc(res: Gate_Result) {
 	case .Rejected:          label = "rejected"
 	}
 	metrics.counter_inc(metrics.with(task_metrics.gate_evaluations_total, label))
+}
+
+metric_notice_dropped :: proc(trigger: string) {
+	if task_metrics.notices_dropped_total == nil do return
+	metrics.counter_inc(metrics.with(task_metrics.notices_dropped_total, notice_trigger_label(trigger)))
+}
+
+@(private = "file")
+notice_trigger_label :: proc(trigger: string) -> string {
+	switch trigger {
+	case "solo_task_ready", "agent_not_running", "budget_exhausted", "oscillation", "blocked_on human", "review_requested_from_user", "work_batch_finished", "ready_unclaimed", "review_stalled", "dependency_stalled", "hold_stale", "merge_conflict", "merge_failed", "workflow_trigger_failed":
+		return trigger
+	}
+	return "other"
 }
 
 @(private = "file")

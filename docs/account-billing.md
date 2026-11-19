@@ -43,6 +43,14 @@ and adds `bridges.plan_disabled_at`.
 | `terminal_input_enabled` | `false` (view-only) | `true` |
 | `max_concurrent_streams` | `2` | `-1` (unlimited) |
 | `shells_enabled` | `false` | `true` |
+| `whatsapp_enabled` | `false` | `false` (invite-only; see below) |
+
+Migration `whatsapp_001_invite_only.sql` adds `billing_plans.whatsapp_enabled`
+(default `0` on every plan) and `account_entitlements.whatsapp_enabled` plus the
+nullable `account_entitlements.override_whatsapp_enabled` (`NULL`/`0`/`1`).
+WhatsApp is invite-only: an operator grants it per account with
+`override_whatsapp_enabled = 1`. As with every entitlement, a hub without plan
+limits enabled resolves permissive values, so WhatsApp is then open.
 
 For `max_bridges` and `max_concurrent_streams`, **`-1` means unlimited and `0`
 means zero allowed**. Nullable override columns distinguish inheritance (`NULL`)
@@ -58,6 +66,17 @@ The hub enforces these values as follows:
   bridges stay enabled across heartbeats from suspended bridges. Disabled bridges
   cannot reconnect at hello or be chosen for new launches. Reconciliation runs
   at startup, on billing changes and entitlement refresh, and after revocation.
+- **WhatsApp bot (invite-only, Telegram unaffected):** `POST
+  /api/v1/bots/me/channels/whatsapp/pairing` and pairing-code redemption refuse
+  with `403` and details code `whatsapp_invite_only`; `GET /api/v1/bots/me`
+  reports `whatsapp.enabled` so Settings > Bots shows the invite-only message
+  instead of Connect. Inbound WhatsApp messages from a disabled account are not
+  routed; the account's binding is revoked like a disconnect (pending messages
+  purged, open delivery abandoned with reason `whatsapp_invite_only`) and the
+  chat receives one "WhatsApp access is invite-only for now." notice. The revoke
+  happens on the next inbound message or within a minute through the bots
+  supervisor sweep, whichever comes first; once revoked, neither path notifies
+  again.
   Upgrades and overrides can re-enable bridges; revocation can free a slot.
 - **View-only terminals:** agent and permitted shell-session streams advertise
   `read_only: true`, keep output and the first-resize snapshot, drop binary input,
@@ -136,7 +155,7 @@ Migration `069_account_billing.sql` creates these tables; `070_free_one_bridge.s
 - `billing_plans`: arbitrary plan IDs, display names, current checkout price, and default parameters.
 - `billing_plan_prices`: retained approved historical price mappings.
 - `account_billing`: owner, subscription/customer IDs, billing lifecycle state and dates, and latest event timestamp.
-- `account_entitlements`: all five effective entitlements from the table above, their nullable `override_*` columns, and operator/reason fields.
+- `account_entitlements`: all six effective entitlements from the table above, their nullable `override_*` columns, and operator/reason fields.
 - `billing_checkouts`: server-created purchase references and preparation state.
 - `billing_events`: successfully processed or stale event IDs for deduplication.
 - `billing_settings`: environment binding.
@@ -155,6 +174,7 @@ SET override_max_bridges = 6,
     override_terminal_input_enabled = 1,
     override_max_concurrent_streams = -1,
     override_shells_enabled = 1,
+    override_whatsapp_enabled = 1,
     override_reason = 'Agreed custom account allowance',
     override_updated_by = 'operator-identity'
 WHERE user_id = 'target-internal-account-id';
