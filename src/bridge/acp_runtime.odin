@@ -333,9 +333,43 @@ acp_runtime_restore_completion :: proc(data: rawptr, _: ACP_RPC_Role, id: ACP_RP
     delete(string(id)); return {acp_runtime_result, data}
 }
 
+ACP_Task_Notice_Input :: struct { text: string, interrupt: bool }
+
+acp_runtime_notice_ready :: proc(r: ^ACP_Runtime, interrupt: bool) -> bool {
+    if !acp_runtime_current(r) || !r.d.ready || r.d.error != "" || r.d.exit_pending do return false
+    if r.chat != nil && (!acp_chat_vault_ready() || acp_chat_bytes(r.chat) > 1536*1024) do return false
+    if r.d.phase == "prompt" do return interrupt
+    return len(r.d.queue) == 0
+}
+
 acp_runtime_work :: proc(data: rawptr, c: ^ACP_RPC_Client, argument: string) -> bool {
     r := cast(^ACP_Runtime)data
     if strings.has_prefix(argument,"chat_") do return acp_chat_work(r,argument)
+    if argument == "task_notices_ready" || argument == "task_notices_interrupt_ready" {
+        return acp_runtime_notice_ready(r, argument == "task_notices_interrupt_ready")
+    }
+    if strings.has_prefix(argument, "task_notices:") {
+        // The notice worker did the hub reads without holding ownership locks.
+        // Only cheap local readiness is rechecked here: stdout and permissions
+        // must keep flowing while the hub is slow or unreachable.
+        input: ACP_Task_Notice_Input
+        if json.unmarshal_string(argument[len("task_notices:"):], &input, allocator = context.temp_allocator) != nil || len(input.text) > 128*1024 do return false
+        if !acp_runtime_notice_ready(r, input.interrupt) do return false
+        if input.text == "" do return true
+        if r.d.phase == "prompt" {
+            if input.interrupt && !r.d.cancelling {
+                r.d.cancelling = true
+                acp_permissions_cancel(r)
+                raw, _ := json.marshal(struct{sessionId: string}{r.session}, allocator = context.temp_allocator)
+                _ = acp_rpc_notify(c, "session/cancel", string(raw))
+            }
+            return false
+        }
+        decrypted := bridge_decrypt_embedded_vault_tokens(input.text); defer delete(decrypted)
+        id := fmt.tprintf("task_notice_%d", time.tick_now()._nsec)
+        acp_runtime_prompt(r, {id, decrypted})
+        return r.d.error == ""
+    }
     switch argument {
     case "begin":
         c.state.next_rpc_id = max(c.state.next_rpc_id, r.next_rpc_id)
