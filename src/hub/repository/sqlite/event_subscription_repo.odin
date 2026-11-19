@@ -15,6 +15,7 @@ new_event_subscription_repository :: proc(
 	impl.conn = conn
 	return {
 		ctx = impl,
+		bot_agent = subscription_bot_agent,
 		owns_chain = subscription_owns_chain,
 		all = subscription_all,
 		deliveries = subscription_deliveries,
@@ -402,4 +403,19 @@ subscription_due_deliveries :: proc(
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, owner); bind_text(stmt, 2, agent); bind_text(stmt, 3, subscription); bind_text(stmt, 4, before)
 	return subscription_read_deliveries(stmt)
+}
+
+
+// Identity comes from the canonical bot binding, never a caller-supplied
+// template id. A retired bot instance must not add watches.
+subscription_bot_agent :: proc(ctx: rawptr, owner, instance: string) -> (string, domain.Domain_Error) {
+	stmt, err := subscription_prepare(ctx, "SELECT agent_id FROM bots WHERE owner_user_id=? AND agent_instance_id=?;")
+	if err.code != .None do return "", err
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, owner)
+	bind_text(stmt, 2, instance)
+	rc := sqlite3_step(stmt)
+	if rc == SQLITE_ROW do return column_text(stmt, 0), {}
+	if rc == SQLITE_DONE do return "", {}
+	return "", domain.domain_error(.Internal_Error, "failed to find bot identity")
 }

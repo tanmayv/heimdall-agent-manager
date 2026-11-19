@@ -40,7 +40,7 @@ test_bot_template_confirms_new_chains_and_each_command :: proc(t: ^testing.T) {
 		"Never send output that looks like a secret",
 		"Do not run a shell command the user has not approved",
 		"### When work is done",
-		"When the work is done, tell me (<your own instance id>) with chat send.",
+		"I will follow progress through chain events.",
 		"Do not complete or archive another agent's chain yourself.",
 		"stop its agents without asking",
 		"with that `chain_id` and an empty `current_task_id`, run `./bin/ham-ctl agents stop <agent_instance_id> --reason chain_work_done`",
@@ -77,4 +77,31 @@ test_bot_template_mentions_media :: proc(t: ^testing.T) {
 	}) {
 		testing.expect(t, strings.contains(bot.instructions, sentence), sentence)
 	}
+}
+
+@(test)
+test_bot_template_follows_events_and_acks_after_updates :: proc(t: ^testing.T) {
+	bot, ok := builtin_template(TEMPLATE_BOT_ID)
+	testing.expect(t, ok)
+	for text in ([]string {
+			"On every fresh start or wake",
+			"[events]",
+			"./bin/ham-ctl events next",
+			"./bin/ham-ctl events ack <event_id>",
+			"after its update is sent",
+			"chain.state",
+			"completed",
+			"failed",
+			"task.review_requested_from_user",
+			"task.blocked_on_human",
+			"actual question fetched from the task",
+			"chain.work_finished",
+			"deduplicate by `event_id`",
+			"`resolved`",
+			"automatically adds an explicit watch",
+			"Do not poll `task-chain list/show`",
+			"plain text",
+			"Never give a verdict yourself",
+		}) {testing.expect(t, strings.contains(bot.instructions, text), text)}
+	testing.expect(t, !strings.contains(bot.instructions, "When the work is done, tell me"))
 }
