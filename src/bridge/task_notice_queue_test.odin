@@ -7,6 +7,9 @@ import "core:os"
 import "core:strings"
 import "core:sync"
 import "core:testing"
+import "core:thread"
+import "core:time"
+import vm "core:mem/virtual"
 
 notice_test_state: string
 notice_test_status: int
@@ -196,6 +199,7 @@ notice_queue_acp_busy_waits_and_revalidates_at_prompt_start :: proc(t: ^testing.
     acp_runtime_replace(&f.r.session, "notice-session")
     batch := [?]Bridge_Task_Notice{notice_test_n("first", instance = f.r.instance), notice_test_n("second", instance = f.r.instance)}
     notice_test_status = 200; notice_test_state = "ready"
+    notice_test_reads = 0
     testing.expect(t, bridge_task_notice_enqueue(batch[0]))
     bridge_task_notice_tick(2999)
     testing.expect_value(t, f.r.d.phase, "prompt")
@@ -204,6 +208,12 @@ notice_queue_acp_busy_waits_and_revalidates_at_prompt_start :: proc(t: ^testing.
     bridge_task_notice_tick(3000)
     testing.expect(t, len(bridge_task_notices.entries) == 2, "busy notices remain in the common queue")
     testing.expect_value(t, len(f.r.d.queue), 0)
+    testing.expect_value(t, notice_test_reads, 0)
+    acp_runtime_replace(&f.r.d.phase, "ready")
+    append(&f.r.d.queue, ACP_Runtime_Input{strings.clone("queued"), strings.clone("queued text")})
+    testing.expect(t, !bridge_task_notice_deliver(batch[:]), "queued FIFO prevents relevance reads")
+    testing.expect_value(t, notice_test_reads, 0)
+    delete(f.r.d.queue[0].id); delete(f.r.d.queue[0].text); clear(&f.r.d.queue)
     notice_test_state = "done"; acp_runtime_replace(&f.r.d.phase, "ready")
     bridge_task_notice_tick(5000)
     testing.expect(t, len(bridge_task_notices.entries) == 0, "state changed while waiting, no prompt")
@@ -242,7 +252,14 @@ notice_queue_failed_delivery_retries_and_expiry_never_sends :: proc(t: ^testing.
     testing.expect_value(t, notice_test_turns, 0)
     bridge_runtime_set_status(n.instance, "running", "idle")
     defer bridge_runtime_set_status(n.instance, "stopped", "idle")
+    path := bridge_task_notice_path(); defer delete(path)
+    before_retry, before_err := os.read_entire_file(path, context.allocator); defer delete(before_retry)
+    testing.expect(t, before_err == nil)
     bridge_task_notice_tick(3000)
+    after_retry, after_err := os.read_entire_file(path, context.allocator); defer delete(after_retry)
+    testing.expect(t, after_err == nil)
+    testing.expect_value(t, string(after_retry), string(before_retry))
+    testing.expect_value(t, bridge_task_notices.entries[0].due_ms, i64(5000))
     testing.expect_value(t, len(bridge_task_notices.entries), 1)
     testing.expect_value(t, notice_test_turns, 1)
     bridge_task_notice_tick(4999)
@@ -279,4 +296,73 @@ notice_queue_worker_restores_merges_and_joins :: proc(t: ^testing.T) {
     testing.expect_value(t, len(bridge_task_notices.entries), 1)
     sync.mutex_unlock(&bridge_task_notices_mu)
     bridge_task_notice_stop(worker)
+}
+
+Notice_Test_Blocked_Relay :: struct { entered, release: bool }
+notice_test_blocked: ^Notice_Test_Blocked_Relay
+
+notice_test_blocked_relay :: proc(path: []string, method, params: string, rec: Bridge_Local_Agent_Token_Record, timeout_ms: int) -> Bridge_Local_Relay_Result {
+    sync.atomic_store(&notice_test_blocked.entered, true)
+    for !sync.atomic_load(&notice_test_blocked.release) do time.sleep(time.Millisecond)
+    return {ok = true, status = 503, body = strings.clone("{}")}
+}
+
+Notice_Test_Probe :: struct { instance: string, done, owned, ready: bool }
+notice_test_probe :: proc(data: rawptr) {
+    p := cast(^Notice_Test_Probe)data
+    p.owned = acp_runtime_owned(p.instance)
+    p.ready = acp_runtime_command(p.instance, "task_notices_ready")
+    sync.atomic_store(&p.done, true)
+}
+
+@(test)
+notice_queue_slow_relevance_read_leaves_acp_ownership_and_dispatcher_free :: proc(t: ^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+    context.allocator = runtime.heap_allocator()
+    prev_records := bridge_local_token_records
+    bridge_local_token_records = make([dynamic]Bridge_Local_Agent_Token_Record)
+    defer { delete(bridge_local_token_records); bridge_local_token_records = prev_records }
+    f: T4_Runtime_Test; t4_runtime_open(&f, "inst_notice_slow_relay", "/unused/bootstrap")
+    defer { f.r.d.stopped = true; acp_runtime_destroy(f.r); acp_test_delete(&f.f); bridge_runtime_set_status("inst_notice_slow_relay", "stopped", "idle") }
+    bridge_runtime_set_status(f.r.instance, "running", "idle")
+    prev_owners := acp_runtimes; acp_runtimes = make(map[string]^ACP_Runtime)
+    acp_runtimes[f.r.instance] = f.r
+    defer { delete(acp_runtimes); acp_runtimes = prev_owners }
+    sync.mutex_lock(&bridge_runtime_mutex)
+    for &inst in bridge_runtime_instances do if inst.agent_instance_id == f.r.instance do inst.runtime_transport = "acp"
+    sync.mutex_unlock(&bridge_runtime_mutex)
+    acp_runtime_replace(&f.r.d.phase, "ready"); f.r.d.ready = true
+    acp_runtime_replace(&f.r.session, "slow-relay-session")
+    blocked: Notice_Test_Blocked_Relay; notice_test_blocked = &blocked
+    prev_relay := bridge_task_notice_relay; bridge_task_notice_relay = notice_test_blocked_relay
+    defer { bridge_task_notice_relay = prev_relay; notice_test_blocked = nil }
+    Delivery :: struct { batch: [1]Bridge_Task_Notice, delivered: bool }
+    d := Delivery{batch = {notice_test_n("fail-open notice", instance = f.r.instance)}}
+    worker := thread.create_and_start_with_data(&d, proc(data: rawptr) {
+        context.allocator = runtime.heap_allocator()
+        arena: vm.Arena; _ = vm.arena_init_growing(&arena); defer vm.arena_destroy(&arena)
+        context.temp_allocator = vm.arena_allocator(&arena)
+        d := cast(^Delivery)data
+        d.delivered = bridge_task_notice_deliver(d.batch[:])
+    })
+    for i in 0..<2000 {
+        if sync.atomic_load(&blocked.entered) do break
+        time.sleep(time.Millisecond)
+    }
+    entered := sync.atomic_load(&blocked.entered)
+    p := Notice_Test_Probe{instance = f.r.instance}
+    probe := thread.create_and_start_with_data(&p, notice_test_probe)
+    for i in 0..<500 {
+        if sync.atomic_load(&p.done) do break
+        time.sleep(time.Millisecond)
+    }
+    available_while_http_blocked := sync.atomic_load(&p.done)
+    // Always release and join, even if an assertion would fail in the old code.
+    sync.atomic_store(&blocked.release, true)
+    thread.join(worker); thread.destroy(worker)
+    thread.join(probe); thread.destroy(probe)
+    testing.expect(t, entered, "relay must have blocked before probing ACP")
+    testing.expect(t, available_while_http_blocked && p.owned && p.ready, "ownership lookup and dispatcher command complete while relay is blocked")
+    testing.expect(t, d.delivered, "failed relevance read preserves the notice")
+    testing.expect(t, acp_test_wait(t, &f.f, .Writes, 1))
 }

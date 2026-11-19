@@ -137,8 +137,9 @@ bridge_task_notice_text :: proc(batch: []Bridge_Task_Notice) -> (string, bool) {
     return strings.to_string(b), interrupt
 }
 
-// ACP validates and starts the batch on its own dispatcher, only when it can
-// actually start a prompt. Busy notices stay in the shared, persisted queue.
+// All hub relevance reads run on the notice worker, outside ACP ownership and
+// dispatcher locks. Busy notices stay in the shared, persisted queue; readiness
+// is checked cheaply before the reads and again when starting the prompt.
 bridge_task_notice_deliver :: proc(batch: []Bridge_Task_Notice) -> bool {
     if len(batch) == 0 do return true
     instance := batch[0].instance
@@ -146,14 +147,21 @@ bridge_task_notice_deliver :: proc(batch: []Bridge_Task_Notice) -> bool {
     // must not be mistaken for a PTY and acknowledged by a one-way socket write.
     snap, present := bridge_runtime_instance_snapshot(instance)
     if !present || !snap.pty_process_alive || snap.stopped_intent_unix_ms != 0 || snap.runtime_status == "starting" do return false
-    if bridge_runtime_is_acp(instance) {
-        raw, err := json.marshal(batch, allocator = context.temp_allocator)
+    acp := bridge_runtime_is_acp(instance)
+    if acp {
+        wants_interrupt := false
+        for n in batch do wants_interrupt = wants_interrupt || n.interrupt
+        ready_command := "task_notices_interrupt_ready" if wants_interrupt else "task_notices_ready"
+        if !acp_runtime_command(instance, ready_command) do return false
+    }
+    text, interrupt := bridge_task_notice_text(batch); defer delete(text)
+    if text == "" do return true
+    if acp {
+        raw, err := json.marshal(ACP_Task_Notice_Input{text, interrupt}, allocator = context.temp_allocator)
         if err != nil do return false
         command := strings.concatenate({"task_notices:", string(raw)}, context.temp_allocator)
         return acp_runtime_command(instance, command)
     }
-    text, interrupt := bridge_task_notice_text(batch); defer delete(text)
-    if text == "" do return true
     socket, ok := bridge_task_notice_daemon(); if !ok do return false
     return bridge_task_notice_pty_deliver(socket, instance, "", "", text, "", interrupt)
 }
@@ -185,18 +193,22 @@ bridge_task_notice_tick :: proc(now: i64) {
     delivered := bridge_task_notice_deliver(batch[:])
     sync.mutex_lock(&bridge_task_notices_mu); defer sync.mutex_unlock(&bridge_task_notices_mu)
     i = 0
+    removed := false
     for i < len(bridge_task_notices.entries) {
         n := &bridge_task_notices.entries[i]
         matched := false
         for sent in batch do if bridge_task_notice_same(n^, sent) do matched = true
         if delivered && matched {
             bridge_task_notice_delete(n^); ordered_remove(&bridge_task_notices.entries, i)
+            removed = true
         } else {
             if matched do n.due_ms = now+BRIDGE_TASK_NOTICE_WINDOW_MS
             i += 1
         }
     }
-    _ = bridge_task_notice_save()
+    // Retry due times are deliberately reset by restore; do not fsync the
+    // entire queue just because a busy/stopped runtime cannot accept a batch.
+    if removed do _ = bridge_task_notice_save()
 }
 
 bridge_task_notice_worker :: proc() {
