@@ -16,7 +16,7 @@ ACP_CLAUDE_PACKAGE :: "@agentclientprotocol/claude-agent-acp"
 ACP_CLAUDE_INTEGRITY :: "sha512-Y0HI3CB0DfhpWItCn2RE3xgpen001V2U/bHm3G6ZVKXsElF5N4uYyjYlmgNzZBKcBtZK0JqiE96NMaeVXtgJjw=="
 ACP_INITIALIZE_PARAMS :: `{"protocolVersion":1,"clientInfo":{"name":"heimdall","version":"`+contracts.APP_VERSION+`"},"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false}}`
 acp_adapter_runner: Bridge_Extension_Install_Runner = bridge_process_run_capture_status
-acp_adapter_probe_hook: proc(root, scratch: string) -> bool = acp_adapter_probe
+acp_adapter_probe_hook: proc(provider, root, scratch: string) -> (bool, string) = acp_adapter_probe
 
 ACP_Adapter_Status :: struct {
     installed: bool,
@@ -115,7 +115,7 @@ acp_adapter_status :: proc(provider: string) -> ACP_Adapter_Status {
         if os.is_dir(root) { s.state = "outdated"; s.error = "Pinned adapter files failed verification" }
         raw, err := os.read_entire_file(strings.concatenate({root, ".status.json"}), context.temp_allocator)
         if err == nil {
-            record: struct{state, error: string}
+            record: struct{state, error, diagnostic: string}
             if json.unmarshal(raw, &record) == nil && record.state == "error" {
                 s.state = "error"
                 // Persisted status is local input, never a source of arbitrary
@@ -123,6 +123,11 @@ acp_adapter_status :: proc(provider: string) -> ACP_Adapter_Status {
                 s.error = "acp_adapter_install_failed"
                 switch record.error {
                 case "acp_adapter_directory_failed", "acp_adapter_install_failed", "acp_adapter_integrity_failed", "acp_adapter_probe_failed", "acp_adapter_host_unavailable", "acp_adapter_in_use", "acp_adapter_promote_failed": s.error = record.error
+                }
+                if record.error == "acp_adapter_probe_failed" {
+                    if message := acp_adapter_probe_message(record.diagnostic); message != "" {
+                        s.error = strings.concatenate({record.error, ": ", message}, context.temp_allocator)
+                    }
                 }
             }
         }
@@ -148,7 +153,19 @@ acp_adapter_status_json :: proc(provider: string, override: string = "") -> stri
     return string(raw)
 }
 
-ACP_Adapter_Probe :: struct { done, ok: bool, mu: sync.Mutex, cond: sync.Cond }
+ACP_Adapter_Probe :: struct {
+    done, ok: bool,
+    mu: sync.Mutex,
+    cond: sync.Cond,
+    diagnostic: [1024]byte,
+    diagnostic_len: int,
+}
+acp_adapter_probe_diagnostic :: proc(data: rawptr, bytes: string) {
+    p := cast(^ACP_Adapter_Probe)data
+    sync.mutex_lock(&p.mu); defer sync.mutex_unlock(&p.mu)
+    p.diagnostic_len += copy(p.diagnostic[p.diagnostic_len:], transmute([]byte)bytes)
+}
+
 acp_adapter_probe_checkpoint :: proc(_: rawptr, _: ^ACP_State) -> bool { return true }
 acp_adapter_probe_result :: proc(data: rawptr, result: ACP_RPC_Result) {
     defer acp_rpc_result_delete(result)
@@ -162,29 +179,105 @@ acp_adapter_probe_result :: proc(data: rawptr, result: ACP_RPC_Result) {
     sync.mutex_lock(&p.mu); p.ok = result.ok && valid; p.done = true; sync.cond_broadcast(&p.cond); sync.mutex_unlock(&p.mu)
 }
 
-// Probe in a scratch cwd with no agent token or project files. Auth metadata is
-// not a failure; only the initialize response and negotiated version matter.
-acp_adapter_probe :: proc(root, scratch: string) -> bool {
-    socket, ok := bridge_pty_host_ensure_daemon(); if !ok do return false
+// Child stderr is untrusted and can contain credentials. Only fixed diagnostic
+// reasons leave the bridge; retain at most 1 KiB locally while classifying it.
+acp_adapter_probe_reason :: proc(diagnostic: string, fallback: string) -> string {
+    if strings.contains(diagnostic, "ERR_MODULE_NOT_FOUND") || strings.contains(diagnostic, "MODULE_NOT_FOUND") do return "node_module_missing"
+    if strings.contains(diagnostic, "ENOENT") do return "executable_or_file_missing"
+    if strings.contains(diagnostic, "EACCES") do return "executable_permission_denied"
+    if strings.contains(diagnostic, "dynamically linked executable") || strings.contains(diagnostic, "ld-linux") do return "unsupported_dynamic_executable"
+    if strings.contains(diagnostic, "EPIPE") do return "pipe_closed"
+    return fallback
+}
+
+acp_adapter_probe_message :: proc(reason: string) -> string {
+    switch reason {
+    case "profile_unavailable": return "The canonical Claude provider profile is unavailable"
+    case "claude_missing": return "No Claude executable resolves in the canonical provider profile"
+    case "host_unavailable": return "The pipe daemon is unavailable"
+    case "spawn_failed": return "The adapter process could not be spawned"
+    case "generation_missing": return "The spawned adapter generation could not be resolved"
+    case "pipe_unavailable": return "The adapter pipe could not be attached"
+    case "initialize_failed": return "The adapter rejected initialize or protocol version 1"
+    case "initialize_timeout": return "The adapter did not answer initialize before the deadline"
+    case "adapter_exited": return "The adapter exited before completing initialize"
+    case "node_module_missing": return "Node could not load an adapter module"
+    case "executable_or_file_missing": return "The adapter could not find a required executable or file"
+    case "executable_permission_denied": return "The adapter could not execute a required file"
+    case "unsupported_dynamic_executable": return "The host cannot run the dynamically linked executable; configure the Claude provider binary"
+    case "pipe_closed": return "The adapter pipe closed during initialize"
+    }
+    return ""
+}
+
+acp_adapter_probe_env :: proc(pp: ^Provider_Profile) -> ([][2]string, bool) {
+    context.allocator = context.temp_allocator
+    env, ok := acp_profile_child_env(pp); if !ok do return nil, false
+    clean := make([dynamic]string)
+    for entry in env {
+        eq := strings.index_byte(entry, '=')
+        if eq < 0 || strings.has_prefix(strings.to_upper(entry[:eq]), "HEIMDALL_") do continue
+        append(&clean, entry)
+    }
+    return bridge_pty_host_env_pairs(clean[:]), true
+}
+
+// Probe in a scratch cwd with the canonical provider profile, without an agent
+// token or project files. Auth metadata is not an initialize failure.
+acp_adapter_probe :: proc(provider, root, scratch: string) -> (bool, string) {
+    context.allocator = context.temp_allocator
+    pp, perr := profile_lookup(provider, "")
+    if perr != .None do return false, "profile_unavailable"
+    env, env_ok := acp_adapter_probe_env(&pp)
+    if !env_ok do return false, "claude_missing"
+    socket, ok := bridge_pty_host_ensure_daemon(); if !ok do return false, "host_unavailable"
     id := fmt.tprintf("acp_probe_%d", time.tick_now()._nsec)
-    env := [][2]string{{"CLAUDE_AGENT_ACP_PROTOCOL", "v1"}}
     reply, received := pty_host_spawn_pipe(socket, {instance = id, argv = {acp_adapter_bin(root)}, cwd = scratch, has_cwd = true, env = env})
     defer pty_host_reply_delete(reply)
-    if !received || reply.kind != .Spawned || reply.generation == "" do return false
+    if !received || reply.kind != .Spawned do return false, "spawn_failed"
+    // Close every spawned probe, including failures before the RPC client opens.
     defer bridge_pty_host_close(socket, id)
-    io, opened := acp_pipe_io_open(socket, id, reply.generation, "probe", "", 0); if !opened do return false
+    if reply.generation == "" do return false, "generation_missing"
+    io, opened := acp_pipe_io_open(socket, id, reply.generation, "probe", "", 0); if !opened do return false, "pipe_unavailable"
     p: ACP_Adapter_Probe
+    pipe := cast(^ACP_Pipe_IO)io.data
+    pipe.diagnostic = acp_adapter_probe_diagnostic; pipe.diagnostic_data = &p
     c, client_ok := acp_rpc_open(io, {checkpoint = acp_adapter_probe_checkpoint})
-    if !client_ok { io.close(io.data); io.destroy(io.data); return false }
-    defer acp_rpc_close(c)
+    if !client_ok { io.close(io.data); io.destroy(io.data); return false, "pipe_unavailable" }
     rpc_id, sent := acp_rpc_request(c, "initialize", ACP_INITIALIZE_PARAMS, 15000, {acp_adapter_probe_result, &p})
     delete(string(rpc_id))
-    if !sent do return false
-    deadline := time.time_add(time.now(), 16*time.Second)
-    sync.mutex_lock(&p.mu)
-    for !p.done && time.diff(time.now(), deadline) > 0 { sync.cond_wait_with_timeout(&p.cond, &p.mu, 100*time.Millisecond) }
-    result := p.done && p.ok; sync.mutex_unlock(&p.mu)
-    return result
+    fallback := "initialize_failed"
+    if sent {
+        deadline := time.time_add(time.now(), 16*time.Second)
+        fallback = "initialize_timeout"
+        for time.diff(time.now(), deadline) > 0 {
+            sync.mutex_lock(&p.mu)
+            if !p.done do sync.cond_wait_with_timeout(&p.cond, &p.mu, 100*time.Millisecond)
+            done := p.done
+            sync.mutex_unlock(&p.mu)
+            if done { fallback = "initialize_failed"; break }
+            frame := pty_host_encode_pipe_request({kind = .List})
+            roster, listed := pty_host_request_deadline(socket, frame, 500)
+            delete(frame)
+            exited := false
+            if listed && roster.kind == .Pipe_List {
+                for row in roster.pipes {
+                    if row.instance == id && row.generation == reply.generation && !row.alive do exited = true
+                }
+            }
+            pty_host_reply_delete(roster)
+            if exited {
+                // The daemon retains stderr independently of the control ACK.
+                // Let the attachment reader consume the final diagnostic.
+                time.sleep(100*time.Millisecond)
+                fallback = "adapter_exited"
+                break
+            }
+        }
+    }
+    acp_rpc_close(c) // joins the diagnostic reader before inspecting its buffer
+    if p.done && p.ok do return true, ""
+    return false, acp_adapter_probe_reason(string(p.diagnostic[:p.diagnostic_len]), fallback)
 }
 
 acp_adapter_install :: proc(provider, etag, version: string) -> (ok: bool, reason: string) {
@@ -201,8 +294,9 @@ acp_adapter_install :: proc(provider, etag, version: string) -> (ok: bool, reaso
     if lock_state == .Busy do return false, "acp_adapter_install_in_progress"
     if lock_state == .Error do return false, "acp_adapter_lock_failed"
     defer acp_adapter_lock_release(lock)
+    diagnostic := ""
     defer {
-        raw, _ := json.marshal(struct{state, error, checked_at: string}{"ready" if ok else "error", reason, bridge_provider_probe_time()}, allocator = context.temp_allocator)
+        raw, _ := json.marshal(struct{state, error, diagnostic, checked_at: string}{"ready" if ok else "error", reason, diagnostic, bridge_provider_probe_time()}, allocator = context.temp_allocator)
         bridge_retry_atomic_write(strings.concatenate({root, ".status.json"}, context.temp_allocator), raw)
     }
     if !acp_adapter_cleanup_stages(root) do return false, "acp_adapter_directory_failed"
@@ -210,12 +304,15 @@ acp_adapter_install :: proc(provider, etag, version: string) -> (ok: bool, reaso
     stage := strings.concatenate({root, fmt.tprintf(".stage-%d", time.tick_now()._nsec)}); defer delete(stage)
     if bridge_make_directory_all(stage) != nil do return false, "acp_adapter_directory_failed"
     defer os.remove_all(stage)
-    out, diagnostic, _, installed, _ := acp_adapter_runner({"npm", "install", "--prefix", stage, "--save-exact", "--no-audit", "--no-fund", ACP_CLAUDE_PACKAGE+"@"+ACP_CLAUDE_VERSION}, 100*time.Second)
-    delete(out); delete(diagnostic) // Never expose npm diagnostics/environment.
+    out, npm_diagnostic, _, installed, _ := acp_adapter_runner({"npm", "install", "--prefix", stage, "--save-exact", "--no-audit", "--no-fund", ACP_CLAUDE_PACKAGE+"@"+ACP_CLAUDE_VERSION}, 100*time.Second)
+    delete(out); delete(npm_diagnostic) // Never expose npm diagnostics/environment.
     if !installed do return false, "acp_adapter_install_failed"
     if !acp_adapter_files_valid(stage) do return false, "acp_adapter_integrity_failed"
     scratch := strings.concatenate({stage, "/probe"}, context.temp_allocator)
-    if bridge_make_directory_all(scratch) != nil || !acp_adapter_probe_hook(stage, scratch) do return false, "acp_adapter_probe_failed"
+    if bridge_make_directory_all(scratch) != nil do return false, "acp_adapter_directory_failed"
+    probed: bool
+    probed, diagnostic = acp_adapter_probe_hook(provider, stage, scratch)
+    if !probed do return false, "acp_adapter_probe_failed"
     if !bridge_retry_atomic_write(strings.concatenate({stage, "/heimdall-probe-v1.json"}, context.temp_allocator), transmute([]byte)string(ACP_CLAUDE_INTEGRITY)) do return false, "acp_adapter_directory_failed"
     // An outdated/corrupt tree can be repaired, but never moved beneath a live
     // child. All supported ACP children currently use this single pinned tree.
@@ -256,7 +353,12 @@ acp_adapter_handle_install :: proc(conn: ^ws.Connection, text: string) {
     ok, reason := acp_adapter_install(provider, etag, version)
     report := bridge_provider_discovery_report_json(command, results[:]); defer delete(report)
     bridge_hub_send(conn, report)
-    frame := bridge_command_result_json(command, "succeeded" if ok else "failed", reason)
+    frame := acp_adapter_install_result_json(command, ok, reason)
     defer delete(frame)
     bridge_hub_send(conn, frame)
+}
+
+acp_adapter_install_result_json :: proc(command: string, ok: bool, reason: string) -> string {
+    if ok do return bridge_command_result_json(command, "succeeded", "")
+    return bridge_command_failed_json(command, bridge_cause_wire_error(reason, "ACP adapter installation failed"))
 }

@@ -14,6 +14,8 @@ ACP_Pipe_IO :: struct {
     mu: sync.Mutex,
     stopped: bool,
     last_acked: u64,
+    diagnostic: proc(data: rawptr, bytes: string),
+    diagnostic_data: rawptr,
     draining_exit: bool,
     exit_ready: bool, // reader-owned
     ready_count: int, // initial attachment plus optional final-watermark attachment
@@ -74,6 +76,7 @@ acp_pipe_io_read :: proc(data: rawptr) -> (ACP_RPC_Frame, bool) {
             if sync.atomic_load(&a.draining_exit) && a.ready_count >= 2 { a.exit_ready = true; a.exit_target = r.last_seq }
         case .Pipe_Output:
             if !matching { pty_host_reply_delete(r); return {}, false }
+            if r.stream == 2 && a.diagnostic != nil do a.diagnostic(a.diagnostic_data, string(r.data))
             frame.kind = .Stdout if r.stream == 1 else .Diagnostic
             frame.bytes = strings.clone(string(r.data)); frame.seq = r.seq; deliver = true
             if r.stream == 1 do a.last_read = max(a.last_read, r.seq)
