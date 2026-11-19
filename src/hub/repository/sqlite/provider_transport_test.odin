@@ -1,5 +1,6 @@
 package sqlite
 
+import "core:mem"
 import "core:strings"
 import "core:testing"
 import contracts "odin_test:contracts"
@@ -192,4 +193,34 @@ test_transport_snapshot_is_frozen_until_next_launch_generation :: proc(t:^testin
  testing.expect(t,new_found)
  testing.expect_value(t,newer.runtime_transport,"pty")
  testing.expect_value(t,newer.launch_epoch,"two")
+}
+
+// Saves borrow their input; a corrected snapshot owns only its replacement.
+// Run with the test runner's tracking allocator, including a heap-owned input.
+@(test)
+test_transport_snapshot_replacement_preserves_borrowed_input_without_leak :: proc(t: ^testing.T) {
+	conn, ok := tmpl_clone_migrated(t)
+	if !ok do return
+	defer close(&conn)
+	impl: Agent_Repo_SQLite
+	repo := new_agent_repository(&impl, &conn)
+	_, saved, err := iface.agent_save_instance(&repo, {agent_instance_id="transport_owned", runtime_transport="acp", run_count=1})
+	if !testing.expect(t, saved, err.message) do return
+	track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&track, context.allocator)
+	defer mem.tracking_allocator_destroy(&track)
+	original_allocator := context.allocator
+	context.allocator = mem.tracking_allocator(&track)
+	defer context.allocator = original_allocator
+	for i in 0..<64 {
+		input := domain.Agent_Instance{agent_instance_id="transport_owned", runtime_transport=strings.clone("pty"), run_count=1}
+		corrected, updated, update_err := iface.agent_save_instance(&repo, input)
+		testing.expect(t, updated, update_err.message)
+		testing.expect(t, input.runtime_transport == "pty", "borrowed input remains live")
+		testing.expect_value(t, corrected.runtime_transport, "acp")
+		delete(input.runtime_transport)
+		delete(corrected.runtime_transport)
+	}
+	testing.expect_value(t, len(track.bad_free_array), 0)
+	testing.expect_value(t, len(track.allocation_map), 0)
 }

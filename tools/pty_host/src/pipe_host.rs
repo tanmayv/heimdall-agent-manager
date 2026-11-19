@@ -7,13 +7,20 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+#[cfg(test)]
+use std::time::Instant;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::daemon::ReplySink;
 use crate::dproto::{CtlReply, SpawnRequest, MAX_PIPE_DATA};
 use anyhow::{anyhow, Context, Result};
 
 const REPLAY_BYTES: usize = 16 * 1024 * 1024;
+// At most 65,536 entries. Charge allocation capacity (minimum 256 bytes)
+// plus a separate entry cap: retained payload capacity <=16 MiB and deque
+// slots <=2 MiB on 64-bit targets (18 MiB total, excluding allocator metadata).
+const REPLAY_ENTRY_CHARGE: usize = 256;
+const REPLAY_ENTRIES: usize = REPLAY_BYTES / REPLAY_ENTRY_CHARGE;
 const STDIN_BYTES: usize = 4 * 1024 * 1024;
 const STDERR_BYTES: usize = 64 * 1024;
 const RECEIPTS: usize = 65_536;
@@ -37,6 +44,8 @@ struct PendingInput {
 struct State {
     stdout: VecDeque<(u64, Vec<u8>)>,
     stdout_bytes: usize,
+    stdout_charge: usize,
+    published: u64,
     last: u64,
     acked: u64,
     stderr: VecDeque<u8>,
@@ -58,6 +67,10 @@ struct Shared {
     instance: String,
     generation: String,
     activity: Arc<AtomicU64>,
+    #[cfg(unix)]
+    cancel_read: std::os::unix::net::UnixStream,
+    #[cfg(unix)]
+    cancel_write: std::os::unix::net::UnixStream,
     hashers: [std::collections::hash_map::RandomState; 2],
     #[cfg(windows)]
     job: crate::job::Job,
@@ -104,6 +117,8 @@ impl Shared {
 pub struct PipeHost {
     shared: Arc<Shared>,
     threads: Vec<JoinHandle<()>>,
+    #[cfg(all(test, target_os = "linux"))]
+    tids: Arc<Mutex<Vec<i32>>>,
 }
 
 impl PipeHost {
@@ -111,7 +126,16 @@ impl PipeHost {
         let mut cmd = Command::new(&spec.argv[0]);
         cmd.args(&spec.argv[1..])
             .env_clear()
-            .envs(crate::host::build_child_env().into_iter().filter(|(key, _)| !matches!(key.as_str(), "HEIMDALL_AGENT_TOKEN" | "HEIMDALL_STARTUP_KEY")))
+            .envs(
+                crate::host::build_child_env()
+                    .into_iter()
+                    .filter(|(key, _)| {
+                        !matches!(
+                            key.as_str(),
+                            "HEIMDALL_AGENT_TOKEN" | "HEIMDALL_STARTUP_KEY"
+                        )
+                    }),
+            )
             .envs(spec.env.iter().cloned());
         if let Some(cwd) = &spec.cwd {
             cmd.current_dir(cwd);
@@ -124,6 +148,8 @@ impl PipeHost {
             use std::os::unix::process::CommandExt;
             cmd.process_group(0);
         }
+        #[cfg(unix)]
+        let (cancel_read, cancel_write) = std::os::unix::net::UnixStream::pair()?;
         let mut child = cmd.spawn().context("spawn piped child")?;
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
@@ -157,6 +183,8 @@ impl PipeHost {
             state: Mutex::new(State {
                 stdout: VecDeque::new(),
                 stdout_bytes: 0,
+                stdout_charge: 0,
+                published: 0,
                 last: 0,
                 acked: 0,
                 stderr: VecDeque::new(),
@@ -176,6 +204,10 @@ impl PipeHost {
             instance: spec.instance.clone(),
             generation,
             activity,
+            #[cfg(unix)]
+            cancel_read,
+            #[cfg(unix)]
+            cancel_write,
             hashers: [
                 std::collections::hash_map::RandomState::new(),
                 std::collections::hash_map::RandomState::new(),
@@ -186,6 +218,8 @@ impl PipeHost {
         let mut host = Self {
             shared,
             threads: Vec::new(),
+            #[cfg(all(test, target_os = "linux"))]
+            tids: Arc::new(Mutex::new(Vec::new())),
         };
         // Each failed thread start drops host, stopping/reaping the child and
         // joining workers already started. No orphan on resource exhaustion.
@@ -198,39 +232,20 @@ impl PipeHost {
         let s = host.shared.clone();
         host.start(move || dispatch(s))?;
         let s = host.shared.clone();
-        host.start(move || loop {
-            let mut child = s.child.lock().unwrap();
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::process::ExitStatusExt;
-                        s.code.store(
-                            status
-                                .code()
-                                .unwrap_or_else(|| 128 + status.signal().unwrap_or(0)),
-                            Ordering::SeqCst,
-                        );
-                    }
-                    #[cfg(windows)]
-                    s.code.store(status.code().unwrap_or(-1), Ordering::SeqCst);
-                    s.alive.store(false, Ordering::SeqCst);
-                    s.changed.notify_all();
-                    return;
-                }
-                Err(_) => {
-                    s.alive.store(false, Ordering::SeqCst);
-                    return;
-                }
-                _ => (),
-            }
-            drop(child);
-            std::thread::sleep(TICK);
-        })?;
+        host.start(move || wait_child(s))?;
         Ok(host)
     }
     fn start(&mut self, f: impl FnOnce() + Send + 'static) -> Result<()> {
-        self.threads.push(std::thread::Builder::new().spawn(f)?);
+        #[cfg(all(test, target_os = "linux"))]
+        let tids = self.tids.clone();
+        self.threads
+            .push(std::thread::Builder::new().spawn(move || {
+                #[cfg(all(test, target_os = "linux"))]
+                tids.lock()
+                    .unwrap()
+                    .push(unsafe { libc::syscall(libc::SYS_gettid) as i32 });
+                f();
+            })?);
         Ok(())
     }
     pub fn generation(&self) -> &str {
@@ -255,10 +270,12 @@ impl PipeHost {
         let _ = self.signal(9);
     }
     pub fn wait_timeout(&self, timeout: Duration) -> Option<i32> {
-        let start = Instant::now();
-        while self.exit_code().is_none() && start.elapsed() < timeout {
-            std::thread::sleep(TICK);
-        }
+        let state = self.shared.state.lock().unwrap();
+        let _guard = self
+            .shared
+            .changed
+            .wait_timeout_while(state, timeout, |_| self.shared.alive.load(Ordering::SeqCst))
+            .unwrap();
         self.exit_code()
     }
     fn check_generation(&self, generation: &str) -> Result<()> {
@@ -294,6 +311,7 @@ impl PipeHost {
                 old.sink.fence();
             }
         }
+        s.published = s.published.max(after);
         s.owner = Some(Owner {
             id,
             sink,
@@ -327,6 +345,7 @@ impl PipeHost {
         while s.stdout.front().is_some_and(|(seq, _)| *seq <= through) {
             let (_, bytes) = s.stdout.pop_front().unwrap();
             s.stdout_bytes -= bytes.len();
+            s.stdout_charge -= bytes.capacity().max(REPLAY_ENTRY_CHARGE);
         }
         s.acked = s.acked.max(through);
         self.shared.changed.notify_all();
@@ -380,6 +399,8 @@ impl PipeHost {
     }
     pub fn stop_io(&self) {
         self.shared.stop.store(true, Ordering::SeqCst);
+        #[cfg(unix)]
+        let _ = self.shared.cancel_write.shutdown(std::net::Shutdown::Both);
         if let Some(owner) = self.shared.state.lock().unwrap().owner.take() {
             owner.sink.fence();
         }
@@ -399,7 +420,67 @@ impl Drop for PipeHost {
     }
 }
 
-fn read_output(s: Arc<Shared>, mut reader: impl Read, stderr: bool) {
+// Wait without reaping so signal() remains serialized with the actual reap:
+// a PID cannot be reused between its alive check and killpg.
+fn wait_child(s: Arc<Shared>) {
+    #[cfg(unix)]
+    unsafe {
+        let mut info: libc::siginfo_t = std::mem::zeroed();
+        loop {
+            if libc::waitid(
+                libc::P_PID,
+                s.pid as _,
+                &mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            ) == 0
+            {
+                break;
+            }
+            if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                break;
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        let handle = s.child.lock().unwrap().as_raw_handle();
+        unsafe {
+            windows_sys::Win32::System::Threading::WaitForSingleObject(handle as _, u32::MAX);
+        }
+    }
+    let mut child = s.child.lock().unwrap();
+    if let Ok(status) = child.wait() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            s.code.store(
+                status
+                    .code()
+                    .unwrap_or_else(|| 128 + status.signal().unwrap_or(0)),
+                Ordering::SeqCst,
+            );
+        }
+        #[cfg(windows)]
+        s.code.store(status.code().unwrap_or(-1), Ordering::SeqCst);
+    }
+    let _state = s.state.lock().unwrap();
+    s.alive.store(false, Ordering::SeqCst);
+    s.changed.notify_all();
+}
+
+#[cfg(unix)]
+trait PipeRead: Read + std::os::fd::AsRawFd {}
+#[cfg(unix)]
+impl<T: Read + std::os::fd::AsRawFd> PipeRead for T {}
+#[cfg(not(unix))]
+trait PipeRead: Read {}
+#[cfg(not(unix))]
+impl<T: Read> PipeRead for T {}
+
+// Only the owning reader closes its descriptor. Shutdown wakes poll through a
+// separate cancellation socket, including when descendants retain stdout.
+fn read_output(s: Arc<Shared>, mut reader: impl PipeRead, stderr: bool) {
     let mut buf = [0; MAX_PIPE_DATA];
     loop {
         if s.stop.load(Ordering::SeqCst) {
@@ -407,12 +488,39 @@ fn read_output(s: Arc<Shared>, mut reader: impl Read, stderr: bool) {
         }
         if !stderr {
             let mut state = s.state.lock().unwrap();
-            while state.stdout_bytes > REPLAY_BYTES - MAX_PIPE_DATA
+            while (state.stdout_charge > REPLAY_BYTES - MAX_PIPE_DATA
+                || state.stdout.len() >= REPLAY_ENTRIES)
                 && !s.stop.load(Ordering::SeqCst)
             {
                 state = s.changed.wait(state).unwrap();
             }
             if s.stop.load(Ordering::SeqCst) {
+                return;
+            }
+        }
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            let mut fds = [
+                libc::pollfd {
+                    fd: reader.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: s.cancel_read.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            let rc = unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
+            if s.stop.load(Ordering::SeqCst) || fds[1].revents != 0 {
+                return;
+            }
+            if rc < 0 {
+                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
                 return;
             }
         }
@@ -435,18 +543,34 @@ fn read_output(s: Arc<Shared>, mut reader: impl Read, stderr: bool) {
                     state.stderr_dropped += excess;
                     state.stderr.extend(&buf[..n]);
                 } else {
-                    state.last += 1;
-                    let seq = state.last;
-                    state.stdout.push_back((seq, buf[..n].to_vec()));
-                    state.stdout_bytes += n;
+                    append_stdout(&mut state, &buf[..n]);
                 }
                 s.changed.notify_all();
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => (),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(TICK),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => (),
             Err(_) => return,
         }
     }
+}
+
+// Never mutate a published sequence: reconnect must replay identical bytes.
+fn append_stdout(state: &mut State, data: &[u8]) {
+    let published = state.published;
+    if let Some((seq, tail)) = state.stdout.back_mut() {
+        if *seq > published && tail.len() + data.len() <= MAX_PIPE_DATA {
+            let old = tail.capacity().max(REPLAY_ENTRY_CHARGE);
+            tail.extend_from_slice(data);
+            state.stdout_charge += tail.capacity().max(REPLAY_ENTRY_CHARGE) - old;
+            state.stdout_bytes += data.len();
+            return;
+        }
+    }
+    state.last += 1;
+    let chunk = data.to_vec();
+    state.stdout_charge += chunk.capacity().max(REPLAY_ENTRY_CHARGE);
+    state.stdout_bytes += chunk.len();
+    state.stdout.push_back((state.last, chunk));
 }
 
 // One attempt only. Even a failure after a successful prefix poisons the
@@ -499,7 +623,7 @@ fn write_input(s: Arc<Shared>, mut writer: impl Write) {
                 break;
             };
             if !owner.ready {
-                state = s.changed.wait_timeout(state, TICK).unwrap().0;
+                state = s.changed.wait(state).unwrap();
                 continue;
             }
             match owner.sink.try_send_pipe(s.done(&pending.id)) {
@@ -526,9 +650,14 @@ fn dispatch(s: Arc<Shared>) {
                     first_seq: state.acked + 1,
                     last_seq: state.last,
                 })
-            } else if let Some((seq, data)) =
-                state.stdout.iter().find(|(seq, _)| *seq > owner.cursor)
-            {
+            } else if let Some((seq, data)) = state.stdout.front().and_then(|(front, _)| {
+                owner
+                    .cursor
+                    .checked_add(1)?
+                    .checked_sub(*front)
+                    .and_then(|index| usize::try_from(index).ok())
+                    .and_then(|index| state.stdout.get(index))
+            }) {
                 Some(s.reply(*seq, 1, data.clone()))
             } else if owner.stderr_cursor < state.stderr_dropped {
                 Some(
@@ -553,10 +682,12 @@ fn dispatch(s: Arc<Shared>) {
                     Ok(true) => {
                         match reply {
                             CtlReply::PipeReady { .. } => {
-                                state.owner.as_mut().unwrap().ready = true
+                                state.owner.as_mut().unwrap().ready = true;
+                                s.changed.notify_all();
                             }
                             CtlReply::PipeOutput { seq, stream: 1, .. } => {
-                                state.owner.as_mut().unwrap().cursor = seq
+                                state.owner.as_mut().unwrap().cursor = seq;
+                                state.published = state.published.max(seq);
                             }
                             _ => {
                                 // Retain the diagnostic tail independently of
@@ -575,11 +706,16 @@ fn dispatch(s: Arc<Shared>) {
                     Err(()) => {
                         state.owner = None;
                     }
-                    Ok(false) => (), // Backpressure, never disconnect or consume the log.
+                    Ok(false) => {
+                        // Only a full subscriber queue needs a timed retry.
+                        // Idle dispatchers wait indefinitely below.
+                        drop(s.changed.wait_timeout(state, TICK).unwrap());
+                        continue;
+                    }
                 }
             }
         }
-        drop(s.changed.wait_timeout(state, TICK).unwrap());
+        drop(s.changed.wait(state).unwrap());
     }
 }
 
@@ -611,9 +747,71 @@ mod tests {
     }
 
     #[test]
+    fn pipe_one_byte_unacked_replay_has_bounded_allocations_and_coalesces() {
+        let h = spawn("exec cat");
+        let mut state = h.shared.state.lock().unwrap();
+        for _ in 0..MAX_PIPE_DATA {
+            append_stdout(&mut state, b"x");
+        }
+        assert_eq!(state.stdout.len(), 1);
+        assert_eq!(state.stdout[0].1.len(), MAX_PIPE_DATA);
+        // Published chunks must be immutable, even after detaching.
+        state.published = state.last;
+        while state.stdout_charge <= REPLAY_BYTES - MAX_PIPE_DATA
+            && state.stdout.len() < REPLAY_ENTRIES
+        {
+            append_stdout(&mut state, b"x");
+            state.published = state.last;
+        }
+        assert_eq!(state.stdout[0].1.len(), MAX_PIPE_DATA);
+        assert!(state.stdout.len() <= REPLAY_ENTRIES);
+        assert!(state.stdout_charge <= REPLAY_BYTES);
+        let payload_capacity: usize = state.stdout.iter().map(|(_, v)| v.capacity()).sum();
+        let slots = state.stdout.capacity() * std::mem::size_of::<(u64, Vec<u8>)>();
+        assert!(payload_capacity + slots <= 18 * 1024 * 1024);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pipe_idle_workers_have_no_periodic_wakeups() {
+        let h = spawn("exec cat");
+        let (sink, rx) = reply_channel(None);
+        h.attach(1, h.generation(), 0, sink).unwrap();
+        drop(rx.recv_timeout(Duration::from_secs(3)).unwrap());
+        wait(|| h.tids.lock().unwrap().len() == 5);
+        // Let startup and attach notifications finish before measuring.
+        std::thread::sleep(Duration::from_millis(100));
+        let switches = || {
+            h.tids
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|tid| {
+                    let status =
+                        std::fs::read_to_string(format!("/proc/self/task/{tid}/status")).unwrap();
+                    status
+                        .lines()
+                        .filter(|line| line.contains("ctxt_switches:"))
+                        .map(|line| {
+                            line.split_whitespace()
+                                .last()
+                                .unwrap()
+                                .parse::<u64>()
+                                .unwrap()
+                        })
+                        .sum::<u64>()
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = switches();
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(before, switches(), "idle pipe workers must remain blocked");
+    }
+
+    #[test]
     fn pipe_full_replay_pauses_then_delivers_every_byte_and_keeps_exit_tail() {
         let h = spawn("printf '%131072s' d >&2; i=0; while test \"$i\" -lt 5120; do printf '%4096s' x; i=$((i+1)); done");
-        wait(|| h.shared.state.lock().unwrap().stdout_bytes > REPLAY_BYTES - MAX_PIPE_DATA);
+        wait(|| h.shared.state.lock().unwrap().stdout_charge > REPLAY_BYTES - MAX_PIPE_DATA);
         {
             let s = h.shared.state.lock().unwrap();
             assert!(s.stdout_bytes <= REPLAY_BYTES);
@@ -676,16 +874,27 @@ mod tests {
             let mut diagnostic = Vec::new();
             while diagnostic.len() < STDERR_BYTES {
                 let frame = rx.recv_timeout(Duration::from_secs(3)).unwrap();
-                match read_ctl_reply(&mut Cursor::new(&frame.bytes)).unwrap().unwrap() {
+                match read_ctl_reply(&mut Cursor::new(&frame.bytes))
+                    .unwrap()
+                    .unwrap()
+                {
                     CtlReply::PipeReady { .. } => (),
-                    CtlReply::PipeOutput { seq: 0, stream: 2, data, .. } => {
+                    CtlReply::PipeOutput {
+                        seq: 0,
+                        stream: 2,
+                        data,
+                        ..
+                    } => {
                         diagnostic.extend(data);
                     }
                     r => panic!("{r:?}"),
                 }
             }
             assert!(diagnostic.starts_with(b"[ham-pty-host: stderr truncated 65536 bytes]\n"));
-            assert_eq!(diagnostic.len(), STDERR_BYTES + b"[ham-pty-host: stderr truncated 65536 bytes]\n".len());
+            assert_eq!(
+                diagnostic.len(),
+                STDERR_BYTES + b"[ham-pty-host: stderr truncated 65536 bytes]\n".len()
+            );
             assert_eq!(*diagnostic.last().unwrap(), b'd');
             h.detach(id, h.generation()).unwrap();
             assert_eq!(h.shared.state.lock().unwrap().stderr.len(), STDERR_BYTES);
@@ -751,7 +960,12 @@ mod tests {
         // capacity varies across systems and is separate from our 4 MiB bound.
         for n in 0..1024 {
             let delivery = n.to_string();
-            if let Err(error) = h.input(1, h.generation(), delivery.clone(), vec![b'x'; MAX_PIPE_DATA]) {
+            if let Err(error) = h.input(
+                1,
+                h.generation(),
+                delivery.clone(),
+                vec![b'x'; MAX_PIPE_DATA],
+            ) {
                 assert!(error.to_string().contains("retryable"), "{error}");
                 overflow = Some(delivery);
                 break;

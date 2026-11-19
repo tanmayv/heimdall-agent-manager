@@ -270,6 +270,8 @@ set_provider_transport_sqlite :: proc(ctx: rawptr, bridge_id, provider, transpor
  defer sqlite3_finalize(stmt)
  bind_text(stmt,1,bridge_id);bind_text(stmt,2,provider);bind_text(stmt,3,now)
  if transport=="" {sqlite3_bind_null(stmt,4)} else {bind_text(stmt,4,transport)}
- if sqlite3_step(stmt)!=SQLITE_DONE do return domain.domain_error(.Invalid_Transport,"provider transport could not be saved")
+ rc := sqlite3_step(stmt)
+ if rc & 0xff == SQLITE_CONSTRAINT do return domain.domain_error(.Invalid_Transport,"provider transport could not be saved")
+ if rc != SQLITE_DONE do return domain.domain_error(.Internal_Error,"provider transport storage write failed")
  return {}
 }
