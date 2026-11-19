@@ -4,6 +4,30 @@ This specification adds ACP (Agent Client Protocol) beside PTY execution. The Hu
 
 Status: implementation specification, 2026-11-18. Approved inputs: [plan](artifact://art_18e9124cfc75a9c2), [comparison](artifact://art_18e8badae3e44864), and subsequent chain decisions. Those decisions supersede the plan's deferrals of piped hosting, streaming, adapter status, and login fallback. This document specifies proposed changes; it does not assert they already exist. Existing-source references were read at `7ccd2d909c34e2c6c0d985adeba40d2a4e06442f`; paths and line numbers below are relative to that repository revision.
 
+## Provider descriptor contract (C1, 2026-11-19)
+
+The compiled closed registry in `src/contracts/acp_provider.odin` owns executable behavior. Catalog recipes select an exact trusted descriptor; they cannot supply extra commands, arguments, environment values, fields, protocol versions or package pins. A valid Claude recipe copied onto another provider is rejected by both Hub and Bridge.
+
+| Provider | Enabled ACP descriptor | Launch | Package / protocol | Bootstrap fallback | Permission binding |
+| --- | --- | --- | --- | --- | --- |
+| Claude | `claude-acp`, revision 1 | Adapter | `@agentclientprotocol/claude-agent-acp@0.108.0`, pinned SHA-512; ACP v1 | `CLAUDE.md` | `model` category; `mode` category with ask=`default`, yolo=`bypassPermissions` |
+| Copilot | None in C1 | Native shape represented and tested; activation is a separate task | No executable recipe enabled | Existing PTY catalog behavior | No ACP policy enabled |
+| Pi | None | PTY | No native ACP mode or adapter enabled | Existing PTY catalog behavior | Existing PTY behavior |
+
+Descriptors distinguish native and adapter launch shapes and carry exact package/platform SRIs, CLI/version requirements, protected executable/environment bindings, trusted authentication guidance and config categories. Native shapes require the native CLI pin and explicit platform package pins. Shape validity alone does not register or enable a provider.
+
+Bootstrap reads the safe catalog filename, falling back to the descriptor filename. The filename is frozen in each launch binding and supplies both the embedded resource URI and exact file bytes. Authentication guidance comes from the trusted descriptor and names the selected profile; agent-supplied terminal commands are never executed.
+
+The package tree and stable advisory lock are shared per provider + descriptor ID/revision + package version tuple. Probe receipts live at `heimdall-probes/<profile>.json` within that tree and bind the selected profile/version; the old integrity-only receipt cannot validate them. A selected profile without a matching receipt receives its own isolated initialize probe before launch. Probes strip `HEIMDALL_*`, and actual authentication remains the selected profile's `session/new`/`session/load` result. npm installation disables lifecycle scripts. No per-profile package trees or profile-install endpoint/UI are added.
+
+The runtime journal now binds provider, descriptor ID/revision, package name/version/SRI, resolved CLI version, profile ID/revision, platform and bootstrap filename. Restore rejects mismatches and compares saved provider/profile against the Hub launch intent. Dead-child recovery resolves the same profile and CLI version before spawning. New runtime journals use inner schema `3` (encrypted envelope stays `2`) and binding version `1`; their identity is strict. Pre-C1 Claude `0.108.0` journals with schema `1` receive a one-time compatibility migration only when the saved profile is nonempty and matches the authoritative Hub launch intent, the profile still exists, the managed bootstrap manifest matches the instance, and the entire checkpoint validates. Because old journals never stored CLI version or profile revision, this coordinator-approved boundary freezes the current matching profile revision and resolved CLI version. The bridge logs `ACP_LEGACY_BIND` once and atomically rewrites the journal before reattaching. Migration sends no initialize/new prompt and preserves session, RPC/delivery IDs, receipts, input queues and outbox. Ambiguous or corrupt legacy state reports typed cause `acp_restart_required` and requires an explicit restart.
+
+This format upgrade is one-way: do not downgrade to pre-C1 bridges after rewriting a journal. Old bridges reject inner schema `3`. The valid legacy Claude package tree/lock at `bridge/acp-adapters/claude/0.108.0` stays in place beneath live children; its pinned files are reverified and its marker is upgraded automatically with a fresh isolated probe. No manual reinstall is needed for a valid tree. Other providers/descriptors cannot use this compatibility path.
+
+The existing `acp_adapter` status field and `install_acp_adapter` command name remain wire-compatible. Status adds `provider`, `profile` and `runtime_kind` (`adapter` or `native`); Hub readiness validates descriptor/provider identity, and UI wording follows the runtime kind. Installation readiness remains independent from selected-profile authentication.
+
+C1 does not change SQLite schema or the enabled catalog recipe, so it needs no migration or catalog ETag update. Numbered migrations on the required `origin/main` base run through `223`; any later catalog/schema change must append after the current maximum. Released migrations remain unchanged.
+
 ## 1. Scope and requirements
 
 | ID | Scope | Required behavior | Contract |

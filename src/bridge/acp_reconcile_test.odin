@@ -64,7 +64,7 @@ t4_recovery_connect :: proc(r: ^ACP_Runtime, _: string, after_seq: u64, checkpoi
 
 // Real token store, real journal, real shim rendering and real RPC dispatcher;
 // only the daemon boundary and endpoint listener are replaced.
-t4_recovery_write_state :: proc(t: ^testing.T, f: ^T4_Recovery_Fixture, error := "") -> string {
+t4_recovery_write_state :: proc(t: ^testing.T, f: ^T4_Recovery_Fixture, error := "", legacy := false) -> string {
     context.allocator = runtime.heap_allocator()
     issue := bridge_agent_token_issue(f.instance, "assertion~recovery_epoch", .Agent, 9)
     bridge_startup_begin(issue.plaintext_token)
@@ -76,6 +76,7 @@ t4_recovery_write_state :: proc(t: ^testing.T, f: ^T4_Recovery_Fixture, error :=
     _ = os.write_entire_file(strings.concatenate({cwd, "/CLAUDE.md"}, context.temp_allocator), string("recovery bootstrap marker"))
     r := acp_runtime_new(f.instance, "recovery_epoch", cwd, "claude", "claude", "sha256:test", "sonnet", "default", rec)
     defer acp_runtime_destroy(r)
+    acp_runtime_replace(&r.binding.cli_version, "2.1.70")
     r.generation = strings.clone("old-generation"); r.session = strings.clone("saved-session")
     r.initialized = true; r.load_session = true
     r.d.phase = strings.clone("prompt"); r.d.current_input = strings.clone("interrupted-input")
@@ -85,7 +86,14 @@ t4_recovery_write_state :: proc(t: ^testing.T, f: ^T4_Recovery_Fixture, error :=
     state := ACP_State{schema_version = 1, instance = strings.clone(f.instance), launch_epoch = strings.clone(r.epoch),
         effective_transport = strings.clone("acp"), next_rpc_id = 40, next_delivery_id = 50}
     defer acp_state_delete(&state)
-    testing.expect(t, acp_runtime_checkpoint(r, &state) && acp_state_write(r.state_path, &state))
+    testing.expect(t, acp_runtime_checkpoint(r, &state))
+    if legacy {
+        acp_provider_binding_delete(&state.binding); state.runtime_binding_version = 0; state.schema_version = 1
+        manifest, _ := json.marshal(struct { agent_instance_id: string, managed_files: []struct { relative_path, kind: string } }{
+            f.instance, {{"CLAUDE.md", "AGENTS_MD"}}}, allocator = context.temp_allocator)
+        _ = os.write_entire_file(strings.concatenate({cwd, "/heimdall-bootstrap-manifest.json"}, context.temp_allocator), manifest)
+    }
+    testing.expect(t, acp_state_write(r.state_path, &state))
     return strings.clone(issue.plaintext_token, context.temp_allocator)
 }
 
@@ -113,13 +121,16 @@ t4_acp_reconcile_recovery_rotates_token_closes_old_and_never_reprompts_interrupt
     bridge_config.daemon_id = "brg_test_t4_recovery"
     g_profile_test_store_path = strings.concatenate({root, "/profiles.json"}, context.temp_allocator)
     // Keep profile/env resolution and SpawnPipe construction in the test.
+    binary := strings.concatenate({root, "/claude"}, context.temp_allocator)
+    _ = os.write_entire_file(binary, string("#!/bin/sh\nprintf '2.1.70 (Claude Code)\\n'\n"))
+    bridge_os_make_owner_executable(binary)
     profile_raw, _ := json.marshal(Provider_Profile_Store_Wire{version = PROFILE_STORE_VERSION,
-        profiles = {{profile_id = "claude", provider = "claude", enabled = true, config = {binary_path = "/bin/sh"}}}}, allocator = context.temp_allocator)
+        profiles = {{profile_id = "claude", provider = "claude", enabled = true, config = {binary_path = binary}}}}, allocator = context.temp_allocator)
     _ = os.write_entire_file(g_profile_test_store_path, profile_raw)
     acp_runtime_io = {t4_recovery_ensure, t4_recovery_list, t4_recovery_close, t4_recovery_spawn, t4_recovery_endpoint, t4_recovery_connect}
     acp_runtime_events.prompt_finished = t4_recovery_finished
     f := T4_Recovery_Fixture{t = t, instance = "inst_t4_real_recovery"}; t4_recovery_fixture = &f
-    old_token := t4_recovery_write_state(t, &f)
+    old_token := t4_recovery_write_state(t, &f, legacy = true)
     defer {
         if f.rpc.r != nil { f.rpc.r.d.stopped = true; acp_runtime_detach(f.instance) }
         bridge_runtime_set_status(f.instance, "stopped", "idle")
@@ -132,7 +143,7 @@ t4_acp_reconcile_recovery_rotates_token_closes_old_and_never_reprompts_interrupt
         delete(f.token); acp_test_delete(&f.rpc.f)
     }
     intents := make(map[string]ACP_Hub_Intent, allocator = context.temp_allocator)
-    intents[f.instance] = {"running", "recovery_epoch", "acp", 9}
+    intents[f.instance] = {status = "running", epoch = "recovery_epoch", transport = "acp", run_count = 9, provider = "claude", profile = "claude"}
     handled := acp_runtime_reconcile("fixture-daemon", nil, intents)
     testing.expect(t, handled[f.instance] && f.spawns == 1 && f.closes == 1 && f.interrupted == 1)
     if !testing.expect(t, f.rpc.r != nil) do return
@@ -156,13 +167,18 @@ t4_acp_reconcile_recovery_rotates_token_closes_old_and_never_reprompts_interrupt
     sync.mutex_unlock(&f.rpc.f.mu)
     // End the successful instance before checking terminal intents independently.
     f.rpc.r.d.stopped = true; acp_runtime_detach(f.instance); f.rpc.r = nil
-    for status in ([]string{"failed", "stopped", "running", "epoch_mismatch", "newer_child"}) {
+    for status in ([]string{"failed", "stopped", "running", "epoch_mismatch", "newer_child", "legacy_profile_mismatch", "legacy_corrupt"}) {
         terminal := T4_Recovery_Fixture{t = t, instance = fmt.tprintf("inst_t4_terminal_%s", status)}
         t4_recovery_fixture = &terminal
-        _ = t4_recovery_write_state(t, &terminal, "acp_protocol_error" if status == "running" else "")
+        _ = t4_recovery_write_state(t, &terminal, "acp_protocol_error" if status == "running" else "", legacy = strings.has_prefix(status, "legacy_"))
+        if status == "legacy_corrupt" {
+            path, _ := acp_state_path(root, terminal.instance, "recovery_epoch"); defer delete(path)
+            _ = os.write_entire_file(path, string("{corrupt"))
+        }
         hub_status := "failed" if status == "failed" else "stopped" if status == "stopped" else "running"
         epoch := "newer_epoch" if status == "epoch_mismatch" else "recovery_epoch"
-        clear(&intents); intents[terminal.instance] = {hub_status, epoch, "acp", 9}
+        clear(&intents); intents[terminal.instance] = {status = hub_status, epoch = epoch, transport = "acp", run_count = 9, provider = "claude", profile = "claude"}
+        if status == "legacy_profile_mismatch" do intents[terminal.instance] = {status = "running", epoch = epoch, transport = "acp", run_count = 9, provider = "claude", profile = "work"}
         pipes: []Pty_Host_Pipe_Info
         if status == "newer_child" {
             terminal.daemon_generation = "newer-generation"
@@ -173,8 +189,9 @@ t4_acp_reconcile_recovery_rotates_token_closes_old_and_never_reprompts_interrupt
         acp_runtime_reconcile("fixture-daemon", pipes, intents)
         testing.expect(t, terminal.spawns == 0 && terminal.closes == 0 && terminal.interrupted == 0 && !acp_runtime_owned(terminal.instance))
         snap, exists := bridge_runtime_instance_snapshot(terminal.instance)
-        expected := "stopped" if status == "stopped" || status == "epoch_mismatch" else "failed"
+        expected := "stopped" if status == "stopped" || status == "epoch_mismatch" || strings.has_prefix(status, "legacy_") else "failed"
         testing.expect(t, exists && snap.runtime_status == expected)
+        if strings.has_prefix(status, "legacy_") do testing.expect_value(t, snap.acp_error_code, "acp_restart_required")
         if status == "failed" || status == "stopped" || status == "running" {
             handled_retry, retry_ok := acp_runtime_retry_launch(terminal.instance, "recovery_epoch", 9)
             testing.expect(t, handled_retry && !retry_ok && terminal.lists == 0 && terminal.spawns == 0)

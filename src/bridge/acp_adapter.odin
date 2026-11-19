@@ -11,13 +11,12 @@ import "core:time"
 import ws "odin_test:lib/ws"
 import contracts "odin_test:contracts"
 
-ACP_CLAUDE_VERSION :: "0.108.0"
-ACP_CLAUDE_PACKAGE :: "@agentclientprotocol/claude-agent-acp"
-ACP_CLAUDE_INTEGRITY :: "sha512-Y0HI3CB0DfhpWItCn2RE3xgpen001V2U/bHm3G6ZVKXsElF5N4uYyjYlmgNzZBKcBtZK0JqiE96NMaeVXtgJjw=="
 ACP_INITIALIZE_PARAMS :: `{"protocolVersion":1,"clientInfo":{"name":"heimdall","version":"`+contracts.APP_VERSION+`"},"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false}}`
 acp_adapter_runner: Bridge_Extension_Install_Runner = bridge_process_run_capture_status
 acp_adapter_probe_hook: proc(provider, root, scratch: string) -> (bool, string) = acp_adapter_probe
-acp_adapter_claude_probe_hook: proc(provider: string) -> (string, string) = acp_adapter_claude_probe
+acp_adapter_cli_probe_hook: proc(provider: string) -> (string, string) = acp_adapter_cli_probe
+acp_adapter_binding_hook: proc(provider, profile: string) -> (ACP_Runtime_Binding, bool) = acp_adapter_profile_binding
+acp_adapter_profile_probe_hook: proc(pp: ^Provider_Profile, root, scratch: string) -> (bool, string) = acp_adapter_probe_profile
 
 ACP_Adapter_Status :: struct {
     installed: bool,
@@ -47,26 +46,38 @@ acp_adapter_recipe :: proc(provider: string) -> (Bridge_Catalog_Provider, bool) 
     defer sync.rw_mutex_shared_unlock(&bridge_provider_catalog_mutex)
     if bridge_provider_catalog_snapshot == nil do return {}, false
     for p in bridge_provider_catalog_snapshot.providers {
-        if p.provider == provider && p.state == "active" && provider == "claude" &&
-           p.acp_recipe.adapter_package == ACP_CLAUDE_PACKAGE && p.acp_recipe.adapter_version == ACP_CLAUDE_VERSION &&
-           p.acp_recipe.command == "claude-agent-acp" && p.acp_recipe.protocol_version == 1 &&
-           len(p.acp_recipe.args) == 0 && p.acp_recipe.env["CLAUDE_AGENT_ACP_PROTOCOL"] == "v1" { return p, true }
+        d, known := contracts.acp_provider_descriptor(provider)
+        if known && p.provider == provider && p.state == "active" && contracts.acp_descriptor_recipe_matches(d, p.acp_recipe) { return p, true }
     }
     return {}, false
 }
 
-acp_adapter_root :: proc() -> string {
+acp_adapter_root :: proc(provider: string) -> string {
+    d, known := contracts.acp_provider_descriptor(provider)
+    if !known do return ""
     base := bridge_shell_data_dir(); defer delete(base)
-    return strings.concatenate({base, "/bridge/acp-adapters/claude/", ACP_CLAUDE_VERSION})
+    cli := strings.concatenate({"-cli-", d.cli_version}, context.temp_allocator) if d.cli_version != "" else ""
+    root := strings.concatenate({base, "/bridge/acp-runtimes/", d.provider, "/", d.id, fmt.tprintf("-r%d/", d.revision), d.pkg.version, cli})
+    if acp_provider_legacy_claude(d) && !os.is_dir(root) {
+        old := strings.concatenate({base, "/bridge/acp-adapters/claude/0.108.0"})
+        // Keep the old path and lock inode intact beneath surviving children.
+        if os.is_dir(old) { delete(root); return old }
+        delete(old)
+    }
+    return root
 }
 
-acp_adapter_bin :: proc(root: string) -> string {
-    return strings.concatenate({root, "/node_modules/.bin/claude-agent-acp"})
+acp_adapter_bin :: proc(root: string, provider: string) -> string {
+    d, known := contracts.acp_provider_descriptor(provider)
+    if !known do return ""
+    return strings.concatenate({root, "/node_modules/.bin/", d.command})
 }
 
-acp_adapter_files_valid :: proc(root: string) -> bool {
+acp_adapter_files_valid :: proc(root: string, provider: string) -> bool {
+    d, known := contracts.acp_provider_descriptor(provider)
+    if !known do return false
     context.allocator = context.temp_allocator
-    manifest, me := os.read_entire_file(strings.concatenate({root, "/node_modules/", ACP_CLAUDE_PACKAGE, "/package.json"}), context.temp_allocator)
+    manifest, me := os.read_entire_file(strings.concatenate({root, "/node_modules/", d.pkg.name, "/package.json"}), context.temp_allocator)
     lock, le := os.read_entire_file(strings.concatenate({root, "/package-lock.json"}), context.temp_allocator)
     if me != nil || le != nil do return false
     m, err := json.parse(string(manifest)); if err != nil do return false
@@ -74,37 +85,51 @@ acp_adapter_files_valid :: proc(root: string) -> bool {
     mo, mok := m.(json.Object); lo, lok := l.(json.Object)
     if !mok || !lok do return false
     name, _ := mo["name"].(json.String); version, _ := mo["version"].(json.String)
-    bins, _ := mo["bin"].(json.Object); bin, _ := bins["claude-agent-acp"].(json.String)
+    bins, _ := mo["bin"].(json.Object); bin, _ := bins[d.command].(json.String)
     packages, _ := lo["packages"].(json.Object)
-    entry, _ := packages[strings.concatenate({"node_modules/", ACP_CLAUDE_PACKAGE})].(json.Object)
+    entry, _ := packages[strings.concatenate({"node_modules/", d.pkg.name})].(json.Object)
     lv, _ := entry["version"].(json.String); integrity, _ := entry["integrity"].(json.String)
-    if string(name) != ACP_CLAUDE_PACKAGE || string(version) != ACP_CLAUDE_VERSION || string(lv) != ACP_CLAUDE_VERSION ||
-       string(integrity) != ACP_CLAUDE_INTEGRITY || bin == "" || filepath.is_abs(string(bin)) || strings.contains(string(bin), "..") { return false }
-    executable := acp_adapter_bin(root)
-    expected, _ := filepath.join({root, "node_modules", ACP_CLAUDE_PACKAGE, string(bin)}, context.temp_allocator)
+    if string(name) != d.pkg.name || string(version) != d.pkg.version || string(lv) != d.pkg.version ||
+       string(integrity) != d.pkg.integrity || bin == "" || filepath.is_abs(string(bin)) || strings.contains(string(bin), "..") { return false }
+    if d.launch == .Native {
+        pin, supported := contracts.acp_descriptor_platform_package(d, strings.to_lower(fmt.tprintf("%v", ODIN_OS)), fmt.tprintf("%v", ODIN_ARCH))
+        if !supported do return false
+        native, present := packages[strings.concatenate({"node_modules/", pin.name}, context.temp_allocator)].(json.Object)
+        nv, _ := native["version"].(json.String); ni, _ := native["integrity"].(json.String)
+        if !present || string(nv) != pin.version || string(ni) != pin.integrity do return false
+        native_manifest, ne := os.read_entire_file(strings.concatenate({root, "/node_modules/", pin.name, "/package.json"}, context.temp_allocator), context.temp_allocator)
+        if ne != nil do return false
+        nm, pe := json.parse(string(native_manifest)); if pe != nil do return false
+        no, _ := nm.(json.Object)
+        nn, _ := no["name"].(json.String); nversion, _ := no["version"].(json.String)
+        if string(nn) != pin.name || string(nversion) != pin.version do return false
+    }
+    executable := acp_adapter_bin(root, provider)
+    expected, _ := filepath.join({root, "node_modules", d.pkg.name, string(bin)}, context.temp_allocator)
     if bridge_fs_canonicalize_existing(executable) != bridge_fs_canonicalize_existing(expected) do return false
     return bridge_provider_path_executable(executable)
 }
 
-acp_adapter_node_compatible :: proc(version: string) -> bool {
+acp_adapter_node_compatible :: proc(version: string, minimum: int = 22) -> bool {
     if len(version) > 64 do return false
     parts := strings.split(strings.trim_prefix(strings.trim_space(version), "v"), ".", context.temp_allocator)
     if len(parts) != 3 do return false
     major, ok := strconv.parse_int(parts[0])
     minor, minor_ok := strconv.parse_int(parts[1]); patch, patch_ok := strconv.parse_int(parts[2])
-    return ok && minor_ok && patch_ok && major >= 22 && minor >= 0 && patch >= 0
+    return ok && minor_ok && patch_ok && major >= minimum && minor >= 0 && patch >= 0
 }
 
-acp_adapter_status :: proc(provider: string) -> ACP_Adapter_Status {
+acp_adapter_status :: proc(provider: string, profile: string = "") -> ACP_Adapter_Status {
     context.allocator = context.temp_allocator
     s := ACP_Adapter_Status{state = "missing", checked_at = bridge_provider_probe_time()}
-    if _, ok := acp_adapter_recipe(provider); !ok { s.state = "not_checked"; return s }
+    d, known := contracts.acp_provider_descriptor(provider)
+    if _, ok := acp_adapter_recipe(provider); !known || !ok { s.state = "not_checked"; return s }
     out, diagnostic, _, ran, _ := acp_adapter_runner({"node", "--version"}, 2*time.Second)
     defer { delete(out); delete(diagnostic) }
-    if !ran || !acp_adapter_node_compatible(out) { s.state = "missing_node"; s.error = "Node 22 or newer is required"; return s }
+    if !ran || !acp_adapter_node_compatible(out, d.node_min_major) { s.state = "missing_node"; s.error = "Node 22 or newer is required"; return s }
     s.node_version = strings.clone(strings.trim_space(out), context.temp_allocator)
-    root := acp_adapter_root(); defer delete(root)
-    s.installed = acp_adapter_files_valid(root)
+    root := acp_adapter_root(provider); defer delete(root)
+    s.installed = acp_adapter_files_valid(root, provider)
     lock_path := strings.concatenate({root, ".lock"}, context.temp_allocator)
     if os.exists(lock_path) {
         lock, state := acp_adapter_lock_acquire(lock_path)
@@ -112,24 +137,25 @@ acp_adapter_status :: proc(provider: string) -> ACP_Adapter_Status {
         if state == .Error { s.state = "error"; s.error = "acp_adapter_lock_failed"; return s }
         acp_adapter_lock_release(lock)
     }
-    if s.installed do s.version = ACP_CLAUDE_VERSION
+    if s.installed do s.version = d.pkg.version
     if !s.installed && os.is_dir(root) { s.state = "outdated"; s.error = "Pinned adapter files failed verification" }
     raw, status_err := os.read_entire_file(strings.concatenate({root, ".status.json"}), context.temp_allocator)
     if status_err == nil {
         record: struct{state, error, diagnostic: string}
         if json.unmarshal(raw, &record) == nil && record.state == "error" {
-            claude_error := record.error == "acp_claude_not_found" || record.error == "acp_claude_not_runnable"
+            provider_error := record.error == strings.concatenate({"acp_", d.provider, "_not_found"}, context.temp_allocator) ||
+                record.error == strings.concatenate({"acp_", d.provider, "_not_runnable"}, context.temp_allocator)
             // A failed recheck must override an older successful install marker.
-            if !s.installed || claude_error {
+            if !s.installed || provider_error && profile_effective_id(provider, profile) == provider {
                 s.state = "error"
                 // Persisted status is local input: allowlist codes and messages.
                 s.error = "acp_adapter_install_failed"
+                if provider_error do s.error = record.error
                 switch record.error {
-                case "acp_adapter_directory_failed", "acp_adapter_install_failed", "acp_adapter_integrity_failed", "acp_adapter_probe_failed", "acp_adapter_host_unavailable", "acp_adapter_in_use", "acp_adapter_promote_failed",
-                     "acp_claude_not_found", "acp_claude_not_runnable": s.error = record.error
+                case "acp_adapter_directory_failed", "acp_adapter_install_failed", "acp_adapter_integrity_failed", "acp_adapter_probe_failed", "acp_adapter_host_unavailable", "acp_adapter_in_use", "acp_adapter_promote_failed": s.error = record.error
                 }
-                if record.error == "acp_adapter_probe_failed" || claude_error {
-                    if message := acp_adapter_probe_message(record.diagnostic); message != "" {
+                if record.error == "acp_adapter_probe_failed" || provider_error {
+                    if message := acp_adapter_probe_message(record.diagnostic, provider); message != "" {
                         s.error = strings.concatenate({record.error, ": ", message}, context.temp_allocator)
                     }
                 }
@@ -138,14 +164,17 @@ acp_adapter_status :: proc(provider: string) -> ACP_Adapter_Status {
         }
     }
     if !s.installed do return s
-    marker, err := os.read_entire_file(strings.concatenate({root, "/heimdall-probe-v1.json"}, context.temp_allocator), context.temp_allocator)
-    if err == nil && string(marker) == ACP_CLAUDE_INTEGRITY { s.state = "ready" } else { s.state = "error"; s.error = "ACP initialize probe is required" }
+    binding, bound := acp_adapter_binding_hook(provider, profile)
+    if bound && (acp_adapter_marker_matches(root, binding) || acp_adapter_upgrade_legacy_marker(root, binding)) {
+        s.state = "ready"
+    } else { s.state = "error"; s.error = "ACP initialize probe is required for the selected profile" }
     return s
 }
 
-acp_adapter_status_json :: proc(provider: string, override: string = "") -> string {
+acp_adapter_status_json :: proc(provider: string, override: string = "", profile: string = "") -> string {
     if _, ok := acp_adapter_recipe(provider); !ok do return strings.clone("null")
-    s := acp_adapter_status(provider)
+    d, _ := contracts.acp_provider_descriptor(provider)
+    s := acp_adapter_status(provider, profile)
     if override != "" do s.state = override
     nullable :: proc(value: string) -> json.Value { if value == "" do return json.Null(nil); return json.String(value) }
     raw, _ := json.marshal(struct {
@@ -153,7 +182,9 @@ acp_adapter_status_json :: proc(provider: string, override: string = "") -> stri
         version, node_version: json.Value,
         state: string,
         error, checked_at: json.Value,
-    }{s.installed, nullable(s.version), nullable(s.node_version), s.state, nullable(s.error), nullable(s.checked_at)})
+        provider, runtime_kind, profile: string,
+    }{s.installed, nullable(s.version), nullable(s.node_version), s.state, nullable(s.error), nullable(s.checked_at),
+        provider, "adapter" if d.launch == .Adapter else "native", profile_effective_id(provider, profile)})
     return string(raw)
 }
 
@@ -194,13 +225,15 @@ acp_adapter_probe_reason :: proc(diagnostic: string, fallback: string) -> string
     return fallback
 }
 
-acp_adapter_probe_message :: proc(reason: string) -> string {
+acp_adapter_probe_message :: proc(reason: string, provider: string = "claude") -> string {
+    d, known := contracts.acp_provider_descriptor(provider)
+    if !known do return ""
+    if reason == "profile_unavailable" do return fmt.tprintf("The canonical %s provider profile is unavailable", d.display_name)
+    if reason == strings.concatenate({provider, "_missing"}, context.temp_allocator) do return fmt.tprintf("No %s executable resolves in the canonical provider profile", d.display_name)
+    if reason == strings.concatenate({provider, "_version_timeout"}, context.temp_allocator) do return fmt.tprintf("%s --version did not finish before the deadline", d.display_name)
+    if reason == strings.concatenate({provider, "_version_spawn_failed"}, context.temp_allocator) do return fmt.tprintf("%s --version could not be executed", d.display_name)
+    if reason == strings.concatenate({provider, "_version_failed"}, context.temp_allocator) do return fmt.tprintf("%s --version exited with a non-zero status", d.display_name)
     switch reason {
-    case "profile_unavailable": return "The canonical Claude provider profile is unavailable"
-    case "claude_missing": return "No Claude executable resolves in the canonical provider profile"
-    case "claude_version_timeout": return "Claude --version did not finish before the deadline"
-    case "claude_version_spawn_failed": return "Claude --version could not be executed"
-    case "claude_version_failed": return "Claude --version exited with a non-zero status"
     case "host_unavailable": return "The pipe daemon is unavailable"
     case "spawn_failed": return "The adapter process could not be spawned"
     case "generation_missing": return "The spawned adapter generation could not be resolved"
@@ -211,7 +244,7 @@ acp_adapter_probe_message :: proc(reason: string) -> string {
     case "node_module_missing": return "Node could not load an adapter module"
     case "executable_or_file_missing": return "The adapter could not find a required executable or file"
     case "executable_permission_denied": return "The adapter could not execute a required file"
-    case "unsupported_dynamic_executable": return "Could not start dynamically linked executable; configure the Claude provider binary for this host"
+    case "unsupported_dynamic_executable": return fmt.tprintf("Could not start dynamically linked executable; configure the %s provider binary for this host", d.display_name)
     case "pipe_closed": return "The adapter pipe closed during initialize"
     }
     return ""
@@ -231,24 +264,30 @@ acp_adapter_probe_env :: proc(pp: ^Provider_Profile) -> ([][2]string, bool) {
 
 // Use the same resolution and environment as managed ACP launches, with no
 // Heimdall credentials. Only allowlisted excerpts of the bounded output escape.
-acp_adapter_claude_version :: proc(pp: ^Provider_Profile, timeout: time.Duration = 3*time.Second) -> (version, reason, diagnostic: string) {
+acp_provider_cli_version :: proc(pp: ^Provider_Profile, timeout: time.Duration = 3*time.Second) -> (version, reason, diagnostic: string) {
     context.allocator = context.temp_allocator
+    d, known := contracts.acp_provider_descriptor(pp.provider)
+    if !known do return "", "unsupported_acp_adapter", "profile_unavailable"
     pairs, env_ok := acp_adapter_probe_env(pp)
-    if !env_ok do return "", "acp_claude_not_found", "claude_missing"
+    if !env_ok do return "", strings.concatenate({"acp_", d.provider, "_not_found"}), strings.concatenate({d.provider, "_missing"})
     env := make([dynamic]string)
     binary := ""
     for pair in pairs {
         append(&env, strings.concatenate({pair[0], "=", pair[1]}))
-        if pair[0] == "CLAUDE_CODE_EXECUTABLE" do binary = pair[1]
+        if pair[0] == d.executable_env do binary = pair[1]
+    }
+    if d.launch == .Native {
+        command := pp.config.binary_path if pp.config.binary_path != "" else d.cli_command
+        binary = profile_resolve_binary(command, env[:])
     }
     out, stderr, exit_code, ran, timed_out := bridge_process_run_capture_status_env({binary, "--version"}, min(timeout, 3*time.Second), env[:])
     defer { delete(out); delete(stderr) }
     if !ran || timed_out || exit_code != 0 {
-        fallback := "claude_version_failed"
-        if exit_code < 0 do fallback = "claude_version_spawn_failed"
-        if timed_out do fallback = "claude_version_timeout"
+        fallback := strings.concatenate({d.provider, "_version_failed"})
+        if exit_code < 0 do fallback = strings.concatenate({d.provider, "_version_spawn_failed"})
+        if timed_out do fallback = strings.concatenate({d.provider, "_version_timeout"})
         excerpt := strings.concatenate({stderr[:min(len(stderr), 512)], out[:min(len(out), 512)]})
-        return "", "acp_claude_not_runnable", acp_adapter_probe_reason(excerpt, fallback)
+        return "", strings.concatenate({"acp_", d.provider, "_not_runnable"}), acp_adapter_probe_reason(excerpt, fallback)
     }
     // Log only a numeric version prefix, never arbitrary child output.
     text := strings.trim_space(out)
@@ -259,14 +298,14 @@ acp_adapter_claude_version :: proc(pp: ^Provider_Profile, timeout: time.Duration
     return strings.clone(text), "", ""
 }
 
-acp_adapter_claude_probe :: proc(provider: string) -> (reason, diagnostic: string) {
+acp_adapter_cli_probe :: proc(provider: string) -> (reason, diagnostic: string) {
     context.allocator = context.temp_allocator
     pp, perr := profile_lookup(provider, "")
-    if perr != .None do return "acp_claude_not_found", "profile_unavailable"
+    if perr != .None do return strings.concatenate({"acp_", provider, "_not_found"}), "profile_unavailable"
     version: string
-    version, reason, diagnostic = acp_adapter_claude_version(&pp)
+    version, reason, diagnostic = acp_provider_cli_version(&pp)
     // Adapter version fields describe the pinned npm package, not Claude.
-    if reason == "" && version != "" do fmt.println("ACP probe Claude version:", version)
+    if reason == "" && version != "" do fmt.println("ACP probe CLI version:", provider, version)
     return
 }
 
@@ -276,11 +315,27 @@ acp_adapter_probe :: proc(provider, root, scratch: string) -> (bool, string) {
     context.allocator = context.temp_allocator
     pp, perr := profile_lookup(provider, "")
     if perr != .None do return false, "profile_unavailable"
-    env, env_ok := acp_adapter_probe_env(&pp)
-    if !env_ok do return false, "claude_missing"
+    return acp_adapter_profile_probe_hook(&pp, root, scratch)
+}
+
+acp_adapter_probe_profile :: proc(pp: ^Provider_Profile, root, scratch: string) -> (bool, string) {
+    context.allocator = context.temp_allocator
+    d, known := contracts.acp_provider_descriptor(pp.provider)
+    if !known do return false, "profile_unavailable"
+    env, env_ok := acp_adapter_probe_env(pp)
+    if !env_ok do return false, strings.concatenate({d.provider, "_missing"})
+    resolved := ""
+    if d.launch == .Native {
+        child_env := make([dynamic]string)
+        for pair in env do append(&child_env, strings.concatenate({pair[0], "=", pair[1]}, context.temp_allocator))
+        command := pp.config.binary_path if pp.config.binary_path != "" else d.cli_command
+        resolved = profile_resolve_binary(command, child_env[:])
+    }
+    argv, built := acp_provider_launch_argv(d, root, resolved)
+    if !built do return false, "spawn_failed"
     socket, ok := bridge_pty_host_ensure_daemon(); if !ok do return false, "host_unavailable"
     id := fmt.tprintf("acp_probe_%d", time.tick_now()._nsec)
-    reply, received := pty_host_spawn_pipe(socket, {instance = id, argv = {acp_adapter_bin(root)}, cwd = scratch, has_cwd = true, env = env})
+    reply, received := pty_host_spawn_pipe(socket, {instance = id, argv = argv, cwd = scratch, has_cwd = true, env = env})
     defer pty_host_reply_delete(reply)
     if !received || reply.kind != .Spawned do return false, "spawn_failed"
     // Close every spawned probe, including failures before the RPC client opens.
@@ -329,10 +384,11 @@ acp_adapter_probe :: proc(provider, root, scratch: string) -> (bool, string) {
 }
 
 acp_adapter_install :: proc(provider, etag, version: string) -> (ok: bool, reason: string) {
-    if _, valid := acp_adapter_recipe(provider); !valid || version != ACP_CLAUDE_VERSION do return false, "unsupported_acp_adapter"
+    d, known := contracts.acp_provider_descriptor(provider)
+    if _, valid := acp_adapter_recipe(provider); !known || !valid || version != d.pkg.version do return false, "unsupported_acp_adapter"
     current := bridge_provider_catalog_current_etag(); defer delete(current)
     if etag != current do return false, "provider_catalog_stale"
-    root := acp_adapter_root(); defer delete(root)
+    root := acp_adapter_root(provider); defer delete(root)
     before := acp_adapter_status(provider)
     if before.state == "missing_node" do return false, "acp_adapter_missing_node"
     parent := filepath.dir(root)
@@ -348,25 +404,37 @@ acp_adapter_install :: proc(provider, etag, version: string) -> (ok: bool, reaso
         bridge_retry_atomic_write(strings.concatenate({root, ".status.json"}, context.temp_allocator), raw)
     }
     if !acp_adapter_cleanup_stages(root) do return false, "acp_adapter_directory_failed"
-    reason, diagnostic = acp_adapter_claude_probe_hook(provider)
+    reason, diagnostic = acp_adapter_cli_probe_hook(provider)
     if reason != "" do return false, reason
+    binding, bound := acp_adapter_binding_hook(provider, provider)
+    if !bound do return false, "acp_adapter_probe_failed"
     if before.installed {
-        marker, err := os.read_entire_file(strings.concatenate({root, "/heimdall-probe-v1.json"}, context.temp_allocator), context.temp_allocator)
-        if err == nil && string(marker) == ACP_CLAUDE_INTEGRITY do return true, ""
+        if acp_adapter_marker_matches(root, binding) do return true, ""
+        scratch := strings.concatenate({root, fmt.tprintf(".stage-probe-%d", time.tick_now()._nsec)}, context.temp_allocator)
+        if bridge_make_directory_all(scratch) != nil do return false, "acp_adapter_directory_failed"
+        defer os.remove_all(scratch)
+        probed: bool
+        probed, diagnostic = acp_adapter_probe_hook(provider, root, scratch)
+        latest, current := acp_adapter_binding_hook(provider, provider)
+        if !probed || !current || !acp_provider_binding_equal(binding, latest) do return false, "acp_adapter_probe_failed"
+        if !acp_adapter_marker_write(root, binding) do return false, "acp_adapter_directory_failed"
+        return true, ""
     }
     stage := strings.concatenate({root, fmt.tprintf(".stage-%d", time.tick_now()._nsec)}); defer delete(stage)
     if bridge_make_directory_all(stage) != nil do return false, "acp_adapter_directory_failed"
     defer os.remove_all(stage)
-    out, npm_diagnostic, _, installed, _ := acp_adapter_runner({"npm", "install", "--prefix", stage, "--save-exact", "--no-audit", "--no-fund", ACP_CLAUDE_PACKAGE+"@"+ACP_CLAUDE_VERSION}, 100*time.Second)
+    out, npm_diagnostic, _, installed, _ := acp_adapter_runner({"npm", "install", "--prefix", stage, "--save-exact", "--ignore-scripts", "--no-audit", "--no-fund", strings.concatenate({d.pkg.name, "@", d.pkg.version}, context.temp_allocator)}, 100*time.Second)
     delete(out); delete(npm_diagnostic) // Never expose npm diagnostics/environment.
     if !installed do return false, "acp_adapter_install_failed"
-    if !acp_adapter_files_valid(stage) do return false, "acp_adapter_integrity_failed"
+    if !acp_adapter_files_valid(stage, provider) do return false, "acp_adapter_integrity_failed"
     scratch := strings.concatenate({stage, "/probe"}, context.temp_allocator)
     if bridge_make_directory_all(scratch) != nil do return false, "acp_adapter_directory_failed"
     probed: bool
     probed, diagnostic = acp_adapter_probe_hook(provider, stage, scratch)
     if !probed do return false, "acp_adapter_probe_failed"
-    if !bridge_retry_atomic_write(strings.concatenate({stage, "/heimdall-probe-v1.json"}, context.temp_allocator), transmute([]byte)string(ACP_CLAUDE_INTEGRITY)) do return false, "acp_adapter_directory_failed"
+    latest, still_bound := acp_adapter_binding_hook(provider, provider)
+    if !still_bound || !acp_provider_binding_equal(binding, latest) do return false, "acp_adapter_probe_failed"
+    if !acp_adapter_marker_write(stage, binding) do return false, "acp_adapter_directory_failed"
     // An outdated/corrupt tree can be repaired, but never moved beneath a live
     // child. All supported ACP children currently use this single pinned tree.
     backup := strings.concatenate({stage, ".previous"}, context.temp_allocator)

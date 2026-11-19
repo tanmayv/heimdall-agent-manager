@@ -10,7 +10,7 @@ test_catalog_transport_mirror_accepts_pin_and_rejects_bad_recipes :: proc(t:^tes
  context.allocator=context.temp_allocator
  defer free_all(context.temp_allocator)
  provider:Bridge_Catalog_Provider
- raw:=`{"transports":["pty","acp"],"default_transport":"pty","acp_recipe":{"command":"claude-agent-acp","args":[],"env":{"CLAUDE_AGENT_ACP_PROTOCOL":"v1"},"protocol_version":1,"adapter_package":"@agentclientprotocol/claude-agent-acp","adapter_version":"0.108.0"}}`
+ raw:=`{"provider":"claude","transports":["pty","acp"],"default_transport":"pty","acp_recipe":{"command":"claude-agent-acp","args":[],"env":{"CLAUDE_AGENT_ACP_PROTOCOL":"v1"},"protocol_version":1,"adapter_package":"@agentclientprotocol/claude-agent-acp","adapter_version":"0.108.0"}}`
  testing.expect(t,json.unmarshal_string(raw,&provider)==nil)
  testing.expect(t,bridge_catalog_transport_valid(provider))
  catalog := strings.concatenate({`{"providers":[`,raw,`]}`})

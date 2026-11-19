@@ -8,8 +8,9 @@ import "core:sync"
 import "core:thread"
 import "core:time"
 import vm "core:mem/virtual"
+import contracts "odin_test:contracts"
 
-ACP_Hub_Intent :: struct { status, epoch, transport: string, run_count: int }
+ACP_Hub_Intent :: struct { status, epoch, transport: string, run_count: int, provider, profile: string }
 
 // Process-boundary seams keep recovery orchestration testable without a real
 // Claude process. Journal, token rotation, shims and dispatcher stay real.
@@ -109,15 +110,15 @@ acp_runtime_recovery_worker :: proc(data: rawptr) {
     acp_runtime_lost_status(job.instance, closed)
 }
 
-acp_runtime_lost_status :: proc(instance: string, closed: bool) {
+acp_runtime_lost_status :: proc(instance: string, closed: bool, reason: string = "acp_pipe_lost") {
     if closed do bridge_runtime_set_pty_process_alive(instance, false)
     bridge_runtime_set_status(instance, "stopped" if closed else "failed", "idle")
     sync.mutex_lock(&bridge_runtime_mutex)
-    for &inst in bridge_runtime_instances do if inst.agent_instance_id == instance do bridge_runtime_replace_acp_error(&inst, "acp_pipe_lost")
+    for &inst in bridge_runtime_instances do if inst.agent_instance_id == instance do bridge_runtime_replace_acp_error(&inst, reason)
     sync.mutex_unlock(&bridge_runtime_mutex)
 }
 
-acp_runtime_retry_launch :: proc(instance, epoch: string, run_count: int) -> (handled, ok: bool) {
+acp_runtime_retry_launch :: proc(instance, epoch: string, run_count: int, provider: string = "", profile: string = "") -> (handled, ok: bool) {
     if !acp_state_component_ok(epoch) do return true, false
     current_epoch := bridge_agent_instance_launch_epoch(instance); defer delete(current_epoch)
     snapshot, exists := bridge_runtime_instance_snapshot(instance)
@@ -127,6 +128,11 @@ acp_runtime_retry_launch :: proc(instance, epoch: string, run_count: int) -> (ha
     if acp_runtime_owned(instance) {
         launch, exists := bridge_runtime_get_launch(instance)
         if exists && launch.launch_epoch == epoch {
+            sync.mutex_lock(&acp_runtime_mu)
+            owner := acp_runtimes[instance]
+            same := owner != nil && owner.provider == provider && owner.profile == profile_effective_id(provider, profile)
+            sync.mutex_unlock(&acp_runtime_mu)
+            if !same do return true, false
             snap, present := bridge_runtime_instance_snapshot(instance)
             return true, present && snap.stopped_intent_unix_ms == 0 && snap.runtime_status != "stopped" && snap.runtime_status != "stopping" && snap.runtime_status != "failed"
         }
@@ -139,7 +145,7 @@ acp_runtime_retry_launch :: proc(instance, epoch: string, run_count: int) -> (ha
     reply, listed := acp_runtime_io.request(socket, frame, 2000); defer pty_host_reply_delete(reply)
     if !listed || reply.kind != .Pipe_List do return true, false
     intents := make(map[string]ACP_Hub_Intent, allocator = context.temp_allocator)
-    intents[instance] = {"starting", epoch, "acp", run_count}
+    intents[instance] = {status = "starting", epoch = epoch, transport = "acp", run_count = run_count, provider = provider, profile = profile_effective_id(provider, profile)}
     // Launch caller already holds this instance's lifecycle gate.
     acp_runtime_reconcile(socket, reply.pipes, intents, lifecycle_held = true)
     snap, present := bridge_runtime_instance_snapshot(instance)
@@ -205,11 +211,14 @@ acp_runtime_durable_valid :: proc(d: ^ACP_Runtime_Durable) -> bool {
 
 acp_runtime_from_state :: proc(s: ^ACP_State, rec: Bridge_Local_Agent_Token_Record) -> (^ACP_Runtime, bool) {
     context.allocator = runtime.heap_allocator()
-    if s.bridge != bridge_config.daemon_id || s.adapter_version != ACP_CLAUDE_VERSION || s.provider != "claude" || s.run_dir == "" || s.pipe_generation == "" ||
-       (s.selected_mode != "default" && s.selected_mode != "bypassPermissions") { return nil, false }
+    d, known := contracts.acp_provider_descriptor(s.provider)
+    if !known || s.schema_version != 3 || s.runtime_binding_version != 1 || !acp_provider_binding_valid(s.binding) || s.binding.provider != s.provider || s.binding.profile != s.profile ||
+       s.bridge != bridge_config.daemon_id || s.adapter_version != d.pkg.version || s.run_dir == "" || s.pipe_generation == "" ||
+       (s.selected_mode != d.ask_mode && s.selected_mode != d.yolo_mode) { return nil, false }
     expected := bridge_runtime_default_run_dir(s.instance); defer delete(expected)
     if expected != s.run_dir do return nil, false
     r := acp_runtime_new(s.instance, s.launch_epoch, s.run_dir, s.provider, s.profile, s.catalog_etag, s.selected_model, s.selected_mode, rec)
+    acp_provider_binding_delete(&r.binding); r.binding = acp_provider_binding_copy(s.binding)
     if json.unmarshal_string(s.runtime_json, &r.d) != nil || !acp_runtime_durable_valid(&r.d) ||
        (r.d.ready && (!s.initialized || s.sessionId == "")) || (s.sessionId != "" && !s.initialized) {
         acp_runtime_destroy(r); return nil, false
@@ -234,7 +243,7 @@ acp_runtime_from_state :: proc(s: ^ACP_State, rec: Bridge_Local_Agent_Token_Reco
 acp_runtime_publish_restored :: proc(r: ^ACP_Runtime) {
     bridge_runtime_record_launch({agent_instance_id = strings.clone(r.instance), run_dir = strings.clone(r.run_dir), effective_transport = "acp",
         launch_epoch = strings.clone(r.epoch), acp_session_id = strings.clone(r.session), acp_load_session = r.load_session,
-        pipe_generation = strings.clone(r.generation), adapter_version = ACP_CLAUDE_VERSION})
+        pipe_generation = strings.clone(r.generation), adapter_version = r.descriptor.pkg.version})
     bridge_runtime_set_status(r.instance, "starting", "active")
     sync.mutex_lock(&bridge_runtime_mutex)
     for &inst in bridge_runtime_instances do if inst.agent_instance_id == r.instance do inst.runtime_transport = "acp"
@@ -252,6 +261,10 @@ acp_runtime_publish_restored :: proc(r: ^ACP_Runtime) {
 
 acp_runtime_recover_lost :: proc(r: ^ACP_Runtime, socket: string) -> bool {
     if r.session == "" || !r.load_session || r.d.stopped || acp_runtime_terminal_error(&r.d) || !acp_runtime_current(r) do return false
+    pp, perr := profile_lookup(r.provider, r.profile); if perr != .None do return false
+    binding, bound := acp_provider_profile_binding(&pp)
+    binding.bootstrap_filename = r.binding.bootstrap_filename
+    if !bound || !acp_provider_binding_equal(binding, r.binding) do return false
     if !acp_runtime_close_child(r) do return false
     acp_inbox_interrupt_pending(r)
     r.inbox_started = false
@@ -271,7 +284,6 @@ acp_runtime_recover_lost :: proc(r: ^ACP_Runtime, socket: string) -> bool {
     r.d.exit_pending = false
     acp_runtime_replace(&r.d.error, ""); acp_runtime_replace(&r.d.phase, "initialize")
     r.initialized = false; r.recovering = true
-    pp, perr := profile_lookup(r.provider, r.profile); if perr != .None do return false
     req, built := acp_runtime_build_spawn(r, endpoint, issue.plaintext_token, &pp); if !built do return false
     bridge_startup_begin(issue.plaintext_token)
     bridge_startup_set_expectation(r.instance, issue.plaintext_token, false)
@@ -355,7 +367,22 @@ acp_runtime_reconcile :: proc(socket: string, pipes: []Pty_Host_Pipe_Info, inten
         }
         separator := strings.index(rec.instance_token, "~")
         epoch_matches := separator >= 0 && rec.instance_token[separator+1:] == intent.epoch
-        valid := path_ok && readable && saved.instance == id && saved.launch_epoch == intent.epoch && rec.run_count == intent.run_count && epoch_matches
+        valid := path_ok && readable && saved.instance == id && saved.launch_epoch == intent.epoch && rec.run_count == intent.run_count && epoch_matches &&
+            saved.provider == intent.provider && saved.profile == profile_effective_id(intent.provider, intent.profile)
+        restart_reason := ""
+        legacy := raw_err == nil && (!readable || saved.runtime_binding_version == 0)
+        if legacy {
+            restart_reason = "acp_restart_required"
+            if valid {
+                migrated, migration_reason := acp_runtime_upgrade_legacy_state(&saved, intent, state_path, rec)
+                if migrated {
+                    delete(raw)
+                    raw, raw_err = os.read_entire_file(state_path, context.allocator)
+                    valid = raw_err == nil
+                    if valid do restart_reason = ""
+                } else { valid = false; restart_reason = migration_reason }
+            }
+        }
         if !acp_runtime_owned(id) {
             r: ^ACP_Runtime; built := false
             if valid do r, built = acp_runtime_from_state(&saved, rec)
@@ -397,12 +424,12 @@ acp_runtime_reconcile :: proc(socket: string, pipes: []Pty_Host_Pipe_Info, inten
             } else {
                 if r != nil do acp_runtime_destroy(r)
                 closed := pipe.instance == "" || matching_child && acp_runtime_close_child(&ACP_Runtime{instance = id, generation = pipe.generation})
-                acp_runtime_lost_status(id, closed)
+                acp_runtime_lost_status(id, closed, restart_reason if restart_reason != "" else "acp_pipe_lost")
             }
             snap, exists := bridge_runtime_instance_snapshot(id)
             if exists && snap.runtime_status == "stopped" {
                 sync.mutex_lock(&bridge_runtime_mutex)
-                for &inst in bridge_runtime_instances do if inst.agent_instance_id == id do bridge_runtime_replace_acp_error(&inst, "acp_pipe_lost")
+                for &inst in bridge_runtime_instances do if inst.agent_instance_id == id do bridge_runtime_replace_acp_error(&inst, restart_reason if restart_reason != "" else "acp_pipe_lost")
                 sync.mutex_unlock(&bridge_runtime_mutex)
             }
         } else {

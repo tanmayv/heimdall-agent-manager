@@ -442,7 +442,7 @@ bridge_catalog_transport_valid :: proc(provider: Bridge_Catalog_Provider) -> boo
  if !found do return false
  if has_acp {
   encoded,err:=json.marshal(provider.acp_recipe,allocator=context.temp_allocator)
-  if err!=nil || !contracts.acp_recipe_valid(string(encoded)) do return false
+  if err!=nil || !contracts.acp_provider_recipe_valid(provider.provider, string(encoded)) do return false
  }
  return true
 }
@@ -463,7 +463,12 @@ bridge_catalog_transport_shape_valid :: proc(raw:string)->bool {
    if !lok || len(list)<1 || len(list)>2 do return false
    for transport in list {
     if name,ok:=transport.(json.String); ok && name=="acp" {
-     if !contracts.acp_recipe_value_valid(row["acp_recipe"]) do return false
+     name, _ := row["provider"].(json.String)
+     d, known := contracts.acp_provider_descriptor(string(name))
+     if !known || !contracts.acp_recipe_value_valid(row["acp_recipe"]) do return false
+     recipe, _ := row["acp_recipe"].(json.Object)
+     command, _ := recipe["command"].(json.String)
+     if string(command) != d.command do return false
     }
    }
   }

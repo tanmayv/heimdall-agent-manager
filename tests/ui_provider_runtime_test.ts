@@ -1,11 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import React, { act, useState } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { AcpAuthInstructions } from '../src/ui/components/chat/AcpAuthInstructions.tsx';
 import { JSDOM } from 'jsdom';
 import { makeVaultStore } from './helpers/vaultEndpointHarness.ts';
 
 const { providerSetupApi } = await import('../src/ui/components/providers/providerSetupApi.ts');
-const { normalizeProviderRuntime, acpDisabledReason } = await import('../src/ui/components/providers/providerRuntime.ts');
+const { normalizeProviderRuntime, acpDisabledReason, acpAdapterSummary } = await import('../src/ui/components/providers/providerRuntime.ts');
 const { default: ProviderRuntimeControl, ACP_INSTALL_WAIT_MS } = await import('../src/ui/components/providers/ProviderRuntimeControl.tsx');
 const { heimdallApi } = await import('../src/ui/api/heimdallApi.ts');
 
@@ -25,6 +27,26 @@ test('runtime normalization is PTY-only for old/invalid fields and preserves the
   assert.deepEqual(normalizeProviderRuntime(row()).acp_adapter, adapter);
   assert.match(acpDisabledReason(false, adapter as any), /Update this bridge/);
   assert.match(acpDisabledReason(true, { ...adapter, state: 'missing_node' } as any), /Node 22/);
+});
+
+test('native runtime status keeps its provider identity and uses native labels', () => {
+  const native = normalizeProviderRuntime({ acp_adapter: { ...adapter, provider: 'copilot', runtime_kind: 'native' } }).acp_adapter;
+  assert.equal(native?.provider, 'copilot');
+  assert.equal(native?.runtime_kind, 'native');
+  assert.match(acpAdapterSummary(native), /^ACP native runtime:/);
+  assert.match(acpDisabledReason(true, { ...native!, state: 'installing' }), /runtime installation/);
+  assert.equal(normalizeProviderRuntime({ acp_adapter: { ...adapter, runtime_kind: 'unknown' } }).acp_adapter?.runtime_kind, undefined);
+});
+
+test('ACP auth renders descriptor guidance and selected profile without a fixed provider command', () => {
+  const markup = renderToStaticMarkup(React.createElement(AcpAuthInstructions, {
+    profile: 'work', guidance: 'Run copilot login using profile work, then restart this instance.',
+  }));
+  assert.match(markup, /copilot login using profile work/);
+  assert.doesNotMatch(markup, /claude/);
+  const fallback = renderToStaticMarkup(React.createElement(AcpAuthInstructions, { profile: 'work' }));
+  assert.match(fallback, /profile <code>work/);
+  assert.doesNotMatch(fallback, /claude/);
 });
 
 test('transport and install APIs use canonical provider scope and keep profile enablement separate', async () => {
@@ -226,7 +248,7 @@ test('startup and unknown blockers never offer permission decisions', async () =
       const item: any = { details: { blocker_kind: kind, input: { reason: 'acp_auth_required' } }, action_refs: { blocker_id: 'auth' } };
       const html = renderToStaticMarkup(React.createElement(Provider, { store }, React.createElement(AgentBlockerActions, { item })));
       assert.doesNotMatch(html, /Allow|Deny|login-open|login-retry|login-cancel/);
-      if (kind === 'startup') assert.match(renderToStaticMarkup(React.createElement(AgentBlockerBody, { item })), /claude \/login.*bridge host.*Restart agent/);
+      if (kind === 'startup') assert.match(renderToStaticMarkup(React.createElement(AgentBlockerBody, { item })), /Authenticate this provider.*bridge host.*Restart agent/);
     }
   } finally { store.dispatch(heimdallApi.util.resetApiState()); }
 });

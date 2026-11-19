@@ -98,7 +98,7 @@ function StructuredAgentPane({ instance, agentInstanceId, isExpanded, runtimeSta
     className={`${isExpanded ? 'flex' : 'hidden'} min-w-0 flex-col gap-3 overflow-auto bg-surface p-4 ${fillPane ? 'h-full flex-1' : 'rounded-xl'} ${className}`}>
     <p className="text-sm font-medium text-primary">Structured runtime — conversation and tools appear in chat</p>
     <p role="status" className="break-words text-xs text-muted">{acpAdapterSummary(provider?.acp_adapter || null)}</p>
-    {authRequired ? <AcpAuthInstructions profile={instance?.provider_profile || instance?.provider} /> : startup.map((b) => <p key={b.blocker_id} role="status" className="text-sm text-warning">{b.summary}</p>)}
+    {authRequired ? <AcpAuthInstructions profile={instance?.provider_profile || instance?.provider} guidance={startup.find((b) => b.input.reason === 'acp_auth_required')?.summary} /> : startup.map((b) => <p key={b.blocker_id} role="status" className="text-sm text-warning">{b.summary}</p>)}
     <AcpPermissionBlockers agentInstanceId={agentInstanceId || ''} visible={isExpanded} runtimeStatus={runtimeStatus || instance?.runtime_status || ''} />
     <button type="button" data-debug-id={`agent-acp-interrupt-${agentInstanceId}`} disabled={!canInterrupt}
       onClick={() => void interrupt()} title="Interrupt the current response (Esc or Ctrl+C while this pane is focused)"

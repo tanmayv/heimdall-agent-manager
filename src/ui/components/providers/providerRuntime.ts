@@ -1,6 +1,9 @@
 /** Mirrors the provider transport/status contract; old bridges remain PTY-only. */
 export type RuntimeTransport = 'pty' | 'acp';
 export interface AcpAdapterStatus {
+  provider?: string;
+  profile?: string;
+  runtime_kind?: 'adapter' | 'native';
   installed: boolean;
   version: string | null;
   node_version: string | null;
@@ -44,6 +47,9 @@ export function normalizeProviderRuntime(raw: any): ProviderRuntimeFields {
       version: textOrNull(adapter.version), node_version: textOrNull(adapter.node_version),
       state: adapterStates.has(adapter.state) ? adapter.state : 'not_checked',
       error: textOrNull(adapter.error), checked_at: textOrNull(adapter.checked_at),
+      ...(typeof adapter.provider === 'string' ? { provider: adapter.provider } : {}),
+      ...(typeof adapter.profile === 'string' ? { profile: adapter.profile } : {}),
+      ...(adapter.runtime_kind === 'adapter' || adapter.runtime_kind === 'native' ? { runtime_kind: adapter.runtime_kind } : {}),
     } : null,
   };
 }
@@ -52,13 +58,15 @@ export function latestAcpInstall(commands: ProviderSetupCommand[] | undefined, p
   return [...(commands || [])].reverse().find((c): c is AcpInstallCommand => c.kind === 'install_acp_adapter' && c.provider === provider);
 }
 export function acpDisabledReason(supported: boolean | undefined, adapter: AcpAdapterStatus | null): string {
+  const runtime = adapter?.runtime_kind === 'native' ? 'runtime' : 'adapter';
   if (!supported) return 'Update this bridge and its PTY host to enable ACP runtime support, then scan providers.';
   if (adapter?.state === 'missing_node') return 'Install Node 22 or newer on the bridge host, then scan providers.';
-  if (adapter?.state === 'installing') return 'Wait for adapter installation to finish.';
-  if (adapter?.state === 'error') return adapter.error || 'The ACP adapter check failed. Check status or install the adapter again.';
+  if (adapter?.state === 'installing') return `Wait for ${runtime} installation to finish.`;
+  if (adapter?.state === 'error') return adapter.error || `The ACP ${runtime} check failed. Check status or install the ${runtime} again.`;
   return '';
 }
 export function acpAdapterSummary(adapter: AcpAdapterStatus | null): string {
   const state = adapter?.state.replaceAll('_', ' ') || 'not checked';
-  return `ACP adapter: ${state} · Version: ${adapter?.version || 'unknown'} · Node: ${adapter?.node_version || 'unknown'}`;
+  const runtime = adapter?.runtime_kind === 'native' ? 'native runtime' : 'adapter';
+  return `ACP ${runtime}: ${state} · Version: ${adapter?.version || 'unknown'} · Node: ${adapter?.node_version || 'unknown'}`;
 }

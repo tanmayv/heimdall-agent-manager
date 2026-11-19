@@ -23,6 +23,8 @@ ACP_State :: struct {
     run_dir: string,
     catalog_etag: string,
     adapter_version: string,
+    binding: ACP_Runtime_Binding,
+    runtime_binding_version: int,
     pipe_generation: string,
     initialized: bool,
     loadSession: bool,
@@ -79,7 +81,8 @@ acp_state_path :: proc(data_dir, instance, epoch: string) -> (string, bool) {
 }
 
 acp_state_write :: proc(path: string, state: ^ACP_State) -> bool {
-    if state.schema_version != 1 || state.effective_transport != "acp" do return false
+    if (state.schema_version != 1 && state.schema_version != 3) || state.effective_transport != "acp" do return false
+    if state.schema_version == 3 && (state.runtime_binding_version != 1 || !acp_provider_binding_valid(state.binding)) do return false
     // The existing helper uses exclusive 0600 staging, file fsync, rename and
     // parent fsync (retry_journal.odin). Restrict every ACP ancestor as well.
     dir := filepath.dir(path)
@@ -136,9 +139,10 @@ acp_state_decode :: proc(raw: string) -> (state: ACP_State, ok: bool) {
         }
     }
     if !acp_rpc_json(raw) || json.unmarshal(transmute([]byte)raw, &state, spec = .JSON) != nil do return state, false
-    if state.schema_version != 1 || state.effective_transport != "acp" ||
+    if (state.schema_version != 1 && state.schema_version != 3) || state.effective_transport != "acp" ||
        !acp_state_component_ok(state.instance) || !acp_state_component_ok(state.launch_epoch) ||
        state.next_rpc_id == 0 || state.next_delivery_id == 0 { return state, false }
+    if state.schema_version == 3 && (state.runtime_binding_version != 1 || !acp_provider_binding_valid(state.binding)) do return state, false
     partial, err := base64.decode(state.partial_line_base64)
     defer delete(partial)
     if err != nil || len(partial) > ACP_RPC_MAX_LINE || strings.contains(string(partial), "\n") do return state, false
@@ -148,6 +152,7 @@ acp_state_decode :: proc(raw: string) -> (state: ACP_State, ok: bool) {
 acp_state_delete :: proc(s: ^ACP_State) {
     delete(s.instance); delete(s.bridge); delete(s.launch_epoch); delete(s.effective_transport)
     delete(s.provider); delete(s.profile); delete(s.run_dir); delete(s.catalog_etag)
+    acp_provider_binding_delete(&s.binding)
     delete(s.adapter_version); delete(s.pipe_generation); delete(s.sessionId)
     delete(s.selected_model); delete(s.selected_mode); delete(s.partial_line_base64)
     delete(s.tool_map_json); delete(s.chat_outbox_json)

@@ -15,7 +15,7 @@ provider_transport_from_entry :: proc(entry: domain.Provider_Catalog_Entry, over
  transport := override
  if transport=="" do transport=contracts.runtime_transport_or_pty(entry.default_transport)
  if !contracts.provider_supports_transport(entry.transports_json,transport) do return "",domain.domain_error(.Invalid_Transport,"transport is not supported by this provider")
- if transport=="acp" && !contracts.acp_recipe_valid(entry.acp_recipe_json) do return "",domain.domain_error(.ACP_Unavailable,"provider ACP recipe is invalid")
+ if transport=="acp" && !contracts.acp_provider_recipe_valid(entry.provider, entry.acp_recipe_json) do return "",domain.domain_error(.ACP_Unavailable,"provider ACP recipe is invalid")
  return strings.clone(transport),{}
 }
 
@@ -48,7 +48,7 @@ require_acp_ready :: proc(service: ^Provider_Service, bridge_id: string, entry: 
  defer domain.bridge_provider_statuses_destroy(statuses)
  for status in statuses {
   if status.provider!=entry.provider || domain.profile_effective_id(status.provider,status.profile_id)!=entry.provider do continue
-  if acp_adapter_ready(status.acp_adapter_json,entry.acp_recipe_json) do return {}
+  if acp_adapter_ready(status.acp_adapter_json,entry.acp_recipe_json,entry.provider) do return {}
   if acp_adapter_state(status.acp_adapter_json)=="installing" do return domain.domain_error(.ACP_Installing,"ACP adapter installation is in progress")
   // The HTTP settings handler starts a tracked install for installable states
   // while keeping the settings unchanged until adapter readiness is verified.
@@ -57,7 +57,9 @@ require_acp_ready :: proc(service: ^Provider_Service, bridge_id: string, entry: 
  return acp_unavailable_error(entry.provider,"not_checked","ACP adapter has not been checked")
 }
 
-acp_adapter_ready :: proc(raw, recipe: string) -> bool {
+acp_adapter_ready :: proc(raw, recipe: string, provider: string = "claude") -> bool {
+ if !contracts.acp_provider_recipe_valid(provider, recipe) do return false
+ d, _ := contracts.acp_provider_descriptor(provider)
  value,err:=json.parse(raw)
  if err!=nil do return false
  defer json.destroy_value(value)
@@ -68,9 +70,20 @@ acp_adapter_ready :: proc(raw, recipe: string) -> bool {
  version,vok:=obj["version"].(json.String)
  checked,cok:=obj["checked_at"].(json.String)
  if !sok || !iok || !vok || !cok || state!="ready" || !bool(installed) || checked=="" do return false
- r: contracts.ACP_Recipe
- if json.unmarshal_string(recipe,&r,json.DEFAULT_SPECIFICATION,context.temp_allocator)!=nil do return false
- return string(version)==r.adapter_version
+ if kind, present := obj["runtime_kind"]; present {
+  name, valid := kind.(json.String)
+  expected := "adapter" if d.launch == .Adapter else "native"
+  if !valid || string(name) != expected do return false
+ }
+ if identity, present := obj["provider"]; present {
+  name, valid := identity.(json.String)
+  if !valid || string(name) != provider do return false
+ }
+ if profile, present := obj["profile"]; present {
+  name, valid := profile.(json.String)
+  if !valid || string(name) != provider do return false
+ }
+ return string(version)==d.pkg.version
 }
 
 update_bridge_provider_settings :: proc(service: ^Provider_Service, bridge: domain.Bridge, provider, now: string, input: Provider_Settings_Update) -> domain.Domain_Error {

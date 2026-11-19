@@ -106,18 +106,17 @@ provider_acp_install_start :: proc(h: ^Provider_Handlers, bridge_id, provider: s
     if err.code != .None do return "", err
     if !found do return "", domain.domain_error(.Unprocessable_Entity, "provider does not support ACP")
     defer domain.provider_catalog_entry_destroy(entry)
-    if entry.state != "active" || !contracts.provider_supports_transport(entry.transports_json, "acp") || !contracts.acp_recipe_valid(entry.acp_recipe_json) do return "", domain.domain_error(.Unprocessable_Entity, "provider does not support ACP")
-    recipe: contracts.ACP_Recipe
-    json.unmarshal_string(entry.acp_recipe_json, &recipe, allocator = context.temp_allocator)
+    if entry.state != "active" || !contracts.provider_supports_transport(entry.transports_json, "acp") || !contracts.acp_provider_recipe_valid(entry.provider, entry.acp_recipe_json) do return "", domain.domain_error(.Unprocessable_Entity, "provider does not support ACP")
+    descriptor, _ := contracts.acp_provider_descriptor(provider)
     sync.mutex_lock(&h.providers.extension_mutex); defer sync.mutex_unlock(&h.providers.extension_mutex)
     commands, list_err := iface.provider_extension_command_list(h.providers.repo, bridge_id)
     if list_err.code != .None do return "", list_err
     defer domain.provider_extension_commands_destroy(commands)
     for c in commands {
-        if c.kind == "install_acp_adapter" && c.provider == provider && c.target_version == recipe.adapter_version && !extension_command_terminal(c.state) do return strings.clone(c.command_id), {}
+        if c.kind == "install_acp_adapter" && c.provider == provider && c.target_version == descriptor.pkg.version && !extension_command_terminal(c.state) do return strings.clone(c.command_id), {}
     }
     id := strings.clone(platform.generate_id(h.ids, "cmd_ext_"))
-    command := domain.Provider_Extension_Command{command_id = id, bridge_id = bridge_id, provider = provider, profile_id = provider, kind = "install_acp_adapter", state = "queued", target_version = recipe.adapter_version}
+    command := domain.Provider_Extension_Command{command_id = id, bridge_id = bridge_id, provider = provider, profile_id = provider, kind = "install_acp_adapter", state = "queued", target_version = descriptor.pkg.version}
     created, create_err := iface.provider_extension_command_create(h.providers.repo, command)
     if !created { delete(id); return "", create_err }
     sent, send_err := extension_command_dispatch(h, command)

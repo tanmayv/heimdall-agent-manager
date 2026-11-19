@@ -49,7 +49,7 @@ acp_recipe_valid :: proc(raw: string) -> bool {
 
 acp_recipe_value_valid :: proc(value: json.Value) -> bool {
 	obj, ok := value.(json.Object)
-	if !ok do return false
+	if !ok || len(obj) != 6 do return false
 	command, cok := obj["command"].(json.String)
 	pkg, pok := obj["adapter_package"].(json.String)
 	version, vok := obj["adapter_version"].(json.String)
@@ -57,12 +57,29 @@ acp_recipe_value_valid :: proc(value: json.Value) -> bool {
 	args, aok := obj["args"].(json.Array)
 	env, eok := obj["env"].(json.Object)
 	if !cok || !pok || !vok || !iok || !aok || !eok do return false
-	if command != "claude-agent-acp" || pkg != "@agentclientprotocol/claude-agent-acp" || protocol != 1 do return false
-	for arg in args do if _, valid := arg.(json.String); !valid do return false
-	for _, item in env do if _, valid := item.(json.String); !valid do return false
-	mode, mok := env["CLAUDE_AGENT_ACP_PROTOCOL"].(json.String)
-	if !mok || mode!="v1" do return false
-	return exact_adapter_version(string(version))
+	for d in acp_provider_descriptors {
+		if string(command) != d.command || string(pkg) != d.pkg.name || string(version) != d.pkg.version ||
+		   int(protocol) != d.protocol_version || len(args) != len(d.args) || len(env) != len(d.env) { continue }
+		matches := true
+		for arg, i in args do if s, valid := arg.(json.String); !valid || string(s) != d.args[i] do matches = false
+		for pair in d.env do if s, valid := env[pair[0]].(json.String); !valid || string(s) != pair[1] do matches = false
+		if matches do return true
+	}
+	return false
+}
+
+// Bind a valid recipe to its catalog provider, preventing a copied Claude
+// recipe from enabling a different provider.
+acp_provider_recipe_valid :: proc(provider, raw: string) -> bool {
+	d, known := acp_provider_descriptor(provider)
+	if !known do return false
+	value, err := json.parse(raw, parse_integers = true)
+	if err != nil do return false
+	defer json.destroy_value(value)
+	if !acp_recipe_value_valid(value) do return false
+	obj := value.(json.Object)
+	command, _ := obj["command"].(json.String)
+	return string(command) == d.command
 }
 
 exact_adapter_version :: proc(version: string) -> bool {

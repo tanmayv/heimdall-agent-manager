@@ -3,16 +3,6 @@ package main
 import "core:encoding/json"
 import "core:strings"
 
-// The permission IDs are specific to the pinned Claude adapter. They must also
-// be advertised by the session: policy may remove bypassPermissions entirely.
-acp_claude_permission_mode :: proc(mode: string) -> (string, bool) {
-    switch mode {
-    case "", "yolo": return "bypassPermissions", true
-    case "ask": return "default", true
-    }
-    return "", false
-}
-
 acp_option_has_value :: proc(options: json.Array, wanted: string) -> bool {
     for item in options {
         obj, ok := item.(json.Object); if !ok do continue

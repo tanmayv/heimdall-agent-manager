@@ -274,7 +274,7 @@ acp_events_config :: proc(r:^ACP_Runtime,update:json.Object) {
         mode:=acp_event_string(update,"currentModeId")
         if mode=="" { acp_runtime_error(r,"acp_protocol_error");return }
         config["currentModeId"]=json.String(mode)
-        if r.d.ready && mode!=r.mode { acp_runtime_error(r,"acp_permission_mode_unsupported");return }
+        if r.d.ready && r.descriptor.permission_category!="" && mode!=r.mode { acp_runtime_error(r,"acp_permission_mode_unsupported");return }
     }
     raw:=acp_event_json(config)
     if len(raw)>256*1024 { acp_runtime_error(r,"acp_protocol_error");return }
@@ -282,11 +282,12 @@ acp_events_config :: proc(r:^ACP_Runtime,update:json.Object) {
     // Setup responses own validation while set_config_option is in flight.
     // Once ready, unsolicited changes cannot broaden the frozen launch policy.
     if !r.d.ready do return
-    for category in ([]string{"model","mode"}) {
-        value:=r.model if category=="model" else r.mode
+    for category in ([]string{r.descriptor.model_category,r.descriptor.permission_category}) {
+        if category=="" do continue
+        value:=r.model if category==r.descriptor.model_category else r.mode
         if value=="" do continue
         id,selected:=acp_config_selection(raw,category,value,selected=true);delete(id)
-        if !selected { acp_runtime_error(r,"acp_model_unavailable" if category=="model" else "acp_permission_mode_unsupported");return }
+        if !selected { acp_runtime_error(r,"acp_model_unavailable" if category==r.descriptor.model_category else "acp_permission_mode_unsupported");return }
     }
 }
 

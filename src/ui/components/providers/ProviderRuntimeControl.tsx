@@ -120,7 +120,7 @@ export default function ProviderRuntimeControl({ setup, status, disabledReason =
         {installable ? <Button size="sm" variant="secondary" data-debug-id={`providers-acp-install-${provider}`}
           title={disabledReason || acpReason || undefined}
           disabled={Boolean(disabledReason) || !setup.acp_runtime_supported || busy || active}
-          onClick={() => void install()}>Install adapter</Button> : null}
+          onClick={() => void install()}>Install {status.acp_adapter?.runtime_kind === 'native' ? 'runtime' : 'adapter'}</Button> : null}
         {status.transports.includes('acp') ? <Button size="sm" variant="ghost" data-debug-id={`providers-acp-check-${provider}`}
           disabled={busy} onClick={() => void checkStatus()}>Check status</Button> : null}
       </div>
@@ -132,7 +132,7 @@ export default function ProviderRuntimeControl({ setup, status, disabledReason =
         {command ? <p className={failed ? 'text-danger' : ''}>Installation: {command.status}{command.message ? ` · ${command.message}` : ''}</p> : null}
         {active && !timedOut ? <progress aria-label="ACP adapter installation progress" max={100} value={Math.max(0, Math.min(100, command?.progress_percent || 0))} /> : null}
         {timedOut ? <p role="alert">Installation status did not finish within 150 seconds. Use Check status to refresh; the bridge may still be installing.</p> : null}
-        {command?.status === 'succeeded' && status.effective_transport !== 'acp' ? <p>Adapter installed. Select ACP to use it on the next launch.</p> : null}
+        {command?.status === 'succeeded' && status.effective_transport !== 'acp' ? <p>{status.acp_adapter?.runtime_kind === 'native' ? 'Runtime' : 'Adapter'} installed. Select ACP to use it on the next launch.</p> : null}
       </div> : null}
       {error ? <p role="alert" className="break-words text-xs text-danger">{error}</p> : null}
     </div>

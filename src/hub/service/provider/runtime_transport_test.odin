@@ -65,7 +65,7 @@ test_runtime_transport_resolves_default_override_and_capability_gate :: proc(t:^
 
 @(test)
 test_runtime_transport_rejects_invalid_recipes_and_catalog_membership :: proc(t:^testing.T) {
- entry:=domain.Provider_Catalog_Entry{transports_json=`["pty"]`,default_transport="pty",acp_recipe_json=TRANSPORT_TEST_RECIPE}
+ entry:=domain.Provider_Catalog_Entry{provider="claude",transports_json=`["pty"]`,default_transport="pty",acp_recipe_json=TRANSPORT_TEST_RECIPE}
  _,err:=provider_transport_from_entry(entry,"acp")
  testing.expect_value(t,err.code,domain.Error_Code.Invalid_Transport)
  entry.transports_json=`["pty","acp"]`
@@ -102,4 +102,17 @@ test_transport_catalog_wire_values_change_etag :: proc(t:^testing.T) {
 transport_test_replace :: proc(input,old,replacement:string)->string {
  value,_:=strings.replace_all(input,old,replacement,context.temp_allocator)
  return value
+}
+
+@(test)
+test_runtime_descriptor_readiness_rejects_status_identity_substitution :: proc(t: ^testing.T) {
+ ready :: `{"installed":true,"state":"ready","version":"0.108.0","checked_at":"2026-11-19T00:00:00Z","provider":"claude","profile":"claude","runtime_kind":"adapter"}`
+ testing.expect(t, acp_adapter_ready(ready, TRANSPORT_TEST_RECIPE, "claude"))
+ testing.expect(t, !acp_adapter_ready(ready, TRANSPORT_TEST_RECIPE, "copilot"))
+ for raw in ([]string{
+  transport_test_replace(ready, `"provider":"claude"`, `"provider":"copilot"`),
+  transport_test_replace(ready, `"profile":"claude"`, `"profile":"work"`),
+  transport_test_replace(ready, `"runtime_kind":"adapter"`, `"runtime_kind":"native"`),
+  transport_test_replace(ready, `"version":"0.108.0"`, `"version":"0.108.1"`),
+ }) { testing.expect(t, !acp_adapter_ready(raw, TRANSPORT_TEST_RECIPE, "claude")) }
 }

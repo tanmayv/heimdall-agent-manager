@@ -50,7 +50,7 @@ export function AgentBlockerBody({ item }: { item: AttentionBlockerItem }) {
   const input = useMemo(() => summarizePermissionInput(d.tool_name, (d.input || {}) as Record<string, any>), [d.tool_name, d.input]);
   if (d.blocker_kind !== 'permission' && d.blocker_kind !== 'terminal_prompt') {
     return d.blocker_kind === 'startup' && d.input?.reason === 'acp_auth_required'
-      ? <AcpAuthInstructions />
+      ? <AcpAuthInstructions guidance={d.summary} />
       : <p className="text-sm text-primary">{d.summary || 'This agent needs attention on the bridge host.'}</p>;
   }
   if (isTerminalPromptItem(item)) {

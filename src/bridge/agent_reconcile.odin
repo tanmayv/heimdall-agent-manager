@@ -283,7 +283,10 @@ bridge_agent_reconcile_acp_intents :: proc(raw: string) -> map[string]ACP_Hub_In
         status, _ := obj["runtime_status"].(json.String)
         transport, _ := obj["runtime_transport"].(json.String)
         generation, _ := obj["run_count"].(json.Integer)
-        out[string(id)] = {string(status), string(epoch), string(transport), int(generation)}
+        provider, _ := obj["provider"].(json.String)
+        profile, _ := obj["provider_profile"].(json.String)
+        out[string(id)] = {status = string(status), epoch = string(epoch), transport = string(transport), run_count = int(generation),
+            provider = string(provider), profile = profile_effective_id(string(provider), string(profile))}
     }
     return out
 }

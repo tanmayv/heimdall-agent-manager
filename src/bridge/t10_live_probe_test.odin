@@ -44,6 +44,10 @@ t10_live_adapter_install_profile_and_failure :: proc(t: ^testing.T) {
         os.remove(sock)
     }
     installed, reason := acp_adapter_install("claude", "sha256:t10-live", ACP_CLAUDE_VERSION)
+    if !installed {
+        status := acp_adapter_status("claude")
+        fmt.eprintf("ACP live install: %s (%s)\n", reason, status.error)
+    }
     if !testing.expect(t, installed, reason) do return
     testing.expect_value(t, acp_adapter_status("claude").state, "ready")
     installed, reason = acp_adapter_install("claude", "sha256:t10-live", ACP_CLAUDE_VERSION)
@@ -53,7 +57,7 @@ t10_live_adapter_install_profile_and_failure :: proc(t: ^testing.T) {
     // and no probe credential can be inherited from this agent's environment.
     bad := profile_join(data, "failing")
     bridge_make_directory_all(profile_join(bad, "node_modules/.bin"))
-    script := acp_adapter_bin(bad)
+    script := acp_adapter_bin(bad, "claude")
     p1c_put(t, script, "#!/bin/sh\nif [ -n \"$HEIMDALL_AGENT_TOKEN\" ]; then echo credential-leaked >&2; exit 1; fi\nprintf 'Error [ERR_MODULE_NOT_FOUND]: credential=must-never-appear\\n' >&2\nexit 1\n")
     bridge_os_make_owner_executable(script)
     ok, diagnostic := acp_adapter_probe("claude", bad, data)

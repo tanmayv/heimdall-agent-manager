@@ -7,6 +7,7 @@ import "core:os"
 import "core:strings"
 import "core:sync"
 import "core:time"
+import contracts "odin_test:contracts"
 
 ACP_Input_Lane :: enum { Steer, Batch, Digest }
 ACP_Runtime_Input :: struct {
@@ -38,6 +39,8 @@ ACP_Runtime_Events :: struct {
 acp_runtime_events := ACP_Runtime_Events{acp_events_notification, acp_events_prompt_started, acp_events_prompt_finished}
 
 ACP_Runtime :: struct {
+    descriptor: contracts.ACP_Provider_Descriptor,
+    binding: ACP_Runtime_Binding,
     client: ^ACP_RPC_Client,
     chat: ^ACP_Chat,
     tools:ACP_Tool_Cache,
@@ -82,7 +85,11 @@ acp_runtime_checkpoint :: proc(data: rawptr, state: ^ACP_State) -> bool {
     acp_runtime_replace(&state.bridge, bridge_config.daemon_id)
     acp_runtime_replace(&state.provider, r.provider); acp_runtime_replace(&state.profile, r.profile)
     acp_runtime_replace(&state.run_dir, r.run_dir); acp_runtime_replace(&state.catalog_etag, r.etag)
-    acp_runtime_replace(&state.adapter_version, ACP_CLAUDE_VERSION); acp_runtime_replace(&state.pipe_generation, r.generation)
+    state.schema_version = 3
+    state.runtime_binding_version = 1
+    acp_provider_binding_delete(&state.binding)
+    state.binding = acp_provider_binding_copy(r.binding)
+    acp_runtime_replace(&state.adapter_version, r.descriptor.pkg.version); acp_runtime_replace(&state.pipe_generation, r.generation)
     acp_runtime_replace(&state.sessionId, r.session); acp_runtime_replace(&state.selected_model, r.model)
     acp_runtime_replace(&state.selected_mode, r.mode)
     state.initialized = r.initialized; state.loadSession = r.load_session
@@ -155,7 +162,7 @@ acp_runtime_auth_blocker :: proc(r: ^ACP_Runtime) {
     for p in bridge_permission_pending { if p.agent_instance_id == r.instance && p.request_id == id { delete(id); return } }
     append(&bridge_permission_pending, Bridge_Permission_Pending{
         request_id = id, agent_instance_id = strings.clone(r.instance), provider = strings.clone(r.provider),
-        kind = "startup", summary = "ACP authentication required. Run claude /login on the bridge host, then restart this instance.",
+        kind = "startup", summary = strings.concatenate({"ACP authentication required for profile ", r.profile, ". ", r.descriptor.auth_guidance}),
         input = `{"reason":"acp_auth_required","actions":[]}`, created_unix_ms = bridge_runtime_now_ms(), generation = 1,
     })
     bridge_blockers_touch_locked(r.instance)
@@ -204,7 +211,8 @@ acp_runtime_session_params :: proc(r: ^ACP_Runtime) -> string {
 }
 
 acp_runtime_configure :: proc(r: ^ACP_Runtime, category, value, failure: string) {
-    id, ok := acp_config_selection(r.d.config_json, category, value)
+    bound := r.descriptor.model_category if category == "model" else r.descriptor.permission_category
+    id, ok := acp_config_selection(r.d.config_json, bound, value)
     defer delete(id)
     if !ok { acp_runtime_error(r, failure); return }
     acp_runtime_replace(&r.d.phase, category)
@@ -241,10 +249,10 @@ acp_runtime_prompt :: proc(r: ^ACP_Runtime, input: ACP_Runtime_Input, bootstrap 
     text["type"] = json.String("text"); text["text"] = json.String(input.text); append(&blocks, text)
     if bootstrap {
         if !r.d.embedded_context { acp_runtime_error(r, "acp_bootstrap_unsupported"); return }
-        content, err := os.read_entire_file(strings.concatenate({r.run_dir, "/CLAUDE.md"}, context.temp_allocator), context.temp_allocator)
+        content, err := os.read_entire_file(strings.concatenate({r.run_dir, "/", r.binding.bootstrap_filename}, context.temp_allocator), context.temp_allocator)
         if err != nil { acp_runtime_error(r, "acp_bootstrap_unsupported"); return }
         resource := make(json.Object, allocator = context.temp_allocator)
-        resource["uri"] = json.String(strings.concatenate({"file://", r.run_dir, "/CLAUDE.md"}, context.temp_allocator))
+        resource["uri"] = json.String(strings.concatenate({"file://", r.run_dir, "/", r.binding.bootstrap_filename}, context.temp_allocator))
         resource["mimeType"] = json.String("text/markdown"); resource["text"] = json.String(string(content))
         block := make(json.Object, allocator = context.temp_allocator); block["type"] = json.String("resource"); block["resource"] = resource
         append(&blocks, block)
@@ -313,7 +321,8 @@ acp_runtime_result :: proc(data: rawptr, result: ACP_RPC_Result) {
     case "model", "mode":
         category := r.d.phase
         value := r.model if category == "model" else r.mode
-        id, selected := acp_config_selection(result.result_json, category, value, selected = true); delete(id)
+        bound := r.descriptor.model_category if category == "model" else r.descriptor.permission_category
+        id, selected := acp_config_selection(result.result_json, bound, value, selected = true); delete(id)
         if !selected { acp_runtime_error(r, "acp_model_unavailable" if category == "model" else "acp_permission_mode_unsupported"); return }
         acp_runtime_replace(&r.d.config_json, result.result_json)
         if category == "model" { acp_runtime_configure(r, "mode", r.mode, "acp_permission_mode_unsupported") }
@@ -414,6 +423,7 @@ acp_runtime_destroy :: proc(r: ^ACP_Runtime) {
     acp_rpc_close(r.client)
     acp_chat_destroy(r)
     acp_tools_destroy(r)
+    acp_provider_binding_delete(&r.binding)
     delete(r.instance); delete(r.epoch); delete(r.generation); delete(r.run_dir); delete(r.state_path)
     delete(r.provider); delete(r.profile); delete(r.etag); delete(r.model); delete(r.mode); delete(r.session)
     delete(r.saved_tools); delete(r.saved_outbox)
@@ -437,6 +447,8 @@ acp_runtime_detach :: proc(instance: string) {
 acp_runtime_new :: proc(instance, epoch, run_dir, provider, profile, etag, model, mode: string, rec: Bridge_Local_Agent_Token_Record) -> ^ACP_Runtime {
     context.allocator = runtime.heap_allocator()
     r := new(ACP_Runtime)
+    r.descriptor, _ = contracts.acp_provider_descriptor(provider)
+    r.binding = acp_provider_binding_copy(acp_provider_binding(r.descriptor, profile, "", bridge_bootstrap_agents_md_name(provider)))
     r.notice_interval_ms = acp_inbox_interval()
     r.instance = strings.clone(instance); r.epoch = strings.clone(epoch); r.run_dir = strings.clone(run_dir)
     r.provider = strings.clone(provider); r.profile = strings.clone(profile); r.etag = strings.clone(etag)
@@ -470,12 +482,15 @@ acp_runtime_connect :: proc(r: ^ACP_Runtime, socket: string, after_seq: u64, che
 acp_profile_child_env :: proc(pp: ^Provider_Profile) -> ([]string, bool) {
     context.allocator = context.temp_allocator
     env, ok := profile_child_env(pp); if !ok do return nil, false
-    binary := pp.config.binary_path if pp.config.binary_path != "" else "claude"
+    d, known := contracts.acp_provider_descriptor(pp.provider)
+    if !known do return nil, false
+    binary := pp.config.binary_path if pp.config.binary_path != "" else d.cli_command
     resolved := profile_resolve_binary(binary, env)
     if resolved == "" do return nil, false
     defer delete(resolved)
     plan := Profile_Env_Plan{}
-    append(&plan.set, [2]string{"CLAUDE_AGENT_ACP_PROTOCOL", "v1"}, [2]string{"CLAUDE_CODE_EXECUTABLE", resolved})
+    for pair in d.env do append(&plan.set, pair)
+    if d.executable_env != "" do append(&plan.set, [2]string{d.executable_env, resolved})
     return profile_apply_env_plan(env, plan), true
 }
 
@@ -492,9 +507,17 @@ acp_runtime_build_spawn :: proc(r: ^ACP_Runtime, endpoint, token: string, pp: ^P
     append(&plan.set, [2]string{"HEIMDALL_STARTUP_KEY", r.rec.token_hash}, [2]string{"HEIMDALL_RUNTIME_TRANSPORT", "acp"})
     full := profile_apply_env_plan(env, plan)
     pairs := bridge_pty_host_env_pairs(full)
-    root := acp_adapter_root()
+    root := acp_adapter_root(pp.provider)
     meta, _ := json.marshal(struct{effective_transport, launch_epoch, state_path: string}{"acp", r.epoch, r.state_path})
-    argv := make([]string, 1); argv[0] = acp_adapter_bin(root)
+    d, known := contracts.acp_provider_descriptor(pp.provider)
+    if !known do return {}, false
+    resolved := ""
+    if d.launch == .Native {
+        command := pp.config.binary_path if pp.config.binary_path != "" else d.cli_command
+        resolved = profile_resolve_binary(command, full)
+    }
+    argv, built := acp_provider_launch_argv(d, root, resolved)
+    if !built do return {}, false
     return {mode = .Pipe, instance = r.instance, argv = argv, env = pairs, cwd = r.run_dir, has_cwd = true,
         meta_json = string(meta), has_meta = true}, true
 }
@@ -505,17 +528,21 @@ acp_runtime_launch :: proc(command, instance, epoch, etag, run_dir, endpoint, pr
     catalog, supported := acp_adapter_recipe(provider)
     current := bridge_provider_catalog_current_etag(); defer delete(current)
     if !supported || current != etag do return false, "provider_catalog_stale", bridge_error(.agent_launch_failed, .unsupported)
-    status := acp_adapter_status(provider)
-    if status.state != "ready" do return false, "acp_adapter_unavailable", bridge_error(.agent_launch_failed, .unsupported)
-    mode, mode_ok := acp_claude_permission_mode(permission_mode)
+    d, _ := contracts.acp_provider_descriptor(provider)
+    mode, mode_ok := contracts.acp_descriptor_permission_mode(d, permission_mode)
     pp, perr := profile_lookup(provider, profile)
     if !mode_ok || perr != .None || (model != "" && !profile_has_model(&pp, provider, model)) do return false, "invalid_acp_configuration", bridge_error(.agent_launch_failed, .unsupported)
+    status := acp_adapter_status(provider, pp.profile_id)
+    if !status.installed || status.state == "installing" || status.state == "missing_node" do return false, "acp_adapter_unavailable", bridge_error(.agent_launch_failed, .unsupported)
+    binding, bound := acp_provider_profile_binding(&pp)
+    if !bound || !acp_adapter_ensure_profile(&pp, binding) do return false, "acp_adapter_unavailable", bridge_error(.agent_launch_failed, .unsupported)
     rec, valid := bridge_agent_token_verify(token)
     if !valid do return false, "invalid_agent_token", bridge_error(.agent_launch_failed, .denied)
     socket, daemon := bridge_pty_host_ensure_daemon()
     if !daemon || !pty_host_supports_pipes(socket) do return false, "unsupported_runtime_transport", bridge_error(.agent_launch_failed, .unsupported)
     acp_runtime_detach(instance)
     r := acp_runtime_new(instance, epoch, run_dir, provider, pp.profile_id, etag, model, mode, rec)
+    acp_provider_binding_delete(&r.binding); r.binding = acp_provider_binding_copy(binding)
     r.d.phase = strings.clone("initialize"); r.d.starter = strings.clone(catalog.starter_prompt)
     if r.state_path == "" { acp_runtime_destroy(r); return false, "acp_state_write_failed", bridge_error(.agent_launch_failed) }
     initial := ACP_State{schema_version = 1, instance = strings.clone(instance), launch_epoch = strings.clone(epoch), effective_transport = strings.clone("acp"), next_rpc_id = 1, next_delivery_id = 1}
@@ -541,7 +568,7 @@ acp_runtime_launch :: proc(command, instance, epoch, etag, run_dir, endpoint, pr
     for &inst in bridge_runtime_instances do if inst.agent_instance_id == instance do inst.runtime_transport = "acp"
     sync.mutex_unlock(&bridge_runtime_mutex)
     bridge_runtime_record_launch({agent_instance_id = strings.clone(instance), command_id = strings.clone(command), run_dir = strings.clone(run_dir),
-        effective_transport = "acp", launch_epoch = strings.clone(epoch), pipe_generation = strings.clone(r.generation), adapter_version = ACP_CLAUDE_VERSION,
+        effective_transport = "acp", launch_epoch = strings.clone(epoch), pipe_generation = strings.clone(r.generation), adapter_version = r.descriptor.pkg.version,
         launched_at_ns = time.tick_now()._nsec})
     sync.mutex_lock(&acp_runtime_mu)
     if acp_runtimes == nil do acp_runtimes = make(map[string]^ACP_Runtime)

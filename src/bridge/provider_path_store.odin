@@ -408,7 +408,7 @@ bridge_provider_discovery_report_json :: proc(request_id: string, results: []Bri
 		// The extension is measured in the same pass as the binary.
 		strings.write_string(&b, "\",\"extension_checked_at\":\""); bridge_runtime_write_json_string(&b, result.probed_at)
 		strings.write_string(&b, "\",\"acp_adapter\":")
-		adapter := acp_adapter_status_json(result.provider, acp_state_override)
+		adapter := acp_adapter_status_json(result.provider, acp_state_override, result.profile_id)
 		strings.write_string(&b, adapter); delete(adapter)
 		strings.write_byte(&b, '}')
 	}

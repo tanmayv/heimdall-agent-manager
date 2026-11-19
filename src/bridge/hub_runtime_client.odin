@@ -2702,7 +2702,10 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 	defer delete(requested_transport)
 	if requested_transport == "acp" {
 		if run_count > 0 && run_count < bridge_agent_instance_run_count(instance_id) do return false, "superseded startup generation", bridge_error(.agent_launch_failed, .denied)
-		if handled, retry_ok := acp_runtime_retry_launch(instance_id, launch_epoch, run_count); handled {
+		retry_provider := extract_json_string(command_json, "provider", "")
+        retry_profile := extract_json_string(command_json, "provider_profile", "")
+        defer { delete(retry_provider); delete(retry_profile) }
+        if handled, retry_ok := acp_runtime_retry_launch(instance_id, launch_epoch, run_count, retry_provider, retry_profile); handled {
 			if retry_ok do return true, "", {}
 			return false, "acp_pipe_lost", bridge_error(.agent_launch_failed, .denied)
 		}
@@ -3608,7 +3611,9 @@ bridge_runtime_write_instance_error :: proc(b: ^strings.Builder, inst: Bridge_Ru
 		strings.write_string(b, ",\"acp_error_code\":")
 		strings.write_string(b, acp_rpc_quote(inst.acp_error_code))
 		strings.write_string(b, ",\"error\":")
-		contracts.write_wire_error(b, contracts.wire_error(.ACP_Unavailable, cause = inst.acp_error_code, message = inst.acp_error_code))
+		message := inst.acp_error_code
+		if message == "acp_restart_required" do message = "ACP recovery cannot verify the saved runtime identity. Restart this instance to continue."
+		contracts.write_wire_error(b, contracts.wire_error(.ACP_Unavailable, cause = inst.acp_error_code, message = message))
 		return
 	}
 	if inst.runtime_status != "failed" || !inst.has_last_error do return

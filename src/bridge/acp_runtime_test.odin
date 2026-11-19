@@ -1,5 +1,7 @@
 package main
 
+import contracts "odin_test:contracts"
+
 import "base:runtime"
 import "core:encoding/json"
 import "core:fmt"
@@ -35,9 +37,9 @@ t4_acp_config_exact_grouped_selection_and_modes :: proc(t: ^testing.T) {
     id, ok := acp_config_selection(T4_CONFIG, "model", "sonnet", true); defer delete(id)
     testing.expect(t, ok && id == "actual-model")
     absent, found := acp_config_selection(T4_CONFIG, "model", "opus"); delete(absent); testing.expect(t, !found)
-    mode, valid := acp_claude_permission_mode("ask"); testing.expect(t, valid && mode == "default")
-    mode, valid = acp_claude_permission_mode("yolo"); testing.expect(t, valid && mode == "bypassPermissions")
-    _, valid = acp_claude_permission_mode("auto"); testing.expect(t, !valid)
+    mode, valid := contracts.acp_descriptor_permission_mode(contracts.ACP_CLAUDE_DESCRIPTOR, "ask"); testing.expect(t, valid && mode == "default")
+    mode, valid = contracts.acp_descriptor_permission_mode(contracts.ACP_CLAUDE_DESCRIPTOR, "yolo"); testing.expect(t, valid && mode == "bypassPermissions")
+    _, valid = contracts.acp_descriptor_permission_mode(contracts.ACP_CLAUDE_DESCRIPTOR, "auto"); testing.expect(t, !valid)
     unavailable, _ := strings.replace_all(T4_CONFIG, "bypassPermissions", "policy-disabled"); defer delete(unavailable)
     missing, offered := acp_config_selection(unavailable, "mode", "bypassPermissions"); delete(missing); testing.expect(t, !offered)
     duplicate := `{"configOptions":[{"id":"a","category":"model","type":"select","options":[{"value":"sonnet"}]},{"id":"b","category":"model","type":"select","options":[{"value":"sonnet"}]}]}`
@@ -73,6 +75,7 @@ t4_runtime_open :: proc(f: ^T4_Runtime_Test, instance, cwd: string) {
     bridge_startup_begin_locked(rec, bridge_runtime_now_ms())
     sync.mutex_unlock(&bridge_runtime_mutex)
     f.r = acp_runtime_new(instance, "t4_epoch", cwd, "claude", "claude", "sha256:test", "sonnet", "default", rec)
+    acp_runtime_replace(&f.r.binding.cli_version, "2.1.70")
     f.r.d.phase = strings.clone("initialize"); f.r.d.starter = strings.clone("EXACT starter text")
     f.r.client, _ = acp_rpc_open({data = &f.f, instance = instance, launch_epoch = "t4_epoch", write = acp_test_write, ack = acp_test_ack, close = acp_test_close},
         {data = f, checkpoint = t4_runtime_checkpoint, restore_completion = t4_runtime_restore_completion})
@@ -132,8 +135,9 @@ t4_acp_runtime_setup_first_prompt_queue_cancel_and_stop_fence :: proc(t: ^testin
     defer { delete(bridge_local_token_records); bridge_local_token_records = previous_records }
     cwd := fmt.tprintf("%s/.cache/heimdall-tests/t4-bootstrap-%d", os.get_env("HOME", context.temp_allocator), sync.current_thread_id())
     bridge_make_directory_all(cwd); defer os.remove_all(cwd)
-    testing.expect(t, os.write_entire_file(strings.concatenate({cwd, "/CLAUDE.md"}, context.temp_allocator), string("unique marker")) == nil)
+    testing.expect(t, os.write_entire_file(strings.concatenate({cwd, "/CUSTOM.md"}, context.temp_allocator), string("unique marker")) == nil)
     f: T4_Runtime_Test; t4_runtime_open(&f, "inst_t4_runtime", cwd)
+    acp_runtime_replace(&f.r.binding.bootstrap_filename, "CUSTOM.md")
     defer { f.r.d.stopped = true; acp_runtime_destroy(f.r); acp_test_delete(&f.f) }
     testing.expect(t, acp_runtime_request(f.r, "initialize", ACP_INITIALIZE_PARAMS))
     t4_runtime_reply(t, &f, 0, `{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{"embeddedContext":true}}}`, 1)
@@ -146,7 +150,7 @@ t4_acp_runtime_setup_first_prompt_queue_cancel_and_stop_fence :: proc(t: ^testin
     testing.expect(t, strings.contains(f.f.writes[1].bytes, `"mcpServers":[]`))
     testing.expect(t, strings.contains(f.f.writes[2].bytes, `"configId":"actual-model"`))
     testing.expect(t, strings.contains(f.f.writes[3].bytes, `"configId":"actual-mode"`))
-    testing.expect(t, strings.contains(f.f.writes[4].bytes, "EXACT starter text") && strings.contains(f.f.writes[4].bytes, "unique marker"))
+    testing.expect(t, strings.contains(f.f.writes[4].bytes, "EXACT starter text") && strings.contains(f.f.writes[4].bytes, "unique marker") && strings.contains(f.f.writes[4].bytes, "/CUSTOM.md"))
     sync.mutex_unlock(&f.f.mu)
     snapshot, ready := bridge_runtime_instance_snapshot("inst_t4_runtime")
     testing.expect(t, ready && snapshot.start_success_seen && snapshot.runtime_status == "running")

@@ -1,5 +1,7 @@
 package main
 
+import contracts "odin_test:contracts"
+
 import "core:c"
 import "core:fmt"
 import "core:os"
@@ -148,7 +150,7 @@ bridge_bootstrap_agents_md_name :: proc(provider: string) -> string {
 		name := strings.trim_space(profile.bootstrap_file_name)
 		if name != "" && bridge_bootstrap_is_safe_bootstrap_name(name) do return name
 	}
-	if strings.to_lower(strings.trim_space(provider)) == "claude" do return "CLAUDE.md"
+	if d, known := contracts.acp_provider_descriptor(strings.to_lower(strings.trim_space(provider))); known do return d.bootstrap_filename
 	return "AGENTS.md"
 }
 

@@ -771,14 +771,9 @@ acp_rpc_raw_id :: proc(line: string) -> string {
     return ""
 }
 
-acp_rpc_restore_state :: proc(c: ^ACP_RPC_Client, raw: string) -> bool {
-    // Restore is allowed only on a fresh connection, before AttachPipe output.
-    if c.restored || c.state.next_rpc_id != 1 || c.state.last_stdout_seq != 0 || len(c.state.pending_writes) != 0 || len(c.state.pending_inbound) != 0 do return false
-    state, ok := acp_state_decode(raw)
-    if !ok do return false
-    valid := false
-    defer { if !valid do acp_state_delete(&state) }
-    if state.instance != c.io.instance || state.launch_epoch != c.io.launch_epoch do return false
+// Shared by normal restore and the one-time legacy binding migration. This
+// validates framing, counters, identities and bounded queues without callbacks.
+acp_rpc_restore_checkpoint_valid :: proc(state: ^ACP_State, restore_completion_available: bool) -> bool {
     if len(state.pending_inbound) > ACP_RPC_MAX_PENDING_INBOUND || len(state.recent_inbound) > ACP_RPC_RECENT_INBOUND_COUNT do return false
     if len(state.pending_outbound) > ACP_RPC_MAX_PENDING_OUTBOUND do return false
     // Validate the entire checkpoint before exposing any of it to callbacks.
@@ -788,7 +783,7 @@ acp_rpc_restore_state :: proc(c: ^ACP_RPC_Client, raw: string) -> bool {
         if p.id == "" || seen[p.id] || !strings.has_prefix(p.id, fmt.tprintf("ham:%s:", state.launch_epoch)) || !acp_rpc_params_ok(p.params_json) || p.role != acp_rpc_role(p.method) do return false
         counter, counter_ok := strconv.parse_u64(strings.trim_prefix(p.id, fmt.tprintf("ham:%s:", state.launch_epoch)))
         if !counter_ok || counter == 0 || counter >= state.next_rpc_id do return false
-        if c.callbacks.restore_completion == nil do return false
+        if !restore_completion_available do return false
         seen[p.id] = true
         outbound_bytes += len(p.id)+len(p.method)+len(p.params_json)+len(p.delivery_id)
     }
@@ -840,6 +835,18 @@ acp_rpc_restore_state :: proc(c: ^ACP_RPC_Client, raw: string) -> bool {
         if id == "" || seen[id] do return false
         seen[id] = true
     }
+    return true
+}
+
+acp_rpc_restore_state :: proc(c: ^ACP_RPC_Client, raw: string) -> bool {
+    // Restore is allowed only on a fresh connection, before AttachPipe output.
+    if c.restored || c.state.next_rpc_id != 1 || c.state.last_stdout_seq != 0 || len(c.state.pending_writes) != 0 || len(c.state.pending_inbound) != 0 do return false
+    state, ok := acp_state_decode(raw)
+    if !ok do return false
+    valid := false
+    defer { if !valid do acp_state_delete(&state) }
+    if state.instance != c.io.instance || state.launch_epoch != c.io.launch_epoch do return false
+    if !acp_rpc_restore_checkpoint_valid(&state, c.callbacks.restore_completion != nil) do return false
     partial, _ := base64.decode(state.partial_line_base64)
     defer delete(partial)
     acp_state_delete(&c.state); c.state = state
@@ -852,7 +859,8 @@ acp_rpc_restore_state :: proc(c: ^ACP_RPC_Client, raw: string) -> bool {
     }
     acp_rpc_reindex_inbound(&c.inbound, state.pending_inbound[:])
     acp_rpc_reindex_inbound(&c.recent_inbound, state.recent_inbound[:])
-    c.recent_inbound_bytes = recent_bytes
+    c.recent_inbound_bytes = 0
+    for p in state.recent_inbound do c.recent_inbound_bytes += acp_rpc_inbound_bytes(p)
     // Restore is one transaction, including reconstituted blockers. An expired
     // setup call must fail before any old stdin bytes can be retried. Defer
     // reentrant replies until older chunks are queued in their original order.

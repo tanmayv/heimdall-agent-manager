@@ -1,5 +1,7 @@
 package main
 
+import contracts "odin_test:contracts"
+
 import "base:runtime"
 import "core:fmt"
 import "core:strings"
@@ -162,7 +164,7 @@ t5_acp_corrupt_tool_restore_reports_protocol_error :: proc(t:^testing.T) {
     testing.expect_value(t,len(r.tools.entries),0)
     run_dir:string
     { context.allocator=context.temp_allocator;run_dir=bridge_runtime_default_run_dir("inst_t5_corrupt_restore") }
-    saved:=ACP_State{bridge=bridge_config.daemon_id,adapter_version=ACP_CLAUDE_VERSION,provider="claude",run_dir=run_dir,pipe_generation="generation",selected_mode="default",instance="inst_t5_corrupt_restore",launch_epoch="epoch",tool_map_json=c.state.tool_map_json,
+    saved:=ACP_State{schema_version=3,runtime_binding_version=1,binding=acp_provider_binding(contracts.ACP_CLAUDE_DESCRIPTOR,"claude","2.1.70","CLAUDE.md"),profile="claude",bridge=bridge_config.daemon_id,adapter_version=ACP_CLAUDE_VERSION,provider="claude",run_dir=run_dir,pipe_generation="generation",selected_mode="default",instance="inst_t5_corrupt_restore",launch_epoch="epoch",tool_map_json=c.state.tool_map_json,
         runtime_json=acp_event_json(ACP_Runtime_Durable{phase="initialize",error="acp_auth_required",auth_required=true})}
     restored,built:=acp_runtime_from_state(&saved,{})
     testing.expect(t,built)
