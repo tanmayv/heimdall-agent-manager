@@ -50,6 +50,8 @@ Bridge_Permission_Pending :: struct {
 	// generation counts registrations of the same id. A hook that lost its
 	// socket re-registers; the older waiter sees a newer generation and leaves.
 	generation: int,
+	// ACP has no terminal fallback; telemetry cannot stand in for a decision.
+	explicit_decision_only: bool,
 }
 
 bridge_permission_mutex: sync.Mutex

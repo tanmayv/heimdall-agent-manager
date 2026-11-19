@@ -1,6 +1,5 @@
 // A live agent blocker in the 'Needs you' surfaces (the global AttentionDeck and
-// the chain-scoped ActionTray) — by user decision the ONLY permission-approval
-// UI. A permission prompt gets Allow / Deny (POST .../blockers/{id}/resolve); a
+// the chain-scoped ActionTray), also reused in the structured ACP pane. A permission prompt gets Allow / Deny (POST .../blockers/{id}/resolve); a
 // prompt detected in the agent terminal can only be answered there, so it gets
 // Open terminal. Resolving hides the card at once; the bridge's next snapshot
 // drops it for good (attention_changed refetches), and a failed call brings it back.

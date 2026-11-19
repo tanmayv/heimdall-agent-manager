@@ -192,12 +192,11 @@ t5_acp_permission_cancelled_and_turn_continues :: proc(t:^testing.T) {
     permission:="{\"jsonrpc\":\"2.0\",\"id\":700,\"method\":\"session/request_permission\",\"params\":{\"sessionId\":\"s\",\"toolCall\":{\"toolCallId\":\"c\",\"title\":\"Run command\"},\"options\":[]}}\n"
     f.r.client.io.feed(f.r.client,permission,1);acp_test_wait(t,&f.f,.Acks,1);acp_test_wait(t,&f.f,.Writes,2)
     testing.expect(t,strings.contains(f.f.writes[1].bytes,`"outcome":"cancelled"`))
-    // Duplicate inbound ID reuses the RPC response without another Activity.
+    // No once options means no actionable prompt; duplicate IDs reuse the reply.
     f.r.client.io.feed(f.r.client,permission,2);acp_test_wait(t,&f.f,.Acks,2)
     f.r.client.io.feed(f.r.client,acp_test_response(id,`{"stopReason":"end_turn"}`),3)
     testing.expect(t,acp_test_wait(t,&f.f,.Results,1),"the turn has a bounded, explicit completion after cancellation")
-    testing.expect_value(t,len(t5_events),1)
-    testing.expect(t,strings.contains(t5_events[0],"Run command"))
+    testing.expect_value(t,len(t5_events),0)
     testing.expect(t,f.f.results[0].ok)
     sync.mutex_lock(&bridge_permission_mutex)
     for pending in bridge_permission_pending do testing.expect(t,pending.agent_instance_id!="inst_t5_events","ACP cancellation must not create an interactive prompt")

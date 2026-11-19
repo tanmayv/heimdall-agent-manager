@@ -16,6 +16,7 @@ ACP_Runtime_Durable :: struct {
     completed_inputs: [dynamic]string,
     token_reissued: bool,
     exit_pending: bool,
+    cancelling: bool,
     stream_retries: int,
 }
 
@@ -32,6 +33,7 @@ ACP_Runtime :: struct {
     client: ^ACP_RPC_Client,
     chat: ^ACP_Chat,
     tools:ACP_Tool_Cache,
+    permissions: [dynamic]^ACP_Permission_Worker,
     instance, epoch, generation, run_dir, state_path, provider, profile, etag, model, mode, session: string,
     initialized, load_session, recovering: bool,
     quiescing, reconnect_queued: bool,
@@ -173,11 +175,8 @@ acp_runtime_inbound :: proc(data: rawptr, id, method, params: string) -> bool {
     r := cast(^ACP_Runtime)data
     if method != "session/request_permission" do return false
     obj := acp_event_object(params)
-    if acp_event_string(obj, "sessionId") != r.session { acp_rpc_reply_error(r.client,id,{code=-32602,message="wrong ACP session"}); return true }
-    // MVP policy: no interactive permission flow. In particular, never select
-    // allow_always when an adapter unexpectedly asks despite bypass mode.
-    acp_rpc_reply(r.client, id, `{"outcome":{"outcome":"cancelled"}}`)
-    acp_events_permission(r, params)
+    if r.session == "" || acp_event_string(obj, "sessionId") != r.session { acp_rpc_reply_error(r.client,id,{code=-32602,message="wrong ACP session"}); return true }
+    acp_permission_start(r, id, params)
     return true
 }
 
@@ -224,6 +223,7 @@ acp_runtime_ready :: proc(r: ^ACP_Runtime) {
 }
 
 acp_runtime_prompt :: proc(r: ^ACP_Runtime, input: ACP_Runtime_Input, bootstrap := false) {
+    r.d.cancelling = false
     acp_runtime_replace(&r.d.phase, "prompt")
     acp_runtime_replace(&r.d.current_input, input.id)
     blocks := make([dynamic]json.Value, allocator = context.temp_allocator)
@@ -319,6 +319,7 @@ acp_runtime_result :: proc(data: rawptr, result: ACP_RPC_Result) {
         case "end_turn", "max_tokens", "max_turn_requests", "refusal", "cancelled":
         case: acp_runtime_error(r, "acp_protocol_error"); return
         }
+        acp_permissions_cancel(r)
         if acp_runtime_events.prompt_finished != nil do acp_runtime_events.prompt_finished(r, r.d.current_input, result.result_json, "")
         append(&r.d.completed_inputs, strings.clone(r.d.current_input))
         if len(r.d.completed_inputs) > 256 { delete(r.d.completed_inputs[0]); ordered_remove(&r.d.completed_inputs, 0) }
@@ -361,15 +362,15 @@ acp_runtime_work :: proc(data: rawptr, c: ^ACP_RPC_Client, argument: string) -> 
     case "stop":
         if r.d.current_input!="" && acp_runtime_events.prompt_finished!=nil do acp_runtime_events.prompt_finished(r,r.d.current_input,`{"stopReason":"cancelled"}`,"")
         r.d.stopped = true
-        for p in c.state.pending_inbound {
-            if p.response_json == "" && p.method == "session/request_permission" do acp_rpc_reply(c, p.id_json, `{"outcome":{"outcome":"cancelled"}}`)
-        }
+        acp_permissions_cancel(r)
         // Cancel is a notification and the original prompt owns the response.
         raw, _ := json.marshal(struct{sessionId: string}{r.session}, allocator = context.temp_allocator)
         acp_rpc_notify(c, "session/cancel", string(raw))
         return acp_rpc_checkpoint(c)
     case "interrupt":
         if !acp_runtime_current(r) || !r.d.ready || r.d.error != "" do return false
+        r.d.cancelling = true
+        acp_permissions_cancel(r)
         raw, _ := json.marshal(struct{sessionId: string}{r.session}, allocator = context.temp_allocator)
         return acp_rpc_notify(c, "session/cancel", string(raw))
     }
@@ -409,6 +410,7 @@ acp_runtime_destroy :: proc(r: ^ACP_Runtime) {
     context.allocator = runtime.heap_allocator()
     r.quiescing = true
     acp_chat_stop(r)
+    acp_permissions_stop(r)
     // close rejects pending calls; they must not mutate the owner
     acp_rpc_close(r.client)
     acp_chat_destroy(r)
@@ -448,7 +450,7 @@ acp_runtime_connect :: proc(r: ^ACP_Runtime, socket: string, after_seq: u64, che
     io, ok := acp_pipe_io_open(socket, r.instance, r.generation, r.epoch, r.state_path, after_seq)
     if !ok do return false
     r.client, ok = acp_rpc_open(io, {data = r, checkpoint = acp_runtime_checkpoint, notification = acp_runtime_notification,
-        inbound_request = acp_runtime_inbound, fault = acp_runtime_fault, restore_completion = acp_runtime_restore_completion, can_process = acp_chat_can_process})
+        inbound_request = acp_runtime_inbound, inbound_timeout = acp_permission_timeout, fault = acp_runtime_fault, restore_completion = acp_runtime_restore_completion, can_process = acp_chat_can_process})
     if !ok { io.close(io.data); io.destroy(io.data); return false }
     if checkpoint != "" {
         if !acp_rpc_restore(r.client, checkpoint) do return false

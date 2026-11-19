@@ -203,15 +203,6 @@ acp_events_activity :: proc(r: ^ACP_Runtime,state,summary: string) {
     acp_events_emit(r,"activity",payload)
 }
 
-acp_events_permission :: proc(r: ^ACP_Runtime,params: string) {
-    obj:=acp_event_object(params)
-    call,_:=obj["toolCall"].(json.Object)
-    name:=acp_event_string(call,"title")
-    if name=="" do name=acp_event_string(call,"kind")
-    if name=="" do name="tool"
-    if len(name)>256 do name=name[:256]
-    acp_events_activity(r,"active",fmt.tprintf("Permission cancelled for %s",name))
-}
 
 acp_events_prompt_started :: proc(r: ^ACP_Runtime,input_id: string) {
     acp_events_activity(r,"active","")

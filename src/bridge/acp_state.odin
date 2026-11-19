@@ -58,6 +58,8 @@ ACP_RPC_Inbound :: struct {
     params_json: string,
     deadline_unix_ms: i64,
     response_json: string,
+    // Stable permission identity; params_json retains the original tool/options.
+    blocker_id: string,
     // Receipt for the final chunk proves the serialized response reached stdin.
     // Empty for unanswered requests and entries in the recent replay window.
     response_delivery_id: string,
@@ -163,5 +165,5 @@ acp_state_delete :: proc(s: ^ACP_State) {
 
 acp_state_inbound_delete :: proc(p: ACP_RPC_Inbound) {
     delete(p.id_json); delete(p.method); delete(p.params_json)
-    delete(p.response_json); delete(p.response_delivery_id)
+    delete(p.response_json); delete(p.response_delivery_id); delete(p.blocker_id)
 }

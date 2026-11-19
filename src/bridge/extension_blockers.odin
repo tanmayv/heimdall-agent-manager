@@ -258,7 +258,7 @@ bridge_blockers_on_extension_event :: proc(instance_id: string, ev: contracts.Ex
 		call_summary := ""
 		if strings.trim_space(tool_input_json) != "" do call_summary = bridge_blocker_summary(ev.tool_name, tool_input_json, context.temp_allocator)
 		for p, i in bridge_permission_pending {
-			if p.agent_instance_id != instance_id || p.kind != BRIDGE_BLOCKER_KIND_PERMISSION || p.decided do continue
+			if p.agent_instance_id != instance_id || p.kind != BRIDGE_BLOCKER_KIND_PERMISSION || p.decided || p.explicit_decision_only do continue
 			if p.tool != ev.tool_name || p.agent_id != ev.agent_id do continue
 			if call_summary != "" && p.summary != "" && p.summary != call_summary do continue
 			if ev.kind == .Tool_Start && now - p.created_unix_ms < BRIDGE_BLOCKER_TOOL_START_GRACE_MS do continue
@@ -275,7 +275,7 @@ bridge_blockers_on_extension_event :: proc(instance_id: string, ev: contracts.Ex
 			if s != "idle" && s != "active" do return 0
 		}
 		for &p in bridge_permission_pending {
-			if p.agent_instance_id != instance_id || p.kind != BRIDGE_BLOCKER_KIND_PERMISSION || p.decided do continue
+			if p.agent_instance_id != instance_id || p.kind != BRIDGE_BLOCKER_KIND_PERMISSION || p.decided || p.explicit_decision_only do continue
 			// Stop fires while background subagents still run, so a turn
 			// boundary only proves the prompts of the agent it belongs to are gone.
 			if p.agent_id != ev.agent_id do continue

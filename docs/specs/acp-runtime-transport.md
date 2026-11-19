@@ -370,7 +370,7 @@ Do not fabricate usage/token counts from text; map only values actually reported
 
 ### Permission request routing
 
-**MVP implementation amendment (T5, requirements revision 2):** interactive permissions are deferred. Reply with `RequestPermissionOutcome` cancelled immediately on the instance dispatcher and emit one Activity naming the tool. Do not start a permission worker, call `bridge_ext_permission_run`, map option kinds, or show a permission prompt. The interactive design below is retained for a later task.
+**Implementation amendment (T9):** interactive permissions are implemented through the existing extension permission relay. Each request has a journaled stable blocker ID and a separate worker; the dispatcher owns the single reply. Ask mode uses the interactive flow below; yolo remains `bypassPermissions`. Both modes only select the adapter’s once options if a permission request arrives.
 
 The request contains `toolCall` (a ToolCallUpdate object), not merely a top-level toolCallId:
 

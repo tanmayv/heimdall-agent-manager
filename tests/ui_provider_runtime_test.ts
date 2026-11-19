@@ -208,7 +208,8 @@ test('provider settings renders one shared Runtime control for multiple profiles
     assert.match(h.doc.body.textContent || '', /Shared by all Claude profiles/);
     assert.equal(h.doc.querySelector('select')!.disabled, true);
   } finally {
-    await h.cleanup(); store.dispatch(heimdallApi.util.resetApiState()); globalThis.fetch = previous;
+    await act(async () => { store.dispatch(heimdallApi.util.resetApiState()); await tick(); });
+    await h.cleanup(); globalThis.fetch = previous;
   }
 });
 
@@ -228,4 +229,62 @@ test('startup and unknown blockers never offer permission decisions', async () =
       if (kind === 'startup') assert.match(renderToStaticMarkup(React.createElement(AgentBlockerBody, { item })), /claude \/login.*bridge host.*Restart agent/);
     }
   } finally { store.dispatch(heimdallApi.util.resetApiState()); }
+});
+
+test('ACP pane reuses attention permission cards: Allow/Deny, failure recovery, instance scoping and stop', async () => {
+  const { AcpPermissionBlockers } = await import('../src/ui/components/chat/AcpPermissionBlockers.tsx');
+  const { Provider } = await import('react-redux');
+  const { createActionScheduler } = await import('../src/ui/services/attention/actionScheduler.ts');
+  const { hideKey } = await import('../src/ui/components/attention/attentionModel.ts');
+  const store = await makeVaultStore();
+  const h = await browser();
+  const previous = globalThis.fetch;
+  const calls: any[] = [];
+  const item = (id: string, instance = 'i', kind = 'permission'): any => ({
+    card_id: `blk:${instance}:${id}`, kind: 'agent_blocker', title: 'Permission', status: 'pending',
+    context: {}, details: { blocker_kind: kind, tool_name: 'Run command', input: { command: 'pwd' } },
+    action_refs: { agent_instance_id: instance, blocker_id: id },
+  });
+  const items = [item('allow'), item('deny'), item('other', 'other-instance'), item('auth', 'i', 'startup')];
+  const scheduler = createActionScheduler({ timers: { now: () => 0, setTimeout: () => 1, clearTimeout: () => {} } });
+  let fail = true;
+  globalThis.fetch = async (input: any, init: any = {}) => {
+    const path = new URL(String(input), 'http://localhost').pathname;
+    if (init.method === 'POST') {
+      calls.push({ path, body: JSON.parse(init.body) });
+      if (path.includes('/deny/') && fail) return new Response(JSON.stringify({ error: { message: 'Try again' } }), { status: 503 });
+      return response({ resolved: true, delivered: true });
+    }
+    return response({ items, counts: { total: 4, agent_blocker: 4 } });
+  };
+  const render = (runtimeStatus = 'running') => h.render(React.createElement(Provider, { store },
+    React.createElement(AcpPermissionBlockers, { agentInstanceId: 'i', visible: true, runtimeStatus, scheduler })));
+  try {
+    await render(); await act(tick);
+    assert.ok(h.doc.querySelector('[data-debug-id="agent-acp-permission-allow"]'));
+    assert.ok(h.doc.querySelector('[data-debug-id="attention-blocker-deny-deny"]'));
+    assert.equal(h.doc.querySelector('[data-debug-id="agent-acp-permission-other"]'), null);
+    assert.equal(h.doc.querySelector('[data-debug-id="agent-acp-permission-auth"]'), null);
+    assert.match(h.doc.body.textContent || '', /pwd/);
+    await h.click('attention-blocker-allow-allow');
+    assert.equal(h.doc.querySelector('[data-debug-id="agent-acp-permission-allow"]'), null);
+    assert.ok(scheduler.getSnapshot().hidden.has(hideKey(items[0])));
+    await h.click('attention-blocker-deny-deny');
+    assert.ok(h.doc.querySelector('[data-debug-id="agent-acp-permission-deny"]'), 'a failed decision restores the prompt');
+    assert.ok(h.doc.querySelector('[role="alert"]'));
+    fail = false;
+    await h.click('attention-blocker-deny-deny');
+    assert.equal(h.doc.querySelector('[data-debug-id="agent-acp-permission-deny"]'), null);
+    assert.deepEqual(calls, [
+      { path: '/api/v1/agent-instances/i/blockers/allow/resolve', body: { decision: 'allow' } },
+      { path: '/api/v1/agent-instances/i/blockers/deny/resolve', body: { decision: 'deny' } },
+      { path: '/api/v1/agent-instances/i/blockers/deny/resolve', body: { decision: 'deny' } },
+    ]);
+    await act(async () => scheduler.unsettle(hideKey(items[0])));
+    await render('stopped');
+    assert.equal(h.doc.querySelector('[data-debug-id^="agent-acp-permission-"]'), null);
+  } finally {
+    await act(async () => { store.dispatch(heimdallApi.util.resetApiState()); await tick(); });
+    await h.cleanup(); globalThis.fetch = previous;
+  }
 });

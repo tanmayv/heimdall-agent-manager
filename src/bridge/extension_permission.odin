@@ -28,13 +28,29 @@ import "core:encoding/json"
 import "core:os"
 import "core:strconv"
 import "core:strings"
+import "core:sync"
 import contracts "odin_test:contracts"
 
 BRIDGE_EXT_PERMISSION_DEFAULT_TIMEOUT_MS :: 300_000
 // HEIMDALL_EXT_PERMISSION_TIMEOUT_MS overrides the default wait (ms) bridge-wide;
 // a request's own timeout_ms wins over both. Clamped by the relay's min/max.
 BRIDGE_EXT_PERMISSION_TIMEOUT_ENV :: "HEIMDALL_EXT_PERMISSION_TIMEOUT_MS"
+// Optional in-process owner guard. Registration and cancellation serialize so
+// a stop cannot miss a worker that has not registered its blocker yet.
+Bridge_Ext_Permission_Control :: struct {
+    mu: sync.Mutex,
+    cancelled: bool,
+}
+
+bridge_ext_permission_cancel :: proc(control: ^Bridge_Ext_Permission_Control, instance, blocker: string) {
+    sync.mutex_lock(&control.mu); defer sync.mutex_unlock(&control.mu)
+    control.cancelled = true
+    bridge_blockers_cancel(instance, blocker)
+}
+
 Bridge_Ext_Permission_Request :: struct {
+	control: ^Bridge_Ext_Permission_Control, // optional, never serialized
+	explicit_decision_only: bool, // structured ACP caller, no terminal fallback
 	provider:    string,
 	agent_id:    string,
 	tool_name:   string,
@@ -124,6 +140,14 @@ bridge_ext_permission_run :: proc(rec: Bridge_Local_Agent_Token_Record, req: Bri
 	blocker_id := strings.clone(req.blocker_id) if req.blocker_id != "" else bridge_blocker_new_id()
 	out := Bridge_Ext_Permission_Outcome{request_id = blocker_id, decision = "none"}
 
+    if req.control != nil {
+        sync.mutex_lock(&req.control.mu)
+        if req.control.cancelled {
+            sync.mutex_unlock(&req.control.mu)
+            out.message = "permission request cancelled"
+            return out
+        }
+    }
 	now := bridge_runtime_now_ms()
 	input := bridge_blocker_cap_input(req.input)
 	generation, _ := bridge_blockers_register_permission(Bridge_Permission_Pending{
@@ -135,9 +159,11 @@ bridge_ext_permission_run :: proc(rec: Bridge_Local_Agent_Token_Record, req: Bri
 		agent_id = strings.clone(req.agent_id),
 		summary = bridge_blocker_summary(req.tool_name, req.input),
 		input = strings.clone(input),
+		explicit_decision_only = req.explicit_decision_only,
 		created_unix_ms = now,
 		deadline_unix_ms = now + i64(timeout_ms),
 	})
+    if req.control != nil do sync.mutex_unlock(&req.control.mu)
 	source := bridge_ext_activity_source(req.provider)
 	bridge_runtime_note_agent_activity(instance_id, "waiting_user", source)
 
