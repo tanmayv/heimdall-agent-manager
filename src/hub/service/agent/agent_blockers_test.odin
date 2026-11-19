@@ -103,9 +103,9 @@ test_agent_blockers_snapshot_replaces_wholesale_and_publishes :: proc(t: ^testin
 
 	// A newer snapshot replaces the list; invalid entries are skipped.
 	testing.expect(t, apply_bridge_blockers_snapshot(&svc, "brg_1", BLK_SNAPSHOT_TWO))
-	testing.expect_value(t, instance_blocker_count(&svc, "inst_me"), 2)
+	testing.expect_value(t, instance_blocker_count(&svc, "inst_me"), 1)
 	body, _, _ = list_instance_blockers(&svc, blk_user(), "inst_me")
-	testing.expect(t, strings.contains(body, `"kind":"terminal_prompt"`), body)
+	testing.expect(t, !strings.contains(body, "terminal_prompt"), body) // screen-detected prompts from older bridges are dropped
 	testing.expect(t, !strings.contains(body, "blk_x"), body)
 	testing.expect_value(t, len(svc.blockers.events), 2)
 
@@ -157,7 +157,7 @@ test_agent_blockers_dropped_on_bridge_offline_and_instance_stop :: proc(t: ^test
 	store: Blk_Store; repo: iface.Agent_Repository; clock: platform.Clock; ids: platform.ID_Generator
 	svc := blk_service(&store, &repo, &clock, &ids)
 	testing.expect(t, apply_bridge_blockers_snapshot(&svc, "brg_1", BLK_SNAPSHOT_ONE))
-	testing.expect(t, apply_bridge_blockers_snapshot(&svc, "brg_1", `{"agent_instance_id":"inst_two","revision":5,"blockers":[{"blocker_id":"term_inst_two","kind":"terminal_prompt"}]}`))
+	testing.expect(t, apply_bridge_blockers_snapshot(&svc, "brg_1", `{"agent_instance_id":"inst_two","revision":5,"blockers":[{"blocker_id":"blk_two","kind":"permission"}]}`))
 	testing.expect(t, apply_bridge_blockers_snapshot(&svc, "brg_2", `{"agent_instance_id":"inst_other_bridge","revision":5,"blockers":[{"blocker_id":"blk_o","kind":"permission"}]}`))
 	events_before := len(svc.blockers.events)
 

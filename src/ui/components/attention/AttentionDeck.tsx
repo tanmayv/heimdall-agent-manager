@@ -413,10 +413,8 @@ export function AttentionDeck({
 
   type DockAction = { key: string; label: string; icon: IconName; tone?: 'success' | 'danger'; run: () => void; debug: string };
   // Snoozed cards keep their original actions: acting settles them in place.
-  const dock: DockAction[] = !current ? [] : current.kind === 'agent_blocker' ? (current.details.blocker_kind !== 'permission' && current.details.blocker_kind !== 'terminal_prompt' ? [
+  const dock: DockAction[] = !current ? [] : current.kind === 'agent_blocker' ? (current.details.blocker_kind !== 'permission' ? [
     { key: 'o', label: 'Open agent', icon: 'arrow-right', debug: 'open', run: () => openSource(current) },
-  ] : current.details.blocker_kind === 'terminal_prompt' ? [
-    { key: 'o', label: 'Open terminal', icon: 'arrow-right', debug: 'open-terminal', run: () => openSource(current) },
   ] : [
     { key: 'a', label: 'Allow', icon: 'check', tone: 'success', debug: 'allow', run: () => decideBlocker(current, 'allow') },
     { key: 'x', label: 'Deny', icon: 'close', tone: 'danger', debug: 'deny', run: () => decideBlocker(current, 'deny') },

@@ -1,8 +1,7 @@
 // A live agent blocker in the 'Needs you' surfaces (the global AttentionDeck and
 // the chain-scoped ActionTray) — by user decision the ONLY permission-approval
-// UI. A permission prompt gets Allow / Deny (POST .../blockers/{id}/resolve); a
-// prompt detected in the agent terminal can only be answered there, so it gets
-// Open terminal. Resolving hides the card at once; the bridge's next snapshot
+// UI. A permission prompt gets Allow / Deny (POST .../blockers/{id}/resolve).
+// Resolving hides the card at once; the bridge's next snapshot
 // drops it for good (attention_changed refetches), and a failed call brings it back.
 // A decision can still be lost after the hub accepted it (the bridge restarts
 // before its waiter sees the frame); the hook then re-registers the SAME
@@ -17,7 +16,7 @@ import { attentionScheduler, type ActionScheduler } from '../../services/attenti
 import { buildRouteHash, navigateTo } from '../../utils/appLocation';
 import { summarizePermissionInput } from '../extension/permissionCardModel';
 import type { BlockerDecision } from '../extension/blockersModel';
-import { formatAge, hideKey, isTerminalPromptItem } from './attentionModel';
+import { formatAge, hideKey } from './attentionModel';
 import { needLabel } from './actionTrayModel';
 import { AcpAuthInstructions } from '../chat/AcpAuthInstructions';
 
@@ -49,18 +48,10 @@ export function openBlockerAgent(item: AttentionBlockerItem) {
 export function AgentBlockerBody({ item }: { item: AttentionBlockerItem }) {
   const d = item.details;
   const input = useMemo(() => summarizePermissionInput(d.tool_name, (d.input || {}) as Record<string, any>), [d.tool_name, d.input]);
-  if (d.blocker_kind !== 'permission' && d.blocker_kind !== 'terminal_prompt') {
+  if (d.blocker_kind !== 'permission') {
     return d.blocker_kind === 'startup' && d.input?.reason === 'acp_auth_required'
       ? <AcpAuthInstructions />
       : <p className="text-sm text-primary">{d.summary || 'This agent needs attention on the bridge host.'}</p>;
-  }
-  if (isTerminalPromptItem(item)) {
-    return (
-      <p data-debug-id="attention-blocker-terminal" className="flex items-center gap-2 text-[14px] text-primary">
-        <Icon name="terminal" size={14} className="shrink-0 text-warning" />
-        {d.summary || 'The agent is waiting for input in its terminal.'}
-      </p>
-    );
   }
   return (
     <>
@@ -79,23 +70,14 @@ export function AgentBlockerBody({ item }: { item: AttentionBlockerItem }) {
   );
 }
 
-/** Allow / Deny (permission) or Open terminal (terminal prompt), with the last error. */
+/** Allow / Deny (permission), with the last error. */
 export function AgentBlockerActions({ item, compact = false, scheduler, onDone }: { item: AttentionBlockerItem; compact?: boolean; scheduler?: ActionScheduler; onDone?: (label: string) => void }) {
   const resolveBlocker = useResolveBlocker(scheduler);
   const [busy, setBusy] = useState<BlockerDecision | null>(null);
   const [error, setError] = useState('');
   const id = item.action_refs.blocker_id;
-  if (item.details.blocker_kind !== 'permission' && item.details.blocker_kind !== 'terminal_prompt') {
+  if (item.details.blocker_kind !== 'permission') {
     return <Button variant="secondary" data-debug-id={`attention-blocker-open-${id}`} onClick={() => openBlockerAgent(item)}>Open agent</Button>;
-  }
-  if (isTerminalPromptItem(item)) {
-    return (
-      <div className="flex flex-wrap items-center gap-2">
-        <Button variant="secondary" data-debug-id={`attention-blocker-open-terminal-${id}`} onClick={() => openBlockerAgent(item)}>
-          Open terminal
-        </Button>
-      </div>
-    );
   }
   const decide = async (decision: BlockerDecision) => {
     setBusy(decision);
@@ -130,7 +112,7 @@ export function ActionBlockerCard({ item, mobile, now, scheduler }: { item: Atte
   return (
     <article
       data-debug-id={`action-tray-card-${item.details.blocker_kind}`}
-      aria-label={isTerminalPromptItem(item) ? 'Agent waiting for input in its terminal' : 'Agent needs your permission'}
+      aria-label="Agent needs your permission"
       className="flex h-full min-h-0 min-w-0 flex-col gap-3"
     >
       <header className="min-w-0 space-y-1">

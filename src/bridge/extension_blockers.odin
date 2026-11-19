@@ -9,9 +9,6 @@ package main
 //                    blocked hook process (under pty-host) is the source of truth:
 //                    after a bridge restart the hook re-registers the SAME
 //                    blocker_id, so the registry rebuilds itself.
-//   terminal_prompt  screen detection (pane_diff) says waiting_user and there is no
-//                    permission blocker: "Waiting for input in terminal". There is
-//                    no waiter and no remote answer; the UI links to the terminal.
 //
 // Display snapshots are forwarded only for an authorized, unexpired live-tool
 // demand lease. Local permission state and decisions do not depend on viewers.
@@ -30,8 +27,6 @@ import ws "odin_test:lib/ws"
 import contracts "odin_test:contracts"
 
 BRIDGE_BLOCKER_KIND_PERMISSION :: "permission"
-BRIDGE_BLOCKER_KIND_TERMINAL_PROMPT :: "terminal_prompt"
-BRIDGE_BLOCKER_TERMINAL_SUMMARY :: "Waiting for input in terminal"
 // Per-blocker cap on the serialized tool input; a larger input is replaced by
 // {"truncated":true} (the summary still names the command / file).
 BRIDGE_BLOCKER_INPUT_MAX :: 4096
@@ -48,7 +43,6 @@ BRIDGE_BLOCKER_TERMINAL_REASON :: "answered in the terminal"
 Bridge_Blocker_Instance :: struct {
 	revision:     i64,
 	dirty:        bool,
-	pane_waiting: bool, // last pane_diff classification was waiting_user
 }
 
 bridge_blocker_instances: map[string]Bridge_Blocker_Instance
@@ -80,11 +74,6 @@ bridge_blocker_valid_id :: proc(id: string) -> bool {
 }
 
 @(private = "file")
-bridge_blocker_terminal_id :: proc(instance_id: string) -> string {
-	return strings.concatenate({"term_", instance_id}, bridge_blockers_allocator())
-}
-
-@(private = "file")
 bridge_blocker_state_locked :: proc(instance_id: string) -> ^Bridge_Blocker_Instance {
 	if bridge_blocker_instances == nil do bridge_blocker_instances = make(map[string]Bridge_Blocker_Instance, 16, bridge_blockers_allocator())
 	if _, ok := bridge_blocker_instances[instance_id]; !ok {
@@ -101,66 +90,17 @@ bridge_blockers_touch_locked :: proc(instance_id: string) {
 	st.dirty = true
 }
 
-@(private = "file")
-bridge_blockers_has_permission_locked :: proc(instance_id: string) -> bool {
-	for p in bridge_permission_pending {
-		if p.agent_instance_id == instance_id && p.kind == BRIDGE_BLOCKER_KIND_PERMISSION && !p.decided do return true
-	}
-	return false
-}
-
-@(private = "file")
-bridge_blockers_remove_terminal_locked :: proc(instance_id: string) -> bool {
-	removed := false
-	for i := len(bridge_permission_pending) - 1; i >= 0; i -= 1 {
-		p := bridge_permission_pending[i]
-		if p.agent_instance_id != instance_id || p.kind != BRIDGE_BLOCKER_KIND_TERMINAL_PROMPT do continue
-		ordered_remove(&bridge_permission_pending, i)
-		removed = true
-	}
-	if removed do bridge_blockers_touch_locked(instance_id)
-	return removed
-}
-
-// bridge_blockers_ensure_terminal_locked adds the screen-detected blocker when the
-// pane waits for input and no permission blocker explains it.
-@(private = "file")
-bridge_blockers_ensure_terminal_locked :: proc(instance_id: string) {
-	if bridge_blockers_has_permission_locked(instance_id) do return
-	for p in bridge_permission_pending {
-		if p.agent_instance_id == instance_id && p.kind == BRIDGE_BLOCKER_KIND_TERMINAL_PROMPT do return
-	}
-	context.allocator = bridge_blockers_allocator()
-	now := bridge_runtime_now_ms()
-	append(&bridge_permission_pending, Bridge_Permission_Pending{
-		request_id = bridge_blocker_terminal_id(instance_id),
-		agent_instance_id = strings.clone(instance_id),
-		kind = BRIDGE_BLOCKER_KIND_TERMINAL_PROMPT,
-		summary = BRIDGE_BLOCKER_TERMINAL_SUMMARY,
-		input = "{}",
-		created_unix_ms = now,
-		generation = 1,
-	})
-	bridge_blockers_touch_locked(instance_id)
-}
-
 // bridge_blockers_after_removal_locked runs after an undecided blocker left the
-// registry (timeout, cancel probe): the snapshot changed, and if the pane is
-// still waiting the prompt is now the provider's own TUI prompt.
+// registry (timeout, cancel probe): the snapshot changed.
 bridge_blockers_after_removal_locked :: proc(instance_id: string) {
 	bridge_blockers_touch_locked(instance_id)
-	if st, ok := bridge_blocker_instances[instance_id]; ok && st.pane_waiting do bridge_blockers_ensure_terminal_locked(instance_id)
 }
 
 // bridge_blockers_clear_instance_locked empties an instance's blockers when it
-// stops: screen-detected entries are dropped (permission waiters were already
-// released by the caller) and an empty snapshot is announced.
+// stops (permission waiters were already released by the caller) and an empty
+// snapshot is announced.
 bridge_blockers_clear_instance_locked :: proc(instance_id: string) {
-	_ = bridge_blockers_remove_terminal_locked(instance_id)
-	if st, ok := &bridge_blocker_instances[instance_id]; ok {
-		st.pane_waiting = false
-		bridge_blockers_touch_locked(instance_id)
-	}
+	if _, ok := bridge_blocker_instances[instance_id]; ok do bridge_blockers_touch_locked(instance_id)
 }
 
 // bridge_blockers_register_permission adds a permission blocker, or refreshes the
@@ -191,29 +131,9 @@ bridge_blockers_register_permission :: proc(pending: Bridge_Permission_Pending) 
 	entry := pending
 	entry.kind = BRIDGE_BLOCKER_KIND_PERMISSION
 	entry.generation = 1
-	_ = bridge_blockers_remove_terminal_locked(entry.agent_instance_id)
 	append(&bridge_permission_pending, entry)
 	bridge_blockers_touch_locked(entry.agent_instance_id)
 	return 1, false
-}
-
-// bridge_blockers_note_pane_activity feeds the screen detector's RAW
-// classification (source pane_diff, before waiting_user is projected to idle)
-// into the terminal_prompt fallback. "unknown" changes nothing.
-bridge_blockers_note_pane_activity :: proc(instance_id, activity_status: string) {
-	if strings.trim_space(instance_id) == "" do return
-	s := strings.to_lower(strings.trim_space(activity_status), context.temp_allocator)
-	if s == "" || s == "unknown" do return
-	waiting := s == "waiting_user" || s == "waiting" || s == "waiting_approval"
-	sync.mutex_lock(&bridge_permission_mutex)
-	defer sync.mutex_unlock(&bridge_permission_mutex)
-	if waiting {
-		bridge_blocker_state_locked(instance_id).pane_waiting = true
-		bridge_blockers_ensure_terminal_locked(instance_id)
-		return
-	}
-	if st, ok := &bridge_blocker_instances[instance_id]; ok do st.pane_waiting = false
-	_ = bridge_blockers_remove_terminal_locked(instance_id)
 }
 
 // bridge_blockers_release_locked releases one waiter with "none" (the provider
@@ -402,7 +322,7 @@ bridge_blockers_ack :: proc(frame: Bridge_Blocker_Frame, sent: bool) {
 	st, ok := &bridge_blocker_instances[frame.agent_instance_id]
 	if !ok do return
 	if !sent { st.dirty = true; return }
-	if frame.count == 0 && !st.dirty && !st.pane_waiting && st.revision == frame.revision {
+	if frame.count == 0 && !st.dirty && st.revision == frame.revision {
 		key, _ := delete_key(&bridge_blocker_instances, frame.agent_instance_id)
 		delete(key, bridge_blockers_allocator())
 	}

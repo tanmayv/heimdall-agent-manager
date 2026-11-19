@@ -195,11 +195,8 @@ test_ext_blockers_cleared_on_stop :: proc(t: ^testing.T) {
 	id := "inst_blk_stop"
 	run := ext_blk_start(id, ext_blk_req(t, `,"timeout_ms":5000`))
 	testing.expect(t, ext_blk_wait_count(id, 1))
-	bridge_blockers_note_pane_activity("inst_blk_stop_pane", "waiting_user")
-	testing.expect_value(t, len(bridge_blockers_list("inst_blk_stop_pane")), 1)
 
 	_ = bridge_permission_cancel_instance(id)
-	_ = bridge_permission_cancel_instance("inst_blk_stop_pane")
 	out := ext_blk_finish(run)
 	testing.expect_value(t, out.decision, "none")
 	testing.expect_value(t, out.message, "agent instance stopped")
@@ -315,39 +312,11 @@ test_ext_blockers_cancel_rpc_releases_own_blocker_only :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_ext_blockers_terminal_prompt_fallback_from_pane_diff :: proc(t: ^testing.T) {
+test_ext_blockers_no_terminal_prompt_from_pane_diff :: proc(t: ^testing.T) {
 	context.allocator = runtime.heap_allocator()
 	id := "inst_blk_pane"
-	// Screen detection says waiting_user and there is no extension blocker.
+	// Screen detection alone never creates a blocker.
 	bridge_runtime_note_agent_activity(id, "waiting_user", "pane_diff")
-	views := bridge_blockers_list(id)
-	testing.expect_value(t, len(views), 1)
-	if len(views) == 1 {
-		testing.expect_value(t, views[0].kind, BRIDGE_BLOCKER_KIND_TERMINAL_PROMPT)
-		testing.expect_value(t, views[0].summary, BRIDGE_BLOCKER_TERMINAL_SUMMARY)
-		// No remote answer for a terminal prompt.
-		testing.expect(t, !ext_blk_decide(id, views[0].blocker_id, "allow"))
-	}
-	frame, ok := ext_blk_take_one(t, id)
-	if ok do testing.expect(t, strings.contains(frame.json, `"kind":"terminal_prompt"`), frame.json)
-
-	// An extension permission blocker replaces it ...
-	run := ext_blk_start(id, ext_blk_req(t, `,"timeout_ms":1200,"payload":{"blocker_id":"blk_pane_1"}`))
-	testing.expect(t, ext_blk_wait_blocker(id, "blk_pane_1"))
-	views = bridge_blockers_list(id)
-	if len(views) == 1 do testing.expect_value(t, views[0].kind, BRIDGE_BLOCKER_KIND_PERMISSION)
-	bridge_blockers_note_pane_activity(id, "waiting_user")
-	testing.expect_value(t, len(bridge_blockers_list(id)), 1)
-	// ... and once the hook deadline passes the TUI prompt is what is left.
-	_ = ext_blk_finish(run)
-	views = bridge_blockers_list(id)
-	testing.expect_value(t, len(views), 1)
-	if len(views) == 1 do testing.expect_value(t, views[0].kind, BRIDGE_BLOCKER_KIND_TERMINAL_PROMPT)
-
-	// Leaving waiting_user clears it; "unknown" changes nothing.
-	bridge_blockers_note_pane_activity(id, "unknown")
-	testing.expect_value(t, len(bridge_blockers_list(id)), 1)
-	bridge_runtime_note_agent_activity(id, "active", "pane_diff")
 	testing.expect_value(t, len(bridge_blockers_list(id)), 0)
 }
 

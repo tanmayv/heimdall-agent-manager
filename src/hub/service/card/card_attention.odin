@@ -34,7 +34,6 @@ ATTENTION_REASON_AWAITING_REVIEW :: "awaiting_review"
 ATTENTION_REASON_QUESTION        :: "question"
 ATTENTION_REASON_MEMORY_PROPOSAL :: "memory_proposal"
 ATTENTION_REASON_PERMISSION       :: "permission"
-ATTENTION_REASON_TERMINAL_PROMPT  :: "terminal_prompt"
 
 // ATTENTION_KIND_AGENT_BLOCKER items are live agent blockers. They are NOT
 // cards: they are built at read time from the agent service's in-memory map
@@ -180,7 +179,7 @@ attention_blocker_item :: proc(blk: agent_service.Owner_Blocker) -> Attention_It
 	strings.write_string(&r, `"}`)
 
 	title := summary
-	if title == "" do title = tool_name if is_permission && tool_name != "" else "Waiting for input in the terminal"
+	if title == "" do title = tool_name if is_permission && tool_name != "" else "Needs attention on the bridge host"
 	return Attention_Item{
 		card = domain.Card{
 			card_id = domain.Card_ID(strings.concatenate({"blk:", blk.blocker_id}, context.temp_allocator)),
@@ -189,12 +188,12 @@ attention_blocker_item :: proc(blk: agent_service.Owner_Blocker) -> Attention_It
 			status = "pending",
 			attention_since = created_at,
 			title = title,
-			rationale = "Needs your permission" if is_permission else "Waiting for input in the agent terminal",
+			rationale = "Needs your permission" if is_permission else "Needs attention on the bridge host",
 			operations_json = "[]",
 			details_json = strings.to_string(d),
 			action_refs_json = strings.to_string(r),
 		},
-		reason = ATTENTION_REASON_PERMISSION if is_permission else ATTENTION_REASON_TERMINAL_PROMPT,
+		reason = ATTENTION_REASON_PERMISSION,
 		// The agent is stalled until someone answers: always top of the deck.
 		urgency = ATTENTION_URGENCY_ERROR,
 	}

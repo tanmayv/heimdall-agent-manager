@@ -102,7 +102,7 @@ export type AttentionScope = { agents: string[]; projects: string[]; bridges: st
 
 /** A live agent blocker (never stored). input is the capped tool input object. */
 export type AttentionBlockerDetails = {
-  blocker_kind: 'permission' | 'terminal_prompt' | 'startup';
+  blocker_kind: 'permission' | 'startup';
   tool_name: string;
   summary: string;
   input: Record<string, unknown>;

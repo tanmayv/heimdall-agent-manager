@@ -15,8 +15,9 @@ import events "odin_test:hub/service/events"
 
 // Agent blockers (REQ-EXT-BLK-1..5): what keeps an agent instance from making
 // progress until a person acts — a provider permission prompt (kind
-// "permission", answerable from the UI) or a prompt screen detection saw in the
-// terminal (kind "terminal_prompt", answered there).
+// "permission", answerable from the UI) or a startup problem (kind "startup").
+// Snapshots from older bridges may still carry kind "terminal_prompt"; it is
+// dropped here.
 //
 // NOTHING IS PERSISTED. The hub keeps an in-memory map instance_id → {revision,
 // blockers} that each bridge `agent_blockers` snapshot replaces wholesale. The
@@ -41,7 +42,6 @@ AGENT_BLOCKERS_REALTIME_CHANGE :: "agent_blockers_changed"
 // Attention item kind (and attention_changed kind) for agent blockers.
 AGENT_BLOCKER_ATTENTION_KIND :: "agent_blocker"
 AGENT_BLOCKER_KIND_PERMISSION :: "permission"
-AGENT_BLOCKER_KIND_TERMINAL_PROMPT :: "terminal_prompt"
 // Bounds on what a bridge snapshot may carry (the bridge caps the same way).
 AGENT_BLOCKERS_MAX_PER_INSTANCE :: 16
 AGENT_BLOCKER_INPUT_MAX_BYTES :: 4096
@@ -114,7 +114,7 @@ blocker_canonical_json :: proc(obj: json.Object, agent_instance_id: string) -> (
 	id := blocker_text(obj, "blocker_id")
 	kind := blocker_text(obj, "kind")
 	if !blocker_valid_id(id) do return {}, false
-	if kind != AGENT_BLOCKER_KIND_PERMISSION && kind != AGENT_BLOCKER_KIND_TERMINAL_PROMPT && kind != "startup" do return {}, false
+	if kind != AGENT_BLOCKER_KIND_PERMISSION && kind != "startup" do return {}, false
 	input := "{}"
 	if in_obj, is_obj := obj["input"].(json.Object); is_obj {
 		if bytes, merr := json.marshal(in_obj, allocator = context.temp_allocator); merr == nil {

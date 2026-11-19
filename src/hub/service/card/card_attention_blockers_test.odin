@@ -39,7 +39,7 @@ test_attention_merges_live_agent_blockers :: proc(t: ^testing.T) {
 	h.svc.agents = &agents
 
 	testing.expect(t, agent_service.apply_bridge_blockers_snapshot(&agents, "brg_1", `{"agent_instance_id":"inst_chain","revision":5,"blockers":[{"blocker_id":"blk_chain","kind":"permission","agent_id":"sub-1","tool_name":"Bash","summary":"Bash: ls","input":{"command":"ls"},"created_at":"2026-10-22T09:59:00Z","expires_at":"2026-10-22T10:04:00Z"}]}`))
-	testing.expect(t, agent_service.apply_bridge_blockers_snapshot(&agents, "brg_1", `{"agent_instance_id":"inst_solo","revision":7,"blockers":[{"blocker_id":"term_inst_solo","kind":"terminal_prompt","summary":"Waiting for input in terminal","created_at":"2026-10-22T09:58:00Z"}]}`))
+	testing.expect(t, agent_service.apply_bridge_blockers_snapshot(&agents, "brg_1", `{"agent_instance_id":"inst_solo","revision":7,"blockers":[{"blocker_id":"blk_solo","kind":"permission","tool_name":"Bash","summary":"Bash: pwd","created_at":"2026-10-22T09:58:00Z"}]}`))
 	testing.expect(t, agent_service.apply_bridge_blockers_snapshot(&agents, "brg_9", `{"agent_instance_id":"inst_foreign","revision":1,"blockers":[{"blocker_id":"blk_foreign","kind":"permission","tool_name":"Bash"}]}`))
 
 	r, err := list_attention(&h.svc, ph_auth(), "", "", true)
@@ -47,13 +47,13 @@ test_attention_merges_live_agent_blockers :: proc(t: ^testing.T) {
 	testing.expect_value(t, r.counts.agent_blocker, 2) // the other owner's blocker never counts
 	testing.expect_value(t, r.counts.task, 1)
 	testing.expect_value(t, len(r.items), 3)
-	// Blockers are urgency error: they come first, oldest first (terminal prompt 09:58).
+	// Blockers are urgency error: they come first, oldest first (solo 09:58).
 	if len(r.items) == 3 {
 		term, perm := r.items[0], r.items[1]
-		testing.expect_value(t, string(term.card.card_id), "blk:term_inst_solo")
+		testing.expect_value(t, string(term.card.card_id), "blk:blk_solo")
 		testing.expect_value(t, term.card.kind, ATTENTION_KIND_AGENT_BLOCKER)
-		testing.expect_value(t, term.reason, ATTENTION_REASON_TERMINAL_PROMPT)
-		testing.expect_value(t, term.card.action_refs_json, `{"agent_instance_id":"inst_solo","chain_id":"","blocker_id":"term_inst_solo"}`)
+		testing.expect_value(t, term.reason, ATTENTION_REASON_PERMISSION)
+		testing.expect_value(t, term.card.action_refs_json, `{"agent_instance_id":"inst_solo","chain_id":"","blocker_id":"blk_solo"}`)
 		testing.expect_value(t, term.ctx.chain_title, "")
 
 		testing.expect_value(t, string(perm.card.card_id), "blk:blk_chain")

@@ -3189,8 +3189,6 @@ bridge_runtime_note_agent_activity :: proc(instance_id, activity_status, activit
 	bridge_bot_note_raw_activity(instance_id, activity_status)
 	source := strings.trim_space(activity_source)
 	if source == "" do source = "agent_extension"
-	// Screen detection drives the terminal_prompt blocker fallback (REQ-EXT-BLK-5).
-	if source == "pane_diff" do bridge_blockers_note_pane_activity(instance_id, activity_status)
 	// T6: idle is withheld (reported active) while a context rollover is in
 	// progress, so the hub's idle grace cannot expire the lease mid-handoff.
 	// Advance the rollover first so an idle that starts one is already withheld.
