@@ -331,22 +331,6 @@ ack_reply :: proc(conn: ^Connection, reply: string, timeout_ms: i64) -> Error {
 	defer delete(value)
 	return Error{status = ham_nats_ack_reply(conn, value, timeout_ms)}
 }
-// Synchronous core subscription, used to observe max-delivery advisories.
-// Caller owns the handle and releases it with pull_destroy.
-subscribe :: proc(conn: ^Connection, subject: string) -> (sub: ^Pull, err: Error) {
-	if conn == nil || !valid_name(subject) do return nil, Error{status = INVALID}
-	value := strings.clone_to_cstring(subject)
-	defer delete(value)
-	err.status = ham_nats_subscribe(&sub, conn, value)
-	return
-}
-// Caller owns a successful message; message_destroy releases it. Timeout owns
-// nothing. Unlike batch_message, the result is independently owned.
-next_message :: proc(sub: ^Pull, timeout_ms: i64) -> (msg: ^Message, err: Error) {
-	if sub == nil || timeout_ms <= 0 do return nil, Error{status = INVALID}
-	err.status = ham_nats_next(&msg, sub, timeout_ms)
-	return
-}
 stream_get :: proc(conn: ^Connection, stream: string, sequence: u64) -> (msg: ^Message, err: Error) {
 	if conn == nil || !valid_name(stream) || sequence == 0 do return nil, Error{status = INVALID}
 	value := strings.clone_to_cstring(stream)
@@ -355,3 +339,19 @@ stream_get :: proc(conn: ^Connection, stream: string, sequence: u64) -> (msg: ^M
 	return
 }
 message_destroy :: proc(msg: ^Message) {natsMsg_Destroy(msg)}
+
+// Snapshot of the server/account JetStream API counters, including this INFO
+// request. Used to verify idle inbox traffic against the real server.
+api_stats :: proc(conn: ^Connection) -> (total, errors: u64, err: Error) {
+	if conn == nil do return 0, 0, Error{status = INVALID}
+	err.status = ham_nats_api_stats(conn, &total, &errors, &err.jetstream)
+	return
+}
+
+// Server-side NoWait fetch: promptly reads available messages without imposing
+// an unsafe millisecond client deadline. Ownership matches fetch.
+fetch_available :: proc(pull: ^Pull, limit: int) -> (batch: ^Batch, err: Error) {
+	if pull == nil || limit <= 0 || limit > 0x7fffffff do return nil, Error{status = INVALID}
+	err.status = ham_nats_fetch_available(&batch, pull, c.int(limit), &err.jetstream)
+	return
+}

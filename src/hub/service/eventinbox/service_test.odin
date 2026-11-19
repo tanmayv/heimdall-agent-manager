@@ -71,6 +71,25 @@ inbox_delivery_scenario :: proc(t: ^testing.T) {
 	committed, _ := iface.unit_of_work_commit(&uow)
 	if !testing.expect(t, committed) do return
 	if !testing.expect(t, reconcile(&runtime), "provision consumer and durable advisory stream") do return
+	// Compare cached reconciliation with advisory draining alone: unchanged
+	// subscriptions must add no management API calls, regardless of idle passes.
+	api_before, _, api_err := nats.api_stats(conn)
+	testing.expect_value(t, api_err.status, i32(0))
+	for _ in 0 ..< 12 do testing.expect(t, drain_advisories(&runtime))
+	api_after_drain, _, _ := nats.api_stats(conn)
+	for _ in 0 ..< 12 do testing.expect(t, reconcile(&runtime))
+	api_after_cache, _, _ := nats.api_stats(conn)
+	drain_requests := api_after_drain - api_before
+	cached_requests := api_after_cache - api_after_drain
+	testing.expectf(
+		t,
+		cached_requests <= drain_requests + 2,
+		"unchanged cached reconciliation adds no consumer management calls: drain %d, cached %d",
+		drain_requests,
+		cached_requests,
+	)
+	testing.expect_value(t, len(runtime.provisioned), 1)
+
 	testing.expect(
 		t,
 		sqlite.exec(
@@ -207,6 +226,24 @@ inbox_delivery_scenario :: proc(t: ^testing.T) {
 	// The hub's advisory reader is offline when the last pull generates the
 	// max-delivery advisory; the dedicated stream retains it until reconnect.
 	runtime_disconnect(&runtime)
+	// Poison advisories precede the valid exhausted delivery. They must be
+	// acknowledged/discarded, so they cannot wedge the durable advisory reader.
+	advisory_subject := "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.HEIM_EVENTS.coord"
+	_, bad_err := nats.publish(conn, advisory_subject, transmute([]byte)string("not-json"), "bad_advisory")
+	testing.expect_value(t, bad_err.status, i32(0))
+	outside_cfg := eventrelay.stream_config()
+	outside_cfg.subjects = []string{"ev.>", "other.>"}
+	_, bad_err = nats.stream_update(conn, outside_cfg)
+	testing.expect_value(t, bad_err.status, i32(0))
+	outside, outside_err := nats.publish(conn, "other.original", transmute([]byte)string("not an event"), "outside")
+	testing.expect_value(t, outside_err.status, i32(0))
+	bad_body, _ := json.marshal(struct {
+		stream, consumer: string,
+		stream_seq:       u64,
+	}{"HEIM_EVENTS", "coord", outside.sequence})
+	_, bad_err = nats.publish(conn, advisory_subject, bad_body, "bad_origin")
+	delete(bad_body)
+	testing.expect_value(t, bad_err.status, i32(0))
 	events, err = next(&service, "alice", "agt_coord", 0, 20)
 	testing.expect(t, err.code == .None && len(events) == 0, "exhausted delivery not returned")
 	values_destroy(events)
@@ -235,6 +272,11 @@ inbox_delivery_scenario :: proc(t: ^testing.T) {
 		json.destroy_value(value)
 		testing.expect_value(t, nats.ack(msg).status, i32(0))
 	}
+	// Retain an HTTP request's stale snapshot, then let removal and background
+	// deletion finish before that request tries to provision its consumer.
+	late_snapshot, snapshot_err := subscriptions(&service, "alice", "agt_coord")
+	testing.expect(t, snapshot_err.code == .None && len(late_snapshot) == 1)
+	defer subscription_rows_destroy(late_snapshot)
 	// Queue deletion survives the SQL commit and is drained outside the UoW.
 	uow, began, _ = iface.unit_of_work_begin(&factory)
 	if !testing.expect(t, began) do return
@@ -248,6 +290,15 @@ inbox_delivery_scenario :: proc(t: ^testing.T) {
 	missing, merr := nats.pull_bind(conn, "HEIM_EVENTS", "coord")
 	testing.expect(t, merr.status != 0 && missing == nil, "removed default retires durable consumer")
 	nats.pull_destroy(missing)
+	if len(late_snapshot) == 1 {
+		active, fence_err := provision_consumer(&service, conn, late_snapshot[0])
+		testing.expect(t, fence_err.code == .None && !active, "late request observes subscription removal")
+		orphan, orphan_err := nats.pull_bind(conn, "HEIM_EVENTS", "coord")
+		testing.expect(t, orphan_err.status != 0 && orphan == nil, "late provisioning cannot resurrect a consumer")
+		nats.pull_destroy(orphan)
+		testing.expect(t, reconcile(&runtime), "cleanup retries tolerate already-deleted consumers")
+	}
+	testing.expect_value(t, len(runtime.provisioned), 0)
 	// Production worker lifecycle joins its thread and releases its own connection.
 	runtime_disconnect(&runtime)
 	start(&runtime, &service)

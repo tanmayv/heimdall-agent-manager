@@ -105,6 +105,10 @@ Delivery semantics:
 - An unacked event is redelivered after `ack_wait` (5 minutes).
 - After `max_deliver` (10) attempts the event goes to subject `ev.dlq.<owner>…`. NATS has no built-in dead-letter queue, so the hub republishes on the max-deliveries advisory.
 
+**Inbox resource bounds (E2 review):** acknowledgement lookup is indexed by requested event IDs, never by the subscriber's delivery history. Delivery metadata expires after 14 days; completed acknowledgement/resolution receipts are trimmed to the latest 256 per subscription. A subscription admits at most 4,096 records and leaves new events queued when full. Previously delivered unresolved topics remain eligible for resolution notices within that retention window. Runtime sweeps expired rows once per minute. Recent acknowledgement retries are idempotent; expired/trimmed IDs return not found.
+
+**Idle polling:** each request provisions and binds each consumer once. It scans with synchronous server-side NoWait and then divides the remaining wait budget among blocking fetches. Resolution checks use a joined query, not one transaction per pending topic. The runtime reconciles once per second, caches unchanged live consumer configurations, and evicts removed names or clears the cache on reconnect. Provisioning rechecks subscription existence after network creation and queues/deletes a consumer when removal won the race. Malformed max-delivery advisories are acknowledged and logged so a poison record cannot block later DLQ work.
+
 ### 3.6 Nudge and wake (REQ-EVA-4)
 
 - When live events are waiting for an agent whose instance is idle, the hub sends **one** nudge line through the existing notice command path: `[events] N new event(s) — run ham-ctl events next`. Nudges are coalesced to at most one per subscriber per 30 seconds.

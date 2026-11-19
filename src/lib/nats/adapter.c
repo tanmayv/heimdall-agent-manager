@@ -130,14 +130,35 @@ int ham_nats_pull_bind(natsSubscription **out, ham_nats *h, const char *stream,
     return s;
 }
 void ham_nats_pull_destroy(natsSubscription *sub) { natsSubscription_Destroy(sub); }
-int ham_nats_fetch(natsMsgList **out, natsSubscription *sub, int count, int64_t timeout, jsErrCode *err) {
+
+static int ham_nats_fetch_options(natsMsgList **out, natsSubscription *sub, int count,
+                                  int64_t timeout, int no_wait, jsErrCode *err) {
     *out = NULL;
     natsMsgList *list = calloc(1, sizeof(*list));
     if (!list) return NATS_NO_MEMORY;
-    natsStatus s = natsSubscription_Fetch(list, sub, count, timeout, err);
+    natsStatus s;
+    if (no_wait) {
+        jsFetchRequest request;
+        s = jsFetchRequest_Init(&request);
+        if (s == NATS_OK) {
+            request.Batch = count;
+            request.Expires = timeout * 1000000;
+            request.NoWait = true;
+            s = natsSubscription_FetchRequest(list, sub, &request);
+        }
+        if (s == NATS_NOT_FOUND) s = NATS_TIMEOUT;
+    } else {
+        s = natsSubscription_Fetch(list, sub, count, timeout, err);
+    }
     if (s != NATS_OK) { natsMsgList_Destroy(list); free(list); return s; }
     *out = list;
     return NATS_OK;
+}
+int ham_nats_fetch(natsMsgList **out, natsSubscription *sub, int count, int64_t timeout, jsErrCode *err) {
+    return ham_nats_fetch_options(out, sub, count, timeout, 0, err);
+}
+int ham_nats_fetch_available(natsMsgList **out, natsSubscription *sub, int count, jsErrCode *err) {
+    return ham_nats_fetch_options(out, sub, count, 1000, 1, err);
 }
 void ham_nats_batch_destroy(natsMsgList *list) {
     if (!list) return;
@@ -172,25 +193,18 @@ int ham_nats_ack_reply(ham_nats *h, const char *reply, int64_t timeout) {
     natsMsg_Destroy(response);
     return s;
 }
-int ham_nats_subscribe(natsSubscription **out, ham_nats *h, const char *subject) {
-    *out = NULL;
-    natsStatus s = natsConnection_SubscribeSync(out, h->nc, subject);
-    // Ensure the advisory subscription is installed before a pull can exhaust
-    // max_deliver. No callback from nats.c enters Odin.
-    if (s == NATS_OK) s = natsConnection_FlushTimeout(h->nc, 2000);
-    if (s != NATS_OK) { natsSubscription_Destroy(*out); *out = NULL; }
-    return s;
-}
-int ham_nats_next(natsMsg **out, natsSubscription *sub, int64_t timeout) {
-    *out = NULL;
-    natsStatus s = natsSubscription_NextMsg(out, sub, timeout);
-    if (s != NATS_OK) { natsMsg_Destroy(*out); *out = NULL; }
-    return s;
-}
 int ham_nats_stream_get(natsMsg **out, ham_nats *h, const char *stream,
                          uint64_t sequence, jsErrCode *err) {
     *out = NULL;
     natsStatus s = js_GetMsg(out, h->js, stream, sequence, NULL, err);
     if (s != NATS_OK) { natsMsg_Destroy(*out); *out = NULL; }
+    return s;
+}
+
+int ham_nats_api_stats(ham_nats *h, uint64_t *total, uint64_t *errors, jsErrCode *err) {
+    jsAccountInfo *info = NULL;
+    natsStatus s = js_GetAccountInfo(&info, h->js, NULL, err);
+    if (s == NATS_OK) { *total = info->API.Total; *errors = info->API.Errors; }
+    jsAccountInfo_Destroy(info);
     return s;
 }

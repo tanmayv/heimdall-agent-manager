@@ -1,5 +1,9 @@
 package domain
 
+// Delivery metadata is bounded independently of the JetStream backlog.
+EVENT_DELIVERY_LIMIT :: 4096
+EVENT_ACK_RECEIPT_LIMIT :: 256
+
 // Repository reads own these strings; the API never accepts a subscriber id
 // from its caller, but derives it from the authenticated durable identity.
 Event_Subscription :: struct {

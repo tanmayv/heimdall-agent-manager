@@ -313,8 +313,24 @@ test_persisted_ack_and_advisory :: proc(t: ^testing.T) {
 	defer destroy(conn)
 	_, err := stream_add(conn, test_stream())
 	if !testing.expect_value(t, err.status, i32(0)) do return
-	advisory, aerr := subscribe(conn, "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.EVENTS.>")
+
+	_, aerr := stream_add(
+		conn,
+		{
+			name = "ADVISORIES",
+			subjects = []string{"$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.EVENTS.>"},
+			max_age_ns = i64(time.Minute),
+			replicas = 1,
+		},
+	)
 	if !testing.expect_value(t, aerr.status, i32(0)) do return
+	aerr = consumer_add(
+		conn,
+		{stream = "ADVISORIES", durable = "advisories", ack_wait_ns = i64(time.Second), max_deliver = 10},
+	)
+	if !testing.expect_value(t, aerr.status, i32(0)) do return
+	advisory, bind_advisory_err := pull_bind(conn, "ADVISORIES", "advisories")
+	if !testing.expect_value(t, bind_advisory_err.status, i32(0)) do return
 	defer pull_destroy(advisory)
 	err = consumer_add(
 		conn,
@@ -353,10 +369,13 @@ test_persisted_ack_and_advisory :: proc(t: ^testing.T) {
 	batch, berr = fetch(pull, 1, 100)
 	testing.expect(t, berr.status != 0 && batch == nil)
 	batch_destroy(batch)
-	notice, nerr := next_message(advisory, 500)
+
+	notices, nerr := fetch(advisory, 1, 500)
 	if !testing.expect_value(t, nerr.status, i32(0)) do return
-	defer message_destroy(notice)
+	defer batch_destroy(notices)
+	notice := batch_message(notices, 0)
 	testing.expect(t, strings.contains(string(message_data(notice)), "max_deliver"))
+	testing.expect_value(t, ack(notice).status, i32(0))
 	stored, serr := stream_get(conn, "EVENTS", published.sequence)
 	if !testing.expect_value(t, serr.status, i32(0)) do return
 	defer message_destroy(stored)
@@ -365,7 +384,7 @@ test_persisted_ack_and_advisory :: proc(t: ^testing.T) {
 	missing, merr := stream_get(conn, "MISSING", 1)
 	testing.expect(t, merr.status != 0 && missing == nil)
 	message_destroy(missing)
-	empty, eerr := next_message(advisory, 10)
+	empty, eerr := fetch(advisory, 1, 10)
 	testing.expect(t, eerr.status != 0 && empty == nil)
-	message_destroy(empty)
+	batch_destroy(empty)
 }

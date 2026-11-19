@@ -11,9 +11,8 @@ when ODIN_OS == .Windows {
 }
 @(private)
 foreign client {
+	ham_nats_api_stats :: proc(conn: ^Connection, total, errors: ^u64, js_error: ^i32) -> i32 ---
 	ham_nats_ack_reply :: proc(conn: ^Connection, reply: cstring, timeout_ms: i64) -> i32 ---
-	ham_nats_subscribe :: proc(out: ^^Pull, conn: ^Connection, subject: cstring) -> i32 ---
-	ham_nats_next :: proc(out: ^^Message, sub: ^Pull, timeout_ms: i64) -> i32 ---
 	ham_nats_stream_get :: proc(out: ^^Message, conn: ^Connection, stream: cstring, sequence: u64, js_error: ^i32) -> i32 ---
 	natsMsg_GetReply :: proc(msg: ^Message) -> cstring ---
 	natsMsg_Destroy :: proc(msg: ^Message) ---
@@ -26,6 +25,7 @@ foreign client {
 	ham_nats_consumer_delete :: proc(conn: ^Connection, stream, durable: cstring, js_error: ^i32) -> i32 ---
 	ham_nats_pull_bind :: proc(out: ^^Pull, conn: ^Connection, stream, durable: cstring, js_error: ^i32) -> i32 ---
 	ham_nats_pull_destroy :: proc(pull: ^Pull) ---
+	ham_nats_fetch_available :: proc(out: ^^Batch, pull: ^Pull, count: c.int, js_error: ^i32) -> i32 ---
 	ham_nats_fetch :: proc(out: ^^Batch, pull: ^Pull, count: c.int, timeout_ms: i64, js_error: ^i32) -> i32 ---
 	ham_nats_batch_destroy :: proc(batch: ^Batch) ---
 	ham_nats_batch_count :: proc(batch: ^Batch) -> c.int ---

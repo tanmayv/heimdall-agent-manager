@@ -123,27 +123,42 @@ ensure_consumer :: proc(s: ^Service, conn: ^nats.Connection, row: domain.Event_S
 	)
 	return err.status == 0
 }
-delivery_snapshot :: proc(
+
+ack_snapshot :: proc(
 	s: ^Service,
 	owner, agent: string,
-	include_acknowledged := false,
+	ids: []string,
 ) -> (
 	rows: []domain.Event_Delivery,
 	err: domain.Domain_Error,
 ) {
 	uow, began, begin_err := iface.unit_of_work_begin(s.factory)
 	if !began do return nil, begin_err
-	rows, err = uow.repos.event_subscriptions.deliveries(
-		uow.repos.event_subscriptions.ctx,
-		owner,
-		agent,
-		include_acknowledged,
-	)
+	repo := uow.repos.event_subscriptions
+	rows, err = repo.deliveries(repo.ctx, owner, agent, ids)
 	if err.code != .None {iface.unit_of_work_rollback(&uow); return}
 	committed, commit_err := iface.unit_of_work_commit(&uow)
 	if !committed {delivery_rows_destroy(rows); return nil, commit_err}
 	return
 }
+resolved_snapshot :: proc(
+	s: ^Service,
+	owner, agent: string,
+	limit: int,
+) -> (
+	rows: []domain.Event_Delivery,
+	err: domain.Domain_Error,
+) {
+	uow, began, begin_err := iface.unit_of_work_begin(s.factory)
+	if !began do return nil, begin_err
+	repo := uow.repos.event_subscriptions
+	rows, err = repo.resolutions(repo.ctx, owner, agent, limit)
+	if err.code != .None {iface.unit_of_work_rollback(&uow); return}
+	committed, commit_err := iface.unit_of_work_commit(&uow)
+	if !committed {delivery_rows_destroy(rows); return nil, commit_err}
+	return
+}
+
 mark :: proc(s: ^Service, owner, agent: string, row: domain.Event_Delivery, resolved: bool) -> domain.Domain_Error {
 	uow, began, begin_err := iface.unit_of_work_begin(s.factory)
 	if !began do return begin_err
@@ -157,7 +172,7 @@ mark :: proc(s: ^Service, owner, agent: string, row: domain.Event_Delivery, reso
 acknowledge :: proc(s: ^Service, owner, agent: string, ids: []string) -> domain.Domain_Error {
 	if owner == "" || agent == "" do return domain.domain_error(.Forbidden, "agent identity required")
 	if len(ids) == 0 || len(ids) > 100 do return domain.domain_error(.Validation_Failed, "ack requires 1..100 event ids")
-	rows, err := delivery_snapshot(s, owner, agent, true)
+	rows, err := ack_snapshot(s, owner, agent, ids)
 	if err.code != .None do return err
 	defer delivery_rows_destroy(rows)
 	// Validate the whole request before making any acknowledgement.
@@ -206,6 +221,144 @@ record :: proc(s: ^Service, owner, agent: string, row: domain.Event_Delivery) ->
 	return !stale, {}
 }
 
+// Provisioning never trusts a pre-commit snapshot alone. If removal won the
+// race, leave a durable deletion intent before trying immediate cleanup.
+fence_consumer :: proc(
+	s: ^Service,
+	conn: ^nats.Connection,
+	row: domain.Event_Subscription,
+) -> (
+	bool,
+	domain.Domain_Error,
+) {
+	uow, began, begin_err := iface.unit_of_work_begin(s.factory)
+	if !began do return false, begin_err
+	repo := uow.repos.event_subscriptions
+	live, err := repo.exists(repo.ctx, row.owner_user_id, row.subscriber_agent_id, row.subscription_id)
+	if err.code == .None && !live do err = repo.queue_delete(repo.ctx, row.consumer_name)
+	if err.code != .None {iface.unit_of_work_rollback(&uow); return false, err}
+	committed, commit_err := iface.unit_of_work_commit(&uow)
+	if !committed do return false, commit_err
+	if live do return true, {}
+	nerr := nats.consumer_delete(conn, "HEIM_EVENTS", row.consumer_name)
+	if nerr.status != 0 && nerr.jetstream != 10014 do return false, unavailable()
+	return false, {}
+}
+provision_consumer :: proc(
+	s: ^Service,
+	conn: ^nats.Connection,
+	row: domain.Event_Subscription,
+) -> (
+	bool,
+	domain.Domain_Error,
+) {
+	if !ensure_consumer(s, conn, row) do return false, unavailable()
+	return fence_consumer(s, conn, row)
+}
+Bound_Pull :: struct {
+	row:   domain.Event_Subscription, // borrowed from request-owned subscriptions
+	pull:  ^nats.Pull,
+	slots: int,
+}
+pull_slots :: proc(s: ^Service, pulls: []Bound_Pull) -> domain.Domain_Error {
+	uow, began, begin_err := iface.unit_of_work_begin(s.factory)
+	if !began do return begin_err
+	repo := uow.repos.event_subscriptions
+	for &bound in pulls {
+		slots, err := repo.available(
+			repo.ctx,
+			bound.row.owner_user_id,
+			bound.row.subscriber_agent_id,
+			bound.row.subscription_id,
+		)
+		if err.code != .None {iface.unit_of_work_rollback(&uow); return err}
+		bound.slots = slots
+	}
+	committed, err := iface.unit_of_work_commit(&uow)
+	if !committed do return err
+	return {}
+}
+append_unique :: proc(events: ^[dynamic]json.Value, value: json.Value) {
+	obj, _ := value.(json.Object)
+	id, _ := obj["event_id"].(json.String)
+	for prior in events^ {
+		prior_obj, _ := prior.(json.Object)
+		prior_id, _ := prior_obj["event_id"].(json.String)
+		if id == prior_id {json.destroy_value(value); return}
+	}
+	append(events, value)
+}
+collect_resolutions :: proc(
+	s: ^Service,
+	conn: ^nats.Connection,
+	owner, agent: string,
+	events: ^[dynamic]json.Value,
+	limit: int,
+) -> domain.Domain_Error {
+	rows, err := resolved_snapshot(s, owner, agent, limit - len(events^))
+	if err.code != .None do return err
+	defer delivery_rows_destroy(rows)
+	for row in rows {
+		if !row.acknowledged {
+			if nats.ack_reply(conn, row.ack_reply, 1000).status != 0 do return unavailable()
+			if err = mark(s, owner, agent, row, false); err.code != .None do return err
+		}
+		data, encode_err := json.marshal(struct {
+			type, event_id, resolved_event_id: string,
+		}{"resolved", fmt.tprintf("resolved:%s", row.event_id), row.event_id})
+		if encode_err != nil do return unavailable()
+		notice, parse_err := json.parse(data)
+		delete(data)
+		if parse_err != nil do return unavailable()
+		if err = mark(s, owner, agent, row, true); err.code != .None {json.destroy_value(notice); return err}
+		append_unique(events, notice)
+		if len(events^) >= limit do break
+	}
+	return {}
+}
+// The C batch owns msg. Every success transfers one parsed JSON value; stale
+// events are acknowledged and freed while no SQLite transaction is open.
+read_message :: proc(
+	s: ^Service,
+	owner, agent, subscription: string,
+	msg: ^nats.Message,
+) -> (
+	value: json.Value,
+	accepted: bool,
+	err: domain.Domain_Error,
+) {
+	parsed, parse_err := json.parse(nats.message_data(msg), parse_integers = true)
+	obj, object_ok := parsed.(json.Object)
+	id, id_ok := obj["event_id"].(json.String)
+	topic, _ := obj["topic_key"].(json.String)
+	generation, _ := obj["topic_generation"].(json.Integer)
+	if parse_err != nil || !object_ok || !id_ok {
+		json.destroy_value(parsed)
+		return nil, false, unavailable()
+	}
+	meta, merr := nats.message_metadata(msg)
+	if merr.status != 0 {json.destroy_value(parsed); return nil, false, unavailable()}
+	accepted, err = record(
+		s,
+		owner,
+		agent,
+		domain.Event_Delivery {
+			subscription_id = subscription,
+			event_id = string(id),
+			ack_reply = nats.message_reply(msg),
+			topic_key = string(topic),
+			topic_generation = i64(generation),
+			stream_sequence = i64(meta.stream_sequence),
+		},
+	)
+	if err.code != .None {json.destroy_value(parsed); return nil, false, err}
+	if !accepted {
+		json.destroy_value(parsed)
+		if nats.ack(msg).status != 0 do return nil, false, unavailable()
+		return nil, false, {}
+	}
+	return parsed, true, {}
+}
 next :: proc(
 	s: ^Service,
 	owner, agent: string,
@@ -224,111 +377,77 @@ next :: proc(
 	defer nats.destroy(conn)
 	if !prepare_advisories(conn) {err = unavailable(); return}
 	started := time.tick_now()
+	if err = collect_resolutions(s, conn, owner, agent, &events, limit); err.code != .None do return
+	if len(events) >= limit do return events[:], {}
+	rows, rerr := subscriptions(s, owner, agent)
+	if rerr.code != .None {err = rerr; return}
+	defer subscription_rows_destroy(rows)
+	pulls := make([dynamic]Bound_Pull)
+	defer {for bound in pulls do nats.pull_destroy(bound.pull); delete(pulls)}
+	// Each durable is provisioned and bound once for this request, with a
+	// post-provision fence against lease/watch removal.
+	for row in rows {
+		live, perr := provision_consumer(s, conn, row)
+		if perr.code != .None {err = perr; return}
+		if !live do continue
+		pull, bind_err := nats.pull_bind(conn, "HEIM_EVENTS", row.consumer_name)
+		if bind_err.status != 0 {err = unavailable(); return}
+		append(&pulls, Bound_Pull{row = row, pull = pull})
+	}
+	pass := 0
 	for {
-		// Recheck even acknowledged deliveries: a later resolution must produce a
-		// notice without requiring the old message to be redelivered.
-		delivered, derr := delivery_snapshot(s, owner, agent)
-		if derr.code != .None {err = derr; return}
-		for row in delivered {
-			if row.topic_key == "" || row.resolved_sent do continue
-			stale, serr := is_stale(s, owner, row.topic_key, row.topic_generation)
-			if serr.code != .None {delivery_rows_destroy(delivered); err = serr; return}
-			if !stale do continue
-			if !row.acknowledged {
-				if nats.ack_reply(conn, row.ack_reply, 1000).status !=
-				   0 {delivery_rows_destroy(delivered); err = unavailable(); return}
-				if merr := mark(s, owner, agent, row, false);
-				   merr.code != .None {delivery_rows_destroy(delivered); err = merr; return}
+		if err = pull_slots(s, pulls[:]); err.code != .None do return
+		// First visit every consumer promptly. Then divide the remaining wait
+		// among unvisited consumers; idle requests use blocking fetches, not a
+		// 20 ms provision/bind/poll loop. Multiple scopes share one wait budget.
+		for &bound, i in pulls {
+			if bound.slots <= 0 do continue // backpressure; leave backlog in JetStream
+			timeout_ms := i64(1)
+			if pass > 0 && len(events) == 0 {
+				remaining := wait - time.tick_since(started)
+				if remaining <= 0 do break
+				if remaining < 5 * time.Millisecond {time.sleep(remaining); break}
+				timeout_ms = max(1, i64(remaining / time.Duration(len(pulls) - i) / time.Millisecond))
 			}
-			notice_bytes, _ := json.marshal(struct {
-				type, event_id, resolved_event_id: string,
-			}{"resolved", fmt.tprintf("resolved:%s", row.event_id), row.event_id})
-			notice, parse_err := json.parse(notice_bytes)
-			delete(notice_bytes)
-			if parse_err != nil {delivery_rows_destroy(delivered); err = unavailable(); return}
-			if merr := mark(s, owner, agent, row, true);
-			   merr.code != .None {json.destroy_value(notice); delivery_rows_destroy(delivered); err = merr; return}
-			duplicate := false
-			for prior in events {
-				prior_obj, _ := prior.(json.Object)
-				prior_id, _ := prior_obj["resolved_event_id"].(json.String)
-				if string(prior_id) == row.event_id do duplicate = true
+			batch: ^nats.Batch
+			berr: nats.Error
+			if pass == 0 || len(events) > 0 || timeout_ms < 5 {
+				batch, berr = nats.fetch_available(bound.pull, min(limit - len(events), bound.slots))
+			} else {
+				batch, berr = nats.fetch(bound.pull, min(limit - len(events), bound.slots), timeout_ms)
 			}
-			if duplicate {json.destroy_value(notice)} else {append(&events, notice)}
-			if len(events) >= limit do break
-		}
-		delivery_rows_destroy(delivered)
-		if len(events) >= limit do return events[:], {}
-		rows, rerr := subscriptions(s, owner, agent)
-		if rerr.code != .None {err = rerr; return}
-		for row in rows {
-			if !ensure_consumer(s, conn, row) {subscription_rows_destroy(rows); err = unavailable(); return}
-			pull, perr := nats.pull_bind(conn, "HEIM_EVENTS", row.consumer_name)
-			if perr.status != 0 {subscription_rows_destroy(rows); err = unavailable(); return}
-			batch, berr := nats.fetch(pull, limit - len(events), 20)
 			if berr.status != 0 {
-				nats.batch_destroy(batch); nats.pull_destroy(pull)
-				// NATS_TIMEOUT means a healthy empty consumer; other errors are surfaced.
-				if berr.status != 26 {subscription_rows_destroy(rows); err = unavailable(); return}
+				nats.batch_destroy(batch)
+				if berr.status != 26 {err = unavailable(); return}
 				continue
 			}
 			for i in 0 ..< nats.batch_count(batch) {
-				msg := nats.batch_message(batch, i)
-				value, parse_err := json.parse(nats.message_data(msg), parse_integers = true)
-				obj, object_ok := value.(json.Object)
-				id, id_ok := obj["event_id"].(json.String)
-				topic, _ := obj["topic_key"].(json.String)
-				generation, _ := obj["topic_generation"].(json.Integer)
-				if parse_err != nil || !object_ok || !id_ok {
-					json.destroy_value(value); nats.batch_destroy(batch); nats.pull_destroy(pull)
-					subscription_rows_destroy(rows); err = unavailable(); return
-				}
-				meta, merr := nats.message_metadata(msg)
-				record_err: domain.Domain_Error
-				accepted := false
-				if merr.status == 0 {
-					accepted, record_err = record(
-						s,
-						owner,
-						agent,
-						domain.Event_Delivery {
-							subscription_id = row.subscription_id,
-							event_id = string(id),
-							ack_reply = nats.message_reply(msg),
-							topic_key = string(topic),
-							topic_generation = i64(generation),
-							stream_sequence = i64(meta.stream_sequence),
-						},
-					)
-				}
-				if merr.status != 0 || record_err.code != .None {
-					json.destroy_value(value); nats.batch_destroy(batch); nats.pull_destroy(pull)
-					subscription_rows_destroy(rows); err = unavailable(); return
-				}
-				if !accepted {
-					json.destroy_value(value)
-					if nats.ack(msg).status != 0 {
-						nats.batch_destroy(
-							batch,
-						); nats.pull_destroy(pull); subscription_rows_destroy(rows); err = unavailable(); return
-					}
-					continue
-				}
-				// An explicit watch may overlap a coordinator default. Persist both ack
-				// replies but return only one copy of an event in the same response.
-				duplicate := false
-				for prior in events {
-					prior_obj, _ := prior.(json.Object)
-					prior_id, _ := prior_obj["event_id"].(json.String)
-					if prior_id == id do duplicate = true
-				}
-				if duplicate {json.destroy_value(value)} else {append(&events, value)}
+				value, accepted, read_err := read_message(
+					s,
+					owner,
+					agent,
+					bound.row.subscription_id,
+					nats.batch_message(batch, i),
+				)
+				if read_err.code != .None {nats.batch_destroy(batch); err = read_err; return}
+				if accepted do append_unique(&events, value)
 			}
-			nats.batch_destroy(batch); nats.pull_destroy(pull)
-			if len(events) >= limit do break
+			nats.batch_destroy(batch)
+			if len(events) >= limit do return events[:], {}
 		}
-		subscription_rows_destroy(rows)
+		if err = collect_resolutions(s, conn, owner, agent, &events, limit); err.code != .None do return
 		if len(events) > 0 || time.tick_since(started) >= wait do return events[:], {}
-		time.sleep(min(20 * time.Millisecond, wait - time.tick_since(started)))
+		if len(pulls) == 0 {
+			time.sleep(max(0, wait - time.tick_since(started)))
+			return events[:], {}
+		}
+		any_slots := false
+		for bound in pulls do if bound.slots > 0 do any_slots = true
+		if !any_slots {
+			// No capacity: do not consume delivery attempts while the agent needs to
+			// acknowledge/resolve existing records.
+			return events[:], {}
+		}
+		pass += 1
 	}
 }
