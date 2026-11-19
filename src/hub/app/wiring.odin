@@ -673,6 +673,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.bridge_handlers.bots = &graph.bots
 	graph.event_inbox = eventinbox.Service{
 		factory = &graph.uow_factory, ids = &graph.ids,
+		notice_ctx = graph, notice = event_inbox_notice,
 		options = {url = config.nats_url, creds_file = config.nats_creds_file, ca_file = config.nats_ca_file, timeout_ms = 1000},
 	}
 	graph.event_inbox_handlers = http.Event_Inbox_Handlers{agent_actions = &graph.agent_action_handlers, inbox = &graph.event_inbox}
@@ -1320,4 +1321,40 @@ read_secret_file :: proc(path: string) -> (string, bool) {
 	secret := strings.clone(strings.trim_space(string(data)))
 	delete(data)
 	return secret, secret != ""
+}
+
+// The inbox observes pending messages; delivery stays on the existing bridge
+// notice and guarded agent start paths, always outside a SQLite transaction.
+event_inbox_notice :: proc(
+	ctx: rawptr,
+	owner, agent: string,
+	target: domain.Event_Notice_Target,
+	count: int,
+	wake: bool,
+) -> bool {
+	graph := (^App_Graph)(ctx)
+	inst, found, _ := iface.agent_get_instance(&graph.repos.agents, target.instance_id)
+	defer domain.agent_instance_destroy(&inst)
+	if !found || string(inst.owner_user_id) != owner || inst.agent_id != agent || inst.stopped_by != "" do return false
+	if wake {
+		if inst.runtime_status != "stopped" && inst.runtime_status != "failed" do return false
+		_, started, _ := agent_service.start_instance(
+			&graph.agents,
+			{kind = .Internal_User, user_id = owner},
+			inst.agent_instance_id,
+		)
+		return started
+	}
+	if (inst.runtime_status != "running" && inst.runtime_status != "idle") || inst.activity_status != "idle" do return false
+	id := platform.generate_id(&graph.ids, "cmd_events_")
+	if id == "" do return false
+	// ID generator returns temporary allocator storage.
+	line := fmt.tprintf("[events] %d new event(s) — run ham-ctl events next", count)
+	body := taskv2.agent_notice_command_json(id, inst.agent_instance_id, "", "events", line)
+	defer delete(body)
+	accepted, _ := project_service.bridge_command_send_runtime(
+		graph.agents.bridge_command_sink,
+		{bridge_id = inst.bridge_id, command_id = id, body_json = body},
+	)
+	return accepted
 }

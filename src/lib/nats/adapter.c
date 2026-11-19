@@ -70,7 +70,7 @@ int ham_nats_publish(ham_nats *h, const char *subject, const void *data, int len
 }
 int ham_nats_stream(ham_nats *h, int operation, const char *name,
                     const char **subjects, int count, int64_t max_age_ns,
-                    int64_t duplicate_ns, int64_t replicas, int rollup,
+                    int64_t duplicate_ns, int64_t replicas, int rollup, int direct,
                     ham_stream_state *out, jsErrCode *err) {
     jsStreamInfo *info = NULL;
     jsStreamConfig cfg;
@@ -85,6 +85,7 @@ int ham_nats_stream(ham_nats *h, int operation, const char *name,
     cfg.Duplicates = duplicate_ns;
     cfg.Replicas = replicas;
     cfg.AllowRollup = rollup != 0;
+    cfg.AllowDirect = direct != 0;
     if (operation == 0) s = js_AddStream(&info, h->js, &cfg, NULL, err);
     else if (operation == 1) s = js_UpdateStream(&info, h->js, &cfg, NULL, err);
     else s = js_GetStreamInfo(&info, h->js, name, NULL, err);
@@ -206,5 +207,37 @@ int ham_nats_api_stats(ham_nats *h, uint64_t *total, uint64_t *errors, jsErrCode
     natsStatus s = js_GetAccountInfo(&info, h->js, NULL, err);
     if (s == NATS_OK) { *total = info->API.Total; *errors = info->API.Errors; }
     jsAccountInfo_Destroy(info);
+    return s;
+}
+
+// Read-only observation: these calls never advance a consumer or consume an
+// acknowledgement attempt. Destroy every C result before returning.
+typedef struct { uint64_t delivered, pending, ack_pending; } ham_consumer_state;
+int ham_nats_consumer_state(ham_nats *h, const char *stream, const char *name,
+                            ham_consumer_state *out, jsErrCode *err) {
+    jsConsumerInfo *info = NULL;
+    natsStatus s = js_GetConsumerInfo(&info, h->js, stream, name, NULL, err);
+    if (s == NATS_OK) {
+        out->delivered = info->Delivered.Stream;
+        out->pending = info->NumPending;
+        out->ack_pending = info->NumAckPending;
+    }
+    jsConsumerInfo_Destroy(info);
+    return s;
+}
+int ham_nats_stream_next(natsMsg **out, ham_nats *h, const char *stream,
+                          const char *subject, uint64_t sequence, uint64_t *actual) {
+    *out = NULL;
+    jsDirectGetMsgOptions opts;
+    natsStatus s = jsDirectGetMsgOptions_Init(&opts);
+    if (s == NATS_OK) {
+        opts.Sequence = sequence;
+        opts.NextBySubject = subject;
+        s = js_DirectGetMsg(out, h->js, stream, NULL, &opts);
+    }
+    const char *value = NULL;
+    if (s == NATS_OK) s = natsMsgHeader_Get(*out, "Nats-Sequence", &value);
+    if (s == NATS_OK && value) *actual = strtoull(value, NULL, 10);
+    if (s != NATS_OK) { natsMsg_Destroy(*out); *out = NULL; }
     return s;
 }

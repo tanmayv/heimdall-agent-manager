@@ -19,6 +19,7 @@ test_jetstream_real_server :: proc(t: ^testing.T) {
 	test_publish_and_rollup(t)
 	test_durable_delivery(t)
 	test_persisted_ack_and_advisory(t)
+	test_notification_snapshots(t)
 	test_errors_and_outage(t)
 	test_tls(t)
 	err := shutdown(5000)
@@ -387,4 +388,54 @@ test_persisted_ack_and_advisory :: proc(t: ^testing.T) {
 	empty, eerr := fetch(advisory, 1, 10)
 	testing.expect(t, eerr.status != 0 && empty == nil)
 	batch_destroy(empty)
+}
+
+test_notification_snapshots :: proc(t: ^testing.T) {
+	srv, ok := server.start()
+	defer server.destroy(&srv)
+	if !testing.expect(t, ok) do return
+	conn := test_connect(t, srv.url)
+	if conn == nil do return
+	defer destroy(conn)
+	cfg := test_stream()
+	cfg.allow_direct = true
+	_, err := stream_add(conn, cfg)
+	if !testing.expect_value(t, err.status, i32(0)) do return
+	a, _ := publish(conn, "ev.match", test_bytes("one"), "notice-1")
+	_, _ = publish(conn, "ev.other", test_bytes("skip"), "notice-2")
+	b, _ := publish(conn, "ev.match", test_bytes("two"), "notice-3")
+	err = consumer_add(
+		conn,
+		{
+			stream = cfg.name,
+			durable = "observe",
+			filter_subjects = []string{"ev.match"},
+			ack_wait_ns = i64(time.Minute),
+			max_deliver = 10,
+		},
+	)
+	if !testing.expect_value(t, err.status, i32(0)) do return
+	for expected, i in ([2]u64{a.sequence, b.sequence}) {
+		msg, sequence, read_err := stream_next(conn, cfg.name, "ev.match", 1 if i == 0 else a.sequence + 1)
+		if testing.expect_value(t, read_err.status, i32(0)) do testing.expect_value(t, sequence, expected)
+		message_destroy(msg)
+	}
+	missing, _, missing_err := stream_next(conn, cfg.name, "ev.match", b.sequence + 1)
+	testing.expect(t, missing == nil && missing_err.status == 13)
+	message_destroy(missing)
+	snapshot, snapshot_err := consumer_state(conn, cfg.name, "observe")
+	testing.expect_value(t, snapshot_err.status, i32(0))
+	testing.expect_value(t, snapshot.pending, u64(2))
+	testing.expect_value(t, snapshot.delivered, u64(0))
+	testing.expect_value(t, snapshot.ack_pending, u64(0))
+	_, snapshot_err = consumer_state(conn, cfg.name, "missing")
+	testing.expect(t, snapshot_err.status != 0)
+	missing, _, missing_err = stream_next(conn, "MISSING", "ev.match", 1)
+	testing.expect(t, missing == nil && missing_err.status != 0)
+	message_destroy(missing)
+	_, invalid := consumer_state(nil, cfg.name, "observe")
+	testing.expect_value(t, invalid.status, INVALID)
+	missing, _, invalid = stream_next(nil, cfg.name, "ev.match", 1)
+	testing.expect_value(t, invalid.status, INVALID)
+	message_destroy(missing)
 }

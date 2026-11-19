@@ -27,7 +27,7 @@ stream_config :: proc() -> nats.Stream_Config {
 	subjects := make([]string, 1, context.temp_allocator)
 	subjects[0] = "ev.>"
 	return {name = "HEIM_EVENTS", subjects = subjects, max_age_ns = i64(14 * 24 * time.Hour),
-	duplicate_window_ns = i64(2 * time.Minute), replicas = 1, allow_rollup = true}
+	duplicate_window_ns = i64(2 * time.Minute), replicas = 1, allow_rollup = true, allow_direct = true}
 }
 start :: proc(s: ^Service, factory: ^iface.Unit_Of_Work_Factory, options: nats.Connect_Options) {
 	if s.worker != nil do return

@@ -29,3 +29,13 @@ event_delivery_destroy :: proc(row: ^Event_Delivery) {
 	delete(row.ack_reply); delete(row.topic_key)
 	row^ = {}
 }
+
+// Small owned snapshot; notification decisions reuse persisted runtime activity.
+Event_Notice_Target :: struct {
+    instance_id, bridge_id, runtime_status, activity_status, stopped_by: string,
+    is_bot: bool,
+}
+event_notice_target_destroy :: proc(t: ^Event_Notice_Target) {
+    delete(t.instance_id); delete(t.bridge_id); delete(t.runtime_status)
+    delete(t.activity_status); delete(t.stopped_by); t^ = {}
+}

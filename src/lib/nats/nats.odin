@@ -39,6 +39,7 @@ Stream_Config :: struct {
 	duplicate_window_ns: i64,
 	replicas:            i64,
 	allow_rollup:        bool,
+	allow_direct:        bool,
 }
 Consumer_Config :: struct {
 	stream, durable:          string,
@@ -170,6 +171,8 @@ stream_operation :: proc(conn: ^Connection, cfg: Stream_Config, op: c.int) -> (s
 	defer destroy_cstrings(subjects)
 	rollup: c.int
 	if cfg.allow_rollup do rollup = 1
+	direct: c.int
+	if cfg.allow_direct do direct = 1
 	err.status = ham_nats_stream(
 		conn,
 		op,
@@ -180,6 +183,7 @@ stream_operation :: proc(conn: ^Connection, cfg: Stream_Config, op: c.int) -> (s
 		cfg.duplicate_window_ns,
 		cfg.replicas,
 		rollup,
+		direct,
 		&state,
 		&err.jetstream,
 	)
@@ -353,5 +357,33 @@ api_stats :: proc(conn: ^Connection) -> (total, errors: u64, err: Error) {
 fetch_available :: proc(pull: ^Pull, limit: int) -> (batch: ^Batch, err: Error) {
 	if pull == nil || limit <= 0 || limit > 0x7fffffff do return nil, Error{status = INVALID}
 	err.status = ham_nats_fetch_available(&batch, pull, c.int(limit), &err.jetstream)
+	return
+}
+
+// Read-only snapshots for notification decisions. Message ownership is the
+// same as stream_get: caller destroys a successful result.
+Consumer_State :: struct {
+	delivered, pending, ack_pending: u64,
+}
+consumer_state :: proc(conn: ^Connection, stream, name: string) -> (state: Consumer_State, err: Error) {
+	if conn == nil || stream == "" || name == "" || !valid_string(stream) || !valid_string(name) do return {}, {status = INVALID}
+	a := strings.clone_to_cstring(stream); defer delete(a)
+	b := strings.clone_to_cstring(name); defer delete(b)
+	err.status = ham_nats_consumer_state(conn, a, b, &state, &err.jetstream)
+	return
+}
+stream_next :: proc(
+	conn: ^Connection,
+	stream, subject: string,
+	sequence: u64,
+) -> (
+	msg: ^Message,
+	actual: u64,
+	err: Error,
+) {
+	if conn == nil || stream == "" || subject == "" || !valid_string(stream) || !valid_string(subject) do return nil, 0, {status = INVALID}
+	a := strings.clone_to_cstring(stream); defer delete(a)
+	b := strings.clone_to_cstring(subject); defer delete(b)
+	err.status = ham_nats_stream_next(&msg, conn, a, b, sequence, &actual)
 	return
 }

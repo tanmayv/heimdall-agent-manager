@@ -24,6 +24,8 @@ new_event_subscription_repository :: proc(
 		queue_delete = subscription_queue_delete,
 		prune = subscription_prune,
 		delivered = subscription_delivered,
+		notice_target = subscription_notice_target,
+		due_deliveries = subscription_due_deliveries,
 		mark_delivery = subscription_mark_delivery,
 		stale = subscription_stale,
 		deletions = subscription_deletions,
@@ -341,4 +343,63 @@ subscription_owns_chain :: proc(ctx: rawptr, owner, chain: string) -> (bool, dom
 	if rc == SQLITE_ROW do return true, {}
 	if rc == SQLITE_DONE do return false, {}
 	return false, domain.domain_error(.Internal_Error, "failed to authorize chain watch")
+}
+
+// Target canonical bot binding, coordinator membership or task claim first.
+// An explicit watch belongs to a durable agent and falls back to its latest
+// instance. All lookups are tenant-scoped and require a live subscription.
+subscription_notice_target :: proc(
+	ctx: rawptr,
+	row: domain.Event_Subscription,
+) -> (
+	target: domain.Event_Notice_Target,
+	result_err: domain.Domain_Error,
+) {
+	stmt, err := subscription_prepare(
+		ctx,
+		`SELECT ai.agent_instance_id,ai.bridge_id,ai.runtime_status,ai.activity_status,ai.stopped_by,
+ EXISTS(SELECT 1 FROM bots b WHERE b.owner_user_id=ai.owner_user_id AND b.agent_id=ai.agent_id AND b.agent_instance_id=ai.agent_instance_id)
+ FROM agent_instances ai
+ WHERE ai.owner_user_id=? AND ai.agent_id=? AND ai.kind='agent'
+ AND EXISTS(SELECT 1 FROM event_subscriptions s WHERE s.subscription_id=? AND s.owner_user_id=ai.owner_user_id AND s.subscriber_agent_id=ai.agent_id)
+ ORDER BY
+ EXISTS(SELECT 1 FROM bots b WHERE b.owner_user_id=ai.owner_user_id AND b.agent_id=ai.agent_id AND b.agent_instance_id=ai.agent_instance_id) DESC,
+ EXISTS(SELECT 1 FROM task_leases l WHERE l.owner_user_id=ai.owner_user_id AND l.holder_instance_id=ai.agent_instance_id AND l.task_id=? AND l.phase IN ('active','waiting')) DESC,
+ EXISTS(SELECT 1 FROM task_chain_members m WHERE m.owner_user_id=ai.owner_user_id AND m.agent_instance_id=ai.agent_instance_id AND m.chain_id=? AND m.role='coordinator') DESC,
+ (ai.chain_id=?) DESC, ai.created_at DESC, ai.agent_instance_id DESC LIMIT 1;`,
+	)
+	if err.code != .None do return {}, err
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, row.owner_user_id); bind_text(stmt, 2, row.subscriber_agent_id)
+	bind_text(stmt, 3, row.subscription_id); bind_text(stmt, 4, row.task_id)
+	bind_text(stmt, 5, row.chain_id); bind_text(stmt, 6, row.chain_id)
+	step := sqlite3_step(stmt)
+	if step == SQLITE_DONE do return {}, {}
+	if step != SQLITE_ROW do return {}, domain.domain_error(.Internal_Error, "failed to read notice target")
+	target = {
+		instance_id     = column_text(stmt, 0),
+		bridge_id       = column_text(stmt, 1),
+		runtime_status  = column_text(stmt, 2),
+		activity_status = column_text(stmt, 3),
+		stopped_by      = column_text(stmt, 4),
+		is_bot          = sqlite3_column_int64(stmt, 5) != 0,
+	}
+	return
+}
+subscription_due_deliveries :: proc(
+	ctx: rawptr,
+	owner, agent, subscription, before: string,
+) -> (
+	[]domain.Event_Delivery,
+	domain.Domain_Error,
+) {
+	stmt, err := subscription_prepare(
+		ctx,
+		DELIVERY_SELECT +
+		"FROM event_subscriptions s JOIN event_deliveries d ON d.subscription_id=s.subscription_id WHERE s.owner_user_id=? AND s.subscriber_agent_id=? AND s.subscription_id=? AND d.acknowledged=0 AND d.recorded_at<? ORDER BY d.stream_sequence LIMIT 4096;",
+	)
+	if err.code != .None do return nil, err
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, owner); bind_text(stmt, 2, agent); bind_text(stmt, 3, subscription); bind_text(stmt, 4, before)
+	return subscription_read_deliveries(stmt)
 }

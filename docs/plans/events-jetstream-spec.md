@@ -114,6 +114,9 @@ Delivery semantics:
 - When live events are waiting for an agent whose instance is idle, the hub sends **one** nudge line through the existing notice command path: `[events] N new event(s) — run ham-ctl events next`. Nudges are coalesced to at most one per subscriber per 30 seconds.
 - If the instance is stopped and an event's type is wake-worthy (section 4), the hub wakes it through the existing restart path.
 - The freshness filter runs **before** any nudge or wake.
+- **Pending/reminders (E3 clarification):** only events not yet returned by `events next` nudge. Unacknowledged deliveries become eligible again after `ack_wait`; acknowledgements and exhausted deliveries suppress reminders. Notification observation never pulls the agent consumer or consumes delivery attempts.
+- E3 observes consumer/stream snapshots with synchronous direct reads (`HEIM_EVENTS.allow_direct=true`), rechecks owned subscriptions and topic freshness, and coalesces across watches by tenant plus durable subscriber. Explicit user stops remain respected. Runtime counters `nudges_sent` and `wakes_sent` count accepted notice/start requests; E6 can export them.
+- A scan reads at most 256 messages per subject per pass, rotating beyond stale history. Its count is the live events observed in that bounded pass. Cooldowns are in-memory and survive NATS reconnects; hub restarts reset them.
 
 ### 3.7 Subject hierarchy and subscription filters (decided 2026-11-19, during E2)
 - **Task subjects are nested under their chain:** `ev.<owner>.chain.<chain_id>.task.<task_id>.<type>`. A task never changes chain.

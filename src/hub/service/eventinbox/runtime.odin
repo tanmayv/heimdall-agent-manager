@@ -22,6 +22,8 @@ Runtime :: struct {
 	provisioned:     map[string]Provisioned_Consumer,
 	cache_allocator: mem.Allocator,
 	last_prune:      time.Tick,
+	notifications: map[string]Notification_State,
+	nudges_sent, wakes_sent: i64,
 }
 Provisioned_Consumer :: struct {
 	key, fingerprint: string,
@@ -62,6 +64,7 @@ runtime_entry :: proc(data: rawptr) {
 	context.allocator = virtual.arena_allocator(&arena)
 	context.temp_allocator = context.allocator
 	defer runtime_disconnect(r)
+	defer clear_notifications(r)
 	for sync.atomic_load(&r.stopping) == 0 {
 		ok := reconcile(r)
 		if !ok do runtime_disconnect(r)
@@ -172,6 +175,7 @@ reconcile :: proc(r: ^Runtime) -> bool {
 		marked, _ := iface.unit_of_work_commit(&mark)
 		if !marked do return false
 	}
+	if !notify_pending(r, rows, time.tick_now()) do return false
 	return drain_advisories(r)
 }
 drain_advisories :: proc(r: ^Runtime) -> bool {

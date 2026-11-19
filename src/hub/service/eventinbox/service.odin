@@ -11,6 +11,9 @@ import nats "odin_test:lib/nats"
 
 Service :: struct {
 	factory:     ^iface.Unit_Of_Work_Factory,
+	notice_ctx: rawptr,
+	// Called outside a UoW. True means the existing notice/start path accepted it.
+	notice: proc(ctx: rawptr, owner, agent: string, target: domain.Event_Notice_Target, count: int, wake: bool) -> bool,
 	options:     nats.Connect_Options,
 	ids:         ^platform.ID_Generator,
 	ack_wait:    time.Duration,
