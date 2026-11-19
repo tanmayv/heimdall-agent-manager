@@ -42,7 +42,7 @@ Bridge_Permission_Pending :: struct {
 	deadline_unix_ms: i64,
 	// Agent blocker metadata (extension_blockers.odin). kind "" keeps an entry
 	// out of the hub snapshot (the legacy agent.permission.request contract).
-	kind: string, // "" | permission | terminal_prompt
+	kind: string, // "" | permission
 	provider: string,
 	agent_id: string,
 	summary: string,
@@ -113,8 +113,6 @@ bridge_permission_resolve :: proc(agent_instance_id, request_id, decision, reaso
 		p := &bridge_permission_pending[i]
 		if p.request_id != request_id do continue
 		if agent_instance_id != "" && p.agent_instance_id != agent_instance_id do continue
-		// A screen-detected prompt has no waiter: nothing can answer it remotely.
-		if p.kind == BRIDGE_BLOCKER_KIND_TERMINAL_PROMPT do return false
 		if p.decided do return true
 		p.decided = true
 		p.decision = bridge_permission_normalize_decision(decision)

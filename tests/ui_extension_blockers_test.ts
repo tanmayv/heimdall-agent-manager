@@ -47,15 +47,12 @@ test('snapshot normalisation keeps known kinds, sorts by creation and drops term
       perm('b2', { created_at: '2026-10-22T06:59:30Z' }),
       { kind: 'permission' },
       { blocker_id: 'x', kind: 'weird' },
-      { blocker_id: 'term_inst_1', kind: 'terminal_prompt', summary: 'Waiting for input in terminal', expires_at: 'ignored' },
+      { blocker_id: 'term_inst_1', kind: 'terminal_prompt', summary: 'Waiting for input in terminal', expires_at: 'ignored' }, // dropped: no longer a kind
       perm('b1', { input: [1, 2] }),
     ],
   });
   assert.equal(s.revision, 42);
-  // terminal_prompt has no created_at here, so it sorts first.
-  assert.deepEqual(s.blockers.map((b) => b.blocker_id), ['term_inst_1', 'b1', 'b2']);
-  const term = s.blockers.find((b) => b.kind === 'terminal_prompt')!;
-  assert.equal(term.expires_at, '');
+  assert.deepEqual(s.blockers.map((b) => b.blocker_id), ['b1', 'b2']);
   assert.deepEqual(s.blockers.find((b) => b.blocker_id === 'b1')!.input, {});
   assert.equal(normalizeBlocker(null), null);
   assert.equal(normalizeBlockersSnapshot(null, 'inst_9').agent_instance_id, 'inst_9');
@@ -140,9 +137,7 @@ test('card view: countdown, expiry, running gate and terminal prompts', () => {
   assert.equal(late.canDecide, false);
   const noDeadline = blockerCardView(normalizeBlocker(perm('b2', { expires_at: '' }))!, NOW, 'running');
   assert.equal(noDeadline.canDecide, true);
-  const term = blockerCardView(normalizeBlocker({ blocker_id: 't', kind: 'terminal_prompt' })!, NOW, 'running');
-  assert.equal(term.phase, 'terminal');
-  assert.equal(term.canDecide, false);
+  assert.equal(normalizeBlocker({ blocker_id: 't', kind: 'terminal_prompt' }), null);
 });
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -168,7 +163,7 @@ const attention = await import('../src/ui/api/endpoints/attention.ts');
 const model = await import('../src/ui/components/attention/attentionModel.ts');
 const tray = await import('../src/ui/components/attention/actionTrayModel.ts');
 
-function blockerItem(id: string, refs: { chain_id?: string; agent_instance_id?: string } = {}, kind: 'permission' | 'terminal_prompt' = 'permission') {
+function blockerItem(id: string, refs: { chain_id?: string; agent_instance_id?: string } = {}, kind: 'permission' | 'startup' = 'permission') {
   return {
     card_id: `blk:${id}`, kind: 'agent_blocker', provider: 'agent_blocker', reason: kind, urgency: 'error', status: 'pending',
     snoozed: false, snooze_until: '', attention_since: '2026-10-22T06:59:00Z', title: 'Bash: ls', rationale: 'Needs your permission',
@@ -203,7 +198,7 @@ test('tray: blockers are scoped to the chain, or to the instance without one, an
     taskItem('t1', 'chain_a'),
     blockerItem('blk_chain', { chain_id: 'chain_a', agent_instance_id: 'inst_1' }),
     blockerItem('blk_other_chain', { chain_id: 'chain_b', agent_instance_id: 'inst_2' }),
-    blockerItem('blk_solo', { agent_instance_id: 'inst_solo' }, 'terminal_prompt'),
+    blockerItem('blk_solo', { agent_instance_id: 'inst_solo' }),
   ]);
   const inChain = tray.trayItems(all, { chainId: 'chain_a', agentInstanceId: 'inst_1' });
   assert.deepEqual(inChain.map((i) => i.card_id), ['blk:blk_chain', 'crd_task_t1']);
@@ -215,11 +210,10 @@ test('tray: blockers are scoped to the chain, or to the instance without one, an
   assert.deepEqual(tray.trayItems(all, { chainId: 'chain_a', agentInstanceId: 'inst_1' }, hidden).map((i) => i.card_id), ['crd_task_t1']);
 });
 
-test('labels: permission vs terminal prompt, and the deck opens on blockers', () => {
-  const [perm, term] = attention.normalizeAttentionItems([blockerItem('blk_p'), blockerItem('blk_t', {}, 'terminal_prompt')]) as any[];
+test('labels: permission vs startup, and the deck opens on blockers', () => {
+  const [perm, term] = attention.normalizeAttentionItems([blockerItem('blk_p'), blockerItem('blk_t', {}, 'startup')]) as any[];
   assert.equal(tray.needLabel(perm), 'Needs your permission');
-  assert.equal(tray.needLabel(term), 'Waiting for input in the terminal');
-  assert.equal(model.isTerminalPromptItem(term), true);
+  assert.equal(tray.needLabel(term), 'Needs attention on the bridge host');
   assert.match(model.reasonLine(perm, NOW), /^Needs your permission · /);
   assert.equal(model.DECK_TABS[0].id, 'agent_blocker');
   const counts = { ...attention.EMPTY_ATTENTION_COUNTS, agent_blocker: 1, message: 2 };
@@ -237,7 +231,7 @@ test('no standalone permission card: only the attention surfaces render blockers
   const deck = read('src/ui/components/attention/AttentionDeck.tsx');
   assert.match(deck, /current\.kind === 'agent_blocker'/);
   assert.match(deck, /decideBlocker\(current, 'allow'\)/);
-  assert.match(deck, /'Open terminal'/);
+  assert.doesNotMatch(deck, /Open terminal|terminal_prompt/);
   const trayTsx = read('src/ui/components/attention/ActionTray.tsx');
   assert.match(trayTsx, /kind: 'agent_blocker'/);
   assert.match(trayTsx, /<ActionBlockerCard/);

@@ -174,14 +174,9 @@ export const TASK_BADGE_LABELS: Record<string, string> = {
   oscillation: 'Review rounds',
 };
 
-/** A terminal prompt is answered only in the agent terminal (no Allow / Deny). */
-export function isTerminalPromptItem(item: AttentionBlockerItem): boolean {
-  return item.details.blocker_kind === 'terminal_prompt';
-}
-
-/** "Needs your permission" (provider prompt) / "Waiting for input in the terminal". */
+/** "Needs your permission" (provider prompt) or a bridge-host startup problem. */
 export function blockerReason(item: AttentionBlockerItem): string {
-  return isTerminalPromptItem(item) ? 'Waiting for input in the terminal' : item.details.blocker_kind === 'permission' ? 'Needs your permission' : 'Needs attention on the bridge host';
+  return item.details.blocker_kind === 'permission' ? 'Needs your permission' : 'Needs attention on the bridge host';
 }
 
 export function reasonLine(item: AttentionItem, now: number): string {
