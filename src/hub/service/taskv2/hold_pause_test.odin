@@ -425,9 +425,9 @@ test_hold_keeps_user_review_attention :: proc(t: ^testing.T) {
 	testing.expect(t, kind == .Review && badge == "review", "a held review awaiting the user keeps its Review attention")
 }
 
-// A forgotten hold reminds the coordinator (never the user): once the hold has
-// stood hold_stale_seconds with no live lease, one hold_stale notice per
-// interval, and none after release. A live holder (checkpoint requested) is
+// A forgotten coordinator hold reminds the coordinator: once the hold has
+// stood hold_stale_seconds with no live lease, one hold_stale notice, the next
+// one HOLD_STALE_BACKOFF times later, and none after release. A live holder (checkpoint requested) is
 // not reminded about, even past the interval.
 @(test)
 test_hold_stale_reminds_coordinator :: proc(t: ^testing.T) {
@@ -444,7 +444,9 @@ test_hold_stale_reminds_coordinator :: proc(t: ^testing.T) {
 	}
 	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
 	confirm_holder(fx, "inst_w1")
-	owner := actor_from_auth(user_auth())
+	// The coordinator places the hold, so the reminders are its own to act on
+	// (a user-placed hold is routed to the user: notice_relevance_test).
+	owner := Actor{kind = ACTOR_AGENT, id = "inst_coord"}
 
 	// Held while leased: no reminder while the holder is asked to checkpoint,
 	// even past a (short) interval.
@@ -469,18 +471,19 @@ test_hold_stale_reminds_coordinator :: proc(t: ^testing.T) {
 	kind, _ := user_attention(&fx.svc, get_task(fx, "task_1"))
 	testing.expect_value(t, kind, User_Attention.None)
 
-	// Deduplicated: nothing before the next interval, one more after it.
-	fixture_advance(fx, HOLD_STALE_SECONDS / 2)
+	// Deduplicated and backed off: nothing before the next (4x) interval,
+	// one more after it.
+	fixture_advance(fx, HOLD_STALE_SECONDS * HOLD_STALE_BACKOFF / 2)
 	_ = fire_due(&fx.svc, now_ms(&fx.clock))
 	testing.expect_value(t, len(notices), 1)
-	fixture_advance(fx, HOLD_STALE_SECONDS / 2 + 1)
+	fixture_advance(fx, HOLD_STALE_SECONDS * HOLD_STALE_BACKOFF / 2 + 1)
 	_ = fire_due(&fx.svc, now_ms(&fx.clock))
 	testing.expect_value(t, len(notices), 2)
 
 	// Released: no further reminders.
 	_, rok, _ := task_release(&fx.svc, get_task(fx, "task_1"), owner)
 	testing.expect(t, rok, "release")
-	fixture_advance(fx, 3 * HOLD_STALE_SECONDS)
+	fixture_advance(fx, 32 * HOLD_STALE_SECONDS)
 	_ = fire_due(&fx.svc, now_ms(&fx.clock))
 	testing.expect_value(t, len(notices), 2)
 }
@@ -506,8 +509,8 @@ test_hold_stale_interval_is_configurable :: proc(t: ^testing.T) {
 }
 
 // A hub restart between reminders: the boot rebuild arms the hold for "now",
-// the dedupe skips it, and the next reminder still comes one interval after
-// the last one.
+// the dedupe skips it, and the next reminder still comes one backed-off
+// interval after the last one.
 @(test)
 test_hold_stale_survives_restart_between_reminders :: proc(t: ^testing.T) {
 	fx, log, ok := lease_fixture(t, "hold_stale_restart")
@@ -521,14 +524,15 @@ test_hold_stale_survives_restart_between_reminders :: proc(t: ^testing.T) {
 	_ = fire_due(&fx.svc, now_ms(&fx.clock))
 	testing.expect_value(t, count_events(fx, "task_1", EV_HOLD_STALE), 1)
 
-	// Restart half an interval later: empty heap, rebuilt from the columns.
-	fixture_advance(fx, HOLD_STALE_SECONDS / 2)
+	// Restart halfway through the (backed-off) interval: empty heap, rebuilt
+	// from the columns.
+	fixture_advance(fx, HOLD_STALE_SECONDS * HOLD_STALE_BACKOFF / 2)
 	delete(fx.svc.timers.heap)
 	fx.svc.timers = Timer_Service{}
 	rebuild_timers(&fx.svc)
 	_ = fire_due(&fx.svc, now_ms(&fx.clock))
 	testing.expect_value(t, count_events(fx, "task_1", EV_HOLD_STALE), 1)
-	fixture_advance(fx, HOLD_STALE_SECONDS / 2 + 1)
+	fixture_advance(fx, HOLD_STALE_SECONDS * HOLD_STALE_BACKOFF / 2 + 1)
 	_ = fire_due(&fx.svc, now_ms(&fx.clock))
 	testing.expect_value(t, count_events(fx, "task_1", EV_HOLD_STALE), 2)
 }

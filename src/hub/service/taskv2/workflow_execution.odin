@@ -443,7 +443,7 @@ trigger_on_output_workflows_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain
             if err.code != .Validation_Failed && err.code != .Not_Found do return false, err
             failure := json_begin(); json_int(&failure, "attempt_no", i64(task.attempt_no)); json_str(&failure, "ref", ref); json_str(&failure, "reason", err.message)
             if _, recorded, record_err := append_event(svc.repo, svc.clock, task, hub_actor(), "workflow_trigger_failed", json_end(&failure)); !recorded do return false, record_err
-            effect_notify_coordinator(svc, u, chain.chain_id, chain.owner_user_id, "workflow_trigger_failed", fmt.tprintf("[taskv2] task %s finished, but follow-up workflow %s could not start: %s; configure it and create a run explicitly", task.task_id, ref, err.message))
+            effect_notify_coordinator(svc, u, chain.chain_id, chain.owner_user_id, "workflow_trigger_failed", fmt.tprintf("[taskv2] task %s finished, but follow-up workflow %s could not start: %s; configure it and create a run explicitly", task.task_id, ref, err.message), string(task.task_id))
             continue
         }
         if child.has_tx {
