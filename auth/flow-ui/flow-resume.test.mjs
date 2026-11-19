@@ -19,8 +19,12 @@ test('add-account: root redirect resumes authorize without prompt=login', () => 
   }
 });
 
-test('add-account: other prompt values are kept', () => {
-  assert.equal(flowRedirectTarget('/', q(AUTH + '&prompt=consent'), O), '/application/o/authorize/?client_id=abc&response_type=code&state=s1');
+test('add-account: only the login token is removed from prompt', () => {
+  const base = '/application/o/authorize/?client_id=abc&response_type=code&state=s1';
+  assert.equal(flowRedirectTarget('/', q(AUTH + '&prompt=consent'), O), base + '&prompt=consent');
+  assert.equal(flowRedirectTarget('/', q(AUTH + '&prompt=select_account'), O), base + '&prompt=select_account');
+  assert.equal(flowRedirectTarget('/', q(AUTH + '&prompt=login%20consent'), O), base + '&prompt=consent');
+  assert.equal(flowRedirectTarget('/', q(AUTH + '&prompt=consent+login'), O), base + '&prompt=consent');
 });
 
 test('malicious next is rejected, challenge.to followed', () => {

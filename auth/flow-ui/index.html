@@ -554,7 +554,9 @@ function resumeAuthorizeUrl(next, origin) {
   let u;
   try { u = new URL(next, origin); } catch { return null; }
   if (u.origin !== origin || !u.pathname.startsWith(AUTHORIZE_PREFIX)) return null;
-  u.searchParams.delete('prompt');
+  // Drop only the `login` token: consent / select_account are still wanted.
+  const rest = (u.searchParams.get('prompt') || '').split(/\s+/).filter((p) => p && p !== 'login');
+  if (rest.length) u.searchParams.set('prompt', rest.join(' ')); else u.searchParams.delete('prompt');
   return u.pathname + u.search;
 }
 
@@ -706,8 +708,8 @@ function otherErrors(challenge, handledKeys) {
   return el('p', { cls: 'error', text: rest.map((k) => all[k].map((e) => e.string).join(' ')).join(' ') });
 }
 
-function submitButton(label) {
-  return el('button', { cls: 'primary', type: 'submit', text: label });
+function submitButton(label, debugId) {
+  return el('button', { cls: 'primary', type: 'submit', text: label, ...(debugId && { 'data-debug-id': debugId }) });
 }
 
 function busy(form, on) {
@@ -889,12 +891,12 @@ const STAGES = {
   // submits (remember_me: false), which is what lets the flow finish.
   'ak-stage-user-login': (c) => {
     let remember = true;
-    const no = el('button', { cls: 'ghost-link', type: 'submit', text: 'Not now' });
+    const no = el('button', { cls: 'ghost-link', type: 'submit', text: 'Not now', 'data-debug-id': 'flow-login-stay-signed-in-decline' });
     no.addEventListener('click', () => { remember = false; });
     const form = el('form', { novalidate: true }, [
       el('h2', { cls: 'step-title', style: 'margin-top:0', text: 'Stay signed in?' }),
       el('p', { cls: 'hint', text: 'Choose yes to skip signing in again on this device.' }),
-      submitButton('Stay signed in'),
+      submitButton('Stay signed in', 'flow-login-stay-signed-in-accept'),
       el('p', { cls: 'hint center' }, [no]),
       otherErrors(c, []),
     ]);

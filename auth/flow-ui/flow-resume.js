@@ -28,7 +28,9 @@ export function resumeAuthorizeUrl(next, origin) {
   let u;
   try { u = new URL(next, origin); } catch { return null; }
   if (u.origin !== origin || !u.pathname.startsWith(AUTHORIZE_PREFIX)) return null;
-  u.searchParams.delete('prompt');
+  // Drop only the `login` token: consent / select_account are still wanted.
+  const rest = (u.searchParams.get('prompt') || '').split(/\s+/).filter((p) => p && p !== 'login');
+  if (rest.length) u.searchParams.set('prompt', rest.join(' ')); else u.searchParams.delete('prompt');
   return u.pathname + u.search;
 }
 
