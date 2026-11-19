@@ -1,0 +1,412 @@
+{
+  "schemaVersion": 1,
+  "task": "task_18e97c6373fb3428",
+  "recordedAt": "2026-11-19",
+  "repositoryBase": "f2ec7361f",
+  "method": "Real child processes, NDJSON stdio, isolated HOME/XDG/provider dirs, no inherited provider or Heimdall credentials. No model prompts.",
+  "nodeVersion": "24.21.0",
+  "piExecutableVersion": "1.1.0",
+  "initializeRequest": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocolVersion": 1,
+      "clientInfo": {
+        "name": "heimdall-planning-probe",
+        "version": "1"
+      },
+      "clientCapabilities": {
+        "fs": {
+          "readTextFile": false,
+          "writeTextFile": false
+        },
+        "terminal": false
+      }
+    }
+  },
+  "probes": [
+    {
+      "name": "copilot",
+      "command": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/ld-linux-x86-64.so.2",
+      "args": [
+        "--library-path",
+        "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib:/nix/store/j7qx4s4mr17j1wqgvqdzj33lmrnzb387-gcc-16.2.0-lib/lib",
+        "/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e97c6373fb3428/.acp-plan-research/node_modules/@github/copilot-linux-x64/copilot",
+        "--acp",
+        "--stdio"
+      ],
+      "environment": {},
+      "stderr": "",
+      "exit": {
+        "code": 0,
+        "signal": null
+      },
+      "initialize": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "protocolVersion": 1,
+          "agentCapabilities": {
+            "auth": {
+              "logout": {}
+            },
+            "loadSession": true,
+            "mcpCapabilities": {
+              "http": true,
+              "sse": true
+            },
+            "promptCapabilities": {
+              "image": true,
+              "audio": false,
+              "embeddedContext": true
+            },
+            "sessionCapabilities": {
+              "close": {},
+              "list": {}
+            }
+          },
+          "agentInfo": {
+            "name": "Copilot",
+            "title": "Copilot",
+            "version": "1.0.114"
+          },
+          "authMethods": [
+            {
+              "id": "copilot-login",
+              "name": "Log in with Copilot CLI",
+              "description": "Run `copilot login` in the terminal",
+              "_meta": {
+                "terminal-auth": {
+                  "command": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/ld-linux-x86-64.so.2",
+                  "args": [
+                    "login"
+                  ],
+                  "label": "Copilot Login"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "newSession": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {
+          "code": -32000,
+          "message": "Authentication required"
+        }
+      },
+      "steering": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "error": {
+          "code": -32601,
+          "message": "\"Method not found\": _session/steering",
+          "data": {
+            "method": "_session/steering"
+          }
+        }
+      }
+    },
+    {
+      "name": "pi",
+      "command": "node",
+      "args": [
+        "/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e97c6373fb3428/.acp-plan-research/node_modules/pi-acp/dist/index.js"
+      ],
+      "environment": {
+        "PI_ACP_PI_COMMAND": "/nix/store/n9cshyawg2r7bmsp2vgz8787m5n6fpzq-pi-coding-agent-1.1.0/bin/pi"
+      },
+      "stderr": "Error handling request {\n  jsonrpc: '2.0',\n  id: 2,\n  method: 'session/new',\n  params: {\n    cwd: '/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e97c6373fb3428/.acp-plan-research/homes/pi',\n    mcpServers: []\n  }\n} {\n  code: -32000,\n  message: 'Authentication required: Configure an API key or log in with an OAuth provider.',\n  data: { authMethods: [ [Object] ] }\n}\nError handling request {\n  jsonrpc: '2.0',\n  id: 3,\n  method: '_session/steering',\n  params: {\n    sessionId: 'missing',\n    prompt: [ [Object] ],\n    _meta: { steering: [Object] }\n  }\n} {\n  code: -32601,\n  message: '\"Method not found\": _session/steering',\n  data: { method: '_session/steering' }\n}\n",
+      "exit": {
+        "code": 0,
+        "signal": null
+      },
+      "initialize": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "protocolVersion": 1,
+          "agentInfo": {
+            "name": "pi-acp",
+            "title": "pi ACP adapter",
+            "version": "0.0.34"
+          },
+          "authMethods": [
+            {
+              "id": "pi_terminal_login",
+              "name": "Launch pi in the terminal",
+              "description": "Start pi in an interactive terminal to configure API keys or login",
+              "type": "terminal",
+              "args": [
+                "--terminal-login"
+              ],
+              "env": {}
+            }
+          ],
+          "agentCapabilities": {
+            "loadSession": true,
+            "mcpCapabilities": {
+              "http": false,
+              "sse": false
+            },
+            "promptCapabilities": {
+              "image": true,
+              "audio": false,
+              "embeddedContext": false
+            },
+            "sessionCapabilities": {
+              "list": {},
+              "delete": {}
+            }
+          }
+        }
+      },
+      "newSession": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {
+          "code": -32000,
+          "message": "Authentication required: Configure an API key or log in with an OAuth provider.",
+          "data": {
+            "authMethods": [
+              {
+                "id": "pi_terminal_login",
+                "name": "Launch pi in the terminal",
+                "description": "Start pi in an interactive terminal to configure API keys or login",
+                "type": "terminal",
+                "args": [
+                  "--terminal-login"
+                ],
+                "env": {},
+                "_meta": {
+                  "terminal-auth": {
+                    "command": "/nix/store/m0256z6rrjwmvxkbymm7a28n0nw2zll9-nodejs-slim-24.21.0/bin/node",
+                    "args": [
+                      "/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e97c6373fb3428/.acp-plan-research/node_modules/pi-acp/dist/index.js",
+                      "--terminal-login"
+                    ],
+                    "label": "Launch pi"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "steering": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "error": {
+          "code": -32601,
+          "message": "\"Method not found\": _session/steering",
+          "data": {
+            "method": "_session/steering"
+          }
+        }
+      }
+    },
+    {
+      "name": "pi-embedded",
+      "command": "node",
+      "args": [
+        "/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e97c6373fb3428/.acp-plan-research/node_modules/pi-acp/dist/index.js"
+      ],
+      "environment": {
+        "PI_ACP_PI_COMMAND": "/nix/store/n9cshyawg2r7bmsp2vgz8787m5n6fpzq-pi-coding-agent-1.1.0/bin/pi",
+        "PI_ACP_ENABLE_EMBEDDED_CONTEXT": "true"
+      },
+      "stderr": "Error handling request {\n  jsonrpc: '2.0',\n  id: 2,\n  method: 'session/new',\n  params: {\n    cwd: '/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e97c6373fb3428/.acp-plan-research/homes/pi-embedded',\n    mcpServers: []\n  }\n} {\n  code: -32000,\n  message: 'Authentication required: Configure an API key or log in with an OAuth provider.',\n  data: { authMethods: [ [Object] ] }\n}\nError handling request {\n  jsonrpc: '2.0',\n  id: 3,\n  method: '_session/steering',\n  params: {\n    sessionId: 'missing',\n    prompt: [ [Object] ],\n    _meta: { steering: [Object] }\n  }\n} {\n  code: -32601,\n  message: '\"Method not found\": _session/steering',\n  data: { method: '_session/steering' }\n}\n",
+      "exit": {
+        "code": 0,
+        "signal": null
+      },
+      "initialize": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "protocolVersion": 1,
+          "agentInfo": {
+            "name": "pi-acp",
+            "title": "pi ACP adapter",
+            "version": "0.0.34"
+          },
+          "authMethods": [
+            {
+              "id": "pi_terminal_login",
+              "name": "Launch pi in the terminal",
+              "description": "Start pi in an interactive terminal to configure API keys or login",
+              "type": "terminal",
+              "args": [
+                "--terminal-login"
+              ],
+              "env": {}
+            }
+          ],
+          "agentCapabilities": {
+            "loadSession": true,
+            "mcpCapabilities": {
+              "http": false,
+              "sse": false
+            },
+            "promptCapabilities": {
+              "image": true,
+              "audio": false,
+              "embeddedContext": true
+            },
+            "sessionCapabilities": {
+              "list": {},
+              "delete": {}
+            }
+          }
+        }
+      },
+      "newSession": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {
+          "code": -32000,
+          "message": "Authentication required: Configure an API key or log in with an OAuth provider.",
+          "data": {
+            "authMethods": [
+              {
+                "id": "pi_terminal_login",
+                "name": "Launch pi in the terminal",
+                "description": "Start pi in an interactive terminal to configure API keys or login",
+                "type": "terminal",
+                "args": [
+                  "--terminal-login"
+                ],
+                "env": {},
+                "_meta": {
+                  "terminal-auth": {
+                    "command": "/nix/store/m0256z6rrjwmvxkbymm7a28n0nw2zll9-nodejs-slim-24.21.0/bin/node",
+                    "args": [
+                      "/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e97c6373fb3428/.acp-plan-research/node_modules/pi-acp/dist/index.js",
+                      "--terminal-login"
+                    ],
+                    "label": "Launch pi"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "steering": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "error": {
+          "code": -32601,
+          "message": "\"Method not found\": _session/steering",
+          "data": {
+            "method": "_session/steering"
+          }
+        }
+      }
+    }
+  ],
+  "probeSource": "import {spawn} from 'node:child_process';\nimport {createInterface} from 'node:readline';\nimport {mkdir,writeFile} from 'node:fs/promises';\nimport {resolve} from 'node:path';\nconst base=resolve('.acp-plan-research');\nasync function probe(name,command,args,extra={}) {\n const home=resolve(base,'homes',name); await mkdir(home,{recursive:true});\n const env={PATH:resolve(base,'node_modules/.bin')+':'+process.env.PATH,HOME:home,XDG_CONFIG_HOME:home+'/.config',XDG_DATA_HOME:home+'/.local/share',XDG_CACHE_HOME:home+'/.cache',PI_CODING_AGENT_DIR:home+'/.pi/agent',COPILOT_HOME:home+'/.copilot',COPILOT_AUTO_UPDATE:'false',NO_COLOR:'1',...extra};\n for(const k of ['LD_LIBRARY_PATH','NIX_LD','NIX_LD_LIBRARY_PATH','SSL_CERT_FILE']) if(process.env[k]) env[k]=process.env[k];\n const child=spawn(command,args,{env,cwd:base,stdio:['pipe','pipe','pipe'],detached:true});\n const result={name,command,args,environment:extra,frames:[],stderr:'',exit:null};const pending=new Map();let id=0;\n const lines=createInterface({input:child.stdout});\n lines.on('line',line=>{try{const v=JSON.parse(line);result.frames.push(v);if(v.id!=null&&pending.has(v.id)){pending.get(v.id)(v);pending.delete(v.id);}if(v.method&&v.id!=null){child.stdin.write(JSON.stringify({jsonrpc:'2.0',id:v.id,result:{outcome:{outcome:'cancelled'}}})+'\\n');}}catch{result.frames.push({nonJson:line.slice(0,512)});}});\n child.stderr.on('data',d=>{result.stderr=(result.stderr+d).slice(0,4096);});child.on('error',e=>{result.error=e.message;}); child.on('exit',(code,signal)=>{result.exit={code,signal};});\n const request=(method,params)=>new Promise((resolve,reject)=>{const n=++id; const timer=setTimeout(()=>{pending.delete(n);reject(new Error('timeout '+method));},25000);pending.set(n,v=>{clearTimeout(timer);resolve(v);});child.stdin.write(JSON.stringify({jsonrpc:'2.0',id:n,method,params})+'\\n');});\n try{result.initialize=await request('initialize',{protocolVersion:1,clientInfo:{name:'heimdall-planning-probe',version:'1'},clientCapabilities:{fs:{readTextFile:false,writeTextFile:false},terminal:false}});\n if(result.initialize.result) {result.newSession=await request('session/new',{cwd:home,mcpServers:[]});result.steering=await request('_session/steering',{sessionId:result.newSession.result?.sessionId??'missing',prompt:[{type:'text',text:'probe'}],_meta:{steering:{idleBehavior:'promptRequired'}}});}\n }catch(e){result.error=e.message;}\n try{process.kill(-child.pid,'SIGTERM');}catch{} if(child.exitCode===null && child.signalCode===null) await new Promise(r=>child.once('close',r)); lines.close();\n await writeFile(resolve(base,name+'.json'),JSON.stringify(result,null,2)+'\\n');\n console.log(JSON.stringify({name,initialize:result.initialize,newSession:result.newSession,steering:result.steering,error:result.error,exit:result.exit,stderr:result.stderr.slice(0,600)}));\n}\nawait probe('copilot','/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/ld-linux-x86-64.so.2',['--library-path','/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib:/nix/store/j7qx4s4mr17j1wqgvqdzj33lmrnzb387-gcc-16.2.0-lib/lib',resolve(base,'node_modules/@github/copilot-linux-x64/copilot'),'--acp','--stdio']);\nawait probe('pi','node',[resolve(base,'node_modules/pi-acp/dist/index.js')],{PI_ACP_PI_COMMAND:'/nix/store/n9cshyawg2r7bmsp2vgz8787m5n6fpzq-pi-coding-agent-1.1.0/bin/pi'});\nawait probe('pi-embedded','node',[resolve(base,'node_modules/pi-acp/dist/index.js')],{PI_ACP_PI_COMMAND:'/nix/store/n9cshyawg2r7bmsp2vgz8787m5n6fpzq-pi-coding-agent-1.1.0/bin/pi',PI_ACP_ENABLE_EMBEDDED_CONTEXT:'true'});\n",
+  "packagePins": [
+    {
+      "package": "@github/copilot",
+      "version": "1.0.114",
+      "integrity": "sha512-qhiUzWGAu3v9jRMU62YFpoI/x9/sQJbylUU2rNrKpTgJSw+jRX7eee0RKf/ZC/FfOPtuACpXWNBQrf08WhVEEw=="
+    },
+    {
+      "package": "@github/copilot-linux-x64",
+      "version": "1.0.114",
+      "integrity": "sha512-gHnINm9ffFqz+G19cQUqRe3lsTAQO3Tbdj7r7Bx1ktZvC5X6iXd/nfo1DRTj9magb52aGRiuwB3yvD1lkW68xQ=="
+    },
+    {
+      "package": "pi-acp",
+      "version": "0.0.34",
+      "integrity": "sha512-MrCp37UbpUzkTkzTIMJQf1RYrT+kr4fgGDGFoLmBN26UupuCZp0XxVIY+7XYsMo3yDnzDeZUJ0jPyM3Si6Bkkg=="
+    },
+    {
+      "package": "@earendil-works/pi-coding-agent",
+      "version": "1.1.0",
+      "integrity": "sha512-SeEi/4hdcHNgA9UWlefZl7ZZpm3dzi2OoxNjDHsBJ9o298LNOtbL4DGKgitlEj6uCTccvtw6f2hlCkTPVJ2RXg==",
+      "execution": "Existing Nix package; npm installation not claimed."
+    }
+  ],
+  "limitations": [
+    "Initialize advertisements do not prove authenticated prompts, permission callbacks, tool updates, config selection or successful load/resume.",
+    "Copilot native npm binary does not run directly on this NixOS host. The explicit glibc loader/library-path invocation establishes handshake evidence only and can alter self-exec/auth metadata.",
+    "Attempted exploratory npm install of Pi1.5.2 failed with EIDLETIMEOUT after312s. Final Pi probes use the installed, version-checked1.1.0 executable.",
+    "First probe harness awaited an already-fired close event; corrected before final evidence.",
+    "Additional Copilot local-BYOK session/new timed out with no model prompt; it does not prove BYOK config success."
+  ],
+  "successfulSession": "sh_fd3e43b97fee2087bfba0d57a9d1880a",
+  "additionalProbe": {
+    "name": "copilot-local-config",
+    "command": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/ld-linux-x86-64.so.2",
+    "args": [
+      "--library-path",
+      "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib:/nix/store/j7qx4s4mr17j1wqgvqdzj33lmrnzb387-gcc-16.2.0-lib/lib",
+      "/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e97c6373fb3428/.acp-plan-research/node_modules/@github/copilot-linux-x64/copilot",
+      "--acp",
+      "--stdio"
+    ],
+    "environment": {
+      "COPILOT_PROVIDER_BASE_URL": "http://127.0.0.1:9/v1",
+      "COPILOT_PROVIDER_TYPE": "openai",
+      "COPILOT_MODEL": "heimdall-local-probe"
+    },
+    "stderr": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/ld-linux-x86-64.so.2: unrecognized option '--binary-version'\nTry '/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/ld-linux-x86-64.so.2 --help' for more information.\n",
+    "exit": {
+      "code": 0,
+      "signal": null
+    },
+    "initialize": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "protocolVersion": 1,
+        "agentCapabilities": {
+          "auth": {
+            "logout": {}
+          },
+          "loadSession": true,
+          "mcpCapabilities": {
+            "http": true,
+            "sse": true
+          },
+          "promptCapabilities": {
+            "image": true,
+            "audio": false,
+            "embeddedContext": true
+          },
+          "sessionCapabilities": {
+            "close": {},
+            "list": {}
+          }
+        },
+        "agentInfo": {
+          "name": "Copilot",
+          "title": "Copilot",
+          "version": "1.0.114"
+        },
+        "authMethods": [
+          {
+            "id": "copilot-login",
+            "name": "Log in with Copilot CLI",
+            "description": "Run `copilot login` in the terminal",
+            "_meta": {
+              "terminal-auth": {
+                "command": "/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/ld-linux-x86-64.so.2",
+                "args": [
+                  "login"
+                ],
+                "label": "Copilot Login"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "error": "timeout session/new"
+  },
+  "additionalProbeSource": "import {spawn} from 'node:child_process';\nimport {createInterface} from 'node:readline';\nimport {mkdir,writeFile} from 'node:fs/promises';\nimport {resolve} from 'node:path';\nconst base=resolve('.acp-plan-research');\nasync function probe(name,command,args,extra={}) {\n const home=resolve(base,'homes',name); await mkdir(home,{recursive:true});\n const env={PATH:resolve(base,'node_modules/.bin')+':'+process.env.PATH,HOME:home,XDG_CONFIG_HOME:home+'/.config',XDG_DATA_HOME:home+'/.local/share',XDG_CACHE_HOME:home+'/.cache',PI_CODING_AGENT_DIR:home+'/.pi/agent',COPILOT_HOME:home+'/.copilot',COPILOT_AUTO_UPDATE:'false',NO_COLOR:'1',...extra};\n for(const k of ['LD_LIBRARY_PATH','NIX_LD','NIX_LD_LIBRARY_PATH','SSL_CERT_FILE']) if(process.env[k]) env[k]=process.env[k];\n const child=spawn(command,args,{env,cwd:base,stdio:['pipe','pipe','pipe'],detached:true});\n const result={name,command,args,environment:extra,frames:[],stderr:'',exit:null};const pending=new Map();let id=0;\n const lines=createInterface({input:child.stdout});\n lines.on('line',line=>{try{const v=JSON.parse(line);result.frames.push(v);if(v.id!=null&&pending.has(v.id)){pending.get(v.id)(v);pending.delete(v.id);}if(v.method&&v.id!=null){child.stdin.write(JSON.stringify({jsonrpc:'2.0',id:v.id,result:{outcome:{outcome:'cancelled'}}})+'\\n');}}catch{result.frames.push({nonJson:line.slice(0,512)});}});\n child.stderr.on('data',d=>{result.stderr=(result.stderr+d).slice(0,4096);});child.on('error',e=>{result.error=e.message;}); child.on('exit',(code,signal)=>{result.exit={code,signal};});\n const request=(method,params)=>new Promise((resolve,reject)=>{const n=++id; const timer=setTimeout(()=>{pending.delete(n);reject(new Error('timeout '+method));},25000);pending.set(n,v=>{clearTimeout(timer);resolve(v);});child.stdin.write(JSON.stringify({jsonrpc:'2.0',id:n,method,params})+'\\n');});\n try{result.initialize=await request('initialize',{protocolVersion:1,clientInfo:{name:'heimdall-planning-probe',version:'1'},clientCapabilities:{fs:{readTextFile:false,writeTextFile:false},terminal:false}});\n if(result.initialize.result) {result.newSession=await request('session/new',{cwd:home,mcpServers:[]});result.steering=await request('_session/steering',{sessionId:result.newSession.result?.sessionId??'missing',prompt:[{type:'text',text:'probe'}],_meta:{steering:{idleBehavior:'promptRequired'}}});}\n }catch(e){result.error=e.message;}\n try{process.kill(-child.pid,'SIGTERM');}catch{} if(child.exitCode===null && child.signalCode===null) await new Promise(r=>child.once('close',r)); lines.close();\n await writeFile(resolve(base,name+'.json'),JSON.stringify(result,null,2)+'\\n');\n console.log(JSON.stringify({name,initialize:result.initialize,newSession:result.newSession,steering:result.steering,error:result.error,exit:result.exit,stderr:result.stderr.slice(0,600)}));\n}\nawait probe('copilot-local-config','/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/ld-linux-x86-64.so.2',['--library-path','/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib:/nix/store/j7qx4s4mr17j1wqgvqdzj33lmrnzb387-gcc-16.2.0-lib/lib',resolve(base,'node_modules/@github/copilot-linux-x64/copilot'),'--acp','--stdio'],{COPILOT_PROVIDER_BASE_URL:'http://127.0.0.1:9/v1',COPILOT_PROVIDER_TYPE:'openai',COPILOT_MODEL:'heimdall-local-probe'});\n"
+}
