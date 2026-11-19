@@ -6,6 +6,8 @@ import domain "odin_test:hub/domain"
 // array and strings to the caller. Remove is scoped to both tenant and agent.
 Event_Subscription_Repository :: struct {
 	ctx:           rawptr,
+	// Returns the canonical bot identity for this owned instance, or empty.
+	bot_agent: proc(ctx: rawptr, owner, instance: string) -> (string, domain.Domain_Error),
 	notice_target: proc(ctx: rawptr, row: domain.Event_Subscription) -> (domain.Event_Notice_Target, domain.Domain_Error),
 	due_deliveries: proc(ctx: rawptr, owner, agent, subscription, before: string) -> ([]domain.Event_Delivery, domain.Domain_Error),
 	owns_chain:    proc(ctx: rawptr, owner, chain: string) -> (bool, domain.Domain_Error),
