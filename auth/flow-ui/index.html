@@ -523,6 +523,58 @@ function qrMatrix(text) {
 
   </script>
   <script>
+// ---- Flow redirect decision (see flow-resume.js; tested by flow-resume.test.mjs) ----
+/*
+ * Decides where the page goes when the flow ends on `xak-flow-redirect`.
+ *
+ * Why: when user B signs in over user A's Authentik session (the add-account path), Django's
+ * login() flushes the session, so the flow's saved `next` is lost and the flow ends on the
+ * root redirect, which lands the user on Authentik's own /if/user/. We still have the original
+ * query in our own URL, so resume the OIDC authorize request from there — without
+ * `prompt=login`, which would demand a second login.
+ *
+ * Pure so it is node-testable (flow-resume.test.mjs) and so the open-redirect rules live in
+ * one place.
+ */
+
+const AUTHORIZE_PREFIX = '/application/o/authorize/';
+
+function isRootRedirect(to, origin) {
+  if (to === undefined || to === null || to === '' || to === '/' || to === '/if/user/') return true;
+  let u;
+  try { u = new URL(String(to), origin); } catch { return false; }
+  return u.origin === origin && (u.pathname === '/' || u.pathname === '/if/user/') && !u.search;
+}
+
+/** Return a safe relative authorize URL (prompt=login removed), or null if `next` is not one. */
+function resumeAuthorizeUrl(next, origin) {
+  if (typeof next !== 'string' || !next.startsWith(AUTHORIZE_PREFIX)) return null;
+  // Control characters and backslashes are stripped or reinterpreted by browsers.
+  if (/[\\\u0000-\u001f\u007f]/.test(next)) return null;
+  let u;
+  try { u = new URL(next, origin); } catch { return null; }
+  if (u.origin !== origin || !u.pathname.startsWith(AUTHORIZE_PREFIX)) return null;
+  // Drop only the `login` token: consent / select_account are still wanted.
+  const rest = (u.searchParams.get('prompt') || '').split(/\s+/).filter((p) => p && p !== 'login');
+  if (rest.length) u.searchParams.set('prompt', rest.join(' ')); else u.searchParams.delete('prompt');
+  return u.pathname + u.search;
+}
+
+/**
+ * @param {string|undefined} to        challenge.to from xak-flow-redirect
+ * @param {string} search              location.search of the login page
+ * @param {string} origin              location.origin
+ * @returns {string} URL to navigate to
+ */
+function flowRedirectTarget(to, search, origin) {
+  const fallback = to || '/';
+  if (!isRootRedirect(to, origin)) return fallback;
+  const resumed = resumeAuthorizeUrl(new URLSearchParams(search).get('next'), origin);
+  return resumed || fallback;
+}
+
+  </script>
+  <script>
 /*
  * Drives Authentik's flow executor and renders each stage as the approved Heimdall design.
  *
@@ -656,8 +708,8 @@ function otherErrors(challenge, handledKeys) {
   return el('p', { cls: 'error', text: rest.map((k) => all[k].map((e) => e.string).join(' ')).join(' ') });
 }
 
-function submitButton(label) {
-  return el('button', { cls: 'primary', type: 'submit', text: label });
+function submitButton(label, debugId) {
+  return el('button', { cls: 'primary', type: 'submit', text: label, ...(debugId && { 'data-debug-id': debugId }) });
 }
 
 function busy(form, on) {
@@ -835,6 +887,24 @@ const STAGES = {
     return [flowHead(c, 'Create your Heimdall account.'), onSubmit(form, () => ({ component: c.component }))];
   },
 
+  // "Stay signed in?" — answered here rather than handed to the stock UI. Declining still
+  // submits (remember_me: false), which is what lets the flow finish.
+  'ak-stage-user-login': (c) => {
+    let remember = true;
+    const no = el('button', { cls: 'ghost-link', type: 'submit', text: 'Not now', 'data-debug-id': 'flow-login-stay-signed-in-decline' });
+    no.addEventListener('click', () => { remember = false; });
+    const form = el('form', { novalidate: true }, [
+      el('h2', { cls: 'step-title', style: 'margin-top:0', text: 'Stay signed in?' }),
+      el('p', { cls: 'hint', text: 'Choose yes to skip signing in again on this device.' }),
+      submitButton('Stay signed in', 'flow-login-stay-signed-in-accept'),
+      el('p', { cls: 'hint center' }, [no]),
+      otherErrors(c, []),
+    ]);
+    form.querySelector('.primary').addEventListener('click', () => { remember = true; });
+    return [flowHead(c, 'Command your agent fleet'),
+      onSubmit(form, () => ({ component: c.component, remember_me: remember }))];
+  },
+
   'ak-stage-access-denied': (c) => [
     flowHead(c),
     el('h2', { cls: 'step-title', style: 'margin-top:0', text: 'Access denied' }),
@@ -911,7 +981,7 @@ function qrNode(configUrl) {
 // ---- Dispatch ----------------------------------------------------------------
 function render(challenge, view) {
   if (challenge.component === 'xak-flow-redirect') {
-    location.href = challenge.to || '/';
+    location.href = flowRedirectTarget(challenge.to, location.search, location.origin);
     return;
   }
   const renderer = STAGES[challenge.component];

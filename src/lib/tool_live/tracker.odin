@@ -114,9 +114,25 @@ tool_live_text :: proc(obj: json.Object, key: string) -> string {
 	return string(v)
 }
 tool_live_ns :: proc(ts: string) -> (i64, bool) {
-	t, consumed := time.rfc3339_to_time_utc(ts)
-	if consumed == 0 do return 0, false
-	return time.to_unix_nanoseconds(t), true
+    // The pinned core parser reads only hundredths and may accept a prefix.
+    // Parse fractional seconds separately so fresh events cannot round below a
+    // nanosecond reset fence. Keep core's calendar and UTC-offset validation.
+    whole:=ts
+    nanos:i64
+    if len(ts)>19 && ts[19]=='.' {
+        end:=20
+        digits:=0
+        for end<len(ts) && ts[end]>='0' && ts[end]<='9' {
+            if digits<9 do nanos=nanos*10+i64(ts[end]-'0')
+            digits+=1;end+=1
+        }
+        if digits==0 do return 0,false
+        for digits<9 { nanos*=10;digits+=1 }
+        whole=strings.concatenate({ts[:19],ts[end:]},context.temp_allocator)
+    }
+    t,consumed:=time.rfc3339_to_time_utc(whole)
+    if consumed==0 || consumed!=len(whole) do return 0,false
+    return time.to_unix_nanoseconds(t)+nanos,true
 }
 tool_live_key :: proc(source, session, agent, use_id: string) -> string {
 	bytes, _ := json.marshal([4]string{source, session, agent, use_id}, allocator = context.temp_allocator)

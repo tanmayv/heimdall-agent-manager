@@ -550,3 +550,56 @@ test_tool_stream_antigravity_background_subagent_survives_main_stop :: proc(t: ^
     testing.expect_value(t, sub_calls, 0)
     testing.expect(t, !bridge_tool_tracker.tool_live.entries[id].session_closed, "subagent stop must not end the session")
 }
+
+// Exercise the production ingest and reducer, rather than the event-capture stub.
+@(test)
+t14_acp_tools_survive_thought_chunks_and_complete_once :: proc(t:^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex);defer sync.mutex_unlock(&bridge_test_config_mutex)
+    sync.mutex_lock(&live_bridge_test_mu);defer sync.mutex_unlock(&live_bridge_test_mu)
+    previous_records:=bridge_local_token_records
+    bridge_local_token_records=make([dynamic]Bridge_Local_Agent_Token_Record,allocator=runtime.heap_allocator())
+    defer {delete(bridge_local_token_records);bridge_local_token_records=previous_records}
+    previous:=acp_events_ingest;acp_events_ingest=t14_live_ingest;defer {acp_events_ingest=previous;t5_reset_events()}
+    bridge_tool_live_init();defer live_bridge_cleanup()
+    f:T4_Runtime_Test;t5_fixture_open(&f)
+    defer {f.r.d.stopped=true;acp_runtime_destroy(f.r);acp_test_delete(&f.f);bridge_runtime_set_status("inst_t5_events","stopped","idle")}
+    bridge_runtime_mark_start_success(f.r.instance)
+    live.tool_live_watch(&bridge_tool_tracker,f.r.instance,true)
+    t5_update(&f,t,1,`{"sessionUpdate":"tool_call","toolCallId":"c","name":"Bash","status":"pending","rawInput":{"command":"pwd"}}`)
+    inst,_:=bridge_tool_live_instance(nil,f.r.instance)
+    snapshot:=live.tool_live_snapshot(&bridge_tool_tracker,inst);defer delete(snapshot)
+    active:=acp_event_object(snapshot)["active"].(json.Array)
+    testing.expect(t,len(active)==1,"ACP start reaches the production live reducer")
+    // Repeated provider updates must not duplicate the call.
+    t5_update(&f,t,2,`{"sessionUpdate":"tool_call_update","toolCallId":"c","status":"in_progress"}`)
+    t5_update(&f,t,3,`{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"checking the result"}}`)
+    after:=live.tool_live_snapshot(&bridge_tool_tracker,inst);defer delete(after)
+    testing.expect(t,len(acp_event_object(after)["active"].(json.Array))==1,"thought chunks must not end in-flight calls")
+    t5_update(&f,t,4,`{"sessionUpdate":"tool_call_update","toolCallId":"c","status":"failed"}`)
+    t5_update(&f,t,5,`{"sessionUpdate":"tool_call_update","toolCallId":"c","status":"failed"}`)
+    t5_update(&f,t,6,`{"sessionUpdate":"tool_call","toolCallId":"edit","name":"Edit","status":"in_progress","rawInput":{"file_path":"a.txt"}}`)
+    edit:=live.tool_live_snapshot(&bridge_tool_tracker,inst);defer delete(edit)
+    edit_active:=acp_event_object(edit)["active"].(json.Array)
+    testing.expect_value(t,len(edit_active),1)
+    if len(edit_active)>0 do testing.expect_value(t,live.tool_live_text(edit_active[0].(json.Object),"summary"),"a.txt")
+    for seq in 7..=8 do t5_update(&f,t,u64(seq),`{"sessionUpdate":"tool_call_update","toolCallId":"edit","status":"completed","content":[{"type":"diff","path":"a.txt","oldText":"old","newText":"new"}]}`)
+    edits:=0
+    for raw in t5_events do if acp_event_string(acp_event_object(raw),"event")=="file.edit" do edits+=1
+    testing.expect_value(t,edits,1)
+    completed:=live.tool_live_snapshot(&bridge_tool_tracker,inst,consume=true);defer delete(completed)
+    rows:=acp_event_object(completed)["completed_since_last"].(json.Array)
+    testing.expect(t,len(rows)==2,"one completion per toolCallId")
+    failed,succeeded:=0,0
+    for row in rows {
+        status:=live.tool_live_text(row.(json.Object),"status")
+        if status=="failed" do failed+=1
+        if status=="completed" do succeeded+=1
+    }
+    testing.expect_value(t,failed,1);testing.expect_value(t,succeeded,1)
+}
+
+t14_live_ingest :: proc(rec:Bridge_Local_Agent_Token_Record,raw:string,now:i64) -> Bridge_Ext_Ingest_Result {
+    result:=t5_ingest(rec,raw,now)
+    bridge_ext_ingest_result_destroy(&result)
+    return bridge_ext_ingest(rec,raw,now)
+}

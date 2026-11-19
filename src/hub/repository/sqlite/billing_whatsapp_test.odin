@@ -3,7 +3,7 @@ package sqlite
 import "core:testing"
 import domain "odin_test:hub/domain"
 
-// REQ-WAI-1: migration 222 adds billing_plans.whatsapp_enabled (0 on every plan)
+// REQ-WAI-1: migration 223 adds billing_plans.whatsapp_enabled (0 on every plan)
 // and account_entitlements.override_whatsapp_enabled (NULL/0/1); the effective
 // value is the override when set, else the entitled plan's value.
 @(test)
@@ -13,7 +13,7 @@ test_whatsapp_entitlement_migration_defaults_and_overrides :: proc(t: ^testing.T
 	if !opened do return
 	defer tmpl_remove_db(path)
 	defer close(&conn)
-	before, before_err := run_migrations(&conn, "/nonexistent/billing-migrations", stop_before = "222_whatsapp_invite_only.sql")
+	before, before_err := run_migrations(&conn, "/nonexistent/billing-migrations", stop_before = "223_whatsapp_invite_only.sql")
 	if !testing.expect(t, before && before_err.code == .None, before_err.message) do return
 	testing.expect(t, !table_column_exists(&conn, "billing_plans", "whatsapp_enabled"))
 	// Existing accounts on every kind of plan, created before the migration.
@@ -22,7 +22,7 @@ test_whatsapp_entitlement_migration_defaults_and_overrides :: proc(t: ^testing.T
 		UPDATE account_billing SET plan_id = 'hobbyist', status = 'active', subscription_id = 'sub_alice' WHERE user_id = 'alice';`))
 	migrated, migration_err := run_migrations(&conn, "/nonexistent/billing-migrations")
 	if !testing.expect(t, migrated && migration_err.code == .None, migration_err.message) do return
-	testing.expect(t, migration_applied(&conn, "222_whatsapp_invite_only.sql"))
+	testing.expect(t, migration_applied(&conn, "223_whatsapp_invite_only.sql"))
 
 	impl: Billing_Repo_SQLite
 	repo, err := new_billing_repository(&impl, path, "sandbox", "pri_hobbyist", true)
@@ -77,7 +77,7 @@ test_whatsapp_entitlement_migration_defaults_and_overrides :: proc(t: ^testing.T
 	testing.expect(t, !exec(&conn, "UPDATE billing_plans SET whatsapp_enabled = 2 WHERE plan_id = 'free';"))
 }
 
-// A crash between 222's COMMIT and its ledger row is recovered on restart.
+// A crash between 223's COMMIT and its ledger row is recovered on restart.
 @(test)
 test_whatsapp_entitlement_migration_ledger_recovery :: proc(t: ^testing.T) {
 	conn, opened, _ := open(":memory:")
@@ -85,8 +85,8 @@ test_whatsapp_entitlement_migration_ledger_recovery :: proc(t: ^testing.T) {
 	defer close(&conn)
 	migrated, err := run_migrations(&conn)
 	if !testing.expect(t, migrated, err.message) do return
-	testing.expect(t, exec(&conn, "DELETE FROM schema_migrations WHERE version = '222_whatsapp_invite_only.sql';"))
+	testing.expect(t, exec(&conn, "DELETE FROM schema_migrations WHERE version = '223_whatsapp_invite_only.sql';"))
 	migrated, err = run_migrations(&conn)
 	testing.expect(t, migrated, err.message)
-	testing.expect(t, migration_applied(&conn, "222_whatsapp_invite_only.sql"))
+	testing.expect(t, migration_applied(&conn, "223_whatsapp_invite_only.sql"))
 }

@@ -45,7 +45,7 @@ and adds `bridges.plan_disabled_at`.
 | `shells_enabled` | `false` | `true` |
 | `whatsapp_enabled` | `false` | `false` (invite-only; see below) |
 
-Migration `222_whatsapp_invite_only.sql` adds `billing_plans.whatsapp_enabled`
+Migration `223_whatsapp_invite_only.sql` adds `billing_plans.whatsapp_enabled`
 (default `0` on every plan) and `account_entitlements.whatsapp_enabled` plus the
 nullable `account_entitlements.override_whatsapp_enabled` (`NULL`/`0`/`1`).
 WhatsApp is invite-only: an operator grants it per account with

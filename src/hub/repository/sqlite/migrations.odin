@@ -683,7 +683,8 @@ MIGRATION_220_EXTENSION_VERSION_SYNC :: #load("migrations/220_extension_version_
 
 MIGRATION_221_EXTENSION_VERSION_SYNC :: #load("migrations/221_extension_version_sync_0_5_61.sql", string)
 
-MIGRATION_222_WHATSAPP_INVITE_ONLY :: #load("migrations/222_whatsapp_invite_only.sql", string)
+MIGRATION_222_EXTENSION_VERSION_SYNC :: #load("migrations/222_extension_version_sync_0_5_62.sql", string)
+MIGRATION_223_WHATSAPP_INVITE_ONLY :: #load("migrations/223_whatsapp_invite_only.sql", string)
 
 migration_order :: [?]string {
 	"001_foundation.sql",
@@ -911,7 +912,8 @@ migration_order :: [?]string {
 	"219_extension_version_sync_0_5_59.sql",
 	"220_extension_version_sync_0_5_60.sql",
 	"221_extension_version_sync_0_5_61.sql",
-	"222_whatsapp_invite_only.sql",
+	"222_extension_version_sync_0_5_62.sql",
+	"223_whatsapp_invite_only.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1324,8 +1326,8 @@ run_migrations :: proc(
 			mark_migration_applied(conn, name)
 			continue
 		}
-		// 222 commits atomically before its ledger row; its last column proves completion.
-		if name == "222_whatsapp_invite_only.sql" &&
+		// 223 commits atomically before its ledger row; its last column proves completion.
+		if name == "223_whatsapp_invite_only.sql" &&
 		   table_column_exists(conn, "account_entitlements", "override_whatsapp_enabled") {
 			mark_migration_applied(conn, name)
 			continue
@@ -1432,7 +1434,8 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 			return string(data)
 		}
 	}
-	if name == "222_whatsapp_invite_only.sql" do return strings.clone(MIGRATION_222_WHATSAPP_INVITE_ONLY)
+	if name == "222_extension_version_sync_0_5_62.sql" do return strings.clone(MIGRATION_222_EXTENSION_VERSION_SYNC)
+	if name == "223_whatsapp_invite_only.sql" do return strings.clone(MIGRATION_223_WHATSAPP_INVITE_ONLY)
 	if name == "221_extension_version_sync_0_5_61.sql" do return strings.clone(MIGRATION_221_EXTENSION_VERSION_SYNC)
 	if name == "220_extension_version_sync_0_5_60.sql" do return strings.clone(MIGRATION_220_EXTENSION_VERSION_SYNC)
 	if name == "219_extension_version_sync_0_5_59.sql" do return strings.clone(MIGRATION_219_EXTENSION_VERSION_SYNC)

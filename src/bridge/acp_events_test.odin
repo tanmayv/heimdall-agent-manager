@@ -10,6 +10,7 @@ import "core:testing"
 import "core:time"
 import contracts "odin_test:contracts"
 import vault "odin_test:lib/vault"
+import live "odin_test:lib/tool_live"
 
 t5_events:[dynamic]string
 t5_locked:bool
@@ -324,4 +325,13 @@ t5_acp_detached_finalization_retries_durably_after_token_invalidation :: proc(t:
     route:=bridge_agent_route("agent.chat.assistant_message","{}")
     testing.expect_value(t,bridge_agent_route_target(route),"/api/v1/agent-actions/chat/assistant-message")
     testing.expect(t,bridge_agent_method_allowed("agent.chat.assistant_message"))
+}
+
+@(test)
+t14_acp_event_timestamp_preserves_reset_fence_precision :: proc(t:^testing.T) {
+    now:=time.unix(1795075200,123456789)
+    stamp:=acp_events_timestamp(now)
+    parsed,valid:=live.tool_live_ns(stamp)
+    testing.expect(t,valid)
+    testing.expect_value(t,parsed,time.to_unix_nanoseconds(now))
 }
