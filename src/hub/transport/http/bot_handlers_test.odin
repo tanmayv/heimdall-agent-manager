@@ -404,3 +404,37 @@ test_telegram_pairing_response_unchanged :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(data), 2)
 	testing.expect(t, "pairing_url" in data && "expires_at" in data)
 }
+Bot_HTTP_WA_Lookup :: struct {enabled: bool}
+bot_http_wa_lookup :: proc(ctx: rawptr, user_id: string) -> (domain.User_Entitlements, domain.Domain_Error) {
+	return {whatsapp_enabled = (^Bot_HTTP_WA_Lookup)(ctx).enabled}, {}
+}
+// REQ-WAI-2a/3: pairing refuses with whatsapp_invite_only; the bot view tells
+// the UI whether to show Connect or the invite-only message.
+@(test)
+test_whatsapp_pairing_route_invite_only :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	f := bot_http_fixture(t); defer bot_http_destroy(f)
+	_ = bot_http_create(t, f)
+	a := bot_http_wa_adapter(f); f.service.whatsapp = &a
+	tg := bot_http_wa_adapter(f)
+	tg.provider, tg.pairing_text = "telegram", nil
+	f.service.adapter = &tg
+	lookup := Bot_HTTP_WA_Lookup{}
+	f.service.entitlements = {ctx = &lookup, lookup = bot_http_wa_lookup}
+	req := bot_http_request(f, "POST", "/api/v1/bots/me/channels/whatsapp/pairing", "{}")
+	refused := bot_whatsapp_pairing_handler(&f.handlers, req)
+	testing.expect_value(t, refused.status, 403)
+	testing.expect(t, strings.contains(refused.body, `"code":"whatsapp_invite_only"`), refused.body)
+	view := bot_me_handler(&f.handlers, bot_http_request(f, "GET", "/api/v1/bots/me", ""))
+	wire: struct {data: struct {whatsapp: struct {configured, enabled: bool}}}
+	testing.expect(t, json.unmarshal(transmute([]byte)view.body, &wire) == nil)
+	testing.expect(t, wire.data.whatsapp.configured && !wire.data.whatsapp.enabled)
+	// Telegram pairing is unaffected.
+	testing.expect_value(t, bot_pairing_handler(&f.handlers, bot_http_request(f, "POST", "/api/v1/bots/me/channels/telegram/pairing", "{}")).status, 201)
+
+	lookup.enabled = true
+	testing.expect_value(t, bot_whatsapp_pairing_handler(&f.handlers, req).status, 201)
+	view = bot_me_handler(&f.handlers, bot_http_request(f, "GET", "/api/v1/bots/me", ""))
+	testing.expect(t, json.unmarshal(transmute([]byte)view.body, &wire) == nil)
+	testing.expect(t, wire.data.whatsapp.enabled)
+}

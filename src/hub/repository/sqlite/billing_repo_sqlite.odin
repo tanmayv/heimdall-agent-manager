@@ -106,12 +106,13 @@ billing_refresh_parameters :: proc(impl: ^Billing_Repo_SQLite, user_id, now: str
 		terminal_input_enabled = COALESCE(override_terminal_input_enabled, (SELECT p.terminal_input_enabled FROM account_billing b JOIN billing_plans p ON p.plan_id = CASE WHEN b.status IN ('active', 'trialing', 'custom') OR (b.status = 'past_due' AND b.grace_until > ?) THEN b.plan_id ELSE 'free' END WHERE b.user_id = ?)),
 		max_concurrent_streams = COALESCE(override_max_concurrent_streams, (SELECT p.max_concurrent_streams FROM account_billing b JOIN billing_plans p ON p.plan_id = CASE WHEN b.status IN ('active', 'trialing', 'custom') OR (b.status = 'past_due' AND b.grace_until > ?) THEN b.plan_id ELSE 'free' END WHERE b.user_id = ?)),
 		shells_enabled = COALESCE(override_shells_enabled, (SELECT p.shells_enabled FROM account_billing b JOIN billing_plans p ON p.plan_id = CASE WHEN b.status IN ('active', 'trialing', 'custom') OR (b.status = 'past_due' AND b.grace_until > ?) THEN b.plan_id ELSE 'free' END WHERE b.user_id = ?)),
-		updated_at = ? WHERE user_id = ?;`, {now, user_id, now, user_id, now, user_id, now, user_id, now, user_id, now, user_id})
+		whatsapp_enabled = COALESCE(override_whatsapp_enabled, (SELECT p.whatsapp_enabled FROM account_billing b JOIN billing_plans p ON p.plan_id = CASE WHEN b.status IN ('active', 'trialing', 'custom') OR (b.status = 'past_due' AND b.grace_until > ?) THEN b.plan_id ELSE 'free' END WHERE b.user_id = ?)),
+		updated_at = ? WHERE user_id = ?;`, {now, user_id, now, user_id, now, user_id, now, user_id, now, user_id, now, user_id, now, user_id})
 }
 
 billing_ensure_account :: proc(impl: ^Billing_Repo_SQLite, user_id, now: string) -> bool {
 	return billing_write(impl, "INSERT OR IGNORE INTO account_billing (user_id, created_at, updated_at) VALUES (?, ?, ?);", {user_id, now, now}) &&
-		billing_write(impl, "INSERT OR IGNORE INTO account_entitlements (user_id, max_bridges, terminal_streaming_enabled, terminal_input_enabled, max_concurrent_streams, shells_enabled, updated_at) SELECT ?, max_bridges, terminal_streaming_enabled, terminal_input_enabled, max_concurrent_streams, shells_enabled, ? FROM billing_plans WHERE plan_id = 'free';", {user_id, now}) &&
+		billing_write(impl, "INSERT OR IGNORE INTO account_entitlements (user_id, max_bridges, terminal_streaming_enabled, terminal_input_enabled, max_concurrent_streams, shells_enabled, whatsapp_enabled, updated_at) SELECT ?, max_bridges, terminal_streaming_enabled, terminal_input_enabled, max_concurrent_streams, shells_enabled, whatsapp_enabled, ? FROM billing_plans WHERE plan_id = 'free';", {user_id, now}) &&
 		billing_refresh_parameters(impl, user_id, now)
 }
 
@@ -129,7 +130,8 @@ BILLING_GET_ACCOUNT_SQL :: `WITH a AS (SELECT u.user_id, COALESCE(b.plan_id, 'fr
 		COALESCE(e.override_max_bridges, ep.max_bridges), COALESCE(e.override_terminal_streaming_enabled, ep.terminal_streaming_enabled), a.created_at, a.updated_at,
 		COALESCE(e.override_terminal_input_enabled, ep.terminal_input_enabled), COALESCE(e.override_max_concurrent_streams, ep.max_concurrent_streams),
 		COALESCE(e.override_shells_enabled, ep.shells_enabled),
-		EXISTS (SELECT 1 FROM billing_checkouts c WHERE c.user_id = a.user_id AND c.expires_at > ?2)
+		EXISTS (SELECT 1 FROM billing_checkouts c WHERE c.user_id = a.user_id AND c.expires_at > ?2),
+		COALESCE(e.override_whatsapp_enabled, ep.whatsapp_enabled)
 	FROM a JOIN billing_plans p ON p.plan_id = a.plan_id
 	JOIN billing_plans ep ON ep.plan_id = ` + BILLING_ENTITLED_PLAN_SQL + `
 	LEFT JOIN account_entitlements e ON e.user_id = a.user_id;`
@@ -141,14 +143,14 @@ billing_get_account :: proc(ctx: rawptr, user_id, now: string) -> (domain.Accoun
 	if stmt == nil do return {}, billing_error()
 	defer sqlite3_finalize(stmt)
 	if sqlite3_step(stmt) != SQLITE_ROW do return {}, billing_error()
-	account := domain.Account_Billing{user_id = column_text(stmt, 0), plan_id = column_text(stmt, 1), plan_label = column_text(stmt, 2), status = column_text(stmt, 3), customer_id = column_text(stmt, 4), subscription_id = column_text(stmt, 5), price_id = column_text(stmt, 6), renews_at = column_text(stmt, 7), cancels_at = column_text(stmt, 8), grace_until = column_text(stmt, 9), last_event_ns = i64(int_v(column_text_unowned(stmt, 10))), entitlements = {max_bridges = int_v(column_text_unowned(stmt, 11)), terminal_streaming_enabled = column_text_unowned(stmt, 12) == "1", terminal_input_enabled = column_text_unowned(stmt, 15) == "1", max_concurrent_streams = int_v(column_text_unowned(stmt, 16)), shells_enabled = column_text_unowned(stmt, 17) == "1"}, created_at = column_text(stmt, 13), updated_at = column_text(stmt, 14), checkout_pending = column_text_unowned(stmt, 18) == "1"}
+	account := domain.Account_Billing{user_id = column_text(stmt, 0), plan_id = column_text(stmt, 1), plan_label = column_text(stmt, 2), status = column_text(stmt, 3), customer_id = column_text(stmt, 4), subscription_id = column_text(stmt, 5), price_id = column_text(stmt, 6), renews_at = column_text(stmt, 7), cancels_at = column_text(stmt, 8), grace_until = column_text(stmt, 9), last_event_ns = i64(int_v(column_text_unowned(stmt, 10))), entitlements = {max_bridges = int_v(column_text_unowned(stmt, 11)), terminal_streaming_enabled = column_text_unowned(stmt, 12) == "1", terminal_input_enabled = column_text_unowned(stmt, 15) == "1", max_concurrent_streams = int_v(column_text_unowned(stmt, 16)), shells_enabled = column_text_unowned(stmt, 17) == "1", whatsapp_enabled = column_text_unowned(stmt, 19) == "1"}, created_at = column_text(stmt, 13), updated_at = column_text(stmt, 14), checkout_pending = column_text_unowned(stmt, 18) == "1"}
 	return account, {}
 }
 
 billing_list_plans :: proc(ctx: rawptr) -> ([]domain.Billing_Plan, domain.Domain_Error) {
 	impl := (^Billing_Repo_SQLite)(ctx)
 	lock_tok := dbt.timed_lock(&impl.read_mutex, .Billing); defer dbt.timed_unlock(&impl.read_mutex, .Billing, lock_tok)
-	stmt := billing_prepare_on(&impl.read_conn, "SELECT plan_id, plan_label, price_id, max_bridges, terminal_streaming_enabled, terminal_input_enabled, max_concurrent_streams, shells_enabled FROM billing_plans ORDER BY plan_id;")
+	stmt := billing_prepare_on(&impl.read_conn, "SELECT plan_id, plan_label, price_id, max_bridges, terminal_streaming_enabled, terminal_input_enabled, max_concurrent_streams, shells_enabled, whatsapp_enabled FROM billing_plans ORDER BY plan_id;")
 	if stmt == nil do return nil, billing_error()
 	defer sqlite3_finalize(stmt)
 	plans := make([dynamic]domain.Billing_Plan, context.temp_allocator)
@@ -156,7 +158,7 @@ billing_list_plans :: proc(ctx: rawptr) -> ([]domain.Billing_Plan, domain.Domain
 		rc := sqlite3_step(stmt)
 		if rc == SQLITE_DONE do break
 		if rc != SQLITE_ROW do return nil, billing_error()
-		append(&plans, domain.Billing_Plan{plan_id = column_text(stmt, 0), plan_label = column_text(stmt, 1), price_id = column_text(stmt, 2), entitlements = {max_bridges = int_v(column_text_unowned(stmt, 3)), terminal_streaming_enabled = column_text_unowned(stmt, 4) == "1", terminal_input_enabled = column_text_unowned(stmt, 5) == "1", max_concurrent_streams = int_v(column_text_unowned(stmt, 6)), shells_enabled = column_text_unowned(stmt, 7) == "1"}})
+		append(&plans, domain.Billing_Plan{plan_id = column_text(stmt, 0), plan_label = column_text(stmt, 1), price_id = column_text(stmt, 2), entitlements = {max_bridges = int_v(column_text_unowned(stmt, 3)), terminal_streaming_enabled = column_text_unowned(stmt, 4) == "1", terminal_input_enabled = column_text_unowned(stmt, 5) == "1", max_concurrent_streams = int_v(column_text_unowned(stmt, 6)), shells_enabled = column_text_unowned(stmt, 7) == "1", whatsapp_enabled = column_text_unowned(stmt, 8) == "1"}})
 	}
 	return plans[:], {}
 }

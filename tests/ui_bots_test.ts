@@ -254,6 +254,10 @@ test('whatsAppCardState covers all four states and whatsAppQrDataUrl produces a 
   const paired = { ...w, binding: { display: '+15551234567' } };
   assert.equal(whatsAppCardState(paired), 'paired');
   assert.equal(whatsAppCardState({ ...paired, held_replies: [{ body: 'Reply' }] }), 'held');
+  assert.equal(whatsAppCardState({ ...w, enabled: true }), 'unpaired');
+  assert.equal(whatsAppCardState({ ...w, enabled: false }), 'invite_only');
+  assert.equal(whatsAppCardState({ ...paired, enabled: false }), 'invite_only');
+  assert.equal(whatsAppCardState({ ...w, configured: false, enabled: false }), 'unconfigured');
   assert.match(whatsAppQrDataUrl('https://wa.me/15550100001?text=CODE'), /^data:image\/gif;base64,/);
 });
 
@@ -285,6 +289,27 @@ test('WhatsApp card renders four mocked states and all reminder values', async (
     Object.assign(b.whatsapp, { binding, held_replies: [{ message_id: '1', body: 'Reply' }], reengage_sent: sent, reengage_error: error });
     await fixture(async ({ get }: any) => assert.equal(get('settings-bots-whatsapp-reminder').textContent, expected), true, b);
   }
+});
+
+test('WhatsApp card shows the invite-only message instead of Connect; Telegram card unchanged', async () => {
+  for (const binding of [null, { state: 'active', display: '+15551234567', connected_at: '2026-11-18' }]) {
+    const b: any = bot();
+    b.whatsapp.enabled = false;
+    b.whatsapp.binding = binding;
+    await fixture(async ({ get }: any) => {
+      assert.equal(get('settings-bots-whatsapp-invite-only').textContent, 'WhatsApp is invite-only — ask the admin for access.');
+      assert.equal(get('settings-bots-whatsapp-connect-btn'), null);
+      assert.equal(get('settings-bots-whatsapp-disconnect-btn'), null);
+      assert.equal(get('settings-bots-whatsapp-unpaired'), null);
+      assert.ok(get('settings-bots-telegram-connect-btn'), 'Telegram card is unaffected');
+    }, true, b);
+  }
+  const enabled: any = bot();
+  enabled.whatsapp.enabled = true;
+  await fixture(async ({ get }: any) => {
+    assert.equal(get('settings-bots-whatsapp-invite-only'), null);
+    assert.ok(get('settings-bots-whatsapp-connect-btn'));
+  }, true, enabled);
 });
 
 test('WhatsApp pairing link, QR, clipboard, disconnect cancellation and confirmation', async () => {

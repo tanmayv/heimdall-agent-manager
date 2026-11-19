@@ -20,6 +20,8 @@ Bots_Service :: struct {
 	uow_factory: ^iface.Unit_Of_Work_Factory,
 	event_bus: ^events.User_Event_Bus,
 	experiments: ^iface.Experiment_Repository,
+	// Per-account WhatsApp entitlement (invite-only); zero value is permissive.
+	entitlements: domain.Entitlement_Lookup,
 	agents: ^agent_service.Agent_Service,
 	providers: ^provider_service.Provider_Service,
 	bridges: ^iface.Bridge_Repository,
@@ -104,6 +106,9 @@ Bot_Telegram_View :: struct {
 Bot_Held_Reply_View :: struct {message_id, body, created_at: string}
 Bot_WhatsApp_View :: struct {
 	configured: bool,
+	// Effective whatsapp_enabled entitlement (REQ-WAI-3). Display only: pairing
+	// and inbound enforce it independently.
+	enabled: bool,
 	phone_display: string,
 	binding: json.Value,
 	window_open, reengage_sent: bool,
@@ -148,6 +153,10 @@ bots_view_json :: proc(s: ^Bots_Service, owner: string) -> (string, domain.Domai
 	view.whatsapp.held_replies = make([]Bot_Held_Reply_View, 0, context.temp_allocator)
 	if s.whatsapp != nil {
 		view.whatsapp.configured = true
+		// A lookup failure keeps the connect path visible; pairing re-checks and
+		// refuses with whatsapp_invite_only, so the hint never grants access.
+		entitled, entitlement_err := bots_channel_entitled(s, domain.CHANNEL_PROVIDER_WHATSAPP, owner)
+		view.whatsapp.enabled = entitled || entitlement_err.code != .None
 		wa_identity, wa_err := s.whatsapp.identity(s.whatsapp.ctx)
 		if wa_err.kind == .None do view.whatsapp.phone_display = strings.concatenate({"+", wa_identity.bot_username}, context.temp_allocator)
 	}

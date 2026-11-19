@@ -37,8 +37,11 @@ export function whatsAppQrDataUrl(url: string): string {
   qr.make();
   return qr.createDataURL(4, 8);
 }
-export function whatsAppCardState(w: BotWhatsApp): 'unconfigured' | 'unpaired' | 'paired' | 'held' {
+export function whatsAppCardState(w: BotWhatsApp): 'unconfigured' | 'invite_only' | 'unpaired' | 'paired' | 'held' {
   if (!w.configured) return 'unconfigured';
+  // Invite-only: an account without access never sees Connect. A remaining
+  // binding is unbound by the hub on the next message or sweep.
+  if (w.enabled === false) return 'invite_only';
   if (w.binding === null) return 'unpaired';
   return w.held_replies.length > 0 ? 'held' : 'paired';
 }
