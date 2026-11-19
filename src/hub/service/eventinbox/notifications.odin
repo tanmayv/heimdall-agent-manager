@@ -13,9 +13,10 @@ import iface "odin_test:hub/repository/iface"
 import nats "odin_test:lib/nats"
 
 Notification_State :: struct {
-	key:       string,
-	last_sent: time.Tick,
-	cursor:    u64,
+	key:           string,
+	last_sent:     time.Tick,
+	last_rejected: time.Tick,
+	cursor:        u64,
 }
 clear_notifications :: proc(r: ^Runtime) {
 	if r.notifications == nil do return
@@ -178,6 +179,7 @@ notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time
 		active[subscriber_key] = true
 		prior := r.notifications[subscriber_key]
 		if prior.last_sent._nsec != 0 && now._nsec - prior.last_sent._nsec < i64(30 * time.Second) do continue
+		if prior.last_rejected._nsec != 0 && now._nsec - prior.last_rejected._nsec < i64(5 * time.Second) do continue
 		target, target_err := notice_target_snapshot(s, row)
 		if target_err.code != .None do return false
 		eligible :=
@@ -185,8 +187,7 @@ notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time
 			target.stopped_by == "" &&
 			((target.runtime_status == "running" || target.runtime_status == "idle") &&
 						target.activity_status == "idle" ||
-					target.runtime_status == "stopped" ||
-					target.runtime_status == "failed")
+					target.runtime_status == "stopped")
 		domain.event_notice_target_destroy(&target)
 		if !eligible do continue
 		state, state_err := nats.consumer_state(r.connection, "HEIM_EVENTS", row.consumer_name)
@@ -276,13 +277,15 @@ notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time
 			obj, _ := other.value.(json.Object)
 			if other.row.wake_policy == "catalog" && notice_wake_worthy(obj, target.is_bot) do worthy = true
 		}
-		stopped := target.runtime_status == "stopped" || target.runtime_status == "failed"
+		stopped := target.runtime_status == "stopped"
 		idle :=
 			(target.runtime_status == "running" || target.runtime_status == "idle") && target.activity_status == "idle"
 		if count > 0 && target.instance_id != "" && target.stopped_by == "" && (idle || stopped && worthy) {
 			if s.notice(s.notice_ctx, row.owner_user_id, row.subscriber_agent_id, target, count, stopped) {
 				save_notification_state(r, key, {last_sent = now})
 				if stopped {sync.atomic_add(&r.wakes_sent, 1)} else {sync.atomic_add(&r.nudges_sent, 1)}
+			} else {
+				save_notification_state(r, key, {last_rejected = now})
 			}
 		}
 		domain.event_notice_target_destroy(&target)

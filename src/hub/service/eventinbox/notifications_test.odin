@@ -15,6 +15,7 @@ import natstest "odin_test:lib/natstest"
 
 Notice_Recorder :: struct {
 	nudges, wakes, count: int,
+	attempts:             int,
 	accept:               bool,
 	service:              ^Service,
 	t:                    ^testing.T,
@@ -34,6 +35,7 @@ record_notice :: proc(
 	rows, err := subscriptions(r.service, owner, agent)
 	testing.expect_value(r.t, err.code, domain.Error_Code.None)
 	subscription_rows_destroy(rows)
+	r.attempts += 1
 	if !r.accept do return false
 	if wake {r.wakes += 1} else {r.nudges += 1}
 	r.count = count
@@ -223,10 +225,33 @@ notification_scenario :: proc(t: ^testing.T) {
 		"",
 		false,
 	)
+	testing.expect(
+		t,
+		sqlite.exec(&db, "UPDATE agent_instances SET runtime_status='failed' WHERE agent_instance_id='inst_coord';"),
+	)
+	attempts := recorder.attempts
+	testing.expect(t, notify_pending(&runtime, rows, later))
+	testing.expect_value(t, recorder.attempts, attempts)
+	testing.expect(t, recorder.wakes == 0, "failed instances require explicit recovery")
+	testing.expect(
+		t,
+		sqlite.exec(&db, "UPDATE agent_instances SET runtime_status='stopped' WHERE agent_instance_id='inst_coord';"),
+	)
 	recorder.accept = false
 	testing.expect(t, notify_pending(&runtime, rows, later))
-	testing.expect(t, recorder.wakes == 0, "failed sends do not spend cooldown or counters")
+	testing.expect(t, recorder.wakes == 0, "rejected sends do not increment success counters")
 	recorder.accept = true
+	attempts = recorder.attempts
+	before_backoff, _, _ := nats.api_stats(conn)
+	for _ in 0 ..< 5 do testing.expect(t, notify_pending(&runtime, rows, later))
+	after_backoff, _, _ := nats.api_stats(conn)
+	testing.expect(t, after_backoff - before_backoff <= 1, "backoff skips consumer and stream reads")
+	testing.expect_value(t, recorder.attempts, attempts)
+	almost := later
+	almost._nsec += i64(5 * time.Second - time.Nanosecond)
+	testing.expect(t, notify_pending(&runtime, rows, almost))
+	testing.expect_value(t, recorder.attempts, attempts)
+	later._nsec += i64(5 * time.Second)
 	testing.expect(t, notify_pending(&runtime, rows, later))
 	testing.expect(t, recorder.wakes == 1, "stopped coordinator wakes for live review")
 	testing.expect_value(t, runtime.wakes_sent, i64(1))
