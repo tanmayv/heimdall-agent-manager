@@ -594,8 +594,13 @@ chain_coordinator_instance_id :: proc(svc: ^Service, chain_id: domain.Task_Chain
 // commit and keeps the notice only while the task is still in the state it was
 // queued for, plus per-trigger checks of what made it worth sending. A failed
 // read keeps the notice: losing a relevant notice is worse than one extra turn.
+// flush_effects also runs on persistent-heap threads (bridge WS reader, reaper,
+// after-commit hooks), so the rows read here live in a scratch arena.
 notice_still_relevant :: proc(svc: ^Service, n: Coordinator_Notification) -> bool {
 	if n.task_id == "" || svc == nil || svc.repo == nil do return true
+	scratch: Scratch
+	context.allocator = scratch_begin(&scratch)
+	defer scratch_end(&scratch)
 	task, found, err := iface.taskchain_get_task(svc.repo, domain.Task_ID(n.task_id))
 	if !found do return err.code != .None && err.code != .Not_Found
 	if n.expected_state != "" && domain.task_state_string(task.state) != n.expected_state do return false
