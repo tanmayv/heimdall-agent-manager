@@ -18,6 +18,7 @@ new_event_subscription_repository :: proc(
 		bot_agent = subscription_bot_agent,
 		owns_chain = subscription_owns_chain,
 		all = subscription_all,
+		by_owner = subscription_by_owner,
 		deliveries = subscription_deliveries,
 		resolutions = subscription_resolutions,
 		exists = subscription_exists,
@@ -418,4 +419,9 @@ subscription_bot_agent :: proc(ctx: rawptr, owner, instance: string) -> (string,
 	if rc == SQLITE_ROW do return column_text(stmt, 0), {}
 	if rc == SQLITE_DONE do return "", {}
 	return "", domain.domain_error(.Internal_Error, "failed to find bot identity")
+}
+
+subscription_by_owner :: proc(ctx: rawptr, owner: string) -> ([]domain.Event_Subscription, domain.Domain_Error) {
+	if owner == "" do return nil, domain.domain_error(.Forbidden, "owner identity required")
+	return subscription_query(ctx, owner, "")
 }

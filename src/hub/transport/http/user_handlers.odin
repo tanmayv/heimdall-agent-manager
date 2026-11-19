@@ -14,6 +14,7 @@ import auth_service "odin_test:hub/service/auth"
 import device_auth "odin_test:hub/service/device_auth"
 import domain "odin_test:hub/domain"
 import events "odin_test:hub/service/events"
+import eventinbox "odin_test:hub/service/eventinbox"
 import project_service "odin_test:hub/service/project"
 import user_service "odin_test:hub/service/user"
 
@@ -38,9 +39,10 @@ User_WS_Ticket_Store :: struct {
 }
 
 User_Handlers :: struct {
- launch_preferences: ^user_service.User_Service,
+	launch_preferences: ^user_service.User_Service,
 	auth: ^auth_service.Auth_Service,
 	event_bus: ^events.User_Event_Bus,
+	catalog: ^eventinbox.Service,
 	ws_tickets: User_WS_Ticket_Store,
 	// Reverse-proxy CIDRs whose X-Forwarded-For is trusted for client-IP rate limits.
 	forwarded_for_cidrs: []string,
@@ -142,6 +144,10 @@ user_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Socke
 	handlers := (^User_Handlers)(ctx)
 	auth_ctx, auth_ok, auth_resp := user_ws_authenticate(handlers, req)
 	if !auth_ok { project_service.ws_track_rejected(project_service.WS_KIND_USER, "auth_failed"); write_http_response(client, auth_resp); return }
+	catalog_cursor := query_value(req.query, "catalog_cursor")
+	if catalog_cursor != "" {
+		if _, valid := eventinbox.catalog_cursor_parse(catalog_cursor); !valid {write_http_response(client, respond_error(domain.domain_error(.Validation_Failed, "invalid catalog cursor"), req.request_id)); return}
+	}
 	key := header_value(req.headers, "Sec-WebSocket-Key")
 	if key == "" { project_service.ws_track_rejected(project_service.WS_KIND_USER, "bad_request"); write_http_response(client, respond_error(domain.domain_error(.Validation_Failed, "missing websocket key"), req.request_id)); return }
 	if !write_user_ws_upgrade_response(client, user_ws_accept_key(key)) { project_service.ws_track_rejected(project_service.WS_KIND_USER, "other"); return }
@@ -172,6 +178,15 @@ user_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Socke
 	}
 	defer events.user_ws_detach(handlers.event_bus, handle)
 	guard := stream_auth_guard_make(handlers.auth, auth_ctx)
+	// Snapshot only after socket registration: existing live invalidations cover
+	// changes racing this read. On reconnect replay retained catalog envelopes;
+	// heartbeat requests advance the cursor without changing legacy fan-out.
+	if handlers.catalog != nil {
+		next, sent := user_ws_catalog_page(handlers, handle, auth_ctx.user_id, catalog_cursor)
+		if !sent do return
+		catalog_cursor = next
+	}
+	defer if handlers.catalog != nil do delete(catalog_cursor)
 	for {
 		// The browser client sends lightweight heartbeat frames every ~25s. Keep the
 		// server idle timeout comfortably above that so normal sockets do not churn,
@@ -186,6 +201,12 @@ user_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Socke
 		if !stream_auth_still_valid(&guard) {
 			ws_close_reason = "auth_revoked"
 			return
+		}
+		if handlers.catalog != nil {
+			next, sent := user_ws_catalog_page(handlers, handle, auth_ctx.user_id, catalog_cursor)
+			if !sent do return
+			delete(catalog_cursor)
+			catalog_cursor = next
 		}
 	}
 }
@@ -334,4 +355,24 @@ auth_ctx_server_time :: proc(req: Request) -> string {
 	// keeps transport handlers deterministic until the HTTP server adapter passes
 	// per-request server_time through Request in a later phase.
 	return "2026-07-22T10:00:00Z"
+}
+
+user_ws_catalog_page :: proc(h: ^User_Handlers, handle: events.User_WS_Handle, owner, cursor: string) -> (string, bool) {
+	page, err := eventinbox.catalog_replay(h.catalog, owner, "", cursor, 200)
+	defer eventinbox.catalog_page_destroy(&page)
+	if err.code != .None {
+		// Preserve the last cursor through a NATS outage and request a full refresh.
+		events.user_ws_send(h.event_bus, handle, `{"type":"resync_required","reason":"catalog_unavailable"}`)
+		return strings.clone(cursor), true
+	}
+	encoded, enc_err := json.marshal(struct {
+		type: string,
+		catalog_cursor: string,
+		events: []json.Value,
+		cursor_expired, has_more: bool,
+	}{"catalog_replay", page.catalog_cursor, page.events[:], page.cursor_expired, page.has_more})
+	if enc_err != nil do return "", false
+	defer delete(encoded)
+	events.user_ws_send(h.event_bus, handle, string(encoded))
+	return strings.clone(page.catalog_cursor), true
 }

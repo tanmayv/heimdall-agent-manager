@@ -10,6 +10,7 @@ import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import auth "odin_test:hub/service/auth"
 import events "odin_test:hub/service/events"
+import eventinbox "odin_test:hub/service/eventinbox"
 import mcp "odin_test:hub/service/mcp"
 import tc "odin_test:hub/service/taskchain"
 import vault "odin_test:lib/vault"
@@ -18,6 +19,7 @@ MCP_Control_Handlers :: struct {
 	delegation:^MCP_Delegation_Handlers,
 	control:mcp.Control_Service,
 	bus:^events.User_Event_Bus,
+	inbox:^eventinbox.Service,
 	workers:mcp.Worker_Broker,
 	registrations:mcp.Worker_Registrations,
 	requests:mcp.Request_Registry,
@@ -109,7 +111,11 @@ mcp_arguments :: proc(name:string,value:json.Value)->(mcp.Control_Arguments,bool
 		case "description":
 			s,typed:=v.(json.String);if !typed || name!="chains.create" || len(s)>20000 do return {},false
 			args.description=string(s)
-		case "cursor":
+		case "catalog_cursor":
+	s,typed:=v.(json.String); if !typed || name!="events.wait" do return {},false
+	if _,valid:=eventinbox.catalog_cursor_parse(string(s)); !valid do return {},false
+	args.catalog_cursor=string(s)
+	case "cursor":
 			s,typed:=v.(json.String);if !typed || (name!="chains.list" && name!="tasks.list") || len(s)>2048 || name=="chains.list" && len(s)>20 do return {},false
 			args.cursor=string(s)
 		case "state":
@@ -129,7 +135,7 @@ mcp_arguments :: proc(name:string,value:json.Value)->(mcp.Control_Arguments,bool
 			s,typed:=v.(json.String);if !typed || name!="tasks.get" || len(s)>2048 do return {},false
 			args.comment_cursor=string(s)
 		case "limit":
-			n,typed:=v.(json.Integer);if !typed || (name!="chains.list" && name!="tasks.list") || n<1 || n>100 do return {},false
+			n,typed:=v.(json.Integer);if !typed || (name!="chains.list" && name!="tasks.list" && name!="events.wait") || n<1 || n>200 || name!="events.wait" && n>100 do return {},false
 			args.limit=int(n)
 		case "timeout_ms":
 			n,typed:=v.(json.Integer);if !typed || name!="events.wait" || n<1 || n>25000 do return {},false
@@ -202,7 +208,7 @@ mcp_control_handler :: proc(ctx:rawptr,req:Request)->(response:Response) {
 		if !ok do return mcp_rpc_error(id,-32602,"Invalid initialization")
 		protocol:="2025-11-25"
 		if requested=="2025-03-26" || requested=="2025-06-18" || requested=="2024-11-05" do protocol=string(requested)
-		return mcp_rpc_result(id,json.Object{"protocolVersion"=json.String(protocol),"capabilities"=json.Object{"tools"=json.Object{}},"serverInfo"=json.Object{"name"=json.String("heimdall-control"),"version"=json.String("0.2.0")},"instructions"=json.String("Act as the connected user within the tools and permissions advertised by tools/list. Task and runtime writes can dispatch work on owned machines. Reuse a stable request_id with identical arguments after ambiguous task/runtime-write results; refresh tasks.get or instances.get revision, or chains.get configuration_revision before a new update. Runtime acceptance is not readiness; poll instances.operations. Hold and checkpoint active task leases before lifecycle changes. Chain creation launches a fresh coordinator on an explicitly selected bridge. Coordinator messages appear as the connected user and can wake the coordinator with explicit messaging consent. No external leases or review approval authority. Poll events.wait only while actively monitoring with a stopping condition and budget; no background wake or durable replay. Never automatically retry an ambiguous chains.create result. Default decryption requires an approved unlocked device; hosted decryption requires explicit connection consent.")})
+		return mcp_rpc_result(id,json.Object{"protocolVersion"=json.String(protocol),"capabilities"=json.Object{"tools"=json.Object{}},"serverInfo"=json.Object{"name"=json.String("heimdall-control"),"version"=json.String("0.2.0")},"instructions"=json.String("Act as the connected user within the tools and permissions advertised by tools/list. Task and runtime writes can dispatch work on owned machines. Reuse a stable request_id with identical arguments after ambiguous task/runtime-write results; refresh tasks.get or instances.get revision, or chains.get configuration_revision before a new update. Runtime acceptance is not readiness; poll instances.operations. Hold and checkpoint active task leases before lifecycle changes. Chain creation launches a fresh coordinator on an explicitly selected bridge. Coordinator messages appear as the connected user and can wake the coordinator with explicit messaging consent. No external leases or review approval authority. Poll events.wait only while actively monitoring with a stopping condition and budget; no background wake. Use catalog_cursor to resume retained catalog events. Never automatically retry an ambiguous chains.create result. Default decryption requires an approved unlocked device; hosted decryption requires explicit connection consent.")})
 	case "ping":return mcp_rpc_result(id,json.Object{})
 	case "tools/list":
 		tools,err:=json.parse_string(#load("mcp_tools.json",string),parse_integers=true,allocator=context.temp_allocator)
@@ -259,6 +265,8 @@ mcp_control_handler :: proc(ctx:rawptr,req:Request)->(response:Response) {
 	bundle_slot:=false
 	defer if bundle_slot do mcp_bundle_slot_release()
 	wait_changed:=false
+	catalog:eventinbox.Catalog_Page
+	defer eventinbox.catalog_page_destroy(&catalog)
 	if string(name)=="events.wait" {
 		// Validate ownership before attaching, attach before the baseline read.
 		_,owned,err:=tc.get_chain_for_read(h.control.chains,mcp.control_auth(view.owner),domain.Task_Chain_ID(args.chain_id))
@@ -266,13 +274,32 @@ mcp_control_handler :: proc(ctx:rawptr,req:Request)->(response:Response) {
 		hint,attached:=events.poll_attach(h.bus,view.owner,args.chain_id)
 		if !attached do return mcp_tool_result(id,"temporarily_unavailable",true)
 		defer events.poll_detach(h.bus,hint)
+		if args.catalog_cursor!="" && h.inbox==nil do return mcp_tool_result(id,"temporarily_unavailable",true)
+		if h.inbox!=nil {
+			replay_err:domain.Domain_Error
+			catalog,replay_err=eventinbox.catalog_replay(h.inbox,view.owner,args.chain_id,args.catalog_cursor,50 if args.limit==0 else args.limit)
+			if replay_err.code!=.None && args.catalog_cursor!="" do return mcp_tool_result(id,"temporarily_unavailable",true)
+		}
+
 		wait:=args.timeout_ms;if wait==0 do wait=20000
 		wait_started:=time.tick_now()
-		for events.poll_revision(h.bus,hint)==0 && time.tick_since(wait_started)<time.Duration(wait)*time.Millisecond && time.tick_since(started)<25*time.Second {
+		for len(catalog.events)==0 && !catalog.cursor_expired && !catalog.has_more && events.poll_revision(h.bus,hint)==0 && time.tick_since(wait_started)<time.Duration(wait)*time.Millisecond && time.tick_since(started)<25*time.Second {
 			if mcp.request_cancelled(&h.requests,handle) do return mcp_tool_result(id,"cancelled",true)
-			time.sleep(25*time.Millisecond)
+			time.sleep(250*time.Millisecond if args.catalog_cursor!="" else 25*time.Millisecond)
+			if h.inbox!=nil && args.catalog_cursor!="" {
+				eventinbox.catalog_page_destroy(&catalog)
+				replay_err:domain.Domain_Error
+				catalog,replay_err=eventinbox.catalog_replay(h.inbox,view.owner,args.chain_id,args.catalog_cursor,50 if args.limit==0 else args.limit)
+				if replay_err.code!=.None && args.catalog_cursor!="" do return mcp_tool_result(id,"temporarily_unavailable",true)
+			}
 		}
-		wait_changed=events.poll_revision(h.bus,hint)>0
+		wait_changed=events.poll_revision(h.bus,hint)>0 || len(catalog.events)>0
+		if h.inbox!=nil {
+			eventinbox.catalog_page_destroy(&catalog)
+			replay_err:domain.Domain_Error
+			catalog,replay_err=eventinbox.catalog_replay(h.inbox,view.owner,args.chain_id,args.catalog_cursor,50 if args.limit==0 else args.limit)
+			if replay_err.code!=.None && args.catalog_cursor!="" do return mcp_tool_result(id,"temporarily_unavailable",true)
+		}
 	}
 	if mcp.request_cancelled(&h.requests,handle) do return mcp_tool_result(id,"cancelled",true)
 	// A fresh read and credential check after waiting, never a pre-wait cache.
@@ -332,9 +359,10 @@ mcp_control_handler :: proc(ctx:rawptr,req:Request)->(response:Response) {
 		defer vault.control_wipe_value(state)
 		if err!=nil do return mcp_tool_result(id,"decryption_unavailable",true)
 		status:="timeout"
+	wait_changed = wait_changed || len(catalog.events)>0
 		hint:json.Value
 		if wait_changed {status="changed";hint=json.Object{"resource"=json.String("task_chain"),"resource_id"=json.String(args.chain_id),"change"=json.String("refetch")}}
-		encoded,eerr:=json.marshal(struct {status:string,event:json.Value,refresh_required:bool,state:json.Value}{status,hint,true,state},allocator=context.temp_allocator)
+		encoded,eerr:=json.marshal(struct {status:string,event:json.Value,refresh_required:bool,state:json.Value,catalog_cursor:string,events:[]json.Value,cursor_expired,has_more:bool}{status,hint,true,state,catalog.catalog_cursor,catalog.events[:],catalog.cursor_expired,catalog.has_more},allocator=context.temp_allocator)
 		defer if len(encoded)>0 do crypto.zero_explicit(raw_data(encoded),len(encoded))
 		if eerr!=nil do return mcp_tool_result(id,"request_failed",true)
 		return mcp_tool_result(id,string(encoded),false)

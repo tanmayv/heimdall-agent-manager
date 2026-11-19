@@ -169,9 +169,8 @@ stream_operation :: proc(conn: ^Connection, cfg: Stream_Config, op: c.int) -> (s
 	defer delete(name)
 	subjects := clone_cstrings(cfg.subjects)
 	defer destroy_cstrings(subjects)
-	rollup: c.int
+	rollup, direct: c.int
 	if cfg.allow_rollup do rollup = 1
-	direct: c.int
 	if cfg.allow_direct do direct = 1
 	err.status = ham_nats_stream(
 		conn,
@@ -182,8 +181,7 @@ stream_operation :: proc(conn: ^Connection, cfg: Stream_Config, op: c.int) -> (s
 		cfg.max_age_ns,
 		cfg.duplicate_window_ns,
 		cfg.replicas,
-		rollup,
-		direct,
+		rollup, direct,
 		&state,
 		&err.jetstream,
 	)
@@ -360,10 +358,8 @@ fetch_available :: proc(pull: ^Pull, limit: int) -> (batch: ^Batch, err: Error) 
 	return
 }
 
-// Read-only snapshots for notification decisions. Message ownership is the
-// same as stream_get: caller destroys a successful result.
 Consumer_State :: struct {
-	delivered, pending, ack_pending: u64,
+	delivered, pending, ack_pending, redelivered: u64,
 }
 consumer_state :: proc(conn: ^Connection, stream, name: string) -> (state: Consumer_State, err: Error) {
 	if conn == nil || stream == "" || name == "" || !valid_string(stream) || !valid_string(name) do return {}, {status = INVALID}
@@ -372,18 +368,21 @@ consumer_state :: proc(conn: ^Connection, stream, name: string) -> (state: Consu
 	err.status = ham_nats_consumer_state(conn, a, b, &state, &err.jetstream)
 	return
 }
-stream_next :: proc(
-	conn: ^Connection,
-	stream, subject: string,
-	sequence: u64,
-) -> (
-	msg: ^Message,
-	actual: u64,
-	err: Error,
-) {
-	if conn == nil || stream == "" || subject == "" || !valid_string(stream) || !valid_string(subject) do return nil, 0, {status = INVALID}
-	a := strings.clone_to_cstring(stream); defer delete(a)
-	b := strings.clone_to_cstring(subject); defer delete(b)
-	err.status = ham_nats_stream_next(&msg, conn, a, b, sequence, &actual)
+
+subject_count :: proc(conn: ^Connection, stream, filter: string) -> (count: u64, err: Error) {
+	if conn == nil || !valid_name(stream) || !valid_string(filter) || filter == "" do return 0, Error{status = INVALID}
+	s := strings.clone_to_cstring(stream); defer delete(s)
+	f := strings.clone_to_cstring(filter); defer delete(f)
+	err.status = ham_nats_subject_count(conn, s, f, &count, &err.jetstream)
+	return
+}
+
+// Returns the first message matching filter at or after start. A nil message
+// with no error means no match. Caller owns the message and must destroy it.
+stream_next :: proc(conn: ^Connection, stream, filter: string, start: u64) -> (msg: ^Message, sequence: u64, err: Error) {
+	if conn == nil || !valid_name(stream) || filter == "" || !valid_string(filter) || start == 0 do return nil, 0, Error{status = INVALID}
+	s := strings.clone_to_cstring(stream); defer delete(s)
+	f := strings.clone_to_cstring(filter); defer delete(f)
+	err.status = ham_nats_stream_next(&msg, conn, s, f, start, &sequence)
 	return
 }

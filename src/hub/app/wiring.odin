@@ -677,7 +677,9 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		notice_ctx = graph, notice = event_inbox_notice,
 		options = {url = config.nats_url, creds_file = config.nats_creds_file, ca_file = config.nats_ca_file, timeout_ms = 1000},
 	}
-	graph.event_inbox_handlers = http.Event_Inbox_Handlers{agent_actions = &graph.agent_action_handlers, inbox = &graph.event_inbox}
+	graph.mcp_control_handlers.inbox = &graph.event_inbox
+ graph.user_handlers.catalog = &graph.event_inbox
+ graph.event_inbox_handlers = http.Event_Inbox_Handlers{agent_actions = &graph.agent_action_handlers, inbox = &graph.event_inbox}
 	graph.bot_agent_handlers = http.Bot_Agent_Handlers{agent_actions = &graph.agent_action_handlers, bots = &graph.bots, experiments = &graph.experiment_repo}
 	graph.bot_handlers = http.Bot_Handlers{auth = &graph.auth, bots = &graph.bots, experiments = &graph.experiment_repo}
 	graph.bridges.provider_repo = graph.providers.repo
@@ -706,6 +708,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 
 shutdown_graph :: proc(graph: ^App_Graph) {
 	eventinbox.stop(&graph.event_inbox_runtime)
+ eventinbox.counters_destroy(&graph.event_inbox)
 	eventrelay.stop(&graph.event_relay)
 	bots_service.bots_runtime_stop(&graph.bots_runtime)
 	bots_service.bots_service_destroy(&graph.bots)
@@ -890,7 +893,8 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/media/fetch", rawptr(&graph.bot_agent_handlers), http.bot_agent_media_fetch_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/media/stored", rawptr(&graph.bot_agent_handlers), http.bot_agent_media_stored_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/media/plan", rawptr(&graph.bot_agent_handlers), http.bot_agent_media_plan_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/events/next", rawptr(&graph.event_inbox_handlers), http.event_next_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/events/metrics", rawptr(&graph.event_inbox_handlers), http.event_metrics_handler)
+ http.router_add(&graph.router, "POST", "/api/v1/agent-actions/events/next", rawptr(&graph.event_inbox_handlers), http.event_next_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/events/ack", rawptr(&graph.event_inbox_handlers), http.event_ack_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/events/watch", rawptr(&graph.event_inbox_handlers), http.event_watch_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/events/unwatch", rawptr(&graph.event_inbox_handlers), http.event_unwatch_handler)

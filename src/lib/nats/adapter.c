@@ -210,9 +210,7 @@ int ham_nats_api_stats(ham_nats *h, uint64_t *total, uint64_t *errors, jsErrCode
     return s;
 }
 
-// Read-only observation: these calls never advance a consumer or consume an
-// acknowledgement attempt. Destroy every C result before returning.
-typedef struct { uint64_t delivered, pending, ack_pending; } ham_consumer_state;
+typedef struct { uint64_t delivered, pending, ack_pending, redelivered; } ham_consumer_state;
 int ham_nats_consumer_state(ham_nats *h, const char *stream, const char *name,
                             ham_consumer_state *out, jsErrCode *err) {
     jsConsumerInfo *info = NULL;
@@ -221,23 +219,55 @@ int ham_nats_consumer_state(ham_nats *h, const char *stream, const char *name,
         out->delivered = info->Delivered.Stream;
         out->pending = info->NumPending;
         out->ack_pending = info->NumAckPending;
+        out->redelivered = info->NumRedelivered;
     }
     jsConsumerInfo_Destroy(info);
     return s;
 }
+int ham_nats_subject_count(ham_nats *h, const char *stream, const char *filter,
+                           uint64_t *count, jsErrCode *err) {
+    jsOptions opts;
+    jsStreamInfo *info = NULL;
+    *count = 0;
+    natsStatus s = jsOptions_Init(&opts);
+    if (s != NATS_OK) return s;
+    opts.Stream.Info.SubjectsFilter = filter;
+    s = js_GetStreamInfo(&info, h->js, stream, &opts, err);
+    if (s == NATS_OK && info->State.Subjects)
+        for (int i = 0; i < info->State.Subjects->Count; i++)
+            *count += info->State.Subjects->List[i].Msgs;
+    jsStreamInfo_Destroy(info);
+    return s;
+}
+
+// Subject-filtered direct get skips other tenants and rolled-up holes server-side.
+// Return a normal owned message with its original subject; all direct info stays C.
 int ham_nats_stream_next(natsMsg **out, ham_nats *h, const char *stream,
-                          const char *subject, uint64_t sequence, uint64_t *actual) {
+                         const char *filter, uint64_t start, uint64_t *sequence) {
     *out = NULL;
-    jsDirectGetMsgOptions opts;
-    natsStatus s = jsDirectGetMsgOptions_Init(&opts);
+    *sequence = 0;
+    jsDirectGetMsgOptions dg;
+    natsMsg *msg = NULL;
+    natsStatus s = jsDirectGetMsgOptions_Init(&dg);
+    if (s != NATS_OK) return s;
+    dg.Sequence = start;
+    dg.NextBySubject = filter;
+    s = js_DirectGetMsg(&msg, h->js, stream, NULL, &dg);
+    if (s == NATS_NOT_FOUND) { natsMsg_Destroy(msg); return NATS_OK; }
+    const char *seq = NULL, *subject = NULL;
+    if (s == NATS_OK) s = natsMsgHeader_Get(msg, "Nats-Sequence", &seq);
+    if (s == NATS_OK) s = natsMsgHeader_Get(msg, "Nats-Subject", &subject);
     if (s == NATS_OK) {
-        opts.Sequence = sequence;
-        opts.NextBySubject = subject;
-        s = js_DirectGetMsg(out, h->js, stream, NULL, &opts);
+        if (!seq || !*seq || !subject || !*subject) s = NATS_ERR;
+        for (const char *p = seq; s == NATS_OK && *p; p++) {
+            if (*p < '0' || *p > '9' || *sequence > (UINT64_MAX - (*p - '0')) / 10)
+                s = NATS_ERR;
+            else *sequence = *sequence * 10 + (*p - '0');
+        }
     }
-    const char *value = NULL;
-    if (s == NATS_OK) s = natsMsgHeader_Get(*out, "Nats-Sequence", &value);
-    if (s == NATS_OK && value) *actual = strtoull(value, NULL, 10);
+    if (s == NATS_OK)
+        s = natsMsg_Create(out, subject, NULL, natsMsg_GetData(msg), natsMsg_GetDataLength(msg));
+    natsMsg_Destroy(msg);
     if (s != NATS_OK) { natsMsg_Destroy(*out); *out = NULL; }
     return s;
 }

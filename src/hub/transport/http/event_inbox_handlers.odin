@@ -101,3 +101,13 @@ event_inbox_handler :: proc(ctx: rawptr, req: Request, verb: string) -> Response
 	}
 	return respond_error(domain.domain_error(.Not_Found, "unknown events verb"), req.request_id)
 }
+
+event_metrics_handler :: proc(ctx: rawptr, req: Request) -> Response {
+ h := (^Event_Inbox_Handlers)(ctx)
+ principal, ok, refusal := require_auth(h.agent_actions.auth, req)
+ if !ok do return refusal
+ result, err := eventinbox.metrics(h.inbox, principal.user_id)
+ defer eventinbox.metrics_destroy(&result)
+ if err.code != .None do return respond_error(err, req.request_id)
+ return respond_success_typed(result, req.request_id, auth_ctx_server_time(req))
+}

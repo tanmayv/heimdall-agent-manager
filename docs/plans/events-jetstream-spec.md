@@ -227,3 +227,39 @@ Their ledger rows remain intact and their SQL is not replayed; main's distinct
 `221_extension_version_sync_0_5_61.sql` and `222_extension_version_sync_0_5_62.sql`
 still apply independently. Regression tests cover main-to-events upgrades,
 repeated startup, and upgrades from those original events identities.
+
+## E6 replay and metrics contract
+
+MCP `events.wait` accepts an optional `catalog_cursor`, a decimal string
+representing the last scanned HEIM_EVENTS sequence, and `limit` (default 50,
+maximum 200). The returned `events`, `catalog_cursor`, `has_more`, and
+`cursor_expired` are additive to the existing fresh state/hint response.
+Without a cursor, existing polling behavior is preserved and the response
+establishes a current cursor. With a cursor, only the caller's owned chain's
+catalog v1 envelopes are replayed. Replay is subject to stream retention and
+state rollup, and never promises the full audit history. Each page scans at most
+1,000 positions or two seconds; an empty page with `has_more` is valid.
+A cursor older than the first retained sequence (except the initial zero on a
+stream starting at one), or beyond the current stream, returns
+`cursor_expired: true`, no events, and the current cursor; refetch state before
+resuming. Retain cursors only for the same owner/chain/hub.
+
+UI websocket reconnects pass a separate `catalog_cursor` query parameter.
+After the existing ready handshake the hub sends a stamped `catalog_replay`
+page with the same fields, scoped to the authenticated owner. The UI routes
+its envelopes to the existing resource invalidation handler. Heartbeats and
+`catalog_next` frames request subsequent pages; existing live invalidations,
+per-socket `stream_epoch`/`stream_seq`, and full reconnect refresh remain intact.
+When the queue is unavailable the hub sends `resync_required` and preserves the
+last cursor. An expired cursor also triggers a full refresh.
+
+Authenticated `GET /api/v1/events/metrics` returns only the caller owner's:
+`subscriptions` (subscription_id, consumer_lag = pending messages, ack_pending,
+redeliveries, available), summed `redeliveries` (JetStream current redelivered
+message gauge), retained `dlq_count`, `nudges_sent`, `wakes_sent`, and
+`outbox_backlog`. Missing consumers have available=false; queue failures return
+an error instead of reporting invented zeroes. Notice counters are process
+lifetime, owner-scoped and start at zero. E3 must call
+`eventinbox.record_notice(&graph.event_inbox, owner, wake)` only after successful
+dispatch; E6 does not depend on E3 implementation. All SQL snapshots commit
+before JetStream calls, and all C-owned info/messages/connections are destroyed.

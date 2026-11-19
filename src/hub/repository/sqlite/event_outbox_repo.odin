@@ -17,6 +17,7 @@ new_event_outbox_repository :: proc(impl: ^Event_Outbox_Repo_SQLite, conn: ^Conn
 		next = outbox_next,
 		mark_published = outbox_mark,
 		backlog = outbox_backlog,
+ backlog_owner = outbox_backlog_owner,
 		prune = outbox_prune,
 	}
 }
@@ -142,4 +143,13 @@ outbox_resolve_topic :: proc(ctx: rawptr, owner, topic, at, event_id: string) ->
 	bind_text(stmt, 1, at); bind_text(stmt, 2, event_id); bind_text(stmt, 3, owner); bind_text(stmt, 4, topic)
 	if sqlite3_step(stmt) != SQLITE_DONE do return domain.domain_error(.Internal_Error, "failed to resolve event topic")
 	return {}
+}
+
+outbox_backlog_owner :: proc(ctx: rawptr, owner: string) -> (i64, domain.Domain_Error) {
+ stmt, err := outbox_prepare(ctx, "SELECT count(*) FROM event_outbox WHERE published_at IS NULL AND owner_user_id=?;")
+ if err.code != .None do return 0, err
+ defer sqlite3_finalize(stmt)
+ bind_text(stmt, 1, owner)
+ if sqlite3_step(stmt) != SQLITE_ROW do return 0, domain.domain_error(.Internal_Error, "failed to count owner outbox")
+ return sqlite3_column_int64(stmt, 0), {}
 }

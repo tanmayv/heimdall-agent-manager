@@ -11,3 +11,10 @@ Events_Ack_Input :: struct {
 Events_Watch_Input :: struct {
 	chain_id: string,
 }
+
+// catalog_cursor is an opaque decimal HEIM_EVENTS sequence. It never replaces
+// the per-connection UI stream_epoch/stream_seq transport watermark.
+Catalog_Replay_Input :: struct {
+    catalog_cursor: string,
+    limit: int,
+}

@@ -11,8 +11,9 @@ when ODIN_OS == .Windows {
 }
 @(private)
 foreign client {
-	ham_nats_consumer_state :: proc(conn: ^Connection, stream, name: cstring, out: ^Consumer_State, js_error: ^i32) -> i32 ---
-	ham_nats_stream_next :: proc(out: ^^Message, conn: ^Connection, stream, subject: cstring, sequence: u64, actual: ^u64) -> i32 ---
+	ham_nats_stream_next :: proc(out: ^^Message, conn: ^Connection, stream, filter: cstring, start: u64, sequence: ^u64) -> i32 ---
+	ham_nats_subject_count :: proc(conn: ^Connection, stream, filter: cstring, count: ^u64, js_error: ^i32) -> i32 ---
+	ham_nats_consumer_state :: proc(conn: ^Connection, stream, consumer: cstring, out: ^Consumer_State, js_error: ^i32) -> i32 ---
 	ham_nats_api_stats :: proc(conn: ^Connection, total, errors: ^u64, js_error: ^i32) -> i32 ---
 	ham_nats_ack_reply :: proc(conn: ^Connection, reply: cstring, timeout_ms: i64) -> i32 ---
 	ham_nats_stream_get :: proc(out: ^^Message, conn: ^Connection, stream: cstring, sequence: u64, js_error: ^i32) -> i32 ---
