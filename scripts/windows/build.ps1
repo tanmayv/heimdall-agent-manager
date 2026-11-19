@@ -19,6 +19,9 @@
 # any other libcurl. The Odin toolchain's own vendor/curl/lib/libcurl.lib is
 # NOT used: it is an unpinned 8.17.0-DEV snapshot without zlib.
 #
+# The opt-in ham-hub also builds static nats.c + OpenSSL + ham_nats with
+# scripts/windows/build-nats.ps1, or reuses -NatsLibDir. This is hub-only.
+#
 # ham-pty-host is built with a static CRT (+crt-static) so the bundle runs on a
 # stock Windows without the VC++ redistributable (no VCRUNTIME140.dll).
 [CmdletBinding()]
@@ -29,6 +32,7 @@ param(
   [string]$SqliteAmalgamationDir = '',
   [string]$PtyHost = '',
   [string]$CurlLibDir = '',
+  [string]$NatsLibDir = '',
   [string]$Version = '',
   [string[]]$Components = @('ham-bridge', 'ham-ctl', 'ham-pty-host')
 )
@@ -90,13 +94,28 @@ try {
       if (-not (Test-Path (Join-Path $CurlLibDir $lib))) { throw "$lib not found in $CurlLibDir (build it with scripts/windows/build-libcurl.ps1)" }
     }
     $curlLibDir = (Resolve-Path $CurlLibDir).Path
+    # Only the opt-in hub imports src/lib/nats. Bridge/ctl never build or link it.
+    if ($Components -contains 'ham-hub') {
+      if (-not $NatsLibDir) {
+        $natsOut = Join-Path $work 'nats'
+        & (Join-Path $PSScriptRoot 'build-nats.ps1') -OutDir $natsOut
+        $NatsLibDir = Join-Path $natsOut 'lib'
+      }
+      foreach ($lib in 'ham_nats.lib', 'nats_static.lib', 'ssl.lib', 'crypto.lib') {
+        if (-not (Test-Path (Join-Path $NatsLibDir $lib))) { throw "$lib not found in $NatsLibDir (build it with scripts/windows/build-nats.ps1)" }
+      }
+      $NatsLibDir = (Resolve-Path $NatsLibDir).Path
+    }
     # ham-hub is opt-in (-Components ham-hub): the e2e workflow builds it, releases do not.
     foreach ($pair in @(@('ham-bridge', 'src/bridge'), @('ham-ctl', 'src/ctl'), @('ham-hub', 'src/hub'))) {
       if ($Components -notcontains $pair[0]) { continue }
       $out = Join-Path $OutDir ($pair[0] + '.exe')
       $odinArgs = @('build', (Join-Path $repo $pair[1]), "-collection:odin_test=$srcRoot", "-out:$out") + $defines
-      $libPaths = "/LIBPATH:$($curlLibDir -replace '\\', '/')"
-      if ($pair[0] -ne 'ham-ctl') { $libPaths += " /LIBPATH:$($SqliteLibDir -replace '\\', '/')" }
+      $libPaths = "/LIBPATH:`"$($curlLibDir -replace '\\', '/')`""
+      if ($pair[0] -ne 'ham-ctl') { $libPaths += " /LIBPATH:`"$($SqliteLibDir -replace '\\', '/')`"" }
+      if ($pair[0] -eq 'ham-hub') {
+        $libPaths += " /LIBPATH:`"$($NatsLibDir -replace '\\', '/')`" ws2_32.lib gdi32.lib advapi32.lib crypt32.lib user32.lib"
+      }
       $odinArgs += "-extra-linker-flags:$libPaths"
       Write-Host "odin build $($pair[1]) -> $out"
       Invoke-Checked "odin build $($pair[1])" { & $Odin @odinArgs }
