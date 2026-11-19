@@ -187,7 +187,7 @@ jobs:
         run: scripts/windows/test-build-nats.ps1
       - name: Cache the pinned static NATS libraries
         id: nats-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/nats-static
           key: nats-static-windows-x64-${{ hashFiles('nix/nats-windows-pin.json', 'scripts/windows/build-nats.ps1', 'src/lib/nats/adapter.c') }}
@@ -195,11 +195,17 @@ jobs:
         if: ${{ steps.nats-cache.outputs.cache-hit != 'true' }}
         shell: pwsh
         run: scripts/windows/build-nats.ps1 -OutDir "$env:RUNNER_TEMP/nats-static"
+      - name: Save validated static NATS libraries
+        if: ${{ steps.nats-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/nats-static
+          key: ${{ steps.nats-cache.outputs.cache-primary-key }}
       - name: Build ham-bridge and ham-hub
         shell: pwsh
         run: |
           $out = Join-Path $env:RUNNER_TEMP 'e2e-bin'
-          scripts/windows/build.ps1 -OutDir $out -Odin $env:ODIN -Components ham-bridge,ham-hub,ham-pty-host -CurlLibDir "$env:RUNNER_TEMP/libcurl-static/lib" -NatsLibDir "$env:RUNNER_TEMP/nats-static/lib"
+          scripts/windows/build.ps1 -OutDir $out -Odin $env:ODIN -Components ham-bridge,ham-hub,ham-pty-host -CurlLibDir "$env:RUNNER_TEMP/libcurl-static/lib" -NatsLibDir "$env:RUNNER_TEMP/nats-static/lib" -Verbose
           "HEIMDALL_E2E_HUB_BIN=$(Join-Path $out 'ham-hub.exe')" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
           "HEIMDALL_E2E_BRIDGE_BIN=$(Join-Path $out 'ham-bridge.exe')" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
       - name: Real enroll + lifecycle e2e

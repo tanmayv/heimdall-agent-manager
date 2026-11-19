@@ -111,12 +111,13 @@ try {
       if ($Components -notcontains $pair[0]) { continue }
       $out = Join-Path $OutDir ($pair[0] + '.exe')
       $odinArgs = @('build', (Join-Path $repo $pair[1]), "-collection:odin_test=$srcRoot", "-out:$out") + $defines
-      $libPaths = "/LIBPATH:`"$($curlLibDir -replace '\\', '/')`""
-      if ($pair[0] -ne 'ham-ctl') { $libPaths += " /LIBPATH:`"$($SqliteLibDir -replace '\\', '/')`"" }
+      $libPaths = "/LIBPATH:$($curlLibDir -replace '\\', '/')"
+      if ($pair[0] -ne 'ham-ctl') { $libPaths += " /LIBPATH:$($SqliteLibDir -replace '\\', '/')" }
       if ($pair[0] -eq 'ham-hub') {
-        $libPaths += " /LIBPATH:`"$($NatsLibDir -replace '\\', '/')`" ws2_32.lib gdi32.lib advapi32.lib crypt32.lib user32.lib"
+        $libPaths += " /LIBPATH:$($NatsLibDir -replace '\\', '/') ws2_32.lib gdi32.lib advapi32.lib crypt32.lib user32.lib"
       }
       $odinArgs += "-extra-linker-flags:$libPaths"
+      if ($VerbosePreference -eq 'Continue') { $odinArgs += '-show-system-calls' }
       Write-Host "odin build $($pair[1]) -> $out"
       Invoke-Checked "odin build $($pair[1])" { & $Odin @odinArgs }
     }

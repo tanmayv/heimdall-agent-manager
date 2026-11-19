@@ -60,6 +60,5 @@ that a native Windows run has already passed.
 
 The routing test uses fake libraries and a fake compiler to verify that
 bridge/CLI builds never build or link NATS, the hub builds it automatically,
-explicit libraries are reused, incomplete libraries fail early, and paths with
-spaces are quoted. It also runs under PowerShell 7 on Linux; that run does not
+explicit libraries are reused, incomplete libraries fail early, and component-specific linker paths are supplied. It also runs under PowerShell 7 on Linux; that run does not
 validate MSVC linking or Windows hub startup.

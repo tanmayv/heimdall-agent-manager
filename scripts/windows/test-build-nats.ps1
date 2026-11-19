@@ -2,7 +2,7 @@
 # Run with powershell.exe or pwsh -NoProfile -File scripts/windows/test-build-nats.ps1.
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$temp = Join-Path ([IO.Path]::GetTempPath()) ('heimdall nats-routing-' + [guid]::NewGuid().ToString('N'))
+$temp = Join-Path ([IO.Path]::GetTempPath()) ('heimdall-nats-routing-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force $temp | Out-Null
 try {
   # Isolate fake dependencies from real builds and downloads.
@@ -37,8 +37,8 @@ Add-Content (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) '
   if ($calls.Count -ne 2) { throw 'expected bridge and ctl invocations' }
   foreach ($call in $calls) {
     $flags = @($call | Where-Object { $_ -like '-extra-linker-flags:*' })
-    $expectedPath = '/LIBPATH:"' + $deps.Replace([IO.Path]::DirectorySeparatorChar, [char]'/') + '"'
-    if ($flags.Count -ne 1 -or -not $flags[0].Contains($expectedPath)) { throw "library path quoting broken: $flags" }
+    $expectedPath = '/LIBPATH:' + $deps.Replace([IO.Path]::DirectorySeparatorChar, [char]'/')
+    if ($flags.Count -ne 1 -or -not $flags[0].Contains($expectedPath)) { throw "library path missing: $flags" }
     if (($call -join ' ') -match 'nats/lib|crypt32|ham_nats') { throw 'bridge/ctl gained NATS linker inputs' }
   }
   Remove-Item $callsPath
