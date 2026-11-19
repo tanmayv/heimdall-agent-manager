@@ -1,0 +1,81 @@
+# Synchronous JetStream binding
+
+This package wraps the nats.c version/source/hash selected by `flake.lock`
+(currently 3.13.0, Apache-2.0). `nix/nats.nix` builds the client and the private
+`adapter.c` ABI adapter. JetStream config structs stay in C rather than mirroring
+their version-sensitive layouts in Odin. There are no callbacks into Odin and
+no asynchronous subscriptions.
+
+## Build and verify
+
+```bash
+nix develop --command sh -c 'odin test src/lib/nats -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/nats-$$'
+nix build .#checks.x86_64-linux.nats --no-link
+nix build .#ham-hub .#release-ham-hub --no-link
+```
+
+The dev shell supplies `nats-server`, the adapter and client libraries.
+The Nix check runs the real-server suite with Odin memory tracking, then on Linux
+runs the same executable under Valgrind. A narrow suppression covers the pinned
+Odin runtime's byte-builder resize padding reads; NATS/C diagnostics and all
+definite/indirect leaks still fail the check. Valgrind also reports Odin's global
+arguments and temporary arena as possibly lost (4,194,406 bytes); these runtime
+allocations are not classified as task leaks. No existing server or credentials are
+used. `src/lib/natstest` is the reusable fixture: the server chooses its own port,
+writes a ports file, and owns an isolated temporary JetStream store. Always call
+`natstest.destroy`, even when startup fails. `natstest.stop` supports outage tests.
+
+TLS is **enabled**, with hostname verification and OpenSSL from the same package
+set used by pinned curl. Libsodium, legacy NATS Streaming and examples are
+disabled. nats.c's built-in NKey implementation supports credentials files.
+Native builds link the client/adapter archives to native shared OpenSSL. The
+Linux release hub uses the same archives built with `pkgsStatic`, musl and static
+OpenSSL. `release-ham-hub` exercises `mkStaticLinuxOdin`. The app records the linked
+client version without opening a connection; runtime configuration belongs to E0b.
+
+## API and ownership
+
+Every public procedure documents its ownership in source. All strings and byte
+slices passed to operations are borrowed only for the call. Embedded NULs are
+rejected. Timeouts are milliseconds; stream/consumer durations are nanoseconds.
+
+1. `connect({url, creds_file, ca_file, timeout_ms})` returns a C-owned connection.
+   `creds_file` is an optional chained JWT/seed credentials file. `ca_file` loads
+   trust anchors and requires TLS; `tls://` URLs also select TLS through nats.c.
+   Reconnect buffering is disabled so outages produce errors rather than silently
+   accumulating unconfirmed publishes. nats.c may reconnect internally.
+2. `stream_add`, `stream_update`, `stream_info` return copied state. Config selects
+   file storage and limits retention, supports multiple subjects, age, duplicate
+   window, replicas and rollup. Update replaces configuration; it is not a patch.
+3. `publish` waits for the JetStream PubAck and returns sequence plus duplicate
+   flag (a C integer, nonzero means true). It supports arbitrary repeated headers.
+   Its explicit message ID overrides an arbitrary `Nats-Msg-Id` header.
+4. `consumer_add` creates an explicit-ack durable pull consumer with one or several
+   subject filters, ack wait and maximum deliveries. `pull_bind` attaches to an
+   existing consumer; `pull_destroy` frees only the local subscription and preserves
+   the durable consumer. `consumer_delete` removes the server consumer explicitly.
+5. `fetch` returns an owned batch, or nil on failure (including timeout). Messages,
+   payload, subject and header views are borrowed from that batch; do not mutate
+   or free them. Copy any data that must survive `batch_destroy`. Metadata is copied.
+   `ack` waits for server confirmation. `nak` and `term` queue their protocol ack;
+   they do not destroy the message or synchronously confirm server processing.
+6. Destroy batches before pulls, then destroy the connection. Destructors accept
+   nil; nonnil handles must be destroyed exactly once. Serialize access to a Pull.
+   Do not destroy handles concurrently with any operation.
+7. At process teardown, after all users and handles are gone, `shutdown` waits for
+   nats.c's global threads. It must not race any call or run per connection.
+
+`Error.status == 0` means success. Other values are nats.c status codes
+(`error_text` returns a borrowed static explanation); `Error.jetstream` preserves
+the server API code when available. Local argument rejection uses
+`NATS_INVALID_ARG` (16). No C error-owned allocations escape.
+
+The adapter pairs options, connection/context, publish message/PubAck, stream
+info, consumer info, subscription, fetched list/messages and metadata with their
+destructors on success and failure. Tests exercise real API failures as well as
+successful calls, outage behavior, durable detach/rebind, timeout, NAK and ack-wait
+redelivery, ack/term, multi-subject filters, dedupe, subject rollup, and TLS trust.
+
+**Never call network operations from a SQLite transaction.** The transactional
+outbox relay will publish after commit; this low-level package does not import
+the repository or enforce its transaction guard.

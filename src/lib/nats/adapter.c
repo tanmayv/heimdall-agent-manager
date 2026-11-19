@@ -1,0 +1,165 @@
+// Private ABI adapter. All nats.c structs and their destruction stay here.
+// No callbacks into Odin, including on reconnect/error paths.
+#include <nats/nats.h>
+#include <stdint.h>
+#include <stdlib.h>
+
+typedef struct { natsConnection *nc; jsCtx *js; } ham_nats;
+typedef struct { uint64_t messages, first, last; } ham_stream_state;
+typedef struct { uint64_t sequence; int duplicate; } ham_pub_ack;
+typedef struct { uint64_t stream_sequence, consumer_sequence, num_delivered, num_pending; } ham_metadata;
+
+const char *ham_nats_version(void) { return nats_GetVersion(); }
+
+int ham_nats_connect(ham_nats **out, const char *url, const char *creds,
+                     const char *ca, int64_t timeout_ms) {
+    *out = NULL;
+    natsOptions *opts = NULL;
+    ham_nats *h = calloc(1, sizeof(*h));
+    if (h == NULL) return NATS_NO_MEMORY;
+    natsStatus s = natsOptions_Create(&opts);
+    if (s == NATS_OK) s = natsOptions_SetURL(opts, url);
+    if (s == NATS_OK) s = natsOptions_SetTimeout(opts, timeout_ms);
+    // Fail calls during outages rather than silently queueing non-durable data.
+    if (s == NATS_OK) s = natsOptions_SetReconnectBufSize(opts, 0);
+    if (s == NATS_OK && creds && *creds)
+        s = natsOptions_SetUserCredentialsFromFiles(opts, creds, NULL);
+    if (s == NATS_OK && ca && *ca) {
+        s = natsOptions_LoadCATrustedCertificates(opts, ca);
+        if (s == NATS_OK) s = natsOptions_SetSecure(opts, true);
+    }
+    if (s == NATS_OK) s = natsConnection_Connect(&h->nc, opts);
+    jsOptions jsopts;
+    if (s == NATS_OK) s = jsOptions_Init(&jsopts);
+    jsopts.Wait = timeout_ms;
+    if (s == NATS_OK) s = natsConnection_JetStream(&h->js, h->nc, &jsopts);
+    natsOptions_Destroy(opts);
+    if (s != NATS_OK) {
+        jsCtx_Destroy(h->js);
+        natsConnection_Destroy(h->nc);
+        free(h);
+        return s;
+    }
+    *out = h;
+    return NATS_OK;
+}
+void ham_nats_destroy(ham_nats *h) {
+    if (!h) return;
+    jsCtx_Destroy(h->js);
+    natsConnection_Destroy(h->nc);
+    free(h);
+}
+int ham_nats_publish(ham_nats *h, const char *subject, const void *data, int len,
+                     const char *id, const char **keys, const char **values,
+                     int count, ham_pub_ack *out, jsErrCode *err) {
+    natsMsg *msg = NULL;
+    jsPubAck *ack = NULL;
+    natsStatus s = natsMsg_Create(&msg, subject, NULL, data, len);
+    for (int i = 0; s == NATS_OK && i < count; i++)
+        s = natsMsgHeader_Add(msg, keys[i], values[i]);
+    // The explicit id wins over any arbitrary Nats-Msg-Id header.
+    if (s == NATS_OK && id && *id) s = natsMsgHeader_Set(msg, "Nats-Msg-Id", id);
+    if (s == NATS_OK) s = js_PublishMsg(&ack, h->js, msg, NULL, err);
+    if (s == NATS_OK) {
+        out->sequence = ack->Sequence;
+        out->duplicate = ack->Duplicate;
+    }
+    jsPubAck_Destroy(ack);
+    natsMsg_Destroy(msg);
+    return s;
+}
+int ham_nats_stream(ham_nats *h, int operation, const char *name,
+                    const char **subjects, int count, int64_t max_age_ns,
+                    int64_t duplicate_ns, int64_t replicas, int rollup,
+                    ham_stream_state *out, jsErrCode *err) {
+    jsStreamInfo *info = NULL;
+    jsStreamConfig cfg;
+    natsStatus s = jsStreamConfig_Init(&cfg);
+    if (s != NATS_OK) return s;
+    cfg.Name = name;
+    cfg.Subjects = subjects;
+    cfg.SubjectsLen = count;
+    cfg.Storage = js_FileStorage;
+    cfg.Retention = js_LimitsPolicy;
+    cfg.MaxAge = max_age_ns;
+    cfg.Duplicates = duplicate_ns;
+    cfg.Replicas = replicas;
+    cfg.AllowRollup = rollup != 0;
+    if (operation == 0) s = js_AddStream(&info, h->js, &cfg, NULL, err);
+    else if (operation == 1) s = js_UpdateStream(&info, h->js, &cfg, NULL, err);
+    else s = js_GetStreamInfo(&info, h->js, name, NULL, err);
+    if (s == NATS_OK) {
+        out->messages = info->State.Msgs;
+        out->first = info->State.FirstSeq;
+        out->last = info->State.LastSeq;
+    }
+    jsStreamInfo_Destroy(info);
+    return s;
+}
+int ham_nats_consumer_add(ham_nats *h, const char *stream, const char *durable,
+                          const char **filters, int count, int64_t ack_wait_ns,
+                          int64_t max_deliver, jsErrCode *err) {
+    jsConsumerInfo *info = NULL;
+    jsConsumerConfig cfg;
+    natsStatus s = jsConsumerConfig_Init(&cfg);
+    if (s != NATS_OK) return s;
+    cfg.Durable = durable;
+    cfg.AckPolicy = js_AckExplicit;
+    cfg.DeliverPolicy = js_DeliverAll;
+    cfg.AckWait = ack_wait_ns;
+    cfg.MaxDeliver = max_deliver;
+    if (count == 1) cfg.FilterSubject = filters[0];
+    else { cfg.FilterSubjects = filters; cfg.FilterSubjectsLen = count; }
+    s = js_AddConsumer(&info, h->js, stream, &cfg, NULL, err);
+    jsConsumerInfo_Destroy(info);
+    return s;
+}
+int ham_nats_consumer_delete(ham_nats *h, const char *stream, const char *name, jsErrCode *err) {
+    return js_DeleteConsumer(h->js, stream, name, NULL, err);
+}
+int ham_nats_pull_bind(natsSubscription **out, ham_nats *h, const char *stream,
+                       const char *durable, jsErrCode *err) {
+    *out = NULL;
+    jsSubOptions opts;
+    natsStatus s = jsSubOptions_Init(&opts);
+    if (s != NATS_OK) return s;
+    opts.Stream = stream;
+    opts.Consumer = durable;
+    s = js_PullSubscribe(out, h->js, NULL, NULL, NULL, &opts, err);
+    if (s != NATS_OK) { natsSubscription_Destroy(*out); *out = NULL; }
+    return s;
+}
+void ham_nats_pull_destroy(natsSubscription *sub) { natsSubscription_Destroy(sub); }
+int ham_nats_fetch(natsMsgList **out, natsSubscription *sub, int count, int64_t timeout, jsErrCode *err) {
+    *out = NULL;
+    natsMsgList *list = calloc(1, sizeof(*list));
+    if (!list) return NATS_NO_MEMORY;
+    natsStatus s = natsSubscription_Fetch(list, sub, count, timeout, err);
+    if (s != NATS_OK) { natsMsgList_Destroy(list); free(list); return s; }
+    *out = list;
+    return NATS_OK;
+}
+void ham_nats_batch_destroy(natsMsgList *list) {
+    if (!list) return;
+    natsMsgList_Destroy(list);
+    free(list);
+}
+int ham_nats_batch_count(natsMsgList *list) { return list->Count; }
+natsMsg *ham_nats_batch_message(natsMsgList *list, int index) {
+    return index >= 0 && index < list->Count ? list->Msgs[index] : NULL;
+}
+int ham_nats_metadata(natsMsg *msg, ham_metadata *out) {
+    jsMsgMetaData *meta = NULL;
+    natsStatus s = natsMsg_GetMetaData(&meta, msg);
+    if (s == NATS_OK) {
+        out->stream_sequence = meta->Sequence.Stream;
+        out->consumer_sequence = meta->Sequence.Consumer;
+        out->num_delivered = meta->NumDelivered;
+        out->num_pending = meta->NumPending;
+    }
+    jsMsgMetaData_Destroy(meta);
+    return s;
+}
+int ham_nats_ack(natsMsg *msg, jsErrCode *err) { return natsMsg_AckSync(msg, NULL, err); }
+int ham_nats_nak(natsMsg *msg) { return natsMsg_Nak(msg, NULL); }
+int ham_nats_term(natsMsg *msg) { return natsMsg_Term(msg, NULL); }

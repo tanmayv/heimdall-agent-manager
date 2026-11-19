@@ -10,6 +10,7 @@ import crashlog "odin_test:lib/crashlog"
 import platform "odin_test:hub/platform"
 import user_service "odin_test:hub/service/user"
 import httpc "odin_test:lib/httpc"
+import nats "odin_test:lib/nats"
 
 
 main :: proc() {
@@ -19,6 +20,8 @@ main :: proc() {
 		fmt.eprintln("ham-hub:", message)
 		os.exit(1)
 	}
+	// Records the linked client without opening a connection or starting threads.
+	fmt.eprintln("ham-hub: nats.c", nats.version())
 	config := app.default_config()
 	// Before anything else, including the users/tokens subcommands.
 	legacy_value, legacy_present := os.lookup_env("HAM_AUTH_MODE", context.allocator)

@@ -1,0 +1,16 @@
+# Pinned Odin dev-2026-07a: dynamic byte builder resize reads allocator padding
+# in conditional_mem_zero. Match only this runtime+strings stack, not C/NATS
+# code, invalid reads/frees or leaks. Reproduced by the runner's log builder.
+{
+   odin_runtime_builder_resize_padding
+   Memcheck:Cond
+   fun:*conditional_mem_zero*
+   fun:*heap_allocator_proc*
+   fun:*heap_allocator_proc*
+   fun:*mem_resize*
+   fun:*mem_resize*
+   fun:*reserve_dynamic_array*
+   fun:*append_elems*
+   fun:*append_elems*
+   fun:*strings*write_bytes*
+}

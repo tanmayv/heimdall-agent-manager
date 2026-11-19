@@ -32,6 +32,7 @@
       # link it statically. -define:HAM_CURL_VERSION makes httpc.init() refuse
       # any other libcurl at startup.
       hamCurlFor = pkgs: import ./nix/libcurl.nix { inherit pkgs; inherit (pkgs) lib; };
+      hamNatsFor = pkgs: import ./nix/nats.nix { inherit pkgs; };
       curlPinDefine = "-define:HAM_CURL_VERSION=${(nixpkgs.lib.importJSON ./nix/libcurl-pin.json).curl.version}";
 
       mkOdinPackage = pkgs: odin: name: srcDir: pkgs.stdenv.mkDerivation {
@@ -62,7 +63,7 @@
         nativeBuildInputs = [ odin pkgs.makeWrapper ];
         # runtimeInputs are PATH tools; a curl CLI there is passed as
         # pkgs.curl.bin so the nixpkgs libcurl never reaches the link line.
-        buildInputs = runtimeInputs ++ [ (hamCurlFor pkgs).native.curl ];
+        buildInputs = runtimeInputs ++ [ (hamCurlFor pkgs).native.curl ] ++ pkgs.lib.optionals (name == "ham-hub") [ (hamNatsFor pkgs) ];
         dontConfigure = true;
         dontInstall = true;
         buildPhase = ''
@@ -137,7 +138,8 @@
           # sqlite's own test suite (make devtest) fails under the aarch64-musl
           # cross build; we only need the static library, so skip its checks.
           sqlite = staticPkgs.sqlite.overrideAttrs (_: { doCheck = false; });
-          libDirs = curl.libDirs ++ pkgs.lib.optionals (name == "ham-bridge") [ "${pkgs.lib.getLib sqlite}/lib" ];
+          nats = hamNatsFor staticPkgs;
+          libDirs = pkgs.lib.optionals (name == "ham-hub") [ "${nats}/lib" ] ++ curl.libDirs ++ pkgs.lib.optionals (name == "ham-bridge" || name == "ham-hub") [ "${pkgs.lib.getLib sqlite}/lib" ];
           # -z stack-size: musl's default thread stack is 128 KiB (glibc: 8 MiB).
           # Odin's core:thread asks for RLIMIT_STACK, but under `ulimit -s
           # unlimited` that request fails and musl's default applies -- to every
@@ -175,12 +177,13 @@
           }
         else
           let curl = (hamCurlFor pkgs).darwinStatic;
+              nats = hamNatsFor pkgs;
           in pkgs.stdenv.mkDerivation {
             pname = "release-${name}";
             version = appVersion;
             src = ./.;
             nativeBuildInputs = [ odin ];
-            buildInputs = pkgs.lib.optionals (name == "ham-bridge") [ pkgs.sqlite ];
+            buildInputs = pkgs.lib.optionals (name == "ham-bridge") [ pkgs.sqlite ] ++ pkgs.lib.optionals (name == "ham-hub") [ nats ];
             dontConfigure = true;
             dontInstall = true;
             dontStrip = true;
@@ -400,6 +403,7 @@
           # REQ-INST-16: portable release attrs consumed by
           # scripts/release/package-local-binary-tarball.sh. Static on Linux,
           # clean load commands on Darwin; nothing references /nix/store.
+          release-ham-hub = mkReleaseOdinPackage pkgs odin "ham-hub" "src/hub";
           release-ham-bridge = mkReleaseOdinPackage pkgs odin "ham-bridge" "src/bridge";
           release-ham-ctl = mkReleaseOdinPackage pkgs odin "ham-ctl" "src/ctl";
           release-ham-pty-host = mkReleasePtyHost pkgs;
@@ -418,6 +422,19 @@
       checks = forAllSystems (system:
         let pkgs = pkgsFor system;
         in {
+          nats = pkgs.stdenv.mkDerivation {
+            name = "check-nats-jetstream";
+            src = ./.;
+            nativeBuildInputs = [ (mkOdin pkgs) pkgs.nats-server pkgs.openssl ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.valgrind ];
+            buildInputs = [ (hamNatsFor pkgs) pkgs.openssl ];
+            dontConfigure = true;
+            dontInstall = true;
+            buildPhase = ''
+              mkdir -p $out/bin
+              odin test src/lib/nats -collection:odin_test=src -keep-executable -out:$out/bin/nats-tests
+              ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "valgrind --suppressions=src/lib/nats/valgrind.supp --leak-check=full --show-leak-kinds=definite,indirect,possible --errors-for-leak-kinds=definite,indirect --error-exitcode=99 $out/bin/nats-tests"}
+            '';
+          };
           # Only src/lib/httpc may touch libcurl; src/lib/http_client must not
           # come back; no hand-rolled HTTP clients over core:net.
           http-boundary = pkgs.runCommand "check-http-boundary" { nativeBuildInputs = [ pkgs.bash pkgs.gnugrep pkgs.coreutils ]; } ''
@@ -622,12 +639,15 @@
           odin = mkOdin pkks;
           ols = pkks.ols.override { inherit odin; };
           hamCurl = (hamCurlFor pkks).native.curl;
+          hamNats = hamNatsFor pkks;
         in
         {
           default = pkks.mkShell {
             packages = [
               odin
               ols
+              hamNats
+              pkks.nats-server
               pkks.tmux
               # src/lib/httpc links the pinned libcurl (nix/libcurl.nix; its
               # curl CLI comes along). Only this libcurl may be on the link
