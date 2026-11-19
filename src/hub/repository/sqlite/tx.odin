@@ -31,6 +31,12 @@ import dbt "odin_test:hub/platform/dbtelemetry"
 // unit of work; it returns facts (terminal/activity) and the caller acts after
 // the unlock. lockorder.assert_tx_mutex_allowed enforces it at begin.
 //
+// SQLite connection mutexes are held only for statements / short repository
+// operations, NEVER across an outer UoW: state_mutex holders also write SQLite.
+// A UoW may take state_mutex and then db_mutex, never db_mutex then state_mutex.
+// Bot multi-statement transactions join the tx_mutex gate before db_mutex via
+// tx_repository_enter/leave; no repository gate may be entered under state_mutex.
+//
 // NESTING: a thread that already owns the unit of work and begins another one
 // (card accept → change_chain_status → engine chain_closed) gets a SAVEPOINT
 // nested inside the outer transaction instead of a self-deadlock. The mutex is
@@ -47,6 +53,8 @@ tx_mutex: sync.Mutex
 tx_owner_thread: int
 @(private = "file")
 tx_depth: int
+@(private = "file")
+tx_outbox_conn: ^Conn
 // tx_after_commit: hooks registered by nested units of work, run by the
 // outermost commit AFTER the mutex is released. Only the owner thread touches
 // it while the transaction is open. `depth` lets a nested rollback drop the
@@ -113,6 +121,7 @@ sqlite_uow_begin :: proc(ctx: rawptr) -> (iface.Unit_Of_Work, bool, domain.Domai
 		return iface.Unit_Of_Work{}, false, domain.domain_error(.Internal_Error, "failed to begin transaction")
 	}
 	sync.atomic_store(&tx_owner_thread, me)
+	tx_outbox_conn = factory.conn
 	sync.atomic_store(&tx_depth, 1)
 	uow_ctx := new(SQLite_Unit_Of_Work_Context)
 	uow_ctx.conn = factory.conn
@@ -265,4 +274,24 @@ tx_mutex_try_lock :: proc() -> bool {
 		return true
 	}
 	return false
+}
+
+// outbox_uow_owns prevents a shared-handle relay from observing uncommitted rows.
+outbox_uow_owns :: proc(conn: ^Conn) -> bool {
+	return sync.atomic_load(&tx_depth) > 0 && sync.atomic_load(&tx_owner_thread) == sync.current_thread_id() && tx_outbox_conn == conn
+}
+
+// Short repository-owned transactions/savepoints share the UoW serialization
+// gate. Enter before taking db_mutex; leave after COMMIT/ROLLBACK and releasing
+// db_mutex. When already inside this threads UoW, its gate is already held.
+Repository_Tx_Guard :: struct {locked: bool, token: dbt.Lock_Token}
+
+tx_repository_enter :: proc() -> Repository_Tx_Guard {
+	if sync.atomic_load(&tx_depth)>0 && sync.atomic_load(&tx_owner_thread)==sync.current_thread_id() do return {}
+	lockorder.assert_tx_mutex_allowed()
+	return {locked=true, token=dbt.timed_lock(&tx_mutex, .Uow_Tx)}
+}
+
+tx_repository_leave :: proc(guard: Repository_Tx_Guard) {
+	if guard.locked do dbt.timed_unlock(&tx_mutex, .Uow_Tx, guard.token)
 }

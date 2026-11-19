@@ -125,7 +125,7 @@ test_bot_template_loaded_and_hidden_from_list :: proc(t: ^testing.T) {
 		"./bin/ham-ctl task-chain show <chain_id>",
 		"./bin/ham-ctl task list --chain <chain_id>",
 		"./bin/ham-ctl task show <task_id>",
-		"Do not change files, run commands other than `shell serve`, or start servers the user did not ask for.",
+		"Do not run a shell command the user has not approved",
 		"Do not approve, reject or request changes on reviews, and do not approve or reject memory proposals.",
 		"Chat apps are not end-to-end encrypted",
 	}) {

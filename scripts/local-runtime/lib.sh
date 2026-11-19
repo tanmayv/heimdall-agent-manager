@@ -223,3 +223,32 @@ lr_enroll_prompt() {
   [ -n "$url" ] && [ -n "$code" ] && printf '%s %s\n' "$url" "$code"
   return 0
 }
+
+# Real JetStream test/dev server, matching src/lib/natstest's ephemeral-port
+# contract. Store and ownership record belong to the supplied private state dir.
+# Prints only the local URL; callers pass it explicitly to their hub.
+lr_nats_start() {
+  local dir="$1" bin="${HEIMDALL_E2E_NATS_BIN:-${HEIMDALL_TEST_NATS_BIN:-nats-server}}" pid ports url
+  command -v "$bin" >/dev/null || lr_die "nats-server is required (use nix develop or HEIMDALL_E2E_NATS_BIN)"
+  lr_stop_svc "$dir" nats >&2
+  mkdir -p "$dir/nats/store" "$dir/logs"
+  lr_spawn "$dir" nats "$dir/logs/nats.log" "$bin" -js -a 127.0.0.1 -p -1 \
+    -sd "$dir/nats/store" --ports_file_dir "$dir/nats"
+  pid="$(lr_owned_pid "$dir" nats)" || { lr_stop_svc "$dir" nats >&2; return 1; }
+  ports="$dir/nats/nats-server_$pid.ports"
+  for _ in $(seq 1 100); do
+    if [ -s "$ports" ]; then
+      url="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["nats"][0])' "$ports" 2>/dev/null)" || url=""
+      if [[ "$url" == nats://127.0.0.1:* ]]; then
+        printf '%s\n' "$url" > "$dir/nats/url"
+        printf '%s\n' "$url"
+        return 0
+      fi
+    fi
+    lr_owned_pid "$dir" nats >/dev/null || break
+    sleep 0.1
+  done
+  tail -20 "$dir/logs/nats.log" >&2 || true
+  lr_stop_svc "$dir" nats >&2
+  return 1
+}

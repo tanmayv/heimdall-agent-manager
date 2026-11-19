@@ -29,7 +29,7 @@ ACP_RPC_UNKNOWN_ID_COUNT :: 256
 ACP_RPC_UNKNOWN_ID_BYTES :: 64*1024
 ACP_RPC_UNKNOWN_ID_OVERFLOW :: `"<additional unknown response IDs suppressed>"`
 ACP_RPC_ID :: distinct string
-ACP_RPC_Role :: enum { Other, Initialize, New, Load, Config, Prompt }
+ACP_RPC_Role :: enum { Other, Initialize, New, Load, Config, Prompt, Steering }
 ACP_RPC_Error :: struct { code: int, message: string, data_json: string }
 ACP_RPC_Result :: struct { id: ACP_RPC_ID, result_json: string, error: ACP_RPC_Error, ok: bool }
 ACP_RPC_Completion :: struct {
@@ -55,6 +55,7 @@ ACP_RPC_Callbacks :: struct {
     // Frame admission may pause on a locked vault or bounded durable outbox.
     // Control commands remain dispatchable while the daemon queue backs up.
     can_process: proc(data: rawptr) -> bool,
+    tick: proc(data: rawptr),
 }
 ACP_RPC_Frame_Kind :: enum { Stdout, Receipt, Diagnostic, Fault }
 ACP_RPC_Frame :: struct { kind: ACP_RPC_Frame_Kind, bytes: string, seq: u64 }
@@ -317,6 +318,7 @@ acp_rpc_dispatcher :: proc(data: rawptr) {
             }
         }
         if !c.failed && frames_ready do acp_rpc_expire(c)
+        if !c.failed && frames_ready && c.callbacks.tick != nil do c.callbacks.tick(c.callbacks.data)
         mem.free_all(context.temp_allocator)
     }
 }
@@ -332,6 +334,7 @@ acp_rpc_role :: proc(method: string) -> ACP_RPC_Role {
     case "session/load": return .Load
     case "session/set_config_option": return .Config
     case "session/prompt": return .Prompt
+    case "_session/steering": return .Steering
     }
     return .Other
 }

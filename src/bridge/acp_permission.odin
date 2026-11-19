@@ -115,6 +115,9 @@ acp_permission_start :: proc(r: ^ACP_Runtime, id, params: string) {
     w.id = strings.clone(id); w.params = strings.clone(params); w.blocker = strings.clone(blocker)
     w.timeout_ms = int(min(remaining, i64(PERMISSION_MAX_TIMEOUT_MS)))
     append(&r.permissions, w)
+    // Publish on the dispatcher before starting the blocking relay. Its native
+    // extension activity is deliberately ignored for ACP instances.
+    acp_permissions_activity(r)
     w.worker = thread.create_and_start_with_data(w, acp_permission_worker)
 }
 
@@ -166,7 +169,7 @@ acp_permissions_activity :: proc(r: ^ACP_Runtime) {
     }
     // The extension relay keeps waiting_user after none for a native TUI.
     // ACP has no such fallback, and other pending requests still need attention.
-    bridge_runtime_note_agent_activity(r.instance, "waiting_user" if waiting else ("active" if r.d.phase == "prompt" else "idle"), bridge_ext_activity_source(r.provider))
+    bridge_runtime_note_agent_activity(r.instance, "waiting_user" if waiting else ("active" if r.d.phase == "prompt" else "idle"), "acp")
 }
 
 acp_permission_timeout :: proc(data: rawptr, id: string) {

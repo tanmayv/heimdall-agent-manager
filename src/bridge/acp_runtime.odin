@@ -8,7 +8,12 @@ import "core:strings"
 import "core:sync"
 import "core:time"
 
-ACP_Runtime_Input :: struct { id, text: string }
+ACP_Input_Lane :: enum { Steer, Batch, Digest }
+ACP_Runtime_Input :: struct {
+    id, text: string,
+    lane: ACP_Input_Lane,
+    key, kind: string,
+}
 ACP_Runtime_Durable :: struct {
     phase, config_json, plan_json, starter, current_input, error: string,
     starter_sent, ready, stopped, auth_required, replay_only, embedded_context: bool,
@@ -18,6 +23,9 @@ ACP_Runtime_Durable :: struct {
     exit_pending: bool,
     cancelling: bool,
     stream_retries: int,
+    steering_supported, steering_pending: bool,
+    steering_input: ACP_Runtime_Input,
+    batch_first_ms, batch_last_ms, last_notice_turn_ms: i64,
 }
 
 // T5 attaches telemetry/chat handling here. Hooks execute only on the instance
@@ -41,6 +49,8 @@ ACP_Runtime :: struct {
     saved_tools, saved_outbox: string,
     rec: Bridge_Local_Agent_Token_Record,
     d: ACP_Runtime_Durable,
+    notice_interval_ms: i64,
+    inbox_started: bool, // dispatcher enables ticks only after begin/restore
 }
 
 // The ownership mutex quiesces external producers before closing a client.
@@ -216,7 +226,7 @@ acp_runtime_ready :: proc(r: ^ACP_Runtime) {
     bridge_runtime_mark_start_success(r.instance)
     if !r.d.starter_sent {
         r.d.starter_sent = true
-        acp_runtime_prompt(r, {"starter", r.d.starter}, bootstrap = true)
+        acp_runtime_prompt(r, {id = "starter", text = r.d.starter}, bootstrap = true)
     } else {
         acp_runtime_drain(r)
     }
@@ -244,14 +254,6 @@ acp_runtime_prompt :: proc(r: ^ACP_Runtime, input: ACP_Runtime_Input, bootstrap 
     if acp_runtime_request(r, "session/prompt", string(raw)) {
         bridge_runtime_note_agent_activity(r.instance, "active", "acp")
     }
-}
-
-acp_runtime_drain :: proc(r: ^ACP_Runtime) {
-    if r.chat != nil && (!acp_chat_vault_ready() || acp_chat_bytes(r.chat) > 1536*1024) do return
-    if !r.d.ready || r.d.phase == "prompt" || r.d.error != "" || r.d.exit_pending || len(r.d.queue) == 0 do return
-    input := r.d.queue[0]; ordered_remove(&r.d.queue, 0)
-    defer { delete(input.id); delete(input.text) }
-    acp_runtime_prompt(r, input)
 }
 
 acp_runtime_result :: proc(data: rawptr, result: ACP_RPC_Result) {
@@ -285,6 +287,9 @@ acp_runtime_result :: proc(data: rawptr, result: ACP_RPC_Result) {
         load, _ := caps["loadSession"].(json.Boolean); r.load_session = bool(load)
         prompts, _ := caps["promptCapabilities"].(json.Object)
         embedded, _ := prompts["embeddedContext"].(json.Boolean); r.d.embedded_context = bool(embedded)
+        meta, _ := obj["_meta"].(json.Object)
+        steering, _ := meta["steering"].(json.Object)
+        supported, _ := steering["supported"].(json.Boolean); r.d.steering_supported = bool(supported)
         if r.recovering {
             if !r.load_session { acp_runtime_error(r, "acp_pipe_lost"); return }
             r.d.replay_only = true; acp_runtime_replace(&r.d.phase, "load")
@@ -329,8 +334,10 @@ acp_runtime_result :: proc(data: rawptr, result: ACP_RPC_Result) {
     }
 }
 
-acp_runtime_restore_completion :: proc(data: rawptr, _: ACP_RPC_Role, id: ACP_RPC_ID) -> ACP_RPC_Completion {
-    delete(string(id)); return {acp_runtime_result, data}
+acp_runtime_restore_completion :: proc(data: rawptr, role: ACP_RPC_Role, id: ACP_RPC_ID) -> ACP_RPC_Completion {
+    delete(string(id))
+    if role == .Steering do return {acp_inbox_steering_result, data}
+    return {acp_runtime_result, data}
 }
 
 ACP_Task_Notice_Input :: struct { text: string, interrupt: bool }
@@ -367,11 +374,12 @@ acp_runtime_work :: proc(data: rawptr, c: ^ACP_RPC_Client, argument: string) -> 
         }
         decrypted := bridge_decrypt_embedded_vault_tokens(input.text); defer delete(decrypted)
         id := fmt.tprintf("task_notice_%d", time.tick_now()._nsec)
-        acp_runtime_prompt(r, {id, decrypted})
+        acp_runtime_prompt(r, {id = id, text = decrypted})
         return r.d.error == ""
     }
     switch argument {
     case "begin":
+        r.inbox_started = true
         c.state.next_rpc_id = max(c.state.next_rpc_id, r.next_rpc_id)
         c.state.next_delivery_id = max(c.state.next_delivery_id, r.next_delivery_id)
         acp_runtime_replace(&c.state.tool_map_json, r.saved_tools)
@@ -379,9 +387,13 @@ acp_runtime_work :: proc(data: rawptr, c: ^ACP_RPC_Client, argument: string) -> 
         return acp_runtime_request(r, "initialize", ACP_INITIALIZE_PARAMS)
     case "resume":
         if !acp_runtime_current(r) || r.d.error != "" do return false
+        r.inbox_started = true
         if r.d.ready && len(c.state.pending_outbound) == 0 {
             if !r.d.starter_sent { acp_runtime_ready(r) } else { acp_runtime_drain(r) }
         }
+        return true
+    case "inbox_tick":
+        acp_runtime_drain(r)
         return true
     case "exit":
         socket, ok := bridge_pty_host_ensure_daemon(); if !ok do return false
@@ -408,20 +420,7 @@ acp_runtime_work :: proc(data: rawptr, c: ^ACP_RPC_Client, argument: string) -> 
         raw, _ := json.marshal(struct{sessionId: string}{r.session}, allocator = context.temp_allocator)
         return acp_rpc_notify(c, "session/cancel", string(raw))
     }
-    if !acp_runtime_current(r) || r.d.error != "" || r.d.exit_pending || len(r.d.queue) >= 128 || len(argument) > 256*1024 do return false
-    input: ACP_Runtime_Input
-    if json.unmarshal_string(argument, &input) != nil { delete(input.id); delete(input.text); return false }
-    if input.id == "" || len(input.id) > 1024 { delete(input.id); delete(input.text); return false }
-    duplicate := input.id == r.d.current_input
-    for entry in r.d.queue do if entry.id == input.id do duplicate = true
-    for id in r.d.completed_inputs do if id == input.id do duplicate = true
-    for id in c.state.queued_input_message_ids do if id == input.id do duplicate = true
-    if duplicate { delete(input.id); delete(input.text); return true }
-    append(&r.d.queue, input)
-    if r.chat!=nil && strings.has_prefix(input.id,"msg_") do append(&c.state.queued_input_message_ids,strings.clone(input.id))
-    if !acp_rpc_checkpoint(c) { acp_runtime_error(r, "acp_state_write_failed"); return false }
-    acp_runtime_drain(r)
-    return true
+    return acp_inbox_accept(r, c, argument)
 }
 
 acp_runtime_command :: proc(instance, argument: string) -> bool {
@@ -431,12 +430,12 @@ acp_runtime_command :: proc(instance, argument: string) -> bool {
     acp_rpc_call(r.client, &cmd); return cmd.ok
 }
 
-acp_runtime_deliver :: proc(instance, text: string, input_id := "") -> bool {
-    // The delivery identity is supplied by T5 direct input; legacy notifications
-    // are queued exactly as their PTY notice text, without terminal keystrokes.
+acp_runtime_deliver :: proc(instance, text: string, input_id := "", lane: ACP_Input_Lane = .Steer, key := "", kind := "") -> bool {
+    // Hub command/message identities survive retries. Local raw user input uses
+    // a distinct prefix so legacy notice migration preserves its priority.
     id := input_id
-    if id == "" do id = fmt.tprintf("notice_%d", time.tick_now()._nsec)
-    raw, _ := json.marshal(ACP_Runtime_Input{id, text}); defer delete(raw)
+    if id == "" do id = fmt.tprintf("%s_%d", "input" if lane == .Steer else "notice", time.tick_now()._nsec)
+    raw, _ := json.marshal(ACP_Runtime_Input{id = id, text = text, lane = lane, key = key, kind = kind}); defer delete(raw)
     return acp_runtime_command(instance, string(raw))
 }
 
@@ -454,7 +453,9 @@ acp_runtime_destroy :: proc(r: ^ACP_Runtime) {
     delete(r.saved_tools); delete(r.saved_outbox)
     delete(r.rec.token_hash); delete(r.rec.agent_instance_id); delete(r.rec.instance_token)
     delete(r.d.phase); delete(r.d.config_json); delete(r.d.plan_json); delete(r.d.starter); delete(r.d.current_input); delete(r.d.error)
-    for input in r.d.queue { delete(input.id); delete(input.text) }; delete(r.d.queue)
+    for input in r.d.queue do acp_inbox_input_delete(input)
+    delete(r.d.queue)
+    acp_inbox_input_delete(r.d.steering_input)
     for id in r.d.completed_inputs do delete(id); delete(r.d.completed_inputs)
     free(r)
 }
@@ -470,6 +471,7 @@ acp_runtime_detach :: proc(instance: string) {
 acp_runtime_new :: proc(instance, epoch, run_dir, provider, profile, etag, model, mode: string, rec: Bridge_Local_Agent_Token_Record) -> ^ACP_Runtime {
     context.allocator = runtime.heap_allocator()
     r := new(ACP_Runtime)
+    r.notice_interval_ms = acp_inbox_interval()
     r.instance = strings.clone(instance); r.epoch = strings.clone(epoch); r.run_dir = strings.clone(run_dir)
     r.provider = strings.clone(provider); r.profile = strings.clone(profile); r.etag = strings.clone(etag)
     r.model = strings.clone(model); r.mode = strings.clone(mode); r.rec = bridge_startup_clone_rec(rec)
@@ -484,7 +486,7 @@ acp_runtime_connect :: proc(r: ^ACP_Runtime, socket: string, after_seq: u64, che
     io, ok := acp_pipe_io_open(socket, r.instance, r.generation, r.epoch, r.state_path, after_seq)
     if !ok do return false
     r.client, ok = acp_rpc_open(io, {data = r, checkpoint = acp_runtime_checkpoint, notification = acp_runtime_notification,
-        inbound_request = acp_runtime_inbound, inbound_timeout = acp_permission_timeout, fault = acp_runtime_fault, restore_completion = acp_runtime_restore_completion, can_process = acp_chat_can_process})
+        inbound_request = acp_runtime_inbound, inbound_timeout = acp_permission_timeout, fault = acp_runtime_fault, restore_completion = acp_runtime_restore_completion, can_process = acp_chat_can_process, tick = acp_inbox_tick})
     if !ok { io.close(io.data); io.destroy(io.data); return false }
     if checkpoint != "" {
         if !acp_rpc_restore(r.client, checkpoint) do return false

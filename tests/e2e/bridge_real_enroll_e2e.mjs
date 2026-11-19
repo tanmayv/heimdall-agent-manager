@@ -17,6 +17,7 @@
 //   HEIMDALL_E2E_HUB_BIN=<ham-hub> HEIMDALL_E2E_BRIDGE_BIN=<ham-bridge> \
 //   node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/bridge_real_enroll_e2e.mjs
 
+import { startNats } from './natsServer.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -80,11 +81,13 @@ async function startHub(label) {
   const port = await freePort();
   const log = fs.openSync(path.join(dir, 'hub.log'), 'w');
   // Users sign in only with OIDC: each hub gets its own mock provider.
+  const nats = await startNats(dir);
+  children.push({ kill: nats.kill });
   const mock = await startMockOidc();
   children.push({ kill: mock.stop });
   const base = `http://127.0.0.1:${port}`;
   const child = spawn(bin, ['--listen', `127.0.0.1:${port}`, '--db', path.join(dir, 'hub.db'), '--migrations-dir', migrations, '--ui-origin', base],
-    { cwd: dir, env: { ...ENV, ...mock.hubEnv(base) }, stdio: ['ignore', log, log] });
+    { cwd: dir, env: { ...ENV, ...mock.hubEnv(base), ...nats.hubEnv }, stdio: ['ignore', log, log] });
   children.push(child);
   for (const deadline = Date.now() + 30_000; ;) {
     try { if ((await fetch(`${base}/api/v1/health`)).ok) break; } catch { /* starting */ }

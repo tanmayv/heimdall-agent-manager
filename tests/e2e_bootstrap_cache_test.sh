@@ -25,7 +25,8 @@ LOG="$(mktemp -t e2e-hub-log-XXXX)"
 
 # shellcheck source=../scripts/lib/hub-oidc-dev.sh
 . "$ROOT/scripts/lib/hub-oidc-dev.sh"
-cleanup() { [ -n "${HUB_PID:-}" ] && kill "$HUB_PID" 2>/dev/null || true; hub_oidc_stop_mock; rm -rf "$DB" "$CACHE" "$TOKF" "$HARNESS" "$LOG"; }
+. "$ROOT/scripts/local-runtime/lib.sh"
+cleanup() { [ -n "${HUB_PID:-}" ] && kill "$HUB_PID" 2>/dev/null || true; hub_oidc_stop_mock; lr_stop_svc "$CACHE" nats; rm -rf "$DB" "$CACHE" "$TOKF" "$HARNESS" "$LOG"; }
 trap cleanup EXIT
 
 echo "[e2e] building ham-hub + ham-bridge via nix"
@@ -37,7 +38,9 @@ echo "[e2e] building bootstrap harness"
 echo "[e2e] starting mock OIDC + local hub on $H"
 hub_oidc_start_mock "$CACHE"
 hub_oidc_export_env
-"$CACHE/result-hub/bin/ham-hub" --listen "$H" --db "$DB" \
+NATS_URL="$(lr_nats_start "$CACHE")"
+export HEIMDALL_NATS_CREDS_FILE= HEIMDALL_NATS_CA_FILE=
+"$CACHE/result-hub/bin/ham-hub" --nats-url "$NATS_URL" --listen "$H" --db "$DB" \
   --migrations-dir src/hub/repository/sqlite/migrations \
   --ui-origin "http://$H" >"$LOG" 2>&1 &
 HUB_PID=$!

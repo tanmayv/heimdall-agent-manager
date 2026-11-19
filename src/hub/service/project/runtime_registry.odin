@@ -86,7 +86,9 @@ Bridge_Runtime_Connection :: struct {
 	// connection_state_lock/unlock: the allowed lock order is
 	// sqlite.tx_mutex → state_mutex (a unit of work may reserve capacity), and
 	// NEVER the reverse — code under state_mutex must not begin a unit of work
-	// (see lib/lockorder; Task System v2 review B1).
+	// (see lib/lockorder; Task System v2 review B1). State-locked status writes
+	// may take SQLite db_mutex, so UoWs MUST NOT hold db_mutex while reserving
+	// capacity here. Bot repository transactions enter tx_mutex before db_mutex.
 	state_mutex: sync.Mutex,
 	instances: map[string]Runtime_Instance_State,
 	// Per-connection cached metric series (hot-path atomics only; the series

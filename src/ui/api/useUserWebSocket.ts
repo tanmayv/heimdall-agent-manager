@@ -92,10 +92,12 @@ export function startUserWsConnection(env: UserWsConnectionEnv): () => void {
   const isElectron = env.isElectron ?? (() => false);
   const handleEvent = env.handleEvent ?? handleUserWsEvent;
   const fullResync = env.fullResync ?? resyncAfterReconnect;
+  let catalogCursor: string | undefined;
   let stopped = false;
   let socket: WebSocket | null = null;
   let reconnectTimer: number | undefined;
   let heartbeatTimer: number | undefined;
+  let catalogPageTimer: number | undefined;
   let pendingWaitTimer: number | undefined;
   // Consecutive connects that never reached a STABLE ready: a connect that failed, or
   // one that closed within STABLE_CONNECTION_MS of user_ws_ready. Reset only once a
@@ -156,6 +158,8 @@ export function startUserWsConnection(env: UserWsConnectionEnv): () => void {
   };
 
   const clearHeartbeat = () => {
+    if (catalogPageTimer) window.clearTimeout(catalogPageTimer);
+    catalogPageTimer = undefined;
     if (heartbeatTimer) window.clearInterval(heartbeatTimer);
     heartbeatTimer = undefined;
   };
@@ -211,7 +215,8 @@ export function startUserWsConnection(env: UserWsConnectionEnv): () => void {
     try {
       const url = await resolveUrl();
       if (!url || stopped) return;
-      socket = createSocket(url);
+      const catalogUrl = catalogCursor ? url + (url.includes('?') ? '&' : '?') + 'catalog_cursor=' + encodeURIComponent(catalogCursor) : url;
+      socket = createSocket(catalogUrl);
     } catch (err: any) {
       if (err instanceof UserWsAuthError) {
         park(err.message || 'WebSocket authentication failed');
@@ -247,7 +252,26 @@ export function startUserWsConnection(env: UserWsConnectionEnv): () => void {
       }
       const verdict = tracker.onEvent(payload);
       if (verdict.resync) scheduler.trigger(verdict.resync);
-      if (verdict.deliver) handleEvent(dispatch, payload, getCtx());
+      if (verdict.deliver && payload?.type === 'catalog_watermark') {
+        if (typeof payload.catalog_cursor === 'string' && /^[0-9]{1,20}$/.test(payload.catalog_cursor)) catalogCursor = payload.catalog_cursor;
+      } else if (verdict.deliver && payload?.type === 'catalog_replay') {
+        if (payload.cursor_expired) scheduler.trigger('reconnect');
+        for (const envelope of Array.isArray(payload.events) ? payload.events : []) {
+          const task = typeof envelope.task_id === 'string' && envelope.task_id !== '';
+          handleEvent(dispatch, {
+            type: 'resource_changed', resource: task ? 'task' : 'task_chain',
+            resource_id: task ? envelope.task_id : envelope.chain_id, change: 'updated',
+            summary: { chain_id: envelope.chain_id, task_id: envelope.task_id },
+          }, getCtx());
+        }
+        if (typeof payload.catalog_cursor === 'string' && /^[0-9]{1,20}$/.test(payload.catalog_cursor)) catalogCursor = payload.catalog_cursor;
+        if (payload.has_more && !catalogPageTimer) {
+          catalogPageTimer = window.setTimeout(() => {
+            catalogPageTimer = undefined;
+            if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'catalog_next' }));
+          }, 300);
+        }
+      } else if (verdict.deliver) handleEvent(dispatch, payload, getCtx());
     };
 
     socket.onerror = () => {

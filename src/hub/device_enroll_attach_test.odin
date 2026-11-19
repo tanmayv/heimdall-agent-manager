@@ -1,5 +1,7 @@
 package main
 
+import natstest "odin_test:lib/natstest"
+
 // REQ-BE-2/3: device enrollment onto an EXISTING bridge ("reuse identity") through
 // the production endpoints and the real device_bridge_minter (app/wiring.odin):
 //
@@ -28,6 +30,7 @@ attach_test_graph :: proc(t: ^testing.T, graph: ^app.App_Graph, name: string) ->
 	db_path = fmt.tprintf("%s/heimdall-hub-test-attach-%s-%d.db", os.get_env("TEMP", context.temp_allocator) if ODIN_OS == .Windows else "/tmp", name, os.get_pid())
 	_ = os.remove(db_path)
 	built, msg := app.build_graph(graph, app.Hub_Config{
+		nats_url = natstest.testing_url(t),
 		database_path        = db_path,
 		migrations_dir       = "src/hub/repository/sqlite/migrations",
 		auto_provision_users = true,

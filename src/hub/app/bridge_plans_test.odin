@@ -1,5 +1,7 @@
 package app
 
+import natstest "odin_test:lib/natstest"
+
 import "core:fmt"
 import "core:os"
 import "core:strings"
@@ -92,6 +94,7 @@ test_launch_gate_inside_write_uow_with_cold_entitlements_does_not_stall :: proc(
 	graph := new(App_Graph)
 	defer free(graph)
 	built, msg := build_graph(graph, Hub_Config{
+		nats_url = natstest.testing_url(t),
 		database_path = db_path,
 		migrations_dir = "src/hub/repository/sqlite/migrations",
 		auto_provision_users = true,

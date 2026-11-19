@@ -684,7 +684,16 @@ MIGRATION_220_EXTENSION_VERSION_SYNC :: #load("migrations/220_extension_version_
 MIGRATION_221_EXTENSION_VERSION_SYNC :: #load("migrations/221_extension_version_sync_0_5_61.sql", string)
 
 MIGRATION_222_EXTENSION_VERSION_SYNC :: #load("migrations/222_extension_version_sync_0_5_62.sql", string)
-MIGRATION_223_WHATSAPP_INVITE_ONLY :: #load("migrations/223_whatsapp_invite_only.sql", string)
+MIGRATION_EVENTS_001_OUTBOX :: #load("migrations/events_001_outbox.sql", string)
+
+MIGRATION_EVENTS_005_DELIVERY_RETENTION :: #load("migrations/events_005_delivery_retention.sql", string)
+MIGRATION_EVENTS_004_DELIVERY :: #load("migrations/events_004_delivery.sql", string)
+MIGRATION_EVENTS_003_SUBSCRIPTIONS :: #load("migrations/events_003_subscriptions.sql", string)
+
+MIGRATION_EVENTS_002_TOPICS :: #load("migrations/events_002_topics.sql", string)
+
+MIGRATION_223_EXTENSION_VERSION_SYNC :: #load("migrations/223_extension_version_sync_0_5_63.sql", string)
+MIGRATION_WHATSAPP_001_INVITE_ONLY :: #load("migrations/whatsapp_001_invite_only.sql", string)
 
 migration_order :: [?]string {
 	"001_foundation.sql",
@@ -913,7 +922,13 @@ migration_order :: [?]string {
 	"220_extension_version_sync_0_5_60.sql",
 	"221_extension_version_sync_0_5_61.sql",
 	"222_extension_version_sync_0_5_62.sql",
-	"223_whatsapp_invite_only.sql",
+	"223_extension_version_sync_0_5_63.sql",
+	"events_001_outbox.sql",
+	"events_002_topics.sql",
+	"events_003_subscriptions.sql",
+	"events_004_delivery.sql",
+	"events_005_delivery_retention.sql",
+	"whatsapp_001_invite_only.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1326,8 +1341,8 @@ run_migrations :: proc(
 			mark_migration_applied(conn, name)
 			continue
 		}
-		// 223 commits atomically before its ledger row; its last column proves completion.
-		if name == "223_whatsapp_invite_only.sql" &&
+		// The WhatsApp migration commits atomically before its ledger row; its last column proves completion.
+		if name == "whatsapp_001_invite_only.sql" &&
 		   table_column_exists(conn, "account_entitlements", "override_whatsapp_enabled") {
 			mark_migration_applied(conn, name)
 			continue
@@ -1434,9 +1449,15 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 			return string(data)
 		}
 	}
+	if name == "223_extension_version_sync_0_5_63.sql" do return strings.clone(MIGRATION_223_EXTENSION_VERSION_SYNC)
 	if name == "222_extension_version_sync_0_5_62.sql" do return strings.clone(MIGRATION_222_EXTENSION_VERSION_SYNC)
-	if name == "223_whatsapp_invite_only.sql" do return strings.clone(MIGRATION_223_WHATSAPP_INVITE_ONLY)
+	if name == "whatsapp_001_invite_only.sql" do return strings.clone(MIGRATION_WHATSAPP_001_INVITE_ONLY)
 	if name == "221_extension_version_sync_0_5_61.sql" do return strings.clone(MIGRATION_221_EXTENSION_VERSION_SYNC)
+	if name == "events_005_delivery_retention.sql" do return strings.clone(MIGRATION_EVENTS_005_DELIVERY_RETENTION)
+	if name == "events_004_delivery.sql" do return strings.clone(MIGRATION_EVENTS_004_DELIVERY)
+	if name == "events_003_subscriptions.sql" do return strings.clone(MIGRATION_EVENTS_003_SUBSCRIPTIONS)
+	if name == "events_002_topics.sql" do return strings.clone(MIGRATION_EVENTS_002_TOPICS)
+	if name == "events_001_outbox.sql" do return strings.clone(MIGRATION_EVENTS_001_OUTBOX)
 	if name == "220_extension_version_sync_0_5_60.sql" do return strings.clone(MIGRATION_220_EXTENSION_VERSION_SYNC)
 	if name == "219_extension_version_sync_0_5_59.sql" do return strings.clone(MIGRATION_219_EXTENSION_VERSION_SYNC)
 	if name == "217_extension_version_sync_0_5_58.sql" do return strings.clone(MIGRATION_217_EXTENSION_VERSION_SYNC)
@@ -1673,6 +1694,9 @@ migration_applied :: proc(conn: ^Conn, version: string) -> bool {
 	if sqlite3_prepare_v2(conn.db, cstring(raw_data(query)), c.int(-1), &stmt, nil) != SQLITE_OK do return false
 	defer sqlite3_finalize(stmt)
 	if sqlite3_step(stmt) == SQLITE_ROW do return true
+	// Preserve pre-namespace events ledger identities without replaying CREATE TABLE.
+	if version == "events_001_outbox.sql" do return migration_applied(conn, "221_event_outbox.sql")
+	if version == "events_002_topics.sql" do return migration_applied(conn, "222_event_topics.sql")
 	// Bots shipped on staging before main claimed 210–212. Keep the original
 	// ledger identities and skip their renumbered equivalents without replaying SQL.
 	if version == "213_bots.sql" do return migration_applied(conn, "209_bots.sql")

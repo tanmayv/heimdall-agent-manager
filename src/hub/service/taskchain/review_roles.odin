@@ -147,6 +147,6 @@ write_review_role_description :: proc(service: ^Taskchain_Service, chain_in: dom
 	data, merr := json.marshal(root, allocator = context.temp_allocator)
 	if merr != nil do return domain.domain_error(.Internal_Error, "could not encode chain defaults")
 	chain.defaults_json = string(data)
-	if _, sok, serr := iface.taskchain_save_chain(service.repo, chain); !sok do return serr
+	if _, sok, serr := save_chain_with_catalog(service, chain); !sok do return serr
 	return domain.Domain_Error{}
 }

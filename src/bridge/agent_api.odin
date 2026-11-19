@@ -237,6 +237,18 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 	case "agent.workflow.cancel":
 		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "workflow", "cancel")}
 
+	// ---- durable events inbox ---------------------------------------------
+	case "agent.events.next":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "events", "next")}
+	case "agent.events.ack":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "events", "ack")}
+	case "agent.events.watch":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "events", "watch")}
+	case "agent.events.unwatch":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "events", "unwatch")}
+	case "agent.events.subscriptions":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "events", "subscriptions")}
+
 	// ---- channel ----------------------------------------------------------
 	case "agent.channel.read":
 		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "channel", "read")}
@@ -367,6 +379,7 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     "agent.work.remove_dependency", "agent.work.scope", "agent.work.complete",
 	     // chat + self/misc
 	     "agent.channel.read", "agent.channel.send", "agent.channel.history",
+	     "agent.events.next", "agent.events.ack", "agent.events.watch", "agent.events.unwatch", "agent.events.subscriptions",
 	     "agent.chat.send", "agent.chat.read", "agent.chat.assistant_message", "agent.chat.previous_context",
 	     "agent.context.get", "agent.conversation.set_title",
 	     "agent.memory.propose", "agent.memory.list", "agent.memory.show", "agent.memory.content",

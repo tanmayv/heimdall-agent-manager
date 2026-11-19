@@ -98,6 +98,12 @@ export HAM_OIDC_API_AUDIENCE=heimdall-api
 export HAM_OIDC_API_SCOPE=heimdall.api
 export HAM_OIDC_WEB_CLIENT_ID=<provider client id>
 
+# Required NATS server: provision it as described in "NATS JetStream (required)".
+# Load an authenticated HEIMDALL_NATS_URL from a private environment file.
+set -a
+. /etc/heimdall/hub-nats.env
+set +a
+
 # Start the hub (replace /path/to/ with your actual paths)
 ham-hub \
   --db /var/lib/heimdall/hub.db \
@@ -153,8 +159,8 @@ Create `/etc/systemd/system/heimdall-hub.service`:
 ```ini
 [Unit]
 Description=Heimdall Hub
-After=network-online.target
-Wants=network-online.target
+After=network-online.target heimdall-nats.service
+Wants=network-online.target heimdall-nats.service
 
 [Service]
 Type=simple
@@ -162,6 +168,7 @@ User=heimdall
 Group=heimdall
 # HAM_OIDC_* settings (see 1.4); the client secret, if any, by file path only
 EnvironmentFile=/etc/heimdall/hub-oidc.env
+EnvironmentFile=/etc/heimdall/hub-nats.env
 ExecStart=/usr/local/bin/ham-hub \
     --db /var/lib/heimdall/hub.db \
     --migrations-dir /usr/local/share/ham-hub/migrations \
@@ -192,7 +199,12 @@ In `nix-homelab-config` or any NixOS flake:
 
   nixosConfigurations.myhub = nixpkgs.lib.nixosSystem {
     modules = [
+      inputs.heimdall.nixosModules.heimdall-nats
       {
+        services.heimdall-nats = {
+          enable = true;
+          authFile = "/run/secrets/heimdall-nats-auth.conf";
+        };
         environment.systemPackages = [
           inputs.heimdall.packages.x86_64-linux.ham-hub
           inputs.heimdall.packages.x86_64-linux.ham-ctl
@@ -200,8 +212,12 @@ In `nix-homelab-config` or any NixOS flake:
 
         systemd.services.heimdall-hub = {
           description = "Heimdall Hub";
-          after = [ "network-online.target" ];
+          after = [ "network-online.target" "heimdall-nats.service" ];
+          wants = [ "heimdall-nats.service" ];
           wantedBy = [ "multi-user.target" ];
+          # For password auth, use the EnvironmentFile below to override this
+          # with nats://heimdall:<URL-encoded-password>@127.0.0.1:4222.
+          environment.HEIMDALL_NATS_URL = "nats://127.0.0.1:4222";
           serviceConfig = {
             ExecStart = ''
               ${inputs.heimdall.packages.x86_64-linux.ham-hub}/bin/ham-hub \
@@ -210,7 +226,10 @@ In `nix-homelab-config` or any NixOS flake:
                 --port 8081 --host 127.0.0.1 --ui-origin https://hub.example.com
             '';
             # HAM_OIDC_* (see 1.4 and docs/auth-oidc.md); keep secrets in files (sops/agenix).
-            EnvironmentFile = "/run/secrets/heimdall-hub-oidc.env";
+            EnvironmentFile = [
+              "/run/secrets/heimdall-hub-oidc.env"
+              "/run/secrets/heimdall-hub-nats.env"
+            ];
             Restart = "on-failure";
             StateDirectory = "heimdall";
             DynamicUser = true;
@@ -231,6 +250,184 @@ In `nix-homelab-config` or any NixOS flake:
   };
 }
 ```
+
+### NATS JetStream (required)
+
+Every hub requires NATS with JetStream enabled; there is no SQLite queue fallback.
+Only the hub connects to NATS. Bridges and agents use the hub API and do not need
+NATS access or credentials. Keep the broker on loopback for a single-host deployment.
+
+#### Authentication and hub settings
+
+For the local examples below, create a private server configuration fragment at
+`/etc/heimdall/nats-auth.conf` (or provision it with sops/agenix on NixOS):
+
+```text
+authorization {
+  users: [
+    { user: "heimdall", password: "REPLACE_WITH_A_RANDOM_PASSWORD" }
+  ]
+}
+```
+
+This is a **server auth fragment**, distinct from a NATS client `.creds` file.
+The NixOS module combines it with the server configuration at runtime.
+The Docker and plain systemd examples use the [NATS configuration include directive](https://docs.nats.io/reference/config/)
+with paths relative to the server configuration directory.
+Protect it with mode `0600`; the systemd examples use `LoadCredential` so its
+source can remain root-owned. The Docker example needs a copy readable by the
+container's NATS user. A dedicated broker lets the hub manage streams and consumers
+without restricting its JetStream API subjects.
+
+Create `/etc/heimdall/hub-nats.env` (root-owned, mode `0600`) for the hub:
+
+```bash
+HEIMDALL_NATS_URL=nats://heimdall:REPLACE_WITH_URL_ENCODED_PASSWORD@127.0.0.1:4222
+```
+
+For the NixOS example, provision the same content at
+`/run/secrets/heimdall-hub-nats.env`.
+Use a URL-encoded password in the URL. Load this file through the hub's
+`EnvironmentFile` rather than embedding secrets in a Nix expression or command line.
+
+| Hub environment | Equivalent flag | Meaning |
+|---|---|---|
+| `HEIMDALL_NATS_URL` | `--nats-url` | Required broker URL; use `tls://` for a TLS broker. |
+| `HEIMDALL_NATS_CREDS_FILE` | `--nats-creds-file` | Optional path to a client JWT/NKey `.creds` file for a broker configured for that authentication mode. |
+| `HEIMDALL_NATS_CA_FILE` | `--nats-ca-file` | Optional trusted CA PEM file for TLS. |
+
+The password-based local examples leave the two optional settings unset. For an
+external JWT/TLS broker, put these paths in the private environment file and make
+the files readable by the hub service (including a dynamic user, if used):
+
+```bash
+HEIMDALL_NATS_URL=tls://nats.example.com:4222
+HEIMDALL_NATS_CREDS_FILE=/run/credentials/heimdall-hub.service/nats.creds
+HEIMDALL_NATS_CA_FILE=/etc/heimdall/nats-ca.pem
+```
+
+For example, add `LoadCredential=nats.creds:/etc/heimdall/hub.creds` to the hub
+unit to provide that client credential without exposing its root-owned source.
+
+#### NixOS
+
+Import `inputs.heimdall.nixosModules.heimdall-nats` and configure:
+
+```nix
+services.heimdall-nats = {
+  enable = true;
+  authFile = "/run/secrets/heimdall-nats-auth.conf";
+};
+```
+
+The module creates `heimdall-nats.service`, enables JetStream, and persists its
+store under `/var/lib/heimdall-nats` with a dynamic system user and mode `0700`.
+Importing the module alone starts nothing. It does not create a hub service;
+the inline example above shows the hub URL and `after`/`wants` ordering.
+Use `Wants`, not `BindsTo`, so a broker outage does not stop the hub.
+
+| `services.heimdall-nats` option | Default | Meaning |
+|---|---|---|
+| `enable` | `false` | Opt in to the broker service. |
+| `package` | `pkgs.nats-server` | Server package. |
+| `listenAddress` | `"127.0.0.1"` | Client listen address. |
+| `port` | `4222` | Client port; adjust the hub URL if changed. |
+| `authFile` | `null` | Required when enabled: absolute string path outside the Nix store to the server auth fragment. |
+
+No firewall port is opened. Restart the broker after replacing its auth file so
+systemd reloads the credential. Back up the JetStream store alongside hub state.
+
+#### Docker
+
+Install Docker and use a persistent named volume for JetStream. Create
+`/etc/heimdall/nats-server.conf`:
+
+```text
+host: "0.0.0.0"
+port: 4222
+jetstream { store_dir: "/data" }
+include "auth.conf"
+```
+
+The broker listens on the container interface; publish it only on host loopback:
+
+```bash
+docker volume create heimdall-nats
+docker run -d --name heimdall-nats --restart unless-stopped \
+  -p 127.0.0.1:4222:4222 \
+  -v heimdall-nats:/data \
+  -v /etc/heimdall/nats-server.conf:/etc/nats/server.conf:ro \
+  -v /etc/heimdall/nats-auth.conf:/etc/nats/auth.conf:ro \
+  nats:2.11 --config /etc/nats/server.conf
+```
+
+Ensure the volume and mounted auth fragment are accessible to the image's NATS
+user. For a hub also in Docker, use a private Docker network and the broker's
+container name instead of `127.0.0.1` in the hub URL. The plain hub systemd
+example's `heimdall-nats.service` ordering applies to the systemd broker below;
+with Docker, order the hub after the service managing the container instead.
+
+#### Plain systemd
+
+Install `nats-server` from your OS package manager or the
+[official server releases](https://github.com/nats-io/nats-server/releases).
+The example assumes `/usr/local/bin/nats-server`; adjust it to the installed path.
+Create `/etc/heimdall/nats-server.conf`:
+
+```text
+host: "127.0.0.1"
+port: 4222
+jetstream { store_dir: "/var/lib/heimdall-nats" }
+include "../../run/credentials/heimdall-nats.service/auth.conf"
+```
+
+Create `/etc/systemd/system/heimdall-nats.service`:
+
+```ini
+[Unit]
+Description=Heimdall NATS JetStream
+After=network.target
+
+[Service]
+DynamicUser=true
+StateDirectory=heimdall-nats
+StateDirectoryMode=0700
+LoadCredential=auth.conf:/etc/heimdall/nats-auth.conf
+ExecStart=/usr/local/bin/nats-server --config /etc/heimdall/nats-server.conf
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now heimdall-nats.service
+sudo systemctl restart heimdall-hub.service
+sudo journalctl -u heimdall-nats.service -u heimdall-hub.service
+```
+
+#### Startup and degraded health
+
+Without `HEIMDALL_NATS_URL` (or `--nats-url`) the hub refuses to start with
+a clear configuration error. The hub creates/updates its `HEIM_EVENTS` stream
+idempotently at boot.
+
+If NATS becomes unreachable at runtime, the hub keeps serving requests and its
+transactional SQLite outbox buffers events. `/health` reports, for example:
+
+```json
+{"events":{"status":"degraded","outbox_backlog":42}}
+```
+
+Restore NATS connectivity and the relay drains the backlog in order. Monitor the
+event health and backlog; restarting the hub is not required for recovery.
 
 ### 1.6a Preview origin (recommended when previews are enabled)
 

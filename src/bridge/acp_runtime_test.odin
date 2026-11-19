@@ -19,7 +19,7 @@ t4_acp_durable_driver_rejects_unbounded_and_unknown_state :: proc(t: ^testing.T)
     d.error = "untrusted diagnostic"; testing.expect(t, !acp_runtime_durable_valid(&d)); d.error = ""
     d.stream_retries = -1; testing.expect(t, !acp_runtime_durable_valid(&d)); d.stream_retries = 0
     d.queue = make([dynamic]ACP_Runtime_Input, 129, allocator = context.temp_allocator)
-    for &input in d.queue do input = {"id", "text"}
+    for &input in d.queue do input = {id = "id", text = "text"}
     testing.expect(t, !acp_runtime_durable_valid(&d))
     resize(&d.queue, 128); testing.expect(t, acp_runtime_durable_valid(&d))
     d.queue[0].id = ""; testing.expect(t, !acp_runtime_durable_valid(&d)); d.queue[0].id = "id"

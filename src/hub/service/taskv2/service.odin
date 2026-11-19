@@ -26,6 +26,8 @@ import jsonx "odin_test:lib/jsonx"
 // touches the network; bridge wakes and user-event publishes are queued on an
 // Effects list and flushed AFTER commit.
 Service :: struct {
+	// Unset keeps the catalog v1 legacy notices enabled during dual-run.
+	legacy_event_notices: Maybe(bool),
 	repo:                ^iface.Taskchain_Repository,
 	agents:              ^iface.Agent_Repository,
 	bridges:             ^iface.Bridge_Repository,
@@ -547,6 +549,7 @@ effect_nudge_instance :: proc(u: ^Uow, instance_id, bridge_id, line: string) {
 // addressed to the instance whose action this UoW records is dropped (rule c).
 effect_notify_coordinator :: proc(svc: ^Service, u: ^Uow, chain_id: domain.Task_Chain_ID, owner: domain.User_ID, trigger, line: string, task_id := "", expected_state := "") {
 	if svc == nil || svc.repo == nil || u == nil || strings.trim_space(line) == "" do return
+	if !legacy_event_notice_enabled(svc, trigger) do return
 	coord_id := chain_coordinator_instance_id(svc, chain_id, owner)
 	if coord_id == "" do return
 	if u.actor_instance_id != "" && coord_id == u.actor_instance_id do return
@@ -750,6 +753,7 @@ refold_task :: proc(svc: ^Service, u: ^Uow, task: domain.Task, tasks: []domain.T
 	saved, ok, err := iface.taskchain_save_task(svc.repo, next)
 	if !ok do return task, view, false, err
 	fold_cache_settle(saved, fold_key_for(saved, evs, input))
+	if cerr := catalog_task_projection(svc, task, saved, evs); cerr.code != .None do return task, view, false, cerr
 	if saved.state != task.state {
 		metric_task_transition(task.state, saved.state)
 	}
@@ -767,7 +771,7 @@ refold_task :: proc(svc: ^Service, u: ^Uow, task: domain.Task, tasks: []domain.T
 		if domain.task_state_is_terminal(task.state) != domain.task_state_is_terminal(saved.state) {
 			effect_tasks_changed(u, saved.chain_id, saved.owner_user_id)
 		}
-		check_coordinator_attention_on_refold(svc, u, task, saved, view, all_tasks)
+		if cerr := check_coordinator_attention_on_refold(svc, u, task, saved, view, all_tasks); cerr.code != .None do return task, view, false, cerr
 		if saved.state == .Done && task.state != .Done do effect_merge_worktree(svc, u, saved, evs)
 		if saved.state == .Ready && task.state != .Ready do nudge_idle_soloist(svc, u, task, saved)
 	}
@@ -816,8 +820,8 @@ block_names_coordinator :: proc(svc: ^Service, task: domain.Task) -> bool {
 }
 
 @(private = "file")
-check_coordinator_attention_on_refold :: proc(svc: ^Service, u: ^Uow, before, after: domain.Task, view: Task_View, all_tasks: []domain.Task) {
-	if u == nil do return
+check_coordinator_attention_on_refold :: proc(svc: ^Service, u: ^Uow, before, after: domain.Task, view: Task_View, all_tasks: []domain.Task) -> domain.Domain_Error {
+	if u == nil do return {}
 	// A hold nested under another block is not a change of that block.
 	if after.blocked_on_json != "" && blocked_on_without_hold(after.blocked_on_json) != blocked_on_without_hold(before.blocked_on_json) {
 		if is_agent_not_running_block(after.blocked_on_json) {
@@ -859,10 +863,14 @@ check_coordinator_attention_on_refold :: proc(svc: ^Service, u: ^Uow, before, af
 					execution, ok, _ := iface.taskchain_get_workflow_execution(svc.repo, run.run_id, run.current_execution_no, chain.owner_user_id)
 					if !ok || execution.state == "draft" || execution.state == "pending" || execution.state == "running" do idle = false
 				}
-				if idle do effect_notify_task(svc, u, after, "work_batch_finished", "[taskv2] current batch finished; assess the goal, add work, or explicitly complete the chain")
+				if idle {
+					if cerr := catalog_work_finished(svc, chain, "work_batch_finished"); cerr.code != .None do return cerr
+					effect_notify_task(svc, u, after, "work_batch_finished", "[taskv2] current batch finished; assess the goal, add work, or explicitly complete the chain")
+				}
 			}
 		}
 	}
+	return {}
 }
 
 @(private = "file")
@@ -1154,4 +1162,16 @@ after_chain_change :: proc(svc: ^Service, u: ^Uow, chain_id: domain.Task_Chain_I
 	// whose tasks are all done or cancelled (T8: stop on completion only).
 	stop_finished_instances_in_uow(svc, u, chain)
 	return true, domain.Domain_Error{}
+}
+
+// Catalog v1 migration switch. Other attention triggers remain on the old path.
+legacy_event_notice_enabled :: proc(svc: ^Service, trigger: string) -> bool {
+	enabled, set := svc.legacy_event_notices.?
+	if !set || enabled do return true
+	switch trigger {
+	case "review_requested_from_user", "blocked_on human", "requirements_changed",
+	     "merge_conflict", "work_batch_finished", "workflow_complete", "workflow_failed":
+		return false
+	}
+	return true
 }

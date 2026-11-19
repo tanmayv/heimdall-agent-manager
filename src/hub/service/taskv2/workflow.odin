@@ -1094,6 +1094,10 @@ materialize_single_stage_in_uow :: proc(
 			sp := json_begin()
 			json_bool(&sp, "gate", true)
 			if _, saved, err := append_event(svc.repo, svc.clock, saved_t, hub_actor(), EV_SUBMITTED, json_end(&sp)); !saved do return false, err
+			before_gate := saved_t
+			before_gate.state = .Backlog
+			if cerr := catalog_task_projection(svc, before_gate, saved_t, nil); cerr.code != .None do return false, cerr
+			if cerr := catalog_review_request(svc, saved_t); cerr.code != .None do return false, cerr
 			notify_user_review_requested(svc, u, saved_t, fmt.tprintf("[taskv2] gate %s (%s) is awaiting approval in workflow run %s", saved_t.task_id, saved_t.title, chain.run.run_id))
 		}
 		if u != nil do effect_publish_task(u, saved_t, "created")

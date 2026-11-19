@@ -162,7 +162,7 @@ notice_queue_acp_saved_fifo_merges_current_completed_and_duplicate_ids :: proc(t
     d := ACP_Runtime_Durable{current_input = "running"}
     append(&d.completed_inputs, "done"); defer delete(d.completed_inputs)
     for id in ([]string{"running", "pending", "done", "pending", "last"}) {
-        append(&d.queue, ACP_Runtime_Input{strings.clone(id), strings.clone(id)})
+        append(&d.queue, ACP_Runtime_Input{id = strings.clone(id), text = strings.clone(id)})
     }
     defer { for input in d.queue { delete(input.id); delete(input.text) }; delete(d.queue) }
     acp_runtime_merge_saved_queue(&d); acp_runtime_merge_saved_queue(&d)
@@ -210,7 +210,7 @@ notice_queue_acp_busy_waits_and_revalidates_at_prompt_start :: proc(t: ^testing.
     testing.expect_value(t, len(f.r.d.queue), 0)
     testing.expect_value(t, notice_test_reads, 0)
     acp_runtime_replace(&f.r.d.phase, "ready")
-    append(&f.r.d.queue, ACP_Runtime_Input{strings.clone("queued"), strings.clone("queued text")})
+    append(&f.r.d.queue, ACP_Runtime_Input{id = strings.clone("queued"), text = strings.clone("queued text")})
     testing.expect(t, !bridge_task_notice_deliver(batch[:]), "queued FIFO prevents relevance reads")
     testing.expect_value(t, notice_test_reads, 0)
     delete(f.r.d.queue[0].id); delete(f.r.d.queue[0].text); clear(&f.r.d.queue)

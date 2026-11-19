@@ -1288,8 +1288,13 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		notice := bridge_shell_run_notice(session_id, status, exit_code)
 		defer delete(notice)
 		fmt.println("bridge hub runtime command notify_shell_run", instance_id, session_id, status)
-		if socket, sok := bridge_pty_host_ensure_daemon(); sok {
-			ok := bridge_pty_host_deliver_notice(socket, instance_id, notice)
+		if socket, sok := bridge_pty_host_ensure_daemon(); sok || bridge_runtime_is_acp(instance_id) {
+			ok := false
+			if bridge_runtime_is_acp(instance_id) {
+				ok = acp_runtime_deliver(instance_id, notice, command_id, acp_inbox_lane("shell_run"), session_id, "shell_run")
+			} else {
+				ok = bridge_pty_host_deliver_notice(socket, instance_id, notice)
+			}
 			if command_id != "" {
 				res := bridge_command_result_json(command_id, "succeeded" if ok else "accepted", "")
 				defer delete(res)
@@ -1318,8 +1323,14 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		defer delete(message)
 		notice := strings.concatenate({"Nudge: ", message})
 		defer delete(notice)
-		if socket, sok := bridge_pty_host_ensure_daemon(); sok {
-			ok := bridge_pty_host_deliver_notice(socket, instance_id, notice)
+		if socket, sok := bridge_pty_host_ensure_daemon(); sok || bridge_runtime_is_acp(instance_id) {
+			ok := false
+			if bridge_runtime_is_acp(instance_id) {
+				plain := bridge_decrypt_embedded_vault_tokens(notice); defer delete(plain)
+				ok = acp_runtime_deliver(instance_id, plain, command_id, acp_inbox_lane("title_nudge"), "title", "title_nudge")
+			} else {
+				ok = bridge_pty_host_deliver_notice(socket, instance_id, notice)
+			}
 			if command_id != "" {
 				res := bridge_command_result_json(command_id, "succeeded" if ok else "accepted", "")
 				defer delete(res)
@@ -1417,7 +1428,15 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 				// lives here. Deliver straight to the local agent via the daemon;
 				// otherwise wake the local agent (coalesced) so it can pick up the work
 				// on boot. Targets not local to this bridge are ignored.
-				if bridge_pty_host_deliver_to_agent(inst, "task_nudge", "", task_id, "participant", human_message) {
+				pushed := false
+				if bridge_runtime_is_acp(inst) {
+					notice := bridge_pty_host_task_nudge_line(task_id, "participant", human_message); defer delete(notice)
+					plain := bridge_decrypt_embedded_vault_tokens(notice); defer delete(plain)
+					pushed = acp_runtime_deliver(inst, plain, command_id, .Batch, task_id, new_status)
+				} else {
+					pushed = bridge_pty_host_deliver_to_agent(inst, "task_nudge", "", task_id, "participant", human_message)
+				}
+				if pushed {
 					delivered += 1
 					continue
 				}
@@ -2631,6 +2650,13 @@ bridge_wake_launch_command_json :: proc(command_id, instance_id, task_id, role, 
 	write_field(&b, &first, "effective_transport", effective_transport)
 	write_field(&b, &first, "catalog_etag", catalog_etag)
 	write_field(&b, &first, "launch_epoch", launch_epoch)
+	// Synthetic wake launches need the same epoch-bound assertion as launch_agent.
+	// Omitting it reuses a stale/bare local assertion and prevents startup auth.
+	if launch_epoch != "" {
+		assertion := strings.concatenate({"hit_", instance_id, "~", launch_epoch})
+		defer delete(assertion)
+		write_field(&b, &first, "instance_token", assertion)
+	}
 	write_field(&b, &first, "model", model)
 	write_field(&b, &first, "agent_id", agent_id)
 	write_field(&b, &first, "agent_name", agent_name)
@@ -3340,6 +3366,10 @@ bridge_runtime_set_status_with_source_locked :: proc(instance_id, runtime_status
 			accept_activity := activity_status != "" && (force_activity || bridge_runtime_accept_activity_update(inst, activity_source, now))
 			runtime_changed := inst.runtime_status != runtime_status
 			activity_changed := accept_activity && inst.activity_status != activity_status
+			if inst.runtime_transport == "acp" && (activity_changed || (!accept_activity && activity_status != "" && inst.activity_status != activity_status)) {
+				// Only bounded state labels and identity: never prompt/tool payloads.
+				fmt.eprintfln("ACP_ACTIVITY instance=%q source=%q previous=%q requested=%q accepted=%t", instance_id, activity_source, inst.activity_status, activity_status, accept_activity)
+			}
 			if runtime_changed || activity_changed {
 				inst.state_seq = bridge_runtime_next_state_seq(inst.state_seq, now)
 				if runtime_status != "failed" do inst.has_last_error = false
@@ -3398,6 +3428,11 @@ bridge_runtime_next_state_seq :: proc(current: int, now: i64) -> int {
 
 bridge_runtime_accept_activity_update :: proc(inst: ^Bridge_Runtime_Instance, source: string, now: i64) -> bool {
 	if inst == nil do return true
+	// ACP session/prompt results own turn boundaries. Native hooks, delayed
+	// thought/tool updates and relay workers can arrive after a result or before
+	// it finishes; their PTY heuristics must not replace the dispatcher's state.
+	// Forced lifecycle transitions still bypass this arbitration above.
+	if inst.runtime_transport == "acp" && source != "acp" do return false
 	current_rank := bridge_runtime_activity_source_rank(inst.activity_source)
 	new_rank := bridge_runtime_activity_source_rank(source)
 	if current_rank <= 0 || new_rank >= current_rank do return true

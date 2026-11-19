@@ -146,7 +146,13 @@ test_requirements_review_change_checkpoints_and_invalidates_verdicts :: proc(t: 
 	if !testing.expect(t, submitted) do return
 	_, approved, _ := review_post(&fx.svc, inst_auth("inst_r1"), {verdict = "approve"})
 	testing.expect(t, approved)
+	// Reviewers have no catalog #5 subscription; flag-off must still tell
+	// the active reviewer to checkpoint so worker rework can begin.
+	fx.svc.legacy_event_notices = false
+	probe: Requirements_Notice_Probe
+	fx.svc.bridge_command_sink = {ctx = &probe, send_runtime_command = requirements_test_send}
 	requirements_test_change(t, fx, "task_1", `{"goal":"g2","acceptance":["a","new"],"review_roles":["reviewer"]}`, 1)
+	testing.expect_value(t, probe.attempts, 1)
 	testing.expect_value(t, get_task(fx, "task_1").state, domain.Task_State.In_Review)
 	review_lease, still := lease_of(fx, "inst_r2")
 	testing.expect(t, still && review_lease.kind == domain.LEASE_KIND_REVIEW, "active reviewer is not killed")

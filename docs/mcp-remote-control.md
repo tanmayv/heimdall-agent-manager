@@ -16,9 +16,9 @@ identity. Native APIs retain their existing approved-device gates.
 | `chains.get` | `chain_id` | Readable chain (with `project_id`), tasks, current-attempt review verdict metadata and comments |
 | `chains.create` | Required `title` (1–500 bytes), `coordinator_agent_id` (`agt_...`), `bridge_id` (`brg_...`); optional `description` (up to 20,000 bytes), `project_id` (`proj_...`), `provider`, `provider_profile`, `model` | Encrypted draft chain and fresh coordinator instance; launches on the selected bridge, in the selected project when given; result echoes `project_id` |
 | `chains.message` | Required `chain_id`, stable `request_id`, nonblank `body` (up to 20,000 UTF-8 bytes) | Accepted user message; coordinator instance, conversation and message IDs; optional delivery warning |
-| `events.wait` | `chain_id`, optional `timeout_ms` | `status`, transient `event`, `refresh_required`, fresh `state` |
+| `events.wait` | `chain_id`, optional `timeout_ms`, `catalog_cursor`, `limit` | `status`, transient `event`, `refresh_required`, fresh `state` |
 
-Pagination is a current-state offset, not a snapshot or replay cursor. A get is
+List pagination is a current-state offset, not a snapshot or catalog replay cursor. A get is
 bounded to 1,000 tasks and 2,000 comments. Serialized input/output is capped at
 4 MiB; larger results fail instead of silently truncating.
 
@@ -114,7 +114,7 @@ do not launch pairing, delete the connection or retry a create automatically.
 30 seconds for the server operation including authorization and forwarding.
 Ingress timeouts must exceed 30 seconds. Bounded transient event-bus waiters
 filter owner and requested chain, subscribe before waiting, and fetch fresh state
-after a hint or timeout. There is no durable history or cross-restart cursor.
+after a hint or timeout. An optional catalog_cursor adds retained catalog v1 replay across reconnects and hub restarts; ordinary hints remain transient.
 
 Authenticated `notifications/cancelled` cancels the matching credential-scoped
 request. Waits check cooperatively and release registrations/slots on exit.
@@ -165,3 +165,11 @@ Retries do not resend its notification; repair the session through normal
 controls if needed. No new durable delivery queue or background replay is added.
 The tool does not return the message body, attachments, review controls, or
 general chat access.
+
+Catalog v1 reconnect replay is available through the additive `catalog_cursor`
+response/request field. Persist the returned cursor for the same owner and
+chain, call `events.wait` with it after reconnect, and drain `has_more` pages.
+Responses include `events` and `cursor_expired`; expiry requires a full refresh
+before continuing from the returned current cursor. Pages default to 50 and
+accept `limit` up to 200. Retention and state rollup apply; this is not a full
+audit log. Calls without a cursor retain live hint and fresh-state behavior.

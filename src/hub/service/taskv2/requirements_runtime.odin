@@ -149,6 +149,9 @@ requirements_reconcile_in_uow :: proc(svc: ^Service, u: ^Uow, task_in: domain.Ta
 		// A reviewer must checkpoint even if it acknowledged the new brief;
 		// that does not turn the old submission into compliant work.
 		if !stale_review && requirements_lease_revision(events, lease.lease_id, EV_REQUIREMENTS_ACKNOWLEDGED) == state.revision do continue
+		// Catalog #5 subscribes work leases only. Review checkpoints have no
+		// event replacement and must keep their legacy notice.
+		if lease.kind == domain.LEASE_KIND_WORK && !stale_review && !legacy_event_notice_enabled(svc, "requirements_changed") do continue
 		pending = true
 		recent := false
 		for i := len(events) - 1; i >= 0; i -= 1 {

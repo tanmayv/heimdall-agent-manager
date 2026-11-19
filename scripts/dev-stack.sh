@@ -51,6 +51,8 @@ TRUSTED_ORIGINS="${HAM_DEV_TRUSTED_ORIGINS:-}"
 MOCK_OIDC_PORT="${HAM_DEV_OIDC_PORT:-8090}"
 # shellcheck source=lib/hub-oidc-dev.sh
 . "$ROOT/scripts/lib/hub-oidc-dev.sh"
+# Shared PID/start-time ownership and private JetStream harness.
+. "$ROOT/scripts/local-runtime/lib.sh"
 BRIDGE_PORT="${HAM_DEV_BRIDGE_PORT:-49327}"
 BRIDGE_LOCAL_ENDPOINT_PORT="${HAM_DEV_BRIDGE_LOCAL_ENDPOINT_PORT:-49328}"
 HUB_DB="${HAM_DEV_HUB_DB:-$ROOT/hub.db}"
@@ -275,6 +277,7 @@ _stop_by_match() { # $1=grep-pattern label
 stop() {
   _stop_pidfile oidc
   _stop_pidfile hub
+  lr_stop_svc "$RUN_DIR" nats
   _stop_pidfile devproxy
   _stop_pidfile bridge
   # Clean up any stale copies bound to the local hub only.
@@ -298,10 +301,13 @@ start() {
   echo $! > "$(_pidfile oidc)"
   disown $!
   hub_oidc_export_env
+  local nats_url
+  nats_url="$(lr_nats_start "$RUN_DIR")" || { stop; return 1; }
+  trap 'rc=$?; if [ "$rc" -ne 0 ]; then stop; fi' EXIT
 
   echo "[dev-stack] starting hub on $HUB_ADDR"
-  nohup ./result-hub/bin/ham-hub \
-    --listen "$HUB_ADDR" --db "$HUB_DB" \
+  HEIMDALL_NATS_CREDS_FILE= HEIMDALL_NATS_CA_FILE= nohup ./result-hub/bin/ham-hub \
+    --nats-url "$nats_url" --listen "$HUB_ADDR" --db "$HUB_DB" \
     --migrations-dir "$MIGRATIONS" \
     --ui-origin "$UI_ORIGIN" \
     >"$RUN_DIR/hub.log" 2>&1 &
@@ -375,6 +381,7 @@ status() {
     f="$(_pidfile "$s")"
     if _running "$f"; then echo "  $s: RUNNING (pid $(cat "$f"))"; else echo "  $s: stopped"; fi
   done
+  lr_svc_status "$RUN_DIR" nats
   echo "--- listeners ---"
   lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | grep -E "${PROXY_ADDR##*:}|${HUB_ADDR##*:}|$BRIDGE_PORT|$BRIDGE_LOCAL_ENDPOINT_PORT" | awk '{print "  "$1, $9}' || true
   echo "--- health ---"
