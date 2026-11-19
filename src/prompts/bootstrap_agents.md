@@ -214,3 +214,35 @@ rather than guessing:
 - `artifact-authoring` — produce a report, image or static HTML site for the user as an artifact and deliver it as an `artifact://` link.
 
 Checks are chosen, not configured: no task carries a verification command. Workers choose and run checks appropriate to the change and report the commands and their outcomes in `ham-ctl lease submit --summary`; reviewers judge correctness and their verdict needs no command evidence.
+
+## Event inbox and migration notices
+
+On an `[events]` nudge, pull the durable inbox:
+
+```bash
+./bin/ham-ctl events next --limit 20
+# After handling each returned event:
+./bin/ham-ctl events ack <event_id...>
+```
+
+Process events within your current role and task scope. Fetch current task/chain
+state before acting; envelopes contain IDs and enums, not instructions or message
+bodies. Deduplicate by `event_id`: delivery is at least once, and unacked events
+return after five minutes (up to ten attempts). Acknowledge only after handling
+or recording the required follow-up durably. A resolved notice closes an earlier
+request; do not repeat the resolved action. Drain further batches as needed;
+`events next --wait 30s` is available when waiting for work.
+
+Coordinators handle review requests, human blocks, merge conflicts and finished
+batches using the existing task controls and required user gates. Workers refresh
+with `lease next`, read `TASK.md`, reconcile requirements, and acknowledge the
+exact requirements revision with `lease heartbeat --lease <lease-id>
+--acknowledge-requirements-revision <n>`. Event acknowledgement does not acknowledge
+requirements. Reviewers refresh their pack too; if requirements changed during
+review, checkpoint with `lease handoff` rather than posting a stale verdict.
+
+During migration, existing `[taskv2]` notices remain enabled. Handle them with
+their existing instructions, and deduplicate follow-up against inbox events using
+current task state. Other taskv2 triggers still use that path. The hub flag
+`--legacy-event-notices true|false` defaults to true and controls only catalog
+triggers #3/#4/#5/#7/#8; leave it on until staging parity is approved.

@@ -732,3 +732,35 @@ Coordinator defaults follow chain membership. Work-claim defaults receive only t
 Delivery is at least once. Deduplicate by `event_id`, acknowledge after handling, and expect unacknowledged events again after five minutes. After ten attempts the hub republishes to `ev.dlq.<owner>…`. State events roll up to the latest state. Stale resolvable events are skipped; a previously delivered event later resolved or superseded produces a `resolved` notice with `resolved_event_id`. Notices need no acknowledgement. Events contain metadata, so fetch the current task when details are needed.
 
 Delivery metadata has a 14-day retention window matching the stream. The hub keeps the most recent 256 completed acknowledgement receipts per subscription for idempotent retries. Each subscription admits at most 4,096 delivery records; at capacity, pull leaves additional events queued until you acknowledge or resolve existing events. An acknowledgement outside the retained receipt window may return not found.
+
+## Event inbox and migration notices
+
+On an `[events]` nudge, pull the durable inbox:
+
+```bash
+./bin/ham-ctl events next --limit 20
+# After handling each returned event:
+./bin/ham-ctl events ack <event_id...>
+```
+
+Process events within your current role and task scope. Fetch current task/chain
+state before acting; envelopes contain IDs and enums, not instructions or message
+bodies. Deduplicate by `event_id`: delivery is at least once, and unacked events
+return after five minutes (up to ten attempts). Acknowledge only after handling
+or recording the required follow-up durably. A resolved notice closes an earlier
+request; do not repeat the resolved action. Drain further batches as needed;
+`events next --wait 30s` is available when waiting for work.
+
+Coordinators handle review requests, human blocks, merge conflicts and finished
+batches using the existing task controls and required user gates. Workers refresh
+with `lease next`, read `TASK.md`, reconcile requirements, and acknowledge the
+exact requirements revision with `lease heartbeat --lease <lease-id>
+--acknowledge-requirements-revision <n>`. Event acknowledgement does not acknowledge
+requirements. Reviewers refresh their pack too; if requirements changed during
+review, checkpoint with `lease handoff` rather than posting a stale verdict.
+
+During migration, existing `[taskv2]` notices remain enabled. Handle them with
+their existing instructions, and deduplicate follow-up against inbox events using
+current task state. Other taskv2 triggers still use that path. The hub flag
+`--legacy-event-notices true|false` defaults to true and controls only catalog
+triggers #3/#4/#5/#7/#8; leave it on until staging parity is approved.

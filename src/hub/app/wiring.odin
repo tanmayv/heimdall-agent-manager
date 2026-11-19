@@ -416,6 +416,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	// (on_tasks_changed) so the chain auto-completes when its last task is done.
 	graph.repos.taskchains.catalog = graph.repos.event_outbox
 	graph.task_engine = taskv2.new_service(&graph.repos.taskchains, &graph.repos.agents, &graph.repos.bridges, &graph.clock, &graph.ids)
+	graph.task_engine.legacy_event_notices = config.legacy_event_notices
 	graph.content.uow_factory = &graph.uow_factory
 	graph.content.vault_directory = &graph.vault_directory_repo
 	graph.task_engine.uow_factory = &graph.uow_factory

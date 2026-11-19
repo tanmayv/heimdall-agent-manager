@@ -165,7 +165,9 @@ requirements_reconcile_in_uow :: proc(svc: ^Service, u: ^Uow, task_in: domain.Ta
 		if _, ok, nerr := append_event(svc.repo, svc.clock, task, hub_actor(), EV_REQUIREMENTS_NOTICE_ATTEMPTED, json_end(&notice)); !ok do return false, nerr
 		line := fmt.tprintf("[taskv2] requirements changed: task %s revision %d. Run ham-ctl lease next, read TASK.md, then acknowledge revision %d before continuing.", task.task_id, state.revision, state.revision)
 		if stale_review do line = fmt.tprintf("[taskv2] requirements changed during review: task %s revision %d. Run ham-ctl lease next; checkpoint review with ham-ctl lease handoff --summary <progress>. Do not post a verdict; worker rework is required.", task.task_id, state.revision)
-		effect_nudge_instance(u, lease.holder_instance_id, lease.bridge_id, line)
+		if legacy_event_notice_enabled(svc, "requirements_changed") {
+			effect_nudge_instance(u, lease.holder_instance_id, lease.bridge_id, line)
+		}
 	}
 	if pending do timers_arm(svc, .Requirements_Notice, string(task.task_id), now_ms(svc.clock) + REQUIREMENTS_RETRY_SECONDS * 1000, "")
 	return true, {}

@@ -8,6 +8,8 @@ import vault "odin_test:lib/vault"
 import auth_service "odin_test:hub/service/auth"
 
 Hub_Config :: struct {
+	// Default on until catalog v1 staging parity is approved.
+	legacy_event_notices: Maybe(bool),
 	nats_url, nats_creds_file, nats_ca_file: string,
 	telegram_bot_token:                     string, // secret; never logged
 	telegram_api_base:                      string,

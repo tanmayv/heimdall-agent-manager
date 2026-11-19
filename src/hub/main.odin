@@ -519,6 +519,14 @@ apply_whatsapp_env :: proc(config: ^app.Hub_Config) {
 parse_nats_args :: proc(config: ^app.Hub_Config) {
 	for i := 1; i < len(os.args); i += 1 {
 		arg := os.args[i]
+		if arg == "--legacy-event-notices" {
+			if i + 1 >= len(os.args) { fmt.eprintln(arg, "requires true or false"); os.exit(2) }
+			value, ok := app.parse_bool_setting(os.args[i + 1])
+			if !ok { fmt.eprintln(arg, "requires true or false"); os.exit(2) }
+			config.legacy_event_notices = value
+			i += 1
+			continue
+		}
 		if arg != "--nats-url" && arg != "--nats-creds-file" && arg != "--nats-ca-file" do continue
 		if i + 1 >= len(os.args) || strings.has_prefix(os.args[i + 1], "--") {
 			fmt.eprintln(arg, "requires a value"); os.exit(2)

@@ -26,6 +26,8 @@ import jsonx "odin_test:lib/jsonx"
 // touches the network; bridge wakes and user-event publishes are queued on an
 // Effects list and flushed AFTER commit.
 Service :: struct {
+	// Unset keeps the catalog v1 legacy notices enabled during dual-run.
+	legacy_event_notices: Maybe(bool),
 	repo:                ^iface.Taskchain_Repository,
 	agents:              ^iface.Agent_Repository,
 	bridges:             ^iface.Bridge_Repository,
@@ -515,6 +517,7 @@ effect_nudge_instance :: proc(u: ^Uow, instance_id, bridge_id, line: string) {
 // dispatch_failed, ready_unclaimed, chain_complete, review_requested_from_user, summary_overflow).
 effect_notify_coordinator :: proc(svc: ^Service, u: ^Uow, chain_id: domain.Task_Chain_ID, owner: domain.User_ID, trigger, line: string) {
 	if svc == nil || svc.repo == nil || u == nil || strings.trim_space(line) == "" do return
+	if !legacy_event_notice_enabled(svc, trigger) do return
 	chain, cok, _ := iface.taskchain_get_chain(svc.repo, chain_id)
 	if !cok do return
 	coord_id := strings.trim_space(chain.coordinator_agent_instance_id)
@@ -1042,4 +1045,16 @@ after_chain_change :: proc(svc: ^Service, u: ^Uow, chain_id: domain.Task_Chain_I
 	// whose tasks are all done or cancelled (T8: stop on completion only).
 	stop_finished_instances_in_uow(svc, u, chain)
 	return true, domain.Domain_Error{}
+}
+
+// Catalog v1 migration switch. Other attention triggers remain on the old path.
+legacy_event_notice_enabled :: proc(svc: ^Service, trigger: string) -> bool {
+	enabled, set := svc.legacy_event_notices.?
+	if !set || enabled do return true
+	switch trigger {
+	case "review_requested_from_user", "blocked_on human", "requirements_changed",
+	     "merge_conflict", "work_batch_finished", "workflow_complete", "workflow_failed":
+		return false
+	}
+	return true
 }
