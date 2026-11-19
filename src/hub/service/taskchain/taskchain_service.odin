@@ -326,7 +326,7 @@ coordinator_sync_mirror :: proc(service: ^Taskchain_Service, chain: domain.Task_
 	if chain.coordinator_agent_instance_id == primary do return chain
 	updated := chain
 	updated.coordinator_agent_instance_id = primary
-	saved, ok, _ := iface.taskchain_save_chain(service.repo, updated)
+	saved, ok, _ := save_chain_with_catalog(service, updated)
 	if ok do return saved
 	return updated
 }
@@ -475,7 +475,7 @@ create_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 		created_at = now,
 		updated_at = now,
 	}
-	saved_chain, save_ok, save_err := iface.taskchain_save_chain(service.repo, chain)
+	saved_chain, save_ok, save_err := save_chain_with_catalog(service, chain)
 	if !save_ok do return domain.Task_Chain{}, false, save_err
 
 	// Write the coordinator to the SINGLE canonical source (members table), then
@@ -562,7 +562,7 @@ update_chain_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Cont
 		}
 	}
 	chain.updated_at = platform.clock_now(service.clock)
-	saved, save_ok, save_err := iface.taskchain_save_chain(service.repo, chain)
+	saved, save_ok, save_err := save_chain_with_catalog(service, chain)
 	if save_ok && status_closed {
 		// REQ-SHELL-9 trigger A. Before the broadcast rather than after, so the servers
 		// are already dying by the time members are told the chain closed.
@@ -593,7 +593,7 @@ pin_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, cha
 		chain.pinned_at = ""
 	}
 	chain.updated_at = platform.clock_now(service.clock)
-	return iface.taskchain_save_chain(service.repo, chain)
+	return save_chain_with_catalog(service, chain)
 }
 
 list_pinned_chains :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context) -> ([]domain.Task_Chain, domain.Domain_Error) {
@@ -645,7 +645,7 @@ publish_chain_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 	chain.status = .Active
 	chain.published_at = now
 	chain.updated_at = now
-	saved_chain, save_ok, save_err := iface.taskchain_save_chain(service.repo, chain)
+	saved_chain, save_ok, save_err := save_chain_with_catalog(service, chain)
 	if !save_ok do return domain.Task_Chain{}, false, save_err
 
 	tasks, err_t := iface.taskchain_list_tasks_by_chain(service.repo, chain_id, chain.owner_user_id)
@@ -686,7 +686,7 @@ change_chain_status_impl :: proc(service: ^Taskchain_Service, auth: contracts.Au
 	} else if next == .Active {
 		chain.completed_at = ""
 	}
-	saved, save_ok, save_err := iface.taskchain_save_chain(service.repo, chain)
+	saved, save_ok, save_err := save_chain_with_catalog(service, chain)
 	// MEM-6 (#10): on chain close, broadcast a wake to all live members so any
 	// long-running loops/tasks halt.
 	if save_ok && (next == .Completed || next == .Cancelled || next == .Archived) {
@@ -1670,7 +1670,7 @@ update_chain_coordinator :: proc(service: ^Taskchain_Service, auth: contracts.Au
 	// stamps the derived mirror column.
 	chain = set_chain_coordinator(service, chain, coordinator_agent_instance_id)
 	chain.updated_at = platform.clock_now(service.clock)
-	saved, save_ok, save_err := iface.taskchain_save_chain(service.repo, chain)
+	saved, save_ok, save_err := save_chain_with_catalog(service, chain)
 	// MEM-6 #9: tell the new coordinator they now hold the role.
 	if save_ok && coordinator_agent_instance_id != "" {
 		notify_coordinator_assigned(service, auth, saved, coordinator_agent_instance_id)

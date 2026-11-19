@@ -110,6 +110,7 @@ evaluate_gate_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, t
 		user_ok := false
 		for r in reviews do if r.attempt_no == task.attempt_no && r.verdict == "approve" && r.reviewer_kind == "user" { user_ok = true; break }
 		if !user_ok {
+			if err := catalog_review_request(svc, task); err.code != .None do return .Waiting, false, err
 			effect_notify_coordinator(svc, u, task.chain_id, task.owner_user_id, "review_requested_from_user", fmt.tprintf("[taskv2] review_requested_from_user: task %s (%s) passed review gate and awaits user approval", task.task_id, task.title))
 			metric_gate_evaluated(.Waiting)
 			return .Waiting, true, domain.Domain_Error{}

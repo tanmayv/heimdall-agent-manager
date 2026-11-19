@@ -408,6 +408,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	// Task System v2 engine: events + fold + leases + timers + matcher. Every
 	// chain/task mutation in the taskchain service funnels into it; it calls back
 	// (on_tasks_changed) so the chain auto-completes when its last task is done.
+	graph.repos.taskchains.catalog = graph.repos.event_outbox
 	graph.task_engine = taskv2.new_service(&graph.repos.taskchains, &graph.repos.agents, &graph.repos.bridges, &graph.clock, &graph.ids)
 	graph.content.uow_factory = &graph.uow_factory
 	graph.content.vault_directory = &graph.vault_directory_repo

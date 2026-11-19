@@ -172,6 +172,7 @@ workflow_run_in_uow :: proc(svc: ^Service, u: ^Uow, owner: domain.User_ID, actor
 }
 
 workflow_set_state :: proc(svc: ^Service, u: ^Uow, wf: ^Workflow_Context, state: string, reason := "", manifest := "{}") -> domain.Domain_Error {
+	previous_state := wf.execution.state
 	execution := wf.execution
 	execution.state = state
 	execution.revision += 1
@@ -185,6 +186,13 @@ workflow_set_state :: proc(svc: ^Service, u: ^Uow, wf: ^Workflow_Context, state:
 	saved, ok, err := iface.taskchain_update_workflow_execution(svc.repo, execution)
 	if !ok do return err
 	wf.execution = saved
+	if previous_state != state && (state == "failed" || state == "succeeded") {
+		p := json_begin()
+		json_str(&p, "outcome", state)
+		json_str(&p, "workflow_run_id", string(wf.run.run_id))
+		json_int(&p, "execution_no", i64(wf.execution.execution_no))
+		if _, cerr := catalog_emit(svc.repo, svc.clock, wf.owner_user_id, wf.chain_id, "", "chain.work_finished", "occurrence", json_end(&p), "hub"); cerr.code != .None do return cerr
+	}
 	payload := json_begin(); json_str(&payload, "reason", reason)
 	return workflow_event(svc, u, wf^, hub_actor(), state, json_end(&payload))
 }
@@ -485,6 +493,7 @@ workflow_proposal_run_in_uow :: proc(svc: ^Service, u: ^Uow, chain_in: domain.Ta
  chain.defaults_json = set_chain_proposal_json(chain.defaults_json, "")
  chain.updated_at = platform.clock_now(svc.clock)
  if _, ok, err := iface.taskchain_save_chain(svc.repo, chain); !ok do return {}, false, err
+ if err := catalog_chain_state(svc.repo, svc.clock, chain_in, chain); err.code != .None do return {}, false, err
  _, ok, err := workflow_run_in_uow(svc, u, chain.owner_user_id, actor, Workflow_Run_Input{
   chain_id = string(chain.chain_id), ref = ref, inputs_json = inputs, request_id = platform.generate_id(svc.ids, "proposal_"),
  })

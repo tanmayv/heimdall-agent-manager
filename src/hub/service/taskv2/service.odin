@@ -662,6 +662,7 @@ refold_task :: proc(svc: ^Service, u: ^Uow, task: domain.Task, tasks: []domain.T
 	saved, ok, err := iface.taskchain_save_task(svc.repo, next)
 	if !ok do return task, view, false, err
 	fold_cache_settle(saved, fold_key_for(saved, evs, input))
+	if cerr := catalog_task_projection(svc, task, saved, evs); cerr.code != .None do return task, view, false, cerr
 	if saved.state != task.state {
 		metric_task_transition(task.state, saved.state)
 	}
@@ -679,7 +680,7 @@ refold_task :: proc(svc: ^Service, u: ^Uow, task: domain.Task, tasks: []domain.T
 		if domain.task_state_is_terminal(task.state) != domain.task_state_is_terminal(saved.state) {
 			effect_tasks_changed(u, saved.chain_id, saved.owner_user_id)
 		}
-		check_coordinator_attention_on_refold(svc, u, task, saved, view, all_tasks)
+		if cerr := check_coordinator_attention_on_refold(svc, u, task, saved, view, all_tasks); cerr.code != .None do return task, view, false, cerr
 		if saved.state == .Done && task.state != .Done do effect_merge_worktree(svc, u, saved, evs)
 		if saved.state == .Ready && task.state != .Ready do nudge_idle_soloist(svc, u, saved)
 	}
@@ -701,8 +702,8 @@ nudge_idle_soloist :: proc(svc: ^Service, u: ^Uow, task: domain.Task) {
 }
 
 @(private = "file")
-check_coordinator_attention_on_refold :: proc(svc: ^Service, u: ^Uow, before, after: domain.Task, view: Task_View, all_tasks: []domain.Task) {
-	if u == nil do return
+check_coordinator_attention_on_refold :: proc(svc: ^Service, u: ^Uow, before, after: domain.Task, view: Task_View, all_tasks: []domain.Task) -> domain.Domain_Error {
+	if u == nil do return {}
 	// A hold nested under another block is not a change of that block.
 	if after.blocked_on_json != "" && blocked_on_without_hold(after.blocked_on_json) != blocked_on_without_hold(before.blocked_on_json) {
 		if is_agent_not_running_block(after.blocked_on_json) {
@@ -742,10 +743,14 @@ check_coordinator_attention_on_refold :: proc(svc: ^Service, u: ^Uow, before, af
 					execution, ok, _ := iface.taskchain_get_workflow_execution(svc.repo, run.run_id, run.current_execution_no, chain.owner_user_id)
 					if !ok || execution.state == "draft" || execution.state == "pending" || execution.state == "running" do idle = false
 				}
-				if idle do effect_notify_coordinator(svc, u, after.chain_id, after.owner_user_id, "work_batch_finished", "[taskv2] current batch finished; assess the goal, add work, or explicitly complete the chain")
+				if idle {
+					if cerr := catalog_work_finished(svc, chain, "work_batch_finished"); cerr.code != .None do return cerr
+					effect_notify_coordinator(svc, u, after.chain_id, after.owner_user_id, "work_batch_finished", "[taskv2] current batch finished; assess the goal, add work, or explicitly complete the chain")
+				}
 			}
 		}
 	}
+	return {}
 }
 
 @(private = "file")

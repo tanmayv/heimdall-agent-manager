@@ -683,6 +683,8 @@ MIGRATION_220_EXTENSION_VERSION_SYNC :: #load("migrations/220_extension_version_
 
 MIGRATION_221_EVENT_OUTBOX :: #load("migrations/221_event_outbox.sql", string)
 
+MIGRATION_222_EVENT_TOPICS :: #load("migrations/222_event_topics.sql", string)
+
 migration_order :: [?]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
@@ -909,6 +911,7 @@ migration_order :: [?]string {
 	"219_extension_version_sync_0_5_59.sql",
 	"220_extension_version_sync_0_5_60.sql",
 	"221_event_outbox.sql",
+	"222_event_topics.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1423,6 +1426,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 			return string(data)
 		}
 	}
+	if name == "222_event_topics.sql" do return strings.clone(MIGRATION_222_EVENT_TOPICS)
 	if name == "221_event_outbox.sql" do return strings.clone(MIGRATION_221_EVENT_OUTBOX)
 	if name == "220_extension_version_sync_0_5_60.sql" do return strings.clone(MIGRATION_220_EXTENSION_VERSION_SYNC)
 	if name == "219_extension_version_sync_0_5_59.sql" do return strings.clone(MIGRATION_219_EXTENSION_VERSION_SYNC)

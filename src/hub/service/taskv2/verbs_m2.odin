@@ -886,6 +886,7 @@ approve_and_publish_chain_in_uow :: proc(svc: ^Service, u: ^Uow, chain_in: domai
 	chain.updated_at = now
 	updated, sok, serr := iface.taskchain_save_chain(svc.repo, chain)
 	if !sok do return {}, nil, false, serr
+	if err := catalog_chain_state(svc.repo, svc.clock, chain_in, updated); err.code != .None do return {}, nil, false, err
 
 	materialized := make([dynamic]domain.Task, 0, len(existing_tasks) + len(specs), context.temp_allocator)
 	existing_by_id := make(map[string]domain.Task, len(existing_tasks), context.temp_allocator)
