@@ -1,6 +1,7 @@
 package app
 
 import "core:fmt"
+import eventrelay "odin_test:hub/service/eventrelay"
 import "core:os"
 import "core:strings"
 import "core:sync"
@@ -36,6 +37,8 @@ import http "odin_test:hub/transport/http"
 import platform "odin_test:hub/platform"
 
 App_Graph :: struct {
+	event_relay: eventrelay.Service,
+	sqlite_event_outbox: sqlite.Event_Outbox_Repo_SQLite,
 	mcp_runtime_mutex:sync.Mutex,
 	mcp_spike: mcp_service.Store,
 	mcp_spike_handlers: http.MCP_Spike_Handlers,
@@ -229,6 +232,7 @@ service_message_created :: proc(ctx: rawptr, m: domain.Chat_Message) {
 }
 
 build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
+	if strings.trim_space(config.nats_url) == "" do return false, "--nats-url / HEIMDALL_NATS_URL is required"
 	graph.bridge_runtime_registry.limits = project_service.Runtime_Registry_Limits{
 		live_bridges = config.runtime_max_live_bridges,
 		live_bridges_per_owner = config.runtime_max_live_bridges_per_owner,
@@ -298,6 +302,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.billing = billing_service.Service{repo = &graph.billing_repo, clock = &graph.clock, config = billing_config}
 	graph.billing_handlers = http.Billing_Handlers{auth = &graph.auth, billing = &graph.billing, ui_origin = config.ui_origin}
 
+	graph.repos.event_outbox = sqlite.new_event_outbox_repository(&graph.sqlite_event_outbox, &graph.db)
 	graph.repos.users = sqlite.new_user_repository(&graph.sqlite_users, &graph.db)
 	// External identity claiming is atomic on an isolated connection so its
 	// transaction cannot commit or roll back an unrelated repository's writes.
@@ -680,10 +685,12 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	} else {
 		fmt.println("ham-hub web push send disabled (no VAPID keypair configured); subscription endpoints remain active")
 	}
+	eventrelay.start(&graph.event_relay, &graph.uow_factory, {url = config.nats_url, creds_file = config.nats_creds_file, ca_file = config.nats_ca_file, timeout_ms = 1000})
 	return true, ""
 }
 
 shutdown_graph :: proc(graph: ^App_Graph) {
+	eventrelay.stop(&graph.event_relay)
 	bots_service.bots_runtime_stop(&graph.bots_runtime)
 	bots_service.bots_service_destroy(&graph.bots)
 	channel.telegram_destroy(&graph.telegram)
@@ -1183,7 +1190,14 @@ register_routes :: proc(graph: ^App_Graph) {
 health_handler :: proc(ctx: rawptr, req: http.Request) -> http.Response {
 	graph := (^App_Graph)(ctx)
 	server_time := platform.clock_now(&graph.clock)
-	return http.respond_success("{\"ok\":true,\"version\":1}", req.request_id, server_time)
+	status, backlog := eventrelay.health(&graph.event_relay)
+
+	payload := struct {
+		ok: bool,
+		version: int,
+		events: struct { status: string, outbox_backlog: i64 },
+	}{ok = true, version = 1, events = {status = status, outbox_backlog = backlog}}
+	return http.respond_success_typed(payload, req.request_id, server_time)
 }
 
 // device_bridge_minter is the REQ-IMPL-2 bridge-credential issuer wired into

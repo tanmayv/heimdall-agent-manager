@@ -435,6 +435,31 @@
               ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "valgrind --suppressions=src/lib/nats/valgrind.supp --leak-check=full --show-leak-kinds=definite,indirect,possible --errors-for-leak-kinds=definite,indirect --error-exitcode=99 $out/bin/nats-tests"}
             '';
           };
+
+          events-relay = pkgs.stdenv.mkDerivation {
+            name = "check-events-relay";
+            src = ./.;
+            nativeBuildInputs = [ (mkOdin pkgs) pkgs.nats-server ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.valgrind ];
+            buildInputs = [ (hamNatsFor pkgs) pkgs.openssl pkgs.sqlite ];
+            dontConfigure = true;
+            dontInstall = true;
+            buildPhase = ''
+              mkdir -p $out/bin
+              odin test src/hub/service/eventrelay -collection:odin_test=src -keep-executable -out:$out/bin/events-tests
+              ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "valgrind --suppressions=src/lib/nats/valgrind.supp --leak-check=full --show-leak-kinds=definite,indirect,possible --errors-for-leak-kinds=definite,indirect --error-exitcode=99 $out/bin/events-tests"}
+              odin test src/hub/repository/sqlite -collection:odin_test=src -define:ODIN_TEST_NAMES=test_event_outbox_transactions -out:$out/bin/outbox-tests
+            '';
+          };
+          hub-requires-nats = pkgs.runCommand "check-hub-requires-nats" {} ''
+            set +e
+            env -u HEIMDALL_NATS_URL ${self.packages.${system}.release-ham-hub}/bin/ham-hub > startup.log 2>&1
+            status=$?
+            set -e
+            cat startup.log
+            test "$status" -eq 2
+            grep -F -- "--nats-url / HEIMDALL_NATS_URL is required" startup.log
+            touch $out
+          '';
           # Only src/lib/httpc may touch libcurl; src/lib/http_client must not
           # come back; no hand-rolled HTTP clients over core:net.
           http-boundary = pkgs.runCommand "check-http-boundary" { nativeBuildInputs = [ pkgs.bash pkgs.gnugrep pkgs.coreutils ]; } ''

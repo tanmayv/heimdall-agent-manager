@@ -1,5 +1,7 @@
 package main
 
+import natstest "odin_test:lib/natstest"
+
 import "core:fmt"
 import "core:os"
 import "core:testing"
@@ -22,6 +24,7 @@ test_reaper_prunes_old_bridge_log_events_every_15_min :: proc(t: ^testing.T) {
 	defer _ = os.remove(db_path)
 	graph: app.App_Graph
 	ok, msg := app.build_graph(&graph, app.Hub_Config{
+		nats_url = natstest.testing_url(t),
 		database_path        = db_path,
 		migrations_dir       = "src/hub/repository/sqlite/migrations",
 		auto_provision_users = true,

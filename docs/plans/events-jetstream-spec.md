@@ -71,6 +71,7 @@ The hub creates or updates the stream idempotently at boot.
   - `--nats-creds-file` / `HEIMDALL_NATS_CREDS_FILE` (optional),
   - `--nats-ca-file` / `HEIMDALL_NATS_CA_FILE` (optional).
 - **Without a URL** the hub refuses to start, with a clear error.
+- **Configured but unreachable at boot:** start degraded, retry with backoff, and provision/update HEIM_EVENTS before the first publish once NATS returns (E0b revision 2).
 - **When NATS is unreachable at runtime:**
   - the hub keeps serving;
   - the outbox buffers events;

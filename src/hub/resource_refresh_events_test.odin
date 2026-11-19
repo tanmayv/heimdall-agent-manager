@@ -1,5 +1,7 @@
 package main
 
+import natstest "odin_test:lib/natstest"
+
 import "core:fmt"
 import "core:net"
 import "core:os"
@@ -68,6 +70,7 @@ refresh_fixture_setup :: proc(t: ^testing.T, f: ^Refresh_Fixture, tag: string) -
 	f.db_path = fmt.aprintf("%s/refresh-events-%s-%d.db", cache_dir, tag, os.get_pid())
 	_ = os.remove(f.db_path)
 	ok, msg := app.build_graph(&f.graph, app.Hub_Config{
+		nats_url = natstest.testing_url(t),
 		database_path = f.db_path, migrations_dir = "src/hub/repository/sqlite/migrations",
 		auto_provision_users = true, paddle_environment = "sandbox",
 	})

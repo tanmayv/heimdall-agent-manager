@@ -1,6 +1,7 @@
 package iface
 
 Repositories :: struct {
+	event_outbox: Event_Outbox_Repository,
 	users: User_Repository,
 	bridges: Bridge_Repository,
 	agents: Agent_Repository,

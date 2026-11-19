@@ -1,5 +1,7 @@
 package hub_memory_actions_test
 
+import natstest "odin_test:lib/natstest"
+
 import "core:fmt"
 import "core:os"
 import "core:strings"
@@ -17,9 +19,13 @@ import bridge_service "odin_test:hub/service/bridge"
 
 PORT :: 49679
 
+// This standalone fixture exits explicitly; release its child on failure too.
+memory_actions_nats: natstest.Server
+
 check :: proc(ok: bool, message: string) {
 	if ok do return
 	fmt.eprintln("FAIL:", message)
+	natstest.destroy(&memory_actions_nats)
 	os.exit(1)
 }
 
@@ -121,7 +127,11 @@ main :: proc() {
 	db_path := "/tmp/heimdall-hub-memory-actions-test.db"
 	_ = os.remove(db_path)
 	graph: app.App_Graph
+	nats_ok: bool
+	memory_actions_nats, nats_ok = natstest.start()
+	check(nats_ok, "NATS fixture starts")
 	ok, message := app.build_graph(&graph, app.Hub_Config{
+		nats_url = memory_actions_nats.url,
 		database_path = db_path,
 		migrations_dir = "src/hub/repository/sqlite/migrations",
 		bind_host = "127.0.0.1",
@@ -340,6 +350,7 @@ main :: proc() {
 	fmt.println("PASS: hub memory actions (list metadata-only, show, content, PATCH scope edits)")
 	app.shutdown_graph(&graph)
 	_ = os.remove(db_path)
+	natstest.destroy(&memory_actions_nats)
 	os.exit(0)
 }
 

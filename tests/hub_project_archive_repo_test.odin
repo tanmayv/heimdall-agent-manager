@@ -1,5 +1,7 @@
 package hub_project_archive_repo_test
 
+import natstest "odin_test:lib/natstest"
+
 // Repo-level coverage for REQ-PROJ-ARCHIVE-1: proves migration 037 (projects.state)
 // is idempotent under a double run_migrations + upgrade guard, and that the project
 // repo round-trips the new `state` field (defaults to Active; persists Archived).
@@ -107,7 +109,11 @@ test_project_archive_http_api :: proc() {
 	defer _ = os.remove(api_db_path)
 
 	graph: app.App_Graph
+	nats_fixture, nats_ok := natstest.start()
+	check(nats_ok, "NATS fixture starts")
+	defer natstest.destroy(&nats_fixture)
 	ok, message := app.build_graph(&graph, app.Hub_Config{
+		nats_url = nats_fixture.url,
 		database_path = api_db_path,
 		migrations_dir = "src/hub/repository/sqlite/migrations",
 		auto_provision_users = true,

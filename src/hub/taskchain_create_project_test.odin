@@ -1,5 +1,7 @@
 package main
 
+import natstest "odin_test:lib/natstest"
+
 import "core:fmt"
 import "core:os"
 import "core:strings"
@@ -21,7 +23,7 @@ test_task_chain_create_project_selection :: proc(t: ^testing.T) {
 	_ = os.remove(db_path)
 	defer _ = os.remove(db_path)
 	graph: app.App_Graph
-	ok, msg := app.build_graph(&graph, app.Hub_Config{database_path = db_path, migrations_dir = "src/hub/repository/sqlite/migrations", auto_provision_users = true, paddle_environment = "sandbox"})
+	ok, msg := app.build_graph(&graph, app.Hub_Config{nats_url = natstest.testing_url(t), database_path = db_path, migrations_dir = "src/hub/repository/sqlite/migrations", auto_provision_users = true, paddle_environment = "sandbox"})
 	if !testing.expect(t, ok, msg) do return
 	defer app.shutdown_graph(&graph)
 	alice := hub_test_user_headers(&graph, "alice")

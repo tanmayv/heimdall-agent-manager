@@ -1,5 +1,7 @@
 package main
 
+import natstest "odin_test:lib/natstest"
+
 // Passwordless vault directory over the real router (plan §2 P2): genesis, register,
 // code resolution with the kind discriminator, signed approval, bridge enrollment gate.
 // Hermetic: in-memory database, injected clock, fixed keys, no network.
@@ -40,6 +42,7 @@ vt_graph :: proc(t: ^testing.T, graph: ^app.App_Graph, db_path: string, now: ^st
 	// The config keeps the slice: it must outlive this proc.
 	_ = os.remove(db_path)
 	ok, msg := app.build_graph(graph, app.Hub_Config{
+		nats_url = natstest.testing_url(t),
 		database_path        = db_path,
 		auto_provision_users = true,
 		paddle_environment   = "sandbox",

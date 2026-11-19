@@ -47,6 +47,8 @@ tx_mutex: sync.Mutex
 tx_owner_thread: int
 @(private = "file")
 tx_depth: int
+@(private = "file")
+tx_outbox_conn: ^Conn
 // tx_after_commit: hooks registered by nested units of work, run by the
 // outermost commit AFTER the mutex is released. Only the owner thread touches
 // it while the transaction is open. `depth` lets a nested rollback drop the
@@ -113,6 +115,7 @@ sqlite_uow_begin :: proc(ctx: rawptr) -> (iface.Unit_Of_Work, bool, domain.Domai
 		return iface.Unit_Of_Work{}, false, domain.domain_error(.Internal_Error, "failed to begin transaction")
 	}
 	sync.atomic_store(&tx_owner_thread, me)
+	tx_outbox_conn = factory.conn
 	sync.atomic_store(&tx_depth, 1)
 	uow_ctx := new(SQLite_Unit_Of_Work_Context)
 	uow_ctx.conn = factory.conn
@@ -265,4 +268,9 @@ tx_mutex_try_lock :: proc() -> bool {
 		return true
 	}
 	return false
+}
+
+// outbox_uow_owns prevents a shared-handle relay from observing uncommitted rows.
+outbox_uow_owns :: proc(conn: ^Conn) -> bool {
+	return sync.atomic_load(&tx_depth) > 0 && sync.atomic_load(&tx_owner_thread) == sync.current_thread_id() && tx_outbox_conn == conn
 }
