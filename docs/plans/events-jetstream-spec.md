@@ -51,7 +51,8 @@ taskv2 state change ──same tx──▶ event_outbox ──relay──▶ Jet
 | `owner_user_id` | tenant |
 | `chain_id`, `task_id` | ids; `task_id` is empty for chain events |
 | `topic_key` | resolvable events only, e.g. `task.<id>.review_request` |
-| `entity_version` | the task's or chain's revision at the time of the event |
+| `topic_generation` | resolvable events only: the topic generation this event opened (section 5) |
+| `entity_version` | the per-entity event counter from `event_entity_versions` (section 5); not `work_revision` |
 | `data` | small enum fields only, e.g. `{"state":"done"}` or `{"verdict":"request_changes","role":"reviewer"}` |
 | `actor` | `user`, `agt_…` or `hub` |
 | `occurred_at` | RFC 3339 |
@@ -134,14 +135,30 @@ Delivery semantics:
 - **state:**
   - Published on `ev.<owner>.task.<id>.state` or `ev.<owner>.chain.<id>.state` with the header `Nats-Rollup: sub`.
   - NATS keeps only the latest message on that subject, so a subscriber that was away sees only the current state.
-- **resolvable:**
-  - Each event carries a `topic_key`.
-  - The hub records resolutions in `event_topic_resolutions(owner_user_id, topic_key, resolved_at, resolved_by_event_id)`:
-    - #3 is resolved by the user's verdict;
-    - #4 is resolved when the block is answered or the task is unblocked;
+- **resolvable** (decided 2026-11-19, replaces the earlier `event_topic_resolutions` design):
+  - **Topic keys are stable:**
+    - `task.<id>.review_request` (#3)
+    - `task.<id>.blocked_on_human` (#4)
+    - `task.<id>.merge_conflict` (#7)
+  - **Table:** `event_topics(owner_user_id, topic_key, generation, opened_event_id, resolved_generation, resolved_at, resolved_by_event_id)`.
+    - The primary key is `(owner_user_id, topic_key)`.
+    - Rows are written in the same transaction as the producing change.
+  - **Opening** a topic increments `generation`. The event carries `topic_generation` = the new value. This applies even when the topic is already open, so a newer request supersedes the older one.
+  - **Resolving** sets `resolved_generation` = the current `generation`, along with `resolved_at` and `resolved_by_event_id`.
+    - #3 is resolved by the user's verdict (approve or request_changes).
+    - #4 is resolved when the block is answered or the task is unblocked.
     - #7 is resolved by a later successful merge or by cancellation.
-  - At pull time, `events next` acks and skips any resolvable event whose topic is resolved, or whose `entity_version` is older than the entity's current version.
-  - It also returns one `resolved` notice that refers to the earlier `event_id` when that event had already been delivered.
+    - Cancelling the task resolves all of its open topics.
+  - **Reopening** is just opening again. Rows are never deleted or reset, and the generation keeps increasing.
+  - **Stale rule, applied at pull time and before any nudge or wake:** an event is stale when `topic_generation <= resolved_generation` or `topic_generation < generation`.
+    - `events next` acks and skips stale events.
+    - When the stale event had already been delivered, `events next` returns one `resolved` notice that refers to the earlier `event_id`.
+  - Resolvable events do not use `entity_version` for freshness.
+- **Entity version:**
+  - **Table:** `event_entity_versions(owner_user_id, entity_kind, entity_id, version)`, a monotonic counter.
+  - Each catalog event about a task or chain increments that entity's counter in the same transaction. The envelope's `entity_version` is the new value.
+  - Within one transaction, events are numbered in the order they are produced.
+  - Consumers use the version to order events and to ignore older state events. It is independent of `work_revision`, which only tracks the work set.
 - **occurrence:** never collapsed.
 - **Audit:** `task_events` and `workflow_run_events` stay the complete history. Supersession affects delivery only.
 
