@@ -418,6 +418,8 @@
           default = self.packages.${system}.ham-hub;
         });
 
+      nixosModules.heimdall-nats = import ./nix/nats-server.nix;
+
       # `nix flake check`: repository invariants that need no build.
       checks = forAllSystems (system:
         let pkgs = pkgsFor system;
@@ -442,6 +444,11 @@
             bash ${./scripts/check-http-boundary.sh} --self-test
             touch $out
           '';
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          nats-module = import ./nix/tests/nats-server.nix {
+            inherit pkgs nixpkgs;
+            module = self.nixosModules.heimdall-nats;
+          };
         });
 
       apps = forAllSystems (system:
