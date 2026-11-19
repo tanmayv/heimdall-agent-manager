@@ -17,6 +17,18 @@ SPEC.loader.exec_module(STAMP)
 
 
 class CatalogHashParityTest(unittest.TestCase):
+    def test_migration_224_matches_odin_canonical_hash(self):
+        directory = ROOT / "src/hub/repository/sqlite/migrations"
+        order = STAMP.ORDER.search((directory.parent / "migrations.odin").read_text())
+        self.assertIsNotNone(order)
+        names = re.findall(r'"([^"]+\.sql)"', order[4])
+        names = names[:names.index("224_copilot_acp_transport.sql") + 1]
+        canonical = "sha256:a601c5c6fffc623c1824a1ffe5f7a9951fa4c2108ab48539f96390ba2c482f0c"
+        with closing(STAMP.catalog_database(directory, names)) as db:
+            self.assertEqual(STAMP.catalog_etag(db), canonical)
+            self.assertEqual(db.execute(
+                "SELECT catalog_etag FROM provider_catalog_meta").fetchone()[0], canonical)
+
     def test_migration_218_matches_odin_canonical_hash(self):
         directory = ROOT / "src/hub/repository/sqlite/migrations"
         order = STAMP.ORDER.search((directory.parent / "migrations.odin").read_text())

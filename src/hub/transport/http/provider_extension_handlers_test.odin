@@ -25,6 +25,26 @@ import user_service "odin_test:hub/service/user"
 import provider_service "odin_test:hub/service/provider"
 
 @(test)
+c2_copilot_native_install_tracks_pinned_identity_and_opt_in :: proc(t: ^testing.T) {
+    context.allocator = context.temp_allocator
+    f := extension_test_setup(t, "c2_copilot_install"); defer extension_test_teardown(f)
+    path := fmt.tprintf("/api/v1/bridges/%s/providers/copilot/acp-adapter", f.bridge_id)
+    response := bridge_provider_acp_adapter_handler(&f.ph, extension_test_request(f,path,`{"action":"install"}`))
+    if !testing.expectf(t,response.status==202,"%d %s",response.status,response.body) do return
+    id:=json_string(response.body,"command_id");defer delete(id)
+    testing.expect_value(t,json_string(f.sink_rec.last_cmd.body_json,"provider",context.temp_allocator),"copilot")
+    testing.expect_value(t,json_string(f.sink_rec.last_cmd.body_json,"adapter_version",context.temp_allocator),"1.0.114")
+    again:=bridge_provider_acp_adapter_handler(&f.ph,extension_test_request(f,path,`{"action":"install"}`))
+    testing.expect(t,again.status==202 && f.sink_rec.count==1)
+    extension_test_report(t,f,id,`[{"provider":"copilot","state":"present","acp_adapter":{"installed":true,"state":"ready","version":"1.0.114","provider":"copilot","profile":"copilot","runtime_kind":"native","checked_at":"2026-11-19T00:00:00Z"}}]`)
+    result:=strings.concatenate({`{"command_id":"`,id,`","status":"succeeded"}`},context.temp_allocator)
+    testing.expect_value(t,bridge_extension_frame(&f.bh,f.bridge_id,"command_result",result).code,domain.Error_Code.None)
+    testing.expect_value(t,extension_test_state(t,f,id),"succeeded")
+    transport,err:=iface.get_provider_transport(&f.pr_repo,f.bridge_id,"copilot");defer delete(transport)
+    testing.expect(t,err.code==.None && transport=="","installation must not select ACP")
+}
+
+@(test)
 t6_provider_status_exposes_acp_capability_and_latest_install_by_kind :: proc(t: ^testing.T) {
     context.allocator = context.temp_allocator
     f := extension_test_setup(t, "t6_runtime_status")

@@ -35,6 +35,7 @@ test('native runtime status keeps its provider identity and uses native labels',
   assert.equal(native?.runtime_kind, 'native');
   assert.match(acpAdapterSummary(native), /^ACP native runtime:/);
   assert.match(acpDisabledReason(true, { ...native!, state: 'installing' }), /runtime installation/);
+  assert.match(acpDisabledReason(true, { ...native!, state: 'error', error: 'acp_adapter_unsupported_platform' }), /not supported on this platform/);
   assert.equal(normalizeProviderRuntime({ acp_adapter: { ...adapter, runtime_kind: 'unknown' } }).acp_adapter?.runtime_kind, undefined);
 });
 

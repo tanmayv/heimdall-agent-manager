@@ -14,6 +14,17 @@ import "core:testing"
 import "core:time"
 
 @(test)
+c2_acp_native_platform_allowlist_rejects_unpinned_targets :: proc(t: ^testing.T) {
+    d, known := contracts.acp_provider_descriptor("copilot")
+    testing.expect(t,known)
+    when ODIN_OS == .Linux && ODIN_ARCH == .amd64 { testing.expect(t,acp_adapter_platform_supported(d)) }
+    else { testing.expect(t,!acp_adapter_platform_supported(d)) }
+    d.platforms=nil
+    testing.expect(t,!acp_adapter_platform_supported(d))
+    testing.expect(t,acp_adapter_platform_supported(contracts.ACP_CLAUDE_DESCRIPTOR))
+}
+
+@(test)
 c2_acp_copilot_frozen_install_and_native_files :: proc(t: ^testing.T) {
     st := p1c_test_setup(t); defer p1c_test_teardown(st)
     context.allocator = context.temp_allocator

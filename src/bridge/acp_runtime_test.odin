@@ -14,6 +14,30 @@ import "core:time"
 T4_CONFIG :: `{"configOptions":[{"id":"actual-model","category":"model","type":"select","currentValue":"sonnet","options":[{"group":"Claude","options":[{"value":"sonnet","name":"Sonnet"}]}]},{"id":"actual-mode","category":"mode","type":"select","currentValue":"default","options":[{"value":"default","name":"Ask"},{"value":"bypassPermissions","name":"Bypass"}]}]}`
 
 @(test)
+c2_acp_copilot_auth_required_uses_trusted_profile_guidance :: proc(t: ^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+    previous := bridge_local_token_records
+    bridge_local_token_records = make([dynamic]Bridge_Local_Agent_Token_Record, allocator = runtime.heap_allocator())
+    defer { delete(bridge_local_token_records); bridge_local_token_records = previous }
+    instance := "inst_c2_auth_guidance"
+    f: T4_Runtime_Test; t4_runtime_open(&f, instance, "/unused", "copilot")
+    acp_runtime_replace(&f.r.profile, "work")
+    defer { f.r.d.stopped = true; acp_runtime_destroy(f.r); acp_test_delete(&f.f); bridge_permission_test_reset(instance); bridge_runtime_set_status(instance,"stopped","idle") }
+    testing.expect(t, acp_runtime_request(f.r,"session/new","{}"))
+    if !acp_test_wait(t,&f.f,.Writes,1) do return
+    testing.expect(t,f.r.client.io.feed(f.r.client,`{"jsonrpc":"2.0","id":"ham:t4_epoch:1","error":{"code":-32000,"message":"untrusted-login-command synthetic-secret"}}`+"\n",1))
+    acp_test_wait(t,&f.f,.Acks,1)
+    blockers:=bridge_blockers_list(instance)
+    testing.expect(t,len(blockers)==1)
+    if len(blockers)==1 {
+        testing.expect(t,blockers[0].kind=="startup" && strings.contains(blockers[0].summary,"profile work"))
+        testing.expect(t,strings.contains(blockers[0].summary,"copilot login") && strings.contains(blockers[0].summary,"COPILOT_HOME"))
+        testing.expect(t,!strings.contains(blockers[0].summary,"untrusted-login-command") && !strings.contains(blockers[0].summary,"synthetic-secret"))
+    }
+    testing.expect(t,f.r.d.auth_required && !f.r.d.ready)
+}
+
+@(test)
 c2_acp_once_only_configures_exact_model_without_permission_mode_rpc :: proc(t: ^testing.T) {
     sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
     previous := bridge_local_token_records
@@ -89,7 +113,7 @@ t4_runtime_checkpoint :: proc(data: rawptr, state: ^ACP_State) -> bool {
     return acp_runtime_checkpoint(fixture.r, state) && acp_test_checkpoint(&fixture.f, state)
 }
 
-t4_runtime_open :: proc(f: ^T4_Runtime_Test, instance, cwd: string) {
+t4_runtime_open :: proc(f: ^T4_Runtime_Test, instance, cwd: string, provider: string = "claude") {
     context.allocator = runtime.heap_allocator()
     rec := Bridge_Local_Agent_Token_Record{agent_instance_id = instance, token_hash = "t4-token", instance_token = "t4-assertion", role = .Agent}
     sync.mutex_lock(&bridge_local_token_mutex)
@@ -98,8 +122,10 @@ t4_runtime_open :: proc(f: ^T4_Runtime_Test, instance, cwd: string) {
     sync.mutex_lock(&bridge_runtime_mutex)
     bridge_startup_begin_locked(rec, bridge_runtime_now_ms())
     sync.mutex_unlock(&bridge_runtime_mutex)
-    f.r = acp_runtime_new(instance, "t4_epoch", cwd, "claude", "claude", "sha256:test", "sonnet", "default", rec)
-    acp_runtime_replace(&f.r.binding.cli_version, "2.1.70")
+    d, _ := contracts.acp_provider_descriptor(provider)
+    mode, _ := contracts.acp_descriptor_permission_mode(d, "ask")
+    f.r = acp_runtime_new(instance, "t4_epoch", cwd, provider, provider, "sha256:test", "sonnet", mode, rec)
+    acp_runtime_replace(&f.r.binding.cli_version, d.cli_version if d.cli_version != "" else "2.1.70")
     f.r.d.phase = strings.clone("initialize"); f.r.d.starter = strings.clone("EXACT starter text")
     f.r.client, _ = acp_rpc_open({data = &f.f, instance = instance, launch_epoch = "t4_epoch", write = acp_test_write, ack = acp_test_ack, close = acp_test_close},
         {data = f, checkpoint = t4_runtime_checkpoint, restore_completion = t4_runtime_restore_completion})
@@ -231,11 +257,20 @@ t4_acp_node_versions_and_intent_epochs :: proc(t: ^testing.T) {
 
 @(test)
 t4_acp_live_restore_keeps_session_without_initialize_or_new_prompt :: proc(t: ^testing.T) {
+    c2_test_live_restore(t, "claude")
+}
+
+@(test)
+c2_acp_copilot_live_pipe_restore_does_not_reprompt_or_reinitialize :: proc(t: ^testing.T) {
+    c2_test_live_restore(t, "copilot")
+}
+
+c2_test_live_restore :: proc(t: ^testing.T, provider: string) {
     sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
     previous_records := bridge_local_token_records
     bridge_local_token_records = make([dynamic]Bridge_Local_Agent_Token_Record, allocator = runtime.heap_allocator())
     defer { delete(bridge_local_token_records); bridge_local_token_records = previous_records }
-    f: T4_Runtime_Test; t4_runtime_open(&f, "inst_t4_restore", "/unused/bootstrap")
+    f: T4_Runtime_Test; t4_runtime_open(&f, "inst_t4_restore", "/unused/bootstrap", provider)
     r := f.r
     r.initialized = true; r.load_session = true; r.session = strings.clone("existing-session", runtime.heap_allocator())
     r.d.ready = true; r.d.starter_sent = true
@@ -254,7 +289,7 @@ t4_acp_live_restore_keeps_session_without_initialize_or_new_prompt :: proc(t: ^t
     defer acp_state_delete(&state)
     testing.expect(t, state.initialized && state.sessionId == "existing-session" && len(state.pending_writes) == 0)
     r.quiescing = true; acp_runtime_destroy(r); acp_test_delete(&f.f)
-    next: T4_Runtime_Test; t4_runtime_open(&next, "inst_t4_restore", "/unused/bootstrap")
+    next: T4_Runtime_Test; t4_runtime_open(&next, "inst_t4_restore", "/unused/bootstrap", provider)
     defer { next.r.d.stopped = true; acp_runtime_destroy(next.r); acp_test_delete(&next.f) }
     next.r.initialized = true; next.r.load_session = true; next.r.session = strings.clone("existing-session", runtime.heap_allocator())
     // Restore runtime fields before restoring semantic RPC completions.

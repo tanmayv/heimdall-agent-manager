@@ -9,6 +9,46 @@ import iface "odin_test:hub/repository/iface"
 import provider "odin_test:hub/service/provider"
 
 @(test)
+c2_copilot_catalog_upgrade_preserves_profiles_defaults_and_hash :: proc(t: ^testing.T) {
+ conn, opened, _ := open(":memory:")
+ if !testing.expect(t, opened) do return
+ defer close(&conn)
+ migrated, err := run_migrations(&conn, stop_before="224_copilot_acp_transport.sql")
+ if !testing.expect(t, migrated, err.message) do return
+ impl: Provider_Repo_SQLite
+ repo := new_provider_repository(&impl, &conn)
+ before, found, before_err := iface.provider_catalog_get(&repo,"copilot")
+ testing.expect(t,found && before_err.code==.None && before.transports_json==`["pty"]`)
+ defer domain.provider_catalog_entry_destroy(before)
+ testing.expect(t,exec(&conn,"INSERT INTO bridges(bridge_id,owner_user_id,created_at,updated_at) VALUES('c2','owner','','');"))
+ testing.expect(t,exec(&conn,"INSERT INTO bridge_provider_profiles(bridge_id,profile_id,provider,state,enabled) VALUES('c2','work','copilot','ok',1);"))
+ testing.expect(t,exec(&conn,"INSERT INTO bridge_provider_settings(bridge_id,profile_id,provider,enabled,updated_at,transport) VALUES('c2','copilot','copilot',1,'',NULL),('c2','work','copilot',0,'',NULL);"))
+ migrated,err=run_migrations(&conn)
+ if !testing.expect(t,migrated,err.message) do return
+ entry, exists, entry_err := iface.provider_catalog_get(&repo,"copilot")
+ testing.expect(t,exists && entry_err.code==.None)
+ defer domain.provider_catalog_entry_destroy(entry)
+ testing.expect(t,entry.transports_json==`["pty","acp"]` && entry.default_transport=="pty")
+ testing.expect(t,contracts.acp_provider_recipe_valid("copilot",entry.acp_recipe_json))
+ testing.expect_value(t,entry.binary,before.binary)
+ testing.expect_value(t,entry.bootstrap_file,before.bootstrap_file)
+ settings,settings_err:=iface.bridge_provider_setting_list(&repo,"c2")
+ defer domain.bridge_provider_settings_destroy(settings)
+ testing.expect(t,settings_err.code==.None && len(settings)==2)
+ for setting in settings do testing.expect(t,setting.transport=="" && setting.enabled==(setting.profile_id=="copilot"))
+ stored,stored_err:=iface.provider_catalog_etag(&repo);defer delete(stored)
+ service:=provider.Provider_Service{repo=&repo}
+ derived,derived_err:=provider.catalog_etag(&service);defer delete(derived)
+ testing.expect(t,stored_err.code==.None && derived_err.code==.None && stored==derived)
+ testing.expect_value(t,stored,"sha256:a601c5c6fffc623c1824a1ffe5f7a9951fa4c2108ab48539f96390ba2c482f0c")
+ pi,pi_found,_:=iface.provider_catalog_get(&repo,"pi");defer domain.provider_catalog_entry_destroy(pi)
+ testing.expect(t,pi_found && pi.transports_json==`["pty"]`)
+ // Replaying the migration ledger is idempotent.
+ migrated,err=run_migrations(&conn)
+ testing.expect(t,migrated,err.message)
+}
+
+@(test)
 test_transport_migration_upgrades_pre210_copy_and_preserves_profiles :: proc(t:^testing.T) {
  source,ok,_:=open(":memory:")
  if !testing.expect(t,ok) do return

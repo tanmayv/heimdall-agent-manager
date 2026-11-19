@@ -7,9 +7,11 @@ import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 
 TRANSPORT_TEST_RECIPE :: `{"command":"claude-agent-acp","args":[],"env":{"CLAUDE_AGENT_ACP_PROTOCOL":"v1"},"protocol_version":1,"adapter_package":"@agentclientprotocol/claude-agent-acp","adapter_version":"0.108.0"}`
+COPILOT_TRANSPORT_TEST_RECIPE :: `{"command":"copilot","args":["--acp","--stdio"],"env":{"COPILOT_AUTO_UPDATE":"false"},"protocol_version":1,"adapter_package":"@github/copilot","adapter_version":"1.0.114"}`
 
 Transport_Test_Store :: struct {
  override, features, adapter, transports, recipe, default_transport: string,
+ provider: string,
 }
 transport_test_get :: proc(ctx:rawptr,name:string)->(domain.Provider_Catalog_Entry,bool,domain.Domain_Error) {
  s:=(^Transport_Test_Store)(ctx)
@@ -23,8 +25,34 @@ transport_test_bridge :: proc(ctx:rawptr,id:string)->(domain.Bridge,bool,domain.
 }
 transport_test_status :: proc(ctx:rawptr,id:string)->([dynamic]domain.Bridge_Provider_Status,domain.Domain_Error) {
  items:=make([dynamic]domain.Bridge_Provider_Status)
- append(&items,domain.Bridge_Provider_Status{provider=strings.clone("claude"),profile_id=strings.clone("claude"),acp_adapter_json=strings.clone((^Transport_Test_Store)(ctx).adapter)})
+ s := (^Transport_Test_Store)(ctx)
+ name := s.provider if s.provider != "" else "claude"
+ append(&items,domain.Bridge_Provider_Status{provider=strings.clone(name),profile_id=strings.clone(name),acp_adapter_json=strings.clone(s.adapter)})
  return items,{}
+}
+
+@(test)
+c2_copilot_transport_opt_in_requires_native_pinned_readiness :: proc(t: ^testing.T) {
+ store := Transport_Test_Store{provider="copilot",features=`{"features":["acp_runtime_v1"]}`,transports=`["pty","acp"]`,default_transport="pty",recipe=COPILOT_TRANSPORT_TEST_RECIPE,
+  adapter=`{"installed":true,"state":"ready","version":"1.0.114","checked_at":"2026-11-19T00:00:00Z","provider":"copilot","profile":"copilot","runtime_kind":"native"}`}
+ repo := iface.Provider_Repository{ctx=&store,get=transport_test_get,get_provider_transport=transport_test_override,list_status=transport_test_status}
+ bridges := iface.Bridge_Repository{ctx=&store,get_bridge=transport_test_bridge}
+ svc := Provider_Service{repo=&repo,bridges=&bridges}
+ selected, err := resolve_runtime_transport(&svc,"bridge","copilot")
+ testing.expect(t,err.code==.None && selected=="pty");delete(selected)
+ store.override="acp"
+ selected,err=resolve_runtime_transport(&svc,"bridge","copilot")
+ testing.expect(t,err.code==.None && selected=="acp");delete(selected)
+ ready:=store.adapter
+ for raw in ([]string{
+  transport_test_replace(ready,`"runtime_kind":"native"`,`"runtime_kind":"adapter"`),
+  transport_test_replace(ready,`"version":"1.0.114"`,`"version":"1.0.91"`),
+  transport_test_replace(ready,`"provider":"copilot"`,`"provider":"claude"`),
+ }) {
+  store.adapter=raw
+  selected,err=resolve_runtime_transport(&svc,"bridge","copilot")
+  testing.expect(t,err.code==.ACP_Unavailable && selected=="");delete(selected)
+ }
 }
 
 @(test)

@@ -62,6 +62,7 @@ export function acpDisabledReason(supported: boolean | undefined, adapter: AcpAd
   if (!supported) return 'Update this bridge and its PTY host to enable ACP runtime support, then scan providers.';
   if (adapter?.state === 'missing_node') return 'Install Node 22 or newer on the bridge host, then scan providers.';
   if (adapter?.state === 'installing') return `Wait for ${runtime} installation to finish.`;
+  if (adapter?.error === 'acp_adapter_unsupported_platform') return 'This ACP runtime is not supported on this platform.';
   if (adapter?.state === 'error') return adapter.error || `The ACP ${runtime} check failed. Check status or install the ${runtime} again.`;
   return '';
 }

@@ -10,11 +10,12 @@ import "core:sync"
 import "core:testing"
 import "core:thread"
 import "core:time"
+import contracts "odin_test:contracts"
 
 T4_Recovery_Fixture :: struct {
     rpc: T4_Runtime_Test,
     t: ^testing.T,
-    instance, cwd, token, daemon_generation: string,
+    instance, cwd, token, daemon_generation, provider: string,
     old_closed: bool,
     lists, closes, spawns, interrupted: int,
 }
@@ -42,6 +43,9 @@ t4_recovery_close :: proc(_: string, instance: string) -> bool {
 t4_recovery_spawn :: proc(_: string, req: Pty_Host_Spawn_Request) -> (Pty_Host_Reply, bool) {
     f := t4_recovery_fixture; f.spawns += 1
     testing.expect(f.t, f.old_closed && f.interrupted == 1 && req.instance == f.instance && req.cwd == f.cwd && req.has_cwd)
+    if f.provider == "copilot" {
+        testing.expect(f.t, len(req.argv) == 3 && strings.has_suffix(req.argv[0], "/copilot") && req.argv[1] == "--acp" && req.argv[2] == "--stdio")
+    }
     for pair in req.env {
         if pair[0] == "HEIMDALL_AGENT_TOKEN" do f.token = strings.clone(pair[1], runtime.heap_allocator())
     }
@@ -73,10 +77,13 @@ t4_recovery_write_state :: proc(t: ^testing.T, f: ^T4_Recovery_Fixture, error :=
     cwd := bridge_runtime_default_run_dir(f.instance); defer delete(cwd)
     f.cwd = strings.clone(cwd, context.temp_allocator)
     bridge_make_directory_all(cwd)
-    _ = os.write_entire_file(strings.concatenate({cwd, "/CLAUDE.md"}, context.temp_allocator), string("recovery bootstrap marker"))
-    r := acp_runtime_new(f.instance, "recovery_epoch", cwd, "claude", "claude", "sha256:test", "sonnet", "default", rec)
+    provider := f.provider if f.provider != "" else "claude"
+    d, _ := contracts.acp_provider_descriptor(provider)
+    mode, _ := contracts.acp_descriptor_permission_mode(d, "ask")
+    _ = os.write_entire_file(strings.concatenate({cwd, "/", d.bootstrap_filename}, context.temp_allocator), string("recovery bootstrap marker"))
+    r := acp_runtime_new(f.instance, "recovery_epoch", cwd, provider, provider, "sha256:test", "sonnet", mode, rec)
     defer acp_runtime_destroy(r)
-    acp_runtime_replace(&r.binding.cli_version, "2.1.70")
+    acp_runtime_replace(&r.binding.cli_version, "1.0.114" if provider == "copilot" else "2.1.70")
     r.generation = strings.clone("old-generation"); r.session = strings.clone("saved-session")
     r.initialized = true; r.load_session = true
     r.d.phase = strings.clone("prompt"); r.d.current_input = strings.clone("interrupted-input")
@@ -90,7 +97,7 @@ t4_recovery_write_state :: proc(t: ^testing.T, f: ^T4_Recovery_Fixture, error :=
     if legacy {
         acp_provider_binding_delete(&state.binding); state.runtime_binding_version = 0; state.schema_version = 1
         manifest, _ := json.marshal(struct { agent_instance_id: string, managed_files: []struct { relative_path, kind: string } }{
-            f.instance, {{"CLAUDE.md", "AGENTS_MD"}}}, allocator = context.temp_allocator)
+            f.instance, {{d.bootstrap_filename, "AGENTS_MD"}}}, allocator = context.temp_allocator)
         _ = os.write_entire_file(strings.concatenate({cwd, "/heimdall-bootstrap-manifest.json"}, context.temp_allocator), manifest)
     }
     testing.expect(t, acp_state_write(r.state_path, &state))
@@ -99,6 +106,15 @@ t4_recovery_write_state :: proc(t: ^testing.T, f: ^T4_Recovery_Fixture, error :=
 
 @(test)
 t4_acp_reconcile_recovery_rotates_token_closes_old_and_never_reprompts_interrupted :: proc(t: ^testing.T) {
+    c2_test_reconcile_provider_recovery(t, "claude")
+}
+
+@(test)
+c2_acp_copilot_dead_child_load_preserves_profile_policy_and_inbox :: proc(t: ^testing.T) {
+    c2_test_reconcile_provider_recovery(t, "copilot")
+}
+
+c2_test_reconcile_provider_recovery :: proc(t: ^testing.T, provider: string) {
     sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
     sync.mutex_lock(&g_profile_test_mu); defer sync.mutex_unlock(&g_profile_test_mu)
     context.allocator = runtime.heap_allocator()
@@ -121,16 +137,17 @@ t4_acp_reconcile_recovery_rotates_token_closes_old_and_never_reprompts_interrupt
     bridge_config.daemon_id = "brg_test_t4_recovery"
     g_profile_test_store_path = strings.concatenate({root, "/profiles.json"}, context.temp_allocator)
     // Keep profile/env resolution and SpawnPipe construction in the test.
-    binary := strings.concatenate({root, "/claude"}, context.temp_allocator)
-    _ = os.write_entire_file(binary, string("#!/bin/sh\nprintf '2.1.70 (Claude Code)\\n'\n"))
+    binary := strings.concatenate({root, "/", provider}, context.temp_allocator)
+    version_script := "#!/bin/sh\nprintf 'GitHub Copilot CLI 1.0.114.\\n'\n" if provider == "copilot" else "#!/bin/sh\nprintf '2.1.70 (Claude Code)\\n'\n"
+    _ = os.write_entire_file(binary, version_script)
     bridge_os_make_owner_executable(binary)
     profile_raw, _ := json.marshal(Provider_Profile_Store_Wire{version = PROFILE_STORE_VERSION,
-        profiles = {{profile_id = "claude", provider = "claude", enabled = true, config = {binary_path = binary}}}}, allocator = context.temp_allocator)
+        profiles = {{profile_id = provider, provider = provider, enabled = true, config = {binary_path = binary}}}}, allocator = context.temp_allocator)
     _ = os.write_entire_file(g_profile_test_store_path, profile_raw)
     acp_runtime_io = {t4_recovery_ensure, t4_recovery_list, t4_recovery_close, t4_recovery_spawn, t4_recovery_endpoint, t4_recovery_connect}
     acp_runtime_events.prompt_finished = t4_recovery_finished
-    f := T4_Recovery_Fixture{t = t, instance = "inst_t4_real_recovery"}; t4_recovery_fixture = &f
-    old_token := t4_recovery_write_state(t, &f, legacy = true)
+    f := T4_Recovery_Fixture{t = t, instance = fmt.tprintf("inst_t4_real_recovery_%s", provider), provider = provider}; t4_recovery_fixture = &f
+    old_token := t4_recovery_write_state(t, &f, legacy = provider == "claude")
     defer {
         if f.rpc.r != nil { f.rpc.r.d.stopped = true; acp_runtime_detach(f.instance) }
         bridge_runtime_set_status(f.instance, "stopped", "idle")
@@ -143,7 +160,7 @@ t4_acp_reconcile_recovery_rotates_token_closes_old_and_never_reprompts_interrupt
         delete(f.token); acp_test_delete(&f.rpc.f)
     }
     intents := make(map[string]ACP_Hub_Intent, allocator = context.temp_allocator)
-    intents[f.instance] = {status = "running", epoch = "recovery_epoch", transport = "acp", run_count = 9, provider = "claude", profile = "claude"}
+    intents[f.instance] = {status = "running", epoch = "recovery_epoch", transport = "acp", run_count = 9, provider = provider, profile = provider}
     handled := acp_runtime_reconcile("fixture-daemon", nil, intents)
     testing.expect(t, handled[f.instance] && f.spawns == 1 && f.closes == 1 && f.interrupted == 1)
     if !testing.expect(t, f.rpc.r != nil) do return
@@ -157,18 +174,21 @@ t4_acp_reconcile_recovery_rotates_token_closes_old_and_never_reprompts_interrupt
     t4_runtime_reply(t, &f.rpc, 0, `{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{"embeddedContext":true}}}`, 1)
     testing.expect(t, f.rpc.r.d.replay_only)
     t4_runtime_reply(t, &f.rpc, 1, T4_CONFIG, 2)
-    t4_runtime_reply(t, &f.rpc, 2, T4_CONFIG, 3); t4_runtime_reply(t, &f.rpc, 3, T4_CONFIG, 4)
-    acp_test_wait(t, &f.rpc.f, .Writes, 5)
+    t4_runtime_reply(t, &f.rpc, 2, T4_CONFIG, 3)
+    writes := 4
+    if provider == "claude" { t4_runtime_reply(t, &f.rpc, 3, T4_CONFIG, 4); writes = 5 }
+    acp_test_wait(t, &f.rpc.f, .Writes, writes)
     testing.expect(t, acp_runtime_deliver(f.instance, "must not replay", "interrupted-input"))
     sync.mutex_lock(&f.rpc.f.mu)
-    testing.expect_value(t, len(f.rpc.f.writes), 5)
+    testing.expect_value(t, len(f.rpc.f.writes), writes)
     for write in f.rpc.f.writes do testing.expect(t, !strings.contains(write.bytes, "must not replay") && !strings.contains(write.bytes, "EXACT starter text"))
-    if len(f.rpc.f.writes) == 5 do testing.expect(t, strings.contains(f.rpc.f.writes[4].bytes, "fresh text"))
+    if len(f.rpc.f.writes) == writes do testing.expect(t, strings.contains(f.rpc.f.writes[writes-1].bytes, "fresh text"))
+    testing.expect(t, strings.contains(f.rpc.f.writes[1].bytes, "session/load"))
     sync.mutex_unlock(&f.rpc.f.mu)
     // End the successful instance before checking terminal intents independently.
     f.rpc.r.d.stopped = true; acp_runtime_detach(f.instance); f.rpc.r = nil
     for status in ([]string{"failed", "stopped", "running", "epoch_mismatch", "newer_child", "legacy_profile_mismatch", "legacy_corrupt"}) {
-        terminal := T4_Recovery_Fixture{t = t, instance = fmt.tprintf("inst_t4_terminal_%s", status)}
+        terminal := T4_Recovery_Fixture{t = t, instance = fmt.tprintf("inst_t4_terminal_%s_%s", provider, status), provider = provider}
         t4_recovery_fixture = &terminal
         _ = t4_recovery_write_state(t, &terminal, "acp_protocol_error" if status == "running" else "", legacy = strings.has_prefix(status, "legacy_"))
         if status == "legacy_corrupt" {
@@ -177,8 +197,8 @@ t4_acp_reconcile_recovery_rotates_token_closes_old_and_never_reprompts_interrupt
         }
         hub_status := "failed" if status == "failed" else "stopped" if status == "stopped" else "running"
         epoch := "newer_epoch" if status == "epoch_mismatch" else "recovery_epoch"
-        clear(&intents); intents[terminal.instance] = {status = hub_status, epoch = epoch, transport = "acp", run_count = 9, provider = "claude", profile = "claude"}
-        if status == "legacy_profile_mismatch" do intents[terminal.instance] = {status = "running", epoch = epoch, transport = "acp", run_count = 9, provider = "claude", profile = "work"}
+        clear(&intents); intents[terminal.instance] = {status = hub_status, epoch = epoch, transport = "acp", run_count = 9, provider = provider, profile = provider}
+        if status == "legacy_profile_mismatch" do intents[terminal.instance] = {status = "running", epoch = epoch, transport = "acp", run_count = 9, provider = provider, profile = "work"}
         pipes: []Pty_Host_Pipe_Info
         if status == "newer_child" {
             terminal.daemon_generation = "newer-generation"

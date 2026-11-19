@@ -27,6 +27,12 @@ ACP_Adapter_Status :: struct {
 
 ACP_Adapter_Lock_State :: enum { Acquired, Busy, Error }
 
+acp_adapter_platform_supported :: proc(d: contracts.ACP_Provider_Descriptor) -> bool {
+    if d.launch != .Native do return true
+    _, supported := contracts.acp_descriptor_platform_package(d, strings.to_lower(fmt.tprintf("%v", ODIN_OS)), fmt.tprintf("%v", ODIN_ARCH))
+    return supported
+}
+
 acp_adapter_cleanup_stages :: proc(root: string) -> bool {
     dir, err := os.open(filepath.dir(root)); if err != nil do return false
     defer os.close(dir)
@@ -134,6 +140,9 @@ acp_adapter_status :: proc(provider: string, profile: string = "") -> ACP_Adapte
     s := ACP_Adapter_Status{state = "missing", checked_at = bridge_provider_probe_time()}
     d, known := contracts.acp_provider_descriptor(provider)
     if _, ok := acp_adapter_recipe(provider); !known || !ok { s.state = "not_checked"; return s }
+    if !acp_adapter_platform_supported(d) {
+        s.state = "error"; s.error = "acp_adapter_unsupported_platform"; return s
+    }
     out, diagnostic, _, ran, _ := acp_adapter_runner({"node", "--version"}, 2*time.Second)
     defer { delete(out); delete(diagnostic) }
     if !ran || !acp_adapter_node_compatible(out, d.node_min_major) { s.state = "missing_node"; s.error = "Node 22 or newer is required"; return s }
@@ -425,6 +434,7 @@ acp_adapter_prepare_install :: proc(d: contracts.ACP_Provider_Descriptor, stage:
 acp_adapter_install :: proc(provider, etag, version: string) -> (ok: bool, reason: string) {
     d, known := contracts.acp_provider_descriptor(provider)
     if _, valid := acp_adapter_recipe(provider); !known || !valid || version != d.pkg.version do return false, "unsupported_acp_adapter"
+    if !acp_adapter_platform_supported(d) do return false, "acp_adapter_unsupported_platform"
     current := bridge_provider_catalog_current_etag(); defer delete(current)
     if etag != current do return false, "provider_catalog_stale"
     root := acp_adapter_root(provider); defer delete(root)
