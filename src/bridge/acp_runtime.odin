@@ -336,6 +336,32 @@ acp_runtime_restore_completion :: proc(data: rawptr, _: ACP_RPC_Role, id: ACP_RP
 acp_runtime_work :: proc(data: rawptr, c: ^ACP_RPC_Client, argument: string) -> bool {
     r := cast(^ACP_Runtime)data
     if strings.has_prefix(argument,"chat_") do return acp_chat_work(r,argument)
+    if strings.has_prefix(argument, "task_notices:") {
+        if !acp_runtime_current(r) || !r.d.ready || r.d.error != "" || r.d.exit_pending do return false
+        if r.chat != nil && (!acp_chat_vault_ready() || acp_chat_bytes(r.chat) > 1536*1024) do return false
+        batch: []Bridge_Task_Notice
+        if json.unmarshal_string(argument[len("task_notices:"):], &batch, allocator = context.temp_allocator) != nil || len(batch) > BRIDGE_TASK_NOTICE_MAX do return false
+        for n in batch do if n.instance != r.instance do return false
+        wants_interrupt := false
+        for n in batch do wants_interrupt = wants_interrupt || n.interrupt
+        if r.d.phase == "prompt" && !wants_interrupt do return false
+        text, interrupt := bridge_task_notice_text(batch); defer delete(text)
+        if text == "" do return true
+        if r.d.phase == "prompt" {
+            if interrupt && !r.d.cancelling {
+                r.d.cancelling = true
+                acp_permissions_cancel(r)
+                raw, _ := json.marshal(struct{sessionId: string}{r.session}, allocator = context.temp_allocator)
+                _ = acp_rpc_notify(c, "session/cancel", string(raw))
+            }
+            return false
+        }
+        if len(r.d.queue) > 0 do return false
+        decrypted := bridge_decrypt_embedded_vault_tokens(text); defer delete(decrypted)
+        id := fmt.tprintf("task_notice_%d", time.tick_now()._nsec)
+        acp_runtime_prompt(r, {id, decrypted})
+        return r.d.error == ""
+    }
     switch argument {
     case "begin":
         c.state.next_rpc_id = max(c.state.next_rpc_id, r.next_rpc_id)

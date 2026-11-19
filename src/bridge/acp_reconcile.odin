@@ -207,6 +207,7 @@ acp_runtime_from_state :: proc(s: ^ACP_State, rec: Bridge_Local_Agent_Token_Reco
        (r.d.ready && (!s.initialized || s.sessionId == "")) || (s.sessionId != "" && !s.initialized) {
         acp_runtime_destroy(r); return nil, false
     }
+    acp_runtime_merge_saved_queue(&r.d)
     r.initialized = s.initialized; r.load_session = s.loadSession
     r.generation = strings.clone(s.pipe_generation); r.session = strings.clone(s.sessionId)
     r.next_rpc_id = s.next_rpc_id; r.next_delivery_id = s.next_delivery_id
@@ -217,6 +218,21 @@ acp_runtime_from_state :: proc(s: ^ACP_State, rec: Bridge_Local_Agent_Token_Reco
     }
     if s.chat_outbox_json != "" && !acp_chat_prepare(r) { acp_runtime_destroy(r);return nil,false }
     return r, true
+}
+
+// A saved FIFO may overlap a restored in-flight/completed input or contain a
+// retried enqueue. Keep the first pending identity in FIFO order, never replay it.
+acp_runtime_merge_saved_queue :: proc(d: ^ACP_Runtime_Durable) {
+    i := 0
+    for i < len(d.queue) {
+        input := d.queue[i]
+        duplicate := input.id == d.current_input
+        for id in d.completed_inputs do if id == input.id do duplicate = true
+        for old in d.queue[:i] do if old.id == input.id do duplicate = true
+        if duplicate {
+            delete(input.id); delete(input.text); ordered_remove(&d.queue, i)
+        } else { i += 1 }
+    }
 }
 
 acp_runtime_publish_restored :: proc(r: ^ACP_Runtime) {

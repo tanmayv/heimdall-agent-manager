@@ -352,6 +352,8 @@ bridge_hub_runtime_worker :: proc() {
 		fmt.println("bridge hub runtime disabled: missing daemon_url or bridge_token (has the bridge enrolled? check the bridge_token/--bridge-token-file)")
 		return
 	}
+	notice_worker := bridge_task_notice_start()
+	defer bridge_task_notice_stop(notice_worker)
 	// Only log each distinct failure the FIRST time (and periodically) so a down
 	// proxy/tunnel doesn't spam the log on every reconnect, but the operator still sees
 	// exactly which step is failing.
@@ -836,9 +838,14 @@ Bridge_Nudge_Record :: struct {
 bridge_recent_nudges: [dynamic]Bridge_Nudge_Record
 bridge_recent_nudges_mutex: sync.Mutex
 
-bridge_should_debounce_nudge :: proc(instance_id, task_id: string) -> bool {
+bridge_should_debounce_nudge :: proc(instance_id, task_id: string, origin: string = "", expected_state: string = "", message: string = "", interrupt: bool = false, record: bool = true) -> bool {
+	context.allocator = runtime.heap_allocator()
 	if instance_id == "" || task_id == "" do return false
-	key := strings.concatenate({instance_id, ":", task_id})
+	// Include the notice identity, not just the task: different reasons/states
+	// for one task must survive the 1.5-second retry debounce.
+	raw, _ := json.marshal(struct{instance, task, origin, state, message: string, interrupt: bool}{instance_id, task_id, origin, expected_state, message, interrupt})
+	defer delete(raw)
+	key := bridge_local_hash_token(string(raw))
 	defer delete(key)
 	now := time.now()
 	now_ms := time.to_unix_nanoseconds(now) / 1_000_000
@@ -862,6 +869,11 @@ bridge_should_debounce_nudge :: proc(instance_id, task_id: string) -> bool {
 		}
 	}
 
+	if !record do return false
+	if len(bridge_recent_nudges) >= BRIDGE_TASK_NOTICE_MAX {
+		delete(bridge_recent_nudges[0].key)
+		ordered_remove(&bridge_recent_nudges, 0)
+	}
 	append(&bridge_recent_nudges, Bridge_Nudge_Record{key = strings.clone(key), timestamp_ms = now_ms})
 	return false
 }
@@ -1218,15 +1230,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		task_id := extract_json_string(text, "task_id", "")
 		defer delete(task_id)
 		fmt.println("bridge hub runtime command notify_task_nudge", instance_id, command_id)
-		if bridge_should_debounce_nudge(instance_id, task_id) {
-			if command_id != "" {
-				res := bridge_command_result_json(command_id, "succeeded", "")
-				defer delete(res)
-				_ = bridge_hub_send(conn, res)
-			}
-			return
-		}
-		// Deliver the task-nudge notice straight to the agent via the daemon.
+		// Queue task nudges before routing to ACP or the PTY daemon.
 		// MEM-6: prefer the hub's human_message (verbatim) when present.
 		target_role := extract_json_string(text, "target_role", "participant")
 		defer delete(target_role)
@@ -1239,7 +1243,18 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		origin := extract_json_string(text, "origin", "")
 		defer delete(origin)
 		interrupt := extract_json_bool(text, "interrupt", false) || origin == "pausing" || origin == "finishing"
-		ok := bridge_pty_host_deliver_to_agent(instance_id, "task_nudge", "", task_id, target_role, human_message, task_title, interrupt)
+		notice_task := extract_json_string(text, "notice_task_id", task_id); defer delete(notice_task)
+		expected_state := extract_json_string(text, "expected_state", ""); defer delete(expected_state)
+		line := bridge_pty_host_task_nudge_line(task_id, target_role, human_message, task_title); defer delete(line)
+		ok := false
+		if bridge_should_debounce_nudge(instance_id, notice_task, origin, expected_state, line, interrupt, record = false) {
+			ok = true
+		} else {
+			now := bridge_runtime_now_ms()
+			ok = bridge_task_notice_enqueue({instance = instance_id, task = notice_task, expected_state = expected_state,
+				origin = origin, text = line, interrupt = interrupt, queued_ms = now, due_ms = now+BRIDGE_TASK_NOTICE_WINDOW_MS})
+			if ok do _ = bridge_should_debounce_nudge(instance_id, notice_task, origin, expected_state, line, interrupt)
+		}
 		if !ok do fmt.println("bridge notify_task_nudge pending/no-agent-subscription", instance_id, command_id)
 		if command_id != "" {
 			res := bridge_command_result_json(command_id, "succeeded" if ok else "accepted", "")
