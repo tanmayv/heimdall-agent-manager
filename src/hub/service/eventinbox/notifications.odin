@@ -5,7 +5,6 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:strconv"
 import "core:strings"
-import "core:sync"
 import "core:time"
 import domain "odin_test:hub/domain"
 import platform "odin_test:hub/platform"
@@ -283,7 +282,7 @@ notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time
 		if count > 0 && target.instance_id != "" && target.stopped_by == "" && (idle || stopped && worthy) {
 			if s.notice(s.notice_ctx, row.owner_user_id, row.subscriber_agent_id, target, count, stopped) {
 				save_notification_state(r, key, {last_sent = now})
-				if stopped {sync.atomic_add(&r.wakes_sent, 1)} else {sync.atomic_add(&r.nudges_sent, 1)}
+				record_notice(s, row.owner_user_id, stopped)
 			} else {
 				save_notification_state(r, key, {last_rejected = now})
 			}

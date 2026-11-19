@@ -378,7 +378,7 @@ subject_count :: proc(conn: ^Connection, stream, filter: string) -> (count: u64,
 }
 
 // Returns the first message matching filter at or after start. A nil message
-// with no error means no match. Caller owns the message and must destroy it.
+// with NATS_NOT_FOUND (status 13) means no match. Caller owns a successful message.
 stream_next :: proc(conn: ^Connection, stream, filter: string, start: u64) -> (msg: ^Message, sequence: u64, err: Error) {
 	if conn == nil || !valid_name(stream) || filter == "" || !valid_string(filter) || start == 0 do return nil, 0, Error{status = INVALID}
 	s := strings.clone_to_cstring(stream); defer delete(s)

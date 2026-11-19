@@ -71,6 +71,7 @@ catalog_read :: proc(conn: ^nats.Connection, owner, chain, cursor: string, limit
 	started := time.tick_now()
 	for after < state.last && len(page.events) < limit && scanned < 1000 && time.tick_since(started) < 2 * time.Second {
 		msg, sequence, ge := nats.stream_next(conn, "HEIM_EVENTS", filter, after + 1)
+		if ge.status == 13 {after = state.last; break} // shared NATS_NOT_FOUND contract
 		if ge.status != 0 {
 			catalog_page_destroy(&page)
 			return page, unavailable()

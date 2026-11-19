@@ -266,9 +266,10 @@ redeliveries, available), summed `redeliveries` (JetStream current redelivered
 message gauge), retained `dlq_count`, `nudges_sent`, `wakes_sent`, and
 `outbox_backlog`. Missing consumers have available=false; queue failures return
 an error instead of reporting invented zeroes. Notice counters are process
-lifetime, owner-scoped and start at zero. E3 must call
-`eventinbox.record_notice(&graph.event_inbox, owner, wake)` only after successful
-dispatch; E6 does not depend on E3 implementation. All SQL snapshots commit
+lifetime, owner-scoped and start at zero. E3 calls
+`eventinbox.record_notice(service, owner, wake)` only after successful dispatch.
+The owner registry is the single counter source for dispatch and metrics;
+rejected/coalesced attempts do not increment it. All SQL snapshots commit
 before JetStream calls, and all C-owned info/messages/connections are destroyed.
 
 MCP cursor waits reuse one connection and read only initially and after an owned

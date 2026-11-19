@@ -253,7 +253,7 @@ int ham_nats_stream_next(natsMsg **out, ham_nats *h, const char *stream,
     dg.Sequence = start;
     dg.NextBySubject = filter;
     s = js_DirectGetMsg(&msg, h->js, stream, NULL, &dg);
-    if (s == NATS_NOT_FOUND) { natsMsg_Destroy(msg); return NATS_OK; }
+    if (s == NATS_NOT_FOUND) { natsMsg_Destroy(msg); return s; }
     const char *seq = NULL, *subject = NULL;
     if (s == NATS_OK) s = natsMsgHeader_Get(msg, "Nats-Sequence", &seq);
     if (s == NATS_OK) s = natsMsgHeader_Get(msg, "Nats-Subject", &subject);

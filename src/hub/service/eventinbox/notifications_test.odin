@@ -20,7 +20,7 @@ Notice_Recorder :: struct {
 	service:              ^Service,
 	t:                    ^testing.T,
 }
-record_notice :: proc(
+notification_record_dispatch :: proc(
 	ctx: rawptr,
 	owner, agent: string,
 	target: domain.Event_Notice_Target,
@@ -83,11 +83,12 @@ notification_scenario :: proc(t: ^testing.T) {
 		t       = t,
 	}
 	service.notice_ctx = &recorder
-	service.notice = record_notice
+	service.notice = notification_record_dispatch
 	runtime := Runtime {
 		service = &service,
 	}
 	defer runtime_disconnect(&runtime)
+	defer counters_destroy(&service)
 	defer clear_notifications(&runtime)
 	testing.expect(
 		t,
@@ -132,6 +133,11 @@ notification_scenario :: proc(t: ^testing.T) {
 	)
 	testing.expect(t, notify_pending(&runtime, rows, now))
 	testing.expect_value(t, recorder.nudges, 1)
+	first_metrics,first_metrics_err:=metrics(&service,"alice")
+	testing.expect_value(t,first_metrics_err.code,domain.Error_Code.None)
+	testing.expect(t,first_metrics.nudges_sent==1,"successful notification dispatch increments the owner metric")
+	testing.expect_value(t,first_metrics.wakes_sent,u64(0))
+	metrics_destroy(&first_metrics)
 	testing.expect(t, recorder.count == 20, "overlapping watches count each event once")
 	for _ in 0 ..< 20 do testing.expect(t, notify_pending(&runtime, rows, now))
 	testing.expect(t, recorder.nudges == 1, "burst produces at most one line in 30 seconds")
@@ -254,8 +260,16 @@ notification_scenario :: proc(t: ^testing.T) {
 	later._nsec += i64(5 * time.Second)
 	testing.expect(t, notify_pending(&runtime, rows, later))
 	testing.expect(t, recorder.wakes == 1, "stopped coordinator wakes for live review")
-	testing.expect_value(t, runtime.wakes_sent, i64(1))
-	testing.expect_value(t, runtime.nudges_sent, i64(2))
+	result,metrics_err:=metrics(&service,"alice")
+	testing.expect_value(t,metrics_err.code,domain.Error_Code.None)
+	testing.expect_value(t,result.wakes_sent,u64(1))
+	testing.expect_value(t,result.nudges_sent,u64(2))
+	metrics_destroy(&result)
+	other_owner,other_err:=metrics(&service,"bob")
+	testing.expect_value(t,other_err.code,domain.Error_Code.None)
+	testing.expect_value(t,other_owner.nudges_sent,u64(0))
+	testing.expect_value(t,other_owner.wakes_sent,u64(0))
+	metrics_destroy(&other_owner)
 	for _ in 0 ..< 20 do testing.expect(t, notify_pending(&runtime, rows, later))
 	testing.expect(t, recorder.wakes == 1, "wake burst is coalesced too")
 	later._nsec += i64(31 * time.Second)

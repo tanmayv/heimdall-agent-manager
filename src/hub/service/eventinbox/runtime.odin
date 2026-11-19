@@ -23,7 +23,6 @@ Runtime :: struct {
 	cache_allocator: mem.Allocator,
 	last_prune:      time.Tick,
 	notifications: map[string]Notification_State,
-	nudges_sent, wakes_sent: i64,
 }
 Provisioned_Consumer :: struct {
 	key, fingerprint: string,
