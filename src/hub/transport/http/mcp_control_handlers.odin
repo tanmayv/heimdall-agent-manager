@@ -11,6 +11,7 @@ import domain "odin_test:hub/domain"
 import auth "odin_test:hub/service/auth"
 import events "odin_test:hub/service/events"
 import eventinbox "odin_test:hub/service/eventinbox"
+import nats "odin_test:lib/nats"
 import mcp "odin_test:hub/service/mcp"
 import tc "odin_test:hub/service/taskchain"
 import vault "odin_test:lib/vault"
@@ -112,10 +113,10 @@ mcp_arguments :: proc(name:string,value:json.Value)->(mcp.Control_Arguments,bool
 			s,typed:=v.(json.String);if !typed || name!="chains.create" || len(s)>20000 do return {},false
 			args.description=string(s)
 		case "catalog_cursor":
-	s,typed:=v.(json.String); if !typed || name!="events.wait" do return {},false
-	if _,valid:=eventinbox.catalog_cursor_parse(string(s)); !valid do return {},false
-	args.catalog_cursor=string(s)
-	case "cursor":
+			s,typed:=v.(json.String); if !typed || name!="events.wait" do return {},false
+			if _,valid:=eventinbox.catalog_cursor_parse(string(s)); !valid do return {},false
+			args.catalog_cursor=string(s)
+		case "cursor":
 			s,typed:=v.(json.String);if !typed || (name!="chains.list" && name!="tasks.list") || len(s)>2048 || name=="chains.list" && len(s)>20 do return {},false
 			args.cursor=string(s)
 		case "state":
@@ -267,6 +268,8 @@ mcp_control_handler :: proc(ctx:rawptr,req:Request)->(response:Response) {
 	wait_changed:=false
 	catalog:eventinbox.Catalog_Page
 	defer eventinbox.catalog_page_destroy(&catalog)
+	catalog_conn:^nats.Connection
+	defer nats.destroy(catalog_conn)
 	if string(name)=="events.wait" {
 		// Validate ownership before attaching, attach before the baseline read.
 		_,owned,err:=tc.get_chain_for_read(h.control.chains,mcp.control_auth(view.owner),domain.Task_Chain_ID(args.chain_id))
@@ -275,30 +278,38 @@ mcp_control_handler :: proc(ctx:rawptr,req:Request)->(response:Response) {
 		if !attached do return mcp_tool_result(id,"temporarily_unavailable",true)
 		defer events.poll_detach(h.bus,hint)
 		if args.catalog_cursor!="" && h.inbox==nil do return mcp_tool_result(id,"temporarily_unavailable",true)
-		if h.inbox!=nil {
+		if args.catalog_cursor!="" {
+			conn_err:nats.Error
+			catalog_conn,conn_err=nats.connect(h.inbox.options)
+			if conn_err.status!=0 do return mcp_tool_result(id,"temporarily_unavailable",true)
 			replay_err:domain.Domain_Error
-			catalog,replay_err=eventinbox.catalog_replay(h.inbox,view.owner,args.chain_id,args.catalog_cursor,50 if args.limit==0 else args.limit)
-			if replay_err.code!=.None && args.catalog_cursor!="" do return mcp_tool_result(id,"temporarily_unavailable",true)
+			catalog,replay_err=eventinbox.catalog_read(catalog_conn,view.owner,args.chain_id,args.catalog_cursor,50 if args.limit==0 else args.limit)
+			if replay_err.code!=.None do return mcp_tool_result(id,"temporarily_unavailable",true)
 		}
-
+		page_ready:=len(catalog.events)>0 || catalog.cursor_expired || catalog.has_more
 		wait:=args.timeout_ms;if wait==0 do wait=20000
 		wait_started:=time.tick_now()
-		for len(catalog.events)==0 && !catalog.cursor_expired && !catalog.has_more && events.poll_revision(h.bus,hint)==0 && time.tick_since(wait_started)<time.Duration(wait)*time.Millisecond && time.tick_since(started)<25*time.Second {
+		// The owned hint registration fences changes during the wait. Re-read
+		// only after a hint or timeout, with the same request-owned connection.
+		for !page_ready && events.poll_revision(h.bus,hint)==0 && time.tick_since(wait_started)<time.Duration(wait)*time.Millisecond && time.tick_since(started)<25*time.Second {
 			if mcp.request_cancelled(&h.requests,handle) do return mcp_tool_result(id,"cancelled",true)
-			time.sleep(250*time.Millisecond if args.catalog_cursor!="" else 25*time.Millisecond)
-			if h.inbox!=nil && args.catalog_cursor!="" {
-				eventinbox.catalog_page_destroy(&catalog)
-				replay_err:domain.Domain_Error
-				catalog,replay_err=eventinbox.catalog_replay(h.inbox,view.owner,args.chain_id,args.catalog_cursor,50 if args.limit==0 else args.limit)
-				if replay_err.code!=.None && args.catalog_cursor!="" do return mcp_tool_result(id,"temporarily_unavailable",true)
-			}
+			time.sleep(25*time.Millisecond)
 		}
 		wait_changed=events.poll_revision(h.bus,hint)>0 || len(catalog.events)>0
-		if h.inbox!=nil {
-			eventinbox.catalog_page_destroy(&catalog)
-			replay_err:domain.Domain_Error
-			catalog,replay_err=eventinbox.catalog_replay(h.inbox,view.owner,args.chain_id,args.catalog_cursor,50 if args.limit==0 else args.limit)
-			if replay_err.code!=.None && args.catalog_cursor!="" do return mcp_tool_result(id,"temporarily_unavailable",true)
+		if h.inbox!=nil && !page_ready {
+			if args.catalog_cursor=="" {
+				// Legacy calls acquire only one optional watermark, after waiting.
+				// Bound each optional queue operation to 100ms on the legacy path.
+				options:=h.inbox.options
+				options.timeout_ms=min(options.timeout_ms,100)
+				catalog_conn,_=nats.connect(options)
+			}
+			if catalog_conn!=nil {
+				eventinbox.catalog_page_destroy(&catalog)
+				replay_err:domain.Domain_Error
+				catalog,replay_err=eventinbox.catalog_read(catalog_conn,view.owner,args.chain_id,args.catalog_cursor,50 if args.limit==0 else args.limit)
+				if replay_err.code!=.None && args.catalog_cursor!="" do return mcp_tool_result(id,"temporarily_unavailable",true)
+			}
 		}
 	}
 	if mcp.request_cancelled(&h.requests,handle) do return mcp_tool_result(id,"cancelled",true)
@@ -359,7 +370,7 @@ mcp_control_handler :: proc(ctx:rawptr,req:Request)->(response:Response) {
 		defer vault.control_wipe_value(state)
 		if err!=nil do return mcp_tool_result(id,"decryption_unavailable",true)
 		status:="timeout"
-	wait_changed = wait_changed || len(catalog.events)>0
+		wait_changed = wait_changed || len(catalog.events)>0
 		hint:json.Value
 		if wait_changed {status="changed";hint=json.Object{"resource"=json.String("task_chain"),"resource_id"=json.String(args.chain_id),"change"=json.String("refetch")}}
 		encoded,eerr:=json.marshal(struct {status:string,event:json.Value,refresh_required:bool,state:json.Value,catalog_cursor:string,events:[]json.Value,cursor_expired,has_more:bool}{status,hint,true,state,catalog.catalog_cursor,catalog.events[:],catalog.cursor_expired,catalog.has_more},allocator=context.temp_allocator)

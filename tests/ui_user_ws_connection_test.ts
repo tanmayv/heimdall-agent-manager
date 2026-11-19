@@ -295,3 +295,28 @@ test('catalog replay preserves the reconnect cursor and routes targeted invalida
     h.stop();
   } finally { mock.timers.reset(); }
 });
+
+test('catalog watermark advances cursor without another invalidation and pages are paced', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] });
+  try {
+    const h = harness();
+    await flush();
+    h.last().open();
+    h.last().frame(ready('catalog-paced'));
+    h.last().frame({ ...ev('catalog-paced', 1), type: 'catalog_replay', catalog_cursor: '5', events: [
+      { type: 'task.state', task_id: 'task_1', chain_id: 'chain_1' },
+    ], has_more: true });
+    assert.equal(h.last().sent.length, 0);
+    await advance(299);
+    assert.equal(h.last().sent.length, 0);
+    await advance(1);
+    assert.equal(h.last().sent.length, 1);
+    assert.equal(JSON.parse(h.last().sent[0]).type, 'catalog_next');
+    h.last().frame({ ...ev('catalog-paced', 2), type: 'catalog_watermark', catalog_cursor: '9', events: [] });
+    assert.equal(h.delivered.length, 1, 'watermarks never re-dispatch catalog events');
+    h.last().drop();
+    await advance(20000);
+    assert.match(h.urls.at(-1)!, /catalog_cursor=9/);
+    h.stop();
+  } finally { mock.timers.reset(); }
+});

@@ -121,4 +121,33 @@ catalog_scenario :: proc(t: ^testing.T) {
 	defer catalog_page_destroy(&old)
 	testing.expect(t,old_err.code==.None && old.cursor_expired && len(old.events)==0,"expired retention requires a full refresh even for cursor zero")
 
+	state,ie:=nats.stream_info(conn,"HEIM_EVENTS")
+	testing.expect_value(t,ie.status,i32(0))
+	edge:=fmt.aprintf("%d",state.first-1)
+	boundary,boundary_err:=catalog_read(conn,"alice","chain_1",edge)
+	delete(edge)
+	testing.expect(t,boundary_err.code==.None && !boundary.cursor_expired,"first-1 is fully resumable")
+	catalog_page_destroy(&boundary)
+	// More than the old global scan cap of another tenant's traffic must require
+	// only a subject-filtered read, not one API call per shared stream position.
+	checkpoint:=fmt.aprintf("%d",state.last)
+	defer delete(checkpoint)
+	for _ in 0..<1200 {
+		_,other_err:=nats.publish(conn,"ev.bob.chain.chain_1.state",transmute([]byte)string("{}"))
+		testing.expect_value(t,other_err.status,i32(0))
+	}
+	_,bad_err:=nats.publish(conn,"ev.alice.chain.chain_1.state",transmute([]byte)string(`{"partial":[`))
+	testing.expect_value(t,bad_err.status,i32(0))
+	_,good_err:=nats.publish(conn,"ev.alice.chain.chain_1.state",transmute([]byte)string(`{"owner_user_id":"alice","chain_id":"chain_1","type":"chain.state"}`))
+	testing.expect_value(t,good_err.status,i32(0))
+	api_before,_,_:=nats.api_stats(conn)
+	sparse,sparse_err:=catalog_read(conn,"alice","chain_1",checkpoint)
+	defer catalog_page_destroy(&sparse)
+	absent,absent_err:=catalog_read(conn,"carol","chain_1",checkpoint)
+	testing.expect(t,absent_err.code==.None && len(absent.events)==0 && !absent.has_more,"no matching subject returns an empty page")
+	catalog_page_destroy(&absent)
+	api_after,_,_:=nats.api_stats(conn)
+	testing.expect(t,sparse_err.code==.None && len(sparse.events)==1 && !sparse.has_more)
+	testing.expect(t,api_after-api_before<=8,"replay cost does not scale with foreign tenant traffic")
+
 }

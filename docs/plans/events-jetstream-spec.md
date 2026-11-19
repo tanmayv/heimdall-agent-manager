@@ -61,7 +61,7 @@ taskv2 state change ──same tx──▶ event_outbox ──relay──▶ Jet
 
 `HEIM_EVENTS`:
 - file storage, limits retention, `max_age` 14 days, `duplicate_window` 2 minutes;
-- `allow_rollup_hdrs: true`, replicas 1 by default.
+- `allow_rollup_hdrs: true`, `allow_direct: true` for subject-filtered replay, replicas 1 by default.
 
 The hub creates or updates the stream idempotently at boot.
 
@@ -238,20 +238,27 @@ Without a cursor, existing polling behavior is preserved and the response
 establishes a current cursor. With a cursor, only the caller's owned chain's
 catalog v1 envelopes are replayed. Replay is subject to stream retention and
 state rollup, and never promises the full audit history. Each page scans at most
-1,000 positions or two seconds; an empty page with `has_more` is valid.
-A cursor older than the first retained sequence (except the initial zero on a
-stream starting at one), or beyond the current stream, returns
+1,000 matching owner/chain messages or two seconds; subject-filtered direct
+reads skip other tenants and rolled-up holes on the server. An empty page with
+`has_more` is valid. Requests and websocket sessions reuse their connection.
+A cursor whose next needed sequence is older than the first retained sequence
+(`cursor + 1 < first`), or beyond the current stream, returns
 `cursor_expired: true`, no events, and the current cursor; refetch state before
 resuming. Retain cursors only for the same owner/chain/hub.
 
 UI websocket reconnects pass a separate `catalog_cursor` query parameter.
 After the existing ready handshake the hub sends a stamped `catalog_replay`
 page with the same fields, scoped to the authenticated owner. The UI routes
-its envelopes to the existing resource invalidation handler. Heartbeats and
-`catalog_next` frames request subsequent pages; existing live invalidations,
-per-socket `stream_epoch`/`stream_seq`, and full reconnect refresh remain intact.
-When the queue is unavailable the hub sends `resync_required` and preserves the
-last cursor. An expired cursor also triggers a full refresh.
+its envelopes to the existing resource invalidation handler. Only parsed
+`catalog_next` controls request subsequent pages (250ms minimum
+spacing, with the UI pacing requests at 300ms). Unknown/malformed controls do
+no network work. Once replay is drained, heartbeats fetch only the current
+stream watermark (at most once per 20 seconds) without replaying live events.
+Existing live invalidations, per-socket `stream_epoch`/`stream_seq`, and full reconnect refresh remain intact.
+On the available-to-unavailable transition the hub sends one
+`resync_required` and preserves the last cursor; repeats during the same outage
+send no more refresh signals. Failed reconnect attempts are spaced by at least
+two seconds. An expired cursor also triggers a full refresh.
 
 Authenticated `GET /api/v1/events/metrics` returns only the caller owner's:
 `subscriptions` (subscription_id, consumer_lag = pending messages, ack_pending,
@@ -263,3 +270,9 @@ lifetime, owner-scoped and start at zero. E3 must call
 `eventinbox.record_notice(&graph.event_inbox, owner, wake)` only after successful
 dispatch; E6 does not depend on E3 implementation. All SQL snapshots commit
 before JetStream calls, and all C-owned info/messages/connections are destroyed.
+
+MCP cursor waits reuse one connection and read only initially and after an owned
+bus hint or timeout; there is no timer-driven rescan. Legacy no-cursor waits
+acquire one optional watermark after waiting with a 100ms network timeout.
+JSON parsing uses scoped per-message storage so partial parse failures cannot
+retain allocations in long-lived sessions.

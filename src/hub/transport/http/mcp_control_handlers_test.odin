@@ -386,26 +386,42 @@ test_mcp_tools_catalog_has_no_top_level_schema_combinators :: proc(t:^testing.T)
 
 @(test)
 test_mcp_events_wait_replays_disconnected_catalog :: proc(t: ^testing.T) {
- context.allocator=context.temp_allocator
- f:=mcp_control_fixture(t);defer mcp_control_close(f)
- server, started:=natstest.start();defer natstest.destroy(&server)
- if !testing.expect(t,started) do return
- conn,err:=nats.connect({url=server.url,timeout_ms=1000})
- if !testing.expect_value(t,err.status,i32(0)) do return
- defer nats.destroy(conn)
- _,err=nats.stream_add(conn,eventrelay.stream_config())
- if !testing.expect_value(t,err.status,i32(0)) do return
- inbox:=eventinbox.Service{options={url=server.url,timeout_ms=1000}}
- f.h.inbox=&inbox
- baseline,be:=eventinbox.catalog_replay(&inbox,f.state.vector.request.owner,"chain_fixture","")
- testing.expect(t,be.code==.None)
- defer eventinbox.catalog_page_destroy(&baseline)
- envelope,_:=json.marshal(struct{event_id,owner_user_id,chain_id,task_id,type:string}{"evt_missed",f.state.vector.request.owner,"chain_fixture","task_fixture","task.review_verdict"})
- _,err=nats.publish(conn,fmt.tprintf("ev.%s.chain.chain_fixture.task.task_fixture.task.review_verdict",f.state.vector.request.owner),envelope)
- testing.expect_value(t,err.status,i32(0))
- call:=fmt.tprintf(`{{"jsonrpc":"2.0","id":71,"method":"tools/call","params":{{"name":"events.wait","arguments":{{"chain_id":"chain_fixture","catalog_cursor":"%s","timeout_ms":1}}}}}}`,baseline.catalog_cursor)
- response:=mcp_control_request(&f.h,f.token,call)
- testing.expectf(t,response.status==200 && strings.contains(response.body,"evt_missed") && strings.contains(response.body,"catalog_cursor") && strings.contains(response.body,"usr_alice_fixture secret"),"%s",response.body)
- denied:=mcp_control_request(&f.h,f.token,`{"jsonrpc":"2.0","id":72,"method":"tools/call","params":{"name":"events.wait","arguments":{"chain_id":"chain_foreign","catalog_cursor":"0","timeout_ms":1}}}`)
- testing.expect(t,!strings.contains(denied.body,"evt_missed") && strings.contains(denied.body,"not_found"))
+	context.allocator=context.temp_allocator
+	f:=mcp_control_fixture(t);defer mcp_control_close(f)
+	server, started:=natstest.start();defer natstest.destroy(&server)
+	if !testing.expect(t,started) do return
+	conn,err:=nats.connect({url=server.url,timeout_ms=1000})
+	if !testing.expect_value(t,err.status,i32(0)) do return
+	defer nats.destroy(conn)
+	_,err=nats.stream_add(conn,eventrelay.stream_config())
+	if !testing.expect_value(t,err.status,i32(0)) do return
+	inbox:=eventinbox.Service{options={url=server.url,timeout_ms=1000}}
+	f.h.inbox=&inbox
+	baseline,be:=eventinbox.catalog_replay(&inbox,f.state.vector.request.owner,"chain_fixture","")
+	testing.expect(t,be.code==.None)
+	defer eventinbox.catalog_page_destroy(&baseline)
+	envelope,_:=json.marshal(struct{event_id,owner_user_id,chain_id,task_id,type:string}{"evt_missed",f.state.vector.request.owner,"chain_fixture","task_fixture","task.review_verdict"})
+	_,err=nats.publish(conn,fmt.tprintf("ev.%s.chain.chain_fixture.task.task_fixture.task.review_verdict",f.state.vector.request.owner),envelope)
+	testing.expect_value(t,err.status,i32(0))
+	call:=fmt.tprintf(`{{"jsonrpc":"2.0","id":71,"method":"tools/call","params":{{"name":"events.wait","arguments":{{"chain_id":"chain_fixture","catalog_cursor":"%s","timeout_ms":1}}}}}}`,baseline.catalog_cursor)
+	response:=mcp_catalog_tracked_request(t,&f.h,f.token,call)
+	testing.expectf(t,response.status==200 && strings.contains(response.body,"evt_missed") && strings.contains(response.body,"catalog_cursor") && strings.contains(response.body,"usr_alice_fixture secret"),"%s",response.body)
+	denied:=mcp_catalog_tracked_request(t,&f.h,f.token,`{"jsonrpc":"2.0","id":72,"method":"tools/call","params":{"name":"events.wait","arguments":{"chain_id":"chain_foreign","catalog_cursor":"0","timeout_ms":1}}}`)
+	testing.expect(t,!strings.contains(denied.body,"evt_missed") && strings.contains(denied.body,"not_found"))
+	before,_,_:=nats.api_stats(conn)
+	timeout_response:=mcp_catalog_tracked_request(t,&f.h,f.token,`{"jsonrpc":"2.0","id":73,"method":"tools/call","params":{"name":"events.wait","arguments":{"chain_id":"chain_fixture","catalog_cursor":"1","timeout_ms":1000}}}`)
+	after,_,_:=nats.api_stats(conn)
+	testing.expect(t,strings.contains(timeout_response.body,"timeout"))
+	testing.expectf(t,after-before<=4,"idle wait uses initial/timeout reads only, got %d APIs",after-before)
+	natstest.stop(&server)
+	started_at:=time.tick_now()
+	legacy:=mcp_catalog_tracked_request(t,&f.h,f.token,`{"jsonrpc":"2.0","id":74,"method":"tools/call","params":{"name":"events.wait","arguments":{"chain_id":"chain_fixture","timeout_ms":1}}}`)
+	testing.expect(t,legacy.status==200 && strings.contains(legacy.body,"usr_alice_fixture secret"))
+	testing.expect(t,time.tick_since(started_at)<600*time.Millisecond,"legacy queue outage remains bounded")
+
+}
+
+mcp_catalog_tracked_request :: proc(t:^testing.T,h:^MCP_Control_Handlers,token,body:string)->Response {
+	headers:=[]contracts.HTTP_Header{{"Authorization",mcp_join("Bearer ",token)},{"Content-Type","application/json"}}
+	return tracked_catalog_handler_request(t,mcp_control_handler,h,{method="POST",path=MCP_PATH,body=body,headers=headers})
 }

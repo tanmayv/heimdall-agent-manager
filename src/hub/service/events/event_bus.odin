@@ -595,6 +595,6 @@ user_ws_note_write :: proc(result: ws.Text_Write_Result, payload_len: int) {
 // Send a reconnect replay/control page only to its authenticated registration.
 // Uses the same generation fence, writer lock and socket sequence as fan-out.
 user_ws_send :: proc(bus: ^User_Event_Bus, handle: User_WS_Handle, event_json: string) {
- if bus == nil || handle.idx < 0 || handle.idx >= USER_WS_MAX_SLOTS do return
- _deliver_to_slot(bus, handle, event_json)
+	if bus == nil || handle.idx < 0 || handle.idx >= USER_WS_MAX_SLOTS do return
+	_deliver_to_slot(bus, handle, event_json)
 }

@@ -108,32 +108,32 @@ test_events_api_uses_authenticated_durable_identity :: proc(t: ^testing.T) {
 
 @(test)
 test_event_metrics_endpoint_owner_scope_and_auth :: proc(t: ^testing.T) {
- context.allocator=context.temp_allocator
- f:=wire_setup(t,"event_metrics");defer wire_teardown(f)
- server,started:=natstest.start();defer natstest.destroy(&server)
- if !testing.expect(t,started) do return
- conn,ne:=nats.connect({url=server.url,timeout_ms=1000})
- if !testing.expect_value(t,ne.status,i32(0)) do return
- defer nats.destroy(conn)
- _,ne=nats.stream_add(conn,eventrelay.stream_config())
- testing.expect_value(t,ne.status,i32(0))
- si:sqlite.Event_Subscription_Repo_SQLite
- oi:sqlite.Event_Outbox_Repo_SQLite
- repos:=iface.Repositories{event_subscriptions=sqlite.new_event_subscription_repository(&si,&f.conn),event_outbox=sqlite.new_event_outbox_repository(&oi,&f.conn)}
- fi:sqlite.SQLite_Unit_Of_Work_Factory
- factory:=sqlite.new_unit_of_work_factory(&fi,&f.conn,&repos)
- service:=eventinbox.Service{factory=&factory,options={url=server.url,timeout_ms=1000}}
- h:=Event_Inbox_Handlers{agent_actions=&f.ah,inbox=&service}
- uow,began,_:=iface.unit_of_work_begin(&factory)
- if !testing.expect(t,began) do return
- for identity in ([][2]string{{string(f.owner),"sub_visible"},{"bob","sub_secret"}}) {
-  testing.expect_value(t,repos.event_subscriptions.put(repos.event_subscriptions.ctx,{subscription_id=identity[1],owner_user_id=identity[0],subscriber_agent_id="agt_metrics",chain_id=string(f.chain_id),source="explicit",consumer_name=identity[1],filter_subjects="[]",wake_policy="catalog",created_at="now"}).code,domain.Error_Code.None)
- }
- committed,_:=iface.unit_of_work_commit(&uow);testing.expect(t,committed)
- response:=event_metrics_handler(&h,wire_cookie_request(f,"GET","/api/v1/events/metrics",""))
- testing.expectf(t,response.status==200,"%s",response.body)
- for field in ([]string{"consumer_lag","redeliveries","dlq_count","nudges_sent","wakes_sent","outbox_backlog"}) do testing.expectf(t,strings.contains(response.body,field),"%s",field)
- testing.expect(t,strings.contains(response.body,"sub_visible") && !strings.contains(response.body,"sub_secret"))
- refused:=event_metrics_handler(&h,{method="GET",path="/api/v1/events/metrics"})
- testing.expect_value(t,refused.status,401)
+	context.allocator=context.temp_allocator
+	f:=wire_setup(t,"event_metrics");defer wire_teardown(f)
+	server,started:=natstest.start();defer natstest.destroy(&server)
+	if !testing.expect(t,started) do return
+	conn,ne:=nats.connect({url=server.url,timeout_ms=1000})
+	if !testing.expect_value(t,ne.status,i32(0)) do return
+	defer nats.destroy(conn)
+	_,ne=nats.stream_add(conn,eventrelay.stream_config())
+	testing.expect_value(t,ne.status,i32(0))
+	si:sqlite.Event_Subscription_Repo_SQLite
+	oi:sqlite.Event_Outbox_Repo_SQLite
+	repos:=iface.Repositories{event_subscriptions=sqlite.new_event_subscription_repository(&si,&f.conn),event_outbox=sqlite.new_event_outbox_repository(&oi,&f.conn)}
+	fi:sqlite.SQLite_Unit_Of_Work_Factory
+	factory:=sqlite.new_unit_of_work_factory(&fi,&f.conn,&repos)
+	service:=eventinbox.Service{factory=&factory,options={url=server.url,timeout_ms=1000}}
+	h:=Event_Inbox_Handlers{agent_actions=&f.ah,inbox=&service}
+	uow,began,_:=iface.unit_of_work_begin(&factory)
+	if !testing.expect(t,began) do return
+	for identity in ([][2]string{{string(f.owner),"sub_visible"},{"bob","sub_secret"}}) {
+		testing.expect_value(t,repos.event_subscriptions.put(repos.event_subscriptions.ctx,{subscription_id=identity[1],owner_user_id=identity[0],subscriber_agent_id="agt_metrics",chain_id=string(f.chain_id),source="explicit",consumer_name=identity[1],filter_subjects="[]",wake_policy="catalog",created_at="now"}).code,domain.Error_Code.None)
+	}
+	committed,_:=iface.unit_of_work_commit(&uow);testing.expect(t,committed)
+	response:=tracked_catalog_handler_request(t,event_metrics_handler,&h,wire_cookie_request(f,"GET","/api/v1/events/metrics",""))
+	testing.expectf(t,response.status==200,"%s",response.body)
+	for field in ([]string{"consumer_lag","redeliveries","dlq_count","nudges_sent","wakes_sent","outbox_backlog"}) do testing.expectf(t,strings.contains(response.body,field),"%s",field)
+	testing.expect(t,strings.contains(response.body,"sub_visible") && !strings.contains(response.body,"sub_secret"))
+	refused:=tracked_catalog_handler_request(t,event_metrics_handler,&h,{method="GET",path="/api/v1/events/metrics"})
+	testing.expect_value(t,refused.status,401)
 }
