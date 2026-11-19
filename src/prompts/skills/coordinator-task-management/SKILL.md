@@ -264,8 +264,11 @@ batches using the existing task controls and required user gates. Workers refres
 with `lease next`, read `TASK.md`, reconcile requirements, and acknowledge the
 exact requirements revision with `lease heartbeat --lease <lease-id>
 --acknowledge-requirements-revision <n>`. Event acknowledgement does not acknowledge
-requirements. Reviewers refresh their pack too; if requirements changed during
-review, checkpoint with `lease handoff` rather than posting a stale verdict.
+requirements. Only work leases subscribe to requirements-change events.
+Reviewers learn about mid-review changes from the `[taskv2]` checkpoint nudge
+(which remains enabled regardless of the legacy-notice flag) and `lease next`.
+Reviewers refresh their pack and checkpoint with `lease handoff` rather than
+posting a stale verdict.
 
 During migration, existing `[taskv2]` notices remain enabled. Handle them with
 their existing instructions, and deduplicate follow-up against inbox events using

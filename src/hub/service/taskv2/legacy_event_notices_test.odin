@@ -58,6 +58,14 @@ test_legacy_requirements_notice_disabled_preserves_revision :: proc(t: ^testing.
 	testing.expect_value(t, probe.attempts, 0)
 	state, _ := requirements_read(&fx.repo, get_task(fx, "task_1"))
 	testing.expect_value(t, state.revision, i64(2))
+	testing.expect_value(t, count_events(fx, "task_1", EV_REQUIREMENTS_NOTICE_ATTEMPTED), 0)
+	for timer in fx.svc.timers.heap {
+		testing.expect(t, timer.kind != .Requirements_Notice || timer.key != "task_1", "suppressed notice must not arm retries")
+	}
+	fixture_advance(fx, REQUIREMENTS_RETRY_SECONDS + 1)
+	_ = fire_due(&fx.svc, now_ms(&fx.clock))
+	testing.expect_value(t, probe.attempts, 0)
+	testing.expect_value(t, count_events(fx, "task_1", EV_REQUIREMENTS_NOTICE_ATTEMPTED), 0)
 }
 
 @(test)
