@@ -81,7 +81,7 @@ t4_recovery_write_state :: proc(t: ^testing.T, f: ^T4_Recovery_Fixture, error :=
     r.d.phase = strings.clone("prompt"); r.d.current_input = strings.clone("interrupted-input")
     r.d.starter = strings.clone("EXACT starter text"); r.d.starter_sent = true; r.d.ready = error == ""
     r.d.error = strings.clone(error)
-    append(&r.d.queue, ACP_Runtime_Input{strings.clone("fresh-input"), strings.clone("fresh text")})
+    append(&r.d.queue, ACP_Runtime_Input{id = strings.clone("fresh-input"), text = strings.clone("fresh text")})
     state := ACP_State{schema_version = 1, instance = strings.clone(f.instance), launch_epoch = strings.clone(r.epoch),
         effective_transport = strings.clone("acp"), next_rpc_id = 40, next_delivery_id = 50}
     defer acp_state_delete(&state)

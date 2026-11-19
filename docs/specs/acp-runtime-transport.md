@@ -605,6 +605,149 @@ T1 and T2 can proceed independently; T3 follows T2; T4 integrates them; T5 then 
 
 Confidence for implementation readiness depends on the specified fixtures and live gate. Package publication and protocol documentation establish contracts, not a successful Claude login/bootstrap/recovery run on this device.
 
+## 15. ACP priority inbox (T16)
+
+The bridge owns input scheduling; the adapter's prompt queue is not a notice
+debouncer. The pinned `@agentclientprotocol/claude-agent-acp@0.108.0` v1 source
+(`dist/v1/acp-agent.js`, `dist/v1/steering.js`) advertises two distinct capabilities:
+
+```json
+{
+  "agentCapabilities": { "_meta": { "claudeCode": { "promptQueueing": true } } },
+  "_meta": { "steering": { "supported": true } }
+}
+```
+
+Concurrent ordinary `session/prompt` requests enqueue separate adapter turns;
+each request stays pending until its turn finishes. For a user message during a
+running turn the bridge instead sends this extension **request**, without
+starting another prompt/chat/tool lifecycle:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "ham:example:2",
+  "method": "_session/steering",
+  "params": {
+    "sessionId": "existing-session",
+    "prompt": [{ "type": "text", "text": "Change direction" }],
+    "_meta": { "steering": { "idleBehavior": "promptRequired" } }
+  }
+}
+```
+
+`{"outcome":"injected"}` means the content joined the running turn and output
+continues under the original `session/prompt`. If the turn finished during the
+race, `{"outcome":"promptRequired","reason":"noRunningTurn"}` means the
+adapter consumed nothing; the bridge submits the saved input through an ordinary
+prompt once the original response settles. Omitting `idleBehavior` permits the
+adapter's legacy `startedNewTurn` detached fallback, which Heimdall deliberately
+does not use. Missing capability or a method-not-found response falls back to
+append-to-next-turn. An ambiguous transport failure retains the pending request;
+it does not silently resend the content as a new turn. The adapter uses SDK
+priority `later` while a permission/elicitation is open, otherwise `now`.
+Steering reduces ACP turn requests; it does not promise that the SDK makes only
+one underlying model generation, since preemption can start another generation.
+The [upstream steering example](https://github.com/agentclientprotocol/claude-agent-acp/blob/main/examples/steering.ts)
+describes the same extension; the installed pin is authoritative for this implementation.
+
+| Lane | Inputs | Scheduling |
+| --- | --- | --- |
+| Steer | Direct chat/raw user input; interrupt task notices (`pausing`, `finishing`, or explicit interrupt) | Prompt immediately when idle; inject into the running turn when supported; otherwise append to the next turn |
+| Batch | Task ready/assigned/changes requested, shell completion, other actionable origins | One notice digest after 2 seconds quiet, with a 10 second maximum debounce |
+| Digest | `review_requested_from_user`, `hold_stale`, `work_batch_finished`, `agent_not_running`, title nudge | Never starts a turn; added inside `<heimdall_notice_digest>` to the next real prompt |
+
+Classification uses existing Hub `origin`, falling back to `target_role`, and
+explicit shell/title command types; human prose is never inspected for priority.
+The existing PTY delivery/debounce/interrupt branches retain their behavior.
+ACP bypasses the older task-only nudge debounce, which would discard different
+kinds for one task. Notices with the same `(task_id, kind)` replace queued content
+with the latest, retaining the superseded delivery's dedupe receipt. Coordinator
+alerts which omit `task_id` keep their distinct command identities, so two tasks
+in one chain cannot overwrite one another. Shell notices use `session_id`.
+
+All accumulated notices, including a restored backlog or notices received during
+a long turn, are consumed in one digest rather than one prompt per notice.
+User inputs retain priority and their individual identities. A per-agent budget
+allows one autonomous notice turn per 60 seconds by default. Set bridge process
+environment `HEIMDALL_ACP_NOTICE_INTERVAL_MS` to configure it (clamped to
+1,000–3,600,000 ms; invalid/unset values use 60,000). This applies to Batch turns;
+user/control Steer input remains immediate. Overflow is demoted to Digest and
+stays context even after the budget refills; a fresh actionable/user input is
+needed to consume it. The budget timestamp is journaled across bridge restart.
+
+The RPC dispatcher owns timers and all queue mutations, including when no chat
+worker is active. Durable admission precedes the Hub acknowledgement. The runtime
+journal contains lane/key/kind, debounce and budget timestamps, pending steering
+content and its semantic RPC role. A live reattach restores that completion and
+the original prompt instead of reinjecting; stdin receipts keep the existing
+daemon delivery dedupe. Legacy untyped `notice_` FIFO entries migrate to Batch on
+restore. Existing `msg_` admission acknowledgements and the bounded 256-input
+dedupe window remain. The inbox preserves the previous journal limit of 128
+entries, each at most 256 KiB (including a pending steer); new notices are limited
+to 112 slots, reserving 16 for real input. Excess admission returns false for
+retry, with no silent eviction. A prompt consumes at most 512 KiB of inbox text;
+larger legacy backlogs retain the remainder as Digest for later real turns rather
+than failing restore or generating repeated autonomous turns. Child/daemon loss
+still follows the existing explicit interrupted
+turn policy rather than claiming exactly-once provider execution across process death.
+
+### Live pin spike, 2026-11-19
+
+`tests/acp_steering_live.mjs` ran the actual adapter and installed Claude executable
+using the isolated provider home of named bridge `t16-acp`
+(`brg_18e96f5dd4210a46`, bridge port 49947, local endpoint 49948) enrolled against
+the existing isolated `t12-acp` Hub. This is a direct adapter API spike under that
+bridge's isolated home; it does not claim a browser/managed-agent routing test.
+No production bridge, provider configuration, or managed agent was restarted.
+
+```bash
+ACP_ADAPTER_ENTRY=/home/tanmay/.local/share/heimdall/bridges/heimdall-bridge-hub-mundus-in/bridge/acp-adapters/claude/0.108.0/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js \
+ACP_ISOLATED_HOME=/home/tanmay/.local/state/heimdall-local/bridges/t16-acp/home \
+node tests/acp_steering_live.mjs
+```
+
+Captured in shell session `sh_fcfe5775503640609b67784e6eebd849` (exit 0):
+
+```json
+{"steering":{"supported":true},"claudeCode":{"promptQueueing":true}}
+{"sessionId":"43dab704-6110-4a1b-8d8a-60a0bff300a2"}
+{"idle":{"outcome":"promptRequired","reason":"noRunningTurn"}}
+{"active":{"outcome":"injected"}}
+{"result":{"stopReason":"end_turn"},"promptRequests":1,"sawSteeredAnswer":true}
+```
+
+The active probe asked for a harmless `sleep 12`, injected a new final-answer
+instruction at its tool call, and observed `STEERED_T16` through the original
+prompt. The isolated bridge was stopped after the check. Deterministic fake-agent
+tests in `src/bridge/acp_inbox_test.odin` cover lanes, latest-wins/delivery dedupe,
+debounce/cap, budget overflow, dispatcher timer, long-turn/restore merging,
+admission bounds/write failure, idle race, unsupported fallback, and restoring
+pending steering without a second prompt.
+
+Final verification on this worktree:
+
+- Focused inbox set: 10/10 passed (`sh_da2e8888f8d79369bc1470721bc1abf2`).
+- Full bridge package: 1,164/1,164 passed (`sh_595974886ed6e998e7a9c6fd8c5f0fe1`).
+- Unchanged Rust PTY suite: 193 passed, 2 expected child-helper ignores,
+  0 failed (`sh_3b44911625f3f20c3ba44960320d0770`).
+- Nix bridge package build passed (`sh_aeff6db4b92e4810440f0e9edf1e32c9`).
+- Live pin spike, JavaScript syntax check, and `git diff --check` passed.
+
+```bash
+nix develop --command unshare --user --map-root-user --mount bash -c \
+  'mount -t tmpfs tmpfs /tmp && mount -t tmpfs tmpfs "$HOME/.cache/heimdall-tests" && mkdir -p "${TMPDIR:-/tmp}" && exec setpriv --bounding-set=-dac_override,-dac_read_search bash scripts/dev-odin.sh test src/bridge -define:ODIN_TEST_THREADS=1'
+nix develop --command cargo test --manifest-path tools/pty_host/Cargo.toml -- --test-threads=1
+nix build .#ham-bridge --out-link .heimdall/t16-package-final
+node --check tests/acp_steering_live.mjs
+git diff --check
+```
+
+The private tmpfs namespace accelerates existing migration-heavy fixtures while
+retaining their fsync calls and DAC checks; these are functional recovery checks,
+not a physical-disk durability certification. No UI or Hub packages changed;
+their separate suites were not run for this bridge-only task.
+
 ### Conversation response and tool status
 
 The pending ACP assistant message drives **Responding…** in the shared conversation

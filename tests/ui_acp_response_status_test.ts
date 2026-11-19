@@ -55,6 +55,8 @@ test('ACP Responding lives in the tail and disappears immediately on complete or
       await render('complete');
       assert.equal(q('conversation-activity-responding'), null, 'completion removes Responding while runtime still reports working');
       assert.match(q('conversation-activity-bubbles')!.textContent!, /Working…/);
+      await render('complete', false);
+      assert.equal(q('conversation-activity-bubbles'), null, 'an idle ACP runtime clears Working after its response completes');
       await render('pending');
       await render('failed', false);
       assert.equal(q('conversation-activity-responding'), null, 'failure removes Responding without a fade delay');

@@ -738,9 +738,8 @@ bridge_pty_host_deliver_message :: proc(socket, instance, sender: string) -> boo
 // older hubs that don't populate human_message.
 bridge_pty_host_deliver_task_nudge :: proc(socket, instance, task_id, target_role: string, human_message: string = "", task_title: string = "", interrupt: bool = false) -> bool {
 	if bridge_runtime_is_acp(instance) {
-		if interrupt && !acp_runtime_command(instance, "interrupt") do return false
 		msg := bridge_pty_host_task_nudge_line(task_id, target_role, human_message, task_title); defer delete(msg)
-		return acp_runtime_deliver(instance, msg)
+		return acp_runtime_deliver(instance, msg, lane = acp_inbox_lane(target_role, interrupt), key = task_id, kind = target_role)
 	}
 	if interrupt {
 		esc := pty_host_encode_key(instance, .Esc)
@@ -765,6 +764,10 @@ bridge_pty_host_task_nudge_line :: proc(task_id, target_role, human_message: str
 // bridge_pty_host_deliver_notice delivers an arbitrary prefixed nudge/notice line
 // (title-nudge, startup prompt) verbatim.
 bridge_pty_host_deliver_notice :: proc(socket, instance, notice: string) -> bool {
+    if bridge_runtime_is_acp(instance) {
+        plain := bridge_decrypt_embedded_vault_tokens(notice); defer delete(plain)
+        return acp_runtime_deliver(instance, plain, lane = .Batch, kind = "notice")
+    }
 	return bridge_pty_host_deliver_line(socket, instance, notice)
 }
 

@@ -191,7 +191,14 @@ acp_runtime_durable_valid :: proc(d: ^ACP_Runtime_Durable) -> bool {
     case: return false
     }
     if len(d.config_json) > ACP_RPC_MAX_LINE || len(d.plan_json)>64*1024 || len(d.starter) > ACP_RPC_MAX_LINE || len(d.current_input) > 1024 || len(d.queue) > 128 || len(d.completed_inputs) > 256 || d.stream_retries < 0 || d.stream_retries > 4 do return false
-    for input in d.queue do if input.id == "" || len(input.id) > 1024 || len(input.text) > 256*1024 do return false
+    bytes := len(d.steering_input.text)
+    for input in d.queue {
+        if !acp_inbox_input_valid(input) do return false
+        bytes += len(input.text)
+    }
+    if bytes > ACP_INBOX_MAX_BYTES || len(d.queue)+int(d.steering_pending) > 128 || d.steering_pending != (d.steering_input.id != "") ||
+       (d.steering_pending && !acp_inbox_input_valid(d.steering_input)) { return false }
+    if d.batch_first_ms < 0 || d.batch_last_ms < d.batch_first_ms || d.last_notice_turn_ms < 0 do return false
     for id in d.completed_inputs do if id == "" || len(id) > 1024 do return false
     return true
 }
@@ -211,6 +218,11 @@ acp_runtime_from_state :: proc(s: ^ACP_State, rec: Bridge_Local_Agent_Token_Reco
     r.generation = strings.clone(s.pipe_generation); r.session = strings.clone(s.sessionId)
     r.next_rpc_id = s.next_rpc_id; r.next_delivery_id = s.next_delivery_id
     r.saved_tools = strings.clone(s.tool_map_json); r.saved_outbox = strings.clone(s.chat_outbox_json)
+    // Older checkpoints stored every notice in the FIFO's default lane.
+    // Reclassify those legacy IDs so a restore cannot replay N model turns.
+    for &input in r.d.queue {
+        if input.kind == "" && strings.has_prefix(input.id, "notice_") do input.lane = .Batch
+    }
     if !acp_tools_prepare(r,r.saved_tools) {
         acp_runtime_replace(&r.d.error,"acp_protocol_error")
         r.d.auth_required=false;r.d.ready=false
@@ -241,6 +253,8 @@ acp_runtime_publish_restored :: proc(r: ^ACP_Runtime) {
 acp_runtime_recover_lost :: proc(r: ^ACP_Runtime, socket: string) -> bool {
     if r.session == "" || !r.load_session || r.d.stopped || acp_runtime_terminal_error(&r.d) || !acp_runtime_current(r) do return false
     if !acp_runtime_close_child(r) do return false
+    acp_inbox_interrupt_pending(r)
+    r.inbox_started = false
     if r.d.current_input != "" {
         if acp_runtime_events.prompt_finished != nil do acp_runtime_events.prompt_finished(r, r.d.current_input, "", "acp_turn_interrupted")
         append(&r.d.completed_inputs, strings.clone(r.d.current_input))
