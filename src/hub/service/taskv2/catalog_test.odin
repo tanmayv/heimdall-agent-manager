@@ -48,7 +48,7 @@ catalog_expect :: proc(t: ^testing.T, fx: ^Fixture, typ, class, topic: string) {
 		testing.expect(t, jsonx.extract_int(env, "topic_generation", 0, true) > 0, "topic generation")
 	}
 	suffix := typ[5:] // both task. and chain. are handled below
-	entity := "task.catalog_task"
+	entity := "chain.catalog_chain.task.catalog_task"
 	if typ == "chain.state" || typ == "chain.work_finished" {suffix = typ[6:]; entity = "chain.catalog_chain"}
 	subject := scalar_text(
 		fx,
@@ -353,7 +353,7 @@ test_catalog_real_jetstream_rollup :: proc(t: ^testing.T) {
 		{
 			stream = "HEIM_EVENTS",
 			durable = "catalog",
-			filter_subjects = []string{"ev.u1.task.catalog_task.state"},
+			filter_subjects = []string{"ev.u1.chain.catalog_chain.task.catalog_task.state"},
 			ack_wait_ns = 60_000_000_000,
 			max_deliver = 10,
 		},

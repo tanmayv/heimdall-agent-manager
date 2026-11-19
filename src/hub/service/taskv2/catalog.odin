@@ -53,10 +53,14 @@ catalog_emit :: proc(
 	json_str(&p, "actor", actor)
 	json_str(&p, "occurred_at", at)
 	suffix := strings.trim_prefix(typ, fmt.tprintf("%s.", kind))
+	subject := fmt.tprintf("ev.%s.chain.%s.%s", owner, chain_id, suffix)
+	if task_id != "" {
+		subject = fmt.tprintf("ev.%s.chain.%s.task.%s.%s", owner, chain_id, task_id, suffix)
+	}
 	row := domain.Event_Outbox_Row {
 		event_id      = event_id,
 		owner_user_id = string(owner),
-		subject       = fmt.tprintf("ev.%s.%s.%s.%s", owner, kind, id, suffix),
+		subject       = subject,
 		envelope_json = json_end(&p),
 		headers_json  = `{"Nats-Rollup":"sub"}` if class == "state" else "{}",
 		created_at    = at,
