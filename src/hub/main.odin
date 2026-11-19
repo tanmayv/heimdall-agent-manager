@@ -30,6 +30,7 @@ main :: proc() {
 		os.exit(2)
 	}
 	apply_oidc_env(&config)
+	parse_nats_args(&config)
 	if is_users_command() {
 		ok, message := run_users_command(&config)
 		if !ok {
@@ -43,6 +44,7 @@ main :: proc() {
 		os.exit(1)
 	}
 	parse_args(&config)
+	if strings.trim_space(config.nats_url) == "" { fmt.eprintln("ham-hub: --nats-url / HEIMDALL_NATS_URL is required"); os.exit(2) }
 	// The server requires OIDC bearer + browser login configuration; there is no
 	// other way for a user to authenticate.
 	if oidc_ok, oidc_error := app.require_oidc_config(config); !oidc_ok {
@@ -363,6 +365,9 @@ parse_args :: proc(config: ^app.Hub_Config) {
 // later override these). It runs before the users/tokens subcommands so they see
 // whether OIDC is configured. No issuer, endpoint or audience is hard-coded.
 apply_oidc_env :: proc(config: ^app.Hub_Config) {
+	if v := os.get_env_alloc("HEIMDALL_NATS_URL", context.allocator); v != "" do config.nats_url = v
+	if v := os.get_env_alloc("HEIMDALL_NATS_CREDS_FILE", context.allocator); v != "" do config.nats_creds_file = v
+	if v := os.get_env_alloc("HEIMDALL_NATS_CA_FILE", context.allocator); v != "" do config.nats_ca_file = v
 	if v := os.get_env_alloc("HAM_OIDC_ISSUER", context.allocator); v != "" do config.oidc_issuer = v
 	if v := os.get_env_alloc("HAM_OIDC_JWKS_URL", context.allocator); v != "" do config.oidc_jwks_url = v
 	if v := os.get_env_alloc("HAM_OIDC_USERINFO_URL", context.allocator); v != "" do config.oidc_userinfo_url = v
@@ -508,4 +513,20 @@ apply_whatsapp_env :: proc(config: ^app.Hub_Config) {
 		config.whatsapp_business_account_id = read_key_file(path)
 	}
 	if base := os.get_env_alloc("HEIMDALL_WHATSAPP_API_BASE", context.temp_allocator); base != "" do config.whatsapp_api_base = strings.clone(base)
+}
+
+// Parse before users subcommands as well as server startup.
+parse_nats_args :: proc(config: ^app.Hub_Config) {
+	for i := 1; i < len(os.args); i += 1 {
+		arg := os.args[i]
+		if arg != "--nats-url" && arg != "--nats-creds-file" && arg != "--nats-ca-file" do continue
+		if i + 1 >= len(os.args) || strings.has_prefix(os.args[i + 1], "--") {
+			fmt.eprintln(arg, "requires a value"); os.exit(2)
+		}
+		value := strings.clone(os.args[i + 1])
+		if arg == "--nats-url" do config.nats_url = value
+		if arg == "--nats-creds-file" do config.nats_creds_file = value
+		if arg == "--nats-ca-file" do config.nats_ca_file = value
+		i += 1
+	}
 }

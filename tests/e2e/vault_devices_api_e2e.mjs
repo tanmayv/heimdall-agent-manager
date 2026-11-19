@@ -16,6 +16,7 @@
 //   node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/vault_devices_api_e2e.mjs
 // Prints PASS/FAIL per step; exits non-zero on any FAIL.
 
+import { startNats } from './natsServer.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -88,15 +89,19 @@ async function startHub() {
   const log = fs.openSync(path.join(dir, 'hub.log'), 'w');
   // Hermetic: cwd and every home/appdata variable point into the temp dir.
   // Users sign in with OIDC only: a mock provider, and real browser sessions below.
-  const mock = await startMockOidc();
+  const nats = await startNats(dir);
+  let mock;
+  try { mock = await startMockOidc(); } catch (err) { await nats.stop(); throw err; }
   const baseUrl = `http://127.0.0.1:${port}`;
-  const env = { ...process.env, ...mock.hubEnv(baseUrl), HOME: dir, USERPROFILE: dir, APPDATA: dir, LOCALAPPDATA: dir, XDG_CONFIG_HOME: dir, XDG_DATA_HOME: dir };
+  const env = { ...process.env, ...mock.hubEnv(baseUrl), ...nats.hubEnv, HOME: dir, USERPROFILE: dir, APPDATA: dir, LOCALAPPDATA: dir, XDG_CONFIG_HOME: dir, XDG_DATA_HOME: dir };
   const child = spawn(bin, [
     '--listen', `127.0.0.1:${port}`, '--db', dbPath, '--migrations-dir', migrations,
     '--ui-origin', baseUrl,
     // A configured hub alias (written non-canonically: the hub canonicalizes it).
     '--pairing-hub-origins', 'https://Hub.Mundus.test/',
   ], { cwd: dir, env, stdio: ['ignore', log, log] });
+  const onExit = () => { child.kill('SIGKILL'); mock.stop(); nats.kill(); };
+  process.once('exit', onExit);
   let exited = false;
   child.on('exit', () => { exited = true; });
   const base = `http://127.0.0.1:${port}`;
@@ -109,10 +114,12 @@ async function startHub() {
   }
   const stop = async () => {
     mock.stop();
+    await nats.stop();
     if (!exited) {
       child.kill();
       await new Promise((r) => { if (exited) r(); else child.once('exit', r); setTimeout(r, 5000); });
     }
+    process.removeListener('exit', onExit);
     fs.closeSync(log);
     for (let i = 0; i < 10; i++) {
       try { fs.rmSync(dir, { recursive: true, force: true }); return; } catch { await new Promise((r) => setTimeout(r, 200)); }

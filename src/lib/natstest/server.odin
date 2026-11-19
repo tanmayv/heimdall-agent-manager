@@ -17,7 +17,7 @@ Server :: struct {
 start :: proc(extra_args: []string = nil) -> (server: Server, ok: bool) {
 	tmp, terr := os.temp_directory(context.temp_allocator)
 	if terr != nil do return
-	server.directory = fmt.aprintf("%s/heimdall-nats-%d-%d", tmp, os.get_pid(), time.tick_now())
+	server.directory = fmt.aprintf("%s/heimdall-nats-%d-%d", tmp, os.get_pid(), time.tick_now()._nsec)
 	if os.make_directory(server.directory) != nil do return
 	store := fmt.tprintf("%s/store", server.directory)
 	command := make([dynamic]string)
@@ -78,4 +78,22 @@ destroy :: proc(server: ^Server) {
 	delete(server.directory)
 	delete(server.url)
 	server^ = {}
+}
+
+// Restarts the same private store/listen port after stop for recovery tests.
+restart :: proc(server: ^Server) -> bool {
+	if server.process.pid != 0 || server.url == "" do return false
+	colon := strings.last_index_byte(server.url, ':')
+	if colon < 0 do return false
+	store := fmt.tprintf("%s/store", server.directory)
+	command := []string{"nats-server", "-js", "-a", "127.0.0.1", "-p", server.url[colon + 1:], "-sd", store, "--ports_file_dir", server.directory}
+	process, err := os.process_start({command = command})
+	if err != nil do return false
+	server.process = process
+	path := fmt.tprintf("%s/nats-server_%d.ports", server.directory, process.pid)
+	for _ in 0 ..< 250 {
+		if os.exists(path) do return true
+		time.sleep(20 * time.Millisecond)
+	}
+	return false
 }

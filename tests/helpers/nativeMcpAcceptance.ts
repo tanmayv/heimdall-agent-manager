@@ -1,4 +1,5 @@
 // Disposable native Hub + synthetic vault. Never points at a production database.
+import { startNats } from '../e2e/natsServer.mjs';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -59,10 +60,11 @@ export async function nativeMcpHub() {
     const child = spawn(bin, args, { cwd, env: { ...env, ...extra }, stdio: ['ignore', fd, fd] }); fs.closeSync(fd); children.push(child); return child;
   };
   const hubBin = process.env.HEIMDALL_E2E_HUB_BIN; check(hubBin && fs.existsSync(hubBin), 'native Hub binary available');
+  const nats = await startNats(root);
   const mock = await startMockOidc({ username: 'mcp-acceptance' });
   const daemonSockets: string[] = [];
   const stopDaemons = () => { if (process.env.HEIMDALL_E2E_PTY_HOST_BIN) for (const socket of daemonSockets) if (fs.existsSync(socket)) spawnSync(process.env.HEIMDALL_E2E_PTY_HOST_BIN, ['--socket', socket, 'stop'], { stdio: 'ignore', timeout: 10000 }); };
-  process.once('exit', () => { stopDaemons(); for (const child of children) child.kill('SIGKILL'); mock.stop(); if (isolatedAuth) fs.rmSync(isolatedAuth, { force: true }); });
+  process.once('exit', () => { stopDaemons(); for (const child of children) child.kill('SIGKILL'); mock.stop(); nats.kill(); if (isolatedAuth) fs.rmSync(isolatedAuth, { force: true }); });
   const port = await freePort(), backendPort = await freePort(); const bindAddress = process.env.HEIMDALL_E2E_BIND_ADDRESS || '127.0.0.1'; const base = `https://${bindAddress}:${port}`;
   const certFile = path.join(root, 'tls-cert.pem'), privateFile = path.join(root, 'tls-key.pem');
   check(spawnSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', privateFile, '-out', certFile, '-days', '1', '-subj', '/CN=localhost', '-addext', `subjectAltName=DNS:localhost,IP:127.0.0.1,IP:${bindAddress}`], { stdio: 'ignore' }).status === 0, 'throwaway localhost TLS certificate');
@@ -109,7 +111,7 @@ export async function nativeMcpHub() {
   await new Promise<void>(resolve => proxy.listen(port, bindAddress, resolve));
   console.log('TEST_SERVER ' + JSON.stringify({ base, certFile }));
   const keyFile = path.join(root, 'mcp-envelope.json'); fs.writeFileSync(keyFile, JSON.stringify({ keys: [{ id: 'acceptance', key_hex: randomBytes(32).toString('hex') }] }), { mode: 0o600 });
-  spawnOwned(hubBin, ['--listen', `127.0.0.1:${backendPort}`, '--db', path.join(root, 'hub.db'), '--ui-origin', base, '--public-app-origin', base, '--mcp-oauth-key-file', keyFile, '--billing-enforce-plan-limits', 'false'], root, mock.hubEnv(base), 'hub.log');
+  spawnOwned(hubBin, ['--listen', `127.0.0.1:${backendPort}`, '--db', path.join(root, 'hub.db'), '--ui-origin', base, '--public-app-origin', base, '--mcp-oauth-key-file', keyFile, '--billing-enforce-plan-limits', 'false'], root, { ...mock.hubEnv(base), ...nats.hubEnv }, 'hub.log');
   await eventually(async () => { try { return (await fetch(base + '/api/v1/health')).ok ? true : undefined; } catch { return undefined; } }, 'Hub health');
   const session = await hubLogin(base, 'mcp-acceptance');
   const foreignRequest = async (method: string, target: string, body?: unknown) => {
@@ -212,6 +214,6 @@ export async function nativeMcpHub() {
     return { bridgeId, runtime, dir };
   };
   return { root, base, certFile, runtimeBundle, operatorEnv, remoteProgress, remoteCallbackUrl: base + remoteCallbackPath, approveBridge, owner, keyringBytes, identity, chain, request, foreignRequest, signed, grant, rpc, tool, enroll,
-    async close() { keyringBytes.fill(0); stopDaemons(); for (const child of children.reverse()) child.kill(); mock.stop(); for (const socket of sockets) socket.destroy(); proxy.close(); if (isolatedAuth) fs.rmSync(isolatedAuth, { force: true }); await pause(300); for (const child of children) if (child.exitCode === null) child.kill('SIGKILL'); },
+    async close() { keyringBytes.fill(0); stopDaemons(); for (const child of children.reverse()) child.kill(); mock.stop(); nats.kill(); for (const socket of sockets) socket.destroy(); proxy.close(); if (isolatedAuth) fs.rmSync(isolatedAuth, { force: true }); await pause(300); for (const child of children) if (child.exitCode === null) child.kill('SIGKILL'); },
   };
 }

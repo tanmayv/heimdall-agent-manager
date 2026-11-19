@@ -8,6 +8,7 @@ import vault "odin_test:lib/vault"
 import auth_service "odin_test:hub/service/auth"
 
 Hub_Config :: struct {
+	nats_url, nats_creds_file, nats_ca_file: string,
 	telegram_bot_token:                     string, // secret; never logged
 	telegram_api_base:                      string,
 	whatsapp_access_token:                  string, // secret; never logged
