@@ -35,6 +35,8 @@ t4_adapter_fake_runner :: proc(argv: []string, timeout: time.Duration) -> (strin
     return "", "", 0, true, false
 }
 
+t4_adapter_fake_claude_probe :: proc(_: string) -> (string, string) { return "", "" }
+
 t4_adapter_fake_probe :: proc(provider, root, scratch: string) -> (bool, string) {
     if t10_adapter_probe_fails do return false, "node_module_missing"
     final := acp_adapter_root(); defer delete(final)
@@ -50,9 +52,10 @@ t4_acp_adapter_pinned_integrity_probe_and_atomic_promotion :: proc(t: ^testing.T
     previous_snapshot := bridge_provider_catalog_snapshot
     previous_loaded := bridge_provider_catalog_loaded
     previous_runner := acp_adapter_runner; previous_probe := acp_adapter_probe_hook
+    previous_claude_probe := acp_adapter_claude_probe_hook
     defer {
         bridge_config = previous_config; bridge_provider_catalog_snapshot = previous_snapshot; bridge_provider_catalog_loaded = previous_loaded
-        acp_adapter_runner = previous_runner; acp_adapter_probe_hook = previous_probe
+        acp_adapter_runner = previous_runner; acp_adapter_probe_hook = previous_probe; acp_adapter_claude_probe_hook = previous_claude_probe
     }
     root := fmt.tprintf("%s/.cache/heimdall-tests/t4-install-%d", os.get_env("HOME", context.temp_allocator), time.tick_now()._nsec)
     bridge_config.data_dir = root; bridge_config.daemon_id = "brg_test_t4_adapter"
@@ -60,7 +63,7 @@ t4_acp_adapter_pinned_integrity_probe_and_atomic_promotion :: proc(t: ^testing.T
     env := make(map[string]string); env["CLAUDE_AGENT_ACP_PROTOCOL"] = "v1"
     snapshot := Bridge_Provider_Catalog_Snapshot{etag = "sha256:t4", providers = {Bridge_Catalog_Provider{provider = "claude", state = "active", acp_recipe = {command = "claude-agent-acp", protocol_version = 1, adapter_package = ACP_CLAUDE_PACKAGE, adapter_version = ACP_CLAUDE_VERSION, env = env}}}}
     bridge_provider_catalog_snapshot = &snapshot; bridge_provider_catalog_loaded = true
-    acp_adapter_runner = t4_adapter_fake_runner; acp_adapter_probe_hook = t4_adapter_fake_probe
+    acp_adapter_runner = t4_adapter_fake_runner; acp_adapter_probe_hook = t4_adapter_fake_probe; acp_adapter_claude_probe_hook = t4_adapter_fake_claude_probe
     final := acp_adapter_root()
     bridge_make_directory_all(filepath.dir(final))
     lock_path := strings.concatenate({final, ".lock"})
@@ -185,4 +188,98 @@ t10_acp_failed_install_redelivery_is_typed_and_cached :: proc(t: ^testing.T) {
     testing.expect_value(t, len(bridge_dispatch_outputs), 2)
     for output in bridge_dispatch_outputs do testing.expect_value(t, output.text, frame)
     testing.expect_value(t, bridge_command_dispatch_total_locked(), queued_before)
+}
+
+@(test)
+t11_acp_claude_version_profile_env_failures_and_deadline :: proc(t: ^testing.T) {
+    st := p1c_test_setup(t); defer p1c_test_teardown(st)
+    context.allocator = context.temp_allocator
+    binary := profile_join(st.dir, "profile-claude")
+    pp := Provider_Profile{provider = "claude", profile_id = "claude", enabled = true,
+        config = {binary_path = "profile-claude", config_dir = profile_join(st.dir, "claude-config")},
+        environment = {{name = "PATH", value = st.dir}, {name = "PROFILE_MARKER", value = "canonical"},
+                       {name = "HEIMDALL_AGENT_TOKEN", value = "must-not-reach-child"}}}
+    _, reason, diagnostic := acp_adapter_claude_version(&pp)
+    testing.expect_value(t, reason, "acp_claude_not_found")
+    testing.expect_value(t, diagnostic, "claude_missing")
+    p1c_put(t, binary, "#!/bin/sh\n[ \"$1\" = --version ] && [ \"$PROFILE_MARKER\" = canonical ] && [ \"$CLAUDE_CONFIG_DIR\" != '' ] && [ \"$CLAUDE_CODE_EXECUTABLE\" = \"$0\" ] && [ -z \"$HEIMDALL_AGENT_TOKEN\" ] && [ -z \"$HEIMDALL_BRIDGE_ENDPOINT\" ] || exit 42\nprintf '2.1.70 (Claude Code)\\n'\n", true)
+    version: string
+    version, reason, diagnostic = acp_adapter_claude_version(&pp)
+    testing.expect_value(t, version, "2.1.70")
+    testing.expect(t, reason == "" && diagnostic == "")
+    p1c_put(t, binary, "#!/bin/sh\nprintf 'Could not start dynamically linked executable credential=secret\\033[31m' >&2\nexit 127\n", true)
+    _, reason, diagnostic = acp_adapter_claude_version(&pp)
+    testing.expect_value(t, reason, "acp_claude_not_runnable")
+    testing.expect_value(t, diagnostic, "unsupported_dynamic_executable")
+    message := acp_adapter_probe_message(diagnostic)
+    testing.expect(t, strings.contains(message, "Could not start dynamically linked executable") && len(message) <= 1024)
+    testing.expect(t, !strings.contains(message, "credential") && !strings.contains(message, "\x1b"))
+    p1c_put(t, binary, "#!/no/such/interpreter\n", true)
+    _, reason, diagnostic = acp_adapter_claude_version(&pp)
+    testing.expect_value(t, reason, "acp_claude_not_runnable")
+    testing.expect_value(t, diagnostic, "claude_version_spawn_failed")
+    p1c_put(t, binary, "#!/bin/sh\nwhile :; do :; done\n", true)
+    started := time.now()
+    _, reason, diagnostic = acp_adapter_claude_version(&pp, 40*time.Millisecond)
+    testing.expect_value(t, reason, "acp_claude_not_runnable")
+    testing.expect_value(t, diagnostic, "claude_version_timeout")
+    testing.expect(t, time.since(started) < 2*time.Second, "deadline must kill and reap promptly")
+}
+
+@(test)
+t11_acp_install_claude_prerequisite_and_status :: proc(t: ^testing.T) {
+    st := p1c_test_setup(t); defer p1c_test_teardown(st)
+    context.allocator = context.temp_allocator
+    old_runner, old_probe := acp_adapter_runner, acp_adapter_probe_hook
+    defer { acp_adapter_runner = old_runner; acp_adapter_probe_hook = old_probe }
+    acp_adapter_runner = t4_adapter_fake_runner; acp_adapter_probe_hook = t4_adapter_fake_probe
+    t4_adapter_bad_integrity = false; t10_adapter_probe_fails = false
+    t4_adapter_install_argv_ok = false; t4_adapter_probe_ran = false
+    snapshot := bridge_provider_catalog_snapshot
+    snapshot.etag = "sha256:t11"
+    snapshot.providers[0].acp_recipe = {command = "claude-agent-acp", protocol_version = 1,
+        adapter_package = ACP_CLAUDE_PACKAGE, adapter_version = ACP_CLAUDE_VERSION,
+        env = make(map[string]string)}
+    snapshot.providers[0].acp_recipe.env["CLAUDE_AGENT_ACP_PROTOCOL"] = "v1"
+    defer delete(snapshot.providers[0].acp_recipe.env)
+    binary := profile_join(st.dir, "claude")
+    pp := Provider_Profile{profile_id = "claude", provider = "claude", enabled = true,
+        config = {binary_path = binary}, environment = {{name = "PROFILE_MARKER", value = "canonical"}}}
+    // Persist exactly the canonical profile read by install, including a missing binary.
+    raw, _ := json.marshal(Provider_Profile_Store_Wire{version = PROFILE_STORE_VERSION, profiles = {pp}})
+    p1c_put(t, g_profile_test_store_path, string(raw))
+    installed, reason := acp_adapter_install("claude", snapshot.etag, ACP_CLAUDE_VERSION)
+    testing.expect(t, !installed && reason == "acp_claude_not_found")
+    testing.expect(t, !t4_adapter_install_argv_ok && !t4_adapter_probe_ran)
+    testing.expect_value(t, acp_adapter_status("claude").error, "acp_claude_not_found: No Claude executable resolves in the canonical provider profile")
+    p1c_put(t, binary, "#!/bin/sh\nprintf 'Could not start dynamically linked executable credential=secret' >&2\nexit 127\n", true)
+    installed, reason = acp_adapter_install("claude", snapshot.etag, ACP_CLAUDE_VERSION)
+    testing.expect(t, !installed && reason == "acp_claude_not_runnable")
+    testing.expect(t, !t4_adapter_install_argv_ok && !t4_adapter_probe_ran)
+    status_json := acp_adapter_status_json("claude")
+    testing.expect(t, strings.contains(status_json, "acp_claude_not_runnable") && strings.contains(status_json, "dynamically linked executable"))
+    testing.expect(t, !strings.contains(status_json, "credential") && !strings.contains(status_json, "secret"))
+    root := acp_adapter_root()
+    record, _ := os.read_entire_file(strings.concatenate({root, ".status.json"}), context.temp_allocator)
+    testing.expect(t, !strings.contains(string(record), "credential"))
+    p1c_put(t, binary, "#!/bin/sh\n[ \"$PROFILE_MARKER\" = canonical ] || exit 42\nprintf '2.1.70 (Claude Code)\\n'\n", true)
+    started := time.now()
+    installed, reason = acp_adapter_install("claude", snapshot.etag, ACP_CLAUDE_VERSION)
+    testing.expect(t, installed && reason == "" && t4_adapter_probe_ran)
+    testing.expect(t, time.since(started) < 5*time.Second)
+    testing.expect_value(t, acp_adapter_status("claude").state, "ready")
+    // A valid old marker must not hide a newly broken Claude binary.
+    p1c_put(t, binary, "#!/bin/sh\nprintf 'credential=secret' >&2\nexit 1\n", true)
+    installed, reason = acp_adapter_install("claude", snapshot.etag, ACP_CLAUDE_VERSION)
+    testing.expect(t, !installed && reason == "acp_claude_not_runnable")
+    status := acp_adapter_status("claude")
+    testing.expect(t, status.installed && status.state == "error")
+    testing.expect_value(t, status.error, "acp_claude_not_runnable: Claude --version exited with a non-zero status")
+    // Persisted arbitrary diagnostics cannot escape via the status report.
+    p1c_put(t, strings.concatenate({root, ".status.json"}), `{"state":"error","error":"acp_claude_not_runnable","diagnostic":"credential=secret"}`)
+    testing.expect_value(t, acp_adapter_status("claude").error, "acp_claude_not_runnable")
+    p1c_put(t, binary, "#!/bin/sh\nprintf '2.1.70 (Claude Code)\\n'\n", true)
+    installed, reason = acp_adapter_install("claude", snapshot.etag, ACP_CLAUDE_VERSION)
+    testing.expect(t, installed && reason == "")
+    testing.expect_value(t, acp_adapter_status("claude").state, "ready")
 }

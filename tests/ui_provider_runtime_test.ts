@@ -288,3 +288,21 @@ test('ACP pane reuses attention permission cards: Allow/Deny, failure recovery, 
     await h.cleanup(); globalThis.fetch = previous;
   }
 });
+
+test('Runtime control displays Claude binary failures from adapter status', async () => {
+  const h = await browser();
+  try {
+    for (const error of [
+      'acp_claude_not_found: No Claude executable resolves in the canonical provider profile',
+      'acp_claude_not_runnable: Could not start dynamically linked executable; configure the Claude provider binary for this host',
+    ]) {
+      const status = row({ acp_adapter: { ...adapter, state: 'error', error } });
+      await h.render(React.createElement(ProviderRuntimeControl, {
+        setup: setup({ providers: [status] }), status, onChange() {},
+      }));
+      const panel = h.doc.querySelector('[data-debug-id="providers-acp-status-claude"]');
+      assert.ok(panel);
+      assert.ok(panel.textContent?.includes(error));
+    }
+  } finally { await h.cleanup(); }
+});

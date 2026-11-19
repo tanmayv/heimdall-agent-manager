@@ -17,6 +17,7 @@ ACP_CLAUDE_INTEGRITY :: "sha512-Y0HI3CB0DfhpWItCn2RE3xgpen001V2U/bHm3G6ZVKXsElF5
 ACP_INITIALIZE_PARAMS :: `{"protocolVersion":1,"clientInfo":{"name":"heimdall","version":"`+contracts.APP_VERSION+`"},"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false}}`
 acp_adapter_runner: Bridge_Extension_Install_Runner = bridge_process_run_capture_status
 acp_adapter_probe_hook: proc(provider, root, scratch: string) -> (bool, string) = acp_adapter_probe
+acp_adapter_claude_probe_hook: proc(provider: string) -> (string, string) = acp_adapter_claude_probe
 
 ACP_Adapter_Status :: struct {
     installed: bool,
@@ -111,29 +112,32 @@ acp_adapter_status :: proc(provider: string) -> ACP_Adapter_Status {
         if state == .Error { s.state = "error"; s.error = "acp_adapter_lock_failed"; return s }
         acp_adapter_lock_release(lock)
     }
-    if !s.installed {
-        if os.is_dir(root) { s.state = "outdated"; s.error = "Pinned adapter files failed verification" }
-        raw, err := os.read_entire_file(strings.concatenate({root, ".status.json"}), context.temp_allocator)
-        if err == nil {
-            record: struct{state, error, diagnostic: string}
-            if json.unmarshal(raw, &record) == nil && record.state == "error" {
+    if s.installed do s.version = ACP_CLAUDE_VERSION
+    if !s.installed && os.is_dir(root) { s.state = "outdated"; s.error = "Pinned adapter files failed verification" }
+    raw, status_err := os.read_entire_file(strings.concatenate({root, ".status.json"}), context.temp_allocator)
+    if status_err == nil {
+        record: struct{state, error, diagnostic: string}
+        if json.unmarshal(raw, &record) == nil && record.state == "error" {
+            claude_error := record.error == "acp_claude_not_found" || record.error == "acp_claude_not_runnable"
+            // A failed recheck must override an older successful install marker.
+            if !s.installed || claude_error {
                 s.state = "error"
-                // Persisted status is local input, never a source of arbitrary
-                // diagnostics or credentials in discovery reports.
+                // Persisted status is local input: allowlist codes and messages.
                 s.error = "acp_adapter_install_failed"
                 switch record.error {
-                case "acp_adapter_directory_failed", "acp_adapter_install_failed", "acp_adapter_integrity_failed", "acp_adapter_probe_failed", "acp_adapter_host_unavailable", "acp_adapter_in_use", "acp_adapter_promote_failed": s.error = record.error
+                case "acp_adapter_directory_failed", "acp_adapter_install_failed", "acp_adapter_integrity_failed", "acp_adapter_probe_failed", "acp_adapter_host_unavailable", "acp_adapter_in_use", "acp_adapter_promote_failed",
+                     "acp_claude_not_found", "acp_claude_not_runnable": s.error = record.error
                 }
-                if record.error == "acp_adapter_probe_failed" {
+                if record.error == "acp_adapter_probe_failed" || claude_error {
                     if message := acp_adapter_probe_message(record.diagnostic); message != "" {
                         s.error = strings.concatenate({record.error, ": ", message}, context.temp_allocator)
                     }
                 }
+                return s
             }
         }
-        return s
     }
-    s.version = ACP_CLAUDE_VERSION
+    if !s.installed do return s
     marker, err := os.read_entire_file(strings.concatenate({root, "/heimdall-probe-v1.json"}, context.temp_allocator), context.temp_allocator)
     if err == nil && string(marker) == ACP_CLAUDE_INTEGRITY { s.state = "ready" } else { s.state = "error"; s.error = "ACP initialize probe is required" }
     return s
@@ -194,6 +198,9 @@ acp_adapter_probe_message :: proc(reason: string) -> string {
     switch reason {
     case "profile_unavailable": return "The canonical Claude provider profile is unavailable"
     case "claude_missing": return "No Claude executable resolves in the canonical provider profile"
+    case "claude_version_timeout": return "Claude --version did not finish before the deadline"
+    case "claude_version_spawn_failed": return "Claude --version could not be executed"
+    case "claude_version_failed": return "Claude --version exited with a non-zero status"
     case "host_unavailable": return "The pipe daemon is unavailable"
     case "spawn_failed": return "The adapter process could not be spawned"
     case "generation_missing": return "The spawned adapter generation could not be resolved"
@@ -204,7 +211,7 @@ acp_adapter_probe_message :: proc(reason: string) -> string {
     case "node_module_missing": return "Node could not load an adapter module"
     case "executable_or_file_missing": return "The adapter could not find a required executable or file"
     case "executable_permission_denied": return "The adapter could not execute a required file"
-    case "unsupported_dynamic_executable": return "The host cannot run the dynamically linked executable; configure the Claude provider binary"
+    case "unsupported_dynamic_executable": return "Could not start dynamically linked executable; configure the Claude provider binary for this host"
     case "pipe_closed": return "The adapter pipe closed during initialize"
     }
     return ""
@@ -220,6 +227,47 @@ acp_adapter_probe_env :: proc(pp: ^Provider_Profile) -> ([][2]string, bool) {
         append(&clean, entry)
     }
     return bridge_pty_host_env_pairs(clean[:]), true
+}
+
+// Use the same resolution and environment as managed ACP launches, with no
+// Heimdall credentials. Only allowlisted excerpts of the bounded output escape.
+acp_adapter_claude_version :: proc(pp: ^Provider_Profile, timeout: time.Duration = 3*time.Second) -> (version, reason, diagnostic: string) {
+    context.allocator = context.temp_allocator
+    pairs, env_ok := acp_adapter_probe_env(pp)
+    if !env_ok do return "", "acp_claude_not_found", "claude_missing"
+    env := make([dynamic]string)
+    binary := ""
+    for pair in pairs {
+        append(&env, strings.concatenate({pair[0], "=", pair[1]}))
+        if pair[0] == "CLAUDE_CODE_EXECUTABLE" do binary = pair[1]
+    }
+    out, stderr, exit_code, ran, timed_out := bridge_process_run_capture_status_env({binary, "--version"}, min(timeout, 3*time.Second), env[:])
+    defer { delete(out); delete(stderr) }
+    if !ran || timed_out || exit_code != 0 {
+        fallback := "claude_version_failed"
+        if exit_code < 0 do fallback = "claude_version_spawn_failed"
+        if timed_out do fallback = "claude_version_timeout"
+        excerpt := strings.concatenate({stderr[:min(len(stderr), 512)], out[:min(len(out), 512)]})
+        return "", "acp_claude_not_runnable", acp_adapter_probe_reason(excerpt, fallback)
+    }
+    // Log only a numeric version prefix, never arbitrary child output.
+    text := strings.trim_space(out)
+    for c, i in text {
+        if (c < '0' || c > '9') && c != '.' { text = text[:i]; break }
+    }
+    if len(text) > 64 do text = ""
+    return strings.clone(text), "", ""
+}
+
+acp_adapter_claude_probe :: proc(provider: string) -> (reason, diagnostic: string) {
+    context.allocator = context.temp_allocator
+    pp, perr := profile_lookup(provider, "")
+    if perr != .None do return "acp_claude_not_found", "profile_unavailable"
+    version: string
+    version, reason, diagnostic = acp_adapter_claude_version(&pp)
+    // Adapter version fields describe the pinned npm package, not Claude.
+    if reason == "" && version != "" do fmt.println("ACP probe Claude version:", version)
+    return
 }
 
 // Probe in a scratch cwd with the canonical provider profile, without an agent
@@ -300,7 +348,12 @@ acp_adapter_install :: proc(provider, etag, version: string) -> (ok: bool, reaso
         bridge_retry_atomic_write(strings.concatenate({root, ".status.json"}, context.temp_allocator), raw)
     }
     if !acp_adapter_cleanup_stages(root) do return false, "acp_adapter_directory_failed"
-    if before.state == "ready" do return true, ""
+    reason, diagnostic = acp_adapter_claude_probe_hook(provider)
+    if reason != "" do return false, reason
+    if before.installed {
+        marker, err := os.read_entire_file(strings.concatenate({root, "/heimdall-probe-v1.json"}, context.temp_allocator), context.temp_allocator)
+        if err == nil && string(marker) == ACP_CLAUDE_INTEGRITY do return true, ""
+    }
     stage := strings.concatenate({root, fmt.tprintf(".stage-%d", time.tick_now()._nsec)}); defer delete(stage)
     if bridge_make_directory_all(stage) != nil do return false, "acp_adapter_directory_failed"
     defer os.remove_all(stage)
