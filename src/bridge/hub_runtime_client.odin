@@ -3325,6 +3325,10 @@ bridge_runtime_set_status_with_source_locked :: proc(instance_id, runtime_status
 			accept_activity := activity_status != "" && (force_activity || bridge_runtime_accept_activity_update(inst, activity_source, now))
 			runtime_changed := inst.runtime_status != runtime_status
 			activity_changed := accept_activity && inst.activity_status != activity_status
+			if inst.runtime_transport == "acp" && (activity_changed || (!accept_activity && activity_status != "" && inst.activity_status != activity_status)) {
+				// Only bounded state labels and identity: never prompt/tool payloads.
+				fmt.eprintfln("ACP_ACTIVITY instance=%q source=%q previous=%q requested=%q accepted=%t", instance_id, activity_source, inst.activity_status, activity_status, accept_activity)
+			}
 			if runtime_changed || activity_changed {
 				inst.state_seq = bridge_runtime_next_state_seq(inst.state_seq, now)
 				if runtime_status != "failed" do inst.has_last_error = false
@@ -3383,6 +3387,11 @@ bridge_runtime_next_state_seq :: proc(current: int, now: i64) -> int {
 
 bridge_runtime_accept_activity_update :: proc(inst: ^Bridge_Runtime_Instance, source: string, now: i64) -> bool {
 	if inst == nil do return true
+	// ACP session/prompt results own turn boundaries. Native hooks, delayed
+	// thought/tool updates and relay workers can arrive after a result or before
+	// it finishes; their PTY heuristics must not replace the dispatcher's state.
+	// Forced lifecycle transitions still bypass this arbitration above.
+	if inst.runtime_transport == "acp" && source != "acp" do return false
 	current_rank := bridge_runtime_activity_source_rank(inst.activity_source)
 	new_rank := bridge_runtime_activity_source_rank(source)
 	if current_rank <= 0 || new_rank >= current_rank do return true
