@@ -20,7 +20,7 @@ Conventions used below:
   `./bin/ham-ctl --help` lists all groups.
 
 Groups: `bridge`, `agents`, `task-chain`, `task`, `workflow`, `lease`, `review`, `issue`, `chat`, `memory`, `artifact`,
-`shell`, `extension`, `context`, `start-success`.
+`shell`, `events`, `extension`, `context`, `start-success`.
 
 ---
 
@@ -720,3 +720,13 @@ ham-ctl task cancel <task-id>
 - `lease next` refreshes current responsibility. Stay with a waiting task rather
   than pulling unrelated work. `lease heartbeat` only reports progress or
   acknowledges requirements; it does not renew ownership.
+
+## events — durable task-chain inbox
+- `events next [--wait 30s] [--limit 20]` — pull live events belonging to your durable agent identity. Default wait is `0s`; maximum `30s`. The limit is `1..100`. Wait accepts seconds or milliseconds.
+- `events ack <event_id...>` — acknowledge `1..100` delivered events after handling them.
+- `events watch --chain <id>` / `events unwatch --chain <id>` — add/remove an explicit watch on a chain owned by your user.
+- `events subscriptions` — list your subscriptions, including automatic role defaults.
+
+Coordinator defaults follow chain membership. Work-claim defaults receive only that task's requirements changes and remain while the claim is waiting; they end when ownership ends. Explicit watches receive chain state, human review requests, human blocks, and work-finished events. Watches survive instance restarts.
+
+Delivery is at least once. Deduplicate by `event_id`, acknowledge after handling, and expect unacknowledged events again after five minutes. After ten attempts the hub republishes to `ev.dlq.<owner>…`. State events roll up to the latest state. Stale resolvable events are skipped; a previously delivered event later resolved or superseded produces a `resolved` notice with `resolved_event_id`. Notices need no acknowledgement. Events contain metadata, so fetch the current task when details are needed.

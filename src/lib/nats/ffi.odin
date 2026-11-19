@@ -11,6 +11,13 @@ when ODIN_OS == .Windows {
 }
 @(private)
 foreign client {
+	ham_nats_ack_reply :: proc(conn: ^Connection, reply: cstring, timeout_ms: i64) -> i32 ---
+	ham_nats_subscribe :: proc(out: ^^Pull, conn: ^Connection, subject: cstring) -> i32 ---
+	ham_nats_next :: proc(out: ^^Message, sub: ^Pull, timeout_ms: i64) -> i32 ---
+	ham_nats_stream_get :: proc(out: ^^Message, conn: ^Connection, stream: cstring, sequence: u64, js_error: ^i32) -> i32 ---
+	natsMsg_GetReply :: proc(msg: ^Message) -> cstring ---
+	natsMsg_Destroy :: proc(msg: ^Message) ---
+
 	ham_nats_connect :: proc(out: ^^Connection, url, creds, ca: cstring, timeout_ms: i64) -> i32 ---
 	ham_nats_destroy :: proc(conn: ^Connection) ---
 	ham_nats_publish :: proc(conn: ^Connection, subject: cstring, data: rawptr, size: c.int, id: cstring, keys, values: [^]cstring, count: c.int, out: ^Pub_Ack, js_error: ^i32) -> i32 ---

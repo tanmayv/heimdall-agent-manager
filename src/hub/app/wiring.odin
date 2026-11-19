@@ -1,6 +1,7 @@
 package app
 
 import "core:fmt"
+import eventinbox "odin_test:hub/service/eventinbox"
 import eventrelay "odin_test:hub/service/eventrelay"
 import "core:os"
 import "core:strings"
@@ -38,7 +39,11 @@ import platform "odin_test:hub/platform"
 
 App_Graph :: struct {
 	event_relay: eventrelay.Service,
+	event_inbox: eventinbox.Service,
+	event_inbox_runtime: eventinbox.Runtime,
+	event_inbox_handlers: http.Event_Inbox_Handlers,
 	sqlite_event_outbox: sqlite.Event_Outbox_Repo_SQLite,
+	sqlite_event_subscriptions: sqlite.Event_Subscription_Repo_SQLite,
 	mcp_runtime_mutex:sync.Mutex,
 	mcp_spike: mcp_service.Store,
 	mcp_spike_handlers: http.MCP_Spike_Handlers,
@@ -303,6 +308,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.billing_handlers = http.Billing_Handlers{auth = &graph.auth, billing = &graph.billing, ui_origin = config.ui_origin}
 
 	graph.repos.event_outbox = sqlite.new_event_outbox_repository(&graph.sqlite_event_outbox, &graph.db)
+	graph.repos.event_subscriptions = sqlite.new_event_subscription_repository(&graph.sqlite_event_subscriptions, &graph.db)
 	graph.repos.users = sqlite.new_user_repository(&graph.sqlite_users, &graph.db)
 	// External identity claiming is atomic on an isolated connection so its
 	// transaction cannot commit or roll back an unrelated repository's writes.
@@ -665,6 +671,11 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.experiment_handlers.on_changed_ctx = &graph.bots_runtime
 	graph.bots.boot_unix_ms, _ = platform.rfc3339_to_unix_ms(platform.clock_now(&graph.clock))
 	graph.bridge_handlers.bots = &graph.bots
+	graph.event_inbox = eventinbox.Service{
+		factory = &graph.uow_factory, ids = &graph.ids,
+		options = {url = config.nats_url, creds_file = config.nats_creds_file, ca_file = config.nats_ca_file, timeout_ms = 1000},
+	}
+	graph.event_inbox_handlers = http.Event_Inbox_Handlers{agent_actions = &graph.agent_action_handlers, inbox = &graph.event_inbox}
 	graph.bot_agent_handlers = http.Bot_Agent_Handlers{agent_actions = &graph.agent_action_handlers, bots = &graph.bots, experiments = &graph.experiment_repo}
 	graph.bot_handlers = http.Bot_Handlers{auth = &graph.auth, bots = &graph.bots, experiments = &graph.experiment_repo}
 	graph.bridges.provider_repo = graph.providers.repo
@@ -686,11 +697,13 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	} else {
 		fmt.println("ham-hub web push send disabled (no VAPID keypair configured); subscription endpoints remain active")
 	}
+	eventinbox.start(&graph.event_inbox_runtime, &graph.event_inbox)
 	eventrelay.start(&graph.event_relay, &graph.uow_factory, {url = config.nats_url, creds_file = config.nats_creds_file, ca_file = config.nats_ca_file, timeout_ms = 1000})
 	return true, ""
 }
 
 shutdown_graph :: proc(graph: ^App_Graph) {
+	eventinbox.stop(&graph.event_inbox_runtime)
 	eventrelay.stop(&graph.event_relay)
 	bots_service.bots_runtime_stop(&graph.bots_runtime)
 	bots_service.bots_service_destroy(&graph.bots)
@@ -875,6 +888,11 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/media/fetch", rawptr(&graph.bot_agent_handlers), http.bot_agent_media_fetch_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/media/stored", rawptr(&graph.bot_agent_handlers), http.bot_agent_media_stored_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/media/plan", rawptr(&graph.bot_agent_handlers), http.bot_agent_media_plan_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/events/next", rawptr(&graph.event_inbox_handlers), http.event_next_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/events/ack", rawptr(&graph.event_inbox_handlers), http.event_ack_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/events/watch", rawptr(&graph.event_inbox_handlers), http.event_watch_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/events/unwatch", rawptr(&graph.event_inbox_handlers), http.event_unwatch_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/events/subscriptions", rawptr(&graph.event_inbox_handlers), http.event_subscriptions_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/read", rawptr(&graph.bot_agent_handlers), http.bot_agent_channel_read_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/send", rawptr(&graph.bot_agent_handlers), http.bot_agent_channel_send_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/history", rawptr(&graph.bot_agent_handlers), http.bot_agent_channel_history_handler)

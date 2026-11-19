@@ -317,3 +317,41 @@ clone_cstrings :: proc(values: []string) -> []cstring {
 }
 @(private)
 destroy_cstrings :: proc(values: []cstring) {for s in values do delete(s); delete(values)}
+
+// Reply is borrowed until the message/batch is destroyed. Clone before storing.
+message_reply :: proc(msg: ^Message) -> string {
+	if msg == nil do return ""
+	return string(natsMsg_GetReply(msg))
+}
+// Only pass reply subjects read from an authenticated subscriber's stored
+// delivery. This is synchronous and must run outside a SQLite UoW.
+ack_reply :: proc(conn: ^Connection, reply: string, timeout_ms: i64) -> Error {
+	if conn == nil || !valid_name(reply) || timeout_ms <= 0 do return Error{status = INVALID}
+	value := strings.clone_to_cstring(reply)
+	defer delete(value)
+	return Error{status = ham_nats_ack_reply(conn, value, timeout_ms)}
+}
+// Synchronous core subscription, used to observe max-delivery advisories.
+// Caller owns the handle and releases it with pull_destroy.
+subscribe :: proc(conn: ^Connection, subject: string) -> (sub: ^Pull, err: Error) {
+	if conn == nil || !valid_name(subject) do return nil, Error{status = INVALID}
+	value := strings.clone_to_cstring(subject)
+	defer delete(value)
+	err.status = ham_nats_subscribe(&sub, conn, value)
+	return
+}
+// Caller owns a successful message; message_destroy releases it. Timeout owns
+// nothing. Unlike batch_message, the result is independently owned.
+next_message :: proc(sub: ^Pull, timeout_ms: i64) -> (msg: ^Message, err: Error) {
+	if sub == nil || timeout_ms <= 0 do return nil, Error{status = INVALID}
+	err.status = ham_nats_next(&msg, sub, timeout_ms)
+	return
+}
+stream_get :: proc(conn: ^Connection, stream: string, sequence: u64) -> (msg: ^Message, err: Error) {
+	if conn == nil || !valid_name(stream) || sequence == 0 do return nil, Error{status = INVALID}
+	value := strings.clone_to_cstring(stream)
+	defer delete(value)
+	err.status = ham_nats_stream_get(&msg, conn, value, sequence, &err.jetstream)
+	return
+}
+message_destroy :: proc(msg: ^Message) {natsMsg_Destroy(msg)}

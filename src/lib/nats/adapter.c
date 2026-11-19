@@ -163,3 +163,34 @@ int ham_nats_metadata(natsMsg *msg, ham_metadata *out) {
 int ham_nats_ack(natsMsg *msg, jsErrCode *err) { return natsMsg_AckSync(msg, NULL, err); }
 int ham_nats_nak(natsMsg *msg) { return natsMsg_Nak(msg, NULL); }
 int ham_nats_term(natsMsg *msg) { return natsMsg_Term(msg, NULL); }
+
+// Persist the reply subject, not the C message: HTTP ack can arrive after the
+// fetched batch has been destroyed. Request/reply confirms server receipt.
+int ham_nats_ack_reply(ham_nats *h, const char *reply, int64_t timeout) {
+    natsMsg *response = NULL;
+    natsStatus s = natsConnection_Request(&response, h->nc, reply, "+ACK", 4, timeout);
+    natsMsg_Destroy(response);
+    return s;
+}
+int ham_nats_subscribe(natsSubscription **out, ham_nats *h, const char *subject) {
+    *out = NULL;
+    natsStatus s = natsConnection_SubscribeSync(out, h->nc, subject);
+    // Ensure the advisory subscription is installed before a pull can exhaust
+    // max_deliver. No callback from nats.c enters Odin.
+    if (s == NATS_OK) s = natsConnection_FlushTimeout(h->nc, 2000);
+    if (s != NATS_OK) { natsSubscription_Destroy(*out); *out = NULL; }
+    return s;
+}
+int ham_nats_next(natsMsg **out, natsSubscription *sub, int64_t timeout) {
+    *out = NULL;
+    natsStatus s = natsSubscription_NextMsg(out, sub, timeout);
+    if (s != NATS_OK) { natsMsg_Destroy(*out); *out = NULL; }
+    return s;
+}
+int ham_nats_stream_get(natsMsg **out, ham_nats *h, const char *stream,
+                         uint64_t sequence, jsErrCode *err) {
+    *out = NULL;
+    natsStatus s = js_GetMsg(out, h->js, stream, sequence, NULL, err);
+    if (s != NATS_OK) { natsMsg_Destroy(*out); *out = NULL; }
+    return s;
+}

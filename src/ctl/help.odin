@@ -24,7 +24,7 @@ ctl_help :: proc(cmd: []string) {
 	if len(cmd) >= 2 {
 		switch cmd[1] {
 		case "bridge", "bridges", "agents", "task-chain", "task-chains",
-		     "task", "tasks", "channel", "channels", "chat", "chats", "artifact", "artifacts",
+		     "task", "tasks", "events", "channel", "channels", "chat", "chats", "artifact", "artifacts",
 		     "memory", "context", "start-success", "issue", "issues", "lease", "review", "verify",
 		     "workflow", "workflows":
 			print_agent_help(cmd[1:]); return

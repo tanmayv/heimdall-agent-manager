@@ -4,6 +4,7 @@ import server "../natstest"
 import "core:fmt"
 import "core:mem"
 import "core:os"
+import "core:strings"
 import "core:testing"
 import "core:time"
 
@@ -17,6 +18,7 @@ test_jetstream_real_server :: proc(t: ^testing.T) {
 	context.allocator = mem.tracking_allocator(&track)
 	test_publish_and_rollup(t)
 	test_durable_delivery(t)
+	test_persisted_ack_and_advisory(t)
 	test_errors_and_outage(t)
 	test_tls(t)
 	err := shutdown(5000)
@@ -298,4 +300,72 @@ test_tls :: proc(t: ^testing.T) {
 	defer destroy(trusted)
 	_, stream_err := stream_add(trusted, test_stream())
 	testing.expectf(t, stream_err.status == 0, "TLS JetStream request: %v", stream_err)
+}
+
+// The HTTP request destroys its batch before a later ack request. Exercise that
+// lifetime as well as the exact max-delivery advisory/raw-message path.
+test_persisted_ack_and_advisory :: proc(t: ^testing.T) {
+	srv, ok := server.start()
+	defer server.destroy(&srv)
+	if !testing.expect(t, ok) do return
+	conn := test_connect(t, srv.url)
+	if conn == nil do return
+	defer destroy(conn)
+	_, err := stream_add(conn, test_stream())
+	if !testing.expect_value(t, err.status, i32(0)) do return
+	advisory, aerr := subscribe(conn, "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.EVENTS.>")
+	if !testing.expect_value(t, aerr.status, i32(0)) do return
+	defer pull_destroy(advisory)
+	err = consumer_add(
+		conn,
+		{
+			stream = "EVENTS",
+			durable = "persist",
+			filter_subjects = []string{"ev.work"},
+			ack_wait_ns = i64(40 * time.Millisecond),
+			max_deliver = 2,
+		},
+	)
+	if !testing.expect_value(t, err.status, i32(0)) do return
+	pull, perr := pull_bind(conn, "EVENTS", "persist")
+	if !testing.expect_value(t, perr.status, i32(0)) do return
+	defer pull_destroy(pull)
+	_, err = publish(conn, "ev.work", test_bytes("acked"), "persist-1")
+	testing.expect_value(t, err.status, i32(0))
+	batch, berr := fetch(pull, 1, 500)
+	if !testing.expect_value(t, berr.status, i32(0)) do return
+	reply := strings.clone(message_reply(batch_message(batch, 0)))
+	defer delete(reply)
+	batch_destroy(batch)
+	testing.expect_value(t, ack_reply(conn, reply, 500).status, i32(0))
+	batch, berr = fetch(pull, 1, 50)
+	testing.expect(t, berr.status != 0 && batch == nil, "persisted reply ack suppresses redelivery")
+	batch_destroy(batch)
+	published, puberr := publish(conn, "ev.work", test_bytes("poison"), "persist-2")
+	testing.expect_value(t, puberr.status, i32(0))
+	for _ in 0 ..< 2 {
+		batch, berr = fetch(pull, 1, 500)
+		if !testing.expect_value(t, berr.status, i32(0)) do return
+		batch_destroy(batch)
+		time.sleep(60 * time.Millisecond)
+	}
+	// A fetch after the final ack_wait causes JetStream to report exhaustion.
+	batch, berr = fetch(pull, 1, 100)
+	testing.expect(t, berr.status != 0 && batch == nil)
+	batch_destroy(batch)
+	notice, nerr := next_message(advisory, 500)
+	if !testing.expect_value(t, nerr.status, i32(0)) do return
+	defer message_destroy(notice)
+	testing.expect(t, strings.contains(string(message_data(notice)), "max_deliver"))
+	stored, serr := stream_get(conn, "EVENTS", published.sequence)
+	if !testing.expect_value(t, serr.status, i32(0)) do return
+	defer message_destroy(stored)
+	testing.expect_value(t, string(message_data(stored)), "poison")
+	testing.expect_value(t, message_subject(stored), "ev.work")
+	missing, merr := stream_get(conn, "MISSING", 1)
+	testing.expect(t, merr.status != 0 && missing == nil)
+	message_destroy(missing)
+	empty, eerr := next_message(advisory, 10)
+	testing.expect(t, eerr.status != 0 && empty == nil)
+	message_destroy(empty)
 }
