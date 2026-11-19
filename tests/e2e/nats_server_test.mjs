@@ -45,3 +45,27 @@ test('missing NATS binary fails promptly with an actionable error', async () => 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('readiness follows a renamed executable including the Windows .exe suffix', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nats-helper-renamed-'));
+  const previous = process.env.HEIMDALL_E2E_NATS_BIN;
+  let server;
+  try {
+    const source = previous || process.env.HEIMDALL_TEST_NATS_BIN ||
+      process.env.PATH.split(path.delimiter).map(dir => path.join(dir, process.platform === 'win32' ? 'nats-server.exe' : 'nats-server'))
+        .find(file => fs.existsSync(file));
+    assert.ok(source, 'real nats-server must be installed');
+    const renamed = path.join(root, 'custom-nats-server.exe');
+    fs.copyFileSync(source, renamed);
+    fs.chmodSync(renamed, 0o700);
+    process.env.HEIMDALL_E2E_NATS_BIN = renamed;
+    server = await startNats(root);
+    assert.match(await connect(server.url), /^INFO /);
+    assert.ok(fs.existsSync(path.join(root, 'nats', 'custom-nats-server.exe_' + server.child.pid + '.ports')));
+  } finally {
+    await server?.stop();
+    if (previous === undefined) delete process.env.HEIMDALL_E2E_NATS_BIN;
+    else process.env.HEIMDALL_E2E_NATS_BIN = previous;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

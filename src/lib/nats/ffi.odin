@@ -2,8 +2,13 @@ package nats
 
 import "core:c"
 
-// Both archives are built by nix/nats.nix; OpenSSL is the same provider as httpc.
-foreign import client {"system:ham_nats", "system:nats_static", "system:ssl", "system:crypto"}
+// Built by nix/nats.nix or scripts/windows/build-nats.ps1.
+// Nix shares OpenSSL with httpc; Windows httpc uses Schannel.
+when ODIN_OS == .Windows {
+	foreign import client {"system:ham_nats.lib", "system:nats_static.lib", "system:ssl.lib", "system:crypto.lib"}
+} else {
+	foreign import client {"system:ham_nats", "system:nats_static", "system:ssl", "system:crypto"}
+}
 @(private)
 foreign client {
 	ham_nats_connect :: proc(out: ^^Connection, url, creds, ca: cstring, timeout_ms: i64) -> i32 ---

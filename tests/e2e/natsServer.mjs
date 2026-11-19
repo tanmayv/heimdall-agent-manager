@@ -31,7 +31,12 @@ export async function startNats(directory) {
       if (failure) throw failure;
       if (child.exitCode !== null || child.signalCode !== null) throw new Error('nats-server exited during startup');
       try {
-        const ports = JSON.parse(fs.readFileSync(path.join(dir, 'nats-server_' + child.pid + '.ports'), 'utf8'));
+        // NATS uses the executable basename (nats-server.exe on Windows).
+        // The private directory and exact child PID identify our server even
+        // when HEIMDALL_E2E_NATS_BIN points to a renamed binary.
+        const portFile = fs.readdirSync(dir).find(name => name.endsWith('_' + child.pid + '.ports'));
+        if (!portFile) throw new Error('waiting for child ports file');
+        const ports = JSON.parse(fs.readFileSync(path.join(dir, portFile), 'utf8'));
         const url = ports.nats?.[0];
         if (url && new URL(url).hostname === '127.0.0.1') {
           return { url, child, kill, stop,
