@@ -153,3 +153,17 @@ a build that picked up some other libcurl fails at startup (`--version` too).
    `nix develop` and `bash tests/hub_package_libcurl_test.sh`.
 3. The Windows cache key includes the pin, so the next release run rebuilds
    `libcurl.lib`.
+
+### Multipart form bodies
+
+Use `multipart_body([]Multipart_Part{...}, allocator)` for in-memory form
+fields and files. Each part supplies `name`, `value` bytes and, for files,
+`filename` plus optional `content_type` (defaults to
+`application/octet-stream`). Plain fields omit filename and Content-Type.
+The encoder copies values, escapes quotes/CR/LF in names and filenames, and
+uses CRLF framing. Its boundary is `----ninjy` plus 32 random lowercase hex
+digits, retried up to three times if present in a value. Failure produces an
+invalid empty Raw_Body. `multipart_body_with_boundary` provides deterministic
+encoding for tests and rejects collisions. The returned `Raw_Body.bytes` and
+`Raw_Body.content_type` belong to the supplied allocator; free both after send
+when using a persistent allocator. Input values remain caller-owned.

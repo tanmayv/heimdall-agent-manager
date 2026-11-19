@@ -186,7 +186,7 @@ pty_host_deliver_line_gates_bracketed_paste :: proc(t: ^testing.T) {
 
 	Server_Ctx :: struct {
 		listener_fd: posix.FD,
-		payloads:    [4][]byte,
+		payloads:    [6][]byte,
 		count:       int,
 		allocator:   runtime.Allocator,
 	}
@@ -217,16 +217,24 @@ pty_host_deliver_line_gates_bracketed_paste :: proc(t: ^testing.T) {
 	testing.expect(t, bridge_pty_host_deliver_line(sock_path, "inst_claude_line", "raw\r\n\x1bbytes"), "non-codex delivery succeeds")
 	thread.join(th)
 
-	testing.expect_value(t, ctx.count, 4)
-	if ctx.count == 4 {
-		codex_data_offset := 1 + 4 + len("inst_codex_line")
-		raw_data_offset := 1 + 4 + len("inst_claude_line")
-		testing.expect_value(t, string(ctx.payloads[0][codex_data_offset:]), "\x1b[200~line[201~tail\x1b[201~")
-		testing.expect_value(t, ctx.payloads[1][0], u8(PTY_HOST_T_KEY))
-		testing.expect_value(t, ctx.payloads[1][len(ctx.payloads[1]) - 1], u8(1))
-		testing.expect_value(t, string(ctx.payloads[2][raw_data_offset:]), "raw\r\n\x1bbytes")
-		testing.expect_value(t, ctx.payloads[3][0], u8(PTY_HOST_T_KEY))
-		testing.expect_value(t, ctx.payloads[3][len(ctx.payloads[3]) - 1], u8(1))
+	testing.expect_value(t, ctx.count, 6)
+	if ctx.count == 6 {
+		for instance, i in ([]string{"inst_codex_line", "inst_claude_line"}) {
+			base := i * 3
+			data_offset := 1 + 4 + len(instance)
+			testing.expect_value(t, ctx.payloads[base][0], u8(PTY_HOST_T_INPUT))
+			testing.expect_value(t, string(ctx.payloads[base][5:data_offset]), instance)
+			expected_text := "\x1b[200~line[201~tail\x1b[201~"
+			if i == 1 do expected_text = "raw\r\n\x1bbytes"
+			testing.expect_value(t, string(ctx.payloads[base][data_offset:]), expected_text)
+			for key_index in 1..=2 {
+				payload := ctx.payloads[base + key_index]
+				testing.expect_value(t, len(payload), data_offset + 1)
+				testing.expect_value(t, payload[0], u8(PTY_HOST_T_KEY))
+				testing.expect_value(t, string(payload[5:data_offset]), instance)
+				testing.expect_value(t, payload[data_offset], u8(1))
+			}
+		}
 	}
 }
 

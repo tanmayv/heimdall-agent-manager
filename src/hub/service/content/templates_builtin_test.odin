@@ -108,3 +108,36 @@ test_template_available_all_builtins :: proc(t: ^testing.T) {
 	testing.expect_value(t, template_available(&service, "user_1", "tmpl_system_reviewer"), false)
 	testing.expect_value(t, template_available(&service, "user_1", "tmpl_non_existent"), false)
 }
+
+// Exercise the public listing service: domain cannot import content without a cycle.
+@(test)
+test_bot_template_loaded_and_hidden_from_list :: proc(t: ^testing.T) {
+	tmpl, ok := domain.builtin_template(domain.TEMPLATE_BOT_ID)
+	testing.expect(t, ok)
+	testing.expect_value(t, tmpl.name, "Ninjy bot")
+	testing.expect_value(t, tmpl.is_system, true)
+	for required in ([]string{
+		"You are the user's personal Ninjy bot.",
+		"./bin/ham-ctl channel read",
+		"./bin/ham-ctl channel send --text",
+		"./bin/ham-ctl channel history --limit 20",
+		"./bin/ham-ctl task-chain list",
+		"./bin/ham-ctl task-chain show <chain_id>",
+		"./bin/ham-ctl task list --chain <chain_id>",
+		"./bin/ham-ctl task show <task_id>",
+		"Do not change files, run commands other than `shell serve`, or start servers the user did not ask for.",
+		"Do not approve, reject or request changes on reviews, and do not approve or reject memory proposals.",
+		"Chat apps are not end-to-end encrypted",
+	}) {
+		testing.expect(t, strings.contains(tmpl.instructions, required), required)
+	}
+
+	repo := iface.Content_Repository{list_templates = fake_content_list_templates_empty, get_template = fake_content_get_template_none}
+	service := new_content_service(&repo, nil, nil, nil, nil, nil, nil)
+	templates, err := list_templates(&service, contracts.Auth_Context{user_id = "user_1"})
+	defer delete(templates)
+	testing.expect_value(t, err.code, domain.Error_Code.None)
+	for listed in templates {
+		testing.expect(t, listed.template_id != domain.TEMPLATE_BOT_ID)
+	}
+}

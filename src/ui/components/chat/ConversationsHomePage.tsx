@@ -1,3 +1,7 @@
+import { useGetBotQuery } from '../../api/endpoints/bots';
+import { useFetchExperimentsQuery } from '../../api/endpoints/settings';
+import { BOTS_EXPERIMENT_KEY, resolveExperimentFlag } from '../settings/experimentFlags';
+import { filterBotConversations } from '../settings/botsView';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useSelector } from 'react-redux';
@@ -65,6 +69,10 @@ export interface ConversationsHomePageProps {
 }
 
 export default function ConversationsHomePage({ onSelectConversation, compact = false, autoFocusSearch = false }: ConversationsHomePageProps = {}) {
+  const flags = useFetchExperimentsQuery();
+  const botsEnabled = resolveExperimentFlag(flags.data?.flags, BOTS_EXPERIMENT_KEY) === 'enabled';
+  const botQuery = useGetBotQuery(undefined, { skip: !botsEnabled });
+  const botInstanceId = botsEnabled ? botQuery.currentData?.advanced.agent_instance_id || null : null;
   const firstPage = useListConversationInboxQuery({ limit: PAGE_SIZE });
   const [fetchPage, fetchPageResult] = useLazyListConversationInboxQuery();
   const [rows, setRows] = useState<SidebarConversation[]>([]);
@@ -107,7 +115,7 @@ export default function ConversationsHomePage({ onSelectConversation, compact = 
     };
   }, [rows, activeKey]);
 
-  const conversations = useMemo(() => mergeConversations([], decryptedRows), [decryptedRows]);
+  const conversations = useMemo(() => filterBotConversations(mergeConversations([], decryptedRows), botInstanceId), [decryptedRows, botInstanceId]);
   const filteredConversations = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return conversations;

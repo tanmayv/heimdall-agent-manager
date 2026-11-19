@@ -10,6 +10,8 @@ import iface "odin_test:hub/repository/iface"
 import sqlite "odin_test:hub/repository/sqlite"
 import auth_service "odin_test:hub/service/auth"
 import mcp_service "odin_test:hub/service/mcp"
+import bots_service "odin_test:hub/service/bots"
+import channel "odin_test:hub/service/channel"
 import agent_service "odin_test:hub/service/agent"
 import bridge_service "odin_test:hub/service/bridge"
 import bridge_log_service "odin_test:hub/service/bridge_log"
@@ -77,6 +79,8 @@ App_Graph :: struct {
 	sqlite_issues: sqlite.Issue_Repo_SQLite,
 	sqlite_shell_sessions: sqlite.Shell_Session_Repo_SQLite,
 	sqlite_experiments: sqlite.Experiment_Repo_SQLite,
+	sqlite_agent_writes: sqlite.Agent_Write_Repo_SQLite,
+	sqlite_bots: sqlite.Bot_Repo_SQLite,
 	sqlite_lsp_server_configs: sqlite.Lsp_Server_Config_Repo_SQLite,
 	sqlite_providers: sqlite.Provider_Repo_SQLite,
 	sqlite_vault_directory: sqlite.Vault_Directory_Repo_SQLite,
@@ -96,6 +100,16 @@ App_Graph :: struct {
 	bridge_update_catalog: bridge_service.Bridge_Update_Catalog,
 	bridges: bridge_service.Bridge_Service,
 	agents: agent_service.Agent_Service,
+	bots: bots_service.Bots_Service,
+	bots_runtime: bots_service.Bots_Runtime,
+	telegram: channel.Telegram_Adapter,
+	whatsapp: channel.WhatsApp_Adapter,
+	whatsapp_adapter: channel.Channel_Adapter,
+	bot_webhook_handlers: http.Bot_Webhook_Handlers,
+	channel_adapter: channel.Channel_Adapter,
+	bot_handlers: http.Bot_Handlers,
+	bot_agent_handlers: http.Bot_Agent_Handlers,
+	bot_command_sink: project_service.Bridge_Command_Sink,
 	projects: project_service.Project_Service,
 	content: content_service.Content_Service,
 	taskchains: taskchain_service.Taskchain_Service,
@@ -110,6 +124,7 @@ App_Graph :: struct {
 	vault_directory_handlers: http.Vault_Directory_Handlers,
 	bridge_handlers: http.Bridge_Handlers,
 	agent_handlers: http.Agent_Handlers,
+	agent_write_handlers: http.Agent_Write_Handlers,
 	project_handlers: http.Project_Handlers,
 	content_handlers: http.Content_Handlers,
 	taskchain_handlers: http.Taskchain_Handlers,
@@ -122,6 +137,8 @@ App_Graph :: struct {
 	cards: card_service.Card_Service,
 	shell_session_repo: iface.Shell_Session_Repository,
 	experiment_repo: iface.Experiment_Repository,
+	agent_write_repo: iface.Agent_Write_Repository,
+	bot_repo: iface.Bot_Repository,
 	lsp_server_config_repo: iface.Lsp_Server_Config_Repository,
 	provider_repo: iface.Provider_Repository,
 	shell_session_service: shell_session_svc.Shell_Session_Service,
@@ -321,6 +338,8 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.repos.issues = sqlite.new_issue_repository(&graph.sqlite_issues, &graph.db)
 	graph.shell_session_repo = sqlite.new_shell_session_repository(&graph.sqlite_shell_sessions, &graph.db)
 	graph.experiment_repo = sqlite.new_experiment_repository(&graph.sqlite_experiments, &graph.db)
+	graph.agent_write_repo = sqlite.new_agent_write_repository(&graph.sqlite_agent_writes, &graph.db)
+	graph.bot_repo = sqlite.new_bot_repository(&graph.sqlite_bots, &graph.db)
 	graph.lsp_server_config_repo = sqlite.new_lsp_server_config_repository(&graph.sqlite_lsp_server_configs, &graph.db)
 	graph.bridge_log_repo = sqlite.new_bridge_log_repository(&graph.sqlite_bridge_logs, &graph.db)
 	graph.bridge_logs = bridge_log_service.new_service(&graph.bridge_log_repo)
@@ -549,6 +568,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.task_engine.vcs_show_file_ctx = rawptr(&graph.bridge_handlers)
 	bridge_log_service.start(&graph.bridge_logs)
 	graph.agent_handlers = http.Agent_Handlers{
+		agent_writes = &graph.agent_write_repo,
 		entitlements = billing_service.entitlement_lookup(&graph.billing),
 		launch_preferences = &graph.users,
 		auth           = &graph.auth,
@@ -558,8 +578,9 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		shell_sessions = &graph.shell_session_service,
 		experiments    = &graph.experiment_repo,
 	}
-	graph.project_handlers = http.Project_Handlers{auth = &graph.auth, projects = &graph.projects}
-	graph.content_handlers = http.Content_Handlers{auth = &graph.auth, agents = &graph.agents, content = &graph.content, event_bus = &graph.event_bus}
+	graph.agent_write_handlers = http.Agent_Write_Handlers{auth = &graph.auth, writes = &graph.agent_write_repo}
+	graph.project_handlers = http.Project_Handlers{agent_writes = &graph.agent_write_repo, auth = &graph.auth, projects = &graph.projects}
+	graph.content_handlers = http.Content_Handlers{agent_writes = &graph.agent_write_repo, auth = &graph.auth, agents = &graph.agents, content = &graph.content, event_bus = &graph.event_bus}
 	graph.taskchain_handlers = http.Taskchain_Handlers{auth = &graph.auth, taskchains = &graph.taskchains, agents = &graph.agents, content = &graph.content, projects = &graph.projects, event_bus = &graph.event_bus, task_engine = &graph.task_engine, shell_sessions = &graph.shell_session_service}
 	graph.search_handlers = http.Search_Handlers{auth = &graph.auth, search = &graph.search}
 	graph.skills_handlers = http.Skills_Handlers{auth = &graph.auth}
@@ -615,6 +636,31 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.providers = provider_service.new_provider_service(&graph.provider_repo)
 	graph.providers.uow_factory = &graph.uow_factory
 	graph.providers.bridges = &graph.repos.bridges
+	graph.bot_command_sink = bridge_command_sink
+	graph.bots = bots_service.Bots_Service{ui_origin = config.ui_origin, repo = &graph.bot_repo, uow_factory = &graph.uow_factory, event_bus = &graph.event_bus, experiments = &graph.experiment_repo, agents = &graph.agents, providers = &graph.providers, bridges = &graph.repos.bridges, registry = &graph.bridge_runtime_registry, command_sink = &graph.bot_command_sink, adapter = nil, clock = &graph.clock, ids = &graph.ids, timers = config.bot_timers}
+	if config.telegram_bot_token != "" {
+		graph.telegram = channel.Telegram_Adapter{token = config.telegram_bot_token, api_base = config.telegram_api_base}
+		graph.channel_adapter = channel.telegram_adapter(&graph.telegram)
+		graph.bots.adapter = &graph.channel_adapter
+	}
+	configured, problem := app_whatsapp_config_state(config)
+	if problem != "" do fmt.eprintln(problem)
+	if configured {
+		graph.whatsapp = channel.WhatsApp_Adapter{access_token = config.whatsapp_access_token, app_secret = config.whatsapp_app_secret,
+			verify_token = config.whatsapp_verify_token, phone_number_id = config.whatsapp_phone_number_id,
+			business_account_id = config.whatsapp_business_account_id, api_base = config.whatsapp_api_base}
+		graph.whatsapp_adapter = channel.whatsapp_adapter(&graph.whatsapp)
+		graph.bots.whatsapp = &graph.whatsapp_adapter
+		fmt.printf("bots: whatsapp configured phone_number_id=%s\n", config.whatsapp_phone_number_id)
+	}
+	graph.bot_webhook_handlers = http.Bot_Webhook_Handlers{bots = &graph.bots, runtime = &graph.bots_runtime, trusted_cidrs = config.forwarded_for_trusted_cidrs}
+	graph.bots_runtime = bots_service.Bots_Runtime{service = &graph.bots, telegram_bot_token = config.telegram_bot_token, supervisor_tick = bots_service.bots_supervisor_tick}
+	graph.experiment_handlers.on_changed = bots_service.bots_on_experiment_changed
+	graph.experiment_handlers.on_changed_ctx = &graph.bots_runtime
+	graph.bots.boot_unix_ms, _ = platform.rfc3339_to_unix_ms(platform.clock_now(&graph.clock))
+	graph.bridge_handlers.bots = &graph.bots
+	graph.bot_agent_handlers = http.Bot_Agent_Handlers{agent_actions = &graph.agent_action_handlers, bots = &graph.bots, experiments = &graph.experiment_repo}
+	graph.bot_handlers = http.Bot_Handlers{auth = &graph.auth, bots = &graph.bots, experiments = &graph.experiment_repo}
 	graph.bridges.provider_repo = graph.providers.repo
 	graph.provider_handlers = http.Provider_Handlers{auth = &graph.auth, providers = &graph.providers, bridges = &graph.bridges, bridge_runtime_registry = &graph.bridge_runtime_registry, clock = &graph.clock, ids = &graph.ids, agents = &graph.agents, event_bus = &graph.event_bus}
 	graph.agent_action_handlers.providers = &graph.providers
@@ -638,6 +684,11 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 }
 
 shutdown_graph :: proc(graph: ^App_Graph) {
+	bots_service.bots_runtime_stop(&graph.bots_runtime)
+	bots_service.bots_service_destroy(&graph.bots)
+	channel.telegram_destroy(&graph.telegram)
+	channel.whatsapp_destroy(&graph.whatsapp)
+	http.webhook_rate_destroy(&graph.bot_webhook_handlers.limiter)
 	bridge_service.bridge_update_catalog_destroy(&graph.bridge_update_catalog)
 	db_collectors_detach()
 	// Join the bridge_log writer (final drain) while the DB is still open.
@@ -695,6 +746,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/auth/logout", rawptr(&graph.user_handlers), http.auth_logout_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me", rawptr(&graph.user_handlers), http.me_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me/logout-url", rawptr(&graph.user_handlers), http.logout_url_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/me/agent-writes", rawptr(&graph.agent_write_handlers), http.list_agent_writes_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me/experiments", rawptr(&graph.experiment_handlers), http.experiment_list_handler)
 	http.router_add(&graph.router, "PUT", "/api/v1/me/experiments/*", rawptr(&graph.experiment_handlers), http.experiment_set_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/providers", rawptr(&graph.provider_handlers), http.provider_catalog_list_handler)
@@ -798,6 +850,26 @@ register_routes :: proc(graph: ^App_Graph) {
 	// Registered BEFORE the /agents/* wildcard so the literal "live" tree endpoint
 	// (project -> live-chains -> agents) is not swallowed by agent_detail_handler.
 	http.router_add(&graph.router, "GET", "/api/v1/agents/live", rawptr(&graph.taskchain_handlers), http.agents_live_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/bots/me", rawptr(&graph.bot_handlers), http.bot_me_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/bots/me", rawptr(&graph.bot_handlers), http.bot_me_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/bots/me", rawptr(&graph.bot_handlers), http.bot_me_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/bots/me/placement", rawptr(&graph.bot_handlers), http.bot_placement_handler)
+	http.router_add(&graph.router, "PUT", "/api/v1/bots/me/placement", rawptr(&graph.bot_handlers), http.bot_placement_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/bots/me/placement/options", rawptr(&graph.bot_handlers), http.bot_placement_options_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/bots/me/deliveries", rawptr(&graph.bot_handlers), http.bot_deliveries_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/bots/me/channels/telegram/pairing", rawptr(&graph.bot_handlers), http.bot_pairing_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/bots/me/channels/telegram", rawptr(&graph.bot_handlers), http.bot_disconnect_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/bots/me/channels/whatsapp/pairing", rawptr(&graph.bot_handlers), http.bot_whatsapp_pairing_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/bots/me/channels/whatsapp", rawptr(&graph.bot_handlers), http.bot_whatsapp_disconnect_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/bots/me/channels/telegram/messages", rawptr(&graph.bot_handlers), http.bot_messages_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/channels/whatsapp/webhook", rawptr(&graph.bot_webhook_handlers), http.whatsapp_webhook_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/channels/whatsapp/webhook", rawptr(&graph.bot_webhook_handlers), http.whatsapp_webhook_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/media/fetch", rawptr(&graph.bot_agent_handlers), http.bot_agent_media_fetch_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/media/stored", rawptr(&graph.bot_agent_handlers), http.bot_agent_media_stored_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/media/plan", rawptr(&graph.bot_agent_handlers), http.bot_agent_media_plan_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/read", rawptr(&graph.bot_agent_handlers), http.bot_agent_channel_read_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/send", rawptr(&graph.bot_agent_handlers), http.bot_agent_channel_send_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/history", rawptr(&graph.bot_agent_handlers), http.bot_agent_channel_history_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agents/*", rawptr(&graph.agent_handlers), http.agent_detail_handler)
 	http.router_add(&graph.router, "PATCH", "/api/v1/agents/*", rawptr(&graph.agent_handlers), http.update_agent_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agents/*/archive", rawptr(&graph.agent_handlers), http.archive_agent_handler)
@@ -1044,6 +1116,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/actions/*/run", rawptr(&graph.action_handlers), http.run_action_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridge/actions", rawptr(&graph.action_handlers), http.bridge_list_actions_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridge/actions/*/execute", rawptr(&graph.action_handlers), http.bridge_execute_action_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/bridge/bot-attempts/*/switch", rawptr(&graph.bridge_handlers), http.bot_bridge_switch_handler)
 
 	// Scheduled Prompts backward compatibility
 	http.router_add(&graph.router, "GET", "/api/v1/scheduled-prompts", rawptr(&graph.action_handlers), http.list_scheduled_prompts_handler)

@@ -361,9 +361,15 @@ agent_action_chat_send_to_agent_handler :: proc(ctx: rawptr, req: Request) -> Re
 	}
 	// Q3: id-free plain phrase (never resolve the target's name in the emit path).
 	publish_agent_action(h, inst, "chat_send_agent", "messaged another agent")
+	wake := coordinator_wake_after_agent_message(h, auth, inst, target, msg.conversation_id, time.to_unix_nanoseconds(time.now()) / 1_000_000)
 	b := strings.builder_make()
+	defer strings.builder_destroy(&b)
 	write_message_json(&b, msg, h.content)
-	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
+	// Extend the existing message object without changing any message fields.
+	encoded := strings.to_string(b)
+	with_wake := strings.concatenate({encoded[:len(encoded)-1], `,"wake":"`, coordinator_wake_outcome_string(wake), `"}`})
+	defer delete(with_wake)
+	return respond_success(with_wake, req.request_id, auth_ctx_server_time(req), 201)
 }
 
 // agent_action_chat_previous_context_handler stores the rollover handoff the
@@ -1373,6 +1379,10 @@ agent_action_start_success_handler :: proc(ctx: rawptr, req: Request) -> Respons
 				// rollover prompt; announcing it as "from User" would be false.
 				if msg.direction == "user_to_agent" && msg.read_at == "" && msg.message_type != content_service.MESSAGE_TYPE_PREVIOUS_CONTEXT {
 					content_service.notify_agent_message(h.content, conv, "user_to_agent", "user", msg.message_id)
+					break
+				}
+				if msg.direction == "agent_to_agent" && msg.read_at == "" && msg.message_type != content_service.MESSAGE_TYPE_PREVIOUS_CONTEXT {
+					content_service.notify_agent_message(h.content, conv, "agent_to_agent", msg.sender_agent_instance_id, msg.message_id)
 					break
 				}
 			}

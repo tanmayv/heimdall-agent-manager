@@ -1,6 +1,7 @@
 package httpc
 
 import "core:c"
+import "core:crypto"
 import "core:encoding/base64"
 import "core:encoding/json"
 import "core:strings"
@@ -145,4 +146,137 @@ encode_form :: proc(fields: []Form_Field) -> (out: string, err: Error) {
 		strings.write_string(&b, escape_temp(f.value) or_return)
 	}
 	return strings.to_string(b), .None
+}
+
+// Multipart_Part values are borrowed for the duration of multipart_body. The
+// returned Raw_Body owns bytes and content_type in the requested allocator.
+Multipart_Part :: struct {
+	name: string,
+	filename: string,
+	content_type: string,
+	value: []byte,
+}
+
+// A random boundary is retried before encoding if any value contains it.
+multipart_body :: proc(parts: []Multipart_Part, allocator := context.temp_allocator) -> Body {
+	for _ in 0..<3 {
+		random: [16]byte
+		crypto.rand_bytes(random[:])
+		hex := "0123456789abcdef"
+		boundary: [41]byte
+		prefix := "----ninjy"
+		copy(boundary[:9], transmute([]byte)prefix)
+		for b, i in random {
+			boundary[9 + 2*i] = hex[b >> 4]
+			boundary[10 + 2*i] = hex[b & 15]
+		}
+		candidate := string(boundary[:])
+		if multipart_boundary_absent(parts, candidate) do return multipart_body_with_boundary(parts, candidate, allocator)
+	}
+	return Raw_Body{}
+}
+
+@(private)
+multipart_boundary_absent :: proc(parts: []Multipart_Part, boundary: string) -> bool {
+	if boundary == "" do return false
+	for part in parts {
+		if strings.contains(string(part.value), boundary) do return false
+	}
+	return true
+}
+
+@(private)
+multipart_parameter_size :: proc(value: string) -> int {
+	size := 0
+	for b in transmute([]byte)value {
+		count := 1
+		if b == '"' || b == '\r' || b == '\n' do count = 3
+		if size > max(int) - count do return -1
+		size += count
+	}
+	return size
+}
+
+@(private)
+multipart_add_size :: proc(total: ^int, size: int) -> bool {
+	if size < 0 || total^ > max(int) - size do return false
+	total^ += size
+	return true
+}
+
+@(private)
+multipart_write :: proc(out: []byte, offset: ^int, value: string) {
+	offset^ += copy(out[offset^:], transmute([]byte)value)
+}
+
+@(private)
+multipart_write_parameter :: proc(out: []byte, offset: ^int, value: string) {
+	for b in transmute([]byte)value {
+		switch b {
+		case '"': multipart_write(out, offset, "%22")
+		case '\r': multipart_write(out, offset, "%0D")
+		case '\n': multipart_write(out, offset, "%0A")
+		case:
+			out[offset^] = b
+			offset^ += 1
+		}
+	}
+}
+
+// Fixed-boundary seam. Validate and size before allocating so file bytes are
+// written exactly once, directly into the requested allocator.
+// Invalid bodies use Raw_Body{} so send reports Invalid_Body.
+multipart_body_with_boundary :: proc(parts: []Multipart_Part, boundary: string, allocator := context.temp_allocator) -> Body {
+	if !multipart_boundary_absent(parts, boundary) do return Raw_Body{}
+	for b in transmute([]byte)boundary {
+		if !((b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '-') do return Raw_Body{}
+	}
+	disposition :: "\r\nContent-Disposition: form-data; name=\""
+	filename :: "; filename=\""
+	type_header :: "\"\r\nContent-Type: "
+	total := 0
+	for size in ([]int{len(boundary), len("----\r\n")}) {
+		if !multipart_add_size(&total, size) do return Raw_Body{}
+	}
+	for part in parts {
+		for size in ([]int{len("--"), len(boundary), len(disposition), multipart_parameter_size(part.name), len("\""), len("\r\n\r\n"), len(part.value), len("\r\n")}) {
+			if !multipart_add_size(&total, size) do return Raw_Body{}
+		}
+		if part.filename != "" {
+			content_type := part.content_type
+			if content_type == "" do content_type = CONTENT_TYPE_OCTET_STREAM
+			for b in transmute([]byte)content_type {
+				if b < 0x20 || b == 0x7f do return Raw_Body{}
+			}
+			for size in ([]int{len(filename), multipart_parameter_size(part.filename), len(type_header), len(content_type)}) {
+				if !multipart_add_size(&total, size) do return Raw_Body{}
+			}
+		}
+	}
+	out := make([]byte, total, allocator)
+	offset := 0
+	for part in parts {
+		multipart_write(out, &offset, "--")
+		multipart_write(out, &offset, boundary)
+		multipart_write(out, &offset, disposition)
+		multipart_write_parameter(out, &offset, part.name)
+		multipart_write(out, &offset, "\"")
+		if part.filename != "" {
+			multipart_write(out, &offset, filename)
+			multipart_write_parameter(out, &offset, part.filename)
+			multipart_write(out, &offset, type_header)
+			content_type := part.content_type
+			if content_type == "" do content_type = CONTENT_TYPE_OCTET_STREAM
+			multipart_write(out, &offset, content_type)
+		}
+		multipart_write(out, &offset, "\r\n\r\n")
+		offset += copy(out[offset:], part.value)
+		multipart_write(out, &offset, "\r\n")
+	}
+	multipart_write(out, &offset, "--")
+	multipart_write(out, &offset, boundary)
+	multipart_write(out, &offset, "--\r\n")
+	assert(offset == total)
+	type_parts := [2]string{"multipart/form-data; boundary=", boundary}
+	return Raw_Body{content_type = strings.concatenate(type_parts[:], allocator), bytes = out}
 }

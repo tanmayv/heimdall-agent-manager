@@ -13,6 +13,7 @@ new_experiment_repository :: proc(impl: ^Experiment_Repo_SQLite, conn: ^Conn) ->
 	impl.conn = conn
 	return iface.Experiment_Repository{
 		ctx           = rawptr(impl),
+		count_enabled = experiment_count_enabled_sqlite,
 		set           = experiment_set_sqlite,
 		list_by_owner = experiment_list_by_owner_sqlite,
 	}
@@ -71,4 +72,16 @@ experiment_list_by_owner_sqlite :: proc(ctx: rawptr, owner_user_id: string) -> (
 		append(&items, exp)
 	}
 	return items, domain.Domain_Error{}
+}
+
+experiment_count_enabled_sqlite ::	proc(ctx: rawptr, key: string) -> (int, domain.Domain_Error) {
+	impl := (^Experiment_Repo_SQLite)(ctx)
+	if impl == nil || impl.conn == nil || impl.conn.db == nil do return 0, domain.domain_error(.Internal_Error, "sqlite repository is not open")
+	stmt: sqlite3_stmt
+	query := "SELECT COUNT(*) FROM experiments WHERE key = ? AND enabled = 1;"
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return 0, domain.domain_error(.Internal_Error, "failed to prepare experiment count")
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, key)
+	if sqlite3_step(stmt) != SQLITE_ROW do return 0, domain.domain_error(.Internal_Error, "failed to count experiments")
+	return int(sqlite3_column_int64(stmt, 0)), {}
 }

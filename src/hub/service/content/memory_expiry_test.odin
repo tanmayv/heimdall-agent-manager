@@ -71,3 +71,51 @@ test_content_service_memory_default_expiry_24h :: proc(t: ^testing.T) {
 	testing.expect(t, get_ok, "get_memory ok")
 	testing.expect_value(t, fetched.expires_at, mem1.expires_at)
 }
+
+// C1: use an isolated in-memory DB and the same service path for each status.
+memory_expiry_case :: proc(t: ^testing.T, status: string) {
+	context.allocator = context.temp_allocator
+	conn, opened, _ := sqlite.open(":memory:")
+	if !testing.expect(t, opened) do return
+	defer sqlite.close(&conn)
+	migrated, _ := sqlite.run_migrations(&conn)
+	if !testing.expect(t, migrated) do return
+	impl: sqlite.Content_Repo_SQLite
+	repo := sqlite.new_content_repository(&impl, &conn)
+	clock := platform.real_clock()
+	ids := platform.real_id_generator()
+	svc := new_content_service(&repo, nil, nil, nil, nil, &clock, &ids)
+	auth := contracts.Auth_Context {
+		kind              = .Instance_Token,
+		user_id           = "expiry_owner",
+		agent_instance_id = "expiry_actor",
+	}
+	m, ok, err := create_memory(&svc, auth, {type = .Fact, body = "test", status = status})
+	testing.expect_value(t, err.code, domain.Error_Code.None)
+	if !testing.expect(t, ok) do return
+	if status == "active" {
+		testing.expect_value(t, m.status, "active"); testing.expect_value(t, m.expires_at, "")
+	} else {
+		testing.expect_value(t, m.status, "pending")
+		now, _ := platform.parse_rfc3339_utc(m.created_at); expiry, parsed := platform.parse_rfc3339_utc(m.expires_at)
+		testing.expect(t, parsed); testing.expect_value(t, time.diff(now, expiry), 24 * time.Hour)
+	}
+	persisted, found, _ := get_memory(
+		&svc,
+		auth,
+		m.memory_id,
+	); testing.expect(t, found); testing.expect_value(t, persisted.expires_at, m.expires_at)
+	explicit, explicit_ok, _ := create_memory(
+		&svc,
+		auth,
+		{type = .Fact, body = "test", status = status, expires_at = "2030-01-01T00:00:00Z"},
+	)
+	testing.expect(t, explicit_ok); testing.expect_value(t, explicit.expires_at, "2030-01-01T00:00:00Z")
+}
+@(test)
+test_create_memory_active_has_no_default_expiry :: proc(t: ^testing.T) {memory_expiry_case(t, "active")}
+@(test)
+test_create_memory_pending_keeps_24h_expiry :: proc(t: ^testing.T) {memory_expiry_case(t, ""); memory_expiry_case(
+		t,
+		"pending",
+	)}

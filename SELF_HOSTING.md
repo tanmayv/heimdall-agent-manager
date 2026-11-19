@@ -1418,3 +1418,57 @@ cannot restart.
 ## Provider accounts and local isolation
 
 See [Provider profiles and isolated local homes](docs/provider-profiles.md) for per-bridge account configuration, redacted secret editing, storage/trust boundaries, and the end-to-end isolation smoke.
+
+### Telegram bot configuration
+
+Bots remain off until a user enables the `bots` experiment. Configure the shared
+Telegram bot with `HEIMDALL_TELEGRAM_BOT_TOKEN`, or set
+`HEIMDALL_TELEGRAM_BOT_TOKEN_FILE` to a file containing the token. The inline
+environment token wins over the environment file. The flag
+`--telegram-bot-token-file <path>` overrides both; file contents are trimmed.
+Token values are secret and must not be logged.
+
+`HEIMDALL_TELEGRAM_API_BASE` overrides the default `https://api.telegram.org`;
+`--telegram-api-base <url>` overrides that environment setting.
+
+`HEIMDALL_BOT_TIMERS_JSON` is **for tests only**. It accepts a JSON object of
+`Bot_Timer_Config` field names from the bots slice 1 specification, section 14.1.
+Durations are in milliseconds; count fields are integer counts. Absent fields
+keep their defaults. Unknown keys and noninteger values are refused at startup.
+
+### WhatsApp bot configuration
+
+Bots remain off until a user enables the `bots` experiment. WhatsApp uses Meta's
+WhatsApp Cloud API and needs five values from your Meta app:
+
+| Value | Environment variable | File variant | Flag |
+|---|---|---|---|
+| System-user access token | `HEIMDALL_WHATSAPP_ACCESS_TOKEN` | `HEIMDALL_WHATSAPP_ACCESS_TOKEN_FILE` | `--whatsapp-access-token-file` |
+| App secret | `HEIMDALL_WHATSAPP_APP_SECRET` | `HEIMDALL_WHATSAPP_APP_SECRET_FILE` | `--whatsapp-app-secret-file` |
+| Webhook verify token (16+ characters you choose) | `HEIMDALL_WHATSAPP_VERIFY_TOKEN` | `HEIMDALL_WHATSAPP_VERIFY_TOKEN_FILE` | `--whatsapp-verify-token-file` |
+| Phone number ID | `HEIMDALL_WHATSAPP_PHONE_NUMBER_ID` | `HEIMDALL_WHATSAPP_PHONE_NUMBER_ID_FILE` | `--whatsapp-phone-number-id` |
+| WhatsApp Business Account ID | `HEIMDALL_WHATSAPP_BUSINESS_ACCOUNT_ID` | `HEIMDALL_WHATSAPP_BUSINESS_ACCOUNT_ID_FILE` | `--whatsapp-business-account-id` |
+
+An inline variable wins over its file variant; a flag wins over both. File
+contents are trimmed. The token, app secret and verify token are secrets and are
+never logged. If only some values are set, the hub starts with WhatsApp disabled
+and logs which variables are missing.
+
+**Public URL required.** Meta delivers messages by calling your hub. The hub must
+be reachable from the internet over HTTPS with a certificate from a public
+authority (self-signed certificates are refused) at
+`https://<your hub>/api/v1/channels/whatsapp/webhook`. A hub behind NAT needs a
+reverse proxy or tunnel that forwards this path. The endpoint answers `404` until
+WhatsApp is configured and at least one user has enabled the `bots` experiment,
+so enable the experiment before you verify the webhook in Meta.
+
+In the Meta app dashboard, set the callback URL to that address, set the verify
+token to the same value as `HEIMDALL_WHATSAPP_VERIFY_TOKEN`, and subscribe to the
+`messages` field. Create the message template `ninjy_reply_waiting` (category
+Utility, language English `en`, body "Your Ninjy bot has finished its reply to your
+last message. Reply here to receive it.", no variables or buttons). Until Meta
+approves it, replies written more than 24 hours after a user's last message are
+kept and shown in Settings > Bots, and delivered when the user writes again.
+
+`HEIMDALL_WHATSAPP_API_BASE` overrides the default `https://graph.facebook.com`
+(tests point it at a fake server); `--whatsapp-api-base <url>` overrides that.

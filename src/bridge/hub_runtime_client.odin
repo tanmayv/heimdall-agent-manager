@@ -345,6 +345,7 @@ bridge_hub_take_replaced_backoff :: proc() -> (backoff_s: int, replaced: bool) {
 }
 
 bridge_hub_runtime_worker :: proc() {
+	defer bridge_bot_shutdown()
 	credential_snapshot_337, _ := bridge_credential_peek()
 	defer delete(credential_snapshot_337)
 	if strings.trim_space(bridge_config.daemon_url) == "" || strings.trim_space(credential_snapshot_337) == "" {
@@ -373,6 +374,7 @@ bridge_hub_runtime_worker :: proc() {
 	}
 	for {
 		if sync.atomic_load(&bridge_hub_traffic_stopped) do return
+		bridge_bot_collect()
 		ws_url := bridge_hub_ws_url(bridge_config.daemon_url)
 		if ws_url == "" {
 			fmt.println("bridge hub runtime disabled: daemon_url must be an http:// or https:// base URL")
@@ -770,6 +772,7 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 		}
 		// Stop before ANY drain or heartbeat in the iteration receiving retirement.
 		if sync.atomic_load(&bridge_hub_traffic_stopped) do break
+		bridge_bot_drain(conn, connection_generation)
 		bridge_command_dispatch_drain(conn, connection_generation)
 		bridge_pane_capture_expire_pending()
 		bridge_pane_capture_drain_outgoing(conn)
@@ -1010,6 +1013,16 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
         schedules_epoch := extract_json_string(text, "schedules_epoch", "")
         defer delete(schedules_epoch)
         bridge_action_scheduler_notify_snapshot(schedules_epoch, i64(extract_json_int(text, "schedules_revision", -1)), bridge_runtime_now_ms())
+		return
+	}
+	if type == "bot_deliver" {
+		result := bridge_bot_handle_deliver(text)
+		defer delete(result)
+		_ = bridge_hub_send(conn, result)
+		return
+	}
+	if type == "bot_delivery_report_ack" {
+		bridge_bot_handle_report_ack(text)
 		return
 	}
 	if type == "agent_instance_status_ack" {
@@ -3173,6 +3186,7 @@ bridge_runtime_note_wrapper_signal :: proc(instance_id, activity_status: string)
 }
 
 bridge_runtime_note_agent_activity :: proc(instance_id, activity_status, activity_source: string) {
+	bridge_bot_note_raw_activity(instance_id, activity_status)
 	source := strings.trim_space(activity_source)
 	if source == "" do source = "agent_extension"
 	// Screen detection drives the terminal_prompt blocker fallback (REQ-EXT-BLK-5).
@@ -4485,7 +4499,7 @@ Bridge_Hello_Wire :: struct {
 // on every hello and on every legacy beat that carries features.
 // heartbeat_metadata_omission tells the hub this Bridge understands the bridge_ready
 // flag of the same name (contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION).
-BRIDGE_RUNTIME_FEATURES := [?]string{"capture_agent_pane", "get_agent_pane", "instance_reconfiguration_v1", "tool_stream_demand_v2", "mcp_transform_v1", contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION}
+BRIDGE_RUNTIME_FEATURES := [?]string{"capture_agent_pane", "get_agent_pane", "instance_reconfiguration_v1", "tool_stream_demand_v2", "mcp_transform_v1", contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION, contracts.BRIDGE_FEATURE_BOT_DELIVER_V1}
 bridge_acp_runtime_supported: bool
 bridge_runtime_features :: proc() -> []string {
 	features := make([dynamic]string, allocator = context.temp_allocator)

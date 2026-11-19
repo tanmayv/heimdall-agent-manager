@@ -397,6 +397,9 @@ test_refresh_restart_and_action_sends_publish :: proc(t: ^testing.T) {
 	f: Refresh_Fixture
 	defer refresh_fixture_teardown(&f)
 	if !refresh_fixture_setup(t, &f, "restart") do return
+	// This fixture exercises Actions for an owner who opted into the experiment.
+	enabled, enable_err := iface.experiment_set(&f.graph.experiment_repo, {owner_user_id = "alice", key = "actions", enabled = true, updated_at = "2026-11-19T00:00:00Z"})
+	if !testing.expect(t, enabled, enable_err.message) do return
 	tab := refresh_socket_open(t, &f.graph, "alice"); defer refresh_socket_close(&f.graph, tab)
 	bob := refresh_socket_open(t, &f.graph, "bob"); defer refresh_socket_close(&f.graph, bob)
 

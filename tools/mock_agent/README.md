@@ -143,3 +143,5 @@ mock-e2e-step
   sanitized child env carries the local endpoint vars, the lifecycle reaches
   `stopped` through the local endpoint, and the mock log records the replay in
   order with the Bridge response to `agent.context.get`.
+
+`bot-agent.sh` is the POSIX sh provider for bot delivery integration tests. It calls `agent start-success`, reads notices on stdin, and uses `channel read` / `channel send` to echo messages or answer `status?` with the first task-chain title. `HAM_CTL` defaults to `./bin/ham-ctl`; `BOT_AGENT_MODE=reply` is the default, and `silent` reads without replying. Pass these variables inline in the provider command because the wrapper sanitizes its child environment.

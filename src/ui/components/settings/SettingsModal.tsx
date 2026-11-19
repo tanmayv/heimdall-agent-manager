@@ -14,6 +14,8 @@ import ExperimentalPanel from './ExperimentalPanel';
 import DevicesPanel from './DevicesPanel';
 import LspPanel from './LspPanel';
 import TemplatesPanel from './TemplatesPanel';
+import BotsPanel from './BotsPanel';
+import { BOTS_EXPERIMENT_KEY, resolveExperimentFlag } from './experimentFlags';
 import AccountPanel from './AccountPanel';
 import { normalizeSettingsTab } from '../../utils/settingsRouting';
 
@@ -80,10 +82,11 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = [
     title: 'Experimental Flags',
     description: 'Preview and enable experimental capabilities, developer tools, and cutting-edge workflows.',
   },
+  { id: 'bots', label: 'Bots', title: 'Bots', description: 'Your personal bot on Telegram and WhatsApp.' },
 ];
 
-export function getVisibleSettingsCategories(lspEnabled: boolean): SettingsCategory[] {
-  return SETTINGS_CATEGORIES.filter((category) => category.id !== 'lsp' || lspEnabled);
+export function getVisibleSettingsCategories(lspEnabled: boolean, botsEnabled = false): SettingsCategory[] {
+  return SETTINGS_CATEGORIES.filter((category) => (category.id !== 'lsp' || lspEnabled) && (category.id !== 'bots' || botsEnabled));
 }
 
 export { normalizeSettingsTab };
@@ -140,9 +143,11 @@ export function SettingsModal({
   const experimentsQuery = useFetchExperimentsQuery();
   const lspEnabled = Boolean(experimentsQuery.data?.flags?.find((f) => f.key === 'lsp')?.enabled);
 
+  const botsEnabled = resolveExperimentFlag(experimentsQuery.data?.flags, BOTS_EXPERIMENT_KEY) === 'enabled';
+
   const categories = useMemo(() => {
-    return getVisibleSettingsCategories(lspEnabled);
-  }, [lspEnabled]);
+    return getVisibleSettingsCategories(lspEnabled, botsEnabled);
+  }, [lspEnabled, botsEnabled]);
 
   // Sync initialTab when opening
   useEffect(() => {
@@ -186,12 +191,12 @@ export function SettingsModal({
   const currentTabInfo = useMemo(() => {
     const effectiveTab = normalizeSettingsTab(activeTab);
     const category = categories.find((c) => c.id === activeTab || c.id === effectiveTab)
-      || SETTINGS_CATEGORIES.find((c) => c.id === activeTab || c.id === effectiveTab);
+      || SETTINGS_CATEGORIES.find((c) => c.id !== 'bots' && (c.id === activeTab || c.id === effectiveTab));
     if (category) return category;
     return {
       id: activeTab,
-      label: activeTab,
-      title: activeTab.charAt(0).toUpperCase() + activeTab.slice(1),
+      label: activeTab === 'bots' ? 'Settings' : activeTab,
+      title: activeTab === 'bots' ? 'Settings' : activeTab.charAt(0).toUpperCase() + activeTab.slice(1),
       description: '',
     };
   }, [activeTab, categories]);
@@ -208,6 +213,8 @@ export function SettingsModal({
   function renderTabContent(tabId: string) {
     const effectiveTab = normalizeSettingsTab(tabId);
     switch (effectiveTab) {
+      case 'bots':
+        return botsEnabled ? <BotsPanel onOpenTerminal={close} /> : null;
       case 'account':
         return <AccountPanel user={currentUser} />;
       case 'appearance':

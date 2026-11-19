@@ -51,16 +51,14 @@ def catalog_etag(db):
         parts = []
         for field in fields:
             value = row[field]
-            if field == "extension":
+            if field in ("extension", "acp_recipe"):
                 value = value or "null"
-            elif field == "ask_args":
-                value = value or "[]"
             elif field == "transports":
                 value = value or '["pty"]'
             elif field == "default_transport":
                 value = value or "pty"
-            elif field == "acp_recipe":
-                value = value or "null"
+            elif field == "ask_args":
+                value = value or "[]"
             parts.append(encode(field) + ":" + (value if field in raw else encode(value)))
         models = [dict(row) for row in db.execute(
             "SELECT model_id, label, state FROM provider_models WHERE provider=? ORDER BY rank ASC, model_id ASC",

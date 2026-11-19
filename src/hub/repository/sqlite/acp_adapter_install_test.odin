@@ -3,19 +3,37 @@ package sqlite
 import "core:testing"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
+import provider_service "odin_test:hub/service/provider"
 
 @(test)
 t4_acp_install_migration_preserves_commands_and_profile_indexes :: proc(t: ^testing.T) {
     conn, opened, _ := open(":memory:")
     if !testing.expect(t, opened) do return
     defer close(&conn)
-    migrated, err := run_migrations(&conn, stop_before = "213_acp_adapter_install.sql")
+    migrated, err := run_migrations(&conn, stop_before = "218_acp_adapter_install.sql")
     if !testing.expect(t, migrated, err.message) do return
+    testing.expect(t, migration_applied(&conn, "217_extension_version_sync_0_5_58.sql"), "starts from deployed v0.5.58")
     testing.expect(t, exec(&conn, "INSERT INTO bridges(bridge_id,owner_user_id,created_at,updated_at) VALUES('t4','owner','','');"))
     impl: Provider_Repo_SQLite
     repo := new_provider_repository(&impl, &conn)
+    deployed_etag, etag_err := iface.provider_catalog_etag(&repo)
+    defer delete(deployed_etag)
+    testing.expect_value(t, etag_err.code, domain.Error_Code.None)
     created, cerr := iface.provider_extension_command_create(&repo, {command_id = "cmd_old", bridge_id = "t4", kind = "install", provider = "claude", profile_id = "work", state = "dispatched", target_version = "old"})
     testing.expect(t, created, cerr.message)
+    migrated, err = run_migrations(&conn, stop_before = "219_extension_version_sync_0_5_59.sql")
+    if !testing.expect(t, migrated, err.message) do return
+    upgraded_etag, upgraded_err := iface.provider_catalog_etag(&repo)
+    defer delete(upgraded_etag)
+    testing.expect_value(t, upgraded_err.code, domain.Error_Code.None)
+    testing.expect_value(t, upgraded_etag, deployed_etag)
+    service := provider_service.Provider_Service{repo = &repo}
+    derived_etag, derived_err := provider_service.catalog_etag(&service)
+    defer delete(derived_etag)
+    testing.expect_value(t, derived_err.code, domain.Error_Code.None)
+    testing.expect_value(t, upgraded_etag, derived_etag)
+    testing.expect_value(t, derived_etag, "sha256:a704ff6a13004d6abb9c04a7ad54512c9cf5aa7a5bc27e5487c2e6b25a59cef1")
+    testing.expect(t, migration_applied(&conn, "218_acp_adapter_install.sql"))
     migrated, err = run_migrations(&conn)
     if !testing.expect(t, migrated, err.message) do return
     created, cerr = iface.provider_extension_command_create(&repo, {command_id = "cmd_acp", bridge_id = "t4", kind = "install_acp_adapter", provider = "claude", profile_id = "claude", state = "dispatched", target_version = "0.108.0"})

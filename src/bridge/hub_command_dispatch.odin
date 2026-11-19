@@ -273,6 +273,10 @@ bridge_command_spec :: proc(command_type: string) -> (Bridge_Command_Spec, bool)
 		return Bridge_Command_Spec{class = .Lifecycle, priority = .Interactive, key_kind = .Agent, queued = true, requires_id = true, timeout_ms = 5000, cost_units = 1}, true
 	case "bridge_unseal", "set_telemetry", "auto_update_config":
 		return Bridge_Command_Spec{class = .Lifecycle, priority = .Interactive, key_kind = .Bridge, queued = true, requires_id = true, timeout_ms = 5000, cost_units = 2}, true
+	case "bot_deliver":
+		return Bridge_Command_Spec{class = .Interactive, priority = .Interactive, key_kind = .Agent, queued = true, requires_id = true, timeout_ms = 10_000, cost_units = 2, coalescible = false, retry_safe = true}, true
+	case "bot_delivery_report_ack":
+		return Bridge_Command_Spec{queued = false, requires_id = false}, true
 	// REQ-PROF-3: sealed provider profile edit/read from the user's browser.
 	case "provider_profile_op":
 		return Bridge_Command_Spec{class = .Interactive, priority = .Interactive, key_kind = .Bridge, queued = true, requires_id = true, timeout_ms = 10_000, cost_units = 2}, true
@@ -401,7 +405,7 @@ bridge_command_ordering_key :: proc(command_type, text: string) -> string {
 		return ""
 	}
 	switch command_type {
-	case "launch_agent", "launch_provider_test", "stop_agent", "agent_pty_input", "agent_pty_resize", "capture_agent_pane", "get_agent_pane", "notify_agent_message", "notify_task_nudge", "notify_shell_run", "notify_title_nudge":
+	case "bot_deliver", "launch_agent", "launch_provider_test", "stop_agent", "agent_pty_input", "agent_pty_resize", "capture_agent_pane", "get_agent_pane", "notify_agent_message", "notify_task_nudge", "notify_shell_run", "notify_title_nudge":
 		id := extract_json_string(text, "agent_instance_id", "")
 		defer delete(id)
 		if id != "" do return strings.concatenate({"agent:", id})

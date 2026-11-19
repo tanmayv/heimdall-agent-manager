@@ -1,3 +1,6 @@
+import { useGetBotQuery } from '../../api/endpoints/bots';
+import { filterBotConversations } from '../settings/botsView';
+import { BOTS_EXPERIMENT_KEY, resolveExperimentFlag } from '../settings/experimentFlags';
 import AccountSwitcher from './AccountSwitcher';
 import { SidebarTaskChains } from './SidebarTaskChains';
 import {
@@ -1505,6 +1508,10 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
   // owner-scoped event (message_created from any tab/CLI/agent, messages_read with
   // unread_count, conversation/created|updated, agent_instance/* with the full status
   // summary), patched or invalidated per row in wsInvalidation.ts.
+  const botFlags = useFetchExperimentsQuery();
+  const botsEnabled = resolveExperimentFlag(botFlags.data?.flags, BOTS_EXPERIMENT_KEY) === 'enabled';
+  const botQuery = useGetBotQuery(undefined, { skip: !botsEnabled });
+  const botInstanceId = botsEnabled ? botQuery.currentData?.advanced.agent_instance_id || null : null;
   const conversationsQuery = useListSidebarConversationsQuery({ limit: 30 });
   // Consolidated project -> live-chains -> agents tree. Drives the rail's project
   // list/order (ALL projects, endpoint-fixed alphabetical) and the coordinator set
@@ -1517,8 +1524,8 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
   // write_chat_json_with_runtime looks the identity up per row), so no app-wide
   // GET /agents is needed to fill it in; a row without one renders "Unnamed agent".
   const conversations = useMemo(
-    () => (conversationsQuery.data || []).map(sidebarConversationToSummary),
-    [conversationsQuery.data],
+    () => filterBotConversations(conversationsQuery.data || [], botInstanceId).map(sidebarConversationToSummary),
+    [conversationsQuery.data, botInstanceId],
   );
   const liveProjects = useMemo(() => agentsLiveQuery.data || [], [agentsLiveQuery.data]);
   // REQ-BAR-2: status bar counts. Instances reuse the agents-live poll above; live

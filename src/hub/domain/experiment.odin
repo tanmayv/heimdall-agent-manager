@@ -10,6 +10,7 @@ PROJECT_VCS_EXPERIMENT_KEY :: "project_vcs"
 // ACTIONS_EXPERIMENT_KEY gates scheduled and on-demand Actions (REQ-EXP-GATE-1).
 // Off until the user enables it; existing users are never auto-enabled.
 ACTIONS_EXPERIMENT_KEY :: "actions"
+BOTS_EXPERIMENT_KEY :: "bots"
 
 // EXPERIMENTAL_FEATURE_DISABLED_CODE is error.details.code on the 403 a gated route
 // answers while the owner's flag is off (REQ-EXP-GATE-3). error.code stays "forbidden".
@@ -44,6 +45,7 @@ experiment_enabled_in :: proc(exps: []Experiment, key: string) -> bool {
 experiment_feature_label :: proc(key: string) -> string {
 	switch key {
 	case PROJECT_VCS_EXPERIMENT_KEY: return "Project Explorer"
+	case BOTS_EXPERIMENT_KEY: return "Bots"
 	case ACTIONS_EXPERIMENT_KEY:     return "Actions"
 	case STREAMING_TERMINAL_PANE_EXPERIMENT_KEY: return "Streaming Terminal Pane"
 	}

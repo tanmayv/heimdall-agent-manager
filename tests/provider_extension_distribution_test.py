@@ -227,9 +227,9 @@ class DistributionTests(unittest.TestCase):
     def test_version_generator_uses_next_free_registered_number_and_build_metadata(self):
         registry = self.sql / "migrations.odin"
         text = registry.read_text()
-        order = re.search(r"(migration_order :: \[)(\d+)(\]string \{)(.*?)(\n\})", text, re.S)
+        order = re.search(r"(migration_order :: \[)(\d+|\?)(\]string \{)(.*?)(\n\})", text, re.S)
         name = f"{self.next_migration:03d}_reserved.sql"
-        text = (text[:order.start()] + order[1] + str(int(order[2]) + 1) + order[3]
+        text = (text[:order.start()] + order[1] + (order[2] if order[2] == "?" else str(int(order[2]) + 1)) + order[3]
                 + order[4] + '\n\t"' + name + '",' + order[5] + text[order.end():])
         registry.write_text(text)
         self.write(self.sql / "migrations" / name, "-- unrelated forward migration\n")
@@ -283,9 +283,10 @@ class DistributionTests(unittest.TestCase):
             text = (self.sql / "migrations.odin").read_text()
             self.assertIn('#load("migrations/' + latest.name + '", string)', text)
             self.assertIn('if name == "' + latest.name + '"', text)
-            order = re.search(r"migration_order :: \[(\d+)\]string \{(.*?)\n\}", text, re.S)
+            order = re.search(r"migration_order :: \[(\d+|\?)\]string \{(.*?)\n\}", text, re.S)
             names = re.findall(r'"([^"]+\.sql)"', order[2])
-            self.assertEqual(int(order[1]), len(names))
+            if order[1] != "?":
+                self.assertEqual(int(order[1]), len(names))
             self.assertEqual(names[-1], latest.name)
             before = {str(p.relative_to(self.repo)): p.read_bytes() for p in self.repo.rglob("*") if p.is_file()}
             self.run_script(self.repo / "scripts/release/bump-version.sh", "--version-only", version)

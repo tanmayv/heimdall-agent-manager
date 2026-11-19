@@ -2,10 +2,11 @@
 // Migrations 104 (chat FTS update guard) and 105 (full-scan indexes) were renumbered
 // to follow main's 103_plan_enforcement.sql. These tests pin that order: a database
 // stopped at main's latest migration upgrades through both, a fresh database applies
-// every migration, and no number after 102 is shared. Extension migrations follow
+// every migration, with strictly increasing prefixes after 102. Extension migrations follow
 // the deployed main identities 104/105 without renumbering either.
 package sqlite
 
+import "core:fmt"
 import "core:strconv"
 import "core:strings"
 import "core:testing"
@@ -95,7 +96,7 @@ test_rebased_fresh_database_applies_every_migration :: proc(t: ^testing.T) {
 }
 
 // Older numbers (043, 044, 048, 072) were shared before this rule; anything after
-// 102 must be unique and in ascending order, including the extension additions.
+// 102 must be unique and in ascending order, except the named staging pair below.
 @(test)
 test_rebased_migration_numbers_after_102_are_unique :: proc(t: ^testing.T) {
 	order := migration_order
@@ -113,7 +114,7 @@ test_rebased_migration_numbers_after_102_are_unique :: proc(t: ^testing.T) {
 		"114_extension_version_sync.sql", "115_provider_extension_commands.sql"}
 	for name, i in expected do testing.expect_value(t, tail[i], name)
 	prev := 0
-	for name in order {
+	for name, i in order {
 		if name == "native_001_oidc_identities.sql" do continue
 		n, n_ok := strconv.parse_int(name[:3])
 		if !testing.expectf(t, n_ok, "%s has a numeric prefix", name) do continue
@@ -149,4 +150,130 @@ test_extension_upgrade_from_deployed_main_keeps_migration_identities :: proc(t: 
 	testing.expect(t, table_column_exists(&conn, "provider_catalog", "ask_args"), "ask arguments exist")
 	mig_ok, _ = run_migrations(&conn)
 	testing.expect(t, mig_ok, "extension upgrade is idempotent")
+}
+
+// Both deployed histories must converge without renaming any ledger identity.
+rmo_bots_upgrade :: proc(t: ^testing.T, staging: bool) {
+	context.allocator = context.temp_allocator
+	conn, path, ok := tmpl_open_file_prod(t, "rmo_bots_upgrade")
+	defer tmpl_remove_db(path)
+	if !ok do return
+	defer close(&conn)
+	main_sync :: "209_extension_version_sync_0_5_55.sql"
+	mig_ok, _ := run_migrations(&conn, stop_before = main_sync)
+	if !testing.expect(t, mig_ok, "migrate shared history") do return
+	first := main_sync
+	if staging do first = "209_bots.sql"
+	sql_name := first
+	if staging do sql_name = "213_bots.sql"
+	sql := migration_sql(sql_name, "")
+	defer delete(sql)
+	if !testing.expect(t, exec(&conn, sql), "apply deployed branch migration") do return
+	if !testing.expect(t, exec(&conn, strings.concatenate({"INSERT INTO schema_migrations(version) VALUES ('", first, "');"}, context.temp_allocator)), "record deployed identity") do return
+	testing.expect_value(t, migration_applied(&conn, "209_bots.sql"), staging)
+	testing.expect_value(t, migration_applied(&conn, main_sync), !staging)
+	testing.expect(t, !migration_applied(&conn, "214_agent_writes.sql") && !migration_applied(&conn, "215_bots_whatsapp.sql"), "later bots migrations absent")
+	mig_ok, _ = run_migrations(&conn)
+	if !testing.expect(t, mig_ok, "upgrade deployed history") do return
+	for name in ([5]string{main_sync, "213_bots.sql", "214_agent_writes.sql", "215_bots_whatsapp.sql", "216_bots_media.sql"}) {
+		testing.expectf(t, migration_applied(&conn, name), "%s applied", name)
+	}
+	for name in ([9]string{"bots", "bot_placement_candidates", "channel_bindings", "channel_pairings", "channel_cursors", "channel_messages", "bot_deliveries", "bot_delivery_attempts", "channel_push_events"}) {
+		testing.expectf(t, sqlite_object_exists(&conn, name), "%s present", name)
+	}
+	mig_ok, _ = run_migrations(&conn)
+	testing.expect(t, mig_ok, "repeat upgrade is idempotent")
+}
+
+@(test)
+test_bots_upgrade_from_staging_209 :: proc(t: ^testing.T) {
+	rmo_bots_upgrade(t, true)
+}
+
+@(test)
+test_bots_upgrade_from_production_209 :: proc(t: ^testing.T) {
+	rmo_bots_upgrade(t, false)
+}
+
+// Reconstruct the deployed staging order, including partial rollouts, rather
+// than relabeling a database that already ran main's transport migration.
+@(test)
+test_bots_renumber_upgrade_from_staging_legacy_names :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	names := [4]string{"213_bots.sql", "214_agent_writes.sql", "215_bots_whatsapp.sql", "216_bots_media.sql"}
+	old_names := [4]string{"209_bots.sql", "210_agent_writes.sql", "211_bots_whatsapp.sql", "212_bots_media.sql"}
+	for applied in 1 ..= 4 {
+		conn, path, ok := tmpl_open_file_prod(t, "bots_legacy_names")
+		defer tmpl_remove_db(path)
+		if !ok do return
+		defer close(&conn)
+		migrated, err := run_migrations(&conn, stop_before = "210_extension_version_sync_0_5_56.sql")
+		if !testing.expect(t, migrated, err.message) do return
+		for i in 0 ..< applied {
+			sql := migration_sql(names[i], "")
+			executed := exec(&conn, sql)
+			delete(sql)
+			if !testing.expectf(t, executed, "apply deployed %s", old_names[i]) do return
+			testing.expect(t, exec(&conn, fmt.tprintf("INSERT INTO schema_migrations(version,applied_at) VALUES ('%s','staging-original');", old_names[i])))
+		}
+		testing.expect(t, exec(&conn, "INSERT INTO bots(bot_id,owner_user_id,agent_id,created_at,updated_at) VALUES ('legacy-bot','legacy-owner','legacy-agent','created','updated');"))
+		if applied >= 2 {
+			testing.expect(t, exec(&conn, "INSERT INTO agent_writes(write_id,owner_user_id,actor_agent_instance_id,resource_kind,resource_id,action,created_at) VALUES ('legacy-write','legacy-owner','legacy-instance','memory','legacy-memory','create','created');"))
+		}
+		if applied == 4 {
+			// Replaying 215 would discard these media columns; replaying 216
+			// would fail on the existing attachment table.
+			testing.expect(t, exec(&conn, "INSERT INTO channel_push_events(seq,provider,event_key,kind,external_chat_id,received_at,media_kind,media_ref,media_name) VALUES (41,'whatsapp','legacy-media','media','chat','received','image','file-ref','photo.png');"))
+		}
+		testing.expect(t, !table_column_exists(&conn, "agent_instances", "runtime_transport"), "staging has not run main 211")
+		for _ in 0 ..< 2 {
+			migrated, err = run_migrations(&conn)
+			if !testing.expect(t, migrated, err.message) do return
+			for name, i in names {
+				testing.expectf(t, migration_applied(&conn, name), "%s recognized", name)
+				if i < applied {
+					testing.expect_value(t, rmo_text(&conn, fmt.tprintf("SELECT applied_at FROM schema_migrations WHERE version='%s';", old_names[i])), "staging-original")
+					testing.expect_value(t, rmo_text(&conn, fmt.tprintf("SELECT count(*) FROM schema_migrations WHERE version='%s';", name)), "0")
+				} else {
+					testing.expect_value(t, rmo_text(&conn, fmt.tprintf("SELECT count(*) FROM schema_migrations WHERE version='%s';", name)), "1")
+				}
+			}
+			testing.expect_value(t, rmo_text(&conn, "SELECT agent_id || ':' || created_at || ':' || updated_at FROM bots WHERE bot_id='legacy-bot';"), "legacy-agent:created:updated")
+			if applied >= 2 {
+				testing.expect_value(t, rmo_text(&conn, "SELECT resource_id FROM agent_writes WHERE write_id='legacy-write';"), "legacy-memory")
+			}
+			if applied == 4 {
+				testing.expect_value(t, rmo_text(&conn, "SELECT CAST(seq AS TEXT) || ':' || kind || ':' || media_kind || ':' || media_ref || ':' || media_name FROM channel_push_events WHERE event_key='legacy-media';"), "41:media:image:file-ref:photo.png")
+			}
+			testing.expect(t, table_column_exists(&conn, "agent_instances", "runtime_transport"))
+			testing.expect(t, sqlite_object_exists(&conn, "acp_assistant_turns"))
+			for name in ([3]string{"210_extension_version_sync_0_5_56.sql", "211_provider_transport.sql", "212_extension_version_sync_0_5_57.sql"}) {
+				testing.expectf(t, migration_applied(&conn, name), "main %s runs after staging bots", name)
+			}
+			testing.expect_value(t, rmo_text(&conn, "PRAGMA integrity_check;"), "ok")
+		}
+	}
+}
+
+@(test)
+test_bots_renumber_upgrade_from_production_0_5_57 :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	conn, path, ok := tmpl_open_file_prod(t, "bots_prod_0_5_57")
+	defer tmpl_remove_db(path)
+	if !ok do return
+	defer close(&conn)
+	migrated, err := run_migrations(&conn, stop_before = "213_bots.sql")
+	if !testing.expect(t, migrated, err.message) do return
+	testing.expect(t, migration_applied(&conn, "212_extension_version_sync_0_5_57.sql"))
+	testing.expect(t, !sqlite_object_exists(&conn, "bots"))
+	testing.expect(t, table_column_exists(&conn, "agent_instances", "runtime_transport"))
+	for _ in 0 ..< 2 {
+		migrated, err = run_migrations(&conn)
+		if !testing.expect(t, migrated, err.message) do return
+		for name in ([4]string{"213_bots.sql", "214_agent_writes.sql", "215_bots_whatsapp.sql", "216_bots_media.sql"}) {
+			testing.expectf(t, migration_applied(&conn, name), "%s applied", name)
+		}
+		testing.expect(t, sqlite_object_exists(&conn, "channel_attachments"))
+		testing.expect_value(t, rmo_text(&conn, "PRAGMA integrity_check;"), "ok")
+	}
 }

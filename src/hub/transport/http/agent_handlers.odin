@@ -15,13 +15,14 @@ import shell_session_svc "odin_test:hub/service/shell_session"
 
 Agent_Handlers :: struct {
 	entitlements: domain.Entitlement_Lookup,
- launch_preferences: ^user_service.User_Service,
+	launch_preferences: ^user_service.User_Service,
 	auth:           ^auth_service.Auth_Service,
 	agents:         ^agent_service.Agent_Service,
 	event_bus:      ^events.User_Event_Bus,
 	ws_tickets:     ^User_WS_Ticket_Store,
 	shell_sessions: ^shell_session_svc.Shell_Session_Service,
 	experiments:    ^iface.Experiment_Repository,
+	agent_writes: ^iface.Agent_Write_Repository,
 }
 
 list_agents_handler :: proc(ctx: rawptr, req: Request) -> Response {
@@ -72,6 +73,7 @@ create_agent_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	}
 	agent, created, err := agent_service.create_agent(h.agents, auth_ctx, agent_input_from_body(req.body))
 	if !created do return respond_error(err, req.request_id)
+	record_agent_write(h.agent_writes, auth_ctx, domain.AGENT_WRITE_KIND_AGENT, agent.agent_id, "create", agent_write_body_fields(req.body, AGENT_WRITE_AGENT_FIELDS))
 	publish_agent_changed(h.event_bus, string(agent.owner_user_id), agent.agent_id, "created")
 	if json_bool(req.body, "favorite") {
 		if _, saved, save_err := user_service.set_agent_favorite_locked(h.launch_preferences, auth_ctx, agent.agent_id, true); !saved do return respond_error(save_err, req.request_id)
@@ -82,7 +84,7 @@ create_agent_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 agent_detail_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	agent_id := path_part(req.path, 4)
 	if strings.contains(agent_id, "/") do return respond_error(domain.domain_error(.Not_Found, "route not found"), req.request_id)
@@ -94,10 +96,39 @@ agent_detail_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 update_agent_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
-	agent, updated, err := agent_service.update_agent(h.agents, auth_ctx, path_part(req.path, 4), agent_input_from_body(req.body))
+
+	if auth_ctx.kind == .Instance_Token && len(agent_write_body_fields(req.body, []string{"template_id"})) > 0 {
+		current, found, get_err := agent_service.get_agent(h.agents, auth_ctx, path_part(req.path, 4))
+		if !found do return respond_error(get_err, req.request_id)
+		if current.template_id == domain.TEMPLATE_BOT_ID ||
+		   strings.trim_space(json_string(req.body, "template_id")) == domain.TEMPLATE_BOT_ID {
+			return respond_error(
+				domain.domain_error(
+					.Forbidden,
+					"the bot template can only be changed by the user",
+					`{"code":"bot_template_locked"}`,
+				),
+				req.request_id,
+			)
+		}
+	}
+	agent, updated, err := agent_service.update_agent(
+		h.agents,
+		auth_ctx,
+		path_part(req.path, 4),
+		agent_input_from_body(req.body),
+	)
 	if !updated do return respond_error(err, req.request_id)
+	record_agent_write(
+		h.agent_writes,
+		auth_ctx,
+		domain.AGENT_WRITE_KIND_AGENT,
+		agent.agent_id,
+		"update",
+		agent_write_body_fields(req.body, AGENT_WRITE_AGENT_FIELDS),
+	)
 	publish_agent_changed(h.event_bus, string(agent.owner_user_id), agent.agent_id, "updated")
 	b := strings.builder_make(); write_agent_json(&b, h.agents, agent)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))

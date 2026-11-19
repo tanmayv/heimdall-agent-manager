@@ -1257,6 +1257,9 @@ export function handleUserWsEvent(dispatch: any, payload: any, ctx: WsCtx = {}) 
   }
 
   switch (payload?.type) {
+    case 'bot_changed':
+      dispatch(heimdallApi.util.invalidateTags(['Bot']));
+      return;
     case 'task_event':
       handleTaskEvent(dispatch, payload);
       return;

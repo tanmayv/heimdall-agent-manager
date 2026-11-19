@@ -8,6 +8,7 @@ TEMPLATE_MD_COORDINATOR :: #load("../../templates/coordinator.md", string)
 TEMPLATE_MD_WORKER :: #load("../../templates/worker.md", string)
 TEMPLATE_MD_REVIEWER :: #load("../../templates/reviewer.md", string)
 TEMPLATE_MD_SOLOIST :: #load("../../templates/soloist.md", string)
+TEMPLATE_MD_BOT :: #load("../../templates/bot.md", string)
 TEMPLATE_MD_EMPTY :: #load("../../templates/empty.md", string)
 
 // builtin_template returns the built-in template for id, or ok = false when id is
@@ -50,6 +51,8 @@ builtin_template :: proc(id: string) -> (Template, bool) {
 			persona = "You are a senior software engineer who owns work end to end. You plan with the user, implement and verify the work yourself, and track every step in tasks.",
 			instructions = TEMPLATE_MD_SOLOIST,
 		}, true
+	case TEMPLATE_BOT_ID:
+		return Template{template_id = TEMPLATE_BOT_ID, is_system = true, name = "Ninjy bot", instructions = TEMPLATE_MD_BOT}, true
 	case TEMPLATE_EMPTY_ID:
 		return Template{
 			template_id = TEMPLATE_EMPTY_ID,
