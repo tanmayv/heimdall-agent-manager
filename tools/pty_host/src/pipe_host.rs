@@ -111,7 +111,7 @@ impl PipeHost {
         let mut cmd = Command::new(&spec.argv[0]);
         cmd.args(&spec.argv[1..])
             .env_clear()
-            .envs(crate::host::build_child_env())
+            .envs(crate::host::build_child_env().into_iter().filter(|(key, _)| !matches!(key.as_str(), "HEIMDALL_AGENT_TOKEN" | "HEIMDALL_STARTUP_KEY")))
             .envs(spec.env.iter().cloned());
         if let Some(cwd) = &spec.cwd {
             cmd.current_dir(cwd);

@@ -679,6 +679,8 @@ MIGRATION_218_ACP_ADAPTER_INSTALL :: #load("migrations/218_acp_adapter_install.s
 
 MIGRATION_219_EXTENSION_VERSION_SYNC :: #load("migrations/219_extension_version_sync_0_5_59.sql", string)
 
+MIGRATION_220_EXTENSION_VERSION_SYNC :: #load("migrations/220_extension_version_sync_0_5_60.sql", string)
+
 migration_order :: [?]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
@@ -903,6 +905,7 @@ migration_order :: [?]string {
 	"217_extension_version_sync_0_5_58.sql",
 	"218_acp_adapter_install.sql",
 	"219_extension_version_sync_0_5_59.sql",
+	"220_extension_version_sync_0_5_60.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1417,6 +1420,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 			return string(data)
 		}
 	}
+	if name == "220_extension_version_sync_0_5_60.sql" do return strings.clone(MIGRATION_220_EXTENSION_VERSION_SYNC)
 	if name == "219_extension_version_sync_0_5_59.sql" do return strings.clone(MIGRATION_219_EXTENSION_VERSION_SYNC)
 	if name == "217_extension_version_sync_0_5_58.sql" do return strings.clone(MIGRATION_217_EXTENSION_VERSION_SYNC)
 	if name == "212_extension_version_sync_0_5_57.sql" do return strings.clone(MIGRATION_212_EXTENSION_VERSION_SYNC)

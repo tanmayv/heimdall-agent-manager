@@ -463,13 +463,23 @@ acp_runtime_connect :: proc(r: ^ACP_Runtime, socket: string, after_seq: u64, che
     return cmd.ok
 }
 
+// Both install probes and managed launches use the provider profile's resolved
+// Claude executable. The adapter's bundled SDK binary cannot run on every host.
+acp_profile_child_env :: proc(pp: ^Provider_Profile) -> ([]string, bool) {
+    context.allocator = context.temp_allocator
+    env, ok := profile_child_env(pp); if !ok do return nil, false
+    binary := pp.config.binary_path if pp.config.binary_path != "" else "claude"
+    resolved := profile_resolve_binary(binary, env)
+    if resolved == "" do return nil, false
+    defer delete(resolved)
+    plan := Profile_Env_Plan{}
+    append(&plan.set, [2]string{"CLAUDE_AGENT_ACP_PROTOCOL", "v1"}, [2]string{"CLAUDE_CODE_EXECUTABLE", resolved})
+    return profile_apply_env_plan(env, plan), true
+}
+
 acp_runtime_build_spawn :: proc(r: ^ACP_Runtime, endpoint, token: string, pp: ^Provider_Profile) -> (Pty_Host_Spawn_Request, bool) {
     context.allocator = context.temp_allocator
-    env, ok := profile_child_env(pp); if !ok do return {}, false
-    binary := "claude"
-    if pp.config.binary_path != "" do binary = pp.config.binary_path
-    resolved := profile_resolve_binary(binary, env)
-    if resolved == "" do return {}, false
+    env, ok := acp_profile_child_env(pp); if !ok do return {}, false
     bootstrap := bridge_prespawn_env(r.run_dir, endpoint, token, r.instance)
     defer { for e in bootstrap do delete(e); delete(bootstrap) }
     plan := Profile_Env_Plan{}
@@ -477,7 +487,7 @@ acp_runtime_build_spawn :: proc(r: ^ACP_Runtime, endpoint, token: string, pp: ^P
         eq := strings.index_byte(entry, '=')
         append(&plan.set, [2]string{entry[:eq], entry[eq+1:]})
     }
-    append(&plan.set, [2]string{"CLAUDE_AGENT_ACP_PROTOCOL", "v1"}, [2]string{"CLAUDE_CODE_EXECUTABLE", resolved}, [2]string{"HEIMDALL_STARTUP_KEY", r.rec.token_hash}, [2]string{"HEIMDALL_RUNTIME_TRANSPORT", "acp"})
+    append(&plan.set, [2]string{"HEIMDALL_STARTUP_KEY", r.rec.token_hash}, [2]string{"HEIMDALL_RUNTIME_TRANSPORT", "acp"})
     full := profile_apply_env_plan(env, plan)
     pairs := bridge_pty_host_env_pairs(full)
     root := acp_adapter_root()

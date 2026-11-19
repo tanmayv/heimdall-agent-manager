@@ -199,3 +199,54 @@ acp_pipe_io_fake_daemon_chunking_receipts_ack_and_detach :: proc(t: ^testing.T) 
         testing.expect_value(t, s.last_stdout_seq, u64(2)); acp_state_delete(&s)
     }
 }
+
+ACP_Test_Spawn_Daemon :: struct { listener: local_socket.Socket, wrong_pid: bool, errors: int }
+acp_test_spawn_daemon :: proc(data: rawptr) {
+    context.allocator = runtime.heap_allocator()
+    d := cast(^ACP_Test_Spawn_Daemon)data
+    for n in 0..<3 {
+        fd, accepted := local_socket.accept(d.listener); if !accepted { d.errors += 1; return }
+        local_socket.set_recv_timeout(fd, 5*time.Second)
+        raw, read := pty_host_read_frame(fd)
+        if !read { local_socket.close(fd); d.errors += 1; return }
+        req, valid := pty_host_decode_pipe_request(raw); delete(raw)
+        if !valid { local_socket.close(fd); d.errors += 1; return }
+        if n == 0 {
+            if req.kind != .Capabilities do d.errors += 1
+            acp_test_daemon_send(fd, {kind = .Capabilities, piped_spawn_v1 = true})
+        } else if n == 1 {
+            if req.kind != .Spawn || req.spawn.instance != "inst_spawn" do d.errors += 1
+            // Compatible Spawned ACK deliberately has no generation field.
+            bytes := make([dynamic]byte); append(&bytes, PTY_HOST_T_SPAWNED)
+            pty_host_put_str(&bytes, "inst_spawn"); pty_host_put_i32(&bytes, 42)
+            frame := pty_host_frame(bytes[:]); pty_host_send_all(fd, frame)
+            delete(frame); delete(bytes)
+        } else {
+            if req.kind != .List do d.errors += 1
+            acp_test_daemon_send(fd, {kind = .Pipe_List, pipes = {
+                {instance = "inst_other", generation = "unrelated", pid = 42},
+                {instance = "inst_spawn", generation = "generation_spawn", pid = 99 if d.wrong_pid else 42, alive = true},
+            }})
+        }
+        pty_host_pipe_request_delete(req)
+        local_socket.close(fd)
+    }
+}
+
+@(test)
+t10_acp_spawn_resolves_generation_from_matching_instance_and_pid :: proc(t: ^testing.T) {
+    context.allocator = runtime.heap_allocator()
+    for wrong_pid in ([]bool{false, true}) {
+        path := fmt.aprintf("/tmp/ham-acp-spawn-%d.sock", time.tick_now()._nsec); defer delete(path); defer os.remove(path)
+        listener, listening := local_socket.listen(path, 1); if !testing.expect(t, listening) do return
+        defer local_socket.close(listener)
+        d := ACP_Test_Spawn_Daemon{listener = listener, wrong_pid = wrong_pid}
+        worker := thread.create_and_start_with_data(&d, acp_test_spawn_daemon)
+        reply, received := pty_host_spawn_pipe(path, {instance = "inst_spawn", argv = {"unused"}})
+        testing.expect(t, received && reply.kind == .Spawned && reply.pid == 42)
+        testing.expect_value(t, reply.generation, "" if wrong_pid else "generation_spawn")
+        pty_host_reply_delete(reply)
+        thread.join(worker); thread.destroy(worker)
+        testing.expect_value(t, d.errors, 0)
+    }
+}

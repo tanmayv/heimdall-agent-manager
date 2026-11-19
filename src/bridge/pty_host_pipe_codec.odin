@@ -231,5 +231,21 @@ pty_host_spawn_pipe :: proc(socket_path: string, req: Pty_Host_Spawn_Request) ->
     frame := pty_host_encode_pipe_request({kind = .Spawn, spawn = req})
     if len(frame) == 0 do return {}, false
     defer delete(frame)
-    return pty_host_request_deadline(socket_path, frame, 5000)
+    reply, received := pty_host_request_deadline(socket_path, frame, 5000)
+    if !received || reply.kind != .Spawned do return reply, received
+    // The compatible Spawned ACK carries only instance + pid. Generation is
+    // authoritative in the pipe roster; bind it to this exact spawn before
+    // attempting an attachment (or accepting a replacement process).
+    list := pty_host_encode_pipe_request({kind = .List}); defer delete(list)
+    roster, listed := pty_host_request_deadline(socket_path, list, 2000)
+    defer pty_host_reply_delete(roster)
+    if listed && roster.kind == .Pipe_List {
+        for row in roster.pipes {
+            if row.instance == req.instance && row.pid == reply.pid {
+                reply.generation = strings.clone(row.generation)
+                break
+            }
+        }
+    }
+    return reply, true
 }
