@@ -1218,7 +1218,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		task_id := extract_json_string(text, "task_id", "")
 		defer delete(task_id)
 		fmt.println("bridge hub runtime command notify_task_nudge", instance_id, command_id)
-		if bridge_should_debounce_nudge(instance_id, task_id) {
+		if !bridge_runtime_is_acp(instance_id) && bridge_should_debounce_nudge(instance_id, task_id) {
 			if command_id != "" {
 				res := bridge_command_result_json(command_id, "succeeded", "")
 				defer delete(res)
@@ -1239,7 +1239,19 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		origin := extract_json_string(text, "origin", "")
 		defer delete(origin)
 		interrupt := extract_json_bool(text, "interrupt", false) || origin == "pausing" || origin == "finishing"
-		ok := bridge_pty_host_deliver_to_agent(instance_id, "task_nudge", "", task_id, target_role, human_message, task_title, interrupt)
+		ok := false
+		if bridge_runtime_is_acp(instance_id) {
+			key := task_id
+			// Coordinator alerts can omit task_id. Do not collapse different
+			// tasks merely because they share a chain and origin.
+			if key == "" do key = command_id
+			kind := origin if origin != "" else target_role
+			msg := bridge_pty_host_task_nudge_line(task_id, target_role, human_message, task_title); defer delete(msg)
+			msg_plain := bridge_decrypt_embedded_vault_tokens(msg); defer delete(msg_plain)
+			ok = acp_runtime_deliver(instance_id, msg_plain, command_id, acp_inbox_lane(kind, interrupt), key, kind)
+		} else {
+			ok = bridge_pty_host_deliver_to_agent(instance_id, "task_nudge", "", task_id, target_role, human_message, task_title, interrupt)
+		}
 		if !ok do fmt.println("bridge notify_task_nudge pending/no-agent-subscription", instance_id, command_id)
 		if command_id != "" {
 			res := bridge_command_result_json(command_id, "succeeded" if ok else "accepted", "")
@@ -1273,8 +1285,13 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		notice := bridge_shell_run_notice(session_id, status, exit_code)
 		defer delete(notice)
 		fmt.println("bridge hub runtime command notify_shell_run", instance_id, session_id, status)
-		if socket, sok := bridge_pty_host_ensure_daemon(); sok {
-			ok := bridge_pty_host_deliver_notice(socket, instance_id, notice)
+		if socket, sok := bridge_pty_host_ensure_daemon(); sok || bridge_runtime_is_acp(instance_id) {
+			ok := false
+			if bridge_runtime_is_acp(instance_id) {
+				ok = acp_runtime_deliver(instance_id, notice, command_id, acp_inbox_lane("shell_run"), session_id, "shell_run")
+			} else {
+				ok = bridge_pty_host_deliver_notice(socket, instance_id, notice)
+			}
 			if command_id != "" {
 				res := bridge_command_result_json(command_id, "succeeded" if ok else "accepted", "")
 				defer delete(res)
@@ -1303,8 +1320,14 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		defer delete(message)
 		notice := strings.concatenate({"Nudge: ", message})
 		defer delete(notice)
-		if socket, sok := bridge_pty_host_ensure_daemon(); sok {
-			ok := bridge_pty_host_deliver_notice(socket, instance_id, notice)
+		if socket, sok := bridge_pty_host_ensure_daemon(); sok || bridge_runtime_is_acp(instance_id) {
+			ok := false
+			if bridge_runtime_is_acp(instance_id) {
+				plain := bridge_decrypt_embedded_vault_tokens(notice); defer delete(plain)
+				ok = acp_runtime_deliver(instance_id, plain, command_id, acp_inbox_lane("title_nudge"), "title", "title_nudge")
+			} else {
+				ok = bridge_pty_host_deliver_notice(socket, instance_id, notice)
+			}
 			if command_id != "" {
 				res := bridge_command_result_json(command_id, "succeeded" if ok else "accepted", "")
 				defer delete(res)
@@ -1402,7 +1425,15 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 				// lives here. Deliver straight to the local agent via the daemon;
 				// otherwise wake the local agent (coalesced) so it can pick up the work
 				// on boot. Targets not local to this bridge are ignored.
-				if bridge_pty_host_deliver_to_agent(inst, "task_nudge", "", task_id, "participant", human_message) {
+				pushed := false
+				if bridge_runtime_is_acp(inst) {
+					notice := bridge_pty_host_task_nudge_line(task_id, "participant", human_message); defer delete(notice)
+					plain := bridge_decrypt_embedded_vault_tokens(notice); defer delete(plain)
+					pushed = acp_runtime_deliver(inst, plain, command_id, .Batch, task_id, new_status)
+				} else {
+					pushed = bridge_pty_host_deliver_to_agent(inst, "task_nudge", "", task_id, "participant", human_message)
+				}
+				if pushed {
 					delivered += 1
 					continue
 				}
