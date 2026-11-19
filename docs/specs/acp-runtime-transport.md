@@ -370,7 +370,7 @@ Do not fabricate usage/token counts from text; map only values actually reported
 
 ### Permission request routing
 
-**MVP implementation amendment (T5, requirements revision 2):** interactive permissions are deferred. Reply with `RequestPermissionOutcome` cancelled immediately on the instance dispatcher and emit one Activity naming the tool. Do not start a permission worker, call `bridge_ext_permission_run`, map option kinds, or show a permission prompt. The interactive design below is retained for a later task.
+**Implementation amendment (T9):** interactive permissions are implemented through the existing extension permission relay. Each request has a journaled stable blocker ID and a separate worker; the dispatcher owns the single reply. Ask mode uses the interactive flow below; yolo remains `bypassPermissions`. Both modes only select the adapter’s once options if a permission request arrives.
 
 The request contains `toolCall` (a ToolCallUpdate object), not merely a top-level toolCallId:
 
@@ -400,6 +400,22 @@ Do not send bare allow_once as outcome, confuse kind with optionId, or translate
 ## 9. Direct input and streamed assistant chat
 
 ### 9.1 Input delivery
+
+**Push-only fetching (T13):** the Bridge drains the durable inbox on launch/restore,
+on `notify_agent_message` (`acp_chat_notify`), and once for every live ACP chat after
+each successful Hub WebSocket ready handshake. Reconnect recovers notifications
+missed while disconnected. There is no periodic inbox fetch. A failed drain retries
+after 1, 2, 4, 8, 16, then 30 seconds (capped); success clears retry state. A fresh
+push or ready edge triggers a drain immediately, bypassing an old retry deadline. Pushes
+coalesce in an atomic latch, including pushes received during a drain; retries retain
+the checkpoint-before-ack and message-ID deduplication rules below.
+
+Bridge list requests set `params.input_source="bridge_acp"` and `mark_read=false`.
+The Hub validates the normal Bridge/instance authority, ACP transport and own-inbox
+target before accepting that source. These infrastructure fetches publish no
+`chat_fetch`/`chat_read` activity bubble. Empty reads also publish none; a model's
+ordinary nonempty `ham-ctl chat read` still publishes its activity. Ack-only requests
+continue to contain only `ack_message_ids` and emit the existing read receipt event.
 
 **MVP implementation amendment (T5 coordinator decision):** ordinary messages and notices remain FIFO. The explicit pane interrupt uses the existing `session/cancel` path; after cancellation, drain the FIFO in order. A combined send-and-interrupt control and message priority flag are deferred post-MVP.
 
@@ -588,3 +604,25 @@ T1 and T2 can proceed independently; T3 follows T2; T4 integrates them; T5 then 
 | Daemon restart loses pipe queues/receipts | Distinct child generation; initialize+load, explicit interrupted turn; no exactly-once claim across daemon death |
 
 Confidence for implementation readiness depends on the specified fixtures and live gate. Package publication and protocol documentation establish contracts, not a successful Claude login/bootstrap/recovery run on this device.
+
+### Conversation response and tool status
+
+The pending ACP assistant message drives **Responding…** in the shared conversation
+tail status line. Completion and failure snapshots remove that status immediately;
+the partial assistant body remains inside its transcript message.
+
+ACP tools use the same viewer-scoped stream as PTY tools:
+`acp_events_tool` → `bridge_ext_ingest` → `bridge_tool_live_event` →
+`tool_stream_state` → `tool_live_apply_bridge` → `toolActivitySlice` →
+`LiveToolActivity`.
+The Hub extension history endpoint is retired. `agentActivitySlice` supplies CLI
+action labels separately.
+
+Thought chunks update runtime liveness directly. Emitting `activity(active)` for
+each chunk incorrectly told the shared reducer that another turn had begun,
+settling in-flight tools as interrupted before the next stream batch. ACP emits
+that lifecycle event only when a prompt starts. Event timestamps retain
+nanoseconds, and the live reducer parses the complete fraction (the pinned Odin
+parser reads only hundredths), so fresh calls survive reset fences. Failures carry the shared
+`status=error` field. Existing toolCallId receipts deduplicate start/end updates
+and diff digests deduplicate file edits.

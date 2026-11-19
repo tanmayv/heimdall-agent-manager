@@ -66,7 +66,7 @@ main :: proc() {
 		fmt.eprintln("ham-bridge:", message)
 		os.exit(1)
 	}
-	if has_flag(os.args, "--version") {
+	if bridge_wants_global_version(os.args) {
 		fmt.println("ham-bridge", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION, "bridge", contracts.BRIDGE_LOOPBACK_CONTRACT_VERSION, "ws", contracts.BRIDGE_WS_FRAME_VERSION)
 		return
 	}
@@ -1096,6 +1096,14 @@ request_method_route :: proc(request: string) -> (method: string, route: string)
 	path := request[path_start:path_start + path_end_rel]
 	if q := strings.index_byte(path, '?'); q >= 0 do path = path[:q]
 	return method, path
+}
+
+// bridge_wants_global_version reports whether --version asks for the binary's own
+// version. Subcommands (os.args[1] not a flag) own their arguments: `update
+// --version vX` names a release, and must reach bridge_update_command.
+bridge_wants_global_version :: proc(args: []string) -> bool {
+	if len(args) > 1 && !strings.has_prefix(args[1], "-") do return false
+	return has_flag(args, "--version")
 }
 
 has_flag :: proc(args: []string, flag: string) -> bool {

@@ -20,7 +20,9 @@ import { agentActionLine } from './agentActionLabels';
 
 // Unified conversation-tail status for the currently viewed instance. Action labels
 // retain their replay, freshness and vault handling; Working… fills the gaps while
-// the agent is busy. The logo stays mounted while only the status text transitions.
+// the agent is busy. Responding… follows the pending ACP message lifecycle;
+// a fresh action temporarily replaces either fallback status.
+// The logo stays mounted while only the status text transitions.
 const BUBBLE_LIFETIME_MS = 4000;
 const REPLAY_STAGGER_MS = 400;
 // Matches the CSS .agent-action-exit duration — how long an exiting row stays
@@ -79,7 +81,7 @@ function ActivityBubbleItem({ bubble }: { bubble: VisibleBubble }) {
   );
 }
 
-export default function AgentActivityBubbles({ instanceId, isWorking = false }: { instanceId: string; isWorking?: boolean }) {
+export default function AgentActivityBubbles({ instanceId, isWorking = false, isResponding = false }: { instanceId: string; isWorking?: boolean; isResponding?: boolean }) {
   const dispatch = useDispatch();
   const buffer = useSelector((state: any) => selectAgentActivityBuffer(state, instanceId));
   // Ids already surfaced for this instance, persisted in redux so it survives
@@ -87,8 +89,6 @@ export default function AgentActivityBubbles({ instanceId, isWorking = false }: 
   // re-open). Read here so replay/live effects can exclude already-seen ids.
   const shownIds = useSelector((state: any) => selectAgentShownIds(state, instanceId));
   const [visible, setVisible] = useState<VisibleBubble[]>([]);
-
-  // (rest of component hooks and effects)
 
   // Latest redux shown-id map, mirrored into a ref so the effects can read the
   // current value without re-subscribing / re-running on every change.
@@ -169,7 +169,7 @@ export default function AgentActivityBubbles({ instanceId, isWorking = false }: 
 
   // One line: the newest action still showing, else the last one on its way out.
   const current = visible.find((b) => b.phase !== 'exiting') || visible[0];
-  if (!current && !isWorking) return null;
+  if (!current && !isWorking && !isResponding) return null;
 
   return (
     <div
@@ -182,6 +182,8 @@ export default function AgentActivityBubbles({ instanceId, isWorking = false }: 
       <WorkingRings size={18} />
       {current ? (
         <ActivityBubbleItem key={current.id} bubble={current} />
+      ) : isResponding ? (
+        <span key="responding" data-debug-id="conversation-activity-responding" className="agent-action-in text-muted">Responding…</span>
       ) : (
         <span key="working" className="agent-action-in text-muted">Working…</span>
       )}

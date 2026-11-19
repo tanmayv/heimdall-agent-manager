@@ -162,7 +162,10 @@ agent_save_instance_sqlite :: proc(ctx: rawptr, instance: domain.Agent_Instance)
         if rc & 0xff == SQLITE_CONSTRAINT do return {}, false, domain.domain_error(.Validation_Failed, "agent instance constraint rejected")
         return domain.Agent_Instance{}, false, domain.domain_error(.Internal_Error, "agent instance save failed")
 	}
-	// Preserve existing string ownership while returning the persisted revision.
+	// Inputs are borrowed and the result otherwise aliases them. Never free the
+	// caller's runtime_transport here: it can be a literal or remain live in the
+	// caller. On snapshot correction ONLY the returned replacement is owned;
+	// callers retain/free the original separately (see tracking regression).
 	saved := instance
 	saved.configuration_revision = string_to_i32(column_text_unowned(stmt, 0))
 	if saved.runtime_transport!=column_text_unowned(stmt,1) do saved.runtime_transport=column_text(stmt,1)

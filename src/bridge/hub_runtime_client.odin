@@ -498,6 +498,7 @@ bridge_hub_runtime_worker :: proc() {
 			thread.run(bridge_shell_orphan_reconcile_now)
 			bridge_action_scheduler_connection_changed()
             sync.atomic_store(&bridge_hub_runtime_up, true)
+			acp_chat_hub_reconnected()
 			if !bridge_hub_is_enroll_only_runtime() do bridge_local_status_write(true)
 			bridge_hub_runtime_loop(&conn)
 			bridge_action_scheduler_connection_changed()

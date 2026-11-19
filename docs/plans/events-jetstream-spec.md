@@ -187,3 +187,25 @@ Delivery semantics:
 - **Memory:** every `nats*_Destroy`, `natsMsg_Destroy` and `jsPubAck_Destroy` is called on every path. Reviewers check this explicitly. Tests use the tracking allocator.
 - **No network I/O inside a transaction** (`src/hub/repository/sqlite/tx.odin:24-26`). Publishing happens only in the relay.
 - **Tests:** run against a real `nats-server -js`. The test harness starts it on an ephemeral port with a temp store dir. In Nix, `pkgs.nats-server` is added to the dev shell and checks.
+
+### Migration identities and ordering
+
+Events migrations use the separate `events_NNN_description.sql` namespace:
+`events_001_outbox.sql`, `events_002_topics.sql`, then `events_003_*` onward.
+Do not consume main's numeric release sequence or reserve a large numeric offset:
+main adds an extension-version migration on each release. Keep main's files unchanged.
+
+The SQLite runner iterates `migration_order` in registration order and checks
+`schema_migrations.version` by **full filename**, applying every missing identity;
+it does not compare numeric prefixes or skip below a maximum version. Register
+events entries after their schema dependencies, with outbox before topics, and
+add matching embedded SQL loads and fallback branches in `migrations.odin`.
+A database already on main's latest release therefore applies the events entries;
+future numeric release entries still apply even after namespaced events entries.
+
+For databases that already ran the pre-namespace events migrations, the runner
+recognizes `221_event_outbox.sql` and `222_event_topics.sql` as historical aliases.
+Their ledger rows remain intact and their SQL is not replayed; main's distinct
+`221_extension_version_sync_0_5_61.sql` and `222_extension_version_sync_0_5_62.sql`
+still apply independently. Regression tests cover main-to-events upgrades,
+repeated startup, and upgrades from those original events identities.

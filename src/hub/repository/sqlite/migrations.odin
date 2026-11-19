@@ -681,9 +681,12 @@ MIGRATION_219_EXTENSION_VERSION_SYNC :: #load("migrations/219_extension_version_
 
 MIGRATION_220_EXTENSION_VERSION_SYNC :: #load("migrations/220_extension_version_sync_0_5_60.sql", string)
 
-MIGRATION_221_EVENT_OUTBOX :: #load("migrations/221_event_outbox.sql", string)
+MIGRATION_221_EXTENSION_VERSION_SYNC :: #load("migrations/221_extension_version_sync_0_5_61.sql", string)
 
-MIGRATION_222_EVENT_TOPICS :: #load("migrations/222_event_topics.sql", string)
+MIGRATION_222_EXTENSION_VERSION_SYNC :: #load("migrations/222_extension_version_sync_0_5_62.sql", string)
+MIGRATION_EVENTS_001_OUTBOX :: #load("migrations/events_001_outbox.sql", string)
+
+MIGRATION_EVENTS_002_TOPICS :: #load("migrations/events_002_topics.sql", string)
 
 migration_order :: [?]string {
 	"001_foundation.sql",
@@ -910,8 +913,10 @@ migration_order :: [?]string {
 	"218_acp_adapter_install.sql",
 	"219_extension_version_sync_0_5_59.sql",
 	"220_extension_version_sync_0_5_60.sql",
-	"221_event_outbox.sql",
-	"222_event_topics.sql",
+	"221_extension_version_sync_0_5_61.sql",
+	"222_extension_version_sync_0_5_62.sql",
+	"events_001_outbox.sql",
+	"events_002_topics.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1426,8 +1431,10 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 			return string(data)
 		}
 	}
-	if name == "222_event_topics.sql" do return strings.clone(MIGRATION_222_EVENT_TOPICS)
-	if name == "221_event_outbox.sql" do return strings.clone(MIGRATION_221_EVENT_OUTBOX)
+	if name == "222_extension_version_sync_0_5_62.sql" do return strings.clone(MIGRATION_222_EXTENSION_VERSION_SYNC)
+	if name == "221_extension_version_sync_0_5_61.sql" do return strings.clone(MIGRATION_221_EXTENSION_VERSION_SYNC)
+	if name == "events_002_topics.sql" do return strings.clone(MIGRATION_EVENTS_002_TOPICS)
+	if name == "events_001_outbox.sql" do return strings.clone(MIGRATION_EVENTS_001_OUTBOX)
 	if name == "220_extension_version_sync_0_5_60.sql" do return strings.clone(MIGRATION_220_EXTENSION_VERSION_SYNC)
 	if name == "219_extension_version_sync_0_5_59.sql" do return strings.clone(MIGRATION_219_EXTENSION_VERSION_SYNC)
 	if name == "217_extension_version_sync_0_5_58.sql" do return strings.clone(MIGRATION_217_EXTENSION_VERSION_SYNC)
@@ -1664,6 +1671,9 @@ migration_applied :: proc(conn: ^Conn, version: string) -> bool {
 	if sqlite3_prepare_v2(conn.db, cstring(raw_data(query)), c.int(-1), &stmt, nil) != SQLITE_OK do return false
 	defer sqlite3_finalize(stmt)
 	if sqlite3_step(stmt) == SQLITE_ROW do return true
+	// Preserve pre-namespace events ledger identities without replaying CREATE TABLE.
+	if version == "events_001_outbox.sql" do return migration_applied(conn, "221_event_outbox.sql")
+	if version == "events_002_topics.sql" do return migration_applied(conn, "222_event_topics.sql")
 	// Bots shipped on staging before main claimed 210–212. Keep the original
 	// ledger identities and skip their renumbered equivalents without replaying SQL.
 	if version == "213_bots.sql" do return migration_applied(conn, "209_bots.sql")

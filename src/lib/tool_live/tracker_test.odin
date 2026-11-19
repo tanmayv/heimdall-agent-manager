@@ -496,3 +496,22 @@ test_live_turn_activity_reopens_ended_session :: proc(t: ^testing.T) {
 	live_send(&s, live_ev("tool.start", "pre_end", 2))
 	testing.expect_value(t, len(live_obj(&s)["active"].(json.Array)), 1)
 }
+
+@(test)
+test_live_rfc3339_fractional_precision_and_full_consumption :: proc(t:^testing.T) {
+    base,ok:=tool_live_ns("2026-11-19T00:00:00Z");testing.expect(t,ok)
+    for row in ([]struct{stamp:string,nanos:i64}{
+        {"2026-11-19T00:00:00Z",0},
+        {"2026-11-19T00:00:00.1Z",100000000},
+        {"2026-11-19T00:00:00.123Z",123000000},
+        {"2026-11-19T00:00:00.123456789Z",123456789},
+        {"2026-11-19T00:00:00.123456789123Z",123456789},
+        {"2026-11-19T01:00:00.000000001+01:00",1},
+    }) {
+        ns,valid:=tool_live_ns(row.stamp)
+        testing.expect(t,valid);testing.expect_value(t,ns,base+row.nanos)
+    }
+    for stamp in ([]string{"", "2026-11-19T00:00:00.Z", "2026-11-19T00:00:00.123junk", "2026-11-19T00:00:00Zjunk", "2026-11-19T00:00:00.123"}) {
+        _,valid:=tool_live_ns(stamp);testing.expect(t,!valid,stamp)
+    }
+}

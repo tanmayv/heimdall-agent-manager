@@ -492,3 +492,16 @@ pty_host_decode_stream_closed :: proc(t: ^testing.T) {
 	testing.expect_value(t, r2.instance, "inst_closed_nocode")
 	testing.expect_value(t, r2.has_code, false)
 }
+
+@(test)
+pty_host_legacy_input_enforces_documented_shared_frame_limit :: proc(t: ^testing.T) {
+	// tag + instance length + one-byte instance is six bytes of overhead.
+	data := make([]byte, PTY_HOST_MAX_FRAME_BYTES - 6 + 1)
+	defer delete(data)
+	at_limit := pty_host_encode_input("a", data[:len(data)-1])
+	defer delete(at_limit)
+	testing.expect_value(t, len(at_limit), PTY_HOST_MAX_FRAME_BYTES + 4)
+	over_limit := pty_host_encode_input("a", data)
+	defer delete(over_limit)
+	testing.expect_value(t, len(over_limit), 0)
+}

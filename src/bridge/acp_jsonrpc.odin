@@ -42,6 +42,8 @@ ACP_RPC_Callbacks :: struct {
     // Return true if the method is supported. Reply may be made reentrantly.
     inbound_request: proc(data: rawptr, id_json, method, params: string) -> bool,
     fault: proc(data: rawptr, reason: string),
+    // Dispatcher-owned timeout handling for adapter-specific inbound outcomes.
+    inbound_timeout: proc(data: rawptr, id_json: string),
     // Receives a borrowed state on the dispatcher; may replace runtime fields
     // with heap-owned copies before the atomic write. Do not change RPC fields.
     // False prevents sends and PipeAck.
@@ -510,7 +512,7 @@ acp_rpc_execute :: proc(c: ^ACP_RPC_Client, cmd: ^ACP_RPC_Command) {
 }
 
 acp_rpc_inbound_bytes :: proc(p: ACP_RPC_Inbound) -> int {
-    return len(p.id_json)+len(p.method)+len(p.params_json)+len(p.response_json)+len(p.response_delivery_id)
+    return len(p.id_json)+len(p.method)+len(p.params_json)+len(p.response_json)+len(p.response_delivery_id)+len(p.blocker_id)
 }
 
 acp_rpc_reindex_inbound :: proc(index: ^map[string]int, entries: []ACP_RPC_Inbound) {
@@ -604,7 +606,10 @@ acp_rpc_expire :: proc(c: ^ACP_RPC_Client) {
         if p.deadline_unix_ms != 0 && now >= p.deadline_unix_ms { acp_rpc_fail(c, "acp_rpc_timeout"); return }
     }
     for p in c.state.pending_inbound {
-        if p.response_json == "" && p.deadline_unix_ms != 0 && now >= p.deadline_unix_ms do acp_rpc_reply_error(c, p.id_json, {code = -32000, message = "permission timeout"})
+        if p.response_json == "" && p.deadline_unix_ms != 0 && now >= p.deadline_unix_ms {
+            if c.callbacks.inbound_timeout != nil { c.callbacks.inbound_timeout(c.callbacks.data, p.id_json) }
+            else { acp_rpc_reply_error(c, p.id_json, {code = -32000, message = "permission timeout"}) }
+        }
     }
 }
 

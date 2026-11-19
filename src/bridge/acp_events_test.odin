@@ -10,6 +10,7 @@ import "core:testing"
 import "core:time"
 import contracts "odin_test:contracts"
 import vault "odin_test:lib/vault"
+import live "odin_test:lib/tool_live"
 
 t5_events:[dynamic]string
 t5_locked:bool
@@ -192,12 +193,11 @@ t5_acp_permission_cancelled_and_turn_continues :: proc(t:^testing.T) {
     permission:="{\"jsonrpc\":\"2.0\",\"id\":700,\"method\":\"session/request_permission\",\"params\":{\"sessionId\":\"s\",\"toolCall\":{\"toolCallId\":\"c\",\"title\":\"Run command\"},\"options\":[]}}\n"
     f.r.client.io.feed(f.r.client,permission,1);acp_test_wait(t,&f.f,.Acks,1);acp_test_wait(t,&f.f,.Writes,2)
     testing.expect(t,strings.contains(f.f.writes[1].bytes,`"outcome":"cancelled"`))
-    // Duplicate inbound ID reuses the RPC response without another Activity.
+    // No once options means no actionable prompt; duplicate IDs reuse the reply.
     f.r.client.io.feed(f.r.client,permission,2);acp_test_wait(t,&f.f,.Acks,2)
     f.r.client.io.feed(f.r.client,acp_test_response(id,`{"stopReason":"end_turn"}`),3)
     testing.expect(t,acp_test_wait(t,&f.f,.Results,1),"the turn has a bounded, explicit completion after cancellation")
-    testing.expect_value(t,len(t5_events),1)
-    testing.expect(t,strings.contains(t5_events[0],"Run command"))
+    testing.expect_value(t,len(t5_events),0)
     testing.expect(t,f.f.results[0].ok)
     sync.mutex_lock(&bridge_permission_mutex)
     for pending in bridge_permission_pending do testing.expect(t,pending.agent_instance_id!="inst_t5_events","ACP cancellation must not create an interactive prompt")
@@ -325,4 +325,13 @@ t5_acp_detached_finalization_retries_durably_after_token_invalidation :: proc(t:
     route:=bridge_agent_route("agent.chat.assistant_message","{}")
     testing.expect_value(t,bridge_agent_route_target(route),"/api/v1/agent-actions/chat/assistant-message")
     testing.expect(t,bridge_agent_method_allowed("agent.chat.assistant_message"))
+}
+
+@(test)
+t14_acp_event_timestamp_preserves_reset_fence_precision :: proc(t:^testing.T) {
+    now:=time.unix(1795075200,123456789)
+    stamp:=acp_events_timestamp(now)
+    parsed,valid:=live.tool_live_ns(stamp)
+    testing.expect(t,valid)
+    testing.expect_value(t,parsed,time.to_unix_nanoseconds(now))
 }

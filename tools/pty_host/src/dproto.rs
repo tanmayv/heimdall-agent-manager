@@ -468,7 +468,9 @@ fn get_bool(rest: &[u8], off: &mut usize) -> io::Result<bool> {
     match b { 0 => Ok(false), 1 => Ok(true), _ => Err(bad("invalid boolean")) }
 }
 
-/// Read daemon frames with a stricter allocation bound than the terminal protocol.
+/// Both legacy PTY and pipe control frames deliberately use the common 4 MiB
+/// allocation limit (ACP spec §5.1). Large legacy Input writes must be split;
+/// rejecting before tag decoding keeps untrusted allocation bounded.
 fn read_frame<R: Read>(r: &mut R) -> io::Result<Option<Vec<u8>>> {
     let mut prefix = [0; 4];
     match r.read(&mut prefix[..1]) { Ok(0) => return Ok(None), Ok(_) => (), Err(e) => return Err(e) }

@@ -1359,3 +1359,33 @@ test_provider_transport_http_discovery_accepts_structured_adapter :: proc(t:^tes
  testing.expect(t,stored,"tracked discovery also persists the adapter status")
  domain.bridge_provider_statuses_destroy(statuses)
 }
+
+@(test)
+test_provider_transport_http_busy_is_storage_error :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	defer free_all(context.temp_allocator)
+	// A second connection holds RESERVED: reads and BEGIN DEFERRED succeed,
+	// but the actual transport INSERT/UPDATE gets SQLITE_BUSY.
+	path := fmt.aprintf("%s/.cache/heimdall-tests/t8-transport-busy.db", os.get_env("HOME", context.temp_allocator))
+	os.remove(path)
+	defer os.remove(path)
+	f := extension_test_setup(t, "transport_busy", path)
+	if f == nil do return
+	defer extension_test_teardown(f)
+	writer, opened, open_err := sqlite.open(path)
+	if !testing.expect(t, opened, open_err.message) do return
+	defer sqlite.close(&writer)
+	testing.expect(t, sqlite.exec(&f.conn, "PRAGMA busy_timeout=0;"))
+	testing.expect(t, sqlite.exec(&writer, "BEGIN IMMEDIATE;"))
+	defer sqlite.exec(&writer, "ROLLBACK;")
+	// Exercise the same real repository through both direct and HTTP paths.
+	err := iface.set_provider_transport(&f.pr_repo, f.bridge_id, "claude", "pty", "now")
+	testing.expect_value(t, err.code, domain.Error_Code.Internal_Error)
+	route := strings.concatenate({"/api/v1/bridges/", f.bridge_id, "/providers/claude"})
+	request := extension_test_request(f, route, `{"transport":"pty"}`)
+	request.method = "PUT"
+	response := bridge_provider_enable_handler(&f.ph, request)
+	testing.expect_value(t, response.status, 500)
+	testing.expect(t, strings.contains(response.body, "internal_error"), response.body)
+	testing.expect(t, !strings.contains(response.body, "invalid_transport"))
+}

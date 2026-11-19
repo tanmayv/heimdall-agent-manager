@@ -593,6 +593,15 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 	auth, inst, ok, resp := require_instance_action_auth(h, req)
 	if !ok do return resp
 	params := json_object_raw(req.body, "params")
+	bridge_input := false
+	parsed, _ := json.parse(params, allocator = context.temp_allocator)
+	obj, _ := parsed.(json.Object)
+	if value, present := obj["input_source"]; present {
+		source, typed := value.(json.String)
+		if !typed || string(source) != contracts.ACP_CHAT_INPUT_SOURCE do return respond_error(domain.domain_error(.Validation_Failed, "unknown chat input source"), req.request_id)
+		if inst.runtime_transport != "acp" || json_string(params, "target_instance_id") != "" do return respond_error(domain.domain_error(.Forbidden, "ACP input fetch requires the authenticated ACP instance's own inbox"), req.request_id)
+		bridge_input = true
+	}
 	if default_mark_read { if response, handled := agent_chat_ack_only(h, req, auth, inst, params); handled do return response }
 	limit := json_int(params, "limit", 50)
 	cursor := json_string(params, "cursor")
@@ -666,13 +675,16 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 	fmt.sbprintf(&b, ",\"read\":{{\"marked\":%t,\"marked_count\":%d,\"through_message_id\":\"%s\",\"through_created_at\":\"%s\"}}}}",
 	    mark_read, marked_count, through_message_id, through_created_at)
 
-	// Human-readable activity bubble: 'read inbox (N new)' vs 'checked messages'.
-	if default_mark_read {
-		act := target_id != "" ? fmt.tprintf("read inbox of %s (%d new)", target_id, unread_count_before) : fmt.tprintf("read inbox (%d new)", unread_count_before)
-		publish_agent_action(h, inst, "chat_read", act)
-	} else {
-		act := target_id != "" ? fmt.tprintf("checked messages of %s", target_id) : "checked messages"
-		publish_agent_action(h, inst, "chat_fetch", act)
+	// Infrastructure drains and empty reads are silent. Explicit agent reads of
+	// actual messages still publish their ordinary activity bubble.
+	if !bridge_input && len(rows) > 0 {
+		if default_mark_read {
+			act := target_id != "" ? fmt.tprintf("read inbox of %s (%d new)", target_id, unread_count_before) : fmt.tprintf("read inbox (%d new)", unread_count_before)
+			publish_agent_action(h, inst, "chat_read", act)
+		} else {
+			act := target_id != "" ? fmt.tprintf("checked messages of %s", target_id) : "checked messages"
+			publish_agent_action(h, inst, "chat_fetch", act)
+		}
 	}
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }

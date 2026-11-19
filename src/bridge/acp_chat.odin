@@ -33,6 +33,8 @@ ACP_Chat :: struct {
     // This exchange is owned by worker -> dispatcher -> worker in acp_rpc_call.
     publication: string,
     retry_after: i64,
+    // Worker-owned failure retry state; fetch itself is an atomic edge latch.
+    input_retry_after, input_retry_delay: i64,
     vault_blocked: bool,
     blocker_id: string,
 }
@@ -97,6 +99,29 @@ acp_chat_notify :: proc(instance:string) -> bool {
     if r==nil || r.chat==nil do return false
     sync.atomic_store(&r.chat.fetch,true)
     return true
+}
+
+// The ready handshake closes the gap for messages sent while Hub WS was down.
+// Only latch work here: HTTP and durable queue work stay on each chat worker.
+acp_chat_hub_reconnected :: proc() {
+    sync.mutex_lock(&acp_runtime_mu);defer sync.mutex_unlock(&acp_runtime_mu)
+    for _,r in acp_runtimes {
+        if r!=nil && r.chat!=nil && !sync.atomic_load(&r.chat.stop) do sync.atomic_store(&r.chat.fetch,true)
+    }
+}
+
+acp_chat_fetch_due :: proc(chat:^ACP_Chat,now:i64) -> bool {
+    notified:=sync.atomic_exchange(&chat.fetch,false)
+    // A fresh push/ready edge signals connectivity and must not wait behind an
+    // old failure deadline. Without an edge, only the bounded retry is due.
+    return notified || (chat.input_retry_after!=0 && now>=chat.input_retry_after)
+}
+
+acp_chat_fetch_finished :: proc(chat:^ACP_Chat,ok:bool,now:i64) {
+    if ok { chat.input_retry_after=0;chat.input_retry_delay=0;return }
+    chat.input_retry_delay=min(30000,max(1000,chat.input_retry_delay*2))
+    chat.input_retry_after=now+chat.input_retry_delay
+    // Do not clear fetch: a notification during the HTTP drain must survive.
 }
 
 acp_chat_vault_ready :: proc() -> bool {
@@ -266,7 +291,6 @@ acp_chat_worker :: proc(data:rawptr) {
     arena:vm.Arena;_=vm.arena_init_growing(&arena);defer vm.arena_destroy(&arena)
     context.temp_allocator=vm.arena_allocator(&arena)
     chat:=cast(^ACP_Chat)data
-    last_fetch:i64
     for !sync.atomic_load(&chat.stop) {
         mem.free_all(context.temp_allocator)
         if !acp_chat_vault_ready() { time.sleep(100*time.Millisecond);continue }
@@ -279,9 +303,9 @@ acp_chat_worker :: proc(data:rawptr) {
             }
         }
         now:=bridge_runtime_now_ms()
-        if sync.atomic_exchange(&chat.fetch,false) || now-last_fetch>=10000 {
-            if !acp_chat_fetch_inputs(chat) do sync.atomic_store(&chat.fetch,true)
-            last_fetch=now
+        if acp_chat_fetch_due(chat,now) {
+            ok:=acp_chat_fetch_inputs(chat)
+            acp_chat_fetch_finished(chat,ok,bridge_runtime_now_ms())
         }
         time.sleep(50*time.Millisecond)
     }
@@ -339,11 +363,14 @@ acp_chat_fetch_inputs :: proc(chat:^ACP_Chat) -> bool {
     // gaps when many input rows share the same created_at.
     for batch in 0..<32 {
         if sync.atomic_load(&chat.stop) do return false
-        reply:=acp_chat_relay(route_path("api","v1","agent-actions","chat","read"),"agent.chat.read",`{"mark_read":false,"unread_only":true,"receiver_only":true,"oldest_first":true,"limit":100}`,chat.r.rec,5000)
+        params:=acp_event_json(contracts.ACP_Chat_Input_Fetch{input_source=contracts.ACP_CHAT_INPUT_SOURCE,unread_only=true,receiver_only=true,oldest_first=true,limit=100})
+        reply:=acp_chat_relay(route_path("api","v1","agent-actions","chat","read"),"agent.chat.read",params,chat.r.rec,5000)
         defer delete(reply.body)
         if !reply.ok || reply.status!=200 do return false
-        root:=acp_event_object(reply.body); data,_:=root["data"].(json.Object)
-        rows,_:=data["messages"].(json.Array)
+        parsed,err:=json.parse(reply.body,allocator=context.temp_allocator)
+        root,object:=parsed.(json.Object);if err!=nil || !object do return false
+        data,has_data:=root["data"].(json.Object);if !has_data do return false
+        rows,has_rows:=data["messages"].(json.Array);if !has_rows do return false
         if len(rows)==0 do return true
         kr,unlocked:=acp_chat_keyring();if !unlocked do return false
         ids:=make([dynamic]string,allocator=context.temp_allocator)
