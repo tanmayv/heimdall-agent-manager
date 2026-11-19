@@ -211,6 +211,15 @@ acp_runtime_session_params :: proc(r: ^ACP_Runtime) -> string {
 }
 
 acp_runtime_configure :: proc(r: ^ACP_Runtime, category, value, failure: string) {
+    if category == "mode" && r.descriptor.permission_policy == .Once_Only {
+        if !contracts.acp_descriptor_effective_mode_valid(r.descriptor, value) {
+            acp_runtime_error(r, failure); return
+        }
+        // Once-only policy is enforced by the bridge for each inbound request.
+        // Provider session/reasoning modes are unrelated to tool approval.
+        acp_runtime_ready(r)
+        return
+    }
     bound := r.descriptor.model_category if category == "model" else r.descriptor.permission_category
     id, ok := acp_config_selection(r.d.config_json, bound, value)
     defer delete(id)

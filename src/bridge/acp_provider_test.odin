@@ -13,6 +13,44 @@ ACP_CLAUDE_PACKAGE :: contracts.ACP_CLAUDE_DESCRIPTOR.pkg.name
 ACP_CLAUDE_INTEGRITY :: contracts.ACP_CLAUDE_DESCRIPTOR.pkg.integrity
 
 @(test)
+c2_acp_copilot_restore_binds_policy_profile_and_pinned_version :: proc(t: ^testing.T) {
+    context.allocator = context.temp_allocator
+    instance := "inst_c2_restore"
+    state := ACP_State{schema_version = 3, runtime_binding_version = 1, provider = "copilot", profile = "work", bridge = bridge_config.daemon_id,
+        instance = instance, launch_epoch = "copilot_epoch", run_dir = bridge_runtime_default_run_dir(instance), pipe_generation = "saved-generation",
+        adapter_version = "1.0.114", selected_mode = "ask", runtime_json = `{"phase":"initialize"}`,
+        binding = acp_provider_binding(contracts.ACP_COPILOT_DESCRIPTOR, "work", "1.0.114", "AGENTS.md", 7)}
+    restored, valid := acp_runtime_from_state(&state, {})
+    testing.expect(t, valid && restored != nil)
+    if restored != nil { testing.expect(t, restored.mode == "ask" && restored.binding.cli_version == "1.0.114"); acp_runtime_destroy(restored) }
+    for field in 0..<4 {
+        changed := state
+        switch field {
+        case 0: changed.selected_mode = "bypassPermissions"
+        case 1: changed.binding.cli_version = "1.0.91"
+        case 2: changed.profile = "personal"
+        case 3: changed.provider = "claude"
+        }
+        rejected, accepted := acp_runtime_from_state(&changed, {})
+        testing.expect(t, !accepted && rejected == nil)
+        if rejected != nil do acp_runtime_destroy(rejected)
+    }
+}
+
+@(test)
+c2_acp_cli_version_pin_rejects_old_host_and_untrusted_output :: proc(t: ^testing.T) {
+    native := contracts.ACP_Provider_Descriptor{provider = "copilot", launch = .Native, cli_version = "1.0.114"}
+    version, valid := acp_provider_parse_cli_version(native, "GitHub Copilot CLI 1.0.114.\nRun 'copilot version' to check for updates.\n")
+    testing.expect(t, valid && version == "1.0.114")
+    for output in ([]string{"GitHub Copilot CLI 1.0.91.", "1.0.114", "diagnostic GitHub Copilot CLI 1.0.114.", "GitHub Copilot CLI 1.0.114.secret", "GitHub Copilot CLI 1.0.114.5"}) {
+        version, valid := acp_provider_parse_cli_version(native, output)
+        testing.expect(t, !valid && version == "")
+    }
+    version, valid = acp_provider_parse_cli_version(contracts.ACP_CLAUDE_DESCRIPTOR, "2.1.70 (Claude Code)\n")
+    testing.expect(t, valid && version == "2.1.70")
+}
+
+@(test)
 acp_provider_launch_argv_native_and_adapter_share_probe_semantics :: proc(t: ^testing.T) {
     d, _ := contracts.acp_provider_descriptor("claude")
     adapter, valid := acp_provider_launch_argv(d, "/managed/claude", "/profile/claude")

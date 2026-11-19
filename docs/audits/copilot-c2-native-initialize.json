@@ -1,0 +1,58 @@
+{
+  "version": "GitHub Copilot CLI 1.0.114.",
+  "initialize": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "protocolVersion": 1,
+      "agentCapabilities": {
+        "auth": {
+          "logout": {}
+        },
+        "loadSession": true,
+        "mcpCapabilities": {
+          "http": true,
+          "sse": true
+        },
+        "promptCapabilities": {
+          "image": true,
+          "audio": false,
+          "embeddedContext": true
+        },
+        "sessionCapabilities": {
+          "close": {},
+          "list": {}
+        }
+      },
+      "agentInfo": {
+        "name": "Copilot",
+        "title": "Copilot",
+        "version": "1.0.114"
+      },
+      "authMethods": [
+        {
+          "id": "copilot-login",
+          "name": "Log in with Copilot CLI",
+          "description": "Run `copilot login` in the terminal",
+          "_meta": {
+            "terminal-auth": {
+              "command": "/nix/store/vq1y1a531pgqhzmk8m8ijavxp0y4sf7w-heimdall-copilot-acp-1.0.114/libexec/copilot",
+              "args": [
+                "login"
+              ],
+              "label": "Copilot Login"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "clean_session": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "error": {
+      "code": -32000,
+      "message": "Authentication required"
+    }
+  }
+}

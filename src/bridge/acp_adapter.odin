@@ -12,6 +12,8 @@ import ws "odin_test:lib/ws"
 import contracts "odin_test:contracts"
 
 ACP_INITIALIZE_PARAMS :: `{"protocolVersion":1,"clientInfo":{"name":"heimdall","version":"`+contracts.APP_VERSION+`"},"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false}}`
+ACP_COPILOT_PACKAGE_JSON :: #load("acp_pins/copilot/package.json", string)
+ACP_COPILOT_LOCK_JSON :: #load("acp_pins/copilot/package-lock.json", string)
 acp_adapter_runner: Bridge_Extension_Install_Runner = bridge_process_run_capture_status
 acp_adapter_probe_hook: proc(provider, root, scratch: string) -> (bool, string) = acp_adapter_probe
 acp_adapter_cli_probe_hook: proc(provider: string) -> (string, string) = acp_adapter_cli_probe
@@ -80,6 +82,7 @@ acp_adapter_files_valid :: proc(root: string, provider: string) -> bool {
     manifest, me := os.read_entire_file(strings.concatenate({root, "/node_modules/", d.pkg.name, "/package.json"}), context.temp_allocator)
     lock, le := os.read_entire_file(strings.concatenate({root, "/package-lock.json"}), context.temp_allocator)
     if me != nil || le != nil do return false
+    if d.provider == "copilot" && string(lock) != ACP_COPILOT_LOCK_JSON do return false
     m, err := json.parse(string(manifest)); if err != nil do return false
     l, lerr := json.parse(string(lock)); if lerr != nil do return false
     mo, mok := m.(json.Object); lo, lok := l.(json.Object)
@@ -103,6 +106,13 @@ acp_adapter_files_valid :: proc(root: string, provider: string) -> bool {
         no, _ := nm.(json.Object)
         nn, _ := no["name"].(json.String); nversion, _ := no["version"].(json.String)
         if string(nn) != pin.name || string(nversion) != pin.version do return false
+        native_bins, _ := no["bin"].(json.Object)
+        native_entry, _ := native_bins[strings.trim_prefix(pin.name, "@github/")].(json.String)
+        if string(native_entry) != "copilot" do return false
+        native_dir := strings.concatenate({root, "/node_modules/", pin.name}, context.temp_allocator)
+        native_binary := strings.concatenate({native_dir, "/copilot"}, context.temp_allocator)
+        if !bridge_provider_path_executable(native_binary) ||
+           filepath.dir(bridge_fs_canonicalize_existing(native_binary)) != bridge_fs_canonicalize_existing(native_dir) { return false }
     }
     executable := acp_adapter_bin(root, provider)
     expected, _ := filepath.join({root, "node_modules", d.pkg.name, string(bin)}, context.temp_allocator)
@@ -233,6 +243,7 @@ acp_adapter_probe_message :: proc(reason: string, provider: string = "claude") -
     if reason == strings.concatenate({provider, "_version_timeout"}, context.temp_allocator) do return fmt.tprintf("%s --version did not finish before the deadline", d.display_name)
     if reason == strings.concatenate({provider, "_version_spawn_failed"}, context.temp_allocator) do return fmt.tprintf("%s --version could not be executed", d.display_name)
     if reason == strings.concatenate({provider, "_version_failed"}, context.temp_allocator) do return fmt.tprintf("%s --version exited with a non-zero status", d.display_name)
+    if reason == "cli_version_mismatch" do return fmt.tprintf("The selected %s executable does not report the pinned CLI version %s", d.display_name, d.cli_version)
     switch reason {
     case "host_unavailable": return "The pipe daemon is unavailable"
     case "spawn_failed": return "The adapter process could not be spawned"
@@ -262,6 +273,25 @@ acp_adapter_probe_env :: proc(pp: ^Provider_Profile) -> ([][2]string, bool) {
     return bridge_pty_host_env_pairs(clean[:]), true
 }
 
+acp_provider_parse_cli_version :: proc(d: contracts.ACP_Provider_Descriptor, output: string) -> (string, bool) {
+    text := strings.trim_space(output)
+    if d.launch == .Native {
+        // Copilot prints a product label and a trailing full stop, followed by
+        // an update hint. Never accept a different semver found in diagnostics.
+        if d.provider != "copilot" || !strings.has_prefix(text, "GitHub Copilot CLI ") do return "", false
+        text = strings.trim_prefix(text, "GitHub Copilot CLI ")
+        if end := strings.index_byte(text, '\n'); end >= 0 do text = strings.trim_space(text[:end])
+        text = strings.trim_suffix(text, ".")
+        if text != d.cli_version || !contracts.exact_adapter_version(text) do return "", false
+        return text, true
+    }
+    // Preserve Claude's numeric prefix (the rest is a product label).
+    for c, i in text {
+        if (c < '0' || c > '9') && c != '.' { text = text[:i]; break }
+    }
+    return text, len(text) <= 64 && contracts.exact_adapter_version(text)
+}
+
 // Use the same resolution and environment as managed ACP launches, with no
 // Heimdall credentials. Only allowlisted excerpts of the bounded output escape.
 acp_provider_cli_version :: proc(pp: ^Provider_Profile, timeout: time.Duration = 3*time.Second) -> (version, reason, diagnostic: string) {
@@ -289,12 +319,9 @@ acp_provider_cli_version :: proc(pp: ^Provider_Profile, timeout: time.Duration =
         excerpt := strings.concatenate({stderr[:min(len(stderr), 512)], out[:min(len(out), 512)]})
         return "", strings.concatenate({"acp_", d.provider, "_not_runnable"}), acp_adapter_probe_reason(excerpt, fallback)
     }
-    // Log only a numeric version prefix, never arbitrary child output.
-    text := strings.trim_space(out)
-    for c, i in text {
-        if (c < '0' || c > '9') && c != '.' { text = text[:i]; break }
-    }
-    if len(text) > 64 do text = ""
+    // Only a validated numeric version can leave this boundary.
+    text, valid := acp_provider_parse_cli_version(d, out)
+    if !valid do return "", strings.concatenate({"acp_", d.provider, "_not_runnable"}), "cli_version_mismatch"
     return strings.clone(text), "", ""
 }
 
@@ -383,6 +410,18 @@ acp_adapter_probe_profile :: proc(pp: ^Provider_Profile, root, scratch: string) 
     return false, acp_adapter_probe_reason(string(p.diagnostic[:p.diagnostic_len]), fallback)
 }
 
+acp_adapter_prepare_install :: proc(d: contracts.ACP_Provider_Descriptor, stage: string) -> ([]string, bool) {
+    argv := make([dynamic]string, allocator = context.temp_allocator)
+    if d.provider == "copilot" {
+        if !bridge_retry_atomic_write(strings.concatenate({stage, "/package.json"}, context.temp_allocator), transmute([]byte)ACP_COPILOT_PACKAGE_JSON) ||
+           !bridge_retry_atomic_write(strings.concatenate({stage, "/package-lock.json"}, context.temp_allocator), transmute([]byte)ACP_COPILOT_LOCK_JSON) { return nil, false }
+        append(&argv, "npm", "ci", "--prefix", stage, "--ignore-scripts", "--no-audit", "--no-fund")
+        return argv[:], true
+    }
+    append(&argv, "npm", "install", "--prefix", stage, "--save-exact", "--ignore-scripts", "--no-audit", "--no-fund", strings.concatenate({d.pkg.name, "@", d.pkg.version}, context.temp_allocator))
+    return argv[:], true
+}
+
 acp_adapter_install :: proc(provider, etag, version: string) -> (ok: bool, reason: string) {
     d, known := contracts.acp_provider_descriptor(provider)
     if _, valid := acp_adapter_recipe(provider); !known || !valid || version != d.pkg.version do return false, "unsupported_acp_adapter"
@@ -423,9 +462,11 @@ acp_adapter_install :: proc(provider, etag, version: string) -> (ok: bool, reaso
     stage := strings.concatenate({root, fmt.tprintf(".stage-%d", time.tick_now()._nsec)}); defer delete(stage)
     if bridge_make_directory_all(stage) != nil do return false, "acp_adapter_directory_failed"
     defer os.remove_all(stage)
-    out, npm_diagnostic, _, installed, _ := acp_adapter_runner({"npm", "install", "--prefix", stage, "--save-exact", "--ignore-scripts", "--no-audit", "--no-fund", strings.concatenate({d.pkg.name, "@", d.pkg.version}, context.temp_allocator)}, 100*time.Second)
+    install_argv, prepared := acp_adapter_prepare_install(d, stage)
+    if !prepared do return false, "acp_adapter_directory_failed"
+    out, npm_diagnostic, npm_exit, installed, npm_timeout := acp_adapter_runner(install_argv, 100*time.Second)
     delete(out); delete(npm_diagnostic) // Never expose npm diagnostics/environment.
-    if !installed do return false, "acp_adapter_install_failed"
+    if !installed || npm_exit != 0 || npm_timeout do return false, "acp_adapter_install_failed"
     if !acp_adapter_files_valid(stage, provider) do return false, "acp_adapter_integrity_failed"
     scratch := strings.concatenate({stage, "/probe"}, context.temp_allocator)
     if bridge_make_directory_all(scratch) != nil do return false, "acp_adapter_directory_failed"

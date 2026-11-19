@@ -413,6 +413,8 @@
           # musl-static, built on the aarch64-linux runner.
           release-termux-ham-bridge = mkTermuxOdinPackage pkgs odin "ham-bridge" "src/bridge";
           release-termux-ham-ctl = mkTermuxOdinPackage pkgs odin "ham-ctl" "src/ctl";
+        } // pkgs.lib.optionalAttrs (system == "x86_64-linux") {
+          copilot-acp = pkgs.callPackage ./nix/copilot-acp.nix { };
         } // {
           bc-test-agent = self.packages.${system}.ham-test-agent;
           default = self.packages.${system}.ham-hub;

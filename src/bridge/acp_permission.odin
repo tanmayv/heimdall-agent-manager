@@ -7,6 +7,7 @@ import "core:strings"
 import "core:sync"
 import "core:thread"
 import "core:time"
+import contracts "odin_test:contracts"
 
 // A worker owns only immutable request data and the blocking relay call.
 // Completion, timeout and cancellation all arbitrate on the RPC dispatcher.
@@ -91,6 +92,16 @@ acp_permission_start :: proc(r: ^ACP_Runtime, id, params: string) {
     if p == nil do return
     if !acp_runtime_current(r) || r.d.error != "" || r.d.replay_only || r.d.cancelling {
         acp_rpc_reply(c, id, ACP_PERMISSION_CANCELLED); return
+    }
+    if r.descriptor.permission_policy == .Once_Only {
+        if !contracts.acp_descriptor_effective_mode_valid(r.descriptor, r.mode) {
+            acp_rpc_reply(c, id, ACP_PERMISSION_CANCELLED); return
+        }
+        if r.mode == "yolo" {
+            // The RPC reply checkpoints before writing; retries replay this
+            // same receipt. Ambiguous/missing allow_once stays cancelled.
+            acp_rpc_reply(c, id, acp_permission_result(params, "allow")); return
+        }
     }
     if acp_permission_result(params, "allow") == ACP_PERMISSION_CANCELLED && acp_permission_result(params, "deny") == ACP_PERMISSION_CANCELLED {
         acp_rpc_reply(c, id, ACP_PERMISSION_CANCELLED); return

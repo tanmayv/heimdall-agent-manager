@@ -12,6 +12,52 @@ import contracts "odin_test:contracts"
 
 T9_OPTIONS :: `[{"optionId":"persistent-allow","kind":"allow_always"},{"optionId":"opaque-yes-123","kind":"allow_once"},{"optionId":"persistent-deny","kind":"reject_always"},{"optionId":"opaque-no-456","kind":"reject_once"}]`
 
+@(test)
+c2_acp_once_only_yolo_replays_receipt_and_cancels_ambiguous_or_stale :: proc(t: ^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+    previous := bridge_local_token_records
+    bridge_local_token_records = make([dynamic]Bridge_Local_Agent_Token_Record, allocator = runtime.heap_allocator())
+    defer { delete(bridge_local_token_records); bridge_local_token_records = previous }
+    f: T4_Runtime_Test; t9_fixture_open(&f, "inst_c2_yolo"); defer t9_fixture_close(&f)
+    f.r.descriptor.permission_policy = .Once_Only
+    acp_runtime_replace(&f.r.mode, "yolo")
+    t9_permission(&f, t, "1", 1)
+    t9_response(t, &f, 0, "1", "opaque-yes-123")
+    t9_permission(&f, t, "1", 2)
+    t9_response(t, &f, 1, "1", "opaque-yes-123")
+    t9_permission(&f, t, "2", 3, `[{"optionId":"persistent","kind":"allow_always"},{"optionId":"no","kind":"reject_once"}]`)
+    t9_response(t, &f, 2, "2", "")
+    t9_permission(&f, t, "3", 4, `[{"optionId":"a","kind":"allow_once"},{"optionId":"b","kind":"allow_once"}]`)
+    t9_response(t, &f, 3, "3", "")
+    f.r.d.cancelling = true
+    t9_permission(&f, t, "4", 5)
+    t9_response(t, &f, 4, "4", "")
+    f.r.d.cancelling = false; f.r.d.replay_only = true
+    t9_permission(&f, t, "5", 6)
+    t9_response(t, &f, 5, "5", "")
+    testing.expect_value(t, len(f.r.permissions), 0)
+    testing.expect_value(t, len(bridge_blockers_list(f.r.instance)), 0)
+}
+
+@(test)
+c2_acp_once_only_ask_uses_relay_and_denial :: proc(t: ^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+    previous := bridge_local_token_records
+    bridge_local_token_records = make([dynamic]Bridge_Local_Agent_Token_Record, allocator = runtime.heap_allocator())
+    defer { delete(bridge_local_token_records); bridge_local_token_records = previous }
+    f: T4_Runtime_Test; t9_fixture_open(&f, "inst_c2_ask"); defer t9_fixture_close(&f)
+    f.r.descriptor.permission_policy = .Once_Only
+    acp_runtime_replace(&f.r.mode, "ask")
+    t9_permission(&f, t, "1", 1)
+    blocker := t9_blocker(t, &f, "1"); defer delete(blocker)
+    testing.expect(t, bridge_permission_resolve(f.r.instance, blocker, "deny", ""))
+    t9_response(t, &f, 0, "1", "opaque-no-456")
+    t9_worker_barrier(&f)
+    acp_runtime_replace(&f.r.mode, "autopilot")
+    t9_permission(&f, t, "2", 2)
+    t9_response(t, &f, 1, "2", "")
+}
+
 t9_inbound :: proc(data: rawptr, id, method, params: string) -> bool {
     f := cast(^T4_Runtime_Test)data
     return acp_runtime_inbound(f.r, id, method, params)

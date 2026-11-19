@@ -6,6 +6,30 @@ import "core:fmt"
 import "core:strings"
 import "core:sync"
 import "core:testing"
+import contracts "odin_test:contracts"
+
+@(test)
+c2_acp_copilot_no_steering_serializes_priority_and_deduplicates :: proc(t: ^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+    f: T4_Runtime_Test; t16_open(&f, "inst_c2_fifo"); defer t16_close(&f)
+    f.r.descriptor, _ = contracts.acp_provider_descriptor("copilot")
+    acp_runtime_replace(&f.r.provider, "copilot"); acp_runtime_replace(&f.r.mode, "ask")
+    testing.expect(t, !f.r.d.steering_supported)
+    testing.expect(t, t16_input(&f, "first", "first turn", .Steer))
+    if !acp_test_wait(t, &f.f, .Writes, 1) do return
+    testing.expect(t, t16_input(&f, "priority", "priority after current turn", .Steer))
+    testing.expect(t, t16_input(&f, "priority", "duplicate ignored", .Steer))
+    testing.expect_value(t, t16_writes(&f), 1)
+    t4_runtime_reply(t, &f, 0, `{"stopReason":"end_turn"}`, 1)
+    if !acp_test_wait(t, &f.f, .Writes, 2) do return
+    sync.mutex_lock(&f.f.mu)
+    testing.expect(t, strings.contains(f.f.writes[1].bytes, "priority after current turn") && !strings.contains(f.f.writes[1].bytes, "duplicate ignored"))
+    for write in f.f.writes do testing.expect(t, !strings.contains(write.bytes, "_session/steering"))
+    sync.mutex_unlock(&f.f.mu)
+    t4_runtime_reply(t, &f, 1, `{"stopReason":"end_turn"}`, 2)
+    testing.expect(t, t16_input(&f, "priority", "completed duplicate ignored", .Steer))
+    testing.expect_value(t, t16_writes(&f), 2)
+}
 
 t16_open :: proc(f: ^T4_Runtime_Test, instance: string) {
     t4_runtime_open(f, instance, "/unused/bootstrap")

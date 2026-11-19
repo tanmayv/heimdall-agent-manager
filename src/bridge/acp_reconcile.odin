@@ -214,7 +214,7 @@ acp_runtime_from_state :: proc(s: ^ACP_State, rec: Bridge_Local_Agent_Token_Reco
     d, known := contracts.acp_provider_descriptor(s.provider)
     if !known || s.schema_version != 3 || s.runtime_binding_version != 1 || !acp_provider_binding_valid(s.binding) || s.binding.provider != s.provider || s.binding.profile != s.profile ||
        s.bridge != bridge_config.daemon_id || s.adapter_version != d.pkg.version || s.run_dir == "" || s.pipe_generation == "" ||
-       (s.selected_mode != d.ask_mode && s.selected_mode != d.yolo_mode) { return nil, false }
+       !contracts.acp_descriptor_effective_mode_valid(d, s.selected_mode) { return nil, false }
     expected := bridge_runtime_default_run_dir(s.instance); defer delete(expected)
     if expected != s.run_dir do return nil, false
     r := acp_runtime_new(s.instance, s.launch_epoch, s.run_dir, s.provider, s.profile, s.catalog_etag, s.selected_model, s.selected_mode, rec)

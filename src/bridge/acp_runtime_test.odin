@@ -14,6 +14,30 @@ import "core:time"
 T4_CONFIG :: `{"configOptions":[{"id":"actual-model","category":"model","type":"select","currentValue":"sonnet","options":[{"group":"Claude","options":[{"value":"sonnet","name":"Sonnet"}]}]},{"id":"actual-mode","category":"mode","type":"select","currentValue":"default","options":[{"value":"default","name":"Ask"},{"value":"bypassPermissions","name":"Bypass"}]}]}`
 
 @(test)
+c2_acp_once_only_configures_exact_model_without_permission_mode_rpc :: proc(t: ^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+    previous := bridge_local_token_records
+    bridge_local_token_records = make([dynamic]Bridge_Local_Agent_Token_Record, allocator = runtime.heap_allocator())
+    defer { delete(bridge_local_token_records); bridge_local_token_records = previous }
+    f: T4_Runtime_Test; t9_fixture_open(&f, "inst_c2_config"); defer t9_fixture_close(&f)
+    f.r.descriptor.permission_policy = .Once_Only
+    f.r.descriptor.permission_category = ""
+    acp_runtime_replace(&f.r.mode, "ask")
+    acp_runtime_replace(&f.r.d.phase, "new")
+    f.r.d.ready = false
+    testing.expect(t, acp_runtime_request(f.r, "session/new", "{}"))
+    config :: `{"configOptions":[{"id":"advertised-model","category":"model","type":"select","currentValue":"sonnet","options":[{"value":"sonnet"}]}]}`
+    t4_runtime_reply(t, &f, 0, strings.concatenate({`{"sessionId":"s",`, config[1:]}, context.temp_allocator), 1)
+    t4_runtime_reply(t, &f, 1, config, 2)
+    testing.expect(t, t4_runtime_call(&f, "resume"))
+    testing.expect(t, f.r.d.ready && f.r.d.error == "")
+    sync.mutex_lock(&f.f.mu)
+    testing.expect_value(t, len(f.f.writes), 2)
+    testing.expect(t, strings.contains(f.f.writes[1].bytes, `"configId":"advertised-model"`))
+    sync.mutex_unlock(&f.f.mu)
+}
+
+@(test)
 t4_acp_durable_driver_rejects_unbounded_and_unknown_state :: proc(t: ^testing.T) {
     d := ACP_Runtime_Durable{phase = "ready"}
     testing.expect(t, acp_runtime_durable_valid(&d))

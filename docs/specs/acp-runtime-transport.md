@@ -11,7 +11,7 @@ The compiled closed registry in `src/contracts/acp_provider.odin` owns executabl
 | Provider | Enabled ACP descriptor | Launch | Package / protocol | Bootstrap fallback | Permission binding |
 | --- | --- | --- | --- | --- | --- |
 | Claude | `claude-acp`, revision 1 | Adapter | `@agentclientprotocol/claude-agent-acp@0.108.0`, pinned SHA-512; ACP v1 | `CLAUDE.md` | `model` category; `mode` category with ask=`default`, yolo=`bypassPermissions` |
-| Copilot | None in C1 | Native shape represented and tested; activation is a separate task | No executable recipe enabled | Existing PTY catalog behavior | No ACP policy enabled |
+| Copilot | `copilot-acp`, revision 1; catalog activation pending authenticated C2 checks | Native `<resolved-copilot> --acp --stdio` | `@github/copilot@1.0.114` + linux-x64 native package, pinned SHA-512; ACP v1 | `AGENTS.md` | `model` config category; bridge-owned ask/yolo, unique once-only decisions |
 | Pi | None | PTY | No native ACP mode or adapter enabled | Existing PTY catalog behavior | Existing PTY behavior |
 
 Descriptors distinguish native and adapter launch shapes and carry exact package/platform SRIs, CLI/version requirements, protected executable/environment bindings, trusted authentication guidance and config categories. Native shapes require the native CLI pin and explicit platform package pins. Shape validity alone does not register or enable a provider.
@@ -27,6 +27,21 @@ This format upgrade is one-way: do not downgrade to pre-C1 bridges after rewriti
 The existing `acp_adapter` status field and `install_acp_adapter` command name remain wire-compatible. Status adds `provider`, `profile` and `runtime_kind` (`adapter` or `native`); Hub readiness validates descriptor/provider identity, and UI wording follows the runtime kind. Installation readiness remains independent from selected-profile authentication.
 
 C1 does not change SQLite schema or the enabled catalog recipe, so it needs no migration or catalog ETag update. Numbered migrations on the required `origin/main` base run through `223`; any later catalog/schema change must append after the current maximum. Released migrations remain unchanged.
+
+### Copilot C2 implementation and validation gate
+
+The Copilot descriptor currently supports only Linux amd64. Its installer embeds reviewed `acp_pins/copilot/package{,-lock}.json`, runs `npm ci --ignore-scripts`, and verifies the complete frozen lock plus the launcher/native package identities before promotion. The native executable is the selected profile's resolved CLI and must report exactly `1.0.114`; an installed older CLI never supplies readiness. `COPILOT_AUTO_UPDATE=false` is protected against profile overrides. Credentials and `COPILOT_HOME`/`COPILOT_PROVIDER_*` remain selected-profile environment values and are excluded from bindings and diagnostics. Shared package readiness does not certify authentication.
+
+On NixOS x86_64, build the pinned host package with:
+
+```bash
+NIXPKGS_ALLOW_UNFREE=1 nix build --impure .#copilot-acp --out-link .nix-build-links/copilot-acp
+python3 tests/copilot_acp_smoke.py --binary .nix-build-links/copilot-acp/bin/copilot
+```
+
+Set the selected profile's binary path to the resulting `bin/copilot`. This derivation checks the same native npm tarball SRI, patches its ELF interpreter and library paths, preserves the Node SEA payload, and wraps auto-update/certificate settings. It does not invoke the raw glibc loader, replace the system Copilot, override HOME, or modify live services. Its clean-profile install check uses `COPILOT_HOME` and `XDG_CACHE_HOME` in the build scratch directory. Version and unauthenticated initialize/new have been exercised on NixOS; authenticated login/self-resume remain live acceptance gates.
+
+For once-only policy, ask uses the existing permission relay. Yolo responds only to a unique `allow_once` option; missing/duplicate options, cancellation and replay fail closed. Policy stays separate from Copilot's session or reasoning mode and is frozen in the journal as `ask`/`yolo`. Models still use the actual advertised config ID and exact response-selected value. No-steering sessions retain the serialized inbox owner. Copilot's catalog remains PTY until authenticated bootstrap, model, permissions (including saved permissions/enterprise policy), tooling and recovery checks pass. This intermediate implementation does not claim those live checks succeeded.
 
 ## 1. Scope and requirements
 

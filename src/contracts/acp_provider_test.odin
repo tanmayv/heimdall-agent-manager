@@ -3,14 +3,34 @@ package contracts
 import "core:testing"
 
 @(test)
+acp_descriptor_once_only_policy_is_independent_of_session_modes :: proc(t: ^testing.T) {
+    d := ACP_Provider_Descriptor{permission_policy = .Once_Only}
+    for policy in ([]string{"ask", "yolo"}) {
+        effective, valid := acp_descriptor_permission_mode(d, policy)
+        testing.expect(t, valid && effective == policy && acp_descriptor_effective_mode_valid(d, effective))
+    }
+    effective, valid := acp_descriptor_permission_mode(d, "")
+    testing.expect(t, valid && effective == "yolo")
+    for invalid in ([]string{"default", "bypassPermissions", "autopilot", "allow_always"}) {
+        _, valid := acp_descriptor_permission_mode(d, invalid)
+        testing.expect(t, !valid && !acp_descriptor_effective_mode_valid(d, invalid))
+    }
+    testing.expect(t, !acp_descriptor_effective_mode_valid(d, ""))
+    testing.expect(t, !acp_descriptor_effective_mode_valid(ACP_CLAUDE_DESCRIPTOR, "ask"))
+    testing.expect(t, acp_descriptor_effective_mode_valid(ACP_CLAUDE_DESCRIPTOR, "default"))
+}
+
+@(test)
 acp_descriptor_closed_registry_and_launch_shapes :: proc(t: ^testing.T) {
     d, ok := acp_provider_descriptor("claude")
     testing.expect(t, ok && acp_descriptor_shape_valid(d) && d.launch == .Adapter)
-    for provider in ([]string{"", "copilot", "pi", "unknown", "CLAUDE"}) {
+    for provider in ([]string{"", "pi", "unknown", "CLAUDE"}) {
         _, enabled := acp_provider_descriptor(provider)
         testing.expect(t, !enabled)
     }
-    // A native shape can be represented without registering/enabling it.
+    copilot, enabled := acp_provider_descriptor("copilot")
+    testing.expect(t, enabled && acp_descriptor_shape_valid(copilot) && copilot.launch == .Native)
+    // Additional platforms still require a reviewed registry change.
     native := ACP_Provider_Descriptor{
         provider = "copilot", id = "copilot-acp", revision = 1, launch = .Native,
         pkg = {"@github/copilot", "1.0.114", "sha512-qhiUzWGAu3v9jRMU62YFpoI/x9/sQJbylUU2rNrKpTgJSw+jRX7eee0RKf/ZC/FfOPtuACpXWNBQrf08WhVEEw=="},

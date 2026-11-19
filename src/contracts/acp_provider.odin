@@ -41,11 +41,23 @@ ACP_CLAUDE_DESCRIPTOR :: ACP_Provider_Descriptor{
     ask_mode = "default", yolo_mode = "bypassPermissions",
 }
 
+ACP_COPILOT_DESCRIPTOR :: ACP_Provider_Descriptor{
+    provider = "copilot", id = "copilot-acp", display_name = "Copilot", revision = 1, launch = .Native,
+    pkg = {"@github/copilot", "1.0.114", "sha512-qhiUzWGAu3v9jRMU62YFpoI/x9/sQJbylUU2rNrKpTgJSw+jRX7eee0RKf/ZC/FfOPtuACpXWNBQrf08WhVEEw=="},
+    platforms = {{"linux", "amd64", {"@github/copilot-linux-x64", "1.0.114", "sha512-gHnINm9ffFqz+G19cQUqRe3lsTAQO3Tbdj7r7Bx1ktZvC5X6iXd/nfo1DRTj9magb52aGRiuwB3yvD1lkW68xQ=="}}},
+    command = "copilot", args = {"--acp", "--stdio"}, env = {{"COPILOT_AUTO_UPDATE", "false"}},
+    protocol_version = 1, node_min_major = 22,
+    cli_command = "copilot", cli_package = "@github/copilot", cli_version = "1.0.114",
+    bootstrap_filename = "AGENTS.md",
+    auth_guidance = "Run copilot login on the bridge host using the selected provider profile and its COPILOT_HOME, or configure the profile's sensitive COPILOT_GITHUB_TOKEN or COPILOT_PROVIDER_* environment rows, then restart this instance.",
+    permission_policy = .Once_Only, model_category = "model",
+}
+
 // Persistent backing storage is required: returning a descriptor copied from
 // a constant slice literal leaves its nested env/argv slices on the caller's
 // stack in Odin. Descriptors returned by lookup retain these immutable arrays.
 @(private)
-acp_provider_descriptors := [?]ACP_Provider_Descriptor{ACP_CLAUDE_DESCRIPTOR}
+acp_provider_descriptors := [?]ACP_Provider_Descriptor{ACP_CLAUDE_DESCRIPTOR, ACP_COPILOT_DESCRIPTOR}
 
 acp_provider_descriptor :: proc(provider: string) -> (ACP_Provider_Descriptor, bool) {
     for d in acp_provider_descriptors do if d.provider == provider do return d, true
@@ -89,12 +101,28 @@ acp_descriptor_recipe_matches :: proc(d: ACP_Provider_Descriptor, r: ACP_Recipe)
 }
 
 acp_descriptor_permission_mode :: proc(d: ACP_Provider_Descriptor, mode: string) -> (string, bool) {
+    if d.permission_policy == .Once_Only {
+        switch mode {
+        case "", "yolo": return "yolo", true
+        case "ask": return "ask", true
+        }
+        return "", false
+    }
     if d.permission_policy != .Session_Mode do return "", false
     switch mode {
     case "", "yolo": return d.yolo_mode, true
     case "ask": return d.ask_mode, true
     }
     return "", false
+}
+
+// Journals store the effective policy, rather than the user-facing alias.
+acp_descriptor_effective_mode_valid :: proc(d: ACP_Provider_Descriptor, mode: string) -> bool {
+    switch d.permission_policy {
+    case .Session_Mode: return mode != "" && (mode == d.ask_mode || mode == d.yolo_mode)
+    case .Once_Only: return mode == "ask" || mode == "yolo"
+    }
+    return false
 }
 
 acp_descriptor_platform_package :: proc(d: ACP_Provider_Descriptor, os, arch: string) -> (ACP_Package_Pin, bool) {

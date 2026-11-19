@@ -13,6 +13,66 @@ import "core:sync"
 import "core:testing"
 import "core:time"
 
+@(test)
+c2_acp_copilot_frozen_install_and_native_files :: proc(t: ^testing.T) {
+    st := p1c_test_setup(t); defer p1c_test_teardown(st)
+    context.allocator = context.temp_allocator
+    d, enabled := contracts.acp_provider_descriptor("copilot")
+    testing.expect(t, enabled)
+    root := profile_join(st.dir, "copilot-stage")
+    bridge_make_directory_all(root)
+    argv, prepared := acp_adapter_prepare_install(d, root)
+    testing.expect(t, prepared && len(argv) == 7 && argv[0] == "npm" && argv[1] == "ci" && argv[3] == root && argv[4] == "--ignore-scripts")
+    lock_path := profile_join(root, "package-lock.json")
+    lock, err := os.read_entire_file(lock_path, context.temp_allocator)
+    testing.expect(t, err == nil && string(lock) == ACP_COPILOT_LOCK_JSON)
+    package_path := profile_join(root, "node_modules/@github/copilot")
+    native_path := profile_join(root, "node_modules/@github/copilot-linux-x64")
+    bridge_make_directory_all(package_path); bridge_make_directory_all(native_path)
+    bridge_make_directory_all(profile_join(root, "node_modules/.bin"))
+    p1c_put(t, profile_join(package_path, "package.json"), `{"name":"@github/copilot","version":"1.0.114","bin":{"copilot":"npm-loader.js"}}`, false)
+    p1c_put(t, profile_join(package_path, "npm-loader.js"), "#!/bin/sh\nexit 0\n", true)
+    p1c_put(t, profile_join(native_path, "package.json"), `{"name":"@github/copilot-linux-x64","version":"1.0.114","bin":{"copilot-linux-x64":"copilot"}}`, false)
+    p1c_put(t, profile_join(native_path, "copilot"), "#!/bin/sh\nexit 0\n", true)
+    os.symlink("../@github/copilot/npm-loader.js", acp_adapter_bin(root, "copilot"))
+    when ODIN_OS == .Linux && ODIN_ARCH == .amd64 {
+        testing.expect(t, acp_adapter_files_valid(root, "copilot"))
+        os.remove(profile_join(native_path, "copilot"))
+        testing.expect(t, !acp_adapter_files_valid(root, "copilot"), "the native executable must exist")
+        p1c_put(t, profile_join(native_path, "copilot"), "#!/bin/sh\nexit 0\n", true)
+        changed, _ := strings.replace_all(ACP_COPILOT_LOCK_JSON, `"2.1.2"`, `"2.1.3"`); defer delete(changed)
+        p1c_put(t, lock_path, changed, false)
+        testing.expect(t, !acp_adapter_files_valid(root, "copilot"), "transitive dependency changes must invalidate the install")
+        p1c_put(t, lock_path, ACP_COPILOT_LOCK_JSON, false)
+        p1c_put(t, profile_join(native_path, "package.json"), `{"name":"@github/copilot-linux-x64","version":"1.0.91"}`, false)
+        testing.expect(t, !acp_adapter_files_valid(root, "copilot"), "launcher integrity does not certify another native version")
+    } else {
+        testing.expect(t, !acp_adapter_files_valid(root, "copilot"), "unreviewed platforms cannot be installed")
+    }
+}
+
+@(test)
+c2_acp_copilot_profile_env_pin_and_native_argv :: proc(t: ^testing.T) {
+    st := p1c_test_setup(t); defer p1c_test_teardown(st)
+    context.allocator = context.temp_allocator
+    binary := profile_join(st.dir, "profile-copilot")
+    p1c_put(t, binary, "#!/bin/sh\n[ \"$COPILOT_AUTO_UPDATE\" = false ] && [ \"$COPILOT_GITHUB_TOKEN\" = synthetic-token ] && [ -n \"$COPILOT_HOME\" ] && [ -z \"$HEIMDALL_AGENT_TOKEN\" ] || exit 42\nprintf 'GitHub Copilot CLI 1.0.114.\\n'\n", true)
+    pp := Provider_Profile{provider = "copilot", profile_id = "work", enabled = true, config = {binary_path = binary},
+        environment = {{name = "COPILOT_HOME", value = profile_join(st.dir, "work-home")}, {name = "COPILOT_GITHUB_TOKEN", value = "synthetic-token", sensitive = true},
+            {name = "COPILOT_AUTO_UPDATE", value = "true"}, {name = "HEIMDALL_AGENT_TOKEN", value = "must-not-leak"}}}
+    version, reason, diagnostic := acp_provider_cli_version(&pp)
+    testing.expect(t, version == "1.0.114" && reason == "" && diagnostic == "")
+    r := acp_runtime_new("inst_c2_profile", "epoch", st.dir, "copilot", "work", "etag", "", "ask", {})
+    defer acp_runtime_destroy(r)
+    spawn, built := acp_runtime_build_spawn(r, "endpoint", "synthetic-agent-token", &pp)
+    testing.expect(t, built && len(spawn.argv) == 3 && spawn.argv[0] == binary && spawn.argv[1] == "--acp" && spawn.argv[2] == "--stdio")
+    for pair in spawn.env {
+        if pair[0] == "COPILOT_AUTO_UPDATE" do testing.expect_value(t, pair[1], "false")
+        if pair[0] == "COPILOT_HOME" do testing.expect_value(t, pair[1], profile_join(st.dir, "work-home"))
+        if pair[0] == "HEIMDALL_AGENT_TOKEN" do testing.expect_value(t, pair[1], "synthetic-agent-token")
+    }
+}
+
 @(private = "file") t4_adapter_bad_integrity: bool
 @(private = "file") t10_adapter_probe_fails: bool
 @(private = "file") t4_adapter_probe_ran: bool
