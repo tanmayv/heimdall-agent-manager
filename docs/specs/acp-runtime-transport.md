@@ -604,3 +604,25 @@ T1 and T2 can proceed independently; T3 follows T2; T4 integrates them; T5 then 
 | Daemon restart loses pipe queues/receipts | Distinct child generation; initialize+load, explicit interrupted turn; no exactly-once claim across daemon death |
 
 Confidence for implementation readiness depends on the specified fixtures and live gate. Package publication and protocol documentation establish contracts, not a successful Claude login/bootstrap/recovery run on this device.
+
+### Conversation response and tool status
+
+The pending ACP assistant message drives **Responding…** in the shared conversation
+tail status line. Completion and failure snapshots remove that status immediately;
+the partial assistant body remains inside its transcript message.
+
+ACP tools use the same viewer-scoped stream as PTY tools:
+`acp_events_tool` → `bridge_ext_ingest` → `bridge_tool_live_event` →
+`tool_stream_state` → `tool_live_apply_bridge` → `toolActivitySlice` →
+`LiveToolActivity`.
+The Hub extension history endpoint is retired. `agentActivitySlice` supplies CLI
+action labels separately.
+
+Thought chunks update runtime liveness directly. Emitting `activity(active)` for
+each chunk incorrectly told the shared reducer that another turn had begun,
+settling in-flight tools as interrupted before the next stream batch. ACP emits
+that lifecycle event only when a prompt starts. Event timestamps retain
+nanoseconds, and the live reducer parses the complete fraction (the pinned Odin
+parser reads only hundredths), so fresh calls survive reset fences. Failures carry the shared
+`status=error` field. Existing toolCallId receipts deduplicate start/end updates
+and diff digests deduplicate file edits.

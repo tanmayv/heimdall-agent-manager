@@ -1,3 +1,11 @@
+// Pending assistant state owns the status line, independently of runtime activity
+// and the animated text reveal. Terminal snapshots remove it on the next render.
+export function hasPendingAcpResponse(rows: readonly {
+  isUser: boolean; messageStatus?: string; metadata?: Record<string, any>;
+}[]): boolean {
+  return rows.some((row) => !row.isUser && Boolean(row.metadata?.acp) && row.messageStatus === 'pending');
+}
+
 // Stream ordering applies equally to raw REST rows and mapped legacy messages.
 export function assistantRevision(row: any): number {
   let metadata = row?.metadata ?? row?.metadata_json ?? {};

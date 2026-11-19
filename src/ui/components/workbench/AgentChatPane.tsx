@@ -1,4 +1,4 @@
-import { acceptAssistantSnapshot } from '../../api/acpChatStream';
+import { acceptAssistantSnapshot, hasPendingAcpResponse } from '../../api/acpChatStream';
 import React, {
   type ClipboardEvent,
   type FormEvent,
@@ -2251,9 +2251,6 @@ export function AgentChatPane({
     }
     return (
       <div className="flex flex-col gap-1">
-        {message.metadata?.acp && message.messageStatus === 'pending' && (
-          <div role="status" data-debug-id={`conversation-assistant-pending-${message.messageId}`} className="mb-1 text-xs text-muted">Responding…</div>
-        )}
         {message.metadata?.acp && message.messageStatus === 'failed' && (
           <div role="status" data-debug-id={`conversation-assistant-failed-${message.messageId}`} className="mb-1 text-xs text-muted">Response interrupted.</div>
         )}
@@ -3555,7 +3552,7 @@ export function AgentChatPane({
           onAnswerQuestions={(sourceMessageId, submission) => answerQuestions({ conversationId, sourceMessageId, submission }).unwrap()}
           formatTimestamp={formatMessageTimestamp}
           getDeliveryStatus={deliveryStatusFor}
-          agentActivity={<AgentActivityBubbles key={agentInstanceId} instanceId={agentInstanceId} isWorking={isWorking} />}
+          agentActivity={<AgentActivityBubbles key={agentInstanceId} instanceId={agentInstanceId} isWorking={isWorking} isResponding={hasPendingAcpResponse(chatMessages)} />}
           bottomInset={composerDockHeight}
           pinOnSend={isOptimisticSend}
           pinOriginRef={textareaRef}

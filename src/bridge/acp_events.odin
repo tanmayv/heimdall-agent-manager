@@ -80,7 +80,7 @@ acp_tools_close :: proc(r:^ACP_Runtime,tool:^ACP_Tool_State,reason:string) {
         native["name"]=json.String(name);native["use_id"]=json.String(tool.id)
         native["input"]=make(json.Object,allocator=context.temp_allocator)
         payload:=make(json.Object,allocator=context.temp_allocator)
-        payload["outcome"]=json.String("failure");payload["stop_reason"]=json.String(reason)
+        payload["outcome"]=json.String("failure");payload["status"]=json.String("error");payload["stop_reason"]=json.String(reason)
         if tool.payload_truncated do payload["telemetry_truncated"]=json.Boolean(true)
         acp_events_emit(r,"tool.end",payload,native)
     }
@@ -182,12 +182,20 @@ acp_event_json :: proc(value: $T) -> string {
     raw,_ := json.marshal(value,allocator=context.temp_allocator); return string(raw)
 }
 
+// The live reducer fences old events at nanosecond precision. Scheduler timestamps
+// round down to seconds and can discard a fresh call immediately after a reset.
+acp_events_timestamp :: proc(now:time.Time) -> string {
+    stamp,ok:=time.time_to_rfc3339(now,allocator=context.temp_allocator)
+    return stamp if ok else ""
+}
+
 acp_events_emit :: proc(r: ^ACP_Runtime,event: string,payload: json.Object,tool: json.Object=nil) {
     if r.d.replay_only do return
     obj:=make(json.Object,allocator=context.temp_allocator)
     obj["schema"]=json.String(contracts.EXT_SCHEMA_V1); obj["provider"]=json.String(r.provider)
     obj["ext_version"]=json.String("acp-0.108.0"); obj["event"]=json.String(event)
-    obj["ts"]=json.String(action_scheduler_format_rfc3339_utc(time.to_unix_nanoseconds(time.now())/1_000_000))
+    stamp:=acp_events_timestamp(time.now());if stamp=="" do return
+    obj["ts"]=json.String(stamp)
     obj["session_id"]=json.String(r.session); obj["payload"]=payload
     if tool!=nil do obj["tool"]=tool
     raw:=acp_event_json(obj)
@@ -236,7 +244,11 @@ acp_events_notification :: proc(r: ^ACP_Runtime,method,params: string) {
     if acp_event_string(obj,"sessionId")!=r.session do return
     update,_:=obj["update"].(json.Object)
     switch acp_event_string(update,"sessionUpdate") {
-    case "agent_thought_chunk": acp_events_activity(r,"active","")
+    case "agent_thought_chunk":
+        // Repeated thought chunks prove liveness, not a new turn. activity(active)
+        // is a lifecycle boundary in the shared PTY tool reducer and settles any
+        // orphaned calls. Only prompt_started may emit that boundary for ACP.
+        bridge_runtime_note_agent_activity(r.instance,"active",bridge_ext_activity_source(r.provider))
     case "tool_call","tool_call_update": acp_events_tool(r,update)
     case "agent_message_chunk":
         content,_:=update["content"].(json.Object)
@@ -331,6 +343,7 @@ acp_events_tool :: proc(r: ^ACP_Runtime,update: json.Object) {
     if terminal && !tool.ended {
         tool.ended=true
         payload["outcome"]=json.String("failure" if tool.status=="failed" else "success")
+        payload["status"]=json.String("error" if tool.status=="failed" else "success")
         if tool.payload_truncated do payload["telemetry_truncated"]=json.Boolean(true)
         if tool.output!="" { value,_:=json.parse(tool.output,allocator=context.temp_allocator); payload["rawOutput"]=value }
         if tool.content!="" { value,_:=json.parse(tool.content,allocator=context.temp_allocator); payload["content"]=value }
