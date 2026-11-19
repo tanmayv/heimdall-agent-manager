@@ -6,8 +6,9 @@ import "core:strings"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 
-// Multi-statement mutations hold SQLite's recursive connection mutex for the
-// entire transaction, preventing other users of the shared connection joining it.
+// Multi-statement mutations take the UoW tx_mutex gate BEFORE SQLite's
+// recursive connection mutex. This prevents overlap with UoWs without holding
+// db_mutex across runtime capacity reservations (which would invert state_mutex).
 Bot_Repo_SQLite :: struct {
 	conn: ^Conn,
 }
@@ -573,6 +574,8 @@ pairing_delete_for_owner_sqlite :: proc(ctx: rawptr, owner_user_id: string, prov
 message_insert_outbound_sqlite :: proc(ctx: rawptr, msg: domain.Channel_Message) -> domain.Domain_Error {
 	conn := bot_repo_conn(ctx)
 	if conn == nil || conn.db == nil do return bot_repo_error(conn)
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	mutex := sqlite3_db_mutex(conn.db)
 	sqlite3_mutex_enter(mutex)
 	defer sqlite3_mutex_leave(mutex)
@@ -985,6 +988,8 @@ placement_replace_sqlite :: proc(
 ) {
 	conn := bot_repo_conn(ctx)
 	if conn == nil || conn.db == nil do return 0, bot_repo_error(conn)
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	mutex := sqlite3_db_mutex(conn.db)
 	sqlite3_mutex_enter(mutex)
 	defer sqlite3_mutex_leave(mutex)
@@ -1032,6 +1037,8 @@ binding_activate_sqlite :: proc(
 ) {
 	conn := bot_repo_conn(ctx)
 	if conn == nil || conn.db == nil do return {}, false, bot_repo_error(conn)
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	mutex := sqlite3_db_mutex(conn.db)
 	sqlite3_mutex_enter(mutex)
 	defer sqlite3_mutex_leave(mutex)
@@ -1094,6 +1101,8 @@ inbound_store_batch_sqlite :: proc(
 ) {
 	conn := bot_repo_conn(ctx)
 	if conn == nil || conn.db == nil do return nil, bot_repo_error(conn)
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	mutex := sqlite3_db_mutex(conn.db)
 	sqlite3_mutex_enter(mutex)
 	defer sqlite3_mutex_leave(mutex)
@@ -1158,6 +1167,8 @@ messages_mark_read_sqlite :: proc(
 ) -> domain.Domain_Error {
 	conn := bot_repo_conn(ctx)
 	if conn == nil || conn.db == nil do return bot_repo_error(conn)
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	mutex := sqlite3_db_mutex(conn.db)
 	sqlite3_mutex_enter(mutex)
 	defer sqlite3_mutex_leave(mutex)
@@ -1253,6 +1264,8 @@ push_events_insert_sqlite :: proc(
 ) {
 	conn := bot_repo_conn(ctx)
 	if conn == nil || conn.db == nil do return 0, bot_repo_error(conn)
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	mutex := sqlite3_db_mutex(conn.db)
 	sqlite3_mutex_enter(mutex)
 	defer sqlite3_mutex_leave(mutex)
@@ -1351,6 +1364,8 @@ push_batch_commit_sqlite :: proc(
 ) {
 	conn := bot_repo_conn(ctx)
 	if conn == nil || conn.db == nil do return nil, bot_repo_error(conn)
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	mutex := sqlite3_db_mutex(conn.db)
 	sqlite3_mutex_enter(mutex)
 	defer sqlite3_mutex_leave(mutex)
@@ -1543,6 +1558,8 @@ attachment_get_sqlite :: proc(ctx: rawptr, attachment_id: string) -> (domain.Cha
 attachment_store_artifact_sqlite :: proc(ctx: rawptr, attachment_id, artifact_id, updated_at: string) -> (artifact_id_now: string, err: domain.Domain_Error) {
 	conn := bot_repo_conn(ctx)
 	if conn == nil || conn.db == nil do return "", bot_repo_error(conn)
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	mutex := sqlite3_db_mutex(conn.db)
 	sqlite3_mutex_enter(mutex)
 	defer sqlite3_mutex_leave(mutex)

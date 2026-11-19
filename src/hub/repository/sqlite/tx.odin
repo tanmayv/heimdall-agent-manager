@@ -31,6 +31,12 @@ import dbt "odin_test:hub/platform/dbtelemetry"
 // unit of work; it returns facts (terminal/activity) and the caller acts after
 // the unlock. lockorder.assert_tx_mutex_allowed enforces it at begin.
 //
+// SQLite connection mutexes are held only for statements / short repository
+// operations, NEVER across an outer UoW: state_mutex holders also write SQLite.
+// A UoW may take state_mutex and then db_mutex, never db_mutex then state_mutex.
+// Bot multi-statement transactions join the tx_mutex gate before db_mutex via
+// tx_repository_enter/leave; no repository gate may be entered under state_mutex.
+//
 // NESTING: a thread that already owns the unit of work and begins another one
 // (card accept → change_chain_status → engine chain_closed) gets a SAVEPOINT
 // nested inside the outer transaction instead of a self-deadlock. The mutex is
@@ -229,10 +235,6 @@ sqlite_uow_rollback :: proc(ctx: rawptr) {
 @(private = "file")
 tx_lock :: proc(conn: ^Conn) {
 	tx_lock_token = dbt.timed_lock(&tx_mutex, .Uow_Tx)
-	// Bots also transact on this handle, under its recursive SQLite mutex.
-	// Hold it for the entire outer UoW so their BEGIN cannot enter ours, and
-	// unrelated autocommit statements cannot be committed/rolled back with us.
-	sqlite3_mutex_enter(sqlite3_db_mutex(conn.db))
 	if !tx_lock_token.timed do return
 	tx_started = time.tick_now()
 	sync.atomic_store(&tx_acquired_nsec, tx_started._nsec)
@@ -251,7 +253,6 @@ tx_unlock :: proc(conn: ^Conn, outcome: Tx_Outcome) {
 		tl_uow_active = false
 		tl_uow_wrote = false
 	}
-	sqlite3_mutex_leave(sqlite3_db_mutex(conn.db))
 	dbt.timed_unlock(&tx_mutex, .Uow_Tx, token)
 }
 
@@ -278,4 +279,19 @@ tx_mutex_try_lock :: proc() -> bool {
 // outbox_uow_owns prevents a shared-handle relay from observing uncommitted rows.
 outbox_uow_owns :: proc(conn: ^Conn) -> bool {
 	return sync.atomic_load(&tx_depth) > 0 && sync.atomic_load(&tx_owner_thread) == sync.current_thread_id() && tx_outbox_conn == conn
+}
+
+// Short repository-owned transactions/savepoints share the UoW serialization
+// gate. Enter before taking db_mutex; leave after COMMIT/ROLLBACK and releasing
+// db_mutex. When already inside this threads UoW, its gate is already held.
+Repository_Tx_Guard :: struct {locked: bool, token: dbt.Lock_Token}
+
+tx_repository_enter :: proc() -> Repository_Tx_Guard {
+	if sync.atomic_load(&tx_depth)>0 && sync.atomic_load(&tx_owner_thread)==sync.current_thread_id() do return {}
+	lockorder.assert_tx_mutex_allowed()
+	return {locked=true, token=dbt.timed_lock(&tx_mutex, .Uow_Tx)}
+}
+
+tx_repository_leave :: proc(guard: Repository_Tx_Guard) {
+	if guard.locked do dbt.timed_unlock(&tx_mutex, .Uow_Tx, guard.token)
 }
