@@ -37,7 +37,7 @@ Add-Content (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) '
   if ($calls.Count -ne 2) { throw 'expected bridge and ctl invocations' }
   foreach ($call in $calls) {
     $flags = @($call | Where-Object { $_ -like '-extra-linker-flags:*' })
-    $expectedPath = '/LIBPATH:"' + ($deps -replace '\\\\', '/') + '"'
+    $expectedPath = '/LIBPATH:"' + $deps.Replace([IO.Path]::DirectorySeparatorChar, [char]'/') + '"'
     if ($flags.Count -ne 1 -or -not $flags[0].Contains($expectedPath)) { throw "library path quoting broken: $flags" }
     if (($call -join ' ') -match 'nats/lib|crypt32|ham_nats') { throw 'bridge/ctl gained NATS linker inputs' }
   }
