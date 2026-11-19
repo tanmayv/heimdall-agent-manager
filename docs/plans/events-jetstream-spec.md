@@ -31,8 +31,8 @@ Integration branch: `feat/events` (off `main` v0.5.60). Earlier design: comments
 ```
 taskv2 state change ──same tx──▶ event_outbox ──relay──▶ JetStream stream HEIM_EVENTS
                                                           subjects: ev.<owner>.chain.<chain_id>.<type>
-                                                                    ev.<owner>.task.<task_id>.<type>
-                                                                    ev.<owner>.task.<task_id>.state   (rollup)
+                                                                    ev.<owner>.chain.<chain_id>.task.<task_id>.<type>
+                                                                    ev.<owner>.chain.<chain_id>.task.<task_id>.state (rollup)
                                                                     ev.<owner>.chain.<chain_id>.state (rollup)
                                    durable pull consumer per subscription (subscriber agt_ id + chain scope)
                                                           │
@@ -111,6 +111,17 @@ Delivery semantics:
 - If the instance is stopped and an event's type is wake-worthy (section 4), the hub wakes it through the existing restart path.
 - The freshness filter runs **before** any nudge or wake.
 
+### 3.7 Subject hierarchy and subscription filters (decided 2026-11-19, during E2)
+- **Task subjects are nested under their chain:** `ev.<owner>.chain.<chain_id>.task.<task_id>.<type>`. A task never changes chain.
+- **Filters are pure NATS subject filters,** so the hub never has to scan or filter events itself:
+
+| Subscriber | Filter |
+|---|---|
+| Coordinator, or a bot watching a chain | `ev.<owner>.chain.<chain_id>.>`. This covers chain events and every current or future task in the chain. The per-type default set (section 4) is applied as one filter per type: `ev.<owner>.chain.<chain_id>.<type>` and `ev.<owner>.chain.<chain_id>.task.*.<type>` |
+| Worker | `ev.<owner>.chain.<chain_id>.task.<task_id>.task.requirements_changed`, or the exact type token the producer uses |
+
+- **Compatibility:** E1's earlier subjects `ev.<owner>.task.<task_id>.*` exist only on Mundus staging (a handful of events, 14-day retention). They are not migrated. E2 changes the E1 producers to the new subjects.
+
 ## 4. Event catalog v1 (minimal; user-approved table)
 
 "Bot" means the user's bot, only for chains it watches. It watches automatically the chains it creates or forwards a request to, and any chain after `ham-ctl events watch`.
@@ -133,7 +144,7 @@ Delivery semantics:
 ## 5. Supersession (REQ-EVA-11)
 
 - **state:**
-  - Published on `ev.<owner>.task.<id>.state` or `ev.<owner>.chain.<id>.state` with the header `Nats-Rollup: sub`.
+  - Published on `ev.<owner>.chain.<chain_id>.task.<id>.state` or `ev.<owner>.chain.<id>.state` with the header `Nats-Rollup: sub`.
   - NATS keeps only the latest message on that subject, so a subscriber that was away sees only the current state.
 - **resolvable** (decided 2026-11-19, replaces the earlier `event_topic_resolutions` design):
   - **Topic keys are stable:**
