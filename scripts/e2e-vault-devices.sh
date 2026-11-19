@@ -7,6 +7,8 @@
 #   bash scripts/e2e-vault-devices.sh [--skip-build]
 # Env: ODIN (odin binary), HEIMDALL_SQLITE_LIBPATH (Windows/Git Bash: dir holding sqlite3.lib).
 set -euo pipefail
+# The JS launcher owns and cleans a private JetStream child per hub.
+command -v "${HEIMDALL_E2E_NATS_BIN:-nats-server}" >/dev/null || { echo "nats-server is required (use nix develop or HEIMDALL_E2E_NATS_BIN)" >&2; exit 1; }
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 out_dir="${HOME}/.cache/heimdall-e2e"
 mkdir -p "$out_dir"

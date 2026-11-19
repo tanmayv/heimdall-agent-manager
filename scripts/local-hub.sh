@@ -178,11 +178,17 @@ start() {
   local hub_bin proxy_bin migrations
   hub_bin="$(lr_bin "$bin" ham-hub)"; proxy_bin="$(lr_bin "$bin" ham-dev-proxy)"
   migrations="$LR_ROOT/src/hub/repository/sqlite/migrations"
+  trap 'rc=$?; if [ "$rc" -ne 0 ]; then stop_all; fi; rm -rf "$DIR/.lock"' EXIT
+  local nats_url
+  nats_url="$(lr_nats_start "$DIR")" || lr_die "private NATS did not start"
+  # Preserve all existing fields while publishing the new URL atomically.
+  lr_env_write "$ENV_FILE" "$(cat "$ENV_FILE")" "NATS_URL=$nats_url"
 
   # The hub and proxy get a private XDG/HEIMDALL_HOME so nothing they persist
   # (dev-proxy user roster, caches) lands in the installed data dir.
   local iso=(env "XDG_DATA_HOME=$DIR/xdg/data" "XDG_CONFIG_HOME=$DIR/xdg/config"
-             "XDG_STATE_HOME=$DIR/xdg/state" "HEIMDALL_HOME=$DIR/xdg/data/heimdall")
+             "XDG_STATE_HOME=$DIR/xdg/state" "HEIMDALL_HOME=$DIR/xdg/data/heimdall"
+             "HEIMDALL_NATS_CREDS_FILE=" "HEIMDALL_NATS_CA_FILE=")
 
   # Users authenticate only with OIDC. Locally that is tools/mock-oidc (TEST key,
   # auto-approve, http on loopback only), never a real identity provider.
@@ -199,7 +205,7 @@ start() {
 
   lr_log "starting hub on 127.0.0.1:$HUB_PORT (db $DIR/hub.db)"
   lr_spawn "$DIR" hub "$DIR/logs/hub.log" "${iso[@]}" "${oidc_env[@]}" "$hub_bin" \
-    --listen "127.0.0.1:$HUB_PORT" --db "$DIR/hub.db" --migrations-dir "$migrations" \
+    --nats-url "$nats_url" --listen "127.0.0.1:$HUB_PORT" --db "$DIR/hub.db" --migrations-dir "$migrations" \
     --ui-origin "$csrf_origin" --pairing-hub-origins "$pairing_origins" \
     --billing-enforce-plan-limits "$PLAN_LIMITS"
   if ! lr_wait_http "http://127.0.0.1:$HUB_PORT/api/v1/health" 30 || ! lr_owned_pid "$DIR" hub >/dev/null; then
@@ -237,7 +243,7 @@ start() {
   status
 }
 
-stop_all() { lr_stop_svc "$DIR" ui; lr_stop_svc "$DIR" proxy; lr_stop_svc "$DIR" hub; lr_stop_svc "$DIR" oidc; }
+stop_all() { lr_stop_svc "$DIR" ui; lr_stop_svc "$DIR" proxy; lr_stop_svc "$DIR" hub; lr_stop_svc "$DIR" oidc; lr_stop_svc "$DIR" nats; }
 
 stop() {
   [ -d "$DIR" ] || { lr_log "no instance '$NAME'"; return 0; }
@@ -249,7 +255,8 @@ stop() {
 status() {
   [ -f "$ENV_FILE" ] || { lr_log "no instance '$NAME' under $(lr_state_root)/hubs"; return 1; }
   echo "hub instance '$NAME' ($DIR)"
-  lr_svc_status "$DIR" hub; lr_svc_status "$DIR" proxy; lr_svc_status "$DIR" ui; lr_svc_status "$DIR" oidc
+  lr_svc_status "$DIR" hub; lr_svc_status "$DIR" proxy; lr_svc_status "$DIR" ui; lr_svc_status "$DIR" oidc; lr_svc_status "$DIR" nats
+  echo "  nats    : $(lr_env_get "$ENV_FILE" NATS_URL)"
   echo "  hub api : $(lr_env_get "$ENV_FILE" HUB_URL)"
   echo "  proxy   : $(lr_env_get "$ENV_FILE" PROXY_URL)  (bridge enrollment approvals)"
   echo "  ui      : $(lr_env_get "$ENV_FILE" UI_URL)"

@@ -16,6 +16,8 @@ on:
       - 'src/ui/utils/vault*'
       - 'tests/e2e/bridge_*_e2e.mjs'
       - 'tests/e2e/hubOidc.mjs'
+      - 'tests/e2e/natsServer.mjs'
+      - 'tests/e2e/nats_server_test.mjs'
       - 'scripts/e2e-bridge-enroll.ps1'
       - '.github/workflows/bridge-lifecycle-e2e.yml'
   pull_request:
@@ -26,6 +28,8 @@ on:
       - 'src/ui/utils/vault*'
       - 'tests/e2e/bridge_*_e2e.mjs'
       - 'tests/e2e/hubOidc.mjs'
+      - 'tests/e2e/natsServer.mjs'
+      - 'tests/e2e/nats_server_test.mjs'
       - 'scripts/e2e-bridge-enroll.ps1'
       - '.github/workflows/bridge-lifecycle-e2e.yml'
   workflow_dispatch:
@@ -105,6 +109,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          nats="$(nix build --inputs-from . nixpkgs#nats-server --print-out-paths --no-link)"
+          echo "HEIMDALL_E2E_NATS_BIN=$nats/bin/nats-server" >> "$GITHUB_ENV"
           hub="$(nix build .#ham-hub --print-out-paths --no-link)"
           bridge="$(nix build .#release-ham-bridge --print-out-paths --no-link)"
           pty="$(nix build .#release-ham-pty-host --print-out-paths --no-link)"
@@ -113,6 +119,8 @@ jobs:
           cp "$bridge/bin/ham-bridge" "$pty/bin/ham-pty-host" "$bundle/"
           echo "HEIMDALL_E2E_HUB_BIN=$hub/bin/ham-hub" >> "$GITHUB_ENV"
           echo "HEIMDALL_E2E_BRIDGE_BIN=$bundle/ham-bridge" >> "$GITHUB_ENV"
+      - name: NATS fixture lifecycle
+        run: node --test tests/e2e/nats_server_test.mjs
       - name: Real enroll e2e
         run: node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/bridge_real_enroll_e2e.mjs
       - name: Lifecycle e2e
@@ -139,6 +147,18 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+      - name: Install private-test NATS server
+        shell: pwsh
+        run: |
+          go install github.com/nats-io/nats-server/v2@v2.14.7
+          if ($LASTEXITCODE -ne 0) { throw 'NATS server build failed' }
+          "HEIMDALL_E2E_NATS_BIN=$(Join-Path (go env GOPATH) 'bin/nats-server.exe')" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: NATS fixture lifecycle
+        run: node --test tests/e2e/nats_server_test.mjs
       - name: Install Odin (pinned, SHA-256 verified)
         shell: pwsh
         run: |
