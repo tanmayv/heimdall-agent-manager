@@ -229,6 +229,10 @@ sqlite_uow_rollback :: proc(ctx: rawptr) {
 @(private = "file")
 tx_lock :: proc(conn: ^Conn) {
 	tx_lock_token = dbt.timed_lock(&tx_mutex, .Uow_Tx)
+	// Bots also transact on this handle, under its recursive SQLite mutex.
+	// Hold it for the entire outer UoW so their BEGIN cannot enter ours, and
+	// unrelated autocommit statements cannot be committed/rolled back with us.
+	sqlite3_mutex_enter(sqlite3_db_mutex(conn.db))
 	if !tx_lock_token.timed do return
 	tx_started = time.tick_now()
 	sync.atomic_store(&tx_acquired_nsec, tx_started._nsec)
@@ -247,6 +251,7 @@ tx_unlock :: proc(conn: ^Conn, outcome: Tx_Outcome) {
 		tl_uow_active = false
 		tl_uow_wrote = false
 	}
+	sqlite3_mutex_leave(sqlite3_db_mutex(conn.db))
 	dbt.timed_unlock(&tx_mutex, .Uow_Tx, token)
 }
 
