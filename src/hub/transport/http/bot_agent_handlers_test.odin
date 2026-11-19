@@ -8,6 +8,7 @@ import "core:time"
 import "core:fmt"
 import "core:unicode/utf8"
 import domain "odin_test:hub/domain"
+import platform "odin_test:hub/platform"
 import iface "odin_test:hub/repository/iface"
 import sqlite "odin_test:hub/repository/sqlite"
 import bots "odin_test:hub/service/bots"
@@ -294,10 +295,16 @@ test_channel_read_returns_channel_field :: proc(t: ^testing.T) {
 	testing.expect_value(t, json.unmarshal(transmute([]u8)r.body, &wire, allocator = context.temp_allocator), nil)
 	testing.expect(t, len(wire.data.messages) == 1 && wire.data.messages[0].channel == "whatsapp" && wire.data.messages[0].sender == "Alice WA" && wire.data.pending_total == 2)
 }
+@(private = "file")
+bot_channel_origin_now :: proc(ctx: rawptr) -> string { return "2026-11-17T12:00:00Z" }
+
 @(test)
 test_channel_send_reply_goes_to_origin :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	c := bot_channel_fixture(t); defer bot_channel_destroy(c)
+	// Keep the origin-routing fixture inside its fixed inbound reply window.
+	clock := platform.Clock{now=bot_channel_origin_now}
+	c.f.service.clock = &clock
 	bot_channel_whatsapp(t, c)
 	bot_channel_wa_inbound(t, c)
 	bot_channel_inbound(t, c, "chm_tg")

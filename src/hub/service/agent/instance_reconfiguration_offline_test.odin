@@ -248,3 +248,36 @@ test_reconfiguration_keeps_explicit_destination_path_validation :: proc(t: ^test
 	testing.expect_value(t, h.sink.validation_calls, 1)
 	testing.expect_value(t, len(h.sink.commands), 0)
 }
+
+@(private = "file")
+relaunch_fail_send :: proc(ctx: rawptr, command: project_service.Runtime_Command) -> (bool, domain.Domain_Error) {
+	return false, domain.domain_error(.Bridge_Offline, "injected send failure")
+}
+
+@(test)
+test_relaunch_send_failure_persists_failed_generation_and_allows_retry :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	defer free_all(context.temp_allocator)
+	h: Offline_Reconfiguration_Harness
+	if !offline_reconfiguration_open(t, &h, "t8_relaunch_failure") { offline_reconfiguration_close(&h); return }
+	defer offline_reconfiguration_close(&h)
+	testing.expect(t, sqlite.exec(&h.conn, "UPDATE agent_instances SET bridge_id='brg_online_destination' WHERE agent_instance_id='inst_offline_reconfig';"))
+	inst, found, err := iface.agent_get_instance(&h.agents, OFFLINE_RECONFIG_INSTANCE)
+	if !testing.expect(t, found, err.message) do return
+	h.service.bridge_command_sink.send_runtime_command = relaunch_fail_send
+	auth := contracts.Auth_Context{kind=.Session, user_id=OFFLINE_RECONFIG_OWNER}
+	_, launched, launch_err := relaunch_instance(&h.service, auth, inst, inst.provider, inst.model)
+	testing.expect(t, !launched)
+	testing.expect_value(t, launch_err.code, domain.Error_Code.Bridge_Offline)
+	failed, loaded, read_err := iface.agent_get_instance(&h.agents, inst.agent_instance_id)
+	if !testing.expect(t, loaded, read_err.message) do return
+	testing.expect_value(t, failed.runtime_status, "failed")
+	testing.expect_value(t, failed.startup_status, "failed")
+	testing.expect_value(t, failed.run_count, inst.run_count + 1)
+	testing.expect(t, failed.stopped_at != "")
+	h.service.bridge_command_sink.send_runtime_command = offline_reconfiguration_send
+	retried, sent, retry_err := relaunch_instance(&h.service, auth, failed, failed.provider, failed.model)
+	testing.expect(t, sent, retry_err.message)
+	testing.expect_value(t, retried.run_count, failed.run_count + 1)
+	testing.expect_value(t, retried.runtime_status, "launching")
+}

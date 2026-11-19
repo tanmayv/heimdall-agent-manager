@@ -1155,7 +1155,18 @@ relaunch_instance_locked :: proc(service: ^Agent_Service, auth: contracts.Auth_C
 	saved,saved_ok,save_err:=iface.agent_save_instance(service.agents,next)
 	if !saved_ok do return {},false,save_err
 	command_id := strings.concatenate({platform.generate_id(service.ids, "cmd_launch_"), "_", next.agent_instance_id})
-	if sent, send_err := send_frozen_instance_launch(service, command_id, saved); !sent do return domain.Agent_Instance{}, false, send_err
+	if sent, send_err := send_frozen_instance_launch(service, command_id, saved); !sent {
+		// Keep the consumed generation: reverting run_count would admit stale
+		// reports. Make the unsent launch terminal so a later retry can proceed.
+		failed := saved
+		failed.runtime_status = "failed"
+		failed.startup_status = "failed"
+		failed.stopped_at = now
+		if _, failed_ok, failed_err := iface.agent_save_instance(service.agents, failed); !failed_ok {
+			return {}, false, failed_err
+		}
+		return {}, false, send_err
+	}
 	launch_sent = true
 	return saved,true,{}
 }

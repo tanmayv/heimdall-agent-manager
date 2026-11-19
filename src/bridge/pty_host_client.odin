@@ -74,15 +74,18 @@ PTY_HOST_T_PIPE_OUTPUT :: 0xC3
 PTY_HOST_T_PIPE_INPUT_DONE :: 0xC4
 PTY_HOST_T_PIPE_GAP :: 0xC5
 PTY_HOST_MAX_PIPE_DATA :: 64 * 1024
+// Both legacy PTY and pipe control frames deliberately share the 4 MiB limit
+// allowed by ACP spec §5.1. Legacy inputs above this size are rejected; callers
+// must split large writes. Keeping one bound caps allocation before tag decoding.
 PTY_HOST_MAX_FRAME_BYTES :: 4 * 1024 * 1024
 Pty_Host_Spawn_Mode :: enum u8 { Pty, Pipe }
 Pty_Host_Pipe_Info :: struct {
-    instance, generation: string,
-    pid: i32,
-    alive, has_exit_code: bool,
-    exit_code: i32,
-    meta_json: string,
-    has_meta: bool,
+	instance, generation: string,
+	pid: i32,
+	alive, has_exit_code: bool,
+	exit_code: i32,
+	meta_json: string,
+	has_meta: bool,
 }
 
 // ---- named keys (must match proto.rs NamedKey discriminants) ------------
@@ -113,9 +116,9 @@ Pty_Host_Key :: enum u8 {
 // the bridge re-plumbing it. env entries are (key,value) pairs; detect is the
 // opaque startup-detection JSON (stored verbatim by HOST-1, parsed in HOST-2).
 Pty_Host_Spawn_Request :: struct {
-    mode: Pty_Host_Spawn_Mode,
-    label, meta_json: string,
-    has_label, has_meta: bool,
+	mode: Pty_Host_Spawn_Mode,
+	label, meta_json: string,
+	has_label, has_meta: bool,
 	instance:         string,
 	argv:             []string,
 	cwd:              string, // "" => None on the wire
@@ -179,7 +182,7 @@ Pty_Host_Reply_Kind :: enum {
 	Already_Exited,
 	Startup_Input_Done,
 	Startup_Launch,
-    Capabilities, Pipe_List, Pipe_Ready, Pipe_Output, Pipe_Input_Done, Pipe_Gap,
+	Capabilities, Pipe_List, Pipe_Ready, Pipe_Output, Pipe_Input_Done, Pipe_Gap,
 }
 
 // One agent's liveness entry inside a Host_Heartbeat reply.
@@ -189,11 +192,11 @@ Pty_Host_Heartbeat_Agent :: struct {
 }
 
 Pty_Host_Reply :: struct {
-    piped_spawn_v1: bool,
-    generation, delivery_id: string,
-    first_seq, last_seq, seq: u64,
-    stream: u8,
-    pipes: []Pty_Host_Pipe_Info,
+	piped_spawn_v1: bool,
+	generation, delivery_id: string,
+	first_seq, last_seq, seq: u64,
+	stream: u8,
+	pipes: []Pty_Host_Pipe_Info,
 	kind:             Pty_Host_Reply_Kind,
 	instance:         string,
 	pid:              i32,
@@ -302,7 +305,7 @@ pty_host_get_str :: proc(b: []byte, off: ^int) -> (string, bool) {
 // pty_host_frame prepends the u32 BE length prefix to a payload, returning a new
 // owned buffer.
 pty_host_frame :: proc(payload: []byte) -> []byte {
-    if len(payload) > PTY_HOST_MAX_FRAME_BYTES do return nil
+	if len(payload) > PTY_HOST_MAX_FRAME_BYTES do return nil
 	out := make([dynamic]byte, 0, 4 + len(payload))
 	pty_host_put_u32(&out, u32(len(payload)))
 	append(&out, ..payload)
@@ -313,8 +316,8 @@ pty_host_frame :: proc(payload: []byte) -> []byte {
 
 // pty_host_encode_spawn builds a framed Spawn control message. Caller owns result.
 pty_host_encode_spawn :: proc(req: Pty_Host_Spawn_Request) -> []byte {
-    if req.mode != .Pty && req.mode != .Pipe do return nil
-    if len(req.argv) > 65535 || len(req.env) > 65535 do return nil
+	if req.mode != .Pty && req.mode != .Pipe do return nil
+	if len(req.argv) > 65535 || len(req.env) > 65535 do return nil
 	p := make([dynamic]byte)
 	defer delete(p)
 	append(&p, PTY_HOST_T_SPAWN_PIPE if req.mode == .Pipe else PTY_HOST_T_SPAWN)
@@ -416,7 +419,7 @@ pty_host_encode_resize :: proc(instance: string, rows, cols: u16) -> []byte {
 // the returned Pty_Host_Reply owns its heap fields (free with pty_host_reply_delete).
 pty_host_decode_reply :: proc(payload: []byte) -> (Pty_Host_Reply, bool) {
 	if len(payload) == 0 || len(payload) > PTY_HOST_MAX_FRAME_BYTES do return {}, false
-    if payload[0] >= PTY_HOST_T_CAPABILITIES_REPLY && payload[0] <= PTY_HOST_T_PIPE_GAP do return pty_host_decode_pipe_reply(payload)
+	if payload[0] >= PTY_HOST_T_CAPABILITIES_REPLY && payload[0] <= PTY_HOST_T_PIPE_GAP do return pty_host_decode_pipe_reply(payload)
 	tag := payload[0]
 	rest := payload[1:]
 	off := 0
@@ -585,9 +588,9 @@ pty_host_free_agents :: proc(agents: []Pty_Host_Agent_Info) {
 
 // pty_host_reply_delete frees an owned reply's heap fields.
 pty_host_reply_delete :: proc(r: Pty_Host_Reply) {
-    delete(r.generation); delete(r.delivery_id)
-    for row in r.pipes { delete(row.instance); delete(row.generation); delete(row.meta_json) }
-    delete(r.pipes)
+	delete(r.generation); delete(r.delivery_id)
+	for row in r.pipes { delete(row.instance); delete(row.generation); delete(row.meta_json) }
+	delete(r.pipes)
 	delete(r.startup_key)
 	if r.instance != "" do delete(r.instance)
 	if r.message != "" do delete(r.message)
@@ -787,46 +790,46 @@ bridge_pty_host_signal :: proc(client: ^Pty_Host_Client, shell_id: string, signa
 // One nonblocking socket, owned entirely by this caller, and one monotonic
 // deadline for all writes and every frame read (including unsolicited frames).
 pty_host_request_deadline :: proc(socket_path: string, request: []byte, timeout_ms: int) -> (Pty_Host_Reply, bool) {
-    if timeout_ms <= 0 do return {}, false
-    start := time.tick_now()
-    if !pty_host_test_socket_allowed(socket_path) do return {}, false
-    fd, dial_ok := local_socket.dial_nonblocking(strings.trim_prefix(socket_path, "unix:"))
-    if !dial_ok do return {}, false
-    defer local_socket.close(fd)
-    duration := time.Duration(timeout_ms)*time.Millisecond
-    sent := 0
-    for sent < len(request) && time.tick_since(start) < duration {
-        n, err := local_socket.send_ex(fd, request[sent:])
-        if err == .Would_Block || err == .Interrupted { time.sleep(time.Millisecond); continue }
-        if err != .None || n <= 0 do return {}, false
-        sent += n
-    }
-    if sent != len(request) do return {}, false
-    read_exact :: proc(fd: local_socket.Socket, bytes: []byte, start: time.Tick, duration: time.Duration) -> bool {
-        got := 0
-        for got < len(bytes) && time.tick_since(start) < duration {
-            n, err := local_socket.recv_ex(fd, bytes[got:])
-            if err == .Would_Block || err == .Interrupted { time.sleep(time.Millisecond); continue }
-            if err != .None || n <= 0 do return false
-            got += n
-        }
-        return got == len(bytes)
-    }
-    for _ in 0..<PTY_HOST_REQUEST_MAX_SKIP {
-        prefix: [4]byte
-        if !read_exact(fd, prefix[:], start, duration) do return {}, false
-        length := u32(prefix[0])<<24 | u32(prefix[1])<<16 | u32(prefix[2])<<8 | u32(prefix[3])
-        if length > PTY_HOST_MAX_FRAME_BYTES do return {}, false
-        payload := make([]byte, int(length))
-        ok := read_exact(fd, payload, start, duration)
-        if !ok { delete(payload); return {}, false }
-        reply, decoded := pty_host_decode_reply(payload)
-        delete(payload)
-        if !decoded do return {}, false
-        if pty_host_reply_is_async(reply.kind) { pty_host_reply_delete(reply); continue }
-        return reply, true
-    }
-    return {}, false
+	if timeout_ms <= 0 do return {}, false
+	start := time.tick_now()
+	if !pty_host_test_socket_allowed(socket_path) do return {}, false
+	fd, dial_ok := local_socket.dial_nonblocking(strings.trim_prefix(socket_path, "unix:"))
+	if !dial_ok do return {}, false
+	defer local_socket.close(fd)
+	duration := time.Duration(timeout_ms)*time.Millisecond
+	sent := 0
+	for sent < len(request) && time.tick_since(start) < duration {
+		n, err := local_socket.send_ex(fd, request[sent:])
+		if err == .Would_Block || err == .Interrupted { time.sleep(time.Millisecond); continue }
+		if err != .None || n <= 0 do return {}, false
+		sent += n
+	}
+	if sent != len(request) do return {}, false
+	read_exact :: proc(fd: local_socket.Socket, bytes: []byte, start: time.Tick, duration: time.Duration) -> bool {
+		got := 0
+		for got < len(bytes) && time.tick_since(start) < duration {
+			n, err := local_socket.recv_ex(fd, bytes[got:])
+			if err == .Would_Block || err == .Interrupted { time.sleep(time.Millisecond); continue }
+			if err != .None || n <= 0 do return false
+			got += n
+		}
+		return got == len(bytes)
+	}
+	for _ in 0..<PTY_HOST_REQUEST_MAX_SKIP {
+		prefix: [4]byte
+		if !read_exact(fd, prefix[:], start, duration) do return {}, false
+		length := u32(prefix[0])<<24 | u32(prefix[1])<<16 | u32(prefix[2])<<8 | u32(prefix[3])
+		if length > PTY_HOST_MAX_FRAME_BYTES do return {}, false
+		payload := make([]byte, int(length))
+		ok := read_exact(fd, payload, start, duration)
+		if !ok { delete(payload); return {}, false }
+		reply, decoded := pty_host_decode_reply(payload)
+		delete(payload)
+		if !decoded do return {}, false
+		if pty_host_reply_is_async(reply.kind) { pty_host_reply_delete(reply); continue }
+		return reply, true
+	}
+	return {}, false
 }
 
 // pty_host_test_socket_allowed is the test-only fence around the pty-host socket:

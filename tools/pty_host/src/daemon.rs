@@ -3493,7 +3493,10 @@ mod tests {
             dproto::write_ctl_msg(&mut c, &CtlMsg::Resize { instance: "inst_pipe".into(), rows: 40, cols: 120 }).unwrap();
             // Wait for initial screen
             let _ = dproto::read_ctl_reply(&mut c);
-            assert_eq!(d.capture("inst_pipe").unwrap().rows, 40);
+            assert!(
+                wait_for(|| d.capture("inst_pipe").is_some_and(|s| s.rows == 40 && s.cols == 120), Duration::from_secs(3)),
+                "queued resize was not applied"
+            );
             // Drop client stream abruptly (simulating broken pipe/disconnect)
         }
 
@@ -3862,6 +3865,10 @@ mod tests {
 
         // A spawn that fails for lack of fds reports the OS error to the caller.
         let mut c = UnixStream::connect(&sock).unwrap();
+        // Confirm accept and both server-side clones before exhausting fds;
+        // otherwise this tests a connection setup race instead of spawn failure.
+        dproto::write_ctl_msg(&mut c, &CtlMsg::Ping).unwrap();
+        assert!(await_reply(&mut c, |r| matches!(r, CtlReply::Pong), Duration::from_secs(3)).is_some());
         let fill = fill_fd_table();
         dproto::write_ctl_msg(&mut c, &CtlMsg::Spawn(true_spec("starved", &prog))).unwrap();
         let reply = await_reply(&mut c, |r| matches!(r, CtlReply::Error { .. }), Duration::from_secs(3));
