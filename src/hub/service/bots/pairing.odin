@@ -27,6 +27,9 @@ bots_pairing_create :: proc(s: ^Bots_Service, owner, provider: string) -> (Bot_P
 	bot, err := bots_get(s, owner)
 	if err.code != .None do return {}, err
 	defer domain.bot_destroy(&bot)
+	entitled, entitlement_err := bots_channel_entitled(s, provider, owner)
+	if entitlement_err.code != .None do return {}, entitlement_err
+	if !entitled do return {}, bots_whatsapp_invite_only_error()
 	a := bots_adapter(s, provider)
 	if a == nil do return {}, domain.domain_error(.Provider_Unavailable, fmt.tprintf("%s is not configured on this hub", provider), "{\"code\":\"channel_not_configured\"}")
 	identity, channel_err := a.identity(a.ctx)
@@ -96,6 +99,10 @@ bots_pairing_apply :: proc(s: ^Bots_Service, a: ^channel.Channel_Adapter, update
 	if get_err.code != .None do return "", "", "", "", get_err
 	if !found || pairing.provider != a.provider || pairing.consumed_at != "" || pairing.expires_at <= now do return copy.pair_invalid, "", "", "", {}
 	if !bots_gate_on(s.experiments, pairing.owner_user_id) do return COPY_PAIR_NOT_ENABLED, "", "", "", {}
+	// A code issued before the account lost WhatsApp access must not pair.
+	entitled, entitlement_err := bots_channel_entitled(s, a.provider, pairing.owner_user_id)
+	if entitlement_err.code != .None do return "", "", "", "", entitlement_err
+	if !entitled do return COPY_WA_INVITE_ONLY, "", "", "", {}
 	bot, bot_found, bot_err := iface.bot_get_by_owner(s.repo, pairing.owner_user_id)
 	defer domain.bot_destroy(&bot)
 	if bot_err.code != .None do return "", "", "", "", bot_err

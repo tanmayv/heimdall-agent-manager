@@ -18,6 +18,8 @@ export interface BotPlacementOptions { bridges: { bridge_id: string; label: stri
 export interface TelegramPairing { pairing_url: string; expires_at: string }
 export interface BotWhatsApp {
   configured: boolean;
+  /** Effective whatsapp_enabled entitlement; WhatsApp is invite-only. Absent on older hubs. */
+  enabled?: boolean;
   phone_display: string;
   binding: null | { state: string; display: string; connected_at: string };
   window_open: boolean;

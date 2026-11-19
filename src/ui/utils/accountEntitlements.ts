@@ -5,6 +5,8 @@ export interface UserEntitlements {
   terminal_input_enabled: boolean;
   max_concurrent_streams: number;
   shells_enabled: boolean;
+  /** WhatsApp bot access; invite-only (admin override), never part of a plan by default. */
+  whatsapp_enabled: boolean;
 }
 
 export const PERMISSIVE_ENTITLEMENTS: UserEntitlements = Object.freeze({
@@ -13,6 +15,7 @@ export const PERMISSIVE_ENTITLEMENTS: UserEntitlements = Object.freeze({
   terminal_input_enabled: true,
   max_concurrent_streams: -1,
   shells_enabled: true,
+  whatsapp_enabled: true,
 });
 
 export function atPlanLimit(allowed: number, current: number): boolean {

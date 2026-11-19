@@ -27,3 +27,23 @@ bots_gate_error :: proc(repo: ^iface.Experiment_Repository, owner_user_id: strin
 bots_gate_on :: proc(repo: ^iface.Experiment_Repository, owner_user_id: string) -> bool {
 	return bots_gate_error(repo, owner_user_id).code == .None
 }
+
+// WhatsApp is invite-only (REQ-WAI-2): the effective `whatsapp_enabled`
+// entitlement (admin override, else plan) is read per request through the
+// shared lookup, whose cache refreshes within the billing TTL. Telegram never
+// consults it. A zero lookup (self-hosted, plan limits off) is permissive.
+BOTS_WHATSAPP_INVITE_ONLY_CODE :: "whatsapp_invite_only"
+
+bots_whatsapp_invite_only_error :: proc() -> domain.Domain_Error {
+	return domain.domain_error(.Forbidden, COPY_WA_INVITE_ONLY_SETTINGS, `{"code":"` + BOTS_WHATSAPP_INVITE_ONLY_CODE + `"}`)
+}
+
+// Returns false with an error when the entitlement cannot be read; callers fail
+// closed (never route) without treating the failure as a revocation.
+bots_channel_entitled :: proc(s: ^Bots_Service, provider, owner_user_id: string) -> (bool, domain.Domain_Error) {
+	if provider != domain.CHANNEL_PROVIDER_WHATSAPP do return true, {}
+	if owner_user_id == "" do return false, {}
+	entitlements, err := domain.lookup_entitlements(s.entitlements, owner_user_id)
+	if err.code != .None do return false, err
+	return entitlements.whatsapp_enabled, {}
+}

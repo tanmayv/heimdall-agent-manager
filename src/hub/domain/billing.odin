@@ -7,6 +7,8 @@ User_Entitlements :: struct {
 	terminal_input_enabled: bool,
 	max_concurrent_streams: int, // -1 = unlimited; 0 permits none
 	shells_enabled: bool,
+	// Invite-only: no plan includes WhatsApp; operators grant it per account.
+	whatsapp_enabled: bool,
 }
 
 Billing_Plan :: struct {
@@ -68,7 +70,7 @@ Entitlement_Lookup :: struct {
 
 unlimited_entitlements :: proc() -> User_Entitlements {
 	return {max_bridges = -1, terminal_streaming_enabled = true,
-		terminal_input_enabled = true, max_concurrent_streams = -1, shells_enabled = true}
+		terminal_input_enabled = true, max_concurrent_streams = -1, shells_enabled = true, whatsapp_enabled = true}
 }
 
 lookup_entitlements :: proc(source: Entitlement_Lookup, user_id: string) -> (User_Entitlements, Domain_Error) {

@@ -18,6 +18,10 @@ bots_inbound_rows :: proc(s: ^Bots_Service, a: ^channel.Channel_Adapter, batch: 
 		defer domain.channel_binding_destroy(&binding)
 		if err.code != .None do return nil, err
 		if !found || !bots_gate_on(s.experiments, binding.owner_user_id) || update.external_user_id != binding.external_user_id do continue
+		// Invite-only WhatsApp: a disabled owner's messages are never routed.
+		entitled, entitlement_err := bots_channel_entitled(s, a.provider, binding.owner_user_id)
+		if entitlement_err.code != .None do return nil, entitlement_err
+		if !entitled do continue
 		limit := bots_media_limit(a)
 		if update.kind == .Media && (limit == 0 || update.media.size > limit && update.text == "") do continue
 		attachment: domain.Channel_Attachment
@@ -48,14 +52,28 @@ bots_inbound_rows :: proc(s: ^Bots_Service, a: ^channel.Channel_Adapter, batch: 
 	return rows[:], {}
 }
 
-bots_inbound_side_effect :: proc(s: ^Bots_Service, a: ^channel.Channel_Adapter, update: channel.Inbound, now: string) -> domain.Domain_Error {
+// invite_only_chats (optional, batch scratch) records chats unbound for
+// invite-only access, so later updates in the same batch stay silent instead of
+// answering with the not-connected copy.
+bots_inbound_side_effect :: proc(s: ^Bots_Service, a: ^channel.Channel_Adapter, update: channel.Inbound, now: string, invite_only_chats: ^map[string]bool = nil) -> domain.Domain_Error {
 	if !update.chat_is_private {bots_notice(s, a.provider, update.external_chat_id, COPY_PRIVATE_ONLY); return {}}
 	if update.kind == .Start do return bots_pairing_start(s, a, update, now)
 	binding, found, err := bots_find_binding(s, a.provider, update.external_chat_id, update.external_user_id)
 	defer domain.channel_binding_destroy(&binding)
 	if err.code != .None do return err
-	if !found {bots_notice(s, a.provider, update.external_chat_id, bots_channel_copy(a.provider).not_connected); return {}}
+	if !found {
+		if invite_only_chats != nil && invite_only_chats[update.external_chat_id] do return {}
+		bots_notice(s, a.provider, update.external_chat_id, bots_channel_copy(a.provider).not_connected)
+		return {}
+	}
 	if !bots_gate_on(s.experiments, binding.owner_user_id) do return {}
+	entitled, entitlement_err := bots_channel_entitled(s, a.provider, binding.owner_user_id)
+	if entitlement_err.code != .None do return entitlement_err
+	if !entitled {
+		revoked, e := bots_whatsapp_invite_only_unbind(s, binding.owner_user_id, true)
+		if revoked && invite_only_chats != nil do invite_only_chats[update.external_chat_id] = true
+		return e
+	}
 	if update.kind == .Disconnect do return bots_disconnect(s, binding.owner_user_id, a.provider, true)
 	if update.kind == .Unsupported do bots_notice(s, a.provider, update.external_chat_id, COPY_UNSUPPORTED)
 	if update.kind == .Media && update.external_user_id == binding.external_user_id {

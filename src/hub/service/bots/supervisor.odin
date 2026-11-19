@@ -303,7 +303,10 @@ bots_supervisor_tick :: proc(s: ^Bots_Service) {
 		binding, found, _ := bots_notice_binding(s, notice.owner, notice.bot_id, notice.through_message_id)
 		if found do bots_notice(s, binding.provider, binding.external_chat_id, notice.text)
 	}
-	if run_idle do bots_idle_stop(s, now, ms)
+	if run_idle {
+		bots_idle_stop(s, now, ms)
+		bots_whatsapp_entitlement_sweep(s)
+	}
 	if run_retention {
 		cutoff := platform.format_rfc3339_utc(time.Time{_nsec = (ms - s.timers.bot_channel_retention_ms) * 1_000_000})
 		_, _ = iface.messages_purge_older_than(s.repo, cutoff)
