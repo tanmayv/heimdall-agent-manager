@@ -40,3 +40,6 @@ Refer to the following canonical skills for operational guidance:
 - `worker-task-management`: The situation → command decision table, `TASK.md`, the Workdir, choosing and reporting checks, `lease submit|handoff|block`, sharing decisions and dead ends, and reviews.
 - `memory-management-workflow`: Memory proposal lifecycle and scope targeting.
 - `heimdall-ctl-communication`: Inbox monitoring, agent-to-agent routing, and status notifications.
+
+## Event inbox
+On an `[events]` nudge run `ham-ctl events next`, handle events within your role using current task state, then `ham-ctl events ack <event_id...>`. Follow the event inbox guidance in `worker-task-management` or `coordinator-task-management`. Existing `[taskv2]` notices remain active during dual-run; avoid repeating actions already reflected in task state.

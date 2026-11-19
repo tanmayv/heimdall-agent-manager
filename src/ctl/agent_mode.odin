@@ -52,6 +52,7 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 	case "review":        ctl_v2_review(endpoint, token, rest, args); return
 	case "verify":        ctl_v2_verify(endpoint, token, rest, args); return
 	case "workflow", "workflows": ctl_v2_workflow(endpoint, token, rest, args); return
+	case "events": ctl_v2_events(endpoint, token, rest, args); return
 	case "channel", "channels": ctl_v2_channel(endpoint, token, rest, args); return
 	case "chat", "chats", "conversation", "conversations": ctl_v2_chat(endpoint, token, rest, args); return
 	case "memory":        ctl_v2_memory(endpoint, token, rest, args); return
@@ -1848,6 +1849,7 @@ print_agent_help :: proc(cmd: []string) {
 	case "review": print_help_review(); return
 	case "verify": print_help_verify(); return
 	case "workflow", "workflows": print_help_workflow(); return
+	case "events": print_help_events(); return
 	case "channel", "channels": print_help_channel(); return
 	case "chat", "chats", "conversation", "conversations": print_help_chat(); return
 	case "artifact", "artifacts": print_help_artifact(); return
@@ -1892,6 +1894,7 @@ print_help_overview :: proc() {
 	fmt.println("  verify      Removed (stub for one release): prints {\"ok\":true,\"verify\":\"removed\"} and exits 0")
 	fmt.println("  review      Post a review verdict on the task you were woken to review (post)")
 	fmt.println("  context     One-shot snapshot of this instance (chain, task, unread)")
+	fmt.println("  events      Durable task-chain inbox (next, ack, watch, unwatch, subscriptions)")
 	fmt.println("  extension   Harness extension hooks → Bridge (hook <provider>, event --stdin, status)")
 	fmt.println("  start-success  Signal this instance is ready")
 	fmt.println("")

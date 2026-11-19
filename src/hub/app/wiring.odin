@@ -1,6 +1,8 @@
 package app
 
 import "core:fmt"
+import eventinbox "odin_test:hub/service/eventinbox"
+import eventrelay "odin_test:hub/service/eventrelay"
 import "core:os"
 import "core:strings"
 import "core:sync"
@@ -36,6 +38,12 @@ import http "odin_test:hub/transport/http"
 import platform "odin_test:hub/platform"
 
 App_Graph :: struct {
+	event_relay: eventrelay.Service,
+	event_inbox: eventinbox.Service,
+	event_inbox_runtime: eventinbox.Runtime,
+	event_inbox_handlers: http.Event_Inbox_Handlers,
+	sqlite_event_outbox: sqlite.Event_Outbox_Repo_SQLite,
+	sqlite_event_subscriptions: sqlite.Event_Subscription_Repo_SQLite,
 	mcp_runtime_mutex:sync.Mutex,
 	mcp_spike: mcp_service.Store,
 	mcp_spike_handlers: http.MCP_Spike_Handlers,
@@ -229,6 +237,7 @@ service_message_created :: proc(ctx: rawptr, m: domain.Chat_Message) {
 }
 
 build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
+	if strings.trim_space(config.nats_url) == "" do return false, "--nats-url / HEIMDALL_NATS_URL is required"
 	graph.bridge_runtime_registry.limits = project_service.Runtime_Registry_Limits{
 		live_bridges = config.runtime_max_live_bridges,
 		live_bridges_per_owner = config.runtime_max_live_bridges_per_owner,
@@ -298,6 +307,8 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.billing = billing_service.Service{repo = &graph.billing_repo, clock = &graph.clock, config = billing_config}
 	graph.billing_handlers = http.Billing_Handlers{auth = &graph.auth, billing = &graph.billing, ui_origin = config.ui_origin}
 
+	graph.repos.event_outbox = sqlite.new_event_outbox_repository(&graph.sqlite_event_outbox, &graph.db)
+	graph.repos.event_subscriptions = sqlite.new_event_subscription_repository(&graph.sqlite_event_subscriptions, &graph.db)
 	graph.repos.users = sqlite.new_user_repository(&graph.sqlite_users, &graph.db)
 	// External identity claiming is atomic on an isolated connection so its
 	// transaction cannot commit or roll back an unrelated repository's writes.
@@ -403,7 +414,9 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	// Task System v2 engine: events + fold + leases + timers + matcher. Every
 	// chain/task mutation in the taskchain service funnels into it; it calls back
 	// (on_tasks_changed) so the chain auto-completes when its last task is done.
+	graph.repos.taskchains.catalog = graph.repos.event_outbox
 	graph.task_engine = taskv2.new_service(&graph.repos.taskchains, &graph.repos.agents, &graph.repos.bridges, &graph.clock, &graph.ids)
+	graph.task_engine.legacy_event_notices = config.legacy_event_notices
 	graph.content.uow_factory = &graph.uow_factory
 	graph.content.vault_directory = &graph.vault_directory_repo
 	graph.task_engine.uow_factory = &graph.uow_factory
@@ -659,6 +672,14 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.experiment_handlers.on_changed_ctx = &graph.bots_runtime
 	graph.bots.boot_unix_ms, _ = platform.rfc3339_to_unix_ms(platform.clock_now(&graph.clock))
 	graph.bridge_handlers.bots = &graph.bots
+	graph.event_inbox = eventinbox.Service{
+		factory = &graph.uow_factory, ids = &graph.ids,
+		notice_ctx = graph, notice = event_inbox_notice,
+		options = {url = config.nats_url, creds_file = config.nats_creds_file, ca_file = config.nats_ca_file, timeout_ms = 1000},
+	}
+	graph.mcp_control_handlers.inbox = &graph.event_inbox
+	graph.user_handlers.catalog = &graph.event_inbox
+	graph.event_inbox_handlers = http.Event_Inbox_Handlers{agent_actions = &graph.agent_action_handlers, inbox = &graph.event_inbox}
 	graph.bot_agent_handlers = http.Bot_Agent_Handlers{agent_actions = &graph.agent_action_handlers, bots = &graph.bots, experiments = &graph.experiment_repo}
 	graph.bot_handlers = http.Bot_Handlers{auth = &graph.auth, bots = &graph.bots, experiments = &graph.experiment_repo}
 	graph.bridges.provider_repo = graph.providers.repo
@@ -680,10 +701,15 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	} else {
 		fmt.println("ham-hub web push send disabled (no VAPID keypair configured); subscription endpoints remain active")
 	}
+	eventinbox.start(&graph.event_inbox_runtime, &graph.event_inbox)
+	eventrelay.start(&graph.event_relay, &graph.uow_factory, {url = config.nats_url, creds_file = config.nats_creds_file, ca_file = config.nats_ca_file, timeout_ms = 1000})
 	return true, ""
 }
 
 shutdown_graph :: proc(graph: ^App_Graph) {
+	eventinbox.stop(&graph.event_inbox_runtime)
+	eventinbox.counters_destroy(&graph.event_inbox)
+	eventrelay.stop(&graph.event_relay)
 	bots_service.bots_runtime_stop(&graph.bots_runtime)
 	bots_service.bots_service_destroy(&graph.bots)
 	channel.telegram_destroy(&graph.telegram)
@@ -867,6 +893,12 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/media/fetch", rawptr(&graph.bot_agent_handlers), http.bot_agent_media_fetch_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/media/stored", rawptr(&graph.bot_agent_handlers), http.bot_agent_media_stored_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/media/plan", rawptr(&graph.bot_agent_handlers), http.bot_agent_media_plan_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/events/metrics", rawptr(&graph.event_inbox_handlers), http.event_metrics_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/events/next", rawptr(&graph.event_inbox_handlers), http.event_next_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/events/ack", rawptr(&graph.event_inbox_handlers), http.event_ack_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/events/watch", rawptr(&graph.event_inbox_handlers), http.event_watch_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/events/unwatch", rawptr(&graph.event_inbox_handlers), http.event_unwatch_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/events/subscriptions", rawptr(&graph.event_inbox_handlers), http.event_subscriptions_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/read", rawptr(&graph.bot_agent_handlers), http.bot_agent_channel_read_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/send", rawptr(&graph.bot_agent_handlers), http.bot_agent_channel_send_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/history", rawptr(&graph.bot_agent_handlers), http.bot_agent_channel_history_handler)
@@ -1183,7 +1215,14 @@ register_routes :: proc(graph: ^App_Graph) {
 health_handler :: proc(ctx: rawptr, req: http.Request) -> http.Response {
 	graph := (^App_Graph)(ctx)
 	server_time := platform.clock_now(&graph.clock)
-	return http.respond_success("{\"ok\":true,\"version\":1}", req.request_id, server_time)
+	status, backlog := eventrelay.health(&graph.event_relay)
+
+	payload := struct {
+		ok: bool,
+		version: int,
+		events: struct { status: string, outbox_backlog: i64 },
+	}{ok = true, version = 1, events = {status = status, outbox_backlog = backlog}}
+	return http.respond_success_typed(payload, req.request_id, server_time)
 }
 
 // device_bridge_minter is the REQ-IMPL-2 bridge-credential issuer wired into
@@ -1287,4 +1326,65 @@ read_secret_file :: proc(path: string) -> (string, bool) {
 	secret := strings.clone(strings.trim_space(string(data)))
 	delete(data)
 	return secret, secret != ""
+}
+
+// The inbox observes pending messages; delivery stays on the existing bridge
+// notice and guarded agent start paths, always outside a SQLite transaction.
+event_inbox_notice :: proc(
+	ctx: rawptr,
+	owner, agent: string,
+	target: domain.Event_Notice_Target,
+	count: int,
+	wake: bool,
+) -> bool {
+	graph := (^App_Graph)(ctx)
+	inst, found, _ := iface.agent_get_instance(&graph.repos.agents, target.instance_id)
+	defer domain.agent_instance_destroy(&inst)
+	if !found || string(inst.owner_user_id) != owner || inst.agent_id != agent || inst.stopped_by != "" do return false
+	if wake {
+		if inst.runtime_status != "stopped" do return false
+		guard := Event_Inbox_Wake_Guard {
+			graph       = graph,
+			owner       = owner,
+			agent       = agent,
+			instance_id = inst.agent_instance_id,
+		}
+		_, started, _ := agent_service.start_instance(
+			&graph.agents,
+			{kind = .Internal_User, user_id = owner},
+			inst.agent_instance_id,
+			&guard,
+			event_inbox_wake_guard,
+		)
+		return started
+	}
+	if (inst.runtime_status != "running" && inst.runtime_status != "idle") || inst.activity_status != "idle" do return false
+	id := platform.generate_id(&graph.ids, "cmd_events_")
+	if id == "" do return false
+	// ID generator returns temporary allocator storage.
+	line := fmt.tprintf("[events] %d new event(s) — run ham-ctl events next", count)
+	body := taskv2.agent_notice_command_json(id, inst.agent_instance_id, "", "events", line)
+	defer delete(body)
+	accepted, _ := project_service.bridge_command_send_runtime(
+		graph.agents.bridge_command_sink,
+		{bridge_id = inst.bridge_id, command_id = id, body_json = body},
+	)
+	return accepted
+}
+
+// start_instance invokes this while holding reconfiguration_mutex, the same
+// mutex as stop_instance. An automatic event wake must never clear a user stop
+// that arrived after the inbox's earlier snapshot.
+Event_Inbox_Wake_Guard :: struct {
+	graph:                     ^App_Graph,
+	owner, agent, instance_id: string,
+}
+event_inbox_wake_guard :: proc(ctx: rawptr) -> domain.Domain_Error {
+	guard := (^Event_Inbox_Wake_Guard)(ctx)
+	inst, found, err := iface.agent_get_instance(&guard.graph.repos.agents, guard.instance_id)
+	defer domain.agent_instance_destroy(&inst)
+	if err.code != .None do return err
+	if !found || string(inst.owner_user_id) != guard.owner || inst.agent_id != guard.agent do return domain.domain_error(.Not_Found, "event wake instance no longer belongs to subscriber")
+	if inst.stopped_by != "" || inst.runtime_status != "stopped" do return domain.domain_error(.Conflict, "event wake requires a stopped instance without an explicit stop")
+	return {}
 }

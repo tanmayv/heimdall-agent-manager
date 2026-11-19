@@ -10,6 +10,8 @@ CTL_BIN="${CTL_BIN:-${REPO_DIR}/bin/ham-ctl}"
 DB_PATH="/tmp/parity_test_${RANDOM}.db"
 MIGRATIONS_DIR="${REPO_DIR}/src/hub/repository/sqlite/migrations"
 PORT=49329
+NATS_STATE="$(mktemp -d)"
+HUB_PID=""
 
 PASS=0
 FAIL=0
@@ -24,18 +26,22 @@ echo "=== Starting mock OIDC + ham-hub on port $PORT ==="
 # tools/mock-oidc. (Hub user tokens and `ham-ctl --as user` were removed.)
 # shellcheck source=../scripts/lib/hub-oidc-dev.sh
 . "$REPO_DIR/scripts/lib/hub-oidc-dev.sh"
-hub_oidc_start_mock /tmp parity
-hub_oidc_export_env
-"$HUB_BIN" --port "$PORT" --db "$DB_PATH" --migrations-dir "$MIGRATIONS_DIR" --ui-origin "http://127.0.0.1:$PORT" > /tmp/parity_hub.log 2>&1 &
-HUB_PID=$!
-
+. "$REPO_DIR/scripts/local-runtime/lib.sh"
 cleanup() {
   echo "=== Shutting down ham-hub (PID $HUB_PID) ==="
   kill "$HUB_PID" 2>/dev/null || true
+  lr_stop_svc "$NATS_STATE" nats
+  rm -rf "$NATS_STATE"
   hub_oidc_stop_mock
   rm -f "$DB_PATH" /tmp/parity_hub.log || true
 }
 trap cleanup EXIT
+hub_oidc_start_mock /tmp parity
+hub_oidc_export_env
+NATS_URL="$(lr_nats_start "$NATS_STATE")"
+export HEIMDALL_NATS_CREDS_FILE= HEIMDALL_NATS_CA_FILE=
+"$HUB_BIN" --nats-url "$NATS_URL" --port "$PORT" --db "$DB_PATH" --migrations-dir "$MIGRATIONS_DIR" --ui-origin "http://127.0.0.1:$PORT" > /tmp/parity_hub.log 2>&1 &
+HUB_PID=$!
 
 for i in {1..40}; do
   if curl -sf "http://127.0.0.1:$PORT/api/v1/health" >/dev/null 2>&1; then

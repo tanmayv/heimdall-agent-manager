@@ -25,6 +25,7 @@
 //   HEIMDALL_E2E_HUB_BIN=<ham-hub> HEIMDALL_E2E_BRIDGE_BIN=<ham-bridge> \
 //   node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/bridge_lifecycle_e2e.mjs
 
+import { startNats } from './natsServer.mjs';
 import { spawn as nodeSpawn, spawnSync as nodeSpawnSync } from 'node:child_process';
 
 // These are background probes, including on a developer's Windows desktop.
@@ -178,13 +179,15 @@ async function startHub(label) {
   fs.mkdirSync(dir, { recursive: true });
   const port = await freePort();
   const log = fs.openSync(path.join(dir, 'hub.log'), 'w');
+  const nats = await startNats(dir);
+  children.push({ kill: nats.kill });
   const mock = await startMockOidc();
   children.push({ kill: mock.stop });
   const base = `http://127.0.0.1:${port}`;
   const child = spawn(bin, ['--listen', `127.0.0.1:${port}`, '--db', path.join(dir, 'hub.db'), '--migrations-dir', migrations, '--ui-origin', base],
     // Offline, manifest-only update catalog (step 5b writes the manifest): the hub
     // offers the build under test rather than the release GitHub has promoted.
-    { cwd: dir, env: { ...ENV, ...mock.hubEnv(base), HEIMDALL_UPDATE_CATALOG_OFFLINE: '1', HEIMDALL_UPDATE_MANIFEST_PATH: path.join(dir, 'update-manifest.json') }, stdio: ['ignore', log, log] });
+    { cwd: dir, env: { ...ENV, ...mock.hubEnv(base), ...nats.hubEnv, HEIMDALL_UPDATE_CATALOG_OFFLINE: '1', HEIMDALL_UPDATE_MANIFEST_PATH: path.join(dir, 'update-manifest.json') }, stdio: ['ignore', log, log] });
   children.push(child);
   for (const deadline = Date.now() + 30_000; ;) {
     try { if ((await fetch(`${base}/api/v1/health`)).ok) break; } catch { /* starting */ }

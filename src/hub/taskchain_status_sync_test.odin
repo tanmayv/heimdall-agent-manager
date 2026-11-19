@@ -1,5 +1,7 @@
 package main
 
+import natstest "odin_test:lib/natstest"
+
 import "core:fmt"
 import "core:os"
 import "core:testing"
@@ -16,6 +18,7 @@ open_sync_test_graph :: proc(t: ^testing.T, graph: ^app.App_Graph, tag: string) 
 	db_path := fmt.tprintf("/tmp/heimdall-hub-test-sync-%s-%d.db", tag, os.get_pid())
 	_ = os.remove(db_path)
 	ok, msg := app.build_graph(graph, app.Hub_Config{
+		nats_url = natstest.testing_url(t),
 		database_path        = db_path,
 		migrations_dir       = "src/hub/repository/sqlite/migrations",
 		auto_provision_users = true,

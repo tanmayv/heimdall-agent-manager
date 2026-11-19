@@ -106,7 +106,10 @@ append_event :: proc(repo: ^iface.Taskchain_Repository, clock: ^platform.Clock, 
 		payload_json = payload_json if strings.trim_space(payload_json) != "" else "{}",
 	}
 	saved, ok, err := iface.taskchain_append_event(repo, ev)
-	if ok do fold_cache_note_appended(saved)
+	if ok {
+		fold_cache_note_appended(saved)
+		if cerr := catalog_task_event(repo, clock, task, actor, kind, payload_json, saved.event_id); cerr.code != .None do return saved, false, cerr
+	}
 	return saved, ok, err
 }
 

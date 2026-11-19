@@ -2647,6 +2647,13 @@ bridge_wake_launch_command_json :: proc(command_id, instance_id, task_id, role, 
 	write_field(&b, &first, "effective_transport", effective_transport)
 	write_field(&b, &first, "catalog_etag", catalog_etag)
 	write_field(&b, &first, "launch_epoch", launch_epoch)
+	// Synthetic wake launches need the same epoch-bound assertion as launch_agent.
+	// Omitting it reuses a stale/bare local assertion and prevents startup auth.
+	if launch_epoch != "" {
+		assertion := strings.concatenate({"hit_", instance_id, "~", launch_epoch})
+		defer delete(assertion)
+		write_field(&b, &first, "instance_token", assertion)
+	}
 	write_field(&b, &first, "model", model)
 	write_field(&b, &first, "agent_id", agent_id)
 	write_field(&b, &first, "agent_name", agent_name)

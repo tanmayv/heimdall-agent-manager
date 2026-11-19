@@ -14,6 +14,14 @@
 param([switch]$SkipBuild, [switch]$Lifecycle)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
+# The JS launcher owns a private JetStream child for each hub and always stops it.
+if (-not $env:HEIMDALL_E2E_NATS_BIN) {
+  $nats = Get-Command nats-server -ErrorAction SilentlyContinue
+  if (-not $nats) { throw 'Install nats-server or set HEIMDALL_E2E_NATS_BIN before running hub e2e tests' }
+  $env:HEIMDALL_E2E_NATS_BIN = $nats.Source
+}
+if (-not (Test-Path $env:HEIMDALL_E2E_NATS_BIN)) { throw 'HEIMDALL_E2E_NATS_BIN does not exist' }
+
 $odin = if ($env:ODIN) { $env:ODIN } else { Join-Path $env:LOCALAPPDATA 'Programs\Odin\dist\odin.exe' }
 $libpath = if ($env:HEIMDALL_SQLITE_LIBPATH) { $env:HEIMDALL_SQLITE_LIBPATH } else { Join-Path $env:USERPROFILE 'heimdall-win-build\deps\lib' }
 $outDir = Join-Path $env:USERPROFILE '.cache\heimdall-e2e'

@@ -96,9 +96,11 @@ PIDS=()
 
 # shellcheck source=../scripts/lib/hub-oidc-dev.sh
 . "$REPO_ROOT/scripts/lib/hub-oidc-dev.sh"
+. "$REPO_ROOT/scripts/local-runtime/lib.sh"
 SESSION=""
 
 cleanup() {
+  lr_stop_svc "$WORK_DIR" nats
   hub_oidc_stop_mock
   if [ -f "$WORK_DIR/service.pid" ]; then
     kill "$(cat "$WORK_DIR/service.pid")" 2>/dev/null || true
@@ -159,7 +161,10 @@ run_delivery_attempt() { # run_delivery_attempt <label> <bridge_binary> <run_dir
 
   say "[$label] starting hub on $HUB_PORT and proxy on $PROXY_PORT"
   [ -n "${MOCK_OIDC_PID:-}" ] || { hub_oidc_start_mock "$WORK_DIR" "$TEST_USER" || fail "mock OIDC did not start"; hub_oidc_export_env; }
-  "$HUB_BIN" --listen "127.0.0.1:$HUB_PORT" --db "$hub_db" \
+  local nats_url
+  nats_url="$(lr_nats_start "$WORK_DIR")" || fail "private NATS did not start"
+  export HEIMDALL_NATS_CREDS_FILE= HEIMDALL_NATS_CA_FILE=
+  "$HUB_BIN" --nats-url "$nats_url" --listen "127.0.0.1:$HUB_PORT" --db "$hub_db" \
     --ui-origin "http://127.0.0.1:$PROXY_PORT" >"$hub_log" 2>&1 &
   PIDS+=($!)
   local hub_pid="${PIDS[-1]}"

@@ -96,7 +96,7 @@ test_rebased_fresh_database_applies_every_migration :: proc(t: ^testing.T) {
 }
 
 // Older numbers (043, 044, 048, 072) were shared before this rule; anything after
-// 102 must be unique and in ascending order, except the named staging pair below.
+// 102 must be unique and in ascending order within its migration namespace.
 @(test)
 test_rebased_migration_numbers_after_102_are_unique :: proc(t: ^testing.T) {
 	order := migration_order
@@ -113,9 +113,16 @@ test_rebased_migration_numbers_after_102_are_unique :: proc(t: ^testing.T) {
 		"111_extension_startup_loading.sql", "112_codex_extension.sql", "113_antigravity_extension.sql",
 		"114_extension_version_sync.sql", "115_provider_extension_commands.sql"}
 	for name, i in expected do testing.expect_value(t, tail[i], name)
-	prev := 0
-	for name, i in order {
+	prev, events_prev := 0, 0
+	for name in order {
 		if name == "native_001_oidc_identities.sql" do continue
+		if strings.has_prefix(name, "events_") {
+			if !testing.expectf(t, len(name) > 10, "%s has an events sequence", name) do continue
+			n, n_ok := strconv.parse_int(name[7:10])
+			testing.expectf(t, n_ok && n > events_prev && name[10] == '_', "%s follows events sequence %d", name, events_prev)
+			events_prev = n
+			continue
+		}
 		n, n_ok := strconv.parse_int(name[:3])
 		if !testing.expectf(t, n_ok, "%s has a numeric prefix", name) do continue
 		if n > 102 do testing.expectf(t, n > prev, "%s must be numbered after %d", name, prev)

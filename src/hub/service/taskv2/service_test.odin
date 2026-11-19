@@ -17,6 +17,7 @@ import jsonx "odin_test:lib/jsonx"
 
 Fixture :: struct {
 	conn:          sqlite.Conn,
+	catalog_impl: sqlite.Event_Outbox_Repo_SQLite,
 	repo_impl:     sqlite.Taskchain_Repo_SQLite,
 	repo:          iface.Taskchain_Repository,
 	agents_impl:   sqlite.Agent_Repo_SQLite,
@@ -134,6 +135,7 @@ fixture_open :: proc(t: ^testing.T, tag: string, stop_before := "") -> (^Fixture
 
 fixture_wire :: proc(fx: ^Fixture) {
 	fx.repo = sqlite.new_taskchain_repository(&fx.repo_impl, &fx.conn)
+	fx.repo.catalog = sqlite.new_event_outbox_repository(&fx.catalog_impl, &fx.conn)
 	fx.agents = sqlite.new_agent_repository(&fx.agents_impl, &fx.conn)
 	fx.bridges = sqlite.new_bridge_repository(&fx.bridges_impl, &fx.conn)
 	fx.repos.taskchains = fx.repo

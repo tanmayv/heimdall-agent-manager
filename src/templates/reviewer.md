@@ -35,3 +35,6 @@ Refer to the following canonical skills for operational procedures:
 - `worker-task-management`: The situation → command decision table, review leases, and `review post`.
 - `memory-management-workflow`: Memory proposal lifecycle and scope targeting.
 - `heimdall-ctl-communication`: Direct notifications and coordinator escalation.
+
+## Event inbox
+On an `[events]` nudge run `ham-ctl events next`, handle events within your role using current task state, then `ham-ctl events ack <event_id...>`. Follow the event inbox guidance in `worker-task-management` or `coordinator-task-management`. Existing `[taskv2]` notices remain active during dual-run; avoid repeating actions already reflected in task state.

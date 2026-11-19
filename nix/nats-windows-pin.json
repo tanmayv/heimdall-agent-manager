@@ -1,0 +1,12 @@
+{
+  "nats": {
+    "version": "3.13.0",
+    "url": "https://codeload.github.com/nats-io/nats.c/tar.gz/refs/tags/v3.13.0",
+    "sha256": "f6ec9ee2ab367594b56dd3265e3561074ade7c3d7410a6f45a77704c5e537024"
+  },
+  "openssl": {
+    "version": "3.6.4",
+    "url": "https://www.openssl.org/source/openssl-3.6.4.tar.gz",
+    "sha256": "9bffaa1ad1e07b354c21bd3324ec02fa15579f45a7d0494b3e74bc449b7333ef"
+  }
+}

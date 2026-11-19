@@ -24,8 +24,9 @@ The state root is `$HEIMDALL_LOCAL_STATE_ROOT`. When that is unset, it is `${XDG
   approver/         device.json: the seed approver's PKCS#8 keys (0700 dir, file 0600);
                     users/<user>/device.json: each seeded account's own approver
   bin/              build outputs (nix result-* links or odin binaries)
-  logs/             hub.log dev-proxy.log ui.log
-  run/<svc>.pid     process records: hub proxy ui
+  nats/             private JetStream store/, current URL, OS-assigned port file
+  logs/             hub.log dev-proxy.log ui.log nats.log
+  run/<svc>.pid     process records: hub proxy ui oidc nats
   xdg/              private XDG_DATA/CONFIG/STATE_HOME + HEIMDALL_HOME for hub & proxy
 <root>/bridges/<name>/
   instance.env
@@ -45,7 +46,7 @@ Instance names match `^[a-z0-9][a-z0-9-]{0,39}$`.
 
 The file has one `KEY=VALUE` per line with no quoting. Write it atomically: write a temporary file, then rename it.
 
-- **Hub:** `KIND=hub NAME HUB_PORT PROXY_PORT UI_PORT HUB_URL PROXY_URL UI_URL UI_ORIGIN PUBLIC_ORIGIN DEV_USER APPROVER_KEY CHECKOUT`. `UI_URL` is always the local Vite URL, and `UI_ORIGIN` (the origin the hub trusts for CSRF) equals it; `PUBLIC_ORIGIN` is trusted by the dev proxy only (see Public origin).
+- **Hub:** `KIND=hub NAME HUB_PORT PROXY_PORT UI_PORT NATS_URL HUB_URL PROXY_URL UI_URL UI_ORIGIN PUBLIC_ORIGIN DEV_USER APPROVER_KEY CHECKOUT`. `UI_URL` is always the local Vite URL, and `UI_ORIGIN` (the origin the hub trusts for CSRF) equals it; `PUBLIC_ORIGIN` is trusted by the dev proxy only (see Public origin).
 - **Bridge:** `KIND=bridge NAME HUB_URL HUB_NAME BRIDGE_PORT LOCAL_ENDPOINT_PORT CONFIG TOKEN_FILE CHECKOUT ISOLATED_HOME PROVIDERS HOME_DIR`. `ISOLATED_HOME` is `1` (provider home under `home/`) or `0` (real `HOME`); a record without it was made before isolation existed and means `0`. `HOME_DIR` is the HOME the bridge runs with.
 
 The preview integration finds a hub's UI, proxy and API URLs here. Ports are recorded on the first start and reused after that. An explicit port that differs from the recorded one is refused, and so is a bridge `--hub-url` that differs from the one it was enrolled with.
@@ -75,7 +76,11 @@ A record is `run/<svc>.pid` containing `<pid> <start-time>`. The start time is `
 
 A launcher holds `<instance>/.lock/` (created with `mkdir`, holder PID inside) for the length of a command. A lock whose holder is dead is reclaimed.
 
+NATS uses an OS-assigned ephemeral loopback port; it is not a reserved instance port. Each start records its current URL as `NATS_URL`. Its store persists under the instance state dir and stop signals only its PID/start-time record. `nats-server` must be on `PATH` (`nix develop` supplies it), or set `HEIMDALL_E2E_NATS_BIN`.
+
 ## Hub start order
+
+**Before the mock provider:** start private NATS with `nats-server -js -a 127.0.0.1 -p -1 -sd <dir>/nats/store --ports_file_dir <dir>/nats` (service `nats`). Read the OS-assigned URL from the child PID-specific ports file; pass `--nats-url` to the hub and clear inherited NATS creds/CA settings. Failure at any later startup stage stops this child too.
 
 0. Mock OIDC provider (DEV ONLY; users authenticate only with OIDC): `python3 tools/mock-oidc/mock_oidc.py --port <oidc> --username <user>` (service `oidc`, port key `OIDC_PORT`, default 18090). Ready when `<issuer>jwks/` answers, issuer `http://127.0.0.1:<oidc>/application/o/heimdall-native/`.
 1. Hub with the mock's environment (`HAM_OIDC_ALLOW_INSECURE_LOCALHOST=1`, `HAM_OIDC_ISSUER=<issuer>`, `HAM_OIDC_JWKS_URL=<issuer>jwks/`, `HAM_OIDC_USERINFO_URL=<issuer>userinfo/`, `HAM_OIDC_AUTHORIZE_URL=<issuer>authorize/`, `HAM_OIDC_TOKEN_URL=<issuer>token/`, `HAM_OIDC_END_SESSION_URL=<issuer>end-session/`, `HAM_OIDC_API_AUDIENCE=heimdall-api`, `HAM_OIDC_API_SCOPE=heimdall.api`, `HAM_OIDC_WEB_CLIENT_ID=heimdall-web`, `HAM_AUTO_PROVISION_USERS=true`, `HAM_OIDC_CLAIM_EXISTING_USERS=true`), `--db <dir>/hub.db`, `--migrations-dir <checkout>/src/hub/repository/sqlite/migrations`, `--ui-origin http://127.0.0.1:<ui-port>`, `--pairing-hub-origins` (see Public origin) and `--billing-enforce-plan-limits true` (`false` with `--no-plan-limits`). Health is `/api/v1/health`.

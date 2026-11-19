@@ -40,6 +40,7 @@ class FakeSocket {
 type Harness = ReturnType<typeof harness>;
 function harness(opts: { probe?: () => Promise<any>; resolveUrl?: () => Promise<string>; isElectron?: boolean } = {}) {
   const sockets: FakeSocket[] = [];
+  const urls: string[] = [];
   const actions: any[] = [];
   const events: any[] = [];
   const delivered: any[] = [];
@@ -56,7 +57,7 @@ function harness(opts: { probe?: () => Promise<any>; resolveUrl?: () => Promise<
   const stop = startUserWsConnection({
     dispatch,
     tracker: new UserWsStreamTracker(),
-    createSocket: () => { const s = new FakeSocket(); sockets.push(s); return s as any; },
+    createSocket: (url) => { urls.push(url); const s = new FakeSocket(); sockets.push(s); return s as any; },
     resolveUrl: opts.resolveUrl ?? (async () => 'ws://hub.test/api/v1/user-ws'),
     probeAuth: async () => { probes += 1; return opts.probe ? opts.probe() : 'unavailable'; },
     isElectron: () => Boolean(opts.isElectron),
@@ -64,7 +65,7 @@ function harness(opts: { probe?: () => Promise<any>; resolveUrl?: () => Promise<
     fullResync: () => { fullResyncs += 1; },
   });
   return {
-    sockets, actions, events, delivered, resyncReasons,
+    sockets, urls, actions, events, delivered, resyncReasons,
     get fullResyncs() { return fullResyncs; },
     get probes() { return probes; },
     last: () => sockets[sockets.length - 1],
@@ -265,6 +266,57 @@ test('Electron ticket 401 stops retrying', async () => {
     await advance(10 * 60 * 1000);
     assert.equal(mints, 1);
     assert.equal(h.sockets.length, 0);
+    h.stop();
+  } finally { mock.timers.reset(); }
+});
+
+test('catalog replay preserves the reconnect cursor and routes targeted invalidations', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] });
+  try {
+    const h = harness();
+    await flush();
+    h.last().open();
+    h.last().frame(ready('catalog-1'));
+    h.last().frame({ ...ev('catalog-1', 1), type: 'catalog_replay', catalog_cursor: '123456789012345678', events: [
+      { type: 'task.state', task_id: 'task_missed', chain_id: 'chain_1' },
+    ], cursor_expired: false, has_more: false });
+    assert.equal(h.delivered.length, 1);
+    assert.equal(h.delivered[0].resource, 'task');
+    assert.equal(h.delivered[0].resource_id, 'task_missed');
+    assert.equal(h.delivered[0].summary.chain_id, 'chain_1');
+    h.last().drop();
+    await advance(20000);
+    assert.match(h.urls.at(-1)!, /catalog_cursor=123456789012345678/);
+    h.last().open();
+    h.last().frame(ready('catalog-2'));
+    h.last().frame({ ...ev('catalog-2', 1), type: 'catalog_replay', catalog_cursor: '200', cursor_expired: true, events: [], has_more: false });
+    await advance(2000);
+    assert.ok(h.fullResyncs >= 1);
+    h.stop();
+  } finally { mock.timers.reset(); }
+});
+
+test('catalog watermark advances cursor without another invalidation and pages are paced', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] });
+  try {
+    const h = harness();
+    await flush();
+    h.last().open();
+    h.last().frame(ready('catalog-paced'));
+    h.last().frame({ ...ev('catalog-paced', 1), type: 'catalog_replay', catalog_cursor: '5', events: [
+      { type: 'task.state', task_id: 'task_1', chain_id: 'chain_1' },
+    ], has_more: true });
+    assert.equal(h.last().sent.length, 0);
+    await advance(299);
+    assert.equal(h.last().sent.length, 0);
+    await advance(1);
+    assert.equal(h.last().sent.length, 1);
+    assert.equal(JSON.parse(h.last().sent[0]).type, 'catalog_next');
+    h.last().frame({ ...ev('catalog-paced', 2), type: 'catalog_watermark', catalog_cursor: '9', events: [] });
+    assert.equal(h.delivered.length, 1, 'watermarks never re-dispatch catalog events');
+    h.last().drop();
+    await advance(20000);
+    assert.match(h.urls.at(-1)!, /catalog_cursor=9/);
     h.stop();
   } finally { mock.timers.reset(); }
 });

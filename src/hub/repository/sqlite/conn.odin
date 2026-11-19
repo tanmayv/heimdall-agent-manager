@@ -40,6 +40,8 @@ foreign sqlite3_lib {
 	sqlite3_finalize_raw :: proc(pStmt: sqlite3_stmt) -> c.int ---
 	@(link_name="sqlite3_step")
 	sqlite3_step_raw :: proc(pStmt: sqlite3_stmt) -> c.int ---
+	sqlite3_get_autocommit :: proc(db: sqlite3) -> c.int ---
+	sqlite3_next_stmt :: proc(db: sqlite3, stmt: sqlite3_stmt) -> sqlite3_stmt ---
 	sqlite3_reset :: proc(pStmt: sqlite3_stmt) -> c.int ---
 	@(link_name="sqlite3_exec")
 	sqlite3_exec_raw :: proc(db: sqlite3, sql: cstring, callback: rawptr, arg: rawptr, errmsg: [^]cstring) -> c.int ---

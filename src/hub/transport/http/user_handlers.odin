@@ -14,6 +14,8 @@ import auth_service "odin_test:hub/service/auth"
 import device_auth "odin_test:hub/service/device_auth"
 import domain "odin_test:hub/domain"
 import events "odin_test:hub/service/events"
+import eventinbox "odin_test:hub/service/eventinbox"
+import ws "odin_test:lib/ws"
 import project_service "odin_test:hub/service/project"
 import user_service "odin_test:hub/service/user"
 
@@ -41,6 +43,7 @@ User_Handlers :: struct {
  launch_preferences: ^user_service.User_Service,
 	auth: ^auth_service.Auth_Service,
 	event_bus: ^events.User_Event_Bus,
+	catalog: ^eventinbox.Service,
 	ws_tickets: User_WS_Ticket_Store,
 	// Reverse-proxy CIDRs whose X-Forwarded-For is trusted for client-IP rate limits.
 	forwarded_for_cidrs: []string,
@@ -142,6 +145,10 @@ user_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Socke
 	handlers := (^User_Handlers)(ctx)
 	auth_ctx, auth_ok, auth_resp := user_ws_authenticate(handlers, req)
 	if !auth_ok { project_service.ws_track_rejected(project_service.WS_KIND_USER, "auth_failed"); write_http_response(client, auth_resp); return }
+	catalog_cursor := query_value(req.query, "catalog_cursor")
+	if catalog_cursor != "" {
+		if _, valid := eventinbox.catalog_cursor_parse(catalog_cursor); !valid {write_http_response(client, respond_error(domain.domain_error(.Validation_Failed, "invalid catalog cursor"), req.request_id)); return}
+	}
 	key := header_value(req.headers, "Sec-WebSocket-Key")
 	if key == "" { project_service.ws_track_rejected(project_service.WS_KIND_USER, "bad_request"); write_http_response(client, respond_error(domain.domain_error(.Validation_Failed, "missing websocket key"), req.request_id)); return }
 	if !write_user_ws_upgrade_response(client, user_ws_accept_key(key)) { project_service.ws_track_rejected(project_service.WS_KIND_USER, "other"); return }
@@ -172,21 +179,28 @@ user_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Socke
 	}
 	defer events.user_ws_detach(handlers.event_bus, handle)
 	guard := stream_auth_guard_make(handlers.auth, auth_ctx)
+	catalog_state:=User_Catalog_State{cursor=strings.clone(catalog_cursor),available=true}
+	defer user_catalog_destroy(&catalog_state)
+	if !user_ws_catalog_step(handlers,handle,auth_ctx.user_id,&catalog_state,.Attach) do return
+	reader:=ws.reader_make(client,max_buffer_bytes=4096,max_continuation_bytes=1024)
+	defer ws.reader_destroy(&reader)
 	for {
-		// The browser client sends lightweight heartbeat frames every ~25s. Keep the
-		// server idle timeout comfortably above that so normal sockets do not churn,
-		// while still eventually collecting half-open dead connections.
-		frame, frame_ok, why := read_user_ws_text_blocking_reason(client, 120 * time.Second)
+		opcode,frame,frame_ok:=ws.read_frame(client,&reader,120*time.Second)
 		if !frame_ok {
-			ws_close_reason = why
+			switch reader.disconnect_reason {
+			case .Read_Deadline:ws_close_reason="read_deadline"
+			case .Recv_Error:ws_close_reason="recv_error"
+			case .Fatal_Frame:ws_close_reason="fatal_frame"
+			case .None,.Clean_Close:ws_close_reason="clean_close"
+			}
 			return
 		}
-		ws_note_rx(ws_rx, len(frame))
-		// Logout / session expiry / token expiry ends the stream at the next frame.
-		if !stream_auth_still_valid(&guard) {
-			ws_close_reason = "auth_revoked"
-			return
-		}
+		defer delete(frame)
+		ws_note_rx(ws_rx,len(frame))
+		if opcode==0x8 {ws_close_reason="clean_close";return}
+		if !stream_auth_still_valid(&guard) {ws_close_reason="auth_revoked";return}
+		if opcode!=0x1 do continue
+		if !user_ws_catalog_receive(handlers,handle,auth_ctx.user_id,&catalog_state,frame) do return
 	}
 }
 
