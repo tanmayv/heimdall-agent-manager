@@ -38,7 +38,8 @@ test('primary nav: "+ New conversation" replaces Home; Conversations and Task Ch
 test('sidebar chains share the navigation scroller; legacy chain tree and pinned rail stay removed', () => {
   assert.doesNotMatch(source, /ProjectChainTree|CollapsedPinnedChains/);
   assert.match(source, /data-debug-id="shell-sidebar-scroll" className="min-h-0 flex-1 overflow-y-auto p-3"/);
-  assert.match(source, /<\/nav>\s*<SidebarTaskChains/);
+  // REQ-WEB-4: the Bot entry sits between the primary nav and the task chains.
+  assert.match(source, /<\/nav>\s*<SidebarBot\b[^\n]*\/>\s*<SidebarTaskChains/);
   assert.match(source, /data-debug-id="shell-sidebar-account" className={`shrink-0 border-t/);
   assert.doesNotMatch(source, /useFetchTaskChainGroupsQuery/);
   assert.equal(fs.existsSync(path.join(REPO_ROOT, 'src/ui/components/chains/ProjectChainTree.tsx')), false);

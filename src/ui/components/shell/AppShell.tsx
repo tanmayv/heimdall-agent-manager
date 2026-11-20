@@ -3,6 +3,7 @@ import { filterBotConversations } from '../settings/botsView';
 import { BOTS_EXPERIMENT_KEY, resolveExperimentFlag } from '../settings/experimentFlags';
 import AccountSwitcher from './AccountSwitcher';
 import { SidebarTaskChains } from './SidebarTaskChains';
+import { BOT_CHAT_ROUTE, SidebarBot } from './SidebarBot';
 import {
   LOGIN_PATH,
   authErrorMessage,
@@ -103,6 +104,7 @@ import { chainConversationRoute, chainIdFromTargetId, chainTargetId } from '../.
 // Pages off the boot path (home, conversations and the workspace stay eager) load
 // on first visit, so they stay out of the entry chunk.
 const TaskChainsPage = lazy(() => import('../taskchain/TaskChainsPage'));
+const BotChatPage = lazy(() => import('../bots/BotChatPage'));
 const NewConversationPage = lazy(() => import('../chat/NewConversationPage'));
 const DeviceApprovalPage = lazy(() => import('../devices/DeviceApprovalPage'));
 const SetupWizardPage = lazy(() => import('../setup/SetupWizardPage'));
@@ -274,6 +276,7 @@ function parseChainRoute(path: string): { chainId: string; taskId?: string } {
 
 function routeTitle(path: string): string {
   if (path === '/home' || path.startsWith('/home') || path === '/cards' || path.startsWith('/cards')) return 'Home';
+  if (path === BOT_CHAT_ROUTE) return 'Bot';
   if (path === '/conversations/new') return 'New conversation';
   if (path.startsWith('/conversations/')) return 'Conversation';
   if (path === '/actions/new') return 'New action';
@@ -317,6 +320,7 @@ function routeTitle(path: string): string {
 
 function routeDescription(path: string): string {
   if (path === '/home' || path.startsWith('/home') || path === '/cards' || path.startsWith('/cards')) return 'Recent task chains, issues, and action items.';
+  if (path === BOT_CHAT_ROUTE) return 'Your bot: one conversation across Telegram, WhatsApp and the web.';
   if (path === '/conversations/new') return 'Choose a favorite agent and project, then send a message to start a conversation.';
   if (path.startsWith('/conversations/')) return 'Page-owned conversation area. The conversation inspector will be owned by this route, not by global shell chrome.';
   if (path === '/actions/new') return 'Create a scheduled or on-demand prompt targeted to an agent instance.';
@@ -361,6 +365,7 @@ function decodeSegment(value: string): string {
 
 function routeBreadcrumbs(path: string, conversations: ConversationSummary[] = []): BreadcrumbCrumb[] {
   if (path === '/home' || path.startsWith('/home') || path === '/cards' || path.startsWith('/cards')) return [{ label: 'Home' }];
+  if (path === BOT_CHAT_ROUTE) return [{ label: 'Bot' }];
   if (path === '/conversations/new') return [{ label: 'Conversations', href: '/conversations' }, { label: 'New Conversation' }];
   if (path.startsWith('/conversations/')) {
     // Conversation routes render the Workspace, whose panes carry their own
@@ -1126,6 +1131,7 @@ function RouteOutlet({
       '/home', '/cards', '/conversations', '/conversations/new', '/actions', '/projects', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/memory', '/shells', '/settings', '/issues',
     ].some((known) => path === known || path.startsWith(`${known}/`)) ||
       path.startsWith('/c/') ||
+      path === BOT_CHAT_ROUTE ||
       path.startsWith('/settings/bridges') ||
       path.startsWith('/settings/appearance') ||
       path.startsWith('/projects/') ||
@@ -1168,12 +1174,14 @@ function RouteOutlet({
     ) &&
     !path.endsWith('/new') &&
     !path.endsWith('/edit');
+  // The bot chat owns its own scroller and composer at every width (REQ-WEB-5).
+  const isFullHeightRoute = isDesktopTwoPaneRoute || path === BOT_CHAT_ROUTE;
 
   return (
     <main
       data-debug-id="shell-main-route-outlet"
       className={
-        isDesktopTwoPaneRoute
+        isFullHeightRoute
           ? 'h-full min-h-0 min-w-0 flex-1 flex flex-col overflow-hidden bg-canvas'
           : 'min-w-0 min-h-0 flex-1 overflow-auto overflow-x-hidden bg-canvas'
       }
@@ -1186,7 +1194,7 @@ function RouteOutlet({
       <section
         data-debug-id="shell-route-frame"
         className={
-          isDesktopTwoPaneRoute
+          isFullHeightRoute
             ? 'mx-auto flex h-full min-h-0 w-full max-w-6xl min-w-0 flex-1 flex-col overflow-hidden px-0 sm:px-4 lg:px-5 [&>*]:max-w-full [&>*]:h-full [&>*]:min-h-0 [&>*]:flex-1'
             : 'mx-auto flex min-h-full w-full max-w-6xl min-w-0 flex-col items-start overflow-x-hidden px-0 py-2 sm:px-4 sm:py-4 lg:px-5 lg:py-5 [&>*]:max-w-full'
         }
@@ -1203,6 +1211,8 @@ function RouteOutlet({
           <HomePage />
         ) : path === '/conversations' ? (
           <ConversationsHomePage />
+        ) : path === BOT_CHAT_ROUTE ? (
+          <BotChatPage />
         ) : path === '/actions' || path.startsWith('/actions/') ? (
           // REQ-EXP-GATE-2: Actions pages mount only while the experiment is enabled.
           <ActionsRouteGate>
@@ -2041,6 +2051,7 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
               />
             ))}
           </nav>
+          <SidebarBot currentPath={path} onNavigate={isMobile ? () => setDrawerOpen(false) : undefined} />
           <SidebarTaskChains
             onChainsChange={setSidebarChains}
             scrollRoot={sidebarScrollRoot}
