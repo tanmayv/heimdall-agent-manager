@@ -1738,21 +1738,22 @@ bridge_exe_in_bin_dir :: proc(exe, bin_dir: string) -> bool {
 }
 
 // bridge_update_via_ham_bridge decides whether this bridge can apply a hub update:
-// every update runs the staged binary's `ham-bridge update` (setup's transaction:
+// updates run `ham-bridge update --bundle` (setup's transaction:
 // bin.bak, service re-render, extensions, health incl. the hub connection,
 // rollback). That needs a bridgesvc profile install running from that profile's
-// bin/, and a target that is not older than this version (older binaries have no
-// `update` subcommand). Anything else is refused before anything is downloaded or
+// bin/. Downgrades use the current updater with the staged binary's setup
+// transaction, since older binaries may have no update subcommand. Refuse other
+// installs before anything is downloaded or
 // stopped, with the one-time reinstall that fixes it (temp-allocated refusal).
-bridge_update_via_ham_bridge :: proc(target_version: string) -> (service: string, refusal: string) {
+bridge_update_via_ham_bridge :: proc(target_version: string, allow_downgrade: bool = false) -> (service: string, refusal: string) {
 	host := bridge_service_host()
 	name, registered := bridge_enroll_service_for(host, os.args)
 	exe, _ := os.get_executable_path(context.temp_allocator)
 	if !registered || !strings.has_prefix(name, bridgesvc.SERVICE_PREFIX) || !bridge_exe_in_bin_dir(exe, bridgesvc.layout_for(host, name).bin_dir) {
 		return "", fmt.tprintf("this bridge is not a ham-bridge profile install, so it cannot apply updates; reinstall it once with %s", BRIDGE_REINSTALL_HINT)
 	}
-	if bridge_provider_extension_version_compare(target_version, contracts.APP_VERSION) < 0 {
-		return "", fmt.tprintf("cannot update from %s to the older %s from the hub; install that version with the installer's --version flag (%s)", contracts.APP_VERSION, target_version, BRIDGE_REINSTALL_HINT)
+	if !bridge_update_version_allowed(contracts.APP_VERSION, target_version, allow_downgrade) {
+		return "", fmt.tprintf("downgrade from %s to %s requires explicit confirmation (%s)", contracts.APP_VERSION, target_version, BRIDGE_REINSTALL_HINT)
 	}
 	return name, ""
 }
@@ -1820,7 +1821,7 @@ bridge_hub_handle_update_command :: proc(conn: ^ws.Connection, text: string) {
 	force := bridge_local_extract_json_bool(text, "force", false)
 	drain_timeout := extract_json_int(text, "drain_timeout_seconds", 60)
 
-	ok, detail := bridge_runtime_apply_update(conn, command_id, target_version, download_url, sha256, force, drain_timeout)
+	ok, detail := bridge_runtime_apply_update(conn, command_id, target_version, download_url, sha256, force, drain_timeout, extract_json_bool(text, "allow_downgrade", false))
 	if !ok {
 		fmt.println("bridge update failed:", detail)
 		fail_progress := bridge_update_progress_json(command_id, bridge_config.daemon_id, "failed", 0, detail)
@@ -1913,11 +1914,31 @@ bridge_update_pid_is_pty_host :: proc(pid: int) -> bool {
 	return strings.contains(command, "ham-pty-host")
 }
 
+// Bind the exact requested version to the checked bundle, including prerelease
+// identifiers. Build metadata and the release tag's v prefix are immaterial.
+bridge_update_staged_version_matches :: proc(output, expected: string) -> bool {
+	fields := strings.fields(output, context.temp_allocator)
+	return len(fields) >= 2 && contracts.release_version_clean(fields[1]) == contracts.release_version_clean(expected)
+}
+
+bridge_update_version_allowed :: proc(current, target: string, allow_downgrade: bool) -> bool {
+	return allow_downgrade || contracts.release_version_compare(target, current) >= 0
+}
+
+bridge_update_handoff_argv :: proc(current_exe, staged, current_version, target_version, service: string) -> []string {
+	updater := staged
+	if contracts.release_version_compare(target_version, current_version) < 0 do updater = current_exe
+	args := make([dynamic]string, context.temp_allocator)
+	append(&args, updater, "update", "--bundle", bridgesvc.pdir(staged), "--service", service, "--detach")
+	return args[:]
+}
+
 bridge_runtime_apply_update :: proc(
 	conn: ^ws.Connection,
 	command_id, target_version, download_url, sha256: string,
 	force: bool,
 	drain_timeout_seconds: int,
+	allow_downgrade: bool = false,
 ) -> (bool, string) {
 	if strings.trim_space(download_url) == "" {
 		return false, "missing download_url"
@@ -1927,7 +1948,7 @@ bridge_runtime_apply_update :: proc(
 	if strings.trim_space(target_version) == "" {
 		return false, "missing target_version"
 	}
-	service, refusal := bridge_update_via_ham_bridge(target_version)
+	service, refusal := bridge_update_via_ham_bridge(target_version, allow_downgrade)
 	if refusal != "" do return false, refusal
 	// REQ-T13-1: refuse before draining or downloading anything. Installing a
 	// bundle for another target would leave the bridge unable to start (the
@@ -2069,6 +2090,10 @@ bridge_runtime_apply_update :: proc(
 		return false, fmt.tprintf("preflight execution check failed (%s --version)", bridge_binary)
 	}
 
+	if !bridge_update_staged_version_matches(pf_out, target_version) {
+		_ = os.remove_all(stage_dir)
+		return false, fmt.tprintf("staged bridge version does not match requested %s", target_version)
+	}
 	_ = bridge_update_send_progress(conn, command_id, "staged", 78, "Update bundle staged and validated.")
 
 	// 7. Stop the PTY host (and the agents it hosts) while this control connection
@@ -2090,7 +2115,10 @@ bridge_runtime_apply_update :: proc(
 	// setup in a session of its own (stdio on the null device, so this capture does
 	// not wait for setup). An early failure is reported to the hub; the PTY host
 	// restarts on the next agent launch.
-	argv := []string{bridge_binary, "update", "--bundle", bridgesvc.pdir(bridge_binary), "--service", service, "--detach"}
+	// The current updater installs an older bundle via that binary's setup;
+	// the older binary need not implement the update command.
+	current_exe, _ := os.get_executable_path(context.temp_allocator)
+	argv := bridge_update_handoff_argv(current_exe, bridge_binary, contracts.APP_VERSION, target_version, service)
 	_ = bridge_update_send_progress(conn, command_id, "restarting", 95, "PTY host stopped. Handing off to ham-bridge update...")
 	h_out, h_err, h_exit, h_ok, h_timed_out := bridge_process_run_capture_status(argv, 30 * time.Second)
 	defer {delete(h_out); delete(h_err)}

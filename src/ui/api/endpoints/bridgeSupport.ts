@@ -17,6 +17,13 @@ export type AgentBridgeSupportEntry = {
   maxInstances?: number;
 };
 
+export interface BridgeUpdateChoice {
+  version: string;
+  prerelease: boolean;
+  downgrade: boolean;
+  artifact_available: boolean;
+}
+
 export interface Bridge {
   bridge_id?: string;
   bridgeId?: string;
@@ -36,6 +43,7 @@ export interface Bridge {
   build_timestamp?: string;
   target?: string;
   update_available?: boolean;
+  update_choices?: BridgeUpdateChoice[];
   /** REQ-T13-2: false when the latest release ships no bundle for `target` (e.g. termux-arm64). */
   update_artifact_available?: boolean;
   latest_version?: string;
@@ -364,12 +372,13 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'Bridges' as const, id: 'LIST' }, { type: 'Bridges' as const, id: bridgeId }],
     }),
-    updateBridge: build.mutation<any, { bridgeId: string; targetVersion?: string; force?: boolean; drainTimeoutSeconds?: number; updateExtensions?: boolean }>({
-      queryFn: async ({ bridgeId, targetVersion, force, drainTimeoutSeconds, updateExtensions }) => {
+    updateBridge: build.mutation<any, { bridgeId: string; targetVersion?: string; force?: boolean; drainTimeoutSeconds?: number; updateExtensions?: boolean; allowDowngrade?: boolean }>({
+      queryFn: async ({ bridgeId, targetVersion, force, drainTimeoutSeconds, updateExtensions, allowDowngrade }) => {
         try {
           const body: Record<string, any> = {};
           if (targetVersion !== undefined) body.target_version = targetVersion;
           if (force !== undefined) body.force = force;
+          if (allowDowngrade !== undefined) body.allow_downgrade = allowDowngrade;
           if (updateExtensions !== undefined) body.update_extensions = updateExtensions;
           if (drainTimeoutSeconds !== undefined) body.drain_timeout_seconds = drainTimeoutSeconds;
           const data = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/update`, 'POST', body);

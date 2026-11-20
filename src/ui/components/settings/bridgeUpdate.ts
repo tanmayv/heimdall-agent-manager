@@ -1,6 +1,18 @@
 // REQ-BUPD-3: Helper functions and predicates for Bridge version reporting and update pipeline.
 
-import type { Bridge } from '../../api/endpoints/bridgeSupport.ts';
+import type { Bridge, BridgeUpdateChoice } from '../../api/endpoints/bridgeSupport.ts';
+
+/** New hubs supply the allowed list; older hubs retain their single target. */
+export function bridgeUpdateChoices(bridge: Partial<Bridge> | null | undefined): BridgeUpdateChoice[] {
+  if (Array.isArray(bridge?.update_choices)) return bridge.update_choices;
+  if (!bridge?.latest_version) return [];
+  return [{ version: bridge.latest_version, prerelease: false, downgrade: false,
+    artifact_available: bridge.update_artifact_available !== false }];
+}
+
+export function bridgeUpdateChoiceLabel(choice: BridgeUpdateChoice): string {
+  return `v${choice.version.replace(/^v/, '')} · ${choice.prerelease ? 'Prerelease' : 'Latest stable'}${choice.downgrade ? ' · Downgrade' : ''}${choice.artifact_available ? '' : ' · Unavailable for this target'}`;
+}
 
 /**
  * Formats a bridge's current running version and commit hash into a monospace badge string.

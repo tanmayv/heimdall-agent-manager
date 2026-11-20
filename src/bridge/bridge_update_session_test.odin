@@ -95,7 +95,7 @@ test_bridge_update_stop_pty_host_identifies_and_guards_the_peer :: proc(t: ^test
 
 // A bridge that is not a ham-bridge profile install (here: the test runner, no
 // registered service) is refused before anything is downloaded, with the one-time
-// reinstall that fixes it; so is a hub-initiated downgrade.
+// reinstall that fixes it. Profile installs also require consent for downgrades.
 @(test)
 test_bridge_update_refuses_non_profile_install_with_reinstall_hint :: proc(t: ^testing.T) {
 	service, refusal := bridge_update_via_ham_bridge("999.0.0")

@@ -971,7 +971,7 @@ send_lsp_stop :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, br
 	return true, domain.Domain_Error{}
 }
 
-bridge_update_command_json :: proc(cmd_id, target_version, download_url, sha256: string, force: bool, drain_timeout_seconds: int) -> string {
+bridge_update_command_json :: proc(cmd_id, target_version, download_url, sha256: string, force: bool, drain_timeout_seconds: int, allow_downgrade: bool = false) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"bridge_update\",\"command_id\":\"")
 	contracts.write_json_string(&b, cmd_id)
@@ -983,6 +983,8 @@ bridge_update_command_json :: proc(cmd_id, target_version, download_url, sha256:
 	contracts.write_json_string(&b, sha256)
 	strings.write_string(&b, "\",\"force\":")
 	strings.write_string(&b, "true" if force else "false")
+	strings.write_string(&b, ",\"allow_downgrade\":")
+	strings.write_string(&b, "true" if allow_downgrade else "false")
 	strings.write_string(&b, ",\"drain_timeout_seconds\":")
 	strings.write_string(&b, fmt.tprintf("%d", drain_timeout_seconds))
 	strings.write_string(&b, "}")
@@ -998,6 +1000,7 @@ send_bridge_update :: proc(
 	drain_timeout_seconds: int = 60,
 	sink_override: project_service.Bridge_Command_Sink = {},
 	update_extensions: bool = false,
+	allow_downgrade: bool = false,
 ) -> (
 	string,
 	bool,
@@ -1022,7 +1025,11 @@ send_bridge_update :: proc(
 		)
 	}
 
-	info := resolve_bridge_update_info(service.catalog, bridge)
+	info, selected := resolve_bridge_selected_update(service.catalog, bridge, target_version)
+	if !selected do return "", false, domain.domain_error(.Validation_Failed, "update catalog changed; refresh bridge update information and retry")
+	if contracts.release_version_compare(info.latest_version, bridge.version) < 0 && !allow_downgrade {
+		return "", false, domain.domain_error(.Validation_Failed, "downgrade requires explicit confirmation (allow_downgrade=true)")
+	}
 	if !info.artifact_available {
 		return "", false, domain.domain_error(
 			.Validation_Failed,
@@ -1033,14 +1040,8 @@ send_bridge_update :: proc(
 			),
 		)
 	}
-	effective_version := target_version
-	if effective_version == "" || effective_version == "latest" {
-		effective_version = info.latest_version
-	} else if strings.trim_prefix(effective_version, "v") != strings.trim_prefix(info.latest_version, "v") {
-		// A Settings modal may predate a newly promoted release. Never dispatch
-		// the new bundle/hash under the modal's old version label.
-		return "", false, domain.domain_error(.Validation_Failed, "update catalog changed; refresh bridge update information and retry")
-	}
+	// Dispatch the exact version whose artifact and checksum were resolved.
+	effective_version := info.latest_version
 	download_url := info.download_url
 	sha256 := info.sha256
 
@@ -1088,6 +1089,7 @@ send_bridge_update :: proc(
 		sha256,
 		force,
 		drain_timeout_seconds,
+		allow_downgrade,
 	)
 	defer delete(cmd_json)
 

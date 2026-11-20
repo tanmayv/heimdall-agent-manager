@@ -31,6 +31,8 @@ import {
   getActiveTaskCount,
   isUpdateUnavailableForTarget,
   updateAvailabilityLabel,
+  bridgeUpdateChoices,
+  bridgeUpdateChoiceLabel,
 } from './bridgeUpdate';
 import BridgeRecentErrorsCard from './BridgeRecentErrorsCard';
 import PendingEnrollmentsCard from './PendingEnrollmentsCard';
@@ -69,6 +71,20 @@ export default function BridgesPanel({ onHeadingChange }: { onHeadingChange?: (h
   const [updateDrainTimeout, setUpdateDrainTimeout] = useState(60);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateError, setUpdateError] = useState('');
+  const [updateVersion, setUpdateVersion] = useState('');
+  const [downgradeConfirmed, setDowngradeConfirmed] = useState(false);
+  const updateChoices = bridgeUpdateChoices(updateModalBridge);
+  const updateChoice = updateChoices.find((choice) => choice.version === updateVersion);
+
+  function openUpdate(bridge: Bridge) {
+    setUpdateModalBridge(bridge);
+    setUpdateVersion(bridgeUpdateChoices(bridge).find((choice) => choice.artifact_available)?.version || '');
+    setDowngradeConfirmed(false);
+    setUpdateForce(false);
+    setUpdateExtensions(true);
+    setUpdateDrainTimeout(60);
+    setUpdateError('');
+  }
 
   const refetchBridges = useCallback(() => { void bridgesQuery.refetch(); }, [bridgesQuery.refetch]);
 
@@ -142,14 +158,15 @@ export default function BridgesPanel({ onHeadingChange }: { onHeadingChange?: (h
   }
 
   async function handleConfirmUpdate() {
-    if (!updateModalBridge) return;
+    if (!updateModalBridge || !updateChoice?.artifact_available || (updateChoice.downgrade && !downgradeConfirmed)) return;
     const bridgeId = String(updateModalBridge.bridge_id || updateModalBridge.bridgeId || updateModalBridge.id || '');
     setUpdateBusy(true);
     setUpdateError('');
     try {
       await updateBridge({
         bridgeId,
-        targetVersion: updateModalBridge.latest_version || 'latest',
+        targetVersion: updateChoice.version,
+        allowDowngrade: updateChoice.downgrade && downgradeConfirmed,
         force: updateForce,
         updateExtensions,
         drainTimeoutSeconds: updateDrainTimeout,
@@ -171,7 +188,11 @@ export default function BridgesPanel({ onHeadingChange }: { onHeadingChange?: (h
       <div data-debug-id="settings-bridges-panel" className="min-w-0">
       {selectedId ? <Button variant="ghost" size="sm" data-debug-id="settings-bridges-back" onClick={() => { setSelectedId(''); setRenamingId(''); setUninstallConfirmId(''); }}>Back to Bridges</Button> : null}
       <div className={selectedId && selectedId !== localBridgeId ? 'hidden' : ''}>
-      {manager ? <ThisMachineCard manager={manager} onBridgeId={setLocalBridgeId} onSetupComplete={refetchBridges} /> : null}
+      {manager ? <ThisMachineCard manager={manager} onBridgeId={setLocalBridgeId} onSetupComplete={refetchBridges} onUpdate={(id) => {
+        const bridge = bridges.find((item) => String(item.bridge_id || item.id || '') === id);
+        if (bridge && bridgeOnline(bridge) && !isBridgeUpdating(bridge)) openUpdate(bridge);
+        else setActionError('The bridge must be online and idle to select an update.');
+      }} /> : null}
       </div>
       {desktop.legacyBridgeManager ? (
         <div data-debug-id="settings-bridges-desktop-outdated" className="mt-3 rounded-xl border border-warning/30 bg-warning-soft px-3 py-2 text-sm text-warning">
@@ -391,11 +412,7 @@ export default function BridgesPanel({ onHeadingChange }: { onHeadingChange?: (h
                             title={updateUnavailable ? updateAvailabilityLabel(bridge) : undefined}
                             disabled={!isReady || isUpdating}
                             onClick={() => {
-                              setUpdateModalBridge(bridge);
-                              setUpdateForce(false);
-                              setUpdateExtensions(true);
-                              setUpdateDrainTimeout(60);
-                              setUpdateError('');
+                              openUpdate(bridge);
                             }}
                           >
                             Update
@@ -472,12 +489,22 @@ export default function BridgesPanel({ onHeadingChange }: { onHeadingChange?: (h
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-muted">Target Version:</span>
-                <span className="font-mono text-accent font-semibold" data-debug-id="settings-bridge-modal-target-version">
-                  {updateModalBridge.latest_version ? `v${updateModalBridge.latest_version}` : 'latest'}
-                  {updateModalBridge.latest_commit_sha ? ` (${updateModalBridge.latest_commit_sha.slice(0, 8)})` : ''}
-                </span>
+                <Select aria-label="Target version" data-debug-id="settings-bridge-modal-target-version"
+                  value={updateVersion} disabled={updateBusy || updateChoices.length === 0}
+                  onChange={(value) => { setUpdateVersion(value); setDowngradeConfirmed(false); setUpdateError(''); }}>
+                  {!updateVersion ? <option value="" disabled>No available release</option> : null}
+                  {updateChoices.map((choice) => <option key={choice.version} value={choice.version} disabled={!choice.artifact_available}>
+                    {bridgeUpdateChoiceLabel(choice)}
+                  </option>)}
+                </Select>
               </div>
             </div>
+
+            {updateChoice?.downgrade ? <label className="flex items-start gap-2 text-sm text-warning">
+              <input type="checkbox" data-debug-id="settings-bridge-downgrade-confirm" checked={downgradeConfirmed}
+                disabled={updateBusy} onChange={(event) => setDowngradeConfirmed(event.target.checked)} />
+              <span>I confirm downgrading from v{updateModalBridge.version?.replace(/^v/, '')} to v{updateChoice.version.replace(/^v/, '')}.</span>
+            </label> : null}
 
             {(updateModalBridge.active_instance_count ?? updateModalBridge.instance_count ?? 0) > 0 ? (
               <div data-debug-id="settings-bridge-update-warning" className="rounded-xl border border-warning/30 bg-warning-soft p-3 text-xs text-warning">
@@ -515,7 +542,7 @@ export default function BridgesPanel({ onHeadingChange }: { onHeadingChange?: (h
               </div>
             ) : (
               <div className="text-xs text-muted">
-                This will stage the latest update bundle on the remote bridge, verify its cryptographic checksum and binary compatibility, and perform an in-situ restart with automated health-checked rollback.
+                This will stage the selected release on the bridge, verify its cryptographic checksum and binary compatibility, and restart with automated health-checked rollback.
               </div>
             )}
 
@@ -552,9 +579,10 @@ export default function BridgesPanel({ onHeadingChange }: { onHeadingChange?: (h
               variant="primary"
               loading={updateBusy}
               data-debug-id="settings-bridge-update-confirm"
+              disabled={!updateChoice?.artifact_available || (updateChoice.downgrade && !downgradeConfirmed)}
               onClick={() => void handleConfirmUpdate()}
             >
-              {updateForce ? 'Force' : 'Update'}
+              {updateChoice?.downgrade ? 'Downgrade' : updateForce ? 'Force' : 'Update'}
             </Button>
           </ModalFooter>
         </Modal>

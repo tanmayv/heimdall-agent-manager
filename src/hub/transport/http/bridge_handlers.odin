@@ -3128,6 +3128,12 @@ bridge_update_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		if !valid do return respond_error(domain.domain_error(.Validation_Failed, "update_extensions must be a JSON boolean"), req.request_id)
 		update_extensions = value
 	}
+	allow_downgrade := false
+	if jsonx.has_key(req.body, "allow_downgrade", true) {
+		value, valid := json_bool_literal(req.body, "allow_downgrade")
+		if !valid do return respond_error(domain.domain_error(.Validation_Failed, "allow_downgrade must be a JSON boolean"), req.request_id)
+		allow_downgrade = value
+	}
 	force := json_bool_value(req.body, "force")
 	drain_timeout := json_int(req.body, "drain_timeout_seconds", 60)
 	target_version_raw := json_string(req.body, "target_version")
@@ -3157,6 +3163,7 @@ bridge_update_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		force,
 		drain_timeout,
 		update_extensions = update_extensions,
+		allow_downgrade = allow_downgrade,
 	)
 	if !send_ok {
 		if send_err.code == .Bridge_Offline || send_err.code == .Unprocessable_Entity {
@@ -3231,6 +3238,14 @@ write_bridge_json :: proc(b: ^strings.Builder, br: domain.Bridge, agents: ^agent
 	strings.write_string(b, "\",\"update_available\":"); strings.write_string(b, "true" if update_info.update_available else "false")
 	// REQ-T13-2: false when the latest release ships no bundle for `target`.
 	strings.write_string(b, ",\"update_artifact_available\":"); strings.write_string(b, "true" if update_info.artifact_available else "false")
+	choices := bridge_service.resolve_bridge_update_choices(catalog, br)
+	strings.write_string(b, ",\"update_choices\":")
+	if len(choices) == 0 {
+		strings.write_string(b, "[]")
+	} else {
+		choices_json, _ := json.marshal(choices, allocator = context.temp_allocator)
+		strings.write_string(b, string(choices_json))
+	}
 	strings.write_string(b, ",\"latest_version\":\""); write_handler_json_string(b, update_info.latest_version)
 	strings.write_string(b, "\",\"latest_source\":\""); write_handler_json_string(b, update_info.latest_source)
 	strings.write_string(b, "\",\"update_warning\":\""); write_handler_json_string(b, update_info.warning)

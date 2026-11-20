@@ -15,9 +15,10 @@ import type { SetupStep } from '../setup/setupWizardModel';
 
 /** Settings hosts the same detector/install/identity/update as /setup.
  * Completion never marks first-run setup seen or visits Agents/Projects. */
-export default function ThisMachineCard({ manager, onBridgeId, onSetupComplete }: {
+export default function ThisMachineCard({ manager, onBridgeId, onSetupComplete, onUpdate }: {
   manager: DesktopBridgeManagerApi;
   onBridgeId?: (bridgeId: string) => void; onSetupComplete?: () => void;
+  onUpdate?: (bridgeId: string) => void;
 }) {
   const detection = useThisMachineBridge(manager);
   const { config, status, phase, bridgeId, session, refresh } = detection;
@@ -69,7 +70,7 @@ export default function ThisMachineCard({ manager, onBridgeId, onSetupComplete }
           {!flow && resumableSetup ? <Button variant="primary" data-debug-id="settings-this-machine-resume-btn" onClick={() => setFlow(true)}>Resume setup</Button> : null}
           {phase === 'absent' && !flow && !resumableSetup ? <Button variant="primary" data-debug-id="settings-this-machine-setup-btn" disabled={busy} onClick={() => { if (phase === 'absent' && !busy) window.location.hash = buildRouteHash('/setup', ''); }}>Install bridge on this machine</Button> : null}
           {phase === 'present' ? <>
-            <Button variant="secondary" size="sm" data-debug-id="settings-this-machine-update-btn" disabled={busy} onClick={() => void run('update')}>Update</Button>
+            <Button variant="secondary" size="sm" data-debug-id="settings-this-machine-update-btn" disabled={busy} onClick={() => onUpdate ? onUpdate(bridgeId) : void run('update')}>Update</Button>
             <Button variant="secondary" size="sm" data-debug-id="settings-this-machine-reenroll-btn" disabled={busy} onClick={() => setConfirm('reenroll')}>Re-enroll</Button>
             <Button variant="danger" size="sm" data-debug-id="settings-this-machine-uninstall-btn" disabled={busy} onClick={() => setConfirm('uninstall')}>Uninstall</Button>
             <Button variant="secondary" size="sm" data-debug-id="settings-this-machine-manage-btn" onClick={() => { setFlow(true); setStep('detect'); }}>Manage</Button>

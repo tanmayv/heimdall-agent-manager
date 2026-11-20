@@ -48,6 +48,8 @@ Bridge_Update_Catalog :: struct {
 	release_get: Bridge_Catalog_Get,
 	snapshot_mutex: sync.Mutex,
 	snapshot: [BRIDGE_CATALOG_SLOTS]Bridge_Catalog_Entry, // snapshot_mutex
+	choices: []Bridge_Catalog_Choice, // snapshot_mutex; owned strings
+	choices_loaded: bool, // snapshot_mutex
 	// Background refresher (bridge_catalog_refresher_start/stop).
 	refresh_interval: time.Duration, // 0 = BRIDGE_CATALOG_REFRESH_INTERVAL
 	refresher: ^thread.Thread,

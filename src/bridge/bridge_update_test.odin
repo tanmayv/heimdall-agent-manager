@@ -7,6 +7,27 @@ import "core:testing"
 import "core:time"
 import httpc "odin_test:lib/httpc"
 
+@(test)
+bridge_update_selected_release_preflight_and_downgrade_handoff :: proc(t: ^testing.T) {
+    testing.expect(t, bridge_update_staged_version_matches("ham-bridge 0.5.70 protocol 1\n", "v0.5.70"))
+    testing.expect(t, bridge_update_staged_version_matches("ham-bridge 0.5.70-rc.2 protocol 1\n", "v0.5.70-rc.2"))
+    testing.expect(t, !bridge_update_staged_version_matches("ham-bridge 0.5.71 protocol 1", "0.5.70"))
+    testing.expect(t, !bridge_update_staged_version_matches("ham-bridge 0.5.70-rc.1 protocol 1", "0.5.70-rc.2"))
+    testing.expect(t, !bridge_update_staged_version_matches("", "0.5.70"))
+    testing.expect(t, !bridge_update_version_allowed("0.5.70", "v0.5.60", false))
+    testing.expect(t, bridge_update_version_allowed("0.5.70", "v0.5.60", true))
+    testing.expect(t, bridge_update_version_allowed("0.5.70-rc.1", "v0.5.70-rc.2", false))
+    args := bridge_update_handoff_argv("/profile/bin/ham-bridge", "/staged/bin/ham-bridge", "0.5.70", "v0.5.60", "heimdall-bridge-test")
+    testing.expect_value(t, args[0], "/profile/bin/ham-bridge")
+    testing.expect_value(t, args[1], "update")
+    testing.expect_value(t, args[2], "--bundle")
+    testing.expect_value(t, args[3], "/staged/bin")
+    testing.expect_value(t, args[4], "--service")
+    testing.expect_value(t, args[5], "heimdall-bridge-test")
+    args = bridge_update_handoff_argv("/profile/bin/ham-bridge", "/staged/bin/ham-bridge", "0.5.60", "v0.5.70", "heimdall-bridge-test")
+    testing.expect_value(t, args[0], "/staged/bin/ham-bridge")
+}
+
 // REQ-BUPD-4: bridge_update_progress_json frame serialization
 @(test)
 test_bridge_update_progress_json_format :: proc(t: ^testing.T) {
