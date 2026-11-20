@@ -153,7 +153,7 @@ const notFound = { status: 404, body: { error: { code: 'not_found', message: 'no
 async function route(req: DemoRequest) {
   const { method, path } = req;
   if (method === 'GET' && path === '/account/billing') {
-    return ok({ user_id: USER, entitlements: { max_bridges: scenario.maxBridges, terminal_streaming_enabled: true, terminal_input_enabled: true, max_concurrent_streams: -1, shells_enabled: true } });
+    return ok({ user_id: USER, entitlements: { max_bridges: scenario.maxBridges, terminal_streaming_enabled: true, terminal_input_enabled: true, max_concurrent_streams: -1, shells_enabled: true, whatsapp_enabled: true } });
   }
   if (method === 'GET' && path === '/bridges') {
     return ok({ bridges: req.query.get('include_pending') ? accountBridges : accountBridges.filter((b) => !b.revoked_at) });

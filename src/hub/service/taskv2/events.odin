@@ -43,7 +43,8 @@ EV_READY_UNCLAIMED   :: "ready_unclaimed"    // {since}  — alert
 EV_REVIEW_STALLED    :: "review_stalled"     // {unmet}  — gate waiting, no lease, nothing owed (re-armed)
 EV_DEPENDENCY_STALLED :: "dependency_stalled" // {prerequisite, merge, detail?} — backlog only on a merge (re-armed)
 EV_BLOCKED_REALERT   :: "blocked_realert"    // {since}  — 24 h re-alert
-EV_HOLD_STALE        :: "hold_stale"         // {since_ms, age_minutes} — held, unleased task: coordinator reminder (re-armed)
+EV_HOLD_STALE        :: "hold_stale"         // {since_ms, age_minutes, reminder, routed_to} — held, unleased task: reminder (back-off, max HOLD_STALE_MAX_REMINDERS)
+EV_USER_REVIEW_REQUESTED :: "user_review_requested" // {attempt_no} — coordinator told review_requested_from_user for this attempt (once per gate pass)
 EV_SUMMARY_OVERFLOW  :: "summary_overflow"
 EV_STARTED_WORKFLOW  :: "started_workflow"   // {chain_id}
 EV_CARRIED_FORWARD   :: "carried_forward"    // {from_task_id, from_attempt_no}

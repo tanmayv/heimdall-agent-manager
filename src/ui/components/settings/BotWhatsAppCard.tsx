@@ -39,6 +39,7 @@ export default function BotWhatsAppCard({ whatsapp }: { whatsapp: BotView['whats
     : whatsapp.reengage_error === 'send_failed' ? 'Ninjy could not send you a WhatsApp reminder.' : '';
   return <Panel title="WhatsApp" data-debug-id="settings-bots-whatsapp-card" className="min-w-0 space-y-3">
     {state === 'unconfigured' ? <Text data-debug-id="settings-bots-whatsapp-unconfigured">WhatsApp is not set up on this Ninjy hub. Ask your hub operator to connect a WhatsApp Business number.</Text>
+      : state === 'invite_only' ? <Text data-debug-id="settings-bots-whatsapp-invite-only">WhatsApp is invite-only — ask the admin for access.</Text>
       : whatsapp.binding ? <><Text data-debug-id="settings-bots-whatsapp-paired">Connected to {whatsapp.binding.display}</Text>
         <Button variant="danger" type="button" disabled={busy} data-debug-id="settings-bots-whatsapp-disconnect-btn" onClick={() => setConfirm(true)}>Disconnect</Button>
         <Modal open={confirm} onOpenChange={(open) => { if (!pending.current) setConfirm(open); }} title="Disconnect WhatsApp?" data-debug-id="settings-bots-whatsapp-disconnect-dialog"><Modal.Body><Text>Disconnect WhatsApp? Your bot will stop receiving messages from this WhatsApp account.</Text></Modal.Body><Modal.Footer>

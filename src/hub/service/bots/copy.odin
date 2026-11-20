@@ -20,6 +20,8 @@ COPY_WA_PAIRED :: "Connected to your Ninjy bot. WhatsApp's end-to-end encryption
 COPY_WA_PAIR_INVALID :: "This connect code has expired or was already used. Open Settings > Bots in Ninjy and choose Connect WhatsApp to get a new one."
 COPY_WA_CHAT_TAKEN :: "This WhatsApp account is already connected to another Ninjy account."
 COPY_WA_NOT_CONNECTED :: "This WhatsApp account is not connected to Ninjy. Open Settings > Bots in Ninjy and choose Connect WhatsApp."
+COPY_WA_INVITE_ONLY :: "WhatsApp access is invite-only for now."
+COPY_WA_INVITE_ONLY_SETTINGS :: "WhatsApp is invite-only — ask the admin for access."
 COPY_WA_REPLACED :: "This WhatsApp account was disconnected from Ninjy because another WhatsApp account was connected."
 
 Bot_Channel_Copy :: struct { paired, pair_invalid, chat_taken, not_connected, replaced: string }

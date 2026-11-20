@@ -501,13 +501,15 @@ test_m3_r1_r2_r3_end_to_end :: proc(t: ^testing.T) {
 	_, bad_sum, bad_sum_err := chain_summary_set(&fx.svc, inst_auth("inst_coord"), chain.chain_id, too_many)
 	testing.expect(t, !bad_sum && bad_sum_err.code == .Validation_Failed, ">60 line summary rejected")
 
-	// R3: verify coordinator notifications fired (proposal_decided and work_batch_finished)
+	// R3: the coordinator is told proposal_decided (the user decided), but not
+	// work_batch_finished: its own proxy review closed the last task (N1 rule c).
 	has_prop_notif, has_complete_notif := false, false
 	for trig in nc.triggers {
 		if trig == "proposal_decided" do has_prop_notif = true
 		if trig == "work_batch_finished" do has_complete_notif = true
 	}
-	testing.expect(t, has_prop_notif && has_complete_notif, "coordinator notified on proposal_decided and work_batch_finished")
+	testing.expect(t, has_prop_notif, "coordinator notified on proposal_decided")
+	testing.expect(t, !has_complete_notif, "no work_batch_finished to the coordinator that closed the last task itself")
 	assert_projection_matches_fold(t, fx, chain.chain_id, "u1", "m3_e2e")
 }
 

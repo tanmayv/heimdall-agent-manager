@@ -99,7 +99,14 @@ bots_push_intake_iteration :: proc(rt: ^Bots_Runtime) -> (more: bool, delay: tim
 		append(&ordinary, batch[i])
 		binding, found, binding_err := bots_find_binding(s, "whatsapp", e.external_chat_id, e.external_user_id)
 		if binding_err.code != .None {domain.channel_binding_destroy(&binding); return false, BOT_PUSH_INTAKE_RETRY}
-		if found && bots_gate_on(s.experiments, binding.owner_user_id) {
+		entitled := false
+		if found {
+			entitlement_err: domain.Domain_Error
+			entitled, entitlement_err = bots_channel_entitled(s, "whatsapp", binding.owner_user_id)
+			if entitlement_err.code != .None {domain.channel_binding_destroy(&binding); return false, BOT_PUSH_INTAKE_RETRY}
+		}
+		// Disabled (invite-only) owners: no touch and no held-reply release.
+		if found && entitled && bots_gate_on(s.experiments, binding.owner_user_id) {
 			// Binding snapshots are freed below; retain only scratch-owned ids.
 			id := strings.clone(binding.binding_id, context.temp_allocator)
 			append(&touches, domain.Channel_Inbound_Touch{id, e.provider_time if e.provider_time != "" else now})
@@ -116,9 +123,10 @@ bots_push_intake_iteration :: proc(rt: ^Bots_Runtime) -> (more: bool, delay: tim
 		return false, BOT_PUSH_INTAKE_RETRY
 	}
 	for id in release do bots_release_held(s, id)
+	invite_only_chats := make(map[string]bool, context.temp_allocator)
 	for b in batch {
 		if b.kind == .Delivery_Failed {bots_on_delivery_failed(s, a, b)} else {
-			if e := bots_inbound_side_effect(s, a, b, now); e.code != .None do fmt.eprintf("bots: inbound side effect code=%v\n", e.code)
+			if e := bots_inbound_side_effect(s, a, b, now, &invite_only_chats); e.code != .None do fmt.eprintf("bots: inbound side effect code=%v\n", e.code)
 		}
 	}
 	seen := make(map[string]bool, context.temp_allocator)
