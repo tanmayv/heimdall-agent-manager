@@ -250,6 +250,7 @@ channel_send_media :: proc(s: ^Bots_Service, binding: domain.Channel_Binding, ca
 	}
 	ids := make([]string, len(bodies))
 	message_ids = ids
+	defer bots_publish_changed(s, binding.owner_user_id, binding.bot_id)
 	recorded := 0
 	for body, i in bodies {
 		id := strings.clone(platform.generate_id(s.ids, "chm_"))

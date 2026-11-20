@@ -888,6 +888,8 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/bots/me/channels/whatsapp/pairing", rawptr(&graph.bot_handlers), http.bot_whatsapp_pairing_handler)
 	http.router_add(&graph.router, "DELETE", "/api/v1/bots/me/channels/whatsapp", rawptr(&graph.bot_handlers), http.bot_whatsapp_disconnect_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bots/me/channels/telegram/messages", rawptr(&graph.bot_handlers), http.bot_messages_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/bots/me/channels/web/messages", rawptr(&graph.bot_handlers), http.bot_web_messages_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/bots/me/messages", rawptr(&graph.bot_handlers), http.bot_unified_messages_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/channels/whatsapp/webhook", rawptr(&graph.bot_webhook_handlers), http.whatsapp_webhook_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/channels/whatsapp/webhook", rawptr(&graph.bot_webhook_handlers), http.whatsapp_webhook_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/channel/media/fetch", rawptr(&graph.bot_agent_handlers), http.bot_agent_media_fetch_handler)

@@ -29,6 +29,8 @@ export interface BotWhatsApp {
 }
 export interface WhatsAppPairing { pairing_url: string; pairing_text: string; phone_display: string; expires_at: string }
 export interface BotMessage { message_id: string; direction: string; body: string; body_purged: boolean; send_state: string; created_at: string; read_at: string; replied_at: string }
+export interface UnifiedBotMessage extends BotMessage { binding_id: string; provider: 'telegram' | 'whatsapp' | 'web' }
+export interface BotMessagePage { messages: UnifiedBotMessage[]; next_cursor: string }
 export interface BotDelivery { delivery_id: string; state: string; round: number; waiting_reason: string; finish_reason: string; created_at: string; finished_at: string; attempts: { attempt_id: string; bridge_id: string; state: string; report: Record<string, unknown> }[] }
 
 export interface AgentWrite { write_id: string; seq: number; actor_agent_instance_id: string; actor_agent_id: string; actor_display_name: string; resource_kind: 'project' | 'memory' | 'agent'; resource_id: string; action: 'create' | 'update' | 'archive' | 'unarchive'; fields: string[]; created_at: string }
@@ -59,8 +61,18 @@ export const botsApi = heimdallApi.injectEndpoints({
     disconnectTelegram: build.mutation<{ disconnected: boolean }, void>({ queryFn: () => request(root + '/channels/telegram', 'DELETE'), invalidatesTags: ['Bot'] }),
     createWhatsAppPairing: build.mutation<WhatsAppPairing, void>({ queryFn: () => request(root + '/channels/whatsapp/pairing', 'POST', {}), invalidatesTags: ['Bot'] }),
     disconnectWhatsApp: build.mutation<{ disconnected: boolean }, void>({ queryFn: () => request(root + '/channels/whatsapp', 'DELETE'), invalidatesTags: ['Bot'] }),
+    getUnifiedBotMessages: build.query<BotMessagePage, { limit?: number; cursor?: string } | void>({
+      queryFn: (args) => {
+        const page = args || {};
+        return request(root + '/messages?limit=' + (page.limit ?? 50) + (page.cursor ? '&cursor=' + encodeURIComponent(page.cursor) : ''));
+      },
+      providesTags: ['Bot'],
+    }),
+    sendBotWebMessage: build.mutation<{ message_id: string; created: boolean }, { text: string; idempotency_key: string }>({
+      queryFn: (body) => request(root + '/channels/web/messages', 'POST', body), invalidatesTags: ['Bot'],
+    }),
     getBotMessages: build.query<{ messages: BotMessage[] }, number | void>({ queryFn: (limit = 50) => request(root + '/channels/telegram/messages?limit=' + limit), providesTags: ['Bot'] }),
     getBotDeliveries: build.query<{ deliveries: BotDelivery[] }, number | void>({ queryFn: (limit = 20) => request(root + '/deliveries?limit=' + limit), providesTags: ['Bot'] }),
   }),
 });
-export const { useGetAgentWritesQuery, useGetBotQuery, useCreateBotMutation, useDeleteBotMutation, useGetBotPlacementQuery, usePutBotPlacementMutation, useGetBotPlacementOptionsQuery, useCreateWhatsAppPairingMutation, useDisconnectWhatsAppMutation, useCreateTelegramPairingMutation, useDisconnectTelegramMutation, useGetBotMessagesQuery, useGetBotDeliveriesQuery } = botsApi;
+export const { useGetUnifiedBotMessagesQuery, useSendBotWebMessageMutation, useGetAgentWritesQuery, useGetBotQuery, useCreateBotMutation, useDeleteBotMutation, useGetBotPlacementQuery, usePutBotPlacementMutation, useGetBotPlacementOptionsQuery, useCreateWhatsAppPairingMutation, useDisconnectWhatsAppMutation, useCreateTelegramPairingMutation, useDisconnectTelegramMutation, useGetBotMessagesQuery, useGetBotDeliveriesQuery } = botsApi;

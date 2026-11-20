@@ -43,6 +43,7 @@ Bots_Service :: struct {
 
 bots_adapter :: proc(s: ^Bots_Service, provider: string) -> ^channel.Channel_Adapter {
 	switch provider {
+	case domain.CHANNEL_PROVIDER_WEB: return &bots_web_adapter
 	case domain.CHANNEL_PROVIDER_TELEGRAM: return s.adapter
 	case domain.CHANNEL_PROVIDER_WHATSAPP: return s.whatsapp
 	}
@@ -230,7 +231,7 @@ bots_delete :: proc(s: ^Bots_Service, auth: contracts.Auth_Context) -> domain.Do
 	if err.code != .None do return err
 	defer domain.bot_destroy(&bot)
 	now := platform.clock_now(s.clock)
-	for provider in ([]string{"telegram", "whatsapp"}) {
+	for provider in ([]string{"telegram", "whatsapp", "web"}) {
 		if e := bots_disconnect_for_reason(s, auth.user_id, provider, true, "bot_deleted"); e.code != .None && e.code != .Not_Found do return e
 	}
 	sync.mutex_lock(&s.mutex)
@@ -284,7 +285,7 @@ bots_delete :: proc(s: ^Bots_Service, auth: contracts.Auth_Context) -> domain.Do
 		seen[m.binding_id] = true
 		if e := iface.messages_purge_binding(s.repo, m.binding_id); e.code != .None do return e
 	}
-	for provider in ([]string{"telegram", "whatsapp"}) {
+	for provider in ([]string{"telegram", "whatsapp", "web"}) {
 		if e := iface.pairing_delete_for_owner(s.repo, auth.user_id, provider); e.code != .None do return e
 	}
 	return iface.bot_delete(s.repo, bot.bot_id)
@@ -308,3 +309,5 @@ bots_put_placement :: proc(s: ^Bots_Service, owner: string, expected_revision: i
 	}
 	return revision, delivery_err
 }
+
+bots_web_adapter := channel.Channel_Adapter{provider = domain.CHANNEL_PROVIDER_WEB, send_text = channel.web_send_text}

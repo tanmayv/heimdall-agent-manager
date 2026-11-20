@@ -341,3 +341,37 @@ test('WhatsApp pairing link, QR, clipboard, disconnect cancellation and confirma
     assert.equal(requests.filter((r: any) => r.path.endsWith('/whatsapp') && r.method === 'DELETE').length, 1);
   });
 });
+
+test('web bot API sends stable keys, pages unified history and refreshes on bot_changed', async () => {
+  const previousFetch = globalThis.fetch;
+  const requests: { path: string; method: string; body?: unknown }[] = [];
+  const store = configureStore({ reducer: { [heimdallApi.reducerPath]: heimdallApi.reducer },
+    middleware: (g) => g({ serializableCheck: false }).concat(heimdallApi.middleware),
+    enhancers: (g) => g({ autoBatch: false }) });
+  globalThis.fetch = (async (input: any, init: any = {}) => {
+    const url = new URL(String(input), 'https://hub.test');
+    const method = init.method ?? 'GET';
+    requests.push({ path: url.pathname + url.search, method, body: init.body ? JSON.parse(init.body) : undefined });
+    if (method === 'POST') return Response.json({ data: { message_id: 'web-in', created: true } }, { status: 201 });
+    return Response.json({ data: { messages: [{ message_id: 'web-out', binding_id: 'web-binding', provider: 'web', direction: 'outbound', body: 'answer', send_state: 'sent', created_at: 'now', read_at: '', replied_at: '', body_purged: false }], next_cursor: 'older' } });
+  }) as typeof fetch;
+  const history = store.dispatch(botsApi.endpoints.getUnifiedBotMessages.initiate({ limit: 2, cursor: 'id /?' }));
+  try {
+    const page = await history.unwrap();
+    assert.equal(page.messages[0].provider, 'web');
+    assert.equal(page.next_cursor, 'older');
+    assert.match(requests[0].path, /messages\?limit=2&cursor=id%20%2F%3F$/);
+    const sent = await store.dispatch(botsApi.endpoints.sendBotWebMessage.initiate({ text: 'hello', idempotency_key: 'stable-key' })).unwrap();
+    assert.equal(sent.message_id, 'web-in');
+    assert.deepEqual(requests.find((r) => r.method === 'POST'), { path: '/api/v1/bots/me/channels/web/messages', method: 'POST', body: { text: 'hello', idempotency_key: 'stable-key' } });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const before = requests.filter((r) => r.method === 'GET').length;
+    handleUserWsEvent(store.dispatch, { type: 'bot_changed', payload: { bot_id: 'bot_a' } });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.ok(requests.filter((r) => r.method === 'GET').length > before);
+  } finally {
+    history.unsubscribe();
+    store.dispatch(heimdallApi.util.resetApiState());
+    globalThis.fetch = previousFetch;
+  }
+});

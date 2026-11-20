@@ -46,6 +46,8 @@ channel_send :: proc(s: ^Bots_Service, binding: domain.Channel_Binding, text: st
 	state: domain.Channel_Send_State = .Pending
 	if closed do state = .Held
 	if record {
+		// Publish after all send-state updates, including partial failures.
+		defer bots_publish_changed(s, binding.owner_user_id, binding.bot_id)
 		for chunk in chunks {
 			id := strings.clone(platform.generate_id(s.ids, "chm_"))
 			insert_err := iface.message_insert_outbound(s.repo, {

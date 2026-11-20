@@ -69,6 +69,7 @@ bots_poller_iteration :: proc(rt: ^Bots_Runtime, backoff: ^time.Duration) -> (ti
 		for id in inserted do if id == row.message_id do new_row = true
 		if !new_row || seen[row.bot_id] do continue
 		seen[row.bot_id] = true
+		bots_publish_changed(s, row.owner_user_id, row.bot_id)
 		fresh := make([dynamic]domain.Channel_Message, context.temp_allocator)
 		for candidate in rows {
 			if candidate.bot_id != row.bot_id do continue

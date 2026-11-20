@@ -58,7 +58,7 @@ Push_Verdict :: enum {
 
 Channel_Adapter :: struct {
 	ctx:             rawptr,
-	provider:        string, // "telegram" | "whatsapp"
+	provider:        string, // "telegram" | "whatsapp" | "web"
 	// Pull providers only (nil for push providers). Blocks up to the provider's long-poll window.
 	poll:     proc(ctx: rawptr, cursor: string, cancel: ^bool, allocator := context.allocator) -> (batch: []Inbound, next_cursor: string, err: Channel_Error),
 	send_text: proc(ctx: rawptr, external_chat_id: string, text: string) -> (external_message_id: string, err: Channel_Error),
