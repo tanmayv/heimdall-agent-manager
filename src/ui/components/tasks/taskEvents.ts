@@ -190,6 +190,8 @@ export function describeTaskEvent(ev: TaskEventWire, names: TaskNames): Describe
     }
     case 'changes_requested':
       return known(`${whoById(reviewerIdFromPayload(p), names)} requested changes${roleSuffix(p.role)}${attempt(p)}`);
+    case 'user_review_requested':
+      return known(`Waiting for your approval${attempt(p)}`);
     case 'approved':
       return known(`Approved${attempt(p)}`);
     case 'cancelled':
