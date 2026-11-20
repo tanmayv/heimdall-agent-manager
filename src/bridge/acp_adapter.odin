@@ -29,7 +29,7 @@ ACP_Adapter_Lock_State :: enum { Acquired, Busy, Error }
 
 acp_adapter_platform_supported :: proc(d: contracts.ACP_Provider_Descriptor) -> bool {
     if d.launch != .Native do return true
-    _, supported := contracts.acp_descriptor_platform_package(d, strings.to_lower(fmt.tprintf("%v", ODIN_OS)), fmt.tprintf("%v", ODIN_ARCH))
+    _, supported := contracts.acp_descriptor_platform_package(d, strings.to_lower(fmt.tprintf("%v", ODIN_OS), context.temp_allocator), fmt.tprintf("%v", ODIN_ARCH))
     return supported
 }
 
@@ -82,6 +82,12 @@ acp_adapter_bin :: proc(root: string, provider: string) -> string {
 }
 
 acp_adapter_files_valid :: proc(root: string, provider: string) -> bool {
+    return acp_adapter_files_valid_for_platform(root, provider, strings.to_lower(fmt.tprintf("%v", ODIN_OS), context.temp_allocator), fmt.tprintf("%v", ODIN_ARCH))
+}
+
+// Keep package-layout validation independent of the host so every supported
+// native layout can be checked without executing a foreign binary.
+acp_adapter_files_valid_for_platform :: proc(root, provider, platform_os, platform_arch: string) -> bool {
     d, known := contracts.acp_provider_descriptor(provider)
     if !known do return false
     context.allocator = context.temp_allocator
@@ -101,7 +107,7 @@ acp_adapter_files_valid :: proc(root: string, provider: string) -> bool {
     if string(name) != d.pkg.name || string(version) != d.pkg.version || string(lv) != d.pkg.version ||
        string(integrity) != d.pkg.integrity || bin == "" || filepath.is_abs(string(bin)) || strings.contains(string(bin), "..") { return false }
     if d.launch == .Native {
-        pin, supported := contracts.acp_descriptor_platform_package(d, strings.to_lower(fmt.tprintf("%v", ODIN_OS)), fmt.tprintf("%v", ODIN_ARCH))
+        pin, supported := contracts.acp_descriptor_platform_package(d, platform_os, platform_arch)
         if !supported do return false
         native, present := packages[strings.concatenate({"node_modules/", pin.name}, context.temp_allocator)].(json.Object)
         nv, _ := native["version"].(json.String); ni, _ := native["integrity"].(json.String)
