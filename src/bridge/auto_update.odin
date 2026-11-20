@@ -1,9 +1,14 @@
 package main
 
-// Automatic updates use a quiet window, never a forced drain. The detached
-// supervisor holds an OS-user-wide kernel lock until setup's verification (or
-// rollback) completes, independently of the service it restarts.
+// Automatic updates prefer a quiet window (no running or starting agents). One
+// that stays overdue for auto_update_max_defer_hours (default 24; 0 = never) is
+// forced: the hub is told first, and BRIDGE_AUTO_UPDATE_FORCE_NOTICE_MS later the
+// PTY host and its agents are stopped and the same --auto-worker update runs.
+// The detached supervisor holds an OS-user-wide kernel lock until setup's
+// verification (or rollback) completes, independently of the service it restarts.
+import "base:runtime"
 import "core:encoding/json"
+import "core:fmt"
 import "core:math/rand"
 import "core:os"
 import "core:strings"
@@ -18,11 +23,32 @@ import ws "odin_test:lib/ws"
 
 BRIDGE_AUTO_UPDATE_INTERVAL :: i64(6 * 60 * 60 * 1000)
 BRIDGE_AUTO_UPDATE_QUIET_MS :: i64(60_000)
+BRIDGE_AUTO_UPDATE_DEFAULT_MAX_DEFER_HOURS :: 24
+// REQ-AUP-5: lead time between the hub-visible notice and the forced stop. Kept
+// short: the update is already max_defer overdue; this only gives whoever is
+// watching a moment to save work.
+BRIDGE_AUTO_UPDATE_FORCE_NOTICE_MS :: i64(2 * 60_000)
+BRIDGE_AUTO_UPDATE_FORCE_STALE_MS :: i64(10 * 60_000)
 
 Bridge_Auto_Update_State :: struct {
 	next_check_ms: i64,
 	failures: int,
 	pending_version: string,
+	// A forced update announced to the hub, due at force_at_ms (REQ-AUP-5).
+	force_at_ms: i64,
+	force_version: string,
+	// A forced update handed to the --auto-worker. Its outcome is reported to the
+	// hub once the worker has finished (pending_version cleared).
+	forced_version: string,
+}
+
+// Seams of the forced path; a zero field means the real implementation.
+Bridge_Auto_Update_Force_Hooks :: struct {
+	agents:  proc() -> int,                        // agents the PTY host runs now
+	reserve: proc() -> bool,                       // close launch admission; false while a launch is being prepared
+	release: proc(),                               // reopen launch admission
+	stop:    proc() -> (ok: bool, detail: string), // stop the PTY host and its agents
+	notify:  proc(version, stage: string, percent: int, message: string),
 }
 
 bridge_auto_update_mutex: sync.Mutex
@@ -38,6 +64,17 @@ bridge_auto_update_enabled :: proc(path: string) -> bool {
 	loaded, ok := cfg_lib.load(path)
 	if !ok do return false // an unreadable config must not authorize an update
 	return !loaded.config.bridge.auto_update_configured || loaded.config.bridge.auto_update_enabled
+}
+
+// bridge_auto_update_max_defer_ms: how long an overdue update may wait for a quiet
+// window before it is forced; 0 = never force (REQ-AUP-3).
+bridge_auto_update_max_defer_ms :: proc(path: string) -> i64 {
+	context.allocator = context.temp_allocator
+	hours := BRIDGE_AUTO_UPDATE_DEFAULT_MAX_DEFER_HOURS
+	if loaded, ok := cfg_lib.load(path); ok && loaded.config.bridge.auto_update_max_defer_configured {
+		hours = loaded.config.bridge.auto_update_max_defer_hours
+	}
+	return i64(hours) * 60 * 60 * 1000
 }
 
 bridge_auto_update_state_path :: proc(service: string) -> string {
@@ -152,16 +189,27 @@ bridge_auto_update_tick :: proc(
     resolve: proc() -> string = bridge_auto_update_latest,
     spawn: proc(argv: []string) -> bool = bridge_os_spawn_new_session,
     quiet: proc(reserve: bool) -> bool = bridge_auto_update_quiet,
+    force: Bridge_Auto_Update_Force_Hooks = {},
 ) {
+	hooks := bridge_auto_update_force_hooks(force)
 	state := bridge_auto_update_read(path)
+	bridge_auto_update_report_forced(path, &state, hooks)
 	if !bridge_auto_update_enabled(config) {
 		quiet_since^ = 0
+		bridge_auto_update_cancel_force(path, &state, hooks, "automatic updates were turned off")
 	} else if state.next_check_ms == 0 {
 		state.next_check_ms = now + bridge_auto_update_delay(0, rand.uint64())
 		_ = bridge_auto_update_write(path, state)
 	} else if now >= state.next_check_ms {
 		if !quiet(false) {
 			quiet_since^ = 0
+			// REQ-AUP-3: still preferring quiet, but not forever.
+			max_defer := bridge_auto_update_max_defer_ms(config)
+			if max_defer > 0 && now >= state.next_check_ms + max_defer {
+				bridge_auto_update_force_step(service, path, &state, now, resolve, spawn, hooks)
+			} else {
+				bridge_auto_update_cancel_force(path, &state, hooks, "forcing was turned off (auto_update_max_defer_hours = 0)")
+			}
 		} else if quiet_since^ == 0 {
 			quiet_since^ = now
 		} else if now - quiet_since^ >= BRIDGE_AUTO_UPDATE_QUIET_MS {
@@ -174,35 +222,184 @@ bridge_auto_update_tick :: proc(
 				quiet_since^ = 0
 				return
 			}
+			// A forced update announced earlier is overtaken by this quiet one;
+			// its outcome is still reported, as the hub was told it would happen.
+			announced := state.force_version
+			state.force_at_ms, state.force_version = 0, ""
 			// Persist conservative backoff BEFORE detaching. A crashed or rolled
 			// back supervisor cannot create a restart/update loop.
 			if version == "" || newer do state.failures += 1
 			else do state.failures = 0
 			state.next_check_ms = now + bridge_auto_update_delay(state.failures, rand.uint64())
-			state.pending_version = version if newer else ""
+			state.pending_version = strings.clone(version, context.temp_allocator) if newer else ""
+			if newer && announced != "" do state.forced_version = state.pending_version
 			persisted := bridge_auto_update_write(path, state)
 			if persisted && newer && bridge_auto_update_enabled(config) {
 				exe, _ := os.get_executable_path(context.temp_allocator)
 				if !spawn({exe, "update", "--version", version, "--service", service, "--auto-worker"}) {
-					sync.mutex_lock(&bridge_auto_update_mutex)
-					bridge_auto_update_reserved_until = 0
-					sync.mutex_unlock(&bridge_auto_update_mutex)
+					bridge_auto_update_release_admission()
 				}
 			} else if newer {
-				sync.mutex_lock(&bridge_auto_update_mutex)
-				bridge_auto_update_reserved_until = 0
-				sync.mutex_unlock(&bridge_auto_update_mutex)
+				bridge_auto_update_release_admission()
+			} else if announced != "" {
+				hooks.notify(announced, "failed", 0, fmt.tprintf("Forced auto-update to %s cancelled: no newer release is available now.", announced))
 			}
 			delete(version)
 			quiet_since^ = 0
 		}
 	}
 	// A supervisor that failed before restarting the bridge clears pending.
-	if state.pending_version == "" {
-		sync.mutex_lock(&bridge_auto_update_mutex)
-		bridge_auto_update_reserved_until = 0
-		sync.mutex_unlock(&bridge_auto_update_mutex)
+	if state.pending_version == "" do bridge_auto_update_release_admission()
+}
+
+bridge_auto_update_release_admission :: proc() {
+	sync.mutex_lock(&bridge_auto_update_mutex)
+	bridge_auto_update_reserved_until = 0
+	sync.mutex_unlock(&bridge_auto_update_mutex)
+}
+
+// bridge_auto_update_force_step advances a forced update (REQ-AUP-4/5). First
+// call: resolve the release and, when it is newer, announce the force to the hub
+// and persist force_at_ms. Once force_at_ms has passed: close launch admission,
+// stop the PTY host and its agents (bridge_update_stop_pty_host, which reaps
+// them), then hand off exactly as a quiet update does: persist backoff and
+// pending_version, spawn `ham-bridge update --auto-worker`. Lock, verify,
+// rollback and backoff are the --auto-worker's, unchanged.
+bridge_auto_update_force_step :: proc(
+	service, path: string, state: ^Bridge_Auto_Update_State, now: i64,
+	resolve: proc() -> string, spawn: proc(argv: []string) -> bool, hooks: Bridge_Auto_Update_Force_Hooks,
+) {
+	// A notice from long ago (this bridge was down when it fell due) no longer
+	// warns anyone: announce again rather than force at once.
+	if state.force_at_ms != 0 && now - state.force_at_ms > BRIDGE_AUTO_UPDATE_FORCE_STALE_MS do state.force_at_ms = 0
+	if state.force_at_ms == 0 {
+		version := resolve()
+		defer delete(version)
+		if !bridge_auto_update_newer(version, contracts.APP_VERSION) {
+			// Nothing to force: the same bookkeeping as a quiet check that found
+			// no newer release (or could not look one up).
+			if version == "" do state.failures += 1
+			else do state.failures = 0
+			state.next_check_ms = now + bridge_auto_update_delay(state.failures, rand.uint64())
+			_ = bridge_auto_update_write(path, state^)
+			return
+		}
+		state.force_at_ms = now + BRIDGE_AUTO_UPDATE_FORCE_NOTICE_MS
+		state.force_version = strings.clone(version, context.temp_allocator)
+		if !bridge_auto_update_write(path, state^) do return // announce only what will happen
+		hooks.notify(version, "preparing", 5, fmt.tprintf(
+			"auto-update to %s forcing in ~%d min; %d agents will be stopped (no quiet window for %d h past the scheduled check)",
+			version, BRIDGE_AUTO_UPDATE_FORCE_NOTICE_MS / 60_000, hooks.agents(), (now - state.next_check_ms) / (60 * 60 * 1000)))
+		return
 	}
+	if now < state.force_at_ms do return
+	if !hooks.reserve() do return // a launch is being prepared; the next tick retries
+	version := state.force_version
+	hooks.notify(version, "stopping_pty_host", 82, fmt.tprintf("Auto-update to %s: stopping the PTY host and %d agents...", version, hooks.agents()))
+	state.force_at_ms, state.force_version = 0, ""
+	stopped, detail := hooks.stop()
+	if !stopped {
+		hooks.release()
+		state.failures += 1
+		state.next_check_ms = now + bridge_auto_update_delay(state.failures, rand.uint64())
+		_ = bridge_auto_update_write(path, state^)
+		hooks.notify(version, "failed", 0, fmt.tprintf("Forced auto-update to %s aborted: %s", version, detail))
+		return
+	}
+	hooks.notify(version, "pty_host_stopped", 88, "PTY host and agent processes stopped; stopped agents do not restart on their own.")
+	// Persist conservative backoff BEFORE detaching, as the quiet path does.
+	state.failures += 1
+	state.next_check_ms = now + bridge_auto_update_delay(state.failures, rand.uint64())
+	state.pending_version = version
+	state.forced_version = version
+	failure := ""
+	if !bridge_auto_update_write(path, state^) {
+		failure = "cannot persist the auto-update state"
+	} else {
+		exe, _ := os.get_executable_path(context.temp_allocator)
+		if !spawn({exe, "update", "--version", version, "--service", service, "--auto-worker"}) do failure = "cannot start ham-bridge update"
+	}
+	if failure != "" {
+		hooks.release()
+		state.pending_version, state.forced_version = "", ""
+		_ = bridge_auto_update_write(path, state^)
+		hooks.notify(version, "failed", 0, fmt.tprintf("Forced auto-update to %s failed: %s; the install was not changed, but the PTY host and its agents were stopped.", version, failure))
+		return
+	}
+	hooks.notify(version, "restarting", 95, "PTY host stopped. Handing off to ham-bridge update...")
+}
+
+// bridge_auto_update_cancel_force withdraws an announced force that will not
+// happen, so the hub does not keep showing it as imminent.
+bridge_auto_update_cancel_force :: proc(path: string, state: ^Bridge_Auto_Update_State, hooks: Bridge_Auto_Update_Force_Hooks, reason: string) {
+	if state.force_at_ms == 0 do return
+	version := state.force_version
+	state.force_at_ms, state.force_version = 0, ""
+	_ = bridge_auto_update_write(path, state^)
+	hooks.notify(version, "failed", 0, fmt.tprintf("Forced auto-update to %s cancelled: %s.", version, reason))
+}
+
+// bridge_auto_update_report_forced reports a forced update's outcome once its
+// --auto-worker has finished (bridge_auto_update_finish clears pending_version).
+// Setup only restarts the bridge on success, so this process runs the forced
+// version iff the update went through; otherwise it was refused or rolled back.
+bridge_auto_update_report_forced :: proc(path: string, state: ^Bridge_Auto_Update_State, hooks: Bridge_Auto_Update_Force_Hooks) {
+	if state.forced_version == "" || state.pending_version != "" do return
+	version := state.forced_version
+	if bridge_auto_update_newer(version, contracts.APP_VERSION) {
+		hooks.notify(version, "failed", 0, fmt.tprintf("Forced auto-update to %s failed or was rolled back; this bridge still runs %s and retries after backoff.", version, contracts.APP_VERSION))
+	} else {
+		hooks.notify(version, "succeeded", 100, fmt.tprintf("Forced auto-update to %s succeeded.", version))
+	}
+	state.forced_version = ""
+	_ = bridge_auto_update_write(path, state^)
+}
+
+bridge_auto_update_force_hooks :: proc(h: Bridge_Auto_Update_Force_Hooks) -> Bridge_Auto_Update_Force_Hooks {
+	out := h
+	if out.agents == nil do out.agents = bridge_auto_update_host_agent_count
+	if out.reserve == nil do out.reserve = bridge_auto_update_reserve_forced
+	if out.release == nil do out.release = bridge_auto_update_release_admission
+	if out.stop == nil do out.stop = bridge_auto_update_stop_host
+	if out.notify == nil do out.notify = bridge_auto_update_notify
+	return out
+}
+
+bridge_auto_update_host_agent_count :: proc() -> int {
+	socket := pty_host_socket_path()
+	defer delete(socket)
+	reply, ok := bridge_pty_host_list(socket)
+	if !ok do return 0
+	defer pty_host_reply_delete(reply)
+	return len(reply.agents)
+}
+
+// bridge_auto_update_reserve_forced closes launch admission for the forced
+// update regardless of running agents; a launch already being prepared is let
+// finish first (it would otherwise start a PTY host beside the update).
+bridge_auto_update_reserve_forced :: proc() -> bool {
+	sync.mutex_lock(&bridge_auto_update_mutex)
+	defer sync.mutex_unlock(&bridge_auto_update_mutex)
+	if bridge_auto_update_launches > 0 do return false
+	bridge_auto_update_reserved_until = bridge_runtime_now_ms() + 30 * 60_000
+	return true
+}
+
+bridge_auto_update_stop_host :: proc() -> (bool, string) {
+	socket := pty_host_socket_path()
+	defer delete(socket)
+	return bridge_update_stop_pty_host(socket)
+}
+
+// bridge_auto_update_notify logs the line and reports it to the hub as a
+// bridge_update_progress frame, the same frame hub-triggered updates send (the
+// hub shows it as this bridge's update status). The auto worker owns no hub
+// connection, so the frame goes through the runtime loop's outgoing queue; one
+// queued while disconnected is sent after the next connect.
+bridge_auto_update_notify :: proc(version, stage: string, percent: int, message: string) {
+	fmt.eprintfln("bridge auto-update: %s", message)
+	context.allocator = runtime.heap_allocator() // the queue frees it on the heap
+	bridge_proxy_enqueue(bridge_update_progress_json(fmt.tprintf("auto_update_%s", version), bridge_config.daemon_id, stage, percent, message))
 }
 
 // Shared across all hubs/accounts/profiles of the OS user. Kernel ownership

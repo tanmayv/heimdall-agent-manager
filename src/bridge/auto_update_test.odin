@@ -220,3 +220,246 @@ test_auto_update_quiet_preserved_pty_agent :: proc(t: ^testing.T) {
 	testing.expect(t, bridge_auto_update_launch_enter(), "busy or unavailable host must not reserve admission")
 	bridge_auto_update_launch_leave()
 }
+
+// ---- REQ-AUP-3..6: forcing an update that stays overdue ----
+
+auto_test_stops: int
+auto_test_stop_ok: bool
+auto_test_reserve_ok: bool
+auto_test_releases: int
+auto_test_stages: [dynamic]string
+auto_test_messages: [dynamic]string
+auto_test_argv: string
+
+auto_test_force_hooks :: Bridge_Auto_Update_Force_Hooks{
+	agents  = proc() -> int {return 3},
+	reserve = proc() -> bool {return auto_test_reserve_ok},
+	release = proc() {auto_test_releases += 1},
+	stop    = proc() -> (bool, string) {
+		auto_test_stops += 1
+		if auto_test_stop_ok do return true, ""
+		return false, "pid 42 survived SIGKILL"
+	},
+	notify  = proc(version, stage: string, percent: int, message: string) {
+		append(&auto_test_stages, strings.clone(stage, context.temp_allocator))
+		append(&auto_test_messages, strings.clone(message, context.temp_allocator))
+	},
+}
+
+auto_test_spawn_argv :: proc(argv: []string) -> bool {
+	auto_test_spawns += 1
+	auto_test_argv = strings.join(argv[1:], " ", context.temp_allocator)
+	return true
+}
+
+auto_test_force_reset :: proc() {
+	auto_test_spawns, auto_test_stops, auto_test_releases = 0, 0, 0
+	auto_test_stop_ok, auto_test_reserve_ok = true, true
+	auto_test_version = "v999.0.0"
+	auto_test_busy, auto_test_busy_during_lookup = true, false
+	auto_test_argv = ""
+	// Per-test temp arrays: the tracking allocator would report heap ones as leaks.
+	auto_test_stages = make([dynamic]string, context.temp_allocator)
+	auto_test_messages = make([dynamic]string, context.temp_allocator)
+}
+
+auto_test_last_stage :: proc() -> string {
+	return auto_test_stages[len(auto_test_stages) - 1] if len(auto_test_stages) > 0 else ""
+}
+
+auto_test_fixture :: proc(t: ^testing.T, config_text: string, next_check_ms: i64) -> (dir, path, config: string) {
+	dir = fmt.tprintf("%s/auto-update-force-%d", os.temp_dir(context.temp_allocator), time.to_unix_nanoseconds(time.now()))
+	_ = bridge_make_directory_all(dir)
+	path, config = fmt.tprintf("%s/auto.json", dir), fmt.tprintf("%s/config.toml", dir)
+	testing.expect(t, os.write_entire_file(config, transmute([]byte)config_text) == nil)
+	testing.expect(t, bridge_auto_update_write(path, {next_check_ms = next_check_ms}))
+	return
+}
+
+HOUR_MS :: i64(60 * 60 * 1000)
+
+@(test)
+test_auto_update_max_defer_config :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir := fmt.tprintf("%s/auto-update-defer-%d", os.temp_dir(context.temp_allocator), time.to_unix_nanoseconds(time.now()))
+	_ = bridge_make_directory_all(dir)
+	defer os.remove_all(dir)
+	config := fmt.tprintf("%s/config.toml", dir)
+	cases := []struct {text: string, hours: i64}{
+		{"[bridge]\n", 24},
+		{"[bridge]\nauto_update_max_defer_hours = 6\n", 6},
+		{"[bridge]\nauto_update_max_defer_hours = 0 # never force\n", 0},
+		{"[bridge]\nauto_update_max_defer_hours = -3\n", 24},
+		{"[wrapper]\nauto_update_max_defer_hours = 1\n", 24},
+	}
+	for c in cases {
+		testing.expect(t, os.write_entire_file(config, transmute([]byte)c.text) == nil)
+		testing.expect_value(t, bridge_auto_update_max_defer_ms(config), c.hours * HOUR_MS)
+	}
+}
+
+// Busy for max_defer past the scheduled check: announce, wait out the notice,
+// stop the PTY host, then hand off to the unchanged --auto-worker. The outcome
+// is reported once the worker has finished.
+@(test)
+test_auto_update_tick_forced_after_max_defer :: proc(t: ^testing.T) {
+	sync.mutex_lock(&auto_test_mutex)
+	defer sync.mutex_unlock(&auto_test_mutex)
+	defer bridge_auto_update_release_admission()
+	auto_test_force_reset()
+	CHECK :: i64(1_000_000)
+	dir, path, config := auto_test_fixture(t, "[bridge]\n", CHECK)
+	defer os.remove_all(dir)
+	quiet: i64
+	tick :: proc(path, config: string, quiet: ^i64, now: i64) {
+		bridge_auto_update_tick("profile-f", config, path, quiet, now, auto_test_resolve, auto_test_spawn_argv, auto_test_quiet, auto_test_force_hooks)
+	}
+
+	// Overdue but within the default 24 h: keep waiting for a quiet window.
+	tick(path, config, &quiet, CHECK + 23 * HOUR_MS)
+	testing.expect_value(t, len(auto_test_stages), 0)
+	testing.expect_value(t, auto_test_stops, 0)
+
+	// 24 h overdue: announce first, stop nothing yet.
+	now := CHECK + 24 * HOUR_MS
+	tick(path, config, &quiet, now)
+	state := bridge_auto_update_read(path)
+	testing.expect_value(t, auto_test_last_stage(), "preparing")
+	if len(auto_test_messages) > 0 {
+		testing.expectf(t, strings.contains(auto_test_messages[0], "auto-update to v999.0.0 forcing in ~2 min; 3 agents will be stopped"), "notice: %s", auto_test_messages[0])
+	}
+	testing.expect_value(t, state.force_at_ms, now + BRIDGE_AUTO_UPDATE_FORCE_NOTICE_MS)
+	testing.expect_value(t, state.force_version, "v999.0.0")
+	testing.expect_value(t, auto_test_stops, 0)
+	testing.expect_value(t, auto_test_spawns, 0)
+
+	// A notice that fell due while the bridge was down is announced again.
+	state.force_at_ms = now - BRIDGE_AUTO_UPDATE_FORCE_STALE_MS - BRIDGE_AUTO_UPDATE_FORCE_NOTICE_MS - 1
+	testing.expect(t, bridge_auto_update_write(path, state))
+	tick(path, config, &quiet, now)
+	testing.expect_value(t, auto_test_stops, 0)
+	testing.expect_value(t, len(auto_test_stages), 2)
+	testing.expect_value(t, auto_test_last_stage(), "preparing")
+	state = bridge_auto_update_read(path)
+	testing.expect_value(t, state.force_at_ms, now + BRIDGE_AUTO_UPDATE_FORCE_NOTICE_MS)
+	clear(&auto_test_stages)
+	append(&auto_test_stages, "preparing")
+
+	// During the notice nothing more happens.
+	tick(path, config, &quiet, now + 60_000)
+	testing.expect_value(t, len(auto_test_stages), 1)
+	// A launch being prepared holds the force off.
+	auto_test_reserve_ok = false
+	tick(path, config, &quiet, state.force_at_ms)
+	testing.expect_value(t, auto_test_stops, 0)
+	testing.expect_value(t, bridge_auto_update_read(path).force_at_ms, state.force_at_ms)
+
+	// Due: stop the PTY host BEFORE spawning the existing auto worker.
+	auto_test_reserve_ok = true
+	forced_at := state.force_at_ms
+	tick(path, config, &quiet, forced_at)
+	testing.expect_value(t, auto_test_stops, 1)
+	testing.expect_value(t, auto_test_spawns, 1)
+	testing.expect_value(t, auto_test_argv, "update --version v999.0.0 --service profile-f --auto-worker")
+	testing.expectf(t, len(auto_test_stages) == 4 && auto_test_stages[1] == "stopping_pty_host" && auto_test_stages[2] == "pty_host_stopped" && auto_test_stages[3] == "restarting", "stages %v", auto_test_stages)
+	state = bridge_auto_update_read(path)
+	testing.expect_value(t, state.pending_version, "v999.0.0")
+	testing.expect_value(t, state.forced_version, "v999.0.0")
+	testing.expect_value(t, state.force_at_ms, i64(0))
+	testing.expect_value(t, state.failures, 1)
+	testing.expect(t, state.next_check_ms - forced_at >= BRIDGE_AUTO_UPDATE_INTERVAL * 9 / 10, "conservative backoff persisted before detaching")
+
+	// While the worker runs nothing is reported; once it finished without
+	// restarting into v999 (refused or rolled back), the failure is reported.
+	tick(path, config, &quiet, forced_at + 1000)
+	testing.expect_value(t, len(auto_test_stages), 4)
+	bridge_auto_update_finish_at(path, false, forced_at + 2000, 0)
+	tick(path, config, &quiet, forced_at + 3000)
+	testing.expect_value(t, auto_test_last_stage(), "failed")
+	testing.expect_value(t, bridge_auto_update_read(path).forced_version, "")
+	tick(path, config, &quiet, forced_at + 4000)
+	testing.expect_value(t, len(auto_test_stages), 5)
+
+	// A process running the forced version reports success.
+	state = bridge_auto_update_read(path)
+	state.forced_version = "v0.0.1"
+	testing.expect(t, bridge_auto_update_write(path, state))
+	tick(path, config, &quiet, forced_at + 5000)
+	testing.expect_value(t, auto_test_last_stage(), "succeeded")
+
+	// A PTY host that cannot be stopped aborts before anything is spawned.
+	state = bridge_auto_update_read(path)
+	now = state.next_check_ms + 24 * HOUR_MS
+	tick(path, config, &quiet, now)
+	testing.expect_value(t, auto_test_last_stage(), "preparing")
+	auto_test_stop_ok = false
+	releases := auto_test_releases
+	tick(path, config, &quiet, now + BRIDGE_AUTO_UPDATE_FORCE_NOTICE_MS)
+	testing.expect_value(t, auto_test_last_stage(), "failed")
+	testing.expect_value(t, auto_test_spawns, 1)
+	testing.expect_value(t, auto_test_releases, releases + 1)
+	after := bridge_auto_update_read(path)
+	testing.expect_value(t, after.failures, state.failures + 1)
+	testing.expect_value(t, after.pending_version, "")
+	testing.expect_value(t, after.force_at_ms, i64(0))
+}
+
+// auto_update_max_defer_hours = 0 keeps the old behaviour: wait for quiet forever.
+// An announced force is withdrawn when forcing is turned off.
+@(test)
+test_auto_update_tick_max_defer_zero_never_forces :: proc(t: ^testing.T) {
+	sync.mutex_lock(&auto_test_mutex)
+	defer sync.mutex_unlock(&auto_test_mutex)
+	auto_test_force_reset()
+	CHECK :: i64(1_000_000)
+	dir, path, config := auto_test_fixture(t, "[bridge]\nauto_update_max_defer_hours = 0\n", CHECK)
+	defer os.remove_all(dir)
+	quiet: i64
+	for now in ([]i64{CHECK, CHECK + 24 * HOUR_MS, CHECK + 1000 * HOUR_MS}) {
+		bridge_auto_update_tick("profile-z", config, path, &quiet, now, auto_test_resolve, auto_test_spawn_argv, auto_test_quiet, auto_test_force_hooks)
+	}
+	testing.expect_value(t, len(auto_test_stages), 0)
+	testing.expect_value(t, auto_test_stops, 0)
+	testing.expect_value(t, auto_test_spawns, 0)
+	testing.expect_value(t, bridge_auto_update_read(path).next_check_ms, CHECK)
+
+	testing.expect(t, bridge_auto_update_write(path, {next_check_ms = CHECK, force_at_ms = CHECK + 25 * HOUR_MS, force_version = "v999.0.0"}))
+	bridge_auto_update_tick("profile-z", config, path, &quiet, CHECK + 25 * HOUR_MS, auto_test_resolve, auto_test_spawn_argv, auto_test_quiet, auto_test_force_hooks)
+	testing.expect_value(t, auto_test_last_stage(), "failed")
+	testing.expect_value(t, auto_test_stops, 0)
+	testing.expect_value(t, bridge_auto_update_read(path).force_at_ms, i64(0))
+}
+
+// Quiet is still preferred: an overdue profile that becomes quiet updates
+// through the quiet window, without stopping anything. One that had already
+// announced a force still gets its outcome reported.
+@(test)
+test_auto_update_tick_quiet_preferred_over_force :: proc(t: ^testing.T) {
+	sync.mutex_lock(&auto_test_mutex)
+	defer sync.mutex_unlock(&auto_test_mutex)
+	defer bridge_auto_update_release_admission()
+	auto_test_force_reset()
+	auto_test_busy = false
+	CHECK :: i64(1_000_000)
+	dir, path, config := auto_test_fixture(t, "[bridge]\n", CHECK)
+	defer os.remove_all(dir)
+	quiet: i64
+	now := CHECK + 48 * HOUR_MS
+	bridge_auto_update_tick("profile-q", config, path, &quiet, now, auto_test_resolve, auto_test_spawn_argv, auto_test_quiet, auto_test_force_hooks)
+	bridge_auto_update_tick("profile-q", config, path, &quiet, now + BRIDGE_AUTO_UPDATE_QUIET_MS, auto_test_resolve, auto_test_spawn_argv, auto_test_quiet, auto_test_force_hooks)
+	testing.expect_value(t, auto_test_spawns, 1)
+	testing.expect_value(t, auto_test_stops, 0)
+	testing.expect_value(t, len(auto_test_stages), 0)
+	testing.expect_value(t, bridge_auto_update_read(path).forced_version, "")
+
+	// Announced, then the agents finished: the quiet path takes over.
+	testing.expect(t, bridge_auto_update_write(path, {next_check_ms = CHECK, force_at_ms = now + HOUR_MS, force_version = "v999.0.0"}))
+	quiet = 0
+	bridge_auto_update_tick("profile-q", config, path, &quiet, now, auto_test_resolve, auto_test_spawn_argv, auto_test_quiet, auto_test_force_hooks)
+	bridge_auto_update_tick("profile-q", config, path, &quiet, now + BRIDGE_AUTO_UPDATE_QUIET_MS, auto_test_resolve, auto_test_spawn_argv, auto_test_quiet, auto_test_force_hooks)
+	testing.expect_value(t, auto_test_spawns, 2)
+	testing.expect_value(t, auto_test_stops, 0)
+	state := bridge_auto_update_read(path)
+	testing.expect_value(t, state.force_at_ms, i64(0))
+	testing.expect_value(t, state.forced_version, "v999.0.0")
+}
