@@ -14,12 +14,19 @@ import contracts "odin_test:contracts"
 import vault "odin_test:lib/vault"
 
 ACP_CHAT_OUTBOX_MAX :: 4*1024*1024
+ACP_CHAT_OUTBOX_ITEMS_MAX :: 128
+// A frame may close an acknowledged segment and start another. Reserve room
+// for both snapshots; the aggregate plaintext turn remains capped at 1 MiB.
+ACP_CHAT_FRAME_RESERVE :: 1536*1024
 ACP_Chat_Durable :: struct {
     turn_id, message_id, text, status, stop_reason, flushed_status: string,
     revision: i64,
     flushed_bytes: int,
     session_announced: bool,
     remote_terminal,publication_failed:bool,
+    segment_index, turn_bytes: int,
+    split_pending: bool,
+    deferred_text: string,
     outbox: [dynamic]contracts.ACP_Assistant_Message_Input,
 }
 ACP_Chat :: struct {
@@ -52,7 +59,9 @@ acp_chat_can_process :: proc(data:rawptr) -> bool {
     if r.quiescing || r.chat==nil do return true
     unlocked:=acp_chat_vault_ready()
     acp_chat_vault_blocker(r,!unlocked)
-    return unlocked && acp_chat_bytes(r.chat)<ACP_CHAT_OUTBOX_MAX
+    return unlocked && r.chat.d.deferred_text=="" &&
+        len(r.chat.d.outbox)<=ACP_CHAT_OUTBOX_ITEMS_MAX-2 &&
+        acp_chat_bytes(r.chat)<=ACP_CHAT_OUTBOX_MAX-ACP_CHAT_FRAME_RESERVE
 }
 
 acp_chat_vault_blocker :: proc(r:^ACP_Runtime,blocked:bool) {
@@ -158,16 +167,72 @@ acp_chat_prompt_started :: proc(r:^ACP_Runtime,input_id:string) {
     if r.chat==nil || r.d.replay_only do return
     d:=&r.chat.d
     acp_runtime_replace(&d.turn_id,fmt.tprintf("ham:%s:%d",r.epoch,r.client.state.next_rpc_id))
-    acp_runtime_replace(&d.message_id,fmt.tprintf("msg_%016x",time.to_unix_nanoseconds(time.now())))
+    d.segment_index=0;d.turn_bytes=0;d.split_pending=false
+    acp_chat_message_id(r)
     acp_chat_reset_text(r.chat);d.remote_terminal=false
     acp_runtime_replace(&d.flushed_status,""); acp_runtime_replace(&d.status,"pending"); acp_runtime_replace(&d.stop_reason,"")
     d.revision=0;d.flushed_bytes=0;r.chat.last_flush=0
 }
 
+// Segment zero retains the old wire turn ID, including when restoring a
+// pre-segmentation journal. Later IDs are deterministic publication identities,
+// not additional ACP prompts or activity/budget boundaries.
+acp_chat_wire_turn :: proc(d:^ACP_Chat_Durable) -> string {
+    if d.segment_index==0 do return d.turn_id
+    return fmt.tprintf("%s:s%d",d.turn_id,d.segment_index)
+}
+
+acp_chat_message_id :: proc(r:^ACP_Runtime) {
+    d:=&r.chat.d
+    digest:=bridge_local_hash_token(fmt.tprintf("%s:%s",r.instance,acp_chat_wire_turn(d)));defer delete(digest)
+    hex:=strings.trim_prefix(digest,"sha1:")
+    acp_runtime_replace(&d.message_id,fmt.tprintf("msg_%s",hex[:16]))
+}
+
+acp_chat_boundary :: proc(r:^ACP_Runtime) {
+    if r.chat==nil || r.d.replay_only do return
+    d:=&r.chat.d
+    // Wait for nonempty continuation before terminalizing the previous row.
+    // A tool-only ending must still put the real stop reason on the last row,
+    // whose terminal status the Hub makes immutable.
+    if d.status=="pending" && d.text!="" do d.split_pending=true
+}
+
+acp_chat_continue :: proc(r:^ACP_Runtime,text:string) -> bool {
+    chat:=r.chat;d:=&chat.d
+    if d.split_pending {
+        acp_runtime_replace(&d.status,"complete")
+        if !acp_chat_flush(r,true,checkpoint=false) { acp_runtime_replace(&d.status,"pending");return false }
+        d.segment_index+=1;acp_chat_message_id(r)
+        acp_chat_reset_text(chat);d.remote_terminal=false;d.split_pending=false
+        d.revision=0;d.flushed_bytes=0;chat.last_flush=0
+        acp_runtime_replace(&d.flushed_status,"");acp_runtime_replace(&d.status,"pending")
+    }
+    acp_chat_append_text(chat,text)
+    return true
+}
+
+acp_chat_resume_deferred :: proc(r:^ACP_Runtime) -> bool {
+    d:=&r.chat.d
+    if d.deferred_text=="" do return true
+    // Stop/error control commands can finalize while frame admission is paused.
+    status:=strings.clone(d.status,context.temp_allocator)
+    reason:=strings.clone(d.stop_reason,context.temp_allocator)
+    text:=d.deferred_text;d.deferred_text=""
+    acp_runtime_replace(&d.stop_reason,"")
+    ok:=acp_chat_continue(r,text)
+    acp_runtime_replace(&d.status,status);acp_runtime_replace(&d.stop_reason,reason)
+    if !ok { d.deferred_text=text;return false }
+    crypto.zero_explicit(raw_data(text),len(text));delete(text)
+    // Closing and appending must reach disk atomically, including from a tick
+    // outside a daemon frame; otherwise a crash could lose the deferred text.
+    return r.client==nil || r.client.in_frame || acp_rpc_checkpoint(r.client)
+}
+
 acp_chat_chunk :: proc(r:^ACP_Runtime,text:string) {
     if r.chat==nil || r.d.replay_only || r.chat.d.status!="pending" || r.chat.d.remote_terminal || r.chat.d.publication_failed || text=="" do return
     d:=&r.chat.d
-    if len(d.text)+len(text)>contracts.ACP_ASSISTANT_MAX_BYTES {
+    if d.turn_bytes+len(text)>contracts.ACP_ASSISTANT_MAX_BYTES {
         // Keep the last valid partial snapshot; an oversized turn never succeeds.
         acp_runtime_replace(&d.status,"failed"); acp_runtime_replace(&d.stop_reason,"assistant_message_too_large")
         acp_tools_finish(r,"assistant_message_too_large")
@@ -176,7 +241,10 @@ acp_chat_chunk :: proc(r:^ACP_Runtime,text:string) {
         acp_rpc_notify(r.client,"session/cancel",raw)
         return
     }
-    acp_chat_append_text(r.chat,text)
+    d.turn_bytes+=len(text)
+    // If vault sealing fails after frame admission, retain the continuation in
+    // the journal and pause frames until chat_tick can close the old segment.
+    if !acp_chat_continue(r,text) { acp_runtime_replace(&d.deferred_text,text);return }
     acp_chat_flush(r,false)
 }
 
@@ -192,12 +260,13 @@ acp_chat_prompt_finished :: proc(r:^ACP_Runtime,input_id,result,error:string) {
     acp_chat_flush(r,true)
 }
 
-acp_chat_flush :: proc(r:^ACP_Runtime,final:bool) -> bool {
+acp_chat_flush :: proc(r:^ACP_Runtime,final:bool,checkpoint:=true) -> bool {
     chat:=r.chat; if chat==nil do return true
+    if chat.d.deferred_text!="" do return false
     d:=&chat.d
     if d.text=="" || d.turn_id=="" || d.remote_terminal || d.publication_failed do return true
     now:=bridge_runtime_now_ms()
-    if !final && (len(d.text)==d.flushed_bytes || (now-chat.last_flush<100 && len(d.text)-d.flushed_bytes<8192)) do return true
+    if !final && d.status==d.flushed_status && (len(d.text)==d.flushed_bytes || (now-chat.last_flush<100 && len(d.text)-d.flushed_bytes<8192)) do return true
     // Once a terminal snapshot exists, periodic ticks must not create revisions.
     if len(d.text)==d.flushed_bytes && d.revision>0 && d.flushed_status==d.status do return true
     kr,unlocked:=acp_chat_keyring(); defer vault.keyring_wipe(&kr)
@@ -205,16 +274,16 @@ acp_chat_flush :: proc(r:^ACP_Runtime,final:bool) -> bool {
     sealed,encrypted:=bridge_encrypt_vault_text(d.text,&kr); if !encrypted do return false
     context.allocator=runtime.heap_allocator()
     old:=-1
-    for entry,i in d.outbox do if entry.turn_id==d.turn_id do old=i
+    for entry,i in d.outbox do if entry.message_id==d.message_id do old=i
     required:=acp_chat_bytes(chat)+len(sealed)
     if old>=0 do required-=len(d.outbox[old].body)
-    if required>ACP_CHAT_OUTBOX_MAX { delete(sealed); return false }
+    if required>ACP_CHAT_OUTBOX_MAX || (old<0 && len(d.outbox)>=ACP_CHAT_OUTBOX_ITEMS_MAX) { delete(sealed); return false }
     d.revision+=1
-    entry:=contracts.ACP_Assistant_Message_Input{launch_epoch=strings.clone(r.epoch),turn_id=strings.clone(d.turn_id),message_id=strings.clone(d.message_id),revision=d.revision,body=sealed,message_status=strings.clone(d.status),stop_reason=strings.clone(d.stop_reason)}
+    entry:=contracts.ACP_Assistant_Message_Input{launch_epoch=strings.clone(r.epoch),turn_id=strings.clone(acp_chat_wire_turn(d)),message_id=strings.clone(d.message_id),revision=d.revision,body=sealed,message_status=strings.clone(d.status),stop_reason=strings.clone(d.stop_reason)}
     if old>=0 { acp_chat_entry_delete(d.outbox[old]);d.outbox[old]=entry } else { append(&d.outbox,entry) }
     d.flushed_bytes=len(d.text);acp_runtime_replace(&d.flushed_status,d.status);chat.last_flush=now
     acp_runtime_replace(&r.saved_outbox,acp_event_json(chat.d))
-    return r.client == nil || r.client.in_frame || acp_rpc_checkpoint(r.client)
+    return !checkpoint || r.client == nil || r.client.in_frame || acp_rpc_checkpoint(r.client)
 }
 
 acp_chat_entry_delete :: proc(entry:contracts.ACP_Assistant_Message_Input) {
@@ -228,7 +297,12 @@ acp_chat_prepare :: proc(r:^ACP_Runtime) -> bool {
     raw:=r.saved_outbox
     if raw!="" && (len(raw)>12*1024*1024 || json.unmarshal_string(raw,&chat.d)!=nil) { acp_chat_destroy(r); return false }
     d:=&chat.d
-    if len(d.text)>contracts.ACP_ASSISTANT_MAX_BYTES || len(d.turn_id)>256 || len(d.message_id)>256 || len(d.outbox)>128 || acp_chat_bytes(chat)>ACP_CHAT_OUTBOX_MAX || d.revision<0 { acp_chat_destroy(r);return false }
+    // Older journals did not track aggregate bytes and contain one segment.
+    if d.turn_bytes==0 && d.segment_index==0 do d.turn_bytes=len(d.text)
+    if len(d.text)>contracts.ACP_ASSISTANT_MAX_BYTES || len(d.deferred_text)>contracts.ACP_ASSISTANT_MAX_BYTES ||
+        d.turn_bytes<len(d.text)+len(d.deferred_text) || d.turn_bytes>contracts.ACP_ASSISTANT_MAX_BYTES ||
+        d.segment_index<0 || d.segment_index>d.turn_bytes || len(acp_chat_wire_turn(d))>256 || len(d.message_id)>256 ||
+        len(d.outbox)>ACP_CHAT_OUTBOX_ITEMS_MAX || acp_chat_bytes(chat)>ACP_CHAT_OUTBOX_MAX || d.revision<0 { acp_chat_destroy(r);return false }
     for entry in d.outbox {
         if entry.launch_epoch!=r.epoch || entry.revision<1 || entry.message_id=="" || entry.turn_id=="" || len(entry.turn_id)>256 || (entry.message_status!="pending" && entry.message_status!="complete" && entry.message_status!="failed") { acp_chat_destroy(r);return false }
     }
@@ -246,6 +320,8 @@ acp_chat_destroy :: proc(r:^ACP_Runtime) {
     acp_chat_stop(r)
     d:=&chat.d
     delete(d.turn_id);delete(d.message_id);delete(d.status);delete(d.stop_reason);delete(d.flushed_status)
+    if d.deferred_text!="" do crypto.zero_explicit(raw_data(d.deferred_text),len(d.deferred_text))
+    delete(d.deferred_text)
     if chat.text_buffer_ready { acp_chat_reset_text(chat);delete(chat.text_buffer) }
     else { if d.text!="" do crypto.zero_explicit(raw_data(d.text),len(d.text));delete(d.text) }
     for entry in d.outbox do acp_chat_entry_delete(entry)
@@ -331,6 +407,7 @@ acp_chat_work :: proc(r:^ACP_Runtime,argument:string) -> bool {
     }
     if argument=="chat_tick" {
         if r.quiescing || chat.d.publication_failed do return false
+        if !acp_chat_resume_deferred(r) do return false
         if !acp_chat_flush(r,false) do return false
         acp_runtime_replace(&chat.publication,"")
         if len(chat.d.outbox)>0 do acp_runtime_replace(&chat.publication,acp_event_json(chat.d.outbox[0]))

@@ -306,6 +306,8 @@ acp_events_tool :: proc(r: ^ACP_Runtime,update: json.Object) {
         r.tools.entries[tool.id]=tool;r.tools.active+=1;r.tools.bytes+=acp_tool_bytes(tool)
     }
     before:=acp_tool_bytes(tool);was_ended:=tool.ended;r.tools.dirty=true
+    // Completed replay receipts do not introduce a new chronological boundary.
+    if !tool.ended do acp_chat_boundary(r)
     // Absent fields leave the previous partial update intact.
     for key in ([]string{"name","kind","title","status"}) {
         if value,present:=update[key];present {
