@@ -284,3 +284,31 @@ test_bots_renumber_upgrade_from_production_0_5_57 :: proc(t: ^testing.T) {
 		testing.expect_value(t, rmo_text(&conn, "PRAGMA integrity_check;"), "ok")
 	}
 }
+
+// PR #29's namespaced WhatsApp migration and Copilot's numeric migration must
+// both survive the release merge, including upgrades from either boundary.
+@(test)
+test_release_0_5_64_upgrades_whatsapp_and_copilot :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	for stop in ([2]string{"whatsapp_001_invite_only.sql", "224_copilot_acp_transport.sql"}) {
+		conn, path, ok := tmpl_open_file_prod(t, "release_0_5_64")
+		if !ok do return
+		migrated, err := run_migrations(&conn, stop_before = stop)
+		if testing.expect(t, migrated, err.message) {
+			testing.expect(t, !migration_applied(&conn, "224_copilot_acp_transport.sql"))
+			for _ in 0 ..< 2 {
+				migrated, err = run_migrations(&conn)
+				if !testing.expect(t, migrated, err.message) do break
+				testing.expect(t, migration_applied(&conn, "whatsapp_001_invite_only.sql"))
+				testing.expect(t, migration_applied(&conn, "224_copilot_acp_transport.sql"))
+				testing.expect(t, migration_applied(&conn, "225_extension_version_sync_0_5_64.sql"))
+				testing.expect(t, table_column_exists(&conn, "account_entitlements", "override_whatsapp_enabled"))
+				testing.expect_value(t, rmo_text(&conn, "SELECT default_transport FROM provider_catalog WHERE provider='copilot';"), "pty")
+				testing.expect_value(t, rmo_text(&conn, "SELECT transports FROM provider_catalog WHERE provider='copilot';"), "[\"pty\",\"acp\"]")
+				testing.expect_value(t, rmo_text(&conn, "PRAGMA integrity_check;"), "ok")
+			}
+		}
+		close(&conn)
+		tmpl_remove_db(path)
+	}
+}

@@ -697,6 +697,8 @@ MIGRATION_WHATSAPP_001_INVITE_ONLY :: #load("migrations/whatsapp_001_invite_only
 
 MIGRATION_224_COPILOT_ACP_TRANSPORT :: #load("migrations/224_copilot_acp_transport.sql", string)
 
+MIGRATION_225_EXTENSION_VERSION_SYNC :: #load("migrations/225_extension_version_sync_0_5_64.sql", string)
+
 migration_order :: [?]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
@@ -932,6 +934,7 @@ migration_order :: [?]string {
 	"events_005_delivery_retention.sql",
 	"whatsapp_001_invite_only.sql",
 	"224_copilot_acp_transport.sql",
+	"225_extension_version_sync_0_5_64.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1452,6 +1455,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 			return string(data)
 		}
 	}
+	if name == "225_extension_version_sync_0_5_64.sql" do return strings.clone(MIGRATION_225_EXTENSION_VERSION_SYNC)
 	if name == "224_copilot_acp_transport.sql" do return strings.clone(MIGRATION_224_COPILOT_ACP_TRANSPORT)
 	if name == "223_extension_version_sync_0_5_63.sql" do return strings.clone(MIGRATION_223_EXTENSION_VERSION_SYNC)
 	if name == "222_extension_version_sync_0_5_62.sql" do return strings.clone(MIGRATION_222_EXTENSION_VERSION_SYNC)
