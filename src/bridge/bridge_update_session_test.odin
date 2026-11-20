@@ -11,6 +11,7 @@ import "core:fmt"
 import "core:os"
 import "core:strconv"
 import "core:strings"
+import "core:sync"
 import "core:sys/posix"
 import "core:testing"
 import "core:time"
@@ -105,4 +106,58 @@ test_bridge_update_refuses_non_profile_install_with_reinstall_hint :: proc(t: ^t
 	ok, detail := bridge_runtime_apply_update(nil, "cmd_1", "999.0.0", "https://example.invalid/bundle.tar.gz", "", true, 0)
 	testing.expect(t, !ok)
 	testing.expect_value(t, detail, refusal)
+}
+
+// REQ-AUP-1/2: a PTY host daemon that exits on SIGTERM is gone on the FIRST stop.
+// When this bridge process started it, SIGTERM leaves it a zombie until it is
+// reaped, and kill(pid, 0) still succeeds for a zombie; the stop path used to
+// wait on that through both graces and fail with "survived SIGKILL". A `sleep`
+// stands in for the daemon (it dies on SIGTERM); nothing here is a real PTY host.
+@(test)
+test_bridge_update_stop_pty_host_reaps_own_daemon_and_ignores_zombies :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	saved_process := pty_host_daemon_process
+	saved_has := pty_host_daemon_has_process
+	saved_started := pty_host_daemon_started
+	defer {
+		pty_host_daemon_process = saved_process
+		pty_host_daemon_has_process = saved_has
+		pty_host_daemon_started = saved_started
+	}
+	TERM_GRACE :: 3 * time.Second
+
+	// This process's own daemon child: reaped by the stop path itself.
+	own, err := os.process_start(os.Process_Desc{command = []string{"sleep", "600"}})
+	testing.expect(t, err == nil, "stand-in daemon started")
+	if err != nil do return
+	pty_host_daemon_process = own
+	pty_host_daemon_has_process = true
+	pty_host_daemon_started = true
+	began := time.tick_now()
+	ok, detail := bridge_update_stop_pty_host_pid(own.pid, TERM_GRACE, 2 * time.Second)
+	testing.expect(t, ok, detail)
+	testing.expectf(t, time.tick_since(began) < TERM_GRACE, "stopped within the TERM grace (took %v), not after SIGKILL", time.tick_since(began))
+	testing.expect(t, !pty_host_daemon_has_process, "the reaped daemon is forgotten")
+	testing.expect(t, !pty_host_daemon_started, "the next use starts a new daemon")
+	reaped := posix.kill(posix.pid_t(own.pid), posix.Signal(0)) != .OK && posix.errno() == .ESRCH
+	testing.expect(t, reaped, "the daemon was reaped, not left a zombie")
+	if !reaped {
+		_ = os.process_kill(own)
+		_, _ = os.process_wait(own)
+	}
+
+	// A zombie whose parent is not the stop path's daemon handle (as for a daemon
+	// an earlier bridge process started) counts as gone as well.
+	other, ferr := os.process_start(os.Process_Desc{command = []string{"sleep", "600"}})
+	testing.expect(t, ferr == nil, "foreign stand-in started")
+	if ferr != nil do return
+	defer { _ = os.process_kill(other); _, _ = os.process_wait(other) }
+	pty_host_daemon_has_process = false
+	began = time.tick_now()
+	ok, detail = bridge_update_stop_pty_host_pid(other.pid, TERM_GRACE, 2 * time.Second)
+	testing.expect(t, ok, detail)
+	testing.expectf(t, time.tick_since(began) < TERM_GRACE, "a zombie is gone at once (took %v)", time.tick_since(began))
+	testing.expect(t, bridge_os_pid_is_zombie(other.pid), "the foreign stand-in is an unreaped zombie")
+	testing.expect(t, !bridge_os_pid_is_zombie(int(os.get_pid())), "a running process is not a zombie")
 }
