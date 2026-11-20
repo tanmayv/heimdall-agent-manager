@@ -78,6 +78,11 @@ Bridge_Config :: struct {
 	local_proxy_enabled: bool,
 	auto_update_enabled: bool,
 	auto_update_configured: bool,
+	// REQ-AUP-3: hours an overdue automatic update may wait for a quiet window
+	// before it is forced (stopping the PTY host and its agents). Absent means
+	// the default (24), hence the _configured flag; 0 means never force.
+	auto_update_max_defer_hours: int,
+	auto_update_max_defer_configured: bool,
 }
 
 Role_Default_Agent_Config :: struct {
@@ -409,6 +414,9 @@ parse_bridge_key :: proc(key, value: string, cfg: ^Bridge_Config) {
 		cfg.local_proxy_enabled = parse_bool(value); cfg.local_proxy_configured = true
 	case "auto_update_enabled":
 		cfg.auto_update_enabled = parse_bool(value); cfg.auto_update_configured = true
+	case "auto_update_max_defer_hours":
+		// A negative or unparsable value is ignored: the default applies.
+		if n, ok := strconv.parse_int(value); ok && n >= 0 { cfg.auto_update_max_defer_hours = int(n); cfg.auto_update_max_defer_configured = true }
 	case:
 	}
 }
