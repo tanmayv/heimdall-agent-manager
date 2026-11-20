@@ -299,6 +299,7 @@ export default function ChatMessageList({
   renderMessageTop,
   renderMessageBody,
   formatTimestamp = () => EMPTY_TIMESTAMP,
+  renderMessageMeta,
   getDeliveryStatus = () => EMPTY_DELIVERY,
   agentIsWorking = false,
   agentActivity,
@@ -330,6 +331,9 @@ export default function ChatMessageList({
   /** `reveal` is set for an agent reply that arrived live (replyMotion.ts); pass it to Markdown. */
   renderMessageBody?: (args: { message: ChatMessage; onReply: (reply: string) => void; reveal?: StreamRevealOptions }) => React.ReactNode;
   formatTimestamp?: (unixMs: number) => ChatTimestamp;
+  /** Extra metadata in a message's action row, before its time (e.g. the bot chat's
+   *  channel label and retry). Not rendered for dividers and clubbed groups. */
+  renderMessageMeta?: (message: ChatMessage) => ReactNode;
   getDeliveryStatus?: (message: ChatMessage) => ChatDeliveryStatus;
   agentIsWorking?: boolean;
   /** Replaces the default working mark at the scrollable conversation tail. */
@@ -1173,6 +1177,7 @@ export default function ChatMessageList({
                     <div data-debug-id={`${debugPrefix}-message-actions-${message.messageId}`} data-chat-actions="" data-reply-chrome={replyMotion || undefined}
                       className={`mt-1 flex min-h-11 w-full items-center justify-end gap-1.5 text-[10px] text-faint sm:min-h-8${replyMotion === 'revealing' ? ' reply-chrome-held' : ''}`}>
                       <MessageCopyButton debugId={`${debugPrefix}-message-copy-btn-${message.messageId}`} body={message.body} className={`rounded-full border border-subtle bg-surface/80 shadow-lg${replyMotion === 'settled' ? ' reply-chrome-in' : ''}`} />
+                      {renderMessageMeta ? renderMessageMeta(message) : null}
                       {timestamp.label ? <time data-debug-id={`${debugPrefix}-message-${message.messageId}-time`} dateTime={timestamp.iso} title={timestamp.iso} className={replyMotion === 'settled' ? 'reply-meta-in' : undefined}>{timestamp.label}</time> : null}
                       {message.isUser && delivery.glyph ? (
                         <span data-debug-id={`${debugPrefix}-message-${message.messageId}-status`} title={delivery.label} className={delivery.tone}>{delivery.glyph} {delivery.label}</span>

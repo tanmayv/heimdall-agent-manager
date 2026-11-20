@@ -1,4 +1,5 @@
 import type { BotStatus, BotView, UnifiedBotMessage } from '../../api/endpoints/bots';
+import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from '../chat/types';
 
 /** The hub refuses web text above this many UTF-8 bytes (docs/bots-web-channel.md). */
 export const BOT_WEB_TEXT_MAX_BYTES = 16384;
@@ -116,6 +117,103 @@ export function botChatErrorText(status: number | undefined, fallback: string): 
   if (status === 403) return 'Bots are not enabled for your account. Turn on Bots in Settings › Experimental.';
   if (status === 404) return "You don't have a bot yet. Create one in Settings › Bots.";
   return fallback;
+}
+
+/** Bot-specific fields carried on a `ChatMessage` for the shared list's meta row. */
+export interface BotChatMeta {
+  provider: UnifiedBotMessage['provider'];
+  /** Outbound send_state, '' for inbound rows. */
+  sendState: string;
+  purged: boolean;
+  /** Set on a composer send the history has not returned yet. */
+  pending?: PendingBotSend['state'];
+}
+
+export function botChatMeta(message: ChatMessage): BotChatMeta | null {
+  const meta = message.metadata?.bot;
+  return meta && typeof meta === 'object' ? meta as BotChatMeta : null;
+}
+
+function isoToUnixMs(iso: string): number {
+  const ms = Date.parse(iso);
+  return Number.isNaN(ms) ? 0 : ms;
+}
+
+/**
+ * The unified history and the unconfirmed sends as rows for the shared ChatMessageList.
+ * A stored message that answers a composer send keeps that send's key (`sentKeys`:
+ * message_id → idempotency key), so the send pin and the row survive the ack exactly as
+ * the coordinator chat's optimistic rows do.
+ */
+export function botChatMessages(
+  timeline: readonly UnifiedBotMessage[],
+  pending: readonly PendingBotSend[],
+  sentKeys: ReadonlyMap<string, string>,
+): ChatMessage[] {
+  const rows: ChatMessage[] = timeline.map((message) => {
+    const mine = message.direction === 'inbound';
+    const sendState = mine ? '' : message.send_state;
+    const failed = !mine && (sendState === 'failed' || sendState === 'held');
+    return {
+      key: sentKeys.get(message.message_id) ?? message.message_id,
+      messageId: message.message_id,
+      body: message.body_purged ? '' : message.body,
+      isUser: mine,
+      createdUnixMs: isoToUnixMs(message.created_at),
+      deliveredUnixMs: 0,
+      readUnixMs: mine && message.read_at ? isoToUnixMs(message.read_at) || 1 : 0,
+      deliveryFailedUnixMs: failed ? 1 : 0,
+      deliveryError: failed ? 'Not delivered' : '',
+      sending: !mine && Boolean(sendState) && sendState !== 'sent' && !failed,
+      authorLabel: '',
+      messageType: 'text',
+      metadata: { bot: { provider: message.provider, sendState, purged: message.body_purged } satisfies BotChatMeta },
+    };
+  });
+  for (const send of pending) {
+    rows.push({
+      key: send.key,
+      messageId: send.message_id || send.key,
+      body: send.text,
+      isUser: true,
+      createdUnixMs: 0,
+      deliveredUnixMs: 0,
+      readUnixMs: 0,
+      deliveryFailedUnixMs: send.state === 'failed' ? 1 : 0,
+      deliveryError: send.state === 'failed' ? 'Not sent' : '',
+      sending: send.state === 'sending',
+      authorLabel: '',
+      messageType: 'text',
+      metadata: { bot: { provider: 'web', sendState: '', purged: false, pending: send.state } satisfies BotChatMeta },
+    });
+  }
+  return rows;
+}
+
+/** True for a row the composer just appended (pins under the top like the coordinator's sends). */
+export function isBotComposerSend(message: ChatMessage): boolean {
+  return botChatMeta(message)?.pending !== undefined;
+}
+
+/** Delivery line for the user's own rows: sending, queued for the bot, read, or not sent. */
+export function botDeliveryStatus(message: ChatMessage): ChatDeliveryStatus {
+  if (!message.isUser) return { glyph: '', label: '', tone: '' };
+  if (message.sending) return { glyph: '…', label: 'Sending', tone: 'text-muted' };
+  if (message.deliveryFailedUnixMs > 0) return { glyph: '!', label: message.deliveryError || 'Not sent', tone: 'text-danger' };
+  if (message.readUnixMs > 0) return { glyph: '✓✓', label: 'Read', tone: 'text-success' };
+  return { glyph: '✓', label: 'Queued', tone: 'text-faint' };
+}
+
+/** Same short form as the coordinator chat (time only) for today; date and time otherwise. */
+export function formatBotChatTimestamp(unixMs: number, now = Date.now()): ChatTimestamp {
+  if (!unixMs) return { label: '', iso: '' };
+  const date = new Date(unixMs);
+  if (Number.isNaN(date.getTime())) return { label: '', iso: '' };
+  const sameDay = new Date(now).toDateString() === date.toDateString();
+  return {
+    label: sameDay ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : formatBotMessageTime(date.toISOString()),
+    iso: date.toISOString(),
+  };
 }
 
 export function formatBotMessageTime(iso: string): string {

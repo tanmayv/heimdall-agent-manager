@@ -64,15 +64,19 @@ function hub(initial: Msg[] = []) {
   };
 }
 
-async function fixture(state: ReturnType<typeof hub>, view: 'sidebar' | 'chat', run: (h: any) => Promise<void>) {
+async function fixture(state: ReturnType<typeof hub>, view: 'sidebar' | 'chat', run: (h: any) => Promise<void>, width = 1280) {
   const dom = new JSDOM('<div id="root"></div>', { url: 'https://hub.test/', pretendToBeVisual: true });
+  Object.defineProperty(dom.window, 'innerWidth', { value: width, configurable: true });
   const saved = new Map<string, PropertyDescriptor | undefined>();
   for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, Node: dom.window.Node,
-    navigator: dom.window.navigator, requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window), cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window), IS_REACT_ACT_ENVIRONMENT: true })) {
+    navigator: dom.window.navigator, requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window), cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window), IS_REACT_ACT_ENVIRONMENT: true,
+    // The shared composer and list size themselves with ResizeObserver; jsdom has none.
+    ResizeObserver: class { observe() {} unobserve() {} disconnect() {} } })) {
     saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
   }
   dom.window.HTMLElement.prototype.scrollIntoView = () => {};
+  dom.window.HTMLElement.prototype.scrollTo = function (this: HTMLElement, options: any) { this.scrollTop = typeof options === 'object' ? options.top ?? 0 : 0; };
   const previousFetch = globalThis.fetch;
   const requests: { path: string; search: string; method: string; body?: any }[] = [];
   globalThis.fetch = (async (input: any, init: any = {}) => {
@@ -113,9 +117,11 @@ async function fixture(state: ReturnType<typeof hub>, view: 'sidebar' | 'chat', 
     const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value')!.set!;
     await act(async () => { setter.call(input, value); input.dispatchEvent(new dom.window.Event('input', { bubbles: true })); });
   };
-  const rows = () => all('[data-debug-id="bot-chat-list"] li').map((li) => ({
-    id: li.getAttribute('data-debug-id'), who: li.getAttribute('data-direction'), text: li.querySelector('[data-chat-body]')?.textContent?.trim(),
-    channel: li.querySelector('[data-debug-id="bot-chat-channel"]')?.textContent, state: li.querySelector('[data-debug-id="bot-chat-message-state"]')?.textContent ?? '' }));
+  // Rows of the shared ChatMessageList (debugPrefix bot-chat): user rows are right-aligned.
+  const rows = () => all('[data-debug-id="bot-chat-messages-container"] > .msg').map((row) => ({
+    id: row.getAttribute('data-debug-id'), who: row.classList.contains('justify-end') ? 'user' : 'bot', text: row.querySelector('[data-chat-body]')?.textContent?.trim(),
+    channel: row.querySelector('[data-debug-id="bot-chat-channel"]')?.textContent,
+    state: (row.querySelector('[data-debug-id$="-status"]') ?? row.querySelector('[data-debug-id="bot-chat-message-state"]'))?.textContent ?? '' }));
   const element = view === 'sidebar'
     ? React.createElement(SidebarBot, { currentPath: '/home' })
     : React.createElement(BotChatPage);
@@ -243,12 +249,12 @@ test('chat: unified history renders channel labels oldest-first and pages older 
     assert.equal(rows.find((r: any) => r.id === 'bot-chat-message-bmsg_0120')!.who, 'user', 'inbound is the owner');
     assert.equal(rows.find((r: any) => r.id === 'bot-chat-message-bmsg_0119')!.who, 'bot', 'outbound is the bot');
     assert.ok(h.get('bot-chat-load-older'));
+    assert.match(rows.find((r: any) => r.id === 'bot-chat-message-bmsg_0120')!.state, /Read/);
+    assert.ok(h.get('bot-chat-message-bmsg_0120-time')!.getAttribute('datetime'), 'every row carries its time');
 
-    // Scrolling to the top loads the next page with the oldest loaded id as cursor.
-    const list = h.get('bot-chat-list')!;
-    list.scrollTop = 0;
-    await act(async () => list.dispatchEvent(new h.dom.window.Event('scroll')));
-    await h.settle();
+    // The shared list's top sentinel (IntersectionObserver in a browser) loads the next
+    // page with the oldest loaded id as cursor.
+    await h.click('bot-chat-load-older');
     const older = h.requests.filter((r: any) => r.path === '/bots/me/messages' && r.search.includes('cursor='));
     assert.equal(older.length, 1);
     assert.match(older[0].search, /cursor=bmsg_0071/);
@@ -270,16 +276,18 @@ test('chat: send shows the message immediately, the reply arrives live via bot_c
   state.bot = bot({ status: 'starting' });
   await fixture(state, 'chat', async (h) => {
     assert.equal(h.get('bot-chat-queue-notice')!.textContent, 'Your bot is starting…');
-    assert.equal((h.get('bot-chat-send') as HTMLButtonElement).disabled, true, 'blank text cannot be sent');
+    assert.equal((h.get('bot-chat-composer-send-btn') as HTMLButtonElement).disabled, true, 'blank text cannot be sent');
 
     state.holdSend = { release: () => {} };
     await h.type('Book a table');
-    await h.click('bot-chat-send');
+    await h.click('bot-chat-composer-send-btn');
     let rows = h.rows();
     const pendingRow = rows[rows.length - 1];
     assert.equal(pendingRow.text, 'Book a table', 'visible before the hub answers');
     assert.equal(pendingRow.who, 'user');
-    assert.equal(pendingRow.state, 'Sending…');
+    assert.equal(pendingRow.state, '… Sending');
+    const pendingKey = h.all('[data-debug-id="bot-chat-messages-container"] > .msg').pop()!.getAttribute('data-chat-pin-index');
+    assert.ok(pendingKey !== null, 'the send pins like the coordinator chat');
     assert.equal((h.get('bot-chat-input') as HTMLTextAreaElement).value, '');
     assert.match(h.get('bot-chat-queue-notice')!.textContent!, /starting\. Your message is queued/);
 
@@ -293,7 +301,9 @@ test('chat: send shows the message immediately, the reply arrives live via bot_c
     rows = h.rows();
     assert.equal(rows.filter((r: any) => r.text === 'Book a table').length, 1, 'stored message replaces the pending bubble');
     assert.equal(rows[rows.length - 1].channel, 'Web');
-    assert.equal(rows[rows.length - 1].state, '· Queued');
+    assert.equal(rows[rows.length - 1].state, '✓ Queued');
+    assert.equal(h.get('bot-chat-scroll')!.querySelector('[data-chat-pin-row="true"] [data-chat-body]')!.textContent, 'Book a table',
+      'the stored row keeps the send key, so the pin survives the ack');
 
     // The bot replies; the hub publishes bot_changed and the view refreshes live.
     const inbound = state.messages[state.messages.length - 1];
@@ -305,13 +315,13 @@ test('chat: send shows the message immediately, the reply arrives live via bot_c
     rows = h.rows();
     assert.equal(rows[rows.length - 1].id, 'bot-chat-message-bmsg_reply');
     assert.match(rows[rows.length - 1].text!, /Done — 7pm/);
-    assert.equal(rows[rows.length - 2].state, '', 'read inbound is no longer queued');
+    assert.equal(rows[rows.length - 2].state, '✓✓ Read', 'read inbound is no longer queued');
     assert.equal(h.get('bot-chat-queue-notice'), null);
 
     // A failed send keeps the text, explains the error and retries with the same key.
     state.sendStatus = 503;
     await h.type('Also wine');
-    await h.click('bot-chat-send');
+    await h.click('bot-chat-composer-send-btn');
     assert.equal(h.get('bot-chat-send-error')!.textContent, 'Hub unavailable');
     rows = h.rows();
     assert.equal(rows[rows.length - 1].text, 'Also wine');
@@ -325,23 +335,23 @@ test('chat: send shows the message immediately, the reply arrives live via bot_c
   });
 });
 
-test('chat: 403 on send and over-long text show clear messages; Enter sends, Shift+Enter does not', async () => {
+test('chat: 403 on send and over-long text show clear messages; Cmd/Ctrl+Enter sends like the coordinator chat', async () => {
   const state = hub();
   await fixture(state, 'chat', async (h) => {
     assert.ok(h.get('bot-chat-empty'));
     state.sendStatus = 403;
     await h.type('hello');
     const input = h.get('bot-chat-input')!;
-    await act(async () => input.dispatchEvent(new h.dom.window.KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true })));
-    await h.settle();
-    assert.equal(h.requests.filter((r: any) => r.method === 'POST').length, 0);
     await act(async () => input.dispatchEvent(new h.dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    await h.settle();
+    assert.equal(h.requests.filter((r: any) => r.method === 'POST').length, 0, 'plain Enter is a newline');
+    await act(async () => input.dispatchEvent(new h.dom.window.KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true })));
     await h.settle();
     assert.equal(h.requests.filter((r: any) => r.method === 'POST').length, 1);
     assert.match(h.get('bot-chat-send-error')!.textContent!, /not enabled for your account/);
 
     await h.type('x'.repeat(16385));
-    await h.click('bot-chat-send');
+    await h.click('bot-chat-composer-send-btn');
     assert.match(h.get('bot-chat-composer-error')!.textContent!, /too long/);
     assert.equal(h.requests.filter((r: any) => r.method === 'POST').length, 1, 'refused locally');
     assert.equal((h.get('bot-chat-input') as HTMLTextAreaElement).value.length, 16385, 'text kept for editing');
@@ -355,24 +365,39 @@ test('chat: waiting for a machine keeps the queued state visible', async () => {
     assert.match(h.get('bot-chat-queue-notice')!.textContent!, /Waiting for a machine/);
     assert.equal(h.get('bot-chat-status-detail')!.textContent, 'None of your machines is online.');
     assert.match(h.get('bot-chat-channels')!.textContent!, /^Stopped/);
-    assert.equal(h.rows()[0].state, '· Queued');
+    assert.equal(h.rows()[0].state, '✓ Queued');
   });
 });
 
-test('phone width: chat and sidebar avoid fixed widths and let content wrap', async () => {
-  const state = hub([msg(1, { body: 'https://example.test/' + 'a'.repeat(400) })]);
+test('composer: the shared morph composer with only text and send controls', async () => {
+  const state = hub([msg(1)]);
   await fixture(state, 'chat', async (h) => {
-    const list = h.get('bot-chat-list')!;
-    assert.match(list.className, /overflow-x-hidden/);
-    assert.match(list.className, /min-w-0/);
-    const bubble = h.doc.querySelector('[data-chat-body]')!;
-    assert.match(bubble.className, /max-w-\[85%\]/);
-    assert.match(bubble.className, /break-words/);
-    assert.match((h.get('bot-chat-input') as HTMLElement).className, /min-w-0/);
-    assert.match((h.get('bot-chat-input') as HTMLElement).className, /text-base/, '16px input avoids iOS focus zoom');
-    assert.match((h.get('bot-chat-send') as HTMLElement).className, /min-h-11/, '44px touch target');
-    assert.match(h.get('bot-chat-header')!.className, /flex-wrap/);
+    const card = h.get('bot-chat-composer-card')!;
+    assert.equal(card.getAttribute('data-composer-morph'), '', 'same MessageComposerMorphShell as the coordinator chat');
+    assert.equal(card.getAttribute('data-expanded'), 'false');
+    assert.ok(h.get('bot-chat-input')!.hasAttribute('data-composer-morph-field'));
+    for (const id of ['bot-chat-runtime-menu-btn', 'bot-chat-attach-btn', 'bot-chat-request-pane-btn', 'bot-chat-tasks-btn', 'bot-chat-composer-morph-tools', 'bot-chat-composer-morph-context']) {
+      assert.equal(h.get(id), null, id + ' is not shown for the bot');
+    }
+    assert.equal(card.querySelectorAll('button').length, 1, 'send is the only control');
+    assert.ok(h.get('bot-chat-composer-send-btn')!.hasAttribute('data-composer-morph-send'));
+    await h.type('draft');
+    assert.equal(card.getAttribute('data-expanded'), 'true', 'a draft holds it open');
   });
+});
+
+test('phone width (390px): chat and sidebar avoid fixed widths and let content wrap', async () => {
+  const state = hub([msg(1, { body: 'https://example.test/' + 'a'.repeat(400) }), msg(2, { body: 'short' })]);
+  await fixture(state, 'chat', async (h) => {
+    const scroll = h.get('bot-chat-scroll')!;
+    assert.match(scroll.className, /overflow-x-hidden/);
+    const bubble = h.get('bot-chat-message-bmsg_0002')!.querySelector('[data-chat-body]')!;
+    assert.match(bubble.className, /\[overflow-wrap:anywhere\]/);
+    assert.match(bubble.parentElement!.className, /max-w-\[86%\]/, 'same user bubble as the coordinator chat');
+    assert.match((h.get('bot-chat-input') as HTMLElement).className, /text-base/, '16px input avoids iOS focus zoom');
+    assert.match(h.get('bot-chat-composer-shell')!.className, /ui-float-dock-pad/, 'mobile dock padding');
+    assert.match(h.get('bot-chat-header')!.className, /flex-wrap/);
+  }, 390);
   for (const file of ['src/ui/components/bots/BotChatPage.tsx', 'src/ui/components/shell/SidebarBot.tsx']) {
     const source = readFileSync(new URL('../' + file, import.meta.url), 'utf8');
     assert.doesNotMatch(source, /\b(?:w|min-w)-\[\d+px\]/, file + ' has no fixed pixel widths');

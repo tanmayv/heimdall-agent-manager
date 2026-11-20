@@ -447,6 +447,21 @@ test('open trailing group reserves the tool row width so a long model chip trunc
   assert.match(MORPH_CSS, /\[data-expanded='true'\] \[data-composer-morph-trailing\] \{[^}]*max-width: calc\(100% - 34px - var\(--composer-morph-tools-width, 0px\)\)/);
 });
 
+test('text-only composer (bot chat): no upload or model chip in either layout, send stays, field reserves only the send width', async () => {
+  const textOnly = { debugPrefix: 'bot-chat', mobile: true, provider: '', model: '' };
+  for (const morph of [undefined, { expanded: false }, { expanded: true }]) {
+    const { container } = await mount(h(MessageComposerActions, { ...textOnly, sendDisabled: false, ...(morph ? { morph } : {}) }));
+    assert.equal(q(container, 'bot-chat-attach-btn'), null, 'no upload without onUpload');
+    assert.equal(q(container, 'bot-chat-runtime-menu-btn'), null, 'no model chip without onSettings');
+    assert.equal(q(container, 'bot-chat-composer-morph-tools'), null, 'no empty tool row');
+    assert.ok(q(container, 'bot-chat-composer-send-btn'));
+    if (morph) assert.equal(q(container, 'bot-chat-composer-toolbar')!.style.getPropertyValue('--composer-morph-tools-width'), '0px');
+  }
+  // Collapsed: the coordinator field keeps its 164px chip+send reserve; without a chip only the send's.
+  assert.match(MORPH_CSS, /\[data-composer-morph-field\] \{[^}]*padding: 0 164px 0 0/);
+  assert.match(MORPH_CSS, /\[data-composer-morph\]:not\(:has\(\[data-composer-morph-chip\]\)\) \[data-composer-morph-field\] \{ padding-right: 56px \}/);
+});
+
 test('dock inset: observer writes the spacer, jump button and pinned scroll in the same callback, commits React state once settled', async () => {
   const observers: { callback: ResizeObserverCallback; targets: Element[] }[] = [];
   const saved = (globalThis as any).ResizeObserver;

@@ -116,7 +116,12 @@ export const MessageComposerInput = forwardRef<HTMLTextAreaElement, MessageCompo
 
 export type ComposerActionsProps = {
   debugPrefix: string; mobile: boolean; compactModel?: boolean; provider: string; model: string;
-  onSettings: () => void; onUpload: () => void; uploadDisabled?: boolean;
+  /** Opens the runtime (bridge/provider/model) picker. Omit for a composer with no
+   *  runtime to choose (the bot chat): the model chip is not rendered. */
+  onSettings?: () => void;
+  /** Opens the attachment picker. Omit for a text-only composer: no upload button. */
+  onUpload?: () => void;
+  uploadDisabled?: boolean;
   onPaneToggle?: () => void; paneExpanded?: boolean; sendDisabled: boolean;
   /** Opens the chain's Tasks surface; the button is hidden when omitted (no chain). */
   onOpenTasks?: () => void;
@@ -130,7 +135,8 @@ export type ComposerActionsProps = {
   morph?: { expanded: boolean };
 };
 /** Bottom row of the composer card: upload, terminal, tasks | model pill, send. Same
- *  controls on every form factor; mobile only gets larger tap targets. */
+ *  controls on every form factor; mobile only gets larger tap targets. Upload and the
+ *  model pill are left out when their handlers are (a text-only composer). */
 export function MessageComposerActions(props: ComposerActionsProps) {
   return props.morph ? <MorphComposerActions {...props} morph={props.morph} /> : <ClassicComposerActions {...props} />;
 }
@@ -141,13 +147,13 @@ function ClassicComposerActions({ debugPrefix: p, mobile, compactModel, provider
   const send = !readOnly && !pendingActions ? <button type="submit" data-debug-id={`${p}-composer-send-btn`} disabled={sendDisabled} aria-label="Send message" className={`grid ${btn} shrink-0 place-items-center bg-accent text-accent-fg disabled:opacity-40`}><Icon name="arrow-up" size={iconSize} /></button> : null;
   return <div data-debug-id={`${p}-composer-toolbar`} className="mt-2 flex min-w-0 items-center justify-between gap-1.5">
     {!pendingActions && !readOnly ? <div className="flex shrink-0 items-center gap-0.5 sm:gap-1.5">
-      <button type="button" data-debug-id={`${p}-attach-btn`} disabled={uploadDisabled} aria-label="Upload attachment" onClick={onUpload} className={`grid ${btn} place-items-center text-muted hover:bg-neutral-soft disabled:opacity-40`}><Icon name="plus" size={mobile ? 22 : 19} /></button>
+      {onUpload ? <button type="button" data-debug-id={`${p}-attach-btn`} disabled={uploadDisabled} aria-label="Upload attachment" onClick={onUpload} className={`grid ${btn} place-items-center text-muted hover:bg-neutral-soft disabled:opacity-40`}><Icon name="plus" size={mobile ? 22 : 19} /></button> : null}
       {onPaneToggle ? <button type="button" data-debug-id={`${p}-request-pane-btn`} aria-label="Open terminal" aria-pressed={paneExpanded} onClick={onPaneToggle} className={`grid ${btn} place-items-center ${paneExpanded ? 'bg-accent/20 text-accent' : 'text-muted hover:bg-neutral-soft'}`}><Icon name="terminal" size={iconSize} /></button> : null}
       {onOpenTasks ? <button type="button" data-debug-id={`${p}-tasks-btn`} aria-label="Open tickets" onClick={onOpenTasks} className={`grid ${btn} place-items-center text-muted hover:bg-neutral-soft`}><Icon name="tasks" size={iconSize} /></button> : null}
       {extraActions}
     </div> : <span />}
     <div className="ml-auto flex min-w-0 items-center justify-end gap-1.5 sm:gap-2">
-      <button type="button" data-debug-id={`${p}-runtime-menu-btn`} aria-haspopup="dialog" aria-label="Choose bridge, provider and model" title={model || undefined} onClick={onSettings} className={`inline-flex ${mobile ? 'h-10 rounded-full' : 'h-9 rounded-xl'} min-w-0 max-w-[180px] items-center gap-1.5 border border-subtle bg-surface-raised px-2.5 text-sm text-primary hover:bg-neutral-soft`}><ProviderIcon provider={provider} size={16} />{!compactModel ? <><span className="min-w-0 truncate font-semibold">{model || 'Choose model'}</span><Icon name="chevron-down" size={14} className="shrink-0" /></> : null}</button>
+      {onSettings ? <button type="button" data-debug-id={`${p}-runtime-menu-btn`} aria-haspopup="dialog" aria-label="Choose bridge, provider and model" title={model || undefined} onClick={onSettings} className={`inline-flex ${mobile ? 'h-10 rounded-full' : 'h-9 rounded-xl'} min-w-0 max-w-[180px] items-center gap-1.5 border border-subtle bg-surface-raised px-2.5 text-sm text-primary hover:bg-neutral-soft`}><ProviderIcon provider={provider} size={16} />{!compactModel ? <><span className="min-w-0 truncate font-semibold">{model || 'Choose model'}</span><Icon name="chevron-down" size={14} className="shrink-0" /></> : null}</button> : null}
       {pendingActions || send}
     </div>
   </div>;
@@ -158,25 +164,26 @@ function ClassicComposerActions({ debugPrefix: p, mobile, compactModel, provider
 function MorphComposerActions({ debugPrefix: p, compactModel, provider, model, onSettings, onUpload, uploadDisabled, onPaneToggle, paneExpanded, sendDisabled, onOpenTasks, pendingActions, readOnly, extraActions, morph }: ComposerActionsProps & { morph: { expanded: boolean } }) {
   const tool = 'grid h-11 w-11 shrink-0 place-items-center rounded-[var(--radius-md)]';
   const hidden = !morph.expanded;
-  const showTools = !pendingActions && !readOnly;
+  const toolCount = !pendingActions && !readOnly
+    ? (onUpload ? 1 : 0) + (onPaneToggle ? 1 : 0) + (onOpenTasks ? 1 : 0) + countControls(extraActions) : 0;
+  const showTools = toolCount > 0;
   // Width of the open tool row (44px buttons, 4px gaps), so the open trailing group can stop
   // short of it: on a phone-width card a long model name would otherwise cover the tools.
-  const toolCount = showTools ? 1 + (onPaneToggle ? 1 : 0) + (onOpenTasks ? 1 : 0) + countControls(extraActions) : 0;
   const toolsWidth = toolCount > 0 ? toolCount * 44 + (toolCount - 1) * 4 : 0;
   return <div data-debug-id={`${p}-composer-toolbar`} data-composer-morph-toolbar="" className="contents"
     style={{ [MORPH_TOOLS_WIDTH_VAR]: `${toolsWidth}px` } as CSSProperties}>
     {showTools ? <div data-debug-id={`${p}-composer-morph-tools`} data-composer-morph-tools="" {...inertWhen(hidden)} className="flex items-center gap-1">
-      <button type="button" data-debug-id={`${p}-attach-btn`} disabled={uploadDisabled} aria-label="Upload attachment" onClick={onUpload} className={`${tool} text-muted hover:bg-neutral-soft hover:text-primary disabled:opacity-40`}><Icon name="plus" size={20} /></button>
+      {onUpload ? <button type="button" data-debug-id={`${p}-attach-btn`} disabled={uploadDisabled} aria-label="Upload attachment" onClick={onUpload} className={`${tool} text-muted hover:bg-neutral-soft hover:text-primary disabled:opacity-40`}><Icon name="plus" size={20} /></button> : null}
       {onPaneToggle ? <button type="button" data-debug-id={`${p}-request-pane-btn`} aria-label="Open terminal" aria-pressed={paneExpanded} onClick={onPaneToggle} className={`${tool} ${paneExpanded ? 'bg-accent/20 text-accent' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}><Icon name="terminal" size={20} /></button> : null}
       {onOpenTasks ? <button type="button" data-debug-id={`${p}-tasks-btn`} aria-label="Open tickets" onClick={onOpenTasks} className={`${tool} text-muted hover:bg-neutral-soft hover:text-primary`}><Icon name="tasks" size={20} /></button> : null}
       {extraActions}
     </div> : null}
     <div data-debug-id={`${p}-composer-morph-trailing`} data-composer-morph-trailing="" className="flex min-w-0 items-center justify-end gap-2">
-      <button type="button" data-debug-id={`${p}-runtime-menu-btn`} data-composer-morph-chip="" aria-haspopup="dialog" aria-label="Choose bridge, provider and model" title={model || undefined} onClick={onSettings} className="inline-flex min-w-0 items-center gap-1.5 border border-strong bg-neutral-soft text-primary hover:bg-surface-raised">
+      {onSettings ? <button type="button" data-debug-id={`${p}-runtime-menu-btn`} data-composer-morph-chip="" aria-haspopup="dialog" aria-label="Choose bridge, provider and model" title={model || undefined} onClick={onSettings} className="inline-flex min-w-0 items-center gap-1.5 border border-strong bg-neutral-soft text-primary hover:bg-surface-raised">
         <ProviderIcon provider={provider} size={16} />
         {!compactModel ? <span className="min-w-0 truncate">{model || 'Choose model'}</span> : null}
         <span data-composer-morph-chevron="" aria-hidden="true"><Icon name="chevron-down" size={16} className="shrink-0" /></span>
-      </button>
+      </button> : null}
       {pendingActions || (!readOnly ? <button type="submit" data-debug-id={`${p}-composer-send-btn`} data-composer-morph-send="" disabled={sendDisabled} aria-label="Send message" className="grid shrink-0 place-items-center bg-accent text-accent-fg disabled:opacity-40"><Icon name="arrow-up" size={20} /></button> : null)}
     </div>
   </div>;
@@ -471,6 +478,7 @@ export const MORPH_CSS = `
 [data-composer-morph-head-inner] { min-height: 0; overflow: hidden }
 [data-composer-morph-context] { padding-top: 16px; opacity: 0; transform: translateY(-4px); transition: opacity var(--cm-d) var(--cm-e), transform var(--cm-d) var(--cm-e) }
 [data-composer-morph-field] { height: 24px; margin: 16px 0 0; padding: 0 164px 0 0; overflow: hidden; transition: height var(--cm-d) var(--cm-e), margin var(--cm-d) var(--cm-e), padding var(--cm-d) var(--cm-e) }
+[data-composer-morph]:not(:has([data-composer-morph-chip])) [data-composer-morph-field] { padding-right: 56px }
 [data-composer-morph-spacer] { height: 16px; transition: height var(--cm-d) var(--cm-e) }
 [data-composer-morph-tools] { position: absolute; left: 10px; bottom: 16px; opacity: 0; transform: translateY(6px); visibility: hidden; transition: opacity var(--cm-d) var(--cm-e), transform var(--cm-d) var(--cm-e), visibility 0s var(--cm-d) }
 [data-composer-morph-trailing] { position: absolute; right: 8px; bottom: 8px; max-width: calc(100% - 16px); transition: right var(--cm-d) var(--cm-e), bottom var(--cm-d) var(--cm-e) }
