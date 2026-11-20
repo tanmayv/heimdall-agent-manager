@@ -40,7 +40,8 @@ c2_copilot_catalog_upgrade_preserves_profiles_defaults_and_hash :: proc(t: ^test
  service:=provider.Provider_Service{repo=&repo}
  derived,derived_err:=provider.catalog_etag(&service);defer delete(derived)
  testing.expect(t,stored_err.code==.None && derived_err.code==.None && stored==derived)
- testing.expect_value(t,stored,"sha256:a601c5c6fffc623c1824a1ffe5f7a9951fa4c2108ab48539f96390ba2c482f0c")
+ // Later release migrations update extension versions and therefore the hash.
+ // The stored/runtime-derived equality above remains valid across releases.
  pi,pi_found,_:=iface.provider_catalog_get(&repo,"pi");defer domain.provider_catalog_entry_destroy(pi)
  testing.expect(t,pi_found && pi.transports_json==`["pty"]`)
  // Replaying the migration ledger is idempotent.

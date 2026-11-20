@@ -181,7 +181,7 @@ test('ACP resolves its launch snapshot before mounting and never opens PTY hooks
     assert.ok(h.dom.window.document.querySelector('[data-debug-id="agent-acp-runtime-placeholder-inst-test"]'));
     assert.match(text, /Structured runtime — conversation and tools appear in chat/);
     assert.match(text, /0\.108\.0.*v22\.0\.0/);
-    assert.match(text, /claude \/login.*bridge host.*claude-work.*Restart agent/);
+    assert.match(text, /Authenticate this provider on the bridge host.*profile claude-work.*Restart agent/);
     assert.equal(h.dom.window.document.querySelector('[data-debug-id*="login-"]'), null, 'auth guidance adds no login/retry/cancel actions');
     assert.equal((h.dom.window.document.querySelector('button') as HTMLButtonElement).disabled, true, 'auth blockers cannot interrupt an unavailable session');
     assert.equal(Socket.instances.length, 0, 'provider setting is PTY but this ACP launch stays structured');
