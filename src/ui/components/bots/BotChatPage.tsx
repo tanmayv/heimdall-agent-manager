@@ -1,4 +1,4 @@
-import { Alert, Badge, Button, Spinner, StatusPill, Text } from '@ui';
+import { Alert, Badge, Button, Spinner, Text } from '@ui';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useDispatch } from 'react-redux';
 import {
@@ -16,19 +16,23 @@ import type { StreamRevealOptions } from '../chat/streamReveal';
 import type { ChatMessage } from '../chat/types';
 import { useIsMobile } from '../shell/responsive';
 import { BOTS_EXPERIMENT_KEY, resolveExperimentFlag } from '../settings/experimentFlags';
-import { BOT_STATUS_DETAILS, resolveBotStatusLabel } from '../settings/botsView';
+import { BOT_STATUS_DETAILS } from '../settings/botsView';
 import {
   BOT_CHANNEL_LABELS, BOT_HISTORY_PAGE_SIZE, awaitingBotReply, botChatErrorText, botChatMessages, botChatMeta,
-  botDeliveryStatus, botQueueNotice, botTimeline, checkBotComposerText, connectedBotChannels, formatBotChatTimestamp,
-  isBotComposerSend, isBotRunning, mergeBotMessages, newIdempotencyKey, visiblePendingSends, type PendingBotSend,
+  botDeliveryStatus, botQueueNotice, botTimeline, checkBotComposerText, formatBotChatTimestamp,
+  isBotComposerSend, mergeBotMessages, newIdempotencyKey, visiblePendingSends, type PendingBotSend,
 } from './botChatModel';
 
 /**
  * REQ-WEB-5: one conversation with the owner's bot across Telegram, WhatsApp and
  * the built-in web channel. Mounts nothing bot-related until the experiment and
  * the bot are known.
+ *
+ * Like the coordinator chat, the page owns the shell's top chrome row (AppShell
+ * draws no spacer on /bot): the header IS that row. `headerLeading` reserves the
+ * floating top-left cluster's width while the sidebar is collapsed.
  */
-export default function BotChatPage() {
+export default function BotChatPage({ headerLeading = null }: { headerLeading?: React.ReactNode } = {}) {
   const flags = useFetchExperimentsQuery();
   const flag = resolveExperimentFlag(flags.data?.flags, BOTS_EXPERIMENT_KEY);
   const enabled = flag === 'enabled';
@@ -36,13 +40,23 @@ export default function BotChatPage() {
   const query = useGetBotQuery(undefined, { skip: !enabled, pollingInterval: enabled ? 10000 : 0 });
   const bot = enabled ? query.currentData : undefined;
   const status = queryErrorStatus(query.error);
+  const isMobile = useIsMobile();
+  // The header is shown before the bot loads so the chrome row (and the
+  // sidebar toggle above it) never collapses; the name fills in once known.
+  const header = (
+    <header data-debug-id="bot-chat-header"
+      className={`window-drag flex ${isMobile ? 'h-14' : 'h-12'} min-w-0 shrink-0 items-center gap-2 px-3 sm:px-4`}>
+      {headerLeading ? <div data-debug-id="bot-chat-header-leading" className="flex shrink-0 items-center">{headerLeading}</div> : null}
+      <h1 data-debug-id="bot-chat-title" className={`min-w-0 truncate px-1.5 font-medium text-primary ${isMobile ? 'text-[15px]' : 'text-sm'}`}>{bot?.display_name ?? ''}</h1>
+    </header>
+  );
   let body: React.ReactNode;
   if (flag === 'loading' && !flags.isError) body = <Loading />;
   else if (!enabled) body = <div data-debug-id="bot-chat-disabled" className="m-4 min-w-0"><Alert tone="info">{botChatErrorText(403, '')}</Alert></div>;
   else if (bot) body = <BotChatView key={bot.bot_id} bot={bot} />;
   else if (query.isError) body = <div data-debug-id="bot-chat-load-error" className="m-4 min-w-0"><Alert tone="danger">{botChatErrorText(status, apiErrorText(query.error))}</Alert></div>;
   else body = <Loading />;
-  return <div data-debug-id="bot-chat-page" className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col">{body}</div>;
+  return <div data-debug-id="bot-chat-page" className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col">{header}{body}</div>;
 }
 
 function Loading() {
@@ -126,7 +140,6 @@ function BotChatView({ bot }: { bot: BotView }) {
   const waiting = awaitingBotReply(timeline, shownPending);
   const notice = botQueueNotice(bot.status, waiting);
   const headStatus = queryErrorStatus(head.error);
-  const running = isBotRunning(bot.status);
   const sendFailure = shownPending.find((row) => row.state === 'failed');
   const statusDetail = bot.status_detail ? BOT_STATUS_DETAILS[bot.status_detail] : '';
 
@@ -154,12 +167,6 @@ function BotChatView({ bot }: { bot: BotView }) {
     : <p data-debug-id="bot-chat-empty" className="py-10 text-center text-sm text-muted">No messages yet. Say hello to {bot.display_name}.</p>;
 
   return <>
-    <header data-debug-id="bot-chat-header" className="flex min-w-0 shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-subtle px-4 py-3">
-      <h1 data-debug-id="bot-chat-title" className="min-w-0 truncate text-base font-semibold text-primary">{bot.display_name}</h1>
-      <StatusPill data-debug-id="bot-chat-status" tone={bot.status === 'ready' ? 'success' : bot.status === 'working' || bot.status === 'starting' ? 'pending' : bot.status === 'waiting_for_machine' ? 'warning' : 'neutral'}
-        className="max-w-full whitespace-normal leading-normal">{resolveBotStatusLabel(bot.status)}</StatusPill>
-      <span data-debug-id="bot-chat-channels" className="min-w-0 truncate text-xs text-muted">{running ? 'Running' : 'Stopped'} · {connectedBotChannels(bot).join(' · ')}</span>
-    </header>
     {older.error ? (
       <div data-debug-id="bot-chat-older-error-row" className="flex min-w-0 shrink-0 items-center justify-center gap-2 px-4 py-2">
         <p role="alert" data-debug-id="bot-chat-older-error" className="min-w-0 text-xs text-muted">{older.error}</p>

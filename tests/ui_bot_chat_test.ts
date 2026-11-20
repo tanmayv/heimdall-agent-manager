@@ -364,8 +364,23 @@ test('chat: waiting for a machine keeps the queued state visible', async () => {
   await fixture(state, 'chat', async (h) => {
     assert.match(h.get('bot-chat-queue-notice')!.textContent!, /Waiting for a machine/);
     assert.equal(h.get('bot-chat-status-detail')!.textContent, 'None of your machines is online.');
-    assert.match(h.get('bot-chat-channels')!.textContent!, /^Stopped/);
     assert.equal(h.rows()[0].state, '✓ Queued');
+  });
+});
+
+test('chat header: one compact row with only the bot name (status lives in the sidebar and the notice)', async () => {
+  const state = hub([msg(2, { replied_at: '', read_at: '' })]);
+  state.bot = bot({ status: 'sleeping' });
+  await fixture(state, 'chat', async (h) => {
+    const header = h.get('bot-chat-header')!;
+    assert.equal(header.textContent, 'Ninjy bot', 'name only');
+    assert.equal(header.children.length, 1, 'no leading reserve when the shell passes none');
+    assert.match(header.className, /\bh-12\b/, 'desktop chrome row height (TOP_CHROME_HEIGHT), like the agent chat header');
+    assert.match(header.className, /\bwindow-drag\b/);
+    assert.doesNotMatch(header.className, /flex-wrap|border-b/);
+    for (const id of ['bot-chat-status', 'bot-chat-channels']) assert.equal(h.get(id), null, id + ' is gone from the header');
+    assert.doesNotMatch(h.doc.body.textContent!, /Asleep|wakes on your next message|Stopped ·|Running ·/);
+    assert.ok(h.get('bot-chat-queue-notice'), 'the in-chat waking/queued notice stays');
   });
 });
 
@@ -396,12 +411,19 @@ test('phone width (390px): chat and sidebar avoid fixed widths and let content w
     assert.match(bubble.parentElement!.className, /max-w-\[86%\]/, 'same user bubble as the coordinator chat');
     assert.match((h.get('bot-chat-input') as HTMLElement).className, /text-base/, '16px input avoids iOS focus zoom');
     assert.match(h.get('bot-chat-composer-shell')!.className, /ui-float-dock-pad/, 'mobile dock padding');
-    assert.match(h.get('bot-chat-header')!.className, /flex-wrap/);
+    const header = h.get('bot-chat-header')!;
+    assert.match(header.className, /\bh-14\b/, 'mobile chrome row height (MOBILE_TOP_CHROME_HEIGHT)');
+    assert.match(h.get('bot-chat-title')!.className, /\btruncate\b/, 'a long name truncates instead of wrapping');
   }, 390);
   for (const file of ['src/ui/components/bots/BotChatPage.tsx', 'src/ui/components/shell/SidebarBot.tsx']) {
     const source = readFileSync(new URL('../' + file, import.meta.url), 'utf8');
     assert.doesNotMatch(source, /\b(?:w|min-w)-\[\d+px\]/, file + ' has no fixed pixel widths');
   }
   const shell = readFileSync(new URL('../src/ui/components/shell/AppShell.tsx', import.meta.url), 'utf8');
-  assert.match(shell, /isFullHeightRoute = isDesktopTwoPaneRoute \|\| path === BOT_CHAT_ROUTE/, 'chat owns its scroller at every width');
+  // /bot owns the top chrome row like the agent workspace: no shell spacer above
+  // its header, its own full-width outlet, and the collapsed-sidebar reserve.
+  assert.match(shell, /const ownsTopChromeRow = isWorkspaceRoute \|\| path === BOT_CHAT_ROUTE;/);
+  assert.match(shell, /\{!ownsTopChromeRow \? \(\s*<div\s+aria-hidden="true"\s+data-debug-id="shell-top-spacer"/);
+  assert.match(shell, /if \(path === BOT_CHAT_ROUTE\) \{[\s\S]*?<BotChatPage headerLeading=\{workspaceLeading\} \/>[\s\S]*?\n  \}/);
+  assert.equal(shell.match(/<BotChatPage\b/g)!.length, 1, 'mounted only by the dedicated outlet');
 });

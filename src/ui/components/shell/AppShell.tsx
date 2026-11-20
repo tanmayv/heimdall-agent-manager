@@ -1167,6 +1167,21 @@ function RouteOutlet({
     );
   }
 
+  if (path === BOT_CHAT_ROUTE) {
+    // Like the conversation workspace, the bot chat owns the top chrome row (its
+    // header sits in it; AppShell draws no spacer) and its own scroller and
+    // composer at every width, full width so the header reaches the window edge.
+    return (
+      <main data-debug-id="shell-main-route-outlet" className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-canvas">
+        <ErrorBoundary resetKey={path} label={routeTitle(path)}>
+          <Suspense fallback={<p data-debug-id="shell-route-loading" className="text-sm text-muted">Loading…</p>}>
+            <BotChatPage headerLeading={workspaceLeading} />
+          </Suspense>
+        </ErrorBoundary>
+      </main>
+    );
+  }
+
   const isDesktopTwoPaneRoute =
     viewport === 'desktop' &&
     ['/projects', '/actions', '/agents', '/shells', '/memory', '/issues'].some(
@@ -1174,8 +1189,7 @@ function RouteOutlet({
     ) &&
     !path.endsWith('/new') &&
     !path.endsWith('/edit');
-  // The bot chat owns its own scroller and composer at every width (REQ-WEB-5).
-  const isFullHeightRoute = isDesktopTwoPaneRoute || path === BOT_CHAT_ROUTE;
+  const isFullHeightRoute = isDesktopTwoPaneRoute;
 
   return (
     <main
@@ -1211,8 +1225,6 @@ function RouteOutlet({
           <HomePage />
         ) : path === '/conversations' ? (
           <ConversationsHomePage />
-        ) : path === BOT_CHAT_ROUTE ? (
-          <BotChatPage />
         ) : path === '/actions' || path.startsWith('/actions/') ? (
           // REQ-EXP-GATE-2: Actions pages mount only while the experiment is enabled.
           <ActionsRouteGate>
@@ -1858,6 +1870,8 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
   const conversationTree = useMemo(() => buildProjectConversationTree(conversations, liveProjects), [conversations, liveProjects]);
   const isEffectiveCollapsed = isMobile ? !drawerOpen : collapsed;
   const isWorkspaceRoute = isAgentConversationRoute(path);
+  // Routes whose own header sits in the top chrome row, so no spacer is drawn.
+  const ownsTopChromeRow = isWorkspaceRoute || path === BOT_CHAT_ROUTE;
   const hideTopLeftCluster = isMobile && isWorkspaceRoute && isCurrentAuxPaneOpen;
   const showBrand = !isWorkspaceRoute || !isEffectiveCollapsed;
   // REQ-MAC-CHROME-1: 0 everywhere except the windowed macOS hidden title bar.
@@ -2069,13 +2083,14 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
 
       <div className="flex min-w-0 flex-1 flex-col h-full min-h-0 overflow-hidden">
         {/* The fixed top-left cluster floats over the content. On the conversation
-            workspace the top-left chat header reserves its space. Other pages draw no
+            workspace and the bot chat (/bot) the page's own header sits in that row
+            and reserves the cluster's space. Other pages draw no
             top bar: an invisible spacer reserves the cluster's row in BOTH sidebar
             states, so page content sits at the same y whether the sidebar is open or
             closed (and is never covered by the cluster). In a desktop window without
             a native title bar it is also the content column's drag region and keeps
             pages clear of the window controls. */}
-        {!isWorkspaceRoute ? (
+        {!ownsTopChromeRow ? (
           <div
             aria-hidden="true"
             data-debug-id="shell-top-spacer"

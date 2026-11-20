@@ -70,9 +70,9 @@ test('hidden sidebar renders no rail; the fixed top-left cluster compacts on age
   // cluster's row in both sidebar states, so the page's y offset never depends
   // on whether the sidebar is open (and content is never covered by the toggle).
   assert.doesNotMatch(source, /shell-top-bar/);
-  assert.match(source, /\{!isWorkspaceRoute \? \(\s*<div\s+aria-hidden="true"\s+data-debug-id="shell-top-spacer"\s+className="window-drag shrink-0"\s+style=\{\{ height: chromeHeight \}\}/);
+  assert.match(source, /\{!ownsTopChromeRow \? \(\s*<div\s+aria-hidden="true"\s+data-debug-id="shell-top-spacer"\s+className="window-drag shrink-0"\s+style=\{\{ height: chromeHeight \}\}/);
   const spacerAt = source.indexOf('data-debug-id="shell-top-spacer"');
-  const spacerBlock = source.slice(source.lastIndexOf('{!isWorkspaceRoute', spacerAt), source.indexOf('<RouteOutlet', spacerAt));
+  const spacerBlock = source.slice(source.lastIndexOf('{!ownsTopChromeRow', spacerAt), source.indexOf('<RouteOutlet', spacerAt));
   assert.doesNotMatch(spacerBlock, /isEffectiveCollapsed|sidebarCollapsed|windowChromeStyle/, 'spacer offset is independent of the sidebar state');
   assert.doesNotMatch(source, /shell-sidebar-reopen-bar/);
   // Chromium applies -webkit-app-region in DOM order: the top-left cluster (with the
