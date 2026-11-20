@@ -19,12 +19,110 @@ import {
   updateAvailabilityLabel,
   shouldWarnActiveTasks,
   getActiveTaskCount,
+  bridgeUpdateChoices,
+  bridgeUpdateChoiceLabel,
 } from '../src/ui/components/settings/bridgeUpdate.ts';
 
 // Dynamic imports run after the harness registers its Vite-style module resolver.
 const { heimdallApi } = await import('../src/ui/api/heimdallApi.ts');
 const { default: BridgesPanel } = await import('../src/ui/components/settings/BridgesPanel.tsx');
 const { default: BridgeAutoUpdateToggle } = await import('../src/ui/components/settings/BridgeAutoUpdateToggle.tsx');
+
+test('version selector sends the exact prerelease and requires renewed consent for a stable downgrade', async () => {
+  const store = configureStore({ reducer: { [heimdallApi.reducerPath]: heimdallApi.reducer },
+    middleware: (defaults) => defaults().concat(heimdallApi.middleware), enhancers: (defaults) => defaults({ autoBatch: false }) });
+  const dom = new JSDOM('<div id="root"></div>', { url: 'https://hub.example.test/', pretendToBeVisual: true });
+  const saved = new Map<string, PropertyDescriptor | undefined>();
+  for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document,
+    HTMLElement: dom.window.HTMLElement, Node: dom.window.Node, IS_REACT_ACT_ENVIRONMENT: true,
+    CSS: { escape: (value: string) => value.replace(/[^\w-]/g, '\\$&') } })) {
+    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { value, writable: true, configurable: true });
+  }
+  dom.window.HTMLElement.prototype.scrollIntoView = () => {};
+  const choices = [
+    { version: 'v0.5.70', prerelease: true, downgrade: false, artifact_available: true },
+    { version: 'v0.5.69', prerelease: true, downgrade: false, artifact_available: false },
+    { version: 'v0.5.60', prerelease: false, downgrade: true, artifact_available: true },
+  ];
+  const bridge = { bridge_id: 'bridge-online', label: 'Online bridge', status: 'online', runtime_connected: true,
+    version: '0.5.67', latest_version: '0.5.60', update_choices: choices };
+  const previousFetch = globalThis.fetch;
+  const updates: any[] = [];
+  globalThis.fetch = (async (input: any, init: any = {}) => {
+    const path = new URL(String(input), 'https://hub.example.test').pathname;
+    if (path.endsWith('/update') && init.method === 'POST') {
+      updates.push(JSON.parse(init.body));
+      return Response.json({ data: { status: 'dispatched' } });
+    }
+    if (path === '/api/v1/bridges') return Response.json({ data: [bridge] });
+    if (path.endsWith('/provider-status')) return Response.json({ data: { providers: [], extension_commands: [] } });
+    if (path.includes('pending')) return Response.json({ data: [] });
+    if (path.includes('telemetry')) return Response.json({ data: { enabled: false } });
+    if (path.includes('/events')) return Response.json({ data: { events: [] } });
+    if (path.endsWith('/auto-update')) return Response.json({ data: { enabled: true } });
+    throw new Error(`Unexpected request: ${init.method || 'GET'} ${path}`);
+  }) as typeof fetch;
+  const root = createRoot(dom.window.document.getElementById('root')!);
+  const query = (id: string) => dom.window.document.querySelector(`[data-debug-id="${id}"]`) as HTMLElement;
+  const click = async (id: string) => { assert.ok(query(id), id); await act(async () => query(id).click()); };
+  const choose = async (text: string) => {
+    await click('settings-bridge-modal-target-version');
+    const option = Array.from(dom.window.document.querySelectorAll('[role="option"]')).find((node) => node.textContent?.includes(text)) as HTMLElement;
+    assert.ok(option, text);
+    await act(async () => option.click());
+  };
+  try {
+    await act(async () => root.render(React.createElement(Provider, { store, children: React.createElement(BridgesPanel) })));
+    await click('settings-bridge-card-bridge-online');
+    await click('settings-bridge-update-btn-bridge-online');
+    assert.match(query('settings-bridge-modal-current-version').textContent || '', /v0.5.67/);
+    assert.match(query('settings-bridge-modal-target-version').textContent || '', /v0.5.70.*Prerelease/);
+    assert.equal(query('settings-bridge-downgrade-confirm'), null);
+    await click('settings-bridge-update-confirm');
+    assert.deepEqual(updates[0], { target_version: 'v0.5.70', force: false, allow_downgrade: false, update_extensions: true, drain_timeout_seconds: 60 });
+    await click('settings-bridge-update-btn-bridge-online');
+    await click('settings-bridge-modal-target-version');
+    const options = Array.from(dom.window.document.querySelectorAll('[role="option"]')) as HTMLElement[];
+    assert.equal(options.length, 3);
+    const unavailable = options.find((node) => node.textContent?.includes('v0.5.69'))!;
+    assert.equal(unavailable.getAttribute('aria-disabled'), 'true');
+    await act(async () => unavailable.click());
+    assert.match(query('settings-bridge-modal-target-version').textContent || '', /v0.5.70/);
+    const stable = options.find((node) => node.textContent?.includes('v0.5.60'))!;
+    await act(async () => stable.click());
+    assert.match(query('settings-bridge-modal-target-version').textContent || '', /Latest stable.*Downgrade/);
+    assert.equal((query('settings-bridge-update-confirm') as HTMLButtonElement).disabled, true);
+    await click('settings-bridge-update-confirm');
+    assert.equal(updates.length, 1, 'no request before explicit confirmation');
+    await click('settings-bridge-downgrade-confirm');
+    assert.equal((query('settings-bridge-update-confirm') as HTMLButtonElement).disabled, false);
+    await choose('v0.5.70');
+    await choose('v0.5.60');
+    assert.equal((query('settings-bridge-downgrade-confirm') as HTMLInputElement).checked, false, 'changing targets clears consent');
+    await click('settings-bridge-downgrade-confirm');
+    await click('settings-bridge-update-confirm');
+    assert.deepEqual(updates[1], { target_version: 'v0.5.60', force: false, allow_downgrade: true, update_extensions: true, drain_timeout_seconds: 60 });
+    await click('settings-bridge-update-btn-bridge-online');
+    await choose('v0.5.60');
+    assert.equal((query('settings-bridge-downgrade-confirm') as HTMLInputElement).checked, false, 'reopening clears consent');
+  } finally {
+    await act(async () => root.unmount());
+    store.dispatch(heimdallApi.util.resetApiState());
+    globalThis.fetch = previousFetch;
+    dom.window.close();
+    for (const [key, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete (globalThis as any)[key];
+    }
+  }
+});
+
+test('empty release lists never fall back to an unrelated latest target', () => {
+  assert.deepEqual(bridgeUpdateChoices({ latest_version: '1.0.0', update_choices: [] }), []);
+  assert.deepEqual(bridgeUpdateChoices({}), []);
+  assert.match(bridgeUpdateChoiceLabel({ version: 'v1.0.0', prerelease: false, downgrade: true, artifact_available: true }), /^v1.0.0 · Latest stable · Downgrade$/);
+});
 
 test('automatic updates read and persist only the selected bridge, preserving errors and offline state', async () => {
   const dom = new JSDOM('<div id="root"></div>', { url: 'https://hub.example.test/' });
@@ -290,6 +388,7 @@ test('ThisMachineCard retries a failed Re-enroll as Re-enroll and labels the fai
     Object.defineProperty(globalThis, key, { value, writable: true, configurable: true });
   }
   const runs: Array<{ kind: string; options: any }> = [];
+  const selectedUpdates: string[] = [];
   let listener: ((event: any) => void) | null = null;
   const manager: any = {
     getConfig: async () => ({ ok: true, supported: true, platform: 'linux', hubUrl: 'https://hub.example.test', defaultHubUrl: 'https://hub.example.test', bundledVersion: '' }),
@@ -310,8 +409,11 @@ test('ThisMachineCard retries a failed Re-enroll as Re-enroll and labels the fai
     await act(async () => { element!.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })); });
   };
   try {
-    await act(async () => { root.render(renderCard({ manager })); });
+    await act(async () => { root.render(renderCard({ manager, onUpdate: (id: string) => selectedUpdates.push(id) })); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await click('settings-this-machine-update-btn');
+    assert.deepEqual(selectedUpdates, ['brg_this'], 'local Update opens the shared selector for the linked bridge');
+    assert.deepEqual(runs, [], 'selection does not start a desktop latest-release operation');
     await click('settings-this-machine-reenroll-btn');
     await click('settings-this-machine-confirm-ok');
     assert.deepEqual(runs, [{ kind: 'reenroll', options: { bridgeId: 'brg_this', inAppApproval: true } }]);

@@ -44,7 +44,10 @@ ACP_CLAUDE_DESCRIPTOR :: ACP_Provider_Descriptor{
 ACP_COPILOT_DESCRIPTOR :: ACP_Provider_Descriptor{
     provider = "copilot", id = "copilot-acp", display_name = "Copilot", revision = 1, launch = .Native,
     pkg = {"@github/copilot", "1.0.114", "sha512-qhiUzWGAu3v9jRMU62YFpoI/x9/sQJbylUU2rNrKpTgJSw+jRX7eee0RKf/ZC/FfOPtuACpXWNBQrf08WhVEEw=="},
-    platforms = {{"linux", "amd64", {"@github/copilot-linux-x64", "1.0.114", "sha512-gHnINm9ffFqz+G19cQUqRe3lsTAQO3Tbdj7r7Bx1ktZvC5X6iXd/nfo1DRTj9magb52aGRiuwB3yvD1lkW68xQ=="}}},
+    platforms = {
+        {"linux", "amd64", {"@github/copilot-linux-x64", "1.0.114", "sha512-gHnINm9ffFqz+G19cQUqRe3lsTAQO3Tbdj7r7Bx1ktZvC5X6iXd/nfo1DRTj9magb52aGRiuwB3yvD1lkW68xQ=="}},
+        {"darwin", "arm64", {"@github/copilot-darwin-arm64", "1.0.114", "sha512-Mw47DTwMNDG0bb4t1rVu7S+ekdThIGGitpG28/wGpACZ0lFhYnpNEoSJ7hHBM3oix4b/w6+ZcmxE9J9MngsR9Q=="}},
+    },
     command = "copilot", args = {"--acp", "--stdio"}, env = {{"COPILOT_AUTO_UPDATE", "false"}},
     protocol_version = 1, node_min_major = 22,
     cli_command = "copilot", cli_package = "@github/copilot", cli_version = "1.0.114",

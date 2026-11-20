@@ -127,6 +127,29 @@ the provider registration stay. Removing a provider's extension from the hub
 is installed. Uninstalling any account, in any order, leaves the others' agents
 working.
 
+## Choosing a bridge release
+
+In **Settings → Bridges**, open a bridge and choose **Update**. The version
+selector shows prereleases newer than the running version and the latest stable
+release. Prereleases are labeled; a stable release older than the running version
+is labeled **Downgrade** and requires a separate confirmation checkbox. Changing
+the selected version or reopening the dialog clears that confirmation. The
+desktop **This machine → Update** action opens the same selector.
+
+Releases without this machine's bundle or `SHA256SUMS` are visible but disabled.
+The Hub refreshes release metadata in the background every 30 minutes, including
+paginated release lists. A failed refresh keeps the last complete list. Before
+metadata is loaded, the manifest/operator target remains the fallback.
+
+The request carries the exact selected `target_version`; older targets require
+`allow_downgrade: true`, independently of force/drain settings. The Hub resolves
+that release's SHA-256 digest before dispatch. The bridge verifies the downloaded
+bundle and checks its reported version before stopping agents, then uses the
+existing `ham-bridge update --bundle` transaction and health-checked rollback.
+Downgrades use the current updater to run the older bundle's setup command.
+This manual path stages a verified bundle; the CLI's `update --version` resolves
+and stages a release locally before reaching the same setup transaction.
+
 ## Automatic bridge updates
 
 Installed profiles check for promoted releases about every six hours, with 10%

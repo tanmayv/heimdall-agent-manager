@@ -98,7 +98,7 @@ acp_inbox_interrupt_pending :: proc(r: ^ACP_Runtime) {
 // mutex is needed, including while the Hub/vault is disconnected.
 acp_runtime_drain :: proc(r: ^ACP_Runtime) {
     if !acp_runtime_current(r) || !r.d.ready || r.d.error != "" || r.d.exit_pending || r.d.steering_pending || len(r.d.queue) == 0 do return
-    if r.chat != nil && (!acp_chat_vault_ready() || acp_chat_bytes(r.chat) > 1536*1024) do return
+    if r.chat != nil && (!acp_chat_can_process(r) || acp_chat_bytes(r.chat) > 1536*1024) do return
     steer := -1
     batch := false
     for input, i in r.d.queue {
@@ -178,6 +178,7 @@ acp_inbox_steering_result :: proc(data: rawptr, result: ACP_RPC_Result) {
     }
     input := r.d.steering_input; r.d.steering_input = {}; r.d.steering_pending = false
     if outcome == "injected" {
+        if input.id!="" && r.d.phase=="prompt" do acp_chat_boundary(r)
         acp_inbox_remember(r, input.id); acp_inbox_input_delete(input)
     } else {
         if !result.ok do r.d.steering_supported = false

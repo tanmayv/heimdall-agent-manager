@@ -62,3 +62,18 @@ acp_descriptor_recipe_rejects_substitution_and_unknown_fields :: proc(t: ^testin
     testing.expect(t, !acp_recipe_valid(`{"command":"claude-agent-acp","args":[],"env":{"CLAUDE_AGENT_ACP_PROTOCOL":"v1","EXTRA":"value"},"protocol_version":1,"adapter_package":"@agentclientprotocol/claude-agent-acp","adapter_version":"0.108.0"}`))
     testing.expect(t, !acp_recipe_valid(`{"command":"claude-agent-acp","args":[],"env":{"CLAUDE_AGENT_ACP_PROTOCOL":"v1"},"protocol_version":1,"adapter_package":"@agentclientprotocol/claude-agent-acp","adapter_version":"0.108.0","unknown":true}`))
 }
+
+@(test)
+acp_copilot_platforms_pin_only_linux_amd64_and_darwin_arm64 :: proc(t: ^testing.T) {
+    d, known := acp_provider_descriptor("copilot")
+    testing.expect(t, known && len(d.platforms) == 2)
+    linux, supported := acp_descriptor_platform_package(d, "linux", "amd64")
+    testing.expect(t, supported && linux.name == "@github/copilot-linux-x64" && linux.version == "1.0.114")
+    darwin, darwin_supported := acp_descriptor_platform_package(d, "darwin", "arm64")
+    testing.expect(t, darwin_supported && darwin.name == "@github/copilot-darwin-arm64" && darwin.version == "1.0.114")
+    testing.expect_value(t, darwin.integrity, "sha512-Mw47DTwMNDG0bb4t1rVu7S+ekdThIGGitpG28/wGpACZ0lFhYnpNEoSJ7hHBM3oix4b/w6+ZcmxE9J9MngsR9Q==")
+    for target in ([][2]string{{"linux", "arm64"}, {"darwin", "amd64"}, {"windows", "amd64"}, {"windows", "arm64"}, {"freebsd", "amd64"}, {"", ""}}) {
+        _, supported := acp_descriptor_platform_package(d, target[0], target[1])
+        testing.expect(t, !supported)
+    }
+}

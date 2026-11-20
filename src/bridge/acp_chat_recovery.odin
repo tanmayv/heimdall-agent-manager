@@ -95,6 +95,7 @@ acp_chat_recover_journal :: proc(path:string) -> bool {
     defer {acp_chat_destroy(&r);delete(r.saved_outbox)}
     if !acp_chat_prepare(&r) do return false
     if r.chat.d.publication_failed do return false
+    if !acp_chat_resume_deferred(&r) do return false
     if r.chat.d.status=="pending" {
         acp_runtime_replace(&r.chat.d.status,"failed")
         acp_runtime_replace(&r.chat.d.stop_reason,"acp_turn_interrupted")

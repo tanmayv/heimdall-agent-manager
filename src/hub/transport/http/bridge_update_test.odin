@@ -20,6 +20,65 @@ import bridge_runtime_service "odin_test:hub/service/bridge_runtime"
 import bridge_service "odin_test:hub/service/bridge"
 import project_service "odin_test:hub/service/project"
 import user_service "odin_test:hub/service/user"
+import httpc "odin_test:lib/httpc"
+
+update_choices_wire_get :: proc(req: httpc.Request) -> (string, bool, string) {
+    if req.path[len(req.path)-1] == "SHA256SUMS" {
+        return "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  heimdall-local-linux-amd64-v0.5.70.tar.gz\n0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  heimdall-local-linux-amd64-v0.5.60.tar.gz\n", true, ""
+    }
+    return `[{"tag_name":"v0.5.70","prerelease":true,"assets":[{"name":"SHA256SUMS"},{"name":"heimdall-local-linux-amd64-v0.5.70.tar.gz"}]},{"tag_name":"v0.5.60","prerelease":false,"assets":[{"name":"SHA256SUMS"},{"name":"heimdall-local-linux-amd64-v0.5.60.tar.gz"}]}]`, true, ""
+}
+
+@(test)
+test_bridge_update_choices_wire_passthrough_and_explicit_downgrade :: proc(t: ^testing.T) {
+    f := setup_update_test_fixture(t, "choices")
+    defer teardown_update_test_fixture(f)
+    br, _, _ := iface.bridge_get_bridge(&f.br_repo, f.bridge_id)
+    br.status, br.version, br.machine_os, br.machine_arch = .Online, "0.5.67", "linux", "amd64"
+    _, _, _ = iface.bridge_save_bridge(&f.br_repo, br)
+    _, _, _ = bridge_runtime_service.runtime_accept_hello(&f.registry, f.bridge_id, bridge_runtime_service.PROTOCOL_VERSION, "")
+    catalog := bridge_service.Bridge_Update_Catalog{release_get = update_choices_wire_get}
+    defer bridge_service.bridge_update_catalog_destroy(&catalog)
+    _, _ = bridge_service.bridge_catalog_refresh(&catalog)
+    f.br_svc.catalog = &catalog
+    b := strings.builder_make(context.temp_allocator)
+    write_bridge_json(&b, br, &f.ag_svc, &catalog)
+    wire := strings.to_string(b)
+    testing.expect(t, strings.contains(wire, `"update_choices":[`))
+    testing.expect(t, strings.contains(wire, `"version":"v0.5.70","prerelease":true,"downgrade":false`))
+    testing.expect(t, strings.contains(wire, `"version":"v0.5.60","prerelease":false,"downgrade":true`))
+    req := Request{method = "POST", path = fmt.tprintf("/api/v1/bridges/%s/update", f.bridge_id),
+        headers = f.user_headers, remote_addr = "127.0.0.1:4444", request_id = "choice-update"}
+    for body in ([]string{
+        `{"target_version":"v0.5.60","force":true}`,
+        `{"target_version":"v0.5.60","allow_downgrade":false}`,
+        `{"target_version":"v0.5.60","allow_downgrade":"true"}`,
+        `{"target_version":"v0.5.60","allow_downgrade":null}`,
+        `{"target_version":"v0.5.59","allow_downgrade":true}`,
+    }) {
+        req.body = body
+        resp := bridge_update_handler(&f.bh, req)
+        testing.expect_value(t, resp.status, 400)
+        testing.expect(t, !f.sink_rec.sent, "unconfirmed downgrade/unknown target never dispatches")
+    }
+    req.body = `{"target_version":"v0.5.70"}`
+    resp := bridge_update_handler(&f.bh, req)
+    testing.expect_value(t, resp.status, 202)
+    testing.expect(t, f.sink_rec.sent)
+    testing.expect(t, strings.contains(f.sink_rec.last_cmd.body_json, `"target_version":"v0.5.70"`))
+    testing.expect(t, strings.contains(f.sink_rec.last_cmd.body_json, "/v0.5.70/heimdall-local-linux-amd64-v0.5.70.tar.gz"))
+    testing.expect(t, strings.contains(f.sink_rec.last_cmd.body_json, `"sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"`))
+    delete(f.sink_rec.last_cmd.bridge_id)
+    delete(f.sink_rec.last_cmd.command_id)
+    delete(f.sink_rec.last_cmd.body_json)
+    f.sink_rec = {}
+    req.body = `{"target_version":"v0.5.60","allow_downgrade":true}`
+    resp = bridge_update_handler(&f.bh, req)
+    testing.expect_value(t, resp.status, 202)
+    testing.expect(t, f.sink_rec.sent)
+    testing.expect(t, strings.contains(f.sink_rec.last_cmd.body_json, `"allow_downgrade":true`))
+    testing.expect(t, strings.contains(f.sink_rec.last_cmd.body_json, "/v0.5.60/heimdall-local-linux-amd64-v0.5.60.tar.gz"))
+}
 
 @(private = "file")
 update_test_counter: int = 0

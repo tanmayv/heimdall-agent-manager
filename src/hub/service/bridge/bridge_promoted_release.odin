@@ -207,6 +207,8 @@ bridge_update_catalog_destroy :: proc(catalog: ^Bridge_Update_Catalog) {
 	sync.mutex_lock(&catalog.snapshot_mutex)
 	defer sync.mutex_unlock(&catalog.snapshot_mutex)
 	for &entry in catalog.snapshot do bridge_catalog_entry_destroy(&entry)
+	bridge_catalog_choices_destroy(catalog.choices)
+	catalog.choices, catalog.choices_loaded = nil, false
 }
 
 bridge_catalog_slot :: proc(target, pin: string) -> int {
@@ -267,7 +269,17 @@ bridge_catalog_refresh :: proc(catalog: ^Bridge_Update_Catalog) -> (reachable, t
 			}
 		}
 	}
+	choices, choices_ok := bridge_catalog_fetch_choices(&memo)
 	sync.mutex_lock(&catalog.snapshot_mutex)
+	if choices_ok {
+		bridge_catalog_choices_destroy(catalog.choices)
+		catalog.choices = make([]Bridge_Catalog_Choice, len(choices), runtime.default_allocator())
+		for item, i in choices {
+			catalog.choices[i] = item
+			catalog.choices[i].tag = strings.clone(item.tag, runtime.default_allocator())
+		}
+		catalog.choices_loaded = true
+	}
 	for &entry, i in fresh {
 		if !entry.populated do continue
 		current := &catalog.snapshot[i]
