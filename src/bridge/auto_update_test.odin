@@ -178,6 +178,9 @@ test_auto_update_resolve_github_fallback :: proc(t: ^testing.T) {
 test_auto_update_quiet_admission :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	// Tick tests clear bridge_auto_update_reserved_until; keep them out.
+	sync.mutex_lock(&auto_test_mutex)
+	defer sync.mutex_unlock(&auto_test_mutex)
 	defer {
 		sync.mutex_lock(&bridge_auto_update_mutex)
 		bridge_auto_update_reserved_until = 0
@@ -203,6 +206,9 @@ auto_update_test_empty_host :: proc(socket: string) -> (Pty_Host_Reply, bool) {
 test_auto_update_quiet_preserved_pty_agent :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	// Tick tests clear bridge_auto_update_reserved_until; keep them out.
+	sync.mutex_lock(&auto_test_mutex)
+	defer sync.mutex_unlock(&auto_test_mutex)
 	// No current-process launch exists, as after a bridge restart.
 	sync.mutex_lock(&bridge_runtime_mutex)
 	count := len(bridge_runtime_launches)
@@ -426,6 +432,17 @@ test_auto_update_tick_max_defer_zero_never_forces :: proc(t: ^testing.T) {
 	testing.expect(t, bridge_auto_update_write(path, {next_check_ms = CHECK, force_at_ms = CHECK + 25 * HOUR_MS, force_version = "v999.0.0"}))
 	bridge_auto_update_tick("profile-z", config, path, &quiet, CHECK + 25 * HOUR_MS, auto_test_resolve, auto_test_spawn_argv, auto_test_quiet, auto_test_force_hooks)
 	testing.expect_value(t, auto_test_last_stage(), "failed")
+	testing.expectf(t, strings.contains(auto_test_messages[len(auto_test_messages) - 1], "= 0"), "cancel reason: %s", auto_test_messages[len(auto_test_messages) - 1])
+	testing.expect_value(t, auto_test_stops, 0)
+	testing.expect_value(t, bridge_auto_update_read(path).force_at_ms, i64(0))
+
+	// Raising the setting (not zeroing it) withdraws the force without blaming "= 0".
+	testing.expect(t, os.write_entire_file(config, transmute([]byte)string("[bridge]\nauto_update_max_defer_hours = 48\n")) == nil)
+	testing.expect(t, bridge_auto_update_write(path, {next_check_ms = CHECK, force_at_ms = CHECK + 25 * HOUR_MS, force_version = "v999.0.0"}))
+	bridge_auto_update_tick("profile-z", config, path, &quiet, CHECK + 25 * HOUR_MS, auto_test_resolve, auto_test_spawn_argv, auto_test_quiet, auto_test_force_hooks)
+	testing.expect_value(t, auto_test_last_stage(), "failed")
+	last := auto_test_messages[len(auto_test_messages) - 1]
+	testing.expectf(t, strings.contains(last, "was raised") && !strings.contains(last, "= 0"), "cancel reason: %s", last)
 	testing.expect_value(t, auto_test_stops, 0)
 	testing.expect_value(t, bridge_auto_update_read(path).force_at_ms, i64(0))
 }

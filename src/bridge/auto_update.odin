@@ -208,7 +208,11 @@ bridge_auto_update_tick :: proc(
 			if max_defer > 0 && now >= state.next_check_ms + max_defer {
 				bridge_auto_update_force_step(service, path, &state, now, resolve, spawn, hooks)
 			} else {
-				bridge_auto_update_cancel_force(path, &state, hooks, "forcing was turned off (auto_update_max_defer_hours = 0)")
+				// Not forcing now: either forcing is off, or auto_update_max_defer_hours
+				// was raised so the update is no longer overdue enough.
+				reason := "forcing was turned off (auto_update_max_defer_hours = 0)"
+				if max_defer > 0 do reason = "auto_update_max_defer_hours was raised, so the update is not overdue yet"
+				bridge_auto_update_cancel_force(path, &state, hooks, reason)
 			}
 		} else if quiet_since^ == 0 {
 			quiet_since^ = now
