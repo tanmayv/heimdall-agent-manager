@@ -191,3 +191,43 @@ acp_provider_legacy_journal_migrates_without_new_turn_and_ambiguous_requires_res
     acp_test_wait(t, &next.f, .Acks, 1); delete(string(id))
     sync.mutex_lock(&next.f.mu); testing.expect_value(t, len(next.f.writes), 0); sync.mutex_unlock(&next.f.mu)
 }
+
+@(test)
+acp_kiro_version_argv_and_binding_use_minimum :: proc(t: ^testing.T) {
+    context.allocator = context.temp_allocator
+    d := contracts.ACP_KIRO_DESCRIPTOR
+    for pair in ([][2]string{{"kiro-cli 3.5.0\n", "3.5.0"}, {"kiro-cli 3.10.2 (stable)\n", "3.10.2"}, {"kiro-cli 3.4.0", "3.4.0"}}) {
+        version, valid := acp_provider_parse_cli_version(d, pair[0])
+        testing.expectf(t, valid && version == pair[1], "%q parses as %s", pair[0], pair[1])
+    }
+    for output in ([]string{"3.5.0", "Kiro CLI 3.5.0", "kiro-cli v3.5.0", "kiro-cli 3.5", "warning\nkiro-cli 3.5.0", "kiro-cli 3.5.0-beta.1", ""}) {
+        version, valid := acp_provider_parse_cli_version(d, output)
+        testing.expectf(t, !valid, "%q rejected (got %s)", output, version)
+    }
+    argv, built := acp_provider_launch_argv(d, "/unused/root", "/opt/kiro/bin/kiro-cli")
+    testing.expect(t, built && len(argv) == 4 && argv[0] == "/opt/kiro/bin/kiro-cli" && argv[1] == "acp" && argv[2] == "--agent-engine" && argv[3] == "v3")
+    _, built = acp_provider_launch_argv(d, "/unused/root", "")
+    testing.expect(t, !built, "an undetected system CLI never falls back to a managed root")
+    binding := acp_provider_binding(d, "work", "3.6.1", "AGENTS.md", 3)
+    testing.expect(t, acp_provider_binding_valid(binding))
+    binding.cli_version = "3.4.9"
+    testing.expect(t, !acp_provider_binding_valid(binding))
+    testing.expect_value(t, acp_adapter_runtime_kind(d), "system")
+    when ODIN_OS == .Linux || ODIN_OS == .Darwin do testing.expect(t, acp_adapter_platform_supported(d))
+}
+
+@(test)
+acp_kiro_profile_config_dir_moves_settings_and_credentials :: proc(t: ^testing.T) {
+    p := Provider_Profile{provider = "kiro", config = {config_dir = "/p/kiro"},
+        environment = {{name = "KIRO_HOME", value = "/env/kiro"}, {name = "XDG_DATA_HOME", value = "/env/data"}}}
+    joined := strings.join(profile_apply_env_plan([]string{"HOME=/bridge", "XDG_DATA_HOME=/bridge/.local/share", "PATH=/bin"}, profile_env_plan(&p)), "\n", context.temp_allocator)
+    testing.expect(t, strings.contains(joined, "KIRO_HOME=/p/kiro") && strings.contains(joined, "XDG_DATA_HOME=/p/kiro/data"))
+    testing.expect(t, !strings.contains(joined, "/env/") && !strings.contains(joined, "/bridge/.local/share") && strings.contains(joined, "HOME=/bridge"))
+    // Without a config directory the user's own Kiro login is inherited.
+    p.config.config_dir = ""; p.environment = nil
+    inherited := strings.join(profile_apply_env_plan([]string{"HOME=/bridge"}, profile_env_plan(&p)), "\n", context.temp_allocator)
+    testing.expect(t, !strings.contains(inherited, "KIRO_HOME") && !strings.contains(inherited, "XDG_DATA_HOME"))
+    copilot := Provider_Profile{provider = "copilot", config = {config_dir = "/p/copilot"}}
+    plan := profile_env_plan(&copilot)
+    testing.expect_value(t, len(plan.set), 0)
+}

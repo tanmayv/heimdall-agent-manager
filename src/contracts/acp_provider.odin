@@ -4,7 +4,9 @@ import "core:strings"
 
 // This is executable policy compiled into Heimdall, not a catalog-supplied
 // shell recipe. Adding a provider requires an explicit reviewed registry entry.
-ACP_Launch_Kind :: enum { Adapter, Native }
+// System runtimes are user-installed CLIs detected on the bridge host (PATH or
+// the profile binary_path); Heimdall never installs or pins them.
+ACP_Launch_Kind :: enum { Adapter, Native, System }
 ACP_Permission_Policy :: enum { Session_Mode, Once_Only }
 ACP_Package_Pin :: struct {
     name, version, integrity: string,
@@ -19,6 +21,10 @@ ACP_Provider_Descriptor :: struct {
     launch: ACP_Launch_Kind,
     pkg: ACP_Package_Pin,
     platforms: []ACP_Platform_Pin,
+    // System only: the operating systems the CLI ships for, and the label that
+    // precedes the version in its `--version` output.
+    system_os: []string,
+    cli_version_prefix: string,
     command: string,
     args: []string,
     env: [][2]string,
@@ -56,11 +62,26 @@ ACP_COPILOT_DESCRIPTOR :: ACP_Provider_Descriptor{
     permission_policy = .Once_Only, model_category = "model",
 }
 
+// Kiro is detect-only: pkg names the user-installed CLI and pkg.version is the
+// minimum accepted version, not a pin. Pass no v2-only flags (--model, --agent,
+// --trust-all-tools): any of them silently switches `kiro-cli acp` to the v2
+// engine. Credentials live under XDG_DATA_HOME, settings under KIRO_HOME.
+ACP_KIRO_DESCRIPTOR :: ACP_Provider_Descriptor{
+    provider = "kiro", id = "kiro-acp", display_name = "Kiro", revision = 1, launch = .System,
+    pkg = {"kiro-cli", "3.5.0", ""}, system_os = {"linux", "darwin"},
+    command = "kiro-cli", args = {"acp", "--agent-engine", "v3"},
+    protocol_version = 1,
+    cli_command = "kiro-cli", cli_version_prefix = "kiro-cli ",
+    bootstrap_filename = "AGENTS.md",
+    auth_guidance = "Run kiro-cli login --use-device-flow on the bridge host using the selected provider profile (its KIRO_HOME and XDG_DATA_HOME), or configure the profile's sensitive KIRO_API_KEY environment row, then restart this instance.",
+    permission_policy = .Once_Only, model_category = "model",
+}
+
 // Persistent backing storage is required: returning a descriptor copied from
 // a constant slice literal leaves its nested env/argv slices on the caller's
 // stack in Odin. Descriptors returned by lookup retain these immutable arrays.
 @(private)
-acp_provider_descriptors := [?]ACP_Provider_Descriptor{ACP_CLAUDE_DESCRIPTOR, ACP_COPILOT_DESCRIPTOR}
+acp_provider_descriptors := [?]ACP_Provider_Descriptor{ACP_CLAUDE_DESCRIPTOR, ACP_COPILOT_DESCRIPTOR, ACP_KIRO_DESCRIPTOR}
 
 acp_provider_descriptor :: proc(provider: string) -> (ACP_Provider_Descriptor, bool) {
     for d in acp_provider_descriptors do if d.provider == provider do return d, true
@@ -69,18 +90,29 @@ acp_provider_descriptor :: proc(provider: string) -> (ACP_Provider_Descriptor, b
 
 // Shape validation is separate from registry membership. Native providers must
 // bind their CLI pin and every supported native platform package; adapters bind
-// the resolved underlying executable. Neither shape enables a provider.
+// the resolved underlying executable; system CLIs bind a minimum version and the
+// operating systems they ship for. No shape enables a provider.
 acp_descriptor_shape_valid :: proc(d: ACP_Provider_Descriptor) -> bool {
     if d.provider == "" || d.id == "" || d.revision < 1 || d.protocol_version != 1 ||
        d.command == "" || d.cli_command == "" || !exact_adapter_version(d.pkg.version) ||
-       !strings.has_prefix(d.pkg.integrity, "sha512-") || len(d.pkg.integrity) != 95 ||
-       d.pkg.name == "" || d.node_min_major < 22 || d.bootstrap_filename == "" ||
+       d.pkg.name == "" || d.bootstrap_filename == "" ||
        strings.contains_any(d.bootstrap_filename, "/\\") || strings.contains(d.bootstrap_filename, "..") ||
        d.auth_guidance == "" || d.model_category == "" { return false }
     switch d.launch {
-    case .Adapter: if d.executable_env == "" do return false
-    case .Native:
-        if d.executable_env != "" || d.cli_package != d.pkg.name || d.cli_version != d.pkg.version || len(d.platforms) == 0 do return false
+    case .Adapter, .Native:
+        if !strings.has_prefix(d.pkg.integrity, "sha512-") || len(d.pkg.integrity) != 95 || d.node_min_major < 22 ||
+           len(d.system_os) != 0 || d.cli_version_prefix != "" { return false }
+        if d.launch == .Adapter && d.executable_env == "" do return false
+        if d.launch == .Native && (d.executable_env != "" || d.cli_package != d.pkg.name || d.cli_version != d.pkg.version || len(d.platforms) == 0) do return false
+    case .System:
+        // Nothing is downloaded, so there is no integrity, Node or platform pin.
+        if d.pkg.integrity != "" || d.node_min_major != 0 || d.executable_env != "" || d.cli_package != "" ||
+           d.cli_version != "" || len(d.platforms) != 0 || d.pkg.name != d.cli_command ||
+           d.cli_version_prefix == "" || len(d.system_os) == 0 { return false }
+        for name, i in d.system_os {
+            if name == "" do return false
+            for previous in d.system_os[:i] do if previous == name do return false
+        }
     case: return false
     }
     for pin, i in d.platforms {
@@ -93,6 +125,26 @@ acp_descriptor_shape_valid :: proc(d: ACP_Provider_Descriptor) -> bool {
     case .Once_Only: return d.permission_category == "" && d.ask_mode == "" && d.yolo_mode == ""
     }
     return false
+}
+
+// A detected CLI version is acceptable when it is an exact numeric version and
+// matches the pin, or, for system CLIs, is at least the minimum.
+acp_descriptor_cli_version_accepted :: proc(d: ACP_Provider_Descriptor, version: string) -> bool {
+    if !exact_adapter_version(version) do return false
+    if d.launch == .System do return acp_semver_compare(version, d.pkg.version) >= 0
+    return d.cli_version == "" || d.cli_version == version
+}
+
+// Both inputs must already be exact numeric versions.
+acp_semver_compare :: proc(a, b: string) -> int {
+    pa := strings.split(a, ".", context.temp_allocator)
+    pb := strings.split(b, ".", context.temp_allocator)
+    for i in 0..<min(len(pa), len(pb)) {
+        // Equal-length digit strings without leading zeros compare lexically.
+        if len(pa[i]) != len(pb[i]) do return -1 if len(pa[i]) < len(pb[i]) else 1
+        if pa[i] != pb[i] do return -1 if pa[i] < pb[i] else 1
+    }
+    return len(pa) - len(pb)
 }
 
 acp_descriptor_recipe_matches :: proc(d: ACP_Provider_Descriptor, r: ACP_Recipe) -> bool {
@@ -125,6 +177,11 @@ acp_descriptor_effective_mode_valid :: proc(d: ACP_Provider_Descriptor, mode: st
     case .Session_Mode: return mode != "" && (mode == d.ask_mode || mode == d.yolo_mode)
     case .Once_Only: return mode == "ask" || mode == "yolo"
     }
+    return false
+}
+
+acp_descriptor_system_os_supported :: proc(d: ACP_Provider_Descriptor, os: string) -> bool {
+    for supported in d.system_os do if supported == os do return true
     return false
 }
 

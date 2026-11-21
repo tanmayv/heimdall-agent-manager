@@ -555,7 +555,7 @@ acp_runtime_build_spawn :: proc(r: ^ACP_Runtime, endpoint, token: string, pp: ^P
     d, known := contracts.acp_provider_descriptor(pp.provider)
     if !known do return {}, false
     resolved := ""
-    if d.launch == .Native {
+    if d.launch == .Native || d.launch == .System {
         command := pp.config.binary_path if pp.config.binary_path != "" else d.cli_command
         resolved = profile_resolve_binary(command, full)
     }
