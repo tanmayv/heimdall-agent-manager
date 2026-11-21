@@ -72,8 +72,16 @@ acp_adapter_ready :: proc(raw, recipe: string, provider: string = "claude") -> b
  if !sok || !iok || !vok || !cok || state!="ready" || !bool(installed) || checked=="" do return false
  if kind, present := obj["runtime_kind"]; present {
   name, valid := kind.(json.String)
-  expected := "adapter" if d.launch == .Adapter else "native"
+  expected := "adapter"
+  switch d.launch {
+  case .Adapter: expected = "adapter"
+  case .Native: expected = "native"
+  case .System: expected = "system"
+  }
   if !valid || string(name) != expected do return false
+ } else if d.launch == .System {
+  // Detect-only runtimes only exist on bridges that report their kind.
+  return false
  }
  if identity, present := obj["provider"]; present {
   name, valid := identity.(json.String)
@@ -83,6 +91,8 @@ acp_adapter_ready :: proc(raw, recipe: string, provider: string = "claude") -> b
   name, valid := profile.(json.String)
   if !valid || string(name) != provider do return false
  }
+ // A detected system CLI reports its own version, which must meet the minimum.
+ if d.launch == .System do return contracts.acp_descriptor_cli_version_accepted(d, string(version))
  return string(version)==d.pkg.version
 }
 
