@@ -11,6 +11,8 @@ import type { RuntimeTransport } from '../../components/providers/providerRuntim
 export interface AgentInstance extends AgentInstanceTokenFields {
   runtime_transport: RuntimeTransport;
   launch_epoch?: string;
+  /** Why the Hub last stopped this run (e.g. coordinator_idle); '' when it did not. */
+  stop_reason?: string;
   [field: string]: any;
 }
 export function normalizeAgentInstance(raw: any): AgentInstance {

@@ -67,3 +67,21 @@ export function agentFailureSummary(lastError: any): { label: string; detail: st
 // Keep the tone helper exported for potential reuse; it is intentionally not
 // used by the two functions' public contract but mirrors the original module.
 export { agentRuntimeDotTone };
+
+// Why the Hub stopped an instance (instance JSON / agent_instance events
+// `stop_reason`, written by stop_instance and cleared on the next run). Only a
+// stopped or stopping instance shows it; '' means "nothing to say".
+const STOP_REASON_LABELS: Record<string, string> = {
+  coordinator_idle_completed: 'Stopped automatically: idle after its chain completed',
+  coordinator_idle: 'Stopped automatically: no user activity',
+  bot_idle: 'Stopped automatically: bot idle',
+};
+
+export function agentStopReasonLabel(runtimeStatus: unknown, stopReason: unknown): string {
+  const status = String(runtimeStatus || '').toLowerCase();
+  const reason = String(stopReason || '').trim();
+  if (!reason || (status !== 'stopped' && status !== 'stopping')) return '';
+  if (STOP_REASON_LABELS[reason]) return STOP_REASON_LABELS[reason];
+  if (reason.startsWith('user')) return 'Stopped by you';
+  return `Stopped: ${reason.replace(/_/g, ' ')}`;
+}

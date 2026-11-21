@@ -40,6 +40,9 @@ Agent_Add_Token_Totals_Proc :: proc(ctx: rawptr, instance_id, bridge_id: string,
 // cannot roll it back.
 Agent_Touch_User_Activity_Proc :: proc(ctx: rawptr, instance_id, at: string) -> (changed: bool, err: domain.Domain_Error)
 Agent_Get_User_Activity_Proc :: proc(ctx: rawptr, instance_id: string) -> (at: string, found: bool, err: domain.Domain_Error)
+// set_stop_reason records why the Hub stopped the instance (stop_instance's
+// reason). Instance saves never write it; a new run (higher run_count) clears it.
+Agent_Set_Stop_Reason_Proc :: proc(ctx: rawptr, instance_id, reason: string) -> (bool, domain.Domain_Error)
 
 Agent_Repository :: struct {
 	update_token_usage: Agent_Update_Token_Usage_Proc,
@@ -71,6 +74,7 @@ Agent_Repository :: struct {
 	next_title_counter: Agent_Next_Title_Counter_Proc,
 	touch_user_activity: Agent_Touch_User_Activity_Proc,
 	get_user_activity: Agent_Get_User_Activity_Proc,
+	set_stop_reason: Agent_Set_Stop_Reason_Proc,
 }
 
 agent_next_title_counter :: proc(repo: ^Agent_Repository, agent_id: string, owner_user_id: domain.User_ID, now: string) -> (int, bool, domain.Domain_Error) {
@@ -151,6 +155,11 @@ agent_list_instances_by_chain :: proc(repo: ^Agent_Repository, owner_user_id: do
 agent_touch_user_activity :: proc(repo: ^Agent_Repository, instance_id, at: string) -> (bool, domain.Domain_Error) {
 	if repo == nil || repo.touch_user_activity == nil do return false, domain.domain_error(.Internal_Error, "agent repository is not configured")
 	return repo.touch_user_activity(repo.ctx, instance_id, at)
+}
+
+agent_set_stop_reason :: proc(repo: ^Agent_Repository, instance_id, reason: string) -> (bool, domain.Domain_Error) {
+	if repo == nil || repo.set_stop_reason == nil do return false, {}
+	return repo.set_stop_reason(repo.ctx, instance_id, reason)
 }
 
 agent_get_user_activity :: proc(repo: ^Agent_Repository, instance_id: string) -> (string, bool, domain.Domain_Error) {

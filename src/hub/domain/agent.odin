@@ -129,6 +129,10 @@ Agent_Instance :: struct {
 	// the lease matcher never picks such an instance. Cleared on a user
 	// start/restart. "" otherwise.
 	stopped_by: string,
+	// stop_reason: the reason of the Hub's last stop_instance for this run
+	// (user_requested, bot_idle, coordinator_idle_completed, coordinator_idle,
+	// ...). Read-only through save_instance; cleared when a new run starts.
+	stop_reason: string,
 	// Provider extension (ham.ext.v1). Written only by the extension ingest path.
 	// provider_session_id is the harness's own session id (session/hello events,
 	// overwritten when it changes); extension_capabilities is a JSON string array.
@@ -210,6 +214,7 @@ agent_instance_destroy :: proc(inst: ^Agent_Instance) {
 	if len(inst.last_seen_at) > 0 do delete(inst.last_seen_at)
 	if len(inst.idle_since) > 0 do delete(inst.idle_since)
 	if len(inst.stopped_by) > 0 do delete(inst.stopped_by)
+	if len(inst.stop_reason) > 0 do delete(inst.stop_reason)
 	if len(inst.provider_session_id) > 0 do delete(inst.provider_session_id)
 	if len(inst.provider_transcript_path) > 0 do delete(inst.provider_transcript_path)
 	if len(inst.extension_provider) > 0 do delete(inst.extension_provider)

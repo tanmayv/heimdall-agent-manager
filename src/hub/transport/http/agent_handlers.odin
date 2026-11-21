@@ -481,6 +481,8 @@ write_agent_instance_json :: proc(b: ^strings.Builder, inst: domain.Agent_Instan
 	strings.write_string(b, ",\"run_count\":"); strings.write_string(b, i32_to_string_http(inst.run_count))
 	strings.write_string(b, ",\"started_at\":\""); write_handler_json_string(b, inst.started_at)
 	strings.write_string(b, "\",\"stopped_at\":\""); write_handler_json_string(b, inst.stopped_at)
+	// stop_reason: why the Hub last stopped this run ("" when it did not).
+	strings.write_string(b, "\",\"stop_reason\":\""); write_handler_json_string(b, inst.stop_reason)
 	strings.write_string(b, "\",\"last_seen_at\":\""); write_handler_json_string(b, inst.last_seen_at)
 	strings.write_string(b, "\",\"updated_at\":\""); write_handler_json_string(b, inst.updated_at)
 	// CT-9: surface the server-authoritative current task pointer (id + role) so the
