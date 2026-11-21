@@ -147,7 +147,7 @@ export const RequirementsEditorModal: React.FC<RequirementsEditorModalProps> = (
           await addComment({ chainId, taskId: task.task_id, body: `${replacedByComment(newId, 'new ticket')} ${reason.trim()}` }).unwrap();
           await addComment({ chainId, taskId: newId, body: replacesComment(task.task_id, key) }).unwrap();
         }
-        await cancelTask({ chainId, taskId: task.task_id }).unwrap();
+        await cancelTask({ chainId, taskId: task.task_id, reason: newId ? `Replaced by ${newId}` : 'Replaced by a new ticket' }).unwrap();
       }
       onClose();
     } catch (err) {

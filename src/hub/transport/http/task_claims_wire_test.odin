@@ -146,3 +146,55 @@ test_chain_set_status_wire_non_member_same_owner :: proc(t: ^testing.T) {
     fresh, _, _ = iface.taskchain_get_chain(&f.tc_repo, f.chain_id)
     testing.expect_value(t, fresh.status, domain.Task_Chain_Status.Cancelled)
 }
+
+// The web UI used to POST `{}` to the cancel route, which the taskv2 handler
+// refuses: reason and request_id are part of the idempotent cancel contract.
+// The refusal must leave the task untouched and name the missing fields.
+@(test)
+test_task_cancel_http_empty_body_is_refused_untouched :: proc(t: ^testing.T) {
+    f := wire_setup(t, "cancel_empty")
+    defer wire_teardown(f)
+    engine := taskv2.new_service(&f.tc_repo, &f.ag_repo, &f.br_repo, &f.clock, &f.ids)
+    f.th.task_engine = &engine
+    task := claim_wire_seed_task(f, "task_cancel_empty", "agt_wire_tb2")
+    path := fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/cancel", f.chain_id, task.task_id)
+    refused := task_cancel_handler(&f.th, wire_cookie_request(f, "POST", path, `{}`))
+    testing.expectf(t, refused.status == 400, "empty cancel body is refused: %d %s", refused.status, refused.body)
+    testing.expectf(t, strings.contains(refused.body, "reason and request_id are required"), "refusal names the fields: %s", refused.body)
+    fresh, _, _ := iface.taskchain_get_task(&f.tc_repo, task.task_id)
+    testing.expect_value(t, fresh.state, domain.Task_State.Ready)
+}
+
+// `ham-ctl task cancel <id>` relays {reason, request_id} with the agent's
+// credentials (ctl_v2_task_cancel_body). It cancels end to end, keeps history,
+// and the reply tells the caller what happened.
+@(test)
+test_task_cancel_http_cli_body_cancels_with_history :: proc(t: ^testing.T) {
+    f := wire_setup(t, "cancel_cli")
+    defer wire_teardown(f)
+    engine := taskv2.new_service(&f.tc_repo, &f.ag_repo, &f.br_repo, &f.clock, &f.ids)
+    f.th.task_engine = &engine
+    task := claim_wire_seed_task(f, "task_cancel_cli", "agt_wire_tb2")
+    path := fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/cancel", f.chain_id, task.task_id)
+    request := wire_cookie_request(f, "POST", path, `{"reason":"Task cancellation requested via CLI","request_id":"req_0123456789abcdef","expected_generation":0}`)
+    request.headers = f.agent_headers[:]
+    response := task_cancel_handler(&f.th, request)
+    if !testing.expectf(t, response.status == 200, "CLI cancel: %s", response.body) do return
+    data, _ := jsonx.extract_raw_object(response.body, "data", true, context.temp_allocator)
+    testing.expectf(t, strings.contains(data, `"changed":true`), "reply says it changed: %s", data)
+    testing.expectf(t, strings.contains(data, `"state":"cancelled"`), "reply carries the cancelled task: %s", data)
+    fresh, _, _ := iface.taskchain_get_task(&f.tc_repo, task.task_id)
+    testing.expect_value(t, fresh.state, domain.Task_State.Cancelled)
+    events, _ := iface.taskchain_list_events_by_task(&f.tc_repo, task.task_id, f.owner)
+    migrated, cancelled, requested := false, false, false
+    for event in events {
+        switch event.kind {
+        case taskv2.EV_MIGRATED: migrated = true
+        case taskv2.EV_CANCELLED: cancelled = strings.contains(event.payload_json, "Task cancellation requested via CLI")
+        case taskv2.EV_TASK_CANCEL_REQUESTED: requested = strings.contains(event.payload_json, "req_0123456789abcdef")
+        }
+    }
+    testing.expect(t, migrated, "earlier history is kept")
+    testing.expect(t, cancelled, "cancel event records the reason")
+    testing.expect(t, requested, "audit records the request id")
+}
