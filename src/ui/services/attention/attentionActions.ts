@@ -3,6 +3,7 @@
 // RTK mutations cannot do. Callers invalidate caches after success.
 import { apiUrl, cookieMutation } from '../../api/cookieFetch';
 import type { AttentionTaskRefs, PlacementRecoveryInput } from '../../api/endpoints/attention';
+import { taskCancelBody } from '../../api/taskCancel';
 
 /** Targeted repair preserves unrelated named/role reviews and user approval. */
 export const recoverCardPlacement = (cardId: string, input: PlacementRecoveryInput) =>
@@ -47,7 +48,7 @@ export const snoozeCard = (cardId: string, until: string, keepalive: boolean) =>
   send(`/cards/${enc(cardId)}/snooze`, 'POST', { snooze_until: until }, keepalive);
 
 export const cancelTask = (refs: AttentionTaskRefs, keepalive: boolean) =>
-  send(`/task-chains/${enc(refs.chain_id)}/tasks/${enc(refs.task_id)}/cancel`, 'POST', {}, keepalive);
+  send(`/task-chains/${enc(refs.chain_id)}/tasks/${enc(refs.task_id)}/cancel`, 'POST', taskCancelBody('Cancelled from the attention deck'), keepalive);
 
 export const markConversationRead = (conversationId: string, keepalive: boolean) =>
   send(`/chats/${enc(conversationId)}/read`, 'POST', {}, keepalive);

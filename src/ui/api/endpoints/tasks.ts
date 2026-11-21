@@ -9,6 +9,7 @@ import { decryptChainRecord, decryptChainList, decryptChainMembers } from '../..
 import { decryptTaskRecord, decryptTaskList, decryptTaskComments } from '../../utils/vaultTasks';
 import { taskCreateBridgeFields, taskPatchBridgeFields } from '../../utils/taskBridgePin';
 import { publishErrorMessage } from '../../utils/taskBrief';
+import { taskCancelBody } from '../taskCancel';
 import type { TaskBriefWire, TaskLeaseWire, TaskWire } from '../taskWire';
 
 /** POST …/tasks/{id}/recheck: what changed (`actions`) and why the rest holds (`reasons`). */
@@ -17,6 +18,14 @@ export interface TaskRecheckResult {
   changed: boolean;
   actions: string[];
   reasons: string[];
+  message: string;
+}
+
+/** POST …/tasks/{id}/cancel {reason, request_id}: cancelling a cancelled task (or replaying a request_id) is a no-op. */
+export interface TaskCancelResult {
+  task: TaskWire;
+  changed: boolean;
+  cleanup_pending: boolean;
   message: string;
 }
 
@@ -996,11 +1005,11 @@ export const tasksApi = heimdallApi.injectEndpoints({
         { type: 'TaskChainFleets' as const, id: chainId },
       ],
     }),
-    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    cancelTaskDetail: build.mutation<any, { chainId: string; taskId: string }>({
-      queryFn: async ({ chainId, taskId }) => {
+    // The hub answers with the cancelled task and whether this request changed it.
+    cancelTaskDetail: build.mutation<TaskCancelResult, { chainId: string; taskId: string; reason?: string }>({
+      queryFn: async ({ chainId, taskId, reason }) => {
         try {
-          const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/tasks/${encodeURIComponent(taskId)}/cancel`, 'POST', {});
+          const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/tasks/${encodeURIComponent(taskId)}/cancel`, 'POST', taskCancelBody(reason));
           return { data };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
