@@ -67,15 +67,16 @@ Service :: struct {
 	// notify_observer sees every 1-line coordinator attention notification after commit (tests).
 	notify_observer:     proc(ctx: rawptr, instance_id, trigger, line: string),
 	notify_observer_ctx: rawptr,
-	// wake_coordinator (REQ-CIS-2) starts a stopped coordinator that was sent a
-	// [taskv2] notice; nil disables the wake (bare tests). Called from the timer
-	// thread, off every taskv2 lock and outside any UoW (coordinator_wake.odin).
-	wake_coordinator:     proc(ctx: rawptr, owner, instance_id: string),
+	// wake_coordinator (REQ-CIS-2) tries to start a stopped coordinator that was
+	// sent a [taskv2] notice and says whether to retry; nil disables the wake
+	// (bare tests). Called from the timer thread, off every taskv2 lock and
+	// outside any UoW (coordinator_wake.odin).
+	wake_coordinator:     proc(ctx: rawptr, owner, instance_id: string, now_ms: i64) -> Coordinator_Wake_Reply,
 	wake_coordinator_ctx: rawptr,
-	// pending_coordinator_wakes: coordinator instance -> chain owner, queued by
+	// pending_coordinator_wakes: coordinator instance -> pending wake, queued by
 	// flush_effects and drained by the timer thread; guarded by state_mutex,
-	// keys and values heap-owned.
-	pending_coordinator_wakes: map[string]string,
+	// keys and owners heap-owned.
+	pending_coordinator_wakes: map[string]Pending_Coordinator_Wake,
 	// on_instance_changed runs after commit for every instance whose current
 	// task pointer or idle stamp changed (wiring publishes agent_instance).
 	on_instance_changed:     proc(ctx: rawptr, instance_id, change: string),

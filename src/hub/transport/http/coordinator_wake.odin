@@ -9,6 +9,7 @@ import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import agent_service "odin_test:hub/service/agent"
+import taskv2 "odin_test:hub/service/taskv2"
 import content_service "odin_test:hub/service/content"
 
 Coordinator_Wake_Outcome :: enum {
@@ -82,6 +83,42 @@ coordinator_wake_guard_try_locked :: proc(g: ^Coordinator_Wake_Guard, sender_id,
 	return true
 }
 
+// coordinator_wake_guard_next_allowed: the earliest time at which
+// coordinator_wake_guard_try(sender_id, target_id) can succeed, given the
+// current state (now_ms when nothing blocks it). Does not record anything.
+coordinator_wake_guard_next_allowed :: proc(sender_id, target_id: string, now_ms: i64) -> i64 {
+	sync.mutex_lock(&coordinator_wake_guard.mutex)
+	defer sync.mutex_unlock(&coordinator_wake_guard.mutex)
+	return coordinator_wake_guard_next_allowed_locked(&coordinator_wake_guard, sender_id, target_id, now_ms)
+}
+
+coordinator_wake_guard_next_allowed_locked :: proc(g: ^Coordinator_Wake_Guard, sender_id, target_id: string, now_ms: i64) -> i64 {
+	at := now_ms
+	if last, ok := g.last_target_ms[target_id]; ok do at = max(at, last + COORDINATOR_WAKE_TARGET_MIN_INTERVAL_MS)
+	if window, ok := g.sender_windows[sender_id]; ok && window.count >= COORDINATOR_WAKE_SENDER_MAX_PER_HOUR {
+		at = max(at, window.window_start_ms + COORDINATOR_WAKE_SENDER_WINDOW_MS)
+	}
+	return at
+}
+
+// coordinator_wake_guard_release undoes the slot one attempt took at
+// stamped_ms when the restart itself failed transiently, so the retry is not
+// throttled by an attempt that started nothing. A newer stamp is left alone.
+coordinator_wake_guard_release :: proc(sender_id, target_id: string, stamped_ms: i64) {
+	sync.mutex_lock(&coordinator_wake_guard.mutex)
+	defer sync.mutex_unlock(&coordinator_wake_guard.mutex)
+	context.allocator = runtime.heap_allocator()
+	coordinator_wake_guard_release_locked(&coordinator_wake_guard, sender_id, target_id, stamped_ms)
+}
+
+coordinator_wake_guard_release_locked :: proc(g: ^Coordinator_Wake_Guard, sender_id, target_id: string, stamped_ms: i64) {
+	last, ok := g.last_target_ms[target_id]
+	if !ok || last != stamped_ms do return
+	key, _ := delete_key(&g.last_target_ms, target_id)
+	delete(key)
+	if window, wok := &g.sender_windows[sender_id]; wok && window.count > 0 do window.count -= 1
+}
+
 // Expired state is equivalent to an absent entry. Collect keys before removing
 // them: map deletion can move entries and invalidate an ongoing iteration.
 coordinator_wake_guard_evict_expired :: proc(g: ^Coordinator_Wake_Guard, now_ms: i64) {
@@ -128,7 +165,17 @@ coordinator_wake_guard_reset :: proc() {
 // reach Completed chains (a review or reopen notice after the chain finished).
 Coordinator_Wake_Chains :: enum { Active_Only, Active_Or_Completed }
 
+// Coordinator_Wake_Detail: what one attempt saw, for callers that retry.
+Coordinator_Wake_Detail :: struct {
+	live:         bool, // running/idle/busy/blocked: the notice can be delivered
+	transitional: bool, // launching/starting/stopping: wait for it to settle
+	guard_taken:  bool, // this attempt recorded a wake in the rate guard
+	code:         domain.Error_Code,
+}
+
 COORDINATOR_WAKE_TASK_NOTICE_SENDER :: "taskv2"
+// A transient restart failure is retried after this delay.
+COORDINATOR_WAKE_TRANSIENT_RETRY_MS :: i64(30_000)
 
 coordinator_wake_after_agent_message :: proc(h: ^Agent_Action_Handlers, auth: contracts.Auth_Context, sender: domain.Agent_Instance, target_instance_id, conversation_id: string, now_ms: i64) -> Coordinator_Wake_Outcome {
 	return coordinator_wake_stopped_instance(h, auth, target_instance_id, conversation_id, sender.agent_instance_id, sender.agent_instance_id, .Active_Only, now_ms)
@@ -142,19 +189,63 @@ coordinator_wake_after_agent_message :: proc(h: ^Agent_Action_Handlers, auth: co
 // user-stopped instance, never a bot, and at most one start per target per
 // COORDINATOR_WAKE_TARGET_MIN_INTERVAL_MS. The sender window is per target
 // ("taskv2:<target>") so one busy chain cannot use up the wakes of another.
-coordinator_wake_after_task_notice :: proc(h: ^Agent_Action_Handlers, owner, target_instance_id: string, now_ms: i64) -> Coordinator_Wake_Outcome {
+//
+// The reply tells taskv2 whether to keep the wake: a rate-limited wake comes
+// back when the guard allows it, a stopping/launching coordinator is checked
+// again until it settles, and a transient restart failure releases its guard
+// slot and is retried. Only a start or a permanent "no" settles the wake.
+coordinator_wake_after_task_notice :: proc(h: ^Agent_Action_Handlers, owner, target_instance_id: string, now_ms: i64) -> (Coordinator_Wake_Outcome, taskv2.Coordinator_Wake_Reply) {
 	auth := contracts.Auth_Context{kind = .Internal_User, user_id = owner}
 	sender_key := strings.concatenate({COORDINATOR_WAKE_TASK_NOTICE_SENDER, ":", target_instance_id}, context.temp_allocator)
-	return coordinator_wake_stopped_instance(h, auth, target_instance_id, "", COORDINATOR_WAKE_TASK_NOTICE_SENDER, sender_key, .Active_Or_Completed, now_ms)
+	detail: Coordinator_Wake_Detail
+	outcome := coordinator_wake_stopped_instance(h, auth, target_instance_id, "", COORDINATOR_WAKE_TASK_NOTICE_SENDER, sender_key, .Active_Or_Completed, now_ms, &detail)
+	reply := taskv2.Coordinator_Wake_Reply{}
+	switch outcome {
+	case .Started, .Not_Coordinator, .User_Stopped:
+		reply.settled = true
+	case .Not_Needed:
+		// Live: the bridge delivers; taskv2 only watches for a stop that races
+		// the delivery. Transitional: check again on the next tick.
+		reply.live = detail.live
+		reply.settled = !detail.live && !detail.transitional
+	case .Rate_Limited:
+		reply.retry_at_ms = coordinator_wake_guard_next_allowed(sender_key, target_instance_id, now_ms)
+	case .Failed:
+		if !coordinator_wake_transient_error(detail.code) {
+			reply.settled = true
+		} else {
+			if detail.guard_taken do coordinator_wake_guard_release(sender_key, target_instance_id, now_ms)
+			reply.retry_at_ms = now_ms + COORDINATOR_WAKE_TRANSIENT_RETRY_MS
+		}
+	}
+	return outcome, reply
+}
+
+// coordinator_wake_transient_error: a restart failure worth retrying later.
+coordinator_wake_transient_error :: proc(code: domain.Error_Code) -> bool {
+	#partial switch code {
+	case .Conflict, .Bridge_Offline, .Bridge_Busy, .Bridge_Timeout, .Rate_Limited,
+	     .Provider_Unavailable, .Instance_Not_Running, .Internal_Error, .ACP_Installing, .Vault_Locked:
+		return true
+	}
+	return false
+}
+
+coordinator_wake_runtime_live :: proc(status: string) -> bool {
+	return status == "running" || status == "idle" || status == "busy" || status == "blocked"
 }
 
 // coordinator_wake_stopped_instance restarts a stopped/failed/unreachable chain
 // coordinator through restart_stopped_conversation_instance. An empty
 // conversation_id resolves to the instance's own conversation.
-coordinator_wake_stopped_instance :: proc(h: ^Agent_Action_Handlers, auth: contracts.Auth_Context, target_instance_id, conversation_id, sender_label, sender_key: string, chains_scope: Coordinator_Wake_Chains, now_ms: i64) -> Coordinator_Wake_Outcome {
+coordinator_wake_stopped_instance :: proc(h: ^Agent_Action_Handlers, auth: contracts.Auth_Context, target_instance_id, conversation_id, sender_label, sender_key: string, chains_scope: Coordinator_Wake_Chains, now_ms: i64, detail: ^Coordinator_Wake_Detail = nil) -> Coordinator_Wake_Outcome {
 	outcome := Coordinator_Wake_Outcome.Failed
 	code := domain.Error_Code.Internal_Error
+	scratch_detail: Coordinator_Wake_Detail
+	d := detail if detail != nil else &scratch_detail
+	d^ = {}
 	defer {
+		if outcome == .Failed do d.code = code
 		switch outcome {
 		case .Started: fmt.printf("coordinator_wake: started target=%s sender=%s\n", target_instance_id, sender_label)
 		case .Not_Coordinator, .User_Stopped, .Rate_Limited:
@@ -175,6 +266,8 @@ coordinator_wake_stopped_instance :: proc(h: ^Agent_Action_Handlers, auth: contr
 	defer domain.agent_instance_destroy(&target)
 	if target.owner_user_id != domain.User_ID(auth.user_id) { code = .Not_Found; return outcome }
 	if target.runtime_status != "stopped" && target.runtime_status != "failed" && target.runtime_status != "unreachable" {
+		d.live = coordinator_wake_runtime_live(target.runtime_status)
+		d.transitional = !d.live && agent_service.runtime_expected_active(target.runtime_status)
 		outcome = .Not_Needed; return outcome
 	}
 	outcome = .Not_Coordinator
@@ -201,6 +294,7 @@ coordinator_wake_stopped_instance :: proc(h: ^Agent_Action_Handlers, auth: contr
 	if cid == "" { outcome = .Failed; code = .Not_Found; return outcome }
 	outcome = .Rate_Limited
 	if !coordinator_wake_guard_try(sender_key, target_instance_id, now_ms) do return outcome
+	d.guard_taken = true
 	ch := Content_Handlers{auth = h.auth, agents = h.agents, content = h.content, event_bus = h.event_bus}
 	restarted, restart_err := restart_stopped_conversation_instance(&ch, auth, cid)
 	if !restarted { outcome = .Failed; code = restart_err.code; return outcome }

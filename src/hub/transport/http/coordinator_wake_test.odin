@@ -12,6 +12,7 @@ import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import sqlite "odin_test:hub/repository/sqlite"
 import agent_service "odin_test:hub/service/agent"
+import taskv2 "odin_test:hub/service/taskv2"
 import content_service "odin_test:hub/service/content"
 import project_service "odin_test:hub/service/project"
 
@@ -362,7 +363,16 @@ coordinator_wake_idle_stop :: proc(t: ^testing.T, c: ^Coordinator_Wake_Fixture, 
 }
 
 coordinator_wake_notice_at :: proc(c: ^Coordinator_Wake_Fixture, now: i64) -> Coordinator_Wake_Outcome {
+	outcome, _ := coordinator_wake_after_task_notice(&c.f.ah, string(c.f.owner), "inst_wake", now)
+	return outcome
+}
+
+coordinator_wake_notice_reply :: proc(c: ^Coordinator_Wake_Fixture, now: i64) -> (Coordinator_Wake_Outcome, taskv2.Coordinator_Wake_Reply) {
 	return coordinator_wake_after_task_notice(&c.f.ah, string(c.f.owner), "inst_wake", now)
+}
+
+coordinator_wake_set_status :: proc(t: ^testing.T, c: ^Coordinator_Wake_Fixture, status: string) {
+	testing.expect(t, sqlite.exec(&c.f.conn, fmt.tprintf("UPDATE agent_instances SET runtime_status='%s' WHERE agent_instance_id='inst_wake';", status)))
 }
 
 @(test)
@@ -461,4 +471,103 @@ test_user_chat_wakes_idle_stopped_coordinator :: proc(t: ^testing.T) {
 		testing.expectf(t, coordinator_wake_launches(c) == 1, "%s: launches=%d (case %d)", reason, coordinator_wake_launches(c), i)
 		coordinator_wake_fixture_destroy(c)
 	}
+}
+
+// ---- review round 1: unsettled wakes report when to retry ------------------------
+
+// Finding 1: a rate-limited wake is not settled; it names the time at which the
+// guard admits it, and an attempt at that time starts the coordinator.
+@(test)
+test_task_notice_rate_limited_reply_names_retry_time :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := coordinator_wake_fixture(t); defer coordinator_wake_fixture_destroy(c)
+	testing.expect_value(t, coordinator_wake_notice_at(c, 0), Coordinator_Wake_Outcome.Started)
+	coordinator_wake_set_stopped(t, c) // idle-stopped again soon after the wake
+	outcome, reply := coordinator_wake_notice_reply(c, 90_000)
+	testing.expect_value(t, outcome, Coordinator_Wake_Outcome.Rate_Limited)
+	testing.expect(t, !reply.settled && !reply.live)
+	testing.expect_value(t, reply.retry_at_ms, COORDINATOR_WAKE_TARGET_MIN_INTERVAL_MS)
+	outcome, reply = coordinator_wake_notice_reply(c, reply.retry_at_ms)
+	testing.expect_value(t, outcome, Coordinator_Wake_Outcome.Started)
+	testing.expect(t, reply.settled)
+	testing.expect_value(t, coordinator_wake_launches(c), 2)
+}
+
+// Finding 2: a stopping (or launching) coordinator is not settled; once the
+// stop completes the next attempt starts it. A live one asks only for a watch.
+@(test)
+test_task_notice_while_stopping_is_retried_after_stop :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := coordinator_wake_fixture(t); defer coordinator_wake_fixture_destroy(c)
+	coordinator_wake_set_status(t, c, "running")
+	outcome, reply := coordinator_wake_notice_reply(c, 0)
+	testing.expect_value(t, outcome, Coordinator_Wake_Outcome.Not_Needed)
+	testing.expect(t, !reply.settled && reply.live)
+	for status in ([]string{"stopping", "launching", "starting"}) {
+		coordinator_wake_set_status(t, c, status)
+		outcome, reply = coordinator_wake_notice_reply(c, 1_000)
+		testing.expect_value(t, outcome, Coordinator_Wake_Outcome.Not_Needed)
+		testing.expectf(t, !reply.settled && !reply.live, "%s must be retried", status)
+	}
+	coordinator_wake_set_status(t, c, "stopped")
+	outcome, reply = coordinator_wake_notice_reply(c, 2_000)
+	testing.expect_value(t, outcome, Coordinator_Wake_Outcome.Started)
+	testing.expect(t, reply.settled)
+	testing.expect_value(t, coordinator_wake_launches(c), 1)
+	// A terminated instance will never run again: settled.
+	coordinator_wake_set_status(t, c, "terminated")
+	outcome, reply = coordinator_wake_notice_reply(c, 3_000)
+	testing.expect_value(t, outcome, Coordinator_Wake_Outcome.Not_Needed)
+	testing.expect(t, reply.settled)
+}
+
+// Finding 3: a transient restart failure releases the guard slot and is
+// retried; the retry starts the coordinator instead of being rate limited.
+@(test)
+test_task_notice_transient_failure_retried_without_guard_penalty :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := coordinator_wake_fixture(t); defer coordinator_wake_fixture_destroy(c)
+	generation := project_service.bridge_runtime_registry_generation(&c.registry, c.f.bridge_pin)
+	project_service.bridge_runtime_registry_mark_offline(&c.registry, c.f.bridge_pin, generation)
+	outcome, reply := coordinator_wake_notice_reply(c, 0)
+	testing.expect_value(t, outcome, Coordinator_Wake_Outcome.Failed)
+	testing.expect(t, !reply.settled)
+	testing.expect_value(t, reply.retry_at_ms, COORDINATOR_WAKE_TRANSIENT_RETRY_MS)
+	testing.expect_value(t, coordinator_wake_guard_next_allowed("taskv2:inst_wake", "inst_wake", 1), i64(1))
+	testing.expect(t, project_service.bridge_runtime_registry_mark_live(&c.registry, c.f.bridge_pin, false, ""))
+	outcome, reply = coordinator_wake_notice_reply(c, reply.retry_at_ms)
+	testing.expect_value(t, outcome, Coordinator_Wake_Outcome.Started)
+	testing.expect(t, reply.settled)
+	testing.expect_value(t, coordinator_wake_launches(c), 1)
+}
+
+@(test)
+test_task_notice_permanent_failure_settles :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := coordinator_wake_fixture(t, other_owner = true); defer coordinator_wake_fixture_destroy(c)
+	outcome, reply := coordinator_wake_notice_reply(c, 0)
+	testing.expect_value(t, outcome, Coordinator_Wake_Outcome.Failed)
+	testing.expect(t, reply.settled)
+}
+
+@(test)
+test_coordinator_wake_guard_next_allowed_and_release :: proc(t: ^testing.T) {
+	g: Coordinator_Wake_Guard
+	defer coordinator_wake_guard_destroy(&g)
+	testing.expect_value(t, coordinator_wake_guard_next_allowed_locked(&g, "s", "a", 5), i64(5))
+	testing.expect(t, coordinator_wake_guard_try_locked(&g, "s", "a", 10))
+	testing.expect_value(t, coordinator_wake_guard_next_allowed_locked(&g, "s", "a", 20), 10 + COORDINATOR_WAKE_TARGET_MIN_INTERVAL_MS)
+	// A stale stamp is not released; the matching one is, with its sender count.
+	coordinator_wake_guard_release_locked(&g, "s", "a", 11)
+	testing.expect_value(t, len(g.last_target_ms), 1)
+	coordinator_wake_guard_release_locked(&g, "s", "a", 10)
+	testing.expect_value(t, len(g.last_target_ms), 0)
+	testing.expect_value(t, g.sender_windows["s"].count, 0)
+	testing.expect_value(t, coordinator_wake_guard_next_allowed_locked(&g, "s", "a", 20), i64(20))
+	// The hourly cap defers to the next window instead of failing for good.
+	// The window opened at 10; a release does not restart it.
+	for i in 0..<COORDINATOR_WAKE_SENDER_MAX_PER_HOUR {
+		testing.expect(t, coordinator_wake_guard_try_locked(&g, "s", fmt.tprintf("t_%d", i), 100))
+	}
+	testing.expect_value(t, coordinator_wake_guard_next_allowed_locked(&g, "s", "b", 200), 10 + COORDINATOR_WAKE_SENDER_WINDOW_MS)
 }

@@ -192,12 +192,14 @@ task_engine_on_start_success :: proc(ctx: rawptr, inst: domain.Agent_Instance) {
 }
 
 // task_engine_wake_coordinator (REQ-CIS-2): a [taskv2] notice went to a
-// coordinator; start it if it is stopped and not user-stopped. Runs on the
-// taskv2 timer thread, after commit and outside every taskv2 lock.
-task_engine_wake_coordinator :: proc(ctx: rawptr, owner, instance_id: string) {
+// coordinator; start it if it is stopped and not user-stopped, and tell taskv2
+// whether to try again. Runs on the taskv2 timer thread, after commit and
+// outside every taskv2 lock.
+task_engine_wake_coordinator :: proc(ctx: rawptr, owner, instance_id: string, now_ms: i64) -> taskv2.Coordinator_Wake_Reply {
 	graph := (^App_Graph)(ctx)
-	if graph == nil do return
-	_ = http.coordinator_wake_after_task_notice(&graph.agent_action_handlers, owner, instance_id, time.to_unix_nanoseconds(time.now()) / 1_000_000)
+	if graph == nil do return {settled = true}
+	_, reply := http.coordinator_wake_after_task_notice(&graph.agent_action_handlers, owner, instance_id, now_ms)
+	return reply
 }
 
 // task_engine_on_instance_changed runs after a taskv2 commit that rewrote an
