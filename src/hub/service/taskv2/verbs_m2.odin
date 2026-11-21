@@ -583,7 +583,7 @@ task_reopen :: proc(svc: ^Service, task_in: domain.Task, actor: Actor) -> (domai
     task, uok, uerr = iface.taskchain_get_task(svc.repo, task_in.task_id)
     if !uok { _, _ = end_uow(svc, &u, false); return {}, false, uerr }
     if guard := task_control_precondition(svc, task, actor, "reopen"); guard.code != .None { _, _ = end_uow(svc, &u, false); return {}, false, guard }
-    if _, allowed, err := work_control_chain(svc, task.owner_user_id, actor, task.chain_id); !allowed {
+    if _, allowed, err := work_task_write_chain(svc, task.owner_user_id, actor, task.chain_id); !allowed {
         _, _ = end_uow(svc, &u, false)
         return {}, false, err
     }
@@ -618,7 +618,7 @@ task_answer :: proc(svc: ^Service, task_in: domain.Task, actor: Actor, note: str
     task, uok, uerr = iface.taskchain_get_task(svc.repo, task_in.task_id)
     if !uok { _, _ = end_uow(svc, &u, false); return {}, false, uerr }
     if guard := task_control_precondition(svc, task, actor, "answer"); guard.code != .None { _, _ = end_uow(svc, &u, false); return {}, false, guard }
-    if _, allowed, err := work_control_chain(svc, task.owner_user_id, actor, task.chain_id); !allowed {
+    if _, allowed, err := work_task_write_chain(svc, task.owner_user_id, actor, task.chain_id); !allowed {
         _, _ = end_uow(svc, &u, false)
         return {}, false, err
     }
@@ -664,7 +664,7 @@ task_hold :: proc(svc: ^Service, task_in: domain.Task, actor: Actor, reason: str
 	task, uok, uerr = iface.taskchain_get_task(svc.repo, task_in.task_id)
 	if !uok { _, _ = end_uow(svc, &u, false); return {}, false, uerr }
 	if guard := task_control_precondition(svc, task, actor, "hold"); guard.code != .None { _, _ = end_uow(svc, &u, false); return {}, false, guard }
-	if _, allowed, err := work_control_chain(svc, task.owner_user_id, actor, task.chain_id); !allowed {
+	if _, allowed, err := work_task_write_chain(svc, task.owner_user_id, actor, task.chain_id); !allowed {
 		_, _ = end_uow(svc, &u, false)
 		return {}, false, err
 	}
@@ -714,7 +714,7 @@ task_release :: proc(svc: ^Service, task_in: domain.Task, actor: Actor) -> (Hold
 	task, uok, uerr = iface.taskchain_get_task(svc.repo, task_in.task_id)
 	if !uok { _, _ = end_uow(svc, &u, false); return {}, false, uerr }
 	if guard := task_control_precondition(svc, task, actor, "release"); guard.code != .None { _, _ = end_uow(svc, &u, false); return {}, false, guard }
-	if _, allowed, err := work_control_chain(svc, task.owner_user_id, actor, task.chain_id); !allowed {
+	if _, allowed, err := work_task_write_chain(svc, task.owner_user_id, actor, task.chain_id); !allowed {
 		_, _ = end_uow(svc, &u, false)
 		return {}, false, err
 	}

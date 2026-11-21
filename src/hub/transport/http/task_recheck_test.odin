@@ -7,7 +7,7 @@ import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import taskv2 "odin_test:hub/service/taskv2"
 
-// POST …/tasks/{id}/recheck: owner or coordinator; both route shapes; the
+// POST …/tasks/{id}/recheck: owner or any of its agents; both route shapes; the
 // response carries changed, actions, reasons and message.
 @(test)
 test_recheck_http_routes_auth_and_result :: proc(t: ^testing.T) {
@@ -24,16 +24,19 @@ test_recheck_http_routes_auth_and_result :: proc(t: ^testing.T) {
 
 	path := fmt.aprintf("/api/v1/task-chains/%s/tasks/%s/recheck", f.chain_id, task.task_id)
 	defer delete(path)
-	// A member worker may not re-check.
+	// REQ-AUTHZ-2: another owner may not re-check (the task is hidden).
+	other_req := wire_cookie_request(f, "POST", path, `{}`)
+	other_req.headers = http_test_login(t, &f.auth_svc, "recheck_foreign_owner")
+	denied := recheck_task_handler(&f.th, other_req)
+	testing.expect_value(t, denied.status, 404)
+
+	// A same-owner worker (member, not coordinator) may re-check. The first
+	// re-check persists the missing-worker placement observation; subsequent
+	// re-checks are idempotent, with the same waiting reason.
 	_, _, _ = iface.taskchain_save_member(&f.tc_repo, domain.Task_Chain_Member{chain_id = f.chain_id, owner_user_id = f.owner, agent_instance_id = f.instance_id, role = "worker"})
 	req := wire_cookie_request(f, "POST", path, `{}`)
 	req.headers = f.agent_headers[:]
-	denied := recheck_task_handler(&f.th, req)
-	testing.expect_value(t, denied.status, 403)
-
-	// The first re-check persists the missing-worker placement observation.
-	// Subsequent re-checks are idempotent, with the same waiting reason.
-	resp := recheck_task_handler(&f.th, wire_cookie_request(f, "POST", path, `{}`))
+	resp := recheck_task_handler(&f.th, req)
 	testing.expect_value(t, resp.status, 200)
 	testing.expect(t, strings.contains(resp.body, `"changed":true`), resp.body)
 	testing.expect(t, strings.contains(resp.body, `"actions":["placement failures reconciled"]`), resp.body)

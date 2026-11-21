@@ -820,7 +820,7 @@ cancel_task :: proc(svc: ^Service, task: domain.Task, actor: Actor, reason: stri
 	fresh, found, read_err := iface.taskchain_get_task(svc.repo, task.task_id)
 	if !found { _, _ = end_uow(svc, &u, false); return read_err }
 	if fresh.owner_user_id != task.owner_user_id { _, _ = end_uow(svc, &u, false); return domain.domain_error(.Not_Found, "task not found") }
-	if _, allowed, auth_err := work_control_chain(svc, fresh.owner_user_id, actor, fresh.chain_id); !allowed { _, _ = end_uow(svc, &u, false); return auth_err }
+	if _, allowed, auth_err := work_task_write_chain(svc, fresh.owner_user_id, actor, fresh.chain_id); !allowed { _, _ = end_uow(svc, &u, false); return auth_err }
 	if fresh.workflow_run_id != "" { _, _ = end_uow(svc, &u, false); return domain.domain_error(.Conflict, "cancel the owning workflow run", `{"code":"workflow_task_managed"}`) }
 	if fresh.state == .Done {
 		merge := task_merge_status(svc, fresh)

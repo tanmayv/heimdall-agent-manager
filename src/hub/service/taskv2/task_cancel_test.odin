@@ -5,6 +5,7 @@ import "core:strings"
 import project "odin_test:hub/service/project"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
+import platform "odin_test:hub/platform"
 
 // Ordinary administrative repair must preserve the genuine approval obligation.
 @(test)
@@ -223,8 +224,11 @@ test_simple_cancel_without_generation_quiet_retry_and_authorization :: proc(t:^t
  task:=publish_task(t,fx,chain,"task_simple_cancel",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
  actor:=actor_from_auth(inst_auth("inst_coord"))
  input:=Task_Cancel_Input{reason="cancel obsolete work",request_id="simple-cancel"}
- _,denied,derr:=task_cancel(&fx.svc,task,actor_from_auth(inst_auth("inst_worker")),input)
- testing.expect(t,!denied && derr.code==.Forbidden,"worker cannot cancel through coordinator API")
+ // REQ-AUTHZ-2: cancel is owner-scoped; an instance of another owner is refused.
+ now:=platform.clock_now(&fx.clock)
+ _,_,_=iface.agent_save_instance(&fx.agents,domain.Agent_Instance{agent_instance_id="inst_other_owner",owner_user_id="u2",agent_id="agt_w",created_at=now,updated_at=now})
+ _,denied,derr:=task_cancel(&fx.svc,task,Actor{kind=ACTOR_AGENT,id="inst_other_owner"},input)
+ testing.expect(t,!denied && derr.code==.Forbidden,"another owner's instance cannot cancel")
  negative:=input;negative.expected_generation=-1
  _,invalid,ierr:=task_cancel(&fx.svc,task,actor,negative)
  testing.expect(t,!invalid && ierr.code==.Validation_Failed,"negative optional generation rejected")

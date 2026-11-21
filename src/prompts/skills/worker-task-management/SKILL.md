@@ -182,6 +182,8 @@ ham-ctl task cancel <task-id>
 - Claims do not silently replace another holder. Use explicit transfer. The old
   writer is fenced immediately; replacement execution waits for the exact process
   stop receipt. Offline cleanup remains `stop_pending`.
+- Any agent instance of the task's owner may cancel it; chain membership or the
+  coordinator role is not required (cross-owner tasks are refused).
 - Cancellation preserves history and revokes work/review ownership. It can finish
   while process cleanup is pending; late callbacks cannot revive the task.
 - No prior inspection or manual generation/request ID is needed. The CLI supplies

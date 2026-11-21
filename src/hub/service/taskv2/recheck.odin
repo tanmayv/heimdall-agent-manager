@@ -169,8 +169,9 @@ task_recheck_in_uow :: proc(svc: ^Service, u: ^Uow, task_in: domain.Task, actor:
 	return Recheck_Result{task = after, changed = changed, actions = actions[:], reasons = reasons[:], message = msg}, true, domain.Domain_Error{}
 }
 
-// recheck_authorize: chain owner or its coordinator, like hold/release, but a
-// completed chain is allowed too (its done tasks may still owe a merge-back).
+// recheck_authorize: chain owner or any agent of the chain's owner, like
+// hold/release (work_task_write_chain), but a completed chain is allowed too
+// (its done tasks may still owe a merge-back).
 @(private = "package")
 recheck_authorize :: proc(svc: ^Service, owner: domain.User_ID, actor: Actor, chain_id: domain.Task_Chain_ID) -> (domain.Task_Chain, bool, domain.Domain_Error) {
 	chain, ok, err := iface.taskchain_get_chain(svc.repo, chain_id)
@@ -178,8 +179,8 @@ recheck_authorize :: proc(svc: ^Service, owner: domain.User_ID, actor: Actor, ch
 	if chain.owner_user_id != owner do return {}, false, domain.domain_error(.Not_Found, "chain not found")
 	authorized := actor.kind == ACTOR_HUB
 	if actor.kind == ACTOR_USER do authorized = actor.id == string(owner)
-	if actor.kind == ACTOR_AGENT || actor.kind == ACTOR_COORDINATOR do authorized = is_coordinator(svc, chain, actor.id)
-	if !authorized do return {}, false, domain.domain_error(.Forbidden, "chain owner or coordinator required")
+	if actor.kind == ACTOR_AGENT || actor.kind == ACTOR_COORDINATOR do authorized = task_write_actor_authorized(svc, chain, actor)
+	if !authorized do return {}, false, domain.domain_error(.Forbidden, "chain owner or an agent of the chain's owner required")
 	return chain, true, domain.Domain_Error{}
 }
 

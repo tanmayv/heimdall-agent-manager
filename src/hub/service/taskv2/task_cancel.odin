@@ -39,7 +39,7 @@ task_cancel_in_uow :: proc(svc:^Service,u:^Uow,task_in:domain.Task,actor:Actor,i
  task,found,err:=iface.taskchain_get_task(svc.repo,task_in.task_id)
  if !found do return {},false,err
  if task.owner_user_id!=task_in.owner_user_id do return {},false,domain.domain_error(.Not_Found,"task not found")
- if _,allowed,aerr:=work_control_chain(svc,task.owner_user_id,actor,task.chain_id);!allowed do return {},false,aerr
+ if _,allowed,aerr:=work_task_write_chain(svc,task.owner_user_id,actor,task.chain_id);!allowed do return {},false,aerr
  if task.workflow_run_id!="" do return {},false,domain.domain_error(.Conflict,"cancel the owning workflow run",`{"code":"workflow_task_managed"}`)
  events,eerr:=iface.taskchain_list_events_by_task(svc.repo,task.task_id,task.owner_user_id)
  if eerr.code!=.None do return {},false,eerr

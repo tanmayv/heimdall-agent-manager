@@ -1760,7 +1760,7 @@ reopen_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
 	task_id := domain.Task_ID(path_part(req.path, 6))
 	if matched, mismatch_resp := require_task_path_scope(h, auth_ctx, chain_id, task_id, req); !matched do return mismatch_resp
-	task, tok, terr := taskchain_service.get_task(h.taskchains, auth_ctx, task_id)
+	task, tok, terr := taskchain_service.get_task_for_owner_write(h.taskchains, auth_ctx, task_id)
 	if !tok do return respond_error(terr, req.request_id)
 	fresh, rok, err := taskv2.task_reopen(h.task_engine, task, taskv2.actor_from_auth(auth_ctx))
 	if !rok do return respond_error(err, req.request_id)
@@ -1779,7 +1779,7 @@ answer_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
 	task_id := domain.Task_ID(path_part(req.path, 6))
 	if matched, mismatch_resp := require_task_path_scope(h, auth_ctx, chain_id, task_id, req); !matched do return mismatch_resp
-	task, tok, terr := taskchain_service.get_task(h.taskchains, auth_ctx, task_id)
+	task, tok, terr := taskchain_service.get_task_for_owner_write(h.taskchains, auth_ctx, task_id)
 	if !tok do return respond_error(terr, req.request_id)
 	fresh, aok, err := taskv2.task_answer(h.task_engine, task, taskv2.actor_from_auth(auth_ctx), json_string(req.body, "note"))
 	if !aok do return respond_error(err, req.request_id)
@@ -1800,7 +1800,7 @@ hold_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	task_id := domain.Task_ID(path_part(req.path, 6))
 	verb := path_part(req.path, 7)
 	if matched, mismatch_resp := require_task_path_scope(h, auth_ctx, chain_id, task_id, req); !matched do return mismatch_resp
-	task, tok, terr := taskchain_service.get_task(h.taskchains, auth_ctx, task_id)
+	task, tok, terr := taskchain_service.get_task_for_owner_write(h.taskchains, auth_ctx, task_id)
 	if !tok do return respond_error(terr, req.request_id)
 	res: taskv2.Hold_Result
 	hok: bool
@@ -1860,7 +1860,7 @@ recheck_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		task_id = domain.Task_ID(path_part(req.path, 6))
 		if matched, mismatch_resp := require_task_path_scope(h, auth_ctx, chain_id, task_id, req); !matched do return mismatch_resp
 	}
-	task, tok, terr := taskchain_service.get_task(h.taskchains, auth_ctx, task_id)
+	task, tok, terr := taskchain_service.get_task_for_owner_write(h.taskchains, auth_ctx, task_id)
 	if !tok do return respond_error(terr, req.request_id)
 	res, rok, err := taskv2.task_recheck(h.task_engine, task, taskv2.actor_from_auth(auth_ctx))
 	if !rok do return respond_error(err, req.request_id)
@@ -3247,7 +3247,7 @@ task_cancel_handler :: proc(ctx: rawptr, req: Request) -> Response {
     chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
     task_id := domain.Task_ID(path_part(req.path, 6))
     if matched, mismatch := require_task_path_scope(h, auth, chain_id, task_id, req); !matched do return mismatch
-    task, found, err := taskchain_service.get_task(h.taskchains, auth, task_id)
+    task, found, err := taskchain_service.get_task_for_owner_write(h.taskchains, auth, task_id)
     if !found do return respond_error(err, req.request_id)
     result, success, cancel_err := taskv2.task_cancel(h.task_engine, task, taskv2.actor_from_auth(auth), taskv2.Task_Cancel_Input{
         reason = json_string(req.body, "reason"), request_id = json_string(req.body, "request_id"),

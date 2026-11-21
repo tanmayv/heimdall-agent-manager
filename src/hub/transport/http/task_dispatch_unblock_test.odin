@@ -24,16 +24,18 @@ test_dispatch_unblock_http_coordinator_and_owner_auth :: proc(t: ^testing.T) {
 	defer delete(path)
 	req := wire_cookie_request(f, "POST", path, `{"note":"repaired provider"}`)
 	req.headers = f.agent_headers[:]
-	// A member worker cannot clear dispatch blocks, even with a valid token.
-	_, _, _ = iface.taskchain_save_member(&f.tc_repo, domain.Task_Chain_Member{chain_id = f.chain_id, owner_user_id = f.owner, agent_instance_id = f.instance_id, role = "worker"})
-	denied := answer_task_handler(&f.th, req)
-	testing.expect_value(t, denied.status, 403)
+	// REQ-AUTHZ-2: another owner cannot see the task, let alone unblock it.
+	other_req := wire_cookie_request(f, "POST", path, `{"note":"not yours"}`)
+	other_req.headers = http_test_login(t, &f.auth_svc, "unblock_foreign_owner")
+	denied := answer_task_handler(&f.th, other_req)
+	testing.expect_value(t, denied.status, 404)
 	still, _, _ := iface.taskchain_get_task(&f.tc_repo, task.task_id)
-	testing.expect(t, still.blocked_on_json != "", "worker cannot unblock")
-	_, _, _ = iface.taskchain_save_member(&f.tc_repo, domain.Task_Chain_Member{chain_id = f.chain_id, owner_user_id = f.owner, agent_instance_id = f.instance_id, role = "coordinator"})
+	testing.expect(t, still.blocked_on_json != "", "cross-owner cannot unblock")
+	// Any same-owner agent instance may clear it, even with no chain membership.
+	_, _ = iface.taskchain_remove_member(&f.tc_repo, f.chain_id, f.instance_id, f.owner)
 	allowed := answer_task_handler(&f.th, req)
 	testing.expect_value(t, allowed.status, 200)
-	testing.expect(t, strings.contains(allowed.body, `"state":"ready"`) && strings.contains(allowed.body, `"blocked_on":null`), "coordinator route clears dispatch block")
+	testing.expect(t, strings.contains(allowed.body, `"state":"ready"`) && strings.contains(allowed.body, `"blocked_on":null`), "same-owner non-member clears dispatch block")
 	// The same existing route remains available to the authenticated owner.
 	task.blocked_on_json = `{"kind":"agent_not_running","reason":"exit 2"}`
 	_, _, _ = iface.taskchain_save_task(&f.tc_repo, task)

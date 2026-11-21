@@ -30,29 +30,34 @@ claim_wire_seed_task :: proc(f: ^wire_fixture, id, assignee: string) -> domain.T
     return task
 }
 
+// REQ-AUTHZ-2/3: any agent instance of the task's owner may cancel it over the
+// wire, with no chain membership at all; a different owner still sees 404.
 @(test)
-test_task_cancel_http_noncoordinator_and_cross_owner_cannot_cancel :: proc(t: ^testing.T) {
+test_task_cancel_http_non_member_same_owner_cancels_cross_owner_hidden :: proc(t: ^testing.T) {
     f := wire_setup(t, "control_denied")
     defer wire_teardown(f)
     engine := taskv2.new_service(&f.tc_repo, &f.ag_repo, &f.br_repo, &f.clock, &f.ids)
     f.th.task_engine = &engine
     task := claim_wire_seed_task(f, "task_cancel_denied", "agt_wire_tb2")
-    _, _, _ = iface.taskchain_save_member(&f.tc_repo, domain.Task_Chain_Member{chain_id=f.chain_id,
-        owner_user_id=f.owner,agent_instance_id=f.instance_id,agent_id="agt_wire_tb2",role="worker"})
+    // Strip the fixture's coordinator seat: the caller is a same-owner non-member.
+    _, _ = iface.taskchain_remove_member(&f.tc_repo, f.chain_id, f.instance_id, f.owner)
+    chain, _, _ := iface.taskchain_get_chain(&f.tc_repo, f.chain_id)
+    chain.publish_state = .Published
+    _, _, _ = iface.taskchain_save_chain(&f.tc_repo, chain)
     path := fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/cancel", f.chain_id, task.task_id)
-    body := `{"reason":"unauthorized","request_id":"denied","expected_generation":1}`
+    body := `{"reason":"not needed","request_id":"nonmember","expected_generation":1}`
     request := wire_cookie_request(f, "POST", path, body)
-    request.headers = f.agent_headers[:]
-    denied := task_cancel_handler(&f.th, request)
-    testing.expectf(t, denied.status == 403, "worker denial: %s", denied.body)
-    fresh, _, _ := iface.taskchain_get_task(&f.tc_repo, task.task_id)
-    testing.expect_value(t, fresh.state, domain.Task_State.Ready)
     other_headers := http_test_login(t, &f.auth_svc, "claims_foreign_owner")
     request.headers = other_headers
     foreign_result := task_cancel_handler(&f.th, request)
     testing.expectf(t, foreign_result.status == 404, "cross-owner task hidden: %s", foreign_result.body)
-    fresh, _, _ = iface.taskchain_get_task(&f.tc_repo, task.task_id)
+    fresh, _, _ := iface.taskchain_get_task(&f.tc_repo, task.task_id)
     testing.expect_value(t, fresh.state, domain.Task_State.Ready)
+    request.headers = f.agent_headers[:]
+    allowed := task_cancel_handler(&f.th, request)
+    testing.expectf(t, allowed.status == 200, "same-owner non-member cancels: %s", allowed.body)
+    fresh, _, _ = iface.taskchain_get_task(&f.tc_repo, task.task_id)
+    testing.expect_value(t, fresh.state, domain.Task_State.Cancelled)
 }
 
 @(test)
@@ -117,4 +122,27 @@ test_task_cancel_http_without_generation_is_idempotent :: proc(t: ^testing.T) {
     testing.expectf(t, again.status == 200, "cancel retry: %s", again.body)
     events_after, _ := iface.taskchain_list_events_by_task(&f.tc_repo, task.task_id, f.owner)
     testing.expect_value(t, len(events_after), len(events_before))
+}
+
+// REQ-AUTHZ-1: POST /api/v1/agent-actions/chain/set-status works for a same-owner
+// agent instance that is neither a member nor the coordinator of the chain.
+@(test)
+test_chain_set_status_wire_non_member_same_owner :: proc(t: ^testing.T) {
+    f := wire_setup(t, "set_status_nonmember")
+    defer wire_teardown(f)
+    _, _ = iface.taskchain_remove_member(&f.tc_repo, f.chain_id, f.instance_id, f.owner)
+    chain, _, _ := iface.taskchain_get_chain(&f.tc_repo, f.chain_id)
+    chain.publish_state = .Published
+    _, _, _ = iface.taskchain_save_chain(&f.tc_repo, chain)
+    body := fmt.tprintf(`{{"params":{{"chain_id":"%s","status":"archived"}}}}`, f.chain_id)
+    archived := agent_action_chain_set_status_handler(&f.ah, wire_agent_request(f, "chain/set-status", body))
+    testing.expectf(t, archived.status == 200, "non-member archives: %s", archived.body)
+    fresh, _, _ := iface.taskchain_get_chain(&f.tc_repo, f.chain_id)
+    testing.expect_value(t, fresh.status, domain.Task_Chain_Status.Archived)
+    body = fmt.tprintf(`{{"params":{{"chain_id":"%s","status":"cancelled"}}}}`, f.chain_id)
+    _ = agent_action_chain_set_status_handler(&f.ah, wire_agent_request(f, "chain/set-status", fmt.tprintf(`{{"params":{{"chain_id":"%s","status":"active"}}}}`, f.chain_id)))
+    cancelled := agent_action_chain_set_status_handler(&f.ah, wire_agent_request(f, "chain/set-status", body))
+    testing.expectf(t, cancelled.status == 200, "non-member cancels: %s", cancelled.body)
+    fresh, _, _ = iface.taskchain_get_chain(&f.tc_repo, f.chain_id)
+    testing.expect_value(t, fresh.status, domain.Task_Chain_Status.Cancelled)
 }

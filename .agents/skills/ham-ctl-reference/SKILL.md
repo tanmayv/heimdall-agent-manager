@@ -52,7 +52,7 @@ Groups: `bridge`, `agents`, `task-chain`, `task`, `issue`, `chat`, `memory`, `ar
 - `task-chain set-description <text> [--chain <id>]` (or `--stdin`) — set the chain
   description (coordinator only; pass `""` to clear; `--chain` defaults to your chain).
 - `task-chain set-status --status <active|completed|cancelled> [--chain <id>]` — change
-  the chain status (coordinator only). Chain statuses are exactly `active`, `completed`,
+  the chain status (any agent instance of the chain's owner; membership not required). Chain statuses are exactly `active`, `completed`,
   `cancelled`. This is how a coordinator completes a chain.
 - `task-chain reconcile <chain-id>` — self-heal / kick off a chain: promote actionable
   tasks, set each agent's current task, and nudge idle agents. **The chain id is REQUIRED**
@@ -198,7 +198,8 @@ globally unique — you rarely need `--chain`).
   `--assignee` and `--reviewer` accept both live instance IDs (`inst_...`) and durable agent IDs (`agt_...`). Coordinators should exclusively specify durable agent IDs (`agt_...`) for `--assignee` and `--reviewer`, relying on automatic actor reference serialization (`{"type":"agent_id","agent_id":"<id>"}`) and fleet JIT dispatch.
   `--reviewer` and `--depends-on` accept comma-separated lists. `--bridge` pins the task to a specific bridge.
 - `task update <task-id> [--title <t>] [--description <d>] [--priority p0|p1|p2] [--assignee <instance-or-agent-id>] [--reviewer <id,id,...>] [--depends-on <id,id>] [--bridge <bridge-id>]` — edit an
-  existing task (coordinator only). Only the fields you pass change; coordinators should exclusively specify durable agent IDs (`agt_...`) for `--assignee` and `--reviewer`; `--reviewer` and
+  existing task. Any agent instance of the task's owner may update it (chain membership is not
+  required); dependency edits (`--depends-on`) stay coordinator/owner only. Only the fields you pass change; coordinators should exclusively specify durable agent IDs (`agt_...`) for `--assignee` and `--reviewer`; `--reviewer` and
   `--depends-on` REPLACE the whole list (pass `""` to clear); `--bridge ""` clears the bridge pin back to inherit.
 - `task comment <task-id> --body <t>` (or `--stdin`) `[--notify <id,id>]` — add a comment
   (the only way to comment).
