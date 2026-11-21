@@ -123,6 +123,7 @@ instance_changed_summary_json :: proc(inst: domain.Agent_Instance, token_changed
 	strings.write_string(&b, "\",\"current_task_role\":\""); write_handler_json_string(&b, domain.current_task_role_string(inst.current_task_role))
 	strings.write_string(&b, "\",\"chain_id\":\""); write_handler_json_string(&b, inst.chain_id)
 	strings.write_string(&b, "\",\"updated_at\":\""); write_handler_json_string(&b, inst.updated_at)
+	strings.write_string(&b, "\",\"stop_reason\":\""); write_handler_json_string(&b, inst.stop_reason)
 	strings.write_string(&b, "\"")
 	write_last_error_json(&b, inst.last_error_json)
 	// Token snapshot + lifetime totals (T3r) in the API's shape, so clients patch

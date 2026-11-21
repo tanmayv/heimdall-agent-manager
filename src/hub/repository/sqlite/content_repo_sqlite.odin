@@ -13,7 +13,7 @@ Content_Repo_SQLite :: struct { conn: ^Conn }
 
 new_content_repository :: proc(impl: ^Content_Repo_SQLite, conn: ^Conn) -> iface.Content_Repository {
 	impl.conn = conn
-	return iface.Content_Repository{ctx=rawptr(impl), get_assistant_turn=content_get_assistant_turn_sqlite, save_assistant_turn=content_save_assistant_turn_sqlite, answer_question=content_answer_question_sqlite, latest_user_visible_message=content_latest_user_visible_message_sqlite, list_unread_incoming_ids=content_list_unread_incoming_ids_sqlite, save_memory=content_save_memory_sqlite, get_memory=content_get_memory_sqlite, list_memories=content_list_memories_sqlite, save_conversation=content_save_conversation_sqlite, get_conversation=content_get_conversation_sqlite, list_conversations=content_list_conversations_sqlite, list_conversation_project_links=content_list_conversation_project_links_sqlite, save_message=content_save_message_sqlite, get_message=content_get_message_sqlite, update_message=content_update_message_sqlite, list_messages=content_list_messages_sqlite, list_user_visible_messages=content_list_user_visible_messages_sqlite, list_agent_inbox_messages=content_list_agent_inbox_messages_sqlite, mark_messages_read=content_mark_messages_read_sqlite, save_artifact=content_save_artifact_sqlite, get_artifact=content_get_artifact_sqlite, get_artifact_bounded=content_get_artifact_bounded_sqlite, update_artifact_metadata=content_update_artifact_metadata_sqlite, list_artifacts=content_list_artifacts_sqlite, delete_artifact=content_delete_artifact_sqlite, save_template=content_save_template_sqlite, get_template=content_get_template_sqlite, list_templates=content_list_templates_sqlite, delete_template=content_delete_template_sqlite}
+	return iface.Content_Repository{ctx=rawptr(impl), get_assistant_turn=content_get_assistant_turn_sqlite, save_assistant_turn=content_save_assistant_turn_sqlite, answer_question=content_answer_question_sqlite, latest_user_visible_message=content_latest_user_visible_message_sqlite, list_unread_incoming_ids=content_list_unread_incoming_ids_sqlite, action_card_sender=content_action_card_sender_sqlite, save_memory=content_save_memory_sqlite, get_memory=content_get_memory_sqlite, list_memories=content_list_memories_sqlite, save_conversation=content_save_conversation_sqlite, get_conversation=content_get_conversation_sqlite, list_conversations=content_list_conversations_sqlite, list_conversation_project_links=content_list_conversation_project_links_sqlite, save_message=content_save_message_sqlite, get_message=content_get_message_sqlite, update_message=content_update_message_sqlite, list_messages=content_list_messages_sqlite, list_user_visible_messages=content_list_user_visible_messages_sqlite, list_agent_inbox_messages=content_list_agent_inbox_messages_sqlite, mark_messages_read=content_mark_messages_read_sqlite, save_artifact=content_save_artifact_sqlite, get_artifact=content_get_artifact_sqlite, get_artifact_bounded=content_get_artifact_bounded_sqlite, update_artifact_metadata=content_update_artifact_metadata_sqlite, list_artifacts=content_list_artifacts_sqlite, delete_artifact=content_delete_artifact_sqlite, save_template=content_save_template_sqlite, get_template=content_get_template_sqlite, list_templates=content_list_templates_sqlite, delete_template=content_delete_template_sqlite}
 }
 
 content_save_memory_sqlite :: proc(ctx: rawptr, m: domain.Memory) -> (domain.Memory, bool, domain.Domain_Error) {
@@ -417,6 +417,17 @@ bind_template :: proc(s:sqlite3_stmt,t:domain.Template){ bind_text(s,1,t.templat
 template_from_stmt :: proc(s:sqlite3_stmt)->domain.Template { return domain.Template{template_id=column_text(s,0),owner_user_id=domain.User_ID(column_text(s,1)),is_system=column_text(s,2)=="1",name=column_text(s,3),description=column_text(s,4),persona=column_text(s,5),instructions=column_text(s,6),created_at=column_text(s,7),updated_at=column_text(s,8)} }
 int_s :: proc(v:int)->string { return fmt.tprintf("%d",v) }
 int_v :: proc(v:string)->int { p,ok:=strconv.parse_int(v); if !ok do return 0; return int(p) }
+
+// The LIKE is a cheap prefilter (a superset); json_each makes the match exact.
+content_action_card_sender_sqlite :: proc(ctx: rawptr, owner: domain.User_ID, card_id: string) -> (string, bool, domain.Domain_Error) {
+	impl := (^Content_Repo_SQLite)(ctx); stmt: sqlite3_stmt = nil
+	q := "SELECT sender_agent_instance_id FROM chat_messages WHERE owner_user_id = ?1 AND direction = 'agent_to_user' AND metadata_json LIKE '%' || ?2 || '%' AND json_valid(metadata_json) AND EXISTS (SELECT 1 FROM json_each(metadata_json, '$.action_ids') WHERE value = ?2) ORDER BY created_at DESC, message_id DESC LIMIT 1;"
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(q)), -1, &stmt, nil) != SQLITE_OK do return "", false, domain.domain_error(.Internal_Error, "failed action card sender lookup")
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, string(owner)); bind_text(stmt, 2, card_id)
+	if sqlite3_step(stmt) != SQLITE_ROW do return "", false, {}
+	return column_text(stmt, 0), true, {}
+}
 
 content_list_unread_incoming_ids_sqlite :: proc(ctx: rawptr, cid: string, owner: domain.User_ID) -> ([]string, domain.Domain_Error) {
 	impl := (^Content_Repo_SQLite)(ctx); stmt: sqlite3_stmt = nil

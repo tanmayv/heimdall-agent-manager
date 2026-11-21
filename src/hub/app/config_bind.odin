@@ -100,6 +100,12 @@ Hub_Config :: struct {
 	// conversation (REQ-4,5,6). Default 3600 (1h). <=0 falls back to the engine
 	// default DEFAULT_TITLE_NUDGE_COOLDOWN_SECONDS.
 	title_nudge_cooldown_seconds: int,
+	// Coordinator idle-stop timers (REQ-CIS-1), hub-wide only. X: stop a chain
+	// coordinator this long after the last user event while all its chains are
+	// Completed. Y: stop it this long after the last user event whatever the
+	// chain status. 0 disables the timer. Defaults 3600 / 21600.
+	coordinator_idle_completed_seconds: int,
+	coordinator_idle_seconds:           int,
 	// VAPID keypair for Web Push (WP-STORE-2). Both keys are unpadded base64url;
 	// the public key is the uncompressed P-256 point served to clients, the
 	// private key is the 32-byte scalar used to sign VAPID JWTs. The private key
@@ -172,6 +178,8 @@ default_config :: proc() -> Hub_Config {
 		device_auth_rate_window = 60,
 		reaper_interval_seconds = 20,
 		title_nudge_cooldown_seconds = 3600,
+		coordinator_idle_completed_seconds = DEFAULT_COORDINATOR_IDLE_COMPLETED_SECONDS,
+		coordinator_idle_seconds = DEFAULT_COORDINATOR_IDLE_SECONDS,
 		vapid_subject = "mailto:12tanmayvijay@gmail.com",
 		public_app_origin = "https://heimdall.mundus.in",
 		metrics_addr = "",
@@ -475,4 +483,15 @@ app_whatsapp_config_state :: proc(config: Hub_Config) -> (configured: bool, prob
 	}
 	if len(config.whatsapp_verify_token) < 16 do return false, "bots: whatsapp disabled: verify token must be at least 16 characters"
 	return true, ""
+}
+
+DEFAULT_COORDINATOR_IDLE_COMPLETED_SECONDS :: 60 * 60
+DEFAULT_COORDINATOR_IDLE_SECONDS           :: 6 * 60 * 60
+
+// parse_idle_seconds parses a coordinator idle-stop setting: a nonnegative
+// integer number of seconds, where 0 disables the timer (REQ-CIS-1).
+parse_idle_seconds :: proc(value: string) -> (int, bool) {
+	parsed, ok := strconv.parse_int(strings.trim_space(value))
+	if !ok || parsed < 0 do return 0, false
+	return int(parsed), true
 }

@@ -2267,8 +2267,14 @@ update_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, t
 	if service.uow_factory != nil && !v.has {
 		return {}, false, domain.domain_error(.Internal_Error, "could not begin task update transaction")
 	}
+	before, had_before, _ := iface.taskchain_get_task(service.repo, task_id)
 	out, ok, err := update_task_impl(service, auth, task_id, input)
 	if cerr := verb_end(&v, ok); cerr.code != .None do return domain.Task{}, false, cerr
+	// A user's requirement change (goal/acceptance) on a chain task is a user
+	// event for the coordinator idle-stop stamp; an agent's edit is not.
+	if ok && had_before && service.engine != nil && contracts.is_user_auth(auth) && taskv2.requirements_differ(before.brief_json, out.brief_json) {
+		taskv2.note_chain_user_activity(service.engine, out.chain_id)
+	}
 	return out, ok, err
 }
 

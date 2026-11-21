@@ -151,3 +151,17 @@ test_whatsapp_config_state :: proc(t: ^testing.T) {
 	testing.expect(t, !configured)
 	testing.expect_value(t, problem, "bots: whatsapp disabled: verify token must be at least 16 characters")
 }
+
+// REQ-CIS-1: hub-wide coordinator idle-stop defaults (X = 1 h, Y = 6 h) and
+// the shared env/flag parser (nonnegative seconds; 0 disables).
+@(test)
+test_coordinator_idle_config_defaults_and_parse :: proc(t: ^testing.T) {
+	config := default_config()
+	defer delete(config.forwarded_for_trusted_cidrs)
+	testing.expect_value(t, config.coordinator_idle_completed_seconds, 3600)
+	testing.expect_value(t, config.coordinator_idle_seconds, 21600)
+	for c in ([]struct{ raw: string, want: int, ok: bool }{{"0", 0, true}, {"3600", 3600, true}, {" 60 ", 60, true}, {"-1", 0, false}, {"1h", 0, false}, {"", 0, false}}) {
+		got, ok := parse_idle_seconds(c.raw)
+		testing.expectf(t, ok == c.ok && got == c.want, "parse_idle_seconds(%q) = %d, %v", c.raw, got, ok)
+	}
+}

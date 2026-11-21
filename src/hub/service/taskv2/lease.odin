@@ -622,6 +622,9 @@ on_start_success :: proc(svc: ^Service, inst: domain.Agent_Instance) {
 		}
 	}
 	_, _ = end_uow(svc, &u, acted)
+	// A (re)started coordinator re-arms its idle timers from its existing
+	// stamp; starting is not a user event, so it never resets them.
+	arm_coordinator_idle_instance(svc, current)
 }
 
 // answer_ready_agent_blocks_in_uow: a lease-free instance proved it is running,

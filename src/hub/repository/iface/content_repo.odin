@@ -18,6 +18,11 @@ Content_Mark_Messages_Read_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_
 // Content_List_Unread_Incoming_IDs_Proc returns the ids of EVERY unread
 // agent_to_user message in a conversation (no page cap), for mark-read.
 Content_List_Unread_Incoming_IDs_Proc :: proc(ctx: rawptr, conversation_id: string, owner_user_id: domain.User_ID) -> ([]string, domain.Domain_Error)
+// Content_Action_Card_Sender_Proc returns the sender instance of the newest
+// agent_to_user message that carried this action card (metadata_json
+// action_ids, written by chat send --actions). found=false when no message
+// carried it (e.g. a curator card).
+Content_Action_Card_Sender_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID, card_id: string) -> (instance_id: string, found: bool, err: domain.Domain_Error)
 Content_Save_Artifact_Proc :: proc(ctx: rawptr, a: domain.Artifact) -> (domain.Artifact, bool, domain.Domain_Error)
 Content_Get_Artifact_Proc :: proc(ctx: rawptr, artifact_id: string) -> (domain.Artifact, bool, domain.Domain_Error)
 Content_List_Artifacts_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID, filter: domain.Artifact_List_Filter) -> ([]domain.Artifact, domain.Domain_Error)
@@ -63,6 +68,7 @@ Content_Repository :: struct {
 	list_templates: Content_List_Templates_Proc,
 	delete_template: Content_Delete_Template_Proc,
 	list_unread_incoming_ids: Content_List_Unread_Incoming_IDs_Proc,
+	action_card_sender: Content_Action_Card_Sender_Proc,
 }
 
 content_answer_question :: proc(r: ^Content_Repository, source, answer: domain.Chat_Message) -> (domain.Chat_Message, bool, domain.Domain_Error) {
@@ -94,6 +100,11 @@ content_delete_template :: proc(r: ^Content_Repository, id: string, owner: domai
 
 // content_list_unread_incoming_ids: supported=false when the repository does
 // not implement it (callers then fall back to their paged scan).
+content_action_card_sender :: proc(r: ^Content_Repository, owner: domain.User_ID, card_id: string) -> (string, bool, domain.Domain_Error) {
+	if r == nil || r.action_card_sender == nil || card_id == "" do return "", false, {}
+	return r.action_card_sender(r.ctx, owner, card_id)
+}
+
 content_list_unread_incoming_ids :: proc(r: ^Content_Repository, conversation_id: string, owner: domain.User_ID) -> (ids: []string, supported: bool, err: domain.Domain_Error) {
 	if r == nil || r.list_unread_incoming_ids == nil do return nil, false, domain.Domain_Error{}
 	ids, err = r.list_unread_incoming_ids(r.ctx, conversation_id, owner)

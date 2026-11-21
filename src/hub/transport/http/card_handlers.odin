@@ -296,6 +296,9 @@ card_action_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	}
 
 	if !action_ok do return respond_error(err, req.request_id)
+	// Answering an agent's action card is a user event for the agent that sent
+	// it (coordinator idle-stop reset, REQ-CIS-1).
+	card_service.note_card_answered(h.cards, auth, action, card)
 
 	b := strings.builder_make()
 	write_card_json(&b, card)

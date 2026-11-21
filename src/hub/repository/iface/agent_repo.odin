@@ -33,6 +33,17 @@ Agent_Next_Title_Counter_Proc :: proc(ctx: rawptr, agent_id: string, owner_user_
 Agent_Update_Token_Usage_Proc :: proc(ctx: rawptr, instance_id, bridge_id, usage_json, updated_at: string) -> (bool, domain.Domain_Error)
 Agent_Add_Token_Totals_Proc :: proc(ctx: rawptr, instance_id, bridge_id: string, run_count: int, context_tokens, est_tool_tokens, output_tokens: i64) -> (added: bool, err: domain.Domain_Error)
 
+// User activity stamp (coordinator idle-stop timers, REQ-CIS-1). touch moves
+// agent_instances.user_activity_at forward to `at` (never backwards: an older
+// or equal stamp leaves the row alone, changed=false). get reads it ("" =
+// never touched). The column is not part of save_instance, so a stale save
+// cannot roll it back.
+Agent_Touch_User_Activity_Proc :: proc(ctx: rawptr, instance_id, at: string) -> (changed: bool, err: domain.Domain_Error)
+Agent_Get_User_Activity_Proc :: proc(ctx: rawptr, instance_id: string) -> (at: string, found: bool, err: domain.Domain_Error)
+// set_stop_reason records why the Hub stopped the instance (stop_instance's
+// reason). Instance saves never write it; a new run (higher run_count) clears it.
+Agent_Set_Stop_Reason_Proc :: proc(ctx: rawptr, instance_id, reason: string) -> (bool, domain.Domain_Error)
+
 Agent_Repository :: struct {
 	update_token_usage: Agent_Update_Token_Usage_Proc,
 	add_token_totals: Agent_Add_Token_Totals_Proc,
@@ -61,6 +72,9 @@ Agent_Repository :: struct {
 	get_tool_instance: Agent_Get_Instance_Proc,
 	list_active_runtime_instances: Agent_List_Active_Runtime_Instances_Proc,
 	next_title_counter: Agent_Next_Title_Counter_Proc,
+	touch_user_activity: Agent_Touch_User_Activity_Proc,
+	get_user_activity: Agent_Get_User_Activity_Proc,
+	set_stop_reason: Agent_Set_Stop_Reason_Proc,
 }
 
 agent_next_title_counter :: proc(repo: ^Agent_Repository, agent_id: string, owner_user_id: domain.User_ID, now: string) -> (int, bool, domain.Domain_Error) {
@@ -136,6 +150,21 @@ agent_list_instances_by_bridge :: proc(repo: ^Agent_Repository, bridge_id: strin
 agent_list_instances_by_chain :: proc(repo: ^Agent_Repository, owner_user_id: domain.User_ID, chain_id: string) -> ([]domain.Agent_Instance, domain.Domain_Error) {
 	if repo == nil || repo.list_instances_by_chain == nil do return nil, domain.domain_error(.Internal_Error, "agent repository is not configured")
 	return repo.list_instances_by_chain(repo.ctx, owner_user_id, chain_id)
+}
+
+agent_touch_user_activity :: proc(repo: ^Agent_Repository, instance_id, at: string) -> (bool, domain.Domain_Error) {
+	if repo == nil || repo.touch_user_activity == nil do return false, domain.domain_error(.Internal_Error, "agent repository is not configured")
+	return repo.touch_user_activity(repo.ctx, instance_id, at)
+}
+
+agent_set_stop_reason :: proc(repo: ^Agent_Repository, instance_id, reason: string) -> (bool, domain.Domain_Error) {
+	if repo == nil || repo.set_stop_reason == nil do return false, {}
+	return repo.set_stop_reason(repo.ctx, instance_id, reason)
+}
+
+agent_get_user_activity :: proc(repo: ^Agent_Repository, instance_id: string) -> (string, bool, domain.Domain_Error) {
+	if repo == nil || repo.get_user_activity == nil do return "", false, domain.domain_error(.Internal_Error, "agent repository is not configured")
+	return repo.get_user_activity(repo.ctx, instance_id)
 }
 
 agent_update_token_usage :: proc(repo: ^Agent_Repository, instance_id, bridge_id, usage_json, updated_at: string) -> (bool, domain.Domain_Error) {

@@ -846,7 +846,7 @@ function stated(payload: any, key: string): string | undefined {
 const INSTANCE_SUMMARY_FIELDS = [
   'runtime_status', 'startup_status', 'activity_status', 'display_name', 'bridge_id',
   'provider', 'model', 'runtime_transport', 'launch_epoch', 'configuration_revision', 'run_count', 'started_at',
-  'current_task_id', 'current_task_role', 'chain_id', 'updated_at',
+  'current_task_id', 'current_task_role', 'chain_id', 'updated_at', 'stop_reason',
 ] as const;
 
 function isNewerOrEqual(next: unknown, current: unknown): boolean {

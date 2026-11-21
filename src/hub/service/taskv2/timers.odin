@@ -46,6 +46,10 @@ Timer_Kind :: enum {
 	// hold (the coordinator, or the user via a user event) with exponential
 	// back-off, at most HOLD_STALE_MAX_REMINDERS times per hold.
 	Hold_Stale,         // key = task_id,     armed = the hold's since_ms
+	// Coordinator idle stops (coordinator_idle.odin): measured from the
+	// instance's user-activity stamp; X only while its chains are completed.
+	Coordinator_Idle_Completed, // key = instance_id, armed = user_activity_at
+	Coordinator_Idle,           // key = instance_id, armed = user_activity_at
 }
 
 Timer :: struct {
@@ -98,6 +102,11 @@ timers_arm :: proc(svc: ^Service, kind: Timer_Kind, key: string, due_ms: i64, ar
 	// one-shot timers. Keep one per task, including under frequent heartbeats.
 	if kind == .Requirements_Notice {
 		for timer in ts.heap do if timer.kind == kind && timer.key == key do return
+	}
+	// Coordinator idle timers are re-armed on every reset, start and chain
+	// completion; one pending timer per (kind, instance, stamp) is enough.
+	if kind == .Coordinator_Idle_Completed || kind == .Coordinator_Idle {
+		for timer in ts.heap do if timer.kind == kind && timer.key == key && timer.armed == armed && timer.due_ms <= due_ms do return
 	}
 	if ts.heap == nil do ts.heap = make([dynamic]Timer, runtime.heap_allocator())
 	ts.seq += 1
@@ -293,6 +302,8 @@ rebuild_timers :: proc(svc: ^Service) {
 			arm_idle_ttl(svc, inst.agent_instance_id, fleet_idle_ttl(svc, domain.Task_Chain_ID(inst.chain_id), inst.owner_user_id, inst.agent_id), inst.idle_since)
 		}
 	}
+	// Coordinator idle stops from agent_instances.user_activity_at (REQ-CIS-4).
+	rebuild_coordinator_idle_timers(svc)
 }
 
 // ---- firing -----------------------------------------------------------------------
@@ -322,6 +333,8 @@ fire_timer :: proc(svc: ^Service, t: Timer, now_ms: i64, jump_detected: bool) {
 	u, ok, _ := begin_uow(svc)
 	if !ok do return
 	r := Fire_Result.Noop
+	idle_stop: Coordinator_Idle_Stop
+	has_idle_stop := false
 	switch t.kind {
 	case .Requirements_Notice:
 		if task, found, _ := iface.taskchain_get_task(svc.repo, domain.Task_ID(t.key)); found {
@@ -340,13 +353,19 @@ fire_timer :: proc(svc: ^Service, t: Timer, now_ms: i64, jump_detected: bool) {
 	case .Rematch:          r = fire_rematch(svc, &u, t)
 	case .Dependency_Stalled: r = fire_dependency_stalled(svc, &u, t)
 	case .Hold_Stale:       r = fire_hold_stale(svc, &u, t, now_ms)
+	case .Coordinator_Idle_Completed, .Coordinator_Idle:
+		idle_stop, has_idle_stop = fire_coordinator_idle(svc, t, now_ms)
+		if has_idle_stop do r = .Acted
 	}
 	if r == .Failed {
 		fmt.eprintfln("[taskv2] timer %v for %s failed; rolled back", t.kind, t.key)
 		// Re-arm so the condition is re-evaluated next tick instead of being lost.
 		timers_arm(svc, t.kind, t.key, now_ms + 1000, t.armed)
 	}
-	_, _ = end_uow(svc, &u, r != .Failed)
+	committed, _ := end_uow(svc, &u, r != .Failed)
+	// The stop is network I/O and takes the agent service's own locks: strictly
+	// after the unit of work released the engine lock.
+	if has_idle_stop && committed do coordinator_idle_stop_after_commit(svc, idle_stop, now_ms)
 }
 
 @(private = "file")

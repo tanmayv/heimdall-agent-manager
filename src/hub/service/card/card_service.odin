@@ -856,6 +856,17 @@ reject_card :: proc(s: ^Card_Service, auth: contracts.Auth_Context, id: domain.C
 	return update_card_status(s, auth, id, domain.CARD_STATUS_REJECTED)
 }
 
+// note_card_answered (after a committed accept / reject / discard by the
+// user): answering an action card an agent sent with chat send --actions is a
+// user event for that agent, i.e. a coordinator idle-stop reset (REQ-CIS-1).
+// Snoozing is not an answer; an agent acting on a card is not a user event;
+// a card no message carried (curator cards) has no addressee.
+note_card_answered :: proc(s: ^Card_Service, auth: contracts.Auth_Context, action: string, card: domain.Card) {
+	if s == nil || s.content == nil || !contracts.is_user_auth(auth) do return
+	if action != "accept" && action != "reject" && action != "discard" do return
+	content_service.note_action_card_answered(s.content, card.owner_user_id, string(card.card_id))
+}
+
 accept_card :: proc(s: ^Card_Service, auth: contracts.Auth_Context, id: domain.Card_ID, decision := Card_Decision{}) -> (domain.Card, bool, domain.Domain_Error) {
 	card, ok, err := get_card(s, auth, id)
 	if !ok do return domain.Card{}, false, err

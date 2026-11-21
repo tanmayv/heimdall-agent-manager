@@ -159,6 +159,7 @@ parse_args :: proc(config: ^app.Hub_Config) {
 	apply_telegram_env(config)
 	apply_whatsapp_env(config)
 	apply_paddle_env(config)
+	apply_coordinator_idle_env(config)
 
 	// public_app_origin resolves default -> env -> flag, same shape as the above.
 	//
@@ -346,6 +347,15 @@ parse_args :: proc(config: ^app.Hub_Config) {
 			if !ok || parsed <= 0 { fmt.eprintln("terminal-retention-seconds must be a positive integer"); os.exit(2) }
 			config.runtime_terminal_retention_seconds = int(parsed)
 			i += 1
+		} else if (arg == "--coordinator-idle-completed-seconds" || arg == "--coordinator-idle-seconds") && i + 1 < len(os.args) {
+			parsed, ok := app.parse_idle_seconds(os.args[i + 1])
+			if !ok { fmt.eprintln(arg, "must be a nonnegative integer (0 disables)"); os.exit(2) }
+			if arg == "--coordinator-idle-completed-seconds" {
+				config.coordinator_idle_completed_seconds = parsed
+			} else {
+				config.coordinator_idle_seconds = parsed
+			}
+			i += 1
 		} else if arg == "--title-nudge-cooldown-seconds" && i + 1 < len(os.args) {
 			if parsed, ok := strconv.parse_int(os.args[i + 1]); ok do config.title_nudge_cooldown_seconds = int(parsed)
 			i += 1
@@ -465,6 +475,21 @@ apply_paddle_env :: proc(config: ^app.Hub_Config) {
 	if v := os.get_env_alloc("HEIMDALL_PADDLE_PAST_DUE_GRACE_SECONDS", context.allocator); v != "" {
 		parsed, ok := strconv.parse_int(v)
 		config.paddle_past_due_grace_seconds = int(parsed) if ok && parsed >= 0 else -1
+	}
+}
+
+// apply_coordinator_idle_env: the coordinator idle-stop timers resolve
+// default -> env -> flag (REQ-CIS-1). A malformed value fails loudly rather
+// than silently disabling or shortening the timer.
+apply_coordinator_idle_env :: proc(config: ^app.Hub_Config) {
+	names := [2]string{"HEIMDALL_COORDINATOR_IDLE_COMPLETED_SECONDS", "HEIMDALL_COORDINATOR_IDLE_SECONDS"}
+	targets := [2]^int{&config.coordinator_idle_completed_seconds, &config.coordinator_idle_seconds}
+	for name, i in names {
+		v := os.get_env_alloc(name, context.temp_allocator)
+		if v == "" do continue
+		parsed, ok := app.parse_idle_seconds(v)
+		if !ok { fmt.eprintln(name, "must be a nonnegative integer (0 disables)"); os.exit(2) }
+		targets[i]^ = parsed
 	}
 }
 

@@ -434,7 +434,10 @@ review_post :: proc(svc: ^Service, auth: contracts.Auth_Context, input: Review_I
 		_, cerr2 := end_uow(svc, &u, gok)
 		if !gok do return {}, false, gerr
 		if cerr2.code != .None do return {}, false, cerr2
-			return review_result(svc, task.task_id, gate), true, domain.Domain_Error{}
+		// A verdict relayed --on-behalf-of user is a user event for the
+		// coordinator idle-stop stamp; the coordinator's own gate verdict is not.
+		if rev_role == "user" do note_chain_user_activity(svc, task.chain_id)
+		return review_result(svc, task.task_id, gate), true, domain.Domain_Error{}
 	}
 	lease, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, inst.agent_instance_id)
 	if !held || lease.phase == domain.LEASE_PHASE_WAITING || lease.kind != domain.LEASE_KIND_REVIEW || (strings.trim_space(input.task_id) != "" && input.task_id != string(lease.task_id)) {
@@ -562,6 +565,8 @@ user_review :: proc(svc: ^Service, auth: contracts.Auth_Context, task_id: domain
 	_, cerr2 := end_uow(svc, &u, gok)
 	if !gok do return {}, false, gerr
 	if cerr2.code != .None do return {}, false, cerr2
+	// LGTM/NGTM by the user resets the chain coordinator's idle stamp.
+	note_chain_user_activity(svc, task.chain_id)
 	return review_result(svc, task.task_id, gate), true, domain.Domain_Error{}
 }
 

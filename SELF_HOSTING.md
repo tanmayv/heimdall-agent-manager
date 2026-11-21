@@ -122,6 +122,23 @@ For local development use `tools/mock-oidc` (see its README).
 The hub binds to `127.0.0.1` by default. Put nginx/Caddy in front to expose it over
 HTTPS. The web UI is served as a static bundle and can be served by the same reverse proxy.
 
+**Idle task-chain coordinators** are stopped automatically. These settings are hub-wide, with no
+per-chain override:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `--coordinator-idle-completed-seconds` / `HEIMDALL_COORDINATOR_IDLE_COMPLETED_SECONDS` | `3600` | Stop a coordinator this long after the last user event while its chains are completed. |
+| `--coordinator-idle-seconds` / `HEIMDALL_COORDINATOR_IDLE_SECONDS` | `21600` | Stop a coordinator this long after the last user event, whatever the chain status. |
+
+`0` disables a timer. Only user events count as activity and reset the timers:
+- the user chatting with the coordinator;
+- the user answering its questions or action cards;
+- the user's verdict on a chain task;
+- the user changing a chain task's requirements.
+
+A stop is deferred while the coordinator is busy, holds a task lease, or has unread user input.
+The instance then shows *Stopped automatically* with the reason.
+
 ### 1.4a Billing and plan enforcement
 
 A self-hosted hub with no Paddle credentials or price ID is unlimited by default.

@@ -53,7 +53,7 @@ import { useFetchTaskChainDetailQuery } from '../../api/endpoints/tasks';
 import { VaultText } from '../vault/VaultText';
 import PaginatedMemoriesSection from '../shared/PaginatedMemoriesSection';
 import { buildRouteHash } from '../../utils/appLocation';
-import { agentFailureSummary } from '../../utils/agentStatus';
+import { agentFailureSummary, agentStopReasonLabel } from '../../utils/agentStatus';
 import { AgentFailureNotice } from './AgentFailureNotice';
 import { ContextMeter, TokenTotalsSummary } from '../extension/TokenUsage';
 import { normalizeTokenTotals, normalizeTokenUsage } from '../extension/tokenUsageModel';
@@ -602,6 +602,7 @@ export function LiveInstanceDetailPane({
   }
 
   const failure = runtimeStatus.toLowerCase() === 'failed' ? agentFailureSummary(inst?.last_error) : null;
+  const stopReasonLabel = agentStopReasonLabel(runtimeStatus, inst?.stop_reason);
   const runtimeTone: Tone = failure ? failure.tone : (runtimeStatus.toLowerCase() === 'running' || runtimeStatus.toLowerCase() === 'ready')
     ? 'success'
     : (runtimeStatus.toLowerCase() === 'starting' || runtimeStatus.toLowerCase() === 'launching')
@@ -694,6 +695,11 @@ export function LiveInstanceDetailPane({
             ) : null}
           </div>
           <AgentFailureNotice runtimeStatus={runtimeStatus} lastError={inst?.last_error} />
+          {stopReasonLabel ? (
+            <p className="mt-1 text-xs text-muted" data-debug-id="live-instance-stop-reason" title={String(inst?.stop_reason || '')}>
+              {stopReasonLabel}
+            </p>
+          ) : null}
         </DetailRow>
 
         <DetailRow label="Provider & Model">

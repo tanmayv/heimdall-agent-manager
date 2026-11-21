@@ -183,6 +183,10 @@ task_engine_on_instance_activity :: proc(ctx: rawptr, instance_id, activity_stat
 	taskv2.on_instance_activity((^taskv2.Service)(ctx), instance_id, activity_status)
 }
 
+task_engine_on_user_activity :: proc(ctx: rawptr, instance_id: string) {
+	taskv2.note_user_activity((^taskv2.Service)(ctx), instance_id)
+}
+
 task_engine_on_user_stopped :: proc(ctx: rawptr, instance_id: string) {
 	taskv2.on_instance_user_stopped((^taskv2.Service)(ctx), instance_id)
 }
@@ -428,6 +432,9 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.repos.taskchains.catalog = graph.repos.event_outbox
 	graph.task_engine = taskv2.new_service(&graph.repos.taskchains, &graph.repos.agents, &graph.repos.bridges, &graph.clock, &graph.ids)
 	graph.task_engine.legacy_event_notices = config.legacy_event_notices
+	graph.task_engine.coordinator_idle_completed_seconds = config.coordinator_idle_completed_seconds
+	graph.task_engine.coordinator_idle_seconds = config.coordinator_idle_seconds
+	graph.task_engine.content = &graph.repos.content
 	graph.content.uow_factory = &graph.uow_factory
 	graph.content.vault_directory = &graph.vault_directory_repo
 	graph.task_engine.uow_factory = &graph.uow_factory
@@ -441,6 +448,9 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.task_engine.wake_coordinator = task_engine_wake_coordinator
 	graph.task_engine.wake_coordinator_ctx = rawptr(graph)
 	taskchain_service.set_engine(&graph.taskchains, &graph.task_engine)
+	// User chat / action cards / question answers reset the coordinator
+	// idle-stop stamp (REQ-CIS-1); the engine arms its timers.
+	graph.content.user_activity = content_service.User_Activity_Hook{ctx = rawptr(&graph.task_engine), run = task_engine_on_user_activity}
 	taskchain_service.set_uow_factory(&graph.taskchains, &graph.uow_factory)
 	// Instance lifecycle → engine: ONE chokepoint for every death path
 	// (taskv2.on_instance_terminal), busy/idle activity, and start-success.
